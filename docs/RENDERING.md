@@ -705,8 +705,41 @@ the strands ((1 − 0.65·f)²); the record's bit `0x10000` leaves the
 specular level unboosted. The original swaps its hair material in only on
 parts whose material word at payload offset `0xC` is over 0.5; the shipped
 hair material (`harhps1`) holds 1.0 there, so every part is tinted. Not
-yet: hair as cloth, the `HarHPC1` texture set bit `0x10000` selects, and
-the creation scene's smoothing.
+yet: hair as cloth, the `HarHPC1` texture set bit `0x10000` selects (its
+maps do not ship; `exa_character::look::hair_textures` names both sets),
+and the creation scene's smoothing.
+
+### Character assembly
+
+The original dresses a character into one auto-skinned mesh: the body and
+every visible garment piece are appended into a single mesh grouped by
+material. `exa_character::dress` is the merge list, and
+`exa_assets::merge::merge_parts` builds the mesh from it; Exarust still
+draws one mesh per node, so the assembled mesh is a tested builder for
+callers and not on the draw path yet.
+
+- **Order.** The worn set is planned in its layer-level order (the apparel
+  cache inserts each garment by its highest occupied layer, outermost
+  last). Each garment's chosen nodes are appended walking the slot tree
+  from the pelvis: a slot's node before its child slots (1–13, 17, 14–16,
+  18), gated by the slot's select mask against the garment's visible mask.
+  The body's own visible slots follow, then the overlays (meshes numbered
+  past slot 18, their node flags `(flags & !0x30000) | 0xC0000`).
+- **Cull bits.** A garment slot's triangles take `0x400000` when its second
+  cull mask misses the visible mask, else `0x200000` when its first does,
+  else none; the second test overwrites the first. Body slots take none.
+  The bits are written on the merged triangles and read by the renderer's
+  two-sided faces.
+- **Occlusion alpha.** A garment part whose material has the occlusion
+  mark makes its merged vertices opaque and every vertex on the border of
+  the marked region transparent: a vertex fades when one of its marked
+  corners' outgoing edge (to the triangle's next corner, by shared
+  position) is not closed by a marked corner's incoming edge at the same
+  vertex. Unmarked parts keep alpha 255.
+- **Impact material.** Each body slot takes the hit-sound class of the
+  garment that leaves the most of the slot's uncovered coverage word
+  (compared as the original's 64-bit word). The body dynamics carry it per
+  part; nothing plays it yet.
 
 ### Blood
 

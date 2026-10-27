@@ -122,7 +122,30 @@ physique values and the body morphs they select remain the body's concern
   (2 ms of styles a frame, so a crowd loads over several frames) by those
   head rules; `exa_assets::hair` gives the record's colour, specular, gloss
   and opacity. Not done: the `HarHPC1` texture set of profession bit
-  `0x10000`, hair as cloth and its smoothing.
+  `0x10000` (the variant's maps do not ship; `look::hair_textures` names
+  both sets), hair as cloth and its smoothing.
+
+## The dressed mesh
+
+- `dress` is the merge list the original's skin builder appends: each
+  garment's chosen nodes in the slot tree's order (the pelvis first, each
+  slot before its child slots), gated by the slot's select mask against the
+  garment's visible mask and carrying the cull bits of
+  `layers::cull_bits`; then the body's visible slots, with no cull bits;
+  then the overlays (the meshes numbered past slot 18, marked
+  `(flags & !0x30000) | 0xC0000`). `DressedPlan` also carries the body's
+  visible mask and slots and the per-slot impact material: the garment that
+  leaves the most of the slot's uncovered coverage word, compared as the
+  original's 64-bit word, gives the body part its hit-sound class.
+- Garments are planned in their layer-level order whatever order the worn
+  list gives them: the original inserts each into the character's apparel
+  cache by its highest occupied layer, outermost last.
+- `exa_assets::merge::merge_parts` carries the cull bits on the merged
+  triangles and, for a part whose material has the occlusion mark, fades
+  the border of the marked region's vertex alpha. Each part keeps its own
+  position-stream ids. The running game still draws one mesh per node, so
+  no caller merges yet; the plan, the merge and its tests are the source of
+  truth for the single mesh.
 
 ## The generator's runtime
 
@@ -135,11 +158,15 @@ These are tested rules the running game does not drive yet.
   numbering and re-framing on the base body's slot frames, the morph frame
   refresh, the dynamics build/split/rebuild passes, frame save (normalised
   with the reciprocal square root estimate) and rows-only restore, the
-  state copy by slot, scene detach, cloth velocity, rest-point placement,
-  the clone's cloth rule, the merge order along the slot tree, the overlay
-  marks and both saved-pose restores (a bone tree matched by position, and
-  a flat list). The rest vectors come from the engine's shape builder,
-  which the caller supplies.
+  state copy by slot, scene detach (with the nodes' item hosts cleared),
+  cloth velocity, rest-point placement, the clone's cloth rule, the merge
+  order along the slot tree, the merge-node collection the skin builder
+  asks for (the chosen node, its marked parent at no offset, its marked
+  mesh children at the saved slot frame or their own world position), the
+  overlay marks and both saved-pose restores (a bone tree matched by
+  position, and a flat list). The rest vectors come from the engine's shape
+  builder, which the caller supplies; the nodes' `host` field is a labelled
+  guess (the original's `0x130`, written by the material loader).
 - `factory` is the start-up data: the eighteen slots' child tables, the
   skin-map side/format from the pixel-format setting (512 below 3, 1024
   from 3), the item-database override and the material lock.
@@ -151,19 +178,30 @@ These are tested rules the running game does not drive yet.
 - `rebuild` keeps the look rebuild's own steps (job reset and first
   apparel, frame save, dynamics rebuild, frame restore, the root lift by
   the new standing height, the double-precision body scale), the
-  dressed-mesh plan (per garment: chosen slots, visible mask, merge order;
-  the body's mask and merged slots), a texture-only rebuild (without the
-  feral apparel overlay) and the creation scene's hair roots.
-  `background` hands a runner the rebuild's build and apply steps apart,
-  or runs both inline.
-- `spawn` plans what the spawn writes: the motions (saved attack motions
-  reset to 3, else 0x13, or 0x19 for profession bit `0x1000`; the player's
-  3 or 0x13), the root heights (placement height plus standing less 8 cm,
-  lying standing less 5, the player's standing less 5 or frame height plus
-  standing less 6), the corpse's 0xA00, the equip pass over both hands
-  (the off hand's torch section, else weapon before shield) and an item
-  model's factory or library source. The viewer fills the moveset's hands
-  from the equip pass.
+  dressed-mesh plan (per garment, in layer order: chosen slots, visible
+  mask, merge order, plus the per-slot impact material; the body's mask and
+  merged slots), a texture-only rebuild (without the feral apparel overlay)
+  and the creation scene's hair roots. `background` hands a runner the
+  rebuild's build and apply steps apart, or runs both inline.
+- The texture-only pass's feral overlay: the underwear (item 8) of a feral
+  character takes quality and damage `round_to_even((2 − f)·f·255)` and the
+  record's look seed; every other first apparel keeps its stored appearance
+  and its own seed (`retexture_layer`). `preview` and `retexture_only` are
+  the two public wrappers.
+- `spawn` plans the spawns the levels and arena call: a placed character's
+  motion (the saved attack motions 5–12 written back as stance 3, else the
+  saved motion, else 0x13, or 0x19 for a profession word with `0x1000`),
+  its lying flags (`0x1000`) and ground height (placement + standing −
+  8 cm, or standing − 5 while lying; a saved pose places the body itself),
+  the player's spawn (mode 1 stance 3 with its stance byte, mode 2 lying,
+  0x13 otherwise, the frame's height + standing − 6 cm or the ground), and
+  the corpse (stance 3, condition `0xA00`, the limp byte and down float
+  cleared, a saved pose). It also gives the creator races their roles
+  (`creator_role`: races 5–9 force role 11; 0x11 and 0x12 try 45 and 46)
+  and the two material passes: run-time `&` materials clear their validity
+  word and set `0x80000`, `*` placeholders clear their value and set `0x10`.
+  The viewer still stands placed characters on the ground and does not set
+  the motion, so these are plans.
 
 ## Held items
 

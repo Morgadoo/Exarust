@@ -212,6 +212,63 @@ pub fn player_motion(mode: i32) -> i32 {
     if mode == 1 { 3 } else { 0x13 }
 }
 
+/// The record's hand flag that asks the held light to burn.
+pub const HAND_LIT: u32 = 0x0200_0000;
+/// The record's hand flag that holds the item flipped.
+pub const HAND_FLIPPED: u32 = 0x0100_0000;
+
+/// What an attached item is, as the attach pass decides from the equip
+/// pass's plan.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Attach {
+    /// The main hand's weapon.
+    Weapon,
+    /// A second weapon in the off hand.
+    SecondWeapon,
+    /// A shield on the off arm.
+    Shield,
+    /// The off hand's torch (the item's torch section).
+    Torch,
+}
+
+/// One item the spawn attaches, and the hand it hangs under.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AttachPlan {
+    pub hand: usize,
+    pub kind: Attach,
+    /// The item's light burns (the hand's `0x02000000` flag).
+    pub lit: bool,
+    /// The item is held flipped (the hand's `0x01000000` flag).
+    pub flipped: bool,
+}
+
+/// The attach pass's plan over the equip pass's two hands: the main hand's
+/// item first, then the off hand's, a torch on its own path. The original
+/// attaches a weapon, a second weapon, a shield or a torch, marks its
+/// meshes held, lights a burning torch and registers it with the scene; an
+/// item the equip pass refused attaches nothing.
+pub fn attach_plan(hands: &[Option<Equipped>; 2]) -> Vec<AttachPlan> {
+    let mut out = Vec::new();
+    for (hand, item) in hands.iter().enumerate() {
+        let Some(item) = item else { continue };
+        let kind = match (hand, item.kind) {
+            (0, EquipKind::Weapon) => Attach::Weapon,
+            (0, EquipKind::Shield) => Attach::Shield,
+            (0, EquipKind::Torch) => Attach::Torch,
+            (_, EquipKind::Weapon) => Attach::SecondWeapon,
+            (_, EquipKind::Shield) => Attach::Shield,
+            (_, EquipKind::Torch) => Attach::Torch,
+        };
+        out.push(AttachPlan {
+            hand,
+            kind,
+            lit: item.flags & HAND_LIT != 0,
+            flipped: item.flags & HAND_FLIPPED != 0,
+        });
+    }
+    out
+}
+
 /// The corpse's motion: the Defence stance 3.
 pub const CORPSE_MOTION: i32 = 3;
 /// The corpse's condition word: dead.
@@ -561,6 +618,64 @@ mod tests {
     fn an_empty_hand_leaves_no_entry() {
         let record = CharacterRecord::default();
         assert_eq!(equip_hands(&record, |_, _| None), [None, None]);
+    }
+
+    /// The attach pass: the main hand's weapon, a second weapon or shield in
+    /// the off hand, a torch on its own path, with the hand's lit and
+    /// flipped flags.
+    #[test]
+    fn the_attach_plan_takes_the_equipped_hands() {
+        let mut record = CharacterRecord::default();
+        record.hands[0] = ItemRef::new(1, 0x0100_0000);
+        record.hands[1] = ItemRef::new(2, 0x0200_0000);
+        let hands = equip_hands(&record, |hand, _| {
+            Some(if hand == 0 {
+                entry("sword", Some(weapon(0x11)), false)
+            } else {
+                HandEntry {
+                    torch: true,
+                    ..entry("torch", None, false)
+                }
+            })
+        });
+        let plan = attach_plan(&hands);
+        assert_eq!(
+            plan,
+            [
+                AttachPlan {
+                    hand: 0,
+                    kind: Attach::Weapon,
+                    lit: false,
+                    flipped: true,
+                },
+                AttachPlan {
+                    hand: 1,
+                    kind: Attach::Torch,
+                    lit: true,
+                    flipped: false,
+                },
+            ]
+        );
+        // A second weapon and a shield take their own kinds; an empty plan
+        // attaches nothing.
+        record.hands[0] = ItemRef::new(1, 0);
+        let hands = equip_hands(&record, |hand, _| {
+            Some(if hand == 0 {
+                entry("sword", Some(weapon(0x11)), false)
+            } else {
+                entry("mace", Some(weapon(0x11)), false)
+            })
+        });
+        assert_eq!(attach_plan(&hands)[1].kind, Attach::SecondWeapon);
+        let hands = equip_hands(&record, |hand, _| {
+            Some(if hand == 0 {
+                entry("sword", Some(weapon(0x11)), false)
+            } else {
+                entry("shield", None, true)
+            })
+        });
+        assert_eq!(attach_plan(&hands)[1].kind, Attach::Shield);
+        assert!(attach_plan(&[None, None]).is_empty());
     }
 
     #[test]

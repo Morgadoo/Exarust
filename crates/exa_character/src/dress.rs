@@ -124,6 +124,39 @@ pub fn dress(
     }
 }
 
+/// The body-only merge the builder runs when the record's profession bit
+/// `0x4` is clear: every body slot the table holds is merged, ungated by
+/// the visible mask and without cull bits, then the overlays. (The other
+/// branch, which builds the garments too, is [`dress`].)
+pub fn body_only_steps(
+    body: &Body,
+    root: usize,
+    body_slots: &[Option<usize>; 19],
+) -> Vec<MergeStep> {
+    fn visit(slot: usize, slots: &[Option<usize>; 19], out: &mut Vec<MergeStep>) {
+        if let Some(node) = slots[slot] {
+            out.push(MergeStep {
+                node,
+                cull: 0,
+                overlay: false,
+            });
+        }
+        for &child in SLOTS[slot - 1].children {
+            visit(child, slots, out);
+        }
+    }
+    let mut steps = Vec::new();
+    visit(1, body_slots, &mut steps);
+    for node in overlay_nodes(body, root) {
+        steps.push(MergeStep {
+            node,
+            cull: 0,
+            overlay: true,
+        });
+    }
+    steps
+}
+
 /// The first run-time material (`&…`) of the merged nodes in merge order:
 /// the texture the skin job carries as its first apparel layer. `materials`
 /// gives a node's part material names.
@@ -260,6 +293,12 @@ mod tests {
         assert_eq!(plan.steps[0].node, 0);
         assert_eq!(plan.steps.len(), 1 + 7 + 1);
         assert_eq!(plan.first_apparel_of(|_| vec!["skinhuman".into()]), None);
+        // The body-only branch merges every slot the table holds, ungated.
+        let only = body_only_steps(&b, 0, &[None; 19]);
+        assert_eq!(only.len(), 1);
+        assert!(only[0].overlay);
+        b.nodes[7].render_flags = 0;
+        assert!(body_only_steps(&b, 0, &[None; 19]).is_empty());
     }
 
     /// The first run-time material in merge order wins; a body material
@@ -287,5 +326,91 @@ mod tests {
             Some("&doublet_ba1")
         );
         assert_eq!(first_apparel(&steps, |_| vec![]), None);
+    }
+
+    /// The shipped human body and a plate helm, assembled as the builder
+    /// does: the helm's head nodes are chosen, the body's head is hidden,
+    /// and the helmet merges after the body's visible slots (skipped when
+    /// the game is not installed).
+    #[test]
+    fn the_shipped_human_dresses_in_the_plate_helm() {
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let game = exa_assets::GameData::open(&dir).unwrap();
+        let resource = game.pack(exa_assets::PackKind::Resource).unwrap();
+        let human = exa_formats::rfc::Scene::parse(resource.get("humanbase.rfc").unwrap()).unwrap();
+        let from_scene = |nodes: &[exa_formats::rfc::Node]| -> Vec<Node> {
+            nodes
+                .iter()
+                .map(|n| Node {
+                    name: n.name.clone(),
+                    parent: n.parent,
+                    chunk_kind: if n.kind == exa_formats::rfc::NODE_MESH {
+                        MESH
+                    } else {
+                        n.kind
+                    },
+                    slot: crate::layers::slot_of(&n.name).unwrap_or(0),
+                    ..Node::default()
+                })
+                .collect()
+        };
+        let mut body = Body::new(from_scene(&human.nodes));
+        let filled = body.chain_slots(0, true, 18);
+        // The chain's table is indexed by slot − 1; the slot table the
+        // merge takes is indexed by slot.
+        let mut table = [None; 19];
+        table[1..=18].copy_from_slice(&filled[..18]);
+        assert_eq!(
+            table[9].map(|i| body.nodes[i].name.clone()).as_deref(),
+            Some("0900Chest")
+        );
+        let mut slot_world = [None; 19];
+        for slot in 1..=18 {
+            slot_world[slot] = table[slot].map(|i| body.nodes[i].world);
+        }
+        let db = exa_formats::rdb::Database::parse(resource.get("objdb.rdb").unwrap()).unwrap();
+        let items = exa_formats::objdb::items(&db);
+        let helm = items.iter().find(|i| i.id == 3).unwrap();
+        assert_eq!(helm.worn_model.to_ascii_lowercase(), "armet___ba1");
+        let chars = game.pack(exa_assets::PackKind::Characters).unwrap();
+        let garment = exa_formats::rfc::Scene::parse(chars.get(&helm.worn_model).unwrap()).unwrap();
+        let base = body.nodes.len();
+        for (i, n) in from_scene(&garment.nodes).into_iter().enumerate() {
+            let mut n = n;
+            n.parent = garment.nodes[i].parent.map(|p| p + base);
+            body.nodes.push(n);
+        }
+        body.refresh_links();
+        assert_ne!(body.reframe_from_slots(base, &slot_world), 0);
+        let slots = (1..=18)
+            .filter(|&slot| {
+                body.descendants(base)
+                    .iter()
+                    .any(|&i| body.nodes[i].slot == slot)
+            })
+            .fold(0, |m, slot| m | crate::layers::slot_bit(slot));
+        let mut words = [0u64; 18];
+        for slot in 1..=18 {
+            words[slot - 1] = helm.slot_word(slot);
+        }
+        let worn = WornGarment {
+            roots: vec![base],
+            occupancy: words,
+            coverage: words,
+            slots,
+            material: helm.armour.map_or(0, |a| a.material),
+        };
+        let plan = dress(&body, 0, &[worn], &table);
+        assert!(!plan.steps.is_empty());
+        // The helm covers the head on every layer: the body's head is not
+        // merged and the helm's nodes are.
+        assert_eq!(plan.body_visible & slot_bit(10), 0);
+        assert_eq!(plan.body_slots & slot_bit(10), 0);
+        assert!(plan.steps.iter().any(|s| s.node >= base));
+        assert_eq!(plan.garments[0].chosen[10].map(|i| i >= base), Some(true));
+        // The slots' impact material is the helm's own.
+        assert_eq!(plan.slot_material[9], helm.armour.unwrap().material);
     }
 }

@@ -39,13 +39,16 @@ Merging (`merge`): `merge_parts` appends the visible body parts and garment
 pieces into one skinned mesh as the original's character assembly does:
 each part placed by its frame, its vertices, normals, UVs and colours
 appended, its weights kept vertex for vertex (a part without them bound to
-its bone), and its triangles grouped by material in first-seen order. `culled_indices` drops triangles with a slot's cull bits
-(`exa_character::layers::cull_bits`; which triangle flags they test is
-not traced) and `occlusion_alpha` writes the generator's per-vertex
-occlusion alpha (vertices on the border of the marked triangles fade). The
-merge order itself comes from the skin builder, outside the generator, and
-is not checked against its instructions here. The loader still draws a mesh per
-node; the merged mesh is built by callers, not by the loader yet.
+its bone), its triangles grouped by material in first-seen order, and each
+part's own position-stream ids kept and moved past the parts before it. A
+part's cull bits go on its merged triangles (the mesh carries triangle
+flags only when a slot wrote one), and a part whose material has the
+occlusion mark fades the vertices on the border of the marked region
+(`occlusion_alpha`). `culled_indices` drops triangles with a slot's cull
+bits (which triangle flags they test is not traced). The merge order and
+the per-slot cull bits come from the generator (`exa_character::dress` and
+`layers::cull_bits`). The loader still draws a mesh per node; the merged
+mesh is built by callers, not by the loader yet.
 
 Skin tone (`human_skin`): a character's `SkinLook` selects the built-in skin
 material for its record's two tone words (and the women's texture set),
