@@ -265,7 +265,9 @@ impl Ragdoll {
                         flags: (l.flags & super::LINK_SOFT_WELD) | super::LINK_BODY,
                         softness: super::PIVOT_SOFTENING,
                         iteration_limit: None,
-                        smoothing: l.smoothing,
+                        // The original gives a child's slider link a 0.01
+                        // smoothing; the other links keep the stored one.
+                        smoothing: if l.flags & 4 != 0 { 0.01 } else { l.smoothing },
                         length: 0.0,
                         shares,
                         mobility: (parts[i].inverse_mass, parts[parent].inverse_mass),
