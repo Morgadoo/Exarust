@@ -735,6 +735,82 @@ fn match_apparel(groups: &mut [Group], joints: &[Joint]) {
     }
 }
 
+/// The deepest group stack the original keeps: its push raises
+/// "Skinning group stack overflow." beyond this many frames.
+pub const GROUP_STACK_LIMIT: usize = 16;
+
+/// A push past [`GROUP_STACK_LIMIT`]: the original's "Skinning group stack
+/// overflow." error.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GroupStackOverflow;
+
+/// One frame of the builder's group stack: the parent groups' joint points
+/// in the part's space. The original stores a vector per parent group and
+/// matches a child's apparel groups against them so a garment spanning
+/// several parts blends towards the parent's bone.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct GroupFrame {
+    pub joints: Vec<Vec3>,
+}
+
+/// The builder's group stack, pushed around the recursive pass over a body's
+/// children. The original pushes an empty frame for a node without groups.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct GroupStack {
+    frames: Vec<GroupFrame>,
+}
+
+impl GroupStack {
+    /// A stack with no frame.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Frames held.
+    pub fn len(&self) -> usize {
+        self.frames.len()
+    }
+
+    /// Whether no frame is held.
+    pub fn is_empty(&self) -> bool {
+        self.frames.is_empty()
+    }
+
+    /// Pushes the parent groups' joint points, or fails at the original's
+    /// sixteen-frame limit (the original reports the error and pushes
+    /// nothing).
+    pub fn push(&mut self, joints: Vec<Vec3>) -> Result<(), GroupStackOverflow> {
+        if self.frames.len() >= GROUP_STACK_LIMIT {
+            return Err(GroupStackOverflow);
+        }
+        self.frames.push(GroupFrame { joints });
+        Ok(())
+    }
+
+    /// Pushes an empty frame (`0x1000d3f70`).
+    pub fn push_empty(&mut self) -> Result<(), GroupStackOverflow> {
+        self.push(Vec::new())
+    }
+
+    /// Clears the frame on top without popping it (`0x1000d3e30`): its
+    /// joint list is freed, the depth stays.
+    pub fn clear_top(&mut self) {
+        if let Some(frame) = self.frames.last_mut() {
+            frame.joints.clear();
+        }
+    }
+
+    /// Pops every frame and frees its lists (`0x1000d3d70`).
+    pub fn clear(&mut self) {
+        self.frames.clear();
+    }
+
+    /// The top frame, if any.
+    pub fn top(&self) -> Option<&GroupFrame> {
+        self.frames.last()
+    }
+}
+
 /// Skin weights of every vertex of `mesh`, a part of bone `own` meeting its
 /// neighbours at `joints`, found as the original does on load. Vertices are
 /// indexed like `mesh.positions`; their weights are those of the position id
@@ -1389,6 +1465,26 @@ mod tests {
                 &torn[..torn.len().min(10)]
             );
         }
+    }
+
+    /// The group stack keeps sixteen frames; the seventeenth is refused and
+    /// a cleared top frame keeps its depth.
+    #[test]
+    fn the_group_stack_holds_sixteen_frames() {
+        let mut stack = GroupStack::new();
+        for i in 0..GROUP_STACK_LIMIT {
+            stack.push(vec![Vec3::splat(i as f32)]).unwrap();
+        }
+        assert_eq!(stack.len(), 16);
+        assert!(stack.push(vec![Vec3::ZERO]).is_err());
+        assert_eq!(stack.len(), 16);
+        stack.clear_top();
+        assert_eq!(stack.top().unwrap().joints, Vec::<Vec3>::new());
+        assert_eq!(stack.len(), 16);
+        stack.clear();
+        assert!(stack.is_empty());
+        stack.push_empty().unwrap();
+        assert_eq!(stack.top().unwrap().joints.len(), 0);
     }
 
     /// Compares with weights measured on the shipped body (run with

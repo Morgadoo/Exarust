@@ -31,6 +31,12 @@ pub struct Texels {
     pub rgba: Vec<u8>,
 }
 
+/// A 0…1 value as an 8-bit texel: rounded half to even and clamped, as the
+/// render target converts a fragment.
+pub fn byte(value: f32) -> u8 {
+    exa_formats::pixel::round_f32(value.clamp(0.0, 1.0) * 255.0) as u8
+}
+
 impl Texels {
     /// Colour at texel (`x`, `y`), wrapping.
     fn at(&self, x: i64, y: i64) -> Vec3 {
@@ -38,7 +44,7 @@ impl Texels {
         Vec3::new(a[0], a[1], a[2])
     }
 
-    fn at4(&self, x: i64, y: i64) -> [f32; 4] {
+    pub(crate) fn at4(&self, x: i64, y: i64) -> [f32; 4] {
         let x = x.rem_euclid(self.width as i64) as usize;
         let y = y.rem_euclid(self.height as i64) as usize;
         let p = &self.rgba[(y * self.width + x) * 4..][..4];

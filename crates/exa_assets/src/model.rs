@@ -2276,6 +2276,55 @@ pub fn apparel_texture_key(material: &str) -> Option<String> {
     (stem.len() == 10).then(|| stem.to_ascii_lowercase())
 }
 
+/// The `_`-named skinned child of `parent`: the effects' and wound painting's
+/// lookup for the copy of a body part they draw on. The original takes the
+/// first child whose name starts `_` and that carries a skinned mesh.
+pub fn underscore_skinned_child(model: &Model, parent: usize) -> Option<usize> {
+    (0..model.nodes.len()).find(|&i| {
+        model.nodes[i].parent == Some(parent)
+            && model.nodes[i].name.starts_with('_')
+            && model.nodes[i].skin_bone.is_some()
+    })
+}
+
+/// The first skinned mesh in `parent`'s subtree, searched in reverse child
+/// order then depth first, as the shell, scan and GUI effects find the mesh
+/// they draw on. `ModelNode::skin_bone` stands for the original's skin
+/// controller pointer.
+pub fn skinned_mesh_under(model: &Model, parent: usize) -> Option<usize> {
+    let children: Vec<usize> = (0..model.nodes.len())
+        .filter(|&i| model.nodes[i].parent == Some(parent))
+        .collect();
+    for &child in children.iter().rev() {
+        if model.nodes[child].skin_bone.is_some() {
+            return Some(child);
+        }
+        if let Some(found) = skinned_mesh_under(model, child) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// The one texture stem a model's `&` materials are painted from: the first
+/// run-time material met in node order, then in part order. The original's
+/// walk makes a single job for the model and rewrites every `&` material to
+/// that job's stem, so a later part with another stem still takes the
+/// first's textures (`docs/formats/OTHER.md`, run-time materials).
+pub fn painted_model_stem(model: &Model) -> Option<String> {
+    model
+        .nodes
+        .iter()
+        .flat_map(|n| n.part_materials.iter())
+        .find_map(|name| {
+            if name.starts_with('&') {
+                apparel_texture_key(name)
+            } else {
+                None
+            }
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2381,6 +2430,76 @@ mod tests {
         );
         assert_eq!(apparel_texture_key("&short"), None);
         assert_eq!(apparel_texture_key("skinhuman"), None);
+    }
+
+    fn material_node(materials: &[&str]) -> ModelNode {
+        ModelNode {
+            name: "part".into(),
+            parent: None,
+            transform: Transform::IDENTITY,
+            parts: Vec::new(),
+            part_materials: materials.iter().map(|m| (*m).to_string()).collect(),
+            skin_bone: None,
+            light: None,
+            voxel_light: None,
+            fire: None,
+            portal: None,
+            bounds: (Vec3::ZERO, 0.0),
+            half_extents: Vec3::ZERO,
+            gi_points: Arc::new(Vec::new()),
+            rigid: None,
+            tracks: Vec::new(),
+            shadow_bias: 0,
+            is_skin: false,
+            placeholder: false,
+            cloth: false,
+        }
+    }
+
+    /// One texture job per model: the first `&` material in node order names
+    /// the stem every `&` part is painted from, even a later part's own
+    /// stem.
+    #[test]
+    fn a_models_painted_stem_is_the_first_run_time_material() {
+        let model = Model {
+            nodes: vec![
+                material_node(&["skinhuman", "&doublet_ba1"]),
+                material_node(&["&otheraaaa1", "&doublet_ba2"]),
+            ],
+        };
+        assert_eq!(painted_model_stem(&model).as_deref(), Some("doublet_ba"));
+        assert_eq!(
+            painted_model_stem(&Model {
+                nodes: vec![material_node(&["skinhuman", "&short"])],
+            }),
+            None
+        );
+    }
+
+    /// The wound and effect lookups: the `_` child first, and the deepest
+    /// skinned mesh in reverse child order.
+    #[test]
+    fn skinned_meshes_are_found_like_the_effects_do() {
+        let mut root = material_node(&[]);
+        root.name = "12RUArm".into();
+        let mut plain = material_node(&[]);
+        plain.name = "plain".into();
+        plain.parent = Some(0);
+        let mut under = material_node(&[]);
+        under.name = "_skin".into();
+        under.parent = Some(1);
+        under.skin_bone = Some(12);
+        let mut underscore = material_node(&[]);
+        underscore.name = "_wound".into();
+        underscore.parent = Some(0);
+        underscore.skin_bone = Some(12);
+        let model = Model {
+            nodes: vec![root, plain, under, underscore],
+        };
+        assert_eq!(underscore_skinned_child(&model, 0), Some(3));
+        assert_eq!(skinned_mesh_under(&model, 0), Some(3));
+        assert_eq!(skinned_mesh_under(&model, 1), Some(2));
+        assert_eq!(skinned_mesh_under(&model, 2), None);
     }
 
     fn record(class: u32, flags: u32, opacity: f32) -> Material {

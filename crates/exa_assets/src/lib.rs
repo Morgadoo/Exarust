@@ -20,6 +20,7 @@ pub mod noise;
 pub mod paint;
 pub mod polyhedra;
 pub mod skin;
+pub mod skin_composite;
 pub mod stream;
 pub mod tangents;
 pub mod texture;

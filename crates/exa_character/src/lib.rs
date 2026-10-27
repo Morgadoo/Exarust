@@ -569,23 +569,24 @@ fn outfit_painted(
         let Some(appearance) = garment_appearance(garment, infos) else {
             continue;
         };
-        for name in apparel.nodes.iter().flat_map(|n| &n.part_materials) {
-            let Some(stem) = model::apparel_texture_key(name) else {
-                continue;
-            };
-            let key = (stem, appearance);
-            if painting.0.contains_key(&key) {
-                ready = false;
-                continue;
-            }
-            if !loader.warm_paint(&key.0, &appearance, deadline) {
-                return false;
-            }
-            if let Paint::Job(job) = loader.paint_job(&key.0, &appearance) {
-                let task = AsyncComputeTaskPool::get().spawn(async move { job.paint() });
-                painting.0.insert(key, task);
-                ready = false;
-            }
+        // One job per model: every `&` part takes the first run-time
+        // material's stem, as the original's walk rewrites them all to the
+        // job's single stem.
+        let Some(stem) = model::painted_model_stem(&apparel) else {
+            continue;
+        };
+        let key = (stem, appearance);
+        if painting.0.contains_key(&key) {
+            ready = false;
+            continue;
+        }
+        if !loader.warm_paint(&key.0, &appearance, deadline) {
+            return false;
+        }
+        if let Paint::Job(job) = loader.paint_job(&key.0, &appearance) {
+            let task = AsyncComputeTaskPool::get().spawn(async move { job.paint() });
+            painting.0.insert(key, task);
+            ready = false;
         }
     }
     ready
@@ -723,14 +724,19 @@ fn equip_outfits(
             if let Some(armour) = garment.armour.or(known.and_then(|k| k.2)) {
                 protection.push(armour);
             }
+            // The whole model is painted from one stem, as the original
+            // rewrites every `&` material to the job's first stem.
+            let painted_stem = model::painted_model_stem(&apparel);
             for node in &apparel.nodes {
                 let parent = bone_index(&node.name)
                     .and_then(|b| by_bone.get(&b).copied())
                     .unwrap_or(body);
                 for ((mesh, material), name) in node.parts.iter().zip(&node.part_materials) {
                     // Run-time materials are painted from the item's appearance.
-                    let material = match (appearance, model::apparel_texture_key(name)) {
-                        (Some(a), Some(stem)) => loader.painted_apparel(&stem, &a),
+                    let material = match (&appearance, painted_stem.as_deref()) {
+                        (Some(a), Some(stem)) if name.starts_with('&') => {
+                            loader.painted_apparel(stem, a)
+                        }
                         _ => material.clone(),
                     };
                     let part = commands

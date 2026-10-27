@@ -680,9 +680,20 @@ for both sexes, able to show for the feral level alone; a woman of a race
 with only the men's set gets no layers). `look::skin_set` reads the race
 look word, `look::beard_index` and `look::skin_darkening` the record.
 
-Not yet: the player's tone (it is in the save, which is not shipped), the
-drawn blend of the physique variants (`humannrmm1…5`), the beard composited
-on the skin, the dirt layer. Blood: see [Blood](#blood).
+The composite's shaders are reproduced on the CPU in
+`exa_assets::skin_composite`: `chargen_d` multiplies the stored colour texel
+by the tone, `chargen_s` packs `(1, min(0.8·gloss, 1), 0)`, `chargen_n`
+adds `(an − bn)·weight` for each physique layer, and the beard's three
+overlay programs blend the beard's alpha (its colour pass squares it and
+uses the mip-3 alpha; its specular is `a³·0.4`; its normal replaces the
+normal where the beard's colour alpha covers). `compose` runs them per
+texel and stores the original's sRGB colour target and linear surface and
+normal targets. Nothing feeds the result to the renderer yet: the running
+skin keeps the material tint and the first normal map, because Exarust has
+no character-creation caller for the job and the full 512/1024 composite
+per character would add load time. Not yet: the player's tone (it is in the
+save, which is not shipped), the decomposition dirt layer in the running
+path. Blood: see [Blood](#blood).
 
 ### Hair
 

@@ -2051,8 +2051,11 @@ Not yet wired: the `_SKIN` merge (the original appends every part and
 garment into one mesh, grouped by material, with the per-triangle cull bits
 of hidden body slots removing covered triangles). Exarust keeps a mesh per
 node and hides whole body-part entities under apparel instead; the pure
-builder `exa_assets::merge::merge_parts` reproduces the append, frame,
-weight and material-group order; `culled_indices` applies a slot's cull bits
-and `occlusion_alpha` the per-vertex mask. The loader does not feed the
-merged mesh yet. The per-scene skin controller
-and manager are Bevy's.
+builder `exa_assets::merge::merge` reproduces the append, frame, weight and
+material-group order and the final renumber pass (each material's vertices
+in order, with the original's one unused vertex between runs); its
+`MergePart::vertex_masks`/`cull` drop the vertices a hidden slot masks and
+the triangles that needed them, `culled_indices` applies a slot's
+per-triangle cull bits and `occlusion_alpha` the per-vertex mask. The loader
+does not feed the merged mesh yet. The per-scene skin controller and manager
+are Bevy's.
