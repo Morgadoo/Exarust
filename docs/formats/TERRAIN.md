@@ -278,7 +278,9 @@ masked, `0x10000000` an additive group and `0x20000000` the normal pass's
 | height | height working target | H | f16, f17, f18, 1; cover f9, boosted by min(1.5·a, 1); sharpness f2/f3 |
 
 The sharpness pair travels to the shaders as `(s, t/s + 1)`. The mask pass
-clears to 0 and the height pass to 0.5. The colour pass's quads cover a
+clears to 0 and the height pass to 0.5. The mask and height passes upload a
+32 × 32 window per block from texel `(by·256 + bx)·30` of each material's
+256² plane. The colour pass's quads cover a
 block's palette slice at the palette scale 4 and 8 blocks a side,
 `[bx, bx+1] × [−by−1, −by] · 4/8`; their mask coordinates run from
 `0.5/32` to `30.5/32` of the block's 32-texel upload, so the 30 × 30 cells

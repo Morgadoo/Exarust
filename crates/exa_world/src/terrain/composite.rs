@@ -278,6 +278,17 @@ impl CompositePools {
     }
 }
 
+/// The per-material mask plane's texels: the original keeps 256 × 256 bytes
+/// per material channel.
+pub const MASK_PLANE_TEXELS: usize = 256 * 256;
+
+/// The mask/height upload's texel offset for block (`bx`, `by`) in the
+/// 256-wide per-material plane: `(by·256 + bx)·30`, the block's 30-cell
+/// stride.
+pub fn mask_texel_offset(bx: u32, by: u32) -> usize {
+    ((by * 256 + bx) * BLOCK_CELLS) as usize
+}
+
 /// The per-level working framebuffers and textures the compositor allocates
 /// once, before any set: two framebuffers with depth at half
 /// and full size, two without depth at half and full size, a mask framebuffer
@@ -438,6 +449,29 @@ impl PassProgram {
             Self::Gloss => Some(T::Gloss),
             Self::Displacement => Some(T::Bump),
             Self::Mask | Self::Height => None,
+        }
+    }
+
+    /// The composite target a pass writes, when the pass is enabled. The
+    /// mask and height passes write their working target instead of a set.
+    pub fn target(self, features: CompositeFeatures) -> Option<CompositeTarget> {
+        match self {
+            Self::Normal if features.normal => Some(CompositeTarget::Normal),
+            Self::Colour => Some(CompositeTarget::Colour),
+            Self::Gloss if features.gloss => Some(CompositeTarget::Gloss),
+            Self::Displacement if features.displacement => Some(CompositeTarget::Displacement),
+            _ => None,
+        }
+    }
+
+    /// The pass's clear colour: the mask pass clears to 0 and the height pass
+    /// to 0.5 in every channel; the set passes overwrite every texel and are
+    /// not cleared.
+    pub fn clear(self) -> Option<[f32; 4]> {
+        match self {
+            Self::Mask => Some([0.0; 4]),
+            Self::Height => Some([HEIGHT_CLEAR; 4]),
+            _ => None,
         }
     }
 }
@@ -1323,6 +1357,17 @@ mod tests {
     }
 
     #[test]
+    fn the_mask_upload_window_is_a_thirty_texel_block_in_a_256_plane() {
+        assert_eq!(mask_texel_offset(0, 0), 0);
+        assert_eq!(mask_texel_offset(1, 0), 30);
+        assert_eq!(mask_texel_offset(0, 1), 7_680);
+        assert_eq!(mask_texel_offset(7, 7), 53_970);
+        assert_eq!(MASK_PLANE_TEXELS, 65_536);
+        assert_eq!(MASK_UPLOAD, 32);
+        assert_eq!(BLOCK_CELLS, 30);
+    }
+
+    #[test]
     fn the_wet_floor_term_only_lifts_ground_below_minus_thirty_five_cm() {
         assert_eq!(wet_floor_gloss(0.5, 0.0, 1.0), 0.5);
         assert_eq!(wet_floor_gloss(0.5, -35.0, 1.0), 0.5);
@@ -1435,6 +1480,35 @@ mod tests {
         assert_eq!(FRESNEL_F0, 0.04);
         assert_eq!(PARALLAX_SCALE, 0.007);
         assert_eq!((HEIGHT_CLEAR, HEIGHT_OPACITY_BOOST), (0.5, 1.5));
+    }
+
+    #[test]
+    fn each_pass_writes_its_target_and_clears_only_its_work_target() {
+        let all = CompositeFeatures::default();
+        assert_eq!(
+            PassProgram::Normal.target(all),
+            Some(CompositeTarget::Normal)
+        );
+        assert_eq!(
+            PassProgram::Colour.target(all),
+            Some(CompositeTarget::Colour)
+        );
+        assert_eq!(PassProgram::Gloss.target(all), Some(CompositeTarget::Gloss));
+        assert_eq!(
+            PassProgram::Displacement.target(all),
+            Some(CompositeTarget::Displacement)
+        );
+        assert_eq!(PassProgram::Mask.target(all), None);
+        assert_eq!(PassProgram::Height.target(all), None);
+        let no_normal = CompositeFeatures {
+            normal: false,
+            ..all
+        };
+        assert_eq!(PassProgram::Normal.target(no_normal), None);
+        assert_eq!(PassProgram::Mask.clear(), Some([0.0; 4]));
+        assert_eq!(PassProgram::Height.clear(), Some([0.5; 4]));
+        assert_eq!(PassProgram::Colour.clear(), None);
+        assert_eq!(PassProgram::Normal.clear(), None);
     }
 
     #[test]

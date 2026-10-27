@@ -10,7 +10,9 @@
 //! per-tile splat texture, one texel per vertex. A tile's geometry and masks
 //! are built on the async compute pool, as the original's terrain worker
 //! does them; [`patch`] is the original's shared triangle list, [`ground`]
-//! its world height query, and [`stream`] its streaming decisions.
+//! its world height query, [`stream`] its streaming decisions and tile bits,
+//! [`composite`] its per-block texture sets, passes and selection, and
+//! [`wireframe`] its debug wireframe overlay.
 
 pub mod manager;
 
