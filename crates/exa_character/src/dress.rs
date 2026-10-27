@@ -39,6 +39,9 @@ pub struct DressedPlan {
     pub body_visible: u32,
     /// The body slots still merged, as a mask.
     pub body_slots: u32,
+    /// The impact material each body slot takes from its least-covering
+    /// garment ([`crate::rebuild::DressPlan`]).
+    pub slot_material: [u8; 18],
     /// The nodes merged, in order: each garment's chosen nodes in the slot
     /// tree's order, then the body's visible slots, then the overlays.
     pub steps: Vec<MergeStep>,
@@ -116,6 +119,7 @@ pub fn dress(
         garments: plan.garments,
         body_visible: plan.body_visible,
         body_slots: plan.body_slots,
+        slot_material: plan.slot_material,
         steps,
     }
 }
@@ -248,6 +252,7 @@ mod tests {
             occupancy,
             coverage: occupancy,
             slots: slot_bit(1),
+            material: 0,
         };
         let plan = dress(&b, 0, &[garment], &slots);
         assert_eq!(plan.steps.last().unwrap().node, 7);

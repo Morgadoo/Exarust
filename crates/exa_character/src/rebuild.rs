@@ -91,13 +91,17 @@ impl Rebuild {
 
 /// One worn garment as the dressed-mesh pass takes it: the roots of its
 /// node trees in the body, its occupancy and coverage words per slot
-/// (slot 1 first) and the slots it has nodes in (bit `slot - 1`).
+/// (slot 1 first), the slots it has nodes in (bit `slot - 1`) and the
+/// impact material its parts sound with.
 #[derive(Clone, Debug, PartialEq)]
 pub struct WornGarment {
     pub roots: Vec<usize>,
     pub occupancy: [u64; 18],
     pub coverage: [u64; 18],
     pub slots: u32,
+    /// The hit-sound class the garment gives a body part it covers most
+    /// (the item's material byte).
+    pub material: u8,
 }
 
 /// One garment's part of the dressed mesh: its chosen node per slot, its
@@ -111,17 +115,21 @@ pub struct GarmentMerge {
 
 /// The dressed-mesh plan: each garment's merge, in the order given (the
 /// builder's layer-level order), and the body's visible mask and the body
-/// slots it still merges.
+/// slots it still merges. `slot_material` is the impact material each body
+/// part takes from the garment that leaves most of its slot uncovered.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DressPlan {
     pub garments: Vec<GarmentMerge>,
     pub body_visible: u32,
     pub body_slots: u32,
+    pub slot_material: [u8; 18],
 }
 
 /// Plans a dressed body: the coverage union of the worn set, then for each
-/// garment its coverage pass, slot assembly and merge order, then the body
-/// mask from the union.
+/// garment, in its layer-level order (the builder inserts each into the
+/// character's cache by level, outermost last), its coverage pass, slot
+/// assembly and merge order, then the body mask from the union and the
+/// per-slot impact material.
 pub fn dress_plan(body: &Body, garments: &[WornGarment]) -> DressPlan {
     use crate::layers;
     let mut union = [0u64; 18];
@@ -130,11 +138,25 @@ pub fn dress_plan(body: &Body, garments: &[WornGarment]) -> DressPlan {
             *u |= w;
         }
     }
-    let garments = garments
-        .iter()
-        .map(|g| {
+    // Stable ascending layer level, as the cache's insertion keeps it.
+    let mut order: Vec<usize> = (0..garments.len()).collect();
+    order.sort_by_key(|&i| layers::layer_level(&garments[i].occupancy));
+    let mut slot_material = [0u8; 18];
+    let mut slot_uncovered = [0u64; 18];
+    let garments: Vec<GarmentMerge> = order
+        .into_iter()
+        .map(|i| {
+            let g = &garments[i];
             let pass = layers::garment_pass(&g.occupancy, &union, g.slots);
             let chosen = layers::assemble_garment(body, &g.roots, &pass);
+            for slot in 1..=18 {
+                if g.slots & layers::slot_bit(slot) != 0
+                    && slot_uncovered[slot - 1] < pass.uncovered[slot]
+                {
+                    slot_uncovered[slot - 1] = pass.uncovered[slot];
+                    slot_material[slot - 1] = g.material;
+                }
+            }
             GarmentMerge {
                 chosen,
                 visible: pass.visible,
@@ -147,6 +169,7 @@ pub fn dress_plan(body: &Body, garments: &[WornGarment]) -> DressPlan {
         garments,
         body_visible,
         body_slots: layers::drawn_body_slots(body_visible),
+        slot_material,
     }
 }
 
@@ -357,6 +380,7 @@ mod tests {
             occupancy,
             coverage: occupancy,
             slots: crate::layers::slot_bit(1),
+            material: 3,
         };
         let plan = dress_plan(&b, &[garment]);
         assert_eq!(plan.garments[0].chosen[1], Some(0));
@@ -365,6 +389,79 @@ mod tests {
         assert_eq!(plan.garments[0].visible & 0x10_0001, 0x1);
         assert_eq!(plan.body_visible, !0);
         assert_eq!(plan.body_slots, 0x3_FFFF);
+        // The garment leaves its pelvis slot uncovered: its material wins.
+        assert_eq!(plan.slot_material[0], 3);
+        assert_eq!(plan.slot_material[1], 0);
+    }
+
+    /// The garments are planned in layer-level order whatever order the
+    /// worn set gives them.
+    #[test]
+    fn the_garments_take_their_layer_order() {
+        let b = body();
+        let chest = crate::layers::slot_bit(9);
+        let mut inner = [0u64; 18];
+        inner[8] = 0x01;
+        let mut outer = [0u64; 18];
+        outer[8] = 0x0200;
+        let plan = dress_plan(
+            &b,
+            &[
+                WornGarment {
+                    roots: vec![0],
+                    occupancy: outer,
+                    coverage: outer,
+                    slots: chest,
+                    material: 7,
+                },
+                WornGarment {
+                    roots: vec![0],
+                    occupancy: inner,
+                    coverage: inner,
+                    slots: chest,
+                    material: 1,
+                },
+            ],
+        );
+        // The inner garment (layer 0) is merged before the outer (layer 1).
+        assert_eq!(plan.garments.len(), 2);
+        assert_eq!(plan.garments[0].chosen[9], Some(1));
+        assert_eq!(plan.garments[1].chosen[9], Some(1));
+    }
+
+    /// The per-slot impact material is the garment that leaves the most of
+    /// the slot uncovered, compared as the 64-bit word the original keeps.
+    #[test]
+    fn the_slot_material_is_the_least_covering_garment() {
+        let b = body();
+        let mut inner = [0u64; 18];
+        inner[8] = 0x01;
+        let mut outer = [0u64; 18];
+        outer[8] = 0x0200;
+        let chest = crate::layers::slot_bit(9);
+        let plan = dress_plan(
+            &b,
+            &[
+                WornGarment {
+                    roots: vec![0],
+                    occupancy: inner,
+                    coverage: inner,
+                    slots: chest,
+                    material: 1,
+                },
+                WornGarment {
+                    roots: vec![0],
+                    occupancy: outer,
+                    coverage: outer,
+                    slots: chest,
+                    material: 7,
+                },
+            ],
+        );
+        // The outer garment leaves its own layer byte uncovered (2), the
+        // inner's own byte is covered by the outer (1): the outer wins.
+        assert_eq!(plan.slot_material[8], 7);
+        assert_eq!(plan.slot_material[0], 0);
     }
 
     #[test]

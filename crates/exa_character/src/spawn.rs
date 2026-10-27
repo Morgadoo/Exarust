@@ -73,6 +73,55 @@ pub fn is_runtime_material(name: &str) -> bool {
     name.starts_with('&')
 }
 
+/// The flag the `&` material pass sets on a run-time material's instance.
+pub const RUNTIME_MATERIAL_FLAG: u32 = 0x8_0000;
+
+/// The generator's `&` material pass for one material instance: a name that
+/// starts `&` clears the instance's validity word and sets
+/// [`RUNTIME_MATERIAL_FLAG`]. Returns whether it applied.
+pub fn mark_runtime_material(name: &str, flags: &mut u32, validity: &mut u32) -> bool {
+    if !is_runtime_material(name) {
+        return false;
+    }
+    *validity = 0;
+    *flags |= RUNTIME_MATERIAL_FLAG;
+    true
+}
+
+/// The item-model loader's `*` material fix-up: a material instance whose
+/// name starts `*` (the body section's placeholder) has its value cleared
+/// and its `0x10` flag set.
+pub fn clear_wildcard_material(name: &str, flags: &mut u32, value: &mut u32) -> bool {
+    if !name.starts_with('*') {
+        return false;
+    }
+    *value = 0;
+    *flags |= 0x10;
+    true
+}
+
+/// How the record's role is set at build time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RoleSet {
+    /// Clear the relations and set the role.
+    Force,
+    /// Set the role only when the character does not hold one already.
+    Try,
+}
+
+/// The role the record's profession word gives at build time: the arena and
+/// creature races (`0x0500` to `0x0900`) take the hostile role 11 by force;
+/// races `0x1100` and `0x1200` take roles 45 and 46 when they hold none.
+/// Every other race keeps its record's roles.
+pub fn creator_role(profession: u32) -> Option<(u32, RoleSet)> {
+    match profession & 0xFF00 {
+        0x0500 | 0x0600 | 0x0700 | 0x0800 | 0x0900 => Some((0x0B, RoleSet::Force)),
+        0x1100 => Some((0x2D, RoleSet::Try)),
+        0x1200 => Some((0x2E, RoleSet::Try)),
+        _ => None,
+    }
+}
+
 /// What a hand holds.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Equipped {
@@ -412,6 +461,43 @@ mod tests {
         assert!(is_runtime_material("&doublet_ba1"));
         assert!(is_runtime_material("&short"));
         assert!(!is_runtime_material("harhps1"));
+        let (mut flags, mut validity) = (0u32, 9u32);
+        assert!(mark_runtime_material("&short", &mut flags, &mut validity));
+        assert_eq!((flags, validity), (RUNTIME_MATERIAL_FLAG, 0));
+        assert!(!mark_runtime_material(
+            "skinhuman",
+            &mut flags,
+            &mut validity
+        ));
+        assert_eq!((flags, validity), (RUNTIME_MATERIAL_FLAG, 0));
+        let (mut flags, mut value) = (0u32, 5u32);
+        assert!(clear_wildcard_material("*body", &mut flags, &mut value));
+        assert_eq!((flags, value), (0x10, 0));
+        assert!(!clear_wildcard_material(
+            "skinhuman",
+            &mut flags,
+            &mut value
+        ));
+    }
+
+    /// The creator races' roles: a hostile role by force, or a hireling's
+    /// role when the character holds none.
+    #[test]
+    fn the_creator_races_take_their_roles() {
+        for race in [5u32, 6, 7, 8, 9] {
+            assert_eq!(
+                creator_role(race << 8),
+                Some((0x0B, RoleSet::Force)),
+                "{race}"
+            );
+        }
+        // The female bit does not change the race byte's role.
+        assert_eq!(creator_role((5 << 8) | 1), Some((0x0B, RoleSet::Force)));
+        assert_eq!(creator_role(0x1100), Some((0x2D, RoleSet::Try)));
+        assert_eq!(creator_role(0x1200), Some((0x2E, RoleSet::Try)));
+        assert_eq!(creator_role(0), None);
+        assert_eq!(creator_role(4 << 8), None);
+        assert_eq!(creator_role(0x0501), Some((0x0B, RoleSet::Force)));
     }
 
     #[test]
