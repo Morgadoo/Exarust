@@ -670,6 +670,9 @@ pub struct TreeScreen {
     pub hovered: i32,
     /// The quick bar overlay is open.
     pub bar_open: bool,
+    /// Every shown node wears its name (the form's label mode, set while a
+    /// power is dragged).
+    pub labels: bool,
     /// The form's fade flags: bit 0 opening, bit 1 closing.
     pub fade_flags: u8,
     /// The stamp the opening fade ends.
@@ -814,6 +817,7 @@ impl TreeScreen {
             link_turn: 0.0,
             hovered: 0,
             bar_open: false,
+            labels: false,
             fade_flags: 0,
             open_at: 0,
             close_at: 0,
@@ -1930,7 +1934,10 @@ impl TreeScreen {
             links,
             bar: slots,
             bar_phase: self.bar_phase_now,
-            hovered: self.node_under,
+            hovered: self.shown_choice,
+            choice_stamp: self.choice_stamp,
+            still_hovering: self.last_choice != 0,
+            labels: self.labels,
             flash: self.flash,
             flash_until: self.flash_until,
             denied: self.denied,

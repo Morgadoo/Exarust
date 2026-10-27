@@ -10,13 +10,15 @@
 //! the open screen is drawn, at most 33 ms apart; the in-game bar draws a
 //! strip `scale × 20` high.
 //!
-//! Not modelled: the link programs' ribbon texture (the draw treats it as
-//! white, so links lack the spline's texture), the bar's form flags and
-//! open/close animation, the show and hide fades, the tooltip and prompt
-//! layout of the original, and the base form's key handlers. The bar's own
-//! keys (pick, step, use) belong to the hotkey handler and the cast plugin
-//! ([`crate::thaum::cast`]), which keeps the caster's record and this
-//! screen's in step.
+//! The tooltip is the shown choice's name box and description caption, laid
+//! out at the original's places (600 ms delay, a 60-unit name box, the
+//! measurement from the running font); while a power is dragged every shown
+//! node wears its name. Not modelled: the link programs' ribbon texture (the
+//! draw treats it as white, so links lack the spline's texture), the GUI
+//! skin's own text metrics and button highlight, and the base form's key
+//! handlers. The bar's own keys (pick, step, use) belong to the hotkey
+//! handler and the cast plugin ([`crate::thaum::cast`]), which keeps the
+//! caster's record and this screen's in step.
 
 use std::sync::{Arc, Mutex};
 
@@ -492,6 +494,7 @@ fn draw(
     }
     let scale = window.scale_factor() * 4.0;
     let tree_open = screen.open;
+    let font = screen.font.clone();
     let PowerScreen {
         tree,
         bar,
@@ -504,17 +507,46 @@ fn draw(
     } else {
         (scale * BAR_UNITS) as u32
     };
+    tree.labels = drag.is_some();
     let view = tree.view(bar, width as f32, height as f32, scale, now as u32);
     let draw = if tree_open {
         // The tree pass already ends with the bar.
         let mut draw = tree_draw::tree_draw(&view);
-        // The tooltip: the hovered node's name and wrapped description.
-        if tree.node_under > 0 && (tree.node_under as usize) <= tree.nodes.len() {
-            let (name, description) = tree.node_text(tree.node_under as usize - 1, texts);
-            let wrapped = wrap_text(description, 59);
-            let tooltip = tree_draw::tooltip_draw(&view, &String::from_utf8_lossy(name), &wrapped);
+        // The tooltip: the shown choice's name and description, as the
+        // running font measures them (the GUI skin's own metrics are
+        // outside the pack; a labelled guess).
+        let font = font.as_ref();
+        if view.hovered > 0 && (view.hovered as usize) <= tree.nodes.len() {
+            let (name, description) = tree.node_text(view.hovered as usize - 1, texts);
+            let name = String::from_utf8_lossy(name).into_owned();
+            let description = String::from_utf8_lossy(description).into_owned();
+            let lines = wrap_text(name.as_bytes(), 59);
+            let (_, line_step) = measure(font, "X", scale * 2.0);
+            let (description_width, _) = measure(font, &description, scale * 2.0);
+            let tooltip = tree_draw::tooltip_draw(
+                &view,
+                &name,
+                &description,
+                lines.len().max(1) as u32,
+                line_step,
+                description_width,
+            );
             draw.batches.extend(tooltip.batches);
             draw.texts.extend(tooltip.texts);
+        }
+        if view.labels {
+            let mut names = Vec::with_capacity(tree.nodes.len());
+            for node in &tree.nodes {
+                let text = texts
+                    .get(node.name_text as usize)
+                    .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
+                    .unwrap_or_default();
+                let width = measure(font, &text, scale * 2.0).0;
+                names.push((text, width));
+            }
+            let labels = tree_draw::labels_draw(&view, &names);
+            draw.batches.extend(labels.batches);
+            draw.texts.extend(labels.texts);
         }
         if let Some(dragged) = drag.clone() {
             draw.batches.extend(
@@ -523,7 +555,7 @@ fn draw(
                     dragged.flags,
                     dragged.at[0],
                     dragged.at[1],
-                    scale * 6.0,
+                    scale,
                     tree.domain,
                 )
                 .batches,
@@ -585,6 +617,22 @@ fn draw(
     }
     screen.last_draw = now;
     screen.dirty = false;
+}
+
+/// A text's drawn width and line step at `size` (the running font's
+/// metrics stand in for the GUI skin's own).
+fn measure(font: Option<&GameFont>, text: &str, size: f32) -> (f32, f32) {
+    match font {
+        Some(font) => {
+            let rendered = font.render(text);
+            let scale = size / font.line_height() as f32;
+            (
+                rendered.width as f32 * scale,
+                font.line_height() as f32 * scale,
+            )
+        }
+        None => (text.chars().count() as f32 * size * 0.5, size),
+    }
 }
 
 /// Wraps a description at `width` characters, keeping its text.
