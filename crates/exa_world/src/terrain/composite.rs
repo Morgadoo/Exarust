@@ -17,9 +17,9 @@
 //! (Terrain) records the pass table and `docs/formats/TERRAIN.md` the
 //! palette fields.
 
-use bevy::math::Vec2;
+use bevy::math::{Vec2, Vec3};
 use exa_formats::terrain::{TerrainMaterial as PaletteMaterial, TerrainTexture};
-use exa_physics::engine_math::round_to_i64;
+use exa_physics::engine_math::{floor_to_i32, round_to_i64};
 
 /// Side of a composite texture set at level 0 (the original's stored 32).
 pub const TEXTURE_BASE: u32 = 32;
@@ -63,6 +63,30 @@ pub const MASK_ATLAS_BYTES: usize = 0x20_0000;
 pub const KERNEL_RADIUS: usize = 120;
 /// The noise maps' side (480 vertices, shared with the blend rules).
 pub const NOISE_SIDE: usize = 480;
+
+/// How far along the viewer's axis the selection's look point sits
+/// (centimetres; the original's −1000 scale).
+pub const FOCUS_REACH: f32 = -1000.0;
+/// The original's one over a block's 600 cm side, as the stored float.
+const INVERSE_BLOCK_CM: f32 = 0.001_666_666_7;
+
+/// The point the block selection measures from, in metres on the X/Z
+/// plane: the viewer's position plus its axis times −1000 cm, then each of
+/// X and Z snapped to the centre of its 6 m block
+/// (`floor(c · 0.0016666667) · 600 + 300` cm, the engine's round-down
+/// helper). Without a viewer the original measures from the origin
+/// (`None`). `viewer_cm` is in centimetres; `axis` is the vector the scene
+/// keeps beside the viewer's position (its sign is the scene's: not
+/// re-traced).
+pub fn selection_focus(viewer: Option<(Vec3, Vec3)>) -> Vec2 {
+    let Some((viewer_cm, axis)) = viewer else {
+        return Vec2::ZERO;
+    };
+    // The packed multiply-add: the axis times the reach, plus the position.
+    let point = axis * FOCUS_REACH + viewer_cm;
+    let snap = |c: f32| (i64::from(floor_to_i32(c * INVERSE_BLOCK_CM)) * 600 + 300) as f32;
+    Vec2::new(snap(point.x), snap(point.z)) / 100.0
+}
 
 /// The original's integer log2 helper: `floor(log2(value))`, 0 for 0 and 1.
 pub fn floor_log2(mut value: u32) -> i32 {
@@ -652,8 +676,9 @@ pub fn pass_groups(program: PassProgram, layers: &[LayerFlags], base_normal: boo
 pub mod block_flags {
     /// The block needs a composite this frame.
     pub const WANTED: u32 = 0x2;
-    /// Its composite is up to date.
-    pub const CLEAN: u32 = 0x4;
+    /// It has no composite yet (set on a new or dropped block, cleared by
+    /// its first bake): a visible blank block sorts first.
+    pub const BLANK: u32 = 0x4;
     /// It wants the low-resolution set.
     pub const LOW_RES: u32 = 0x100;
     /// It wants the high-resolution set.
@@ -686,7 +711,7 @@ pub struct BlockComposite {
 }
 
 impl BlockComposite {
-    /// A new block, in the original's initial state: wanted, clean, no set,
+    /// A new block, in the original's initial state: wanted, blank, no set,
     /// not in the selection list.
     pub fn new(centre: Vec2) -> Self {
         Self {
@@ -695,7 +720,7 @@ impl BlockComposite {
             visible: false,
             priority: 0,
             light_distance: None,
-            state: block_flags::WANTED | block_flags::CLEAN,
+            state: block_flags::WANTED | block_flags::BLANK,
             set: None,
             selection: None,
             sort_key: 0,
@@ -785,9 +810,11 @@ impl CompositeSelector {
         self.ring = ring;
     }
 
-    /// Runs one frame of the selection: neighbours in and out of the list,
+    /// Runs one frame of the selection from `focus` (metres, as
+    /// [`selection_focus`] gives it; the blocks are walked in their list
+    /// order, which the original takes tile by tile): neighbours in and out of the list,
     /// sort keys, the composite order, and at most one block baked once a
-    /// non-clean block needs work. Returns whether anything was baked.
+    /// block that is not blank needs work. Returns whether anything was baked.
     pub fn reselect(&mut self, focus: Vec2) -> bool {
         self.select(focus);
         self.assign_keys();
@@ -838,7 +865,7 @@ impl CompositeSelector {
                 }
                 self.selected.pop();
                 let state = self.blocks[index].state;
-                self.blocks[index].state = block_flags::WANTED | block_flags::CLEAN;
+                self.blocks[index].state = block_flags::WANTED | block_flags::BLANK;
                 if let Some(set) = self.blocks[index].set.take() {
                     if state & block_flags::LOW_SET != 0 {
                         self.pools.give_low(set);
@@ -850,7 +877,7 @@ impl CompositeSelector {
         }
     }
 
-    /// The sort key: a visible clean block first (0), a visible block that
+    /// The sort key: a visible blank block first (0), a visible block that
     /// wants work by `0xffff − (ring − priority)` clamped to 1, an invisible
     /// block by its nearest light's rounded distance plus 0x10000.
     fn assign_keys(&mut self) {
@@ -866,7 +893,7 @@ impl CompositeSelector {
                     nearest = distance;
                 }
                 (round_to_i64(nearest) + i64::from(LIGHT_SORT_BIAS)) as u32
-            } else if block.state & block_flags::CLEAN != 0 {
+            } else if block.state & block_flags::BLANK != 0 {
                 0
             } else {
                 // The original compares the 64-bit difference as a signed
@@ -898,7 +925,8 @@ impl CompositeSelector {
     }
 
     /// Walks the selected blocks in order, baking the first one that needs
-    /// work; once one is baked, a later block that is not clean stops the
+    /// work; once one is baked (or a high set was wanted and none could be
+    /// had), a later block whose key is not 0 stops the
     /// walk (the original's "one block a frame" rule).
     fn composite(&mut self) -> bool {
         self.cursor = self.selected.len().saturating_sub(1);
@@ -957,7 +985,9 @@ impl CompositeSelector {
                 self.blocks[block].state = 0xa00;
                 return true;
             }
-            return false;
+            // The original marks the frame as changed even when no high set
+            // could be had (only the low branch's failure leaves it alone).
+            return true;
         }
         if state & 0xf00 == 0x600 {
             if self.pools.high_free() > 0 {
@@ -979,38 +1009,41 @@ impl CompositeSelector {
                 self.blocks[block].state = 0xa00;
                 return true;
             }
-            return false;
+            // As above: a failed trade still counts as a change.
+            return true;
         }
         self.composited(block);
-        self.blocks[block].state &= !(block_flags::WANTED | block_flags::CLEAN);
+        self.blocks[block].state &= !(block_flags::WANTED | block_flags::BLANK);
         true
     }
 
     /// A block that just turned high takes a high set still held by a block
-    /// that is now low resolution. If that holder is not clean, it gets a
-    /// low set with a copy of its composite; if it is clean, it keeps
+    /// that is now low resolution. If that holder is not blank, it gets a
+    /// low set with a copy of its composite; if it is blank, it keeps
     /// sharing the high set.
     fn steal_high_share(&mut self, other: usize) {
         let state = self.blocks[other].state;
-        if state & block_flags::CLEAN != 0 {
+        if state & block_flags::BLANK != 0 {
             return;
         }
-        if let Some(low) = self.take_low(other) {
+        // The hand-out helper scans from the holder's place in the list.
+        let at = self.blocks[other].selection.unwrap_or(0);
+        if let Some(low) = self.take_low(at) {
             self.blocks[other].set = Some(low);
             self.blocks[other].state = (state & block_flags::WANTED) | 0x500;
             self.composited(other);
         } else {
             self.blocks[other].set = None;
-            self.blocks[other].state = block_flags::WANTED | block_flags::CLEAN;
+            self.blocks[other].state = block_flags::WANTED | block_flags::BLANK;
         }
     }
 
     /// The same for a holder that is itself turning high and gives its low
     /// set away: the old low set is reused for the holder's copy (or simply
-    /// handed to it when the holder is clean).
+    /// handed to it when the holder is blank).
     fn steal_high_swap(&mut self, other: usize, low: Option<u32>) {
         let state = self.blocks[other].state;
-        if state & block_flags::CLEAN != 0 {
+        if state & block_flags::BLANK != 0 {
             self.blocks[other].state = 0x506;
             self.blocks[other].set = low;
             return;
@@ -1021,12 +1054,15 @@ impl CompositeSelector {
             self.composited(other);
         } else {
             self.blocks[other].set = None;
-            self.blocks[other].state = block_flags::WANTED | block_flags::CLEAN;
+            self.blocks[other].state = block_flags::WANTED | block_flags::BLANK;
         }
     }
 
     /// The original's set hand-out helper: a free low set, else steal the
-    /// low set of a later selected block that is not visible.
+    /// low set of a later selected block. The scan goes down from the
+    /// persistent cursor, skips blocks without a low set and ends at the
+    /// first block holding one: invisible, its set is taken; visible, no set
+    /// is handed out.
     fn take_low(&mut self, at: usize) -> Option<u32> {
         if let Some(set) = self.pools.take_low() {
             return Some(set);
@@ -1044,9 +1080,12 @@ impl CompositeSelector {
             self.cursor = scan.saturating_sub(1);
             let bi = self.selected[scan];
             let block = &mut self.blocks[bi];
-            if block.state & block_flags::LOW_SET != 0 && !block.visible {
+            if block.state & block_flags::LOW_SET != 0 {
+                if block.visible {
+                    return None;
+                }
                 let set = block.set.take();
-                block.state = block_flags::WANTED | block_flags::CLEAN;
+                block.state = block_flags::WANTED | block_flags::BLANK;
                 return set;
             }
             if scan <= at + 1 {
@@ -1570,7 +1609,7 @@ mod tests {
     }
 
     #[test]
-    fn selection_keeps_the_cutoffs_and_bakes_all_clean_blocks_at_once() {
+    fn selection_keeps_the_cutoffs_and_bakes_all_blank_blocks_at_once() {
         // Four blocks around the focus: two within 15 m, two farther.
         let mut sel = selector(&[
             Vec2::new(0.0, 0.0),
@@ -1584,7 +1623,7 @@ mod tests {
         assert!(sel.reselect(Vec2::ZERO));
         assert_eq!(sel.selected().len(), 4);
         // The first two are high (0xa00), the others low (0x500); all were
-        // clean, so the original's walk bakes every one of them in the same
+        // blank, so the original's walk bakes every one of them in the same
         // frame.
         assert_eq!(sel.blocks()[0].state(), 0xa00);
         assert_eq!(sel.blocks()[1].state(), 0xa00);
@@ -1639,15 +1678,15 @@ mod tests {
     }
 
     #[test]
-    fn one_not_clean_block_is_baked_a_frame() {
+    fn one_block_that_is_not_blank_is_baked_a_frame() {
         let mut sel = selector(&[Vec2::ZERO, Vec2::new(6.0, 0.0)]);
         for i in 0..2 {
             sel.block_mut(i).unwrap().visible = true;
         }
-        // The first pass bakes both (they start clean).
+        // The first pass bakes both (they start blank).
         assert!(sel.reselect(Vec2::ZERO));
         assert_eq!(sel.ring(), RING_START + 1);
-        // Ask for both again: they are not clean now, and the sort key of
+        // Ask for both again: they are not blank now, and the sort key of
         // the second is not 0, so the walk stops after the first.
         for i in 0..2 {
             sel.block_mut(i).unwrap().want();
@@ -1703,7 +1742,7 @@ mod tests {
 
     #[test]
     fn a_high_set_with_no_high_set_left_is_stolen_from_a_low_resolution_holder() {
-        // A block that wants the high resolution, a clean high-resolution
+        // A block that wants the high resolution, a baked high-resolution
         // block sharing a set, and a low-resolution block still holding a
         // high set (0x900). The high pool is empty.
         let mut sel = selector(&[Vec2::ZERO, Vec2::new(1.0, 0.0), Vec2::new(2.0, 0.0)]);
@@ -1748,5 +1787,103 @@ mod tests {
         // The traded low set never left the block pair, so no low set was
         // taken from the pool.
         assert_eq!(sel.pools.low_free(), 43);
+    }
+
+    #[test]
+    fn the_selection_focus_is_the_block_centre_behind_the_axis() {
+        // No viewer: the origin.
+        assert_eq!(selection_focus(None), Vec2::ZERO);
+        // Viewer at (250, 0, −50) cm with the axis (−1, 0, 0.5): the point
+        // is (1250, 0, −550) cm, in the blocks starting at 1200 and −600.
+        let focus = selection_focus(Some((
+            Vec3::new(250.0, 0.0, -50.0),
+            Vec3::new(-1.0, 0.0, 0.5),
+        )));
+        assert_eq!(focus, Vec2::new(15.0, -3.0));
+        // Exactly on a block edge (600 cm) the round-down keeps the block.
+        let focus = selection_focus(Some((Vec3::new(600.0, 0.0, 0.0), Vec3::ZERO)));
+        assert_eq!(focus, Vec2::new(9.0, 3.0));
+    }
+
+    #[test]
+    fn a_visible_low_set_holder_ends_the_steal_scan() {
+        // The low pool is empty. The scan starts at the last selected block,
+        // skips the one without a low set and stops at a visible holder: no
+        // set, even though an invisible holder sits before it.
+        let mut sel = selector(&[
+            Vec2::ZERO,
+            Vec2::new(1.0, 0.0),
+            Vec2::new(2.0, 0.0),
+            Vec2::new(3.0, 0.0),
+        ]);
+        sel.selected = vec![0, 1, 2, 3];
+        for (i, b) in sel.blocks.iter_mut().enumerate() {
+            b.selection = Some(i);
+        }
+        sel.pools.low_free.clear();
+        sel.cursor = 3;
+        sel.blocks[1].state = 0x500;
+        sel.blocks[1].set = Some(30);
+        sel.blocks[2].state = 0x500;
+        sel.blocks[2].set = Some(31);
+        sel.blocks[2].visible = true;
+        sel.blocks[3].state = 0xa00;
+        assert_eq!(sel.take_low(0), None);
+        assert_eq!(sel.blocks[1].set, Some(30));
+        assert_eq!(sel.cursor, 1);
+        // Hidden, the same holder gives its set up and goes back to blank.
+        let mut sel2 = sel.clone();
+        sel2.cursor = 3;
+        sel2.blocks[2].visible = false;
+        assert_eq!(sel2.take_low(0), Some(31));
+        assert_eq!(sel2.blocks[2].state, 6);
+    }
+
+    #[test]
+    fn a_wanted_high_set_that_cannot_be_had_still_counts_as_a_change() {
+        // No high set is free and nobody holds one at low resolution: the
+        // block stays as it is, but the frame counts as changed, so the ring
+        // advances.
+        let mut sel = selector(&[Vec2::ZERO]);
+        sel.block_mut(0).unwrap().visible = true;
+        sel.pools.high_free.clear();
+        let ring = sel.ring();
+        assert!(sel.reselect(Vec2::ZERO));
+        assert_eq!(sel.blocks()[0].set(), None);
+        assert_eq!(sel.blocks()[0].state() & 0xf00, 0x200);
+        assert_eq!(sel.ring(), ring + 1);
+    }
+
+    #[test]
+    fn a_stolen_high_holder_scans_from_its_own_place_in_the_list() {
+        // Block 3 sits at list position 0 and holds a high set at low
+        // resolution; block 0 (position 1) wants it. The low pool is empty
+        // and the only low holder is at position 2, after the holder's place:
+        // the holder's copy takes it.
+        let mut sel = selector(&[
+            Vec2::ZERO,
+            Vec2::new(1.0, 0.0),
+            Vec2::new(2.0, 0.0),
+            Vec2::new(3.0, 0.0),
+        ]);
+        sel.selected = vec![3, 0, 2, 1];
+        for (at, &bi) in sel.selected.clone().iter().enumerate() {
+            sel.blocks[bi].selection = Some(at);
+        }
+        sel.pools.high_free.clear();
+        sel.pools.low_free.clear();
+        sel.cursor = 3;
+        sel.blocks[3].state = 0x900;
+        sel.blocks[3].set = Some(4);
+        sel.blocks[2].state = 0x500;
+        sel.blocks[2].set = Some(40);
+        sel.blocks[1].state = 0xa00;
+        sel.blocks[1].set = Some(9);
+        sel.blocks[0].state = block_flags::WANTED | block_flags::HIGH_RES;
+        assert!(sel.bake(0, 1, sel.blocks[0].state));
+        assert_eq!(sel.blocks[0].set, Some(4));
+        assert_eq!(sel.blocks[3].set, Some(40));
+        assert_eq!(sel.blocks[3].state, 0x500);
+        assert_eq!(sel.blocks[2].state, 6);
     }
 }

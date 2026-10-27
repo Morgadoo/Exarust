@@ -293,16 +293,21 @@ The selection and the frame hook decide which block is rebaked. Blocks within
 44.4 m of the look-ahead point (the camera moved 10 m along its back axis and
 snapped to a 6 m block centre) join a list of at most 189; those within 15 m
 want the high set and the rest the low set. A NaN distance is kept as low. The
-list is sorted by a key: visible clean blocks first (0), visible blocks that
-want work by `0xffff − (ring − priority)` (clamped to 1), and invisible blocks
-by their nearest light's rounded distance plus 0x10000. One block is baked a
-frame once the list holds blocks that are no longer clean; the first batch of
-newly selected (clean) blocks is baked together. A block that turns high with
-no free high set takes one from the last selected block that holds a high set
-at low resolution (state `0x900`): if that holder is dirty it gets a low set
-with a copy of its composite, else it keeps sharing the high set. A block that
-turns high while holding a low set (state `0x600`) trades its low set back for
-a high one. A block that leaves the list hands its set back to its pool.
+list is sorted by a key: visible blank blocks (no composite yet) first (0),
+visible blocks that want work by `0xffff − (ring − priority)` (clamped to 1),
+and invisible blocks by their nearest light's rounded distance plus 0x10000.
+The walk bakes every key-0 block it meets, and stops at the first block with
+a non-zero key once anything changed, so at most one baked block a frame
+after the blank ones; a wanted high set that cannot be had still counts as a
+change. A low set comes from the pool, else from the scan down the list from
+a persistent cursor, which takes the first low-set holder it meets if that
+block is hidden and gives nothing if it is visible. A block that turns high
+with no free high set takes one from the last selected block that holds a
+high set at low resolution (state `0x900`): if that holder is not blank it
+gets a low set with a copy of its composite, else it keeps sharing the high
+set. A block that turns high while holding a low set (state `0x600`) trades
+its low set back for a high one. A block that leaves the list hands its set
+back to its pool.
 
 Exarust evaluates the same stacking per pixel in `terrain.wesl` — the
 colour, normal, gloss, parallax-height and height rules above, every material

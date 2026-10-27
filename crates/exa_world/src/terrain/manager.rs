@@ -183,11 +183,7 @@ impl ManagerConfig {
 
     /// The constructor's values.
     pub fn new(settings: &ManagerSettings) -> Self {
-        let detail_size = if settings.texture_detail < 3 {
-            0x1000
-        } else {
-            0x2000
-        };
+        let detail_size = super::composite::detail_size(settings.texture_detail);
         let palette_scale = if settings.palette_scale == 0 {
             (detail_size >> 11) as f32
         } else {
