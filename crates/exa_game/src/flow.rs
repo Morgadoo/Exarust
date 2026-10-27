@@ -1060,6 +1060,8 @@ pub enum Step {
     },
     /// Delete the current slot's save.
     DropSave,
+    /// Close the save manager's open package.
+    CloseSave,
     /// Keep the save just written as the checkpoint.
     Checkpoint,
     /// The screen fades out over the level change (the exit's fade bit).
@@ -1732,9 +1734,10 @@ impl Flow {
         ]
     }
 
-    /// Continues a story save: the save's locale is loaded (or the first
-    /// level when there is none), the player nudged out of any exit trigger
-    /// by the host, and the near shot framed on the player's body, fast.
+    /// Continues a story save: the menu form closes, the wake-up flags and
+    /// their clock clear, the save's locale is loaded (or the first level
+    /// when there is none), the player nudged out of any exit trigger by the
+    /// host, and the near shot framed on the player's body, fast.
     pub fn continue_story(
         &mut self,
         save_locale: Option<&'static str>,
@@ -1745,7 +1748,12 @@ impl Flow {
         self.hook = Hook::Story;
         self.phase = Phase::Playing;
         self.viewport = viewport;
+        self.menu_open = false;
+        // A continued save starts with every wake-up flag and its clock
+        // clear.
+        self.story.wake = Wake::default();
         vec![
+            Step::HideMenu,
             Step::SessionTask(true),
             Step::LoadLevel {
                 locale: save_locale.unwrap_or("exanima01"),
@@ -2302,8 +2310,9 @@ impl Flow {
     /// the mode); while playing, the game's interface closes and the session
     /// autosaves: a story always with the death rule (a dead player's save
     /// is dropped), an arena from its in-game page without it, or a forfeit
-    /// from its pause page; practice writes nothing. `page` is the main
-    /// menu's page. Nothing returns to the title: the application is closing.
+    /// from its pause page; practice writes nothing. Every playing quit then
+    /// closes the save manager's package. `page` is the main menu's page.
+    /// Nothing returns to the title: the application is closing.
     pub fn quit_session(&mut self, page: Page) -> Vec<Step> {
         let mut steps = Vec::new();
         if self.phase == Phase::Paused {
@@ -2324,6 +2333,7 @@ impl Flow {
                 },
                 _ => {}
             }
+            steps.push(Step::CloseSave);
         }
         steps
     }
@@ -2367,7 +2377,10 @@ impl Flow {
             Step::GameGui(false),
             Step::Dialogue,
             Step::ClosePrelude,
+            Step::CloseSave,
+            Step::HideEndMenu,
         ];
+        self.story.wake.start_ms = 0;
         self.hook = Hook::None;
         match self.mode {
             Mode::Arena => steps.push(Step::ScriptMode {
@@ -2382,6 +2395,7 @@ impl Flow {
         }
         steps.push(Step::TeardownWorld);
         self.player = [false; 3];
+        self.end_menu = None;
         steps
     }
 
@@ -3627,6 +3641,8 @@ mod tests {
             position: Vec3::new(1.0, 2.0, 3.0),
         };
         let steps = flow.continue_story(Some("exanima02"), placement, view);
+        assert_eq!(steps.first(), Some(&Step::HideMenu));
+        assert!(flow.story.wake == Wake::default());
         assert!(steps.contains(&Step::LoadLevel {
             locale: "exanima02",
             spawn: 0,
@@ -4148,7 +4164,7 @@ mod tests {
             ..Default::default()
         };
         let steps = flow.quit_session(Page::InGame);
-        assert_eq!(steps, vec![Step::GameGui(false)]);
+        assert_eq!(steps, vec![Step::GameGui(false), Step::CloseSave]);
     }
 
     #[test]

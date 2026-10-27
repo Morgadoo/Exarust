@@ -733,9 +733,12 @@ calling the rest of the game, so the order is testable.
 - **Leaving.** The story's end-menu EXIT closes the game view and the
   dialogue, clears the story bit of a stripped player and saves without the
   death rule (any other story saves with it), then leaves to the title
-  behind the transition. Back to the title marks the menu's help flag, plays
-  its theme, lays the GUI scale out again and builds the title page. A level
-  load's finish closes the end menu and returns the session to playing.
+  behind the transition. Leaving a session stops the hook and the frame
+  task, closes the dialogue, the prelude and the save package and hides the
+  end menu. Back to the title marks the menu's help flag, plays its theme,
+  lays the GUI scale out again and builds the title page. A level load's
+  finish closes the end menu and the prelude and returns the session to
+  playing.
 - **Level exits.** A level the locale table names is left behind the
   transition; a player with neither dead bit loses the controls. Every exit
   saves (without the death rule); levels below 7 also keep a checkpoint when
@@ -746,7 +749,8 @@ calling the rest of the game, so the order is testable.
 - **The quit autosave** is the application's quit callback: in the paused
   phase the arena unit's pause callback runs; while playing, a story saves
   with the death rule, an arena saves from its in-game page or forfeits from
-  its pause page; practice writes nothing.
+  its pause page, practice writes nothing, and the save manager's package is
+  closed. It does not return to the title.
 - **The exit-trigger nudge** pushes a continued story's player out of an
   exit trigger that holds it: the squared distance to the centre within
   (radius + 50)², the squared box distance within 50 and an exit-marker
