@@ -494,6 +494,280 @@ pub fn weapon_handling(flags: u32, w: u8, b: u8, g: u8) -> WeaponHandling {
     }
 }
 
+/// The vertical step a card's rows take.
+pub const CARD_ROW_STEP: i32 = 0x68;
+/// The height a socket row, a rank row, a points row and the value row add.
+pub const CARD_SOCKET_HEIGHT: i32 = 0x18;
+pub const CARD_SMALL_HEIGHT: i32 = 0x14;
+/// The title's tint endpoints, low then middle then high, as the original's
+/// palette words (the low byte is blue in their byte order).
+pub const TITLE_COLOURS: [u32; 3] = [0x806a_85be, 0x80d4_dae1, 0xc060_d4ff];
+
+/// One row of a stats card.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CardRow {
+    /// The row's control id, as the builder fetches it.
+    pub control: u32,
+    pub label: &'static str,
+    pub value: f32,
+}
+
+/// A stats card's content: its rows, its special rows and its height.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CardContent {
+    pub rows: Vec<CardRow>,
+    /// The material swatch row.
+    pub material: bool,
+    /// The crystal-socket row.
+    pub sockets: bool,
+    pub rank: Option<&'static str>,
+    pub points: Option<f32>,
+    /// The value row, when the caller's gate shows it.
+    pub value: Option<u32>,
+    /// The content's own height in pixels: the rows' step plus each special
+    /// row's.
+    pub height: i32,
+}
+
+/// The title's tint: the condition byte, between [`TITLE_COLOURS`]' low and
+/// middle below `0x80` and between the middle and high above it, by the
+/// original's factors. A model whose flags carry bit 2 maps the byte over
+/// the whole range instead. The weapon and apparel cards read the two
+/// ranges' factors in opposite order.
+pub fn title_colour(condition: u8, model_tinted: bool, weapon: bool) -> (u32, u32, f32) {
+    if model_tinted {
+        let weight = f32::from(condition) * 0.003_921_569;
+        return (TITLE_COLOURS[0], TITLE_COLOURS[1], weight);
+    }
+    if condition < 0x80 {
+        let factor = if weapon { 0.007_874_016 } else { 0.007_812_5 };
+        (
+            TITLE_COLOURS[0],
+            TITLE_COLOURS[1],
+            f32::from(condition) * factor,
+        )
+    } else {
+        let factor = if weapon { 0.007_812_5 } else { 0.007_874_016 };
+        (
+            TITLE_COLOURS[1],
+            TITLE_COLOURS[2],
+            f64::from(condition - 0x80) as f32 * factor,
+        )
+    }
+}
+
+/// The colour between `low` and `high` by `weight`, channel by channel on
+/// the palette word's four bytes.
+pub fn blend_colour(low: u32, high: u32, weight: f32) -> u32 {
+    let mut out = 0u32;
+    for shift in [0u32, 8, 16, 24] {
+        let a = ((low >> shift) & 0xff) as f32;
+        let b = ((high >> shift) & 0xff) as f32;
+        let value = (a + (b - a) * weight).clamp(0.0, 255.0) as u32;
+        out |= value << shift;
+    }
+    out
+}
+
+/// The weapon card: weight, handling and balance rows, the four striking
+/// rows (each shown above 5, at the byte times 0.05), the material swatch,
+/// the socket row, the rank and points rows and the value. The damage rows
+/// fill the card's three damage slots, so a hidden Slash moves Crush and
+/// Pierce up. The control ids follow the builder's: Slash is 0xd03, Crush
+/// and Pierce follow the shown ones, Thrust is 0x106.
+#[allow(clippy::too_many_arguments)]
+pub fn weapon_content(
+    flags: u32,
+    weight: u8,
+    balance: u8,
+    grip: u8,
+    slash: u8,
+    crush: u8,
+    pierce: u8,
+    thrust: u8,
+    material: bool,
+    sockets: bool,
+    skill: u8,
+    points: i32,
+    value: u32,
+    gates: CardGates,
+    value_shown: bool,
+) -> CardContent {
+    let handling = weapon_handling(flags, weight, balance, grip);
+    let mut rows = vec![
+        CardRow {
+            control: 0x101,
+            label: "Weight",
+            value: handling.weight,
+        },
+        CardRow {
+            control: 0x102,
+            label: "Handling",
+            value: handling.handling,
+        },
+        CardRow {
+            control: 0x103,
+            label: "Balance",
+            value: handling.balance,
+        },
+    ];
+    let mut shown = 0u16;
+    let mut damage = |row: &mut Vec<CardRow>, byte: u8, label: &'static str, base: u32| {
+        if byte > 5 {
+            row.push(CardRow {
+                control: base + u32::from(shown),
+                label,
+                value: (f64::from(byte) * 0.05) as f32,
+            });
+            shown += 1;
+        }
+    };
+    damage(&mut rows, slash, "Slash", 0xd03);
+    damage(&mut rows, crush, "Crush", 0xd03);
+    damage(&mut rows, pierce, "Pierce", 0xd03);
+    if thrust > 5 {
+        rows.push(CardRow {
+            control: 0x106,
+            label: "Thrust",
+            value: (f64::from(thrust) * 0.05) as f32,
+        });
+    }
+    let rank = shield_rank(gates.rank, skill);
+    let points = if gates.points && points > 0 {
+        Some(points as f32 * 0.5)
+    } else {
+        None
+    };
+    let height = rows.len() as i32 * CARD_ROW_STEP
+        + i32::from(material) * CARD_SMALL_HEIGHT
+        + i32::from(sockets) * CARD_SOCKET_HEIGHT
+        + i32::from(rank.is_some()) * CARD_SMALL_HEIGHT
+        + i32::from(points.is_some()) * CARD_SMALL_HEIGHT
+        + i32::from(value_shown) * CARD_SOCKET_HEIGHT;
+    CardContent {
+        rows,
+        material,
+        sockets,
+        rank,
+        points,
+        value: value_shown.then_some(value),
+        height,
+    }
+}
+
+/// The apparel card: the weight row (byte times 0.05), the impact, slash,
+/// crush and pierce rows (each shown when its byte times 0.05 is above a
+/// quarter, in double), encumbrance (likewise), the socket row, rank,
+/// points and value. The impact row is control 0x102, slash 0xd03, crush
+/// 0xd04, pierce 0xd05 and encumbrance 0x107.
+#[allow(clippy::too_many_arguments)]
+pub fn apparel_content(
+    weight: u8,
+    impact: u8,
+    slash: u8,
+    crush: u8,
+    pierce: u8,
+    encumbrance: u8,
+    sockets: bool,
+    skill: u16,
+    value: u32,
+    gates: CardGates,
+    value_shown: bool,
+) -> CardContent {
+    let mut rows = vec![CardRow {
+        control: 0x101,
+        label: "Weight",
+        value: (f64::from(weight) * 0.05) as f32,
+    }];
+    let amount = |row: &mut Vec<CardRow>, byte: u8, label: &'static str, control: u32| {
+        if f64::from(byte) * 0.05 > 0.25 {
+            row.push(CardRow {
+                control,
+                label,
+                value: (f64::from(byte) * 0.05) as f32,
+            });
+        }
+    };
+    amount(&mut rows, impact, "Impact", 0x102);
+    amount(&mut rows, slash, "Slash", 0xd03);
+    amount(&mut rows, crush, "Crush", 0xd04);
+    amount(&mut rows, pierce, "Pierce", 0xd05);
+    amount(&mut rows, encumbrance, "Encumbrance", 0x107);
+    let skill = (skill & 0xff) as u8;
+    let rank = shield_rank(gates.rank, skill);
+    let points = if gates.points {
+        let low = (skill & 0x1f) as f32;
+        (low != 0.0).then_some(low * 0.5)
+    } else {
+        None
+    };
+    let height = rows.len() as i32 * CARD_ROW_STEP
+        + i32::from(sockets) * CARD_SOCKET_HEIGHT
+        + i32::from(rank.is_some()) * CARD_SMALL_HEIGHT
+        + i32::from(points.is_some()) * CARD_SMALL_HEIGHT
+        + i32::from(value_shown) * CARD_SOCKET_HEIGHT;
+    CardContent {
+        rows,
+        material: false,
+        sockets,
+        rank,
+        points,
+        value: value_shown.then_some(value),
+        height,
+    }
+}
+
+/// The shield card: weight (byte times 0.01, or 1 when the fixed flags are
+/// set), impact (times 0.05), encumbrance (times 0.05, or 8 when fixed and
+/// left out for a zero byte otherwise), rank, points and value.
+#[allow(clippy::too_many_arguments)]
+pub fn shield_content(
+    flags: u32,
+    weight: u8,
+    impact: u8,
+    encumbrance: u8,
+    skill: u8,
+    value: u32,
+    gates: CardGates,
+    value_shown: bool,
+) -> CardContent {
+    let bars = shield_bars(flags, weight, impact, encumbrance);
+    let mut rows = vec![
+        CardRow {
+            control: 0x101,
+            label: "Weight",
+            value: bars.weight,
+        },
+        CardRow {
+            control: 0x102,
+            label: "Impact",
+            value: bars.impact,
+        },
+    ];
+    if let Some(value) = bars.encumbrance {
+        rows.push(CardRow {
+            control: 0x107,
+            label: "Encumbrance",
+            value,
+        });
+    }
+    let rank = shield_rank(gates.rank, skill);
+    let points = shield_points(gates.points, skill);
+    let height = rows.len() as i32 * CARD_ROW_STEP
+        + i32::from(rank.is_some()) * CARD_SMALL_HEIGHT
+        + i32::from(points.is_some()) * CARD_SMALL_HEIGHT
+        + i32::from(value_shown) * CARD_SOCKET_HEIGHT;
+    CardContent {
+        rows,
+        material: false,
+        sockets: false,
+        rank,
+        points,
+        value: value_shown.then_some(value),
+        height,
+    }
+}
+
 /// One description phrase and the inclusive byte range that may use it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Phrase<'a> {
@@ -1651,5 +1925,130 @@ mod tests {
                 side: "line".to_string(),
             }
         );
+    }
+
+    #[test]
+    fn the_weapon_card_rows_and_their_slots() {
+        let gates = CardGates {
+            rank: true,
+            points: true,
+        };
+        let card = weapon_content(
+            0, 100, 50, 127, 10, 0, 40, 60, true, true, 0x65, 4, 7, gates, true,
+        );
+        let labels: Vec<_> = card.rows.iter().map(|r| r.label).collect();
+        assert_eq!(
+            labels,
+            ["Weight", "Handling", "Balance", "Slash", "Pierce", "Thrust"]
+        );
+        assert_eq!(card.rows[0].value, 1.0);
+        assert!((card.rows[1].value - 3.846_154).abs() < 1e-5);
+        assert_eq!(card.rows[2].value, 2.5);
+        assert_eq!((card.rows[3].control, card.rows[3].value), (0xd03, 0.5));
+        // Crush is hidden, so Pierce takes the next control and Thrust 0x106.
+        assert_eq!((card.rows[4].control, card.rows[4].value), (0xd04, 2.0));
+        assert_eq!((card.rows[5].control, card.rows[5].value), (0x106, 3.0));
+        assert!(card.material && card.sockets);
+        assert_eq!(card.rank, Some("Adept"));
+        assert_eq!(card.points, Some(2.0));
+        assert_eq!(card.value, Some(7));
+        // Six rows, then the swatch, socket, rank, points and value rows.
+        assert_eq!(card.height, 6 * 0x68 + 0x14 + 0x18 + 0x14 + 0x14 + 0x18);
+        // A high-quality weapon maps its title over the high half; the
+        // fixed flags show 1, 5 and 0.
+        let fixed = weapon_content(
+            0x0600_0000,
+            1,
+            1,
+            1,
+            0,
+            0,
+            0,
+            0,
+            false,
+            false,
+            0,
+            0,
+            0,
+            CardGates {
+                rank: false,
+                points: false,
+            },
+            true,
+        );
+        assert_eq!(fixed.rows[0].value, 1.0);
+        assert_eq!(fixed.rows[1].value, 5.0);
+        assert_eq!(fixed.rows[2].value, 0.0);
+        assert_eq!(fixed.height, 3 * 0x68 + 0x18);
+        assert_eq!(fixed.rank, None);
+    }
+
+    #[test]
+    fn the_apparel_card_shows_a_row_above_a_quarter() {
+        let gates = CardGates {
+            rank: true,
+            points: true,
+        };
+        let card = apparel_content(20, 5, 6, 0, 100, 5, false, 0x25, 3, gates, true);
+        let labels: Vec<_> = card.rows.iter().map(|r| r.label).collect();
+        // Weight always, then impact, slash, crush, pierce and encumbrance
+        // when their amount is above 0.25.
+        assert_eq!(labels, ["Weight", "Slash", "Pierce"]);
+        assert_eq!(card.rows[0].value, 1.0);
+        assert_eq!((card.rows[1].control, card.rows[1].value), (0xd03, 0.3));
+        assert_eq!((card.rows[2].control, card.rows[2].value), (0xd05, 5.0));
+        assert_eq!(card.rank, Some("Aspirant"));
+        assert_eq!(card.points, Some(2.5));
+        assert_eq!(card.value, Some(3));
+        assert_eq!(card.height, 3 * 0x68 + 0x14 + 0x14 + 0x18);
+    }
+
+    #[test]
+    fn the_shield_card_keeps_its_fixed_numbers() {
+        let gates = CardGates {
+            rank: true,
+            points: true,
+        };
+        let card = shield_content(0x0600_0000, 7, 10, 0, 0x40, 9, gates, false);
+        let labels: Vec<_> = card.rows.iter().map(|r| r.label).collect();
+        assert_eq!(labels, ["Weight", "Impact", "Encumbrance"]);
+        assert_eq!(card.rows[0].value, 1.0);
+        assert_eq!(card.rows[1].value, 0.5);
+        assert_eq!(card.rows[2].value, 8.0);
+        assert_eq!(card.rank, Some("Novice"));
+        assert_eq!(card.points, None);
+        assert_eq!(card.value, None);
+        assert_eq!(card.height, 3 * 0x68 + 0x14);
+        let ordinary = shield_content(0, 7, 10, 0, 0, 0, gates, false);
+        assert_eq!(ordinary.rows[0].value, 0.07);
+        assert_eq!(ordinary.rows.len(), 2);
+        assert_eq!(ordinary.height, 2 * 0x68);
+    }
+
+    #[test]
+    fn the_title_tint_follows_the_condition() {
+        let (low, high, weight) = title_colour(0x40, false, false);
+        assert_eq!(low, TITLE_COLOURS[0]);
+        assert_eq!(high, TITLE_COLOURS[1]);
+        assert_eq!(weight, 0.5);
+        assert_eq!(
+            title_colour(0x40, false, true).2,
+            0x40 as f32 * 0.007_874_016
+        );
+        let (low, high, weight) = title_colour(0xc0, false, true);
+        assert_eq!((low, high), (TITLE_COLOURS[1], TITLE_COLOURS[2]));
+        assert_eq!(weight, 0.5);
+        assert_eq!(
+            title_colour(0xc0, false, false).2,
+            0x40 as f32 * 0.007_874_016
+        );
+        // A model tinted by its flags maps the whole byte.
+        let (low, high, weight) = title_colour(0xff, true, false);
+        assert_eq!((low, high), (TITLE_COLOURS[0], TITLE_COLOURS[1]));
+        assert_eq!(weight, 255.0 * 0.003_921_569);
+        // The blend works a byte at a time.
+        assert_eq!(blend_colour(0x0000_0000, 0xff00_0000, 0.5), 0x7f00_0000);
+        assert_eq!(blend_colour(0x1020_3040, 0x1020_3040, 0.7), 0x1020_3040);
+        assert_eq!(CARD_ROW_STEP, 104);
     }
 }
