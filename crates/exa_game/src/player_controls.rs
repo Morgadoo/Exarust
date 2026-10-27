@@ -8,26 +8,28 @@
 //! item, The reach) and `docs/PLAYER.md` (Hotkeys, Combat mode).
 //!
 //! **A click.** The click turns a point farther than 70 cm toward first.
-//! On a placed object a usable section of kind 2 is a lock: with the key
-//! its first opening writes a journal line and pays 100 experience, or
-//! 1000 when the section's own kind is 3; an already open lock opens its
-//! container, and kinds 0 and 1 are containers too. Other kinds and an
-//! object with no usable section show the item. A dead character runs its
-//! roles' interact scripts, the player opens its character screen with
-//! 5000 units, and a living one is the click callback's (Exarust has no
-//! dialogue). The Ctrl/double-click interaction is separate: a usable item
-//! is taken in hand (kind 1), a consumable (kind 0 subtype 1) is used after
-//! 2100 ms, a button (kind 5, not held) is pushed, and a container opens;
-//! the player opens the inventory, a corpse is looted, and a living
-//! character talks when its roles' condition passes or a dialogue role
-//! links it to the player.
+//! On a placed object with no usable section it shows the item. A usable
+//! section of kind 2 is a lock: open, it opens its container; closed, with
+//! the key and its reward still due, its first opening writes a journal
+//! line and pays 100 experience, or 1000 when the lock's subtype is 3.
+//! Kinds 0 and 1 open the container; other kinds show the item. A dead
+//! character runs its roles' interact scripts; the player's own body shows
+//! the health and focus bars for 5000 ms and then runs the click callback,
+//! as a living character does (Exarust has no dialogue). The double-click
+//! interaction is separate (in combat mode it needs Ctrl held): while the
+//! object is unmarked a usable item is taken in hand (kind 1, which ends
+//! it) and a consumable (kind 0 subtype 1) is used after 2100 ms; a button
+//! (kind 5, its flag clear) is pushed; then a container section opens. The
+//! player opens the inventory, a corpse is looted, and a living character
+//! talks when its roles' condition passes or a dialogue role links it to
+//! the player.
 //!
 //! **Using an item.** The operative section's kind byte names the use: 8
 //! is a salve that adds 0.2 to the heal pool (0.1 when the value word is
 //! 50) when the body takes remedies, 14 is an elixir that sets the potion
 //! flag and stamps the world clock's seconds plus 1800, 9 cleans and 10
 //! repairs. Both pour kinds also mark the item (or its container's entry)
-//! with 0xC80000. A cleaning kit takes an item's dirt byte down to 0x20
+//! with 0xC80000, a repair with 0xFF0000. A cleaning kit takes an item's dirt byte down to 0x20
 //! when it is over that; a repair kit lowers the wear byte by 255 over the
 //! material's rating `(r + 5) / 10` (at least 1), never under zero. Both
 //! schedule a timed value that moves 0.0005 of the gap a millisecond (two
@@ -129,8 +131,7 @@ impl Timed {
 /// The timed list: entries applied to an item each frame, removed when they
 /// arrive. The original holds them in an array, takes a finished entry out
 /// by moving the last into its place, and counts its entries with a length.
-/// (It writes a value only while it lowers the item's byte or arrives;
-/// Exarust returns every value and leaves that to the writer.)
+/// It writes a value only while it lowers the item's byte or arrives.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct TimedList {
     pub entries: Vec<TimedItem>,
@@ -151,25 +152,37 @@ impl TimedList {
     }
 
     /// One frame at `now_ms` against `current`, which gives the item's byte
-    /// at section `section` (0 the usable section, 1 the weapon section).
-    /// The value is written only while it lowers that byte or arrives, as
-    /// the original writes it; an arriving entry is removed by moving the
-    /// last into its slot. Returns the section writes in the loop's order.
+    /// at section `section` (0 the usable section, 1 the weapon section),
+    /// or `None` when the item has no such section. The value is written
+    /// only while it lowers that byte or arrives, as the original writes
+    /// it. When the item has the usable section and its byte is not
+    /// written, the weapon section is not looked at this frame (the
+    /// original goes straight to the next entry). An arriving entry is
+    /// removed by moving the last into its slot. Returns the section writes
+    /// in the loop's order.
     pub fn tick_sections(
         &mut self,
         now_ms: u32,
-        mut current: impl FnMut(u32, u8) -> u8,
+        mut current: impl FnMut(u32, u8) -> Option<u8>,
     ) -> Vec<(u32, u8, u8)> {
         let mut writes = Vec::with_capacity(self.entries.len() * 2);
         let mut i = 0;
         while i < self.entries.len() {
             let entry = self.entries[i];
             let (value, done) = entry.timed.value(now_ms);
-            for section in [0u8, 1] {
-                let old = current(entry.item, section);
+            let mut next_section = true;
+            if let Some(old) = current(entry.item, 0) {
                 if old > value || done {
-                    writes.push((entry.item, section, value));
+                    writes.push((entry.item, 0, value));
+                } else {
+                    next_section = false;
                 }
+            }
+            if next_section
+                && let Some(old) = current(entry.item, 1)
+                && (old > value || done)
+            {
+                writes.push((entry.item, 1, value));
             }
             if done {
                 self.entries.swap_remove(i);
@@ -289,31 +302,34 @@ pub const REACH_HEIGHT_CM: f32 = 245.0;
 pub const DOOR_HEIGHT_CM: f32 = 300.0;
 pub const DOOR_ACROSS_CM: f32 = 350.0;
 pub const REACH_ACROSS_CM: f32 = 300.0;
-/// A door unlock's reward: 100 for a lock, 1000 for the main door kind 3.
+/// A lock's unlock reward: 100, or 1000 when the lock section's subtype is
+/// [`MAIN_LOCK_SUBTYPE`].
 pub const UNLOCK_REWARD: u32 = 100;
 pub const UNLOCK_REWARD_MAIN: u32 = 1000;
-/// The usable section's kinds: a lock, the main door, a wheel, a crank and
-/// a button.
+pub const MAIN_LOCK_SUBTYPE: u8 = 3;
+/// The usable section's kinds the click and the interaction read: a lock
+/// and a button (kinds 0 and 1 are the consumable and the hand-held item).
 pub const USABLE_LOCK: u8 = 2;
-pub const USABLE_MAIN: u8 = 3;
 pub const USABLE_BUTTON: u8 = 5;
-/// A character screen opens with 5000 units of its own.
-pub const CHARACTER_SCREEN_COST: u32 = 5000;
+/// A click on the player's own body shows the health and focus bars for
+/// this many ms.
+pub const SHOW_BARS_MS: u32 = 5000;
 /// A consumable of usable kind 0, subtype 1, is used this many ms after
 /// the interaction.
 pub const CONSUME_MS: u32 = 2100;
 
-/// What the click (and the Ctrl/double-click interaction) sees under the
+/// What the click (and the double-click interaction) sees under the
 /// cursor: a placed object's sections, or a character.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClickTarget {
     /// Nothing was hit.
     Nothing,
     /// A placed object. `usable` is its usable section's kind byte when it
-    /// has one, `subtype` its subtype byte; `lock_open` and `reward_ready`
-    /// are the lock section's two words, `key_ok` the player's key test,
-    /// `container` whether it has a container section, `first_touch` the
-    /// node's first-touch bit, and `push_released` whether a button's own
+    /// has one and `subtype` that section's subtype byte; `lock_open` and
+    /// `reward_ready` are the lock section's two words, `key_ok` the
+    /// player's key test, `container` whether it has a container section,
+    /// `unmarked` whether its used-mark byte (the one a pour or a repair
+    /// sets) is still clear, and `push_released` whether a button's own
     /// flag word allows it to fire.
     Placed {
         usable: Option<u8>,
@@ -322,7 +338,7 @@ pub enum ClickTarget {
         reward_ready: bool,
         key_ok: bool,
         container: bool,
-        first_touch: bool,
+        unmarked: bool,
         push_released: bool,
     },
     /// A character.
@@ -341,7 +357,7 @@ impl ClickTarget {
             reward_ready: false,
             key_ok: false,
             container: false,
-            first_touch: false,
+            unmarked: true,
             push_released: true,
         }
     }
@@ -362,72 +378,59 @@ pub enum ClickOutcome {
     /// The click callback (the living character's line, or an object's
     /// own click).
     Callback,
-    /// The player's own character screen.
-    CharacterScreen {
-        experience: u32,
+    /// The player's own body: the health and focus bars are shown for
+    /// `ms`, then the click callback runs.
+    ShowBars {
+        ms: u32,
     },
     /// A dead character's roles' interact scripts.
     CorpseScripts,
 }
 
-/// The first-touch bit of a placed object is cleared by any hit.
+/// The click's outcome. On a placed object: no usable section shows the
+/// item; a lock (kind 2) that is open opens its container, a closed one
+/// with the key and its reward still due pays 100 (1000 for the lock
+/// subtype 3), else nothing; kinds 0 and 1 open the container; any other
+/// kind shows the item. The object's first-touch bit is cleared by any
+/// hit.
 pub fn click(target: ClickTarget) -> ClickOutcome {
     match target {
         ClickTarget::Nothing => ClickOutcome::Nothing,
-        ClickTarget::Player => ClickOutcome::CharacterScreen {
-            experience: CHARACTER_SCREEN_COST,
-        },
+        ClickTarget::Player => ClickOutcome::ShowBars { ms: SHOW_BARS_MS },
         ClickTarget::DeadCharacter => ClickOutcome::CorpseScripts,
         ClickTarget::LivingCharacter => ClickOutcome::Callback,
         ClickTarget::Placed {
             usable,
+            subtype,
             lock_open,
             reward_ready,
             key_ok,
-            container,
             ..
         } => match usable {
+            None => ClickOutcome::Inspect,
             Some(USABLE_LOCK) => {
                 if lock_open {
                     ClickOutcome::OpenContainer
                 } else if key_ok && reward_ready {
                     ClickOutcome::Unlock {
-                        reward: UNLOCK_REWARD,
+                        reward: if subtype == MAIN_LOCK_SUBTYPE {
+                            UNLOCK_REWARD_MAIN
+                        } else {
+                            UNLOCK_REWARD
+                        },
                     }
                 } else {
                     ClickOutcome::Nothing
                 }
             }
-            Some(USABLE_MAIN) => {
-                if lock_open {
-                    ClickOutcome::OpenContainer
-                } else if key_ok && reward_ready {
-                    ClickOutcome::Unlock {
-                        reward: UNLOCK_REWARD_MAIN,
-                    }
-                } else {
-                    ClickOutcome::Nothing
-                }
-            }
-            Some(kind) if kind < USABLE_LOCK => {
-                if container {
-                    ClickOutcome::OpenContainer
-                } else {
-                    ClickOutcome::Inspect
-                }
-            }
-            Some(_) | None => {
-                if usable.is_none() && container {
-                    ClickOutcome::OpenContainer
-                } else {
-                    ClickOutcome::Inspect
-                }
-            }
+            Some(kind) if kind < USABLE_LOCK => ClickOutcome::OpenContainer,
+            Some(_) => ClickOutcome::Inspect,
         },
     }
 }
 
-/// What the Ctrl/double-click interaction does on a placed object.
+/// What the double-click interaction does with a placed object's usable
+/// section.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ObjectInteraction {
     Nothing,
@@ -435,44 +438,36 @@ pub enum ObjectInteraction {
     Consume {
         due_ms: u32,
     },
-    /// Use kind 0, other subtype, or kind 0 with no subtype: open the item.
+    /// Use kind 0, another subtype: the item is taken at once (guess: the
+    /// object database call it makes is not traced further).
     Open,
-    /// Take the usable item in hand (kind 1).
+    /// Take the usable item in hand (kind 1); the interaction ends here.
     UseInHand,
-    /// Push a button (kind 5, not held).
+    /// Push a button (kind 5, its flag clear).
     Push,
-    /// Open the container section.
-    OpenContainer,
-    /// Show the item.
-    Inspect,
 }
 
 /// The placed object's interaction, as the double click's handler decides
-/// it. `first_touch` gates kind 0 and 1; `push_released` gates the button.
-pub fn interact_object(target: ClickTarget, now_ms: u32) -> ObjectInteraction {
+/// it, and whether its container then opens. Kinds 0 and 1 act only while
+/// the object is unmarked; a button fires while its flag allows. Only the
+/// hand-held item (kind 1) ends the interaction; every other branch,
+/// including none, goes on to open the container section when there is
+/// one.
+pub fn interact_object(target: ClickTarget, now_ms: u32) -> (ObjectInteraction, bool) {
     let ClickTarget::Placed {
         usable,
         subtype,
         container,
-        first_touch,
+        unmarked,
         push_released,
         ..
     } = target
     else {
-        return ObjectInteraction::Nothing;
+        return (ObjectInteraction::Nothing, false);
     };
-    let Some(kind) = usable else {
-        return if container {
-            ObjectInteraction::OpenContainer
-        } else {
-            ObjectInteraction::Inspect
-        };
-    };
-    match kind {
-        0 => {
-            if !first_touch {
-                ObjectInteraction::Nothing
-            } else if subtype == 1 {
+    let action = match usable {
+        Some(0) if unmarked => {
+            if subtype == 1 {
                 ObjectInteraction::Consume {
                     due_ms: now_ms.wrapping_add(CONSUME_MS),
                 }
@@ -480,35 +475,11 @@ pub fn interact_object(target: ClickTarget, now_ms: u32) -> ObjectInteraction {
                 ObjectInteraction::Open
             }
         }
-        1 => {
-            if first_touch {
-                ObjectInteraction::UseInHand
-            } else {
-                ObjectInteraction::Nothing
-            }
-        }
-        USABLE_BUTTON => {
-            if push_released {
-                ObjectInteraction::Push
-            } else {
-                ObjectInteraction::Nothing
-            }
-        }
-        2 | USABLE_MAIN => {
-            if container {
-                ObjectInteraction::OpenContainer
-            } else {
-                ObjectInteraction::Inspect
-            }
-        }
-        _ => {
-            if container {
-                ObjectInteraction::OpenContainer
-            } else {
-                ObjectInteraction::Inspect
-            }
-        }
-    }
+        Some(1) if unmarked => return (ObjectInteraction::UseInHand, false),
+        Some(USABLE_BUTTON) if push_released => ObjectInteraction::Push,
+        _ => ObjectInteraction::Nothing,
+    };
+    (action, container)
 }
 
 /// What the Ctrl/double-click interaction does on a character.
@@ -569,14 +540,16 @@ pub fn interaction_allowed(g: InteractGate) -> bool {
         && (!g.combat || g.ctrl)
 }
 
-/// A second press this many ms after the first, under 2 pixels from it, is
-/// a double click.
-pub const DOUBLE_CLICK_MS: u64 = 450;
+/// A second press of the same button within the system's double-click
+/// time of the first, under 2 pixels from it, is a double click. The
+/// original asks Windows for that time at start-up (`GetDoubleClickTime`);
+/// Exarust uses Windows' default, 500 ms.
+pub const DOUBLE_CLICK_MS: u64 = 500;
 pub const DOUBLE_CLICK_PX: i64 = 2;
 
 /// Whether a press at `at`, `now_ms`, is the double click of the press at
-/// `was`, `was_ms`: strictly under 450 ms and strictly under 2 pixels on
-/// both axes.
+/// `was`, `was_ms`: strictly under [`DOUBLE_CLICK_MS`] and strictly under 2
+/// pixels on both axes.
 pub fn is_double_click(was: (i32, i32), was_ms: u64, at: (i32, i32), now_ms: u64) -> bool {
     now_ms < was_ms + DOUBLE_CLICK_MS
         && (i64::from(at.0) - i64::from(was.0)).abs() < DOUBLE_CLICK_PX
@@ -636,7 +609,8 @@ pub enum UseOutcome {
 }
 
 /// The complete use: what it does, the marks it sets on the item or its
-/// container entry (0xC80000 for both pour kinds), and its sound.
+/// container entry (0xC80000 for both pour kinds, 0xFF0000 for a repair),
+/// and its sound.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Use {
     pub outcome: UseOutcome,
@@ -646,6 +620,8 @@ pub struct Use {
 
 /// The pour kinds' mark on the item or its container entry.
 pub const POUR_MARK: u32 = 0xC80000;
+/// The repair kit's mark on the item or its container entry.
+pub const REPAIR_MARK: u32 = 0xFF0000;
 /// The elixir's potion flag on the body, and the world seconds it lasts.
 pub const POTION_FLAG: u32 = exa_combat::condition::StateFlags::POTION;
 pub const ELIXIR_S: u32 = exa_combat::remedy::ELIXIR_S;
@@ -676,7 +652,9 @@ pub fn use_sound(kind: UseSoundKind, draw: f32, at_point: bool) -> UseSound {
     UseSound {
         kind,
         volume,
-        pitch: draw * 0.2 + 0.9,
+        // The unit draw is a double; the sum is taken in double and stored
+        // as a float.
+        pitch: (f64::from(draw) * 0.2 + 0.9) as f32,
         at_point,
     }
 }
@@ -704,14 +682,18 @@ pub fn use_on(
             marks: POUR_MARK,
             sound: None,
         },
-        POUR_MARKS => Use {
-            outcome: elixir(takes_remedies, world_clock_s).map_or(
-                UseOutcome::Nothing,
-                |(flag, until_s)| UseOutcome::Elixir { flag, until_s },
-            ),
-            marks: POUR_MARK,
-            sound: Some(use_sound(UseSoundKind::Pour, sound_draw, at_point)),
-        },
+        POUR_MARKS => {
+            let lit = elixir(takes_remedies, world_clock_s);
+            Use {
+                outcome: lit.map_or(UseOutcome::Nothing, |(flag, until_s)| UseOutcome::Elixir {
+                    flag,
+                    until_s,
+                }),
+                marks: POUR_MARK,
+                // The pour sound plays only with the potion, at the body.
+                sound: lit.map(|_| use_sound(UseSoundKind::Pour, sound_draw, at_point)),
+            }
+        }
         CLEAN => {
             let timed = dirt.and_then(clean_timed).map(|mut t| {
                 t.started_ms = now_ms;
@@ -730,12 +712,14 @@ pub fn use_on(
                 t.started_ms = now_ms;
                 t
             });
+            // A repair marks the item (or its entry) 0xFF0000 and plays at
+            // the player, wherever the item is.
             Use {
                 outcome: timed.map_or(UseOutcome::Nothing, UseOutcome::Timed),
-                marks: 0,
+                marks: if timed.is_some() { REPAIR_MARK } else { 0 },
                 sound: timed
                     .is_some()
-                    .then(|| use_sound(UseSoundKind::Repair, sound_draw, at_point)),
+                    .then(|| use_sound(UseSoundKind::Repair, sound_draw, false)),
             }
         }
         _ => Use {
@@ -782,6 +766,7 @@ pub fn repair_timed(wear: u8, rating: u8) -> Option<Timed> {
 /// A scene object that carries a script the player's use can run.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ScriptObject {
+    /// The node's place (cm).
     pub at: Vec3,
     pub object: u32,
 }
@@ -797,21 +782,23 @@ pub fn nearby_scripts(point: Vec3, objects: impl IntoIterator<Item = ScriptObjec
         .collect()
 }
 
-/// Where a use's marks go: the world item itself, or a container's entry
-/// `entry` with the entry's own word.
+/// Where a use's marks go: the world item itself, or a container's entry.
+/// `slot` counts from one (zero is no entry) and `word` is the entry's own
+/// word.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MarkTarget {
     Item,
-    Container { entry: u32 },
+    Container { slot: u32, word: u32 },
 }
 
-/// The words a pour marks: the item's flags word, or the container's entry
-/// word, ORed with 0xC80000. A container entry word of zero marks nothing.
-pub fn mark_used(target: MarkTarget, flags: u32) -> Option<u32> {
+/// The word a use marks: the item's flags word, or the container entry's
+/// word, ORed with `mark` ([`POUR_MARK`] or [`REPAIR_MARK`]). A container
+/// with no entry slot marks nothing.
+pub fn mark_used(target: MarkTarget, flags: u32, mark: u32) -> Option<u32> {
     match target {
-        MarkTarget::Item => Some(flags | POUR_MARK),
-        MarkTarget::Container { entry: 0 } => None,
-        MarkTarget::Container { entry } => Some(entry | POUR_MARK),
+        MarkTarget::Item => Some(flags | mark),
+        MarkTarget::Container { slot: 0, .. } => None,
+        MarkTarget::Container { word, .. } => Some(word | mark),
     }
 }
 
@@ -825,8 +812,8 @@ pub enum RequestMode {
     Combat,
     /// The lift places its object; no movement request.
     Lift,
-    /// A door or wheel drag leaves the request to the keys and the right
-    /// button.
+    /// A door drag sets its cursor and leaves the request to the keys and
+    /// the right button.
     Mechanism,
     /// A refused press keeps the request as it was.
     Refused,
@@ -834,17 +821,19 @@ pub enum RequestMode {
     Use,
 }
 
-/// The movement request's mode, in the original's branch order: down or
-/// dead first, then the use, the lift, a door or wheel, a refusal, combat
-/// and the normal request.
+/// The movement request's mode, in the original's branch order (after the
+/// down-or-dead test, which the caller makes): an item use, the lift, a
+/// door (whose drag then runs the normal request), a refusal, combat mode,
+/// and the normal request. A wheel, cloth, physical or GUI drag is not
+/// tested here and takes the combat or normal branch.
 pub fn request_mode(state: crate::hand::DragState, combat: bool) -> RequestMode {
     use crate::hand::DragState;
     match state {
         DragState::Use => RequestMode::Use,
-        DragState::Lift | DragState::GuiPending | DragState::GuiCallback => RequestMode::Lift,
-        DragState::Door | DragState::Wheel | DragState::Cloth => RequestMode::Mechanism,
+        DragState::Lift => RequestMode::Lift,
+        DragState::Door => RequestMode::Mechanism,
         DragState::Refused => RequestMode::Refused,
-        DragState::Idle | DragState::Physical if combat => RequestMode::Combat,
+        _ if combat => RequestMode::Combat,
         _ => RequestMode::Normal,
     }
 }
@@ -852,13 +841,13 @@ pub fn request_mode(state: crate::hand::DragState, combat: bool) -> RequestMode 
 /// The controls' gates as the frame reads them.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ControlGates {
-    /// The controls are off (`0xac`).
+    /// The controls are off.
     pub off: bool,
-    /// A screen blocks the controls (`0xad`).
+    /// A screen blocks the controls.
     pub blocked: bool,
-    /// A second block (`0xaf`).
+    /// A second block.
     pub second_block: bool,
-    /// The spectating view (`0xb0`).
+    /// The spectating view.
     pub spectate: bool,
 }
 
@@ -1074,7 +1063,7 @@ mod tests {
         reward_ready: bool,
         key_ok: bool,
         container: bool,
-        first_touch: bool,
+        unmarked: bool,
         push_released: bool,
     ) -> ClickTarget {
         ClickTarget::Placed {
@@ -1084,7 +1073,7 @@ mod tests {
             reward_ready,
             key_ok,
             container,
-            first_touch,
+            unmarked,
             push_released,
         }
     }
@@ -1093,16 +1082,17 @@ mod tests {
         placed_with(usable, subtype, false, false, false, false, true, true)
     }
 
-    /// A plain lock needs the key and pays 100 or 1000 once; an open lock
-    /// opens the container; kinds 0 and 1 are containers; other kinds and
-    /// no usable section inspect. A character is its screen, scripts or a
-    /// callback.
+    /// No usable section inspects, container or not; a closed lock needs
+    /// the key and its reward due and pays 100, or 1000 for the lock
+    /// subtype 3; an open lock opens the container; kinds 0 and 1 always
+    /// open the container; other kinds (3 included) inspect. The player's
+    /// body shows the bars for 5000 ms.
     #[test]
     fn a_click_names_the_object_and_the_character() {
         assert_eq!(click(ClickTarget::Nothing), ClickOutcome::Nothing);
         assert_eq!(
             click(ClickTarget::Player),
-            ClickOutcome::CharacterScreen { experience: 5_000 }
+            ClickOutcome::ShowBars { ms: 5_000 }
         );
         assert_eq!(
             click(ClickTarget::DeadCharacter),
@@ -1113,65 +1103,71 @@ mod tests {
         assert_eq!(click(lock), ClickOutcome::Nothing);
         let key = placed_with(Some(USABLE_LOCK), 0, false, true, true, false, true, true);
         assert_eq!(click(key), ClickOutcome::Unlock { reward: 100 });
-        let main = placed_with(Some(USABLE_MAIN), 0, false, true, true, false, true, true);
+        let main = placed_with(Some(USABLE_LOCK), 3, false, true, true, false, true, true);
         assert_eq!(click(main), ClickOutcome::Unlock { reward: 1000 });
-        let open = placed_with(Some(USABLE_LOCK), 0, true, true, true, false, true, true);
+        let spent = placed_with(Some(USABLE_LOCK), 3, false, false, true, false, true, true);
+        assert_eq!(click(spent), ClickOutcome::Nothing);
+        let open = placed_with(Some(USABLE_LOCK), 0, true, false, false, false, true, true);
         assert_eq!(click(open), ClickOutcome::OpenContainer);
-        let container = placed_with(Some(1), 0, false, false, false, true, true, true);
-        assert_eq!(click(container), ClickOutcome::OpenContainer);
-        assert_eq!(click(placed(Some(1), 0)), ClickOutcome::Inspect);
+        assert_eq!(click(placed(Some(0), 0)), ClickOutcome::OpenContainer);
+        assert_eq!(click(placed(Some(1), 0)), ClickOutcome::OpenContainer);
+        let kind3 = placed_with(Some(3), 0, false, true, true, true, true, true);
+        assert_eq!(click(kind3), ClickOutcome::Inspect);
         assert_eq!(click(placed(Some(USABLE_BUTTON), 0)), ClickOutcome::Inspect);
         assert_eq!(click(ClickTarget::plain()), ClickOutcome::Inspect);
+        let boxed = placed_with(None, 0, false, false, false, true, true, true);
+        assert_eq!(click(boxed), ClickOutcome::Inspect);
     }
 
-    /// Kind 0 subtype 1 consumes after 2100 ms; another subtype opens; kind
-    /// 1 takes the item; kind 5 pushes when released; containers open.
+    /// Kind 0 subtype 1 consumes after 2100 ms and another subtype is
+    /// taken, only while unmarked; kind 1 takes the item and ends the
+    /// interaction; kind 5 pushes while its flag allows; every other branch
+    /// goes on to the container section.
     #[test]
     fn the_interaction_reads_the_usable_section() {
+        let n = ObjectInteraction::Nothing;
         assert_eq!(
             interact_object(placed(Some(0), 1), 1_000),
-            ObjectInteraction::Consume { due_ms: 3_100 }
+            (ObjectInteraction::Consume { due_ms: 3_100 }, false)
+        );
+        let full = placed_with(Some(0), 1, false, false, false, true, true, true);
+        assert_eq!(
+            interact_object(full, 1_000),
+            (ObjectInteraction::Consume { due_ms: 3_100 }, true)
         );
         assert_eq!(
             interact_object(placed(Some(0), 0), 0),
-            ObjectInteraction::Open
+            (ObjectInteraction::Open, false)
         );
+        let marked = placed_with(Some(0), 1, false, false, false, true, false, true);
+        assert_eq!(interact_object(marked, 0), (n, true));
+        let hand = placed_with(Some(1), 0, false, false, false, true, true, true);
         assert_eq!(
-            interact_object(
-                placed_with(Some(0), 1, false, false, false, false, false, true),
-                0
-            ),
-            ObjectInteraction::Nothing
+            interact_object(hand, 0),
+            (ObjectInteraction::UseInHand, false)
         );
-        assert_eq!(
-            interact_object(placed(Some(1), 0), 0),
-            ObjectInteraction::UseInHand
-        );
+        let marked = placed_with(Some(1), 0, false, false, false, true, false, true);
+        assert_eq!(interact_object(marked, 0), (n, true));
         assert_eq!(
             interact_object(placed(Some(USABLE_BUTTON), 0), 0),
-            ObjectInteraction::Push
+            (ObjectInteraction::Push, false)
         );
-        assert_eq!(
-            interact_object(
-                placed_with(
-                    Some(USABLE_BUTTON),
-                    0,
-                    false,
-                    false,
-                    false,
-                    false,
-                    true,
-                    false
-                ),
-                0
-            ),
-            ObjectInteraction::Nothing
+        let held = placed_with(
+            Some(USABLE_BUTTON),
+            0,
+            false,
+            false,
+            false,
+            false,
+            true,
+            false,
         );
-        let container = placed_with(Some(2), 0, false, false, false, true, true, true);
-        assert_eq!(
-            interact_object(container, 0),
-            ObjectInteraction::OpenContainer
-        );
+        assert_eq!(interact_object(held, 0), (n, false));
+        let lock = placed_with(Some(2), 0, false, false, false, true, true, true);
+        assert_eq!(interact_object(lock, 0), (n, true));
+        let lone = placed_with(None, 0, false, false, false, false, true, true);
+        assert_eq!(interact_object(lone, 0), (n, false));
+        assert_eq!(interact_object(ClickTarget::Player, 0), (n, false));
         assert_eq!(
             interact_character(ClickTarget::Player, false, false),
             CharacterInteraction::Inventory
@@ -1241,12 +1237,12 @@ mod tests {
         }));
     }
 
-    /// A double click is strictly under 450 ms and under 2 pixels on both
+    /// A double click is strictly under 500 ms and under 2 pixels on both
     /// axes.
     #[test]
     fn the_double_click_window() {
-        assert!(is_double_click((10, 10), 1000, (11, 9), 1449));
-        assert!(!is_double_click((10, 10), 1000, (11, 9), 1450));
+        assert!(is_double_click((10, 10), 1000, (11, 9), 1499));
+        assert!(!is_double_click((10, 10), 1000, (11, 9), 1500));
         assert!(!is_double_click((10, 10), 1000, (12, 10), 1100));
         assert!(!is_double_click((10, 10), 1000, (10, 12), 1100));
     }
@@ -1281,6 +1277,14 @@ mod tests {
         assert!((sound.pitch - 1.0).abs() < 1e-6);
         assert!(sound.at_point);
         assert_eq!(elixir(false, 100), None);
+        // Without the remedy flag the elixir only marks: no potion, no sound.
+        let dull = use_on(14, 7, false, 100, None, None, 0, 0, 0.5, true);
+        assert_eq!(dull.outcome, UseOutcome::Nothing);
+        assert_eq!(dull.marks, POUR_MARK);
+        assert_eq!(dull.sound, None);
+        // The pitch sum is taken in double: 0.9 + 0.2·0.3 rounds once.
+        let p = use_sound(UseSoundKind::Pour, 0.3, false).pitch;
+        assert_eq!(p, (f64::from(0.3f32) * 0.2 + 0.9) as f32);
     }
 
     /// A cleaning kit stops at 0x20; a repair kit takes 255 over the rating
@@ -1301,6 +1305,9 @@ mod tests {
             (10, 100, 15, 2000)
         );
         assert_eq!(repair.sound.unwrap().volume, 0.15);
+        assert_eq!(repair.marks, REPAIR_MARK);
+        assert!(!repair.sound.unwrap().at_point);
+        assert_eq!(clean.marks, 0);
         assert_eq!(
             use_on(10, 0, true, 0, Some(0), None, 25, 0, 0.0, false).outcome,
             UseOutcome::Nothing
@@ -1325,20 +1332,39 @@ mod tests {
             item: 7,
         });
         // At the start neither section changes: no write.
-        assert!(list.tick_sections(1000, |_, _| 100).is_empty());
+        assert!(list.tick_sections(1000, |_, _| Some(100)).is_empty());
         // Halfway: both sections go to 50.
         assert_eq!(
-            list.tick_sections(2000, |_, _| 100),
+            list.tick_sections(2000, |_, _| Some(100)),
             vec![(7, 0, 50), (7, 1, 50)]
         );
-        // One section already lower than the new value: only the other writes.
+        // The weapon section alone lower: it is written.
         assert_eq!(
-            list.tick_sections(2500, |_, section| if section == 0 { 20 } else { 50 }),
-            vec![(7, 1, 25)]
+            list.tick_sections(2500, |_, section| if section == 0 {
+                Some(50)
+            } else {
+                Some(20)
+            }),
+            vec![(7, 0, 25)]
+        );
+        // The usable section not lowered: the weapon section is skipped
+        // this frame even though it would lower.
+        assert!(
+            list.tick_sections(2600, |_, section| if section == 0 {
+                Some(10)
+            } else {
+                Some(90)
+            })
+            .is_empty()
+        );
+        // No usable section: the weapon section is tested on its own.
+        assert_eq!(
+            list.tick_sections(2600, |_, section| (section == 1).then_some(90)),
+            vec![(7, 1, 20)]
         );
         // Done writes both even when one is already at the target.
         assert_eq!(
-            list.tick_sections(3000, |_, _| 0),
+            list.tick_sections(3000, |_, _| Some(0)),
             vec![(7, 0, 0), (7, 1, 0)]
         );
         assert!(list.entries.is_empty());
@@ -1352,7 +1378,7 @@ mod tests {
             },
             item: 9,
         });
-        assert_eq!(list.tick_sections(900, |_, _| 0x30,), Vec::new());
+        assert_eq!(list.tick_sections(900, |_, _| Some(0x30)), Vec::new());
     }
 
     /// The movement request's mode branch order.
@@ -1362,6 +1388,8 @@ mod tests {
         assert_eq!(request_mode(DragState::Idle, false), RequestMode::Normal);
         assert_eq!(request_mode(DragState::Idle, true), RequestMode::Combat);
         assert_eq!(request_mode(DragState::Physical, true), RequestMode::Combat);
+        assert_eq!(request_mode(DragState::Wheel, true), RequestMode::Combat);
+        assert_eq!(request_mode(DragState::Door, true), RequestMode::Mechanism);
         assert_eq!(
             request_mode(DragState::Physical, false),
             RequestMode::Normal
@@ -1370,17 +1398,11 @@ mod tests {
         assert_eq!(request_mode(DragState::Lift, false), RequestMode::Lift);
         assert_eq!(
             request_mode(DragState::GuiPending, false),
-            RequestMode::Lift
+            RequestMode::Normal
         );
         assert_eq!(request_mode(DragState::Door, false), RequestMode::Mechanism);
-        assert_eq!(
-            request_mode(DragState::Wheel, false),
-            RequestMode::Mechanism
-        );
-        assert_eq!(
-            request_mode(DragState::Cloth, false),
-            RequestMode::Mechanism
-        );
+        assert_eq!(request_mode(DragState::Wheel, false), RequestMode::Normal);
+        assert_eq!(request_mode(DragState::Cloth, false), RequestMode::Normal);
         assert_eq!(
             request_mode(DragState::Refused, false),
             RequestMode::Refused
@@ -1469,12 +1491,18 @@ mod tests {
             },
         ];
         assert_eq!(nearby_scripts(point, objects), vec![7]);
-        assert_eq!(mark_used(MarkTarget::Item, 1), Some(POUR_MARK | 1));
         assert_eq!(
-            mark_used(MarkTarget::Container { entry: 2 }, 0),
-            Some(POUR_MARK | 2)
+            mark_used(MarkTarget::Item, 1, POUR_MARK),
+            Some(POUR_MARK | 1)
         );
-        assert_eq!(mark_used(MarkTarget::Container { entry: 0 }, 0), None);
+        assert_eq!(
+            mark_used(MarkTarget::Container { slot: 1, word: 2 }, 0, REPAIR_MARK),
+            Some(REPAIR_MARK | 2)
+        );
+        assert_eq!(
+            mark_used(MarkTarget::Container { slot: 0, word: 2 }, 0, POUR_MARK),
+            None
+        );
     }
 
     /// A walk-to point stops 245 cm short, or 350 cm for a door, along the
