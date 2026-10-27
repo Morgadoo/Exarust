@@ -539,12 +539,23 @@ slot; a start stores the bar back with the chosen bit moved to the slot,
 closes the bar, flashes the slot (from where its state stood, back-dated by
 the elapsed share) and stores the last instant power; a refusal plays the
 failure sound. The running game does not play that sound or retry the
-queued slot yet. The running-power budget is the highest Concentration
+queued slot yet. Opening the bar loads it and runs a 900 ms rise (the
+height and size ease in over the first 400, the pitch eases twice);
+closing runs 900 ms, the marked slots falling as `1 − f⁴` and the rest as
+`1 − 1.5f`, then clears the slots' flash and picked bits. The bar's slots
+step their own flashes (200 ms to lit, then a fade over their duration). The running-power budget is the highest Concentration
 technique of 2 to 4, one less without the focus item; powers past it are
 told to end. The grant routine (`grant_power`) adds a power to a record
 that holds Insight's seventh technique when its node's first link names a
 learnt prerequisite, over the first matching pair or appended, with flags
-`0x9fff`; nothing calls it from the running game.
+`0x9fff`; the caster's `PowerCaster::grant` is its caller, with no script
+or game function offering a power yet. A saved character's power list
+(`exa_formats::power_tree::read_saved_powers`) is re-validated by
+`validate_saved_power`: each entry takes the flags of the last record pair
+it matches under `0xff0f_ffff`, and the saved copy of a power is added with
+`0x9fff` when it is not the first entry and its first link's prerequisite
+entry is learnt. No character save loader exists yet, so that reader and
+rule are tested functions.
 
 ## Electric arcs
 
