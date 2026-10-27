@@ -158,8 +158,9 @@ These are tested rules the running game does not drive yet.
   refresh, the dynamics build/split/rebuild passes, frame save (normalised
   with the reciprocal square root estimate) and rows-only restore, the
   state copy by slot, scene detach (the scene word written through the
-  nodes that carry dynamics), cloth velocity, rest-point placement, the clone's cloth rule, the merge
-  order along the slot tree, the merge-node collection the skin builder
+  nodes that carry dynamics), cloth velocity, rest-point placement, the
+  clone's cloth rule, the weight pass's walk along the slot tree, the
+  merge-node collection the skin builder
   asks for (the chosen node, its marked parent at no offset, its marked
   mesh children at the saved slot frame or their own world position), the
   overlay marks and both saved-pose restores (a bone tree matched by

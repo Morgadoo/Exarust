@@ -105,7 +105,9 @@ pub struct WornGarment {
 }
 
 /// One garment's part of the dressed mesh: its chosen node per slot, its
-/// visible mask (for the cull bits) and its nodes in merge order.
+/// visible mask (for the cull bits) and its nodes in the weight pass's
+/// slot-tree order ([`crate::runtime::merge_order`]; the geometry appends in
+/// slot order, [`crate::dress::garment_steps`]).
 #[derive(Clone, Debug, PartialEq)]
 pub struct GarmentMerge {
     pub chosen: [Option<usize>; 19],

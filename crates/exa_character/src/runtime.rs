@@ -836,10 +836,11 @@ impl Body {
     }
 }
 
-/// The merge order of a garment's chosen nodes: the slot tree walked from
-/// the pelvis, each slot's chosen node before its child slots' (1 to 13,
-/// 17, 14 to 16, 18). Only the chosen node itself is merged; the overlays
-/// ([`mark_overlays`]) follow once every garment is merged.
+/// The order the skin builder's weight pass visits a garment's chosen
+/// nodes: the slot tree walked from the pelvis, each slot's chosen node
+/// before its child slots' (1 to 13, 17, 14 to 16, 18). The geometry is
+/// appended afterwards in slot order ([`crate::dress::garment_steps`]); the
+/// overlays ([`mark_overlays`]) follow once every garment is merged.
 pub fn merge_order(chosen: &[Option<usize>; 19]) -> Vec<usize> {
     fn visit(slot: usize, chosen: &[Option<usize>; 19], out: &mut Vec<usize>) {
         if let Some(n) = chosen[slot] {
