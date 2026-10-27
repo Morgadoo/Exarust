@@ -153,11 +153,100 @@ pub fn dress_plan(body: &Body, garments: &[WornGarment]) -> DressPlan {
 /// A texture-only rebuild: the skin job built again from the record
 /// ([`SkinJob::of_record`]) takes the first apparel texture of the body's
 /// mesh children. The original also composites a feral character's
-/// apparel overlay (its feral share `(2 − f)·f` in two bytes), which is not
-/// reproduced.
+/// apparel overlay (its feral share `(2 − f)·f` in two bytes), which is
+/// [`feral_underwear_appearance`].
 pub fn retexture(mut job: SkinJob, apparel: &[Option<String>]) -> SkinJob {
     job.take_first_apparel(apparel);
     job
+}
+
+/// The re-texture pass's first apparel layer: what it paints and the seed it
+/// paints with.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RetextureLayer {
+    pub texture: String,
+    pub appearance: exa_formats::objdb::Appearance,
+    /// The seed the texture compositor takes (`FUN_100207740`'s third word).
+    pub seed: u32,
+}
+
+/// The first apparel layer of a re-texture: the underwear (item 8) of a
+/// feral character takes [`feral_underwear_appearance`] and the record's
+/// look seed; every other item keeps its stored appearance and its own seed.
+pub fn retexture_layer(
+    first: Option<(&str, exa_formats::objdb::Appearance, u32)>,
+    item_id: u32,
+    feral: f32,
+    record_seed: u32,
+) -> Option<RetextureLayer> {
+    let (texture, appearance, item_seed) = first?;
+    if item_id == crate::UNDERWEAR_ITEM {
+        Some(RetextureLayer {
+            texture: texture.to_string(),
+            appearance: feral_underwear_appearance(appearance, feral),
+            seed: record_seed,
+        })
+    } else {
+        Some(RetextureLayer {
+            texture: texture.to_string(),
+            appearance,
+            seed: item_seed,
+        })
+    }
+}
+
+/// The two bytes the re-texture pass writes on the underwear's appearance
+/// (its quality and damage) for a feral level `f`: `(2 − f)·f·255`, rounded
+/// to even as the original's conversion does and cut to a byte.
+pub fn feral_underwear_appearance(
+    mut appearance: exa_formats::objdb::Appearance,
+    feral: f32,
+) -> exa_formats::objdb::Appearance {
+    let k = (2.0 - feral) * feral;
+    let byte = (k * 255.0).round_ties_even() as i64 as u8;
+    appearance.quality = byte;
+    appearance.damage = byte;
+    appearance
+}
+
+/// The creation preview's rebuild ([`Rebuild::prepare`]): the editor hands
+/// the factory the look it edits, the body is rebuilt, and the caller
+/// refreshes the editor's own view of it. The view refresh is the caller's,
+/// as the scene and renderer steps between the rebuild's parts are.
+pub fn preview(
+    body: &Body,
+    root: usize,
+    bones: &[usize],
+    pixel_format: u32,
+    apparel: &[Option<String>],
+) -> Rebuild {
+    Rebuild::prepare(body, root, bones, pixel_format, apparel)
+}
+
+/// A texture-only rebuild from a record: the job [`SkinJob::of_record`]
+/// builds for `record`, then [`retexture`]. The original sets the factory's
+/// look to the record before this, which the caller does.
+#[allow(clippy::too_many_arguments)]
+pub fn retexture_only(
+    pixel_format: u32,
+    stem: &str,
+    record: &exa_formats::characters::CharacterRecord,
+    look_word: u32,
+    controller_weights: &[f32],
+    fresh: &mut dyn FnMut() -> u32,
+    exists: &dyn Fn(&str) -> bool,
+    apparel: &[Option<String>],
+) -> SkinJob {
+    let job = SkinJob::of_record(
+        pixel_format,
+        stem,
+        record,
+        look_word,
+        controller_weights,
+        fresh,
+        exists,
+    );
+    retexture(job, apparel)
 }
 
 /// The creation scene's hair rebuild: every hair root is removed, then,
@@ -287,6 +376,66 @@ mod tests {
         assert_eq!(job.colour.as_deref(), Some("humandifm"));
         assert_eq!(job.first_apparel.as_deref(), Some("&doublet_ba1"));
         assert_eq!(job.format.side, 0x200);
+    }
+
+    /// The feral overlay on the underwear: quality and damage become
+    /// `(2 − f)·f·255` rounded to even; every other item keeps its own
+    /// appearance and seed.
+    #[test]
+    fn the_feral_underwear_takes_the_feral_share() {
+        let appearance = exa_formats::objdb::Appearance {
+            quality: 160,
+            damage: 64,
+            dirt: 3,
+            layers: [Default::default(); 8],
+        };
+        let feral = feral_underwear_appearance(appearance, 0.5);
+        assert_eq!((feral.quality, feral.damage), (191, 191));
+        assert_eq!(feral.dirt, 3);
+        let calm = feral_underwear_appearance(appearance, 0.0);
+        assert_eq!((calm.quality, calm.damage), (0, 0));
+        let full = feral_underwear_appearance(appearance, 1.0);
+        assert_eq!((full.quality, full.damage), (255, 255));
+        // The underwear (item 8) takes the record's seed; anything else its
+        // own.
+        let layer = retexture_layer(
+            Some(("&braies", appearance, 77)),
+            crate::UNDERWEAR_ITEM,
+            0.25,
+            0x1234,
+        )
+        .unwrap();
+        assert_eq!(layer.seed, 0x1234);
+        assert_eq!(layer.appearance.quality, 112);
+        let other = retexture_layer(Some(("&shirt", appearance, 77)), 144, 0.25, 0x1234).unwrap();
+        assert_eq!((other.seed, other.appearance), (77, appearance));
+        assert_eq!(retexture_layer(None, 8, 1.0, 0), None);
+    }
+
+    /// The creation preview builds the same rebuild plan as the builder, and
+    /// the texture-only wrapper builds the job from the record and takes the
+    /// first apparel.
+    #[test]
+    fn the_preview_and_texture_wrappers_build_the_same_plans() {
+        let body = body();
+        let apparel = [Some("&doublet_ba1".to_string())];
+        let preview = preview(&body, 0, &[0, 1], 3, &apparel);
+        let prepare = Rebuild::prepare(&body, 0, &[0, 1], 3, &apparel);
+        assert_eq!(preview, prepare);
+        let record = exa_formats::characters::CharacterRecord::default();
+        let exists = |_: &str| true;
+        let job = retexture_only(
+            2,
+            "human",
+            &record,
+            0x1BF,
+            &[0.0; 12],
+            &mut || 1,
+            &exists,
+            &apparel,
+        );
+        assert_eq!(job.colour.as_deref(), Some("humandifm"));
+        assert_eq!(job.first_apparel.as_deref(), Some("&doublet_ba1"));
     }
 
     /// The creation scene grows the `?` roots under a covered head, the

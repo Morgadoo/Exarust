@@ -136,6 +136,11 @@ pub struct Node {
     /// The word the item loader writes through an item's model (its id;
     /// [`HAIR_OWNER`] on hair roots).
     pub owner: u32,
+    /// The item source the material loader wrote through the node (the
+    /// original's `0x130`); a detached body clears it. The field's reader is
+    /// in the material manager, which this unit does not model, so its
+    /// meaning is a guess.
+    pub host: Option<usize>,
     /// The body slot its name gives.
     pub slot: usize,
     /// The layer bits of its name ([`crate::layers::layer_of`]).
@@ -167,6 +172,7 @@ impl Default for Node {
             flags: 0,
             render_flags: 0,
             owner: 0,
+            host: None,
             slot: 0,
             layer: 0,
             morphed: false,
@@ -192,6 +198,15 @@ impl Node {
 pub struct PoseRecord {
     pub frame: Frame,
     pub children: u32,
+}
+
+/// One mesh node of the dressed mesh, as the building callback collects it:
+/// the node and the translation its vertices are placed by (the rest of the
+/// placement is the node's own frame).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CollectedNode {
+    pub node: usize,
+    pub offset: [f32; 3],
 }
 
 /// The two-digit number the slot passes parse from a name's first two
@@ -409,6 +424,61 @@ impl Body {
         }
     }
 
+    /// The meshes the dressed-mesh pass collects under `node`, as the
+    /// original's skin builder asks for them ([`CollectedNode`], the
+    /// `0x1000e7660` callback).
+    ///
+    /// A node in a body slot is replaced by the slot's chosen node from
+    /// `table`. The chosen node's parent is added first when it is a mesh
+    /// with render flag `0x400000`, at no offset. Then every direct child
+    /// that is a mesh with `0x400000` is added: a child in a slot takes the
+    /// slot's saved frame translation from `slot_world`, a child without one
+    /// its own world translation. (The original reads the saved slot frames
+    /// unconditionally; a missing one here falls back to the child's own
+    /// translation.)
+    pub fn collect_merge_nodes(
+        &self,
+        node: usize,
+        table: &[Option<usize>; 19],
+        slot_world: &[Option<Frame>; 19],
+    ) -> Vec<CollectedNode> {
+        let first = match self.nodes.get(node) {
+            Some(n) if n.slot > 0 => table.get(n.slot).copied().flatten().unwrap_or(node),
+            Some(_) => node,
+            None => return Vec::new(),
+        };
+        let mut out = Vec::with_capacity(self.nodes[first].children.len() + 2);
+        if let Some(parent) = self.nodes[first].parent {
+            let p = &self.nodes[parent];
+            if p.is_mesh() && p.render_flags & 0x40_0000 != 0 {
+                out.push(CollectedNode {
+                    node: parent,
+                    offset: [0.0; 3],
+                });
+            }
+        }
+        for &child in &self.nodes[first].children {
+            let n = &self.nodes[child];
+            if !(n.is_mesh() && n.render_flags & 0x40_0000 != 0) {
+                continue;
+            }
+            let offset = if n.slot > 0 {
+                slot_world
+                    .get(n.slot)
+                    .copied()
+                    .flatten()
+                    .map_or(n.world[3], |f| f[3])
+            } else {
+                n.world[3]
+            };
+            out.push(CollectedNode {
+                node: child,
+                offset,
+            });
+        }
+        out
+    }
+
     /// The generator's slot chain: `root` takes slot 1, its subtrees their
     /// names' digits (a node with no digits keeps its subtree out). With
     /// `fill`, a table of `count` slots is filled from the tree: each
@@ -558,6 +628,28 @@ impl Body {
     pub fn detach(&mut self, root: usize) -> Option<usize> {
         let old = self.nodes[root].scene;
         self.set_scene(root, None);
+        old
+    }
+
+    /// Clears the item source the material loader wrote through `root` and
+    /// every descendant that carries dynamics, as the detach pass does
+    /// before the body leaves the scene. `host` replaces it (the original
+    /// writes a process-wide empty value; `None` here).
+    pub fn clear_hosts(&mut self, root: usize, host: Option<usize>) {
+        self.nodes[root].host = host;
+        for c in self.nodes[root].children.clone() {
+            if self.nodes[c].dynamics.is_some() {
+                self.clear_hosts(c, host);
+            }
+        }
+    }
+
+    /// The detach and host clear of the rebuild: the body leaves its scene,
+    /// its nodes' sources clear, and the caller flags the scene's old root
+    /// body.
+    pub fn detach_scene(&mut self, root: usize) -> Option<usize> {
+        let old = self.detach(root);
+        self.clear_hosts(root, None);
         old
     }
 
@@ -1213,5 +1305,77 @@ mod tests {
         assert_eq!(name_digits("99x"), 99);
         assert_eq!(name_digits("9Chest"), 0);
         assert_eq!(name_digits(""), 0);
+    }
+
+    /// The merge collection resolves a slot node to the slot table's chosen
+    /// node, adds the chosen node's marked parent at no offset, then its
+    /// marked mesh children: a child in a slot takes the saved slot frame's
+    /// translation, a child without one its own.
+    #[test]
+    fn the_merge_collection_takes_the_chosen_node_and_its_children() {
+        let mut nodes = vec![
+            node("00Root", None),
+            node("01Pelvis", Some(0)),
+            node("0906Chest", Some(1)),
+            node("1000Head", Some(2)),
+            node("strap", Some(2)),
+            node("0906Chest", Some(1)),
+            node("1106RShld", Some(5)),
+            node("x", Some(5)),
+        ];
+        nodes[1].render_flags = 0x40_0000;
+        nodes[2].render_flags = 0x40_0000;
+        nodes[2].slot = 9;
+        nodes[3].render_flags = 0x40_0000;
+        nodes[3].slot = 10;
+        nodes[4].render_flags = 0x40_0000;
+        nodes[6].render_flags = 0x40_0000;
+        nodes[6].slot = 11;
+        nodes[7].render_flags = 0x40_0000;
+        nodes[6].world = translated([1.0, 2.0, 3.0]);
+        nodes[7].world = translated([9.0, 9.0, 9.0]);
+        let b = Body::new(nodes);
+        let mut table = [None; 19];
+        table[9] = Some(5);
+        let mut slots = [None; 19];
+        slots[11] = Some(translated([1.0, 2.0, 3.0]));
+        let got = b.collect_merge_nodes(2, &table, &slots);
+        assert_eq!(
+            got,
+            [
+                CollectedNode {
+                    node: 1,
+                    offset: [0.0; 3]
+                },
+                CollectedNode {
+                    node: 6,
+                    offset: [1.0, 2.0, 3.0]
+                },
+                CollectedNode {
+                    node: 7,
+                    offset: [9.0, 9.0, 9.0]
+                },
+            ]
+        );
+        // Without a chosen node the slot node itself is collected; a slot
+        // child without a saved frame falls back to its own world position.
+        let got = b.collect_merge_nodes(2, &[None; 19], &[None; 19]);
+        assert_eq!(got[0].node, 1);
+        assert_eq!(got.iter().map(|c| c.node).collect::<Vec<_>>(), [1, 3, 4]);
+    }
+
+    /// The detach clears the hosts of the root and every child that carries
+    /// dynamics, and leaves the others alone.
+    #[test]
+    fn the_detach_clears_hosts_below_the_dynamic_nodes() {
+        let mut b = body();
+        b.nodes[1].dynamics = Some(Dynamics::default());
+        b.nodes[0].host = Some(4);
+        b.nodes[1].host = Some(4);
+        b.nodes[3].host = Some(4);
+        b.detach_scene(0);
+        assert_eq!(b.nodes[0].host, None);
+        assert_eq!(b.nodes[1].host, None);
+        assert_eq!(b.nodes[3].host, Some(4));
     }
 }

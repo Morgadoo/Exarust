@@ -36,6 +36,7 @@ pub mod texture_job;
 pub mod background;
 
 pub mod blood;
+pub mod dress;
 pub mod spawn;
 
 pub mod spray;

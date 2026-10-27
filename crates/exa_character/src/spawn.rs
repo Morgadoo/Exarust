@@ -168,6 +168,144 @@ pub const CORPSE_MOTION: i32 = 3;
 /// The corpse's condition word: dead.
 pub const CORPSE_CONDITION: u32 = 0xA00;
 
+/// The body flag a spawn sets on the model it built.
+pub const SPAWNED: u32 = 0x1000_0000;
+/// The condition-flags word a lying spawn writes (`0xdf8`).
+pub const LYING_FLAGS: u32 = 0x1000;
+/// The stance a spawn resets to before it sets the record's own (none).
+pub const NO_STANCE: i32 = -1;
+
+/// What a spawn does with the body's pose.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PoseSource {
+    /// No saved pose: the root stands on the placement's ground.
+    Ground,
+    /// The saved bone tree ([`crate::runtime::Body::restore_tree_pose`]).
+    Tree,
+    /// The saved flat bone frames
+    /// ([`crate::runtime::Body::restore_flat_pose`]).
+    Flat,
+}
+
+/// A placed character's spawn, as the placement asks for it: the motion it
+/// starts in, whether it lies, which saved pose wins, and the root height a
+/// ground placement gives. The original also equips both hands, attaches
+/// the held items, builds the armour layers, applies the record's powers,
+/// copies its saved pools, gives it its reach and registers it with the
+/// scene; those are the steps, in this order.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PlacedSpawn {
+    /// The motion index the body starts in ([`placed_motion`]).
+    pub motion: i32,
+    /// The placement's saved attack motion was reset: the caller writes the
+    /// new motion back into the placement.
+    pub reset_saved_motion: bool,
+    pub lying: bool,
+    /// The condition-flags word (`0x1000` when lying, else 0).
+    pub flags: u32,
+    pub pose: PoseSource,
+    /// The root's height above the ground, cm, for a ground placement.
+    pub root_y: f32,
+    /// Every spawn's body-flag word: [`SPAWNED`].
+    pub model_flags: u32,
+    /// The stance every spawn resets first.
+    pub stance: i32,
+}
+
+/// A placed character's spawn rules. A saved pose wins over the root
+/// placement: the body is placed by its saved bones and its root height is
+/// left at the body's standing height, not the placement's. The lying flag
+/// (the placement's bit 1) sets the condition flags and, without a saved
+/// pose, places the root at the standing height less five centimetres.
+pub fn placed_spawn(
+    record: &CharacterRecord,
+    saved_motion: Option<i32>,
+    lying: bool,
+    pose: PoseSource,
+    placement_y: f32,
+    standing: f32,
+) -> PlacedSpawn {
+    let motion = placed_motion(saved_motion, record);
+    let reset = matches!(saved_motion, Some(m) if (5..13).contains(&m));
+    PlacedSpawn {
+        motion,
+        reset_saved_motion: reset,
+        lying,
+        flags: if lying { LYING_FLAGS } else { 0 },
+        pose,
+        root_y: placed_root_height(placement_y, standing, lying),
+        model_flags: SPAWNED,
+        stance: NO_STANCE,
+    }
+}
+
+/// The player's spawn: 3 in mode 1 (and the mode's stance byte set), else
+/// 0x13; mode 2 starts it in the lying flags; the race's own equip flag
+/// decides whether the record's hands are used. Without a frame the root
+/// stands on the ground at the standing height less 5 cm, the body's
+/// "on ground" frame being a zero translation and one scale.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PlayerSpawn {
+    pub motion: i32,
+    pub mode_one: bool,
+    pub lying: bool,
+    pub flags: u32,
+    pub model_flags: u32,
+    /// The root height in cm: the frame's height plus the standing pelvis
+    /// less 6 cm, or the standing pelvis less 5 cm without a frame.
+    pub root_y: f32,
+    /// Whether the record's hands are equipped (the race's equip flag).
+    pub equip: bool,
+    pub stance: i32,
+}
+
+/// The player's spawn rules ([`player_spawn`]): `frame_y` is the optional
+/// placement frame's height.
+pub fn player_spawn(
+    mode: i32,
+    frame_y: Option<f32>,
+    standing: f32,
+    race_equips: bool,
+) -> PlayerSpawn {
+    PlayerSpawn {
+        motion: player_motion(mode),
+        mode_one: mode == 1,
+        lying: mode == 2,
+        flags: if mode == 2 { LYING_FLAGS } else { 0 },
+        model_flags: SPAWNED,
+        root_y: player_root_height(standing, frame_y),
+        equip: race_equips,
+        stance: NO_STANCE,
+    }
+}
+
+/// The corpse's spawn: the Defence stance, the dead condition word, the
+/// lying byte and "down" float cleared, and a saved pose when the placement
+/// has one. It does not move the root: the placement's position is already
+/// the body's.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CorpseSpawn {
+    pub motion: i32,
+    pub condition: u32,
+    pub pose: PoseSource,
+    pub model_flags: u32,
+    /// The "asleep/limp" byte and the "down" float it clears.
+    pub limp: bool,
+    pub down: f32,
+}
+
+/// The corpse's spawn rules ([`corpse_spawn`]).
+pub fn corpse_spawn(pose: PoseSource) -> CorpseSpawn {
+    CorpseSpawn {
+        motion: CORPSE_MOTION,
+        condition: CORPSE_CONDITION,
+        pose,
+        model_flags: SPAWNED,
+        limp: true,
+        down: 0.0,
+    }
+}
+
 /// The root height a placed spawn without a saved pose places a body at:
 /// the placement's height plus the standing pelvis, less 8 cm, or, for a
 /// lying placement (its flag bit 1), the standing pelvis less 5 cm. A
@@ -362,5 +500,63 @@ mod tests {
         assert_eq!(placed_root_height(2.0, 101.5, true), 96.5);
         assert_eq!(player_root_height(101.5, None), 96.5);
         assert_eq!(player_root_height(101.5, Some(2.0)), 97.5);
+    }
+
+    /// A placed spawn: the motion from the record and the saved value, the
+    /// attack reset written back, the lying flags, and the ground height.
+    #[test]
+    fn a_placed_spawn_takes_its_motion_pose_and_height() {
+        let record = CharacterRecord::default();
+        let spawn = placed_spawn(&record, None, false, PoseSource::Ground, 2.0, 101.5);
+        assert_eq!(spawn.motion, 0x13);
+        assert!(!spawn.reset_saved_motion);
+        assert!(!spawn.lying);
+        assert_eq!(spawn.flags, 0);
+        assert_eq!(spawn.root_y, 95.5);
+        assert_eq!(spawn.model_flags, SPAWNED);
+        assert_eq!(spawn.stance, NO_STANCE);
+        let attack = placed_spawn(&record, Some(7), false, PoseSource::Tree, 2.0, 101.5);
+        assert_eq!(attack.motion, 3);
+        assert!(attack.reset_saved_motion);
+        assert_eq!(attack.pose, PoseSource::Tree);
+        let lying = placed_spawn(&record, Some(3), true, PoseSource::Flat, 2.0, 101.5);
+        assert_eq!((lying.motion, lying.flags), (3, 0x1000));
+        assert_eq!(lying.root_y, 96.5);
+        // A profession bit `0x1000` starts it in 0x19.
+        let golem = CharacterRecord {
+            race: 0x10,
+            ..Default::default()
+        };
+        assert_eq!(
+            placed_spawn(&golem, None, false, PoseSource::Ground, 0.0, 100.0).motion,
+            0x19
+        );
+    }
+
+    /// The player's spawn: mode 1 is the Defence stance with the mode's
+    /// stance byte, mode 2 the lying flags, the frame's height or the
+    /// ground.
+    #[test]
+    fn the_players_spawn_follows_the_mode_and_the_frame() {
+        let a = player_spawn(0, None, 101.5, true);
+        assert_eq!((a.motion, a.lying, a.flags), (0x13, false, 0));
+        assert_eq!((a.root_y, a.equip), (96.5, true));
+        let b = player_spawn(1, None, 101.5, false);
+        assert_eq!((b.motion, b.mode_one, b.equip), (3, true, false));
+        let c = player_spawn(2, Some(2.0), 101.5, false);
+        assert_eq!((c.motion, c.lying, c.flags), (0x13, true, 0x1000));
+        assert_eq!(c.root_y, 97.5);
+        assert_eq!(c.stance, NO_STANCE);
+        assert_eq!(c.model_flags, SPAWNED);
+    }
+
+    #[test]
+    fn a_corpse_spawn_is_dead_and_limp() {
+        let c = corpse_spawn(PoseSource::Flat);
+        assert_eq!((c.motion, c.condition), (3, 0xA00));
+        assert_eq!(c.pose, PoseSource::Flat);
+        assert!(c.limp);
+        assert_eq!(c.down, 0.0);
+        assert_eq!(c.model_flags, SPAWNED);
     }
 }

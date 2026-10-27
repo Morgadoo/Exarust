@@ -30,6 +30,13 @@ pub struct MergePart<'a> {
     pub material: &'a str,
     /// A hidden body slot's part is left out.
     pub visible: bool,
+    /// The cull bits the dressed-mesh pass writes on the part's triangles
+    /// (`0x200000` or `0x400000`): the slot's coverage against its visible
+    /// mask, which the renderer's two-sided faces read.
+    pub cull: u32,
+    /// The part's material carries the occlusion mark: its vertices fade at
+    /// the border of the marked region ([`occlusion_alpha`]).
+    pub occlude: bool,
 }
 
 /// The body's frame with no turn or shift.
@@ -47,6 +54,10 @@ pub const IDENTITY: Frame = [
 /// groups keep the order in which their materials first appear). A mesh
 /// whose vertices carry skin weights is marked skinned; a vertex without
 /// one is bound to its part's bone with weight 1.
+///
+/// The cull bits of each part go on its triangles ([`Mesh::triangle_flags`]),
+/// and when a part carries the occlusion mark the merged mesh's vertex
+/// colours fade at the border of the marked region ([`occlusion_alpha`]).
 pub fn merge_parts(parts: &[MergePart]) -> Option<Mesh> {
     let mut out = Mesh {
         positions: Vec::new(),
@@ -69,8 +80,12 @@ pub fn merge_parts(parts: &[MergePart]) -> Option<Mesh> {
     let mut any = false;
     let mut materials: Vec<String> = Vec::new();
     let mut per_material: Vec<Vec<u32>> = Vec::new();
+    let mut per_material_flags: Vec<Vec<u32>> = Vec::new();
+    let mut per_material_marked: Vec<Vec<bool>> = Vec::new();
     let mut has_colour = false;
     let mut has_uv = false;
+    let mut any_cull = false;
+    let mut any_occlude = false;
     // A mesh with any skinned part keeps a weight for every vertex.
     let skinned = parts.iter().any(|p| p.visible && p.skin.is_some());
     if skinned {
@@ -82,6 +97,7 @@ pub fn merge_parts(parts: &[MergePart]) -> Option<Mesh> {
         }
         any = true;
         let base = out.positions.len() as u32;
+        let base_position = out.position_count.max(out.positions.len()) as u32;
         let turn = |d: [f32; 3]| unturn(&part.frame, d);
         for (i, p) in part.mesh.positions.iter().enumerate() {
             out.positions.push(place(&part.frame, *p));
@@ -106,23 +122,34 @@ pub fn merge_parts(parts: &[MergePart]) -> Option<Mesh> {
         out.colors.get_or_insert_with(Vec::new).extend(
             (0..count).map(|i| colours.and_then(|c| c.get(i)).copied().unwrap_or([255; 4])),
         );
-        out.position_ids
-            .extend(base..base + part.mesh.positions.len() as u32);
-        out.position_count = out.positions.len();
+        // The part's position ids keep the shared positions of its own
+        // stream, moved past the parts before it.
+        out.position_ids.extend(
+            (0..count as u32).map(|i| {
+                part.mesh.position_ids.get(i as usize).copied().unwrap_or(i) + base_position
+            }),
+        );
+        out.position_count = base_position as usize + part.mesh.position_count.max(count);
         let at = materials.iter().position(|m| m == part.material);
         let group = match at {
             Some(g) => g,
             None => {
                 materials.push(part.material.to_string());
                 per_material.push(Vec::new());
+                per_material_flags.push(Vec::new());
+                per_material_marked.push(Vec::new());
                 materials.len() - 1
             }
         };
+        any_cull |= part.cull != 0;
+        any_occlude |= part.occlude;
         for tri in part.mesh.indices.as_chunks::<3>().0 {
             let [a, b, c] = *tri;
             let len = part.mesh.positions.len() as u32;
             if a < len && b < len && c < len {
                 per_material[group].extend([base + a, base + b, base + c]);
+                per_material_flags[group].push(part.cull);
+                per_material_marked[group].push(part.occlude);
             }
         }
         if let Some(skin) = &mut out.skin {
@@ -152,18 +179,45 @@ pub fn merge_parts(parts: &[MergePart]) -> Option<Mesh> {
         out.uv_count = 0;
     }
     let mut first = 0u32;
-    for (material, indices) in materials.into_iter().zip(per_material) {
+    let mut flags: Vec<u32> = Vec::new();
+    let mut marked: Vec<bool> = Vec::new();
+    for ((material, indices), (group_flags, group_marked)) in materials
+        .into_iter()
+        .zip(per_material)
+        .zip(per_material_flags.into_iter().zip(per_material_marked))
+    {
         if indices.is_empty() {
             continue;
         }
         let count = indices.len() as u32;
         out.indices.extend(indices);
+        flags.extend(group_flags);
+        marked.extend(group_marked);
         out.groups.push(MeshGroup {
             material,
             first_index: first,
             index_count: count,
         });
         first += count;
+    }
+    // The cull bits only exist when a slot wrote one, as in the original.
+    if any_cull {
+        out.triangle_flags = Some(flags);
+    }
+    if any_occlude {
+        let alpha = occlusion_alpha(
+            out.positions.len(),
+            &out.indices,
+            &out.position_ids,
+            &marked,
+        );
+        let colours = out
+            .colors
+            .get_or_insert_with(|| vec![[255; 4]; out.positions.len()]);
+        colours.resize(out.positions.len(), [255; 4]);
+        for (colour, a) in colours.iter_mut().zip(alpha) {
+            colour[3] = a;
+        }
     }
     Some(out)
 }
@@ -294,6 +348,8 @@ mod tests {
                 bone: 1,
                 material: "skinhuman",
                 visible: true,
+                cull: 0,
+                occlude: false,
             },
             MergePart {
                 mesh: &cloth,
@@ -302,6 +358,8 @@ mod tests {
                 bone: 9,
                 material: "trouser",
                 visible: true,
+                cull: 0,
+                occlude: false,
             },
         ];
         let merged = merge_parts(&parts).unwrap();
@@ -353,6 +411,8 @@ mod tests {
                 bone: 1,
                 material: "m",
                 visible: true,
+                cull: 0,
+                occlude: false,
             },
             MergePart {
                 mesh: &hidden,
@@ -361,6 +421,8 @@ mod tests {
                 bone: 1,
                 material: "m",
                 visible: false,
+                cull: 0,
+                occlude: false,
             },
         ];
         let merged = merge_parts(&parts).unwrap();
@@ -414,6 +476,8 @@ mod tests {
                 bone: 1,
                 material: "m",
                 visible: true,
+                cull: 0,
+                occlude: false,
             },
             MergePart {
                 mesh: &b,
@@ -422,12 +486,55 @@ mod tests {
                 bone: 1,
                 material: "m",
                 visible: true,
+                cull: 0,
+                occlude: false,
             },
         ];
         let merged = merge_parts(&parts).unwrap();
         assert_eq!(merged.groups.len(), 1);
         assert_eq!(merged.groups[0].index_count, 6);
         assert!(merge_parts(&[]).is_none());
+    }
+
+    /// The cull bits go on the part's triangles; the mesh only carries the
+    /// flags when a slot wrote one. A marked part's border vertices fade.
+    #[test]
+    fn the_merged_mesh_takes_the_cull_bits_and_occlusion() {
+        let plain = mesh(
+            &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            &[0, 1, 2],
+        );
+        let marked = mesh(
+            &[[0.0, 0.0, 1.0], [1.0, 0.0, 1.0], [0.0, 1.0, 1.0]],
+            &[0, 1, 2],
+        );
+        let part = |mesh, cull, occlude| MergePart {
+            mesh,
+            frame: IDENTITY,
+            skin: None,
+            bone: 1,
+            material: "m",
+            visible: true,
+            cull,
+            occlude,
+        };
+        let merged =
+            merge_parts(&[part(&plain, 0x20_0000, false), part(&marked, 0, true)]).unwrap();
+        assert_eq!(merged.triangle_flags.as_deref(), Some(&[0x20_0000, 0][..]));
+        // The marked triangle hangs alone: all three of its vertices fade,
+        // the plain part's keep opaque.
+        let colours = merged.colors.unwrap();
+        assert_eq!(
+            colours.iter().map(|c| c[3]).collect::<Vec<_>>(),
+            [255, 255, 255, 0, 0, 0]
+        );
+        // Position ids keep each part's own stream, moved past the part
+        // before it.
+        assert_eq!(merged.position_ids, [0, 1, 2, 3, 4, 5]);
+        assert_eq!(merged.position_count, 6);
+        // No cull bit anywhere: no flags, as in the original.
+        let merged = merge_parts(&[part(&plain, 0, false)]).unwrap();
+        assert!(merged.triangle_flags.is_none());
     }
 
     /// Weights of a skinned part are kept vertex for vertex; a part without
@@ -446,6 +553,8 @@ mod tests {
                 bone: 7,
                 material: "a",
                 visible: true,
+                cull: 0,
+                occlude: false,
             },
             MergePart {
                 mesh: &skinned,
@@ -454,6 +563,8 @@ mod tests {
                 bone: 1,
                 material: "b",
                 visible: true,
+                cull: 0,
+                occlude: false,
             },
         ];
         let merged = merge_parts(&parts).unwrap();
