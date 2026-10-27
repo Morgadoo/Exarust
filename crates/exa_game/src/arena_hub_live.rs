@@ -48,6 +48,8 @@ pub struct ArenaHub {
     pub session_hook: HubHook,
     /// The manager's plan from its profile place and the hub's floor.
     pub manager: Option<crate::arena_spawn::ManagerPlan>,
+    /// The player root took the manager's plan once it spawned.
+    pub manager_placed: bool,
     /// The session hook's answer, once the manager fell.
     pub fall: Option<HubFall>,
     /// The roll the entry used.
@@ -62,6 +64,7 @@ impl Default for ArenaHub {
             click_hook: HubHook::None,
             session_hook: HubHook::None,
             manager: None,
+            manager_placed: false,
             fall: None,
             roll: 0,
         }
@@ -179,9 +182,7 @@ fn enter_loaded_hub(
         .any(|root| root.name.eq_ignore_ascii_case(HUB_LEVEL));
     if !loaded {
         hub.entered = false;
-        return;
-    }
-    if hub.entered {
+        hub.manager_placed = false;
         return;
     }
     if flow.as_deref().is_some_and(|flow| {
@@ -192,40 +193,51 @@ fn enter_loaded_hub(
     }) {
         return;
     }
-    let alternative = flow.is_some_and(|flow| flow.alternative_music);
-    let reading = manager_reading(bodies.iter().next());
-    let entry = enter_hub(&mut roll.0, alternative, reading.pelvis_cm);
-    // The hub's own start is the known spot the entry places the manager on;
-    // its floor is y 0 (the level's start puts the player at 0, 0, 3 m).
-    let start = player_start(HUB_LEVEL).map(|start| start.position);
-    let floor = start.map(|at| [at.x * 100.0, at.y * 100.0]);
-    let plan = manager_plan(entry.player, floor);
-    if let Some(at) = start {
+    if !hub.entered {
+        let alternative = flow.is_some_and(|flow| flow.alternative_music);
+        let reading = manager_reading(bodies.iter().next());
+        let entry = enter_hub(&mut roll.0, alternative, reading.pelvis_cm);
+        // The hub's own start is the known spot the entry places the manager
+        // on; its floor is y 0 (the level's start puts the player at 0, 0,
+        // 3 m).
+        let start = player_start(HUB_LEVEL).map(|start| start.position);
+        let floor = start.map(|at| [at.x * 100.0, at.y * 100.0]);
+        let plan = manager_plan(entry.player, floor);
+        hub.entered = true;
+        hub.busy = entry.hub_busy;
+        hub.click_hook = entry.click_hook;
+        hub.session_hook = entry.session_hook;
+        hub.manager = Some(plan);
+        hub.manager_placed = false;
+        hub.fall = None;
+        hub.roll = entry.roll;
+        if let Some(index) = clear_physician_weapon(&mut career) {
+            info!("arena hub: cleared the physician's weapon object {index}");
+        }
+        commands.insert_resource(exa_audio::LevelMusic(entry.music.name.to_ascii_lowercase()));
+        commands.insert_resource(exa_audio::LevelMusicVolume(entry.music.volume));
+        match entry.start {
+            Some(at) => commands.insert_resource(exa_audio::LevelMusicStart(at)),
+            None => commands.remove_resource::<exa_audio::LevelMusicStart>(),
+        }
+        info!(
+            "arena hub entered: {} at {} from {:?}, roll {:#x}",
+            entry.music.name, entry.music.volume, entry.start, entry.roll
+        );
+    }
+    // The player spawns after the level's collision is built; place it when
+    // it first appears rather than only on the entry frame.
+    if !hub.manager_placed
+        && let (Some(plan), Some(at)) = (hub.manager, player_start(HUB_LEVEL).map(|s| s.position))
+    {
         let manager = Vec3::new(at.x, plan.position[1] / 100.0, at.z);
+        let mut placed = false;
         for mut transform in players {
             transform.translation = manager;
+            placed = true;
         }
+        hub.manager_placed = placed;
     }
-    hub.entered = true;
-    hub.busy = entry.hub_busy;
-    hub.click_hook = entry.click_hook;
-    hub.session_hook = entry.session_hook;
-    hub.manager = Some(plan);
-    hub.fall = None;
-    hub.roll = entry.roll;
-    if let Some(index) = clear_physician_weapon(&mut career) {
-        info!("arena hub: cleared the physician's weapon object {index}");
-    }
-    commands.insert_resource(exa_audio::LevelMusic(entry.music.name.to_ascii_lowercase()));
-    commands.insert_resource(exa_audio::LevelMusicVolume(entry.music.volume));
-    match entry.start {
-        Some(at) => commands.insert_resource(exa_audio::LevelMusicStart(at)),
-        None => commands.remove_resource::<exa_audio::LevelMusicStart>(),
-    }
-    info!(
-        "arena hub entered: {} at {} from {:?}, roll {:#x}",
-        entry.music.name, entry.music.volume, entry.start, entry.roll
-    );
 }
 
 /// The click the hub last asked about, for the report and the tests.
@@ -710,6 +722,13 @@ mod tests {
         assert_eq!(plan.position, [0.0, 5.0, 300.0]);
         assert_eq!(plan.team, 1);
         assert_eq!(plan.role, 0x11);
+        // The player spawns after the level's collision: it is placed when
+        // it appears, not only on the entry frame.
+        let player = app.world_mut().spawn((Player, Transform::default())).id();
+        app.update();
+        let at = app.world().get::<Transform>(player).unwrap().translation;
+        assert_eq!(at, Vec3::new(0.0, 0.05, 3.0));
+        assert!(app.world().resource::<ArenaHub>().manager_placed);
     }
 
     #[test]
