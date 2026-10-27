@@ -32,7 +32,7 @@ pub struct MergePart<'a> {
     pub visible: bool,
     /// The cull bits the dressed-mesh pass writes on the part's triangles
     /// (`0x200000` or `0x400000`): the slot's coverage against its visible
-    /// mask, which the renderer's two-sided faces read.
+    /// mask. Which draw pass tests them is not traced.
     pub cull: u32,
     /// The part's material carries the occlusion mark: its vertices fade at
     /// the border of the marked region ([`occlusion_alpha`]).

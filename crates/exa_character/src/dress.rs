@@ -4,9 +4,8 @@
 //!
 //! The builder assembles each garment into a chosen node per slot
 //! ([`crate::layers`]); this module turns that choice into the merge the
-//! skinning builder runs: the slot tree is walked from the pelvis, a chosen
-//! node is appended where its slot's select mask meets the garment's visible
-//! mask, and a garment's slots take the cull bits of
+//! skinning builder runs: the chosen nodes are appended in slot order (1 to
+//! 18) where the slot's select mask meets the garment's visible mask, and a garment's slots take the cull bits of
 //! [`crate::layers::cull_bits`]. The body's own visible slots follow, without
 //! cull bits, and the overlays (hair and other meshes numbered past the
 //! slots) come last. [`crate::rebuild::dress_plan`] gives the assembly; this
@@ -16,7 +15,7 @@
 //! Exarust still draws one mesh per node, so nothing in the running game
 //! calls this yet; it is the tested list the original merges by.
 
-use crate::layers::{SLOTS, cull_bits, slot_selected};
+use crate::layers::{cull_bits, slot_selected};
 use crate::rebuild::WornGarment;
 use crate::runtime::{Body, overlay_nodes};
 
@@ -42,55 +41,42 @@ pub struct DressedPlan {
     /// The impact material each body slot takes from its least-covering
     /// garment ([`crate::rebuild::DressPlan`]).
     pub slot_material: [u8; 18],
-    /// The nodes merged, in order: each garment's chosen nodes in the slot
-    /// tree's order, then the body's visible slots, then the overlays.
+    /// The nodes merged, in order: each garment's chosen nodes in slot
+    /// order, then the body's visible slots, then the overlays.
     pub steps: Vec<MergeStep>,
 }
 
-/// A garment's merge list: its chosen nodes along the slot tree, in the
-/// order the builder walks it (the pelvis first, each slot before its child
-/// slots), each gated by the slot's select mask against `visible`.
+/// A garment's merge list: its chosen nodes in slot order (1 to 18, the
+/// order the skin builder appends them; the slot-tree walk before it only
+/// builds the skin weights), each gated by the slot's select mask against
+/// `visible` and carrying the slot's cull bits.
 pub fn garment_steps(chosen: &[Option<usize>; 19], visible: u32) -> Vec<MergeStep> {
-    fn visit(slot: usize, chosen: &[Option<usize>; 19], visible: u32, out: &mut Vec<MergeStep>) {
-        if let Some(node) = chosen[slot]
-            && slot_selected(slot, visible)
-        {
-            out.push(MergeStep {
+    (1..=18)
+        .filter_map(|slot| {
+            let node = chosen[slot]?;
+            slot_selected(slot, visible).then_some(MergeStep {
                 node,
                 cull: cull_bits(slot, visible),
                 overlay: false,
-            });
-        }
-        for &child in SLOTS[slot - 1].children {
-            visit(child, chosen, visible, out);
-        }
-    }
-    let mut out = Vec::new();
-    visit(1, chosen, visible, &mut out);
-    out
+            })
+        })
+        .collect()
 }
 
-/// The body's merge list: the nodes its slot table holds, walked in the slot
-/// tree's order, where the slot's select mask meets the body's visible mask.
-/// The body's own parts take no cull bits.
+/// The body's merge list: the nodes its slot table holds, in slot order,
+/// where the slot's select mask meets the body's visible mask. The body's
+/// own parts take no cull bits.
 pub fn body_steps(slots: &[Option<usize>; 19], visible: u32) -> Vec<MergeStep> {
-    fn visit(slot: usize, slots: &[Option<usize>; 19], visible: u32, out: &mut Vec<MergeStep>) {
-        if let Some(node) = slots[slot]
-            && slot_selected(slot, visible)
-        {
-            out.push(MergeStep {
-                node,
+    (1..=18)
+        .filter(|&slot| slot_selected(slot, visible))
+        .filter_map(|slot| {
+            Some(MergeStep {
+                node: slots[slot]?,
                 cull: 0,
                 overlay: false,
-            });
-        }
-        for &child in SLOTS[slot - 1].children {
-            visit(child, slots, visible, out);
-        }
-    }
-    let mut out = Vec::new();
-    visit(1, slots, visible, &mut out);
-    out
+            })
+        })
+        .collect()
 }
 
 /// The whole dressed mesh: the garments in the order given (the builder's
@@ -124,29 +110,25 @@ pub fn dress(
     }
 }
 
-/// The body-only merge the builder runs when the record's profession bit
-/// `0x4` is clear: every body slot the table holds is merged, ungated by
-/// the visible mask and without cull bits, then the overlays. (The other
+/// The body-only merge the builder runs when the race's look word lacks
+/// [`exa_formats::races::LOOK_MORPH_PASS`] (bit `0x4`): every body slot the
+/// table holds is merged in slot order, ungated by the visible mask and
+/// without cull bits, then the overlays. (The other
 /// branch, which builds the garments too, is [`dress`].)
 pub fn body_only_steps(
     body: &Body,
     root: usize,
     body_slots: &[Option<usize>; 19],
 ) -> Vec<MergeStep> {
-    fn visit(slot: usize, slots: &[Option<usize>; 19], out: &mut Vec<MergeStep>) {
-        if let Some(node) = slots[slot] {
-            out.push(MergeStep {
-                node,
+    let mut steps: Vec<MergeStep> = (1..=18)
+        .filter_map(|slot| {
+            Some(MergeStep {
+                node: body_slots[slot]?,
                 cull: 0,
                 overlay: false,
-            });
-        }
-        for &child in SLOTS[slot - 1].children {
-            visit(child, slots, out);
-        }
-    }
-    let mut steps = Vec::new();
-    visit(1, body_slots, &mut steps);
+            })
+        })
+        .collect();
     for node in overlay_nodes(body, root) {
         steps.push(MergeStep {
             node,
@@ -220,7 +202,7 @@ mod tests {
     /// `06`: its group chooses the chest, then the shoulder, with the cull
     /// bits the slot masks give.
     #[test]
-    fn a_garment_merges_its_chosen_slots_in_tree_order() {
+    fn a_garment_merges_its_chosen_slots_in_slot_order() {
         let mut chosen = [None; 19];
         chosen[9] = Some(4);
         chosen[11] = Some(6);
@@ -255,7 +237,21 @@ mod tests {
         assert_eq!(steps[0].node, 6);
     }
 
-    /// The body's slots merge in the same tree order, gated by the body's
+    /// The append order is the slot number, not the slot tree: the right
+    /// hand (17) follows the left arm (14 to 16), as the skin builder's
+    /// slot loop appends them.
+    #[test]
+    fn the_merge_follows_the_slot_numbers() {
+        let mut chosen = [None; 19];
+        for slot in [13, 14, 17, 18] {
+            chosen[slot] = Some(100 + slot);
+        }
+        let nodes = |steps: Vec<MergeStep>| steps.iter().map(|s| s.node).collect::<Vec<_>>();
+        assert_eq!(nodes(garment_steps(&chosen, !0)), [113, 114, 117, 118]);
+        assert_eq!(nodes(body_steps(&chosen, !0)), [113, 114, 117, 118]);
+    }
+
+    /// The body's slots merge in the same slot order, gated by the body's
     /// visible mask, with no cull bits; the overlays follow last.
     #[test]
     fn the_body_and_the_overlays_follow_the_garments() {

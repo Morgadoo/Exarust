@@ -720,16 +720,16 @@ callers and not on the draw path yet.
 
 - **Order.** The worn set is planned in its layer-level order (the apparel
   cache inserts each garment by its highest occupied layer, outermost
-  last). Each garment's chosen nodes are appended walking the slot tree
-  from the pelvis: a slot's node before its child slots (1–13, 17, 14–16,
-  18), gated by the slot's select mask against the garment's visible mask.
-  The body's own visible slots follow, then the overlays (meshes numbered
+  last). Each garment's chosen nodes are appended in slot order (1–18;
+  the slot-tree walk before it only builds the skin weights), gated by the
+  slot's select mask against the garment's visible mask.
+  The body's own visible slots follow in the same slot order, then the overlays (meshes numbered
   past slot 18, their node flags `(flags & !0x30000) | 0xC0000`).
 - **Cull bits.** A garment slot's triangles take `0x400000` when its second
   cull mask misses the visible mask, else `0x200000` when its first does,
   else none; the second test overwrites the first. Body slots take none.
-  The bits are written on the merged triangles and read by the renderer's
-  two-sided faces.
+  The bits are written on the merged triangles; which draw pass tests them
+  is not traced.
 - **Occlusion alpha.** A garment part whose material has the occlusion
   mark makes its merged vertices opaque and every vertex on the border of
   the marked region transparent: a vertex fades when one of its marked

@@ -128,10 +128,9 @@ physique values and the body morphs they select remain the body's concern
 ## The dressed mesh
 
 - `dress` is the merge list the original's skin builder appends: each
-  garment's chosen nodes in the slot tree's order (the pelvis first, each
-  slot before its child slots), gated by the slot's select mask against the
+  garment's chosen nodes in slot order (1 to 18), gated by the slot's select mask against the
   garment's visible mask and carrying the cull bits of
-  `layers::cull_bits`; then the body's visible slots, with no cull bits;
+  `layers::cull_bits`; then the body's visible slots in slot order, with no cull bits;
   then the overlays (the meshes numbered past slot 18, marked
   `(flags & !0x30000) | 0xC0000`). `DressedPlan` also carries the body's
   visible mask and slots and the per-slot impact material: the garment that
