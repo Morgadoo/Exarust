@@ -1212,7 +1212,6 @@ impl TerrainBuild {
         }
         self.grounds[slot] = Some(ground);
         self.stream.tiles[slot].mark_inserted();
-        self.stream.tiles[slot].mark_settled();
         self.stats.tiles += 1;
         self.built = None;
         self.next += 1;
@@ -2347,7 +2346,13 @@ mod build_tests {
         assert_eq!((pools.high_free(), pools.low_free()), (21, 43));
         // Every tile went through the reader, the worker and insertion.
         assert!(stream.tiles.iter().all(|t| t.state & 0x80 != 0));
-        assert!(stream.tiles.iter().all(|t| t.state & 0x800 == 0));
+        // Inserted, they stay in the frame hook's walk with nothing to do.
+        assert!(
+            stream
+                .tiles
+                .iter()
+                .all(|t| t.state & 0x800 != 0 && t.action() == stream::TileAction::None)
+        );
         assert!(world.get_resource::<ground::TerrainGround>().is_some());
         let ground = world.get_resource::<ground::TerrainGround>().unwrap();
         assert!(ground.height(0.0, 0.0).is_some());

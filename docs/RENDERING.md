@@ -582,11 +582,13 @@ snapped to a 6 m block centre: blocks within 44.4 m get one, those within
 15 m a high-resolution set, from pools of 21 high and 43 low sets (at most
 189 blocks in the list). Terrain plugins gather the 3 × 3 tiles around one,
 missing tiles as an empty placeholder. The worker marks a finished tile
-`(state & ~0x10) | 0x828` in the reader's state, and the hook inserts the
-first tile with the stream bit `0x800` a frame (a reload bit `0x1000`
-unloads it, the insert test is `(state & 0x309f) == 0xf`, and an upload is
-`(state & 0x4080) == 0x4080`); a refresh pass detaches a tile and bumps the
-delay counter. Exarust builds and inserts every tile behind its loading
+`(state & ~0x10) | 0x828` in the reader's state. The hook walks the tiles
+with the stream bit `0x800` (nothing clears it): a ready, inserted tile
+(`0xa0`) has its blocks marked wanted, and the first tile with work is
+handled and ends the walk (a reload bit `0x1000` unloads it, the insert test
+is `(state & 0x309f) == 0xf`, and an upload is `(state & 0x4080) ==
+0x4080`); tiles with no work are passed. A refresh pass detaches a tile and
+bumps the delay counter, during which frames only count down. Exarust builds and inserts every tile behind its loading
 screen and then evaluates the composite per pixel; `terrain::stream` keeps
 the tile bits and the one-tile frame hook as a tested model, and
 `terrain::wireframe` draws a block's edges as lines when `EXA_TERRAIN_WIRE`
