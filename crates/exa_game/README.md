@@ -112,6 +112,14 @@ player-data writer then emits them in the original's order, removes the
 optional lists the writer omits, and leaves an old save's tables alone
 when the session has none.
 
+The `CheckpointSave` script function's save side is
+`Slots::checkpoint_from_script`: it runs only for the player with
+checkpoints enabled, and writes the checkpoint only when the slot has none.
+The script side already exists as `exa_script::builtins::Global::CheckpointSave`.
+The load also clears a player record's race byte
+(`CharacterRecord::reset_loaded_identity`), leaving sex and the kept
+profession bits.
+
 Character creation (`create`): the record's gear (four hand items, its
 worn list and its carried list), the mode filters (story background 0 keeps
 braies only and clears the hands; the arena keeps the first two hands only
