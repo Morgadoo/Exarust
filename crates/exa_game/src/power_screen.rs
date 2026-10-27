@@ -33,7 +33,7 @@ use exa_ui::gui_core::{FormHost, FormId, GuiRect, GuiTask};
 use exa_ui::tree_draw::{self, Batch, Program, TextRun, Texture, TreeDraw, TreeVertex};
 
 use crate::bindings::{Action, Bindings};
-use crate::thaum::tree::{PowerBar, PowerRecord, TreeMode, TreeScreen};
+use crate::thaum::tree::{BAR_CLOSING, PowerBar, PowerRecord, TreeMode, TreeScreen};
 
 /// The time between redraws while the screen animates.
 const REDRAW_MS: u128 = 33;
@@ -255,7 +255,7 @@ fn hotkeys(
             *bar_open = true;
             tree.bar_open = true;
             tree.show(now);
-            tree.open_bar(bar, record, now);
+            tree.open_bar_if_closed(bar, record, now);
         }
         *dirty = true;
         return;
@@ -462,26 +462,42 @@ fn draw(
     if width == 0 || height == 0 {
         return;
     }
-    if !screen.open && !screen.bar_open {
+    let animating = screen.tree.bar_flags != 0;
+    if !screen.open && !screen.bar_open && !animating {
         for (_, _, mut visibility, _) in &mut canvas {
             *visibility = Visibility::Hidden;
         }
         return;
     }
     let now = time.elapsed().as_millis();
-    if screen.open || screen.bar_open {
+    if screen.open || screen.bar_open || animating {
         let now_at = now as u32;
+        // The bare bar (the tree closed) starts its rise when it is turned
+        // on and falls when it is turned off.
+        if !screen.open {
+            if screen.bar_open && screen.tree.bar_flags == 0 {
+                let PowerScreen {
+                    tree, bar, record, ..
+                } = &mut *screen;
+                tree.open_bar(bar, record, now_at);
+            } else if !screen.bar_open && screen.tree.bar_flags & BAR_CLOSING == 0 {
+                screen.tree.close_bar(now_at);
+            }
+        }
         screen.tree.advance(now_at);
         screen.tree.present_window(now_at);
         let PowerScreen { tree, bar, .. } = &mut *screen;
         tree.step_bar(bar, now_at);
         if screen.tree.faded_out {
+            // The form and its bar child hide together; the bar's own
+            // closing animation is for the bar on its own.
             screen.open = false;
             screen.bar_open = false;
+            screen.tree.bar_flags = 0;
             screen.dirty = true;
         }
     }
-    if !screen.open && !screen.bar_open {
+    if !screen.open && !screen.bar_open && screen.tree.bar_flags == 0 {
         for (_, _, mut visibility, _) in &mut canvas {
             *visibility = Visibility::Hidden;
         }

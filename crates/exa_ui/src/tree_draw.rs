@@ -38,14 +38,17 @@
 //! - [`bar_draw`]: the ten-slot bar: its icons grouped by domain, frame
 //!   marks, glows and chosen-slot flame, and the empty slots, with the
 //!   opening and closing animation.
-//! - [`prompt_draw`], [`tooltip_draw`] and [`preview_draw`]: the creation
-//!   prompt, the tooltip and the dragged power's preview. These are
-//!   approximations of the original's layout, not ports of it.
+//! - [`prompt_draw`], [`tooltip_layout`], [`tooltip_draw`], [`labels_draw`]
+//!   and [`preview_draw`]: the creation prompt's three panels and texts,
+//!   the shown choice's tooltip (its 600 ms delay, 60-unit name box and
+//!   description caption), every node's name in the form's label mode, and
+//!   the dragged power's 13-unit icon and 6 × 2.5 glow.
 //!
-//! Not modelled: the link ribbons are an approximation (the original builds
-//! them with its spline renderer), the link program's texture is not
-//! identified, and the opening and closing fade of the whole window is a
-//! caller's `window` number.
+//! The window's two fades are the caller's numbers: the backdrop's
+//! [`TreeView::window`], the content's [`TreeView::content`] and the bar
+//! child's [`TreeView::bar_alpha`]. Not modelled: the link ribbons'
+//! spline texture (they read as white) and the GUI skin's own text metrics
+//! and button highlights (the running font measures the texts).
 //!
 //! Evidence: the immediate-draw routines and the screen and bar draws of
 //! TThaumTree, the six fragment programs, and the icon and frame sheet
