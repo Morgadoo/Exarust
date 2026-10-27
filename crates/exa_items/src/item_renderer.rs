@@ -166,6 +166,223 @@ pub fn view(icon: i32) -> IconView {
     }
 }
 
+/// The shift the render gives the icon view's camera node: 500 up, with
+/// its target left at the origin.
+pub const CAMERA_SHIFT: [f32; 3] = [0.0, 500.0, 0.0];
+
+/// A 3 × 4 row-major transform: three rows of `[x, y, z, w]`.
+pub type Transform3 = [[f32; 4]; 3];
+
+/// A point's projection through a [`Transform3`].
+pub fn project(transform: &Transform3, point: [f32; 3]) -> [f32; 3] {
+    let mut out = [0.0f32; 3];
+    for (row, value) in out.iter_mut().enumerate() {
+        let m = &transform[row];
+        *value = point[0] * m[0] + point[1] * m[1] + point[2] * m[2] + m[3];
+    }
+    out
+}
+
+/// The span of projected points: the largest minus the smallest x and y,
+/// each widened by 0.0001 in double precision and narrowed back to single.
+/// `None` for no points.
+pub fn projected_extents(points: &[[f32; 3]], transform: &Transform3) -> Option<(f32, f32)> {
+    let first = project(transform, *points.first()?);
+    let (mut min_x, mut max_x) = (first[0], first[0]);
+    let (mut min_y, mut max_y) = (first[1], first[1]);
+    for point in &points[1..] {
+        let p = project(transform, *point);
+        // The compare order is the machine's: below the minimum moves the
+        // minimum, otherwise above the maximum moves the maximum. An
+        // unordered value moves neither.
+        if p[0] < min_x {
+            min_x = p[0];
+        } else if p[0] > max_x {
+            max_x = p[0];
+        }
+        if p[1] < min_y {
+            min_y = p[1];
+        } else if p[1] > max_y {
+            max_y = p[1];
+        }
+    }
+    Some(span(max_x, min_x, max_y, min_y))
+}
+
+/// The span of a box's eight corners: `centre ± half` per axis, projected.
+pub fn projected_box_extents(
+    centre: [f32; 3],
+    half: [f32; 3],
+    transform: &Transform3,
+) -> (f32, f32) {
+    let mut low = [0.0f32; 3];
+    let mut high = [0.0f32; 3];
+    for axis in 0..3 {
+        low[axis] = centre[axis] - half[axis];
+        high[axis] = centre[axis] + half[axis];
+    }
+    let mut corners = [[0.0f32; 3]; 8];
+    let mut at = 0;
+    for x in [low[0], high[0]] {
+        for y in [low[1], high[1]] {
+            for z in [low[2], high[2]] {
+                corners[at] = [x, y, z];
+                at += 1;
+            }
+        }
+    }
+    projected_extents(&corners, transform).unwrap_or((0.0001, 0.0001))
+}
+
+/// The exact widening and subtraction of the extents helper.
+fn span(max_x: f32, min_x: f32, max_y: f32, min_y: f32) -> (f32, f32) {
+    let width = f64::from(max_x) - f64::from(min_x);
+    let height = f64::from(max_y) - f64::from(min_y);
+    ((width + 0.0001) as f32, (height + 0.0001) as f32)
+}
+
+/// The depth the icon scene's bounding box spans.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DepthBounds {
+    /// The smallest and largest projected z.
+    pub min: f32,
+    pub max: f32,
+    /// Their midpoint.
+    pub centre: f32,
+    /// Half their difference.
+    pub half: f32,
+    /// The length of the half-extent vector (a guess for the unnamed
+    /// length helper the original calls on the box's half extents).
+    pub radius: f32,
+}
+
+/// The scene bounds the icon camera frames: every mesh vertex the scene
+/// keeps (the icon scene's own node list), projected through the node's
+/// matrix onto z. Classes other than the mesh class and nodes with both
+/// withheld bits are left out. The original also copies a vector the
+/// pseudo-code does not identify; that copy is not modelled.
+pub fn scene_bounds(vertices: &[[f32; 3]], transform: &Transform3) -> DepthBounds {
+    // The node's depth row is the transform's third row.
+    let row = &transform[2];
+    let z_of = |p: [f32; 3]| p[0] * row[0] + p[1] * row[1] + p[2] * row[2] + row[3];
+    let Some(first) = vertices.first().map(|p| z_of(*p)) else {
+        return DepthBounds {
+            min: 0.0,
+            max: 0.0,
+            centre: 0.0,
+            half: 0.0,
+            radius: 0.0,
+        };
+    };
+    let (mut min, mut max) = (first, first);
+    for p in &vertices[1..] {
+        let z = z_of(*p);
+        if z < min {
+            min = z;
+        } else if z > max {
+            max = z;
+        }
+    }
+    let centre = (min + max) * 0.5;
+    let half = (max - min) * 0.5;
+    DepthBounds {
+        min,
+        max,
+        centre,
+        half,
+        radius: half,
+    }
+}
+
+/// The buffers and images the resize hook gives an icon of `icon` pixels:
+/// both renderbuffers are twice the icon, the full image is the buffer's
+/// side and the final image the icon's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Resize {
+    pub buffer_side: i32,
+    pub alpha_colour_format: u32,
+    pub full: IconImage,
+    pub final_image: IconImage,
+}
+
+/// The resize for a GUI unit and the alpha global (the icon size is
+/// [`crate::icon_cache::icon_size`]).
+pub fn resize(unit: i32, alpha: bool) -> Resize {
+    let icon = crate::icon_cache::icon_size(unit);
+    let a = allocations(icon, alpha);
+    Resize {
+        buffer_side: a.buffer_side,
+        alpha_colour_format: a.colour_format,
+        full: a.full,
+        final_image: a.final_image,
+    }
+}
+
+/// One icon render's plan: what the render routine does with the item and
+/// the numbers it frames the camera with.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RenderPlan {
+    /// The framing distance (20, 30 or 70) and sun.
+    pub framing: crate::item_gui::Framing,
+    /// The object is turned (−0.1, 0.1, 0.5) before it renders.
+    pub turned: bool,
+    /// The clothing material named with a leading `*` is hidden.
+    pub hide_star_materials: bool,
+    /// The node's meshes are subdivided first.
+    pub subdivide: bool,
+    /// The projected width and height after the screen scale.
+    pub screen_extents: (f32, f32),
+    /// The full-size render is post-processed before it is drawn.
+    pub post_process: bool,
+    /// The full-size render is filtered down to the final image (rather
+    /// than the final image being the full one).
+    pub downsample: bool,
+    /// The halo is the highlighted one.
+    pub halo_highlight: bool,
+}
+
+/// The scale the extents take: the final image's width times the view's
+/// scale, over the distance between the camera and its target, halved.
+pub fn extent_scale(icon_pixels: i32, view_scale: f32, distance_squared: f32) -> f32 {
+    (icon_pixels as f32 * view_scale) / distance_squared.sqrt() * 0.5
+}
+
+/// The icon render plan for an item: the framing by its variant, the
+/// scene's bounds and the projected extents it frames. `extents` is the
+/// item's own projected span; `model_flags` decides the material hiding;
+/// `close` is the manager's close-icon flag. The post process and the halo
+/// always run, as the render routine calls them.
+#[allow(clippy::too_many_arguments)]
+pub fn render_plan(
+    variant: u32,
+    close: bool,
+    extents: (f32, f32),
+    model_flags: u32,
+    icon_pixels: i32,
+    view_scale: f32,
+    distance_squared: f32,
+) -> RenderPlan {
+    let framing = crate::item_gui::framing(variant, close);
+    let scale = extent_scale(icon_pixels, view_scale, distance_squared);
+    RenderPlan {
+        framing,
+        turned: framing.turned,
+        hide_star_materials: model_flags & 0x5f == 9,
+        subdivide: variant & 0x8000_0000 != 0,
+        screen_extents: (extents.0 * scale, extents.1 * scale),
+        post_process: true,
+        downsample: downsamples(icon_pixels, icon_pixels.wrapping_shl(1)),
+        halo_highlight: variant & crate::icon_cache::variant::HIGHLIGHT != 0,
+    }
+}
+
+/// Whether the render filters the full image down: the final image's side
+/// is smaller than the full one's. Equal sides make the final image the
+/// full one instead.
+pub fn downsamples(final_side: i32, full_side: i32) -> bool {
+    final_side < full_side
+}
+
 /// What the destroy does, in the original's order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DestroyOrder {
@@ -230,6 +447,120 @@ mod tests {
         assert_eq!(v.target, [0.0, 0.0, 0.0]);
         assert_eq!((v.distance, v.setting, v.view_factor), (40.0, 10.0, 0.8));
         assert_eq!(v.size, (320, 320));
+    }
+
+    const IDENTITY: Transform3 = [
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+    ];
+
+    #[test]
+    fn the_extents_span_the_projected_points() {
+        let points = [[1.0, 2.0, 3.0], [-1.0, 4.0, 0.0]];
+        let (w, h) = projected_extents(&points, &IDENTITY).unwrap();
+        assert_eq!((w, h), (2.0001, 2.0001));
+        // 2 x − 3 y = the projection: x 2·1+5 and 2·(−1)+5, y 3·1−1 and
+        // 3·(−1)−1.
+        let scaled: Transform3 = [
+            [2.0, 0.0, 0.0, 5.0],
+            [0.0, 3.0, 0.0, -1.0],
+            [0.0, 0.0, 1.0, 0.0],
+        ];
+        let points = [[1.0, 1.0, 0.0], [-1.0, -1.0, 0.0]];
+        let (w, h) = projected_extents(&points, &scaled).unwrap();
+        assert_eq!((w, h), (4.0001, 6.0001));
+        // An unordered value moves neither bound, as the machine's ordered
+        // compares skip it.
+        let points = [[0.0, 0.0, 0.0], [f32::NAN, f32::NAN, 0.0], [2.0, 3.0, 0.0]];
+        assert_eq!(
+            projected_extents(&points, &IDENTITY).unwrap(),
+            (2.0001, 3.0001)
+        );
+        assert!(projected_extents(&[], &IDENTITY).is_none());
+    }
+
+    #[test]
+    fn the_box_corners_are_its_eight_corners() {
+        // A box's centre ± half, its x halved by the transform.
+        let tf: Transform3 = [
+            [0.5, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+        ];
+        let (w, h) = projected_box_extents([1.0, 0.0, 0.0], [2.0, 3.0, 1.0], &tf);
+        assert_eq!((w, h), (2.0001, 6.0001));
+        // A single corner (a zero box) still gets the widening.
+        let (w, h) = projected_box_extents([4.0, 5.0, 6.0], [0.0; 3], &IDENTITY);
+        assert_eq!((w, h), (0.0001, 0.0001));
+    }
+
+    #[test]
+    fn the_scene_bounds_frame_z() {
+        let b = scene_bounds(
+            &[[1.0, 1.0, 1.0], [1.0, 1.0, 3.0], [9.0, 9.0, -1.0]],
+            &IDENTITY,
+        );
+        assert_eq!((b.min, b.max, b.centre, b.half, b.radius), (-1.0, 3.0, 1.0, 2.0, 2.0));
+        assert_eq!(scene_bounds(&[], &IDENTITY).half, 0.0);
+        let tilted: Transform3 = [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 2.0, 0.0, 1.0],
+        ];
+        let b = scene_bounds(&[[0.0, 1.0, 0.0], [0.0, 2.0, 0.0]], &tilted);
+        assert_eq!((b.min, b.max, b.centre, b.half), (3.0, 5.0, 4.0, 1.0));
+    }
+
+    #[test]
+    fn the_screen_scale_keeps_the_float_order() {
+        assert_eq!(extent_scale(160, 1.0, 100.0), 8.0);
+        assert_eq!(extent_scale(160, 1.0, 400.0), 4.0);
+        assert_eq!(extent_scale(80, 2.0, 400.0), 4.0);
+        assert!(downsamples(160, 320));
+        assert!(!downsamples(160, 160));
+    }
+
+    #[test]
+    fn the_render_plan_follows_the_variant() {
+        use crate::icon_cache::variant as v;
+        let p = render_plan(
+            v::APPAREL | v::WEAPON | v::HIGHLIGHT,
+            true,
+            (2.0, 1.0),
+            9,
+            160,
+            1.0,
+            400.0,
+        );
+        assert_eq!(p.framing.distance, 20.0);
+        assert_eq!(p.framing.sun, (-0.16, 0.6516));
+        assert!(p.turned && p.hide_star_materials && p.halo_highlight);
+        assert!(!p.subdivide);
+        assert!(p.post_process && p.downsample);
+        // 2 × 4.0 and 1 × 4.0.
+        assert_eq!(p.screen_extents, (8.0, 4.0));
+        // Apparel alone: 30, the other sun.
+        let p = render_plan(v::APPAREL, false, (1.0, 1.0), 0, 160, 1.0, 400.0);
+        assert_eq!(p.framing.distance, 30.0);
+        assert_eq!(p.framing.sun, (-0.21, 0.7516));
+        assert!(!p.turned && !p.hide_star_materials);
+        // Neither: 70, and the subdivision bit.
+        let p = render_plan(0x8000_0000, false, (1.0, 1.0), 0, 160, 1.0, 400.0);
+        assert_eq!(p.framing.distance, 70.0);
+        assert!(p.subdivide);
+    }
+
+    #[test]
+    fn the_resize_is_twice_the_icon() {
+        let r = resize(4, true);
+        assert_eq!(r.buffer_side, 320);
+        assert_eq!(r.alpha_colour_format, 0x8c43);
+        assert_eq!((r.full.width, r.final_image.width), (320, 160));
+        let r = resize(2, false);
+        assert_eq!((r.buffer_side, r.full.width, r.final_image.width), (160, 160, 80));
+        assert_eq!(r.alpha_colour_format, 0x8c41);
+        assert_eq!(CAMERA_SHIFT, [0.0, 500.0, 0.0]);
     }
 
     #[test]
