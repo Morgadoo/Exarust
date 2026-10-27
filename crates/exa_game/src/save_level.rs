@@ -245,6 +245,71 @@ pub fn scene_content(
         .then_some(SceneContent::Second)
 }
 
+/// The grid-environment arrays a load allocates: one zero word per grid
+/// cell, a set update callback and the two flags the original writes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GridEnvironmentSetup {
+    pub values: Vec<u32>,
+    /// The engine flag the original stores as 1.
+    pub flag: u32,
+    /// The mode word the original stores as 0.
+    pub mode: u32,
+}
+
+/// The arrays for `cells` grid cells: all zero, flag 1 and mode 0.
+pub fn grid_environment_setup(cells: usize) -> GridEnvironmentSetup {
+    GridEnvironmentSetup {
+        values: vec![0; cells],
+        flag: 1,
+        mode: 0,
+    }
+}
+
+/// One scene flush: the object database begins, the player is flushed, the
+/// travelling characters are listed, and the database ends.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SceneFlush {
+    pub object_db_begun: bool,
+    pub player_flushed: bool,
+    pub migrations: Vec<Migration>,
+    pub object_db_ended: bool,
+}
+
+/// The save unit's scene flush over the offered characters.
+pub fn flush_scene(motiles: &[SceneMotile<'_>]) -> SceneFlush {
+    SceneFlush {
+        object_db_begun: true,
+        player_flushed: true,
+        migrations: migrations(motiles),
+        object_db_ended: true,
+    }
+}
+
+/// Where the player and the followers land on a newly loaded level.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LandingPlan {
+    pub player: [f32; 3],
+    pub followers: Vec<[f32; 3]>,
+}
+
+/// The landing plan: the player at the saved planar position and the
+/// lifted floor height, the travelling followers around them in the stored
+/// offset order.
+pub fn landing_plan(
+    position: [f32; 3],
+    extent: f32,
+    floor: f32,
+    raised: bool,
+    yaw: f32,
+    followers: usize,
+) -> LandingPlan {
+    let player = spawn_placement(position, extent, floor, raised);
+    LandingPlan {
+        player,
+        followers: follower_positions(player, heading(yaw), followers),
+    }
+}
+
 /// A heading matrix for a yaw in radians, as the follower placement needs
 /// it. The engine's rotation builder takes degrees.
 pub fn heading(yaw: f32) -> [[f32; 3]; 3] {
@@ -357,6 +422,38 @@ mod tests {
         // NaN does not compare below 5 and is kept.
         assert!(reattach_follower(2, f32::NAN).min_distance.is_nan());
         assert_eq!(reattach_follower(7, 8.0).min_distance, 8.0);
+    }
+
+    #[test]
+    fn the_grid_arrays_start_zeroed_with_the_two_flags() {
+        let setup = grid_environment_setup(3);
+        assert_eq!(setup.values, vec![0; 3]);
+        assert_eq!((setup.flag, setup.mode), (1, 0));
+    }
+
+    #[test]
+    fn the_scene_flush_lists_the_travelling_characters() {
+        let motiles = [SceneMotile {
+            address: 1,
+            name: "Ann",
+            controller: 4,
+            flags: 0,
+        }];
+        let flush = flush_scene(&motiles);
+        assert!(flush.object_db_begun && flush.player_flushed && flush.object_db_ended);
+        assert_eq!(flush.migrations.len(), 1);
+        assert!(!flush.migrations[0].duplicate);
+    }
+
+    #[test]
+    fn the_landing_plan_lifts_the_player_and_places_the_followers() {
+        let plan = landing_plan([1.0, 2.0, 3.0], 1.0, 0.0, false, 0.0, 2);
+        assert!((plan.player[0] - 1.0).abs() < 1e-6);
+        assert!((plan.player[1] - 102.08).abs() < 1e-4);
+        assert!((plan.player[2] - 3.0).abs() < 1e-6);
+        assert_eq!(plan.followers.len(), 2);
+        assert!((plan.followers[0][0] + 99.0).abs() < 1e-4);
+        assert!((plan.followers[0][2] + 97.0).abs() < 1e-4);
     }
 
     #[test]

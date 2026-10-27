@@ -689,6 +689,8 @@ pub struct SceneEnvironment {
     pub time_speed: f32,
     /// The weather preset's wind strength, 0 indoors.
     pub wind: f32,
+    /// The sun height the shadow distance reads; a load resets it to zero.
+    pub sun_height: f32,
     /// The frame the environment last produced.
     pub frame: Frame,
     /// Whether colours are worked in linear light (the original's setting).
@@ -750,6 +752,7 @@ impl SceneEnvironment {
             far_plane: DEFAULT_FAR_PLANE,
             time_speed: 0.0,
             wind: 0.0,
+            sun_height: 0.0,
             frame: Frame {
                 background: [0.0; 3],
                 fog: None,
@@ -815,6 +818,14 @@ impl SceneEnvironment {
         }
         self.background = GRID_BACKGROUND;
         self.fog.colour = DEFAULT_FOG_COLOUR;
+    }
+
+    /// The scene part of the save load's global reset: the sun height the
+    /// shadow distance reads goes back to zero. The other globals the save
+    /// unit clears are the settings chunk's default tag and saved word
+    /// (`exa_formats::save_chunk::load_reset`).
+    pub fn reset_for_load(&mut self) {
+        self.sun_height = 0.0;
     }
 
     /// The indoor/underground preset: no sky, fog at distance 2 with a
@@ -1546,6 +1557,14 @@ mod tests {
         let mut third = SceneEnvironment::new(5);
         let dark = third.apply_outdoor_preset(true, 0, 0);
         assert!(dark.time_of_day >= 0.76 && dark.time_of_day < 1.0);
+    }
+
+    #[test]
+    fn the_load_reset_clears_the_sun_height() {
+        let mut env = SceneEnvironment::new(5);
+        env.sun_height = 0.8;
+        env.reset_for_load();
+        assert_eq!(env.sun_height, 0.0);
     }
 
     #[test]

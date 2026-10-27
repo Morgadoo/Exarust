@@ -63,6 +63,36 @@ pub fn read_save_settings(id: u32, tag_value: f32, first: i32, second: i32) -> S
     }
 }
 
+/// The saved settings word a load clears.
+pub const LOAD_SETTINGS_WORD: u32 = 0;
+
+/// The twelve-byte settings tag a load leaves in place: a zero, the version
+/// `1_100_000.0` and a zero.
+pub const LOAD_SETTINGS_TAG: [f32; 3] = [0.0, 1_100_000.0, 0.0];
+
+/// What the save load resets globally. `old` is the old-tag flag (clear),
+/// `tag` the twelve-byte tag, `saved` the settings chunk's saved word and
+/// `sun_height` the scene's sun height (zero).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LoadReset {
+    pub old: bool,
+    pub tag: [f32; 3],
+    pub saved: u32,
+    pub sun_height: f32,
+}
+
+/// The globals the load resets before it opens a level: the old-tag flag
+/// clear, the default tag, a zero saved word and the scene's sun height
+/// zero.
+pub fn load_reset() -> LoadReset {
+    LoadReset {
+        old: false,
+        tag: LOAD_SETTINGS_TAG,
+        saved: LOAD_SETTINGS_WORD,
+        sun_height: 0.0,
+    }
+}
+
 /// The save game's quadratic easing curve.
 pub fn ease_save_curve(x: f32) -> f32 {
     let scaled = x * 2.0;
@@ -451,5 +481,14 @@ mod tests {
             GameClock::restore(120, 4_294_966_296).now(1_000),
             4_290_672_451
         );
+    }
+
+    #[test]
+    fn the_load_resets_the_settings_tag_and_scene_height() {
+        let reset = load_reset();
+        assert!(!reset.old);
+        assert_eq!(reset.tag, [0.0, 1_100_000.0, 0.0]);
+        assert_eq!(reset.saved, 0);
+        assert_eq!(reset.sun_height, 0.0);
     }
 }

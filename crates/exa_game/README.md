@@ -118,7 +118,12 @@ checkpoints enabled, and writes the checkpoint only when the slot has none.
 The script side already exists as `exa_script::builtins::Global::CheckpointSave`.
 The load also clears a player record's race byte
 (`CharacterRecord::reset_loaded_identity`), leaving sex and the kept
-profession bits.
+profession bits. The scene flush (object database begin, player flush,
+migration list, end), the grid environment's zero arrays and the landing
+plan joining spawn placement and follower placement are in `save_level`;
+the load's global reset (old-settings flag clear, default settings tag,
+zero saved word and sun height) is
+`save_chunk::load_reset` plus `SceneEnvironment::reset_for_load`.
 
 Character creation (`create`): the record's gear (four hand items, its
 worn list and its carried list), the mode filters (story background 0 keeps

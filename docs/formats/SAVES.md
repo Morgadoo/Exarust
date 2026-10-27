@@ -413,6 +413,14 @@ only.
   and a `0x10000` kind whose kind byte is 2 to the third. A record the
   object database does not know falls back to a name starting with `[`,
   which joins the second list.
+* **Load reset.** Before a load the save unit clears the old-settings flag,
+  leaves the default twelve-byte settings tag (a zero, `1 100 000.0`, a
+  zero), clears the settings chunk's saved word and the scene's sun height,
+  and allocates the grid environment's arrays (a zero word per grid cell,
+  update flag 1 and mode 0).
+* **Landing.** The landing plan puts the player at the saved planar
+  position and the lifted floor height, then places the followers around
+  them from the offset table in order.
 
 ## The game clock
 
