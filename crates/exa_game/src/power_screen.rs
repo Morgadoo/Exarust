@@ -543,14 +543,8 @@ fn draw(
             let lines = wrap_text(name.as_bytes(), 59);
             let (_, line_step) = measure(font, "X", scale * 2.0);
             let (description_width, _) = measure(font, &description, scale * 2.0);
-            let tooltip = tree_draw::tooltip_draw(
-                &view,
-                &name,
-                &description,
-                lines.len().max(1) as u32,
-                line_step,
-                description_width,
-            );
+            let tooltip =
+                tree_draw::tooltip_draw(&view, &lines, &description, line_step, description_width);
             draw.batches.extend(tooltip.batches);
             draw.texts.extend(tooltip.texts);
         }

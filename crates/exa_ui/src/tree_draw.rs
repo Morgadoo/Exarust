@@ -1562,14 +1562,14 @@ pub fn tooltip_layout(
 /// The hovered node's tooltip: the name box and the description caption.
 pub fn tooltip_draw(
     view: &TreeView,
-    name: &str,
+    name: &[String],
     description: &str,
-    name_lines: u32,
     line_step: f32,
     description_width: f32,
 ) -> TreeDraw {
     let mut out = TreeDraw::default();
-    let Some(layout) = tooltip_layout(view, name_lines, line_step, description_width) else {
+    let line_count = name.len().max(1) as u32;
+    let Some(layout) = tooltip_layout(view, line_count, line_step, description_width) else {
         return out;
     };
     let boxed = |out: &mut TreeDraw, rect: [f32; 4], alpha: f32| {
@@ -1587,17 +1587,13 @@ pub fn tooltip_draw(
     boxed(&mut out, layout.name_panel, layout.alpha);
     // The wrapped name: one run a line, a baseline four fifths down the
     // step (the skin's own text draw is outside the pack).
-    for line in 0..name_lines {
+    for (line, text) in name.iter().enumerate() {
         out.texts.push(TextRun {
             x: layout.name_text[0] + view.scale,
             y: layout.name_text[1] + layout.line_step * (line as f32 + 0.8),
             size: layout.line_step,
             colour: [1.0, 1.0, 1.0, layout.alpha],
-            text: if line == 0 {
-                name.to_string()
-            } else {
-                String::new()
-            },
+            text: text.clone(),
         });
     }
     if layout.description_alpha > 0.0 {
@@ -2634,6 +2630,33 @@ mod tests {
         assert!(above.name_panel[1] < 690.0);
         view.hovered = 2;
         assert!(tooltip_layout(&view, 1, 8.0, 120.0).is_none());
+    }
+
+    #[test]
+    fn a_wrapped_tooltip_name_keeps_every_line() {
+        let mut view = view();
+        view.nodes = vec![node(0x101, 100.0, mark::SHOWN)];
+        view.hovered = 1;
+        view.choice_stamp = 0;
+        view.now = 1000;
+        view.still_hovering = true;
+        let draw = tooltip_draw(
+            &view,
+            &["Choose".to_string(), "a power".to_string()],
+            "Blast",
+            8.0,
+            60.0,
+        );
+        // The two panels are one batch (the submit joins equal ones).
+        assert_eq!(draw.batches.len(), 1);
+        assert_eq!(draw.batches[0].vertices.len(), 12);
+        assert_eq!(draw.texts.len(), 3);
+        assert_eq!(draw.texts[1].text, "a power");
+        // The name box grows a line: 2 × 8 + 4 − 4 = 16.
+        assert_eq!(
+            draw.batches[0].vertices[0].y - draw.batches[0].vertices[2].y,
+            16.0
+        );
     }
 
     #[test]
