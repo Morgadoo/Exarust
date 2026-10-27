@@ -29,6 +29,9 @@ pub const NORMAL_PROGRAM: &str = "chargen_n";
 pub const SURFACE_INTENSITY: f32 = 1.0;
 /// The gloss scale of `chargen_s`.
 pub const GLOSS_SCALE: f32 = 0.8;
+/// The physique normal layers `chargen_n` can take: `Tex1` to `Tex5`, the
+/// base being `Tex0`.
+pub const MAX_NORMAL_LAYERS: usize = 5;
 
 /// The shader language's `min`: the second operand when it is strictly below
 /// the first, so a NaN in the first passes through.
@@ -206,6 +209,7 @@ pub fn compose(
             let base = sample(normal, u, v);
             let layer_samples: Vec<(f32, [f32; 2])> = layers
                 .iter()
+                .take(MAX_NORMAL_LAYERS)
                 .map(|&(amount, tex)| {
                     let s = sample(tex, u, v);
                     (amount, [s[0], s[1]])
