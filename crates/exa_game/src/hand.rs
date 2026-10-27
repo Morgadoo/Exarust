@@ -520,6 +520,109 @@ pub fn cloth_drag_anchor(
     }
 }
 
+/// What the press knows of the mechanism under the cursor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MechanismState {
+    /// The body's latched byte.
+    pub latched: bool,
+    /// The body is being forced, so a latch does not rattle.
+    pub forcing: bool,
+    /// The leaf slides instead of hinging.
+    pub sliding: bool,
+    /// The node has a body under it.
+    pub has_body: bool,
+}
+
+/// The mechanism press's branch.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum MechanismPress {
+    /// No body under the node, or a latched door that refuses the pull.
+    Refused,
+    /// A latched door rattled; `still_drags` is true for a sliding leaf,
+    /// whose drag continues after the rattle.
+    Rattle {
+        rattle: Rattle,
+        still_drags: bool,
+    },
+    /// A door (or lever) drag starts at this grip.
+    Door(DoorGrip),
+    Wheel,
+    Cloth,
+}
+
+/// The press on a mechanism, in the original's order: a latched closing
+/// door rattles and refuses (a sliding one rattles and still drags); no
+/// body refuses; else the door, wheel or cloth drag starts.
+pub fn mechanism_press(
+    pick: Pick,
+    node: Vec3,
+    hit: Vec3,
+    state: MechanismState,
+    mut draw: impl FnMut() -> f32,
+) -> MechanismPress {
+    match pick {
+        Pick::Hinge => {
+            if let Some(rattle) = door_rattle(state.latched, state.forcing, &mut draw) {
+                return MechanismPress::Rattle {
+                    rattle,
+                    still_drags: state.sliding,
+                };
+            }
+            if !state.has_body {
+                return MechanismPress::Refused;
+            }
+            // The press stores the hinge-side point 100 cm toward the hit;
+            // a sliding leaf stores the hit itself.
+            let anchor = if state.sliding {
+                hit
+            } else {
+                node + (hit - node).normalize_or_zero()
+            };
+            MechanismPress::Door(DoorGrip {
+                anchor,
+                sliding: state.sliding,
+                latched: state.latched,
+            })
+        }
+        Pick::Wheel => MechanismPress::Wheel,
+        Pick::Scene => MechanismPress::Cloth,
+        _ => MechanismPress::Refused,
+    }
+}
+
+/// The handler the release dispatch picks for a drag state word.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReleaseHandler {
+    None,
+    /// The lift's end (the item cursor).
+    Lift,
+    Door,
+    Physical,
+    Wheel,
+    GuiCallback,
+    Cloth,
+}
+
+/// The release handler, in the original's test order: the two GUI/lift
+/// bits together, then the door, physical, wheel, GUI and cloth bits.
+pub fn release_handler(word: u32) -> ReleaseHandler {
+    if word & 0x3000 != 0 {
+        ReleaseHandler::Lift
+    } else if word & 0x4000 != 0 {
+        ReleaseHandler::Door
+    } else if word & 0x8000 != 0 {
+        ReleaseHandler::Physical
+    } else if word & 0x10000 != 0 {
+        ReleaseHandler::Wheel
+    } else if word & 0x40000 != 0 {
+        ReleaseHandler::GuiCallback
+    } else if word & 0x20000 != 0 {
+        ReleaseHandler::Cloth
+    } else {
+        ReleaseHandler::None
+    }
+}
+
 /// Whether a press finds its point out of reach. While the player's
 /// kinesis waits for its pick the original asks the kinesis's pick callback
 /// instead of measuring: the point is in reach exactly when the kinesis can
@@ -1535,6 +1638,105 @@ mod tests {
             cloth_drag_anchor(Some(grabbed), Some(Vec3::new(2.0, 0.0, 0.0)), Vec3::Y, 0.05),
             Vec3::Y
         );
+    }
+
+    /// The mechanism press: a latch rattles and refuses a closing leaf but
+    /// a sliding one still drags; no body refuses; a door grip is 100 cm
+    /// from the node toward the hit; a wheel and cloth are their drags.
+    #[test]
+    fn the_mechanism_press() {
+        let state = MechanismState {
+            latched: false,
+            forcing: false,
+            sliding: false,
+            has_body: true,
+        };
+        let node = Vec3::ZERO;
+        let hit = Vec3::new(0.0, 1.0, 3.0);
+        let pressed = mechanism_press(Pick::Hinge, node, hit, state, || 0.5);
+        let MechanismPress::Door(grip) = pressed else {
+            panic!("{pressed:?}");
+        };
+        assert!((grip.anchor - hit.normalize()).length() < 1e-5);
+        assert!(!grip.sliding && !grip.latched);
+        let sliding = MechanismState {
+            sliding: true,
+            ..state
+        };
+        let MechanismPress::Door(grip) = mechanism_press(Pick::Hinge, node, hit, sliding, || 0.5)
+        else {
+            panic!();
+        };
+        assert_eq!(grip.anchor, hit);
+        let latched = MechanismState {
+            latched: true,
+            ..state
+        };
+        let pressed = mechanism_press(Pick::Hinge, node, hit, latched, || 0.5);
+        let MechanismPress::Rattle {
+            rattle,
+            still_drags,
+        } = pressed
+        else {
+            panic!("{pressed:?}");
+        };
+        assert!(!still_drags);
+        assert!((rattle.pitch - 0.9).abs() < 1e-6);
+        let pressed = mechanism_press(
+            Pick::Hinge,
+            node,
+            hit,
+            MechanismState {
+                sliding: true,
+                ..latched
+            },
+            || 0.5,
+        );
+        assert!(matches!(
+            pressed,
+            MechanismPress::Rattle {
+                still_drags: true,
+                ..
+            }
+        ));
+        assert_eq!(
+            mechanism_press(
+                Pick::Hinge,
+                node,
+                hit,
+                MechanismState {
+                    has_body: false,
+                    ..state
+                },
+                || 0.5
+            ),
+            MechanismPress::Refused
+        );
+        assert_eq!(
+            mechanism_press(Pick::Wheel, node, hit, state, || 0.5),
+            MechanismPress::Wheel
+        );
+        assert_eq!(
+            mechanism_press(Pick::Scene, node, hit, state, || 0.5),
+            MechanismPress::Cloth
+        );
+    }
+
+    /// The release dispatch tests the two GUI/lift bits first, then door,
+    /// physical, wheel, GUI and cloth.
+    #[test]
+    fn the_release_dispatch_order() {
+        assert_eq!(release_handler(0), ReleaseHandler::None);
+        assert_eq!(release_handler(0x2000), ReleaseHandler::Lift);
+        assert_eq!(release_handler(0x1000), ReleaseHandler::Lift);
+        assert_eq!(release_handler(0x4000), ReleaseHandler::Door);
+        assert_eq!(release_handler(0x8000), ReleaseHandler::Physical);
+        assert_eq!(release_handler(0x10000), ReleaseHandler::Wheel);
+        assert_eq!(release_handler(0x40000), ReleaseHandler::GuiCallback);
+        assert_eq!(release_handler(0x20000), ReleaseHandler::Cloth);
+        // The first matching bit wins.
+        assert_eq!(release_handler(0x4000 | 0x8000), ReleaseHandler::Door);
+        assert_eq!(release_handler(0x10000 | 0x20000), ReleaseHandler::Wheel);
     }
 
     /// The state word round-trips and a hand's hold maps onto it.
