@@ -795,6 +795,37 @@ pub fn sheet_cell_rect(sheet: &SpriteSheet, index: usize) -> Option<SheetCellRec
     })
 }
 
+/// Crops one sheet cell out of a decoded RGBA sheet: `channels` bytes a
+/// pixel, row 0 the sheet's first row (the sheets store their bottom row
+/// first, so a stored place counts from that row). `None` for a rectangle
+/// outside the image or a pixel size the sheet cannot hold.
+pub fn crop_sheet_cell(
+    source: &[u8],
+    width: i32,
+    height: i32,
+    channels: usize,
+    rect: SheetCellRect,
+) -> Option<Vec<u8>> {
+    if width <= 0 || height <= 0 || channels == 0 || rect.side < 0 {
+        return None;
+    }
+    let last_x = rect.x.checked_add(rect.side)?;
+    let last_y = rect.y.checked_add(rect.side)?;
+    if rect.x < 0 || rect.y < 0 || last_x > width || last_y > height {
+        return None;
+    }
+    let side = rect.side as usize;
+    let stride = width as usize * channels;
+    let mut out = vec![0u8; side * side * channels];
+    for row in 0..side {
+        let src = (rect.y as usize + row) * stride + rect.x as usize * channels;
+        let dst = row * side * channels;
+        let span = side * channels;
+        out[dst..dst + span].copy_from_slice(source.get(src..src + span)?);
+    }
+    Some(out)
+}
+
 /// The item panel's icon shader, as the original's program compiles it.
 ///
 /// The program sums the alpha of a ring around the pixel (three pixels
@@ -1148,6 +1179,49 @@ mod tests {
             })
         );
         assert_eq!(sheet_cell_rect(&SPRITE_SHEETS[3], 6), None);
+        // A 4 × 4 sheet of one channel: crop its 2 × 2 cell at (1, 2).
+        let source: Vec<u8> = (0..16).collect();
+        let cell = crop_sheet_cell(
+            &source,
+            4,
+            4,
+            1,
+            SheetCellRect {
+                x: 1,
+                y: 2,
+                side: 2,
+            },
+        )
+        .unwrap();
+        assert_eq!(cell, vec![9, 10, 13, 14]);
+        assert_eq!(
+            crop_sheet_cell(
+                &source,
+                4,
+                4,
+                1,
+                SheetCellRect {
+                    x: 3,
+                    y: 0,
+                    side: 2
+                }
+            ),
+            None
+        );
+        assert_eq!(
+            crop_sheet_cell(
+                &source,
+                4,
+                4,
+                1,
+                SheetCellRect {
+                    x: 1,
+                    y: 2,
+                    side: 3
+                }
+            ),
+            None
+        );
     }
 
     #[test]
