@@ -26,6 +26,9 @@ pub struct ItemModelPlan {
     /// a body section: `0x400` when high-resolution skins are on and the
     /// pixel-format setting is 3 or more, else `0x200`.
     pub skin_side: Option<u32>,
+    /// The word the loader writes through every node of the model: the
+    /// item's id.
+    pub owner: u32,
 }
 
 /// The item-model loader's plan. The model is the item's model section
@@ -64,6 +67,7 @@ pub fn item_model_plan(
         source,
         kind,
         skin_side,
+        owner: item.id,
     })
 }
 
@@ -487,6 +491,7 @@ mod tests {
         let plan = item_model_plan(&it, 2, true).unwrap();
         assert_eq!(plan.source, ModelSource::Factory("sword_a".into()));
         assert_eq!(plan.kind, EquipKind::Weapon);
+        assert_eq!(plan.owner, 1);
         // No body section: the skin side is left alone.
         assert_eq!(plan.skin_side, None);
         let mut it = item(2, "mace_a");
