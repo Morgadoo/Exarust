@@ -481,6 +481,92 @@ fn placements_and_their_database() {
     assert_eq!(r.roles[0].id, 8);
 }
 
+/// A placement section holding one placement whose sub-chunks are `subs`.
+fn placement_section(subs: &[u8]) -> Vec<u8> {
+    let mut place = u32s(&[0x8000_0002]);
+    for v in [2500.0f32, 0.0, -1000.0, 1.5] {
+        place.extend(v.to_le_bytes());
+    }
+    place.extend(DEAD.to_le_bytes());
+    place.extend(subs);
+    let mut b = 1i32.to_le_bytes().to_vec();
+    b.extend(u32s(&[PLACEMENT, place.len() as u32]));
+    b.extend(&place);
+    b
+}
+
+/// A 3×4 row frame translated by `t` (cm).
+fn frame_at(t: [f32; 3]) -> Vec<u8> {
+    f32s(&[
+        1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, t[0], t[1], t[2],
+    ])
+}
+
+/// A saved bone-tree record (56 bytes) and its children.
+fn pose_node(t: [f32; 3], word: u32, children: i32, children_bytes: &[u8]) -> Vec<u8> {
+    let mut b = frame_at(t);
+    b.extend(u32s(&[word, children as u32]));
+    b.extend(children_bytes);
+    b
+}
+
+/// The bone tree keeps its records, words and child counts, and wins over
+/// the legacy flat chunk whatever order the two are stored in; the flat
+/// chunk alone is read as world frames.
+#[test]
+fn placements_read_their_saved_poses() {
+    let child = pose_node([4.0, 5.0, 6.0], 8, 0, &[]);
+    let tree = pose_node([1.0, 2.0, 3.0], 7, 1, &child);
+    let mut flat = frame_at([9.0, 8.0, 7.0]);
+    flat.extend(frame_at([10.0, 11.0, 12.0]));
+    let mut subs = Vec::new();
+    subs.extend(u32s(&[LEGACY_POSE, flat.len() as u32]));
+    subs.extend(&flat);
+    subs.extend(u32s(&[POSE, tree.len() as u32]));
+    subs.extend(&tree);
+    let c = LevelCharacters::parse(&placement_section(&subs)).unwrap();
+    let SavedPose::Tree(records) = &c.placements[0].pose else {
+        panic!("a bone tree: {:?}", c.placements[0].pose);
+    };
+    assert_eq!(records.len(), 2);
+    assert_eq!((records[0].word, records[0].children), (7, 1));
+    assert_eq!((records[1].word, records[1].children), (8, 0));
+    assert_eq!(records[0].frame[3], [0.01, 0.02, 0.03]);
+    assert_eq!(records[1].frame[3], [0.04, 0.05, 0.06]);
+
+    let mut subs = Vec::new();
+    subs.extend(u32s(&[LEGACY_POSE, flat.len() as u32]));
+    subs.extend(&flat);
+    let c = LevelCharacters::parse(&placement_section(&subs)).unwrap();
+    let SavedPose::Flat(frames) = &c.placements[0].pose else {
+        panic!("flat frames: {:?}", c.placements[0].pose);
+    };
+    assert_eq!(frames.len(), 2);
+    assert_eq!(frames[0][3], [0.09, 0.08, 0.07]);
+    assert_eq!(frames[1][3], [0.1, 0.11, 0.12]);
+}
+
+/// Malformed pose nodes are errors, never panics.
+#[test]
+fn malformed_saved_poses_are_errors() {
+    for children in [-1, 65] {
+        let tree = pose_node([0.0; 3], 1, children, &[]);
+        let mut subs = Vec::new();
+        subs.extend(u32s(&[POSE, tree.len() as u32]));
+        subs.extend(&tree);
+        assert!(matches!(
+            LevelCharacters::parse(&placement_section(&subs)),
+            Err(Error::Malformed(_))
+        ));
+    }
+    // A tree that ends before a child.
+    let tree = pose_node([0.0; 3], 1, 1, &[]);
+    let mut subs = Vec::new();
+    subs.extend(u32s(&[POSE, tree.len() as u32]));
+    subs.extend(&tree);
+    assert!(LevelCharacters::parse(&placement_section(&subs)).is_err());
+}
+
 /// Every level's character section, with each database entry's parse.
 fn level_records(
     resource: &exa_rpk::MappedArchive,
@@ -1082,4 +1168,26 @@ fn the_creators_reset_keeps_the_other_fields() {
         r.worn,
         [ItemRef::new(9, 0), ItemRef::new(UNDERWEAR_ITEM, 0)]
     );
+}
+
+#[test]
+fn tmp_print_corpse_races() {
+    let Some(dir) = exa_rpk::locate_install(None) else {
+        return;
+    };
+    let game = exa_rpk::GameData::open(&dir).unwrap();
+    let resource = game.pack(exa_rpk::PackKind::Resource).unwrap();
+    let scene = crate::rfc::Scene::parse(resource.get("exanima01.rfc").unwrap()).unwrap();
+    let lc = scene.characters.unwrap();
+    for p in lc.placements.iter().filter(|p| p.is_dead()) {
+        let r = lc.record(p.id).unwrap();
+        println!(
+            "{:#x}: {:?} race {} female {} worn {:?}",
+            p.id,
+            r.name,
+            r.race,
+            r.female,
+            r.worn_ids().collect::<Vec<_>>()
+        );
+    }
 }

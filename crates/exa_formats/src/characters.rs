@@ -210,6 +210,32 @@ impl ItemRef {
     }
 }
 
+/// A placed body's saved pose, as its placement stores it.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum SavedPose {
+    /// The placement carries no pose: the body stays where its model was
+    /// built.
+    #[default]
+    None,
+    /// The bone-tree chunk: records in depth-first order, each a body
+    /// part's world frame, the word it stores and its child count.
+    Tree(Vec<PoseRecord>),
+    /// The legacy flat chunk: one world frame per part, in the part order
+    /// the file saves (slots 1–18; the shipped files keep two more zero
+    /// slots that are never read).
+    Flat(Vec<[[f32; 3]; 4]>),
+}
+
+/// One record of a saved bone tree: a part's world frame (rows, translation
+/// in metres), the word the file stores with it (the bone number in every
+/// shipped file) and how many child records follow it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PoseRecord {
+    pub frame: [[f32; 3]; 4],
+    pub word: u32,
+    pub children: u32,
+}
+
 /// A character standing (or lying) in a level.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Placement {
@@ -219,9 +245,8 @@ pub struct Placement {
     /// Facing: the character looks along (sin yaw, 0, cos yaw).
     pub yaw: f32,
     pub condition: i32,
-    /// Per-bone 3×4 matrices (rows, translation in metres) of a posed body,
-    /// in depth-first order of the skeleton.
-    pub pose: Vec<[[f32; 3]; 4]>,
+    /// The body's saved pose, if the placement carries one.
+    pub pose: SavedPose,
 }
 
 impl Placement {
@@ -1021,18 +1046,28 @@ fn read_placement(b: &[u8]) -> Result<Placement> {
     let position = [r.f32()?, r.f32()?, r.f32()?].map(|v| v / CENTIMETRES_PER_METRE);
     let yaw = r.f32()?;
     let condition = r.i32()?;
-    let mut pose = Vec::new();
+    let mut pose = SavedPose::None;
+    let mut saw_tree = false;
     while r.remaining() >= 8 {
         let tag = r.u32()?;
         let size = r.u32()? as usize;
         let body = r.bytes(size)?;
         match tag {
-            POSE => read_bone_tree(&mut Reader { b: body, pos: 0 }, &mut pose)?,
-            LEGACY_POSE if pose.is_empty() => {
+            // A bone tree, when present, is preferred over the legacy flat
+            // chunk whatever order they are stored in.
+            POSE if !saw_tree => {
+                let mut records = Vec::new();
+                read_bone_tree(&mut Reader { b: body, pos: 0 }, &mut records)?;
+                pose = SavedPose::Tree(records);
+                saw_tree = true;
+            }
+            LEGACY_POSE if !saw_tree && pose == SavedPose::None => {
                 let mut p = Reader { b: body, pos: 0 };
+                let mut frames = Vec::new();
                 while p.remaining() >= 48 {
-                    pose.push(p.matrix()?);
+                    frames.push(p.matrix()?);
                 }
+                pose = SavedPose::Flat(frames);
             }
             _ => {}
         }
@@ -1046,16 +1081,22 @@ fn read_placement(b: &[u8]) -> Result<Placement> {
     })
 }
 
-/// A bone and its children: matrix, a word, child count, children.
-fn read_bone_tree(r: &mut Reader<'_>, out: &mut Vec<[[f32; 3]; 4]>) -> Result<()> {
-    out.push(r.matrix()?);
-    r.u32()?;
+/// A bone and its children: a matrix, a word, a child count, then the
+/// children depth first.
+fn read_bone_tree(r: &mut Reader<'_>, out: &mut Vec<PoseRecord>) -> Result<()> {
+    let frame = r.matrix()?;
+    let word = r.u32()?;
     let children = r.i32()?;
-    if !(0..=64).contains(&children) || out.len() > 256 {
+    if !(0..=64).contains(&children) || out.len() >= 256 {
         return Err(Error::Malformed(format!(
             "pose node with {children} children"
         )));
     }
+    out.push(PoseRecord {
+        frame,
+        word,
+        children: children as u32,
+    });
     for _ in 0..children {
         read_bone_tree(r, out)?;
     }

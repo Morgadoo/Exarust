@@ -306,6 +306,12 @@ impl Animator {
 #[derive(Component, Clone, Copy, Debug, Default)]
 pub struct TickedClips;
 
+/// A body model root whose skinned meshes bind without an animator: a body
+/// a level placed from its saved pose has no clips to sample, but its skin
+/// still binds to its parts.
+#[derive(Component, Clone, Copy, Debug, Default)]
+pub struct SkinnedRoot;
+
 /// A body-part node driven by bone `bone`.
 #[derive(Component, Clone, Copy, Debug)]
 pub struct BodyPart {
@@ -355,7 +361,7 @@ fn bind_skins(
     mut commands: Commands,
     unbound: Query<(Entity, &SkinnedPart), Without<SkinnedMesh>>,
     parents: Query<&ChildOf>,
-    roots: Query<(), With<Animator>>,
+    roots: Query<(), Or<(With<Animator>, With<SkinnedRoot>)>>,
     children: Query<&Children>,
     parts: Query<&BodyPart>,
     transforms: Query<&Transform>,

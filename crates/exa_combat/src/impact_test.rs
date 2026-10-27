@@ -124,57 +124,6 @@ fn a_thrown_ball_hurts_the_limb_it_strikes() {
     assert_eq!(run(0.5), None);
 }
 
-/// A corpse still being laid out neither takes nor deals a limb impact: the
-/// ball that hurts a pelvis does nothing to one, nor does a laid-out ball
-/// to a living pelvis. The mark is lifted once the corpse's body sleeps.
-#[test]
-fn a_corpse_being_laid_out_takes_no_limb_impact() {
-    let run = |target_laid: bool, ball_laid: bool| {
-        let mut app = App::new();
-        app.add_plugins((MinimalPlugins, BodyPlugin))
-            .insert_resource(Physics::default())
-            .insert_resource(BodyTicks(100))
-            .add_message::<LimbImpact>()
-            .add_message::<ImpactSounded>()
-            .add_message::<Weakened>()
-            .add_message::<SecondWindFired>();
-        let target = app
-            .world_mut()
-            .spawn((Fighter::default(), ball(1, 1, Vec3::new(0.0, 5.0, 0.0))))
-            .id();
-        let mut thrown = ball(2, 0, Vec3::new(-0.5, 5.0, 0.0));
-        thrown.set_velocity(Vec3::X * 8.0);
-        let other = app.world_mut().spawn(thrown).id();
-        if target_laid {
-            app.world_mut().entity_mut(target).insert(LayingOut);
-        }
-        if ball_laid {
-            app.world_mut().entity_mut(other).insert(LayingOut);
-        }
-        let mut struck = false;
-        for _ in 0..60 {
-            app.world_mut().run_system_once(step_bodies).unwrap();
-            app.world_mut().run_system_once(strike_limbs).unwrap();
-            struck |= app.world().get::<ImpactBook>(target).unwrap().taken > 0.0;
-        }
-        struck
-    };
-    assert!(run(false, false));
-    assert!(!run(true, false));
-    assert!(!run(false, true));
-
-    let mut app = App::new();
-    let mut body = ball(3, 0, Vec3::ZERO);
-    let corpse = app.world_mut().spawn(LayingOut).id();
-    app.world_mut().entity_mut(corpse).insert(body.clone());
-    app.world_mut().run_system_once(finish_laying_out).unwrap();
-    assert!(app.world().get::<LayingOut>(corpse).is_some());
-    body.sleep = exa_physics::body::Sleep::Deep;
-    app.world_mut().entity_mut(corpse).insert(body);
-    app.world_mut().run_system_once(finish_laying_out).unwrap();
-    assert!(app.world().get::<LayingOut>(corpse).is_none());
-}
-
 /// The same ball on a pelvis that strikes in an overhead swing still
 /// sounds, but the hard impact is dropped: no damage, no clock and no
 /// draw of the clock's spread.

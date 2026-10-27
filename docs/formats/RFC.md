@@ -934,13 +934,23 @@ lightning at rest until something sets them.
 (`CECDDB00`, an RDB with magic `0xDBACCD00`), then n × `CAC0CA00`. Each is
 `u32 id` (low 28 bits = record; `0x40000000` = world database), `f32 pos[3]`
 (cm), `f32 yaw`, `i32 condition` (`0xA00` = dead, placed from its pose), then
-sub-chunks: `CAC0EB00` pose as a bone tree (per node a 3×4 matrix, a word
-and a child count), `CAC0E100` legacy flat bone matrices, `CAC0EA00` motion
-state, `CACE0F77` AI home (saves). A world-database character is created
+sub-chunks: `CAC0EB00` pose as a bone tree (per node 56 bytes: a 3×4 matrix
+in world space, a u32 word that holds the bone number, and an i32 child
+count; depth first), `CAC0E100` legacy flat bone matrices (48 bytes each,
+one world matrix per part slot 1–18, then two unused zero slots), `CAC0EA00`
+motion state, `CACE0F77` AI home (saves). A world-database character is created
 only in its own locale: the record's own id bit `0x40000000` set and its
 stored locale different from the level's `locales.rdb` id leaves it out
 (REA on the character section reader); a level's local records are always
-created. Exarust filters them when the level's locale resolves. `exanima01` places 39 characters, 8 of
+created. Exarust filters them when the level's locale resolves, keeps the
+pose records (frame, word, child count) and maps the bone tree by the
+nearest child rest offset within 20 cm (a record with no child is skipped
+with its subtree); the flat slots go by the saved part table, since the
+shipped files' order is pelvis, belly, chest, right arm, head, left arm,
+legs. Corpse placements carry y = 0 and yaw = 0 and their saved parts lie
+on furniture 3–260 cm up; the original ignores the placement's position and
+yaw and takes the character frame's translation from the restored root, so
+Exarust does too. `exanima01` places 39 characters, 7 of
 them corpses. Hostility comes from each record's roles in `charroles.rdb`.
 
 Character records (`0x00CDACvv`, the low byte the version; framed as tag +

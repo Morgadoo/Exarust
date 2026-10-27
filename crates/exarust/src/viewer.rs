@@ -1003,7 +1003,8 @@ fn spawn_players(
             hands: [const { None }; exa_formats::characters::HANDS],
             record: exa_formats::characters::CharacterRecord::reset(),
             encumbrance: 0.0,
-            pose: Vec::new(),
+            pose: exa_formats::characters::SavedPose::None,
+            fall: true,
         })
         .collect();
     let placing = Placing {
@@ -1517,12 +1518,26 @@ struct Placing<'a> {
     story: bool,
 }
 
-/// Spawns a level's placed characters in their race's bodies, standing (or
-/// lying, for the dead) where the level puts them, those of human frame
-/// dressed in their own items, each with the stats its record and race
-/// give it. The living carry a brain: their record's roles, their
-/// relations and their traits; those of human frame also rate the player
-/// and duel it once their rating turns hostile. Returns how many were
+/// A body model's scene tree, as the saved-pose placement reads it: each
+/// node's bone number, parent and built local frame.
+fn pose_nodes(model: &exa_assets::model::Model) -> Vec<exa_character::pose::PoseNode> {
+    model
+        .nodes
+        .iter()
+        .map(|n| exa_character::pose::PoseNode {
+            bone: exa_formats::rsq::bone_index(&n.name).filter(|&b| b >= 1),
+            parent: n.parent,
+            local: exa_character::pose::rows_of(&n.transform),
+        })
+        .collect()
+}
+
+/// Spawns a level's placed characters in their race's bodies, standing where
+/// the level puts them — or, for the dead, lying on the pose the level saved
+/// — those of human frame dressed in their own items, each with the stats its
+/// record and race give it. The living carry a brain: their record's roles,
+/// their relations and their traits; those of human frame also rate the
+/// player and duel it once their rating turns hostile. Returns how many were
 /// spawned and how many had no body.
 fn spawn_placed_characters(
     commands: &mut Commands,
@@ -1565,8 +1580,15 @@ fn spawn_placed_characters(
             missing += 1;
             continue;
         }
+        // A level's dead are placed where the level saved them; only the
+        // command line's synthetic corpse is built standing and falls.
+        let placed_pose =
+            (c.dead && !c.fall).then(|| exa_character::pose::place(&pose_nodes(&body), &c.pose));
+        let root_at = placed_pose
+            .as_ref()
+            .map_or(c.position + Vec3::Y * 0.05, |p| Vec3::from_array(p.frame));
         let mut root = commands.spawn((
-            Transform::from_translation(c.position + Vec3::Y * 0.05),
+            Transform::from_translation(root_at),
             Visibility::default(),
             Name::new(c.name.clone()),
             exa_world::room_view::RoomTracked,
@@ -1575,17 +1597,54 @@ fn spawn_placed_characters(
             root.insert(exa_physics::CharacterBody::default());
         }
         let root = root.id();
-        let model = exa_world::spawn_model(commands, &body, None);
-        let anim = exa_anim::Animator::new(&moveset, "Idle");
-        if c.dead {
-            // The dead fall where they lie: their condition is dead, as
-            // the original's corpse placement writes it. The original puts
-            // them in their saved pose instead, so their fall deals no limb
-            // impacts.
+        let (model, entities) = exa_world::spawn_model_nodes(commands, &body, None);
+        if let Some(placed) = &placed_pose {
+            // Every body part sits on its saved world frame; the character
+            // frame carries the restored root's translation, and the model
+            // keeps its built orientation. The body parts are attached
+            // here, as the pose pass writes them, with the built frames as
+            // their rest (skinning keeps that bind pose).
+            for (i, &entity) in entities.iter().enumerate() {
+                commands
+                    .entity(entity)
+                    .insert(exa_character::pose::transform(&placed.locals[i]));
+                if let Some(bone) =
+                    exa_formats::rsq::bone_index(&body.nodes[i].name).filter(|&b| b >= 1)
+                {
+                    commands.entity(entity).insert(exa_anim::BodyPart {
+                        bone,
+                        rest: body.nodes[i].transform,
+                    });
+                }
+            }
+            // Dead (0xA00), muscles off and registered at rest: the body
+            // runs one tick and sleeps. Its Defence stance (motion 3,
+            // `spawn::CORPSE_MOTION`) is never sampled, so no animator is
+            // attached.
             commands.entity(model).insert((
+                Transform::IDENTITY,
+                exa_anim::SkinnedRoot,
+                exa_physics::body::PlacedCorpse::default(),
+                exa_combat::Condition::DEAD,
+            ));
+        } else if c.dead {
+            // The command line's corpse: no saved pose, so it keeps the
+            // built pose and collapses limp, as Exarust always did.
+            for (i, &entity) in entities.iter().enumerate() {
+                if let Some(bone) =
+                    exa_formats::rsq::bone_index(&body.nodes[i].name).filter(|&b| b >= 1)
+                {
+                    commands.entity(entity).insert(exa_anim::BodyPart {
+                        bone,
+                        rest: body.nodes[i].transform,
+                    });
+                }
+            }
+            commands.entity(model).insert((
+                Transform::from_rotation(Quat::from_rotation_y(c.yaw)),
+                exa_anim::SkinnedRoot,
                 exa_physics::body::GoLimp::default(),
                 exa_combat::Condition::DEAD,
-                exa_combat::impact::LayingOut,
             ));
         } else if physical {
             let body = exa_formats::races::body_of_character(races, c.race);
@@ -1628,8 +1687,6 @@ fn spawn_placed_characters(
             }
         }
         commands.entity(model).insert((
-            Transform::from_rotation(Quat::from_rotation_y(c.yaw)),
-            anim,
             hands,
             exa_character::record::CharacterData::of_record(c.record.clone()),
             exa_character::Outfit(
@@ -1680,6 +1737,12 @@ fn spawn_placed_characters(
             },
             ChildOf(root),
         ));
+        if !c.dead {
+            commands.entity(model).insert((
+                Transform::from_rotation(Quat::from_rotation_y(c.yaw)),
+                exa_anim::Animator::new(&moveset, "Idle"),
+            ));
+        }
         if let Some((model_name, weapon)) = &c.held {
             commands.entity(model).insert(exa_character::Wielded {
                 model: model_name.clone(),

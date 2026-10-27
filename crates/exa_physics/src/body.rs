@@ -688,6 +688,22 @@ impl Default for GoLimp {
     }
 }
 
+/// A body model root a level placed from a saved pose: its parts already
+/// sit where the pose puts them, and it is built limp with no muscles and
+/// registered at rest ([`Ragdoll::register_placed`]), so it runs one tick
+/// and sleeps. `delay` frames let the nodes' world transforms propagate
+/// before the particles are placed.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct PlacedCorpse {
+    pub delay: u32,
+}
+
+impl Default for PlacedCorpse {
+    fn default() -> Self {
+        Self { delay: 3 }
+    }
+}
+
 /// One pass of a breakable grab between a weapon part and the part it bit.
 ///
 /// The pull is the stored strength divided by 1 plus 0.001 times the gap in
@@ -2196,8 +2212,16 @@ impl Ragdoll {
     /// the living body's countdown (256) and sleeps by its speed from then
     /// on.
     pub fn go_limp(&mut self) {
-        self.drive = None;
         self.wake();
+        self.become_limp();
+    }
+
+    /// The limp state itself: no muscles, the legs' limits at full
+    /// strength, every slack link's smoothed length at its posed distance,
+    /// the lower legs off the living layer, and each limb's limp state and
+    /// mobility. The callers set the sleep countdown.
+    fn become_limp(&mut self) {
+        self.drive = None;
         pairs::set_leg_layers(&mut self.parts, 0);
         for p in &self.parts {
             if let Some(k) = p.leg_limit {
@@ -2210,6 +2234,24 @@ impl Ragdoll {
             // The original gives every limp limb its own mobility back; the
             // part already carries it, so the restore is the identity.
             p.pairing.mobility = crate::part::ragdoll_mobility(p.pairing.mobility);
+        }
+    }
+
+    /// Registers the body where its parts already are, limp, as the
+    /// original's placed body is registered: every velocity zero and the
+    /// sleep countdown at zero, so the body runs one tick and that tick's
+    /// post-step puts it to sleep, with deep sleep from the next. It never
+    /// wakes on its own.
+    pub fn register_placed(&mut self) {
+        self.become_limp();
+        self.countdown = 0;
+        self.sleep = Sleep::Awake;
+        self.simulated = false;
+        self.set_velocity(Vec3::ZERO);
+        for p in &mut self.parts {
+            p.settled = p.transform();
+            p.shown = (p.settled, p.settled);
+            p.drawn_particles = (p.positions, p.positions);
         }
     }
 

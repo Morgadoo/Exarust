@@ -25,6 +25,8 @@ pub mod layers;
 
 pub mod look;
 
+pub mod pose;
+
 pub mod rebuild;
 
 pub mod record;

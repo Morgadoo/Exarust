@@ -43,6 +43,8 @@ owed to the next frame), 0.6 × the race's base a tick, added in double
   mesh's own part with an identity inverse, each inverse relative to the
   mesh's part in rest), and a mesh's vertex translation. Bevy's GPU
   skinning performs the per-frame deform; the bind uses these numbers.
+  Meshes bind under an `Animator` body root or a `SkinnedRoot` one (a
+  level's placed dead have no clips, but their skin still binds).
 - Node keyframe tracks (`tracks`): `NodeTracks` on a scene node,
   `StartTracks` starts the tracks of a node and the nodes under it as
   using an object does (once and reverse swap at each start), and every

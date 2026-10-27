@@ -134,12 +134,22 @@ These are tested rules the running game does not drive yet.
   write, the held marks (direct mesh children), the slot chain, slot
   numbering and re-framing on the base body's slot frames, the morph frame
   refresh, the dynamics build/split/rebuild passes, frame save (normalised
-  with the reciprocal square root estimate) and rows-only restore, the
-  state copy by slot, scene detach, cloth velocity, rest-point placement,
-  the clone's cloth rule, the merge order along the slot tree, the overlay
-  marks and both saved-pose restores (a bone tree matched by position, and
-  a flat list). The rest vectors come from the engine's shape builder,
-  which the caller supplies.
+  with the reciprocal square root estimate) and frame restore (the rows and
+  the origin in the parent's frame), the state copy by slot, scene detach,
+  cloth velocity, rest-point placement, the clone's cloth rule, the merge
+  order along the slot tree, the overlay marks and both saved-pose restores
+  (a bone tree matched to the nearest child within 20 cm, and a flat list
+  by slot). The rest vectors come from the engine's shape builder, which
+  the caller supplies.
+- `pose` puts a level's saved pose on a body model's scene tree: the bone
+  tree first (records in depth-first order, each to the parent part's
+  nearest child within 20 cm, an unmatched record skipping its subtree),
+  the legacy flat matrices otherwise (slots 1 to 18 by the saved part
+  table: pelvis, belly, chest, the right arm, the head, the left arm, the
+  legs), and with neither the built pose. It gives every node its local
+  frame and returns the character frame's translation (the restored root's
+  world origin), so a corpse is spawned lying exactly where the level saved
+  it instead of falling into place.
 - `factory` is the start-up data: the eighteen slots' child tables, the
   skin-map side/format from the pixel-format setting (512 below 3, 1024
   from 3), the item-database override and the material lock.
@@ -163,7 +173,11 @@ These are tested rules the running game does not drive yet.
   standing less 6), the corpse's 0xA00, the equip pass over both hands
   (the off hand's torch section, else weapon before shield) and an item
   model's factory or library source. The viewer fills the moveset's hands
-  from the equip pass.
+  from the equip pass, and places a level's dead from their saved pose:
+  muscles off, every part on its saved world frame, the character frame at
+  the restored root's origin, and the bodies registered at rest (one tick,
+  then sleep). Only a `--corpse` without a saved pose keeps the built pose
+  and the limp fall.
 
 ## Held items
 
