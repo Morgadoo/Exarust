@@ -4,8 +4,8 @@
 //! zero from the live mass, replaces the live mass with 1.25 times that
 //! saved mass, and stores its reciprocal. It counts the parts and sums
 //! those reciprocals. The second writes both words with the reciprocal of
-//! a half-even, half-by-inverse share of the caller's scale. A saved mass
-//! that is already set is the one inflated.
+//! half an even share plus half the part's inverse share, times the
+//! caller's scale. A saved mass that is already set is the one inflated.
 //!
 //! The arithmetic is single precision in the original's order. A zero
 //! inflated mass divides the way IEEE division does. [`distribute_tree`]
