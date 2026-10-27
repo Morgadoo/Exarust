@@ -505,7 +505,9 @@ fn weapon_mass_of(model: &model::Model, total: f32) -> exa_physics::weapon_mass:
             parent = model.nodes.get(at).and_then(|n| n.parent);
         }
         // A rigid part's inverse mass is its mobility, so its mass is the
-        // reciprocal; a missing body cannot occur on this path.
+        // reciprocal; a missing body cannot occur on this path. [guess: the
+        // original's mass word is the shape builder's, and the part's stored
+        // mobility is the closest body-side value Exarust keeps.]
         let inverse = model.nodes[node]
             .rigid
             .as_ref()
