@@ -2389,22 +2389,28 @@ pub fn skinned_mesh_under(model: &Model, parent: usize) -> Option<usize> {
 }
 
 /// The one texture stem a model's `&` materials are painted from: the first
-/// run-time material met in node order, then in part order. The original's
-/// walk makes a single job for the model and rewrites every `&` material to
-/// that job's stem, so a later part with another stem still takes the
-/// first's textures (`docs/formats/OTHER.md`, run-time materials).
+/// run-time material the original's walk meets, depth first (a node's parts
+/// in order, then its children in order, from the roots in order). The walk
+/// makes a single job for the model and rewrites every `&` material to that
+/// job's stem, so a later part with another stem still takes the first's
+/// textures (`docs/formats/OTHER.md`, run-time materials).
 pub fn painted_model_stem(model: &Model) -> Option<String> {
-    model
-        .nodes
-        .iter()
-        .flat_map(|n| n.part_materials.iter())
-        .find_map(|name| {
-            if name.starts_with('&') {
-                apparel_texture_key(name)
-            } else {
-                None
-            }
-        })
+    fn walk(model: &Model, node: usize, depth: usize) -> Option<String> {
+        let own = model.nodes[node]
+            .part_materials
+            .iter()
+            .filter(|name| name.starts_with('&'))
+            .find_map(|name| apparel_texture_key(name));
+        if own.is_some() || depth > model.nodes.len() {
+            return own;
+        }
+        (0..model.nodes.len())
+            .filter(|&child| child != node && model.nodes[child].parent == Some(node))
+            .find_map(|child| walk(model, child, depth + 1))
+    }
+    (0..model.nodes.len())
+        .filter(|&i| model.nodes[i].parent.is_none_or(|p| p >= model.nodes.len()))
+        .find_map(|root| walk(model, root, 0))
 }
 
 #[cfg(test)]
@@ -2550,6 +2556,18 @@ mod tests {
             ],
         };
         assert_eq!(painted_model_stem(&model).as_deref(), Some("doublet_ba"));
+        // Depth first: a root's child is visited before the next root, even
+        // when the next root comes earlier in the node list.
+        let mut child = material_node(&["&childstem1"]);
+        child.parent = Some(0);
+        let model = Model {
+            nodes: vec![
+                material_node(&["skinhuman"]),
+                material_node(&["&secondroo1"]),
+                child,
+            ],
+        };
+        assert_eq!(painted_model_stem(&model).as_deref(), Some("childstem1"));
         assert_eq!(
             painted_model_stem(&Model {
                 nodes: vec![material_node(&["skinhuman", "&short"])],
@@ -3460,8 +3478,10 @@ mod tests {
         let skins: Vec<Option<(u16, Vec<VertexSkin>)>> =
             scene_skins(&scene, true, crate::PackKind::Resource);
         let merged = scene_merged_mesh(&scene, &skins, |_| true).expect("a merged body");
-        assert!(merged.mesh.positions.len() > 20_000);
-        assert!(merged.subobjects.len() > 1);
+        // The eighteen parts' skin and eye groups reference 2 737 of the
+        // scene's 7 430 vertices (the `_null` groups' are left out).
+        assert_eq!(merged.mesh.positions.len(), 2737);
+        assert_eq!(merged.subobjects.len(), 2);
         assert!(!merged.mesh.groups.is_empty());
         assert!(merged.mesh.groups.iter().all(|g| g.material != "_null"));
         let vertices = merged.mesh.positions.len();
