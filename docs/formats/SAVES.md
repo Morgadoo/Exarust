@@ -311,7 +311,10 @@ zero: the slot is neither listed nor loaded.
   RDB with magic `0xDBACCD00` (observed in both retail saves).
 * The settings chunk (`0xECADCA01`) is written into the level section by
   the story's exporter only; see the settings rules in
-  [SETTINGS.md](SETTINGS.md) and [`exa_formats::save_chunk`].
+  [SETTINGS.md](SETTINGS.md) and [`exa_formats::save_chunk`]. It holds the
+  twelve-byte tag (a zero, `1 100 000.0`, a zero) and the two words the
+  settings store carries. `rfc_write::export_save_level` appends it after
+  the scene's chunk tree.
 
 ### Chunks
 

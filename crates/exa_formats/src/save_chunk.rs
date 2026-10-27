@@ -63,6 +63,15 @@ pub fn read_save_settings(id: u32, tag_value: f32, first: i32, second: i32) -> S
     }
 }
 
+/// The twelve-byte tag a written settings chunk carries. The original has
+/// two source tags (the old and the current one) with the same bytes: a
+/// zero, `1_100_000.0` and a zero.
+pub fn save_tag_bytes(_tag: SaveTag) -> [u8; 12] {
+    let mut out = [0u8; 12];
+    out[4..8].copy_from_slice(&1_100_000.0f32.to_le_bytes());
+    out
+}
+
 /// The saved settings word a load clears.
 pub const LOAD_SETTINGS_WORD: u32 = 0;
 
