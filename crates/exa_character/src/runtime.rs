@@ -701,9 +701,10 @@ impl Body {
     /// its child count). The root takes the first record as its local and
     /// world frame; each later record is matched to the child of its
     /// parent bone nearest its position (under 20 cm, the first nearest
-    /// winning), takes the record as its world frame and, as its local
-    /// frame, the record's rows and origin in the parent's frame. A record
-    /// with no match skips its whole subtree. Every node's
+    /// winning), takes the record as its world frame and the rows that
+    /// place it there under the parent as its local rows; its local origin
+    /// stays the built one (the world frame is what places the body). A
+    /// record with no match skips its whole subtree. Every node's
     /// [`POSE_PENDING`] bit is cleared first.
     pub fn restore_tree_pose(&mut self, root: usize, records: &[PoseRecord]) {
         for i in self.descendants(root) {
@@ -738,14 +739,12 @@ impl Body {
                 Some(c) => {
                     self.nodes[c].world = r.frame;
                     let parent = self.nodes[node].world;
-                    // The record's rows under the parent, and its origin
-                    // moved into the parent's frame.
-                    let mut local = [r.frame[0], r.frame[1], r.frame[2], [0.0; 3]];
-                    for (row, w) in local.iter_mut().zip(&r.frame).take(3) {
+                    // Only the rows are re-derived: the local origin stays
+                    // the built one, so a later sibling record is still
+                    // matched against the child's rest offset.
+                    for (row, w) in self.nodes[c].local.iter_mut().zip(&r.frame).take(3) {
                         *row = unturn(&parent, *w);
                     }
-                    local[3] = unplace(&parent, r.frame[3]);
-                    self.nodes[c].local = local;
                     self.pose_children(c, r.children, records, next);
                 }
                 None => skip_records(r.children, records, next),
@@ -755,8 +754,9 @@ impl Body {
 
     /// Restores a flat saved pose, one world frame per bone: every bone
     /// takes its frame as its world frame, the root (bone 0) also as its
-    /// local, and every other bone the rows and origin that place it under
-    /// its parent's new world frame as its local frame.
+    /// local, and every other bone the rows that place it under its
+    /// parent's new world frame as its local rows (its local origin stays
+    /// the built one).
     pub fn restore_flat_pose(&mut self, bones: &[usize], frames: &[Frame]) {
         for (&i, frame) in bones.iter().zip(frames) {
             self.nodes[i].world = *frame;
@@ -770,7 +770,6 @@ impl Body {
                 for (row, w) in self.nodes[i].local.iter_mut().zip(&world).take(3) {
                     *row = unturn(&parent, *w);
                 }
-                self.nodes[i].local[3] = unplace(&parent, world[3]);
             }
         }
     }
@@ -1091,12 +1090,8 @@ mod tests {
         b.restore_tree_pose(0, &records);
         assert_eq!(b.nodes[0].local[3], [0.0, 1.0, 0.0]);
         assert_eq!(b.nodes[3].world[3], [0.01, 1.1, 0.0]);
-        // The record's frame in the pelvis's: its rows and its origin.
-        let local = b.nodes[3].local[3];
-        assert!(
-            (0..3).all(|k| (local[k] - [0.01, 0.1, 0.0][k]).abs() < 1e-4),
-            "{local:?}"
-        );
+        // Only the rows are re-derived: the chest keeps its built offset.
+        assert_eq!(b.nodes[3].local[3], [0.0, 0.09, 0.0]);
         // The head's record is 90 cm up, too far from the head.
         assert_eq!(b.nodes[4].world, IDENTITY);
         assert_eq!(b.nodes[4].local[3], [0.0, 0.35, 0.0]);
@@ -1115,7 +1110,35 @@ mod tests {
         b.restore_flat_pose(&[0, 3], &[turned, turned]);
         assert_eq!(b.nodes[0].local, turned);
         assert_eq!(b.nodes[3].world, turned);
-        assert_eq!(b.nodes[3].local, IDENTITY);
+        assert_eq!(b.nodes[3].local[..3], IDENTITY[..3]);
+    }
+
+    /// Two records near the same child, 15 cm either side of its rest
+    /// offset: both match it, as the rest offset is left in place by the
+    /// first; the second record's frame is the one kept.
+    #[test]
+    fn a_tree_pose_matches_siblings_against_the_rest_offset() {
+        let mut b = body();
+        b.nodes[1].local[3] = [-0.5, 0.0, 0.0];
+        b.nodes[3].local[3] = [0.0, 0.1, 0.0];
+        let records = [
+            PoseRecord {
+                frame: translated([0.0, 1.0, 0.0]),
+                children: 2,
+            },
+            PoseRecord {
+                frame: translated([0.0, 1.25, 0.0]),
+                children: 0,
+            },
+            PoseRecord {
+                frame: translated([0.0, 0.95, 0.0]),
+                children: 0,
+            },
+        ];
+        b.restore_tree_pose(0, &records);
+        assert_eq!(b.nodes[3].world[3], [0.0, 0.95, 0.0]);
+        assert_eq!(b.nodes[3].local[3], [0.0, 0.1, 0.0]);
+        assert_eq!(b.nodes[1].world, IDENTITY);
     }
 
     /// The state copy pairs flagged children by slot.

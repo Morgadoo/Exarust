@@ -134,13 +134,14 @@ These are tested rules the running game does not drive yet.
   write, the held marks (direct mesh children), the slot chain, slot
   numbering and re-framing on the base body's slot frames, the morph frame
   refresh, the dynamics build/split/rebuild passes, frame save (normalised
-  with the reciprocal square root estimate) and frame restore (the rows and
-  the origin in the parent's frame), the state copy by slot, scene detach,
-  cloth velocity, rest-point placement, the clone's cloth rule, the merge
-  order along the slot tree, the overlay marks and both saved-pose restores
-  (a bone tree matched to the nearest child within 20 cm, and a flat list
-  by slot). The rest vectors come from the engine's shape builder, which
-  the caller supplies.
+  with the reciprocal square root estimate) and rows-only restore, the
+  state copy by slot, scene detach, cloth velocity, rest-point placement,
+  the clone's cloth rule, the merge order along the slot tree, the overlay
+  marks and both saved-pose restores (a bone tree matched to the nearest
+  child rest offset within 20 cm, and a flat list by slot; both re-derive
+  only the local rows, as the world frame is what places the body). The
+  rest vectors come from the engine's shape builder, which the caller
+  supplies.
 - `pose` puts a level's saved pose on a body model's scene tree: the bone
   tree first (records in depth-first order, each to the parent part's
   nearest child within 20 cm, an unmatched record skipping its subtree),
