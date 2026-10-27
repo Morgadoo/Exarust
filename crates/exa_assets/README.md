@@ -28,7 +28,10 @@ splits on the groups, and up to three damped distance blends elsewhere
 human and ogre bodies are checked watertight. The weights run in the model
 build on the compute pool; a mesh that ships weights keeps them. The
 builder's group stack (sixteen frames, an empty frame for a node without
-groups, a cleared top frame that keeps its depth) is `skin::GroupStack`.
+groups, a cleared top frame that keeps its depth) is `skin::GroupStack`;
+`skin::auto_skin_with_context` matches a garment's groups against an
+enclosing part's joints as the stack's reader does, and the per-node model
+build passes no context.
 `model::underscore_skinned_child` and `model::skinned_mesh_under` are the
 wound and effect lookups (the `_`-named child, then the deepest skinned
 mesh in reverse child order).
@@ -51,8 +54,10 @@ drop the vertices a hidden body slot masks and the triangles that needed
 them; `culled_indices` drops triangles by a slot's per-triangle cull bits
 (`exa_character::layers::cull_bits`) and `occlusion_alpha` writes the
 generator's per-vertex occlusion alpha. `Merged::subobjects` states each
-material run's vertex and index ranges. The loader still draws a mesh per
-node; the merged mesh is built by callers, not by the loader yet.
+material run's vertex and index ranges, and `model::scene_merged_mesh`
+merges a scene's skinned nodes group by group from their body-space frames.
+The loader still draws a mesh per node; the merged mesh is built by callers,
+not by the loader yet.
 
 Skin composite (`skin_composite`): the original's generated skin maps.
 `colour_texel` is `chargen_d`'s colour times the tone, `specular_texel`

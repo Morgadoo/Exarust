@@ -2276,6 +2276,88 @@ pub fn apparel_texture_key(material: &str) -> Option<String> {
     (stem.len() == 10).then(|| stem.to_ascii_lowercase())
 }
 
+/// The frames a scene node has in the body's space: its own transform
+/// composed with every ancestor's.
+fn scene_frames(scene: &Scene) -> Vec<exa_formats::morph::Frame> {
+    let mut out = Vec::with_capacity(scene.nodes.len());
+    for index in 0..scene.nodes.len() {
+        let mut chain = vec![index];
+        let mut current = index;
+        while let Some(parent) = scene.nodes[current].parent.and_then(|p| p.checked_sub(1)) {
+            if parent >= scene.nodes.len() || chain.contains(&parent) {
+                break;
+            }
+            chain.push(parent);
+            current = parent;
+        }
+        let mut frame = crate::merge::IDENTITY;
+        for &at in chain.iter().rev() {
+            frame = exa_formats::morph::compose(&frame, &scene.nodes[at].transform);
+        }
+        out.push(frame);
+    }
+    out
+}
+
+/// The merged `_SKIN` mesh of a scene's skinned nodes, as the original's
+/// scene import builds it: every mesh node that has weights contributes its
+/// drawn material groups, placed by the node's frame in the body's space.
+/// `visible` leaves a node's parts out (a hidden body slot). Returns `None`
+/// when no skinned mesh is left.
+pub fn scene_merged_mesh(
+    scene: &Scene,
+    skins: &[Option<(u16, Vec<VertexSkin>)>],
+    visible: impl Fn(usize) -> bool,
+) -> Option<crate::merge::Merged> {
+    use exa_formats::rfc::NodeBody;
+    let frames = scene_frames(scene);
+    let weights: Vec<Option<(u16, Vec<exa_formats::rfc::SkinWeights>)>> = skins
+        .iter()
+        .map(|s| {
+            s.as_ref().map(|(bone, weights)| {
+                let converted = weights
+                    .iter()
+                    .map(|w| exa_formats::rfc::SkinWeights {
+                        bones: w.map(|(b, _)| u32::from(b)),
+                        weights: w.map(|(_, x)| x),
+                    })
+                    .collect();
+                (*bone, converted)
+            })
+        })
+        .collect();
+    let mut parts = Vec::new();
+    for (index, node) in scene.nodes.iter().enumerate() {
+        let NodeBody::Mesh(mesh) = &node.body else {
+            continue;
+        };
+        let Some((bone, weights)) = weights.get(index).and_then(Option::as_ref) else {
+            continue;
+        };
+        if !visible(index) {
+            continue;
+        }
+        for group in &mesh.groups {
+            if group.material.eq_ignore_ascii_case("_null") || group.index_count == 0 {
+                continue;
+            }
+            let first = group.first_index as usize;
+            parts.push(crate::merge::MergePart {
+                mesh,
+                frame: frames[index],
+                skin: Some(weights),
+                bone: u32::from(*bone),
+                material: &group.material,
+                visible: true,
+                vertex_masks: None,
+                cull: 0,
+                index_range: Some((first, first + group.index_count as usize)),
+            });
+        }
+    }
+    crate::merge::merge(&parts)
+}
+
 /// The `_`-named skinned child of `parent`: the effects' and wound painting's
 /// lookup for the copy of a body part they draw on. The original takes the
 /// first child whose name starts `_` and that carries a skinned mesh.
@@ -3357,5 +3439,35 @@ mod tests {
         assert!(built.attribute(Mesh::ATTRIBUTE_COLOR).is_none());
         assert_eq!(built.count_vertices(), 3);
         assert!(built.attribute(Mesh::ATTRIBUTE_UV_0).is_some());
+    }
+
+    /// The shipped human body merges into one mesh with its material runs
+    /// (skipped without the game): every index is in range and every
+    /// vertex's weights sum to one.
+    #[test]
+    fn the_shipped_body_merges_into_one_skin_mesh() {
+        use crate::skin::VertexSkin;
+        use exa_formats::rfc::Scene;
+        let Some(dir) = crate::locate_install(None) else {
+            return;
+        };
+        let game = crate::GameData::open(dir).unwrap();
+        let bytes = game
+            .pack(crate::PackKind::Resource)
+            .and_then(|p| p.get("humanbase.rfc"))
+            .unwrap();
+        let scene = Scene::parse(bytes).unwrap();
+        let skins: Vec<Option<(u16, Vec<VertexSkin>)>> =
+            scene_skins(&scene, true, crate::PackKind::Resource);
+        let merged = scene_merged_mesh(&scene, &skins, |_| true).expect("a merged body");
+        assert!(merged.mesh.positions.len() > 20_000);
+        assert!(merged.subobjects.len() > 1);
+        assert!(!merged.mesh.groups.is_empty());
+        assert!(merged.mesh.groups.iter().all(|g| g.material != "_null"));
+        let vertices = merged.mesh.positions.len();
+        assert!(merged.mesh.indices.iter().all(|&i| (i as usize) < vertices));
+        for w in merged.mesh.skin.as_ref().unwrap() {
+            assert!((w.weights.iter().sum::<f32>() - 1.0).abs() < 1e-4);
+        }
     }
 }

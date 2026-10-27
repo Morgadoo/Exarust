@@ -40,6 +40,9 @@ pub struct MergePart<'a> {
     /// The visible body slots' bits: a vertex is left out when
     /// `vertex_masks[v] & cull != 0`.
     pub cull: u32,
+    /// The part's slice of its mesh's index buffer, when it is one material
+    /// group of a shared mesh.
+    pub index_range: Option<(usize, usize)>,
 }
 
 impl<'a> MergePart<'a> {
@@ -60,6 +63,7 @@ impl<'a> MergePart<'a> {
             visible: true,
             vertex_masks: None,
             cull: 0,
+            index_range: None,
         }
     }
 }
@@ -95,6 +99,18 @@ fn fallback(bone: u32) -> SkinWeights {
     SkinWeights {
         bones: [bone, 0, 0, 0],
         weights: [1.0, 0.0, 0.0, 0.0],
+    }
+}
+
+/// A `(from, to)` index range clamped to `len`, with `from` first.
+trait ClampTo {
+    fn clamp_to(self, len: usize) -> (usize, usize);
+}
+
+impl ClampTo for (usize, usize) {
+    fn clamp_to(self, len: usize) -> (usize, usize) {
+        let from = self.0.min(len);
+        (from, self.1.clamp(from, len))
     }
 }
 
@@ -151,14 +167,24 @@ pub fn merge(parts: &[MergePart]) -> Option<Merged> {
             continue;
         }
         let count = source.positions.len();
-        let keep: Vec<bool> = (0..count)
-            .map(|v| match part.vertex_masks {
+        let (from, to) = part
+            .index_range
+            .unwrap_or((0, source.indices.len()))
+            .clamp_to(source.indices.len());
+        let triangles_slice = &source.indices[from..to];
+        let mut keep: Vec<bool> = vec![false; count];
+        for &v in triangles_slice {
+            let v = v as usize;
+            if v >= count {
+                continue;
+            }
+            keep[v] = match part.vertex_masks {
                 Some(masks) if part.cull != 0 => {
                     masks.get(v).copied().unwrap_or(0) & part.cull == 0
                 }
                 _ => true,
-            })
-            .collect();
+            };
+        }
         if !keep.iter().any(|&k| k) {
             continue;
         }
@@ -233,7 +259,8 @@ pub fn merge(parts: &[MergePart]) -> Option<Merged> {
                     .saturating_add(1),
             );
         }
-        for (t, tri) in source.indices.as_chunks::<3>().0.iter().enumerate() {
+        for (offset, tri) in triangles_slice.as_chunks::<3>().0.iter().enumerate() {
+            let t = from / 3 + offset;
             if tri
                 .iter()
                 .all(|&v| keep.get(v as usize).copied().unwrap_or(false))

@@ -2055,7 +2055,9 @@ builder `exa_assets::merge::merge` reproduces the append, frame, weight and
 material-group order and the final renumber pass (each material's vertices
 in order, with the original's one unused vertex between runs); its
 `MergePart::vertex_masks`/`cull` drop the vertices a hidden slot masks and
-the triangles that needed them, `culled_indices` applies a slot's
-per-triangle cull bits and `occlusion_alpha` the per-vertex mask. The loader
-does not feed the merged mesh yet. The per-scene skin controller and manager
+the triangles that needed them, `MergePart::index_range` names one material
+group of a shared mesh, `scene_merged_mesh` walks a scene's skinned nodes
+and merges their drawn groups by their body-space frames, `culled_indices`
+applies a slot's per-triangle cull bits and `occlusion_alpha` the per-vertex
+mask. The loader does not feed the merged mesh yet. The per-scene skin controller and manager
 are Bevy's.
