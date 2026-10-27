@@ -328,8 +328,8 @@ skipped by size.
 | `0xD000C001` | story | memory-fragment flags, u32 |
 | `0xD000C003` | story | portal/respawn state, 16 bytes; state 2 forces the level to `exanima05` after loading |
 | `0x00010000` | arena | hireable characters |
-| `0xA0100000` | arena | arsenal, five categories of five item lists |
-| `0xA0200000` | arena | hub stash, one item list |
+| `0xA0100000` | arena | arsenal: 25 item lists, one per box and shelf, written box first then shelf |
+| `0xA0200000` | arena | hub stash: one item list |
 | `0xA0300000` | arena | shop stock: `i32 n`, then `n` ids |
 | `0xA0400000` | arena | employees |
 | `0xA0500000` | arena | merchant stock and specialisation |
@@ -361,7 +361,11 @@ merchant chunk is the stock type, the specialisation word (kept raw; it
 starts at −1), two unused words and the stock's count and ids; a loader
 that regenerates the stock reads only the header. The hireables chunk
 (`0x00010000`) is a count and, per candidate, an unused word and a
-character export.
+character export. An **item list** is a signed count and that many
+twelve-byte entries (id, flags, a third word). The arsenal is 25 such
+lists: the writer walks the five boxes first and the five shelves inside
+each box, so the wire order is box 0 shelf 0…4, box 1 shelf 0…4, and so
+on. The stash is one list.
 
 A loader passes a **mask**: the reader ands each chunk id with it, ignores
 a result of `0xF` or less and dispatches the rest on the **masked** id

@@ -14,6 +14,7 @@
 //! chunk's own payload is version 2 (version 1 had no discovery,
 //! experience-worth, memory or transition fields).
 
+use exa_formats::arena_save::ArenaTables;
 use exa_formats::save_package::{
     self, ARENA_DATA_VERSION, EXARUST_CHUNK, Flavour, JournalRecord, PLAYER_DATA, PackageImage,
     PlayerData, PlayerHeader,
@@ -59,6 +60,10 @@ pub struct Session {
     pub memory_flags: Option<u32>,
     /// The sixteen-byte portal/respawn state; all zeroes are not written.
     pub transition: Option<[u8; 16]>,
+    /// The arena's own table chunks. `None` keeps whatever a save already
+    /// holds; `Some` replaces them in the writer's order (an empty stash,
+    /// shop, staff list or merchant is removed).
+    pub arena_tables: Option<ArenaTables>,
 }
 
 impl Session {
@@ -75,6 +80,7 @@ impl Session {
             global_experience: None,
             memory_flags: None,
             transition: None,
+            arena_tables: None,
         }
     }
 
@@ -91,6 +97,7 @@ impl Session {
             global_experience: None,
             memory_flags: None,
             transition: None,
+            arena_tables: None,
         }
     }
 }
@@ -182,6 +189,32 @@ pub fn player_data(session: &Session) -> PlayerData {
                 header.data_version = ARENA_DATA_VERSION;
                 header.clock = session.clock;
                 header.day = session.company.day;
+            }
+            if let Some(tables) = &session.arena_tables {
+                let mut encoded = Vec::new();
+                tables.write(&mut encoded);
+                if let Ok(chunks) = save_package::parse_chunks(&encoded) {
+                    let present: Vec<u32> = chunks.iter().map(|chunk| chunk.id).collect();
+                    for chunk in chunks {
+                        data.set_chunk(chunk.id, chunk.payload.to_vec());
+                    }
+                    // The writer omits an empty stash, shop, staff list or
+                    // merchant; remove the previous save's chunk so it does
+                    // not survive the merge.
+                    for (id, absent) in [
+                        (save_package::HUB_STASH_CHUNK, tables.stash.is_empty()),
+                        (save_package::SHOP_STOCK_CHUNK, tables.shop_stock.is_empty()),
+                        (
+                            save_package::EMPLOYEES_CHUNK,
+                            tables.employees.employees.is_empty(),
+                        ),
+                        (save_package::MERCHANT_CHUNK, tables.merchant.is_none()),
+                    ] {
+                        if absent && !present.contains(&id) {
+                            data.remove_chunk(id);
+                        }
+                    }
+                }
             }
             data
         }
@@ -633,6 +666,7 @@ fn read_body(bytes: &[u8]) -> Result<Session, SaveError> {
         global_experience,
         memory_flags,
         transition,
+        arena_tables: None,
     })
 }
 
@@ -1040,6 +1074,54 @@ mod tests {
         assert_eq!(
             loaded.company.reward_ids.as_slice(),
             &[1175, 1174, 1177, 1176]
+        );
+    }
+
+    #[test]
+    fn an_arena_session_writes_its_table_chunks_in_the_original_order() {
+        use exa_formats::arena_save::{ArenaTables, ItemEntry};
+
+        let mut session = Session::career("Ash");
+        let tables = ArenaTables {
+            shop_stock: vec![7, 8],
+            stash: vec![ItemEntry {
+                id: 3,
+                flags: 0,
+                extra: 0,
+            }],
+            ..ArenaTables::default()
+        };
+        session.arena_tables = Some(tables);
+        let data = player_data(&session);
+        let bytes = data.write();
+        // The section starts with the 52-byte arena header.
+        let chunks = save_package::parse_chunks(&bytes[52..]).unwrap();
+        let ids: Vec<u32> = chunks.iter().map(|chunk| chunk.id).collect();
+        // The header's placement is absent in an Exarust session, so the
+        // arena chunks start at the arsenal; the optional lists sit before
+        // the company and the always-written hireables and tournament.
+        assert!(ids.contains(&save_package::ARSENAL_CHUNK));
+        assert!(ids.contains(&save_package::HUB_STASH_CHUNK));
+        assert!(ids.contains(&save_package::SHOP_STOCK_CHUNK));
+        assert!(ids.contains(&save_package::COMPANY_CHUNK));
+        assert!(ids.contains(&save_package::ARENA_EXTRA_CHUNK));
+        assert!(ids.contains(&save_package::HIREABLES_CHUNK));
+        assert!(ids.contains(&save_package::TOURNAMENT_CHUNK));
+        assert!(!ids.contains(&save_package::EMPLOYEES_CHUNK));
+        assert!(!ids.contains(&save_package::MERCHANT_CHUNK));
+        let arsenal = chunks
+            .iter()
+            .find(|chunk| chunk.id == save_package::ARSENAL_CHUNK)
+            .unwrap();
+        // 25 empty lists.
+        assert_eq!(arsenal.payload.len(), 25 * 4);
+        let shop = chunks
+            .iter()
+            .find(|chunk| chunk.id == save_package::SHOP_STOCK_CHUNK)
+            .unwrap();
+        assert_eq!(
+            exa_formats::arena_save::parse_shop_stock(shop.payload).unwrap(),
+            vec![7, 8]
         );
     }
 }

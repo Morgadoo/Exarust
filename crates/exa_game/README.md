@@ -105,7 +105,12 @@ minimum distance raised to 5 cm), the menu background scene
 axis), the `<locale>.rft` terrain name and the scene-content classifier.
 The arena's save-id pass also classifies a re-added item onto its shelf
 (with flag `0x400`, once), flushes a scene character's items and registers
-its world record, and compacts the stash, employee and record lists.
+its world record, and compacts the stash, employee and record lists. An
+arena session may carry `arena_save::ArenaTables` (arsenal, stash, shop
+stock, company, day, employees, merchant, hireables, tournament); the
+player-data writer then emits them in the original's order, removes the
+optional lists the writer omits, and leaves an old save's tables alone
+when the session has none.
 
 Character creation (`create`): the record's gear (four hand items, its
 worn list and its carried list), the mode filters (story background 0 keeps
