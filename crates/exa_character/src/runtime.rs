@@ -136,11 +136,6 @@ pub struct Node {
     /// The word the item loader writes through an item's model (its id;
     /// [`HAIR_OWNER`] on hair roots).
     pub owner: u32,
-    /// The item source the material loader wrote through the node (the
-    /// original's `0x130`); a detached body clears it. The field's reader is
-    /// in the material manager, which this unit does not model, so its
-    /// meaning is a guess.
-    pub host: Option<usize>,
     /// The skin texture job the node's mesh was built with, if any (the
     /// original keeps it on the mesh object; a rebuild's apply step clears
     /// the node's `0x20` render flag for it). A labelled guess: the job is
@@ -177,7 +172,6 @@ impl Default for Node {
             flags: 0,
             render_flags: 0,
             owner: 0,
-            host: None,
             texture: None,
             slot: 0,
             layer: 0,
@@ -634,28 +628,6 @@ impl Body {
     pub fn detach(&mut self, root: usize) -> Option<usize> {
         let old = self.nodes[root].scene;
         self.set_scene(root, None);
-        old
-    }
-
-    /// Clears the item source the material loader wrote through `root` and
-    /// every descendant that carries dynamics, as the detach pass does
-    /// before the body leaves the scene. `host` replaces it (the original
-    /// writes a process-wide empty value; `None` here).
-    pub fn clear_hosts(&mut self, root: usize, host: Option<usize>) {
-        self.nodes[root].host = host;
-        for c in self.nodes[root].children.clone() {
-            if self.nodes[c].dynamics.is_some() {
-                self.clear_hosts(c, host);
-            }
-        }
-    }
-
-    /// The detach and host clear of the rebuild: the body leaves its scene,
-    /// its nodes' sources clear, and the caller flags the scene's old root
-    /// body.
-    pub fn detach_scene(&mut self, root: usize) -> Option<usize> {
-        let old = self.detach(root);
-        self.clear_hosts(root, None);
         old
     }
 
@@ -1368,20 +1340,5 @@ mod tests {
         let got = b.collect_merge_nodes(2, &[None; 19], &[None; 19]);
         assert_eq!(got[0].node, 1);
         assert_eq!(got.iter().map(|c| c.node).collect::<Vec<_>>(), [1, 3, 4]);
-    }
-
-    /// The detach clears the hosts of the root and every child that carries
-    /// dynamics, and leaves the others alone.
-    #[test]
-    fn the_detach_clears_hosts_below_the_dynamic_nodes() {
-        let mut b = body();
-        b.nodes[1].dynamics = Some(Dynamics::default());
-        b.nodes[0].host = Some(4);
-        b.nodes[1].host = Some(4);
-        b.nodes[3].host = Some(4);
-        b.detach_scene(0);
-        assert_eq!(b.nodes[0].host, None);
-        assert_eq!(b.nodes[1].host, None);
-        assert_eq!(b.nodes[3].host, Some(4));
     }
 }
