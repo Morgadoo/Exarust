@@ -122,12 +122,15 @@ impl Lengths {
         let Some(first) = chain.first() else {
             return Self::default();
         };
-        let length = first.top
-            + chain[1..]
-                .iter()
-                .filter(|n| n.rigid)
-                .map(|n| n.top)
-                .sum::<f32>();
+        // The original's walk stops at the first node down the chain that
+        // is not a rigid body: no later rigid node counts.
+        let mut length = first.top;
+        for next in &chain[1..] {
+            if !next.rigid {
+                break;
+            }
+            length += next.top;
+        }
         let mut whole = 0.0f32;
         let mut last = first;
         for next in &chain[1..] {
@@ -342,7 +345,9 @@ impl WeaponRecord {
             pierce: share(s.get(at::PIERCE + side)),
             thrust: share(s.get(at::THRUST)),
             swing_speed: 0.0,
-            handling: 0.8 - (first_weight + 1.0 - balance) * 0.125,
+            // The inner product is single precision; the original widens it
+            // for the subtraction from 0.8 and narrows once.
+            handling: (0.8 - f64::from(((first_weight + 1.0) - balance) * 0.125)) as f32,
             recoil: 0.0,
             swing_shaping: 0.0,
             blend: 0,
@@ -465,6 +470,14 @@ impl WeaponRecord {
     /// Held in one or both hands, not a fist or claw.
     pub fn armed(&self) -> bool {
         self.flags & flags::HANDS != 0
+    }
+
+    /// The held weapon's total simulation mass ([`total_mass`] over its
+    /// flags and W6), absent for the fists and claws. The original hands
+    /// this value to its weapon part-tree redistribution in the holding
+    /// pass.
+    pub fn mass(&self) -> Option<f32> {
+        total_mass(self.flags, self.weight)
     }
 
     /// The hit sound set's name.
@@ -842,6 +855,16 @@ mod tests {
         assert!(close(w.second_hand, 1.0));
         assert_eq!(w.hit_sound_name(), Some("WH_SwordA"));
         assert_eq!(thrust_preference(&w), 5);
+        // One-handed, normal size, weight 0.5: the table's 0.16–0.40 row.
+        assert!(close(w.mass().unwrap(), 0.28));
+        // A fist has no table mass: the mass pass never runs for it.
+        let fist = WeaponRecord::build(
+            &Section::FISTS,
+            false,
+            Lengths::hand(-7.21, 10.45),
+            &Holder::AVERAGE,
+        );
+        assert_eq!(fist.mass(), None);
     }
 
     #[test]
@@ -1015,9 +1038,10 @@ mod tests {
         let torch = [n(58.3, true), n(36.5, false), n(93.0, false)];
         let l = Lengths::armed(&torch, 0.7, 0.9);
         assert!(close(l.length, 58.3) && close(l.sweet_spot, 0.82 * 58.3));
-        // A rigid node past a plain one still counts for the length only.
+        // The walk stops at the first node that is not rigid: a rigid node
+        // past a plain one does not count.
         let l = Lengths::armed(&[n(50.0, true), n(5.0, false), n(20.0, true)], 0.0, 1.0);
-        assert!(close(l.length, 70.0) && close(l.sweet_spot, 30.0));
+        assert!(close(l.length, 50.0) && close(l.sweet_spot, 30.0));
         assert_eq!(Lengths::armed(&[], 0.0, 1.0), Lengths::default());
     }
 

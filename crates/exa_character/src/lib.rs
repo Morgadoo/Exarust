@@ -478,6 +478,44 @@ fn held_record(
     record
 }
 
+/// A weapon model's parts, for the mass redistribution the holding pass runs
+/// on a held weapon's body tree: each rigid node is a part, its parent the
+/// nearest rigid ancestor, and its initial mass the reciprocal of the
+/// mobility the body solver gives it (`1 / mobility`, as `Ragdoll::rigid`
+/// takes a rigid part's inverse mass). `total` is the weapon's table mass.
+fn weapon_mass_of(model: &model::Model, total: f32) -> exa_physics::weapon_mass::WeaponMass {
+    use exa_physics::weapon_mass::{WeaponMass, WeaponMassPart};
+    let rigid: Vec<usize> = (0..model.nodes.len())
+        .filter(|&i| model.nodes[i].rigid.is_some())
+        .collect();
+    let index: HashMap<usize, usize> = rigid
+        .iter()
+        .enumerate()
+        .map(|(k, &node)| (node, k))
+        .collect();
+    let mut parts = Vec::with_capacity(rigid.len());
+    for &node in &rigid {
+        let mut parent = model.nodes[node].parent;
+        let mut nearest = None;
+        while let Some(at) = parent {
+            if let Some(&k) = index.get(&at) {
+                nearest = Some(k);
+                break;
+            }
+            parent = model.nodes.get(at).and_then(|n| n.parent);
+        }
+        let inverse = model.nodes[node]
+            .rigid
+            .as_ref()
+            .map_or(0.0, |body| body.mobility());
+        parts.push(WeaponMassPart::new(
+            nearest,
+            if inverse > 0.0 { 1.0 / inverse } else { 0.0 },
+        ));
+    }
+    WeaponMass::new(parts, total)
+}
+
 /// The records of an unarmed character's fists (or claws), right then left,
 /// from its race's unarmed sections (the right by the race index, the left
 /// by its clawed-hands word), each measured across its hand's box (`hands`:
@@ -834,6 +872,9 @@ fn equip_outfits(
                 &holder,
                 &race,
             );
+            // The holding pass hands the weapon's table mass to its part
+            // tree's redistribution; the result waits for the body solver.
+            let mass = record.mass().map(|total| weapon_mass_of(&weapon, total));
             // The one held weapon is the primary striker from the equip.
             if let Some(mut attacker) = attacker {
                 attacker.primary = Some(Slot::First);
@@ -851,6 +892,9 @@ fn equip_outfits(
                     exa_combat::wounds::BladeBlood::default(),
                 ))
                 .id();
+            if let Some(mass) = mass {
+                commands.entity(holder).insert(mass);
+            }
             // Plain models drop their root node's placement; assembled
             // weapons keep each component's.
             let mut spawned = HashMap::new();
@@ -1126,6 +1170,78 @@ mod tests {
                     "{name} {r:?}"
                 );
             }
+        }
+    }
+
+    /// The holding pass's mass redistribution runs over the rigid nodes of
+    /// shipped weapon models: every part keeps a finite, positive inverse
+    /// mass, and the saved masses are latched once (skipped without the
+    /// game).
+    #[test]
+    fn shipped_weapons_get_their_mass_distributed() {
+        use exa_physics::weapon_mass::{WeaponMass, WeaponMassPart};
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let game = exa_assets::GameData::open(&dir).unwrap();
+        let items = objdb_items(&game);
+        let Some(objects) = game.pack(PackKind::Objects) else {
+            return;
+        };
+        let human = RaceWeaponry::default();
+        for name in ["Torch A01", "Flail A", "Sword GSF 01", "Ogre Flail"] {
+            let item = items
+                .iter()
+                .find(|i| i.name == name)
+                .unwrap_or_else(|| panic!("{name} is not in the object database"));
+            let w = item.weapon.unwrap();
+            let scene = Scene::parse(objects.get(&item.model).unwrap()).unwrap();
+            let rigid: Vec<usize> = (0..scene.nodes.len())
+                .filter(|&i| scene.nodes[i].has_rigid_body())
+                .collect();
+            let index: HashMap<usize, usize> = rigid
+                .iter()
+                .enumerate()
+                .map(|(k, &node)| (node, k))
+                .collect();
+            let mut parts = Vec::with_capacity(rigid.len());
+            for &node in &rigid {
+                let mut parent = scene.nodes[node].parent;
+                let mut nearest = None;
+                while let Some(at) = parent {
+                    if let Some(&k) = index.get(&at) {
+                        nearest = Some(k);
+                        break;
+                    }
+                    parent = scene.nodes.get(at).and_then(|n| n.parent);
+                }
+                let mobility = scene.nodes[node]
+                    .rigid_body
+                    .as_ref()
+                    .and_then(|body| body.as_ref().ok())
+                    .map_or(0.0, |body| body.mobility);
+                parts.push(WeaponMassPart::new(
+                    nearest,
+                    if mobility > 0.0 { 1.0 / mobility } else { 0.0 },
+                ));
+            }
+            let record = held_record(
+                &game,
+                &item.model,
+                || 0.0,
+                w.flags,
+                w.stats,
+                &Holder::AVERAGE,
+                &human,
+            );
+            let mass = WeaponMass::new(parts, record.mass().unwrap());
+            assert!(!mass.parts.is_empty(), "{name}");
+            for part in &mass.parts {
+                assert!(part.mass.is_finite() && part.mass > 0.0, "{name} {part:?}");
+                assert_eq!(part.mass.to_bits(), part.inverse.to_bits());
+                assert!(part.saved > 0.0, "{name} {part:?}");
+            }
+            assert_eq!(mass.parts[0].parent, None, "{name}");
         }
     }
 

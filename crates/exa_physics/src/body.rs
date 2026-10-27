@@ -1863,6 +1863,26 @@ impl Ragdoll {
         muscle::set_part_factors(&mut parts, BodyStats::HUMAN.head_factor);
         pairs::mask_groups(&mut parts);
         pairs::register_legs(&mut parts);
+        // The parts join the world with the original's class bits: a part
+        // without foot contacts keeps level contacts, a lower leg has none
+        // and is no longer dynamic, and its foot child is marked a sole.
+        let feet: Vec<usize> = (0..parts.len())
+            .filter(|&i| parts[i].foot.is_some())
+            .collect();
+        for part in &mut parts {
+            part.state = crate::part::world_state(part.state, part.foot.is_some());
+        }
+        for leg in feet {
+            let children: Vec<usize> = parts
+                .iter()
+                .enumerate()
+                .filter(|(_, part)| part.parent == Some(leg))
+                .map(|(child, _)| child)
+                .collect();
+            for child in children {
+                parts[child].state = crate::part::foot_child_state(parts[child].state);
+            }
+        }
         let (outward, inward) = tree_orders(&parts);
         let (chest, legs, sole) = balance::build(setup, &mut parts);
         Self {

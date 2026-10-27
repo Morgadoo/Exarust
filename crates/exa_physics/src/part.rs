@@ -196,6 +196,23 @@ pub fn set_striking(parts: &mut [Part], root: usize, on: bool) {
     }
 }
 
+/// A living part's state when it joins the world: a part with no foot
+/// contacts keeps level contacts; a lower leg (one with foot contacts) has
+/// none and is no longer dynamic, and its foot child is marked a sole.
+pub fn world_state(state: PartState, has_foot_contacts: bool) -> PartState {
+    if has_foot_contacts {
+        state.without(PartState::HAS_CONTACTS | PartState::DYNAMIC)
+    } else {
+        state.with(PartState::HAS_CONTACTS)
+    }
+}
+
+/// The state of a lower leg's child when the leg joins the world: its own
+/// foot is a sole and no longer dynamic.
+pub fn foot_child_state(state: PartState) -> PartState {
+    state.without(PartState::DYNAMIC).with(PartState::SOLE)
+}
+
 /// The part's state after it goes limp: a limb keeps its muscle mark, as a
 /// dead body's limbs do.
 pub fn ragdoll_state(state: PartState) -> PartState {
@@ -1237,5 +1254,24 @@ mod tests {
     fn a_limp_part_keeps_its_muscle_mark() {
         assert!(ragdoll_state(PartState::LIMB_FRESH).has(PartState::MUSCLED));
         assert_eq!(ragdoll_mobility(0.3), 0.3);
+    }
+
+    #[test]
+    fn joining_the_world_sets_the_class_bits() {
+        // A torso keeps level contacts and its dynamic bit.
+        let torso = world_state(PartState::LIMB_FRESH, false);
+        assert!(torso.has(PartState::HAS_CONTACTS));
+        assert!(torso.has(PartState::DYNAMIC));
+        // A lower leg has no level contacts and is no longer dynamic.
+        let shin = world_state(PartState::LIMB_FRESH, true);
+        assert!(!shin.has(PartState::HAS_CONTACTS));
+        assert!(!shin.has(PartState::DYNAMIC));
+        // Its foot is a sole.
+        let foot = foot_child_state(PartState::LIMB_FRESH);
+        assert!(foot.has(PartState::SOLE));
+        assert!(!foot.has(PartState::DYNAMIC));
+        // A second join leaves the same bits.
+        assert_eq!(world_state(torso, false), torso);
+        assert_eq!(foot_child_state(foot), foot);
     }
 }

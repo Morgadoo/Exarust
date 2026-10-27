@@ -8,7 +8,12 @@
 //! that is already set is the one inflated.
 //!
 //! The arithmetic is single precision in the original's order. A zero
-//! inflated mass divides the way IEEE division does.
+//! inflated mass divides the way IEEE division does. [`distribute_tree`]
+//! is the same law over a flat part list, the form a held weapon's model
+//! nodes take; [`WeaponMassNode`] is a convenient tree for callers that
+//! already have one.
+
+use bevy::prelude::Component;
 
 /// Even share of the blend, and the weight of a part's own inverse.
 const HALF: f32 = 0.5;
@@ -87,6 +92,116 @@ fn rewrite(node: &mut WeaponMassNode, tally: &MassTally) {
     node.mass = node.inverse;
     for child in &mut node.children {
         rewrite(child, tally);
+    }
+}
+
+/// One part of a weapon in a flat list, the parents before their children.
+/// This is [`WeaponMassNode`] without the tree: a held weapon built from a
+/// model's rigid nodes keeps the node indices and their parent relations.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WeaponMassPart {
+    /// The part's parent in the same list, when it has one.
+    pub parent: Option<usize>,
+    /// The live mass word (the original's `0x54`): the initial mass, then
+    /// 1.25 times the saved mass. [`distribute_tree`] rewrites it to the
+    /// distributed inverse.
+    pub mass: f32,
+    /// The inverse-mass word (the original's `0x50`): the reciprocal of the
+    /// inflated mass, then the distributed inverse.
+    pub inverse: f32,
+    /// The saved mass (the original's separate latch, zero until the first
+    /// pass).
+    pub saved: f32,
+}
+
+impl WeaponMassPart {
+    /// A part from its live mass, its saved mass still unlatched.
+    pub fn new(parent: Option<usize>, mass: f32) -> Self {
+        Self {
+            parent,
+            mass,
+            inverse: 0.0,
+            saved: 0.0,
+        }
+    }
+}
+
+/// A held weapon's parts and their total simulation mass.
+#[derive(Debug, Clone, Default, PartialEq, Component)]
+pub struct WeaponMass {
+    /// The parts, in the model's node order, parents before children.
+    pub parts: Vec<WeaponMassPart>,
+    /// The weapon's total simulation mass (`weapon_record::total_mass`).
+    pub total: f32,
+}
+
+impl WeaponMass {
+    /// Distributes `parts` with the weapon's total mass as the scale, as the
+    /// holding pass does for a held weapon's body tree.
+    pub fn new(mut parts: Vec<WeaponMassPart>, total: f32) -> Self {
+        distribute_tree(&mut parts, total);
+        Self { parts, total }
+    }
+}
+
+/// The parent-before-children order a tree walk visits: roots in list
+/// order, each one's children in list order, depth first. A cycle in bad
+/// input is cut after every part has been visited once.
+fn tree_order(parts: &[WeaponMassPart]) -> Vec<usize> {
+    let mut children = vec![Vec::new(); parts.len()];
+    let mut roots = Vec::new();
+    for (i, part) in parts.iter().enumerate() {
+        match part.parent.filter(|&p| p < parts.len() && p != i) {
+            Some(p) => children[p].push(i),
+            None => roots.push(i),
+        }
+    }
+    let mut order = Vec::with_capacity(parts.len());
+    let mut stack: Vec<usize> = roots.into_iter().rev().collect();
+    let mut seen = vec![false; parts.len()];
+    while let Some(i) = stack.pop() {
+        if i >= parts.len() || seen[i] {
+            continue;
+        }
+        seen[i] = true;
+        order.push(i);
+        for &child in children[i].iter().rev() {
+            stack.push(child);
+        }
+    }
+    // A part in a cycle and not reachable from a root still takes a turn,
+    // in list order, as a fresh root would.
+    for (i, &was_seen) in seen.iter().enumerate() {
+        if !was_seen {
+            order.push(i);
+        }
+    }
+    order
+}
+
+/// Redistributes a flat weapon part list in the original's two passes,
+/// depth first from each root in list order. The order is computed from
+/// `parent`, so the caller need not sort the list.
+pub fn distribute_tree(parts: &mut [WeaponMassPart], scale: f32) {
+    let order = tree_order(parts);
+    let mut count = 0i32;
+    let mut sum = 0.0f32;
+    for &i in &order {
+        let part = &mut parts[i];
+        if part.saved == 0.0 {
+            part.saved = part.mass;
+        }
+        part.mass = part.saved * INFLATE;
+        part.inverse = 1.0 / part.mass;
+        count += 1;
+        sum += part.inverse;
+    }
+    let count = count as f32;
+    for &i in &order {
+        let part = &mut parts[i];
+        let share = HALF / count + (part.inverse / sum) * HALF;
+        part.inverse = 1.0 / (share * scale);
+        part.mass = part.inverse;
     }
 }
 
@@ -175,5 +290,105 @@ mod tests {
         assert_eq!(node.saved.to_bits(), 0);
         assert!(node.mass.is_nan());
         assert!(node.inverse.is_nan());
+    }
+
+    #[test]
+    fn a_flat_tree_takes_the_same_walk_as_the_node_tree() {
+        // A weapon's handle with two rigid children and a grandchild, in
+        // the model's node order.
+        let mut parts = vec![
+            WeaponMassPart::new(None, 2.0),
+            WeaponMassPart::new(Some(0), 1.0),
+            WeaponMassPart::new(Some(0), 0.5),
+            WeaponMassPart::new(Some(1), 0.25),
+        ];
+        distribute_tree(&mut parts, 0.6);
+        let mut root = WeaponMassNode {
+            mass: 2.0,
+            inverse: 0.0,
+            saved: 0.0,
+            children: vec![
+                WeaponMassNode {
+                    mass: 1.0,
+                    inverse: 0.0,
+                    saved: 0.0,
+                    children: vec![WeaponMassNode::leaf(0.25)],
+                },
+                WeaponMassNode::leaf(0.5),
+            ],
+        };
+        distribute_weapon_mass(&mut root, 0.6);
+        let node = |n: &WeaponMassNode| (n.mass.to_bits(), n.inverse.to_bits(), n.saved.to_bits());
+        assert_eq!(
+            (parts[0].mass.to_bits(), parts[0].inverse.to_bits()),
+            (root.mass.to_bits(), root.inverse.to_bits())
+        );
+        assert_eq!(
+            (
+                parts[1].mass.to_bits(),
+                parts[1].inverse.to_bits(),
+                parts[1].saved.to_bits()
+            ),
+            node(&root.children[0])
+        );
+        assert_eq!(
+            (
+                parts[3].mass.to_bits(),
+                parts[3].inverse.to_bits(),
+                parts[3].saved.to_bits()
+            ),
+            node(&root.children[0].children[0])
+        );
+        assert_eq!(
+            (
+                parts[2].mass.to_bits(),
+                parts[2].inverse.to_bits(),
+                parts[2].saved.to_bits()
+            ),
+            node(&root.children[1])
+        );
+        // The first pass latches the saved mass and the second keeps it.
+        assert_eq!(parts[0].saved.to_bits(), root.saved.to_bits());
+    }
+
+    #[test]
+    fn a_flat_tree_visits_roots_in_list_order() {
+        // Two roots, the second listed first in the call's parent list:
+        // the walk still visits them root by root, then each one's
+        // children, and every part gets a share of its own.
+        let mut parts = vec![
+            WeaponMassPart::new(None, 4.0),
+            WeaponMassPart::new(None, 2.0),
+            WeaponMassPart::new(Some(0), 1.0),
+        ];
+        distribute_tree(&mut parts, 1.0);
+        assert_eq!(parts[0].mass, parts[0].inverse);
+        assert_eq!(parts[1].mass, parts[1].inverse);
+        assert_eq!(parts[2].mass, parts[2].inverse);
+        // The heavier first root's inverse share is larger than the second
+        // root's, and its child's is the smallest.
+        assert!(parts[0].inverse > parts[1].inverse);
+        assert!(parts[0].inverse > parts[2].inverse);
+        // A second pass inflates the saved masses again but writes the same
+        // words, exactly as the tree does.
+        let once = parts.clone();
+        distribute_tree(&mut parts, 1.0);
+        assert_eq!(parts, once);
+    }
+
+    #[test]
+    fn a_weapon_mass_table_keeps_the_total_and_works_on_the_parts() {
+        let parts = vec![
+            WeaponMassPart::new(None, 3.0),
+            WeaponMassPart::new(Some(0), 1.0),
+        ];
+        let mass = WeaponMass::new(parts, 0.75);
+        assert_eq!(mass.total, 0.75);
+        assert_eq!(mass.parts.len(), 2);
+        assert!(
+            mass.parts
+                .iter()
+                .all(|p| p.mass.is_finite() && p.mass > 0.0)
+        );
     }
 }
