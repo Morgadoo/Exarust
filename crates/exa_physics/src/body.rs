@@ -267,6 +267,9 @@ pub struct Part {
     /// integration found it (before its inertia): the velocity the pose
     /// drive damps.
     moved: [Vec3; 4],
+    /// The original's smoothed velocity (`+0x1e0`): a copy of [`moved`]
+    /// lerped a tenth of the way each tick, which the pair impact reads.
+    smoothed: [Vec3; 4],
     /// The weights of the part's own origin (its joint, the point (0, 0, 0)
     /// of its space) on its particles: where the pose drive turns it about.
     own_origin: [f32; 4],
@@ -322,6 +325,12 @@ pub struct Part {
     /// When this part may play its impact sound again, on the 32-bit game
     /// clock. A blow on it stamps [`crate::part::part_sound_ready`].
     pub sound_ready_ms: u32,
+    /// The original's extra particle array a placed body's pair solves
+    /// record: each push it applies is recorded back with the opposite
+    /// sign, so the placed body's node controller can read how far a
+    /// contact wanted to move it. The two pushes cancel, so nothing moves
+    /// by this array; [`crate::body_pairs`] keeps it for the node owner.
+    pub(crate) placed_offset: [Vec3; 4],
 }
 
 /// The share of a push at a point of a body that acts, as the original's
@@ -434,6 +443,7 @@ impl Part {
             },
             start: positions,
             moved: [Vec3::ZERO; 4],
+            smoothed: [Vec3::ZERO; 4],
             own_origin: [1.0 - own.x - own.y - own.z, own.x, own.y, own.z],
             settled: Affine3A::IDENTITY,
             shown: (Affine3A::IDENTITY, Affine3A::IDENTITY),
@@ -453,6 +463,7 @@ impl Part {
             class_word: 0,
             state_word: 0,
             sound_ready_ms: 0,
+            placed_offset: [Vec3::ZERO; 4],
         }
         .settle()
     }
@@ -463,6 +474,21 @@ impl Part {
         self.shown = (self.settled, self.settled);
         self.drawn_particles = (self.positions, self.positions);
         self
+    }
+
+    /// The part's world values the sector refreshes each tick: its matrix,
+    /// the world box around its mesh bound, the world sphere around its
+    /// spheres and the grid cell of the mesh box centre
+    /// ([`crate::sector::BodyPose`]).
+    pub(crate) fn pose(&self, origin: (i32, i32)) -> crate::sector::BodyPose {
+        crate::sector::body_pose(
+            &self.rest,
+            &self.rest_inverse,
+            &self.positions,
+            &self.pairing.mesh,
+            &self.pairing.sphere,
+            origin,
+        )
     }
 
     /// The part's transform `alpha` of the way from where the tick before
@@ -505,6 +531,14 @@ impl Part {
         }
     }
 
+    /// Records `delta` times the clamped weights in the placed-offset array
+    /// (the original's `+0x1b0` push).
+    fn offset_push(&mut self, w: &[f32; 4], delta: Vec3) {
+        for (p, wi) in self.placed_offset.iter_mut().zip(w) {
+            *p += delta * wi.max(0.0);
+        }
+    }
+
     /// Weights of the world point `x` over the current particles.
     fn weights_now(&self, x: Vec3) -> Option<[f32; 4]> {
         let edges = Mat3::from_cols(
@@ -524,6 +558,12 @@ impl Part {
         (0..4)
             .map(|i| (self.positions[i] - self.start[i]) * w[i])
             .sum()
+    }
+
+    /// The part's smoothed velocity (m a tick) at the point with weights
+    /// `w`: the original's impact travel reads its `+0x1e0` array so.
+    fn smoothed_velocity(&self, w: &[f32; 4]) -> Vec3 {
+        (0..4).map(|i| self.smoothed[i] * w[i]).sum()
     }
 
     /// A level hit on sphere `centre` (part space): the closest point `q` on
@@ -1215,6 +1255,10 @@ pub struct Ragdoll {
     /// Ticks still to run with gravity but no inertia, as the original
     /// settles a re-placed character (its temporary state's countdown).
     settle: i32,
+    /// The original's placed state bit (0x1000): the body's node is driven
+    /// by something else, and a contact with another body moves only this
+    /// side ([`set_placed`]).
+    placed: bool,
     /// A sleeping body is not simulated until something wakes it.
     pub sleep: Sleep,
     /// Whether the body has been simulated since it was built: a body
@@ -1882,6 +1926,7 @@ impl Ragdoll {
             // corpses still collapse from standing in Exarust.
             countdown: WAKE_COUNT,
             settle: 0,
+            placed: false,
             sleep: Sleep::Awake,
             simulated: false,
             fell_out: false,
@@ -2250,6 +2295,18 @@ impl Ragdoll {
     /// Ticks still to run with gravity but no inertia.
     pub fn settling(&self) -> i32 {
         self.settle
+    }
+
+    /// Whether the body is placed (the original's state bit 0x1000): its
+    /// node is driven by something else, and a contact with another body
+    /// moves only this side.
+    pub fn placed(&self) -> bool {
+        self.placed
+    }
+
+    /// Sets or clears the placed state.
+    pub fn set_placed(&mut self, on: bool) {
+        self.placed = on;
     }
 
     /// Moves the whole body by `offset` (m), as the original's translate
@@ -2903,8 +2960,10 @@ impl Ragdoll {
                 .unwrap_or(gravity);
             if settling {
                 // No velocity is carried or recorded: the next tick's
-                // velocity is this tick's move.
+                // velocity is this tick's move, and the placed offset array
+                // is zeroed, as the original's Verlet step does.
                 p.moved = [Vec3::ZERO; 4];
+                p.placed_offset = [Vec3::ZERO; 4];
                 for i in 0..4 {
                     p.previous[i] = p.positions[i];
                     p.positions[i] += pull * p.gravity[i];
@@ -2920,6 +2979,9 @@ impl Ragdoll {
             for i in 0..4 {
                 let v = p.positions[i] - p.previous[i];
                 p.moved[i] = v;
+                // The original's smoothed velocity: a tenth of the way to
+                // this tick's displacement.
+                p.smoothed[i] += (v - p.smoothed[i]) * 0.1;
                 p.previous[i] = p.positions[i];
                 p.positions[i] += v * keep + pull * p.gravity[i];
             }
@@ -3289,7 +3351,11 @@ fn drive_parts(parts: &mut [Part], drive: &Drive) {
 /// The affine map taking `rest` to `points`, from the rest edges' inverse:
 /// the original's body matrix built from the particles and their inverse
 /// rest basis (it maps all four points exactly).
-fn affine_from_points(rest: &[Vec3; 4], rest_inverse: &Mat3, points: &[Vec3; 4]) -> Affine3A {
+pub(crate) fn affine_from_points(
+    rest: &[Vec3; 4],
+    rest_inverse: &Mat3,
+    points: &[Vec3; 4],
+) -> Affine3A {
     let edges = Mat3::from_cols(
         points[1] - points[0],
         points[2] - points[0],

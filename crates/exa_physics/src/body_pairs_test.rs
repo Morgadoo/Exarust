@@ -114,11 +114,11 @@ fn two_limbs_stop_at_their_spheres() {
 }
 
 /// Two limbs meeting head-on at 2 m/s each strike each other: their
-/// relative travel at the hit (under the 4.8 cm a tick they were thrown
-/// at, as the solver damps it, and before the push) squared,
-/// times the cosine against the push, over 2·m + 1 of the other's contact
-/// mobility m. At 0.2 m/s each the squared travel is under 1 cm² and
-/// neither is struck.
+/// relative smoothed velocity at the hit (2.8 cm a tick against the 4.8 they
+/// were thrown at, as the solver damps it and the impact reads a tenth of
+/// the way to each tick's motion) squared, times the cosine against the
+/// push, over 2·m + 1 of the other's contact mobility m. At 0.2 m/s each
+/// the squared travel is under 1 cm² and neither is struck.
 #[test]
 fn limbs_meeting_fast_strike_each_other() {
     let first_touch = |speed: f32| {
@@ -137,7 +137,7 @@ fn limbs_meeting_fast_strike_each_other() {
         panic!("the two balls never touched");
     };
     let (fast, m) = first_touch(2.0);
-    assert!(fast.travel.x > 4.0 && fast.travel.x < 4.8, "{fast:?}");
+    assert!(fast.travel.x > 2.5 && fast.travel.x < 3.2, "{fast:?}");
     let impact = fast.impact().unwrap();
     assert!((impact - fast.travel2).abs() < 0.01 * impact, "{fast:?}");
     let each = impact / (m * 2.0 + 1.0);
@@ -158,7 +158,7 @@ fn a_placed_body_takes_no_impact() {
         let mut a = ball(1, 11, Vec3::new(-0.3, 2.0, 0.0), 0.1);
         let mut b = ball(2, 11, Vec3::new(0.3, 2.0, 0.0), 0.1);
         if placed {
-            a.settle_for(100);
+            a.set_placed(true);
         }
         b.set_velocity(Vec3::NEG_X * 4.0);
         let mut stages = pairs();
@@ -173,7 +173,9 @@ fn a_placed_body_takes_no_impact() {
     let free = first_touch(false);
     assert!(free.struck.iter().all(Option::is_some), "{free:?}");
     let placed = first_touch(true);
-    assert!(placed.hits > 0, "{placed:?}");
+    // The placed callback records the contact without counting impact hits.
+    assert!(placed.met, "{placed:?}");
+    assert_eq!(placed.hits, 0);
     assert_eq!(placed.struck, [None, None]);
 }
 
@@ -185,6 +187,7 @@ fn a_degenerate_pair_cosine_is_zero() {
     let mut t = Touch {
         a: (entity(1), 0),
         b: (entity(2), 0),
+        met: true,
         hits: 1,
         point: Vec3::ZERO,
         push: Vec3::ZERO,
@@ -820,4 +823,124 @@ fn pair_detection_timing() {
         "pair detection: {each:.1} us per tick, {} touches",
         the_pairs(&stages).touches().len()
     );
+}
+
+/// A placed pair's pass moves only the placed side, by the whole
+/// correction (no mobility share), and records the opposite push in its
+/// offset array; the other side is untouched.
+#[test]
+fn the_placed_pass_moves_only_the_placed_side() {
+    let (mut a, mut b, pair) = kept_pair(0.0051, Vec3::ZERO, false);
+    let (a0, b0) = (a.parts[0].positions, b.parts[0].positions);
+    assert!(solve_placed_pair(
+        &mut a.parts[0],
+        &mut b.parts[0],
+        true,
+        &pair.points[..1]
+    ));
+    for (i, before) in a0.iter().enumerate() {
+        // depth 0.51 cm less the 0.01 slop is 0.5 cm; each particle takes
+        // its quarter of it.
+        assert!((a.parts[0].positions[i].x - before.x - 0.00125).abs() < 1e-8);
+        assert!((a.parts[0].placed_offset[i].x + 0.00125).abs() < 1e-8);
+    }
+    assert_eq!(b.parts[0].positions, b0);
+
+    // With B placed the correction goes the other way and A stays.
+    let (mut a, mut b, pair) = kept_pair(0.0051, Vec3::ZERO, false);
+    let (a0, b0) = (a.parts[0].positions, b.parts[0].positions);
+    assert!(solve_placed_pair(
+        &mut a.parts[0],
+        &mut b.parts[0],
+        false,
+        &pair.points[..1]
+    ));
+    for (i, before) in b0.iter().enumerate() {
+        assert!((b.parts[0].positions[i].x - before.x + 0.00125).abs() < 1e-8);
+        assert!((b.parts[0].placed_offset[i].x - 0.00125).abs() < 1e-8);
+    }
+    assert_eq!(a.parts[0].positions, a0);
+}
+
+/// A placed hit records the contact (so the pair is kept and the two sleep
+/// countdowns equalise) but no impact hit, and the placed side takes the
+/// whole push with its weights normalised to sum one, recording the
+/// opposite in its offset array.
+#[test]
+fn a_placed_hit_takes_the_push_and_records_its_opposite() {
+    let mut a = ball(1, 11, Vec3::ZERO, 0.1);
+    let mut b = ball(2, 11, Vec3::X * 0.25, 0.1);
+    a.set_placed(true);
+    let before_a = a.parts[0].positions;
+    let before_b = b.parts[0].positions;
+    let mut pair = Pair {
+        a: Side {
+            key: entity(1),
+            body: 0,
+            part: 0,
+        },
+        b: Side {
+            key: entity(2),
+            body: 1,
+            part: 0,
+        },
+        points: [Point::default(); POINTS],
+        count: 0,
+        live: true,
+    };
+    let mut touch = Touch {
+        a: (entity(1), 0),
+        b: (entity(2), 0),
+        met: false,
+        hits: 0,
+        point: Vec3::ZERO,
+        push: Vec3::ZERO,
+        deepest: 0.0,
+        travel: Vec3::ZERO,
+        travel2: 0.0,
+        struck: [None; 2],
+        hit_event: false,
+    };
+    let b_now = b.parts[0].transform();
+    // B's centre at x = 0.25 with radius 0.1; A's sphere at x = 0 with
+    // radius 0.1; q is the touched point on B toward A, and the push takes
+    // A off by 0.05 m.
+    let q = Vec3::new(-0.1, 0.0, 0.0);
+    let delta = Vec3::new(0.05, 0.0, 0.0);
+    assert!(on_placed_hit(
+        &mut a.parts[0],
+        &mut b.parts[0],
+        true,
+        &b_now,
+        Vec3::ZERO,
+        q,
+        delta,
+        &mut pair,
+        &mut touch,
+    ));
+    assert!(touch.met);
+    assert_eq!(touch.hits, 0);
+    assert_eq!(pair.count, 1);
+    assert_eq!(b.parts[0].positions, before_b);
+    let push = b_now.transform_vector3(delta);
+    let moved = a.parts[0].positions[0] - before_a[0];
+    assert!(moved.x > 0.0, "{moved:?}");
+    // The offset array keeps the whole opposite push: its weights sum to 1,
+    // so its particles together record −push (the edge restore then spreads
+    // the push over them).
+    let offset: Vec3 = a.parts[0].placed_offset.iter().sum();
+    assert!((offset.x + push.x).abs() < 1e-6, "{offset:?}");
+}
+
+/// The sector's constructor tests every pair unless the scene's flag word
+/// asks for the grid (either of bits 0x2000000 and 0x4000000).
+#[test]
+fn the_scene_flags_choose_the_grid_or_all_pairs() {
+    assert_eq!(BroadPhase::for_scene(0), BroadPhase::AllPairs);
+    assert_eq!(BroadPhase::for_scene(0x100_0000), BroadPhase::AllPairs);
+    assert_eq!(BroadPhase::for_scene(0x200_0000), BroadPhase::Cells);
+    assert_eq!(BroadPhase::for_scene(0x400_0000), BroadPhase::Cells);
+    assert_eq!(BroadPhase::for_scene(0x600_0000 | 0x89), BroadPhase::Cells);
+    assert_eq!(Pairs::for_scene(0).phase(), BroadPhase::AllPairs);
+    assert_eq!(Pairs::for_scene(0x400_0000).phase(), BroadPhase::Cells);
 }

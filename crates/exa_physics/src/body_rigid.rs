@@ -138,6 +138,7 @@ impl Part {
             friction: RIGID_FRICTION,
             start: positions,
             moved: [Vec3::ZERO; 4],
+            smoothed: [Vec3::ZERO; 4],
             own_origin: [1.0 - own.x - own.y - own.z, own.x, own.y, own.z],
             settled: Affine3A::IDENTITY,
             shown: (Affine3A::IDENTITY, Affine3A::IDENTITY),
@@ -158,6 +159,7 @@ impl Part {
             class_word: 0,
             state_word: 0,
             sound_ready_ms: 0,
+            placed_offset: [Vec3::ZERO; 4],
         }
         .settle()
     }
@@ -293,6 +295,7 @@ impl Ragdoll {
             ticks: 0,
             countdown: 0,
             settle: 0,
+            placed: false,
             sleep: Sleep::Deep,
             simulated: false,
             fell_out: false,

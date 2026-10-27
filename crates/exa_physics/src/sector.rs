@@ -594,6 +594,188 @@ pub fn mesh_box_distance2(point: Vec3, mesh: &Bounds, transform: &Affine3A) -> f
     sum
 }
 
+/// The state bit that marks a body placed (the original's `+0x1000`): its
+/// node is held by something else (a door or mechanism, a body put down at
+/// a fixed pose), and a contact with it moves only the placed side, leaving
+/// the other untouched ([`crate::body_pairs`]). Also the bit a pair takes
+/// for the hit event instead of the impact path.
+pub const PLACED_STATE: u32 = 0x1000;
+
+/// A body's world values the sector refreshes once a tick, before the
+/// broad phase: its matrix from its particles and rest basis, the
+/// world-aligned box and sphere around its bounds, and the grid cell its
+/// mesh box's world centre falls in.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BodyPose {
+    /// The affine map from the rest tetrahedron to the particles (the
+    /// original's body matrix).
+    pub matrix: Affine3A,
+    /// The world box around the mesh bound: its centre and half extents.
+    pub box_centre: Vec3,
+    pub box_half: Vec3,
+    /// The mesh bound's bounding radius (a rotation keeps a radius).
+    pub box_radius: f32,
+    /// The world sphere around the collision spheres: its centre and
+    /// radius.
+    pub sphere_centre: Vec3,
+    pub sphere_radius: f32,
+    /// The grid cell of the mesh box's world centre, offset by the grid's
+    /// origin.
+    pub cell: (i32, i32),
+}
+
+/// The world values of a body part ([`BodyPose`]) from its rest points,
+/// the inverse rest basis, where the tick has its particles, and its mesh
+/// and sphere bounds in its own space. `origin` is the grid's origin cell.
+pub fn body_pose(
+    rest: &[Vec3; 4],
+    rest_inverse: &bevy::math::Mat3,
+    points: &[Vec3; 4],
+    mesh: &Bounds,
+    spheres: &Bounds,
+    origin: (i32, i32),
+) -> BodyPose {
+    let matrix = crate::body::affine_from_points(rest, rest_inverse, points);
+    let box_centre = matrix.transform_point3(mesh.centre);
+    BodyPose {
+        matrix,
+        box_centre,
+        box_half: mesh.world_half(&matrix),
+        box_radius: mesh.radius,
+        sphere_centre: matrix.transform_point3(spheres.centre),
+        sphere_radius: spheres.radius,
+        cell: cell_of(box_centre * 100.0, origin),
+    }
+}
+
+/// The cell the original parks a body in whose cell index overflowed the
+/// grid: just past the first row (`columns + 1`), which the next tick's
+/// bounds pass migrates it out of.
+pub fn overflow_cell(columns: i32) -> i32 {
+    columns.wrapping_add(1)
+}
+
+/// The original's reset of a body whose grid cell overflowed: its current
+/// and previous particles both become the particles of the tick before
+/// last, so the body is taken back to where it stood two ticks ago (the
+/// matrix and bounds are then recomputed from them). The part's drawn
+/// history is left where it was.
+pub fn reset_overflow(
+    current: &mut [Vec3; 4],
+    previous: &mut [Vec3; 4],
+    previous_previous: &[Vec3; 4],
+) {
+    *previous = *previous_previous;
+    *current = *previous_previous;
+}
+
+/// What a sector's step does with a simulated object (cloth, a particle
+/// system, a fire row) from its state word's low three bits and its sleep
+/// countdown, as the original's step switches on them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ObjectTick {
+    /// A live object is integrated and put in the solver's list.
+    pub solve: bool,
+    /// A sleeping object rolls its matrices and particle history, as a
+    /// body's sleep does.
+    pub roll: bool,
+    /// The state word after the tick.
+    pub state: u32,
+    /// The countdown after the tick.
+    pub countdown: i32,
+}
+
+/// [`ObjectTick`] for a state word and countdown: a state under 3 is live
+/// (bits 0 and 3 cleared, bit 1 set); a state at or over 3 with bit 3 clear
+/// rolls its history and counts down, falling asleep (bit 3) at a
+/// countdown under 1; a state with bit 3 set is left alone.
+pub fn object_tick(state: u32, countdown: i32) -> ObjectTick {
+    if state & 7 < 3 {
+        ObjectTick {
+            solve: true,
+            roll: false,
+            state: (state & !0x9) | 2,
+            countdown,
+        }
+    } else if state & 8 == 0 {
+        let slept = countdown < 1;
+        ObjectTick {
+            solve: false,
+            roll: true,
+            state: if slept { state | 8 } else { state },
+            countdown: if slept { countdown } else { countdown - 1 },
+        }
+    } else {
+        ObjectTick {
+            solve: false,
+            roll: false,
+            state,
+            countdown,
+        }
+    }
+}
+
+/// What a scene-node walk does with a node, as the original's registration
+/// pass decides from the node's words: nothing, a fresh rigid body (with
+/// its body children), a body into the grid only (one the scene already
+/// built, or a static stand-in), a static collider, or a simulated object.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Registration {
+    None,
+    /// A body the walker builds and then recurses into (clear).
+    Body,
+    /// A body handed to the grid without rebuilding it.
+    GridOnly,
+    /// A mesh registered as a static collider.
+    Static,
+    /// A simulated object registered with the sector (cloth).
+    SimObject,
+}
+
+/// The scene flags the registration pass reads: bit `0x10000` marks a node
+/// whose subtree carries bodies, `0x80000` a node that stays level geometry
+/// (any of `0x90000` clear or both set skips it), `0x89` marks a
+/// simulated-object node.
+pub const NODE_BODY_FLAGS: u32 = 0x9_0000;
+/// The controller/body state bits: a body the scene already built
+/// (`0x10000000`) or a static stand-in (`0x20000000`).
+pub const BODY_LIVE: u32 = 0x1000_0000;
+pub const BODY_STATIC: u32 = 0x2000_0000;
+
+/// The registration decision for one scene node ([`Registration`]):
+/// `flags` is the node's runtime flag word, `state` its body's/controller's
+/// state word (0 without one), `has_body` whether it carries a body, and
+/// `body_flags` the body's own first word (bit `0x10000` = already built).
+pub fn registration(flags: u32, state: u32, has_body: bool, body_flags: u32) -> Registration {
+    if flags & NODE_BODY_FLAGS == 0x1_0000 {
+        if !has_body {
+            return Registration::None;
+        }
+        if state & BODY_LIVE != 0 {
+            if body_flags & 0x1_0000 == 0 {
+                Registration::Body
+            } else {
+                Registration::GridOnly
+            }
+        } else if state & BODY_STATIC != 0 {
+            Registration::Static
+        } else {
+            Registration::None
+        }
+    } else if flags & 0x89 == 0x89 {
+        // The original also asks the node's class word for 0x200000 here;
+        // only a simulated object carries it. Without that word a node of
+        // these flags registers nothing.
+        if state & 0x20_0000 != 0 {
+            Registration::SimObject
+        } else {
+            Registration::None
+        }
+    } else {
+        Registration::None
+    }
+}
+
 /// The stages of one sector's 83 Hz step, in the original's order. The
 /// existing schedule runs them; this names them so a new piece of work
 /// joins the right stage instead of a new loop.
