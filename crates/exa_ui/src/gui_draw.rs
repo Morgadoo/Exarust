@@ -573,10 +573,79 @@ fn shade(
                 ink[3] * f32::from(texel[3]) / 255.0,
             ]
         }
+        SkinMode::HltCol => {
+            let Some(texture) = texture else {
+                return [0.0; 4];
+            };
+            let centre = texture.sample(uv.0, uv.1);
+            let mut ring = [0.0f32; 8];
+            for (sample, (dx, dy)) in ring.iter_mut().zip(ITEM_ICON_OFFSETS) {
+                let u = uv.0 + dx as f32 / texture.width as f32;
+                let v = uv.1 + dy as f32 / texture.height as f32;
+                *sample = f32::from(texture.sample(u, v)[3]) / 255.0;
+            }
+            let texel = [
+                f32::from(centre[0]) / 255.0,
+                f32::from(centre[1]) / 255.0,
+                f32::from(centre[2]) / 255.0,
+                f32::from(centre[3]) / 255.0,
+            ];
+            item_icon_fragment(ring, texel, ink, ITEM_HIGHLIGHT)
+        }
         // Any other answer of the subclass is the flat program: the line
         // skin game screens use binds it and draws the vertex's ink.
         SkinMode::Skin => ink,
     }
+}
+
+/// The item panel's highlight colour (the shader's `HltCol` uniform's rgb).
+pub const ITEM_HIGHLIGHT: [f32; 3] = [1.0, 0.75, 0.45];
+/// The item panel's icon program's sample offsets, in the shader's order.
+pub const ITEM_ICON_OFFSETS: [(i32, i32); 8] = [
+    (-3, 0),
+    (3, 0),
+    (0, -3),
+    (0, 3),
+    (-2, -2),
+    (-2, 2),
+    (2, -2),
+    (2, 2),
+];
+
+/// One fragment of the item panel's icon program in single precision: the
+/// eight ring alphas, the pixel's own colour and the vertex colour. The ring
+/// folds in the shader's order, the vertex's green scales it by 0.75, the
+/// highlight mixes towards white by the vertex's red, the free colour gains
+/// the glow by the square of the pixel's transparency, and the fragment
+/// takes the vertex's alpha.
+pub fn item_icon_fragment(
+    ring: [f32; 8],
+    texel: [f32; 4],
+    ink: [f32; 4],
+    highlight: [f32; 3],
+) -> [f32; 4] {
+    let mut a = ring[0] * 0.5;
+    let mut b = ring[1] * 0.5;
+    a = a * (1.0 - b) + b;
+    for sample in &ring[2..] {
+        b = sample * 0.5;
+        a = a * (1.0 - b) + b;
+    }
+    a = a * ink[1] * 0.75;
+    let base = 1.0 - ink[0];
+    let col = [
+        highlight[0] * base + ink[0],
+        highlight[1] * base + ink[0],
+        highlight[2] * base + ink[0],
+    ];
+    let clear = 1.0 - texel[3];
+    let add = clear * clear;
+    [
+        (col[0] * a * add + texel[0]) * ink[3],
+        (col[1] * a * add + texel[1]) * ink[3],
+        (col[2] * a * add + texel[2]) * ink[3],
+        (a + texel[3]).min(1.0) * ink[3],
+    ]
 }
 
 /// Whether a barycentric weight is inside its edge: past it, or on it when
@@ -1386,6 +1455,69 @@ mod tests {
         app.world_mut().resource_mut::<GuiFrames>().push(changed);
         app.update();
         assert_eq!(app.world().resource::<GuiCanvas>().drawn, drawn + 1);
+    }
+
+    #[test]
+    fn the_item_icon_program_matches_its_shader() {
+        // Black ink leaves the pixel untouched.
+        let texel = [0.2, 0.4, 0.6, 1.0];
+        assert_eq!(
+            item_icon_fragment([1.0; 8], texel, [0.0, 0.0, 0.0, 1.0], ITEM_HIGHLIGHT),
+            texel
+        );
+        // Green ink lays the highlight by a ring that folds to 0.99609375
+        // scaled by 0.75.
+        let p = item_icon_fragment([1.0; 8], [0.0; 4], [0.0, 1.0, 0.0, 1.0], ITEM_HIGHLIGHT);
+        let a = 0.996_093_75f32 * 0.75;
+        assert!((p[0] - ITEM_HIGHLIGHT[0] * a).abs() < 1e-6);
+        assert!((p[3] - a).abs() < 1e-6);
+        // A no-ring pixel keeps its colour and half its alpha.
+        assert_eq!(
+            item_icon_fragment(
+                [0.0; 8],
+                [0.2, 0.3, 0.4, 0.5],
+                [0.0, 1.0, 0.0, 0.5],
+                ITEM_HIGHLIGHT
+            ),
+            [0.1, 0.15, 0.2, 0.25]
+        );
+        assert_eq!(ITEM_ICON_OFFSETS[7], (2, 2));
+    }
+
+    #[test]
+    fn a_highlighted_icon_draws_its_ring() {
+        // A 4 × 4 texture with one opaque texel: the green-ink ring lifts
+        // the clear pixels around it and leaves the far corner alone.
+        let mut texture = GuiTexture::from_top_down(4, 4, &[0u8; 4 * 4 * 4]).unwrap();
+        // Stored top-down; set the texel at row 1, column 1.
+        texture.pixels[4 + 1] = [255, 255, 255, 255];
+        let mut batch = SkinBatch::new();
+        batch.mode = SkinMode::HltCol;
+        batch.blend = BLEND_REPLACE;
+        batch.set_ink([0, 255, 0, 255]);
+        batch.set_uv(0.0, 0.0);
+        batch.vertex(0.0, 0.0);
+        batch.set_uv(0.0, 1.0);
+        batch.vertex(0.0, 4.0);
+        batch.set_uv(1.0, 1.0);
+        batch.vertex(4.0, 4.0);
+        batch.set_uv(1.0, 0.0);
+        batch.vertex(4.0, 0.0);
+        batch.end_quads();
+        let mut frame = GuiFrame::new();
+        frame.push(GuiLayer::new(batch, LayerTexture::Owned(texture)));
+        let pixels = rasterise(&[frame], &GuiTextures::default(), 4, 4);
+        let alpha = |x: usize, y: usize| pixels[(y * 4 + x) * 4 + 3];
+        // The lit texel stays opaque; the corner away from it is untouched
+        // and the pixel beside it gains the ring.
+        assert!(alpha(1, 2) >= 254);
+        assert_eq!(alpha(0, 0), 0);
+        // The ring spills onto the pixels around the lit texel.
+        let lit = (0..4)
+            .flat_map(|y| (0..4).map(move |x| (x, y)))
+            .filter(|&(x, y)| alpha(x, y) > 0)
+            .count();
+        assert!(lit > 1);
     }
 
     #[test]

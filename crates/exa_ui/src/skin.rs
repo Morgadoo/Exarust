@@ -4278,6 +4278,8 @@ pub enum SkinMode {
     Rounded,
     /// The GUI subclass' own program.
     Skin,
+    /// The item panel's icon program: a texture with the highlight ring.
+    HltCol,
 }
 
 /// How a batch's vertices are drawn.

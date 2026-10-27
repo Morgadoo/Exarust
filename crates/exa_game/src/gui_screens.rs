@@ -31,6 +31,8 @@ use exa_ui::gui_draw::{GuiFrames, GuiTextures};
 use exa_ui::skin::SkinBatch;
 
 use crate::gui_paint::{self, Frame};
+use crate::item_container::{CardWindow, Container};
+use crate::item_panel_draw::PanelIcons;
 use crate::menu_screen::MenuScreen;
 
 /// A screen the player's keys ask for.
@@ -205,6 +207,10 @@ pub struct GameScreens {
     pub inventory_place: Option<(i32, i32)>,
     /// The player's character record id (Exarust uses the entity index).
     pub player: i32,
+    /// The inventory's item pack, drawn through the panel's icon path.
+    pub pack: Container,
+    /// The description card the panel asked for.
+    pub card: CardWindow,
 }
 
 impl Default for GameScreens {
@@ -217,6 +223,8 @@ impl Default for GameScreens {
             journal_text: String::new(),
             inventory_place: None,
             player: 0,
+            pack: Container::default(),
+            card: CardWindow::default(),
         }
     }
 }
@@ -410,6 +418,7 @@ pub struct GameScreensPlugin;
 impl Plugin for GameScreensPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<GameScreens>()
+            .init_resource::<PanelIcons>()
             .init_resource::<DebugGuiForm>()
             .init_resource::<GuiFrames>()
             .add_message::<ScreenRequest>()
@@ -548,7 +557,13 @@ fn paint_controls(
 /// The inventory's frame, the item pack's panel and the Encumbrance label
 /// and Primary button records. The character view, the pack's item icons
 /// and the preview bars are not drawn.
-fn paint_inventory(bounds: GuiRect, unit: i32, textures: &GuiTextures) -> gui_paint::Painted {
+fn paint_inventory(
+    bounds: GuiRect,
+    unit: i32,
+    textures: &GuiTextures,
+    items: &Container,
+    icons: Option<&mut PanelIcons>,
+) -> gui_paint::Painted {
     let palette = gui_paint::palette();
     let level = exa_ui::gui_font::level_for_unit(unit);
     let (font, size) = screen_font(exa_ui::gui_font::gui_level(level).main, textures);
@@ -570,6 +585,11 @@ fn paint_inventory(bounds: GuiRect, unit: i32, textures: &GuiTextures) -> gui_pa
         gui_paint::PACK_STYLE,
     )
     .layers
+    {
+        painted.push(layer);
+    }
+    if let Some(icons) = icons
+        && let Some(layer) = icons.layer(items)
     {
         painted.push(layer);
     }
@@ -666,6 +686,7 @@ fn paint_journal(
 /// Draws the open screens and the debug form into the GUI's queue.
 fn draw_screens(
     screens: Res<GameScreens>,
+    mut icons: ResMut<PanelIcons>,
     debug: Res<DebugGuiForm>,
     menu: Option<Res<MenuScreen>>,
     textures: Option<Res<GuiTextures>>,
@@ -689,7 +710,9 @@ fn draw_screens(
         };
         let bounds = form.bounds();
         let painted = match screen.kind {
-            GameScreen::Inventory => paint_inventory(bounds, unit, textures),
+            GameScreen::Inventory => {
+                paint_inventory(bounds, unit, textures, &screens.pack, Some(&mut icons))
+            }
             GameScreen::Journal => paint_journal(bounds, &screens.journal, unit, textures),
             _ => continue,
         };

@@ -494,8 +494,9 @@ pub fn weapon_handling(flags: u32, w: u8, b: u8, g: u8) -> WeaponHandling {
     }
 }
 
-/// The vertical step a card's rows take.
-pub const CARD_ROW_STEP: i32 = 0x68;
+/// The stride of the control records the card builder appends (a record's
+/// size, not a visual row height; the GUI lays the controls out itself).
+pub const CARD_CONTROL_STRIDE: i32 = 0x68;
 /// The height a socket row, a rank row, a points row and the value row add.
 pub const CARD_SOCKET_HEIGHT: i32 = 0x18;
 pub const CARD_SMALL_HEIGHT: i32 = 0x14;
@@ -524,9 +525,9 @@ pub struct CardContent {
     pub points: Option<f32>,
     /// The value row, when the caller's gate shows it.
     pub value: Option<u32>,
-    /// The content's own height in pixels: the rows' step plus each special
-    /// row's.
-    pub height: i32,
+    /// The height the special rows add to the page's own (the material and
+    /// rank and points rows 0x14 each, the socket and value rows 0x18).
+    pub extra_height: i32,
 }
 
 /// The title's tint: the condition byte, between [`TITLE_COLOURS`]' low and
@@ -638,8 +639,7 @@ pub fn weapon_content(
     } else {
         None
     };
-    let height = rows.len() as i32 * CARD_ROW_STEP
-        + i32::from(material) * CARD_SMALL_HEIGHT
+    let extra_height = i32::from(material) * CARD_SMALL_HEIGHT
         + i32::from(sockets) * CARD_SOCKET_HEIGHT
         + i32::from(rank.is_some()) * CARD_SMALL_HEIGHT
         + i32::from(points.is_some()) * CARD_SMALL_HEIGHT
@@ -651,7 +651,7 @@ pub fn weapon_content(
         rank,
         points,
         value: value_shown.then_some(value),
-        height,
+        extra_height,
     }
 }
 
@@ -701,8 +701,7 @@ pub fn apparel_content(
     } else {
         None
     };
-    let height = rows.len() as i32 * CARD_ROW_STEP
-        + i32::from(sockets) * CARD_SOCKET_HEIGHT
+    let extra_height = i32::from(sockets) * CARD_SOCKET_HEIGHT
         + i32::from(rank.is_some()) * CARD_SMALL_HEIGHT
         + i32::from(points.is_some()) * CARD_SMALL_HEIGHT
         + i32::from(value_shown) * CARD_SOCKET_HEIGHT;
@@ -713,7 +712,7 @@ pub fn apparel_content(
         rank,
         points,
         value: value_shown.then_some(value),
-        height,
+        extra_height,
     }
 }
 
@@ -753,8 +752,7 @@ pub fn shield_content(
     }
     let rank = shield_rank(gates.rank, skill);
     let points = shield_points(gates.points, skill);
-    let height = rows.len() as i32 * CARD_ROW_STEP
-        + i32::from(rank.is_some()) * CARD_SMALL_HEIGHT
+    let extra_height = i32::from(rank.is_some()) * CARD_SMALL_HEIGHT
         + i32::from(points.is_some()) * CARD_SMALL_HEIGHT
         + i32::from(value_shown) * CARD_SOCKET_HEIGHT;
     CardContent {
@@ -764,7 +762,7 @@ pub fn shield_content(
         rank,
         points,
         value: value_shown.then_some(value),
-        height,
+        extra_height,
     }
 }
 
@@ -1952,8 +1950,8 @@ mod tests {
         assert_eq!(card.rank, Some("Adept"));
         assert_eq!(card.points, Some(2.0));
         assert_eq!(card.value, Some(7));
-        // Six rows, then the swatch, socket, rank, points and value rows.
-        assert_eq!(card.height, 6 * 0x68 + 0x14 + 0x18 + 0x14 + 0x14 + 0x18);
+        // The swatch, socket, rank, points and value rows' additions.
+        assert_eq!(card.extra_height, 0x14 + 0x18 + 0x14 + 0x14 + 0x18);
         // A high-quality weapon maps its title over the high half; the
         // fixed flags show 1, 5 and 0.
         let fixed = weapon_content(
@@ -1979,7 +1977,7 @@ mod tests {
         assert_eq!(fixed.rows[0].value, 1.0);
         assert_eq!(fixed.rows[1].value, 5.0);
         assert_eq!(fixed.rows[2].value, 0.0);
-        assert_eq!(fixed.height, 3 * 0x68 + 0x18);
+        assert_eq!(fixed.extra_height, 0x18);
         assert_eq!(fixed.rank, None);
     }
 
@@ -2000,7 +1998,7 @@ mod tests {
         assert_eq!(card.rank, Some("Aspirant"));
         assert_eq!(card.points, Some(2.5));
         assert_eq!(card.value, Some(3));
-        assert_eq!(card.height, 3 * 0x68 + 0x14 + 0x14 + 0x18);
+        assert_eq!(card.extra_height, 0x14 + 0x14 + 0x18);
     }
 
     #[test]
@@ -2018,11 +2016,11 @@ mod tests {
         assert_eq!(card.rank, Some("Novice"));
         assert_eq!(card.points, None);
         assert_eq!(card.value, None);
-        assert_eq!(card.height, 3 * 0x68 + 0x14);
+        assert_eq!(card.extra_height, 0x14);
         let ordinary = shield_content(0, 7, 10, 0, 0, 0, gates, false);
         assert_eq!(ordinary.rows[0].value, 0.07);
         assert_eq!(ordinary.rows.len(), 2);
-        assert_eq!(ordinary.height, 2 * 0x68);
+        assert_eq!(ordinary.extra_height, 0);
     }
 
     #[test]
@@ -2049,6 +2047,6 @@ mod tests {
         // The blend works a byte at a time.
         assert_eq!(blend_colour(0x0000_0000, 0xff00_0000, 0.5), 0x7f00_0000);
         assert_eq!(blend_colour(0x1020_3040, 0x1020_3040, 0.7), 0x1020_3040);
-        assert_eq!(CARD_ROW_STEP, 104);
+        assert_eq!(CARD_CONTROL_STRIDE, 104);
     }
 }
