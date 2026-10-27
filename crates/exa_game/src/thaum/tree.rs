@@ -2119,7 +2119,7 @@ impl TreeScreen {
 }
 
 /// What showing or hiding the screen sets.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ShowState {
     /// The form fade flags' new value: bit 0 opening, bit 1 closing.
     pub flags: u8,
@@ -2128,6 +2128,8 @@ pub struct ShowState {
     /// The remembered domain (the hide path keeps it; the open path reads
     /// it).
     pub remembered: u8,
+    /// The sound the open path plays; a hide is silent.
+    pub sound: Option<TreeSound>,
 }
 
 /// The form's opening fade, in milliseconds.
@@ -2178,6 +2180,7 @@ impl TreeScreen {
             flags: self.fade_flags,
             stamp: self.open_at,
             remembered: self.domain,
+            sound: Some(SHOW_SOUND),
         }
     }
 
@@ -2196,6 +2199,7 @@ impl TreeScreen {
             flags: self.fade_flags,
             stamp: self.close_at,
             remembered: self.domain,
+            sound: None,
         }
     }
 
@@ -4428,7 +4432,8 @@ mod tests {
             ShowState {
                 flags: FADING_IN,
                 stamp: 2000,
-                remembered: DOMAIN_FORCE
+                remembered: DOMAIN_FORCE,
+                sound: Some(SHOW_SOUND)
             }
         );
         assert_eq!(tree.hide(3000).stamp, 3256);

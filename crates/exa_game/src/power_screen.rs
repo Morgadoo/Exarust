@@ -33,7 +33,7 @@ use exa_ui::gui_core::{FormHost, FormId, GuiRect, GuiTask};
 use exa_ui::tree_draw::{self, Batch, Program, TextRun, Texture, TreeDraw, TreeVertex};
 
 use crate::bindings::{Action, Bindings};
-use crate::thaum::tree::{BAR_CLOSING, PowerBar, PowerRecord, TreeMode, TreeScreen};
+use crate::thaum::tree::{BAR_CLOSING, PowerBar, PowerRecord, TreeMode, TreeScreen, TreeSound};
 
 /// The time between redraws while the screen animates.
 const REDRAW_MS: u128 = 33;
@@ -52,6 +52,10 @@ pub struct PowerScreen {
     pub domain_files: [Option<Vec<u8>>; 7],
     pub sheets: TreeSheets,
     pub font: Option<GameFont>,
+    /// The sound the tree's last action names, for the audio path: showing
+    /// it plays `ThaumShow02`; a hidden screen is silent. The running game
+    /// has no UI-sound playback yet.
+    pub sound: Option<TreeSound>,
     /// A redraw is needed.
     pub dirty: bool,
     /// The last draw, in the frame clock's milliseconds.
@@ -86,6 +90,7 @@ impl Default for PowerScreen {
             domain_files: [None, None, None, None, None, None, None],
             sheets: TreeSheets::default(),
             font: None,
+            sound: None,
             dirty: true,
             last_draw: 0,
             drag: None,
@@ -223,6 +228,7 @@ fn hotkeys(
         texts,
         domain_files,
         dirty,
+        sound,
         ..
     } = &mut *screen;
     if bindings
@@ -254,7 +260,7 @@ fn hotkeys(
             *open = true;
             *bar_open = true;
             tree.bar_open = true;
-            tree.show(now);
+            *sound = tree.show(now).sound;
             tree.open_bar_if_closed(bar, record, now);
         }
         *dirty = true;
