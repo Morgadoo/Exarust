@@ -30,7 +30,7 @@
 use exa_formats::arena_save::ItemEntry;
 use exa_formats::characters::CharacterRecord;
 
-use crate::arsenal::{Arsenal, ArsenalEntry};
+use crate::arsenal::{Arsenal, ArsenalEntry, ItemKind};
 use crate::career::SKILL_STEP;
 
 /// The flag an arsenal entry carries when its id also lives in an
@@ -46,6 +46,72 @@ pub const CHARACTER_REF: u32 = 0x200;
 pub struct EmployeeRefs {
     pub record: CharacterRecord,
     pub items: Vec<ItemEntry>,
+}
+
+/// The `0x400` flag a reclassified item enters the arsenal with.
+pub const SAVED_ITEM: u32 = 0x400;
+
+/// Puts an item on the shelf its object record names, unless the shelf
+/// already holds it. The save's reclassification pass adds the item with
+/// the saved-item flag; a shelf that already has any copy of the id is left
+/// alone. Returns whether the item was added.
+pub fn add_classified(arsenal: &mut Arsenal, item: u32, kind: ItemKind) -> bool {
+    let Some(shelf) = crate::arsenal::shelf_of(kind) else {
+        return false;
+    };
+    if arsenal.shelves[shelf]
+        .iter()
+        .any(|entries| entries.iter().any(|entry| entry.item == item))
+    {
+        return false;
+    }
+    arsenal.stow(item, kind, SAVED_ITEM)
+}
+
+/// Reclassifies a list of twelve-byte item records into the arsenal, as the
+/// load's id pass does with the manager's own items: each record's first
+/// word is looked up in the object database and added to its shelf. The
+/// list is expected to have been deduplicated first.
+pub fn reclassify_records(
+    arsenal: &mut Arsenal,
+    records: &[[u8; 12]],
+    mut kind_of: impl FnMut(u32) -> ItemKind,
+) -> usize {
+    let mut added = 0;
+    for record in records {
+        let id = u32::from_le_bytes([record[0], record[1], record[2], record[3]]);
+        if add_classified(arsenal, id, kind_of(id)) {
+            added += 1;
+        }
+    }
+    added
+}
+
+/// Prepare one character record: its hands, worn items, loadouts, then
+/// its carried items.
+pub fn prepare_character_items(
+    character: &mut CharacterRecord,
+    prepare_item: &mut impl FnMut(u32) -> u32,
+) {
+    prepare_character(character, prepare_item);
+}
+
+/// Flushes one scene character before a save: a reference with its top bit
+/// set registers the character in the world character database under the
+/// low 28 bits, and every item in the record takes its saved id. The
+/// original also rewrites the ids of objects attached to the character;
+/// those attachments are the caller's.
+///
+/// Returns the id to register, or `None` when the character was already
+/// registered.
+pub fn flush_scene_character(
+    character: &mut CharacterRecord,
+    reference: u32,
+    mut prepare_item: impl FnMut(u32) -> u32,
+) -> Option<u32> {
+    let register = reference & 0x8000_0000 != 0;
+    prepare_character(character, &mut prepare_item);
+    register.then_some(reference & 0x0fff_ffff)
 }
 
 /// The fighter rank the board and the company read: the six skills' levels
@@ -232,7 +298,7 @@ pub fn remap_personal(old: u32, new: u32, character: &mut CharacterRecord) -> bo
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::arsenal::{ARMOUR, WEAPONS};
+    use crate::arsenal::{ARMOUR, CLOTHING, SHIELDS, WEAPONS};
     use exa_formats::characters::{ItemRef, Loadout};
 
     fn character(
@@ -460,5 +526,102 @@ mod tests {
         assert_eq!(staff[0].items[0].id, 20);
         // That pass leaves hands alone.
         assert_eq!(staff[0].record.hands[0].id, 20);
+    }
+
+    fn kind(weapon: bool, shield: bool, layer: Option<u8>) -> ItemKind {
+        ItemKind {
+            known: true,
+            apparel_layer: layer,
+            weapon,
+            shield,
+        }
+    }
+
+    #[test]
+    fn reclassification_puts_an_item_on_its_shelf_once_with_the_saved_flag() {
+        let mut arsenal = Arsenal::default();
+        assert!(add_classified(&mut arsenal, 10, kind(true, false, None)));
+        assert_eq!(arsenal.shelves[WEAPONS][0][0].item, 10);
+        assert_eq!(arsenal.shelves[WEAPONS][0][0].flags, SAVED_ITEM);
+        // A second copy on any box of the same shelf is refused.
+        arsenal.shelves[WEAPONS][4].push(entry(10, 0));
+        assert!(!add_classified(&mut arsenal, 10, kind(true, false, None)));
+        // Apparel of layer 3 and 6 is armour; the other layers clothing.
+        assert!(add_classified(
+            &mut arsenal,
+            11,
+            kind(false, false, Some(3))
+        ));
+        assert!(add_classified(
+            &mut arsenal,
+            12,
+            kind(false, false, Some(6))
+        ));
+        assert!(add_classified(
+            &mut arsenal,
+            13,
+            kind(false, false, Some(2))
+        ));
+        assert_eq!(arsenal.shelves[ARMOUR][0][0].item, 11);
+        assert_eq!(arsenal.shelves[ARMOUR][0][1].item, 12);
+        assert_eq!(arsenal.shelves[CLOTHING][0][0].item, 13);
+        assert!(add_classified(&mut arsenal, 14, kind(false, true, None)));
+        assert_eq!(arsenal.shelves[SHIELDS][0][0].item, 14);
+        // An unknown item has no shelf.
+        assert!(!add_classified(
+            &mut arsenal,
+            15,
+            ItemKind {
+                known: false,
+                ..ItemKind::default()
+            }
+        ));
+    }
+
+    #[test]
+    fn the_id_pass_reclassifies_each_records_first_word() {
+        let mut records = [[0u8; 12]; 3];
+        for (slot, id) in records.iter_mut().zip([20u32, 21, 22]) {
+            slot[..4].copy_from_slice(&id.to_le_bytes());
+        }
+        let mut arsenal = Arsenal::default();
+        let added = reclassify_records(&mut arsenal, &records, |id| match id {
+            20 => kind(true, false, None),
+            21 => kind(false, true, None),
+            _ => kind(false, false, Some(4)),
+        });
+        assert_eq!(added, 3);
+        assert_eq!(arsenal.shelves[WEAPONS][0][0].item, 20);
+        assert_eq!(arsenal.shelves[SHIELDS][0][0].item, 21);
+        assert_eq!(arsenal.shelves[ARMOUR][0][0].item, 22);
+        // Re-running with the same classification adds nothing.
+        assert_eq!(
+            reclassify_records(&mut arsenal, &records, |id| match id {
+                20 => kind(true, false, None),
+                21 => kind(false, true, None),
+                _ => kind(false, false, Some(4)),
+            }),
+            0
+        );
+    }
+
+    #[test]
+    fn flushing_a_scene_character_registers_once_and_remaps_every_item() {
+        let mut record = character([40, 0], &[50], &[([60, 0], &[70])]);
+        record.worn = vec![ItemRef::new(45, 0)];
+        let mut seen = Vec::new();
+        let registered = flush_scene_character(&mut record, 0x8000_0000 | 0x1234, |id| {
+            seen.push(id);
+            id + 1
+        });
+        assert_eq!(registered, Some(0x1234));
+        // The record's hands, worn items, loadout hands and worn items, then
+        // its carried items.
+        assert_eq!(seen, vec![40, 0, 0, 0, 45, 60, 0, 0, 0, 70, 50]);
+        assert_eq!(record.hands[0].id, 41);
+        assert_eq!(record.worn[0].id, 46);
+        assert_eq!(record.inventory[0].item, 51);
+        // A reference without the top bit does not register again.
+        assert_eq!(flush_scene_character(&mut record, 0x1234, |id| id), None);
     }
 }

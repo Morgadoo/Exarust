@@ -51,6 +51,10 @@ pub const TOURNAMENT_CHUNK: u32 = 0xA060_0000;
 pub const EMPLOYEES_CHUNK: u32 = 0xA040_0000;
 /// The merchant chunk's id.
 pub const MERCHANT_CHUNK: u32 = 0xA050_0000;
+/// The shop stock chunk's id.
+pub const SHOP_STOCK_CHUNK: u32 = 0xA030_0000;
+/// The hireable candidates' chunk id.
+pub const HIREABLES_CHUNK: u32 = 0x0001_0000;
 /// One item reference in an employee's own list.
 pub const ITEM_ENTRY_LEN: usize = 12;
 /// The emblem record's size.
@@ -408,6 +412,28 @@ pub fn write_merchant(chunk: &MerchantChunk) -> Vec<u8> {
     out
 }
 
+/// Read the shop's stock chunk: a signed count and that many item ids. A
+/// negative count reads no ids.
+pub fn parse_shop_stock(bytes: &[u8]) -> Result<Vec<u32>, ArenaSaveError> {
+    let mut r = Reader { bytes, at: 0 };
+    let count = r.word()? as i32;
+    let mut ids = Vec::new();
+    for _ in 0..count.max(0) {
+        ids.push(r.word()?);
+    }
+    Ok(ids)
+}
+
+/// Write the shop's stock chunk: the count and the ids.
+pub fn write_shop_stock(ids: &[u32]) -> Vec<u8> {
+    let mut out = Vec::new();
+    put(&mut out, ids.len() as u32);
+    for &id in ids {
+        put(&mut out, id);
+    }
+    out
+}
+
 /// One hire-list candidate: the unused word the chunk writes and the
 /// candidate's encoded character.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -586,6 +612,32 @@ pub fn remove_duplicate_item_ids(records: &mut Vec<[u8; 12]>) {
             }
         }
         index += 1;
+    }
+}
+
+/// A list of eight-byte item entries and a list of twelve-byte records as
+/// the arena's record repair sees them. The save unit compacts one
+/// eight-byte list, then every employee's eight-byte list, then the
+/// twelve-byte list, in that order.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ArenaLists {
+    /// The eight-byte lists in the order the repair walks them: the stash
+    /// list first, then one per employee.
+    pub lists8: Vec<Vec<[u8; 8]>>,
+    /// The twelve-byte record list.
+    pub records12: Vec<[u8; 12]>,
+}
+
+impl ArenaLists {
+    /// The load's record repair: every eight-byte list keeps only plain
+    /// entries, then the twelve-byte list does. The character-record fix
+    /// that follows in the original needs the character database and is
+    /// the caller's.
+    pub fn compact(&mut self) {
+        for list in &mut self.lists8 {
+            retain_plain_items(list);
+        }
+        retain_plain_records(&mut self.records12);
     }
 }
 
@@ -856,5 +908,30 @@ mod tests {
         let mut records = vec![record(7), record(0xC000_0007)];
         remove_duplicate_item_ids(&mut records);
         assert_eq!(records, vec![record(7), record(0xC000_0007)]);
+    }
+
+    #[test]
+    fn the_record_repair_compacts_every_eight_byte_list_then_the_records() {
+        let mut lists = ArenaLists {
+            lists8: vec![
+                vec![item(1), item(0x8000_0002), item(3)],
+                vec![item(0x8000_0004), item(5)],
+            ],
+            records12: vec![record(6), record(0xC000_0007), record(8)],
+        };
+        lists.compact();
+        assert_eq!(lists.lists8[0], vec![item(1), item(3)]);
+        assert_eq!(lists.lists8[1], vec![item(5)]);
+        assert_eq!(lists.records12, vec![record(6), record(8)]);
+    }
+
+    #[test]
+    fn the_shop_stock_is_a_count_and_item_ids() {
+        let payload = write_shop_stock(&[7, 8, 9]);
+        assert_eq!(&payload[..4], &3u32.to_le_bytes());
+        assert_eq!(parse_shop_stock(&payload).unwrap(), vec![7, 8, 9]);
+        // The count is signed; a negative one is empty.
+        assert_eq!(parse_shop_stock(&(-1i32).to_le_bytes()).unwrap(), vec![]);
+        assert_eq!(parse_shop_stock(&payload[..6]), Err(ArenaSaveError::Short));
     }
 }

@@ -384,6 +384,31 @@ only.
 * When the saved transition state (`0xD000C003`) is 2, the story loader
   forces the locale to `exanima05`; the load path then places the player at
   the portal node and sets the state to 1.
+* **Placement.** The player's matrix is the saved placement; its height is
+  probed down 300 cm from 100 cm up, then lifted by `108.18 − 11.1·extent`
+  and 5 cm (13 cm for a body in its raised state). The body's feet are put
+  at the probed floor and the body is carried to the lifted point.
+* **Followers.** When the current scene character is flushed, every
+  travelling character (controller word 4, flags without 0x800) joins the
+  migration list once; a repeat is logged as `Duplicate simulation motile:
+  <name>` under `Migration` and skipped. Followers take the six stored
+  offsets `(−100,0,−100)`, `(100,0,−100)`, `(0,0,150)`, `(100,0,200)`,
+  `(0,0,0)`, `(0,0,0)`, each rotated by the player's heading and added to
+  the player's position in order. Re-attaching one frees its UID manager,
+  re-creates its player controls, clears its carry world, sets its body
+  controller to 1 and raises a minimum distance under 5 cm to 5 (a NaN is
+  kept, as the unordered compare does not branch).
+* **Menu.** The menu background is the shipped `menuscene.rfc` with the
+  1.8 fog preset, the scene editor at mode 0, the view at (0, 500, 700)
+  and its target 200 cm down the z axis; the camera's far distance is 60.
+* **Terrain.** A saved level's terrain file is the locale with its
+  extension replaced by `.rft` (the loader looks it up in the archive and
+  imports it when it exists).
+* **Scene content.** A scene node is classified from its object record:
+  kind bits `0x1100`/`0x1200` go to the first list, `0x2200` to the second,
+  and a `0x10000` kind whose kind byte is 2 to the third. A record the
+  object database does not know falls back to a name starting with `[`,
+  which joins the second list.
 
 ## The game clock
 

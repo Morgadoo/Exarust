@@ -65,6 +65,7 @@ pub mod power_screen;
 pub mod practice;
 pub mod prelude;
 pub mod report;
+pub mod save_level;
 pub mod scene_editor;
 pub mod session;
 pub mod shell_draw;

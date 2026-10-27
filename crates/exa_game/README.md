@@ -95,7 +95,17 @@ checkpoint exists, which the next load copies back. A save's
 database (id-sorted lookup and lazy record), the same lookup the original
 uses. The original's world
 databases, character placement export and level sections are not exported
-yet, so a save made from nothing is not loadable by the original.
+yet, so a save made from nothing is not loadable by the original. The
+level-transition rules (`save_level`): the spawn height (108.18 less 11.1
+per body extent, plus 5 or 13 cm over the probed floor), the six follower
+offsets rotated by the player's heading, the duplicate-motile list and the
+follower re-attach (UID and controls re-created, carry cleared, the
+minimum distance raised to 5 cm), the menu background scene
+(`menuscene.rfc`, fog 1.8, view (0, 500, 700), target 200 cm down the z
+axis), the `<locale>.rft` terrain name and the scene-content classifier.
+The arena's save-id pass also classifies a re-added item onto its shelf
+(with flag `0x400`, once), flushes a scene character's items and registers
+its world record, and compacts the stash, employee and record lists.
 
 Character creation (`create`): the record's gear (four hand items, its
 worn list and its carried list), the mode filters (story background 0 keeps

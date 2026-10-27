@@ -83,6 +83,27 @@ pub const GRID_BACKGROUND: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 /// The lightning tint the fog takes.
 pub const LIGHTNING_FOG: [f32; 3] = [0.2, 0.3, 1.0];
 
+/// The indoor preset's fog distance (the fog spans this squared times the
+/// far plane, plus 100).
+pub const INDOOR_FOG_DISTANCE: f32 = 2.0;
+/// The indoor preset's global light: the same grey at full strength.
+pub const INDOOR_GLOBAL_LIGHT: [f32; 4] = [0.75, 0.75, 0.75, 0.75];
+/// The outdoor preset's fog distance at a clear sky; the rain and cloud
+/// branches replace it.
+pub const OUTDOOR_FOG_DISTANCE: f32 = 0.6;
+/// The outdoor preset's far plane.
+pub const OUTDOOR_FAR_PLANE: f32 = 100_000.0;
+/// The outdoor preset's fixed azimuth.
+pub const OUTDOOR_AZIMUTH: f32 = -0.31;
+/// The outdoor preset's global light: grey at 0.6 strength.
+pub const OUTDOOR_GLOBAL_LIGHT: [f32; 4] = [0.75, 0.75, 0.75, 0.6];
+/// The outdoor preset's first fog term at a clear sky.
+pub const OUTDOOR_FOG_BASE: f32 = 0.6;
+/// The outdoor preset's fog falloff per cloudiness squared.
+pub const OUTDOOR_FOG_CLOUD: f32 = 0.03;
+/// A cloud factor over this much overcasts the sky.
+pub const OUTDOOR_CLOUDY: f32 = 1.5;
+
 /// The sRGB transfer function, as the original's colour helper computes it:
 /// the knee test and the linear segment in double precision, the ratio
 /// truncated to a float before the power (a NaN takes the curve). The
@@ -598,6 +619,21 @@ pub struct FrameFog {
     pub far: f32,
 }
 
+/// What the outdoor preset drew.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OutdoorPreset {
+    /// The time of day, 0 midnight … 1 midnight.
+    pub time_of_day: f32,
+    /// The cloud factor (1.5 is a clear sky).
+    pub cloudiness: f32,
+    /// The fog distance the weather settled on.
+    pub fog_distance: f32,
+    /// The wind strength.
+    pub wind: f32,
+    /// The rain target; zero when it does not rain.
+    pub rain: f32,
+}
+
 /// The scene environment.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SceneEnvironment {
@@ -651,6 +687,8 @@ pub struct SceneEnvironment {
     pub far_plane: f32,
     /// How fast the time of day runs, days a second; 0 stops it.
     pub time_speed: f32,
+    /// The weather preset's wind strength, 0 indoors.
+    pub wind: f32,
     /// The frame the environment last produced.
     pub frame: Frame,
     /// Whether colours are worked in linear light (the original's setting).
@@ -711,6 +749,7 @@ impl SceneEnvironment {
             sun_dim: 0.0,
             far_plane: DEFAULT_FAR_PLANE,
             time_speed: 0.0,
+            wind: 0.0,
             frame: Frame {
                 background: [0.0; 3],
                 fog: None,
@@ -776,6 +815,120 @@ impl SceneEnvironment {
         }
         self.background = GRID_BACKGROUND;
         self.fog.colour = DEFAULT_FOG_COLOUR;
+    }
+
+    /// The indoor/underground preset: no sky, fog at distance 2 with a
+    /// 50 000 cm far plane, a full-strength grey global light, a black
+    /// background and mid-grey fog, no wind and no rain. It replaced the
+    /// fixed values a scene's plug-in starts from; the fog variants below
+    /// only change the distance afterwards.
+    pub fn apply_indoor_preset(&mut self) {
+        self.sky = false;
+        self.sun_light = false;
+        self.far_plane = DEFAULT_FAR_PLANE;
+        self.fog.distance = INDOOR_FOG_DISTANCE;
+        self.update_fog_span();
+        self.set_global_light(INDOOR_GLOBAL_LIGHT);
+        self.background = [0.0, 0.0, 0.0, 1.0];
+        self.fog.colour = [0.5, 0.5, 0.5, 1.0];
+        self.fog.current_colour = [0.5, 0.5, 0.5];
+        self.tint = [1.0; 4];
+        self.wind = 0.0;
+        self.weather.rain = 0.0;
+        self.weather.target = 0.0;
+        self.weather.raining = false;
+        self.weather.flash = false;
+    }
+
+    /// A fog variant of [`Self::apply_indoor_preset`]: the base then the
+    /// fog distance the variant stores.
+    pub fn apply_indoor_preset_with_fog(&mut self, distance: f32) {
+        self.apply_indoor_preset();
+        self.fog.distance = distance;
+        self.update_fog_span();
+    }
+
+    /// The outdoor arena preset: a generated sky, a 100 000 cm far plane,
+    /// a 0.6 fog distance before the weather shapes it, the grey 0.6
+    /// global light, and a seeded draw of the time of day, the rain, the
+    /// fog distance, the cloudiness and the wind.
+    ///
+    /// The original draws from its shared linear-congruential generator:
+    /// the time of day is day (0.32…0.74) unless `night_allowed` and the
+    /// six-way roll comes up zero, then night (0.76…1.0); rain on three of
+    /// seven rolls. The river of draws is preserved exactly, including the
+    /// thunder roll a rain target above 0.75 makes inside the rain setter.
+    pub fn apply_outdoor_preset(
+        &mut self,
+        night_allowed: bool,
+        seed: u32,
+        now: u32,
+    ) -> OutdoorPreset {
+        let mut rng = WeatherRng::new(seed);
+        self.sky = true;
+        self.sun_light = true;
+        self.far_plane = OUTDOOR_FAR_PLANE;
+        self.fog.distance = OUTDOOR_FOG_DISTANCE;
+        self.update_fog_span();
+        self.set_global_light(OUTDOOR_GLOBAL_LIGHT);
+        self.azimuth = OUTDOOR_AZIMUTH;
+        let day = !night_allowed || rng.below(6) != 0;
+        let time_of_day = if day {
+            rng.unit() * 0.42 + 0.32
+        } else {
+            rng.unit() * 0.24 + 0.76
+        };
+        let mut rain = 0.0;
+        let cloudiness;
+        let wind;
+        if rng.below(7) < 3 {
+            let target = rng.unit() * 0.9 + 0.1;
+            // The rain setter schedules thunder with its own draw when the
+            // target is over 0.75; the shared stream advances there too.
+            self.set_rain(target, now, &mut rng);
+            self.weather.rain = target - 0.01;
+            rain = target;
+            let shape = (2.0 - target) * target;
+            let roll = rng.unit();
+            self.fog.distance = (0.5 - shape * 0.15) - (0.1 - shape * 0.05) * roll;
+            self.update_fog_span();
+            cloudiness = rng.unit() * 0.25 + self.weather.rain * 0.3 + 1.95;
+            wind = rng.unit() * 0.3 + 0.3;
+        } else {
+            cloudiness = rng.unit() + 1.0;
+            // (1 − time) − (1 − time)^16, the 16th power by five squarings
+            // and multiplies as the original's exponentiation by squaring.
+            let base = 1.0 - time_of_day;
+            let mut power = base;
+            let mut factor = 1.0f32;
+            let mut bits = 0x10u32;
+            while bits != 0 {
+                if bits & 1 != 0 {
+                    factor *= power;
+                }
+                power *= power;
+                bits >>= 1;
+            }
+            let falloff = base - factor;
+            let roll = rng.unit();
+            self.fog.distance = (OUTDOOR_FOG_BASE - cloudiness * cloudiness * OUTDOOR_FOG_CLOUD)
+                - falloff * falloff * roll * 0.16;
+            self.update_fog_span();
+            self.set_rain(0.0, now, &mut rng);
+            self.weather.rain = 0.0;
+            wind = rng.unit() * 0.5 + 0.5;
+        }
+        self.cloudiness = cloudiness;
+        self.wind = wind;
+        self.time_of_day = time_of_day;
+        self.set_sun_position(self.azimuth, self.time_of_day);
+        OutdoorPreset {
+            time_of_day,
+            cloudiness,
+            fog_distance: self.fog.distance,
+            wind,
+            rain,
+        }
     }
 
     /// Places the sun or moon for an azimuth and time of day, and updates
@@ -1326,6 +1479,73 @@ mod tests {
         env.fog.distance = 1.0;
         env.update_fog_span();
         assert_eq!(env.fog.span, 10_100.0);
+    }
+
+    #[test]
+    fn the_indoor_preset_matches_the_original_numbers() {
+        let mut env = SceneEnvironment::new(5);
+        env.set_ambient([0.5, 0.4, 0.3, 1.0]);
+        env.background = [0.2, 0.2, 0.2, 1.0];
+        env.fog.distance = 1.0;
+        env.wind = 2.0;
+        env.apply_indoor_preset();
+        assert!(!env.sky && !env.sun_light);
+        assert_eq!(env.far_plane, 50_000.0);
+        assert_eq!(env.fog.distance, 2.0);
+        // 2² · 50 000 + 100.
+        assert_eq!(env.fog.span, 200_100.0);
+        assert_eq!(env.fog.near, 0.0);
+        assert_eq!(env.background, [0.0, 0.0, 0.0, 1.0]);
+        assert_eq!(env.fog.colour, [0.5, 0.5, 0.5, 1.0]);
+        assert_eq!(env.tint, [1.0; 4]);
+        assert_eq!(env.wind, 0.0);
+        // 0.75 through the linear-light curve.
+        assert!((env.global_light[0] - 0.522_521_6).abs() < 1e-6);
+        assert_eq!(env.global_light[3], 0.75);
+        assert_eq!(env.weather.rain, 0.0);
+        assert_eq!(env.weather.target, 0.0);
+        // The ambient is not part of the preset.
+        assert_eq!(env.ambient, [0.5, 0.4, 0.3, 1.0]);
+    }
+
+    #[test]
+    fn the_indoor_fog_variants_set_their_distances() {
+        let mut env = SceneEnvironment::new(5);
+        env.apply_indoor_preset_with_fog(1.8);
+        assert!((env.fog.span - 162_100.0).abs() < 0.05);
+        env.apply_indoor_preset_with_fog(1.4);
+        assert!((env.fog.span - 98_100.0).abs() < 0.05);
+        env.apply_indoor_preset_with_fog(2.0);
+        assert!((env.fog.span - 200_100.0).abs() < 0.05);
+    }
+
+    #[test]
+    fn the_outdoor_preset_draws_its_weather_in_the_original_order() {
+        let mut env = SceneEnvironment::new(5);
+        let drawn = env.apply_outdoor_preset(false, 7, 0);
+        assert!(env.sky && env.sun_light);
+        assert_eq!(env.far_plane, 100_000.0);
+        assert_eq!(env.azimuth, OUTDOOR_AZIMUTH);
+        assert_eq!(env.wind, drawn.wind);
+        assert_eq!(env.time_of_day, drawn.time_of_day);
+        assert!(drawn.time_of_day >= 0.32 && drawn.time_of_day < 0.74);
+        assert_eq!(env.weather.rain, (drawn.rain - 0.01).max(0.0));
+    }
+
+    #[test]
+    fn the_outdoor_preset_can_be_forced_to_day() {
+        let mut env = SceneEnvironment::new(5);
+        // With nights allowed, seed 0's first six-way roll is zero and
+        // takes the night path; 0x12345678 rolls a four and stays day.
+        let drawn = env.apply_outdoor_preset(true, 0x1234_5678, 0);
+        assert!(drawn.time_of_day >= 0.32 && drawn.time_of_day < 0.74);
+        let mut other = SceneEnvironment::new(5);
+        let night = other.apply_outdoor_preset(false, 0, 0);
+        // Without the night roll the first draw is always a day time.
+        assert!(night.time_of_day >= 0.32 && night.time_of_day < 0.74);
+        let mut third = SceneEnvironment::new(5);
+        let dark = third.apply_outdoor_preset(true, 0, 0);
+        assert!(dark.time_of_day >= 0.76 && dark.time_of_day < 1.0);
     }
 
     #[test]
