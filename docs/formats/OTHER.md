@@ -1022,6 +1022,16 @@ tick.
   below 1 stores no links. Otherwise that many 16-byte links follow. After
   every node is read, each node but the first subtracts the first node's x
   and y.
+- **A saved character's power list** (`exa_formats::power_tree::read_saved_powers`):
+  the same header and nodes, but only each node's word and the end of its
+  first link (its prerequisite, one-based; 0 for no link) are kept; the
+  rest is skipped. A short file, a short node or a negative count is an
+  error. The record's re-validation
+  (`exa_game::thaum::tree::validate_saved_power`) gives each entry the flags
+  of the last known pair whose word, under `0xff0f_ffff`, equals the
+  entry's; the saved copy of a power (the last entry under `0x0e0f_ffff`)
+  is added with `0x9fff` when it is not the first entry and its first line's
+  prerequisite is learnt.
 - **Text chunk**: first word `0xABCD0000`, then five words, then a 16-byte
   head whose last word is the *last* string's index, so the chunk holds one
   more string than that count. One more offset than that count follows,

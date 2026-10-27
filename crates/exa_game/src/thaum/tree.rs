@@ -79,6 +79,12 @@
 //!   focus item, is how many running powers a body may keep; the rest are
 //!   told to end.
 //!
+//! - **Saved powers** ([`validate_saved_power`]): loading a character gives
+//!   each saved power the flags of the last record pair it matches and adds
+//!   the power with `0x9fff` when it is not the first entry and its first
+//!   link's prerequisite is learnt. The save chunk's reader is
+//!   `exa_formats::power_tree::read_saved_powers`; no character save loader
+//!   calls either yet.
 //! - **Granting** ([`grant_power`]): the game's grant routine adds a power
 //!   to a record that holds Insight's seventh technique when its node's
 //!   prerequisite is learnt. Nothing calls it from the running game yet.
@@ -1814,6 +1820,73 @@ pub fn grant_power(
     match known
         .iter_mut()
         .find(|pair| pair.power & word::MATCH == power)
+    {
+        Some(pair) => *pair = entry,
+        None => known.push(entry),
+    }
+    true
+}
+
+/// The flags a saved power is re-validated with.
+pub const SAVED_FLAGS: u32 = 0x9fff;
+
+/// Re-validates one of a saved character's powers against the record, as
+/// loading a character does: [`exa_formats::power_tree::read_saved_powers`]
+/// gives the list, and the record's known pairs give each entry its flags
+/// (the last pair whose word, under `0xff0f_ffff`, equals the entry's power
+/// wins). The saved copy of `power` is the last entry whose word, under
+/// `0x0e0f_ffff`, equals it; it must not be the first entry, its first
+/// link's end must name an entry, and that prerequisite's flags must carry
+/// [`LEARNED`]. The power is then added with [`SAVED_FLAGS`] (or the first
+/// pair that matches it is replaced). Returns whether it was added.
+///
+/// A prerequisite past the saved list reads as unlearnt, where the original
+/// reads past its array.
+pub fn validate_saved_power(
+    saved: &[exa_formats::power_tree::SavedPower],
+    known: &mut Vec<KnownPower>,
+    power: u32,
+) -> bool {
+    let mut marks = vec![0u32; saved.len()];
+    for (index, entry) in saved.iter().enumerate() {
+        for pair in known.iter() {
+            if pair.power & 0xff0f_ffff == entry.power {
+                marks[index] = pair.flags;
+            }
+        }
+    }
+    let mut target = None;
+    for (index, entry) in saved.iter().enumerate() {
+        if entry.power & 0x0e0f_ffff == power {
+            target = Some(index);
+        }
+    }
+    let Some(target) = target else {
+        return false;
+    };
+    if target == 0 {
+        return false;
+    }
+    let prerequisite = saved[target].prerequisite;
+    if prerequisite == 0 {
+        return false;
+    }
+    let Some(at) = usize::try_from(prerequisite - 1)
+        .ok()
+        .filter(|at| *at < marks.len())
+    else {
+        return false;
+    };
+    if marks[at] & LEARNED == 0 {
+        return false;
+    }
+    let entry = KnownPower {
+        power,
+        flags: SAVED_FLAGS,
+    };
+    match known
+        .iter_mut()
+        .find(|pair| pair.power & 0x0e0f_ffff == power)
     {
         Some(pair) => *pair = entry,
         None => known.push(entry),
@@ -3905,6 +3978,66 @@ mod tests {
                 flags: LEARNED | PICKED
             }]
         );
+    }
+
+    #[test]
+    fn a_saved_power_needs_a_learnt_prerequisite() {
+        use exa_formats::power_tree::SavedPower;
+        let saved = [
+            SavedPower {
+                power: 0x101,
+                prerequisite: 0,
+            },
+            SavedPower {
+                power: 0x102,
+                prerequisite: 1,
+            },
+            SavedPower {
+                power: 0x103,
+                prerequisite: 3,
+            },
+        ];
+        let mut known = vec![KnownPower {
+            power: 0x101,
+            flags: LEARNED,
+        }];
+        // The second entry names the first, which is learnt.
+        assert!(validate_saved_power(&saved, &mut known, 0x102));
+        assert_eq!(
+            known[1],
+            KnownPower {
+                power: 0x102,
+                flags: SAVED_FLAGS
+            }
+        );
+        // The first entry is never re-validated.
+        assert!(!validate_saved_power(&saved, &mut known, 0x101));
+        // The third names a prerequisite past the list: unlearnt.
+        assert!(!validate_saved_power(&saved, &mut known, 0x103));
+        // An entry without a prerequisite is refused.
+        let flat = [SavedPower {
+            power: 0x101,
+            prerequisite: 0,
+        }];
+        assert!(!validate_saved_power(&flat, &mut known, 0x101));
+        // The same power again replaces the first matching pair.
+        let twice = [
+            SavedPower {
+                power: 0x101,
+                prerequisite: 0,
+            },
+            SavedPower {
+                power: 0x10_0102,
+                prerequisite: 1,
+            },
+        ];
+        known.push(KnownPower {
+            power: 0x102,
+            flags: 0,
+        });
+        assert!(validate_saved_power(&twice, &mut known, 0x102));
+        assert_eq!(known[1].flags, SAVED_FLAGS);
+        assert_eq!(known[2].flags, 0);
     }
 
     #[test]
