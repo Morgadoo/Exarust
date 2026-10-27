@@ -53,7 +53,7 @@ and the grid's rooms; portal clipping is next (see
   (`AddPass`, `Textured`, `Masked`, `BaseNrm`), every per-layer value the
   passes upload, the block palette and mask quads, `TexPos`, the
   wet-floor gloss term (wired into `terrain.wesl` through the palette's
-  wetness) and the selection's cut-offs, light-distance sort, set stealing
+  wetness) and the selection's look point, cut-offs, light-distance sort, set stealing
   and one-block-a-frame rule; `terrain::wireframe` draws each block's
   triangle edges as lines under `EXA_TERRAIN_WIRE` (the original's debug
   wireframe hook). Grass and

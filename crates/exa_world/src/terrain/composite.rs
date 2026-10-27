@@ -17,18 +17,13 @@
 //! (Terrain) records the pass table and `docs/formats/TERRAIN.md` the
 //! palette fields.
 
-use bevy::math::{Vec2, Vec3};
+use bevy::math::Vec2;
 use exa_formats::terrain::{TerrainMaterial as PaletteMaterial, TerrainTexture};
-use exa_physics::engine_math::{floor_to_i32, round_to_i64};
+use exa_physics::engine_math::round_to_i64;
 
 /// Side of a composite texture set at level 0 (the original's stored 32).
 pub const TEXTURE_BASE: u32 = 32;
-/// High-resolution sets in the pool (21).
-pub const HIGH_SETS: usize = 21;
-/// Low-resolution sets in the pool (43).
-pub const LOW_SETS: usize = 43;
-/// Blocks the selector keeps in its list (189).
-pub const SELECTED_LIMIT: usize = 189;
+pub use super::stream::{HIGH_SETS, LOW_SETS, MAX_SELECTED};
 /// Blocks along a 48 m tile's side (8).
 pub const BLOCK_SIDE: u32 = 8;
 /// The tile's block level (3): the selector and `TexPos` use it.
@@ -63,30 +58,6 @@ pub const MASK_ATLAS_BYTES: usize = 0x20_0000;
 pub const KERNEL_RADIUS: usize = 120;
 /// The noise maps' side (480 vertices, shared with the blend rules).
 pub const NOISE_SIDE: usize = 480;
-
-/// How far along the viewer's axis the selection's look point sits
-/// (centimetres; the original's −1000 scale).
-pub const FOCUS_REACH: f32 = -1000.0;
-/// The original's one over a block's 600 cm side, as the stored float.
-const INVERSE_BLOCK_CM: f32 = 0.001_666_666_7;
-
-/// The point the block selection measures from, in metres on the X/Z
-/// plane: the viewer's position plus its axis times −1000 cm, then each of
-/// X and Z snapped to the centre of its 6 m block
-/// (`floor(c · 0.0016666667) · 600 + 300` cm, the engine's round-down
-/// helper). Without a viewer the original measures from the origin
-/// (`None`). `viewer_cm` is in centimetres; `axis` is the vector the scene
-/// keeps beside the viewer's position (its sign is the scene's: not
-/// re-traced).
-pub fn selection_focus(viewer: Option<(Vec3, Vec3)>) -> Vec2 {
-    let Some((viewer_cm, axis)) = viewer else {
-        return Vec2::ZERO;
-    };
-    // The packed multiply-add: the axis times the reach, plus the position.
-    let point = axis * FOCUS_REACH + viewer_cm;
-    let snap = |c: f32| (i64::from(floor_to_i32(c * INVERSE_BLOCK_CM)) * 600 + 300) as f32;
-    Vec2::new(snap(point.x), snap(point.z)) / 100.0
-}
 
 /// The original's integer log2 helper: `floor(log2(value))`, 0 for 0 and 1.
 pub fn floor_log2(mut value: u32) -> i32 {
@@ -811,7 +782,7 @@ impl CompositeSelector {
     }
 
     /// Runs one frame of the selection from `focus` (metres, as
-    /// [`selection_focus`] gives it; the blocks are walked in their list
+    /// [`super::stream::composite_focus`] gives it; the blocks are walked in their list
     /// order, which the original takes tile by tile): neighbours in and out of the list,
     /// sort keys, the composite order, and at most one block baked once a
     /// block that is not blank needs work. Returns whether anything was baked.
@@ -837,7 +808,7 @@ impl CompositeSelector {
             let kept = d2 <= FAR_D2 || d2.is_nan();
             if kept {
                 if self.blocks[index].selection.is_none() {
-                    if self.selected.len() >= SELECTED_LIMIT {
+                    if self.selected.len() >= MAX_SELECTED {
                         continue;
                     }
                     self.blocks[index].selection = Some(self.selected.len());
@@ -1787,22 +1758,6 @@ mod tests {
         // The traded low set never left the block pair, so no low set was
         // taken from the pool.
         assert_eq!(sel.pools.low_free(), 43);
-    }
-
-    #[test]
-    fn the_selection_focus_is_the_block_centre_behind_the_axis() {
-        // No viewer: the origin.
-        assert_eq!(selection_focus(None), Vec2::ZERO);
-        // Viewer at (250, 0, −50) cm with the axis (−1, 0, 0.5): the point
-        // is (1250, 0, −550) cm, in the blocks starting at 1200 and −600.
-        let focus = selection_focus(Some((
-            Vec3::new(250.0, 0.0, -50.0),
-            Vec3::new(-1.0, 0.0, 0.5),
-        )));
-        assert_eq!(focus, Vec2::new(15.0, -3.0));
-        // Exactly on a block edge (600 cm) the round-down keeps the block.
-        let focus = selection_focus(Some((Vec3::new(600.0, 0.0, 0.0), Vec3::ZERO)));
-        assert_eq!(focus, Vec2::new(9.0, 3.0));
     }
 
     #[test]

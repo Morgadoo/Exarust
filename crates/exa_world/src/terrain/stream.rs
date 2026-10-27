@@ -86,10 +86,10 @@ pub fn select_composites(
         let (dx, dz) = ((centre.x - focus.x) * 100.0, (centre.y - focus.y) * 100.0);
         let d2 = dz * dz + dx * dx;
         // Kept unless it compares above the cut-off (NaN is kept).
-        if d2 <= 19_713_600.0 || d2.is_nan() {
+        if d2 <= super::composite::FAR_D2 || d2.is_nan() {
             out.push(CompositeBlock {
                 index,
-                high: d2 < 2_250_000.0,
+                high: d2 < super::composite::NEAR_D2,
             });
         }
     }
