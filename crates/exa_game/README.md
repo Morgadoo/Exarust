@@ -573,7 +573,10 @@ and swing, the mind domain for the second and third codes, the force domain
 for the first and third, and the class word) and the background-unlock bit.
 
 The main menu screen's F1 now takes the flow's mode, phase and page state,
-and its in-game page in a session.
+and its in-game page in a session; while the page is open the flow's
+dialogue and session hook are held, as the original's frame task does. The
+menu rows' text program is `menu_text` (the unit's one shader, still to be
+bound on the draw path).
 
 ## Main menu screen
 

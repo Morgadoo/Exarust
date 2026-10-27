@@ -102,6 +102,9 @@ pub const FIRST_FIGHT: i32 = 1;
 /// The role a practice mode's player starts with.
 pub const PRACTICE_ROLE: u32 = 0x10;
 
+/// The motion a practice start and each next fight asks the player for.
+pub const PRACTICE_MOTION: u32 = 3;
+
 /// The victory screen's menu number.
 pub const MENU_WON: u32 = 2;
 /// The next-fight screen's menu number.
@@ -858,15 +861,51 @@ pub struct Unlocks {
 
 /// The settings script's hook name the game main unit registers.
 pub const SCRIPT_HOOK: &str = "GameEvent";
+
+/// One settings-file key the game main unit registers: its name and the
+/// value kind the settings unit is told to read (`4` size, `5` integer,
+/// `3` boolean).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SettingsKey {
+    pub name: &'static str,
+    pub kind: u32,
+}
+
 /// The settings keys the game main unit registers. Their values are read by
 /// the units named next to them, not here.
-pub const SETTINGS_KEYS: [&str; 6] = [
-    "CursorSize",
-    "CursorInt",
-    "CursorCom",
-    "FirstRun",
-    "ShowGameTips",
-    "CheckPoints",
+pub const SETTINGS_KEYS: [SettingsKey; 6] = [
+    SettingsKey {
+        name: "CursorSize",
+        kind: 4,
+    },
+    SettingsKey {
+        name: "CursorInt",
+        kind: 5,
+    },
+    SettingsKey {
+        name: "CursorCom",
+        kind: 5,
+    },
+    SettingsKey {
+        name: "FirstRun",
+        kind: 3,
+    },
+    SettingsKey {
+        name: "ShowGameTips",
+        kind: 3,
+    },
+    SettingsKey {
+        name: "CheckPoints",
+        kind: 3,
+    },
+];
+
+/// The strings the unit releases at shutdown: the two menu theme names and
+/// its text shader source.
+pub const FINALISED_STRINGS: [&str; 3] = [
+    exa_ui::menu::MENU_THEME.0,
+    exa_ui::menu::MENU_THEME_DNB.0,
+    crate::menu_text::MENU_TEXT_SHADER,
 ];
 
 impl Unlocks {
@@ -1009,6 +1048,11 @@ pub enum Step {
     DropSave,
     /// Keep the save just written as the checkpoint.
     Checkpoint,
+    /// The screen fades out over the level change (the exit's fade bit).
+    FadeOut,
+    /// The AI takes over the player's body for the level change (the exit's
+    /// fade bit).
+    AiHandover,
     /// Leave the world: props, bodies, particles, blood and the level.
     TeardownWorld,
     /// Show the end-of-session menu.
@@ -1066,6 +1110,9 @@ pub enum Step {
     Transition,
     /// Leave the application (the title's EXIT).
     Quit,
+    /// The unit's own tables are released at shutdown (the scripted-mode
+    /// hook table and the three menu strings).
+    Finalise,
 }
 
 /// The action behind the transition screen.
@@ -1648,6 +1695,7 @@ impl Flow {
             Step::PracticePlayer {
                 role: PRACTICE_ROLE,
             },
+            Step::RequestAction(PRACTICE_MOTION),
             Step::PlacePlayer(placement),
             Step::Camera(camera::frame_point(PRACTICE_POINT, true, false, viewport)),
             Step::Music {
@@ -1939,6 +1987,7 @@ impl Flow {
                 red_bits: step.red_bits,
                 yellow_bits: step.yellow_bits,
             },
+            Step::RequestAction(PRACTICE_MOTION),
             Step::PlacePlayer(placement),
             Step::Camera(camera::frame_point(
                 PRACTICE_POINT,
@@ -2176,6 +2225,14 @@ impl Flow {
         self.menu_open = false;
     }
 
+    /// The unit's finalisation: the script hook is forgotten and its tables
+    /// released. Exarust has no globals to tear down, so this is the step the
+    /// host runs at shutdown.
+    pub fn finalise(&mut self) -> Vec<Step> {
+        self.custom_hook = false;
+        vec![Step::Finalise]
+    }
+
     /// The end-of-life story CONTINUE of a save with no record: the player
     /// data is written back, then the respawn runs behind the transition.
     pub fn continue_after_death(&mut self, now: u32) -> Vec<Step> {
@@ -2221,6 +2278,10 @@ impl Flow {
     /// out again for the current client.
     pub fn quit_to_menu(&mut self) -> Vec<Step> {
         let mut steps = self.leave_session();
+        // The switch to the title clears the reconstruction state and its
+        // checkpoint record, as every mode switch does.
+        self.story.reconstruction = 0;
+        self.story.checkpoint = 0;
         self.mode = Mode::Menu;
         self.phase = Phase::Menu;
         self.saved_phase = Phase::Menu;
@@ -2298,6 +2359,10 @@ impl Flow {
         });
         if checkpoint {
             steps.push(Step::Checkpoint);
+        }
+        if exit.flags & 1 != 0 {
+            steps.push(Step::FadeOut);
+            steps.push(Step::AiHandover);
         }
         steps.extend(self.transition(
             Action::Locale {
@@ -3198,6 +3263,8 @@ mod tests {
                     drop_on_low_health: false
                 },
                 Step::Checkpoint,
+                Step::FadeOut,
+                Step::AiHandover,
                 Step::Transition,
             ]
         );
@@ -3225,6 +3292,9 @@ mod tests {
         let steps = flow.level_exit(next, held, DEAD, 2000);
         assert_eq!(steps[0], Step::GameGui(false));
         assert!(!steps.contains(&Step::Checkpoint));
+        // Without the fade bit nothing fades or hands over.
+        assert!(!steps.contains(&Step::FadeOut));
+        assert!(!steps.contains(&Step::AiHandover));
     }
 
     #[test]
@@ -3587,8 +3657,9 @@ mod tests {
         assert_eq!(Unlocks::read_word(&[1, 2, 3, 4]), Some(0x0403_0201));
         assert_eq!(Unlocks::read_word(&[]), None);
         assert_eq!(SCRIPT_HOOK, "GameEvent");
+        let names: Vec<&str> = SETTINGS_KEYS.iter().map(|key| key.name).collect();
         assert_eq!(
-            SETTINGS_KEYS,
+            names,
             [
                 "CursorSize",
                 "CursorInt",
@@ -3718,6 +3789,70 @@ mod tests {
         }));
         assert!(!steps.contains(&Step::ClearStoryFlag));
         assert!(steps.contains(&Step::Transition));
+    }
+
+    #[test]
+    fn back_to_the_title_clears_the_reconstruction_state() {
+        let mut flow = Flow {
+            mode: Mode::Story,
+            phase: Phase::Ended,
+            story: StoryState {
+                reconstruction: REBUILDABLE,
+                checkpoint: 9,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let scale = gui_scale(flow.viewport.height as i32);
+        let steps = flow.quit_to_menu();
+        assert_eq!(flow.mode, Mode::Menu);
+        assert_eq!(flow.phase, Phase::Menu);
+        assert_eq!(flow.story.reconstruction, 0);
+        assert_eq!(flow.story.checkpoint, 0);
+        assert!(flow.menu_open);
+        assert!(steps.contains(&Step::MenuHelp(true)));
+        assert!(steps.contains(&Step::GuiScale(scale)));
+        assert_eq!(
+            steps
+                .iter()
+                .filter(|step| matches!(step, Step::Music { .. }))
+                .count(),
+            1
+        );
+        assert_eq!(steps.last(), Some(&Step::SessionTask(false)));
+    }
+
+    #[test]
+    fn the_units_settings_keys_and_finalisation() {
+        let names: Vec<&str> = SETTINGS_KEYS.iter().map(|key| key.name).collect();
+        assert_eq!(
+            names,
+            [
+                "CursorSize",
+                "CursorInt",
+                "CursorCom",
+                "FirstRun",
+                "ShowGameTips",
+                "CheckPoints"
+            ]
+        );
+        let kinds: Vec<u32> = SETTINGS_KEYS.iter().map(|key| key.kind).collect();
+        assert_eq!(kinds, [4, 5, 5, 3, 3, 3]);
+        assert_eq!(SCRIPT_HOOK, "GameEvent");
+        assert_eq!(
+            FINALISED_STRINGS,
+            [
+                "MenuTheme",
+                "MenuTheme_DnB",
+                crate::menu_text::MENU_TEXT_SHADER
+            ]
+        );
+        let mut flow = Flow {
+            custom_hook: true,
+            ..Default::default()
+        };
+        assert_eq!(flow.finalise(), vec![Step::Finalise]);
+        assert!(!flow.custom_hook);
     }
 
     #[test]

@@ -737,7 +737,9 @@ calling the rest of the game, so the order is testable.
   transition; a player with neither dead bit loses the controls. Every exit
   saves (without the death rule); levels below 7 also keep a checkpoint when
   `CheckPoints` is on (level 6 always) and the save holds neither
-  `exanima04` nor the level.
+  `exanima04` nor the level. An exit whose fade bit is set also fades the
+  screen out and hands the player's body to the AI before the transition.
+  The locale's ambient music is the host's.
 - **The quit autosave** is the application's quit callback: in the paused
   phase the arena unit's pause callback runs; while playing, a story saves
   with the death rule, an arena saves from its in-game page or forfeits from
@@ -808,7 +810,11 @@ otherwise, with the flow's mode, phase and page state. The screen follows
   disabled, grey at half alpha; the selected row is drawn last in white with
   the menu's text shader, a third of a unit lower while it is pressed. A row
   with marks gets `[` or `[[` appended. With no selection no row is singled
-  out.
+  out. The menu's text shader is the game-main unit's own small program
+  (`exa_game::menu_text`): it samples the glyph, mixes a tint from the
+  glyph's red channel (`(1, 0.75, 0.4)` to white), gains it 1.1, tone-maps
+  by `rgb/(0.5 + rgb)·1.5` and multiplies the vertex colour; the rows are
+  still drawn in the base font until its quads take that program.
 - **Selection and click.** The pointer selects the row under it and Up and
   Down move the selection. A press marks the pressed row; its command runs
   on the release over it, or at once on Enter. The commands, by page:
