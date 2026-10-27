@@ -686,7 +686,12 @@ by the tone, `chargen_s` packs `(1, min(0.8·gloss, 1), 0)`, `chargen_n`
 adds `(an − bn)·weight` for each physique layer, and the beard's three
 overlay programs blend the beard's alpha (its colour pass squares it and
 uses the mip-3 alpha; its specular is `a³·0.4`; its normal replaces the
-normal where the beard's colour alpha covers). `compose` runs them per
+normal where the beard's colour alpha covers). The beard is drawn only over
+the map's first quarter-by-quarter corner (the overlay quad spans 0…0.25 of
+the target with the whole beard map on it). `chargen_n` binds at most five
+layers and stops at the first amount not above zero. The callback fills the
+colour target, then the normal target, then the surface target, each with
+its beard overlay and then the apparel layers. `compose` runs them per
 texel and stores the original's sRGB colour target and linear surface and
 normal targets. Nothing feeds the result to the renderer yet: the running
 skin keeps the material tint and the first normal map, because Exarust has

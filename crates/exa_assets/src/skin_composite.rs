@@ -32,6 +32,23 @@ pub const GLOSS_SCALE: f32 = 0.8;
 /// The physique normal layers `chargen_n` can take: `Tex1` to `Tex5`, the
 /// base being `Tex0`.
 pub const MAX_NORMAL_LAYERS: usize = 5;
+/// The share of the skin map's side the beard is drawn over: the overlay
+/// quad spans 0 to 0.25 in both target coordinates while its texture
+/// coordinates span the whole beard map, so the beard fills the map's first
+/// quarter-by-quarter corner (the face) and leaves the rest untouched.
+pub const BEARD_EXTENT: f32 = 0.25;
+
+/// The normal layers the callback binds: the job's layers in order, up to
+/// [`MAX_NORMAL_LAYERS`], stopping at the first whose amount is not above
+/// zero (a NaN amount stops too, as the unordered compare does).
+pub fn bound_normal_layers<T: Copy>(layers: &[(f32, T)]) -> Vec<(f32, T)> {
+    layers
+        .iter()
+        .take(MAX_NORMAL_LAYERS)
+        .take_while(|(amount, _)| *amount > 0.0)
+        .copied()
+        .collect()
+}
 
 /// The shader language's `min`: the second operand when it is strictly below
 /// the first, so a NaN in the first passes through.
@@ -166,7 +183,9 @@ fn sample(tex: &Texels, u: f32, v: f32) -> [f32; 4] {
 
 /// The mip-3 alpha of a beard map at `u`, `v`: an 8×8 box average, the
 /// filter the engine's mip chain applies to the alpha channel. A guess:
-/// the chain's exact box and rounding are not in the pack's functions.
+/// the chain's exact box and rounding are not in the pack's functions. The
+/// overlay's plain `texture` read is taken at the base level (a guess too:
+/// the GPU would pick a coarser level for the four-times minified quad).
 fn sample_blurred_alpha(tex: &Texels, u: f32, v: f32) -> f32 {
     let cx = (u * tex.width as f32).floor() as i64;
     let cy = (v * tex.height as f32).floor() as i64;
@@ -181,7 +200,9 @@ fn sample_blurred_alpha(tex: &Texels, u: f32, v: f32) -> f32 {
 
 /// A generated skin's maps from the race's textures, the character's tone,
 /// the normal layers and an optional beard. `width` and `height` are the
-/// job's side. The layers are in the job's order, amounts first.
+/// job's side. The layers are in the job's order, amounts first; the ones
+/// the callback binds are [`bound_normal_layers`]. The beard covers only the
+/// [`BEARD_EXTENT`] corner, its map stretched over it.
 #[allow(clippy::too_many_arguments)]
 pub fn compose(
     width: usize,
@@ -198,6 +219,7 @@ pub fn compose(
     let mut surface_out = vec![0u8; w * h * 4];
     let mut normal_out = vec![0u8; w * h * 4];
     let byte = |v: f32| crate::paint::byte(v);
+    let bound = bound_normal_layers(layers);
     for y in 0..h {
         for x in 0..w {
             let u = (x as f32 + 0.5) / w as f32;
@@ -207,16 +229,17 @@ pub fn compose(
             let gloss = sample(gloss, u, v);
             let mut surf = specular_texel(gloss[0]);
             let base = sample(normal, u, v);
-            let layer_samples: Vec<(f32, [f32; 2])> = layers
+            let layer_samples: Vec<(f32, [f32; 2])> = bound
                 .iter()
-                .take(MAX_NORMAL_LAYERS)
                 .map(|&(amount, tex)| {
                     let s = sample(tex, u, v);
                     (amount, [s[0], s[1]])
                 })
                 .collect();
             let mut nrm = normal_texel([base[0], base[1]], &layer_samples);
-            if let Some(beard) = beard {
+            if let Some(beard) = beard.filter(|_| u < BEARD_EXTENT && v < BEARD_EXTENT) {
+                // The overlay quad maps the corner onto the whole beard map.
+                let (u, v) = (u / BEARD_EXTENT, v / BEARD_EXTENT);
                 let b = sample(beard.colour, u, v);
                 let blurred = sample_blurred_alpha(beard.colour, u, v);
                 let over = beard_colour(b[3], blurred, beard.tint);
@@ -335,6 +358,17 @@ mod tests {
         assert_eq!(beard_specular(0.5), [0.05, 0.05, 0.05, 0.5]);
     }
 
+    /// The callback binds at most five normal layers and stops at the first
+    /// amount that is not above zero, NaN included.
+    #[test]
+    fn normal_layers_stop_at_the_first_non_positive_amount() {
+        let layers = [(0.5, 1), (0.25, 2), (0.0, 3), (0.75, 4)];
+        assert_eq!(bound_normal_layers(&layers), [(0.5, 1), (0.25, 2)]);
+        assert!(bound_normal_layers(&[(f32::NAN, 1), (0.5, 2)]).is_empty());
+        let six = [(0.1, 0); 6];
+        assert_eq!(bound_normal_layers(&six).len(), 5);
+    }
+
     /// A 1×1 composite: the tone multiplies the stored texel, the gloss
     /// packs, and the maps' bytes are the rounded quantised results.
     #[test]
@@ -362,8 +396,9 @@ mod tests {
         assert_eq!(out.bytes(), 12);
     }
 
-    /// A beard over a flat skin: the diffuse, surface and normal targets
-    /// each blend by the beard alpha, and the normal's z is rebuilt.
+    /// A beard over a flat skin: inside the quarter corner the diffuse,
+    /// surface and normal targets each blend by the beard alpha and the
+    /// normal's z is rebuilt; outside it the skin is untouched.
     #[test]
     fn a_beard_blends_all_three_targets() {
         let colour = tex(1, 1, [255, 255, 255, 255]);
@@ -377,8 +412,8 @@ mod tests {
             tint: [0.4, 0.4, 0.4],
         };
         let out = compose(
-            1,
-            1,
+            8,
+            8,
             [0.0, 0.0, 0.0],
             &colour,
             &gloss,
@@ -386,6 +421,15 @@ mod tests {
             &[],
             Some(&beard),
         );
+        // Texels 0 and 1 of an 8-wide map are inside the corner (centres
+        // 1/16 and 3/16 < 0.25); texel 2 (5/16) is outside.
+        let outside = 2 * 4;
+        assert_eq!(&out.colour[outside..outside + 4], &[0, 0, 0, 255]);
+        assert_eq!(&out.surface[outside..outside + 4], &[255, 0, 0, 255]);
+        assert_eq!(&out.normal[outside..outside + 4], &[128, 128, 255, 255]);
+        let row_two = 2 * 8 * 4;
+        assert_eq!(&out.colour[row_two..row_two + 4], &[0, 0, 0, 255]);
+        assert_eq!(out.colour[4..8], out.colour[..4]);
         // The skin's colour is black, so the result is the beard's own
         // colour scaled by its alpha (the blurred alpha of a uniform map is
         // the same 0.5).
@@ -395,9 +439,9 @@ mod tests {
             assert_eq!(*got, crate::paint::byte(want * o[3]));
         }
         // The surface takes a³·0.4 at the beard's alpha over the skin's
-        // intensity, so red stays high and gloss drops to a few texels.
-        assert!(out.surface[0] > 100 && out.surface[0] < 200);
-        assert!(out.surface[1] > 0 && out.surface[1] < 10);
+        // (1, 0, 0): a = 128/255, so 0.0506·a + (1 − a) = 0.5233 → 133 and
+        // 0.0506·a = 0.0254 → 6.
+        assert_eq!(&out.surface[..3], &[133, 6, 6]);
         // The beard normal's x 191/255 re-encodes unchanged; the skin's 128
         // stays near the middle, so the alpha blend is 0.626 → 160.
         assert_eq!(out.normal[0], 160);
