@@ -2009,14 +2009,12 @@ impl Flow {
         self.practice.start_ms = now;
         self.phase = Phase::Playing;
         self.hook = Hook::Practice;
-        self.end_menu = None;
         let placement = Placement {
             rotation: PRACTICE_ROTATION,
             position: Vec3::new(PRACTICE_POINT.x, self.stand_height, PRACTICE_POINT.z),
         };
-        let mut steps = vec![
-            Step::HideEndMenu,
-            Step::ClosePrelude,
+        let mut steps = self.close_end_menu();
+        steps.extend([
             Step::MenuHelp(false),
             Step::Health {
                 red_bits: step.red_bits,
@@ -2032,7 +2030,7 @@ impl Flow {
             )),
             Step::Hook(Hook::Practice),
             Step::SessionTask(true),
-        ];
+        ]);
         if step.boss {
             let music = practice_boss_music(
                 self.alternative_music,
@@ -2239,14 +2237,20 @@ impl Flow {
         steps
     }
 
+    /// Closes the end-of-session menu and the prelude: what the next-fight
+    /// start and the level-load finish both do before anything else.
+    pub fn close_end_menu(&mut self) -> Vec<Step> {
+        self.end_menu = None;
+        vec![Step::HideEndMenu, Step::ClosePrelude]
+    }
+
     /// The level-load finish behind the transition: the end menu and the
     /// prelude close and the session is playing again. (The original also
     /// clears the pending exit words, saves the level's start state and runs
     /// the scene's own loaded callback, which are the host's.)
     pub fn level_loaded(&mut self) -> Vec<Step> {
         self.phase = Phase::Playing;
-        self.end_menu = None;
-        vec![Step::HideEndMenu, Step::ClosePrelude]
+        self.close_end_menu()
     }
 
     /// The in-game page opened (F1): the session hook and the dialogue stop
@@ -2484,6 +2488,23 @@ impl Flow {
     /// The class select's cancel form's final step: back to the title.
     pub fn cancel_to_menu(&mut self) -> Vec<Step> {
         self.quit_to_menu()
+    }
+
+    /// The class select's own cancel (not behind the transition): a scripted
+    /// mode's end hook runs, the selection form closes and the flow goes
+    /// straight back to the title.
+    pub fn class_cancel_direct(&mut self) -> Vec<Step> {
+        let mut steps = Vec::new();
+        if let Mode::Other(word) = self.mode
+            && word & SCRIPT_MODE_BIT != 0
+        {
+            steps.push(Step::ScriptMode {
+                mode: word,
+                hook: ScriptHook::End,
+            });
+        }
+        steps.extend(self.quit_to_menu());
+        steps
     }
 
     /// The splash's hand-over: the title page is built and shown, and the
@@ -3819,6 +3840,32 @@ mod tests {
         assert!(steps.contains(&Step::Transition));
         let _ = flow.transition_due(600);
         assert_eq!(flow.mode, Mode::Menu);
+        // The class select's direct cancel goes back to the title at once,
+        // after the scripted mode's end hook.
+        let mut flow = Flow {
+            mode: Mode::Other(VERSUS_MODE),
+            phase: Phase::ClassSelect,
+            menu_open: true,
+            ..Default::default()
+        };
+        let steps = flow.class_cancel_direct();
+        assert!(steps.contains(&Step::ScriptMode {
+            mode: VERSUS_MODE,
+            hook: ScriptHook::End
+        }));
+        assert!(!steps.contains(&Step::Transition));
+        assert_eq!(flow.mode, Mode::Menu);
+        assert_eq!(flow.phase, Phase::Menu);
+        // Closing the end menu closes the prelude too and forgets the menu.
+        let mut flow = Flow {
+            end_menu: Some(end_menu(MENU_WON, Mode::Story)),
+            ..Default::default()
+        };
+        assert_eq!(
+            flow.close_end_menu(),
+            vec![Step::HideEndMenu, Step::ClosePrelude]
+        );
+        assert!(flow.end_menu.is_none());
         let mut flow = Flow::default();
         let steps = flow.after_splash();
         assert!(steps.contains(&Step::ShowMenu(Page::Title)));
