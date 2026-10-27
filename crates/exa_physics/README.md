@@ -108,7 +108,10 @@ the grid (`BroadPhase::for_scene`), and the registration walk
 (`sector::registration`) decides from a node's words whether it builds a
 body, only inserts one, registers a static collider or a simulated object.
 Registration's impact sound scale (`sector::impact_scale`, `v = min(2m, 1)
-+ 1`) is the original's. The pair stage buckets parts by their mesh box's
++ 1`) is the original's. The level detection's masks are the original's
+(`sector::static_mask`, `body_mask`, `level_meets`): a collider is 1 and
+gains 4 when flagged or thin and horizontal; a hung body is 1 and a living
+foot 4; a pair is skipped when the masks share a bit. The pair stage buckets parts by their mesh box's
 world centre and first asks that the awake part's sphere touch the
 other's mesh sphere; a small sector's all-pairs walk
 (`body::Pairs::all_pairs`) adds the original's two point-to-mesh-box

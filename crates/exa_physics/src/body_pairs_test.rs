@@ -944,3 +944,30 @@ fn the_scene_flags_choose_the_grid_or_all_pairs() {
     assert_eq!(Pairs::for_scene(0).phase(), BroadPhase::AllPairs);
     assert_eq!(Pairs::for_scene(0x400_0000).phase(), BroadPhase::Cells);
 }
+
+/// A striker meeting a living limb takes the hit event: the pair is kept,
+/// its touch carries the mean point, the summed push and the smoothed
+/// travel, and neither side is struck.
+#[test]
+fn a_striker_pair_takes_the_hit_event_and_no_impact() {
+    use crate::part::PartState;
+    let mut a = ball(1, 11, Vec3::ZERO, 0.1);
+    let mut b = ball(2, 11, Vec3::X * 0.25, 0.1);
+    a.parts[0].state = PartState(PartState::HELD | PartState::STRIKE_CHAIN);
+    b.parts[0].state = PartState(PartState::LIMB | PartState::DYNAMIC);
+    a.set_velocity(Vec3::X * 2.0);
+    let mut stages = pairs();
+    for _ in 0..40 {
+        step(&mut [&mut a, &mut b], NONE, &mut stages);
+        if let Some(t) = the_pairs(&stages).touches().first() {
+            assert!(t.met && t.hits > 0, "{t:?}");
+            assert!(t.hit_event, "{t:?}");
+            assert_eq!(t.struck, [None, None]);
+            assert_eq!(t.impact(), None);
+            // The mean point is between the two balls' centres.
+            assert!((t.point.x - 0.15).abs() < 0.05, "{t:?}");
+            return;
+        }
+    }
+    panic!("the two balls never touched");
+}

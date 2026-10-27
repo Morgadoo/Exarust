@@ -563,3 +563,23 @@ fn impact_scales_follow_the_mobility() {
     // The processor's minimum gives way to 1 on a NaN mobility.
     assert_eq!(impact_scale(f32::NAN, true).volume, 1.7071068);
 }
+
+/// The level detection's masks: a collider is 1 and gains 4 when flagged or
+/// thin and horizontal; a hung body is 1, a living foot 4, and a pair is
+/// skipped only when the masks share a bit.
+#[test]
+fn level_masks_follow_the_collider_and_body_rules() {
+    assert_eq!(static_mask(false, 10.0, 0.0), MASK_SMALL);
+    assert_eq!(static_mask(true, 10.0, 0.0), MASK_SMALL | MASK_THIN);
+    // Thin is under 1 cm, and horizontal must be over 0.99.
+    assert_eq!(static_mask(false, 0.5, 0.995), MASK_SMALL | MASK_THIN);
+    assert_eq!(static_mask(false, 1.0, 0.995), MASK_SMALL);
+    assert_eq!(static_mask(false, 0.5, 0.99), MASK_SMALL);
+    assert_eq!(body_mask(true, false), MASK_SMALL);
+    assert_eq!(body_mask(false, true), MASK_THIN);
+    assert_eq!(body_mask(true, true), MASK_SMALL | MASK_THIN);
+    assert!(!level_meets(MASK_SMALL, MASK_SMALL));
+    assert!(!level_meets(MASK_THIN, MASK_THIN));
+    assert!(level_meets(MASK_THIN, MASK_SMALL));
+    assert!(level_meets(0, MASK_SMALL | MASK_THIN));
+}

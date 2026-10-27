@@ -807,6 +807,42 @@ pub fn impact_scale(mobility: f32, has_sound: bool) -> ImpactScale {
     }
 }
 
+/// The collider and body mask bits the level detection tests: a pair is
+/// skipped when the two masks share a bit. A static collider is mask 1, and
+/// mask 4 when it is flagged or a thin horizontal plate; a body anchored to
+/// the world is mask 1, and a living character's foot mask 4.
+pub const MASK_SMALL: u32 = 1;
+pub const MASK_THIN: u32 = 4;
+/// A thin horizontal collider: its local half height under this (cm).
+pub const THIN_HALF_HEIGHT_CM: f32 = 1.0;
+/// Its world up component over this makes it horizontal.
+pub const THIN_UP: f32 = 0.99;
+
+/// A static collider's level mask, as the original sets it when the mesh
+/// registers: 1, plus 4 when the node is flagged (the original's node word
+/// bit `0x800000`) or the mesh is a thin horizontal plate (local half
+/// height under 1 cm, world up over 0.99).
+pub fn static_mask(flagged: bool, half_height_cm: f32, world_up: f32) -> u32 {
+    let mut mask = MASK_SMALL;
+    if flagged || (half_height_cm < THIN_HALF_HEIGHT_CM && world_up > THIN_UP) {
+        mask |= MASK_THIN;
+    }
+    mask
+}
+
+/// A body's world mask for the level detection, as the original keeps it:
+/// bit 1 on a root anchored to the world (a hung body), bit 4 on a living
+/// character's foot (so it ignores thin plates and flagged meshes).
+pub fn body_mask(world_anchored: bool, foot: bool) -> u32 {
+    (if world_anchored { MASK_SMALL } else { 0 }) | (if foot { MASK_THIN } else { 0 })
+}
+
+/// Whether a body and a collider meet under their masks: only when they
+/// share no bit.
+pub fn level_meets(body_mask: u32, collider_mask: u32) -> bool {
+    body_mask & collider_mask == 0
+}
+
 /// The stages of one sector's 83 Hz step, in the original's order. The
 /// existing schedule runs them; this names them so a new piece of work
 /// joins the right stage instead of a new loop.
