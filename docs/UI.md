@@ -1824,7 +1824,9 @@ that atlas yet, and the other windows wait for their forms.
   over 0x100 ms, and a request while one is pending drops it. A double
   click's use class 0 opens a container (and does nothing for anything
   else), class 1 does nothing, and a class above 1 runs the game's use
-  hook. An already-open popup is refocused; a new one is sized from its
+  hook; `panel_event` composes that with the right click's card (delayed
+  by 200 ms for classes 0–2, running the use for 2) and the drag and use
+  bits. An already-open popup is refocused; a new one is sized from its
   record (`2·border + cells·unit`) with its inner panel six units plus the
   icon down. The five special controls register after the shipped ones:
   rating dots (0, 24), slider (72, 24), coin value (128, 24), crystal

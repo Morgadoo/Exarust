@@ -805,6 +805,63 @@ pub fn mouse_intent(
     MouseIntent::None
 }
 
+/// What a panel's mouse event does, with the card detail the original's
+/// handler decides: the double click's class, and whether a right click
+/// runs the use before its card and whether that card is delayed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PanelEvent {
+    None,
+    StartDrag { grab: Cell },
+    OpenContainer,
+    UseItem,
+    ShowCard { delayed: bool, run_use: bool },
+}
+
+/// The panel's mouse decision, composing the press bits with the item's use
+/// class. A right click (bit 0x2000) with an item under the pointer shows
+/// its card: use class 0 or 1 delays it (the GUI's 200 ms timer) and class
+/// 2 also runs the game's use; a class above 2 shows it at once. A double
+/// click (bit 0x8000) opens a container, does nothing for class 1 and
+/// otherwise runs the use. A drag starts only when allowed and over an
+/// item; a press without its item bit does nothing.
+pub fn panel_event(
+    button: u16,
+    hit: Option<usize>,
+    allow_drag: bool,
+    is_container: bool,
+    use_class: u8,
+    cell: i32,
+    card_pending: bool,
+) -> PanelEvent {
+    if button & 0x8000 != 0 && button & 0x2 == 0 && button & 0x1 != 0 && hit.is_some() {
+        return match double_click(use_class, is_container) {
+            DoubleClick::OpenContainer => PanelEvent::OpenContainer,
+            DoubleClick::UseItem => PanelEvent::UseItem,
+            DoubleClick::Nothing => PanelEvent::None,
+        };
+    }
+    if button & 0x2000 != 0 && button & 0x2 == 0 && button & 0x1 != 0 {
+        if hit.is_none() || card_pending {
+            return PanelEvent::None;
+        }
+        return PanelEvent::ShowCard {
+            delayed: use_class <= 2,
+            run_use: use_class == 2,
+        };
+    }
+    match mouse_intent(button, hit, allow_drag, is_container, cell) {
+        MouseIntent::None => PanelEvent::None,
+        MouseIntent::StartDrag { grab } => PanelEvent::StartDrag { grab },
+        MouseIntent::Open => PanelEvent::OpenContainer,
+        MouseIntent::Use => PanelEvent::UseItem,
+        // The card path is handled above with its use class.
+        MouseIntent::Card => PanelEvent::ShowCard {
+            delayed: true,
+            run_use: false,
+        },
+    }
+}
+
 /// The grab offset once a drag has started: the cell's centre, not the
 /// click's offset inside it.
 pub fn drag_grab(cell: i32) -> Cell {
@@ -889,6 +946,73 @@ mod mouse_tests {
             MouseIntent::None
         );
         assert_eq!(drag_grab(160), Cell::new(80, 80));
+    }
+
+    #[test]
+    fn a_panel_event_composes_the_press_and_the_use_class() {
+        // Right click: delayed unless a use above 2, which runs first.
+        assert_eq!(
+            panel_event(0x2001, Some(0), true, false, 0, 160, false),
+            PanelEvent::ShowCard {
+                delayed: true,
+                run_use: false
+            }
+        );
+        assert_eq!(
+            panel_event(0x2001, Some(0), true, false, 2, 160, false),
+            PanelEvent::ShowCard {
+                delayed: true,
+                run_use: true
+            }
+        );
+        assert_eq!(
+            panel_event(0x2001, Some(0), true, false, 5, 160, false),
+            PanelEvent::ShowCard {
+                delayed: false,
+                run_use: false
+            }
+        );
+        assert_eq!(
+            panel_event(0x2001, None, true, false, 0, 160, false),
+            PanelEvent::None
+        );
+        assert_eq!(
+            panel_event(0x2001, Some(0), true, false, 0, 160, true),
+            PanelEvent::None
+        );
+        // Double click: a container opens, class 1 does nothing, class 2 uses.
+        assert_eq!(
+            panel_event(0x8001, Some(1), true, true, 0, 160, false),
+            PanelEvent::OpenContainer
+        );
+        assert_eq!(
+            panel_event(0x8001, Some(1), true, false, 0, 160, false),
+            PanelEvent::None
+        );
+        assert_eq!(
+            panel_event(0x8001, Some(1), true, true, 1, 160, false),
+            PanelEvent::None
+        );
+        assert_eq!(
+            panel_event(0x8001, Some(1), true, true, 2, 160, false),
+            PanelEvent::UseItem
+        );
+        // Drags go through the base decision.
+        assert_eq!(
+            panel_event(0x4001, Some(1), true, false, 0, 160, false),
+            PanelEvent::StartDrag {
+                grab: Cell::new(80, 80)
+            }
+        );
+        assert_eq!(
+            panel_event(0x4001, Some(1), false, false, 0, 160, false),
+            PanelEvent::None
+        );
+        // The base form's bit swallows the event.
+        assert_eq!(
+            panel_event(0x8003, Some(1), true, true, 0, 160, false),
+            PanelEvent::None
+        );
     }
 
     #[test]
