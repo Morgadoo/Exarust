@@ -7,9 +7,10 @@
 //! original's single mesh. Each part is placed by its frame in the body's
 //! space, its vertices, normals, UVs and colours are appended, and the
 //! vertices are then regrouped by material, as the original's final renumber
-//! pass does: the first material's vertices come first, then a single unused
-//! vertex, then the next material's, and so on. The one-vertex gap is the
-//! original's (`docs/formats/RSQ.md`, Skinning).
+//! pass does: the first material's vertices come first, then the next
+//! material's, and so on, each run ending where the next begins (the pass
+//! stores a run's last vertex inclusively and starts the next one past it;
+//! `docs/formats/RSQ.md`, Skinning).
 //!
 //! A hidden body slot's part is appended with a cull mask: vertices whose
 //! per-vertex slot mask meets the cull bits are left out, and triangles that
@@ -292,8 +293,8 @@ pub fn merge(parts: &[MergePart]) -> Option<Merged> {
     if appended.positions.is_empty() {
         return None;
     }
-    // The original's renumber pass: each material run's vertices in order,
-    // then one unused vertex before the next run.
+    // The original's renumber pass: each material run's vertices in their
+    // appended order, the next run starting right after the last vertex.
     let mut subobjects = Vec::with_capacity(materials.len());
     let mut remap = vec![0u32; appended.positions.len()];
     let mut total = 0usize;
@@ -303,11 +304,9 @@ pub fn merge(parts: &[MergePart]) -> Option<Merged> {
         let mut ordered: Vec<u32> = vertices.clone();
         ordered.sort_unstable();
         for &old in &ordered {
-            remap[old as usize] = (first + (total - first)) as u32;
+            remap[old as usize] = total as u32;
             total += 1;
         }
-        // The one-vertex gap between material runs, even after the last.
-        total += 1;
         subobjects.push(SubObject {
             material: (*material).to_string(),
             first_vertex: first,
@@ -520,11 +519,11 @@ mod tests {
         MergePart::new(mesh, IDENTITY, skin, bone, material)
     }
 
-    /// Two parts of two materials: vertices are regrouped by material, a
-    /// gap vertex separates the runs, and the indices follow the new
-    /// numbering. The materials keep first-seen order.
+    /// Two parts of two materials: vertices are regrouped by material, the
+    /// second run starts right after the first, and the indices follow the
+    /// new numbering. The materials keep first-seen order.
     #[test]
-    fn parts_are_grouped_by_material_with_a_gap_between_runs() {
+    fn parts_are_grouped_by_material_in_back_to_back_runs() {
         let body = mesh(
             &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
             &[0, 1, 2],
@@ -542,7 +541,7 @@ mod tests {
             part(&cloth, None, 9, "trouser"),
         ];
         let merged = merge(&parts).unwrap();
-        assert_eq!(merged.mesh.positions.len(), 8);
+        assert_eq!(merged.mesh.positions.len(), 6);
         assert_eq!(
             merged.subobjects,
             [
@@ -555,24 +554,23 @@ mod tests {
                 },
                 SubObject {
                     material: "trouser".into(),
-                    first_vertex: 4,
+                    first_vertex: 3,
                     vertex_count: 3,
                     first_index: 3,
                     index_count: 3,
                 },
             ]
         );
-        assert_eq!(merged.mesh.indices, [0, 1, 2, 4, 5, 6]);
-        // The skin stream follows the vertices; the gap carries the
-        // fallback.
+        assert_eq!(merged.mesh.indices, [0, 1, 2, 3, 4, 5]);
+        // The skin stream follows the vertices; the unskinned part takes its
+        // bone.
         let skin = merged.mesh.skin.as_ref().unwrap();
-        assert_eq!(skin.len(), 8);
+        assert_eq!(skin.len(), 6);
         assert_eq!(
             (skin[0].bones[0], skin[1].bones[0], skin[2].bones[0]),
             (1, 1, 2)
         );
-        assert_eq!(skin[3].bones, [0, 0, 0, 0]);
-        assert_eq!(skin[4].bones, [9, 0, 0, 0]);
+        assert_eq!(skin[3].bones, [9, 0, 0, 0]);
         assert_eq!(merged.mesh.groups[0].material, "skinhuman");
         assert_eq!(merged.mesh.groups[1].index_count, 3);
     }
@@ -634,7 +632,7 @@ mod tests {
         }];
         let merged = merge_parts(&parts).unwrap();
         // Vertices 2 and 3 survive; both triangles needed a culled vertex.
-        assert_eq!(merged.positions.len(), 3);
+        assert_eq!(merged.positions.len(), 2);
         assert!(merged.indices.is_empty());
         assert_eq!(merged.position_count, 4);
     }
@@ -676,7 +674,7 @@ mod tests {
         assert_eq!(merged.mesh.groups[0].index_count, 6);
         assert_eq!(merged.subobjects.len(), 1);
         assert_eq!(merged.subobjects[0].vertex_count, 6);
-        assert_eq!(merged.mesh.positions.len(), 7);
+        assert_eq!(merged.mesh.positions.len(), 6);
         assert!(merge_parts(&[]).is_none());
     }
 
@@ -691,13 +689,13 @@ mod tests {
         let parts = [part(&plain, None, 7, "a"), part(&skinned, Some(&w), 1, "b")];
         let merged = merge_parts(&parts).unwrap();
         let skin = merged.skin.as_ref().unwrap();
-        assert_eq!(skin.len(), 8);
+        assert_eq!(skin.len(), 6);
         assert_eq!(
             (skin[0].bones[0], skin[1].bones[0], skin[2].bones[0]),
             (7, 7, 7)
         );
         assert_eq!(
-            (skin[4].bones[0], skin[5].bones[0], skin[6].bones[0]),
+            (skin[3].bones[0], skin[4].bones[0], skin[5].bones[0]),
             (3, 4, 5)
         );
     }

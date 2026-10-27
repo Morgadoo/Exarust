@@ -2053,7 +2053,8 @@ of hidden body slots removing covered triangles). Exarust keeps a mesh per
 node and hides whole body-part entities under apparel instead; the pure
 builder `exa_assets::merge::merge` reproduces the append, frame, weight and
 material-group order and the final renumber pass (each material's vertices
-in order, with the original's one unused vertex between runs); its
+in order, back to back: the pass keeps each run's last vertex inclusive and
+starts the next run after it); its
 `MergePart::vertex_masks`/`cull` drop the vertices a hidden slot masks and
 the triangles that needed them, `MergePart::index_range` names one material
 group of a shared mesh, `scene_merged_mesh` walks a scene's skinned nodes

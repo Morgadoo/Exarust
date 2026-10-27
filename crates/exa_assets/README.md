@@ -48,8 +48,8 @@ into one skinned mesh as the original's character assembly does: each part
 placed by its frame, its vertices, normals, UVs and colours appended, its
 weights kept vertex for vertex (a part without them bound to its bone), and
 its triangles grouped by material in first-seen order. The final renumber
-pass is the original's: each material's vertices in order, then the one
-unused vertex it leaves between runs. A part's `vertex_masks` and `cull`
+pass is the original's: each material's vertices in order, each run
+starting right after the previous one's last vertex. A part's `vertex_masks` and `cull`
 drop the vertices a hidden body slot masks and the triangles that needed
 them; `culled_indices` drops triangles by a slot's per-triangle cull bits
 (`exa_character::layers::cull_bits`) and `occlusion_alpha` writes the
