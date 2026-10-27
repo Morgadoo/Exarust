@@ -18,6 +18,7 @@ pub mod body_overlay;
 pub mod career;
 pub mod char_view;
 pub mod commands;
+pub mod control_nodes;
 pub mod create;
 pub mod cursor;
 pub mod destination;

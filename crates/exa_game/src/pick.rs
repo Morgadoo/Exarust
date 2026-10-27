@@ -230,6 +230,7 @@ pub fn reach(r: Reach) -> bool {
 /// 300 cm; when the player's navigation region has a height field at the
 /// point, the point must also be inside it and no flagged mesh may stand
 /// between the player and it. Every ordered comparison lets a NaN through.
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
 pub fn walk_within_reach(point: Vec3, hip: Vec3, region: Region) -> bool {
     if region == Region::Outside {
         return false;
@@ -239,6 +240,7 @@ pub fn walk_within_reach(point: Vec3, hip: Vec3, region: Region) -> bool {
     }
     let off = point - hip;
     let flat2 = off.x * off.x + off.z * off.z;
+    // The original refuses only on an ordered "over": a NaN passes.
     !(flat2 > 300.0 * 300.0)
 }
 

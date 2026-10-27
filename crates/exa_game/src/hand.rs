@@ -69,8 +69,10 @@ use exa_physics::prop::{PropBody, StandIns};
 use exa_ui::ScriptedPointer;
 
 use crate::bindings::{Action, Bindings};
+use crate::gui_screens::ScreenRequest;
 use crate::pick::{self, Body, Pick, ReachTo, Target};
 use crate::player::{ChaseCamera, Player, PlayerBody, window_ray};
+use crate::player_controls::{self, CharacterInteraction, ClickTarget};
 use crate::thaum::kinesis_live::{KinesisPickHook, KinesisPicked};
 
 /// Centimetres per metre: the original's rules are in cm.
@@ -130,6 +132,9 @@ pub struct Hand {
     pub out_of_reach: bool,
     /// The left button's press, until its release.
     pub left: Option<LeftPress>,
+    /// The previous press's pointer and real time (ms), for the double
+    /// click test.
+    pub last_click: Option<(IVec2, i64)>,
 }
 
 /// Where and when the left button went down, and whether its drag started.
@@ -141,6 +146,8 @@ pub struct LeftPress {
     /// Real time (ms).
     pub ms: i64,
     pub dragging: bool,
+    /// The press was the second of a double click.
+    pub double: bool,
 }
 
 /// The pointer's allowance (pixels) `elapsed` ms after the press: 2 × ((200
@@ -776,12 +783,26 @@ fn press_hand(
             .map(|p| (p, (p * w.scale_factor()).as_ivec2()))
     });
     if buttons.just_pressed(MouseButton::Left) {
+        let double = pointer.is_some_and(|(_, px)| {
+            hand.last_click.is_some_and(|(was, ms)| {
+                player_controls::is_double_click(
+                    (was.x, was.y),
+                    ms as u64,
+                    (px.x, px.y),
+                    now as u64,
+                )
+            })
+        });
         hand.left = pointer.map(|(at, pixels)| LeftPress {
             at,
             pixels,
             ms: now,
             dragging: false,
+            double,
         });
+        if let Some((_, pixels)) = pointer {
+            hand.last_click = Some((pixels, now));
+        }
         return;
     }
     let Some(mut left) = hand.left.filter(|l| !l.dragging) else {
@@ -899,7 +920,11 @@ fn press_hand(
 /// The hold each frame: the drag follows the cursor, the release lets go.
 #[allow(clippy::too_many_arguments)]
 fn hold_hand(
+    keys: Res<ButtonInput<KeyCode>>,
     buttons: Res<ButtonInput<MouseButton>>,
+    bindings: Res<Bindings>,
+    physics: Res<Physics>,
+    stand_ins: Res<StandIns>,
     scripted: Res<ScriptedPointer>,
     windows: Query<&Window, With<PrimaryWindow>>,
     cameras: Query<(&Camera, &GlobalTransform), With<ChaseCamera>>,
@@ -908,22 +933,70 @@ fn hold_hand(
     mut player_bodies: Query<PlayerParts, Without<PropBody>>,
     mut requests: Query<&mut Locomotion, With<PlayerBody>>,
     mut bodies: Query<OtherBodies, Without<PlayerBody>>,
+    mut screens: Option<ResMut<Messages<ScreenRequest>>>,
 ) {
     let released = buttons.just_released(MouseButton::Left);
     let player = player_child(&players, &player_bodies);
     // A release before the drag started is a click: outside combat mode
-    // the player turns toward the cursor.
+    // the player turns toward the cursor. A double click or Ctrl then
+    // interacts with what is there.
     if released {
         let left = hand.left.take();
-        if left.is_some_and(|l| !l.dragging)
+        if let Some(left) = left.filter(|l| !l.dragging)
             && let Some((_, child)) = player
-            && let Ok((pb, ..)) = player_bodies.get(child)
-            && !pb.combat
-            && let Some((yaw, distance)) = pb.cursor()
-            && click_turns(distance * CM)
-            && let Ok(mut req) = requests.get_mut(child)
         {
-            req.heading = yaw;
+            let ctrl = bindings.pressed(&keys, Action::Interact);
+            let interact = left.double || ctrl;
+            if let Ok((pb, own, condition, _)) = player_bodies.get(child) {
+                if !pb.combat
+                    && let Some((yaw, distance)) = pb.cursor()
+                    && click_turns(distance * CM)
+                    && let Ok(mut req) = requests.get_mut(child)
+                {
+                    req.heading = yaw;
+                }
+                if interact {
+                    let ray = windows.single().ok().zip(cameras.single().ok()).and_then(
+                        |(window, (camera, eye))| window_ray(camera, eye, window, left.at),
+                    );
+                    let picked = pick_with(
+                        ray,
+                        &physics,
+                        &stand_ins,
+                        &bodies,
+                        own.map(|r| (child, r, condition.copied().unwrap_or_default())),
+                    );
+                    if let Some(picked) = picked {
+                        let target = match picked.hit {
+                            Hit::Character { body, .. } if body == child => {
+                                Some(ClickTarget::Player)
+                            }
+                            Hit::Character { dead, .. } if dead => Some(ClickTarget::DeadCharacter),
+                            Hit::Character { .. } => Some(ClickTarget::LivingCharacter),
+                            Hit::Prop { .. } => Some(ClickTarget::plain()),
+                            Hit::Level => None,
+                        };
+                        if let Some(target) = target {
+                            let outcome = player_controls::click(target);
+                            let interaction =
+                                player_controls::interact_character(target, false, false);
+                            debug!("click {target:?}: {outcome:?}, {interaction:?}");
+                            // The player's own body opens Exarust's
+                            // inventory screen; the other windows have no
+                            // Exarust form yet.
+                            if interaction == CharacterInteraction::Inventory
+                                && let Some(messages) = screens.as_deref_mut()
+                            {
+                                messages.write(ScreenRequest {
+                                    screen: exa_ui::game_gui::GameScreen::Inventory,
+                                    player_ready: !condition.copied().unwrap_or_default().dying(),
+                                    player_alive: !condition.copied().unwrap_or_default().is_dead(),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
     match hand.holding {
@@ -1420,14 +1493,7 @@ mod tests {
         };
         let a = door_pull_anchor(sliding, Vec3::new(0.3, 1.0, 2.0), Vec3::Z);
         assert!((a - Vec3::new(0.0, 0.0, 2.0)).length() < 1e-5, "{a}");
-        let rattle = door_rattle(true, false, {
-            let mut n = 0;
-            move || {
-                n += 1;
-                if n == 1 { 0.5 } else { 0.5 }
-            }
-        })
-        .unwrap();
+        let rattle = door_rattle(true, false, || 0.5).unwrap();
         assert!((rattle.pitch - 0.9).abs() < 1e-6);
         assert!((rattle.volume - 0.2).abs() < 1e-6);
         assert_eq!(door_rattle(true, true, || 0.5), None);
