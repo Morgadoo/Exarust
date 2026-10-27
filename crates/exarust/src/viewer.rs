@@ -58,6 +58,7 @@ impl Plugin for ViewerPlugin {
                     shove_at_frame,
                     shove_props_at_frame,
                     start_fight,
+                    launch_arena_match,
                 ),
             );
     }
@@ -531,28 +532,11 @@ fn play_level(
     commands.entity(root).insert(exa_physics::StaticGeometry);
     // An arena match draws its track as the original's match start does:
     // the roll is the reversed counter, and the arena is the one named on
-    // the command line, so the arena draw is not run.
-    let hub = name
-        .strip_suffix(".rfc")
-        .unwrap_or(name)
-        .eq_ignore_ascii_case("arenahub");
-    // The hub draws its track and where it starts as the original's hub
-    // entry does, from the counter roll.
-    let hub_music = hub.then(|| {
-        let mut roll = (exa_game::arena_match::counter_now() as u32).swap_bytes();
-        exa_game::arena_hub::pick_hub_music(&mut roll, false)
-    });
-    match hub_music.and_then(|music| music.start) {
-        Some(at) => commands.insert_resource(exa_audio::LevelMusicStart(at)),
-        None => commands.remove_resource::<exa_audio::LevelMusicStart>(),
-    }
-    let (track, volume) = if let Some(music) = hub_music {
-        info!(
-            "arena hub music: {} at {}, from {:?} s",
-            music.track.name, music.track.volume, music.start
-        );
-        (music.track.name.to_ascii_lowercase(), music.track.volume)
-    } else if exa_game::arena_match::arena_index(name).is_some() {
+    // the command line, so the arena draw is not run. The hub's track is
+    // the hub entry's (`exa_game::arena_hub_live`), which runs once the
+    // level is in.
+    commands.remove_resource::<exa_audio::LevelMusicStart>();
+    let (track, volume) = if exa_game::arena_match::arena_index(name).is_some() {
         use exa_game::arena_match::{counter_now, pick_track};
         let mut roll = (counter_now() as u32).swap_bytes();
         let track = pick_track(&mut arena_picks.tracks, &mut roll, false, false);
@@ -1408,6 +1392,33 @@ fn start_fight(
         info!("the fight starts: combat mode on");
     } else {
         info!("the fight starts");
+    }
+}
+
+/// A board pick in the hub asks for a career match: the launcher restarts
+/// on the drawn arena with `--arena-match`, whose layout and fighter spawn
+/// are the play mode's own. The career's records stay in the hub process;
+/// the match's return is not wired yet.
+fn launch_arena_match(
+    mut launches: MessageReader<exa_game::arena_hub_live::ArenaMatchLaunch>,
+    loading: Option<Res<exa_ui::LoadingStatus>>,
+    mut exit: MessageWriter<AppExit>,
+) {
+    if loading.is_some() {
+        return;
+    }
+    for launch in launches.read() {
+        let Some(map) = exa_game::arena_match::ARENA_MAPS.get(launch.arena) else {
+            warn!("arena match launch: no arena {}", launch.arena);
+            continue;
+        };
+        info!(
+            "arena match launch: {} (template {}) at {}",
+            map.name, launch.template, launch.track.name
+        );
+        let extra = vec!["--arena-match".to_string(), launch.template.to_string()];
+        crate::map_panel::restart_with(map.name, &extra, &mut exit);
+        return;
     }
 }
 
