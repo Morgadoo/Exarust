@@ -25,7 +25,8 @@ use exa_formats::rsq::{BoneBody, Clip, ClipTable, MotionSet, Sequences, bone_ind
 mod clock;
 pub use clock::{
     ATTACKS, Bracket, Capture, Ease, FOOTWORK, LOCOMOTION, STANDING_PACE, bracket, follow_up_blend,
-    hold_toward, in_place, overlay_toward, ragdoll_bracket, rising_frames, standing_frames,
+    hold_toward, in_place, overlay_toward, ragdoll_bracket, rising_frames, shock_hold,
+    standing_frames,
 };
 
 /// Body ticks a second: the clock every clip counts frames by (the

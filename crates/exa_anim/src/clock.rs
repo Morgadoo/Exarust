@@ -73,9 +73,13 @@ const SHORT_BLEND_FROM: usize = 0x1F;
 const SHORT_BLEND: u32 = 20;
 const LONG_BLEND_FROM: usize = 0x21;
 const LONG_BLEND: u32 = 60;
-/// The bones whose plain capture (and hold pose) keeps their last target:
-/// the pelvis and the legs; the upper body's take their physical turn.
+/// The bones whose plain capture keeps their last target: the pelvis and
+/// the legs (the original's bone index up to 7); the upper body's take
+/// their physical turn.
 const LOWER_BODY: RangeInclusive<usize> = 1..=7;
+/// The bones whose hold pose keeps their last target: one fewer than the
+/// capture, the original's index up to 6.
+const HOLD_LOWER: RangeInclusive<usize> = 1..=6;
 /// Times and weights at or under this (the original's 1.19e-7) count as
 /// none.
 const EPSILON: f32 = 1.192_09e-7;
@@ -244,7 +248,7 @@ impl Animator {
                 .iter()
                 .enumerate()
                 .map(|(i, &r)| match physical.get(i) {
-                    Some(Some(q)) if !LOWER_BODY.contains(&(i + 1)) => *q,
+                    Some(Some(q)) if !HOLD_LOWER.contains(&(i + 1)) => *q,
                     _ => r,
                 })
                 .collect(),
@@ -562,6 +566,47 @@ pub fn ragdoll_bracket(clip: &Clip, time: f32, looping: bool, blend: f32) -> Opt
         f,
         from_capture: false,
     })
+}
+
+/// The held pose a shock stagger starts from (`+0xb88`): bones up to the
+/// pelvis and legs (1 to 7) keep the captured pose unless the body is down
+/// (its condition has the off-feet bit); every other bone takes a random
+/// turn of a random axis, each component drawn from 0..1 less 0.5 and
+/// normalised, an angle drawn from 0..1, blended half way from the
+/// Defence stance's first key without a short-way sign check and
+/// normalised. The caller supplies the draws in order (axis x, y, z, then
+/// the angle), one bone after another, as the original's random generator
+/// does.
+pub fn shock_hold(
+    defence_first: &[Quat],
+    capture: &[Quat],
+    down: bool,
+    rng: &mut impl FnMut() -> f32,
+) -> Vec<Quat> {
+    let n = capture.len().max(defence_first.len());
+    (0..n)
+        .map(|i| {
+            if (i + 1) <= 7 && !down {
+                capture.get(i).copied().unwrap_or(Quat::IDENTITY)
+            } else {
+                let axis = Vec3::new(rng() - 0.5, rng() - 0.5, rng() - 0.5);
+                let angle = rng();
+                let q = if axis.length_squared() > EPSILON {
+                    Quat::from_axis_angle(axis.normalize(), angle)
+                } else {
+                    Quat::IDENTITY
+                };
+                let base = defence_first.get(i).copied().unwrap_or(Quat::IDENTITY);
+                Quat::from_xyzw(
+                    (base.x + q.x) * 0.5,
+                    (base.y + q.y) * 0.5,
+                    (base.z + q.z) * 0.5,
+                    (base.w + q.w) * 0.5,
+                )
+                .normalize()
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]

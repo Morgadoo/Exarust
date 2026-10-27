@@ -1830,7 +1830,12 @@ turn, taken each tick the body is dazed, has a sag, or its support is
 under 1. A dazed body standing on its feet holds its physical pose in
 full: the clip has no say until its energy recovers. The root is not held.
 The original lerps the quaternions' components without a sign check;
-Exarust does the same (two opposite turns half way give a NaN).
+Exarust does the same (two opposite turns half way give a NaN). A shock
+stagger's held pose (`exa_anim::shock_hold`, tested; no writer of the
+shock condition yet) copies the captured pose for bones 1 to 7 unless the
+body is down, and turns every other bone by a random axis (each draw less
+0.5, normalised) and a random angle, blended half way from the Defence
+stance's first key without a sign check and normalised.
 
 **Swing.** Every tick of an attack's clip (actions 5–12), with the
 fighter's condition attacking (balanced, not getting up), the original's

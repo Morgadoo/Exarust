@@ -685,3 +685,46 @@ fn the_limp_sampler_brackets_at_the_raw_clock() {
     let pose = anim.sample_ragdoll(&walk, true).unwrap();
     assert_eq!(pose.rotations.len(), BONES);
 }
+
+/// The hold pose keeps the last targets of bones 1 to 6 and takes the
+/// physical turn from bone 7, one bone fewer than the plain capture.
+#[test]
+fn the_hold_stops_one_bone_before_the_capture() {
+    let mut anim = Animator::new("Default", "Idle");
+    let mut pose = ClipPose {
+        rotations: vec![Quat::IDENTITY; BONES],
+        root: Vec3::ZERO,
+    };
+    pose.rotations[6] = Quat::from_rotation_y(0.2);
+    pose.rotations[7] = Quat::from_rotation_y(0.3);
+    anim.keep(&pose, 0.0);
+    let physical: Vec<Option<Quat>> = (0..BONES)
+        .map(|i| Some(Quat::from_rotation_x(0.1 * (i + 1) as f32)))
+        .collect();
+    let held = anim.hold_pose(&physical).unwrap();
+    // Bone 6 (index 5) keeps its target; bone 7 (index 6) is physical.
+    assert_eq!(held[5], pose.rotations[5]);
+    assert_eq!(held[6], physical[6].unwrap());
+}
+
+/// The shock hold copies the captured pose for bones 1 to 7 unless the body
+/// is down, and turns every other bone by a random axis and angle blended
+/// half way from the Defence stance's first key.
+#[test]
+fn the_shock_hold_turns_the_upper_body() {
+    let capture: Vec<Quat> = (0..BONES).map(|i| turn(0, i)).collect();
+    let defence: Vec<Quat> = (0..BONES).map(|_| Quat::IDENTITY).collect();
+    let mut draws = [0.5, 0.0, 0.5, 0.5].into_iter().cycle();
+    let held = shock_hold(&defence, &capture, false, &mut || draws.next().unwrap());
+    for i in 0..7 {
+        assert_eq!(held[i], capture[i]);
+    }
+    // Axis (0, −0.5, 0) normalised is −Y; angle 0.5; identity blended half
+    // way from it is half the angle.
+    let want = Quat::from_axis_angle(Vec3::NEG_Y, 0.25);
+    assert!(held[7].abs_diff_eq(want, 1e-6), "{}", held[7]);
+    // Down, every bone takes the random turn, the lower body included.
+    let mut draws = [0.5, 0.0, 0.5, 0.5].into_iter().cycle();
+    let down = shock_hold(&defence, &capture, true, &mut || draws.next().unwrap());
+    assert!(down[0].abs_diff_eq(want, 1e-6));
+}
