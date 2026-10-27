@@ -43,25 +43,49 @@ pub struct Row {
 }
 
 /// The state the page table reads.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PageState {
-    /// A save exists, so CONTINUE is live.
+    /// A save exists in either manager, so CONTINUE is live somewhere.
     pub has_save: bool,
-    /// The game is in progress (page 2's first row).
-    pub in_game: bool,
+    /// The story's save manager has a save. The title page's CONTINUE
+    /// reads this manager.
+    pub story_save: bool,
+    /// The arena's save manager has a save. The start page's CONTINUE
+    /// reads this manager.
+    pub arena_save: bool,
+    /// The mode word has bit 2 set (practice and the scripted modes). The
+    /// in-game page then reads NEW GAME instead of CONTINUE.
+    pub new_game: bool,
     /// The arena is available, so VERSUS appears.
     pub arena: bool,
     /// The expert difficulty is unlocked (practice's EXPERT row is greyed
     /// out until then).
     pub expert: bool,
+    /// The session-state word. The arena pause page's last row reads its
+    /// bit 2 to label itself EXIT (the session was won or ended) or FORFEIT.
+    pub session: u32,
+}
+
+impl Default for PageState {
+    fn default() -> Self {
+        Self {
+            has_save: false,
+            story_save: false,
+            arena_save: false,
+            new_game: false,
+            arena: false,
+            expert: false,
+            session: crate::flow::PHASE_MENU,
+        }
+    }
 }
 
 impl PageState {
-    fn continue_row(self) -> Row {
+    fn continue_row(self, enabled: bool) -> Row {
         Row {
             label: "CONTINUE",
             kind: RowKind::Continue,
-            enabled: self.has_save,
+            enabled,
         }
     }
 
@@ -90,8 +114,12 @@ impl PageState {
     }
 }
 
-/// The rows of `page`. The start page drops VERSUS when the arena is not
-/// available; the in-game page's first row is CONTINUE or NEW GAME.
+/// The rows of `page`. The title's CONTINUE is live when the story's save
+/// manager has a save, the start page's when the arena's does. The start
+/// page drops VERSUS when the arena is not available; the in-game page's
+/// first row is NEW GAME in a mode with bit 2 (practice and scripted modes)
+/// and CONTINUE otherwise. The arena pause page's last row reads EXIT once
+/// the session was won or has ended, and FORFEIT before that.
 pub fn page_rows(page: Page, state: PageState) -> Vec<Row> {
     match page {
         Page::Title => vec![
@@ -100,7 +128,7 @@ pub fn page_rows(page: Page, state: PageState) -> Vec<Row> {
                 kind: RowKind::Begin,
                 enabled: true,
             },
-            state.continue_row(),
+            state.continue_row(state.story_save),
             Row {
                 label: "ARENA",
                 kind: RowKind::Arena,
@@ -117,7 +145,7 @@ pub fn page_rows(page: Page, state: PageState) -> Vec<Row> {
                     kind: RowKind::NewCareer,
                     enabled: true,
                 },
-                state.continue_row(),
+                state.continue_row(state.arena_save),
                 Row {
                     label: "PRACTICE",
                     kind: RowKind::Practice,
@@ -139,16 +167,16 @@ pub fn page_rows(page: Page, state: PageState) -> Vec<Row> {
             rows
         }
         Page::InGame => vec![
-            if state.in_game {
+            if state.new_game {
                 Row {
-                    label: "CONTINUE",
-                    kind: RowKind::Continue,
+                    label: "NEW GAME",
+                    kind: RowKind::NewGame,
                     enabled: true,
                 }
             } else {
                 Row {
-                    label: "NEW GAME",
-                    kind: RowKind::NewGame,
+                    label: "CONTINUE",
+                    kind: RowKind::Continue,
                     enabled: true,
                 }
             },
@@ -157,15 +185,15 @@ pub fn page_rows(page: Page, state: PageState) -> Vec<Row> {
             state.exit(),
         ],
         Page::ArenaPause => vec![
-            state.continue_row(),
+            state.continue_row(true),
             state.settings(),
             Row {
-                label: "FORFEIT",
+                label: arena_last_row(state.session),
                 kind: RowKind::Forfeit,
                 enabled: true,
             },
         ],
-        Page::StoryPause => vec![state.continue_row(), state.settings(), state.exit()],
+        Page::StoryPause => vec![state.continue_row(true), state.settings(), state.exit()],
         Page::ClassSelect => vec![
             Row {
                 label: "NOVICE",
@@ -184,6 +212,12 @@ pub fn page_rows(page: Page, state: PageState) -> Vec<Row> {
             },
         ],
     }
+}
+
+/// The arena pause page's last row: EXIT once the session was won (4) or has
+/// ended (5, whose bit 2 is set), FORFEIT while it is still being played.
+pub const fn arena_last_row(session: u32) -> &'static str {
+    if session & 4 != 0 { "EXIT" } else { "FORFEIT" }
 }
 
 /// The page's row origin as a fraction of the client height. The start page
@@ -239,18 +273,72 @@ mod tests {
     }
 
     #[test]
+    fn a_continue_row_reads_its_own_save_manager() {
+        // The title's CONTINUE reads the story manager, the start page's the
+        // arena manager: one save is not the other.
+        let story_only = PageState {
+            has_save: true,
+            story_save: true,
+            ..Default::default()
+        };
+        assert!(page_rows(Page::Title, story_only)[1].enabled);
+        assert!(!page_rows(Page::Start, story_only)[1].enabled);
+        let arena_only = PageState {
+            has_save: true,
+            arena_save: true,
+            ..Default::default()
+        };
+        assert!(!page_rows(Page::Title, arena_only)[1].enabled);
+        assert!(page_rows(Page::Start, arena_only)[1].enabled);
+        // The in-game and pause pages never grey their CONTINUE out.
+        for page in [Page::InGame, Page::ArenaPause, Page::StoryPause] {
+            let rows = page_rows(page, PageState::default());
+            assert!(rows[0].enabled, "{page:?}");
+        }
+    }
+
+    #[test]
     fn the_in_game_page_switches_its_first_row() {
+        let rows = page_rows(Page::InGame, PageState::default());
+        assert_eq!(rows[0].label, "CONTINUE");
+        // A mode with bit 2 (practice) reads NEW GAME instead.
         let rows = page_rows(
             Page::InGame,
             PageState {
-                in_game: true,
+                new_game: true,
                 ..Default::default()
             },
         );
-        assert_eq!(rows[0].label, "CONTINUE");
-        let rows = page_rows(Page::InGame, PageState::default());
         assert_eq!(rows[0].label, "NEW GAME");
         assert_eq!(rows[0].kind, RowKind::NewGame);
+    }
+
+    #[test]
+    fn the_arena_pause_row_reads_the_session_word() {
+        // Still playing: FORFEIT.
+        let rows = page_rows(
+            Page::ArenaPause,
+            PageState {
+                session: crate::flow::PHASE_PLAYING,
+                ..Default::default()
+            },
+        );
+        assert_eq!(rows[2].label, "FORFEIT");
+        // Won or ended (bit 2 of the word): EXIT, and still the row that
+        // finishes the match.
+        for session in [crate::flow::PHASE_WON, crate::flow::PHASE_ENDED] {
+            let rows = page_rows(
+                Page::ArenaPause,
+                PageState {
+                    session,
+                    ..Default::default()
+                },
+            );
+            assert_eq!(rows[2].label, "EXIT");
+            assert_eq!(rows[2].kind, RowKind::Forfeit);
+        }
+        assert_eq!(arena_last_row(crate::flow::PHASE_ROUND_WON), "FORFEIT");
+        assert_eq!(arena_last_row(crate::flow::PHASE_FORFEIT), "FORFEIT");
     }
 
     #[test]
@@ -675,6 +763,7 @@ mod action_tests {
         assert_eq!(
             menu.activate(PageState {
                 has_save: true,
+                story_save: true,
                 ..Default::default()
             }),
             Some(MenuAction::Continue)
@@ -695,7 +784,13 @@ mod action_tests {
         let class = page_rows(Page::ClassSelect, state);
         assert_eq!(class[0].kind.action(), MenuAction::Novice);
         assert_eq!(class[1].kind.action(), MenuAction::Expert);
-        let game = page_rows(Page::InGame, PageState::default());
+        let game = page_rows(
+            Page::InGame,
+            PageState {
+                new_game: true,
+                ..Default::default()
+            },
+        );
         assert_eq!(game[0].kind.action(), MenuAction::NewGame);
     }
 }
@@ -806,6 +901,7 @@ mod command_tests {
     fn the_menu_hit_uses_the_rows_centred_bands() {
         let state = PageState {
             has_save: true,
+            story_save: true,
             arena: true,
             ..Default::default()
         };

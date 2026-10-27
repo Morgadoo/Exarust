@@ -298,21 +298,30 @@ fn setup_router(mut commands: Commands) {
 }
 
 /// F1 opens and closes the menu. Opening it in a session shows the in-game
-/// page for the flow's mode and session words.
-fn toggle(keys: Res<ButtonInput<KeyCode>>, mut menu: ResMut<MenuScreen>, flow: Option<Res<Flow>>) {
+/// page for the flow's mode and session words, and hides the session hook
+/// behind it, as the original's frame task does while the menu is up.
+fn toggle(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut menu: ResMut<MenuScreen>,
+    mut flow: Option<ResMut<Flow>>,
+) {
     if !keys.just_pressed(KeyCode::F1) {
         return;
     }
     if menu.open {
         menu.close();
+        if let Some(flow) = flow.as_mut() {
+            flow.menu_closed();
+        }
         return;
     }
-    match flow {
+    match flow.as_mut() {
         Some(flow) => {
             menu.game = flow.mode.word();
             menu.session = flow.phase.word();
             menu.state = flow.page_state();
             menu.open_at(flow.menu_page());
+            flow.menu_opened();
         }
         None => menu.open(),
     }
