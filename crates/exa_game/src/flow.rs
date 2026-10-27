@@ -754,17 +754,17 @@ pub enum ClipClock {
 /// not written that frame, so the previous value stays.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WakePose {
-    /// The animator's flags word (`0xdf8`): 0x600 while the get-up holds its
-    /// first pose, 0x20 once the get-up's clock has started, 0x40 for the
+    /// The animator's flags word: 0x600 while the get-up holds its first
+    /// pose, 0x20 once the get-up's clock has started, 0x40 for the
     /// revival's wake.
     pub flags: u32,
     /// The flags are set with a bitwise or instead of replaced.
     pub or_flags: bool,
-    /// The blend the clip starts with (`0xdcc`).
+    /// The blend the clip starts with.
     pub blend: Option<f32>,
-    /// The move factor (`0x58c`).
+    /// The move factor.
     pub move_factor: Option<f32>,
-    /// The turn factor (`0x590`).
+    /// The turn factor.
     pub turn_factor: Option<f32>,
     /// The clip clock write.
     pub clock: Option<ClipClock>,
