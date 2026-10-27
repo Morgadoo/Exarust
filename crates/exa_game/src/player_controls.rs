@@ -778,6 +778,42 @@ pub fn repair_timed(wear: u8, rating: u8) -> Option<Timed> {
     })
 }
 
+/// A scene object that carries a script the player's use can run.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ScriptObject {
+    pub at: Vec3,
+    pub object: u32,
+}
+
+/// The script objects within the use's reach: a node's distance squared
+/// from the point under 5 cm² and an object id. The scene walks its object
+/// nodes in order and keeps that order.
+pub fn nearby_scripts(point: Vec3, objects: impl IntoIterator<Item = ScriptObject>) -> Vec<u32> {
+    objects
+        .into_iter()
+        .filter(|o| o.object != 0 && (o.at - point).length_squared() < 5.0)
+        .map(|o| o.object)
+        .collect()
+}
+
+/// Where a use's marks go: the world item itself, or a container's entry
+/// `entry` with the entry's own word.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MarkTarget {
+    Item,
+    Container { entry: u32 },
+}
+
+/// The words a pour marks: the item's flags word, or the container's entry
+/// word, ORed with 0xC80000. A container entry word of zero marks nothing.
+pub fn mark_used(target: MarkTarget, flags: u32) -> Option<u32> {
+    match target {
+        MarkTarget::Item => Some(flags | POUR_MARK),
+        MarkTarget::Container { entry: 0 } => None,
+        MarkTarget::Container { entry } => Some(entry | POUR_MARK),
+    }
+}
+
 /// The controls' movement request mode, from the hand's drag state and the
 /// combat branch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1410,6 +1446,34 @@ mod tests {
         assert_eq!(hold.frame(1600), None);
         let mut no = PowerHold::pick(-1, 0);
         assert_eq!(no.frame(0), None);
+    }
+
+    /// Script objects within 5 cm² of the point keep their order; the item
+    /// or container entry takes the pour mark, a zero entry nothing.
+    #[test]
+    fn the_script_reach_and_marks() {
+        let point = Vec3::ZERO;
+        let objects = [
+            ScriptObject {
+                at: Vec3::new(1.0, 0.0, 0.0),
+                object: 7,
+            },
+            ScriptObject {
+                at: Vec3::new(3.0, 0.0, 0.0),
+                object: 8,
+            },
+            ScriptObject {
+                at: Vec3::new(0.0, 0.0, 0.0),
+                object: 0,
+            },
+        ];
+        assert_eq!(nearby_scripts(point, objects), vec![7]);
+        assert_eq!(mark_used(MarkTarget::Item, 1), Some(POUR_MARK | 1));
+        assert_eq!(
+            mark_used(MarkTarget::Container { entry: 2 }, 0),
+            Some(POUR_MARK | 2)
+        );
+        assert_eq!(mark_used(MarkTarget::Container { entry: 0 }, 0), None);
     }
 
     /// A walk-to point stops 245 cm short, or 350 cm for a door, along the
