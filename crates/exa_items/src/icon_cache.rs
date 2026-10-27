@@ -437,6 +437,115 @@ fn free_slot(e: &mut Entry) {
     e.id = 0;
 }
 
+/// The retry budget of an icon that waits for its object to stream: the
+/// wait makes this many lookups before giving up.
+pub const STREAM_TRIES: u32 = 0xf000_0000;
+
+/// A streamed variant's lit bit: its condition byte is its own bits 16–23.
+pub const STREAM_LIT: u32 = 0x2000_0000;
+/// The weapon bit the render variant gains when the streamed object has a
+/// weapon section.
+pub const STREAM_WEAPON: u32 = 0x0400_0000;
+/// The tag bits a streamed variant keeps from the request.
+pub const STREAM_TAGS: u32 = 0xc000_0000;
+
+/// The state of an icon waiting on the content stream. The original spins
+/// with a zero-length sleep, pumping the texture loader between lookups;
+/// here the caller polls and decides when to pump.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StreamWait {
+    pub tries: u32,
+    pub limit: u32,
+}
+
+/// One poll's answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamPoll<T> {
+    /// The object is not built yet.
+    Pending,
+    /// The object arrived.
+    Ready(T),
+    /// The retry budget ran out.
+    GaveUp,
+}
+
+impl Default for StreamWait {
+    fn default() -> Self {
+        Self {
+            tries: 0,
+            limit: STREAM_TRIES,
+        }
+    }
+}
+
+impl StreamWait {
+    pub fn new(limit: u32) -> Self {
+        Self { tries: 0, limit }
+    }
+
+    /// One lookup. The first call is the original's initial query; each
+    /// further call follows its pump and its sleep.
+    pub fn poll<T>(&mut self, mut lookup: impl FnMut() -> Option<T>) -> StreamPoll<T> {
+        if let Some(found) = lookup() {
+            return StreamPoll::Ready(found);
+        }
+        if self.tries >= self.limit {
+            return StreamPoll::GaveUp;
+        }
+        self.tries += 1;
+        StreamPoll::Pending
+    }
+}
+
+/// What a streamed icon asks the content stream for: the item id and the
+/// variant flags. A request with [`STREAM_LIT`] writes the flags into the
+/// object's condition word before the render.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StreamRequest {
+    pub id: u32,
+    pub variant: u32,
+}
+
+impl StreamRequest {
+    /// The variant the render gets: the request's top two tag bits, plus
+    /// the weapon bit when the streamed object has a weapon section.
+    pub fn render_variant(&self, weapon: bool) -> u32 {
+        let tags = self.variant & STREAM_TAGS;
+        if weapon { tags | STREAM_WEAPON } else { tags }
+    }
+
+    /// Whether the caller writes the request's flags into the object's
+    /// condition word first.
+    pub fn writes_condition(&self) -> bool {
+        self.variant & STREAM_LIT != 0
+    }
+}
+
+/// Adds a rendered streamed icon to the cache: the first free slot (its id
+/// is 0), else a new one; its item, its streamed variant, its cell and
+/// half extents of half the rendered size plus the GUI unit. Returns the
+/// 1-based slot.
+pub fn insert_streamed(cache: &mut IconCache, id: u32, variant: u32, rendered: Rendered) -> usize {
+    let at = cache
+        .entries
+        .iter()
+        .position(|e| e.id == 0)
+        .unwrap_or_else(|| {
+            cache.entries.push(Entry::default());
+            cache.entries.len() - 1
+        });
+    let (half_width, half_height) = cache.halves(rendered);
+    cache.entries[at] = Entry {
+        id,
+        cell: rendered.cell,
+        variant,
+        half_width,
+        half_height,
+        refs: 1,
+    };
+    at + 1
+}
+
 /// The icon size for GUI unit `unit`: 40 units.
 pub fn icon_size(unit: i32) -> i32 {
     40 * unit
@@ -722,5 +831,90 @@ mod tests {
             "Unable to resolve item: 0000002A"
         );
         assert_eq!(unresolved(0), None);
+    }
+
+    #[test]
+    fn a_stream_wait_spins_until_its_budget_ends() {
+        let mut wait = StreamWait::new(3);
+        assert_eq!(wait.poll(|| None::<u8>), StreamPoll::Pending);
+        assert_eq!(wait.tries, 1);
+        assert_eq!(wait.poll(|| Some(7)), StreamPoll::Ready(7));
+        assert_eq!(wait.tries, 1);
+        let mut wait = StreamWait::new(2);
+        assert_eq!(wait.poll(|| None::<u8>), StreamPoll::Pending);
+        assert_eq!(wait.poll(|| None::<u8>), StreamPoll::Pending);
+        assert_eq!(wait.poll(|| None::<u8>), StreamPoll::GaveUp);
+        assert_eq!(STREAM_TRIES, 0xf000_0000);
+        // A budget of zero retries gives up at the first query; a budget
+        // of n makes n more queries.
+        let mut wait = StreamWait::new(0);
+        assert_eq!(wait.poll(|| None::<u8>), StreamPoll::GaveUp);
+        let mut wait = StreamWait::new(1);
+        assert_eq!(wait.poll(|| None::<u8>), StreamPoll::Pending);
+        assert_eq!(wait.poll(|| None::<u8>), StreamPoll::GaveUp);
+    }
+
+    #[test]
+    fn a_streamed_request_keeps_the_tags_and_gains_the_weapon_bit() {
+        let r = StreamRequest {
+            id: 9,
+            variant: 0x8000_0000 | STREAM_LIT | 0x00ab_0000,
+        };
+        assert!(r.writes_condition());
+        assert_eq!(r.render_variant(false), 0x8000_0000);
+        assert_eq!(r.render_variant(true), 0x8400_0000);
+        assert!(!StreamRequest { id: 9, variant: 0 }.writes_condition());
+        assert_eq!(
+            StreamRequest {
+                id: 9,
+                variant: 0x4000_0000
+            }
+            .render_variant(false),
+            0x4000_0000
+        );
+    }
+
+    #[test]
+    fn a_streamed_icon_reuses_the_first_free_slot() {
+        let mut cache = IconCache::new(4);
+        cache.entries = vec![
+            Entry {
+                id: 1,
+                cell: 5,
+                variant: 0,
+                half_width: 81,
+                half_height: 83,
+                refs: 1,
+            },
+            Entry::default(),
+        ];
+        let slot = insert_streamed(
+            &mut cache,
+            9,
+            STREAM_WEAPON,
+            Rendered {
+                cell: 12,
+                width: 150.0,
+                height: 90.0,
+            },
+        );
+        assert_eq!(slot, 2);
+        let e = cache.entries[1];
+        assert_eq!((e.id, e.cell, e.variant, e.refs), (9, 12, STREAM_WEAPON, 1));
+        // 4 + round(75) and 4 + round(45).
+        assert_eq!((e.half_width, e.half_height), (79, 49));
+        // A cache with no free slot grows by one.
+        let slot = insert_streamed(
+            &mut cache,
+            10,
+            0,
+            Rendered {
+                cell: 13,
+                width: 32.0,
+                height: 32.0,
+            },
+        );
+        assert_eq!(slot, 3);
+        assert_eq!(cache.entries.len(), 3);
     }
 }

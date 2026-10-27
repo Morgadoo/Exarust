@@ -501,7 +501,10 @@ mod tests {
             &[[1.0, 1.0, 1.0], [1.0, 1.0, 3.0], [9.0, 9.0, -1.0]],
             &IDENTITY,
         );
-        assert_eq!((b.min, b.max, b.centre, b.half, b.radius), (-1.0, 3.0, 1.0, 2.0, 2.0));
+        assert_eq!(
+            (b.min, b.max, b.centre, b.half, b.radius),
+            (-1.0, 3.0, 1.0, 2.0, 2.0)
+        );
         assert_eq!(scene_bounds(&[], &IDENTITY).half, 0.0);
         let tilted: Transform3 = [
             [1.0, 0.0, 0.0, 0.0],
@@ -558,7 +561,10 @@ mod tests {
         assert_eq!(r.alpha_colour_format, 0x8c43);
         assert_eq!((r.full.width, r.final_image.width), (320, 160));
         let r = resize(2, false);
-        assert_eq!((r.buffer_side, r.full.width, r.final_image.width), (160, 160, 80));
+        assert_eq!(
+            (r.buffer_side, r.full.width, r.final_image.width),
+            (160, 160, 80)
+        );
         assert_eq!(r.alpha_colour_format, 0x8c41);
         assert_eq!(CAMERA_SHIFT, [0.0, 500.0, 0.0]);
     }

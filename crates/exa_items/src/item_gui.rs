@@ -54,7 +54,7 @@ pub struct SpriteSheet {
     pub places: &'static [(i32, i32)],
 }
 
-const DOTRATING_PLACES: [(i32, i32); 3] = [(0, 0), (64, 0), (128, 0)];
+const DOTRATING_PLACES: [(i32, i32); 3] = [(0, 128), (0, 64), (0, 0)];
 const COIN_PLACES: [(i32, i32); 3] = [(0, 0), (48, 0), (96, 0)];
 const GRIP_PLACES: [(i32, i32); 3] = [(0, 96), (96, 96), (192, 96)];
 const CRYSTAL_PLACES: [(i32, i32); 6] = [(0, 128), (64, 128), (0, 64), (0, 0), (64, 0), (64, 64)];
@@ -713,6 +713,175 @@ where
     (out, used)
 }
 
+/// The atlas each sprite sheet is loaded into, and the atlas cell's side in
+/// pixels once the GUI unit is applied. The rating dots go into the global
+/// icon manager the interface opens first; the coins, the grip sides and
+/// the crystals get the three managers this unit makes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SheetAtlas {
+    pub sheet: &'static str,
+    /// The manager's cell size, or `None` for the interface's global one.
+    pub manager: Option<IconManager>,
+    /// The manager's blend word.
+    pub blend: u32,
+    /// The manager's pixel format.
+    pub format: u32,
+    /// The source cell's side.
+    pub source_cell: i32,
+}
+
+/// The three managers this unit makes: `unit · 4` for the coins in the
+/// colour format, `unit · 8` for the grip sides in the single-channel
+/// format, and the 22-pixel socket manager in the colour format. All three
+/// blend with 0x203.
+pub const SHEET_ATLASES: [SheetAtlas; 4] = [
+    SheetAtlas {
+        sheet: "dotrating.rfi",
+        manager: None,
+        blend: 0x203,
+        format: 0x0100_e608,
+        source_cell: 64,
+    },
+    SheetAtlas {
+        sheet: "coinicons.rfi",
+        manager: Some(IconManager::Coins),
+        blend: 0x203,
+        format: 0x0100_e608,
+        source_cell: 48,
+    },
+    SheetAtlas {
+        sheet: "wpnflpgrpico.rfi",
+        manager: Some(IconManager::Grip),
+        blend: 0x203,
+        format: 0x0100_6208,
+        source_cell: 96,
+    },
+    SheetAtlas {
+        sheet: "crystalicons.rfi",
+        manager: Some(IconManager::Sockets),
+        blend: 0x203,
+        format: 0x0100_e608,
+        source_cell: 64,
+    },
+];
+
+/// The cell side a sheet's manager is given for GUI unit `unit`: four
+/// units for the coins, eight for the grip sides, the fixed 22 for the
+/// sockets.
+pub fn sheet_cell(atlas: &SheetAtlas, unit: i32) -> Option<i32> {
+    atlas.manager.map(|manager| manager_cell(manager, unit))
+}
+
+/// The item panel's icon shader, as the original's program compiles it.
+///
+/// The program sums the alpha of a ring around the pixel (three pixels
+/// left, right, below and above, and the four diagonal pairs at two), each
+/// sample halved and folded in turn, scales the sum by the vertex's green
+/// and three quarters, mixes the highlight colour towards white by the
+/// vertex's red, adds that over the pixel's own colour by the square of
+/// its transparency, and adds the glow to the alpha. The fragment is then
+/// scaled by the vertex's alpha.
+pub const ITEM_ICON_SHADER: &str = "in vec2 vrTex;\r\nin vec4 vrCol;\r\nout vec4 FragColor;\r\nuniform vec4 HltCol;\r\nuniform sampler2D Tex;\r\nvoid main() {\r\nfloat a = textureOffset(Tex, vrTex, ivec2(-3, 0)).a * 0.5;\r\nfloat b = textureOffset(Tex, vrTex, ivec2(3, 0)).a * 0.5;\r\na = a * (1.0-b) + b;\r\nb = textureOffset(Tex, vrTex, ivec2(0, -3)).a * 0.5;\r\na = a * (1.0-b) + b;\r\nb = textureOffset(Tex, vrTex, ivec2(0, 3)).a * 0.5;\r\na = a * (1.0-b) + b;\r\nb = textureOffset(Tex, vrTex, ivec2(-2, -2)).a * 0.5;\r\na = a * (1.0-b) + b;\r\nb = textureOffset(Tex, vrTex, ivec2(-2, 2)).a * 0.5;\r\na = a * (1.0-b) + b;\r\nb = textureOffset(Tex, vrTex, ivec2(2, -2)).a * 0.5;\r\na = a * (1.0-b) + b;\r\nb = textureOffset(Tex, vrTex, ivec2(2, 2)).a * 0.5;\r\na = a * (1.0-b) + b;\r\na = a * vrCol.g * 0.75;\r\nvec3 col = mix(HltCol.rgb, vec3(1.0), vrCol.r) * a;\r\nvec4 tcol = texture(Tex, vrTex);\r\nb = (1.0 - tcol.a);tcol.rgb = col.rgb * b * b + tcol.rgb;\r\ntcol.a = min(a + tcol.a, 1.0);\r\nFragColor = tcol * vrCol.a;\r\n}";
+
+/// The highlight colour the shader's uniform holds.
+pub const HLT_COLOUR: [f32; 3] = [1.0, 0.75, 0.45];
+/// The vertex-colour alpha the shader's uniform holds (it scales the
+/// fragment after the shader's own work).
+pub const HLT_ALPHA: f32 = 1.0;
+
+/// The shader's samples, in the program's order: the offsets whose alpha
+/// the ring sums (x, y).
+pub const HLT_OFFSETS: [(i32, i32); 8] = [
+    (-3, 0),
+    (3, 0),
+    (0, -3),
+    (0, 3),
+    (-2, -2),
+    (-2, 2),
+    (2, -2),
+    (2, 2),
+];
+
+/// One pixel through [`ITEM_ICON_SHADER`], in single precision: the eight
+/// ring samples' alphas in [`HLT_OFFSETS`] order, the pixel's own colour
+/// (alpha included) and the vertex colour. Returns straight colour and
+/// alpha.
+pub fn item_icon_pixel(
+    ring_alpha: [f32; 8],
+    texel: [f32; 4],
+    ink: [f32; 4],
+    highlight: [f32; 3],
+) -> [f32; 4] {
+    let mut a = ring_alpha[0] * 0.5;
+    let mut b = ring_alpha[1] * 0.5;
+    a = a * (1.0 - b) + b;
+    for sample in &ring_alpha[2..] {
+        b = sample * 0.5;
+        a = a * (1.0 - b) + b;
+    }
+    a = a * ink[1] * 0.75;
+    // mix(HltCol, white, ink.r): the highlight fades towards white as the
+    // vertex's red rises.
+    let base = 1.0 - ink[0];
+    let col = [
+        highlight[0] * base + ink[0],
+        highlight[1] * base + ink[0],
+        highlight[2] * base + ink[0],
+    ];
+    let clear = 1.0 - texel[3];
+    let add = clear * clear;
+    [
+        (col[0] * a * add + texel[0]) * ink[3],
+        (col[1] * a * add + texel[1]) * ink[3],
+        (col[2] * a * add + texel[2]) * ink[3],
+        (a + texel[3]).min(1.0) * ink[3],
+    ]
+}
+
+/// The item GUI's five control classes, registered with the GUI's control
+/// table in the original: the rating dots, the value slider, the coin
+/// value, the crystal-socket row and the item-icon cell, each with the
+/// procedure that answers its events.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ControlClass {
+    pub class: u16,
+    pub control: ControlKind,
+}
+
+/// Which item-GUI control a class is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ControlKind {
+    RatingDots,
+    Slider,
+    CoinValue,
+    Sockets,
+    IconCell,
+}
+
+/// The control classes, in the order the original registers them.
+pub const CONTROL_CLASSES: [ControlClass; 5] = [
+    ControlClass {
+        class: 0xac01,
+        control: ControlKind::RatingDots,
+    },
+    ControlClass {
+        class: 0xac02,
+        control: ControlKind::Slider,
+    },
+    ControlClass {
+        class: 0xac03,
+        control: ControlKind::CoinValue,
+    },
+    ControlClass {
+        class: 0xac04,
+        control: ControlKind::Sockets,
+    },
+    ControlClass {
+        class: 0xac05,
+        control: ControlKind::IconCell,
+    },
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -959,6 +1128,84 @@ mod tests {
         // Green rises by what alpha gained: 10 + (255 − 100).
         assert_eq!(lit[(w + 1) * 4 + 1], 165);
         assert_eq!(lit[(2 * w + 1) * 4 + 1], 100);
+    }
+
+    #[test]
+    fn the_sheet_atlases_and_their_cells() {
+        assert_eq!(SHEET_ATLASES[0].manager, None);
+        assert_eq!(SHEET_ATLASES[1].manager, Some(IconManager::Coins));
+        assert_eq!(SHEET_ATLASES[2].manager, Some(IconManager::Grip));
+        assert_eq!(SHEET_ATLASES[3].manager, Some(IconManager::Sockets));
+        assert_eq!(sheet_cell(&SHEET_ATLASES[0], 4), None);
+        assert_eq!(sheet_cell(&SHEET_ATLASES[1], 4), Some(16));
+        assert_eq!(sheet_cell(&SHEET_ATLASES[2], 4), Some(32));
+        assert_eq!(sheet_cell(&SHEET_ATLASES[3], 4), Some(22));
+        assert_eq!(SHEET_ATLASES[2].format, 0x0100_6208);
+        assert_eq!(SHEET_ATLASES[3].format, 0x0100_e608);
+        assert_eq!(SHEET_ATLASES[0].blend, 0x203);
+        // The rating dots are stored down the sheet's last column, the
+        // crystals in the six cells on a 64-pixel grid.
+        assert_eq!(SPRITE_SHEETS[0].places, &[(0, 128), (0, 64), (0, 0)]);
+        assert_eq!(
+            SPRITE_SHEETS[3].places,
+            &[(0, 128), (64, 128), (0, 64), (0, 0), (64, 0), (64, 64)]
+        );
+        assert_eq!(SPRITE_SHEETS[1].places, &[(0, 0), (48, 0), (96, 0)]);
+        assert_eq!(SPRITE_SHEETS[2].places, &[(0, 96), (96, 96), (192, 96)]);
+    }
+
+    #[test]
+    fn the_icon_shader_and_its_pixel() {
+        assert!(ITEM_ICON_SHADER.contains("uniform vec4 HltCol;"));
+        assert!(ITEM_ICON_SHADER.contains("textureOffset(Tex, vrTex, ivec2(-3, 0))"));
+        assert!(ITEM_ICON_SHADER.contains("a = a * vrCol.g * 0.75;"));
+        assert!(ITEM_ICON_SHADER.contains("mix(HltCol.rgb, vec3(1.0), vrCol.r)"));
+        assert!(ITEM_ICON_SHADER.contains("FragColor = tcol * vrCol.a;"));
+        assert_eq!(HLT_COLOUR, [1.0, 0.75, 0.45]);
+        assert_eq!(HLT_ALPHA, 1.0);
+        // Black ink draws the pixel as it is.
+        let texel = [0.2, 0.4, 0.6, 1.0];
+        assert_eq!(
+            item_icon_pixel([1.0; 8], texel, [0.0, 0.0, 0.0, 1.0], HLT_COLOUR),
+            texel
+        );
+        // Green ink with a fully opaque ring and a transparent pixel: the
+        // ring folds to 0.99609375, red scales it by 0.75 and the glow is
+        // the highlight colour laid by its square.
+        let p = item_icon_pixel([1.0; 8], [0.0; 4], [0.0, 1.0, 0.0, 1.0], HLT_COLOUR);
+        let a = 0.996_093_75f32 * 0.75;
+        assert!((p[0] - HLT_COLOUR[0] * a).abs() < 1e-6);
+        assert!((p[1] - HLT_COLOUR[1] * a).abs() < 1e-6);
+        assert!((p[2] - HLT_COLOUR[2] * a).abs() < 1e-6);
+        assert!((p[3] - a).abs() < 1e-6);
+        // Yellow ink mixes the highlight fully to white and halves the
+        // fragment by the vertex alpha.
+        let p = item_icon_pixel([1.0; 8], [0.0; 4], [1.0, 1.0, 0.0, 0.5], HLT_COLOUR);
+        assert!((p[0] - a * 0.5).abs() < 1e-6);
+        assert!((p[3] - a * 0.5).abs() < 1e-6);
+        // A pixel under no ring keeps its own colour, scaled by the ink's
+        // alpha.
+        let p = item_icon_pixel(
+            [0.0; 8],
+            [0.2, 0.3, 0.4, 0.5],
+            [0.0, 1.0, 0.0, 0.5],
+            HLT_COLOUR,
+        );
+        assert_eq!(p, [0.1, 0.15, 0.2, 0.25]);
+        assert_eq!(HLT_OFFSETS[0], (-3, 0));
+        assert_eq!(HLT_OFFSETS[7], (2, 2));
+    }
+
+    #[test]
+    fn the_control_classes_are_registered_in_order() {
+        assert_eq!(CONTROL_CLASSES.len(), 5);
+        assert_eq!(CONTROL_CLASSES[0].class, 0xac01);
+        assert_eq!(CONTROL_CLASSES[0].control, ControlKind::RatingDots);
+        assert_eq!(CONTROL_CLASSES[1].control, ControlKind::Slider);
+        assert_eq!(CONTROL_CLASSES[2].control, ControlKind::CoinValue);
+        assert_eq!(CONTROL_CLASSES[3].control, ControlKind::Sockets);
+        assert_eq!(CONTROL_CLASSES[4].class, 0xac05);
+        assert_eq!(CONTROL_CLASSES[4].control, ControlKind::IconCell);
     }
 
     #[test]
