@@ -1505,6 +1505,9 @@ fn body_stats(stats: &CharacterStats) -> BodyStats {
         head_factor: stats.head_factor,
         walking_arms: stats.walking_arms,
         pin_factor: stats.pin_factor,
+        size: stats.size,
+        feral: stats.feral,
+        encumbrance: stats.encumbrance,
     }
 }
 

@@ -206,7 +206,13 @@ pub(super) fn bend_target(foot: Vec3, anchor: Vec3, anchored: bool, drop: f32) -
 /// `horizontal` and `distance` are centimetres to the anchor, `crouch` is
 /// 0 to 1 and `stance` is the race's stance factor (a human's 0.5).
 pub(super) fn step_lift(horizontal: f32, distance: f32, crouch: f32, stance: f32) -> f32 {
-    let s = (LIFT_HORIZONTAL * horizontal).min(LIFT_CAP);
+    // Under a centimetre of horizontal travel the scale is the squared
+    // distance itself; beyond, 0.4 of it, at most 30 cm.
+    let s = if horizontal * horizontal <= 1.0 {
+        horizontal * horizontal
+    } else {
+        (LIFT_HORIZONTAL * horizontal).min(LIFT_CAP)
+    };
     let f = if s > 0.0 && distance <= 3.0 * s {
         let span = 3.0 * s;
         let r = (distance * distance) / (span * span);

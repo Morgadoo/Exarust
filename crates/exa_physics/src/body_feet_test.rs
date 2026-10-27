@@ -676,7 +676,8 @@ fn the_stance_levels_and_the_legs_extend() {
     assert_eq!(level(1.0, 0.0, 30.0, 0.0), 1.0);
     assert!(close(level(1.0, 30.0, 30.0, 0.0), 0.975, 1e-6));
     assert!(close(level(0.5, 0.0, 0.0, 30.0), 0.55, 1e-6));
-    assert_eq!(level(1.0, 0.0, 0.0, 0.0), 1.0);
+    // Two feet on one spot give 0/0: the original propagates the NaN.
+    assert!(level(1.0, 0.0, 0.0, 0.0).is_nan());
     assert_eq!(extension(1.0, 85.0, 85.0), 1.0);
     assert_eq!(extension(1.0, 90.0, 85.0), 1.0);
     assert!(close(extension(1.0, 42.5, 85.0), 0.25, 1e-6));
@@ -1003,4 +1004,59 @@ fn state_masks_and_the_full_tone_are_the_originals() {
     assert_eq!(full_tone(0, 0.75).stance, 0.75);
     assert_eq!(full_tone(0, 0.75).tone, 1.0);
     assert_eq!(full_tone(0, 0.75).stagger_decay, 0.0);
+}
+
+/// The walking ground weights: the stored height difference smooths
+/// 0.9/0.1 toward the phase's difference, the phase's bias comes from it,
+/// and the first foot's weight is (1 − r)·0.5 + (1 − |2t − 1|)·r with
+/// r = 1 − run/2. Standing, the stored difference loses a tenth and the
+/// feet share the ground equally.
+#[test]
+fn the_walking_ground_weights_follow_the_phase_and_run() {
+    // Phase 0.45 picks g0 − g1 = −10; the stored −1 biases the phase by
+    // 0.4125, so the first foot takes 1 − |0.825 − 1| = 0.825 at full run.
+    let (last, first, second) = gait_weights(0.0, 0.0, true, 10.0, 20.0, 0.0);
+    assert!(close(last, -1.0, 1e-6), "{last}");
+    assert!(close(first, 0.825, 1e-6), "{first}");
+    assert!(close(second, 0.175, 1e-6), "{second}");
+    // A run of 1 halves the phase term: 0.5·0.5 + 0.825·0.5.
+    let (_, first, _) = gait_weights(0.0, 1.0, true, 10.0, 20.0, 0.0);
+    assert!(close(first, 0.6625, 1e-6), "{first}");
+    // Standing keeps half the ground each; the stored difference decays.
+    let (last, first, second) = gait_weights(0.5, 1.0, false, 0.0, 0.0, 2.0);
+    assert!(close(last, 1.8, 1e-6), "{last}");
+    assert_eq!((first, second), (0.5, 0.5));
+    // A NaN stored difference takes the middling bias: 0.4 − NaN = NaN.
+    let (last, first, _) = gait_weights(0.0, 0.0, true, 1.0, 2.0, f32::NAN);
+    assert!(last.is_nan());
+    assert!(first.is_nan());
+}
+
+/// A queued step is taken when its direction is more than cos 0.7 off the
+/// line to the target, or the target is within 40 × scale cm; it aims at
+/// the chest plus the queued vector, tells the AI when that points along
+/// the facing, and counts down to −2 before the first landing and −1
+/// after it.
+#[test]
+fn a_queued_step_aims_from_the_chest() {
+    let chest = Vec3::ZERO;
+    let target = Vec3::new(10.0, 0.0, 0.0);
+    // Straight at the target, far away: not taken.
+    let side = Vec3::Z;
+    assert!(queued_step(chest, target, Vec3::X, side, 1.0, 0).is_none());
+    // Behind the line: taken, the target the chest plus the queue.
+    let step = queued_step(chest, target, Vec3::NEG_X, side, 1.0, 0).unwrap();
+    assert_eq!(step.target, Vec3::NEG_X);
+    assert!(!step.tell_ai);
+    assert_eq!(step.countdown, -2);
+    let step = queued_step(chest, target, Vec3::NEG_X, Vec3::NEG_X, 1.0, 1).unwrap();
+    assert!(step.tell_ai);
+    assert_eq!(step.countdown, -1);
+    // Within 40 × scale cm even along the line: taken.
+    let near = Vec3::new(0.39, 0.0, 0.0);
+    assert!(queued_step(chest, near, Vec3::X, side, 1.0, 0).is_some());
+    let far = Vec3::new(0.41, 0.0, 0.0);
+    assert!(queued_step(chest, far, Vec3::X, side, 1.0, 0).is_none());
+    // A target on the chest is unordered and takes the queue.
+    assert!(queued_step(chest, chest, Vec3::X, side, 1.0, 0).is_some());
 }

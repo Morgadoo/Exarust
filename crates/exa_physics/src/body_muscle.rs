@@ -164,6 +164,15 @@ pub struct BodyStats {
     /// Its support pins' factor (its race's, less 0.25 × its feral
     /// level²): it scales its feet's grip and its support pins.
     pub pin_factor: f32,
+    /// The character's size: the race's times 1 − 0.05 × its record's
+    /// height. The footwork widens its recent-change window by it.
+    pub size: f32,
+    /// Its record's feral level, 0 to 1: it shortens the footwork's reach
+    /// by 0.3 a unit.
+    pub feral: f32,
+    /// What its worn armour and shield weigh, 0 to 1: it shortens the
+    /// footwork's reach by 0.2 a unit.
+    pub encumbrance: f32,
 }
 
 impl BodyStats {
@@ -175,7 +184,19 @@ impl BodyStats {
         head_factor: 1.0,
         walking_arms: ARM_LOOSE,
         pin_factor: HUMAN_PINS,
+        size: 1.0,
+        feral: 0.0,
+        encumbrance: 0.0,
     };
+
+    /// The footwork's reach (cm): 80 · √scale · (1 − 0.2 × encumbrance) ×
+    /// (1 − 0.3 × feral). The original's footwork reads this in place of
+    /// the attack steps' extension-scaled length.
+    pub fn foot_reach(&self) -> f32 {
+        80.0 * self.scale.max(0.0).sqrt()
+            * (1.0 - 0.2 * self.encumbrance)
+            * (1.0 - 0.3 * self.feral)
+    }
 }
 
 impl Default for BodyStats {

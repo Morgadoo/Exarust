@@ -48,7 +48,7 @@ fn the_trigger_is_one_and_a_half_radii() {
     };
     let mut up = trigger(1.0, true, 0.0);
     up.getting_up = true;
-    assert!(matches!(consider(&mut going, &up), Plan::Ended));
+    assert!(matches!(consider(&mut going, &up), Plan::Idle));
     assert!(!going.stepping);
     let mut going = Steps {
         stepping: true,
@@ -95,9 +95,10 @@ fn trigger(balance: f32, supported: bool, h_cm: f32) -> Trigger {
         support: 1.0,
         scale: 1.0,
         bonus: 0.0,
-        extension: 1.0,
+        reach: 80.0,
         frame: Vec3::ZERO,
         landings: 0,
+        shock_stagger: false,
     }
 }
 
@@ -405,4 +406,68 @@ fn a_deep_crouch_shortens_the_steps() {
     assert_eq!(crouch_stride(0.5), 1.0);
     assert!(close(crouch_stride(0.51), 0.7));
     assert!(close(crouch_stride(1.0) * step_length(1.0, 1.0), 56.0));
+}
+
+/// The imbalance accumulator gains (h − R·E⁴S)/(5·scale)·0.005 a tick
+/// past the trigger, caps at 1 (a NaN stays), and decays 0.01 a tick in
+/// double precision to 0.
+#[test]
+fn the_imbalance_accumulates_and_decays() {
+    assert!(close(add_imbalance(0.5, 50.0, 30.0, 1.0, 1.0), 0.52));
+    assert!(close(add_imbalance(0.5, 50.0, 30.0, 1.0, 2.0), 0.51));
+    assert_eq!(add_imbalance(0.99, 100.0, 1.0, 1.0, 0.01), 1.0);
+    assert!(add_imbalance(f32::NAN, 50.0, 30.0, 1.0, 1.0).is_nan());
+    assert!(close(decay_imbalance(0.5), 0.49));
+    assert_eq!(decay_imbalance(0.005), 0.0);
+    assert_eq!(decay_imbalance(-1.0), 0.0);
+}
+
+/// The footwork's reach is 80·√scale·(1 − 0.2·encumbrance)·(1 − 0.3·feral),
+/// and its step length is that reach times the crouch's stride.
+#[test]
+fn the_footworks_reach_narrows_with_armour_and_feral() {
+    let reach = |scale: f32, encumbrance: f32, feral: f32| {
+        let stats = crate::body::BodyStats {
+            scale,
+            encumbrance,
+            feral,
+            ..crate::body::BodyStats::HUMAN
+        };
+        stats.foot_reach()
+    };
+    assert!(close(reach(1.0, 0.0, 0.0), 80.0));
+    assert!(close(reach(1.0, 0.5, 0.0), 72.0));
+    assert!(close(reach(1.0, 0.0, 1.0), 56.0));
+    assert!(close(reach(4.0, 0.0, 0.0), 160.0));
+    assert!(close(foot_step_length(80.0, 0.6), 56.0));
+    assert!(close(foot_step_length(80.0, 0.0), 80.0));
+}
+
+/// The step trigger compares squared distances: a NaN offset never wants
+/// a step, and a shock stagger suppresses it.
+#[test]
+fn the_trigger_compares_squared_and_respects_a_shock() {
+    assert!(!starts(1.0, true, f32::NAN));
+    let mut steps = Steps {
+        placed: true,
+        radius_base: 30.0,
+        ..Steps::default()
+    };
+    let mut shocked = trigger(1.0, true, 100.0);
+    shocked.shock_stagger = true;
+    assert!(matches!(consider(&mut steps, &shocked), Plan::Idle));
+    assert!(!steps.stepping);
+    let target = Vec3::new(1.0, 3.0, 0.5);
+    let mut stepping = Steps {
+        stepping: true,
+        placed: true,
+        target,
+        standing: Vec3::new(0.0, 7.0, 0.0),
+        ..Steps::default()
+    };
+    // A new target takes the standing position's height while stepping.
+    let mut t = trigger(1.0, true, 100.0);
+    t.chest = Vec3::X * 20.0;
+    let _ = consider(&mut stepping, &t);
+    assert!(close(stepping.target.y, 7.0), "{}", stepping.target.y);
 }

@@ -58,7 +58,9 @@ pub use hunch::{ease_hunch, hunch_applies, hunch_turn, step_hunch};
 mod feet;
 #[path = "body_stagger.rs"]
 pub mod stagger;
-pub use feet::{FootState, FullTone, StepEnd, WalkedStep, full_tone, step_end};
+pub use feet::{
+    FootState, FullTone, QueuedStep, StepEnd, WalkedStep, full_tone, queued_step, step_end,
+};
 #[path = "body_pins.rs"]
 mod pins;
 #[path = "body_stages.rs"]
