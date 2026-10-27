@@ -46,9 +46,10 @@
 //!
 //! The window's two fades are the caller's numbers: the backdrop's
 //! [`TreeView::window`], the content's [`TreeView::content`] and the bar
-//! child's [`TreeView::bar_alpha`]. Not modelled: the link ribbons'
-//! spline texture (they read as white) and the GUI skin's own text metrics
-//! and button highlights (the running font measures the texts).
+//! child's [`TreeView::bar_alpha`]. The texts' widths and line steps are
+//! the GUI main font's ([`TREE_FONT`]); their glyphs are the running
+//! font's. Not modelled: the link ribbons' spline texture (they read as
+//! white) and the skin's button highlight.
 //!
 //! Evidence: the immediate-draw routines and the screen and bar draws of
 //! TThaumTree, the six fragment programs, and the icon and frame sheet
@@ -1460,6 +1461,32 @@ fn bar_empties(out: &mut TreeDraw, view: &TreeView, pose: &BarPose) {
     }
 }
 
+/// The tree's text font: the GUI's main font at the screen's fixed unit of
+/// four pixels (the original's tree layout constant). Its advances measure
+/// the tooltip and prompt texts step for step; the running screen draws the
+/// glyphs with the running font, whose shapes differ.
+pub const TREE_FONT: &crate::gui_font::GuiFont = &crate::gui_font::RAYFORM_08;
+
+/// The tree's layout unit in pixels, before the window's scale multiplies
+/// it.
+pub const TREE_UNIT: f32 = 4.0;
+
+/// A text's width in tree units, from the GUI font's advances.
+pub fn text_width(text: &[u8]) -> f32 {
+    TREE_FONT.text_width(text) as f32 / TREE_UNIT
+}
+
+/// The number of lines a text wraps to at `width` tree units (the
+/// original's line count with the GUI font).
+pub fn text_lines(text: &[u8], width: f32) -> u32 {
+    crate::text_layout::line_count(text, (width * TREE_UNIT) as i32, TREE_FONT).max(1) as u32
+}
+
+/// The line step in tree units.
+pub fn text_step() -> f32 {
+    TREE_FONT.line_height as f32 / TREE_UNIT
+}
+
 /// The tooltip's panel and text places in pixels, from the shown choice's
 /// node and the measured texts.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1493,9 +1520,9 @@ pub const TIP_TEXT_WIDTH: f32 = 59.0;
 /// name box is `60 × (lines·step + 1)` units under the node (above it when
 /// it would leave the window) and fades to 160/255 over 300 ms, out again
 /// when the focus leaves. The description is a one-line caption of its
-/// measured width. The original measures with the GUI skin's letter sheet;
-/// Exarust passes the running font's measurements, so the places follow the
-/// numbers while the sizes depend on that font (a labelled guess).
+/// measured width. The widths and the line step come from the GUI's main
+/// font at the tree's fixed unit ([`text_width`], [`text_lines`],
+/// [`text_step`]); the glyphs themselves are drawn with the running font.
 pub fn tooltip_layout(
     view: &TreeView,
     name_lines: u32,
@@ -2630,6 +2657,19 @@ mod tests {
         assert!(above.name_panel[1] < 690.0);
         view.hovered = 2;
         assert!(tooltip_layout(&view, 1, 8.0, 120.0).is_none());
+    }
+
+    #[test]
+    fn the_tree_text_uses_the_gui_fonts_advances() {
+        // Rayform08's advances: B 8, l 4, a 7, s 6, t 5 = 30 pixels, four to
+        // a unit; its line height is 16 pixels, four units.
+        assert_eq!(text_width(b"Blast"), 7.5);
+        assert_eq!(text_width(b""), 0.0);
+        assert_eq!(text_step(), 4.0);
+        assert_eq!(text_lines(b"one two three", 59.0), 1);
+        // At one unit the 4-pixel width fits no 7-pixel glyph but the
+        // first: every later byte overflows its own line.
+        assert_eq!(text_lines(&[b'a'; 4], 1.0), 4);
     }
 
     #[test]

@@ -12,8 +12,8 @@
 //!
 //! The tooltip is the shown choice's name box and description caption, laid
 //! out at the original's places (600 ms delay, a 60-unit name box, the
-//! measurement from the running font); while a power is dragged every shown
-//! node wears its name. Not modelled: the link programs' ribbon texture (the
+//! widths and line step of the GUI main font at the tree's unit); while a
+//! power is dragged every shown node wears its name. Not modelled: the link programs' ribbon texture (the
 //! draw treats it as white, so links lack the spline's texture), the GUI
 //! skin's own text metrics and button highlight, and the base form's key
 //! handlers. The bar's own keys (pick, step, use) belong to the hotkey
@@ -514,7 +514,6 @@ fn draw(
     }
     let scale = window.scale_factor() * 4.0;
     let tree_open = screen.open;
-    let font = screen.font.clone();
     let PowerScreen {
         tree,
         bar,
@@ -535,14 +534,14 @@ fn draw(
         // The tooltip: the shown choice's name and description, as the
         // running font measures them (the GUI skin's own metrics are
         // outside the pack; a labelled guess).
-        let font = font.as_ref();
         if view.hovered > 0 && (view.hovered as usize) <= tree.nodes.len() {
             let (name, description) = tree.node_text(view.hovered as usize - 1, texts);
             let name = String::from_utf8_lossy(name).into_owned();
             let description = String::from_utf8_lossy(description).into_owned();
-            let lines = wrap_text(name.as_bytes(), 59);
-            let (_, line_step) = measure(font, "X", scale * 2.0);
-            let (description_width, _) = measure(font, &description, scale * 2.0);
+            let lines = divide_lines(name.as_bytes(), 59);
+            let line_step = tree_draw::text_step() * scale / tree_draw::TREE_UNIT;
+            let description_width =
+                tree_draw::text_width(description.as_bytes()) * scale / tree_draw::TREE_UNIT;
             let tooltip =
                 tree_draw::tooltip_draw(&view, &lines, &description, line_step, description_width);
             draw.batches.extend(tooltip.batches);
@@ -555,7 +554,7 @@ fn draw(
                     .get(node.name_text as usize)
                     .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
                     .unwrap_or_default();
-                let width = measure(font, &text, scale * 2.0).0;
+                let width = tree_draw::text_width(text.as_bytes()) * scale / tree_draw::TREE_UNIT;
                 names.push((text, width));
             }
             let labels = tree_draw::labels_draw(&view, &names);
@@ -633,20 +632,34 @@ fn draw(
     screen.dirty = false;
 }
 
-/// A text's drawn width and line step at `size` (the running font's
-/// metrics stand in for the GUI skin's own).
-fn measure(font: Option<&GameFont>, text: &str, size: f32) -> (f32, f32) {
-    match font {
-        Some(font) => {
-            let rendered = font.render(text);
-            let scale = size / font.line_height() as f32;
-            (
-                rendered.width as f32 * scale,
-                font.line_height() as f32 * scale,
-            )
+/// Splits a text into the lines the GUI font's line count takes at
+/// `width` tree units: a word wrap at the spaces that fit, without the
+/// markup the tooltip does not use.
+fn divide_lines(text: &[u8], width: usize) -> Vec<String> {
+    let text = String::from_utf8_lossy(text);
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    for word in text.split([' ', '\r', '\n']) {
+        if word.is_empty() {
+            continue;
         }
-        None => (text.chars().count() as f32 * size * 0.5, size),
+        if !line.is_empty()
+            && tree_draw::text_width(format!("{line} {word}").as_bytes()) > width as f32
+        {
+            lines.push(std::mem::take(&mut line));
+        }
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line.push_str(word);
     }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
 }
 
 /// Wraps a description at `width` characters, keeping its text.
