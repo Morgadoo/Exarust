@@ -320,6 +320,10 @@ pub struct ViewRef {
     pub owner: Option<u32>,
     /// The view's pack panel.
     pub pack: Option<u32>,
+    /// The view's shown record.
+    pub record: Option<u32>,
+    /// The view's panel has been loaded (its contents may be saved).
+    pub loaded: bool,
 }
 
 /// The first visible form of the character view's class owned by `owner`.
@@ -332,6 +336,36 @@ pub fn find_owner(views: &[ViewRef], owner: u32) -> Option<usize> {
 /// The player's pack panel: the pack of the player's open view.
 pub fn player_pack(views: &[ViewRef], player: u32) -> Option<u32> {
     views[find_owner(views, player)?].pack
+}
+
+/// The shown record of the first view of `owner`: the first visible view's
+/// record, or `None` when no view is open.
+pub fn first_record(views: &[ViewRef], owner: u32) -> Option<u32> {
+    views[find_owner(views, owner)?].record
+}
+
+/// The views whose loaded panel is saved when the character view closes:
+/// the open forms of the view's class with their loaded byte set. The
+/// caller saves each one's pack panel.
+pub fn panels_to_save(views: &[ViewRef]) -> Vec<usize> {
+    views
+        .iter()
+        .enumerate()
+        .filter(|(_, view)| view.loaded && view.pack.is_some())
+        .map(|(index, _)| index)
+        .collect()
+}
+
+/// The 1-based worn entry whose attachment is the pointer's scene node. A
+/// node not marked as a held item (`marker` false) or a body with no worn
+/// entries has none.
+pub fn worn_index(worn: &[Option<u32>], node: u32, marker: bool) -> Option<usize> {
+    if !marker {
+        return None;
+    }
+    worn.iter()
+        .position(|entry| *entry == Some(node))
+        .map(|at| at + 1)
 }
 
 /// The card a press on the figure opens: the item under the pointer and its
@@ -364,16 +398,22 @@ mod tests {
                 visible: false,
                 owner: Some(3),
                 pack: Some(9),
+                record: Some(90),
+                loaded: false,
             },
             ViewRef {
                 visible: true,
                 owner: Some(4),
                 pack: Some(9),
+                record: Some(91),
+                loaded: true,
             },
             ViewRef {
                 visible: true,
                 owner: Some(3),
                 pack: Some(8),
+                record: Some(92),
+                loaded: true,
             },
         ];
         assert_eq!(find_owner(&views, 3), Some(2));
@@ -382,6 +422,13 @@ mod tests {
         assert_eq!(player_pack(&views, 7), None);
         assert_eq!(current_card(0, 0x10), None);
         assert_eq!(current_card(7, 0x10), Some((7, 0x10)));
+        assert_eq!(first_record(&views, 3), Some(92));
+        assert_eq!(first_record(&views, 7), None);
+        // The invisible view is not open, so its loaded flag does not count.
+        assert_eq!(panels_to_save(&views), vec![1, 2]);
+        assert_eq!(worn_index(&[None, Some(4), Some(5)], 5, true), Some(3));
+        assert_eq!(worn_index(&[None, Some(4)], 4, false), None);
+        assert_eq!(worn_index(&[None, Some(4)], 9, true), None);
         assert!(!insight_blocks(0, &[8], 100, 100));
         assert!(insight_blocks(5000, &[8], 100, 100));
         assert!(!insight_blocks(5000, &[8], 50, 100));
