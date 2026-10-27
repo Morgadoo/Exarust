@@ -1789,7 +1789,16 @@ and starts from the keys, with no blend. The pose-only sampler (a clip at
 a time, no capture or blend: the gait floor, the viewer's first pose)
 takes the same bracket: a looping clip blends from its last key back to
 its first before the first key and past the last (no further than the
-first key), one played once holds its first and last keys there.
+first key), one played once holds its first and last keys there. The
+limp (muscles-off) sampler takes its bracket at the raw clock and the
+remaining blend (`exa_anim::ragdoll_bracket`, `Animator::sample_ragdoll`):
+before the first key plus the blend it blends from the last key of a
+looping clip; between the keys it blends as the living sampler does; at
+or past the last key a looping clip blends from it back to the first by
+(time − last)/first with no clamp, and one played once blends from the
+key before the last to the last with a share of 1. It takes no gait
+overlay, hold, twist, look or foot pitch, and the root keeps its travel.
+No Exarust corpse plays a clip yet.
 
 **Sampler pipeline.** A living body's sampler takes each sample in the
 original's steps, part by part in the model tree's order, one function a

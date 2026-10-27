@@ -655,3 +655,33 @@ fn the_six_tenths_clock_adds_in_double() {
     up.tick_double(&get_up(20.0, 120.0), 1.5 * 0.6 * 0.7, 0);
     assert_eq!(up.time, 0.684_800_03);
 }
+
+/// The limp sampler takes the bracket at the raw clock: before the first
+/// key (plus the remaining blend) it blends from the last key of a looping
+/// clip, or from the first; between keys it blends as the living sampler
+/// does; past the last key a looping clip blends from it back to the first
+/// without clamping, and one played once blends from the key before the
+/// last to the last with a share of 1.
+#[test]
+fn the_limp_sampler_brackets_at_the_raw_clock() {
+    let walk = clip(&[20.0, 80.0], &[Vec3::ZERO, Vec3::ZERO], true);
+    let b = ragdoll_bracket(&walk, 10.0, true, 4.0).unwrap();
+    assert_eq!((b.src, b.dst), (1, 0));
+    assert!((b.f - 10.0 / 24.0).abs() < 1e-6, "{}", b.f);
+    let b = ragdoll_bracket(&walk, 30.0, true, 0.0).unwrap();
+    assert_eq!((b.src, b.dst), (0, 1));
+    assert!((b.f - 10.0 / 60.0).abs() < 1e-6, "{}", b.f);
+    // Past the last key, looping: from it to the first, past 1 allowed.
+    let b = ragdoll_bracket(&walk, 110.0, true, 0.0).unwrap();
+    assert_eq!((b.src, b.dst), (1, 0));
+    assert!((b.f - 30.0 / 20.0).abs() < 1e-6, "{}", b.f);
+    // Played once past its last key: the key before the last holds it.
+    let once = get_up(20.0, 80.0);
+    let b = ragdoll_bracket(&once, 90.0, false, 0.0).unwrap();
+    assert_eq!((b.src, b.dst, b.f), (0, 1, 1.0));
+    // A sample starts from the keys and keeps the root's travel.
+    let mut anim = Animator::new("Default", "Walk");
+    anim.time = 110.0;
+    let pose = anim.sample_ragdoll(&walk, true).unwrap();
+    assert_eq!(pose.rotations.len(), BONES);
+}

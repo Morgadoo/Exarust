@@ -377,6 +377,18 @@ impl Animator {
         self.pose = Some(pose.clone());
     }
 
+    /// Samples `clip` as a limp body's (muscles-off) sampler does: the
+    /// bracket at the raw clock ([`ragdoll_bracket`]), no gait overlay, no
+    /// hold, the root keeping its travel, and the pose kept as the targets.
+    /// The body still snaps its particles to the pose itself; that and the
+    /// contacts are the caller's. Exarust has no clip on a corpse yet.
+    pub fn sample_ragdoll(&mut self, clip: &Clip, looping: bool) -> Option<ClipPose> {
+        let b = ragdoll_bracket(clip, self.time, looping, self.blend)?;
+        let pose = self.blend_keys(clip, &b, false);
+        self.keep(&pose, 0.0);
+        Some(pose)
+    }
+
     /// Samples `clip` at the clock for a body without parts of its own.
     /// See [`Animator::sample_layered`].
     pub fn sample(
@@ -507,6 +519,49 @@ pub fn hold_toward(pose: &mut ClipPose, hold: Option<(&[Quat], f32)>) -> f32 {
         .normalize();
     }
     weight
+}
+
+/// The bracket of a limp body's (muscles-off) sample, taken at the raw
+/// clock `time` with no blend. Up to the first key (plus the remaining
+/// blend) it blends from the last key for a looping clip, else from the
+/// first, by time over (first key + blend). Between keys it blends as the
+/// living sampler does. At or past the last key a looping clip blends
+/// from it back to the first by (time − last) / first; a clip played once
+/// blends from the key before the last to the last with a share of 1 (it
+/// holds the last key). The share is not clamped: the original's looping
+/// branch can reach past 1.
+pub fn ragdoll_bracket(clip: &Clip, time: f32, looping: bool, blend: f32) -> Option<Bracket> {
+    let keys = &clip.keys;
+    let n = keys.len();
+    let (first, last) = (keys.first()?.time, keys.last()?.time);
+    let (src, dst, f) = if first + blend < time {
+        if time < last {
+            let k = (1..n).find(|&k| time <= keys[k].time).unwrap_or(n - 1);
+            let from = keys[k - 1].time;
+            let span = keys[k].time - from;
+            let f = if span > EPSILON {
+                (time - from) / span
+            } else {
+                0.0
+            };
+            (k - 1, k, f)
+        } else if looping {
+            (n - 1, 0, (time - last) / first)
+        } else {
+            (n.saturating_sub(2), n - 1, 1.0)
+        }
+    } else {
+        let src = if looping { n - 1 } else { 0 };
+        let span = first + blend;
+        let f = if span > EPSILON { time / span } else { 0.0 };
+        (src, 0, f)
+    };
+    Some(Bracket {
+        src,
+        dst,
+        f,
+        from_capture: false,
+    })
 }
 
 #[cfg(test)]
