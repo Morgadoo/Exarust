@@ -1220,6 +1220,8 @@ Done (change `chase-cast-and-integrate-contacts`; motileai lane): an NPC's chase
 **M6 "fair fight":** NPC-vs-NPC and player-vs-NPC duels that behave like
 the original's.
 
+Done (change `wire-ai-brain`; reviewed): the NPC brain runs in the game. Every frame each brain clears its contacts as the original's target pass does, perceives every character within reach with the role database's attitude, the observed character's contacts and the relations' trust (a knocked-out character's concern drops by 0.99; dead, asleep or removed characters are cleared; a lost target raises the alert), then drifts its morale, integrates its contacts and runs the target pass over every character it saw. The pass decides the duellist's engagement, replacing the mind's rating; a neutral NPC watches a nearby fight. On the RTX 3090 an arena duel still engages about 4 s after the spawn and `exanima01` keeps its frame rate. Not yet: the original's one pass a tick (the longest waiter), a line-of-sight test, the nearby list, retargeting and flight once the room graph exists. TMotileAI 60% → 61%, TCombatant 85% → 86%.
+
 ### Phase 7 — Game modes and content
 
 Done (change `run-an-arena-career`): a new company starts with 343 copper

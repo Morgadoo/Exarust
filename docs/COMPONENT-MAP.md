@@ -22,7 +22,7 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 | Characters, motion & animation | 506 | 198 | 23 | 56% | 0% |  |
 | Combat, weapons & damage | 14 | 3 | 3 | 31% | 0% | RFE_Effects_Blood, TBloodSprays |
 | Items, materials & crafting | 341 | 140 | 40 | 60% | 0% | TCharLoot, TPopUpDesc, TPopUpContainer |
-| AI & behaviour | 437 | 206 | 17 | 59% | 0% | FG_AI_Behaviours, FLX_Entities, TEntity |
+| AI & behaviour | 437 | 206 | 17 | 60% | 0% | FG_AI_Behaviours, FLX_Entities, TEntity |
 | Thaumaturgy & effects | 697 | 296 | 83 | 63% | 0% |  |
 | Audio | 59 | 18 | 4 | 84% | 0% |  |
 | Script, dialogue & story | 184 | 46 | 11 | 70% | 0% | TJournal, TScriptActor |
@@ -84,7 +84,7 @@ Ordered by code size; these are where most of the original still has no counterp
 | component | section | KB | coverage | Exarust |
 |---|---|---:|---:|---|
 | XA_Arena | Game modes, arena & session | 71 | 67% | exa_game/src/arena_outfit.rs; exa_game/src/arena_outfit_data.rs |
-| TMotileAI | AI & behaviour | 60 | 60% | exa_ai/src/chase.rs; exa_ai/src/route.rs |
+| TMotileAI | AI & behaviour | 60 | 61% | exa_ai/src/chase.rs; exa_ai/src/route.rs |
 | TGUIDrawSkin | UI | 35 | 90% | exa_ui/src/skin.rs; exa_ui/src/gui_draw.rs |
 | TPathFinder | AI & behaviour | 32 | 86% | exa_world/src/nav/path.rs; exa_world/src/nav/mover.rs |
 | TVCCloth | Physics, bodies & cloth | 30 | 84% | exa_physics/src/cloth.rs; exa_world/src/cloth.rs |
