@@ -656,6 +656,7 @@ mod tests {
                 transform: Transform::from_translation(translation.into()),
                 parts: Vec::new(),
                 part_materials: Vec::new(),
+                collision: Vec::new(),
                 skin_bone: Some(1),
                 light: None,
                 voxel_light: None,
