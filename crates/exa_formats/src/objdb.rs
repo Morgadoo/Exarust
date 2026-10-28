@@ -211,7 +211,8 @@ impl Burden {
     /// A helm worn to see in the dark: it turns the player's own light on
     /// (the three night-vision helms of the shipped database).
     pub const SEES_IN_THE_DARK: u8 = 1;
-    /// A worn talisman that grants its wearer a second wind at low health.
+    /// A worn item that grants its wearer a second wind at low health (the
+    /// armour pass sets the character's second-wind flag for it).
     pub const SECOND_WIND: u8 = 2;
     /// The golem suit: unpowered, it adds 2 to its wearer's encumbrance.
     pub const GOLEM_SUIT: u8 = 4;

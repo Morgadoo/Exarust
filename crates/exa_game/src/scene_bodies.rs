@@ -523,6 +523,10 @@ pub fn spawn_scene_body(
         }
     }
     let mut fighter = exa_combat::Fighter::of_stats(race, stats).with_perks(record.perks());
+    // A worn item of special kind 2 grants the second wind (the armour
+    // pass's flag), for the arena's generated fighters as for the level's.
+    fighter.second_wind.granted =
+        exa_formats::encumbrance::second_wind_of_record(&record, |id| item_of(context.items, id));
     fighter.health.yellow = fighter.health.max * plan.health;
     fighter.health.red = fighter.health.yellow;
     let worn = look
