@@ -388,8 +388,10 @@ pub fn spawn_scene_body(
         BodyLook::Record(record) => record.as_ref().clone(),
         BodyLook::Actor(name) => context.actors.template(context.game, name, false)?,
         BodyLook::Generated(fighter) => {
-            // The spawned bodies share the arena's sequence: one body's
-            // look and outfit draws continue into the next body's.
+            // The original reseeds the shared randomiser from the system
+            // clock before each generated body; Exarust continues the
+            // arena's roll instead [guess: a deterministic stand-in for the
+            // clock seed], so one body's draws lead into the next body's.
             let mut lcg = Lcg::new(*context.roll);
             let record = generated_record(
                 fighter,

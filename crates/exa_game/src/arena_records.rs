@@ -17,9 +17,10 @@
 //! number, profession word, skill, variant word, search seed and the four
 //! personality values follow the same "too many fields" shape.
 //!
-//! A generated opponent writes personality `[-100, 100, 0, 0]`, a hire-list
-//! opponent writes none, and both are given the event's 100/100 condition
-//! by the spawn plan, not by the record. The event weapon is put in the
+//! Both a generated and a hire-list opponent write personality
+//! `[-100, 100, 0]` after the outfit pass (the fourth value stays 0), and
+//! both are given the event's 100/100 condition by the spawn plan, not by
+//! the record. The event weapon is put in the
 //! record's main hand before the outfit pass, and the profile's flag 4 keeps
 //! the outfit from picking another weapon.
 //!
@@ -80,13 +81,14 @@ impl GeneratedFighter {
     }
 
     /// A hire-list opponent: its six-level record and eight-byte outfit
-    /// profile, with the event's drawn weapon in the main hand.
+    /// profile, with the event's drawn weapon in the main hand. It writes
+    /// the same personality as a generic opponent.
     #[must_use]
     pub fn hire(plan: HirePlan, weapon: Option<u32>) -> Self {
         Self {
             level: plan.stat_level,
             outfit: OutfitSource::Profile(plan.outfit),
-            traits: [0.0; 4],
+            traits: [-100.0, 100.0, 0.0, 0.0],
             weapon,
         }
     }
@@ -316,7 +318,8 @@ mod tests {
         assert_eq!(&plan.outfit.0[5..8], &[66, 140, 1]);
         let fighter = GeneratedFighter::hire(plan, None);
         assert_eq!(fighter.outfit, OutfitSource::Profile(plan.outfit));
-        assert_eq!(fighter.traits, [0.0; 4]);
+        // The hire routine writes the same -100, 100, 0 personality.
+        assert_eq!(fighter.traits, [-100.0, 100.0, 0.0, 0.0]);
     }
 
     /// The installed object database dresses a generated fighter: its worn
