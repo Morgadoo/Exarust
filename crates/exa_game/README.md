@@ -174,8 +174,19 @@ terrain probe and the node, sector and grid-environment passes, the game
 scene's creation constants, the menu background scene's load, the GUI reset
 and the player's node set-up and spawn. The migration pass now keeps only
 the travelling characters: a repeated address is logged as a duplicate and
-is neither flushed again nor placed. These are tested rules; no running
-game calls them yet because the level loader keeps its own scene model.
+is neither flushed again nor placed. The fighters' kit passes are
+`save_kit`: the preparation resolves own item references in hand, worn and
+carried order (with the original's dead second-pair replacements), and the
+equip pass instantiates them, rewrites the attached hand nodes and the
+carried duplicates, and frees the temporary database. A load imports the
+save's world character and object databases into their world tiers
+(`Slots::world_characters`/`world_objects`). `level_transition` now also
+has the transition's ordered flow: the teardown and flush, the destination
+read (save section or archive), the import, the spawn matrix choice, the
+story respawn, the grid arrays, the followers and the post-load pass, with
+a missing destination aborting and a failed import disabling saves. These
+are tested rules; no running game calls them yet because the level loader
+keeps its own scene model.
 
 Character creation (`create`): the record's gear (four hand items, its
 worn list and its carried list), the mode filters (story background 0 keeps

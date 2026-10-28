@@ -28,6 +28,36 @@ use exa_formats::settings_store::SettingsStore;
 
 use crate::session::{self, Mode, SaveError, Session, SlotInfo};
 
+/// The save's world character database, read as the load's character
+/// database importer reads it: the `#worldchrdb` section's first chunk into
+/// the world tier. `None` when the section or the chunk is missing or does
+/// not read; the original then clears the live database.
+pub fn world_characters(package: &PackageImage) -> Option<exa_formats::character_db::CharacterDb> {
+    let section = package.section(save_package::WORLD_CHARACTER_DB)?;
+    let payload = save_package::first_chunk_payload(section)?;
+    exa_formats::character_db::CharacterDb::from_rdb(exa_formats::character_db::WORLD_TAG, payload)
+        .ok()
+}
+
+/// The save's world object database, read as the load's object database
+/// importer reads it: the `#worldobjdb` section's first chunk into the world
+/// tier and its second chunk (the data manager's table) into the string
+/// library the records resolve their text through. `None` when the section
+/// or its first chunk is missing or does not read; the original then clears
+/// the live database.
+pub fn world_objects(package: &PackageImage) -> Option<exa_formats::objdb::ObjectDb> {
+    let section = package.section(save_package::WORLD_OBJECT_DB)?;
+    let (objects, strings) = save_package::world_object_payloads(section)?;
+    let world = exa_formats::objdb::Store::parse(objects).ok()?;
+    let strings = strings
+        .and_then(|bytes| exa_formats::objstrings::Library::parse(bytes).ok())
+        .unwrap_or_default();
+    let mut db = exa_formats::objdb::ObjectDb::default();
+    db.world = world;
+    db.strings = strings;
+    Some(db)
+}
+
 /// The settings store file the slot order lives in, in the user folder.
 pub const STORE_FILE: &str = "Exanima.set";
 
@@ -133,6 +163,17 @@ impl LoadedSave {
         // The slot view names records by their low id, as the placement does.
         record.id &= exa_formats::characters::ID_MASK;
         Some(record)
+    }
+
+    /// The save's world character database, imported as the load does.
+    pub fn world_characters(&self) -> Option<exa_formats::character_db::CharacterDb> {
+        world_characters(&self.package)
+    }
+
+    /// The save's world object database and its strings, imported as the
+    /// load does.
+    pub fn world_objects(&self) -> Option<exa_formats::objdb::ObjectDb> {
+        world_objects(&self.package)
     }
 }
 
@@ -1758,6 +1799,45 @@ mod tests {
         assert_eq!(record.name, "Ash");
         assert_eq!(record.id, 5);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_saves_world_databases_import_into_their_tiers() {
+        use exa_formats::characters::CharacterRecord;
+        use exa_formats::objdb::ObjectDb;
+        let mut package = PackageImage::new();
+        let mut db =
+            exa_formats::character_db::CharacterDb::new(exa_formats::character_db::WORLD_TAG);
+        let mut record = CharacterRecord::new();
+        record.id = 5;
+        record.name = "Ash".to_string();
+        db.add(5, record);
+        db.flush().unwrap();
+        package.put_section(
+            save_package::WORLD_CHARACTER_DB,
+            &save_package::world_character_db(&db.save()),
+        );
+        let objects = ObjectDb::default();
+        package.put_section(
+            save_package::WORLD_OBJECT_DB,
+            &save_package::world_object_db(&objects.world.write(), &objects.strings.write()),
+        );
+        let mut characters = world_characters(&package).unwrap();
+        assert!(characters.contains(5));
+        assert_eq!(characters.get(5).unwrap().record().name, "Ash");
+        let objects = world_objects(&package).unwrap();
+        assert!(objects.world.is_empty());
+        // A package without the sections imports nothing (the original
+        // clears the live databases then).
+        assert!(world_characters(&PackageImage::new()).is_none());
+        assert!(world_objects(&PackageImage::new()).is_none());
+        // A broken table imports nothing rather than panicking.
+        let mut broken = PackageImage::new();
+        broken.put_section(
+            save_package::WORLD_OBJECT_DB,
+            &save_package::world_object_db(&[0xff; 6], &[]),
+        );
+        assert!(world_objects(&broken).is_none());
     }
 
     #[test]

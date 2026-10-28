@@ -207,12 +207,274 @@ impl PendingLanding {
     }
 }
 
+/// One step of the level-transition flow, in the original's order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransitionStep {
+    /// The open GUI forms are closed and the scene is made current.
+    CloseForms,
+    /// The first-load hook runs when one is installed.
+    FirstLoadHook,
+    /// The kd-tree build is reserved.
+    ReserveTrees,
+    /// A 13 ms sleep, letting the frame's work settle before the teardown.
+    Sleep,
+    /// The audio environment's per-level reset.
+    AudioReset,
+    /// The GUI reset (task list, tips, game functions, item GUI, the word).
+    GuiReset,
+    /// The object database begins its save pass.
+    ObjectsBegin,
+    /// The player's body part controller is put in mode 8.
+    PreparePlayerParts,
+    /// The player's record is flushed into the world character database.
+    FlushPlayer,
+    /// The travelling characters are collected (engine controller 4,
+    /// flags without 0x800), a repeat logged and dropped.
+    CollectFollowers,
+    /// The object database ends its pass.
+    ObjectsEnd,
+    /// Each travelling character's node is set up as the player's is.
+    SetupFollowerNodes,
+    /// The player's body node takes the manager and is activated.
+    ActivatePlayerNode,
+    /// The GUI's audio state is restored.
+    RestoreGuiAudio,
+    /// The scene-content helpers reset for the new level.
+    ResetContent,
+    /// The arena task's leave hook, when one exists.
+    ArenaLeave,
+    /// The destination's locale and level ids are looked up; the previous
+    /// id keeps the current one and the portal node is cleared to none.
+    LocaleLookup,
+    /// The portal node is cleared to −1 (none).
+    ClearPortal,
+    /// The settings tag, saved word and sun height reset.
+    SettingsReset,
+    /// The save package is opened.
+    OpenSave,
+    /// The destination's section is read from the save when it has one.
+    ReadSaveSection,
+    /// Otherwise the archive's `<locale>.rfc` is read.
+    ReadArchiveSection,
+    /// The chunk tree is imported with the terrain probe.
+    ImportLevel,
+    /// The current level's name is stored on the scene.
+    StoreName,
+    /// The spawn matrix: the portal node's when the transition names one,
+    /// else the identity.
+    ChooseMatrix,
+    /// The player is spawned at the matrix with the floor probe and lift.
+    SpawnPlayer,
+    /// The player's world transform is stored for the next transition.
+    StorePlayerTransform,
+    /// A save whose mode word was 2 re-derives the character, sets its
+    /// health to the maximum and clears the word to 1.
+    StoryRespawn,
+    /// The grid environment's arrays are zeroed when the flag is set.
+    GridEnvironments,
+    /// The followers are spawned on the stored offsets around the player.
+    SpawnFollowers,
+    /// The followers are re-attached (UID, controls, carry, controller 1,
+    /// the 5 cm floor).
+    ReattachFollowers,
+    /// The game functions' post-load pass runs.
+    PostLoad,
+}
+
+/// Where the transition's spawn matrix comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpawnMatrix {
+    /// The level's own default matrix.
+    Default,
+    /// The portal node the transition names.
+    Portal,
+}
+
+/// The transition flow: its steps, whether it aborted before importing,
+/// whether saves were disabled by a failed import, and the spawn details.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransitionFlow {
+    pub steps: Vec<TransitionStep>,
+    /// The destination could be neither read from the save nor found in
+    /// the archive; the original returns without touching the rest.
+    pub aborted: bool,
+    /// A read destination failed to import; the original then refuses to
+    /// save (its save-disable flag is set).
+    pub saves_disabled: bool,
+    pub matrix: SpawnMatrix,
+    pub respawn: bool,
+    pub followers: usize,
+    /// Whether the destination came from the save's section.
+    pub from_save: bool,
+}
+
+/// The level transition's flow over the pieces Exarust models: the flushes
+/// and the migration list ([`crate::save_level`]), the import
+/// ([`crate::save_scene::import_level`]) and the landing. The original also
+/// suspends the frame for 13 ms between reserving the trees and the GUI
+/// reset, and drives the renderer, audio, scene nodes and game functions at
+/// the named points; those are the host's.
+pub fn transition_flow(
+    has_save_section: bool,
+    archive_found: bool,
+    imported: bool,
+    portal_present: bool,
+    story_mode_two: bool,
+    grid_environments: bool,
+    followers: usize,
+) -> TransitionFlow {
+    let mut steps = vec![
+        TransitionStep::CloseForms,
+        TransitionStep::FirstLoadHook,
+        TransitionStep::ReserveTrees,
+        TransitionStep::Sleep,
+        TransitionStep::AudioReset,
+        TransitionStep::GuiReset,
+        TransitionStep::ObjectsBegin,
+        TransitionStep::PreparePlayerParts,
+        TransitionStep::FlushPlayer,
+        TransitionStep::CollectFollowers,
+        TransitionStep::ObjectsEnd,
+    ];
+    steps.push(TransitionStep::SetupFollowerNodes);
+    steps.extend([
+        TransitionStep::ActivatePlayerNode,
+        TransitionStep::RestoreGuiAudio,
+        TransitionStep::ResetContent,
+        TransitionStep::ArenaLeave,
+        TransitionStep::LocaleLookup,
+        TransitionStep::ClearPortal,
+        TransitionStep::SettingsReset,
+        TransitionStep::OpenSave,
+    ]);
+    let mut flow = TransitionFlow {
+        steps,
+        aborted: false,
+        saves_disabled: false,
+        matrix: if portal_present {
+            SpawnMatrix::Portal
+        } else {
+            SpawnMatrix::Default
+        },
+        respawn: story_mode_two,
+        followers,
+        from_save: has_save_section,
+    };
+    if !has_save_section && !archive_found {
+        // Neither copy is there: the original returns here, before the
+        // import and before the save-disable flag is touched.
+        flow.aborted = true;
+        return flow;
+    }
+    if has_save_section {
+        flow.steps.push(TransitionStep::ReadSaveSection);
+    } else {
+        flow.steps.push(TransitionStep::ReadArchiveSection);
+    }
+    flow.steps.push(TransitionStep::ImportLevel);
+    if !imported {
+        flow.saves_disabled = true;
+        return flow;
+    }
+    flow.steps.extend([
+        TransitionStep::StoreName,
+        TransitionStep::ChooseMatrix,
+        TransitionStep::SpawnPlayer,
+        TransitionStep::StorePlayerTransform,
+    ]);
+    if story_mode_two {
+        flow.steps.push(TransitionStep::StoryRespawn);
+    }
+    if grid_environments {
+        flow.steps.push(TransitionStep::GridEnvironments);
+    }
+    if followers > 0 {
+        flow.steps.push(TransitionStep::SpawnFollowers);
+        flow.steps.push(TransitionStep::ReattachFollowers);
+    }
+    flow.steps.push(TransitionStep::PostLoad);
+    flow
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use exa_formats::rfc_write::{ExportScene, SceneNode, class};
     use exa_formats::save_chunk::SAVE_SETTINGS_ID;
     use exa_formats::save_package::parse_chunks;
+
+    #[test]
+    fn a_transition_flushes_then_imports_and_lands_in_order() {
+        let flow = transition_flow(true, true, true, false, false, true, 2);
+        assert!(!flow.aborted && !flow.saves_disabled);
+        assert_eq!(flow.matrix, SpawnMatrix::Default);
+        assert!(flow.from_save);
+        assert_eq!(flow.followers, 2);
+        // The teardown comes first, the destination after.
+        assert_eq!(flow.steps.first(), Some(&TransitionStep::CloseForms));
+        let save = flow
+            .steps
+            .iter()
+            .position(|step| *step == TransitionStep::ReadSaveSection)
+            .unwrap();
+        let import = flow
+            .steps
+            .iter()
+            .position(|step| *step == TransitionStep::ImportLevel)
+            .unwrap();
+        let spawn = flow
+            .steps
+            .iter()
+            .position(|step| *step == TransitionStep::SpawnPlayer)
+            .unwrap();
+        let followers = flow
+            .steps
+            .iter()
+            .position(|step| *step == TransitionStep::SpawnFollowers)
+            .unwrap();
+        let reattach = flow
+            .steps
+            .iter()
+            .position(|step| *step == TransitionStep::ReattachFollowers)
+            .unwrap();
+        assert!(save < import && import < spawn && spawn < followers && followers < reattach);
+        assert_eq!(flow.steps.last(), Some(&TransitionStep::PostLoad));
+        assert!(flow.steps.contains(&TransitionStep::GridEnvironments));
+        assert!(!flow.steps.contains(&TransitionStep::StoryRespawn));
+
+        // A destination only in the archive: the archive read instead, and
+        // a portal names the spawn matrix.
+        let archive = transition_flow(false, true, true, true, true, false, 0);
+        assert!(!archive.from_save);
+        assert_eq!(archive.matrix, SpawnMatrix::Portal);
+        assert!(archive.steps.contains(&TransitionStep::ReadArchiveSection));
+        assert!(!archive.steps.contains(&TransitionStep::ReadSaveSection));
+        assert!(archive.steps.contains(&TransitionStep::StoryRespawn));
+        // No followers: neither follower step.
+        assert!(!archive.steps.contains(&TransitionStep::SpawnFollowers));
+        assert!(!archive.steps.contains(&TransitionStep::ReattachFollowers));
+        assert!(!archive.steps.contains(&TransitionStep::GridEnvironments));
+    }
+
+    #[test]
+    fn a_missing_destination_aborts_and_a_failed_import_disables_saves() {
+        // Neither a section nor an archive entry: the original returns
+        // before the import and does not touch the save flag.
+        let missing = transition_flow(false, false, false, false, false, false, 1);
+        assert!(missing.aborted);
+        assert!(!missing.saves_disabled);
+        assert!(!missing.steps.contains(&TransitionStep::ImportLevel));
+        assert_eq!(missing.steps.last(), Some(&TransitionStep::OpenSave));
+
+        // A destination that read but did not import: saves are disabled
+        // and the player is not spawned.
+        let failed = transition_flow(true, true, false, false, false, false, 1);
+        assert!(!failed.aborted);
+        assert!(failed.saves_disabled);
+        assert!(failed.steps.contains(&TransitionStep::ImportLevel));
+        assert!(!failed.steps.contains(&TransitionStep::SpawnPlayer));
+        assert_eq!(failed.steps.last(), Some(&TransitionStep::ImportLevel));
+    }
 
     fn scene() -> ExportScene {
         let mut name = [0u8; 16];

@@ -496,6 +496,32 @@ position and the lifted floor height, then places the followers around
 them from the offset table in order (positions before each follower's
 own floor probe).
 
+**World databases.** The load imports the save's `#worldchrdb` first chunk
+into the world character database (a missing section clears the live one)
+and the `#worldobjdb` first chunk into the object database's world tier,
+with its second chunk as the string library the records read their text
+through (a missing section clears the live object database). Exarust
+exposes both as `Slots`' `world_characters`/`world_objects`
+(`exa_game::slots`) and on a `LoadedSave`.
+
+**Flow.** A transition closes the open forms, reserves the kd trees, waits
+13 ms, resets the audio environment and the GUI, begins the object
+database's save pass, puts the player's body part controller in mode 8,
+flushes the player and collects the travelling characters, ends the object
+pass, sets up each travelling character's node, activates the player's
+node, restores the GUI's audio state and resets the scene content, leaves
+the arena task, looks up the destination's locale and level ids, clears the
+portal word, resets the load's globals, opens the save, reads the
+destination's section from the save or the archive, imports it, stores the
+name, chooses the spawn matrix (the portal node's when one is named, else
+the identity), spawns the player, stores its transform, re-derives a
+story-mode-2 character and clears the word to 1, sets up the grid arrays
+when the flag is set, spawns the followers on the stored offsets,
+re-attaches them and runs the game functions' post-load pass. A destination
+that is neither in the save nor the archive aborts before the import and
+leaves saves enabled; a destination that reads but does not import disables
+saving.
+
 ## The game clock
 
 The clock is the seconds read from the save plus the whole seconds since
@@ -519,6 +545,25 @@ Practice has no save file of its own in this unit: the practice and arena
 combatants are prepared by rebuilding their kit from the object database
 (the prep helpers), and the mode's saved state is the arena's. A practice
 fight started from the arena therefore writes `ArenaNNN.rsg`.
+
+A fighter's saved kit names its items through the character's **own**
+database (an id whose top two bits are `10`). The preparation pass resolves
+the first hand pair, the second pair, the worn items and then the carried
+items; a carried item that names a hand's saved id takes that hand's
+resolved id instead of being resolved itself, and the original stores the
+*second* pair's replacements from the *first* pair (a dead value that still
+decides that lookup). The equip pass then instantiates every own id into the
+running scene in the same order, writes the first pair's new ids into the
+attached scene nodes and the character's hand node that still hold the old
+ones, gives carried items the running hand id when they name one (first pair
+first), frees the temporary database and refreshes the item GUI.
+
+The combatant scene is prepared after the GUI and kd-tree resets: the
+locale and its level id are put in place, the portal word goes to −1, the
+GUI and content helpers reset, then the archive's `<locale>.rfc` is opened
+and imported with the saved locale for its terrain probe. A successful
+import lets the arena task run its post-load hook when its flag bit 0 is
+clear.
 
 ## Exarust mapping
 
@@ -546,7 +591,11 @@ order), checked save, checkpoint (`checkpoint_full`), death, delete,
 legacy removal and transition save (`transition_save_full`).
 [`exa_game::save_scene`](../../crates/exa_game/src/save_scene.rs) holds the
 three scene-load entry points, the import order, the game scene's constants,
-the menu scene's load, the GUI reset and the player's node set-up and spawn.
+the menu scene's load, the GUI reset and the player's node set-up and spawn;
+[`exa_game::save_kit`](../../crates/exa_game/src/save_kit.rs) the practice
+and arena fighters' two kit passes and their scene preparation, and
+[`exa_game::level_transition`](../../crates/exa_game/src/level_transition.rs)
+the transition's ordered flow over those pieces.
 `create_empty` is the original's new-slot path (an empty package);
 `create` also writes a session into it.
 

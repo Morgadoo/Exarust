@@ -93,25 +93,35 @@ pub struct SceneCharacterFlush {
     /// The id to register in the world character database (the reference's
     /// low 28 bits), or `None` when the reference's top bit is clear.
     pub register: Option<u32>,
+    /// The whole reference the original stores on the record, or `None`
+    /// when its top bit is clear.
+    pub record_reference: Option<u32>,
     /// The first hand pair's (old, new) ids: the original rewrites the ids
     /// of the objects attached to the character through these, which is
     /// the caller's.
     pub hands: [(u32, u32); 2],
+    /// The attached scene nodes that took a hand's new id.
+    pub attached_nodes: usize,
 }
 
 /// Flushes one scene character before a save, in the original's order:
 /// a reference with its top bit set registers the character under the low
-/// 28 bits; then every worn item takes its saved id, then the first hand
-/// pair, then the second pair, then each carried item. A carried item
-/// whose id is one of the hands' old ids takes that hand's new id (the
-/// first pair is looked up before the second) instead of a fresh call.
-/// The loadouts are not touched.
+/// 28 bits and stores the whole reference on the record; then every worn
+/// item takes its saved id, then the first hand pair, then the character's
+/// attached scene-object nodes are rewritten from the first pair (every
+/// node whose object id equals a saved hand id takes the new one), then the
+/// second pair, then each carried item. A carried item whose id is one of
+/// the hands' old ids takes that hand's new id (the first pair is looked up
+/// before the second) instead of a fresh call. The loadouts are not
+/// touched.
 pub fn flush_scene_character(
     character: &mut CharacterRecord,
     reference: u32,
+    attached_nodes: &mut [u32],
     mut prepare_item: impl FnMut(u32) -> u32,
 ) -> SceneCharacterFlush {
-    let register = (reference & 0x8000_0000 != 0).then_some(reference & 0x0fff_ffff);
+    let registered = reference & 0x8000_0000 != 0;
+    let register = registered.then_some(reference & 0x0fff_ffff);
     for worn in &mut character.worn {
         worn.id = prepare_item(worn.id);
     }
@@ -124,6 +134,13 @@ pub fn flush_scene_character(
         })
     };
     let hands = remap_pair(0);
+    let mut attached_nodes_updated = 0;
+    for node in attached_nodes.iter_mut() {
+        if let Some(&(_, new)) = hands.iter().find(|(old, _)| *old == *node) {
+            *node = new;
+            attached_nodes_updated += 1;
+        }
+    }
     let second = remap_pair(2);
     for item in &mut character.inventory {
         let reused = hands
@@ -135,7 +152,12 @@ pub fn flush_scene_character(
             None => prepare_item(item.item),
         };
     }
-    SceneCharacterFlush { register, hands }
+    SceneCharacterFlush {
+        register,
+        record_reference: registered.then_some(reference),
+        hands,
+        attached_nodes: attached_nodes_updated,
+    }
 }
 
 /// The fighter rank the board and the company read: the six skills' levels
@@ -636,12 +658,18 @@ mod tests {
         record.hands[3] = ItemRef::new(52, 0);
         record.worn = vec![ItemRef::new(45, 0)];
         let mut seen = Vec::new();
-        let flushed = flush_scene_character(&mut record, 0x8000_0000 | 0x1234, |id| {
+        let mut nodes = vec![40, 41, 99];
+        let flushed = flush_scene_character(&mut record, 0x8000_0000 | 0x1234, &mut nodes, |id| {
             seen.push(id);
             id + 100
         });
         assert_eq!(flushed.register, Some(0x1234));
+        assert_eq!(flushed.record_reference, Some(0x8000_0000 | 0x1234));
         assert_eq!(flushed.hands, [(40, 140), (41, 141)]);
+        // The attached nodes with the first pair's saved ids take their new
+        // ids; the third node is left alone.
+        assert_eq!(nodes, vec![140, 141, 99]);
+        assert_eq!(flushed.attached_nodes, 2);
         // Worn, the first hand pair, the second pair, then the carried
         // items; carried 41 and 52 reuse the hands' new ids, and the
         // loadouts are left alone.
@@ -651,10 +679,12 @@ mod tests {
         assert_eq!(carried, vec![150, 141, 152]);
         assert_eq!(record.loadouts[0].hands[0].id, 60);
         assert_eq!(record.loadouts[0].worn[0].id, 70);
-        // A reference without the top bit does not register.
-        assert_eq!(
-            flush_scene_character(&mut record, 0x1234, |id| id).register,
-            None
-        );
+        // A reference without the top bit does not register and stores no
+        // reference.
+        let mut nodes = Vec::new();
+        let unregistered = flush_scene_character(&mut record, 0x1234, &mut nodes, |id| id);
+        assert_eq!(unregistered.register, None);
+        assert_eq!(unregistered.record_reference, None);
+        assert_eq!(unregistered.attached_nodes, 0);
     }
 }
