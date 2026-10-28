@@ -89,6 +89,13 @@ pub struct RatedPlayer;
 #[derive(Component, Debug, Clone, Copy, Default)]
 pub struct Unseen;
 
+/// The body's mind-masked bit: other characters' perception sees it as
+/// hidden, its range shrinking with their perception
+/// ([`combatant::perceive`]). A worn mind-ward item (the null helm, special
+/// kind 5) sets it at spawn, as the original's armour pass does.
+#[derive(Component, Debug, Clone, Copy, Default)]
+pub struct MindWarded;
+
 /// A level character's brain.
 #[derive(Component, Debug, Clone)]
 pub struct Npc {
@@ -434,6 +441,8 @@ struct Sensed {
     condition: u32,
     asleep: bool,
     invisible: bool,
+    /// Its mind-masked bit ([`MindWarded`]).
+    hidden: bool,
     phase: f32,
     in_combat: bool,
     stepping: bool,
@@ -477,6 +486,7 @@ pub fn perceive_all(
             Option<&Roles>,
             Option<&ChildOf>,
             Has<Npc>,
+            Has<MindWarded>,
         )>,
         Query<(
             Entity,
@@ -516,6 +526,7 @@ pub fn perceive_all(
                 roles,
                 child,
                 ai,
+                hidden,
             )| {
                 let phase = anim
                     .zip(motions.as_deref())
@@ -535,6 +546,7 @@ pub fn perceive_all(
                     condition: condition.0,
                     asleep: mind.is_some_and(|m| m.asleep),
                     invisible: unseen.is_some(),
+                    hidden,
                     phase,
                     in_combat: combatant.is_some_and(|c| c.in_combat)
                         || duellist.is_some_and(|d| d.fighting()),
@@ -606,7 +618,7 @@ pub fn perceive_all(
                 forward: sensed.forward,
                 condition: sensed.condition,
                 invisible: sensed.invisible,
-                hidden: false,
+                hidden: sensed.hidden,
                 mask: None,
                 asleep: sensed.asleep,
                 removed: false,

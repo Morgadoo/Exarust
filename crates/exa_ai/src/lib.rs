@@ -420,7 +420,7 @@ fn duellist(
     mut commands: Commands,
     ticks: Option<Res<BodyTicks>>,
     nav: Option<Res<exa_world::nav::NavGrid>>,
-    targets: Query<&GlobalTransform>,
+    targets: Query<(&GlobalTransform, Has<brain::MindWarded>)>,
     motions: Option<Res<Motions>>,
     bodies: Query<
         (
@@ -508,7 +508,7 @@ fn duellist(
         if !ai.engaged {
             continue;
         }
-        let Ok(target) = targets.get(ai.target) else {
+        let Ok((target, target_warded)) = targets.get(ai.target) else {
             continue;
         };
         if !ai.in_combat {
@@ -578,7 +578,7 @@ fn duellist(
             forward: target_forward,
             condition: target_condition.0,
             invisible: false,
-            hidden: false,
+            hidden: target_warded,
             mask: None,
             asleep: false,
             removed: false,
