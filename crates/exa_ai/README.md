@@ -34,10 +34,22 @@ brains' and a duellist's, sees it hidden, its range shrinking with the
 observer's perception. The AI tick links each brain into its 600 cm room cell
 and the level's room table, gathers the characters of that cell as its
 nearby list, decays its group alert a step every ten seconds, and out of
-combat runs the original's look chain (`motion::look_chain`) and turns its
+combat runs the idle states' head (`walker`: the alert look-around while
+the panic is at least 0.2 and the body keeps its in-combat mark, which
+fighting sets; then the attention to the attended contact, whose notice
+score must reach 1, with a look window of `clamp(1 − 0.1·score, 0.25,
+0.7)·π`; only then is the mark cleared), the original's look chain
+(`motion::look_chain`) and turns its
 model with the eased look (the original lets the body's locomotion turn the
 body; the running game ticks no locomotion request for an NPC, so the model
-is turned directly). The original's reset when the level is
+is turned directly). A roaming or patrolling brain walks its legs
+(`brain::idle_walk`): on its turn of the one-planner-a-frame turn it picks
+a wander goal a quarter of the way from a drawn door's near cell to the
+cell behind it, routes it through the navigation grid (followed past
+150 cm end to end), walks it with the walk clip through the NPC driver,
+settles its look and pauses 0.5–2.5 s, then (a roam) walks a forced route
+into the room it aimed at and pauses 1–5 s. A body the scene takes back
+mid-leg faces its route's goal. The original's reset when the level is
 written out on leaving it (the body heals to its lasting health, forgets
 every contact, and a roaming AI is put down along fresh wander paths and
 leaves combat) is `presence::reenter`; Exarust writes no level on leaving,
@@ -72,6 +84,7 @@ the standard one.
 | `brain` | the components and systems that carry roles into the running game: applying roles again when the held set changes, the attitude rating and waking, the perception pass (line of sight, the ally sense and the sense a race installs), the AI tick once a body tick (morale, the group alert's ten-second decay, the contact integration, the target pass with the room graph, the room cell and nearby list, the engagement, the look chain and the out-of-combat body turn), and the flight's walk to a room's exit |
 | `presence` | the activation range (200 m, a NaN out), the 80-tick hold, the scene move's end, the entering body's reset, the level-leave reset, and the placement an entering body takes (a collapsed body keeps its stored one; others take their point and face their path goal) |
 | `idle` | roam, patrol, sentry and the wait, the wander and home-side points, follow, sleep, knock-out and waking |
+| `walker` | the idle states' head (the attention's notice score and clamped window, the 50° focus window), the roam and patrol step on the planning turn (the goal picked only on the turn, the 150 cm follow span, the forced home leg, the settle before the pause), and the walk along the followed route (100 cm flat arrival, Exarust's give-up deadline) |
 | `motion` | the AI's look and body motion: the head look toward a point (a quarter turn, 0.02 easing), the whole-look smoothing (`(0.0062831854·gap + sway)·0.7`, a 30° write threshold), the idle look (0.1 of the gap, 1 % pitch), the out-of-combat look chain (the body look toward the head offset, the 0.4/0.64 smoothing and the gait helper's 30° write, with the stepping, live-target and combat cases), the step/combat walk (the 0.7/0.007 facing threshold, the 150 cm goal hold, the run and sprint flags), the walk stop (8·crouch + 20), the steer line (120 cm, 3600 cm²), the way share, the body in the way (each body shifted 20 cm along the walk direction, skipping the remembered and carried bodies), the alert pan (both draws every tick, one in 300 and 75, the body turned by the sway with a foe), the out-of-combat sway, and the aim, settle and snap |
 | `rooms` | the 600 cm room cell grid (the floored, half-offset flat index, the per-cell occupant lists, the old-cell memory and the cell's nearby characters) and the level's side of it: the cell-to-room table, a room's exits at the cell centres behind its door links with shut doors from the room tracker, a room's reference point, and the sight test (the room reach test) |
 | `lifecycle` | the script-object factory, the scripted action hook, the removal/destroy/disable hooks, the investigation of a disturbance, the idle driver's state machine (turn, plan a room, walk, test the exit, use the object, plan home, search the room) with its exit/use/object checks and room walk (every unvisited exit weighed, the previous cell included; going back clears the avoided exits; the first avoided exit sets its marker), the go-to-object state, and the object goal |

@@ -230,8 +230,11 @@ const WANDER_BLEND: f32 = 0.25;
 /// One way out of the walker's room.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Exit {
-    /// The exit on the horizontal plane. The second component is depth.
+    /// The centre of the cell behind the door, on the horizontal plane (cm;
+    /// the second component is depth).
     pub point: Vec2,
+    /// The centre of the door's cell on the walker's side (cm).
+    pub near: Vec2,
     /// The room this exit leads to.
     pub node: i32,
 }
@@ -259,12 +262,12 @@ fn draw_exit(roll: &mut u32, count: usize) -> usize {
 /// No room, or a room with no exits, picks nothing and does not step the
 /// roll. Otherwise one exit is drawn. When that exit leads to `avoid`, one
 /// more exit is drawn, and that second draw is kept even if it leads back
-/// too. The goal is a quarter of the way from the exit toward `room`, at
-/// height 0. The stop is 20 cm and the radius is 150 cm.
+/// too. The goal is a quarter of the way from the door's near cell toward
+/// the cell behind it (`near + (point − near)·0.25`, per lane in single
+/// precision), at height 0. The stop is 20 cm and the radius is 150 cm.
 pub fn pick_wander(
     room_index: i32,
     exits: &[Exit],
-    room: Vec2,
     avoid: i32,
     roll: &mut u32,
 ) -> Option<WanderPoint> {
@@ -276,7 +279,7 @@ pub fn pick_wander(
         index = draw_exit(roll, exits.len());
     }
     let exit = exits[index];
-    let toward = exit.point + (room - exit.point) * WANDER_BLEND;
+    let toward = exit.near + (exit.point - exit.near) * WANDER_BLEND;
     Some(WanderPoint {
         goal: Vec3::new(toward.x, 0.0, toward.y),
         stop_cm: WANDER_STOP_CM,
@@ -1333,6 +1336,16 @@ mod tests {
     fn exit(x: f32, z: f32, node: i32) -> Exit {
         Exit {
             point: Vec2::new(x, z),
+            near: Vec2::new(x, z),
+            node,
+        }
+    }
+
+    /// A door from the near cell at `near` to the cell behind it at `far`.
+    fn door(near: Vec2, far: Vec2, node: i32) -> Exit {
+        Exit {
+            point: far,
+            near,
             node,
         }
     }
@@ -1378,14 +1391,16 @@ mod tests {
     #[test]
     fn a_wander_point_is_a_quarter_of_the_way_from_the_exit() {
         let mut roll = 1;
-        assert!(pick_wander(-1, &[exit(0.0, 0.0, 5)], Vec2::ZERO, 9, &mut roll).is_none());
+        assert!(pick_wander(-1, &[exit(0.0, 0.0, 5)], 9, &mut roll).is_none());
         assert_eq!(roll, 1);
-        assert!(pick_wander(0, &[], Vec2::ZERO, 9, &mut roll).is_none());
+        assert!(pick_wander(0, &[], 9, &mut roll).is_none());
         assert_eq!(roll, 1);
 
-        let picked =
-            pick_wander(0, &[exit(0.0, 0.0, 5)], Vec2::new(100.0, 0.0), 9, &mut roll).unwrap();
-        assert_eq!(picked.goal, Vec3::new(25.0, 0.0, 0.0));
+        // A quarter of the way from the near cell (0, 0) to the cell behind
+        // the door (600, 0).
+        let east = door(Vec2::ZERO, Vec2::new(600.0, 0.0), 5);
+        let picked = pick_wander(0, &[east], 9, &mut roll).unwrap();
+        assert_eq!(picked.goal, Vec3::new(150.0, 0.0, 0.0));
         assert_eq!(picked.stop_cm, 20);
         assert_eq!(picked.radius_cm, 150.0);
         assert_eq!(picked.mode, 2);
@@ -1395,29 +1410,26 @@ mod tests {
         assert_eq!(roll, 134_775_814);
 
         let mut deep = 1;
-        let picked = pick_wander(0, &[exit(0.0, 100.0, 5)], Vec2::ZERO, 9, &mut deep).unwrap();
-        assert_eq!(picked.goal, Vec3::new(0.0, 0.0, 75.0));
+        let south = door(Vec2::new(300.0, 300.0), Vec2::new(300.0, 900.0), 5);
+        let picked = pick_wander(0, &[south], 9, &mut deep).unwrap();
+        assert_eq!(picked.goal, Vec3::new(300.0, 0.0, 450.0));
 
+        // The first draw leads back to the avoided room, so a second is
+        // drawn and kept.
         let mut retry = 1;
-        let picked = pick_wander(
-            0,
-            &[exit(0.0, 0.0, 5), exit(200.0, 0.0, 7)],
-            Vec2::ZERO,
-            5,
-            &mut retry,
-        )
-        .unwrap();
+        let west = door(Vec2::ZERO, Vec2::new(-600.0, 0.0), 7);
+        let picked = pick_wander(0, &[east, west], 5, &mut retry).unwrap();
         assert_eq!(picked.cursor, 1);
         assert_eq!(picked.node, 7);
-        assert_eq!(picked.goal, Vec3::new(150.0, 0.0, 0.0));
+        assert_eq!(picked.goal, Vec3::new(-150.0, 0.0, 0.0));
         assert_eq!(retry, 3_698_175_007);
 
+        // A second draw back into the avoided room is kept too.
         let mut same = 1;
-        let picked =
-            pick_wander(0, &[exit(0.0, 0.0, 5)], Vec2::new(100.0, 0.0), 5, &mut same).unwrap();
+        let picked = pick_wander(0, &[east], 5, &mut same).unwrap();
         assert_eq!(picked.cursor, 0);
         assert_eq!(picked.node, 5);
-        assert_eq!(picked.goal, Vec3::new(25.0, 0.0, 0.0));
+        assert_eq!(picked.goal, Vec3::new(150.0, 0.0, 0.0));
         assert_eq!(same, 3_698_175_007);
     }
 

@@ -267,12 +267,41 @@ pub fn in_sight(level: Option<&LevelRooms>, from_cm: Vec3, to_cm: Vec3) -> bool 
 }
 
 impl From<RoomExit> for Exit {
+    /// A flight's exit as a wander exit: it carries no near cell, so the
+    /// near point is the exit's own point [guess: only
+    /// [`wander_exits`] knows the door's near cell].
     fn from(exit: RoomExit) -> Self {
         Exit {
             point: exit.point,
+            near: exit.point,
             node: exit.room,
         }
     }
+}
+
+/// The exits a roam walks through from `room`, as the original's wander and
+/// home-side picks read the room table: every door link of the room, open
+/// or shut, in link order, with the centre of the door's own cell (`near`),
+/// the centre of the cell behind it (`point`, both cm on x and z) and the
+/// room behind it as a room index (the table's word less one, so a cell
+/// without a room is −1).
+pub fn wander_exits(rooms: &Rooms, room: u16) -> Vec<Exit> {
+    let Some(level_room) = rooms.room(room) else {
+        return Vec::new();
+    };
+    level_room
+        .links
+        .iter()
+        .map(|link| {
+            let near = rooms.cell_centre(link.from) * 100.0;
+            let far = rooms.cell_centre(link.to) * 100.0;
+            Exit {
+                point: far,
+                near,
+                node: rooms.room_of_index(link.to).map_or(-1, i32::from),
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -404,6 +433,16 @@ mod tests {
             (wander[0].point, wander[0].node),
             (Vec2::new(300.0, 300.0), 2)
         );
+        // The roam's exits keep the door's near cell (2, 1), centred at
+        // (−300, 300) cm, and number the room behind it by index, shut or
+        // not.
+        let roam = wander_exits(&rooms, 0);
+        assert_eq!(roam.len(), 1);
+        assert_eq!(roam[0].near, Vec2::new(-300.0, 300.0));
+        assert_eq!(roam[0].point, Vec2::new(300.0, 300.0));
+        assert_eq!(roam[0].node, 1);
+        assert_eq!(wander_exits(&rooms, 1)[0].node, 0);
+        assert!(wander_exits(&rooms, 9).is_empty());
         // Room 0 is cells (1, 1) and (2, 1): its rectangle's centre cell is
         // (1, 1), whose centre is (-900, 300) cm.
         assert_eq!(
