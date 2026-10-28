@@ -528,10 +528,19 @@ strictly beyond 30° (the gap wrapped in double precision), the camera's
 follow step (kept within 0.1π of the body's yaw, on the camera's side),
 the character nearest the cursor on screen, and the attack timing. The
 gamepad's aim runs through the eased world cursor each behaviour tick
-(`player::AimCursor`, read by `player_combat`). The other rules have no
-caller yet: the stance keeps no target entity to lock the aim onto, and
-the running swing keeps its own stall and Feint renewal clocks
-(`exa_combat::swing`). The right button walks to the cursor in combat mode too
+(`player::AimCursor`, read by `player_combat`), and the combat auto-target
+stores its opponent on the player body each tick for the aim point's bone
+lock, which `player::cursor_ground` reads together with the raised surface
+(the bone lock reads the opponent's head, chest and belly part origins, a
+stand-in for the original's own three points). The running game records the
+attack timing when an attack starts and holds the next attack until its
+recovery clock (the swing's own stall and Feint renewal still rule a
+released swing). The remaining rules have no caller yet: the 12 m contact
+list, the strongest engaged enemy, the look snap, the camera's follow step
+and the character nearest the cursor, and the movement goal's direction and
+tapped stride (`steering::key_goal_direction`, `goal_stride`; the 400 cm²
+release test is the footwork's). The right button walks to the cursor in
+combat mode too
 (`steering::Steering::combat_walk`), the chevrons showing while it is
 held.
 

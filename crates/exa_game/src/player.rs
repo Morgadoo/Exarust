@@ -147,6 +147,9 @@ pub struct PlayerBody {
     walk_from: Option<String>,
     /// When its last attack last ticked (s, on the fixed clock).
     last_attack: Option<f32>,
+    /// The opponent the behaviour's auto-target picked this tick: what the
+    /// aim point's bone lock reads. Only in combat mode.
+    target: Option<Entity>,
     /// How far it crouches, 0 to 1.
     crouch: f32,
 }
@@ -172,8 +175,15 @@ impl PlayerBody {
             long: false,
             walk_from: None,
             last_attack: None,
+            target: None,
             crouch: 0.0,
         }
+    }
+
+    /// The opponent the behaviour's auto-target picked this tick (the
+    /// original's stored target), which the aim point's bone lock reads.
+    pub(crate) fn aim_target(&self) -> Option<Entity> {
+        self.target
     }
 
     /// How far it crouches, 0 to 1.
@@ -332,6 +342,142 @@ fn other_side(cursor: f32, yaw: f32, weapon_class: u8) -> bool {
 /// mouse button, combat facing and the world cursor.
 #[derive(Resource, Default)]
 pub(crate) struct CursorGround(pub(crate) Option<Vec3>);
+
+/// The cursor's aim pick reaches this far along its ray (m), as the
+/// navigation pick does.
+const AIM_PICK_RANGE: f32 = 40.0;
+
+/// The skeleton's bone numbers the aim point's bone lock reads: the head,
+/// the chest and the belly. [guess: the original reads the target's head
+/// record's own points; Exarust stands these three part origins in for
+/// them.]
+const AIM_BONES: [usize; 3] = [10, 9, 8];
+
+/// The aim point with a locked target: the target's chest as the lock's
+/// root and three of its bones, projected to the window, with the pixel
+/// radius 80 cm makes at the root's depth. Returns the locked height when a
+/// bone lies within twice the radius of the cursor.
+fn aim_locked_height(
+    plane: f32,
+    cursor: Vec2,
+    camera: &Camera,
+    eye: &GlobalTransform,
+    window: &Window,
+    projection: &Projection,
+    target: (&GlobalTransform, &Ragdoll),
+) -> Option<f32> {
+    let (gt, ragdoll) = target;
+    let root = stance::chest_point(gt, Some(ragdoll));
+    let root_screen = window_point(camera, eye, window, root)?;
+    let Projection::Perspective(perspective) = projection else {
+        return None;
+    };
+    // The projection's x scale, 1 / (aspect·tan(fov/2)): the pixels one
+    // unit makes at depth one, as the original's projection scale.
+    let aspect = perspective.aspect_ratio;
+    let aspect = if aspect.is_finite() && aspect > 0.0 {
+        aspect
+    } else {
+        window.width() / window.height().max(1.0)
+    };
+    let scale = 1.0 / (aspect * (perspective.fov * 0.5).tan());
+    let depth = (root - eye.translation()).dot(*eye.forward());
+    let radius = crate::player_behaviour::bone_lock_radius(window.width(), scale, depth);
+    let bones: Vec<crate::player_behaviour::AimBone> = AIM_BONES
+        .iter()
+        .filter_map(|bone| {
+            let part = ragdoll.parts.iter().find(|p| p.bone == *bone)?;
+            let at = Vec3::from(part.transform().translation);
+            Some(crate::player_behaviour::AimBone {
+                screen: window_point(camera, eye, window, at)?,
+                height: at.y,
+            })
+        })
+        .collect();
+    let (height, locked) = crate::player_behaviour::aim_lock_bones(
+        plane,
+        crate::player_behaviour::AimBone {
+            screen: root_screen,
+            height: root.y,
+        },
+        &bones,
+        cursor,
+        radius,
+    );
+    locked.then_some(height)
+}
+
+/// The aim point each frame: the cursor's ray on the plane 80 cm over the
+/// player's ground, its height locked onto the auto-target's bones when one
+/// shows within twice the pixel radius 80 cm makes at the target's depth,
+/// else raised onto the surface the cursor's pick meets when that lies
+/// above the plane's point and under the player's ground plus 200 cm.
+///
+/// The aim plane's normal is the world's up, as the original's; the pick is
+/// the level's fixed geometry (the original's navigation pick also admits
+/// non-solid nodes; Exarust's fixed colliders stand in).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn cursor_ground(
+    mut ground: ResMut<CursorGround>,
+    scripted: Res<exa_ui::ScriptedPointer>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    cameras: Query<(&Camera, &GlobalTransform, &Projection), With<ChaseCamera>>,
+    players: Query<&GlobalTransform, With<Player>>,
+    bodies: Query<&PlayerBody>,
+    targets: Query<(&GlobalTransform, Option<&Ragdoll>)>,
+    physics: Res<Physics>,
+) {
+    ground.0 = None;
+    let (Ok(window), Ok((camera, eye, projection)), Some(player)) =
+        (windows.single(), cameras.single(), players.iter().next())
+    else {
+        return;
+    };
+    let Some(cursor) = scripted.position(window) else {
+        return;
+    };
+    let Some(ray) = window_ray(camera, eye, window, cursor) else {
+        return;
+    };
+    let ground_y = player.translation().y;
+    let at = |height: f32| {
+        let hit = crate::nav_pick::plane_hit(
+            crate::nav_pick::Ray::new(ray.origin, *ray.direction),
+            crate::nav_pick::Plane::new(Vec3::Y, height),
+        );
+        (hit.distance > 0.0 && hit.point.is_finite()).then_some(hit.point)
+    };
+    let plane = ground_y + AIM_HEIGHT;
+    let Some(plane_point) = at(plane) else {
+        return;
+    };
+    let locked = bodies.iter().next().and_then(|pb| {
+        let target = pb.aim_target()?;
+        let (gt, ragdoll) = targets.get(target).ok()?;
+        aim_locked_height(
+            plane,
+            cursor,
+            camera,
+            eye,
+            window,
+            projection,
+            (gt, ragdoll?),
+        )
+    });
+    if let Some(height) = locked {
+        ground.0 = at(height);
+        return;
+    }
+    let hit = physics
+        .fixed_hit(ray.origin, *ray.direction, AIM_PICK_RANGE)
+        .filter(|distance| *distance > 0.0)
+        .map(|distance| ray.origin + *ray.direction * distance);
+    ground.0 = Some(crate::player_behaviour::aim_raised(
+        plane_point,
+        hit,
+        ground_y,
+    ));
+}
 
 /// The gamepad aim's eased cursor point in the world (m): the stick's
 /// direction places the point `250·|aim| + 50` cm out, and it eases toward
@@ -567,35 +713,6 @@ fn cursor_look(
         }
     }
     capture.0 = look.active;
-}
-
-pub(crate) fn cursor_ground(
-    mut ground: ResMut<CursorGround>,
-    scripted: Res<exa_ui::ScriptedPointer>,
-    windows: Query<&Window, With<PrimaryWindow>>,
-    cameras: Query<(&Camera, &GlobalTransform), With<ChaseCamera>>,
-    players: Query<&GlobalTransform, With<Player>>,
-) {
-    ground.0 = None;
-    let (Ok(window), Ok((camera, eye)), Some(player)) =
-        (windows.single(), cameras.single(), players.iter().next())
-    else {
-        return;
-    };
-    let Some(ray) = scripted
-        .position(window)
-        .and_then(|c| window_ray(camera, eye, window, c))
-    else {
-        return;
-    };
-    let plane = player.translation().y + AIM_HEIGHT;
-    let hit = crate::nav_pick::plane_hit(
-        crate::nav_pick::Ray::new(ray.origin, *ray.direction),
-        crate::nav_pick::Plane::new(Vec3::Y, plane),
-    );
-    if hit.distance > 0.0 && hit.point.is_finite() {
-        ground.0 = Some(hit.point);
-    }
 }
 
 /// The player's behaviour each fixed tick, before its body's tick (as the
@@ -1070,12 +1187,14 @@ const GAITS: [&str; 3] = ["Walk", "Run", "Backpedal"];
 /// clip follows when it was the old stance's); in combat mode the guard,
 /// or the combat idle with a target within 3.5 m or within 3 s of its last
 /// attack's last tick. The target is the best of the other living fighters
-/// within 5 m of the cursor's direction (`exa_combat::stance`). The clip
-/// changes in the body tick, never from the combat idle. Not yet: the
-/// original's line-of-sight test on the target.
+/// within 5 m of the cursor's direction (`exa_combat::stance`); the
+/// behaviour's own auto-target picks the same list by the original's score
+/// and keeps the entity for the aim point's bone lock. The clip changes in
+/// the body tick, never from the combat idle.
 #[allow(clippy::type_complexity)]
 fn take_player_stance(
     time: Res<Time>,
+    physics: Option<Res<Physics>>,
     mut bodies: Query<(
         Entity,
         &mut PlayerBody,
@@ -1107,6 +1226,7 @@ fn take_player_stance(
             pb.last_attack = Some(now);
         }
         if !pb.combat {
+            pb.target = None;
             if *stance != Stance::Idle {
                 info!("player stance: Idle");
             }
@@ -1114,21 +1234,47 @@ fn take_player_stance(
             continue;
         }
         let from = stance::chest_point(gt, body);
+        // The other living fighters (the dead a level places lie limp), with
+        // their bodies' scale and their chest points.
+        let candidates: Vec<(Entity, f32, Vec3)> = others
+            .iter()
+            .filter(|(e, c, _, b, _)| {
+                *e != me && !c.is_dead() && b.is_none_or(|b| b.drive.is_some())
+            })
+            .map(|(e, _, gt, b, scale)| (e, scale.map_or(1.0, |s| s.0), stance::chest_point(gt, b)))
+            .collect();
         let target = stance::pick_target(
             from,
             forward(pb.aim),
-            others
+            candidates
                 .iter()
-                // Living: not dead, and with its muscles (the dead a level
-                // places lie limp).
-                .filter(|(e, c, _, b, _)| {
-                    *e != me && !c.is_dead() && b.is_none_or(|b| b.drive.is_some())
-                })
-                .map(|(e, _, gt, b, scale)| {
-                    ((e, scale.map_or(1.0, |s| s.0)), stance::chest_point(gt, b))
-                }),
+                .map(|(e, scale, chest)| ((*e, *scale), *chest)),
         )
         .map(|((_, scale), d)| (d, scale));
+        // The behaviour's auto-target: the visible opponent within 5 m with
+        // the best (500 − d)·(cursor·dir + 0.5). Its visibility is a ray at
+        // the fixed level between the two chests; the original also asks its
+        // behaviour's own can-see callback, which Exarust does not have.
+        let cursor = forward(pb.aim);
+        pb.target = crate::player_behaviour::auto_target(
+            from * 100.0,
+            cursor,
+            candidates.iter().map(|(_, _, chest)| {
+                let to = *chest - from;
+                let visible = to.length() < 1e-4
+                    || physics.as_ref().is_none_or(|physics| {
+                        physics
+                            .fixed_hit(from, to.normalize_or_zero(), to.length())
+                            .is_none()
+                    });
+                crate::player_behaviour::AimCandidate {
+                    at: *chest * 100.0,
+                    visible,
+                    skipped: false,
+                }
+            }),
+        )
+        .map(|index| candidates[index].0);
         // Dazed, its energy more than 0.05 under its most, it guards.
         let dazed = body
             .and_then(|b| b.drive.as_ref())
@@ -1963,6 +2109,47 @@ mod tests {
             .set_combat(false);
         app.update();
         assert_eq!(stance_of(&app, player), Stance::Idle);
+    }
+
+    /// The behaviour's auto-target stores the opponent the aim lock reads:
+    /// the one ahead within 5 m, cleared out of combat mode and for one
+    /// behind the cursor; a nearer one wins.
+    #[test]
+    fn the_aim_target_is_the_opponent_ahead() {
+        let (mut app, player, foe) = stance_app(4.0);
+        app.update();
+        assert_eq!(
+            app.world().get::<PlayerBody>(player).unwrap().aim_target(),
+            Some(foe)
+        );
+        place(&mut app, foe, Vec3::new(0.0, 0.0, -2.0));
+        app.update();
+        assert_eq!(
+            app.world().get::<PlayerBody>(player).unwrap().aim_target(),
+            None
+        );
+        place(&mut app, foe, Vec3::new(0.0, 0.0, 2.0));
+        let near = app
+            .world_mut()
+            .spawn((
+                Fighter::default(),
+                GlobalTransform::from_translation(Vec3::new(0.0, 0.0, 1.0)),
+            ))
+            .id();
+        app.update();
+        assert_eq!(
+            app.world().get::<PlayerBody>(player).unwrap().aim_target(),
+            Some(near)
+        );
+        app.world_mut()
+            .get_mut::<PlayerBody>(player)
+            .unwrap()
+            .set_combat(false);
+        app.update();
+        assert_eq!(
+            app.world().get::<PlayerBody>(player).unwrap().aim_target(),
+            None
+        );
     }
 
     /// While attacking, and for 3 s after its attack's last tick, the

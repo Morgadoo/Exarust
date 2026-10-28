@@ -778,3 +778,70 @@ fn a_held_word_counts_as_a_tap() {
     let mut w = MoveWord::default();
     assert_eq!(w.tick(0, fwd, Vec2::new(f32::NAN, 0.0), 0.0), MOVE_FORWARD);
 }
+
+/// The movement goal's direction: W is the facing, S back, A and D the side
+/// vector at 0.8, and the bits add in the original's order (W then A, D and
+/// S); no bit gives zero.
+#[test]
+fn the_key_goal_takes_the_facing_and_the_scaled_side() {
+    let facing = Vec3::Z;
+    assert_eq!(
+        key_goal_direction(facing, MOVE_FORWARD),
+        Vec3::new(0.0, 0.0, 1.0)
+    );
+    assert_eq!(key_goal_direction(facing, 0), Vec3::ZERO);
+    // +Z facing: the side is (1, 0, 0), so A adds 0.8 of it and D takes it.
+    assert_eq!(
+        key_goal_direction(facing, MOVE_LEFT),
+        Vec3::new(0.8, 0.0, 0.0)
+    );
+    assert_eq!(
+        key_goal_direction(facing, MOVE_RIGHT),
+        Vec3::new(-0.8, 0.0, 0.0)
+    );
+    assert_eq!(
+        key_goal_direction(facing, MOVE_FORWARD | MOVE_LEFT),
+        Vec3::new(0.8, 0.0, 1.0)
+    );
+    assert_eq!(
+        key_goal_direction(facing, MOVE_BACK | MOVE_RIGHT),
+        Vec3::new(-0.8, 0.0, -1.0)
+    );
+    // Facing +X: the side is (0, 0, -1), at 0.8.
+    let facing = Vec3::X;
+    assert_eq!(
+        key_goal_direction(facing, MOVE_LEFT),
+        Vec3::new(0.0, 0.0, -0.8)
+    );
+}
+
+/// A tapped word lengthens the stride to `(1.5 − 0.3·encumbrance)` of the
+/// step, in double precision, then multiplies the clock factor; a held word
+/// keeps the step.
+#[test]
+fn a_tap_takes_a_longer_stride() {
+    // 80 cm, encumbrance 0, clock 1: 120 cm; encumbrance 0.5: 108 cm.
+    assert_eq!(goal_stride(80.0, 1.0, 0.0, true), 120.0);
+    assert_eq!(goal_stride(80.0, 1.0, 0.5, true), 108.0);
+    assert_eq!(goal_stride(80.0, 0.25, 0.0, true), 30.0);
+    assert_eq!(goal_stride(80.0, 1.0, 0.0, false), 80.0);
+    // The double product narrows once: (1.5 − 0.3·0.1)·72 = 105.84.
+    assert_eq!(goal_stride(72.0, 1.0, 0.1, true), 105.84);
+    // A NaN encumbrance makes a tap's stride NaN.
+    assert!(goal_stride(80.0, 1.0, f32::NAN, true).is_nan());
+}
+
+/// The goal lets go of the movement target past 400 cm² (20 cm): 20 cm does
+/// not, 20.1 does, and a NaN height never does.
+#[test]
+fn the_goal_releases_past_four_hundred_squared_centimetres() {
+    assert!(!goal_released(Vec3::new(0.0, 0.0, 20.0)));
+    assert!(goal_released(Vec3::new(0.0, 0.0, 20.1)));
+    assert!(!goal_released(Vec3::new(20.0, 0.0, 0.0)));
+    assert!(goal_released(Vec3::new(20.1, 0.0, 0.0)));
+    assert!(!goal_released(Vec3::new(0.0, 20.0, 0.0)));
+    assert!(goal_released(Vec3::new(0.0, 20.1, 0.0)));
+    assert!(!goal_released(Vec3::new(0.0, f32::NAN, 0.0)));
+    // 400 cm² across the ground with 0 height.
+    assert!(!goal_released(Vec3::new(0.0, 0.0, 400.0f32.sqrt())));
+}
