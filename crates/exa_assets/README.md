@@ -246,6 +246,15 @@ shipped but cannot be read gets the original's 1×1 grey placeholder (RGB
 the original would draw the placeholder, but Exarust has no registry of the
 images the original builds at run time, so such a name may be one of those
 (`model::tests::shipped_materials_missing_images` lists them).
+`image_format` is the loader's reader dispatch: a borrowed name goes first to
+a registered provider (Exarust's pack lookup is that provider) and then to
+the file reader its extension names. `.rfi` is the only reader registered; a
+name with another extension reports the original's "Unrecognised file
+extension: …", and a bare name whose bytes carry no image magic reports
+"File format error". Both paths end in the grey placeholder, as the
+original's failed load does. `texture::decode_entry` runs that dispatch
+before the `.rfi` decoder; the streaming task and the material loader use
+it.
 
 `texture_cache` is the manager: a name is its first sixteen bytes, cut at the
 last dot among them and with `A`–`Z` folded, kept in the original's order
@@ -297,8 +306,8 @@ their bind groups, so they draw the real texture from the next frame.
 Consumers whose bindings the upload cannot refresh (terrain and particle
 materials) load through `texture_sync`, and the parallax depth is read from
 the loaded size. A BC4 image is one grey channel (`TextureRecord::grey`) that
-the shaders repeat into colour for diffuse maps, apparel, race skins and the
-skin scatter; emissive and unpacked specular maps are not greyed. The loader waits for
+the shaders repeat into colour for diffuse, emissive and unpacked specular
+maps, apparel, race skins and the skin scatter. The loader waits for
 the upload pass only when it decoded a request behind waiting uploads; the
 frame uploads before it starts new decodes, so that wait never idles it, the
 pump drains every ready upload,
@@ -337,7 +346,15 @@ supplied by the caller (`ContentBuilders`), as the original's thread calls
 into the database, character and item factories. The queue and loop are
 implemented; the level-object chunk reader, the database object factory and
 the character builders remain in their own components, and Exarust's level
-loader does not drive this scheduler yet.
+loader does not drive this scheduler yet. `saved_chunks` reads the saved
+sub-chunk blob a streamed character carries (the builder scans from byte 4
+to the stored total length for the flat pose, motion state, pose tree and AI
+home, keeping the last of a repeated tag), and `stored_size_scale` is the
+character builders' size rule: the stored 16-bit word times the double
+constant 65537/2^32, times the body's base scale, narrowed to `f32` last.
+`root_node_flags` is the placed-object root rule: only the object's flags
+under `0xB80000` replace that field of the node word, and the placement's
+bit `0x10` adds the node's static bit.
 
 Materials that show wound blood (`docs/RENDERING.md`, Blood): the human
 skin, painted and run-time apparel and factory items, any record selecting

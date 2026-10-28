@@ -215,7 +215,7 @@ fn run_texture_loader(
                 let (space, flags) = (request.space, request.flags);
                 let task = pool.spawn(async move {
                     let bytes = data.texture(&source)?;
-                    texture::decode_uploaded(bytes, space, flags, &settings, bc)
+                    texture::decode_entry(&source, bytes, space, flags, &settings, bc)
                 });
                 loader.decoding.push_back((request, task));
             }
@@ -223,7 +223,14 @@ fn run_texture_loader(
             // the request fails and uploads the original's placeholder.
             (Some(game), None) => {
                 let decoded = game.0.texture(&request.source).and_then(|b| {
-                    texture::decode_uploaded(b, request.space, request.flags, &settings, bc)
+                    texture::decode_entry(
+                        &request.source,
+                        b,
+                        request.space,
+                        request.flags,
+                        &settings,
+                        bc,
+                    )
                 });
                 loader.stream.finish_decode(request, decoded);
             }
