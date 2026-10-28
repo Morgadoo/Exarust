@@ -231,3 +231,48 @@ fn shipped_actor_databases() {
     }
     assert_eq!((databases, older), (20, 17));
 }
+
+/// The transition markers the levels' own object databases carry: 54
+/// volumes whose flags' low byte is 0x40, each naming the level it connects
+/// back to (the record's name) and the entrance. `exanima01`'s single
+/// marker leads back from `exanima02` (locale id 3) at entrance 0.
+#[test]
+fn shipped_level_transition_markers() {
+    let Some(dir) = exa_rpk::locate_install(None) else {
+        return;
+    };
+    let game = exa_rpk::GameData::open(&dir).unwrap();
+    let resource = game.pack(exa_rpk::PackKind::Resource).unwrap();
+    let levels = level_databases(resource);
+    let mut markers = Vec::new();
+    for (name, file, _) in &levels {
+        let db = Database::parse(file).unwrap();
+        for item in items(&db) {
+            if let Some(volume) = item.volume
+                && let Some(words) = volume.marker()
+            {
+                markers.push((name.clone(), item.name, words, volume.flags, volume.extents));
+            }
+        }
+    }
+    assert_eq!(markers.len(), 54);
+    let first = &markers[0];
+    assert_eq!(first.0, "exanima01.rfc");
+    assert_eq!(first.1, "Exanima02");
+    assert_eq!(first.2, [0, 3]);
+    assert_eq!(first.3, 0x1040);
+    assert_eq!(first.4, [50, 50, 50]);
+    // Different entrances into the same level are separate markers.
+    assert!(
+        markers
+            .iter()
+            .any(|m| m.0 == "exanima05_sw.rfc" && m.1 == "CrossRoads_2" && m.2 == [2, 7])
+    );
+    // A marker whose flags word is the shorter 0x40 form (an older level's
+    // record).
+    assert!(
+        markers
+            .iter()
+            .any(|m| m.0 == "exanima08.rfc" && m.3 == 0x40)
+    );
+}

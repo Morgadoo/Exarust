@@ -983,9 +983,16 @@ the picture, so Exarust applies the 2.0 base to every indoor level.
   position = centre − r·(sin θ, 0, cos θ). In a duel the player stands 2 m
   along +Z.
 - Level transitions: the arrival marker in the new level's placed objects.
-  It is an objdb class `0x8000AC07` box whose flags' low byte is `0x40`, with
-  +0x18 = the previous level's id (from `locales.rdb`, which is the level
-  list) and +0x14 = the entrance number. The player gets its matrix;
+  It is an object with a volume section (`0x8000AC07`, an invisible 50 cm
+  box) whose flags' low byte is `0x40`, with the entrance number at body
+  `0x0c` and the previous level's id (from `locales.rdb`, which is the level
+  list) at body `0x10`; the object's own name is the level it connects to.
+  The 54 shipped markers are all in their level's own item database
+  (`exa_formats::objdb::Volume`) and `exa_world::player_markers` reads them
+  with their world positions. The marker names the player only when the
+  level's two session variables hold those same words: the entrance
+  variable (the arrival word a journey or a start sets) and the previous
+  level id. The player gets its matrix;
   followers stand at offsets (−1,0,−1), (1,0,−1), (0,0,1.5), (1,0,2) m in its
   frame.
 
@@ -1287,6 +1294,16 @@ carries (`3DE0ECAC` transforms, `3DE0ECDB` mesh positions; above). `exanima01` h
 spawns each as a static model, its item's model from `Objects.rpk` or
 `Objlib.rpk` (1763 in `exanima01`, none missing). Scripted (`@`) objects and
 model-less triggers or markers are skipped.
+
+The object flags word is copied onto the object's root node under the mask
+`0xB80000`, as a prop's is, and the placement flags' bit 4 (`0x10`) also sets
+node flag `0x80000` on that root (`PlacedObject::is_static`). Unlike the prop
+reader, the placed-object reader does not spread `0x80000` to the nodes under
+the root, and what the root's flag does to the model's bodies is not traced,
+so Exarust registers a placed object's bodies whatever these bits say (or
+keeps them for their mechanism). 240 shipped placed objects carry the bits,
+both on every one of them: `exanima01`'s tongs and two back packs,
+`arenao1`'s bundles, clothes pegs and tableware.
 
 Bits 16–23 of the placement flags word are the object's condition byte c.
 For items whose model section sets bit 0 (`OTHER.md`, object database), the

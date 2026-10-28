@@ -191,7 +191,11 @@ detail class, target) join the word. An uncompressed format word with bit 16
 set, or a compressed one whose top byte is `0x82` or `0x92`, is data whatever
 the slot asks. The target bits are the original's switch: `0x10000000` a 1D
 texture, `0x20000000` and every value from `0x50000000` up 2D, `0x30000000`
-3D and `0x40000000` the cube. The seven uncompressed formats the original
+3D and `0x40000000` the cube. A cube map uploads as six faces, each from the
+detail level the word keeps with its levels back to back, and a cube view;
+the three shipped cubes (`genref01r`, `genref02r`, `genref02rm`) take that
+path. A block-compressed cube is refused (none ships). No shipped image asks
+for 1D or 3D; those still upload as 2D. The seven uncompressed formats the original
 uploads as they are (`texture::COMPATIBLE_FORMATS`, compared under
 `0x800CFFFF`) decide whether a colour word has an sRGB internal format:
 ALPHA8 and the two-channel AB8/XY8 do not, so they upload linear.
@@ -213,8 +217,10 @@ mask, the anisotropy level and the bias base, −0.75 at quality 5),
 `TextureDetail`, the supersampling setting, the device's largest texture
 side and its units (clamped to 16); `fallback` is what the original forces
 on a generic (software) pixel format. **Bevy's sampler descriptor has no LOD
-bias**, so the value is computed and exposed but not applied; a renderer that
-wants the original's bias must pass it to the shader. The GL texture-unit and
+bias**, so each material carries it in its parameters and the shader adds it;
+a settings change rewrites every loaded material's bias
+(`exa_render::material::set_texture_bias`), as the original sets it on every
+bind. The GL texture-unit and
 render-target texture calls (selecting a unit, binding, creating an empty
 texture for a framebuffer attachment) have no Exarust item: Bevy owns render
 targets and binds per draw.
@@ -260,18 +266,22 @@ in order; a promotion that moves one request to the front and lets the last
 fill its place (the original's "Priority item"); removal; and an upload pass
 that takes only what was ready and honours a budget. `TextureStream` is the
 texture loader's queue: `request` (a duplicate of a queued name is refused),
-`promote` (which finds a request queued or held by the loader; one decoded
-or uploaded is no longer found, as the loader clears its status bits when it
+`promote` (which finds a request queued or held by the loader, decoding it
+or waiting with it for the upload pass; one already in the upload list or
+uploaded is no longer found, as the loader clears its status bits when it
 goes on), `cancel` (a queued request or a
 decoded one is dropped, one decoding is marked by its request id so its
 upload is skipped and a later request for the same name still loads),
 `take_next`/`finish_decode` for an executor that decodes between them (or
-`decode_next` for a synchronous one), the loader's yield while uploads are
-pending (skipped for a promoted request; pausing only stops the wake-ups),
+`decode_next` for a synchronous one), the loader's wait (`wants_to_yield`:
+it decoded a request while earlier uploads were queued and the request was
+not promoted, so it starts no other decode until an upload pass; pausing
+only stops the wake-ups),
 `load_now` for the priority path (promote, decode and drain every ready
 upload, as the original's pump does; no budget, because the original has
 none), and `pump_uploads(budget, upload)` on the main thread with a
-per-upload completion callback. The pass wakes the loader after it uploads.
+per-upload completion callback. The pass wakes the loader unless it is idle
+with an empty ring.
 The `upload_budget` is Exarust's addition for bounded callers (unbounded with
 `usize::MAX`).
 
@@ -288,9 +298,10 @@ Consumers whose bindings the upload cannot refresh (terrain and particle
 materials) load through `texture_sync`, and the parallax depth is read from
 the loaded size. A BC4 image is one grey channel (`TextureRecord::grey`) that
 the shaders repeat into colour for diffuse maps, apparel, race skins and the
-skin scatter; emissive and unpacked specular maps are not greyed. The loader yields
-while uploads wait (the original's rule; the frame uploads before it starts
-new decodes), the pump drains every ready upload,
+skin scatter; emissive and unpacked specular maps are not greyed. The loader waits for
+the upload pass only when it decoded a request behind waiting uploads; the
+frame uploads before it starts new decodes, so that wait never idles it, the
+pump drains every ready upload,
 and a record freed at its last reference drops its queued load and its image
 (`ModelLoader::release_texture`). `texture_now` decodes on the calling
 thread (the original's synchronous path and its priority load); `wait_decodes`
@@ -308,8 +319,10 @@ request that builds nothing is dropped. `StreamThread::new` holds the
 thread's two empty data streams, as the original's constructor creates
 them (unused so far); the loop above runs on the executor that drives it. A placed actor of the operative kind
 the session's arrival word names (15 after a journey, 18 after a start or a
-load), or an object whose marker record's first word is the arrival word,
-becomes the player and its position the point the stream orders by; an object that cannot
+load), or a placed object of the marker class whose record (type byte
+`0x40`) holds the session's arrival variable as its entrance word and the
+id of the level the session came from as its second, becomes the player and
+its position the point the stream orders by; an object that cannot
 be built raises the missing count and leaves no hole in the built list. Its
 rings have the original's capacities (16 jobs, completions and attachments,
 32 object and character requests and results, 128 streamed results);

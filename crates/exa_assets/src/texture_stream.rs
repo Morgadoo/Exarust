@@ -1,18 +1,17 @@
 //! The texture loader's thread, on Bevy's task pool.
 //!
-//! The original decodes one queued image at a time on a loader thread, hands
-//! the decoded image to the main thread through a pending-upload list, and
-//! waits for that list to drain before it starts the next request (unless a
-//! material promoted one). [`crate::stream::TextureStream`] holds those
-//! rules; this module runs them: a request is decoded by a task on Bevy's
-//! async compute pool, the main thread collects the result, and the image is
-//! put under the placeholder handle the texture manager handed out when the
-//! record was created. The upload pass drains every ready entry, as the
-//! original's does; a frame's cost is one decode in the background and the
-//! image insertions, not the decode itself. Each frame collects the finished
-//! decodes, uploads them, and only then starts the next decodes, so the
-//! original's yield rule (no new decode while an upload waits) does not idle
-//! the loader every frame that collected one.
+//! The original decodes one queued image at a time on a loader thread and
+//! hands the decoded image to the main thread through a pending-upload list.
+//! When it has decoded an image while earlier uploads are still waiting
+//! (and no material promoted it), it suspends itself until the main thread's
+//! upload pass wakes it. [`crate::stream::TextureStream`] holds those rules;
+//! this module runs them: a request is decoded by a task on Bevy's async compute pool, the
+//! main thread collects the result, and the image is put under the
+//! placeholder handle the texture manager handed out when the record was
+//! created. The upload pass drains every ready entry, as the original's
+//! does; a frame's cost is the decodes in the background and the image
+//! insertions, not the decode itself. Each frame collects the finished
+//! decodes, uploads them, and then starts the next decodes.
 //!
 //! A replaced placeholder is a new image under the same handle: materials
 //! and shadow cuts that bound the placeholder are touched or rebuilt so they
@@ -202,9 +201,9 @@ fn run_texture_loader(
     pump_uploads(&mut loader, &mut cache, &mut images);
 
     // The loader's pass: one request at a time per free slot, and none
-    // while the upload list is waiting on the main thread (the original's
-    // yield rule). The pump above has just drained the list, so the loader
-    // only waits when a capped upload budget left entries behind.
+    // while it waits for an upload pass (it decoded a request behind
+    // waiting uploads). The pump above has just run that pass, so the
+    // loader only waits when a capped upload budget left entries behind.
     while loader.decoding.len() < loader.decodes_in_flight.max(1) && loader.stream.can_decode() {
         let Some(request) = loader.stream.take_next() else {
             break;
@@ -333,7 +332,7 @@ mod tests {
         let handle = request(&mut app, &data, "spatter01", false);
         // Before the loader runs, the record draws the 1x1 placeholder.
         assert_eq!(width(&app, &handle), 1);
-        for _ in 0..600 {
+        for _ in 0..5000 {
             app.update();
             if width(&app, &handle) > 1 {
                 break;

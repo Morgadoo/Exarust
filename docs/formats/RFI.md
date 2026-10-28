@@ -29,7 +29,8 @@ original's size, copy, create and conversion routines all multiply by six
 on that test). `genref01r`, the indoor environment cube, is six 256² RGB8
 faces of nine levels each, `data size` 262 143 (pinned by a corpus test).
 `exa_formats::rfi::RfiHeader::is_cube` and `Rfi::decode_faces_rgba8` read
-it. `BldGr02D`, the weapon blood gradient, has `0x20A90000`: it
+it; the texture loader uploads it as a six-face cube from the detail level
+the creation word keeps (`exa_assets::texture::rfi_to_texture`). `BldGr02D`, the weapon blood gradient, has `0x20A90000`: it
 repeats across and clamps along its height (pinned by a corpus test in
 `exa_character`). `BldPrt02`, the blood droplet atlas, has `0x20A80000`,
 and its built-in material loads it with `0xF0` (no wrap bit either): it

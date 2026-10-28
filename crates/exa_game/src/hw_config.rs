@@ -543,6 +543,7 @@ pub fn texture_settings(base: TextureSettings, live: &Options) -> TextureSetting
 fn apply_options(
     config: Option<Res<HardwareConfig>>,
     mut models: Option<ResMut<ModelCache>>,
+    mut materials: Option<ResMut<Assets<exa_render::material::ExaMaterial>>>,
     mut sampling: ResMut<SuperSampling>,
     mut shadow: ResMut<ShadowQuality>,
     mut multisample: ResMut<MultisampleSetting>,
@@ -561,11 +562,19 @@ fn apply_options(
     if sampling.0 != sampling_on {
         sampling.0 = sampling_on;
     }
+    let mut bias = None;
     if let Some(models) = models.as_mut() {
         let textures = texture_settings(*models.textures.settings(), &live);
         if *models.textures.settings() != textures {
             models.textures.set_settings(textures);
+            bias = Some(textures.lod_bias());
         }
+    }
+    // The original sets the LOD bias from the quality's global on every
+    // bind, so a change also applies to the materials already loaded; the
+    // sampler filters stay those each texture was uploaded with.
+    if let (Some(bias), Some(materials)) = (bias, materials.as_mut()) {
+        exa_render::material::set_texture_bias(materials, bias);
     }
     if shadow.0 != live.shadow_quality {
         shadow.0 = live.shadow_quality;

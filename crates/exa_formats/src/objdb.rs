@@ -125,6 +125,52 @@ pub struct Item {
     /// The item has the torch section ([`TORCH`]): the equip pass holds it
     /// in the off hand on its own path.
     pub torch: bool,
+    /// The object's volume section ([`VOLUME`]): its box extents, its flags
+    /// and, when the flags' low byte is [`Volume::MARKER`], the entrance and
+    /// previous level id of a level transition.
+    pub volume: Option<Volume>,
+}
+
+/// An object's volume section: a box the level places, and for a level
+/// transition the words the stream compares against the session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Volume {
+    /// Half extents in centimetres, in the order the section stores them.
+    pub extents: [u16; 3],
+    /// The section's flags word; only its low byte is read here.
+    pub flags: u32,
+    /// The entrance number (the session's arrival variable) a transition
+    /// marker names.
+    pub entrance: u32,
+    /// The id, in `locales.rdb`, of the level the marker leads back from.
+    pub previous_level: u32,
+}
+
+impl Volume {
+    /// The flags word's low byte of a level-transition marker.
+    pub const MARKER: u32 = 0x40;
+
+    /// Reads a volume section's body: three 16-bit extents, a zeroed word,
+    /// then the flags, the entrance and the previous level id.
+    pub fn parse(b: &[u8]) -> Option<Self> {
+        let b = b.get(..20)?;
+        // The slice was checked to be 20 bytes, so these widths fix.
+        let u16_at = |o: usize| u16::from_le_bytes(b[o..o + 2].try_into().expect("2 bytes"));
+        let u32_at = |o: usize| u32::from_le_bytes(b[o..o + 4].try_into().expect("4 bytes"));
+        Some(Self {
+            extents: [u16_at(0), u16_at(2), u16_at(4)],
+            flags: u32_at(8),
+            entrance: u32_at(12),
+            previous_level: u32_at(16),
+        })
+    }
+
+    /// The level-transition marker's two session words, in the order the
+    /// stream compares them: `[entrance, previous level]`. `None` for a
+    /// volume that is not a marker.
+    pub fn marker(&self) -> Option<[u32; 2]> {
+        (self.flags & 0xFF == Self::MARKER).then_some([self.entrance, self.previous_level])
+    }
 }
 
 /// An overlapping worn item whose [`Item::equip_lock`] is over this cannot
@@ -637,6 +683,7 @@ impl Item {
             burden: None,
             equip_lock: 0,
             torch: false,
+            volume: None,
         };
         let mut pos = 0;
         while pos + 8 <= payload.len() {
@@ -688,6 +735,7 @@ impl Item {
                 DOOR => item.door = Door::parse(body),
                 OPERATIVE => item.operative = Operative::parse(body),
                 TORCH => item.torch = true,
+                VOLUME => item.volume = Volume::parse(body),
                 _ => {}
             }
             pos += size;
@@ -760,7 +808,9 @@ pub const MAP: u32 = 0x8000_0B03;
 /// The torch's extra section; zero in the one shipped record, meaning not
 /// established.
 pub const TORCH: u32 = 0x100;
-/// The invisible container volume of older records; not shipped.
+/// The object's volume section: a box, and for the level-transition marker
+/// the entrance and previous level its flags word names (shipped in the
+/// levels' own item records).
 pub const VOLUME: u32 = 0x8000_AC07;
 /// A container's contents: a count at body `0x14` and 12-byte child entries
 /// from `0x18` (the child's id, then two words whose meanings are not
@@ -805,6 +855,41 @@ mod tests {
         assert_eq!(item.hidden_slots(), 1 << 10);
         let (q, _, _) = a.condition();
         assert!((q - 0x70 as f32 / 255.0).abs() < 1e-6);
+    }
+
+    /// A volume section: three extents, a zeroed word, the flags, the
+    /// entrance and the previous level id. Only a marker's flags low byte
+    /// gives the stream a pair to compare.
+    #[test]
+    fn a_level_transition_marker_is_a_volume_section() {
+        let mut body = Vec::new();
+        for e in [50u16, 50, 100] {
+            body.extend(e.to_le_bytes());
+        }
+        body.extend(0u16.to_le_bytes());
+        body.extend(0x1040u32.to_le_bytes());
+        body.extend(7u32.to_le_bytes());
+        body.extend(11u32.to_le_bytes());
+        body.resize(0x20, 0);
+        let item = Item::parse(1, &section(VOLUME, &body)).unwrap();
+        let volume = item.volume.unwrap();
+        assert_eq!(volume.extents, [50, 50, 100]);
+        assert_eq!(volume.flags, 0x1040);
+        assert_eq!(volume.marker(), Some([7, 11]));
+        // A volume of another kind is not a transition marker.
+        body[8..12].copy_from_slice(&0x1000u32.to_le_bytes());
+        let other = Item::parse(1, &section(VOLUME, &body)).unwrap();
+        assert_eq!(other.volume.unwrap().marker(), None);
+        // A short body keeps no volume.
+        let short = Item::parse(1, &section(VOLUME, &[0u8; 18])).unwrap();
+        assert!(short.volume.is_none());
+        // An object without the section has none.
+        assert!(
+            Item::parse(1, &section(NAME, &padded("Box", 0x20)))
+                .unwrap()
+                .volume
+                .is_none()
+        );
     }
 
     #[test]
