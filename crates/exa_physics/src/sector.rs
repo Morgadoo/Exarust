@@ -1198,7 +1198,7 @@ pub fn object_pairs(takes: &[bool], offered: &[bool]) -> Vec<(usize, usize)> {
 /// One rigid-body part as a simulated object's body-contact stage sees it:
 /// where the tick has it and where the last tick left it, its collision
 /// spheres (metres, in the part's space), the world sphere around them and
-/// the part's level friction.
+/// its body's sleep countdown.
 #[derive(Debug, Clone, Copy)]
 pub struct ObjectBodyPart<'a> {
     /// The part's transform now.
@@ -1214,8 +1214,8 @@ pub struct ObjectBodyPart<'a> {
     /// The part's mesh box, in its space (m): the box the object's centre
     /// is measured against.
     pub mesh: &'a Bounds,
-    /// The part's level friction.
-    pub friction: f32,
+    /// Its body's sleep countdown (0 asleep).
+    pub countdown: i32,
 }
 
 /// The contacts a simulated object takes from the sector's body and static
@@ -1224,8 +1224,9 @@ pub struct ObjectBodyPart<'a> {
 /// tick, and the level's triangles.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ObjectContacts {
-    pub spheres: Vec<crate::cloth::BodySphere>,
-    pub swept: Vec<crate::cloth::SweptSphere>,
+    /// The bodies handed over, each with its spheres that reach the
+    /// object's box.
+    pub bodies: Vec<crate::cloth_body::ClothBody>,
     pub level: Vec<crate::cloth::LevelTri>,
     /// The level meshes `level` came from, in order.
     pub pieces: Vec<crate::cloth_level::LevelPiece>,
@@ -1234,25 +1235,26 @@ pub struct ObjectContacts {
 impl ObjectContacts {
     /// Removes every contact, keeping the lists' storage.
     pub fn clear(&mut self) {
-        self.spheres.clear();
-        self.swept.clear();
+        self.bodies.clear();
         self.level.clear();
         self.pieces.clear();
     }
 
     /// The object's body-contact stage: every part passing
     /// [`object_body_meet`] (its bound sphere meets the object's, and the
-    /// object's centre lies within its radius of the part's mesh box) hands
-    /// its collision spheres to the object, in the object's space and
-    /// centimetres. As the cloth's body-contact call does, each sphere
-    /// takes the cloth's 2 cm padding for its own tests: a sphere that moved
-    /// more than [`CLOTH_SWEEP_TRAVEL2`] over the tick (compared in double
-    /// precision) is swept from where the last tick left it and kept only
-    /// when its sweep meets the object's box; one that barely moved is kept
-    /// only when it is not apart from that box. `object_box` is the box
-    /// about the object's particles (centre and half extents, cm, the
-    /// object's space): the original tests its node's world box, and a
-    /// sphere that misses the particles' box can touch none of them.
+    /// object's centre lies within its radius of the part's mesh box) is
+    /// handed to the object with its collision spheres, in the object's
+    /// space and centimetres, the part's last sphere first, as the cloth's
+    /// body-contact call visits them. Each sphere takes the cloth's 2 cm
+    /// padding: one that moved more than [`CLOTH_SWEEP_TRAVEL2`] over the
+    /// tick (compared in double precision) sweeps from where the last tick
+    /// left it and is kept only when its sweep meets the object's box; one
+    /// that barely moved is kept only when, where the last tick left it, it
+    /// is not apart from that box. `object_box` is the box about the
+    /// object's particles (centre and half extents, cm, the object's
+    /// space): the original tests its node's world box, and a sphere that
+    /// misses the particles' box can touch none of them. A part none of
+    /// whose spheres is kept is not handed over.
     pub fn gather_bodies<'a>(
         &mut self,
         to_object: &Affine3A,
@@ -1278,35 +1280,35 @@ impl ObjectContacts {
             ) {
                 continue;
             }
-            for &(centre, radius) in part.spheres {
+            let mut body = crate::cloth_body::ClothBody {
+                spheres: Vec::new(),
+                countdown: part.countdown,
+            };
+            for &(centre, radius) in part.spheres.iter().rev() {
                 let now = to_object.transform_point3(part.now.transform_point3(centre)) * 100.0;
                 let previous =
                     to_object.transform_point3(part.previous.transform_point3(centre)) * 100.0;
-                let radius = radius * 100.0;
-                let reach = radius + crate::cloth::PADDING_CM;
+                let reach = radius * 100.0 + crate::cloth::PADDING_CM;
                 let travel = now - previous;
                 let travel2 = (travel.x * travel.x + travel.y * travel.y) + travel.z * travel.z;
-                if f64::from(travel2) > CLOTH_SWEEP_TRAVEL2 {
+                let moving = f64::from(travel2) > CLOTH_SWEEP_TRAVEL2;
+                let kept = if moving {
                     let sweep = intersect::Sweep::new(previous, now);
-                    if !intersect::swept_sphere_aabb_hit(&sweep, reach, box_centre, box_half) {
-                        continue;
-                    }
-                    self.swept.push(crate::cloth::SweptSphere {
+                    intersect::swept_sphere_aabb_hit(&sweep, reach, box_centre, box_half)
+                } else {
+                    !intersect::sphere_aabb_separated(previous, reach, box_centre, box_half)
+                };
+                if kept {
+                    body.spheres.push(crate::cloth_body::BodySweep {
                         from: previous,
                         to: now,
-                        radius,
-                        friction: part.friction,
-                    });
-                } else {
-                    if intersect::sphere_aabb_separated(now, reach, box_centre, box_half) {
-                        continue;
-                    }
-                    self.spheres.push(crate::cloth::BodySphere {
-                        center: now,
-                        radius,
-                        friction: part.friction,
+                        radius: reach,
+                        moving,
                     });
                 }
+            }
+            if !body.spheres.is_empty() {
+                self.bodies.push(body);
             }
         }
     }
