@@ -1040,6 +1040,8 @@ impl LevelLoad {
         for err in &scene.level_errors {
             loader.warn_once(format!("level {entry}: {err}"));
         }
+        // A previous level's terrain stream goes with its entities.
+        commands.remove_resource::<terrain::live::TerrainStreaming>();
         let root = commands
             .spawn((
                 LevelRoot {

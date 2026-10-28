@@ -976,8 +976,11 @@ pub struct BlockComposite {
     pub visible: bool,
     /// Its priority: the distance rank, then the composite ring once baked.
     pub priority: u32,
-    /// The nearest light's distance (metres? centimetres: the original's
-    /// light test answers centimetres), or `None` for no light in reach.
+    /// Its distance rank this frame: `round(6000 − d)` centimetres within
+    /// 60 m, else 0.
+    pub distance: i16,
+    /// The nearest light's distance, centimetres, or `None` for no light in
+    /// reach.
     pub light_distance: Option<f32>,
     state: u32,
     set: Option<u32>,
@@ -994,6 +997,7 @@ impl BlockComposite {
             enabled: true,
             visible: false,
             priority: 0,
+            distance: 0,
             light_distance: None,
             state: block_flags::WANTED | block_flags::BLANK,
             set: None,
@@ -1038,6 +1042,10 @@ pub struct CompositeSelector {
     pools: CompositePools,
     cursor: usize,
     ring: i32,
+    /// The blocks whose composite was written in the last selection.
+    baked: Vec<usize>,
+    /// Scratch for the priority pass.
+    scratch: Vec<super::stream::BlockPriority>,
 }
 
 impl Default for CompositeSelector {
@@ -1057,6 +1065,8 @@ impl CompositeSelector {
             pools,
             cursor: 0,
             ring: RING_START,
+            baked: Vec::new(),
+            scratch: Vec::new(),
         }
     }
 
@@ -1071,6 +1081,40 @@ impl CompositeSelector {
     /// The selected block indices, in composite order.
     pub fn selected(&self) -> &[usize] {
         &self.selected
+    }
+
+    /// The blocks whose composite was written in the last selection, in the
+    /// order written (a stolen set's copy counts too).
+    pub fn last_baked(&self) -> &[usize] {
+        &self.baked
+    }
+
+    /// The priority pass: every block's distance rank from `focus`, then the
+    /// blocks that want work and are visible set the priority base from the
+    /// lowest and highest of their old priorities, found in one pass where a
+    /// rank that lowers the lowest is not also tried as the highest. The
+    /// base becomes the composite ring (as the original writes its ring
+    /// word) and every block's rank follows it. Returns the base.
+    pub fn rank(&mut self, focus: Vec2) -> u32 {
+        self.scratch.clear();
+        self.scratch.extend(
+            self.blocks
+                .iter()
+                .map(|block| super::stream::BlockPriority {
+                    centre: block.centre,
+                    distance: 0,
+                    rank: block.priority,
+                    wants: block.state & block_flags::WANTED != 0,
+                    visible: block.visible,
+                }),
+        );
+        let base = super::stream::update_priorities(&mut self.scratch, focus);
+        for (block, ranked) in self.blocks.iter_mut().zip(&self.scratch) {
+            block.distance = ranked.distance;
+            block.priority = ranked.rank;
+        }
+        self.ring = base as i32;
+        base
     }
 
     pub fn pools(&self) -> &CompositePools {
@@ -1205,6 +1249,7 @@ impl CompositeSelector {
     /// walk (the original's "one block a frame" rule).
     fn composite(&mut self) -> bool {
         self.cursor = self.selected.len().saturating_sub(1);
+        self.baked.clear();
         let mut changed = false;
         let mut at = 0;
         while at < self.selected.len() {
@@ -1386,9 +1431,11 @@ impl CompositeSelector {
             .find(|&bi| self.blocks[bi].state & 0xf00 == 0x900)
     }
 
-    /// Records a bake: the block's priority becomes the ring it was baked in.
+    /// Records a bake: the block's priority becomes the ring it was baked in,
+    /// and its composite counts as written this frame.
     fn composited(&mut self, block: usize) {
         self.blocks[block].priority = self.ring as u32;
+        self.baked.push(block);
     }
 }
 

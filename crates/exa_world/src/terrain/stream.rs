@@ -515,6 +515,42 @@ impl TerrainStream {
         }
         Some(step)
     }
+
+    /// Whether every tile of the terrain has been inserted, as the
+    /// block-until-loaded slot tests (`state & 0x80`).
+    pub fn all_inserted(&self) -> bool {
+        self.tiles
+            .iter()
+            .all(|tile| tile.state & tile_flags::INSERTED != 0)
+    }
+
+    /// The block-until-loaded slot: run the frame hook until every tile is
+    /// inserted, handing each handled action to `on_action` (the caller
+    /// attaches or detaches the tile's nodes). Bounded so a level with an
+    /// unbuildable tile cannot spin forever; returns the calls made.
+    pub fn wait_until_inserted(&mut self, mut on_action: impl FnMut(usize, TileAction)) -> usize {
+        let cap = self.tiles.len().saturating_mul(4) + 64;
+        let mut calls = 0;
+        while !self.all_inserted() && calls < cap {
+            if let Some(step) = self.frame()
+                && let Some((index, action)) = step.handled
+            {
+                on_action(index, action);
+            }
+            calls += 1;
+        }
+        calls
+    }
+
+    /// The per-tile refresh pass: every tile detaches its nodes (or clears
+    /// their visibility when it was not inserted) and the terrain's refresh
+    /// delay goes up by one, as the refresh slot does.
+    pub fn refresh_all(&mut self) {
+        for tile in &mut self.tiles {
+            tile.refresh();
+        }
+        self.delay += 1;
+    }
 }
 
 #[cfg(test)]
