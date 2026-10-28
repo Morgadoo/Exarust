@@ -25,6 +25,7 @@ use bevy::transform::TransformSystems;
 use exa_physics::voxel::{self, Bounds};
 use exa_render::gi::{GiSector, GiSectorLights, GiVolume};
 
+use crate::gi_residency::GiResidency;
 use crate::shadow_links::LevelWalls;
 
 pub struct GiVolumePlugin;
@@ -52,7 +53,8 @@ impl Plugin for GiVolumePlugin {
 pub struct GiPoints(pub Arc<Vec<Vec3>>);
 
 /// A GI mesh the original counts as thin: its sample points weigh a quarter
-/// (the node's first child carries the thin byte).
+/// (the node's first surface's material is a class-`0x4000` or opacity-cut
+/// material, `Material::is_thin_for_gi`).
 #[derive(Component, Clone, Copy, Debug, Default)]
 pub struct GiThinMesh;
 
@@ -91,6 +93,9 @@ pub struct PendingGi {
     pub base_ambient: [f32; 3],
     /// The 6 m cells the manager reads.
     pub grid: GiGrid,
+    /// The environment record's flag `0x20` (the outdoor terrain arenas):
+    /// the light steps reach the top slice instead of clearing it.
+    pub top_slice: bool,
 }
 
 /// The level's 6 m cells as the GI manager reads them: plane A's open flag
@@ -235,6 +240,12 @@ impl GiBlockLayout {
         }
         let slot = (index.x + index.y * self.columns) as usize;
         self.blocks.iter().position(|b| b.slot == slot)
+    }
+
+    /// A block's centre in the ground plane (X, Z), world centimetres:
+    /// `((cell − grid/2) + 4) · 600` per axis.
+    pub fn centre_cm(&self, block: &GiBlockSpec) -> Vec2 {
+        block_centre(block.sector, self.grid.0, self.grid.1)
     }
 
     /// The nearest block to a world point (metres), ties in creation order.
@@ -543,12 +554,21 @@ struct GiBlock {
 #[derive(Resource, Clone, Default)]
 pub struct GiBlocks(pub Arc<GiBlockLayout>);
 
-/// The block being built off the main thread; at most one at a time.
+/// The block being built off the main thread; at most one at a time. A
+/// background build (a block the residency asks for, not the camera's)
+/// gives way to a camera block that needs building.
 #[derive(Resource)]
-struct GiBuild(Task<(usize, Arc<BuiltBlock>)>);
+struct GiBuild {
+    task: Task<Arc<BuiltBlock>>,
+    /// The layout index of the block, or `usize::MAX` for the fallback
+    /// block of an empty grid.
+    block: usize,
+    background: bool,
+}
 
-/// Finished blocks, kept for a while so a camera that walks back into one
-/// reuses its occupancy instead of rebuilding it.
+/// Finished blocks by layout index. Like the original manager, which keeps
+/// every block's occupancy once it is built, nothing is evicted until the
+/// level ends.
 #[derive(Resource, Default)]
 struct GiBuiltBlocks(HashMap<usize, Arc<BuiltBlock>>);
 
@@ -566,8 +586,6 @@ struct BuiltBlock {
 /// How far ahead of the camera the manager's focus sits (metres): the sector
 /// marks and the block distance sort measure from it.
 const FOCUS_AHEAD: f32 = 20.0;
-/// Finished blocks kept for reuse.
-const BLOCKS_KEPT: usize = 3;
 
 #[allow(clippy::too_many_arguments)]
 fn collect_source(
@@ -595,6 +613,7 @@ fn collect_source(
     }
     commands.remove_resource::<PendingGi>();
     commands.remove_resource::<GiBlock>();
+    commands.remove_resource::<GiResidency>();
     commands.insert_resource(GiBuiltBlocks::default());
     // A build for the previous level is dropped, which cancels it.
     commands.remove_resource::<GiBuild>();
@@ -631,6 +650,7 @@ pub fn unload_level(commands: &mut Commands, state: &mut GiState) {
     commands.remove_resource::<GiVolume>();
     commands.remove_resource::<GiSource>();
     commands.remove_resource::<GiBlocks>();
+    commands.remove_resource::<GiResidency>();
     commands.remove_resource::<exa_render::gi::GiTextures>();
     commands.remove_resource::<exa_render::gi::GiPendingTextures>();
     commands.insert_resource(GiBuiltBlocks::default());
@@ -663,6 +683,7 @@ fn build_level(
         layout.rows,
         layout.cells_origin_cm
     );
+    commands.insert_resource(GiResidency::new(&layout));
     commands.insert_resource(GiBlocks(Arc::new(layout)));
     // Only shared or copied here; the world-space work runs elsewhere.
     let points: Vec<_> = points
@@ -746,13 +767,17 @@ fn triangles_of(mesh: &MeshCopy, at: Affine3A) -> Vec<[Vec3; 3]> {
 
 /// Keeps the block around the point ahead of the camera: starts a build
 /// when that point has moved on, and hands the block to the renderer when
-/// the build is done. A newer focus waits for the build in flight.
+/// the build is done. Meanwhile it ranks the level's blocks as the
+/// original's residency does (`GiResidency`) and, while the camera's block
+/// stands, builds the block the residency names next in the background, so
+/// a camera that walks into a neighbouring block finds it built.
 #[allow(clippy::too_many_arguments)]
 fn follow_camera(
     mut commands: Commands,
     source: Option<ResMut<GiSource>>,
     block: Option<Res<GiBlock>>,
     blocks: Option<Res<GiBlocks>>,
+    mut residency: Option<ResMut<GiResidency>>,
     mut built_blocks: ResMut<GiBuiltBlocks>,
     build: Option<ResMut<GiBuild>>,
     refocus: Option<Res<GiRefocus>>,
@@ -780,33 +805,39 @@ fn follow_camera(
     let inputs = inputs.clone();
     let level = source.level.clone();
     let cache = &mut *built_blocks;
-    let was_building = build.is_some();
+    let mut active = block.as_ref().map(|b| b.index);
+    let mut building = None;
     if let Some(mut build) = build {
-        let Some((index, built)) = block_on(poll_once(&mut build.0)) else {
-            return;
-        };
-        commands.remove_resource::<GiBuild>();
-        info!(
-            "GI block: {} terrain columns, {} floor voxels, origin {:.2}, {} slices",
-            built.terrain_columns, built.floor_points, built.origin, built.depth
-        );
-        if index != usize::MAX {
-            cache.0.insert(index, built.clone());
-            while cache.0.len() > BLOCKS_KEPT {
-                if let Some(&oldest) = cache
-                    .0
-                    .keys()
-                    .find(|&&k| k != index && Some(k) != block.as_ref().map(|b| b.index))
-                {
-                    cache.0.remove(&oldest);
-                } else {
-                    break;
+        match block_on(poll_once(&mut build.task)) {
+            Some(built) => {
+                commands.remove_resource::<GiBuild>();
+                info!(
+                    "GI block{}: {} terrain columns, {} floor voxels, origin {:.2}, {} slices",
+                    if build.background {
+                        " (background)"
+                    } else {
+                        ""
+                    },
+                    built.terrain_columns,
+                    built.floor_points,
+                    built.origin,
+                    built.depth
+                );
+                if build.block != usize::MAX {
+                    cache.0.insert(build.block, built.clone());
+                    if let Some(residency) = residency.as_deref_mut() {
+                        residency.mark_built(build.block);
+                    }
+                }
+                if !build.background {
+                    commands.insert_resource(GiBlock { index: build.block });
+                    commands.insert_resource(volume_of(&built, &level, &settings));
+                    active = Some(build.block);
+                    *state = GiState::Built;
                 }
             }
+            None => building = Some((build.block, build.background)),
         }
-        commands.insert_resource(GiBlock { index });
-        commands.insert_resource(volume_of(&built, &level, &settings));
-        *state = GiState::Built;
     }
     let Some(blocks) = blocks else { return };
     let Some(camera) = cameras.iter().next() else {
@@ -814,6 +845,12 @@ fn follow_camera(
     };
     let at = camera.translation();
     let focus = at + camera.forward().as_vec3() * FOCUS_AHEAD;
+    if let Some(residency) = residency.as_deref_mut() {
+        residency.rank(focus);
+        // The texture handoffs only matter to a renderer holding several
+        // blocks; Exarust's draws the camera's block alone.
+        residency.hand_out_textures();
+    }
     // The camera's own block when it has geometry; otherwise the block the
     // original's residency sort ranks first, nearest the point 20 m ahead.
     let wanted = blocks.0.block_at(at).or_else(|| blocks.0.nearest(focus));
@@ -821,13 +858,33 @@ fn follow_camera(
     if refocusing {
         commands.remove_resource::<GiRefocus>();
     }
-    let active = block.as_ref().map(|b| b.index);
-    if !refocusing && wanted.is_some() && wanted == active {
+    let settled = !refocusing && wanted.is_some() && wanted == active;
+    if settled || (active == Some(usize::MAX) && wanted.is_none() && !refocusing) {
+        // The camera's block stands: build what the residency asks for
+        // next, one block at a time.
+        if building.is_none()
+            && let Some(residency) = residency.as_deref_mut()
+            && let Some(next) = residency.take_next_build()
+            && let Some(&spec) = blocks.0.blocks.get(next)
+        {
+            let task = AsyncComputeTaskPool::get()
+                .spawn(async move { build_block(Some(spec), at, level, &inputs) });
+            commands.insert_resource(GiBuild {
+                task,
+                block: next,
+                background: true,
+            });
+        }
         return;
     }
-    // A newer focus waits for the build in flight.
-    if was_building {
-        return;
+    // A newer focus waits for the camera block in flight; a background
+    // build gives way to it (dropping the task cancels it, and the
+    // residency asks for that block again later).
+    if let Some((_, background)) = building {
+        if !background {
+            return;
+        }
+        commands.remove_resource::<GiBuild>();
     }
     if let Some(index) = wanted {
         if refocusing {
@@ -843,17 +900,22 @@ fn follow_camera(
         let spec = blocks.0.blocks[index];
         let task = AsyncComputeTaskPool::get()
             .spawn(async move { build_block(Some(spec), at, level, &inputs) });
-        commands.insert_resource(GiBuild(task));
+        commands.insert_resource(GiBuild {
+            task,
+            block: index,
+            background: false,
+        });
         *state = GiState::Building;
         return;
     }
     // A grid with no built cells: the old focus-centred block stands in.
-    if active == Some(usize::MAX) && !refocusing {
-        return;
-    }
     let task =
         AsyncComputeTaskPool::get().spawn(async move { build_block(None, focus, level, &inputs) });
-    commands.insert_resource(GiBuild(task));
+    commands.insert_resource(GiBuild {
+        task,
+        block: usize::MAX,
+        background: false,
+    });
     *state = GiState::Building;
 }
 
@@ -868,6 +930,7 @@ fn volume_of(block: &BuiltBlock, level: &PendingGi, settings: &GiSettings) -> Gi
         base_ambient: Vec3::from(level.base_ambient) * BASE_AMBIENT,
         sector: block.sector,
         warm_up: settings.warm_up,
+        top_slice: level.top_slice,
     }
 }
 
@@ -1067,7 +1130,7 @@ fn build_block(
     focus: Vec3,
     level: PendingGi,
     inputs: &GiInputs,
-) -> (usize, Arc<BuiltBlock>) {
+) -> Arc<BuiltBlock> {
     let mut occupancy = match spec {
         Some(spec) => Occupancy::new_at(spec.origin, spec.depth, spec.sector),
         None => Occupancy::new(
@@ -1077,7 +1140,6 @@ fn build_block(
             (level.grid.width, level.grid.height),
         ),
     };
-    let index = spec.map_or(usize::MAX, |s| s.slot);
     let mut ground = TerrainColumns::new(&occupancy);
     for &t in &inputs.terrain {
         ground.add(t);
@@ -1106,7 +1168,7 @@ fn build_block(
         terrain_columns,
         floor_points,
     };
-    (index, Arc::new(built))
+    Arc::new(built)
 }
 
 /// Voxel edge, metres.
@@ -1506,6 +1568,7 @@ mod tests {
             bottom: 0.0,
             base_ambient: [0.04, 0.04, 0.04],
             grid: open_grid(32),
+            top_slice: false,
         };
         app.insert_resource(level.clone());
         app.update();

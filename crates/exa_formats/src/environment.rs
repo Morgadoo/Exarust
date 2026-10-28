@@ -17,8 +17,16 @@ pub enum SunMode {
     On,
 }
 
+/// The record's flag (`0x20`, set on the outdoor terrain arenas) that lets
+/// the voxel GI's light steps reach the volume's top slice, which they
+/// otherwise clear: the original draws as many slices as the volume is
+/// deep instead of one fewer.
+pub const GI_TOP_SLICE: u32 = 0x20;
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Environment {
+    /// Flags: `0x10000` always, [`GI_TOP_SLICE`] on the outdoor terrain
+    /// arenas.
     pub flags: u32,
     pub sun_mode: SunMode,
     /// 0 points straight down, 0.5 at the horizon, 1 at the zenith.

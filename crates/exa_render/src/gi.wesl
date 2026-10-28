@@ -57,7 +57,8 @@ struct GiParams {
     base: vec4<f32>,
     // The sun's fitted shadow matrix, world (m) to Bevy's clip space.
     sun_matrix: mat4x4<f32>,
-    // x: 1 when the sun shadow map may be sampled, y: 1 under an open sky.
+    // x: 1 when the sun shadow map may be sampled, y: 1 under an open sky,
+    // z: 1 when the steps reach the top slice (the level record's flag).
     sun_flags: vec4<u32>,
     groups: array<GiGroup, 64>,
     // Per sector (X fastest), its group or 0xffffffff.
@@ -194,9 +195,9 @@ fn propagate(@builtin(global_invocation_id) id: vec3<u32>) {
     if any(id >= dims) {
         return;
     }
-    // The 8-voxel margins, and the top slice drawn by no group, are cleared
-    // every step; slices outside a sector group's span and unmarked sectors
-    // are too.
+    // The 8-voxel margins, and the top slice unless the level record lets
+    // the groups draw it, are cleared every step; slices outside a sector
+    // group's span and unmarked sectors are too.
     if id.x < MARGIN || id.y < MARGIN || id.x + MARGIN >= dims.x || id.y + MARGIN >= dims.y {
         write_dark(id, dims);
         return;
@@ -209,7 +210,7 @@ fn propagate(@builtin(global_invocation_id) id: vec3<u32>) {
         return;
     }
     let plan = params.groups[group];
-    if id.z < plan.floor || id.z + 1u >= dims.z {
+    if id.z < plan.floor || (id.z + 1u >= dims.z && params.sun_flags.z == 0u) {
         write_dark(id, dims);
         return;
     }

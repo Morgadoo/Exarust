@@ -12,6 +12,7 @@ pub mod editor;
 pub mod environment;
 pub mod fire;
 pub mod flame;
+pub mod gi_residency;
 pub mod gi_volume;
 pub mod grid;
 pub mod grid_sets;
@@ -1468,6 +1469,7 @@ impl LevelLoad {
             bottom: env.floor,
             base_ambient: [env.fill[0], env.fill[1], env.fill[2]],
             grid,
+            top_slice: env.flags & exa_formats::environment::GI_TOP_SLICE != 0,
         });
         let (width, depth) =
             nav::source::grid_size(self.scene.grid.as_ref().map(|g| (g.width, g.height)));
