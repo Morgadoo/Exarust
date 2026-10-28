@@ -151,13 +151,7 @@ impl LoadedSave {
             return None;
         }
         let id = reference & exa_formats::characters::ID_MASK;
-        let section = self.package.section(save_package::WORLD_CHARACTER_DB)?;
-        let payload = save_package::first_chunk_payload(section)?;
-        let mut db = exa_formats::character_db::CharacterDb::from_rdb(
-            exa_formats::character_db::WORLD_TAG,
-            payload,
-        )
-        .ok()?;
+        let mut db = self.world_characters()?;
         let record = db.get(id)?;
         let mut record = record.record().clone();
         // The slot view names records by their low id, as the placement does.
