@@ -233,6 +233,7 @@ pub fn slide(previous: Vec3, position: Vec3) -> Vec3 {
 /// against it as the module describes. Returns whether any particle was
 /// pushed. It never wakes the cloth.
 pub fn touch_level(cloth: &mut Cloth) -> bool {
+    cloth.level_tests = 0;
     if cloth.level.is_empty() {
         return false;
     }
@@ -249,6 +250,7 @@ pub fn touch_level(cloth: &mut Cloth) -> bool {
     let planes: Vec<Option<(Vec3, f32)>> = cloth.level.iter().map(face_plane).collect();
     let radius = PADDING_CM;
     let mut any = false;
+    let mut tests = 0;
     let mut first = 0;
     for piece in pieces {
         let range = first.min(cloth.level.len())..piece.end.min(cloth.level.len());
@@ -274,6 +276,7 @@ pub fn touch_level(cloth: &mut Cloth) -> bool {
                 continue;
             }
             let mut hit = false;
+            tests += range.len();
             for index in range.clone() {
                 let Some(plane) = planes[index] else {
                     continue;
@@ -295,6 +298,7 @@ pub fn touch_level(cloth: &mut Cloth) -> bool {
             }
         }
     }
+    cloth.level_tests = tests;
     any
 }
 
@@ -393,6 +397,8 @@ mod tests {
         cloth.level.push(floor());
         cloth.level_pieces.push(LevelPiece::around(&cloth.level, 1));
         assert!(touch_level(&mut cloth));
+        // Two particles reach the piece's box; the third is culled.
+        assert_eq!(cloth.level_tests, 2);
         assert!(
             cloth.particles[0]
                 .position

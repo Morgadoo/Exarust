@@ -202,6 +202,9 @@ pub struct Cloth {
     /// where its triangles end ([`crate::cloth_level::touch_level`]). Empty
     /// means one mesh holding the whole list.
     pub level_pieces: Vec<crate::cloth_level::LevelPiece>,
+    /// How many particle-triangle tests the last level stage made (a debug
+    /// count; no rule reads it).
+    pub level_tests: usize,
     /// Wind noise, when the cloth samples the tile instead of `noise`.
     pub tile: Option<[f32; NOISE_CELLS * NOISE_CELLS]>,
     /// Equal and opposite sum of this tick's collision pushes, for the body.
@@ -239,6 +242,7 @@ impl Cloth {
             triangles: Vec::new(),
             level: Vec::new(),
             level_pieces: Vec::new(),
+            level_tests: 0,
             tile: None,
             reaction: Vec3::ZERO,
             double_sided: true,

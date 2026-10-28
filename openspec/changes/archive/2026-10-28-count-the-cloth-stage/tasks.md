@@ -1,0 +1,3 @@
+- [x] `ClothContacts` off by default; README and DEBUGGING.md
+- [x] `ClothDebug` counters behind `EXA_DEBUG_CLOTH=1`
+- [x] `Cloth::level_tests`
