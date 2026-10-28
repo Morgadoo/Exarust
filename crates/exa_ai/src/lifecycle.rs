@@ -327,12 +327,13 @@ pub fn object_goal(
 pub struct RoomObject {
     /// Its point (cm).
     pub point_cm: bevy::math::Vec3,
-    /// Its item record is searchable and not fixed (the original's
-    /// `0x20` flag), its kind is not 5 and its value is not negative.
+    /// Its item record carries the searchable flag (0x20) and its kind is
+    /// neither 5 nor below the threshold the running level keeps (an
+    /// unsigned compare against a runtime word, not identified).
     pub usable: bool,
     /// Its reach in the item's unit, at most 0.7 to be used.
     pub reach: f32,
-    /// Its use flag (`0x528` bit 8) is already set.
+    /// Its use flag (bit 8 of the object's flag word) is already set.
     pub used: bool,
 }
 
@@ -356,10 +357,11 @@ pub fn use_object(object: RoomObject) -> (bool, bool) {
     (true, false)
 }
 
-/// The first usable object of the current room: searchable, not fixed, not
-/// searched, its kind not 5, its value not negative.
+/// The usable object of the current room the idle driver walks to: the
+/// original runs over every object and each usable one overwrites the
+/// goal, so the last usable one wins.
 pub fn find_object(objects: &[RoomObject]) -> Option<RoomObject> {
-    objects.iter().copied().find(|o| o.usable)
+    objects.iter().rev().copied().find(|o| o.usable)
 }
 
 /// The idle driver's state: its step (1–6), the wait's deadline, the exits
@@ -747,7 +749,7 @@ mod tests {
     }
 
     /// The exit midpoint is 250 cm out at most; the use fires within 0.7
-    /// once; the first usable object is found.
+    /// once; the last usable object is found.
     #[test]
     fn the_exit_use_and_object_checks() {
         assert!(near_exit(
@@ -782,15 +784,24 @@ mod tests {
             (false, true)
         );
         assert_eq!(find_object(&[]), None);
+        let later = RoomObject {
+            point_cm: Vec3::new(5.0, 0.0, 0.0),
+            ..object
+        };
         assert_eq!(
             find_object(&[
+                object,
                 RoomObject {
                     usable: false,
                     ..object
                 },
-                object
+                later,
+                RoomObject {
+                    usable: false,
+                    ..later
+                },
             ]),
-            Some(object)
+            Some(later)
         );
     }
 
