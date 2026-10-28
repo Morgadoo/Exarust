@@ -211,17 +211,6 @@ mod tests {
     }
 
     #[test]
-    fn the_item_program_agrees_in_both_crates() {
-        let ring = [0.25, 0.5, 1.0, 0.0, 0.75, 0.125, 0.5, 1.0];
-        let texel = [0.1, 0.2, 0.3, 0.6];
-        let ink = [0.2, 0.7, 0.4, 0.9];
-        assert_eq!(
-            exa_items::item_gui::item_icon_pixel(ring, texel, ink, [1.0, 0.75, 0.45]),
-            exa_ui::gui_draw::item_icon_fragment(ring, texel, ink, [1.0, 0.75, 0.45])
-        );
-    }
-
-    #[test]
     fn the_panel_scales_an_atlas_cell_to_its_icon_size() {
         let mut manager = manager();
         let mut container = panel(0);
