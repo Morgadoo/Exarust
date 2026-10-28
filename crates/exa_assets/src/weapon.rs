@@ -152,6 +152,8 @@ impl ModelLoader<'_> {
             is_skin: false,
             placeholder: false,
             cloth: false,
+            mesh: false,
+            render_flags: 0,
         }];
         let mut head: Option<(f32, f32)> = None;
         let mut flipped: Option<(f32, f32)> = None;
@@ -247,6 +249,8 @@ impl ModelLoader<'_> {
                 is_skin: false,
                 placeholder: false,
                 cloth: false,
+                mesh: false,
+                render_flags: 0,
             });
         }
 

@@ -93,6 +93,13 @@ pub struct ModelNode {
     /// a controller only in a scene carrying the cloth-flag 0x10000, which
     /// every game scene does ([`exa_formats::rfc::cloth_import`]).
     pub cloth: bool,
+    /// The node stores a mesh body, whatever its groups draw.
+    pub mesh: bool,
+    /// The mesh body's render word, which the original copies onto its
+    /// mesh node as the body is read
+    /// ([`exa_formats::rfc::Mesh::render_flags`]). The dressed-mesh pass
+    /// reads flag `0x40` to find overlay meshes and mark slot meshes.
+    pub render_flags: u32,
 }
 
 /// A model node's rigid body and what its mobility is divided by when the
@@ -170,6 +177,9 @@ pub struct ModelCache {
     /// The built-in race skin by body model, tone and sex
     /// ([`ModelLoader::skin_material_of`]).
     skin_materials: HashMap<(String, [u16; 2], bool), Handle<ExaMaterial>>,
+    /// The composited skin materials by
+    /// [`crate::skin_composite::SkinCompositeJob::key`].
+    pub(crate) skin_composites: HashMap<String, Option<Handle<ExaMaterial>>>,
     /// Painted factory regions by [`FactoryPaint::key`].
     factory_painted: HashMap<String, Handle<ExaMaterial>>,
     /// Factory weapon stats once its assembled extents are known.
@@ -558,6 +568,8 @@ impl ModelLoader<'_> {
                     node.cloth_marker,
                     exa_formats::rfc::CLOTH_SCENE,
                 ),
+                mesh: mesh.is_some(),
+                render_flags: mesh.map_or(0, |mesh| mesh.render_flags),
             });
         }
         // An instance node shares the node it names (1-based): the original
@@ -2120,7 +2132,7 @@ fn cube_image(rfi: &Rfi) -> Option<Image> {
 /// its texels as painted and averages its colour in linear light, as the GPU
 /// builds the mips of the original's sRGB paint targets; alpha and linear maps
 /// are averaged as stored.
-fn painted_image(width: u32, height: u32, rgba: Vec<u8>, encoding: Encoding) -> Image {
+pub(crate) fn painted_image(width: u32, height: u32, rgba: Vec<u8>, encoding: Encoding) -> Image {
     use bevy::image::{ImageAddressMode, ImageSampler, ImageSamplerDescriptor};
     use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
     let srgb = SrgbTables::new();
@@ -2434,6 +2446,214 @@ pub fn scene_merged_mesh(
     crate::merge::merge(&parts)
 }
 
+/// One part of a dressed character to merge: a built material group of a
+/// body or garment node, placed by its frame in the body's space.
+///
+/// The running game has each part as a Bevy [`Mesh`] (one material group of
+/// a node's mesh, with its skin attributes); [`merge_dressed`] turns them
+/// into [`exa_formats::rfc::Mesh`] streams again and runs
+/// [`crate::merge::merge`] over them, the original's assembly.
+pub struct DressedPart<'a> {
+    /// The part's built mesh.
+    pub mesh: &'a Mesh,
+    /// Its frame in the body's space.
+    pub frame: exa_formats::morph::Frame,
+    /// The bone a vertex without a weight falls back to.
+    pub bone: u32,
+    /// Its material name, as the file stores it.
+    pub material: &'a str,
+    /// The material its built group draws with.
+    pub handle: Handle<ExaMaterial>,
+    /// The cull bits the slot's append takes
+    /// ([`exa_character::layers::cull_bits`]; 0 for body parts and overlays).
+    pub cull: u32,
+}
+
+/// A character's merged mesh and the material of each of its runs, in the
+/// same order as `Merged::subobjects`.
+pub struct DressedMerge {
+    pub merged: crate::merge::Merged,
+    pub materials: Vec<Handle<ExaMaterial>>,
+}
+
+/// Merges a dressed character's built parts into the original's one skinned
+/// mesh: each part's vertex streams (positions, normals, UVs, weights) are
+/// turned back into the file's form and appended by [`crate::merge::merge`].
+/// The handles are matched to the runs by material name; a name shared by
+/// two parts (the original groups by name too) uses the first handle met in
+/// merge order.
+///
+/// The position-stream ids are the parts' own vertex numbers (the built
+/// meshes keep no stream ids); they only feed the occlusion fade, which no
+/// shipped material marks. Triangles' file flags and edge bytes are not
+/// carried either, for the same reason.
+pub fn merge_dressed(parts: &[DressedPart<'_>]) -> Option<DressedMerge> {
+    let streams: Vec<Option<RfcMesh>> =
+        parts.iter().map(|part| render_streams(part.mesh)).collect();
+    let mut handles: HashMap<String, Handle<ExaMaterial>> = HashMap::new();
+    let mut merge_parts = Vec::with_capacity(parts.len());
+    for (part, stream) in parts.iter().zip(&streams) {
+        let Some(stream) = stream else { continue };
+        merge_parts.push(crate::merge::MergePart {
+            mesh: stream,
+            frame: part.frame,
+            skin: stream.skin.as_deref(),
+            bone: part.bone,
+            material: part.material,
+            visible: true,
+            vertex_masks: None,
+            cull: part.cull,
+            occlude: false,
+            index_range: None,
+        });
+    }
+    let merged = crate::merge::merge(&merge_parts)?;
+    let mut materials = Vec::with_capacity(merged.subobjects.len());
+    for run in &merged.subobjects {
+        if let Some(handle) = handles.get(run.material.as_str()) {
+            materials.push(handle.clone());
+            continue;
+        }
+        let handle = parts
+            .iter()
+            .zip(&streams)
+            .find(|(part, stream)| stream.is_some() && part.material == run.material)
+            .map(|(part, _)| part.handle.clone())
+            .unwrap_or_default();
+        handles.insert(run.material.clone(), handle.clone());
+        materials.push(handle);
+    }
+    Some(DressedMerge { merged, materials })
+}
+
+/// A built mesh's streams as the merge takes them: positions, normals, UVs,
+/// weights and indices. A mesh without positions or indices has no part.
+fn render_streams(mesh: &Mesh) -> Option<RfcMesh> {
+    use bevy::mesh::VertexAttributeValues;
+    let positions = mesh
+        .attribute(Mesh::ATTRIBUTE_POSITION)?
+        .as_float3()?
+        .to_vec();
+    let count = positions.len();
+    let indices = match mesh.indices()? {
+        Indices::U16(v) => v.iter().map(|&i| u32::from(i)).collect(),
+        Indices::U32(v) => v.clone(),
+    };
+    if count == 0 || indices.is_empty() {
+        return None;
+    }
+    let normals = mesh
+        .attribute(Mesh::ATTRIBUTE_NORMAL)
+        .and_then(|a| a.as_float3())
+        .map(<[[f32; 3]]>::to_vec)
+        .filter(|n| n.len() == count)
+        .unwrap_or_else(|| vec![[0.0, 1.0, 0.0]; count]);
+    let uvs = match mesh.attribute(Mesh::ATTRIBUTE_UV_0) {
+        Some(VertexAttributeValues::Float32x2(uv)) if uv.len() == count => Some(uv.clone()),
+        _ => None,
+    };
+    let skin = match (
+        mesh.attribute(Mesh::ATTRIBUTE_JOINT_INDEX),
+        mesh.attribute(Mesh::ATTRIBUTE_JOINT_WEIGHT),
+    ) {
+        (
+            Some(VertexAttributeValues::Uint16x4(joints)),
+            Some(VertexAttributeValues::Float32x4(weights)),
+        ) if joints.len() == count && weights.len() == count => Some(
+            joints
+                .iter()
+                .zip(weights)
+                .map(|(bones, weights)| exa_formats::rfc::SkinWeights {
+                    bones: bones.map(u32::from),
+                    weights: *weights,
+                })
+                .collect(),
+        ),
+        _ => None,
+    };
+    Some(RfcMesh {
+        positions,
+        normals,
+        uvs,
+        colors: None,
+        skin,
+        position_ids: (0..count as u32).collect(),
+        indices,
+        groups: Vec::new(),
+        triangle_flags: None,
+        triangle_edges: None,
+        gi_points: Vec::new(),
+        render_flags: 0,
+        position_count: count,
+        smoothing: vec![0; count],
+        uv_ids: Vec::new(),
+        uv_count: 0,
+    })
+}
+
+/// One material run of a merged character mesh as a drawable mesh: only the
+/// run's vertices and indices, so each run is a sub-mesh of the merged one
+/// with the same skin weights. `None` for a run without triangles.
+pub fn run_mesh(merged: &crate::merge::Merged, run: &crate::merge::SubObject) -> Option<Mesh> {
+    let source = &merged.mesh;
+    let first = run.first_vertex.min(source.positions.len());
+    let last = (run.first_vertex + run.vertex_count).min(source.positions.len());
+    if first >= last {
+        return None;
+    }
+    let indices: Vec<u32> = source
+        .indices
+        .iter()
+        .skip(run.first_index)
+        .take(run.index_count)
+        .filter(|i| (first..last).contains(&(**i as usize)))
+        .map(|i| i - first as u32)
+        .collect();
+    if indices.is_empty() {
+        return None;
+    }
+    let count = last - first;
+    let positions = source.positions[first..last].to_vec();
+    let normals = source.normals[first..last].to_vec();
+    let max = count as u32;
+    let indices = if max < 0x1_0000 {
+        Indices::U16(indices.iter().map(|&i| i as u16).collect())
+    } else {
+        Indices::U32(indices)
+    };
+    let mut mesh = Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::default(),
+    )
+    .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
+    .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
+    .with_inserted_indices(indices);
+    if let Some(uvs) = &source.uvs {
+        mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs[first..last].to_vec());
+    }
+    if let Some(colours) = &source.colors {
+        let bytes: Vec<[u8; 4]> = colours[first..last].to_vec();
+        mesh.insert_attribute(
+            Mesh::ATTRIBUTE_COLOR,
+            bevy::mesh::VertexAttributeValues::Unorm8x4(bytes),
+        );
+    }
+    if let Some(skin) = &source.skin {
+        let joints: Vec<[u16; 4]> = skin[first..last]
+            .iter()
+            .map(|w| w.bones.map(|b| b.min(u32::from(u16::MAX)) as u16))
+            .collect();
+        let weights: Vec<[f32; 4]> = skin[first..last].iter().map(|w| w.weights).collect();
+        mesh.insert_attribute(
+            Mesh::ATTRIBUTE_JOINT_INDEX,
+            bevy::mesh::VertexAttributeValues::Uint16x4(joints),
+        );
+        mesh.insert_attribute(Mesh::ATTRIBUTE_JOINT_WEIGHT, weights);
+        let _ = mesh.generate_skinned_mesh_bounds();
+    }
+    Some(mesh)
+}
+
 /// The `_`-named skinned child of `parent`: the effects' and wound painting's
 /// lookup for the copy of a body part they draw on. The original takes the
 /// first child whose name starts `_` and that carries a skinned mesh.
@@ -2618,6 +2838,8 @@ mod tests {
             is_skin: false,
             placeholder: false,
             cloth: false,
+            mesh: false,
+            render_flags: 0,
         }
     }
 

@@ -50,7 +50,7 @@ use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on, poll_once};
 use exa_anim::BodyPart;
 use exa_assets::model::{Paint, PaintedSet};
-use exa_assets::{Game, ModelCache, ModelLoader, PackKind, model};
+use exa_assets::{Game, Model, ModelCache, ModelLoader, PackKind, model};
 use exa_combat::attack::{Attacker, Slot};
 use exa_combat::grip::{self, GripHand, GripHolder};
 use exa_formats::objdb::{self, Appearance, Armour, Item};
@@ -284,10 +284,25 @@ fn put_on_underwear(outfit: &mut Outfit, items: &UnderwearItems) -> bool {
     true
 }
 
-/// Gives a body the skin tone of its [`exa_assets::SkinLook`]: its race
-/// skin parts are re-bound to the built-in skin material of that tone, made
-/// once per race and tone. A body without a look keeps the middle tone the
-/// model was built with.
+/// The skin material a look asks for: the composited maps when the job is
+/// known and its race textures decode, else the race maps plus the tone.
+fn skin_material_of_look(
+    loader: &mut ModelLoader,
+    look: &exa_assets::SkinLook,
+    job: Option<&exa_assets::SkinCompositeJob>,
+) -> Handle<exa_render::material::ExaMaterial> {
+    if let Some(job) = job
+        && let Some(handle) = loader.composited_skin(job)
+    {
+        return handle;
+    }
+    loader.skin_material_of(&look.entry(), look.tone, look.female)
+}
+
+/// Gives a body the skin material of its [`exa_assets::SkinLook`]: its race
+/// skin parts are re-bound to the character's composited skin (or the race
+/// maps plus tone when it has no job). A body without a look keeps the
+/// middle tone the model was built with.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn apply_skin_looks(
     game: Option<Res<Game>>,
@@ -297,15 +312,22 @@ fn apply_skin_looks(
     mut images: ResMut<Assets<Image>>,
     support: Option<Res<CompressedImageFormatSupport>>,
     looks: Query<
-        (Entity, &exa_assets::SkinLook),
+        (
+            Entity,
+            &exa_assets::SkinLook,
+            Option<&exa_assets::SkinCompositeJob>,
+        ),
         Or<(Added<exa_assets::SkinLook>, Changed<exa_assets::SkinLook>)>,
     >,
+    new_skins: Query<Entity, Added<exa_assets::RaceSkinPart>>,
+    look_of: Query<(&exa_assets::SkinLook, Option<&exa_assets::SkinCompositeJob>)>,
+    parents: Query<&ChildOf>,
     children: Query<&Children>,
     skins: Query<(), With<exa_assets::RaceSkinPart>>,
     mut parts: Query<&mut MeshMaterial3d<exa_render::material::ExaMaterial>>,
 ) {
     let Some(game) = game else { return };
-    if looks.is_empty() {
+    if looks.is_empty() && new_skins.is_empty() {
         return;
     }
     let mut loader = ModelLoader {
@@ -316,8 +338,8 @@ fn apply_skin_looks(
         images: &mut images,
         bc_supported: model::bc_supported(support.as_deref()),
     };
-    for (root, look) in &looks {
-        let material = loader.skin_material_of(&look.entry(), look.tone, look.female);
+    for (root, look, job) in &looks {
+        let material = skin_material_of_look(&mut loader, look, job);
         for part in children.iter_descendants(root) {
             if !skins.contains(part) {
                 continue;
@@ -325,6 +347,20 @@ fn apply_skin_looks(
             if let Ok(mut bound) = parts.get_mut(part) {
                 bound.0 = material.clone();
             }
+        }
+    }
+    // A skin part that appears later (the merged mesh) takes its
+    // character's material.
+    for part in &new_skins {
+        let Some(root) = parents.iter_ancestors(part).find(|&a| look_of.contains(a)) else {
+            continue;
+        };
+        let Ok((look, job)) = look_of.get(root) else {
+            continue;
+        };
+        let material = skin_material_of_look(&mut loader, look, job);
+        if let Ok(mut bound) = parts.get_mut(part) {
+            bound.0 = material;
         }
     }
 }
@@ -376,8 +412,35 @@ struct Fitting(HashMap<String, Task<model::BuiltModel>>);
 /// section of the first item that shows it.
 #[derive(Debug, Clone, Default)]
 struct ItemInfo {
-    apparel: Option<(Appearance, u32, Option<Armour>)>,
+    apparel: Option<ApparelInfo>,
     weapon: Option<objdb::Weapon>,
+}
+
+/// What a worn item gives the dressed-mesh pass: how it paints, which body
+/// slots it hides, its armour, its occupancy and coverage words (slot 1
+/// first) and its hit-sound material byte.
+#[derive(Clone, Debug)]
+struct ApparelInfo {
+    appearance: Appearance,
+    hides: u32,
+    armour: Option<Armour>,
+    occupancy: [u64; 18],
+    coverage: [u64; 18],
+    material: u8,
+}
+
+impl ApparelInfo {
+    fn of(item: &Item) -> Option<Self> {
+        Some(Self {
+            appearance: item.appearance?,
+            hides: item.hidden_slots(),
+            armour: item.armour,
+            occupancy: std::array::from_fn(|i| item.occupancy.get(i).copied().unwrap_or(0)),
+            // `slot_word` takes the slot number; slot 1 is the first byte.
+            coverage: std::array::from_fn(|i| item.slot_word(i + 1)),
+            material: item.armour.map_or(0, |a| a.material),
+        })
+    }
 }
 
 /// Every item of the game's object database.
@@ -399,10 +462,10 @@ fn item_info(game: &exa_assets::GameData) -> HashMap<String, ItemInfo> {
 fn item_info_of(items: &[Item]) -> HashMap<String, ItemInfo> {
     let mut out: HashMap<String, ItemInfo> = HashMap::new();
     for item in items {
-        if let (false, Some(a)) = (item.worn_model.is_empty(), item.appearance) {
+        if let (false, Some(_)) = (item.worn_model.is_empty(), item.appearance) {
             let info = out.entry(item.worn_model.to_ascii_lowercase()).or_default();
             if info.apparel.is_none() {
-                info.apparel = Some((a, item.hidden_slots(), item.armour));
+                info.apparel = ApparelInfo::of(item);
             }
         }
         if let (false, Some(w)) = (item.model.is_empty(), item.weapon) {
@@ -616,8 +679,8 @@ fn garment_appearance(garment: &Garment, infos: &HashMap<String, ItemInfo>) -> O
     garment.appearance.or_else(|| {
         infos
             .get(&garment.model.to_ascii_lowercase())
-            .and_then(|i| i.apparel)
-            .map(|k| k.0)
+            .and_then(|i| i.apparel.as_ref())
+            .map(|k| k.appearance)
     })
 }
 
@@ -705,6 +768,182 @@ fn fitted_model(
     }
 }
 
+/// One part of a character to merge, with its material already resolved.
+struct MergePiece {
+    mesh: Handle<Mesh>,
+    material: String,
+    handle: Handle<exa_render::material::ExaMaterial>,
+    frame: exa_formats::morph::Frame,
+    bone: u32,
+    cull: u32,
+}
+
+/// Builds and spawns a character's one merged skinned mesh: the body's
+/// visible slots and every chosen garment node, in the generator's order,
+/// through [`dress::assemble`] and [`model::merge_dressed`]. Each material
+/// run becomes one sub-mesh bound to the character's skeleton; the body
+/// nodes it replaced stop drawing.
+///
+/// Returns `false` (spawning nothing) when a garment has no object-database
+/// record to plan it from or the merge leaves no triangles, so the caller
+/// keeps the one-mesh-per-node draw.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn spawn_merged_character(
+    commands: &mut Commands,
+    loader: &mut ModelLoader,
+    body: Entity,
+    body_entry: &str,
+    body_model: &exa_assets::Model,
+    garments: &[(
+        std::sync::Arc<Model>,
+        Option<Appearance>,
+        Option<ApparelInfo>,
+    )],
+    node_entities: &HashMap<String, Entity>,
+    children: &Query<&Children>,
+    meshes_of: &Query<(), Or<(With<Mesh3d>, With<exa_assets::SkinnedPart>)>>,
+    skin_look: Option<&exa_assets::SkinLook>,
+    skin_job: Option<&exa_assets::SkinCompositeJob>,
+) -> bool {
+    // The generator plans a garment from its item's occupancy and coverage
+    // words; a model no item is worn as cannot be planned.
+    if garments.iter().any(|(_, _, info)| info.is_none()) {
+        return false;
+    }
+    let worn: Vec<dress::WornModel<'_>> = garments
+        .iter()
+        .map(|(model, _, info)| {
+            let info = info.as_ref().expect("checked above");
+            dress::WornModel {
+                model: model.as_ref(),
+                occupancy: info.occupancy,
+                coverage: info.coverage,
+                material: info.material,
+            }
+        })
+        .collect();
+    let Some(assembled) = dress::assemble(body_model, &worn) else {
+        return false;
+    };
+    // The skin run takes the character's composited skin when it is ready,
+    // else the race maps plus tone.
+    let skin = match (skin_look, skin_job) {
+        (Some(look), Some(job)) => loader
+            .composited_skin(job)
+            .or_else(|| Some(loader.skin_material_of(&look.entry(), look.tone, look.female))),
+        (Some(look), None) => Some(loader.skin_material_of(&look.entry(), look.tone, look.female)),
+        _ => None,
+    };
+    let mut pieces = Vec::new();
+    let mut merged_body_nodes = Vec::new();
+    for step in &assembled.plan.steps {
+        let (which, node) = assembled.model_of(*step);
+        let (model, appearance) = if which == 0 {
+            (body_model, None)
+        } else {
+            let (model, appearance, _) = &garments[which - 1];
+            (model.as_ref(), *appearance)
+        };
+        let Some(node_index) = model.nodes.get(node).map(|_| node) else {
+            continue;
+        };
+        let node = &model.nodes[node_index];
+        let frame = assembled.body.nodes[step.node].world;
+        let bone = node.skin_bone.map_or(0, u32::from);
+        if which == 0 && !merged_body_nodes.contains(&node_index) {
+            merged_body_nodes.push(node_index);
+        }
+        // The whole garment is painted from one stem, as the original
+        // rewrites every `&` material to the job's first stem.
+        let painted_stem = (which > 0)
+            .then(|| model::painted_model_stem(model))
+            .flatten();
+        for ((mesh, handle), name) in node.parts.iter().zip(&node.part_materials) {
+            let handle = if which == 0 && exa_assets::human_skin::is_race_skin(body_entry, name) {
+                skin.clone().unwrap_or_else(|| handle.clone())
+            } else {
+                match (appearance, painted_stem.as_deref()) {
+                    (Some(a), Some(stem)) if name.starts_with('&') => {
+                        loader.painted_apparel(stem, &a)
+                    }
+                    _ => handle.clone(),
+                }
+            };
+            pieces.push(MergePiece {
+                mesh: mesh.clone(),
+                material: name.clone(),
+                handle,
+                frame,
+                bone,
+                cull: step.cull,
+            });
+        }
+    }
+    let merged = {
+        let built: &Assets<Mesh> = &*loader.meshes;
+        let parts: Vec<exa_assets::model::DressedPart<'_>> = pieces
+            .iter()
+            .filter_map(|piece| {
+                Some(exa_assets::model::DressedPart {
+                    mesh: built.get(&piece.mesh)?,
+                    frame: piece.frame,
+                    bone: piece.bone,
+                    material: &piece.material,
+                    handle: piece.handle.clone(),
+                    cull: piece.cull,
+                })
+            })
+            .collect();
+        model::merge_dressed(&parts)
+    };
+    let Some(merged) = merged else {
+        return false;
+    };
+    let root = assembled.root;
+    let root_transform = body_model.nodes[root].transform;
+    for (run, handle) in merged.merged.subobjects.iter().zip(&merged.materials) {
+        let Some(run_mesh) = model::run_mesh(&merged.merged, run) else {
+            continue;
+        };
+        let is_skin = exa_assets::human_skin::is_race_skin(body_entry, &run.material);
+        let material = if is_skin {
+            skin.clone().unwrap_or_else(|| handle.clone())
+        } else {
+            handle.clone()
+        };
+        let entity = commands
+            .spawn((
+                MeshMaterial3d(material),
+                root_transform,
+                exa_anim::BodyPart {
+                    bone: 0,
+                    rest: root_transform,
+                },
+                ChildOf(body),
+            ))
+            .id();
+        if is_skin {
+            commands.entity(entity).insert(exa_assets::RaceSkinPart);
+        }
+        commands.entity(entity).insert(exa_assets::SkinnedPart {
+            bone: 0,
+            mesh: loader.meshes.add(run_mesh),
+        });
+    }
+    // The body parts the merged mesh replaced are no longer drawn.
+    for node in merged_body_nodes {
+        let Some(&entity) = node_entities.get(&body_model.nodes[node].name) else {
+            continue;
+        };
+        for child in children.get(entity).into_iter().flat_map(|c| c.iter()) {
+            if meshes_of.contains(child) {
+                commands.entity(child).insert(Visibility::Hidden);
+            }
+        }
+    }
+    true
+}
+
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn equip_outfits(
     mut commands: Commands,
@@ -723,10 +962,14 @@ fn equip_outfits(
             Option<&RaceWeaponry>,
             Option<&mut Attacker>,
             Option<&exa_assets::BodyMorph>,
+            Option<&exa_assets::BodyModel>,
+            Option<&exa_assets::SkinLook>,
+            Option<&exa_assets::SkinCompositeJob>,
         ),
         Without<Dressed>,
     >,
     children: Query<&Children>,
+    names: Query<&Name>,
     parts: Query<(&BodyPart, Option<&PartBounds>)>,
     ragdolls: Query<&exa_physics::body::Ragdoll>,
     mut cache: ResMut<ModelCache>,
@@ -769,7 +1012,20 @@ fn equip_outfits(
     // one frame stalled the window for seconds.
     let started = std::time::Instant::now();
     let deadline = started + DRESS_BUDGET;
-    for (body, outfit, wielded, fighter, hands, race, attacker, morph) in &mut bodies {
+    for (
+        body,
+        outfit,
+        wielded,
+        fighter,
+        hands,
+        race,
+        attacker,
+        morph,
+        body_model,
+        skin_look,
+        skin_job,
+    ) in &mut bodies
+    {
         if started.elapsed() >= DRESS_BUDGET {
             break;
         }
@@ -794,6 +1050,7 @@ fn equip_outfits(
         }
         let mut hidden = 0u32;
         let mut protection = Vec::new();
+        let mut garment_models = Vec::new();
         for garment in &outfit.0 {
             let Some(apparel) = loader.morphed_model(PackKind::Characters, &garment.model, morph)
             else {
@@ -801,52 +1058,83 @@ fn equip_outfits(
             };
             let known = infos
                 .get(&garment.model.to_ascii_lowercase())
-                .and_then(|i| i.apparel);
+                .and_then(|i| i.apparel.clone());
             let appearance = garment_appearance(garment, infos);
-            hidden |= garment.hides.or(known.map(|k| k.1)).unwrap_or(0);
+            hidden |= garment
+                .hides
+                .or(known.as_ref().map(|k| k.hides))
+                .unwrap_or(0);
             // The armour pass reads the protection an item stores: an
             // item made from a template stores it scaled by its condition.
-            if let Some(armour) = garment.armour.or(known.and_then(|k| k.2)) {
+            if let Some(armour) = garment.armour.or(known.as_ref().and_then(|k| k.armour)) {
                 protection.push(armour);
             }
-            // The whole model is painted from one stem, as the original
-            // rewrites every `&` material to the job's first stem.
-            let painted_stem = model::painted_model_stem(&apparel);
-            for node in &apparel.nodes {
-                let parent = bone_index(&node.name)
-                    .and_then(|b| by_bone.get(&b).copied())
-                    .unwrap_or(body);
-                for ((mesh, material), name) in node.parts.iter().zip(&node.part_materials) {
-                    // Run-time materials are painted from the item's appearance.
-                    let material = match (&appearance, painted_stem.as_deref()) {
-                        (Some(a), Some(stem)) if name.starts_with('&') => {
-                            loader.painted_apparel(stem, a)
-                        }
-                        _ => material.clone(),
-                    };
-                    let part = commands
-                        .spawn((
-                            MeshMaterial3d(material),
-                            Transform::IDENTITY,
-                            ChildOf(parent),
-                        ))
-                        .id();
-                    match node.skin_bone {
-                        Some(bone) => commands.entity(part).insert(exa_assets::SkinnedPart {
-                            bone,
-                            mesh: mesh.clone(),
-                        }),
-                        None => commands.entity(part).insert(Mesh3d(mesh.clone())),
-                    };
+            garment_models.push((apparel, appearance, known));
+        }
+        // The dressed character's one merged skin mesh, through the
+        // generator's dressed-mesh plan; the per-node draw when the body
+        // model is not known.
+        let merged = body_model.and_then(|entry| {
+            let model = loader.morphed_model(PackKind::Resource, &entry.0, morph)?;
+            let node_entities: HashMap<String, Entity> = children
+                .iter_descendants(body)
+                .filter_map(|e| Some((names.get(e).ok()?.as_str().to_owned(), e)))
+                .collect();
+            Some(spawn_merged_character(
+                &mut commands,
+                &mut loader,
+                body,
+                &entry.0,
+                &model,
+                &garment_models,
+                &node_entities,
+                &children,
+                &meshes_of,
+                skin_look,
+                skin_job,
+            ))
+        });
+        if !merged.unwrap_or(false) {
+            for (apparel, appearance, _known) in &garment_models {
+                // The whole model is painted from one stem, as the original
+                // rewrites every `&` material to the job's first stem.
+                let painted_stem = model::painted_model_stem(apparel);
+                for node in &apparel.nodes {
+                    let parent = bone_index(&node.name)
+                        .and_then(|b| by_bone.get(&b).copied())
+                        .unwrap_or(body);
+                    for ((mesh, material), name) in node.parts.iter().zip(&node.part_materials) {
+                        // Run-time materials are painted from the item's appearance.
+                        let material = match (appearance, painted_stem.as_deref()) {
+                            (Some(a), Some(stem)) if name.starts_with('&') => {
+                                loader.painted_apparel(stem, a)
+                            }
+                            _ => material.clone(),
+                        };
+                        let part = commands
+                            .spawn((
+                                MeshMaterial3d(material),
+                                Transform::IDENTITY,
+                                ChildOf(parent),
+                            ))
+                            .id();
+                        match node.skin_bone {
+                            Some(bone) => commands.entity(part).insert(exa_assets::SkinnedPart {
+                                bone,
+                                mesh: mesh.clone(),
+                            }),
+                            None => commands.entity(part).insert(Mesh3d(mesh.clone())),
+                        };
+                    }
                 }
             }
-        }
-        // Body parts under apparel that covers them are not drawn.
-        for (&bone, &part) in &by_bone {
-            if bone < 32 && hidden & (1 << bone) != 0 {
-                for child in children.get(part).into_iter().flat_map(|c| c.iter()) {
-                    if meshes_of.contains(child) {
-                        commands.entity(child).insert(Visibility::Hidden);
+            // Body parts under apparel that covers them are not drawn.
+            for (&bone, &part) in &by_bone {
+                if bone < 32 && hidden & (1 << bone) != 0 {
+                    for child in children.get(part).into_iter().flat_map(|c| c.iter()) {
+                        if meshes_of.contains(child) {
+                            commands.entity(child).insert(Visibility::Hidden);
+                        }
                     }
                 }
             }
@@ -1139,8 +1427,8 @@ mod tests {
         sword.weapon = Some(plain_sword());
         items.push(sword);
         let info = item_info_of(&items);
-        let braies = info["braies_a"].apparel.unwrap();
-        assert_eq!(braies.0.layers[0].colour, 1);
+        let braies = info["braies_a"].apparel.as_ref().unwrap();
+        assert_eq!(braies.appearance.layers[0].colour, 1);
         assert!(info["@sworda"].weapon.is_some());
         assert!(info.get("swordbody").is_none_or(|i| i.weapon.is_none()));
     }

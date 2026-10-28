@@ -36,7 +36,9 @@
 use bevy::prelude::*;
 use exa_render::material::{BloodProgram, ExaMaterial, ExaParams, flags, linear_rgb};
 
-use crate::model::{ModelLoader, is_body_model};
+use crate::model::{ModelLoader, is_body_model, painted_image};
+use crate::paint::{Encoding, Texels};
+use crate::skin_composite::{self, Beard, SkinCompositeJob};
 use crate::texture::ColorSpace;
 
 /// The body model's skin material, which the built-in skin replaces.
@@ -313,6 +315,105 @@ pub fn skin_params_of(kind: SkinKind, tone: [f32; 3]) -> ExaParams {
         flags: flags::LIT | flags::PACKED_SPECULAR | flags::SUBSURFACE | flags::TINT_AS_SRGB,
         subsurface: linear_rgb(kind.scatter()).extend(SCATTER_BLUR),
         ..default()
+    }
+}
+
+impl ModelLoader<'_> {
+    /// The composited skin material of `job`, generated on the CPU once per
+    /// look ([`SkinCompositeJob::key`]) and cached: the original's texture
+    /// job draws the character's colour, surface and normal maps from the
+    /// race's, the tone and the beard.
+    ///
+    /// A job whose race maps cannot be decoded gives `None`; the caller
+    /// keeps the race maps plus tint ([`skin_material_of`]).
+    pub fn composited_skin(&mut self, job: &SkinCompositeJob) -> Option<Handle<ExaMaterial>> {
+        let key = job.key();
+        if let Some(cached) = self.cache.skin_composites.get(&key) {
+            return cached.clone();
+        }
+        let made = self.compose_skin(job);
+        self.cache.skin_composites.insert(key, made.clone());
+        made
+    }
+
+    /// Runs one composite job and uploads its three maps: the colour target
+    /// as sRGB (the original renders into an sRGB target with sRGB encoding
+    /// off, so drawing decodes it once), the surface and normal targets as
+    /// linear data.
+    fn compose_skin(&mut self, job: &SkinCompositeJob) -> Option<Handle<ExaMaterial>> {
+        let colour = self.texels(job.colour.as_deref()?)?;
+        let gloss = self.texels(job.gloss.as_deref()?)?;
+        let normal = self.texels(job.base_normal.as_deref()?)?;
+        let mut layers = Vec::with_capacity(job.layers.len());
+        for (amount, name) in &job.layers {
+            // The callback binds a layer only where its map ships; the job
+            // builder already drops the others.
+            let Some(texels) = self.texels(name) else {
+                continue;
+            };
+            layers.push((*amount, texels));
+        }
+        let beard_texels = job.beard.as_ref().and_then(|beard| {
+            let colour = self.texels(&beard.colour)?;
+            let normal = self.texels(&beard.normal)?;
+            Some((colour, normal))
+        });
+        let beard =
+            job.beard
+                .as_ref()
+                .zip(beard_texels.as_ref())
+                .map(|(beard, (colour, normal))| Beard {
+                    colour: colour.as_ref(),
+                    normal: normal.as_ref(),
+                    tint: beard.tint,
+                });
+        let layer_refs: Vec<(f32, &Texels)> = layers
+            .iter()
+            .map(|(amount, texels)| (*amount, texels.as_ref()))
+            .collect();
+        let generated = skin_composite::compose_with_offsets(
+            job.side as usize,
+            job.side as usize,
+            tone_colour(job.tone),
+            &colour,
+            &gloss,
+            &normal,
+            &layer_refs,
+            beard.as_ref(),
+            job.uv_offset,
+        );
+        let kind = SkinKind::of_stem(&job.stem);
+        let (w, h) = (generated.width as u32, generated.height as u32);
+        let mut mat = ExaMaterial {
+            params: skin_params_of(kind, [1.0; 3]),
+            environment: self.environment_map(),
+            ..default()
+        };
+        // The maps carry the tone; the material no longer tints them in
+        // sRGB space.
+        mat.params.diffuse = Vec4::ONE;
+        mat.params.flags &= !flags::TINT_AS_SRGB;
+        mat.params.texture_bias = self.cache.textures.settings().lod_bias();
+        mat.diffuse_map =
+            Some(
+                self.images
+                    .add(painted_image(w, h, generated.colour, Encoding::Srgb)),
+            );
+        mat.specular_map =
+            Some(
+                self.images
+                    .add(painted_image(w, h, generated.surface, Encoding::Linear)),
+            );
+        mat.normal_map =
+            Some(
+                self.images
+                    .add(painted_image(w, h, generated.normal, Encoding::Linear)),
+            );
+        if kind.shows_blood() {
+            let spatter = self.spatter();
+            mat = mat.with_blood(BloodProgram::Skin, spatter);
+        }
+        Some(self.materials.add(mat.with_map_flags()))
     }
 }
 

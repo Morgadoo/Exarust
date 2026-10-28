@@ -139,6 +139,80 @@ pub struct Beard<'a> {
     pub tint: [f32; 3],
 }
 
+/// One character's skin composite job: the texture names and values the
+/// render callback binds. The character generator fills it from the record
+/// and race (`exa_character::texture_job`); [`crate::human_skin::composited_skin`]
+/// runs it on the CPU and uploads the three maps.
+#[derive(bevy::prelude::Component, Clone, Debug, PartialEq)]
+pub struct SkinCompositeJob {
+    /// The body model's stem (`human`), which names the race and its skin
+    /// kind.
+    pub stem: String,
+    /// The record's two tone words.
+    pub tone: [u16; 2],
+    /// The look seed the two map offsets came from.
+    pub seed: u32,
+    /// The two skin-map offsets drawn from the seed, in −0.5…0.5.
+    pub uv_offset: [f32; 2],
+    /// The race's colour map, loaded as data.
+    pub colour: Option<String>,
+    /// The race's gloss map.
+    pub gloss: Option<String>,
+    /// The race's base normal map (physique map 0).
+    pub base_normal: Option<String>,
+    /// The physique normal layers the callback binds, amounts first.
+    pub layers: Vec<(f32, String)>,
+    /// The beard and its tint, when the record wears one.
+    pub beard: Option<SkinBeard>,
+    /// The generated maps' side (512, or 1024 at the high-detail setting).
+    pub side: u32,
+}
+
+/// A beard's two maps and the hair colour it is tinted with.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SkinBeard {
+    /// The colour map (`bearda0Nd`), whose alpha is the beard's coverage.
+    pub colour: String,
+    /// The normal map (`bearda0Nn`).
+    pub normal: String,
+    /// The hair picker's diffuse halfway to grey 0.3, encoded sRGB.
+    pub tint: [f32; 3],
+}
+
+impl SkinCompositeJob {
+    /// The cache key of the generated maps: every value the composite reads.
+    /// The look seed alone does not determine the maps (two records of one
+    /// race with different tones or beards differ), so the key carries the
+    /// stem, tone, sex and side too.
+    pub fn key(&self) -> String {
+        let mut key = format!(
+            "{}:{:04x}{:04x}:{}:{:08x}:{}",
+            self.stem.to_ascii_lowercase(),
+            self.tone[0],
+            self.tone[1],
+            self.side,
+            self.seed,
+            self.colour.as_deref().unwrap_or("")
+        );
+        key.push_str(self.gloss.as_deref().unwrap_or(""));
+        key.push_str(self.base_normal.as_deref().unwrap_or(""));
+        for (amount, name) in &self.layers {
+            key.push_str(&format!(":{:08x}{name}", amount.to_bits()));
+        }
+        if let Some(beard) = &self.beard {
+            key.push_str(&format!(
+                ":b{}:{}:{:08x}{:08x}{:08x}",
+                beard.colour,
+                beard.normal,
+                beard.tint[0].to_bits(),
+                beard.tint[1].to_bits(),
+                beard.tint[2].to_bits()
+            ));
+        }
+        key
+    }
+}
+
 /// A generated skin's maps, as texel rows.
 pub struct CompositedSkin {
     pub width: usize,
@@ -214,30 +288,150 @@ pub fn compose(
     layers: &[(f32, &Texels)],
     beard: Option<&Beard<'_>>,
 ) -> CompositedSkin {
+    compose_with_offsets(
+        width,
+        height,
+        tone,
+        colour,
+        gloss,
+        normal,
+        layers,
+        beard,
+        [0.0, 0.0],
+    )
+}
+
+/// [`compose`] with the job's two map offsets: the race's colour, gloss and
+/// normal maps are read at `u + offset.x` and `v + offset.y`, wrapping, as
+/// the original's `UVOfs` uniform moves the overlay quad's texture reads.
+/// The beard map is read over its own corner without the offset (its
+/// overlay program has none).
+#[allow(clippy::too_many_arguments)]
+pub fn compose_with_offsets(
+    width: usize,
+    height: usize,
+    tone: [f32; 3],
+    colour: &Texels,
+    gloss: &Texels,
+    normal: &Texels,
+    layers: &[(f32, &Texels)],
+    beard: Option<&Beard<'_>>,
+    offset: [f32; 2],
+) -> CompositedSkin {
     let (w, h) = (width.max(1), height.max(1));
     let mut colour_out = vec![0u8; w * h * 4];
     let mut surface_out = vec![0u8; w * h * 4];
     let mut normal_out = vec![0u8; w * h * 4];
+    let inputs = SkinInputs {
+        width: w,
+        height: h,
+        tone,
+        colour,
+        gloss,
+        normal,
+        layers: bound_normal_layers(layers),
+        beard,
+        offset,
+    };
+    // The whole map is generated before the character is drawn; its rows are
+    // independent, so they are split over the machine's threads. The band
+    // boundaries depend only on the height, so the result is the same on
+    // every machine.
+    let workers = std::thread::available_parallelism()
+        .map_or(1, |n| n.get())
+        .min(8)
+        .min(h);
+    if workers <= 1 || h < 32 {
+        render_rows(
+            &inputs,
+            0,
+            h,
+            &mut colour_out,
+            &mut surface_out,
+            &mut normal_out,
+        );
+    } else {
+        let rows = h.div_ceil(workers);
+        let row_bytes = w * 4;
+        let colour: Vec<&mut [u8]> = colour_out.chunks_mut(rows * row_bytes).collect();
+        let surface: Vec<&mut [u8]> = surface_out.chunks_mut(rows * row_bytes).collect();
+        let normal: Vec<&mut [u8]> = normal_out.chunks_mut(rows * row_bytes).collect();
+        std::thread::scope(|scope| {
+            let mut handles = Vec::with_capacity(colour.len());
+            for (i, ((colour, surface), normal)) in
+                colour.into_iter().zip(surface).zip(normal).enumerate()
+            {
+                let inputs = &inputs;
+                handles.push(scope.spawn(move || {
+                    let first = i * rows;
+                    let last = (first + rows).min(h);
+                    render_rows(inputs, first, last, colour, surface, normal);
+                }));
+            }
+            for handle in handles {
+                let _ = handle.join();
+            }
+        });
+    }
+    CompositedSkin {
+        width: w,
+        height: h,
+        colour: colour_out,
+        surface: surface_out,
+        normal: normal_out,
+    }
+}
+
+/// The inputs of one map's texel program, shared by the row threads.
+struct SkinInputs<'a> {
+    width: usize,
+    height: usize,
+    tone: [f32; 3],
+    colour: &'a Texels,
+    gloss: &'a Texels,
+    normal: &'a Texels,
+    /// The normal layers the callback binds (amounts above zero).
+    layers: Vec<(f32, &'a Texels)>,
+    beard: Option<&'a Beard<'a>>,
+    offset: [f32; 2],
+}
+
+/// Generates rows `first..last` of the three maps into the row slices,
+/// whose first row is `first`. The program is [`compose_with_offsets`]'s
+/// per-texel work.
+fn render_rows(
+    inputs: &SkinInputs<'_>,
+    first: usize,
+    last: usize,
+    colour_out: &mut [u8],
+    surface_out: &mut [u8],
+    normal_out: &mut [u8],
+) {
+    let (w, h) = (inputs.width, inputs.height);
     let byte = |v: f32| crate::paint::byte(v);
-    let bound = bound_normal_layers(layers);
-    for y in 0..h {
+    for y in first..last {
         for x in 0..w {
             let u = (x as f32 + 0.5) / w as f32;
             let v = (y as f32 + 0.5) / h as f32;
-            let source = sample(colour, u, v);
-            let mut rgb = colour_texel([source[0], source[1], source[2]], tone);
-            let gloss = sample(gloss, u, v);
+            let (su, sv) = (u + inputs.offset[0], v + inputs.offset[1]);
+            let source = sample(inputs.colour, su, sv);
+            let mut rgb = colour_texel([source[0], source[1], source[2]], inputs.tone);
+            let gloss = sample(inputs.gloss, su, sv);
             let mut surf = specular_texel(gloss[0]);
-            let base = sample(normal, u, v);
-            let layer_samples: Vec<(f32, [f32; 2])> = bound
+            let base = sample(inputs.normal, su, sv);
+            let layer_samples: Vec<(f32, [f32; 2])> = inputs
+                .layers
                 .iter()
                 .map(|&(amount, tex)| {
-                    let s = sample(tex, u, v);
+                    let s = sample(tex, su, sv);
                     (amount, [s[0], s[1]])
                 })
                 .collect();
             let mut nrm = normal_texel([base[0], base[1]], &layer_samples);
-            if let Some(beard) = beard.filter(|_| u < BEARD_EXTENT && v < BEARD_EXTENT) {
+            if let Some(beard) = inputs
+                .beard
+                .filter(|_| u < BEARD_EXTENT && v < BEARD_EXTENT)
+            {
                 // The overlay quad maps the corner onto the whole beard map.
                 let (u, v) = (u / BEARD_EXTENT, v / BEARD_EXTENT);
                 let b = sample(beard.colour, u, v);
@@ -264,7 +458,7 @@ pub fn compose(
                     over[1] * a + nrm[1] * (1.0 - a),
                 ];
             }
-            let i = (y * w + x) * 4;
+            let i = ((y - first) * w + x) * 4;
             colour_out[i] = byte(rgb[0]);
             colour_out[i + 1] = byte(rgb[1]);
             colour_out[i + 2] = byte(rgb[2]);
@@ -280,13 +474,6 @@ pub fn compose(
             normal_out[i + 2] = exa_formats::pixel::rebuild_z(nx, ny);
             normal_out[i + 3] = 255;
         }
-    }
-    CompositedSkin {
-        width: w,
-        height: h,
-        colour: colour_out,
-        surface: surface_out,
-        normal: normal_out,
     }
 }
 

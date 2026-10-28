@@ -7,6 +7,8 @@ use bevy::prelude::*;
 use bevy::render::view::screenshot::{Screenshot, save_to_disk};
 use exa_assets::{ColorSpace, Game, ModelCache, ModelLoader, PackKind, model};
 use exa_formats::character_stats::{CharacterStats, Spawn};
+use exa_formats::characters::CharacterRecord;
+use exa_formats::morph::Physique;
 use exa_physics::body::{BodyStats, RaceMuscles};
 
 use crate::{Options, View};
@@ -174,15 +176,37 @@ fn setup(
                 .map(|p| exa_assets::BodyMorph::of_model(&body_name, p));
             if let Some(body) = loader.morphed_model(PackKind::Resource, &body_name, morph.as_ref())
             {
+                // No record: the preview body keeps the middle tone and the
+                // race's own look.
+                let physique = options.physique.unwrap_or(Physique::NEUTRAL);
+                let record = CharacterRecord {
+                    skin: exa_assets::human_skin::MIDDLE_TONE,
+                    search_seed: 3,
+                    female: physique.female,
+                    ..CharacterRecord::default()
+                };
+                let (skin_look, skin_composite) = character_skin(
+                    loader.game,
+                    &body_name,
+                    &record,
+                    race.as_ref().map_or(0, |r| r.look),
+                    &physique,
+                    0x0BAD_5EED,
+                );
                 let root = exa_world::spawn_model(&mut commands, &body, None);
                 commands.entity(root).insert((
                     exa_anim::Animator::new(moveset, action),
                     exa_character::Outfit::of_models(&options.outfit),
                     exa_character::blood::DebugWoundTarget,
+                    exa_assets::BodyModel(body_name.clone()),
+                    skin_look,
                     // The preview turns toward the mouse, as the GUI's
                     // character view does.
                     exa_game::char_view::PreviewTurn::default(),
                 ));
+                if let Some(job) = skin_composite {
+                    commands.entity(root).insert(job);
+                }
                 if let Some(m) = morph {
                     commands.entity(root).insert(m);
                 }
@@ -811,6 +835,23 @@ fn spawn_players(
     // The duellist, without a record either, keeps the model's body.
     let duellist_body = loader.model(PackKind::Resource, model::BODY_MODEL);
     if let (Some(player_body), Some(body)) = (player_body, duellist_body) {
+        // The player has no record: a human of the middle tone, its feral
+        // level and physique the command line's.
+        let player_record = CharacterRecord {
+            skin: exa_assets::human_skin::MIDDLE_TONE,
+            search_seed: 1,
+            feral: options.feral.unwrap_or(0.0),
+            ..CharacterRecord::default()
+        };
+        let player_physique = morph.as_ref().map_or(Physique::NEUTRAL, |m| m.physique);
+        let (player_look, player_composite) = character_skin(
+            loader.game,
+            model::BODY_MODEL,
+            &player_record,
+            exa_formats::races::of_character(&races, exa_character::HUMAN).map_or(0, |r| r.look),
+            &player_physique,
+            0x51ED_270B,
+        );
         let model = exa_world::spawn_model(commands, &player_body, None);
         commands.entity(model).insert((
             Transform::from_rotation(Quat::from_rotation_y(yaw)),
@@ -819,8 +860,13 @@ fn spawn_players(
             exa_game::thaum::cast::PowerCaster::new(&options.powers),
             exa_physics::body::locomotion::Locomotion::facing(yaw),
             exa_character::Outfit::of_models(&options.outfit),
+            exa_assets::BodyModel(model::BODY_MODEL.into()),
+            player_look,
             ChildOf(player),
         ));
+        if let Some(job) = player_composite {
+            commands.entity(model).insert(job);
+        }
         if !options.powers.is_empty() {
             info!("player knows powers: {:x?}", options.powers);
         }
@@ -975,12 +1021,31 @@ fn spawn_players(
             if let Some(opponent) = &practice {
                 duellist.reaction_ms = opponent.reaction_ms;
             }
+            let duel_record = practice.as_ref().map_or_else(
+                || CharacterRecord {
+                    skin: exa_assets::human_skin::MIDDLE_TONE,
+                    search_seed: 2,
+                    ..CharacterRecord::default()
+                },
+                |opponent| opponent.record.clone(),
+            );
+            let (duel_look, duel_composite) = character_skin(
+                loader.game,
+                model::BODY_MODEL,
+                &duel_record,
+                exa_formats::races::of_character(&races, exa_character::HUMAN)
+                    .map_or(0, |r| r.look),
+                &Physique::of_record(&duel_record),
+                0x2F1D_3B57,
+            );
             commands.entity(foe).insert((
                 Transform::from_rotation(Quat::from_rotation_y(foe_at.yaw)),
                 anim,
                 exa_character::held::Hands::default(),
                 exa_character::Outfit::of_models(&outfit),
                 exa_character::Wielded::model(weapon),
+                exa_assets::BodyModel(model::BODY_MODEL.into()),
+                duel_look,
                 exa_combat::Fighter::of_stats(None, stats),
                 exa_physics::body::Physical {
                     stats: body_stats(&stats),
@@ -991,6 +1056,9 @@ fn spawn_players(
                 duellist,
                 ChildOf(foe_root),
             ));
+            if let Some(job) = duel_composite {
+                commands.entity(foe).insert(job);
+            }
             if let Some(options) = practice.as_ref() {
                 insert_duel_powers(commands, foe, &options.record);
             }
@@ -1593,6 +1661,48 @@ fn pose_nodes(model: &exa_assets::model::Model) -> Vec<exa_character::pose::Pose
         .collect()
 }
 
+/// A character's skin look and the composite job its generated maps come
+/// from: the record's tone, look seed, beard and physique layers with the
+/// race's look word. `seed` starts the generator that replaces a zero look
+/// seed, as the original draws one.
+fn character_skin(
+    game: &exa_assets::GameData,
+    model_name: &str,
+    record: &CharacterRecord,
+    look_word: u32,
+    physique: &Physique,
+    seed: u32,
+) -> (exa_assets::SkinLook, Option<exa_assets::SkinCompositeJob>) {
+    let lower = model_name.to_ascii_lowercase();
+    let stem = lower.strip_suffix("base.rfc").unwrap_or(&lower).to_string();
+    let weights = physique.weights(12);
+    let mut state = seed;
+    let mut fresh = || {
+        state = exa_character::look::random_step(state);
+        state
+    };
+    let exists = |name: &str| game.texture(name).is_some();
+    let job = exa_character::texture_job::SkinJob::of_record(
+        exa_character::factory::PIXEL_FORMAT,
+        &stem,
+        record,
+        look_word,
+        &weights,
+        &mut fresh,
+        &exists,
+    );
+    let female = exa_character::look::skin_set(look_word, record.female)
+        == exa_character::look::SkinSet::Female;
+    (
+        exa_assets::SkinLook {
+            stem,
+            tone: record.skin,
+            female,
+        },
+        job.composite_job(),
+    )
+}
+
 /// Spawns a level's placed characters in their race's bodies, standing where
 /// the level puts them — or, for the dead, lying on the pose the level saved
 /// — those of human frame dressed in their own items, each with the stats its
@@ -1625,6 +1735,14 @@ fn spawn_placed_characters(
             missing += 1;
             continue;
         };
+        let (skin_look, skin_composite) = character_skin(
+            loader.game,
+            &model_name,
+            &c.record,
+            race.map_or(0, |r| r.look),
+            &morph.physique,
+            c.record.id ^ 0x51ED_270B,
+        );
         let physical = human_frame(c.race);
         // The init, then the armour pass's encumbrance.
         let stats = CharacterStats::derive(
@@ -1770,16 +1888,8 @@ fn spawn_placed_characters(
                 exa_character::RaceWeaponry::of_race,
             ),
             morph,
-            exa_assets::SkinLook::of_entry(
-                &model_name,
-                c.record.skin,
-                // The women's set when the race ships it; a record of an
-                // unknown race keeps its own sex, as before.
-                race.map_or(c.record.female, |r| {
-                    exa_character::look::skin_set(r.look, c.record.female)
-                        == exa_character::look::SkinSet::Female
-                }),
-            ),
+            skin_look,
+            exa_assets::BodyModel(model_name.clone()),
             exa_character::hair::Hair {
                 // Only a race whose look word has hair grows it.
                 style: if race.is_some_and(|r| r.look & exa_formats::races::LOOK_HAIR != 0) {
@@ -1798,6 +1908,9 @@ fn spawn_placed_characters(
             },
             ChildOf(root),
         ));
+        if let Some(job) = skin_composite {
+            commands.entity(model).insert(job);
+        }
         if !c.dead {
             commands.entity(model).insert((
                 Transform::from_rotation(Quat::from_rotation_y(c.yaw)),

@@ -10,6 +10,11 @@
 
 use crate::layers::SLOTS;
 
+/// The pixel-format setting Exarust runs at: the original's 512-pixel skin
+/// maps (the middle detail level). Exarust has no settings screen writing
+/// it yet.
+pub const PIXEL_FORMAT: u32 = 2;
+
 /// The side of a generated skin map: the original uses 512 while the pixel
 /// format setting is below 3 and 1024 from 3 up.
 pub fn skin_side(pixel_format: u32) -> u32 {

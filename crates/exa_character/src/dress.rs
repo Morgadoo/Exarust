@@ -16,9 +16,12 @@
 //! Exarust still draws one mesh per node, so nothing in the running game
 //! calls this yet; it is the tested list the original merges by.
 
+use exa_assets::Model;
+use exa_formats::morph::Frame;
+
 use crate::layers::{cull_bits, slot_selected};
 use crate::rebuild::WornGarment;
-use crate::runtime::{Body, overlay_nodes};
+use crate::runtime::{Body, Node, overlay_nodes};
 
 /// One node of the merged mesh: the node whose meshes are appended, the
 /// cull bits its append takes (`exa_assets::merge::MergePart::cull`), and
@@ -90,18 +93,17 @@ pub fn dress(
     body_slots: &[Option<usize>; 19],
 ) -> DressedPlan {
     let plan = crate::rebuild::dress_plan(body, garments);
-    let mut steps = Vec::new();
-    for garment in &plan.garments {
-        steps.extend(garment_steps(&garment.chosen, garment.visible));
-    }
-    steps.extend(body_steps(body_slots, plan.body_visible));
-    for node in overlay_nodes(body, root) {
-        steps.push(MergeStep {
-            node,
-            cull: 0,
-            overlay: true,
-        });
-    }
+    with_steps(body, root, plan, body_slots)
+}
+
+/// Adds the merge list to an already computed plan ([`dress_steps`]).
+fn with_steps(
+    body: &Body,
+    root: usize,
+    plan: crate::rebuild::DressPlan,
+    body_slots: &[Option<usize>; 19],
+) -> DressedPlan {
+    let steps = dress_steps(body, root, &plan.garments, body_slots, plan.body_visible);
     DressedPlan {
         garments: plan.garments,
         body_visible: plan.body_visible,
@@ -109,6 +111,31 @@ pub fn dress(
         slot_material: plan.slot_material,
         steps,
     }
+}
+
+/// The merge list of a computed plan: each garment's chosen nodes in slot
+/// order, the body's visible slots, then the overlays. `body_slots` is the
+/// body's slot table.
+fn dress_steps(
+    body: &Body,
+    root: usize,
+    garments: &[crate::rebuild::GarmentMerge],
+    body_slots: &[Option<usize>; 19],
+    body_visible: u32,
+) -> Vec<MergeStep> {
+    let mut steps = Vec::new();
+    for garment in garments {
+        steps.extend(garment_steps(&garment.chosen, garment.visible));
+    }
+    steps.extend(body_steps(body_slots, body_visible));
+    for node in overlay_nodes(body, root) {
+        steps.push(MergeStep {
+            node,
+            cull: 0,
+            overlay: true,
+        });
+    }
+    steps
 }
 
 /// The body-only merge the builder runs when the race's look word lacks
@@ -163,6 +190,163 @@ impl DressedPlan {
     pub fn first_apparel_of(&self, materials: impl FnMut(usize) -> Vec<String>) -> Option<String> {
         first_apparel(&self.steps, materials)
     }
+}
+
+/// A worn garment as the dressed-mesh pass takes it: its built model (the
+/// character's physique already applied) and the item's occupancy, coverage
+/// and hit-sound material.
+pub struct WornModel<'a> {
+    pub model: &'a Model,
+    /// The item's occupied sub-parts per body slot (slot 1 first).
+    pub occupancy: [u64; 18],
+    /// The item's eight-byte coverage word per body slot.
+    pub coverage: [u64; 18],
+    /// The item's hit-sound material byte.
+    pub material: u8,
+}
+
+/// A character assembled for the merge: the runtime body tree with its
+/// garments appended (body nodes first, then each garment's), the merge
+/// plan and list, and where each garment's nodes start.
+pub struct Assembled {
+    pub body: Body,
+    /// The body model's first root in [`Assembled::body`].
+    pub root: usize,
+    pub plan: DressedPlan,
+    /// For each garment, its first node in the body tree.
+    pub garment_bases: Vec<usize>,
+}
+
+impl Assembled {
+    /// The model and node a merge step names: `0` is the body's model, `i +
+    /// 1` the `i`th garment's.
+    pub fn model_of(&self, step: MergeStep) -> (usize, usize) {
+        for (g, &base) in self.garment_bases.iter().enumerate().rev() {
+            if step.node >= base {
+                return (g + 1, step.node - base);
+            }
+        }
+        (0, step.node)
+    }
+}
+
+/// Builds a character's runtime body tree and the dressed-mesh plan from
+/// its built models, as the original assembles a body and the garments
+/// worn over it: the body's nodes with their frames in its first root's
+/// space, each garment appended as its own subtree, re-framed on the body's
+/// slot frames ([`Body::reframe_from_slots`]), then the merge plan.
+///
+/// The body's slots come from [`Body::chain_slots`]; the garments are taken
+/// in the order given (the caller's layer-level order). `None` when the
+/// body model has no root.
+pub fn assemble(body_model: &Model, garments: &[WornModel<'_>]) -> Option<Assembled> {
+    let root = body_model.roots().next()?;
+    let frames = model_frames(body_model);
+    let nodes: Vec<Node> = body_model
+        .nodes
+        .iter()
+        .zip(&frames)
+        .map(|(node, frame)| node_of(node, *frame))
+        .collect();
+    let mut body = Body::new(nodes);
+    // The body's eighteen slots, indexed by slot (the slot table `dress`
+    // takes; index 0 is unused).
+    let filled = body.chain_slots(root, true, 18);
+    let mut slots = [None; 19];
+    slots[1..=18].copy_from_slice(&filled[..18]);
+    let slot_world: [Option<Frame>; 19] = std::array::from_fn(|slot| {
+        if slot == 0 {
+            None
+        } else {
+            slots[slot].map(|i| body.nodes[i].world)
+        }
+    });
+    let mut worn = Vec::with_capacity(garments.len());
+    let mut garment_bases = Vec::with_capacity(garments.len());
+    for garment in garments {
+        let base = body.nodes.len();
+        let garment_frames = model_frames(garment.model);
+        for (node, frame) in garment.model.nodes.iter().zip(&garment_frames) {
+            let mut n = node_of(node, *frame);
+            n.parent = node.parent.map(|p| p + base);
+            body.nodes.push(n);
+        }
+        body.refresh_links();
+        garment_bases.push(base);
+        let roots: Vec<usize> = (0..garment.model.nodes.len())
+            .filter(|&i| garment.model.nodes[i].parent.is_none())
+            .map(|i| i + base)
+            .collect();
+        let mut seen = 0;
+        for &r in &roots {
+            seen |= body.reframe_from_slots(r, &slot_world);
+        }
+        worn.push(WornGarment {
+            roots,
+            occupancy: garment.occupancy,
+            coverage: garment.coverage,
+            slots: seen,
+            material: garment.material,
+        });
+    }
+    let plan = crate::rebuild::dress_plan(&body, &worn);
+    let steps = dress_steps(&body, root, &plan.garments, &slots, plan.body_visible);
+    Some(Assembled {
+        body,
+        root,
+        plan: DressedPlan {
+            garments: plan.garments,
+            body_visible: plan.body_visible,
+            body_slots: plan.body_slots,
+            slot_material: plan.slot_material,
+            steps,
+        },
+        garment_bases,
+    })
+}
+
+/// A built model node as a runtime body node: its frame, its mesh kind and
+/// render word, and the slot and layer its name carries.
+fn node_of(node: &exa_assets::ModelNode, world: Frame) -> Node {
+    Node {
+        name: node.name.clone(),
+        parent: node.parent,
+        local: crate::pose::rows_of(&node.transform),
+        world,
+        chunk_kind: if node.mesh { crate::runtime::MESH } else { 0 },
+        render_flags: node.render_flags,
+        layer: crate::layers::layer_of(&node.name),
+        ..Node::default()
+    }
+}
+
+/// The frame of every node of a model in its first root's space: each
+/// node's transform composed with every ancestor's, as the file's
+/// row-vector frames compose.
+pub fn model_frames(model: &Model) -> Vec<Frame> {
+    let mut out = Vec::with_capacity(model.nodes.len());
+    for index in 0..model.nodes.len() {
+        let mut chain = vec![index];
+        let mut at = index;
+        let mut steps = 0;
+        while let Some(parent) = model.nodes[at].parent {
+            if parent >= model.nodes.len() || chain.contains(&parent) || steps > model.nodes.len() {
+                break;
+            }
+            chain.push(parent);
+            at = parent;
+            steps += 1;
+        }
+        let mut frame = exa_assets::merge::IDENTITY;
+        for &at in chain.iter().rev() {
+            frame = exa_formats::morph::compose(
+                &frame,
+                &crate::pose::rows_of(&model.nodes[at].transform),
+            );
+        }
+        out.push(frame);
+    }
+    out
 }
 
 #[cfg(test)]
@@ -421,5 +605,164 @@ mod tests {
         // The head's impact material is the helm's own (plate, 4).
         assert_eq!(helm.armour.unwrap().material, 4);
         assert_eq!(plan.slot_material[9], helm.armour.unwrap().material);
+    }
+
+    /// One of `exanima01`'s living characters, dressed from its own record
+    /// and items, merges into one skinned mesh: its body's visible slots,
+    /// its garments' chosen nodes and the body's overlays, drawn as the
+    /// original's material runs (skipped without the game).
+    #[test]
+    fn a_shipped_character_merges_into_one_skinned_mesh() {
+        use exa_assets::{ModelCache, ModelLoader, PackKind};
+        use exa_formats::morph::Physique;
+
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let game = exa_assets::GameData::open(&dir).unwrap();
+        let resource = game.pack(PackKind::Resource).unwrap();
+        let scene = exa_formats::rfc::Scene::parse(resource.get("exanima01.rfc").unwrap()).unwrap();
+        let db = exa_formats::rdb::Database::parse(resource.get("objdb.rdb").unwrap()).unwrap();
+        let items = exa_formats::objdb::items(&db);
+        let locale =
+            exa_formats::roles::locale_id(resource.get("locales.rdb").unwrap(), "exanima01.rfc");
+        let characters = exa_world::placed_characters(&scene, &items, locale);
+        let races = exa_formats::races::parse(resource.get("races.rdb").unwrap()).unwrap();
+        let Some(character) = characters.iter().find(|c| c.name == "Kade") else {
+            return;
+        };
+        let race = exa_formats::races::of_character(&races, character.race);
+        let model_name = race.map_or_else(|| "humanbase.rfc".to_string(), |r| r.model());
+        let morph =
+            exa_assets::BodyMorph::of_model(&model_name, Physique::of_record(&character.record));
+        let mut cache = ModelCache::default();
+        let mut meshes = bevy::prelude::Assets::<bevy::prelude::Mesh>::default();
+        let mut materials = bevy::prelude::Assets::<exa_render::material::ExaMaterial>::default();
+        let mut images = bevy::prelude::Assets::<bevy::prelude::Image>::default();
+        let mut loader = ModelLoader {
+            game: &game,
+            cache: &mut cache,
+            meshes: &mut meshes,
+            materials: &mut materials,
+            images: &mut images,
+            bc_supported: false,
+        };
+        let body = loader
+            .morphed_model(PackKind::Resource, &model_name, Some(&morph))
+            .unwrap();
+        let infos = crate::item_info(&game);
+        let mut models = Vec::new();
+        let mut worn = Vec::new();
+        for item in &character.worn {
+            let Some(model) = loader.morphed_model(PackKind::Characters, &item.model, Some(&morph))
+            else {
+                continue;
+            };
+            let info = infos
+                .get(&item.model.to_ascii_lowercase())
+                .and_then(|i| i.apparel.clone());
+            models.push(model);
+            worn.push((
+                item.model.to_ascii_lowercase(),
+                info.as_ref().map_or([0; 18], |i| i.occupancy),
+                info.as_ref().map_or([0; 18], |i| i.coverage),
+                info.as_ref().map_or(0, |i| i.material),
+            ));
+        }
+        let garments: Vec<WornModel<'_>> = worn
+            .iter()
+            .zip(&models)
+            .map(|((_, occupancy, coverage, material), model)| WornModel {
+                model,
+                occupancy: *occupancy,
+                coverage: *coverage,
+                material: *material,
+            })
+            .collect();
+        let assembled = assemble(&body, &garments).expect("a body with a root");
+        let mut pieces = Vec::new();
+        for step in &assembled.plan.steps {
+            let (which, node) = assembled.model_of(*step);
+            let model = if which == 0 {
+                &body
+            } else {
+                &models[which - 1]
+            };
+            let node = &model.nodes[node];
+            for ((mesh, handle), name) in node.parts.iter().zip(&node.part_materials) {
+                pieces.push((
+                    mesh.clone(),
+                    handle.clone(),
+                    name.clone(),
+                    assembled.body.nodes[step.node].world,
+                    node.skin_bone.map_or(0, u32::from),
+                    step.cull,
+                ));
+            }
+        }
+        let parts: Vec<exa_assets::model::DressedPart<'_>> = pieces
+            .iter()
+            .map(
+                |(mesh, handle, material, frame, bone, cull)| exa_assets::model::DressedPart {
+                    mesh: meshes.get(mesh).unwrap(),
+                    frame: *frame,
+                    bone: *bone,
+                    material,
+                    handle: handle.clone(),
+                    cull: *cull,
+                },
+            )
+            .collect();
+        let merged = exa_assets::model::merge_dressed(&parts).expect("a merged mesh");
+        let names: Vec<&str> = merged
+            .merged
+            .subobjects
+            .iter()
+            .map(|s| s.material.as_str())
+            .collect();
+        // Kade's five garments' chosen nodes, the body's eighteen slots and
+        // its two overlays; eight materials, the body's skin and eyes, the
+        // dark under-layer and the five painted garments.
+        assert_eq!(assembled.plan.steps.len(), 30);
+        assert_eq!(pieces.len(), 35);
+        // The runs take their materials' first-seen order: trousers first
+        // (the innermost layer), then the shirt, the tunic's dark lining,
+        // the sandals, the long shirt and the waistcoat, then the body's
+        // skin and eyes.
+        assert_eq!(
+            names,
+            [
+                "&trouser_aa1",
+                "&shirty__aa1",
+                "_dark",
+                "&sandals_da0",
+                "&tunicls_aa1",
+                "&wstcoat_aa1",
+                "skinhuman",
+                "eyehuman",
+            ]
+        );
+        assert_eq!(merged.merged.mesh.positions.len(), 5624);
+        assert_eq!(merged.merged.mesh.indices.len(), 25884);
+        assert_eq!(merged.materials.len(), merged.merged.subobjects.len());
+        // Every run's indices stay inside its own vertices, and the runs
+        // together hold every merged vertex.
+        let mut total = 0;
+        for run in &merged.merged.subobjects {
+            let first = run.first_vertex;
+            let end = first + run.vertex_count;
+            let slice = &merged.merged.mesh.indices[run.first_index..][..run.index_count];
+            assert!(slice.iter().all(|i| (first..end).contains(&(*i as usize))));
+            total += run.vertex_count;
+        }
+        assert_eq!(total, merged.merged.mesh.positions.len());
+        assert!(
+            merged
+                .merged
+                .mesh
+                .skin
+                .as_ref()
+                .is_some_and(|s| s.len() == merged.merged.mesh.positions.len())
+        );
     }
 }

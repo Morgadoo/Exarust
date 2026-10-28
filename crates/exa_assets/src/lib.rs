@@ -40,6 +40,7 @@ pub use model::{
     Model, ModelCache, ModelLoader, ModelNode, NodeRigidBody, TextureInfo, transform_from_rows,
 };
 pub use morph::BodyMorph;
+pub use skin_composite::{SkinBeard, SkinCompositeJob};
 pub use texture::ColorSpace;
 pub use texture_cache::{TextureCache, TextureKey, TextureName, TextureRecord};
 pub use texture_stream::{TextureLoader, TextureStreamPlugin};
@@ -59,6 +60,14 @@ pub struct SkinnedPart {
 /// character may change.
 #[derive(bevy::prelude::Component, Debug, Clone, Copy, Default)]
 pub struct RaceSkinPart;
+
+/// The body model whose node tree a character was spawned from
+/// (`humanbase.rfc`, `skelbase.rfc`, …), as the `Resource.rpk` entry name.
+/// The dressed-mesh pass loads the same model again (morphed by the
+/// character's physique) to merge the body's parts with its garments; a
+/// character without it keeps the one-mesh-per-node draw.
+#[derive(bevy::prelude::Component, Debug, Clone, PartialEq, Eq)]
+pub struct BodyModel(pub String);
 
 /// A character's skin: the race stem whose built-in skin it wears (a body
 /// model entry without its `base.rfc`) and its tone coordinates, so a body

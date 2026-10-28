@@ -21,6 +21,9 @@ use exa_formats::races::LOOK_FEMALE_TEXTURES;
 /// The generator's skin job.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SkinJob {
+    /// The body model's stem (`human`), which names the race and its skin
+    /// kind in the composite job.
+    pub stem: String,
     pub format: SkinFormat,
     /// The race's colour and gloss maps, when it has a skin set.
     pub colour: Option<String>,
@@ -55,6 +58,7 @@ impl SkinJob {
     /// words, no maps, not started.
     pub fn new(pixel_format: u32) -> Self {
         Self {
+            stem: String::new(),
             format: SkinFormat::of_setting(pixel_format),
             colour: None,
             gloss: None,
@@ -96,6 +100,7 @@ impl SkinJob {
 
     /// Fills the race texture names for a body stem.
     pub fn with_stem(mut self, stem: &str, set: SkinSet) -> Self {
+        self.stem = stem.to_ascii_lowercase();
         if let Some(textures) = skin_textures(stem, set) {
             self.colour = Some(textures.colour);
             self.gloss = Some(textures.gloss);
@@ -211,6 +216,38 @@ impl SkinJob {
     /// The passes the job's callback draws (see [`passes`]).
     pub fn passes(&self) -> Vec<SkinPass> {
         passes(self.beard.is_some())
+    }
+
+    /// The job as the loader's CPU composite takes it: the race's colour,
+    /// gloss and base normal maps, the tone and its seed's offsets, the
+    /// beard and its tint, and the normal layers. `None` without a race
+    /// skin set (the body then keeps its own skin material).
+    pub fn composite_job(&self) -> Option<exa_assets::SkinCompositeJob> {
+        let colour = self.colour.clone()?;
+        let gloss = self.gloss.clone()?;
+        let base_normal = self.normals[0].clone()?;
+        Some(exa_assets::SkinCompositeJob {
+            stem: self.stem.clone(),
+            tone: self.tone,
+            seed: self.seed,
+            uv_offset: self.uv_offset,
+            colour: Some(colour),
+            gloss: Some(gloss),
+            base_normal: Some(base_normal),
+            layers: self
+                .layers
+                .iter()
+                .map(|l| (l.amount, l.texture.clone()))
+                .collect(),
+            beard: self.beard.as_ref().and_then(|beard| {
+                Some(exa_assets::SkinBeard {
+                    colour: beard[0].clone(),
+                    normal: beard[1].clone(),
+                    tint: self.beard_colour?,
+                })
+            }),
+            side: self.format.side,
+        })
     }
 }
 
@@ -342,6 +379,90 @@ mod tests {
         let job = SkinJob::of_record(2, "ancient", &man, 0x86, &weights, &mut || 1, &exists);
         let textures: Vec<&str> = job.layers.iter().map(|l| l.texture.as_str()).collect();
         assert_eq!(textures, ["ancientnrmm1", "ancientnrmm5"]);
+    }
+
+    /// A character of `exanima01` composites its skin from the race's maps,
+    /// its tone, look seed and layers: the material gets the three generated
+    /// maps, and the colour map is not empty or uniform (skipped without the
+    /// game).
+    #[test]
+    fn a_shipped_characters_skin_composites() {
+        use exa_assets::{ModelCache, ModelLoader, PackKind};
+        use exa_formats::morph::Physique;
+
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let game = exa_assets::GameData::open(&dir).unwrap();
+        let resource = game.pack(PackKind::Resource).unwrap();
+        let scene = exa_formats::rfc::Scene::parse(resource.get("exanima01.rfc").unwrap()).unwrap();
+        let db = exa_formats::rdb::Database::parse(resource.get("objdb.rdb").unwrap()).unwrap();
+        let items = exa_formats::objdb::items(&db);
+        let locale =
+            exa_formats::roles::locale_id(resource.get("locales.rdb").unwrap(), "exanima01.rfc");
+        let characters = exa_world::placed_characters(&scene, &items, locale);
+        let Some(character) = characters.iter().find(|c| c.name == "Kade") else {
+            return;
+        };
+        let races = exa_formats::races::parse(resource.get("races.rdb").unwrap()).unwrap();
+        let look = exa_formats::races::of_character(&races, character.race).map_or(0, |r| r.look);
+        let physique = Physique::of_record(&character.record);
+        let weights = physique.weights(12);
+        let exists = |name: &str| game.texture(name).is_some();
+        let mut job = SkinJob::of_record(
+            crate::factory::PIXEL_FORMAT,
+            "human",
+            &character.record,
+            look,
+            &weights,
+            &mut || 1,
+            &exists,
+        );
+        // A small side keeps the test quick; the maps are the same program.
+        job.format.side = 64;
+        job.format.format = 64;
+        let composite = job.composite_job().expect("the human skin set ships");
+        assert_eq!(composite.stem, "human");
+        assert_eq!(composite.colour.as_deref(), Some("humandifm"));
+        assert_eq!(composite.side, 64);
+        let mut cache = ModelCache::default();
+        let mut meshes = bevy::prelude::Assets::<bevy::prelude::Mesh>::default();
+        let mut materials = bevy::prelude::Assets::<exa_render::material::ExaMaterial>::default();
+        let mut images = bevy::prelude::Assets::<bevy::prelude::Image>::default();
+        let mut loader = ModelLoader {
+            game: &game,
+            cache: &mut cache,
+            meshes: &mut meshes,
+            materials: &mut materials,
+            images: &mut images,
+            bc_supported: false,
+        };
+        let handle = loader.composited_skin(&composite).unwrap();
+        // The second request is the cached material.
+        assert_eq!(loader.composited_skin(&composite), Some(handle.clone()));
+        let material = loader.materials.get(&handle).unwrap();
+        let colour = material.diffuse_map.clone().unwrap();
+        let surface = material.specular_map.clone().unwrap();
+        let normal = material.normal_map.clone().unwrap();
+        for (map, srgb) in [(colour, true), (surface, false), (normal, false)] {
+            let image = loader.images.get(&map).unwrap();
+            let data = image.data.as_ref().unwrap();
+            assert!(data.len() >= 64 * 64 * 4);
+            assert!(data.iter().any(|&b| b != 0));
+            assert_eq!(
+                image.texture_descriptor.format
+                    == bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
+                srgb
+            );
+        }
+        let image = loader
+            .images
+            .get(&material.diffuse_map.clone().unwrap())
+            .unwrap();
+        let data = &image.data.as_ref().unwrap()[..64 * 64 * 4];
+        let pixels = data.as_chunks::<4>().0;
+        assert!(pixels.iter().any(|p| p[..3] != data[..3]));
+        assert!(pixels.iter().any(|p| p[3] == 255));
     }
 
     /// A bearded man takes one of the six beard maps; a race without the

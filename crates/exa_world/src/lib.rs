@@ -189,7 +189,11 @@ pub struct Worn {
 
 /// Resolves a level's placed characters: records from its own database,
 /// worn items from its local object database or the game's.
-fn placed_characters(scene: &Scene, global: &[Item], locale: Option<u32>) -> Vec<PlacedCharacter> {
+pub fn placed_characters(
+    scene: &Scene,
+    global: &[Item],
+    locale: Option<u32>,
+) -> Vec<PlacedCharacter> {
     use exa_formats::characters::{ID_MASK, LOCAL_ITEM};
     let Some(chars) = &scene.characters else {
         return Vec::new();
@@ -1632,6 +1636,8 @@ mod tests {
             is_skin: false,
             placeholder: false,
             cloth: false,
+            mesh: false,
+            render_flags: 0,
         }
     }
 
