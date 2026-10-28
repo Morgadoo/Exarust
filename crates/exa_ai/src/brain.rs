@@ -796,6 +796,13 @@ pub fn ai_tick(
             && let Some(mut transform) = transform
         {
             let facing = motion::yaw_of(transform.rotation * Vec3::Z);
+            // A brain that has never turned takes the body's placed facing
+            // as its look (the attach step's snap).
+            if npc.turn.heading == 0.0 && npc.turn.look == 0.0 && npc.turn.offset == 0.0 {
+                npc.turn.heading = facing;
+                npc.turn.look = facing;
+                npc.turn.offset = facing;
+            }
             if seen_or_heard {
                 npc.turn.look = motion::yaw_of(target_cm - observer_cm);
             }
@@ -1273,6 +1280,30 @@ mod tests {
             ))
             .id();
         (app, player, npc)
+    }
+
+    /// A brain that has seen nobody keeps the yaw its model was placed
+    /// with; the first tick takes it as the look.
+    #[test]
+    fn an_idle_brain_keeps_its_placed_facing() {
+        let mut app = App::new();
+        app.add_systems(Update, ai_tick);
+        let mut brain = Npc::new([0.0; 4]);
+        brain.turn.sway_at_ms = u32::MAX;
+        let npc = app
+            .world_mut()
+            .spawn((
+                brain,
+                Combatant::default(),
+                GlobalTransform::IDENTITY,
+                Fighter::default(),
+                Condition::NORMAL,
+                Transform::from_rotation(Quat::from_rotation_y(1.0)),
+            ))
+            .id();
+        app.update();
+        let t = app.world().get::<Transform>(npc).unwrap();
+        assert!((t.rotation.to_euler(bevy::math::EulerRot::YXZ).0 - 1.0).abs() < 1e-5);
     }
 
     /// The AI tick decays the brain's group alert a step every ten seconds,
