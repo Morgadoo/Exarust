@@ -776,7 +776,7 @@ pub fn ai_tick(
         let talking = name.map_or("character", |n| n.as_str());
         // A knocked-out, collapsed or dead body only refreshes its nav
         // footprint: no morale, contacts, state or look (the original's
-        // condition bit 0x800 branch).
+        // out-of-the-fight condition branch).
         if condition.0 & combatant::CONDITION_OUT != 0 {
             continue;
         }
@@ -1094,7 +1094,9 @@ pub fn flee_walk(
             d.length_squared() < crate::flee::FLEE_RADIUS_CM * crate::flee::FLEE_RADIUS_CM
         });
         if replan && level_room >= 0 {
-            let level = level.as_deref().expect("the room came from the level");
+            let Some(level) = level.as_deref() else {
+                continue;
+            };
             let exits = crate::rooms::room_exits(&level.rooms, &level.tracker, level_room as u16);
             let threat_room = crate::rooms::level_room(&level.rooms, threat_cm);
             npc.flight = crate::flee::way_out(

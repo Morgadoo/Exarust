@@ -180,10 +180,10 @@ pub struct Gaze {
     pub sway: f32,
     /// The pitch the idle look's pitch eases toward.
     pub pitch: f32,
-    /// The body's own look direction out of combat (the chain's `+0xcb0`);
-    /// the zero vector until the brain first turns.
+    /// The body's own look direction out of combat; the zero vector until
+    /// the brain first turns.
     pub body_look: Vec3,
-    /// The body's look smoothing direction (the chain's `+0xcfc`).
+    /// The body's look smoothing direction.
     pub body_smooth: Vec3,
 }
 
@@ -481,12 +481,10 @@ pub fn stop_walk(body_cm: Vec3, facing: Vec3, crouch: f32, mut walk: Walk) -> Wa
     walk
 }
 
-/// The body's look as the out-of-combat chain reads it: its look direction
-/// (the body's own, `+0xcb0`), its look smoothing (`+0xcfc`), the yaw of its
-/// heading vector (`+0xa48`) and its physical facing (`+0xad4`), whether it
-/// is stepping (`+0x12ee`), in the attacking condition (2), in combat
-/// (`+0x12f6`) and whether a live look target holds its head (`+0xe50` with
-/// a clock past `+0xd24`).
+/// The body's look as the out-of-combat chain reads it: its own look
+/// direction, its look smoothing, the yaw of its heading vector and its
+/// physical facing; whether it is stepping, in the attacking condition, in
+/// combat, and whether a live look target still holds its head.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BodyLook {
     pub look: Vec3,
