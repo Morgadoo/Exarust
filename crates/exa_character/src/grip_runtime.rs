@@ -84,8 +84,10 @@ pub struct HeldItemSpec {
 }
 
 /// The character's held-gear refresh, as its equip and every swap
-/// recompute it: the count of held items, the first striker's measures and
-/// the parry gate. The AI's reach and the attack aim do not read it yet.
+/// recompute it: the count of held items, the first striker's measures,
+/// its aim point's weights on the item body and the parry gate. The aim
+/// drive that reads the weights is outside this component; the reach the
+/// AI reads is the equip pass's ([`exa_combat::grip::held_reach`]).
 #[derive(Component, Debug, Clone, Copy, PartialEq)]
 pub struct HeldRefresh(pub exa_combat::grip::HoldRefresh);
 
@@ -94,9 +96,16 @@ pub struct HeldRefresh(pub exa_combat::grip::HoldRefresh);
 /// the first held slot as the measured one, and the parry gate of that
 /// item. Runs before the solver so a swap's new first item is measured the
 /// same tick.
+#[allow(clippy::type_complexity)]
 pub fn refresh_holds(
     mut commands: Commands,
-    held: Query<(Entity, &HeldGrip, Option<&Blade>, Option<&HeldItemSpec>)>,
+    held: Query<(
+        Entity,
+        &HeldGrip,
+        Option<&Blade>,
+        Option<&HeldItemSpec>,
+        Option<&Ragdoll>,
+    )>,
     mut holders: Query<(Entity, &Ragdoll, Option<&mut HeldRefresh>)>,
 ) {
     for (owner, body, current) in &mut holders {
@@ -104,8 +113,8 @@ pub fn refresh_holds(
             continue;
         };
         let mut count = 0;
-        let mut first: Option<(HeldItemSpec, bool)> = None;
-        for (_, grip, blade, spec) in &held {
+        let mut first: Option<(HeldItemSpec, bool, Option<[Vec3; 4]>)> = None;
+        for (_, grip, blade, spec, item_body) in &held {
             // The count is the hands' weapon slots: a shield or a torch
             // is held through its own slot.
             if grip.holder_key != key || grip.kind != HeldKind::Weapon {
@@ -117,24 +126,45 @@ pub fn refresh_holds(
             };
             let is_first = blade.is_some_and(|b| b.slot == exa_combat::attack::Slot::First);
             if is_first || first.is_none() {
-                first = Some((*spec, grip.soft_weld));
+                let rest = item_body
+                    .and_then(|b| b.parts.get(HeldGrip::ITEM_PART))
+                    .map(|p| p.rest);
+                first = Some((*spec, grip.soft_weld, rest));
             }
         }
         let refresh = HeldRefresh(match first {
-            Some((spec, gate)) => exa_combat::grip::refresh_hold(
-                count,
-                gate,
-                spec.class,
-                spec.start_byte,
-                spec.item_cm,
-                spec.race_reach,
-            ),
+            Some((spec, gate, rest)) => {
+                let mut hold = exa_combat::grip::refresh_hold(
+                    count,
+                    gate,
+                    spec.class,
+                    spec.start_byte,
+                    spec.item_cm,
+                    spec.race_reach,
+                );
+                hold.aim_weights = rest
+                    .zip(hold.measures)
+                    .and_then(|(rest, m)| aim_weights_cm(&rest, m.aim_cm));
+                hold
+            }
             None => exa_combat::grip::refresh_hold(0, false, 0, 0, 0.0, 0.0),
         });
         if current.map(|c| *c) != Some(refresh) {
             commands.entity(owner).insert(refresh);
         }
     }
+}
+
+/// The aim point's weights on an item body's rest particles. Exarust keeps
+/// a part's rest points in metres; the original's are centimetres, so the
+/// points are scaled to centimetres first (the weights are the same up to
+/// rounding). A flat rest tetrahedron, which the original's rigid-body
+/// registration never makes, gives none instead of the division's
+/// infinities [Exarust's].
+fn aim_weights_cm(rest_m: &[Vec3; 4], aim_cm: f32) -> Option<[f32; 4]> {
+    let rest_cm = rest_m.map(|p| (p * 100.0).to_array());
+    let weights = exa_combat::grip::held_aim_weights(&rest_cm, aim_cm);
+    weights.iter().all(|w| w.is_finite()).then_some(weights)
 }
 
 /// The other held slot.
@@ -148,16 +178,25 @@ fn other_slot(slot: exa_combat::attack::Slot) -> exa_combat::attack::Slot {
 /// Swaps a character's two held weapons when its switch clip reaches the
 /// swap (60 % of the clip): the first and second held slots trade places
 /// and its primary striker moves with the weapon. The items stay in their
-/// hands; only the slot that strikes and the attacker's primary change. A
-/// holder with anything but two weapons in the two slots keeps them.
+/// hands; the slot that strikes, the attacker's primary and the holder's
+/// [`crate::held::Hands`] (main and second weapon) change, so the moveset
+/// is chosen again from the new main weapon. A holder with anything but two
+/// weapons in the two slots keeps them.
+#[allow(clippy::type_complexity)]
 pub fn swap_on_switch(
     mut commands: Commands,
-    mut holders: Query<(Entity, &Condition, &Ragdoll, Option<&mut LastCondition>)>,
+    mut holders: Query<(
+        Entity,
+        &Condition,
+        &Ragdoll,
+        Option<&mut LastCondition>,
+        Option<&mut crate::held::Hands>,
+    )>,
     held: Query<(Entity, &HeldGrip)>,
     mut blades: Query<&mut Blade>,
     mut attackers: Query<&mut exa_combat::attack::Attacker>,
 ) {
-    for (owner, condition, body, last) in &mut holders {
+    for (owner, condition, body, last, hands) in &mut holders {
         let before = last.as_ref().map_or(*condition, |l| l.0);
         let due = exa_combat::condition::swap_due(before, *condition);
         if let Some(mut last) = last {
@@ -193,6 +232,16 @@ pub fn swap_on_switch(
         }
         if let Ok(mut attacker) = attackers.get_mut(owner) {
             attacker.primary = attacker.primary.map(other_slot);
+        }
+        // The new first weapon picks the moveset: the original's equip
+        // routines re-run the moveset choice on held slot 0 after every
+        // change of the held list, so the hands trade their two weapons and
+        // the moveset system chooses again from the new main hand.
+        if let Some(mut hands) = hands
+            && let (Some(main), Some(second)) = (hands.main, hands.second)
+        {
+            hands.main = Some(second);
+            hands.second = Some(main);
         }
     }
 }
@@ -661,6 +710,11 @@ mod tests {
                 Condition::SWITCHED,
                 LastCondition(Condition::SWITCHING),
                 attacker,
+                crate::held::Hands {
+                    main: Some(crate::held::HeldItem::weapon(0x20)),
+                    second: Some(crate::held::HeldItem::weapon(0x11)),
+                    ..default()
+                },
             ))
             .id();
         let body = holder(owner, Vec3::ZERO);
@@ -705,6 +759,15 @@ mod tests {
         assert_eq!(
             app.world().get::<Attacker>(owner).unwrap().primary,
             Some(Slot::Second)
+        );
+        // The hands trade their weapons, so the moveset choice now reads
+        // the one-hander as the main weapon.
+        let hands = *app.world().get::<crate::held::Hands>(owner).unwrap();
+        assert_eq!(hands.main, Some(crate::held::HeldItem::weapon(0x11)));
+        assert_eq!(hands.second, Some(crate::held::HeldItem::weapon(0x20)));
+        assert_eq!(
+            crate::held::choose(&hands, false).stance,
+            crate::held::StanceClass::TwoWeapons
         );
         // The next tick is no swap: the slots stay.
         app.update();
@@ -775,6 +838,7 @@ mod tests {
                 held: true,
                 may_parry: true,
                 measures: Some(held_measures(0x20, 128, 90.0, 50.0)),
+                aim_weights: None,
             }
         );
         // A second weapon counts, but the first slot keeps the measures.
@@ -798,6 +862,17 @@ mod tests {
         app.update();
         let refresh = app.world().get::<HeldRefresh>(owner).unwrap().0;
         assert_eq!(refresh.measures, Some(held_measures(0x10, 5, 97.1, 50.0)));
+        // An item with a body: the aim point 0.9 of its 97.1 cm up is
+        // weighted on its rest particles and comes back from them.
+        let item_body = holder(second, Vec3::ZERO);
+        let rest = item_body.parts[0].rest;
+        app.world_mut().entity_mut(second).insert(item_body);
+        app.update();
+        let refresh = app.world().get::<HeldRefresh>(owner).unwrap().0;
+        let weights = refresh.aim_weights.expect("the item's body gives weights");
+        let back: Vec3 = rest.iter().zip(weights).map(|(p, w)| *p * 100.0 * w).sum();
+        let aim = exa_combat::grip::held_aim_height(97.1);
+        assert!((back - Vec3::new(0.0, aim, 0.0)).length() < 1e-3);
         // Both gone: no hold.
         app.world_mut().entity_mut(second).despawn();
         app.update();
