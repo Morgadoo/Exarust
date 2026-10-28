@@ -127,7 +127,12 @@ reach is `held_reach`: the item's length times a byte of its weapon record as a
 hundredth plus 60 cm, or the race's reach with no hands bits; the aim
 point sits `held_aim_height` above the grip. `Grip::placement` places an
 item for a `GripHolder` (size, race byte, the race's held offset) and a
-flip. Rules: [`docs/PLAYER.md`](../../docs/PLAYER.md) (Held
+flip. The off-hand item takes entry 5 (a light, or the second of two
+weapons) and a shield keeps its own record through the spawn's equip and
+attach plans (`spawn::Equipped::shield_record`,
+`exa_character::offhand`); the flip command's section gate lives in
+`exa_formats::weapon_record::Section::can_flip`. Rules:
+[`docs/PLAYER.md`](../../docs/PLAYER.md) (Held
 items and their grips).
 
 ## Weapon body impacts
