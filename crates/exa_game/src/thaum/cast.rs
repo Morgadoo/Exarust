@@ -1148,7 +1148,8 @@ fn create_force(
             let view = blast_view(body, context.heading, context.cursor)?;
             let hooked = start_blast(&mut caster.body, &setup);
             let generation = caster.body.cast_generation;
-            let blast = Blast::new(setup, cost, TICK_MS, &view, &mut draws.0);
+            let mut blast = Blast::new(setup, cost, TICK_MS, &view, &mut draws.0);
+            blast.link();
             let entity = commands
                 .spawn((
                     Name::new("_ForceBlast"),
@@ -1193,7 +1194,7 @@ fn create_force(
         ForceStart::Torrent { cost } => {
             let body = ragdoll?;
             let view = torrent_view(body, context.heading, context.cursor)?;
-            let live = new_torrent(
+            let mut live = new_torrent(
                 &mut caster.body,
                 caster_entity,
                 context.target,
@@ -1203,6 +1204,7 @@ fn create_force(
                 draws,
                 roll,
             );
+            live.torrent.link();
             let hooked = live.hooked;
             let entity = commands.spawn((Name::new("_ForceTorrent"), live)).id();
             attach_visual(commands, entity, EffectKind::Torrent, context, ragdoll);

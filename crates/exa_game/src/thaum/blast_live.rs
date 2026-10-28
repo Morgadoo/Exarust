@@ -36,7 +36,13 @@
 //! start, the body tick's release, the spend and the cast end, read from
 //! `Exanima.exe`.
 
+// NaN-sensitive compares are kept as the original makes them.
+#![allow(clippy::neg_cmp_op_on_partial_ord)]
+
 use bevy::prelude::*;
+use exa_ai::brain::Npc;
+use exa_ai::combatant::Combatant;
+use exa_physics::Physics;
 use exa_physics::body::Ragdoll;
 use exa_physics::body::locomotion::Locomotor;
 
@@ -44,10 +50,11 @@ use super::barricade::WAKE_TICKS;
 use super::cast::PowerCaster;
 use super::casting::{self, CastBody, CastHook};
 use super::force::{BLAST_MOTION, BlastSetup};
-use super::live::EffectDraws;
+use super::live::{EffectDraws, EffectMesh, mesh_of_ribbon, show};
+use crate::effects::Frame as ViewFrame;
 use crate::effects::blast::{
-    Blast, BlastChunk, BlastView, CHARGING, THROWN, character_knock, contact_reach, contact_weight,
-    limb_push, limb_terms,
+    Blast, BlastChunk, BlastView, CHARGING, HIT_HOSTILITY, STATIC_EXTRA, THROWN, character_knock,
+    contact_reach, contact_weight, limb_push, limb_terms, rebound,
 };
 use crate::player::CursorGround;
 
@@ -348,8 +355,44 @@ pub(crate) fn strike_chunks(
     struck.then_some(gathered)
 }
 
+/// The level's static contact: every live chunk is swept as a ball of its
+/// contact reach along its move, and one that meets the level rebounds half
+/// way to the surface and keeps nine tenths of its weight. [inf: the
+/// original walks the level's static bodies' faces for the closest point to
+/// the chunk; Exarust asks rapier for the swept ball.]
+fn strike_level(blast: &mut Blast, physics: &Physics) -> usize {
+    let mut hits = 0;
+    for index in 0..blast.chunks.len() {
+        if blast.lives[index].ticks < 1 {
+            continue;
+        }
+        let chunk = &blast.chunks[index];
+        let reach = contact_reach(chunk, 2.0, blast.setup.margin, STATIC_EXTRA);
+        let motion = chunk.at - chunk.previous;
+        let squared = (motion.x * motion.x + motion.y * motion.y) + motion.z * motion.z;
+        if !(crate::effects::blast::EPSILON < squared) {
+            continue;
+        }
+        let length = squared.sqrt();
+        let direction = motion * (1.0 / length);
+        let Some(toi) =
+            physics.level_sweep(chunk.previous / CM, direction, length / CM, reach / CM)
+        else {
+            continue;
+        };
+        let contact = chunk.previous + direction * (toi * CM);
+        rebound(&mut blast.chunks[index], contact);
+        hits += 1;
+    }
+    hits
+}
+
 /// Ticks every blast in the scene.
-#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+#[allow(
+    clippy::too_many_arguments,
+    clippy::type_complexity,
+    clippy::too_many_lines
+)]
 pub(crate) fn tick_blasts(
     mut commands: Commands,
     mut blasts: Query<(Entity, &mut LiveBlast)>,
@@ -361,6 +404,9 @@ pub(crate) fn tick_blasts(
     mut bodies: Query<(Entity, &mut Ragdoll)>,
     places: Query<&GlobalTransform>,
     cursor: Option<Res<CursorGround>>,
+    physics: Option<Res<Physics>>,
+    mut combatants: Query<&mut Combatant>,
+    npcs: Query<&Npc>,
     mut draws: ResMut<EffectDraws>,
     mut alive: Local<Vec<bool>>,
     mut limbs: Local<Vec<LimbSphere>>,
@@ -434,6 +480,9 @@ pub(crate) fn tick_blasts(
             caster.sync_body();
         }
         if live.blast.state == THROWN {
+            if let Some(physics) = physics.as_deref() {
+                strike_level(&mut live.blast, physics);
+            }
             for (other, mut body) in &mut bodies {
                 if other == live.caster {
                     continue;
@@ -445,20 +494,79 @@ pub(crate) fn tick_blasts(
                 };
                 body.touch(WAKE_TICKS);
                 let mass = body_mass(&body);
-                let Some(drive) = body.drive.as_mut() else {
+                let Some(knock) = body.drive.as_mut().map(|drive| {
+                    let knock = character_knock(mass, drive.energy, impulse);
+                    drive.energy = knock.energy;
+                    let counter = drive.balance().counter() + 1;
+                    drive.balance_mut().set_counter(counter);
+                    knock
+                }) else {
                     continue;
                 };
-                let knock = character_knock(mass, drive.energy, impulse);
-                drive.energy = knock.energy;
                 if let Some((direction, size)) = knock.knock {
                     let flat = Vec3::new(direction.x, 0.0, direction.z);
                     body.begin_knockback(flat * (size / CM));
+                }
+                if let Ok(mut combatant) = combatants.get_mut(other) {
+                    let aggression = npcs
+                        .get(other)
+                        .ok()
+                        .and_then(|npc| npc.personality)
+                        .map_or(0.0, |personality| personality.restraint);
+                    combatant.add_concern(
+                        live.caster,
+                        aggression,
+                        HIT_HOSTILITY.0,
+                        HIT_HOSTILITY.1,
+                    );
                 }
             }
         }
         if events.removed {
             commands.entity(entity).despawn();
         }
+    }
+}
+
+/// The glow tint the ribbon draws with: the vertices carry the original's
+/// colour bytes.
+const RIBBON_TINT: Vec4 = Vec4::ONE;
+
+/// Draws every blast's ribbon, built in the camera's space each frame, as
+/// the original's linked geometry draw does.
+pub(crate) fn draw_blasts(
+    mut commands: Commands,
+    mut blasts: Query<(Entity, &LiveBlast, Option<&EffectMesh>)>,
+    cameras: Query<&GlobalTransform, exa_render::supersample::SceneCamera>,
+    time: Res<Time<Fixed>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<exa_render::glow::GlowMaterial>>,
+) {
+    let Some(camera) = cameras.iter().next() else {
+        return;
+    };
+    let view = ViewFrame {
+        x: camera.right().as_vec3(),
+        y: camera.up().as_vec3(),
+        z: camera.back().as_vec3(),
+        at: camera.translation() * CM,
+    };
+    let alpha = time.overstep_fraction();
+    for (entity, live, drawn) in &mut blasts {
+        let ribbon = live.blast.ribbon(alpha, &view);
+        if ribbon.is_empty() {
+            continue;
+        }
+        let mesh = mesh_of_ribbon(&ribbon);
+        show(
+            &mut commands,
+            entity,
+            drawn,
+            mesh,
+            RIBBON_TINT,
+            &mut meshes,
+            &mut materials,
+        );
     }
 }
 

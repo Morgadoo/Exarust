@@ -32,6 +32,8 @@
 //! `Exanima.exe`.
 
 use bevy::prelude::*;
+use exa_ai::brain::Npc;
+use exa_ai::combatant::Combatant;
 use exa_physics::body::Ragdoll;
 use exa_physics::body::locomotion::Locomotor;
 
@@ -42,11 +44,11 @@ use super::blast_live::{
 };
 use super::cast::PowerCaster;
 use super::casting::{self, CastBody, CastHook, spend_tick};
-use super::live::{EffectDraws, EffectRoll};
-use crate::effects::blast::blast_aim;
+use super::live::{EffectDraws, EffectMesh, EffectRoll, mesh_of_ribbon, show};
+use crate::effects::blast::{HIT_HOSTILITY, blast_aim};
 use crate::effects::torrent::{
     POINTS, RUNNING_FLAGS, Stream, StreamPoint, TORRENT_MOTION, Torrent, TorrentEvents,
-    TorrentView, energy_after, limb_impulse, limb_terms, torrent_reach,
+    TorrentView, limb_impulse, limb_terms, torrent_knock, torrent_reach,
 };
 use crate::player::CursorGround;
 
@@ -184,27 +186,29 @@ fn live_points(stream: &Stream) -> impl Iterator<Item = &StreamPoint> {
 /// One tick of a running torrent's live points against `body`'s limb
 /// spheres. `limbs` is the caller's scratch buffer; a body whose limbs' box
 /// misses the live points' box grown by their most reach is skipped (the
-/// points do not move here). Returns the pushes made.
+/// points do not move here). Returns the pushes made and the impulse a
+/// character gathered.
 pub(crate) fn strike_streams(
     torrent: &Torrent,
     body: &mut Ragdoll,
     limbs: &mut Vec<LimbSphere>,
-) -> usize {
+) -> (usize, Vec3) {
     let Some(effect) = reach_box(torrent.records[..torrent.count].iter().flat_map(|stream| {
         live_points(stream).map(|point| {
             let reach = most_reach(|scale| torrent_reach(point.width, scale, torrent.margin));
             (point.at, reach)
         })
     })) else {
-        return 0;
+        return (0, Vec3::ZERO);
     };
     let (low, high) = gather_limbs(body, limbs);
     if bounds_miss(low, high, effect) {
-        return 0;
+        return (0, Vec3::ZERO);
     }
     let character = body.drive.is_some();
     let mass = body_mass(body);
     let mut pushes = 0;
+    let mut gathered = Vec3::ZERO;
     for stream in &torrent.records[..torrent.count] {
         for &point in live_points(stream) {
             let share = point.life as f32 / torrent.point_life as f32;
@@ -233,6 +237,9 @@ pub(crate) fn strike_streams(
                         continue;
                     }
                     body.push_sphere(part_index, sphere, impulse / CM);
+                    if character {
+                        gathered += impulse;
+                    }
                     pushes += 1;
                     pushed = true;
                 }
@@ -243,7 +250,7 @@ pub(crate) fn strike_streams(
             }
         }
     }
-    pushes
+    (pushes, gathered)
 }
 
 /// Ticks every torrent in the scene.
@@ -259,6 +266,8 @@ pub(crate) fn tick_torrents(
     mut bodies: Query<(Entity, &mut Ragdoll)>,
     places: Query<&GlobalTransform>,
     cursor: Option<Res<CursorGround>>,
+    mut combatants: Query<&mut Combatant>,
+    npcs: Query<&Npc>,
     mut draws: ResMut<EffectDraws>,
     mut roll: ResMut<EffectRoll>,
     mut limbs: Local<Vec<LimbSphere>>,
@@ -315,16 +324,37 @@ pub(crate) fn tick_torrents(
                 if other == live.caster {
                     continue;
                 }
-                let pushes = strike_streams(&live.torrent, &mut body, &mut limbs);
+                let (pushes, impulse) = strike_streams(&live.torrent, &mut body, &mut limbs);
                 if pushes == 0 {
                     continue;
                 }
                 body.touch(WAKE_TICKS);
                 let mass = body_mass(&body);
-                if let Some(drive) = body.drive.as_mut() {
-                    for _ in 0..pushes {
-                        drive.energy = energy_after(drive.energy, mass);
-                    }
+                let Some(knock) = body.drive.as_mut().map(|drive| {
+                    let knock = torrent_knock(mass, drive.energy, impulse);
+                    drive.energy = knock.energy;
+                    let counter = drive.balance().counter() + 1;
+                    drive.balance_mut().set_counter(counter);
+                    knock
+                }) else {
+                    continue;
+                };
+                if let Some((direction, size)) = knock.knock {
+                    let flat = Vec3::new(direction.x, 0.0, direction.z);
+                    body.begin_knockback(flat * (size / CM));
+                }
+                if let Ok(mut combatant) = combatants.get_mut(other) {
+                    let aggression = npcs
+                        .get(other)
+                        .ok()
+                        .and_then(|npc| npc.personality)
+                        .map_or(0.0, |personality| personality.restraint);
+                    combatant.add_concern(
+                        live.caster,
+                        aggression,
+                        HIT_HOSTILITY.0,
+                        HIT_HOSTILITY.1,
+                    );
                 }
             }
         }
@@ -337,6 +367,45 @@ pub(crate) fn tick_torrents(
             }
             commands.entity(entity).despawn();
         }
+    }
+}
+
+/// The glow tint the stream ribbon draws with: the vertices carry the
+/// original's colour bytes.
+const RIBBON_TINT: Vec4 = Vec4::ONE;
+
+/// Draws every torrent's stream ribbon, built from this frame's samples.
+pub(crate) fn draw_torrents(
+    mut commands: Commands,
+    mut torrents: Query<(Entity, &mut LiveTorrent, Option<&EffectMesh>)>,
+    cameras: Query<&GlobalTransform, exa_render::supersample::SceneCamera>,
+    time: Res<Time<Fixed>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<exa_render::glow::GlowMaterial>>,
+) {
+    let Some(camera) = cameras.iter().next() else {
+        return;
+    };
+    // The original carries the camera into the effect node's frame; the
+    // node is unturned here, so its place (cm) is the eye.
+    let eye = camera.translation() * CM;
+    let alpha = time.overstep_fraction();
+    for (entity, mut live, drawn) in &mut torrents {
+        let frame = live.torrent.frame(alpha);
+        let ribbon = live.torrent.ribbon(&frame, eye);
+        if ribbon.is_empty() {
+            continue;
+        }
+        let mesh = mesh_of_ribbon(&ribbon);
+        show(
+            &mut commands,
+            entity,
+            drawn,
+            mesh,
+            RIBBON_TINT,
+            &mut meshes,
+            &mut materials,
+        );
     }
 }
 
@@ -471,10 +540,11 @@ mod tests {
 
     /// The strike before its body transforms were shared and its bodies
     /// skipped by their boxes, kept to pin the new one to it.
-    fn strike_streams_unshared(torrent: &Torrent, body: &mut Ragdoll) -> usize {
+    fn strike_streams_unshared(torrent: &Torrent, body: &mut Ragdoll) -> (usize, Vec3) {
         let character = body.drive.is_some();
         let mass = body_mass(body);
         let mut pushes = 0;
+        let mut gathered = Vec3::ZERO;
         for stream in &torrent.records[..torrent.count] {
             let mut k = stream.head;
             loop {
@@ -509,6 +579,9 @@ mod tests {
                             continue;
                         }
                         body.push_sphere(part_index, s, impulse / CM);
+                        if character {
+                            gathered += impulse;
+                        }
                         pushes += 1;
                     }
                 }
@@ -518,12 +591,14 @@ mod tests {
                 }
             }
         }
-        pushes
+        (pushes, gathered)
     }
 
     #[test]
     fn the_shared_strike_matches_the_unshared_one_to_the_bit() {
-        use crate::thaum::blast_live::test_bodies::{between, near, same_particles, scattered};
+        use crate::thaum::blast_live::test_bodies::{
+            between, near, same, same_particles, scattered,
+        };
         let mut random = Mt19937::new(11);
         let (mut struck, mut skipped) = (0, 0);
         for round in 0..200 {
@@ -557,9 +632,10 @@ mod tests {
                 let mut limbs = Vec::new();
                 let old = strike_streams_unshared(&live.torrent, &mut old_body);
                 let new = strike_streams(&live.torrent, &mut new_body, &mut limbs);
-                assert_eq!(old, new, "round {round}");
+                assert_eq!(old.0, new.0, "round {round}");
+                assert!(same(old.1, new.1), "round {round}");
                 assert!(same_particles(&old_body, &new_body), "round {round}");
-                if old > 0 {
+                if old.0 > 0 {
                     struck += 1;
                 } else {
                     skipped += 1;
