@@ -510,3 +510,36 @@ fn a_record_resolves_its_specials() {
         WornSpecials::default()
     );
 }
+
+/// The shipped object database carries every special kind the armour pass
+/// dispatches (2 through 7); a kind-3 healing item stores the crystal
+/// bytes its tick reads.
+#[test]
+fn shipped_special_kinds() {
+    let Some(dir) = exa_rpk::locate_install(None) else {
+        return;
+    };
+    let game = exa_rpk::GameData::open(&dir).unwrap();
+    let resource = game.pack(exa_rpk::PackKind::Resource).unwrap();
+    let global = objdb::items(&Database::parse(resource.get("objdb.rdb").unwrap()).unwrap());
+    let kinds: Vec<(u32, Burden)> = global
+        .iter()
+        .filter_map(|item| Some((item.id, item.burden?)))
+        .filter(|(_, b)| b.special > 1)
+        .collect();
+    for kind in 2..=7 {
+        assert!(
+            kinds.iter().any(|(_, b)| b.special == kind),
+            "no item of special kind {kind}"
+        );
+    }
+    let specials = WornSpecials::of_worn(kinds.iter().copied());
+    assert!(specials.second_wind && specials.mind_ward);
+    assert_eq!(specials.focus_regen, FOCUS_CHARM_REGEN);
+    assert!(
+        specials
+            .effects
+            .iter()
+            .any(|e| e.special == Burden::HEALING)
+    );
+}
