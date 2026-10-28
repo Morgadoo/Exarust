@@ -226,7 +226,13 @@ pub fn resolve_dead_bodies(
 ) -> Vec<usize> {
     let mut resolved = Vec::new();
     for (index, fighter) in fighters.iter_mut().enumerate() {
-        if !fighter.company || fighter.resolved || !(fighter.health < 0.01) {
+        if !fighter.company
+            || fighter.resolved
+            || !matches!(
+                fighter.health.partial_cmp(&0.01),
+                Some(std::cmp::Ordering::Less)
+            )
+        {
             continue;
         }
         let fall =
@@ -422,6 +428,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::assertions_on_constants)]
     fn the_return_saves_the_managers_placement() {
         assert_eq!(RETURN_PLACEMENT.distance, 300.0);
         assert_eq!(RETURN_PLACEMENT.heading.to_bits(), 0x4049_0fdb);
