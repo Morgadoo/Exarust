@@ -784,7 +784,7 @@ The lift SHALL read each foot's own ground. The character controller's floor SHA
 - **THEN** its target is the original's every tick, as with its controller on the floor
 
 ### Requirement: Leg bend
-A leg SHALL bend onto its bend target. The knee SHALL be the law of cosines on the two bones: 30° over the double 0.866, 180° at or below −1, else the engine's arc cosine. The correction from the clip SHALL advance at most 0.02 rad a tick (0.2 while stepping) plus its stored rate, never past the target. The rate SHALL become half that sum, within ±0.1 rad. Muscles SHALL follow the correction on the next tick, not the tick that computed it, through the sampler's IK step. Lying down it SHALL release instead.
+A leg SHALL bend onto its bend target. The knee SHALL be the law of cosines on the two bones: 30° over the double 0.866, 180° at or below −1, else the engine's arc cosine. The correction from the clip SHALL advance at most 0.02 rad a tick (0.2 while stepping) plus its stored rate, never past the target. The rate SHALL become half that sum, within ±0.1 rad. Muscles SHALL follow the correction on the next tick, through the sampler's IK step. Lying down it SHALL release instead.
 
 #### Scenario: Folded to 40 cm
 - **WHEN** both bones are 40 cm and the hip-to-target distance is 40 cm
@@ -1314,7 +1314,7 @@ The footwork SHALL turn each stance spot from the character frame's yaw onto the
 - **THEN** an ankle 1 m ahead across the ground stands 1 m toward +X
 
 ### Requirement: Stance score
-The stance score SHALL be 2(1 − C²) + ((1 − W²) + A), with the feet's difference taken across the ground (its height zeroed) for the span, the segment projection and the side term. A SHALL be 1 minus the reference's horizontal distance to the foot segment times the single 1/30, or 1 when the squared distance is under the general epsilon (a NaN takes the root), less a double 0.1 a cm of a crouched span past 120 − 30·crouch. W SHALL be |60·scale − span| / (60·scale), unguarded. C SHALL be the same for 55·scale and the span's dot with the character frame's side axis, rooted when over the epsilon.
+The stance score SHALL be 2(1 − C²) + ((1 − W²) + A), the feet's difference taken with its height zeroed. A SHALL be 1 minus the reference's horizontal distance to the foot segment times the single 1/30 (1 under the squared general epsilon), less a double 0.1 a cm of a crouched span past 120 − 30·crouch. W SHALL be |60·scale − span| / (60·scale), unguarded. C SHALL be the same for 55·scale and the span's dot with the frame's side axis, rooted over the epsilon.
 
 #### Scenario: Natural and crossed
 - **WHEN** the feet are 60 cm apart, the reference lies on the segment, and the frame's side axis runs from the first foot to the second
