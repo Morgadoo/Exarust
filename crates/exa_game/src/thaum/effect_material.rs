@@ -6,10 +6,11 @@
 //! shader object once (and registers its release with the frame's deferred
 //! list), selects the material's shader parameters, creates the named
 //! material, binds the material to the node's first sub-object, and — for
-//! the aura and the shell — gives the node one sub-object of kind 35044
-//! whose parent points back at the node. The force and tendril materials
-//! mark the node with flag 0x20; the aura and shell materials mark it with
-//! flags 0x9000. The barrier and aura materials share one shader signature
+//! the aura and the shell — replaces the node's sub-objects with one new
+//! sub-object (buffer usage 35044, the GL static-draw word) whose parent
+//! points back at the node. The force and tendril materials set bit 0x20
+//! in the node's flags word; the aura and shell materials set bits 0x9000
+//! in its state word (the word whose top bit marks a dead node). The barrier and aura materials share one shader signature
 //! and also make (and bind) the animated `_ForceNoise` picture.
 //!
 //! The material signature is a 0x18-byte record: the draw callback, a
@@ -22,8 +23,11 @@
 //! parameters.
 //!
 //! The noise picture is a 256 by 256 single-channel (0x1903) unsigned-byte
-//! field generated from the engine's noise object: four octaves, a 0.8 s
-//! phase, amplitude 1, both mixing weights one half. Its parameter word is
+//! field generated from the engine's noise object
+//! ([`super::visuals::noise_field`]): four octaves, amplitude 1, both mixing
+//! weights one half, then four octaves, 0.8 and 1 (read as a 0.8 s period
+//! and a target amplitude of 1). The upload runs only when the noise object
+//! reports a new picture. Its parameter word is
 //! 0x2f0, or 0x33 while either display switch is on; the upload generates
 //! mipmaps only when bit 0x40 is set, so the reduced word does not. The
 //! texture is created with internal format 0x8229 (one byte a channel) and
@@ -33,50 +37,28 @@
 //! picture's creation and upload and the deferred shader release, read from
 //! `Exanima.exe`.
 
-/// The material the blast family wears.
-pub const FORCE_MATERIAL: &str = "_ForceMat01";
-/// The material the domes and the barricade wear.
-pub const BARRIER_MATERIAL: &str = "_ForceBarrier01";
-/// The material the shell (and its decorative copy) wears.
-pub const AURA_MATERIAL: &str = "_ForceAura01";
-/// The material the tendrils wear.
-pub const TENDRIL_MATERIAL: &str = "_TDispMat01";
-/// The material the displacement shell wears.
-pub const SHELL_MATERIAL: &str = "_EffectShell01";
+pub use super::force::{
+    BARRIER_PARAM_SIZE as BARRIER_BLOCK, FORCE_AURA_MATERIAL as AURA_MATERIAL,
+    FORCE_BARRIER_MATERIAL as BARRIER_MATERIAL, FORCE_MATERIAL, FORCE_PARAM_SIZE as FULL_BLOCK,
+    MATERIAL_PARAMS, NOISE_SIZE, NOISE_TEXTURE, NOISE_WORD, NOISE_WORD_REDUCED,
+};
+pub use super::visuals::{NOISE_FLAGS, NOISE_USAGE, SHELL_FLAG, SHELL_MATERIAL, TENDRIL_MATERIAL};
+pub use crate::effects::effect_geometry::SUB_OBJECT_KIND as SUB_OBJECT_USAGE;
 
 /// The force texture the force material's signature names.
 pub const FORCE_SIGNATURE_TEXTURE: &str = "_ForceBarrier01";
 /// The aura texture the shared barrier and aura signature names.
 pub const AURA_SIGNATURE_TEXTURE: &str = "_ForceAura01";
 
-/// The parameter block size the force, aura, tendril and shell materials
-/// keep.
-pub const FULL_BLOCK: usize = 0xf0;
-/// The barrier material's parameter block size.
-pub const BARRIER_BLOCK: usize = 0xb8;
-/// The four parameters the force and aura materials bind.
-pub const MATERIAL_PARAMS: [f32; 4] = [0.25, 0.25, 0.25, 1.0];
 /// The signature record's flags word.
 pub const SIGNATURE_FLAGS: u32 = 0x0048_0018;
 /// The layer count every effect material's signature answers.
 pub const TEXTURE_LAYERS: u32 = 4;
 
-/// The animated noise picture's name.
-pub const NOISE_TEXTURE: &str = "_ForceNoise";
 /// Its side, in pixels.
-pub const NOISE_SIDE: u32 = 0x100;
-/// The octaves its generator is set to.
-pub const NOISE_OCTAVES: u32 = 4;
+pub const NOISE_SIDE: u32 = NOISE_SIZE.0;
 /// Its bytes: one channel a pixel.
 pub const NOISE_BYTES: usize = 0x1_0000;
-/// The parameter word with mipmaps.
-pub const NOISE_WORD: u32 = 0x2f0;
-/// The parameter word the display switches reduce it to.
-pub const NOISE_WORD_REDUCED: u32 = 0x33;
-/// The texture's usage word.
-pub const NOISE_USAGE: u32 = 0x2007_0000;
-/// Its sampler word.
-pub const NOISE_FLAGS: u32 = 0x0100_4200;
 /// The texture target.
 pub const TEXTURE_2D: u32 = 0x0de1;
 /// The internal format: one unsigned byte a channel.
@@ -88,14 +70,13 @@ pub const NOISE_TYPE: u32 = 0x1401;
 /// The mipmap bit of the parameter word.
 pub const NOISE_MIPMAP: u32 = 0x40;
 
-/// The kind word of the sub-object the aura and shell materials add.
-pub const SUB_OBJECT_KIND: u32 = 35_044;
-/// The flag the force and tendril materials add to their node.
+/// The flag the force and tendril materials add to their node's flags word.
 pub const MATERIAL_FLAG: u32 = 0x20;
-/// The flags the aura and shell materials add to their node.
+/// The bits the aura and shell materials add to their node's state word
+/// (the word whose top bit marks a dead node), not to its flags word.
 pub const AURA_FLAGS: u32 = 0x9000;
-/// The shell creator's extra flag, and the shared shell's.
-pub const SHELL_FLAG: u32 = 0x20;
+/// The flags-word bit the shared displacement shell's creator adds when it
+/// is asked for a shared shell.
 pub const SHARED_SHELL_FLAG: u32 = 0x0004_0000;
 
 /// One of the five effect materials.
@@ -115,11 +96,14 @@ pub struct MaterialBinding {
     pub name: &'static str,
     /// The parameter block size.
     pub block: usize,
-    /// The flag the routine adds to the node's words, if any.
+    /// The bit the routine adds to the node's flags word, if any.
     pub node_flag: u32,
-    /// The routine adds one sub-object of [`SUB_OBJECT_KIND`], points its
-    /// parent back at the node and binds the material to it. The other
-    /// routines bind to the sub-object the geometry already has.
+    /// The bits the routine adds to the node's state word, if any.
+    pub state_flags: u32,
+    /// The routine replaces the node's sub-objects with one new sub-object
+    /// (buffer usage [`SUB_OBJECT_USAGE`], the GL static-draw word), points
+    /// its parent back at the node and binds the material to it. The other
+    /// routines bind to the first sub-object the geometry already has.
     pub adds_subobject: bool,
     /// The routine makes and binds the `_ForceNoise` picture.
     pub noise: bool,
@@ -144,6 +128,7 @@ impl MaterialKind {
                 name: FORCE_MATERIAL,
                 block: FULL_BLOCK,
                 node_flag: MATERIAL_FLAG,
+                state_flags: 0,
                 adds_subobject: false,
                 noise: false,
             },
@@ -151,13 +136,15 @@ impl MaterialKind {
                 name: BARRIER_MATERIAL,
                 block: BARRIER_BLOCK,
                 node_flag: 0,
+                state_flags: 0,
                 adds_subobject: false,
                 noise: true,
             },
             Self::Aura => MaterialBinding {
                 name: AURA_MATERIAL,
                 block: FULL_BLOCK,
-                node_flag: AURA_FLAGS,
+                node_flag: 0,
+                state_flags: AURA_FLAGS,
                 adds_subobject: true,
                 noise: true,
             },
@@ -165,13 +152,15 @@ impl MaterialKind {
                 name: TENDRIL_MATERIAL,
                 block: FULL_BLOCK,
                 node_flag: MATERIAL_FLAG,
+                state_flags: 0,
                 adds_subobject: false,
                 noise: false,
             },
             Self::Shell => MaterialBinding {
                 name: SHELL_MATERIAL,
                 block: FULL_BLOCK,
-                node_flag: AURA_FLAGS,
+                node_flag: 0,
+                state_flags: AURA_FLAGS,
                 adds_subobject: true,
                 noise: false,
             },
@@ -273,7 +262,7 @@ impl NoiseTexture {
     pub const fn new(reduced: bool) -> Self {
         Self {
             name: NOISE_TEXTURE,
-            size: (NOISE_SIDE, NOISE_SIDE, NOISE_OCTAVES),
+            size: NOISE_SIZE,
             amplitude: 1.0,
             mix: (0.5, 0.5),
             phase: 0.8,
@@ -318,10 +307,12 @@ pub struct NoiseUpload {
     pub mipmaps: bool,
 }
 
-/// The upload of `pixels` into the picture. The picture holds exactly
+/// The upload of `pixels` into the picture (a sub-image of level 0). It
+/// runs only when the noise object's tick reported a new picture (`fresh`,
+/// [`exa_render::image_noise::NoiseField::tick`]). The picture holds exactly
 /// [`NOISE_BYTES`] bytes; any other length is refused.
-pub fn noise_upload(texture: &NoiseTexture, pixels: &[u8]) -> Option<NoiseUpload> {
-    if pixels.len() != texture.bytes {
+pub fn noise_upload(texture: &NoiseTexture, fresh: bool, pixels: &[u8]) -> Option<NoiseUpload> {
+    if !fresh || pixels.len() != texture.bytes {
         return None;
     }
     Some(NoiseUpload {
@@ -392,17 +383,18 @@ mod tests {
         assert!(barrier.noise);
         let aura = MaterialKind::Aura.binding();
         assert_eq!((aura.name, aura.block), ("_ForceAura01", 0xf0));
-        assert_eq!(aura.node_flag, 0x9000);
+        assert_eq!((aura.node_flag, aura.state_flags), (0, 0x9000));
         assert!(aura.adds_subobject);
         assert!(aura.noise);
         let tendril = MaterialKind::Tendril.binding();
         assert_eq!((tendril.name, tendril.node_flag), ("_TDispMat01", 0x20));
         let shell = MaterialKind::Shell.binding();
         assert_eq!((shell.name, shell.block), ("_EffectShell01", 0xf0));
-        assert_eq!(shell.node_flag, 0x9000);
+        assert_eq!((shell.node_flag, shell.state_flags), (0, 0x9000));
         assert!(shell.adds_subobject);
         assert!(!shell.noise);
-        assert_eq!(SUB_OBJECT_KIND, 35_044);
+        assert_eq!(SUB_OBJECT_USAGE, 35_044);
+        assert_eq!(force.state_flags, 0);
         assert_eq!(MATERIAL_PARAMS, [0.25, 0.25, 0.25, 1.0]);
     }
 
@@ -446,14 +438,19 @@ mod tests {
     fn an_upload_needs_the_whole_picture() {
         let texture = NoiseTexture::default();
         let pixels = vec![0u8; NOISE_BYTES];
-        let upload = noise_upload(&texture, &pixels).expect("an upload");
+        let upload = noise_upload(&texture, true, &pixels).expect("an upload");
         assert_eq!(upload.width, 256);
         assert_eq!(upload.height, 256);
         assert_eq!((upload.level, upload.border), (0, 0));
         assert!(upload.mipmaps);
-        assert!(noise_upload(&texture, &pixels[1..]).is_none());
+        assert!(noise_upload(&texture, true, &pixels[1..]).is_none());
+        assert!(noise_upload(&texture, false, &pixels).is_none());
         let reduced = NoiseTexture::new(true);
-        assert!(!noise_upload(&reduced, &pixels).expect("an upload").mipmaps);
+        assert!(
+            !noise_upload(&reduced, true, &pixels)
+                .expect("an upload")
+                .mipmaps
+        );
     }
 
     #[test]

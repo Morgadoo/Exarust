@@ -157,11 +157,17 @@ pub fn effect_row(pass: i32, frame: i32, start: f32, lod: f32) -> f32 {
 }
 
 /// The tendril's, blast's and torrent's pass row, step 0.002 (its half,
-/// 0.001, as the original's literal).
+/// 0.001, as the original's literal). The counter and its 0.5 are single
+/// precision; the step, the divisor, the start and the half step are
+/// applied in double and the sum narrowed, as the material passes do.
 pub fn force_row(pass: i32, frame: i32, start: f32) -> f32 {
-    (((i64::from(pass) + i64::from(frame)) as f32 + 0.5) * FORCE_ROW_STEP) / ROW_PASSES + start
-        - 0.001
+    let counter = (i64::from(pass) + i64::from(frame)) as f32 + 0.5;
+    (f64::from(counter) * FORCE_ROW_STEP_LITERAL / f64::from(ROW_PASSES) + f64::from(start) - 0.001)
+        as f32
 }
+
+/// The 0.002 step as the double literal the material passes multiply by.
+const FORCE_ROW_STEP_LITERAL: f64 = 0.002;
 
 /// The `Fade` a dome geometry draws at: `max(1 − alpha, 0)` while the
 /// effect is under state 3, the alpha itself from 3 on.

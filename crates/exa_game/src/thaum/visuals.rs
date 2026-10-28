@@ -75,8 +75,11 @@ pub const TENDRIL_KIND: u32 = 0x15;
 pub struct SceneNodeSpec {
     /// The node's material, if it makes one.
     pub material: Option<&'static str>,
-    /// The node's flags.
+    /// The node's flags word.
     pub flags: u32,
+    /// The bits the material sets in the node's state word (the aura and
+    /// shell materials' 0x9000).
+    pub state: u32,
     /// The shared emissive program.
     pub gi: Option<&'static str>,
     /// The material's parameter block size.
@@ -110,6 +113,7 @@ impl Default for SceneNodeSpec {
         Self {
             material: None,
             flags: EFFECT_NODE,
+            state: 0,
             gi: None,
             block: 0,
             position: Vec3::ZERO,
@@ -185,6 +189,7 @@ pub fn creator(kind: EffectKind, input: &CreatorInput) -> SceneNodeSpec {
         SceneNodeSpec {
             material: Some(binding.name),
             flags: EFFECT_NODE | binding.node_flag,
+            state: binding.state_flags,
             block: binding.block,
             position,
             rotation,
@@ -257,13 +262,13 @@ pub fn creator(kind: EffectKind, input: &CreatorInput) -> SceneNodeSpec {
             )
         },
         EffectKind::Shell => SceneNodeSpec {
-            flags: EFFECT_NODE | effect_material::AURA_FLAGS | effect_material::SHELL_FLAG,
+            flags: EFFECT_NODE | SHELL_FLAG,
             position: input.body,
             sounds: vec![("thmfrc_ss", 0.6 + input.roll * 0.4)],
             ..material(MaterialKind::Aura, input.body, Quat::IDENTITY)
         },
         EffectKind::DecorativeShell => SceneNodeSpec {
-            flags: EFFECT_NODE | effect_material::AURA_FLAGS | effect_material::SHELL_FLAG,
+            flags: EFFECT_NODE | SHELL_FLAG,
             scale: DECORATIVE_SCALE,
             marker: 1,
             position: input.body,
@@ -280,7 +285,7 @@ pub fn creator(kind: EffectKind, input: &CreatorInput) -> SceneNodeSpec {
             ..SceneNodeSpec::default()
         },
         EffectKind::Constant => SceneNodeSpec {
-            flags: EFFECT_NODE | effect_material::AURA_FLAGS | effect_material::SHELL_FLAG,
+            flags: EFFECT_NODE | SHELL_FLAG,
             position: input.body,
             sounds: vec![("thmdsp_cns01", input.roll), ("thmdsp_phs", 1.0)],
             ..material(MaterialKind::Shell, input.body, Quat::IDENTITY)
@@ -290,7 +295,6 @@ pub fn creator(kind: EffectKind, input: &CreatorInput) -> SceneNodeSpec {
             ..SceneNodeSpec::default()
         },
         EffectKind::Tendril => SceneNodeSpec {
-            flags: EFFECT_NODE | effect_material::MATERIAL_FLAG,
             position: input.body,
             ..material(MaterialKind::Tendril, input.body, Quat::IDENTITY)
         },
@@ -391,7 +395,8 @@ pub fn shell_draws(nodes: &[ShellNodeView], shown: f32) -> Vec<ShellDraw> {
     let pass: Vec<crate::effects::shell::ShellPassNode> = nodes
         .iter()
         .map(|node| crate::effects::shell::ShellPassNode {
-            visibility: if node.visible {
+            visibility: 0,
+            flags: if node.visible {
                 crate::effects::shell::THICK_PASS
             } else {
                 0
@@ -423,7 +428,7 @@ pub fn shell_draws(nodes: &[ShellNodeView], shown: f32) -> Vec<ShellDraw> {
         .enumerate()
         .filter(|(_, node)| node.render_flags & crate::effects::shell::SUBOBJECTS != 0)
         .map(|(index, node)| ShellDraw {
-            thick: node.visibility & crate::effects::shell::THICK_PASS != 0,
+            thick: node.thick(),
             parts: counts[index],
         })
         .collect()
@@ -547,6 +552,8 @@ pub struct EffectVisual {
     pub material: Option<&'static str>,
     pub gi: Option<&'static str>,
     pub flags: u32,
+    /// The material's state-word bits.
+    pub state: u32,
     pub block: usize,
     pub life_ms: u32,
     /// The sub-objects the material added.
@@ -612,6 +619,7 @@ pub fn spawn_visual(commands: &mut Commands, spec: SceneNodeSpec) -> Entity {
                 material: spec.material,
                 gi: spec.gi,
                 flags: spec.flags,
+                state: spec.state,
                 block: spec.block,
                 life_ms: spec.life_ms,
                 subobjects: spec.subobjects,
@@ -701,24 +709,24 @@ mod tests {
         let shell = creator(EffectKind::Shell, &input());
         assert_eq!(shell.material, Some(AURA_MATERIAL));
         assert_eq!(shell.gi, None);
-        assert_eq!(
-            shell.flags,
-            EFFECT_NODE | effect_material::AURA_FLAGS | SHELL_FLAG
-        );
+        assert_eq!(shell.flags, EFFECT_NODE | SHELL_FLAG);
+        assert_eq!(shell.state, effect_material::AURA_FLAGS);
         assert_eq!(shell.sounds, vec![("thmfrc_ss", 0.8)]);
         assert_eq!(shell.subobjects, 1);
         assert_eq!(shell.textures, vec![effect_material::NOISE_TEXTURE]);
         let decorative = creator(EffectKind::DecorativeShell, &input());
         assert_eq!(decorative.material, Some(AURA_MATERIAL));
-        assert_eq!(
-            decorative.flags,
-            EFFECT_NODE | effect_material::AURA_FLAGS | SHELL_FLAG
-        );
+        assert_eq!(decorative.flags, EFFECT_NODE | SHELL_FLAG);
+        assert_eq!(decorative.state, 0x9000);
         assert_eq!((decorative.scale, decorative.marker), (3.0, 1));
         assert!(decorative.sounds.is_empty());
         let constant = creator(EffectKind::Constant, &input());
         assert_eq!(constant.material, Some(SHELL_MATERIAL));
         assert_eq!(constant.subobjects, 1);
+        assert_eq!(
+            (constant.flags, constant.state),
+            (EFFECT_NODE | SHELL_FLAG, 0x9000)
+        );
         assert!(constant.textures.is_empty());
         assert_eq!(constant.sounds[0].0, "thmdsp_cns01");
         assert_eq!(constant.sounds[0].1, 0.5);
@@ -873,6 +881,7 @@ mod tests {
             material: shell.material,
             gi: shell.gi,
             flags: shell.flags,
+            state: shell.state,
             block: shell.block,
             life_ms: shell.life_ms,
             subobjects: shell.subobjects,
@@ -885,18 +894,19 @@ mod tests {
             passes: 2,
             frame: 0,
             base: 0.0,
-            speed: 0.5,
+            lod: 0.5,
             ..super::super::effect_pass::PassParams::default()
         };
         let plan = visual.pass_plan(&params);
         assert_eq!(plan.len(), 3);
-        // The aura's shader pass rows use the node's speed.
-        assert_eq!(plan[1].row, ((1.5 * 0.5) - 0.25));
+        // The aura's shader pass steps by the sub-object's level of detail.
+        assert_eq!(plan[1].depth, ((1.5 * 0.5) - 0.25));
         let blast = creator(EffectKind::Blast, &input());
         let visual = EffectVisual {
             material: blast.material,
             gi: blast.gi,
             flags: blast.flags,
+            state: blast.state,
             block: blast.block,
             life_ms: blast.life_ms,
             subobjects: blast.subobjects,
@@ -905,9 +915,9 @@ mod tests {
             marker: blast.marker,
         };
         assert_eq!(visual.material_kind(), Some(MaterialKind::Force));
-        // The force material's rows step by 0.002.
+        // The force material's terms step by the double literal 0.002.
         let plan = visual.pass_plan(&params);
-        assert!((plan[1].row - (1.5 * 0.002 - 0.001)).abs() < 1e-6);
+        assert_eq!(plan[1].depth, (1.5_f64 * 0.002 - 0.001) as f32);
         assert_eq!(creator(EffectKind::Vanish, &input()).material, None);
     }
 }

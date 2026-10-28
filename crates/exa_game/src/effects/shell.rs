@@ -313,16 +313,19 @@ pub fn tick_shells(
     }
 }
 
-/// The segment flag for the draw side above one half.
-pub const FIRST_SIDE: u32 = 0x200;
-/// The segment flag for the draw side at one half or below.
-pub const SECOND_SIDE: u32 = 0x400;
-/// A shell node whose visibility word carries this bit is dead and leaves
-/// the pass's list.
+/// The segment flag for the depth pass: the nodes' parts are drawn with
+/// colour writes off and depth writes on, then the masks are put back
+/// (colour on, depth off).
+pub const DEPTH_PASS: u32 = 0x200;
+/// The segment flag for the fade pass: the nodes, skins and parts take the
+/// shown value's fades.
+pub const FADE_PASS: u32 = 0x400;
+/// A shell node whose state word carries this bit is dead and leaves the
+/// pass's list.
 pub const DEAD_VISIBILITY: u32 = 0x8000_0000;
 /// A node with this render bit has sub-objects.
 pub const SUBOBJECTS: u32 = 0x0100_0000;
-/// The thick pass's visibility bit.
+/// The flags-word bit that picks the thick draw entry point.
 pub const THICK_PASS: u32 = 0x8000;
 /// A sub-object the first pass skips.
 pub const SKIP_PART: u32 = 0x0008_0040;
@@ -348,8 +351,10 @@ pub struct ShellPart {
 /// One node of a displacement shell as the render pass sees it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ShellPassNode {
-    /// The visibility word; [`DEAD_VISIBILITY`] takes the node out.
+    /// The state word; [`DEAD_VISIBILITY`] takes the node out.
     pub visibility: u32,
+    /// The flags word; [`THICK_PASS`] picks the thick draw.
+    pub flags: u32,
     /// The render flags; [`SUBOBJECTS`] says the node has sub-objects.
     pub render_flags: u32,
     /// The node's fade value (+0x238).
@@ -365,6 +370,7 @@ impl ShellPassNode {
     pub fn with_parts(parts: Vec<ShellPart>) -> Self {
         Self {
             visibility: 0,
+            flags: 0,
             render_flags: if parts.is_empty() { 0 } else { SUBOBJECTS },
             fade: 0.0,
             fade2: 0.0,
@@ -374,7 +380,7 @@ impl ShellPassNode {
 
     /// Whether the node takes the thick pass.
     pub fn thick(&self) -> bool {
-        self.visibility & THICK_PASS != 0
+        self.flags & THICK_PASS != 0
     }
 }
 
@@ -418,21 +424,23 @@ pub fn prune_dead(nodes: &mut Vec<ShellPassNode>) -> usize {
     removed
 }
 
-/// Whether the first side of the draw window runs: a segment carrying a
-/// draw bit and a shown value above one half.
+/// Whether the pre-draw step runs the shared pass: a segment carrying
+/// either pass bit and a shown value above one half. Inside the pass,
+/// [`DEPTH_PASS`] and [`FADE_PASS`] each run their own half independently.
 pub fn first_side(segment_flags: u32, shown: f32) -> bool {
-    segment_flags & (FIRST_SIDE | SECOND_SIDE) != 0 && shown > 0.5
+    segment_flags & (DEPTH_PASS | FADE_PASS) != 0 && shown > 0.5
 }
 
-/// Whether the second side runs: a segment carrying a draw bit and a shown
-/// value at one half or below.
+/// Whether the post-draw step runs the shared pass: a segment carrying
+/// either pass bit and a shown value at one half or below (and at least
+/// one node in the list).
 pub fn second_side(segment_flags: u32, shown: f32) -> bool {
-    segment_flags & (FIRST_SIDE | SECOND_SIDE) != 0 && shown <= 0.5
+    segment_flags & (DEPTH_PASS | FADE_PASS) != 0 && shown <= 0.5
 }
 
-/// The first pass's draws: every node with sub-objects, each of its parts
-/// whose flags lack [`SKIP_PART`], thick when the node's visibility carries
-/// [`THICK_PASS`]. The pass sets no fades.
+/// The depth pass's draws: every node with sub-objects, each of its parts
+/// whose flags lack [`SKIP_PART`], thick when the node's flags word carries
+/// [`THICK_PASS`]. The pass sets no fades and writes depth only.
 pub fn first_draws(nodes: &[ShellPassNode]) -> Vec<ShellPartDraw> {
     let mut draws = Vec::new();
     for (node_index, node) in nodes.iter().enumerate() {
@@ -452,10 +460,12 @@ pub fn first_draws(nodes: &[ShellPassNode]) -> Vec<ShellPartDraw> {
     draws
 }
 
-/// The second pass: every node's two fade words and every skin's fade
-/// become one less the shown value; each drawn sub-object's fade becomes
-/// the shown value and its plain stage is switched to [`FADE_STAGE`]. The
-/// stage is put back after the draw, as the original restores it.
+/// The fade pass: every skin's fade and every node's two fade words become
+/// one less the shown value; each drawn sub-object (one whose flags lack
+/// [`SKIP_SUBPART`] and whose material is found) is drawn with its
+/// material's fade at the shown value and a plain stage switched to
+/// [`FADE_STAGE`]. Both are put back after the draw, as the original
+/// restores them, so the parts keep their own fade and stage.
 pub fn prepare_second(
     nodes: &mut [ShellPassNode],
     skins: &mut [f32],
@@ -475,9 +485,8 @@ pub fn prepare_second(
             if part.flags & SKIP_SUBPART != 0 || !part.mesh {
                 continue;
             }
-            part.fade = shown;
-            // The original switches a plain stage for the draw and restores
-            // it afterwards, so the node keeps its own stage.
+            // The original sets the fade and switches a plain stage for the
+            // draw, then restores both.
             let stage = if part.texture_stage == PLAIN_STAGE {
                 FADE_STAGE
             } else {
@@ -723,10 +732,10 @@ mod tests {
 
     #[test]
     fn the_two_sides_split_at_one_half() {
-        assert!(first_side(FIRST_SIDE, 0.5001));
-        assert!(!first_side(FIRST_SIDE, 0.5));
-        assert!(second_side(SECOND_SIDE, 0.5));
-        assert!(!second_side(SECOND_SIDE, 0.5001));
+        assert!(first_side(DEPTH_PASS, 0.5001));
+        assert!(!first_side(DEPTH_PASS, 0.5));
+        assert!(second_side(FADE_PASS, 0.5));
+        assert!(!second_side(FADE_PASS, 0.5001));
         assert!(!first_side(0x1000, 1.0));
         assert!(!second_side(0x800, 0.0));
     }
@@ -747,7 +756,7 @@ mod tests {
                 texture_stage: PLAIN_STAGE,
             },
         ]);
-        node.visibility = THICK_PASS;
+        node.flags = THICK_PASS;
         let nodes = vec![node, ShellPassNode::with_parts(vec![])];
         assert_eq!(
             first_draws(&nodes),
@@ -758,7 +767,7 @@ mod tests {
             }]
         );
         let mut thin = nodes;
-        thin[0].visibility = 0;
+        thin[0].flags = 0;
         assert!(!first_draws(&thin)[0].thick);
     }
 
@@ -789,7 +798,7 @@ mod tests {
         assert_eq!(nodes[0].fade, 0.75);
         assert_eq!(nodes[0].fade2, 0.75);
         assert_eq!(skins[0], 0.75);
-        assert_eq!(nodes[0].parts[0].fade, 0.25);
+        assert_eq!(nodes[0].parts[0].fade, 0.0);
         assert_eq!(nodes[0].parts[0].texture_stage, PLAIN_STAGE);
         assert_eq!(
             draws,

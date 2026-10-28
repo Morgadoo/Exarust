@@ -74,10 +74,7 @@ pub const PRUNE_FLAG: u32 = 0x40;
 /// The subobject mark the shell's end sets.
 pub const ENDED: u32 = 0x8;
 
-/// The flags the shell's material gives its node.
-pub const AURA_FLAGS: u32 = 0x9000;
-/// The flag that marks a shell shared with a constant displacement.
-pub const SHARED: u32 = 0x0004_0000;
+pub use super::effect_material::{AURA_FLAGS, SHARED_SHELL_FLAG as SHARED, SHELL_FLAG};
 
 /// A node of a body the displacement routines walk.
 #[derive(Debug, Clone, PartialEq)]
@@ -222,10 +219,11 @@ pub struct ShellWear {
     pub fade: f32,
     /// The node's event word.
     pub event: u32,
-    /// The shell's visibility word: it starts dead.
+    /// The shell's state word: it starts dead, with the shell material's
+    /// 0x9000 bits.
     pub visibility: u32,
-    /// The shell node's flags: the aura material's 0x9000, the creator's
-    /// 0x20 and, for a shell a constant displacement shares, 0x40000.
+    /// The shell node's flags word: the creator's 0x20 and, for a shell
+    /// asked for as shared, 0x40000.
     pub flags: u32,
     /// The shell belongs to a constant displacement and is shared with a
     /// vanish.
@@ -240,8 +238,8 @@ impl ShellWear {
         Self {
             fade: 0.0,
             event: 0,
-            visibility: DEAD,
-            flags: AURA_FLAGS | 0x20,
+            visibility: DEAD | AURA_FLAGS,
+            flags: SHELL_FLAG,
             shared: false,
             hidden: false,
         }
@@ -250,7 +248,7 @@ impl ShellWear {
     /// The shell a constant displacement starts: the same node, shared.
     pub fn shared() -> Self {
         Self {
-            flags: AURA_FLAGS | 0x20 | SHARED,
+            flags: SHELL_FLAG | SHARED,
             shared: true,
             ..Self::new()
         }
@@ -838,10 +836,10 @@ mod tests {
         assert_eq!(image.visibility, 0x8000_0000);
         assert_eq!(image.scale, 0.75);
         assert_eq!((image.first, image.last, image.spare), (3, 11, 8));
-        assert_eq!(ShellWear::new().visibility, 0x8000_0000);
-        assert_eq!(ShellWear::new().flags, 0x9020);
+        assert_eq!(ShellWear::new().visibility, 0x8000_9000);
+        assert_eq!(ShellWear::new().flags, 0x20);
         let shared = ShellWear::shared();
-        assert_eq!(shared.flags, 0x4_9020);
+        assert_eq!(shared.flags, 0x4_0020);
         assert!(shared.shared);
     }
 

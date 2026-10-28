@@ -1285,8 +1285,11 @@ fn create_force(
                 PowerBase::new(SHELL).accrue(body, cost)
             };
             power.held = held;
-            let start_pitch = roll.0.unit();
+            // The creator constructs the power (and its aura, which draws
+            // its two texture positions) before it draws the start sound's
+            // pitch.
             let tex_pos = [roll.0.unit(), roll.0.unit()];
+            let start_pitch = roll.0.unit();
             let mut aura = crate::thaum::ForceShell::new(context.now, tex_pos);
             aura.voice = true;
             let spec = creator(

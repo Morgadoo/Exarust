@@ -1063,7 +1063,7 @@ fn a_records_powers_make_its_caster() {
 }
 
 /// A shell's creator leaves the aura node: the aura material, one
-/// sub-object and the node's 0x9000 words.
+/// sub-object and the 0x9000 bits in the node's state word.
 #[test]
 fn a_shell_cast_adds_its_aura_node() {
     let mut app = new_app();
@@ -1078,7 +1078,7 @@ fn a_shell_cast_adds_its_aura_node() {
             (
                 visual.material,
                 visual.subobjects,
-                visual.flags,
+                visual.state,
                 visual.textures.clone(),
             )
         })
@@ -1086,7 +1086,7 @@ fn a_shell_cast_adds_its_aura_node() {
     assert_eq!(visuals.len(), 1);
     assert_eq!(visuals[0].0, Some("_ForceAura01"));
     assert_eq!(visuals[0].1, 1);
-    assert_eq!(visuals[0].2 & 0x9000, 0x9000);
+    assert_eq!(visuals[0].2, 0x9000);
     assert_eq!(visuals[0].3, vec!["_ForceNoise"]);
 }
 
