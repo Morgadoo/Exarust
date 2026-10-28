@@ -578,23 +578,7 @@ fn resolved_attachments<'a>(
     ) {
         for a in list {
             if let PropAttachment::Tree { entries } = a {
-                // A tree entry always names a direct child; an empty name
-                // matches no node (the original does not apply it to the
-                // tree's anchor).
-                for entry in entries {
-                    if entry.name().is_empty() {
-                        continue;
-                    }
-                    let target = model
-                        .nodes
-                        .iter()
-                        .position(|n| n.parent == Some(at) && n.name == entry.name());
-                    let Some(target) = target else { continue };
-                    out.push((target, entry));
-                    if let PropAttachment::Transform { children, .. } = entry {
-                        walk(model, target, children, out);
-                    }
-                }
+                walk_tree(model, at, entries, out);
                 continue;
             }
             let target = if a.name().is_empty() {
@@ -609,6 +593,27 @@ fn resolved_attachments<'a>(
             out.push((target, a));
             if let PropAttachment::Transform { children, .. } = a {
                 walk(model, target, children, out);
+            }
+        }
+    }
+    /// A `0x3DE0EC00` tree: every entry, its own children included, names
+    /// the first direct child of exactly that name (an empty name included;
+    /// the original compares the two 16-byte names), never the node itself.
+    fn walk_tree<'a>(
+        model: &Model,
+        at: usize,
+        entries: &'a [PropAttachment],
+        out: &mut Vec<(usize, &'a PropAttachment)>,
+    ) {
+        for entry in entries {
+            let target = model
+                .nodes
+                .iter()
+                .position(|n| n.parent == Some(at) && n.name == entry.name());
+            let Some(target) = target else { continue };
+            out.push((target, entry));
+            if let PropAttachment::Transform { children, .. } = entry {
+                walk_tree(model, target, children, out);
             }
         }
     }
@@ -1874,6 +1879,45 @@ mod tests {
         );
         let x = |i: usize| model.nodes[i].transform.translation.x;
         assert_eq!((x(0), x(1), x(2), x(3), x(4)), (0.0, 1.0, 0.0, 2.0, 0.0));
+    }
+
+    /// A placement tree (`0x3DE0EC00`) names direct children all the way
+    /// down, an empty name included: it never stands for the node itself.
+    #[test]
+    fn a_placement_tree_names_children_at_every_level() {
+        use exa_formats::level::PropAttachment;
+        let mut model = Model {
+            nodes: vec![
+                node("Root", None, None),
+                node("Arm", Some(0), None),
+                node("", Some(1), None),
+                node("Hand", Some(1), None),
+            ],
+        };
+        let entry = |name: &str, x: f32, children: Vec<PropAttachment>| PropAttachment::Transform {
+            name: name.into(),
+            word: 0,
+            transform: [
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+                [x, 0.0, 0.0],
+            ],
+            children,
+        };
+        apply_transform_attachments(
+            &mut model,
+            &[PropAttachment::Tree {
+                entries: vec![
+                    // Under the arm, the empty name is the unnamed child.
+                    entry("Arm", 1.0, vec![entry("", 2.0, Vec::new())]),
+                    // The root has no unnamed child: nothing moves.
+                    entry("", 3.0, Vec::new()),
+                ],
+            }],
+        );
+        let x = |i: usize| model.nodes[i].transform.translation.x;
+        assert_eq!((x(0), x(1), x(2), x(3)), (0.0, 1.0, 2.0, 0.0));
     }
 
     #[test]
