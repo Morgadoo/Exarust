@@ -623,8 +623,10 @@ The original's own forms and controls that Exarust rebuilds, with the
   it at 4, 40, 228 wide to its bottom. The continue toggle is enabled only
   while both a save and a checkpoint exist. The form's opening (the GUI
   clear, the removed task and three input actions) and the equipment page's
-  back switch (the first equipment panel hidden, the skills panel's 0x2d
-  slide, the two tab words cleared, the NEXT button enabled) are modelled,
+  back switch (the first built of the weapons, skills and lobby forms
+  hidden, the skills panel's 0x2d slide when it is that one, the versus
+  forms hidden, a non-continued character's appearance panels shown again
+  with both tab words at 0x110, the NEXT button enabled) are modelled,
   as are the preview's icon list, its material pass, the dummy-head
   renderer (`dummyhead.rfc`, the `0x00a0a040` options, one added reference
   and the three hooks), the continue page's character view (model polling,

@@ -173,8 +173,9 @@ worn list and its carried list), the mode filters (story background 0 keeps
 braies only and clears the hands; the arena keeps the first two hands only
 when its kit offers them and keeps braies only; modes whose 2 bit is set
 clear the fist placeholder and the carried list), the underwear pass after
-a filter (a record with no race band and no worn item whose database
-record flags it as underwear gets the braies), the story presets and
+a filter (flagged on the entry plan; the rule itself is
+`exa_character::record::CharacterData::ensure_underwear`), which records
+the entry makes and marks as new, the story presets and
 their settings keys (the first key per background, one shared character
 key), the free-create and entry plans (recruits are not filtered, story
 records lose their experience, every non-continued record is set to full
@@ -216,10 +217,13 @@ creator with the deferred-close and commit callbacks, the name warning
 keeps its `Character Name` / `Please name your character` box and code
 0xc1, the reset-to-portal and delete-confirmation dialogs take the creator
 as owner and centre at -1, and the icon sheet carries the 0x203 word, the
-`0x0100_2008` flags, the 32-slot word and the four 96-pixel cells cut at
+`0x0100_2008` flags, an icon size of eight GUI units and the four 96-pixel cells cut at
 288, 192, 96 and 0 from the 96 by 384 sheet. The creator form's opening (cursor clear, task removal, three
-input actions) and the equipment page's back switch (the first panel
-hidden, the skills slide 0x2d, the two tab words cleared) are modelled, as
+input actions) and the equipment page's back switch (the first built of
+the weapons, skills and lobby forms hidden, the skills slide 0x2d only when
+it is the one hidden, the versus forms hidden, and a non-continued
+character's appearance panels shown again with both tab words set to
+0x110) are modelled, as
 is the equipment page's layout: the preview frame, the 172-wide apparel
 and weapon panels and the 216-wide skills panel. The look a record carries
 (skin tone, hair style and colour, beards, normal-map layers, the look

@@ -968,8 +968,9 @@ placeholder (31) from the first two hands. Each of those three filters
 empties the carried list; a named story background and the other modes
 are left as they are. After the filter every record but a recruited or
 continued one gets the underwear pass: a record whose profession word has
-no race band (bits 8 through 15) and whose worn items' database records
-none carries flag `0x2` has the braies (item 8, no flags) appended. The
+no race band (bits 8 through 15) and whose worn items' apparel records
+none carries flag `0x2` has the braies (item 8, no flags) appended (the
+same rule the arena's loadouts use). The
 skills are six slots of a `u16` points word and
 six technique bytes; the free creator writes Close Combat, Armour and
 Shields to 25000 points and their first five techniques, leaving the other
