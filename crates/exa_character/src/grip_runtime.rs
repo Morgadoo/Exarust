@@ -107,6 +107,9 @@ pub fn animate_grips(
                 holder_body,
             );
         }
+        if links.relaxing {
+            links.relax();
+        }
         let before = links.flipped;
         let attacking = *condition == Condition::ATTACKING;
         links.flip_step(item_body, attacking);
