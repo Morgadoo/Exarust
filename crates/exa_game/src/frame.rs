@@ -751,12 +751,16 @@ impl DeferredCalls {
 /// divided by the counter's frequency (truncating, so a tick short of a
 /// millisecond does not round up). A negative elapsed time divides toward
 /// zero. The frequency is never zero in the original (it is read once at
-/// start-up); zero answers zero here instead of dividing.
+/// start-up); zero answers zero here instead of dividing, and the one
+/// overflowing quotient wraps instead of faulting.
 pub fn elapsed_ms(counter: i64, start: i64, frequency: i64) -> i64 {
     if frequency == 0 {
         return 0;
     }
-    counter.wrapping_sub(start).wrapping_mul(1000) / frequency
+    counter
+        .wrapping_sub(start)
+        .wrapping_mul(1000)
+        .wrapping_div(frequency)
 }
 
 /// The original's sleep: zero yields the processor, anything else sleeps on
