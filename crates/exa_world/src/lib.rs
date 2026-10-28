@@ -2001,6 +2001,8 @@ mod tests {
             yaw: 0.0,
             condition: 0,
             pose: exa_formats::characters::SavedPose::None,
+            motion: None,
+            ai_home: None,
         }
     }
 
