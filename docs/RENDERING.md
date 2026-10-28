@@ -774,7 +774,8 @@ the merge and gives each step's built material group as a
 into the file's vertex streams and merges them, and `model::run_mesh` makes
 one sub-mesh per material run. Each run is drawn as its own entity bound to
 the character's skeleton, the body's root part as joint 0; the body parts
-the merged mesh replaced stop drawing. Held items, hair and cloth keep
+the merged mesh replaced, and the body slots a garment covers, stop
+drawing. Held items, hair and cloth keep
 their own draw. No shipped material carries the occlusion mark and the
 built meshes keep neither vertex slot masks nor triangle flags, so the cull
 and occlusion passes do nothing on shipped data.

@@ -3758,6 +3758,92 @@ mod tests {
         assert!(built.attribute(Mesh::ATTRIBUTE_UV_0).is_some());
     }
 
+    /// A built part turns back into the merge's streams: its positions,
+    /// normals, UVs, weights and indices; two materials become two runs of
+    /// the merged mesh, each with its own vertices and its handle, and
+    /// `run_mesh` slices them back into drawable sub-meshes.
+    #[test]
+    fn built_parts_merge_into_one_mesh_and_its_runs() {
+        use bevy::mesh::VertexAttributeValues;
+        let triangle = |offset: f32, joint: u16| {
+            Mesh::new(
+                PrimitiveTopology::TriangleList,
+                RenderAssetUsages::default(),
+            )
+            .with_inserted_attribute(
+                Mesh::ATTRIBUTE_POSITION,
+                vec![
+                    [offset, 0.0, 0.0],
+                    [offset + 1.0, 0.0, 0.0],
+                    [offset, 1.0, 0.0],
+                ],
+            )
+            .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0.0, 0.0, 1.0]; 3])
+            .with_inserted_attribute(
+                Mesh::ATTRIBUTE_UV_0,
+                vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
+            )
+            .with_inserted_attribute(
+                Mesh::ATTRIBUTE_JOINT_INDEX,
+                VertexAttributeValues::Uint16x4(vec![[joint, 0, 0, 0]; 3]),
+            )
+            .with_inserted_attribute(Mesh::ATTRIBUTE_JOINT_WEIGHT, vec![[1.0, 0.0, 0.0, 0.0]; 3])
+            .with_inserted_indices(Indices::U32(vec![0, 1, 2]))
+        };
+        let first = triangle(0.0, 3);
+        let second = triangle(10.0, 7);
+        let first_handle = Handle::<ExaMaterial>::default();
+        let second_handle = Handle::<ExaMaterial>::default();
+        let parts = [
+            DressedPart {
+                mesh: &first,
+                frame: crate::merge::IDENTITY,
+                bone: 3,
+                material: "cloth",
+                handle: first_handle.clone(),
+                cull: 0,
+            },
+            DressedPart {
+                mesh: &second,
+                frame: crate::merge::IDENTITY,
+                bone: 7,
+                material: "leather",
+                handle: second_handle.clone(),
+                cull: 0,
+            },
+        ];
+        let merged = merge_dressed(&parts).expect("two parts");
+        let names: Vec<&str> = merged
+            .merged
+            .subobjects
+            .iter()
+            .map(|s| s.material.as_str())
+            .collect();
+        assert_eq!(names, ["cloth", "leather"]);
+        assert_eq!(merged.merged.mesh.positions.len(), 6);
+        assert_eq!(merged.merged.mesh.indices, [0, 1, 2, 3, 4, 5]);
+        assert_eq!(merged.materials.len(), 2);
+        let skin = merged.merged.mesh.skin.as_ref().unwrap();
+        assert_eq!(skin[0].bones[0], 3);
+        assert_eq!(skin[3].bones[0], 7);
+        // Each run is its own compact sub-mesh, its indices rebased.
+        for (run, expected) in merged.merged.subobjects.iter().zip([0.0f32, 10.0]) {
+            let mesh = run_mesh(&merged.merged, run).expect("a run");
+            assert_eq!(mesh.count_vertices(), 3);
+            let positions = mesh.attribute(Mesh::ATTRIBUTE_POSITION).unwrap();
+            assert_eq!(positions.as_float3().unwrap()[0], [expected, 0.0, 0.0]);
+            assert_eq!(
+                mesh.indices().unwrap().iter().collect::<Vec<_>>(),
+                [0, 1, 2]
+            );
+            let joints = mesh.attribute(Mesh::ATTRIBUTE_JOINT_INDEX).unwrap();
+            let VertexAttributeValues::Uint16x4(joints) = joints else {
+                panic!("joints");
+            };
+            assert_eq!(joints[0][0], if expected == 0.0 { 3 } else { 7 });
+        }
+    }
+
     /// The shipped human body merges into one mesh with its material runs
     /// (skipped without the game): every index is in range and every
     /// vertex's weights sum to one.

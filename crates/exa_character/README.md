@@ -157,7 +157,8 @@ physique values and the body morphs they select remain the body's concern
   `model::merge_dressed`, which merges the built parts and spawns one
   sub-mesh per material run, bound to the character's skeleton with the
   root part as joint 0. The body nodes the merged mesh replaced stop
-  drawing. Held items, hair and cloth stay as they are drawn today; no
+  drawing, and so do the body slots a garment covers (they are left out of
+  the plan). Held items, hair and cloth stay as they are drawn today; no
   shipped material carries the occlusion mark, and the built meshes keep
   no vertex slot masks or triangle flags, so the cull and occlusion
   passes do nothing on shipped data (both stay tested rules).

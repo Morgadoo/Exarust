@@ -837,6 +837,17 @@ fn spawn_merged_character(
     let Some(assembled) = dress::assemble(body_model, &worn) else {
         return false;
     };
+    // A body whose node names number no slots (the demons) cannot be
+    // planned by the slot passes; it keeps the per-node draw.
+    let slotted = assembled
+        .body
+        .nodes
+        .iter()
+        .filter(|n| (1..=18).contains(&n.slot))
+        .count();
+    if slotted < 15 {
+        return false;
+    }
     // The skin run takes the character's composited skin when it is ready,
     // else the race maps plus tone.
     let skin = match (skin_look, skin_job) {
@@ -970,7 +981,18 @@ fn spawn_merged_character(
             mesh: loader.meshes.add(run_mesh),
         });
     }
-    // The body parts the merged mesh replaced are no longer drawn.
+    // The body parts the merged mesh replaced, and the body slots a
+    // garment covers (left out of the plan), are no longer drawn. A body
+    // node outside the eighteen slots (an overlay) keeps its own draw.
+    for (i, node) in body_model.nodes.iter().enumerate() {
+        if node.parts.is_empty() || node.cloth || merged_body_nodes.contains(&i) {
+            continue;
+        }
+        let slot = assembled.body.nodes[i].slot;
+        if (1..=18).contains(&slot) && !assembled.plan.steps.iter().any(|step| step.node == i) {
+            merged_body_nodes.push(i);
+        }
+    }
     for node in merged_body_nodes {
         let Some(&entity) = node_entities.get(&body_model.nodes[node].name) else {
             continue;

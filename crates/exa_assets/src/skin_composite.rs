@@ -556,6 +556,83 @@ mod tests {
         assert_eq!(bound_normal_layers(&six).len(), 5);
     }
 
+    /// The job's two seed offsets move the race-map sample: a map black on
+    /// its left half and white on its right half reads black at the middle
+    /// without an offset and white half a map to the right, wrapping.
+    #[test]
+    fn the_job_offsets_move_the_race_map_sample() {
+        let mut rgba = Vec::new();
+        for _y in 0..4 {
+            for x in 0..4 {
+                let v = if x < 2 { 0 } else { 255 };
+                rgba.extend_from_slice(&[v, v, v, 255]);
+            }
+        }
+        let colour = Texels {
+            width: 4,
+            height: 4,
+            rgba,
+        };
+        let flat = tex(4, 4, [128, 128, 128, 255]);
+        let plain =
+            compose_with_offsets(1, 1, [1.0; 3], &colour, &flat, &flat, &[], None, [0.0, 0.0]);
+        let moved = compose_with_offsets(
+            1,
+            1,
+            [1.0; 3],
+            &colour,
+            &flat,
+            &flat,
+            &[],
+            None,
+            [0.25, 0.0],
+        );
+        // The middle texel's sample straddles the halves: 0.25 across is
+        // the first white column.
+        assert!(plain.colour[0] < moved.colour[0]);
+        assert_eq!(moved.colour[0], 255);
+        assert_eq!(plain.colour[0], 128);
+    }
+
+    /// The cache key carries every value the maps read: two jobs of one race
+    /// with different seeds or tones are different keys, and an equal job
+    /// repeats its key.
+    #[test]
+    fn the_composite_key_covers_the_look() {
+        let job = SkinCompositeJob {
+            stem: "human".into(),
+            tone: [0x8000, 0x8000],
+            seed: 1,
+            uv_offset: [0.0, 0.0],
+            colour: Some("humandifm".into()),
+            gloss: Some("humanspcm".into()),
+            base_normal: Some("humannrmm0".into()),
+            layers: vec![(0.5, "humannrmm1".into())],
+            beard: None,
+            side: 512,
+        };
+        assert_eq!(job.key(), job.clone().key());
+        let mut other = job.clone();
+        other.seed = 2;
+        assert_ne!(job.key(), other.key());
+        other = job.clone();
+        other.tone = [0x8000, 0x8001];
+        assert_ne!(job.key(), other.key());
+        other = job.clone();
+        other.side = 1024;
+        assert_ne!(job.key(), other.key());
+        other = job.clone();
+        other.layers[0].0 = 0.25;
+        assert_ne!(job.key(), other.key());
+        other = job.clone();
+        other.beard = Some(SkinBeard {
+            colour: "bearda01d.rfi".into(),
+            normal: "bearda01n.rfi".into(),
+            tint: [0.3; 3],
+        });
+        assert_ne!(job.key(), other.key());
+    }
+
     /// A 1×1 composite: the tone multiplies the stored texel, the gloss
     /// packs, and the maps' bytes are the rounded quantised results.
     #[test]

@@ -273,6 +273,9 @@ pub fn assemble(body_model: &Model, garments: &[WornModel<'_>]) -> Option<Assemb
         }
         body.refresh_links();
         garment_bases.push(base);
+        // The item's model hangs under the character's root node, so its
+        // tree's own root takes the body root's frame.
+        body.nodes[base].world = body.nodes[root].world;
         let roots: Vec<usize> = (0..garment.model.nodes.len())
             .filter(|&i| garment.model.nodes[i].parent.is_none())
             .map(|i| i + base)
@@ -280,6 +283,17 @@ pub fn assemble(body_model: &Model, garments: &[WornModel<'_>]) -> Option<Assemb
         let mut seen = 0;
         for &r in &roots {
             seen |= body.reframe_from_slots(r, &slot_world);
+            // A one-node garment's mesh is the tree's own root: the file's
+            // re-framing pass always has a parent to read, so its root
+            // takes the slot frame directly here.
+            let slot = crate::runtime::frame_slot(&body.nodes[r].name);
+            if body.nodes[r].parent.is_none()
+                && slot <= 18
+                && let Some(frame) = slot_world[slot]
+            {
+                body.nodes[r].world = frame;
+                seen |= 1 << (slot - 1);
+            }
         }
         worn.push(WornGarment {
             roots,
@@ -605,6 +619,79 @@ mod tests {
         // The head's impact material is the helm's own (plate, 4).
         assert_eq!(helm.armour.unwrap().material, 4);
         assert_eq!(plan.slot_material[9], helm.armour.unwrap().material);
+    }
+
+    /// A built body and garment assemble: the garment's node re-frames on
+    /// the body's slot frame, the merge list puts it before the body's
+    /// visible slots, and the frame the merge places it by is the body
+    /// part's own (the pelvis at 1 m and the belly 10 cm above it).
+    #[test]
+    fn a_built_body_and_garment_assemble_on_the_slot_frames() {
+        use bevy::prelude::Transform;
+
+        fn built(
+            name: &str,
+            parent: Option<usize>,
+            translation: [f32; 3],
+            mesh: bool,
+        ) -> exa_assets::ModelNode {
+            exa_assets::ModelNode {
+                name: name.into(),
+                parent,
+                transform: Transform::from_translation(translation.into()),
+                parts: Vec::new(),
+                part_materials: Vec::new(),
+                skin_bone: Some(1),
+                light: None,
+                voxel_light: None,
+                fire: None,
+                portal: None,
+                bounds: (bevy::prelude::Vec3::ZERO, 0.0),
+                half_extents: bevy::prelude::Vec3::ZERO,
+                gi_points: Default::default(),
+                rigid: None,
+                tracks: Vec::new(),
+                shadow_bias: 0,
+                is_skin: false,
+                placeholder: false,
+                cloth: false,
+                mesh,
+                render_flags: 0,
+            }
+        }
+        let body = Model {
+            nodes: vec![
+                built("01Pelvis", None, [0.0, 1.0, 0.0], true),
+                built("08Belly", Some(0), [0.0, 0.1, 0.0], true),
+            ],
+        };
+        let garment = Model {
+            nodes: vec![built("0800Belly", None, [0.0, 0.0, 0.0], true)],
+        };
+        let mut occupancy = [0u64; 18];
+        occupancy[7] = 1;
+        let mut coverage = [0u64; 18];
+        coverage[7] = 1;
+        let worn = WornModel {
+            model: &garment,
+            occupancy,
+            coverage,
+            material: 2,
+        };
+        let assembled = assemble(&body, &[worn]).expect("a body with a root");
+        let nodes: Vec<usize> = assembled.plan.steps.iter().map(|s| s.node).collect();
+        // The garment's belly node, then the body's pelvis and belly.
+        assert_eq!(nodes, [2, 0, 1]);
+        assert_eq!(assembled.model_of(assembled.plan.steps[0]), (1, 0));
+        assert_eq!(assembled.model_of(assembled.plan.steps[1]), (0, 0));
+        // The garment node sits on the belly's world frame: 1.1 m up.
+        let frame = assembled.body.nodes[2].world;
+        assert!((frame[3][1] - 1.1).abs() < 1e-5, "{frame:?}");
+        assert_eq!(assembled.plan.slot_material[7], 2);
+        // The frames compose down the body's tree.
+        let frames = model_frames(&body);
+        assert_eq!(frames[0][3], [0.0, 1.0, 0.0]);
+        assert_eq!(frames[1][3], [0.0, 1.1, 0.0]);
     }
 
     /// One of `exanima01`'s living characters, dressed from its own record
