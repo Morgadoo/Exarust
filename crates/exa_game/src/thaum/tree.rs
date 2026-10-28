@@ -734,6 +734,9 @@ pub struct TreeScreen {
     pub choice_stamp: u32,
     /// The node under the pointer, one-based.
     pub node_under: i32,
+    /// The link the last hover or press named: bits 16 to 30 hold it
+    /// one-based and bit 21 marks an incoming link.
+    pub link_focus: u32,
     /// The node (0-based) a pick or a drop last flashed, or -1.
     pub flash: i32,
     /// When the flash ends.
@@ -920,6 +923,7 @@ impl TreeScreen {
             shown_choice: 0,
             choice_stamp: 0,
             node_under: 0,
+            link_focus: 0,
             flash: -1,
             flash_until: 0,
             learn_until: 0,
@@ -1512,7 +1516,71 @@ impl TreeScreen {
                 }
                 3
             }
-            DragState::MoveNode | DragState::MoveLink => 3,
+            DragState::MoveNode => {
+                // A node follows the pointer: its placed point is the
+                // pointer less the grab offset the press stored (the
+                // original keeps that offset in the same pair a pan uses;
+                // that the press hands a node grab rather than the pan is
+                // a labelled guess), and its base place is worked back from
+                // the shown pan and zoom at a tenth of the pixel scale.
+                let Some(node) = self.node_under.checked_sub(1) else {
+                    return 3;
+                };
+                let node = node as usize;
+                if node >= self.nodes.len() {
+                    return 3;
+                }
+                let placed = [
+                    (x as i64 - self.drag_origin[0] as i64) as f32,
+                    (y as i64 - self.drag_origin[1] as i64) as f32,
+                ];
+                self.placed[node] = placed;
+                self.base[node] = [
+                    ((placed[0] - self.shown_pan[0]) / self.shown_zoom) * 0.1,
+                    ((placed[1] - self.shown_pan[1]) / self.shown_zoom) * 0.1,
+                ];
+                self.nodes[node].x = self.base[node][0];
+                self.nodes[node].y = self.base[node][1];
+                3
+            }
+            DragState::MoveLink => {
+                // A link's turn follows the pointer: the outgoing turn is
+                // measured about its owner, the incoming one about the node
+                // the link ends on. The link is the one the last hover named
+                // (bits 16 to 30 hold it one-based, bit 21 the incoming
+                // side).
+                let Some(node) = self.node_under.checked_sub(1) else {
+                    return 3;
+                };
+                let node = node as usize;
+                let at = ((self.link_focus & 0x000f_0000) >> 16) as usize;
+                let Some(link) = at.checked_sub(1) else {
+                    return 3;
+                };
+                if node >= self.nodes.len() || link >= self.nodes[node].links.len() {
+                    return 3;
+                }
+                let (centre, incoming) = if self.link_focus & focus::INCOMING as u32 == 0 {
+                    (self.placed[node], false)
+                } else {
+                    let end = self.links[node][link].end as usize;
+                    if end < 1 || end > self.placed.len() {
+                        return 3;
+                    }
+                    (self.placed[end - 1], true)
+                };
+                let turn = link_angle(centre[0], centre[1], x, y) / std::f32::consts::TAU;
+                self.link_turn = turn;
+                let word = turn.to_le_bytes();
+                if incoming {
+                    self.links[node][link].in_turn = turn;
+                    self.nodes[node].links[link][4..8].copy_from_slice(&word);
+                } else {
+                    self.links[node][link].out_turn = turn;
+                    self.nodes[node].links[link][0..4].copy_from_slice(&word);
+                }
+                3
+            }
             DragState::LinkHover | DragState::Link => {
                 let Some(node) = self.node_under.checked_sub(1) else {
                     return 3;
@@ -1577,7 +1645,9 @@ impl TreeScreen {
         let pointer = self.pointer;
         let delta = [pointer[0] - start[0], pointer[1] - start[1]];
         let length = (delta[0] * delta[0] + delta[1] * delta[1]).sqrt();
-        let capped = if length >= 400.0 { 400.0 } else { length };
+        // `COMISS`/`JC`: only a length below 400 is kept; equal or above,
+        // and a not-a-number, take the cap.
+        let capped = if length < 400.0 { length } else { 400.0 };
         let unit = if length == 0.0 {
             [0.0, 0.0]
         } else {
@@ -1591,12 +1661,12 @@ impl TreeScreen {
             unit[0] * capped * self.shown_zoom,
             unit[1] * capped * self.shown_zoom,
         ];
-        let out_step = 2.0 / 30.0;
-        let start_handle = [start[0] - out[0] * out_step, start[1] - out[1] * out_step];
-        let end_handle = [
-            pointer[0] + in_[0] * out_step,
-            pointer[1] + in_[1] * out_step,
-        ];
+        // The spline's first and last control points: one tangent step
+        // (two thirtieths, worked out in double) beyond each end.
+        let out_step = (-2.0_f64 / 30.0) as f32;
+        let on_step = (2.0_f64 / 30.0) as f32;
+        let start_handle = [start[0] + out[0] * out_step, start[1] + out[1] * out_step];
+        let end_handle = [pointer[0] + in_[0] * on_step, pointer[1] + in_[1] * on_step];
         let mut points = Vec::with_capacity(31);
         points.push(start);
         for step in 1..=30 {
@@ -4218,6 +4288,59 @@ mod tests {
         assert!((framed[0][1] - 73.472).abs() < 1e-4);
         screen.drag = DragState::Idle;
         assert!(screen.drag_link_points().is_none());
+    }
+
+    #[test]
+    fn an_edited_node_or_link_turn_follows_the_pointer() {
+        let mut screen = TreeScreen::from_nodes(
+            DOMAIN_MIND,
+            TreeMode::Play,
+            vec![node(0x101, vec![link_to(2)]), node(0x102, vec![])],
+        );
+        screen.shown_zoom = 1.0;
+        screen.shown_pan = [0.0, 0.0];
+        screen.base[0] = [10.0, 20.0];
+        screen.base[1] = [50.0, 50.0];
+        screen.refresh_placement();
+        assert_eq!(screen.placed[0], [100.0, 200.0]);
+
+        // A moved node: the pointer less the grab offset, and the base
+        // place worked back at a tenth of the pixel scale.
+        screen.drag = DragState::MoveNode;
+        screen.node_under = 1;
+        screen.drag_origin = [3.0, 4.0];
+        assert_eq!(screen.drag_move(103.0, 204.0, 0), 3);
+        assert_eq!(screen.placed[0], [100.0, 200.0]);
+        assert_eq!(screen.base[0], [10.0, 20.0]);
+        assert_eq!((screen.nodes[0].x, screen.nodes[0].y), (10.0, 20.0));
+
+        // The outgoing turn is measured about the link's owner: straight
+        // below the owner is turn zero.
+        screen.drag = DragState::MoveLink;
+        screen.link_focus = 1 << 16;
+        screen.node_under = 1;
+        assert_eq!(screen.drag_move(100.0, 300.0, 0), 3);
+        assert_eq!(screen.links[0][0].out_turn, 0.0);
+        assert_eq!(screen.link_turn, 0.0);
+        assert_eq!(
+            screen.nodes[0].links[0][0..4],
+            screen.link_turn.to_le_bytes()
+        );
+
+        // An incoming turn is measured about the node the link ends on.
+        screen.link_focus = 1 << 16 | focus::INCOMING as u32;
+        assert_eq!(screen.drag_move(500.0, 600.0, 0), 3);
+        assert_eq!(screen.links[0][0].in_turn, 0.0);
+        assert_eq!(
+            screen.nodes[0].links[0][4..8],
+            screen.link_turn.to_le_bytes()
+        );
+
+        // A link index the node does not have changes nothing.
+        screen.link_focus = 9 << 16;
+        let before = screen.links[0][0];
+        assert_eq!(screen.drag_move(0.0, 300.0, 0), 3);
+        assert_eq!(screen.links[0][0], before);
     }
 
     #[test]
