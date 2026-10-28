@@ -459,8 +459,10 @@ fraction and the 80 cm pixel radius at the bone's depth) and its raised
 surface, the gamepad aim's `250·|aim| + 50` cm point and its
 `(0.4·AimSpeed + 0.1)²` ease, the 12 m contact list and its 12-entry
 eviction, the strongest engaged enemy (the enemy's own contact score for
-the player over 2), the character nearest the cursor on screen, and the
-attack timing. The gamepad's aim runs through the eased world cursor each
+the player over 2), the auto-target (the visible opponent within 500 cm
+maximising `(500 − d)(cos + 0.5)` from a best of zero), the look snap
+beyond 30° and the pin-cursor aim step of 0.1π a tick, the character
+nearest the cursor on screen, and the attack timing. The gamepad's aim runs through the eased world cursor each
 behaviour tick (`player::AimCursor`, read by `player_combat`), and an
 attack records the timing when it starts (the strength's drain, the
 expected end and the recovery, from the primary's recoil); a new attack

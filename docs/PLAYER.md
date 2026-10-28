@@ -1006,6 +1006,19 @@ functions with no caller yet:
   swing's overhead and Feint keep their timing. The fists' 0.1 recoil at
   full energy give a 0.285 step, a 44 ms expected end and 330 ms of
   recovery at full balance.
+- **Auto-target.** The visible opponent within 500 cm whose
+  `(500 − d)·(δ·cursor/d + 0.5)` is the largest, strictly over the best
+  from zero (so a zero, negative or NaN score never wins), the first on a
+  tie; the target is dropped when it dies, and the stance picks 3
+  (Defence) or 4 (Cmbt - Idle) from it (350 cm × the target's scale, or
+  3 s since the player's attack, and the energy within 0.05 of the most)
+  (`auto_target`; the stance rule is `exa_combat::stance::player_stance`).
+- **Look.** Over 30° from the cursor's direction the look snaps to it
+  (`look_snap`). A pin-cursor frame turns the aim yaw toward the camera by
+  at most 0.1π a tick and wraps it into ±π (`step_aim_yaw`). The cursor
+  follower itself is the same second-order one as the steering's
+  (`steering::CursorFollower`: error clamped to ±π/2, speed
+  `(speed + 0.015708·error)·0.7`, a speed under 1e-5 still).
 - **On screen.** The living character whose point shows nearest the cursor.
 
 ## The combat stance

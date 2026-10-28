@@ -11,9 +11,10 @@
 //! the comparisons and the branch order are pinned by tests; the running
 //! game feeds the gamepad aim's point and ease ([`crate::player`]) and
 //! records [`windup`] when an attack starts (its next-attack clock gates
-//! the following attack); the bone lock needs the behaviour's stored target
-//! and a screen read of its bones, which Exarust's stance does not keep as
-//! an entity.
+//! the following attack). The auto-target, look snap and pin-cursor aim
+//! step ([`auto_target`], [`look_snap`], [`step_aim_yaw`]) and the bone
+//! lock are tested rules: the stance keeps no target entity and no target
+//! bones are read to the screen.
 //!
 //! Evidence: the behaviour's aim point, gamepad aim, contacts, engaged
 //! enemy, screen-nearest character and attack timing, read in the
@@ -319,6 +320,100 @@ pub fn engaged(player_score: Option<f32>) -> bool {
     player_score.is_some_and(|s| s > ENGAGED_SCORE)
 }
 
+/// An opponent the auto-target considers: where it stands (cm), whether
+/// the view can see it and whether it is out of the scene (flag 0x800).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AimCandidate {
+    pub at: Vec3,
+    pub visible: bool,
+    pub skipped: bool,
+}
+
+/// The auto-target's reach (cm): the squared 250 000 of the original's
+/// 500 cm.
+pub const AUTO_TARGET_CM: f32 = 500.0;
+
+/// The auto-target: the visible opponent within 500 cm whose score
+/// `(500 − d)·(δ·cursor/d + 0.5)` is the highest, strictly over the best so
+/// far (the ordered compare, so a NaN never wins), the first on a tie.
+/// `player` is the player's chest point and `cursor` its direction to the
+/// cursor, both in the body's frame as the original takes them. Returns its
+/// index.
+pub fn auto_target(
+    player: Vec3,
+    cursor: Vec3,
+    others: impl IntoIterator<Item = AimCandidate>,
+) -> Option<usize> {
+    // The original keeps the best score from zero here, so a score that is
+    // zero, negative or NaN never becomes the target.
+    let mut best = 0.0f32;
+    let mut found = None;
+    for (index, other) in others.into_iter().enumerate() {
+        if other.skipped || !other.visible {
+            continue;
+        }
+        let delta = other.at - player;
+        let d2 = (delta.y * delta.y + delta.x * delta.x) + delta.z * delta.z;
+        if !(d2 <= AUTO_TARGET_CM * AUTO_TARGET_CM) {
+            continue;
+        }
+        let d = d2.sqrt();
+        let dot = (delta.y * cursor.y + delta.x * cursor.x) + delta.z * cursor.z;
+        let score = (AUTO_TARGET_CM - d) * (dot / d + 0.5);
+        if best < score {
+            best = score;
+            found = Some(index);
+        }
+    }
+    found
+}
+
+/// The aim yaw one tick after a pin-cursor frame: the angle to `toward`,
+/// taken within ±π of `current`, moved by at most `step` (the original's
+/// 0.1π), then wrapped into ±π.
+pub fn step_aim_yaw(current: f32, toward: f32, step: f32) -> f32 {
+    let mut delta = toward - current;
+    if delta > std::f32::consts::PI {
+        delta -= std::f32::consts::TAU;
+    } else if delta < -std::f32::consts::PI {
+        delta += std::f32::consts::TAU;
+    }
+    let moving = if delta.abs() > step {
+        if delta >= 0.0 { step } else { -step }
+    } else {
+        delta
+    };
+    let out = current + moving;
+    if out > std::f32::consts::PI {
+        out - std::f32::consts::TAU
+    } else if out < -std::f32::consts::PI {
+        out + std::f32::consts::TAU
+    } else {
+        out
+    }
+}
+
+/// The look's yaw after a frame: over 30° from the cursor's direction, the
+/// look snaps to it (`step` false); within it, the look stays. The
+/// comparison is the original's signed difference, so a NaN keeps the
+/// look.
+pub fn look_snap(look: f32, cursor: f32) -> f32 {
+    let mut delta = cursor - look;
+    if delta > std::f32::consts::PI {
+        delta -= std::f32::consts::TAU;
+    } else if delta < -std::f32::consts::PI {
+        delta += std::f32::consts::TAU;
+    }
+    if delta.abs() > SNAP_LOOK {
+        cursor
+    } else {
+        look
+    }
+}
+
+/// The cone the look snaps within: 30°.
+const SNAP_LOOK: f32 = 0.523_598_8;
+
 /// The strongest engaged enemy in front within the player's reach plus
 /// 70 cm (`from` the player's point and `heading` its heading, cm): the
 /// squared distance within the reach's and at least 1, the dot with the
@@ -563,6 +658,99 @@ mod tests {
         assert_eq!(aim_lock_bones(0.8, head, &[], cursor, 50.0), (0.8, false));
         // 1000 px across, scale 1, 800 cm deep: 50 px.
         assert_eq!(bone_lock_radius(1000.0, 1.0, 800.0), 50.0);
+    }
+
+    /// The auto-target keeps the visible opponent within 500 cm whose
+    /// `(500 − d)(cos + 0.5)` is highest: a nearer one ahead beats a farther
+    /// one, one behind scores negative, and an invisible, skipped or far one
+    /// never wins.
+    #[test]
+    fn the_auto_target_scores_by_distance_and_cursor() {
+        let others = [
+            AimCandidate {
+                at: Vec3::new(0.0, 0.0, 300.0),
+                visible: true,
+                skipped: false,
+            },
+            AimCandidate {
+                at: Vec3::new(0.0, 0.0, 100.0),
+                visible: true,
+                skipped: false,
+            },
+            AimCandidate {
+                at: Vec3::new(0.0, 0.0, -100.0),
+                visible: true,
+                skipped: false,
+            },
+        ];
+        // A at 300 scores (200)(1.5) = 300; the nearer B (400)(1.5) = 600;
+        // C behind (400)(-0.5) = -200.
+        assert_eq!(auto_target(Vec3::ZERO, Vec3::Z, others), Some(1));
+        // Beyond 500 cm, invisible, or out of the scene: none.
+        for other in [
+            AimCandidate {
+                at: Vec3::new(0.0, 0.0, 501.0),
+                visible: true,
+                skipped: false,
+            },
+            AimCandidate {
+                at: Vec3::new(0.0, 0.0, 100.0),
+                visible: false,
+                skipped: false,
+            },
+            AimCandidate {
+                at: Vec3::new(0.0, 0.0, 100.0),
+                visible: true,
+                skipped: true,
+            },
+        ] {
+            assert_eq!(auto_target(Vec3::ZERO, Vec3::Z, [other]), None);
+        }
+        // Exactly 500 cm is in reach, but its score is 0: not over the
+        // zero the best starts from.
+        assert_eq!(
+            auto_target(
+                Vec3::ZERO,
+                Vec3::Z,
+                [AimCandidate {
+                    at: Vec3::new(0.0, 0.0, 500.0),
+                    visible: true,
+                    skipped: false,
+                }]
+            ),
+            None
+        );
+        // A NaN direction never wins: no candidate.
+        assert_eq!(
+            auto_target(
+                Vec3::ZERO,
+                Vec3::new(f32::NAN, 0.0, 1.0),
+                [AimCandidate {
+                    at: Vec3::new(0.0, 0.0, 100.0),
+                    visible: true,
+                    skipped: false,
+                }]
+            ),
+            None
+        );
+    }
+
+    /// The pin-cursor aim steps at most 0.1π a tick and wraps into ±π; the
+    /// look snaps to the cursor once it is over 30° off.
+    #[test]
+    fn the_pin_aim_and_the_look_snap() {
+        let step = std::f32::consts::PI * 0.1;
+        assert!((step_aim_yaw(0.0, 1.0, step) - step).abs() < 1e-6);
+        assert!((step_aim_yaw(0.0, 0.1, step) - 0.1).abs() < 1e-6);
+        assert!((step_aim_yaw(0.0, -1.0, step) + step).abs() < 1e-6);
+        // 3.1 to −3.1 is a +0.083 step the short way, which wraps to −3.1.
+        assert!((step_aim_yaw(3.1, -3.1, step) + 3.1).abs() < 1e-5);
+        // A NaN keeps the yaw (the ordered compares all fail).
+        assert!(step_aim_yaw(0.5, f32::NAN, step).is_nan());
+        assert_eq!(look_snap(0.0, 0.53), 0.53);
+        assert_eq!(look_snap(0.0, 0.52), 0.0);
+        assert_eq!(look_snap(0.0, -0.53), -0.53);
+        assert_eq!(look_snap(0.0, 0.523_598_8), 0.0);
     }
 
     /// A raised surface under the cursor replaces the aim point when it is
