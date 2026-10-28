@@ -1271,10 +1271,10 @@ character body's possession routines; addresses are in the research notes.
   nearest, ties to even), subtracts the wheel in 120-unit notches of
   0.008333334 levels, holds the level between 0 and 5 (the processor's
   max-then-min, so a NaN holds at the least) and writes `level · range/5 +
-  min`; one notch of Bevy's scroll line is 120 units
-  (`exa_game::nav_drag::zoom_detents`).
+  min`; one notch of Bevy's scroll line is 120 units, and a touchpad's
+  pixels count 24 to the notch (Exarust's guess) (`exa_game::nav_drag::zoom_detents`).
 - **The zoom's pitch offset.** When the preset gives the controller an
-  amplitude (field `0x164`, set outside this unit), each zoom change
+  amplitude (a controller field set outside this unit), each zoom change
   computes `t = 1 − (zoom − min)/(max − min)` and sets the pitch offset to
   `exp(3·ln t) · amplitude`, the engine's fast logarithm and exponential,
   and lowers the pitch to `−offset` when that is steeper

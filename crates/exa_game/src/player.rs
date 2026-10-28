@@ -19,7 +19,7 @@
 //! player stands in its guard until a target comes close or it attacks
 //! (`exa_combat::stance`).
 
-use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll};
+use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll, MouseScrollUnit};
 use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 use exa_anim::Stature;
@@ -1735,7 +1735,14 @@ pub(crate) fn chase_camera(
         if scroll.delta.y != 0.0 {
             // The wheel's handler reads the zoom as a stop level, subtracts
             // the notch in 120-unit steps and holds it below the sixth stop.
-            let units = (scroll.delta.y * crate::nav_drag::WHEEL_UNITS_PER_NOTCH).round() as i32;
+            // A line is one notch; a touchpad's pixels are read at 24 to the
+            // notch (Exarust's guess, the map panel's line height) so a
+            // pixel delta does not jump the zoom to an end stop.
+            let notches = match scroll.unit {
+                MouseScrollUnit::Line => scroll.delta.y,
+                MouseScrollUnit::Pixel => scroll.delta.y / 24.0,
+            };
+            let units = (notches * crate::nav_drag::WHEEL_UNITS_PER_NOTCH).round() as i32;
             cam.zoom = crate::nav_drag::zoom_detents(cam.zoom, units, ZOOM_MIN, ZOOM_MAX);
         }
         if pad_status.as_ref().is_some_and(|s| s.active())
