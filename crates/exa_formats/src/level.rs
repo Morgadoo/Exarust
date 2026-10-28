@@ -490,9 +490,12 @@ mod tests {
         let g = read_grid(&b).unwrap();
         assert_eq!(g.floor_sets, ["GEFS_A", "GEFS_B"]);
         assert_eq!((g.width, g.height), (2, 1));
+        // A one-row grid's plane A ends as the loader's last corner writes,
+        // whatever the file stored.
+        assert_eq!(g.edges, [0x0132_0770, 0x1320_7700]);
         let c = g.cell(1, 0).unwrap();
-        assert_eq!((g.edge(c, 0), g.edge(c, 3)), (7, 7));
-        assert_eq!(g.edge(c, 1), 0);
+        assert_eq!((g.edge(c, 0), g.edge(c, 1)), (0, 0));
+        assert_eq!((g.edge(c, 2), g.edge(c, 3)), (7, 7));
         assert_eq!(g.plane_c, [3, 4]);
         assert!(g.cell(2, 0).is_none());
     }
