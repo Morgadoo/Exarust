@@ -998,16 +998,16 @@ pub struct MeshGroup {
     pub index_count: u32,
 }
 
-/// A handler for chunk tags this reader does not know, as the original's
-/// registry (`0x1001c5e80`) holds them: the tag, the chunk's body, and
-/// whether the handler took it. A handler is registered once and is called
-/// for a root chunk or a node sub-chunk of its tag.
+/// A node sub-chunk handler, as the original's registry holds them: the
+/// tag, the chunk's body, and whether the handler took it.
 pub type ChunkHandler = fn(u32, &[u8]) -> bool;
 
-/// The registered unknown-chunk handlers, in registration order. The
-/// original appends a tag and a callback and dispatches the first tag that
-/// matches; Exarust's reader keeps the same order and the same first-match
-/// rule.
+/// The registered node sub-chunk handlers, in registration order. The
+/// original appends a tag and a callback per registration; in the reader
+/// mode that uses them, every node's sub-chunks go to the first handler of
+/// their tag instead of the reader's own sub-chunk loop (root chunks never
+/// reach it). Exarust's game registers none, so `Scene::parse` reads as
+/// before.
 #[derive(Default)]
 pub struct ChunkHandlers {
     entries: Vec<(u32, ChunkHandler)>,
@@ -1016,6 +1016,11 @@ pub struct ChunkHandlers {
 impl ChunkHandlers {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Whether no handler is registered.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
     }
 
     /// Registers a handler. A tag registered twice keeps both, the first
@@ -1035,14 +1040,15 @@ impl ChunkHandlers {
 }
 
 impl Scene {
-    /// Parses a file with no unknown-chunk handlers (the original's default
-    /// registry is empty until other units register theirs).
+    /// Parses a file with the reader's own sub-chunk loop.
     pub fn parse(b: &[u8]) -> Result<Self> {
         Self::parse_with(b, &ChunkHandlers::new())
     }
 
-    /// Parses a file, handing every unknown root chunk and node sub-chunk to
-    /// `handlers` after recording its tag.
+    /// Parses a file; with handlers registered, every node sub-chunk goes to
+    /// the first handler of its tag in place of the reader's own sub-chunk
+    /// loop (the original's registry mode). An empty registry reads as
+    /// [`Scene::parse`].
     pub fn parse_with(b: &[u8], handlers: &ChunkHandlers) -> Result<Self> {
         let mut c = Cursor::new(b);
         if c.u16()? != SANITY {
@@ -1108,7 +1114,6 @@ impl Scene {
                 }
             } else {
                 unknown_chunks.push(tag);
-                handlers.dispatch(tag, chunk.b);
             }
         }
         Ok(Self {
@@ -1279,9 +1284,12 @@ fn read_sub_chunks(c: &mut Cursor<'_>, handlers: &ChunkHandlers) -> SubChunks {
         let Ok((tag, mut sub)) = c.chunk() else {
             break;
         };
+        if !handlers.is_empty() {
+            handlers.dispatch(tag, sub.b);
+            continue;
+        }
         if !KNOWN_SUB_CHUNKS.contains(&tag) {
             out.unknown.push(tag);
-            handlers.dispatch(tag, sub.b);
         }
         if tag == RIGID_BODY && out.rigid_body.is_none() {
             out.rigid_body = Some(RigidBody::parse(sub.b).map_err(|e| e.to_string()));
@@ -3744,29 +3752,36 @@ mod tests {
     }
 
     #[test]
-    fn unknown_chunk_handlers_take_their_tag() {
+    fn registered_handlers_take_every_node_sub_chunk() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         static SEEN: AtomicUsize = AtomicUsize::new(0);
         fn handler(tag: u32, body: &[u8]) -> bool {
-            if tag == 0x1234_5678 && body == [9, 8, 7] {
+            if tag == 0x1234_5678 && body == [9, 8, 7, 6] {
                 SEEN.fetch_add(1, Ordering::SeqCst);
-                true
-            } else {
-                false
             }
+            true
         }
+        let mut sector = node_with("Sector", 0, &[]);
+        sector.extend(chunk(0x1234_5678, &[9, 8, 7, 6]));
+        let file = {
+            let mut list = u32s(&[1]);
+            list.extend(chunk(NODE_SECTOR, &sector));
+            let mut file = vec![0xCF, 0xAF, 0x23, 0x3D];
+            file.extend(chunk(NODE_LIST, &list));
+            // A root chunk never reaches the registry.
+            file.extend(chunk(0x1234_5678, &[9, 8, 7, 6]));
+            file
+        };
         let mut handlers = ChunkHandlers::new();
         handlers.register(0x1234_5678, handler);
-        let mut file = vec![0xCF, 0xAF, 0x23, 0x3D];
-        file.extend(chunk(0x1234_5678, &[9, 8, 7]));
         let scene = Scene::parse_with(&file, &handlers).unwrap();
-        assert_eq!(scene.unknown_chunks, [0x1234_5678]);
         assert_eq!(SEEN.load(Ordering::SeqCst), 1);
-        // Another tag is kept but reaches no handler.
-        let mut other = vec![0xCF, 0xAF, 0x23, 0x3D];
-        other.extend(chunk(0x8765_4321, &[1]));
-        let scene = Scene::parse_with(&other, &handlers).unwrap();
-        assert_eq!(scene.unknown_chunks, [0x8765_4321]);
+        // The registry replaces the reader's own sub-chunk loop.
+        assert!(scene.nodes[0].unknown_sub_chunks.is_empty());
+        assert_eq!(scene.unknown_chunks, [0x1234_5678]);
+        // Without handlers the reader records the tag itself.
+        let scene = Scene::parse(&file).unwrap();
+        assert_eq!(scene.nodes[0].unknown_sub_chunks, [0x1234_5678]);
         assert_eq!(SEEN.load(Ordering::SeqCst), 1);
     }
 

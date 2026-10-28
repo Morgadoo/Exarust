@@ -1109,7 +1109,11 @@ fn read_placement(b: &[u8]) -> Result<Placement> {
                 }
                 pose = SavedPose::Flat(frames);
             }
-            MOTION if motion.is_none() => {
+            // The original's placement reader only keeps a pointer to each
+            // of these bodies (a later chunk of the same tag replaces an
+            // earlier one); the field layouts below are inferred from the
+            // body sizes, not from a reader of them (guess).
+            MOTION => {
                 let mut p = Reader { b: body, pos: 0 };
                 if p.remaining() >= 12 {
                     motion = Some(MotionState {
@@ -1118,7 +1122,7 @@ fn read_placement(b: &[u8]) -> Result<Placement> {
                     });
                 }
             }
-            AI_HOME if ai_home.is_none() => {
+            AI_HOME => {
                 let mut p = Reader { b: body, pos: 0 };
                 if p.remaining() >= 20 {
                     let at = [p.f32()?, p.f32()?, p.f32()?];
