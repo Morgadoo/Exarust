@@ -121,7 +121,8 @@ pub fn armour_layers(
                 let (g0, g1) = (effective(inner.coverage), effective(outer.coverage));
                 let fold = |s0: f32, s1: f32| {
                     let s0 = g0 * s0;
-                    (1.0 - s0) * s1 * g1 + s0
+                    // (1 − s0′)·(s1·γ1) + s0′: the outer product first.
+                    (1.0 - s0) * (s1 * g1) + s0
                 };
                 part.inner = Layer {
                     coverage: 1.0,
@@ -1748,6 +1749,25 @@ mod tests {
         // Padding folds the same way: 10 × 0.005 × 0.905.
         assert!((p.inner.padding - 0.045_250_002).abs() < 1e-8);
         assert!(p.outer.is_some());
+    }
+
+    /// The fold forms the outer layer's product first: (1 − s0′)·(s1·γ1) +
+    /// s0′. Three items (80 % slash 30, 51 % slash 90, then any) leave the
+    /// float 0x3eece03c; multiplying (1 − s0′)·s1 first would give
+    /// 0x3eece03e.
+    #[test]
+    fn the_fold_multiplies_the_outer_product_first() {
+        let item = |percent: u8, slash: u8| Armour {
+            coverage: [percent; 18],
+            padding: 0,
+            slash,
+            crush: 0,
+            pierce: 0,
+            encumbrance: 0,
+            material: 0,
+        };
+        let parts = armour_layers(None, &[item(80, 30), item(51, 90), item(60, 10)], false);
+        assert_eq!(parts[0].inner.slash.to_bits(), 0x3eec_e03c);
     }
 
     /// The race's natural layer: its percentage is a double product narrowed
