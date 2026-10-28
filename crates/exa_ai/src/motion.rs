@@ -725,16 +725,33 @@ pub fn alert_look(
 }
 
 /// The aim snap: the body's look yaw is taken as the AI's look, offset and
-/// offset target.
+/// offset target, and every body look direction the AI carries is set to
+/// it (the original copies the body's forward into its look, smoothing
+/// and head look and writes the facing too).
 pub fn snap_to_body(gaze: &mut Gaze, turn: &mut Turning, heading_yaw: f32) -> Vec3 {
+    let look = dir_of(heading_yaw);
     gaze.look = heading_yaw;
     gaze.offset = heading_yaw;
     gaze.target_offset = heading_yaw;
     gaze.sway = 0.0;
+    gaze.body_look = look;
+    gaze.body_smooth = look;
+    gaze.body_heading = look;
     turn.heading = heading_yaw;
     turn.look = heading_yaw;
     turn.offset = heading_yaw;
-    dir_of(heading_yaw)
+    look
+}
+
+/// The look after combat is left: the AI's look, its offset and its
+/// heading take the body's look yaw. No new sway is drawn.
+pub fn leave_look(gaze: &mut Gaze, turn: &mut Turning, body_look_yaw: f32) {
+    gaze.look = body_look_yaw;
+    gaze.offset = body_look_yaw;
+    gaze.target_offset = body_look_yaw;
+    turn.look = body_look_yaw;
+    turn.heading = body_look_yaw;
+    turn.offset = body_look_yaw;
 }
 
 /// The aim: the look is snapped to the body's facing and a new sway draw is
@@ -762,12 +779,7 @@ pub fn settle_look(
     now_ms: u32,
     roll: &mut u32,
 ) {
-    gaze.look = body_look_yaw;
-    gaze.offset = body_look_yaw;
-    gaze.target_offset = body_look_yaw;
-    turn.look = body_look_yaw;
-    turn.heading = body_look_yaw;
-    turn.offset = body_look_yaw;
+    leave_look(gaze, turn, body_look_yaw);
     *roll = roll.wrapping_mul(0x0808_8405).wrapping_add(1);
     let step = ((u64::from(*roll) * 3000) >> 32) as u32;
     turn.sway_at_ms = now_ms.wrapping_add(1000).wrapping_add(step);
@@ -1331,5 +1343,22 @@ mod tests {
             (gaze.look, gaze.offset, gaze.target_offset, turn.look),
             (-0.5, -0.5, -0.5, -0.5)
         );
+        assert_eq!(
+            (gaze.body_look, gaze.body_smooth, gaze.body_heading),
+            (dir_of(-0.5), dir_of(-0.5), dir_of(-0.5))
+        );
+        // Leaving combat takes the body's look yaw into the look, offset
+        // and heading without drawing a new sway.
+        let mut gaze = Gaze::default();
+        let mut turn = Turning {
+            sway_at_ms: 77,
+            ..Turning::default()
+        };
+        leave_look(&mut gaze, &mut turn, 0.75);
+        assert_eq!(
+            (gaze.look, gaze.offset, turn.look, turn.heading, turn.offset),
+            (0.75, 0.75, 0.75, 0.75, 0.75)
+        );
+        assert_eq!(turn.sway_at_ms, 77);
     }
 }
