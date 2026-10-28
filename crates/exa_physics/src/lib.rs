@@ -59,6 +59,7 @@ impl Plugin for PhysicsPlugin {
             .init_resource::<PendingKinematics>()
             .init_resource::<StaticBuild>()
             .init_resource::<ColliderNodes>()
+            .init_resource::<StaticColliders>()
             .insert_resource(Time::<Fixed>::from_hz(STEP_HZ))
             .add_systems(Startup, limit_backlog)
             .add_systems(
@@ -253,6 +254,76 @@ impl ColliderNodes {
     /// Whether no collider has a scene node.
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
+    }
+}
+
+/// The original's static-collider grid, live: every fixed collision mesh of
+/// the level bucketed into the sector's 600 cm cells as it is built, so a
+/// simulated object (a cloth) can find the level's triangles around it
+/// without querying the whole physics world. The props' stand-ins and
+/// pick-only geometry are not level collision and are left out.
+#[derive(Resource, Debug)]
+pub struct StaticColliders {
+    grid: sector::StaticGrid,
+}
+
+impl Default for StaticColliders {
+    fn default() -> Self {
+        Self {
+            grid: sector::StaticGrid::new(Self::COLUMNS, Self::ROWS, Self::ORIGIN),
+        }
+    }
+}
+
+impl StaticColliders {
+    /// Columns of the grid: a level's cells stay far inside.
+    pub const COLUMNS: i32 = 4096;
+    /// Rows of the grid.
+    pub const ROWS: i32 = 4096;
+    /// The grid's origin cell, centred on the world origin.
+    pub const ORIGIN: (i32, i32) = (-2048, -2048);
+
+    /// The grid.
+    pub fn grid(&self) -> &sector::StaticGrid {
+        &self.grid
+    }
+
+    /// How many colliders the grid holds.
+    pub fn len(&self) -> usize {
+        self.grid.len()
+    }
+
+    /// Whether the grid is empty.
+    pub fn is_empty(&self) -> bool {
+        self.grid.is_empty()
+    }
+
+    /// Empties the grid (a level change).
+    pub fn clear(&mut self) {
+        self.grid.clear();
+    }
+
+    /// Records a fixed collider's world AABB (metres) as level piece
+    /// `piece`, under scene node `node` (0 for generated geometry).
+    pub fn insert_aabb(&mut self, piece: u32, mins: Vec3, maxs: Vec3, node: u32) {
+        let centre = (mins + maxs) * 0.5 * 100.0;
+        let half = (maxs - mins) * 0.5 * 100.0;
+        self.grid.insert(sector::StaticBody {
+            centre_cm: centre,
+            half_cm: half,
+            mask: sector::MASK_SMALL,
+            node,
+            piece,
+        });
+    }
+
+    /// The colliders in the nine cells around a world box `lo..hi` (cm):
+    /// the ones a simulated object's static stage scans, each once. The
+    /// caller tests the box against each record's own box.
+    pub fn near(&self, lo_cm: Vec3, hi_cm: Vec3) -> Vec<usize> {
+        let mut out = Vec::new();
+        self.grid.near_box(lo_cm, hi_cm, &mut out);
+        out
     }
 }
 
@@ -454,6 +525,7 @@ fn build_static_colliders(
     no_collider: Query<(), With<NoStaticCollider>>,
     pick_only: Query<(), With<PickOnly>>,
     meshes: Res<Assets<Mesh>>,
+    mut statics: ResMut<StaticColliders>,
 ) {
     for root in &roots {
         if build.roots.iter().any(|r| r.root == root) {
@@ -487,11 +559,22 @@ fn build_static_colliders(
                     collider.set_collision_groups(InteractionGroups::none());
                     collider.set_solver_groups(InteractionGroups::none());
                 }
+                let level = owner.is_none() && !pick_only;
+                let aabb = level.then(|| collider.compute_aabb());
                 let handle = physics.0.insert_collider(collider, None);
                 if let Some((body, part)) = owner {
                     stand_ins.0.entry(body).or_default().push((handle, part));
                 } else if let Some(node) = node {
                     collider_nodes.insert(handle, node);
+                }
+                if let Some(aabb) = aabb {
+                    // The sector's static grid, in the original's centimetres.
+                    statics.insert_aabb(
+                        handle.into_raw_parts().0,
+                        aabb.mins,
+                        aabb.maxs,
+                        node.map_or(0, |n| n.index().index()),
+                    );
                 }
             }
             build.built += *count;
@@ -825,6 +908,7 @@ mod tests {
             .init_resource::<StaticBuild>()
             .init_resource::<prop::StandIns>()
             .init_resource::<ColliderNodes>()
+            .init_resource::<StaticColliders>()
             .init_resource::<Assets<Mesh>>()
             .add_systems(Update, build_static_colliders);
         let mesh = app
@@ -853,6 +937,25 @@ mod tests {
         assert!(!app.world().entity(root).contains::<StaticGeometry>());
         assert_eq!(app.world().resource::<Physics>().0.colliders.len(), 40);
         assert_eq!(app.world().resource::<StaticBuild>().fraction(), 1.0);
+        // Every level collider joined the sector's static grid, as the
+        // simulated-object stage scans it, with its world box and piece.
+        let statics = app.world().resource::<StaticColliders>();
+        assert_eq!(statics.len(), 40);
+        let mut near = statics.near(
+            Vec3::new(-150.0, -150.0, -150.0),
+            Vec3::new(150.0, 150.0, 150.0),
+        );
+        assert_eq!(near.len(), 1);
+        let record = statics.grid().get(near.pop().unwrap()).unwrap();
+        assert!(record.centre_cm.abs_diff_eq(Vec3::ZERO, 1e-3));
+        assert!(
+            !app.world()
+                .resource::<Physics>()
+                .0
+                .colliders
+                .get_unknown_gen(record.piece)
+                .is_none()
+        );
     }
 
     /// A standing character drawn toward a follow point goes a tenth of the
@@ -950,6 +1053,7 @@ mod tests {
             .init_resource::<StaticBuild>()
             .init_resource::<prop::StandIns>()
             .init_resource::<ColliderNodes>()
+            .init_resource::<StaticColliders>()
             .init_resource::<Assets<Mesh>>()
             .add_systems(Update, build_static_colliders);
         let mesh = app
@@ -1007,6 +1111,7 @@ mod tests {
             .init_resource::<StaticBuild>()
             .init_resource::<prop::StandIns>()
             .init_resource::<ColliderNodes>()
+            .init_resource::<StaticColliders>()
             .init_resource::<Assets<Mesh>>()
             .add_systems(Update, build_static_colliders);
         let mesh = app
@@ -1068,6 +1173,7 @@ mod tests {
             .init_resource::<StaticBuild>()
             .init_resource::<prop::StandIns>()
             .init_resource::<ColliderNodes>()
+            .init_resource::<StaticColliders>()
             .init_resource::<Assets<Mesh>>()
             .add_systems(Update, build_static_colliders);
         let mesh = app

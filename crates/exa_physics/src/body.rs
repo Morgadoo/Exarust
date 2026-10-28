@@ -798,6 +798,23 @@ impl Part {
         let centre: Vec3 = self.positions.iter().copied().sum::<Vec3>() * 0.25;
         Affine3A::from_mat3_translation(r, centre - r * rest_centre)
     }
+
+    /// The part's transform where the last tick left it: where a swept contact
+    /// of a simulated object starts.
+    pub fn settled_transform(&self) -> Affine3A {
+        self.settled
+    }
+
+    /// The world centre and radius of the sphere around the part's collision
+    /// spheres, as a simulated object's body pre-test reads it: the bound
+    /// travelled by the part's transform now.
+    pub fn sphere_bound(&self) -> (Vec3, f32) {
+        (
+            self.transform()
+                .transform_point3(self.pairing.sphere.centre),
+            self.pairing.sphere.radius,
+        )
+    }
 }
 
 /// On a living body model root off its balance: from the tick its posture

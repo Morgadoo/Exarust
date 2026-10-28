@@ -163,6 +163,7 @@ pub fn teardown(
     physics.clear();
     commands.insert_resource(exa_physics::StaticBuild::default());
     commands.insert_resource(exa_physics::ColliderNodes::default());
+    commands.insert_resource(exa_physics::StaticColliders::default());
     commands.insert_resource(exa_physics::prop::StandIns::default());
     commands.insert_resource(exa_physics::PendingKinematics::default());
     commands.remove_resource::<room_view::LevelRooms>();

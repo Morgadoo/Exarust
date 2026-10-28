@@ -61,8 +61,9 @@ pub const LIMB_CONTACT_SCALE: f32 = 2.0 / 3.0;
 /// smaller key (the more mobile one) brings its spheres.
 const KEY_NUMERATOR: f32 = 100.0;
 /// Squared travel (cm²) of a sphere relative to the other part over a tick
-/// above which it is swept from where the last tick left it.
-const SWEEP_TRAVEL2: f32 = 0.1;
+/// above which it is swept from where the last tick left it; a simulated
+/// object's sweeps use the same threshold.
+pub(crate) const SWEEP_TRAVEL2: f32 = 0.1;
 /// Squared pushes (cm²) under this are no hit; over the second they are
 /// reported (not clamped, as the original's clamp is dead).
 const MIN_PUSH2: f32 = 1e-5;
@@ -553,6 +554,39 @@ pub const STRIKE_TRAVEL2: f32 = 1.0;
 /// A pair's impact must pass this to strike either side.
 pub const STRIKE_IMPACT: f32 = 0.5;
 
+/// A pair's hit event, as the original hands it to both bodies' strike
+/// handlers: the other side (body and part), the mean contact point (world),
+/// the relative velocity at the fastest hit (cm a tick, world) and the
+/// summed push (m, world). Its event keeps its own side's part alongside.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HitEvent {
+    pub a: (Entity, usize),
+    pub b: (Entity, usize),
+    /// The mean of the contact points (world, m).
+    pub point: Vec3,
+    /// The relative velocity of the two contact points at the fastest hit
+    /// (cm a tick, world).
+    pub travel: Vec3,
+    /// The pushes the pair's hits summed (world, m).
+    pub push: Vec3,
+}
+
+impl Touch {
+    /// The pair's hit event: only a pair with a striker and a hittable side,
+    /// neither body placed, takes one (the original's strike handler). The
+    /// event carries the mean point, the travel and the summed push the
+    /// handler reads.
+    pub fn hit(&self) -> Option<HitEvent> {
+        self.hit_event.then_some(HitEvent {
+            a: self.a,
+            b: self.b,
+            point: self.point,
+            travel: self.travel,
+            push: self.push,
+        })
+    }
+}
+
 impl Touch {
     /// The pair's impact: the fastest squared travel times the cosine
     /// between that travel and the summed push, negated. Only a pair of two
@@ -670,9 +704,10 @@ impl Pairs {
     /// the impact: one side is an active striker and the other hittable, and
     /// neither body is placed. The original calls the classifier on both
     /// sides; Exarust's combat reads these and classifies with
-    /// [`crate::part::classify`].
-    pub fn hit_events(&self) -> impl Iterator<Item = &Touch> {
-        self.touches.iter().filter(|t| t.hit_event)
+    /// [`crate::part::classify`]. Each carries the mean point, the fastest
+    /// travel and the summed push the handler reads ([`HitEvent`]).
+    pub fn hit_events(&self) -> impl Iterator<Item = HitEvent> + '_ {
+        self.touches.iter().filter_map(Touch::hit)
     }
 
     /// Pairs kept for the pair pass that still need solving.

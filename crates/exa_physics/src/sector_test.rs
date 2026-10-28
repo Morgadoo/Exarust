@@ -556,12 +556,14 @@ fn the_static_grid_scans_own_cell_then_neighbours() {
         half_cm: Vec3::splat(100.0),
         mask: MASK_SMALL,
         node: 7,
+        piece: 11,
     });
     let wide = grid.insert(StaticBody {
         centre_cm: Vec3::new(1500.0, 0.0, 1500.0),
         half_cm: Vec3::new(700.0, 50.0, 700.0),
         mask: MASK_THIN,
         node: 9,
+        piece: 12,
     });
     assert_eq!(grid.len(), 2);
     assert_eq!(grid.get(small).unwrap().mask, MASK_SMALL);
@@ -601,18 +603,21 @@ fn the_static_grid_scans_own_cell_then_neighbours() {
         half_cm: Vec3::splat(50.0),
         mask: 0,
         node: 1,
+        piece: 0,
     });
     let b = order.insert(StaticBody {
         centre_cm: Vec3::new(-300.0, 0.0, 0.0),
         half_cm: Vec3::splat(50.0),
         mask: 0,
         node: 1,
+        piece: 0,
     });
     let c = order.insert(StaticBody {
         centre_cm: Vec3::new(900.0, 0.0, 900.0),
         half_cm: Vec3::splat(50.0),
         mask: 0,
         node: 1,
+        piece: 0,
     });
     let mut got = Vec::new();
     order.near((0, 0), 0, 0, &mut got);
@@ -662,4 +667,190 @@ fn a_cell_index_splits_into_its_row_and_column() {
     assert_eq!(cell_of_index(-1, 8), (-1, 0));
     assert_eq!(cell_of_index(9, 8), (1, 1));
     assert_eq!(cell_of_index(5, 0), (5, 0));
+}
+
+/// The simulated object's body pre-test: the two bound spheres must not be
+/// apart (touching counts as meeting, and a NaN gap passes), and the body's
+/// centre must then lie strictly within the object's own radius.
+#[test]
+fn an_object_meets_a_body_between_its_two_bounds() {
+    let object = ObjectBounds {
+        centre: Vec3::new(100.0, 50.0, 0.0),
+        radius: 20.0,
+    };
+    // The body's centre sits 15 cm away, inside the object's radius, and its
+    // bound sphere (radius 10) overlaps the object's.
+    assert!(object_body_meet(object, Vec3::new(100.0, 65.0, 0.0), 10.0));
+    // The spheres touch at exactly the sum: not apart, but the centre is
+    // 30 cm out, past the object's own radius.
+    assert!(!object_body_meet(object, Vec3::new(100.0, 80.0, 0.0), 10.0));
+    // The bounds are apart (30 > 20 + 5), though the centre is inside the
+    // object's radius: the first test rejects.
+    assert!(!object_body_meet(object, Vec3::new(100.0, 75.0, 0.0), 5.0));
+    // A NaN gap is not "apart" (the sign bit of a NaN difference is clear),
+    // so the second, ordered compare decides and fails.
+    assert!(!object_body_meet(
+        object,
+        Vec3::new(f32::NAN, 0.0, 0.0),
+        10.0
+    ));
+}
+
+/// A body part meeting an object hands every one of its spheres over in the
+/// object's own frame and centimetres; a sphere whose part moved by more
+/// than 0.1 cm² over the tick is swept instead of placed.
+#[test]
+fn an_objects_body_stage_takes_the_parts_spheres_in_its_own_frame() {
+    let object = ObjectBounds {
+        centre: Vec3::new(100.0, 0.0, 0.0),
+        radius: 50.0,
+    };
+    // The object's node sits 1 m along x, so the object's frame has its
+    // origin there; the part is at the world origin with two spheres.
+    let to_object = Affine3A::from_translation(Vec3::new(1.0, 0.0, 0.0)).inverse();
+    let spheres = [(Vec3::ZERO, 0.1), (Vec3::new(0.2, 0.0, 0.0), 0.05)];
+    let part = ObjectBodyPart {
+        now: Affine3A::IDENTITY,
+        previous: Affine3A::IDENTITY,
+        spheres: &spheres,
+        centre: Vec3::new(80.0, 0.0, 0.0),
+        radius: 30.0,
+        friction: 0.75,
+    };
+    let mut contacts = ObjectContacts::default();
+    contacts.gather_bodies(&to_object, object, [part]);
+    assert_eq!(contacts.swept.len(), 0);
+    assert_eq!(contacts.spheres.len(), 2);
+    // 10 cm behind the object's node, 10 cm across and 12 cm back.
+    assert_eq!(contacts.spheres[0].center, Vec3::new(-100.0, 0.0, 0.0));
+    assert_eq!(contacts.spheres[0].radius, 10.0);
+    assert_eq!(contacts.spheres[0].friction, 0.75);
+    assert_eq!(contacts.spheres[1].center, Vec3::new(-80.0, 0.0, 0.0));
+    assert_eq!(contacts.spheres[1].radius, 5.0);
+    // A part whose bound is not near the object gives nothing.
+    let far = ObjectBodyPart {
+        centre: Vec3::new(500.0, 0.0, 0.0),
+        ..part
+    };
+    let mut contacts = ObjectContacts::default();
+    contacts.gather_bodies(&to_object, object, [far]);
+    assert!(contacts.spheres.is_empty() && contacts.swept.is_empty());
+    // Moved 0.2 m over the tick (20 cm, 400 cm²), the sphere is swept from
+    // where the last tick left it.
+    let moving = ObjectBodyPart {
+        previous: Affine3A::from_translation(Vec3::new(-0.2, 0.0, 0.0)),
+        ..part
+    };
+    let mut contacts = ObjectContacts::default();
+    contacts.gather_bodies(&to_object, object, [moving]);
+    assert_eq!(contacts.spheres.len(), 0);
+    assert_eq!(contacts.swept.len(), 2);
+    assert!(
+        contacts.swept[0]
+            .from
+            .abs_diff_eq(Vec3::new(-120.0, 0.0, 0.0), 1e-4)
+    );
+    assert_eq!(contacts.swept[0].to, Vec3::new(-100.0, 0.0, 0.0));
+}
+
+/// The object's static stage turns each world triangle into the object's
+/// own centimetres.
+#[test]
+fn an_objects_level_stage_takes_triangles_in_its_own_frame() {
+    let to_object = Affine3A::from_translation(Vec3::new(0.0, 1.0, 0.0)).inverse();
+    let mut contacts = ObjectContacts::default();
+    contacts.gather_level(
+        &to_object,
+        [[
+            Vec3::new(1.0, 1.0, 0.0),
+            Vec3::new(2.0, 1.0, 0.0),
+            Vec3::new(1.0, 2.0, 0.0),
+        ]],
+    );
+    assert_eq!(
+        contacts.level[0],
+        exa_physics_cm([[100.0, 0.0, 0.0], [200.0, 0.0, 0.0], [100.0, 100.0, 0.0]])
+    );
+}
+
+/// Three world points as a level triangle in centimetres.
+fn exa_physics_cm(points: [[f32; 3]; 3]) -> crate::cloth::LevelTri {
+    crate::cloth::LevelTri {
+        a: Vec3::from(points[0]),
+        b: Vec3::from(points[1]),
+        c: Vec3::from(points[2]),
+    }
+}
+
+/// The static grid's box query finds every collider whose own box meets the
+/// box, and no other, wherever in its cells it lies.
+#[test]
+fn the_static_grid_answers_a_world_box() {
+    let mut grid = StaticGrid::new(8, 8, (0, 0));
+    let a = grid.insert(StaticBody {
+        centre_cm: Vec3::new(300.0, 0.0, 300.0),
+        half_cm: Vec3::splat(100.0),
+        mask: MASK_SMALL,
+        node: 0,
+        piece: 1,
+    });
+    let b = grid.insert(StaticBody {
+        centre_cm: Vec3::new(1500.0, 0.0, 1500.0),
+        half_cm: Vec3::new(700.0, 50.0, 700.0),
+        mask: MASK_SMALL,
+        node: 0,
+        piece: 2,
+    });
+    let c = grid.insert(StaticBody {
+        centre_cm: Vec3::new(-900.0, 0.0, 300.0),
+        half_cm: Vec3::splat(10.0),
+        mask: MASK_SMALL,
+        node: 0,
+        piece: 3,
+    });
+    let mut out = Vec::new();
+    // A box over the first collider only: its centre cell and the record's
+    // own box decide.
+    grid.near_box(
+        Vec3::new(250.0, -50.0, 250.0),
+        Vec3::new(350.0, 50.0, 350.0),
+        &mut out,
+    );
+    assert_eq!(out, [a]);
+    // A box over the wide collider's left edge and the third one's cell:
+    // both records, once each.
+    out.clear();
+    grid.near_box(
+        Vec3::new(-950.0, -50.0, 250.0),
+        Vec3::new(850.0, 50.0, 850.0),
+        &mut out,
+    );
+    assert_eq!(out, [c, a, b]);
+    // The object stage's nine-cell scan takes records from the own cell and
+    // its neighbours, each once, whatever their box.
+    let mut out = Vec::new();
+    grid.near_offsets((0, 0), &mut out);
+    assert_eq!(out, [a, b]);
+}
+
+/// The simulated-object/object stage walks every pair in list order and
+/// keeps the ones whose bound spheres are not apart; touching counts.
+#[test]
+fn the_object_list_pairs_bounds_that_touch() {
+    let at = |x: f32, radius: f32| ObjectBounds {
+        centre: Vec3::new(x, 0.0, 0.0),
+        radius,
+    };
+    let bounds = [
+        at(0.0, 10.0),
+        at(15.0, 10.0),
+        at(100.0, 10.0),
+        at(-10.0, 2.0),
+    ];
+    // 0 and 1 are 15 apart with radii 10 + 10, so they meet; 3 and 0 are
+    // 10 apart with radii 10 + 2, so they meet too; 2 meets nothing.
+    assert_eq!(object_pairs(&bounds), [(0, 1), (0, 3)]);
+    // A NaN centre takes the pair (the sign of a NaN difference is clear).
+    let bounds = [at(f32::NAN, 1.0), at(0.0, 1.0)];
+    assert_eq!(object_pairs(&bounds), [(0, 1)]);
 }
