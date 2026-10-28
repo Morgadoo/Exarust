@@ -361,6 +361,153 @@ pub fn find_object(objects: &[RoomObject]) -> Option<RoomObject> {
     objects.iter().copied().find(|o| o.usable)
 }
 
+/// The idle driver's state: its step (1–6), the wait's deadline, the exits
+/// to avoid (a bit per exit index) and the room it set out for.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Explore {
+    pub step: i32,
+    pub until_ms: u32,
+    pub excluded: u32,
+    pub target_cell: i32,
+}
+
+/// What the idle driver asks the caller to do this tick.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Drive {
+    /// Turn the body in place (the out-of-combat turn).
+    Turn,
+    /// Plan a route with the room-walk callback (`forced` for a new room,
+    /// not forced for an object in the same room).
+    Plan { forced: bool },
+    /// Walk the planned route.
+    Walk,
+    /// Test whether the body is near the exit.
+    NearExit,
+    /// Use the object at the exit.
+    UseObject,
+    /// Look for a usable object in the room.
+    FindObject,
+}
+
+/// What the driver reads this tick.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DriveInput {
+    pub now_ms: u32,
+    /// The plan was started.
+    pub planned: bool,
+    /// The walk routine still walks.
+    pub walking: bool,
+    /// The body is within 250 cm of the exit's midpoint.
+    pub near_exit: bool,
+    /// The exit's object was used.
+    pub used: bool,
+    /// A usable object was found in the room.
+    pub found: bool,
+    /// The body reached the room it set out for.
+    pub same_cell: bool,
+    /// The planned path's flat length (cm).
+    pub path_length_cm: f32,
+}
+
+impl Default for DriveInput {
+    fn default() -> Self {
+        Self {
+            now_ms: 0,
+            planned: false,
+            walking: false,
+            near_exit: false,
+            used: false,
+            found: false,
+            same_cell: false,
+            path_length_cm: 0.0,
+        }
+    }
+}
+
+/// One tick of the idle driver (the go-to-object state machine), after the
+/// investigation, alert and attend checks: state 1 turns until its wait
+/// passes, then asks for a forced room plan; state 2 plans, and on a plan
+/// walks (state 3) with a wait of the path's length × 20 ms plus 2 s;
+/// state 3 walks while its wait lasts, then tests the exit: near it the
+/// body moves on to the use state (4), otherwise it plans again (2) and
+/// remembers the exit to avoid. State 4 turns and uses the object, then
+/// plans the way home (5); a use that does not come within ten seconds
+/// plans again (2). State 5 plans a forced home route, and state 6, at the
+/// room, looks for an object before it walks and, when the walk stops,
+/// plans again with a 1–4 s wait. Returns the action for the caller.
+pub fn drive(state: &mut Explore, input: &DriveInput, roll: &mut u32) -> Drive {
+    match state.step {
+        1 => {
+            if state.until_ms < input.now_ms {
+                state.step = 2;
+            }
+            Drive::Turn
+        }
+        2 => {
+            if input.planned {
+                state.step = 3;
+                state.until_ms = input
+                    .now_ms
+                    .wrapping_add((input.path_length_cm * 20.0).round_ties_even() as u32)
+                    .wrapping_add(2000);
+            }
+            Drive::Plan { forced: true }
+        }
+        3 => {
+            if state.until_ms <= input.now_ms && input.walking {
+                Drive::Walk
+            } else if input.near_exit {
+                state.step = 4;
+                state.until_ms = input.now_ms;
+                Drive::NearExit
+            } else {
+                state.step = 2;
+                state.excluded |= 1 << (state.target_cell & 31);
+                Drive::NearExit
+            }
+        }
+        4 => {
+            if input.used {
+                state.step = 5;
+            } else if state.until_ms.wrapping_add(10_000) < input.now_ms {
+                state.target_cell = -1;
+                state.step = 2;
+                state.excluded |= 1 << (state.target_cell & 31);
+            }
+            Drive::UseObject
+        }
+        5 => {
+            if input.planned {
+                state.step = 6;
+            }
+            Drive::Plan { forced: true }
+        }
+        6 => {
+            if input.same_cell && input.found {
+                return Drive::FindObject;
+            }
+            let action = if state.step == 6 && !input.walking {
+                Drive::Walk
+            } else {
+                Drive::Plan { forced: false }
+            };
+            if input.planned {
+                state.step = 3;
+            }
+            if !input.walking {
+                state.step = 2;
+                let step = go_to_wait(roll, input.now_ms);
+                state.until_ms = step;
+            }
+            action
+        }
+        _ => {
+            state.step = 1;
+            Drive::Turn
+        }
+    }
+}
+
 /// The steps of the idle driver's go-to-object state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum GoTo {
@@ -640,6 +787,135 @@ mod tests {
             ]),
             Some(object)
         );
+    }
+
+    /// The driver turns, plans a room, walks and tests the exit, uses the
+    /// object and plans home; a short walk plans again.
+    #[test]
+    fn the_idle_driver_walks_a_room_and_uses_its_object() {
+        let mut state = Explore {
+            step: 1,
+            until_ms: 100,
+            ..Explore::default()
+        };
+        let mut roll = 0u32;
+        let at = |now, planned, walking, near, used, found, same, length| DriveInput {
+            now_ms: now,
+            planned,
+            walking,
+            near_exit: near,
+            used,
+            found,
+            same_cell: same,
+            path_length_cm: length,
+        };
+        assert_eq!(
+            drive(
+                &mut state,
+                &at(100, false, false, false, false, false, false, 0.0),
+                &mut roll
+            ),
+            Drive::Turn
+        );
+        assert_eq!(state.step, 1);
+        assert_eq!(
+            drive(
+                &mut state,
+                &at(101, false, false, false, false, false, false, 0.0),
+                &mut roll
+            ),
+            Drive::Turn
+        );
+        assert_eq!(state.step, 2);
+        assert_eq!(
+            drive(
+                &mut state,
+                &at(110, false, false, false, false, false, false, 0.0),
+                &mut roll
+            ),
+            Drive::Plan { forced: true }
+        );
+        assert_eq!(
+            drive(
+                &mut state,
+                &at(120, true, false, false, false, false, false, 300.0),
+                &mut roll
+            ),
+            Drive::Plan { forced: true }
+        );
+        assert_eq!(state.step, 3);
+        // 300 cm × 20 ms + 2000 = 8000 ms after 120.
+        assert_eq!(state.until_ms, 8120);
+        assert_eq!(
+            drive(
+                &mut state,
+                &at(8121, false, true, false, false, false, false, 0.0),
+                &mut roll
+            ),
+            Drive::Walk
+        );
+        // Out of the exit's reach: plan again and avoid it.
+        assert_eq!(
+            drive(
+                &mut state,
+                &at(9000, false, false, false, false, false, false, 0.0),
+                &mut roll
+            ),
+            Drive::NearExit
+        );
+        assert_eq!(state.step, 2);
+        assert_ne!(state.excluded, 0);
+        // Plan, arrive, use, and plan home.
+        state.step = 3;
+        state.until_ms = 0;
+        assert_eq!(
+            drive(
+                &mut state,
+                &at(20_000, false, false, true, false, false, false, 0.0),
+                &mut roll
+            ),
+            Drive::NearExit
+        );
+        assert_eq!(state.step, 4);
+        assert_eq!(
+            drive(
+                &mut state,
+                &at(20_001, false, false, false, true, false, false, 0.0),
+                &mut roll
+            ),
+            Drive::UseObject
+        );
+        assert_eq!(state.step, 5);
+        assert_eq!(
+            drive(
+                &mut state,
+                &at(20_100, true, false, false, false, false, false, 0.0),
+                &mut roll
+            ),
+            Drive::Plan { forced: true }
+        );
+        assert_eq!(state.step, 6);
+        // At the room with an object: find it.
+        assert_eq!(
+            drive(
+                &mut state,
+                &at(21_000, false, false, false, false, true, true, 0.0),
+                &mut roll
+            ),
+            Drive::FindObject
+        );
+        // A walk that stops plans again with a 1–4 s wait.
+        state.step = 6;
+        assert_eq!(
+            drive(
+                &mut state,
+                &at(22_000, false, false, false, false, false, true, 0.0),
+                &mut roll
+            ),
+            Drive::Walk
+        );
+        assert_eq!(state.step, 2);
+        assert_eq!(state.until_ms, 23_000);
     }
 
     #[test]
