@@ -409,18 +409,20 @@ fn rise_terms(out_dot: f32, in_dot: f32) -> (f32, f32) {
 /// The spline's sample count from the two rise terms and the ends'
 /// closeness: `round((out + in)·6 + √closeness·4) + 1`, held to two
 /// through thirty. The square root and the sum are single precision; the
-/// conversion rounds to even.
+/// conversion rounds to even into a 64-bit integer, one is added and the
+/// low 32 bits are compared.
 fn spline_steps(out_rise: f32, in_rise: f32, closeness: f32) -> usize {
     let span = (out_rise + in_rise) * 6.0 + closeness.sqrt() * 4.0;
     let rounded = span.round_ties_even();
-    // The conversion's indefinite value is negative, so a not-a-number
-    // span clamps to the two-sample floor, as the original's compare does.
-    let steps = if rounded.is_finite() {
-        rounded as i32
+    // A span outside the 64-bit range (or not a number) converts to the
+    // indefinite value, the lowest integer, whose low half plus one is
+    // one: the two-sample floor.
+    let wide = if rounded.is_finite() && rounded.abs() < i64::MAX as f32 {
+        rounded as i64
     } else {
-        i32::MIN
+        i64::MIN
     };
-    steps.saturating_add(1).clamp(2, 30) as usize
+    (wide.wrapping_add(1) as i32).clamp(2, 30) as usize
 }
 
 /// One point of a link's cubic at `t`, between two placed ends and their
@@ -896,6 +898,9 @@ mod tests {
         assert_eq!(spline_steps(0.0, 0.0, 100.0), 30);
         assert_eq!(spline_steps(f32::NAN, 1.0, 0.0), 2);
         assert_eq!(spline_steps(0.0, 0.0, 1.0), 5);
+        // A span whose integer's low half wraps: 4 294 967 040 plus one is
+        // −255 in the low 32 bits, so the floor of two holds.
+        assert_eq!(spline_steps(0.0, 0.0, 1.152_921_4e18), 2);
     }
 
     #[test]

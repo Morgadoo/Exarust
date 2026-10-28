@@ -285,16 +285,23 @@ pub struct WheelView {
     pub alpha: f32,
 }
 
-/// The domain wheel's texture: the `domainwheel.rfi` sheet is kept 128
-/// pixels a side (eight four-pixel units) with Kaiser mipmaps, and created
-/// with the engine's flags `0x133` (the shared texture flag word `0x33` and
-/// `0x100`). The child shows it across its 280-pixel square.
-pub const WHEEL_TEXTURE_SIZE: u32 = 128;
-/// The creation flags of the wheel's texture.
+/// The creation flags of the domain wheel's texture: the engine's shared
+/// texture flag word (`0x33` as shipped) with `0x100`.
 pub const WHEEL_TEXTURE_FLAGS: u32 = 0x133;
-/// The value the load writes to the wheel's shared scale word: 32, eight
-/// four-pixel units.
-pub const WHEEL_TEXTURE_SCALE: i32 = 32;
+
+/// The domain wheel's texture side at the GUI unit `unit`: the load
+/// resamples `domainwheel.rfi` with Kaiser mipmaps to 32 units a side (128
+/// pixels at the four-pixel unit). The running screen samples the sheet as
+/// it ships (384 pixels) and does not resample it yet.
+pub fn wheel_texture_side(unit: i32) -> i32 {
+    unit << 5
+}
+
+/// The value the wheel texture's load writes to the wheel's shared size
+/// word: eight units (32 pixels at the four-pixel unit).
+pub fn wheel_size_word(unit: i32) -> i32 {
+    unit << 3
+}
 
 /// The character's power record: what the tree reads and writes.
 #[derive(Debug, Clone, PartialEq)]
@@ -750,9 +757,6 @@ pub struct TreeScreen {
     pub choice_stamp: u32,
     /// The node under the pointer, one-based.
     pub node_under: i32,
-    /// The link the last hover or press named: bits 16 to 30 hold it
-    /// one-based and bit 21 marks an incoming link.
-    pub link_focus: u32,
     /// The node (0-based) a pick or a drop last flashed, or -1.
     pub flash: i32,
     /// When the flash ends.
@@ -829,11 +833,6 @@ pub struct TreeScreen {
     pub hint_alpha: u8,
     /// The form's caption value, the engine's lowest float.
     pub caption: f32,
-    /// The form's client origin in the parent, whole pixels.
-    pub form_origin: [i32; 2],
-    /// The form's client size, whole pixels: the constructor's 1000 by 700
-    /// until the caller gives its window.
-    pub form_size: [i32; 2],
 }
 
 /// The original's zoom levels' thresholds and gains.
@@ -945,7 +944,6 @@ impl TreeScreen {
             shown_choice: 0,
             choice_stamp: 0,
             node_under: 0,
-            link_focus: 0,
             flash: -1,
             flash_until: 0,
             learn_until: 0,
@@ -981,8 +979,6 @@ impl TreeScreen {
             text_alpha: 0xa0,
             hint_alpha: 0x80,
             caption: f32::from_bits(0xff00_0000),
-            form_origin: [0, 0],
-            form_size: [1000, 700],
         }
     }
 
@@ -1008,7 +1004,6 @@ impl TreeScreen {
         // pixels square, and has the domain the tree opened as its choice;
         // the record's wheel shares are written into it below.
         screen.wheel_child = DomainWheel::new(10.0, height - 290.0, domain);
-        screen.form_size = [width as i32, height as i32];
         match (mode, record) {
             (TreeMode::Test, _) => screen.marks.fill(SHOWN | LEARNED),
             (_, Some(record)) => {
@@ -1541,7 +1536,9 @@ impl TreeScreen {
                 // original keeps that offset in the same pair a pan uses;
                 // that the press hands a node grab rather than the pan is
                 // a labelled guess), and its base place is worked back from
-                // the shown pan and zoom at a tenth of the pixel scale.
+                // the shown pan and zoom at a tenth of the pixel scale: the
+                // quotient is single precision, the tenth a double product
+                // rounded back to single.
                 let Some(node) = self.node_under.checked_sub(1) else {
                     return 3;
                 };
@@ -1554,9 +1551,11 @@ impl TreeScreen {
                     (y as i64 - self.drag_origin[1] as i64) as f32,
                 ];
                 self.placed[node] = placed;
+                let tenth =
+                    |at: f32, pan: f32| (f64::from((at - pan) / self.shown_zoom) * 0.1) as f32;
                 self.base[node] = [
-                    ((placed[0] - self.shown_pan[0]) / self.shown_zoom) * 0.1,
-                    ((placed[1] - self.shown_pan[1]) / self.shown_zoom) * 0.1,
+                    tenth(placed[0], self.shown_pan[0]),
+                    tenth(placed[1], self.shown_pan[1]),
                 ];
                 self.nodes[node].x = self.base[node][0];
                 self.nodes[node].y = self.base[node][1];
@@ -1565,21 +1564,21 @@ impl TreeScreen {
             DragState::MoveLink => {
                 // A link's turn follows the pointer: the outgoing turn is
                 // measured about its owner, the incoming one about the node
-                // the link ends on. The link is the one the last hover named
-                // (bits 16 to 30 hold it one-based, bit 21 the incoming
-                // side).
+                // the link ends on. The link is the one the focus id names
+                // (its bits 16 to 19 hold it one-based, bit 21 the incoming
+                // side), on the pressed node.
                 let Some(node) = self.node_under.checked_sub(1) else {
                     return 3;
                 };
                 let node = node as usize;
-                let at = ((self.link_focus & 0x000f_0000) >> 16) as usize;
+                let at = ((self.focus & 0x000f_0000) >> 16) as usize;
                 let Some(link) = at.checked_sub(1) else {
                     return 3;
                 };
                 if node >= self.nodes.len() || link >= self.nodes[node].links.len() {
                     return 3;
                 }
-                let (centre, incoming) = if self.link_focus & focus::INCOMING as u32 == 0 {
+                let (centre, incoming) = if self.focus & focus::INCOMING == 0 {
                     (self.placed[node], false)
                 } else {
                     let end = self.links[node][link].end as usize;
@@ -2245,10 +2244,13 @@ impl TreeScreen {
         now: u32,
     ) -> exa_ui::tree_draw::TreeView {
         use exa_ui::tree_draw as draw;
-        // The draw head clears the refusal flag after it has coloured the
-        // flash or the frame with it.
+        // The draw ends a flash whose time is up: the flashed node is
+        // forgotten and the refusal flag that shaped its curve is cleared.
+        if self.flash >= 0 && self.flash_until <= now {
+            self.flash = -1;
+            self.denied = false;
+        }
         let denied = self.denied;
-        self.denied = false;
         // The draw scales every placed node about the first node's placed
         // point, as the draw head took it, by the opening ease (one when no
         // fade runs).
@@ -2557,9 +2559,8 @@ impl TreeScreen {
     /// wheel's own hover and confirm (the click carries the confirm
     /// modifier; the domain must be known and differ from the current
     /// choice). A confirmed choice starts the tree's domain switch to it
-    /// and names the sound it plays; the wheel's own sound name is outside
-    /// this pack, so the tree's show sound is used (0.25, pitch one, the
-    /// volume and pitch the wheel's confirm asks for: a labelled guess).
+    /// and names the sound it plays: the wheel's confirm plays the tree's
+    /// `ThaumShow02` at 0.25 and pitch one.
     pub fn wheel_click(&mut self, x: f32, y: f32, now: u32) -> Option<TreeSound> {
         let hit = self.wheel_child.domain_at(x, y);
         let wheel = &mut self.wheel_child.state;
@@ -3328,18 +3329,15 @@ mod tests {
         assert_eq!(screen.hint_alpha, 0x80);
         assert_eq!(screen.caption.to_bits(), 0xff00_0000);
         // The constructor's own defaults before a window gives its size:
-        // 1000 by 700, the zoom at one half, the charge at −4.
+        // the zoom at one half, the charge at −4.
         let fresh = TreeScreen::empty(DOMAIN_MIND, TreeMode::Play);
-        assert_eq!(fresh.form_size, [1000, 700]);
-        assert_eq!(fresh.form_origin, [0, 0]);
         assert_eq!(fresh.charge, -4.0);
         assert_eq!((fresh.zoom.value, fresh.shown_zoom), (0.5, 0.5));
         assert_eq!(fresh.zoom_fixed, 128.0);
-        assert_eq!(screen.form_size, [1000, 700]);
-        // The wheel's texture is 128 pixels a side with the engine's flags.
-        assert_eq!(WHEEL_TEXTURE_SIZE, 128);
+        // The wheel's texture is 32 units a side with the engine's flags.
         assert_eq!(WHEEL_TEXTURE_FLAGS, 0x133);
-        assert_eq!(WHEEL_TEXTURE_SCALE, 32);
+        assert_eq!((wheel_texture_side(4), wheel_size_word(4)), (128, 32));
+        assert_eq!((wheel_texture_side(5), wheel_size_word(5)), (160, 40));
         // The wheel is 280 square at (10, height − 290) and has the opened
         // domain as its choice. A tree with no record gives it 48 focus
         // points to share; its own open ease keeps its constructor value.
@@ -3360,15 +3358,19 @@ mod tests {
     }
 
     #[test]
-    fn the_draw_clears_the_refusal_flag() {
+    fn the_draw_ends_a_flash_and_its_refusal_when_its_time_is_up() {
         let mut tree = TreeScreen::load(DOMAIN_MIND, TreeMode::Play, None, None, 1000.0, 700.0);
+        tree.flash = 0;
+        tree.flash_until = 1300;
         tree.denied = true;
         let bar = PowerBar::default();
-        let view = tree.view(&bar, 1000.0, 700.0, 4.0, exa_ui::gui_font::RAYFORM_08, 0);
-        assert!(view.denied, "this frame still shows the refusal");
-        assert!(!tree.denied, "and the next one does not");
-        let view = tree.view(&bar, 1000.0, 700.0, 4.0, exa_ui::gui_font::RAYFORM_08, 0);
-        assert!(!view.denied);
+        let font = exa_ui::gui_font::RAYFORM_08;
+        let view = tree.view(&bar, 1000.0, 700.0, 4.0, font, 1299);
+        assert!(view.denied && view.flash == 0, "the flash still runs");
+        assert!(tree.denied);
+        let view = tree.view(&bar, 1000.0, 700.0, 4.0, font, 1300);
+        assert!(!view.denied && view.flash == -1, "and is over at its end");
+        assert!(!tree.denied && tree.flash == -1);
     }
 
     #[test]
@@ -4375,7 +4377,7 @@ mod tests {
         // The outgoing turn is measured about the link's owner: straight
         // below the owner is turn zero.
         screen.drag = DragState::MoveLink;
-        screen.link_focus = 1 << 16;
+        screen.focus = 1 << 16 | 1;
         screen.node_under = 1;
         assert_eq!(screen.drag_move(100.0, 300.0, 0), 3);
         assert_eq!(screen.links[0][0].out_turn, 0.0);
@@ -4386,7 +4388,7 @@ mod tests {
         );
 
         // An incoming turn is measured about the node the link ends on.
-        screen.link_focus = 1 << 16 | focus::INCOMING as u32;
+        screen.focus = 1 << 16 | focus::INCOMING | 1;
         assert_eq!(screen.drag_move(500.0, 600.0, 0), 3);
         assert_eq!(screen.links[0][0].in_turn, 0.0);
         assert_eq!(
@@ -4395,7 +4397,7 @@ mod tests {
         );
 
         // A link index the node does not have changes nothing.
-        screen.link_focus = 9 << 16;
+        screen.focus = 9 << 16 | 1;
         let before = screen.links[0][0];
         assert_eq!(screen.drag_move(0.0, 300.0, 0), 3);
         assert_eq!(screen.links[0][0], before);
