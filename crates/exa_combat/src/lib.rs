@@ -1379,6 +1379,7 @@ mod tests {
             fighter.health.yellow = yellow;
             // A shield parry deals no yellow but runs the low-health check.
             fighter.guard = damage::Guard::Shield(damage::ShieldGuard {
+                parry: 1.0,
                 leak: 1.0,
                 cost: 1.0,
                 stamina: 1.0,
@@ -1524,6 +1525,7 @@ mod tests {
         let leak = 1.0 - 0.5 * 0.58;
         let shielded = Fighter {
             guard: damage::Guard::Shield(damage::ShieldGuard {
+                parry: 1.0,
                 leak,
                 cost: leak,
                 stamina: 0.0,

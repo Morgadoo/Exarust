@@ -606,6 +606,7 @@ const CM_PER_M: f32 = 100.0;
 /// race `race`. A plain model (`name` in `Objects.rpk`) is measured along
 /// its first-child chain of rigid parts; an assembled factory weapon, one
 /// merged part in the original, up to its highest point, `top` (cm).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn held_record(
     game: &exa_assets::GameData,
     name: &str,
@@ -614,6 +615,7 @@ pub(crate) fn held_record(
     stats: StatBytes,
     holder: &Holder,
     race: &RaceWeaponry,
+    flipped: bool,
 ) -> WeaponRecord {
     let start = f32::from(stats.get(at::START)) * 0.005;
     let end = f32::from(stats.get(at::END)) * 0.005;
@@ -628,7 +630,7 @@ pub(crate) fn held_record(
         None => Lengths::one_part(top(), start, end),
     };
     let section = Section { flags, stats };
-    let mut record = WeaponRecord::build(&section, false, lengths, holder);
+    let mut record = WeaponRecord::build(&section, flipped, lengths, holder);
     weapon_record::equip(
         std::slice::from_mut(&mut record),
         holder,
@@ -1549,7 +1551,12 @@ fn equip_outfits(
             if let Some(mut hands) = hands {
                 hands.main = Some(held::HeldItem::weapon(item.flags));
             }
-            let top = || weapon_length(&weapon, loader.meshes) * CM_PER_M;
+            // The item node's y extents (cm), which the held reach and aim
+            // height measure: the model's own top, as the record's length
+            // already uses it. [guess for a multi-node weapon, whose root
+            // node's own box the original reads]
+            let item_cm = weapon_length(&weapon, loader.meshes) * CM_PER_M;
+            let top = || item_cm;
             let record = held_record(
                 loader.game,
                 &held.model,
@@ -1558,6 +1565,7 @@ fn equip_outfits(
                 stats,
                 &holder,
                 &race,
+                flipped,
             );
             // The holding pass hands the weapon's table mass to its part
             // tree's redistribution; the result waits for the body solver.
@@ -1569,11 +1577,12 @@ fn equip_outfits(
                 attacker.primary = Some(Slot::First);
             }
             let length = (record.length / CM_PER_M).max(0.1);
-            // Placed by its grip for the character's size and race; no
-            // weapon starts flipped yet.
+            // Placed by its grip for the character's size and race; a
+            // starting flip turns the item over and builds the record from
+            // its flipped side.
             let (grip_scale, grip_size) = (holder.scale, holder.size);
             let weapon_holder = holder;
-            let placement = grip.placement(&race.grip_holder(holder.size), false);
+            let placement = grip.placement(&race.grip_holder(holder.size), flipped);
             let holder = commands
                 .spawn((
                     placement,
@@ -1656,6 +1665,14 @@ fn equip_outfits(
                             ],
                             links: None,
                             released: false,
+                        },
+                        // What the equip refresh measures from this item,
+                        // for the character's refresh.
+                        crate::grip_runtime::HeldItemSpec {
+                            class: (item.flags & 0xFFFF) as u16,
+                            start_byte: stats.get(at::START),
+                            item_cm,
+                            race_reach: race.weapons.unarmed_reach,
                         },
                     ));
                     if key.is_none() {
@@ -1862,7 +1879,16 @@ mod tests {
                 continue;
             }
             let top = || panic!("{} is measured along its chain", item.model);
-            let r = held_record(&game, &item.model, top, w.flags, w.stats, average, &human);
+            let r = held_record(
+                &game,
+                &item.model,
+                top,
+                w.flags,
+                w.stats,
+                average,
+                &human,
+                false,
+            );
             assert!(r.length > 5.0 && r.length < 300.0, "{} {r:?}", item.name);
             assert!((r.reach - 60.0 - r.sweet_spot).abs() < 1e-3);
             plain += 1;
@@ -1878,6 +1904,7 @@ mod tests {
             w.stats,
             average,
             &human,
+            false,
         );
         assert!((r.length - 58.3).abs() < 0.05, "{r:?}");
         // Factory weapons: their assembled top, as the original's one
@@ -1909,6 +1936,7 @@ mod tests {
                 stats,
                 average,
                 &human,
+                false,
             );
             assert_eq!(r.length, top, "{name}");
             assert!(r.length > 50.0 && r.length < 300.0, "{name} {r:?}");
@@ -1992,6 +2020,7 @@ mod tests {
                 w.stats,
                 &Holder::AVERAGE,
                 &human,
+                false,
             );
             let mass = WeaponMass::new(parts, record.mass().unwrap(), 1.0);
             assert!(!mass.parts.is_empty(), "{name}");

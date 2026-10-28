@@ -535,6 +535,27 @@ mod held_measure_tests {
         assert_eq!((m.reach, m.aim_cm, m.greatsword), (260.0, 90.0, true));
         assert!(!held_measures(0x10, 200, 100.0, 50.0).greatsword);
     }
+
+    /// The refresh holds the first item's measures only while something is
+    /// held, and the parry gate only counts with something in hand.
+    #[test]
+    fn the_equip_refresh_reports_the_first_held_item() {
+        let empty = refresh_hold(0, true, 0x20, 128, 90.0, 50.0);
+        assert!(!empty.held && !empty.may_parry);
+        assert_eq!(empty.measures, None);
+        let held = refresh_hold(1, true, 0x20, 128, 90.0, 50.0);
+        assert!(held.held && held.may_parry);
+        assert_eq!(held.measures, Some(held_measures(0x20, 128, 90.0, 50.0)));
+        assert_eq!(held.measures.unwrap().reach, 175.2);
+        // Two weapons: the first still gives the measures; a gate that is
+        // off (the heavy claws) leaves the parry flag clear.
+        let two = refresh_hold(2, false, 0x521, 200, 100.0, 50.0);
+        assert!(two.held && !two.may_parry);
+        assert!(two.measures.unwrap().greatsword);
+        // Unarmed hands take the race's own reach.
+        let fists = refresh_hold(1, true, 0, 128, 90.0, 50.0);
+        assert_eq!(fists.measures.unwrap().reach, 50.0);
+    }
 }
 
 /// What the held-item refresh derives from the item's weapon
@@ -546,6 +567,46 @@ pub struct HeldMeasures {
     pub reach: f32,
     pub aim_cm: f32,
     pub greatsword: bool,
+}
+
+/// The refresh of a character's held gear, as its equip and every swap
+/// recompute it: whether it holds anything and may parry, and the first
+/// held item's measures (none with empty hands).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HoldRefresh {
+    /// Something is in the hands.
+    pub held: bool,
+    /// It holds something and may parry (the world-weld gate): a shield or
+    /// a torch always may.
+    pub may_parry: bool,
+    /// The first held item's measures.
+    pub measures: Option<HeldMeasures>,
+}
+
+/// The equip/swap refresh: with `count` items held, the first one's class,
+/// start byte and node length give its measures; empty hands take the
+/// race's reach and no measures. The parry gate is the holder's and only
+/// counts while something is held.
+pub fn refresh_hold(
+    count: usize,
+    parry_gate: bool,
+    class: u16,
+    start_byte: u8,
+    item_cm: f32,
+    race_reach: f32,
+) -> HoldRefresh {
+    if count == 0 {
+        return HoldRefresh {
+            held: false,
+            may_parry: false,
+            measures: None,
+        };
+    }
+    HoldRefresh {
+        held: true,
+        may_parry: parry_gate,
+        measures: Some(held_measures(class, start_byte, item_cm, race_reach)),
+    }
 }
 
 /// The refresh's measures: with no hands bits the reach is the race's,

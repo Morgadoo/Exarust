@@ -78,7 +78,12 @@ pitch and muffling and each layer's ringing (`hit_sounds`). A blow on a
 shield or a weapon (`Guard`) meets no layer and draws no roll: a weapon's
 parry deals nothing and sags the parrier (`parried`), a shield takes it on
 its arm's stamina and leaks yellow (`block`, the block path with its
-Synchrony, Persist and Counter rules). Rules and
+Synchrony, Persist and Counter rules). A shield's own equip gives its
+holder the guard's factors from the shield's record and its techniques,
+with a full arm (`damage::shield_guard`); `exa_character::offhand` keeps
+them beside the shield (`ShieldHold`) and does not raise the guard, since
+only a blow on the shield itself is blocked and Exarust does not strike
+shield bodies yet. The parry factor waits for the shield parry. Rules and
 numbers: [`docs/formats/OTHER.md`](../../docs/formats/OTHER.md), Damage.
 
 The hit reaction then runs the striker's side (`SwingState::after_wound`):
@@ -125,15 +130,21 @@ hand's X, then Z, then Y) and links (to the hand, the second hand and the
 arm, and the stab's; `spec` hands them to `exa_physics::grip`). The held
 reach is `held_reach`: the item's length times a byte of its weapon record as a
 hundredth plus 60 cm, or the race's reach with no hands bits; the aim
-point sits `held_aim_height` above the grip. `Grip::placement` places an
-item for a `GripHolder` (size, race byte, the race's held offset) and a
-flip. The off-hand item takes entry 5 (a light, or the second of two
+point sits `held_aim_height` above the grip. The equip/swap refresh
+(`refresh_hold`, `HoldRefresh`) reports the first held item's measures,
+the held count and the parry gate; `exa_character::grip_runtime` keeps it
+on the character. `Grip::placement` places an item for a `GripHolder`
+(size, race byte, the race's held offset) and a flip. The off-hand item takes entry 5 (a light, or the second of two
 weapons) and a shield keeps its own record through the spawn's equip and
 attach plans (`spawn::Equipped::shield_record`,
 `exa_character::offhand`); the flip command's section gate lives in
 `exa_formats::weapon_record::Section::can_flip`. Rules:
 [`docs/PLAYER.md`](../../docs/PLAYER.md) (Held
 items and their grips).
+
+A weapon switch swaps the two held slots once past 60% of its clip
+(`condition::swap_due`); `exa_character::grip_runtime::swap_on_switch`
+trades the two blades' slots and the attacker's primary.
 
 ## Weapon body impacts
 

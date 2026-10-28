@@ -287,6 +287,14 @@ pub const WEAK_BELOW: f32 = 0.85;
 /// A weapon switch swaps the weapons once past this share of its clip
 /// (compared in double precision, so the float 0.6 is past it).
 pub const SWAP_AT: f64 = 0.6;
+
+/// Whether a weapon switch reaches its swap this tick: the condition was
+/// [`Condition::SWITCHING`] and the tick's posture made it
+/// [`Condition::SWITCHED`] (the clip passed [`SWAP_AT`]). The holder then
+/// swaps its two held items' slots, in [`crate::grip`]'s runtime.
+pub fn swap_due(before: Condition, after: Condition) -> bool {
+    before == Condition::SWITCHING && after == Condition::SWITCHED
+}
 /// The actions the decision tells apart.
 pub mod action {
     use std::ops::RangeInclusive;

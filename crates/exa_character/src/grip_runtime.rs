@@ -66,6 +66,137 @@ pub fn resolve_pending_grips(
     }
 }
 
+/// A character's condition on the previous fixed tick, so the weapon
+/// switch's swap fires once when its clip passes 60 %.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LastCondition(pub Condition);
+
+/// What the equip refresh measures from one held item: its weapon class,
+/// the record's start byte, the item node's y extents (cm) and the race's
+/// unarmed reach. [`exa_combat::grip::held_measures`] turns them into the
+/// item's reach and aim height.
+#[derive(Component, Debug, Clone, Copy, PartialEq)]
+pub struct HeldItemSpec {
+    pub class: u16,
+    pub start_byte: u8,
+    pub item_cm: f32,
+    pub race_reach: f32,
+}
+
+/// The character's held-gear refresh, as its equip and every swap
+/// recompute it: the count of held items, the first striker's measures and
+/// the parry gate. The AI's reach and the attack aim do not read it yet.
+#[derive(Component, Debug, Clone, Copy, PartialEq)]
+pub struct HeldRefresh(pub exa_combat::grip::HoldRefresh);
+
+/// Recomputes each character's held-gear refresh from its held items, in
+/// the original's equip/swap refresh: the count of items, the striker in
+/// the first held slot as the measured one, and the parry gate of that
+/// item. Runs before the solver so a swap's new first item is measured the
+/// same tick.
+pub fn refresh_holds(
+    mut commands: Commands,
+    held: Query<(Entity, &HeldGrip, Option<&Blade>, Option<&HeldItemSpec>)>,
+    mut holders: Query<(Entity, &Ragdoll, Option<&mut HeldRefresh>)>,
+) {
+    for (owner, body, current) in &mut holders {
+        let Some(key) = body.parts.first().map(|p| p.entity) else {
+            continue;
+        };
+        let mut count = 0;
+        let mut first: Option<(HeldItemSpec, bool)> = None;
+        for (_, grip, blade, spec) in &held {
+            // The count is the hands' weapon slots: a shield or a torch
+            // is held through its own slot.
+            if grip.holder_key != key || grip.kind != HeldKind::Weapon {
+                continue;
+            }
+            count += 1;
+            let Some(spec) = spec else {
+                continue;
+            };
+            let is_first = blade.is_some_and(|b| b.slot == exa_combat::attack::Slot::First);
+            if is_first || first.is_none() {
+                first = Some((*spec, grip.soft_weld));
+            }
+        }
+        let refresh = HeldRefresh(match first {
+            Some((spec, gate)) => exa_combat::grip::refresh_hold(
+                count,
+                gate,
+                spec.class,
+                spec.start_byte,
+                spec.item_cm,
+                spec.race_reach,
+            ),
+            None => exa_combat::grip::refresh_hold(0, false, 0, 0, 0.0, 0.0),
+        });
+        if current.map(|c| *c) != Some(refresh) {
+            commands.entity(owner).insert(refresh);
+        }
+    }
+}
+
+/// The other held slot.
+fn other_slot(slot: exa_combat::attack::Slot) -> exa_combat::attack::Slot {
+    match slot {
+        exa_combat::attack::Slot::First => exa_combat::attack::Slot::Second,
+        exa_combat::attack::Slot::Second => exa_combat::attack::Slot::First,
+    }
+}
+
+/// Swaps a character's two held weapons when its switch clip reaches the
+/// swap (60 % of the clip): the first and second held slots trade places
+/// and its primary striker moves with the weapon. The items stay in their
+/// hands; only the slot that strikes and the attacker's primary change. A
+/// holder with anything but two weapons in the two slots keeps them.
+pub fn swap_on_switch(
+    mut commands: Commands,
+    mut holders: Query<(Entity, &Condition, &Ragdoll, Option<&mut LastCondition>)>,
+    held: Query<(Entity, &HeldGrip)>,
+    mut blades: Query<&mut Blade>,
+    mut attackers: Query<&mut exa_combat::attack::Attacker>,
+) {
+    for (owner, condition, body, last) in &mut holders {
+        let before = last.as_ref().map_or(*condition, |l| l.0);
+        let due = exa_combat::condition::swap_due(before, *condition);
+        if let Some(mut last) = last {
+            last.0 = *condition;
+        } else {
+            commands.entity(owner).insert(LastCondition(*condition));
+        }
+        if !due {
+            continue;
+        }
+        let Some(key) = body.parts.first().map(|p| p.entity) else {
+            continue;
+        };
+        let items: Vec<Entity> = held
+            .iter()
+            .filter(|(_, grip)| grip.holder_key == key && grip.kind == HeldKind::Weapon)
+            .map(|(entity, _)| entity)
+            .collect();
+        if items.len() != 2 {
+            continue;
+        }
+        let (Ok(first), Ok(second)) = (blades.get(items[0]), blades.get(items[1])) else {
+            continue;
+        };
+        if first.slot == second.slot {
+            continue;
+        }
+        let swapped = [other_slot(first.slot), other_slot(second.slot)];
+        for (entity, slot) in items.into_iter().zip(swapped) {
+            if let Ok(mut blade) = blades.get_mut(entity) {
+                blade.slot = slot;
+            }
+        }
+        if let Ok(mut attacker) = attackers.get_mut(owner) {
+            attacker.primary = attacker.primary.map(other_slot);
+        }
+    }
+}
+
 /// Starts the flip on every held item of the requested character. A held
 /// item names its holder by the holder body's first part, so the request's
 /// body is looked up for it. The original's flip command refuses while the
@@ -253,6 +384,8 @@ impl Plugin for GripRuntimePlugin {
         app.add_message::<FlipWeaponRequest>()
             .add_systems(FixedUpdate, flip_requests.before(GripSolveSet::Sync))
             .add_systems(FixedUpdate, animate_grips.before(GripSolveSet::Sync))
+            .add_systems(FixedUpdate, swap_on_switch.before(GripSolveSet::Sync))
+            .add_systems(FixedUpdate, refresh_holds.before(GripSolveSet::Sync))
             .add_systems(FixedUpdate, weld_states.before(GripSolveSet::Sync))
             .add_systems(
                 FixedUpdate,
@@ -511,6 +644,165 @@ mod tests {
         app.add_message::<FlipWeaponRequest>()
             .add_systems(Update, (flip_requests, animate_grips).chain());
         app
+    }
+
+    /// The switch's swap trades the two held weapons' slots and the primary
+    /// striker once, on the tick past 60 % of the clip.
+    #[test]
+    fn a_weapon_switch_swaps_the_two_held_slots_once() {
+        use exa_combat::attack::{Attacker, Slot};
+        let mut app = App::new();
+        app.add_systems(Update, swap_on_switch);
+        let mut attacker = Attacker::default();
+        attacker.primary = Some(Slot::First);
+        let owner = app
+            .world_mut()
+            .spawn((
+                Condition::SWITCHED,
+                LastCondition(Condition::SWITCHING),
+                attacker,
+            ))
+            .id();
+        let body = holder(owner, Vec3::ZERO);
+        let key = body.parts[0].entity;
+        app.world_mut().entity_mut(owner).insert(body);
+        let blade = |slot| {
+            Blade::new(
+                owner,
+                1.0,
+                WeaponRecord::build(
+                    &section(),
+                    false,
+                    Lengths::one_part(100.0, 0.1, 1.0),
+                    &Holder::AVERAGE,
+                ),
+            )
+            .in_slot(slot)
+        };
+        let spawn = |app: &mut App, slot| {
+            let grip = HeldGrip {
+                spec: spec(),
+                scale: 1.0,
+                size: 1.0,
+                second_hand_factor: 1.0,
+                flip: false,
+                class: 0x10,
+                soft_weld: false,
+                kind: exa_physics::grip::HeldKind::Weapon,
+                holder_key: key,
+                hands: [None, None],
+                arms: [None, None],
+                links: None,
+                released: false,
+            };
+            app.world_mut().spawn((grip, blade(slot))).id()
+        };
+        let first = spawn(&mut app, Slot::First);
+        let second = spawn(&mut app, Slot::Second);
+        app.update();
+        assert_eq!(app.world().get::<Blade>(first).unwrap().slot, Slot::Second);
+        assert_eq!(app.world().get::<Blade>(second).unwrap().slot, Slot::First);
+        assert_eq!(
+            app.world().get::<Attacker>(owner).unwrap().primary,
+            Some(Slot::Second)
+        );
+        // The next tick is no swap: the slots stay.
+        app.update();
+        assert_eq!(app.world().get::<Blade>(first).unwrap().slot, Slot::Second);
+        assert_eq!(
+            app.world().get::<Attacker>(owner).unwrap().primary,
+            Some(Slot::Second)
+        );
+    }
+
+    /// The refresh measures the first held striker, counts every held item
+    /// and takes the first item's parry gate; empty hands drop it.
+    #[test]
+    fn the_held_refresh_measures_the_first_striker() {
+        use exa_combat::attack::Slot;
+        use exa_combat::grip::{HoldRefresh, held_measures};
+        let mut app = App::new();
+        app.add_systems(Update, refresh_holds);
+        let owner = app.world_mut().spawn_empty().id();
+        let body = holder(owner, Vec3::ZERO);
+        let key = body.parts[0].entity;
+        app.world_mut().entity_mut(owner).insert(body);
+        let spawn = |app: &mut App, slot: Slot, item: HeldItemSpec, soft: bool| {
+            let grip = HeldGrip {
+                spec: spec(),
+                scale: 1.0,
+                size: 1.0,
+                second_hand_factor: 1.0,
+                flip: false,
+                class: u32::from(item.class),
+                soft_weld: soft,
+                kind: exa_physics::grip::HeldKind::Weapon,
+                holder_key: key,
+                hands: [None, None],
+                arms: [None, None],
+                links: None,
+                released: false,
+            };
+            let blade = Blade::new(
+                owner,
+                1.0,
+                WeaponRecord::build(
+                    &section(),
+                    false,
+                    Lengths::one_part(100.0, 0.1, 1.0),
+                    &Holder::AVERAGE,
+                ),
+            )
+            .in_slot(slot);
+            app.world_mut().spawn((grip, blade, item)).id()
+        };
+        let first = spawn(
+            &mut app,
+            Slot::First,
+            HeldItemSpec {
+                class: 0x20,
+                start_byte: 128,
+                item_cm: 90.0,
+                race_reach: 50.0,
+            },
+            true,
+        );
+        app.update();
+        let refresh = app.world().get::<HeldRefresh>(owner).unwrap().0;
+        assert_eq!(
+            refresh,
+            HoldRefresh {
+                held: true,
+                may_parry: true,
+                measures: Some(held_measures(0x20, 128, 90.0, 50.0)),
+            }
+        );
+        // A second weapon counts, but the first slot keeps the measures.
+        let second = spawn(
+            &mut app,
+            Slot::Second,
+            HeldItemSpec {
+                class: 0x10,
+                start_byte: 5,
+                item_cm: 97.1,
+                race_reach: 50.0,
+            },
+            false,
+        );
+        app.update();
+        let refresh = app.world().get::<HeldRefresh>(owner).unwrap().0;
+        assert!(refresh.held && refresh.may_parry && refresh.measures.is_some());
+        assert_eq!(refresh.measures.unwrap().reach, 175.2);
+        // With the first weapon gone the second becomes the measured one.
+        app.world_mut().entity_mut(first).despawn();
+        app.update();
+        let refresh = app.world().get::<HeldRefresh>(owner).unwrap().0;
+        assert_eq!(refresh.measures, Some(held_measures(0x10, 5, 97.1, 50.0)));
+        // Both gone: no hold.
+        app.world_mut().entity_mut(second).despawn();
+        app.update();
+        let refresh = app.world().get::<HeldRefresh>(owner).unwrap().0;
+        assert!(!refresh.held && refresh.measures.is_none());
     }
 
     /// A grip attached before its holder's body exists takes the holder's
