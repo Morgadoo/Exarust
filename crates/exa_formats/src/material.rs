@@ -431,6 +431,19 @@ impl Material {
         }
     }
 
+    /// Whether a mesh whose first surface wears this material is thin for
+    /// the voxel GI, so its points fill the occupancy at a quarter weight:
+    /// the render class carries `0x4000`, or the material has an opacity
+    /// layer and an opacity above 0.75 (an ordered compare, so NaN is not
+    /// thin). The original's mesh set-up derives the flag for every surface
+    /// when the node is loaded; the GI splat reads the first surface's.
+    pub fn is_thin_for_gi(&self) -> bool {
+        const THIN_CLASS: u32 = 0x4000;
+        const THIN_OPACITY: f32 = 0.75;
+        self.class & THIN_CLASS != 0
+            || (self.flags & TextureSlot::Opacity.flag() != 0 && self.opacity > THIN_OPACITY)
+    }
+
     /// The impact sound set of the material named `name`: the collision
     /// sound prefix, or the name's first three characters, then `col`.
     pub fn collision_sound_set(&self, name: &str) -> String {
@@ -498,6 +511,25 @@ mod tests {
         ] {
             assert_eq!(TextureSlot::from_flag(flag).flag(), flag);
         }
+    }
+
+    /// The GI's thin-mesh rule: class bit 0x4000, or an opacity layer with
+    /// an opacity strictly above 0.75 (NaN is not thin).
+    #[test]
+    fn thin_gi_meshes_follow_the_class_bit_or_an_opaque_cut_out() {
+        let with = |class: u32, flags: u32, opacity: f32| Material {
+            class,
+            flags,
+            opacity,
+            ..Material::default()
+        };
+        assert!(with(0x4000, 0, 0.0).is_thin_for_gi());
+        assert!(with(0x4003, 0x3, 1.0).is_thin_for_gi());
+        assert!(!with(0x3003, 0x3, 1.0).is_thin_for_gi());
+        assert!(with(0, 0x0040_0000, 0.76).is_thin_for_gi());
+        assert!(!with(0, 0x0040_0000, 0.75).is_thin_for_gi());
+        assert!(!with(0, 0x0040_0000, f32::NAN).is_thin_for_gi());
+        assert!(!with(0, 0x0002_0000, 1.0).is_thin_for_gi());
     }
 
     #[test]
