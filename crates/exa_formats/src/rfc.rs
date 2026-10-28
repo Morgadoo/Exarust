@@ -1901,6 +1901,26 @@ impl Face {
         Some(diff)
     }
 
+    /// The original's "a point is within `max` of the face" test, used by
+    /// the kd-tree's sphere walks: the point's plane distance must be
+    /// within the reach and its squared distance to the closest point under
+    /// `max² − the engine's epsilon`.
+    #[allow(clippy::neg_cmp_op_on_partial_ord)] // NaN must take the miss branch
+    pub fn within(&self, point: [f32; 3], max: f32) -> Option<f32> {
+        let distance = self.plane_distance(point);
+        if !(distance.abs() <= max) {
+            return None;
+        }
+        let closest = self.closest_point(point, distance);
+        let v = sub(point, closest);
+        let squared = dot3(v, v);
+        if squared < max * max - FACE_EPSILON {
+            Some(squared.sqrt())
+        } else {
+            None
+        }
+    }
+
     /// The distance along a sphere's sweep at which it first touches the
     /// face's front, if it does before `best`. `direction` is the unit
     /// sweep direction and `length` its travel; `radius` is the sphere's.
@@ -2024,6 +2044,18 @@ impl Mesh {
             .find_map(|(triangle, face)| {
                 face.sphere_push(centre, radius)
                     .map(|push| (triangle as u32, push))
+            })
+    }
+
+    /// The first face within `reach` of `point`, with the distance to its
+    /// closest point (see [`Face::within`]).
+    pub fn within_hit(&self, point: [f32; 3], reach: f32) -> Option<(u32, f32)> {
+        self.faces()
+            .iter()
+            .enumerate()
+            .find_map(|(triangle, face)| {
+                face.within(point, reach)
+                    .map(|distance| (triangle as u32, distance))
             })
     }
 
@@ -3186,6 +3218,14 @@ mod tests {
         assert!(push[0].abs() < 1e-3 && push[2].abs() < 1e-3, "{push:?}");
         // Well above the surface it reaches nothing.
         assert!(mesh.sphere_hit([0.5, 3.0, -0.5], 1.0).is_none());
+        // The same square is within a metre of a point half a metre up, and
+        // not of one three metres away.
+        let near = mesh.within_hit([0.5, 0.5, -0.5], 1.0).expect("a face");
+        assert!((near.1 - 0.5).abs() < 1e-3, "{near:?}");
+        assert!(mesh.within_hit([0.5, 3.0, -0.5], 1.0).is_none());
+        // A point beside the square reaches its nearest corner.
+        let beside = mesh.within_hit([1.5, 0.0, -0.5], 1.0).expect("a face");
+        assert!((beside.1 - 0.5).abs() < 1e-3, "{beside:?}");
     }
 
     /// A sphere swept straight down meets a face where its centre is one

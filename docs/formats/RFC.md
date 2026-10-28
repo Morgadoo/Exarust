@@ -239,12 +239,14 @@ with the original's 1e-6 and 1 limits), a one-sided ray hit (the signed
 volumes of the ray against the two edges; the ray must run against the
 normal and the denominator must reach 1.19e-7), a sphere's push-out (from
 the centre to the closest point, lengthened to the radius, or along the
-normal when the centre is on the triangle) and a swept sphere's first touch
+normal when the centre is on the triangle), a swept sphere's first touch
 (the centre placed one radius in front of the plane, the closest point
 there, and the gap along the sweep; a sweep that grazes the plane uses its
-end). `exa_formats::rfc::Face` and
-`Mesh::{faces, ray_hit, ray_hit_inclusive, sphere_hit, swept_sphere_hit}`
-reproduce them; the collision solver still uses rapier, so only the mesh
+end) and a point's distance to the nearest face of a reach (the plane
+distance within the reach and the squared distance under the reach's square
+less the epsilon). `exa_formats::rfc::Face` and
+`Mesh::{faces, ray_hit, ray_hit_inclusive, sphere_hit, swept_sphere_hit,
+within_hit}` reproduce them; the collision solver still uses rapier, so only the mesh
 class's rules are ported, not its kd-tree wiring or the callback forms of
 the same tests.
 
