@@ -191,20 +191,22 @@ fn attach_off_hands(
                 stats: w.stats,
             })
         {
-            let lengths = Lengths::one_part(
-                crate::weapon_length(&weapon, &meshes),
-                f32::from(section.stats.get(exa_formats::weapon_stats::at::START)) * 0.005,
-                f32::from(section.stats.get(exa_formats::weapon_stats::at::END)) * 0.005,
-            );
+            // The model's own chain gives a plain weapon's lengths; a
+            // factory weapon takes its assembled top (cm).
+            let top = crate::weapon_length(&weapon, &meshes) * 100.0;
             let record = crate::held_record(
                 &game.0,
                 &off.model,
-                || lengths.length,
+                || top,
                 section.flags,
                 section.stats,
                 &holder,
                 &race,
             );
+            let lengths = Lengths {
+                length: record.length,
+                sweet_spot: record.sweet_spot,
+            };
             commands
                 .entity(root)
                 .insert((
