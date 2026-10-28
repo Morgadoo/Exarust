@@ -661,8 +661,10 @@ is (0.14, 0.08, 1) times a tenth of its curve, and the hum's volume and
 pitch follow the opening and closing. A Shell cast now spawns the aura
 node: the `_ForceAura01` material with its `0xf0` block, node flags
 `0x9020`, one sub-object of kind 35044 and the `_ForceNoise` picture. The
-node carries its material's pass plan (`thaum::effect_material`,
-`thaum::effect_pass`); nothing draws it yet.
+node carries the `ForceShell` aura (`LiveShellAura`): it opens, holds and
+closes, steps its ripples, and outlives the power until it has closed; it
+also carries its material's pass plan (`thaum::effect_material`,
+`thaum::effect_pass`). Nothing draws it yet.
 
 ## Displacement wisps
 
