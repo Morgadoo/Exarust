@@ -67,8 +67,11 @@ and the manager releases its references and atlas cells; a freed slot is
 reused by the next acquire. A body's encumbrance is recomputed from its possessions
 after an equipment change (`exa_game::equip::refresh_encumbrance`), using
 the same armour-pass sum as the spawn. The container popup's open geometry
-is modelled, but no live container popup is drawn yet. The phrase tables
-the generated quality and condition sentence draws from are data in
-`Exanima.exe` that has not been extracted, so an apparel card, or a weapon
-card whose model name starts with `@`, shows its description without that
-sentence.
+is modelled, but no live container popup is drawn yet. The generated quality and
+condition sentence is live (`desc_phrase`): its phrase tables and the eight
+armour-variant words are read once from the game folder's `Exanima.exe`
+(`exa_formats::desc_phrases`, nothing shipped), the catalogue records which
+rule a card uses (a weapon page on a factory model, else any apparel body,
+else a shield section on a factory model), and the card rewrites the
+description through it (the apparel rule also prefixes the variant word to
+the title). Without the executable the description is kept as it is.

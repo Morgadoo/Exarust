@@ -778,7 +778,10 @@ one fall back to the CPU paint of the same scene. The card
 window (`CardWindow`) keeps the 200 ms request, its toggle and its 0x100 ms
 close fade on top of the card timer; `item_card` now draws it: a right
 click on a panel entry builds the item's page from the catalogue's card
-facts through the card's own page, value, tint, row and description rules,
+facts through the card's own page, value, tint, row and description rules
+(the description first rewritten into the generated quality and condition
+sentence from the executable's phrase tables, the apparel title taking its
+variant word),
 the card holds the panel manager's icon and fades on the popup's squared
 curve, and leaving it starts the fade. Closing the inventory or a loot
 window queues its icon handles and the manager frees their references and

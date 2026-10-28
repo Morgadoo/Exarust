@@ -2080,6 +2080,43 @@ does not call it. Health does not store a limb impairment: a part's damage
 and stun weights stay the bone table. Not yet: shields as bodies, and
 encumbrance's effect on swings.
 
+## Item description phrases (in `Exanima.exe`)
+
+Status: **verified** (`exa_formats::desc_phrases` reads every table of the
+installed 0.9.5 executable; the sentence rules were checked against the
+instructions with REA).
+
+The sentence an item card adds to a description is built from five tables
+in the executable's initialised data, not from a pack. Each row is 24
+bytes: a pointer to a constant Free Pascal ANSI string (its signed 64-bit
+length precedes the bytes, a zero follows them), an 8-byte word that is zero
+in every row, and the inclusive mark range as two bytes (low, high) on a
+0–100 scale, then padding.
+
+| table | rows | used for |
+|---|---:|---|
+| flawless | 11 | condition, first try |
+| perfect | 10 | condition when the flawless pick adds nothing |
+| high | 8 | quality of a weapon description starting with `-` |
+| great | 6 | condition of a weapon description starting with `-` |
+| made | 15 | quality otherwise |
+
+The eight armour-variant words (variants 1–8, after a null entry for 0)
+are a run of string pointers in the same unit.
+
+A mark is `byte / 2.55` in double precision rounded to the nearest, ties to
+even. A pick steps the engine generator (`× 0x08088405 + 1`) once when some
+row's range holds the mark and takes candidate `(state × count) >> 32`; a
+condition candidate that repeats a word of more than three letters (whole
+words followed by a space, case-insensitive) of the quality phrase adds
+nothing. The bytes read are the weapon (or shield) section body's seed word
+at `+0x04`, quality `+0x0C` and damage `+0x0D`, and the apparel body's
+variant `+0x1AA`, seed `+0x1AC`, quality `+0x1B0` and damage `+0x1B1`; a seed
+of `0xFFFFFFFF` keeps the template's fixed name. The card uses the weapon
+rule for a weapon page on a factory model (`@` name), else the apparel rule
+for any apparel body, else the weapon rule over a shield section on a
+factory model.
+
 ## Practice ladder
 
 The next fight advances the count by one and stops at 8
