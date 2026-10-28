@@ -1856,24 +1856,25 @@ impl Face {
     /// the original's ray test: the signed volumes of the ray and the two
     /// edges, one-sided (the ray must run against the face normal), with
     /// the denominator compared against the engine's epsilon.
-    #[allow(clippy::neg_cmp_op_on_partial_ord)] // NaN must take the miss branch
     pub fn ray(&self, origin: [f32; 3], direction: [f32; 3], best: f32) -> Option<f32> {
         let [a, b, c] = self.corners;
         let e1 = sub(b, a);
         let e2 = sub(c, a);
         let h = cross3(direction, e2);
         let denom = dot3(e1, h);
-        if !(denom >= FACE_EPSILON) {
+        // The range rejections are "below"/"above" compares a NaN passes;
+        // only the distance checks at the end reject a NaN.
+        if denom < FACE_EPSILON {
             return None;
         }
         let s = sub(origin, a);
         let u = dot3(s, h);
-        if !(0.0 <= u && u <= denom) {
+        if u < 0.0 || denom < u {
             return None;
         }
         let q = cross3(s, e1);
         let v = dot3(direction, q);
-        if !(0.0 <= v && u + v <= denom) {
+        if v < 0.0 || denom < u + v {
             return None;
         }
         let t = dot3(e2, q) / denom;
@@ -1883,25 +1884,24 @@ impl Face {
     /// The original's second ray variant: the barycentric weights are
     /// divided by the denominator first and the hit is accepted at
     /// `t == best` too.
-    #[allow(clippy::neg_cmp_op_on_partial_ord)] // NaN must take the miss branch
     pub fn ray_inclusive(&self, origin: [f32; 3], direction: [f32; 3], best: f32) -> Option<f32> {
         let [a, b, c] = self.corners;
         let e1 = sub(b, a);
         let e2 = sub(c, a);
         let h = cross3(direction, e2);
         let denom = dot3(e1, h);
-        if !(denom.abs() >= FACE_EPSILON) {
+        if denom.abs() < FACE_EPSILON {
             return None;
         }
         let inverse = 1.0 / denom;
         let s = sub(origin, a);
         let u = dot3(s, h) * inverse;
-        if !(0.0..=1.0).contains(&u) {
+        if u < 0.0 || u > 1.0 {
             return None;
         }
         let q = cross3(s, e1);
         let v = dot3(direction, q) * inverse;
-        if !(0.0..=1.0).contains(&v) || !(u + v <= 1.0) {
+        if v < 0.0 || u + v > 1.0 {
             return None;
         }
         let t = dot3(e2, q) * inverse;
@@ -1913,20 +1913,20 @@ impl Face {
     /// reports it: from the centre to the closest point of the triangle,
     /// lengthened to the radius less the distance (or straight along the
     /// normal when the centre is on the triangle).
-    #[allow(clippy::neg_cmp_op_on_partial_ord)] // NaN must take the miss branch
+    #[allow(clippy::neg_cmp_op_on_partial_ord)] // a NaN takes the original's branch
     pub fn sphere_push(&self, centre: [f32; 3], radius: f32) -> Option<[f32; 3]> {
         let distance = self.plane_distance(centre);
-        if !(0.0 <= distance && distance < radius) {
+        if distance < 0.0 || distance >= radius {
             return None;
         }
         let closest = self.closest_point(centre, distance);
         let mut diff = sub(centre, closest);
         let squared = dot3(diff, diff);
         let room = radius - SPHERE_EPSILON;
-        if !(squared < room * room) {
+        if room * room <= squared {
             return None;
         }
-        if SPHERE_EPSILON <= squared {
+        if !(squared < SPHERE_EPSILON) {
             let scale = (radius - squared.sqrt()) / squared.sqrt();
             diff = diff.map(|x| x * scale);
         } else {
@@ -1939,10 +1939,9 @@ impl Face {
     /// the kd-tree's sphere walks: the point's plane distance must be
     /// within the reach and its squared distance to the closest point under
     /// `max² − the engine's epsilon`.
-    #[allow(clippy::neg_cmp_op_on_partial_ord)] // NaN must take the miss branch
     pub fn within(&self, point: [f32; 3], max: f32) -> Option<f32> {
         let distance = self.plane_distance(point);
-        if !(distance.abs() <= max) {
+        if distance.abs() > max {
             return None;
         }
         let closest = self.closest_point(point, distance);
@@ -1962,7 +1961,7 @@ impl Face {
     /// one radius in front of the plane, the closest point there, and the
     /// gap from that centre along the sweep; a sweep that only grazes the
     /// plane (a zero change) uses its end.
-    #[allow(clippy::neg_cmp_op_on_partial_ord)] // NaN must take the miss branch
+    #[allow(clippy::neg_cmp_op_on_partial_ord)] // a NaN takes the original's branch
     pub fn swept_sphere(
         &self,
         start: [f32; 3],
@@ -1972,17 +1971,17 @@ impl Face {
         best: f32,
     ) -> Option<f32> {
         let start_distance = self.plane_distance(start);
-        if !(0.0 <= start_distance) {
+        if start_distance < 0.0 {
             return None;
         }
         let delta = dot3(direction, self.normal) * length;
-        if !(delta <= 0.0) {
+        if delta > 0.0 {
             return None;
         }
-        if !(start_distance + delta <= radius) {
+        if start_distance + delta > radius {
             return None;
         }
-        let centre = if delta.abs() >= FACE_EPSILON {
+        let centre = if !(delta.abs() < FACE_EPSILON) {
             let travel = ((radius - start_distance) / delta) * length;
             [
                 start[0] + direction[0] * travel,
@@ -3286,6 +3285,26 @@ mod tests {
             face.closest_point(p, face.plane_distance(p)),
             [1.0, 0.0, -1.0]
         ));
+    }
+
+    /// The original's range rejections are "below"/"above" compares a NaN
+    /// passes; only the final distance checks reject it.
+    #[test]
+    fn a_nan_passes_the_range_rejections_but_not_the_distance_checks() {
+        let face = Face::new([0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 0.0, -2.0]);
+        // A NaN direction reaches the distance check and fails it there.
+        assert_eq!(
+            face.ray([0.5, 5.0, -0.5], [f32::NAN, -1.0, 0.0], 10.0),
+            None
+        );
+        // A NaN centre passes every sphere rejection and is pushed by NaN.
+        let push = face.sphere_push([f32::NAN, 0.5, -0.5], 1.0);
+        assert!(
+            push.is_some_and(|p| p.iter().any(|x| x.is_nan())),
+            "{push:?}"
+        );
+        // The reach test's last compare is a strict "under", so NaN misses.
+        assert_eq!(face.within([f32::NAN, 0.5, -0.5], 1.0), None);
     }
 
     /// The ray test is one-sided and front-only: a ray running against the

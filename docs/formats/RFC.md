@@ -238,7 +238,7 @@ squared area (`1/(|e1|²|e2|² − (e1·e2)²)`). From it the original answers a
 point's barycentric weights (drop the point onto the plane, express it in
 the two edges, scale by the stored area reciprocal), the closest point on
 the triangle (the interior projection, then the edge and corner regions,
-with the original's 1e-6 and 1 limits), a one-sided ray hit (the signed
+with weights clamped to 0…1 by `<=` compares), a one-sided ray hit (the signed
 volumes of the ray against the two edges; the ray must run against the
 normal and the denominator must reach 1.19e-7), a sphere's push-out (from
 the centre to the closest point, lengthened to the radius, or along the
@@ -247,7 +247,9 @@ normal when the centre is on the triangle), a swept sphere's first touch
 there, and the gap along the sweep; a sweep that grazes the plane uses its
 end) and a point's distance to the nearest face of a reach (the plane
 distance within the reach and the squared distance under the reach's square
-less the epsilon). `exa_formats::rfc::Face` and
+less the epsilon). The range rejections are "below"/"above" compares that a
+NaN passes; only the final distance checks (`0 < t < best`, the sweep's
+perpendicular gap) reject one. `exa_formats::rfc::Face` and
 `Mesh::{faces, ray_hit, ray_hit_inclusive, sphere_hit, swept_sphere_hit,
 within_hit}` reproduce them; the collision solver still uses rapier, so only the mesh
 class's rules are ported, not its kd-tree wiring or the callback forms of
