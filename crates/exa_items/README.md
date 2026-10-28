@@ -58,11 +58,17 @@ and fades on the popup's squared curve; leaving the card starts the fade.
 The catalogue now keeps each record's card facts (display name and
 description through `objstrings.rdb`, compact value expanded to copper,
 condition, weapon, apparel and shield sections, sockets, material gate,
-name id) and the worn burden and shield record. Closing an inventory or
-loot panel queues its icon handles and the manager releases its references
-and atlas cells. A body's encumbrance is recomputed from its possessions
+name id) and the worn burden and shield record. Names resolve as the
+original's string resolver does (inherit, own-tier bit, shared library);
+an unresolved name gives no card, and the tint, rank and socket bytes come
+from the section of the page shown. The card holds an icon slot by its own
+acquire key. Closing an inventory or loot panel queues its icon handles
+and the manager releases its references and atlas cells; a freed slot is
+reused by the next acquire. A body's encumbrance is recomputed from its possessions
 after an equipment change (`exa_game::equip::refresh_encumbrance`), using
 the same armour-pass sum as the spawn. The container popup's open geometry
-is modelled, but no live container popup is drawn yet, and the shipped
-phrase tables are not in the game data, so an `@` description is shown
-without its generated sentence.
+is modelled, but no live container popup is drawn yet. The phrase tables
+the generated quality and condition sentence draws from are data in
+`Exanima.exe` that has not been extracted, so an apparel card, or a weapon
+card whose model name starts with `@`, shows its description without that
+sentence.
