@@ -7,7 +7,8 @@ the full game as `exa_game` gains modes (see `docs/PLAN.md`). The debug
 flags (`--debug-bodies`, `--joint-trace`, `--pair-trace`, `--corpse`,
 `--fixed-frames`, `--sim-speed`, `--pause-at-tick`, `--pause-on-stretch`,
 `--pause-on-hit`, `--pause-after-jet`, `--pause-after-collapse`, `--press`,
-`--click`, `--cursor`, `--still-opponent`, `--arena-match`, `--debug-wound`, `--debug-nav`,
+`--click`, `--cursor`, `--still-opponent`, `--arena-match`, `--arena-level`,
+`--arena-tier`, `--arena-weapons`, `--debug-wound`, `--debug-nav`,
 `--bevy-sun-cascades`,
 `--weapon-blood`, `--debug-spray`, `--perks`) and keys are in
 [`docs/DEBUGGING.md`](../../docs/DEBUGGING.md).
@@ -32,7 +33,9 @@ With `--opponent` the fight starts when the level shows: the duellist enters
 combat and, in a practice or arena level, the player's combat mode turns on.
 In an arena level the match is ticked as the original ticks a career match
 (its first second, then who stands), and the music is the arena track the
-original's match start draws, at its own volume. The arena hub plays the hub track the
+original's match start draws, at its own volume. A career match started from
+the hub carries its rank and gear tier into the layout and holds, on each
+opponent, the weapon whose object id the match's event drew. The arena hub plays the hub track the
 original's hub entry draws (Msc_Hub01 two times in three), at 0.1, from one of
 its four start places.
 Placed characters keep their records' perks (Remise, Feint, …); the player
