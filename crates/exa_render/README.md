@@ -90,7 +90,9 @@ Rules and evidence: [`docs/formats/FLB.md`](../../docs/formats/FLB.md) and
   blended per-sector lists with depth writes off, the particles' depth
   pre-pass and colour, the environment's weather), the blended list's
   layer/opacity selection and the opaque list's grouping by material program
-  key, with the Bevy phase each step maps to
+  key, the 156-byte render-state record with its opacity, blend-word and
+  program-key offsets (the layer is bits 4-7 of the blend word), with the
+  Bevy phase each step maps to
   ([`docs/RENDERING.md`](../../docs/RENDERING.md), Pass order).
 - `view`: the 3D view's arithmetic: the perspective frustum's half extents,
   the super-sampling levels (1/2/3/4/8 sub-views, up to four a pass, their
