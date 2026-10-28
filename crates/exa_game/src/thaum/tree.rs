@@ -575,7 +575,10 @@ pub mod press {
     pub const HANDLED: u32 = 0x10;
 }
 
-/// The tree's drag state.
+/// The tree's drag state. Only [`DragState::Pan`] is ever entered: the
+/// retail press clears the state and starts the pan on the middle button,
+/// and no shipped code writes the node, link-turn or link states, so the
+/// move handler's edit branches (kept as it has them) are unreachable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DragState {
     Idle,

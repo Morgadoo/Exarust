@@ -583,8 +583,12 @@ lower left are kept; the child is the wheel of `effects::wheel` (its icon
 hit test, its confirm that needs a known, different domain, and the 300 ms
 ease a pick or drop starts), its eased value is the focus share and its
 show the bar child's fade. A confirmed icon starts the domain switch. The
-child's own ring, icon and label draw is outside the component, so its
-sheet is shown at the child's place.
+tree's focus total is the child's own focus value (48 when there is no
+record), which its paint eases toward from where a pick or drop began the
+fade. No shipped press enters the node, link-turn or link drags: the press
+clears the drag state and only the middle button starts the pan, and
+nothing else writes those states, so the move handler's edit branches are
+unreachable in the retail game (kept as the move handler has them).
 
 The power bar holds ten slots; the chosen one carries bit 20. Loading it
 from a record copies the words (clearing bits 23 and 24 and the technique
@@ -815,7 +819,7 @@ closing fades, group by domain and start each group at its first slot; the
 glow of each slot, the flame of the chosen one and the empty slots' rings
 finish it. A slot's flash is a signed time difference over 200 ms and its
 fade a double-precision ratio over its duration. The running screen adds
-the domain wheel's sheet, the tooltip's caption and wrapped description, the
+the domain wheel's paint (below), the tooltip's caption and wrapped description, the
 creation prompt, the label mode and the dragged preview; the texts are the
 interface level's main font's glyph quads at the original's places (a
 focused prompt caption is the skin's glowing text). The installed packs do
@@ -824,7 +828,30 @@ atlas scaled to the level's glyph quad; with no GUI atlas at all the
 running screen falls back to the game's bitmap font for the same runs. A
 flash ends, with the refusal that shaped it, when the draw finds its time
 up. The running screen rasterises those batches in software (`power_screen::render`)
-with each fragment program's arithmetic and the loaded sheets; the shader
+with each fragment program's arithmetic and the loaded sheets. The links'
+texture unit is unbound and the spline program samples nothing, so the
+ribbon is wholly procedural.
+
+The domain wheel child paints itself (`exa_ui::wheel_draw`). With
+`s = (2 − shown)·shown` and the phase `t` (the game clock modulo 400 000 ms
+times 2.5e-6): the backdrop over the form in (255, 242, 230) at
+`round(255s)` with the flamelets program (`par0 = 6t`, `par1` the reciprocal
+of `(2 − f)·f·shown` for the eased focus value `f`, 1000 at or below 0.01);
+six sector bands at `(i + 2)·2π/6` from `round(0.64R)` to `round(1.2R)`
+(`R = 140s`), half `0.3R` and `round(0.35R)` wide, in the domain colour,
+`par0 = 2t`, `par1 = (0.738i, 4(1 − shown)² + 4.5(1 − share)²·shown,
+1 − share)`; the chosen domain's glow (`par0 = 4t`, half side `0.7·8n·s` for the GUI
+unit `n`) with the previous choice fading `round((1 − 0.75k)·255)` while the
+new one rises `round((0.25 + 0.75k)·255s)` over the 200 ms flash `k`; the six
+icons (half side `4n·s`) on the 76-pixel ring, the hot one with four glow copies
+1.5 pixels off each diagonal at `round(96·shown)` and itself at
+`round(192·shown)`, the chosen one in its domain colour, the rest in the
+line skin's third ink; the ring frame, six segments from (64, 111) to
+(30, 52) turned by `iπ/3`; and the last highlighted icon's label, a rounded
+box at `0.6` of its fade and its name. The three wheel programs draw with
+blend `0x103` over the flamelets sheet, which repeats; the glow program
+writes no alpha and is taken as additive (a guess). The wheel's texture is
+`domainwheel` resampled to 32 units a side. The shader
 bindings of the Force and Displacement effects are data in
 `thaum::effect_material` and `thaum::visuals` (the five materials, their
 blocks, node flags, sub-objects, signatures, `gi_multipoint`, the noise

@@ -17,8 +17,9 @@
 //! the hover, the label and the choice's flash.
 //!
 //! The wheel adds no light. Its drawing (the background program, six ring
-//! segments, the icons, their frames and the label's text) is not
-//! reproduced; the places, sizes and alphas it draws with are.
+//! segments, the icons, their frames and the label's text) is
+//! [`exa_ui::wheel_draw`]; the power tree's child builds its view
+//! ([`crate::thaum::tree::TreeScreen::wheel_draw_view`]).
 
 use bevy::prelude::*;
 

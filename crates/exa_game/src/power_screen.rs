@@ -16,8 +16,8 @@
 //! that quad (only `fontbase24r` ships). The tooltip is the shown choice's
 //! name caption (at once) and its wrapped description box (after 600 ms),
 //! laid out at the original's places; while a power is dragged every node
-//! wears its name instead. Not modelled: the link programs' ribbon texture
-//! (the draw treats it as white, so links lack the spline's texture) and the
+//! wears its name instead. The domain wheel child draws its own paint
+//! ([`exa_ui::wheel_draw`]) and is hovered every frame. Not modelled: the
 //! base form's key handlers. The bar's own keys (pick, step, use) belong to
 //! the hotkey handler and the cast plugin ([`crate::thaum::cast`]), which
 //! keeps the caster's record and this screen's in step.

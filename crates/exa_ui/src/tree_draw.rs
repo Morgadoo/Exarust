@@ -49,8 +49,9 @@
 //! child's [`TreeView::bar_alpha`]. The texts' widths, glyph quads and line
 //! steps are the GUI level's main font's ([`TreeView::font`], by default
 //! [`TREE_FONT`]); its glyphs sample the level's atlas, or the base font's
-//! scaled to the level's quad when only that ships. Not modelled: the link
-//! ribbons' spline texture (they read as white).
+//! scaled to the level's quad when only that ships. The links' texture unit
+//! is unbound and the spline program samples nothing: the ribbon is wholly
+//! procedural. The domain wheel child's paint is [`crate::wheel_draw`].
 //!
 //! Evidence: the immediate-draw routines and the screen and bar draws of
 //! TThaumTree, the six fragment programs, and the icon and frame sheet

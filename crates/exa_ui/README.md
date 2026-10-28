@@ -422,7 +422,23 @@ ribbon follows the spline renderer: the two vertices a
 sample, the start and end handles one tangent step beyond, the row and side
 coordinates, the join term and the source-to-end dim alpha. The ring passes
 sample the flamelets sheet and the glows, flames and preview sample the frame
-sheet, as the original binds them.
+sheet, as the original binds them. The links' texture unit is unbound and
+the spline program samples nothing: the ribbon is wholly procedural.
+
+`wheel_draw` is the domain wheel child's own paint, in the original's
+order: the flamelets backdrop over the 280-pixel form (`par0` six times the
+400-second phase, `par1` the reciprocal of the eased focus reach, or 1000
+at or below 0.01), the six sector bands from `round(0.64R)` to
+`round(1.2R)` (`R = 140·scale·s`, `s = (2 − shown)·shown`) with their phase,
+open and share fall-off, the chosen and fading choice's glow, the six icons
+on the 76-pixel ring (the hot icon's four glow copies 1.5 pixels off each
+diagonal, the chosen icon in its domain colour, the rest in the line skin's
+third ink), the ring frame turned by `iπ/3` in its second ink, and the
+label's rounded box and name. Its three programs' sources are kept and
+their fragments are functions (`back_fragment`, `glow_fragment`,
+`sector_fragment`, `rounded_fragment`); they draw with blend `0x103` over
+the repeating flamelets sheet. Places round to whole pixels once the show is
+above 0.99999, compared in double.
 
 ## Form base and the in-game unit
 
