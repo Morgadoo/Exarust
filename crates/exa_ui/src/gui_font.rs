@@ -122,6 +122,42 @@ pub fn level_for_unit(unit: i32) -> i32 {
         .map_or(0, |i| i as i32)
 }
 
+/// The font a screen draws text with: the level's own font when its atlas is
+/// installed. Else the level's metrics (glyph quad, advances, gap and line
+/// height, which the layout and the controls' sizes are built from) are kept
+/// and the glyph cells are sampled from the base font's atlas, the only GUI
+/// font the packs ship. `level_size` and `base_size` are the installed
+/// atlases' pixel sizes. The size returned with a fallback is the atlas size
+/// the level's glyph quad would span one base glyph cell of, so
+/// [`crate::gui_text::font_uv`] gives the base cell's sample step while the
+/// quad keeps the level's size.
+pub fn font_with_fallback(
+    level: &GuiFont,
+    level_size: Option<(u16, u16)>,
+    base_size: Option<(u16, u16)>,
+) -> (GuiFont, Option<(u16, u16)>) {
+    if let Some(size) = level_size {
+        return (*level, Some(size));
+    }
+    let base = &FONTBASE_24;
+    let size = base_size.map(|(width, height)| {
+        let scaled = |extent: u16, quad: i32, base_quad: i32| {
+            (f32::from(extent) * quad as f32 / base_quad as f32)
+                .round()
+                .clamp(1.0, f32::from(u16::MAX)) as u16
+        };
+        (
+            scaled(width, level.glyph.0, base.glyph.0),
+            scaled(height, level.glyph.1, base.glyph.1),
+        )
+    });
+    let font = GuiFont {
+        texture: base.texture,
+        ..*level
+    };
+    (font, size)
+}
+
 /// The original's float-to-integer rounding: to nearest, ties to even,
 /// through a 64-bit integer whose low 32 bits are kept; a value that does
 /// not fit (or is not a number) gives the conversion's indefinite value,
@@ -313,6 +349,26 @@ mod tests {
             FONTBASE_24.uv_size(1024, 1024),
             (36.0 / 1024.0, 48.0 / 1024.0)
         );
+    }
+
+    #[test]
+    fn a_missing_level_atlas_samples_the_base_font() {
+        // The level's metrics stay; the atlas size is scaled so one base
+        // glyph cell maps onto the level's quad.
+        let (font, size) = font_with_fallback(&RAYFORM_08, None, Some((1024, 1024)));
+        assert_eq!(font.texture, "fontbase24r");
+        assert_eq!((font.glyph, font.line_height), ((11, 16), 16));
+        assert_eq!(size, Some((313, 341)));
+        // The sample step is the base cell's: 36/1024 by 48/1024.
+        let (du, dv) = font.uv_size(size.unwrap().0, size.unwrap().1);
+        assert!((du - 36.0 / 1024.0).abs() < 1e-3, "{du}");
+        assert!((dv - 48.0 / 1024.0).abs() < 1e-3, "{dv}");
+        // The level's own atlas is used as it is.
+        let (font, size) = font_with_fallback(&RAYFORM_08, Some((2048, 2048)), Some((1024, 1024)));
+        assert_eq!((font.texture, size), ("Rayform08R", Some((2048, 2048))));
+        // No atlas at all leaves no glyphs to draw.
+        let (font, size) = font_with_fallback(&RAYFORM_08, None, None);
+        assert_eq!((font.texture, size), ("fontbase24r", None));
     }
 
     #[test]

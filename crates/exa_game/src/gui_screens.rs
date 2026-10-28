@@ -865,26 +865,11 @@ pub(crate) fn screen_font(
     level_font: &exa_ui::gui_font::GuiFont,
     textures: &GuiTextures,
 ) -> (exa_ui::gui_font::GuiFont, Option<(u16, u16)>) {
-    if let Some(size) = font_texture(textures, level_font) {
-        return (*level_font, Some(size));
-    }
-    let base = &exa_ui::gui_font::FONTBASE_24;
-    let size = font_texture(textures, base).map(|(width, height)| {
-        let scaled = |extent: u16, quad: i32, base_quad: i32| {
-            (f32::from(extent) * quad as f32 / base_quad as f32)
-                .round()
-                .clamp(1.0, f32::from(u16::MAX)) as u16
-        };
-        (
-            scaled(width, level_font.glyph.0, base.glyph.0),
-            scaled(height, level_font.glyph.1, base.glyph.1),
-        )
-    });
-    let font = exa_ui::gui_font::GuiFont {
-        texture: base.texture,
-        ..*level_font
-    };
-    (font, size)
+    exa_ui::gui_font::font_with_fallback(
+        level_font,
+        font_texture(textures, level_font),
+        font_texture(textures, &exa_ui::gui_font::FONTBASE_24),
+    )
 }
 
 /// Paints the control records a screen's form carries: buttons with their

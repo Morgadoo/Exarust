@@ -160,8 +160,10 @@ pub struct TreeSheets {
     pub mods: Option<RgbaImage>,
     pub flamelets: Option<RgbaImage>,
     pub wheel: Option<RgbaImage>,
-    /// The tree's GUI font atlas (`Rayform08R`), when an install ships it
-    /// (the installed packs do not).
+    /// The GUI font atlas the tree's text samples. The running screen fills
+    /// this with the interface level's font, or with the base font's atlas
+    /// when the install does not ship that level's font (the packs ship only
+    /// `fontbase24r`).
     pub font: Option<RgbaImage>,
 }
 
@@ -200,7 +202,6 @@ impl Game {
         sheets.mods = self.load_rgba("pwrsmods").ok();
         sheets.flamelets = self.load_rgba("flameletsa1").ok();
         sheets.wheel = self.load_rgba("domainwheel").ok();
-        sheets.font = self.load_rgba("Rayform08R").ok();
         sheets
     }
 }
@@ -216,6 +217,17 @@ mod tests {
             crate::GameData::open(dir).expect("the install opens"),
         ));
         let sheets = game.load_tree_sheets();
+        // The sheets that are installed are square and a whole number of
+        // the icon cells the original's texture scale counts (512 pixels):
+        // the shipped mind and force sheets are 2048 (four cells) and the
+        // energy and displacement ones 512 (one). Some domains' sheets may
+        // not be installed; their icons are not drawn.
+        assert!(sheets.domains[1].is_some() && sheets.domains[2].is_some());
+        for sheet in sheets.domains.iter().flatten() {
+            assert_eq!(sheet.width, sheet.height);
+            assert!(matches!(sheet.width, 512 | 2048), "{}", sheet.width);
+            assert!((1..=4).contains(&(sheet.width >> 9)));
+        }
         let mind = sheets.domains[1].as_ref().expect("the mind sheet");
         assert_eq!((mind.width, mind.height), (2048, 2048));
         assert_eq!(mind.pixels.len(), 2048 * 2048 * 4);
@@ -229,10 +241,11 @@ mod tests {
         assert_eq!((flamelets.width, flamelets.height), (1024, 1024));
         let wheel = sheets.wheel.as_ref().expect("the domain wheel");
         assert_eq!((wheel.width, wheel.height), (384, 384));
-        // The GUI font atlas (`Rayform08R`) is named only by the executable;
-        // the installed packs do not ship it, so it may be missing.
-        if let Some(font) = sheets.font.as_ref() {
-            assert_eq!((font.width, font.height), (1024, 1024));
-        }
+        // The font atlas is the running screen's choice: the sheet loader
+        // leaves it empty, and `fontbase24r` (the one the packs ship) is
+        // loaded by the screen itself.
+        assert!(sheets.font.is_none());
+        let base = game.load_rgba("fontbase24r").expect("the base font");
+        assert_eq!((base.width, base.height), (1024, 1024));
     }
 }

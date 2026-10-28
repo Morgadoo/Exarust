@@ -300,9 +300,15 @@ pub fn tree_link(source: LinkEnd, dest: LinkEnd, link: &[u8; 16], zoom: f32) -> 
     let start = offset(source.at, out_turn, reach(source.power, zoom, scale));
     let end = offset(dest.at, in_turn, reach(dest.power, zoom, scale));
     let (out_dir, in_dir, steps) = tangents(start, end, out_turn, in_turn, zoom);
-    let step = 2.0 / steps as f32;
-    let start_handle = [start[0] + out_dir[0] * -step, start[1] + out_dir[1] * -step];
-    let end_handle = [end[0] + in_dir[0] * step, end[1] + in_dir[1] * step];
+    // The spline's first and last control points: one tangent step beyond
+    // each end, the step worked out in double and rounded to single.
+    let step_back = (-2.0_f64 / steps as f64) as f32;
+    let step_on = (2.0_f64 / steps as f64) as f32;
+    let start_handle = [
+        start[0] + out_dir[0] * step_back,
+        start[1] + out_dir[1] * step_back,
+    ];
+    let end_handle = [end[0] + in_dir[0] * step_on, end[1] + in_dir[1] * step_on];
     let mut points = Vec::with_capacity(steps + 1);
     points.push(start);
     for step in 1..=steps {
@@ -369,28 +375,54 @@ fn tangents(
         scale(delta, reciprocal_sqrt(length_sq))
     };
     let out_dot = dot(out_turn, unit);
+    let in_dot = dot(in_turn, unit);
+    // The original works the two rise terms out in double and rounds each to
+    // single before it sums them, so the sum's order is `A + B`.
+    let (out_rise, in_rise) = rise_terms(out_dot, in_dot);
     let mut out_scale = closeness;
     if closeness < 1.0 {
-        out_scale = (1.0 - closeness) * (1.1 - out_dot) + closeness;
+        out_scale = (1.0 - closeness) * out_rise + closeness;
     }
-    let in_dot = dot(in_turn, unit);
     let mut in_scale = closeness;
     if closeness < 1.0 {
-        in_scale = (1.0 - closeness) * (in_dot + 1.1) + closeness;
+        in_scale = (1.0 - closeness) * in_rise + closeness;
     }
-    let span = ((1.1 - out_dot) + in_dot + 1.1) * 6.0 + closeness.sqrt() * 4.0;
-    let rounded = span.round_ties_even();
-    let steps = if rounded.is_finite() {
-        rounded as i32
-    } else {
-        30
-    };
-    let steps = steps.saturating_add(1).clamp(2, 30) as usize;
+    let steps = spline_steps(out_rise, in_rise, closeness);
     (
         scale(out_turn, zoom * 400.0 * out_scale),
         scale(in_turn, zoom * -400.0 * in_scale),
         steps,
     )
+}
+
+/// The link's two direction terms for a spline sample count: one less the
+/// start's dot with the chord, and one more the end's. Each is worked out
+/// in double and rounded to single, as the original does; the span adds
+/// them in that order.
+fn rise_terms(out_dot: f32, in_dot: f32) -> (f32, f32) {
+    (
+        (1.1 - f64::from(out_dot)) as f32,
+        (f64::from(in_dot) + 1.1) as f32,
+    )
+}
+
+/// The spline's sample count from the two rise terms and the ends'
+/// closeness: `round((out + in)·6 + √closeness·4) + 1`, held to two
+/// through thirty. The square root and the sum are single precision; the
+/// conversion rounds to even into a 64-bit integer, one is added and the
+/// low 32 bits are compared.
+fn spline_steps(out_rise: f32, in_rise: f32, closeness: f32) -> usize {
+    let span = (out_rise + in_rise) * 6.0 + closeness.sqrt() * 4.0;
+    let rounded = span.round_ties_even();
+    // A span outside the 64-bit range (or not a number) converts to the
+    // indefinite value, the lowest integer, whose low half plus one is
+    // one: the two-sample floor.
+    let wide = if rounded.is_finite() && rounded.abs() < i64::MAX as f32 {
+        rounded as i64
+    } else {
+        i64::MIN
+    };
+    (wide.wrapping_add(1) as i32).clamp(2, 30) as usize
 }
 
 /// One point of a link's cubic at `t`, between two placed ends and their
@@ -852,6 +884,23 @@ mod tests {
             &[(9, 0x5000)],
         );
         assert_eq!(held, vec![0x10000, 0x15000]);
+    }
+
+    #[test]
+    fn a_link_sum_rounds_each_rise_and_the_span_holds_its_order() {
+        // The two rise terms come from doubles; the sum is `A + B`, not
+        // `(A + dot) + 1.1`, which would give a different single here.
+        let (out_rise, in_rise) = rise_terms(0.895_698_66, -0.019_202_493);
+        assert_eq!(out_rise.to_bits(), 0x3e51_345e);
+        assert_eq!(in_rise.to_bits(), 0x3f8a_5793);
+        assert_eq!(spline_steps(out_rise, in_rise, 0.5), 12);
+        assert_eq!(spline_steps(0.0, 0.0, 0.0), 2);
+        assert_eq!(spline_steps(0.0, 0.0, 100.0), 30);
+        assert_eq!(spline_steps(f32::NAN, 1.0, 0.0), 2);
+        assert_eq!(spline_steps(0.0, 0.0, 1.0), 5);
+        // A span whose integer's low half wraps: 4 294 967 040 plus one is
+        // −255 in the low 32 bits, so the floor of two holds.
+        assert_eq!(spline_steps(0.0, 0.0, 1.152_921_4e18), 2);
     }
 
     #[test]
