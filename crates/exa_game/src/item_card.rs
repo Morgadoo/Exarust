@@ -13,9 +13,11 @@
 //! centres its icon and writes the description below it.
 //!
 //! The description is expanded through the card's condition blocks and
-//! pronoun markers. The original's quality and condition sentence is built
-//! from the shipped phrase tables, which are not in Exarust's data; a
-//! description that starts with `@` is shown without that sentence.
+//! pronoun markers. The original appends a generated quality and condition
+//! sentence to an apparel item's description, and to a weapon's when its
+//! model name starts with `@`; the phrase tables those sentences draw from
+//! are data in `Exanima.exe` that Exarust has not extracted yet, so the card
+//! shows the description without that sentence.
 //!
 //! Evidence: the card builder and its helpers (`docs/UI.md`, item GUI).
 
@@ -94,6 +96,10 @@ pub fn build_for(
     female: bool,
 ) -> Option<(String, BuiltCard)> {
     let facts = catalogue.card_facts(item)?;
+    // The card builder shows nothing when the name does not resolve.
+    if !facts.titled {
+        return None;
+    }
     let card_item = CardItem {
         id: item,
         flags,
@@ -131,12 +137,7 @@ pub fn build_for(
         description: &facts.description,
         female,
     })?;
-    let name = if facts.name.is_empty() {
-        format!("Item {}", item & 0xFFFF)
-    } else {
-        facts.name.clone()
-    };
-    Some((name, built))
+    Some((facts.name.clone(), built))
 }
 
 /// The card's least width and height at a unit.
@@ -178,7 +179,10 @@ fn show(
     };
     let (width, height) = card_size(unit);
     let at = popup_place(pointer, (width, height), screens.task.screen.0, unit);
-    let (icon, _) = icons.reserve(item, flags, Some(catalogue));
+    let model_flags = catalogue
+        .card_facts(item)
+        .map_or(0, |facts| facts.model_flags);
+    let (icon, _) = icons.reserve_card(item, flags, model_flags);
     let mut fade = PopupFade::default();
     fade.show(now);
     fade.shown_at = fade.fade_at;
@@ -531,7 +535,9 @@ fn draw_card(
         rect.top + unit * 7
     };
     let left = rect.left + unit;
-    let value_right = rect.left + icon_at.0 - rect.left - unit * 2;
+    // The values end two units left of the icon, measured from the rows'
+    // left edge.
+    let value_right = icon_at.0 - left - unit * 2;
     if let Some(content) = &card.built.content {
         for row in &content.rows {
             painted.push(text_layer(
@@ -640,7 +646,7 @@ pub fn entry_under(screens: &GameScreens, at: IVec2) -> bool {
                 .contains(at.x, at.y)
                 .then(|| (*panel, Cell::new(at.x - client.left, at.y - client.top)))
         })
-        .and_then(|(panel, local)| container(screens, panel).map(|c| entry_at(c, local)))
+        .and_then(|(panel, local)| container(screens, panel).and_then(|c| entry_at(c, local)))
         .is_some()
 }
 
@@ -715,6 +721,11 @@ mod tests {
         assert!(!entry_under(
             &screens,
             IVec2::new(client.left + 300, client.top + 300)
+        ));
+        // Inside the panel but on no entry.
+        assert!(!entry_under(
+            &screens,
+            IVec2::new(client.right - 2, client.bottom - 2)
         ));
     }
 }
