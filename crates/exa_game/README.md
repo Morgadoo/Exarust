@@ -544,7 +544,7 @@ write: flags, blend, move and turn factors and the clip clock), the story's
 wake-up, knockout and revival, death and the end-of-session menu, level
 exits with their save and checkpoint, the level-load finish, the story
 end-menu exit, the story respawn at `exanima05`'s portal, the application
-quit's autosave, the menu form routines (show, hide, clear the help flag),
+quit's autosave, the menu form routines (show, hide, the help flag, the title logo),
 the return to the menu form, and the pause. The rules return named steps;
 `FlowPlugin` runs them on the 12 ms game clock, follows a play level's
 player as a sandbox practice session, turns a teleporter's journey into a
