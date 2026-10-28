@@ -217,7 +217,14 @@ fn enter_loaded_hub(
         hub.manager_placed = false;
         hub.fall = None;
         hub.roll = entry.roll;
-        if let Some(index) = clear_physician_weapon(&mut career) {
+        // Only a physician clears the weapon object at the hub's spot.
+        if career
+            .company
+            .roster
+            .iter()
+            .any(|member| member.profession == crate::career::Profession::Physician)
+            && let Some(index) = clear_physician_weapon(&mut career)
+        {
             info!("arena hub: cleared the physician's weapon object {index}");
         }
         commands.insert_resource(exa_audio::LevelMusic(entry.music.name.to_ascii_lowercase()));
@@ -259,6 +266,10 @@ pub struct ArenaMatchLaunch {
     pub track: crate::arena_match::Track,
     /// The arena's spawn spot, centimetres.
     pub spawn_at: [f32; 3],
+    /// The event's rank: the generic spawn plans' character level.
+    pub level: i32,
+    /// The event's gear tier.
+    pub tier: i32,
     /// The company entry that is the player's own, if any.
     pub player: Option<usize>,
     pub fighters: Vec<LaunchedFighter>,
@@ -331,6 +342,12 @@ pub fn plan_launch_at(
     if career.matches_today >= crate::arena_match::MATCHES_PER_DAY {
         return None;
     }
+    // The match start takes the event's entry fee from the purse (a short
+    // purse stops at 0; nothing refuses the match) and adds the whole fee
+    // to the day's spending.
+    let fee = board.selected.fee;
+    career.company.copper = career.company.copper.saturating_sub(fee);
+    career.company.spent = career.company.spent.saturating_add(fee);
     let template = board.match_id() as i32;
     let start = crate::arena_match::start_match(&mut career.picks, template, counter, alternative);
     let spawn_at = crate::arena_match::ARENA_MAPS
@@ -340,8 +357,9 @@ pub fn plan_launch_at(
     let tier = board.selected.tier;
     let slots = crate::match_layout::layout(template, level, tier, spawn_at);
     let roles = manager_roles(board.team.len());
-    let player =
-        (0..roles.len()).find_map(|index| crate::arena_spawn::player_participant(&roles, index));
+    // The player's own body is the team member whose pool slot is 0 (the
+    // manager), not merely the team's first member.
+    let player = board.team.iter().position(|&slot| slot == 0);
     let tournament = board.tab == exa_ui::match_board::BoardTab::Tournament;
     let mut fighters = Vec::with_capacity(slots.len());
     for slot in slots {
@@ -406,6 +424,8 @@ pub fn plan_launch_at(
         arena: start.arena,
         track: start.track,
         spawn_at,
+        level,
+        tier,
         player,
         fighters,
     })
@@ -489,10 +509,29 @@ fn hub_clicks(
                                 let alternative =
                                     flow.as_deref().is_some_and(|flow| flow.alternative_music);
                                 let board = windows.board.clone();
+                                // The first board Begin that enters the
+                                // manager shows the tip and waits for a
+                                // second press; a tournament never warns.
+                                let manager_entered = board.as_ref().is_some_and(|board| {
+                                    board.tab != exa_ui::match_board::BoardTab::Tournament
+                                        && board.team.contains(&0)
+                                });
+                                if crate::arena_match::warn_manager(
+                                    &mut career.warn_manager,
+                                    manager_entered,
+                                ) {
+                                    info!("arena begin: the manager is entered; warning shown");
+                                    continue;
+                                }
                                 if let Some(board) = board
                                     && let Some(launch) =
                                         plan_launch(&mut career, &board, alternative)
                                 {
+                                    // Before a match the first unhealthy
+                                    // specialist leaves the company.
+                                    if let Some(departure) = career.company.leave_before_match() {
+                                        info!("arena begin: specialist left ({departure:?})");
+                                    }
                                     launches.write(launch);
                                     windows.close_window();
                                     hub.busy = true;
@@ -1055,6 +1094,50 @@ mod tests {
         assert_eq!((plan.level, plan.outfit_level), (0, 0));
         assert_eq!(launch.fighters[0].team, 2);
         assert_eq!(launch.fighters[1].body, LaunchedBody::Player);
+        // The match start took the Duel's 3 copper entry fee.
+        assert_eq!(career.company.copper, 340);
+        assert_eq!(career.company.spent, 3);
+    }
+
+    #[test]
+    fn the_player_body_is_the_manager_not_the_first_team_member() {
+        let mut career = crate::hub_windows::ArenaCareer::default();
+        career.company.roster.push(crate::career::Member {
+            name: "Ash".into(),
+            profession: crate::career::Profession::Combatant,
+            xp: 0,
+            skills: [6, 0, 0, 0, 0, 0],
+            skill_xp: [0; 6],
+            techniques: [[0; 6]; 6],
+            loadouts: Default::default(),
+            health: 65_000,
+            in_entry: false,
+        });
+        let board = career.board();
+        // A duel takes the combatant (pool slot 1), not the manager.
+        assert_eq!(board.team, vec![1]);
+        let launch = plan_launch_at(&mut career, &board, false, 0x1234_5678).unwrap();
+        assert_eq!(launch.player, None);
+        assert!(
+            launch
+                .fighters
+                .iter()
+                .all(|fighter| { !matches!(fighter.body, LaunchedBody::Player) })
+        );
+        assert!(matches!(
+            launch.fighters.last().unwrap().body,
+            LaunchedBody::Company { .. }
+        ));
+    }
+
+    #[test]
+    fn a_short_purse_pays_down_to_nothing_and_still_starts() {
+        let mut career = crate::hub_windows::ArenaCareer::default();
+        career.company.copper = 2;
+        let board = career.board();
+        assert!(plan_launch_at(&mut career, &board, false, 0x1234_5678).is_some());
+        assert_eq!(career.company.copper, 0);
+        assert_eq!(career.company.spent, 3);
     }
 
     #[test]

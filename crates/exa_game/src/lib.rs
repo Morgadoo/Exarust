@@ -11,6 +11,7 @@ pub mod arena_log;
 pub mod arena_match;
 pub mod arena_outfit;
 pub mod arena_outfit_data;
+pub mod arena_session;
 pub mod arena_spawn;
 pub mod arsenal;
 pub mod balance;

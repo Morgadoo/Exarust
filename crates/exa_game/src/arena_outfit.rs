@@ -1909,6 +1909,49 @@ pub fn equip_apparel(
     }
 }
 
+/// The eight quality markers an outfit record carries, one per layer (the
+/// marking loops run their counter to 7 inclusive).
+pub const QUALITY_MARKERS: usize = 8;
+
+/// Mark an equipped outfit's quality layers.
+///
+/// Mode 1 gives every unmarked layer marker 1. Mode 2 gives the first layer
+/// 6 and every other unmarked layer 1. Mode 3 gives the first layer 7,
+/// every other unmarked layer 1, and then the second layer 6 when bit 0 of
+/// the second layer's flag word (`flag`) is set. Any other mode leaves the
+/// markers alone.
+pub fn mark_quality(mode: u32, markers: &mut [u8; QUALITY_MARKERS], flag: bool) {
+    match mode {
+        1 => {
+            for marker in markers.iter_mut() {
+                if *marker == 0 {
+                    *marker = 1;
+                }
+            }
+        }
+        2 => {
+            markers[0] = 6;
+            for marker in markers.iter_mut().skip(1) {
+                if *marker == 0 {
+                    *marker = 1;
+                }
+            }
+        }
+        3 => {
+            markers[0] = 7;
+            for marker in markers.iter_mut().skip(1) {
+                if *marker == 0 {
+                    *marker = 1;
+                }
+            }
+            if flag {
+                markers[1] = 6;
+            }
+        }
+        _ => {}
+    }
+}
+
 /// The outfit after one apparel piece is merged in.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ApparelFit {
@@ -2462,6 +2505,25 @@ mod tests {
 
     fn close(actual: f32, expected: f32) -> bool {
         (actual - expected).abs() < 1e-6
+    }
+
+    #[test]
+    fn the_quality_markers_fill_by_mode() {
+        let mut markers = [0u8; QUALITY_MARKERS];
+        mark_quality(1, &mut markers, false);
+        assert_eq!(markers, [1; QUALITY_MARKERS]);
+        let mut markers = [0, 2, 0, 0, 0, 0, 0, 0];
+        mark_quality(2, &mut markers, false);
+        assert_eq!(markers, [6, 2, 1, 1, 1, 1, 1, 1]);
+        let mut markers = [0, 2, 0, 0, 0, 0, 0, 3];
+        mark_quality(3, &mut markers, true);
+        assert_eq!(markers, [7, 6, 1, 1, 1, 1, 1, 3]);
+        let mut markers = [0, 2, 0, 0, 0, 0, 0, 0];
+        mark_quality(3, &mut markers, false);
+        assert_eq!(markers, [7, 2, 1, 1, 1, 1, 1, 1]);
+        let mut markers = [0; QUALITY_MARKERS];
+        mark_quality(9, &mut markers, true);
+        assert_eq!(markers, [0; QUALITY_MARKERS]);
     }
 
     #[test]

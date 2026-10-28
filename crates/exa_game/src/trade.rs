@@ -358,6 +358,28 @@ pub fn update_stock(
     report
 }
 
+/// The shop's first stock: an empty shelf draws [`FIRST_STOCK`] to two more
+/// items with the default kinds and any rank. The original calls the stock
+/// update with `(stock, 0, −1)` in the new career and again when the shop
+/// has no stock on a click.
+pub fn first_stock(
+    stock: &mut Vec<u32>,
+    rolls: [u32; 2],
+    world: &mut impl ShopWorld,
+) -> StockReport {
+    update_stock(stock, 0, -1, rolls, world)
+}
+
+/// Fill an empty stock and leave a shelf that already has items alone. The
+/// hub click's first-stock guard: `None` when there was nothing to do.
+pub fn ensure_first_stock(
+    stock: &mut Vec<u32>,
+    rolls: [u32; 2],
+    world: &mut impl ShopWorld,
+) -> Option<StockReport> {
+    stock.is_empty().then(|| first_stock(stock, rolls, world))
+}
+
 /// The variant roll's next unit in [0, 1): the seed stepped, times 2^−32,
 /// as a float.
 pub fn variant_unit(seed: &mut u32) -> f32 {

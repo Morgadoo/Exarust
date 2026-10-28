@@ -284,10 +284,109 @@ pub fn save_to(member: &mut Member, editor: &LoadoutEditor) {
         .collect();
 }
 
+/// The equipment form's preview mode state.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LoadoutPreview {
+    /// The mode word the form stores.
+    pub mode: u32,
+    /// The viewport's width and height words.
+    pub viewport: [u32; 2],
+    /// The camera distance word.
+    pub distance: i32,
+    /// The camera's scale word.
+    pub scale: f32,
+    /// The five equipment slots' visibility words.
+    pub slots: [u32; 5],
+    /// The loadout tab whose points line is shown.
+    pub points_tab: i32,
+    /// The portrait layout is used (the mode is 2).
+    pub portrait: bool,
+    /// The body preview is switched on (an odd mode other than 2, when the
+    /// form has a body preview).
+    pub body_preview: bool,
+}
+
+/// The form's preview mode and its five slot words, at GUI `unit` (4 at the
+/// base scale).
+///
+/// Mode 2 is the portrait layout: a 0x200 by 0x200 viewport, the camera at
+/// `unit · 0x2d` (180 at unit 4), scale 1, every slot visible (0x110) and
+/// no points line. Every other mode is the equipment layout: a 0x400 by 0
+/// viewport, the camera at `unit · 0x7b` (492 at unit 4) times `zoom` in
+/// single precision, converted to the nearest integer (ties to even), that
+/// zoom as the scale, and the points line at `points_tab`. Modes other than
+/// 3 hide the slots (0); mode 3 keeps them as they were. An odd mode
+/// switches the body preview on.
+pub fn preview(
+    mode: u32,
+    unit: i32,
+    zoom: f32,
+    points_tab: i32,
+    slots: [u32; 5],
+) -> LoadoutPreview {
+    if mode == 2 {
+        return LoadoutPreview {
+            mode,
+            viewport: [0x200, 0x200],
+            distance: unit.wrapping_mul(0x2d),
+            scale: 1.0,
+            slots: [0x110; 5],
+            points_tab: -1,
+            portrait: true,
+            body_preview: false,
+        };
+    }
+    let distance = ((i64::from(unit) * 0x7b) as f32 * zoom).round_ties_even();
+    let distance = if distance.is_nan() || distance.abs() >= 9.223_372e18 {
+        i64::MIN
+    } else {
+        distance as i64
+    } as i32;
+    LoadoutPreview {
+        mode,
+        viewport: [0x400, 0],
+        distance,
+        scale: zoom,
+        slots: if mode == 3 { slots } else { [0; 5] },
+        points_tab,
+        portrait: false,
+        body_preview: mode & 1 != 0,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::career::{Company, Profession};
+
+    #[test]
+    fn the_preview_mode_sets_the_viewport_camera_and_slots() {
+        let portrait = preview(2, 4, 0.5, 4, [9; 5]);
+        assert_eq!(portrait.viewport, [0x200, 0x200]);
+        assert_eq!(portrait.distance, 180);
+        assert_eq!(portrait.scale, 1.0);
+        assert_eq!(portrait.slots, [0x110; 5]);
+        assert_eq!(portrait.points_tab, -1);
+        assert!(portrait.portrait);
+        let equipment = preview(1, 4, 0.5, 4, [9; 5]);
+        assert_eq!(equipment.viewport, [0x400, 0]);
+        assert_eq!(equipment.distance, 246);
+        assert_eq!(equipment.scale, 0.5);
+        assert_eq!(equipment.slots, [0; 5]);
+        assert_eq!(equipment.points_tab, 4);
+        assert!(!equipment.portrait);
+        assert!(equipment.body_preview);
+        assert!(!portrait.body_preview);
+        // Mode 3 keeps the slots it was given; mode 0 hides them and has no
+        // body preview.
+        let kept = preview(3, 4, 1.0, 0, [7; 5]);
+        assert_eq!(kept.slots, [7; 5]);
+        assert_eq!(kept.distance, 492);
+        assert!(!preview(0, 4, 1.0, 0, [7; 5]).body_preview);
+        // The camera scales with the unit: 3 · 123 · 0.5 = 184.5, to even.
+        assert_eq!(preview(1, 3, 0.5, 0, [0; 5]).distance, 184);
+        assert_eq!(preview(2, 3, 0.5, 0, [0; 5]).distance, 135);
+    }
 
     fn facts(id: u32) -> Option<LoadoutItem> {
         match id {

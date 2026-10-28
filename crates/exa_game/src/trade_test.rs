@@ -182,6 +182,19 @@ fn a_new_apparel_copy_takes_its_condition() {
     assert_eq!(seed, 1);
 }
 
+/// The first-stock guard fills an empty shelf with the default draw and
+/// leaves a stocked one alone, reporting nothing the second time.
+#[test]
+fn the_first_stock_guard_fills_only_an_empty_shelf() {
+    let mut world = World::new();
+    let mut stock = Vec::new();
+    let report = ensure_first_stock(&mut stock, [7, 99], &mut world).unwrap();
+    assert_eq!(stock.len(), 18);
+    assert_eq!(report.seed, 0xa311_c561);
+    assert_eq!(ensure_first_stock(&mut stock, [11, 5], &mut world), None);
+    assert_eq!(stock.len(), 18);
+}
+
 /// Options 1 to 3 ask all kinds, apparel and arms; option 1 of the ranks
 /// asks any. The dialog reopens on the matching options.
 #[test]

@@ -974,9 +974,11 @@ pub fn count_returned_match(day: u32, entered: bool, matches_today: &mut u32) {
 /// Play mode inserts it on an arena with an opponent. Its tick waits for
 /// the first second of game time, then counts the player's team (the
 /// player) against everyone else who fights, resolves each fallen company
-/// fighter once, and ends the round as the original does. What comes after
-/// (the end screen, the next round's spawn, the return to the hub) is not
-/// in the running game; the outcome is logged and kept here.
+/// fighter once, and ends the round as the original does. The transition
+/// screen and the Continue/forfeit branch are kept here
+/// ([`ArenaMatch::end_action`], [`ArenaMatch::forfeit`], and
+/// [`crate::arena_session`]); the next round's bodies and the return to the
+/// hub still have no scene caller.
 #[derive(Resource, Clone, Debug, PartialEq)]
 pub struct ArenaMatch {
     /// The game clock at the start; stamped on the first frame.
@@ -992,6 +994,9 @@ pub struct ArenaMatch {
     /// The manager's own fall was handled: the end screen it showed, 3 when
     /// the fall was fatal, else 2.
     pub manager_screen: Option<u32>,
+    /// The transition screen the round's result opened: 3 for the next
+    /// round, 2 for the match's end.
+    pub screen: Option<crate::arena_session::Screen>,
 }
 
 impl ArenaMatch {
@@ -1008,7 +1013,24 @@ impl ArenaMatch {
             deaths: 0,
             resolved: Vec::new(),
             manager_screen: None,
+            screen: None,
         }
+    }
+
+    /// The end screen's Continue, from the match's state. A manager whose
+    /// fall was fatal goes to the main menu.
+    pub fn end_action(&self, tournament: bool) -> crate::arena_session::EndAction {
+        crate::arena_session::end_action(
+            self.manager_screen == Some(3),
+            self.state,
+            &self.rounds,
+            tournament,
+        )
+    }
+
+    /// The forfeit guard, from the match's manager state.
+    pub fn forfeit(&self, tournament: bool) -> crate::arena_session::ForfeitResult {
+        crate::arena_session::forfeit(self.manager_screen == Some(3), tournament)
     }
 }
 
@@ -1089,12 +1111,15 @@ fn tick_arena_match(
     }
     match result {
         MatchTick::NotDue | MatchTick::Nothing => {}
-        MatchTick::RoundEnded(round) => info!(
-            "arena match: round {} {} -> state {}",
-            arena.rounds.round,
-            if round.won { "won" } else { "lost" },
-            round.state.word()
-        ),
+        MatchTick::RoundEnded(round) => {
+            arena.screen = Some(crate::arena_session::Screen::after(round.state));
+            info!(
+                "arena match: round {} {} -> state {}",
+                arena.rounds.round,
+                if round.won { "won" } else { "lost" },
+                round.state.word()
+            );
+        }
         MatchTick::ManagerDown(down) => {
             if let Some(round) = down.round {
                 info!(
@@ -1103,6 +1128,9 @@ fn tick_arena_match(
                     if round.won { "won" } else { "lost" },
                     round.state.word()
                 );
+                // The manager's own menu is a separate screen; the
+                // transition is only the one this tick's round end opened.
+                arena.screen = Some(crate::arena_session::Screen::after(round.state));
             }
             arena.manager_screen = Some(down.screen);
             info!(
@@ -1994,6 +2022,40 @@ mod tests {
         // The manager's death wipes the career: nothing is logged for it.
         assert!(arena.log.records.is_empty());
         assert_eq!(arena.deaths, 0);
+    }
+
+    #[test]
+    fn the_running_match_exposes_the_continue_and_forfeit_actions() {
+        let mut arena = ArenaMatch::begin(7);
+        arena.rounds.round = 3;
+        arena.state = MatchState::NextFight;
+        assert_eq!(
+            arena.end_action(false),
+            crate::arena_session::EndAction::NextRound {
+                round: 4,
+                bracket: false
+            }
+        );
+        arena.rounds.round = 4;
+        arena.state = MatchState::Won;
+        assert_eq!(
+            arena.end_action(true),
+            crate::arena_session::EndAction::ReturnToHub { tournament: true }
+        );
+        arena.manager_screen = Some(3);
+        assert_eq!(
+            arena.end_action(false),
+            crate::arena_session::EndAction::MainMenu
+        );
+        assert_eq!(
+            arena.forfeit(false),
+            crate::arena_session::ForfeitResult::Ignored
+        );
+        arena.manager_screen = Some(2);
+        assert_eq!(
+            arena.forfeit(false),
+            crate::arena_session::ForfeitResult::Return { tournament: false }
+        );
     }
 
     #[test]
