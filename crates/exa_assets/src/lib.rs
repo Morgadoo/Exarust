@@ -159,6 +159,8 @@ pub struct TreeSheets {
     pub mods: Option<RgbaImage>,
     pub flamelets: Option<RgbaImage>,
     pub wheel: Option<RgbaImage>,
+    /// The tree's GUI font atlas (`Rayform08R`).
+    pub font: Option<RgbaImage>,
 }
 
 impl Game {
@@ -196,6 +198,7 @@ impl Game {
         sheets.mods = self.load_rgba("pwrsmods").ok();
         sheets.flamelets = self.load_rgba("flameletsa1").ok();
         sheets.wheel = self.load_rgba("domainwheel").ok();
+        sheets.font = self.load_rgba("Rayform08R").ok();
         sheets
     }
 }

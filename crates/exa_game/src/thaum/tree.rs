@@ -631,6 +631,9 @@ pub struct TreeScreen {
     pub ease_share: f32,
     /// The zoom in 8.8 fixed point, rounded to even.
     pub zoom_fixed: f32,
+    /// The tree font atlas's pixel size, set by the running screen when it
+    /// loads the atlas; zero emits no glyph quads.
+    pub font_size: (u16, u16),
     /// The view is dragged, so places are not rounded.
     pub free_view: bool,
     /// The stamp the free view ends.
@@ -809,6 +812,7 @@ impl TreeScreen {
             shown_zoom: 1.0,
             ease_share: 1.0,
             zoom_fixed: 256.0,
+            font_size: (0, 0),
             free_view: false,
             free_view_stamp: 0,
             factor: 1.0,
@@ -2106,6 +2110,7 @@ impl TreeScreen {
             width,
             height,
             scale,
+            font_size: self.font_size,
             window: self.window_alpha,
             content: self.content_alpha,
             bar_alpha: self.bar_alpha,

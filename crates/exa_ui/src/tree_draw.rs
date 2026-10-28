@@ -123,6 +123,8 @@ pub enum Program {
     /// The spline renderer's procedural ribbon (`vrTex`, `vrTx2`, the line
     /// width `lnwdt`): the tree's links.
     Spline,
+    /// The GUI skin's textured program, for the font atlas's glyph quads.
+    SkinText,
 }
 
 /// The texture a batch draws with.
@@ -136,6 +138,8 @@ pub enum Texture {
     Flamelets,
     /// The domain wheel's picture.
     Wheel,
+    /// A GUI font's 16 × 16 glyph atlas, by its texture name.
+    Font(&'static str),
 }
 
 /// A batch's uniform set.
@@ -750,6 +754,9 @@ pub struct TreeView {
     pub height: f32,
     /// The GUI unit: the bar's slots are 17 units apart and 13 across.
     pub scale: f32,
+    /// The tree font atlas's pixel size, when the screen loaded it; zero
+    /// emits no glyph quads (the texts stay as runs for measurement only).
+    pub font_size: (u16, u16),
     /// The opening or closing window's alpha, 0 to 1: the backdrop's and
     /// the form's own.
     pub window: f32,
@@ -889,6 +896,10 @@ pub const SPLINE_VERTEX_SHADER: &str = "in vec3 vPos;\r\nin vec2 vTex;\r\nin vec
 /// shapes the cross-section, the join shifts its middle, and `lnwdt` holds
 /// the width, the offset and the softness.
 pub const SPLINE_FRAGMENT_SHADER: &str = "in vec2 vrTex;\r\nin vec2 vrTx2;\r\nin vec4 vrCol;\r\nout vec4 FragColor;\r\nuniform vec3 lnwdt;\r\nvoid main() {\r\nfloat a = abs(0.5 - fract(vrTex.x));\r\na = sqrt(1.0 - a * 2.0);\r\na = clamp(0.5 + a * vrTx2.x, 0.0, 1.0);\r\na = 0.5 - abs(vrTex.y - a);\r\nfloat b = clamp(a * lnwdt.x + lnwdt.y, 0.0, 1.0);\r\nFragColor.rgb = vrCol.rgb * b;\r\na = clamp(a * lnwdt.z * 0.2, 0.0, 1.0);\r\na = clamp(a + b, 0.0, 1.0);\r\nFragColor.a = vrCol.a * a * a;\r\n}";
+
+/// The GUI skin's textured program, which draws a font atlas's glyphs with
+/// `TexCol` folded into the atlas colour.
+pub const SKIN_TEXT_SHADER: &str = crate::skin::SKIN_TEXTURED_SHADER;
 
 /// One program's source and the uniforms it binds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1619,6 +1630,66 @@ pub fn text_step(unit: f32) -> f32 {
     TREE_FONT.line_height as f32 * unit / TREE_UNIT
 }
 
+/// Appends one line's glyph quads, at the pixel `x` and baseline `y`, with
+/// the GUI font's cells on its 16 × 16 atlas. Nothing is appended before
+/// the atlas size is known: the running screen loads it from the resource
+/// pack.
+fn text_line(out: &mut TreeDraw, view: &TreeView, text: &[u8], x: f32, y: f32, ink: [f32; 4]) {
+    let (tw, th) = view.font_size;
+    let Some((du, dv)) = crate::gui_text::font_uv(TREE_FONT, (tw, th)) else {
+        return;
+    };
+    let quads = crate::gui_text::draw_line(TREE_FONT, text, cvt_i32(x), cvt_i32(y));
+    push_glyphs(out, &quads, ink, (du, dv));
+}
+
+/// Appends a wrapped block's glyph quads on the GUI font's atlas.
+#[allow(clippy::too_many_arguments)]
+fn text_block(
+    out: &mut TreeDraw,
+    view: &TreeView,
+    text: &[u8],
+    x: f32,
+    y: f32,
+    width: i32,
+    height: i32,
+    ink: [f32; 4],
+) {
+    let (tw, th) = view.font_size;
+    let Some((du, dv)) = crate::gui_text::font_uv(TREE_FONT, (tw, th)) else {
+        return;
+    };
+    let draw = crate::gui_text::draw_wrapped_at(TREE_FONT, text, x, y, width, height, 0, true);
+    push_glyphs(out, &draw.quads, ink, (du, dv));
+}
+
+/// One font layer's quads, with the skin's textured program and the font's
+/// atlas. The original's text batch order is top left, bottom left, bottom
+/// right, top right; the atlas cell's far row is the top.
+fn push_glyphs(
+    out: &mut TreeDraw,
+    quads: &[crate::gui_text::TextQuad],
+    ink: [f32; 4],
+    (du, dv): (f32, f32),
+) {
+    if quads.is_empty() {
+        return;
+    }
+    let mut batch = Batch::new(Program::SkinText, Texture::Font(TREE_FONT.texture));
+    batch.uniforms.par0 = [1.0, 1.0, 0.0, 0.0];
+    for quad in quads {
+        let [x, top, w, h] = quad.rect;
+        let (u0, v0) = quad.cell;
+        batch.quad([
+            TreeVertex::new(x as f32, top as f32, u0, v0 + dv).with_colour(ink),
+            TreeVertex::new(x as f32, (top + h) as f32, u0, v0).with_colour(ink),
+            TreeVertex::new((x + w) as f32, (top + h) as f32, u0 + du, v0).with_colour(ink),
+            TreeVertex::new((x + w) as f32, top as f32, u0 + du, v0 + dv).with_colour(ink),
+        ]);
+    }
+    out.submit(batch);
+}
+
 /// One panel of the tooltip, in pixels.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TipPanel {
@@ -1788,6 +1859,19 @@ pub fn tooltip_draw(
                 text: text.clone(),
             });
         }
+        // The skin's own wrapped draw: the lines centred in the 59-unit
+        // text width, at the box's top.
+        let joined = description.join("\r\n");
+        text_block(
+            &mut out,
+            view,
+            joined.as_bytes(),
+            tip.text[0],
+            tip.text[1],
+            (TIP_TEXT_WIDTH * view.scale) as i32,
+            (tip.panel[3] + view.scale) as i32,
+            [1.0, 1.0, 1.0, tip.alpha],
+        );
     }
     if let Some(tip) = layout.name {
         boxed(&mut out, tip.panel, tip.alpha);
@@ -1798,6 +1882,14 @@ pub fn tooltip_draw(
             colour: [0.9, 0.9, 0.9, tip.alpha],
             text: name.to_string(),
         });
+        text_line(
+            &mut out,
+            view,
+            name.as_bytes(),
+            tip.text[0],
+            tip.text[1],
+            [0.9, 0.9, 0.9, tip.alpha],
+        );
     }
     out
 }
@@ -1846,6 +1938,14 @@ pub fn labels_draw(view: &TreeView, names: &[(String, f32)]) -> TreeDraw {
             colour: [1.0, 1.0, 1.0, 160.0 / 255.0],
             text: text.clone(),
         });
+        text_line(
+            &mut out,
+            view,
+            text.as_bytes(),
+            text_x,
+            text_y,
+            [1.0, 1.0, 1.0, 160.0 / 255.0],
+        );
     }
     out
 }
@@ -1940,6 +2040,30 @@ pub fn prompt_draw(
         colour: button(focused == 0x200_0000),
         text: begin.to_string(),
     });
+    text_line(
+        &mut out,
+        view,
+        title.as_bytes(),
+        title_x + unit,
+        title_y + unit * 3.0,
+        [1.0, 1.0, 1.0, 1.0],
+    );
+    text_line(
+        &mut out,
+        view,
+        back.as_bytes(),
+        back_x,
+        button_y,
+        button(focused == 0x100_0000),
+    );
+    text_line(
+        &mut out,
+        view,
+        begin.as_bytes(),
+        begin_x,
+        button_y,
+        button(focused == 0x200_0000),
+    );
     out
 }
 
@@ -2042,6 +2166,7 @@ mod tests {
             width: 1000.0,
             height: 700.0,
             scale: 4.0,
+            font_size: (0, 0),
             window: 1.0,
             content: 1.0,
             bar_alpha: 1.0,
@@ -2957,6 +3082,32 @@ mod tests {
             draw.batches[0].vertices[0].y - draw.batches[0].vertices[2].y,
             16.0
         );
+    }
+
+    #[test]
+    fn the_skin_font_draws_its_glyph_quads_when_the_atlas_is_loaded() {
+        let mut view = view();
+        view.font_size = (1024, 1024);
+        view.nodes = vec![node(0x101, 100.0, mark::SHOWN)];
+        let draw = labels_draw(&view, &[("Blast".to_string(), 40.0)]);
+        let batch = draw
+            .batches
+            .iter()
+            .find(|b| b.program == Program::SkinText)
+            .expect("the glyph quads draw");
+        assert_eq!(batch.texture, Texture::Font(TREE_FONT.texture));
+        // Five glyphs, two triangles each.
+        assert_eq!(batch.vertices.len(), 5 * 6);
+        let first = batch.vertices[0];
+        // The label's text x is 80 and its baseline 156: the glyph's top is
+        // 140. The B's cell is column 2, row 4.
+        assert_eq!((first.x, first.y), (80.0, 140.0));
+        assert!((first.u - 0.125).abs() < 1e-6);
+        assert!((first.v - (0.25 + 16.0 / 1024.0)).abs() < 1e-6);
+        assert!((batch.vertices[1].v - 0.25).abs() < 1e-6);
+        assert!((batch.vertices[2].u - (0.125 + 11.0 / 1024.0)).abs() < 1e-6);
+        // The advance moves the second glyph to 80 + 8.
+        assert_eq!(batch.vertices[6].x, 88.0);
     }
 
     #[test]

@@ -31,7 +31,7 @@ use exa_assets::{Game, RgbaImage, TreeSheets};
 use exa_formats::rfi::Rfi;
 use exa_ui::font::{BASE_FONT, GameFont};
 use exa_ui::gui_core::{FormHost, FormId, GuiRect, GuiTask};
-use exa_ui::tree_draw::{self, Batch, Program, TextRun, Texture, TreeDraw, TreeVertex};
+use exa_ui::tree_draw::{self, Batch, Program, Texture, TreeDraw, TreeVertex};
 
 use crate::bindings::{Action, Bindings};
 use crate::thaum::tree::{BAR_CLOSING, PowerBar, PowerRecord, TreeMode, TreeScreen, TreeSound};
@@ -184,6 +184,12 @@ fn load_screen(mut commands: Commands, game: Option<Res<Game>>, mut screen: ResM
             }
         }
         screen.sheets = game.load_tree_sheets();
+        screen.tree.font_size = screen
+            .sheets
+            .font
+            .as_ref()
+            .map(|image| (image.width as u16, image.height as u16))
+            .unwrap_or((0, 0));
         if let Some(bytes) = game.0.texture(BASE_FONT)
             && let Ok(rfi) = Rfi::parse(bytes)
         {
@@ -198,6 +204,12 @@ fn load_screen(mut commands: Commands, game: Option<Res<Game>>, mut screen: ResM
             1000.0,
             700.0,
         );
+        screen.tree.font_size = screen
+            .sheets
+            .font
+            .as_ref()
+            .map(|image| (image.width as u16, image.height as u16))
+            .unwrap_or((0, 0));
         screen.texts = Vec::new();
     }
     commands.insert_resource(AssetsLoaded);
@@ -228,6 +240,7 @@ fn hotkeys(
         bar,
         texts,
         domain_files,
+        sheets,
         dirty,
         sound,
         ..
@@ -258,6 +271,11 @@ fn hotkeys(
                 width,
                 height,
             );
+            tree.font_size = sheets
+                .font
+                .as_ref()
+                .map(|image| (image.width as u16, image.height as u16))
+                .unwrap_or((0, 0));
             *open = true;
             *bar_open = true;
             tree.bar_open = true;
@@ -689,11 +707,9 @@ pub fn render(
         };
         raster_batch(&mut canvas, width, height, batch, texture, level);
     }
-    if let Some(font) = font {
-        for run in &draw.texts {
-            blit_text(&mut canvas, width, height, run, font);
-        }
-    }
+    // The runs are the layout's metrics; their glyph quads are in the
+    // batches of the skin's text program when the atlas is loaded.
+    let _ = font;
     canvas
 }
 
@@ -708,6 +724,13 @@ fn texture_of(texture: Texture, sheets: &TreeSheets) -> Option<&RgbaImage> {
         Texture::Mods => sheets.mods.as_ref(),
         Texture::Flamelets => sheets.flamelets.as_ref(),
         Texture::Wheel => sheets.wheel.as_ref(),
+        Texture::Font(name) => {
+            if name == tree_draw::TREE_FONT.texture {
+                sheets.font.as_ref()
+            } else {
+                None
+            }
+        }
     }
 }
 
@@ -1011,6 +1034,18 @@ fn shade(
                 col[3] * alpha * alpha,
             ]
         }
+        Program::SkinText => {
+            // The skin's textured program with `TexCol` one: the atlas
+            // colour multiplies the run's ink.
+            let tex = sample(texture, vertex.u, vertex.v);
+            let tex_col = uniforms.par0[0];
+            [
+                col[0] * (tex[0] * tex_col + 1.0 - tex_col),
+                col[1] * (tex[1] * tex_col + 1.0 - tex_col),
+                col[2] * (tex[2] * tex_col + 1.0 - tex_col),
+                col[3] * tex[3],
+            ]
+        }
     };
     out.iter_mut().for_each(|v| *v = clamp01(*v));
     out
@@ -1032,36 +1067,6 @@ fn blend(canvas: &mut [u8], width: u32, height: u32, x: i32, y: i32, colour: [f3
     }
     let dst_a = f32::from(canvas[at + 3]) / 255.0;
     canvas[at + 3] = ((a + dst_a * (1.0 - a)) * 255.0).clamp(0.0, 255.0) as u8;
-}
-
-/// Blits one text run with the game font, tinted.
-fn blit_text(canvas: &mut [u8], width: u32, height: u32, run: &TextRun, font: &GameFont) {
-    let rendered = font.render(&run.text);
-    if rendered.width == 0 || rendered.height == 0 {
-        return;
-    }
-    let scale = run.size / font.line_height() as f32;
-    for y in 0..rendered.height {
-        for x in 0..rendered.width {
-            let alpha = rendered.alpha[y * rendered.width + x];
-            if alpha == 0 {
-                continue;
-            }
-            let px = run.x as i32 + (x as f32 * scale) as i32;
-            let py = run.y as i32 - ((rendered.height - y) as f32 * scale) as i32;
-            let colour = [
-                run.colour[0],
-                run.colour[1],
-                run.colour[2],
-                run.colour[3] * f32::from(alpha) / 255.0,
-            ];
-            for oy in 0..(scale.ceil() as i32).max(1) {
-                for ox in 0..(scale.ceil() as i32).max(1) {
-                    blend(canvas, width, height, px + ox, py + oy, colour);
-                }
-            }
-        }
-    }
 }
 
 #[cfg(test)]
