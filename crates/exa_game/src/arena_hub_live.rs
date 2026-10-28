@@ -519,15 +519,15 @@ fn hub_clicks(
                                     info!("arena begin: the manager is entered; warning shown");
                                     continue;
                                 }
-                                // Before a match the first unhealthy
-                                // specialist leaves the company.
-                                if let Some(departure) = career.company.leave_before_match() {
-                                    info!("arena begin: specialist left ({departure:?})");
-                                }
                                 if let Some(board) = board
                                     && let Some(launch) =
                                         plan_launch(&mut career, &board, alternative)
                                 {
+                                    // Before a match the first unhealthy
+                                    // specialist leaves the company.
+                                    if let Some(departure) = career.company.leave_before_match() {
+                                        info!("arena begin: specialist left ({departure:?})");
+                                    }
                                     launches.write(launch);
                                     windows.close_window();
                                     hub.busy = true;
