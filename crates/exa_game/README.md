@@ -537,9 +537,9 @@ attack timing when an attack starts and holds the next attack until its
 recovery clock (the swing's own stall and Feint renewal still rule a
 released swing). The remaining rules have no caller yet: the 12 m contact
 list, the strongest engaged enemy, the look snap, the camera's follow step
-and the character nearest the cursor, and the movement goal's direction and
-tapped stride (`steering::key_goal_direction`, `goal_stride`; the 400 cm²
-release test is the footwork's). The right button walks to the cursor in
+and the character nearest the cursor, and the movement goal's direction, step vector and
+tapped stride (`steering::key_goal_direction`, `key_step`, `goal_stride`;
+the 400 cm² release test is the footwork's). The right button walks to the cursor in
 combat mode too
 (`steering::Steering::combat_walk`), the chevrons showing while it is
 held.

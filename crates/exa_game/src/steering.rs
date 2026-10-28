@@ -186,6 +186,24 @@ pub(crate) fn goal_stride(step_cm: f32, clock: f32, encumbrance: f32, tap: bool)
     }
 }
 
+/// The step vector a movement word asks for (cm), the original's key
+/// direction scaled by `(step·factor)/|dir|`: W is the facing, S back, A and
+/// D the 0.8 side, the analog word its own stored direction; the height is
+/// dropped, and a zero direction divides by zero as the original does.
+///
+/// Kept as a tested rule: the running request walks by the look-ahead, so
+/// nothing calls it yet.
+#[allow(dead_code)]
+pub(crate) fn key_step(facing: Vec3, word: u32, analog: Vec3, step_cm: f32, factor: f32) -> Vec3 {
+    let dir = if word == MOVE_ANALOG {
+        analog.with_y(0.0)
+    } else {
+        key_goal_direction(facing, word)
+    };
+    let length = dir.length();
+    dir * ((step_cm * 1.0 * factor) / length)
+}
+
 /// Whether a goal this far from the body (cm) lets go of the movement
 /// target: the squared distance, summed in the original's order, strictly
 /// over [`GOAL_RELEASE2`], so 20 cm does not and 20.1 cm does (a NaN never

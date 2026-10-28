@@ -845,3 +845,30 @@ fn the_goal_releases_past_four_hundred_squared_centimetres() {
     // 400 cm² across the ground with 0 height.
     assert!(!goal_released(Vec3::new(0.0, 0.0, 400.0f32.sqrt())));
 }
+
+/// The movement word's step vector is its direction scaled to the body's
+/// step times its factor, over the direction's length, with the height
+/// dropped: 80 cm along +Z, 80 cm of a diagonal kept, the pad's own
+/// direction; a zero word divides by zero.
+#[test]
+fn the_key_step_is_the_word_scaled_to_the_step() {
+    let facing = Vec3::Z;
+    let step = key_step(facing, MOVE_FORWARD, Vec3::ZERO, 80.0, 1.0);
+    assert_eq!(step, Vec3::new(0.0, 0.0, 80.0));
+    // W and A: (0.8, 0, 1) over 1.2806248, times 80, is 49.9756 and 62.4695 cm.
+    let diagonal = key_step(facing, MOVE_FORWARD | MOVE_LEFT, Vec3::ZERO, 80.0, 1.0);
+    assert!((diagonal.x - 49.975_6).abs() < 1e-3, "{diagonal}");
+    assert!((diagonal.z - 62.469_5).abs() < 1e-3, "{diagonal}");
+    assert!((diagonal.length() - 80.0).abs() < 1e-4);
+    // A pure side step keeps the full step.
+    let side = key_step(facing, MOVE_LEFT, Vec3::ZERO, 80.0, 1.0);
+    assert_eq!(side, Vec3::new(80.0, 0.0, 0.0));
+    // The factor scales it (the step's clock share).
+    let half = key_step(facing, MOVE_FORWARD, Vec3::ZERO, 80.0, 0.5);
+    assert_eq!(half, Vec3::new(0.0, 0.0, 40.0));
+    // The pad's direction, its height dropped.
+    let analog = key_step(facing, MOVE_ANALOG, Vec3::new(0.0, 3.0, 2.0), 50.0, 1.0);
+    assert_eq!(analog, Vec3::new(0.0, 0.0, 50.0));
+    // No direction: the division by zero gives a NaN vector.
+    assert!(key_step(facing, 0, Vec3::ZERO, 80.0, 1.0).is_nan());
+}

@@ -1038,14 +1038,16 @@ are wired, the rest are tested functions with no caller yet:
   full energy give a 0.285 step, a 44 ms expected end and 330 ms of
   recovery at full balance.
 - **Movement goal.** A word's direction is the facing (W), the side
-  `(facing.z, 0, −facing.x)` at 0.8 (A, D) and back (S), summed; a tapped
+  `(facing.z, 0, −facing.x)` at 0.8 (A, D) and back (S), summed; the step
+  vector is that direction scaled by `step·factor / |dir|` (the pad's own
+  stored direction instead, flattened), a tapped
   word lays the goal at `(1.5 − 0.3·encumbrance)` of the step (in double
   precision), and a goal more than 400 cm² from the body lets go of the
   movement target. Exarust's exploration request walks by the body's
-  look-ahead and does not build this goal, so the direction and the tap
-  stride are tested rules with no caller (`steering::key_goal_direction`,
-  `goal_stride`); the 400 cm² test is the footwork's step test
-  (`goal_released`).
+  look-ahead and does not build this goal, so the direction, the step
+  vector and the tap stride are tested rules with no caller
+  (`steering::key_goal_direction`, `key_step`, `goal_stride`); the 400 cm²
+  test is the footwork's step test (`goal_released`).
 - **Auto-target.** The visible opponent within 500 cm whose
   `(500 − d)·(δ·cursor/d + 0.5)` is the largest, strictly over the best
   from zero (so a zero, negative or NaN score never wins), the first on a
