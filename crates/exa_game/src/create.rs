@@ -2153,7 +2153,9 @@ pub fn plan_free_create(
                 reset_skills: false,
                 reset_gear: true,
                 clear_race_and_powers: true,
-                marks_new_character: false,
+                // The preset is read into a record made (and marked) for
+                // it when the creator had none.
+                marks_new_character: !record_present,
             }
         } else {
             FreeCreatePlan {
@@ -2175,51 +2177,6 @@ pub fn plan_free_create(
         reset_gear: false,
         clear_race_and_powers: false,
         marks_new_character: !record_present,
-    }
-}
-
-/// The database flag that marks an item as underwear.
-pub const UNDERWEAR_FLAG: u32 = 0x2;
-
-/// What the creator's underwear pass did.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct UnderwearPass {
-    /// The braies were appended to the worn list.
-    pub added: bool,
-    /// The worn list already held an item its database record flags as
-    /// underwear.
-    pub covered: bool,
-}
-
-/// Makes sure the record wears underwear.
-///
-/// A record whose profession word carries a race band (bits 8 through 15)
-/// is left alone. Otherwise each worn item's database record (looked up
-/// with the apparel kind) is asked for flag bit 1 (`0x2`); the first item
-/// that has it means the record is covered. With no such item the braies
-/// (item 8, no flags) are appended to the worn list. This runs for every
-/// record the creator edits except a recruited one and a continued one.
-pub fn ensure_underwear(
-    worn: &mut Vec<GearSlot>,
-    profession: i32,
-    flagged: impl Fn(u32) -> bool,
-) -> UnderwearPass {
-    if profession & 0x0000_ff00 != 0 {
-        return UnderwearPass {
-            added: false,
-            covered: false,
-        };
-    }
-    if worn.iter().any(|slot| flagged(slot.item)) {
-        return UnderwearPass {
-            added: false,
-            covered: true,
-        };
-    }
-    worn.push(GearSlot::new(BRAIES));
-    UnderwearPass {
-        added: true,
-        covered: false,
     }
 }
 
@@ -2303,9 +2260,12 @@ pub struct EntryPlan {
     pub full_health: bool,
     /// The story record's experience word is cleared.
     pub clear_experience: bool,
-    /// The underwear pass runs ([`ensure_underwear`]).
+    /// The underwear pass runs: the record wears the braies unless its
+    /// race band is set or a worn item covers the groin
+    /// (`exa_character::record::CharacterData::ensure_underwear`).
     pub ensure_underwear: bool,
-    /// The record is a new one the screen creates and marks as such.
+    /// The record is a new one the screen creates and marks as such (the
+    /// record's new-character word set to 1 when it is made).
     pub marks_new_character: bool,
     pub background: i32,
 }
@@ -2367,8 +2327,22 @@ pub fn plan_creation_entry(
         full_health: true,
         clear_experience: mode == CreationScreenMode::Story,
         ensure_underwear: filter,
-        marks_new_character: source == EntrySource::NewDefault
-            || (mode == CreationScreenMode::Story && background == 0 && !preset_loaded),
+        marks_new_character: match mode {
+            CreationScreenMode::Recruit => true,
+            // The story loader makes (and marks) a record only when the
+            // screen had none and it either reads a saved preset or starts
+            // the unknown background; a named background without a preset
+            // adopts its template, and an unlisted one gets an unmarked
+            // blank record.
+            CreationScreenMode::Story => {
+                !record_present
+                    && background_preset(background).is_some()
+                    && (background == 0 || preset_loaded)
+            }
+            // The free creator (or the entry's own fallback) makes and
+            // marks a record whenever none was there.
+            _ => !record_present,
+        },
         background,
     })
 }
@@ -2632,7 +2606,22 @@ pub enum PageDestination {
 pub enum HiddenPanel {
     Weapons,
     Skills,
-    VersusEquipment,
+    /// The versus lobby form a script hook supplied.
+    Lobby,
+}
+
+/// The equipment-page forms the creator has built. Each one stays built
+/// once made, so a later visit sees every form an earlier one created.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct BuiltPanels {
+    pub weapons: bool,
+    pub skills: bool,
+    /// The versus lobby form (the lobby hook's).
+    pub lobby: bool,
+    /// The read-only versus skills panel (with the equipment hook).
+    pub versus_skills: bool,
+    /// The versus equipment form (the equipment hook's).
+    pub versus_equipment: bool,
 }
 
 /// The result of the equipment page's tab.
@@ -2641,17 +2630,19 @@ pub struct PageSwitch {
     pub page: CreationScreenPage,
     pub destination: PageDestination,
     pub header: Option<PageHeader>,
-    /// The equipment page's first hidden panel, in the original's order:
-    /// weapons, then skills, then the versus equipment form.
+    /// The one main panel hidden, the first built of weapons, skills and
+    /// the versus lobby form.
     pub hidden_first: Option<HiddenPanel>,
-    /// The skills panel's slide argument, `0x2d` when it was the panel
+    /// The skills panel's slide argument, `0x2d`, when it was the panel
     /// hidden.
     pub skills_slide: Option<i32>,
-    /// Two further panels hidden on the way back [guess: their owners are
-    /// not established; the original writes both unconditionally].
-    pub hidden_secondary: [bool; 2],
-    /// The two tab state words cleared for a non-continued character.
-    pub tab_flags_cleared: bool,
+    /// The versus skills panel was hidden (it exists).
+    pub versus_skills_hidden: bool,
+    /// The versus equipment form was hidden (it exists).
+    pub versus_equipment_hidden: bool,
+    /// A non-continued character's two appearance panels were shown again
+    /// and both their tab state words set to `0x110`.
+    pub appearance_panels_shown: bool,
     /// The creator form was shown again with its page state cleared.
     pub form_shown: bool,
     /// The NEXT button's form was found and its disabled bit cleared.
@@ -2662,23 +2653,25 @@ pub struct PageSwitch {
 /// the creator from the appearance page: a recruit returns to the arena,
 /// anyone else to the menu.
 ///
-/// On the way back the first built equipment panel is hidden (weapons, then
-/// skills with its `0x2d` slide, then the versus equipment form), then the
-/// two secondary forms; a non-continued character clears two tab state
-/// words. The form is shown with page state 0, the tabs read NAME and HAIR,
-/// the NEXT button is enabled and the appearance editor is stored.
+/// On the way back only the first built of the weapons panel, the skills
+/// panel (which also slides with `0x2d`) and the versus lobby form is
+/// hidden; the versus skills panel and the versus equipment form are then
+/// hidden when they exist. A non-continued character shows its two
+/// appearance panels again and sets both tab state words to `0x110`. The
+/// form is shown with page state 0, the tabs read NAME and HAIR, the NEXT
+/// button is enabled and the appearance editor is stored.
 pub fn switch_creation_page(
     page: CreationScreenPage,
     screen_mode: i32,
-    panels: EquipmentPanels,
+    panels: BuiltPanels,
 ) -> PageSwitch {
     if page == CreationScreenPage::Equipment {
         let hidden_first = if panels.weapons {
             Some(HiddenPanel::Weapons)
         } else if panels.skills {
             Some(HiddenPanel::Skills)
-        } else if panels.versus_script {
-            Some(HiddenPanel::VersusEquipment)
+        } else if panels.lobby {
+            Some(HiddenPanel::Lobby)
         } else {
             None
         };
@@ -2687,28 +2680,37 @@ pub fn switch_creation_page(
             destination: PageDestination::Appearance,
             header: Some(appearance_page_header()),
             hidden_first,
-            skills_slide: panels.skills.then_some(0x2d),
-            hidden_secondary: [panels.versus_script, panels.apparel],
-            tab_flags_cleared: screen_mode != 12,
+            skills_slide: (hidden_first == Some(HiddenPanel::Skills)).then_some(0x2d),
+            versus_skills_hidden: panels.versus_skills,
+            versus_equipment_hidden: panels.versus_equipment,
+            appearance_panels_shown: screen_mode != 12,
             form_shown: true,
             next_enabled: true,
         }
     } else {
         PageSwitch {
             page,
-            destination: if screen_mode == 10 {
-                PageDestination::Arena
-            } else {
-                PageDestination::Menu
-            },
+            destination: leave_creator(screen_mode),
             header: None,
             hidden_first: None,
             skills_slide: None,
-            hidden_secondary: [false; 2],
-            tab_flags_cleared: false,
+            versus_skills_hidden: false,
+            versus_equipment_hidden: false,
+            appearance_panels_shown: false,
             form_shown: false,
             next_enabled: false,
         }
+    }
+}
+
+/// Leaves the creator: a recruit returns to the arena's form, anyone else
+/// to the menu. The cancel key and the page tab's appearance side both
+/// end here.
+pub fn leave_creator(screen_mode: i32) -> PageDestination {
+    if screen_mode == 10 {
+        PageDestination::Arena
+    } else {
+        PageDestination::Menu
     }
 }
 
@@ -3070,7 +3072,7 @@ pub struct SexChange {
     pub voice_reset: bool,
     /// Previews were muted while the two selections were made.
     pub muted: bool,
-    /// The audio device was opened first.
+    /// The audio device was opened first (it was not ready yet).
     pub audio_opened: bool,
     /// The change callback ran.
     pub callback: bool,
@@ -3097,9 +3099,16 @@ pub fn change_sex(word: i32, radio: i32) -> SexChange {
 }
 
 /// Applies the sex radio only when it was checked, and reports the full
-/// refresh: the look panel when it exists, the audio device opened, both
-/// voice selections previewed under the mute flag, and the callback.
-pub fn sex_radio(word: i32, radio: i32, checked: bool, panel: bool) -> Option<SexChange> {
+/// refresh: the look panel when it exists, the audio device opened when it
+/// was not ready yet, both voice selections previewed under the mute flag,
+/// and the callback.
+pub fn sex_radio(
+    word: i32,
+    radio: i32,
+    checked: bool,
+    panel: bool,
+    audio_ready: bool,
+) -> Option<SexChange> {
     if !checked {
         return None;
     }
@@ -3107,7 +3116,7 @@ pub fn sex_radio(word: i32, radio: i32, checked: bool, panel: bool) -> Option<Se
     change.look_refreshed = panel;
     change.voice_reset = true;
     change.muted = true;
-    change.audio_opened = true;
+    change.audio_opened = !audio_ready;
     change.callback = true;
     Some(change)
 }
@@ -3269,7 +3278,7 @@ pub struct ResolvedKitItem {
     pub item: u32,
     /// The appearance to write, or none for a plain item.
     pub appearance: Option<KitAppearance>,
-    /// A made item's colour layers each end with this byte (five); an
+    /// A made item's four colour layers each end with this byte (five); an
     /// alias writes its three bytes directly and has no marker.
     pub layer_marker: Option<u8>,
 }
@@ -3889,11 +3898,12 @@ pub fn release_preview_icon(present: bool) -> bool {
 
 /// The number of preview items a material is applied to.
 ///
-/// The material is only applied when the preview's generator object exists;
-/// its list length is read as a signed count, and a negative count runs no
-/// pass. Every item gets the same material.
-pub fn preview_material_items(present: bool, count: i32) -> Option<usize> {
-    (present && count >= 0).then_some(count as usize)
+/// The material is only applied when the preview's generator object exists.
+/// The loop runs from 0 through the item list's highest index (`high`, -1
+/// for an empty list), so it covers `high + 1` items. Every item gets the
+/// same material.
+pub fn preview_material_items(present: bool, high: i32) -> Option<usize> {
+    present.then(|| usize::try_from(high.saturating_add(1)).unwrap_or(0))
 }
 
 /// Releases a preview item's material; the material manager is called only
@@ -4189,25 +4199,6 @@ pub fn delete_confirm_dialog(question: &str, name: &str) -> DeleteConfirmDialog 
 // The continue screen's list
 // ---------------------------------------------------------------------
 
-/// Where the main menu's continue entry sends the screen.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ContinueEntry {
-    /// The arena's continue screen (screen mode 10).
-    Arena,
-    /// The story/menu session's continue screen.
-    Session,
-}
-
-/// Opens the continue screen from the main menu: recruiting goes to the
-/// arena's screen, every other mode to the session's.
-pub fn open_continue_from_menu(screen_mode: i32) -> ContinueEntry {
-    if screen_mode == 10 {
-        ContinueEntry::Arena
-    } else {
-        ContinueEntry::Session
-    }
-}
-
 /// What the continue screen's character view needs.
 #[derive(Debug, Clone, Copy)]
 pub struct ContinueViewInput<'a> {
@@ -4222,6 +4213,9 @@ pub struct ContinueViewInput<'a> {
     pub item_count: i32,
     /// The figure holds the item at its extra slot.
     pub extra_item: bool,
+    /// The figure's first listed item's database record carries flag
+    /// `0x100`; only then is that item refreshed on each pass.
+    pub listed_flagged: bool,
     /// The preview panel exists.
     pub panel: bool,
     /// The second panel exists.
@@ -4254,6 +4248,8 @@ pub struct ContinueView {
     pub record_applied: bool,
     /// Passes over the figure's items in continue mode.
     pub item_passes: usize,
+    /// Of those passes, the ones that refreshed the first listed item.
+    pub listed_passes: usize,
     /// Of those passes, the ones that also refreshed the extra item.
     pub extra_passes: usize,
     pub panels_bound: usize,
@@ -4273,8 +4269,9 @@ pub struct ContinueView {
 /// frame between empty answers. The loaded model is shown and an existing
 /// item list is attached to the record's carried items. Continue mode
 /// labels the header CONTINUE and applies the character to the figure, then
-/// walks the figure's item count twice: the listed item is refreshed on
-/// every pass and so is the extra item, when it exists. Other modes put the
+/// walks the figure's item count: on every pass the first listed item is
+/// refreshed when its database record carries flag `0x100`, and the extra
+/// item when it exists. Other modes put the
 /// record's name (fifteen bytes) into the details box. Versus labels the
 /// header VERSUS after that. When the preview panel exists, both panels are
 /// bound to the character; the second panel's look is refreshed, or the
@@ -4282,12 +4279,13 @@ pub struct ContinueView {
 /// panel's targets are set to the figure and the GUI's textures before both
 /// are shown.
 ///
-/// The item passes are modelled as a count: the original's loop re-reads the
-/// same list entry on every pass, so no per-item result is observable from
-/// this routine [guess: the list walk's indexing is not in the routine].
+/// The item passes are modelled as counts: the original's loop re-reads the
+/// list's first entry on every pass (the instructions carry no index), so
+/// the same item is refreshed each time.
 pub fn continue_view(input: ContinueViewInput<'_>) -> ContinueView {
     let waited = input.loader_hook && !input.model_available;
     let mut item_passes = 0;
+    let mut listed_passes = 0;
     let mut extra_passes = 0;
     let mut name = String::new();
     let mut title = None;
@@ -4295,6 +4293,9 @@ pub fn continue_view(input: ContinueViewInput<'_>) -> ContinueView {
         title = Some(exa_ui::creation::CONTINUE);
         if input.item_count > 0 {
             item_passes = input.item_count as usize;
+            if input.listed_flagged {
+                listed_passes = item_passes;
+            }
             if input.extra_item {
                 extra_passes = item_passes;
             }
@@ -4334,6 +4335,7 @@ pub fn continue_view(input: ContinueViewInput<'_>) -> ContinueView {
         title,
         record_applied: input.screen_mode == 12,
         item_passes,
+        listed_passes,
         extra_passes,
         panels_bound,
         look_refreshed,
@@ -4371,8 +4373,11 @@ pub fn open_continue_page(
 
 /// Re-selects the save the continue screen already has.
 ///
-/// The callback carries no choice of its own: it re-runs the selection with
-/// the stored index, which the select routine then shows again.
+/// This is the reset-to-portal dialog's confirmation: after the save
+/// manager resets the chosen character (a routine outside this unit) the
+/// selection re-runs with the stored index and the dialog closes [guess:
+/// the dialog is inferred from the owner field it reads, which only the
+/// reset-to-portal and delete dialogs set].
 pub fn reselect_save(index: i32) -> i32 {
     index
 }
@@ -4458,9 +4463,6 @@ pub const CREATION_ICON_SHEET: &str = "charcreate.rfi";
 pub const CREATION_ICON_WORD: u32 = 0x203;
 /// The icon manager's flags the sheet sets.
 pub const CREATION_ICON_FLAGS: u32 = 0x0100_2008;
-/// The word the manager is given: four cells at a scale of eight [guess:
-/// the field's meaning is not established].
-pub const CREATION_ICON_SLOTS: i32 = 32;
 
 /// What building the creator's icon sheet did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4469,7 +4471,9 @@ pub struct CreationIconSheet {
     pub reused: bool,
     pub word: u32,
     pub flags: u32,
-    pub slots: i32,
+    /// The icon size the manager is given, eight GUI units
+    /// ([`creation_icon_size`]); the dummy-head preview reads it back.
+    pub icon_size: i32,
     /// The sheet loaded.
     pub loaded: bool,
     /// The 96-pixel cells added, in the order the original cuts them.
@@ -4479,16 +4483,16 @@ pub struct CreationIconSheet {
 /// Builds or rebinds the creator's icon sheet.
 ///
 /// An existing manager is reset first; otherwise one is made with the
-/// 0x203 word and the `0x0100_2008` flags. The slot word is set to four
-/// times the eight-unit scale. A missing sheet adds no cells. A present one
+/// 0x203 word and the `0x0100_2008` flags. Its icon size is set to eight
+/// GUI units (32 at unit 4) either way. A missing sheet adds no cells. A present one
 /// is cut into four 96-pixel cells at 288, 192, 96 and 0, each registered
 /// as an icon, then the manager finishes.
-pub fn build_creation_icons(existing: bool, load_ok: bool) -> CreationIconSheet {
+pub fn build_creation_icons(unit: i32, existing: bool, load_ok: bool) -> CreationIconSheet {
     CreationIconSheet {
         reused: existing,
         word: CREATION_ICON_WORD,
         flags: CREATION_ICON_FLAGS,
-        slots: CREATION_ICON_SLOTS,
+        icon_size: creation_icon_size(unit),
         loaded: load_ok,
         cells: if load_ok {
             CREATION_ICON_OFFSETS.len()
@@ -5931,6 +5935,8 @@ mod tests {
         assert!(story.reset_gear);
         assert!(story.clear_race_and_powers);
         assert!(!story.marks_new_character);
+        // Read into a record made for it, the preset's record is marked.
+        assert!(plan_free_create(4, false, true).marks_new_character);
 
         assert_eq!(
             plan_free_create(8, false, true).source,
@@ -6000,7 +6006,10 @@ mod tests {
         assert_eq!(free.source, EntrySource::FreeCreate);
         assert!(free.filter);
         assert!(free.ensure_underwear);
-        assert!(!free.marks_new_character);
+        // The free creator makes the missing record and marks it.
+        assert!(free.marks_new_character);
+        assert!(unsaved.marks_new_character);
+        assert!(!existing.marks_new_character);
 
         // Continue with no record marks a new one; the other entries that
         // make a record mark it too.
@@ -6009,7 +6018,20 @@ mod tests {
         assert!(!continued_blank.ensure_underwear);
         assert!(!recruit.ensure_underwear);
         assert!(recruit.marks_new_character);
+        // A named background without a preset adopts its template.
         assert!(!story.marks_new_character);
+        // A saved preset read into a fresh record marks it, and so does
+        // the unknown background's blank record; a record already there is
+        // reused unmarked.
+        let saved = plan_creation_entry(4, 4, 2, false, true, true, true).unwrap();
+        assert!(saved.marks_new_character);
+        let unknown = plan_creation_entry(4, 4, 0, false, true, true, false).unwrap();
+        assert!(unknown.marks_new_character);
+        let reused = plan_creation_entry(4, 4, 0, true, true, true, true).unwrap();
+        assert!(!reused.marks_new_character);
+        // An unlisted background gets a blank, unmarked record.
+        let unlisted = plan_creation_entry(4, 4, 7, false, true, true, true).unwrap();
+        assert!(!unlisted.marks_new_character);
     }
 
     #[test]
@@ -6048,43 +6070,6 @@ mod tests {
         );
         assert_eq!(gear.worn, vec![GearSlot::new(8)]);
         assert!(gear.carried.is_empty());
-    }
-
-    #[test]
-    fn the_underwear_pass_adds_braies_only_when_missing() {
-        let mut worn = vec![GearSlot::new(24)];
-        let added = ensure_underwear(&mut worn, 0, |item| item == 40);
-        assert_eq!(
-            added,
-            UnderwearPass {
-                added: true,
-                covered: false
-            }
-        );
-        assert_eq!(worn, vec![GearSlot::new(24), GearSlot::new(8)]);
-
-        let mut covered = vec![GearSlot::new(5), GearSlot::new(40)];
-        let pass = ensure_underwear(&mut covered, 0, |item| item == 40);
-        assert_eq!(
-            pass,
-            UnderwearPass {
-                added: false,
-                covered: true
-            }
-        );
-        assert_eq!(covered, vec![GearSlot::new(5), GearSlot::new(40)]);
-
-        // A race band leaves the record alone, even with no underwear.
-        let mut alien = Vec::new();
-        let pass = ensure_underwear(&mut alien, 0x200, |_| false);
-        assert!(!pass.added && !pass.covered);
-        assert!(alien.is_empty());
-
-        // A missing database record never flags an item.
-        let mut empty = Vec::new();
-        let pass = ensure_underwear(&mut empty, 0, |_| false);
-        assert!(pass.added);
-        assert_eq!(empty, vec![GearSlot::new(8)]);
     }
 
     #[test]
@@ -6195,47 +6180,64 @@ mod tests {
 
     #[test]
     fn the_page_switch_goes_back_or_commits() {
-        let back = switch_creation_page(
-            CreationScreenPage::Equipment,
-            10,
-            equipment_panels(8, false),
-        );
+        let arena_panels = BuiltPanels {
+            skills: true,
+            ..BuiltPanels::default()
+        };
+        let back = switch_creation_page(CreationScreenPage::Equipment, 10, arena_panels);
         assert_eq!(back.page, CreationScreenPage::Appearance);
         assert_eq!(back.destination, PageDestination::Appearance);
         let header = back.header.unwrap();
         assert_eq!(header.first, "NAME");
         assert_eq!(header.second, "HAIR");
         assert_eq!(header.final_button, "NEXT");
-        // The arena shows apparel and skills, so the skills panel hides and
-        // slides; the apparel panel is hidden twice as a secondary form.
+        // The arena built the skills panel: it hides and slides.
         assert_eq!(back.hidden_first, Some(HiddenPanel::Skills));
         assert_eq!(back.skills_slide, Some(0x2d));
-        assert_eq!(back.hidden_secondary, [false, true]);
+        assert!(!back.versus_skills_hidden && !back.versus_equipment_hidden);
         assert!(back.form_shown && back.next_enabled);
-        assert!(back.tab_flags_cleared);
+        assert!(back.appearance_panels_shown);
 
-        let continued = switch_creation_page(
+        // Weapons come first: the skills panel is neither hidden nor slid.
+        let both = switch_creation_page(
             CreationScreenPage::Equipment,
-            12,
-            equipment_panels(8, false),
+            0,
+            BuiltPanels {
+                weapons: true,
+                skills: true,
+                ..BuiltPanels::default()
+            },
         );
-        assert!(!continued.tab_flags_cleared);
+        assert_eq!(both.hidden_first, Some(HiddenPanel::Weapons));
+        assert_eq!(both.skills_slide, None);
 
-        let arena = switch_creation_page(
-            CreationScreenPage::Appearance,
-            10,
-            EquipmentPanels::default(),
+        // Versus with both script hooks hides the lobby and its two forms.
+        let versus = switch_creation_page(
+            CreationScreenPage::Equipment,
+            0,
+            BuiltPanels {
+                lobby: true,
+                versus_skills: true,
+                versus_equipment: true,
+                ..BuiltPanels::default()
+            },
         );
+        assert_eq!(versus.hidden_first, Some(HiddenPanel::Lobby));
+        assert!(versus.versus_skills_hidden && versus.versus_equipment_hidden);
+
+        let continued = switch_creation_page(CreationScreenPage::Equipment, 12, arena_panels);
+        assert!(!continued.appearance_panels_shown);
+
+        let arena =
+            switch_creation_page(CreationScreenPage::Appearance, 10, BuiltPanels::default());
         assert_eq!(arena.destination, PageDestination::Arena);
         assert!(arena.header.is_none());
         assert_eq!(arena.hidden_first, None);
 
-        let other = switch_creation_page(
-            CreationScreenPage::Appearance,
-            4,
-            EquipmentPanels::default(),
-        );
+        let other = switch_creation_page(CreationScreenPage::Appearance, 4, BuiltPanels::default());
         assert_eq!(other.destination, PageDestination::Menu);
+        assert_eq!(leave_creator(10), PageDestination::Arena);
+        assert_eq!(leave_creator(12), PageDestination::Menu);
     }
 
     #[test]
@@ -6437,14 +6439,16 @@ mod tests {
         assert_eq!(ham.label, CreationLabel::Ham);
         assert_eq!(ham.voice_prefix, "VHAM");
 
-        assert_eq!(sex_radio(0, 2, false, true), None);
-        let checked = sex_radio(0x200, 1, true, true).unwrap();
+        assert_eq!(sex_radio(0, 2, false, true, false), None);
+        let checked = sex_radio(0x200, 1, true, true, false).unwrap();
         assert_eq!(checked.word, 0x200);
         assert_eq!(checked.voice_prefix, "VHAM");
         assert!(checked.look_refreshed);
         assert!(checked.voice_reset && checked.muted && checked.audio_opened);
         assert!(checked.callback);
-        let without_panel = sex_radio(0, 2, true, false).unwrap();
+        let without_panel = sex_radio(0, 2, true, false, true).unwrap();
+        // The audio device is only opened when it was not ready.
+        assert!(!without_panel.audio_opened);
         assert!(!without_panel.look_refreshed);
         assert!(without_panel.voice_reset);
     }
@@ -7042,9 +7046,10 @@ mod tests {
     #[test]
     fn a_preview_material_covers_every_listed_item() {
         assert_eq!(preview_material_items(false, 3), None);
-        assert_eq!(preview_material_items(true, -1), None);
-        assert_eq!(preview_material_items(true, 0), Some(0));
-        assert_eq!(preview_material_items(true, 3), Some(3));
+        // An empty list's highest index is -1: no pass.
+        assert_eq!(preview_material_items(true, -1), Some(0));
+        assert_eq!(preview_material_items(true, 0), Some(1));
+        assert_eq!(preview_material_items(true, 3), Some(4));
         assert!(release_preview_material(true));
         assert!(!release_preview_material(false));
     }
@@ -7158,6 +7163,7 @@ mod tests {
             loader_hook: false,
             item_count: 0,
             extra_item: false,
+            listed_flagged: false,
             panel: false,
             second_panel: false,
             item_list: false,
@@ -7183,7 +7189,11 @@ mod tests {
         assert_eq!(continued.name, "");
         assert_eq!(continued.title, Some(exa_ui::creation::CONTINUE));
         assert_eq!(continued.item_passes, 3);
+        assert_eq!(continued.listed_passes, 0);
         assert_eq!(continued.extra_passes, 3);
+        input.listed_flagged = true;
+        assert_eq!(continue_view(input).listed_passes, 3);
+        input.listed_flagged = false;
         assert!(continued.record_applied);
 
         input.game_mode = 0x1010;
@@ -7260,13 +7270,6 @@ mod tests {
     }
 
     #[test]
-    fn the_continue_screen_opens_from_the_menu() {
-        assert_eq!(open_continue_from_menu(10), ContinueEntry::Arena);
-        assert_eq!(open_continue_from_menu(0), ContinueEntry::Session);
-        assert_eq!(open_continue_from_menu(12), ContinueEntry::Session);
-    }
-
-    #[test]
     fn the_continue_save_steps_offer_the_checkpoint_first() {
         assert_eq!(reselect_save(-3), -3);
         assert_eq!(previous_save_step(0), None);
@@ -7326,15 +7329,16 @@ mod tests {
     #[test]
     fn the_icon_sheet_adds_four_cells() {
         assert_eq!(CREATION_ICON_SHEET, "charcreate.rfi");
-        let built = build_creation_icons(false, true);
+        let built = build_creation_icons(4, false, true);
         assert!(!built.reused);
         assert_eq!(built.word, 0x203);
         assert_eq!(built.flags, 0x0100_2008);
-        assert_eq!(built.slots, 32);
+        assert_eq!(built.icon_size, 32);
+        assert_eq!(build_creation_icons(5, false, true).icon_size, 40);
         assert!(built.loaded);
         assert_eq!(built.cells, 4);
 
-        let missing = build_creation_icons(true, false);
+        let missing = build_creation_icons(4, true, false);
         assert!(missing.reused);
         assert!(!missing.loaded);
         assert_eq!(missing.cells, 0);
