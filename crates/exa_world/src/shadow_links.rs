@@ -29,7 +29,7 @@ use bevy::transform::TransformSystems;
 use exa_formats::level::LevelGrid;
 use exa_render::cube_shadows::{CasterFaces, CubeCasters, CubeShadow, PointShadows};
 use exa_render::lights::{LightId, LightsSystems, MAX_MESH_LIGHTS, MeshLights};
-use exa_render::supersample::DisplayCamera;
+use exa_render::supersample::SceneCamera;
 
 use crate::light_flood::{CellLights, FloodLight, NodeBounds, WallGrid};
 
@@ -141,8 +141,8 @@ const LINK_WEIGHT: f32 = 0.01;
 /// 3.4e38 cm (3.4e36 m), so only walls and the stack's limit stop the walk.
 const UNLIMITED_REACH: f32 = 3.4e36;
 /// The first render layer given to a light: 0 is the world's, and the
-/// layers up to the supersampling resolve layer are taken.
-pub const FIRST_LIGHT_LAYER: usize = exa_render::supersample::RESOLVE_LAYER + 1;
+/// layers up to the off-screen scenes' layer are taken.
+pub const FIRST_LIGHT_LAYER: usize = exa_render::supersample::OFFSCREEN_LAYER + 1;
 
 /// The light whose object holds this mesh: a light whose parent is one of
 /// these entities casts no shadow of it.
@@ -725,7 +725,7 @@ fn dirty_moved_casters(
 fn see_light_layers(
     mut commands: Commands,
     mut table: ResMut<LinkedLights>,
-    cameras: Query<Entity, (With<Camera3d>, Without<DisplayCamera>)>,
+    cameras: Query<Entity, SceneCamera>,
     added: Query<(), Added<Camera3d>>,
 ) {
     let any_added = cameras.iter().any(|c| added.contains(c));

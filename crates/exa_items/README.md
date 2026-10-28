@@ -25,10 +25,11 @@ The off-screen icon renderer (`item_renderer`) is modelled from its
 constructor: an icon-size global starting at 160 pixels, depth and colour
 renderbuffers at twice that, the two RGBA image headers, the sun along
 (0.46, 0.47, 0.48) in the colour (0.75, 0.75, 0.75, 0.5), and the camera at
-(0, 0, 350) with the settings 40 and 10. `item_icon` adds what the running
-camera needs: the framing distance as a floor in metres, a 30° field with
-the box fitted to 0.9 of the icon, the framing presets' sun direction, the
-model's baked scene and a CPU rasteriser; the tests pin the camera, the
+(0, 0, 350) with a 40° field of view and a 10 cm near field;
+`frame_distance` is the engine's scene fit the render frames the item with.
+`item_icon` adds what the running camera needs: that fit in metres on +Z
+from the box's centre, the framing presets' sun direction, the model's
+baked scene and a CPU rasteriser; the tests pin the fit, the camera, the
 plan's pixel extents, the sun and a shipped weapon's non-empty icon.
 
 The Body loot window (`char_loot`) is 244 by 440 with a 228 by 180

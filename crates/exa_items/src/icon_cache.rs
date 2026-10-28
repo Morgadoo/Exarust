@@ -190,7 +190,9 @@ impl IconCache {
         }
     }
 
-    fn halves(&self, r: Rendered) -> (i32, i32) {
+    /// The half extents a rendered icon's slot keeps: half its size,
+    /// rounded half to even, plus the GUI unit.
+    pub fn halves(&self, r: Rendered) -> (i32, i32) {
         (
             self.unit + (r.width * 0.5).round_ties_even() as i32,
             (r.height * 0.5).round_ties_even() as i32 + self.unit,

@@ -16,6 +16,7 @@ use bevy::camera::visibility::RenderLayers;
 use bevy::camera::{ClearColorConfig, RenderTarget};
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::image::CompressedImageFormatSupport;
+use bevy::light::{NotShadowCaster, NotShadowReceiver};
 use bevy::prelude::*;
 use bevy::render::gpu_readback::{ReadbackComplete, ReadbackOnce};
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages};
@@ -26,14 +27,16 @@ use exa_items::catalogue::ItemCatalogue;
 use exa_items::item_gui::framing;
 use exa_items::item_icon::{self, IconCamera, IconPixels, IconScene, sun_direction};
 use exa_items::item_renderer::ALPHA_GLOBAL;
+use exa_render::supersample::Offscreen;
 
 use crate::item_panel_draw::{PanelIcons, PendingIcon};
 
 /// How many icons one frame starts.
 pub const ICONS_PER_FRAME: usize = 2;
-/// The render layer the icon cameras and their scenes use, so the main view
-/// never sees them.
-pub const ICON_LAYER: usize = 30;
+/// The render layer the icon cameras and their scenes use: the off-screen
+/// layer, which no scene camera and no light's shadow layer takes, so the
+/// main view never sees them.
+pub const ICON_LAYER: usize = exa_render::supersample::OFFSCREEN_LAYER;
 /// The frames a GPU icon may take before it is dropped (a lost readback
 /// must not leak its scene).
 pub const ICON_JOB_TIMEOUT: u32 = 60;
@@ -132,6 +135,9 @@ fn prepare_icon_scenes(
     images: Option<ResMut<Assets<Image>>>,
     support: Option<Res<CompressedImageFormatSupport>>,
 ) {
+    if icons.pending.iter().all(|pending| pending.scene.is_some()) {
+        return;
+    }
     let (
         Some(game),
         Some(catalogue),
@@ -221,6 +227,10 @@ fn paint_icon_jobs(
     mut images: Option<ResMut<Assets<Image>>>,
     cache: Option<Res<ModelCache>>,
 ) {
+    // Nothing to start: no texture scan and no change mark on the icons.
+    if !icons.pending.iter().any(|pending| pending.scene.is_some()) {
+        return;
+    }
     // The original flushes its procedural texture jobs before the render;
     // Exarust waits for the streamed uploads so the icon does not keep the
     // loader's grey placeholder.
@@ -317,6 +327,7 @@ fn spawn_gpu_icon(
             Tonemapping::None,
             Msaa::Off,
             layer.clone(),
+            Offscreen,
         ))
         .id();
     let sun = sun_direction(plan.framing).normalize_or_zero();
@@ -336,6 +347,7 @@ fn spawn_gpu_icon(
             },
             Transform::default().looking_to(-sun, up),
             layer.clone(),
+            Offscreen,
         ))
         .id();
     let root = commands
@@ -356,6 +368,9 @@ fn spawn_gpu_icon(
             MeshMaterial3d(part.material.clone()),
             Transform::from_matrix(part.transform),
             layer.clone(),
+            // The shadow linker would move a caster onto the world's layer.
+            NotShadowCaster,
+            NotShadowReceiver,
             ChildOf(root),
         ));
     }
@@ -384,6 +399,9 @@ fn spawn_gpu_icon(
 
 /// Requests the readback one frame after the camera has drawn.
 fn start_icon_readbacks(mut commands: Commands, mut jobs: ResMut<IconGpuJobs>) {
+    if jobs.jobs.is_empty() {
+        return;
+    }
     for job in &mut jobs.jobs {
         job.frames = job.frames.saturating_add(1);
         if job.frames == READBACK_DELAY && job.readback.is_none() {
@@ -407,6 +425,9 @@ fn expire_icon_jobs(
     mut icons: ResMut<PanelIcons>,
     mut images: Option<ResMut<Assets<Image>>>,
 ) {
+    if jobs.jobs.iter().all(|job| job.frames < ICON_JOB_TIMEOUT) {
+        return;
+    }
     let (keep, expired): (Vec<_>, Vec<_>) = std::mem::take(&mut jobs.jobs)
         .into_iter()
         .partition(|job| job.frames < ICON_JOB_TIMEOUT);
@@ -422,11 +443,11 @@ fn expire_icon_jobs(
             );
         }
         icons.apply_rendered(job.id, job.key, icon, job.content_width, job.content_height);
-        commands.entity(job.camera).despawn();
-        commands.entity(job.light).despawn();
-        commands.entity(job.root).despawn();
-        if let Some(readback) = job.readback {
-            commands.entity(readback).despawn();
+        for entity in [job.camera, job.light, job.root]
+            .into_iter()
+            .chain(job.readback)
+        {
+            commands.entity(entity).try_despawn();
         }
         if let Some(images) = images.as_deref_mut() {
             images.remove(&job.image);
@@ -470,11 +491,11 @@ fn icon_readback_complete(
         );
     }
     icons.apply_rendered(job.id, job.key, icon, job.content_width, job.content_height);
-    for entity in [job.camera, job.light, job.root] {
-        commands.entity(entity).despawn();
-    }
-    if let Some(readback) = job.readback {
-        commands.entity(readback).despawn();
+    for entity in [job.camera, job.light, job.root]
+        .into_iter()
+        .chain(job.readback)
+    {
+        commands.entity(entity).try_despawn();
     }
     images.remove(&job.image);
 }
@@ -732,6 +753,63 @@ mod tests {
         let mut icons = app.world_mut().resource_mut::<PanelIcons>();
         let layer = icons.layer(&container).expect("a filled icon draws");
         assert_eq!(layer.batch.primitives.len(), 1);
+    }
+
+    #[test]
+    fn the_icon_camera_and_scene_stay_off_the_world() {
+        // The off-screen layer is below every light's shadow layer, so the
+        // light-layer pass never hands it to a scene camera.
+        const {
+            assert!(ICON_LAYER < exa_world::shadow_links::FIRST_LIGHT_LAYER);
+            assert!(ICON_LAYER != 0);
+        }
+        let mut world = World::new();
+        world.init_resource::<Assets<Image>>();
+        let scene = IconScene {
+            parts: vec![item_icon::IconPart {
+                mesh: Handle::default(),
+                material: Handle::default(),
+                transform: Mat4::IDENTITY,
+            }],
+            ..IconScene::synthetic_quad()
+        };
+        let (view, plan) = item_icon::scene_plan(0, false, 0, scene.bounds, 160, true);
+        let pending = PendingIcon {
+            id: 3,
+            key: 0,
+            variant: 0,
+            entry: 0,
+            model_flags: 0,
+            scene: None,
+            attempts: 0,
+        };
+        let job = world.resource_scope(|world, mut images: Mut<Assets<Image>>| {
+            let mut queue = bevy::ecs::world::CommandQueue::default();
+            let mut commands = Commands::new(&mut queue, world);
+            let job = spawn_gpu_icon(
+                &mut commands,
+                &mut images,
+                &pending,
+                &scene,
+                &view,
+                &plan,
+                160,
+            )
+            .expect("a job");
+            queue.apply(world);
+            job
+        });
+        let layer = RenderLayers::layer(ICON_LAYER);
+        for entity in [job.camera, job.light] {
+            assert!(world.get::<Offscreen>(entity).is_some());
+            assert_eq!(world.get::<RenderLayers>(entity), Some(&layer));
+        }
+        let mut parts = world.query_filtered::<&RenderLayers, With<Mesh3d>>();
+        let parts: Vec<_> = parts.iter(&world).collect();
+        assert_eq!(parts, vec![&layer]);
+        let mut casters = world.query_filtered::<(), (With<Mesh3d>, Without<NotShadowCaster>)>();
+        assert_eq!(casters.iter(&world).count(), 0);
+        assert_eq!(world.resource::<Assets<Image>>().len(), 1);
     }
 
     #[test]

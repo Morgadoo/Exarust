@@ -896,7 +896,7 @@ fn prepare_draws(
 
 #[allow(clippy::too_many_arguments)]
 fn render_faces(
-    view: ViewQuery<Has<DisplayCamera>>,
+    view: ViewQuery<(Has<DisplayCamera>, Has<crate::supersample::Offscreen>)>,
     jobs: Res<CubeJobs>,
     mut prepared: ResMut<PreparedCubes>,
     cache: Res<PipelineCache>,
@@ -904,8 +904,10 @@ fn render_faces(
     allocator: Res<MeshAllocator>,
     mut ctx: RenderContext,
 ) {
-    // Once per frame, by the scene view (not a supersampling display).
-    if view.into_inner() {
+    // Once per frame, by the scene view (not a supersampling display or an
+    // off-screen scene).
+    let (display, offscreen) = view.into_inner();
+    if display || offscreen {
         return;
     }
     if !prepared.pending {

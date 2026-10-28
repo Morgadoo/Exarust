@@ -22,7 +22,7 @@ use std::collections::VecDeque;
 use bevy::prelude::*;
 
 use exa_items::catalogue::ItemCatalogue;
-use exa_items::icon_cache::{IconCache, key, streamed_key, variant};
+use exa_items::icon_cache::{IconCache, key, streamed_key};
 use exa_items::item_icon::IconScene;
 use exa_ui::gui_draw::{GuiLayer, GuiTexture, LayerTexture};
 use exa_ui::icon_atlas::{IconAtlas, IconImage};
@@ -117,7 +117,7 @@ impl PanelIcons {
         };
         if let Some(at) = self.entries_slot(id, name) {
             let entry = &mut self.cache.entries[at];
-            entry.refs += 1;
+            entry.refs = entry.refs.saturating_add(1);
             return (at + 1, (entry.half_width, entry.half_height));
         }
         let (half_width, half_height) = self.icon_half();
@@ -130,27 +130,13 @@ impl PanelIcons {
             refs: 1,
         });
         let entry = self.cache.entries.len() - 1;
-        let render_variant = match model {
-            Some(model) => {
-                let base = if model.flags & 1 != 0 {
-                    (flags & (variant::APPAREL | variant::CONDITION)) | variant::LIT
-                } else {
-                    flags & variant::APPAREL
-                };
-                base | if model.flags & 0x2000 != 0 {
-                    variant::EFFECT
-                } else {
-                    0
-                } | variant::STREAMED
-            }
-            // A record the database does not know: the render pass finds no
-            // model and drops the pending icon; the slot stays reserved.
-            None => name,
-        };
+        // The render variant is the key: the framing bit (and a lit model's
+        // condition byte) pick the framing and turn, the effect bit the
+        // subdivision, the streamed bit the object-database resolve.
         self.pending.push_back(PendingIcon {
             id,
             key: name,
-            variant: render_variant,
+            variant: name,
             entry,
             model_flags: model.map_or(0, |m| m.flags),
             scene: None,
@@ -200,11 +186,15 @@ impl PanelIcons {
         if cell <= 0 {
             return false;
         }
-        let unit = self.cache.unit;
+        let (half_width, half_height) = self.cache.halves(exa_items::icon_cache::Rendered {
+            cell,
+            width,
+            height,
+        });
         let entry = &mut self.cache.entries[at];
         entry.cell = cell;
-        entry.half_width = unit + (width * 0.5).round_ties_even() as i32;
-        entry.half_height = (height * 0.5).round_ties_even() as i32 + unit;
+        entry.half_width = half_width;
+        entry.half_height = half_height;
         entry.variant = key;
         self.version = self.version.wrapping_add(1);
         true
