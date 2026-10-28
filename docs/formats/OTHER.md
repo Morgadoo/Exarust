@@ -247,7 +247,7 @@ routines read the header's words straight from payload `0x18` (flags) and
 | `0x40000` | door/link: flags at `0`, linked object at `4` (see [Door and operative sections](#door-and-operative-sections)) |
 | `0x100` | the torch's extra section; 16 zero bytes in the one shipped record, meaning not established |
 | `0x80000b03` | the map record's own section (record "Map"): zeroed volume, then `Map_Exanima01` |
-| `0x8000ac07` | older invisible container volume (ushort extents); not shipped |
+| `0x8000ac07` | volume: three 16-bit extents, a zeroed word, flags at body `8`, entrance at `0x0c`, the level it leads back from at `0x10`. Shipped in every level's own item records as its transition markers (54 across the levels, all flags `0x1040`/`0x40`); flags' low byte `0x40` makes it a marker (`exa_formats::objdb::Volume`) |
 
 The original's section editing routines (used by the converters): delete
 removes a section and closes the gap; resize to a smaller or equal body

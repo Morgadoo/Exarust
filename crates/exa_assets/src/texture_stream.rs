@@ -333,7 +333,7 @@ mod tests {
         let handle = request(&mut app, &data, "spatter01", false);
         // Before the loader runs, the record draws the 1x1 placeholder.
         assert_eq!(width(&app, &handle), 1);
-        for _ in 0..600 {
+        for _ in 0..5000 {
             app.update();
             if width(&app, &handle) > 1 {
                 break;

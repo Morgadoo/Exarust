@@ -163,9 +163,10 @@ pub struct LevelNode {
     pub position: [f32; 3],
     /// For a placed object of the player-marker class whose marker record
     /// exists with type byte `0x40`: the two words the record stores, in
-    /// file order, `[entrance, previous level]`. The marker names the
-    /// player when the entrance is the session's arrival variable and the
-    /// previous level is the level the session came from.
+    /// file order, `[entrance, previous level]` (`exa_formats::objdb::Volume::marker`).
+    /// The marker names the player when the entrance is the session's
+    /// arrival variable and the previous level is the level the session
+    /// came from.
     pub marker: Option<[u32; 2]>,
 }
 

@@ -121,10 +121,59 @@ pub struct LevelInfo {
     pub bodies: bodies::BodyCounts,
     /// A floored cell to start in (stand-in for the level's start marker).
     pub spawn: Option<Vec3>,
+    /// The level's transition markers, in placement order: the entrance and
+    /// the id of the level each leads back from, with its position.
+    pub player_markers: Vec<PlayerMarker>,
     /// The level environment's reverb decay offset, seconds.
     pub reverb_decay: f32,
     pub bounds_min: Vec3,
     pub bounds_max: Vec3,
+}
+
+/// A level's transition marker: a placed object whose volume section names
+/// an entrance and the level it leads back from (the object's own record
+/// name is that level). The stream makes the one matching the session's two
+/// words the player and orders the streamed characters by its position.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PlayerMarker {
+    /// The entrance number the session's arrival variable must equal.
+    pub entrance: u32,
+    /// The id, in `locales.rdb`, of the level the session came from.
+    pub previous_level: u32,
+    /// The marker's world position, metres.
+    pub position: Vec3,
+}
+
+/// Every transition marker a level places, in placement order, from its
+/// objects and their items' volume sections.
+pub fn player_markers(scene: &Scene, global: &[Item]) -> Vec<PlayerMarker> {
+    let mut out = Vec::new();
+    for object in &scene.placed_objects {
+        // A marker has no model of its own (it is an invisible box), so the
+        // record is looked up directly rather than through the model path.
+        if object.slot != 0 {
+            continue;
+        }
+        let items: &[Item] = if object.is_local() {
+            &scene.local_items
+        } else {
+            global
+        };
+        let id = object.id & exa_formats::rfc::PlacedObject::ID_MASK;
+        let Some(item) = items.iter().find(|item| item.id == id) else {
+            continue;
+        };
+        let Some(words) = item.volume.and_then(|v| v.marker()) else {
+            continue;
+        };
+        let t = object.transform[3];
+        out.push(PlayerMarker {
+            entrance: words[0],
+            previous_level: words[1],
+            position: Vec3::new(t[0], t[1], t[2]),
+        });
+    }
+    out
 }
 
 /// A character placed in a level, resolved to what can be spawned.
@@ -1317,6 +1366,7 @@ impl LevelLoad {
                 missing_objects: self.missing_objects,
                 bodies: self.bodies,
                 spawn: self.scene.grid.as_ref().and_then(grid::spawn_point),
+                player_markers: player_markers(&self.scene, &self.global_items),
                 reverb_decay,
                 bounds_min: min,
                 bounds_max: max,
@@ -1389,6 +1439,29 @@ mod tests {
         };
         let (point, ..) = light_bundle(&light);
         assert_eq!(point.shadow_map_near_z, 0.03);
+    }
+
+    /// Every level's transition marker is an object whose volume section
+    /// names an entrance and the level it leads back from; `exanima01`'s
+    /// single marker leads back from `exanima02` (locale id 3) at entrance
+    /// 0 (skipped without the game).
+    #[test]
+    fn shipped_player_markers_come_from_volume_sections() {
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let game = GameData::open(&dir).unwrap();
+        let resource = game.pack(exa_assets::PackKind::Resource).unwrap();
+        let scene = Scene::parse(resource.get("exanima01.rfc").unwrap()).unwrap();
+        let db = exa_formats::rdb::Database::parse(resource.get("objdb.rdb").unwrap()).unwrap();
+        let markers = player_markers(&scene, &exa_formats::objdb::items(&db));
+        assert_eq!(markers.len(), 1);
+        assert_eq!((markers[0].entrance, markers[0].previous_level), (0, 3));
+        // The marker box sits in the first room at about
+        // (-8.95, 0.49, -94.15) m, on the floor.
+        assert!((markers[0].position.x + 8.948565).abs() < 1e-3);
+        assert!((markers[0].position.y - 0.49198326).abs() < 1e-3);
+        assert!((markers[0].position.z + 94.14694).abs() < 1e-3);
     }
 
     /// What spawning `name` produced: the level's info, the names spawned
@@ -1788,6 +1861,7 @@ mod tests {
             burden: None,
             equip_lock: 0,
             torch: false,
+            volume: None,
         }
     }
 

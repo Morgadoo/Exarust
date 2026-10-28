@@ -30,6 +30,7 @@ fn item(id: u32, occupancy: u64) -> Item {
         burden: Some(Burden::default()),
         equip_lock: 0,
         torch: false,
+        volume: None,
     }
 }
 

@@ -1504,6 +1504,7 @@ mod tests {
             burden: None,
             equip_lock: 0,
             torch: false,
+            volume: None,
         }
     }
 
