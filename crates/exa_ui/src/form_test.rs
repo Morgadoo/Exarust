@@ -903,6 +903,18 @@ fn the_routes() {
     assert_eq!(route_drag(3, 5, 0), Route::Control(2, 0x4000));
     assert_eq!(route_drag(3, 5, i32::MIN), Route::Nothing);
     assert_eq!(route_drag(0, 5, 0), Route::Nothing);
+    // A held record takes pointer moves as message 0x30 with x low and y
+    // high; frame codes and out-of-range codes take nothing.
+    assert_eq!(held_move(2, 3, (5, 7)), Some((1, 0x30, 5 | (7 << 16))));
+    assert_eq!(
+        held_move(2, 3, (-1, 2)),
+        Some((1, 0x30, 0xffff | (2 << 16)))
+    );
+    assert_eq!(held_move(4, 3, (5, 7)), Some((3, 0x30, 5 | (7 << 16))));
+    assert_eq!(held_move(5, 3, (5, 7)), None);
+    assert_eq!(held_move(0, 3, (5, 7)), None);
+    // Dragging the title bar moves the form by the pointer's move.
+    assert_eq!(title_drag((100, 50), (120, 80), (10, 20)), (210, 110));
 }
 
 fn grip() -> GripDrag {

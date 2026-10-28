@@ -1883,6 +1883,27 @@ pub fn route_drag(held: u32, last: i32, word: i32) -> Route {
     }
 }
 
+/// A pointer move sent to the held record: message 0x30 with the form-local
+/// point packed as x in the low half and y in the high half (both 16-bit).
+/// Only a held record code (1 to the last record plus one) is sent.
+pub fn held_move(held: i32, last: i32, point: (i32, i32)) -> Option<(usize, u32, i32)> {
+    if held < 1 || held > last + 1 {
+        return None;
+    }
+    let packed = ((point.0 & 0xffff) as u32 | ((point.1 & 0xffff) as u32) << 16) as i32;
+    Some((held as usize - 1, 0x30, packed))
+}
+
+/// The place a title-bar drag asks for: the grab saved at the press plus
+/// the pointer's move. The form's x and y are not clamped by the move (the
+/// pointer was clamped before it reached the form).
+pub fn title_drag(grab: (i32, i32), pointer: (i32, i32), task: (i32, i32)) -> (i32, i32) {
+    (
+        grab.0.wrapping_add(pointer.0).wrapping_sub(task.0),
+        grab.1.wrapping_add(pointer.1).wrapping_sub(task.1),
+    )
+}
+
 /// The scroll a wheel turn sets.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum WheelScroll {
