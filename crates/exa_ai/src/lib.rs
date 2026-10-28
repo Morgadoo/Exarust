@@ -40,6 +40,7 @@ pub mod flee;
 pub mod golem;
 pub mod hear;
 pub mod idle;
+pub mod lifecycle;
 pub mod lookup;
 pub mod manager;
 pub mod motion;

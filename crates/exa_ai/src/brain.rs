@@ -107,6 +107,12 @@ pub struct Npc {
     pub gaze: Gaze,
     /// Its heading, look and the sway it turns by out of combat.
     pub turn: Turning,
+    /// The key of the roles the applied state was derived from.
+    pub roles_key: u64,
+    /// The group-alert count the AI tick decays every 10 s.
+    pub alert_count: i32,
+    /// When the alert count is next checked (ms).
+    pub alert_until_ms: u32,
     /// Its cell in the room grid and the cell before it.
     pub room: RoomCell,
     /// The nearby characters the room list gathered (their ids), by
@@ -130,6 +136,9 @@ impl Npc {
             roll: 0,
             gaze: Gaze::default(),
             turn: Turning::default(),
+            roles_key: 0,
+            alert_count: 1,
+            alert_until_ms: u32::MAX,
             room: RoomCell::default(),
             nearby: Vec::new(),
         }
@@ -161,6 +170,7 @@ impl Npc {
 
     /// Applies the roles and installs the routine they choose.
     pub fn apply(&mut self, db: &RoleDatabase, roles: &Roles, now_ms: u32) -> &Applied {
+        self.roles_key = roles_key(roles);
         let before = Before {
             activity: self.applied.as_ref().map_or(1, |a| a.activity),
             idle: self.search.as_ref().map(|_| activity::SEARCH),
@@ -638,6 +648,9 @@ pub fn ai_tick(
     ) in &mut npcs
     {
         let talking = name.map_or("character", |n| n.as_str());
+        // The AI tick's group alert decays one step every ten seconds.
+        (npc.alert_count, npc.alert_until_ms) =
+            crate::manager::decay_alert(npc.alert_count, npc.alert_until_ms, now);
         let target = duellist.as_deref().map(|d| d.target).or(player);
         let observer_cm = gt.map_or(Vec3::ZERO, |g| g.translation() * 100.0);
         let target_cm = target
@@ -799,16 +812,31 @@ pub fn ai_tick(
     }
 }
 
-/// Applies the roles of brains just added.
+/// A key over the held role ids, so a brain applies its roles only when the
+/// set (or an order) changed: the original re-applies them when the dirty
+/// flag is set and the script lock is free.
+pub fn roles_key(roles: &Roles) -> u64 {
+    let mut key = 0xcbf2_9ce4_8422_2325u64;
+    for id in roles.ids() {
+        key ^= u64::from(id);
+        key = key.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    key
+}
+
+/// Applies the roles of brains whose held roles changed (or that are new).
 #[allow(clippy::type_complexity)]
 pub fn apply_new_roles(
     db: Option<Res<RoleDatabase>>,
     ticks: Option<Res<BodyTicks>>,
-    mut npcs: Query<(&Roles, &mut Npc, Option<&mut Mind>, Option<&Name>), Added<Npc>>,
+    mut npcs: Query<(&Roles, &mut Npc, Option<&mut Mind>, Option<&Name>)>,
 ) {
     let Some(db) = db else { return };
     let now = ticks.map_or(0, |t| t.millis() as u32);
     for (roles, mut npc, mind, name) in &mut npcs {
+        if npc.roles_key == roles_key(roles) {
+            continue;
+        }
         let applied = npc.apply(&db, roles, now).clone();
         if let Some(mut mind) = mind {
             mind.asleep = applied.state == IdleState::Sleep;
@@ -1245,6 +1273,52 @@ mod tests {
             ))
             .id();
         (app, player, npc)
+    }
+
+    /// The AI tick decays the brain's group alert a step every ten seconds,
+    /// down to 1 where it stays.
+    #[test]
+    fn the_ai_tick_decays_the_group_alert() {
+        let mut app = App::new();
+        app.add_systems(Update, ai_tick);
+        let player = app
+            .world_mut()
+            .spawn((GlobalTransform::default(), RatedPlayer))
+            .id();
+        let mut brain = Npc::new([0.0; 4]);
+        brain.alert_count = 3;
+        brain.alert_until_ms = 0;
+        let npc = app
+            .world_mut()
+            .spawn((
+                brain,
+                Combatant::default(),
+                crate::Duellist::new(player),
+                GlobalTransform::IDENTITY,
+                Fighter::default(),
+                Condition::NORMAL,
+            ))
+            .id();
+        app.insert_resource(BodyTicks(1));
+        app.update();
+        assert_eq!(app.world().get::<Npc>(npc).unwrap().alert_count, 2);
+        assert_eq!(app.world().get::<Npc>(npc).unwrap().alert_until_ms, 10_012);
+        // Inside the hold it stays; past it one step goes, and at 1 the
+        // next step keeps 1 for good.
+        app.world_mut().resource_mut::<BodyTicks>().0 = 2;
+        app.update();
+        assert_eq!(app.world().get::<Npc>(npc).unwrap().alert_count, 2);
+        app.world_mut().resource_mut::<BodyTicks>().0 = 835;
+        app.update();
+        assert_eq!(app.world().get::<Npc>(npc).unwrap().alert_count, 1);
+        assert_eq!(app.world().get::<Npc>(npc).unwrap().alert_until_ms, 20_020);
+        app.world_mut().resource_mut::<BodyTicks>().0 = 2000;
+        app.update();
+        assert_eq!(app.world().get::<Npc>(npc).unwrap().alert_count, 1);
+        assert_eq!(
+            app.world().get::<Npc>(npc).unwrap().alert_until_ms,
+            u32::MAX
+        );
     }
 
     /// The AI tick links the brain into its 600 cm room cell and fills the
