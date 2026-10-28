@@ -802,7 +802,9 @@ pub fn worn_as<'a>(items: &'a [Item], model: &str) -> Option<&'a Item> {
 
 /// The experience amount the experience system reads for a level: 10, 20,
 /// 50, 100, 200, 500, 1000 and 2000 for levels 0–7, and 2000 from 8 up (the
-/// unit's table; the original keeps it beside the database).
+/// unit's table; the original keeps it beside the database). A level past
+/// the table reads 2000 here; the original reads the table's neighbour
+/// (unrelated memory) for a negative level.
 pub fn experience_for_level(level: u32) -> u32 {
     const TABLE: [u32; 8] = [10, 20, 50, 100, 200, 500, 1000, 2000];
     TABLE.get(level as usize).copied().unwrap_or(2000)

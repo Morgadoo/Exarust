@@ -231,7 +231,10 @@ three converters the entries list.
   three quarter fractions (`0x92`), the old bytes `0x1AA`/`0x1AB` become
   `0x1A7`/`0x1AB`, the old word `0x1B4` becomes the articulated set
   (`0x220`), quality starts at `0xA0` and damage at `0x40`, and the paint
-  seed (`0x1AC`) takes a 63-bit random draw modulo `0xFFFFFFFF`. The four
+  seed (`0x1AC`) takes a 63-bit random draw modulo `0xFFFFFFFF` (the
+  original draws it from its process RNG; `Store::parse` hands the
+  converter a fixed seed stream, `Store::parse_with_seeds` another, so a
+  load is reproducible). The four
   old 16-byte parts at `0x1B8` become the first four 12-byte appearance
   layers at `0x1B4`: the mask is 1–4 (part 0 also sets layer byte 0 to 1),
   byte 3 and byte 0xB start at 1, the colour is the part's byte 2, and the
