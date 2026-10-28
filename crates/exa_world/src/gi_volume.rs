@@ -275,10 +275,11 @@ const BLOCK_INV_CM: f32 = 1.0 / 4800.0;
 
 /// The bounding box of the grid's built cells, as the original finds it:
 /// the border cells are skipped, and the first row and column come from the
-/// first built cell; the right edge grows to the last built cell in any
-/// row, and the bottom edge only to rows whose cells in the current span
-/// are built (so a row reached only by a leftward extension does not extend
-/// it). An empty grid gives the original's (-4, -4) to (3, 3).
+/// first built cell. Each later row moves the left edge to its first built
+/// cell left of it, or else checks the current span (both ends included);
+/// either reaches the bottom edge to that row, as does any built cell right
+/// of the span, which also moves the right edge. An empty grid gives the
+/// original's (-4, -4) to (3, 3).
 #[allow(clippy::mut_range_bound)]
 pub fn built_bounds(grid: &GiGrid) -> (i32, i32, i32, i32) {
     let (w, h) = (grid.width as i32, grid.height as i32);
@@ -301,11 +302,12 @@ pub fn built_bounds(grid: &GiGrid) -> (i32, i32, i32, i32) {
         for x in 1..x0 {
             if grid.open(i64::from(x), i64::from(z)) {
                 x0 = x;
+                z1 = z;
                 extended = true;
                 break;
             }
         }
-        if !extended && (x0..x1).any(|x| grid.open(i64::from(x), i64::from(z))) {
+        if !extended && (x0..=x1).any(|x| grid.open(i64::from(x), i64::from(z))) {
             z1 = z;
         }
         for x in x1 + 1..=w - 2 {
@@ -1522,8 +1524,7 @@ mod tests {
             synthetic: false,
         };
         assert_eq!(built_bounds(&grid), (1, 1, 5, 3));
-        // A row reached only by a leftward extension does not extend the
-        // bottom: cells (1, 1) and (0, 6) — the border cell 0 is skipped.
+        // A single built cell bounds itself.
         let mut edges = vec![0; 8 * 8];
         edges[9] = OPEN;
         let grid = GiGrid {
@@ -1533,6 +1534,24 @@ mod tests {
             synthetic: false,
         };
         assert_eq!(built_bounds(&grid), (1, 1, 1, 1));
+        // The span's right end counts: cells (1, 1) and (1, 4) reach row 4.
+        // A leftward extension reaches its row too: (3, 1) then (1, 5).
+        for (cells, bounds) in [
+            ([(1, 1), (1, 4)], (1, 1, 1, 4)),
+            ([(3, 1), (1, 5)], (1, 1, 3, 5)),
+        ] {
+            let mut edges = vec![0; 8 * 8];
+            for (x, z) in cells {
+                edges[x + z * 8] = OPEN;
+            }
+            let grid = GiGrid {
+                width: 8,
+                height: 8,
+                edges: Arc::new(edges),
+                synthetic: false,
+            };
+            assert_eq!(built_bounds(&grid), bounds);
+        }
     }
 
     #[test]
