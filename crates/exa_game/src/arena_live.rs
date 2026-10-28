@@ -9,30 +9,39 @@
 //! with its drawn weapon, the Beast, and the company's other entrants. The
 //! player's own body is the one the play start already made.
 //!
-//! When the round result opens a transition screen, the end screen's
-//! Continue runs on Enter or Space (the screen itself is not drawn yet; the
-//! key is the message box's confirming key, a stand-in). A next round
-//! despawns the round's bodies and stands the winner and the reserve or a
-//! fresh opponent after the original's 13 ms yield. The end of the match
-//! settles the result into the career, drops the unfit on a tournament day
-//! and asks for the hub's level, whose entry places the manager at the saved
-//! 300 cm, half turn, flag `0x100` placement.
+//! When the round result opens a transition screen, [`ArenaEndScreen`]
+//! draws the original's end menu through the GUI path: `NEXT FIGHT` for
+//! screen 3 and `EXIT;` for screen 2, the arena's single-row end menu. Its
+//! first row confirms the Continue on Enter or on a pointer release over it.
+//! A next round despawns the round's bodies and stands the winner and the
+//! reserve or a fresh opponent after the original's 13 ms yield; a
+//! tournament's next round first resolves its bracket (the won group keeps
+//! team one, the other groups draw a winner) and stands the first surviving
+//! teams, as many as the event has sides. Escape opens the arena's pause page and its FORFEIT row settles
+//! the match as forfeited. The end of the match settles the result into the
+//! career, drops the unfit on a tournament day and asks for the hub's level
+//! in process, whose entry places the manager at the saved 300 cm, half
+//! turn, flag `0x100` placement.
 //!
 //! Evidence: the arena's match tick, end screen, next-round routine and
 //! return (`arena_session`, `arena_match`, `match_layout`).
 
 use bevy::prelude::*;
+use bevy::window::PrimaryWindow;
 use exa_combat::{Condition, Fighter};
+use exa_ui::gui_draw::{GuiFrames, GuiTextures};
 
 use crate::arena;
 use crate::arena_match::{ArenaMatch, CompanyRecords, Finish, MatchState, any_entry};
+use crate::arena_outfit::Lcg;
 use crate::arena_session::{
-    EndAction, ReturnFighter, RoundFight, Screen, regenerate_round, settle_return,
+    BracketState, EndAction, ReturnFighter, RoundFight, Screen, bracket_for_template,
+    bracket_next_fight, regenerate_round, settle_return,
 };
 use crate::arena_spawn::{MANAGER_ROLE, generic_plan, hire_plan};
 use crate::match_layout::{
-    Fighter as SlotFighter, HOSTILE, MATCH_ACT_GRACE_MS, NextRound, Slot, layout, opponent_place,
-    our_place,
+    Fighter as SlotFighter, FreshMatch, HOSTILE, MATCH_ACT_GRACE_MS, NextRound, RaisedBody, Slot,
+    layout, opponent_place, our_place, raise_fresh_match,
 };
 use crate::scene_bodies::{
     BodyBrain, SceneBodyPlan, SceneCommand, SceneFighter, beast_scene_plan, company_plan,
@@ -61,6 +70,13 @@ pub struct ArenaScene {
     /// The company's thirteen records, carried from the career for the
     /// settle.
     pub records: CompanyRecords,
+    /// A tournament event's bracket, from its template's teams and rounds.
+    pub bracket: Option<BracketState>,
+    /// The event weapon row's three variants, when the event arms its
+    /// fighters.
+    pub weapon_variants: Option<[u32; 3]>,
+    /// The roll a bracket's unwatched pairs and its weapon draws use.
+    pub roll: u32,
 }
 
 impl ArenaScene {
@@ -88,7 +104,21 @@ impl ArenaScene {
             prize,
             placed: false,
             records: career.map_or_else(CompanyRecords::default, records_of),
+            bracket: if tournament {
+                bracket_for_template(template)
+            } else {
+                None
+            },
+            weapon_variants: None,
+            roll: crate::arena_match::counter_now() as u32,
         }
+    }
+
+    /// The event weapon row's variants, for the bracket's later fights.
+    #[must_use]
+    pub fn with_weapon_variants(mut self, variants: Option<[u32; 3]>) -> Self {
+        self.weapon_variants = variants;
+        self
     }
 }
 
@@ -128,6 +158,9 @@ pub struct MatchSetup {
     pub player: Option<usize>,
     /// The match's prize when won, copper.
     pub prize: u32,
+    /// A tournament event's weapon row: the three item variants later
+    /// bracket fights draw from.
+    pub weapon_variants: Option<[u32; 3]>,
 }
 
 /// The match's exit: where the process goes when the end screen's Continue
@@ -146,15 +179,108 @@ pub enum ArenaExit {
 #[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ArenaAutoContinue(pub bool);
 
+/// The arena's end screen: the original's end-session menu as a round's
+/// result opens it.
+///
+/// Screen 3 (the next round) shows the single `NEXT FIGHT` row and screen 2
+/// (the match's end) the single `EXIT;` row, both at the end menu's scale.
+/// The rows come from [`crate::flow::end_menu`] in arena mode; the frame is
+/// painted by [`crate::end_menu_screen::end_menu_frame`], the same GUI path
+/// the practice and story end menus use. Enter runs the selected row and a
+/// pointer release over it runs it too; Up and Down move the selection.
+#[derive(Resource, Clone, Debug, Default, PartialEq)]
+pub struct ArenaEndScreen {
+    pub open: bool,
+    /// The menu number: 3 for the next round, 2 for the match's end.
+    pub kind: u32,
+    /// The selected row, 0-based.
+    pub selected: usize,
+    /// The row a press is held on.
+    pub pressed: Option<usize>,
+}
+
+impl ArenaEndScreen {
+    /// Opens the screen a transition word names.
+    pub fn show(&mut self, screen: Screen) {
+        self.open = true;
+        self.kind = screen.word();
+        self.selected = 0;
+        self.pressed = None;
+    }
+
+    /// Hides the screen.
+    pub fn close(&mut self) {
+        self.open = false;
+        self.pressed = None;
+    }
+
+    /// The menu the screen paints, when it is open.
+    #[must_use]
+    pub fn menu(&self) -> Option<crate::flow::EndMenu> {
+        self.open
+            .then(|| crate::flow::end_menu(self.kind, crate::flow::Mode::Arena))
+    }
+
+    /// Moves the selection by `delta`, clamped to the rows.
+    pub fn move_selection(&mut self, delta: i32) {
+        let Some(menu) = self.menu() else {
+            return;
+        };
+        let count = menu.rows.len() as i32;
+        if count == 0 {
+            self.selected = 0;
+            return;
+        }
+        self.selected = (self.selected as i32 + delta).clamp(0, count - 1) as usize;
+    }
+
+    /// Runs the selected row, returning whether the arena's Continue should
+    /// handle it. Only the first row continues; a later row is the lobby
+    /// choice, which the original sends to the title and this screen does
+    /// not raise.
+    pub fn confirm(&mut self) -> bool {
+        let continues = self.open && self.selected == 0;
+        self.close();
+        continues
+    }
+}
+
+/// The end screen's Continue was pressed. The arena's continue system reads
+/// it; the row's action is the same whichever screen opened the menu.
+#[derive(Message, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ArenaContinue;
+
+/// The arena's pause page asked to forfeit the match (the flow's
+/// [`crate::flow::Step::Forfeit`]).
+#[derive(Message, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ArenaForfeit;
+
 /// Runs the live arena scene.
 pub struct ArenaLivePlugin;
 
 impl Plugin for ArenaLivePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ArenaAutoContinue>()
+            .init_resource::<ArenaEndScreen>()
             .add_message::<ArenaExit>()
+            .add_message::<ArenaContinue>()
+            .add_message::<ArenaForfeit>()
             .add_message::<SceneCommand>()
-            .add_systems(Update, (stand_first_round, continue_round).chain());
+            .add_systems(
+                Update,
+                (
+                    mark_arena_session,
+                    stand_first_round,
+                    arena_pause,
+                    open_end_screen,
+                    update_end_screen,
+                    continue_round,
+                    forfeit_match,
+                    draw_end_screen,
+                )
+                    .chain()
+                    .after(crate::gui_screens::draw_screens),
+            );
     }
 }
 
@@ -207,8 +333,12 @@ pub fn round_plans(
                     // The event's weapon field adds the profile's armed flag;
                     // the drawn variant itself is the item shown.
                     let event_weapon = i32::from(weapon.is_some());
+                    // The team ids after the player's are the company ids
+                    // the forced outfit table is indexed by [guess: the
+                    // bracket's company table is filled from the event's
+                    // teams].
                     hire_opponent_plan(
-                        hire_plan(tier as u8, 0, event_weapon),
+                        hire_plan(tier as u8, team as i32, event_weapon),
                         &slot.place,
                         flags,
                         weapon,
@@ -247,6 +377,182 @@ type MatchBody<'a> = (
     &'a SceneFighter,
     Has<crate::player::PlayerBody>,
 );
+
+/// The running match is an arena session: the arena's pause page and the
+/// end-of-session dispatch read the arena mode, not the play view's practice
+/// stand-in.
+fn mark_arena_session(
+    arena: Option<Res<ArenaMatch>>,
+    mut flow: Option<ResMut<crate::flow::Flow>>,
+    levels: Query<&exa_world::LevelRoot>,
+) {
+    if arena.is_none() {
+        return;
+    }
+    if !levels
+        .iter()
+        .any(|level| crate::arena_match::arena_index(&level.name).is_some())
+    {
+        return;
+    }
+    if let Some(flow) = flow.as_mut()
+        && flow.mode != crate::flow::Mode::Arena
+    {
+        flow.mode = crate::flow::Mode::Arena;
+        flow.phase = crate::flow::Phase::Playing;
+        flow.hook = crate::flow::Hook::None;
+    }
+}
+
+/// Escape opens the arena's pause page; closing it (by Escape, by the page's
+/// CONTINUE row or by the menu's own close) resumes the pause.
+#[allow(clippy::too_many_arguments)]
+fn arena_pause(
+    arena: Option<Res<ArenaMatch>>,
+    mut flow: Option<ResMut<crate::flow::Flow>>,
+    mut queued: Option<ResMut<crate::flow::FlowSteps>>,
+    menu: Option<Res<crate::menu_screen::MenuScreen>>,
+    end: Option<Res<ArenaEndScreen>>,
+    keys: Option<Res<ButtonInput<KeyCode>>>,
+) {
+    let (Some(arena), Some(flow), Some(queued)) = (arena, flow.as_mut(), queued.as_mut()) else {
+        return;
+    };
+    if arena.state == MatchState::Fighting && arena.screen.is_none() {
+        // A live round can be paused.
+    } else if flow.phase != crate::flow::Phase::Paused {
+        return;
+    }
+    if end.as_ref().is_some_and(|end| end.open) {
+        return;
+    }
+    let menu_open = menu.as_ref().is_some_and(|menu| menu.open);
+    if flow.phase == crate::flow::Phase::Paused {
+        if !menu_open {
+            queued.steps.extend(flow.resume());
+        }
+        return;
+    }
+    if menu_open {
+        return;
+    }
+    if keys
+        .as_ref()
+        .is_some_and(|keys| keys.just_pressed(KeyCode::Escape))
+    {
+        queued.steps.extend(flow.pause());
+    }
+}
+
+/// Opens the end screen the round's transition asked for, and closes it once
+/// the match carries no transition.
+fn open_end_screen(arena: Option<Res<ArenaMatch>>, mut screen: Option<ResMut<ArenaEndScreen>>) {
+    let (Some(arena), Some(screen)) = (arena, screen.as_mut()) else {
+        return;
+    };
+    match arena.screen {
+        Some(transition) if !screen.open => screen.show(transition),
+        None if screen.open => screen.close(),
+        _ => {}
+    }
+}
+
+/// The end screen's input: Enter and a release over a row confirm, Up and
+/// Down move, and the pointer selects the row under it.
+fn update_end_screen(
+    mut screen: Option<ResMut<ArenaEndScreen>>,
+    keys: Option<Res<ButtonInput<KeyCode>>>,
+    mouse: Option<Res<ButtonInput<MouseButton>>>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    mut confirmed: MessageWriter<ArenaContinue>,
+) {
+    let Some(screen) = screen.as_mut() else {
+        return;
+    };
+    if !screen.open {
+        return;
+    }
+    let Some(menu) = screen.menu() else {
+        return;
+    };
+    let Some(keys) = keys else {
+        return;
+    };
+    if keys.just_pressed(KeyCode::ArrowDown) {
+        screen.move_selection(1);
+    }
+    if keys.just_pressed(KeyCode::ArrowUp) {
+        screen.move_selection(-1);
+    }
+    if keys.just_pressed(KeyCode::Enter) {
+        if screen.confirm() {
+            confirmed.write(ArenaContinue);
+        }
+        return;
+    }
+    let Ok(window) = windows.single() else {
+        return;
+    };
+    let width = window.physical_width() as i32;
+    let height = window.physical_height() as i32;
+    let layout = crate::end_menu_screen::end_layout(width, height, &menu, Some(screen.selected));
+    let Some(cursor) = window.cursor_position() else {
+        return;
+    };
+    let scale = window.scale_factor();
+    let hit = layout.hit((cursor.x * scale) as i32, (cursor.y * scale) as i32);
+    if let Some(row) = hit {
+        screen.selected = row;
+    }
+    let Some(mouse) = mouse else {
+        return;
+    };
+    if mouse.just_pressed(MouseButton::Left) {
+        screen.pressed = hit;
+    }
+    if mouse.just_released(MouseButton::Left)
+        && let Some(pressed) = screen.pressed.take()
+        && hit == Some(pressed)
+        && screen.confirm()
+    {
+        confirmed.write(ArenaContinue);
+    }
+}
+
+/// Paints the end screen through the GUI draw path.
+fn draw_end_screen(
+    screen: Option<Res<ArenaEndScreen>>,
+    textures: Option<Res<GuiTextures>>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    mut frames: Option<ResMut<GuiFrames>>,
+) {
+    let (Some(screen), Some(frames)) = (screen, frames.as_mut()) else {
+        return;
+    };
+    if !screen.open {
+        return;
+    }
+    let Some(menu) = screen.menu() else {
+        return;
+    };
+    let Ok(window) = windows.single() else {
+        return;
+    };
+    let width = window.physical_width() as i32;
+    let height = window.physical_height() as i32;
+    if width <= 0 || height <= 0 {
+        return;
+    }
+    let empty = GuiTextures::default();
+    let textures = textures.as_deref().unwrap_or(&empty);
+    frames.push(crate::end_menu_screen::end_menu_frame(
+        width,
+        height,
+        &menu,
+        Some(screen.selected),
+        textures,
+    ));
+}
 
 /// Stands the first round's bodies once the level is loaded and the player
 /// is there.
@@ -306,7 +612,8 @@ fn continue_round(
     mut arena: Option<ResMut<ArenaMatch>>,
     mut scene: Option<ResMut<ArenaScene>>,
     mut career: Option<ResMut<crate::hub_windows::ArenaCareer>>,
-    keys: Option<Res<ButtonInput<KeyCode>>>,
+    mut confirms: MessageReader<ArenaContinue>,
+    mut screen: Option<ResMut<ArenaEndScreen>>,
     auto: Res<ArenaAutoContinue>,
     clock: Option<Res<crate::effects::EffectClock>>,
     fighters: Query<MatchBody<'_>>,
@@ -319,11 +626,16 @@ fn continue_round(
     if arena.screen.is_none() || arena.state == MatchState::Fighting {
         return;
     }
-    let pressed = keys
-        .as_ref()
-        .is_some_and(|keys| keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::Space));
+    // The end screen's row is the only input now; the auto-continue switch
+    // runs the same handler without it.
+    let pressed = confirms.read().next().is_some();
     if !pressed && !auto.0 {
         return;
+    }
+    if auto.0
+        && let Some(screen) = screen.as_mut()
+    {
+        screen.close();
     }
     let action = arena.end_action(scene.tournament);
     let now = clock.as_ref().map_or(0, |clock| clock.now_ms);
@@ -337,33 +649,38 @@ fn continue_round(
         }
         EndAction::NextRound { round, bracket } => {
             if bracket {
-                // The bracket's next fight is not raised yet: the round takes
-                // a fresh generic opponent (`match_layout::raise_fresh_match`
-                // holds the bracket's rules).
-                info!("arena match: tournament round {round} raises no bracket fight yet");
+                // A tournament's next round raises the bracket's fight: the
+                // won group keeps team one, the other groups draw their
+                // winner, and the survivors are stood on the ring.
+                if stand_bracket_round(scene, career.as_deref(), &fighters, now, &mut commands) {
+                    info!("arena match: tournament round {round} raised the bracket fight");
+                } else {
+                    warn!("arena match: tournament round {round} has no bracket");
+                }
+            } else {
+                let entered = scene.player_entry.is_some();
+                let fighter_dead = fighters.iter().any(|(_, _, condition, body, player)| {
+                    (if entered { player } else { body.company }) && *condition == Condition::DEAD
+                });
+                let opponent_present = fighters.iter().any(|(_, _, condition, body, _)| {
+                    !body.company && *condition != Condition::DEAD
+                });
+                let fight = regenerate_round(
+                    scene.level,
+                    scene.tier,
+                    arena.rounds.losses,
+                    fighter_dead,
+                    opponent_present,
+                );
+                stand_next_round(
+                    &fight,
+                    scene,
+                    career.as_deref(),
+                    &fighters,
+                    now,
+                    &mut commands,
+                );
             }
-            let entered = scene.player_entry.is_some();
-            let fighter_dead = fighters.iter().any(|(_, _, condition, body, player)| {
-                (if entered { player } else { body.company }) && *condition == Condition::DEAD
-            });
-            let opponent_present = fighters
-                .iter()
-                .any(|(_, _, condition, body, _)| !body.company && *condition != Condition::DEAD);
-            let fight = regenerate_round(
-                scene.level,
-                scene.tier,
-                arena.rounds.losses,
-                fighter_dead,
-                opponent_present,
-            );
-            stand_next_round(
-                &fight,
-                scene,
-                career.as_deref(),
-                &fighters,
-                now,
-                &mut commands,
-            );
             arena.rounds.round = round;
             arena.state = MatchState::Fighting;
             arena.screen = None;
@@ -371,15 +688,21 @@ fn continue_round(
             arena.resolved.clear();
         }
         EndAction::ReturnToHub { tournament } => {
-            settle_match(arena, scene, career.as_deref_mut(), tournament, &fighters);
-            for (entity, ..) in &fighters {
-                commands.write(SceneCommand::Despawn(entity));
-            }
-            // The career resource and the settle survive into the hub; the
-            // host's arena exit sets the return placement and changes the
-            // level in process.
-            exits.write(ArenaExit::Hub);
-            arena.screen = None;
+            let finish = if arena.state == MatchState::Won {
+                Finish::Won
+            } else {
+                Finish::Lost
+            };
+            finish_and_exit(
+                arena,
+                scene,
+                career.as_deref_mut(),
+                finish,
+                tournament,
+                &fighters,
+                &mut commands,
+                &mut exits,
+            );
         }
     }
 }
@@ -438,22 +761,202 @@ fn stand_next_round(
     }
 }
 
+/// The bodies of a tournament's next round: resolve the bracket's groups,
+/// then keep the player where the bracket puts it and stand every other
+/// surviving side. Returns false when the match carries no bracket.
+#[allow(clippy::too_many_arguments)]
+fn stand_bracket_round(
+    scene: &mut ArenaScene,
+    career: Option<&crate::hub_windows::ArenaCareer>,
+    fighters: &Query<MatchBody<'_>>,
+    now_ms: u32,
+    commands: &mut MessageWriter<SceneCommand>,
+) -> bool {
+    let Some(bracket) = scene.bracket.as_mut() else {
+        return false;
+    };
+    // The player's side won the watched fight, so team one keeps its place;
+    // every other group's winner is drawn from the roll.
+    let mut roll = scene.roll;
+    let survivors = bracket_next_fight(bracket, 1, &mut roll);
+    scene.roll = roll;
+    // The forced outfit table is indexed by team id. The original reads
+    // the company each rival team id was drawn for; Exarust uses the team id
+    // itself [guess: the drawn rival field is not kept with the bracket].
+    let outfits: Vec<i32> = (0..20).collect();
+    // The next fight is the first `sides` surviving teams in slot order (the
+    // player's group leads), as the original's team walk stops at the
+    // event's side count; the raise derives the role flag from how many
+    // teams it formed (hostile below three, else a free-for-all).
+    let fight = FreshMatch {
+        slots: &survivors,
+        per_team: bracket.team_size,
+        teams: bracket.sides,
+        spawn_at: scene.spawn_at,
+        player_team: 1,
+        company_entries: usize::try_from(bracket.team_size).unwrap_or(1),
+        player_entry: scene.player_entry,
+        tier: scene.tier,
+        outfits: &outfits,
+        event_weapon: i32::from(scene.weapon_variants.is_some()),
+        now_ms: now_ms.wrapping_add(crate::arena_session::NEXT_ROUND_YIELD_MS),
+    };
+    let raised = raise_fresh_match(&fight, |_| true);
+    for report in &raised.reports {
+        warn!("arena match: {}: {}", report.title, report.message);
+    }
+    // Every body but the player's is rebuilt; the player is placed on its
+    // bracket spot instead.
+    for (entity, _, _, _, player) in fighters {
+        if !player {
+            commands.write(SceneCommand::Despawn(entity));
+        }
+    }
+    for fighter in raised.fighters {
+        let place = fighter.place;
+        match fighter.body {
+            RaisedBody::Player => {
+                if let Some((entity, ..)) = fighters.iter().find(|(_, _, _, _, player)| *player) {
+                    commands.write(SceneCommand::Place {
+                        body: entity,
+                        at: Vec3::from_array(place.position) / 100.0,
+                        yaw: place.forward[0].atan2(place.forward[2]),
+                    });
+                }
+            }
+            RaisedBody::Company {
+                role, act_at_ms, ..
+            } => {
+                let member = career.and_then(|career| {
+                    career
+                        .company
+                        .roster
+                        .get(fighter.index.saturating_sub(1))
+                        .map(|member| (member.name.as_str(), member.health))
+                });
+                let body = company_plan(
+                    member,
+                    &place,
+                    role,
+                    u32::try_from(fighter.index).unwrap_or(0).wrapping_add(1),
+                    0,
+                    act_at_ms,
+                );
+                commands.write(SceneCommand::Spawn(Box::new(body)));
+            }
+            RaisedBody::Opponent {
+                plan,
+                role,
+                act_at_ms,
+                ..
+            } => {
+                let mut body = match plan {
+                    crate::match_layout::OpponentPlan::Generic(plan) => {
+                        opponent_plan(plan, &place, role, 0, act_at_ms)
+                    }
+                    crate::match_layout::OpponentPlan::Hire(plan) => {
+                        let weapon = if plan.draw_weapon {
+                            plan.weapon_row.and(scene.weapon_variants).map(|row| {
+                                let mut lcg = Lcg::new(scene.roll);
+                                let step = lcg.step();
+                                scene.roll = lcg.state();
+                                crate::arena_spawn::pick_weapon_slot(row, step)
+                            })
+                        } else {
+                            None
+                        };
+                        hire_opponent_plan(plan, &place, role, weapon, 0, act_at_ms)
+                    }
+                };
+                body.team = u32::try_from(fighter.team).unwrap_or(0);
+                commands.write(SceneCommand::Spawn(Box::new(body)));
+            }
+        }
+    }
+    true
+}
+
+/// Settle `finish`, take the round's bodies away and ask for the hub's
+/// level; the settled career stays in its resource. Both the end screen's Continue and the pause page's
+/// forfeit leave this way.
+#[allow(clippy::too_many_arguments)]
+fn finish_and_exit(
+    arena: &mut ArenaMatch,
+    scene: &mut ArenaScene,
+    mut career: Option<&mut crate::hub_windows::ArenaCareer>,
+    finish: Finish,
+    tournament: bool,
+    fighters: &Query<MatchBody<'_>>,
+    commands: &mut MessageWriter<SceneCommand>,
+    exits: &mut MessageWriter<ArenaExit>,
+) {
+    settle_match(arena, scene, &mut career, finish, tournament, fighters);
+    for (entity, ..) in fighters {
+        commands.write(SceneCommand::Despawn(entity));
+    }
+    // The career resource and the settle survive into the hub; the host's
+    // arena exit sets the return placement and changes the level in process.
+    exits.write(ArenaExit::Hub);
+    arena.screen = None;
+}
+
+/// The arena pause page's FORFEIT: a dead manager is ignored, anything else
+/// settles the match as forfeited and returns to the hub. The flow's pause
+/// page sends [`crate::flow::ForfeitMatch`] when its third row runs.
+#[allow(clippy::too_many_arguments)]
+fn forfeit_match(
+    mut forfeits: Option<MessageReader<crate::flow::ForfeitMatch>>,
+    mut arena: Option<ResMut<ArenaMatch>>,
+    mut scene: Option<ResMut<ArenaScene>>,
+    mut career: Option<ResMut<crate::hub_windows::ArenaCareer>>,
+    fighters: Query<MatchBody<'_>>,
+    mut commands: MessageWriter<SceneCommand>,
+    mut exits: MessageWriter<ArenaExit>,
+) {
+    let Some(forfeits) = forfeits.as_mut() else {
+        return;
+    };
+    if forfeits.read().next().is_none() {
+        return;
+    }
+    let (Some(arena), Some(scene)) = (arena.as_mut(), scene.as_mut()) else {
+        return;
+    };
+    if arena.state != MatchState::Fighting {
+        return;
+    }
+    match arena.forfeit(scene.tournament) {
+        crate::arena_session::ForfeitResult::Ignored => {
+            info!("arena forfeit: the manager is already down, ignored");
+        }
+        crate::arena_session::ForfeitResult::Return { tournament } => {
+            info!("arena forfeit: returning to the hub");
+            finish_and_exit(
+                arena,
+                scene,
+                career.as_deref_mut(),
+                Finish::Forfeited,
+                tournament,
+                &fighters,
+                &mut commands,
+                &mut exits,
+            );
+        }
+    }
+}
+
 /// The match's end: settle the result into the career, as the return to the
 /// hub does. The round's fallen company bodies were already resolved by the
 /// match tick, so this pass only books the result.
 fn settle_match(
     arena: &mut ArenaMatch,
     scene: &mut ArenaScene,
-    career: Option<&mut crate::hub_windows::ArenaCareer>,
+    career: &mut Option<&mut crate::hub_windows::ArenaCareer>,
+    finish: Finish,
     tournament: bool,
     fighters: &Query<MatchBody<'_>>,
 ) {
-    let finish = if arena.state == MatchState::Won {
-        Finish::Won
-    } else {
-        Finish::Lost
-    };
-    let Some(career) = career else {
+    let Some(career) = career.as_deref_mut() else {
         warn!("arena return: no career to settle");
         return;
     };
@@ -531,6 +1034,7 @@ pub fn setup_from(
         // debug player is the company's entry zero.
         player: Some(0),
         prize: 0,
+        weapon_variants: None,
     })
 }
 
@@ -548,7 +1052,7 @@ mod tests {
     use super::*;
     use crate::arena_match::ArenaMatch;
     use crate::match_layout::{opponent_place, our_place};
-    use crate::scene_bodies::SceneFighter;
+    use crate::scene_bodies::{BodyLook, SceneFighter};
 
     fn scene() -> ArenaScene {
         ArenaScene::new(
@@ -569,9 +1073,15 @@ mod tests {
         app.add_plugins(MinimalPlugins)
             .add_message::<SceneCommand>()
             .add_message::<ArenaExit>()
+            .add_message::<ArenaContinue>()
             .init_resource::<ArenaAutoContinue>()
-            .add_systems(Update, continue_round);
-        app.init_resource::<ButtonInput<KeyCode>>();
+            .init_resource::<ArenaEndScreen>()
+            .add_systems(
+                Update,
+                (open_end_screen, update_end_screen, continue_round).chain(),
+            );
+        app.init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<ButtonInput<MouseButton>>();
         app.insert_resource(crate::effects::EffectClock { now_ms: 1_000 });
         app
     }
@@ -674,6 +1184,16 @@ mod tests {
         assert_eq!(plans[0].weapon, Some(0x1234));
         assert_eq!(plans[0].team, 6);
         assert_eq!(plans[0].act_at_ms, 3_000);
+        // The team's company bytes are forced into the hire profile, and
+        // the event's weapon sets the profile's armed flag.
+        let BodyLook::Generated(fighter) = plans[0].look else {
+            panic!("a tournament side takes a generated record");
+        };
+        let crate::arena_records::OutfitSource::Profile(profile) = fighter.outfit else {
+            panic!("a hire side takes the profile pass");
+        };
+        assert_eq!(profile.flags(), 0x0f);
+        assert_eq!(&profile.0[5..8], &[96, 227, 0]);
     }
 
     #[test]
@@ -803,6 +1323,29 @@ mod tests {
     }
 
     #[test]
+    fn space_no_longer_runs_the_end_screens_continue() {
+        let mut app = arena_app();
+        let mut arena = ArenaMatch::begin(1);
+        arena.state = MatchState::Won;
+        arena.screen = Some(Screen::End);
+        app.insert_resource(arena);
+        app.insert_resource(scene());
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::Space);
+        app.update();
+        assert_eq!(app.world().resource::<ArenaMatch>().state, MatchState::Won);
+        assert!(app.world().resource::<ArenaEndScreen>().open);
+        assert!(
+            app.world_mut()
+                .resource_mut::<Messages<ArenaExit>>()
+                .drain()
+                .next()
+                .is_none()
+        );
+    }
+
+    #[test]
     fn a_dead_manager_goes_to_the_main_menu() {
         let mut app = arena_app();
         let mut arena = ArenaMatch::begin(1);
@@ -822,6 +1365,186 @@ mod tests {
     }
 
     #[test]
+    fn escape_opens_the_arena_pause_page_and_a_closed_page_resumes() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<crate::flow::Flow>()
+            .init_resource::<crate::flow::FlowSteps>()
+            .init_resource::<crate::menu_screen::MenuScreen>()
+            .init_resource::<ArenaEndScreen>()
+            .add_systems(Update, arena_pause);
+        app.init_resource::<ButtonInput<KeyCode>>();
+        {
+            let mut flow = app.world_mut().resource_mut::<crate::flow::Flow>();
+            flow.mode = crate::flow::Mode::Arena;
+            flow.phase = crate::flow::Phase::Playing;
+        }
+        app.insert_resource(ArenaMatch::begin(1));
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::Escape);
+        app.update();
+        let flow = app.world().resource::<crate::flow::Flow>();
+        assert_eq!(flow.phase, crate::flow::Phase::Paused);
+        let steps = core::mem::take(
+            &mut app
+                .world_mut()
+                .resource_mut::<crate::flow::FlowSteps>()
+                .steps,
+        );
+        assert!(steps.contains(&crate::flow::Step::ShowMenu(
+            crate::menu_pages::Page::ArenaPause
+        )));
+        // The menu closed (its page's Escape, or its CONTINUE row): the pause
+        // ends on the next frame.
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .reset_all();
+        app.update();
+        assert_eq!(
+            app.world().resource::<crate::flow::Flow>().phase,
+            crate::flow::Phase::Playing
+        );
+    }
+
+    #[test]
+    fn the_end_screen_shows_the_arenas_rows() {
+        let mut screen = ArenaEndScreen::default();
+        screen.show(Screen::NextRound);
+        assert!(screen.open);
+        assert_eq!(screen.kind, 3);
+        assert_eq!(screen.menu().unwrap().rows, ["NEXT FIGHT"]);
+        assert_eq!(screen.menu().unwrap().scale, 0.9);
+        screen.show(Screen::End);
+        assert_eq!(screen.kind, 2);
+        assert_eq!(screen.menu().unwrap().rows, ["EXIT;"]);
+        // The frame goes through the same GUI path as the other end menus:
+        // the backdrop alone when no font texture is installed.
+        let frame = crate::end_menu_screen::end_menu_frame(
+            1600,
+            1080,
+            &screen.menu().unwrap(),
+            Some(0),
+            &GuiTextures::default(),
+        );
+        assert_eq!(frame.layers.len(), 1);
+        // Only the first row continues; confirming closes the screen.
+        assert!(screen.confirm());
+        assert!(!screen.open);
+    }
+
+    #[test]
+    fn a_tournament_continue_raises_the_brackets_next_fight() {
+        let mut app = arena_app();
+        let spawn = [900.0, 0.0, 100.0];
+        let mut arena = ArenaMatch::begin_match(7, spawn, 3, 2, true, Some(0));
+        arena.state = MatchState::NextFight;
+        arena.screen = Some(Screen::NextRound);
+        app.insert_resource(arena);
+        let mut scene = ArenaScene::new(7, spawn, 3, 2, true, Some(0), Vec::new(), 0, None);
+        scene.roll = 42;
+        // Template 7 is four rounds of duels: sixteen one-fighter teams, two
+        // sides a fight. After the won first round eight teams survive, but
+        // the next fight is only the first two of them: the player and one
+        // drawn winner.
+        let mut bracket = scene.bracket.clone().unwrap();
+        assert_eq!((bracket.team_size, bracket.sides), (1, 2));
+        let mut roll = 42;
+        let survivors = bracket_next_fight(&mut bracket, 1, &mut roll);
+        assert_eq!(survivors.iter().filter(|&&id| id > 0).count(), 8);
+        let expected = 1;
+        app.insert_resource(scene);
+        let player = app
+            .world_mut()
+            .spawn((
+                body(1, true, Condition::NORMAL),
+                crate::player::PlayerBody::new(0.0),
+            ))
+            .id();
+        let opponent = app
+            .world_mut()
+            .spawn(body(2, false, Condition::NORMAL))
+            .id();
+        press_continue(&mut app);
+        app.update();
+        let arena = app.world().resource::<ArenaMatch>();
+        assert_eq!(arena.state, MatchState::Fighting);
+        assert_eq!(arena.screen, None);
+        let messages: Vec<SceneCommand> = app
+            .world_mut()
+            .resource_mut::<Messages<SceneCommand>>()
+            .drain()
+            .collect();
+        let mut spawned = Vec::new();
+        let mut killed = Vec::new();
+        let mut placed = Vec::new();
+        for message in messages {
+            match message {
+                SceneCommand::Spawn(plan) => spawned.push(*plan),
+                SceneCommand::Despawn(entity) => killed.push(entity),
+                SceneCommand::Place { body, .. } => placed.push(body),
+            }
+        }
+        assert_eq!(spawned.len(), expected);
+        assert_eq!(killed, vec![opponent]);
+        assert_eq!(placed, vec![player]);
+        // Every raised opponent is generated from its record and outfit.
+        assert!(
+            spawned
+                .iter()
+                .all(|plan| matches!(plan.look, BodyLook::Generated(_)))
+        );
+        assert!(spawned.iter().any(|plan| plan.team != 1));
+        // Two teams fight, so the opponent is hostile (the original's role
+        // flag is a free-for-all only from three teams up).
+        assert!(spawned.iter().all(|plan| plan.roles == vec![HOSTILE]));
+    }
+
+    #[test]
+    fn a_forfeit_settles_the_match_and_asks_for_the_hub() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_message::<SceneCommand>()
+            .add_message::<ArenaExit>()
+            .add_message::<crate::flow::ForfeitMatch>()
+            .add_systems(Update, forfeit_match);
+        let mut arena = ArenaMatch::begin(1);
+        arena.state = MatchState::Fighting;
+        app.insert_resource(arena);
+        app.insert_resource(scene());
+        let mut career = crate::hub_windows::ArenaCareer::default();
+        career.company.copper = 500;
+        app.insert_resource(career);
+        app.world_mut().spawn((
+            Fighter::default(),
+            Condition::NORMAL,
+            SceneFighter {
+                team: 1,
+                company: true,
+                id: 2,
+                damage: 100.0,
+                condition_health: 100.0,
+                act_at_ms: 0,
+                behaviour: None,
+            },
+        ));
+        app.world_mut().write_message(crate::flow::ForfeitMatch);
+        app.update();
+        let exits: Vec<ArenaExit> = app
+            .world_mut()
+            .resource_mut::<Messages<ArenaExit>>()
+            .drain()
+            .collect();
+        assert_eq!(exits, vec![ArenaExit::Hub]);
+        // The forfeit settles into the live career resource the hub's
+        // in-process level change reads.
+        let career = app.world().resource::<crate::hub_windows::ArenaCareer>();
+        assert_eq!(career.company.copper, 500);
+        assert_eq!(career.company.lost, 1);
+        assert_eq!(career.matches_today, 1);
+    }
+
+    #[test]
     fn the_match_setup_comes_from_the_hub_and_else_the_command_line() {
         let launch = MatchSetup {
             template: 9,
@@ -830,6 +1553,7 @@ mod tests {
             tournament: true,
             player: Some(1),
             prize: 20,
+            weapon_variants: Some([9, 0, 4]),
         };
         let setup = setup_from(Some(launch), 1, 0, 0);
         assert_eq!(setup.template, 9);

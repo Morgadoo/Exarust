@@ -17,6 +17,7 @@
 //! `Exanima.exe` 0.9.5 (see the arena research notes).
 
 use crate::arena_outfit_data as data;
+use exa_formats::objdb::Item;
 use std::collections::BTreeMap;
 
 /// Number of bonus words and bonus floats an item carries.
@@ -79,6 +80,15 @@ impl Lcg {
     #[must_use]
     pub const fn high(self, range: u32) -> u32 {
         ((self.state as u64 * range as u64) >> 32) as u32
+    }
+
+    /// A unit draw: step, then the new word over 2^32, in double and
+    /// narrowed once, as the engine's float randomiser does. It shares this
+    /// sequence with the high-word draws, so callers must not mix another
+    /// generator in.
+    pub fn unit(&mut self) -> f32 {
+        self.step();
+        (f64::from(self.state) * f64::from_bits(0x3df0_0000_0000_0000)) as f32
     }
 }
 
@@ -194,6 +204,44 @@ impl ItemFacts {
     #[must_use]
     pub const fn bulk(&self) -> i16 {
         (self.rank_word & BULK_MASK) as i16
+    }
+
+    /// The facts the object database gives one item, as the original's
+    /// first-use pass reads them from the item object.
+    ///
+    /// The rank word and the twenty bonus words are the body's rank and
+    /// occupancy table; a weapon without a body takes its weapon section's
+    /// rank. Quality and condition are the appearance bytes for apparel and
+    /// the weapon's own for a weapon. The bonus floats and units are not
+    /// item fields in the original (they come from the arena's table rows),
+    /// so they stay zero here; the item's material bytes are also not
+    /// exposed by the parser yet.
+    #[must_use]
+    pub fn of_item(item: &Item) -> Self {
+        let quality = item
+            .appearance
+            .map(|appearance| appearance.quality)
+            .or_else(|| item.weapon.map(|weapon| weapon.quality))
+            .unwrap_or(0);
+        let condition = item
+            .appearance
+            .map(|appearance| appearance.damage)
+            .or_else(|| item.weapon.map(|weapon| weapon.damage))
+            .unwrap_or(0);
+        Self {
+            id: ItemId(item.id),
+            rank_word: item.rank_word,
+            weapon_kind: 0,
+            apparel_class: u32::from(item.armour_type),
+            apparel_points: i32::from(item.rank_word & BULK_MASK),
+            material_lo: 0,
+            material_hi: 0,
+            quality,
+            condition,
+            bonus_words: item.occupancy,
+            bonus_floats: [0.0; BONUS_SLOTS],
+            bonus_units: [0; BONUS_SLOTS],
+        }
     }
 }
 
@@ -1281,12 +1329,43 @@ fn finish_look(preset: [f32; 20], height: f32, skin: f32, condition_seed: f32) -
 ///
 /// `unit` supplies the original's separate look randomiser; the outfit rolls
 /// themselves come from `lcg` in the original's order.
+/// [`generate_profile`] drawing its unit values from the same sequence as
+/// its high-word draws, as the engine's shared randomiser does.
+pub fn generate_profile_lcg(
+    profile: &[u8; 8],
+    lcg: &mut Lcg,
+    tables: &OutfitTables,
+    character: &OutfitCharacter,
+) -> GeneratedOutfit {
+    generate_profile_with(profile, lcg, tables, character, |lcg| lcg.unit())
+}
+
+/// Dress a full outfit from an eight-byte profile.
+///
+/// Byte zero is the low flag byte: bit one enables max-rank mode, bit two
+/// skips the early weapon/suit branch, bits three and four change the
+/// description mode and the hood/jewel pass. Byte one is the rank limit.
+/// Bytes two and three feed the height and skin look values.
+///
+/// `unit` supplies the original's separate look randomiser; the outfit rolls
+/// themselves come from `lcg` in the original's order.
 pub fn generate_profile(
     profile: &[u8; 8],
     lcg: &mut Lcg,
     tables: &OutfitTables,
     character: &OutfitCharacter,
-    mut unit: impl FnMut() -> f32,
+    unit: impl FnMut() -> f32,
+) -> GeneratedOutfit {
+    let mut unit = unit;
+    generate_profile_with(profile, lcg, tables, character, move |_| unit())
+}
+
+fn generate_profile_with(
+    profile: &[u8; 8],
+    lcg: &mut Lcg,
+    tables: &OutfitTables,
+    character: &OutfitCharacter,
+    mut unit: impl FnMut(&mut Lcg) -> f32,
 ) -> GeneratedOutfit {
     let rank = i32::from(profile[1]);
     let max_rank = profile[0] & 2 != 0;
@@ -1334,7 +1413,7 @@ pub fn generate_profile(
     let wanted = if low_tier { 0x16 } else { 0x44 };
 
     let rank_scale = (f64::from(rank) * 0.05) as f32;
-    let smooth = smooth_unit(unit());
+    let smooth = smooth_unit(unit(dresser.lcg));
     let height = ((1.0 - rank_scale) * smooth + rank_scale) as f64;
     let height = (height + f64::from(profile[2]) * 0.01) as f32;
     let mut skin = (f64::from(profile[3]) * 0.01) as f32;
@@ -1342,7 +1421,7 @@ pub fn generate_profile(
         skin = (f64::from(skin) * 0.3 + f64::from(character.warmth) * 0.7) as f32;
     }
     dresser.condition_value = skin;
-    let condition_seed = (f64::from(unit()) + f64::from(rank) * 0.4) as f32;
+    let condition_seed = (f64::from(unit(dresser.lcg)) + f64::from(rank) * 0.4) as f32;
 
     if flags & 8 != 0 {
         dresser.mode = 2;
@@ -1455,6 +1534,26 @@ pub fn generate_profile(
 /// `warmth` is the height bias the original callers pass (`level * 0.05`);
 /// it is added to the height value. `mode_flags` bit eight skips the early
 /// weapon/suit branch; its low byte is stored as the mode flag byte.
+/// [`generate_by_level`] drawing its unit values from the same sequence as
+/// its high-word draws, as the engine's shared randomiser does.
+pub fn generate_by_level_lcg(
+    level: i32,
+    warmth: f32,
+    mode_flags: u32,
+    lcg: &mut Lcg,
+    tables: &OutfitTables,
+    character: &OutfitCharacter,
+) -> GeneratedOutfit {
+    generate_by_level_with(level, warmth, mode_flags, lcg, tables, character, |lcg| {
+        lcg.unit()
+    })
+}
+
+/// Dress a full outfit from a numeric level.
+///
+/// `warmth` is the height bias the original callers pass (`level * 0.05`);
+/// it is added to the height value. `mode_flags` bit eight skips the early
+/// weapon/suit branch; its low byte is stored as the mode flag byte.
 pub fn generate_by_level(
     level: i32,
     warmth: f32,
@@ -1462,7 +1561,28 @@ pub fn generate_by_level(
     lcg: &mut Lcg,
     tables: &OutfitTables,
     character: &OutfitCharacter,
-    mut unit: impl FnMut() -> f32,
+    unit: impl FnMut() -> f32,
+) -> GeneratedOutfit {
+    let mut unit = unit;
+    generate_by_level_with(
+        level,
+        warmth,
+        mode_flags,
+        lcg,
+        tables,
+        character,
+        move |_| unit(),
+    )
+}
+
+fn generate_by_level_with(
+    level: i32,
+    warmth: f32,
+    mode_flags: u32,
+    lcg: &mut Lcg,
+    tables: &OutfitTables,
+    character: &OutfitCharacter,
+    mut unit: impl FnMut(&mut Lcg) -> f32,
 ) -> GeneratedOutfit {
     let rank = level.max(0);
     let max_rank = false;
@@ -1507,7 +1627,7 @@ pub fn generate_by_level(
     let wanted = if low_tier { 0x16 } else { 0x44 };
 
     let rank_scale = (f64::from(rank) * 0.05) as f32;
-    let smooth = smooth_unit(unit());
+    let smooth = smooth_unit(unit(dresser.lcg));
     // The original adds the bias to the rank scale first and the smoothed
     // draw last, and clamps the height before the skin is derived from it.
     let mut height = rank_scale + warmth;
@@ -1520,7 +1640,7 @@ pub fn generate_by_level(
         skin = (f64::from(skin) * 0.3 + f64::from(character.warmth) * 0.7) as f32;
     }
     dresser.condition_value = skin;
-    let condition_seed = (f64::from(unit()) + f64::from(rank) * 0.4) as f32;
+    let condition_seed = (f64::from(unit(dresser.lcg)) + f64::from(rank) * 0.4) as f32;
 
     let family = level == 5 && dresser.hands[1].is_none();
     if level == 5 || (max_rank && level > 1) {
@@ -1540,7 +1660,7 @@ pub fn generate_by_level(
 
     dresser.pool.clear();
     if family {
-        let smooth = smooth_unit(unit());
+        let smooth = smooth_unit(unit(dresser.lcg));
         skin = (0.4 - f64::from(smooth * 0.375)) as f32;
         dresser.condition_value = skin;
         if roll(dresser.lcg, 10) == 0 {
@@ -2333,11 +2453,41 @@ pub struct NpcProfile<'a> {
 /// strength square and its optional bias, the two feature words, the two
 /// seeds, the profession grade and the sex bit, then the skin and hair
 /// bytes. All unit values come from `unit`, in call order.
+/// [`random_npc`] drawing its unit values from the same sequence as its
+/// high-word draws, as the engine's shared randomiser does.
+pub fn random_npc_lcg<'a>(
+    lcg: &mut Lcg,
+    request: &NpcRequest<'a>,
+    professions: &mut ProfessionCatalog,
+) -> NpcProfile<'a> {
+    random_npc_with(lcg, request, professions, |lcg| lcg.unit())
+}
+
+/// Generate an NPC's experience, professions and look.
+///
+/// The experience is the level times ten thousand plus a roll below ten
+/// thousand; it is spent on professions first. The skill is twenty per level
+/// plus a unit draw below level five. The sex is rolled unless forced. The
+/// profession variant avoids the previous one; the appearance and name are
+/// drawn from caller tables. The rest follows the four look curves, the
+/// strength square and its optional bias, the two feature words, the two
+/// seeds, the profession grade and the sex bit, then the skin and hair
+/// bytes. All unit values come from `unit`, in call order.
 pub fn random_npc<'a>(
     lcg: &mut Lcg,
     request: &NpcRequest<'a>,
     professions: &mut ProfessionCatalog,
-    mut unit: impl FnMut() -> f32,
+    unit: impl FnMut() -> f32,
+) -> NpcProfile<'a> {
+    let mut unit = unit;
+    random_npc_with(lcg, request, professions, move |_| unit())
+}
+
+fn random_npc_with<'a>(
+    lcg: &mut Lcg,
+    request: &NpcRequest<'a>,
+    professions: &mut ProfessionCatalog,
+    mut unit: impl FnMut(&mut Lcg) -> f32,
 ) -> NpcProfile<'a> {
     lcg.step();
     let experience = request
@@ -2350,7 +2500,7 @@ pub fn random_npc<'a>(
     let level = request.level.min(5);
     let mut skill = (i64::from(level) * 20) as f32;
     if level < 5 {
-        let level_bonus = unit() * 20.0;
+        let level_bonus = unit(lcg) * 20.0;
         skill += level_bonus;
     }
 
@@ -2382,12 +2532,12 @@ pub fn random_npc<'a>(
     lcg.step();
     let damage_seed = lcg.high(0x7fff_ffff);
 
-    let frame = (smooth_unit(unit()) - 0.5) * 0.5 + 0.5;
+    let frame = (smooth_unit(unit(lcg)) - 0.5) * 0.5 + 0.5;
     // The height, deviation, muscle and skin sums run in double precision in
     // the original and are narrowed once at the end.
-    let height_draw = smooth_unit(unit());
+    let height_draw = smooth_unit(unit(lcg));
     let height = ((1.0 - f64::from(level) * 0.05) * f64::from(height_draw)) as f32;
-    let weight = smooth_unit(unit()) * 2.0 - 1.0;
+    let weight = smooth_unit(unit(lcg)) * 2.0 - 1.0;
     let deviation = (f64::from(weight) * 0.3
         + (f64::from(0.5 - frame) * 0.6 + f64::from(height - 0.5) * 0.8))
         as f32;
@@ -2400,15 +2550,15 @@ pub fn random_npc<'a>(
     } else {
         -(-deviation).sqrt()
     };
-    let muscle_sum = smooth_unit(unit()) * 0.5 + (deviation * 0.5 + 0.5) * 0.5;
+    let muscle_sum = smooth_unit(unit(lcg)) * 0.5 + (deviation * 0.5 + 0.5) * 0.5;
     let muscle = (f64::from(muscle_sum) * 0.17 + 0.9) as f32;
-    let draw = unit();
+    let draw = unit(lcg);
     let mut strength = draw * draw;
     if flags & 0x2_0000 != 0 {
         strength = (1.0 - strength) * 0.75 + strength;
     }
-    let face_seed = cvtss2si_low(smooth_unit(unit()) * 65535.0) as u16;
-    let voice_seed = cvtss2si_low(smooth_unit(unit()) * 65535.0) as u16;
+    let face_seed = cvtss2si_low(smooth_unit(unit(lcg)) * 65535.0) as u16;
+    let voice_seed = cvtss2si_low(smooth_unit(unit(lcg)) * 65535.0) as u16;
 
     lcg.step();
     let mut build_seed = lcg.high(13);
@@ -2437,7 +2587,7 @@ pub fn random_npc<'a>(
     lcg.step();
     let feature_seed = (lcg.state() >> 24) as u8;
 
-    let skin_draw = unit();
+    let skin_draw = unit(lcg);
     let muscle_share = f64::from(strength) * 0.6;
     let skin_value = (f64::from(request.warmth * 0.5)
         + muscle_share * muscle_share
@@ -2447,7 +2597,7 @@ pub fn random_npc<'a>(
     } else {
         cvtss2si_low(skin_value * 255.0) as u8
     };
-    let hair_draw = unit();
+    let hair_draw = unit(lcg);
     let mut hair_tone = cvtss2si_low((strength * 0.5 + hair_draw * 0.5) * 255.0) as u8;
     let blend = request.warmth * 0.75;
     hair_tone = cvtss2si_low(blend * 255.0 + (1.0 - blend) * f32::from(hair_tone)) as u8;
@@ -2505,6 +2655,55 @@ mod tests {
 
     fn close(actual: f32, expected: f32) -> bool {
         (actual - expected).abs() < 1e-6
+    }
+
+    #[test]
+    fn the_unit_draw_is_the_shared_sequence_over_two_to_the_thirty_two() {
+        let mut lcg = Lcg::new(0);
+        assert_eq!(lcg.unit().to_bits(), 0x2f80_0000);
+        assert_eq!(lcg.unit().to_bits(), 0x3d00_8840);
+        assert_eq!(lcg.state(), 0x0808_8406);
+    }
+
+    #[test]
+    fn item_facts_read_the_body_rank_quality_and_occupancy() {
+        let mut body = vec![0u8; 0x1B0 + 100];
+        body[0x1AB..0x1AD].copy_from_slice(&0x00A5u16.to_le_bytes());
+        body[0x1A8] = 3;
+        body[0x1B0] = 160;
+        body[0x1B1] = 64;
+        body[0x10..0x18].copy_from_slice(&0x8000_0000_0000_0001u64.to_le_bytes());
+        let mut payload = 0x1000u32.to_le_bytes().to_vec();
+        payload.extend(((body.len() + 8) as u32).to_le_bytes());
+        payload.extend(body);
+        let item = exa_formats::objdb::Item::parse(42, &payload).unwrap();
+        let facts = ItemFacts::of_item(&item);
+        assert_eq!(facts.id, ItemId(42));
+        assert_eq!(facts.rank_word, 0x00A5);
+        assert_eq!(facts.bulk(), 5);
+        assert_eq!(facts.quality, 160);
+        assert_eq!(facts.condition, 64);
+        assert_eq!(facts.apparel_class, 3);
+        assert_eq!(facts.bonus_words[0], 0x8000_0000_0000_0001);
+        assert_eq!(facts.bonus_floats, [0.0; BONUS_SLOTS]);
+    }
+
+    #[test]
+    fn item_facts_fall_back_to_the_weapon_rank() {
+        let mut body = vec![0u8; 0x5A];
+        body[0x42..0x44].copy_from_slice(&0x0043u16.to_le_bytes());
+        body[0x0C] = 90;
+        body[0x0D] = 12;
+        let mut payload = 0x4000u32.to_le_bytes().to_vec();
+        payload.extend(((body.len() + 8) as u32).to_le_bytes());
+        payload.extend(body);
+        let item = exa_formats::objdb::Item::parse(43, &payload).unwrap();
+        let facts = ItemFacts::of_item(&item);
+        assert_eq!(facts.rank_word, 0x0043);
+        assert_eq!(facts.bulk(), 3);
+        assert_eq!(facts.quality, 90);
+        assert_eq!(facts.condition, 12);
+        assert_eq!(facts.apparel_class, 0);
     }
 
     #[test]

@@ -518,6 +518,8 @@ mod tests {
             equip_lock: 0,
             torch: false,
             volume: None,
+            rank_word: 0,
+            armour_type: 0,
         }
     }
 

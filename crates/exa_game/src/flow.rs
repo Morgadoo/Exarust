@@ -1423,6 +1423,11 @@ pub const REBUILDABLE: u8 = 1;
 /// The reconstruction state after a strip.
 pub const STRIPPED: u8 = 2;
 
+/// The arena pause page's FORFEIT row ran: the running arena match settles
+/// as forfeited and returns to the hub.
+#[derive(Message, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ForfeitMatch;
+
 /// The steps the flow asked for since the last frame: every producer pushes
 /// here and [`apply_steps`] applies the ones the running app owns.
 #[derive(Resource, Debug, Default)]
@@ -2847,6 +2852,7 @@ impl Plugin for FlowPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Flow>()
             .init_resource::<FlowSteps>()
+            .add_message::<ForfeitMatch>()
             .init_resource::<GameView>()
             .init_resource::<BootToMenu>()
             .add_message::<MenuChoice>()
@@ -3017,6 +3023,7 @@ fn apply_menu_choices(
     mut choices: MessageReader<MenuChoice>,
     mut flow: ResMut<Flow>,
     mut queued: ResMut<FlowSteps>,
+    arena_match: Option<Res<crate::arena_match::ArenaMatch>>,
     ticks: Option<Res<exa_physics::body::BodyTicks>>,
 ) {
     let now = ticks.as_ref().map_or(0, |ticks| ticks.millis() as u32);
@@ -3048,9 +3055,14 @@ fn apply_menu_choices(
             }
             MenuCommand::ExitArena | MenuCommand::ExitToTitle => flow.quit_to_menu(),
             MenuCommand::QuitStory => flow.story_exit(now),
-            MenuCommand::FinishMatch { .. } => {
+            MenuCommand::FinishMatch { forfeit } => {
                 if flow.mode == Mode::Story {
                     flow.story_exit(now)
+                } else if *forfeit && arena_match.is_some() {
+                    // The arena pause page's FORFEIT: the live match settles
+                    // and returns to the hub. The end page's EXIT, a won
+                    // session's row, still leaves to the title.
+                    vec![Step::HideMenu, Step::Controls(true), Step::Forfeit]
                 } else {
                     flow.quit_to_menu()
                 }
@@ -3104,6 +3116,7 @@ fn apply_steps(
     mut session: Option<ResMut<crate::player_controls::PlaySession>>,
     mut fighters: Query<&mut exa_combat::Fighter, With<crate::player::PlayerBody>>,
     mut changes: MessageWriter<exa_world::level_lifecycle::LevelChangeRequest>,
+    mut forfeit: MessageWriter<ForfeitMatch>,
     mut exit: MessageWriter<AppExit>,
 ) {
     if queued.steps.is_empty() {
@@ -3213,6 +3226,9 @@ fn apply_steps(
                 if restart {
                     commands.insert_resource(exa_audio::LevelMusicStart(0.0));
                 }
+            }
+            Step::Forfeit => {
+                forfeit.write(ForfeitMatch);
             }
             Step::Quit => {
                 exit.write(AppExit::Success);
@@ -4417,6 +4433,39 @@ mod tests {
     }
 
     #[test]
+    fn the_arena_pauses_forfeit_row_runs_the_forfeit_step() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_message::<MenuChoice>()
+            .init_resource::<Flow>()
+            .init_resource::<FlowSteps>()
+            .add_systems(Update, apply_menu_choices);
+        app.insert_resource(crate::arena_match::ArenaMatch::begin(1));
+        app.world_mut().resource_mut::<Flow>().mode = Mode::Arena;
+        app.world_mut()
+            .write_message(MenuChoice(MenuCommand::FinishMatch { forfeit: true }));
+        app.update();
+        let steps = core::mem::take(&mut app.world_mut().resource_mut::<FlowSteps>().steps);
+        assert_eq!(
+            steps,
+            vec![Step::HideMenu, Step::Controls(true), Step::Forfeit]
+        );
+        // Without a live match the same row leaves to the title.
+        app.world_mut()
+            .remove_resource::<crate::arena_match::ArenaMatch>();
+        app.world_mut()
+            .write_message(MenuChoice(MenuCommand::FinishMatch { forfeit: true }));
+        app.update();
+        let steps = core::mem::take(&mut app.world_mut().resource_mut::<FlowSteps>().steps);
+        assert!(!steps.contains(&Step::Forfeit));
+        assert!(
+            steps
+                .iter()
+                .any(|step| matches!(step, Step::ShowMenu(Page::Title)))
+        );
+    }
+
+    #[test]
     fn the_arenas_pause_page_and_resume() {
         let mut flow = Flow {
             mode: Mode::Arena,
@@ -4847,6 +4896,7 @@ mod tests {
             .init_resource::<FlowSteps>()
             .init_resource::<GameView>()
             .add_message::<exa_world::level_lifecycle::LevelChangeRequest>()
+            .add_message::<ForfeitMatch>()
             .add_message::<AppExit>()
             .add_systems(Update, apply_steps);
         let placement = Placement {

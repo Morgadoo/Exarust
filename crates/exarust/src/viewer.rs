@@ -76,6 +76,7 @@ impl Plugin for ViewerPlugin {
                 (
                     fly_camera,
                     screenshot_after_frames,
+                    fell_arena_opponents,
                     shove_at_frame,
                     shove_props_at_frame,
                     start_fight,
@@ -709,6 +710,7 @@ fn play_level(
             tournament: launch.tournament,
             player: launch.player,
             prize: launch.prize,
+            weapon_variants: (launch.weapon_variants != [0; 3]).then_some(launch.weapon_variants),
         }),
         options.arena_match.unwrap_or(1),
         options.arena_level,
@@ -752,17 +754,20 @@ fn play_level(
             setup.tournament,
             setup.player,
         ));
-        commands.insert_resource(exa_game::arena_live::ArenaScene::new(
-            template,
-            spawn_at,
-            setup.level,
-            setup.tier,
-            setup.tournament,
-            setup.player,
-            weapons,
-            setup.prize,
-            career,
-        ));
+        commands.insert_resource(
+            exa_game::arena_live::ArenaScene::new(
+                template,
+                spawn_at,
+                setup.level,
+                setup.tier,
+                setup.tournament,
+                setup.player,
+                weapons,
+                setup.prize,
+                career,
+            )
+            .with_weapon_variants(setup.weapon_variants),
+        );
     } else {
         commands.remove_resource::<exa_game::arena_match::ArenaMatch>();
         commands.remove_resource::<exa_game::arena_live::ArenaScene>();
@@ -1921,6 +1926,43 @@ fn autowalk(
             keys.press(KeyCode::KeyW);
         }
     }
+}
+
+/// `--arena-fell <frame>`: at that frame after the load every arena
+/// opponent (a scene body off the company's side) drops dead, so the match
+/// tick ends the round and the end screen opens. A debug tool: the bodies
+/// do not collapse, only their condition and health change.
+fn fell_arena_opponents(
+    options: Res<Options>,
+    loading: Option<Res<exa_ui::LoadingStatus>>,
+    mut frames: Local<u32>,
+    mut bodies: Query<(
+        &mut exa_combat::Condition,
+        &mut exa_combat::Fighter,
+        &exa_game::scene_bodies::SceneFighter,
+    )>,
+) {
+    let Some(at) = options.arena_fell else {
+        return;
+    };
+    if loading.is_some() || *frames > at {
+        return;
+    }
+    *frames += 1;
+    if *frames != at {
+        return;
+    }
+    let mut felled = 0;
+    for (mut condition, mut fighter, body) in &mut bodies {
+        if body.company {
+            continue;
+        }
+        *condition = exa_combat::Condition::DEAD;
+        fighter.health.red = 0.0;
+        fighter.health.yellow = 0.0;
+        felled += 1;
+    }
+    info!("arena fell: {felled} opponents drop dead");
 }
 
 /// `--press` and `--click`: presses each scripted key or mouse button (and

@@ -577,18 +577,47 @@ right-button release close an open window. Opening the board or Manage
 Company makes the hub busy (the board's open and close set and clear the flag
 in the original); the trade window leaves it alone.
 
-In the running game the click does not reach the hub's objects yet: the
-nodes the hook names (`\xaaArenaShop` in the library's `shop_arena`,
-`\xaaArenaMach` in its two notice boards) are static scenery with no body,
-and the static colliders are built in batches that keep no node, so a click
-on them picks the level. The ArenaMach side value is a float the original
-reads from the clicked node; which field it is is not traced, and the node's
-world x stands in for it.
+The notice boards and the shop counter are static scenery with no body; their
+colliders remember the scene node they were built under
+(`exa_physics::ColliderNodes`), so a click on `\xaaArenaShop` or
+`\xaaArenaMach` reaches the hook. The ArenaMach side value is a float the
+original reads from the clicked node; which field it is is not traced, and
+the node's world x stands in for it.
 
 Not drawn: the board's pictures, prize items and reward slots, the manage
 window's controls and report lines, the trade window's item icons and
-character preview, and the windows' own close controls. The match's return
-to the hub is not wired; the career records stay in the hub process.
+character preview, and the windows' own close controls.
+
+## The running arena match
+
+A board pick keeps the career in its resource and the match's setup in
+process and changes the level to the drawn arena in place
+(`exa_world::level_lifecycle`). `arena_live` stands the round's
+bodies: the play start's player, the company's other entrants, and each
+opponent built from its own generated record — the random NPC pass and the
+arena outfit tables from the object database — through the merged character
+mesh; a tournament side takes its company's forced outfit profile and the
+event's drawn weapon. The Beast, the company entrants' and the hub
+specialists' records are not kept, so those bodies still take actor
+templates [guess].
+
+A round's result opens the end screen as the original builds it: screen 3
+shows the single `NEXT FIGHT` row and screen 2 the single `EXIT;` row (the
+arena mode's `& 2` test leaves the match-end menu one row), both at scale
+0.9. `exa_game::arena_live::ArenaEndScreen` paints it over the game through
+the GUI path and takes the row on Enter or on a pointer release over it; Up
+and Down move the selection. The first row is the arena Continue: a dead
+manager goes to the main menu, a next round stands the winner and the
+reserve or a fresh opponent after 13 ms, a tournament's next round resolves
+its bracket first (the won group keeps team one, every other group draws a
+winner with the arena's roll) and stands the first of the surviving teams, as many as the event has sides,
+on the ring,
+and the match's end settles the result into the running career and changes
+the level back to the hub with the 300 cm, half turn, `0x100` placement. Escape opens the
+arena pause page (`CONTINUE`, `SETTINGS`, `FORFEIT`, or `EXIT` once the
+session was won or ended); its FORFEIT settles the match as forfeited and
+returns to the hub, and a dead manager's forfeit is ignored. The score
+board, the round banner and the per-fighter condition bars are not drawn.
 
 ## Forms
 
@@ -791,8 +820,8 @@ calling the rest of the game, so the order is testable.
   menu over the game through the GUI path, the selected row through the
   menu's text program, and runs the row on Enter or on the release over it:
   the next practice fight, the story's respawn or end-menu exit, a practice
-  restart (back to the menu form), the arena's continue or lobby (both
-  leave to the title until the arena session is wired), and the exit. The centered row placement is
+  restart (back to the menu form), the arena's continue (the live match's
+  own end screen), and the exit. The centered row placement is
   Exarust's (the original's form class is outside the game-main unit). The
   arena's pause page reads its last row EXIT once the session was won or
   has ended, FORFEIT before.
@@ -854,9 +883,9 @@ calling the rest of the game, so the order is testable.
   or NEXT FIGHT, its second row returns to the title behind the
   transition; the story's first row is CONTINUE on the reconstructed menu
   and otherwise, like its second, the story exit; the arena's first row is
-  the arena unit's continue (a leave to the title until the arena session
-  is wired) and its second (LOBBY) the return to the title; the arena's
-  third row and a scripted mode's rows do nothing there.
+  the arena unit's continue (the live match's end screen) and its second
+  (LOBBY) the return to the title; the arena's third row and a scripted
+  mode's rows do nothing there.
 
 ### The splash screen
 

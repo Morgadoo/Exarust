@@ -573,7 +573,11 @@ on the ground as `Trouser_At` (an `Objects.rpk` entry). 366 of the 388
 objdb records with a body are worn as a `Characters.rpk` model (319
 models), against 363 by the ground model. Exarust reads both
 (`Item.worn_model`, `Item.model`): apparel is dressed, painted and looked
-up by its worn model, weapons by their ground model.
+up by its worn model, weapons by their ground model. `Item.rank_word` is the
+trade rank word resolved by the body/weapon/shield order below, and
+`Item.armour_type` the body's armour type byte at `0x1A8`. The arena's
+item-fact pass reads those, the appearance bytes and the occupancy table
+(`ItemFacts::of_item`).
 
 Appearance block (100 bytes): quality, damage and dirt bytes (the painter uses
 q = x, damage = x/(2−x), dirt = (x²+x)/2 with x = byte/255), their packed

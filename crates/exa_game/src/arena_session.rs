@@ -402,6 +402,70 @@ pub fn hub_day_checks(day: u32, any_entry: bool) -> HubDayChecks {
     }
 }
 
+/// A tournament event's bracket and its place in the event.
+///
+/// The slots are the original's sixteen-byte team records flattened to one
+/// entry per fighter slot: `team_size` consecutive slots hold a team's id,
+/// and the group of `sides` teams fights each round. Starting an event fills
+/// `sides << (rounds − 1)` teams with ids one and up (team one is the
+/// player's side). A won round clears every other team of each group,
+/// keeping the player's team in its own group, and the survivors become the
+/// next fight's sides.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BracketState {
+    pub slots: Vec<crate::career::BracketSlot>,
+    /// Fighters per team (the event's `teams` field).
+    pub team_size: i32,
+    /// Teams in each round's group (the event's `fighters` field).
+    pub sides: i32,
+    /// The event's rounds, for the record.
+    pub rounds: i32,
+}
+
+/// The bracket a tournament template starts with: its teams, team size and
+/// rounds, team one being the player's. `None` for a standard match.
+#[must_use]
+pub fn bracket_for_template(template: i32) -> Option<BracketState> {
+    let template = crate::arena::TOURNAMENTS
+        .iter()
+        .find(|entry| i32::try_from(entry.id).ok() == Some(template))?;
+    if template.rounds == 0 || template.teams == 0 || template.fighters == 0 {
+        return None;
+    }
+    let entries = crate::tournament::fill_bracket(
+        template.teams as i32,
+        template.fighters as i32,
+        template.rounds as i32,
+        1,
+    );
+    Some(BracketState {
+        slots: entries
+            .into_iter()
+            .map(|entry| crate::career::BracketSlot {
+                id: entry.id,
+                strength: entry.strength,
+            })
+            .collect(),
+        team_size: template.teams as i32,
+        sides: template.fighters as i32,
+        rounds: template.rounds as i32,
+    })
+}
+
+/// Resolve the bracket's round and return the surviving team ids in slot
+/// order. The group the player's team is in keeps `forced` (team one on a
+/// won fight); every other group draws its winner with one step of `roll`.
+pub fn bracket_next_fight(bracket: &mut BracketState, forced: i32, roll: &mut u32) -> Vec<i32> {
+    crate::career::clear_losing_bracket(
+        &mut bracket.slots,
+        bracket.team_size,
+        bracket.sides,
+        forced,
+        roll,
+    );
+    bracket.slots.iter().map(|slot| slot.id).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -677,6 +741,57 @@ mod tests {
         );
         assert!(!hub_arrival(false, true).clear_physician_weapon);
         assert!(!hub_arrival(false, true).generate_tournament);
+    }
+
+    #[test]
+    fn a_tournament_bracket_starts_with_team_one_and_eight_pairs() {
+        let bracket = bracket_for_template(7).expect("Elimination is a tournament");
+        assert_eq!(bracket.team_size, 1);
+        assert_eq!(bracket.sides, 2);
+        assert_eq!(bracket.rounds, 4);
+        assert_eq!(bracket.slots.len(), 16);
+        assert_eq!(
+            bracket.slots.iter().map(|slot| slot.id).collect::<Vec<_>>(),
+            (1..=16).collect::<Vec<_>>()
+        );
+        assert!(bracket.slots.iter().all(|slot| slot.strength == 1.0));
+        // A standard match has no bracket.
+        assert!(bracket_for_template(1).is_none());
+        // The doubles event pairs two slots per team.
+        let doubles = bracket_for_template(16).unwrap();
+        assert_eq!(doubles.team_size, 2);
+        assert_eq!(doubles.slots.len(), 16);
+        assert_eq!(
+            &doubles.slots[..4].iter().map(|s| s.id).collect::<Vec<_>>(),
+            &[1, 1, 2, 2]
+        );
+    }
+
+    #[test]
+    fn a_won_bracket_round_keeps_the_player_and_draws_the_other_pairs() {
+        let mut bracket = bracket_for_template(7).unwrap();
+        let mut roll = 0;
+        let survivors = bracket_next_fight(&mut bracket, 1, &mut roll);
+        assert_eq!(
+            survivors,
+            [1, 0, 3, 0, 5, 0, 0, 8, 9, 0, 11, 0, 0, 14, 15, 0]
+        );
+        assert_eq!(roll, 0x5195_c04b);
+        assert_eq!(survivors.len(), 16);
+        // Player team one beat team two; the other seven pairs draw a winner
+        // each with the original's roll sequence.
+        assert_eq!(survivors[0], 1);
+        assert_eq!(survivors[1], 0);
+        assert_eq!(survivors[2], 3);
+        assert_eq!(survivors[3], 0);
+        assert!(survivors.iter().filter(|&&id| id != 0).count() == 8);
+        assert_ne!(roll, 0);
+        // A second round groups the survivors and keeps team one again.
+        let again = bracket_next_fight(&mut bracket, 1, &mut roll);
+        assert_eq!(again, [1, 0, 0, 0, 5, 0, 0, 0, 9, 0, 0, 0, 0, 14, 0, 0]);
+        assert_eq!(roll, 0x6cf8_f4be);
+        assert_eq!(again.iter().filter(|&&id| id != 0).count(), 4);
+        assert_eq!(again[0], 1);
     }
 
     #[test]

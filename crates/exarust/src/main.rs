@@ -274,6 +274,9 @@ pub struct Options {
     pub heartbeat: bool,
     /// Refill the player's health after every frame and body tick.
     pub undying: bool,
+    /// Play mode: every arena opponent drops dead at this frame after the
+    /// load, so the round ends and its end screen opens (a debug tool).
+    pub arena_fell: Option<u32>,
     /// Play mode: the player's record's feral level (0..=1).
     pub feral: Option<f32>,
     /// Play mode: powers the player knows (`--powers`, hex or decimal).
@@ -346,6 +349,7 @@ fn key_named(name: &str) -> Option<KeyCode> {
         "]" => Some(KeyCode::BracketRight),
         "Tab" => Some(KeyCode::Tab),
         "Esc" => Some(KeyCode::Escape),
+        "Enter" => Some(KeyCode::Enter),
         "Ctrl" => Some(KeyCode::ControlLeft),
         "Shift" => Some(KeyCode::ShiftLeft),
         _ => {
@@ -623,6 +627,7 @@ fn main() -> AppExit {
             }
             "--heartbeat" => options.heartbeat = true,
             "--undying" => options.undying = true,
+            "--arena-fell" => options.arena_fell = args.next().and_then(|v| v.parse().ok()),
             "--debug-arcs" => options.thaum_debug.arcs = true,
             "--debug-barricade" => options.thaum_debug.barricade = true,
             "--debug-wisps" => options.thaum_debug.wisps = true,
