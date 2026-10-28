@@ -809,6 +809,7 @@ fn shader(game: &GameData, request: &ShaderRequest) -> Result<()> {
         supersample: request.supersample,
         fog_mode: request.fog,
         voxel_gi: !request.no_gi,
+        gi_mode: 3,
         voxel_gi_specular: request.vxgi_spec,
         outdoor: request.outdoor,
         wet_floor: request.wet_floor,
