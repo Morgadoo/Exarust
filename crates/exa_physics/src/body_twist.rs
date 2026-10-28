@@ -80,8 +80,10 @@ fn without(v: Vec3A, n: Vec3A) -> Vec3A {
 }
 
 /// One tick of the torso twist (`body.twist_yaw` the yaw it follows,
-/// `body.twist` the rotation; the identity when it holds).
+/// `body.twist` the rotation; the identity when it holds), last tick's
+/// rotation kept as `body.twist_before`.
 pub fn twist(body: &mut Locomotor, by: &TwistBy) {
+    body.twist_before = body.twist;
     if by.helpless || !(by.tone > TWIST_TONE) {
         body.twist = Quat::IDENTITY;
         return;
@@ -148,6 +150,25 @@ pub fn twist_spine(parts: &mut [Affine3A], spine: &[(usize, bool)], twist: Quat)
         }
         p.matrix3 = m;
     }
+}
+
+/// The plain start capture's half-lean of a midline bone (the lumbar or
+/// the thorax): its physical turn under its parent, `turn`, with its
+/// forward (z) axis moved halfway toward the same turn taken out of the
+/// twist (`twist`ᵀ · turn, the original's relative frame), its up axis
+/// made square to that forward, its side their cross product, and the
+/// result back to a unit rotation. The sampler turns the spine by the
+/// twist again, so the capture keeps only half of it. The original runs
+/// the correction whatever the twist (the identity merely squares the
+/// turn's axes); its normalisations are approximate (rsqrtss), Exarust's
+/// exact, as in [`twist_spine`].
+pub fn half_lean(turn: Quat, twist: Quat) -> Quat {
+    let m = Mat3A::from_quat(turn);
+    let untwisted = Mat3A::from_quat(twist).transpose() * m;
+    let z = (m.z_axis + (untwisted.z_axis - m.z_axis) * 0.5).normalize_or_zero();
+    let y = without(m.y_axis, z).normalize_or_zero();
+    let x = y.cross(z).normalize_or_zero();
+    Quat::from_mat3a(&Mat3A::from_cols(x, y, z)).normalize()
 }
 
 /// The head's look yaw is clamped to this (rad, double), × 0.8, and

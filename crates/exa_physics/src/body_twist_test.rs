@@ -245,3 +245,36 @@ fn the_head_turns_toward_its_look() {
     head_look(&head, aside, 1.0, &mut kept, true);
     assert!(close(kept, 0.036));
 }
+
+/// The same rotation, either sign.
+fn same_turn(a: Quat, b: Quat) -> bool {
+    a.dot(b).abs() > 1.0 - 1e-6
+}
+
+/// The start capture's half-lean keeps half of the twist in a midline
+/// bone's captured turn: a lumbar twisted 0.6 rad with the twist (its turn
+/// the twist itself) captures 0.3 rad; an upright one under that twist
+/// captures −0.3 rad (half the twist taken out); an untwisted body keeps
+/// its turn (a pitched and yawed one too); a pitch's up axis is made
+/// square to the halved forward.
+#[test]
+fn the_capture_keeps_half_of_the_twist() {
+    let twist = Quat::from_rotation_y(0.6);
+    assert!(same_turn(
+        half_lean(twist, twist),
+        Quat::from_rotation_y(0.3)
+    ));
+    assert!(same_turn(
+        half_lean(Quat::IDENTITY, twist),
+        Quat::from_rotation_y(-0.3)
+    ));
+    let bent = Quat::from_rotation_y(0.4) * Quat::from_rotation_x(0.25);
+    assert!(same_turn(half_lean(bent, Quat::IDENTITY), bent));
+    let leaned = half_lean(Quat::from_rotation_x(0.5), twist);
+    let m = Mat3A::from_quat(leaned);
+    assert!(m.y_axis.dot(m.z_axis).abs() < 1e-6);
+    let pitched_z = Vec3A::new(0.0, -(0.5f32.sin()), 0.5f32.cos());
+    let untwisted_z = Mat3A::from_quat(twist).transpose() * pitched_z;
+    let want = (pitched_z + (untwisted_z - pitched_z) * 0.5).normalize();
+    assert!((m.z_axis - want).length() < 1e-6, "{}", m.z_axis);
+}

@@ -342,8 +342,11 @@ which `track_condition` writes each tick). Rules:
 
 ## Sounds
 
-`sounds` chooses a body part's hit sound and its clothing foley from the
-armour layers the crate already keeps: the first layer (outer, then inner)
+`sounds` chooses a struck item's blow sound (`struck_item_sound`, tested:
+its record's class set below the record's split along the item, else its
+own sound, the clock 200 ms less round-half-even(80 · strength) on, the
+pitch × 1.2 in double; no item record feeds it yet) and a body part's hit
+sound and its clothing foley from the armour layers the crate already keeps: the first layer (outer, then inner)
 covering at least half the part gives its class, or the flesh/skeleton
 default, or the golem's `HitGlm`; the foley sums each layer's coverage times
 its bone's weight per class, picks the largest class sum times its factor,

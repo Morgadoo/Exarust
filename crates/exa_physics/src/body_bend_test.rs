@@ -462,3 +462,30 @@ fn a_limp_body_keeps_the_chain() {
     body.fold_leg_ik(&mut chain);
     assert_eq!(chain[0], Affine3A::from_translation(Vec3::Y * 0.5));
 }
+
+/// A placement clears the legs' IK corrections: a stored knee of 0.2 and
+/// hip of −0.2 (each turning its part 0.2 rad) fold nothing into the next
+/// sample's chain, while the stored angles stay for the IK to ease.
+#[test]
+fn a_placement_clears_the_leg_corrections() {
+    let (mut body, pose) = standing_at(Vec3::ZERO);
+    body.set_bearing(Bearing::default());
+    let leg = right_leg(&body);
+    body.legs[leg].knee = 0.2;
+    body.legs[leg].hip = -0.2;
+    let mut folded = pose.clone();
+    body.fold_leg_ik(&mut folded);
+    let shin = body.legs[leg].shin;
+    let thigh = body.parts[shin].parent.unwrap();
+    assert!(rotation(folded[thigh]).angle_between(rotation(pose[thigh])) > 0.19);
+    let knee = |c: &[Affine3A]| rotation(c[thigh]).inverse() * rotation(c[shin]);
+    assert!(knee(&folded).angle_between(knee(&pose)) > 0.19);
+    body.clear_leg_corrections();
+    let mut chain = pose.clone();
+    body.fold_leg_ik(&mut chain);
+    for (a, b) in chain.iter().zip(&pose) {
+        assert!(rotation(*a).angle_between(rotation(*b)) < 1e-5);
+    }
+    assert_eq!(body.legs[leg].knee, 0.2);
+    assert_eq!(body.legs[leg].hip, -0.2);
+}

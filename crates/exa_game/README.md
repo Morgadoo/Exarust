@@ -439,7 +439,8 @@ standing run blend's fall, and the torso twist toward the look (its
 capsule carries the decision out at Exarust's speeds), its walk's
 lowest ankle while it moves and its balance against the level
 (movement); its clip (the capture of a start
-from the body's physical turns, the original's clock rate for what the
+from the body's physical turns, a plain start's lumbar and thorax keeping
+half of the twist (`limp::Lean`), the original's clock rate for what the
 body does (the base in its stance whatever its balance, twice it
 kicking), the pose it holds while dazed, the sample taken in the
 original's per-part pipeline (the Run clip overlaid on the Walk by

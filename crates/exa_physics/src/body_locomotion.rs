@@ -29,8 +29,8 @@ pub use gait::{
 #[path = "body_twist.rs"]
 mod twist;
 pub use twist::{
-    TwistBy, acos_approx, asin_approx, euler_of, from_euler, head_look, heading_of, look_rotation,
-    twist, twist_spine,
+    TwistBy, acos_approx, asin_approx, euler_of, from_euler, half_lean, head_look, heading_of,
+    look_rotation, twist, twist_spine,
 };
 
 /// Bits of the request's flag word, the original's.
@@ -332,6 +332,11 @@ pub struct Locomotor {
     /// identity while it holds) the sampler turns the spine by.
     pub twist_yaw: f32,
     pub twist: Quat,
+    /// The twist before this tick's twist block: the frame a clip started
+    /// earlier in the tick (by the behaviour, the posture or the
+    /// locomotion) captures its half-lean against
+    /// ([`half_lean`]); one started by the sampler reads this tick's.
+    pub twist_before: Quat,
     /// The character frame's yaw this tick's sampler reads: the body's
     /// yaw before this tick's turn (the original rebuilds its frame after
     /// its sampler).
@@ -404,6 +409,7 @@ impl Default for Locomotor {
             stance_facing: 0.0,
             twist_yaw: 0.0,
             twist: Quat::IDENTITY,
+            twist_before: Quat::IDENTITY,
             frame_yaw: 0.0,
             head_weight: 0.0,
             head_yaw: 0.0,
@@ -431,6 +437,22 @@ impl Locomotor {
     /// The horizontal direction the body faces.
     pub fn facing(&self) -> Vec3 {
         forward(self.yaw)
+    }
+
+    /// The placement's reset of the locomotion, as the original's
+    /// placement at a matrix does before it samples the first clip: the
+    /// twist back to the identity, the move vector's reach 0, and the yaw
+    /// that of the matrix's forward (`forward`, its z axis) flattened and
+    /// normalised (a zero one kept zero), by the original's arc cosine
+    /// ([`heading_of`]). Returns that flattened heading, which the
+    /// original also takes as the behaviour's heading and its last.
+    pub fn placed(&mut self, forward: Vec3) -> Vec3 {
+        self.twist = Quat::IDENTITY;
+        self.twist_before = Quat::IDENTITY;
+        self.reach = 0.0;
+        let heading = Vec3::new(forward.x, 0.0, forward.z).normalize_or_zero();
+        self.yaw = heading_of(heading);
+        heading
     }
 }
 

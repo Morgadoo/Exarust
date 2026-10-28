@@ -119,7 +119,10 @@ queries in the running game). The per-place scorer's notice and band
 terms are overwritten by its close formula, so they are not kept. A stuck
 fighter runs its chase route through the navigation grid when there is
 one (`chase`, `route`; the duellists share one plan turn a frame); only
-while it follows the route does the combat tick end there. A running body
+while it follows the route does the combat tick end there. The step gate
+(`combat::can_act`) also stays shut while the body's trailing-foot request
+is pending (`Locomotor::plant_request`, up to 500 ms after a clip
+replaced Walk or Run). A running body
 stops its run before the drives (the step goal pulled to `8·speed + 20`
 cm along its facing). The cast chooser runs at the first place for a body
 not attacking with a foe, and a cast running past a second is torn down

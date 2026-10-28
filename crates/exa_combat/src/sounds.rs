@@ -7,6 +7,11 @@
 //! coverage at least a half, its class, the flesh and skeleton defaults and
 //! the golem override) and its foley routine (the per-bone weights, the
 //! class factors and volumes, the `FoleyPlH` and `Golem_Foley` loops).
+//! A struck item's blow sound ([`struck_item_sound`]) follows the damage
+//! routine's struck-item voice: its record's class set below the split
+//! along the item, its own sound above, and its sound clock.
+
+use bevy::math::Vec3;
 
 use crate::damage::PartArmour;
 
@@ -159,6 +164,78 @@ pub fn foley(
     }
 }
 
+/// The struck item's sound clock waits this long (ms) less 80 ms a unit
+/// of the blow's strength.
+pub const STRUCK_SOUND_WAIT_MS: u32 = 200;
+const STRUCK_SOUND_PER_STRENGTH: f32 = 80.0;
+/// The struck item's sounds play at 1.2 times the blow's pitch (double).
+const STRUCK_PITCH: f64 = 1.2;
+/// The record's sound-class bits: a nonzero class names one of three
+/// shared sets (1 to 3).
+pub const STRUCK_CLASS_BITS: u32 = 0x30000;
+
+/// What the struck item's blow reads of it: its record's sound-class bits
+/// and the split (a share of its `length`) below which a blow lands on
+/// the class's shared set, and where the item is and its long (y) axis.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StruckItem {
+    pub record_word: u32,
+    pub split: f32,
+    pub length: f32,
+    pub origin: Vec3,
+    pub axis: Vec3,
+    /// The item has its own impact sound.
+    pub own_sound: bool,
+}
+
+/// The sound a struck item's blow plays.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum StruckSound {
+    /// One of the three shared sets of the record's class (1 to 3).
+    Set(u8),
+    /// The item's own impact sound.
+    Own,
+}
+
+/// A struck item's blow: when its sound may play again (the 32-bit game
+/// clock `now_ms` plus 200 ms less round(`strength` · 80), rounded half to
+/// even as the original's conversion, whose NaN or out-of-range value
+/// leaves 0 in the low word), and the sound with its volume (`strength`)
+/// and pitch (`pitch` · 1.2 in double). The record's class set plays when
+/// it has class bits and the blow's `point` projects on the item's axis,
+/// summed y then x then z and over its length, strictly below the split;
+/// otherwise (a NaN projection too) the item's own sound, none without
+/// one.
+pub fn struck_item_sound(
+    item: &StruckItem,
+    point: Vec3,
+    strength: f32,
+    pitch: f32,
+    now_ms: u32,
+) -> (u32, Option<(StruckSound, f32, f32)>) {
+    let scaled = strength * STRUCK_SOUND_PER_STRENGTH;
+    let rounded = if scaled.is_finite() && scaled.abs() < 9.2e18 {
+        scaled.round_ties_even() as i64 as u32
+    } else {
+        0
+    };
+    let ready = now_ms
+        .wrapping_add(STRUCK_SOUND_WAIT_MS)
+        .wrapping_sub(rounded);
+    let pitch = (f64::from(pitch) * STRUCK_PITCH) as f32;
+    let class = item.record_word & STRUCK_CLASS_BITS;
+    let d = point - item.origin;
+    let along = (d.z * item.axis.z + (d.y * item.axis.y + d.x * item.axis.x)) / item.length;
+    let sound = if class != 0 && along < item.split {
+        Some(StruckSound::Set((class >> 16) as u8))
+    } else if item.own_sound {
+        Some(StruckSound::Own)
+    } else {
+        None
+    };
+    (ready, sound.map(|s| (s, strength, pitch)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -250,5 +327,65 @@ mod tests {
         assert_eq!((g.kind, g.volume, g.base), (FoleyKind::Golem, 1.0, 1.0));
         let g = foley(&armour, true, true, false);
         assert_eq!((g.kind, g.volume, g.base), (FoleyKind::Golem, 6.0, 1.5));
+    }
+
+    fn sword() -> StruckItem {
+        StruckItem {
+            record_word: 0x20000,
+            split: 0.25,
+            length: 80.0,
+            origin: Vec3::new(10.0, 0.0, 0.0),
+            axis: Vec3::Y,
+            own_sound: true,
+        }
+    }
+
+    /// A blow 10 cm up an 80 cm item whose record splits at a quarter
+    /// plays its class's second set; one 30 cm up its own sound; a record
+    /// without class bits always its own, an item without one then
+    /// nothing. The clock waits 200 ms less round-half-even(80 · strength)
+    /// (0.5 → 40, 1/32 → 2.5 → 2, 3/32 → 7.5 → 8), wrapping the
+    /// 32-bit clock; the pitch is 1.2 times the blow's in double.
+    #[test]
+    fn a_struck_items_sound_follows_its_split() {
+        let item = sword();
+        let low = Vec3::new(10.0, 10.0, 0.0);
+        let (ready, sound) = struck_item_sound(&item, low, 0.5, 1.0, 1_000);
+        assert_eq!(ready, 1_160);
+        assert_eq!(sound, Some((StruckSound::Set(2), 0.5, 1.2)));
+        let high = Vec3::new(10.0, 30.0, 0.0);
+        let (_, sound) = struck_item_sound(&item, high, 0.5, 1.0, 1_000);
+        assert_eq!(sound.map(|s| s.0), Some(StruckSound::Own));
+        let at_split = Vec3::new(10.0, 20.0, 0.0);
+        let (_, sound) = struck_item_sound(&item, at_split, 0.5, 1.0, 1_000);
+        assert_eq!(sound.map(|s| s.0), Some(StruckSound::Own));
+        let plain = StruckItem {
+            record_word: 0,
+            ..item
+        };
+        let (_, sound) = struck_item_sound(&plain, low, 0.5, 1.0, 1_000);
+        assert_eq!(sound.map(|s| s.0), Some(StruckSound::Own));
+        let mute = StruckItem {
+            own_sound: false,
+            ..plain
+        };
+        assert_eq!(struck_item_sound(&mute, low, 0.5, 1.0, 1_000).1, None);
+        assert_eq!(struck_item_sound(&item, low, 0.031_25, 1.0, 0).0, 198);
+        assert_eq!(struck_item_sound(&item, low, 0.093_75, 1.0, 0).0, 192);
+        assert_eq!(struck_item_sound(&item, low, 1.0, 1.0, u32::MAX).0, 119);
+        assert_eq!(
+            struck_item_sound(&item, low, f32::NAN, 1.0, 5).0,
+            205,
+            "a NaN strength leaves the clock 200 ms on"
+        );
+        let third = StruckItem {
+            record_word: 0x0003_0001,
+            ..item
+        };
+        let (_, sound) = struck_item_sound(&third, low, 0.5, 0.9, 0);
+        assert_eq!(
+            sound,
+            Some((StruckSound::Set(3), 0.5, (f64::from(0.9f32) * 1.2) as f32))
+        );
     }
 }

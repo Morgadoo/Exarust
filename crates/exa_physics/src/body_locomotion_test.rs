@@ -545,3 +545,26 @@ fn moving_drops_the_trailing_foot_request() {
     assert_eq!(body.stop, Stop::Standing);
     assert_eq!(body.plant_request, 2);
 }
+
+/// A placement drops the twist and the move vector's reach and takes its
+/// yaw from the matrix's flattened forward by the original's arc cosine:
+/// (1, 0.5, 1) faces 0.785179 rad (the exact π/4 is 0.785398); a vertical
+/// forward gives a zero heading and yaw.
+#[test]
+fn a_placement_resets_the_twist_and_takes_the_matrix_heading() {
+    let mut body = Locomotor {
+        twist: Quat::from_rotation_y(0.4),
+        twist_before: Quat::from_rotation_y(0.3),
+        reach: 200.0,
+        yaw: 2.0,
+        ..Locomotor::default()
+    };
+    let heading = body.placed(Vec3::new(1.0, 0.5, 1.0));
+    assert_eq!(body.twist, Quat::IDENTITY);
+    assert_eq!(body.twist_before, Quat::IDENTITY);
+    assert_eq!(body.reach, 0.0);
+    assert!((heading - Vec3::new(1.0, 0.0, 1.0).normalize()).length() < 1e-6);
+    assert!((body.yaw - 0.785_179).abs() < 1e-5, "{}", body.yaw);
+    assert_eq!(body.placed(Vec3::Y), Vec3::ZERO);
+    assert_eq!(body.yaw, 0.0);
+}
