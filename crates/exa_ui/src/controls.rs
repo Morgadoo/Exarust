@@ -1138,7 +1138,7 @@ pub struct Spinner {
     pub integer: bool,
     /// The typed text no longer shows the value (the `0x40000000` bit).
     pub dirty: bool,
-    /// The decimals the value formats with (the record's `0x58` word).
+    /// The decimals the value formats with.
     pub decimals: i32,
     /// The drawn text.
     pub text: Vec<u8>,
