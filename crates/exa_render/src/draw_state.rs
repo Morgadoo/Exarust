@@ -182,8 +182,8 @@ pub struct DrawPlan {
     pub environment: u32,
     /// Lights gathered, 0 through 6.
     pub lights: usize,
-    /// The light array is uploaded (the slots were refilled or their depth
-    /// scale changed).
+    /// The light array is uploaded (a slot was refilled or its depth scale
+    /// changed, or the draw bound another program than the last one).
     pub upload_lights: bool,
     /// The material block is rewritten with this diffuse alpha (the room
     /// fade), when the object's frame word asks for it and it moved.
@@ -263,6 +263,7 @@ impl DrawState {
         object: &DrawObject<'_>,
         scene: &DrawScene,
         path: DrawPath,
+        program_changed: bool,
     ) -> DrawPlan {
         self.slots.set_scene(scene.slot);
         let lit = object.material & 6 != 0;
@@ -283,10 +284,13 @@ impl DrawState {
         let environment = self.slots.environment;
         // The plain path uploads the lights only for a lit material; the
         // surface path whenever any light is gathered.
+        // The light records are re-uploaded when a slot changed or the
+        // draw bound another program than the last one (the drawing
+        // state's single stale flag).
         let upload_lights = match path {
             DrawPath::Supersampled => gathered > 0,
             DrawPath::Plain => lit && gathered > 0,
-        } && self.slots.stale;
+        } && (self.slots.stale || program_changed);
         if upload_lights {
             self.slots.stale = false;
         }
@@ -419,7 +423,7 @@ mod tests {
         let mut state = DrawState::new(scene().slot);
         let mut object = object();
         object.lights = Some(&lights);
-        let plan = state.prepare(&object, &scene(), DrawPath::Supersampled);
+        let plan = state.prepare(&object, &scene(), DrawPath::Supersampled, false);
         assert_eq!(
             plan.object_word,
             (1 << 24) | crate::shader_program::object::QUAD_RENDER
@@ -473,18 +477,41 @@ mod tests {
         // No light list: the slots are cleared.
         let mut object = object();
         object.lights = Some(&lights);
-        let plan = state.prepare(&object, &scene(), DrawPath::Supersampled);
+        let plan = state.prepare(&object, &scene(), DrawPath::Supersampled, false);
         assert_eq!(plan.lights, 1);
         object.lights = None;
-        let plan = state.prepare(&object, &scene(), DrawPath::Supersampled);
+        let plan = state.prepare(&object, &scene(), DrawPath::Supersampled, false);
         assert_eq!(plan.lights, 0);
         assert_eq!(plan.environment & 0xFF, 0);
         // An unlit material ignores the list.
         object.lights = Some(&lights);
         object.material = 0x8;
-        let plan = state.prepare(&object, &scene(), DrawPath::Supersampled);
+        let plan = state.prepare(&object, &scene(), DrawPath::Supersampled, false);
         assert_eq!(plan.lights, 0);
         assert_eq!(plan.environment & 0xFF, 0);
+    }
+
+    #[test]
+    fn a_program_change_reuploads_the_lights() {
+        let lights = [light(1)];
+        let mut state = DrawState::new(scene().slot);
+        let mut object = object();
+        object.lights = Some(&lights);
+        let plan = state.prepare(&object, &scene(), DrawPath::Supersampled, false);
+        assert!(plan.upload_lights);
+        // A second draw with the same slots and the same program leaves the
+        // light records alone.
+        let plan = state.prepare(&object, &scene(), DrawPath::Supersampled, false);
+        assert!(!plan.upload_lights);
+        // Binding another program marks the drawing state stale.
+        let plan = state.prepare(&object, &scene(), DrawPath::Supersampled, true);
+        assert!(plan.upload_lights);
+        // With no lights there is nothing to upload even on a program
+        // change.
+        object.lights = None;
+        let plan = state.prepare(&object, &scene(), DrawPath::Supersampled, true);
+        assert_eq!(plan.lights, 0);
+        assert!(!plan.upload_lights);
     }
 
     #[test]
@@ -493,7 +520,7 @@ mod tests {
         let mut state = DrawState::new(scene().slot);
         let mut object = object();
         object.lights = Some(&lights);
-        let plan = state.prepare(&object, &scene(), DrawPath::Plain);
+        let plan = state.prepare(&object, &scene(), DrawPath::Plain, false);
         assert_eq!(plan.subframes.len(), 1);
         assert_eq!(plan.subframes[0].index, 0);
         assert_eq!(
@@ -505,7 +532,7 @@ mod tests {
         );
         // An unlit material's plain draw uploads no lights.
         object.material = 0x8;
-        let plan = state.prepare(&object, &scene(), DrawPath::Plain);
+        let plan = state.prepare(&object, &scene(), DrawPath::Plain, false);
         assert_eq!(plan.lights, 0);
         assert!(!plan.upload_lights);
     }
@@ -516,7 +543,7 @@ mod tests {
         let mut state = DrawState::new(scene().slot);
         let mut object = object();
         object.frame_object = (2 - 1) << 24;
-        let plan = state.prepare(&object, &scene(), DrawPath::Supersampled);
+        let plan = state.prepare(&object, &scene(), DrawPath::Supersampled, false);
         assert_eq!(
             plan.subframes[0].taps,
             ShadowSampleUpload {
@@ -541,15 +568,15 @@ mod tests {
         let mut scene = scene();
         scene.subframe_base = 0.25;
         scene.subframe_step = 0.125;
-        let plan = state.prepare(&object, &scene, DrawPath::Supersampled);
+        let plan = state.prepare(&object, &scene, DrawPath::Supersampled, false);
         assert_eq!(plan.subframes[0].time, Some(0.25));
         assert_eq!(plan.subframes[2].time, Some(0.25 + 2.0 * 0.125));
         // The plain path draws once and sets no sub-frame clock.
-        let plan = state.prepare(&object, &scene, DrawPath::Plain);
+        let plan = state.prepare(&object, &scene, DrawPath::Plain, false);
         assert_eq!(plan.subframes[0].time, None);
         // A static object has none.
         object.geometry.word = 0;
-        let plan = state.prepare(&object, &scene, DrawPath::Supersampled);
+        let plan = state.prepare(&object, &scene, DrawPath::Supersampled, false);
         assert!(plan.subframes.iter().all(|s| s.time.is_none()));
     }
 
@@ -559,7 +586,7 @@ mod tests {
         let mut object = object();
         object.vertex_colors = true;
         object.geometry.word = GEOMETRY_VERTEX_DELTA;
-        let plan = state.prepare(&object, &scene(), DrawPath::Supersampled);
+        let plan = state.prepare(&object, &scene(), DrawPath::Supersampled, false);
         assert_ne!(
             plan.object_word & crate::shader_program::object::VERTEX_COLOR,
             0
@@ -578,28 +605,28 @@ mod tests {
         object.fade = 0.5;
         object.diffuse_alpha = 0.5;
         // The target 1 − fade equals the stored alpha: nothing is uploaded.
-        let plan = state.prepare(&object, &scene(), DrawPath::Supersampled);
+        let plan = state.prepare(&object, &scene(), DrawPath::Supersampled, false);
         assert_eq!(plan.fade_alpha, None);
         object.diffuse_alpha = 0.5 - 1e-4;
-        let plan = state.prepare(&object, &scene(), DrawPath::Supersampled);
+        let plan = state.prepare(&object, &scene(), DrawPath::Supersampled, false);
         assert_eq!(plan.fade_alpha, Some(0.5));
         // One float below the target is still under the epsilon; the
         // epsilon itself is the engine's constant, one step above that.
         object.diffuse_alpha = f32::from_bits(0.5f32.to_bits() - 1);
-        let plan = state.prepare(&object, &scene(), DrawPath::Supersampled);
+        let plan = state.prepare(&object, &scene(), DrawPath::Supersampled, false);
         assert_eq!(plan.fade_alpha, None);
         object.diffuse_alpha = 0.5 - FADE_EPSILON;
-        let plan = state.prepare(&object, &scene(), DrawPath::Supersampled);
+        let plan = state.prepare(&object, &scene(), DrawPath::Supersampled, false);
         assert_eq!(plan.fade_alpha, Some(0.5));
         // A NaN stored alpha never rewrites (the original's compare is not
         // an ordered `<`).
         object.diffuse_alpha = f32::NAN;
-        let plan = state.prepare(&object, &scene(), DrawPath::Supersampled);
+        let plan = state.prepare(&object, &scene(), DrawPath::Supersampled, false);
         assert_eq!(plan.fade_alpha, None);
         // Without the frame bit no fade is applied.
         object.frame = 0;
         object.diffuse_alpha = 0.0;
-        let plan = state.prepare(&object, &scene(), DrawPath::Supersampled);
+        let plan = state.prepare(&object, &scene(), DrawPath::Supersampled, false);
         assert_eq!(plan.fade_alpha, None);
     }
 
@@ -612,19 +639,19 @@ mod tests {
         object.emissive = 0.25;
         let mut scene = scene();
         scene.emissive_scale = 2.0;
-        let plan = state.prepare(&object, &scene, DrawPath::Supersampled);
+        let plan = state.prepare(&object, &scene, DrawPath::Supersampled, false);
         assert_eq!(plan.emissive_scale, Some(0.25));
         object.frame = FRAME_EMISSIVE_SCALE;
-        let plan = state.prepare(&object, &scene, DrawPath::Supersampled);
+        let plan = state.prepare(&object, &scene, DrawPath::Supersampled, false);
         assert_eq!(plan.emissive_scale, Some(2.0));
         // Only a record with the emissive bit is rescaled.
         object.material = 0x7;
-        let plan = state.prepare(&object, &scene, DrawPath::Supersampled);
+        let plan = state.prepare(&object, &scene, DrawPath::Supersampled, false);
         assert_eq!(plan.emissive_scale, None);
         // And only a geometry whose flags ask for it.
         object.material = 0x8;
         object.geometry.flags = 0;
-        let plan = state.prepare(&object, &scene, DrawPath::Supersampled);
+        let plan = state.prepare(&object, &scene, DrawPath::Supersampled, false);
         assert_eq!(plan.emissive_scale, None);
     }
 
@@ -635,12 +662,12 @@ mod tests {
         object.material = 0x7 | 0x200;
         let mut scene = scene();
         scene.slot.base_environment = 0x10;
-        let plan = state.prepare(&object, &scene, DrawPath::Supersampled);
+        let plan = state.prepare(&object, &scene, DrawPath::Supersampled, false);
         assert!(plan.liquid_level);
         assert!(plan.gi_position);
         object.material = 0x7;
         scene.slot.base_environment = 0;
-        let plan = state.prepare(&object, &scene, DrawPath::Supersampled);
+        let plan = state.prepare(&object, &scene, DrawPath::Supersampled, false);
         assert!(!plan.liquid_level);
         assert!(!plan.gi_position);
     }
@@ -652,16 +679,16 @@ mod tests {
         object.frame = HALF_PASSES;
         let mut scene = scene();
         scene.sun_shadow_mode = 3;
-        let plan = state.prepare(&object, &scene, DrawPath::Supersampled);
+        let plan = state.prepare(&object, &scene, DrawPath::Supersampled, false);
         assert_eq!(plan.subframes.len(), 2);
         scene.sun_shadow_mode = 2;
-        let plan = state.prepare(&object, &scene, DrawPath::Supersampled);
+        let plan = state.prepare(&object, &scene, DrawPath::Supersampled, false);
         assert_eq!(plan.subframes.len(), 4);
         // A single pass stays one: the engine halves the last index, not
         // the count.
         scene.passes = 1;
         scene.sun_shadow_mode = 3;
-        let plan = state.prepare(&object, &scene, DrawPath::Supersampled);
+        let plan = state.prepare(&object, &scene, DrawPath::Supersampled, false);
         assert_eq!(plan.subframes.len(), 1);
     }
 
@@ -681,7 +708,7 @@ mod tests {
         let mut state = DrawState::new(scene().slot);
         let mut object = object();
         object.lights = Some(&lights);
-        let plan = state.prepare(&object, &scene(), DrawPath::Supersampled);
+        let plan = state.prepare(&object, &scene(), DrawPath::Supersampled, false);
         assert_eq!(plan.lights, 1);
         state.begin_scene();
         assert_eq!(state.slots().count, 0);
