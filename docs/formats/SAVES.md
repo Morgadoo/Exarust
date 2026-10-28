@@ -434,6 +434,9 @@ name on the scene once the import succeeds.
   After a successful import the scene's sun mode becomes automatic (0).
 * **Arena level**: the archive only; no GUI or settings reset. Only the item
   GUI's panel reset runs first.
+* All three clear the portal node (a null pointer: the level's own start),
+  store −1 in the engine's portal id word and reset the saved spawn matrix
+  to its default.
 
 **Import order.** Reserve the kd-tree build; import the chunk tree; free the
 section stream; release the reservation; when at least one node came back:
@@ -448,10 +451,11 @@ stream; a section with no nodes does the same.
 
 **Game scene.** The scene is created with its flag word `0x10000`, 115 sound
 slots [guess at the field's meaning], node-manager flags 1 and 1, the scene
-environment's sun mode off (1) and fog distance `0x3F333333` (0.7), the
-view's own flag set, and the renderer's option word 3; the object manager,
-audio environment, editor, GI manager, blood, AI hooks and the save unit's
-scene-content classifier are created on the way.
+environment's sky mode 1 and fog distance `0x3F333333` (0.7), the view's own
+byte set and its setter called with 1, and the renderer's option word 3;
+the object manager, audio environment, editor, GI manager, blood, AI hooks
+and the save unit's scene-content classifier are created on the way. The
+indoor preset (which sets the sun) is applied by the caller just after.
 
 **GUI reset.** Every load, combatant preparation and the menu scene runs
 the same reset: the GUI's task list, the tips/hover state (with argument

@@ -72,8 +72,13 @@ pub struct SceneLoadPlan {
     pub level_id: u32,
     /// The previous level id these entry points always store as zero.
     pub previous_level: u32,
-    /// The portal node these entry points always clear to −1 (none).
-    pub portal: i32,
+    /// The portal node is cleared (a null pointer: the level's own start).
+    pub portal_cleared: bool,
+    /// The engine's portal id word, stored as −1 (none).
+    pub portal_word: i32,
+    /// The saved spawn matrix is reset to its default (the two zero
+    /// globals the entry points store).
+    pub matrix_reset: bool,
     /// The GUI's task and item-panel reset (the named-level path only).
     pub gui_reset: bool,
     /// The settings tag, saved word and sun-height reset (the named-level
@@ -119,7 +124,9 @@ pub fn scene_load_plan(
         origin,
         level_id: locale_id,
         previous_level: 0,
-        portal: -1,
+        portal_cleared: true,
+        portal_word: -1,
+        matrix_reset: true,
         gui_reset: kind == SceneLoadKind::NamedLevel,
         settings_reset: kind == SceneLoadKind::NamedLevel,
         save_local_database: origin == LevelOrigin::SaveSection,
@@ -267,10 +274,12 @@ pub fn import_level(
 /// The values the game scene is created with, before any level is loaded:
 /// the scene's own flag word, the sound-slot count the original stores, the
 /// editor's (empty) name, the two node-manager flags, the scene
-/// environment's initial sun mode and fog distance, the view's own flag and
-/// the renderer option word. The objects created on the way (the object
+/// environment's sky mode and fog distance, the view's flag and mode and the
+/// renderer option word. The objects created on the way (the object
 /// manager, the audio environment, the GI manager, blood, the AI hooks) are
-/// the host's; these are the values it must see.
+/// the host's; these are the values it must see. The scene environment's
+/// *sun* mode is not set here; the indoor preset the caller runs next does
+/// that.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GameSceneDefaults {
     /// The flag word the scene object starts with (`0x10000`).
@@ -280,17 +289,73 @@ pub struct GameSceneDefaults {
     pub sound_slots: u32,
     /// The node-manager flags the original sets (`1` and `1`).
     pub node_flags: [u8; 2],
-    /// The scene environment's first sun mode: off (the engine's value 1).
-    pub sun_mode: u32,
+    /// The scene environment's sky mode, written through its setter (1).
+    pub sky_mode: u32,
     /// The scene environment's first fog distance: `0x3F333333` (0.7).
     pub fog_distance: f32,
-    /// The view's own flag word the original sets to one.
+    /// The view's own byte the original sets to one.
     pub view_flag: bool,
+    /// The mode the view's own setter is called with (1).
+    pub view_mode: u32,
     /// The renderer's option word the original stores (3).
     pub renderer_option: u32,
-    /// The fog preset the first environment is rebuilt with: the indoor
-    /// preset with its own distance.
-    pub indoor_preset: bool,
+}
+
+/// One step of the game scene's creation, in the original's order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GameSceneStep {
+    /// The renderer's scene object and the node manager are created.
+    CreateRendererScene,
+    /// The scene's flag word gains `0x10000`.
+    FlagScene,
+    /// The object manager is created and attached to the scene.
+    CreateObjectManager,
+    /// The OpenAL loader runs when the audio environment is not up yet, and
+    /// the audio environment is attached and switched on.
+    CreateAudio,
+    /// The scene's sound-slot word is stored.
+    StoreSoundSlots,
+    /// The scene node is added with 0x20, 0x20.
+    AddSceneNode,
+    /// The scene editor is created with the empty name.
+    CreateEditor,
+    /// The node-manager flags are set.
+    SetNodeFlags,
+    /// The scene environment's sky mode and fog distance are set.
+    SetSky,
+    /// The view's byte is set and its setter called with 1.
+    SetView,
+    /// The renderer's option word is stored and its create call runs.
+    SetRenderer,
+    /// The GI manager is created and attached to the renderer.
+    CreateGi,
+    /// The blood sprays and the weapon blood are created.
+    CreateBlood,
+    /// The AI's scene hook is initialised.
+    CreateAi,
+    /// The save unit's scene-content classifier is registered.
+    RegisterClassifier,
+}
+
+/// The scene-creation steps in the original's order.
+pub fn game_scene_steps() -> Vec<GameSceneStep> {
+    vec![
+        GameSceneStep::CreateRendererScene,
+        GameSceneStep::FlagScene,
+        GameSceneStep::CreateObjectManager,
+        GameSceneStep::CreateAudio,
+        GameSceneStep::StoreSoundSlots,
+        GameSceneStep::AddSceneNode,
+        GameSceneStep::CreateEditor,
+        GameSceneStep::SetNodeFlags,
+        GameSceneStep::SetSky,
+        GameSceneStep::SetView,
+        GameSceneStep::SetRenderer,
+        GameSceneStep::CreateGi,
+        GameSceneStep::CreateBlood,
+        GameSceneStep::CreateAi,
+        GameSceneStep::RegisterClassifier,
+    ]
 }
 
 /// The scene-creation constants.
@@ -299,11 +364,11 @@ pub fn game_scene_defaults() -> GameSceneDefaults {
         scene_flags: 0x1_0000,
         sound_slots: 0x73,
         node_flags: [1, 1],
-        sun_mode: 1,
+        sky_mode: 1,
         fog_distance: 0.7,
         view_flag: true,
+        view_mode: 1,
         renderer_option: 3,
-        indoor_preset: true,
     }
 }
 
@@ -533,7 +598,9 @@ mod tests {
         assert!(save.save_local_database);
         assert_eq!(save.level_id, 27);
         assert_eq!(save.previous_level, 0);
-        assert_eq!(save.portal, -1);
+        assert!(save.portal_cleared);
+        assert_eq!(save.portal_word, -1);
+        assert!(save.matrix_reset);
         assert!(!save.gui_reset && !save.settings_reset && !save.sun_mode_auto);
 
         // A save without the section falls back to the archive.
@@ -647,11 +714,26 @@ mod tests {
         assert_eq!(scene.scene_flags, 0x1_0000);
         assert_eq!(scene.sound_slots, 0x73);
         assert_eq!(scene.node_flags, [1, 1]);
-        assert_eq!(scene.sun_mode, 1);
+        assert_eq!(scene.sky_mode, 1);
         assert_eq!(scene.fog_distance.to_bits(), 0x3f33_3333);
         assert!(scene.view_flag);
+        assert_eq!(scene.view_mode, 1);
         assert_eq!(scene.renderer_option, 3);
-        assert!(scene.indoor_preset);
+        let steps = game_scene_steps();
+        assert_eq!(steps.len(), 15);
+        assert_eq!(steps.first(), Some(&GameSceneStep::CreateRendererScene));
+        assert_eq!(steps.last(), Some(&GameSceneStep::RegisterClassifier));
+        // The content classifier is registered last, after every object
+        // the scene needs.
+        let ai = steps
+            .iter()
+            .position(|step| *step == GameSceneStep::CreateAi)
+            .unwrap();
+        let classifier = steps
+            .iter()
+            .position(|step| *step == GameSceneStep::RegisterClassifier)
+            .unwrap();
+        assert!(ai < classifier);
     }
 
     #[test]

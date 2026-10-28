@@ -837,8 +837,8 @@ impl SceneEnvironment {
     /// light, a black background and mid-grey fog, no wind and no rain. It
     /// replaced the fixed values a scene's plug-in starts from; the fog
     /// variants below only change the distance afterwards. The renderer's
-    /// view reset and the audio environment switch the original makes first
-    /// are the caller's.
+    /// view reset (its sky/sun field goes to zero) and the audio
+    /// environment switch the original makes first are the caller's.
     pub fn apply_indoor_preset(&mut self) {
         self.set_sun_mode(SunMode::Off, 0, 0);
         self.set_sky(false);
