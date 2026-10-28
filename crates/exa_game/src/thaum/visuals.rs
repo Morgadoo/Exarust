@@ -383,22 +383,48 @@ pub struct ShellDraw {
     pub parts: usize,
 }
 
-/// The shell pass's selection: a node with subobjects draws its parts whose
-/// flags lack 0x80040; `visible` picks the thick pass (0x8000 set).
+/// The shell pass's first side: a node with subobjects draws its parts whose
+/// flags lack 0x80040, thick when its visible bit 0x8000 is set, as
+/// [`crate::effects::shell::first_draws`] selects them.
 pub fn shell_draws(nodes: &[ShellNodeView], shown: f32) -> Vec<ShellDraw> {
-    nodes
+    let _ = shown;
+    let pass: Vec<crate::effects::shell::ShellPassNode> = nodes
         .iter()
-        .filter(|node| node.subobjects)
-        .map(|node| {
-            let parts = node.parts[..node.part_count.min(4)]
+        .map(|node| crate::effects::shell::ShellPassNode {
+            visibility: if node.visible {
+                crate::effects::shell::THICK_PASS
+            } else {
+                0
+            },
+            render_flags: if node.subobjects {
+                crate::effects::shell::SUBOBJECTS
+            } else {
+                0
+            },
+            fade: 0.0,
+            fade2: 0.0,
+            parts: node.parts[..node.part_count.min(4)]
                 .iter()
-                .filter(|flags| **flags & 0x0008_0040 == 0)
-                .count();
-            let _ = shown;
-            ShellDraw {
-                thick: node.visible,
-                parts,
-            }
+                .map(|flags| crate::effects::shell::ShellPart {
+                    flags: *flags,
+                    mesh: true,
+                    fade: 0.0,
+                    texture_stage: 0,
+                })
+                .collect(),
+        })
+        .collect();
+    let draws = crate::effects::shell::first_draws(&pass);
+    let mut counts = vec![0usize; pass.len()];
+    for draw in draws {
+        counts[draw.node] += 1;
+    }
+    pass.iter()
+        .enumerate()
+        .filter(|(_, node)| node.render_flags & crate::effects::shell::SUBOBJECTS != 0)
+        .map(|(index, node)| ShellDraw {
+            thick: node.visibility & crate::effects::shell::THICK_PASS != 0,
+            parts: counts[index],
         })
         .collect()
 }
