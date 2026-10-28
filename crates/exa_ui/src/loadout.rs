@@ -638,6 +638,355 @@ pub fn save_on_close(editor: &LoadoutEditor) -> LoadoutSave {
     }
 }
 
+/// One of the form's 0x68-byte control records, decoded: class and id, the
+/// x and y words (a negative y is the layout pass's anchor code), width and
+/// height, the caption, and the style and state words.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FormControl {
+    pub class: u16,
+    pub id: u16,
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
+    pub text: Option<&'static str>,
+    pub style: u32,
+    pub state: u32,
+}
+
+/// The arsenal form's 27 control records, in the constructor's order:
+/// the class and id, the x and y words (negative anchors the layout pass
+/// resolves), the width and height, the caption, the style word and the
+/// state word.
+pub const CONTROLS: [FormControl; 27] = [
+    FormControl {
+        class: 0x5,
+        id: 0x0,
+        x: 200,
+        y: 1,
+        w: 160,
+        h: 0,
+        text: Some("ARSENAL"),
+        style: 0x3b00,
+        state: 0x0,
+    },
+    FormControl {
+        class: 0x12,
+        id: 0x0,
+        x: 8,
+        y: 5,
+        w: 220,
+        h: 0,
+        text: None,
+        style: 0x8403320,
+        state: 0x0,
+    },
+    FormControl {
+        class: 0x1,
+        id: 0x0,
+        x: 4,
+        y: -32762,
+        w: 76,
+        h: 24,
+        text: Some("Previous"),
+        style: 0x403320,
+        state: 0x0,
+    },
+    FormControl {
+        class: 0x1,
+        id: 0x0,
+        x: -32759,
+        y: -32768,
+        w: 76,
+        h: 24,
+        text: Some("Next"),
+        style: 0x403320,
+        state: 0x0,
+    },
+    FormControl {
+        class: 0x1,
+        id: 0x0,
+        x: -32760,
+        y: -32768,
+        w: 64,
+        h: 24,
+        text: Some("Dismiss"),
+        style: 0x403320,
+        state: 0x0,
+    },
+    FormControl {
+        class: 0x5,
+        id: 0x0,
+        x: 8,
+        y: -32763,
+        w: 40,
+        h: 0,
+        text: Some("Rank"),
+        style: 0x0,
+        state: 0x0,
+    },
+    FormControl {
+        class: 0x4,
+        id: 0x102,
+        x: 56,
+        y: -32768,
+        w: 112,
+        h: 0,
+        text: Some("Inept"),
+        style: 0x405320,
+        state: 0x0,
+    },
+    FormControl {
+        class: 0x5,
+        id: 0x0,
+        x: 52,
+        y: -32760,
+        w: 228,
+        h: 28,
+        text: Some("Points: 0 / 5"),
+        style: 0x0,
+        state: 0x0,
+    },
+    FormControl {
+        class: 0x5,
+        id: 0x0,
+        x: 8,
+        y: -32760,
+        w: 12,
+        h: 28,
+        text: Some("Encumbrance:"),
+        style: 0x0,
+        state: 0x0,
+    },
+    FormControl {
+        class: 0xac01,
+        id: 0x0,
+        x: 100,
+        y: -32768,
+        w: 12,
+        h: 28,
+        text: None,
+        style: 0x0,
+        state: 0x0,
+    },
+    FormControl {
+        class: 0x5,
+        id: 0x0,
+        x: 4,
+        y: 105,
+        w: 228,
+        h: 0,
+        text: None,
+        style: 0x3300,
+        state: 0x0,
+    },
+    FormControl {
+        class: 0x3,
+        id: 0x0,
+        x: 12,
+        y: 4,
+        w: 44,
+        h: 44,
+        text: None,
+        style: 0x1420080,
+        state: 0x0,
+    },
+    FormControl {
+        class: 0x3,
+        id: 0x0,
+        x: -32758,
+        y: -32768,
+        w: 44,
+        h: 44,
+        text: None,
+        style: 0x1420080,
+        state: 0x0,
+    },
+    FormControl {
+        class: 0x3,
+        id: 0x0,
+        x: -32758,
+        y: -32768,
+        w: 44,
+        h: 44,
+        text: None,
+        style: 0x1420080,
+        state: 0x0,
+    },
+    FormControl {
+        class: 0x3,
+        id: 0x0,
+        x: -32758,
+        y: -32768,
+        w: 44,
+        h: 44,
+        text: None,
+        style: 0x1420080,
+        state: 0x0,
+    },
+    FormControl {
+        class: 0x3,
+        id: 0x0,
+        x: -32758,
+        y: -32768,
+        w: 44,
+        h: 44,
+        text: None,
+        style: 0x1420080,
+        state: 0x60,
+    },
+    FormControl {
+        class: 0x1,
+        id: 0x0,
+        x: 16,
+        y: -32764,
+        w: 36,
+        h: 0,
+        text: Some("5"),
+        style: 0x1423300,
+        state: 0x0,
+    },
+    FormControl {
+        class: 0x1,
+        id: 0x0,
+        x: -32760,
+        y: -32768,
+        w: 36,
+        h: 0,
+        text: Some("4"),
+        style: 0x1423300,
+        state: 0x0,
+    },
+    FormControl {
+        class: 0x1,
+        id: 0x0,
+        x: -32760,
+        y: -32768,
+        w: 36,
+        h: 0,
+        text: Some("3"),
+        style: 0x1423300,
+        state: 0x0,
+    },
+    FormControl {
+        class: 0x1,
+        id: 0x0,
+        x: -32760,
+        y: -32768,
+        w: 36,
+        h: 0,
+        text: Some("2"),
+        style: 0x1423300,
+        state: 0x0,
+    },
+    FormControl {
+        class: 0x1,
+        id: 0x0,
+        x: -32760,
+        y: -32768,
+        w: 36,
+        h: 0,
+        text: Some("1"),
+        style: 0x1423300,
+        state: 0x60,
+    },
+    FormControl {
+        class: 0x1,
+        id: 0x0,
+        x: 36,
+        y: 0,
+        w: 164,
+        h: 28,
+        text: Some("CLOSE"),
+        style: 0x20483300,
+        state: 0x0,
+    },
+    FormControl {
+        class: 0x1,
+        id: 0x0,
+        x: 40,
+        y: 0,
+        w: 164,
+        h: 28,
+        text: Some("HIRE"),
+        style: 0x204a3300,
+        state: 0x110,
+    },
+    FormControl {
+        class: 0x5,
+        id: 0x0,
+        x: 108,
+        y: 13,
+        w: 96,
+        h: 0,
+        text: Some("Hire Fee:"),
+        style: 0xa2300,
+        state: 0x110,
+    },
+    FormControl {
+        class: 0xac03,
+        id: 0x0,
+        x: 72,
+        y: 13,
+        w: 48,
+        h: 0,
+        text: None,
+        style: 0xa0000,
+        state: 0x110,
+    },
+    FormControl {
+        class: 0x5,
+        id: 0x0,
+        x: 108,
+        y: 8,
+        w: 96,
+        h: 0,
+        text: Some("Upkeep:"),
+        style: 0xa2300,
+        state: 0x110,
+    },
+    FormControl {
+        class: 0xac03,
+        id: 0x0,
+        x: 72,
+        y: 8,
+        w: 48,
+        h: 0,
+        text: None,
+        style: 0xa0000,
+        state: 0x110,
+    },
+];
+
+/// The form's controls as the control layout pass reads them, placed in a
+/// client (see [`crate::gui_controls::layout_records`]).
+pub fn controls(
+    unit: i32,
+    client: crate::gui_controls::LayoutClient,
+) -> Vec<crate::gui_controls::Control> {
+    let mut records: Vec<crate::gui_controls::Control> = CONTROLS
+        .iter()
+        .map(|record| {
+            let mut control = crate::gui_controls::Control::new(
+                record.class,
+                record.x,
+                record.y,
+                record.w,
+                record.h,
+            );
+            control.text = record
+                .text
+                .map(|text| text.as_bytes().to_vec())
+                .unwrap_or_default();
+            control.style = record.style;
+            control.state = record.state;
+            control
+        })
+        .collect();
+    crate::gui_controls::layout_records(&mut records, client, unit);
+    records
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -655,6 +1004,40 @@ mod tests {
             max_rank: 2,
             ..LoadoutEditor::default()
         }
+    }
+
+    #[test]
+    fn the_form_controls_are_the_shipped_table() {
+        assert_eq!(CONTROLS.len(), 27);
+        assert_eq!(CONTROLS[0].text, Some("ARSENAL"));
+        assert_eq!(CONTROLS[2].text, Some("Previous"));
+        assert_eq!(CONTROLS[4].text, Some("Dismiss"));
+        assert_eq!(CONTROLS[7].text, Some("Points: 0 / 5"));
+        assert_eq!(CONTROLS[8].text, Some("Encumbrance:"));
+        assert_eq!(CONTROLS[21].text, Some("CLOSE"));
+        assert_eq!(CONTROLS[21].style, 0x2048_3300);
+        assert_eq!(CONTROLS[22].state, 0x110);
+        let client = crate::gui_controls::LayoutClient {
+            inner_right: 1020,
+            border: 2,
+            bottom: 766,
+        };
+        let controls = controls(4, client);
+        assert_eq!(controls.len(), 27);
+        let previous = &controls[2];
+        assert_eq!(
+            (previous.x, previous.y, previous.w, previous.h),
+            (4, 52, 76, 24)
+        );
+        assert_eq!((controls[3].x, controls[3].y), (84, 52));
+        assert_eq!((controls[4].x, controls[4].y), (168, 52));
+        // The title label is centred in the client's width.
+        assert_eq!((controls[0].x, controls[0].y), (429, 2));
+        // Points reads 228 wide below the rank row.
+        assert_eq!(
+            (controls[7].x, controls[7].y, controls[7].w, controls[7].h),
+            (52, 118, 228, 28)
+        );
     }
 
     #[test]

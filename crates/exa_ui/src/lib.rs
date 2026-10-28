@@ -182,9 +182,10 @@ pub use line_skin::{
 };
 pub use loading::LoadingStatus;
 pub use loadout::{
-    DropResult, DropSource, EquipFacts, EquipKind, FORM_HEIGHT, FORM_OPACITY, FORM_WIDTH,
-    HeldWeapon, LoadoutEditor, LoadoutItem, LoadoutLayout, LoadoutMode, LoadoutSave, OFFHAND_FLAG,
-    Slot, apply_drop, can_equip, copies, encumbrance, item_cost, layout as loadout_layout,
+    CONTROLS as LOADOUT_CONTROLS, DropResult, DropSource, EquipFacts, EquipKind, FORM_HEIGHT,
+    FORM_OPACITY, FORM_WIDTH, FormControl, HeldWeapon, LoadoutEditor, LoadoutItem, LoadoutLayout,
+    LoadoutMode, LoadoutSave, OFFHAND_FLAG, Slot, apply_drop, can_equip,
+    controls as loadout_controls, copies, encumbrance, item_cost, layout as loadout_layout,
     may_equip, opacity as loadout_opacity, points_used, save_on_close, unequip,
 };
 pub use match_board::{
