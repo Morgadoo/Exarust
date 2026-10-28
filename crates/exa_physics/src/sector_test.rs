@@ -718,8 +718,8 @@ fn an_object_meets_a_body_between_its_bound_and_the_mesh_box() {
 }
 
 /// A body part meeting an object hands every one of its spheres over in the
-/// object's own frame and centimetres; a sphere whose part moved by more
-/// than 0.1 cm² over the tick is swept instead of placed.
+/// object's own frame and centimetres; a sphere that moved by more than
+/// 0.01 cm² over the tick is swept instead of placed.
 #[test]
 fn an_objects_body_stage_takes_the_parts_spheres_in_its_own_frame() {
     let object = ObjectBounds {
@@ -733,6 +733,8 @@ fn an_objects_body_stage_takes_the_parts_spheres_in_its_own_frame() {
     // The part's mesh box reaches x = 0.6 m, 0.4 m short of the object's
     // centre (1 m along x): 1600 cm² < 50² cm².
     let mesh = Bounds::of_box(Vec3::new(0.3, 0.0, 0.0), Vec3::new(0.3, 0.1, 0.1));
+    // The box about the object's particles, wide enough for both spheres.
+    let wide = (Vec3::new(-90.0, 0.0, 0.0), Vec3::splat(30.0));
     let part = ObjectBodyPart {
         now: Affine3A::IDENTITY,
         previous: Affine3A::IDENTITY,
@@ -743,7 +745,7 @@ fn an_objects_body_stage_takes_the_parts_spheres_in_its_own_frame() {
         friction: 0.75,
     };
     let mut contacts = ObjectContacts::default();
-    contacts.gather_bodies(&to_object, object, [part]);
+    contacts.gather_bodies(&to_object, object, wide, [part]);
     assert_eq!(contacts.swept.len(), 0);
     assert_eq!(contacts.spheres.len(), 2);
     // 10 cm behind the object's node, 10 cm across and 12 cm back.
@@ -758,7 +760,7 @@ fn an_objects_body_stage_takes_the_parts_spheres_in_its_own_frame() {
         ..part
     };
     let mut contacts = ObjectContacts::default();
-    contacts.gather_bodies(&to_object, object, [far]);
+    contacts.gather_bodies(&to_object, object, wide, [far]);
     assert!(contacts.spheres.is_empty() && contacts.swept.is_empty());
     // A part whose bound meets the object's but whose mesh box is 0.5 m
     // from the object's centre (2500 <= 2500) gives nothing.
@@ -768,7 +770,7 @@ fn an_objects_body_stage_takes_the_parts_spheres_in_its_own_frame() {
         ..part
     };
     let mut contacts = ObjectContacts::default();
-    contacts.gather_bodies(&to_object, object, [far]);
+    contacts.gather_bodies(&to_object, object, wide, [far]);
     assert!(contacts.spheres.is_empty() && contacts.swept.is_empty());
     // Moved 0.2 m over the tick (20 cm, 400 cm²), the sphere is swept from
     // where the last tick left it.
@@ -777,7 +779,7 @@ fn an_objects_body_stage_takes_the_parts_spheres_in_its_own_frame() {
         ..part
     };
     let mut contacts = ObjectContacts::default();
-    contacts.gather_bodies(&to_object, object, [moving]);
+    contacts.gather_bodies(&to_object, object, wide, [moving]);
     assert_eq!(contacts.spheres.len(), 0);
     assert_eq!(contacts.swept.len(), 2);
     assert!(
@@ -786,6 +788,50 @@ fn an_objects_body_stage_takes_the_parts_spheres_in_its_own_frame() {
             .abs_diff_eq(Vec3::new(-120.0, 0.0, 0.0), 1e-4)
     );
     assert_eq!(contacts.swept[0].to, Vec3::new(-100.0, 0.0, 0.0));
+    // The cloth's own gate is 0.01 cm²: 0.2 cm (0.04 cm²) sweeps, 0.05 cm
+    // (0.0025 cm²) is placed.
+    let crept = ObjectBodyPart {
+        previous: Affine3A::from_translation(Vec3::new(-0.002, 0.0, 0.0)),
+        ..part
+    };
+    let mut contacts = ObjectContacts::default();
+    contacts.gather_bodies(&to_object, object, wide, [crept]);
+    assert_eq!((contacts.spheres.len(), contacts.swept.len()), (0, 2));
+    let still = ObjectBodyPart {
+        previous: Affine3A::from_translation(Vec3::new(-0.0005, 0.0, 0.0)),
+        ..part
+    };
+    let mut contacts = ObjectContacts::default();
+    contacts.gather_bodies(&to_object, object, wide, [still]);
+    assert_eq!((contacts.spheres.len(), contacts.swept.len()), (2, 0));
+    // Each sphere, padded by 2 cm, must reach the box about the particles:
+    // a box over x = -74..-46 keeps the 5 cm sphere at -80 (6 cm < 7 cm)
+    // and drops the 10 cm one at -100 (26 cm > 12 cm).
+    let narrow = (Vec3::new(-60.0, 0.0, 0.0), Vec3::splat(14.0));
+    let mut contacts = ObjectContacts::default();
+    contacts.gather_bodies(&to_object, object, narrow, [part]);
+    assert_eq!(contacts.spheres.len(), 1);
+    assert_eq!(contacts.spheres[0].radius, 5.0);
+    // Swept, the 10 cm sphere ends at -100 (reach -88) and misses; the
+    // 5 cm one ends at -80 (reach -73) and meets the box's -74 face.
+    let mut contacts = ObjectContacts::default();
+    contacts.gather_bodies(&to_object, object, narrow, [moving]);
+    assert_eq!(contacts.swept.len(), 1);
+    assert_eq!(contacts.swept[0].radius, 5.0);
+    // A box beside both gives nothing.
+    let beside = (Vec3::ZERO, Vec3::splat(5.0));
+    let mut contacts = ObjectContacts::default();
+    contacts.gather_bodies(&to_object, object, beside, [part, moving]);
+    assert!(contacts.spheres.is_empty() && contacts.swept.is_empty());
+}
+
+/// A sleeping object takes only awake bodies; an awake one takes all.
+#[test]
+fn a_sleeping_object_takes_only_awake_bodies() {
+    assert!(object_takes_body(false, false));
+    assert!(object_takes_body(false, true));
+    assert!(object_takes_body(true, false));
+    assert!(!object_takes_body(true, true));
 }
 
 /// The object's static stage turns each world triangle into the object's
@@ -806,6 +852,14 @@ fn an_objects_level_stage_takes_triangles_in_its_own_frame() {
         contacts.level[0],
         exa_physics_cm([[100.0, 0.0, 0.0], [200.0, 0.0, 0.0], [100.0, 100.0, 0.0]])
     );
+    // The mesh is one piece, with the box about its triangles.
+    assert_eq!(contacts.pieces.len(), 1);
+    assert_eq!(contacts.pieces[0].end, 1);
+    assert_eq!(contacts.pieces[0].centre, Vec3::new(150.0, 50.0, 0.0));
+    assert_eq!(contacts.pieces[0].half, Vec3::new(50.0, 50.0, 0.0));
+    // An empty mesh adds no piece.
+    contacts.gather_level(&to_object, []);
+    assert_eq!(contacts.pieces.len(), 1);
 }
 
 /// Three world points as a level triangle in centimetres.

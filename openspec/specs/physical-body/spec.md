@@ -2159,16 +2159,51 @@ The object/object stage SHALL offer each object taking it every other offered ob
 - **WHEN** three objects take the stage as (yes, no, yes) and are offered as (yes, yes, no)
 - **THEN** the pairs are (0, 1), (2, 0) and (2, 1)
 
+### Requirement: Cloth level contact
+After its step, a cloth SHALL meet each static mesh in order, particle by particle: a particle that moved over 0.1 cm² SHALL sweep a 2 cm sphere from its last position, any other SHALL test a 2 cm sphere where it is, first against the mesh's box and then against every triangle's front face in order, each push moving it before the next. A level push SHALL NOT wake the cloth.
+
+#### Scenario: A falling particle
+- **WHEN** a particle sweeps from 8 cm to −8 cm through a floor
+- **THEN** it is put back 2 cm over the floor and slides to 2.1 cm
+
+### Requirement: Cloth level slide
+A particle a level mesh pushed SHALL lose 0.1 cm of its travel since its last position, or all of it when that travel is no longer than 0.1 cm.
+
+#### Scenario: A resting particle
+- **WHEN** a still particle sits 1 cm over a floor
+- **THEN** it is pushed to 2 cm and keeps 0.9 cm of the push, ending at 1.9 cm, and a second pass leaves it there
+
+### Requirement: Cloth sleep reads the velocity sum
+The cloth's countdown SHALL read the squared length of its particles' summed velocity from the last tick, before drag, gravity and wind. It SHALL count down under √(vertices × 10⁻⁶) and count up over twice that, squared. The rustle and the drag's mean velocity (the sum times the reciprocal of the vertex count) SHALL read the same sum.
+
+#### Scenario: Held against gravity
+- **WHEN** one particle rests on a plane under gravity for 33 ticks
+- **THEN** its countdown reaches 0
+
+### Requirement: Cloth body sphere cull
+Each body sphere offered to a cloth, padded by 2 cm, SHALL be kept only when it reaches the box around the cloth's particles. A sphere that moved more than 0.01 cm² over the tick (compared in double precision) SHALL be swept, and its sweep SHALL meet the box.
+
+#### Scenario: A narrow box
+- **WHEN** the cloth's box spans x = −74 to −46 cm and a 5 cm sphere sits at −80 cm and a 10 cm sphere at −100 cm
+- **THEN** only the 5 cm sphere is kept
+
 ### Requirement: Cloth contacts are opt-in
-The level's cloths SHALL gather body and level contacts only when the cloth contacts switch is on (`EXA_CLOTH_CONTACTS=1`), and a cloth's bound radius SHALL be its particles' half-extent in centimetres scaled by its node. A sleeping cloth SHALL skip the gathering.
+The level's cloths SHALL gather body and level contacts only when the cloth contacts switch is on (`EXA_CLOTH_CONTACTS=1`). A cloth's bound radius SHALL be its particles' half-extent in centimetres, scaled by its node. A cloth SHALL NOT meet the static meshes of its own scene node. A sleeping cloth SHALL take only awake bodies, and it SHALL skip the stage while its frame is unchanged and no body sphere reaches it.
 
-#### Scenario: The default level run
-- **WHEN** exanima01 loads with the switch off
-- **THEN** its cloths step with no contacts and the level keeps its frame rate
+#### Scenario: A falling cloth lands and sleeps
+- **WHEN** a free cloth falls onto a level floor with the switch on and rests there
+- **THEN** it gathers the floor's triangles, stays above the floor and falls asleep
 
-#### Scenario: The switch on
-- **WHEN** a free cloth falls onto a level floor with the switch on
-- **THEN** it gathers the floor's triangles and rests on them
+#### Scenario: The cloth's own mesh
+- **WHEN** the floor belongs to the cloth's own scene node
+- **THEN** the cloth falls through it
+
+### Requirement: Cloth stage counters
+With `EXA_DEBUG_CLOTH=1`, the cloth stage SHALL log once a second (83 ticks) the per-tick means of its time and work, then one line per cloth for the last tick. The work counted SHALL include awake, sleeping and skipped cloths, body parts offered, spheres kept and swept, the sweep tests, static records and own-node skips, level pieces, triangles and particle-triangle tests. Without the flag, the stage SHALL take no timings.
+
+#### Scenario: The level stage's tests
+- **WHEN** two of three particles reach a level piece's box holding one triangle
+- **THEN** the cloth's level-test count is 2
 
 ### Requirement: Start capture half-lean
 A plain start capture SHALL replace the physical turn of the lumbar and the thorax (the midline bones between the legs and the head) with that turn whose forward axis is moved halfway toward the same turn taken out of the twist frame, whose up axis is made square to that forward and whose side is their cross product. Whole captures and the held pose SHALL keep the measured turns.

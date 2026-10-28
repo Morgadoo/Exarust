@@ -1,0 +1,7 @@
+- [x] Port the mesh's sphere and sweep queries and the cloth's slide (`cloth_level`)
+- [x] Run the level contact after the step, mesh by mesh, without waking
+- [x] Sleep, rustle and mean from the velocity sum
+- [x] Body sphere cull against the cloth's box and the 0.01 cm² sweep gate
+- [x] A sleeping cloth takes awake bodies only, and skips its own node's meshes
+- [x] Contacts on by default; README and DEBUGGING.md
+- [x] GPU check written down for the integrator (design.md, Verification)

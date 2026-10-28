@@ -9,14 +9,16 @@
 //! is the shipped cloth's mode. A sphere pushes a vertex out to its radius
 //! plus 2 cm, and a level plane does the same along its normal. The three
 //! body frictions are 0.002, 0.01 and 0.015; which body uses which was not
-//! read. Sleep counts down while the mean squared speed is under
-//! √(vertices × 10⁻⁶), and never below the owner's count. Rustle plays when
-//! the squared speed sum exceeds 400. The mesh vertices are the particle
+//! read. Sleep counts down while the squared length of the particles'
+//! summed velocity (their travel over the last tick, before drag, gravity
+//! and wind) is under √(vertices × 10⁻⁶), and never below the owner's
+//! count; that sum over the vertex count is the mean the drag pulls toward.
+//! Rustle plays when the same sum's squared length exceeds 400. The mesh vertices are the particle
 //! positions.
 //!
 //! Evidence: the cloth step notes (retention, drag, wind, pins, edges, sleep,
-//! rustle, sphere and plane pushes, a sphere swept through a cloth triangle,
-//! and a vertex swept through a level triangle).
+//! rustle, sphere and plane pushes, a sphere swept through a cloth triangle);
+//! the level's meshes are [`crate::cloth_level`]'s, after the step.
 
 use bevy::math::Vec3;
 use bevy::render::render_resource::Face;
@@ -196,6 +198,13 @@ pub struct Cloth {
     pub swept: Vec<SweptSphere>,
     pub triangles: Vec<ClothTri>,
     pub level: Vec<LevelTri>,
+    /// The level meshes `level` came from, in order: each one's box and
+    /// where its triangles end ([`crate::cloth_level::touch_level`]). Empty
+    /// means one mesh holding the whole list.
+    pub level_pieces: Vec<crate::cloth_level::LevelPiece>,
+    /// How many particle-triangle tests the last level stage made (a debug
+    /// count; no rule reads it).
+    pub level_tests: usize,
     /// Wind noise, when the cloth samples the tile instead of `noise`.
     pub tile: Option<[f32; NOISE_CELLS * NOISE_CELLS]>,
     /// Equal and opposite sum of this tick's collision pushes, for the body.
@@ -232,6 +241,8 @@ impl Cloth {
             swept: Vec::new(),
             triangles: Vec::new(),
             level: Vec::new(),
+            level_pieces: Vec::new(),
+            level_tests: 0,
             tile: None,
             reaction: Vec3::ZERO,
             double_sided: true,
@@ -588,8 +599,10 @@ pub fn step(cloth: &mut Cloth, gravity: Vec3) {
     if count == 0 {
         return;
     }
+    // The sum of the particles' velocities (their last tick's travel),
+    // before drag, gravity and wind: the original's sleep, rustle and mean
+    // all read this sum.
     let mut sum = Vec3::ZERO;
-    let mut speed_sq = 0.0;
     let awake = cloth.sleep > 0;
     if awake {
         let mean = cloth.mean_velocity;
@@ -603,6 +616,7 @@ pub fn step(cloth: &mut Cloth, gravity: Vec3) {
                 continue;
             }
             let velocity = particle.position - particle.previous;
+            sum += velocity;
             let retained = (velocity + (mean - velocity) * MEAN_DRAG) * keep;
             let mut next = particle.position + retained + gravity;
             if wind > WIND_FLOOR {
@@ -615,15 +629,12 @@ pub fn step(cloth: &mut Cloth, gravity: Vec3) {
                     next += wind_direction * (sample + 0.25) * wind;
                 }
             }
-            let step = next - particle.position;
-            sum += step;
-            speed_sq += step.length_squared();
             particle.previous = particle.position;
             particle.position = next;
         }
     }
-    cloth.mean_velocity = sum / count as f32;
-    settle_sleep(cloth, speed_sq / count as f32);
+    cloth.mean_velocity = sum * (1.0 / count as f32);
+    settle_sleep(cloth, sum.length_squared());
     settle_rustle(cloth, sum);
     if awake {
         apply_constraints(cloth);
@@ -651,10 +662,12 @@ pub fn step(cloth: &mut Cloth, gravity: Vec3) {
             hit |= push_sphere(particle, sphere);
         }
     }
+    // A level plane pushes like the level's meshes and, like them, does not
+    // wake the cloth.
     for index in 0..cloth.planes.len() {
         let plane = cloth.planes[index];
         for particle in &mut cloth.particles {
-            hit |= push_plane(particle, plane);
+            push_plane(particle, plane);
         }
     }
     for index in 0..cloth.swept.len() {
@@ -664,22 +677,19 @@ pub fn step(cloth: &mut Cloth, gravity: Vec3) {
             hit |= sweep_sphere_triangle(&mut cloth.particles, tri, body);
         }
     }
-    for index in 0..cloth.level.len() {
-        let tri = cloth.level[index];
-        for particle in &mut cloth.particles {
-            hit |= sweep_vertex(particle, tri);
-        }
-    }
-    cloth.reaction = Vec3::ZERO;
-    for (particle, old) in cloth.particles.iter().zip(before) {
-        cloth.reaction -= particle.position - old;
-    }
+    // A body's push wakes a sleeping cloth; the level's never does.
     if hit && cloth.sleep == 0 {
         cloth.sleep = 1.max(cloth.owner_sleep);
     } else if cloth.sleep == 0 {
         for particle in &mut cloth.particles {
             particle.previous = particle.position;
         }
+    }
+    // The level's meshes last, after the step, as the sector calls them.
+    crate::cloth_level::touch_level(cloth);
+    cloth.reaction = Vec3::ZERO;
+    for (particle, old) in cloth.particles.iter().zip(before) {
+        cloth.reaction -= particle.position - old;
     }
 }
 
@@ -766,11 +776,14 @@ fn apply_constraints(cloth: &mut Cloth) {
     }
 }
 
-fn settle_sleep(cloth: &mut Cloth, mean_sq: f32) {
+/// The countdown from the squared length of the velocity sum: under
+/// `√(vertices × 10⁻⁶)` it counts down, over twice that squared it counts
+/// up (a NaN does neither), never past the cap nor below the owner's.
+fn settle_sleep(cloth: &mut Cloth, sum_sq: f32) {
     let threshold = (cloth.particles.len() as f32 * 1e-6).sqrt();
-    if mean_sq < threshold {
+    if sum_sq < threshold {
         cloth.sleep -= 1;
-    } else if mean_sq > (2.0 * threshold).powi(2) {
+    } else if sum_sq > (2.0 * threshold) * (2.0 * threshold) {
         cloth.sleep += 1;
     }
     cloth.sleep = cloth.sleep.clamp(cloth.owner_sleep, SLEEP_CAP);
@@ -851,16 +864,6 @@ fn segment_triangle(from: Vec3, to: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Option<(
         normal = -normal;
     }
     Some((t, from + dir * t, normal))
-}
-
-fn sweep_vertex(particle: &mut Particle, tri: LevelTri) -> bool {
-    let Some((_, hit, normal)) =
-        segment_triangle(particle.previous, particle.position, tri.a, tri.b, tri.c)
-    else {
-        return false;
-    };
-    particle.position = hit + normal * PADDING_CM;
-    true
 }
 
 fn sweep_sphere_triangle(particles: &mut [Particle], tri: ClothTri, body: SweptSphere) -> bool {
@@ -1560,26 +1563,27 @@ mod tests {
             b: Vec3::new(20.0, -1.0, 0.0),
             c: Vec3::new(-1.0, 20.0, 0.0),
         };
+        // The level's meshes come after the step: a particle 1 cm over the
+        // floor, falling 7 cm a tick, is swept back to 2 cm over it and
+        // slides 0.1 cm short (1.9 cm), and the push wakes nothing.
         let mut cloth = Cloth::new(vec![Particle {
             previous: Vec3::new(2.0, 2.0, 8.0),
-            position: Vec3::new(2.0, 2.0, -8.0),
+            position: Vec3::new(2.0, 2.0, 1.0),
         }]);
-        cloth.sleep = 0;
         cloth.level.push(floor);
         step(&mut cloth, Vec3::ZERO);
         assert!(
-            (cloth.particles[0].position.z - PADDING_CM).abs() < 1e-3,
+            (cloth.particles[0].position.z - 1.9).abs() < 1e-3,
             "{:?}",
             cloth.particles[0].position
         );
         let mut beside = Cloth::new(vec![Particle {
             previous: Vec3::new(100.0, 2.0, 8.0),
-            position: Vec3::new(100.0, 2.0, -8.0),
+            position: Vec3::new(100.0, 2.0, 1.0),
         }]);
-        beside.sleep = 0;
         beside.level.push(floor);
         step(&mut beside, Vec3::ZERO);
-        assert!((beside.particles[0].position.z + 8.0).abs() < 1e-3);
+        assert!(beside.particles[0].position.z < 0.0);
     }
 
     #[test]
@@ -2102,5 +2106,40 @@ mod tests {
         // A grab on a vertex the cloth does not have is ignored.
         cloth.grab(9, target);
         assert!(cloth.grabbed.is_none());
+    }
+
+    /// The countdown reads the summed velocity, not the tick's step: a
+    /// particle held on a plane under gravity has no velocity left after
+    /// the push, so it counts down and sleeps, though gravity moves it
+    /// every tick.
+    #[test]
+    fn a_cloth_held_against_gravity_sleeps() {
+        let mut cloth = Cloth::new(vec![still(Vec3::new(0.0, 2.0, 0.0))]);
+        cloth.planes.push(LevelPlane {
+            point: Vec3::ZERO,
+            normal: Vec3::Y,
+        });
+        let gravity = gravity_cm(1.0);
+        step(&mut cloth, gravity);
+        assert_eq!(cloth.sleep, SLEEP_CAP - 1);
+        for _ in 0..SLEEP_CAP {
+            step(&mut cloth, gravity);
+        }
+        assert_eq!(cloth.sleep, 0);
+        assert!((cloth.particles[0].position.y - PADDING_CM).abs() < 1e-4);
+        // A velocity sum over twice the threshold, squared, counts up: one
+        // particle (threshold 0.001) moving 0.05 cm a tick (0.0025 cm²).
+        let mut moving = Cloth::new(vec![Particle {
+            position: Vec3::new(0.05, 0.0, 0.0),
+            previous: Vec3::ZERO,
+        }]);
+        moving.sleep = 10;
+        step(&mut moving, Vec3::ZERO);
+        assert_eq!(moving.sleep, 11);
+        assert!(
+            moving
+                .mean_velocity
+                .abs_diff_eq(Vec3::new(0.05, 0.0, 0.0), 1e-7)
+        );
     }
 }

@@ -1227,6 +1227,8 @@ pub struct ObjectContacts {
     pub spheres: Vec<crate::cloth::BodySphere>,
     pub swept: Vec<crate::cloth::SweptSphere>,
     pub level: Vec<crate::cloth::LevelTri>,
+    /// The level meshes `level` came from, in order.
+    pub pieces: Vec<crate::cloth_level::LevelPiece>,
 }
 
 impl ObjectContacts {
@@ -1235,21 +1237,30 @@ impl ObjectContacts {
         self.spheres.clear();
         self.swept.clear();
         self.level.clear();
+        self.pieces.clear();
     }
 
     /// The object's body-contact stage: every part passing
     /// [`object_body_meet`] (its bound sphere meets the object's, and the
-    /// object's centre lies within its radius of the part's mesh box) hands each of its collision spheres to the object, in
-    /// the object's space and centimetres. A sphere the part moved by more
-    /// than the pair stage's 0.1 cm² over the tick is swept from where the
-    /// last tick left it instead [guess: the cloth subclass's own sweep gate
-    /// is not in this pack; the sector's threshold is used].
+    /// object's centre lies within its radius of the part's mesh box) hands
+    /// its collision spheres to the object, in the object's space and
+    /// centimetres. As the cloth's body-contact call does, each sphere
+    /// takes the cloth's 2 cm padding for its own tests: a sphere that moved
+    /// more than [`CLOTH_SWEEP_TRAVEL2`] over the tick (compared in double
+    /// precision) is swept from where the last tick left it and kept only
+    /// when its sweep meets the object's box; one that barely moved is kept
+    /// only when it is not apart from that box. `object_box` is the box
+    /// about the object's particles (centre and half extents, cm, the
+    /// object's space): the original tests its node's world box, and a
+    /// sphere that misses the particles' box can touch none of them.
     pub fn gather_bodies<'a>(
         &mut self,
         to_object: &Affine3A,
         object: ObjectBounds,
+        object_box: (Vec3, Vec3),
         parts: impl IntoIterator<Item = ObjectBodyPart<'a>>,
     ) {
+        let (box_centre, box_half) = object_box;
         for part in parts {
             // The cheap sphere test first: the box distance inverts the
             // part's matrix (the result is the same as the full test).
@@ -1272,7 +1283,14 @@ impl ObjectContacts {
                 let previous =
                     to_object.transform_point3(part.previous.transform_point3(centre)) * 100.0;
                 let radius = radius * 100.0;
-                if (now - previous).length_squared() > crate::body::pairs::SWEEP_TRAVEL2 {
+                let reach = radius + crate::cloth::PADDING_CM;
+                let travel = now - previous;
+                let travel2 = (travel.x * travel.x + travel.y * travel.y) + travel.z * travel.z;
+                if f64::from(travel2) > CLOTH_SWEEP_TRAVEL2 {
+                    let sweep = intersect::Sweep::new(previous, now);
+                    if !intersect::swept_sphere_aabb_hit(&sweep, reach, box_centre, box_half) {
+                        continue;
+                    }
                     self.swept.push(crate::cloth::SweptSphere {
                         from: previous,
                         to: now,
@@ -1280,6 +1298,9 @@ impl ObjectContacts {
                         friction: part.friction,
                     });
                 } else {
+                    if intersect::sphere_aabb_separated(now, reach, box_centre, box_half) {
+                        continue;
+                    }
                     self.spheres.push(crate::cloth::BodySphere {
                         center: now,
                         radius,
@@ -1290,13 +1311,16 @@ impl ObjectContacts {
         }
     }
 
-    /// The object's static stage: every level triangle handed over (world,
-    /// metres) in the object's space and centimetres.
+    /// The object's static stage for one level mesh: its triangles handed
+    /// over (world, metres) in the object's space and centimetres, closed
+    /// as one piece with the box about them, as the cloth's level contact
+    /// takes one static mesh at a time.
     pub fn gather_level(
         &mut self,
         to_object: &Affine3A,
         triangles: impl IntoIterator<Item = [Vec3; 3]>,
     ) {
+        let first = self.level.len();
         for t in triangles {
             self.level.push(crate::cloth::LevelTri {
                 a: to_object.transform_point3(t[0]) * 100.0,
@@ -1304,7 +1328,24 @@ impl ObjectContacts {
                 c: to_object.transform_point3(t[2]) * 100.0,
             });
         }
+        if self.level.len() > first {
+            self.pieces.push(crate::cloth_level::LevelPiece::around(
+                &self.level[first..],
+                self.level.len(),
+            ));
+        }
     }
+}
+
+/// The cloth's sweep gate (cm², double precision): a body sphere that moved
+/// further over the tick sweeps through the cloth.
+pub const CLOTH_SWEEP_TRAVEL2: f64 = 0.01;
+
+/// Whether the sector hands a body to a simulated object's body stage, by
+/// sleep alone: a sleeping object takes only awake bodies, so a still cloth
+/// costs nothing until something moves into it.
+pub fn object_takes_body(object_asleep: bool, body_asleep: bool) -> bool {
+    !(object_asleep && body_asleep)
 }
 
 /// A cell index back to an (x, z) cell: the original stores `z * columns +
