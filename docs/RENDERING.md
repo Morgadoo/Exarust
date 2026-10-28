@@ -2076,6 +2076,10 @@ two thirds (0.35–0.5) and half way (the others) through a particle's life.
 - Output: texture × vertex colour, premultiplied (ONE,
   ONE_MINUS_SRC_ALPHA), no depth writes. The beds are additive in effect
   because their key alpha is zero.
+- The two particle textures load through the texture manager's streaming
+  path (the original's asynchronous load): an emitter binds the 1×1
+  placeholder until the loader's upload arrives, and the flame material's
+  bind group is prepared again when the image under its handle changes.
 
 Still missing for fires: fires on other physics bodies (only the carried
 torch rides its item), the source frame following the body, body contacts

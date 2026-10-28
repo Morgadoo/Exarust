@@ -132,6 +132,7 @@ impl Plugin for TextureStreamPlugin {
 fn rebind_replaced_images(
     mut events: MessageReader<AssetEvent<Image>>,
     materials: Option<ResMut<Assets<ExaMaterial>>>,
+    mut flames: Option<ResMut<Assets<exa_render::flame::FlameMaterial>>>,
 ) {
     let replaced: HashSet<AssetId<Image>> = events
         .read()
@@ -140,12 +141,24 @@ fn rebind_replaced_images(
             _ => None,
         })
         .collect();
-    let Some(mut materials) = materials else {
-        return;
-    };
     if replaced.is_empty() {
         return;
     }
+    if let Some(flames) = flames.as_mut() {
+        // The flame material binds its particle texture directly, so a
+        // streamed fire texture rebuilds its bind group the same way.
+        let touched: Vec<AssetId<exa_render::flame::FlameMaterial>> = flames
+            .iter()
+            .filter(|(_, material)| replaced.contains(&material.texture.id()))
+            .map(|(id, _)| id)
+            .collect();
+        for id in touched {
+            let _ = flames.get_mut(id).map(bevy::asset::AssetMut::into_inner);
+        }
+    }
+    let Some(mut materials) = materials else {
+        return;
+    };
     let touched: Vec<AssetId<ExaMaterial>> = materials
         .iter()
         .filter(|(_, material)| binds_any(material, &replaced))
@@ -453,13 +466,15 @@ mod tests {
     }
 
     /// A material that binds an image is touched when the image is replaced
-    /// under its handle, and one that does not is left alone.
+    /// under its handle, and one that does not is left alone; a flame
+    /// material, which binds its particle texture directly, is touched too.
     #[test]
     fn replacing_an_image_touches_the_materials_that_bind_it() {
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, bevy::asset::AssetPlugin::default()))
             .init_asset::<Image>()
             .init_asset::<ExaMaterial>()
+            .init_asset::<exa_render::flame::FlameMaterial>()
             .add_systems(Update, rebind_replaced_images);
         let (image, other) = {
             let mut images = app.world_mut().resource_mut::<Assets<Image>>();
@@ -484,6 +499,12 @@ mod tests {
             });
             (bound, unbound)
         };
+        let flame = app
+            .world_mut()
+            .resource_mut::<Assets<exa_render::flame::FlameMaterial>>()
+            .add(exa_render::flame::FlameMaterial {
+                texture: image.clone(),
+            });
         // Settle the creation events, then replace the image.
         app.update();
         app.update();
@@ -503,5 +524,15 @@ mod tests {
         }
         assert!(modified.contains(&bound.id()));
         assert!(!modified.contains(&unbound.id()));
+        let events = app
+            .world()
+            .resource::<Messages<AssetEvent<exa_render::flame::FlameMaterial>>>();
+        let mut cursor = events.get_cursor();
+        assert!(
+            cursor
+                .read(events)
+                .any(|event| matches!(event, AssetEvent::Modified { id } if *id == flame.id())),
+            "the flame material is rebound"
+        );
     }
 }
