@@ -30,8 +30,9 @@
 //! extents in its turned saved frame at most 280 cm high and at least
 //! −1000 cm low, `hand::box_ok_local`) only decides the routine's answer.
 //! The original then slides the item along the ray from 600 cm back to its
-//! first contact (at most 1000 cm on, [`drag_hit`]); Exarust has no mesh
-//! sweep and pulls the grab to the picked point, and a cursor that picks
+//! first contact (at most 1000 cm on, [`drag_hit`]); Exarust sweeps the
+//! held part's widest collision sphere from 600 cm before the picked point
+//! instead of every sphere against the meshes, and a cursor that picks
 //! nothing keeps the last point (its pick has no navigation mesh behind
 //! every pixel).
 //!
@@ -88,11 +89,29 @@ pub const PLACEMENT_LIMIT_CM: f32 = -100_000.0;
 pub const DRAG_REACH_CM: f32 = 1000.0;
 /// The lift's grab strength (Exarust's stand-in hold).
 pub const LIFT_STRENGTH: f32 = 1.0;
-/// The hover word's bits: over a GUI item slot, over the world, and the
-/// "give back" word that leaves the item where it is.
+/// The hover word's bits. [The live item cursor keeps them as the earlier
+/// pass named them; in the original the lift's frame sets 1 for a free
+/// world placement, 0x10 for an item snapped onto a matching level
+/// placement marker, and 0x30 for a marker whose link byte reads `L`.]
 pub const HOVER_GUI: u32 = 1;
 pub const HOVER_WORLD: u32 = 0x10;
 pub const HOVER_GIVE_BACK: u32 = 0x30;
+/// The placement marker's link byte that gives the give-back word.
+pub const GIVE_BACK_LINK: u8 = b'L';
+
+/// The lift's hover word for a frame, in the original's order: a level
+/// placement marker the item snaps onto gives [`HOVER_GIVE_BACK`] when its
+/// link byte is [`GIVE_BACK_LINK`] and [`HOVER_WORLD`] otherwise; else a
+/// free placement that passed its checks gives [`HOVER_GUI`] (the bit 1
+/// word); else none. `marker` is the snapped marker's link byte.
+pub fn hover_word(marker: Option<u8>, placed: bool) -> u32 {
+    match marker {
+        Some(GIVE_BACK_LINK) => HOVER_GIVE_BACK,
+        Some(_) => HOVER_WORLD,
+        None if placed => HOVER_GUI,
+        None => 0,
+    }
+}
 
 /// The mouse turn's running speed: the frame clock, the ramp's start and
 /// whether the cursor was turning last call.
@@ -211,6 +230,55 @@ pub fn drag_hit(hits: impl IntoIterator<Item = f32>) -> Option<f32> {
         })
 }
 
+/// One collision sphere of the dragged item, in its placed frame (m): the
+/// centre offset from the item's point and the radius.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SweepSphere {
+    pub centre: Vec3,
+    pub radius: f32,
+}
+
+/// How far before the picked point the placement sweep starts (cm): the
+/// original backs the ray's point off by 600 along the ray and then
+/// searches [`DRAG_REACH_CM`] on from there.
+pub const SWEEP_BACK_CM: f32 = 600.0;
+
+/// The item's first contact along the cursor's ray, in cm from the sweep's
+/// start, through [`drag_hit`]: every sphere is swept and only a contact
+/// nearer than the best so far (starting at [`DRAG_REACH_CM`]) is kept, so
+/// a NaN never is. `sweep` takes a sphere's centre, the unit direction,
+/// the reach and the radius (all m) and gives the distance along the ray
+/// (m). [The original also pulls a sphere already under the level's
+/// support plane back along the ray before its cast; that offset is not
+/// modelled.]
+pub fn sweep_to_contact(
+    spheres: &[SweepSphere],
+    direction: Vec3,
+    mut sweep: impl FnMut(Vec3, Vec3, f32, f32) -> Option<f32>,
+) -> Option<f32> {
+    let reach = DRAG_REACH_CM / 100.0;
+    drag_hit(spheres.iter().filter_map(|sphere| {
+        sweep(sphere.centre, direction, reach, sphere.radius).map(|toi| toi * 100.0)
+    }))
+}
+
+/// Where the placement stops along the ray (cm from its origin): the
+/// sweep's contact when it is nearer than the picked point, else the
+/// pick (a NaN contact keeps the pick).
+pub fn placement_distance(hit: f32, contact: Option<f32>) -> f32 {
+    match contact {
+        Some(contact) if contact < hit => contact,
+        _ => hit,
+    }
+}
+
+/// The world point of a placement distance (cm) along a ray from `origin`
+/// (m), or none when it is not finite.
+pub fn placement_point(origin: Vec3, direction: Vec3, distance_cm: f32) -> Option<Vec3> {
+    let at = origin + direction * (distance_cm / 100.0);
+    at.is_finite().then_some(at)
+}
+
 /// Where the cursor's ray puts the item (m): the hit `at` when its height
 /// (`height_cm`, the hit point's height in cm) is not under `limit` (cm;
 /// the original's `height < limit` test, so a NaN height keeps the hit),
@@ -311,6 +379,44 @@ pub fn drop(has_entry: bool, from_gui: bool, has_body: bool) -> Drop {
     } else {
         Drop::Spawn
     }
+}
+
+/// The record a GUI drag spawns: the dragged entry's item id (as the
+/// object database resolves it) and the condition the drag carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SpawnRecord {
+    pub item: u32,
+    pub condition: u32,
+}
+
+/// The spawned record of a GUI drag whose current event is `event`: only
+/// the two drag events ([`ITEM_PAYLOAD`], [`OBJECT_PAYLOAD`]) spawn, both
+/// the same way, from the GUI's dragged entry and the drag's condition.
+/// Any other event spawns nothing and answers false.
+pub fn spawn_record(event: u32, item: u32, condition: u32) -> Option<SpawnRecord> {
+    (event == ITEM_PAYLOAD || event == OBJECT_PAYLOAD).then_some(SpawnRecord { item, condition })
+}
+
+/// An object record's spawned node: its id, the condition its placement
+/// asks for, and whether the new node still has to be attached to its
+/// parent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SpawnedObject {
+    pub item: u32,
+    pub condition: u32,
+    pub attach: bool,
+}
+
+/// The node a record spawns: a record the database cannot make gives none
+/// [guess: Exarust stands a zero id in for that record].
+/// A node whose parent is already the record's parent needs no attach, as
+/// the original's attach skips it.
+pub fn spawn_object(item: u32, condition: u32, already_attached: bool) -> Option<SpawnedObject> {
+    (item != 0).then_some(SpawnedObject {
+        item,
+        condition,
+        attach: !already_attached,
+    })
 }
 
 /// Where a spawned item goes: under the cursor, offset by the camera.
@@ -560,6 +666,108 @@ mod tests {
         assert_eq!(drag_hit([999.9]), Some(999.9));
         assert_eq!(drag_hit([f32::NAN, 5.0]), Some(5.0));
         assert_eq!(drag_hit([]), None);
+    }
+
+    /// The first contact starts at the 1000 cm reach, keeps only a strictly
+    /// nearer sphere contact and ignores a NaN; a placement takes the
+    /// nearer of the pick and the contact.
+    #[test]
+    fn the_sweep_finds_the_first_contact() {
+        let spheres = [
+            SweepSphere {
+                centre: Vec3::new(0.0, 1.0, 0.0),
+                radius: 0.1,
+            },
+            SweepSphere {
+                centre: Vec3::new(0.0, 0.5, 0.0),
+                radius: 0.2,
+            },
+        ];
+        let mut seen = Vec::new();
+        let contact = sweep_to_contact(&spheres, Vec3::NEG_Y, |centre, dir, max, radius| {
+            seen.push((centre, dir, max, radius));
+            // The higher sphere meets at 3 m, the lower at 7.5 m.
+            if centre.y > 0.75 {
+                Some(3.0)
+            } else {
+                Some(7.5)
+            }
+        });
+        assert_eq!(contact, Some(300.0));
+        assert_eq!(seen.len(), 2);
+        assert_eq!(seen[0].2, 10.0);
+        assert_eq!(seen[0].3, 0.1);
+        // Nothing nearer than the reach gives none.
+        assert_eq!(
+            sweep_to_contact(&spheres, Vec3::NEG_Y, |_, _, _, _| Some(11.0)),
+            None
+        );
+        // A NaN contact never replaces the best; the next one does.
+        assert_eq!(
+            sweep_to_contact(&spheres, Vec3::NEG_Y, |centre, _, _, _| {
+                if centre.y > 0.75 {
+                    Some(f32::NAN)
+                } else {
+                    Some(4.0)
+                }
+            }),
+            Some(400.0)
+        );
+        assert_eq!(placement_distance(500.0, Some(300.0)), 300.0);
+        assert_eq!(placement_distance(500.0, None), 500.0);
+        assert_eq!(placement_distance(1200.0, Some(1300.0)), 1200.0);
+        assert_eq!(placement_distance(500.0, Some(f32::NAN)), 500.0);
+        assert_eq!(placement_point(Vec3::ZERO, Vec3::NEG_Y, f32::NAN), None);
+        let at = placement_point(Vec3::ZERO, Vec3::NEG_Y, 300.0).unwrap();
+        assert_eq!(at, Vec3::new(0.0, -3.0, 0.0));
+    }
+
+    /// The hover word: a placement marker's `L` link gives the give-back
+    /// word, another marker the world word, a free placement bit 1.
+    #[test]
+    fn the_hover_words() {
+        assert_eq!(hover_word(Some(GIVE_BACK_LINK), true), HOVER_GIVE_BACK);
+        assert_eq!(hover_word(Some(b'K'), false), HOVER_WORLD);
+        assert_eq!(hover_word(None, true), HOVER_GUI);
+        assert_eq!(hover_word(None, false), 0);
+    }
+
+    /// Both drag events spawn the GUI's dragged entry with the drag's
+    /// condition; another event spawns none.
+    #[test]
+    fn the_gui_drag_spawns_its_record() {
+        assert_eq!(
+            spawn_record(ITEM_PAYLOAD, 42, 0x10),
+            Some(SpawnRecord {
+                item: 42,
+                condition: 0x10
+            })
+        );
+        assert_eq!(
+            spawn_record(OBJECT_PAYLOAD, 42, 3),
+            Some(SpawnRecord {
+                item: 42,
+                condition: 3
+            })
+        );
+        assert_eq!(spawn_record(0x8004, 42, 0), None);
+        assert_eq!(spawn_object(0, 0, false), None);
+        assert_eq!(
+            spawn_object(42, 7, false),
+            Some(SpawnedObject {
+                item: 42,
+                condition: 7,
+                attach: true
+            })
+        );
+        assert_eq!(
+            spawn_object(42, 7, true),
+            Some(SpawnedObject {
+                item: 42,
+                condition: 7,
+                attach: false
+            })
+        );
     }
 
     #[test]

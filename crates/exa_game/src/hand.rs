@@ -486,6 +486,38 @@ pub fn door_pull_anchor(grip: DoorGrip, cursor_point: Vec3, axis: Vec3) -> Vec3 
     }
 }
 
+/// One frame of a door drag: the link's stop bit while the movement
+/// request suppresses the pull, else the anchor the leaf is pulled to.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DoorFrame {
+    pub anchor: Option<Vec3>,
+    /// The link word's stop bit (`0x100000`).
+    pub stop: bool,
+}
+
+/// The door drag's frame: a suppressed request sets the link's stop bit
+/// and leaves the leaf's point alone; otherwise the leaf is pulled to
+/// [`door_pull_anchor`] and the bit clears. A plain door drag therefore
+/// never turns the player's request off.
+pub fn door_drag_frame(
+    grip: DoorGrip,
+    cursor_point: Vec3,
+    axis: Vec3,
+    suppressed: bool,
+) -> DoorFrame {
+    if suppressed {
+        DoorFrame {
+            anchor: None,
+            stop: true,
+        }
+    } else {
+        DoorFrame {
+            anchor: Some(door_pull_anchor(grip, cursor_point, axis)),
+            stop: false,
+        }
+    }
+}
+
 /// A wheel's asked angle after a frame: the gap `wanted − current` is taken
 /// as no turn when it is negative and stops at `limit` when it is longer;
 /// the current angle plus that turn is then wrapped into ±π, compared in
@@ -1325,8 +1357,9 @@ fn hold_hand(
                 {
                     ragdoll.release_grab();
                     // A plain release leaves the item where the cursor put
-                    // it; a cancelled one (and the GUI's, which Exarust has
-                    // no slot for) puts it back.
+                    // it; a cancelled one is put back at the frames the
+                    // lift saved (the live hand leaves the hover word at
+                    // zero: it has no level placement markers).
                     if outcome != Release::Drop {
                         ragdoll.place_at(&held.saved);
                     }
@@ -1379,8 +1412,13 @@ fn hold_hand(
                 // held item itself left out of the pick (as the original
                 // flags its node while it picks). The item goes there
                 // whether or not its box fits. A cursor over nothing keeps
-                // the last point [Exarust: no navigation mesh behind every
-                // pixel, and no sweep to the first contact].
+                // the last point (its pick has no navigation mesh behind
+                // every pixel). As in the original, the item then slides
+                // along the ray from 600 cm before the picked point and
+                // stops at its first contact [Exarust sweeps the held
+                // part's widest collision sphere; the original sweeps every
+                // sphere against the meshes]. A sweep that starts inside
+                // the level is no contact, so the item keeps the pick.
                 let ray = cursor_ray(&scripted, &windows, &cameras);
                 if let Some(ray) = ray {
                     let (origin, dir) = (ray.origin, *ray.direction);
@@ -1391,19 +1429,31 @@ fn hold_hand(
                                 .stand_ins
                                 .owner_of(h)
                                 .is_some_and(|(owner, _)| owner == body)
-                        })
-                        .map(|(_, t)| {
-                            let at = origin + dir * t;
-                            (at, at.y * CM)
                         });
-                    if hit.is_some()
-                        && let Some(point) = item_cursor::place_point(
-                            origin,
-                            dir,
-                            hit,
-                            item_cursor::PLACEMENT_LIMIT_CM,
-                        )
-                    {
+                    let radius = bodies
+                        .get(body)
+                        .ok()
+                        .and_then(|(_, ragdoll, ..)| ragdoll.parts.get(part))
+                        .map(|part| {
+                            part.spheres
+                                .iter()
+                                .map(|(_, radius)| *radius)
+                                .fold(0.0_f32, f32::max)
+                        })
+                        .filter(|radius| *radius > 0.0)
+                        .unwrap_or_else(|| box_half.x.min(box_half.y).min(box_half.z).max(0.01));
+                    let point = hit.and_then(|(_, t)| {
+                        let back = t.min(item_cursor::SWEEP_BACK_CM / CM);
+                        let start = t - back;
+                        let contact = sources
+                            .physics
+                            .level_sweep(origin + dir * start, dir, back, radius)
+                            .filter(|toi| *toi > 0.0)
+                            .map(|toi| (start + toi) * CM);
+                        let distance = item_cursor::placement_distance(t * CM, contact);
+                        item_cursor::placement_point(origin, dir, distance)
+                    });
+                    if let Some(point) = point {
                         let (frame, _fits) =
                             item_cursor::place_frame(items.rotation, point, box_centre, box_half);
                         if let Some(held) = items.held.as_mut() {
@@ -2175,6 +2225,12 @@ mod tests {
         };
         let a = door_pull_anchor(sliding, Vec3::new(0.3, 1.0, 2.0), Vec3::Z);
         assert!((a - Vec3::new(0.0, 0.0, 2.0)).length() < 1e-5, "{a}");
+        let frame = door_drag_frame(grip, Vec3::new(0.0, 0.0, 3.0), Vec3::X, false);
+        assert!(!frame.stop);
+        assert!((frame.anchor.unwrap().z - 1.0).abs() < 1e-6);
+        let stopped = door_drag_frame(grip, Vec3::new(0.0, 0.0, 3.0), Vec3::X, true);
+        assert!(stopped.stop);
+        assert_eq!(stopped.anchor, None);
         let rattle = door_rattle(true, false, || 0.5).unwrap();
         assert!((rattle.pitch - 0.9).abs() < 1e-6);
         assert!((rattle.volume - 0.2).abs() < 1e-6);
