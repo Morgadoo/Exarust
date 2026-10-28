@@ -74,7 +74,7 @@ use exa_ui::ScriptedPointer;
 
 use crate::bindings::{Action, Bindings};
 use crate::control_nodes::Frame;
-use crate::gui_screens::{GameScreens, ScreenRequest};
+use crate::gui_screens::ScreenRequest;
 use crate::item_cursor::{self, HeldItem, ItemCursor, Release};
 use crate::pick::{self, Body, Pick, ReachTo, Target};
 use crate::player::{ChaseCamera, Player, PlayerBody, window_ray};
@@ -1222,7 +1222,6 @@ fn hold_hand(
     mut requests: Query<&mut Locomotion, With<PlayerBody>>,
     mut bodies: Query<OtherBodies, Without<PlayerBody>>,
     mut screens: Option<ResMut<Messages<ScreenRequest>>>,
-    games: Option<Res<GameScreens>>,
     (time, mut show_bars, pad, pad_status): (
         Option<Res<Time<Virtual>>>,
         Option<ResMut<HudShowUntil>>,
@@ -1358,13 +1357,10 @@ fn hold_hand(
                 {
                     ragdoll.release_grab();
                     // A plain release leaves the item where the cursor put
-                    // it, and so does a cancelled one over the world. Only
-                    // a cancelled lift with no world hover goes back to the
-                    // frames it saved. The GUI slot's take has no Exarust
-                    // inventory path yet, so the item is left where it is
-                    // rather than snapped back [guess: the original's GUI
-                    // release takes the icon out of the world].
-                    if outcome == Release::PutBack {
+                    // it; a cancelled one is put back at the frames the
+                    // lift saved (the live hand leaves the hover word at
+                    // zero: it has no level placement markers).
+                    if outcome != Release::Drop {
                         ragdoll.place_at(&held.saved);
                     }
                     ragdoll.wake();
@@ -1417,21 +1413,12 @@ fn hold_hand(
                 // flags its node while it picks). The item goes there
                 // whether or not its box fits. A cursor over nothing keeps
                 // the last point (its pick has no navigation mesh behind
-                // every pixel). The item's rest box sweeps along the ray
-                // first, so a wall beside the cursor's point stops it at
-                // the first contact [Exarust sweeps the held part's widest
-                // collision sphere; the original sweeps every sphere
-                // against the meshes].
-                let pointer = windows.single().ok().and_then(|window| {
-                    scripted
-                        .position(window)
-                        .map(|p| (p * window.scale_factor()).as_ivec2())
-                });
-                let slot = pointer.and_then(|p| {
-                    games
-                        .as_deref()
-                        .and_then(|screens| screens.pack_slot_at(p, 4))
-                });
+                // every pixel). As in the original, the item then slides
+                // along the ray from 600 cm before the picked point and
+                // stops at its first contact [Exarust sweeps the held
+                // part's widest collision sphere; the original sweeps every
+                // sphere against the meshes]. A sweep that starts inside
+                // the level is no contact, so the item keeps the pick.
                 let ray = cursor_ray(&scripted, &windows, &cameras);
                 if let Some(ray) = ray {
                     let (origin, dir) = (ray.origin, *ray.direction);
@@ -1443,11 +1430,6 @@ fn hold_hand(
                                 .owner_of(h)
                                 .is_some_and(|(owner, _)| owner == body)
                         });
-                    let hit_cm = hit.map(|(_, t)| t * CM);
-                    // The sweep uses the held part's widest collision
-                    // sphere, the original's first-contact shape; a part
-                    // without spheres falls back to the box's thinnest
-                    // half extent.
                     let radius = bodies
                         .get(body)
                         .ok()
@@ -1460,18 +1442,18 @@ fn hold_hand(
                         })
                         .filter(|radius| *radius > 0.0)
                         .unwrap_or_else(|| box_half.x.min(box_half.y).min(box_half.z).max(0.01));
-                    let contact = hit_cm.and_then(|distance| {
-                        sources
+                    let point = hit.and_then(|(_, t)| {
+                        let back = t.min(item_cursor::SWEEP_BACK_CM / CM);
+                        let start = t - back;
+                        let contact = sources
                             .physics
-                            .level_sweep(origin, dir, distance / CM, radius)
-                            .map(|t| t * CM)
+                            .level_sweep(origin + dir * start, dir, back, radius)
+                            .filter(|toi| *toi > 0.0)
+                            .map(|toi| (start + toi) * CM);
+                        let distance = item_cursor::placement_distance(t * CM, contact);
+                        item_cursor::placement_point(origin, dir, distance)
                     });
-                    let distance =
-                        hit_cm.and_then(|hit| item_cursor::placement_distance(hit, contact));
-                    items.hover = item_cursor::hover_word(slot, hit.is_some(), false);
-                    if let Some(distance) = distance
-                        && let Some(point) = item_cursor::placement_point(origin, dir, distance)
-                    {
+                    if let Some(point) = point {
                         let (frame, _fits) =
                             item_cursor::place_frame(items.rotation, point, box_centre, box_half);
                         if let Some(held) = items.held.as_mut() {
@@ -1483,8 +1465,6 @@ fn hold_hand(
                             ragdoll.wake_to(DRAG_WAKE);
                         }
                     }
-                } else {
-                    items.hover = item_cursor::hover_word(slot, false, false);
                 }
             }
         }

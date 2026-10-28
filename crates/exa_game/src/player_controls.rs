@@ -854,35 +854,31 @@ pub fn use_target(classification: u8) -> UseTarget {
     }
 }
 
-/// What the release of the right-press use cursor does, after the pick's
-/// classification: a door rattles or unlocks, a character takes the poured
-/// liquid, a world item is cleaned or repaired, and a GUI entry is cleaned,
-/// repaired or moved to the held item's place.
+/// What the use cursor's release is over: the world view (with the
+/// pick's target), a GUI view showing a character, an item container
+/// window, or another GUI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UseEffect {
-    Door,
-    Character,
-    WorldItem,
-    GuiItem,
-    Nothing,
+pub enum UseOver {
+    World(UseTarget),
+    CharacterView,
+    /// An item container window; `same_item` when its entry under the
+    /// cursor is the item the use holds.
+    ItemWindow {
+        same_item: bool,
+    },
+    OtherGui,
 }
 
-/// The use release's dispatch, in the original's order: a door (4), a
-/// character (0x10), a world item (bit 2), then the GUI's own item slot.
-pub fn use_effect(target: UseTarget, over_gui: bool) -> UseEffect {
-    match target {
-        UseTarget::Door => UseEffect::Door,
-        UseTarget::Character => UseEffect::Character,
-        UseTarget::Item => UseEffect::WorldItem,
-        UseTarget::Nothing if over_gui => UseEffect::GuiItem,
-        UseTarget::Nothing => UseEffect::Nothing,
-    }
+/// The picked door's lock, read from its key section: none, open, or
+/// locked with a key that does or does not match the held item.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DoorLock {
+    None,
+    Open,
+    Locked { key_matches: bool },
 }
 
-/// What a use's release actually does on the picked world object, as the
-/// dispatcher branches: a door unlocks with its key or rattles, a character
-/// takes the poured liquid, a world item is cleaned or repaired, and a GUI
-/// entry is cleaned, repaired or moved.
+/// What a use's release does, as the dispatcher branches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UseRelease {
     UnlockDoor,
@@ -896,42 +892,34 @@ pub enum UseRelease {
     Nothing,
 }
 
-/// The release of a use on `target`, given the held item's usable kind (0
-/// when it has none), whether a GUI entry is the same item the use holds,
-/// and whether the door's key matches. The original checks the door first,
-/// then a character, then a world item's bit 2, and otherwise the GUI
-/// entry. A liquid (kinds 8 and 14) pours on a character; kinds 9 and 10
-/// clean and repair; only kind 0x10 moves a GUI entry.
-pub fn use_release(
-    target: UseTarget,
-    held_kind: u8,
-    same_gui_item: bool,
-    key_matches: bool,
-) -> UseRelease {
-    match target {
-        UseTarget::Door => {
-            if key_matches {
-                UseRelease::UnlockDoor
-            } else {
-                UseRelease::RattleDoor
-            }
-        }
-        UseTarget::Character => {
-            if held_kind == POUR || held_kind == POUR_MARKS {
-                UseRelease::Pour
-            } else {
-                UseRelease::Nothing
-            }
-        }
-        UseTarget::Item => match held_kind {
+/// The release of a use, in the original's order. Over the world view a
+/// door (4) unlocks when it is locked and the held item is its key and
+/// rattles when locked with another; a character (0x10) takes a liquid
+/// (kinds 8 and 14); a world item (bit 2) with an item id is cleaned (9)
+/// or repaired (10). Over the GUI a character view takes the liquid, and
+/// an item window is the GUI use ([`gui_use`]). `held_kind` is the held
+/// item's usable kind (0 when it has none).
+pub fn use_release(over: UseOver, held_kind: u8, door: DoorLock, item_id: u32) -> UseRelease {
+    let pours = held_kind == POUR || held_kind == POUR_MARKS;
+    match over {
+        UseOver::World(UseTarget::Door) => match door {
+            DoorLock::Locked { key_matches: true } => UseRelease::UnlockDoor,
+            DoorLock::Locked { key_matches: false } => UseRelease::RattleDoor,
+            DoorLock::None | DoorLock::Open => UseRelease::Nothing,
+        },
+        UseOver::World(UseTarget::Character) | UseOver::CharacterView if pours => UseRelease::Pour,
+        UseOver::World(UseTarget::Item) if item_id != 0 => match held_kind {
             CLEAN => UseRelease::CleanWorld,
             REPAIR => UseRelease::RepairWorld,
             _ => UseRelease::Nothing,
         },
-        UseTarget::Nothing if held_kind == CLEAN => UseRelease::CleanGui,
-        UseTarget::Nothing if held_kind == REPAIR => UseRelease::RepairGui,
-        UseTarget::Nothing if held_kind == 0x10 && same_gui_item => UseRelease::TransferGui,
-        UseTarget::Nothing => UseRelease::Nothing,
+        UseOver::ItemWindow { same_item } => match gui_use(held_kind, same_item) {
+            GuiUse::Clean => UseRelease::CleanGui,
+            GuiUse::Repair => UseRelease::RepairGui,
+            GuiUse::Transfer => UseRelease::TransferGui,
+            GuiUse::Nothing => UseRelease::Nothing,
+        },
+        _ => UseRelease::Nothing,
     }
 }
 
@@ -1151,8 +1139,9 @@ impl PowerHold {
 
 /// A game mode the controls unit registers: the story's Character mode and
 /// the Spectate view. The original appends them to the game's mode table in
-/// this order, each with a start and an end routine, and keeps the mode id
-/// (`index + 2`) for the session to enter.
+/// this order, each with a start and an end routine, and keeps each mode's
+/// id (the table's length after the append, plus two) for the session to
+/// enter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GameMode {
     Character,
@@ -1166,7 +1155,8 @@ pub struct GameModeEntry {
     pub mode: GameMode,
     /// Its place in the table, from zero.
     pub index: u32,
-    /// The id the session asks for: the place plus two.
+    /// The id the session asks for: the table's length after the append
+    /// plus two, so the place plus three.
     pub id: u32,
 }
 
@@ -1180,25 +1170,19 @@ impl GameMode {
     }
 }
 
-/// The script class the same unit init registers before the modes.
-pub const SCRIPT_CLASS: &str = "ScriptInst";
-
-/// The two mode entries the unit init appends after `registered`, in order.
+/// The two mode entries the unit init appends to a table of `registered`
+/// entries, in order.
 pub fn register_game_modes(registered: u32) -> [GameModeEntry; 2] {
-    [
+    [GameMode::Character, GameMode::Spectate].map(|mode| {
+        let index = registered + mode as u32;
         GameModeEntry {
-            name: GameMode::Character.name(),
-            mode: GameMode::Character,
-            index: registered,
-            id: registered + 2,
-        },
-        GameModeEntry {
-            name: GameMode::Spectate.name(),
-            mode: GameMode::Spectate,
-            index: registered + 1,
-            id: registered + 3,
-        },
-    ]
+            name: mode.name(),
+            mode,
+            index,
+            // The table's new length (place + 1) plus two.
+            id: index + 3,
+        }
+    })
 }
 
 #[cfg(test)]
@@ -1772,90 +1756,99 @@ mod tests {
         );
     }
 
-    /// The use release's target order: door, character, world item, then
-    /// the GUI's own slot.
-    #[test]
-    fn the_use_release_dispatch() {
-        assert_eq!(use_effect(UseTarget::Door, false), UseEffect::Door);
-        assert_eq!(
-            use_effect(UseTarget::Character, false),
-            UseEffect::Character
-        );
-        assert_eq!(use_effect(UseTarget::Item, true), UseEffect::WorldItem);
-        assert_eq!(use_effect(UseTarget::Nothing, true), UseEffect::GuiItem);
-        assert_eq!(use_effect(UseTarget::Nothing, false), UseEffect::Nothing);
-    }
-
-    /// The use release: a door unlocks or rattles by its key; a liquid
-    /// pours on a character; a kit cleans or repairs a world item or a GUI
-    /// entry; only kind 0x10 moves the same GUI item.
+    /// The use release: a locked door unlocks with its key and rattles
+    /// with another, an unlocked or keyless door does nothing; a liquid
+    /// pours on a character in the world or a character view; a kit
+    /// cleans or repairs a world item with an id; an item window is the GUI
+    /// use.
     #[test]
     fn the_use_release_branch() {
+        let world = UseOver::World;
+        let locked = |key_matches| DoorLock::Locked { key_matches };
         assert_eq!(
-            use_release(UseTarget::Door, 0, false, true),
+            use_release(world(UseTarget::Door), 0, locked(true), 0),
             UseRelease::UnlockDoor
         );
         assert_eq!(
-            use_release(UseTarget::Door, 0, false, false),
+            use_release(world(UseTarget::Door), 0, locked(false), 0),
             UseRelease::RattleDoor
         );
         assert_eq!(
-            use_release(UseTarget::Character, POUR, false, false),
-            UseRelease::Pour
-        );
-        assert_eq!(
-            use_release(UseTarget::Character, POUR_MARKS, false, false),
-            UseRelease::Pour
-        );
-        assert_eq!(
-            use_release(UseTarget::Character, CLEAN, false, false),
+            use_release(world(UseTarget::Door), 0, DoorLock::Open, 0),
             UseRelease::Nothing
         );
         assert_eq!(
-            use_release(UseTarget::Item, CLEAN, false, false),
+            use_release(world(UseTarget::Door), 0, DoorLock::None, 0),
+            UseRelease::Nothing
+        );
+        for over in [world(UseTarget::Character), UseOver::CharacterView] {
+            assert_eq!(use_release(over, POUR, DoorLock::None, 0), UseRelease::Pour);
+            assert_eq!(
+                use_release(over, POUR_MARKS, DoorLock::None, 0),
+                UseRelease::Pour
+            );
+            assert_eq!(
+                use_release(over, CLEAN, DoorLock::None, 0),
+                UseRelease::Nothing
+            );
+        }
+        assert_eq!(
+            use_release(world(UseTarget::Item), CLEAN, DoorLock::None, 5),
             UseRelease::CleanWorld
         );
         assert_eq!(
-            use_release(UseTarget::Item, REPAIR, false, false),
+            use_release(world(UseTarget::Item), REPAIR, DoorLock::None, 5),
             UseRelease::RepairWorld
         );
         assert_eq!(
-            use_release(UseTarget::Item, POUR, false, false),
+            use_release(world(UseTarget::Item), REPAIR, DoorLock::None, 0),
             UseRelease::Nothing
         );
         assert_eq!(
-            use_release(UseTarget::Nothing, CLEAN, false, false),
+            use_release(world(UseTarget::Item), POUR, DoorLock::None, 5),
+            UseRelease::Nothing
+        );
+        let window = |same_item| UseOver::ItemWindow { same_item };
+        assert_eq!(
+            use_release(window(false), CLEAN, DoorLock::None, 0),
             UseRelease::CleanGui
         );
         assert_eq!(
-            use_release(UseTarget::Nothing, REPAIR, false, false),
+            use_release(window(false), REPAIR, DoorLock::None, 0),
             UseRelease::RepairGui
         );
         assert_eq!(
-            use_release(UseTarget::Nothing, 0x10, true, false),
+            use_release(window(true), 0x10, DoorLock::None, 0),
             UseRelease::TransferGui
         );
         assert_eq!(
-            use_release(UseTarget::Nothing, 0x10, false, false),
+            use_release(window(false), 0x10, DoorLock::None, 0),
+            UseRelease::Nothing
+        );
+        assert_eq!(
+            use_release(UseOver::OtherGui, CLEAN, DoorLock::None, 0),
+            UseRelease::Nothing
+        );
+        assert_eq!(
+            use_release(world(UseTarget::Nothing), CLEAN, DoorLock::None, 0),
             UseRelease::Nothing
         );
     }
 
-    /// The unit init registers ScriptInst and the two modes Character then
-    /// Spectate, each mode id two past its table place.
+    /// The unit init appends Character then Spectate, each id the table's
+    /// new length plus two.
     #[test]
     fn the_game_modes_register_in_order() {
-        assert_eq!(SCRIPT_CLASS, "ScriptInst");
         let modes = register_game_modes(0);
         assert_eq!(modes[0].name, "Character");
         assert_eq!(modes[0].mode, GameMode::Character);
-        assert_eq!((modes[0].index, modes[0].id), (0, 2));
+        assert_eq!((modes[0].index, modes[0].id), (0, 3));
         assert_eq!(modes[1].name, "Spectate");
         assert_eq!(modes[1].mode, GameMode::Spectate);
-        assert_eq!((modes[1].index, modes[1].id), (1, 3));
+        assert_eq!((modes[1].index, modes[1].id), (1, 4));
         let modes = register_game_modes(7);
-        assert_eq!((modes[0].index, modes[0].id), (7, 9));
-        assert_eq!((modes[1].index, modes[1].id), (8, 10));
+        assert_eq!((modes[0].index, modes[0].id), (7, 10));
+        assert_eq!((modes[1].index, modes[1].id), (8, 11));
     }
 
     /// The right press: a usable kind zero opens the container, another
