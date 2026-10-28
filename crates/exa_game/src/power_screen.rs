@@ -636,6 +636,21 @@ fn draw(
         // The tooltip: the shown choice's name caption and its wrapped
         // description box, measured with the GUI font's advances (the
         // glyphs are the running font's).
+        if view.mode == tree_draw::ScreenMode::Create {
+            const TITLE: &str = "Choose which new power you wish to learn first.";
+            let prompt = tree_draw::prompt_draw(
+                &view,
+                TITLE,
+                tree_draw::text_width(TITLE.as_bytes(), scale),
+                "BACK",
+                tree_draw::text_width(b"BACK", scale),
+                "BEGIN",
+                tree_draw::text_width(b"BEGIN", scale),
+                tree.focus,
+            );
+            draw.batches.extend(prompt.batches);
+            draw.texts.extend(prompt.texts);
+        }
         if !view.labels && view.hovered > 0 && (view.hovered as usize) <= tree.nodes.len() {
             let (name, description) = tree.node_text(view.hovered as usize - 1, texts);
             let lines = tree_draw::text_split(description, tree_draw::TIP_TEXT_WIDTH);
@@ -677,7 +692,7 @@ fn draw(
                     dragged.at[0],
                     dragged.at[1],
                     scale,
-                    tree.domain,
+                    tree_draw::power_domain(dragged.power),
                 )
                 .batches,
             );
@@ -1089,31 +1104,34 @@ fn shade(
             [rgb[0], rgb[1], rgb[2], col[3] * band * inner * 0.63]
         }
         Program::Link | Program::LinkGlow => {
-            // The link's texture is the spline's white gradient.
-            let t = [vertex.u, vertex.v];
+            // The ring program: two taps of the flamelets sheet, the first
+            // along the turned y and the second a quarter away, with the
+            // soft program raising the first to the eighth power.
             let b = vertex.u2;
             let a0 = 0.5 - b;
             let a0 = 0.25 - a0 * a0;
-            let bb = t[1] + (t[1] * 0.05 + uniforms.par0[2] * a0) * 2.0;
-            let ty = t[1] * uniforms.par0[0];
-            let c = if batch.program == Program::Link {
-                let mut a = 1.0 - bb;
+            let mut ty = vertex.v * 0.05 + uniforms.par0[2] * a0;
+            let bb = vertex.v + ty * 2.0;
+            ty *= uniforms.par0[0];
+            let uy = (ty + uniforms.par0[1]) * 0.25;
+            ty += uniforms.par0[1];
+            let ux = vertex.u - uniforms.par0[1];
+            let mut c = sample(texture, vertex.u, ty)[0];
+            let mut a = 1.0 - bb;
+            a *= a;
+            if batch.program == Program::Link {
                 a *= a;
                 a *= a;
-                a *= a;
-                let mut c = 1.0 + a;
-                c *= 1.0 * 0.75;
-                c
-            } else {
-                let a = (1.0 - bb).powi(2);
-                let c = 1.0 + a;
-                let c = c * 1.0 * 0.75;
-                c + (a - c) * 0.75
-            };
-            let _ = ty;
-            let a = clamp01(bb * 32.0);
-            let b2 = clamp01(c - (bb * bb + uniforms.par0[3]));
-            let alpha = a * b2 * b2;
+            }
+            c += a;
+            let d = sample(texture, ux, uy)[0];
+            c = c * d * 0.75;
+            if batch.program == Program::LinkGlow {
+                c = c + (a - c) * 0.75;
+            }
+            let mask = clamp01(bb * 32.0);
+            let under = clamp01(c - (bb * bb + uniforms.par0[3]));
+            let alpha = mask * under * under;
             if batch.program == Program::Link {
                 [col[0] * 1.25, col[1] * 1.25, col[2] * 1.25, col[3] * alpha]
             } else {

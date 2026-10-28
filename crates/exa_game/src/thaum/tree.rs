@@ -1572,7 +1572,7 @@ impl TreeScreen {
     /// at the far tangent: the engine's vector calls imply the handle points
     /// back along the drag direction.
     fn drag_link_spline(&self) -> Option<DragSpline> {
-        if !matches!(self.drag, DragState::LinkHover | DragState::Link) {
+        if self.drag != DragState::Link {
             return None;
         }
         let index = self.node_under.checked_sub(1)? as usize;
@@ -2738,11 +2738,13 @@ impl BarSlot {
     /// Moves the state on as the original's draw does: a flash that has run
     /// its 200 ms becomes lit, and a fade that has run its duration ends.
     pub fn step(&mut self, now: u32) {
+        let clock = u64::from(now);
         if self.state & bar_state::FLASH != 0 {
-            if self.stamp.wrapping_add(bar_state::FLASH_MS) < now {
+            if u64::from(self.stamp) + u64::from(bar_state::FLASH_MS) < clock {
                 self.state = (self.state & !bar_state::FLASH) | bar_state::LIT;
             }
-        } else if self.state & bar_state::FADE != 0 && self.stamp.wrapping_add(self.duration) < now
+        } else if self.state & bar_state::FADE != 0
+            && u64::from(self.stamp) + u64::from(self.duration) < clock
         {
             self.state &= !bar_state::FADE;
         }
@@ -4226,7 +4228,7 @@ mod tests {
         screen.zoom_fixed = 256.0;
         screen.placed[0] = [0.0, 0.0];
         assert!(screen.drag_link_points().is_none());
-        screen.drag = DragState::LinkHover;
+        screen.drag = DragState::Link;
         screen.node_under = 1;
         screen.link_turn = 0.0;
         screen.pointer = [0.0, 100.0];

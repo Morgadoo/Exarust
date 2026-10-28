@@ -985,8 +985,8 @@ fn framed(power: u32) -> bool {
     power & 0x0f00_0000 != 0
 }
 
-/// A power's domain.
-fn power_domain(power: u32) -> u8 {
+/// A power's domain byte.
+pub fn power_domain(power: u32) -> u8 {
     ((power >> 8) & 0xff) as u8
 }
 
@@ -1016,11 +1016,10 @@ fn alpha_byte(value: f32) -> u8 {
     low_byte(255.0 * value)
 }
 
-/// The glow shader's `FrameCol` at rest: the accent's colour at 0.4 and its
-/// alpha.
+/// The glow shader's `FrameCol` at rest: the accent at 0.4, every lane.
 fn accent_frame(accent: [u8; 4]) -> [f32; 4] {
-    let [red, green, blue, alpha] = ink(accent);
-    [red * 0.4, green * 0.4, blue * 0.4, alpha]
+    let colour = ink(accent);
+    [colour[0] * 0.4, colour[1] * 0.4, colour[2] * 0.4, colour[3] * 0.4]
 }
 
 /// The tree screen's draw order: the background, the links, the icons, the
@@ -1200,7 +1199,7 @@ fn node_ring(
     } else {
         (times(view.zoom, 0.599), times(view.zoom, 0.3))
     };
-    let mut batch = Batch::new(Program::Link, Texture::Frames);
+    let mut batch = Batch::new(Program::Link, Texture::Flamelets);
     ring(
         &mut batch, node.x, node.y, size, outer, alpha, flag, view.now, colour,
     );
@@ -1311,7 +1310,7 @@ fn glows(out: &mut TreeDraw, view: &TreeView, new_ease: f32, retired: i32) {
         } else {
             (view.icon_size * 0.5, times(view.icon_size, 0.1))
         };
-        let mut batch = Batch::new(Program::Frame, Texture::Flamelets);
+        let mut batch = Batch::new(Program::Frame, Texture::Frames);
         batch.uniforms.frame_col = frame_col;
         glow(
             &mut batch,
@@ -1493,7 +1492,7 @@ fn bar_glows(out: &mut TreeDraw, view: &TreeView, pose: &BarPose) {
             continue;
         }
         if slot.word & 0x10_0000 != 0 {
-            let mut batch = Batch::new(Program::Frame, Texture::Flamelets);
+            let mut batch = Batch::new(Program::Frame, Texture::Frames);
             batch.uniforms.frame_col = frame_col;
             flame(
                 &mut batch,
@@ -1537,7 +1536,7 @@ fn bar_glows(out: &mut TreeDraw, view: &TreeView, pose: &BarPose) {
             rest[2] + (FLASH_GLOW[2] - rest[2]) * lit,
             rest[3],
         ];
-        let mut batch = Batch::new(Program::Frame, Texture::Flamelets);
+        let mut batch = Batch::new(Program::Frame, Texture::Frames);
         batch.uniforms.frame_col = frame_col;
         glow(
             &mut batch,
@@ -2107,7 +2106,7 @@ pub fn preview_draw(power: u32, flags: u32, x: f32, y: f32, unit: f32, domain: u
         });
         out.submit(batch);
     }
-    let mut glow_batch = Batch::new(Program::Frame, Texture::Flamelets);
+    let mut glow_batch = Batch::new(Program::Frame, Texture::Frames);
     glow_batch.uniforms.frame_col = accent_frame([255, 250, 230, 100]);
     let mut colour = domain_colour(domain);
     if flags & mark::PICKED == 0 {
@@ -2598,7 +2597,7 @@ mod tests {
             .find(|b| b.program == Program::Frame)
             .unwrap();
         assert!(close(glow.uniforms.frame_col[0], 0.4));
-        assert!(close(glow.uniforms.frame_col[3], 100.0 / 255.0));
+        assert!(close(glow.uniforms.frame_col[3], 100.0 / 255.0 * 0.4));
         // A flash on the first node scales its colour by 0.333 + 0.667
         // smoothstep(share), the share being the time left over 300 ms.
         view.flash = 0;
@@ -2624,7 +2623,7 @@ mod tests {
         let rings: Vec<_> = draw
             .batches
             .iter()
-            .filter(|b| b.program == Program::Link && b.texture == Texture::Frames)
+            .filter(|b| b.program == Program::Link && b.texture == Texture::Flamelets)
             .collect();
         // The retired node's ring, then the new node's.
         assert_eq!(rings.len(), 2);
@@ -2651,7 +2650,7 @@ mod tests {
         let rings = draw
             .batches
             .iter()
-            .filter(|b| b.program == Program::Link && b.texture == Texture::Frames)
+            .filter(|b| b.program == Program::Link && b.texture == Texture::Flamelets)
             .count();
         assert_eq!(rings, 1);
         assert_eq!(glow_alpha(&draw, 1), 1.0);
@@ -2668,7 +2667,7 @@ mod tests {
             tree_draw(view)
                 .batches
                 .into_iter()
-                .filter(|b| b.program == Program::LinkGlow && b.texture == Texture::Frames)
+                .filter(|b| b.program == Program::LinkGlow && b.texture == Texture::Flamelets)
                 .collect()
         };
         let quiet = rings(&view);
