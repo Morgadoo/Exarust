@@ -850,8 +850,9 @@ original opens it from its session flow, which belongs to the game modes.
 F1 shows the flow's page: the in-game page while a session runs, the title
 otherwise, with the flow's mode, phase and page state. The page is painted
 through the GUI draw path (`exa_ui::gui_draw`): a near-black backdrop, the
-title logo, and the rows from the menu font's sheet with the unit's own
-text program on the selected row. The screen follows `TMainMenu`'s rules
+title logo (Exarust's wordmark in the base font until the logo art is
+wired), and the rows from the menu font's sheet with the unit's own text
+program on the selected row. The screen follows `TMainMenu`'s rules
 (`exa_game::menu_pages`):
 
 - **Pages.** Title: BEGIN, CONTINUE (greyed without a story save), ARENA,
