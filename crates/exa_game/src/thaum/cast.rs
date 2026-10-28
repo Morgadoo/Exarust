@@ -1567,7 +1567,8 @@ fn attach_visual(
         commands,
         creator(kind, &visual_input(context, ragdoll, 0.0)),
     );
-    commands.entity(node).insert(Transform::IDENTITY);
+    // The live effect carries no transform of its own; the node keeps the
+    // creator's place and the parent link is only its lifetime.
     commands.entity(parent).add_child(node);
     node
 }
