@@ -719,7 +719,9 @@ level exit, and hides the session hook while F1's in-game page is up (the
 menu screen calls `menu_opened`/`menu_closed`). Every producer queues its
 steps in `FlowSteps`; the app applies the menu, end-menu, title-logo,
 game-view, controls, health and music ones, and logs the world, save,
-camera, character and transition steps. F1 opens the in-game page while a
+camera, character and transition steps. `BootToMenu` keeps a direct
+`play <level>` launch from covering the level with the boot title; the
+splash path still shows it at the hand-over. F1 opens the in-game page while a
 session runs. There is no in-process level reload, so a step that loads a
 level changes the session state but keeps the level that is loaded. The camera shots (offsets added to the framed point)
 with their cursor warps, the spawn turns (the engine's angle builder), the

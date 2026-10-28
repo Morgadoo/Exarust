@@ -1427,6 +1427,18 @@ pub struct FlowSteps {
     pub steps: Vec<Step>,
 }
 
+/// Whether the boot's title page is shown at start-up. The original always
+/// boots to it; Exarust's launch modes load a level or a model directly, so
+/// the launcher asks for the title only on the splash path.
+#[derive(Resource, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BootToMenu(pub bool);
+
+impl Default for BootToMenu {
+    fn default() -> Self {
+        Self(true)
+    }
+}
+
 /// Whether the game's interface is drawn over the world (the original's game
 /// view). The frame flow closes it on a death, an end-menu exit and a level
 /// change, and opens it again on a revival.
@@ -2825,6 +2837,7 @@ impl Plugin for FlowPlugin {
         app.init_resource::<Flow>()
             .init_resource::<FlowSteps>()
             .init_resource::<GameView>()
+            .init_resource::<BootToMenu>()
             .add_message::<MenuChoice>()
             .add_systems(Startup, boot)
             .add_systems(
@@ -2834,9 +2847,18 @@ impl Plugin for FlowPlugin {
     }
 }
 
-fn boot(mut flow: ResMut<Flow>, mut queued: ResMut<FlowSteps>) {
+fn boot(
+    mut flow: ResMut<Flow>,
+    mut queued: ResMut<FlowSteps>,
+    show_title: Option<Res<BootToMenu>>,
+) {
     for step in flow.boot() {
         debug!("game flow: {step:?}");
+        if show_title.as_deref().is_some_and(|show| !show.0)
+            && matches!(step, Step::ShowMenu(Page::Title) | Step::TitleLogo(_))
+        {
+            continue;
+        }
         queued.steps.push(step);
     }
 }
@@ -4608,6 +4630,25 @@ mod tests {
             ]
         );
         assert_eq!(flow.menu_confirm(true, false, 0.5), vec![Step::MenuConfirm]);
+    }
+
+    #[test]
+    fn a_direct_launch_can_skip_the_boot_title_page() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<exa_ui::gui_draw::GuiFrames>()
+            .insert_resource(BootToMenu(false))
+            .add_plugins((crate::menu_screen::MenuScreenPlugin, FlowPlugin));
+        app.update();
+        assert!(
+            !app.world()
+                .resource::<crate::menu_screen::MenuScreen>()
+                .open
+        );
+        assert_eq!(app.world().resource::<Flow>().mode, Mode::Menu);
+        assert!(app.world().resource::<Flow>().booted());
     }
 
     #[test]
