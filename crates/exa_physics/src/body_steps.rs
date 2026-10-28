@@ -60,8 +60,9 @@ const CROUCH_SPAN: f32 = 120.0;
 const CROUCH_NARROW: f32 = 30.0;
 const STANCE_WIDTH: f32 = 60.0;
 const STANCE_SIDE: f32 = 55.0;
-/// Below this the side term is not rooted (a crossed stance).
-const SIDE_ROOT: f32 = 1.2e-7;
+/// Below this the side term is not rooted (a crossed stance): the
+/// original's general epsilon, just under 2⁻²³.
+const SIDE_ROOT: f32 = 1.192_09e-7;
 /// Foot scores. Under the first (cm, × scale; the second after a stall) a
 /// free foot scores the third and stays. A moving foot scores the fourth,
 /// plus the later bonuses inside their windows.
@@ -479,7 +480,10 @@ pub(super) fn score_reference(
 
 /// The stance score of feet at `a` and `b` (cm) against `reference` (cm).
 /// `side` is horizontal; a positive `(b − a) · side` is the natural order
-/// and is rooted, a negative one is a crossed stance and is not.
+/// and is rooted, a negative one is a crossed stance and is not. The
+/// original's unordered edge cases are kept: a NaN reference distance takes
+/// the root and gives a NaN; a footing of no length gives a NaN distance
+/// (the division by zero), as the original's does.
 pub(super) fn stance_score(
     a: Vec3,
     b: Vec3,
@@ -488,31 +492,37 @@ pub(super) fn stance_score(
     crouch: f32,
     scale: f32,
 ) -> f32 {
+    // The original zeroes the feet's vertical difference first: the span,
+    // the projection and the side term all read it across the ground.
     let e = (b - a).with_y(0.0);
-    // The span is rooted only above the original's epsilon.
-    let ee = e.length_squared();
+    // (z² + (y² + x²)) with y 0: z² + x².
+    let ee = e.z * e.z + (e.y * e.y + e.x * e.x);
     let length = if ee > SIDE_ROOT { ee.sqrt() } else { ee };
-    let r = segment_distance(reference.with_y(0.0), a.with_y(0.0), b.with_y(0.0));
-    // The original multiplies by its single-precision 1/30.
-    let mut along = 1.0 - r * REF_RECIP;
-    let span = CROUCH_SPAN - CROUCH_NARROW * crouch;
-    if crouch > 0.0 && length > span {
-        along = (f64::from(along) - f64::from(length - span) * CROUCH_WEIGHT) as f32;
-    }
-    let width = if scale <= 0.0 {
+    // The reference's projection onto the feet's segment, by the original's
+    // x, y, z sum, clamped to it (a NaN stays, as its unordered jumps do).
+    let rv = reference - a;
+    let t = ((e.y * rv.y + e.x * rv.x) + e.z * rv.z) / ee;
+    let t = t.clamp(0.0, 1.0);
+    let d = (a + e * t) - reference;
+    // The same horizontal distance as the span, its y zeroed.
+    let r2 = d.z * d.z + (0.0 + d.x * d.x);
+    // The original takes the root unless the squared distance is under its
+    // epsilon (a NaN takes it): 1 − r/30, the single-precision 0.033333335.
+    let mut along = if r2 < SIDE_ROOT {
         1.0
     } else {
-        (STANCE_WIDTH * scale - length).abs() / (STANCE_WIDTH * scale)
+        1.0 - r2.sqrt() * REF_RECIP
     };
-    let mut w = e.dot(side.with_y(0.0));
+    let span = CROUCH_SPAN - CROUCH_NARROW * crouch;
+    if crouch > 0.0 && span < length {
+        along = (f64::from(along) - f64::from(length - span) * CROUCH_WEIGHT) as f32;
+    }
+    let width = (STANCE_WIDTH * scale - length).abs() / (STANCE_WIDTH * scale);
+    let mut w = e.z * side.z + (e.y * side.y + e.x * side.x);
     if w > SIDE_ROOT {
         w = w.sqrt();
     }
-    let side_term = if scale <= 0.0 {
-        1.0
-    } else {
-        (STANCE_SIDE * scale - w).abs() / (STANCE_SIDE * scale)
-    };
+    let side_term = (STANCE_SIDE * scale - w).abs() / (STANCE_SIDE * scale);
     (1.0 - side_term * side_term) * 2.0 + ((1.0 - width * width) + along)
 }
 
@@ -830,17 +840,6 @@ pub(super) fn reach_penalty(g_cm: f32, leg_cm: f32, step_cm: f32) -> f32 {
 
 fn recent(stamp: f32, now: f32, window: f32) -> bool {
     stamp.is_finite() && now >= stamp && now - stamp < window
-}
-
-fn segment_distance(reference: Vec3, a: Vec3, b: Vec3) -> f32 {
-    let e = b - a;
-    let ee = e.length_squared();
-    let t = if ee < 1e-12 {
-        0.0
-    } else {
-        ((reference - a).dot(e) / ee).clamp(0.0, 1.0)
-    };
-    (reference - (a + e * t)).length()
 }
 
 #[cfg(test)]

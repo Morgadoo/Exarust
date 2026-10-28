@@ -117,7 +117,9 @@ fn the_muscles_follow_the_bend_on_the_next_tick() {
     let aimed: Vec<Affine3A> = pose.iter().map(|p| root * *p).collect();
     body.set_bearing(Bearing::default());
     body.measure_balance(level.as_slice());
-    body.aim(root, aimed.clone());
+    let mut chain = aimed.clone();
+    body.fold_leg_ik(&mut chain);
+    body.aim(root, chain);
     let leg = right_leg(&body);
     let followed = shin_turn(&body, leg);
     let pose_now = body.drive.as_ref().unwrap().targets().to_vec();
@@ -138,7 +140,9 @@ fn the_muscles_follow_the_bend_on_the_next_tick() {
     let rate = body.legs[leg].knee_rate;
     assert!(close(knee, 0.02), "knee correction {knee}");
     assert!(close(rate, 0.01), "knee rate {rate}");
-    body.aim(root, aimed);
+    let mut chain = aimed;
+    body.fold_leg_ik(&mut chain);
+    body.aim(root, chain);
     let next = shin_turn(&body, leg);
     let extra = followed.inverse() * next;
     let (axis, angle) = extra.to_axis_angle();
@@ -159,7 +163,9 @@ fn lying_down_releases_the_stored_bend() {
         let aimed: Vec<Affine3A> = pose.iter().map(|p| root * *p).collect();
         body.set_bearing(bearing);
         body.measure_balance(level.as_slice());
-        body.aim(root, aimed);
+        let mut chain = aimed;
+        body.fold_leg_ik(&mut chain);
+        body.aim(root, chain);
         let leg = right_leg(&body);
         body.legs[leg].knee = 0.2;
         body.legs[leg].knee_rate = 0.0;
@@ -265,7 +271,9 @@ fn a_foot_on_a_15_cm_step_bends_its_knee() {
     for _ in 0..250 {
         body.set_bearing(bearing);
         body.measure_balance(level.as_slice());
-        body.aim(root, aimed.clone());
+        let mut chain = aimed.clone();
+        body.fold_leg_ik(&mut chain);
+        body.aim(root, chain);
         body.tick(level.as_slice());
     }
     let leg = right_leg(&body);
@@ -337,4 +345,120 @@ fn the_locomotion_ik_bends_a_short_clip_leg_over_the_contact() {
     // them, so each angle moves half its correction back.
     assert!((body.legs[leg].knee + 0.005).abs() < 1e-5);
     assert!((body.legs[leg].hip - 0.005).abs() < 1e-5);
+}
+
+/// The sampler's IK step: each leg's clip hip-to-ankle offset is recorded
+/// from the chain before the bend, and the stored thigh turn, hip and knee
+/// are folded into the thigh and shin, the shin keeping its clip offset
+/// under its turned parent.
+#[test]
+fn the_sampler_folds_the_leg_bend_into_the_chain() {
+    let part = |bone: usize, parent: Option<usize>, foot: Option<Vec3>| super::super::PartSetup {
+        bone,
+        entity: bevy::prelude::Entity::PLACEHOLDER,
+        parent,
+        world: Affine3A::IDENTITY,
+        centre: Vec3::ZERO,
+        half: Vec3::splat(0.05),
+        origin: Vec3::ZERO,
+        links: vec![],
+        foot,
+        pins: Vec::new(),
+        spheres: None,
+    };
+    let shin = Vec3::new(0.0, -0.4, 0.0);
+    let mut body = Ragdoll::new(&[
+        part(1, None, None),
+        part(3, Some(0), Some(shin)),
+        part(4, Some(1), None),
+    ])
+    .with_drive();
+    assert_eq!(body.legs()[0].foot, Some(2));
+    {
+        let leg = &mut body.legs[0];
+        leg.knee = 0.2;
+        leg.hip = -0.1;
+        leg.turn = Quat::from_rotation_y(0.15);
+    }
+    let thigh = Affine3A::IDENTITY;
+    let below = Affine3A::from_translation(shin);
+    let foot = Affine3A::from_translation(shin * 2.0);
+    let mut chain = [thigh, below, foot];
+    body.fold_leg_ik(&mut chain);
+    let leg = &body.legs[0];
+    // The leg's contact is its foot part's origin, here the shin's own
+    // origin: the clip's ankle 0.4 under the hip, kept in the chain's frame
+    // for the next aim.
+    let (hip, ankle) = leg.sampled_clip.expect("recorded");
+    assert!(hip.abs_diff_eq(Vec3::ZERO, 1e-6));
+    assert!(
+        ankle.abs_diff_eq(Vec3::new(0.0, -0.4, 0.0), 1e-6),
+        "{ankle:?}"
+    );
+    // The thigh takes the extra turn and the hip hinge; the shin keeps its
+    // clip offset under the turned thigh and takes the knee hinge.
+    let want_thigh = Affine3A::from_quat(Quat::from_rotation_y(0.15) * Quat::from_rotation_x(-0.1));
+    assert!(chain[0].abs_diff_eq(want_thigh, 1e-6), "{:?}", chain[0]);
+    let local = want_thigh.inverse() * chain[1];
+    let (scale, turn, at) = local.to_scale_rotation_translation();
+    assert!(at.abs_diff_eq(shin, 1e-6));
+    assert!(turn.abs_diff_eq(Quat::from_rotation_x(0.2), 1e-6), "{turn}");
+    assert!(scale.abs_diff_eq(Vec3::ONE, 1e-6));
+    // The foot keeps its clip placement under the bent shin.
+    let foot_local = chain[1].inverse() * chain[2];
+    assert!(
+        foot_local.abs_diff_eq(Affine3A::from_translation(shin), 1e-6),
+        "{foot_local:?}"
+    );
+}
+
+/// The aim after the sampler's IK step puts its clip record in the world by
+/// the body root: a root 3 m along x and turned a quarter about the
+/// vertical moves the hip and ankle with it.
+#[test]
+fn the_aim_puts_the_sampled_record_in_the_world() {
+    let (mut body, pose) = standing_at(Vec3::ZERO);
+    let root = Affine3A::from_rotation_translation(
+        Quat::from_rotation_y(std::f32::consts::FRAC_PI_2),
+        Vec3::new(3.0, 0.0, 0.0),
+    );
+    let mut chain = pose.clone();
+    body.fold_leg_ik(&mut chain);
+    let leg = right_leg(&body);
+    let (hip, ankle) = body.legs[leg].sampled_clip.expect("recorded");
+    body.set_bearing(Bearing::default());
+    body.aim(root, chain.iter().map(|p| root * *p).collect());
+    let leg = &body.legs[leg];
+    assert!(leg.sampled_clip.is_none());
+    assert!(leg.anim_hip.abs_diff_eq(root.transform_point3(hip), 1e-5));
+    assert!(
+        leg.anim_contact
+            .abs_diff_eq(root.transform_point3(ankle), 1e-5)
+    );
+    assert!(
+        leg.posed_offset
+            .abs_diff_eq(root.transform_vector3(ankle - hip), 1e-5)
+    );
+}
+
+/// A body without muscles keeps its chain: there is no bend to fold.
+#[test]
+fn a_limp_body_keeps_the_chain() {
+    let setup = super::super::PartSetup {
+        bone: 1,
+        entity: bevy::prelude::Entity::PLACEHOLDER,
+        parent: None,
+        world: Affine3A::IDENTITY,
+        centre: Vec3::ZERO,
+        half: Vec3::splat(0.05),
+        origin: Vec3::ZERO,
+        links: vec![],
+        foot: None,
+        pins: Vec::new(),
+        spheres: None,
+    };
+    let mut body = Ragdoll::new(&[setup]);
+    let mut chain = [Affine3A::from_translation(Vec3::Y * 0.5)];
+    body.fold_leg_ik(&mut chain);
+    assert_eq!(chain[0], Affine3A::from_translation(Vec3::Y * 0.5));
 }

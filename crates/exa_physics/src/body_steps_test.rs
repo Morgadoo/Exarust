@@ -537,3 +537,73 @@ fn a_walking_body_jolts_past_its_chest_velocity() {
     assert!(jolt_at(&mut down, jolt_vec, true, true).is_none());
     assert!(!down.jolt_latch);
 }
+
+/// The score's reference term is 1 less a 30th of the distance to the feet's
+/// segment, except under the original's squared epsilon (and for a NaN,
+/// which takes the root). The width and side terms divide by the stance
+/// width even at a zero scale, as the original's do.
+#[test]
+fn the_stance_score_keeps_the_originals_edges() {
+    let side = Vec3::X;
+    // A point 30 cm aside of the segment's midpoint: along = 1 − 30/30 = 0.
+    // (The original measures the distance across the ground, so the 30 cm
+    // of height above it would not count.)
+    let score = stance_score(
+        Vec3::ZERO,
+        Vec3::new(0.0, 0.0, 60.0),
+        Vec3::new(30.0, 0.0, 30.0),
+        side,
+        0.0,
+        1.0,
+    );
+    // span 60, width |60−60|/60 = 0, w = (b−a)·x = 0 (rooted to 0),
+    // side |55−0|/55 = 1: (1−1)·2 + ((1−0) + 0) = 1.
+    assert!(close(score, 1.0), "{score}");
+    // A reference on the segment itself: along = 1, width 0, side 1 -> 2.
+    let on = stance_score(
+        Vec3::ZERO,
+        Vec3::new(0.0, 0.0, 60.0),
+        Vec3::new(0.0, 0.0, 30.0),
+        side,
+        0.0,
+        1.0,
+    );
+    assert!(close(on, 2.0), "{on}");
+    // A NaN reference gives a NaN distance and so a NaN `along`: the
+    // original's unordered compare takes the root and keeps it.
+    let nan = stance_score(
+        Vec3::ZERO,
+        Vec3::new(0.0, 0.0, 60.0),
+        Vec3::new(f32::NAN, 0.0, 30.0),
+        side,
+        0.0,
+        1.0,
+    );
+    assert!(nan.is_nan(), "{nan}");
+    // A zero scale divides by zero: the width and side terms are infinities
+    // and the score is a NaN (the original does not guard it).
+    let zero = stance_score(
+        Vec3::ZERO,
+        Vec3::new(0.0, 0.0, 60.0),
+        Vec3::new(0.0, 0.0, 30.0),
+        side,
+        0.0,
+        0.0,
+    );
+    assert!(zero.is_nan(), "{zero}");
+    // The feet's height difference is zeroed before the projection: feet
+    // 40 cm apart in height with the reference 20 cm up, over the
+    // segment's midpoint, project onto the midpoint (t = 1800/3600) and
+    // the reference is on the segment across the ground: along = 1, the
+    // score 2. (Projecting with the height left in, t would be 2600/3600 =
+    // 0.722, and along 1 − 13.3/30.)
+    let raised = stance_score(
+        Vec3::ZERO,
+        Vec3::new(0.0, 40.0, 60.0),
+        Vec3::new(0.0, 20.0, 30.0),
+        side,
+        0.0,
+        1.0,
+    );
+    assert!(close(raised, 2.0), "{raised}");
+}

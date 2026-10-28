@@ -23,8 +23,8 @@ use std::collections::HashMap;
 use bevy::math::Affine3A;
 use bevy::prelude::*;
 use exa_anim::{
-    ATTACKS, AnimSystems, Animator, BodyPart, ClipPose, Motions, TickedClips, follow_up_blend,
-    ragdoll_bracket, rising_frames, slerp, standing_frames,
+    ATTACKS, AnimSystems, Animator, BodyPart, ClipPose, Motions, Stature, TickedClips,
+    follow_up_blend, in_place, ragdoll_bracket, rising_frames, slerp, standing_frames,
 };
 use exa_assets::SkinnedPart;
 use exa_combat::Condition;
@@ -75,6 +75,9 @@ fn build_bodies(
     parents: Query<&ChildOf>,
     parts: Query<(&BodyPart, &GlobalTransform)>,
     locals: Query<&Transform>,
+    nodes: Query<(&Transform, Option<&BodyPart>)>,
+    animators: Query<(&Animator, Option<&Stature>)>,
+    globals: Query<&GlobalTransform>,
     skinned: Query<&SkinnedPart>,
     meshes: Res<Assets<Mesh>>,
 ) {
@@ -147,12 +150,26 @@ fn build_bodies(
         } else {
             // A limp request is honoured by `go_limp` next. From now on the
             // body's ticks advance and sample its clips.
-            Ragdoll::new(&setup)
+            let mut body = Ragdoll::new(&setup)
                 .with_drive()
                 .with_race(race)
                 .with_stats(stats)
-                .with_rest_turns(&rest_turns)
-                .place_foot_pitches()
+                .with_rest_turns(&rest_turns);
+            // The original places a character by sampling its first clip
+            // and putting the parts where that pose puts them (its
+            // placement routine). The body is built from the model's posed
+            // parts, which are the same clip; sampling it again from the
+            // clip's clock keeps the pose independent of what the frame
+            // sampler last left on the nodes. The placement's leg snap
+            // (`Ragdoll::snap_placement`) that follows in the original is
+            // not run: without its frame height applied to the controller
+            // it left the standing player 4.5 cm lower (105 cm against 110
+            // cm over 2 000 ticks on the RTX 3090 check).
+            let frame = globals.get(root).map_or(Affine3A::IDENTITY, |g| g.affine());
+            spawn_pose(
+                root, frame, &mut body, &found, &motions, &animators, &parents, &nodes,
+            );
+            body.place_foot_pitches()
         };
         let mut entity = commands.entity(root);
         entity
@@ -163,6 +180,39 @@ fn build_bodies(
             entity.insert(TickedClips);
         }
     }
+}
+
+/// The placement's sampling: the body's clip at its current clock, posed on
+/// `frame`, is put on the parts before the feet are snapped to the ground.
+/// A root without an animator or clip keeps the posed model it was built
+/// from. The original's placement routine runs its living sampler once
+/// before it moves the particles to the placed pose.
+#[allow(clippy::too_many_arguments)]
+fn spawn_pose(
+    root: Entity,
+    frame: Affine3A,
+    body: &mut Ragdoll,
+    found: &[(Entity, usize, GlobalTransform)],
+    motions: &Motions,
+    animators: &Query<(&Animator, Option<&Stature>)>,
+    parents: &Query<&ChildOf>,
+    nodes: &Query<(&Transform, Option<&BodyPart>)>,
+) {
+    let Ok((anim, stature)) = animators.get(root) else {
+        return;
+    };
+    let Some(clip) = motions.clip(anim, &anim.action) else {
+        return;
+    };
+    let still = in_place(motions.0.action_index(&anim.action));
+    let Some(pose) = ClipPose::at(clip, anim.time, stature.map_or(1.0, |s| s.0), still) else {
+        return;
+    };
+    let worlds: Vec<Affine3A> = found
+        .iter()
+        .map(|&(entity, _, _)| frame * clip_pose(entity, root, &pose, parents, nodes))
+        .collect();
+    body.place_at(&worlds);
 }
 
 /// What building a part's body needs: its links to its parent as the
@@ -1069,6 +1119,95 @@ pub(crate) mod tests {
             }],
         };
         Motions::new(Arc::new(set), Arc::new(HashMap::new()), 0.0)
+    }
+
+    /// The placement's first sample: the body is built from its rest pose,
+    /// and `spawn_pose` puts the clip's pose on it (the pelvis's root height
+    /// and the thigh's swing) before the feet are snapped. A root with no
+    /// clip keeps the pose it was built from.
+    #[test]
+    fn the_spawn_samples_the_first_clip_before_placing() {
+        use bevy::ecs::system::SystemState;
+
+        let mut world = World::new();
+        let root = world.spawn(GlobalTransform::default()).id();
+        let pelvis = world
+            .spawn((
+                Transform::from_translation(PELVIS_REST),
+                BodyPart {
+                    bone: 1,
+                    rest: Transform::from_translation(PELVIS_REST),
+                },
+                ChildOf(root),
+            ))
+            .id();
+        let thigh = world
+            .spawn((
+                Transform::from_translation(THIGH_REST),
+                BodyPart {
+                    bone: 2,
+                    rest: Transform::from_translation(THIGH_REST),
+                },
+                ChildOf(pelvis),
+            ))
+            .id();
+        let setup = |bone, entity, parent, world: Vec3| PartSetup {
+            bone,
+            entity,
+            parent,
+            world: Affine3A::from_translation(world + PELVIS_REST),
+            centre: Vec3::ZERO,
+            half: Vec3::splat(0.1),
+            origin: Vec3::ZERO,
+            links: Vec::new(),
+            foot: None,
+            pins: Vec::new(),
+            spheres: None,
+        };
+        let mut body = Ragdoll::new(&[
+            setup(1, pelvis, None, Vec3::ZERO),
+            setup(2, thigh, Some(0), THIGH_REST),
+        ])
+        .with_drive();
+        let mut anim = Animator::new("Default", "Idle");
+        anim.time = 15.0;
+        world.entity_mut(root).insert(anim);
+        let motions = motions();
+        let found = vec![
+            (pelvis, 1, *world.get::<GlobalTransform>(pelvis).unwrap()),
+            (thigh, 2, *world.get::<GlobalTransform>(thigh).unwrap()),
+        ];
+        let mut animators: SystemState<Query<(&Animator, Option<&Stature>)>> =
+            SystemState::new(&mut world);
+        let mut parents: SystemState<Query<&ChildOf>> = SystemState::new(&mut world);
+        let mut nodes: SystemState<Query<(&Transform, Option<&BodyPart>)>> =
+            SystemState::new(&mut world);
+        let animators = animators.get(&world).unwrap();
+        let parents = parents.get(&world).unwrap();
+        let nodes = nodes.get(&world).unwrap();
+        spawn_pose(
+            root,
+            Affine3A::IDENTITY,
+            &mut body,
+            &found,
+            &motions,
+            &animators,
+            &parents,
+            &nodes,
+        );
+        let (swing, y) = idle_at(15.0);
+        let pelvis_at = body.parts[0].transform();
+        assert!(
+            (pelvis_at.translation.y - y).abs() < 1e-5,
+            "{:?}",
+            pelvis_at.translation
+        );
+        let local = body.parts[0].transform().inverse() * body.parts[1].transform();
+        let turn = Quat::from_mat3a(&local.matrix3);
+        assert!(
+            turn.abs_diff_eq(Quat::from_rotation_x(swing), 1e-5),
+            "{turn}"
+        );
     }
 
     /// A pelvis over a shin whose ankle is the shin's origin, 0.5 m under

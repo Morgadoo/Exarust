@@ -200,9 +200,13 @@ cosine), the angle between the clip's leg and the target's negated unless
 the clip's foot is ahead of the character frame's origin, all at 0.04 ×
 the speed plus 0.01 a tick; a leg where the clip's leg is not longer and
 the foot does not touch standing still eases both corrections back with
-the identity shown. Both write the knee and hip corrections the sampler
-composes into the clip's thigh and shin turns, and the foot's height over
-its floor, which the foot pitch levels. Each foot's sole floor is the
+the identity shown. Both write the knee and hip corrections the sampler folds into the clip's
+chain (`Ragdoll::fold_leg_ik`: it records each leg's clip ankle and hip
+before the fold, bends the thigh and shin and re-places the foot under the
+bent shin, as the original's IK chain places every part by its parent's;
+the next aim puts the record in the world after its carry), the chain the
+muscles follow, and
+the foot's height over its floor, which the foot pitch levels. Each foot's sole floor is the
 original's Ground Query (`contact::Level::floor_below`, a point ray from
 30 cm over the foot's ground 60 cm down against floor-flagged pieces): the
 hit, or the ground plus the leg's offset where it misses, never over the
@@ -242,8 +246,10 @@ it had when the muscles went, the 0.05 height ease and key-flag plants
 (`limp_plant`). It is not scheduled: the original samples only a body
 whose muscles are off and which is not dead, and a dead body's tick
 samples nothing.
-The placement's leg snap is a tested rule, not yet called by the spawn
-(`Ragdoll::snap_placement`): each probe is the clip ankle plus 5·scale cm
+The placement's leg snap is a tested rule, not called by the spawn
+(`Ragdoll::snap_placement`; the spawn now samples the first clip,
+`exa_game::limp::spawn_pose`, but without the snap's frame height applied
+to the controller the snap left the standing player 4.5 cm lower): each probe is the clip ankle plus 5·scale cm
 along the shin, a 10 cm sphere from the frame's height plus the leg's
 length is dropped 300 cm for the ground, the hits average to the
 character's ground, one foot's record (index 1 when leg 0's ground is
@@ -279,7 +285,12 @@ each leg's foot contact (`body::Leg`: `state`, a `body::FootState` of the
 original's bits, `anchor`, `grip`, `ramp`) is planted where its foot meets
 the floor, stood on its stance spot getting up or unsupported, cleared
 lying, and steps to its stance spot by the footwork's stance score, one
-foot at a time (a free foot within 5 cm stays). A recovery step starts
+foot at a time (a free foot within 5 cm stays). The score zeroes the
+feet's height difference before its span, projection and side terms; its
+reference term is 1 − the horizontal distance to the feet's segment × the
+single-precision 1/30, except under the squared epsilon where it stays 1
+(a NaN reference takes the root); the width and side terms divide by their
+spans unguarded, as the original's do. A recovery step starts
 when the chest is past 1.5 · R · E⁴ · S (45 cm for a settled human),
 compared squared as the original does, and not during a shock stagger;
 the balance keeps the support point and the feet's centre

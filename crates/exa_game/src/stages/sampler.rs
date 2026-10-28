@@ -17,7 +17,8 @@
 //! 5. the clip chain ([`clip_chain`]): each part's placement from its
 //!    rest translation and posed turn under its parent's, the thorax
 //!    hunch on a pinned part's turn first ([`pitch_thorax`]);
-//! 6. the IK chain ([`ik_chain`]; C13, C19);
+//! 6. the IK chain ([`ik_chain`]): each leg's stored knee, hip and thigh
+//!    turn folded into the clip chain, its clip ankle recorded first;
 //! 7. the torso twist: the spine turned toward the look ([`spine`],
 //!    `exa_physics::body::locomotion::twist_spine`);
 //! 8. the head look ([`head_look`]; M8) and the foot pitch
@@ -285,7 +286,8 @@ pub(crate) fn sample_parts(
     let pose = femur_posture(pose.scaled(stature), body, posture);
     let pose = pitch_thorax(pose, body, feral);
     let chain = clip_chain(body, root, &pose, parents, nodes);
-    let mut parts = ik_chain(chain);
+    let mut parts = chain;
+    ik_chain(body, &mut parts);
     let head_parent = head_parent_before_twist(body, &parts);
     twist_spine(&mut parts, &spine(body, nodes), twist);
     look_with_head(&mut parts, body, look);
@@ -387,10 +389,12 @@ fn clip_chain(
 
 /// Step 6, the IK chain: each IK part's turn is multiplied by its leg IK
 /// corrections and the chain recomposed; the targets and the pins read
-/// it. Until C13 (standing) and C19 (walking) land the corrections are the
-/// identity: the IK chain is the clip chain.
-fn ik_chain(chain: Vec<Affine3A>) -> Vec<Affine3A> {
-    chain
+/// it. The corrections are last tick's, computed by the feet routine from
+/// the pose the solver left (`Ragdoll::fold_leg_ik`), and the clip's own
+/// hip-to-ankle offsets are recorded from the chain before they are
+/// folded in.
+fn ik_chain(body: &mut Ragdoll, chain: &mut [Affine3A]) {
+    body.fold_leg_ik(chain);
 }
 
 /// The bones' midline: a part within this (m) of its parent's midplane
