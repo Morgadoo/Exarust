@@ -588,6 +588,47 @@ mod tests {
         );
     }
 
+    /// The lift's lifecycle: the begin leaves a held item and its saved
+    /// rotation, the turn adds up, the release decides by the hover, and the
+    /// GUI drops wait in order for one frame.
+    #[test]
+    fn the_cursor_lifecycle_and_drop_queue() {
+        let mut cursor = ItemCursor::default();
+        cursor.begin(HeldItem {
+            body: Entity::PLACEHOLDER,
+            part: 0,
+            saved: Vec::new(),
+            saved_frame: Frame::default(),
+            shown: Frame::default(),
+            centre: Vec3::ZERO,
+            half: Vec3::ONE,
+            target: Vec3::ZERO,
+        });
+        assert!(cursor.held.is_some());
+        assert_eq!(cursor.rotation, Mat3::IDENTITY);
+        assert!(cursor.turn_frame(0, 100.0, Vec2f::new(1.0, 0.0), [false; 4], Vec3::X));
+        assert!((cursor.offset.x - 0.0625).abs() < 1e-6);
+        assert!((cursor.rotation * Vec3::Y - Vec3::Y).length() > 0.01);
+        cursor.hover = HOVER_GUI;
+        cursor.queue_drop(DropTask {
+            item: 3,
+            from_gui: true,
+            pointer: IVec2::new(4, 5),
+        });
+        cursor.queue_drop(DropTask {
+            item: 4,
+            from_gui: false,
+            pointer: IVec2::ZERO,
+        });
+        assert_eq!(cursor.take_drops().len(), 2);
+        assert!(cursor.take_drops().is_empty());
+        let (outcome, held) = cursor.end(false).unwrap();
+        assert_eq!(outcome, Release::ToGui);
+        assert_eq!(held.part, 0);
+        assert!(cursor.held.is_none());
+        assert_eq!(cursor.end(false), None);
+    }
+
     /// A part's rest points box: the centre is their middle, the half the
     /// extremes.
     #[test]
