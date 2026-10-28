@@ -556,7 +556,7 @@ impl Blast {
                 for slot in &mut chunk.trail {
                     slot.distance += trail_step;
                 }
-                if !(SPACING as f32 > chunk.trail[chunk.head].distance) {
+                if SPACING as f32 <= chunk.trail[chunk.head].distance {
                     let old = chunk.head;
                     chunk.head = if old + 1 > TRAIL - 1 { 0 } else { old + 1 };
                     chunk.trail[chunk.head].distance = trail_step;
