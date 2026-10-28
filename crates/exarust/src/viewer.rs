@@ -10,7 +10,8 @@ use exa_assets::{ColorSpace, Game, ModelCache, ModelLoader, PackKind, model};
 use exa_formats::character_stats::{CharacterStats, Spawn};
 use exa_formats::characters::CharacterRecord;
 use exa_formats::morph::Physique;
-use exa_physics::body::{BodyStats, RaceMuscles};
+use exa_game::scene_bodies::{body_stats, character_skin, human_frame, race_muscles};
+use exa_physics::body::RaceMuscles;
 
 use crate::{Options, View};
 
@@ -1701,39 +1702,6 @@ fn press_keys(
     }
 }
 
-/// Races with the human frame (human, skeleton, ancient): their bodies
-/// take the skeleton's physical links and fit human apparel.
-fn human_frame(race: u8) -> bool {
-    race <= 2
-}
-
-/// The factors a race gives its bodies' muscles.
-fn race_muscles(body: &exa_formats::races::RaceBody) -> RaceMuscles {
-    RaceMuscles {
-        stance: body.stance,
-        arm_relaxation: body.arm_relaxation,
-        balance_bonus: body.balance_bonus,
-        damping_ratio: body.damping_ratio,
-        clip_rate: body.clip_rate,
-        gaits: exa_physics::race_runtime::rows_of(body),
-    }
-}
-
-/// What a character's stats give its body.
-fn body_stats(stats: &CharacterStats) -> BodyStats {
-    BodyStats {
-        max_energy: stats.max_energy,
-        scale: stats.scale,
-        head_gain: stats.head_gain,
-        head_factor: stats.head_factor,
-        walking_arms: stats.walking_arms,
-        pin_factor: stats.pin_factor,
-        size: stats.size,
-        feral: stats.feral,
-        encumbrance: stats.encumbrance,
-    }
-}
-
 /// What placing a level's characters reads: the races, the role
 /// database, the player they rate and whether the level is a story level.
 struct Placing<'a> {
@@ -1755,48 +1723,6 @@ fn pose_nodes(model: &exa_assets::model::Model) -> Vec<exa_character::pose::Pose
             local: exa_character::pose::rows_of(&n.transform),
         })
         .collect()
-}
-
-/// A character's skin look and the composite job its generated maps come
-/// from: the record's tone, look seed, beard and physique layers with the
-/// race's look word. `seed` starts the generator that replaces a zero look
-/// seed, as the original draws one.
-fn character_skin(
-    game: &exa_assets::GameData,
-    model_name: &str,
-    record: &CharacterRecord,
-    look_word: u32,
-    physique: &Physique,
-    seed: u32,
-) -> (exa_assets::SkinLook, Option<exa_assets::SkinCompositeJob>) {
-    let lower = model_name.to_ascii_lowercase();
-    let stem = lower.strip_suffix("base.rfc").unwrap_or(&lower).to_string();
-    let weights = physique.weights(12);
-    let mut state = seed;
-    let mut fresh = || {
-        state = exa_character::look::random_step(state);
-        state
-    };
-    let exists = |name: &str| game.texture(name).is_some();
-    let job = exa_character::texture_job::SkinJob::of_record(
-        exa_character::factory::PIXEL_FORMAT,
-        &stem,
-        record,
-        look_word,
-        &weights,
-        &mut fresh,
-        &exists,
-    );
-    let female = exa_character::look::skin_set(look_word, record.female)
-        == exa_character::look::SkinSet::Female;
-    (
-        exa_assets::SkinLook {
-            stem,
-            tone: record.skin,
-            female,
-        },
-        job.composite_job(),
-    )
 }
 
 /// Spawns a level's placed characters in their race's bodies, standing where

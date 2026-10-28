@@ -328,7 +328,7 @@ fn stand_first_round(
             scene.template
         );
     }
-    let plans = round_plans(&scene, career.as_deref(), &slots, now, 3_000);
+    let plans = round_plans(&scene, career.as_deref(), &slots, now, MATCH_ACT_GRACE_MS);
     for plan in plans {
         commands.write(SceneCommand::Spawn(Box::new(plan)));
     }
