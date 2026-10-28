@@ -733,6 +733,8 @@ pub struct Picked {
 pub struct WorldClick {
     pub hit: Hit,
     pub pointer: IVec2,
+    /// The press was the second of a double click.
+    pub double: bool,
 }
 
 impl WorldClick {
@@ -741,6 +743,7 @@ impl WorldClick {
         Self {
             hit,
             pointer: IVec2::ZERO,
+            double: false,
         }
     }
 }
@@ -879,6 +882,12 @@ impl Plugin for HandPlugin {
                     .chain()
                     .in_set(HandSystems)
                     .after(crate::player::chase_camera)
+                    .before(crate::cursor::pick_cursor),
+            )
+            .add_systems(
+                Update,
+                run_corpse_scripts
+                    .after(HandSystems)
                     .before(crate::cursor::pick_cursor),
             );
     }
@@ -1218,6 +1227,7 @@ fn hold_hand(
                 clicks.write(WorldClick {
                     hit: picked.hit,
                     pointer,
+                    double: left.double,
                 });
             }
             if !combat
@@ -1485,6 +1495,84 @@ fn reach_hand(
         }
     };
     hand.out_of_reach = !in_reach;
+}
+
+/// Runs a dead character's role scripts on a double click: the roles in
+/// list order whose first Player-aimed entry carries the corpse section,
+/// each with the corpse as actor 0 and the player as actor 1, and the
+/// effects the scripts ask for go out as [`exa_script::ScriptEffect`].
+fn run_corpse_scripts(
+    mut clicks: MessageReader<WorldClick>,
+    scripts: Option<Res<exa_script::Scripts>>,
+    conversations: Option<ResMut<exa_script::Conversations>>,
+    corpses: Query<(&exa_ai::roles::Roles, Option<&exa_ai::brain::CharacterId>)>,
+    players: Query<Option<&exa_ai::brain::CharacterId>, With<PlayerBody>>,
+    time: Option<Res<Time<Virtual>>>,
+    mut effects: MessageWriter<exa_script::ScriptEffect>,
+) {
+    let (Some(scripts), Some(mut conversations)) = (scripts, conversations) else {
+        return;
+    };
+    for click in clicks.read() {
+        if !click.double {
+            continue;
+        }
+        let Hit::Character {
+            body, dead: true, ..
+        } = click.hit
+        else {
+            continue;
+        };
+        let Ok((roles, id)) = corpses.get(body) else {
+            continue;
+        };
+        let Some(corpse) = id.map(|id| id.0) else {
+            continue;
+        };
+        let player = players
+            .iter()
+            .next()
+            .and_then(|id| id.map(|id| id.0))
+            .unwrap_or(exa_ai::brain::PLAYER_ID);
+        let list = exa_ai::roles::corpse_scripts(&scripts.roles, roles);
+        if list.is_empty() {
+            continue;
+        }
+        let now = time.as_ref().map_or(0, |t| t.elapsed().as_millis() as u32);
+        let exa_script::Conversations {
+            engine,
+            cast,
+            player: scene_player,
+            player2,
+            world_base,
+            locale,
+            ..
+        } = &mut *conversations;
+        let mut scene = exa_script::dialogue::Scene {
+            library: exa_script::dialogue::Library {
+                roles: &scripts.roles,
+                narrator: scripts.narrator.as_ref(),
+            },
+            cast,
+            now,
+            world_time: exa_script::topics::world_time(*world_base, now, 0),
+            player: *scene_player,
+            player2: *player2,
+            locale: *locale,
+            effects: Vec::new(),
+        };
+        for script in list {
+            engine.run_script(
+                &mut scene,
+                vec![Some(corpse), Some(player)],
+                script.role,
+                script.script,
+            );
+        }
+        for effect in scene.effects.drain(..) {
+            effects.write(exa_script::ScriptEffect(effect));
+        }
+    }
 }
 
 #[cfg(test)]

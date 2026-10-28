@@ -455,8 +455,10 @@ arrives; the reach's navigation region and walk-to point; the movement
 request's drag modes, the controls' gates, the key permissions and the power
 bar's 500 ms hold. A click on the player's own body shows the HUD bars for
 5000 ms; a double click on it (with Ctrl in combat mode) opens the
-existing inventory screen; the other windows have no form and the script
-registry is `exa_ai::roles`. The controls' scene-node words are
+existing inventory screen; a double click on a corpse runs its roles'
+corpse scripts through `exa_script` (the corpse as actor 0, the player as
+actor 1) and sends their effects on, and the other windows have no form and
+the living character's talk condition is `exa_ai::roles`'s. The controls' scene-node words are
 `control_nodes`, a tested model (the runtime hand holds physics bodies, not
 scene nodes): the active and hold words, the grab switch and its release,
 the body-bearing subtrees, the frame refresh and orthonormalisation and the

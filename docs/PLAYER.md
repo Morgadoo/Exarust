@@ -548,10 +548,13 @@ is strict: the same button within the system's double-click time
 (`GetDoubleClickTime`, 500 ms by Windows' default, which Exarust uses) and
 under 2 pixels from the press before. The original takes it on the second
 press; Exarust reads it on that press's release. Exarust wires the player's
-own inventory and the item cursor's lift and release (below); the other
-windows and the script registry's click runners are not in (the registry
-itself is `exa_script::Scripts`, and the corpse and talk lookups are
-`exa_ai::roles`).
+own inventory, the item cursor's lift and release (below) and a dead
+character's role scripts: a double click runs the scripts
+`exa_ai::roles::corpse_scripts` names with the corpse as actor 0 and the
+player as actor 1, and their effects go out as
+`exa_script::ScriptEffect` (`hand::run_corpse_scripts`). The registry is
+`exa_script::Scripts` (`charroles.rdb`/`narrator.rcd`). The other windows
+and the living character's talk condition are not in.
 
 ### Using an item
 
