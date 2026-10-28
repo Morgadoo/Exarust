@@ -838,8 +838,9 @@ parameter block) and the `gi_multipoint` table's lookup, creation,
 `Light`/`Atten` binding and shutdown free. The EffectShell, EffectShell pass
 selection and the tendril geometry are in
 `thaum::veil`/`exa_game::effects::shell`/`thaum::visuals`. A shell, strikes,
-vanish, long door, summon and constant displacement cast leave their effect
-nodes in the scene; a long door's move places the body at the destination
+vanish, long door and constant displacement cast leave their effect nodes in
+the scene, on the caster's body (the summoning's creator adds none: its class
+builds the vanish effect); a long door's move places the body at the destination
 after the caster tick (the destination in centimetres, the root kept at
 its height above the body's lowest part). The constant displacement's
 shell records the shell material's sub-object and its end marks every
