@@ -43,6 +43,21 @@ pub const MATERIAL_STEP: f32 = 0.002;
 /// The divisor the original keeps in a global; it holds 1.
 pub const PASS_DIVISOR: f32 = 1.0;
 
+/// The message the tendril material raises when its geometry is not the
+/// effect class it was registered for.
+pub const INVALID_BINDING: &str = "Invalid effect geometry binding.";
+
+/// Checks that the node's geometry is the registered effect class. The
+/// original looks the class up in its registry and raises
+/// [`INVALID_BINDING`] when it is missing; the pass then runs anyway.
+pub fn check_geometry_binding(registered: bool) -> Result<(), &'static str> {
+    if registered {
+        Ok(())
+    } else {
+        Err(INVALID_BINDING)
+    }
+}
+
 /// The parameters one pass plan is computed from.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PassParams {
@@ -304,5 +319,14 @@ mod tests {
         assert!(draws.iter().all(|draw| draw.coord == 0.0));
         // The speed does not change the material's row.
         assert_eq!(draws[1].row, ((2.5f32 * 0.002) - 0.001));
+    }
+    #[test]
+    fn an_unregistered_geometry_is_reported() {
+        assert_eq!(check_geometry_binding(true), Ok(()));
+        assert_eq!(
+            check_geometry_binding(false),
+            Err("Invalid effect geometry binding.")
+        );
+        assert_eq!(INVALID_BINDING, "Invalid effect geometry binding.");
     }
 }
