@@ -200,12 +200,9 @@ fn enter_loaded_hub(
         hub.manager_placed = false;
         return;
     }
-    if flow.as_deref().is_some_and(|flow| {
-        !matches!(
-            flow.mode,
-            crate::flow::Mode::Arena | crate::flow::Mode::Menu
-        )
-    }) {
+    // The play view's practice stand-in counts as the arena while the hub
+    // is loaded, as the click hook reads it; story mode does not.
+    if hub_mode(flow.as_deref(), true) != ARENA_MODE {
         return;
     }
     if !hub.entered {
@@ -256,17 +253,21 @@ fn enter_loaded_hub(
         // A settled match's return puts the company back at the saved
         // placement: 300 cm out along the hub's entry direction (the hub's
         // own start), a half turn round. Both are the same spot, which is
-        // why the entry's start and the return agree.
+        // why the entry's start and the return agree. The half turn is the
+        // hub start's own facing (towards -z), which the player's body
+        // already carries; the root, which holds only the position, is not
+        // turned again.
         let distance = hub
             .returned
             .map_or(at.z, |placement| placement.distance / 100.0);
-        let yaw = hub.returned.map_or(0.0, |placement| placement.heading);
         let manager = Vec3::new(at.x, plan.position[1] / 100.0, distance);
         let mut placed = false;
         for mut transform in players {
             transform.translation = manager;
-            transform.rotation = Quat::from_rotation_y(yaw);
             placed = true;
+        }
+        if placed {
+            info!("arena hub: the manager stands at {manager}");
         }
         hub.manager_placed = placed;
     }
@@ -1275,6 +1276,29 @@ mod tests {
         }
     }
 
+    /// The play view runs the hub under its practice stand-in mode: the
+    /// manager is still placed and the hub's bodies asked for; a story-mode
+    /// flow leaves the hub alone.
+    #[test]
+    fn the_play_views_practice_mode_still_enters_the_hub() {
+        for (mode, entered) in [
+            (crate::flow::Mode::Practice, true),
+            (crate::flow::Mode::Story, false),
+        ] {
+            let mut app = hub_app();
+            let mut flow = Flow::default();
+            flow.mode = mode;
+            flow.phase = Phase::Playing;
+            app.insert_resource(flow);
+            spawn_hub_level(&mut app);
+            spawn_player(&mut app);
+            app.update();
+            let hub = app.world().resource::<ArenaHub>();
+            assert_eq!(hub.manager_placed, entered, "{mode:?}");
+            assert_eq!(hub.npcs_spawned, entered, "{mode:?}");
+        }
+    }
+
     #[test]
     fn the_hub_asks_for_its_shopkeeper_and_one_body_per_specialist() {
         let mut app = hub_app();
@@ -1362,11 +1386,9 @@ mod tests {
         let player = spawn_player(&mut app);
         app.update();
         let transform = app.world().get::<Transform>(player).unwrap();
-        // The saved distance is along z, in metres, over the floor lift.
+        // The saved distance is along z, in metres, over the floor lift;
+        // the facing stays the body's own.
         assert_eq!(transform.translation, Vec3::new(0.0, 0.05, 2.5));
-        assert_eq!(
-            transform.rotation.to_euler(EulerRot::YXZ).0.to_bits(),
-            0.5f32.to_bits()
-        );
+        assert_eq!(transform.rotation, Quat::IDENTITY);
     }
 }
