@@ -1384,8 +1384,28 @@ speed once 16 ms have passed in a frame. The original's random numbers are
 the wrapping linear congruential generator 134 775 813·state + 1, drawn as
 state/2³², except a strike's first step (0.2…0.3) and the thunder's pitch
 (0.9…1.2), which come from the run-time library's own generator. Exarust
-reproduces the rules and their generator; no level sets a time speed or a
-rain amount yet, so its scenes stay clear at their record's time.
+reproduces the rules and their generator; the outdoor scene preset is the
+one thing that starts rain and redraws the time of day, at a level load.
+
+**The presets at a load.** The save unit keeps the scene presets that the
+arena's scene creation calls: the indoor/underground preset (the sun off, no
+sky, a 50 000 cm far plane, fog distance 2, the full-strength grey global
+light, a black background, 0.5 grey fog, no wind or rain) and its 1.4, 1.8
+and 2.0 fog variants; and the outdoor preset (a 100 000 cm far plane, fog
+distance 0.6, the grey 0.6 global light, the sun on, a sky, then a seeded
+draw of the time of day, the rain, the fog distance, the cloudiness and the
+wind). The draw uses a local stream started at the caller's seed, replaced
+by a clock seed when zero; three of seven rolls rain, and only an arena
+whose entry in the original's table allows it may draw a night (0.76 … 1.0
+instead of the eased 0.32 … 0.74 day). A level load now applies these
+presets: `exa_world::environment::level_preset` classifies the level from its
+name (`arenao*` outdoor, `exanima*` and the first seven arenas indoor,
+everything else by its record), the first four outdoor arenas allow the
+night, and `level_lighting_preset` runs the preset before deriving the
+`Lighting`. The indoor preset leaves an indoor level's picture as it was
+(those levels had neither sun nor fog); an outdoor arena now draws its day
+and weather per launch, as the original does. The renderer's view reset and
+the audio environment switch the preset also performs are the caller's.
 
 **Grid levels.** A tile-grid level built the original's older way forces a
 black background and 0.5 grey fog, and, unless the level has terrain, an
