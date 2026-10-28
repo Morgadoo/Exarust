@@ -714,7 +714,8 @@ end-menu exit, the story respawn at `exanima05`'s portal, the application
 quit's autosave, the menu form routines (show, hide, the help flag, the title logo),
 the return to the menu form, and the pause. The rules return named steps;
 `FlowPlugin` runs them on the 12 ms game clock, follows a play level's
-player as a sandbox practice session, turns a teleporter's journey into a
+player as a sandbox practice-mode session (without the practice round
+hook), turns a teleporter's journey into a
 level exit, and hides the session hook while F1's in-game page is up (the
 menu screen calls `menu_opened`/`menu_closed`). Every producer queues its
 steps in `FlowSteps`; the app applies the menu, end-menu, title-logo,
@@ -751,8 +752,10 @@ and session hook are held, as the original's frame task does. The page is
 painted through the GUI draw path with the menu font's sheet, and the
 selected row runs `menu_text` through `exa_ui::skin::SkinMode::MenuText`.
 `end_menu_screen` draws the end-of-session menu over the game the same way;
-its rows run the flow's next practice fight, story respawn or exit, restart
-and leave actions. The title's BEGIN starts Exarust's unknown background;
+its rows follow the end-session dispatch (mode, then row, then menu
+number): the next practice fight, practice's RESTART back to the menu form,
+the story respawn or exit, and the returns to the title behind the
+transition. The title's BEGIN starts Exarust's unknown background;
 the save character screen, creator, manual, settings form and the in-process
 level reload are not wired.
 

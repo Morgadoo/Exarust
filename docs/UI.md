@@ -771,8 +771,8 @@ calling the rest of the game, so the order is testable.
   menu over the game through the GUI path, the selected row through the
   menu's text program, and runs the row on Enter or on the release over it:
   the next practice fight, the story's respawn or end-menu exit, a practice
-  restart, the arena's continue or lobby (both leave to the title until the
-  arena session is wired), and the exit. The centered row placement is
+  restart (back to the menu form), the arena's continue or lobby (both
+  leave to the title until the arena session is wired), and the exit. The centered row placement is
   Exarust's (the original's form class is outside the game-main unit). The
   arena's pause page reads its last row EXIT once the session was won or
   has ended, FORFEIT before.
@@ -812,7 +812,9 @@ calling the rest of the game, so the order is testable.
   offset is not positive (the original's arithmetic, which overshoots on the
   negative side).
 - **Wiring.** `FlowPlugin` boots the flow, ticks it on the 12 ms game clock,
-  watches a play level's player (a sandbox practice session) and turns a
+  watches a play level's player (a sandbox practice-mode session without
+  the practice round hook, since a launched level is not a practice arena
+  and its corpses would end a round at once) and turns a
   teleporter's `TravelToLevel` into a level exit; F1 then opens the in-game
   page with the flow's mode and phase words and hides the session hook while
   the page is up. `FlowSteps` collects every step and the app applies the
@@ -823,7 +825,17 @@ calling the rest of the game, so the order is testable.
   The world, save, camera, character and transition-screen steps are logged
   and left to the host; there is no in-process level reload, so a level
   load's request (a practice start on a fresh title, the next fight, a
-  teleporter) changes the flow state but keeps the loaded level.
+  teleporter) changes the flow state but keeps the loaded level; its
+  app-owned first steps (the menu form hides, the end menu closes) run.
+  The end menu's rows follow the end-session dispatch, which branches on
+  the mode first: practice's first row is RESTART (menu 2: the prelude
+  closes and the session leaves to the menu form behind the transition)
+  or NEXT FIGHT, its second row returns to the title behind the
+  transition; the story's first row is CONTINUE on the reconstructed menu
+  and otherwise, like its second, the story exit; the arena's first row is
+  the arena unit's continue (a leave to the title until the arena session
+  is wired) and its second (LOBBY) the return to the title; the arena's
+  third row and a scripted mode's rows do nothing there.
 
 ### The splash screen
 

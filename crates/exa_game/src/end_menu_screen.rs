@@ -25,7 +25,7 @@ use exa_ui::gui_text::{MenuFont, menu_font_scale};
 use exa_ui::menu::menu_row_scale;
 use exa_ui::skin::{SkinBatch, SkinInk};
 
-use crate::flow::{Action, EndMenu, Flow, FlowSteps, Step};
+use crate::flow::{Action, EndMenu, Flow, FlowSteps, Mode, Step};
 use crate::menu_pages::{row_advance, row_h};
 
 /// The backdrop's darkness, shared with the main menu.
@@ -35,45 +35,43 @@ pub const SELECTED_INK: SkinInk = [255, 255, 255, 255];
 /// A row that is not selected.
 pub const ROW_INK: SkinInk = [255, 255, 255, 255];
 
-/// What an end-menu row asks for, from its menu number and place. This is
-/// the branch the original's end-session dispatch takes for the pages the
-/// game builds.
+/// What an end-menu row asks for. This is the end-session form's dispatch:
+/// it branches on the game mode word first, then on the 1-based row, and
+/// only then (for the first row) on the menu number.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EndAction {
-    /// The next practice fight.
+    /// Practice's NEXT FIGHT: the next fight behind the transition.
     NextFight,
     /// The reconstructed story player continues (the respawn).
     StoryContinue,
     /// The story's end menu exits.
     StoryExit,
-    /// A practice ladder restarts at its first fight.
+    /// Practice's RESTART: the prelude closes and the session leaves to the
+    /// menu form (the practice page) behind the transition.
     Restart,
-    /// The arena's match continues.
+    /// The arena's first row: the arena unit's continue.
     ArenaContinue,
-    /// The arena's lobby.
-    Lobby,
-    /// Leave the session to the title.
-    Exit,
+    /// The second row in practice and the arena (EXIT, LOBBY): back to the
+    /// title behind the transition.
+    QuitToMenu,
 }
 
-/// The action of the 1-based `row` on `menu`.
-pub fn end_action(menu: &EndMenu, row: usize) -> EndAction {
-    match menu.kind {
-        3 => EndAction::NextFight,
-        4 => match row {
-            1 => EndAction::StoryContinue,
-            _ => EndAction::StoryExit,
-        },
-        5 => match row {
-            1 => EndAction::ArenaContinue,
-            2 => EndAction::Lobby,
-            _ => EndAction::Exit,
-        },
-        2 if menu.rows.len() > 1 => match row {
-            1 => EndAction::Restart,
-            _ => EndAction::Exit,
-        },
-        _ => EndAction::Exit,
+/// The action of the 1-based `row` on `menu` in `mode`, or `None` where the
+/// dispatch does nothing: a row past the ones it handles (the arena's third
+/// row among them) and every scripted or menu mode, whose end-menu handler
+/// is the script's own (not modelled).
+pub fn end_action(menu: &EndMenu, mode: Mode, row: usize) -> Option<EndAction> {
+    match (mode, row) {
+        (Mode::Practice, 1) if menu.kind == crate::flow::MENU_WON => Some(EndAction::Restart),
+        (Mode::Practice, 1) => Some(EndAction::NextFight),
+        (Mode::Practice, 2) => Some(EndAction::QuitToMenu),
+        (Mode::Story, 1) if menu.kind == crate::flow::MENU_RECONSTRUCTED => {
+            Some(EndAction::StoryContinue)
+        }
+        (Mode::Story, 1 | 2) => Some(EndAction::StoryExit),
+        (Mode::Arena, 1) => Some(EndAction::ArenaContinue),
+        (Mode::Arena, 2) => Some(EndAction::QuitToMenu),
+        _ => None,
     }
 }
 
@@ -204,8 +202,10 @@ impl EndMenuScreen {
         });
     }
 
-    /// Runs the selected row at `now`, returning the flow's steps. The menu
-    /// closes first; the flow's own end-menu steps then keep it hidden.
+    /// Runs the selected row at `now`, returning the flow's steps. A row
+    /// the dispatch handles closes the menu first; the flow's own end-menu
+    /// steps then keep it hidden. A row it does not handle leaves the menu
+    /// as it is.
     pub fn confirm(&mut self, flow: &mut Flow, now: u32) -> Vec<Step> {
         let Some(menu) = self.menu else {
             return Vec::new();
@@ -213,29 +213,28 @@ impl EndMenuScreen {
         let Some(selected) = self.selected else {
             return Vec::new();
         };
-        let action = end_action(&menu, selected + 1);
+        let Some(action) = end_action(&menu, flow.mode, selected + 1) else {
+            return Vec::new();
+        };
         self.close();
         match action {
             EndAction::NextFight => flow.transition(Action::NextPracticeFight, now),
             EndAction::StoryContinue => flow.continue_after_death(now),
             EndAction::StoryExit => flow.story_exit(now),
             EndAction::Restart => {
-                let steps = flow.start_practice(
-                    flow.practice.ladder,
-                    flow.stand_height,
-                    flow.viewport,
-                    now,
-                );
-                flow.begin_session(steps)
+                // The prelude closes first. The original also makes two
+                // calls (into the experience system and the GUI unit) whose
+                // roles are not identified; they are not modelled.
+                let mut steps = vec![Step::ClosePrelude];
+                steps.extend(flow.transition(Action::LeaveToMenuForm, now));
+                steps
             }
-            EndAction::ArenaContinue | EndAction::Lobby => flow.quit_to_menu(),
-            EndAction::Exit => {
-                if flow.mode == crate::flow::Mode::Story {
-                    flow.story_exit(now)
-                } else {
-                    flow.quit_to_menu()
-                }
+            EndAction::ArenaContinue => {
+                // The arena unit's continue has no live session bridge yet;
+                // the stand-in leaves to the title.
+                flow.transition(Action::QuitToMenu, now)
             }
+            EndAction::QuitToMenu => flow.transition(Action::QuitToMenu, now),
         }
     }
 }
@@ -421,22 +420,68 @@ mod tests {
 
     #[test]
     fn the_end_menus_ask_for_the_original_actions() {
+        let next = end_menu(MENU_NEXT, Mode::Practice);
         assert_eq!(
-            end_action(&end_menu(MENU_NEXT, Mode::Practice), 1),
-            EndAction::NextFight
+            end_action(&next, Mode::Practice, 1),
+            Some(EndAction::NextFight)
+        );
+        let practice = end_menu(MENU_WON, Mode::Practice);
+        assert_eq!(
+            end_action(&practice, Mode::Practice, 1),
+            Some(EndAction::Restart)
+        );
+        assert_eq!(
+            end_action(&practice, Mode::Practice, 2),
+            Some(EndAction::QuitToMenu)
         );
         let reconstructed = end_menu(MENU_RECONSTRUCTED, Mode::Story);
-        assert_eq!(end_action(&reconstructed, 1), EndAction::StoryContinue);
-        assert_eq!(end_action(&reconstructed, 2), EndAction::StoryExit);
+        assert_eq!(
+            end_action(&reconstructed, Mode::Story, 1),
+            Some(EndAction::StoryContinue)
+        );
+        assert_eq!(
+            end_action(&reconstructed, Mode::Story, 2),
+            Some(EndAction::StoryExit)
+        );
+        // The story's one-row EXIT menu exits the story.
         let won = end_menu(MENU_WON, Mode::Story);
-        assert_eq!(end_action(&won, 1), EndAction::Exit);
-        let practice = end_menu(MENU_WON, Mode::Practice);
-        assert_eq!(end_action(&practice, 1), EndAction::Restart);
-        assert_eq!(end_action(&practice, 2), EndAction::Exit);
+        assert_eq!(end_action(&won, Mode::Story, 1), Some(EndAction::StoryExit));
         let arena = end_menu(crate::flow::MENU_ARENA, Mode::Arena);
-        assert_eq!(end_action(&arena, 1), EndAction::ArenaContinue);
-        assert_eq!(end_action(&arena, 2), EndAction::Lobby);
-        assert_eq!(end_action(&arena, 3), EndAction::Exit);
+        assert_eq!(
+            end_action(&arena, Mode::Arena, 1),
+            Some(EndAction::ArenaContinue)
+        );
+        assert_eq!(
+            end_action(&arena, Mode::Arena, 2),
+            Some(EndAction::QuitToMenu)
+        );
+        // The arena's third row and a scripted mode's rows do nothing here.
+        assert_eq!(end_action(&arena, Mode::Arena, 3), None);
+        assert_eq!(end_action(&won, Mode::Other(0x20), 1), None);
+    }
+
+    #[test]
+    fn restart_leaves_to_the_menu_form_behind_the_transition() {
+        let mut flow = Flow::default();
+        flow.mode = Mode::Practice;
+        flow.phase = crate::flow::Phase::Ended;
+        let mut screen = EndMenuScreen::default();
+        screen.show(end_menu(MENU_WON, Mode::Practice));
+        let steps = screen.confirm(&mut flow, 1000);
+        assert_eq!(steps, vec![Step::ClosePrelude, Step::Transition]);
+        assert!(!screen.open);
+        assert_eq!(flow.phase, crate::flow::Phase::Transition);
+        // After 100 ms the session leaves to the menu form with its theme.
+        let steps = flow.transition_due(1100).unwrap();
+        assert!(steps.iter().any(|step| matches!(step, Step::ShowMenu(_))));
+        assert!(steps.iter().any(|step| matches!(step, Step::Music { .. })));
+        // An unhandled row keeps the menu.
+        let mut flow = Flow::default();
+        flow.mode = Mode::Arena;
+        screen.show(end_menu(crate::flow::MENU_ARENA, Mode::Arena));
+        screen.selected = Some(2);
+        assert!(screen.confirm(&mut flow, 0).is_empty());
+        assert!(screen.open);
     }
 
     #[test]

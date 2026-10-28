@@ -1199,6 +1199,9 @@ pub enum Action {
     Revive,
     /// Start the next practice fight.
     NextPracticeFight,
+    /// Leave the session to the menu form and its theme (practice's
+    /// RESTART).
+    LeaveToMenuForm,
     /// Load a named level at a spawn point.
     Locale { locale: &'static str, spawn: u32 },
 }
@@ -1611,7 +1614,6 @@ impl Flow {
         // The shipped build's first-run switch sets the second end-page tip.
         self.practice.next_tip = true;
         steps.push(Step::ShowMenu(Page::Title));
-        steps.push(Step::TitleLogo(true));
         steps.push(Step::SessionTask(false));
         steps
     }
@@ -1954,6 +1956,7 @@ impl Flow {
             Action::StoryRespawn => self.story_respawn(now),
             Action::Revive => self.revive(now),
             Action::NextPracticeFight => self.practice_next(now),
+            Action::LeaveToMenuForm => self.leave_to_menu_form(),
             Action::Locale { locale, spawn } => {
                 self.phase = Phase::Playing;
                 vec![Step::LoadLevel {
@@ -2369,12 +2372,9 @@ impl Flow {
     /// first here.
     pub fn begin_session(&mut self, mut starter: Vec<Step>) -> Vec<Step> {
         self.phase = Phase::Playing;
-        if self.menu_open {
-            // The original hides the menu form before the mode's starter
-            // runs.
-            self.menu_open = false;
-            starter.insert(0, Step::HideMenu);
-        }
+        // The begin itself does not touch the menu form: the starter's level
+        // load hides it (see `Step::LoadLevel`).
+        self.menu_open = false;
         self.end_menu = None;
         starter.push(Step::SessionTask(true));
         starter.push(Step::EndMenuUnselected(false));
@@ -2608,11 +2608,7 @@ impl Flow {
         self.mode = Mode::Menu;
         self.phase = Phase::Menu;
         self.menu_open = true;
-        vec![
-            Step::ShowMenu(Page::Title),
-            Step::TitleLogo(true),
-            Step::SessionTask(false),
-        ]
+        vec![Step::ShowMenu(Page::Title), Step::SessionTask(false)]
     }
 
     /// The help screen closed: the menu's help flag clears.
@@ -2855,7 +2851,7 @@ fn boot(
     for step in flow.boot() {
         debug!("game flow: {step:?}");
         if show_title.as_deref().is_some_and(|show| !show.0)
-            && matches!(step, Step::ShowMenu(Page::Title) | Step::TitleLogo(_))
+            && matches!(step, Step::ShowMenu(Page::Title))
         {
             continue;
         }
@@ -2891,12 +2887,16 @@ fn tick(
     }
 }
 
-/// A play level's player starts the practice hook (the sandbox is Exarust's
-/// stand-in for a practice session; the debug views have no session flow of
-/// the original's).
+/// A play level's player starts a practice-mode session (the sandbox is
+/// Exarust's stand-in for one; the debug views have no session flow of the
+/// original's). The practice round hook is not installed: a directly
+/// launched level is not a practice arena, and its corpses or any fallen
+/// character would end a "round" at once. A practice started from the menu
+/// installs the hook itself.
 fn follow_player(
     mut flow: ResMut<Flow>,
     mut queued: ResMut<FlowSteps>,
+    menu: Option<Res<MenuScreen>>,
     players: Query<(), Added<crate::player::PlayerBody>>,
     ticks: Option<Res<exa_physics::body::BodyTicks>>,
     mut clock: Option<MessageWriter<crate::world_clock::RestoreWorldClock>>,
@@ -2915,13 +2915,12 @@ fn follow_player(
     if let Some(clock) = clock.as_mut() {
         clock.write(crate::world_clock::RestoreWorldClock { saved_seconds: 0 });
     }
-    flow.menu_open = false;
+    // A title the splash put up stays over the level until it is closed.
+    flow.menu_open = menu.is_some_and(|menu| menu.open);
     flow.phase = Phase::Playing;
-    flow.hook = Hook::Practice;
+    flow.hook = Hook::None;
     flow.practice.start_ms = now;
-    // The title the boot put up belongs to the menus, not the sandbox game.
-    queued.steps.push(Step::HideMenu);
-    debug!("game flow: a play level is running; the practice hook watches it");
+    debug!("game flow: a play level is running as a practice-mode session");
 }
 
 /// A teleporter journey is the game's level exit.
@@ -3084,6 +3083,19 @@ fn apply_steps(
                 if let Some(end) = end.as_mut() {
                     end.close();
                 }
+            }
+            Step::LoadLevel { .. } => {
+                // The level loader's first work is the app's: it hides the
+                // menu form and closes the end menu and the prelude. The
+                // load itself is the host's; Exarust has no in-process level
+                // reload, so the loaded level stays.
+                if let Some(menu) = menu.as_mut() {
+                    menu.close();
+                }
+                if let Some(end) = end.as_mut() {
+                    end.close();
+                }
+                debug!("game flow step not applied by the app: {step:?}");
             }
             Step::EndMenuUnselected(unselected) => {
                 if let Some(end) = end.as_mut() {
@@ -4360,7 +4372,6 @@ mod tests {
         assert_eq!(
             steps,
             vec![
-                Step::HideMenu,
                 Step::LoadLevel {
                     locale: "exanima01",
                     spawn: 0,
