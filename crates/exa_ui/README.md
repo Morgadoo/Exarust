@@ -379,14 +379,22 @@ prerequisites funded), a node's press state, the screen's own unlearning
 flag, the ring, satellites and link search with the engine's sine across,
 the group icons, orbit bars and spokes, the hover tooltips, learning row,
 forget dialog and popup fade, and the screen's fades. The record's
-prerequisite table and surplus query come from `exa_character`. The
+prerequisite table and surplus query come from `exa_character`. Its
+opening keeps the content alpha and the opening scale apart (the hide
+scales the scale), its open/toggle plan builds the atlases, starts the
+reveal sound, suspends the controls and shows the form, and its close
+restores them. `skill_gui` holds the two shader sources, their uniforms
+and `MPrj` = (2, 0, 0, 0) with the reveal sound, and `skill_draw` builds
+the screen's vertices: the page background, the ring page's dim, the node
+plates and five spokes, the node and level icons, the orbit bars and the
+tooltip, learning-row and forget-dialog boxes and text anchors. The
 extended controls in `controls` model each class's message rules: the text
 field's and combo box's edit state and key dispatch, the drop-down
 placement, the colour drag, the spinner's commit, press, key filter, drag
-step and buttons, the progress, separator, image, texture, caption,
-trackbar and scroll-bar geometry, with `CVTSS2SI`'s indefinite result and
-the unordered clamps that let a NaN through. The screen and the controls
-are not drawn by a form yet.
+step, auto-repeat capture and buttons, the progress, separator, image,
+texture, caption, trackbar and scroll-bar geometry and draw calls, with
+`CVTSS2SI`'s indefinite result and the unordered clamps that let a NaN
+through. The screen and the controls are not drawn by a form yet.
 
 The thaumaturgy power tree's drawing is `tree_draw`: the six immediate
 programs and the spline renderer's procedural ribbon, the empty slot, icon,

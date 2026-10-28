@@ -1336,6 +1336,551 @@ pub fn drag_press(disabled: bool, flags: u32) -> bool {
     !disabled && flags & 7 == 1
 }
 
+/// The spinner's drag state and the values it remembers when a drag starts.
+///
+/// The state word's `0x0f00_0000` field holds the drag's phase: 0 is idle
+/// (a press places the caret), `0x0100_0000`/`0x0200_0000` are the up/down
+/// hot halves, `0x0300_0000` is a live drag and `0x0306_0000` is a drag
+/// that has captured the mouse.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SpinnerDrag {
+    pub state: u32,
+    /// The cursor's y when the drag began.
+    pub origin_y: i32,
+    /// The value when the drag began.
+    pub origin_value: f32,
+    /// The integer value's bits when the drag began (the integer path
+    /// remembers the raw bits).
+    pub origin_bits: u32,
+}
+
+impl Default for SpinnerDrag {
+    fn default() -> Self {
+        Self {
+            state: 0,
+            origin_y: 0,
+            origin_value: 0.0,
+            origin_bits: 0,
+        }
+    }
+}
+
+/// What a spinner's drag message does.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SpinnerDragAction {
+    /// Nothing.
+    None,
+    /// A press left of the button column places the caret.
+    Text,
+    /// Commit a float value through the control's set message.
+    SetFloat(f32),
+    /// Commit an integer value (its bits) through the set message, flagged
+    /// as an integer.
+    SetInt(u32),
+    /// The pointer passed the unit's travel: capture the mouse and become
+    /// the live drag. The two bounds are the original's clamp limits; its
+    /// two other region fields hold the sentinel `0x8000_0001`.
+    Capture { low: i32, high: i32 },
+    /// The hot half changed (the control redraws).
+    Hot,
+}
+
+/// The spinner's drag message. `cursor` is the GUI's cursor position and
+/// `press` the message's. The state starts idle; a press in the text
+/// places the caret. Once the text's drag state is on, moving past the
+/// unit's travel captures the mouse over the value's whole reach, and
+/// further moves step the value by `spinner_repeat_step` pixels each.
+#[allow(clippy::too_many_arguments)]
+pub fn spinner_drag(
+    drag: &mut SpinnerDrag,
+    spinner: &Spinner,
+    rect: (i32, i32, i32, i32),
+    _button: i32,
+    unit: i32,
+    style: u32,
+    press: (i32, i32),
+    cursor: (i32, i32),
+) -> SpinnerDragAction {
+    let pixels = spinner_repeat_step(unit, spinner.min, spinner.max, spinner.step);
+    if drag.state & 0x0f00_0000 == 0 {
+        return SpinnerDragAction::Text;
+    }
+    if drag.state & 0x0300_0000 == 0x0300_0000 {
+        if spinner.integer {
+            let moves = cvt_div(drag.origin_y - cursor.1, pixels);
+            let step = spinner.step.to_bits();
+            let value = (drag.origin_bits as u64)
+                .wrapping_add((moves as i64 as u64).wrapping_mul(u64::from(step)));
+            return SpinnerDragAction::SetInt(value as u32);
+        }
+        let moves = cvt_div(drag.origin_y - cursor.1, pixels) as f32;
+        return SpinnerDragAction::SetFloat(moves * spinner.step + drag.origin_value);
+    }
+    // The text drag: a travel past the unit captures the mouse over the
+    // value's whole reach.
+    let travel = (cursor.1 - press.1).unsigned_abs() as i32;
+    if travel > unit {
+        let (low, high) = if spinner.integer {
+            let max = spinner.max.to_bits();
+            let min = spinner.min.to_bits();
+            let step = spinner.step.to_bits();
+            let to_left = if max <= 0x186a0 {
+                cursor.1 - cvt_div_u(pixels, max.wrapping_sub(drag.origin_bits), step) - pixels
+            } else {
+                i32::MIN
+            };
+            let to_right = if min <= 0x186a0 {
+                cursor.1 + pixels + cvt_div_u(pixels, drag.origin_bits.wrapping_sub(min), step)
+            } else {
+                i32::MAX
+            };
+            (to_left, to_right)
+        } else {
+            let to_left = cursor.1
+                - (pixels as f32 * ((spinner.max - spinner.value) / spinner.step)).round_ties_even()
+                    as i32
+                - pixels;
+            let to_right = cursor.1
+                + (pixels as f32 * ((spinner.value - spinner.min) / spinner.step)).round_ties_even()
+                    as i32
+                + pixels;
+            (to_left, to_right)
+        };
+        drag.state |= 0x0306_0000;
+        drag.origin_y = cursor.1;
+        drag.origin_value = spinner.value;
+        drag.origin_bits = spinner.value.to_bits();
+        return SpinnerDragAction::Capture { low, high };
+    }
+    // The hot halves: the up half marks 0x0100_0000 when the style wants
+    // a hot button, the lower half 0x0200_0000. Other bits are kept.
+    let (top, h) = (rect.1, rect.3);
+    let mut bit = 0;
+    if cursor.1 >= top && cursor.1 < top + (((h as u32) >> 1) as i32) {
+        if style & 0x0400_0000 != 0 {
+            bit = 0x0100_0000;
+        }
+    } else if style & 0x0800_0000 != 0 {
+        bit = 0x0200_0000;
+    }
+    let state = (drag.state & 0xfcff_ffff) | bit;
+    if state != drag.state {
+        drag.state = state;
+        return SpinnerDragAction::Hot;
+    }
+    SpinnerDragAction::None
+}
+
+/// `round(a / b)` on the i32 operands, half to even; the quotient is taken
+/// in double precision as the original's conversion does.
+fn cvt_div(a: i32, b: i32) -> i32 {
+    let quotient = f64::from(a) / f64::from(b);
+    let rounded = quotient.round_ties_even();
+    if rounded.is_nan() || !(-2_147_483_648.0..2_147_483_648.0).contains(&rounded) {
+        i32::MIN
+    } else {
+        rounded as i32
+    }
+}
+
+/// `round(pixels × (numerator / step))` on the unsigned difference of two
+/// integer values, as the integer drag reads them.
+fn cvt_div_u(pixels: i32, numerator: u32, step: u32) -> i32 {
+    let quotient = f64::from(pixels) * (f64::from(numerator) / f64::from(step));
+    let rounded = quotient.round_ties_even();
+    if rounded.is_nan() || !(-2_147_483_648.0..2_147_483_648.0).contains(&rounded) {
+        i32::MIN
+    } else {
+        rounded as i32
+    }
+}
+
+/// A spinner's drawn parts, including each button's press and hot state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SpinnerDraw {
+    pub buttons: SpinnerButtons,
+    /// The field's two-ink face: its inks are the control's panel pair.
+    pub field_face: bool,
+    /// The inner one-pixel inset rectangle.
+    pub inner: (i32, i32, i32, i32),
+    /// The up button is pressed (`0x0100_0000`) and hot (`0x10`).
+    pub up_pressed: bool,
+    pub down_pressed: bool,
+    pub hot: bool,
+    /// The arrows' state words: 1 for the pressed style bit `0x20000`,
+    /// 0 otherwise, or `0xffff_ffff` while the control is hot.
+    pub up_arrow_state: i32,
+    pub down_arrow_state: i32,
+}
+
+/// Lays out the spinner's draw exactly as its draw routine does: a field to
+/// the button column (its inner rectangle one pixel in), two half-height
+/// buttons with the 1- or 2-pixel overlap, and the arrows at
+/// `(unit + 1) / 2` into each. The up button's pressed bit is `0x1000000`,
+/// the down button's `0x2000000`; both take the hot bit `0x10`. Without the
+/// hot bit the up arrow's state is 1 on style `0x20000` and the down
+/// arrow's 1 on style `0x40000`; with the hot bit both are `0xffff_ffff`.
+pub fn spinner_draw(
+    rect: (i32, i32, i32, i32),
+    button: i32,
+    unit: i32,
+    style: u32,
+    state: u32,
+) -> SpinnerDraw {
+    let (x, y, w, h) = rect;
+    let buttons = spinner_buttons(rect, button, unit);
+    let hot = state & 0x10 != 0;
+    let up_arrow_state = if hot {
+        -1
+    } else if style & 0x0002_0000 != 0 {
+        1
+    } else {
+        0
+    };
+    let down_arrow_state = if hot {
+        -1
+    } else if style & 0x0004_0000 != 0 {
+        1
+    } else {
+        0
+    };
+    SpinnerDraw {
+        buttons,
+        field_face: true,
+        inner: (x + 1, y + 1, (x + w - button) - 1, (y + h) - 1),
+        up_pressed: state & 0x0100_0000 != 0,
+        down_pressed: state & 0x0200_0000 != 0,
+        hot,
+        up_arrow_state,
+        down_arrow_state,
+    }
+}
+
+/// A progress bar's draw: its empty part (0.4 alpha), its four-stop bar and
+/// its one-ink highlight, each a rectangle in screen space.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProgressDraw {
+    pub rest: Option<(i32, i32, i32, i32)>,
+    pub bar: Option<(i32, i32, i32, i32)>,
+    pub highlight: Option<(i32, i32, i32, i32)>,
+    pub rest_alpha: u8,
+}
+
+/// Lays out the progress bar's draw from its fill. The empty part is drawn
+/// at alpha 0.4; the bar is four stops and the highlight one ink. The
+/// rectangles are the ones [`progress_rects`] already computes.
+pub fn progress_draw(rect: (i32, i32, i32, i32), pad: i32, value: f32) -> ProgressDraw {
+    let fill = round_to_i64((rect.2 as f32) * value) as i32;
+    let rects = progress_rects(rect, pad, fill);
+    ProgressDraw {
+        rest: rects.rest,
+        bar: rects.bar,
+        highlight: rects.highlight,
+        rest_alpha: round_to_i64(0.4 * 255.0) as u8,
+    }
+}
+
+/// A separator's line draw: the line rectangles and the four inks in the
+/// order the skin takes them (top, left, right, bottom). Style bit 0x40
+/// swaps the two ink sets.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SeparatorDraw {
+    pub lines: Vec<(i32, i32, i32, i32)>,
+    /// The four skin colour slots.
+    pub inks: [u8; 4],
+}
+
+/// Lays out the separator's lines and inks. The line rects are
+/// [`separator_lines`]; the normal inks are slots `0x9c, 0xa0, 0xac, 0xb4`,
+/// and style bit 0x40 reads `0xb8, 0xb0, 0xa0, 0x9c`.
+pub fn separator_draw(
+    rect: (i32, i32, i32, i32),
+    gap: i32,
+    style: u32,
+    unit: i32,
+    lines: i32,
+) -> SeparatorDraw {
+    let inks = if style & 0x40 != 0 {
+        [0xb8, 0xb0, 0xa0, 0x9c]
+    } else {
+        [0x9c, 0xa0, 0xac, 0xb4]
+    };
+    SeparatorDraw {
+        lines: separator_lines(rect, gap, style, unit, lines),
+        inks,
+    }
+}
+
+/// The unit text inset the unit-change hook caches: `3·unit | 1`, the
+/// width the spinner's button column and the separator's text gap use. The
+/// hook runs ahead of the previous one, which it then calls.
+pub fn text_inset(unit: i32) -> i32 {
+    (3 * unit) | 1
+}
+
+/// A text field's draw-through plan: the inner frame, the label's origin
+/// and the run the text edit unit draws.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TextFieldDraw {
+    /// The inner frame when the style has any `0xf0` bit.
+    pub border: Option<(i32, i32, i32, i32)>,
+    /// The aligned text origin.
+    pub origin: LabelAt,
+    /// The drawn run's first byte and one past its last.
+    pub start: u8,
+    pub end: u8,
+}
+
+/// Lays out a text field's draw-through: its inner frame, the label origin
+/// from the style and the measured width, and the run its edit state keeps.
+#[allow(clippy::too_many_arguments)]
+pub fn text_field_draw(
+    rect: (i32, i32, i32, i32),
+    style: u32,
+    edit: EditState,
+    text_width: i32,
+    line_h: i32,
+    base: i32,
+    pad: i32,
+    unit: i32,
+) -> TextFieldDraw {
+    let (x, y, w, h) = rect;
+    let avail = text_span_a(w, pad, unit);
+    TextFieldDraw {
+        border: text_border(rect, style),
+        origin: align_label(x, y, h, pad, unit, text_width, avail, line_h, base, style),
+        start: edit.start,
+        end: edit.end,
+    }
+}
+
+/// A scroll bar's three caption runs: their origins and alignment styles.
+/// The text keeps its origin, the suffix takes `0x4000` and the value
+/// `0x3000`; the style word's own alignment bits are cleared first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScrollCaptionRun {
+    pub x: i32,
+    pub y: i32,
+    pub style: u32,
+}
+
+/// Places the scroll bar's three captions. Each is measured by the caller;
+/// the text and suffix keep the control's style with the alignment bits
+/// cleared, and the value is centred.
+#[allow(clippy::too_many_arguments)]
+pub fn scroll_caption_runs(
+    rect: (i32, i32, i32, i32),
+    pad: i32,
+    unit: i32,
+    text_width: i32,
+    suffix_width: i32,
+    value_width: i32,
+    line_h: i32,
+    base: i32,
+    style: u32,
+) -> [ScrollCaptionRun; 3] {
+    let (x, y, w, h) = rect;
+    let plain = style & !0x7000;
+    let avail = text_span_a(w, pad, unit);
+    let text = align_label(x, y, h, pad, unit, text_width, avail, line_h, base, plain);
+    let suffix = align_label(
+        x,
+        y,
+        h,
+        pad,
+        unit,
+        suffix_width,
+        avail,
+        line_h,
+        base,
+        plain | 0x4000,
+    );
+    let value = align_label(
+        x,
+        y,
+        h,
+        pad,
+        unit,
+        value_width,
+        avail,
+        line_h,
+        base,
+        plain | 0x3000,
+    );
+    [
+        ScrollCaptionRun {
+            x: text.x,
+            y: text.y,
+            style: plain,
+        },
+        ScrollCaptionRun {
+            x: suffix.x,
+            y: suffix.y,
+            style: plain | 0x4000,
+        },
+        ScrollCaptionRun {
+            x: value.x,
+            y: value.y,
+            style: plain | 0x3000,
+        },
+    ]
+}
+
+/// A combo box's draw: its arrow (when shown) and which text path runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ComboDraw {
+    pub arrow: Option<(i32, i32)>,
+    /// The arrow's colour slot: `0xd4` when the style bit 0x10 is set,
+    /// `0xe0` otherwise.
+    pub arrow_ink: u8,
+    /// The arrow was drawn through the texture path (`0xe0` method) rather
+    /// than the flat one (`0xd0`).
+    pub arrow_textured: bool,
+    /// The text goes through the text-edit draw (edit state `0x10000`)
+    /// rather than the plain draw-through.
+    pub editing: bool,
+    /// The text's colour slot: `0xe4` for the plain path.
+    pub text_ink: u8,
+}
+
+/// Lays out a combo box's draw from its style and state words.
+pub fn combo_draw(rect: (i32, i32, i32, i32), unit: i32, style: u32, state: u32) -> ComboDraw {
+    let arrow = combo_arrow(rect, unit, style);
+    let editing = state & 0xf_0000 == 0x1_0000;
+    ComboDraw {
+        arrow,
+        arrow_ink: if state & 0x10 != 0 { 0xd4 } else { 0xe0 },
+        arrow_textured: editing,
+        editing,
+        text_ink: 0xe4,
+    }
+}
+
+/// A trackbar's draw: its track and thumb rectangles and the knob's travel.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TrackDraw {
+    pub track: (i32, i32, i32, i32),
+    pub track_alpha: u8,
+    pub thumb: (i32, i32, i32, i32),
+    pub pressed: bool,
+    /// The knob's offset from `x + pad`.
+    pub offset: i32,
+}
+
+/// Lays out a trackbar's draw. The track is inset by two pixels all round
+/// and drawn at alpha 0.6; the knob is `knob` wide at
+/// `x + pad + rint((w − 2·pad − knob) × value)`, one pad inside the height.
+pub fn track_draw(
+    rect: (i32, i32, i32, i32),
+    pad: i32,
+    knob: i32,
+    value: f32,
+    state: u32,
+) -> TrackDraw {
+    let (x, y, w, h) = rect;
+    let travel = (w - (pad << 1)) - knob;
+    let offset = round_to_i64(travel as f32 * value) as i32;
+    TrackDraw {
+        track: (x + 2, y + 2, (x + w) - 2, (y + h) - 2),
+        track_alpha: round_to_i64(0.6 * 255.0) as u8,
+        thumb: (x + pad + offset, y + pad, knob, (h - (pad << 1)).max(0)),
+        pressed: state & 0x10 != 0,
+        offset,
+    }
+}
+
+/// A scroll bar's draw: the track, the thumb and the value offset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScrollDraw {
+    pub track: (i32, i32, i32, i32),
+    pub track_alpha: u8,
+    pub thumb: (i32, i32, i32, i32),
+    pub pressed: bool,
+}
+
+/// Lays out the scroll bar's track and thumb. The track is inset by two
+/// pixels; the thumb is `4·unit + 1` wide at `x + pad + rint(spare ×
+/// value)`, one pad inside the height.
+pub fn scroll_draw(
+    rect: (i32, i32, i32, i32),
+    unit: i32,
+    pad: i32,
+    value: f32,
+    state: u32,
+) -> ScrollDraw {
+    let (x, y, w, h) = rect;
+    let (width, offset) = scroll_thumb(unit, pad, w, value);
+    ScrollDraw {
+        track: (x + 2, y + 2, (x + w) - 2, (y + h) - 2),
+        track_alpha: round_to_i64(0.6 * 255.0) as u8,
+        thumb: (x + pad + offset, y + pad, width, (h - (pad << 1)).max(0)),
+        pressed: state & 0x10 != 0,
+    }
+}
+
+/// The image view's fading shade: the inset rectangle with a transparent
+/// top edge (grey 128) and an opaque bottom.
+pub fn image_shade(rect: (i32, i32, i32, i32), pad: i32) -> (i32, i32, i32, i32) {
+    image_rect(rect, pad)
+}
+
+/// The ink an image's shade takes at its top and bottom: 128, 128, 128 at
+/// alpha 0 and 255.
+pub const IMAGE_SHADE_TOP: [u8; 4] = [0x80, 0x80, 0x80, 0x00];
+pub const IMAGE_SHADE_BOTTOM: [u8; 4] = [0x80, 0x80, 0x80, 0xff];
+
+/// A texture view's draw: either the filled inset rectangle in the stored
+/// colour, or the texture's cell centred in the control.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextureDraw {
+    Fill {
+        rect: (i32, i32, i32, i32),
+        ink: [u8; 4],
+    },
+    Cell {
+        origin: (i32, i32),
+        cell: i32,
+    },
+}
+
+/// Lays out a texture view's draw. With no texture it fills its inset
+/// rectangle in its stored ink; with one it centres the texture's cell,
+/// each half truncated toward zero.
+pub fn texture_draw(rect: (i32, i32, i32, i32), pad: i32, cell: Option<(i32, i32)>) -> TextureDraw {
+    match cell {
+        Some((cell, _ink)) => TextureDraw::Cell {
+            origin: (rect.0 + (rect.2 - cell) / 2, rect.1 + (rect.3 - cell) / 2),
+            cell,
+        },
+        None => TextureDraw::Fill {
+            rect: image_rect(rect, pad),
+            ink: [0, 0, 0, 0xff],
+        },
+    }
+}
+
+/// A caption's draw: whether the skin draws behind it and whether the text
+/// wraps with the style's 0x3000 bits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CaptionDraw {
+    pub back: bool,
+    pub wraps: bool,
+}
+
+/// Lays out a caption's draw.
+pub fn caption_draw(style: u32) -> CaptionDraw {
+    CaptionDraw {
+        back: caption::draws_back(style),
+        wraps: caption::wraps(style),
+    }
+}
+
+/// The colour drag's draw ink: the dragged colour at alpha 0xa0.
+pub fn colour_drag_ink(colour: u32) -> [u8; 4] {
+    let [red, green, blue, _] = colour.to_le_bytes();
+    [red, green, blue, 0xa0]
+}
+
 #[cfg(test)]
 mod extended_tests {
     use super::*;
@@ -1751,6 +2296,247 @@ mod extended_tests {
         assert!(caption::press(false, 0x2001, true));
         assert!(!caption::press(true, 0x2001, true));
         assert!(!caption::press(false, 0x2002, true));
+    }
+
+    #[test]
+    fn the_spinner_draw_lays_out_its_field_and_buttons() {
+        let draw = spinner_draw((10, 20, 60, 20), 13, 4, 0, 0);
+        assert_eq!(draw.buttons.field, (10, 20, 57, 40));
+        assert_eq!(draw.inner, (11, 21, 56, 39));
+        assert_eq!(draw.buttons.up, (57, 19, 13, 11));
+        assert_eq!(draw.buttons.down, (57, 30, 13, 11));
+        assert_eq!(
+            (draw.buttons.up_arrow, draw.buttons.down_arrow),
+            ((57, 22), (57, 33))
+        );
+        assert_eq!(draw.buttons.arrow_width, 7);
+        assert!(!draw.up_pressed && !draw.down_pressed && !draw.hot);
+        assert_eq!((draw.up_arrow_state, draw.down_arrow_state), (0, 0));
+        let marked = spinner_draw((0, 0, 60, 20), 13, 5, 0x6_0000, 0x100_0010);
+        assert!(marked.hot && marked.up_pressed);
+        assert_eq!(marked.up_arrow_state, -1);
+        assert_eq!(marked.buttons.up.1, -2);
+        // Style bit 0x20000 marks the up arrow when the control is not hot.
+        let up = spinner_draw((0, 0, 60, 20), 13, 4, 0x2_0000, 0);
+        assert_eq!((up.up_arrow_state, up.down_arrow_state), (1, 0));
+    }
+
+    #[test]
+    fn a_progress_bar_draws_its_rest_bar_and_highlight() {
+        let draw = progress_draw((10, 20, 100, 24), 2, 0.5);
+        assert_eq!(draw.rest, Some((59, 21, 109, 43)));
+        assert_eq!(draw.bar, Some((14, 24, 56, 40)));
+        assert_eq!(draw.highlight, Some((13, 23, 57, 41)));
+        assert_eq!(draw.rest_alpha, 102);
+        assert_eq!(progress_draw((0, 0, 100, 24), 2, 0.0).bar, None);
+        assert_eq!(progress_draw((0, 0, 100, 24), 2, 1.0).rest, None);
+    }
+
+    #[test]
+    fn a_separator_swaps_its_ink_set() {
+        let draw = separator_draw((0, 10, 100, 3), 32, 0, 4, 0);
+        assert_eq!(draw.lines, vec![(0, 10, 33, 3), (67, 10, 33, 3)]);
+        assert_eq!(draw.inks, [0x9c, 0xa0, 0xac, 0xb4]);
+        assert_eq!(
+            separator_draw((0, 0, 10, 3), 0, 0x40, 4, 0).inks,
+            [0xb8, 0xb0, 0xa0, 0x9c]
+        );
+    }
+
+    #[test]
+    fn a_combo_box_draws_its_arrow_and_picks_the_text_path() {
+        let draw = combo_draw((10, 20, 80, 24), 4, 0, 0);
+        assert_eq!(draw.arrow, Some((74, 25)));
+        assert_eq!(draw.arrow_ink, 0xe0);
+        assert!(!draw.arrow_textured && !draw.editing);
+        let editing = combo_draw((0, 0, 80, 24), 4, 0, 0x1_0010);
+        assert!(editing.editing && editing.arrow_textured);
+        assert_eq!(editing.arrow_ink, 0xd4);
+        assert_eq!(combo_draw((0, 0, 80, 24), 4, 0x800_0000, 0).arrow, None);
+    }
+
+    #[test]
+    fn a_track_and_a_scroll_bar_lay_out_their_tracks_and_thumbs() {
+        let track = track_draw((0, 0, 100, 20), 2, 20, 0.5, 0);
+        assert_eq!(track.track, (2, 2, 98, 18));
+        assert_eq!(track.thumb, (40, 2, 20, 16));
+        assert_eq!((track.offset, track.track_alpha), (38, 153));
+        let pressed = track_draw((0, 0, 100, 20), 2, 20, 0.0, 0x10);
+        assert!(pressed.pressed);
+        assert_eq!(pressed.thumb, (2, 2, 20, 16));
+        let scroll = scroll_draw((0, 0, 100, 80), 4, 2, 0.0, 0);
+        assert_eq!(scroll.track, (2, 2, 98, 78));
+        assert_eq!(scroll.thumb, (2, 2, 17, 76));
+        assert_eq!(
+            scroll_draw((0, 0, 100, 80), 4, 2, 0.5, 0).thumb,
+            (42, 2, 17, 76)
+        );
+    }
+
+    #[test]
+    fn an_image_texture_and_colour_drag_draw_their_parts() {
+        assert_eq!(image_shade((10, 20, 100, 80), 2), (12, 22, 96, 76));
+        assert_eq!(IMAGE_SHADE_TOP, [0x80, 0x80, 0x80, 0]);
+        assert_eq!(IMAGE_SHADE_BOTTOM, [0x80, 0x80, 0x80, 0xff]);
+        assert_eq!(
+            texture_draw((10, 20, 100, 80), 2, None),
+            TextureDraw::Fill {
+                rect: (12, 22, 96, 76),
+                ink: [0, 0, 0, 0xff]
+            }
+        );
+        assert_eq!(
+            texture_draw((10, 20, 100, 80), 2, Some((40, 0))),
+            TextureDraw::Cell {
+                origin: (40, 40),
+                cell: 40
+            }
+        );
+        assert_eq!(colour_drag_ink(0x1234_56ff), [0xff, 0x56, 0x34, 0xa0]);
+        assert_eq!(
+            caption_draw(0x1000),
+            CaptionDraw {
+                back: false,
+                wraps: true
+            }
+        );
+        assert_eq!(
+            caption_draw(0x10),
+            CaptionDraw {
+                back: true,
+                wraps: false
+            }
+        );
+    }
+
+    #[test]
+    fn the_spinner_drag_places_steps_captures_and_lights_halves() {
+        let spinner = Spinner {
+            value: 10.0,
+            min: 0.0,
+            max: 100.0,
+            step: 1.0,
+            integer: false,
+            dirty: false,
+        };
+        let rect = (0, 0, 60, 20);
+        let mut drag = SpinnerDrag::default();
+        assert_eq!(
+            spinner_drag(&mut drag, &spinner, rect, 13, 4, 0, (10, 10), (10, 10)),
+            SpinnerDragAction::Text
+        );
+        // The text drag: a move past the unit captures over the value's reach.
+        drag.state = 0x0100_0000;
+        assert_eq!(
+            spinner_drag(&mut drag, &spinner, rect, 13, 4, 0, (10, 100), (10, 110)),
+            SpinnerDragAction::Capture {
+                low: -254,
+                high: 154
+            }
+        );
+        assert_eq!(drag.state, 0x0306_0000);
+        assert_eq!((drag.origin_y, drag.origin_value), (110, 10.0));
+        // And a live drag steps by the 4-pixel repeat.
+        assert_eq!(
+            spinner_drag(&mut drag, &spinner, rect, 13, 4, 0, (10, 100), (10, 88)),
+            SpinnerDragAction::SetFloat(16.0)
+        );
+        // Integer spinners add the step's bits to the value's bits.
+        let mut whole = spinner;
+        whole.integer = true;
+        whole.step = f32::from_bits(1);
+        let mut drag = SpinnerDrag {
+            state: 0x0300_0000,
+            origin_y: 100,
+            origin_value: 10.0,
+            origin_bits: 10,
+        };
+        assert_eq!(
+            spinner_drag(&mut drag, &whole, rect, 13, 4, 0, (0, 0), (0, 88)),
+            SpinnerDragAction::SetInt(16)
+        );
+        // The hot halves: upper takes 0x01000000 under style 0x4000000.
+        let mut drag = SpinnerDrag {
+            state: 0x0200_0000,
+            ..SpinnerDrag::default()
+        };
+        assert_eq!(
+            spinner_drag(
+                &mut drag,
+                &spinner,
+                rect,
+                13,
+                4,
+                0x400_0000,
+                (10, 5),
+                (10, 5)
+            ),
+            SpinnerDragAction::Hot
+        );
+        assert_eq!(drag.state, 0x0100_0000);
+        assert_eq!(
+            spinner_drag(
+                &mut drag,
+                &spinner,
+                rect,
+                13,
+                4,
+                0x400_0000,
+                (10, 15),
+                (10, 15)
+            ),
+            SpinnerDragAction::Hot
+        );
+        assert_eq!(drag.state, 0);
+    }
+
+    #[test]
+    fn a_text_field_draws_its_frame_and_aligned_run() {
+        assert_eq!(text_inset(4), 13);
+        assert_eq!(text_inset(5), 15);
+        let draw = text_field_draw(
+            (10, 20, 80, 24),
+            0x1000,
+            EditState {
+                start: 1,
+                end: 4,
+                ..EditState::default()
+            },
+            30,
+            16,
+            14,
+            2,
+            4,
+        );
+        assert_eq!(draw.border, None);
+        assert_eq!(draw.origin.x, 10 - 30 - 4);
+        assert_eq!((draw.start, draw.end), (1, 4));
+        assert_eq!(
+            text_field_draw(
+                (10, 20, 80, 24),
+                0x10,
+                EditState::default(),
+                0,
+                16,
+                14,
+                2,
+                4
+            )
+            .border,
+            Some((11, 22, 89, 42))
+        );
+    }
+
+    #[test]
+    fn the_scroll_captions_take_their_three_alignments() {
+        let runs = scroll_caption_runs((0, 0, 100, 16), 2, 4, 20, 10, 12, 16, 14, 0x4000);
+        assert_eq!(runs[0].style, 0);
+        assert_eq!(runs[0].x, 2 + (4 + 1) / 2);
+        assert_eq!(runs[1].style, 0x4000);
+        assert_eq!(runs[2].style, 0x3000);
+        // The value is centred in the usable span.
+        let avail = text_span_a(100, 2, 4);
+        assert_eq!(runs[2].x, (avail - 1 - 12) / 2 + 2 + 4);
     }
 
     #[test]
