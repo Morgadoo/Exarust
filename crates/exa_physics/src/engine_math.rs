@@ -321,6 +321,64 @@ pub fn acos(x: f32) -> f32 {
     acos_approx(x)
 }
 
+/// The squared XZ length below which [`heading`] answers zero: the same
+/// 1e-8 constant as [`cosine`]'s guard.
+pub const HEADING_EPSILON: f32 = f32::from_bits(0x322B_CC77);
+
+/// The fractional part of `x` by the processor's truncating conversion:
+/// `x − trunc(x)`, so the sign follows `x`. NaN and a value outside the
+/// 32-bit range convert to the integer indefinite, which is subtracted as
+/// −2 147 483 648.
+pub fn frac(x: f32) -> f32 {
+    let whole = if x.is_nan() || x >= 2_147_483_648.0 || x < -2_147_483_648.0 {
+        i32::MIN
+    } else {
+        x.trunc() as i32
+    };
+    x - whole as f32
+}
+
+/// The signed heading of a direction in the XZ plane: the arc cosine of
+/// `z / |xz|`, negated when `x` is negative. Zero when the squared XZ
+/// length is below [`HEADING_EPSILON`]. A cosine at or below −1 answers π,
+/// above 1 zero, and a NaN length runs the division and the fast arc cosine
+/// (which gives NaN). The squared length sums z first, then x.
+pub fn heading(v: Vec3) -> f32 {
+    let length_squared = v.z * v.z + v.x * v.x;
+    if length_squared < HEADING_EPSILON {
+        return 0.0;
+    }
+    let cosine = v.z / length_squared.sqrt();
+    let angle = if cosine <= -1.0 {
+        PI
+    } else if cosine > 1.0 {
+        0.0
+    } else {
+        acos_approx(cosine)
+    };
+    if v.x < 0.0 {
+        f32::from_bits(angle.to_bits() ^ 0x8000_0000)
+    } else {
+        angle
+    }
+}
+
+/// The ground-plane direction at `yaw`: `(sin yaw, 0, cos yaw)`, so yaw 0
+/// looks along +Z and a positive yaw turns toward +X.
+pub fn direction_from_yaw(yaw: f32) -> Vec3 {
+    let (sin, cos) = sin_cos(yaw);
+    Vec3::new(sin, 0.0, cos)
+}
+
+/// The full direction at an elevation and a heading, in the original's
+/// argument order (elevation first): `(cos p·sin y, −sin p, cos p·cos y)`.
+/// Both angles use the engine's fast sine and cosine.
+pub fn direction_from_pitch_yaw(pitch: f32, yaw: f32) -> Vec3 {
+    let (sin_y, cos_y) = sin_cos(yaw);
+    let (sin_p, cos_p) = sin_cos(pitch);
+    Vec3::new(cos_p * sin_y, -sin_p, cos_p * cos_y)
+}
+
 /// The angles of a turn under the name the body code has always used.
 pub fn euler_of(m: &Mat3A) -> Vec3 {
     mat3_to_euler(m)
@@ -1164,5 +1222,54 @@ mod tests {
         assert_eq!(wide.x_axis.x, 0.0);
         // (0 − (−2^31)) − (2^31 − 1) = 1 over 2^32 − 1.
         assert_eq!(wide.w_axis.x, (1.0f64 / 4_294_967_295.0) as f32);
+    }
+
+    #[test]
+    fn frac_truncates_toward_zero() {
+        assert_eq!(frac(2.75), 0.75);
+        assert_eq!(frac(-2.75), -0.75);
+        assert_eq!(frac(0.0), 0.0);
+        assert_eq!(frac(-0.0), -0.0);
+        assert_eq!(frac(5.0), 0.0);
+        // Out of the 32-bit range the conversion is the indefinite integer.
+        assert_eq!(frac(3.0e9), 3.0e9 - (-2_147_483_648.0));
+        assert!(frac(f32::NAN).is_nan());
+    }
+
+    #[test]
+    fn heading_follows_the_xz_direction() {
+        // Yaw 0 looks along +Z; a quarter turn toward +X.
+        assert_eq!(heading(Vec3::Z), 0.0);
+        let quarter = heading(Vec3::X);
+        assert!((quarter - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
+        // Negative x flips the sign; z = -1 gives π.
+        assert!((heading(Vec3::NEG_X) + std::f32::consts::FRAC_PI_2).abs() < 1e-6);
+        assert!((heading(Vec3::NEG_Z) - std::f32::consts::PI).abs() < 1e-6);
+        // The height is ignored.
+        assert_eq!(heading(Vec3::new(0.0, 100.0, 5.0)), 0.0);
+        // A direction shorter than the guard is zero, even with x negative.
+        assert_eq!(heading(Vec3::new(-1.0e-5, 0.0, 1.0e-5)), 0.0);
+        // A cosine at the -1 end is π; NaN stays NaN.
+        assert_eq!(heading(Vec3::new(0.0, 0.0, -0.0)), 0.0);
+        assert!(heading(Vec3::new(f32::NAN, 0.0, 0.0)).is_nan());
+    }
+
+    #[test]
+    fn directions_come_from_the_fast_trig() {
+        assert_eq!(direction_from_yaw(0.0), Vec3::new(0.0, 0.0, 1.0));
+        // The fast sine at a quarter turn is 1 to within its polynomial.
+        let quarter = direction_from_yaw(std::f32::consts::FRAC_PI_2);
+        assert!((quarter.x - 1.0).abs() < 1e-6);
+        assert!(quarter.z.abs() < 1e-6);
+        // Positive pitch raises the direction: the Y term is −sin(pitch).
+        let up = direction_from_pitch_yaw(0.5, 0.0);
+        assert!((up.y + 0.5f32.sin()).abs() < 2e-6);
+        assert!((up.z - 0.5f32.cos()).abs() < 2e-6);
+        assert_eq!(up.x, 0.0);
+        // Elevation first, heading second: a heading of a quarter turn
+        // points along +X.
+        let right = direction_from_pitch_yaw(0.0, std::f32::consts::FRAC_PI_2);
+        assert!((right.x - 1.0).abs() < 1e-6);
+        assert_eq!(right.y, -0.0);
     }
 }
