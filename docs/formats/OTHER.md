@@ -548,10 +548,10 @@ whose layout is not established:
 | field | getter | setter |
 |---|---|---|
 | byte 0 bits 0–1 | 0..3 | clamps to 0..3 (NaN to 0) and rounds |
-| byte 0 bits 2–6, sign bit 7 | n·(1/31) in double precision, negated by bit 7 | round(\|31v\|) << 2 (a value past 31 spills into bit 7), then bit 7 for a negative v |
+| byte 0 bits 2–6, sign bit 7 | n·(1/31) in double precision, negated by bit 7 | round(\|31v\|) << 2 clears bits 0–1 and keeps the other bits (an earlier sign bit survives a positive v; a value past 31 spills into bit 7), then bit 7 for a negative v |
 | byte 0 bits 5–7 | the top three bits | — |
 | byte 0 bits 0–4 | the low five bits | — |
-| byte 3 fractions at bits 0, 3, 6 | n < 2 → n/8, else (n − 1)/4: 0, 0.125, 0.25, 0.5, 0.75, 1 | n = round(8v); above 1 → (n >> 1) + 1 capped at 5 (3 in the two-bit field at 6), ORed in unmasked (a negative n sets the bits above) |
+| byte 3 fractions at bits 0, 3, 6 | n < 2 → n/8, else (n − 1)/4: 0, 0.125, 0.25, 0.5, 0.75, 1 | n = round(8v); above 1 → (n >> 1) + 1 capped at 5 (3 in the two-bit field at 6), ORed in unmasked (a negative n sets the bits above; NaN's conversion ORs nothing in) |
 
 **Amounts.** A `u8` + `u8` + `u16` triple of units 1, 12 and 144
 (`b0 + 12·b1 + 144·w`); packing cuts the word to 16 bits. The add helper
