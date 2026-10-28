@@ -405,6 +405,7 @@ fn expire_icon_jobs(
     mut commands: Commands,
     mut jobs: ResMut<IconGpuJobs>,
     mut icons: ResMut<PanelIcons>,
+    mut images: Option<ResMut<Assets<Image>>>,
 ) {
     let (keep, expired): (Vec<_>, Vec<_>) = std::mem::take(&mut jobs.jobs)
         .into_iter()
@@ -426,6 +427,9 @@ fn expire_icon_jobs(
         commands.entity(job.root).despawn();
         if let Some(readback) = job.readback {
             commands.entity(readback).despawn();
+        }
+        if let Some(images) = images.as_deref_mut() {
+            images.remove(&job.image);
         }
     }
 }
