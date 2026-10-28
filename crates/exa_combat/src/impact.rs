@@ -519,11 +519,24 @@ pub fn strike_limbs(
                     part.last_impact,
                     part.transform().translation,
                 );
-                let spread = roll.below(100);
-                let Some(sound) = base_impact_sound(*impact, mobility, ready, last, now, spread)
-                else {
+                let Some(sound) = base_impact_sound(*impact, mobility, ready, last, now) else {
                     continue;
                 };
+                let set = weapon
+                    .blades
+                    .get(target)
+                    .ok()
+                    .and_then(|b| b.record.hit_sound_name())
+                    .map(str::to_owned);
+                // The original parks the clock of a body with no sound set;
+                // the stand-in set is the weapon's, whose clock the striking
+                // branch shares, so a missing set only stays silent here.
+                let Some(set) = set else {
+                    continue;
+                };
+                // The spread is drawn after the sound plays, as the
+                // original draws it.
+                let spread = roll.below(100);
                 let cooldown = sound.cooldown_ms.wrapping_add(spread);
                 if let Some(part) = item.parts.first_mut() {
                     part.sound_ready_ms = now.wrapping_add(cooldown);
@@ -534,12 +547,7 @@ pub fn strike_limbs(
                     point: point.into(),
                     volume: sound.volume,
                     pitch: sound.pitch,
-                    set: weapon
-                        .blades
-                        .get(target)
-                        .ok()
-                        .and_then(|b| b.record.hit_sound_name())
-                        .map(str::to_owned),
+                    set: Some(set),
                     kind: None,
                 });
                 continue;
