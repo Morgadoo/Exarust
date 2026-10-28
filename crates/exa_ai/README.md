@@ -28,25 +28,33 @@ their relations and traits. When they appear their roles choose their idle
 activity, and they choose it again whenever the held roles change; every
 frame they rate the player from both sides' roles, which feeds the contact
 rating (`sense`), and the brain's target pass decides whether the character
-engages the player. The AI tick links each brain into its 600 cm room cell,
-gathers the characters of that cell as its nearby list, decays its group
-alert a step every ten seconds, and out of combat sways its look about its
-heading and turns its model to it (the original lets the body's locomotion
-turn the body; the running game ticks no locomotion request for an NPC, so
-the model is turned directly). The original's reset when the level is
+engages the player. The AI tick links each brain into its 600 cm room cell
+and the level's room table, gathers the characters of that cell as its
+nearby list, decays its group alert a step every ten seconds, and out of
+combat runs the original's look chain (`motion::look_chain`) and turns its
+model with the eased look (the original lets the body's locomotion turn the
+body; the running game ticks no locomotion request for an NPC, so the model
+is turned directly). The original's reset when the level is
 written out on leaving it (the body heals to its lasting health, forgets
 every contact, and a roaming AI is put down along fresh wander paths and
 leaves combat) is `presence::reenter`; Exarust writes no level on leaving,
-so nothing calls it yet. Every frame the brain's
-perception pass clears its contacts' concern targets, closeness and view
-(as the original's target pass does before it perceives), looks at every
-character within the largest perception reach and every one it already
-knows, with that character's own contacts, the role database's attitude
+so nothing calls it yet. Once a body tick (not once a frame, as the
+original runs it from the body tick) the brain's perception pass clears its
+contacts' concern targets, closeness and view (as the original's target
+pass does before it perceives), looks at every character within the largest
+perception reach that the level's sight callback lets it see (in a grid
+level the room reach test, `rooms::in_sight`: the same room, or an open
+door whose point lies within 2 m of the other character; a level without a
+grid sees everyone) and every one it already knows, with that character's own contacts, the role database's attitude
 and the relations' trust in its threat estimate, and writes the contact
-words the integration reads. The original weighs only the characters in
-its line of sight; Exarust has no such test yet, so the reach stands in.
-A sleeper that rates the player above a notice drops the sleep role and
-wakes.
+words the integration reads. A race-class-`0x12xx` brain uses the standard
+per-contact sense; the other AI races use the ally-aware one
+(`combatant::ally_sense`), in which a fellow brain stands in for the race
+word's AI bit. A sleeper that rates the player above a notice drops the
+sleep role and wakes. A knocked-out or dead brain stops after its alert decay,
+before its morale and state (the original's condition bit `0x800`). No
+running race word selects the ally sense yet, so every level brain keeps
+the standard one.
 
 | module | what it holds |
 |---|---|
@@ -58,10 +66,10 @@ wakes.
 | `search` | the companion's search: gathering over the room grid, picking, the look sweep, the forced path, arrival, kneeling, looting worn items, packs and containers, item worth, wear room, comments to the leader, re-arming, tidying, and the world edits its deeds carry out (`apply_deed`) |
 | `manager` | the AI manager's frame (dormant ticks, rising undead, the 3 cm zone check), zone deeds, the group alert (raised, held ten seconds and dropped one every ten), the approach clamp, and the scene node the level's AI start-up makes once (`_Temp`, flag `0x100000`) |
 | `lookup` | a simulation's character by record id and a status effect by a masked word (first match in list order) |
-| `brain` | the components and systems that carry roles into the running game: applying roles again when the held set changes, the attitude rating and waking, the perception pass, and the AI tick (morale, the group alert's ten-second decay, the contact integration, the target pass, the room cell and nearby list, the engagement, and the out-of-combat body turn) |
+| `brain` | the components and systems that carry roles into the running game: applying roles again when the held set changes, the attitude rating and waking, the perception pass (line of sight, the ally sense and the sense a race installs), the AI tick once a body tick (morale, the group alert's ten-second decay, the contact integration, the target pass with the room graph, the room cell and nearby list, the engagement, the look chain and the out-of-combat body turn), and the flight's walk to a room's exit |
 | `idle` | roam, patrol, sentry and the wait, the wander and home-side points, follow, sleep, knock-out and waking |
-| `motion` | the AI's look and body motion: the head look toward a point (a quarter turn, 0.02 easing), the whole-look smoothing (`(0.0062831854·gap + sway)·0.7`, a 30° write threshold), the idle look (0.1 of the gap, 1 % pitch), the step/combat walk (the 0.7/0.007 facing threshold, the 150 cm goal hold, the run and sprint flags), the walk stop (8·crouch + 20), the steer line (120 cm, 3600 cm²), the way share, the alert pan (one draw in 300 and 75), the out-of-combat sway, and the aim, settle and snap |
-| `rooms` | the 600 cm room cell grid: the floored, half-offset flat index, the per-cell occupant lists, the old-cell memory, and the cell's nearby characters |
+| `motion` | the AI's look and body motion: the head look toward a point (a quarter turn, 0.02 easing), the whole-look smoothing (`(0.0062831854·gap + sway)·0.7`, a 30° write threshold), the idle look (0.1 of the gap, 1 % pitch), the out-of-combat look chain (the body look toward the head offset, the 0.4/0.64 smoothing and the gait helper's 30° write, with the stepping, live-target and combat cases), the step/combat walk (the 0.7/0.007 facing threshold, the 150 cm goal hold, the run and sprint flags), the walk stop (8·crouch + 20), the steer line (120 cm, 3600 cm²), the way share, the alert pan (one draw in 300 and 75), the out-of-combat sway, and the aim, settle and snap |
+| `rooms` | the 600 cm room cell grid (the floored, half-offset flat index, the per-cell occupant lists, the old-cell memory and the cell's nearby characters) and the level's side of it: the cell-to-room table, a room's exits at the cell centres behind its door links with shut doors from the room tracker, a room's reference point, and the sight test (the room reach test) |
 | `lifecycle` | the script-object factory, the scripted action hook, the removal/destroy/disable hooks, the investigation of a disturbance, the idle driver's state machine (turn, plan a room, walk, test the exit, use the object, plan home, search the room) with its exit/use/object checks and room walk, the go-to-object state, and the object goal |
 | `combatant` | the behaviour base: contacts, perception, the ally-class races' sense (the 3 concern floor, attitude 100 for a fellow AI, the 1200/1800 cm range, the threat to an ally weighed by the observed state, 0.3 of it as the concern target; a tested function, not called by the perception pass), the attitude and trust overrides, concern, references, the queued step, the nav footprint |
 | `combat` | the combat state: the follow check, practice, the foe estimate, the weapon draw and the lunge, the chase count and eagerness, the footwork drives, the seventeen-place search, the attack decision with the friend test and the keep-off, the step, the guard, the fierce stance and the body turn |
@@ -139,8 +147,11 @@ open exit most opposite the threat (cosine under 0.2), and fled rooms are
 remembered (eight). A combatant's contact is classified through
 `ContactRecord::of`; the combatant's own list still drops its oldest
 contact when full, where the original's admission (`contacts::admit`)
-replaces the lightest. The running game has no room graph yet, so no
-flight starts there.
+replaces the lightest. The classification asks the level's room graph with
+the contact as the threat (`rooms::level_room`, `rooms::room_exits`, the
+door links' cells as exit points), as the original's way-out query does,
+and `brain::flee_walk` runs a fleeing brain to that exit at the jog speed,
+putting the idle clip back when the flight ends.
 
 `brain::Npc::run_pass` drifts the morale, integrates a brain's contacts and
 runs the target pass over every character seen this tick, and reports
@@ -156,8 +167,11 @@ on the next frame) and a calm pass leaves it; the mind's own rating no
 longer decides the engagement. Exarust's duellist fights only its own
 target, so an entry against another character does not start it. A
 duellist without a brain, the practice opponent, is started by the fight's
-setup as before. Not yet: the original's one brain a tick (the longest
-waiter), the line-of-sight filter, the nearby list and the room graph.
+setup as before. The brain's passes run once a body tick, the perception
+filters by the room reach test, and the flight reads the level's room
+graph (it steers straight to the exit, without a nav route). Not yet: the one-planner-a-tick turn (`route::PlanTurn`) gates
+only the path planner, and an NPC's idle walk to its room exits has no
+driver yet (only the flight walks).
 
 The golem guardians' rules are plain functions with tests; no level has a
 golem entity or an alarm zone yet.
@@ -167,9 +181,10 @@ effect (the interpreter runs them, but the AI's host exposes only those two
 slots); encounter, corpse, dialogue and condition scripts and
 `StartDialogue` are found and modelled, not run from the AI; the brain feeding the
 combatant's mind-power overrides and group blend (they are in `combatant`);
-the roam and patrol walk only
-once the running game has a navigation grid, and the search's deeds have no
-item instances, containers or corpses to act on there yet.
+the roam and patrol choose
+their wander and home points from the level's rooms (`rooms::room_exits`,
+`idle::pick_wander`) but no system walks them yet, and the search's deeds
+have no item instances, containers or corpses to act on there yet.
 
 ## The combatant
 

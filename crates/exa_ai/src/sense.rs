@@ -153,8 +153,12 @@ pub fn decide(mind: &Mind) -> Decision {
     let at = crate::contacts::Standing {
         level: if mind.fleeing { 4 } else { 0 },
         is_focus: mind.fleeing,
+        // The caller's own room graph answers `flee_route`; the contact's
+        // place is not known here.
+        threat: bevy::math::Vec2::ZERO,
+        threat_room: -1,
     };
-    match crate::contacts::classify(&mut record, &mut morale, at, || mind.flee_route).0 {
+    match crate::contacts::classify(&mut record, &mut morale, at, |_, _| mind.flee_route).0 {
         4 => Decision::Flee,
         2 | 3 => Decision::Engage,
         1 => Decision::Watch,

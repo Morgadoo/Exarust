@@ -45,11 +45,11 @@ The skill share SHALL be the combat skill over 100, capped at 1. With t1 and t2 
 - **THEN** the skill is 1, the confidence 0.2, the restraint 0.3, the courage 0.6, the eagerness 5.9/8, the blend 0.75 + 0.25·2.2·0.333 and the jitter about 1
 
 ### Requirement: Attaching the brain
-Without the race word's AI flag no contact sense SHALL be installed. With it, the sense SHALL be the ally sense for race class `0x12xx` and the standard one otherwise; a dead character SHALL get the effect at 0 and its roles SHALL NOT be applied; a statue race SHALL stand sentry with the effect at 0; any other SHALL get the effect at 1.
+Without the race word's AI flag no contact sense SHALL be installed. With it, the sense SHALL be the standard one for race class `0x12xx` and the ally sense otherwise; a dead character SHALL get the effect at 0 and its roles SHALL NOT be applied; a statue race SHALL stand sentry with the effect at 0; any other SHALL get the effect at 1.
 
 #### Scenario: Ally, dead and statue
-- **WHEN** brains are attached to an ally-class body, a dead body and a statue body, all with the AI flag
-- **THEN** the first has the ally sense and the effect at 1, the second the effect at 0 and no roles applied, and the third is a statue with the effect at 0
+- **WHEN** brains are attached to a class-`0x12xx` body, a class-`0x04xx` body, a dead body and a statue body, all with the AI flag
+- **THEN** the first has the standard sense and the effect at 1, the second the ally sense, the third the effect at 0 and no roles applied, and the fourth is a statue with the effect at 0
 
 ### Requirement: Perception range
 One character's look at another SHALL skip an invisible character and clear the contact's threat first. The distance SHALL ignore vertical offsets under 150 cm. The contact SHALL be tracked inside 1200 cm, halved asleep, cut for a hidden character by `1 − 0.9·(1 − v)` (its inner radius by `1 − 0.8·(1 − v)`), 600 cm more while tracked. Outside both radii it SHALL be lost, raising the alert of an observer it was the target of to 40.
@@ -150,11 +150,15 @@ The pass's alarm mean, its sum over the root of its count, doubled, SHALL raise 
 - **THEN** the stress becomes 3 and the sleeper wakes
 
 ### Requirement: Perception fills the brain's contacts
-Every frame each brain SHALL clear its contacts' concern targets, closeness, view and noticed flag, then perceive every character within the largest perception reach and every character it already knows, and SHALL write the perception's sighting, closeness, attitude, threat and concern target into its contact for that character.
+Once a body tick each brain SHALL clear its contacts' concern targets, closeness, view and noticed flag, then perceive, through the sense it holds, every character within the largest perception reach that the level's sight test lets it see and every character it already knows, and SHALL write the perception's sighting, closeness, attitude, threat and concern target into its contact for that character. A second frame on the same body tick SHALL perceive nothing.
 
 #### Scenario: Visible and unseen
 - **WHEN** the player stands two metres ahead, then is made unseen
 - **THEN** the contact's closeness is 1 − 200/1200, then its sighting and closeness are 0
+
+#### Scenario: Once a tick
+- **WHEN** a contact's noticeability is cleared after a perception and the frame repeats on the same body tick, then the tick advances
+- **THEN** it stays 0 on the same tick and is written again on the next
 
 ### Requirement: Dead, knocked-out and lost characters
 A dead, asleep or removed character's concern and hostility SHALL be cleared on the brain; only a knocked-out character SHALL be skipped by the calming. A tracked target that moves out of reach SHALL raise the brain's alert to the lost floor.
@@ -168,7 +172,7 @@ A dead, asleep or removed character's concern and hostility SHALL be cleared on 
 - **THEN** the contact is no longer tracked and the alert is 40
 
 ### Requirement: The AI tick
-Every frame after the perception each brain SHALL drift its morale, integrate its contacts and run the target pass over every character seen this tick, keep the report on the brain, and copy its concern and hostility to the combatant's contacts.
+Once a body tick after the perception each brain SHALL decay its group alert, stop there when its body is out of the fight (condition bit `0x800`), and otherwise drift its morale, integrate its contacts and run the target pass over every character seen this tick, each contact's way out answered from the brain's room, its exits and its fled rooms away from that contact; it SHALL keep the report on the brain and copy its concern and hostility to the combatant's contacts.
 
 #### Scenario: One pass a tick
 - **WHEN** a brain holds a seen contact with hostility 5 for the player
@@ -208,3 +212,24 @@ With a concern of at least 1, the ally sense SHALL take the largest threat to an
 #### Scenario: An attacker near an ally
 - **WHEN** the observed character attacks, the concern is 1.5 and an ally contact has closeness 0.9 and view 1
 - **THEN** the concern becomes 3 and the concern target 0.3·(0.81·4·1.2)
+
+### Requirement: The sight test
+A brain SHALL see a character in a level without a grid always; in a grid level when both stand in the same room, or when a door between their rooms, open in the room tracker, has its point (¾ of the way into the cell behind it) within 2 m of the other character. A position in no room SHALL be taken as seen.
+
+#### Scenario: Through a door
+- **WHEN** a brain in a two-room grid looks at a character in its own room, one 1.5 m from the door's point behind it, one two cells past the door, and the first again with the door shut
+- **THEN** it sees the first two, not the third, and not the second once the door is shut
+
+### Requirement: The level room
+The AI tick SHALL read the brain's level room from the level's cell-to-room table. A cell without a room SHALL set the room to −1 and keep the previous room; a new room SHALL make the old one the previous room only when the old one was a room.
+
+#### Scenario: Through a roomless cell
+- **WHEN** a brain enters room 2, a roomless cell, room 5 and room 3
+- **THEN** the previous room stays −1 until room 3, which remembers 5
+
+### Requirement: The out-of-combat look chain
+Out of combat, a body stepping or attacking SHALL copy its look into its look smoothing and heading. Otherwise the look yaw SHALL turn a tenth of the gap to the eased offset (held within a quarter turn), the pitch ease 1 % toward the target pitch, the smoothing ease from the facing by 0.4 of the gap (0.64 of its sign past 1.6 rad), and the gait helper SHALL rewrite the body's heading when it lags the eased look by more than 30°.
+
+#### Scenario: A tenth and 0.4
+- **WHEN** a body looking along yaw 0 with facing 0 has an eased offset 0.3 and a target pitch 0.5
+- **THEN** the look yaw becomes 0.03, the pitch 0.005 and the smoothing yaw 0.012

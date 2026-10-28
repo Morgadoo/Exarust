@@ -48,6 +48,19 @@ use crate::rooms::{RoomCell, RoomCells};
 use crate::search::Search;
 use crate::sense::{Decision, Mind, decide};
 
+/// The body tick the perception pass last ran on and the one the AI tick
+/// last consumed, so the brain's passes run once per fixed tick even when
+/// frames outnumber ticks (the original runs them from the body tick).
+#[derive(Resource, Debug, Clone, Copy, Default)]
+pub struct BrainClock {
+    /// The tick [`perceive_all`] last perceived on.
+    pub perceived: u64,
+    /// The tick [`ai_tick`] last ran on.
+    pub passed: u64,
+    /// The tick [`flee_walk`] last steered on.
+    pub walked: u64,
+}
+
 /// The role database and the locale the level plays in (the id the
 /// level's name has in the locale list) [guess: the global the
 /// one-character entries compare with is the current locale].
@@ -118,9 +131,51 @@ pub struct Npc {
     /// The nearby characters the room list gathered (their ids), by
     /// distance.
     pub nearby: Vec<u64>,
+    /// The rooms a flight has left through (eight at most).
+    pub fled: crate::flee::FledRooms,
+    /// The contact sense its race uses ([`personality::Sense`]).
+    pub sense: personality::Sense,
+    /// The attach found a statue: its contact sense clears what it sees.
+    pub statue: bool,
+    /// The level room it stands in, −1 unknown.
+    pub level_room: i32,
+    /// The level room before the current one: a room whose only exit leads
+    /// back to it is remembered as fled.
+    pub previous_room: i32,
+    /// The way out the last flight chose (cm, y 0), while it runs.
+    pub flight: Option<bevy::math::Vec3>,
+    /// The velocity the flight walk last steered (m/s).
+    pub flight_velocity: Vec3,
+}
+
+/// Where a brain stands and the room graph its flight reads: the brain's
+/// position and room, the room before it and its room's exits.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct FleePlace<'a> {
+    /// The brain's position (cm); only x and z are read.
+    pub at_cm: bevy::math::Vec3,
+    /// Its level room, −1 unknown.
+    pub room: i32,
+    /// The room before it, −1 unknown.
+    pub home: i32,
+    /// Its room's exits (empty without a level room table).
+    pub exits: &'a [crate::flee::RoomExit],
 }
 
 impl Npc {
+    /// Moves the brain into level room `room` (−1 none): a cell without a
+    /// room unlinks it and keeps the previous room; a new room remembers
+    /// the old one only when it had one.
+    pub fn enter_room(&mut self, room: i32) {
+        if room == self.level_room {
+            return;
+        }
+        if room >= 0 && self.level_room >= 0 {
+            self.previous_room = self.level_room;
+        }
+        self.level_room = room;
+    }
+
     pub fn new(traits: [f32; 4]) -> Self {
         Self {
             applied: None,
@@ -141,6 +196,13 @@ impl Npc {
             alert_until_ms: u32::MAX,
             room: RoomCell::default(),
             nearby: Vec::new(),
+            fled: crate::flee::FledRooms::default(),
+            sense: personality::Sense::Standard,
+            statue: false,
+            level_room: -1,
+            previous_room: -1,
+            flight: None,
+            flight_velocity: Vec3::ZERO,
         }
     }
 
@@ -203,7 +265,9 @@ impl Npc {
     /// Integrates the brain's contacts and runs the target pass over the
     /// characters `visible` this tick: the level to fight at, 0 when
     /// nothing is noticed. `distance2` gives a character's squared distance
-    /// (cm²) for the greeting.
+    /// (cm²) for the greeting. `place` is where it stands and the room
+    /// graph it flees through: its position (cm), its room and the room
+    /// before it (−1 unknown) and its room's exits.
     #[allow(clippy::too_many_arguments)]
     pub fn run_pass(
         &mut self,
@@ -216,6 +280,7 @@ impl Npc {
         down: bool,
         now_ms: u32,
         roll: &mut u32,
+        place: &FleePlace<'_>,
     ) -> i32 {
         // The AI tick drifts the morale before the contacts are integrated.
         combat::drift_morale(
@@ -258,6 +323,22 @@ impl Npc {
             ..contacts::Morale::default()
         };
         let attended = self.pass.attention;
+        // The room graph answers each contact's way out as the original's
+        // classify asks it: from the brain's room, past the exits it has
+        // not fled through, away from the contact.
+        let mut fled = self.fled;
+        let mut way_out = |threat: bevy::math::Vec2, threat_room: i32| {
+            crate::flee::way_out(
+                place.room,
+                bevy::math::Vec2::new(place.at_cm.x, place.at_cm.z),
+                threat,
+                place.exits,
+                place.home,
+                threat_room,
+                &mut fled,
+            )
+            .is_some()
+        };
         let report = contacts::target_pass(
             contacts::PassInput {
                 contacts: &mut self.contacts,
@@ -276,8 +357,9 @@ impl Npc {
             &visible,
             &[],
             distance2,
-            || false,
+            &mut way_out,
         );
+        self.fled = fled;
         self.integration.level = report.level;
         self.integration.stress = report.stress;
         // The alarm mean raises the same stress the next drift decays.
@@ -358,6 +440,10 @@ struct Sensed {
     speed: f32,
     contacts: Vec<Contact>,
     roles: Option<Roles>,
+    /// It carries a brain, i.e. belongs to the AI class the ally sense
+    /// treats as a fellow [guess: the race word's AI bit is not modelled,
+    /// so a brain stands in for it].
+    ai: bool,
 }
 
 /// Runs one perception pass for every brain over every character it can
@@ -371,7 +457,9 @@ struct Sensed {
 pub fn perceive_all(
     db: Option<Res<RoleDatabase>>,
     ticks: Option<Res<BodyTicks>>,
+    mut clock: Option<ResMut<BrainClock>>,
     motions: Option<Res<Motions>>,
+    level: Option<Res<exa_world::room_view::LevelRooms>>,
     players: Query<Entity, With<RatedPlayer>>,
     bodies: Query<&CharacterBody>,
     mut chars: ParamSet<(
@@ -388,6 +476,7 @@ pub fn perceive_all(
             Option<&CharacterId>,
             Option<&Roles>,
             Option<&ChildOf>,
+            Has<Npc>,
         )>,
         Query<(
             Entity,
@@ -402,7 +491,13 @@ pub fn perceive_all(
         )>,
     )>,
 ) {
-    let now = ticks.map_or(0, |t| t.millis() as u32);
+    if let (Some(ticks), Some(clock)) = (ticks.as_deref(), clock.as_deref_mut()) {
+        if clock.perceived == ticks.0 {
+            return;
+        }
+        clock.perceived = ticks.0;
+    }
+    let now = ticks.as_ref().map_or(0, |t| t.millis() as u32);
     let candidates: Vec<Sensed> = chars
         .p0()
         .iter()
@@ -420,6 +515,7 @@ pub fn perceive_all(
                 id,
                 roles,
                 child,
+                ai,
             )| {
                 let phase = anim
                     .zip(motions.as_deref())
@@ -446,6 +542,7 @@ pub fn perceive_all(
                     speed,
                     contacts: combatant.map_or_else(Vec::new, |c| c.contacts.clone()),
                     roles: roles.cloned(),
+                    ai,
                 }
             },
         )
@@ -480,19 +577,21 @@ pub fn perceive_all(
             c.view = 0.0;
             c.flags &= !combatant::CONTACT_NOTICED;
         }
-        // The largest radius a tracked perception can have. The original
-        // weighs only the characters in its line of sight, which Exarust
-        // cannot test yet; no contact is made for a character beyond this
-        // reach or unseen [guess: a stand-in for the line-of-sight filter].
-        // A character it already knows is still perceived, so a tracked
-        // contact is lost and the alert raised as the perception does.
+        // The largest radius a tracked perception can have, and the
+        // original's sight test: the level's sight callback, which in a grid
+        // level is the room reach test ([`crate::rooms::in_sight`]) and
+        // otherwise always answers yes. A character already known is still
+        // perceived, so a tracked contact is lost and the alert raised as
+        // the perception does.
         let reach = combatant::PERCEPTION_CM + combatant::TRACKED_CM + combatant::FLAT_BAND_CM;
+        let in_sight = |at: Vec3| crate::rooms::in_sight(level.as_deref(), position_cm, at);
         for sensed in &candidates {
             if sensed.entity == entity {
                 continue;
             }
             if (sensed.invisible
-                || (sensed.position_cm - position_cm).length_squared() > reach * reach)
+                || (sensed.position_cm - position_cm).length_squared() > reach * reach
+                || !in_sight(sensed.position_cm))
                 && combatant.contact(sensed.entity).is_none()
             {
                 npc.unseen(sensed.id);
@@ -569,17 +668,43 @@ pub fn perceive_all(
                     .map_or(0.0, |(_, v)| *v);
                 combatant::trust(third, raw, false, effects)
             };
-            let sight = combatant::perceive(
-                &observer,
-                &observed,
-                &sensed.contacts,
-                &mut combatant.contacts,
-                index,
-                raw,
-                &trust_of,
-                effects,
-                u64::from(now),
-            );
+            let sight = match npc.sense {
+                personality::Sense::Standard => combatant::perceive(
+                    &observer,
+                    &observed,
+                    &sensed.contacts,
+                    &mut combatant.contacts,
+                    index,
+                    raw,
+                    &trust_of,
+                    effects,
+                    u64::from(now),
+                ),
+                personality::Sense::Ally => {
+                    // The ally-class sense: a fellow AI is an ally, the
+                    // player and the non-AI races are weighed by the threat
+                    // to the allies around.
+                    let ai_flagged = |other: Entity| {
+                        candidates
+                            .iter()
+                            .find(|s| s.entity == other)
+                            .is_some_and(|s| s.ai)
+                    };
+                    let code = combatant::ally_sense(
+                        &observer,
+                        npc.statue,
+                        &observed,
+                        &mut combatant.contacts,
+                        index,
+                        &ai_flagged,
+                    );
+                    let _ = code;
+                    combatant::Sight {
+                        seen: combatant.contacts[index].flags & combatant::CONTACT_TRACKED != 0,
+                        ..combatant::Sight::default()
+                    }
+                }
+            };
             if let Some(floor) = sight.alert_floor
                 && combatant.alert < floor
             {
@@ -611,10 +736,12 @@ pub fn perceive_all(
 /// combat state and the distances, on the game clock and the brain's
 /// generator. The report stays in [`Npc::pass`] (its level, attention,
 /// stress and cursor included).
-#[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn ai_tick(
     ticks: Option<Res<BodyTicks>>,
+    mut clock: Option<ResMut<BrainClock>>,
     mut rooms: Option<ResMut<RoomCells>>,
+    level: Option<Res<exa_world::room_view::LevelRooms>>,
     players: Query<(Entity, &GlobalTransform), With<RatedPlayer>>,
     targets: Query<(Entity, &GlobalTransform)>,
     fighters: Query<(Entity, &GlobalTransform), With<Fighter>>,
@@ -632,6 +759,13 @@ pub fn ai_tick(
         Option<&crate::presence::Presence>,
     )>,
 ) {
+    // One pass a tick: a second frame on the same body tick does nothing
+    // (the original's AI tick is called from the body tick).
+    if let (Some(ticks), Some(clock)) = (ticks.as_deref(), clock.as_deref())
+        && clock.passed == ticks.0
+    {
+        return;
+    }
     let now = ticks.as_ref().map_or(0, |t| t.millis() as u32);
     let player = players.iter().next().map(|(entity, _)| entity);
     for (
@@ -652,6 +786,12 @@ pub fn ai_tick(
         // The AI tick's group alert decays one step every ten seconds.
         (npc.alert_count, npc.alert_until_ms) =
             crate::manager::decay_alert(npc.alert_count, npc.alert_until_ms, now);
+        // After the alert decay, a knocked-out, collapsed or dead body only
+        // refreshes its nav footprint: no morale, contacts, state or look
+        // (the original's out-of-the-fight condition branch).
+        if condition.0 & combatant::CONDITION_OUT != 0 {
+            continue;
+        }
         let target = duellist.as_deref().map(|d| d.target).or(player);
         let observer_cm = gt.map_or(Vec3::ZERO, |g| g.translation() * 100.0);
         let target_cm = target
@@ -667,16 +807,48 @@ pub fn ai_tick(
         } else {
             (target_cm - observer_cm).length()
         };
+        // The level's cell-to-room table: the character's room, the room
+        // before it (remembered when it changes) and the room's exits.
+        let level_room = |at: Vec3| match level.as_deref() {
+            Some(level) => crate::rooms::level_room(&level.rooms, at),
+            None => -1,
+        };
+        // [guess: a position off the grid, which the original leaves as it
+        // was, also reads as no room here.]
+        let room = level_room(observer_cm);
+        npc.enter_room(room);
+        let exits = match level.as_deref() {
+            Some(level) if room >= 0 => {
+                crate::rooms::room_exits(&level.rooms, &level.tracker, room as u16)
+            }
+            _ => Vec::new(),
+        };
         // Every character the perception saw this tick is weighed, in the
         // contact list's order [guess: the original walks the world's
         // character list, which Exarust does not keep in that order].
+        let places: Vec<(u64, Vec3)> = fighters
+            .iter()
+            .map(|(e, g)| (e.to_bits(), g.translation() * 100.0))
+            .collect();
         let visible: Vec<contacts::Sighting> = npc
             .contacts
             .iter()
             .filter(|c| !c.object && contacts::TINY < c.seen)
-            .map(|&contact| contacts::Sighting {
-                contact,
-                character: true,
+            .map(|&contact| {
+                let at = if Some(contact.id) == target.map(Entity::to_bits) {
+                    target_cm
+                } else {
+                    places
+                        .iter()
+                        .find(|(id, _)| *id == contact.id)
+                        .map_or(Vec3::ZERO, |(_, at)| *at)
+                };
+                contacts::Sighting {
+                    contact,
+                    character: true,
+                    position_cm: at,
+                    room: level_room(at),
+                }
             })
             .collect();
         let sees_foe = target.is_some_and(|t| visible.iter().any(|s| s.contact.id == t.to_bits()));
@@ -700,10 +872,9 @@ pub fn ai_tick(
             sees_foe,
             foe_point: target_cm,
             // [guess: the model's translation stands in for the body's
-            // stored ground height; the running game has no room graph, so
-            // every foe is in room 0].
+            // stored ground height].
             foe_ground_y: target_cm.y,
-            foe_room: 0,
+            foe_room: level_room(target_cm),
             focus: None,
         };
         let in_combat = duellist
@@ -736,6 +907,12 @@ pub fn ai_tick(
         let asleep = mind.is_some_and(|m| m.asleep);
         let down = condition.0 & combatant::CONDITION_DOWN != 0;
         let mut roll = npc.roll;
+        let place = FleePlace {
+            at_cm: observer_cm,
+            room: npc.level_room,
+            home: npc.previous_room,
+            exits: &exits,
+        };
         let _ = npc.run_pass(
             &visible,
             sight,
@@ -746,6 +923,7 @@ pub fn ai_tick(
             down,
             now,
             &mut roll,
+            &place,
         );
         let seen_or_heard = npc.pass.attention.is_some();
         // The original keeps one contact list: the combat state, the
@@ -818,11 +996,176 @@ pub fn ai_tick(
                 now,
                 &mut roll,
             );
-            // The body turns to the eased yaw, look plus sway; the
-            // heading is the bare look and would snap the model.
-            transform.rotation = Quat::from_rotation_y(npc.turn.offset);
+            // The look chain: the body's own look and smoothing directions
+            // follow the head's offset, then the gait helper turns the look
+            // toward the heading and writes the body's look when it lags.
+            if npc.gaze.body_look == Vec3::ZERO {
+                npc.gaze.body_look = motion::dir_of(facing);
+                npc.gaze.body_smooth = motion::dir_of(facing);
+                npc.gaze.body_heading = motion::dir_of(facing);
+                npc.gaze.look = facing;
+            }
+            let turn = npc.turn;
+            let (body_look, body_smooth) = (npc.gaze.body_look, npc.gaze.body_smooth);
+            let heading_yaw = motion::yaw_of(npc.gaze.body_heading);
+            let chain = motion::look_chain(
+                &mut npc.gaze,
+                &turn,
+                motion::BodyLook {
+                    look: body_look,
+                    smooth: body_smooth,
+                    heading_yaw,
+                    facing_yaw: facing,
+                    // [guess: the running game has no stepping flag for an
+                    // NPC body.]
+                    stepping: false,
+                    attacking: condition.0 == combatant::CONDITION_ATTACKING,
+                    in_combat: false,
+                    // [guess: the running game has no object the brain looks
+                    // at; its live look target stays empty.]
+                    look_target_live: false,
+                },
+            );
+            npc.gaze.body_look = chain.look;
+            npc.gaze.body_smooth = chain.smooth;
+            if let Some(heading) = chain.heading.or(chain.turn) {
+                npc.gaze.body_heading = heading;
+            }
+            // The original turns the body's physical facing through its own
+            // locomotion; the running game ticks none for an NPC, so the
+            // model turns with the eased look, look plus sway, as before. A
+            // fleeing brain is turned by its flight walk ([`flee_walk`]).
+            if npc.flight.is_none() {
+                transform.rotation = Quat::from_rotation_y(npc.turn.offset);
+            }
         }
         npc.roll = roll;
+    }
+    if let (Some(ticks), Some(clock)) = (ticks.as_deref(), clock.as_deref_mut()) {
+        clock.passed = ticks.0;
+    }
+}
+
+/// Walks a fleeing brain out of its room: a brain whose target pass put it
+/// at level 4 runs (gait 2) to the way out [`crate::flee::way_out`] picks
+/// from its room's exits, replanning once it is within 150 cm of the goal.
+/// It does nothing while a duellist fights or the body is out of the scene,
+/// and it puts the walk back to the idle clip when the flight ends.
+///
+/// The original's flee state plans the path through the nav grid and walks
+/// it; Exarust steers straight to the exit with the NPC driver
+/// ([`crate::order::follow`]) and leaves the plan to the caller's grid.
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
+pub fn flee_walk(
+    ticks: Option<Res<BodyTicks>>,
+    mut clock: Option<ResMut<BrainClock>>,
+    level: Option<Res<exa_world::room_view::LevelRooms>>,
+    mut npcs: Query<(
+        Entity,
+        &mut Npc,
+        &crate::Duellist,
+        &Condition,
+        &GlobalTransform,
+        &mut Transform,
+        &ChildOf,
+        Option<&crate::presence::Presence>,
+        Option<&mut Animator>,
+    )>,
+    targets: Query<&GlobalTransform>,
+    mut roots: Query<(&mut CharacterBody, &GlobalTransform)>,
+) {
+    // The flight steers once a body tick, as the brain's other passes do:
+    // the driver eases the heading a tenth of the gap per call. A frame
+    // between ticks only puts back the velocity the duellist cleared.
+    let mut steer = true;
+    if let (Some(ticks), Some(clock)) = (ticks.as_deref(), clock.as_deref_mut()) {
+        steer = clock.walked != ticks.0;
+        clock.walked = ticks.0;
+    }
+    for (_entity, mut npc, duellist, condition, gt, mut t, parent, presence, anim) in &mut npcs {
+        if !steer {
+            if npc.flight.is_some()
+                && let Ok((mut body, _)) = roots.get_mut(parent.parent())
+            {
+                body.desired_velocity = npc.flight_velocity;
+            }
+            continue;
+        }
+        let was_fleeing = npc.flight.is_some();
+        if presence.is_some_and(|p| !p.moves())
+            || condition.0 & combatant::CONDITION_OUT != 0
+            || duellist.engaged
+            || duellist.fighting()
+            || npc.pass.level != 4
+        {
+            let was_fleeing = npc.flight.take().is_some();
+            if was_fleeing {
+                if let Ok((mut body, _)) = roots.get_mut(parent.parent()) {
+                    body.desired_velocity = Vec3::ZERO;
+                }
+                if let Some(mut anim) = anim
+                    && anim.action == "Run"
+                {
+                    anim.play_loop("Idle");
+                }
+            }
+            continue;
+        }
+        let Ok((mut body, root_gt)) = roots.get_mut(parent.parent()) else {
+            continue;
+        };
+        let feet = root_gt.translation();
+        let at_cm = gt.translation() * 100.0;
+        let threat_cm = targets
+            .get(duellist.target)
+            .map_or(at_cm, |g| g.translation() * 100.0);
+        let level_room = level
+            .as_deref()
+            .map_or(-1, |l| crate::rooms::level_room(&l.rooms, at_cm));
+        let replan = npc.flight.is_none_or(|goal| {
+            let d = Vec3::new(goal.x - at_cm.x, 0.0, goal.z - at_cm.z);
+            d.length_squared() < crate::flee::FLEE_RADIUS_CM * crate::flee::FLEE_RADIUS_CM
+        });
+        if replan && level_room >= 0 {
+            let Some(level) = level.as_deref() else {
+                continue;
+            };
+            let exits = crate::rooms::room_exits(&level.rooms, &level.tracker, level_room as u16);
+            let threat_room = crate::rooms::level_room(&level.rooms, threat_cm);
+            npc.flight = crate::flee::way_out(
+                level_room,
+                bevy::math::Vec2::new(at_cm.x, at_cm.z),
+                bevy::math::Vec2::new(threat_cm.x, threat_cm.z),
+                &exits,
+                npc.previous_room,
+                threat_room,
+                &mut npc.fled,
+            )
+            .map(|way| way.goal);
+        }
+        match npc.flight {
+            Some(goal) => {
+                let path = [feet, goal / 100.0];
+                let order =
+                    crate::order::follow(&path, feet, motion::yaw_of(t.rotation * Vec3::Z), 1);
+                body.desired_velocity = order.velocity;
+                npc.flight_velocity = order.velocity;
+                t.rotation = Quat::from_rotation_y(order.heading);
+                if let Some(mut anim) = anim
+                    && anim.action != "Run"
+                {
+                    anim.play_loop("Run");
+                }
+            }
+            None => {
+                if was_fleeing
+                    && let Some(mut anim) = anim
+                    && anim.action == "Run"
+                {
+                    anim.play_loop("Idle");
+                }
+            }
+        }
     }
 }
 
@@ -1075,6 +1418,8 @@ mod tests {
                 ..ContactRecord::default()
             },
             character: true,
+            position_cm: bevy::math::Vec3::ZERO,
+            room: -1,
         };
         let sight = contacts::FoeSight {
             foe: Some(1),
@@ -1095,6 +1440,7 @@ mod tests {
             false,
             0,
             &mut roll,
+            &FleePlace::default(),
         );
         assert_eq!(level, 3);
         assert_eq!(npc.pass.enter, Some(3));
@@ -1120,6 +1466,7 @@ mod tests {
             false,
             1,
             &mut roll,
+            &FleePlace::default(),
         );
         assert_eq!(level, 0);
         assert_eq!(npc.pass.target, None);
@@ -1287,6 +1634,198 @@ mod tests {
             ))
             .id();
         (app, player, npc)
+    }
+
+    /// A brain the target pass put at level 4 runs out of its room: it
+    /// steers at the jog speed to the centre of the cell behind its only
+    /// door.
+    #[test]
+    fn a_fleeing_brain_runs_out_of_its_room() {
+        use exa_formats::level::LevelGrid;
+        use exa_world::room_view::LevelRooms;
+        use exa_world::rooms::{CELL_OPEN, Rooms};
+        use std::sync::Arc;
+
+        let mut grid = LevelGrid {
+            wall_sets: vec!["GEWS_UWA01".into()],
+            floor_sets: vec!["GEFS_UWA01".into()],
+            width: 6,
+            height: 3,
+            edges: vec![0; 18],
+            plane_b: vec![0; 18],
+            plane_c: vec![0; 18],
+        };
+        let open = |edges: &mut Vec<u32>, x: u32, y: u32, sides: [u32; 4]| {
+            edges[(y * 6 + x) as usize] =
+                CELL_OPEN | sides[0] | sides[1] << 4 | sides[2] << 8 | sides[3] << 12;
+        };
+        open(&mut grid.edges, 1, 1, [7, 7, 7, 0]);
+        open(&mut grid.edges, 2, 1, [7, 0, 7, 0xB]);
+        open(&mut grid.edges, 3, 1, [7, 0xB, 7, 0]);
+        open(&mut grid.edges, 4, 1, [7, 0, 7, 7]);
+        let rooms = Rooms::flood(&grid);
+
+        let mut app = App::new();
+        app.add_systems(Update, flee_walk);
+        app.insert_resource(LevelRooms::new(Arc::new(rooms)));
+        // The threat stands far away in no room, so the flight does not
+        // refuse the only exit.
+        let player = app
+            .world_mut()
+            .spawn(GlobalTransform::from_translation(Vec3::new(
+                -90.0, 0.0, 3.0,
+            )))
+            .id();
+        let root = app
+            .world_mut()
+            .spawn((
+                CharacterBody::default(),
+                GlobalTransform::from_translation(Vec3::new(-9.0, 0.0, 3.0)),
+            ))
+            .id();
+        let mut brain = Npc::new([0.0; 4]);
+        brain.pass.level = 4;
+        let npc = app
+            .world_mut()
+            .spawn((
+                brain,
+                crate::Duellist::new(player),
+                Condition::NORMAL,
+                GlobalTransform::from_translation(Vec3::new(-9.0, 0.0, 3.0)),
+                Transform::default(),
+                ChildOf(root),
+                Animator::new("Default", "Idle"),
+            ))
+            .id();
+        app.update();
+        {
+            let l = app.world().resource::<LevelRooms>();
+            assert_eq!(
+                crate::rooms::level_room(&l.rooms, Vec3::new(-900.0, 0.0, 300.0)),
+                0
+            );
+            let exits = crate::rooms::room_exits(&l.rooms, &l.tracker, 0);
+            assert_eq!(exits.len(), 1, "{exits:?}");
+            let mut fled = crate::flee::FledRooms::default();
+            assert!(
+                crate::flee::way_out(
+                    0,
+                    bevy::math::Vec2::new(-900.0, 300.0),
+                    bevy::math::Vec2::new(-9000.0, 300.0),
+                    &exits,
+                    -1,
+                    -1,
+                    &mut fled,
+                )
+                .is_some()
+            );
+        }
+        // The heading eases a tenth of the gap a tick, as the NPC driver
+        // says: after twenty-five ticks it faces the exit and jogs.
+        for _ in 0..25 {
+            app.update();
+        }
+        let body = app.world().get::<CharacterBody>(root).unwrap();
+        assert!(body.desired_velocity.x > 3.0, "{:?}", body.desired_velocity);
+        assert!(
+            body.desired_velocity.z.abs() < 0.5,
+            "the heading still eases"
+        );
+        assert_eq!(app.world().get::<Animator>(npc).unwrap().action, "Run");
+        assert_eq!(
+            app.world().get::<Npc>(npc).unwrap().flight,
+            Some(Vec3::new(300.0, 0.0, 300.0))
+        );
+        // The flight over, it puts the idle clip back.
+        app.world_mut().get_mut::<Npc>(npc).unwrap().pass.level = 0;
+        app.update();
+        assert_eq!(app.world().get::<Animator>(npc).unwrap().action, "Idle");
+        assert_eq!(
+            app.world()
+                .get::<CharacterBody>(root)
+                .unwrap()
+                .desired_velocity,
+            Vec3::ZERO
+        );
+    }
+
+    /// Entering rooms: the first room leaves no previous room, a cell
+    /// without a room unlinks the brain but keeps the previous room, and
+    /// the next room remembers the last real one.
+    #[test]
+    fn entering_rooms_remembers_the_last_real_room() {
+        let mut npc = Npc::new([0.0; 4]);
+        npc.enter_room(2);
+        assert_eq!((npc.level_room, npc.previous_room), (2, -1));
+        npc.enter_room(-1);
+        assert_eq!((npc.level_room, npc.previous_room), (-1, -1));
+        npc.enter_room(5);
+        assert_eq!((npc.level_room, npc.previous_room), (5, -1));
+        npc.enter_room(3);
+        assert_eq!((npc.level_room, npc.previous_room), (3, 5));
+        npc.enter_room(3);
+        assert_eq!((npc.level_room, npc.previous_room), (3, 5));
+    }
+
+    /// The brain's perception runs once a body tick: a second frame on the
+    /// same tick leaves the contacts as they are, and the next tick
+    /// perceives again.
+    #[test]
+    fn the_perception_runs_once_a_tick() {
+        let (mut app, player, npc) = perception();
+        app.init_resource::<BrainClock>();
+        app.insert_resource(BodyTicks(1));
+        app.update();
+        let noticed = app
+            .world()
+            .get::<Combatant>(npc)
+            .unwrap()
+            .contact(player)
+            .unwrap()
+            .noticeability;
+        assert!(noticed > 0.0);
+        app.world_mut()
+            .get_mut::<Combatant>(npc)
+            .unwrap()
+            .contact_mut(player)
+            .noticeability = 0.0;
+        app.update();
+        assert_eq!(
+            app.world()
+                .get::<Combatant>(npc)
+                .unwrap()
+                .contact(player)
+                .unwrap()
+                .noticeability,
+            0.0,
+            "the same tick does not perceive again"
+        );
+        app.world_mut().resource_mut::<BodyTicks>().0 = 2;
+        app.update();
+        assert_eq!(
+            app.world()
+                .get::<Combatant>(npc)
+                .unwrap()
+                .contact(player)
+                .unwrap()
+                .noticeability,
+            noticed
+        );
+    }
+
+    /// A brain whose race uses the ally sense perceives through it: the
+    /// noticeability is the closeness itself (`1 − 200/1200`), not the
+    /// standard routine's look and facing product.
+    #[test]
+    fn an_ally_class_brain_perceives_through_the_ally_sense() {
+        let (mut app, player, npc) = perception();
+        app.world_mut().get_mut::<Npc>(npc).unwrap().sense = personality::Sense::Ally;
+        app.update();
+        let combatant = app.world().get::<Combatant>(npc).unwrap();
+        let contact = combatant.contact(player).unwrap();
+        assert!(contact.tracked());
+        assert!((contact.noticeability - (1.0 - 200.0 / 1200.0)).abs() < 1e-6);
+        assert_eq!(contact.attitude, 0.0);
     }
 
     /// A brain that has seen nobody keeps the yaw its model was placed

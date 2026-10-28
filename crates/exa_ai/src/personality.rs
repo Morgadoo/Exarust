@@ -92,12 +92,17 @@ pub fn personality(
 }
 
 /// Which contact sense the brain uses.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Sense {
-    /// The sense of race class `0x12xx`, which takes the player for a
-    /// friend [?].
-    Ally,
+    /// The standard per-contact sense of race class `0x12xx`: it weighs the
+    /// observed character's contacts as the threat estimate and takes the
+    /// leader for a friend.
+    #[default]
     Standard,
+    /// The ally-aware sense of the other AI races: a fellow AI is an ally
+    /// and each contact's threat is the largest threat to the allies
+    /// around the observer.
+    Ally,
 }
 
 /// How attaching sets the brain up.
@@ -122,10 +127,12 @@ pub fn attach(race_word: u32, dead: bool) -> Attached {
             applies_roles: true,
         };
     }
+    // Race class `0x12xx` gets the standard sense; the other AI races the
+    // ally-aware one.
     let sense = if race_word & 0xFF00 == ALLY_CLASS {
-        Sense::Ally
-    } else {
         Sense::Standard
+    } else {
+        Sense::Ally
     };
     if dead {
         return Attached {
@@ -172,22 +179,26 @@ mod tests {
         assert!((human.blend - 2.0 * 0.333).abs() < 1e-6);
     }
 
-    /// No AI flag waits; the ally class gets the ally sense; a dead body
-    /// stops at the effect 0; a statue stands sentry with the effect 0.
+    /// No AI flag waits; race class `0x12xx` gets the standard sense and
+    /// the other AI races the ally sense; a dead body stops at the effect
+    /// 0; a statue stands sentry with the effect 0.
     #[test]
     fn attaching_picks_the_sense_and_the_statue() {
         let none = attach(0x0100, false);
         assert_eq!((none.sense, none.applies_roles), (None, true));
-        let ally = attach(AI_FLAG | 0x1200, false);
-        assert_eq!(ally.sense, Some(Sense::Ally));
-        assert_eq!(ally.effect, Some(1.0));
+        let class = attach(AI_FLAG | 0x1200, false);
+        assert_eq!(class.sense, Some(Sense::Standard));
+        assert_eq!(class.effect, Some(1.0));
+        let other = attach(AI_FLAG | 0x0400, false);
+        assert_eq!(other.sense, Some(Sense::Ally));
         let dead = attach(AI_FLAG, true);
         assert_eq!((dead.effect, dead.applies_roles), (Some(0.0), false));
+        assert_eq!(dead.sense, Some(Sense::Ally));
         let statue = attach(AI_FLAG | STATUE_FLAG | 0x0400, false);
         assert!(statue.statue);
         assert_eq!(
             (statue.sense, statue.effect),
-            (Some(Sense::Standard), Some(0.0))
+            (Some(Sense::Ally), Some(0.0))
         );
     }
 }

@@ -180,6 +180,14 @@ pub struct Gaze {
     pub sway: f32,
     /// The pitch the idle look's pitch eases toward.
     pub pitch: f32,
+    /// The body's own look direction out of combat; the zero vector until
+    /// the brain first turns.
+    pub body_look: Vec3,
+    /// The body's look smoothing direction.
+    pub body_smooth: Vec3,
+    /// The body's heading direction, which the gait helper
+    /// ([`smooth_look`]) compares with the look and rewrites when it lags.
+    pub body_heading: Vec3,
 }
 
 impl Gaze {
@@ -191,6 +199,9 @@ impl Gaze {
             target_offset: yaw,
             sway: 0.0,
             pitch: 0.0,
+            body_look: Vec3::ZERO,
+            body_smooth: Vec3::ZERO,
+            body_heading: Vec3::ZERO,
         }
     }
 }
@@ -474,6 +485,86 @@ pub fn stop_walk(body_cm: Vec3, facing: Vec3, crouch: f32, mut walk: Walk) -> Wa
     walk
 }
 
+/// The body's look as the out-of-combat chain reads it: its own look
+/// direction, its look smoothing, the yaw of its heading vector and its
+/// physical facing; whether it is stepping, in the attacking condition, in
+/// combat, and whether a live look target still holds its head.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BodyLook {
+    pub look: Vec3,
+    pub smooth: Vec3,
+    pub heading_yaw: f32,
+    pub facing_yaw: f32,
+    pub stepping: bool,
+    pub attacking: bool,
+    pub in_combat: bool,
+    pub look_target_live: bool,
+}
+
+/// What one tick of the out-of-combat look chain writes.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LookStep {
+    /// The body's look direction.
+    pub look: Vec3,
+    /// The body's look smoothing direction.
+    pub smooth: Vec3,
+    /// The body's heading vector when the chain copies the look into it
+    /// (stepping or attacking); `None` leaves it.
+    pub heading: Option<Vec3>,
+    /// The body's heading direction the gait helper writes when the
+    /// heading lags the look yaw past 30°, as [`smooth_look`] returns it.
+    pub turn: Option<Vec3>,
+}
+
+/// The out-of-combat look chain of the AI tick.
+///
+/// A body that is stepping or attacking takes its look as its smoothing
+/// direction and heading and moves nothing else. In combat the chain does
+/// nothing (the locomotion driver faces it). Otherwise, with no live look
+/// target, the body's look yaw is turned a tenth of the way (in double
+/// precision) toward the head's eased offset, held within a quarter turn;
+/// its pitch eases 1 % toward [`Gaze::pitch`]; the look direction is built
+/// from them and the look smoothing eases from the physical facing by 0.4
+/// of the gap to it (0.64 beyond 1.6 rad, both in double precision). A live
+/// look target only takes the yaw ([`idle_look`], [`look_smoothing`]). The
+/// gait helper ([`smooth_look`]) then turns [`Gaze::look`] toward the
+/// brain's heading and rewrites the body's heading direction when it lags
+/// that look by more than 30°.
+pub fn look_chain(gaze: &mut Gaze, turn: &Turning, body: BodyLook) -> LookStep {
+    if body.stepping || body.attacking {
+        return LookStep {
+            look: body.look,
+            smooth: body.look,
+            heading: Some(body.look),
+            turn: None,
+        };
+    }
+    if body.in_combat {
+        return LookStep {
+            look: body.look,
+            smooth: body.smooth,
+            heading: None,
+            turn: None,
+        };
+    }
+    // The idle look steps with the brain's eased offset (the turn's
+    // offset is the same state as the gaze's).
+    let head = Gaze {
+        offset: turn.offset,
+        ..*gaze
+    };
+    let (written, yaw) = idle_look(&head, Looking { look: body.look }, body.look_target_live);
+    let look = written.unwrap_or(body.look);
+    let smooth_yaw = look_smoothing(body.facing_yaw, yaw);
+    let turn = smooth_look(gaze, turn.heading, body.heading_yaw, LOOK_WRITE_DEGREES);
+    LookStep {
+        look,
+        smooth: dir_of(smooth_yaw),
+        heading: None,
+        turn,
+    }
+}
+
 /// The AI's heading, look and body turn state out of combat.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Turning {
@@ -713,6 +804,109 @@ mod tests {
         gaze.look = 30.0 * DEGREE;
         let body = gaze.look;
         assert!(smooth_look(&mut gaze, 0.0, body, 30.0).is_none());
+    }
+
+    /// The out-of-combat look chain: the body's look turns a tenth of the
+    /// head offset (0.3 rad → 0.03), the pitch eases 1 % (0.5 → 0.005),
+    /// and the look smoothing eases from the facing by 0.4 of the gap
+    /// (0.03 → 0.012); the gait helper floats the look by `(heading ·
+    /// 0.0062831854 + 0) · 0.7` and only writes the body's look past 30°.
+    #[test]
+    fn the_look_chain_turns_the_look_and_eases_the_smoothing() {
+        let mut gaze = Gaze {
+            look: 0.0,
+            pitch: 0.5,
+            ..Gaze::default()
+        };
+        let turn = Turning {
+            heading: 0.6,
+            look: 0.6,
+            offset: 0.3,
+            sway: 0.0,
+            sway_at_ms: u32::MAX,
+        };
+        let body = BodyLook {
+            look: Vec3::Z,
+            smooth: Vec3::Z,
+            heading_yaw: 0.0,
+            facing_yaw: 0.0,
+            stepping: false,
+            attacking: false,
+            in_combat: false,
+            look_target_live: false,
+        };
+        let step = look_chain(&mut gaze, &turn, body);
+        // (0.3 · 0.1) in double, added in single.
+        assert!((yaw_of(step.look) - 0.03).abs() < 1e-6);
+        assert!(
+            (step.look.y + 0.005f32.sin()).abs() < 1e-6,
+            "1 % of the pitch"
+        );
+        // 0.03 · 0.4.
+        assert!((yaw_of(step.smooth) - 0.012).abs() < 1e-6);
+        assert!(step.turn.is_none(), "the look is within 30° of the body");
+        assert_eq!(step.heading, None);
+        // The gait helper's sway: (0.6 · 0.0062831854 + 0) · 0.7.
+        let sway = (0.6f32 * SWAY_RATE + 0.0) * 0.7;
+        assert_eq!(gaze.sway, sway);
+        assert_eq!(gaze.look, sway);
+        // A body look 1 rad from the gait helper's body yaw writes the look.
+        let mut gaze = Gaze::default();
+        let step = look_chain(
+            &mut gaze,
+            &turn,
+            BodyLook {
+                heading_yaw: 1.0,
+                ..body
+            },
+        );
+        assert_eq!(step.turn, Some(dir_of(sway)));
+        // Beyond 1.6 rad the smoothing turns 0.64 of the sign, not 0.4.
+        let mut gaze = Gaze::default();
+        let step = look_chain(
+            &mut gaze,
+            &turn,
+            BodyLook {
+                facing_yaw: 2.0,
+                ..body
+            },
+        );
+        assert!((yaw_of(step.smooth) - (2.0 - 0.64)).abs() < 1e-6);
+        // A stepping body copies its look into the smoothing and heading.
+        let mut gaze = Gaze::default();
+        let step = look_chain(
+            &mut gaze,
+            &turn,
+            BodyLook {
+                stepping: true,
+                ..body
+            },
+        );
+        assert_eq!(
+            (step.look, step.smooth, step.heading),
+            (Vec3::Z, Vec3::Z, Some(Vec3::Z))
+        );
+        // A live look target keeps the head: the look is not rebuilt.
+        let mut gaze = Gaze::default();
+        let step = look_chain(
+            &mut gaze,
+            &turn,
+            BodyLook {
+                look_target_live: true,
+                ..body
+            },
+        );
+        assert_eq!(step.look, Vec3::Z);
+        // In combat the chain writes nothing.
+        let step = look_chain(
+            &mut gaze,
+            &turn,
+            BodyLook {
+                in_combat: true,
+                ..body
+            },
+        );
+        assert_eq!((step.heading, step.turn), (None, None));
     }
 
     /// The idle look turns the body's look 0.1 of the gap toward the target

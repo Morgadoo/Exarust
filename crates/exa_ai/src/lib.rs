@@ -69,6 +69,7 @@ impl Plugin for AiPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<presence::ActivationArea>()
             .init_resource::<rooms::RoomCells>()
+            .init_resource::<brain::BrainClock>()
             .add_message::<presence::Entered>()
             .add_message::<exa_combat::AttackAskedHook>()
             .add_systems(
@@ -82,6 +83,7 @@ impl Plugin for AiPlugin {
                     brain::perceive_all,
                     brain::ai_tick,
                     duellist.in_set(DuelSystems),
+                    brain::flee_walk,
                 )
                     .chain(),
             );

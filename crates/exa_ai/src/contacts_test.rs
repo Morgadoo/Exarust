@@ -31,14 +31,14 @@ fn heat_past_the_threshold_engages() {
     let at = Standing::default();
     // Tolerance 0: the threshold is 2.
     let mut c = contact(1.0, 1.5);
-    assert_eq!(classify(&mut c, &mut m, at, || false), (3, 2.5));
+    assert_eq!(classify(&mut c, &mut m, at, |_, _| false), (3, 2.5));
     assert_eq!((c.level, c.marks), (3, 2));
     // Unreachable: engaging is level 2.
     let mut c = ContactRecord {
         flags: 0x10,
         ..contact(1.0, 1.5)
     };
-    assert_eq!(classify(&mut c, &mut m, at, || false).0, 2);
+    assert_eq!(classify(&mut c, &mut m, at, |_, _| false).0, 2);
     // Tolerance 0.5: 7·0.25 + 2.5 = 4.25; heat 4 is under it (and a concern
     // of 1 is no watch), 4.3 passes it, and an alarm past 1.5 engages at 4
     // even with stress.
@@ -46,23 +46,23 @@ fn heat_past_the_threshold_engages() {
         tolerance: 0.5,
         ..contact(1.0, 3.0)
     };
-    assert_eq!(classify(&mut c, &mut m, at, || false).0, 0);
+    assert_eq!(classify(&mut c, &mut m, at, |_, _| false).0, 0);
     c.hostility = 3.3;
-    assert_eq!(classify(&mut c, &mut m, at, || false).0, 3);
+    assert_eq!(classify(&mut c, &mut m, at, |_, _| false).0, 3);
     let mut c = ContactRecord {
         tolerance: 0.5,
         alarm: 1.6,
         ..contact(1.0, 3.3)
     };
     m.stress = 10.0;
-    assert_eq!(classify(&mut c, &mut m, at, || false).0, 3);
+    assert_eq!(classify(&mut c, &mut m, at, |_, _| false).0, 3);
     // A negative tolerance lowers the threshold to 2 + b.
     let mut m = Morale::default();
     let mut c = ContactRecord {
         tolerance: -0.5,
         ..contact(0.0, 1.6)
     };
-    assert_eq!(classify(&mut c, &mut m, at, || false).0, 3);
+    assert_eq!(classify(&mut c, &mut m, at, |_, _| false).0, 3);
 }
 
 #[test]
@@ -80,7 +80,7 @@ fn stress_and_alarm_flee() {
         alarm: 0.8,
         ..contact(0.0, 0.0)
     };
-    assert_eq!(classify(&mut c, &mut m, at, || true), (4, 0.8));
+    assert_eq!(classify(&mut c, &mut m, at, |_, _| true), (4, 0.8));
     assert_eq!((m.alarm_sum, m.alarm_count), (0.8, 1));
     // Without one, the same contact is only noticed.
     let mut c = ContactRecord {
@@ -89,25 +89,27 @@ fn stress_and_alarm_flee() {
         attention: 0.5,
         ..contact(0.0, 0.0)
     };
-    assert_eq!(classify(&mut c, &mut m, at, || false), (0, 1.5));
+    assert_eq!(classify(&mut c, &mut m, at, |_, _| false), (0, 1.5));
     // The contact it already flees keeps the flight at any alarm, raised to
     // the alarm it fled at.
     m.fled_alarm = 2.0;
     let fleeing = Standing {
         level: 4,
         is_focus: true,
+        threat: bevy::math::Vec2::ZERO,
+        threat_room: -1,
     };
     let mut c = ContactRecord {
         alarm: 0.1,
         ..contact(0.0, 0.0)
     };
-    assert_eq!(classify(&mut c, &mut m, fleeing, || true), (4, 2.0));
+    assert_eq!(classify(&mut c, &mut m, fleeing, |_, _| true), (4, 2.0));
     // Concern past 8 less the stress flees; under it, watches.
     let mut c = contact(4.5, 0.0);
     c.tolerance = 1.0;
-    assert_eq!(classify(&mut c, &mut m, at, || true).0, 4);
+    assert_eq!(classify(&mut c, &mut m, at, |_, _| true).0, 4);
     let mut calm = Morale::default();
-    assert_eq!(classify(&mut c, &mut calm, at, || true), (1, 4.5));
+    assert_eq!(classify(&mut c, &mut calm, at, |_, _| true), (1, 4.5));
     // Courage past the stress leaves 0.
     let brave = Morale {
         courage: 5.0,
@@ -128,9 +130,11 @@ fn a_notice_scores_heat_and_attention() {
     let focus = Standing {
         level: 0,
         is_focus: true,
+        threat: bevy::math::Vec2::ZERO,
+        threat_room: -1,
     };
     assert_eq!(
-        classify(&mut c, &mut m, focus, || false),
+        classify(&mut c, &mut m, focus, |_, _| false),
         (0, 0.75 * 6.0 + 0.75 + 3.0)
     );
     // The engaging brain clears the contact's first mark.
@@ -141,8 +145,10 @@ fn a_notice_scores_heat_and_attention() {
     let fighting = Standing {
         level: 3,
         is_focus: false,
+        threat: bevy::math::Vec2::ZERO,
+        threat_room: -1,
     };
-    classify(&mut c, &mut m, fighting, || false);
+    classify(&mut c, &mut m, fighting, |_, _| false);
     assert_eq!(c.marks, 0);
 }
 
@@ -248,7 +254,7 @@ fn a_combatant_contact_is_classified() {
     assert_eq!((r.id, r.sighting, r.attention), (7, 0.25, 0.0));
     let mut m = Morale::default();
     assert_eq!(
-        classify(&mut r, &mut m, Standing::default(), || false),
+        classify(&mut r, &mut m, Standing::default(), |_, _| false),
         (3, 2.5)
     );
 }
@@ -413,6 +419,8 @@ fn a_noticed_character_is_met_greeted_and_entered_in_combat() {
             ..ContactRecord::default()
         },
         character: true,
+        position_cm: bevy::math::Vec3::ZERO,
+        room: -1,
     };
     let report = target_pass(
         PassInput {
@@ -432,7 +440,7 @@ fn a_noticed_character_is_met_greeted_and_entered_in_combat() {
         &[sighting],
         &[],
         |_| 250_000.0,
-        || false,
+        |_, _| false,
     );
     assert_eq!(report.outcome, Outcome::Fight { id: 1, level: 1 });
     assert_eq!(report.target, Some(1));
@@ -455,6 +463,8 @@ fn a_greeting_stays_inside_its_six_metres_and_its_gates() {
             ..ContactRecord::default()
         },
         character: true,
+        position_cm: bevy::math::Vec3::ZERO,
+        room: -1,
     };
     let pass = |distance: f32, gates: (f32, f32)| {
         let distance2 = distance * distance;
@@ -476,7 +486,7 @@ fn a_greeting_stays_inside_its_six_metres_and_its_gates() {
             &[sighting],
             &[],
             |_| distance2,
-            || false,
+            |_, _| false,
         )
     };
     assert_eq!(pass(600.0, (0.99, 1.0)).greet, Some(1));
@@ -500,6 +510,8 @@ fn the_scripted_focus_is_attended_and_any_sighting_of_its_level_wins() {
             ..ContactRecord::default()
         },
         character: true,
+        position_cm: bevy::math::Vec3::ZERO,
+        room: -1,
     };
     let seen = Sighting {
         contact: ContactRecord {
@@ -509,6 +521,8 @@ fn the_scripted_focus_is_attended_and_any_sighting_of_its_level_wins() {
             ..ContactRecord::default()
         },
         character: true,
+        position_cm: bevy::math::Vec3::ZERO,
+        room: -1,
     };
     let report = target_pass(
         PassInput {
@@ -528,7 +542,7 @@ fn the_scripted_focus_is_attended_and_any_sighting_of_its_level_wins() {
         &[seen],
         &[],
         |_| 250_000.0,
-        || false,
+        |_, _| false,
     );
     // The watch wins the scripted focus's level 0 notice.
     assert_eq!(report.attention, Some(1));
@@ -552,6 +566,8 @@ fn the_scripted_focus_is_attended_and_any_sighting_of_its_level_wins() {
                     ..ContactRecord::default()
                 },
                 character: true,
+                position_cm: bevy::math::Vec3::ZERO,
+                room: -1,
             }),
             cursor: 0,
             attended_id: Some(9),
@@ -560,7 +576,7 @@ fn the_scripted_focus_is_attended_and_any_sighting_of_its_level_wins() {
         &[],
         &[],
         |_| 250_000.0,
-        || false,
+        |_, _| false,
     );
     assert_eq!(report.attention, Some(9));
     // The scripted focus is what the brain attends when nothing else is
@@ -656,7 +672,7 @@ fn the_pass_clears_the_concern_targets_and_cleans_the_unkept() {
         &[],
         &[],
         |_| 0.0,
-        || false,
+        |_, _| false,
     );
     let c = contacts[0];
     assert_eq!(c.noticed, 0.7);
@@ -664,4 +680,40 @@ fn the_pass_clears_the_concern_targets_and_cleans_the_unkept() {
         (c.level, c.sighting, c.concern_target, c.seen),
         (0, 0.0, 0.0, 0.0)
     );
+}
+
+#[test]
+fn a_flight_asks_the_level_room_graph_for_a_way_out() {
+    let mut m = Morale {
+        base: 4.0,
+        stress: 0.0,
+        courage: 0.5,
+        ..Morale::default()
+    };
+    let mut c = ContactRecord {
+        id: 1,
+        alarm: 1.0,
+        ..ContactRecord::default()
+    };
+    let at = Standing {
+        level: 0,
+        is_focus: false,
+        threat: bevy::math::Vec2::new(100.0, 200.0),
+        threat_room: 3,
+    };
+    let mut asked = None;
+    let (level, _) = classify(&mut c, &mut m, at, |threat, room| {
+        asked = Some((threat, room));
+        true
+    });
+    assert_eq!(level, 4);
+    assert_eq!(asked, Some((bevy::math::Vec2::new(100.0, 200.0), 3)));
+    // No exit: the same contact engages instead of fleeing.
+    let mut c = ContactRecord {
+        id: 1,
+        alarm: 1.0,
+        hostility: 6.0,
+        ..ContactRecord::default()
+    };
+    assert_eq!(classify(&mut c, &mut m, at, |_, _| false).0, 3);
 }

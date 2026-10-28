@@ -10,21 +10,30 @@
 //! it was. Moving to another cell remembers the old one and puts the
 //! character at the head of the new cell's list.
 //!
-//! [guess: the original maps the grid cell to a level room through the
-//! level's cell-to-room table and links the character into that room's
-//! list, unlinking it when the cell has no room; the running game loads no
-//! room table, so Exarust treats each grid cell as its own room.]
+//! The level side of the same bookkeeping is [`level_room`],
+//! [`room_exits`] and [`room_reference`]: the level grid's cell-to-room
+//! table ([`exa_world::rooms::Rooms`]) gives a character's room and the
+//! room's door links give its exits, each at the centre of the cell behind
+//! the door. A closed door is still an exit for the way out, but not one a
+//! walk may pass, so [`room_exits`] reports it shut from the room tracker.
 //!
-//! The original links each character into a doubly linked list per cell
-//! and walks the current cells and the cells of the room's exits when it
-//! gathers the nearby characters; Exarust keeps a vector per cell and has
-//! no room exits in the running game, so the gather covers the character's
-//! own cell ([`RoomCells::occupants`]).
+//! The original links each character into a doubly linked list per room
+//! and walks the room's own list and the lists of the rooms behind its
+//! exits when it gathers the nearby characters; Exarust keeps a vector per
+//! 600 cm cell, so the gather covers the character's own cell
+//! ([`RoomCells::occupants`]) and the nearby list is the room's cells
+//! through [`RoomCells::nearby`].
 //!
 //! Evidence: the original's room bookkeeping (the cell index, the unlink and
-//! link, the previous-cell write) and its nearby gather.
+//! link, the previous-cell write), its nearby gather, and its room and exit
+//! queries (the grid environment's cell centre and the cell-to-room table).
 
 use bevy::prelude::*;
+use exa_world::room_view::LevelRooms;
+use exa_world::rooms::{RoomTracker, Rooms};
+
+use crate::flee::RoomExit;
+use crate::idle::Exit;
 
 /// The room grid's cell size (cm): 600.
 pub const CELL_CM: f32 = 600.0;
@@ -179,6 +188,93 @@ pub fn cell_index(position_cm: Vec3, size: RoomGridSize) -> Option<i32> {
     }
 }
 
+/// The level room holding `position_cm` (x and z, centimetres), or −1
+/// where the level grid has no room.
+///
+/// The original reads the grid environment's cell-to-room table with the
+/// character's 600 cm cell index and stores the table's word less one, so a
+/// cell without a room becomes −1. The conversion here goes through the
+/// level grid's own cell size and centring.
+pub fn level_room(rooms: &Rooms, position_cm: Vec3) -> i32 {
+    rooms
+        .room_at(Vec2::new(position_cm.x * 0.01, position_cm.z * 0.01))
+        .map_or(-1, i32::from)
+}
+
+/// The exits of `room`: for each door link, the centre of the cell behind
+/// the door (cm, x and z) and the room it leads to numbered as the
+/// original's table numbers it (the room index plus one). `shut` is true
+/// while the room tracker holds the door closed.
+///
+/// The room's points are the original's [`room_reference`] and exit points:
+/// the cell centre helper multiplies the grid index by 600 cm and adds half
+/// a cell, centred on the grid.
+pub fn room_exits(rooms: &Rooms, tracker: &RoomTracker, room: u16) -> Vec<RoomExit> {
+    let Some(level_room) = rooms.room(room) else {
+        return Vec::new();
+    };
+    level_room
+        .links
+        .iter()
+        .filter_map(|link| {
+            let to = rooms.room_of_index(link.to)?;
+            let centre = rooms.cell_centre(link.to) * 100.0;
+            Some(RoomExit {
+                point: Vec2::new(centre.x, centre.y),
+                room: i32::from(to) + 1,
+                shut: !tracker.is_open(*link),
+            })
+        })
+        .collect()
+}
+
+/// The point a room's walks aim at: the centre of its cell rectangle
+/// (cm, x and z), `y` 0 [guess: the original keeps a per-room reference
+/// cell in the grid environment; the rectangle's centre is the running
+/// game's stand-in].
+pub fn room_reference(rooms: &Rooms, room: u16) -> Option<Vec3> {
+    let level_room = rooms.room(room)?;
+    let [x0, y0, x1, y1] = level_room.rect;
+    let cell = rooms.cell_index((x0 + x1) / 2, (y0 + y1) / 2)?;
+    let centre = rooms.cell_centre(cell) * 100.0;
+    Some(Vec3::new(centre.x, 0.0, centre.y))
+}
+
+/// Whether `from_cm` sees `to_cm` (x and z, centimetres), as the level's
+/// sight callback answers the AI's visible and nearby lists: a grid level
+/// installs the grid environment's room reach test
+/// ([`Rooms::light_reach`]: the same room, or a door between the rooms,
+/// open in the room tracker, whose point lies within 2 m of the other
+/// position); a level without a grid keeps the default callback, which
+/// always answers yes.
+///
+/// [guess: a position in no room of the grid is taken as seen. The
+/// original's reach test refuses it, but there it never happens, as every
+/// character stands in a room; Exarust's placements may sit on a cell the
+/// room flood left out, and such a brain would otherwise never see.]
+pub fn in_sight(level: Option<&LevelRooms>, from_cm: Vec3, to_cm: Vec3) -> bool {
+    let Some(level) = level else {
+        return true;
+    };
+    let from = Vec2::new(from_cm.x * 0.01, from_cm.z * 0.01);
+    let to = Vec2::new(to_cm.x * 0.01, to_cm.z * 0.01);
+    if level.rooms.room_at(from).is_none() || level.rooms.room_at(to).is_none() {
+        return true;
+    }
+    level
+        .rooms
+        .light_reach(from, to, |link| level.tracker.is_open(link))
+}
+
+impl From<RoomExit> for Exit {
+    fn from(exit: RoomExit) -> Self {
+        Exit {
+            point: exit.point,
+            node: exit.room,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -257,5 +353,107 @@ mod tests {
         assert_eq!(at.previous, OFF_GRID);
         assert_eq!(cells.occupants(old), &[a]);
         assert_eq!(cells.nearby(&at), vec![a]);
+    }
+
+    #[test]
+    fn the_level_room_table_and_its_door_exits() {
+        use exa_formats::level::LevelGrid;
+        use exa_world::rooms::{CELL_OPEN, DoorLink, Rooms};
+        let mut grid = LevelGrid {
+            wall_sets: vec!["GEWS_UWA01".into()],
+            floor_sets: vec!["GEFS_UWA01".into()],
+            width: 6,
+            height: 3,
+            edges: vec![0; 18],
+            plane_b: vec![0; 18],
+            plane_c: vec![0; 18],
+        };
+        let open = |edges: &mut Vec<u32>, x: u32, y: u32, sides: [u32; 4]| {
+            edges[(y * 6 + x) as usize] =
+                CELL_OPEN | sides[0] | sides[1] << 4 | sides[2] << 8 | sides[3] << 12;
+        };
+        open(&mut grid.edges, 1, 1, [7, 7, 7, 0]);
+        open(&mut grid.edges, 2, 1, [7, 0, 7, 0xB]);
+        open(&mut grid.edges, 3, 1, [7, 0xB, 7, 0]);
+        open(&mut grid.edges, 4, 1, [7, 0, 7, 7]);
+        let rooms = Rooms::flood(&grid);
+        assert_eq!(rooms.len(), 2);
+        // The cell (1, 1) is centred at (−900, 300) cm in the grid's
+        // centring: the first room.
+        assert_eq!(level_room(&rooms, Vec3::new(-900.0, 0.0, 300.0)), 0);
+        assert_eq!(level_room(&rooms, Vec3::new(300.0, 0.0, 300.0)), 1);
+        // A cell no door reaches has no room.
+        assert_eq!(level_room(&rooms, Vec3::new(-900.0, 0.0, 1300.0)), -1);
+        let mut tracker = RoomTracker::new(rooms.len());
+        let exits = room_exits(&rooms, &tracker, 0);
+        assert_eq!(exits.len(), 1);
+        // The cell behind the door is (3, 1): its centre is (300, 300) cm.
+        assert_eq!(exits[0].point, Vec2::new(300.0, 300.0));
+        assert_eq!(exits[0].room, 2);
+        assert!(!exits[0].shut);
+        tracker.set_open(DoorLink { from: 8, to: 9 }, false);
+        tracker.set_open(DoorLink { from: 9, to: 8 }, false);
+        assert!(room_exits(&rooms, &tracker, 0)[0].shut);
+        assert!(room_exits(&rooms, &tracker, 1)[0].shut, "the same door");
+        // The exit becomes the idle walk's exit with the same room number.
+        let wander: Vec<Exit> = room_exits(&rooms, &tracker, 0)
+            .into_iter()
+            .map(Exit::from)
+            .collect();
+        assert_eq!(
+            (wander[0].point, wander[0].node),
+            (Vec2::new(300.0, 300.0), 2)
+        );
+        // Room 0 is cells (1, 1) and (2, 1): its rectangle's centre cell is
+        // (1, 1), whose centre is (-900, 300) cm.
+        assert_eq!(
+            room_reference(&rooms, 0),
+            Some(Vec3::new(-900.0, 0.0, 300.0))
+        );
+        assert_eq!(room_reference(&rooms, 9), None);
+    }
+
+    /// The sight test is the room reach test: the same room sees, the
+    /// next room only near the door's point (¾ into the cell behind it,
+    /// within 2 m) and only while the door is open; no grid sees all.
+    #[test]
+    fn sight_is_the_room_reach_test() {
+        use exa_formats::level::LevelGrid;
+        use exa_world::rooms::{CELL_OPEN, DoorLink, Rooms};
+        let mut grid = LevelGrid {
+            wall_sets: vec!["GEWS_UWA01".into()],
+            floor_sets: vec!["GEFS_UWA01".into()],
+            width: 6,
+            height: 3,
+            edges: vec![0; 18],
+            plane_b: vec![0; 18],
+            plane_c: vec![0; 18],
+        };
+        let open = |edges: &mut Vec<u32>, x: u32, y: u32, sides: [u32; 4]| {
+            edges[(y * 6 + x) as usize] =
+                CELL_OPEN | sides[0] | sides[1] << 4 | sides[2] << 8 | sides[3] << 12;
+        };
+        open(&mut grid.edges, 1, 1, [7, 7, 7, 0]);
+        open(&mut grid.edges, 2, 1, [7, 0, 7, 0xB]);
+        open(&mut grid.edges, 3, 1, [7, 0xB, 7, 0]);
+        open(&mut grid.edges, 4, 1, [7, 0, 7, 7]);
+        let mut level = LevelRooms::new(std::sync::Arc::new(Rooms::flood(&grid)));
+        let far = Vec3::new(1000.0, 0.0, 300.0);
+        assert!(in_sight(None, Vec3::ZERO, far * 10.0), "no grid sees all");
+        // Cells (1, 1) and (2, 1) are one room.
+        let a = Vec3::new(-900.0, 0.0, 300.0);
+        assert!(in_sight(Some(&level), a, Vec3::new(-300.0, 0.0, 300.0)));
+        // Room 0's door (cell 8 to cell 9) has its point ¾ of the way from
+        // (−300, 300) to (300, 300): (150, 300) cm. A target at (300, 300),
+        // in the cell behind the door, is 1.5 m from it; one at (900, 300)
+        // stands in a cell no door of room 0 leads into, and `a` is in a
+        // cell no door of room 1 leads into.
+        assert!(in_sight(Some(&level), a, Vec3::new(300.0, 0.0, 300.0)));
+        assert!(!in_sight(Some(&level), a, far.with_x(900.0)));
+        level.tracker.set_open(DoorLink { from: 8, to: 9 }, false);
+        level.tracker.set_open(DoorLink { from: 9, to: 8 }, false);
+        assert!(!in_sight(Some(&level), a, Vec3::new(300.0, 0.0, 300.0)));
+        // A position in no room is taken as seen.
+        assert!(in_sight(Some(&level), a, Vec3::new(-900.0, 0.0, 1300.0)));
     }
 }
