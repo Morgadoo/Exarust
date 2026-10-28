@@ -1235,7 +1235,7 @@ pub fn bulk_of(
 /// the original's loop indexes them; the clamp uses both.
 pub fn worn_layout(
     items: &[(u32, u32)],
-    icon: &mut dyn FnMut(u32) -> Option<(usize, (i32, i32))>,
+    icon: &mut dyn FnMut(u32, u32) -> Option<(usize, (i32, i32))>,
     client: (i32, i32),
     icon_size: i32,
     state: &mut u32,
@@ -1245,7 +1245,7 @@ pub fn worn_layout(
     let mut pos: Vec<[i32; 2]> = Vec::new();
     let mut half: Vec<[i32; 2]> = Vec::new();
     for &(id, flags) in items {
-        let Some((slot, (a, b))) = icon(id) else {
+        let Some((slot, (a, b))) = icon(id, flags) else {
             continue;
         };
         let mut rng = Rng(*state);
@@ -2059,7 +2059,7 @@ mod entry_tests {
     #[test]
     fn the_worn_panel_spreads_its_items() {
         let items = [(1, 0), (2, 0), (3, 0x10)];
-        let mut icon = |id: u32| Some((id as usize, (40, 40)));
+        let mut icon = |id: u32, _flags: u32| Some((id as usize, (40, 40)));
         let mut state = 0x1234;
         let a = worn_layout(&items, &mut icon, (228, 228), 160, &mut state);
         let mut state2 = 0x1234;
@@ -2071,7 +2071,7 @@ mod entry_tests {
         // An item the cache cannot draw is left out and takes no draws: the
         // second item then lands where the first did.
         let mut state3 = 0x1234;
-        let mut no_first = |id: u32| (id != 1).then_some((id as usize, (40, 40)));
+        let mut no_first = |id: u32, _flags: u32| (id != 1).then_some((id as usize, (40, 40)));
         let c = worn_layout(&items[..2], &mut no_first, (228, 228), 160, &mut state3);
         let mut state4 = 0x1234;
         let d = worn_layout(&items[1..2], &mut icon, (228, 228), 160, &mut state4);

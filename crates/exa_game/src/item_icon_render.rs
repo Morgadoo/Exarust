@@ -35,10 +35,10 @@ pub const ICONS_PER_FRAME: usize = 2;
 pub const ICON_LAYER: usize = 30;
 /// The frames a GPU icon may take before it is dropped (a lost readback
 /// must not leak its scene).
-pub const ICON_JOB_TIMEOUT: u32 = 240;
-/// The frames before the readback is requested: the target needs its GPU
-/// image prepared first.
-pub const READBACK_DELAY: u32 = 2;
+pub const ICON_JOB_TIMEOUT: u32 = 60;
+/// The frames before the readback is requested: the target image needs its
+/// GPU image prepared, and the camera its first draws.
+pub const READBACK_DELAY: u32 = 6;
 /// The icon scene sun's colour and illuminance. The original's icon scene
 /// has a sun of colour 0.75; `SUN_LUX` in the shading is 160, so a white
 /// 120-lux light gives the same 0.75 irradiance.
@@ -74,6 +74,12 @@ pub struct IconGpuJob {
     pub halo_highlight: bool,
     pub content_width: f32,
     pub content_height: f32,
+    /// The scene and camera, so the CPU can paint a stand-in when the
+    /// readback has no covered pixel (an unsupported adapter or a lost
+    /// draw).
+    pub scene: IconScene,
+    pub paint_camera: IconCamera,
+    pub sun: Vec3,
 }
 
 /// The icons currently on the GPU.
@@ -89,6 +95,10 @@ pub struct ItemIconPlugin;
 impl Plugin for ItemIconPlugin {
     fn build(&self, app: &mut App) {
         let gpu = app.get_sub_app(bevy::render::RenderApp).is_some();
+        info!(
+            "item icons: {} renderer",
+            if gpu { "off-screen" } else { "CPU" }
+        );
         app.insert_resource(IconRenderMode { gpu })
             .init_resource::<PanelIcons>()
             .init_resource::<IconGpuJobs>()
@@ -267,7 +277,7 @@ fn spawn_gpu_icon(
     images: &mut Assets<Image>,
     pending: &PendingIcon,
     scene: &IconScene,
-    camera: &IconCamera,
+    view: &IconCamera,
     plan: &exa_items::item_renderer::RenderPlan,
     icon: u32,
 ) -> Option<IconGpuJob> {
@@ -296,13 +306,13 @@ fn spawn_gpu_icon(
             },
             RenderTarget::Image(image.clone().into()),
             Projection::Perspective(PerspectiveProjection {
-                fov: camera.fov_degrees.to_radians(),
-                near: camera.near,
-                far: camera.far,
+                fov: view.fov_degrees.to_radians(),
+                near: view.near,
+                far: view.far,
                 aspect_ratio: 1.0,
                 ..default()
             }),
-            Transform::from_translation(camera.position).looking_at(camera.target, Vec3::Y),
+            Transform::from_translation(view.position).looking_at(view.target, Vec3::Y),
             Tonemapping::None,
             Msaa::Off,
             layer.clone(),
@@ -365,6 +375,9 @@ fn spawn_gpu_icon(
         halo_highlight: plan.halo_highlight,
         content_width: plan.screen_extents.0,
         content_height: plan.screen_extents.1,
+        scene: scene.clone(),
+        paint_camera: *view,
+        sun,
     })
 }
 
@@ -384,23 +397,35 @@ fn start_icon_readbacks(mut commands: Commands, mut jobs: ResMut<IconGpuJobs>) {
     }
 }
 
-/// Drops a GPU icon that never answered, so its scene and image do not leak.
-fn expire_icon_jobs(mut commands: Commands, mut jobs: ResMut<IconGpuJobs>) {
-    let mut expired = Vec::new();
-    jobs.jobs.retain(|job| {
-        if job.frames < ICON_JOB_TIMEOUT {
-            return true;
+/// Drops a GPU icon that never answered, so its scene and image do not
+/// leak; the CPU's paint of the same scene fills the slot, so a lost
+/// readback still leaves an icon.
+fn expire_icon_jobs(
+    mut commands: Commands,
+    mut jobs: ResMut<IconGpuJobs>,
+    mut icons: ResMut<PanelIcons>,
+) {
+    let (keep, expired): (Vec<_>, Vec<_>) = std::mem::take(&mut jobs.jobs)
+        .into_iter()
+        .partition(|job| job.frames < ICON_JOB_TIMEOUT);
+    jobs.jobs = keep;
+    for job in expired {
+        let mut icon = job.scene.paint(&job.paint_camera, job.sun, job.icon);
+        if job.halo {
+            exa_items::item_gui::halo(
+                &mut icon.pixels,
+                icon.width as usize,
+                icon.height as usize,
+                job.halo_highlight,
+            );
         }
-        expired.push(job.camera);
-        expired.push(job.light);
-        expired.push(job.root);
+        icons.apply_rendered(job.id, job.key, icon, job.content_width, job.content_height);
+        commands.entity(job.camera).despawn();
+        commands.entity(job.light).despawn();
+        commands.entity(job.root).despawn();
         if let Some(readback) = job.readback {
-            expired.push(readback);
+            commands.entity(readback).despawn();
         }
-        false
-    });
-    for entity in expired {
-        commands.entity(entity).despawn();
     }
 }
 
@@ -421,6 +446,12 @@ fn icon_readback_complete(
         return;
     };
     let job = jobs.jobs.swap_remove(at);
+    let nonzero = trigger.event().data.iter().filter(|&&b| b != 0).count();
+    eprintln!(
+        "readback: {} bytes, {nonzero} nonzero, first {:?}",
+        trigger.event().data.len(),
+        &trigger.event().data[..8.min(trigger.event().data.len())]
+    );
     if let Some(icon) = icon_from_readback(
         &trigger.event().data,
         job.buffer,
@@ -701,5 +732,53 @@ mod tests {
         let mut icons = app.world_mut().resource_mut::<PanelIcons>();
         let layer = icons.layer(&container).expect("a filled icon draws");
         assert_eq!(layer.batch.primitives.len(), 1);
+    }
+
+    #[test]
+    fn an_expired_gpu_job_falls_back_to_the_cpu_paint() {
+        let mut app = App::new();
+        app.add_plugins(bevy::asset::AssetPlugin::default())
+            .init_asset::<Image>()
+            .init_resource::<PanelIcons>()
+            .init_resource::<IconGpuJobs>()
+            .add_systems(Update, expire_icon_jobs);
+        let entry = {
+            let mut icons = app.world_mut().resource_mut::<PanelIcons>();
+            let (handle, _) = icons.reserve(9, 0, None);
+            icons.cache.entries[handle - 1].variant
+        };
+        let scene = IconScene::synthetic_quad();
+        let (view, _) = item_icon::scene_plan(0, false, 0, scene.bounds, 160, true);
+        let world = app.world_mut();
+        let camera = world.spawn_empty().id();
+        let light = world.spawn_empty().id();
+        let root = world.spawn_empty().id();
+        let image = world.resource_mut::<Assets<Image>>().add(Image::default());
+        world.resource_mut::<IconGpuJobs>().jobs.push(IconGpuJob {
+            id: 9,
+            key: entry,
+            image,
+            camera,
+            light,
+            root,
+            readback: None,
+            frames: ICON_JOB_TIMEOUT,
+            icon: 160,
+            buffer: 320,
+            screen_pass: true,
+            downsample: false,
+            halo: false,
+            halo_highlight: false,
+            content_width: 144.0,
+            content_height: 144.0,
+            scene,
+            paint_camera: view,
+            sun: sun_direction(framing(0, false)),
+        });
+        app.update();
+        let icons = app.world().resource::<PanelIcons>();
+        assert!(icons.cache.entries[0].cell >= 1);
+        assert!(icons.atlas.image.pixels.iter().any(|&b| b != 0));
+        assert!(app.world().resource::<IconGpuJobs>().jobs.is_empty());
     }
 }

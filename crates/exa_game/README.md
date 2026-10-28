@@ -665,8 +665,8 @@ fills the atlas from off-screen item renders, at most two icons a frame:
 it loads the item's ground or factory model, draws it with a private camera
 and sun on its own render layer, reads the image back, resolves it (the
 alpha global's screen pass, else the Kaiser downsample and halo) and fills
-the cache slot and atlas cell; a headless App paints the same scene on the
-CPU. The card
+the cache slot and atlas cell; a headless App, a blank readback and a lost
+one fall back to the CPU paint of the same scene. The card
 window (`CardWindow`) keeps the 200 ms request, its toggle and its 0x100 ms
 close fade on top of the card timer; a double click classifies a
 container's open, a card close and a use; a popup's inner panel and top

@@ -2306,8 +2306,9 @@ screen shader's sampler is not traced], else the Kaiser filter reduces the
 image and the halo (highlighted for the variant's bit) runs. The pixels go
 into the manager's atlas and the cache slot gets its cell and content half
 extents. A headless App paints the same scene with the CPU rasteriser in
-`item_icon` instead. The panel draws the filled cells through the HltCol
-program (below).
+`item_icon` instead; a readback with no covered pixel, or one that never
+arrives, also takes that CPU paint, so a missing draw still leaves an
+icon. The panel draws the filled cells through the HltCol program (below).
 
 **The render plan** (`item_renderer::render_plan`): the item is turned by
 (−0.1, 0.1, 0.5) when both the apparel and weapon bits are set; its sun is
