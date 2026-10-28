@@ -659,8 +659,9 @@ sections' triangles; a skinned copy keeps the skinned sections' vertices
 and places each at its place plus twice its normal every frame. The light
 is (0.14, 0.08, 1) times a tenth of its curve, and the hum's volume and
 pitch follow the opening and closing. A Shell cast now spawns the aura
-node: the `_ForceAura01` material with its `0xf0` block, node flags
-`0x9020`, one sub-object of kind 35044 and the `_ForceNoise` picture. The
+node: the `_ForceAura01` material with its `0xf0` block, flags-word bit
+`0x20`, state-word bits `0x9000`, one new sub-object (buffer usage 35044,
+GL static draw) and the `_ForceNoise` picture. The
 node carries the `ForceShell` aura (`LiveShellAura`): it opens, holds and
 closes, steps its ripples, and outlives the power until it has closed; it
 also carries its material's pass plan (`thaum::effect_material`,
@@ -754,14 +755,17 @@ each fragment program's arithmetic and the loaded sheets; the shader
 bindings of the Force and Displacement effects are data in
 `thaum::effect_material` and `thaum::visuals` (the five materials, their
 blocks, node flags, sub-objects, signatures, `gi_multipoint`, the noise
-picture and its upload), and their four layered passes — the exact rows,
-layer colours, time and brightness uniforms and the shader's texture
-coordinate — are in `thaum::effect_pass`. The EffectShell, EffectShell pass
+picture and its upload), and their four layered passes — each layer
+matrix's depth term (double precision for the effect material and the
+tendril, single for the shader and the shell), the layer colours, the
+time and brightness uniforms and the shader's texture coordinate, with no
+draw at all while the pass count is zero — are in `thaum::effect_pass`. The EffectShell, EffectShell pass
 selection and the tendril geometry are in
 `thaum::veil`/`exa_game::effects::shell`/`thaum::visuals`. A shell, strikes,
 vanish, long door, summon and constant displacement cast leave their effect
 nodes in the scene; a long door's move places the body at the destination
-after the caster tick. The vanish's show and hide are still the effect
+after the caster tick (the destination in centimetres, the root kept at
+its height above the body's lowest part). The vanish's show and hide are still the effect
 class's own, not applied to Exarust's drawn body.
 
 The effects' meshes come from their own builders but are drawn with

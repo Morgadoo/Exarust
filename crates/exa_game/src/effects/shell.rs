@@ -342,7 +342,7 @@ pub struct ShellPart {
     pub flags: u32,
     /// The sub-object has a mesh.
     pub mesh: bool,
-    /// Its fade (the node's +0x20 word while the second pass draws).
+    /// Its material's fade, set for the fade pass's draw and restored.
     pub fade: f32,
     /// Its texture stage.
     pub texture_stage: u16,
@@ -357,9 +357,9 @@ pub struct ShellPassNode {
     pub flags: u32,
     /// The render flags; [`SUBOBJECTS`] says the node has sub-objects.
     pub render_flags: u32,
-    /// The node's fade value (+0x238).
+    /// The node's fade value.
     pub fade: f32,
-    /// The node's second fade value (+0x234).
+    /// The node's second fade value.
     pub fade2: f32,
     /// The node's sub-objects.
     pub parts: Vec<ShellPart>,
