@@ -962,7 +962,7 @@ fn paint_loot(
 }
 
 /// Draws the open screens and the debug form into the GUI's queue.
-fn draw_screens(
+pub(crate) fn draw_screens(
     screens: Res<GameScreens>,
     mut icons: ResMut<PanelIcons>,
     debug: Res<DebugGuiForm>,

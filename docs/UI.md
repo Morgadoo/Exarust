@@ -767,8 +767,15 @@ calling the rest of the game, so the order is testable.
   NEXT FIGHT, at scales 0.9, 0.85 and 0.78; the arena's refreshes the pad
   bindings and starts with no row selected (a session's begin and continue
   clear that flag). Its confirm key plays the menu's click at
-  0.06 with a pitch of 0.8 to 1.2. The arena's pause page reads its last row
-  EXIT once the session was won or has ended, FORFEIT before.
+  0.06 with a pitch of 0.8 to 1.2. `exa_game::end_menu_screen` draws the
+  menu over the game through the GUI path, the selected row through the
+  menu's text program, and runs the row on Enter or on the release over it:
+  the next practice fight, the story's respawn or end-menu exit, a practice
+  restart, the arena's continue or lobby (both leave to the title until the
+  arena session is wired), and the exit. The centered row placement is
+  Exarust's (the original's form class is outside the game-main unit). The
+  arena's pause page reads its last row EXIT once the session was won or
+  has ended, FORFEIT before.
 - **The menus' rows.** The title's CONTINUE reads the story's save manager,
   the start page's the arena's; each grey out only when its own manager has
   no save. The in-game page's first row is NEW GAME in a mode whose word
@@ -808,8 +815,12 @@ calling the rest of the game, so the order is testable.
   watches a play level's player (a sandbox practice session) and turns a
   teleporter's `TravelToLevel` into a level exit; F1 then opens the in-game
   page with the flow's mode and phase words and hides the session hook while
-  the page is up. The steps are logged; the world, save and camera steps are
-  not applied yet.
+  the page is up. `FlowSteps` collects every step and the app applies the
+  menu, end-menu, title-logo, game-view, controls, health and music ones.
+  The world, save, camera, character and transition-screen steps are logged
+  and left to the host; there is no in-process level reload, so a level
+  load's request (a practice start on a fresh title, the next fight, a
+  teleporter) changes the flow state but keeps the loaded level.
 
 ### The splash screen
 
@@ -837,8 +848,11 @@ without the flag nothing starts it.
 The running app opens the main menu with F1 (`exa_game::menu_screen`); the
 original opens it from its session flow, which belongs to the game modes.
 F1 shows the flow's page: the in-game page while a session runs, the title
-otherwise, with the flow's mode, phase and page state. The screen follows
-`TMainMenu`'s rules (`exa_game::menu_pages`):
+otherwise, with the flow's mode, phase and page state. The page is painted
+through the GUI draw path (`exa_ui::gui_draw`): a near-black backdrop, the
+title logo, and the rows from the menu font's sheet with the unit's own
+text program on the selected row. The screen follows `TMainMenu`'s rules
+(`exa_game::menu_pages`):
 
 - **Pages.** Title: BEGIN, CONTINUE (greyed without a story save), ARENA,
   MANUAL, SETTINGS, EXIT. Arena: NEW CAREER, CONTINUE (greyed without an
@@ -868,8 +882,10 @@ otherwise, with the flow's mode, phase and page state. The screen follows
   out. The menu's text shader is the game-main unit's own small program
   (`exa_game::menu_text`): it samples the glyph, mixes a tint from the
   glyph's red channel (`(1, 0.75, 0.4)` to white), gains it 1.1, tone-maps
-  by `rgb/(0.5 + rgb)·1.5` and multiplies the vertex colour; the rows are
-  still drawn in the base font until its quads take that program.
+  by `rgb/(0.5 + rgb)·1.5` and multiplies the vertex colour. The draw path's
+  `SkinMode::MenuText` runs it over the row quads; a screen whose menus font
+  texture is not installed falls back to the base font through the same
+  path.
 - **Selection and click.** The pointer selects the row under it and Up and
   Down move the selection. A press marks the pressed row; its command runs
   on the release over it, or at once on Enter. The commands, by page:
@@ -896,8 +912,16 @@ otherwise, with the flow's mode, phase and page state. The screen follows
 
 The session and form work behind the commands (starting a game, the
 character screen, the manual, the settings form) belongs to the game modes;
-the screen only performs its own page changes, the resume, the exits to the
-title and the quit.
+the screen performs its own page changes, the resume and the quit at once
+and sends the rest through `MenuChoice`. `FlowPlugin` applies those the
+running game has: the resume, a practice start or restart, the story start
+(Exarust's unknown background), the story end-menu exit and the leave to
+the title, and it applies the flow's menu, end-menu, title-logo, interface,
+controls, health and music steps. The character screen, the creator, the
+manual, the settings form, the save and world steps, and a live level change
+are not wired; a practice next fight therefore changes the session state but
+does not reload the arena, because no in-process level reload exists yet
+(a level change restarts the process).
 
 ### The window manager
 

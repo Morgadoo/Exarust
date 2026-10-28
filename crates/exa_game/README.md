@@ -716,8 +716,12 @@ the return to the menu form, and the pause. The rules return named steps;
 `FlowPlugin` runs them on the 12 ms game clock, follows a play level's
 player as a sandbox practice session, turns a teleporter's journey into a
 level exit, and hides the session hook while F1's in-game page is up (the
-menu screen calls `menu_opened`/`menu_closed`). F1 opens the in-game page
-while a session runs. The camera shots (offsets added to the framed point)
+menu screen calls `menu_opened`/`menu_closed`). Every producer queues its
+steps in `FlowSteps`; the app applies the menu, end-menu, title-logo,
+game-view, controls, health and music ones, and logs the world, save,
+camera, character and transition steps. F1 opens the in-game page while a
+session runs. There is no in-process level reload, so a step that loads a
+level changes the session state but keeps the level that is loaded. The camera shots (offsets added to the framed point)
 with their cursor warps, the spawn turns (the engine's angle builder), the
 exit-trigger nudge, the practice scene filter, the practice and menu music,
 the unlock words and the save managers' signatures are pinned by tests.
@@ -739,11 +743,16 @@ awakenings (the potential plus ten less the fragments seen, the voice, wail
 and swing, the mind domain for the second and third codes, the force domain
 for the first and third, and the class word) and the background-unlock bit.
 
-The main menu screen's F1 now takes the flow's mode, phase and page state,
-and its in-game page in a session; while the page is open the flow's
-dialogue and session hook are held, as the original's frame task does. The
-menu rows' text program is `menu_text` (the unit's one shader, still to be
-bound on the draw path).
+The main menu screen's F1 takes the flow's mode, phase and page state, and
+its in-game page in a session; while the page is open the flow's dialogue
+and session hook are held, as the original's frame task does. The page is
+painted through the GUI draw path with the menu font's sheet, and the
+selected row runs `menu_text` through `exa_ui::skin::SkinMode::MenuText`.
+`end_menu_screen` draws the end-of-session menu over the game the same way;
+its rows run the flow's next practice fight, story respawn or exit, restart
+and leave actions. The title's BEGIN starts Exarust's unknown background;
+the save character screen, creator, manual, settings form and the in-process
+level reload are not wired.
 
 ## Main menu screen
 
@@ -758,8 +767,9 @@ EXIT quits; page changes, the resume and the exits to the title are the
 screen's own; the session work behind BEGIN, CONTINUE, NEW CAREER,
 PRACTICE, VERSUS, MANUAL and SETTINGS is named, not performed. Escape goes
 back from the arena and practice pages and closes the screen elsewhere. The
-rows are measured with the menu font's record (`titlefont.rfi`) and drawn in
-the base font until its quads are wired.
+rows are measured and drawn with the menu font's record (`titlefont.rfi`),
+the selected one through the menu text program; a missing sheet falls back
+to the base font through the same draw path.
 
 ## The trade window and the camera's wall probe
 

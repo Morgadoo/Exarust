@@ -74,8 +74,15 @@ struct HeartbeatSound;
 fn pick_hud(
     players: Query<&Children, With<Player>>,
     bodies: Query<(&PlayerBody, Option<&Fighter>, Option<&PowerCaster>)>,
+    view: Option<Res<crate::flow::GameView>>,
     mut hud: ResMut<HudBars>,
 ) {
+    if view.is_some_and(|view| !view.0) {
+        if hud.active {
+            *hud = HudBars::default();
+        }
+        return;
+    }
     let found = players
         .iter()
         .find_map(|children| children.iter().find_map(|c| bodies.get(c).ok()));

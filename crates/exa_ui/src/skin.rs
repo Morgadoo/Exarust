@@ -4280,6 +4280,9 @@ pub enum SkinMode {
     Skin,
     /// The item panel's icon program: a texture with the highlight ring.
     HltCol,
+    /// The menu rows' text program: a glyph tinted by its own red channel
+    /// and tone-mapped before the vertex colour multiplies it.
+    MenuText,
 }
 
 /// How a batch's vertices are drawn.
@@ -4419,6 +4422,13 @@ impl SkinBatch {
     /// Asks the subclass for its mode, as mode 0x10 does through its slot.
     pub fn select_subclass(&mut self, subclass: u32) {
         self.select(0x10, subclass, false);
+    }
+
+    /// Selects the menu rows' text program. The program is the main menu
+    /// unit's own, not one of the skin's mode words, so it binds directly.
+    pub fn select_menu_text(&mut self) {
+        self.mode_calls += 1;
+        self.mode = SkinMode::MenuText;
     }
 
     /// Replaces the texture offset. The original stores it in 512ths.

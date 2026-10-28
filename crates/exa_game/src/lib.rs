@@ -28,6 +28,7 @@ pub mod destination;
 pub mod drag;
 pub mod effects;
 pub mod emblem;
+pub mod end_menu_screen;
 pub mod experience;
 pub mod fall;
 pub mod flow;
@@ -141,6 +142,7 @@ impl Plugin for GamePlugin {
             destination::DestinationPlugin,
             (
                 menu_screen::MenuScreenPlugin,
+                end_menu_screen::EndMenuScreenPlugin,
                 arena_match::ArenaMatchPlugin,
                 arena_hub_live::ArenaHubPlugin,
                 gui_screens::GameScreensPlugin,

@@ -39,7 +39,11 @@ the 3-D view; text and icon quads are layers of their own. A form's chrome
 (gutter strips, client fill, double frames), its default background (round
 shell, title bar, marks, scrollbars and title blocks) and a page's draw
 order (background, clip, scroll, lines, controls, children, shadow) are
-modelled too, as are the label placements and the label fade. A draw skin
+modelled too, as are the label placements and the label fade. The menu's
+own text program is `SkinMode::MenuText`: `menu_batch` draws its line quads
+and `menu_text_fragment` reproduces the shader's red-channel tint, 1.1
+gain, tone map and vertex colour; the title sheet (`titlefont.rfi`) is
+loaded with the other GUI textures. A draw skin
 opened with unit 5 stores spans 10, 5, 10 and 10 and the colour 255, 250,
 230, 100 three times. A flat slider at unit 5, place 10, 20 and width 100
 stores a thumb

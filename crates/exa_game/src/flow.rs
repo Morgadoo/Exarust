@@ -30,7 +30,9 @@ use exa_formats::save_package;
 
 use crate::arena_hub;
 use crate::arena_match::Track;
-use crate::menu_pages::{Page, PageState};
+use crate::end_menu_screen::EndMenuScreen;
+use crate::menu_pages::{MenuCommand, Page, PageState};
+use crate::menu_screen::{MenuChoice, MenuScreen, TitleLogo};
 use crate::practice::{self, Ladder};
 
 /// The title menu: no game loaded.
@@ -1418,6 +1420,25 @@ pub const REBUILDABLE: u8 = 1;
 /// The reconstruction state after a strip.
 pub const STRIPPED: u8 = 2;
 
+/// The steps the flow asked for since the last frame: every producer pushes
+/// here and [`apply_steps`] applies the ones the running app owns.
+#[derive(Resource, Debug, Default)]
+pub struct FlowSteps {
+    pub steps: Vec<Step>,
+}
+
+/// Whether the game's interface is drawn over the world (the original's game
+/// view). The frame flow closes it on a death, an end-menu exit and a level
+/// change, and opens it again on a revival.
+#[derive(Resource, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GameView(pub bool);
+
+impl Default for GameView {
+    fn default() -> Self {
+        Self(true)
+    }
+}
+
 /// The flow's whole state.
 #[derive(Clone, Debug, Resource)]
 pub struct Flow {
@@ -1578,6 +1599,7 @@ impl Flow {
         // The shipped build's first-run switch sets the second end-page tip.
         self.practice.next_tip = true;
         steps.push(Step::ShowMenu(Page::Title));
+        steps.push(Step::TitleLogo(true));
         steps.push(Step::SessionTask(false));
         steps
     }
@@ -2335,7 +2357,12 @@ impl Flow {
     /// first here.
     pub fn begin_session(&mut self, mut starter: Vec<Step>) -> Vec<Step> {
         self.phase = Phase::Playing;
-        self.menu_open = false;
+        if self.menu_open {
+            // The original hides the menu form before the mode's starter
+            // runs.
+            self.menu_open = false;
+            starter.insert(0, Step::HideMenu);
+        }
         self.end_menu = None;
         starter.push(Step::SessionTask(true));
         starter.push(Step::EndMenuUnselected(false));
@@ -2569,7 +2596,11 @@ impl Flow {
         self.mode = Mode::Menu;
         self.phase = Phase::Menu;
         self.menu_open = true;
-        vec![Step::ShowMenu(Page::Title), Step::SessionTask(false)]
+        vec![
+            Step::ShowMenu(Page::Title),
+            Step::TitleLogo(true),
+            Step::SessionTask(false),
+        ]
     }
 
     /// The help screen closed: the menu's help flag clears.
@@ -2792,14 +2823,21 @@ pub struct FlowPlugin;
 impl Plugin for FlowPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Flow>()
+            .init_resource::<FlowSteps>()
+            .init_resource::<GameView>()
+            .add_message::<MenuChoice>()
             .add_systems(Startup, boot)
-            .add_systems(Update, (tick, follow_player, travel).chain());
+            .add_systems(
+                Update,
+                (apply_menu_choices, tick, follow_player, travel, apply_steps).chain(),
+            );
     }
 }
 
-fn boot(mut flow: ResMut<Flow>) {
+fn boot(mut flow: ResMut<Flow>, mut queued: ResMut<FlowSteps>) {
     for step in flow.boot() {
         debug!("game flow: {step:?}");
+        queued.steps.push(step);
     }
 }
 
@@ -2807,6 +2845,7 @@ fn boot(mut flow: ResMut<Flow>) {
 /// player and the other characters' conditions come from the running world.
 fn tick(
     mut flow: ResMut<Flow>,
+    mut queued: ResMut<FlowSteps>,
     ticks: Option<Res<exa_physics::body::BodyTicks>>,
     players: Query<
         (Option<&exa_combat::Condition>, Option<&exa_combat::Fighter>),
@@ -2826,6 +2865,7 @@ fn tick(
     let others: Vec<u32> = others.iter().map(|condition| condition.0).collect();
     for step in flow.frame(now, player, &others) {
         trace!("game flow: {step:?}");
+        queued.steps.push(step);
     }
 }
 
@@ -2834,9 +2874,10 @@ fn tick(
 /// the original's).
 fn follow_player(
     mut flow: ResMut<Flow>,
+    mut queued: ResMut<FlowSteps>,
     players: Query<(), Added<crate::player::PlayerBody>>,
     ticks: Option<Res<exa_physics::body::BodyTicks>>,
-    mut clock: MessageWriter<crate::world_clock::RestoreWorldClock>,
+    mut clock: Option<MessageWriter<crate::world_clock::RestoreWorldClock>>,
 ) {
     if players.is_empty() || flow.mode.is_game() {
         return;
@@ -2844,25 +2885,34 @@ fn follow_player(
     let now = ticks.as_ref().map_or(0, |ticks| ticks.millis() as u32);
     for step in flow.switch_mode(Mode::Practice, now) {
         debug!("game flow: {step:?}");
+        queued.steps.push(step);
     }
     // A fresh session's world time starts at its load: the original's clock
     // counts the saved seconds (zero here) plus the ticks since the load, so
     // the splash and the menu do not age the world.
-    clock.write(crate::world_clock::RestoreWorldClock { saved_seconds: 0 });
+    if let Some(clock) = clock.as_mut() {
+        clock.write(crate::world_clock::RestoreWorldClock { saved_seconds: 0 });
+    }
     flow.menu_open = false;
     flow.phase = Phase::Playing;
     flow.hook = Hook::Practice;
     flow.practice.start_ms = now;
+    // The title the boot put up belongs to the menus, not the sandbox game.
+    queued.steps.push(Step::HideMenu);
     debug!("game flow: a play level is running; the practice hook watches it");
 }
 
 /// A teleporter journey is the game's level exit.
 fn travel(
     mut flow: ResMut<Flow>,
-    mut journeys: MessageReader<crate::destination::TravelToLevel>,
+    mut queued: ResMut<FlowSteps>,
+    mut journeys: Option<MessageReader<crate::destination::TravelToLevel>>,
     ticks: Option<Res<exa_physics::body::BodyTicks>>,
 ) {
     let now = ticks.as_ref().map_or(0, |ticks| ticks.millis() as u32);
+    let Some(journeys) = journeys.as_mut() else {
+        return;
+    };
     for journey in journeys.read() {
         let steps = flow.level_exit(
             LevelExit {
@@ -2883,6 +2933,190 @@ fn travel(
                 "game flow: {} asks for level {} (spawn {}): {step:?}",
                 journey.user, journey.level, journey.arrival
             );
+            queued.steps.push(step);
+        }
+    }
+}
+
+/// Runs the commands the main menu handed over. The menu's own page changes
+/// and the resume already happened in [`crate::menu_screen`]; the session,
+/// restart and leave work below turns into the same [`Step`]s the flow's
+/// methods return and is applied by [`apply_steps`]. The character screen,
+/// the creator, the manual and the settings form are not wired yet.
+fn apply_menu_choices(
+    mut choices: MessageReader<MenuChoice>,
+    mut flow: ResMut<Flow>,
+    mut queued: ResMut<FlowSteps>,
+    ticks: Option<Res<exa_physics::body::BodyTicks>>,
+) {
+    let now = ticks.as_ref().map_or(0, |ticks| ticks.millis() as u32);
+    for MenuChoice(command) in choices.read() {
+        let steps = match command {
+            MenuCommand::Resume => {
+                if flow.phase == Phase::Paused {
+                    flow.resume()
+                } else {
+                    flow.menu_closed();
+                    vec![Step::Controls(true)]
+                }
+            }
+            MenuCommand::NewPractice => {
+                let ladder = flow.practice.ladder;
+                let (standing, viewport) = (flow.stand_height, flow.viewport);
+                let start = flow.start_practice(ladder, standing, viewport, now);
+                flow.begin_session(start)
+            }
+            MenuCommand::Practice { expert } => {
+                let ladder = if *expert {
+                    Ladder::Expert
+                } else {
+                    Ladder::Novice
+                };
+                let (standing, viewport) = (flow.stand_height, flow.viewport);
+                let start = flow.start_practice(ladder, standing, viewport, now);
+                flow.begin_session(start)
+            }
+            MenuCommand::ExitArena | MenuCommand::ExitToTitle => flow.quit_to_menu(),
+            MenuCommand::QuitStory => flow.story_exit(now),
+            MenuCommand::FinishMatch { .. } => {
+                if flow.mode == Mode::Story {
+                    flow.story_exit(now)
+                } else {
+                    flow.quit_to_menu()
+                }
+            }
+            MenuCommand::BeginStory => {
+                // Exarust's story start has no background form: the sandbox
+                // player is the unknown background's, and its body height is
+                // the average the flow's spawn arithmetic expects (a guess
+                // until the creator supplies the measured body).
+                let viewport = flow.viewport;
+                let steps = flow.start_story(Background::Unknown, 1.0, viewport, now);
+                flow.begin_session(steps)
+            }
+            MenuCommand::CharacterScreen(mode) => {
+                // The saves' character screen needs a loaded save, which the
+                // running game does not have yet.
+                warn!("main menu: the character screen for mode {mode} is not wired");
+                Vec::new()
+            }
+            MenuCommand::None | MenuCommand::ShowPage(_) | MenuCommand::Quit => Vec::new(),
+            MenuCommand::NewCareer
+            | MenuCommand::Versus
+            | MenuCommand::OpenManual
+            | MenuCommand::OpenSettings => {
+                warn!("main menu command {command:?} is not wired");
+                Vec::new()
+            }
+        };
+        for step in &steps {
+            debug!("game flow: menu {command:?}: {step:?}");
+        }
+        queued.steps.extend(steps);
+    }
+}
+
+/// Applies the flow's steps to the running app's own pieces: the menu and
+/// end-menu forms, the title logo, the interface and controls flags and the
+/// practice heal's health. The world, camera, music, save and transition
+/// screen are logged and left to the host; Exarust has no live level change
+/// yet (see `docs/UI.md`, The main menu screen).
+#[allow(clippy::too_many_arguments)]
+fn apply_steps(
+    mut commands: Commands,
+    mut queued: ResMut<FlowSteps>,
+    flow: Res<Flow>,
+    mut menu: Option<ResMut<MenuScreen>>,
+    mut end: Option<ResMut<EndMenuScreen>>,
+    mut logo: Option<ResMut<TitleLogo>>,
+    mut view: Option<ResMut<GameView>>,
+    mut session: Option<ResMut<crate::player_controls::PlaySession>>,
+    mut fighters: Query<&mut exa_combat::Fighter, With<crate::player::PlayerBody>>,
+    mut exit: MessageWriter<AppExit>,
+) {
+    if queued.steps.is_empty() {
+        return;
+    }
+    let steps = core::mem::take(&mut queued.steps);
+    for step in steps {
+        match step {
+            Step::ShowMenu(page) => {
+                if let Some(menu) = menu.as_mut() {
+                    menu.game = flow.mode.word();
+                    menu.session = flow.phase.word();
+                    menu.state = flow.page_state();
+                    menu.open_at(page);
+                }
+            }
+            Step::HideMenu => {
+                if let Some(menu) = menu.as_mut() {
+                    menu.close();
+                }
+            }
+            Step::EndMenu(end_menu) => {
+                if let Some(end) = end.as_mut() {
+                    end.show(end_menu);
+                }
+            }
+            Step::HideEndMenu => {
+                if let Some(end) = end.as_mut() {
+                    end.close();
+                }
+            }
+            Step::EndMenuUnselected(unselected) => {
+                if let Some(end) = end.as_mut() {
+                    end.unselected = unselected;
+                    if end.open {
+                        end.selected = if unselected { None } else { Some(0) };
+                    }
+                }
+            }
+            Step::MenuHelp(help) => {
+                if let Some(menu) = menu.as_mut() {
+                    menu.set_covered(help);
+                }
+            }
+            Step::TitleLogo(shown) => {
+                if let Some(logo) = logo.as_mut() {
+                    logo.0 = shown;
+                }
+            }
+            Step::GameGui(shown) => {
+                if let Some(view) = view.as_mut() {
+                    view.0 = shown;
+                }
+            }
+            Step::Controls(on) => {
+                if let Some(session) = session.as_mut() {
+                    session.playing = on;
+                }
+            }
+            Step::Health {
+                red_bits,
+                yellow_bits,
+            } => {
+                for mut fighter in &mut fighters {
+                    fighter.health.red = f32::from_bits(red_bits);
+                    fighter.health.yellow = f32::from_bits(yellow_bits);
+                }
+            }
+            Step::Music {
+                name,
+                volume,
+                restart,
+            } => {
+                commands.insert_resource(exa_audio::LevelMusic(name.to_ascii_lowercase()));
+                commands.insert_resource(exa_audio::LevelMusicVolume(volume));
+                if restart {
+                    commands.insert_resource(exa_audio::LevelMusicStart(0.0));
+                }
+            }
+            Step::Quit => {
+                exit.write(AppExit::Success);
+            }
+            other => {
+                debug!("game flow step not applied by the app: {other:?}");
+            }
         }
     }
 }
@@ -4104,6 +4338,7 @@ mod tests {
         assert_eq!(
             steps,
             vec![
+                Step::HideMenu,
                 Step::LoadLevel {
                     locale: "exanima01",
                     spawn: 0,
@@ -4373,5 +4608,97 @@ mod tests {
             ]
         );
         assert_eq!(flow.menu_confirm(true, false, 0.5), vec![Step::MenuConfirm]);
+    }
+
+    #[test]
+    fn a_player_death_opens_the_end_menu_and_its_exit_returns_to_the_title() {
+        use exa_physics::body::BodyTicks;
+
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<exa_ui::gui_draw::GuiFrames>()
+            .add_plugins((
+                crate::menu_screen::MenuScreenPlugin,
+                FlowPlugin,
+                crate::end_menu_screen::EndMenuScreenPlugin,
+            ));
+        app.insert_resource(BodyTicks(100));
+        // The boot opens the title; then the session takes over.
+        app.update();
+        app.world_mut()
+            .resource_mut::<crate::menu_screen::MenuScreen>()
+            .close();
+        {
+            let mut flow = app.world_mut().resource_mut::<Flow>();
+            flow.mode = Mode::Story;
+            flow.phase = Phase::Playing;
+            flow.hook = Hook::Story;
+            flow.menu_open = false;
+            flow.story = StoryState {
+                reconstruction: REBUILDABLE,
+                record: 3,
+                checkpoint: 3,
+                knockout_ms: u32::MAX - KNOCKOUT_MS,
+                ..Default::default()
+            };
+        }
+        let player = app
+            .world_mut()
+            .spawn((
+                crate::player::PlayerBody::new(0.0),
+                exa_combat::Condition(DEAD),
+                exa_combat::Fighter {
+                    health: exa_combat::Health {
+                        yellow: 0.0,
+                        red: 0.0,
+                        max: 0.25,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            ))
+            .id();
+        assert!(
+            app.world()
+                .get::<crate::player::PlayerBody>(player)
+                .is_some()
+        );
+        app.update();
+        // The reconstructed story player's end menu: CONTINUE and EXIT.
+        let end = app
+            .world()
+            .resource::<crate::end_menu_screen::EndMenuScreen>();
+        assert!(end.open);
+        assert_eq!(end.menu.unwrap().rows, &["CONTINUE", "EXIT"]);
+        assert_eq!(end.selected, Some(0));
+        // EXIT runs the story's end-menu exit behind the transition.
+        app.world_mut()
+            .resource_mut::<crate::end_menu_screen::EndMenuScreen>()
+            .selected = Some(1);
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::Enter);
+        app.update();
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .reset_all();
+        assert_eq!(app.world().resource::<Flow>().phase, Phase::Transition);
+        assert!(
+            !app.world()
+                .resource::<crate::end_menu_screen::EndMenuScreen>()
+                .open
+        );
+        // The transition's 100 ms elapse and the quit to the title shows the
+        // title page again.
+        app.world_mut().resource_mut::<BodyTicks>().0 = 200;
+        app.update();
+        let flow = app.world().resource::<Flow>();
+        assert_eq!(flow.mode, Mode::Menu);
+        assert_eq!(flow.phase, Phase::Menu);
+        let menu = app.world().resource::<crate::menu_screen::MenuScreen>();
+        assert!(menu.open);
+        assert_eq!(menu.page, Page::Title);
     }
 }
