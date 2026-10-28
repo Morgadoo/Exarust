@@ -44,8 +44,8 @@ pub struct ScreenRequest {
     pub player_ready: bool,
     /// The player's condition is not the dead mode 0xa00.
     pub player_alive: bool,
-    /// The body a loot window is asked for (0 otherwise).
-    pub target: i32,
+    /// The body a loot window is asked for (its entity index), if any.
+    pub target: Option<i32>,
     /// The body's record flag word, for the loot window's show rule.
     pub flags: u32,
 }
@@ -57,7 +57,7 @@ impl ScreenRequest {
             screen,
             player_ready,
             player_alive,
-            target: 0,
+            target: None,
             flags: 0,
         }
     }
@@ -472,13 +472,21 @@ impl GameScreens {
         true
     }
 
-    /// The bodies whose loot window the deferred close takes, in the given
-    /// bodies' order: a body with a window whose mark 0x80000 is set or
-    /// whose condition is no longer dead (other than 0xa00).
+    /// The bodies whose loot window the deferred close takes, in the open
+    /// windows' order (the original walks the GUI's forms): a window whose
+    /// body's mark 0x80000 is set or whose condition is no longer dead
+    /// (other than 0xa00). `bodies` gives each body's (id, flags, mode); a
+    /// window whose body is not listed stays.
     pub fn loot_windows_to_close(&self, bodies: &[(i32, u32, u32)]) -> Vec<i32> {
-        bodies
+        self.open
             .iter()
-            .filter(|(character, _, _)| self.loot_window(*character).is_some())
+            .filter(|screen| screen.kind == GameScreen::Loot)
+            .filter_map(|screen| self.loot.iter().find(|w| w.form == screen.form))
+            .filter_map(|window| {
+                bodies
+                    .iter()
+                    .find(|(character, _, _)| *character == window.character)
+            })
             .filter(|(_, flags, mode)| exa_ui::game_gui::closes_loot_window(*flags, *mode))
             .map(|(character, _, _)| *character)
             .collect()
@@ -487,7 +495,8 @@ impl GameScreens {
     /// Closes a screen: its form closes and the task deletes it; the
     /// journal stores its text (its save) and the screens remember their
     /// place; the inventory leaves the container registry; a loot window
-    /// leaves it under its body's id and saves its pack when it was loaded.
+    /// leaves it under its body's id (the original also saves the body's
+    /// pack, which has no Exarust store yet).
     /// The focus falls to the last screen left. The focused window of the
     /// kind is closed when there are several (the loot windows of two
     /// bodies).
@@ -625,9 +634,10 @@ fn open_requested_screens(
                 screens.open_inventory(request.player_ready, request.player_alive, 4)
             }
             GameScreen::Journal => screens.open_journal(request.player_ready, request.player_alive),
-            GameScreen::Loot if request.target != 0 => {
-                screens.open_loot(request.target, request.flags, 4)
-            }
+            GameScreen::Loot => match request.target {
+                Some(target) => screens.open_loot(target, request.flags, 4),
+                None => continue,
+            },
             _ => continue,
         };
         debug!("GUI: {:?} {action:?}", request.screen);
@@ -1131,7 +1141,7 @@ mod tests {
             screen: GameScreen::Loot,
             player_ready: true,
             player_alive: true,
-            target: 7,
+            target: Some(7),
             flags: 0,
         });
         app.update();
@@ -1197,6 +1207,11 @@ mod tests {
         assert_eq!(
             screens.loot_windows_to_close(&[(7, 0x80000, 0xa00)]),
             vec![7]
+        );
+        // Both close in the windows' order, whatever the bodies' order.
+        assert_eq!(
+            screens.loot_windows_to_close(&[(8, 0, 0), (7, 0, 0)]),
+            vec![7, 8]
         );
     }
 

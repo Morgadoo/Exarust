@@ -1155,7 +1155,7 @@ fn hold_hand(
                                 screen: exa_ui::game_gui::GameScreen::Loot,
                                 player_ready: !condition.dying(),
                                 player_alive: !condition.is_dead(),
-                                target: body.index().index() as i32,
+                                target: Some(body.index().index() as i32),
                                 // The body's record flag word is not read
                                 // by this path yet; 0 passes the show rule.
                                 flags: 0,
