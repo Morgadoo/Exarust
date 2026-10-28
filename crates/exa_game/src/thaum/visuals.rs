@@ -139,7 +139,7 @@ pub enum ActiveNode {
     /// The creator adds no node; the class's own activation builds its
     /// effect.
     None,
-    /// The creator adds its own node (`+0x28`).
+    /// The creator adds its own node.
     Own,
     /// The creator adds its node only when its activation left the "owns
     /// its effect" byte zero.
@@ -162,13 +162,13 @@ impl ActiveNode {
 }
 
 /// What one creator's active power object holds, as the creator writes it:
-/// the id its base registers, the state word `+0x18` (always 1), the focus
+/// the id its base registers, the state word (always 1), the focus
 /// it holds, the long door's per-tick drain, destination and forward axis,
-/// the AI flag `+0xa0`, the scene nodes and the sounds it plays there.
+/// the AI flag, the scene nodes and the sounds it plays there.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ActiveObjectSpec {
     pub id: u32,
-    /// The creator's `+0x18` word (1 for every active power).
+    /// The creator's state word (1 for every active power).
     pub kind: u32,
     pub cost: Option<f32>,
     /// The long door's `tick ms × cost × 0.001` (single precision).
@@ -179,7 +179,7 @@ pub struct ActiveObjectSpec {
     /// the player's cast. The AI cast hands the creator a vector it never
     /// set, so it is none there.
     pub forward: Option<Vec3>,
-    /// The creator's `+0xa0` byte.
+    /// The creator's AI byte.
     pub ai: bool,
     pub node: ActiveNode,
     /// The sounds the creator plays, with their pitch.

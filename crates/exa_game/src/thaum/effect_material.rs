@@ -283,9 +283,9 @@ pub struct MaterialNode {
     pub material: Option<&'static str>,
     /// The material's parameter block size.
     pub block: usize,
-    /// The geometry node's flags word (`+0xc`).
+    /// The geometry node's flags word.
     pub flags: u32,
-    /// The geometry node's render word (`+8`); the aura and shell add
+    /// The geometry node's render word; the aura and shell add
     /// [`AURA_FLAGS`].
     pub state: u32,
     /// The node's sub-objects. The aura and shell replace them with one.
@@ -294,7 +294,7 @@ pub struct MaterialNode {
     pub subobject_usage: i32,
     /// The replacement sub-object's parent points back at the node.
     pub subobject_parent: bool,
-    /// The noise picture bound to the material's `+0x70` (the barrier and
+    /// The noise picture bound to the material's noise slot (the barrier and
     /// the aura bind it; the shell does not).
     pub noise: Option<&'static str>,
 }
@@ -391,7 +391,7 @@ impl MaterialKind {
 /// routine's own order: the noise picture (the barrier and the aura), the
 /// shader object (made once, its release deferred), the parameter block, the
 /// node's flag or state bits, the sub-object replacement (the aura and the
-/// shell), the material, and the noise bound to the material's `+0x70`.
+/// shell), the material, and the noise bound to the material's noise slot.
 pub fn dress(
     kind: MaterialKind,
     node: &mut MaterialNode,

@@ -439,11 +439,11 @@ pub struct ConstantVeil {
     /// The hum's first volume (silent) and pitch (normal).
     pub hum_volume: f32,
     pub hum_pitch: f32,
-    /// The hum loops from its first play (`+0x10` in its flags).
+    /// The hum loops from its first play (bit 0x10 in its flags).
     pub hum_loop: bool,
     /// The body's size factor, which the shell and the image keep.
     pub size_factor: f32,
-    /// The shell's fade may run (its `+0x2d8` word starts zero).
+    /// The shell's fade may run (its hold byte starts zero).
     pub shell_can_fade: bool,
     /// The shell's fade callback was appended to the body's 100-room list.
     pub fade_hook: bool,
