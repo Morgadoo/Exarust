@@ -282,8 +282,12 @@ fn card_facts(payload: &[u8], strings: Option<&Library>) -> CardFacts {
         });
         let description_id = word(model, DESCRIPTION_ID);
         if let Some(strings) = strings {
-            facts.name = strings.get(facts.name_id).unwrap_or_default();
-            facts.description = strings.get(description_id).unwrap_or_default();
+            // A string id with bit 31 set names the record's own tier
+            // library; the base catalogue's shared library holds the same
+            // slot numbers for the base tier.
+            let text = |id: u32| strings.get(id & ID_MASK).unwrap_or_default();
+            facts.name = text(facts.name_id);
+            facts.description = text(description_id);
         }
         if facts.name.is_empty() {
             // The record's own 16-byte name, as the item parser reads it.
@@ -521,7 +525,9 @@ mod tests {
         let mut model = vec![0u8; 0x20];
         model[0] = b'M';
         model[0x10..0x14].copy_from_slice(&2u32.to_le_bytes());
-        model[0x14..0x18].copy_from_slice(&name.to_le_bytes());
+        // The high bit names the record's own tier library; the base
+        // catalogue resolves the same slot in the shared one.
+        model[0x14..0x18].copy_from_slice(&(name | 0x8000_0000).to_le_bytes());
         model[0x18..0x1c].copy_from_slice(&description.to_le_bytes());
         // The compact value word: 0xC001 is one unit of 1440 copper.
         model[0x1e..0x20].copy_from_slice(&0xC001u16.to_le_bytes());
@@ -557,7 +563,7 @@ mod tests {
         let facts = cat.card_facts(7).unwrap();
         assert_eq!(facts.name, "Rusty Sword");
         assert_eq!(facts.description, "It is old.");
-        assert_eq!((facts.name_id, facts.model_flags), (name, 2));
+        assert_eq!((facts.name_id, facts.model_flags), (name | 0x8000_0000, 2));
         assert_eq!(facts.coins, 1440);
         assert_eq!((facts.condition, facts.skill), (200, 0x42));
         assert!(facts.container && facts.model && !facts.map && facts.sockets);
