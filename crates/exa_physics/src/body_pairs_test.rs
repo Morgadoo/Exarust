@@ -1212,3 +1212,28 @@ fn a_placed_bodys_contact_offsets_are_read_and_cleared() {
     a.clear_placed_offsets();
     assert_eq!(a.placed_offsets(0), Some([Vec3::ZERO; 4]));
 }
+
+/// A placed pair's mesh hit also takes the static path and the placed
+/// callback: the contact is recorded with no impact hit, the placed side
+/// moves and its offset array holds the opposite push.
+#[test]
+fn a_placed_mesh_hit_records_an_offset_and_no_hit() {
+    let mut a = ball(1, 11, Vec3::new(0.05, 0.0, 0.0), 0.1);
+    let mut b = mesh_side(wall());
+    a.settle_for(3);
+    let (mut pair, mut touch) = fresh();
+    let before = a.parts[0].positions;
+    collide(
+        &mut a.parts[0],
+        &mut b.parts[0],
+        &mut pair,
+        &mut touch,
+        Some(true),
+    );
+    assert!(touch.met, "{touch:?}");
+    assert_eq!(touch.hits, 0);
+    assert_eq!(pair.count, 1);
+    assert!(a.parts[0].positions[0].x > before[0].x);
+    let offsets: Vec<Vec3> = a.placed_offsets(0).unwrap().to_vec();
+    assert!(offsets.iter().any(|o| o.length() > 0.0), "{offsets:?}");
+}

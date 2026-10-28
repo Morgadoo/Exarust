@@ -812,9 +812,15 @@ pub const WIDE_COLLIDER: u32 = 0x8000_0000;
 /// it belongs to (a body skips the node that is its own node's parent).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct StaticBody {
+    /// The centre of the collider node's box (cm, world).
     pub centre_cm: Vec3,
+    /// Its half extents (cm, world-aligned).
     pub half_cm: Vec3,
+    /// Its level mask (1, or 1|4), plus [`WIDE_COLLIDER`] once inserted
+    /// over more than its centre cell.
     pub mask: u32,
+    /// The scene node the collider belongs to (a body skips its own
+    /// parent node's colliders).
     pub node: u32,
 }
 
@@ -935,7 +941,10 @@ impl StaticGrid {
 /// list keeps it: its id and the grid index it was last bucketed in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SimObject {
+    /// The object's id in its owner's list.
     pub id: usize,
+    /// The cell index it is bucketed in (`z · columns + x`), or the park
+    /// index `columns + 1` after an overflow.
     pub cell: i32,
 }
 
