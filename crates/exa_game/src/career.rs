@@ -420,6 +420,17 @@ impl Company {
         trade::update_stock(&mut self.stock, kinds, rank, rolls, world)
     }
 
+    /// Fill the shop's shelf on its first stock, as the hub's shop click
+    /// does when the shelf is empty. A shelf that already has items is left
+    /// alone and no report is returned.
+    pub fn first_shop_stock(
+        &mut self,
+        rolls: [u32; 2],
+        world: &mut impl ShopWorld,
+    ) -> Option<StockReport> {
+        trade::ensure_first_stock(&mut self.stock, rolls, world)
+    }
+
     /// Apply a confirmed trade (`trade::settle`) through coin dwords: the
     /// copper due leaves the purse, none left below 1, and the two tallies
     /// add to the copper spent and earned [guess: which tally is which].

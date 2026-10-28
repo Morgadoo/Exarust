@@ -217,7 +217,14 @@ fn enter_loaded_hub(
         hub.manager_placed = false;
         hub.fall = None;
         hub.roll = entry.roll;
-        if let Some(index) = clear_physician_weapon(&mut career) {
+        // Only a physician clears the weapon object at the hub's spot.
+        if career
+            .company
+            .roster
+            .iter()
+            .any(|member| member.profession == crate::career::Profession::Physician)
+            && let Some(index) = clear_physician_weapon(&mut career)
+        {
             info!("arena hub: cleared the physician's weapon object {index}");
         }
         commands.insert_resource(exa_audio::LevelMusic(entry.music.name.to_ascii_lowercase()));
@@ -335,6 +342,14 @@ pub fn plan_launch_at(
     if career.matches_today >= crate::arena_match::MATCHES_PER_DAY {
         return None;
     }
+    // The match start takes the event's entry fee from the purse and adds
+    // it to the day's spending; a short purse refuses the match.
+    let fee = board.selected.fee;
+    if career.company.copper < fee {
+        return None;
+    }
+    career.company.copper -= fee;
+    career.company.spent = career.company.spent.saturating_add(fee);
     let template = board.match_id() as i32;
     let start = crate::arena_match::start_match(&mut career.picks, template, counter, alternative);
     let spawn_at = crate::arena_match::ARENA_MAPS
@@ -492,6 +507,22 @@ fn hub_clicks(
                                 let alternative =
                                     flow.as_deref().is_some_and(|flow| flow.alternative_music);
                                 let board = windows.board.clone();
+                                // The first Begin that enters the manager
+                                // shows the tip and waits for a second press.
+                                let manager_entered =
+                                    board.as_ref().is_some_and(|board| board.team.contains(&0));
+                                if crate::arena_match::warn_manager(
+                                    &mut career.warn_manager,
+                                    manager_entered,
+                                ) {
+                                    info!("arena begin: the manager is entered; warning shown");
+                                    continue;
+                                }
+                                // Before a match the first unhealthy
+                                // specialist leaves the company.
+                                if let Some(departure) = career.company.leave_before_match() {
+                                    info!("arena begin: specialist left ({departure:?})");
+                                }
                                 if let Some(board) = board
                                     && let Some(launch) =
                                         plan_launch(&mut career, &board, alternative)
@@ -1035,6 +1066,22 @@ mod tests {
         assert_eq!((plan.level, plan.outfit_level), (0, 0));
         assert_eq!(launch.fighters[0].team, 2);
         assert_eq!(launch.fighters[1].body, LaunchedBody::Player);
+        // The match start took the Duel's 3 copper entry fee.
+        assert_eq!(career.company.copper, 340);
+        assert_eq!(career.company.spent, 3);
+    }
+
+    #[test]
+    fn a_short_purse_refuses_the_match_and_keeps_the_coins() {
+        let mut career = crate::hub_windows::ArenaCareer::default();
+        career.company.copper = 2;
+        let board = career.board();
+        assert_eq!(
+            plan_launch_at(&mut career, &board, false, 0x1234_5678),
+            None
+        );
+        assert_eq!(career.company.copper, 2);
+        assert_eq!(career.company.spent, 0);
     }
 
     #[test]

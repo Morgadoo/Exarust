@@ -398,11 +398,33 @@ pub fn paint_label(
     font_texture: Option<(u16, u16)>,
     label: &str,
 ) -> Painted {
+    paint_label_ink(rect, style, unit, palette, font, font_texture, label, None)
+}
+
+/// Paints a label record with a caller's ink; `None` is the skin's own text
+/// colour. The roster's name cells use their role's ink this way.
+#[allow(clippy::too_many_arguments)]
+pub fn paint_label_ink(
+    rect: GuiRect,
+    style: u32,
+    unit: i32,
+    palette: &SkinPalette,
+    font: &GuiFont,
+    font_texture: Option<(u16, u16)>,
+    label: &str,
+    ink: Option<[u8; 4]>,
+) -> Painted {
     let mut painted = Painted::default();
     if let Some(texture) = font_texture {
         let text = label.as_bytes();
         let origin = caption_origin(rect, style, font, text, palette, unit);
-        painted.push(caption_layer(font, texture, text, origin, palette.text[6]));
+        painted.push(caption_layer(
+            font,
+            texture,
+            text,
+            origin,
+            ink.unwrap_or(palette.text[6]),
+        ));
     }
     painted
 }

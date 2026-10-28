@@ -95,7 +95,7 @@ pub const ARENA_MAPS: [ArenaMap; 12] = [
     map("arena1", [0.0, 0.0, 300.0], 0.0, false, false),
     map("arena2", [0.0, 0.0, 300.0], 0.3, false, false),
     map("arena3", [-300.0, 0.0, 300.0], 0.0, false, false),
-    map("arena4", [-1500.0, 0.0, -450.0], 0.6, false, false),
+    map("arena4", [-1500.0, 0.0, -450.0], 0.2, false, false),
     map("arena5", [-300.0, 0.0, -300.0], 0.0, false, false),
     map("arena6", [300.0, 0.0, 300.0], 0.0, false, false),
     map("arena7", [0.0, 0.0, 0.0], 0.0, false, false),
@@ -1122,7 +1122,7 @@ mod tests {
         assert_eq!(ARENA_MAPS[3].name, "arena4");
         assert_eq!(ARENA_MAPS[3].spawn, [-1500.0, 0.0, -450.0]);
         assert_eq!(ARENA_MAPS[1].view_amount.to_bits(), 0x3e99_999a);
-        assert_eq!(ARENA_MAPS[3].view_amount.to_bits(), 0x3f19_999a);
+        assert_eq!(ARENA_MAPS[3].view_amount.to_bits(), 0x3e4c_cccd);
         let late: Vec<_> = ARENA_MAPS.iter().map(|a| a.late_draw).collect();
         assert_eq!(late.iter().filter(|l| **l).count(), 4);
         assert!(!ARENA_MAPS[11].late_draw);

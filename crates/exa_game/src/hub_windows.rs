@@ -81,6 +81,9 @@ pub struct ArenaCareer {
     pub venue_items: Vec<crate::arena_spawn::PlacedItem>,
     /// The roll the window actions draw from.
     pub roll: u32,
+    /// The manager-entry warning is still armed: the first Begin that
+    /// enters the manager shows the tip and waits for a second press.
+    pub warn_manager: bool,
 }
 
 impl Default for ArenaCareer {
@@ -105,6 +108,7 @@ impl Default for ArenaCareer {
             merchant_stock: Vec::new(),
             venue_items: Vec::new(),
             roll: 0,
+            warn_manager: true,
         }
     }
 }
@@ -512,6 +516,22 @@ fn paint_text(
     }
 }
 
+fn paint_text_ink(
+    painted: &mut gui_paint::Painted,
+    rect: GuiRect,
+    text: &str,
+    ink: Option<[u8; 4]>,
+    unit: i32,
+    textures: &GuiTextures,
+) {
+    let palette = gui_paint::palette();
+    let (font, size) = screen_font(textures, unit);
+    for layer in gui_paint::paint_label_ink(rect, 0, unit, &palette, &font, size, text, ink).layers
+    {
+        painted.push(layer);
+    }
+}
+
 fn paint_panel(painted: &mut gui_paint::Painted, rect: GuiRect, unit: i32) {
     let palette = gui_paint::palette();
     for layer in gui_paint::paint_panel(rect, unit, &palette, gui_paint::FORM_ATTRIBUTES, 0).layers
@@ -660,10 +680,11 @@ fn paint_row(
     unit: i32,
     textures: &GuiTextures,
 ) {
-    paint_text(
+    paint_text_ink(
         painted,
         GuiRect::new(left, y, 0x84, ROW_HEIGHT),
         &text.name.text,
+        text.name.ink,
         unit,
         textures,
     );

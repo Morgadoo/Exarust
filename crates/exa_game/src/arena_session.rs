@@ -24,7 +24,8 @@
 //! Evidence: the arena round result, end screen Continue, forfeit, next
 //! round and return-to-hub routines, read from `Exanima.exe` 0.9.5.
 
-use crate::arena_match::MatchState;
+use crate::arena_log::ArenaLog;
+use crate::arena_match::{CompanyRecords, Finish, MatchState, health_word, return_to_hub};
 use crate::arena_spawn::{GenericPlan, generic_plan};
 use crate::match_layout::{NextRound, next_round};
 
@@ -210,6 +211,120 @@ pub fn regenerate_round(level: i32, tier: i32, losses: i32, fighter_dead: bool) 
     }
 }
 
+/// Resolve every company body whose health fell under 0.01 and was not
+/// already resolved, before the end screen or the return to the hub.
+///
+/// The manager's fatal fall is the permadeath branch; a hired fighter's is
+/// logged and counted, or logged as saved when the fall was not fatal. The
+/// body is marked resolved either way. The returned indices are the bodies
+/// this pass resolved, in scene order.
+pub fn resolve_dead_bodies(
+    fighters: &mut [crate::arena_match::SceneFighter],
+    physician: bool,
+    log: &mut ArenaLog,
+    deaths: &mut u32,
+) -> Vec<usize> {
+    let mut resolved = Vec::new();
+    for (index, fighter) in fighters.iter_mut().enumerate() {
+        if !fighter.company || fighter.resolved || !(fighter.health < 0.01) {
+            continue;
+        }
+        let fall =
+            crate::arena_match::resolve_fall(fighter.health, fighter.max, physician, fighter.id);
+        crate::arena_match::log_fall(log, fall, fighter.id, fighter.name, deaths);
+        fighter.resolved = true;
+        resolved.push(index);
+    }
+    resolved
+}
+
+/// One body whose health the return writes back into its record.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ReturnFighter {
+    /// The body carries the match-participant flag: a company fighter.
+    pub company: bool,
+    pub health: f32,
+    pub max: f32,
+    /// The record's health word after the write.
+    pub word: Option<u16>,
+}
+
+/// What the return to the hub did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MatchReturn {
+    /// Copper the win paid.
+    pub paid: u32,
+    /// Company bodies whose health words were written.
+    pub healths_written: usize,
+    /// The day's tournament work.
+    pub day: HubDayChecks,
+    /// The day's match count after the return.
+    pub matches_today: u32,
+}
+
+/// Come back to the hub after a match.
+///
+/// Every company body's health is written to its record as a word (0 at no
+/// health, else the share of the maximum times 65535 rounded to even). The
+/// result is booked: outside a tournament a win pays the prize and logs it,
+/// a loss and a forfeit log theirs; the records count the match. On a
+/// tournament day the day's checks run: with an entered event the unfit are
+/// dropped and the pending events' rivals reassigned, otherwise the day's
+/// match count rises.
+#[allow(clippy::too_many_arguments)]
+pub fn settle_return(
+    finish: Finish,
+    template: i32,
+    tournament: bool,
+    prize: u32,
+    fighters: &mut [ReturnFighter],
+    records: &mut CompanyRecords,
+    log: &mut ArenaLog,
+    day: u32,
+    any_entry: bool,
+    matches_today: u32,
+) -> MatchReturn {
+    let mut written = 0;
+    for fighter in fighters.iter_mut().filter(|fighter| fighter.company) {
+        fighter.word = Some(health_word(fighter.health, fighter.max));
+        written += 1;
+    }
+    let paid = return_to_hub(records, log, finish, template, tournament, prize).prize;
+    let checks = hub_day_checks(day, any_entry);
+    let matches_today = if checks.count_match {
+        matches_today.wrapping_add(1)
+    } else {
+        matches_today
+    };
+    MatchReturn {
+        paid,
+        healths_written: written,
+        day: checks,
+        matches_today,
+    }
+}
+
+/// The participant list a saved lineup starts with.
+///
+/// The list has the match's participant count. It is filled from the
+/// employees after the manager (index 0), taking every combatant — a class
+/// below 4 — in order until the list is full. A short staff leaves the rest
+/// zeroed, as the original's uninitialised slots would.
+pub fn meet_participants(count: usize, staff: &[(i32, u8)]) -> Vec<i32> {
+    let mut list = vec![0; count];
+    let mut filled = 0;
+    for &(id, class) in staff.iter().skip(1) {
+        if filled >= count {
+            break;
+        }
+        if class < 4 {
+            list[filled] = id;
+            filled += 1;
+        }
+    }
+    list
+}
+
 /// The hub-return day's tournament work.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HubDayChecks {
@@ -344,6 +459,128 @@ mod tests {
             regenerate_round(3, 1, 2, false).company,
             NextRound::FreshOpponent
         );
+    }
+
+    #[test]
+    fn the_end_screens_pass_resolves_each_fallen_company_body_once() {
+        use crate::arena_match::{LOG_SAVED, SceneFighter};
+        let mut bytes = [0u8; 16];
+        bytes[..3].copy_from_slice(b"Ash");
+        let mut scene = [
+            SceneFighter {
+                team: 1,
+                dead: true,
+                company: true,
+                resolved: false,
+                health: -0.1,
+                max: 0.25,
+                id: 2,
+                name: Some(bytes),
+                manager: false,
+            },
+            SceneFighter {
+                team: 1,
+                dead: true,
+                company: true,
+                resolved: true,
+                health: 0.0,
+                max: 0.25,
+                id: 3,
+                name: None,
+                manager: false,
+            },
+            SceneFighter {
+                team: 1,
+                dead: true,
+                company: true,
+                resolved: false,
+                health: 0.005,
+                max: 0.25,
+                id: 4,
+                name: None,
+                manager: false,
+            },
+        ];
+        let mut log = ArenaLog::default();
+        let mut deaths = 0;
+        let resolved = resolve_dead_bodies(&mut scene, true, &mut log, &mut deaths);
+        assert_eq!(resolved, vec![0, 2]);
+        assert_eq!(deaths, 1);
+        assert_eq!(log.records.len(), 2);
+        assert_eq!(log.records[1].id, LOG_SAVED);
+        assert!(scene.iter().all(|fighter| fighter.resolved));
+        // A second pass resolves nobody.
+        assert!(resolve_dead_bodies(&mut scene, true, &mut log, &mut deaths).is_empty());
+    }
+
+    #[test]
+    fn the_return_writes_healths_books_the_result_and_counts_the_day() {
+        let mut fighters = [
+            ReturnFighter {
+                company: true,
+                health: 0.25,
+                max: 0.5,
+                word: None,
+            },
+            ReturnFighter {
+                company: false,
+                health: 0.1,
+                max: 0.5,
+                word: None,
+            },
+        ];
+        let mut records = CompanyRecords::default();
+        let mut log = ArenaLog::default();
+        let out = settle_return(
+            Finish::Won,
+            1,
+            false,
+            12,
+            &mut fighters,
+            &mut records,
+            &mut log,
+            3,
+            false,
+            1,
+        );
+        assert_eq!(out.paid, 12);
+        assert_eq!(out.healths_written, 1);
+        assert_eq!(fighters[0].word, Some(32_768));
+        assert_eq!(fighters[1].word, None);
+        assert_eq!(records.matches_won, 1);
+        assert_eq!(log.records.len(), 1);
+        assert_eq!(out.matches_today, 2);
+        // A tournament day with an entry keeps the count and drops the
+        // unfit instead; the tournament itself is not booked in the log.
+        let mut records = CompanyRecords::default();
+        let mut log = ArenaLog::default();
+        let out = settle_return(
+            Finish::Won,
+            9,
+            true,
+            0,
+            &mut [],
+            &mut records,
+            &mut log,
+            7,
+            true,
+            1,
+        );
+        assert!(out.day.drop_unfit);
+        assert!(out.day.assign_round_ids);
+        assert_eq!(out.matches_today, 1);
+        assert_eq!(out.paid, 0);
+        assert!(log.records.is_empty());
+    }
+
+    #[test]
+    fn a_saved_lineup_takes_the_combatants_after_the_manager() {
+        let staff = [(9, 0), (1, 0), (2, 4), (3, 1), (4, 0)];
+        assert_eq!(meet_participants(3, &staff), vec![1, 3, 4]);
+        assert_eq!(meet_participants(5, &staff), vec![1, 3, 4, 0, 0]);
+        assert_eq!(meet_participants(0, &staff), Vec::<i32>::new());
+        // The manager is never taken even when no one else is on the books.
+        assert_eq!(meet_participants(1, &[(9, 0)]), vec![0]);
     }
 
     #[test]
