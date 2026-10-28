@@ -224,10 +224,11 @@ after; a light keeps its slot from the previous frame where it can and the
 rest fill the first empty slot of their group. A light new to its slot
 writes all three `vec4`s: the position is the light's vector for its kind,
 the colour is its record's linear colour times
-its intensity, `2/π`, `1/SdwSmps`, `1 − dimmer` and the exposure, all in
-single precision in that order; `w` is
-`0.8/radius`; the shape is `(softness + 1)·quality·0.005` (`0.003` under
-`FastLgt`, and `softness·0.5·0.005` for a sun-like light) and the vertical
+its intensity, then `2/π / SdwSmps` (divided in double and narrowed),
+then `(1 − dimmer)·exposure` in single precision; `w` is
+`0.8/radius`; the shape is `(softness + 1)·(quality·0.005)` with the step
+in double and narrowed (`0.003` under `FastLgt`), and for a sun-like light
+`softness·0.5` in single precision times the double `0.005`, narrowed and the vertical
 shaping `(y, z, w)` when the node's shadow bits are exactly `0x200`, else
 `(1, 1, 1)`; the position's `w` is `(0.97 + E)/(radius · scene
 light scale)`, where `E` is a light-record field distinct from the copied

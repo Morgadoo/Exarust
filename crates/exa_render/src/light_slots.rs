@@ -245,10 +245,10 @@ impl DrawLightSlots {
     }
 
     /// The filter radius a light's softness gets: `Q · 0.005`, or `Q ·
-    /// 0.003` under `FastLgt`, both in single precision.
+    /// 0.003` under `FastLgt`, both in double precision and narrowed.
     fn filter_radius(&self) -> f32 {
         let base = if self.scene.fast_light { 0.003 } else { 0.005 };
-        self.scene.quality_scale * base
+        (f64::from(self.scene.quality_scale) * base) as f32
     }
 
     /// The position's `w` of a light: the sun's own value, else `(0.97 +
@@ -351,9 +351,7 @@ impl DrawLightSlots {
                 self.ids[slot] = Some(light.id);
                 self.set_index(light.id, slot as i32);
                 let taps = self.scene.shadow_samples.max(1);
-                // The engine's colour normalisation is its single-precision
-                // `2/π` constant over the tap count.
-                let normalise = 0.636_619_75f32 / taps as f32;
+                let normalise = (0.636_619_772_367_581_4f64 / f64::from(taps)) as f32;
                 let dim = (1.0 - light.dimmer) * self.scene.exposure;
                 self.uniforms[slot].colour = [
                     light.direct[0] * normalise * dim,
@@ -364,7 +362,7 @@ impl DrawLightSlots {
                 self.uniforms[slot].position[..3].copy_from_slice(&light.position);
                 self.uniforms[slot].position[3] = self.depth_scale(light);
                 self.uniforms[slot].shape[0] = if light.kind == SlotKind::Sun {
-                    light.softness * 0.5 * 0.005
+                    ((light.softness * 0.5) as f64 * 0.005) as f32
                 } else {
                     (light.softness + 1.0) * filter
                 };

@@ -815,14 +815,20 @@ impl Default for LightInputs {
     }
 }
 
-/// The reciprocal of π doubled, the light colour's normalisation.
-const TWO_OVER_PI: f32 = 0.636_619_75;
+/// The reciprocal of π doubled, the light colour's normalisation: a double
+/// constant divided by the tap count in double and narrowed.
+const TWO_OVER_PI: f64 = std::f64::consts::FRAC_2_PI;
+
+/// `2/π` over the shadow tap count, in double precision and narrowed.
+fn colour_normalise(shadow_samples: u32) -> f32 {
+    (TWO_OVER_PI / f64::from(shadow_samples.max(1))) as f32
+}
 
 impl LightUniform {
     /// A point or spot light: `position.w` is the cube map's depth scale,
     /// `colour.w` is `0.8/radius` (the attenuation's inverse reach).
     pub fn point(input: &LightInputs) -> Self {
-        let normalise = TWO_OVER_PI / input.shadow_samples.max(1) as f32;
+        let normalise = colour_normalise(input.shadow_samples);
         let dim = (1.0 - input.dimmer) * input.exposure;
         let colour = [
             crate::material::linear(input.colour[0]) * input.intensity * normalise * dim,
@@ -834,7 +840,10 @@ impl LightUniform {
                 0.0
             },
         ];
-        let filter = if input.fast_light { 0.003 } else { 0.005 };
+        // The softness filter step is `Q · 0.005` (`0.003` under `FastLgt`)
+        // in double and narrowed; with the quality scale 1 that is the f32
+        // nearest the step.
+        let filter = (if input.fast_light { 0.003f64 } else { 0.005 }) as f32;
         Self {
             position: [
                 input.position[0],
@@ -855,9 +864,8 @@ impl LightUniform {
     /// A directional light: `position.xyz` is the direction, its `w` the
     /// depth scale, and the filter radius is half the softness's 0.005 step.
     pub fn directional(input: &LightInputs) -> Self {
-        let normalise = TWO_OVER_PI / input.shadow_samples.max(1) as f32;
+        let normalise = colour_normalise(input.shadow_samples);
         let dim = (1.0 - input.dimmer) * input.exposure;
-        let filter = if input.fast_light { 0.003 } else { 0.005 };
         Self {
             position: [
                 input.position[0],
@@ -876,7 +884,9 @@ impl LightUniform {
                 },
             ],
             shape: [
-                input.softness * 0.5 * filter,
+                // `softness · 0.5` in single precision, then the double
+                // 0.005 step (a sun-like light ignores `FastLgt`).
+                (f64::from(input.softness * 0.5) * 0.005) as f32,
                 input.shaping.unwrap_or([1.0; 3])[0],
                 input.shaping.unwrap_or([1.0; 3])[1],
                 input.shaping.unwrap_or([1.0; 3])[2],
@@ -1392,5 +1402,27 @@ mod tests {
             ..LightInputs::default()
         });
         close(sun.shape[0], 0.5 * 0.5 * 0.005);
+    }
+
+    #[test]
+    fn light_colour_and_sun_radius_go_through_double() {
+        // Seven taps: `(2/π)/7` in double narrows to 0.09094568, one ulp
+        // above the single-precision quotient 0.090945676.
+        let light = LightUniform::point(&LightInputs {
+            intensity: 1.0,
+            shadow_samples: 7,
+            ..LightInputs::default()
+        });
+        assert_eq!(light.colour[0], 0.090_945_68);
+        assert_ne!(light.colour[0], 0.636_619_75f32 / 7.0);
+        // Softness 2.1: `2.1·0.5` in single, times the double 0.005, gives
+        // 0.00525 where an all-single product gives 0.0052499995; FastLgt
+        // does not change a sun-like light's radius.
+        let sun = LightUniform::directional(&LightInputs {
+            softness: 2.1,
+            fast_light: true,
+            ..LightInputs::default()
+        });
+        assert_eq!(sun.shape[0], 0.005_25);
     }
 }
