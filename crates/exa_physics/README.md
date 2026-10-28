@@ -242,7 +242,7 @@ it had when the muscles went, the 0.05 height ease and key-flag plants
 (`limp_plant`). It is not scheduled: the original samples only a body
 whose muscles are off and which is not dead, and a dead body's tick
 samples nothing.
-A body placed into the scene takes the placement's leg snap
+The placement's leg snap is a tested rule, not yet called by the spawn
 (`Ragdoll::snap_placement`): each probe is the clip ankle plus 5·scale cm
 along the shin, a 10 cm sphere from the frame's height plus the leg's
 length is dropped 300 cm for the ground, the hits average to the

@@ -75,10 +75,8 @@ fn build_bodies(
     parents: Query<&ChildOf>,
     parts: Query<(&BodyPart, &GlobalTransform)>,
     locals: Query<&Transform>,
-    globals: Query<&GlobalTransform>,
     skinned: Query<&SkinnedPart>,
     meshes: Res<Assets<Mesh>>,
-    physics: Option<Res<exa_physics::Physics>>,
 ) {
     let Some(motions) = motions else { return };
     for (root, mut physical, mut limp, mut placed) in &mut requests {
@@ -156,17 +154,6 @@ fn build_bodies(
                 .with_rest_turns(&rest_turns)
                 .place_foot_pitches()
         };
-        let mut body = body;
-        // A living body placed by the level takes the original's placement
-        // snap: the model's own pose is its sample, the frame its root, and
-        // the legs find the ground under their stance spots and snap their
-        // IK onto it. A corpse keeps its saved pose.
-        if !corpse && let Some(physics) = physics.as_ref() {
-            let targets: Vec<Affine3A> = body.parts.iter().map(|p| p.transform()).collect();
-            let frame = globals.get(root).map_or(Affine3A::IDENTITY, |g| g.affine());
-            body.aim(frame, targets);
-            body.snap_placement(&physics.0, frame);
-        }
         let mut entity = commands.entity(root);
         entity
             .insert(body)

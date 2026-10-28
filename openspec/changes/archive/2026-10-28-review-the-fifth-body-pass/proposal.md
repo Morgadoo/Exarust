@@ -38,6 +38,7 @@ dead body's tick.
 
 ## Out of scope
 
-Carrying the floor bit through the level's colliders, applying the
+Carrying the floor bit through the level's colliders, calling the
+placement leg snap at spawn (it sank the standing player), applying the
 placement's frame height to the controller, the remaining body tick
 blocks, a reader for the adapters and the look rate.
