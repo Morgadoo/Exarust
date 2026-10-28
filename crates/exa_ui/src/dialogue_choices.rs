@@ -13,6 +13,8 @@
 //! (`docs/UI.md`, dialogue).
 
 use crate::form::{cvtss2si, cvtss2si64, ease};
+use crate::gui_font::GuiFont;
+use crate::gui_text::count_lines;
 
 /// The panel's size, in GUI units.
 pub const PANEL_WIDTH: i32 = 400;
@@ -36,6 +38,13 @@ pub struct Entry {
     pub text: String,
     /// The wrapped line count.
     pub lines: i32,
+    /// The topic number the choice starts (0: a reply of the running
+    /// conversation; 0xFFFF: the `[Other]` toggle).
+    pub topic: u32,
+    /// The branch it takes.
+    pub branch: usize,
+    /// The `[Other]` toggle.
+    pub other: bool,
 }
 
 /// The panel's constructor values.
@@ -97,6 +106,8 @@ pub struct ChoicesView {
     pub picked: i32,
     /// The clock the pick's hold ends at.
     pub pick_end: u32,
+    /// The entry list changed and the height must be laid out again.
+    pub dirty: bool,
 }
 
 /// What the input handler did.
@@ -109,6 +120,83 @@ pub struct ChoiceInput {
 }
 
 impl ChoicesView {
+    /// Adds one entry, as the dialogue unit's `say` does: the text is
+    /// measured at the panel's width less eight units and the wrapped line
+    /// count is kept. The entry list is flagged for a relayout.
+    pub fn push(
+        &mut self,
+        text: &str,
+        topic: u32,
+        branch: usize,
+        font: &GuiFont,
+        panel_width: i32,
+        unit: i32,
+    ) -> &mut Entry {
+        let lines = count_lines(font, text.as_bytes(), panel_width - unit * 8);
+        self.entries.push(Entry {
+            text: text.to_string(),
+            lines,
+            topic,
+            branch,
+            other: false,
+        });
+        self.dirty = true;
+        self.entries.last_mut().expect("just pushed")
+    }
+
+    /// Adds the `[Other]` toggle. The original appends it without measuring
+    /// its text, so its line count stays whatever the fresh slot holds (0).
+    pub fn push_other(&mut self) {
+        self.entries.push(Entry {
+            text: "[Other]".to_string(),
+            lines: 0,
+            topic: 0xFFFF,
+            branch: 0,
+            other: true,
+        });
+        self.dirty = true;
+    }
+
+    /// The panel's height for its entries: two units plus, per entry, the
+    /// font's glyph height times its lines plus one unit; at least 30 units
+    /// (17 for the narrator). A narrator panel takes the height at once and
+    /// is seated eight units above its parent's bottom; another panel
+    /// starts a 500-unit height animation from the height it draws.
+    pub fn layout(
+        &mut self,
+        font: &GuiFont,
+        unit: i32,
+        parent_height: i32,
+        narrator: bool,
+        now: u32,
+    ) {
+        if self.entries.is_empty() {
+            return;
+        }
+        let mut target = unit.wrapping_mul(2);
+        for e in &self.entries {
+            target = target
+                .wrapping_add(font.glyph.1.wrapping_mul(e.lines))
+                .wrapping_add(unit);
+        }
+        let min = unit.wrapping_mul(if narrator { 17 } else { 30 });
+        if target < min {
+            target = min;
+        }
+        if narrator {
+            self.height = target;
+            self.base = target;
+            self.target = target;
+            self.y = parent_height
+                .wrapping_sub(target)
+                .wrapping_add(unit.wrapping_mul(-BOTTOM_GAP_UNITS));
+        } else if target != self.base {
+            self.anim_end = now.wrapping_add(ANIM_MS);
+            self.base = self.height;
+        }
+        self.target = target;
+    }
+
     /// Replaces the entries and starts the height animation.
     pub fn set_entries(&mut self, entries: Vec<Entry>, target: i32, now: u32) {
         self.entries = entries;
@@ -293,10 +381,16 @@ mod tests {
                 Entry {
                     text: "One".into(),
                     lines: 1,
+                    topic: 0,
+                    branch: 0,
+                    other: false,
                 },
                 Entry {
                     text: "Two".into(),
                     lines: 2,
+                    topic: 1,
+                    branch: 0,
+                    other: false,
                 },
             ],
             target: 120,
@@ -311,6 +405,72 @@ mod tests {
         normal: 0xdc10_2030,
         normal_while_picked: 0x8000_0001,
     };
+
+    #[test]
+    fn entries_are_measured_and_the_height_follows_them() {
+        use crate::gui_font::RAYFORM_08 as FONT;
+        let mut v = ChoicesView::default();
+        let e = v.push("One", 7, 2, &FONT, PANEL_WIDTH, 4);
+        assert_eq!((e.lines, e.topic, e.branch, e.other), (1, 7, 2, false));
+        assert!(v.dirty);
+        // Ten five-byte words wrap at 368 into two lines.
+        let e = v.push(
+            "aaaa aaaa aaaa aaaa aaaa aaaa aaaa aaaa aaaa aaaa aaaa",
+            3,
+            1,
+            &FONT,
+            PANEL_WIDTH,
+            4,
+        );
+        assert_eq!(e.lines, 2);
+        v.push_other();
+        assert_eq!(
+            (
+                v.entries[2].text.as_str(),
+                v.entries[2].lines,
+                v.entries[2].topic
+            ),
+            ("[Other]", 0, 0xFFFF)
+        );
+        // Target: 8 + (16·1 + 4) + (16·2 + 4) + (16·0 + 4) = 72, under the
+        // 120 minimum.
+        v.layout(&FONT, 4, 600, false, 1000);
+        assert_eq!(v.target, 120);
+        assert_eq!(v.anim_end, 1500);
+        assert_eq!(v.base, 0);
+        // Drawing down to the target and laying out again only rebases:
+        // the old base (0) still differed, so the animation clock is set
+        // again, and the base takes the height being drawn.
+        v.height = 120;
+        v.layout(&FONT, 4, 600, false, 2000);
+        assert_eq!((v.base, v.target, v.anim_end), (120, 120, 2500));
+    }
+
+    #[test]
+    fn a_narrator_panel_takes_its_height_at_once() {
+        use crate::gui_font::RAYFORM_08 as FONT;
+        let mut v = ChoicesView::default();
+        v.push("One", 0, 0, &FONT, PANEL_WIDTH, 4);
+        // 8 + 20 = 28 → the narrator's 17-unit minimum is 68.
+        v.layout(&FONT, 4, 600, true, 1000);
+        assert_eq!((v.height, v.base, v.target), (68, 68, 68));
+        assert_eq!(v.y, 600 - 68 - 32);
+        assert_eq!(v.anim_end, 0);
+        // A long list grows past the minimum: 8 + 5·(16·2 + 4) = 188.
+        let mut v = ChoicesView::default();
+        for _ in 0..5 {
+            v.push(
+                "aaaa aaaa aaaa aaaa aaaa aaaa aaaa aaaa aaaa aaaa aaaa",
+                0,
+                0,
+                &FONT,
+                PANEL_WIDTH,
+                4,
+            );
+        }
+        v.layout(&FONT, 4, 600, true, 1000);
+        assert_eq!((v.height, v.target, v.y), (188, 188, 600 - 188 - 32));
+    }
 
     #[test]
     fn the_hit_test_walks_the_entry_bands() {

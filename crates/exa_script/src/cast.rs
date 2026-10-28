@@ -29,8 +29,8 @@ use exa_formats::roles::{
 
 use crate::builtins::ZoneMarker;
 
-/// A memory block: the words of one dialogue's nodes; `None` before any
-/// were stored.
+/// A memory block: the count word of one dialogue's nodes and one word per
+/// node; `None` before any were stored.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Memory {
     pub key: u32,
@@ -77,6 +77,17 @@ impl Relation {
     }
 }
 
+/// What a contact remembers of the other's voice: the loudest recent
+/// stimulus and the offset its decay starts from (the original's two
+/// floats beside the contact's AI pointer).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Hearing {
+    /// The loudest stimulus, already scaled by a quarter.
+    pub level: f32,
+    /// How far the level has faded before the next stimulus.
+    pub decay: f32,
+}
+
 /// An AI contact as scripts and dialogues see it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Contact {
@@ -92,6 +103,8 @@ pub struct Contact {
     /// up to 10, nothing beyond. Its meaning in the AI is not determined
     /// (a guess: how far the contact is, in metres).
     pub range: f32,
+    /// What the contact heard of the other recently.
+    pub hearing: Hearing,
 }
 
 impl Contact {
@@ -102,8 +115,33 @@ impl Contact {
             attitude: 0.0,
             state: 0,
             range: 0.0,
+            hearing: Hearing::default(),
         }
     }
+
+    /// One heard stimulus from `other`: the amount a quarter. A stimulus
+    /// louder than the level takes it and clears the decay; otherwise one
+    /// louder than the decayed level (`level − decay`) sets the decay to
+    /// `level − amount`. Both compares are ordered, so an unordered amount
+    /// or level changes nothing.
+    pub fn hear(&mut self, amount: f32) {
+        let amount = amount * 0.25;
+        if amount > self.hearing.level {
+            self.hearing.level = amount;
+            self.hearing.decay = 0.0;
+        } else if amount > self.hearing.level - self.hearing.decay {
+            self.hearing.decay = self.hearing.level - amount;
+        }
+    }
+}
+
+/// The item a character is busy with, as `ContextObj` reads it: the item's
+/// type word (`0x4000` weapons) and its object database name (`None` when
+/// the database has no name for it).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContextItem {
+    pub kind: u32,
+    pub name: Option<String>,
 }
 
 /// One character.
@@ -127,7 +165,8 @@ pub struct Character {
     pub skills: [u16; 6],
     pub actions: Vec<u32>,
     pub context_phrase: String,
-    pub context_object: Option<String>,
+    /// The item the character last handled; `ContextObj` names it.
+    pub context_item: Option<ContextItem>,
     /// AI arousal (dialogues need it low).
     pub arousal: f32,
     /// Out of action (body state flag `0x800`): ends its dialogues.
@@ -152,7 +191,7 @@ impl Character {
             skills: [0; 6],
             actions: Vec::new(),
             context_phrase: String::new(),
-            context_object: None,
+            context_item: None,
             arousal: 0.0,
             out_of_action: false,
             zones: Vec::new(),
@@ -161,6 +200,15 @@ impl Character {
 
     pub fn contact(&self, other: u32) -> Option<&Contact> {
         self.contacts.iter().find(|c| c.other == other)
+    }
+
+    /// Hear `other` say something: every contact of the speaker takes the
+    /// stimulus (the original's walk does not stop at the first match; no
+    /// contact, no hearing).
+    pub fn hear_from(&mut self, other: u32, amount: f32) {
+        for c in self.contacts.iter_mut().filter(|c| c.other == other) {
+            c.hear(amount);
+        }
     }
 
     /// The role list as the original stores it: per entry a u32 id, the

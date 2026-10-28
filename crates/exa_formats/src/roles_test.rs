@@ -326,6 +326,7 @@ fn shipped_roles_and_narrator() {
     assert_eq!(db.get(43).unwrap().init_script, b"Actor.Activity = 7;");
     let narrator = Dialogue::parse(resource.get("narrator.rcd").unwrap()).unwrap();
     assert_eq!(narrator.nodes.len(), 5);
+    assert_eq!(narrator.node_count(), 5);
     assert_eq!(narrator.node(1).unwrap().title.text(), "Corlian");
     assert_eq!(narrator.node(1).unwrap().branches[0].replies.len(), 3);
 }

@@ -7,7 +7,8 @@ use exa_formats::roles::{
 };
 
 use crate::bubbles::{self, Bubbles, Phase, Speaker};
-use crate::cast::{Cast, Character, Contact};
+use crate::builtins;
+use crate::cast::{Cast, Character, Contact, ContextItem};
 use crate::dialogue::{self, Effect, Engine, Library, Scene, State};
 use crate::topics::{self, ACTIVATED, COUNTING, MemoryKey};
 
@@ -224,12 +225,23 @@ fn memory_loads_shifted_when_counts_differ() {
         key: 19,
     };
     assert_eq!(topics::load(&c, at, 3), (None, false));
-    topics::store(&mut c, at, &[7, 8, 9]);
-    assert_eq!(topics::load(&c, at, 3), (Some(vec![7, 8, 9]), true));
-    // The stored count (3) lands in node 0 and only as many words as the
+    topics::store(&mut c, at, &[3, 7, 8, 9]);
+    // Slot 0 is the count, node 1 is slot 1.
+    assert_eq!(topics::load(&c, at, 3), (Some(vec![3, 7, 8, 9]), true));
+    // The stored count (3) lands in slot 1 and only as many words as the
     // block holds are copied: the last stored word is dropped.
-    assert_eq!(topics::load(&c, at, 5), (Some(vec![3, 7, 8, 0, 0]), true));
-    assert_eq!(topics::load(&c, at, 2), (Some(vec![3, 7]), true));
+    assert_eq!(
+        topics::load(&c, at, 5),
+        (Some(vec![5, 3, 7, 8, 0, 0]), true)
+    );
+    assert_eq!(topics::load(&c, at, 2), (Some(vec![2, 3, 7]), true));
+    // A fresh conversation's buffer: the count word, then one zero a node.
+    assert_eq!(topics::fresh(3), [3, 0, 0, 0]);
+    // Opening from a block copies the stored nodes into slots 1.., no shift.
+    let block = topics::block(&c, 2, 7, 19).cloned();
+    assert_eq!(topics::from_block(block.as_ref(), 3), [3, 7, 8, 9]);
+    assert_eq!(topics::from_block(block.as_ref(), 2), [2, 7, 8]);
+    assert_eq!(topics::from_block(None, 2), [2, 0, 0]);
     let other = MemoryKey { key: 20, ..at };
     assert_eq!(topics::load(&c, other, 3), (None, true));
     assert_eq!(topics::world_time(100, 5500, 1000), 104);
@@ -277,6 +289,94 @@ fn bubbles_queue_split_and_fade() {
     assert!((f.list[0].alpha - 0.5).abs() < 1e-6);
     f.update(1250 + 1501);
     assert!(f.list.is_empty());
+}
+
+#[test]
+fn a_bubble_is_measured_placed_and_projected() {
+    // The text is wrapped at 320 and the height is lines × line height − 2.
+    let mut b = Bubbles::default();
+    b.say(Speaker::Character(7), None, b"One two", 0, None);
+    b.layout(20, |text, width| {
+        assert_eq!(*width, bubbles::BUBBLE_WIDTH);
+        *width = 123;
+        if text.len() > 7 { 2 } else { 1 }
+    });
+    assert_eq!((b.list[0].width, b.list[0].lines), (123, 1));
+    assert_eq!(b.list[0].height, 18);
+    // The layout runs once: a later call leaves the measured bubble alone.
+    b.layout(20, |_, width| {
+        *width = 9;
+        9
+    });
+    assert_eq!((b.list[0].width, b.list[0].height), (123, 18));
+
+    // A narrator line: centred and three quarters down the screen, then
+    // kept four units from the edges.
+    let view = bubbles::View {
+        width: 800,
+        height: 600,
+        glyph_height: 16,
+        camera: None,
+    };
+    let mut n = b.list[0].clone();
+    n.speaker = Speaker::Narrator;
+    n.width = 200;
+    n.height = 18;
+    Bubbles::place_bubble(&mut n, &view, None);
+    // (800 − 200) / 2 = 300; 16 + round(450) − 18 = 448.
+    assert_eq!((n.x, n.y), (300, 448));
+    // Too tall for the top margin: pulled to 4.
+    n.height = 600;
+    Bubbles::place_bubble(&mut n, &view, None);
+    assert_eq!(n.y, 4);
+    // Too wide: pushed inside the left margin.
+    n.width = 900;
+    n.height = 18;
+    Bubbles::place_bubble(&mut n, &view, None);
+    assert_eq!(n.x, 4);
+
+    // A character line: the head is raised 120 cm, taken to camera space
+    // by the rigid inverse view, then divided by the depth.
+    let camera = bubbles::Camera {
+        inverse_view: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 5.0],
+        projection: [2.0, 2.0],
+    };
+    let view = bubbles::View {
+        camera: Some(camera),
+        ..view
+    };
+    // Camera space is (x, y, z − 5); a point at (0, −120, 0) is 120 below
+    // the eye, so y = 300 − (2·600·0.5·120)/5 = −14100 and the screen y is
+    // 600 − (−14100) = 14700. The view does not flip y: the projection
+    // already returns a bottom-left origin.
+    let p = bubbles::project(&camera, &view, [0.0, -120.0, 0.0]);
+    assert_eq!(p, [400.0, 14700.0]);
+    // 60 cm right and 90 below: x = 400 + (2·800·0.5·60)/5 = 400 + 9600,
+    // y = 300 − (2·600·0.5·90)/5 = 300 − 10800, then 600 + 10500.
+    let p = bubbles::project(&camera, &view, [60.0, -90.0, 0.0]);
+    assert_eq!(p, [400.0 + 9600.0, 11100.0]);
+    // A point at or behind the camera's plane clamps to an edge: x >= 0
+    // gives the right edge, y < 0 the top (which the flip returns as 0).
+    let p = bubbles::project(&camera, &view, [0.0, -120.0, 10.0]);
+    assert_eq!(p, [800.0, 600.0]);
+    // An unordered depth is treated as behind and an unordered component
+    // fails the ordered "below zero" test: x takes the right edge and y the
+    // bottom, which the flip returns as 0.
+    let p = bubbles::project(&camera, &view, [f32::NAN, f32::NAN, f32::NAN]);
+    assert_eq!(p, [800.0, 0.0]);
+
+    // A character bubble at the screen centre: (300, 16 + 300 − 18).
+    let mut c = b.list[0].clone();
+    c.speaker = Speaker::Character(7);
+    c.width = 200;
+    c.height = 18;
+    Bubbles::place_bubble(&mut c, &view, Some([0.0, -120.0, 0.0]));
+    assert_eq!((c.x, c.y), (300, 298));
+    // Without a head the position stays, but the margin clamp still runs.
+    c.x = 1;
+    c.y = 2;
+    Bubbles::place_bubble(&mut c, &view, None);
+    assert_eq!((c.x, c.y), (4, 4));
 }
 
 #[test]
@@ -348,10 +448,39 @@ fn an_ai_greets_and_the_topic_is_remembered() {
     let mut cast = Cast {
         characters: vec![person(GUARD, &[100], &db), person(TRAVELLER, &[1], &db)],
     };
+    cast.get_mut(GUARD)
+        .unwrap()
+        .contacts
+        .push(Contact::new(TRAVELLER));
+    cast.get_mut(TRAVELLER)
+        .unwrap()
+        .contacts
+        .push(Contact::new(GUARD));
     let mut e = Engine::default();
     let mut s = scene(&db, None, &mut cast, 0);
     assert!(e.greet(&mut s, GUARD, TRAVELLER));
     assert_eq!(e.bubbles.list[0].text, b"Halt.");
+    // "Halt." is 5 bytes: (5/2 + 20) × 0.25 = 5.5 in both directions.
+    assert_eq!(
+        s.cast
+            .get(GUARD)
+            .unwrap()
+            .contact(TRAVELLER)
+            .unwrap()
+            .hearing
+            .level,
+        5.5
+    );
+    assert_eq!(
+        s.cast
+            .get(TRAVELLER)
+            .unwrap()
+            .contact(GUARD)
+            .unwrap()
+            .hearing
+            .level,
+        5.5
+    );
     assert_eq!(e.bubbles.list[0].speaker, Speaker::Character(GUARD));
     let id = e.active[0];
     assert_eq!(e.conversations[id].as_ref().unwrap().next_at, 625);
@@ -360,6 +489,17 @@ fn an_ai_greets_and_the_topic_is_remembered() {
     let mut s = scene(&db, None, &mut cast, 626);
     e.update(&mut s);
     assert_eq!(e.bubbles.list[1].text, b"I mean no harm.");
+    // The answer is 15 bytes: (7 + 20) × 0.25 = 6.75, louder than 5.5.
+    assert_eq!(
+        s.cast
+            .get(GUARD)
+            .unwrap()
+            .contact(TRAVELLER)
+            .unwrap()
+            .hearing
+            .level,
+        6.75
+    );
     assert_eq!(e.conversations[id].as_ref().unwrap().next_at, 626 + 875);
     let mut s = scene(&db, None, &mut cast, 1502);
     e.update(&mut s);
@@ -378,7 +518,7 @@ fn an_ai_greets_and_the_topic_is_remembered() {
     // when the conversation ended (1005).
     let words =
         topics::block(cast.get(GUARD).unwrap(), TRAVELLER, 1, 100).and_then(|m| m.words.clone());
-    assert_eq!(words, Some(vec![1005]));
+    assert_eq!(words, Some(vec![1, 1005]));
     let mut s = scene(&db, None, &mut cast, 6000);
     assert!(!e.greet(&mut s, GUARD, TRAVELLER), "inside the cooldown");
     let mut s = scene(&db, None, &mut cast, 604_000);
@@ -484,6 +624,164 @@ fn the_narrator_offers_replies() {
     assert_eq!(e.bubbles.list.last().unwrap().text, b"You feel it.");
 }
 
+/// `ContextObj` names the weapon a character is busy with, or nothing.
+#[test]
+fn context_obj_names_the_item_in_hand() {
+    assert_eq!(builtins::context_object(None), "nothing");
+    // The name is lowered (ASCII capitals only) behind "a ".
+    let sword = ContextItem {
+        kind: 0x4000,
+        name: Some("Short Sword".into()),
+    };
+    assert_eq!(builtins::context_object(Some(&sword)), "a short sword");
+    // The type's masked bits decide; an empty name still gets the article,
+    // a missing one is "nothing".
+    let masked = ContextItem {
+        kind: 0x4200,
+        name: Some(String::new()),
+    };
+    assert_eq!(builtins::context_object(Some(&masked)), "a ");
+    let unnamed = ContextItem {
+        kind: 0x4000,
+        name: None,
+    };
+    assert_eq!(builtins::context_object(Some(&unnamed)), "nothing");
+    let other = ContextItem {
+        kind: 0x1000,
+        name: Some("Cap".into()),
+    };
+    assert_eq!(builtins::context_object(Some(&other)), "nothing");
+}
+
+/// Looking away from the narrator ends its conversation on the next frame.
+#[test]
+fn turning_away_ends_the_narrator() {
+    let corlian = node(
+        NODE_ENTRY,
+        "Corlian",
+        &[0],
+        vec![branch(0, &[(1, "Here lies the body.")], "", "", vec![])],
+    );
+    let narrator = graph(0, vec![corlian]);
+    let db = RoleDb { roles: vec![] };
+    let mut cast = Cast {
+        characters: vec![Character::new(PLAYER, "Ermus")],
+    };
+    let mut e = Engine::default();
+    let mut s = scene(&db, Some(&narrator), &mut cast, 0);
+    e.narrate(&mut s, name("Corlian"), 0);
+    assert_eq!(e.active.len(), 1);
+    let mut s = scene(&db, Some(&narrator), &mut cast, 10);
+    e.update(&mut s);
+    assert_eq!(e.active.len(), 1, "the narrator keeps its line");
+    e.end_narration();
+    e.update(&mut s);
+    assert!(e.active.is_empty(), "the narrator's conversation ends");
+    // A new narration is delayed while the old bubble closes; when it
+    // fires it clears the flag again.
+    e.narrate(&mut s, name("Corlian"), 0);
+    assert!(e.narrator_done);
+    // The old bubble is still up, so that request queues 500 ms too.
+    let mut s = scene(&db, Some(&narrator), &mut cast, 600);
+    e.update(&mut s);
+    assert!(e.narrator_done);
+    let mut s = scene(&db, Some(&narrator), &mut cast, 1101);
+    e.update(&mut s);
+    assert!(!e.narrator_done);
+    assert_eq!(e.active.len(), 1);
+}
+
+/// A contact keeps the loudest stimulus and the decay floor the original's
+/// hearing routine writes: a no-louder sound only raises the floor; a
+/// louder one resets it. Unordered values change nothing.
+#[test]
+fn hearing_keeps_the_loudest_and_the_floor() {
+    let mut c = Contact::new(2);
+    c.hear(22.0);
+    assert_eq!((c.hearing.level, c.hearing.decay), (5.5, 0.0));
+    // A quieter sound never lowers the peak: at a zero floor the whole
+    // level is still audible, so 2.5 changes nothing.
+    c.hear(10.0);
+    assert_eq!((c.hearing.level, c.hearing.decay), (5.5, 0.0));
+    // The AI's decay raises the floor over time; a sound louder than the
+    // decayed level (5.5 − 4 = 1.5) is heard by raising it to 2.5, which
+    // sets the floor to 5.5 − 2.5 = 3.
+    c.hearing.decay = 4.0;
+    c.hear(10.0);
+    assert_eq!((c.hearing.level, c.hearing.decay), (5.5, 3.0));
+    // A sound between the decayed level (2.5) and the peak raises it to 3.
+    c.hearing.decay = 4.0;
+    c.hear(12.0);
+    assert_eq!((c.hearing.level, c.hearing.decay), (5.5, 2.5));
+    // A louder one takes the level and clears the floor.
+    c.hear(30.0);
+    assert_eq!((c.hearing.level, c.hearing.decay), (7.5, 0.0));
+    // An unordered amount fails both ordered compares: nothing changes.
+    c.hearing.decay = 1.0;
+    c.hear(f32::NAN);
+    assert_eq!((c.hearing.level, c.hearing.decay), (7.5, 1.0));
+    // An unordered level fails them too.
+    c.hearing.level = f32::NAN;
+    c.hear(100.0);
+    assert!(c.hearing.level.is_nan());
+    assert_eq!(c.hearing.decay, 1.0);
+}
+
+/// The calm filters: a greeting takes calm class 0 only; a start or reply
+/// refuses class 0 and takes a higher class while the stored arousal is at
+/// or under its threshold (an unordered arousal counts as calm).
+#[test]
+fn the_calm_filters_read_the_class_and_arousal() {
+    let plain = node(NODE_ENTRY, "Plain", &[], vec![]).unwrap();
+    assert!(dialogue::calm_any(&plain));
+    assert!(!dialogue::calm_enough(&plain, 0.0));
+    assert!(!dialogue::calm_any(
+        &node(NODE_ENTRY | 0x10, "One", &[], vec![]).unwrap()
+    ));
+    let class1 = node(NODE_ENTRY | 0x10, "One", &[], vec![]).unwrap();
+    assert!(dialogue::calm_enough(&class1, 10.0));
+    assert!(!dialogue::calm_enough(&class1, 10.5));
+    // An unordered arousal passes.
+    assert!(dialogue::calm_enough(&class1, f32::NAN));
+    let class4 = node(NODE_ENTRY | 0x40, "Four", &[], vec![]).unwrap();
+    assert!(dialogue::calm_enough(&class4, 200.0));
+    assert!(!dialogue::calm_enough(&class4, 200.5));
+}
+
+/// A speaker's candidate record holds six lines: of eight, the draw is
+/// over the first six (seed 28 steps to 0xE0EE708D; × 6 >> 32 = 5, the
+/// sixth line, where eight candidates would give the eighth).
+#[test]
+fn six_candidate_lines_per_speaker() {
+    let texts = ["L1", "L2", "L3", "L4", "L5", "L6", "L7", "L8"];
+    let lines: Vec<(u32, &str)> = texts.iter().map(|&t| (1u32, t)).collect();
+    let greeting = node(
+        NODE_ENTRY,
+        "Greeting",
+        &[],
+        vec![branch(0, &lines, "", "", vec![])],
+    );
+    let db = RoleDb {
+        roles: vec![
+            role(
+                100,
+                0,
+                0,
+                vec![entry(0x2, 1, Some(graph(1, vec![greeting])))],
+            ),
+            role(1, 0, 0, vec![]),
+        ],
+    };
+    let mut cast = Cast {
+        characters: vec![person(GUARD, &[100], &db), person(TRAVELLER, &[1], &db)],
+    };
+    let mut e = Engine::default();
+    e.seed = 28;
+    let mut s = scene(&db, None, &mut cast, 0);
+    assert!(e.greet(&mut s, GUARD, TRAVELLER));
+    assert_eq!(e.bubbles.list[0].text, b"L6");
+}
+
 /// An AI event runs the matching node's action and clears its bit.
 #[test]
 fn events_run_their_nodes() {
@@ -532,7 +830,7 @@ fn a_relation_topic_is_activated() {
     dialogue::activate_with(&mut s, GUARD, PLAYER, name("parting"), 40, 0, 1);
     let words =
         topics::block(cast.get(GUARD).unwrap(), PLAYER, 40, 0).and_then(|m| m.words.clone());
-    assert_eq!(words, Some(vec![0, ACTIVATED | 1000]));
+    assert_eq!(words, Some(vec![2, 0, ACTIVATED | 1000]));
 }
 
 #[test]
@@ -594,7 +892,7 @@ fn ending_everything_records_and_releases() {
     assert!(e.conversations.iter().all(Option::is_none));
     let words =
         topics::block(cast.get(GUARD).unwrap(), TRAVELLER, 1, 100).and_then(|m| m.words.clone());
-    assert_eq!(words, Some(vec![1000]));
+    assert_eq!(words, Some(vec![1, 1000]));
 }
 
 #[test]
@@ -629,7 +927,7 @@ fn a_witnessed_event_activates_the_contacts_topic() {
     dialogue::witness_event(&mut s, PLAYER, 19, 7, 1, name("XAU_Memory"));
     let words =
         topics::block(cast.get(GUARD).unwrap(), PLAYER, 7, 19).and_then(|m| m.words.clone());
-    assert_eq!(words, Some(vec![ACTIVATED | 1000]));
+    assert_eq!(words, Some(vec![1, ACTIVATED | 1000]));
 }
 
 /// A broadcast reaches a witness through the relation role it holds
@@ -657,7 +955,7 @@ fn a_broadcast_reaches_a_witness_through_its_relation_role() {
     dialogue::broadcast(&mut s, PLAYER, name("DamageTaken"), |_, _| true);
     let words =
         topics::block(cast.get(GUARD).unwrap(), PLAYER, 30, 31).and_then(|m| m.words.clone());
-    assert_eq!(words, Some(vec![ACTIVATED | 1000]));
+    assert_eq!(words, Some(vec![1, ACTIVATED | 1000]));
 }
 
 /// The mood mask and mood code reproduce the original's ordered compares:
@@ -667,23 +965,11 @@ fn the_mood_mask_and_code_test_exactly() {
     use crate::dialogue::{mood, mood_code};
     let mut cast = Cast::default();
     let mut c = Character::new(1, "A");
-    c.contacts.push(Contact {
-        other: 2,
-        concern: 0.0,
-        attitude: 0.0,
-        state: 0,
-        range: 0.0,
-    });
+    c.contacts.push(Contact::new(2));
     cast.characters.push(c);
     let set = |cast: &mut Cast, f: &dyn Fn(&mut Contact)| {
         let c = cast.get_mut(1).unwrap();
-        c.contacts[0] = Contact {
-            other: 2,
-            concern: 0.0,
-            attitude: 0.0,
-            state: 0,
-            range: 0.0,
-        };
+        c.contacts[0] = Contact::new(2);
         f(&mut c.contacts[0]);
     };
 
@@ -805,7 +1091,7 @@ fn near_activation_checks_the_contact_and_files_the_word() {
         dialogue::activate_near(&mut s, PLAYER, 5, 9, 1, name("Rumour"));
     }
     let words = topics::block(cast.get(PLAYER).unwrap(), GUARD, 9, 5).and_then(|m| m.words.clone());
-    assert_eq!(words, Some(vec![ACTIVATED | 1000]));
+    assert_eq!(words, Some(vec![1, ACTIVATED | 1000]));
     // Without a target the contact's roles pick the dialogue and the word
     // is filed under entry 0, key role.
     let gossip = node(0x100, "Gossip", &[], vec![]);
@@ -823,7 +1109,7 @@ fn near_activation_checks_the_contact_and_files_the_word() {
     let mut s = scene(&db, None, &mut cast, 0);
     dialogue::activate_near(&mut s, PLAYER, 5, 0, 1, name("Gossip"));
     let words = topics::block(cast.get(PLAYER).unwrap(), GUARD, 0, 5).and_then(|m| m.words.clone());
-    assert_eq!(words, Some(vec![ACTIVATED | 1000]));
+    assert_eq!(words, Some(vec![1, ACTIVATED | 1000]));
 }
 
 /// A topic event that stores a word checks the actor's roles against the

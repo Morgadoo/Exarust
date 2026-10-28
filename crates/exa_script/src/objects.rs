@@ -13,6 +13,21 @@
 //! second; a source stays in the list while its socket still carries the
 //! charge flag, and leaves it when the socket or the flag is gone.
 //!
+//! **The glow task.** A scheduled pulse is a task with the object, its
+//! start, the fade length and the hold length; each frame it writes a level
+//! into the object's own emissive mesh (type `& 0x5f == 9`), its emissive
+//! children and its lights (type `& 0x5f == 0x41`: base intensity × level).
+//! Cancel removes every task. The task list is global and ordered.
+//!
+//! **The crystal drain.** A first pass over the player's two hand slots,
+//! every further held item and the inventory fills the source list: a
+//! crystal stack in the inventory is filed as the inventory source (kind
+//! 3), any other charged item not in a hand as a socket source (kind 4).
+//! Once per game second every source is drained in turn; containers (kind
+//! 1), one container record (kind 2), the player's inventory (kind 3) and
+//! a socketed item (kind 4) each answer whether anything changed, and a
+//! source that changed nothing is replaced by the last one.
+//!
 //! Evidence: the object-use, script-run, glow-task, revelation and crystal
 //! routines of the game unit and the drain constant (REA on `Exanima.exe`
 //! 0.9.5).
@@ -35,6 +50,12 @@ pub const CRYSTAL: u32 = 499;
 pub const DRAIN: u8 = 2;
 /// The object whose use runs a once-per-session hook.
 pub const SESSION_HOOK_OBJECT: u32 = 588;
+/// The charge flag of a socketed item's flag word (the weapon form and the
+/// apparel form each keep a flag word with a charge byte beside it).
+pub const CHARGE_FLAG: u16 = 0x10;
+/// The pulse a scripted object's use schedules: fade and hold, ms. The use
+/// passes it as the object handler does (fade 1200, hold 0).
+pub const USE_PULSE: (u32, u32) = (PULSE_FADE, 0);
 
 /// What using an object does.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -93,6 +114,10 @@ pub struct Objects {
     /// Clock (ms) of the last scripted use.
     pub last_use: u32,
     pub hook_done: bool,
+    /// The glow pulses running, oldest first.
+    pub pulses: Vec<Pulse>,
+    /// The charge sources being drained once a game second.
+    pub drain: Drain,
 }
 
 impl Objects {
@@ -105,6 +130,7 @@ impl Objects {
                     return Use::TooSoon;
                 }
                 self.last_use = now;
+                self.schedule_pulse(object, USE_PULSE.0, USE_PULSE.1, now);
                 Use::Script {
                     sound: (!sound.is_empty()).then(|| sound.chars().take(15).collect()),
                 }
@@ -122,6 +148,46 @@ impl Objects {
             }
             _ => Use::Plain,
         }
+    }
+
+    /// Queue a glow pulse for `object` (the original's task creation).
+    pub fn schedule_pulse(&mut self, object: u32, fade: u32, hold: u32, now: u32) {
+        self.pulses.push(Pulse {
+            object,
+            start: now,
+            fade,
+            hold,
+        });
+    }
+
+    /// Cancel every glow pulse (a session reset).
+    pub fn cancel_pulses(&mut self) {
+        self.pulses.clear();
+    }
+
+    /// One frame of the glow tasks: each writes its level into the targets
+    /// and ends once its time is up. On that last frame the task still
+    /// writes a level of 0, then is dropped from the list, as the task
+    /// frees itself. `lookup` answers an object's type word and its
+    /// children.
+    pub fn tick_pulses(
+        &mut self,
+        now: u32,
+        lookup: impl Fn(u32) -> (u32, Vec<GlowChild>),
+    ) -> Vec<GlowWrite> {
+        let mut writes = Vec::new();
+        self.pulses.retain(|p| {
+            let level = pulse(now.wrapping_sub(p.start), p.fade, p.hold);
+            let (kind, children) = lookup(p.object);
+            writes.extend(pulse_object_kind(
+                p.object,
+                kind,
+                &children,
+                level.unwrap_or(0.0),
+            ));
+            level.is_some()
+        });
+        writes
     }
 }
 
@@ -232,6 +298,258 @@ impl Drain {
     }
 }
 
+/// One glow pulse task: the object it drives, its start and the fade and
+/// hold lengths (ms).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Pulse {
+    pub object: u32,
+    pub start: u32,
+    pub fade: u32,
+    pub hold: u32,
+}
+
+/// A child object of a pulsing object, as the pulse walk reads it: its type
+/// word and, for a light, its base intensity.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GlowChild {
+    pub kind: u32,
+    pub base: f32,
+}
+
+impl GlowChild {
+    pub fn new(kind: u32, base: f32) -> Self {
+        Self { kind, base }
+    }
+}
+
+/// What one frame of a pulse writes.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum GlowWrite {
+    /// The object's own emissive mesh (every submesh follows it).
+    Mesh { object: u32, level: f32 },
+    /// An emissive child mesh.
+    ChildMesh {
+        object: u32,
+        child: usize,
+        level: f32,
+    },
+    /// A child light: its base intensity times the level.
+    Light {
+        object: u32,
+        child: usize,
+        intensity: f32,
+    },
+}
+
+/// The writes of one glow frame for an object of `kind` with `children`:
+/// the object's own emissive mesh when `kind & 0x5f == 9`, then each child
+/// whose type `& 0x5f` is above 8 — an emissive mesh (9) or a light (0x41,
+/// intensity = base × level). Other child types are not touched.
+pub fn pulse_object_kind(
+    object: u32,
+    kind: u32,
+    children: &[GlowChild],
+    level: f32,
+) -> Vec<GlowWrite> {
+    let mut out = Vec::new();
+    if channel(kind) == Some(Channel::Emissive) {
+        out.push(GlowWrite::Mesh { object, level });
+    }
+    for (i, child) in children.iter().enumerate() {
+        let child_kind = child.kind & 0x5f;
+        if child_kind <= 8 {
+            continue;
+        }
+        match child_kind {
+            9 => out.push(GlowWrite::ChildMesh {
+                object,
+                child: i,
+                level,
+            }),
+            0x41 => out.push(GlowWrite::Light {
+                object,
+                child: i,
+                intensity: light_intensity(child.base, level),
+            }),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// A socketed item's charge: the flag word and the charge byte beside it,
+/// in either the weapon or the apparel form.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Socket {
+    pub item: u32,
+    pub flags: u16,
+    pub charge: u8,
+}
+
+impl Socket {
+    pub fn new(item: u32, flags: u16, charge: u8) -> Self {
+        Self {
+            item,
+            flags,
+            charge,
+        }
+    }
+
+    /// One drain: two off the charge down to zero. Answers whether the
+    /// charge flag is still set (the socket stays a source).
+    pub fn drain(&mut self) -> bool {
+        if self.flags & CHARGE_FLAG == 0 {
+            return false;
+        }
+        self.charge = self.charge.saturating_sub(DRAIN);
+        true
+    }
+}
+
+/// An item stack as the container and inventory lists store it: the item
+/// id and a word whose bits 16–23 are the charge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Stack {
+    pub item: u32,
+    pub word: u32,
+}
+
+impl Stack {
+    pub fn new(item: u32, charge: u8) -> Self {
+        Self {
+            item,
+            word: u32::from(charge) << 16,
+        }
+    }
+
+    /// The stack's charge.
+    pub fn charge(&self) -> u8 {
+        ((self.word & 0x00ff_0000) >> 16) as u8
+    }
+
+    /// One drain of a crystal stack: two off the charge, clamped at zero.
+    /// Answers whether the charge was reduced (the original reports a
+    /// change only then; a stack at or below two is cleared without being
+    /// reported). A stack of another item is left alone.
+    pub fn drain(&mut self) -> bool {
+        if self.item != CRYSTAL {
+            return false;
+        }
+        let charge = self.charge();
+        if u32::from(DRAIN) < u32::from(charge) {
+            self.word = (self.word & 0xff00_ffff) | (u32::from(charge - DRAIN) << 16);
+            true
+        } else {
+            self.word &= 0xff00_ffff;
+            false
+        }
+    }
+}
+
+/// The item data the crystal drain walks, as the original's object
+/// database and inventory expose it.
+#[derive(Debug, Clone, Default)]
+pub struct Charges {
+    /// Every item's socket, by item id (the object database).
+    pub sockets: Vec<Socket>,
+    /// Every loaded container's crystal stacks.
+    pub containers: Vec<Vec<Stack>>,
+    /// One container record's stacks, by record id.
+    pub records: Vec<(u32, Vec<Stack>)>,
+    /// The player's inventory stacks.
+    pub inventory: Vec<Stack>,
+}
+
+impl Charges {
+    /// The socketed item `item`'s drain (the object database lookup).
+    fn drain_item(&mut self, item: u32) -> bool {
+        self.sockets
+            .iter_mut()
+            .find(|s| s.item == item)
+            .is_some_and(Socket::drain)
+    }
+
+    /// Every container's stacks (kind 1).
+    fn drain_containers(&mut self) -> bool {
+        let mut changed = false;
+        for list in &mut self.containers {
+            for stack in list {
+                changed |= stack.drain();
+            }
+        }
+        changed
+    }
+
+    /// One container record's stacks (kind 2).
+    fn drain_record(&mut self, id: u32) -> bool {
+        let mut changed = false;
+        if let Some((_, list)) = self.records.iter_mut().find(|(r, _)| *r == id) {
+            for stack in list {
+                changed |= stack.drain();
+            }
+        }
+        changed
+    }
+
+    /// The player's inventory stacks (kind 3).
+    fn drain_inventory(&mut self) -> bool {
+        let mut changed = false;
+        for stack in &mut self.inventory {
+            changed |= stack.drain();
+        }
+        changed
+    }
+
+    /// Drain the source once; answers whether anything changed.
+    pub fn drain(&mut self, source: Source) -> bool {
+        match source {
+            Source::Containers => self.drain_containers(),
+            Source::Container(id) => self.drain_record(id),
+            Source::Inventory => self.drain_inventory(),
+            Source::Socketed(id) => self.drain_item(id),
+        }
+    }
+}
+
+/// The player's item slots the collect pass reads: the two hand slots, the
+/// further held list and the inventory's item ids.
+#[derive(Debug, Clone, Default)]
+pub struct Slots {
+    /// The weapon slot and the other hand's item (0: empty).
+    pub hands: [u32; 2],
+    pub held: Vec<u32>,
+    pub inventory: Vec<u32>,
+}
+
+/// The collect pass: try the two hand slots, every further held item, then
+/// the inventory. A crystal stack in the inventory files the inventory
+/// source (once, as the list dedups by kind and id); any other inventory
+/// item not in a hand is tried as a socket. `drain_item` is the object
+/// database's socket drain.
+pub fn collect(
+    slots: &Slots,
+    drain_item: &mut impl FnMut(u32) -> bool,
+    add: &mut impl FnMut(Source),
+) {
+    for &item in &slots.hands {
+        if item != 0 && drain_item(item) {
+            add(Source::Socketed(item));
+        }
+    }
+    for &item in &slots.held {
+        if item != 0 && drain_item(item) {
+            add(Source::Socketed(item));
+        }
+    }
+    for &item in &slots.inventory {
+        if item == CRYSTAL {
+            add(Source::Inventory);
+        } else if item != 0 && !slots.hands.contains(&item) && drain_item(item) {
+            add(Source::Socketed(item));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -308,5 +626,193 @@ mod tests {
         // The inventory runs dry: the last source takes its place.
         d.tick(|s| s != Source::Inventory);
         assert_eq!(d.sources, [Source::Containers, Source::Socketed(5)]);
+    }
+
+    #[test]
+    fn a_used_object_schedules_its_glow() {
+        let mut o = Objects::default();
+        o.use_object(3, 7, 0, "", 5000);
+        assert_eq!(
+            o.pulses,
+            [Pulse {
+                object: 7,
+                start: 5000,
+                fade: 1200,
+                hold: 0
+            }]
+        );
+        // The level rises, holds and falls; the task ends past 2.4 s.
+        let children = vec![GlowChild::new(0x09, 0.0), GlowChild::new(0x41, 2.0)];
+        let first = o.tick_pulses(5600, |_| (0x09, children.clone()));
+        assert_eq!(
+            first,
+            [
+                GlowWrite::Mesh {
+                    object: 7,
+                    level: 0.5
+                },
+                GlowWrite::ChildMesh {
+                    object: 7,
+                    child: 0,
+                    level: 0.5
+                },
+                GlowWrite::Light {
+                    object: 7,
+                    child: 1,
+                    intensity: 1.0
+                },
+            ]
+        );
+        // At 2.4 s the level is 0; one ms later the task writes 0 a last
+        // time and is gone.
+        assert_eq!(o.tick_pulses(7400, |_| (0x09, children.clone())).len(), 3);
+        let last = o.tick_pulses(7401, |_| (0x09, children.clone()));
+        assert_eq!(
+            last[0],
+            GlowWrite::Mesh {
+                object: 7,
+                level: 0.0
+            }
+        );
+        assert_eq!(last.len(), 3);
+        assert!(o.pulses.is_empty());
+        assert!(o.tick_pulses(7402, |_| (0x09, children.clone())).is_empty());
+        o.schedule_pulse(1, 1200, 0, 0);
+        o.cancel_pulses();
+        assert!(o.pulses.is_empty());
+    }
+
+    #[test]
+    fn only_emissive_meshes_and_lights_take_a_pulse() {
+        let children = [
+            GlowChild::new(0x09, 0.0),
+            GlowChild::new(0x41, 4.0),
+            GlowChild::new(0x08, 9.0),
+            GlowChild::new(0x49, 4.0),
+        ];
+        let writes = pulse_object_kind(3, 0x29, &children, 0.25);
+        assert_eq!(
+            writes,
+            [
+                GlowWrite::Mesh {
+                    object: 3,
+                    level: 0.25
+                },
+                GlowWrite::ChildMesh {
+                    object: 3,
+                    child: 0,
+                    level: 0.25
+                },
+                GlowWrite::Light {
+                    object: 3,
+                    child: 1,
+                    intensity: 1.0
+                },
+            ]
+        );
+        // A kind that is not emissive writes its children only.
+        assert_eq!(
+            pulse_object_kind(3, 0x40, &children, 0.0),
+            [
+                GlowWrite::ChildMesh {
+                    object: 3,
+                    child: 0,
+                    level: 0.0
+                },
+                GlowWrite::Light {
+                    object: 3,
+                    child: 1,
+                    intensity: 0.0
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn socketed_and_stacked_charges_drain_two() {
+        let mut s = Socket::new(9, 0, 5);
+        assert!(!s.drain());
+        assert_eq!(s.charge, 5);
+        s.flags = CHARGE_FLAG;
+        assert!(s.drain());
+        assert_eq!(s.charge, 3);
+        assert!(s.drain());
+        assert_eq!(s.charge, 1);
+        // The socket keeps answering while its charge flag is set, even at
+        // zero: the source stays listed.
+        assert!(s.drain());
+        assert_eq!(s.charge, 0);
+        assert!(s.drain());
+        assert_eq!(s.charge, 0);
+
+        let mut stack = Stack::new(CRYSTAL, 10);
+        assert_eq!(stack.charge(), 10);
+        assert!(stack.drain());
+        assert_eq!(stack.word, 8 << 16);
+        stack.word = 3 << 16;
+        assert!(stack.drain());
+        assert_eq!(stack.charge(), 1);
+        assert!(!stack.drain());
+        assert_eq!(stack.charge(), 0);
+        // Another item is left alone.
+        let mut other = Stack::new(7, 9);
+        assert!(!other.drain());
+        assert_eq!(other.charge(), 9);
+    }
+
+    #[test]
+    fn the_drain_walks_containers_records_and_the_inventory() {
+        let mut c = Charges {
+            sockets: vec![Socket::new(4, CHARGE_FLAG, 5)],
+            containers: vec![vec![Stack::new(CRYSTAL, 6), Stack::new(1, 2)]],
+            records: vec![(9, vec![Stack::new(CRYSTAL, 4)])],
+            inventory: vec![Stack::new(CRYSTAL, 3)],
+        };
+        assert!(c.drain(Source::Containers));
+        assert_eq!(c.containers[0][0].charge(), 4);
+        assert_eq!(c.containers[0][1].charge(), 2);
+        // Two drains run a record's stack down; the second clears it
+        // without reporting a change.
+        assert!(c.drain(Source::Container(9)));
+        assert_eq!(c.records[0].1[0].charge(), 2);
+        assert!(!c.drain(Source::Container(9)));
+        assert_eq!(c.records[0].1[0].charge(), 0);
+        assert!(!c.drain(Source::Container(10)));
+        assert!(c.drain(Source::Inventory));
+        assert_eq!(c.inventory[0].charge(), 1);
+        assert!(!c.drain(Source::Inventory));
+        assert_eq!(c.inventory[0].charge(), 0);
+        assert!(c.drain(Source::Socketed(4)));
+        assert_eq!(c.sockets[0].charge, 3);
+        assert!(!c.drain(Source::Socketed(5)));
+    }
+
+    #[test]
+    fn the_collect_pass_files_hands_held_and_inventory_sources() {
+        let slots = Slots {
+            hands: [4, 8],
+            held: vec![5],
+            inventory: vec![CRYSTAL, 4, 9, 6],
+        };
+        let mut charged = vec![4u32, 5, 9];
+        let mut drains = |item: u32| {
+            let had = charged.contains(&item);
+            charged.retain(|&i| i != item);
+            had
+        };
+        let mut found = Vec::new();
+        collect(&slots, &mut drains, &mut |s| found.push(s));
+        // 4 and 8 are tried as hands (4 charged, 8 not); 5 as held; the
+        // inventory's crystal is an inventory source, 4 is already a hand,
+        // 9 and 6 are sockets (only 9 still charged).
+        assert_eq!(
+            found,
+            [
+                Source::Socketed(4),
+                Source::Socketed(5),
+                Source::Inventory,
+                Source::Socketed(9)
+            ]
+        );
     }
 }

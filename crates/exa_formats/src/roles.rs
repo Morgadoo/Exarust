@@ -539,6 +539,12 @@ impl Dialogue {
         })
     }
 
+    /// The number of node slots (empty ones included): the count word the
+    /// original reads past the actor records.
+    pub fn node_count(&self) -> u32 {
+        self.nodes.len() as u32
+    }
+
     /// The node numbered `n` (from 1).
     pub fn node(&self, n: usize) -> Option<&Node> {
         n.checked_sub(1)

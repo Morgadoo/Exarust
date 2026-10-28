@@ -10,10 +10,12 @@
 //!
 //! Memory is filed under (relation role entry, key): a role-to-role
 //! dialogue uses (the aimed-at role, the owner's role), a relation role's
-//! dialogue (the relation role, the aimed-at role). Loading pads a shorter
-//! block with zeros; when the stored count differs from the dialogue's,
-//! the stored count word itself lands in the first node slot and the
-//! stored words follow it, as in the original.
+//! dialogue (the relation role, the aimed-at role). A conversation's words
+//! are a count word (the dialogue's node count) and one word per node, node
+//! `n` at slot `n`; a stored block has the same shape. Loading pads a
+//! shorter block with zeros; when the stored count differs from the
+//! dialogue's, the stored count word itself lands in slot 1 and the stored
+//! words follow it (the last stored node word dropped), as in the original.
 //!
 //! Evidence: the topic gate, the activation updater, the memory load and
 //! store of the run-time dialogue, the cooldown table (16 words), the
@@ -167,10 +169,20 @@ pub struct MemoryKey {
     pub key: u32,
 }
 
-/// The node words of a dialogue with `count` nodes, as the run-time
-/// dialogue loads them: `Some` when the block exists (otherwise the
-/// caller keeps the words it has, zeros for a new one), and whether the
-/// holding relation-role entry exists.
+/// A new conversation's words for `count` nodes: the count word and one
+/// zero per node.
+pub fn fresh(count: usize) -> Vec<u32> {
+    let mut words = vec![0; count + 1];
+    if let Some(first) = words.first_mut() {
+        *first = count as u32;
+    }
+    words
+}
+
+/// The words of a dialogue with `count` nodes, as the run-time dialogue
+/// loads them: slot 1 is node 1. `Some` when the block exists (otherwise
+/// the caller keeps the words it has, zeros for a new one), and whether
+/// the holding relation-role entry exists.
 pub fn load(owner: &Character, at: MemoryKey, count: usize) -> (Option<Vec<u32>>, bool) {
     let Some(entry) = owner.relation(at.other).and_then(|r| r.role(at.role)) else {
         return (None, false);
@@ -178,20 +190,22 @@ pub fn load(owner: &Character, at: MemoryKey, count: usize) -> (Option<Vec<u32>>
     let Some(m) = entry.memories.iter().find(|m| m.key == at.key) else {
         return (None, true);
     };
-    let mut words = vec![0; count];
+    let mut words = fresh(count);
     let stored = m.words.as_deref().unwrap_or(&[]);
-    if stored.len() == count {
-        words.copy_from_slice(stored);
+    let saved = stored.first().copied().unwrap_or(0) as usize;
+    if saved == count {
+        let n = (count + 1).min(stored.len());
+        words[..n].copy_from_slice(&stored[..n]);
+    } else if saved < count {
+        // The stored count lands in slot 1, the stored node words follow
+        // (one short: the last is dropped) and the rest stays zero.
+        let n = saved.min(stored.len());
+        words[1..1 + n].copy_from_slice(&stored[..n]);
     } else {
-        // The original's buffer is a count word and the node words. It
-        // writes the requested count into the count word, then copies the
-        // stored block from its own count word on, as many words as the
-        // block holds (at most the requested count): node 0 gets the
-        // stored count and the stored words follow, shifted by one.
-        let shifted = std::iter::once(stored.len() as u32).chain(stored.iter().copied());
-        for (w, s) in words.iter_mut().zip(shifted).take(stored.len().min(count)) {
-            *w = s;
-        }
+        // More stored nodes than the dialogue has: the stored count and
+        // its first `count − 1` node words are copied.
+        let n = count.min(stored.len());
+        words[1..1 + n].copy_from_slice(&stored[..n]);
     }
     (Some(words), true)
 }
@@ -230,12 +244,14 @@ pub fn block(owner: &Character, other: u32, role: u32, key: u32) -> Option<&Memo
         .find(|m| m.key == key)
 }
 
-/// A new conversation's node words from a stored block: copied, padded
-/// with zeros or cut to `count` (no shift on this path).
+/// A new conversation's words from a stored block: the node words are
+/// copied into slots 1.., padded with zeros or cut to `count` (no shift on
+/// this path).
 pub fn from_block(block: Option<&Memory>, count: usize) -> Vec<u32> {
-    let mut words = vec![0; count];
+    let mut words = fresh(count);
     if let Some(stored) = block.and_then(|b| b.words.as_deref()) {
-        for (w, &s) in words.iter_mut().zip(stored) {
+        // Slot 0 of the stored block is its count; the nodes follow.
+        for (w, &s) in words[1..].iter_mut().zip(stored.get(1..).unwrap_or(&[])) {
             *w = s;
         }
     }

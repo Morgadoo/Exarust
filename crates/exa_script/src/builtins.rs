@@ -304,6 +304,22 @@ pub fn global(name: &[u8]) -> Option<Global> {
     })
 }
 
+/// The name `ContextObj` gives an item: a weapon (`kind & 0x7000` equal to
+/// `0x4000`) whose object database name is found is "a " plus that name
+/// with `A`–`Z` lowered (only ASCII capitals change); a weapon without a
+/// name, anything else, or no item is "nothing".
+pub fn context_object(item: Option<&crate::cast::ContextItem>) -> String {
+    match item {
+        Some(crate::cast::ContextItem {
+            kind,
+            name: Some(name),
+        }) if kind & 0x7000 == 0x4000 => {
+            format!("a {}", name.to_ascii_lowercase())
+        }
+        _ => "nothing".to_string(),
+    }
+}
+
 /// The `Role` object of `role` on `owner`: the role's variables, filled
 /// from the stored values as far as both go.
 pub fn role_object<H: Host>(host: &H, owner: H::Actor, role: u32, slot: usize) -> RoleObject {

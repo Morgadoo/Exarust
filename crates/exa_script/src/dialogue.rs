@@ -166,7 +166,8 @@ pub struct Conversation {
     pub id: u32,
     /// The role whose dialogue this is (`Role.` in its scripts).
     pub role: u32,
-    /// One word per node.
+    /// The node memory: the count word, then one word per node (node `n`
+    /// at slot `n`).
     pub words: Vec<u32>,
     /// The requester's arousal when opened (calm classes test it).
     pub arousal: f32,
@@ -485,19 +486,20 @@ pub fn is_player(scene: &Scene<'_>, who: Speaker) -> bool {
 }
 
 /// Whether a node passes the greeting filter: calm class 0.
-fn calm_any(node: &Node) -> bool {
+pub fn calm_any(node: &Node) -> bool {
     (node.flags & 0xF0) >> 4 == 0
 }
 
-/// Whether a node passes the calm filter: a class from 1 whose threshold
-/// the stored arousal does not exceed.
-fn calm_enough(node: &Node, arousal: f32) -> bool {
+/// Whether a node passes the calm filter: calm class 0 is refused (the
+/// predicate returns false on a zero class before any compare); a class
+/// from 1 picks a threshold the stored arousal must not exceed. An
+/// unordered arousal counts as calm, as the original's `comiss`/`jp` does.
+pub fn calm_enough(node: &Node, arousal: f32) -> bool {
     let class = ((node.flags & 0xF0) >> 4) as usize;
     if class == 0 {
         return false;
     }
     let limit = f32::from_bits(CALM[class]);
-    // An unordered arousal (NaN) passes, as the original's compare does.
     arousal.partial_cmp(&limit) != Some(std::cmp::Ordering::Greater)
 }
 
@@ -678,9 +680,7 @@ impl Host for SceneHost<'_, '_> {
             .unwrap_or_default()
     }
     fn context_object(&self, actor: u32) -> String {
-        self.character(actor)
-            .and_then(|c| c.context_object.clone())
-            .unwrap_or_else(|| "nothing".to_string())
+        builtins::context_object(self.character(actor).and_then(|c| c.context_item.as_ref()))
     }
     fn game_event(&mut self, code: u32) {
         self.scene.effects.push(Effect::GameEvent(code));
@@ -703,7 +703,7 @@ impl Host for SceneHost<'_, '_> {
             .nodes
             .iter()
             .position(|n| n.as_ref().is_some_and(|n| n.title == topic))
-            .and_then(|i| conv.words.get(i))
+            .and_then(|i| conv.words.get(i + 1))
             .map_or(0, |&w| topics::used_time(w) as i32)
     }
     fn world_time(&self) -> u32 {
@@ -734,7 +734,7 @@ impl Host for SceneHost<'_, '_> {
         if let (Some(words), _) = topics::load(c, at, graph.nodes.len()) {
             conv.words = words;
         }
-        let Some(w) = conv.words.get_mut(i) else {
+        let Some(w) = conv.words.get_mut(i + 1) else {
             return false;
         };
         if !topics::activate(w, flags, mode as u32, self.scene.world_time) {
@@ -1020,7 +1020,7 @@ pub fn witness_activate(
         };
         let mut words = topics::from_block(block.as_ref(), d.nodes.len());
         let flags = d.node(n).map_or(0, |n| n.flags);
-        if !topics::activate(&mut words[n - 1], flags, mode, scene.world_time) {
+        if !topics::activate(&mut words[n], flags, mode, scene.world_time) {
             return false;
         }
         if d.target != 0
@@ -1092,14 +1092,14 @@ fn activate_word(
         (Some(w), _) => *words = Some(w),
         (None, _) => {
             if words.is_none() {
-                *words = Some(vec![0; hit.count]);
+                *words = Some(topics::fresh(hit.count));
             }
         }
     }
     let Some(buf) = words.as_mut() else {
         return false;
     };
-    if let Some(w) = buf.get_mut(hit.index)
+    if let Some(w) = buf.get_mut(hit.index + 1)
         && topics::activate(w, hit.flags, hit.mode, hit.now)
     {
         topics::store(c, at, buf);
@@ -1585,7 +1585,7 @@ impl Engine {
                         Filter::Greeting => calm_any(n),
                         Filter::Calm => calm_enough(n, c.arousal),
                     };
-                    let word = c.words.get(i).copied().unwrap_or(0);
+                    let word = c.words.get(i + 1).copied().unwrap_or(0);
                     if !pass || !topics::available(word, n.flags, scene.world_time) {
                         continue;
                     }
@@ -1705,7 +1705,12 @@ impl Engine {
                             }
                             passed = true;
                         }
-                        // Six lines per speaker fit.
+                        // Each speaker's candidate record holds six lines
+                        // (a 104-byte record: a count and six 16-byte
+                        // entries). The original appends with no bound
+                        // check, so a seventh line overwrites the next
+                        // record; keeping the first six is a labelled
+                        // guess at the defined behaviour.
                         if buckets[s].len() < 6 {
                             buckets[s].push(line.text.clone());
                         }
@@ -1728,6 +1733,7 @@ impl Engine {
                     let due = self
                         .bubbles
                         .say(speaker, listener, &text, scene.now, scene.player);
+                    self.deliver_heard(scene.cast);
                     if let Speaker::Character(c) = speaker {
                         self.set_current(c, Some(id));
                     }
@@ -1804,7 +1810,7 @@ impl Engine {
             return;
         }
         let mut words = block.unwrap_or_else(|| conv.words.clone());
-        if let Some(w) = node.checked_sub(1).and_then(|i| words.get_mut(i)) {
+        if let Some(w) = words.get_mut(node) {
             *w = scene.world_time;
         }
         conv.words = words.clone();
@@ -1927,7 +1933,7 @@ impl Engine {
         let Some(n) = graph.node(node) else {
             return false;
         };
-        let word = conv.words.get(node - 1).copied().unwrap_or(0);
+        let word = conv.words.get(node).copied().unwrap_or(0);
         if !topics::available(word, n.flags, scene.world_time) {
             return false;
         }
@@ -1991,7 +1997,7 @@ impl Engine {
         let Some(n) = graph.node(node) else {
             return false;
         };
-        let word = conv.words.get(node - 1).copied().unwrap_or(0);
+        let word = conv.words.get(node).copied().unwrap_or(0);
         if !topics::available(word, n.flags, scene.world_time) {
             return false;
         }
@@ -2200,6 +2206,7 @@ impl Engine {
                 scene.now,
                 scene.player,
             );
+            self.deliver_heard(scene.cast);
         }
         self.panel.chosen = n + 1;
         let conv = if choice.topic < 1 {
@@ -2346,7 +2353,7 @@ impl Engine {
             vec![Some(Speaker::Narrator), Some(Speaker::Character(player))],
         );
         conv.partner = Some(player);
-        conv.words = vec![0; count];
+        conv.words = topics::fresh(count);
         conv.bind();
         self.conversations.push(Some(conv));
         let id = self.conversations.len() - 1;
@@ -2384,6 +2391,23 @@ impl Engine {
                 scene.now.wrapping_add(delay),
                 Narration::Text(text.to_vec()),
             ));
+        }
+    }
+
+    /// The player turned away from the narrator: the next frame ends every
+    /// narrator conversation. (The original's player behaviour sets the
+    /// flag; a topic pick clears it when the narrator starts again.)
+    pub fn end_narration(&mut self) {
+        self.narrator_done = true;
+    }
+
+    /// Apply the hearing stimuli the bubbles raised since the last call:
+    /// each side's contact of the other takes the amount.
+    fn deliver_heard(&mut self, cast: &mut Cast) {
+        for h in self.bubbles.heard.drain(..) {
+            if let Some(c) = cast.get_mut(h.listener) {
+                c.hear_from(h.speaker, h.amount);
+            }
         }
     }
 

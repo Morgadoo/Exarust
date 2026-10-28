@@ -370,7 +370,9 @@ its dialogs.
 
 ## Speech bubbles and the reply panel
 
-The logic is in `exa_script` (`bubbles`, `dialogue`); nothing draws it yet.
+The logic is in `exa_script` (`bubbles`, `dialogue`); `exa_ui::speech`
+turns a frame's bubbles into batches and `exa_ui::dialogue_choices` does the
+same for the reply list, but no form is painted by the running app yet.
 A spoken line shows for 1000 ms + 50 ms per byte, the narrator's under 10 s
 stretched by (2 − d/10 000), the player's halved. A speaker's new line closes
 its old bubble (fading four times as fast) and waits 375 ms past its end; a
@@ -378,9 +380,16 @@ character's line is cut at a CR and the rest follows as another bubble (the
 narrator's text is kept whole). Bubbles fade in over 300 ms (smoothstep) and
 out over 1.5 s; the narrator's waits up to a minute while its replies are
 offered and closes in a second (half a second for a new narration) once one
-is picked. In the original the box is 80 interface units wide, a
-character's sits over the head (120 cm up) and the narrator's at 75 % of
-the screen height.
+is picked. A line is wrapped at 80 interface units (320 pixels), narrowed
+to its widest wrapped line, and is as tall as its line count times the
+font's line height less two. A character's box sits over the head (120 cm
+up, taken to camera space by the rigid inverse view and projected), the
+narrator's is centred at 75 % of the screen height, and both keep four
+units from the screen's edges. The box is a rounded fill of radius three
+at alpha 128 times the fade; the narrator's is grown by four units on each
+side. The white text (alpha 160 times the fade) starts four units below
+the box's top less the glyph height and half a unit; every box is drawn
+before any text.
 
 The reply panel lists the player's lines: first the replies of a dialogue
 the partner is holding with the player, then the topics of every dialogue

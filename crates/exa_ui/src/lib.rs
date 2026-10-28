@@ -76,6 +76,7 @@ pub mod settings;
 pub mod skill;
 pub mod skill_gui;
 pub mod skin;
+pub mod speech;
 pub mod table_view;
 pub mod task_stack;
 pub mod technique_selector;
