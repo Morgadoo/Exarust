@@ -75,8 +75,8 @@ pub fn personality(
         let h = h * h;
         (1.0 - h) + h * (confidence + 2.0) * 0.333
     };
-    // The original sums (3 − r) + (3 + c), in that order.
-    let eagerness = ((3.0 - restraint) + (3.0 + confidence)) * 0.125;
+    // The original sums ((3 − r) + c) + 3, in that order.
+    let eagerness = ((3.0 - restraint) + confidence + 3.0) * 0.125;
     let spread = (unit_draw(roll) - 0.5) * 2.0;
     Personality {
         skill,
