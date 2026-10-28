@@ -1241,7 +1241,13 @@ drawing:
   reset takes one off that count only from a fallen curtain, then clears
   the state and starts a running heartbeat's fade. The compass
   is a 12-unit diamond two units plus its half from the left and bottom at
-  `round((1 − fade) · 192)`. The heartbeat's fade-out lowers its sound to
+  `round((1 − fade) · 192)`; `exa_ui::hud_extra` paints it as one square
+  turned clockwise by the camera's shown heading, its corners taking the
+  texture coordinates `(1,1)`, `(0,1)`, `(0,0)` and `(1,0)` (the picture is
+  mirrored across its vertical axis) and bilinear-filtered. The same module
+  paints the curtain as a black page at the fall's share of 255, remapped
+  to Bevy's linear blend. The status marker's glow and icon are not painted
+  yet. The heartbeat's fade-out lowers its sound to
   `0.3 · (1 − elapsed / 1000)` and stops it; the border keeps its pulse.
   The menu cursor is `round(scale · height / 1080 · 32)`, at most 128, with
   a 0.176/0.08 hotspot. The draw order is the heartbeat, a hook, then (with

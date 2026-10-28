@@ -1612,6 +1612,12 @@ impl ChaseCamera {
         cam
     }
 
+    /// The heading the camera shows this frame (rad), which the compass
+    /// turns by.
+    pub fn shown_yaw(&self) -> f32 {
+        self.shown_yaw
+    }
+
     /// The unit vector from the focus to the eye the last tick left: the
     /// shown yaw and the pitch with the wall tilt, which the original adds
     /// to its (negated) pitch and holds to 1.54 rad.

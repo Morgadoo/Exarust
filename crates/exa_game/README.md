@@ -527,7 +527,8 @@ the lift's −100000 cm limit), the
 timed list that writes only while it lowers a section or arrives; the reach's navigation region and walk-to point; the movement
 request's drag modes, the controls' gates, the key permissions and the power
 bar's 500 ms hold. A click on the player's own body shows the HUD bars for
-5000 ms; a double click on it (with Ctrl in combat mode) opens the
+5000 ms; the HUD's compass shows while the player's pack carries its usable
+item and turns with the chase camera's shown heading. a double click on it (with Ctrl in combat mode) opens the
 existing inventory screen; a double click on a corpse runs its roles'
 corpse scripts through `exa_script` (the corpse as actor 0, the player as
 actor 1) and sends their effects on, and the other windows have no form and

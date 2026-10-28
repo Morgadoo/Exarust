@@ -59,6 +59,7 @@ pub mod heartbeat;
 pub mod help_screen;
 pub mod help_system;
 pub mod hud;
+pub mod hud_extra;
 pub mod icon_atlas;
 pub mod item_view;
 pub mod line_skin;
@@ -172,6 +173,9 @@ pub use help_system::{
     parse_topics, show_tip, tip_index, tip_plan,
 };
 pub use hud::{DrawHud, HudBars};
+pub use hud_extra::{
+    COMPASS, CompassTexture, CompassView, CurtainView, compass_corners, compass_uv,
+};
 pub use line_skin::{
     LINE_SCHEME, LINE_STRIP_CAP, LineIcon, LineIconAlpha, LineIconInk, LineMetrics, LineScroll,
     LineScrollPlace, WINDOW_CORNER, WindowFrame, WindowFrameInk, WindowFramePlace, draw_line_icon,
@@ -315,6 +319,7 @@ impl Plugin for UiPlugin {
             loading::plugin,
             cursor::plugin,
             hud::plugin,
+            hud_extra::plugin,
             heartbeat::plugin,
             fade::plugin,
             gui_draw::GuiDrawPlugin,
