@@ -128,6 +128,11 @@ fn standing_the_clip_decides() {
     // Compared in double precision: the float 0.6 is past the swap.
     assert_eq!(switch(0.599), Condition::SWITCHING);
     assert_eq!(switch(0.6), Condition::SWITCHED);
+    // The swap fires once, on the tick that leaves the switching word.
+    assert!(swap_due(Condition::SWITCHING, Condition::SWITCHED));
+    assert!(!swap_due(Condition::SWITCHED, Condition::SWITCHED));
+    assert!(!swap_due(Condition::NORMAL, Condition::SWITCHED));
+    assert!(!swap_due(Condition::SWITCHING, Condition::SWITCHING));
     // An action the motion set lacks is normal.
     let none = Posture {
         motion: None,
