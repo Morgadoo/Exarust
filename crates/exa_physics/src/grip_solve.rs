@@ -25,16 +25,8 @@ use bevy::prelude::*;
 use crate::body::{BodySystems, Ragdoll, SolverStage, SolverStages};
 use crate::grip::{self, DISABLED, GripLinks, HeldGrip};
 
-/// Units: the original's links work in centimetres.
-const CM: f32 = 100.0;
 /// A pivot's softening per cm².
 const SOFTENING: f32 = 0.001;
-/// Gaps below this (m²) are left alone.
-const EPSILON2: f32 = 1.19e-11;
-/// A slack at or below this (m) is a pivot, as the limp link law reads it.
-const PIVOT_SLACK: f32 = 1.19e-9;
-/// A slack link's smoothed length does not follow a change below this (m).
-const LENGTH_EPSILON: f32 = 1.19e-9;
 
 /// One held item's links, as the solver stage reads them.
 #[derive(Debug, Clone)]
@@ -82,30 +74,15 @@ fn link_correction(
         Some(part) => holder.point_at(part, &link.on_hand)?,
         None => link.anchor?,
     };
-    let d = b - a;
-    let len2 = d.length_squared();
-    if len2 <= EPSILON2 {
-        return None;
-    }
-    let len = len2.sqrt();
-    let correction = if link.slack <= PIVOT_SLACK {
-        // The original's pivot: d·strength/(1 + 0.001·len²), with len in
-        // cm.
-        d * (link.strength / (len2 * CM * CM * SOFTENING + 1.0))
-    } else if len > link.slack {
-        link.length = link.slack;
-        d * (link.strength * (len - link.slack) / len)
-    } else {
-        // Inside the slack the limp link is a damper on its smoothed
-        // length (the grip main links' table slack starts full).
-        let old = link.length;
-        #[allow(clippy::neg_cmp_op_on_partial_ord)]
-        if !((len - old).abs() > LENGTH_EPSILON) {
-            return None;
-        }
-        link.length = old * link.smoothing + (1.0 - link.smoothing) * len;
-        d * (link.strength * (len - old) / len)
-    };
+    // The limp rigid body's own link law, with a pivot's 0.001 softening.
+    let correction = crate::body::limp_law(
+        b - a,
+        link.slack,
+        link.strength,
+        SOFTENING,
+        link.smoothing,
+        &mut link.length,
+    )?;
     correction
         .is_finite()
         .then_some((correction, link.shares.0, link.shares.1))

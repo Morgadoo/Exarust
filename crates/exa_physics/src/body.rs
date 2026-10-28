@@ -947,6 +947,44 @@ pub struct Link {
     history: (Vec3, Vec3),
 }
 
+/// The limp link law on gap `d` (the parent's point minus the part's) for
+/// a link of `slack`, `strength`, pivot `softness` and length `smoothing`,
+/// with its smoothed `length`: [`Link`]'s limp law, shared with the
+/// cross-body grip links of a held item (`crate::grip_solve`).
+pub(crate) fn limp_law(
+    d: Vec3,
+    slack: f32,
+    strength: f32,
+    softness: f32,
+    smoothing: f32,
+    length: &mut f32,
+) -> Option<Vec3> {
+    let len2 = d.length_squared();
+    // The original has no guard on a pivot's gap; here gaps under the
+    // epsilon (3.4 µm) are left alone, as they always were: closing them
+    // too only lengthens a resting limp body's settling.
+    if len2 <= LINK_EPSILON2 {
+        return None;
+    }
+    if slack <= LIMP_PIVOT_SLACK {
+        return Some(d * (strength / (len2 * CM * CM * softness + 1.0)));
+    }
+    let len = len2.sqrt();
+    if len > slack {
+        *length = slack;
+        return Some(d * ((len - slack) / len * strength));
+    }
+    let old = *length;
+    // A NaN length change is left alone too (the original's compare).
+    #[allow(clippy::neg_cmp_op_on_partial_ord)]
+    let still = !((len - old).abs() > LENGTH_EPSILON);
+    if still {
+        return None;
+    }
+    *length = old * smoothing + (1.0 - smoothing) * len;
+    Some(d * ((len - old) / len * strength))
+}
+
 impl Link {
     /// The correction of a living body's link with gap `d` (the parent's
     /// point minus the part's): a pivot closes d/(1 + 0.001|d|) (cm), a
@@ -981,30 +1019,14 @@ impl Link {
     /// × (|d| − L)/|d|; beyond the slack it takes back strength times its
     /// excess, and L is the slack.
     fn limp(&mut self, d: Vec3) -> Option<Vec3> {
-        let len2 = d.length_squared();
-        // The original has no guard on a pivot's gap; here gaps under the
-        // epsilon (3.4 µm) are left alone, as they always were: closing them
-        // too only lengthens a resting limp body's settling.
-        if len2 <= LINK_EPSILON2 {
-            return None;
-        }
-        if self.slack <= LIMP_PIVOT_SLACK {
-            return Some(d * (self.strength / (len2 * CM * CM * self.softness + 1.0)));
-        }
-        let len = len2.sqrt();
-        if len > self.slack {
-            self.length = self.slack;
-            return Some(d * ((len - self.slack) / len * self.strength));
-        }
-        let old = self.length;
-        // A NaN length change is left alone too (the original's compare).
-        #[allow(clippy::neg_cmp_op_on_partial_ord)]
-        let still = !((len - old).abs() > LENGTH_EPSILON);
-        if still {
-            return None;
-        }
-        self.length = old * self.smoothing + (1.0 - self.smoothing) * len;
-        Some(d * ((len - old) / len * self.strength))
+        limp_law(
+            d,
+            self.slack,
+            self.strength,
+            self.softness,
+            self.smoothing,
+            &mut self.length,
+        )
     }
 
     /// Starts a limp slack link's smoothed length at the gap `d`, within
