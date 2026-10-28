@@ -479,6 +479,7 @@ impl MaterialUniforms {
         // An unlit record draws emission only: the factory zeroes the
         // diffuse's colour (the alpha stays its opacity).
         if crate::shader_program::feature_key(material) & 3 == 0 {
+            // (`feature_key` is the plug-in-masked word the factory tests.)
             mat_dif[0] = 0.0;
             mat_dif[1] = 0.0;
             mat_dif[2] = 0.0;
@@ -498,11 +499,12 @@ impl MaterialUniforms {
             crate::material::linear(material.specular[2]) * material.specular_level,
         ];
         // The factory keeps the specular colour times its level for a record
-        // with the specular bit, the unscaled colour for a record with only
-        // a reflection cube, and zero otherwise.
-        let specular = if material.flags & 0x4 != 0 {
+        // whose plug-in-masked word has the specular bit, the unscaled colour
+        // for one with only the reflection bit, and zero otherwise.
+        let key = crate::shader_program::feature_key(material);
+        let specular = if key & 0x4 != 0 {
             specular
-        } else if material.flags & 0x10_0000 != 0 {
+        } else if key & 0x10_0000 != 0 {
             [
                 crate::material::linear(material.specular[0]),
                 crate::material::linear(material.specular[1]),
@@ -530,22 +532,21 @@ impl MaterialUniforms {
             gloss,
         ];
 
-        let lit = material.flags & 7 != 0;
+        // The factory tests the plug-in-masked word: its lit or specular bits
+        // decide the emissive's `w`, and the emissive doubles when `MatEmi`
+        // (`0x8`) sits beside them with the record's emissive-map bit
+        // (`0x80000`); the layer itself is not consulted there.
+        let lit = key & 7 != 0;
         let emissive = [
             crate::material::linear(material.emissive[0]),
             crate::material::linear(material.emissive[1]),
             crate::material::linear(material.emissive[2]),
         ];
-        // The factory doubles the emissive only when the plug-in-masked word
-        // keeps `MatEmi` (`0x8`) beside the lit or specular bits, and the
-        // emissive layer is there.
-        let emissive_key = crate::shader_program::feature_key(material);
-        let emissive_scale =
-            if emissive_key & 0x8 != 0 && lit && material.layer(TextureSlot::Emissive).is_some() {
-                2.0
-            } else {
-                1.0
-            };
+        let emissive_scale = if key & 0x8 != 0 && lit && key & 0x8_0000 != 0 {
+            2.0
+        } else {
+            1.0
+        };
         let mat_emi = if inputs.program == UniformProgram::Subsurface {
             [
                 linear_diffuse[0] * subsurface[0],
@@ -1240,7 +1241,7 @@ mod tests {
     }
 
     #[test]
-    fn the_emissive_doubles_only_with_the_masked_bit_and_the_layer() {
+    fn the_emissive_doubles_only_with_the_masked_bits() {
         let mut m = material();
         m.flags = 0x3 | 0x8 | 0x8_0000;
         m.emissive = [0.5, 0.5, 0.5, 1.0];
@@ -1257,6 +1258,12 @@ mod tests {
         m.flags = 0x3 | 0x8_0000;
         let u = MaterialUniforms::from_material(&m, &MaterialInputs::default());
         close(u.mat_emi[0], crate::material::linear(0.5));
+        // The factory tests the record's emissive-map bit, not the layer:
+        // with the bits and no layer the colour still doubles.
+        m.flags = 0x3 | 0x8 | 0x8_0000;
+        m.layers.clear();
+        let u = MaterialUniforms::from_material(&m, &MaterialInputs::default());
+        close(u.mat_emi[0], crate::material::linear(0.5) * 2.0);
     }
 
     #[test]
