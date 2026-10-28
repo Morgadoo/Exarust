@@ -326,6 +326,7 @@ impl Ragdoll {
             sleep: Sleep::Deep,
             simulated: false,
             fell_out: false,
+            frozen: false,
             grabs: Vec::new(),
             pieces: Vec::new(),
             triangles: Vec::new(),

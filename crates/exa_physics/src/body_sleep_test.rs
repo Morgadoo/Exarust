@@ -334,3 +334,32 @@ fn sleeping_empties_the_motion_buffers() {
         assert_eq!(p.smoothed, [Vec3::ZERO; 4]);
     }
 }
+
+/// A frozen body's step holds it where the last tick left it: moving
+/// sideways at 1 m/s, it is put back to its previous particles (no motion,
+/// no gravity, no speed band), and its countdown loses one tick a step.
+/// Thawed, it integrates again.
+#[test]
+fn a_frozen_body_holds_still_and_counts_down_by_one() {
+    let mut body = ball(Vec3::new(0.0, 5.0, 0.0));
+    body.set_velocity(Vec3::X);
+    let held = body.parts[0].previous;
+    let start = body.countdown();
+    body.freeze(true);
+    assert!(body.frozen());
+    body.tick(NONE);
+    // Held to the edge restore's rounding, which the tick's link pass runs
+    // on a frozen body as on any other.
+    for (i, h) in held.iter().enumerate() {
+        assert!(body.parts[0].positions[i].distance(*h) < 1e-6);
+        assert!(body.parts[0].previous[i].distance(*h) < 1e-6);
+    }
+    assert_eq!(body.countdown(), start - 1);
+    body.set_velocity(Vec3::X * 10.0);
+    body.tick(NONE);
+    // A fast tick does not wake it back to 256: no band is measured.
+    assert_eq!(body.countdown(), start - 2);
+    body.freeze(false);
+    body.tick(NONE);
+    assert!(body.parts[0].positions[0].y < held[0].y);
+}

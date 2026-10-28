@@ -1477,6 +1477,10 @@ pub struct Ragdoll {
     /// Its root part fell below [`FALL_OUT_HEIGHT`], where the original
     /// removes a body's node.
     fell_out: bool,
+    /// Frozen (the original's state bit 0x40): the step holds every part
+    /// at its previous particles instead of integrating it
+    /// ([`Ragdoll::freeze`]).
+    frozen: bool,
     /// The hand's grabs on its parts ([`Ragdoll::grab`]).
     grabs: Vec<Grab>,
     /// Scratch lists for the level detection, kept across ticks so a tick
@@ -2236,6 +2240,7 @@ impl Ragdoll {
             sleep: Sleep::Awake,
             simulated: false,
             fell_out: false,
+            frozen: false,
             grabs: Vec::new(),
             pieces: Vec::new(),
             triangles: Vec::new(),
@@ -2809,6 +2814,24 @@ impl Ragdoll {
     /// Ticks still to run with gravity but no inertia.
     pub fn settling(&self) -> i32 {
         self.settle
+    }
+
+    /// Freezes or thaws the body (the original's state bit 0x40). A frozen
+    /// body's step does not integrate: each part's current particles are
+    /// set to its previous ones (the original copies its oldest particle
+    /// set into both newer ones; Exarust keeps two), so it holds still
+    /// with no velocity, no gravity and no sleep band, and its countdown
+    /// loses one tick, floored at 1, as the original's root takes one tick
+    /// off its tree. The original sets the bit on a body whose node carries
+    /// the walkable-platform flag (no shipped body does) and on an item the
+    /// cursor holds in place; neither path exists in Exarust yet.
+    pub fn freeze(&mut self, frozen: bool) {
+        self.frozen = frozen;
+    }
+
+    /// Whether the body is frozen ([`Ragdoll::freeze`]).
+    pub fn frozen(&self) -> bool {
+        self.frozen
     }
 
     /// Whether the body is placed (the original's state bit 0x1000): the
@@ -3391,6 +3414,17 @@ impl Ragdoll {
         if self.placed() {
             self.clear_placed_offsets();
         }
+        if self.frozen {
+            // The original's frozen branch: the particles are put back where
+            // the last tick left them, and the tree loses one tick of its
+            // countdown (floored at 1); nothing else of the step runs.
+            for p in &mut self.parts {
+                p.start = p.previous;
+                p.positions = p.previous;
+            }
+            self.countdown = (self.countdown - 1).max(SLEEP_COUNT);
+            return;
+        }
         self.tick_countdown();
         if let Some(drive) = self.drive.as_mut() {
             drive.pin_gain = recover_pins(drive.pin_gain, drive.bearing.collapsing);
@@ -3483,8 +3517,9 @@ impl Ragdoll {
         if self.countdown <= SLEEP_COUNT {
             self.countdown = 0;
             self.sleep = Sleep::Asleep;
-            // Sleep clears the placed body's contact offset array, and the
-            // original's post-step empties its motion and smoothed buffers.
+            // The original's post-step empties its three displacement
+            // records: the motion, the placed body's contact offsets and
+            // the smoothed motion.
             self.clear_placed_offsets();
             for p in &mut self.parts {
                 p.moved = [Vec3::ZERO; 4];

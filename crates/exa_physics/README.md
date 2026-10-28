@@ -632,7 +632,12 @@ temporary state where gravity acts with no inertia (a re-placed
 character). The integration keeps the velocity by the motion band's
 retention (0.426, 0.25, 0.05 a second; nothing else damps a body), and the
 sleep countdown is the original's: 256 on fast motion, held at 30–32 on
-slow motion, two off a tick at rest.
+slow motion, two off a tick at rest. A frozen body (`Ragdoll::freeze`, the
+original's state bit 0x40) skips all of that: its step puts each part back
+on its previous particles and takes one tick off the countdown (floored at
+1). Nothing in Exarust freezes a body yet (the original does it for a
+walkable-platform node, which no shipped body has, and for an item the
+cursor holds).
 
 A limp body's links also carry the original's other kinds. A soft weld
 takes a quarter of its strength times the gap less 0.4 of its two points'
