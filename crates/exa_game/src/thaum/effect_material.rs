@@ -312,21 +312,32 @@ impl ShaderBook {
         true
     }
 
-    /// Runs the deferred releases, one slot at a time; the tendril and shell
+    /// Runs the deferred releases, one slot at a time. The tendril and shell
     /// slots share the displacement material's callback, which frees two
-    /// handles (the shader and its parameter block). Answers the handles
-    /// freed.
+    /// handles (the shader and its parameter block) and is registered once,
+    /// so releasing either frees both. Answers the handles freed.
     pub fn release(&mut self, slot: ShaderSlot) -> usize {
-        if let Some(at) = self.releasing.iter().position(|held| *held == slot) {
-            self.releasing.remove(at);
-            self.made.retain(|held| *held != slot);
-            if slot == ShaderSlot::Tendril || slot == ShaderSlot::Shell {
-                TENDRIL_HANDLES
-            } else {
-                1
-            }
+        let shares = |held: &ShaderSlot| {
+            matches!(held, ShaderSlot::Tendril | ShaderSlot::Shell)
+                && matches!(slot, ShaderSlot::Tendril | ShaderSlot::Shell)
+        };
+        if !self
+            .releasing
+            .iter()
+            .any(|held| *held == slot || shares(held))
+        {
+            return 0;
+        }
+        if matches!(slot, ShaderSlot::Tendril | ShaderSlot::Shell) {
+            self.releasing
+                .retain(|held| !matches!(held, ShaderSlot::Tendril | ShaderSlot::Shell));
+            self.made
+                .retain(|held| !matches!(held, ShaderSlot::Tendril | ShaderSlot::Shell));
+            TENDRIL_HANDLES
         } else {
-            0
+            self.releasing.retain(|held| *held != slot);
+            self.made.retain(|held| *held != slot);
+            1
         }
     }
 
@@ -779,11 +790,14 @@ mod tests {
         assert!(book.ensure(ShaderSlot::Tendril));
         assert!(!book.ensure(ShaderSlot::Tendril));
         assert!(book.ensure(ShaderSlot::Shell));
-        // The displacement material's one callback frees two handles.
+        // The displacement material's one callback frees both handles and
+        // is registered once, so either slot releases them both.
         assert_eq!(book.release(ShaderSlot::Tendril), TENDRIL_HANDLES);
         assert_eq!(book.release(ShaderSlot::Tendril), 0);
-        assert_eq!(book.releasing.len(), 1);
-        assert_eq!(book.release(ShaderSlot::Shell), TENDRIL_HANDLES);
+        assert_eq!(book.release(ShaderSlot::Shell), 0);
+        assert!(book.releasing.is_empty() && book.made.is_empty());
+        assert!(book.ensure(ShaderSlot::Force));
+        assert_eq!(book.release(ShaderSlot::Force), 1);
         assert_eq!(book.release_all(), 0);
     }
 
