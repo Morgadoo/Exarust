@@ -12,6 +12,7 @@ pub mod editor;
 pub mod environment;
 pub mod fire;
 pub mod flame;
+pub mod gi_residency;
 pub mod gi_volume;
 pub mod grid;
 pub mod grid_sets;
@@ -878,6 +879,11 @@ pub fn spawn_model_nodes(
             if node.gi_centred {
                 commands.entity(e).insert(gi_volume::GiCentredMesh);
             }
+            // A thin mesh (its first surface's material) fills the
+            // occupancy at a quarter weight.
+            if node.gi_thin {
+                commands.entity(e).insert(gi_volume::GiThinMesh);
+            }
         }
         if !node.tracks.is_empty() {
             commands
@@ -1464,6 +1470,7 @@ impl LevelLoad {
             bottom: env.floor,
             base_ambient: [env.fill[0], env.fill[1], env.fill[2]],
             grid,
+            top_slice: env.flags & exa_formats::environment::GI_TOP_SLICE != 0,
         });
         let (width, depth) =
             nav::source::grid_size(self.scene.grid.as_ref().map(|g| (g.width, g.height)));
@@ -1840,6 +1847,7 @@ mod tests {
             half_extents: Vec3::ZERO,
             gi_points: Default::default(),
             gi_centred: false,
+            gi_thin: false,
             rigid: None,
             tracks: Vec::new(),
             shadow_bias: 0,
@@ -1861,6 +1869,7 @@ mod tests {
         model.nodes[0].gi_points = std::sync::Arc::new(vec![Vec3::ZERO]);
         model.nodes[1].gi_points = std::sync::Arc::new(vec![Vec3::ZERO]);
         model.nodes[1].gi_centred = true;
+        model.nodes[0].gi_thin = true;
         let mut queue = CommandQueue::default();
         let mut world = World::new();
         {
@@ -1871,14 +1880,21 @@ mod tests {
         let mut query = world.query::<(
             Has<crate::gi_volume::GiPoints>,
             Has<crate::gi_volume::GiCentredMesh>,
+            Has<crate::gi_volume::GiThinMesh>,
         )>();
-        let (with_points, centred) = query
-            .iter(&world)
-            .fold((0, 0), |(points, centred), (has, is)| {
-                (points + has as usize, centred + is as usize)
-            });
+        let (with_points, centred, thin) =
+            query
+                .iter(&world)
+                .fold((0, 0, 0), |(points, centred, thin), (has, is, slim)| {
+                    (
+                        points + has as usize,
+                        centred + is as usize,
+                        thin + slim as usize,
+                    )
+                });
         assert_eq!(with_points, 2);
         assert_eq!(centred, 1);
+        assert_eq!(thin, 1);
     }
 
     /// A placement's node transforms change the named direct child of the

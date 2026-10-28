@@ -928,7 +928,7 @@ A fixed 248-byte record in every level file (29/29 decode;
 
 | off | type | meaning |
 |---|---|---|
-| 0x00 | u32 | flags: `0x10000` always; `0x20` on the outdoor terrain arenas (effect unknown) |
+| 0x00 | u32 | flags: `0x10000` always; `0x20` on the outdoor terrain arenas, where the voxel GI's light steps draw the volume's top slice instead of clearing it (the injection's instance count is `D − floor` rather than `D − 1 − floor`); a record already loaded with `0x100` is replaced by a fresh one rather than read over |
 | 0x04 | u32 | sun mode: 0 auto, 1 off, 2 on (stored; the presets below decide) |
 | 0x08 | f32 | sun altitude: 0 down, 0.5 horizon, 1 zenith (default 0.7516) |
 | 0x0C | f32 | sun azimuth: 0 towards +Z, growing towards −X, ±1 towards −Z (default −0.21) |

@@ -148,6 +148,9 @@ pub struct GiVolume {
     pub sector: IVec2,
     /// Steps run at once when the volume is created.
     pub warm_up: u32,
+    /// Whether the steps reach the top slice (the environment record's
+    /// flag `0x20`); otherwise it is cleared every step.
+    pub top_slice: bool,
 }
 
 /// The GI textures and where they sit.
@@ -169,6 +172,8 @@ pub struct GiTextures {
     base_ambient: Vec3,
     /// Steps run at once when the volume is created.
     warm_up: u32,
+    /// Whether the steps reach the top slice.
+    top_slice: bool,
     /// Which volume these are (counting from 1), so the render world starts
     /// each volume's warm-up once.
     serial: u32,
@@ -777,7 +782,8 @@ struct GiParams {
     base: Vec4,
     /// The sun's fitted shadow matrix (world metres to clip space).
     sun_matrix: Mat4,
-    /// x: the shadow map may be sampled, y: the level has a sky.
+    /// x: the shadow map may be sampled, y: the level has a sky, z: the
+    /// steps reach the top slice.
     sun_flags: UVec4,
     /// The groups of sectors drawn this frame.
     groups: [GiGroupUniform; MAX_GROUPS],
@@ -1210,6 +1216,20 @@ pub fn voxel_height(id: UVec3, dims: UVec3) -> Vec3 {
     )
 }
 
+/// The slices a sector group's light step draws: from its floor (the
+/// original's `LyrOfs`) up to the volume's depth, less the top slice unless
+/// the level record's flag lets the step reach it (the original's instance
+/// count is `D − floor` with the flag, `D − 1 − floor` without). The others
+/// are cleared. Mirrors the slice test in `gi.wesl`.
+pub fn drawn_slices(floor: u32, depth: u32, top_slice: bool) -> std::ops::Range<u32> {
+    let top = if top_slice {
+        depth
+    } else {
+        depth.saturating_sub(1)
+    };
+    floor.min(top)..top
+}
+
 fn volume_image(size: UVec3, format: TextureFormat, data: Vec<u8>, storage: bool) -> Image {
     let mut image = Image::new(
         Extent3d {
@@ -1284,6 +1304,7 @@ fn create_textures(
         sector: volume.sector,
         base_ambient: volume.base_ambient,
         warm_up: volume.warm_up,
+        top_slice: volume.top_slice,
         serial: warm_up.serial,
     };
     // The first block is shown while it warms (the loading screen waits);
@@ -1937,7 +1958,7 @@ fn prepare_bind_group(
         sun_flags: UVec4::new(
             shaded as u32,
             sun_sky.as_deref().is_some_and(|s| s.0) as u32,
-            0,
+            textures.top_slice as u32,
             0,
         ),
         groups,
@@ -2110,6 +2131,7 @@ mod tests {
             sector: IVec2::ZERO,
             base_ambient: Vec3::ZERO,
             warm_up: 10,
+            top_slice: false,
             serial,
         }
     }
@@ -2124,6 +2146,7 @@ mod tests {
             base_ambient: Vec3::ZERO,
             sector: IVec2::ZERO,
             warm_up: 10,
+            top_slice: false,
         }
     }
 
@@ -2716,6 +2739,16 @@ mod tests {
         assert_eq!(t.sector_floor(2, 5), 255);
         assert_eq!(t.sector_floor(3, 4), 255);
         assert_eq!(t.sector_floor(8, 0), 255);
+    }
+
+    #[test]
+    fn the_top_slice_is_drawn_only_under_the_level_flag() {
+        assert_eq!(drawn_slices(3, 64, false), 3..63);
+        assert_eq!(drawn_slices(3, 64, true), 3..64);
+        assert_eq!(drawn_slices(0, 128, true), 0..128);
+        // A floor at or above the top draws nothing.
+        assert!(drawn_slices(70, 64, true).is_empty());
+        assert!(drawn_slices(63, 64, false).is_empty());
     }
 
     #[test]

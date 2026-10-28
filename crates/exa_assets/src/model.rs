@@ -74,6 +74,10 @@ pub struct ModelNode {
     /// voxel to the sample's height and leaves the column's lowest slice
     /// alone (the original's second point path).
     pub gi_centred: bool,
+    /// Whether the mesh is thin for the GI (its first surface's material,
+    /// [`exa_formats::material::Material::is_thin_for_gi`]): its points
+    /// fill the occupancy at a quarter of the usual weight.
+    pub gi_thin: bool,
     /// The node's rigid body, when it carries one that decodes and the
     /// node is not marked as level geometry
     /// ([`exa_formats::rfc::Node::is_static`]).
@@ -201,6 +205,9 @@ pub struct ModelCache {
     /// Mobility divisors and collision sound sets by material cache key
     /// ([`ModelLoader::body_material`]).
     divisors: HashMap<String, (f32, Option<String>)>,
+    /// The GI thin-mesh flag by material cache key
+    /// ([`ModelLoader::thin_for_gi`]).
+    thin: HashMap<String, bool>,
     /// Morph bodies and the shares of the morphs models take
     /// ([`crate::morph`]).
     pub(crate) morph: MorphCache,
@@ -563,6 +570,9 @@ impl ModelLoader<'_> {
                     _ => Vec::new(),
                 }),
                 gi_centred: node.flags2 & 0x10 != 0,
+                gi_thin: mesh
+                    .and_then(|mesh| mesh.groups.first())
+                    .is_some_and(|g| self.thin_for_gi(&entry, &scene, &g.material)),
                 fire: match &node.body {
                     NodeBody::Emitter { kind, size } if *kind == exa_formats::rfc::FIRE => {
                         Some(*size)
@@ -620,6 +630,7 @@ impl ModelLoader<'_> {
                 collision,
                 gi_points,
                 gi_centred,
+                gi_thin,
                 shadow_bias,
                 light,
                 voxel_light,
@@ -633,6 +644,7 @@ impl ModelLoader<'_> {
                     src.collision.clone(),
                     src.gi_points.clone(),
                     src.gi_centred,
+                    src.gi_thin,
                     src.shadow_bias,
                     src.light,
                     src.voxel_light,
@@ -646,6 +658,7 @@ impl ModelLoader<'_> {
             dst.collision = collision;
             dst.gi_points = gi_points;
             dst.gi_centred = gi_centred;
+            dst.gi_thin = gi_thin;
             dst.shadow_bias = shadow_bias;
             dst.light = light;
             dst.voxel_light = voxel_light;
@@ -686,6 +699,21 @@ impl ModelLoader<'_> {
             });
         self.cache.divisors.insert(key, d.clone());
         d
+    }
+
+    /// Whether the material named `name` makes a mesh thin for the GI.
+    fn thin_for_gi(&mut self, entry: &str, scene: &Scene, name: &str) -> bool {
+        let key = Self::material_key(entry, scene, name);
+        if let Some(&thin) = self.cache.thin.get(&key) {
+            return thin;
+        }
+        let thin = scene
+            .material(name)
+            .cloned()
+            .or_else(|| library_material(self.game, name))
+            .is_some_and(|m| m.is_thin_for_gi());
+        self.cache.thin.insert(key, thin);
+        thin
     }
 
     fn material(&mut self, entry: &str, scene: &Scene, name: &str) -> Handle<ExaMaterial> {
@@ -2903,6 +2931,7 @@ mod tests {
             half_extents: Vec3::ZERO,
             gi_points: Arc::new(Vec::new()),
             gi_centred: false,
+            gi_thin: false,
             rigid: None,
             tracks: Vec::new(),
             shadow_bias: 0,
