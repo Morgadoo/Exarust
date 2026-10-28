@@ -134,13 +134,17 @@ items and their grips).
 
 A held item that is its own body (`exa_physics::grip_solve`) is struck
 through the pair stage's struck side. While its owner's strike window is
-open the item is a striker; the weapon branch (`impact::strike_limbs`)
-rings the item's own hit set at `0.005·I + 0.3·(0.01·I)²` (volume at most
+open the item is a striker; the weapon branch (`impact::strike_limbs`),
+for a contact with anything but a limb (the blade sweep answers a weapon
+striking a body) and once the item's own sound clock is past, rings the
+item's own hit set at `0.005·I + 0.3·(0.01·I)²` (volume at most
 1, silent under 0.005), pitch `0.3·v + 0.7`, cooldown `200 − round(80·v)`
 stamped on the item, its first-child chain and its striking weapon
 ancestors, and interrupts or stalls the owner's swing by the same
 `part::hard_impact` rules as an overhead or stab, recording
-`round(5√impact)` on the swing (`SwingState::strike_strength`). The
+`round(5√impact)` on the swing (`SwingState::strike_strength`) with a
+zero stall that ends at once (the original adds a shared tick field that
+was not traced). The
 contact classifier (`part::classify`) reads the striker's state for the
 kind when the other side is itself striking; the message carries it.
 Camera shake and the base collision sound of a non-striking item are the

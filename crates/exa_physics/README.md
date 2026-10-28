@@ -293,7 +293,9 @@ with the law documented: a correction is shared by the item's and the
 hand's particle weights and mobilities; a world link moves only the item.
 `grip_solve` runs the records as a cross-body solver stage: a held item is
 its own `Ragdoll` (built from its model's rigid root), pulled every
-iteration to the hand, second hand and arm by their mobility shares, and
+iteration to the hand, second hand and arm by their mobility shares with
+the body's own limp link law (a slack link's smoothed length kept from
+tick to tick), and
 kept off its holder's body and the other items of the same character (the
 original's all-ones group mask, as `Ragdoll::held_by`). The character's
 equip and the torch light a held item's body and its `HeldGrip` when its
