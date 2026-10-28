@@ -1293,13 +1293,15 @@ spawns each as a static model, its item's model from `Objects.rpk` or
 `Objlib.rpk` (1763 in `exanima01`, none missing). Scripted (`@`) objects and
 model-less triggers or markers are skipped.
 
-The placement flags' bit 4 (`0x10`) and the object flags' bit 19
-(`0x80000`) both mark the object as level geometry: the original turns
-either into node flag `0x80000`, so its bodies never register
-(`PlacedObject::is_static`). 240 shipped placed objects are static, and both
-bits are set on every one of them: `exanima01`'s tongs and two back packs,
-`arenao1`'s bundles, clothes pegs and tableware. Exarust registers
-the rest of a placed object's bodies, or keeps them for their mechanism.
+The object flags word is copied onto the object's root node under the mask
+`0xB80000`, as a prop's is, and the placement flags' bit 4 (`0x10`) also sets
+node flag `0x80000` on that root (`PlacedObject::is_static`). Unlike the prop
+reader, the placed-object reader does not spread `0x80000` to the nodes under
+the root, and what the root's flag does to the model's bodies is not traced,
+so Exarust registers a placed object's bodies whatever these bits say (or
+keeps them for their mechanism). 240 shipped placed objects carry the bits,
+both on every one of them: `exanima01`'s tongs and two back packs,
+`arenao1`'s bundles, clothes pegs and tableware.
 
 Bits 16–23 of the placement flags word are the object's condition byte c.
 For items whose model section sets bit 0 (`OTHER.md`, object database), the

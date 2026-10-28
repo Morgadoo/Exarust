@@ -846,11 +846,12 @@ pub struct PlacedObject {
     /// `0x80000000`: the level's own database; `0x40000000`: the world
     /// database; otherwise `objdb.rdb`. The low 30 bits are the record id.
     pub id: u32,
-    /// The placement flags word: condition in bits 16–23, bit `0x10` places
-    /// the object static.
+    /// The placement flags word: condition in bits 16–23; bit `0x10` sets
+    /// node flag `0x80000` on the object's root.
     pub flags: u32,
-    /// The object's own flags word: bits 19–23 are copied onto its root
-    /// node (`0x80000` marks it level geometry; the rest are not decoded).
+    /// The object's own flags word: its bits under `0xB80000` are copied onto
+    /// its root node (`0x80000` marks it level geometry; the rest are not
+    /// decoded).
     pub object_flags: u32,
     /// Row-major 3×4: three rotation rows, then the translation (metres).
     pub transform: [[f32; 3]; 4],
@@ -863,8 +864,8 @@ pub struct PlacedObject {
 
 impl PlacedObject {
     pub const ID_MASK: u32 = 0x3FFF_FFFF;
-    /// The placement flags bit that marks the object (and every node under
-    /// it) as level geometry.
+    /// The placement flags bit that marks the object's root node as level
+    /// geometry (the flag is not spread to the nodes under it).
     pub const STATIC: u32 = 0x10;
     /// The object flag that marks the root node level geometry.
     pub const OBJECT_STATIC: u32 = 0x8_0000;
@@ -873,9 +874,10 @@ impl PlacedObject {
         self.id & 0x8000_0000 != 0
     }
 
-    /// Whether the object is level geometry: the placement's static bit or
-    /// the object's own static flag, either of which the original turns
-    /// into node flag `0x80000` on its root.
+    /// Whether the object's root node is level geometry: the placement's
+    /// static bit or the object's own static flag, either of which the
+    /// original turns into node flag `0x80000` on its root (and on no other
+    /// node).
     pub fn is_static(&self) -> bool {
         self.flags & Self::STATIC != 0 || self.object_flags & Self::OBJECT_STATIC != 0
     }

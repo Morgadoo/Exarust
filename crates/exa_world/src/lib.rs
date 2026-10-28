@@ -468,11 +468,12 @@ fn spawn_placed_object(
             operative,
         });
     }
-    // A placed object flagged static is level geometry; otherwise a door,
-    // lever or push surface keeps its body for its mechanism.
-    let placement = if object.is_static() {
-        bodies::Placement::Static
-    } else if item.mechanism().is_some() {
+    // A door, lever or push surface keeps its body for its mechanism. The
+    // placement's static bits (`PlacedObject::is_static`) mark only the
+    // object's root node in the original, which, unlike the prop reader,
+    // does not spread the flag to the nodes under it; what that root flag
+    // does to the model's bodies is not traced, so it is not applied.
+    let placement = if item.mechanism().is_some() {
         bodies::Placement::Mechanism
     } else {
         bodies::Placement::Loose
