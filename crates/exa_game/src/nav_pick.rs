@@ -30,6 +30,14 @@ pub const KINESIS_NODE: u32 = 0x20_0000;
 pub const MESH_FAR: f32 = f32::from_bits(0x7f7f_c99e);
 /// How far a kinesis pick looks (the original's 4000 cm).
 pub const KINESIS_FAR: f32 = 40.0;
+/// How far the ground pick looks (the original's 4000 cm).
+pub const GROUND_FAR: f32 = 40.0;
+/// The sphere a node the ground pick's accept callback refuses grows by
+/// (the original's 10 cm).
+pub const GROUND_RADIUS_REFUSED: f32 = 0.1;
+/// The sphere a node the accept callback takes grows by (the original's
+/// 5 m: the whole reach of a raised ground surface).
+pub const GROUND_RADIUS_ACCEPTED: f32 = 5.0;
 
 /// A ray: an origin and a direction. The direction may be a unit vector or
 /// a segment vector; distances are in its units.
@@ -48,6 +56,30 @@ impl Ray {
     pub fn at(self, distance: f32) -> Vec3 {
         self.origin + self.direction * distance
     }
+
+    /// The same ray with a unit direction, as both mesh picks normalise the
+    /// viewport's near-to-far vector: scaled by the reciprocal of the
+    /// vector's length, with no guard for a zero length.
+    pub fn unit(self) -> Self {
+        Self {
+            origin: self.origin,
+            direction: self.direction * (1.0 / length(self.direction)),
+        }
+    }
+}
+
+/// The screen ray the original's point-to-ray routine builds: the near
+/// point is the origin and the far point less the near point the
+/// direction, unnormalised. Exarust's camera gives the same pair through
+/// Bevy's viewport unprojection; this keeps the original's shape so a pick
+/// can be tested without a camera.
+pub fn screen_ray(near: Vec3, far: Vec3) -> Ray {
+    Ray::new(near, far - near)
+}
+
+/// The original's length: `(x² + z²) + y²`, square-rooted.
+fn length(v: Vec3) -> f32 {
+    (v.x * v.x + v.z * v.z + v.y * v.y).sqrt()
 }
 
 /// A plane `normal · point = offset`.
@@ -243,6 +275,76 @@ pub fn kinesis_hit(
         (true, far)
     } else {
         (false, floor_distance(ray))
+    }
+}
+
+/// The ground pick: the highest surface under the cursor, as the original's
+/// point-to-ground routine walks its nodes. It is the nearest-mesh pick with
+/// two differences: each node's bounding sphere grows by
+/// [`GROUND_RADIUS_ACCEPTED`] when the caller's accept test takes it and by
+/// [`GROUND_RADIUS_REFUSED`] when it does not; and the node's mesh is asked
+/// from the point where the ray crosses the grown sphere's top, for the
+/// stretch that is left of the [`GROUND_FAR`] reach. The first node whose
+/// mesh answers keeps the pick; a later, nearer one still wins because the
+/// segment shortens (the original keeps the least distance reported). The
+/// distance is [`floor_distance`] when nothing is found.
+///
+/// The original's accept test is a per-node callback and its mesh test
+/// counts the ground surfaces under a column; Exarust has neither, so the
+/// accept test is the caller's closure and [`RayMesh`]'s nearest hit stands
+/// in for the column. The crossing uses the engine's `1 / direction.y`,
+/// held to zero when it is positive (the ray looks up): a level ray gives
+/// an infinite crossing, as the original's division does.
+pub fn ground_hit(
+    ray: Ray,
+    layer_mask: u32,
+    accept: impl Fn(&Candidate<'_>) -> bool,
+    candidates: &[Candidate<'_>],
+) -> (Option<Hit>, f32) {
+    let ratio = 1.0 / ray.direction.y;
+    let ratio = if ratio > 0.0 { 0.0 } else { ratio };
+    let mut far = GROUND_FAR;
+    let mut segment = ray.direction * far;
+    let mut found = None;
+    for (index, node) in candidates.iter().enumerate() {
+        if !node.pickable(layer_mask) {
+            continue;
+        }
+        let grow = if accept(node) {
+            GROUND_RADIUS_ACCEPTED
+        } else {
+            GROUND_RADIUS_REFUSED
+        };
+        let radius = node.radius + grow;
+        if !segment_sphere(ray.origin, segment, node.bounds.centre, radius) {
+            continue;
+        }
+        let crossing = (node.bounds.centre.y + radius - ray.origin.y) * ratio;
+        let start = if crossing > 0.0 {
+            ray.at(crossing)
+        } else {
+            ray.origin
+        };
+        if let Some((face, distance)) = node
+            .mesh
+            .nearest_hit(Ray::new(start, ray.direction), far - crossing)
+        {
+            far = distance + crossing;
+            segment = ray.direction * far;
+            found = Some((index, face, far));
+        }
+    }
+    match found {
+        Some((node, face, distance)) => (
+            Some(Hit {
+                node,
+                face,
+                distance,
+                point: ray.at(distance),
+            }),
+            distance,
+        ),
+        None => (None, floor_distance(ray)),
     }
 }
 
@@ -509,5 +611,104 @@ mod tests {
         behind.bounds.half_extents = Vec3::splat(0.5);
         // Now both bounds hold the start; the mesh itself is met at 1 m.
         assert!(nearest_hit(r, 10.0, 1, &[behind]).is_some());
+    }
+
+    #[test]
+    fn a_screen_ray_runs_from_near_to_far() {
+        let near = Vec3::new(1.0, 2.0, 3.0);
+        let far = Vec3::new(1.0, 2.0, 13.0);
+        let r = screen_ray(near, far);
+        assert_eq!(r.origin, near);
+        assert_eq!(r.direction, Vec3::new(0.0, 0.0, 10.0));
+        // The picks use the unit form; the length is summed (x² + z²) + y².
+        let unit = r.unit();
+        assert_eq!(unit.direction, Vec3::Z);
+        let unit = screen_ray(Vec3::ZERO, Vec3::new(3.0, 4.0, 0.0)).unit();
+        assert_eq!(unit.direction, Vec3::new(0.6, 0.8, 0.0));
+        // A zero vector has no guard: the direction is NaN.
+        assert!(
+            screen_ray(Vec3::ZERO, Vec3::ZERO)
+                .unit()
+                .direction
+                .x
+                .is_nan()
+        );
+    }
+
+    #[test]
+    fn the_ground_pick_grows_the_sphere_and_asks_from_its_top() {
+        // A floor about the origin, met straight down from 10 m.
+        let floor = [[
+            Vec3::new(-20.0, 0.0, -20.0),
+            Vec3::new(20.0, 0.0, -20.0),
+            Vec3::new(0.0, 0.0, 20.0),
+        ]];
+        let mesh = Triangles(&floor);
+        let down = ray(Vec3::new(0.0, 10.0, 0.0), -Vec3::Y);
+        let mut target = node(u32::MAX, Vec3::ZERO, 0.5, &mesh);
+        target.radius = 0.5;
+        // Taken: the sphere grows 5 m, its top is 5.5 m up (4.5 m along),
+        // and the floor is 5.5 m further: 10 m in all, face 0.
+        let (hit, distance) = ground_hit(down, u32::MAX, |_| true, &[target]);
+        let hit = hit.unwrap();
+        assert_eq!((hit.node, hit.face), (0, 0));
+        assert_eq!(distance, 10.0);
+        assert!((hit.point - Vec3::ZERO).length() < 1e-5);
+        // Refused: the sphere only grows 10 cm, the top is 0.6 m up
+        // (9.4 m along) and the floor 0.6 m further: still 10 m.
+        let (hit, distance) = ground_hit(down, u32::MAX, |_| false, &[target]);
+        assert_eq!(hit.unwrap().distance, 10.0);
+        assert_eq!(distance, 10.0);
+        // Beside the node by 3 m, only the taken 5 m sphere reaches the
+        // floor; the refused 0.6 m sphere misses, and the miss records the
+        // ground plane below the eye: 10 m again but no hit.
+        let beside = ray(Vec3::new(3.0, 10.0, 0.0), -Vec3::Y);
+        assert!(
+            ground_hit(beside, u32::MAX, |_| true, &[target])
+                .0
+                .is_some()
+        );
+        let (none, distance) = ground_hit(beside, u32::MAX, |_| false, &[target]);
+        assert!(none.is_none());
+        assert_eq!(distance, 10.0);
+        // The layer and class filters apply as in the nearest pick.
+        assert!(ground_hit(down, 0, |_| true, &[target]).0.is_none());
+        target.class = 0x09;
+        assert!(ground_hit(down, u32::MAX, |_| true, &[target]).0.is_none());
+        // A level ray gives an infinite crossing ratio, held to zero: the
+        // mesh is asked from the eye itself.
+        let level = ray(Vec3::new(0.0, 5.0, -2.0), Vec3::Z);
+        assert!(ground_hit(level, u32::MAX, |_| true, &[target]).0.is_none());
+        assert_eq!(floor_distance(level), f32::NEG_INFINITY);
+    }
+
+    #[test]
+    fn a_ground_pick_keeps_the_last_node_that_answers_within_its_reach() {
+        // Two floors along the same downward ray: a taken high one nearer
+        // the eye and a refused low one. The second is asked with what is
+        // left after the first, so both are met and the later one is the
+        // pick (the original writes the node and face on every hit).
+        let high = [[
+            Vec3::new(-20.0, 6.0, -20.0),
+            Vec3::new(20.0, 6.0, -20.0),
+            Vec3::new(0.0, 6.0, 20.0),
+        ]];
+        let low = [[
+            Vec3::new(-20.0, 0.0, -20.0),
+            Vec3::new(20.0, 0.0, -20.0),
+            Vec3::new(0.0, 0.0, 20.0),
+        ]];
+        let high = Triangles(&high);
+        let low = Triangles(&low);
+        let down = ray(Vec3::new(0.0, 10.0, 0.0), -Vec3::Y);
+        let mut near = node(1, Vec3::ZERO, 0.5, &high);
+        near.radius = 0.5;
+        let mut far = node(1, Vec3::ZERO, 0.5, &low);
+        far.radius = 0.5;
+        let (hit, distance) = ground_hit(down, 1, |_| true, &[near, far]);
+        let hit = hit.unwrap();
+        assert_eq!(hit.node, 1);
+        assert_eq!(distance, 10.0);
+        assert!((hit.point.y).abs() < 1e-5);
     }
 }
