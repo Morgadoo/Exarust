@@ -34,6 +34,8 @@
 //! living body never sleeps. Evidence: `docs/formats/RSQ.md` (Physical
 //! body).
 
+use std::sync::Arc;
+
 use bevy::math::{Affine3A, Mat3};
 use bevy::prelude::*;
 
@@ -265,6 +267,11 @@ pub struct Part {
     pub gravity: [f32; 4],
     /// Collision spheres in the part's space: centre, radius.
     pub spheres: Vec<(Vec3, f32)>,
+    /// The part's collision mesh in its space, when its node's model gives
+    /// one: the triangles the other side's spheres are tested against (the
+    /// original's mesh query). Empty for a part whose mesh was never handed
+    /// over; the pair stage then falls back to the part's spheres.
+    pub triangles: Option<Arc<Vec<[Vec3; 3]>>>,
     /// How it meets other parts, of other bodies and of its own.
     pub pairing: Pairing,
     rest_inverse: Mat3,
@@ -516,6 +523,7 @@ impl Part {
             inverse_mass,
             gravity: [1.0; 4],
             spheres,
+            triangles: None,
             pairing,
             rest_inverse,
             no_level: false,
@@ -3015,6 +3023,51 @@ impl Ragdoll {
         self.parts.get(part).map(|p| weights(p, local))
     }
 
+    /// Hands part `part` its collision mesh in the part's space: the
+    /// triangles the pair stage tests the other side's spheres against,
+    /// where the original queries a body's node mesh. Empty when the
+    /// loader has no triangles for it, which leaves the sphere fallback.
+    pub fn set_part_triangles(&mut self, part: usize, triangles: Vec<[Vec3; 3]>) {
+        if let Some(p) = self.parts.get_mut(part) {
+            p.triangles = Some(Arc::new(triangles));
+        }
+    }
+
+    /// Part `part`'s collision mesh, in its space, when it has one.
+    pub fn part_triangles(&self, part: usize) -> Option<&[[Vec3; 3]]> {
+        self.parts
+            .get(part)
+            .and_then(|p| p.triangles.as_deref())
+            .map(Vec::as_slice)
+    }
+
+    /// The pushes a placed body's contacts this tick wanted to move part
+    /// `part` by (m, on its four particles), the original's `+0x1b0` array:
+    /// each force added here was applied to the particles with the opposite
+    /// sign, so the array is a record for the node controller, not a
+    /// displacement. The original clears it in the integration while the
+    /// body is placed and when it sleeps; Exarust does the same
+    /// ([`Ragdoll::step`], [`Ragdoll::post_step`]).
+    pub fn placed_offsets(&self, part: usize) -> Option<[Vec3; 4]> {
+        self.parts.get(part).map(|p| p.placed_offset)
+    }
+
+    /// Every part's contact offset array ([`Ragdoll::placed_offsets`]).
+    pub fn placed_offsets_all(&self) -> impl Iterator<Item = (usize, [Vec3; 4])> + '_ {
+        self.parts
+            .iter()
+            .enumerate()
+            .map(|(i, p)| (i, p.placed_offset))
+    }
+
+    /// Clears every part's contact offset array, as the original's
+    /// integration does while the body is placed and sleep does.
+    pub fn clear_placed_offsets(&mut self) {
+        for p in &mut self.parts {
+            p.placed_offset = [Vec3::ZERO; 4];
+        }
+    }
+
     /// The point with weights `w` in the part's rest pose (m). `None` when
     /// the part does not exist.
     pub fn rest_point_at(&self, part: usize, w: &[f32; 4]) -> Option<Vec3> {
@@ -3241,6 +3294,11 @@ impl Ragdoll {
     fn step(&mut self) {
         self.simulated = true;
         self.pass = 0;
+        // The original's Verlet step zeroes a placed body's contact offset
+        // array before the tick's detection writes this tick's contacts.
+        if self.placed() {
+            self.clear_placed_offsets();
+        }
         self.tick_countdown();
         if let Some(drive) = self.drive.as_mut() {
             drive.pin_gain = recover_pins(drive.pin_gain, drive.bearing.collapsing);
@@ -3333,6 +3391,8 @@ impl Ragdoll {
         if self.countdown <= SLEEP_COUNT {
             self.countdown = 0;
             self.sleep = Sleep::Asleep;
+            // Sleep clears the placed body's contact offset array.
+            self.clear_placed_offsets();
         }
         if let Some(&root) = self.outward.first()
             && self.parts[root].positions[0].y < FALL_OUT_HEIGHT

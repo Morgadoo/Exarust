@@ -1007,6 +1007,7 @@ fn a_striker_pair_takes_the_hit_event_and_no_impact() {
         if let Some(t) = the_pairs(&stages).touches().first() {
             assert!(t.met && t.hits > 0, "{t:?}");
             assert!(t.hit_event, "{t:?}");
+            assert_eq!(the_pairs(&stages).hit_events().count(), 1);
             assert_eq!(t.struck, [None, None]);
             assert_eq!(t.impact(), None);
             // The mean point is between the two balls' centres.
@@ -1015,4 +1016,199 @@ fn a_striker_pair_takes_the_hit_event_and_no_impact() {
         }
     }
     panic!("the two balls never touched");
+}
+
+/// A wall triangle in the y-z plane at x = 0, its front toward +x, wide
+/// enough that any test sphere projects inside it.
+fn wall() -> Vec<[Vec3; 3]> {
+    vec![[
+        Vec3::new(0.0, -2.0, -2.0),
+        Vec3::new(0.0, 2.0, 2.0),
+        Vec3::new(0.0, -2.0, 2.0),
+    ]]
+}
+
+/// A body with one ball part used as the mesh side: a wide mesh bound so
+/// the broad phase sees the pair, no stored spheres, and the given mesh.
+fn mesh_side(mesh: Vec<[Vec3; 3]>) -> Ragdoll {
+    let mut b = ball(2, 11, Vec3::ZERO, 0.01);
+    // Its stored spheres sit 10 m away, so only the mesh can answer and the
+    // fallback is never used; a body with no spheres at all would be left
+    // out of the pair stage (the original's bodies always carry some).
+    let far = [(Vec3::new(0.0, 0.0, 10.0), 0.01)];
+    b.parts[0].spheres = far.to_vec();
+    b.parts[0].pairing.sphere = Bounds::of_spheres(&far);
+    b.parts[0].pairing.mesh = Bounds {
+        centre: Vec3::ZERO,
+        half: Vec3::new(0.1, 2.0, 2.0),
+        radius: 2.0,
+    };
+    b.set_part_triangles(0, mesh);
+    b
+}
+
+/// A fresh pair and touch for a direct `collide` call.
+fn fresh() -> (Pair, Touch) {
+    let pair = Pair {
+        a: Side {
+            key: entity(1),
+            body: 0,
+            part: 0,
+        },
+        b: Side {
+            key: entity(2),
+            body: 1,
+            part: 0,
+        },
+        points: [Point::default(); POINTS],
+        count: 0,
+        live: true,
+    };
+    let touch = Touch {
+        a: (entity(1), 0),
+        b: (entity(2), 0),
+        met: false,
+        hits: 0,
+        point: Vec3::ZERO,
+        push: Vec3::ZERO,
+        deepest: 0.0,
+        travel: Vec3::ZERO,
+        travel2: 0.0,
+        struck: [None; 2],
+        hit_event: false,
+    };
+    (pair, touch)
+}
+
+/// A sphere in front of a part's triangle is pushed off it along the
+/// triangle's closest-point direction: the mesh narrow phase, not the
+/// sphere fallback (the mesh side has no stored spheres at all). The push
+/// is +x because the face's normal points there and the sphere's centre is
+/// 5 cm in front of the plane, inside the triangle.
+#[test]
+fn a_sphere_meets_a_parts_mesh_triangle() {
+    let mut a = ball(1, 11, Vec3::new(0.05, 0.0, 0.0), 0.1);
+    let mut b = mesh_side(wall());
+    let (mut pair, mut touch) = fresh();
+    let before = a.parts[0].positions;
+    collide(
+        &mut a.parts[0],
+        &mut b.parts[0],
+        &mut pair,
+        &mut touch,
+        None,
+    );
+    assert!(touch.met && touch.hits == 1, "{touch:?}");
+    assert_eq!(pair.count, 1);
+    // The push is 5 cm along +x spread over the part's weights: every
+    // particle moves forward on x.
+    for (now, was) in a.parts[0].positions.iter().zip(before) {
+        assert!(now.x > was.x, "{now:?} {was:?}");
+    }
+    // The stored normal is the push's direction.
+    assert!(
+        pair.points[0].normal.x > 0.99,
+        "{:?}",
+        pair.points[0].normal
+    );
+}
+
+/// The triangle test is one-sided: a centre behind the face is never
+/// pushed back, so a sphere that ended up behind a wall passes through it.
+#[test]
+fn a_sphere_behind_a_mesh_triangle_is_left_alone() {
+    let mut a = ball(1, 11, Vec3::new(-0.05, 0.0, 0.0), 0.1);
+    let mut b = mesh_side(wall());
+    let (mut pair, mut touch) = fresh();
+    let before = a.parts[0].positions;
+    collide(
+        &mut a.parts[0],
+        &mut b.parts[0],
+        &mut pair,
+        &mut touch,
+        None,
+    );
+    assert!(!touch.met && touch.hits == 0, "{touch:?}");
+    assert_eq!(a.parts[0].positions, before);
+}
+
+/// A fast sphere crosses a wall in one tick: the swept query takes it back
+/// to where it first touched (its centre one radius in front of the plane),
+/// while a held item's static-only mode tests only the end, finds it behind
+/// nothing and lets it through.
+#[test]
+fn a_fast_sphere_is_caught_by_the_swept_mesh_query() {
+    let run = |static_only: bool| {
+        // The sphere starts one radius' reach in front of the face and
+        // crosses it: the swept test only runs from the front side.
+        let mut a = ball(1, 11, Vec3::new(0.3, 0.0, 0.0), 0.1);
+        let mut b = mesh_side(wall());
+        a.parts[0].static_only = static_only;
+        // 60 m/s is 72 cm a tick: far enough that the end centre is more
+        // than a radius behind the face.
+        a.set_velocity(Vec3::NEG_X * 60.0);
+        let mut stages = pairs();
+        step(&mut [&mut a, &mut b], NONE, &mut stages);
+        let x = a.parts[0].positions[0].x;
+        println!(
+            "static_only={static_only}: x={x} touches={} sleep={:?}",
+            the_pairs(&stages).touches().len(),
+            a.sleep
+        );
+        (x, the_pairs(&stages).touches().len())
+    };
+    let (swept, touches) = run(false);
+    assert_eq!(touches, 1);
+    // The push takes the contact point back toward the face; the immediate
+    // push spreads over the particle weights, so the centre does not reach
+    // the plane in the same tick, but it is nowhere near the -0.42 m it
+    // would have travelled freely.
+    assert!((-0.15..0.3).contains(&swept), "swept to {swept}");
+    let (through, touches) = run(true);
+    assert_eq!(touches, 0);
+    assert!(through < -0.2, "passed to {through}");
+}
+
+/// The contact offset array a placed body's hits record is readable by its
+/// owner and cleared by the integration while the body is placed, as the
+/// original's `+0x1b0` is.
+#[test]
+fn a_placed_bodys_contact_offsets_are_read_and_cleared() {
+    let mut a = ball(1, 11, Vec3::ZERO, 0.1);
+    let mut b = ball(2, 11, Vec3::X * 0.25, 0.1);
+    let (mut pair, mut touch) = fresh();
+    let b_now = b.parts[0].transform();
+    assert!(on_placed_hit(
+        &mut a.parts[0],
+        &mut b.parts[0],
+        true,
+        &b_now,
+        Vec3::ZERO,
+        Vec3::new(-0.1, 0.0, 0.0),
+        Vec3::new(0.05, 0.0, 0.0),
+        &mut pair,
+        &mut touch,
+    ));
+    let offsets: Vec<Vec3> = a.placed_offsets(0).unwrap().to_vec();
+    assert!(offsets.iter().any(|o| o.length() > 0.0), "{offsets:?}");
+    assert_eq!(a.placed_offsets(9), None);
+    assert_eq!(a.placed_offsets_all().count(), 1);
+    // The next integration while placed starts the array again.
+    a.settle_for(2);
+    a.tick(&[] as &[[Vec3; 3]]);
+    assert_eq!(a.placed_offsets(0), Some([Vec3::ZERO; 4]));
+    // A direct clear does the same after a hit.
+    assert!(on_placed_hit(
+        &mut a.parts[0],
+        &mut b.parts[0],
+        true,
+        &b_now,
+        Vec3::ZERO,
+        Vec3::new(-0.1, 0.0, 0.0),
+        Vec3::new(0.05, 0.0, 0.0),
+        &mut pair,
+        &mut touch,
+    ));
+    a.clear_placed_offsets();
+    assert_eq!(a.placed_offsets(0), Some([Vec3::ZERO; 4]));
 }

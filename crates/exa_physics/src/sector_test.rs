@@ -542,3 +542,116 @@ fn level_masks_follow_the_collider_and_body_rules() {
     assert!(level_meets(MASK_THIN, MASK_SMALL));
     assert!(level_meets(0, MASK_SMALL | MASK_THIN));
 }
+
+/// The static grid's insertion: a collider inside its centre's cell goes
+/// there alone; a wider one takes the wide bit and every cell of its span
+/// with one cell of margin, as the capacity says. A scan finds its own
+/// cell's colliders first, takes a wide one only from the own cell, and
+/// rejects shared masks and the body's own parent node.
+#[test]
+fn the_static_grid_scans_own_cell_then_neighbours() {
+    let mut grid = StaticGrid::new(8, 8, (0, 0));
+    let small = grid.insert(StaticBody {
+        centre_cm: Vec3::new(300.0, 0.0, 300.0),
+        half_cm: Vec3::splat(100.0),
+        mask: MASK_SMALL,
+        node: 7,
+    });
+    let wide = grid.insert(StaticBody {
+        centre_cm: Vec3::new(1500.0, 0.0, 1500.0),
+        half_cm: Vec3::new(700.0, 50.0, 700.0),
+        mask: MASK_THIN,
+        node: 9,
+    });
+    assert_eq!(grid.len(), 2);
+    assert_eq!(grid.get(small).unwrap().mask, MASK_SMALL);
+    assert_eq!(grid.get(wide).unwrap().mask, MASK_THIN | WIDE_COLLIDER);
+    // The small collider's own cell is (0, 0); the wide one covers
+    // x and z 0..=5 (its edges 1 − 1 … 4 + 1).
+    assert_eq!(grid.cells().get((0, 0)), [small, wide]);
+    assert_eq!(grid.cells().get((5, 5)), [wide]);
+    let mut out = Vec::new();
+    grid.near((0, 0), 0, 0, &mut out);
+    assert_eq!(out, [small, wide]);
+    // From (5, 5) the wide collider is the own cell's; a body further out
+    // does not see it again. The wide one is not appended twice.
+    out.clear();
+    grid.near((5, 5), 0, 0, &mut out);
+    assert_eq!(out, [wide]);
+    out.clear();
+    grid.near((7, 7), 0, 0, &mut out);
+    assert!(out.is_empty());
+    // A body under node 7 never sees the small collider; a mask-1 body
+    // skips the mask-1 small one and keeps the mask-4 wide one.
+    out.clear();
+    grid.near((0, 0), 0, 7, &mut out);
+    assert_eq!(out, [wide]);
+    out.clear();
+    grid.near((0, 0), MASK_SMALL, 0, &mut out);
+    assert_eq!(out, [wide]);
+    out.clear();
+    grid.near((0, 0), MASK_THIN, 0, &mut out);
+    assert_eq!(out, [small]);
+    // The own cell is scanned before the neighbours, in the original's
+    // table order: (-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0),
+    // (-1, 1), (0, 1), (1, 1).
+    let mut order = StaticGrid::new(8, 8, (0, 0));
+    let a = order.insert(StaticBody {
+        centre_cm: Vec3::new(300.0, 0.0, -300.0),
+        half_cm: Vec3::splat(50.0),
+        mask: 0,
+        node: 1,
+    });
+    let b = order.insert(StaticBody {
+        centre_cm: Vec3::new(-300.0, 0.0, 0.0),
+        half_cm: Vec3::splat(50.0),
+        mask: 0,
+        node: 1,
+    });
+    let c = order.insert(StaticBody {
+        centre_cm: Vec3::new(900.0, 0.0, 900.0),
+        half_cm: Vec3::splat(50.0),
+        mask: 0,
+        node: 1,
+    });
+    let mut got = Vec::new();
+    order.near((0, 0), 0, 0, &mut got);
+    assert_eq!(got, [a, b, c], "(0,-1), (-1,0), (1,1) in table order");
+}
+
+/// An object's cell index parks at `columns + 1` when it is on the first
+/// cell of the second row or past the last row, exactly the sector's object
+/// guard; a normal move migrates its link, and removing keeps the order of
+/// the rest.
+#[test]
+fn the_object_list_parks_an_overflowing_cell() {
+    let mut objects = ObjectGrid::new(8, 6, (0, 0));
+    // Cell (0, 1): index 8, the first cell of the second row → parked.
+    let low = objects.insert(Vec3::new(100.0, 0.0, 700.0));
+    assert_eq!(objects.objects()[low].cell, 9);
+    // Cell (2, 2) is a normal cell.
+    let normal = objects.insert(Vec3::new(1500.0, 0.0, 1500.0));
+    assert_eq!(objects.objects()[normal].cell, 2 * 8 + 2);
+    assert_eq!(objects.at((2, 2)), [normal]);
+    // Its step moves it to cell (3, 2); the link migrates.
+    objects.migrate(normal, Vec3::new(2100.0, 0.0, 1500.0));
+    assert_eq!(objects.objects()[normal].cell, 2 * 8 + 3);
+    assert!(objects.at((2, 2)).is_empty());
+    assert_eq!(objects.at((3, 2)), [normal]);
+    // A cell past the last row parks at columns + 1 too.
+    objects.migrate(normal, Vec3::new(100.0, 0.0, 10_000.0));
+    assert_eq!(objects.objects()[normal].cell, 9);
+    objects.remove(low);
+    assert_eq!(objects.objects().len(), 1);
+    assert_eq!(objects.objects()[0].id, normal);
+}
+
+/// A cell index splits into x and z with the engine's `z * columns + x`;
+/// the remainder keeps an x outside the row wrapping as the 32-bit add does.
+#[test]
+fn a_cell_index_splits_into_its_row_and_column() {
+    assert_eq!(cell_of_index(26, 8), (2, 3));
+    assert_eq!(cell_of_index(-1, 8), (-1, 0));
+    assert_eq!(cell_of_index(9, 8), (1, 1));
+    assert_eq!(cell_of_index(5, 0), (5, 0));
+}

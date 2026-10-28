@@ -131,6 +131,7 @@ impl Part {
             inverse_mass: s.mobility,
             gravity: gravity_shares(s.point_masses),
             spheres: s.spheres.clone(),
+            triangles: None,
             pairing: {
                 let mut pairing = Pairing::new(&rest, &rest_inverse, &s.spheres, s.mobility);
                 if let Some(mesh) = s.mesh {

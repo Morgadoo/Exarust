@@ -801,6 +801,256 @@ pub fn level_meets(body_mask: u32, collider_mask: u32) -> bool {
     body_mask & collider_mask == 0
 }
 
+/// The bit a wide static collider's mask carries (the original's bit 31):
+/// while a body scans past its own cell, this bit is added to its reject
+/// mask, so a multi-cell collider is taken from its own cell only and never
+/// twice.
+pub const WIDE_COLLIDER: u32 = 0x8000_0000;
+
+/// A static collider as the sector's static grid keeps it: the centre and
+/// half extents of its node's box (cm), its level mask, and the scene node
+/// it belongs to (a body skips the node that is its own node's parent).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StaticBody {
+    pub centre_cm: Vec3,
+    pub half_cm: Vec3,
+    pub mask: u32,
+    pub node: u32,
+}
+
+/// The original's static collider grid: one 600 cm cell per collider whose
+/// box stays in its centre's cell, every cell of the footprint plus a
+/// one-cell margin for a wider one (whose mask gains [`WIDE_COLLIDER`]).
+/// A body scans its own cell first, then the eight around it; past the own
+/// cell, wide colliders are rejected (they were all found there), and a
+/// collider whose mask shares a bit with the body's is skipped, as is one
+/// under the body's own parent node.
+#[derive(Debug, Clone, Default)]
+pub struct StaticGrid {
+    columns: i32,
+    rows: i32,
+    origin: (i32, i32),
+    cells: CellGrid,
+    bodies: Vec<StaticBody>,
+}
+
+impl StaticGrid {
+    /// An empty grid `columns` × `rows` whose origin cell is `origin`.
+    pub fn new(columns: i32, rows: i32, origin: (i32, i32)) -> Self {
+        Self {
+            columns,
+            rows,
+            origin,
+            ..Self::default()
+        }
+    }
+
+    /// The records inserted.
+    pub fn len(&self) -> usize {
+        self.bodies.len()
+    }
+
+    /// Whether no collider is in the grid.
+    pub fn is_empty(&self) -> bool {
+        self.bodies.is_empty()
+    }
+
+    /// The record inserted at `id`.
+    pub fn get(&self, id: usize) -> Option<&StaticBody> {
+        self.bodies.get(id)
+    }
+
+    /// Inserts a collider as the original's static registration does and
+    /// returns its id. A box that stays in its centre's cell goes there
+    /// alone; a wider one takes the wide bit and every cell of the span with
+    /// its one-cell margin.
+    pub fn insert(&mut self, mut body: StaticBody) -> usize {
+        let span = grid_span(
+            body.centre_cm,
+            body.half_cm,
+            self.columns,
+            self.rows,
+            self.origin,
+        );
+        let id = self.bodies.len();
+        if span.wide {
+            body.mask |= WIDE_COLLIDER;
+            for cell in span.insertion_cells() {
+                self.cells.insert(cell, id);
+            }
+        } else {
+            self.cells.insert(span.centre, id);
+        }
+        self.bodies.push(body);
+        id
+    }
+
+    /// The colliders a body in `cell` meets: its own cell first, then the
+    /// eight neighbours (rows top to bottom, x left to right, as the
+    /// original's offset table is laid out), skipping shared masks and the
+    /// body's own parent node, and skipping wide colliders past the own
+    /// cell. Ids are appended in scan order; a wide collider is not
+    /// appended twice.
+    pub fn near(&self, cell: (i32, i32), body_mask: u32, own_node: u32, out: &mut Vec<usize>) {
+        let mut reject = body_mask;
+        let offsets = [
+            (0, 0),
+            (-1, -1),
+            (0, -1),
+            (1, -1),
+            (-1, 0),
+            (1, 0),
+            (-1, 1),
+            (0, 1),
+            (1, 1),
+        ];
+        for (k, (dx, dz)) in offsets.into_iter().enumerate() {
+            let at = (cell.0.wrapping_add(dx), cell.1.wrapping_add(dz));
+            for &id in self.cells.get(at) {
+                let Some(body) = self.bodies.get(id) else {
+                    continue;
+                };
+                if body.node == own_node || body.mask & reject != 0 {
+                    continue;
+                }
+                if k > 0 && body.mask & WIDE_COLLIDER != 0 {
+                    continue;
+                }
+                if !out.contains(&id) {
+                    out.push(id);
+                }
+            }
+            // Past the own cell, a multi-cell collider is not taken again.
+            reject |= WIDE_COLLIDER;
+        }
+    }
+
+    /// The cells the grid has records in (for tests and tools).
+    pub fn cells(&self) -> &CellGrid {
+        &self.cells
+    }
+}
+
+/// A simulated object (a cloth or a particle body) as the sector's object
+/// list keeps it: its id and the grid index it was last bucketed in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SimObject {
+    pub id: usize,
+    pub cell: i32,
+}
+
+/// The original's simulated-object list and its grid: one cell index per
+/// object, from its mesh box's world centre, rebucketed after its step.
+/// Unlike a rigid body's grid cell, an object's cell index that lands on
+/// the first cell of the second row (`≤ columns`) is treated as an
+/// overflow too, and the object is parked at `columns + 1`; the next tick
+/// migrates it out.
+#[derive(Debug, Clone, Default)]
+pub struct ObjectGrid {
+    columns: i32,
+    rows: i32,
+    origin: (i32, i32),
+    /// The objects in list order.
+    objects: Vec<SimObject>,
+    /// Cell index → object ids.
+    cells: CellGrid,
+}
+
+impl ObjectGrid {
+    /// An empty list `columns` × `rows` whose origin cell is `origin`.
+    pub fn new(columns: i32, rows: i32, origin: (i32, i32)) -> Self {
+        Self {
+            columns,
+            rows,
+            origin,
+            ..Self::default()
+        }
+    }
+
+    /// The objects in list order.
+    pub fn objects(&self) -> &[SimObject] {
+        &self.objects
+    }
+
+    /// The grid cells.
+    pub fn cells(&self) -> &CellGrid {
+        &self.cells
+    }
+
+    /// The cell index of a world centre (cm), wrapping at 32 bits.
+    pub fn index_of(&self, centre_cm: Vec3) -> i32 {
+        let cell = cell_of(centre_cm, self.origin);
+        cell_index(cell, self.columns)
+    }
+
+    /// Adds an object at `centre_cm` (cm, world) and returns its id. A
+    /// centre whose index overflows is parked at `columns + 1`.
+    pub fn insert(&mut self, centre_cm: Vec3) -> usize {
+        let id = self.objects.len();
+        let mut index = self.index_of(centre_cm);
+        if object_cell_overflow(index, self.columns, self.rows) {
+            index = overflow_cell(self.columns);
+        }
+        self.cells.insert(cell_of_index(index, self.columns), id);
+        self.objects.push(SimObject { id, cell: index });
+        id
+    }
+
+    /// Rebuckets object `id` at `centre_cm` (cm, world) after its step,
+    /// with the object overflow guard. The original reports a duplicate
+    /// migration and leaves the old link alone; an object already in the
+    /// target cell is not linked twice.
+    pub fn migrate(&mut self, id: usize, centre_cm: Vec3) {
+        let Some(object) = self.objects.get(id) else {
+            return;
+        };
+        let from = object.cell;
+        let mut to = self.index_of(centre_cm);
+        if object_cell_overflow(to, self.columns, self.rows) {
+            to = overflow_cell(self.columns);
+        }
+        if to == from {
+            return;
+        }
+        let (from_cell, to_cell) = (
+            cell_of_index(from, self.columns),
+            cell_of_index(to, self.columns),
+        );
+        if self.cells.get(to_cell).contains(&id) {
+            return;
+        }
+        self.cells.remove(from_cell, id);
+        self.cells.insert(to_cell, id);
+        self.objects[id].cell = to;
+    }
+
+    /// Removes object `id` from the list and its cell, keeping the order of
+    /// the others. The original compacts its array and shifts the objects.
+    pub fn remove(&mut self, id: usize) {
+        let Some(object) = self.objects.get(id).copied() else {
+            return;
+        };
+        self.cells
+            .remove(cell_of_index(object.cell, self.columns), id);
+        self.objects.retain(|o| o.id != id);
+    }
+
+    /// The objects bucketed in `cell`.
+    pub fn at(&self, cell: (i32, i32)) -> &[usize] {
+        self.cells.get(cell)
+    }
+}
+
+/// A cell index back to an (x, z) cell: the original stores `z * columns +
+/// x`, so this is the inverse for a well-formed index (x may be outside the
+/// grid and wraps into a neighbouring row).
+pub fn cell_of_index(index: i32, columns: i32) -> (i32, i32) {
+    if columns == 0 {
+        return (index, 0);
+    }
+    (index.wrapping_rem(columns), index.wrapping_div(columns))
+}
+
 /// The stages of one sector's 83 Hz step, in the original's order. The
 /// existing schedule runs them; this names them so a new piece of work
 /// joins the right stage instead of a new loop.
