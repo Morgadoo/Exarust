@@ -14,6 +14,7 @@ pub mod icon_cache;
 pub mod instance;
 pub mod inventory_window;
 pub mod item_gui;
+pub mod item_icon;
 pub mod item_renderer;
 pub mod palette;
 pub mod pane;

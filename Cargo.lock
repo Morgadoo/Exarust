@@ -2514,6 +2514,7 @@ dependencies = [
  "bevy",
  "exa_assets",
  "exa_formats",
+ "exa_render",
 ]
 
 [[package]]
