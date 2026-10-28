@@ -158,7 +158,7 @@ fn a_placed_body_takes_no_impact() {
         let mut a = ball(1, 11, Vec3::new(-0.3, 2.0, 0.0), 0.1);
         let mut b = ball(2, 11, Vec3::new(0.3, 2.0, 0.0), 0.1);
         if placed {
-            a.set_placed(true);
+            a.settle_for(100);
         }
         b.set_velocity(Vec3::NEG_X * 4.0);
         let mut stages = pairs();
@@ -870,7 +870,6 @@ fn the_placed_pass_moves_only_the_placed_side() {
 fn a_placed_hit_takes_the_push_and_records_its_opposite() {
     let mut a = ball(1, 11, Vec3::ZERO, 0.1);
     let mut b = ball(2, 11, Vec3::X * 0.25, 0.1);
-    a.set_placed(true);
     let before_a = a.parts[0].positions;
     let before_b = b.parts[0].positions;
     let mut pair = Pair {

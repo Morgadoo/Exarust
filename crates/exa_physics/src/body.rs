@@ -267,8 +267,8 @@ pub struct Part {
     /// integration found it (before its inertia): the velocity the pose
     /// drive damps.
     moved: [Vec3; 4],
-    /// The original's smoothed velocity (`+0x1e0`): a copy of [`moved`]
-    /// lerped a tenth of the way each tick, which the pair impact reads.
+    /// The original's smoothed velocity: a copy of [`moved`] lerped a tenth
+    /// of the way each tick, which the pair and level impacts read.
     smoothed: [Vec3; 4],
     /// The weights of the part's own origin (its joint, the point (0, 0, 0)
     /// of its space) on its particles: where the pose drive turns it about.
@@ -595,11 +595,12 @@ impl Part {
         }
     }
 
-    /// Records `delta` times the clamped weights in the placed-offset array
-    /// (the original's `+0x1b0` push).
+    /// Records `delta` times the weights `w` in the placed-offset array
+    /// (the pair pass clamps its weights at zero first; the placed hit
+    /// does not).
     fn offset_push(&mut self, w: &[f32; 4], delta: Vec3) {
         for (p, wi) in self.placed_offset.iter_mut().zip(w) {
-            *p += delta * wi.max(0.0);
+            *p += delta * *wi;
         }
     }
 
@@ -625,7 +626,7 @@ impl Part {
     }
 
     /// The part's smoothed velocity (m a tick) at the point with weights
-    /// `w`: the original's impact travel reads its `+0x1e0` array so.
+    /// `w`: the original's impact travel reads its smoothed array so.
     fn smoothed_velocity(&self, w: &[f32; 4]) -> Vec3 {
         (0..4).map(|i| self.smoothed[i] * w[i]).sum()
     }
@@ -662,11 +663,10 @@ impl Part {
                 *x += delta * (c / top);
             }
         }
-        // The level impact's bookkeeping, before the push changes the
-        // velocity: the smoothed velocity at the max-normalised contact
-        // weights, and the point and push sums.
-        let scaled = crate::sector::normalise_to_max(w).map_or(w, |(n, _)| n);
-        let travel = balance::cm(self.smoothed_velocity(&scaled));
+        // The level impact's bookkeeping: the smoothed velocity at the
+        // contact weights as found (the original reads it before it
+        // normalises them for the push), and the point and push sums.
+        let travel = balance::cm(self.smoothed_velocity(&w));
         let travel2 = travel.z * travel.z + (travel.y * travel.y + travel.x * travel.x);
         self.level_hits += 1;
         self.level_point += q;
@@ -1332,10 +1332,6 @@ pub struct Ragdoll {
     /// Ticks still to run with gravity but no inertia, as the original
     /// settles a re-placed character (its temporary state's countdown).
     settle: i32,
-    /// The original's placed state bit (0x1000): the body's node is driven
-    /// by something else, and a contact with another body moves only this
-    /// side ([`set_placed`]).
-    placed: bool,
     /// A sleeping body is not simulated until something wakes it.
     pub sleep: Sleep,
     /// Whether the body has been simulated since it was built: a body
@@ -2006,7 +2002,6 @@ impl Ragdoll {
             // corpses still collapse from standing in Exarust.
             countdown: WAKE_COUNT,
             settle: 0,
-            placed: false,
             sleep: Sleep::Awake,
             simulated: false,
             fell_out: false,
@@ -2378,16 +2373,13 @@ impl Ragdoll {
         self.settle
     }
 
-    /// Whether the body is placed (the original's state bit 0x1000): its
-    /// node is driven by something else, and a contact with another body
-    /// moves only this side.
+    /// Whether the body is placed (the original's state bit 0x1000): the
+    /// original's integration keeps the bit only while the settling
+    /// countdown runs and clears it once the countdown is spent, so the
+    /// placed state is [`Ragdoll::settling`] above zero. A contact with
+    /// another, unplaced body moves only the placed side.
     pub fn placed(&self) -> bool {
-        self.placed
-    }
-
-    /// Sets or clears the placed state.
-    pub fn set_placed(&mut self, on: bool) {
-        self.placed = on;
+        self.settle > 0
     }
 
     /// Moves the whole body by `offset` (m), as the original's translate
@@ -3302,7 +3294,8 @@ impl Ragdoll {
             if p.level_hits == 0 || !p.reacts {
                 continue;
             }
-            let point = p.level_point / p.level_hits as f32;
+            // The original scales the sum by the count's reciprocal.
+            let point = p.level_point * (1.0 / p.level_hits as f32);
             if let Some(impact) =
                 level_impact(i, point, p.level_push, p.level_travel, p.level_travel2)
             {

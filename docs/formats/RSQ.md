@@ -627,12 +627,13 @@ prop). Rules in cm and ticks:
   takes the other's (a sleeper also drops its level contacts), so a living
   body (256) that touches a corpse wakes it for at least 1.5 s.
 - **Placed pairs.** A body in the placed state (the original's state bit
-  `0x1000`) meets another body one-sided: the same points are recorded but
+  `0x1000`, set while the settling countdown runs) meets another body
+  one-sided: the same points are recorded but
   the placed side takes the whole push (no mobility share) over its
   non-negative weights, records the opposite push in its extra particle
   array (its node controller's offset), and the other side is not touched.
-  The detection callback likewise normalises the placed side's weights to
-  sum one; it counts no impact hit, so a placed pair is kept and wakes the
+  The detection runs the static sphere query only, and its callback
+  normalises the placed side's weights to sum one; it counts no impact hit, so a placed pair is kept and wakes the
   sleeper but never strikes.
 - **Hit events and impacts.** A pair whose one side carries the active
   strike bit and whose other is hittable (a living limb or a held part)
@@ -640,7 +641,7 @@ prop). Rules in cm and ticks:
   placed: the event carries the mean contact point, the summed push and
   the relative smoothed velocity. Otherwise, with at least one hit, a
   relative smoothed velocity squared over 1 cm² a tick² (the parts'
-  `+0x1e0` velocity, a tenth of the way to each tick's displacement) and
+  smoothed velocity, a tenth of the way to each tick's displacement) and
   different body roots, the impact is that square times the negated cosine
   against the summed push; over 0.5 each side with the impact class bit is
   struck with it over 2·m + 1 of the other's mobility.
@@ -652,10 +653,10 @@ prop). Rules in cm and ticks:
   impact call makes of it.
 - **Registration** (`exa_physics::sector::registration`) reads a scene
   node's words as the original's walk does: a body node (flag `0x10000`,
-  `0x80000` clear) builds its body unless the scene already did, a node
-  whose body is a static stand-in registers only a collider, and a
-  simulated-object node (flags `0x89`, class bit `0x200000`) joins the
-  sector's object list. The sector picks the all-pairs walk unless the
+  `0x80000` clear) builds its body unless the scene already did (then the
+  body only joins the grid), a node whose body has the simulated-object bit
+  joins the sector's object list, and a mesh node (flags `0x89`, class bit
+  `0x200000`) registers as a static collider with its level mask. The sector picks the all-pairs walk unless the
   scene's flag word has either grid bit (`0x2000000`, `0x4000000`).
   Registration gives a body its countdown 0 and the asleep bits, its
   mobility over the material divisor, and its material's impact sound

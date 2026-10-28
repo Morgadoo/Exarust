@@ -101,12 +101,11 @@ matrix from its particles and rest basis, the world box and sphere of its
 bounds, the cell of the mesh box's centre) is what the pair stage buckets
 and meets by. A body whose cell index overflows goes back to its
 particles of the tick before last and is parked past the first row
-(`sector::reset_overflow`), and a simulated object's state machine
-(`sector::object_tick`: live, rolling countdown, or deep sleep) is the
-original's. A sector tests every pair unless the scene's flag word asks for
+(`sector::reset_overflow`). A sector tests every pair unless the scene's flag word asks for
 the grid (`BroadPhase::for_scene`), and the registration walk
 (`sector::registration`) decides from a node's words whether it builds a
-body, only inserts one, registers a static collider or a simulated object.
+body, only inserts one, registers a simulated object or a mesh as a
+static collider.
 Registration's impact sound scale (`sector::impact_scale`, `v = min(2m, 1)
 + 1`) is the original's. The level detection's masks are the original's
 (`sector::static_mask`, `body_mask`, `level_meets`): a collider is 1 and
@@ -118,13 +117,15 @@ other's mesh sphere; a small sector's all-pairs walk
 tests. Not wired: the static-collider grid (rapier keeps the level's
 broad phase), the overflow guard's reset, the overlap and placement
 queries, and an automatic choice between the grid and all pairs.
-A pair with exactly one placed body (state bit 0x1000) is one-sided: the
-placed side takes the whole correction over its non-negative weights and
-records the opposite push in its offset array (`Part::placed_offset`, the
-original's +0x1b0), which its node controller would read; the other side
-does not move, and such a pair records contacts without impact hits, so it
-never strikes. The impact path reads the parts' smoothed velocity (a tenth
-of the way to each tick's displacement, the original's +0x1e0), which the
+A pair with exactly one placed body (state bit 0x1000, which the original
+keeps only while the settling countdown runs, so `Ragdoll::placed` is
+`settling() > 0`) is one-sided: the placed side takes the whole correction
+over its non-negative weights and records the opposite push in its offset
+array (`Part::placed_offset`), which its node controller would read; the
+other side does not move. Its detection runs the static (unswept) sphere
+query only and records contacts without impact hits, so it never strikes.
+The impact path reads the parts' smoothed velocity (a tenth of the way to
+each tick's displacement), which the
 pair's touch carries as its travel alongside the mean contact point and
 the summed push for the hit event.
 A part's level contacts also make an impact record (`body::LevelImpact`):

@@ -905,10 +905,7 @@ impl Pairs {
         // settling countdown stands for it). A pair with exactly one placed
         // body goes through the original's placed callback, which counts no
         // hits, so it takes no impact either.
-        let placed = (
-            bodies[a.0].placed() || bodies[a.0].settling() > 0,
-            bodies[b.0].placed() || bodies[b.0].settling() > 0,
-        );
+        let placed = (bodies[a.0].placed(), bodies[b.0].placed());
         {
             let Some((pa, pb)) = parts_mut(bodies, a, b) else {
                 return false;
@@ -967,7 +964,9 @@ fn collide(pa: &mut Part, pb: &mut Part, pair: &mut Pair, touch: &mut Touch, pla
         let (c, r) = pa.spheres[i];
         let start = before.transform_point3(c);
         let mut end = (b_now.inverse() * a_now).transform_point3(c);
-        let swept = cm(end - start).length_squared() > SWEEP_TRAVEL2;
+        // The placed callback always runs the static query (the original
+        // sweeps only in the dynamic path).
+        let swept = placed.is_none() && cm(end - start).length_squared() > SWEEP_TRAVEL2;
         let gap = if swept {
             segment_distance(b_centre, start, end)
         } else {
@@ -1099,8 +1098,15 @@ fn on_placed_hit(
         (pb, wb, -push)
     };
     if let Some(wn) = sector::normalise_sum(weights) {
-        shove(placed, &wn, move_by);
-        placed.offset_push(&wn, -move_by);
+        // The callback's offset record takes the normalised weights as
+        // they are (the pass's record clamps them at zero).
+        if a_placed {
+            shove(placed, &wn, move_by);
+            placed.offset_push(&wn, -move_by);
+        } else {
+            placed.offset_push(&wn, -move_by);
+            shove(placed, &wn, move_by);
+        }
     }
     true
 }
@@ -1187,11 +1193,13 @@ fn solve_placed_pair(pa: &mut Part, pb: &mut Part, a_placed: bool, points: &[Poi
             continue;
         };
         if a_placed {
-            pa.push(&p.a.map(|w| w.max(0.0)), c);
-            pa.offset_push(&p.a, -c);
+            let w = p.a.map(|w| w.max(0.0));
+            pa.push(&w, c);
+            pa.offset_push(&w, -c);
         } else {
-            pb.push(&p.b.map(|w| w.max(0.0)), -c);
-            pb.offset_push(&p.b, c);
+            let w = p.b.map(|w| w.max(0.0));
+            pb.push(&w, -c);
+            pb.offset_push(&w, c);
         }
         work = true;
     }
@@ -1277,8 +1285,8 @@ impl SolverStage for Pairs {
             // one placed body moves only that side (the original's placed
             // pair pass).
             let placed = if pair.a.body < bodies.len() && pair.b.body < bodies.len() {
-                let a = bodies[pair.a.body].placed() || bodies[pair.a.body].settling() > 0;
-                let b = bodies[pair.b.body].placed() || bodies[pair.b.body].settling() > 0;
+                let a = bodies[pair.a.body].placed();
+                let b = bodies[pair.b.body].placed();
                 match (a, b) {
                     (true, false) => Some(true),
                     (false, true) => Some(false),
