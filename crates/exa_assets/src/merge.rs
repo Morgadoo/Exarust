@@ -3,14 +3,19 @@
 //! one skin weight per vertex.
 //!
 //! Exarust keeps a mesh per node and draws each under the skeleton, so the
-//! merge is offered as a pure builder (`merge_parts`) for callers that want
-//! the original's single mesh. Each part is placed by its frame in the
-//! body's space, its vertices and normals copied, its triangles offset and
-//! its material groups collected in first-seen order. Vertices of a part
-//! without weights fall back to the part's bone. Evidence for the original's
-//! order: the character builder's mesh assembly (`docs/formats/RSQ.md`,
-//! Skinning); the per-group draw order is the original's material-group
-//! order.
+//! merge is offered as a pure builder ([`merge`]) for callers that want the
+//! original's single mesh. Each part is placed by its frame in the body's
+//! space, its vertices, normals, UVs and colours are appended, and the
+//! vertices are then regrouped by material, as the original's final renumber
+//! pass does: the first material's vertices come first, then the next
+//! material's, and so on, each run ending where the next begins (the pass
+//! stores a run's last vertex inclusively and starts the next one past it;
+//! `docs/formats/RSQ.md`, Skinning).
+//!
+//! A hidden body slot's part is appended with a cull mask: vertices whose
+//! per-vertex slot mask meets the cull bits are left out, and triangles that
+//! needed one of them go with them. The per-triangle flags and corner bytes
+//! are carried along for the cull pass.
 
 use exa_formats::morph::{Frame, place, unturn};
 use exa_formats::rfc::{Mesh, MeshGroup, SkinWeights};
@@ -30,6 +35,56 @@ pub struct MergePart<'a> {
     pub material: &'a str,
     /// A hidden body slot's part is left out.
     pub visible: bool,
+    /// The body slot mask of each vertex, when the file stores one; a
+    /// vertex whose mask meets `cull` is not merged.
+    pub vertex_masks: Option<&'a [u32]>,
+    /// The visible body slots' bits: a vertex is left out when
+    /// `vertex_masks[v] & cull != 0`.
+    pub cull: u32,
+    /// The part's slice of its mesh's index buffer, when it is one material
+    /// group of a shared mesh.
+    pub index_range: Option<(usize, usize)>,
+}
+
+impl<'a> MergePart<'a> {
+    /// A visible part with no cull mask.
+    pub fn new(
+        mesh: &'a Mesh,
+        frame: Frame,
+        skin: Option<&'a [SkinWeights]>,
+        bone: u32,
+        material: &'a str,
+    ) -> Self {
+        Self {
+            mesh,
+            frame,
+            skin,
+            bone,
+            material,
+            visible: true,
+            vertex_masks: None,
+            cull: 0,
+            index_range: None,
+        }
+    }
+}
+
+/// One material run of the merged mesh.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SubObject {
+    pub material: String,
+    /// The run's first vertex in the merged mesh.
+    pub first_vertex: usize,
+    pub vertex_count: usize,
+    /// The run's first index in the merged mesh's index buffer.
+    pub first_index: usize,
+    pub index_count: usize,
+}
+
+/// The original's merged mesh and its material runs.
+pub struct Merged {
+    pub mesh: Mesh,
+    pub subobjects: Vec<SubObject>,
 }
 
 /// The body's frame with no turn or shift.
@@ -40,132 +95,323 @@ pub const IDENTITY: Frame = [
     [0.0, 0.0, 0.0],
 ];
 
+/// A vertex's fallback weight: all of it on `bone`.
+fn fallback(bone: u32) -> SkinWeights {
+    SkinWeights {
+        bones: [bone, 0, 0, 0],
+        weights: [1.0, 0.0, 0.0, 0.0],
+    }
+}
+
+/// A `(from, to)` index range clamped to `len`, with `from` first.
+trait ClampTo {
+    fn clamp_to(self, len: usize) -> (usize, usize);
+}
+
+impl ClampTo for (usize, usize) {
+    fn clamp_to(self, len: usize) -> (usize, usize) {
+        let from = self.0.min(len);
+        (from, self.1.clamp(from, len))
+    }
+}
+
+/// A part's appended vertices and its triangle list per material.
+struct Appended {
+    positions: Vec<[f32; 3]>,
+    normals: Vec<[f32; 3]>,
+    uvs: Vec<[f32; 2]>,
+    colors: Vec<[u8; 4]>,
+    skin: Vec<SkinWeights>,
+    position_ids: Vec<u32>,
+    uv_ids: Vec<u32>,
+    /// The material run of each appended vertex.
+    material: Vec<usize>,
+    /// The part's kept triangles, as local vertex indices.
+    triangles: Vec<[u32; 3]>,
+    /// Flags and corner bytes of the kept triangles.
+    flags: Vec<u32>,
+    edges: Vec<u8>,
+    has_uv: bool,
+    has_colour: bool,
+    has_flags: bool,
+    has_edges: bool,
+}
+
 /// Merges the visible parts into one mesh, or `None` when nothing is left.
-///
-/// Positions and normals are placed by each part's frame, the vertices are
-/// appended in part order, and the indices are regrouped by material (the
-/// groups keep the order in which their materials first appear). A mesh
-/// whose vertices carry skin weights is marked skinned; a vertex without
-/// one is bound to its part's bone with weight 1.
-pub fn merge_parts(parts: &[MergePart]) -> Option<Mesh> {
-    let mut out = Mesh {
+pub fn merge(parts: &[MergePart]) -> Option<Merged> {
+    let skinned = parts.iter().any(|p| p.visible && p.skin.is_some());
+    let mut appended = Appended {
         positions: Vec::new(),
         normals: Vec::new(),
-        uvs: Some(Vec::new()),
-        colors: Some(Vec::new()),
-        skin: None,
+        uvs: Vec::new(),
+        colors: Vec::new(),
+        skin: Vec::new(),
         position_ids: Vec::new(),
+        uv_ids: Vec::new(),
+        material: Vec::new(),
+        triangles: Vec::new(),
+        flags: Vec::new(),
+        edges: Vec::new(),
+        has_uv: false,
+        has_colour: false,
+        has_flags: false,
+        has_edges: false,
+    };
+    // Material names in first-seen order, and the appended vertices of each.
+    let mut materials: Vec<&str> = Vec::new();
+    let mut assigned: Vec<Vec<u32>> = Vec::new();
+    let mut position_count = 0u32;
+    let mut uv_count = 0u32;
+    for part in parts.iter().filter(|p| p.visible) {
+        let source = part.mesh;
+        if source.indices.is_empty() {
+            continue;
+        }
+        let count = source.positions.len();
+        let (from, to) = part
+            .index_range
+            .unwrap_or((0, source.indices.len()))
+            .clamp_to(source.indices.len());
+        let triangles_slice = &source.indices[from..to];
+        let mut keep: Vec<bool> = vec![false; count];
+        for &v in triangles_slice {
+            let v = v as usize;
+            if v >= count {
+                continue;
+            }
+            keep[v] = match part.vertex_masks {
+                Some(masks) if part.cull != 0 => {
+                    masks.get(v).copied().unwrap_or(0) & part.cull == 0
+                }
+                _ => true,
+            };
+        }
+        if !keep.iter().any(|&k| k) {
+            continue;
+        }
+        let at = materials.iter().position(|m| *m == part.material);
+        let group = match at {
+            Some(g) => g,
+            None => {
+                materials.push(part.material);
+                assigned.push(Vec::new());
+                materials.len() - 1
+            }
+        };
+        let turn = |d: [f32; 3]| unturn(&part.frame, d);
+        let uvs = source.uvs.as_deref();
+        let colours = source.colors.as_deref();
+        if uvs.is_some() {
+            appended.has_uv = true;
+        }
+        if colours.is_some() {
+            appended.has_colour = true;
+        }
+        if source.triangle_flags.is_some() {
+            appended.has_flags = true;
+        }
+        if source.triangle_edges.is_some() {
+            appended.has_edges = true;
+        }
+        let mut local = vec![u32::MAX; count];
+        for v in 0..count {
+            if !keep[v] {
+                continue;
+            }
+            let p = source.positions.get(v).copied().unwrap_or([0.0; 3]);
+            appended.positions.push(place(&part.frame, p));
+            let n = source.normals.get(v).copied().unwrap_or([0.0, 1.0, 0.0]);
+            appended.normals.push(turn(n));
+            appended
+                .uvs
+                .push(uvs.and_then(|u| u.get(v)).copied().unwrap_or([0.0, 0.0]));
+            appended
+                .colors
+                .push(colours.and_then(|c| c.get(v)).copied().unwrap_or([255; 4]));
+            let weight = part
+                .skin
+                .and_then(|s| s.get(v))
+                .copied()
+                .unwrap_or_else(|| fallback(part.bone));
+            appended.skin.push(weight);
+            appended
+                .position_ids
+                .push(source.position_ids.get(v).copied().unwrap_or(v as u32));
+            appended
+                .uv_ids
+                .push(source.uv_ids.get(v).copied().unwrap_or(v as u32));
+            appended.material.push(group);
+            local[v] = appended.positions.len() as u32 - 1;
+            assigned[group].push(appended.positions.len() as u32 - 1);
+            position_count = position_count.max(
+                source
+                    .position_ids
+                    .get(v)
+                    .copied()
+                    .unwrap_or(v as u32)
+                    .saturating_add(1),
+            );
+            uv_count = uv_count.max(
+                source
+                    .uv_ids
+                    .get(v)
+                    .copied()
+                    .unwrap_or(v as u32)
+                    .saturating_add(1),
+            );
+        }
+        for (offset, tri) in triangles_slice.as_chunks::<3>().0.iter().enumerate() {
+            let t = from / 3 + offset;
+            if tri
+                .iter()
+                .all(|&v| keep.get(v as usize).copied().unwrap_or(false))
+            {
+                appended.triangles.push([
+                    local[tri[0] as usize],
+                    local[tri[1] as usize],
+                    local[tri[2] as usize],
+                ]);
+                appended.flags.push(
+                    source
+                        .triangle_flags
+                        .as_ref()
+                        .and_then(|f| f.get(t))
+                        .copied()
+                        .unwrap_or(0),
+                );
+                appended.edges.push(
+                    source
+                        .triangle_edges
+                        .as_ref()
+                        .and_then(|e| e.get(t))
+                        .copied()
+                        .unwrap_or(0),
+                );
+            }
+        }
+    }
+    if appended.positions.is_empty() {
+        return None;
+    }
+    // The original's renumber pass: each material run's vertices in their
+    // appended order, the next run starting right after the last vertex.
+    let mut subobjects = Vec::with_capacity(materials.len());
+    let mut remap = vec![0u32; appended.positions.len()];
+    let mut total = 0usize;
+    for (index, material) in materials.iter().enumerate() {
+        let first = total;
+        let vertices = &assigned[index];
+        let mut ordered: Vec<u32> = vertices.clone();
+        ordered.sort_unstable();
+        for &old in &ordered {
+            remap[old as usize] = total as u32;
+            total += 1;
+        }
+        subobjects.push(SubObject {
+            material: (*material).to_string(),
+            first_vertex: first,
+            vertex_count: ordered.len(),
+            first_index: 0,
+            index_count: 0,
+        });
+    }
+    let mut mesh = Mesh {
+        positions: vec![[0.0; 3]; total],
+        normals: vec![[0.0, 1.0, 0.0]; total],
+        uvs: None,
+        colors: None,
+        skin: None,
+        position_ids: vec![0; total],
         indices: Vec::new(),
         groups: Vec::new(),
         triangle_flags: None,
         triangle_edges: None,
         gi_points: Vec::new(),
         render_flags: 0,
-        position_count: 0,
-        smoothing: Vec::new(),
+        position_count: position_count as usize,
+        smoothing: vec![0; total],
         uv_ids: Vec::new(),
-        uv_count: 0,
+        uv_count: uv_count as usize,
     };
-    let mut any = false;
-    let mut materials: Vec<String> = Vec::new();
-    let mut per_material: Vec<Vec<u32>> = Vec::new();
-    let mut has_colour = false;
-    let mut has_uv = false;
-    // A mesh with any skinned part keeps a weight for every vertex.
-    let skinned = parts.iter().any(|p| p.visible && p.skin.is_some());
+    for (old, &new) in remap.iter().enumerate() {
+        let new = new as usize;
+        mesh.positions[new] = appended.positions[old];
+        mesh.normals[new] = appended.normals[old];
+        mesh.position_ids[new] = appended.position_ids[old];
+    }
+    if appended.has_uv {
+        mesh.uvs = Some(vec![[0.0, 0.0]; total]);
+        mesh.uv_ids = vec![0; total];
+        for (old, &new) in remap.iter().enumerate() {
+            let new = new as usize;
+            mesh.uvs.as_mut().expect("just set")[new] = appended.uvs[old];
+            mesh.uv_ids[new] = appended.uv_ids[old];
+        }
+    }
+    if appended.has_colour {
+        mesh.colors = Some(vec![[255; 4]; total]);
+        for (old, &new) in remap.iter().enumerate() {
+            mesh.colors.as_mut().expect("just set")[new as usize] = appended.colors[old];
+        }
+    }
     if skinned {
-        out.skin = Some(Vec::new());
-    }
-    for part in parts.iter().filter(|p| p.visible) {
-        if part.mesh.indices.is_empty() {
-            continue;
-        }
-        any = true;
-        let base = out.positions.len() as u32;
-        let turn = |d: [f32; 3]| unturn(&part.frame, d);
-        for (i, p) in part.mesh.positions.iter().enumerate() {
-            out.positions.push(place(&part.frame, *p));
-            let n = part.mesh.normals.get(i).copied().unwrap_or([0.0, 1.0, 0.0]);
-            out.normals.push(turn(n));
-        }
-        let uvs = part.mesh.uvs.as_deref();
-        if uvs.is_some() {
-            has_uv = true;
-        }
-        let count = part.mesh.positions.len();
-        let at = out.uv_count as u32;
-        out.uvs
-            .get_or_insert_with(Vec::new)
-            .extend((0..count).map(|i| uvs.and_then(|u| u.get(i)).copied().unwrap_or([0.0, 0.0])));
-        out.uv_ids.extend((0..count as u32).map(|i| at + i));
-        out.uv_count += count;
-        let colours = part.mesh.colors.as_deref();
-        if colours.is_some() {
-            has_colour = true;
-        }
-        out.colors.get_or_insert_with(Vec::new).extend(
-            (0..count).map(|i| colours.and_then(|c| c.get(i)).copied().unwrap_or([255; 4])),
-        );
-        out.position_ids
-            .extend(base..base + part.mesh.positions.len() as u32);
-        out.position_count = out.positions.len();
-        let at = materials.iter().position(|m| m == part.material);
-        let group = match at {
-            Some(g) => g,
-            None => {
-                materials.push(part.material.to_string());
-                per_material.push(Vec::new());
-                materials.len() - 1
-            }
-        };
-        for tri in part.mesh.indices.as_chunks::<3>().0 {
-            let [a, b, c] = *tri;
-            let len = part.mesh.positions.len() as u32;
-            if a < len && b < len && c < len {
-                per_material[group].extend([base + a, base + b, base + c]);
-            }
-        }
-        if let Some(skin) = &mut out.skin {
-            match part.skin {
-                Some(weights) => skin.extend((0..count).map(|i| {
-                    weights
-                        .get(i)
-                        .copied()
-                        .unwrap_or_else(|| fallback(part.bone))
-                })),
-                None => skin.extend(std::iter::repeat_n(fallback(part.bone), count)),
-            }
+        mesh.skin = Some(vec![fallback(0); total]);
+        for (old, &new) in remap.iter().enumerate() {
+            mesh.skin.as_mut().expect("just set")[new as usize] = appended.skin[old];
         }
     }
-    if !any {
-        return None;
-    }
-    if let Some(skin) = &mut out.skin {
-        skin.resize(out.positions.len(), fallback(0));
-    }
-    if !has_colour {
-        out.colors = None;
-    }
-    if !has_uv {
-        out.uvs = None;
-        out.uv_ids.clear();
-        out.uv_count = 0;
-    }
+    // The triangles stay grouped by material, in the run order the
+    // sub-objects took; a part's own triangle order is kept.
+    let mut indices = Vec::with_capacity(appended.triangles.len() * 3);
+    let mut flags = Vec::with_capacity(appended.triangles.len());
+    let mut edges = Vec::with_capacity(appended.triangles.len());
     let mut first = 0u32;
-    for (material, indices) in materials.into_iter().zip(per_material) {
-        if indices.is_empty() {
+    for (index, subobject) in subobjects.iter_mut().enumerate() {
+        let start = indices.len();
+        for (t, tri) in appended.triangles.iter().enumerate() {
+            if appended.material[tri[0] as usize] != index {
+                continue;
+            }
+            indices.extend_from_slice(&[
+                remap[tri[0] as usize],
+                remap[tri[1] as usize],
+                remap[tri[2] as usize],
+            ]);
+            flags.push(appended.flags[t]);
+            edges.push(appended.edges[t]);
+        }
+        let count = indices.len() - start;
+        if count == 0 {
             continue;
         }
-        let count = indices.len() as u32;
-        out.indices.extend(indices);
-        out.groups.push(MeshGroup {
-            material,
+        subobject.first_index = first as usize;
+        subobject.index_count = count;
+        mesh.groups.push(MeshGroup {
+            material: materials[index].to_string(),
             first_index: first,
-            index_count: count,
+            index_count: count as u32,
         });
-        first += count;
+        first += count as u32;
     }
-    Some(out)
+    mesh.indices = indices;
+    if appended.has_flags {
+        mesh.triangle_flags = Some(flags);
+    }
+    if appended.has_edges {
+        mesh.triangle_edges = Some(edges);
+    }
+    // Sub-object index runs are relative to the final grouped index buffer.
+    let mut first = 0usize;
+    for subobject in &mut subobjects {
+        subobject.first_index = first;
+        first += subobject.index_count;
+    }
+    Some(Merged { mesh, subobjects })
+}
+
+/// Merges the visible parts into one mesh, or `None` when nothing is left.
+pub fn merge_parts(parts: &[MergePart]) -> Option<Mesh> {
+    merge(parts).map(|m| m.mesh)
 }
 
 /// The next and previous corner of a triangle corner, as the generator's
@@ -232,14 +478,6 @@ pub fn culled_indices(mesh: &Mesh, bits: u32) -> Vec<u32> {
         .collect()
 }
 
-/// A vertex's fallback weight: all of it on `bone`.
-fn fallback(bone: u32) -> SkinWeights {
-    SkinWeights {
-        bones: [bone, 0, 0, 0],
-        weights: [1.0, 0.0, 0.0, 0.0],
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -272,11 +510,20 @@ mod tests {
         }
     }
 
-    /// Two parts under two materials merge into one mesh: the second part's
-    /// vertices follow the first's, its indices are offset, and each
-    /// material keeps one contiguous run in first-seen order.
+    fn part<'a>(
+        mesh: &'a Mesh,
+        skin: Option<&'a [SkinWeights]>,
+        bone: u32,
+        material: &'a str,
+    ) -> MergePart<'a> {
+        MergePart::new(mesh, IDENTITY, skin, bone, material)
+    }
+
+    /// Two parts of two materials: vertices are regrouped by material, the
+    /// second run starts right after the first, and the indices follow the
+    /// new numbering. The materials keep first-seen order.
     #[test]
-    fn two_parts_become_one_mesh_with_one_group_per_material() {
+    fn parts_are_grouped_by_material_in_back_to_back_runs() {
         let body = mesh(
             &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
             &[0, 1, 2],
@@ -288,42 +535,44 @@ mod tests {
         let skin = [weight(1), weight(1), weight(2)];
         let parts = [
             MergePart {
-                mesh: &body,
-                frame: IDENTITY,
                 skin: Some(&skin),
-                bone: 1,
-                material: "skinhuman",
-                visible: true,
+                ..part(&body, Some(&skin), 1, "skinhuman")
             },
-            MergePart {
-                mesh: &cloth,
-                frame: IDENTITY,
-                skin: None,
-                bone: 9,
-                material: "trouser",
-                visible: true,
-            },
+            part(&cloth, None, 9, "trouser"),
         ];
-        let merged = merge_parts(&parts).unwrap();
-        assert_eq!(merged.positions.len(), 6);
-        assert_eq!(merged.indices, [0, 1, 2, 3, 4, 5]);
+        let merged = merge(&parts).unwrap();
+        assert_eq!(merged.mesh.positions.len(), 6);
         assert_eq!(
-            merged.groups,
+            merged.subobjects,
             [
-                MeshGroup {
+                SubObject {
                     material: "skinhuman".into(),
+                    first_vertex: 0,
+                    vertex_count: 3,
                     first_index: 0,
-                    index_count: 3
+                    index_count: 3,
                 },
-                MeshGroup {
+                SubObject {
                     material: "trouser".into(),
+                    first_vertex: 3,
+                    vertex_count: 3,
                     first_index: 3,
-                    index_count: 3
+                    index_count: 3,
                 },
             ]
         );
-        assert_eq!(merged.skin.as_ref().unwrap()[2].bones[0], 2);
-        assert_eq!(merged.skin.as_ref().unwrap()[3].bones, [9, 0, 0, 0]);
+        assert_eq!(merged.mesh.indices, [0, 1, 2, 3, 4, 5]);
+        // The skin stream follows the vertices; the unskinned part takes its
+        // bone.
+        let skin = merged.mesh.skin.as_ref().unwrap();
+        assert_eq!(skin.len(), 6);
+        assert_eq!(
+            (skin[0].bones[0], skin[1].bones[0], skin[2].bones[0]),
+            (1, 1, 2)
+        );
+        assert_eq!(skin[3].bones, [9, 0, 0, 0]);
+        assert_eq!(merged.mesh.groups[0].material, "skinhuman");
+        assert_eq!(merged.mesh.groups[1].index_count, 3);
     }
 
     /// A part placed by a frame: its positions move and its normals turn;
@@ -346,26 +595,15 @@ mod tests {
             [0.0, 0.1, 0.0],
         ];
         let parts = [
+            MergePart::new(&body, frame, None, 1, "m"),
             MergePart {
-                mesh: &body,
-                frame,
-                skin: None,
-                bone: 1,
-                material: "m",
-                visible: true,
-            },
-            MergePart {
-                mesh: &hidden,
-                frame: IDENTITY,
-                skin: None,
-                bone: 1,
-                material: "m",
                 visible: false,
+                ..part(&hidden, None, 1, "m")
             },
         ];
         let merged = merge_parts(&parts).unwrap();
         assert_eq!(
-            merged.positions,
+            merged.positions[..3],
             [[0.0, 0.1, -1.0], [0.0, 0.1, -2.0], [0.0, 1.1, -1.0]]
         );
         assert_eq!(merged.normals[0], [0.0, 1.0, 0.0]);
@@ -373,12 +611,36 @@ mod tests {
         assert!(merged.skin.is_none());
     }
 
-    /// A triangle whose marked vertices belong to two parts loses their
-    /// alpha; an unmarked vertex keeps the opaque value.
+    /// A cull mask leaves out the vertices whose stored slot mask meets it,
+    /// and the triangles that used them.
     #[test]
+    fn a_cull_mask_drops_vertices_and_their_triangles() {
+        let m = mesh(
+            &[
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [1.0, 1.0, 0.0],
+            ],
+            &[0, 1, 2, 1, 3, 2],
+        );
+        let masks = [0x1, 0x1, 0x2, 0x2];
+        let parts = [MergePart {
+            vertex_masks: Some(&masks),
+            cull: 0x1,
+            ..part(&m, None, 1, "m")
+        }];
+        let merged = merge_parts(&parts).unwrap();
+        // Vertices 2 and 3 survive; both triangles needed a culled vertex.
+        assert_eq!(merged.positions.len(), 2);
+        assert!(merged.indices.is_empty());
+        assert_eq!(merged.position_count, 4);
+    }
+
     /// A closed fan of three marked triangles around vertex 0: the centre
     /// keeps its alpha, the rim (the marked region's border) fades. An
     /// unmarked fan stays opaque.
+    #[test]
     fn the_occlusion_alpha_fades_the_marked_border() {
         let fan = [0, 1, 2, 0, 2, 3, 0, 3, 1];
         let ids = [0, 1, 2, 3];
@@ -406,56 +668,25 @@ mod tests {
     fn a_part_that_covers_every_material_run_keeps_one_group() {
         let a = mesh(&[[0.0; 3]; 3], &[0, 1, 2]);
         let b = mesh(&[[0.0; 3]; 3], &[0, 1, 2]);
-        let parts = [
-            MergePart {
-                mesh: &a,
-                frame: IDENTITY,
-                skin: None,
-                bone: 1,
-                material: "m",
-                visible: true,
-            },
-            MergePart {
-                mesh: &b,
-                frame: IDENTITY,
-                skin: None,
-                bone: 1,
-                material: "m",
-                visible: true,
-            },
-        ];
-        let merged = merge_parts(&parts).unwrap();
-        assert_eq!(merged.groups.len(), 1);
-        assert_eq!(merged.groups[0].index_count, 6);
+        let parts = [part(&a, None, 1, "m"), part(&b, None, 1, "m")];
+        let merged = merge(&parts).unwrap();
+        assert_eq!(merged.mesh.groups.len(), 1);
+        assert_eq!(merged.mesh.groups[0].index_count, 6);
+        assert_eq!(merged.subobjects.len(), 1);
+        assert_eq!(merged.subobjects[0].vertex_count, 6);
+        assert_eq!(merged.mesh.positions.len(), 6);
         assert!(merge_parts(&[]).is_none());
     }
 
     /// Weights of a skinned part are kept vertex for vertex; a part without
     /// skin gets its bone, and a skinned mesh keeps a weight for every
-    /// vertex, including those of earlier unskinned parts.
+    /// vertex.
     #[test]
     fn the_weights_follow_the_vertices() {
         let plain = mesh(&[[0.0; 3]; 3], &[0, 1, 2]);
         let skinned = mesh(&[[1.0; 3]; 3], &[0, 1, 2]);
         let w = [weight(3), weight(4), weight(5)];
-        let parts = [
-            MergePart {
-                mesh: &plain,
-                frame: IDENTITY,
-                skin: None,
-                bone: 7,
-                material: "a",
-                visible: true,
-            },
-            MergePart {
-                mesh: &skinned,
-                frame: IDENTITY,
-                skin: Some(&w),
-                bone: 1,
-                material: "b",
-                visible: true,
-            },
-        ];
+        let parts = [part(&plain, None, 7, "a"), part(&skinned, Some(&w), 1, "b")];
         let merged = merge_parts(&parts).unwrap();
         let skin = merged.skin.as_ref().unwrap();
         assert_eq!(skin.len(), 6);

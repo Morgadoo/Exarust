@@ -169,6 +169,51 @@ impl SkinJob {
     }
 }
 
+/// One draw of the texture job's render callback, in the order the original
+/// issues it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SkinPass {
+    /// `chargen_d` over the colour target.
+    Colour,
+    /// The beard's colour overlay, when the record wears one.
+    BeardColour,
+    /// `chargen_n` over the normal target.
+    Normal,
+    /// The beard's normal overlay.
+    BeardNormal,
+    /// `chargen_s` over the surface target.
+    Specular,
+    /// The beard's surface overlay.
+    BeardSurface,
+}
+
+/// The passes a job's callback draws: the colour target, then the normal
+/// target, then the surface target, each skin program followed by its beard
+/// overlay when the record has a beard. The job's apparel layers are drawn
+/// into each target after its beard overlay.
+pub fn passes(beard: bool) -> Vec<SkinPass> {
+    let mut out = vec![SkinPass::Colour];
+    if beard {
+        out.push(SkinPass::BeardColour);
+    }
+    out.push(SkinPass::Normal);
+    if beard {
+        out.push(SkinPass::BeardNormal);
+    }
+    out.push(SkinPass::Specular);
+    if beard {
+        out.push(SkinPass::BeardSurface);
+    }
+    out
+}
+
+impl SkinJob {
+    /// The passes the job's callback draws (see [`passes`]).
+    pub fn passes(&self) -> Vec<SkinPass> {
+        passes(self.beard.is_some())
+    }
+}
+
 /// The beard's colour: the hair picker on the record's three colour bytes
 /// (each `byte × 1/255` in double), its diffuse moved halfway to grey 0.3.
 pub fn beard_colour(colour: [u8; 3]) -> [f32; 3] {
@@ -180,6 +225,27 @@ pub fn beard_colour(colour: [u8; 3]) -> [f32; 3] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The callback's draw order: colour, normal, surface, each skin
+    /// program before its beard overlay, and no beard pass without a beard.
+    #[test]
+    fn the_passes_follow_the_callback_order() {
+        assert_eq!(
+            passes(false),
+            [SkinPass::Colour, SkinPass::Normal, SkinPass::Specular]
+        );
+        assert_eq!(
+            passes(true),
+            [
+                SkinPass::Colour,
+                SkinPass::BeardColour,
+                SkinPass::Normal,
+                SkinPass::BeardNormal,
+                SkinPass::Specular,
+                SkinPass::BeardSurface
+            ]
+        );
+    }
 
     #[test]
     fn the_job_starts_at_the_pixel_formats_side() {

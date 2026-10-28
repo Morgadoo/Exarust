@@ -16,6 +16,17 @@ pub fn skin_side(pixel_format: u32) -> u32 {
     if pixel_format < 3 { 0x200 } else { 0x400 }
 }
 
+/// The side of the player's inventory preview job: the original takes 512
+/// unless its high-quality flag is set and the pixel-format setting is 3 or
+/// more, when it takes 1024.
+pub fn preview_side(pixel_format: u32, high_quality: bool) -> u32 {
+    if high_quality && pixel_format >= 3 {
+        0x400
+    } else {
+        0x200
+    }
+}
+
 /// The two format words a texture job carries: its side, then the same word
 /// as the target format.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -132,6 +143,14 @@ mod tests {
                 format: 0x400
             }
         );
+    }
+
+    #[test]
+    fn the_preview_is_512_unless_high_quality_and_format_three() {
+        assert_eq!(preview_side(2, true), 0x200);
+        assert_eq!(preview_side(3, false), 0x200);
+        assert_eq!(preview_side(3, true), 0x400);
+        assert_eq!(preview_side(5, true), 0x400);
     }
 
     #[test]

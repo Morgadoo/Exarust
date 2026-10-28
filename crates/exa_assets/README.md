@@ -26,7 +26,15 @@ group that reaches it. The weights are per position id: fixed 0.5/0.25/0.125
 splits on the groups, and up to three damped distance blends elsewhere
 ([`docs/formats/RSQ.md`](../../docs/formats/RSQ.md), Skinning). The shipped
 human and ogre bodies are checked watertight. The weights run in the model
-build on the compute pool; a mesh that ships weights keeps them.
+build on the compute pool; a mesh that ships weights keeps them. The
+builder's group stack (sixteen frames, an empty frame for a node without
+groups, a cleared top frame that keeps its depth) is `skin::GroupStack`;
+`skin::auto_skin_with_context` matches a garment's groups against an
+enclosing part's joints as the stack's reader does, and the per-node model
+build passes no context.
+`model::underscore_skinned_child` and `model::skinned_mesh_under` are the
+wound and effect lookups (the `_`-named child, then the deepest skinned
+mesh in reverse child order).
 
 Hair (`hair`): the original's hair colour picker (five decoded hue anchors,
 desaturation by the saturated value, a specular grey moved in, the engine's
@@ -35,17 +43,31 @@ sRGB chain), with the feral level's lightening, the material's gloss
 widened to double and narrowed) as the instructions take it. The character
 crate's `hair` system tints the hair materials with it.
 
-Merging (`merge`): `merge_parts` appends the visible body parts and garment
-pieces into one skinned mesh as the original's character assembly does:
-each part placed by its frame, its vertices, normals, UVs and colours
-appended, its weights kept vertex for vertex (a part without them bound to
-its bone), and its triangles grouped by material in first-seen order. `culled_indices` drops triangles with a slot's cull bits
-(`exa_character::layers::cull_bits`; which triangle flags they test is
-not traced) and `occlusion_alpha` writes the generator's per-vertex
-occlusion alpha (vertices on the border of the marked triangles fade). The
-merge order itself comes from the skin builder, outside the generator, and
-is not checked against its instructions here. The loader still draws a mesh per
-node; the merged mesh is built by callers, not by the loader yet.
+Merging (`merge`): `merge` appends the visible body parts and garment pieces
+into one skinned mesh as the original's character assembly does: each part
+placed by its frame, its vertices, normals, UVs and colours appended, its
+weights kept vertex for vertex (a part without them bound to its bone), and
+its triangles grouped by material in first-seen order. The final renumber
+pass is the original's: each material's vertices in order, each run
+starting right after the previous one's last vertex. A part's `vertex_masks` and `cull`
+drop the vertices a hidden body slot masks and the triangles that needed
+them; `culled_indices` drops triangles by a slot's per-triangle cull bits
+(`exa_character::layers::cull_bits`) and `occlusion_alpha` writes the
+generator's per-vertex occlusion alpha. `Merged::subobjects` states each
+material run's vertex and index ranges, and `model::scene_merged_mesh`
+merges a scene's skinned nodes group by group from their body-space frames.
+The loader still draws a mesh per node; the merged mesh is built by callers,
+not by the loader yet.
+
+Skin composite (`skin_composite`): the original's generated skin maps.
+`colour_texel` is `chargen_d`'s colour times the tone, `specular_texel`
+`chargen_s`'s packed intensity/gloss/metal, and `normal_texel`
+`chargen_n`'s base plus each physique layer's `(an − bn)·weight`. The
+beard's three overlay programs are `beard_colour` (squared alpha, mip-3
+alpha, the 0.1 mix and the 1.5 alpha), `beard_normal` and
+`beard_specular` (`a³·0.4`). `compose` runs the whole job per texel into
+the sRGB colour target and linear surface and normal targets; no caller
+feeds it to the renderer yet.
 
 Skin tone (`human_skin`): a character's `SkinLook` selects the built-in skin
 material for its record's two tone words (and the women's texture set),

@@ -744,8 +744,10 @@ The game never draws an apparel item's own textures. It paints a colour
 texture per item from the shade map `<stem>d` (cavities dark), stacking each
 layer's finish over its mask on black. Run-time materials `&<10 chars><digit>`
 name the stem: the ten characters after the `&` (`&doublet_aa1` →
-`doublet_aa`, `&gambsonaba1` → `gambsonaba`). The finishes by material
-number:
+`doublet_aa`, `&gambsonaba1` → `gambsonaba`). A model gets one job and one
+stem: the walk takes the first `&` material in node and part order and
+rewrites every `&` part to that job's stem (`exa_assets::model::
+painted_model_stem`). The finishes by material number:
 
 | id | material | finish family | colour-pass textures (sampler order) |
 |---|---|---|---|

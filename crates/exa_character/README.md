@@ -68,7 +68,10 @@ physique values and the body morphs they select remain the body's concern
 - `Outfit` lists garments by `Characters.rpk` model; `equip_outfits` fits
   each to the body parts, paints it from its appearance (or from the first
   object-database item worn as the model) and hides the body parts it
-  covers. The fitting (the garment's weights from its own seam groups, as
+  covers. A garment gets one texture job and one stem: the first `&`
+  material in node and part order,
+  `exa_assets::model::painted_model_stem`, and every `&` part is painted
+  from it, as the original rewrites all of them to the job's stem. The fitting (the garment's weights from its own seam groups, as
   the body's, its meshes) and the painting run on the async compute pool, and at most
   32 MiB of painted textures are made a frame; a body is dressed, 8 ms of
   dressing a frame, once everything it wears is in, before the animation
@@ -142,12 +145,16 @@ These are tested rules the running game does not drive yet.
   which the caller supplies.
 - `factory` is the start-up data: the eighteen slots' child tables, the
   skin-map side/format from the pixel-format setting (512 below 3, 1024
-  from 3), the item-database override and the material lock.
+  from 3), the inventory preview's side (`preview_side`: 512 unless the
+  high-quality flag and format 3 make it 1024), the item-database override
+  and the material lock.
 - `texture_job` describes the skin job the renderer runs: the race's colour,
   gloss and normal maps, the record's tone words, look seed and offsets,
   the darkening, the beard and its colour, the normal-layer blend, plus the
-  first apparel texture the job carries. `exa_assets::human_skin` draws the
-  parts it can; the tone colour, the beard and the blend are not drawn.
+  first apparel texture the job carries. `exa_assets::skin_composite`
+  evaluates the job's `chargen_d`/`_s`/`_n` and beard overlay programs per
+  texel; `exa_assets::human_skin` draws the parts the running skin keeps
+  (the tone tint and the base normal map).
 - `rebuild` keeps the look rebuild's own steps (job reset and first
   apparel, frame save, dynamics rebuild, frame restore, the root lift by
   the new standing height, the double-precision body scale), the
