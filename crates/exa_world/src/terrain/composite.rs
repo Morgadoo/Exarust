@@ -608,7 +608,7 @@ pub fn mask_pass(
     layers: &[LayerFlags],
 ) -> PassDraw {
     let count = total.saturating_sub(start).min(4);
-    let group = &layers[start..start + count.min(layers.len())];
+    let group = layers.get(start..start + count).unwrap_or(&[]);
     let key = pass_key(PassProgram::Mask, start, total, group, false);
     PassDraw {
         program: PassProgram::Mask,
@@ -631,7 +631,7 @@ pub fn mask_pass(
 /// layer `k` has a height map.
 pub fn height_pass(level: i32, start: usize, total: usize, layers: &[LayerFlags]) -> PassDraw {
     let count = total.saturating_sub(start).min(4);
-    let group = &layers[start..start + count.min(layers.len())];
+    let group = layers.get(start..start + count).unwrap_or(&[]);
     let key = pass_key(PassProgram::Height, start, total, group, false);
     PassDraw {
         program: PassProgram::Height,
