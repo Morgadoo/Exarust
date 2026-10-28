@@ -2158,9 +2158,9 @@ conversation's buffer has the same shape: slot 0 is its own node count and
 node `n` is slot `n`. When a dialogue loads a block whose count differs from
 its node count, it writes its own count into slot 0, copies the stored
 block from the block's count word on into slots 1… (as many words as the
-block holds, at most the node count) and zeroes the rest: slot 1 receives
-the stored count, slot `i + 1` the stored word `i − 1`, and the last stored
-word is dropped. An equal count copies the block straight. A new
+block's count, at most the node count) and zeroes the rest: slot 1
+receives the stored count, slot `j` the stored node word `j − 1`, and the
+last stored node word is dropped. An equal count copies the block straight. A new
 conversation's buffer is its count word and zeros; opening from a stored
 block copies the nodes into slots 1… unshifted.
 The dialogue search (and a broadcast witness's walk) looks a role-to-role

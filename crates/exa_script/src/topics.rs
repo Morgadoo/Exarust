@@ -12,10 +12,10 @@
 //! dialogue uses (the aimed-at role, the owner's role), a relation role's
 //! dialogue (the relation role, the aimed-at role). A conversation's words
 //! are a count word (the dialogue's node count) and one word per node, node
-//! `n` at slot `n`; a stored block keeps the node words only. Loading pads
-//! a shorter block with zeros; when the stored count differs from the
+//! `n` at slot `n`; a stored block has the same shape. Loading pads a
+//! shorter block with zeros; when the stored count differs from the
 //! dialogue's, the stored count word itself lands in slot 1 and the stored
-//! words follow it, as in the original.
+//! words follow it (the last stored node word dropped), as in the original.
 //!
 //! Evidence: the topic gate, the activation updater, the memory load and
 //! store of the run-time dialogue, the cooldown table (16 words), the
