@@ -51,12 +51,14 @@ impl Default for PartArmour {
     }
 }
 
-/// Effective coverage of a layer folded under another.
+/// Effective coverage of a layer folded under another:
+/// `c + (1 − c)·((c − ½)·1.75)`, each product in float, in the original's
+/// order, over half only (a NaN stays).
 fn effective(c: f32) -> f32 {
-    if c <= 0.5 {
-        c
+    if c > 0.5 {
+        (1.0 - c) * ((c - 0.5) * 1.75) + c
     } else {
-        c + 1.75 * (1.0 - c) * (c - 0.5)
+        c
     }
 }
 
@@ -87,12 +89,16 @@ pub fn armour_layers(
 ) -> [PartArmour; 18] {
     let mut parts = [PartArmour::default(); 18];
     if let Some(n) = natural {
+        // The natural layer's coverage is a percentage taken to a double and
+        // narrowed, its padding a byte × 0.005 in double times that coverage,
+        // and its resistances the byte × 1/140 in float times the coverage.
+        let resist = |b: u8| f32::from(b) * PER_RESISTANCE;
         for (part, &c) in parts.iter_mut().zip(&n.coverage) {
-            let c = c as f32 / 100.0;
-            part.inner.padding = c * n.padding as f32 * 0.005;
-            part.inner.slash = c * n.slash as f32 / 140.0;
-            part.inner.crush = c * n.crush as f32 / 140.0;
-            part.inner.pierce = c * n.pierce as f32 / 140.0;
+            let c = (f64::from(c) * 0.01) as f32;
+            part.inner.padding = (f64::from(c) * (f64::from(n.padding) * 0.005)) as f32;
+            part.inner.slash = resist(n.slash) * c;
+            part.inner.crush = resist(n.crush) * c;
+            part.inner.pierce = resist(n.pierce) * c;
         }
     }
     for item in worn {
@@ -115,7 +121,7 @@ pub fn armour_layers(
                 let (g0, g1) = (effective(inner.coverage), effective(outer.coverage));
                 let fold = |s0: f32, s1: f32| {
                     let s0 = g0 * s0;
-                    s0 + (1.0 - s0) * g1 * s1
+                    (1.0 - s0) * s1 * g1 + s0
                 };
                 part.inner = Layer {
                     coverage: 1.0,
@@ -1732,9 +1738,51 @@ mod tests {
         let p = parts[0];
         assert_eq!(p.inner.coverage, 1.0);
         assert_eq!(p.inner.material, 3);
-        // The first shirt folds in at its effective coverage 0.905.
-        assert!((p.inner.slash - 0.905 * 0.5).abs() < 1e-5);
+        // The first shirt folds in at its effective coverage 0.905, the
+        // products in the original's order: (1 − c)((c − ½)·1.75) + c.
+        assert_eq!(effective(0.8), 0.905_000_03);
+        assert_eq!(effective(0.8).to_bits(), 0x3f67_ae15);
+        // 70/140 in float × 0.905, the inner term zero first.
+        assert_eq!(p.inner.slash.to_bits(), 0x3ee7_ae15);
+        assert!((p.inner.slash - 0.452_500_02).abs() < 1e-7);
+        // Padding folds the same way: 10 × 0.005 × 0.905.
+        assert!((p.inner.padding - 0.045_250_002).abs() < 1e-8);
         assert!(p.outer.is_some());
+    }
+
+    /// The race's natural layer: its percentage is a double product narrowed
+    /// to 0.4; its padding a byte × 0.005 in double times that coverage
+    /// (0.02); its resistances the byte × 1/140 in float times it (0.2 for
+    /// 70). It stays the inner layer under the first garment.
+    #[test]
+    fn the_natural_layer_keeps_the_originals_precision() {
+        let natural = Natural {
+            coverage: [40; 18],
+            padding: 10,
+            slash: 70,
+            crush: 10,
+            pierce: 30,
+        };
+        let parts = armour_layers(Some(&natural), &[], false);
+        let p = parts[0].inner;
+        assert_eq!(p.coverage, 1.0);
+        assert_eq!(p.padding.to_bits(), 0x3ca3_d70a);
+        assert_eq!(p.slash, 0.2);
+        assert_eq!(p.crush.to_bits(), 0x3cea_0ea2);
+        assert_eq!(p.pierce.to_bits(), 0x3daf_8af9);
+        assert!((p.padding - 0.02).abs() < 1e-9);
+        let shirt = Armour {
+            coverage: [80; 18],
+            padding: 10,
+            slash: 70,
+            crush: 10,
+            pierce: 30,
+            encumbrance: 5,
+            material: 3,
+        };
+        let parts = armour_layers(Some(&natural), &[shirt], false);
+        assert_eq!(parts[0].inner.slash, 0.2);
+        assert_eq!(parts[0].outer.unwrap().slash, 0.5);
     }
 
     /// Deflection: 30 % covers 0.4, 75 % covers 0.825 and 95 % all of it;

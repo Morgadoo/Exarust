@@ -985,7 +985,8 @@ mod tests {
     }
 
     /// The layer level is the highest layer any occupancy word holds:
-    /// braies sit on layer 0, plate on layer 6.
+    /// braies sit on layer 0, plate on layer 6. The builder scans all twenty
+    /// words (bones 1 to 20), not only the eighteen slots.
     #[test]
     fn the_layer_level_is_the_garments_highest() {
         let mut braies = [0u64; 20];
@@ -995,6 +996,11 @@ mod tests {
         plate[8] = 0x06_0000_0000_0000;
         plate[19] = 0x0300;
         assert_eq!(layer_level(&plate), 6);
+        let mut bone20 = [0u64; 20];
+        bone20[0] = 0x01;
+        bone20[19] = 0x0700_0000_0000_0000;
+        assert_eq!(layer_level(&bone20), 7);
+        assert_eq!(layer_level(&bone20[..18]), 0);
         assert_eq!(layer_level(&[0; 20]), 0);
     }
 }

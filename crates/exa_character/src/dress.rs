@@ -205,6 +205,9 @@ pub struct WornModel<'a> {
     pub occupancy: [u64; 18],
     /// The item's eight-byte coverage word per body slot.
     pub coverage: [u64; 18],
+    /// The item's layer level over all twenty occupancy words (bones 1 to
+    /// 20); the builder inserts it by this.
+    pub level: u8,
     /// The item's hit-sound material byte.
     pub material: u8,
 }
@@ -278,6 +281,7 @@ pub fn assemble(body_model: &Model, garments: &[WornModel<'_>]) -> Option<Assemb
                 occupancy: garment.occupancy,
                 coverage: garment.coverage,
                 slots: 0,
+                level: garment.level,
                 material: garment.material,
             });
             continue;
@@ -316,6 +320,7 @@ pub fn assemble(body_model: &Model, garments: &[WornModel<'_>]) -> Option<Assemb
             occupancy: garment.occupancy,
             coverage: garment.coverage,
             slots: seen,
+            level: garment.level,
             material: garment.material,
         });
     }
@@ -508,6 +513,7 @@ mod tests {
             occupancy,
             coverage: occupancy,
             slots: slot_bit(1),
+            level: crate::layers::layer_level(&occupancy),
             material: 0,
         };
         let plan = dress(&b, 0, &[garment], &slots);
@@ -626,6 +632,7 @@ mod tests {
             occupancy,
             coverage: words,
             slots,
+            level: crate::layers::layer_level(&helm.occupancy),
             material: helm.armour.map_or(0, |a| a.material),
         };
         let plan = dress(&body, 0, &[worn], &table);
@@ -705,6 +712,7 @@ mod tests {
             model: &garment,
             occupancy,
             coverage,
+            level: crate::layers::layer_level(&occupancy),
             material: 2,
         };
         let assembled = assemble(&body, &[worn]).expect("a body with a root");
@@ -783,17 +791,21 @@ mod tests {
                 info.as_ref().map_or([0; 18], |i| i.occupancy),
                 info.as_ref().map_or([0; 18], |i| i.coverage),
                 info.as_ref().map_or(0, |i| i.material),
+                info.as_ref().map_or(0, |i| i.level),
             ));
         }
         let garments: Vec<WornModel<'_>> = worn
             .iter()
             .zip(&models)
-            .map(|((_, occupancy, coverage, material), model)| WornModel {
-                model,
-                occupancy: *occupancy,
-                coverage: *coverage,
-                material: *material,
-            })
+            .map(
+                |((_, occupancy, coverage, material, level), model)| WornModel {
+                    model,
+                    occupancy: *occupancy,
+                    coverage: *coverage,
+                    level: *level,
+                    material: *material,
+                },
+            )
             .collect();
         let assembled = assemble(&body, &garments).expect("a body with a root");
         let mut pieces = Vec::new();

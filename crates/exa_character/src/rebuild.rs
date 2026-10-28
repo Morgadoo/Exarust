@@ -99,6 +99,10 @@ pub struct WornGarment {
     pub occupancy: [u64; 18],
     pub coverage: [u64; 18],
     pub slots: u32,
+    /// The garment's layer level: the highest non-zero layer byte over the
+    /// item's twenty occupancy words (bones 1 to 20), not just the eighteen
+    /// slots. The cache inserts each garment by it.
+    pub level: u8,
     /// The hit-sound class the garment gives a body part it covers most
     /// (the item's material byte).
     pub material: u8,
@@ -140,9 +144,10 @@ pub fn dress_plan(body: &Body, garments: &[WornGarment]) -> DressPlan {
             *u |= w;
         }
     }
-    // Stable ascending layer level, as the cache's insertion keeps it.
+    // Stable ascending layer level, as the cache's insertion keeps it: each
+    // garment goes after every entry whose level is at most its own.
     let mut order: Vec<usize> = (0..garments.len()).collect();
-    order.sort_by_key(|&i| layers::layer_level(&garments[i].occupancy));
+    order.sort_by_key(|&i| garments[i].level);
     let mut slot_material = [0u8; 18];
     let mut slot_uncovered = [0u64; 18];
     let garments: Vec<GarmentMerge> = order
@@ -440,6 +445,7 @@ mod tests {
             occupancy,
             coverage: occupancy,
             slots: crate::layers::slot_bit(1),
+            level: crate::layers::layer_level(&occupancy),
             material: 3,
         };
         let plan = dress_plan(&b, &[garment]);
@@ -472,6 +478,7 @@ mod tests {
                     occupancy: outer,
                     coverage: outer,
                     slots: chest,
+                    level: crate::layers::layer_level(&outer),
                     material: 7,
                 },
                 WornGarment {
@@ -479,6 +486,7 @@ mod tests {
                     occupancy: inner,
                     coverage: inner,
                     slots: chest,
+                    level: crate::layers::layer_level(&inner),
                     material: 1,
                 },
             ],
@@ -487,6 +495,46 @@ mod tests {
         assert_eq!(plan.garments.len(), 2);
         assert_eq!(plan.garments[0].chosen[9], Some(1));
         assert_eq!(plan.garments[1].chosen[9], Some(1));
+    }
+
+    /// The cache sorts by the level over all twenty occupancy words: a
+    /// garment whose high layer lies on bone 20 comes after one on the
+    /// slots even when it is worn first.
+    #[test]
+    fn the_layer_order_reads_bone_twenty() {
+        let b = body();
+        let chest = crate::layers::slot_bit(9);
+        let mut inner = [0u64; 18];
+        inner[8] = 0x01;
+        let mut bone20 = [0u64; 20];
+        bone20[8] = 0x01;
+        bone20[19] = 0x0300_0000_0000_0000;
+        let plan = dress_plan(
+            &b,
+            &[
+                WornGarment {
+                    roots: vec![0],
+                    occupancy: bone20[..18].try_into().unwrap(),
+                    coverage: [0; 18],
+                    slots: chest,
+                    level: crate::layers::layer_level(&bone20),
+                    material: 7,
+                },
+                WornGarment {
+                    roots: vec![0],
+                    occupancy: inner,
+                    coverage: [0; 18],
+                    slots: chest,
+                    level: 0,
+                    material: 1,
+                },
+            ],
+        );
+        // The second garment (level 0) is planned first; both choose the
+        // chest node.
+        assert_eq!(plan.garments[0].chosen[9], Some(1));
+        assert_eq!(plan.garments[1].chosen[9], Some(1));
+        assert_eq!(plan.slot_material[8], 1);
     }
 
     /// The per-slot impact material is the garment that leaves the most of
@@ -507,6 +555,7 @@ mod tests {
                     occupancy: inner,
                     coverage: inner,
                     slots: chest,
+                    level: crate::layers::layer_level(&inner),
                     material: 1,
                 },
                 WornGarment {
@@ -514,6 +563,7 @@ mod tests {
                     occupancy: outer,
                     coverage: outer,
                     slots: chest,
+                    level: crate::layers::layer_level(&outer),
                     material: 7,
                 },
             ],
