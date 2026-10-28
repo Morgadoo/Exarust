@@ -32,7 +32,8 @@ open/close animation, the tooltip and label layout, the stretched link's own
 cubic, and the caster's grant caller. The running screen (`power_screen`)
 opens the tree with P, draws the tree, the domain wheel's sheet and the bar
 through `exa_ui::tree_draw`, draws the tooltip, labels and prompt with the
-GUI skin's Rayform08R atlas, plays the screen's `ThaumShow02`, `ThaumSel01`,
+GUI skin's Rayform08R glyph quads when the atlas is present (the installed
+packs lack it, so the game's bitmap font draws them), plays the screen's `ThaumShow02`, `ThaumSel01`,
 `ThaumSlot02`, `ThaumChnl01`, `ThaumChnl02` and `ThaumFail01` sounds through
 the audio environment, and takes the arrows as the bar's cycle keys. A
 constantly displaced body

@@ -159,7 +159,8 @@ pub struct TreeSheets {
     pub mods: Option<RgbaImage>,
     pub flamelets: Option<RgbaImage>,
     pub wheel: Option<RgbaImage>,
-    /// The tree's GUI font atlas (`Rayform08R`).
+    /// The tree's GUI font atlas (`Rayform08R`), when an install ships it
+    /// (the installed packs do not).
     pub font: Option<RgbaImage>,
 }
 
@@ -227,7 +228,10 @@ mod tests {
         assert_eq!((flamelets.width, flamelets.height), (1024, 1024));
         let wheel = sheets.wheel.as_ref().expect("the domain wheel");
         assert_eq!((wheel.width, wheel.height), (384, 384));
-        let font = sheets.font.as_ref().expect("the tree font atlas");
-        assert_eq!((font.width, font.height), (1024, 1024));
+        // The GUI font atlas (`Rayform08R`) is named only by the executable;
+        // the installed packs do not ship it, so it may be missing.
+        if let Some(font) = sheets.font.as_ref() {
+            assert_eq!((font.width, font.height), (1024, 1024));
+        }
     }
 }

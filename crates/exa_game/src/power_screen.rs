@@ -34,7 +34,7 @@ use exa_audio::{AudioEnvironment, SoundBank};
 use exa_formats::rfi::Rfi;
 use exa_ui::font::{BASE_FONT, GameFont};
 use exa_ui::gui_core::{FormHost, FormId, GuiRect, GuiTask};
-use exa_ui::tree_draw::{self, Batch, Program, Texture, TreeDraw, TreeVertex};
+use exa_ui::tree_draw::{self, Batch, Program, TextRun, Texture, TreeDraw, TreeVertex};
 
 use crate::bindings::{Action, Bindings};
 use crate::thaum::tree::{BAR_CLOSING, PowerBar, PowerRecord, TreeMode, TreeScreen, TreeSound};
@@ -845,8 +845,16 @@ pub fn render(
         raster_batch(&mut canvas, width, height, batch, texture, level);
     }
     // The runs are the layout's metrics; their glyph quads are in the
-    // batches of the skin's text program when the atlas is loaded.
-    let _ = font;
+    // batches of the skin's text program when the atlas is loaded. The
+    // installed packs do not ship the GUI font atlas, so without it the
+    // runs are drawn with the game's bitmap font instead.
+    if sheets.font.is_none()
+        && let Some(font) = font
+    {
+        for run in &draw.texts {
+            blit_text(&mut canvas, width, height, run, font);
+        }
+    }
     canvas
 }
 
@@ -1207,6 +1215,36 @@ fn blend(canvas: &mut [u8], width: u32, height: u32, x: i32, y: i32, colour: [f3
     }
     let dst_a = f32::from(canvas[at + 3]) / 255.0;
     canvas[at + 3] = ((a + dst_a * (1.0 - a)) * 255.0).clamp(0.0, 255.0) as u8;
+}
+
+/// Blits one text run with the game font, tinted.
+fn blit_text(canvas: &mut [u8], width: u32, height: u32, run: &TextRun, font: &GameFont) {
+    let rendered = font.render(&run.text);
+    if rendered.width == 0 || rendered.height == 0 {
+        return;
+    }
+    let scale = run.size / font.line_height() as f32;
+    for y in 0..rendered.height {
+        for x in 0..rendered.width {
+            let alpha = rendered.alpha[y * rendered.width + x];
+            if alpha == 0 {
+                continue;
+            }
+            let px = run.x as i32 + (x as f32 * scale) as i32;
+            let py = run.y as i32 - ((rendered.height - y) as f32 * scale) as i32;
+            let colour = [
+                run.colour[0],
+                run.colour[1],
+                run.colour[2],
+                run.colour[3] * f32::from(alpha) / 255.0,
+            ];
+            for oy in 0..(scale.ceil() as i32).max(1) {
+                for ox in 0..(scale.ceil() as i32).max(1) {
+                    blend(canvas, width, height, px + ox, py + oy, colour);
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
