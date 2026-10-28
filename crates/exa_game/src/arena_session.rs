@@ -10,11 +10,11 @@
 //! and the player data is saved with the manager at 300 cm and a half turn,
 //! flag 0x100, before the hub opens.
 //!
-//! The next round clears the opponent's body and creates a fresh opponent
-//! from the match's level and gear tier; the company's side keeps the same
-//! fighter unless the last round was lost and that fighter is dead, in which
-//! case the entrant at the place of the losses comes in. A spare opponent
-//! is created for the round after.
+//! The next round keeps the company's fighter and generates a fresh
+//! opponent from the match's level and gear tier, unless the last round was
+//! lost and that fighter is dead: then the entrant at the place of the
+//! losses comes in against the opponent who won. A tournament's next round
+//! raises the bracket's next fight instead.
 //!
 //! Coming back to the hub writes the healths back, numbers the fighters and
 //! books the result; on a tournament day with an entered event the unfit
@@ -25,7 +25,10 @@
 //! round and return-to-hub routines, read from `Exanima.exe` 0.9.5.
 
 use crate::arena_log::ArenaLog;
-use crate::arena_match::{CompanyRecords, Finish, MatchState, health_word, return_to_hub};
+use crate::arena_match::{
+    CompanyRecords, Continue, Finish, MatchState, continue_match, count_returned_match,
+    health_word, return_to_hub,
+};
 use crate::arena_spawn::{GenericPlan, generic_plan};
 use crate::match_layout::{NextRound, next_round};
 
@@ -52,6 +55,17 @@ pub enum Screen {
 }
 
 impl Screen {
+    /// The transition a round's end opens for the state it set: the next
+    /// round while the state is the next fight, else the end menu.
+    pub fn after(state: MatchState) -> Self {
+        if state == MatchState::NextFight {
+            Self::NextRound
+        } else {
+            Self::End
+        }
+    }
+
+    /// The screen's word.
     pub fn word(self) -> u32 {
         match self {
             Self::NextRound => SCREEN_NEXT_ROUND,
@@ -71,7 +85,9 @@ pub struct RoundEnding {
     pub screen: Screen,
     /// Experience is awarded whatever the result.
     pub award_experience: bool,
-    /// Only a player-controlled match runs the end screen's handler.
+    /// The end screen's Continue runs at once, without waiting for a
+    /// press. It follows an auto-continue switch the game never sets, so
+    /// in play this is always false.
     pub run_end_handler: bool,
 }
 
@@ -80,26 +96,21 @@ pub struct RoundEnding {
 /// A win continues while the round less the losses is below the extra
 /// rounds, else the match is won. A loss counts one more loss and continues
 /// while the losses are below the lives, else the match is lost. The
-/// transition is 3 while the state is the next fight and 2 otherwise. The
-/// end handler runs only for a player-controlled match whose state is not
-/// the next fight.
+/// transition is 3 while the state is the next fight and 2 otherwise. With
+/// the auto-continue switch on (the game never sets it) a match's end runs
+/// the end screen's Continue at once.
 pub fn round_ending(
     won: bool,
     rounds: &mut crate::arena_match::MatchRounds,
-    player_controls: bool,
+    auto_continue: bool,
 ) -> RoundEnding {
     let state = rounds.finish_round(won);
-    let screen = if state == MatchState::NextFight {
-        Screen::NextRound
-    } else {
-        Screen::End
-    };
     RoundEnding {
         won,
         state,
-        screen,
+        screen: Screen::after(state),
         award_experience: true,
-        run_end_handler: player_controls && state != MatchState::NextFight,
+        run_end_handler: auto_continue && state != MatchState::NextFight,
     }
 }
 
@@ -127,8 +138,10 @@ pub const RETURN_PLACEMENT: ReturnPlacement = ReturnPlacement {
 pub enum EndAction {
     /// The manager is dead: the main menu, not the hub.
     MainMenu,
-    /// Another round follows. The round counter rose by one.
-    NextRound { round: i32 },
+    /// Another round follows. The round counter rose by one. A tournament
+    /// (`bracket`) raises the bracket's next fight, any other match the
+    /// next round's bodies ([`regenerate_round`]).
+    NextRound { round: i32, bracket: bool },
     /// The match is settled and the hub opens.
     ReturnToHub { tournament: bool },
 }
@@ -137,25 +150,23 @@ pub enum EndAction {
 ///
 /// A dead manager goes to the main menu without settling. Another round
 /// follows while the state is the next fight and the round less the losses
-/// is below the extra rounds; the round counter rises. Anything else
-/// settles the match (the bracket is resolved for a tournament) and returns
-/// to the hub.
+/// is below the extra rounds ([`continue_match`]); the round counter rises.
+/// Anything else settles the match (the bracket is resolved for a
+/// tournament) and returns to the hub.
 pub fn end_action(
     manager_dead: bool,
     state: MatchState,
     rounds: &crate::arena_match::MatchRounds,
     tournament: bool,
 ) -> EndAction {
-    if manager_dead {
-        return EndAction::MainMenu;
-    }
-    let ahead = i64::from(rounds.round) - i64::from(rounds.losses);
-    if state == MatchState::NextFight && ahead < i64::from(rounds.extra_rounds) {
-        EndAction::NextRound {
-            round: rounds.round.wrapping_add(1),
-        }
-    } else {
-        EndAction::ReturnToHub { tournament }
+    let mut next = *rounds;
+    match continue_match(&mut next, state, manager_dead) {
+        Continue::MainMenu => EndAction::MainMenu,
+        Continue::NextRound => EndAction::NextRound {
+            round: next.round,
+            bracket: tournament,
+        },
+        Continue::Hub => EndAction::ReturnToHub { tournament },
     }
 }
 
@@ -180,37 +191,42 @@ pub fn forfeit(manager_dead: bool, tournament: bool) -> ForfeitResult {
     }
 }
 
-/// The fighter who fights the next round of a multi-round match.
+/// The bodies of the next round of a multi-round match.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RoundFight {
     /// The company's side: its current fighter or the reserve entrant.
     pub company: NextRound,
-    /// The opponent created for the round.
-    pub opponent: GenericPlan,
-    /// The previous opponent's body is cleared before the new one comes.
-    pub clears_opponent: bool,
-    /// A spare opponent is created for the round after this one.
-    pub spare_opponent: bool,
-    /// The company's side is stood again from the participant list (the
-    /// last fighter died on a loss).
-    pub respawns_company: bool,
+    /// The opponent generated for the round, at the match's level and gear
+    /// tier; `None` when the surviving opponent fights on.
+    pub opponent: Option<GenericPlan>,
+    /// The surviving opponent is cleared and stood again for the round
+    /// (the reserve entrant meets the opponent who won).
+    pub keeps_opponent: bool,
     /// The scene work starts after this many milliseconds.
     pub yield_ms: u32,
 }
 
 /// The next round's bodies.
 ///
-/// The company keeps its fighter unless the last round was lost and that
-/// fighter is dead (then the entrant at the place of the losses comes in).
-/// A fresh opponent is generated from the match's level and gear tier, the
-/// old one is cleared, and a spare is created for the next round.
-pub fn regenerate_round(level: i32, tier: i32, losses: i32, fighter_dead: bool) -> RoundFight {
+/// While no round is lost, or the company's fighter is not dead, that
+/// fighter is stood again and the opponent is dropped: a fresh generic
+/// opponent is generated at the match's level and gear tier. When a round
+/// was lost and the fighter is dead, the entrant at the place of the losses
+/// comes in and the opponent who won stays, cleared and stood again; only a
+/// round without an opponent body generates a fresh one.
+pub fn regenerate_round(
+    level: i32,
+    tier: i32,
+    losses: i32,
+    fighter_dead: bool,
+    opponent_present: bool,
+) -> RoundFight {
+    let company = next_round(losses, fighter_dead);
+    let keeps_opponent = matches!(company, NextRound::Reserve(_)) && opponent_present;
     RoundFight {
-        company: next_round(losses, fighter_dead),
-        opponent: generic_plan(level, tier),
-        clears_opponent: true,
-        spare_opponent: true,
-        respawns_company: losses >= 1 && fighter_dead,
+        company,
+        opponent: (!keeps_opponent).then(|| generic_plan(level, tier)),
+        keeps_opponent,
         yield_ms: NEXT_ROUND_YIELD_MS,
     }
 }
@@ -230,12 +246,12 @@ pub fn resolve_dead_bodies(
 ) -> Vec<usize> {
     let mut resolved = Vec::new();
     for (index, fighter) in fighters.iter_mut().enumerate() {
+        // The health is widened to double before the 0.01 compare, so a
+        // single 0.01 counts as below it; NaN never does.
         if !fighter.company
             || fighter.resolved
-            || !matches!(
-                fighter.health.partial_cmp(&0.01),
-                Some(std::cmp::Ordering::Less)
-            )
+            || f64::from(fighter.health) >= crate::arena_match::DEAD_HEALTH
+            || fighter.health.is_nan()
         {
             continue;
         }
@@ -301,11 +317,8 @@ pub fn settle_return(
     }
     let paid = return_to_hub(records, log, finish, template, tournament, prize).prize;
     let checks = hub_day_checks(day, any_entry);
-    let matches_today = if checks.count_match {
-        matches_today.wrapping_add(1)
-    } else {
-        matches_today
-    };
+    let mut matches_today = matches_today;
+    count_returned_match(day, any_entry, &mut matches_today);
     MatchReturn {
         paid,
         healths_written: written,
@@ -438,7 +451,10 @@ mod tests {
         rounds.round = 3;
         assert_eq!(
             end_action(false, MatchState::NextFight, &rounds, false),
-            EndAction::NextRound { round: 4 }
+            EndAction::NextRound {
+                round: 4,
+                bracket: false
+            }
         );
         assert_eq!(
             end_action(true, MatchState::NextFight, &rounds, false),
@@ -447,6 +463,14 @@ mod tests {
         assert_eq!(
             end_action(false, MatchState::Won, &rounds, true),
             EndAction::ReturnToHub { tournament: true }
+        );
+        // A tournament's next round raises the bracket's next fight.
+        assert_eq!(
+            end_action(false, MatchState::NextFight, &rounds, true),
+            EndAction::NextRound {
+                round: 4,
+                bracket: true
+            }
         );
         rounds.round = 4;
         assert_eq!(
@@ -484,23 +508,27 @@ mod tests {
 
     #[test]
     fn the_next_round_takes_a_fresh_opponent_and_keeps_the_fighter() {
-        let fight = regenerate_round(4, 2, 0, true);
+        let fight = regenerate_round(4, 2, 0, true, true);
         assert_eq!(fight.company, NextRound::FreshOpponent);
-        assert_eq!(fight.opponent.level, 4);
-        assert_eq!(fight.opponent.outfit_level, 2);
-        assert!(fight.clears_opponent);
-        assert!(fight.spare_opponent);
-        assert!(!fight.respawns_company);
+        let opponent = fight.opponent.unwrap();
+        assert_eq!(opponent.level, 4);
+        assert_eq!(opponent.outfit_level, 2);
+        assert!(!fight.keeps_opponent);
         assert_eq!(fight.yield_ms, 13);
-        // A loss with a dead fighter brings the reserve entrant in.
-        let fight = regenerate_round(3, 1, 2, true);
+        // A loss with a dead fighter brings the reserve entrant in against
+        // the opponent who won.
+        let fight = regenerate_round(3, 1, 2, true, true);
         assert_eq!(fight.company, NextRound::Reserve(2));
-        assert!(fight.respawns_company);
-        // A loss with the fighter alive keeps it.
-        assert_eq!(
-            regenerate_round(3, 1, 2, false).company,
-            NextRound::FreshOpponent
-        );
+        assert!(fight.keeps_opponent);
+        assert_eq!(fight.opponent, None);
+        // Without an opponent body a fresh one is generated.
+        let fight = regenerate_round(3, 1, 2, true, false);
+        assert!(!fight.keeps_opponent);
+        assert_eq!(fight.opponent.unwrap().level, 3);
+        // A loss with the fighter alive keeps it and draws a fresh opponent.
+        let fight = regenerate_round(3, 1, 2, false, true);
+        assert_eq!(fight.company, NextRound::FreshOpponent);
+        assert!(fight.opponent.is_some());
     }
 
     #[test]
@@ -553,6 +581,16 @@ mod tests {
         assert!(scene.iter().all(|fighter| fighter.resolved));
         // A second pass resolves nobody.
         assert!(resolve_dead_bodies(&mut scene, true, &mut log, &mut deaths).is_empty());
+        // The single 0.01 widens below the double 0.01: the body is resolved
+        // (saved, not dead, with a physician); NaN never is.
+        let mut edge = [scene[2], scene[2]];
+        edge[0].resolved = false;
+        edge[0].health = 0.01;
+        edge[1].resolved = false;
+        edge[1].health = f32::NAN;
+        let resolved = resolve_dead_bodies(&mut edge, true, &mut log, &mut deaths);
+        assert_eq!(resolved, vec![0]);
+        assert_eq!(log.records.last().unwrap().id, LOG_SAVED);
     }
 
     #[test]

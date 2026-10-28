@@ -95,7 +95,7 @@ pub const ARENA_MAPS: [ArenaMap; 12] = [
     map("arena1", [0.0, 0.0, 300.0], 0.0, false, false),
     map("arena2", [0.0, 0.0, 300.0], 0.3, false, false),
     map("arena3", [-300.0, 0.0, 300.0], 0.0, false, false),
-    map("arena4", [-1500.0, 0.0, -450.0], 0.2, false, false),
+    map("arena4", [-1500.0, 0.0, -450.0], 0.6, false, false),
     map("arena5", [-300.0, 0.0, -300.0], 0.0, false, false),
     map("arena6", [300.0, 0.0, 300.0], 0.0, false, false),
     map("arena7", [0.0, 0.0, 0.0], 0.0, false, false),
@@ -1112,11 +1112,7 @@ fn tick_arena_match(
     match result {
         MatchTick::NotDue | MatchTick::Nothing => {}
         MatchTick::RoundEnded(round) => {
-            arena.screen = Some(if round.state == MatchState::NextFight {
-                crate::arena_session::Screen::NextRound
-            } else {
-                crate::arena_session::Screen::End
-            });
+            arena.screen = Some(crate::arena_session::Screen::after(round.state));
             info!(
                 "arena match: round {} {} -> state {}",
                 arena.rounds.round,
@@ -1132,9 +1128,11 @@ fn tick_arena_match(
                     if round.won { "won" } else { "lost" },
                     round.state.word()
                 );
+                // The manager's own menu is a separate screen; the
+                // transition is only the one this tick's round end opened.
+                arena.screen = Some(crate::arena_session::Screen::after(round.state));
             }
             arena.manager_screen = Some(down.screen);
-            arena.screen = Some(crate::arena_session::Screen::End);
             info!(
                 "arena match: the manager fell (screen {}, fatal {})",
                 down.screen, down.fatal
@@ -1152,7 +1150,7 @@ mod tests {
         assert_eq!(ARENA_MAPS[3].name, "arena4");
         assert_eq!(ARENA_MAPS[3].spawn, [-1500.0, 0.0, -450.0]);
         assert_eq!(ARENA_MAPS[1].view_amount.to_bits(), 0x3e99_999a);
-        assert_eq!(ARENA_MAPS[3].view_amount.to_bits(), 0x3e4c_cccd);
+        assert_eq!(ARENA_MAPS[3].view_amount.to_bits(), 0x3f19_999a);
         let late: Vec<_> = ARENA_MAPS.iter().map(|a| a.late_draw).collect();
         assert_eq!(late.iter().filter(|l| **l).count(), 4);
         assert!(!ARENA_MAPS[11].late_draw);
@@ -2033,7 +2031,10 @@ mod tests {
         arena.state = MatchState::NextFight;
         assert_eq!(
             arena.end_action(false),
-            crate::arena_session::EndAction::NextRound { round: 4 }
+            crate::arena_session::EndAction::NextRound {
+                round: 4,
+                bracket: false
+            }
         );
         arena.rounds.round = 4;
         arena.state = MatchState::Won;
