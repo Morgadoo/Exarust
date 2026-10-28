@@ -144,8 +144,8 @@ physique values and the body morphs they select remain the body's concern
   cache by its highest occupied layer, outermost last.
 - `exa_assets::merge::merge` takes a slot's cull bits as the append's
   cull argument (`MergePart::cull`, tested against the vertices' slot
-  masks; nothing is written on the triangles, as in the original's append
-  at `0x1000d80f0`) and, for a part whose material has the occlusion mark
+  masks; nothing is written on the triangles, as in the original's mesh
+  append) and, for a part whose material has the occlusion mark
   (`MergePart::occlude`), fades the border of the marked region's vertex
   alpha. Each mesh keeps its own position-stream ids, moved past the
   meshes before it. The running game still draws one mesh per node, so

@@ -66,6 +66,37 @@ fn ball(id: u32, bone: usize, at: Vec3) -> Ragdoll {
     }])
 }
 
+/// Ticks the thrower's hand carries the ball before it lets go. The pair
+/// impact reads each part's smoothed velocity, which moves a tenth of the
+/// way to the part's motion a tick, so a ball only strikes at its full
+/// speed once it has moved at that speed for a while: a velocity given on
+/// the tick of the throw would arrive with a third of it.
+const CARRY_TICKS: usize = 30;
+
+/// A ball carried at `speed` (m/s) along +x for [`CARRY_TICKS`] ticks
+/// before it is let go 0.5 m short of x = 0, at a height of 5 m.
+fn thrown_ball(speed: f32) -> Ragdoll {
+    let carried = speed / exa_physics::body::BODY_HZ * CARRY_TICKS as f32;
+    let mut thrown = ball(2, 0, Vec3::new(-0.5 - carried, 5.0, 0.0));
+    thrown.set_velocity(Vec3::X * speed);
+    thrown
+}
+
+/// One tick of the bodies and the limb impacts; while the hand still
+/// carries the ball (`tick` under [`CARRY_TICKS`]) it keeps it at `speed`,
+/// and the target is held still so that it has not fallen away when the
+/// ball is let go.
+fn tick(app: &mut App, target: Entity, thrown: Entity, speed: f32, tick: usize) {
+    if tick < CARRY_TICKS {
+        let mut body = app.world_mut().get_mut::<Ragdoll>(thrown).unwrap();
+        body.set_velocity(Vec3::X * speed);
+        let mut body = app.world_mut().get_mut::<Ragdoll>(target).unwrap();
+        body.set_velocity(Vec3::ZERO);
+    }
+    app.world_mut().run_system_once(step_bodies).unwrap();
+    app.world_mut().run_system_once(strike_limbs).unwrap();
+}
+
 /// A ball thrown at 8 m/s at a character's pelvis strikes it: the new
 /// damage raises the impact damage taken (less the tick's 0.01), half of
 /// it comes off yellow
@@ -86,13 +117,10 @@ fn a_thrown_ball_hurts_the_limb_it_strikes() {
             .world_mut()
             .spawn((Fighter::default(), ball(1, 1, Vec3::new(0.0, 5.0, 0.0))))
             .id();
-        let mut thrown = ball(2, 0, Vec3::new(-0.5, 5.0, 0.0));
-        thrown.set_velocity(Vec3::X * speed);
-        let other = app.world_mut().spawn(thrown).id();
+        let other = app.world_mut().spawn(thrown_ball(speed)).id();
         let yellow = app.world().get::<Fighter>(target).unwrap().health.yellow;
-        for _ in 0..60 {
-            app.world_mut().run_system_once(step_bodies).unwrap();
-            app.world_mut().run_system_once(strike_limbs).unwrap();
+        for i in 0..CARRY_TICKS + 60 {
+            tick(&mut app, target, other, speed, i);
             let book = app.world().get::<ImpactBook>(target).unwrap().clone();
             if book.taken > 0.0 {
                 let f = app.world().get::<Fighter>(target).unwrap();
@@ -148,13 +176,10 @@ fn an_overhead_strikers_hard_impact_sounds_and_is_dropped() {
             pelvis,
         ))
         .id();
-    let mut thrown = ball(2, 0, Vec3::new(-0.5, 5.0, 0.0));
-    thrown.set_velocity(Vec3::X * 8.0);
-    app.world_mut().spawn(thrown);
+    let thrown = app.world_mut().spawn(thrown_ball(8.0)).id();
     let mut sounded = Vec::new();
-    for _ in 0..60 {
-        app.world_mut().run_system_once(step_bodies).unwrap();
-        app.world_mut().run_system_once(strike_limbs).unwrap();
+    for i in 0..CARRY_TICKS + 60 {
+        tick(&mut app, target, thrown, 8.0, i);
         let messages = app.world().resource::<Messages<ImpactSounded>>();
         sounded.extend(messages.iter_current_update_messages().copied());
         if !sounded.is_empty() {
