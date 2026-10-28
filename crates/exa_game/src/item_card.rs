@@ -139,6 +139,14 @@ pub fn build_for(
     Some((name, built))
 }
 
+/// The card's least width and height at a unit.
+fn card_size(unit: i32) -> (i32, i32) {
+    (
+        (CARD_WIDTH * unit / 4).max(CARD_WIDTH),
+        (CARD_HEIGHT * unit / 4).max(CARD_HEIGHT),
+    )
+}
+
 /// The physical pointer and the interface unit.
 fn pointer_and_unit(window: &Window, screens: &GameScreens) -> Option<((i32, i32), i32)> {
     let pointer = window.cursor_position()? * window.scale_factor();
@@ -168,8 +176,7 @@ fn show(
     let Some((name, built)) = build_for(catalogue, item, flags, false) else {
         return;
     };
-    let width = (CARD_WIDTH * unit / 4).max(CARD_WIDTH);
-    let height = (CARD_HEIGHT * unit / 4).max(CARD_HEIGHT);
+    let (width, height) = card_size(unit);
     let at = popup_place(pointer, (width, height), screens.task.screen.0, unit);
     let (icon, _) = icons.reserve(item, flags, Some(catalogue));
     let mut fade = PopupFade::default();
@@ -307,6 +314,24 @@ fn tick_card(
             unit,
             now,
         );
+    }
+    // The card closes when the pointer leaves it, as the popup's hover
+    // handler starts its fade on the base form's leave answer.
+    if let (Some(card), Ok(window)) = (view.shown.as_mut(), windows.single())
+        && let Some(pointer) = window.cursor_position()
+    {
+        let pointer = pointer * window.scale_factor();
+        let unit = exa_ui::scale::gui_scale(window.physical_height(), 0) as i32;
+        let unit = if unit > 0 {
+            unit
+        } else {
+            screens.pack.unit.max(1)
+        };
+        let (width, height) = card_size(unit);
+        let rect = GuiRect::new(card.at.0, card.at.1, width, height);
+        if !rect.contains(pointer.x as i32, pointer.y as i32) {
+            card.fade.fade_out(now);
+        }
     }
     let close = view
         .shown
@@ -541,7 +566,15 @@ fn draw_card(
             y += unit * 5;
         }
     }
-    if let Some(value) = card.built.content.as_ref().and_then(|c| c.value) {
+    let value = card
+        .built
+        .content
+        .as_ref()
+        .and_then(|content| content.value)
+        .or_else(|| {
+            (card.built.page == exa_items::card::CardPage::Plain).then_some(card.built.value)
+        });
+    if let Some(value) = value {
         painted.push(text_layer(
             &font,
             font_texture,

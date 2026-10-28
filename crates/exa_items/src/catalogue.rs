@@ -10,7 +10,7 @@ use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 use exa_assets::{Game, PackKind};
 use exa_formats::characters::ID_MASK;
-use exa_formats::containers::{CONTAINER, Container, LIGHT, USABLE, section};
+use exa_formats::containers::{CONTAINER, Container, LIGHT, USABLE, coins_of, section};
 use exa_formats::objdb::Burden;
 use exa_formats::objstrings::Library;
 use exa_formats::rdb::Database;
@@ -77,8 +77,9 @@ pub struct CardFacts {
     pub name_id: u32,
     /// The model section's flags word.
     pub model_flags: u32,
-    /// The compact value word (the model section's `+0x26`, body `+0x1e`).
-    pub coins: u16,
+    /// The item's value in copper, expanded from the compact word (the
+    /// model section's `+0x26`, body `+0x1e`).
+    pub coins: u32,
     /// The condition the title tint reads: a weapon's quality byte, an
     /// apparel copy's appearance quality, else 0.
     pub condition: u8,
@@ -276,9 +277,9 @@ fn card_facts(payload: &[u8], strings: Option<&Library>) -> CardFacts {
     if let Some(model) = model {
         facts.name_id = word(model, NAME_ID);
         facts.model_flags = word(model, 0x10);
-        facts.coins = model
-            .get(COINS..COINS + 2)
-            .map_or(0, |w| u16::from_le_bytes(w.try_into().expect("2 bytes")));
+        facts.coins = model.get(COINS..COINS + 2).map_or(0, |w| {
+            coins_of(u16::from_le_bytes(w.try_into().expect("2 bytes")))
+        });
         let description_id = word(model, DESCRIPTION_ID);
         if let Some(strings) = strings {
             facts.name = strings.get(facts.name_id).unwrap_or_default();
@@ -522,7 +523,8 @@ mod tests {
         model[0x10..0x14].copy_from_slice(&2u32.to_le_bytes());
         model[0x14..0x18].copy_from_slice(&name.to_le_bytes());
         model[0x18..0x1c].copy_from_slice(&description.to_le_bytes());
-        model[0x1e..0x20].copy_from_slice(&300u16.to_le_bytes());
+        // The compact value word: 0xC001 is one unit of 1440 copper.
+        model[0x1e..0x20].copy_from_slice(&0xC001u16.to_le_bytes());
 
         // A weapon section: flags, quality, stat bytes and the socket word.
         let mut weapon = vec![0u8; 0x5a];
@@ -556,7 +558,7 @@ mod tests {
         assert_eq!(facts.name, "Rusty Sword");
         assert_eq!(facts.description, "It is old.");
         assert_eq!((facts.name_id, facts.model_flags), (name, 2));
-        assert_eq!(facts.coins, 300);
+        assert_eq!(facts.coins, 1440);
         assert_eq!((facts.condition, facts.skill), (200, 0x42));
         assert!(facts.container && facts.model && !facts.map && facts.sockets);
         assert!(facts.material);

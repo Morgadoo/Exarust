@@ -50,7 +50,7 @@ pub struct CardItem {
     pub model: bool,
     /// A model mark of 0 refuses the card.
     pub marked: u32,
-    pub coins: u16,
+    pub coins: u32,
     pub has_weapon: bool,
     pub weapon_flags: u32,
     pub has_apparel: bool,
@@ -87,9 +87,9 @@ pub fn item_card(item: &CardItem) -> ItemCard {
         };
     }
     let value = if item.flags & FULL_VALUE == 0 {
-        u32::from(item.coins) >> 2
+        item.coins >> 2
     } else {
-        u32::from(item.coins)
+        item.coins
     };
     let page = if item.has_weapon && item.weapon_flags & WITHHELD == 0 {
         CardPage::Weapon
