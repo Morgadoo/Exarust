@@ -2152,18 +2152,20 @@ part gets its mesh only when it is bound, since Bevy cannot draw a mesh with
 skin attributes and no skin. A mesh that ships weights keeps them. Apparel
 with no joints (one-node garments) stays rigid on its bone.
 
-Not yet wired: the `_SKIN` merge (the original appends every part and
-garment into one mesh, grouped by material, with the per-triangle cull bits
-of hidden body slots removing covered triangles). Exarust keeps a mesh per
-node and hides whole body-part entities under apparel instead; the pure
-builder `exa_assets::merge::merge` reproduces the append, frame, weight and
+Wired: the `_SKIN` merge (the original appends every part and
+garment into one mesh, grouped by material). `exa_character::dress` plans
+the merge and `exa_assets::model::merge_dressed` runs
+`exa_assets::merge::merge` over the built material groups, spawning one
+sub-mesh per run; the builder reproduces the append, frame, weight and
 material-group order and the final renumber pass (each material's vertices
 in order, back to back: the pass keeps each run's last vertex inclusive and
-starts the next run after it); its
-`MergePart::vertex_masks`/`cull` drop the vertices a hidden slot masks and
-the triangles that needed them, `MergePart::index_range` names one material
-group of a shared mesh, `scene_merged_mesh` walks a scene's skinned nodes
-and merges their drawn groups by their body-space frames, `culled_indices`
-applies a slot's per-triangle cull bits and `occlusion_alpha` the per-vertex
-mask. The loader does not feed the merged mesh yet. The per-scene skin controller and manager
-are Bevy's.
+starts the next run after it). Its `MergePart::vertex_masks`/`cull` drop the
+vertices a hidden slot masks and the triangles that needed them,
+`MergePart::index_range` names one material group of a shared mesh,
+`scene_merged_mesh` walks a scene's skinned nodes and merges their drawn
+groups by their body-space frames, `culled_indices` applies a slot's
+per-triangle cull bits and `occlusion_alpha` the per-vertex mask. The built
+meshes keep no vertex slot masks and no triangle flags, and no shipped
+material carries the occlusion mark, so those two passes do nothing on
+shipped data. Hidden body slots are left out of the merge (the body's
+visible mask). The per-scene skin controller and manager are Bevy's.

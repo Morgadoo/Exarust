@@ -658,8 +658,8 @@ word it sets on the character, 0x200 for ancients) **[inf]**.
   of the last `m` for women. Whatever the skin material names plays no
   part: `humanbase.rfc`'s names the same textures, `ancientbase.rfc`'s only
   a `missing.dds`. Exarust uses the men's set, or the women's when the
-  race has it and the character's record is female (`look::skin_set`), and
-  the first physique's normal map.
+  race has it and the character's record is female (`look::skin_set`), as
+  the inputs of the generated maps (below), not as the drawn maps.
 - **Diffuse map**: the race's skin texture (`humandifm`, `humandiff` for
   women) times the character's skin tone. The original loads the race
   texture as data, so the product is taken on its stored, sRGB-encoded
@@ -713,12 +713,28 @@ layers and stops at the first amount not above zero. The callback fills the
 colour target, then the normal target, then the surface target, each with
 its beard overlay and then the apparel layers. `compose` runs them per
 texel and stores the original's sRGB colour target and linear surface and
-normal targets. Nothing feeds the result to the renderer yet: the running
-skin keeps the material tint and the first normal map, because Exarust has
-no character-creation caller for the job and the full 512/1024 composite
-per character would add load time. Not yet: the player's tone (it is in the
-save, which is not shipped), the decomposition dirt layer in the running
-path. Blood: see [Blood](#blood).
+normal targets; `compose_with_offsets` also bakes the record's two seed
+offsets into the race-map samples, and rows are split over up to eight
+threads (same texels, same result).
+
+The running skin is the composite, not the race maps plus tint.
+`SkinJob::composite_job` describes the job
+(`exa_assets::SkinCompositeJob`), and `ModelLoader::composited_skin`
+decodes the race's colour, gloss, base normal and layer maps and the
+beard's colour and normal maps on the CPU, composes at the pixel-format
+side (Exarust runs at the original's 512 default; 1024 at setting 3) and
+uploads the colour target as sRGB and the surface and normal targets as
+linear images with a mip chain. The material keeps the built-in skin's
+subsurface scatter and packed-specular flags, sets its diffuse to white
+(the maps carry the tone) and takes the three maps. The composite is built
+once per distinct look and cached by the job's key: body stem, tone, side,
+look seed, beard and normal layers. On this machine it costs 14 ms at
+512² and 124 ms at 1024² with the eight-thread split, about 0.3 s for
+`exanima01`'s characters at 512. A body whose race map or base normal does
+not decode keeps the race maps plus tone. Not yet: the feral darkening
+(the job keeps it as data; the shader does not apply it), the player's tone
+(it is in the save, which is not shipped), the decomposition dirt layer in
+the running path. Blood: see [Blood](#blood).
 
 ### Hair
 
@@ -750,9 +766,18 @@ and the creation scene's smoothing.
 The original dresses a character into one auto-skinned mesh: the body and
 every visible garment piece are appended into a single mesh grouped by
 material. `exa_character::dress` is the merge list, and
-`exa_assets::merge::merge_parts` builds the mesh from it; Exarust still
-draws one mesh per node, so the assembled mesh is a tested builder for
-callers and not on the draw path yet.
+`exa_assets::merge::merge` builds the mesh from it. The running game does
+this: `dress::assemble` builds the body tree from the built body and
+garment models, re-frames each garment on the body's slot frames, plans
+the merge and gives each step's built material group as a
+`model::DressedPart`; `model::merge_dressed` turns the built parts back
+into the file's vertex streams and merges them, and `model::run_mesh` makes
+one sub-mesh per material run. Each run is drawn as its own entity bound to
+the character's skeleton, the body's root part as joint 0; the body parts
+the merged mesh replaced stop drawing. Held items, hair and cloth keep
+their own draw. No shipped material carries the occlusion mark and the
+built meshes keep neither vertex slot masks nor triangle flags, so the cull
+and occlusion passes do nothing on shipped data.
 
 - **Order.** The worn set is planned in its layer-level order (the apparel
   cache inserts each garment by its highest occupied layer, outermost

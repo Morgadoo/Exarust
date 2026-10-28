@@ -63,8 +63,16 @@ bits (which triangle flags the original's draw tests is not traced).
 and `model::scene_merged_mesh` merges a scene's skinned nodes group by group
 from their body-space frames. The merge order and the per-slot cull bits
 come from the generator (`exa_character::dress` and `layers::cull_bits`).
-The loader still draws a mesh per node; the merged mesh is built by callers,
-not by the loader yet.
+The running game merges through `model::merge_dressed`: the caller gives
+each built material group with its body-space frame, weight bone and cull
+bits, the built mesh is turned back into file streams
+(`positions`, `normals`, UVs, joint indices and weights), and each merged
+material run becomes a drawable sub-mesh (`model::run_mesh`) bound to the
+character's skeleton with the root part as joint 0
+(`exa_character::dress::assemble` builds the plan). The per-node draw stays
+as the fallback for a character without its body model. The built meshes
+keep no vertex slot masks and no triangle flags, so on shipped data the
+cull argument and the occlusion fade do nothing; both remain tested rules.
 
 The editable-form assembly is `merge::merge_editable`: the original's merge
 read instruction by instruction. Groups join by material (the destination's
@@ -89,8 +97,17 @@ Skin composite (`skin_composite`): the original's generated skin maps.
 beard's three overlay programs are `beard_colour` (squared alpha, mip-3
 alpha, the 0.1 mix and the 1.5 alpha), `beard_normal` and
 `beard_specular` (`a³·0.4`). `compose` runs the whole job per texel into
-the sRGB colour target and linear surface and normal targets; no caller
-feeds it to the renderer yet.
+the sRGB colour target and linear surface and normal targets;
+`compose_with_offsets` also bakes the job's two seed offsets into the
+race-map samples, and the rows are split over the machine's threads (up to
+eight), so the result is the same on every machine. `SkinCompositeJob` is
+the job as data: `ModelLoader::composited_skin` decodes the race, layer and
+beard maps on the CPU, composes and uploads the three maps as an
+`ExaMaterial` (white diffuse, packed surface, normal, subsurface, blood),
+cached by the job's key (stem, tone, side, look seed, beard and layers).
+The running game feeds it to each character's merged skin run; a job whose
+textures do not decode falls back to the race maps plus tone in
+`human_skin`.
 
 Skin tone (`human_skin`): a character's `SkinLook` selects the built-in skin
 material for its record's two tone words (and the women's texture set),

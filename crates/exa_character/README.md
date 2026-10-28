@@ -105,11 +105,12 @@ physique values and the body morphs they select remain the body's concern
   assembler (best groups per slot, child slots pruned under the group's
   parent-slot node, the same-bits fallback, the first group chosen where
   the slot's select mask meets the visible mask), the cull bits and the
-  body mask (the union's innermost byte). These are tested rules; the
-  running game still hides whole body-part meshes by the first byte
-  (`Item::hidden_slots`), which the body mask agrees with. Real-data tests
-  read `objdb.rdb` (`EXANIMA_DIR`) and check a helm on the head, boots on
-  the feet and braies that hide nothing.
+  body mask (the union's innermost byte, which agrees with
+  `Item::hidden_slots`). The dressed-mesh pass drives them: the running
+  game plans each character from its items, so the mask decides which body
+  slots merge (the per-node fallback still hides whole parts by the first
+  byte). Real-data tests read `objdb.rdb` (`EXANIMA_DIR`) and check a helm
+  on the head, boots on the feet and braies that hide nothing.
 - `look` reads the race's look word (`races.rdb` `0x14`): the skin texture
   set (men's or women's; both sexes take the men's extra normal map), the
   six beards and their `bearda0N d/n` maps, the normal-map layers (weight
@@ -124,7 +125,8 @@ physique values and the body morphs they select remain the body's concern
 - `hair` builds a placed character's `CharExt` style under its head part
   (2 ms of styles a frame, so a crowd loads over several frames) by those
   head rules; `exa_assets::hair` gives the record's colour, specular, gloss
-  and opacity. Not done: the `HarHPC1` texture set of profession bit
+  and opacity. Hair is a separate model and is not part of the merged
+  mesh. Not done: the `HarHPC1` texture set of profession bit
   `0x10000` (the variant's maps do not ship; `look::hair_textures` names
   both sets), hair as cloth and its smoothing.
 
@@ -148,13 +150,28 @@ physique values and the body morphs they select remain the body's concern
   append) and, for a part whose material has the occlusion mark
   (`MergePart::occlude`), fades the border of the marked region's vertex
   alpha. Each mesh keeps its own position-stream ids, moved past the
-  meshes before it. The running game still draws one mesh per node, so
-  no caller merges yet; the plan, the merge and its tests are the source of
-  truth for the single mesh.
+  meshes before it. The running game merges: `dress::assemble` builds the
+  body tree from the built body and garment models, re-frames each garment
+  on the body's slot frames and returns the plan; `equip_outfits` turns
+  each step into `exa_assets::model::DressedPart`s and runs
+  `model::merge_dressed`, which merges the built parts and spawns one
+  sub-mesh per material run, bound to the character's skeleton with the
+  root part as joint 0. The body nodes the merged mesh replaced stop
+  drawing. Held items, hair and cloth stay as they are drawn today; no
+  shipped material carries the occlusion mark, and the built meshes keep
+  no vertex slot masks or triangle flags, so the cull and occlusion
+  passes do nothing on shipped data (both stay tested rules).
+- A character without a `BodyModel` component (or with a garment model no
+  object-database item is worn as) keeps the one-mesh-per-node draw. A
+  real-data test merges Kade of `exanima01` into one mesh: 30 steps, 35
+  parts, eight material runs and 5 624 vertices (`EXANIMA_DIR`; skipped
+  when unset).
 
 ## The generator's runtime
 
-These are tested rules the running game does not drive yet.
+The dressed-mesh plan, the slot chain and the skin job drive the running
+game; the rebuild, spawn-height, background and saved-pose steps remain
+tested rules of their own.
 
 - `runtime` is the body tree the generator walks: each node's local and
   world frame, slot and layer, chunk kind, node and render flag words, the
@@ -191,10 +208,18 @@ These are tested rules the running game does not drive yet.
 - `texture_job` describes the skin job the renderer runs: the race's colour,
   gloss and normal maps, the record's tone words, look seed and offsets,
   the darkening, the beard and its colour, the normal-layer blend, plus the
-  first apparel texture the job carries. `exa_assets::skin_composite`
-  evaluates the job's `chargen_d`/`_s`/`_n` and beard overlay programs per
-  texel; `exa_assets::human_skin` draws the parts the running skin keeps
-  (the tone tint and the base normal map).
+  first apparel texture the job carries. The running skin runs it:
+  `SkinJob::composite_job` becomes an `exa_assets::SkinCompositeJob`,
+  `ModelLoader::composited_skin` evaluates `chargen_d`/`_s`/`_n` and the
+  beard overlays per texel (`exa_assets::skin_composite`) and uploads the
+  sRGB colour, linear surface and linear normal maps, caching the material
+  by the job's key (stem, tone, side, look seed, beard and layers). The
+  maps are generated after the merge, once per distinct look: 14 ms at
+  512² and 124 ms at 1024² on this machine's 8 threads (about 0.3 s for
+  `exanima01`'s characters at 512). The two seed offsets are baked into
+  the race-map samples. The darkening (the feral level) is not applied by
+  the shader yet; a body whose race texture set does not decode keeps the
+  race maps plus tone.
 - `rebuild` keeps the look rebuild's own steps (job reset and first
   apparel, frame save, dynamics rebuild, frame restore, the root lift by
   the new standing height, the double-precision body scale), the

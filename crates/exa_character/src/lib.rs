@@ -324,6 +324,8 @@ fn apply_skin_looks(
     parents: Query<&ChildOf>,
     children: Query<&Children>,
     skins: Query<(), With<exa_assets::RaceSkinPart>>,
+    dressed: Query<(), With<Dressed>>,
+    merged: Query<(), With<exa_assets::BodyModel>>,
     mut parts: Query<&mut MeshMaterial3d<exa_render::material::ExaMaterial>>,
 ) {
     let Some(game) = game else { return };
@@ -339,6 +341,12 @@ fn apply_skin_looks(
         bc_supported: model::bc_supported(support.as_deref()),
     };
     for (root, look, job) in &looks {
+        // A body that will merge its skin gets the composited material from
+        // the merge itself; resolving it here would composite every
+        // character of a level in the frame it is spawned.
+        if merged.contains(root) && !dressed.contains(root) {
+            continue;
+        }
         let material = skin_material_of_look(&mut loader, look, job);
         for part in children.iter_descendants(root) {
             if !skins.contains(part) {
@@ -355,6 +363,10 @@ fn apply_skin_looks(
         let Some(root) = parents.iter_ancestors(part).find(|&a| look_of.contains(a)) else {
             continue;
         };
+        // The merged skin run takes its composited material in the merge.
+        if merged.contains(root) && !dressed.contains(root) {
+            continue;
+        }
         let Ok((look, job)) = look_of.get(root) else {
             continue;
         };
@@ -828,9 +840,20 @@ fn spawn_merged_character(
     // The skin run takes the character's composited skin when it is ready,
     // else the race maps plus tone.
     let skin = match (skin_look, skin_job) {
-        (Some(look), Some(job)) => loader
-            .composited_skin(job)
-            .or_else(|| Some(loader.skin_material_of(&look.entry(), look.tone, look.female))),
+        (Some(look), Some(job)) => {
+            let composite = loader.composited_skin(job);
+            if composite.is_none() {
+                warn!(
+                    "{}: skin composite maps unavailable; drawing the race maps",
+                    look.entry()
+                );
+            }
+            Some(
+                composite.unwrap_or_else(|| {
+                    loader.skin_material_of(&look.entry(), look.tone, look.female)
+                }),
+            )
+        }
         (Some(look), None) => Some(loader.skin_material_of(&look.entry(), look.tone, look.female)),
         _ => None,
     };
@@ -848,8 +871,19 @@ fn spawn_merged_character(
             continue;
         };
         let node = &model.nodes[node_index];
+        // Cloth stays a per-node mesh, as it is drawn today: the merged
+        // skin has no cloth controller.
+        if which == 0 && node.cloth {
+            continue;
+        }
         let frame = assembled.body.nodes[step.node].world;
-        let bone = node.skin_bone.map_or(0, u32::from);
+        // A part without weights follows its own bone; a garment node's
+        // first two digits are its slot, and slot n is bone n.
+        let bone = node
+            .skin_bone
+            .map(u32::from)
+            .or_else(|| bone_index(&node.name).map(|b| b as u32))
+            .unwrap_or(0);
         if which == 0 && !merged_body_nodes.contains(&node_index) {
             merged_body_nodes.push(node_index);
         }
@@ -899,8 +933,14 @@ fn spawn_merged_character(
     let Some(merged) = merged else {
         return false;
     };
-    let root = assembled.root;
-    let root_transform = body_model.nodes[root].transform;
+    debug!(
+        "{body_entry}: merged character mesh, {} runs, {} vertices",
+        merged.merged.subobjects.len(),
+        merged.merged.mesh.positions.len()
+    );
+    // The merged vertices are in the character frame's space (the frames
+    // compose the body model's root nodes too), so the mesh entity sits at
+    // the model root and takes identity as its own rest frame.
     for (run, handle) in merged.merged.subobjects.iter().zip(&merged.materials) {
         let Some(run_mesh) = model::run_mesh(&merged.merged, run) else {
             continue;
@@ -914,10 +954,10 @@ fn spawn_merged_character(
         let entity = commands
             .spawn((
                 MeshMaterial3d(material),
-                root_transform,
+                Transform::IDENTITY,
                 exa_anim::BodyPart {
                     bone: 0,
-                    rest: root_transform,
+                    rest: Transform::IDENTITY,
                 },
                 ChildOf(body),
             ))
