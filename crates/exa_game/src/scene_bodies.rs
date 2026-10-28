@@ -4,12 +4,13 @@
 //! A plan is plain data: the record it looks like (or the shipped actor
 //! template its record comes from), where it stands, its team and role
 //! words, its condition words and the item its main hand shows. The
-//! generator builds the body the game's placed characters use: the merged
-//! body model morphed by the record's physique, its skinned parts and skin
-//! look, its garments, the held item's model, the physical body's stats and
-//! ragdoll, its record data, its possessions and its brain — the duellist
-//! AI for a match opponent, or the placed-character brain for a company
-//! entrant or a hub NPC.
+//! generator builds the body the game's placed characters use: the body
+//! model morphed by the record's physique and the garments the dress pass
+//! merges around it, its skinned parts and skin look, the held item's
+//! model, the physical body whose `Physical` the limp plugin turns into the
+//! simulated ragdoll, its record data, its possessions and its brain — the
+//! duellist AI for a match opponent, or the placed-character brain for a
+//! company entrant or a hub NPC.
 //!
 //! A body is removed through [`SceneCommand::Despawn`]: its character
 //! capsule leaves the physics world first and the root with its whole
