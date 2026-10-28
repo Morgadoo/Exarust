@@ -88,7 +88,7 @@ use super::tree::{
     DOMAIN_DISPLACEMENT, DOMAIN_ENERGY, DOMAIN_FORCE, DOMAIN_MIND, PowerBar, PowerRecord, TreeMode,
     TreeScreen, domain_of, word,
 };
-use super::visuals::{CreatorInput, EffectKind, creator, spawn_visual};
+use super::visuals::{CreatorInput, EffectKind, active_object, creator, spawn_visual};
 use super::wave_live::new_wave;
 use super::wisps::{Strand, Wisps};
 use crate::effects::blast::Blast;
@@ -1472,8 +1472,11 @@ fn create_displacement(
         DisplacementStart::Vanish { cost } => {
             let mut power = Vanish::new(context.now, false, false, cost);
             power.take_hook(&mut caster.body);
-            let spec = creator(EffectKind::Vanish, &visual_input(context, ragdoll, 0.0));
-            let entity = spawn_visual(commands, spec);
+            let input = visual_input(context, ragdoll, 0.0);
+            // The creator adds its own node unless its activation made one.
+            let entity = active_object(EffectKind::Vanish, &input, cost, TICK_MS as f32, false)
+                .filter(|object| object.node.adds(false))
+                .map(|_| spawn_visual(commands, creator(EffectKind::Vanish, &input)));
             push_active(
                 caster,
                 0x601,
@@ -1481,10 +1484,10 @@ fn create_displacement(
                 READY,
                 ActiveClass::Vanish(power),
                 0.0,
-                Some(entity),
+                entity,
             );
             debug!("displacement vanish: effect node {entity:?}");
-            Some(entity)
+            entity
         }
         DisplacementStart::LongDoor { tick_cost, to, .. } => {
             let power = LongDoor::new(context.now, to.map(|p| p.to_array()), false, tick_cost);
@@ -1493,7 +1496,15 @@ fn create_displacement(
             if let Some(to) = to {
                 input.point = Some(to);
             }
-            let entity = spawn_visual(commands, creator(EffectKind::LongDoor, &input));
+            let entity = active_object(
+                EffectKind::LongDoor,
+                &input,
+                tick_cost,
+                TICK_MS as f32,
+                false,
+            )
+            .filter(|object| object.node.adds(false))
+            .map(|_| spawn_visual(commands, creator(EffectKind::LongDoor, &input)));
             push_active(
                 caster,
                 LONG_DOOR,
@@ -1501,10 +1512,10 @@ fn create_displacement(
                 READY,
                 ActiveClass::LongDoor(power),
                 0.0,
-                Some(entity),
+                entity,
             );
             debug!("displacement long door: effect node {entity:?}");
-            Some(entity)
+            entity
         }
         DisplacementStart::Constant { cost } => {
             let mut power = ConstantDisplacement::new();
@@ -1537,10 +1548,8 @@ fn create_displacement(
         DisplacementStart::Summon { .. } => {
             let power = Summon::new(context.now, false);
             caster.body.cast_hook = Some(super::power::displacement::SUMMON_HOOK);
-            let entity = spawn_visual(
-                commands,
-                creator(EffectKind::Summon, &visual_input(context, ragdoll, 0.0)),
-            );
+            // The summoning's creator adds no node: the class builds its
+            // vanish effect on its own activation.
             push_active(
                 caster,
                 super::displacement::SUMMON,
@@ -1548,10 +1557,10 @@ fn create_displacement(
                 READY,
                 ActiveClass::Summon(power),
                 0.0,
-                Some(entity),
+                None,
             );
-            debug!("displacement summon: effect node {entity:?}");
-            Some(entity)
+            debug!("displacement summon: the class builds its effect");
+            None
         }
     }
 }
