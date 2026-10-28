@@ -31,6 +31,8 @@ use exa_ui::gui_draw::{GuiFrames, GuiTextures};
 use exa_ui::skin::SkinBatch;
 
 use crate::gui_paint::{self, Frame};
+use crate::item_container::{CardWindow, Container};
+use crate::item_panel_draw::PanelIcons;
 use crate::menu_screen::MenuScreen;
 
 /// A screen the player's keys ask for.
@@ -205,6 +207,10 @@ pub struct GameScreens {
     pub inventory_place: Option<(i32, i32)>,
     /// The player's character record id (Exarust uses the entity index).
     pub player: i32,
+    /// The inventory's item pack, drawn through the panel's icon path.
+    pub pack: Container,
+    /// The description card the panel asked for.
+    pub card: CardWindow,
 }
 
 impl Default for GameScreens {
@@ -217,6 +223,8 @@ impl Default for GameScreens {
             journal_text: String::new(),
             inventory_place: None,
             player: 0,
+            pack: Container::default(),
+            card: CardWindow::default(),
         }
     }
 }
@@ -410,6 +418,7 @@ pub struct GameScreensPlugin;
 impl Plugin for GameScreensPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<GameScreens>()
+            .init_resource::<PanelIcons>()
             .init_resource::<DebugGuiForm>()
             .init_resource::<GuiFrames>()
             .add_message::<ScreenRequest>()
@@ -545,10 +554,17 @@ fn paint_controls(
     }
 }
 
-/// The inventory's frame, the item pack's panel and the Encumbrance label
-/// and Primary button records. The character view, the pack's item icons
-/// and the preview bars are not drawn.
-fn paint_inventory(bounds: GuiRect, unit: i32, textures: &GuiTextures) -> gui_paint::Painted {
+/// The inventory's frame, the item pack's panel with its entries' icons
+/// (when the panel's icon atlas holds them) and the Encumbrance label and
+/// Primary button records. The character view and the preview bars are
+/// not drawn.
+fn paint_inventory(
+    bounds: GuiRect,
+    unit: i32,
+    textures: &GuiTextures,
+    items: &Container,
+    icons: Option<&mut PanelIcons>,
+) -> gui_paint::Painted {
     let palette = gui_paint::palette();
     let level = exa_ui::gui_font::level_for_unit(unit);
     let (font, size) = screen_font(exa_ui::gui_font::gui_level(level).main, textures);
@@ -562,15 +578,29 @@ fn paint_inventory(bounds: GuiRect, unit: i32, textures: &GuiTextures) -> gui_pa
         gui_paint::PACK.0,
         gui_paint::PACK.1,
     );
-    for layer in gui_paint::paint_panel(
+    let panel = gui_paint::paint_panel(
         pack,
         unit,
         &palette,
         gui_paint::PACK_ATTRIBUTES,
         gui_paint::PACK_STYLE,
-    )
-    .layers
+    );
+    let panel_client = panel.client;
+    for layer in panel.layers {
+        painted.push(layer);
+    }
+    // The entries' cells are the panel's own coordinates: the icons are
+    // moved to its client area and clipped to it.
+    if let Some(icons) = icons
+        && let Some(mut layer) = icons.layer(items)
     {
+        gui_paint::offset_batch(&mut layer.batch, panel_client.left, panel_client.top);
+        layer.clip = Some([
+            panel_client.left,
+            panel_client.top,
+            panel_client.width(),
+            panel_client.height(),
+        ]);
         painted.push(layer);
     }
     let controls = screen_controls(GameScreen::Inventory, bounds);
@@ -666,6 +696,7 @@ fn paint_journal(
 /// Draws the open screens and the debug form into the GUI's queue.
 fn draw_screens(
     screens: Res<GameScreens>,
+    mut icons: ResMut<PanelIcons>,
     debug: Res<DebugGuiForm>,
     menu: Option<Res<MenuScreen>>,
     textures: Option<Res<GuiTextures>>,
@@ -689,7 +720,9 @@ fn draw_screens(
         };
         let bounds = form.bounds();
         let painted = match screen.kind {
-            GameScreen::Inventory => paint_inventory(bounds, unit, textures),
+            GameScreen::Inventory => {
+                paint_inventory(bounds, unit, textures, &screens.pack, Some(&mut icons))
+            }
             GameScreen::Journal => paint_journal(bounds, &screens.journal, unit, textures),
             _ => continue,
         };
@@ -835,6 +868,61 @@ mod tests {
                     | exa_ui::skin::SkinMode::Skin
             )
         }));
+    }
+
+    #[test]
+    fn a_pack_entry_with_an_icon_draws_through_the_panel_program() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<ButtonInput<KeyCode>>()
+            .add_plugins(GameScreensPlugin);
+        {
+            let mut icons = app.world_mut().resource_mut::<PanelIcons>();
+            let mut image = exa_ui::icon_atlas::IconImage::new(160, 160, 4);
+            image.pixels.fill(255);
+            let cell = icons.atlas.add(&image, 7);
+            icons.cache.entries = vec![exa_items::icon_cache::Entry {
+                id: 7,
+                cell,
+                variant: 0,
+                half_width: 84,
+                half_height: 84,
+                refs: 1,
+            }];
+        }
+        {
+            let mut screens = app.world_mut().resource_mut::<GameScreens>();
+            screens.pack.icon_size = 160;
+            screens.pack.entries = vec![crate::item_container::Entry {
+                cell: crate::item_container::Cell::new(10, 20),
+                id: 7,
+                icon: 1,
+                flags: 0,
+                drag: 0,
+            }];
+        }
+        let request = ScreenRequest {
+            screen: GameScreen::Inventory,
+            player_ready: true,
+            player_alive: true,
+        };
+        app.world_mut().write_message(request);
+        app.update();
+        let frames = app.world().resource::<GuiFrames>();
+        assert_eq!(frames.frames.len(), 1);
+        let panel: Vec<_> = frames.frames[0]
+            .layers
+            .iter()
+            .filter(|layer| layer.batch.mode == exa_ui::skin::SkinMode::HltCol)
+            .collect();
+        assert_eq!(panel.len(), 1);
+        assert_eq!(panel[0].batch.primitives.len(), 1);
+        // The cell is placed inside the pack panel's client area and the
+        // layer is clipped to it.
+        let clip = panel[0].clip.unwrap();
+        let first = panel[0].batch.vertices_of(&panel[0].batch.primitives[0])[0];
+        assert_eq!(first.x, (clip[0] + 10) as f32);
+        assert!(first.y >= clip[1] as f32);
     }
 
     #[test]

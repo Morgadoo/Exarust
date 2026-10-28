@@ -54,7 +54,7 @@ pub struct SpriteSheet {
     pub places: &'static [(i32, i32)],
 }
 
-const DOTRATING_PLACES: [(i32, i32); 3] = [(0, 0), (64, 0), (128, 0)];
+const DOTRATING_PLACES: [(i32, i32); 3] = [(0, 128), (0, 64), (0, 0)];
 const COIN_PLACES: [(i32, i32); 3] = [(0, 0), (48, 0), (96, 0)];
 const GRIP_PLACES: [(i32, i32); 3] = [(0, 96), (96, 96), (192, 96)];
 const CRYSTAL_PLACES: [(i32, i32); 6] = [(0, 128), (64, 128), (0, 64), (0, 0), (64, 0), (64, 64)];
@@ -713,6 +713,134 @@ where
     (out, used)
 }
 
+/// The atlas each sprite sheet is loaded into, and the atlas cell's side in
+/// pixels once the GUI unit is applied. The rating dots go into the global
+/// icon manager the interface opens first; the coins, the grip sides and
+/// the crystals get the three managers this unit makes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SheetAtlas {
+    pub sheet: &'static str,
+    /// The manager's cell size, or `None` for the interface's global one.
+    pub manager: Option<IconManager>,
+    /// The manager's blend word.
+    pub blend: u32,
+    /// The manager's pixel format.
+    pub format: u32,
+    /// The source cell's side.
+    pub source_cell: i32,
+}
+
+/// The three managers this unit makes: `unit · 4` for the coins in the
+/// colour format, `unit · 8` for the grip sides in the single-channel
+/// format, and the 22-pixel socket manager in the colour format. All three
+/// blend with 0x203.
+pub const SHEET_ATLASES: [SheetAtlas; 4] = [
+    SheetAtlas {
+        sheet: "dotrating.rfi",
+        manager: None,
+        blend: 0x203,
+        format: 0x0100_e608,
+        source_cell: 64,
+    },
+    SheetAtlas {
+        sheet: "coinicons.rfi",
+        manager: Some(IconManager::Coins),
+        blend: 0x203,
+        format: 0x0100_e608,
+        source_cell: 48,
+    },
+    SheetAtlas {
+        sheet: "wpnflpgrpico.rfi",
+        manager: Some(IconManager::Grip),
+        blend: 0x203,
+        format: 0x0100_6208,
+        source_cell: 96,
+    },
+    SheetAtlas {
+        sheet: "crystalicons.rfi",
+        manager: Some(IconManager::Sockets),
+        blend: 0x203,
+        format: 0x0100_e608,
+        source_cell: 64,
+    },
+];
+
+/// The cell side a sheet's manager is given for GUI unit `unit`: four
+/// units for the coins, eight for the grip sides, and for the sockets the
+/// interface's large-icon cell. That cell is 22 only before a GUI level is
+/// chosen; each level then sets its own (`exa_ui::gui_font::LARGE_ICONS`),
+/// which this crate does not see yet, so the sockets keep [`DOT`].
+pub fn sheet_cell(atlas: &SheetAtlas, unit: i32) -> Option<i32> {
+    atlas.manager.map(|manager| manager_cell(manager, unit))
+}
+
+/// One sheet cell's source rectangle: its top-left and its side.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SheetCellRect {
+    pub x: i32,
+    pub y: i32,
+    pub side: i32,
+}
+
+/// The source rectangle of a sheet's cell `index`; `None` past its cells.
+/// The places are the corners the sheet stores (bottom row first), so the
+/// cropped image is taken there and stored as the manager's cell.
+pub fn sheet_cell_rect(sheet: &SpriteSheet, index: usize) -> Option<SheetCellRect> {
+    if index >= sheet.cells as usize {
+        return None;
+    }
+    let (x, y) = *sheet.places.get(index)?;
+    Some(SheetCellRect {
+        x,
+        y,
+        side: sheet.cell,
+    })
+}
+
+/// Crops one sheet cell out of a decoded RGBA sheet: `channels` bytes a
+/// pixel, row 0 the sheet's first row (the sheets store their bottom row
+/// first, so a stored place counts from that row). `None` for a rectangle
+/// outside the image or a pixel size the sheet cannot hold.
+pub fn crop_sheet_cell(
+    source: &[u8],
+    width: i32,
+    height: i32,
+    channels: usize,
+    rect: SheetCellRect,
+) -> Option<Vec<u8>> {
+    if width <= 0 || height <= 0 || channels == 0 || rect.side < 0 {
+        return None;
+    }
+    let last_x = rect.x.checked_add(rect.side)?;
+    let last_y = rect.y.checked_add(rect.side)?;
+    if rect.x < 0 || rect.y < 0 || last_x > width || last_y > height {
+        return None;
+    }
+    let side = rect.side as usize;
+    let stride = width as usize * channels;
+    let mut out = vec![0u8; side * side * channels];
+    for row in 0..side {
+        let src = (rect.y as usize + row) * stride + rect.x as usize * channels;
+        let dst = row * side * channels;
+        let span = side * channels;
+        out[dst..dst + span].copy_from_slice(source.get(src..src + span)?);
+    }
+    Some(out)
+}
+
+/// The item panel's icon shader, as the original's program compiles it.
+/// Its uniform and per-pixel arithmetic are drawn by
+/// `exa_ui::gui_draw::item_icon_fragment` (the GUI's `HltCol` program).
+///
+/// The program sums the alpha of a ring around the pixel (three pixels
+/// left, right, below and above, and the four diagonal pairs at two), each
+/// sample halved and folded in turn, scales the sum by the vertex's green
+/// and three quarters, mixes the highlight colour towards white by the
+/// vertex's red, adds that over the pixel's own colour by the square of
+/// its transparency, and adds the glow to the alpha. The fragment is then
+/// scaled by the vertex's alpha.
+pub const ITEM_ICON_SHADER: &str = "in vec2 vrTex;\r\nin vec4 vrCol;\r\nout vec4 FragColor;\r\nuniform vec4 HltCol;\r\nuniform sampler2D Tex;\r\nvoid main() {\r\nfloat a = textureOffset(Tex, vrTex, ivec2(-3, 0)).a * 0.5;\r\nfloat b = textureOffset(Tex, vrTex, ivec2(3, 0)).a * 0.5;\r\na = a * (1.0-b) + b;\r\nb = textureOffset(Tex, vrTex, ivec2(0, -3)).a * 0.5;\r\na = a * (1.0-b) + b;\r\nb = textureOffset(Tex, vrTex, ivec2(0, 3)).a * 0.5;\r\na = a * (1.0-b) + b;\r\nb = textureOffset(Tex, vrTex, ivec2(-2, -2)).a * 0.5;\r\na = a * (1.0-b) + b;\r\nb = textureOffset(Tex, vrTex, ivec2(-2, 2)).a * 0.5;\r\na = a * (1.0-b) + b;\r\nb = textureOffset(Tex, vrTex, ivec2(2, -2)).a * 0.5;\r\na = a * (1.0-b) + b;\r\nb = textureOffset(Tex, vrTex, ivec2(2, 2)).a * 0.5;\r\na = a * (1.0-b) + b;\r\na = a * vrCol.g * 0.75;\r\nvec3 col = mix(HltCol.rgb, vec3(1.0), vrCol.r) * a;\r\nvec4 tcol = texture(Tex, vrTex);\r\nb = (1.0 - tcol.a);tcol.rgb = col.rgb * b * b + tcol.rgb;\r\ntcol.a = min(a + tcol.a, 1.0);\r\nFragColor = tcol * vrCol.a;\r\n}";
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -959,6 +1087,99 @@ mod tests {
         // Green rises by what alpha gained: 10 + (255 − 100).
         assert_eq!(lit[(w + 1) * 4 + 1], 165);
         assert_eq!(lit[(2 * w + 1) * 4 + 1], 100);
+    }
+
+    #[test]
+    fn the_sheet_atlases_and_their_cells() {
+        assert_eq!(SHEET_ATLASES[0].manager, None);
+        assert_eq!(SHEET_ATLASES[1].manager, Some(IconManager::Coins));
+        assert_eq!(SHEET_ATLASES[2].manager, Some(IconManager::Grip));
+        assert_eq!(SHEET_ATLASES[3].manager, Some(IconManager::Sockets));
+        assert_eq!(sheet_cell(&SHEET_ATLASES[0], 4), None);
+        assert_eq!(sheet_cell(&SHEET_ATLASES[1], 4), Some(16));
+        assert_eq!(sheet_cell(&SHEET_ATLASES[2], 4), Some(32));
+        assert_eq!(sheet_cell(&SHEET_ATLASES[3], 4), Some(22));
+        assert_eq!(SHEET_ATLASES[2].format, 0x0100_6208);
+        assert_eq!(SHEET_ATLASES[3].format, 0x0100_e608);
+        assert_eq!(SHEET_ATLASES[0].blend, 0x203);
+        // The rating dots are stored down the sheet's last column, the
+        // crystals in the six cells on a 64-pixel grid.
+        assert_eq!(SPRITE_SHEETS[0].places, &[(0, 128), (0, 64), (0, 0)]);
+        assert_eq!(
+            SPRITE_SHEETS[3].places,
+            &[(0, 128), (64, 128), (0, 64), (0, 0), (64, 0), (64, 64)]
+        );
+        assert_eq!(SPRITE_SHEETS[1].places, &[(0, 0), (48, 0), (96, 0)]);
+        assert_eq!(SPRITE_SHEETS[2].places, &[(0, 96), (96, 96), (192, 96)]);
+        assert_eq!(
+            sheet_cell_rect(&SPRITE_SHEETS[0], 1),
+            Some(SheetCellRect {
+                x: 0,
+                y: 64,
+                side: 64
+            })
+        );
+        assert_eq!(
+            sheet_cell_rect(&SPRITE_SHEETS[1], 2),
+            Some(SheetCellRect {
+                x: 96,
+                y: 0,
+                side: 48
+            })
+        );
+        assert_eq!(sheet_cell_rect(&SPRITE_SHEETS[3], 6), None);
+        // A 4 × 4 sheet of one channel: crop its 2 × 2 cell at (1, 2).
+        let source: Vec<u8> = (0..16).collect();
+        let cell = crop_sheet_cell(
+            &source,
+            4,
+            4,
+            1,
+            SheetCellRect {
+                x: 1,
+                y: 2,
+                side: 2,
+            },
+        )
+        .unwrap();
+        assert_eq!(cell, vec![9, 10, 13, 14]);
+        assert_eq!(
+            crop_sheet_cell(
+                &source,
+                4,
+                4,
+                1,
+                SheetCellRect {
+                    x: 3,
+                    y: 0,
+                    side: 2
+                }
+            ),
+            None
+        );
+        assert_eq!(
+            crop_sheet_cell(
+                &source,
+                4,
+                4,
+                1,
+                SheetCellRect {
+                    x: 1,
+                    y: 2,
+                    side: 3
+                }
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn the_icon_shader_source() {
+        assert!(ITEM_ICON_SHADER.contains("uniform vec4 HltCol;"));
+        assert!(ITEM_ICON_SHADER.contains("textureOffset(Tex, vrTex, ivec2(-3, 0))"));
+        assert!(ITEM_ICON_SHADER.contains("a = a * vrCol.g * 0.75;"));
+        assert!(ITEM_ICON_SHADER.contains("mix(HltCol.rgb, vec3(1.0), vrCol.r)"));
+        assert!(ITEM_ICON_SHADER.contains("FragColor = tcol * vrCol.a;"));
     }
 
     #[test]

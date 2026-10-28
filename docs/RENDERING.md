@@ -2074,8 +2074,49 @@ and the icon in size; each is the payload plus a 32-byte header (16-bit
 width and height, a word of 1, the format, the flags `0x20000000`, a word
 of `0x1000`, the payload's offset of 32 and its size). The icon is
 later framed at 70, 30 for apparel or 20 when close, with the weapon light
-preset (see `exa_items::item_gui`). The running game does not use the
-module: its icons come from `exa_items::icon_cache`.
+preset (see `exa_items::item_gui`). The running game does not render its
+icons yet: the panel takes the manager's atlas from
+`exa_items::icon_cache` and draws it through the GUI path (below).
+
+**The render plan** (`item_renderer::render_plan`): the item is turned by
+(−0.1, 0.1, 0.5) when both the apparel and weapon bits are set; its sun is
+set to the weapon preset (−0.16, 0.6516) or the other (−0.21, 0.7516); a
+model whose flags' low byte is 9 hides the materials named `*`; bit 31 of
+the variant subdivides the meshes. The camera node is shifted (0, 500, 0)
+above a target at the origin and the framing distance is 20 (close), 30
+(apparel) or 70. The extents are projected from the mesh's vertices (model
+flags `0x89` masked to `0x89`) or from its box's eight corners, each axis's
+minimum and maximum updated in the machine's ordered compare (an unordered
+value moves neither), the span taken in single precision and widened by
+0.0001 in double. The projection is the engine's packed transform, which
+adds the x and y terms and the z and translation terms in pairs. The span
+is scaled by `icon · view scale / √(distance²) · 0.5`, given in single
+precision in that order. The post process always runs; while the alpha
+global is set (the default) a screen-quad pass draws the full render into
+the icon and nothing else follows, otherwise the full image is filtered
+down to the icon size (2× to 1×) and the halo runs, highlighted for the
+variant's `0x01000000` bit. The scene's depth bounds read the camera axis
+(the node matrix's second row), start both ends at the first kept node's
+stored depth and give the box a radius over its whole half-extent vector.
+
+**Resize and stream.** A UI-scale change resizes both renderbuffers and
+both images to twice the new icon and the icon (the scale hook then renders
+every cached icon again). An item whose object is still streaming asks the
+content stream, pumping the texture loader and sleeping zero until the
+object arrives; the wait gives up after `0xf0000000` retries. A streamed
+request keeps its top two tag bits, writes the condition word when its
+`0x20000000` bit is set, gains `0x04000000` for a weapon section, and is
+inserted into the cache's first free slot with half extents of half the
+rendered size plus the GUI unit.
+
+**The panel program** (`HltCol`). The panel binds its own icon program,
+whose source is `exa_items::item_gui::ITEM_ICON_SHADER` and whose uniform is
+(1, 0.75, 0.45, 1). It sums a ring's alpha (three texels left, right, below
+and above, and the four diagonal pairs at two), scales it by the vertex's
+green and 0.75, mixes the highlight towards white by the vertex's red, adds
+that over the pixel by the square of its transparency, adds the glow to the
+alpha and scales the fragment by the vertex alpha. The GUI draw path
+reproduces it as `SkinMode::HltCol`.
 
 ## Procedural noise
 

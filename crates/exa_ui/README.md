@@ -388,11 +388,23 @@ compass, heartbeat sound fade, menu cursor and HUD draw order, and the
 save and close scopes. The bars and their frames are `hud`'s.
 `exa_game::gui_screens` opens the inventory and journal from the I and J
 hotkeys on a `GuiTask` and draws them through `gui_draw` and
-`exa_game::gui_paint`: the frame, the inventory's pack panel, its
-Encumbrance label and Primary button, and the journal's New and Erase
-buttons and the selected entry's text, from the constructors' words and
-records. The character view, preview bars, item icons and the journal's
-entry list are not wired.
+`exa_game::gui_paint`: the frame, the inventory's pack panel and its item
+icons when the item manager's atlas has any, its Encumbrance label and
+Primary button, and the journal's New and Erase buttons and the selected
+entry's text, from the constructors' words and records. The item panel's
+icons use `SkinMode::HltCol`, the item GUI's own program (below). The
+character view, preview bars and the journal's entry list are not wired.
+
+## The item panel's icon program
+
+`SkinMode::HltCol` is the item panel's subset program: it samples the icon
+texture, sums eight neighbouring alphas in the shader's order, scales the
+sum by the vertex's green and three quarters, mixes the highlight
+(1, 0.75, 0.45) towards white by the vertex's red, lays that over the pixel
+by the square of its transparency, adds the glow to the alpha and scales
+the fragment by the vertex alpha (`item_icon_fragment`, pinned by tests).
+The item GUI's five control classes are `gui_controls::ITEM_CLASSES` and
+register after the shipped seven.
 
 ## Scope
 
