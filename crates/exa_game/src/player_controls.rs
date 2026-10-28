@@ -826,6 +826,161 @@ pub fn use_press(has_body: bool, usable: Option<u8>) -> UsePress {
     }
 }
 
+/// The values the use cursor reads from a world item: its operative
+/// section and the condition bytes of its weapon or apparel section. The
+/// material byte the repair kit's step divides by is the model section's
+/// byte [`exa_formats::objdb::Item::equip_lock`] reads (the same byte the
+/// equip lock uses).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ItemUseFields {
+    /// [`exa_formats::objdb::operative`] class.
+    pub class: u8,
+    pub kind: u8,
+    pub flags: u16,
+    pub value: u16,
+    pub target: u32,
+    /// The section's name bytes (body offset 16): a sound's name for the
+    /// usable classes, a teleporter's atlas for a device.
+    pub name: String,
+    /// The weapon or apparel section's wear byte (the repair kit lowers
+    /// it), from the copy's condition.
+    pub wear: Option<u8>,
+    /// The weapon or apparel section's dirt byte (the cleaning kit lowers
+    /// it), from the copy's condition.
+    pub dirt: Option<u8>,
+    /// The model section's material byte (body offset 0x24).
+    pub material: Option<u8>,
+}
+
+/// The fields the use cursor reads of an item, or none when it has no
+/// operative section or the record is not in the database. The wear and
+/// dirt bytes are the copy's condition bytes when it has one; a template
+/// with no copy has none.
+pub fn item_use_fields(
+    item: &exa_formats::objdb::Item,
+    condition: Option<&exa_items::instance::MadeCondition>,
+) -> Option<ItemUseFields> {
+    let operative = item.operative.as_ref()?;
+    let name_end = operative
+        .atlas
+        .iter()
+        .position(|b| *b == 0)
+        .unwrap_or(operative.atlas.len());
+    let name = String::from_utf8_lossy(&operative.atlas[..name_end]).into_owned();
+    let has_condition =
+        item.weapon.is_some() || item.armour.is_some() || !item.worn_model.is_empty();
+    let (wear, dirt) = match (has_condition, condition) {
+        (true, Some(c)) => (Some(c.damage), Some(c.dirt)),
+        _ => (None, None),
+    };
+    Some(ItemUseFields {
+        class: operative.class,
+        kind: operative.kind,
+        flags: operative.flags,
+        value: operative.value,
+        target: operative.target,
+        name,
+        wear,
+        dirt,
+        material: (!item.model.is_empty()).then_some(item.equip_lock),
+    })
+}
+
+/// What using a world item does, in the use dispatcher's order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorldUse {
+    Nothing,
+    /// Class 0, kind 1: consumed after [`CONSUME_MS`], the timed entry
+    /// carrying the section's target word.
+    Consume {
+        due_ms: u32,
+        target: u32,
+    },
+    /// Class 0, another kind: the item is taken into the inventory.
+    TakeItem,
+    /// Class 1: the item is taken in hand (the item cursor's drag, state
+    /// [`TAKE_STATE`]) and the player's hand word is [`TAKE_PLAYER_WORD`].
+    TakeInHand {
+        state: u32,
+        player_word: u32,
+    },
+    /// Class 5, its second-target bit clear: the push surface is pressed
+    /// and its body woken for [`PUSH_WAKE`] ticks.
+    Push {
+        wake: u32,
+    },
+}
+
+/// The state word a taken item sets on the controls.
+pub const TAKE_STATE: u32 = 0x100;
+/// The player's hand word a taken item sets.
+pub const TAKE_PLAYER_WORD: u32 = 0x40;
+/// The ticks a pressed push surface's body is woken for.
+pub const PUSH_WAKE: u32 = 256;
+/// The push surface's flags bit that refuses the use (its second target).
+pub const PUSH_NO_USE: u16 = 4;
+
+/// The use of a world item, in the original's order: an operative section
+/// is required; a used item (its mark word's 0xff0000 bits set) does
+/// nothing for classes 0 and 1; class 0 is a consumable of kind 1 or an
+/// item taken into the inventory; class 1 is taken in hand; class 5 with
+/// its flags bit 2 clear is pushed. Other classes do nothing.
+pub fn world_use(fields: &ItemUseFields, marked: bool, now_ms: u32) -> WorldUse {
+    match fields.class {
+        0 if !marked => {
+            if fields.kind == 1 {
+                WorldUse::Consume {
+                    due_ms: now_ms.wrapping_add(CONSUME_MS),
+                    target: fields.target,
+                }
+            } else {
+                WorldUse::TakeItem
+            }
+        }
+        1 if !marked => WorldUse::TakeInHand {
+            state: TAKE_STATE,
+            player_word: TAKE_PLAYER_WORD,
+        },
+        5 if fields.flags & PUSH_NO_USE == 0 => WorldUse::Push { wake: PUSH_WAKE },
+        _ => WorldUse::Nothing,
+    }
+}
+
+/// What the deferred GUI drop's spawn task does when it runs.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SpawnRun {
+    /// No node was queued.
+    Nothing,
+    /// The controls' state word lacks bit 0x1000: the node is freed and
+    /// nothing is placed.
+    Dropped,
+    /// The node's body has no physics: the original's "Game object has no
+    /// physics: <name>" content error, the node freed.
+    ContentError,
+    /// The node is attached at its frame, its condition word written, the
+    /// lift begun and the placement run at the lift's height limit.
+    Placed { condition: u32, place_limit_cm: f32 },
+}
+
+/// The deferred drop task's run: a node is required, the controls must
+/// hold bit 0x1000, and the node's body must have physics. A placed node
+/// takes the drag's condition word and the lift's −100000 cm placement
+/// limit.
+pub fn run_spawn(queued: bool, suppressed: bool, has_body: bool, condition: u32) -> SpawnRun {
+    if !queued {
+        SpawnRun::Nothing
+    } else if !suppressed {
+        SpawnRun::Dropped
+    } else if !has_body {
+        SpawnRun::ContentError
+    } else {
+        SpawnRun::Placed {
+            condition,
+            place_limit_cm: -100_000.0,
+        }
+    }
+}
+
 /// What a use aimed at the world hits, from the pick's classification: a
 /// hinge (4), a living character (0x10), a usable item (bit 2 set, so class
 /// 3) or nothing.
@@ -1188,6 +1343,7 @@ pub fn register_game_modes(registered: u32) -> [GameModeEntry; 2] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use exa_formats::objdb::{Item, Operative};
 
     /// A salve fills the heal pool by 0.2, or 0.1 when the value word is
     /// 50, in double precision: 0.3 + 0.2 is 0.5 exactly once narrowed.
@@ -1913,5 +2069,153 @@ mod tests {
         let goal = walk_stop(feet, far, true).unwrap();
         assert!((goal.z - (5.0 - 3.5)).abs() < 1e-5, "{goal}");
         assert_eq!(walk_stop(feet, Vec3::new(0.0, 0.0, 2.0), false), None);
+    }
+
+    fn operative(class: u8, kind: u8, flags: u16, value: u16, target: u32) -> Operative {
+        Operative {
+            class,
+            kind,
+            flags,
+            value,
+            time: 0,
+            target,
+            second: 0,
+            atlas: [0; 16],
+            destinations: [0; exa_formats::objdb::DESTINATIONS],
+        }
+    }
+
+    fn item_with(operative: Option<Operative>, worn_model: &str, equip_lock: u8) -> Item {
+        Item {
+            id: 7,
+            name: "thing".into(),
+            model: "ThingA01".into(),
+            model_flags: 0,
+            worn_model: worn_model.into(),
+            appearance: None,
+            slot_layers: [0; exa_formats::objdb::SLOTS],
+            slot_words: [0; exa_formats::objdb::SLOTS],
+            occupancy: [0; exa_formats::objdb::OCCUPANCY_BONES],
+            weapon: None,
+            armour: None,
+            shield: None,
+            door: None,
+            operative,
+            burden: None,
+            equip_lock,
+            torch: false,
+            volume: None,
+        }
+    }
+
+    /// The use reader takes the operative section's class, kind, flags,
+    /// value, target and name, the copy's wear and dirt bytes when the item
+    /// has a condition, and the model section's material byte.
+    #[test]
+    fn the_use_fields_come_from_the_sections() {
+        let mut section = operative(0, 1, 4, 50, 0x1234);
+        section.atlas[..4].copy_from_slice(b"LqdA");
+        let item = item_with(Some(section), "", 25);
+        let fields = item_use_fields(&item, None).unwrap();
+        assert_eq!(
+            (
+                fields.class,
+                fields.kind,
+                fields.flags,
+                fields.value,
+                fields.target
+            ),
+            (0, 1, 4, 50, 0x1234)
+        );
+        assert_eq!(fields.name, "LqdA");
+        assert_eq!(fields.wear, None);
+        // A worn item with a condition copy reads its bytes; a template
+        // without a copy has none.
+        let worn = item_with(Some(operative(3, 1, 0, 0, 0)), "CoatA01", 25);
+        let condition = exa_items::instance::MadeCondition {
+            flags: 0,
+            seeds: [1, 2],
+            quality: 200,
+            damage: 120,
+            dirt: 0x40,
+            spreads: Default::default(),
+        };
+        let fields = item_use_fields(&worn, Some(&condition)).unwrap();
+        assert_eq!(
+            (fields.wear, fields.dirt, fields.material),
+            (Some(120), Some(0x40), Some(25))
+        );
+        let fields = item_use_fields(&worn, None).unwrap();
+        assert_eq!((fields.wear, fields.dirt), (None, None));
+        // No operative section: the use cursor has nothing to read.
+        assert!(item_use_fields(&item_with(None, "", 25), None).is_none());
+    }
+
+    /// A world item's use: class 0 kind 1 is consumed after 2100 ms with
+    /// its target word, class 0 another kind is taken into the inventory,
+    /// class 1 is taken in hand (state 0x100, hand word 0x40), class 5
+    /// with bit 2 clear is pushed (256 ticks), and a marked item is inert.
+    #[test]
+    fn a_world_item_is_used_taken_or_pushed() {
+        let at = |class, kind, flags| ItemUseFields {
+            class,
+            kind,
+            flags,
+            value: 0,
+            target: 0x99,
+            name: String::new(),
+            wear: None,
+            dirt: None,
+            material: None,
+        };
+        assert_eq!(
+            world_use(&at(0, 1, 0), false, 1000),
+            WorldUse::Consume {
+                due_ms: 3100,
+                target: 0x99
+            }
+        );
+        assert_eq!(world_use(&at(0, 4, 0), false, 0), WorldUse::TakeItem);
+        assert_eq!(
+            world_use(&at(1, 0, 0), false, 0),
+            WorldUse::TakeInHand {
+                state: 0x100,
+                player_word: 0x40
+            }
+        );
+        assert_eq!(
+            world_use(&at(5, 0, 0), false, 0),
+            WorldUse::Push { wake: 256 }
+        );
+        assert_eq!(world_use(&at(5, 0, 4), false, 0), WorldUse::Nothing);
+        // The mark word's 0xff0000 bits make classes 0 and 1 inert.
+        assert_eq!(world_use(&at(0, 1, 0), true, 0), WorldUse::Nothing);
+        assert_eq!(world_use(&at(1, 0, 0), true, 0), WorldUse::Nothing);
+        // The push does not read the mark.
+        assert_eq!(
+            world_use(&at(5, 0, 0), true, 0),
+            WorldUse::Push { wake: 256 }
+        );
+        // Other classes do nothing.
+        assert_eq!(world_use(&at(2, 15, 0), false, 0), WorldUse::Nothing);
+        assert_eq!(world_use(&at(9, 0, 0), false, 0), WorldUse::Nothing);
+    }
+
+    /// The deferred drop task: no queued node does nothing; the controls
+    /// without bit 0x1000 free the node; a node without physics is the
+    /// content error; a placed node takes the drag's condition word and the
+    /// lift's −100000 cm limit.
+    #[test]
+    fn the_deferred_spawn_runs_in_order() {
+        assert_eq!(run_spawn(false, true, true, 7), SpawnRun::Nothing);
+        assert_eq!(run_spawn(true, false, true, 7), SpawnRun::Dropped);
+        assert_eq!(run_spawn(true, true, false, 7), SpawnRun::ContentError);
+        assert_eq!(
+            run_spawn(true, true, true, 7),
+            SpawnRun::Placed {
+                condition: 7,
+                place_limit_cm: -100_000.0
+            }
+        );
     }
 }
