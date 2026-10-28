@@ -317,7 +317,12 @@ pump drains every ready upload,
 and a record freed at its last reference drops its queued load and its image
 (`ModelLoader::release_texture`). `texture_now` decodes on the calling
 thread (the original's synchronous path and its priority load); `wait_decodes`
-blocks on the in-flight decodes for a caller that must have them. Without a
+blocks on the in-flight decodes for a caller that must have them. The
+terrain material path's two routines are `texture_existing` (the manager
+lookup that takes a reference and creates nothing) and `texture_stream_first`
+(a live record first, else the placeholder and a queued load whatever the
+general streaming switch says); terrain's own bindings cannot refresh a
+placeholder yet, so its build still uses `texture_sync`. Without a
 `Game` (tools) or a task pool the plugin uploads the placeholder, and a cache
 built by hand without `set_streaming` keeps decoding synchronously.
 

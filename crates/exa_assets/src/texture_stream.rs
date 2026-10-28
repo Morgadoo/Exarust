@@ -312,35 +312,41 @@ mod tests {
         Some((app, data))
     }
 
+    /// Runs `f` with a loader over the app's assets and cache.
+    fn with_loader<T>(
+        app: &mut App,
+        data: &crate::GameData,
+        f: impl FnOnce(&mut crate::ModelLoader<'_>) -> T,
+    ) -> T {
+        app.world_mut().resource_scope(
+            |world: &mut World, mut cache: bevy::ecs::change_detection::Mut<ModelCache>| {
+                let mut images = world.resource_mut::<Assets<Image>>();
+                let mut meshes = Assets::<Mesh>::default();
+                let mut materials = Assets::<exa_render::material::ExaMaterial>::default();
+                let mut loader = crate::ModelLoader {
+                    game: data,
+                    cache: &mut cache,
+                    meshes: &mut meshes,
+                    materials: &mut materials,
+                    images: &mut images,
+                    bc_supported: true,
+                };
+                f(&mut loader)
+            },
+        )
+    }
+
     /// Requests `name`; with `now`, through the synchronous priority path.
     fn request(app: &mut App, data: &crate::GameData, name: &str, now: bool) -> Handle<Image> {
-        app.world_mut()
-            .resource_scope(
-                |world: &mut World, mut cache: bevy::ecs::change_detection::Mut<ModelCache>| {
-                    let mut images = world.resource_mut::<Assets<Image>>();
-                    let mut meshes = Assets::<Mesh>::default();
-                    let mut materials = Assets::<exa_render::material::ExaMaterial>::default();
-                    let mut loader = crate::ModelLoader {
-                        game: data,
-                        cache: &mut cache,
-                        meshes: &mut meshes,
-                        materials: &mut materials,
-                        images: &mut images,
-                        bc_supported: true,
-                    };
-                    let texture = if now {
-                        loader.texture_now(
-                            name,
-                            texture::ColorSpace::Srgb,
-                            texture::default_flags(),
-                        )
-                    } else {
-                        loader.texture(name, texture::ColorSpace::Srgb)
-                    };
-                    texture.map(|(handle, _)| handle)
-                },
-            )
-            .unwrap_or_else(|| panic!("texture {name} is shipped"))
+        with_loader(app, data, |loader| {
+            let texture = if now {
+                loader.texture_now(name, texture::ColorSpace::Srgb, texture::default_flags())
+            } else {
+                loader.texture(name, texture::ColorSpace::Srgb)
+            };
+            texture.map(|(handle, _)| handle)
+        })
+        .unwrap_or_else(|| panic!("texture {name} is shipped"))
     }
 
     fn width(app: &App, handle: &Handle<Image>) -> u32 {
@@ -349,6 +355,75 @@ mod tests {
             .get(handle)
             .map(|image| image.texture_descriptor.size.width)
             .unwrap_or(0)
+    }
+
+    /// The terrain path looks the record up first and otherwise queues a
+    /// load behind the placeholder even with the manager's general streaming
+    /// switch off; a second call reuses the live record without queueing.
+    #[test]
+    fn the_terrain_path_queues_once_and_then_reuses_the_record() {
+        let Some((mut app, data)) = streaming_app() else {
+            return;
+        };
+        app.world_mut()
+            .resource_mut::<ModelCache>()
+            .textures
+            .set_streaming(false);
+        let first = with_loader(&mut app, &data, |loader| {
+            loader.texture_stream_first(
+                "spatter01",
+                texture::ColorSpace::Srgb,
+                texture::default_flags(),
+            )
+        })
+        .expect("the image is shipped")
+        .0;
+        assert_eq!(width(&app, &first), 1, "the placeholder first");
+        assert_eq!(
+            app.world()
+                .resource::<ModelCache>()
+                .textures
+                .queued_loads()
+                .len(),
+            1
+        );
+        // A live record (even the placeholder) wins without another load.
+        let second = with_loader(&mut app, &data, |loader| {
+            loader.texture_existing("spatter01", texture::ColorSpace::Srgb)
+        })
+        .expect("the record is live");
+        assert_eq!(second.0, first);
+        let third = with_loader(&mut app, &data, |loader| {
+            loader.texture_stream_first(
+                "spatter01",
+                texture::ColorSpace::Srgb,
+                texture::default_flags(),
+            )
+        })
+        .expect("the record is live");
+        assert_eq!(third.0, first);
+        assert_eq!(
+            app.world()
+                .resource::<ModelCache>()
+                .textures
+                .queued_loads()
+                .len(),
+            1
+        );
+        // A name that is not live and not shipped leaves no handle.
+        assert!(
+            with_loader(&mut app, &data, |loader| loader
+                .texture_existing("no_such_image_name", texture::ColorSpace::Srgb))
+            .is_none()
+        );
+        assert!(
+            with_loader(&mut app, &data, |loader| loader.texture_stream_first(
+                "no_such_image_name",
+                texture::ColorSpace::Srgb,
+                texture::default_flags()
+            ))
+            .is_none()
+        );
     }
 
     /// The streaming path decodes a shipped image on the task pool and

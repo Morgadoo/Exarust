@@ -1751,6 +1751,14 @@ mod corpus_tests {
                 if FileKind::detect(bytes) != FileKind::Image {
                     continue;
                 }
+                // The name dispatch finds the reader for every shipped
+                // image, whatever dots the entry name carries.
+                assert_eq!(
+                    crate::image_format::reader_for(&entry.name, bytes),
+                    Ok(crate::image_format::ImageFormat::Rfi),
+                    "{}",
+                    entry.name
+                );
                 let Ok(rfi) = Rfi::parse(bytes) else {
                     continue;
                 };
