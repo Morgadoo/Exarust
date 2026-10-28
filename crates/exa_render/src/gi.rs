@@ -1102,6 +1102,26 @@ pub fn margin_blit(dims: UVec3, dx: i32, dz: i32) -> Option<MarginBlit> {
     })
 }
 
+/// The four corners of a margin blit's quad, in destination texture units
+/// (x, Z depth, Y height), with the base z the original's quad carries
+/// (−0.5/depth; each instance's layer adds 1/depth). The fragment reads the
+/// neighbour at the same coordinates plus [`MarginBlit::offset`]. The quad
+/// walks the destination box's edges anticlockwise.
+pub fn margin_quad(blit: &MarginBlit, dims: UVec3) -> [Vec3; 4] {
+    let w = dims.x.max(1) as f32;
+    let h = dims.y.max(1) as f32;
+    let d = dims.z.max(1) as f32;
+    let (x0, x1) = (blit.lo.x as f32 / w, blit.hi.x as f32 / w);
+    let (y0, y1) = (blit.lo.y as f32 / h, blit.hi.y as f32 / h);
+    let r = -0.5 / d;
+    [
+        Vec3::new(x0, y0, r),
+        Vec3::new(x1, y0, r),
+        Vec3::new(x1, y1, r),
+        Vec3::new(x0, y1, r),
+    ]
+}
+
 /// The voxels a voxel light at `at` (in voxels from the block's corner,
 /// texture axes X, Z, Y) adds to, as the original draws it: 6 × 6 columns
 /// around the voxel corner nearest it, outside the block's 8-column
@@ -2290,6 +2310,14 @@ mod tests {
             (UVec2::new(248, 248), UVec2::new(256, 256))
         );
         assert_eq!(corner.offset, Vec2::splat(-0.9375));
+        // The blit's quad lies on the destination strip with the original's
+        // base z of −0.5/64; its fragment adds the UV offset to read the
+        // neighbour.
+        let quad = margin_quad(&left, dims);
+        assert_eq!(quad[0], Vec3::new(0.0, 8.0 / 256.0, -0.5 / 64.0));
+        assert_eq!(quad[1], Vec3::new(8.0 / 256.0, 8.0 / 256.0, -0.5 / 64.0));
+        assert_eq!(quad[2], Vec3::new(8.0 / 256.0, 248.0 / 256.0, -0.5 / 64.0));
+        assert_eq!(quad[3], Vec3::new(0.0, 248.0 / 256.0, -0.5 / 64.0));
     }
 
     #[test]

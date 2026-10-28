@@ -1453,9 +1453,10 @@ its width, at the slice's middle ((slice + 0.5)/width), as the original's
   original's sub-upload (the region and its bytes are `VoxelRegion`,
   `sub_upload`);
 - a neighbour block's margin copy: one margin column or row, the interior
-  on the other axis, UV offset ∓240/256, every slice but the top
-  (`margin_blit`). With one resident block no neighbour exists to copy
-  from.
+  on the other axis, UV offset ∓240/256, every slice but the top, and the
+  destination quad's four corners with the original's base z of
+  −0.5/depth (`margin_blit`, `margin_quad`). With one resident block no
+  neighbour light texture exists to copy from, so the pass is not run.
 
 **Voxel lights** (`0x3D0C` nodes: glowing items and a few level nodes)
 add straight into the volume, after the propagation, every step and in
