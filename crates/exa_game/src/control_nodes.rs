@@ -155,11 +155,11 @@ impl ControlNode {
         self.clear_bit(HOLD);
     }
 
-    /// The grab switch: a node without the middle bit takes the whole grab
+    /// The grab switch: a node without the end bit takes the whole grab
     /// word; one with it drops the middle bit and keeps the end bit. Every
     /// child follows.
     pub fn grab_switch(&mut self) {
-        if self.word & GRAB_MIDDLE == 0 {
+        if self.word & GRAB_END == 0 {
             self.word |= GRAB_WORD;
         } else {
             self.word &= !GRAB_MIDDLE;
@@ -297,8 +297,9 @@ mod tests {
         assert_eq!(fresh.word, DRAG_BITS);
     }
 
-    /// The grab switch sets the whole word once, then swaps the middle bit;
-    /// the release drops the end bit only from a node with the middle bit.
+    /// The grab switch sets the whole word once, then drops the middle bit
+    /// from a node that already has the end bit; the release drops the end
+    /// bit only from a node with the middle bit.
     #[test]
     fn the_grab_switch() {
         let mut n = ControlNode::new().with_child(ControlNode::new());
@@ -308,6 +309,11 @@ mod tests {
         n.grab_switch();
         assert_eq!(n.word, GRAB_END);
         assert_eq!(n.children[0].word, GRAB_END);
+        // A node with only the middle bit takes the whole word.
+        let mut middle = ControlNode::new();
+        middle.word = GRAB_MIDDLE;
+        middle.grab_switch();
+        assert_eq!(middle.word, GRAB_WORD);
         // Without the middle bit the release leaves the end bit.
         n.grab_release();
         assert_eq!(n.word, GRAB_END);

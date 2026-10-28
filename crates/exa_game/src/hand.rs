@@ -62,6 +62,7 @@
 //! per-frame request's reach and the controls' frame, read in the
 //! instructions (`context/re/player-control-hand.md`).
 
+use bevy::input::mouse::AccumulatedMouseMotion;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 use exa_combat::Condition;
@@ -73,7 +74,9 @@ use exa_physics::prop::{PropBody, StandIns};
 use exa_ui::ScriptedPointer;
 
 use crate::bindings::{Action, Bindings};
+use crate::control_nodes::Frame;
 use crate::gui_screens::ScreenRequest;
+use crate::item_cursor::{self, HeldItem, ItemCursor, Release};
 use crate::pick::{self, Body, Pick, ReachTo, Target};
 use crate::player::{ChaseCamera, Player, PlayerBody, window_ray};
 use crate::player_controls::{self, CharacterInteraction, ClickOutcome, ClickTarget};
@@ -106,6 +109,9 @@ const EARLY_FROM_MS: i64 = 200;
 const EARLY_STEP_MS: i64 = 20;
 /// A click turns the player toward a cursor farther than this (cm).
 const TURN_BEYOND_CM: f32 = 70.0;
+/// The scene's sensitivity scalar in the item cursor's turn (the original
+/// reads one from the scene; Exarust has none, so it passes 1 [guess]).
+const ITEM_TURN_SENSITIVITY: f32 = 1.0;
 
 /// What the left button holds.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -119,7 +125,9 @@ pub enum Holding {
         /// The body is a character's (let go once it lives).
         character: bool,
     },
-    /// The lifting press (the original's item drag), until the release.
+    /// The item cursor's lift: the item rides the cursor, held by a grab
+    /// with a slack, and turns with the mouse; the release puts it back at
+    /// the frame its lift saved (or leaves it, or the GUI takes it).
     Lift,
     /// A door's, a wheel's or a cloth's drag, until the release. Unlike a
     /// lift or a refusal it leaves the movement request to the keys and the
@@ -832,6 +840,7 @@ pub struct HandSystems;
 impl Plugin for HandPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Hand>()
+            .init_resource::<ItemCursor>()
             .add_message::<WorldClick>()
             .add_systems(
                 Update,
@@ -931,6 +940,7 @@ fn press_hand(
     windows: Query<&Window, With<PrimaryWindow>>,
     cameras: Query<(&Camera, &GlobalTransform), With<ChaseCamera>>,
     mut hand: ResMut<Hand>,
+    mut items: ResMut<ItemCursor>,
     players: Query<(&GlobalTransform, &Children), With<Player>>,
     mut player_bodies: Query<PlayerParts, Without<PropBody>>,
     mut bodies: Query<OtherBodies, Without<PlayerBody>>,
@@ -1043,7 +1053,46 @@ fn press_hand(
                 }
                 return;
             }
+            // The lift rides the item cursor: a grab with the item cursor's
+            // slack, and the frames the release may put the item back to.
+            let Some(Picked {
+                at,
+                hit: Hit::Prop { body, part },
+            }) = picked
+            else {
+                return;
+            };
+            let Ok((_, mut ragdoll, ..)) = bodies.get_mut(body) else {
+                return;
+            };
+            if !ragdoll.grab_with_slack(
+                part,
+                at,
+                item_cursor::LIFT_STRENGTH,
+                None,
+                item_cursor::LIFT_SLACK,
+            ) {
+                return;
+            }
+            let saved: Vec<bevy::math::Affine3A> =
+                ragdoll.parts.iter().map(|p| p.transform()).collect();
+            let (centre, half) = ragdoll
+                .parts
+                .get(part)
+                .map(|p| item_cursor::rest_box(p.rest))
+                .unwrap_or((Vec3::ZERO, Vec3::ZERO));
+            let saved_frame = Frame::new(at, bevy::math::Mat3::IDENTITY);
             pb.hold_object(true);
+            items.begin(HeldItem {
+                body,
+                part,
+                saved,
+                saved_frame,
+                shown: saved_frame,
+                centre,
+                half,
+                target: at,
+            });
             hand.holding = Holding::Lift;
         }
         Press::Drag {
@@ -1081,7 +1130,7 @@ fn press_hand(
 }
 
 /// The hold each frame: the drag follows the cursor, the release lets go.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn hold_hand(
     keys: Res<ButtonInput<KeyCode>>,
     buttons: Res<ButtonInput<MouseButton>>,
@@ -1090,13 +1139,17 @@ fn hold_hand(
     scripted: Res<ScriptedPointer>,
     windows: Query<&Window, With<PrimaryWindow>>,
     cameras: Query<(&Camera, &GlobalTransform), With<ChaseCamera>>,
-    mut hand: ResMut<Hand>,
+    (mut hand, mut items): (ResMut<Hand>, ResMut<ItemCursor>),
     players: Query<(&GlobalTransform, &Children), With<Player>>,
     mut player_bodies: Query<PlayerParts, Without<PropBody>>,
     mut requests: Query<&mut Locomotion, With<PlayerBody>>,
     mut bodies: Query<OtherBodies, Without<PlayerBody>>,
     mut screens: Option<ResMut<Messages<ScreenRequest>>>,
-    (time, mut show_bars): (Option<Res<Time<Virtual>>>, Option<ResMut<HudShowUntil>>),
+    (time, mut show_bars, motion): (
+        Option<Res<Time<Virtual>>>,
+        Option<ResMut<HudShowUntil>>,
+        Res<AccumulatedMouseMotion>,
+    ),
     mut clicks: MessageWriter<WorldClick>,
 ) {
     let released = buttons.just_released(MouseButton::Left);
@@ -1217,6 +1270,97 @@ fn hold_hand(
                     && let Ok((mut pb, ..)) = player_bodies.get_mut(child)
                 {
                     pb.hold_object(false);
+                }
+                let walking = hand.out_of_reach;
+                if let Some((outcome, held)) = items.end(walking)
+                    && let Ok((_, mut ragdoll, ..)) = bodies.get_mut(held.body)
+                {
+                    ragdoll.release_grab();
+                    if outcome != Release::Drop {
+                        ragdoll.place_at(&held.saved);
+                    }
+                    ragdoll.wake();
+                }
+            } else {
+                // The mouse turns the item: the base speed, ramped after
+                // 300 ms of turning, 500 ms of quiet dropping it back.
+                let now = time
+                    .as_deref()
+                    .map_or(0, |t| t.elapsed().as_millis() as u64);
+                let look = Vec2::new(motion.delta.x, motion.delta.y);
+                let keys_held = [
+                    keys.pressed(KeyCode::KeyW),
+                    keys.pressed(KeyCode::KeyS),
+                    keys.pressed(KeyCode::KeyA),
+                    keys.pressed(KeyCode::KeyD),
+                ];
+                let (delta, turned) = items
+                    .turn
+                    .frame(now, ITEM_TURN_SENSITIVITY, look, keys_held);
+                if turned {
+                    items.offset += delta;
+                }
+                let right = cameras
+                    .single()
+                    .map(|(_, eye)| eye.right().as_vec3())
+                    .unwrap_or(Vec3::X);
+                let Some(held) = items.held.as_ref() else {
+                    hand.holding = Holding::Nothing;
+                    return;
+                };
+                let (body, part, saved_frame, box_centre, box_half) = (
+                    held.body,
+                    held.part,
+                    held.saved_frame,
+                    held.centre,
+                    held.half,
+                );
+                if turned && let Ok((_, mut ragdoll, ..)) = bodies.get_mut(body) {
+                    let rotation = bevy::math::Mat3::from_axis_angle(right, delta.x)
+                        * bevy::math::Mat3::from_axis_angle(Vec3::Y, delta.y);
+                    let centre = ragdoll
+                        .parts
+                        .get(part)
+                        .map(|p| Vec3::from(p.transform().translation))
+                        .unwrap_or(Vec3::ZERO);
+                    ragdoll.turn_about(centre, rotation);
+                }
+                // The cursor's ray places the item; a box that does not
+                // fit keeps the last good point.
+                let own = player.and_then(|(_, child)| {
+                    player_bodies
+                        .get(child)
+                        .ok()
+                        .and_then(|(_, own, condition, _)| {
+                            own.map(|r| (child, r, condition.copied().unwrap_or_default()))
+                        })
+                });
+                let ray = cursor_ray(&scripted, &windows, &cameras);
+                let picked = pick_with(ray, &physics, &stand_ins, &bodies, own);
+                if let Some(ray) = ray
+                    && let Some(point) = item_cursor::place_point(
+                        ray.origin,
+                        *ray.direction,
+                        picked.map(|p| (p.at, (p.at - ray.origin).length())),
+                        item_cursor::PLACEMENT_LIMIT_CM,
+                    )
+                    && let Some(frame) = item_cursor::place_frame(
+                        saved_frame,
+                        right,
+                        items.offset,
+                        point,
+                        box_centre,
+                        box_half,
+                    )
+                {
+                    if let Some(held) = items.held.as_mut() {
+                        held.shown = frame;
+                        held.target = point;
+                    }
+                    if let Ok((_, mut ragdoll, ..)) = bodies.get_mut(body) {
+                        ragdoll.pull_grab_to(point);
+                        ragdoll.wake_to(DRAG_WAKE);
+                    }
                 }
             }
         }
@@ -1802,6 +1946,8 @@ mod tests {
             .init_resource::<ColliderNodes>()
             .insert_resource(Physics::default())
             .init_resource::<Hand>()
+            .init_resource::<ItemCursor>()
+            .init_resource::<AccumulatedMouseMotion>()
             .add_message::<WorldClick>()
             .add_systems(Update, (press_hand, hold_hand, reach_hand).chain());
         app.world_mut()
