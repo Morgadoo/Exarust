@@ -611,7 +611,12 @@ impl Plugin for GameScreensPlugin {
                     .after(crate::hotkeys::HotkeySet)
                     .before(crate::player::player_combat),
             )
-            .add_systems(Update, draw_screens.after(open_requested_screens))
+            .add_systems(
+                Update,
+                draw_screens
+                    .after(open_requested_screens)
+                    .after(crate::item_icon_render::IconRenderSystems),
+            )
             .add_systems(
                 Update,
                 (close_on_right_release, close_changed_loot_windows).after(open_requested_screens),

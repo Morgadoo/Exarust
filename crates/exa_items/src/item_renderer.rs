@@ -11,13 +11,17 @@
 //!
 //! The scene's sun points along (0.46, 0.47, 0.48) and has the colour
 //! (0.75, 0.75, 0.75, 0.5); the view's camera sits at (0, 0, 350) looking
-//! at the origin, 40 away, with the setting 10 after the distance.
+//! at the origin, with a 40° field of view and 10 in the field after it
+//! (read as the near plane, in centimetres).
 //!
 //! Evidence: the renderer's constructor, its image allocator and its
 //! destroy (`docs/RENDERING.md`, item icons).
 
 /// The icon size global's start value, in pixels.
 pub const ICON_SIZE: i32 = 160;
+/// The alpha global's start value: set, so the screen-quad pass draws the
+/// full render into the final image and the downsample and halo do not run.
+pub const ALPHA_GLOBAL: bool = true;
 /// The render size: twice the icon size.
 pub const BUFFER_SIZE: i32 = ICON_SIZE * 2;
 /// The image header's size.
@@ -136,10 +140,11 @@ pub fn scene() -> IconScene {
 /// The renderer's view settings.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct IconView {
-    /// The camera's distance setting.
-    pub distance: f32,
-    /// The camera setting after it (10).
-    pub setting: f32,
+    /// The view's field of view in degrees (the character view writes 30
+    /// to the same field).
+    pub fov_degrees: f32,
+    /// The view field after it (10) [guess: the near plane, centimetres].
+    pub near: f32,
     /// The camera position.
     pub position: [f32; 3],
     /// The look-at target.
@@ -156,8 +161,8 @@ pub struct IconView {
 pub fn view(icon: i32) -> IconView {
     let side = icon.wrapping_shl(1);
     IconView {
-        distance: 40.0,
-        setting: 10.0,
+        fov_degrees: 40.0,
+        near: 10.0,
         position: [0.0, 0.0, 350.0],
         target: [0.0, 0.0, 0.0],
         view_factor: 0.8,
@@ -166,9 +171,40 @@ pub fn view(icon: i32) -> IconView {
     }
 }
 
-/// The shift the render gives the icon view's camera node: 500 up, with
-/// its target left at the origin.
-pub const CAMERA_SHIFT: [f32; 3] = [0.0, 500.0, 0.0];
+/// The position the render gives the icon view's camera node before the
+/// scene fit, 500 along +z, with its target left at the origin: the fit
+/// moves the camera along this direction from the scene's centre.
+pub const CAMERA_SHIFT: [f32; 3] = [0.0, 0.0, 500.0];
+
+/// The scene fit's camera distance: the engine's frame-the-scene routine
+/// given the scene box's half extents (`half[0]`, `half[1]` across the
+/// view, `half[2]` along it), the framing distance and the view's field of
+/// view in degrees.
+///
+/// The larger of the two cross halves is taken (the second only when the
+/// first is below it, an ordered compare), and the depth weight is 1 for
+/// the first and 0.5 for the second. While the framing is above that half
+/// (ordered), the half is bent toward the framing:
+/// `r = h / F` and `h = F · ((r · 0.11 + 1) − 1 / (r · 8 + 1))`, with
+/// `1 / (r · 8 + 1)` in single precision and the rest in double. The
+/// distance is `h / tan(fov · π / 360)` in double, narrowed, plus the depth
+/// half times its weight: `half[2] · w + distance` in single precision.
+pub fn frame_distance(half: [f32; 3], framing: f32, fov_degrees: f32) -> f32 {
+    let (mut h, mut weight) = (half[0], 1.0f32);
+    if half[0] < half[1] {
+        h = half[1];
+        weight = 0.5;
+    }
+    if framing > h {
+        let r = h / framing;
+        let lift = 1.0f32 / (r * 8.0 + 1.0);
+        let bent = (f64::from(r) * 0.11 + 1.0) - f64::from(lift);
+        h = (f64::from(framing) * bent) as f32;
+    }
+    let tan = (f64::from(fov_degrees) * std::f64::consts::PI / 360.0).tan();
+    let distance = (f64::from(h) / tan) as f32;
+    half[2] * weight + distance
+}
 
 /// A 3 × 4 row-major transform: three rows of `[x, y, z, w]`.
 pub type Transform3 = [[f32; 4]; 3];
@@ -474,8 +510,25 @@ mod tests {
         let v = view(160);
         assert_eq!(v.position, [0.0, 0.0, 350.0]);
         assert_eq!(v.target, [0.0, 0.0, 0.0]);
-        assert_eq!((v.distance, v.setting, v.view_factor), (40.0, 10.0, 0.8));
+        assert_eq!((v.fov_degrees, v.near, v.view_factor), (40.0, 10.0, 0.8));
         assert_eq!(v.size, (320, 320));
+    }
+
+    #[test]
+    fn the_scene_fit_bends_small_items_toward_the_framing() {
+        // 5 cm across at the 70 cm framing: r = 1/14, the half becomes
+        // 70 · ((r · 0.11 + 1) − 1/(8r + 1)) = 26.0045, over tan(20°), plus
+        // the depth half at weight 1.
+        assert!((frame_distance([5.0, 2.0, 1.0], 70.0, 40.0) - 72.446_91).abs() < 1.0e-3);
+        // The second cross half wins only when the first is below it, and
+        // halves the depth weight; a half above the framing is not bent.
+        assert!((frame_distance([2.0, 50.0, 10.0], 30.0, 40.0) - 142.373_87).abs() < 1.0e-3);
+        // Equal halves keep the first and its full depth weight.
+        let equal = frame_distance([0.5, 0.5, 0.5], 0.3, 40.0);
+        assert!((equal - (0.5 / 20.0f64.to_radians().tan() + 0.5) as f32).abs() < 1.0e-5);
+        // An unordered half takes neither branch: the framing is not above
+        // it, so the distance is unordered too, never a panic.
+        assert!(frame_distance([f32::NAN, 1.0, 1.0], 70.0, 40.0).is_nan());
     }
 
     const IDENTITY: Transform3 = [
@@ -624,7 +677,7 @@ mod tests {
             (160, 160, 80)
         );
         assert_eq!(r.alpha_colour_format, 0x8c41);
-        assert_eq!(CAMERA_SHIFT, [0.0, 500.0, 0.0]);
+        assert_eq!(CAMERA_SHIFT, [0.0, 0.0, 500.0]);
     }
 
     #[test]

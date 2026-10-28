@@ -725,8 +725,14 @@ held marks and the torn-out AR crystal trigger; the item card's request,
 its 200 ms delay timer and its description box. The panel's icons are drawn through the GUI path (`item_panel_draw`): the
 manager's atlas and cache are a resource, each visible entry is drawn at its
 cell in the item panel's highlight program with its flags' tint, and the
-inventory screen submits the layer over its pack panel. No item renderer
-fills the atlas yet, so the panel is empty in the running game. The card
+inventory screen submits the layer over its pack panel. `item_icon_render`
+fills the atlas from off-screen item renders, at most two icons a frame:
+it loads the item's ground or factory model, draws it with a private camera
+and sun on the off-screen layer (marked `Offscreen`, which the world's
+camera, light, GI, shadow, fog and post systems skip), reads the image back, resolves it (the
+alpha global's screen pass, else the Kaiser downsample and halo) and fills
+the cache slot and atlas cell; a headless App, a blank readback and a lost
+one fall back to the CPU paint of the same scene. The card
 window (`CardWindow`) keeps the 200 ms request, its toggle and its 0x100 ms
 close fade on top of the card timer; a double click classifies a
 container's open, a card close and a use; a popup's inner panel and top
@@ -795,8 +801,7 @@ drop on a body's equipment panel or outside every panel is refused (no
 running character view and no GUI-to-world drop yet). Taking a worn item
 off a corpse does not re-dress its mesh. The world's own press is held while
 the pointer is over an open screen. The character view, the preview bars,
-the item icons (a reserved slot draws nothing until the renderer fills the
-atlas), the journal's entry list, the controls' callbacks and the
+the journal's entry list, the controls' callbacks and the
 inventory's unlocated second record are not wired; the text keeps the level
 font's metrics and samples the base font's atlas while the Rayform faces
 are not shipped. The skills key's screen and the power tree are not opened.

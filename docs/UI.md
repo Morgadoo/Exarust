@@ -1298,9 +1298,8 @@ drop and drag-end rules; a drop on another pack moves the possession
 entries, a drop on the same panel repositions, and a drop on the body's
 equipment panel or outside every panel is refused. The world's press is
 held while the pointer is over an open screen.
-Not wired: the character view and its preview bars, the pack's item icons
-(the item renderer; a reserved icon slot draws nothing), the journal's
-entry list (its geometry is not in the traced units), the 0xac01 record,
+Not wired: the character view and its preview bars, the journal's entry
+list (its geometry is not in the traced units), the 0xac01 record,
 the controls' callbacks and the technique selector. Taking a worn item off
 a body does not re-dress its mesh, the GUI-to-world drop is not run, and a
 level-local item's record is not promoted into the world database, so its
@@ -2011,9 +2010,11 @@ pass a sixth level read the next skill's bytes, as the original's do.
 
 The item GUI's rules, read by REA from the original's item panel, icon
 cache, inventory, arsenal and item-card code. The running inventory screen
-paints its pack panel and, when the item manager's icon atlas has icons,
-the pack's icons through the GUI draw path (below); no item renderer fills
-that atlas yet, and the other windows wait for their forms.
+paints its pack panel and the pack's icons through the GUI draw path
+(below); the loot window's two panels do the same. `exa_game::item_icon_render`
+fills the manager's atlas from off-screen renders of each item's model (see
+[RENDERING.md](RENDERING.md#item-icons)); the other windows wait for their
+forms.
 
 - **Panel entries** (`exa_game::item_container`): an entry is drawn
   unless it is dragged, held (`0x100`, the item in a hand) or has no icon,
@@ -2139,8 +2140,10 @@ that atlas yet, and the other windows wait for their forms.
 - **Icons** (`exa_items::icon_cache`, `exa_items::item_gui`): one icon per
   item and variant (lit models by their condition byte), counted by
   reference; 40 units square; framed at 70 (30 for apparel, 20 close),
-  the weapon light preset for weapons, and given a one-pixel alpha halo
-  (the highlighted one also lifts green). Cards show rating dots (whole
+  the weapon light preset for weapons, and, without the alpha global's
+  screen pass, given a one-pixel alpha halo (the highlighted one also
+  lifts green). The off-screen renderer fills the atlas two icons a frame,
+  from the item's ground or factory model. Cards show rating dots (whole
   up to the value less a quarter, then a half dot), a slider, coin groups
   and crystal sockets; a popup opens centred on the cursor, its bottom 8
   units below it. The four socket sheets (`dotrating.rfi`,

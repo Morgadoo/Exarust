@@ -21,6 +21,19 @@ const MODEL: u32 = 0x0010_0000;
 /// its eight-byte header (`exa_formats::objdb` reads the same one).
 const MODEL_BULK: usize = 0x1C;
 
+/// The ground model an item icon renders, from the object database's model
+/// section.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ItemModel {
+    /// The `Objects`/`Objlib` entry, or `@` and a factory name.
+    pub model: String,
+    /// The model section's word: bit 0 dims a lit model by its condition,
+    /// bit `0x2000` asks for the icon's extra effect.
+    pub flags: u32,
+    /// A factory weapon's seeds, when the model is assembled.
+    pub weapon: Option<exa_formats::objdb::Weapon>,
+}
+
 /// Item kinds and container children of the game's object database, by
 /// record id. Ids with a database tag (a level's own items, the world's)
 /// are not in it.
@@ -32,12 +45,26 @@ pub struct ItemCatalogue {
     /// entry's bulk, and the equip conflict pass reads the same byte as an
     /// item's weight class.
     bulk: HashMap<u32, u8>,
+    models: HashMap<u32, ItemModel>,
 }
 
 impl ItemCatalogue {
     /// Reads every record of an object database.
     pub fn of_database(db: &Database<'_>) -> Self {
         let mut out = Self::default();
+        for item in exa_formats::objdb::items(db) {
+            if item.model.is_empty() {
+                continue;
+            }
+            out.models.insert(
+                item.id,
+                ItemModel {
+                    model: item.model,
+                    flags: item.model_flags,
+                    weapon: item.weapon,
+                },
+            );
+        }
         for r in &db.records {
             let payload = db.payload(r);
             let weapon = section(payload, WEAPON)
@@ -87,6 +114,16 @@ impl ItemCatalogue {
             return None;
         }
         self.bulk.get(&id).copied()
+    }
+
+    /// The item's ground model, when its record names one. An item without
+    /// a model section has no icon, as the original's icon acquire returns
+    /// 0 for it.
+    pub fn model(&self, id: u32) -> Option<&ItemModel> {
+        if id & !ID_MASK != 0 {
+            return None;
+        }
+        self.models.get(&id)
     }
 
     pub fn is_empty(&self) -> bool {

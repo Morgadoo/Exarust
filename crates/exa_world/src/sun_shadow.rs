@@ -119,7 +119,10 @@ fn fit_sun_shadows(
         ),
         Without<Camera>,
     >,
-    cameras: Query<(Entity, &GlobalTransform, &Projection, &Camera)>,
+    cameras: Query<
+        (Entity, &GlobalTransform, &Projection, &Camera),
+        Without<exa_render::supersample::Offscreen>,
+    >,
     region: Option<Res<SunShadowRegion>>,
     enabled: Res<SunShadowFit>,
     shadow_map: Option<Res<DirectionalLightShadowMap>>,
@@ -217,11 +220,14 @@ fn publish_gi_sun_shadow(
     current: Option<ResMut<GiSunShadow>>,
     gi: Option<Res<exa_render::gi::GiTextures>>,
     suns: Query<&Cascades, With<DirectionalLight>>,
-    cameras: Query<(
-        Entity,
-        &Camera,
-        Option<&exa_render::supersample::DisplayCamera>,
-    )>,
+    cameras: Query<
+        (
+            Entity,
+            &Camera,
+            Option<&exa_render::supersample::DisplayCamera>,
+        ),
+        Without<exa_render::supersample::Offscreen>,
+    >,
 ) {
     // Nothing reads it without a GI volume (`--no-gi` runs skip it).
     if gi.is_none() {

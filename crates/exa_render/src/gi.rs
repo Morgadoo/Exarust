@@ -1174,7 +1174,7 @@ const SHAPE_FLOOR: f32 = f32::from_bits(0x33ff_ffd7);
 fn gather_lights(
     mut gi: ResMut<GiLights>,
     lights: GiLightQuery,
-    suns: Query<(&DirectionalLight, &GlobalTransform)>,
+    suns: Query<(&DirectionalLight, &GlobalTransform), Without<crate::supersample::Offscreen>>,
     voxel_lights: Query<(&VoxelLight, &GlobalTransform)>,
     textures: Option<Res<GiTextures>>,
     pending: Option<Res<GiPendingTextures>>,
@@ -1630,7 +1630,13 @@ fn prepare_bind_group(
     lights: Res<GiLights>,
     sun_shadow: Option<Res<GiSunShadow>>,
     sun_sky: Option<Res<GiSunSky>>,
-    shadow_views: Query<&bevy::pbr::ViewShadowBindings, Without<crate::supersample::DisplayCamera>>,
+    shadow_views: Query<
+        &bevy::pbr::ViewShadowBindings,
+        (
+            Without<crate::supersample::DisplayCamera>,
+            Without<crate::supersample::Offscreen>,
+        ),
+    >,
     pipeline: Option<Res<GiPipeline>>,
     cache: Res<PipelineCache>,
     images: Res<RenderAssets<GpuImage>>,
@@ -1739,7 +1745,11 @@ fn prepare_bind_group(
 
 #[allow(clippy::too_many_arguments)]
 fn propagate(
-    view: ViewQuery<(&ExtractedView, Has<crate::supersample::DisplayCamera>)>,
+    view: ViewQuery<(
+        &ExtractedView,
+        Has<crate::supersample::DisplayCamera>,
+        Has<crate::supersample::Offscreen>,
+    )>,
     textures: Option<Res<GiTextures>>,
     pending: Option<Res<GiPendingTextures>>,
     bind_group: Option<Res<GiBindGroup>>,
@@ -1750,8 +1760,10 @@ fn propagate(
     report: Res<WarmUpReport>,
     mut ctx: RenderContext,
 ) {
-    // Once per frame, for the scene view (not a supersampling display).
-    if view.into_inner().1 {
+    // Once per frame, for the scene view (not a supersampling display or an
+    // off-screen scene).
+    let (_, display, offscreen) = view.into_inner();
+    if display || offscreen {
         return;
     }
     let textures = pending.as_ref().map(|p| &p.0).or(textures.as_deref());

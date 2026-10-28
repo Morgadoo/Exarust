@@ -2315,9 +2315,51 @@ and the icon in size; each is the payload plus a 32-byte header (16-bit
 width and height, a word of 1, the format, the flags `0x20000000`, a word
 of `0x1000`, the payload's offset of 32 and its size). The icon is
 later framed at 70, 30 for apparel or 20 when close, with the weapon light
-preset (see `exa_items::item_gui`). The running game does not render its
-icons yet: the panel takes the manager's atlas from
-`exa_items::icon_cache` and draws it through the GUI path (below).
+preset (see `exa_items::item_gui`).
+
+**Camera and scene.** `exa_items::item_icon` turns the plan into the camera
+the render uses. The icon view's constructor gives it a 40° field of view
+(the character view writes 30 to the same field) and 10 cm in the field
+after it [guess: the near plane]. The render starts the camera node at
+(0, 0, 500) with its target at the origin and hands the framing distance F
+(20, 30 or 70 cm; 0.2, 0.3 or 0.7 m here) to the engine's scene fit
+(`item_renderer::frame_distance`): the larger of the box's two cross half
+extents h (the second only when the first is below it, which also halves
+the depth weight), bent toward F while F is above it,
+`h = F·((r·0.11 + 1) − 1/(8r + 1))` with `r = h/F`, then
+`distance = h / tan(fov/2) + depth half · weight`; the camera moves to that
+distance from the box's centre along +Z. A small item thus draws small in
+its cell and one at least F across fills it. The plan's screen scale is
+the perspective scale, `icon · 1/tan(fov/2) / distance · 0.5` [guess: the
+view's scale field read as `1/tan(fov/2)`], so the plan's extents are the
+camera's own. The framing presets' two numbers are the sun's azimuth and
+height; the scene environment's sector builds the direction
+`(cos(π(1−h))cos(−πa), sin(π(1−h)), cos(π(1−h))sin(−πa))`.
+
+**The running renderer.** `exa_game::item_icon_render` starts at most two
+pending icons a frame. It resolves the item's ground model in the object
+database (a factory `@` name assembles the weapon), bakes the model's parts
+with `item_icon::IconScene`, and draws them with an off-screen `Camera3d`
+on the off-screen render layer (`exa_render::supersample::OFFSCREEN_LAYER`,
+below the lights' shadow layers, so no scene camera ever takes it) into an
+image twice the icon's side; a white 120-lux sun with the framing preset's
+direction stands on the same layer. The camera and sun carry the
+`Offscreen` marker, which every world system skips (scene-camera queries,
+light layers, GI and its sun, cube and sun shadows, sky, fog and the scene
+post-processing), and the parts cast and receive no shadow, so the shadow
+linker never moves them onto the world's layer. The camera has no
+post-processing [guess: the original's private view's post pass is the
+screen pass below]. With no pending icon and no job the systems return at
+once; the readback is asynchronous and a job is dropped after 60 frames. A GPU
+readback returns the image: the alpha global's screen pass resolves each
+icon pixel as a 2 × 2 linear-light average of the 2× render [guess: the
+screen shader's sampler is not traced], else the Kaiser filter reduces the
+image and the halo (highlighted for the variant's bit) runs. The pixels go
+into the manager's atlas and the cache slot gets its cell and content half
+extents. A headless App paints the same scene with the CPU rasteriser in
+`item_icon` instead; a readback with no covered pixel, or one that never
+arrives, also takes that CPU paint, so a missing draw still leaves an
+icon. The panel draws the filled cells through the HltCol program (below).
 
 **The render plan** (`item_renderer::render_plan`): the item is turned by
 (−0.1, 0.1, 0.5) when both the apparel and weapon bits are set; its sun is

@@ -31,6 +31,7 @@ impl Plugin for SupersamplePlugin {
         app.add_plugins((
             MaterialPlugin::<ResolveMaterial>::default(),
             ExtractComponentPlugin::<DisplayCamera>::default(),
+            ExtractComponentPlugin::<Offscreen>::default(),
         ))
         .init_resource::<SplitTaps>()
         .init_resource::<SuperSampling>()
@@ -120,13 +121,22 @@ pub struct Supersample;
 #[extract_app(bevy::render::RenderApp)]
 pub struct DisplayCamera;
 
-/// Query filter for the camera that sees the world: a 3D camera that is not
-/// a supersampling display.
-pub type SceneCamera = (With<Camera3d>, Without<DisplayCamera>);
+/// A camera or light of a private off-screen scene (the item icon renderer):
+/// world systems (GI, shadows, fog, sky, post-processing, light layers)
+/// ignore it, and it draws only [`OFFSCREEN_LAYER`].
+#[derive(Component, ExtractComponent, Clone, Copy, Debug)]
+#[extract_app(bevy::render::RenderApp)]
+pub struct Offscreen;
 
-/// The render layer of the resolve quad. Layers above it are free for the
-/// lights' shadow casters.
+/// Query filter for the camera that sees the world: a 3D camera that is
+/// neither a supersampling display nor an off-screen scene's.
+pub type SceneCamera = (With<Camera3d>, Without<DisplayCamera>, Without<Offscreen>);
+
+/// The render layer of the resolve quad.
 pub const RESOLVE_LAYER: usize = 1;
+/// The render layer of the off-screen scenes. The layers above it are free
+/// for the lights' shadow casters, so no scene camera ever sees it.
+pub const OFFSCREEN_LAYER: usize = RESOLVE_LAYER + 1;
 /// Scene resolution per window pixel, on each axis.
 const SCALE: u32 = 2;
 

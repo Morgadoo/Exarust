@@ -163,7 +163,7 @@ fn vertical_fov(projection: &Projection) -> f32 {
 
 fn turn_previews(
     pointer: Res<PreviewPointer>,
-    cameras: Query<(&GlobalTransform, &Projection), With<Camera3d>>,
+    cameras: Query<(&GlobalTransform, &Projection), exa_render::supersample::SceneCamera>,
     windows: Query<&Window, With<PrimaryWindow>>,
     mut turns: Query<(&mut PreviewTurn, &mut Transform)>,
 ) {

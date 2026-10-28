@@ -215,12 +215,17 @@ impl Plugin for PostPlugin {
     }
 }
 
+/// A 3D camera just spawned that draws to the window or a plain image: not
+/// a supersampled scene's and not an off-screen scene's.
+type NewCamera = (
+    Added<Camera3d>,
+    Without<crate::supersample::Supersample>,
+    Without<crate::supersample::Offscreen>,
+);
+
 /// Gives every new 3D camera the original's post-processing instead of
 /// Bevy's tonemapping.
-fn adopt_cameras(
-    mut commands: Commands,
-    cameras: Query<Entity, (Added<Camera3d>, Without<crate::supersample::Supersample>)>,
-) {
+fn adopt_cameras(mut commands: Commands, cameras: Query<Entity, NewCamera>) {
     for camera in &cameras {
         commands
             .entity(camera)
