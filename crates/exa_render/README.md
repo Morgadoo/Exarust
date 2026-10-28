@@ -15,14 +15,24 @@ binding and the emissive's doubling), the program choice
 (`shading/shadeopt/shadehar/shadesss/shadetrl`), the shadow and displacement
 sample splits, the warm-up variants; `shader_uniforms` the 252-byte `Global`
 block, the 112-byte `Material` block and the per-light `vec4`s.
-`exa-tool shader` prints a material's original GLSL for comparison. Rules
-and evidence: [`docs/formats/FLB.md`](../../docs/formats/FLB.md) and
+`exa-tool shader` prints a material's original GLSL for comparison.
+`shader_cache` keeps the program cache: one bucket per material word, one
+entry per object and environment word, a failed build stored and not
+retried, reference counts, the last-bound program and the stale-flags bit,
+and a warm-up pass through the 29 rows and their light counts.
+`shader_bindings` holds the uniform-block bindings, the texture units the
+maps pack into (and the fixed environment, GI, screen-copy and shadow
+units) and the cached uniform locations, plus the `SdwSmp` upload window.
+`light_slots` fills a draw's six light slots in the original's order and
+values. Rules and evidence: [`docs/formats/FLB.md`](../../docs/formats/FLB.md) and
 [`docs/RENDERING.md`](../../docs/RENDERING.md) (Shader builder).
 
 ## Modules
 
 - `shader_template`, `shader_program`, `shader_uniforms`: the original's
   template expansion, program choice and uniform blocks (above).
+- `shader_cache`, `shader_bindings`, `light_slots`: the program cache, the
+  per-program bindings and the per-draw light slots (above).
 - `shader_reload`: the `cshd` debug command's reload of the 12 embedded render shaders through the asset server (the original's command reloads its shader programs; Exarust has no file watcher, so this rebuilds the compiled-in sources).
 - `bound_sphere`: the original's smallest enclosing sphere (move-to-front over a support set of 1–4 points, in f64), which fits its sun shadow map; with the f32/f64 vector helpers ([`docs/RENDERING.md`](../../docs/RENDERING.md), Sun shadow fit).
 - `camera`: the camera node's 70° default and its near and far planes (100 and 12 500 engine units; 1 and 125 m; held as data, no camera applies them yet), and the 3D view's constructor values: exposure 1, bloom 1, post on, no scene camera slot ([`docs/RENDERING.md`](../../docs/RENDERING.md), Cameras).
