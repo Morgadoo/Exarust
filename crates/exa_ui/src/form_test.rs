@@ -58,29 +58,42 @@ fn the_client_rectangle() {
 }
 
 #[test]
-fn the_control_spans_keep_a_smallest_width() {
+fn the_control_spans_keep_the_border_over_the_stretches() {
     let skin = ControlSkin {
         span_x: 8,
         span_y: 9,
         title: 20,
         scroll: 7,
     };
+    // No stretches: the border 2 is kept and remembered; the client is the
+    // form less the border, and without a title the top is the border.
     let m = control_spans(302, 402, 2, 0, 0, 0, skin);
     assert_eq!(
-        (m.width, m.saved_width, m.right, m.bottom, m.title),
-        (302, 302, 300, 400, 2)
+        (m.border, m.saved_border, m.right, m.bottom, m.title),
+        (2, 2, 300, 400, 2)
     );
     assert!(!m.horizontal_scroll && !m.vertical_scroll);
-    // The frame's stretch (style 0x30 across, 0xc0 down) is the minimum.
-    let wide = control_spans(6, 402, 2, 0x30, 0, 0, skin);
-    assert_eq!((wide.width, wide.saved_width, wide.span_x), (8, 0, 8));
-    // Once the form fits, its width is remembered and restored later.
-    let first = control_spans(10, 402, 2, 0, 0, 0, skin);
-    assert_eq!((first.width, first.saved_width), (10, 10));
-    let restored = control_spans(100, 402, 2, 0, 0, first.saved_width, skin);
-    assert_eq!((restored.width, restored.saved_width), (10, 10));
+    // The frame's stretch (style 0x30 across, 0xc0 down) above the border
+    // becomes the border, and nothing is remembered.
+    let wide = control_spans(302, 402, 2, 0x30, 0, 0, skin);
+    assert_eq!(
+        (
+            wide.border,
+            wide.saved_border,
+            wide.span_x,
+            wide.right,
+            wide.title
+        ),
+        (8, 0, 8, 294, 8)
+    );
+    // A remembered border is restored over the one given.
+    let restored = control_spans(302, 402, 5, 0, 0, 2, skin);
+    assert_eq!(
+        (restored.border, restored.saved_border, restored.right),
+        (2, 2, 300)
+    );
     // The scrollbars inset the client and the title takes the skin's
-    // height plus the top stretch (or two border metrics for 0x20).
+    // height plus the top stretch (or the border metric 2 for 0x20).
     let bars = control_spans(
         302,
         402,
@@ -90,7 +103,10 @@ fn the_control_spans_keep_a_smallest_width() {
         0,
         skin,
     );
-    assert_eq!((bars.right, bars.bottom, bars.title), (293, 393, 29));
+    assert_eq!(
+        (bars.border, bars.right, bars.bottom, bars.title),
+        (9, 286, 386, 29)
+    );
     assert!(bars.horizontal_scroll && bars.vertical_scroll);
     let thin = control_spans(302, 402, 2, 0xc0, 0x21, 0, skin);
     assert_eq!(thin.title, 22);
@@ -148,6 +164,25 @@ fn setting_controls_copies_or_adopts_the_table() {
         .table,
         ControlTable::Adopt
     );
+    // The adopt flag wins over a negative count, which is kept as given.
+    let adopted = set_controls(SetControlsInput {
+        adopt: true,
+        new_count: -1,
+        state: 0,
+        ..input
+    });
+    assert_eq!(
+        (adopted.table, adopted.count, adopted.assign_owner),
+        (ControlTable::Adopt, -1, false)
+    );
+    // A stored count of 0 still has its record's owner set.
+    assert!(
+        set_controls(SetControlsInput {
+            new_count: 0,
+            ..input
+        })
+        .assign_owner
+    );
     // The old owned table is freed, an empty one included.
     assert!(
         set_controls(SetControlsInput {
@@ -183,18 +218,18 @@ fn the_conversions_round_as_the_instructions() {
 fn the_horizontal_scrollbar() {
     // Client 400, track 400 − 38 = 362, thumb round(362 · 400/1200 =
     // 120.67) = 121.
-    let s = scroll_metrics(404, 1200, 2, 0, 19, 4, 0.0);
+    let s = scroll_metrics(404, 1200, 2, 0, 19, 0.0);
     assert!((s.step - 10.0 / 796.0).abs() < 1e-7);
     assert_eq!((s.thumb, s.thumb_x), (121, 21));
-    assert_eq!(scroll_metrics(404, 1200, 2, 0, 19, 4, 1.0).thumb_x, 262);
+    assert_eq!(scroll_metrics(404, 1200, 2, 0, 19, 1.0).thumb_x, 262);
     // A vertical scrollbar insets the client's right edge: the step's
     // denominator and the thumb follow it.
-    let s = scroll_metrics(404, 1200, 2, 7, 19, 4, 0.5);
+    let s = scroll_metrics(404, 1200, 2, 7, 19, 0.5);
     assert_eq!(s.thumb, 116);
     assert!((s.step - 10.0 / 803.0).abs() < 1e-7);
     assert_eq!(s.thumb_x, 141);
-    // A thumb not above two units becomes 2·unit + 1.
-    assert_eq!(scroll_metrics(404, 100_000, 2, 0, 19, 5, 0.0).thumb, 11);
+    // A thumb below 9 becomes 9 at any unit (round(362 · 400/100000) = 1).
+    assert_eq!(scroll_metrics(404, 100_000, 2, 0, 19, 0.0).thumb, 9);
 }
 
 #[test]

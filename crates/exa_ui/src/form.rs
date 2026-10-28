@@ -25,8 +25,8 @@ pub struct FormMetrics {
 }
 
 impl FormMetrics {
-    /// The horizontal scrollbar's smallest thumb at unit 4
-    /// (`2·unit + 1`, a skin value of 9); other units scale it.
+    /// The horizontal scrollbar's smallest thumb: a fixed 9 at every GUI
+    /// unit (the vertical scrollbar's is `2·unit + 1`).
     pub const MIN_THUMB: i32 = 9;
 
     /// `6·unit − border` (the skin's base measure).
@@ -198,16 +198,14 @@ pub struct ScrollMetrics {
 /// content, the given border, vertical scrollbar inset and rail at scroll
 /// fraction `f`: the step is `10 / (content − client right − border)` (0
 /// without room to scroll), the thumb `round(track · client / content)`
-/// (ties to even), `2·unit + 1` when not above `2·unit`, at most the
-/// track, and placed at `border + rail + round((track − thumb) · f)`.
-#[allow(clippy::too_many_arguments)]
+/// (ties to even), [`FormMetrics::MIN_THUMB`] when below it, else at most
+/// the track, and placed at `border + rail + round((track − thumb) · f)`.
 pub fn scroll_metrics(
     width: i32,
     content_w: i32,
     border: i32,
     scroll_inset: i32,
     rail: i32,
-    unit: i32,
     f: f32,
 ) -> ScrollMetrics {
     let right = width - border - scroll_inset;
@@ -220,12 +218,10 @@ pub fn scroll_metrics(
     };
     let track = cw - 2 * rail;
     let mut thumb = cvtsd2si(f64::from(track) * (f64::from(cw) / f64::from(content_w)));
-    if unit * 2 < thumb {
-        if track < thumb {
-            thumb = track;
-        }
-    } else {
-        thumb = unit * 2 + 1;
+    if thumb < FormMetrics::MIN_THUMB {
+        thumb = FormMetrics::MIN_THUMB;
+    } else if track < thumb {
+        thumb = track;
     }
     let x = border + rail + cvtss2si((track - thumb) as f32 * f);
     ScrollMetrics {
@@ -286,9 +282,9 @@ pub fn selected_nudge(unit: i32) -> i32 {
 }
 
 /// The form class's shared ease `(3 − 2t)t²`, in the instructions' order:
-/// the first product is taken, then the second.
+/// `t²` is taken first, then `3 − 2t` times it.
 pub fn ease(t: f32) -> f32 {
-    (3.0 - 2.0 * t) * t * t
+    (3.0 - 2.0 * t) * (t * t)
 }
 
 /// `CVTSS2SI` into a 64-bit register, keeping the low 32 bits: rounds to
@@ -612,26 +608,26 @@ pub fn show_place(
 /// The skin measures a form reads when it sets its controls.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ControlSkin {
-    /// The left/right frame's stretch (the skin's `+0x1c`).
+    /// The left/right frame's stretch.
     pub span_x: i32,
-    /// The top/bottom frame's stretch (the skin's `+0x20`).
+    /// The top/bottom frame's stretch.
     pub span_y: i32,
-    /// The title's height (the skin's `+0x24`).
+    /// The title's height.
     pub title: i32,
-    /// The scrollbars' inset (the skin's `+0x28`).
+    /// The scrollbars' inset.
     pub scroll: i32,
 }
 
 /// A form's client spans after its controls are set or it is restored from
-/// a maximise: the width (kept at a minimum so the frame fits), the width
-/// remembered as that minimum, the client's right and bottom edges and the
-/// title's height.
+/// a maximise: the border (kept at least the frame's two stretches), the
+/// border remembered, the client's right and bottom edges and the title's
+/// height.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SpanMetrics {
-    pub width: i32,
-    /// The remembered minimum width; the original keeps the first width
-    /// that fits and restores it on later calls.
-    pub saved_width: i32,
+    pub border: i32,
+    /// The remembered border; the original keeps the first border that
+    /// covers the stretches and restores it on later calls.
+    pub saved_border: i32,
     pub span_x: i32,
     pub span_y: i32,
     pub right: i32,
@@ -644,33 +640,35 @@ pub struct SpanMetrics {
 }
 
 /// The client spans of a form whose controls are set: the frame's stretches
-/// from the style word (0x30 across, 0xc0 down) set a smallest width, kept
-/// in `saved_width` once the form first fits; the client's right edge is
-/// the width less the border and, with a vertical scrollbar (attribute
-/// 0x200), the skin's scroll inset; the title's height is the skin's plus
-/// either two border metrics (attribute bits 0x20 without 0x800000) or the
-/// frame's top stretch, or the border without a title (attribute 1); the
-/// bottom edge is the height less the border and, with a horizontal
-/// scrollbar (0x100), the scroll inset. The original recomputes the
-/// horizontal scrollbar before it writes the new bottom edge, so a caller
-/// wanting that order passes the previous bottom to the first metric.
+/// from the style word (0x30 across, 0xc0 down) are summed (in 64 bits)
+/// and a border below that sum becomes the sum; otherwise the first border
+/// is remembered in `saved_border` and later calls restore it. The
+/// client's right edge is the width less the new border and, with a
+/// vertical scrollbar (attribute 0x200), the skin's scroll inset; the
+/// title's height is the skin's plus either the border metric 2 (attribute
+/// bits 0x20 without 0x800000) or the frame's top stretch, or the new
+/// border without a title (attribute 1); the bottom edge is the height less
+/// the new border and, with a horizontal scrollbar (0x100), the scroll
+/// inset. The original recomputes the scrollbars before it writes the new
+/// bottom edge, so a caller wanting that order passes the previous bottom
+/// to the scrollbar metrics.
 pub fn control_spans(
     width: i32,
     height: i32,
     border: i32,
     style: u32,
     attributes: u32,
-    saved_width: i32,
+    saved_border: i32,
     skin: ControlSkin,
 ) -> SpanMetrics {
     let span_x = if style & 0x30 != 0 { skin.span_x } else { 0 };
     let span_y = if style & 0xc0 != 0 { skin.span_y } else { 0 };
-    let (width, saved_width) = if i64::from(width) < i64::from(span_x) + i64::from(span_y) {
-        (span_x + span_y, saved_width)
-    } else if saved_width == 0 {
-        (width, width)
+    let (border, saved_border) = if i64::from(span_x) + i64::from(span_y) > i64::from(border) {
+        (span_x.wrapping_add(span_y), saved_border)
+    } else if saved_border == 0 {
+        (border, border)
     } else {
-        (saved_width, saved_width)
+        (saved_border, saved_border)
     };
     let right = if attributes & attribute::VSCROLL != 0 {
         (width - border) - skin.scroll
@@ -693,8 +691,8 @@ pub fn control_spans(
         height - border
     };
     SpanMetrics {
-        width,
-        saved_width,
+        border,
+        saved_border,
         span_x,
         span_y,
         right,
@@ -745,8 +743,9 @@ pub struct SetControlsPlan {
 /// The form state that decides what [`set_controls`] does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SetControlsInput {
-    /// The form owns its old table and has one.
+    /// The form owns its old table and has one (a non-null table).
     pub owns_old: bool,
+    /// The old table's stored count, which the free is given.
     pub old_count: i32,
     /// The hovered control (0 none).
     pub hover: i32,
@@ -756,32 +755,36 @@ pub struct SetControlsInput {
 }
 
 /// Setting the control table: the old owned table is freed, the hover is
-/// cleared, a negative count leaves no table, else the table is copied
-/// (owned) or adopted; a restyle and a client-span or client-area pass
+/// cleared, an adopted table is taken as given (its count too, negative or
+/// not), else a negative count leaves no table and any other is copied
+/// (owned); a restyle and a client-span or client-area pass
 /// follow by the state word; every record's owner becomes the form, the
 /// set-up pass runs, and a placed form rescales its records to the GUI
 /// unit.
 pub fn set_controls(input: SetControlsInput) -> SetControlsPlan {
-    let table = if input.new_count < 0 {
-        ControlTable::Empty
-    } else if input.adopt {
+    // The adopt flag is tested before the count's sign.
+    let table = if input.adopt {
         ControlTable::Adopt
+    } else if input.new_count < 0 {
+        ControlTable::Empty
     } else {
         ControlTable::Copy
     };
+    let count = if !input.adopt && input.new_count < 0 {
+        -1
+    } else {
+        input.new_count
+    };
     SetControlsPlan {
-        free_old: input.owns_old && input.old_count >= 0,
+        free_old: input.owns_old,
         clear_hover: input.hover != 0,
         table,
-        count: if input.new_count < 0 {
-            -1
-        } else {
-            input.new_count
-        },
+        count,
         restyle: input.state & state::RESTYLE != 0,
         spans: input.state & state::LAYOUT != 0 && input.state & state::PLACED == 0,
         metrics: input.state & state::LAYOUT != 0 && input.state & state::PLACED != 0,
-        assign_owner: input.new_count > 0,
+        // The owner loop runs over records 0 to the stored count.
+        assign_owner: count >= 0,
         setup: true,
         rescale: input.state & state::PLACED != 0,
     }
@@ -1885,9 +1888,10 @@ pub fn route_drag(held: u32, last: i32, word: i32) -> Route {
 
 /// A pointer move sent to the held record: message 0x30 with the form-local
 /// point packed as x in the low half and y in the high half (both 16-bit).
-/// Only a held record code (1 to the last record plus one) is sent.
+/// Only a positive held code whose low 16 bits less one are not past the
+/// last record is sent; the record is the whole code less one.
 pub fn held_move(held: i32, last: i32, point: (i32, i32)) -> Option<(usize, u32, i32)> {
-    if held < 1 || held > last + 1 {
+    if held <= 0 || i64::from(held & 0xffff) - 1 > i64::from(last) {
         return None;
     }
     let packed = ((point.0 & 0xffff) as u32 | ((point.1 & 0xffff) as u32) << 16) as i32;
