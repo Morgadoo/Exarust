@@ -248,10 +248,10 @@ fn shipped_level_transition_markers() {
     for (name, file, _) in &levels {
         let db = Database::parse(file).unwrap();
         for item in items(&db) {
-            if let Some(volume) = item.volume {
-                if let Some(words) = volume.marker() {
-                    markers.push((name.clone(), item.name, words, volume.flags, volume.extents));
-                }
+            if let Some(volume) = item.volume
+                && let Some(words) = volume.marker()
+            {
+                markers.push((name.clone(), item.name, words, volume.flags, volume.extents));
             }
         }
     }
