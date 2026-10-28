@@ -1650,6 +1650,8 @@ mod tests {
         assert_eq!(mesh.positions.len(), mesh.uvs.len());
         assert_eq!(mesh.positions.len(), mesh.uvs2.len());
         assert_eq!(mesh.positions.len(), mesh.colours.len());
+        assert!(mesh.positions.iter().all(|p| p.is_finite()));
+        assert!(mesh.uvs.iter().flatten().all(|v| v.is_finite()));
         // The first coordinate runs across each pair.
         for i in 0..8 {
             assert_eq!(mesh.uvs[i * 2][0], 0.0);

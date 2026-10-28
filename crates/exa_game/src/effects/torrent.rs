@@ -1207,6 +1207,8 @@ mod tests {
         assert_eq!(mesh.colours[0], *colour);
         assert_eq!(mesh.uvs[0][0], 0.0);
         assert_eq!(mesh.uvs[1][0], 1.0);
+        assert!(mesh.positions.iter().all(|p| p.is_finite()));
+        assert!(mesh.uvs2.iter().flatten().all(|v| v.is_finite()));
         // The first quad starts the texture walk at zero; the second has
         // moved on by the squared sample distance times 0.005 (charging).
         assert_eq!(mesh.uvs2[0][1], 0.0);

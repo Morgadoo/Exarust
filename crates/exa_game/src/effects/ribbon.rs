@@ -89,7 +89,15 @@ impl RibbonMesh {
         let cross = Vec3::new(delta.y, -delta.x, 0.0);
         let length = (cross.x * cross.x + cross.y * cross.y) + cross.z * cross.z;
         let length = length.sqrt();
-        let dir = cross * (half / length);
+        // The closing call passes the last point twice and the original
+        // divides the zero cross length into the half width, leaving two
+        // NaN vertices that the strip's last triangles discard. Keep the
+        // pair at the point instead so the mesh stays finite.
+        let dir = if length > 0.0 {
+            cross * (half / length)
+        } else {
+            Vec3::ZERO
+        };
         self.positions.push(a - dir);
         self.positions.push(a + dir);
         self.uvs.push([0.0, v]);
