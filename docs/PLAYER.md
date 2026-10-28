@@ -271,7 +271,10 @@ Entering combat mode lets go of what the hand holds and clears the
 request's backpedal, keys' heading and turn-about bits. The swap is refused
 while the body is busy (its condition word has any of 0x10202) or a lift is
 on the cursor. F toggles the record's light flag of the first held item
-when it gives light and the body is not switching weapons (0x10000).
+when it gives light and the body is not switching weapons (0x10000), and
+then asks the grip runtime to start the held item's flip, as the original
+does in the same branch. (The original's gate reads the weapon section's
+flipped-side kind byte rather than a light; Exarust keeps the light test.)
 
 Wired in Exarust: Tab, R and F, and C with the digits, Q and the arrows:
 the hotkey handler sends the cast plugin the bar's commands, so C opens and
@@ -1189,13 +1192,15 @@ held items change (by the character's), both giving the same grip
   upright, tip up, before the chest, as in the live retail capture of the
   player's two-hander; a polearm is held in the left hand at the chest,
   its haft running down to the right hand at the hip.
-- **Not yet in Exarust.** The links (held items are scene children of the
-  hand until they become bodies), the grip modes that switch them by the
-  motion (the two-hander's second hand, the polearm's sliding grip), the
-  flip (no weapon starts flipped; the character records' held-item flag
-  words, now read into `CharacterRecord::hand_flags`, carry the flip bit
-  `0x0100_0000`, which nothing applies to the grip yet) and second
-  weapons.
+- **In Exarust.** Every rigid node of a held item is a solver part joined
+  to its hand, the top one moving the item's root. An assembled factory
+  weapon's fitted part is built by a tested function but not attached yet:
+  those weapons stay scene children of the hand. The grip modes switch the
+  two-hander's second hand, arm and stab links and slide the polearm's
+  grip by the motion, and a flip request (sent by F) runs the flip
+  animation and rebuilds the weapon record from its flipped side. A held
+  shield item takes the shield builder's face pivots. Second weapons and
+  the starting flip flag are not attached yet.
 
 ## Weapon sets and what a character carries
 

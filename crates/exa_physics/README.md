@@ -321,6 +321,14 @@ A dazed or unsteady body's targets give way to the pose it holds by the
 original's weight (`body::Drive::hold_weight`), which the character tick
 hands to the sampler; the race's clip rates (`body::RaceMuscles`) set its
 clip clock.
+An ordinary rigid body's collision sound is the original's slot 38 base
+rule (`part::base_impact_sound`, read by a striking item's non-striker
+contact): above 0.5 and either past its clock or
+over twice the last strength, the volume `1.5·min(0.01·S, 1)` (times
+`8·mobility + 0.2` under 0.1), the pitch `(0.02·mobility + 0.9)·(0.6·v +
+0.7)` (or `7·mobility + 0.3` under 0.1) and the clock `now + 220 −
+round(170·v)` plus a draw below 100 ms, made only when it rings.
+
 A held item's body (`grip`) is joined to the hand that holds it by the
 grip table's link records, in the original's order and numbers: the second
 hand's and the arm's links first (built disabled, the second hand's points
@@ -334,19 +342,24 @@ modes (`apply_mode`, `mode_from_clip`, `set_mode`) switch the second-hand,
 arm and extra links by the original's two callbacks, the polearm's main
 link slides at 15·scale cm, `relax` takes the post-change slack off the
 links enabled once, and `flip_step` turns the flip point about the item's y
-by `f·π` while the character is not combat-ready. `GripLink` is plain data
+by `f·π` while a flip is active and the character is not attacking away
+from its middle; either end clears the active flag, turns the item's
+flipped state and marks its record for a rebuild (the middle and end tests
+are double compares, as the original's). The death routine's stiffening
+of a soft world weld to strength 1 is `weld_on_death`, not called yet:
+Exarust frees a dead holder's item links. `GripLink` is plain data
 with the law documented: a correction is shared by the item's and the
 hand's particle weights and mobilities; a world link moves only the item.
 `grip_solve` runs the records as a cross-body solver stage: a held item is
-its own `Ragdoll` (built from its model's rigid root), pulled every
-iteration to the hand, second hand and arm by their mobility shares with
-the body's own limp link law (a slack link's smoothed length kept from
-tick to tick), and
-kept off its holder's body and the other items of the same character (the
-original's all-ones group mask, as `Ragdoll::held_by`). The character's
-equip and the torch light a held item's body and its `HeldGrip` when its
-model has a rigid root; an assembled factory weapon has none and stays
-bone-attached.
+its own `Ragdoll` (one part per stored rigid node), pulled every iteration to the hand, second
+hand and arm by their mobility shares with the body's own limp link law (a
+slack link's smoothed length kept from tick to tick), and kept off its
+holder's body and the other items of the same character (the original's
+all-ones group mask, as `Ragdoll::held_by`). Its generic world weld is the
+stiff origin link, plus the soft (parry) weld when the holder may parry,
+0.3 of the node box's top above the grip (at the grip for a polearm). A shield item takes the shield builder's three face
+pivots and its own soft world link. The character's equip and the torch
+light a held item's body and its `HeldGrip`.
 
 The mesh voxeliser (`voxel`) keeps the original's occupancy map of a
 rigid-body mesh (`VoxelMap`: the 0.02 resolution, unit scale and caller's

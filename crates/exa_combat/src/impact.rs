@@ -40,8 +40,8 @@ use bevy::prelude::*;
 use exa_physics::body::{BodySystems, BodyTicks, GoLimp, Pairs, Ragdoll, Shove, SolverStages};
 use exa_physics::body::{Fallen, daze_energy};
 use exa_physics::part::{
-    Contact, ContactKind, HardImpact, PartState, classify, hard_impact, limb_impact_damage,
-    limb_impact_sound, stamp_sound_cooldown, weapon_impact_sound,
+    Contact, ContactKind, HardImpact, PartState, base_impact_sound, classify, hard_impact,
+    limb_impact_damage, limb_impact_sound, stamp_sound_cooldown, weapon_impact_sound,
 };
 
 use crate::attack::AttackMotion;
@@ -149,6 +149,13 @@ pub struct ImpactSounded {
     pub foley: bool,
 }
 
+/// A hard overhead landing that may shake the camera: the attacker's
+/// position (m), where the original measures from its body centre.
+#[derive(Message, Debug, Clone, Copy, PartialEq)]
+pub struct CameraHit {
+    pub at: Vec3,
+}
+
 /// A held weapon's own impact sound: the weapon record's set at the item's
 /// point, with the volume and pitch the weapon branch works out.
 #[derive(Message, Debug, Clone, PartialEq)]
@@ -222,6 +229,7 @@ pub struct WeaponImpacts<'w, 's> {
     pub blades: Query<'w, 's, &'static Blade>,
     pub motions: Option<Res<'w, Motions>>,
     pub sounds: MessageWriter<'w, WeaponSounded>,
+    pub camera_hits: MessageWriter<'w, CameraHit>,
 }
 
 /// Limb impacts from the pair stage's last detection, then each
@@ -496,6 +504,52 @@ pub fn strike_limbs(
                 .first()
                 .is_some_and(|p| p.state.has(PartState::STRIKING));
             if !striking {
+                // A non-striking item takes the plain body's collision
+                // sound. Its material set is not modelled, so the
+                // weapon's hit set stands in. [guess]
+                let Some(part) = item.parts.first() else {
+                    continue;
+                };
+                if !part.reacts {
+                    continue;
+                }
+                let (mobility, ready, last, point) = (
+                    part.pairing.mobility,
+                    part.sound_ready_ms,
+                    part.last_impact,
+                    part.transform().translation,
+                );
+                let Some(sound) = base_impact_sound(*impact, mobility, ready, last, now) else {
+                    continue;
+                };
+                let set = weapon
+                    .blades
+                    .get(target)
+                    .ok()
+                    .and_then(|b| b.record.hit_sound_name())
+                    .map(str::to_owned);
+                // The original parks the clock of a body with no sound set;
+                // the stand-in set is the weapon's, whose clock the striking
+                // branch shares, so a missing set only stays silent here.
+                let Some(set) = set else {
+                    continue;
+                };
+                // The spread is drawn after the sound plays, as the
+                // original draws it.
+                let spread = roll.below(100);
+                let cooldown = sound.cooldown_ms.wrapping_add(spread);
+                if let Some(part) = item.parts.first_mut() {
+                    part.sound_ready_ms = now.wrapping_add(cooldown);
+                    part.last_impact = sound.threshold;
+                }
+                weapon.sounds.write(WeaponSounded {
+                    target,
+                    point: point.into(),
+                    volume: sound.volume,
+                    pitch: sound.pitch,
+                    set: Some(set),
+                    kind: None,
+                });
                 continue;
             }
             let Some(owner_key) = item.held_by else {
@@ -504,7 +558,7 @@ pub fn strike_limbs(
             let Some(&owner) = owner_of.get(&owner_key) else {
                 continue;
             };
-            let Ok((_, _, _, _, _, anim, attacking, _)) = fighters.get_mut(owner) else {
+            let Ok((_, f, _, _, _, anim, attacking, body)) = fighters.get_mut(owner) else {
                 continue;
             };
             let Ok(mut swing) = weapon.swings.get_mut(owner) else {
@@ -532,10 +586,18 @@ pub fn strike_limbs(
                 root_is_primary,
                 counter_taken,
                 now_ms: now,
-                // The original adds a shared simulation field here; its
-                // writer was not traced, so no time is added.
-                link_ticks: 0,
+                // The simulation's per-tick clock advance, added to the
+                // stab's or overhead's stall.
+                link_ticks: 12,
             };
+            if exa_physics::part::shakes_camera(&hit, f.stats.scale) {
+                let at = body
+                    .parts
+                    .iter()
+                    .find(|p| p.parent.is_none())
+                    .map_or(Vec3::ZERO, |p| p.transform().translation.into());
+                weapon.camera_hits.write(CameraHit { at });
+            }
             if let Some(reaction) = hard_impact(&hit) {
                 swing.flags = reaction.flags;
                 if reaction.interrupted {
@@ -653,6 +715,7 @@ pub(crate) fn plugin(app: &mut App) {
     app.add_message::<LimbImpact>()
         .add_message::<ImpactSounded>()
         .add_message::<WeaponSounded>()
+        .add_message::<CameraHit>()
         .add_systems(FixedUpdate, sync_held_striking.before(BodySystems))
         .add_systems(FixedUpdate, strike_limbs.after(BodySystems));
 }

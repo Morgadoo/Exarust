@@ -112,6 +112,7 @@ fn a_thrown_ball_hurts_the_limb_it_strikes() {
             .add_message::<LimbImpact>()
             .add_message::<ImpactSounded>()
             .add_message::<WeaponSounded>()
+            .add_message::<CameraHit>()
             .add_message::<Weakened>()
             .add_message::<SecondWindFired>();
         let target = app
@@ -168,6 +169,7 @@ fn a_struck_weapon_body_rings_and_records_its_strength() {
         .add_message::<LimbImpact>()
         .add_message::<ImpactSounded>()
         .add_message::<WeaponSounded>()
+        .add_message::<CameraHit>()
         .add_message::<Weakened>()
         .add_message::<SecondWindFired>();
     let owner = app
@@ -233,6 +235,7 @@ fn an_overhead_strikers_hard_impact_sounds_and_is_dropped() {
         .add_message::<LimbImpact>()
         .add_message::<ImpactSounded>()
         .add_message::<WeaponSounded>()
+        .add_message::<CameraHit>()
         .add_message::<Weakened>()
         .add_message::<SecondWindFired>();
     let mut pelvis = ball(1, 1, Vec3::new(0.0, 5.0, 0.0));

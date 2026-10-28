@@ -805,6 +805,80 @@ pub fn classify(contact: &Contact) -> Option<Classified> {
     })
 }
 
+/// A plain rigid body's collision sound: the volume, pitch and the time it
+/// may next sound, from the strength the pair or level contact reported.
+///
+/// The original's base impact call rings only above 0.5 (a NaN is silent),
+/// and then only when the body's cooldown has passed or the strength beats
+/// twice the last one played. The volume is `1.5·min(0.01·strength, 1)`,
+/// times `8·mobility + 0.2` when the mobility is under 0.1; the pitch is
+/// `(0.02·mobility + 0.9)·(0.6·v + 0.7)`, or `(7·mobility + 0.3)·(0.6·v +
+/// 0.7)` under 0.1. The next allowed time is `now + 220 − round(170·v)`
+/// plus a random spread in `0..100` ms. The last-played
+/// threshold becomes `2·strength`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BaseImpactSound {
+    pub volume: f32,
+    pub pitch: f32,
+    /// The strength times two, the threshold the next impact must beat
+    /// while the cooldown still holds.
+    pub threshold: f32,
+    /// The cooldown in milliseconds, before the caller's spread.
+    pub cooldown_ms: u32,
+}
+
+/// A plain rigid body's collision sound rule ([`BaseImpactSound`]).
+/// `ready` is the part's sound clock and `last` its last-played threshold.
+/// The caller draws the spread only when the sound rings (after it plays,
+/// as the original does); the original parks the clock of a body with no
+/// sound set at `u32::MAX`.
+pub fn base_impact_sound(
+    strength: f32,
+    mobility: f32,
+    ready: u32,
+    last: f32,
+    now: u32,
+) -> Option<BaseImpactSound> {
+    // The original's comiss pair: a NaN takes neither branch.
+    if strength.partial_cmp(&0.5) != Some(std::cmp::Ordering::Greater) {
+        return None;
+    }
+    if !(ready < now || strength > last) {
+        return None;
+    }
+    let v = ((f64::from(strength) * 0.01) as f32).min(1.0);
+    let volume = (f64::from(v) * 1.5) as f32;
+    let tone = (f64::from(v) * 0.6 + 0.7) as f32;
+    let (volume, pitch) = if f64::from(mobility) < 0.1 {
+        let m = mobility * 10.0;
+        (
+            ((f64::from(m) * 0.8 + 0.2) * f64::from(volume)) as f32,
+            ((f64::from(m) * 0.7 + 0.3) * f64::from(tone)) as f32,
+        )
+    } else {
+        (
+            volume,
+            ((f64::from(mobility) * 0.02 + 0.9) * f64::from(tone)) as f32,
+        )
+    };
+    Some(BaseImpactSound {
+        volume,
+        pitch,
+        threshold: strength * 2.0,
+        cooldown_ms: 220 - convert_unsigned(v * 170.0),
+    })
+}
+
+/// A non-negative float-to-integer convert, round half to even; a NaN or an
+/// out-of-range value comes back as zero.
+fn convert_unsigned(value: f32) -> u32 {
+    if value.is_nan() || value < 0.0 || value >= 4.0e9 {
+        0
+    } else {
+        value.round_ties_even() as u32
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -948,6 +1022,42 @@ mod tests {
             limb_impact_damage(f32::NAN, 4.0, 0.0, 0.0, false).hurt,
             None
         );
+    }
+
+    #[test]
+    fn a_plain_bodys_collision_sound() {
+        // Above 0.5: v = 1, volume 1.5, pitch (0.02·0.5 + 0.9)·1.3.
+        let sound = base_impact_sound(100.0, 0.5, 0, 0.0, 1_000).unwrap();
+        assert_eq!(sound.volume, 1.5);
+        assert!((sound.pitch - 1.183).abs() < 1e-6, "{}", sound.pitch);
+        assert_eq!(sound.threshold, 200.0);
+        assert_eq!(sound.cooldown_ms, 220 - 170);
+        // 10: v = 0.1, volume 0.15, pitch 0.91·0.76, cooldown 220 − 17.
+        let sound = base_impact_sound(10.0, 0.5, 0, 0.0, 1_000).unwrap();
+        assert!((sound.volume - 0.15).abs() < 1e-6);
+        assert!((sound.pitch - 0.6916).abs() < 1e-6, "{}", sound.pitch);
+        assert_eq!(sound.cooldown_ms, 203);
+        // A low mobility takes the 8m + 0.2 and 7m + 0.3 factors.
+        let sound = base_impact_sound(10.0, 0.05, 0, 0.0, 1_000).unwrap();
+        assert!((sound.volume - 0.09).abs() < 1e-6);
+        assert!((sound.pitch - 0.494).abs() < 1e-6, "{}", sound.pitch);
+        // v = 0.5: 0.5·170 = 85.
+        let half = base_impact_sound(50.0, 0.5, 0, 0.0, 1_000).unwrap();
+        assert_eq!(half.volume, 0.75);
+        assert_eq!(half.cooldown_ms, 220 - 85);
+        // Half rounds to even: 0.05·170 = 8.5 → 8.
+        let even = base_impact_sound(5.0, 0.5, 0, 0.0, 1_000).unwrap();
+        assert_eq!(even.cooldown_ms, 220 - 8);
+        // At or below 0.5, and a NaN, are silent.
+        assert_eq!(base_impact_sound(0.5, 0.5, 0, 0.0, 1_000), None);
+        assert_eq!(base_impact_sound(f32::NAN, 0.5, 0, 0.0, 1_000), None);
+        // The cooldown still holds and the strength is not over the last:
+        // silent; over it rings.
+        assert_eq!(base_impact_sound(10.0, 0.5, 1_000, 20.0, 1_000), None);
+        assert_eq!(base_impact_sound(20.0, 0.5, 1_000, 20.0, 1_000), None);
+        assert!(base_impact_sound(20.1, 0.5, 1_000, 20.0, 1_000).is_some());
+        // A passed cooldown rings even under the last threshold.
+        assert!(base_impact_sound(10.0, 0.5, 999, 20.0, 1_000).is_some());
     }
 
     #[test]

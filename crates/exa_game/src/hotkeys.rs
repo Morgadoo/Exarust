@@ -18,7 +18,9 @@
 //!
 //! Wired in Exarust: Tab (with the hand's cancel and the request bits it
 //! clears), R (with the player's condition word and the lift counting as a
-//! drag) and F (the record's light flag); I and J send a
+//! drag) and F (the record's light flag, then a flip request to the grip
+//! runtime, as the original starts the held item's flip in the same
+//! branch); I and J send a
 //! [`crate::gui_screens::ScreenRequest`], which opens the inventory and the
 //! journal on the window manager; C, the digits, Q and the arrows send the
 //! power bar's commands to [`crate::thaum::cast`]. The skills screen's
@@ -30,6 +32,7 @@
 //! (`context/re/player-control-hand.md`, Hotkeys).
 
 use bevy::prelude::*;
+use exa_character::grip_runtime::FlipWeaponRequest;
 use exa_character::held::Hands;
 use exa_combat::Condition;
 use exa_items::possession::{LIT, Possessions, SwapRequest};
@@ -200,6 +203,7 @@ impl Plugin for HotkeyPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<ScreenRequest>()
             .add_message::<BarCommand>()
+            .add_message::<FlipWeaponRequest>()
             .add_systems(
                 Update,
                 press_hotkeys
@@ -235,6 +239,7 @@ fn press_hotkeys(
     mut bodies: Query<&mut Ragdoll, Without<PlayerBody>>,
     mut screens: MessageWriter<ScreenRequest>,
     mut bars: MessageWriter<BarCommand>,
+    mut flips: MessageWriter<FlipWeaponRequest>,
 ) {
     let mut pressed: Vec<u32> = keys
         .get_just_pressed()
@@ -306,12 +311,16 @@ fn press_hotkeys(
                         hands.and_then(|h| h.main.map(|m| m.light).or(h.off_light.then_some(true)));
                     if let Some(p) = possessions.as_deref_mut() {
                         let burning = p.out[0].flags & LIT != 0;
-                        p.toggle_light(
+                        // The original's branch ends by starting the held
+                        // item's flip.
+                        if p.toggle_light(
                             first.is_some(),
                             word.0 & Condition::SWITCHING.0 != 0,
                             first.unwrap_or(false),
                             burning,
-                        );
+                        ) {
+                            flips.write(FlipWeaponRequest { body: entity });
+                        }
                     }
                 }
                 Hotkey::Inventory | Hotkey::Journal => {
@@ -541,6 +550,7 @@ mod tests {
                 .init_resource::<Hand>()
                 .add_message::<ScreenRequest>()
                 .add_message::<BarCommand>()
+                .add_message::<FlipWeaponRequest>()
                 .add_systems(Update, press_hotkeys);
             let player = app.world_mut().spawn((PlayerBody::new(0.0), word)).id();
             app.world_mut()
@@ -564,6 +574,7 @@ mod tests {
                 .init_resource::<Hand>()
                 .add_message::<ScreenRequest>()
                 .add_message::<BarCommand>()
+                .add_message::<FlipWeaponRequest>()
                 .add_systems(Update, press_hotkeys);
             app.world_mut().spawn((PlayerBody::new(0.0), word));
             app.world_mut()

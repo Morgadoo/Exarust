@@ -181,6 +181,12 @@ pub struct GripLinks {
     pub flip_point: Vec3,
     /// The flip's progress, 0 to 1.
     pub flip_progress: f32,
+    /// Whether the item is held flipped in its current pose (the original's
+    /// item flag): a flip runs from this state to its opposite.
+    pub flipped: bool,
+    /// The original's flip-active flag: the animation runs only while this
+    /// is set, and clears it when the progress reaches an end.
+    pub flip_active: bool,
     /// The grip mode, -1 before the first callback.
     pub mode: i32,
     /// A link still relaxing after a grip change.
@@ -210,6 +216,14 @@ pub struct HeldGrip {
     pub second_hand_factor: f32,
     /// The item is held flipped.
     pub flip: bool,
+    /// The soft (parry) world weld's gate: the original's auto-parry
+    /// flag, set for a holder that may parry (the global parry switch is
+    /// on, the heavy-claws state and race flag bit 0 are clear). Without
+    /// it the item gets the stiff origin weld alone.
+    pub soft_weld: bool,
+    /// The item is a shield: its three face pivots and its soft world weld
+    /// replace a weapon's table links.
+    pub shield: bool,
     /// The body of the character holding it, as the pair stage knows it
     /// (its first part's entity).
     pub holder_key: Entity,
@@ -427,7 +441,9 @@ pub fn build(
         extra,
         flip: flip_link,
         flip_point,
-        flip_progress: 0.0,
+        flip_progress: if flip { 1.0 } else { 0.0 },
+        flipped: flip,
+        flip_active: false,
         mode: -1,
         relaxing: false,
         record_dirty: false,
@@ -444,7 +460,8 @@ pub fn world_links(
     item: &Ragdoll,
     bindings: GripBindings,
     soft_point: Vec3,
-) -> Option<(GripLink, GripLink)> {
+    soft: bool,
+) -> Option<Vec<GripLink>> {
     let cm = 0.01;
     let on_item = item.weights_at(bindings.item_part, soft_point * cm)?;
     let soft_at = item.point_at(bindings.item_part, &on_item)?;
@@ -465,7 +482,14 @@ pub fn world_links(
         shares: (1.0, 0.0),
         anchor: Some(anchor),
     };
-    Some((world(on_item, soft_at, 0.05), world(origin, origin_at, 1.0)))
+    let mut links = Vec::with_capacity(2);
+    // The soft weld is only built under the original's auto-parry flag;
+    // the stiff origin weld is always built.
+    if soft {
+        links.push(world(on_item, soft_at, 0.05));
+    }
+    links.push(world(origin, origin_at, 1.0));
+    Some(links)
 }
 
 /// Builds a shield's links: three runtime pivots from points on
@@ -546,6 +570,8 @@ pub fn shield_links(
         flip: None,
         flip_point: Vec3::ZERO,
         flip_progress: 0.0,
+        flipped: false,
+        flip_active: false,
         mode: -1,
         relaxing: false,
         record_dirty: false,
@@ -746,41 +772,78 @@ impl GripLinks {
         true
     }
 
-    /// One flip step: only while the character is not
-    /// combat-ready, or the flip is within 0.49 of its middle. The progress
-    /// moves by `(1 − (0.5 − f)²·4)·0.05 + 0.002` a tick toward 1 (or back
-    /// to 0 once `flipping`), and at either end the item's record must be
-    /// rebuilt. The flip link's point turns about the item's y axis by
-    /// `f·π`. Returns whether the link moved.
-    pub fn flip_step(&mut self, item: &Ragdoll, flipping: &mut bool, ready: bool) -> bool {
-        if ready && (self.flip_progress - 0.5).abs() > 0.49 {
+    /// The death routine stiffens each held item's soft (parry) world
+    /// weld: its strength becomes 1. The original tests the weld's index
+    /// as strictly positive, so a weld at index 0 is left alone. Returns
+    /// whether a weld was stiffened. Not called by the game yet: Exarust's
+    /// death frees the item's links ([`crate::grip_solve`]).
+    pub fn weld_on_death(&mut self) -> bool {
+        let Some(soft) = self.world_soft.filter(|&i| i > 0 && i < self.links.len()) else {
+            return false;
+        };
+        self.links[soft].strength = 1.0;
+        true
+    }
+
+    /// Starts a flip if the item has a flip link. The original's caller
+    /// sets its "flip active" byte; the direction is the item's current
+    /// flipped flag, so a second command turns it back.
+    pub fn begin_flip(&mut self) -> bool {
+        if self.flip.is_none_or(|i| i >= self.links.len()) {
+            return false;
+        }
+        self.flip_active = true;
+        true
+    }
+
+    /// One flip step while a flip is active: only while the character is
+    /// not attacking, or the flip is within 0.49 of its middle. The
+    /// progress moves by `(1 − (0.5 − f)²·4)·0.05 + 0.002` a tick toward 1
+    /// (or back to 0 once flipped), and at either end the item's record
+    /// must be rebuilt and the flip flag turns over. The flip link's point
+    /// turns about the item's y axis by `f·π`. Returns whether the link
+    /// moved.
+    pub fn flip_step(&mut self, item: &Ragdoll, attacking: bool) -> bool {
+        if !self.flip_active {
+            return false;
+        }
+        // The middle test subtracts and takes the magnitude in single
+        // precision and compares in double; a NaN lets the flip run.
+        if attacking && f64::from((self.flip_progress - 0.5).abs()) > 0.49 {
             return false;
         }
         let Some(flip) = self.flip.filter(|&i| i < self.links.len()) else {
             return false;
         };
+        // `1 − (0.5 − f)²·4` in single precision, then scaled and offset
+        // in double.
         let offset = 0.5 - self.flip_progress;
-        let step = (1.0 - offset * offset * 4.0) * 0.05 + 0.002;
-        let running = if !*flipping {
+        let ease = 1.0 - offset * offset * 4.0;
+        let step = (f64::from(ease) * 0.05 + 0.002) as f32;
+        // The end tests are double compares on the single-precision
+        // progress; a NaN keeps the flip running.
+        let running = if !self.flipped {
             self.flip_progress += step;
-            if self.flip_progress <= 0.99 {
+            if f64::from(self.flip_progress).partial_cmp(&0.99) != Some(std::cmp::Ordering::Greater)
+            {
                 true
             } else {
                 self.flip_progress = 1.0;
-                *flipping = true;
+                self.flipped = true;
                 false
             }
         } else {
             self.flip_progress -= step;
-            if self.flip_progress >= 0.01 {
+            if f64::from(self.flip_progress).partial_cmp(&0.01) != Some(std::cmp::Ordering::Less) {
                 true
             } else {
                 self.flip_progress = 0.0;
-                *flipping = false;
+                self.flipped = false;
                 false
             }
         };
         if !running {
+            self.flip_active = false;
             self.record_dirty = true;
         }
         let angle = (f64::from(self.flip_progress) * std::f64::consts::PI) as f32;
@@ -1093,15 +1156,16 @@ mod tests {
             1.0,
         )
         .unwrap();
-        let mut flipping = false;
+        assert!(links.begin_flip());
         for _ in 0..200 {
-            if flipping {
+            if !links.flip_active {
                 break;
             }
-            links.flip_step(&item, &mut flipping, false);
+            links.flip_step(&item, false);
         }
         assert_eq!(links.flip_progress, 1.0);
-        assert!(flipping);
+        assert!(links.flipped);
+        assert!(!links.flip_active);
         assert!(links.record_dirty);
         // At f = 1 the flip point (15, 0, 0) has turned to (−15, 0, 0).
         let p = item
@@ -1121,13 +1185,34 @@ mod tests {
             1.0,
         )
         .unwrap();
-        assert!(!links2.flip_step(&item, &mut flipping, true));
+        assert!(!links2.flip_active);
+        assert!(!links2.flip_step(&item, true));
+        assert!(links2.begin_flip());
+        assert!(!links2.flip_step(&item, true));
+        // Near the middle an attack lets the flip run.
+        links2.flip_progress = 0.5;
+        assert!(links2.flip_step(&item, true));
+        // The middle test is a double compare: 0.99 in single precision is
+        // 0.490000009… from the middle, past the double 0.49, so an attack
+        // holds it (a single-precision compare would let it run).
+        links2.flip_progress = 0.99;
+        assert!(!links2.flip_step(&item, true));
+        // From 0.25 the step is (1 − 0.25²·4)·0.05 + 0.002 = 0.0395, worked
+        // in double and stored as a single.
+        links2.flip_progress = 0.25;
+        assert!(links2.flip_step(&item, false));
+        assert_eq!(links2.flip_progress, 0.25 + 0.0395_f64 as f32);
     }
 
     #[test]
     fn the_world_links_and_the_mode_word() {
         let item = body_at(Vec3::ZERO);
-        let (soft, hard) = world_links(&item, bindings(), Vec3::new(0.0, 10.0, 0.0)).unwrap();
+        let one = world_links(&item, bindings(), Vec3::new(0.0, 10.0, 0.0), false).unwrap();
+        assert_eq!(one.len(), 1);
+        assert_eq!(one[0].strength, 1.0);
+        assert_eq!(one[0].shares, (1.0, 0.0));
+        let two = world_links(&item, bindings(), Vec3::new(0.0, 10.0, 0.0), true).unwrap();
+        let (soft, hard) = (&two[0], &two[1]);
         assert_eq!(soft.strength, 0.05);
         assert_eq!(hard.strength, 1.0);
         assert_eq!(soft.flags, RUNTIME | DISABLED);
@@ -1143,6 +1228,8 @@ mod tests {
             flip: None,
             flip_point: Vec3::ZERO,
             flip_progress: 0.0,
+            flipped: false,
+            flip_active: false,
             mode: -1,
             relaxing: false,
             record_dirty: false,
@@ -1156,6 +1243,37 @@ mod tests {
         links.relaxing = false;
         assert!(links.set_mode(4, GripKind::Other));
         assert!(!links.relaxing);
+    }
+
+    #[test]
+    fn death_stiffens_the_shields_world_weld() {
+        let item = body_at(Vec3::ZERO);
+        let hand = body_at(Vec3::ZERO);
+        let mut shield =
+            shield_links(&item, &hand, bindings(), 1, Affine3A::IDENTITY, Vec3::ZERO).unwrap();
+        let soft = shield.world_soft.unwrap();
+        assert_eq!(shield.links[soft].strength, 0.05);
+        assert!(shield.weld_on_death());
+        assert_eq!(shield.links[soft].strength, 1.0);
+        // A weapon's stiff origin weld is not the shield's soft index.
+        let mut one = GripLinks {
+            links: Vec::new(),
+            main: 0,
+            second: None,
+            arm: None,
+            extra: None,
+            flip: None,
+            flip_point: Vec3::ZERO,
+            flip_progress: 0.0,
+            flipped: false,
+            flip_active: false,
+            mode: -1,
+            relaxing: false,
+            record_dirty: false,
+            world_soft: None,
+            world_hard: Some(0),
+        };
+        assert!(!one.weld_on_death());
     }
 
     #[test]
