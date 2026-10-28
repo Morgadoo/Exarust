@@ -1593,7 +1593,9 @@ and is stored as a float:
    body (an actor's local ids name its own database, a level's its own, the
    rest the game's): an unpowered golem suit adds 2.0, powered gauntlets of
    kind 6 make the held shield weightless (unpowered ones make it count
-   again), then + encumbrance byte × 0.0025;
+   again), a kind-2 talisman grants the wearer a second wind
+   (`exa_formats::encumbrance::second_wind`, wired into a level's placed
+   characters), then + encumbrance byte × 0.0025;
 2. each articulated piece (set word ≠ 0) whose covered bones touch another
    articulated piece's takes 0.025 off, once: piece A touches piece B when
    A's bones meet the bones B's bones neighbour, or the other way round. The
