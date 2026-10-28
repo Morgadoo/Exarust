@@ -402,6 +402,7 @@ mod tests {
                 Vec3::new(-2.0, 0.5, -2.0),
                 Vec3::new(2.0, 0.5, 2.0),
                 0,
+                exa_physics::sector::MASK_SMALL,
             );
         let mesh = app
             .world_mut()

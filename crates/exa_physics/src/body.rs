@@ -4160,6 +4160,36 @@ fn begin_frame(
     }
 }
 
+/// The level as body detection reads it: the physics world's pieces, their
+/// masks from [`crate::StaticColliders`] when it is loaded.
+struct MaskedLevel<'a> {
+    world: &'a rapier3d::prelude::PhysicsWorld,
+    masks: Option<&'a crate::StaticColliders>,
+}
+
+impl Level for MaskedLevel<'_> {
+    fn pieces(&self, lo: Vec3, hi: Vec3, out: &mut Vec<u32>) {
+        self.world.pieces(lo, hi, out);
+    }
+
+    fn triangles(&self, piece: u32, lo: Vec3, hi: Vec3, out: &mut Vec<[Vec3; 3]>) {
+        self.world.triangles(piece, lo, hi, out);
+    }
+
+    fn mask(&self, piece: u32) -> u32 {
+        self.masks
+            .map_or(crate::sector::MASK_SMALL, |m| m.mask(piece))
+    }
+
+    fn movable(&self, piece: u32) -> bool {
+        self.world.movable(piece)
+    }
+
+    fn floor_piece(&self, piece: u32) -> bool {
+        self.world.floor_piece(piece)
+    }
+}
+
 /// The solver's tick over every body (the character ticks ran before it):
 /// the queued blows, then one tick of the world's solver over the awake
 /// bodies, with the solver stages, which see the sleeping bodies too (a
@@ -4167,6 +4197,7 @@ fn begin_frame(
 /// woke it.
 pub fn step_bodies(
     physics: Res<Physics>,
+    statics: Option<Res<crate::StaticColliders>>,
     mut queue: ResMut<ShoveQueue>,
     mut dealt: ResMut<DealtShoves>,
     mut clock: ResMut<BodyTicks>,
@@ -4205,7 +4236,14 @@ pub fn step_bodies(
             .iter_mut()
             .map(|b| b.bypass_change_detection())
             .collect();
-        solve_among(&mut awake, &mut sleeping, &physics.0, stages.all());
+        // The level as body detection reads it: the world's pieces with the
+        // static colliders' stored masks (a thin plate's 4 keeps a foot's
+        // mask-4 part off it).
+        let level = MaskedLevel {
+            world: &physics.0,
+            masks: statics.as_deref(),
+        };
+        solve_among(&mut awake, &mut sleeping, &level, stages.all());
     }
     for body in &mut sleeping {
         if body.sleep == Sleep::Awake {

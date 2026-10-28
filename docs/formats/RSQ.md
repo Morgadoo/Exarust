@@ -499,7 +499,10 @@ tick, in this order (REA and `exe.asm` of its sector step and body tick):
    (with its stored level contacts and edges).
 5. Pair and level contacts dropped; sim objects stepped; the bodies tested
    against each other, the sim objects against the bodies and the level,
-   then the bodies against the level.
+   then the bodies against the level. Exarust's cloth gathers its contacts
+   from the bodies' parts and the static grid's cells before the step and
+   steps after the body tick; the bodies' own level detection reads the
+   static grid's masks.
 6. 8 friction passes, each the pairs' friction, then every body's against
    the level.
 7. The post-step (for a character: its pending hit and its damage first).
@@ -672,8 +675,11 @@ prop). Rules in cm and ticks:
   `0x80000` clear) builds its body unless the scene already did (then the
   body only joins the grid), a node whose body has the simulated-object bit
   joins the sector's object list, and a mesh node (flags `0x89`, class bit
-  `0x200000`) registers as a static collider with its level mask. The sector picks the all-pairs walk unless the
-  scene's flag word has either grid bit (`0x2000000`, `0x4000000`).
+  `0x200000`) registers as a static collider with its level mask (1, or
+  1|4 for a thin horizontal plate: local half height under 1 cm and world
+  up over 0.99; the original's flagged bit has no traced node source in
+  Exarust). The sector picks the all-pairs walk unless the scene's flag
+  word has either grid bit (`0x2000000`, `0x4000000`).
   Registration gives a body its countdown 0 and the asleep bits, its
   mobility over the material divisor, and its material's impact sound
   scale `v = min(2m, 1) + 1` (`1/v²` and `(√v + v)/2`) with the impact
