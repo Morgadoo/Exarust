@@ -602,6 +602,12 @@ pub(crate) fn draw_blasts(
     };
     let alpha = time.overstep_fraction();
     for (entity, live, drawn) in &mut blasts {
+        // The ribbon draws the thrown trail; while the blast charges, the
+        // original's entity object draws the chunks and the trail has no
+        // step to sample (a zero step would divide the widths by zero).
+        if live.blast.state != THROWN {
+            continue;
+        }
         let ribbon = live.blast.ribbon(alpha, &view);
         if ribbon.is_empty() {
             continue;

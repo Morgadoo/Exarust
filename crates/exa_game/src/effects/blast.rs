@@ -1265,9 +1265,10 @@ impl Blast {
                 widths[RIBBON_SAMPLES - 1],
                 uv2,
             );
+            let view_spine = spine.map(|point| camera.inverse_point(point));
             for _ in 0..3 {
                 for i in 0..RIBBON_SAMPLES - 2 {
-                    let along = spine[i + 2] - spine[i];
+                    let along = view_spine[i + 2] - view_spine[i];
                     let across = strip.positions[i + 2] - strip.positions[i];
                     // The fix compares the screen-space directions: the
                     // original's dot helper is two-dimensional.

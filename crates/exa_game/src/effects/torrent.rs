@@ -855,6 +855,7 @@ impl Torrent {
             normals[0] = normalize(lerp(normals[0], sum, NORMAL_AVERAGE));
             normals[count - 1] = normals[0];
             let stream = &mut self.records[index];
+            stream.normals[0] = normals[0];
             stream.normals[1] = normalize(lerp(
                 stream.normals[1],
                 normalize(cross(points[1] - points[0], eye)),
@@ -872,7 +873,7 @@ impl Torrent {
             }
             stream.normals[3] = normals[count - 2];
             let mut along = 0.0f32;
-            for i in 0..count - 2 {
+            for i in 0..count - 1 {
                 mesh.push_torrent_quad(
                     points[i],
                     normals[i],
@@ -1198,9 +1199,10 @@ mod tests {
         }
         let frame = t.frame(1.0);
         let mesh = t.ribbon(&frame, Vec3::new(1000.0, 1000.0, 0.0));
-        // Three samples make four vertices and two quads a stream.
-        assert_eq!(mesh.positions.len(), 16 * 4);
-        assert_eq!(mesh.indices.len(), 16 * 2 * 6);
+        // Three samples make a four-point spine and three quads a stream,
+        // each emitter call adding two vertices.
+        assert_eq!(mesh.positions.len(), 16 * 6);
+        assert_eq!(mesh.indices.len(), 16 * 3 * 6);
         let (colour, _) = &frame.streams[0];
         assert_eq!(mesh.colours[0], *colour);
         assert_eq!(mesh.uvs[0][0], 0.0);
