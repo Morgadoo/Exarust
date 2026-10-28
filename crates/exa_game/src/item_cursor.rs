@@ -381,7 +381,9 @@ pub enum Release {
 /// the original's release passes the saved rest points to the deferred
 /// restore only to take the body out of its old sector, and the body keeps
 /// its current points. [The GUI slot's acceptance test of the cancelled
-/// path is not modelled: a slot always takes it.]
+/// path is not modelled: a slot always takes it. Exarust has no inventory
+/// take for the world body yet, so the live hand leaves a `ToGui` item
+/// where it is instead of snapping it back.]
 pub fn release(cancelled: bool, hover: u32) -> Release {
     if hover & HOVER_GUI != 0 {
         Release::ToGui

@@ -474,10 +474,10 @@ on the cursor; the movement inputs (the pad's raw move stick past a squared
 0.1, else the move keys) turn it by `0.25·frame ms·0.0025` rad a frame,
 ramping to `1.0` after 300 ms of turning and falling back after 500 ms of
 quiet; each frame the cursor's ray, the held item left out, places it at
-the level hit (a miss keeps the last point), its rest box's bounding sphere
-sweeping from the 1000 cm reach to the first contact (strictly nearer
-contacts only, a NaN left), its rest-point box test (280 cm up, −1000 cm
-down) only answering; the hover word is the inventory pack's slot under the
+the level hit (a miss keeps the last point), the held part's widest
+collision sphere sweeping from the 1000 cm reach to the first contact
+(strictly nearer contacts only, a NaN left), its rest-point box test
+(280 cm up, −1000 cm down) only answering; the hover word is the inventory pack's slot under the
 pointer, else the world hit, or the give-back word on a node whose link
 byte reads `L`; a plain release leaves it there, and a cancelled one goes
 to the GUI slot, stays on the world hover, or is put back at the frames the

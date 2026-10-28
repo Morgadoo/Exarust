@@ -702,10 +702,10 @@ extents in its saved frame, turned as above) stays within 280 cm up and
 −1000 cm down: the box only decides the routine's answer. The original
 starts its sweep at the 1000 cm reach and pulls the item back to the first
 contact of its collision spheres with the level's meshes, keeping a contact
-only when it is strictly nearer. Exarust sweeps the rest box's bounding
-sphere along the ray and stops at the nearer of that contact and the pick
-(`item_cursor::{sweep_to_contact, placement_distance, placement_point}`); a
-cursor over nothing keeps the last point.
+only when it is strictly nearer. Exarust sweeps the held part's widest
+collision sphere along the ray and stops at the nearer of that contact and
+the pick (`item_cursor::{sweep_to_contact, placement_distance,
+placement_point}`); a cursor over nothing keeps the last point.
 
 The item cursor's hover word is the item GUI slot under the pointer
 (`HOVER_GUI`), else the world hit (`HOVER_WORLD`), with the give-back word

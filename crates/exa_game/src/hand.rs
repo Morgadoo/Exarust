@@ -1358,9 +1358,13 @@ fn hold_hand(
                 {
                     ragdoll.release_grab();
                     // A plain release leaves the item where the cursor put
-                    // it; a cancelled one (and the GUI's, which Exarust has
-                    // no slot for) puts it back.
-                    if outcome != Release::Drop {
+                    // it, and so does a cancelled one over the world. Only
+                    // a cancelled lift with no world hover goes back to the
+                    // frames it saved. The GUI slot's take has no Exarust
+                    // inventory path yet, so the item is left where it is
+                    // rather than snapped back [guess: the original's GUI
+                    // release takes the icon out of the world].
+                    if outcome == Release::PutBack {
                         ragdoll.place_at(&held.saved);
                     }
                     ragdoll.wake();
@@ -1415,9 +1419,9 @@ fn hold_hand(
                 // the last point (its pick has no navigation mesh behind
                 // every pixel). The item's rest box sweeps along the ray
                 // first, so a wall beside the cursor's point stops it at
-                // the first contact [Exarust sweeps the box's bounding
-                // sphere; the original sweeps its collision spheres against
-                // the meshes].
+                // the first contact [Exarust sweeps the held part's widest
+                // collision sphere; the original sweeps every sphere
+                // against the meshes].
                 let pointer = windows.single().ok().and_then(|window| {
                     scripted
                         .position(window)
@@ -1440,7 +1444,22 @@ fn hold_hand(
                                 .is_some_and(|(owner, _)| owner == body)
                         });
                     let hit_cm = hit.map(|(_, t)| t * CM);
-                    let radius = box_half.length();
+                    // The sweep uses the held part's widest collision
+                    // sphere, the original's first-contact shape; a part
+                    // without spheres falls back to the box's thinnest
+                    // half extent.
+                    let radius = bodies
+                        .get(body)
+                        .ok()
+                        .and_then(|(_, ragdoll, ..)| ragdoll.parts.get(part))
+                        .map(|part| {
+                            part.spheres
+                                .iter()
+                                .map(|(_, radius)| *radius)
+                                .fold(0.0_f32, f32::max)
+                        })
+                        .filter(|radius| *radius > 0.0)
+                        .unwrap_or_else(|| box_half.x.min(box_half.y).min(box_half.z).max(0.01));
                     let contact = hit_cm.and_then(|distance| {
                         sources
                             .physics
