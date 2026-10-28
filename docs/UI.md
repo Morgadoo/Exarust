@@ -2164,6 +2164,26 @@ plain draw and input records.
   under the button's anchor (x plus half its width, y plus its height) when
   the anchor bit is set; a colour button's popup uses the `0x6000` action
   set.
+- **Doll equipment** (`exa_items::doll`): the record's two weapon sets.
+  A re-dress compares the stowed set with the out set hand by hand; only a
+  changed hand is detached, then attached by its item's sections: a weapon
+  as a weapon part (the off hand's weapon that also has a light section as
+  an off-hand light), a shield as a shield, an item with only a light
+  section as an off-hand light, and anything else not at all. The item's
+  `0x1000000` flag is written to the body's flip byte and `0x2000000`
+  lights its held part. The stance restarts with blend 20 after every
+  re-dress unless the body is in its weapon-swap state (`0x1F`), and the
+  sets then trade only when a hand changed. A weapon's take-out clears
+  the record entry that names it (either hand's) and, when it was scheduled
+  for the main hand and the weapon was the body's first attached weapon,
+  promotes the off hand's light or weapon into it — never a shield — the
+  promoted item taking the off hand's flags. An off-hand light's or
+  shield's take-out reads and clears the record's off-hand entry without
+  comparing its item. A take-in (once the original's item node has
+  loaded, which Exarust does not need to wait for) follows the take-in
+  order: the off-hand light, the main hand's light moving to the off hand, the second weapon
+  only when asked for, and a two-hander freeing both hands. A shield frees the off hand and clears the body's weapon
+  part when it holds none.
 - **Item renderer** (`exa_items::item_renderer`): a 160-pixel icon
   rendered at 320 into colour and depth buffers, with the full and final
   RGBA images and the private scene and camera.
@@ -2191,22 +2211,77 @@ and blue 0.45 of the blue, as bytes of 255 at the top and 280 at the
 bottom, rounded to even. The view's task eases the figure's race share
 up to its race's value by 0.003 per frame millisecond, never past it.
 
+The scene's environment is given two colours, grey 0.5 and 0.75, its
+mode word 2 and a light level of 1; its view distance is 100 units. Each
+frame the figure's node takes the direction (0.5, 0.7, 0.5), already unit
+length within the original's rounding, turned into the camera's space and
+normalised, so the doll keeps facing the camera as it orbits; the body is
+also given the camera's point. A per-frame counter steps down by one and
+never below zero.
+
 A drag over the figure is accepted only when its item section allows it:
 apparel needs a race that wears it (bit 4) and a view that allows
 changes; a withheld weapon or shield needs the matching body permission
 (`0x10000`, or `0x20000` for a weapon's second bit); a race whose core
-word takes the AL crystal accepts item 500 while nothing is shown. A drop
-wears apparel, takes a weapon into a hand, takes a shield into the off
-hand, or takes the body's core crystal. A hover shows the item under the
-pointer and its icon, and clears the shown item when the icon cannot be
-resolved. A frozen view starts drags only from a held item. A release
-takes a held item out of its hand (the pack drops its held entry), takes
-the shown item off when the shown icon is the dragged one, and otherwise
-takes the dragged item off and charges the pack its bulk. The view's
-owner lookup follows the first visible form of its class, and the
-player's pack is that view's; the insight check looks for technique 8 in
-the skill block the view reads and blocks on the right half of the
+word takes the AL crystal accepts item 500 while nothing is shown. A view
+that allows changes answers for any item; a frozen one only while the
+pointer is over one of the doll's held items. A drag off the figure refunds
+the item's mind cost (charged again by a drop back on the view or a
+cancelled release): twice a weapon's desirability, else an apparel's
+protection value, the weapon section read first; the shield and the core
+crystal have none.
+
+A drop from the view's own panel only charges back the refunded cost.
+Otherwise apparel is worn, with both the doll and the shown character's
+mesh and textures rebuilt, the character data told of the equip change,
+and the shown character's pack (when it is not where the drag began)
+charged the item's bulk, locked or not; a weapon is taken into the doll's
+hands and mirrored on the shown character; a shield likewise; and a body
+that takes the item as its core crystal shows it under the pointer and
+clears the shown character's mark. For a weapon or a shield, when the
+view is not locked and the shown character's pack is not where the drag
+began, the pack also takes the item at its centre, marked held. With the
+view's mind-cost flag on, the drop charges the cost first and a refusal
+hides the view: the apparel's wear room (its value less the worn pieces
+it overlaps), or — only with a second character shown — twice the
+weapon's desirability less what it displaces.
+
+A hover shows the item under the pointer and its icon, and clears the
+shown item when the icon cannot be resolved. A hit on the shown icon
+answers the shown item. Otherwise the pick walks the figure's nodes and
+takes the last one under the pointer whose flags carry `0x89`, that is not
+flagged `0x4000000`, and whose item is not flagged `0x12000000` while
+settled; the record hand entry that the node's slot names gives the item's
+flags, else the first carried entry with that item does. (The slot is the
+1-based place among the doll's attached items, so its flags are one of the
+record's four hand flag words.) A frozen view starts drags
+only from a held item.
+
+A release takes a hand's item out: over one of the doll's item slots the
+take-out is scheduled on the doll (unless a view byte of unknown name
+keeps the doll's hands) and, when a second character is shown, on it too,
+and the shown character's pack drops its held icon; the doll is not
+rebuilt. A take-out of the main hand's first weapon promotes the off
+hand's light or weapon into it (a shield stays), the promoted item taking
+the off hand's flags. Otherwise, when the dragged icon is the shown item,
+the shown item is taken off the worn list, the shown character's mark is
+set again and the shown item cleared, with no rebuild; and for anything
+else the dragged item is taken off, the shown pack is charged its bulk,
+and both characters are rebuilt. A cancelled drag charges the refunded
+mind cost again instead; a locked view's drag of an item flagged
+`0x80000000` is released normally with the answer -1 handed to the
+owner's callback.
+
+The view's owner lookup follows the first visible form of its class, and
+the player's pack is that view's; the insight check looks for technique 8
+in the skill block the view reads and blocks on the right half of the
 figure.
+
+The two preview bars at the bottom of the doll are the HUD's own bars at
+the doll panel's size: the health bar's yellow and healable shares come
+from the character record's two 16-bit words (each × 1/65535), the focus
+bar is drawn full, and both are painted by the HUD's painter onto a canvas
+covering their frames and drop shadows (`exa_ui::game_gui::paint_preview_bars`).
 
 ## Settings options
 

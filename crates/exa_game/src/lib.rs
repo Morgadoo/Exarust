@@ -30,6 +30,7 @@ pub mod drag;
 pub mod effects;
 pub mod emblem;
 pub mod end_menu_screen;
+pub mod equip;
 pub mod experience;
 pub mod fall;
 pub mod flow;
@@ -136,6 +137,7 @@ impl Plugin for GamePlugin {
                 hand::HandPlugin,
                 idle_orbit::IdleOrbitPlugin,
                 hotkeys::HotkeyPlugin,
+                equip::EquipPlugin,
                 player_light::PlayerLightPlugin,
                 commands::CommandPlugin,
             ),

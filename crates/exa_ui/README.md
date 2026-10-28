@@ -275,11 +275,30 @@ maximised 100 by 80 window draws eight quads, its top bar from 30, 0 to
 ## Character view
 
 `character_view` holds the character screen's 3D panel: the `_Inventory`
-scene's camera (410 cm from the figure, 30°), its super-sampling choice
-and background wash (sRGB-decoded or boosted), the task's race-share
-easing, the drag-over acceptance, the drop classification, the shown
-item, the drag start and release decisions, the owner and player-pack
-lookups and the insight check. The panel itself is not built yet.
+scene's camera (410 cm from the figure, 30°), its settings (a 100-unit
+view, grey 0.5 and 0.75 environment colours, mode 2, light level 1), its
+super-sampling choice and background wash (sRGB-decoded or boosted), and
+the task's per-frame rules: the race share's easing, the figure turning
+its node to the camera's space (`doll_facing`) and the frame counter's
+clamped step. It also holds what a pointer and a drag do: the hover pick
+over the figure's nodes (the `0x89` and hidden-flag filters, the
+settled-item filter, the last node under the pointer, the record hand
+entry's or the carried entry's flags), the drag-over answer and the mind cost
+a drag off the figure refunds (twice a weapon's desirability, else an
+apparel's protection value), the drop onto the figure (apparel worn with
+both characters refit and the shown pack charged the bulk at its wear-room
+cost, a weapon or shield attached on both and handed to an unlocked shown
+pack marked held, the core crystal shown and the shown character
+unmarked, and the weapon's cost twice its desirability less what it
+displaces), the release on the figure (a scheduled take-out of a slot on
+the doll and the shown character, the shown item taken off with its mark
+set again, the dragged item taken off with the other pack charged its
+bulk, the cancelled drag charging its refunded cost and the locked
+flagged drag answering -1), the shown item, the drag start, the owner and player-pack lookups
+and the insight check. The two preview bars at the doll panel's bottom are
+painted with the HUD's bar painter (`game_gui::paint_preview_bars`), the
+health bar from the record's two shares and the focus bar full. The panel
+itself is not built yet.
 
 ## Arena match board
 

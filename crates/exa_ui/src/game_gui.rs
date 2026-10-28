@@ -410,6 +410,64 @@ pub fn preview_bar_rects(window_width: u32, window_height: i32, unit: i32) -> [P
     [bar(x0), bar(x0 + 52 * unit)]
 }
 
+/// The preview bars' layout, as the HUD's: the health bar at the first
+/// [`preview_bar_rects`] place, the focus bar at the second, both
+/// [`crate::hud::Layout::height`] fill rows high.
+pub fn preview_bar_layout(window_width: u32, window_height: i32, unit: i32) -> crate::hud::Layout {
+    let [health, focus] = preview_bar_rects(window_width, window_height, unit);
+    crate::hud::Layout {
+        gui: unit,
+        health_x: health.x,
+        focus_x: focus.x,
+        y: health.y,
+        width: health.width,
+        height: 4 * unit - 4,
+        gauge_x: 0,
+        gauge_y: 0,
+        gauge_height: 0,
+    }
+}
+
+/// Paints the character view's preview bars: the health bar takes the
+/// record's two shares (yellow and lasting damage of a maximum of 1) and
+/// the focus bar is drawn full, through the HUD's own painter. The canvas
+/// covers both bars' frames and drop shadows. `texture` is the stone
+/// texture the frames are multiplied by, and `fade` the bars' fade.
+pub fn paint_preview_bars(
+    shares: (f32, f32),
+    fade: f32,
+    unit: i32,
+    window: (u32, i32),
+    texture: &crate::hud::FrameTexture,
+) -> crate::blend::Canvas {
+    let layout = preview_bar_layout(window.0, window.1, unit);
+    let [health, focus] = preview_bar_rects(window.0, window.1, unit);
+    let shadow = 2 * unit;
+    let x = health.frame.0 - shadow;
+    let y = health.y - shadow;
+    let right = focus.x + focus.width + 2 + shadow;
+    let bottom = health.frame.3 + shadow;
+    let mut canvas = crate::blend::Canvas::new(
+        x,
+        y,
+        (right - x).max(0) as usize,
+        (bottom - y).max(0) as usize,
+    );
+    let bars = crate::hud::HudBars {
+        active: true,
+        yellow: shares.0,
+        red: shares.1,
+        max: 1.0,
+        focus: 1.0,
+        focus_cap: 1.0,
+        shield: false,
+        stamina: 1.0,
+        combat: false,
+    };
+    crate::hud::paint_bars(&mut canvas, &bars, &layout, fade, texture, window.1 as u32);
+    canvas
+}
+
 /// The player controls' GUI flag the journal passes: 0 when it opens, 1
 /// from its close callback.
 pub fn journal_controls_flag(opening: bool) -> u8 {
