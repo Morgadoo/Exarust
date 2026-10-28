@@ -1,6 +1,7 @@
 //! Viewer mode: shows a level, a model or a texture with a free-fly camera.
 
 use bevy::camera::Exposure;
+use bevy::ecs::system::SystemParam;
 use bevy::image::CompressedImageFormatSupport;
 use bevy::input::mouse::AccumulatedMouseMotion;
 use bevy::prelude::*;
@@ -61,6 +62,7 @@ impl Plugin for ViewerPlugin {
                     shove_props_at_frame,
                     start_fight,
                     launch_arena_match,
+                    arena_exit,
                 ),
             );
     }
@@ -379,8 +381,11 @@ fn continue_level(
     play_camera: Option<Res<PlayCamera>>,
     gi: Res<exa_world::gi_volume::GiSettings>,
     mut arena_picks: ResMut<exa_game::arena_match::ArenaPicks>,
-    landing: Option<Res<exa_game::level_transition::PendingLanding>>,
+    pending_arena: PendingArena<'_>,
 ) {
+    let landing = pending_arena.landing.as_deref();
+    let handed = pending_arena.handed.as_deref();
+    let career = pending_arena.career.as_deref();
     let mut loader = ModelLoader {
         game: &game.0,
         cache: &mut cache,
@@ -430,7 +435,9 @@ fn continue_level(
                 play_camera.map(|c| c.0),
                 &options,
                 &mut arena_picks,
-                landing.as_deref(),
+                landing,
+                handed,
+                career,
             );
             // A landing plan is used once.
             commands.remove_resource::<exa_game::level_transition::PendingLanding>();
@@ -560,6 +567,8 @@ fn play_level(
     options: &Options,
     arena_picks: &mut exa_game::arena_match::ArenaPicks,
     landing: Option<&exa_game::level_transition::PendingLanding>,
+    handed: Option<&exa_game::arena_live::HandedOver>,
+    career: Option<&exa_game::hub_windows::ArenaCareer>,
 ) {
     commands.entity(root).insert(exa_physics::StaticGeometry);
     // An arena match draws its track as the original's match start does:
@@ -582,21 +591,53 @@ fn play_level(
     };
     commands.insert_resource(exa_audio::LevelMusic(track));
     commands.insert_resource(exa_audio::LevelMusicVolume(volume));
-    // An arena match: a duel with `--opponent`, or the template that
-    // `--arena-match` names, laid out around the arena's spawn spot.
+    // An arena match: a duel with `--opponent`, or the match the hub's
+    // board launched (its setup comes from the hand-off when there is one),
+    // laid out around the arena's spawn spot.
     let arena = exa_game::arena_match::arena_index(name);
-    let template = options.arena_match.unwrap_or(1);
+    let (setup, handed_career) = exa_game::arena_live::setup_from(
+        handed.and_then(|handed| handed.0.as_ref()),
+        options.arena_match.unwrap_or(1),
+        options.arena_level,
+        options.arena_tier,
+    );
+    let template = setup.template;
+    let spawn_at = arena.map_or([0.0; 3], |index| {
+        exa_game::arena_match::ARENA_MAPS[index].spawn
+    });
     let layout = match arena {
-        Some(index) if options.opponent => {
-            let spawn = exa_game::arena_match::ARENA_MAPS[index].spawn;
-            exa_game::match_layout::layout(template, options.arena_level, options.arena_tier, spawn)
-        }
+        Some(index) if options.opponent => exa_game::match_layout::layout(
+            template,
+            setup.level,
+            setup.tier,
+            exa_game::arena_match::ARENA_MAPS[index].spawn,
+        ),
         _ => Vec::new(),
     };
+    let career = career.or(handed_career.as_ref());
     if arena.is_some() && options.opponent {
-        commands.insert_resource(exa_game::arena_match::ArenaMatch::begin(template));
+        commands.insert_resource(exa_game::arena_match::ArenaMatch::begin_match(
+            template,
+            spawn_at,
+            setup.level,
+            setup.tier,
+            setup.tournament,
+            setup.player,
+        ));
+        commands.insert_resource(exa_game::arena_live::ArenaScene::new(
+            template,
+            spawn_at,
+            setup.level,
+            setup.tier,
+            setup.tournament,
+            setup.player,
+            options.arena_weapons.clone(),
+            setup.prize,
+            career,
+        ));
     } else {
         commands.remove_resource::<exa_game::arena_match::ArenaMatch>();
+        commands.remove_resource::<exa_game::arena_live::ArenaScene>();
     }
     commands.insert_resource(exa_audio::LevelAmbience(exa_audio::ambience_for_level(
         name,
@@ -617,25 +658,24 @@ fn play_level(
         ),
     };
     let mut yaw = yaw;
-    let mut foes = Vec::new();
+    // The player's own entry is stood here; the other bodies are the scene
+    // generator's (a generated opponent, the Beast, the other entrants).
+    let foes = Vec::new();
     if options.arena_match.is_some() {
         use exa_game::match_layout::Fighter;
         let start_of = |place: &exa_game::match_layout::Place| exa_world::start::Start {
             position: Vec3::from_array(place.position) / 100.0,
             yaw: place.forward[0].atan2(place.forward[2]),
         };
+        let player_entry = setup.player.unwrap_or(0);
         for slot in &layout {
             match slot.who {
-                Fighter::Ours(0) => {
+                Fighter::Ours(index) if index == player_entry => {
                     let at = start_of(&slot.place);
                     position = at.position;
                     yaw = at.yaw;
                 }
-                Fighter::Ours(other) => {
-                    info!("arena match: the company's entrant {other} is not spawned")
-                }
-                Fighter::Opponent { .. } => foes.push(start_of(&slot.place)),
-                Fighter::Beast { .. } => warn!("arena match: the beast is not spawned"),
+                _ => {}
             }
         }
         if layout.is_empty() {
@@ -689,6 +729,15 @@ fn place_chase_camera(
         Transform::from_translation(start.position + Vec3::new(0.0, 4.0, 4.0)),
         exa_game::player::ChaseCamera::behind(start.yaw),
     ));
+}
+
+/// The arena state a level change carries: a save's landing, the launch the
+/// hub handed over, and the career it came with.
+#[derive(SystemParam)]
+pub(crate) struct PendingArena<'w> {
+    landing: Option<Res<'w, exa_game::level_transition::PendingLanding>>,
+    handed: Option<Res<'w, exa_game::arena_live::HandedOver>>,
+    career: Option<Res<'w, exa_game::hub_windows::ArenaCareer>>,
 }
 
 /// Play mode waiting for the level's collision, behind the loading screen.
@@ -928,9 +977,12 @@ fn spawn_players(
                 .entity(model)
                 .insert(exa_character::Wielded::model(w.clone()));
         }
-        // An arena match's opponent places, else the duellist's ring slot,
-        // else in front of the player, facing it.
-        let foes = if !options.opponent {
+        // An arena level's bodies come from the scene generator
+        // (`exa_game::arena_live`); `--opponent` on any other level is the
+        // debug duellist, at the level's opponent start or in front of the
+        // player, facing it.
+        let arena = exa_game::arena_match::arena_index(name).is_some();
+        let foes = if !options.opponent || arena {
             Vec::new()
         } else if start.foes.is_empty() {
             vec![exa_world::start::duel_opponent(
@@ -1489,13 +1541,14 @@ fn start_fight(
     }
 }
 
-/// A board pick in the hub asks for a career match: the launcher restarts
-/// on the drawn arena with `--arena-match`, whose layout and fighter spawn
-/// are the play mode's own. The career's records stay in the hub process;
-/// the match's return is not wired yet.
+/// A board pick in the hub asks for a career match: the launcher hands the
+/// career and the match's setup to the restarted process
+/// (`exa_game::arena_handoff`) and restarts on the drawn arena with
+/// `--arena-match`, whose bodies the scene generator stands.
 fn launch_arena_match(
     mut launches: MessageReader<exa_game::arena_hub_live::ArenaMatchLaunch>,
     loading: Option<Res<exa_ui::LoadingStatus>>,
+    career: Option<Res<exa_game::hub_windows::ArenaCareer>>,
     mut exit: MessageWriter<AppExit>,
 ) {
     if loading.is_some() {
@@ -1510,6 +1563,22 @@ fn launch_arena_match(
             "arena match launch: {} (template {}) at {}",
             map.name, launch.template, launch.track.name
         );
+        let handoff = exa_game::arena_handoff::Handoff {
+            career: career.as_deref().cloned(),
+            launch: Some(exa_game::arena_handoff::MatchSetup {
+                template: launch.template,
+                level: launch.level,
+                tier: launch.tier,
+                tournament: launch.tournament,
+                player: launch.player,
+                prize: launch.prize,
+            }),
+            returned: None,
+        };
+        match exa_game::arena_handoff::write(&exa_game::arena_handoff::default_path(), &handoff) {
+            Ok(()) => info!("arena match launch: the career is in the hand-off"),
+            Err(error) => warn!("arena match launch: cannot write the hand-off: {error}"),
+        }
         // One entry per generated opponent, in layout order (the order
         // play mode spawns its foes in); 0 keeps the default weapon.
         let weapons: Vec<String> = launch
@@ -1535,6 +1604,33 @@ fn launch_arena_match(
         ];
         crate::map_panel::restart_with(map.name, &extra, &mut exit);
         return;
+    }
+}
+
+/// The live match's exit: the settled match returns to the hub's level,
+/// whose process reads the career and the return placement from the
+/// hand-off. A dead manager's main menu is left to the end menu; the match
+/// only logs it.
+fn arena_exit(
+    mut exits: MessageReader<exa_game::arena_live::ArenaExit>,
+    loading: Option<Res<exa_ui::LoadingStatus>>,
+    mut exit: MessageWriter<AppExit>,
+) {
+    if loading.is_some() {
+        exits.clear();
+        return;
+    }
+    let Some(arena_exit) = exits.read().next().cloned() else {
+        return;
+    };
+    match arena_exit {
+        exa_game::arena_live::ArenaExit::Hub => {
+            info!("arena return: restarting on the hub");
+            crate::map_panel::restart_with("arenahub", &[], &mut exit);
+        }
+        exa_game::arena_live::ArenaExit::MainMenu => {
+            info!("arena match: the manager is dead; the main menu is not drawn yet");
+        }
     }
 }
 

@@ -25,7 +25,7 @@ use exa_combat::{Condition, Fighter};
 
 use crate::arena_log::ArenaLog;
 use crate::effects::EffectClock;
-use crate::player::Player;
+use crate::player::PlayerBody;
 
 /// The company log's record of a won match, with the template id.
 pub const LOG_WON: i32 = 0x20000;
@@ -997,12 +997,36 @@ pub struct ArenaMatch {
     /// The transition screen the round's result opened: 3 for the next
     /// round, 2 for the match's end.
     pub screen: Option<crate::arena_session::Screen>,
+    /// The arena's spawn spot, centimetres: the layout's centre.
+    pub spawn_at: [f32; 3],
+    /// The match's rank, the generated fighters' level.
+    pub level: i32,
+    /// The event's gear tier.
+    pub tier: i32,
+    /// A tournament event: its next round raises the bracket's fight.
+    pub tournament: bool,
+    /// The company entry that is the player's own.
+    pub player_entry: Option<usize>,
 }
 
 impl ArenaMatch {
     /// A match of `template`: Elimination's and Reserve's rounds, else one
     /// round and one life.
     pub fn begin(template: i32) -> Self {
+        Self::begin_match(template, [0.0; 3], 0, 0, false, None)
+    }
+
+    /// A match of `template` in the arena at `spawn_at` (centimetres), at
+    /// the event's rank and gear tier, a tournament or not, with the
+    /// company entry that is the player's own.
+    pub fn begin_match(
+        template: i32,
+        spawn_at: [f32; 3],
+        level: i32,
+        tier: i32,
+        tournament: bool,
+        player_entry: Option<usize>,
+    ) -> Self {
         Self {
             started_ms: None,
             template,
@@ -1014,6 +1038,11 @@ impl ArenaMatch {
             resolved: Vec::new(),
             manager_screen: None,
             screen: None,
+            spawn_at,
+            level,
+            tier,
+            tournament,
+            player_entry,
         }
     }
 
@@ -1054,7 +1083,13 @@ impl Plugin for ArenaMatchPlugin {
     }
 }
 
-type MatchFighter<'a> = (Entity, &'a Fighter, &'a Condition, Has<Player>);
+type MatchFighter<'a> = (
+    Entity,
+    &'a Fighter,
+    &'a Condition,
+    Has<PlayerBody>,
+    Option<&'a crate::scene_bodies::SceneFighter>,
+);
 
 fn tick_arena_match(
     arena: Option<ResMut<ArenaMatch>>,
@@ -1073,19 +1108,27 @@ fn tick_arena_match(
     let mut entities = Vec::new();
     let mut scene = Vec::new();
     let mut index = 0u8;
-    for (entity, fighter, condition, player) in &fighters {
+    for (entity, fighter, condition, player, marker) in &fighters {
         entities.push(entity);
+        // The player's body is the manager; a generated body carries the
+        // side its plan stood it on.
+        let company = player || marker.is_some_and(|marker| marker.company);
         scene.push(SceneFighter {
-            team: if player { PLAYER_TEAM } else { 0 },
+            team: if company {
+                PLAYER_TEAM
+            } else {
+                marker.map_or(0, |marker| marker.team as i32)
+            },
             dead: *condition == Condition::DEAD,
-            company: player,
+            company,
             resolved: arena.resolved.contains(&entity),
             health: fighter.health.red,
             max: fighter.health.max,
-            // The player is the manager, id 0. No other company fighter is
-            // spawned here, so the other ids are only placeholders for the
-            // non-company fighters, whose falls are not resolved.
-            id: if player { 0 } else { index.wrapping_add(1) },
+            // The player is the manager, id 0; a generated body its plan's
+            // id, and anything else a placeholder.
+            id: marker.map_or(if player { 0 } else { index.wrapping_add(1) }, |marker| {
+                u8::try_from(marker.id).unwrap_or(u8::MAX)
+            }),
             name: None,
             manager: player,
         });
@@ -1144,6 +1187,7 @@ fn tick_arena_match(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::player::Player;
 
     #[test]
     fn the_twelve_arenas_carry_their_tables() {
@@ -1985,8 +2029,12 @@ mod tests {
                 Condition::NORMAL
             }
         };
-        app.world_mut()
-            .spawn((Player, player, condition(player_dead)));
+        app.world_mut().spawn((
+            Player,
+            crate::player::PlayerBody::new(0.0),
+            player,
+            condition(player_dead),
+        ));
         app.world_mut()
             .spawn((Fighter::default(), condition(foe_dead)));
         app

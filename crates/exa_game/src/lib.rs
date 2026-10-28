@@ -4,9 +4,11 @@
 
 pub mod arena;
 pub mod arena_board;
+pub mod arena_handoff;
 pub mod arena_hub;
 pub mod arena_hub_live;
 pub mod arena_ids;
+pub mod arena_live;
 pub mod arena_log;
 pub mod arena_match;
 pub mod arena_outfit;
@@ -75,6 +77,7 @@ pub mod practice;
 pub mod prelude;
 pub mod report;
 pub mod save_level;
+pub mod scene_bodies;
 pub mod scene_editor;
 pub mod session;
 pub mod shell_draw;
@@ -143,6 +146,7 @@ impl Plugin for GamePlugin {
                 menu_screen::MenuScreenPlugin,
                 arena_match::ArenaMatchPlugin,
                 arena_hub_live::ArenaHubPlugin,
+                (scene_bodies::SceneBodiesPlugin, arena_live::ArenaLivePlugin),
                 gui_screens::GameScreensPlugin,
                 power_screen::PowerScreenPlugin,
             thaum::visuals::VisualPlugin,
