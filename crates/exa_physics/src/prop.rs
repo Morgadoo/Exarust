@@ -76,6 +76,24 @@ pub struct BodyNode {
 #[derive(Component, Debug, Clone)]
 pub struct PendingProp(pub Vec<RigidPart>);
 
+/// A stored scrape or roll sound slot, in its body part's frame (metres):
+/// the point whose motion drives the loop, and the volume and pitch it
+/// asks for per unit of speed.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BodyScrape {
+    pub part: usize,
+    pub point: Vec3,
+    pub volume: f32,
+    pub pitch: f32,
+}
+
+/// On a rigid body's root node: the stored sound slots to attach when the
+/// body is registered. The original keeps one source per slot and drops
+/// the slots whose sound the audio environment cannot find; the level
+/// loader keeps the named ones and this component carries them to the body.
+#[derive(Component, Debug, Clone, Default)]
+pub struct PendingScrapes(pub Vec<BodyScrape>);
+
 /// The stand-in colliders of each prop body (by its root node) and the
 /// part each follows.
 #[derive(Resource, Debug, Default)]
@@ -97,6 +115,7 @@ impl StandIns {
 fn register_props(
     mut commands: Commands,
     pending: Query<(Entity, &PendingProp)>,
+    scrape_slots: Query<&PendingScrapes>,
     globals: Query<&GlobalTransform>,
     parents: Query<&ChildOf>,
 ) {
@@ -114,11 +133,17 @@ fn register_props(
                 part.parent_world = g.affine();
             }
         }
-        let body = Ragdoll::rigid(&parts);
+        let mut body = Ragdoll::rigid(&parts);
+        if let Ok(PendingScrapes(slots)) = scrape_slots.get(root) {
+            for slot in slots {
+                body.add_scrape_on(slot.part, slot.point, slot.volume, slot.pitch);
+            }
+        }
         let placed = body.parts.iter().map(|p| p.transform()).collect();
         commands
             .entity(root)
             .remove::<PendingProp>()
+            .remove::<PendingScrapes>()
             .insert((body, PropBody { placed }));
     }
 }
@@ -351,5 +376,32 @@ mod tests {
             .position()
             .translation;
         assert!((at - Vec3::X).length() < 1e-5, "stand-in at {at}");
+    }
+
+    /// A body's stored scrape slots reach its source list when it registers,
+    /// on the part that carried them.
+    #[test]
+    fn stored_scrape_slots_reach_the_registered_body() {
+        let mut app = App::new();
+        app.add_systems(Update, register_props);
+        let node = app.world_mut().spawn(GlobalTransform::IDENTITY).id();
+        app.world_mut().entity_mut(node).insert((
+            PendingProp(vec![crate_part(node)]),
+            PendingScrapes(vec![BodyScrape {
+                part: 0,
+                point: Vec3::new(0.0, 0.2, 0.0),
+                volume: 0.5,
+                pitch: 1.2,
+            }]),
+        ));
+        app.update();
+        let e = app.world().entity(node);
+        assert!(!e.contains::<PendingScrapes>());
+        let body = e.get::<Ragdoll>().unwrap();
+        assert_eq!(body.scrapes().len(), 1);
+        assert_eq!(body.scrapes()[0].part, 0);
+        assert_eq!(body.scrapes()[0].point, Vec3::new(0.0, 0.2, 0.0));
+        assert_eq!(body.scrapes()[0].volume, 0.5);
+        assert_eq!(body.scrapes()[0].pitch, 1.2);
     }
 }

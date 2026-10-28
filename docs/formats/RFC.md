@@ -538,7 +538,7 @@ clears `0x10000` on a root body's links and keeps only 8 (then sets
 
 **Sound slots** are scrape and roll loops played while the slot's point
 moves; only the two flails of `Objects.rpk` carry one (`ChnAMov`,
-volume 0.5, pitch 1).
+volume 0.5, pitch 1). Exarust attaches each shipped slot to its stored part as a `body::ScrapeSource` when the body registers; the events are not played yet because `exa_audio` has no body hookup.
 
 Corpus (`exa-tool corpus bodies`): `Objects.rpk` 1 163 of 1 253 models carry
 a body (1 230 bodies: class words `0x10000000` 564, `0x10000400` 600,

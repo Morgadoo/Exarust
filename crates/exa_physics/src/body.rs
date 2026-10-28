@@ -41,6 +41,9 @@ use crate::Physics;
 use crate::contact::{CONTACT_SLOP, Level, LevelContact, evicted, rub, sphere_hit, swept_hit};
 use crate::part::PartState;
 
+#[path = "body_sound.rs"]
+mod sound;
+pub use sound::{ImpactEvent, ImpactState, ScrapeEvent, ScrapeSource, impact_sound};
 #[path = "body_muscle.rs"]
 mod muscle;
 pub use muscle::{AttackArmTune, Bearing, BodyStats, RaceMuscles, attack_arms};
@@ -1436,6 +1439,11 @@ pub struct Ragdoll {
     limp_height: f32,
     /// The body scale the muscles-off sampler's height target reads.
     limp_scale: f32,
+    /// The body's scrape and roll sound sources, each following a point in
+    /// its part's frame ([`Ragdoll::add_scrape_on`]).
+    scrapes: Vec<ScrapeSource>,
+    /// What this tick's scrape sources reported, for the audio side.
+    scrape_events: Vec<ScrapeEvent>,
 }
 
 /// Muscles of a living body: the animated pose it follows.
@@ -2166,6 +2174,8 @@ impl Ragdoll {
             limp_clip_rate: 1.0,
             limp_height: 0.0,
             limp_scale: 1.0,
+            scrapes: Vec::new(),
+            scrape_events: Vec::new(),
         }
     }
 
@@ -3296,6 +3306,9 @@ impl Ragdoll {
     /// The post-step: where the tick leaves each part, and sleep once the
     /// countdown is down to 1 (a living body's never is).
     fn post_step(&mut self) {
+        // The scrape and roll sources follow their points through the tick
+        // before the body's matrices are recorded, as the original does.
+        self.step_scrapes();
         // The walk's travel phase, from the root's movement since the last
         // tick, before the parts settle.
         let moved2 = self
@@ -3335,6 +3348,58 @@ impl Ragdoll {
     /// original removes the body's node then).
     pub fn fell_out(&self) -> bool {
         self.fell_out
+    }
+
+    /// Adds a scrape or roll source at `point` in the body's root frame:
+    /// its volume per unit of speed and its pitch per unit of speed over
+    /// the source's base. The point starts where the body has it now, so
+    /// the first tick measures no jump. The original makes one for each of
+    /// the body's stored sound slots when it joins the world; Exarust's
+    /// callers have no audio hookup yet, so nothing adds one in the game.
+    pub fn add_scrape(&mut self, point: Vec3, volume: f32, pitch: f32) {
+        self.add_scrape_on(0, point, volume, pitch);
+    }
+
+    /// Adds a scrape source on part `part` at `point` in that part's frame.
+    pub fn add_scrape_on(&mut self, part: usize, point: Vec3, volume: f32, pitch: f32) {
+        let world = self
+            .parts
+            .get(part)
+            .map_or(point, |p| p.settled.transform_point3(point));
+        self.scrapes
+            .push(ScrapeSource::new(part, point, volume, pitch, world));
+    }
+
+    /// The body's scrape sources.
+    pub fn scrapes(&self) -> &[ScrapeSource] {
+        &self.scrapes
+    }
+
+    /// What the last post-step's scrape sources reported.
+    pub fn scrape_events(&self) -> &[ScrapeEvent] {
+        &self.scrape_events
+    }
+
+    /// One tick of every scrape source. The original runs this at the head
+    /// of its post-step, before the tick's matrix is recorded, so the point
+    /// is put in the world by the matrix the last tick left (the part's
+    /// settled transform) and the playing source sits at that matrix's
+    /// translation (each original body is one part here). Bodies without
+    /// sources (all but a few shipped props) return at once.
+    fn step_scrapes(&mut self) {
+        self.scrape_events.clear();
+        if self.scrapes.is_empty() {
+            return;
+        }
+        let Some(root) = self.parts.first().map(|p| p.settled) else {
+            return;
+        };
+        for source in &mut self.scrapes {
+            let frame = self.parts.get(source.part).map_or(root, |p| p.settled);
+            let world = frame.transform_point3(source.point);
+            let origin = Vec3::from(frame.translation);
+            self.scrape_events.push(source.step(world, origin));
+        }
     }
 
     /// The level impacts this tick's detection found, one per part, for the
