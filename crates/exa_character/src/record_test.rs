@@ -31,6 +31,8 @@ fn item(id: u32, occupancy: u64) -> Item {
         equip_lock: 0,
         torch: false,
         volume: None,
+        rank_word: 0,
+        armour_type: 0,
     }
 }
 

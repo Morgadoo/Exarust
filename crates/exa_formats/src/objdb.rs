@@ -129,6 +129,14 @@ pub struct Item {
     /// and, when the flags' low byte is [`Volume::MARKER`], the entrance and
     /// previous level id of a level transition.
     pub volume: Option<Volume>,
+    /// The item's rank word: the body's word at `0x1AB`, else a weapon's at
+    /// `0x42`, else a shield's at `0x08` (see `docs/formats/OTHER.md`, Trade
+    /// fields). The low five bits are the bulk in points and the low byte's
+    /// top three bits the rank.
+    pub rank_word: u16,
+    /// The body's armour type byte at `0x1A8` (the arena's apparel class),
+    /// 0 without a body.
+    pub armour_type: u8,
 }
 
 /// An object's volume section: a box the level places, and for a level
@@ -684,7 +692,12 @@ impl Item {
             equip_lock: 0,
             torch: false,
             volume: None,
+            rank_word: 0,
+            armour_type: 0,
         };
+        let mut body_rank = None;
+        let mut weapon_rank = None;
+        let mut shield_rank = None;
         let mut pos = 0;
         while pos + 8 <= payload.len() {
             let tag = crate::read_u32(payload, pos)?;
@@ -712,6 +725,10 @@ impl Item {
                 }
                 BODY => {
                     item.worn_model = name(body);
+                    body_rank = body
+                        .get(0x1AB..0x1AD)
+                        .map(|w| u16::from_le_bytes(w.try_into().expect("2 bytes")));
+                    item.armour_type = body.get(0x1A8).copied().unwrap_or(0);
                     let table = OCCUPANCY_OFFSET..OCCUPANCY_OFFSET + OCCUPANCY_BONES * 8;
                     if let Some(t) = body.get(table) {
                         item.occupancy = std::array::from_fn(|b| {
@@ -730,8 +747,18 @@ impl Item {
                     item.armour = Armour::parse(body);
                     item.burden = Some(Burden::parse(body));
                 }
-                WEAPON => item.weapon = Weapon::parse(body),
-                SHIELD => item.shield = ShieldRecord::from_section(body),
+                WEAPON => {
+                    weapon_rank = body
+                        .get(0x42..0x44)
+                        .map(|w| u16::from_le_bytes(w.try_into().expect("2 bytes")));
+                    item.weapon = Weapon::parse(body);
+                }
+                SHIELD => {
+                    shield_rank = body
+                        .get(0x08..0x0A)
+                        .map(|w| u16::from_le_bytes(w.try_into().expect("2 bytes")));
+                    item.shield = ShieldRecord::from_section(body);
+                }
                 DOOR => item.door = Door::parse(body),
                 OPERATIVE => item.operative = Operative::parse(body),
                 TORCH => item.torch = true,
@@ -740,6 +767,7 @@ impl Item {
             }
             pos += size;
         }
+        item.rank_word = body_rank.or(weapon_rank).or(shield_rank).unwrap_or(0);
         Ok(item)
     }
 }
