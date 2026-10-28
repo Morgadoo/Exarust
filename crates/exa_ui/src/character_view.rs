@@ -387,6 +387,432 @@ pub fn insight_blocks(points: u16, techniques: &[u8], cursor_x: i32, width: u32)
     known && ((width >> 1) as i32) < cursor_x
 }
 
+/// The direction, in the camera's space, the figure's node is turned to
+/// each frame: a unit vector within the original's rounding. [?] The
+/// routine that composes it with the camera's matrix is not traced beyond
+/// its call, so the meaning is inferred.
+pub const DOLL_FACING: [f32; 3] = [0.5, 0.7, 0.5];
+
+/// The private scene's settings the constructor gives it: its view
+/// distance (already [`SCENE_DISTANCE`]), the camera's field of view, the
+/// two colours its environment is given, the environment's mode word and
+/// the level written through the environment's light block. The colours'
+/// roles are [?]: they are the two 12-byte colours the constructor passes
+/// to the scene environment, and the last value is the one float the
+/// constructor writes into its light block.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DollScene {
+    pub distance: f32,
+    pub field_of_view: f32,
+    pub ambient: [f32; 3],
+    pub sky: [f32; 3],
+    pub environment_mode: u32,
+    pub light_level: f32,
+}
+
+/// The doll's private scene: a 100-unit view, a 30° camera, grey 0.5 and
+/// 0.75 colours, environment mode 2 and a light level of 1.
+pub fn doll_scene() -> DollScene {
+    DollScene {
+        distance: SCENE_DISTANCE,
+        field_of_view: FIELD_OF_VIEW,
+        ambient: [0.5; 3],
+        sky: [0.75; 3],
+        environment_mode: 2,
+        light_level: 1.0,
+    }
+}
+
+/// The figure's node direction each frame: the camera's rotation applied
+/// to [`DOLL_FACING`] and normalised. The camera is at the view's eye and
+/// the figure turns its node into that space, so the doll keeps facing the
+/// camera as the camera orbits.
+pub fn doll_facing(camera: bevy::math::Quat) -> bevy::math::Vec3 {
+    let facing = bevy::math::Vec3::from(DOLL_FACING);
+    (camera * facing).normalize_or_zero()
+}
+
+/// The view's per-frame counter after a frame: one less, never below zero.
+pub fn frame_counter(value: i32) -> i32 {
+    (value.wrapping_sub(1)).max(0)
+}
+
+/// A node of the figure's scene, as the hover pick walks it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PickNode {
+    /// The node's identity.
+    pub node: u32,
+    /// Its flags.
+    pub flags: u32,
+    /// The item it carries, 0 for none.
+    pub item: u32,
+    /// The carried item's flags.
+    pub item_flags: u32,
+    /// The carried item's settle word: a negative one is still settling.
+    pub item_settle: i32,
+    /// The node was under the pointer.
+    pub hit: bool,
+    /// The worn entry the node belongs to, 1-based (the original follows
+    /// the node's parent chain to a settled node and looks it up).
+    pub worn: Option<usize>,
+}
+
+/// The flags a pickable node carries: all of `0x89`.
+pub const PICK_REQUIRED: u32 = 0x89;
+/// A node flagged this is not picked.
+pub const PICK_HIDDEN: u32 = 0x0400_0000;
+/// An item flagged both of these, and settled, makes its node unpickable.
+pub const PICK_ITEM_HIDDEN: u32 = 0x1200_0000;
+
+/// Whether the hover pick looks at a node: its flags carry all of
+/// [`PICK_REQUIRED`], it is not [`PICK_HIDDEN`], and its item is not
+/// [`PICK_ITEM_HIDDEN`] while settled.
+pub fn pickable(node: &PickNode) -> bool {
+    node.flags & PICK_REQUIRED == PICK_REQUIRED
+        && node.flags & PICK_HIDDEN != PICK_HIDDEN
+        && !(node.item != 0
+            && node.item_flags & PICK_ITEM_HIDDEN == PICK_ITEM_HIDDEN
+            && node.item_settle >= 0)
+}
+
+/// What the pointer is over.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Hover {
+    /// The item under the pointer, 0 for none.
+    pub item: u32,
+    /// Its flags: the worn entry's when the node is a worn one, else the
+    /// first carried entry's with that item.
+    pub flags: u32,
+    /// The worn entry, 1-based.
+    pub worn: Option<usize>,
+}
+
+/// The item under the pointer. A hit on the item the view already shows
+/// answers that item and its flags. Otherwise the last pickable node under
+/// the pointer gives the item; the worn entry the node belongs to gives
+/// the flags when it has one, else the first carried entry naming the item
+/// does, else 0.
+pub fn hover_pick(
+    shown: Option<(u32, u32)>,
+    nodes: &[PickNode],
+    worn_flags: &[u32],
+    carried: &[(u32, u32)],
+) -> Hover {
+    if let Some((item, flags)) = shown {
+        return Hover {
+            item,
+            flags,
+            worn: None,
+        };
+    }
+    let picked = nodes.iter().rev().find(|node| node.hit && pickable(node));
+    let Some(node) = picked else {
+        return Hover {
+            item: 0,
+            flags: 0,
+            worn: None,
+        };
+    };
+    let flags = match node.worn {
+        Some(index) if index >= 1 => worn_flags.get(index - 1).copied().unwrap_or(0),
+        _ => carried
+            .iter()
+            .find(|(id, _)| *id == node.item)
+            .map_or(0, |(_, flags)| *flags),
+    };
+    Hover {
+        item: node.item,
+        flags,
+        worn: node.worn.filter(|index| *index >= 1),
+    }
+}
+
+/// The plan a drop onto the figure makes.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DropPlan {
+    /// The section the drop picked.
+    pub kind: FigureDrop,
+    /// The mind cost the drop charges, when the view charges costs and a
+    /// second character is shown: the apparel's protection value, or twice
+    /// the weapon's desirability less what it displaces.
+    pub cost: Option<f32>,
+    /// The item is attached on the doll and on the shown character.
+    pub attach: [bool; 2],
+    /// The doll's and the shown character's mesh and textures are rebuilt.
+    pub refit: [bool; 2],
+    /// The shown character's pack takes the item at its centre, marked
+    /// held: the view is not locked and the pack is not where the drag
+    /// began.
+    pub give_to_panel: bool,
+    /// The shown character's pack is charged the item's bulk (the apparel
+    /// path does this as well as handing the item over).
+    pub charge_panel: bool,
+    /// The item is shown under the pointer (the core crystal).
+    pub show: bool,
+    /// The shown character's held mark is cleared (the core crystal).
+    pub clear_mark: bool,
+}
+
+impl DropPlan {
+    const fn nothing() -> Self {
+        Self {
+            kind: FigureDrop::None,
+            cost: None,
+            attach: [false; 2],
+            refit: [false; 2],
+            give_to_panel: false,
+            charge_panel: false,
+            show: false,
+            clear_mark: false,
+        }
+    }
+}
+
+/// The facts a drop onto the figure needs beyond the section test.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DropFacts {
+    /// The dragged item and its flags.
+    pub id: u32,
+    pub flags: u32,
+    /// The drag began in this view's own panel.
+    pub from_self: bool,
+    /// The drag began in the shown character's pack.
+    pub from_panel: bool,
+    pub locked: bool,
+    /// A second character is shown over the doll.
+    pub shown: bool,
+    /// That character's pack is open.
+    pub other_panel: bool,
+    pub mind_cost: bool,
+    /// The apparel section's protection value.
+    pub apparel_cost: f32,
+    /// The weapon's desirability and what it displaces.
+    pub weapon_value: f32,
+    pub displaced: f32,
+    /// The sections the item has, and whether the body takes its core.
+    pub has_apparel: bool,
+    pub has_weapon: bool,
+    pub has_shield: bool,
+    pub takes_core: bool,
+    /// The doll's race wears apparel.
+    pub race_wears_apparel: bool,
+}
+
+impl Default for DropFacts {
+    fn default() -> Self {
+        Self {
+            id: 0,
+            flags: 0,
+            from_self: false,
+            from_panel: false,
+            locked: false,
+            shown: false,
+            other_panel: false,
+            mind_cost: false,
+            apparel_cost: 0.0,
+            weapon_value: 0.0,
+            displaced: 0.0,
+            has_apparel: false,
+            has_weapon: false,
+            has_shield: false,
+            takes_core: false,
+            race_wears_apparel: false,
+        }
+    }
+}
+
+/// The drop onto the figure. A drag from the view's own panel does nothing
+/// (its mind cost is charged by the drag-over test). Otherwise the item's
+/// sections pick the action: apparel is worn (the doll and the shown
+/// character rebuilt, the shown pack charged its bulk), a weapon is taken
+/// into the doll's hands and mirrored on the shown character, a shield the
+/// same, and the body's core crystal is shown and unmarked. An item the
+/// shown character's pack does not already hold is also handed to that
+/// pack, marked held, when the view is not locked.
+pub fn figure_drop(facts: DropFacts) -> DropPlan {
+    if facts.from_self {
+        return DropPlan::nothing();
+    }
+    let kind = drop_kind(FigureDropInput {
+        race_flags: if facts.race_wears_apparel { 4 } else { 0 },
+        has_apparel: facts.has_apparel,
+        has_weapon: facts.has_weapon,
+        has_shield: facts.has_shield,
+        takes_core: facts.takes_core,
+    });
+    let hand_over = !facts.locked && facts.other_panel && !facts.from_panel;
+    let cost = facts.mind_cost && facts.shown;
+    match kind {
+        FigureDrop::None => DropPlan::nothing(),
+        FigureDrop::Apparel => DropPlan {
+            kind,
+            cost: cost.then_some(facts.apparel_cost),
+            attach: [false; 2],
+            refit: [true, facts.shown],
+            give_to_panel: hand_over,
+            charge_panel: hand_over,
+            show: false,
+            clear_mark: false,
+        },
+        FigureDrop::Weapon => DropPlan {
+            kind,
+            cost: cost.then_some((facts.weapon_value - facts.displaced) * 2.0),
+            attach: [true, facts.shown],
+            refit: [false; 2],
+            give_to_panel: hand_over,
+            charge_panel: false,
+            show: false,
+            clear_mark: false,
+        },
+        FigureDrop::Shield => DropPlan {
+            kind,
+            cost: None,
+            attach: [true, facts.shown],
+            refit: [false; 2],
+            give_to_panel: hand_over,
+            charge_panel: false,
+            show: false,
+            clear_mark: false,
+        },
+        FigureDrop::Hand => DropPlan {
+            kind,
+            cost: None,
+            attach: [false; 2],
+            refit: [false; 2],
+            give_to_panel: false,
+            charge_panel: false,
+            show: true,
+            clear_mark: true,
+        },
+    }
+}
+
+/// The mind cost the drag-over test shows for the item it is over: an
+/// apparel's protection value or twice a weapon's desirability; a shield
+/// and the core crystal have none.
+pub fn drag_over_cost(
+    has_apparel: bool,
+    has_weapon: bool,
+    apparel_cost: f32,
+    weapon_value: f32,
+) -> Option<f32> {
+    if has_apparel {
+        Some(apparel_cost)
+    } else if has_weapon {
+        Some(weapon_value * 2.0)
+    } else {
+        None
+    }
+}
+
+/// What a release on the figure asks of the record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ReleasePlan {
+    /// The worn entry (0-based) whose hand take-out is scheduled on the
+    /// doll; the shown character's follows when [`shown_take_out`].
+    ///
+    /// [`shown_take_out`]: Self::shown_take_out
+    pub hand: Option<usize>,
+    pub shown_take_out: bool,
+    /// The dragged icon is the shown item: it is taken off.
+    pub take_off_shown: bool,
+    /// The dragged item is taken off the worn list.
+    pub take_off: bool,
+    /// The shown character's pack drops its held icon of the dragged item.
+    pub remove_held_icon: bool,
+    /// The shown character's pack is charged the dragged item's bulk.
+    pub charge_panel: bool,
+    /// The doll's and the shown character's mesh and textures are rebuilt.
+    pub refit: [bool; 2],
+    /// The shown character's worn mark is cleared.
+    pub clear_mark: bool,
+    /// The player's controls are refreshed.
+    pub refresh_player: bool,
+    /// The mind cost stored by the drag-over test is charged (a locked
+    /// drag of an item flagged `0x80000000`, or a cancelled drag).
+    pub charge_cost: bool,
+}
+
+/// The facts a release on the figure needs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ReleaseFacts {
+    /// The slot the drag answered for (`i32::MIN` for a cancelled drag).
+    pub slot: i32,
+    pub locked: bool,
+    /// The dragged item's payload flags.
+    pub payload_flags: u32,
+    pub mind_cost: bool,
+    /// The worn entry under the pointer, 0-based.
+    pub worn: Option<usize>,
+    pub shown: bool,
+    /// The dragged icon is the item the view shows.
+    pub shown_is_dragged: bool,
+    pub other_panel: bool,
+    pub from_panel: bool,
+    pub player_shown: bool,
+}
+
+/// The release on the figure. A locked drag of an item flagged
+/// `0x80000000`, and a cancelled drag (`i32::MIN`), charge the stored mind
+/// cost and do nothing else. A release over a worn entry schedules that
+/// hand's take-out on the doll and, when a second character is shown, on it
+/// too; the other pack drops the held icon and the doll is not refit. A
+/// release over the shown item takes the shown item off and clears it;
+/// anything else takes the dragged item off, charges the other pack its
+/// bulk, and rebuilds both characters.
+pub fn release_on_figure(facts: ReleaseFacts) -> ReleasePlan {
+    let mut plan = ReleasePlan::default();
+    if (facts.locked && facts.payload_flags & 0x8000_0000 != 0) || facts.slot == i32::MIN {
+        if facts.mind_cost {
+            plan.charge_cost = true;
+        }
+        return plan;
+    }
+    if let Some(index) = facts.worn {
+        plan.hand = Some(index);
+        plan.shown_take_out = facts.shown;
+        plan.remove_held_icon = facts.other_panel && !facts.from_panel;
+        plan.refresh_player = facts.player_shown;
+        return plan;
+    }
+    if facts.shown_is_dragged {
+        plan.take_off_shown = true;
+        plan.refit = [true, facts.shown];
+        plan.clear_mark = facts.shown;
+        plan.refresh_player = facts.player_shown;
+        return plan;
+    }
+    plan.take_off = true;
+    plan.charge_panel = facts.other_panel && !facts.from_panel;
+    plan.refit = [true, facts.shown];
+    plan.refresh_player = facts.player_shown;
+    plan
+}
+
+/// Which drag-over answer the view gives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DragAnswer {
+    /// The item resolves to an icon: the panel accepts it (`0x105`).
+    Accept,
+    /// The item's icon does not resolve, or the view is frozen and not
+    /// over a worn entry.
+    Refuse,
+}
+
+/// The drag-over answer. A view that allows changes answers for any item; a
+/// frozen one only while it is over a worn entry. An item whose icon does
+/// not resolve is refused.
+pub fn drag_over(frozen: bool, worn: Option<usize>, icon: usize) -> DragAnswer {
+    if frozen && worn.is_none() {
+        return DragAnswer::Refuse;
+    }
+    if icon < 1 {
+        DragAnswer::Refuse
+    } else {
+        DragAnswer::Accept
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -580,5 +1006,235 @@ mod tests {
             drag_end(false, 0, false, true),
             FigureDragEnd::TakeOffDragged { charge_pack: true }
         );
+    }
+
+    #[test]
+    fn the_doll_scene_and_its_facing() {
+        let scene = doll_scene();
+        assert_eq!(scene.distance, 100.0);
+        assert_eq!(scene.field_of_view, 30.0);
+        assert_eq!(scene.ambient, [0.5; 3]);
+        assert_eq!(scene.sky, [0.75; 3]);
+        assert_eq!(scene.environment_mode, 2);
+        assert_eq!(scene.light_level, 1.0);
+        // The camera's identity leaves the direction as it is, normalised:
+        // its length is 0.9975, so the length changes.
+        let facing = doll_facing(bevy::math::Quat::IDENTITY);
+        assert!((facing.length() - 1.0).abs() < 1e-6);
+        assert!((facing.x / facing.y - 0.5 / 0.7).abs() < 1e-6);
+        // A quarter turn about Y puts it on another axis.
+        let turned = doll_facing(bevy::math::Quat::from_rotation_y(
+            std::f32::consts::FRAC_PI_2,
+        ));
+        let share = 0.5 / 0.99f32.sqrt();
+        assert!((turned.x - share).abs() < 1e-5, "{turned:?}");
+        assert!((turned.z + share).abs() < 1e-5, "{turned:?}");
+        assert!((turned.y - 0.7 / 0.99f32.sqrt()).abs() < 1e-5, "{turned:?}");
+        assert_eq!(frame_counter(3), 2);
+        assert_eq!(frame_counter(0), 0);
+        // The original subtracts and clamps: a minimum wraps to the
+        // maximum, which is not below zero.
+        assert_eq!(frame_counter(i32::MIN), i32::MAX);
+    }
+
+    fn node(flags: u32, item: u32, hit: bool) -> PickNode {
+        PickNode {
+            node: item + 1,
+            flags,
+            item,
+            item_flags: 0,
+            item_settle: -1,
+            hit,
+            worn: None,
+        }
+    }
+
+    #[test]
+    fn the_hover_pick_walks_the_nodes() {
+        // Nothing under the pointer.
+        assert_eq!(
+            hover_pick(None, &[], &[], &[]),
+            Hover {
+                item: 0,
+                flags: 0,
+                worn: None
+            }
+        );
+        // The shown icon wins wherever the pointer is.
+        assert_eq!(
+            hover_pick(Some((7, 0x10)), &[node(0x89, 8, true)], &[], &[]),
+            Hover {
+                item: 7,
+                flags: 0x10,
+                worn: None
+            }
+        );
+        // A node must carry all of 0x89 and must not be hidden.
+        assert!(!pickable(&node(0x88, 8, true)));
+        assert!(!pickable(&node(0x89 | PICK_HIDDEN, 8, true)));
+        let mut hidden = node(0x89, 8, true);
+        hidden.item_flags = PICK_ITEM_HIDDEN;
+        hidden.item_settle = 0;
+        assert!(!pickable(&hidden));
+        hidden.item_settle = -1;
+        assert!(pickable(&hidden));
+        // The last node under the pointer wins; a non-hit node is skipped.
+        let mut worn_node = node(0x89, 12, true);
+        worn_node.worn = Some(2);
+        let carried = [(12u32, 0x20u32)];
+        assert_eq!(
+            hover_pick(
+                None,
+                &[node(0x89, 8, true), worn_node, node(0x89, 9, false)],
+                &[1, 2],
+                &carried
+            ),
+            Hover {
+                item: 12,
+                flags: 2,
+                worn: Some(2)
+            }
+        );
+        // Without a worn entry the carried list gives the flags.
+        assert_eq!(
+            hover_pick(None, &[node(0x89, 12, true)], &[], &carried),
+            Hover {
+                item: 12,
+                flags: 0x20,
+                worn: None
+            }
+        );
+    }
+
+    #[test]
+    fn a_drop_on_the_figure_follows_the_sections() {
+        // A drag from the view's own panel does nothing.
+        assert_eq!(
+            figure_drop(DropFacts {
+                from_self: true,
+                has_weapon: true,
+                ..Default::default()
+            }),
+            DropPlan::nothing()
+        );
+        // Apparel: cost, both refits, the other pack charged the bulk, and
+        // the item handed over.
+        let plan = figure_drop(DropFacts {
+            has_apparel: true,
+            race_wears_apparel: true,
+            shown: true,
+            other_panel: true,
+            mind_cost: true,
+            apparel_cost: 2.5,
+            ..Default::default()
+        });
+        assert_eq!(plan.kind, FigureDrop::Apparel);
+        assert_eq!(plan.cost, Some(2.5));
+        assert_eq!(plan.refit, [true, true]);
+        assert!(plan.give_to_panel && plan.charge_panel);
+        assert_eq!(plan.attach, [false; 2]);
+        // A weapon: no refit, both hands attach, and the cost is twice the
+        // desirability less what it displaces.
+        let plan = figure_drop(DropFacts {
+            has_weapon: true,
+            shown: true,
+            mind_cost: true,
+            weapon_value: 5.0,
+            displaced: 1.25,
+            locked: true,
+            other_panel: true,
+            ..Default::default()
+        });
+        assert_eq!(plan.kind, FigureDrop::Weapon);
+        assert_eq!(plan.cost, Some((5.0 - 1.25) * 2.0));
+        assert_eq!(plan.attach, [true, true]);
+        assert_eq!(plan.refit, [false; 2]);
+        // Locked: the other pack is not handed the item.
+        assert!(!plan.give_to_panel);
+        // A shield has no cost.
+        let plan = figure_drop(DropFacts {
+            has_shield: true,
+            shown: true,
+            mind_cost: true,
+            ..Default::default()
+        });
+        assert_eq!(plan.kind, FigureDrop::Shield);
+        assert_eq!(plan.cost, None);
+        assert_eq!(plan.attach, [true, true]);
+        // The core crystal is shown and its mark cleared.
+        let plan = figure_drop(DropFacts {
+            takes_core: true,
+            ..Default::default()
+        });
+        assert_eq!(plan.kind, FigureDrop::Hand);
+        assert!(plan.show && plan.clear_mark);
+        assert_eq!(plan.attach, [false; 2]);
+        // An item with no section does nothing.
+        assert_eq!(figure_drop(DropFacts::default()).kind, FigureDrop::None);
+        // A race that wears nothing ignores the apparel section.
+        assert_eq!(
+            figure_drop(DropFacts {
+                has_apparel: true,
+                has_weapon: true,
+                ..Default::default()
+            })
+            .kind,
+            FigureDrop::Weapon
+        );
+    }
+
+    #[test]
+    fn a_release_on_the_figure_takes_a_hand_or_an_item() {
+        let facts =
+            |slot, locked, payload_flags, worn, shown_is_dragged, other_panel, from_panel| {
+                ReleaseFacts {
+                    slot,
+                    locked,
+                    payload_flags,
+                    mind_cost: true,
+                    worn,
+                    shown: true,
+                    shown_is_dragged,
+                    other_panel,
+                    from_panel,
+                    player_shown: true,
+                }
+            };
+        // A locked drag of a flagged item only charges its stored cost.
+        let p = release_on_figure(facts(2, true, 0x8000_0000, None, false, true, false));
+        assert!(p.charge_cost && p.hand.is_none() && !p.take_off && !p.refit[0]);
+        // A cancelled drag does the same.
+        let p = release_on_figure(facts(i32::MIN, false, 0, None, false, false, false));
+        assert!(p.charge_cost && p.hand.is_none());
+        // Over a worn entry: that hand's take-out is scheduled on both
+        // characters; the other pack drops the held icon; no refit.
+        let p = release_on_figure(facts(2, false, 0, Some(1), true, true, false));
+        assert_eq!(p.hand, Some(1));
+        assert!(p.shown_take_out && p.remove_held_icon && p.refresh_player);
+        assert!(!p.refit[0] && !p.take_off && !p.take_off_shown);
+        // The dragged icon is the shown item: the shown item is taken off.
+        let p = release_on_figure(facts(2, false, 0, None, true, false, false));
+        assert!(p.take_off_shown && p.clear_mark);
+        assert_eq!(p.refit, [true, true]);
+        assert!(!p.take_off);
+        // Anything else: the dragged item is taken off and both rebuilt.
+        let p = release_on_figure(facts(2, false, 0, None, false, true, false));
+        assert!(p.take_off && p.charge_panel);
+        assert_eq!(p.refit, [true, true]);
+        assert!(!p.remove_held_icon);
+        // A drag from the same pack is not charged.
+        let p = release_on_figure(facts(2, false, 0, None, false, true, true));
+        assert!(!p.charge_panel);
+    }
+
+    #[test]
+    fn the_drag_over_test_and_its_costs() {
+        assert_eq!(drag_over_cost(true, false, 3.0, 4.0), Some(3.0));
+        assert_eq!(drag_over_cost(false, true, 3.0, 4.0), Some(8.0));
+        assert_eq!(drag_over_cost(false, false, 3.0, 4.0), None);
+        assert_eq!(drag_over(false, None, 4), DragAnswer::Accept);
+        assert_eq!(drag_over(true, None, 4), DragAnswer::Refuse);
+        assert_eq!(drag_over(true, Some(1), 4), DragAnswer::Accept);
+        assert_eq!(drag_over(false, Some(1), 0), DragAnswer::Refuse);
     }
 }

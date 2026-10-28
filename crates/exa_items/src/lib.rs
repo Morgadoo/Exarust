@@ -9,6 +9,7 @@ pub mod card;
 pub mod carry;
 pub mod catalogue;
 pub mod char_loot;
+pub mod doll;
 pub mod icon_cache;
 pub mod instance;
 pub mod inventory_window;

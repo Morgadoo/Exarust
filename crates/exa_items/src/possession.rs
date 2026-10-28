@@ -203,16 +203,14 @@ impl Possessions {
             .any(|c| c.id == id || contents(c.id).is_some_and(|_| contains(c.id, id, contents)))
     }
 
-    /// Swaps the weapon sets. The record's [`SECOND_SET`] flag toggles. Each
-    /// out hand's item leaves the hands: as many of its held entries are
-    /// unmarked as hands it fills, less the hands of the stowed set that
+    /// Starts a weapon-set swap: the record's [`SECOND_SET`] flag toggles.
+    /// Each out hand's item leaves the hands: as many of its held entries
+    /// are unmarked as hands it fills, less the hands of the stowed set that
     /// hold it too. Each stowed hand's item is marked held the same way. A
     /// two-handed item (both hands the same id) is counted once, from the
-    /// main hand. Returns what the hands must take; the sets trade places
-    /// only when a hand changes, since the original exchanges them in the
-    /// step that re-dresses the hands and skips that step when neither
-    /// hand's item differs (the flag and the marks still change).
-    pub fn swap_sets<F>(&mut self, kind: F) -> Option<HandPlan>
+    /// main hand. Returns what the hands must take; nothing is exchanged
+    /// yet.
+    pub fn swap_plan<F>(&mut self, kind: F) -> Option<HandPlan>
     where
         F: Fn(u32) -> Option<ItemKind>,
     {
@@ -240,9 +238,25 @@ impl Possessions {
                 break;
             }
         }
-        let plan = hand_plan(&self.out, &self.stowed, kind);
+        hand_plan(&self.out, &self.stowed, kind)
+    }
+
+    /// Trades the two weapon sets.
+    pub fn exchange_sets(&mut self) {
+        std::mem::swap(&mut self.out, &mut self.stowed);
+    }
+
+    /// Swaps the weapon sets: the plan and the marks are made at once and
+    /// the sets then trade places, as the view's immediate swap does. A
+    /// swap whose hands do not change leaves the sets alone (the flag and
+    /// the marks still change).
+    pub fn swap_sets<F>(&mut self, kind: F) -> Option<HandPlan>
+    where
+        F: Fn(u32) -> Option<ItemKind>,
+    {
+        let plan = self.swap_plan(kind);
         if plan.is_some() {
-            std::mem::swap(&mut self.out, &mut self.stowed);
+            self.exchange_sets();
         }
         plan
     }
@@ -351,64 +365,6 @@ impl Possessions {
             *h = Hand { id, flags };
         }
     }
-
-    /// Records an item leaving the hands, as the original's take-out does.
-    /// `hand` is the hand it left; the out set's entry for it (that hand's,
-    /// else the other hand's) gives its flags and, when `record`, is
-    /// cleared. When it was the first held weapon and is dropped while the
-    /// off hand holds a weapon or a light (`dropped_with_off`), the off
-    /// hand's item becomes the main hand's in the record. Returns the flags
-    /// it leaves with.
-    pub fn record_release(
-        &mut self,
-        hand: usize,
-        id: u32,
-        place: HeldPlace,
-        record: bool,
-        dropped_with_off: bool,
-    ) -> u32 {
-        let hand = hand.min(1);
-        let mut flags = 0;
-        match place {
-            HeldPlace::Weapon { first } => {
-                if self.out[hand].id == id {
-                    flags = self.out[hand].flags;
-                    if record {
-                        self.out[hand].id = 0;
-                    }
-                } else if self.out[1 - hand].id == id {
-                    flags = self.out[1 - hand].flags;
-                    if record {
-                        self.out[1 - hand].id = 0;
-                    }
-                }
-                if first && dropped_with_off && record {
-                    self.out[0].id = self.out[1].id;
-                    self.out[0].flags = self.out[1].flags;
-                    self.out[1].id = 0;
-                }
-            }
-            HeldPlace::Shield | HeldPlace::OffLight => {
-                flags = self.out[1].flags;
-                if record {
-                    self.out[1].id = 0;
-                }
-            }
-        }
-        flags
-    }
-}
-
-/// Where a held item sits on the body.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HeldPlace {
-    /// One of the held weapons; `first` when it is the first of them.
-    Weapon {
-        first: bool,
-    },
-    Shield,
-    /// The light in the off hand.
-    OffLight,
 }
 
 /// The answer to a swap request.
@@ -1000,35 +956,6 @@ mod tests {
         assert!(p.toggle_light(true, false, true, true));
         assert_eq!(p.out[0].flags, 0);
         assert!(!p.toggle_light(true, true, true, false));
-    }
-
-    #[test]
-    fn releasing_reads_and_clears_the_record() {
-        let mut p = Possessions {
-            out: [Hand { id: 5, flags: 0x80 }, Hand { id: 6, flags: 0x40 }],
-            ..Default::default()
-        };
-        assert_eq!(
-            p.record_release(0, 5, HeldPlace::Weapon { first: true }, true, true),
-            0x80
-        );
-        assert_eq!(p.out[0], Hand { id: 6, flags: 0x40 });
-        assert_eq!(p.out[1].id, 0);
-        let mut p = Possessions {
-            out: [Hand { id: 5, flags: 0x80 }, Hand { id: 7, flags: 0x40 }],
-            ..Default::default()
-        };
-        assert_eq!(
-            p.record_release(1, 7, HeldPlace::Shield, false, false),
-            0x40
-        );
-        assert_eq!(p.out[1].id, 7);
-        // Found in the other hand's entry.
-        assert_eq!(
-            p.record_release(1, 5, HeldPlace::Weapon { first: false }, true, false),
-            0x80
-        );
-        assert_eq!(p.out[0].id, 0);
     }
 
     #[test]

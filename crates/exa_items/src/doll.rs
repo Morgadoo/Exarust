@@ -1,0 +1,879 @@
+//! The character doll's equipment pipeline: what a view attaches to a
+//! figure's hands, how an item is taken into them, how one is taken out,
+//! and what the record keeps of it.
+//!
+//! A plan compares the record's stowed set with its out set, hand by hand
+//! (main against main, off against off). Only a hand whose item differs is
+//! re-dressed: its old model is detached, then the stowed item is attached
+//! by its sections — a weapon as a weapon part (an off-hand item that also
+//! has a light section is attached as an off-hand light instead), a shield
+//! as a shield, any other item with a light section as an off-hand light,
+//! and anything else is not attached at all. A hand's `0x1000000` flag
+//! flips the item and its `0x2000000` flag lights it. When neither hand
+//! changes there is no plan, the sets do not trade, and the record keeps
+//! its out set.
+//!
+//! Taking an item into the hands follows the branch order of
+//! [`crate::possession::hold_plan`]: a one-handed light beside a one-handed
+//! weapon or the fists frees the off hand and goes there; a light already
+//! in the main hand moves to the off hand (or the off hand is freed); a
+//! second weapon goes to the off hand only when asked for, never beside a
+//! two-hander; everything else frees the main hand. A two-hander frees the
+//! off hand and then the main hand. The item is then attached as a weapon
+//! (or as the off-hand light) and its record entry written.
+//!
+//! Taking an item out of a hand clears the record's entry that names it
+//! (either hand's), and — when the take-out was scheduled and it was the
+//! main hand — promotes the off hand's item into the main hand if that
+//! item is a weapon or a light (a shield is not promoted). The promoted
+//! item takes the off hand's flags, as the original copies them.
+//!
+//! Every completed re-dress restarts the figure's stance with blend 20,
+//! unless the body is in its weapon-swap state (its animation does it
+//! then), and clears the body's first attach flag.
+//!
+//! Evidence: the apply, plan, take-out, take-in, shield and swap routines
+//! of the character view's equipment cluster, read in the instructions
+//! (`context/re/item-gui-lane.md`).
+
+use crate::possession::{
+    Attach, Hand, HoldInto, HoldPlan, HoldStep, ItemKind, Possessions, hold_plan,
+};
+
+/// The blend a re-dress restarts the stance with.
+pub const STANCE_BLEND: u32 = 0x14;
+/// The body state whose animation swaps the weapon sets; the apply step
+/// does not restart the stance then.
+pub const SWAP_STATE: u32 = 0x1F;
+
+/// How an item is attached to a hand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttachKind {
+    /// A weapon, in the weapon part of this hand.
+    Weapon,
+    /// A shield, in the off hand.
+    Shield,
+    /// A burning item, as the off hand's light.
+    Light,
+}
+
+/// What a hand of a plan takes, when it changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HandAttach {
+    pub id: u32,
+    /// The item's record flags: a weapon's flip and lit bits are read from
+    /// these.
+    pub flags: u32,
+    pub kind: AttachKind,
+}
+
+/// The plan that re-dresses the hands from the record's stowed set: which
+/// hands change and what each takes. A hand that changes to an item with
+/// no attachable section has no [`HandAttach`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AttachPlan {
+    pub changed: [bool; 2],
+    pub attach: [Option<HandAttach>; 2],
+    /// The record's second set is out after this plan (the plan was made
+    /// for the swap, so the sets trade when it is applied).
+    pub swap: bool,
+}
+
+impl AttachPlan {
+    /// Whether either hand changes; a plan with neither is not made.
+    pub fn any(&self) -> bool {
+        self.changed[0] || self.changed[1]
+    }
+}
+
+/// The plan that turns the hands holding `out` into the record's `stowed`
+/// set, as the original builds it before a swap: per hand, changed when the
+/// stowed hand's item differs from the out hand's; a weapon section makes
+/// it a weapon (the off hand's weapon that also has a light section an
+/// off-hand light), else a shield section a shield, else a light section an
+/// off-hand light, and anything else is left unattached. `None` when
+/// neither hand changes — the original frees the job then, and the record's
+/// sets do not trade.
+pub fn plan_attachments<F>(out: &[Hand; 2], stowed: &[Hand; 2], kind: F) -> Option<AttachPlan>
+where
+    F: Fn(u32) -> Option<ItemKind>,
+{
+    let mut plan = AttachPlan {
+        changed: [false; 2],
+        attach: [None; 2],
+        swap: true,
+    };
+    for hand in 0..2 {
+        plan.changed[hand] = stowed[hand].id != out[hand].id;
+        if !plan.changed[hand] || stowed[hand].id == 0 {
+            continue;
+        }
+        let Some(k) = kind(stowed[hand].id) else {
+            continue;
+        };
+        let Some(attach) = attach_of(k, hand) else {
+            continue;
+        };
+        plan.attach[hand] = Some(HandAttach {
+            id: stowed[hand].id,
+            flags: stowed[hand].flags,
+            kind: attach,
+        });
+    }
+    plan.any().then_some(plan)
+}
+
+/// The plan for the record's hands as they are now, as the redress and the
+/// initial dressing make it: the hands are compared with the record's out
+/// set and the ones that differ are attached from it. No swap happens.
+pub fn plan_from_record<F>(hands: &[Hand; 2], record: &[Hand; 2], kind: F) -> Option<AttachPlan>
+where
+    F: Fn(u32) -> Option<ItemKind>,
+{
+    plan_attachments(hands, record, kind).map(|plan| AttachPlan {
+        swap: false,
+        ..plan
+    })
+}
+
+/// One step of applying a plan, in the original's order: the changed hands
+/// detach first (main, then off), then the new items attach (main, then
+/// off).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApplyStep {
+    Detach(usize),
+    Attach {
+        hand: usize,
+        kind: AttachKind,
+    },
+    /// The stance is restarted with [`STANCE_BLEND`] (skipped in the swap
+    /// state).
+    RestartStance,
+    /// The body's first attach flag is cleared.
+    ClearAttachFlag,
+    /// The record's sets trade places.
+    ExchangeSets,
+}
+
+/// Applies an attachment plan to the record. The changed hands' models are
+/// detached, the new ones attached, the stance restarted unless the body is
+/// in [`SWAP_STATE`], the body's flag cleared, and — for a swap plan — the
+/// out and stowed sets exchanged. Returns the steps in the original's
+/// order.
+pub fn apply(p: &mut Possessions, plan: &AttachPlan, body_state: u32) -> Vec<ApplyStep> {
+    let mut steps = Vec::new();
+    for hand in 0..2 {
+        if plan.changed[hand] {
+            steps.push(ApplyStep::Detach(hand));
+        }
+    }
+    for hand in 0..2 {
+        if let Some(attach) = plan.attach[hand] {
+            steps.push(ApplyStep::Attach {
+                hand,
+                kind: attach.kind,
+            });
+        }
+    }
+    if body_state != SWAP_STATE {
+        steps.push(ApplyStep::RestartStance);
+    }
+    steps.push(ApplyStep::ClearAttachFlag);
+    if plan.swap {
+        p.exchange_sets();
+        steps.push(ApplyStep::ExchangeSets);
+    }
+    steps
+}
+
+/// Starts a weapon-set swap: the second-set flag toggles, the held marks
+/// move to the set that becomes the out set ([`Possessions::swap_plan`]),
+/// and the plan for the hands is made. The sets themselves trade only in
+/// [`Possessions::exchange_sets`], one apply step later.
+pub fn begin_swap<F>(p: &mut Possessions, kind: F) -> Option<AttachPlan>
+where
+    F: Fn(u32) -> Option<ItemKind>,
+{
+    let _ = p.swap_plan(&kind);
+    plan_attachments(&p.out, &p.stowed, kind)
+}
+
+/// The equipment job a view has in flight: a swap asked for while one is
+/// pending does nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Busy(pub bool);
+
+impl Busy {
+    /// The swap request gate: refused while a job is in flight.
+    pub fn request(&self) -> bool {
+        !self.0
+    }
+}
+
+/// What a take-out job asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TakeOut {
+    /// The hand it was made for.
+    pub hand: usize,
+    /// The job mode word: bit 1 restarts the stance and refreshes the
+    /// textures, bit 2 asks for the body's own finaliser.
+    pub mode: u32,
+    /// The item the take-out makes room for: the hand's model must not
+    /// already hold it (a second job for the same hand does nothing). `None`
+    /// is the null the scheduled drag-off job carries, which always
+    /// proceeds.
+    pub instead: Option<u32>,
+    /// The record's entry is cleared.
+    pub record: bool,
+    /// The job was scheduled by a drag off the figure: the off hand's
+    /// weapon or light is promoted into the main hand when this was the
+    /// main hand.
+    pub scheduled: bool,
+}
+
+impl TakeOut {
+    /// The take-out a drag off the figure schedules for `hand`: mode 7, no
+    /// expected item, the record cleared and the promotion armed.
+    pub fn scheduled(hand: usize) -> Self {
+        Self {
+            hand,
+            mode: 7,
+            instead: None,
+            record: true,
+            scheduled: true,
+        }
+    }
+
+    /// A plain take-out that makes room for another item in `hand` and
+    /// keeps the record.
+    pub fn plain(hand: usize, instead: u32) -> Self {
+        Self {
+            hand,
+            mode: 0,
+            instead: Some(instead),
+            record: false,
+            scheduled: false,
+        }
+    }
+}
+
+/// What a take-out did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Released {
+    /// The item left the hand.
+    pub done: bool,
+    /// The flags of the record entry that named it (0 when none did).
+    pub flags: u32,
+    /// The off hand's item moved into the main hand.
+    pub promoted: Option<u32>,
+    /// The stance restarts and the textures refresh (mode bit 1).
+    pub restarts: bool,
+    /// Neither out hand holds an item after the take-out.
+    pub both_empty: bool,
+}
+
+/// Takes an item out of a hand, as a drag off the figure and the weapon
+/// swap do. `held` is the item in the hand's model (`None` when the hand is
+/// empty), `off` the kind of the other hand's model, `off_id` its item.
+///
+/// The hand must be one of the two, must hold a model, and that model must
+/// not be the item the take-out makes room for (a hand that already holds
+/// it is left alone). The record
+/// entry naming the item is cleared in either hand when `record` is set.
+/// With `scheduled` and the main hand, the off hand's item is promoted into
+/// the main hand — it takes the off hand's flags — when it is a weapon or a
+/// light; a shield stays in the off hand.
+pub fn take_out(
+    p: &mut Possessions,
+    job: &TakeOut,
+    held: Option<u32>,
+    off: Option<(u32, ItemKind)>,
+) -> Released {
+    let mut released = Released {
+        restarts: job.mode & 2 != 0,
+        ..Default::default()
+    };
+    let hand = job.hand;
+    if hand > 1 {
+        return released;
+    }
+    let Some(held) = held else {
+        return released;
+    };
+    if job.instead == Some(held) {
+        return released;
+    }
+    released.done = true;
+    if p.out[hand].id == held {
+        released.flags = p.out[hand].flags;
+        if job.record {
+            p.out[hand].id = 0;
+        }
+    } else if p.out[1 - hand].id == held {
+        released.flags = p.out[1 - hand].flags;
+        if job.record {
+            p.out[1 - hand].id = 0;
+        }
+    }
+    if job.scheduled
+        && hand == 0
+        && let Some((off_id, off_kind)) = off
+        && (off_kind.weapon.is_some() || off_kind.light)
+    {
+        if job.record {
+            p.out[0] = Hand {
+                id: off_id,
+                flags: p.out[1].flags,
+            };
+            p.out[1].id = 0;
+        }
+        released.promoted = Some(off_id);
+    }
+    released.both_empty = p.out[0].id == 0 && p.out[1].id == 0;
+    released
+}
+
+/// What taking an item into the hands did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Into {
+    /// The item wants the body's permission and does not have it.
+    Refused,
+    Taken {
+        /// The removals first, then the hand it goes into.
+        plan: HoldPlan,
+        /// The item is attached as a weapon, or as the off-hand light.
+        kind: AttachKind,
+        /// The light that moved from the main hand to the off hand: the
+        /// record's off hand takes the light's item and the *new* item's
+        /// flags, as the original copies the job's flags.
+        moved_light: Option<Hand>,
+    },
+}
+
+/// The facts a take-in needs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IntoFacts {
+    pub kind: ItemKind,
+    /// The main hand's item and whether it is a light.
+    pub main: Option<(u32, bool)>,
+    pub off: Option<u32>,
+    /// The body's weapon class word.
+    pub class: u32,
+    /// The off hand was asked for.
+    pub off_wanted: bool,
+    /// The item's permission (its weapon section's `0x2000000`, the flag
+    /// the drag test reads as withheld) is met by the body's `0x10000`.
+    pub permitted: bool,
+}
+
+/// Takes an item into the hands: a withheld item without the body's
+/// permission is refused; otherwise the item's take-in plan decides the
+/// removals and the hand, and the item is attached as a weapon or as the
+/// off-hand light. `flags` are the item's record flags, which a light
+/// moving out of the main hand takes with it.
+pub fn take_into_hands(facts: IntoFacts, flags: u32) -> Into {
+    if facts.kind.weapon.is_some_and(|f| f & 0x0200_0000 != 0) && !facts.permitted {
+        return Into::Refused;
+    }
+    let plan = hold_plan(
+        facts.kind.grip(),
+        facts.kind.light,
+        facts
+            .main
+            .map(|(id, light)| crate::possession::Holding { id, light }),
+        facts
+            .off
+            .map(|id| crate::possession::Holding { id, light: false }),
+        facts.class,
+        facts.off_wanted,
+    );
+    let mut moved_light = None;
+    if let Some((light, _)) = facts.main
+        && plan.steps.contains(&HoldStep::LightToOff)
+    {
+        moved_light = Some(Hand { id: light, flags });
+    }
+    let attach = match plan.into {
+        HoldInto::OffLight => AttachKind::Light,
+        HoldInto::Hand(_) => AttachKind::Weapon,
+    };
+    Into::Taken {
+        plan,
+        kind: attach,
+        moved_light,
+    }
+}
+
+/// Records an item taken into a hand: the hand's entry becomes the item
+/// and its flags. The off-hand light always writes the off hand, whichever
+/// hand the take-in reported.
+pub fn record_into(p: &mut Possessions, plan: &HoldPlan, item: u32, flags: u32) {
+    let hand = match plan.into {
+        HoldInto::Hand(hand) => hand,
+        HoldInto::OffLight => 1,
+    };
+    p.record_hold(hand, item, flags);
+}
+
+/// What taking a shield into the off hand did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShieldTaken {
+    /// The off hand's old item is released first.
+    pub frees_off: bool,
+    /// The body's weapon part is cleared (it holds no weapon class bits).
+    pub clears_part: bool,
+}
+
+/// Takes a shield into the off hand: the off hand is released first, the
+/// record's off hand takes the shield and its flags, and the body's weapon
+/// part is cleared when it holds no weapon class bits. `off` is the item in
+/// the off hand's model.
+pub fn take_shield(
+    off: Option<u32>,
+    item: u32,
+    flags: u32,
+    p: &mut Possessions,
+    class: u32,
+) -> ShieldTaken {
+    if let Some(old) = off {
+        take_out(p, &TakeOut::plain(1, old), Some(old), None);
+    }
+    p.record_hold(1, item, flags);
+    ShieldTaken {
+        frees_off: off.is_some(),
+        clears_part: class & 0x30 == 0,
+    }
+}
+
+/// The attach a hand takes, for callers that only have the item's kind.
+pub fn attach_of(kind: ItemKind, hand: usize) -> Option<AttachKind> {
+    if kind.weapon.is_some() {
+        if hand == 1 && kind.light {
+            Some(AttachKind::Light)
+        } else {
+            Some(AttachKind::Weapon)
+        }
+    } else if kind.shield {
+        Some(AttachKind::Shield)
+    } else if kind.light {
+        Some(AttachKind::Light)
+    } else {
+        None
+    }
+}
+
+/// The item and flags a hand takes, as the hand's plan step sees it: a
+/// weapon takes the lit and flipped bits of its flags, a light and a shield
+/// take none.
+pub fn hand_take(attach: &HandAttach) -> Attach {
+    match attach.kind {
+        AttachKind::Weapon => Attach::Weapon,
+        AttachKind::Shield => Attach::Shield,
+        AttachKind::Light => Attach::Light,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::possession::{Carried, HELD, SECOND_SET};
+
+    fn hand(id: u32, flags: u32) -> Hand {
+        Hand { id, flags }
+    }
+
+    fn weapon(grip: u32) -> ItemKind {
+        ItemKind {
+            weapon: Some(grip),
+            ..Default::default()
+        }
+    }
+
+    fn torch() -> ItemKind {
+        ItemKind {
+            weapon: Some(0x10),
+            light: true,
+            ..Default::default()
+        }
+    }
+
+    fn shield() -> ItemKind {
+        ItemKind {
+            shield: true,
+            ..Default::default()
+        }
+    }
+
+    fn light() -> ItemKind {
+        ItemKind {
+            light: true,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_plan_compares_each_hand_with_the_same_hand() {
+        // A sword out, a shield stowed in the off hand; the main hand
+        // differs.
+        let out = [hand(5, 0), hand(0, 0)];
+        let stowed = [hand(5, 0), hand(9, 0)];
+        let plan = plan_attachments(&out, &stowed, |id| {
+            Some(match id {
+                5 => weapon(0x10),
+                9 => shield(),
+                _ => ItemKind::default(),
+            })
+        })
+        .unwrap();
+        assert_eq!(plan.changed, [false, true]);
+        assert!(plan.any() && plan.swap);
+        assert_eq!(plan.attach[0], None);
+        assert_eq!(
+            plan.attach[1],
+            Some(HandAttach {
+                id: 9,
+                flags: 0,
+                kind: AttachKind::Shield
+            })
+        );
+        // Neither hand changes: no plan at all.
+        assert_eq!(plan_attachments(&out, &out, |_| Some(weapon(0x10))), None);
+    }
+
+    #[test]
+    fn the_attach_kind_reads_the_sections_in_order() {
+        let out = [hand(0, 0), hand(0, 0)];
+        let stowed = [hand(1, 0), hand(2, 0)];
+        let plan = plan_attachments(&out, &stowed, |id| {
+            Some(match id {
+                // A weapon that also lights: a weapon in the main hand,
+                // a light in the off hand.
+                1 => torch(),
+                2 => torch(),
+                _ => ItemKind::default(),
+            })
+        })
+        .unwrap();
+        assert_eq!(plan.attach[0].unwrap().kind, AttachKind::Weapon);
+        assert_eq!(plan.attach[1].unwrap().kind, AttachKind::Light);
+        // An item with no attachable section changes the hand but attaches
+        // nothing.
+        let plan = plan_attachments(&out, &[hand(3, 0), hand(0, 0)], |_| {
+            Some(ItemKind::default())
+        })
+        .unwrap();
+        assert!(plan.changed[0]);
+        assert_eq!(plan.attach[0], None);
+        // A shield in the off hand is a shield even with a light section.
+        let plan = plan_attachments(&out, &[hand(4, 0), hand(0, 0)], |_| {
+            Some(ItemKind {
+                shield: true,
+                light: true,
+                ..Default::default()
+            })
+        })
+        .unwrap();
+        assert_eq!(plan.attach[0].unwrap().kind, AttachKind::Shield);
+    }
+
+    #[test]
+    fn applying_a_plan_detaches_then_attaches_and_trades_the_sets() {
+        let mut p = Possessions {
+            out: [hand(5, 0), hand(6, 0)],
+            stowed: [hand(7, 0x0200_0000), hand(8, 0)],
+            ..Default::default()
+        };
+        let plan = plan_from_record(&p.out, &[hand(7, 0), hand(8, 0)], |id| {
+            Some(match id {
+                7 => weapon(0x10),
+                8 => shield(),
+                _ => ItemKind::default(),
+            })
+        })
+        .unwrap();
+        assert_eq!(plan.changed, [true, true]);
+        let steps = apply(&mut p, &plan, 0);
+        assert_eq!(
+            steps,
+            vec![
+                ApplyStep::Detach(0),
+                ApplyStep::Detach(1),
+                ApplyStep::Attach {
+                    hand: 0,
+                    kind: AttachKind::Weapon
+                },
+                ApplyStep::Attach {
+                    hand: 1,
+                    kind: AttachKind::Shield
+                },
+                ApplyStep::RestartStance,
+                ApplyStep::ClearAttachFlag,
+            ]
+        );
+        // A redress plan does not trade the sets.
+        assert_eq!(p.out, [hand(5, 0), hand(6, 0)]);
+        // A swap plan does, and its stance restart is skipped in the swap
+        // state.
+        let plan = AttachPlan {
+            changed: [true, false],
+            attach: [None, None],
+            swap: true,
+        };
+        let steps = apply(&mut p, &plan, SWAP_STATE);
+        assert_eq!(
+            steps,
+            vec![
+                ApplyStep::Detach(0),
+                ApplyStep::ClearAttachFlag,
+                ApplyStep::ExchangeSets
+            ]
+        );
+        assert_eq!(p.out, [hand(7, 0x0200_0000), hand(8, 0)]);
+        assert_eq!(p.stowed, [hand(5, 0), hand(6, 0)]);
+    }
+
+    #[test]
+    fn a_swap_moves_the_marks_and_builds_the_plan() {
+        let mut p = Possessions {
+            out: [hand(5, 0), hand(0, 0)],
+            stowed: [hand(9, 0), hand(9, 0)],
+            carried: vec![
+                Carried {
+                    id: 5,
+                    flags: HELD,
+                    x: 0,
+                    y: 0,
+                },
+                Carried {
+                    id: 9,
+                    flags: 0,
+                    x: 0,
+                    y: 0,
+                },
+                Carried {
+                    id: 9,
+                    flags: 0,
+                    x: 0,
+                    y: 0,
+                },
+            ],
+            ..Default::default()
+        };
+        let plan =
+            begin_swap(&mut p, |id| Some(weapon(if id == 9 { 0x20 } else { 0x10 }))).unwrap();
+        // The flag toggles and the marks move at once.
+        assert_eq!(p.flags & SECOND_SET, SECOND_SET);
+        let marks: Vec<u32> = p.carried.iter().map(|c| c.flags).collect();
+        assert_eq!(marks, vec![0, HELD, HELD]);
+        // The sets have not traded yet.
+        assert_eq!(p.out[0].id, 5);
+        assert_eq!(plan.changed, [true, true]);
+        assert_eq!(plan.attach[0].unwrap().id, 9);
+        assert_eq!(plan.attach[1].unwrap().kind, AttachKind::Weapon);
+        // A view with a job in flight refuses the request.
+        assert!(!Busy(true).request());
+        assert!(Busy(false).request());
+    }
+
+    #[test]
+    fn taking_out_clears_the_record_entry_that_names_the_item() {
+        let mut p = Possessions {
+            out: [hand(5, 0), hand(7, 0)],
+            ..Default::default()
+        };
+        // The off hand's model holds the main hand's item: the other
+        // hand's entry is cleared.
+        let job = TakeOut {
+            record: true,
+            ..TakeOut::plain(1, 99)
+        };
+        let r = take_out(&mut p, &job, Some(5), None);
+        assert!(r.done);
+        assert_eq!(r.flags, 0);
+        assert_eq!(p.out[0].id, 0);
+        assert_eq!(p.out[1].id, 7);
+        // An empty hand, a hand out of range, and a hand that already holds
+        // the item the take-out makes room for do nothing.
+        assert!(!take_out(&mut p, &TakeOut::plain(0, 5), None, None).done);
+        assert!(!take_out(&mut p, &TakeOut::plain(2, 5), Some(5), None).done);
+        assert!(!take_out(&mut p, &TakeOut::plain(1, 7), Some(7), None).done);
+        assert!(take_out(&mut p, &TakeOut::plain(1, 99), Some(7), None).done);
+        // A plain take-out keeps the record.
+        let mut p = Possessions {
+            out: [hand(5, 0x0200_0000), hand(0, 0)],
+            ..Default::default()
+        };
+        let r = take_out(&mut p, &TakeOut::plain(0, 99), Some(5), None);
+        assert!(r.done);
+        assert_eq!(r.flags, 0x0200_0000);
+        assert_eq!(p.out[0].id, 5);
+    }
+
+    #[test]
+    fn a_scheduled_take_out_promotes_a_weapon_or_a_light_but_not_a_shield() {
+        let mut p = Possessions {
+            out: [hand(5, 0x0100_0000), hand(7, 0x0200_0000)],
+            ..Default::default()
+        };
+        let r = take_out(&mut p, &TakeOut::scheduled(0), Some(5), Some((7, torch())));
+        assert_eq!(r.promoted, Some(7));
+        // The promoted item takes the off hand's flags.
+        assert_eq!(p.out[0], hand(7, 0x0200_0000));
+        assert_eq!(p.out[1].id, 0);
+        assert!(!r.both_empty);
+        // A shield is not promoted and stays in the off hand.
+        let mut p = Possessions {
+            out: [hand(5, 0), hand(9, 0)],
+            ..Default::default()
+        };
+        let r = take_out(&mut p, &TakeOut::scheduled(0), Some(5), Some((9, shield())));
+        assert_eq!(r.promoted, None);
+        assert_eq!(p.out, [hand(0, 0), hand(9, 0)]);
+        // A take-out from the off hand never promotes, and both hands
+        // empty is reported.
+        let mut p = Possessions {
+            out: [hand(5, 0), hand(7, 0)],
+            ..Default::default()
+        };
+        let r = take_out(&mut p, &TakeOut::scheduled(1), Some(7), Some((5, torch())));
+        assert_eq!(r.promoted, None);
+        assert_eq!(p.out[0].id, 5);
+        let r = take_out(&mut p, &TakeOut::scheduled(0), Some(5), None);
+        assert!(r.both_empty && r.done);
+        // The mode's bit 1 asks for the stance restart.
+        assert!(!take_out(&mut p, &TakeOut::plain(0, 1), Some(5), None).restarts);
+        assert!(take_out(&mut p, &TakeOut::scheduled(0), Some(5), None).restarts);
+    }
+
+    #[test]
+    fn taking_an_item_into_the_hands_follows_the_branch_order() {
+        let facts = |kind, main, off, class, off_wanted, permitted| IntoFacts {
+            kind,
+            main,
+            off,
+            class,
+            off_wanted,
+            permitted,
+        };
+        // Empty hands: the main hand, as a weapon.
+        let Into::Taken { plan, kind, .. } =
+            take_into_hands(facts(weapon(0x10), None, None, 0x80, false, true), 0)
+        else {
+            panic!("taken");
+        };
+        assert_eq!(plan.into, HoldInto::Hand(0));
+        assert_eq!(kind, AttachKind::Weapon);
+        assert!(plan.steps.is_empty());
+        // A torch beside a sword: the off hand is freed and the torch is an
+        // off-hand light.
+        let Into::Taken { plan, kind, .. } = take_into_hands(
+            facts(torch(), Some((5, false)), Some(9), 0x10, false, true),
+            0,
+        ) else {
+            panic!("taken");
+        };
+        assert_eq!(plan.steps, vec![HoldStep::Release(1)]);
+        assert_eq!(plan.into, HoldInto::OffLight);
+        assert_eq!(kind, AttachKind::Light);
+        // A sword taken while a torch is the main hand: the torch moves,
+        // and the record's off hand takes the new item's flags.
+        let Into::Taken {
+            plan, moved_light, ..
+        } = take_into_hands(
+            facts(weapon(0x10), Some((9, true)), None, 0x80, false, true),
+            0x0200_0000,
+        )
+        else {
+            panic!("taken");
+        };
+        assert_eq!(plan.steps, vec![HoldStep::LightToOff]);
+        assert_eq!(
+            moved_light,
+            Some(Hand {
+                id: 9,
+                flags: 0x0200_0000
+            })
+        );
+        // A withheld weapon without the body's permission is refused.
+        assert_eq!(
+            take_into_hands(
+                facts(weapon(0x0200_0010), None, None, 0x80, false, false),
+                0
+            ),
+            Into::Refused
+        );
+        // ... but with it, it is taken.
+        assert!(matches!(
+            take_into_hands(facts(weapon(0x0200_0010), None, None, 0x80, false, true), 0),
+            Into::Taken { .. }
+        ));
+    }
+
+    #[test]
+    fn a_take_in_writes_the_hand_it_reported() {
+        let mut p = Possessions::default();
+        let plan = hold_plan(
+            0x10,
+            false,
+            Some(crate::possession::Holding {
+                id: 1,
+                light: false,
+            }),
+            None,
+            0x10,
+            true,
+        );
+        record_into(&mut p, &plan, 5, 0x0200_0000);
+        assert_eq!(p.out[1], hand(5, 0x0200_0000));
+        // The off-hand light writes the off hand even though the take-in
+        // reported no hand.
+        let plan = hold_plan(
+            0x10,
+            true,
+            Some(crate::possession::Holding {
+                id: 1,
+                light: false,
+            }),
+            None,
+            0x10,
+            false,
+        );
+        record_into(&mut p, &plan, 6, 0);
+        assert_eq!(p.out[1].id, 6);
+        assert_eq!(p.out[0].id, 0);
+    }
+
+    #[test]
+    fn a_shield_frees_the_off_hand_and_the_record_takes_it() {
+        let mut p = Possessions {
+            out: [hand(5, 0), hand(9, 0)],
+            ..Default::default()
+        };
+        let taken = take_shield(Some(9), 11, 4, &mut p, 0x10);
+        assert!(taken.frees_off);
+        assert!(!taken.clears_part);
+        assert_eq!(p.out[1], hand(11, 4));
+        assert_eq!(p.out[0].id, 5);
+        let mut p = Possessions::default();
+        let taken = take_shield(None, 11, 0, &mut p, 0);
+        assert!(!taken.frees_off && taken.clears_part);
+        assert_eq!(p.out[1].id, 11);
+    }
+
+    #[test]
+    fn attaches_by_kind_for_a_single_hand() {
+        assert_eq!(attach_of(weapon(0x10), 0), Some(AttachKind::Weapon));
+        assert_eq!(attach_of(torch(), 1), Some(AttachKind::Light));
+        assert_eq!(attach_of(shield(), 1), Some(AttachKind::Shield));
+        assert_eq!(attach_of(light(), 0), Some(AttachKind::Light));
+        assert_eq!(attach_of(ItemKind::default(), 0), None);
+        assert_eq!(
+            hand_take(&HandAttach {
+                id: 1,
+                flags: 0,
+                kind: AttachKind::Shield
+            }),
+            Attach::Shield
+        );
+    }
+}
