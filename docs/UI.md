@@ -1790,6 +1790,16 @@ result reads as 0. Their rules:
   anchor or the caret is at 0; Up and Down step, Enter commits and selects
   all, Ctrl+V pastes and Ctrl+C copies. The drag step is `96·unit /
   ((max − min) / step)` pixels, at most `8·unit`, then at least `unit / 2`.
+  Once the text drag has moved past the unit it captures the mouse over
+  the value's whole reach (the two clamp limits; the other two region
+  fields are the sentinel `0x80000001`) and remembers the cursor and the
+  value there; further moves step the value, the float by
+  `round(Δy / pixels) × step` added to the remembered value (in that
+  order), the integer by the same product added to the remembered bit
+  pattern. The up and down halves mark `0x1000000`/`0x2000000` under style
+  bits `0x4000000`/`0x8000000`. The set message truncates a non-float
+  input to an `int` first, clamps with the ordered compares and lands only
+  a move over 1e-8.
 - **Progress bar.** Setting a negative value stores zero (−0 and NaN stay)
   and tells the owner every time. The fill is `w × value` rounded half to
   even; the empty part draws at 0.4 alpha, the bar and its highlight two

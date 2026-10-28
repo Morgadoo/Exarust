@@ -905,7 +905,7 @@ pub fn colour_drag_rect(cursor: (i32, i32), drag: &ColourDrag) -> (i32, i32, i32
 
 /// A numeric spinner: its value, range and step, in float or (with the
 /// integer style) 32-bit integer form.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Spinner {
     pub value: f32,
     pub min: f32,
@@ -914,6 +914,10 @@ pub struct Spinner {
     pub integer: bool,
     /// The typed text no longer shows the value (the `0x40000000` bit).
     pub dirty: bool,
+    /// The decimals the value formats with (the record's `0x58` word).
+    pub decimals: i32,
+    /// The drawn text.
+    pub text: Vec<u8>,
 }
 
 impl Spinner {
@@ -931,6 +935,58 @@ impl Spinner {
         if !self.integer && self.value < self.min {
             self.value = self.min;
         }
+        self.text = self.formatted();
+    }
+
+    /// The text the value formats to: `decimals` places for a float
+    /// spinner, or the 32-bit integer bits for an integer spinner. The
+    /// original's number formatter is outside the pack; Rust's formatting
+    /// stands in for it.
+    pub fn formatted(&self) -> Vec<u8> {
+        let text = if self.integer {
+            (self.value.to_bits() as i32).to_string()
+        } else {
+            format!("{:.*}", self.decimals.max(0) as usize, self.value)
+        };
+        text.into_bytes()
+    }
+
+    /// The drawn text, reformatted from the value.
+    pub fn text(&self) -> String {
+        String::from_utf8_lossy(&self.formatted()).into_owned()
+    }
+
+    /// The set message: a float spinner truncates a non-float input
+    /// (`truncate`), clamps below the minimum and above the maximum with
+    /// the original's ordered compares, and lands only when it moves by
+    /// more than 1e-8 in double precision. An integer spinner assigns the
+    /// value when it differs. Returns whether the value changed; a caller's
+    /// reset of the edit state is separate.
+    pub fn set_value(&mut self, value: f32, truncate: bool) -> bool {
+        if self.integer {
+            if value != self.value {
+                self.value = value;
+                self.text = self.formatted();
+                return true;
+            }
+            return false;
+        }
+        let mut value = if truncate {
+            (value as i32) as f32
+        } else {
+            value
+        };
+        if value < self.min {
+            value = self.min;
+        } else if value > self.max && value != self.max {
+            value = self.max;
+        }
+        if f64::from((value - self.value).abs()) > 1e-8 {
+            self.value = value;
+            self.text = self.formatted();
+            return true;
+        }
+        false
     }
 
     /// Commits a typed float: below the minimum takes the minimum, above
@@ -1154,6 +1210,12 @@ impl ProgressBar {
     /// The caption draws only on a bar taller than five units.
     pub fn shows_text(h: i32, unit: i32) -> bool {
         i64::from(unit) * 5 < i64::from(h)
+    }
+
+    /// The creation helper's text: the value as a number (`decimals`
+    /// places) then `%`.
+    pub fn text_with(&self, decimals: i32) -> String {
+        format!("{:.*}%", decimals.max(0) as usize, self.value * 100.0)
     }
 }
 
@@ -2123,6 +2185,8 @@ mod extended_tests {
             step: 1.0,
             integer: false,
             dirty: false,
+            decimals: 1,
+            text: b"0.0".to_vec(),
         }
     }
 
@@ -2166,6 +2230,30 @@ mod extended_tests {
         assert!(quiet.commit(-3.0, true));
         assert_eq!(quiet.value, 0.0);
         assert!(!quiet.dirty);
+    }
+
+    #[test]
+    fn a_spinner_formats_and_takes_a_set_value() {
+        let mut value = spinner();
+        value.value = 12.26;
+        assert_eq!(value.text(), "12.3");
+        value.value = 12.0;
+        value.text = value.formatted();
+        assert!(value.set_value(150.0, false));
+        assert_eq!(value.value, 100.0);
+        assert_eq!(value.text, b"100.0");
+        assert!(value.set_value(3.9, true));
+        assert_eq!(value.value, 3.0);
+        assert!(!value.set_value(3.0, false));
+        assert!(!value.set_value(f32::NAN, false));
+        let mut whole = spinner();
+        whole.integer = true;
+        whole.value = f32::from_bits(7);
+        whole.text = whole.formatted();
+        assert!(whole.set_value(f32::from_bits(9), false));
+        assert_eq!(whole.value.to_bits(), 9);
+        assert_eq!(whole.text, b"9");
+        assert_eq!(ProgressBar { value: 0.25 }.text_with(2), "25.00%");
     }
 
     #[test]
@@ -2418,6 +2506,8 @@ mod extended_tests {
             step: 1.0,
             integer: false,
             dirty: false,
+            decimals: 1,
+            text: Vec::new(),
         };
         let rect = (0, 0, 60, 20);
         let mut drag = SpinnerDrag::default();
@@ -2442,7 +2532,7 @@ mod extended_tests {
             SpinnerDragAction::SetFloat(16.0)
         );
         // Integer spinners add the step's bits to the value's bits.
-        let mut whole = spinner;
+        let mut whole = spinner.clone();
         whole.integer = true;
         whole.step = f32::from_bits(1);
         let mut drag = SpinnerDrag {
