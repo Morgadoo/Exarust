@@ -128,14 +128,32 @@ impl IconCamera {
         [r(0), r(1), r(2)]
     }
 
+    /// The box's projected extents in the original's centimetres: the
+    /// extents helper widens each span by 0.0001 of the original's unit, so
+    /// the box and the view's translation are scaled from metres first.
+    pub fn box_extents_cm(&self, bounds: IconBounds) -> (f32, f32) {
+        let cm = 1.0 / FRAMING_CM_PER_M;
+        let mut rows = self.view_rows();
+        for row in &mut rows {
+            row[3] *= cm;
+        }
+        projected_box_extents(
+            (bounds.centre * cm).to_array(),
+            (bounds.half * cm).to_array(),
+            &rows,
+        )
+    }
+
+    /// The camera-to-target distance squared, in centimetres.
+    pub fn distance_squared_cm(&self) -> f32 {
+        let d = self.distance / FRAMING_CM_PER_M;
+        d * d
+    }
+
     /// The pixel extents the plan gives a box at this camera.
     pub fn pixel_extents(&self, bounds: IconBounds, icon_pixels: i32) -> (f32, f32) {
-        let extents = projected_box_extents(
-            bounds.centre.to_array(),
-            bounds.half.to_array(),
-            &self.view_rows(),
-        );
-        let scale = extent_scale(icon_pixels, self.view_scale, self.distance * self.distance);
+        let extents = self.box_extents_cm(bounds);
+        let scale = extent_scale(icon_pixels, self.view_scale, self.distance_squared_cm());
         (extents.0 * scale, extents.1 * scale)
     }
 }
@@ -164,19 +182,14 @@ pub fn scene_plan(
         alpha,
     );
     let camera = IconCamera::from_plan(&first, bounds);
-    let extents = projected_box_extents(
-        bounds.centre.to_array(),
-        bounds.half.to_array(),
-        &camera.view_rows(),
-    );
     let plan = render_plan(
         variant,
         close,
-        extents,
+        camera.box_extents_cm(bounds),
         model_flags,
         icon_pixels,
         camera.view_scale,
-        camera.distance * camera.distance,
+        camera.distance_squared_cm(),
         alpha,
     );
     (camera, plan)
@@ -618,7 +631,7 @@ mod tests {
         assert!((camera.near - 0.1).abs() < 1.0e-6);
         // A small item draws small: 41 of 160 pixels.
         let (w, _) = camera.pixel_extents(bounds(Vec3::new(0.05, 0.05, 0.05)), 160);
-        assert!((w - 41.0).abs() < 0.01, "{w}");
+        assert!((w - 40.999).abs() < 0.01, "{w}");
         // A 1 m box is above the framing, so its half is used as it is:
         // 0.5 / tan(20°) + 0.5.
         let big = bounds(Vec3::new(0.5, 0.5, 0.5));

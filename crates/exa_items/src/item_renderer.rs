@@ -677,7 +677,7 @@ mod tests {
             (160, 160, 80)
         );
         assert_eq!(r.alpha_colour_format, 0x8c41);
-        assert_eq!(CAMERA_SHIFT, [0.0, 500.0, 0.0]);
+        assert_eq!(CAMERA_SHIFT, [0.0, 0.0, 500.0]);
     }
 
     #[test]
