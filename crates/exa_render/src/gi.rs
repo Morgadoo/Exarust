@@ -202,7 +202,7 @@ impl GiTextures {
     /// `texture(p·scale + offset)` with `p` in world metres: the block's
     /// lowest corner, less half a voxel in height. The original's per-object
     /// lookup adds half a slice to the height coordinate
-    /// (`(b4 + 0.5)/depth`) so a surface reads its voxel's centre; the
+    /// (`(below + 0.5)/depth`) so a surface reads its voxel's centre; the
     /// terrain and grass paths pass the flag that drops it, and use
     /// [`GiTextures::sample_origin_floor`] instead.
     pub fn sample_origin(&self) -> Vec4 {
@@ -2784,7 +2784,7 @@ mod tests {
         let mut t = fake_textures(1);
         t.origin = Vec3::new(1.0, -6.8, 2.0);
         t.voxel = 0.2;
-        // Half a slice up: the original's per-object `(b4 + 0.5)/depth`.
+        // Half a slice up: the original's per-object `(below + 0.5)/depth`.
         assert_eq!(t.sample_origin(), Vec4::new(1.0, -6.9, 2.0, 1.0));
         // Terrain and grass pass the flag that drops it.
         assert_eq!(t.sample_origin_floor(), Vec4::new(1.0, -6.8, 2.0, 1.0));
