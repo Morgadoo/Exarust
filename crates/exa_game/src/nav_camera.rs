@@ -603,7 +603,13 @@ pub struct Preset {
     pub extent: f32,
     pub extent_step: f32,
     pub rate: f32,
+    /// The controller's distance field after the minimum clamp: the record's
+    /// first distance, or the smallest distance when that is below it.
     pub distance: f32,
+    /// Whether the placement derives its distance from the eye instead: the
+    /// record's first distance was not positive (the original tests the raw
+    /// field, not the clamped one).
+    pub derive_distance: bool,
     pub min_distance: f32,
     pub max_distance: f32,
     pub min_height: f32,
@@ -654,6 +660,11 @@ pub fn apply_preset(fields: PresetFields) -> Preset {
     } else {
         1.0
     };
+    let distance = if fields.distance < min_distance {
+        min_distance
+    } else {
+        fields.distance
+    };
     let pitch_speed = if stepped {
         5.0
     } else {
@@ -694,7 +705,8 @@ pub fn apply_preset(fields: PresetFields) -> Preset {
         extent,
         extent_step: (f64::from(extent) * 0.001) as f32,
         rate,
-        distance: fields.distance,
+        distance,
+        derive_distance: fields.distance <= 0.0,
         min_distance,
         max_distance,
         min_height: fields.min_height,
@@ -1122,6 +1134,10 @@ mod tests {
             (1.0, -1.5, 1.5)
         );
         assert_eq!((preset.min_distance, preset.max_distance), (10.0, 10000.0));
+        // A zero first distance is held up to the minimum for the field,
+        // but the placement still derives its own distance.
+        assert_eq!(preset.distance, 10.0);
+        assert!(preset.derive_distance);
         assert!((preset.pitch_speed - 43.091_064).abs() < 1e-4);
         assert!((preset.zoom_speed - 0.111_864_41).abs() < 1e-6);
         // The stepped camera swaps in its own speeds.
@@ -1158,6 +1174,7 @@ mod tests {
         assert_eq!(preset.extent, 1.0);
         assert!((preset.rate - 59f32.powf(1.0 / 59.0)).abs() < 1e-5);
         assert_eq!(preset.distance, 2000.0);
+        assert!(!preset.derive_distance);
         assert_eq!((preset.min_distance, preset.max_distance), (1.0, 5000.0));
         assert_eq!(
             (preset.min_height, preset.max_height, preset.extra),
