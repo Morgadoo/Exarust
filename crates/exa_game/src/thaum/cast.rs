@@ -88,6 +88,7 @@ use super::tree::{
     DOMAIN_DISPLACEMENT, DOMAIN_ENERGY, DOMAIN_FORCE, DOMAIN_MIND, PowerBar, PowerRecord, TreeMode,
     TreeScreen, domain_of, word,
 };
+use super::visuals::{CreatorInput, EffectKind, creator, spawn_visual};
 use super::wave_live::new_wave;
 use super::wisps::{Strand, Wisps};
 use crate::effects::blast::Blast;
@@ -99,6 +100,8 @@ use crate::power_screen::PowerScreen;
 const CM: f32 = 100.0;
 /// The right hand's bone.
 const RIGHT_HAND: usize = 17;
+/// The chest's bone.
+const CHEST: usize = 9;
 /// The body tick the focus and the clip lengths are read at.
 pub(super) const TICK_MS: u32 = 12;
 /// The cast clip's length when no motion set says otherwise, in ms.
@@ -323,12 +326,22 @@ impl PowerCaster {
     }
 }
 
+/// A vanish effect asking the body it hides to be placed somewhere else,
+/// after the caster tick that asked for it.
+#[derive(Message, Debug, Clone, Copy, PartialEq)]
+pub struct Otherwhere {
+    pub entity: Entity,
+    /// The destination (cm).
+    pub to: Vec3,
+}
+
 /// The plugin that runs the bar and the active powers.
 pub struct CastPlugin;
 
 impl Plugin for CastPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<BarCommand>()
+            .add_message::<Otherwhere>()
             .add_message::<exa_ai::presence::Entered>()
             .add_message::<AttackAskedHook>()
             .add_message::<super::kinesis_live::KinesisPicked>()
@@ -379,6 +392,7 @@ impl Plugin for CastPlugin {
                 FixedUpdate,
                 (
                     tick_casters,
+                    apply_otherwhere.after(tick_casters),
                     super::kinesis_live::steer_kinesis,
                     super::throw_live::push_throws,
                     super::throw_live::sound_throws,
@@ -1256,6 +1270,11 @@ fn create_force(
                 PowerBase::new(SHELL).accrue(body, cost)
             };
             power.held = held;
+            let spec = creator(
+                EffectKind::Shell,
+                &visual_input(context, ragdoll, roll.0.unit()),
+            );
+            let entity = spawn_visual(commands, spec);
             push_active(
                 caster,
                 SHELL,
@@ -1263,10 +1282,10 @@ fn create_force(
                 READY,
                 ActiveClass::Shell(power),
                 0.0,
-                None,
+                Some(entity),
             );
-            debug!("force shell: the aura entity is not ported");
-            None
+            debug!("force shell: aura entity {entity:?}");
+            Some(entity)
         }
         ForceStart::Kinesis { cost } => {
             push_active(
@@ -1327,6 +1346,11 @@ fn create_force(
                 held
             };
             power.held = held;
+            let spec = creator(
+                EffectKind::Strikes,
+                &visual_input(context, ragdoll, roll.0.unit()),
+            );
+            let entity = spawn_visual(commands, spec);
             push_active(
                 caster,
                 super::force::STRIKES,
@@ -1334,10 +1358,10 @@ fn create_force(
                 READY,
                 ActiveClass::Strikes(power),
                 0.0,
-                None,
+                Some(entity),
             );
-            debug!("force strikes: the weapon auras and effect are not wired");
-            None
+            debug!("force strikes: aura entity {entity:?}");
+            Some(entity)
         }
         ForceStart::ThrowMissed => None,
     }
@@ -1407,6 +1431,8 @@ fn create_displacement(
         DisplacementStart::Vanish { cost } => {
             let mut power = Vanish::new(context.now, false, false, cost);
             power.take_hook(&mut caster.body);
+            let spec = creator(EffectKind::Vanish, &visual_input(context, ragdoll, 0.0));
+            let entity = spawn_visual(commands, spec);
             push_active(
                 caster,
                 0x601,
@@ -1414,14 +1440,19 @@ fn create_displacement(
                 READY,
                 ActiveClass::Vanish(power),
                 0.0,
-                None,
+                Some(entity),
             );
-            debug!("displacement vanish: the effect node is not ported");
-            None
+            debug!("displacement vanish: effect node {entity:?}");
+            Some(entity)
         }
         DisplacementStart::LongDoor { tick_cost, to, .. } => {
             let power = LongDoor::new(context.now, to.map(|p| p.to_array()), false, tick_cost);
             caster.body.cast_hook = Some(super::power::displacement::LONG_DOOR_HOOK);
+            let mut input = visual_input(context, ragdoll, 0.0);
+            if let Some(to) = to {
+                input.point = Some(to);
+            }
+            let entity = spawn_visual(commands, creator(EffectKind::LongDoor, &input));
             push_active(
                 caster,
                 LONG_DOOR,
@@ -1429,10 +1460,10 @@ fn create_displacement(
                 READY,
                 ActiveClass::LongDoor(power),
                 0.0,
-                None,
+                Some(entity),
             );
-            debug!("displacement long door: the effect node and the move are not wired");
-            None
+            debug!("displacement long door: effect node {entity:?}");
+            Some(entity)
         }
         DisplacementStart::Constant { cost } => {
             let mut power = ConstantDisplacement::new();
@@ -1455,6 +1486,10 @@ fn create_displacement(
         DisplacementStart::Summon { .. } => {
             let power = Summon::new(context.now, false);
             caster.body.cast_hook = Some(super::power::displacement::SUMMON_HOOK);
+            let entity = spawn_visual(
+                commands,
+                creator(EffectKind::Summon, &visual_input(context, ragdoll, 0.0)),
+            );
             push_active(
                 caster,
                 super::displacement::SUMMON,
@@ -1462,10 +1497,49 @@ fn create_displacement(
                 READY,
                 ActiveClass::Summon(power),
                 0.0,
-                None,
+                Some(entity),
             );
-            debug!("displacement summon: the demon spawn is not wired");
-            None
+            debug!("displacement summon: effect node {entity:?}");
+            Some(entity)
+        }
+    }
+}
+
+/// The creator's view of the caster: its feet, hand, chest, body
+/// orientation and heading, and the cursor point. The hand and chest are
+/// the body's own parts; a body without them sits at its feet.
+fn visual_input(context: &CastContext, ragdoll: Option<&Ragdoll>, roll: f32) -> CreatorInput {
+    let body = ragdoll.and_then(root_of).unwrap_or(context.standing);
+    let part_at = |bone: usize| {
+        let doll = ragdoll?;
+        let part = bone_part(doll, bone)?;
+        part_point(doll, part, Vec3::ZERO)
+    };
+    let hand = part_at(RIGHT_HAND).unwrap_or(body);
+    let chest = part_at(CHEST).unwrap_or(body + Vec3::Y * 120.0);
+    let body_rotation = ragdoll
+        .and_then(|doll| doll.parts.first())
+        .map(|part| part.transform().to_scale_rotation_translation().1)
+        .unwrap_or(Quat::IDENTITY);
+    CreatorInput {
+        body,
+        heading: context.heading,
+        hand,
+        chest,
+        body_rotation,
+        facing: context.heading,
+        point: context.cursor,
+        roll,
+    }
+}
+
+/// Places a vanished body at the destination its Long Door reached. The
+/// shell the vanish dropped keeps its own place; only the body moves, as
+/// the original's place-at call does.
+fn apply_otherwhere(mut moves: MessageReader<Otherwhere>, mut bodies: Query<&mut Ragdoll>) {
+    for Otherwhere { entity, to } in moves.read().copied() {
+        if let Ok(mut doll) = bodies.get_mut(entity) {
+            super::visuals::teleport(&mut doll, to, None);
         }
     }
 }
@@ -1602,6 +1676,7 @@ fn tick_casters(
     mut commands: Commands,
     mut casters: Query<
         (
+            Entity,
             &mut PowerCaster,
             Option<&Condition>,
             Option<&SwingState>,
@@ -1619,10 +1694,20 @@ fn tick_casters(
     buttons: Option<Res<ButtonInput<MouseButton>>>,
     pad: Option<Res<crate::gamepad::PlayPad>>,
     mut faded: MessageWriter<super::throw_live::ThrowFade>,
+    mut moves: MessageWriter<Otherwhere>,
 ) {
     let now = ticks.as_deref().map_or(0, |t| t.millis() as u32);
-    for (mut caster, condition, swing, locomotion, locomotor, ragdoll, mut animator, player) in
-        &mut casters
+    for (
+        caster_entity,
+        mut caster,
+        condition,
+        swing,
+        locomotion,
+        locomotor,
+        ragdoll,
+        mut animator,
+        player,
+    ) in &mut casters
     {
         let caster = &mut *caster;
         refresh_body(
@@ -1755,6 +1840,14 @@ fn tick_casters(
                         NavAnswer::Waiting
                     };
                     let step = power.control(now, nav);
+                    if step.moved
+                        && let Some(destination) = power.destination
+                    {
+                        moves.write(Otherwhere {
+                            entity: caster_entity,
+                            to: Vec3::from_array(destination),
+                        });
+                    }
                     if 0.0 < step.spend {
                         drain(body, step.spend);
                     }

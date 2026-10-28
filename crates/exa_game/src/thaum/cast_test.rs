@@ -1062,6 +1062,50 @@ fn a_records_powers_make_its_caster() {
     assert_eq!(PowerCaster::of_character(&character).unwrap().body.slots, 0);
 }
 
+/// A shell's creator leaves the aura node: the aura material, one
+/// sub-object and the node's 0x9000 words.
+#[test]
+fn a_shell_cast_adds_its_aura_node() {
+    let mut app = new_app();
+    let caster = caster(&mut app, &[SHELL]);
+    cast(&mut app, caster);
+    let mut query = app
+        .world_mut()
+        .query::<&crate::thaum::visuals::EffectVisual>();
+    let visuals: Vec<_> = query
+        .iter(app.world())
+        .map(|visual| {
+            (
+                visual.material,
+                visual.subobjects,
+                visual.flags,
+                visual.textures.clone(),
+            )
+        })
+        .collect();
+    assert_eq!(visuals.len(), 1);
+    assert_eq!(visuals[0].0, Some("_ForceAura01"));
+    assert_eq!(visuals[0].1, 1);
+    assert_eq!(visuals[0].2 & 0x9000, 0x9000);
+    assert_eq!(visuals[0].3, vec!["_ForceNoise"]);
+}
+
+/// A vanish's creator leaves its effect node in the scene.
+#[test]
+fn a_vanish_cast_adds_its_effect_node() {
+    let mut app = new_app();
+    let caster = caster(&mut app, &[VANISH]);
+    cast(&mut app, caster);
+    let mut query = app
+        .world_mut()
+        .query::<&crate::thaum::visuals::EffectVisual>();
+    let visuals: Vec<_> = query
+        .iter(app.world())
+        .map(|visual| visual.material)
+        .collect();
+    assert_eq!(visuals, vec![None]);
+}
+
 /// A running shell puts its damping on the caster's fighter for the hit
 /// formula, and its end takes it off.
 #[test]
