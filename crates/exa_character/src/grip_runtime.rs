@@ -39,11 +39,14 @@ pub struct FlipWeaponRequest {
 
 /// Starts the flip on every held item of the requested character. A held
 /// item names its holder by the holder body's first part, so the request's
-/// body is looked up for it.
+/// body is looked up for it. The original's flip command refuses while the
+/// character is switching or the item has no weapon section with a
+/// flipped-side kind (`Section::can_flip`).
 pub fn flip_requests(
     mut requests: MessageReader<FlipWeaponRequest>,
     bodies: Query<&Ragdoll>,
-    mut held: Query<&mut HeldGrip>,
+    mut held: Query<(&mut HeldGrip, Option<&HeldRecord>)>,
+    owners: Query<&Condition>,
 ) {
     for request in requests.read() {
         let Some(key) = bodies
@@ -54,13 +57,56 @@ pub fn flip_requests(
         else {
             continue;
         };
-        for mut grip in &mut held {
+        if owners
+            .get(request.body)
+            .is_ok_and(|c| c.has(Condition::SWITCHING.0))
+        {
+            continue;
+        }
+        for (mut grip, record) in &mut held {
             if grip.holder_key != key {
                 continue;
             }
+            let can_flip = record.is_some_and(|r| r.section.can_flip());
             if let Some(links) = grip.links.as_mut() {
-                links.begin_flip();
+                links.begin_flip(can_flip);
             }
+        }
+    }
+}
+
+/// The weld changes a condition asks of every held item: a dead holder
+/// stiffens its soft (parry) world weld to 1 (the original's death routine
+/// keeps the weapon in the corpse's hand); a collapsing holder of record
+/// state 0x800 loosens it to a 10 cm slack. Exarust does not carry the
+/// record state word the collapse branch reads, so it passes 0 and only
+/// the death branch acts.
+pub fn weld_states(
+    mut held: Query<&mut HeldGrip>,
+    bodies: Query<(Entity, &Ragdoll)>,
+    owners: Query<&Condition>,
+) {
+    for mut grip in &mut held {
+        if grip.released {
+            continue;
+        }
+        let Some((owner, _)) = bodies
+            .iter()
+            .find(|(_, b)| b.parts.first().is_some_and(|p| p.entity == grip.holder_key))
+        else {
+            continue;
+        };
+        let Ok(condition) = owners.get(owner) else {
+            continue;
+        };
+        let Some(links) = grip.links.as_mut() else {
+            continue;
+        };
+        if condition.is_dead() && links.weld_on_death() {
+            continue;
+        }
+        if condition.has(Condition::COLLAPSING.0) && exa_physics::grip::collapse_weld_state(0) {
+            links.set_soft_slack(0.1);
         }
     }
 }
@@ -148,7 +194,8 @@ impl Plugin for GripRuntimePlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<FlipWeaponRequest>()
             .add_systems(FixedUpdate, flip_requests.before(GripSolveSet::Sync))
-            .add_systems(FixedUpdate, animate_grips.before(GripSolveSet::Sync));
+            .add_systems(FixedUpdate, animate_grips.before(GripSolveSet::Sync))
+            .add_systems(FixedUpdate, weld_states.before(GripSolveSet::Sync));
     }
 }
 
@@ -238,6 +285,9 @@ mod tests {
         let mut stats = StatBytes::default();
         stats.set(at::SLASH, 80);
         stats.set(at::SLASH + at::FLIP, 30);
+        // The weapon defines a flipped side (its kind byte), or the flip
+        // command refuses it.
+        stats.set(at::KIND + at::FLIP, 1);
         Section { flags: 0x11, stats }
     }
 
@@ -286,8 +336,9 @@ mod tests {
             size: 1.0,
             second_hand_factor: 1.0,
             flip: false,
+            class: 0x20,
             soft_weld: false,
-            shield: false,
+            kind: exa_physics::grip::HeldKind::Weapon,
             holder_key: owner,
             hands: [
                 Some(Entity::from_raw_u32(2).unwrap()),

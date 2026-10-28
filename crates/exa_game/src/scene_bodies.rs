@@ -459,6 +459,13 @@ pub fn spawn_scene_body(
             _ => {}
         }
     }
+    // The record's hand flag that holds the last weapon flipped: the equip
+    // pass builds the grip at the far end of its flip animation.
+    if exa_character::spawn::holds_flipped(&equip).unwrap_or(false) {
+        commands
+            .entity(model_entity)
+            .insert(exa_character::HeldFlipped);
+    }
     let mut fighter = exa_combat::Fighter::of_stats(race, stats).with_perks(record.perks());
     fighter.health.yellow = fighter.health.max * plan.health;
     fighter.health.red = fighter.health.yellow;

@@ -165,6 +165,12 @@ pub const LINK_ITERATION_LIMIT: u32 = 0x4000;
 pub const LINK_DISABLED: u32 = 0x10_0000;
 pub const LINK_REANCHOR: u32 = 0x20_0000;
 pub const LINK_CODE: u32 = 0x40_0000;
+/// The stored skeleton link's pivot flag: a link without it is a limit
+/// link (compared by its squared slack, moving its part alone).
+pub const MODEL_LINK_PIVOT: u32 = 0x1_0000;
+/// The stored skeleton link's horizontal-only flag: the link ignores the
+/// vertical gap and runs in the tick's first two iterations.
+pub const MODEL_LINK_HORIZONTAL: u32 = 0x200;
 /// Squared gaps (m², 1.19e-7 cm²) a link, or the pose drive, leaves alone.
 const LINK_EPSILON2: f32 = 1.19e-11;
 /// A living body's slack-link correction is cut to this (m, 80 cm); a
@@ -955,6 +961,13 @@ pub struct Link {
     mobility: (f32, f32),
     /// The pivot at the part's origin, not one of the skeleton's links.
     pub origin: bool,
+    /// A limit link: a skeleton link without the pivot flag. Its slack is
+    /// compared with the gap's square, and its correction moves the part
+    /// alone, at most 10 cm (2 cm when horizontal) past it.
+    pub limit: bool,
+    /// A limit link that only holds horizontally, in the first two
+    /// iterations of the tick.
+    pub horizontal: bool,
     /// A living slack link's muscle: where the animated joint angle puts
     /// the part's point, as weights on the parent's particles (none before
     /// the body's first pose), and that point in the parent's space when
@@ -1029,6 +1042,35 @@ impl Link {
             return Some(excess.clamp_length_max(MAX_CORRECTION));
         }
         Some(excess)
+    }
+
+    /// The correction of a living body's limit link with gap `d` (the
+    /// parent's point minus the part's). The link's slack is a squared
+    /// distance in the original's centimetres, so the test is
+    /// `slack ≤ |d|²` there (`slack ≤ |d|²·100` here, metres). Past it the
+    /// part alone moves by `strength·d`, its magnitude cut to 10 cm once
+    /// the gap is over 10 cm (2 cm and horizontal-only for a horizontal
+    /// link). The compares are ordered: a NaN gap takes neither branch.
+    fn limit_correction(&self, d: Vec3) -> Option<Vec3> {
+        let d = if self.horizontal {
+            Vec3::new(d.x, d.y, 0.0)
+        } else {
+            d
+        };
+        let len2 = d.length_squared();
+        let slack = self.slack;
+        #[allow(clippy::neg_cmp_op_on_partial_ord)]
+        let past = !(slack <= len2 * CM) || len2 * CM == slack;
+        if past {
+            return None;
+        }
+        let cap = if self.horizontal { 2.0 } else { 10.0 };
+        let cap2 = (cap / CM) * (cap / CM);
+        if len2 <= cap2 {
+            Some(d * self.strength)
+        } else {
+            Some(d * (self.strength * cap / CM / len2.sqrt()))
+        }
     }
 
     /// The correction of a limp body's link with gap `d`: a pivot closes
@@ -2081,6 +2123,8 @@ impl Ragdoll {
                         shares,
                         mobility,
                         origin,
+                        limit: false,
+                        horizontal: false,
                         anchor: None,
                         kept: None,
                         history: (Vec3::ZERO, Vec3::ZERO),
@@ -2177,6 +2221,28 @@ impl Ragdoll {
             scrapes: Vec::new(),
             scrape_events: Vec::new(),
         }
+    }
+
+    /// Marks part `part`'s stored skeleton links with their model flags: a
+    /// link without [`MODEL_LINK_PIVOT`] is a limit link, one with
+    /// [`MODEL_LINK_HORIZONTAL`] ignores its vertical gap. The origin pivot
+    /// the builder appends after them stays a pivot. A part without links,
+    /// or a flag list longer than it has stored links, is left alone and
+    /// the call returns false.
+    pub fn set_link_flags(&mut self, part: usize, flags: &[u32]) -> bool {
+        let Some(range) = self.links_of.get(part).cloned() else {
+            return false;
+        };
+        let stored = range.len().saturating_sub(1);
+        if flags.len() > stored {
+            return false;
+        }
+        for (k, &f) in flags.iter().enumerate() {
+            let link = &mut self.links[range.start + k];
+            link.limit = f & MODEL_LINK_PIVOT == 0;
+            link.horizontal = f & MODEL_LINK_HORIZONTAL != 0;
+        }
+        true
     }
 
     /// The character frame the body had when its muscles went; the
@@ -3553,6 +3619,17 @@ impl Ragdoll {
                 let a = part.point(&l.on_part);
                 let b = parent.point(&l.on_parent);
                 let d = b - a;
+                if l.limit {
+                    // A horizontal limit link runs only in the first two
+                    // iterations, and only a living body takes it.
+                    if gains.is_none() || (l.horizontal && self.pass >= 2) {
+                        continue;
+                    }
+                    if let Some(c) = l.limit_correction(d).filter(|c| c.is_finite()) {
+                        self.parts[l.part].push(&l.on_part, c);
+                    }
+                    continue;
+                }
                 let correction = match (gains, l.anchor) {
                     (Some(gains), Some(anchor)) if l.slack > PIVOT_SLACK => {
                         l.muscle(part, parent, anchor, gains)

@@ -23,7 +23,7 @@
 use bevy::prelude::*;
 
 use crate::body::{BodySystems, Ragdoll, SolverStage, SolverStages};
-use crate::grip::{self, DISABLED, GripLinks, HeldGrip};
+use crate::grip::{self, DISABLED, GripLinks, HeldGrip, HeldKind};
 
 /// The grip stage's order: the builder and the per-tick sync. The game's
 /// grip-mode and flip systems run before [`GripSolveSet::Sync`], so this
@@ -214,13 +214,22 @@ pub fn build_grips(mut held: Query<(Entity, &mut HeldGrip)>, bodies: Query<&Ragd
             hand_parts: hands,
             arm_parts: arms,
         };
-        let built = if grip.shield {
-            // The original subtracts the other hand's rest translation
-            // from the two face points; Exarust has no separate rest field
-            // for a part, so the caller passes zero. [guess]
-            grip::shield_links(item, holder, bindings, holding, item_to_hand, Vec3::ZERO)
-        } else {
-            grip::build(
+        let built = match grip.kind {
+            // The torch's own two pivots and its soft weld, from its attach
+            // routine rather than the grip table.
+            HeldKind::Torch => grip::torch_links(item, holder, bindings, item_to_hand),
+            HeldKind::Shield => {
+                // The original subtracts the other hand's stored rest
+                // translation from the two face points, after the item
+                // node's turn. [guess: the part's origin stands in]
+                let other = 1 - holding;
+                let offset = holder
+                    .parts
+                    .get(hands[other])
+                    .map_or(Vec3::ZERO, |p| p.rest_offset() * 100.0);
+                grip::shield_links(item, holder, bindings, holding, item_to_hand, offset)
+            }
+            HeldKind::Weapon => grip::build(
                 item,
                 holder,
                 bindings,
@@ -230,16 +239,17 @@ pub fn build_grips(mut held: Query<(Entity, &mut HeldGrip)>, bodies: Query<&Ragd
                 item_to_hand,
                 grip.flip,
                 grip.second_hand_factor,
-            )
+            ),
         };
         if let Some(mut links) = built {
             // The world welds a held weapon gets, both built disabled: a
             // stiff one at its origin, and, when its holder may parry, the
             // soft (parry) weld 0.3 of the node box's top above the grip,
-            // at the grip itself for a polearm. A shield's builder has
-            // already added its own soft weld.
-            if !grip.shield {
-                let top = if grip.spec.kind() == grip::GripKind::Polearm {
+            // at the grip itself for a two-hander of the exact class 0x30.
+            // A shield's and a torch's builders have already added their
+            // own soft weld.
+            if grip.kind == HeldKind::Weapon {
+                let top = if grip.class == 0x30 {
                     0.0
                 } else {
                     item.parts.first().map_or(0.0, |p| {
@@ -283,9 +293,12 @@ pub fn mark_held(mut held: Query<(&HeldGrip, &mut Ragdoll)>) {
     }
 }
 
-/// Releases the items whose holder has gone limp or left: the link records
+/// Releases the items whose holder has left the world: the link records
 /// stop acting, the item body loses its holder and held mask, takes the
-/// dropped weapon's friction and falls free.
+/// dropped weapon's friction and falls free. A holder that only went limp
+/// or died keeps its item: the original welds a held item to a dead body
+/// ([`GripLinks::weld_on_death`]) instead of dropping it, and its collapse
+/// is the routine that lets the hands go.
 pub fn release_freed_grips(
     mut commands: Commands,
     mut held: Query<(Entity, &mut HeldGrip, &mut Ragdoll)>,
@@ -298,8 +311,7 @@ pub fn release_freed_grips(
         let owner = bodies
             .iter()
             .find(|b| b.parts.first().is_some_and(|p| p.entity == grip.holder_key));
-        let let_go = owner.is_none_or(|o| o.drive.is_none());
-        if !let_go {
+        if owner.is_some() {
             continue;
         }
         grip.released = true;

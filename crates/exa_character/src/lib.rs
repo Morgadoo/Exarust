@@ -152,6 +152,12 @@ impl Wielded {
     }
 }
 
+/// The character's first held weapon starts turned over: the record's hand
+/// flag asked for it ([`spawn::holds_flipped`]). The equip pass builds the
+/// grip at the flipped end of its flip animation.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HeldFlipped;
+
 /// Right hand bone.
 pub const RIGHT_HAND: usize = 17;
 /// Left hand bone.
@@ -1287,6 +1293,7 @@ fn equip_outfits(
             Entity,
             &Outfit,
             Option<&Wielded>,
+            Has<HeldFlipped>,
             Option<&mut exa_combat::Fighter>,
             Option<&mut held::Hands>,
             Option<&RaceWeaponry>,
@@ -1346,6 +1353,7 @@ fn equip_outfits(
         body,
         outfit,
         wielded,
+        flipped,
         fighter,
         hands,
         race,
@@ -1535,7 +1543,7 @@ fn equip_outfits(
                 hands.main = Some(held::HeldItem::weapon(item.flags));
             }
             let top = || weapon_length(&weapon, loader.meshes) * CM_PER_M;
-            let record = held_record(
+            let mut record = held_record(
                 loader.game,
                 &held.model,
                 top,
@@ -1544,6 +1552,10 @@ fn equip_outfits(
                 &holder,
                 &race,
             );
+            // The equip refresh: the race's stance blend and swing-turn
+            // factor scale the record's (the record state word the
+            // weightless states read is not carried yet).
+            record.refresh(race.weapons.blend, race.weapons.swing_turn, 0);
             // The holding pass hands the weapon's table mass to its part
             // tree's redistribution; the result waits for the body solver.
             let mass = record
@@ -1619,14 +1631,15 @@ fn equip_outfits(
                             scale: grip_scale,
                             size: grip_size,
                             second_hand_factor: record.second_hand,
-                            flip: false,
+                            flip: flipped,
+                            class: item.flags & 0xFFFF,
                             // The auto-parry flag: off in the heavy-claws
                             // state. Race flag bit 0 and the character
                             // classes that also clear it are not carried
                             // yet. [partial]
                             soft_weld: !weapon_record::unarmed(race.index, race.weapons.claws)
                                 .heavy_claws,
-                            shield: false,
+                            kind: exa_physics::grip::HeldKind::Weapon,
                             holder_key: key,
                             hands: [
                                 by_bone.get(&RIGHT_HAND).copied(),

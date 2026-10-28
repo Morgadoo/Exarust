@@ -107,6 +107,18 @@ fn build_bodies(
         let index: HashMap<Entity, usize> =
             found.iter().enumerate().map(|(i, f)| (f.0, i)).collect();
         let mut rest_turns = Vec::with_capacity(found.len());
+        // Each part's stored link flags: a link without the pivot flag is
+        // a limit link (the original's gather of a limb's long link).
+        let link_flags: Vec<Vec<u32>> = found
+            .iter()
+            .map(|&(_, bone, _)| {
+                motions
+                    .1
+                    .get(&bone)
+                    .map(|b| b.links.iter().map(|l| l.flags).collect())
+                    .unwrap_or_default()
+            })
+            .collect();
         let setup: Vec<PartSetup> = found
             .iter()
             .map(|&(entity, bone, world)| {
@@ -142,13 +154,19 @@ fn build_bodies(
             // A level's dead are already in their saved pose: limp, no
             // muscles, and registered at rest (one tick, then sleep).
             let mut body = Ragdoll::new(&setup);
+            for (i, flags) in link_flags.iter().enumerate() {
+                body.set_link_flags(i, flags);
+            }
             body.register_placed();
             body
         } else {
             // A limp request is honoured by `go_limp` next. From now on the
             // body's ticks advance and sample its clips.
-            Ragdoll::new(&setup)
-                .with_drive()
+            let mut body = Ragdoll::new(&setup);
+            for (i, flags) in link_flags.iter().enumerate() {
+                body.set_link_flags(i, flags);
+            }
+            body.with_drive()
                 .with_race(race)
                 .with_stats(stats)
                 .with_rest_turns(&rest_turns)
