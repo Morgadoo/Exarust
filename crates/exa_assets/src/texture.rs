@@ -632,7 +632,7 @@ fn cube_to_texture(
             "a block-compressed cube map".into(),
         ));
     }
-    let first = if chain {
+    let mut first = if chain {
         first.min(rfi.mip_count.saturating_sub(1))
     } else {
         first
@@ -680,6 +680,10 @@ fn cube_to_texture(
                 data.extend(chain);
                 levels = generated;
             } else {
+                // A skip past the end of a tiny image: keep the stored base
+                // and no skip, as the 2D path does.
+                first = 0;
+                levels = 1;
                 data.extend_from_slice(&decoded);
             }
         }
@@ -1589,6 +1593,47 @@ mod level_tests {
         .unwrap();
         assert_eq!(image.texture_descriptor.mip_level_count, 1);
         assert_eq!(image.data.as_ref().unwrap().len(), 6 * 16);
+    }
+
+    /// A cube with a single stored level is filtered per face from that
+    /// base to the detail level, as the 2D path does.
+    #[test]
+    fn a_single_level_cube_is_generated_per_face() {
+        let mut data = Vec::new();
+        for face in 0..6u8 {
+            for _ in 0..4 {
+                data.extend_from_slice(&[face, 50, 0]);
+            }
+        }
+        let header = RfiHeader {
+            width: 2,
+            height: 2,
+            depth: 1,
+            format_word: 0x0100_C600,
+            flags: exa_formats::rfi::FLAG_CUBE | (3 << 22),
+            storage: 0x1000_0000,
+            data_size: 12,
+        };
+        let bytes = rfi_bytes(&header, &data);
+        let rfi = Rfi::parse(&bytes).unwrap();
+        let settings = TextureSettings {
+            texture_detail: 2,
+            ..TextureSettings::default()
+        };
+        let image =
+            rfi_to_texture(&rfi, ColorSpace::Srgb, false, default_flags(), &settings).unwrap();
+        assert_eq!(image.texture_descriptor.size.width, 1);
+        assert_eq!(image.texture_descriptor.size.height, 1);
+        assert_eq!(image.texture_descriptor.size.depth_or_array_layers, 6);
+        assert_eq!(image.texture_descriptor.mip_level_count, 1);
+        let data = image.data.as_ref().unwrap();
+        assert_eq!(data.len(), 6 * 4);
+        for face in 0..6u8 {
+            assert_eq!(
+                &data[face as usize * 4..face as usize * 4 + 4],
+                &[face, 50, 0, 255]
+            );
+        }
     }
 
     /// The detail setting slices each face's chain at the chosen level, and
