@@ -847,13 +847,17 @@ mod generation_tests {
     }
 
     #[test]
-    fn the_dropped_prize_slot_does_not_refuse_a_prize() {
+    fn the_eighth_history_slot_still_refuses_a_prize() {
         // Seed 13's first draw is prize 8, which sits in the eighth history
-        // slot; only the first seven refuse it.
+        // slot: it is refused and a later draw is kept.
+        let mut rng = Rng(13);
+        assert_eq!(rng.below(TOURNAMENT_PRIZES.len() as u32), 7);
         let mut rng = Rng(13);
         let mut history = [1, 2, 3, 4, 5, 6, 7, 8];
-        assert_eq!(draw_prize(&mut rng, &mut history), TOURNAMENT_PRIZES[7]);
-        assert_eq!(history, [8, 1, 2, 3, 4, 5, 6, 7]);
+        let prize = draw_prize(&mut rng, &mut history);
+        assert!(history[0] > 8);
+        assert_eq!(prize, TOURNAMENT_PRIZES[history[0] as usize - 1]);
+        assert_eq!(&history[1..], &[1, 2, 3, 4, 5, 6, 7]);
         assert_eq!(
             prize_conflict(8, &[7, 8], None),
             PrizeConflict {
@@ -1361,9 +1365,9 @@ pub struct TournamentBoard {
 pub fn draw_prize(rng: &mut crate::item_container::Rng, history: &mut [u32; 8]) -> u32 {
     loop {
         let index = rng.below(TOURNAMENT_PRIZES.len() as u32);
-        // The last slot of the eight-entry history is about to be dropped,
-        // so only the first seven refuse a prize.
-        if history[..7].contains(&(index + 1)) {
+        // All eight history slots refuse a prize, the one about to be
+        // dropped among them.
+        if history.contains(&(index + 1)) {
             continue;
         }
         history.rotate_right(1);
