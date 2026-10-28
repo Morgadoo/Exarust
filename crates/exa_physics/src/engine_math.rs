@@ -371,10 +371,11 @@ pub fn max_component(v: Vec3) -> f32 {
     max(max(v.x, v.y), v.z)
 }
 
-/// The part of `v` along the unit vector `unit`: the dot (3D, x and y then
-/// z) scaled back onto `unit`.
+/// The part of `v` along the unit vector `unit`: the dot scaled back onto
+/// `unit`. The dot is the original's horizontal SSE sum, x and z first,
+/// then y: `(x·ux + z·uz) + y·uy`.
 pub fn project_onto_unit(v: Vec3, unit: Vec3) -> Vec3 {
-    let along = v.x * unit.x + v.y * unit.y + v.z * unit.z;
+    let along = (v.x * unit.x + v.z * unit.z) + v.y * unit.y;
     unit * along
 }
 
@@ -386,19 +387,6 @@ pub fn remove_component(v: Vec3, unit: Vec3) -> Vec3 {
 /// The squared XZ length below which [`heading`] answers zero: the same
 /// 1e-8 constant as [`cosine`]'s guard.
 pub const HEADING_EPSILON: f32 = f32::from_bits(0x322B_CC77);
-
-/// The fractional part of `x` by the processor's truncating conversion:
-/// `x − trunc(x)`, so the sign follows `x`. NaN and a value outside the
-/// 32-bit range convert to the integer indefinite, which is subtracted as
-/// −2 147 483 648.
-pub fn frac(x: f32) -> f32 {
-    let whole = if x.is_nan() || x >= 2_147_483_648.0 || x < -2_147_483_648.0 {
-        i32::MIN
-    } else {
-        x.trunc() as i32
-    };
-    x - whole as f32
-}
 
 /// The signed heading of a direction in the XZ plane: the arc cosine of
 /// `z / |xz|`, negated when `x` is negative. Zero when the squared XZ
@@ -1319,18 +1307,12 @@ mod tests {
         let along = project_onto_unit(v, diag);
         assert!((along.length() - v.dot(diag)).abs() < 1e-6);
         assert!((remove_component(v, diag).dot(diag)).abs() < 1e-6);
-    }
-
-    #[test]
-    fn frac_truncates_toward_zero() {
-        assert_eq!(frac(2.75), 0.75);
-        assert_eq!(frac(-2.75), -0.75);
-        assert_eq!(frac(0.0), 0.0);
-        assert_eq!(frac(-0.0), -0.0);
-        assert_eq!(frac(5.0), 0.0);
-        // Out of the 32-bit range the conversion is the indefinite integer.
-        assert_eq!(frac(3.0e9), 3.0e9 - (-2_147_483_648.0));
-        assert!(frac(f32::NAN).is_nan());
+        // The dot sums x and z before y: (2^-24 + 2^-24) + 1 is 1 + 2^-23,
+        // where the (x, y, z) order would round (2^-24 + 1) back to 1 twice.
+        let tiny = f32::from_bits(0x3380_0000); // 2^-24
+        let w = Vec3::new(tiny, 1.0, tiny);
+        assert_eq!(project_onto_unit(w, Vec3::ONE).x, 1.0 + 2.0 * tiny);
+        assert_ne!((tiny + 1.0) + tiny, 1.0 + 2.0 * tiny);
     }
 
     #[test]

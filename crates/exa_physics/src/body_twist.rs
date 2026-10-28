@@ -36,8 +36,6 @@ const CROUCH_LOWER: f32 = 1.0;
 /// The lowered direction's height is then × 0.75 (casting, a lowered one
 /// is −y² instead).
 const HEIGHT_SHARE: f32 = 0.75;
-/// The horizontal length² under which a direction has no yaw.
-const NO_YAW: f32 = 1e-8;
 
 /// What the twist reads of the character this tick.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -71,17 +69,7 @@ pub struct TwistBy {
 /// length or cosine goes to the approximation, as the original's compares
 /// send it).
 pub fn heading_of(d: Vec3) -> f32 {
-    let flat = d.z * d.z + d.x * d.x;
-    if flat < NO_YAW {
-        return 0.0;
-    }
-    let c = d.z / flat.sqrt();
-    let yaw = if !(c <= -1.0) {
-        if !(c > 1.0) { acos_approx(c) } else { 0.0 }
-    } else {
-        std::f32::consts::PI
-    };
-    if d.x < 0.0 { -yaw } else { yaw }
+    crate::engine_math::heading(d)
 }
 
 /// `v` less its component along the unit `n` (the dot product summed x

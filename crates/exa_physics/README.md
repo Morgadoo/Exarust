@@ -18,11 +18,11 @@ arctangent and octant atan2, arcsine and arccosine, the double-precision
 angle wrap, the 4×3 products, triple product, fast and exact barycentrics,
 quaternion product, axis-angle and matrix conversions, the pitch/yaw, X,
 axis and look-at turns (the look basis normalised with `RSQRTSS`), the
-truncating frac, the signed XZ heading through the fast arc cosine, the
+signed XZ heading through the fast arc cosine, the
 yaw and elevation directions, the 2D, 3D and ground-plane lengths in the
 original's x-and-z-first association, the per-component and folded minimum
 and maximum with the SSE NaN rule, and the projection onto and removal
-along a unit vector, component-wise row scaling, Euler angles with the runtime library's
+along a unit vector (the dot summed x and z, then y), component-wise row scaling, Euler angles with the runtime library's
 arcsine and arctangent rules, the Gauss-Jordan 4×4 inverse (pivoting
 against the diagonal) and the OpenGL frustum, perspective (with the
 sub-pixel jitter) and pixel-rectangle matrices. The runtime library's own
