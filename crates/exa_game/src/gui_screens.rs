@@ -31,6 +31,7 @@ use exa_ui::gui_core::{FormHost, FormId, GuiRect, GuiTask, NO_CONTROL};
 use exa_ui::gui_draw::{GuiFrames, GuiTextures};
 use exa_ui::skin::SkinBatch;
 
+use crate::body_inventory;
 use crate::gui_paint::{self, Frame};
 use crate::item_container::{CardWindow, Container};
 use crate::item_panel_draw::PanelIcons;
@@ -510,6 +511,11 @@ impl GameScreens {
         let Some(index) = index else {
             return false;
         };
+        self.close_at(index)
+    }
+
+    /// Closes one open screen by its position in the open list.
+    fn close_at(&mut self, index: usize) -> bool {
         let screen = self.open.remove(index);
         let place = self.task.form(screen.form).map(|form| {
             let b = form.bounds();
@@ -519,7 +525,7 @@ impl GameScreens {
             form.close(0);
         }
         self.task.delete_doomed();
-        match kind {
+        match screen.kind {
             GameScreen::Journal => {
                 self.journal.store_text(&self.journal_text);
                 self.journal.place = place;
@@ -552,6 +558,23 @@ impl GameScreens {
     /// Closes the focused screen, if any (Escape).
     pub fn close_focused(&mut self) -> bool {
         self.focused().is_some_and(|kind| self.close(kind))
+    }
+
+    /// Closes the loot window of one body (the deferred close), whichever
+    /// window is focused.
+    pub fn close_loot(&mut self, character: i32) -> bool {
+        let Some(form) = self
+            .loot
+            .iter()
+            .find(|window| window.character == character)
+            .map(|window| window.form)
+        else {
+            return false;
+        };
+        let Some(index) = self.open.iter().position(|screen| screen.form == form) else {
+            return false;
+        };
+        self.close_at(index)
     }
 
     /// Closes the container and journal family, front to back.
@@ -589,7 +612,10 @@ impl Plugin for GameScreensPlugin {
                     .before(crate::player::player_combat),
             )
             .add_systems(Update, draw_screens.after(open_requested_screens))
-            .add_systems(Update, close_on_right_release.after(open_requested_screens));
+            .add_systems(
+                Update,
+                (close_on_right_release, close_changed_loot_windows).after(open_requested_screens),
+            );
     }
 }
 
@@ -611,10 +637,15 @@ fn sync_screen_size(
 
 /// Opens the screens the hotkeys asked for; Escape closes the focused one.
 /// Nothing happens while the main menu is open.
+#[allow(clippy::too_many_arguments)]
 fn open_requested_screens(
     keys: Res<ButtonInput<KeyCode>>,
     mut requests: MessageReader<ScreenRequest>,
     players: Query<Entity, With<crate::player::Player>>,
+    player_bodies: Query<Entity, With<crate::player::PlayerBody>>,
+    possessions: Query<(Entity, &exa_items::possession::Possessions)>,
+    catalogue: Option<Res<exa_items::catalogue::ItemCatalogue>>,
+    mut icons: Option<ResMut<PanelIcons>>,
     menu: Option<Res<MenuScreen>>,
     mut screens: ResMut<GameScreens>,
 ) {
@@ -631,11 +662,68 @@ fn open_requested_screens(
         }
         let action = match request.screen {
             GameScreen::Inventory => {
-                screens.open_inventory(request.player_ready, request.player_alive, 4)
+                let action = screens.open_inventory(request.player_ready, request.player_alive, 4);
+                // The pack is the player's own carried list, as the original
+                // loads it when the inventory opens.
+                if action == ScreenAction::Opened
+                    && let Some(body) = player_bodies.iter().next()
+                    && let Ok((_, possessions)) = possessions.get(body)
+                    && let Some(icons) = icons.as_deref_mut()
+                {
+                    body_inventory::bind_pack(
+                        &mut screens.pack,
+                        possessions,
+                        icons,
+                        catalogue.as_deref(),
+                    );
+                }
+                action
             }
             GameScreen::Journal => screens.open_journal(request.player_ready, request.player_alive),
             GameScreen::Loot => match request.target {
-                Some(target) => screens.open_loot(target, request.flags, 4),
+                Some(target) => {
+                    let entity = possessions
+                        .iter()
+                        .find(|(entity, _)| entity.index().index() as i32 == target)
+                        .map(|(entity, _)| entity);
+                    // The window's show rule reads the body's record flag
+                    // word: the profession word (byte 1 the race; race 3
+                    // refuses), which the body's possessions keep.
+                    let flags = entity
+                        .and_then(|entity| possessions.get(entity).ok())
+                        .map_or(request.flags, |(_, body)| body.flags);
+                    let action = screens.open_loot(target, flags, 4);
+                    if action == ScreenAction::Opened
+                        && let Some(entity) = entity
+                        && let Ok((_, body)) = possessions.get(entity)
+                        && let Some(bounds) = screens
+                            .loot
+                            .iter()
+                            .rev()
+                            .find(|window| window.character == target)
+                            .and_then(|window| screens.task.form(window.form))
+                            .map(|form| form.bounds())
+                        && let Some(icons) = icons.as_deref_mut()
+                    {
+                        let mut pack = Container::form(4);
+                        pack.owner = Some(target as u32);
+                        body_inventory::bind_pack(&mut pack, body, icons, catalogue.as_deref());
+                        let (_, equipment) = loot_panel_rects(bounds);
+                        let client = panel_client(equipment);
+                        let mut worn = Container::form(4);
+                        worn.owner = Some(target as u32);
+                        worn.client = (client.width(), client.height());
+                        body_inventory::bind_equipment(
+                            &mut worn,
+                            body,
+                            icons,
+                            catalogue.as_deref(),
+                            (client.width(), client.height()),
+                        );
+                        screens.bind_loot(target, pack, worn);
+                    }
+                    action
+                }
                 None => continue,
             },
             _ => continue,
@@ -685,6 +773,33 @@ fn close_on_right_release(
     };
     if form.bounds().contains(pointer.x as i32, pointer.y as i32) {
         screens.close(screen.kind);
+    }
+}
+
+/// Closes the loot windows the original's deferred close takes: a window
+/// whose body's state word has `0x80000`, or whose condition is no longer
+/// the dead mode `0xa00`. Exarust keeps no copy of the body's state word, so
+/// the mark half reads 0 [not modelled]; a window whose body is no longer in
+/// the world is left alone.
+fn close_changed_loot_windows(
+    bodies: Query<(Entity, &exa_combat::Condition)>,
+    mut screens: ResMut<GameScreens>,
+) {
+    if screens.loot.is_empty() {
+        return;
+    }
+    let live: Vec<(i32, u32, u32)> = screens
+        .loot
+        .iter()
+        .filter_map(|window| {
+            bodies
+                .iter()
+                .find(|(entity, _)| entity.index().index() as i32 == window.character)
+                .map(|(_, condition)| (window.character, 0, condition.0))
+        })
+        .collect();
+    for character in screens.loot_windows_to_close(&live) {
+        screens.close_loot(character);
     }
 }
 
@@ -762,6 +877,59 @@ fn paint_controls(
     }
 }
 
+/// The inventory's pack panel, as its painter places it: the client's
+/// bottom, 228 × 180.
+pub fn inventory_pack_panel(bounds: GuiRect) -> GuiRect {
+    let client = GuiRect::new(
+        bounds.left + gui_paint::INVENTORY_SPACING,
+        bounds.top + gui_paint::INVENTORY_SPACING,
+        bounds.width() - gui_paint::INVENTORY_SPACING * 2,
+        bounds.height() - gui_paint::INVENTORY_SPACING * 2,
+    );
+    GuiRect::new(
+        client.left,
+        client.bottom - gui_paint::PACK.1,
+        gui_paint::PACK.0,
+        gui_paint::PACK.1,
+    )
+}
+
+/// A loot window's pack and equipment panels, as its painter places them:
+/// the pack at the client's bottom (228 × 180) and the equipment panel above
+/// it, ending four units before the pack.
+pub fn loot_panel_rects(bounds: GuiRect) -> (GuiRect, GuiRect) {
+    let client = GuiRect::new(
+        bounds.left + gui_paint::FORM_SPACING,
+        bounds.top + gui_paint::FORM_SPACING,
+        bounds.width() - gui_paint::FORM_SPACING * 2,
+        bounds.height() - gui_paint::FORM_SPACING * 2,
+    );
+    let pack = GuiRect::new(
+        client.left,
+        client.bottom - exa_ui::game_gui::LOOT_PACK_HEIGHT,
+        exa_items::char_loot::PACK_WIDTH,
+        exa_ui::game_gui::LOOT_PACK_HEIGHT,
+    );
+    let equipment = GuiRect::new(
+        client.left,
+        client.top,
+        exa_items::char_loot::PACK_WIDTH,
+        (pack.top - client.top - exa_ui::game_gui::LOOT_PANEL_GAP).max(0),
+    );
+    (pack, equipment)
+}
+
+/// A panel's inner client, the four-unit inset its painter uses for the
+/// entries' cells.
+pub fn panel_client(rect: GuiRect) -> GuiRect {
+    GuiRect::new(
+        rect.left + 4,
+        rect.top + 4,
+        rect.width() - 8,
+        rect.height() - 8,
+    )
+}
+
 /// The inventory's frame, the item pack's panel with its entries' icons
 /// (when the panel's icon atlas holds them) and the Encumbrance label and
 /// Primary button records. The character view and the preview bars are
@@ -779,13 +947,7 @@ fn paint_inventory(
     let mut frame = Frame::new(bounds, unit, INVENTORY_TITLE);
     frame.spacing = gui_paint::INVENTORY_SPACING;
     let mut painted = gui_paint::paint_frame(&frame, &palette, &font, size);
-    let client = frame.client();
-    let pack = GuiRect::new(
-        client.left,
-        client.bottom - gui_paint::PACK.1,
-        gui_paint::PACK.0,
-        gui_paint::PACK.1,
-    );
+    let pack = inventory_pack_panel(bounds);
     let panel = gui_paint::paint_panel(
         pack,
         unit,
@@ -917,19 +1079,7 @@ fn paint_loot(
     let (font, size) = screen_font(exa_ui::gui_font::gui_level(level).main, textures);
     let frame = Frame::new(bounds, unit, LOOT_TITLE);
     let mut painted = gui_paint::paint_frame(&frame, &palette, &font, size);
-    let client = frame.client();
-    let pack = GuiRect::new(
-        client.left,
-        client.bottom - exa_ui::game_gui::LOOT_PACK_HEIGHT,
-        exa_items::char_loot::PACK_WIDTH,
-        exa_ui::game_gui::LOOT_PACK_HEIGHT,
-    );
-    let equipment = GuiRect::new(
-        client.left,
-        client.top,
-        exa_items::char_loot::PACK_WIDTH,
-        (pack.top - client.top - exa_ui::game_gui::LOOT_PANEL_GAP).max(0),
-    );
+    let (pack, equipment) = loot_panel_rects(bounds);
     let mut paint_panel_with =
         |rect: GuiRect, container: &Container, icons: &mut Option<&mut PanelIcons>| {
             let panel = gui_paint::paint_panel(
@@ -1128,6 +1278,160 @@ mod tests {
         assert_eq!(screens.loot_window(7).unwrap().pack.entries[0].id, 7);
         assert_eq!(screens.loot_window(7).unwrap().worn.entries[0].id, 8);
         assert!(!screens.bind_loot(99, Container::default(), Container::default()));
+    }
+
+    #[test]
+    fn a_loot_window_closes_when_the_body_is_no_longer_dead() {
+        let mut app = App::new();
+        app.add_systems(Update, close_changed_loot_windows);
+        let body = app.world_mut().spawn(exa_combat::Condition::DEAD).id();
+        let target = body.index().index() as i32;
+        let mut screens = GameScreens::default();
+        screens.task.screen = (1600, 900);
+        assert_eq!(screens.open_loot(target, 0, 4), ScreenAction::Opened);
+        app.insert_resource(screens);
+        app.update();
+        assert!(
+            app.world()
+                .resource::<GameScreens>()
+                .loot_window(target)
+                .is_some()
+        );
+        app.world_mut()
+            .get_mut::<exa_combat::Condition>(body)
+            .unwrap()
+            .0 = exa_combat::Condition::NORMAL.0;
+        app.update();
+        assert!(
+            app.world()
+                .resource::<GameScreens>()
+                .loot_window(target)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn the_inventory_request_binds_the_players_carried_list() {
+        let mut app = App::new();
+        app.init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<GameScreens>()
+            .init_resource::<PanelIcons>()
+            .add_message::<ScreenRequest>()
+            .add_systems(Update, open_requested_screens);
+        app.world_mut().spawn((
+            crate::player::PlayerBody::new(0.0),
+            exa_items::possession::Possessions {
+                carried: vec![exa_items::possession::Carried {
+                    id: 0x30,
+                    flags: 0,
+                    x: 0x28,
+                    y: 4,
+                }],
+                ..Default::default()
+            },
+        ));
+        app.world_mut()
+            .write_message(ScreenRequest::screen(GameScreen::Inventory, true, true));
+        app.update();
+        let screens = app.world().resource::<GameScreens>();
+        assert_eq!(screens.pack.entries.len(), 1);
+        assert_eq!(screens.pack.entries[0].id, 0x30);
+        // The panel's icon half extents carry the GUI unit, so the top
+        // clamp lifts the saved y of 1 to 4, as the icon's own halves do.
+        assert_eq!(
+            screens.pack.entries[0].cell,
+            crate::item_container::Cell::new(10, 4)
+        );
+    }
+
+    #[test]
+    fn the_loot_request_binds_the_bodys_record_and_its_condition_flags() {
+        let mut app = App::new();
+        app.init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<GameScreens>()
+            .init_resource::<PanelIcons>()
+            .add_message::<ScreenRequest>()
+            .add_systems(Update, open_requested_screens);
+        let record = exa_formats::characters::CharacterRecord {
+            hands: [
+                exa_formats::characters::ItemRef::new(0x11, 0),
+                exa_formats::characters::ItemRef::new(0x12, 0),
+                exa_formats::characters::ItemRef::default(),
+                exa_formats::characters::ItemRef::default(),
+            ],
+            worn: vec![exa_formats::characters::ItemRef::new(0xa0, 0)],
+            inventory: vec![exa_formats::characters::Carried {
+                item: 0x30,
+                flags: 0,
+                extra: 0,
+            }],
+            race: 1,
+            ..exa_formats::characters::CharacterRecord::default()
+        };
+        let entity = app
+            .world_mut()
+            .spawn((
+                exa_items::possession::Possessions::of_record(&record),
+                exa_combat::Condition::DEAD,
+            ))
+            .id();
+        let target = entity.index().index() as i32;
+        // The request's flags are stale; the body's record flag word (its
+        // profession word, race 1 here) is what the show rule reads.
+        app.world_mut().write_message(ScreenRequest {
+            screen: GameScreen::Loot,
+            player_ready: true,
+            player_alive: true,
+            target: Some(target),
+            flags: 0x300,
+        });
+        app.update();
+        let screens = app.world().resource::<GameScreens>();
+        let window = screens.loot_window(target).unwrap();
+        assert_eq!(window.flags, 0x100);
+        assert_eq!(window.pack.entries.len(), 1);
+        assert_eq!(window.pack.entries[0].id, 0x30);
+        // Worn first, then only the shields in the hands: with no item
+        // catalogue nothing in a hand is known to be a shield.
+        let ids: Vec<u32> = window.worn.entries.iter().map(|e| e.id).collect();
+        assert_eq!(ids, vec![0xa0]);
+    }
+
+    #[test]
+    fn a_body_of_race_three_refuses_the_loot_window() {
+        let mut app = App::new();
+        app.init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<GameScreens>()
+            .init_resource::<PanelIcons>()
+            .add_message::<ScreenRequest>()
+            .add_systems(Update, open_requested_screens);
+        let record = exa_formats::characters::CharacterRecord {
+            race: 3,
+            ..exa_formats::characters::CharacterRecord::default()
+        };
+        let entity = app
+            .world_mut()
+            .spawn((
+                exa_items::possession::Possessions::of_record(&record),
+                exa_combat::Condition::DEAD,
+            ))
+            .id();
+        let target = entity.index().index() as i32;
+        app.world_mut().write_message(ScreenRequest {
+            screen: GameScreen::Loot,
+            player_ready: true,
+            player_alive: true,
+            target: Some(target),
+            flags: 0,
+        });
+        app.update();
+        // 0x300 & 0xff00 == 0x300: the show rule refuses.
+        assert!(
+            app.world()
+                .resource::<GameScreens>()
+                .loot_window(target)
+                .is_none()
+        );
     }
 
     #[test]

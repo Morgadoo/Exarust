@@ -189,7 +189,7 @@ pub fn worn_bulk<F>(p: &Possessions, bulk: F) -> u32
 where
     F: Fn(u32) -> u32,
 {
-    p.worn.iter().map(|&id| bulk(id)).sum()
+    p.worn.iter().map(|worn| bulk(worn.id)).sum()
 }
 
 /// The doll's camera distance for a model whose height value is `height`.
@@ -534,7 +534,10 @@ mod tests {
     fn the_compass_and_the_worn_bulk() {
         let p = Possessions {
             carried: vec![item(115, 0), item(5, HELD), item(6, 0)],
-            worn: vec![7, 8],
+            worn: vec![
+                exa_formats::characters::ItemRef::new(7, 0),
+                exa_formats::characters::ItemRef::new(8, 0),
+            ],
             ..Default::default()
         };
         assert!(carries_compass(&p, |id| (id == 115).then_some([4, 11])));

@@ -1222,10 +1222,11 @@ pub fn bulk_of(
     model_bulk(base).unwrap_or(0)
 }
 
-/// The worn and shield panel of a body being looted: each worn item and
-/// each held shield whose icon the cache gives (`icon` returns its slot and
-/// half extents; an item without one is left out and draws no random
-/// numbers) is placed at a random spot in the middle half of the panel
+/// The equipment panel of a body being looted: each worn item, then each
+/// shield in the set in the hands (the caller filters), whose icon the cache gives (`icon` returns
+/// its slot and half extents; an item without one is left out and draws no
+/// random numbers) is placed at a random spot in the middle half of the
+/// panel
 /// (a quarter of the width plus a draw below half of it, from the engine's
 /// shared generator), then the entries push each other apart over four
 /// rounds (overlap divided by 6, 5, 4 and 3, twice each), each pass ending

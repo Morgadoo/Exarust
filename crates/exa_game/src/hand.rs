@@ -1014,6 +1014,7 @@ fn press_hand(
     mut bodies: Query<OtherBodies, Without<PlayerBody>>,
     kinesis: Option<Res<KinesisPickHook>>,
     mut kinesis_picks: Option<ResMut<Messages<KinesisPicked>>>,
+    over_gui: Option<Res<crate::panel_live::PointerOverGui>>,
 ) {
     let kinesis = kinesis.and_then(|k| k.0);
     let now = real.elapsed().as_millis() as i64;
@@ -1022,6 +1023,11 @@ fn press_hand(
             .position(w)
             .map(|p| (p, (p * w.scale_factor()).as_ivec2()))
     });
+    // The GUI's own press path takes a press over an open screen; the world
+    // sees neither the pick nor the click.
+    if over_gui.is_some_and(|over| over.0) && buttons.just_pressed(MouseButton::Left) {
+        return;
+    }
     if buttons.just_pressed(MouseButton::Left) {
         let double = pointer.is_some_and(|(_, px)| {
             hand.last_click.is_some_and(|(was, ms)| {
@@ -1320,8 +1326,9 @@ fn hold_hand(
                                 player_ready: !condition.dying(),
                                 player_alive: !condition.is_dead(),
                                 target: Some(body.index().index() as i32),
-                                // The body's record flag word is not read
-                                // by this path yet; 0 passes the show rule.
+                                // The screen opener reads the body's record
+                                // flag word from its possessions; 0 passes
+                                // the show rule when it has none.
                                 flags: 0,
                             });
                         }

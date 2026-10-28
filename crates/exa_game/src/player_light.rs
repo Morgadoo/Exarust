@@ -163,7 +163,7 @@ fn switch_player_light(
     let worn = possessions
         .worn
         .iter()
-        .map(|&id| kind(id).is_some_and(|k| k.sight));
+        .map(|worn| kind(worn.id).is_some_and(|k| k.sight));
     let held = |i: usize| {
         let id = possessions.out[i].id;
         id != 0 && kind(id).is_some_and(|k| k.light)

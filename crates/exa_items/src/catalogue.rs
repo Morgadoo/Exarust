@@ -15,6 +15,11 @@ use exa_formats::rdb::Database;
 const BODY: u32 = 0x1000;
 const WEAPON: u32 = 0x4000;
 const SHIELD: u32 = 0x8000;
+/// The item's model section; its body starts eight bytes after the tag.
+const MODEL: u32 = 0x0010_0000;
+/// The bulk byte from the model section's body: the section's `+0x24` less
+/// its eight-byte header (`exa_formats::objdb` reads the same one).
+const MODEL_BULK: usize = 0x1C;
 
 /// Item kinds and container children of the game's object database, by
 /// record id. Ids with a database tag (a level's own items, the world's)
@@ -23,6 +28,10 @@ const SHIELD: u32 = 0x8000;
 pub struct ItemCatalogue {
     kinds: HashMap<u32, ItemKind>,
     contents: HashMap<u32, Vec<u32>>,
+    /// The model section's `0x24` byte: an item panel counts it as the
+    /// entry's bulk, and the equip conflict pass reads the same byte as an
+    /// item's weight class.
+    bulk: HashMap<u32, u8>,
 }
 
 impl ItemCatalogue {
@@ -48,6 +57,9 @@ impl ItemCatalogue {
                 out.contents
                     .insert(r.id, c.children.iter().map(|c| c.id).collect());
             }
+            if let Some(bulk) = model_bulk(payload) {
+                out.bulk.insert(r.id, bulk);
+            }
         }
         out
     }
@@ -68,9 +80,26 @@ impl ItemCatalogue {
         self.contents.get(&id).map(Vec::as_slice)
     }
 
+    /// The item's bulk (the model section's `0x24` byte); `None` for an id
+    /// that is not a record of the game's database.
+    pub fn bulk(&self, id: u32) -> Option<u8> {
+        if id & !ID_MASK != 0 {
+            return None;
+        }
+        self.bulk.get(&id).copied()
+    }
+
     pub fn is_empty(&self) -> bool {
         self.kinds.is_empty()
     }
+}
+
+/// The model section's `+0x24` byte (body `+0x1C`): the bulk an item panel
+/// counts. `None` for an item without a model section or with a short one.
+fn model_bulk(payload: &[u8]) -> Option<u8> {
+    section(payload, MODEL)
+        .and_then(|body| body.get(MODEL_BULK))
+        .copied()
 }
 
 /// Asks for a character's weapon sets to be swapped.
@@ -175,6 +204,25 @@ mod tests {
         let plan = app.world().get::<PendingHands>(body).unwrap().0;
         assert_eq!(plan.changed, [true, false]);
         assert!(plan.take[0].is_none());
+    }
+
+    #[test]
+    fn the_model_bulk_is_the_sections_0x24_byte() {
+        // A model section: tag, size (8 + 0x1D), then a body whose byte
+        // 0x1C is the bulk.
+        let mut payload = Vec::new();
+        let body_len = 0x1D;
+        payload.extend_from_slice(&MODEL.to_le_bytes());
+        payload.extend_from_slice(&(8 + body_len as u32).to_le_bytes());
+        let mut body = vec![0u8; body_len];
+        body[MODEL_BULK] = 7;
+        payload.extend_from_slice(&body);
+        assert_eq!(model_bulk(&payload), Some(7));
+        // A truncated body has no byte.
+        payload.truncate(8 + 0x1C);
+        assert_eq!(model_bulk(&payload), None);
+        // A record with no model section has none.
+        assert_eq!(model_bulk(&[]), None);
     }
 
     #[test]

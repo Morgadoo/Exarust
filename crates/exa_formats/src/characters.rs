@@ -58,7 +58,8 @@ pub const SAVED_POTION: u32 = 0xCECC_0002;
 pub const FULL_POOL: u16 = 0xFFFF;
 /// Character traits are stored as bytes offset by this.
 const TRAIT_BIAS: i32 = 100;
-/// The word a new inventory entry carries after its item and flags.
+/// The word a new inventory entry carries after its item and flags: the
+/// packed saved cell (40, 4) in sixteenths of a GUI unit, x low and y high.
 pub const NEW_ENTRY_WORD: u32 = 0x0004_0028;
 /// The voice name the writer builds: this prefix, then the number.
 const VOICE_PREFIX: &str = "vi";
@@ -811,8 +812,9 @@ pub struct Carried {
     /// Item id (`LOCAL_ITEM` = the level's object database); 0 = empty.
     pub item: u32,
     pub flags: u32,
-    /// A third word: [`NEW_ENTRY_WORD`] on an entry the game appends, its
-    /// meaning not traced.
+    /// The saved cell in the pack: two signed 16-bit words, x low and y high,
+    /// in sixteenths of a GUI unit. [`NEW_ENTRY_WORD`] is (40, 4), where the
+    /// game appends a new entry.
     pub extra: u32,
 }
 

@@ -80,8 +80,9 @@ pub struct Possessions {
     pub out: [Hand; 2],
     /// The other set.
     pub stowed: [Hand; 2],
-    /// Worn apparel, in wearing order.
-    pub worn: Vec<u32>,
+    /// Worn apparel, in wearing order, with the record's flags (the same
+    /// pairs the record keeps).
+    pub worn: Vec<exa_formats::characters::ItemRef>,
     pub carried: Vec<Carried>,
 }
 
@@ -155,7 +156,7 @@ impl Possessions {
             flags: record.profession(),
             out: [hand(0), hand(1)],
             stowed: [hand(2), hand(3)],
-            worn: record.worn_ids().collect(),
+            worn: record.worn.clone(),
             carried: record
                 .inventory
                 .iter()
@@ -1074,7 +1075,7 @@ mod tests {
                 y: 4
             }
         );
-        assert_eq!(p.worn, vec![8]);
+        assert_eq!(p.worn, vec![ItemRef::new(8, 0)]);
     }
 
     #[test]

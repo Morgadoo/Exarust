@@ -1239,11 +1239,24 @@ equipment panel above it ending four units before the pack, each drawing
 its entries' icons when the icon cache holds them. The window joins the
 open-container registry under the body's tagged id, binds a body's pack and
 worn items through `bind_loot`, and leaves the registry when it closes.
+The window's flag word is the body's record profession word (race byte 3
+refuses), read from its `Possessions` when the window opens; `exa_game::body_inventory` fills the pack
+from the body's carried list at its saved places and the equipment panel
+from the worn items and the shields in the hands (the original's hand loop
+lists an item only when it has a shield section) with the worn/scatter pass,
+and the player's inventory pack from its own carried list. `panel_live`
+runs the left drag between open panels with the item panel's press, accept,
+drop and drag-end rules; a drop on another pack moves the possession
+entries, a drop on the same panel repositions, and a drop on the body's
+equipment panel or outside every panel is refused. The world's press is
+held while the pointer is over an open screen.
 Not wired: the character view and its preview bars, the pack's item icons
-(the item renderer), the journal's entry list (its geometry is not in the
-traced units), the 0xac01 record, the controls' callbacks and the technique
-selector. The loot panels have no body inventory to load from yet; the
-body's record flag word is passed as 0 by the world path. The skills key's screen and the power tree are outside this unit,
+(the item renderer; a reserved icon slot draws nothing), the journal's
+entry list (its geometry is not in the traced units), the 0xac01 record,
+the controls' callbacks and the technique selector. Taking a worn item off
+a body does not re-dress its mesh, the GUI-to-world drop is not run, and a
+level-local item's record is not promoted into the world database, so its
+bulk counts 0. The skills key's screen and the power tree are outside this unit,
 and the selector opens only from a power slot the HUD does not draw yet.
 The Rayform faces are not shipped, so the text keeps the level font's
 metrics (glyph quad, advances, line height) and samples its glyph cells

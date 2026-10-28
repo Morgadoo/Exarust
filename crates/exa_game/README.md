@@ -700,11 +700,25 @@ placed by the skin's own rule, and the journal's selected entry through the
 text box. A dead body's double click in the world opens the body's loot
 window (400, 36; 244 × 440) with its pack and equipment panels; it joins
 the open-container registry under the body's tagged id and closes with the
-focused screen. The character view, the preview bars, the pack's and the
-loot panels' item icons, the journal's entry list, the controls' callbacks
-and the inventory's unlocated second record are not wired; the text keeps the level font's metrics and
-samples the base font's atlas while the Rayform faces are not shipped. The
-skills key's screen and the power tree are not opened.
+focused screen. The window's show rule reads the body's record flag word, its
+profession word (`& 0xff00 == 0x300`, race 3, refuses), and
+`body_inventory` fills its panels from the body's `Possessions`: the pack
+through the character list's own saved places, the equipment panel with the
+worn items and the shields in the hands (held weapons are not listed)
+through the worn/scatter pass, its generator started from `DOLL_SEED` as a
+stand-in for the engine's shared one. The player's inventory pack is its carried list the same way.
+`panel_live` runs a left-button drag between open panels with the item
+panel's press, accept, drop and drag-end rules; a drop on another pack moves
+the possession entries, a drop on the same panel only repositions, and a
+drop on a body's equipment panel or outside every panel is refused (no
+running character view and no GUI-to-world drop yet). Taking a worn item
+off a corpse does not re-dress its mesh. The world's own press is held while
+the pointer is over an open screen. The character view, the preview bars,
+the item icons (a reserved slot draws nothing until the renderer fills the
+atlas), the journal's entry list, the controls' callbacks and the
+inventory's unlocated second record are not wired; the text keeps the level
+font's metrics and samples the base font's atlas while the Rayform faces
+are not shipped. The skills key's screen and the power tree are not opened.
 
 ## Scope
 
