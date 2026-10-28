@@ -52,11 +52,20 @@
 //!   toward the caster by `0.25·(1 − (d/1800)⁴)·(aim·dir + 3)` for 3 s.
 //! - **Hits**: the contact rules ([`limb_push`], [`character_knock`],
 //!   [`sim_point_push`], [`rebound`], [`push_out`]) are the original's
-//!   arithmetic; the engine's mesh and sphere tests that find the contacts
-//!   are not ported.
+//!   arithmetic; [`hit_static`], [`hit_sampled`] and [`hit_sim_object`]
+//!   walk the level's surface, a sampled body and a simulated object's
+//!   points. The engine's own surface queries are replaced by the callers'
+//!   (a sweep for the level) at the same reach and callback rules.
+//! - **Ribbon** ([`Blast::ribbon`]): each live chunk's trail is sampled
+//!   eight times five centimetres apart, its widths normalised and
+//!   smoothed, the spine bent across the camera plane and eight quads
+//!   emitted a chunk, chained onto the previous chunk's closing pair, as
+//!   `effects::ribbon` lays them out.
 //! - **Frame** ([`Blast::frame`]): the chunks' sounds and the per-chunk
 //!   colour bytes, and the texture offset `(0, r₀, texture_scale)` with the
 //!   first chunk's radius between its last two ticks.
+//! - **Life** ([`Blast::link`], [`Blast::destroy`]): the geometry link and
+//!   the destroy slot's sound, buffer, light and entity releases.
 //!
 //! Evidence: the blast's constructor, start, chunk setup, direction table,
 //! aim, release directions, tick, alert, contact entries and callbacks,
@@ -103,6 +112,8 @@ pub const ALERT_REACH: f32 = 1800.0;
 pub const ALERT_FLAT_BAND: f32 = 150.0;
 /// How long the alert keeps, s.
 pub const ALERT_SECONDS: f32 = 3.0;
+/// The gain the alert passes the AI's concern helper.
+pub const ALERT_GAIN: f32 = 3.0;
 /// The speed the release asks the blast's entity for, cm/s.
 pub const RELEASE_SPEED: f32 = 1200.0;
 /// The flag the release sets.
@@ -321,6 +332,8 @@ pub struct BlastTeardown {
     pub light: bool,
     /// The blast's entity is freed.
     pub entity: bool,
+    /// The two sound names the effect copied are freed.
+    pub strings: bool,
 }
 
 impl BlastTeardown {
@@ -835,13 +848,58 @@ pub fn hit_static(blast: &mut Blast, nearest: impl Fn(Vec3) -> Option<Vec3>) -> 
     hits
 }
 
+/// The contact walk an effect takes over a target body: the mesh's faces
+/// with the limb callback, or the body's own sample points.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContactWalk {
+    Mesh,
+    Sampled,
+}
+
+/// The values a static body's contact passes the walk: the reach scale 2,
+/// the push 0.5 and the extra 10 cm.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StaticContact {
+    pub scale: f32,
+    pub push: f32,
+    pub extra: f32,
+    pub walk: ContactWalk,
+}
+
+/// The static body's contact setup.
+pub fn static_contact(sampled: bool) -> StaticContact {
+    StaticContact {
+        scale: 2.0,
+        push: 0.5,
+        extra: STATIC_EXTRA,
+        walk: if sampled {
+            ContactWalk::Sampled
+        } else {
+            ContactWalk::Mesh
+        },
+    }
+}
+
+impl Blast {
+    /// Which walk the effect's contact dispatch picks.
+    pub fn contact_walk(&self) -> ContactWalk {
+        if self.setup.sampled_contact {
+            ContactWalk::Sampled
+        } else {
+            ContactWalk::Mesh
+        }
+    }
+}
+
 /// The sampled-body walk's hit: a chunk whose centre is within
-/// `contact_reach(chunk, scale, margin)` of the body's surface loses all
-/// its weight and is worn (0.015). Returns the contact reach when it met
-/// the body. The body's own push is the caller's callback.
+/// `contact_reach(chunk, scale, margin)` of the body's surface moves to the
+/// contact point, loses all its weight and is worn (0.015). Returns the
+/// contact reach when it met the body. The body's own push is the caller's
+/// callback.
 pub fn hit_sampled(chunk: &mut BlastChunk, point: Vec3, scale: f32, margin: f32) -> Option<f32> {
     let reach = contact_reach(chunk, scale, margin, 0.0);
     if dist_sq(chunk.at, point) <= reach * reach {
+        chunk.at = point;
         chunk.weight = 0.0;
         chunk.wear = CONTACT_WEAR;
         Some(reach)
@@ -1013,6 +1071,7 @@ impl Blast {
             draw_buffers: drawn,
             light: true,
             entity: true,
+            strings: true,
         }
     }
 
@@ -1633,6 +1692,7 @@ mod tests {
                 draw_buffers: true,
                 light: true,
                 entity: true,
+                strings: true,
             }
         );
         // Never drawn: no buffers to free.
@@ -1663,11 +1723,25 @@ mod tests {
             hit_sampled(&mut chunk, Vec3::new(7.0, 0.0, 0.0), 2.0, 0.0),
             Some(8.0)
         );
+        assert_eq!(chunk.at, Vec3::new(7.0, 0.0, 0.0));
         assert_eq!((chunk.weight, chunk.wear), (0.0, CONTACT_WEAR));
         assert_eq!(
-            hit_sampled(&mut chunk, Vec3::new(7.0, 0.0, 0.0), 1.0, 0.0),
+            hit_sampled(&mut chunk, Vec3::new(20.0, 0.0, 0.0), 1.0, 0.0),
             None
         );
+        assert_eq!(b.contact_walk(), ContactWalk::Mesh);
+        let bolt = Blast::new(BOLT_SETUP, 0.1, 12, &view(), &mut Mt19937::new(1));
+        assert_eq!(bolt.contact_walk(), ContactWalk::Sampled);
+        assert_eq!(
+            static_contact(false),
+            StaticContact {
+                scale: 2.0,
+                push: 0.5,
+                extra: STATIC_EXTRA,
+                walk: ContactWalk::Mesh
+            }
+        );
+        assert_eq!(static_contact(true).walk, ContactWalk::Sampled);
     }
 
     #[test]

@@ -53,8 +53,9 @@ use super::force::{BLAST_MOTION, BlastSetup};
 use super::live::{EffectDraws, EffectMesh, mesh_of_ribbon, show};
 use crate::effects::Frame as ViewFrame;
 use crate::effects::blast::{
-    Blast, BlastChunk, BlastView, CHARGING, HIT_HOSTILITY, STATIC_EXTRA, THROWN, character_knock,
-    contact_reach, contact_weight, limb_push, limb_terms, rebound,
+    ALERT_GAIN, Blast, BlastChunk, BlastView, CHARGING, CONTACT_WEAR, HIT_HOSTILITY, STATIC_EXTRA,
+    THROWN, alert_amount, character_knock, contact_reach, contact_weight, limb_push, limb_terms,
+    rebound,
 };
 use crate::player::CursorGround;
 
@@ -339,9 +340,17 @@ pub(crate) fn strike_chunks(
                     }
                 }
                 let (weight, wear) = contact_weight(chunk.weight, setup.piercing, character);
-                chunk.weight = weight;
-                if 0.0 < wear {
-                    chunk.wear = wear;
+                if setup.sampled_contact {
+                    // The bolt's sampled walk: the chunk sits on the contact
+                    // and loses all its weight.
+                    chunk.at = point;
+                    chunk.weight = 0.0;
+                    chunk.wear = CONTACT_WEAR;
+                } else {
+                    chunk.weight = weight;
+                    if 0.0 < wear {
+                        chunk.wear = wear;
+                    }
                 }
                 struck = true;
                 pushed = true;
@@ -475,6 +484,46 @@ pub(crate) fn tick_blasts(
         }
         if let Some(pitch) = events.released {
             debug!("blast {entity:?} thrown, release pitch {pitch:.3}");
+            // The release alerts the caster's AI's known characters: each
+            // within 1800 cm is told of the caster by the draw's weight.
+            let known: Vec<Entity> = combatants.get(live.caster).map_or_else(
+                |_| Vec::new(),
+                |combatant| {
+                    combatant
+                        .contacts
+                        .iter()
+                        .filter(|contact| contact.kind == 1)
+                        .map(|contact| contact.character)
+                        .collect()
+                },
+            );
+            let origin = bodies
+                .get(live.caster)
+                .ok()
+                .and_then(|(_, body)| chest_point(body));
+            if let Some(origin) = origin {
+                for other in known {
+                    if other == live.caster {
+                        continue;
+                    }
+                    let at = bodies
+                        .get(other)
+                        .ok()
+                        .and_then(|(_, body)| chest_point(body));
+                    let Some(amount) = at.and_then(|at| alert_amount(origin, at, live.blast.aim))
+                    else {
+                        continue;
+                    };
+                    if let Ok(mut combatant) = combatants.get_mut(other) {
+                        let aggression = npcs
+                            .get(other)
+                            .ok()
+                            .and_then(|npc| npc.personality)
+                            .map_or(0.0, |personality| personality.restraint);
+                        combatant.add_concern(live.caster, aggression, amount, ALERT_GAIN);
+                    }
+                }
+            }
         }
         if let Some(caster) = caster.as_deref_mut() {
             caster.sync_body();
@@ -848,9 +897,15 @@ mod tests {
                         }
                     }
                     let (weight, wear) = contact_weight(chunk.weight, setup.piercing, character);
-                    chunk.weight = weight;
-                    if 0.0 < wear {
-                        chunk.wear = wear;
+                    if setup.sampled_contact {
+                        chunk.at = point;
+                        chunk.weight = 0.0;
+                        chunk.wear = CONTACT_WEAR;
+                    } else {
+                        chunk.weight = weight;
+                        if 0.0 < wear {
+                            chunk.wear = wear;
+                        }
                     }
                     struck = true;
                 }

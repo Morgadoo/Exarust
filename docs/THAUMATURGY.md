@@ -185,8 +185,14 @@ cast motion plays on. Each tick the
 blast reads the caster's right hand, facing and aim point (the AI's
 target's chest or the player's cursor), and a thrown blast pushes the limb
 spheres its chunks reach and knocks a struck character by its gathered
-impulse; that sphere test, the body's mass as its parts' sum and the knock
-as a knockback step are Exarust's. A barrier cast makes its dome entity
+impulse, raises the character's instability counter by one and its concern
+toward the caster by the hit's 1 at gain 0.01 (the alert on the release
+raises the concern of every character the caster's AI knows within 1800 cm
+by the draw's weight at gain 3); each chunk also sweeps the level as a
+ball of its reach and rebounds half way to a surface it meets. The limb
+sphere test, the body's mass as its parts' sum, the knock as a knockback
+step and the level sweep are Exarust's. Its ribbon is built each frame and
+drawn with the glow material (`thaum::blast_live::draw_blasts`). A barrier cast makes its dome entity
 (`thaum::barrier_live`): the creator hands it the power's cost as its rate
 and the radius 100, its start plays cast motion 0x23 with id 0x10205 and
 takes the hook, which ends the dome (state 2) and answers −1. Under state 2
@@ -222,11 +228,17 @@ takes a hook answering −1 that fizzles a charging torrent and ends a
 running one. Running keeps the hook, so the torrent pours until a later
 cast, the release flag or a shortfall (the drain while charging, half of
 it while running) calls it. Its delays draw from the effects' shared roll,
-its running points push other bodies' limb spheres (each push costing a
-character the torrent's energy loss), and it leaves the scene on the first
+its running points push other bodies' limb spheres at forty centimetres
+past their width's reach (each push costing a character the torrent's
+energy loss), a struck character is knocked by the gathered impulse, gets
+the torrent's stun, raises its instability counter by one and its concern
+toward the caster by 1 at gain 0.01, and it leaves the scene on the first
 frame that would build no triangles: fizzled, or no stream with more than
-two samples. The turned aim (the blast aim here) and the sphere test are
-Exarust's; the character knock, sounds, light and draw are not wired. A cast motion is played through
+two samples. Its stream ribbons are built each frame with the eye as the
+normal reference and drawn with the glow material
+(`thaum::torrent_live::draw_torrents`). The turned aim (the blast aim
+here) and the sphere test are Exarust's; the sounds, the light and the
+stun's consumer are not wired. A cast motion is played through
 the animator by its action name (0x22 Force Blast … 0x28 Disp Form),
 looping when its clip's mode has bit 0 (Force Barrier, Force Torrent). A
 cast hook answers by the event's bits (`casting::CastHook`): the engine
@@ -464,8 +476,38 @@ What the Mind domain shows is in `exa_game::mind::sight`:
   `(contact − point)·(1 − straightness)·(−k)`, `k = inverse/(inverse +
   0.5)·push·0.3·(2 − s)·s`; a character as the blast's, with `k/2000` of
   energy. A simulated point moves by `(1 − d²/r²)·0.01` of the move.
+- **Ribbon meshes** (`effects::ribbon`): the draw samples each chunk's
+  trail eight times, five centimetres apart, with the slot sizes
+  interpolated and offset by the head's share of the frame's trail step,
+  normalises the second coordinates by the last and smooths both ten
+  times (`0.5·w + 0.25·(w₊ + w₋)`), takes the spine into the camera's
+  space and bends it across the view plane in ten passes by
+  `(f/(x² + y² + f) − 0.5)·0.5` and 0.05, then emits eight quads a chunk:
+  the two vertices at `a ± (b − previous) × z`, the texture `(0, v)` and
+  `(1, v)`, the second coordinates `((40/reach·2.5)·w₇, row)` and the
+  chunk's colour bytes. Each chunk's strip starts from the extrapolated
+  point `2p₀ − p₁` and chains onto the previous chunk's closing pair. The
+  torrent doubles its samples with midpoints pulled a quarter by the
+  neighbours and a sixteenth back along the segment, bends each pair by a
+  normal across the eye and the sample's age, and walks its second texture
+  coordinate by the squared sample distance (0.005 while charging, 0.0003
+  while running).
+- **Lifecycle** (`Blast::{link, destroy}` and `Torrent::{link, destroy}`):
+  linking sets the geometry node's link flag 0x1_0000 and installs the
+  ribbon draw; destroying stops the sounds, frees the chunk records and
+  draw buffers, takes the GI light out of its manager and frees the entity
+  (the torrent's destroys its object too). The shared effect draw uploads
+  the node's matrix times each pass's texture matrix (`force_passes`).
+- **Contact walks**: the static walk rebounds a chunk half way to the
+  level's closest surface point and keeps 0.9 of its weight; a limb takes
+  the push and keeps 0.9 (0.5 for a bolt on anything but a character); the
+  bolt's sampled walk moves a chunk onto the contact, zeroes its weight
+  and wears it 0.015; a simulated object's points move and stir; a
+  torrent point moves half way to a static surface and raises the loop's
+  channels by its life share.
 - **Lights**: one multi-point light each, coloured (0.16, 0.08, 1) and
-  (0.12, 0.06, 1) (`effects::emissive`).
+  (0.12, 0.06, 1) (`effects::emissive`); their box's middle is moved by
+  the effect node's place.
 
 ## Energy
 

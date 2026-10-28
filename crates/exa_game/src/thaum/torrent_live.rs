@@ -48,7 +48,7 @@ use super::live::{EffectDraws, EffectMesh, EffectRoll, mesh_of_ribbon, show};
 use crate::effects::blast::{HIT_HOSTILITY, blast_aim};
 use crate::effects::torrent::{
     POINTS, RUNNING_FLAGS, Stream, StreamPoint, TORRENT_MOTION, Torrent, TorrentEvents,
-    TorrentView, limb_impulse, limb_terms, torrent_knock, torrent_reach,
+    TorrentView, body_reach, limb_impulse, limb_terms, torrent_knock,
 };
 use crate::player::CursorGround;
 
@@ -195,7 +195,7 @@ pub(crate) fn strike_streams(
 ) -> (usize, Vec3) {
     let Some(effect) = reach_box(torrent.records[..torrent.count].iter().flat_map(|stream| {
         live_points(stream).map(|point| {
-            let reach = most_reach(|scale| torrent_reach(point.width, scale, torrent.margin));
+            let reach = most_reach(|scale| body_reach(point.width, scale, torrent.margin));
             (point.at, reach)
         })
     })) else {
@@ -221,7 +221,7 @@ pub(crate) fn strike_streams(
                 }
                 let inverse = limbs[start].inverse_mass;
                 let (scale, push, _) = limb_terms(character, inverse, mass);
-                let reach = torrent_reach(point.width, scale, torrent.margin);
+                let reach = body_reach(point.width, scale, torrent.margin);
                 let mut pushed = false;
                 for limb in &limbs[start..end] {
                     let (centre, radius, velocity, sphere) =
@@ -557,7 +557,7 @@ mod tests {
                     let part = &body.parts[part_index];
                     let inverse = part.inverse_mass;
                     let (scale, push, _) = limb_terms(character, inverse, mass);
-                    let reach = torrent_reach(point.width, scale, torrent.margin);
+                    let reach = body_reach(point.width, scale, torrent.margin);
                     let world = part.transform();
                     let here: Vec3 = part.positions.iter().copied().sum::<Vec3>() * 0.25;
                     let before: Vec3 = part.previous.iter().copied().sum::<Vec3>() * 0.25;

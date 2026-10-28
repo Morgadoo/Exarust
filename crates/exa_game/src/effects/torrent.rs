@@ -45,9 +45,16 @@
 //!   source and its live points between their last two places, with their
 //!   width, life curve `(2 − s)·s` and age) and colour bytes; the GI
 //!   light's points ([`LightPoints::merge`]).
-//! - **Hits** ([`torrent_reach`], [`torrent_hit`], [`push_torrent_point`],
-//!   [`limb_terms`], [`limb_impulse`], [`character_knock`]): the contact
-//!   arithmetic; the engine's mesh tests are not ported.
+//! - **Hits** ([`torrent_reach`], [`body_reach`], [`torrent_hit`],
+//!   [`push_torrent_point`], [`limb_terms`], [`limb_impulse`],
+//!   [`torrent_knock`], [`surface_push`]): the contact arithmetic; the
+//!   engine's mesh query is the caller's surface callback.
+//! - **Ribbon** ([`Torrent::ribbon`]): each stream's samples doubled with
+//!   midpoints, eye-facing normals kept between frames, and quads widened
+//!   by the sample's age, walking the second texture coordinate by the
+//!   squared sample distance.
+//! - **Life** ([`Torrent::link`], [`Torrent::destroy`]): the geometry link
+//!   and the destroy slot's two loops and GI light.
 //!
 //! Evidence: the torrent's start, chunk setup, aim, tick, contact entries
 //! and callbacks, frame and light merge, read from `Exanima.exe`
@@ -105,6 +112,36 @@ pub const MOST_LIGHTS: usize = 16;
 /// runs: the squared distance between two samples times one of these.
 pub const RIBBON_STEP_CHARGING: f64 = 0.005;
 pub const RIBBON_STEP_RUNNING: f64 = 0.0003;
+/// The extra reach a torrent point tests a rigid body with, cm.
+pub const BODY_EXTRA: f32 = 40.0;
+
+/// The reach a torrent point tests a rigid body with: the width times the
+/// scale, plus the margin, plus forty.
+pub fn body_reach(width: f32, scale: f32, margin: f32) -> f32 {
+    width * scale + margin + BODY_EXTRA
+}
+
+/// The static surface's contact scale, push and the ease a point takes
+/// toward the contact.
+pub const STATIC_SCALE: f32 = 0.25;
+pub const STATIC_PUSH: f32 = 0.5;
+pub const CONTACT_EASE: f32 = 0.5;
+
+/// What a static surface's contact tells the walk.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StaticContact {
+    pub scale: f32,
+    pub push: f32,
+    pub ease: f32,
+}
+
+/// The static surface's contact values.
+pub const STATIC_CONTACT: StaticContact = StaticContact {
+    scale: STATIC_SCALE,
+    push: STATIC_PUSH,
+    ease: CONTACT_EASE,
+};
+
 /// The normal-averaging weight and the normal lerps the ribbon keeps
 /// between frames.
 pub const NORMAL_AVERAGE: f32 = 0.1;
@@ -1136,6 +1173,16 @@ mod tests {
         assert!((energy_after(1.0, 80.0) - (1.0 - 0.0125 * 0.0005)).abs() < 1e-7);
         assert_eq!(energy_after(0.2, 80.0), 0.2);
         assert_eq!(torrent_reach(12.0, 0.25, 0.0), 13.0);
+        // A rigid body's reach is forty past the same scale, not ten.
+        assert_eq!(body_reach(12.0, 0.25, 0.0), 43.0);
+        assert_eq!(
+            STATIC_CONTACT,
+            StaticContact {
+                scale: 0.25,
+                push: 0.5,
+                ease: 0.5
+            }
+        );
     }
 
     #[test]

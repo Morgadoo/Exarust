@@ -250,12 +250,21 @@ sixteen streams fed from the hand, spawning, pulling together, splitting
 arithmetic (limb pushes, the character knock and its stun quirk, rebound,
 push-out, simulated points), their frames' sounds, colour bytes, texture
 offsets and torrent light points, their geometry classes
-(`effects::effect_geometry`) and multi-point lights (`effects::emissive`)
-are in. The engine's mesh and sphere tests that find contacts, the ribbon
-vertex builds and the GL passes are not. A blast or bolt cast runs its
+(`effects::effect_geometry`, including the per-pass object matrix) and
+multi-point lights (`effects::emissive`, their box moved by the node's
+place) are in. `effects::ribbon` builds both draws: the blast's eight
+trail samples a chunk, its smoothed 0–1 coordinates, the camera-facing
+bend in the camera's space and the eight quads chained across chunks; the
+torrent's doubled samples with their eye-facing normals and per-sample
+widths. The contact walks are in too: the level's static rebound, the
+bolt's sampled walk that zeroes a chunk's weight, the simulated object's
+stir and the torrent's surface push. The engine's GL passes are what
+remains out. A blast or bolt cast runs its
 blast as an entity (`thaum::blast_live`): the cast motion and hook as the
-original's start sets them, and Exarust's own sphere test against the
-other bodies' limbs. A barrier cast runs its dome as an entity
+original's start sets them, Exarust's own sphere test against the other
+bodies' limbs, the level sweep that rebounds a chunk, the release's alert
+to the caster's known characters, the instability counter and the concern
+a struck character takes, and its ribbon drawn with the glow material. A barrier cast runs its dome as an entity
 (`thaum::barrier_live`): cast motion 0x23 and the hook that ends it, the
 focus it pays a tick, and its shell pushing other bodies' limb spheres out.
 A bubble cast runs its dome where it was cast (`thaum::bubble_live`),
@@ -264,7 +273,9 @@ ending with its power. A wave cast runs its wave round the caster's body root
 tick, and thrown into other bodies' limbs. A torrent cast runs its streams from
 the caster's right hand (`thaum::torrent_live`): charging and pouring on
 its hook until the caster lets go or runs out, its points pushing other
-bodies' limbs, and leaving once its frame would draw nothing. Cast hooks answer by event
+bodies' limbs at the body reach of forty, the knock, counter and concern
+a struck character takes, its ribbon drawn with the glow material, and
+leaving once its frame would draw nothing. Cast hooks answer by event
 (`thaum::casting::CastHook`): the shell's and the bubble's refuse another
 cast until their raise clip ends, and a caster's animator leaving its cast
 action asks the hook with event 4 (`thaum::cast::call_motion_hooks`).
