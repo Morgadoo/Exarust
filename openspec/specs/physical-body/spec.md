@@ -784,7 +784,7 @@ The lift SHALL read each foot's own ground. The character controller's floor SHA
 - **THEN** its target is the original's every tick, as with its controller on the floor
 
 ### Requirement: Leg bend
-A leg SHALL bend onto its bend target. The knee SHALL be the law of cosines on the two bones: 30° over the double 0.866, 180° at or below −1, else the engine's arc cosine. The correction from the clip SHALL advance at most 0.02 rad a tick (0.2 while stepping) plus its stored rate, never past the target. The rate SHALL become half that sum, within ±0.1 rad. Muscles SHALL follow the correction on the next tick, not the tick that computed it. Lying down it SHALL release instead.
+A leg SHALL bend onto its bend target. The knee SHALL be the law of cosines on the two bones: 30° over the double 0.866, 180° at or below −1, else the engine's arc cosine. The correction from the clip SHALL advance at most 0.02 rad a tick (0.2 while stepping) plus its stored rate, never past the target. The rate SHALL become half that sum, within ±0.1 rad. Muscles SHALL follow the correction on the next tick, not the tick that computed it, through the sampler's IK step. Lying down it SHALL release instead.
 
 #### Scenario: Folded to 40 cm
 - **WHEN** both bones are 40 cm and the hip-to-target distance is 40 cm
@@ -1314,11 +1314,15 @@ The footwork SHALL turn each stance spot from the character frame's yaw onto the
 - **THEN** an ankle 1 m ahead across the ground stands 1 m toward +X
 
 ### Requirement: Stance score
-The stance score SHALL be 2(1 − C²) + ((1 − W²) + A). A SHALL be 1 minus the reference's horizontal distance to the foot segment times the single 1/30, less a double 0.1 a cm of a crouched span past 120 − 30·crouch. W SHALL be |60·scale − span| / (60·scale). C SHALL be the same for 55·scale and the span's dot with the character frame's side axis, rooted when positive.
+The stance score SHALL be 2(1 − C²) + ((1 − W²) + A), with the feet's difference taken across the ground (its height zeroed) for the span, the segment projection and the side term. A SHALL be 1 minus the reference's horizontal distance to the foot segment times the single 1/30, or 1 when the squared distance is under the general epsilon (a NaN takes the root), less a double 0.1 a cm of a crouched span past 120 − 30·crouch. W SHALL be |60·scale − span| / (60·scale), unguarded. C SHALL be the same for 55·scale and the span's dot with the character frame's side axis, rooted when over the epsilon.
 
 #### Scenario: Natural and crossed
 - **WHEN** the feet are 60 cm apart, the reference lies on the segment, and the frame's side axis runs from the first foot to the second
 - **THEN** the natural order scores 2.524 and the swapped order scores −4.744
+
+#### Scenario: Feet at different heights
+- **WHEN** the second foot is 40 cm higher and 60 cm along, and the reference is 20 cm up over the segment's midpoint
+- **THEN** the reference is on the segment across the ground and A is 1
 
 ### Requirement: Score reference
 The stance score's chest reference SHALL be the chest, or, while a recovery step runs, the midpoint of the chest and the thorax pin targets. It SHALL then add 10 ticks of the fast velocity and 100·crouch cm along the facing.
@@ -2068,3 +2072,14 @@ The look rate SHALL rise 0.0025 a tick in double while locomoting, at most 0.15,
 #### Scenario: Moving
 - **WHEN** a body locomotes for 200 ticks and then stands
 - **THEN** its look rate reaches 0.15 and returns to 0.0125
+
+### Requirement: Sampler IK step
+The living sampler SHALL fold each leg's stored thigh turn, hip and knee corrections into its clip chain before the torso twist, recording the clip's hip and ankle from the chain before the fold, and SHALL re-place every part under the shin by its clip placement under its re-placed parent. The record SHALL reach the feet routine in world coordinates, put there by the aim after its carry.
+
+#### Scenario: A turned root
+- **WHEN** the body root is 3 m along x and turned a quarter about the vertical
+- **THEN** the leg's animated hip and ankle are the chain's recorded points under that root
+
+#### Scenario: The foot follows
+- **WHEN** a knee correction of 0.2 rad is folded into a shin with a foot 0.4 m under it
+- **THEN** the foot keeps its 0.4 m placement under the bent shin
