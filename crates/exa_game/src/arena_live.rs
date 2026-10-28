@@ -226,6 +226,7 @@ pub fn round_plans(
                     member,
                     &slot.place,
                     MANAGER_ROLE,
+                    u32::try_from(index).unwrap_or(0).wrapping_add(1),
                     now_ms,
                     act_grace_ms,
                 ));
@@ -470,7 +471,14 @@ fn stand_next_round(
                 .get(index.saturating_sub(1))
                 .map(|member| (member.name.as_str(), member.health))
         });
-        let body = company_plan(member, &ours, MANAGER_ROLE, now, MATCH_ACT_GRACE_MS);
+        let body = company_plan(
+            member,
+            &ours,
+            MANAGER_ROLE,
+            u32::try_from(index).unwrap_or(0).wrapping_add(1),
+            now,
+            MATCH_ACT_GRACE_MS,
+        );
         commands.write(SceneCommand::Spawn(Box::new(body)));
     }
 }

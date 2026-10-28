@@ -255,6 +255,7 @@ pub fn company_plan(
     member: Option<(&str, u16)>,
     place: &Place,
     role: u32,
+    id: u32,
     now_ms: u32,
     act_grace_ms: u32,
 ) -> SceneBodyPlan {
@@ -263,7 +264,7 @@ pub fn company_plan(
     body.name = member.map(|(name, _)| name.to_string());
     body.team = PLAYER_TEAM;
     body.roles = vec![role];
-    body.id = role;
+    body.id = id;
     body.health = member.map_or(1.0, |(_, health)| f32::from(health) / f32::from(u16::MAX));
     body.damage = SPAWN_HEALTH;
     body.condition_health = SPAWN_HEALTH;
@@ -872,14 +873,14 @@ mod tests {
 
     #[test]
     fn a_company_entrant_is_the_players_side_with_its_saved_health() {
-        let plan = company_plan(Some(("Ash", 32_768)), &place(), 0x11, 0, 3_000);
+        let plan = company_plan(Some(("Ash", 32_768)), &place(), 0x11, 3, 0, 3_000);
         assert_eq!(plan.team, 1);
         assert_eq!(plan.roles, vec![0x11]);
         assert_eq!(plan.name.as_deref(), Some("Ash"));
         assert!((plan.health - 0.5).abs() < 1e-4);
         assert!(matches!(plan.brain, BodyBrain::Npc));
         assert_eq!(plan.damage, 100.0);
-        let empty = company_plan(None, &place(), 0x11, 0, 3_000);
+        let empty = company_plan(None, &place(), 0x11, 1, 0, 3_000);
         assert_eq!(empty.health, 1.0);
         assert_eq!(empty.name, None);
     }
