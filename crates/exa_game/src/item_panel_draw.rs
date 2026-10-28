@@ -76,7 +76,10 @@ impl PanelIcons {
     /// atlas cell exist, at its stored cell, scaled from the atlas's cell
     /// to the panel's icon size. `None` when nothing draws.
     pub fn layer(&mut self, container: &Container) -> Option<GuiLayer> {
-        let texture = self.texture()?.clone();
+        if container.entries.is_empty() {
+            return None;
+        }
+        self.texture()?;
         let mut batch = SkinBatch::new();
         batch.mode = SkinMode::HltCol;
         batch.blend = PANEL_BLEND;
@@ -116,7 +119,9 @@ impl PanelIcons {
             batch.end_quads();
             drew = true;
         }
-        drew.then(|| GuiLayer::new(batch, LayerTexture::Owned(texture)))
+        // The atlas texture is copied into the layer only when an icon drew.
+        let texture = self.texture.as_ref().filter(|_| drew)?.clone();
+        Some(GuiLayer::new(batch, LayerTexture::Owned(texture)))
     }
 }
 

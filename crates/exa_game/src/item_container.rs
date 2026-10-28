@@ -724,19 +724,22 @@ mod tests {
         // The toggle drops the open card when one was pending.
         let mut card = CardWindow {
             open: true,
-            due: Some(5),
+            timer: CardTimer {
+                due: Some(5),
+                ..Default::default()
+            },
             ..Default::default()
         };
         card.toggle(2, 0, 0);
         assert!(!card.open);
-        assert_eq!(card.due, Some(CARD_DELAY_MS));
+        assert_eq!(card.timer.due, Some(CARD_DELAY_MS));
     }
 
     #[test]
     fn a_double_click_opens_uses_or_does_nothing() {
         assert_eq!(double_click(0, true), DoubleClick::OpenContainer);
         assert_eq!(double_click(0, false), DoubleClick::Nothing);
-        assert_eq!(double_click(1, true), DoubleClick::Nothing);
+        assert_eq!(double_click(1, true), DoubleClick::CloseCard);
         assert_eq!(double_click(2, false), DoubleClick::UseItem);
         assert_eq!(double_click(7, true), DoubleClick::UseItem);
     }
@@ -811,55 +814,76 @@ pub fn mouse_intent(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PanelEvent {
     None,
-    StartDrag { grab: Cell },
+    StartDrag {
+        grab: Cell,
+    },
     OpenContainer,
+    /// Close the open card (a double click on a use-class-1 item).
+    CloseCard,
+    /// Close the open card, then run the game's use hook.
     UseItem,
-    ShowCard { delayed: bool, run_use: bool },
+    ShowCard {
+        delayed: bool,
+        run_use: bool,
+    },
 }
 
-/// The panel's mouse decision, composing the press bits with the item's use
-/// class. A right click (bit 0x2000) with an item under the pointer shows
-/// its card: use class 0 or 1 delays it (the GUI's 200 ms timer) and class
-/// 2 also runs the game's use; a class above 2 shows it at once. A double
-/// click (bit 0x8000) opens a container, does nothing for class 1 and
-/// otherwise runs the use. A drag starts only when allowed and over an
-/// item; a press without its item bit does nothing.
+/// The panel's mouse decision, composing the press bits with the item's
+/// use class, in the original's order: bit 0x2 goes to the base form and
+/// nothing happens without bit 0x1; then 0x4000 starts a drag (when allowed
+/// and over an item), 0x8000 is the double click ([`double_click`] on the
+/// item's `use_class`) and 0x2000 shows the card. The card reads
+/// `card_kind`, the first byte of the item's use section (`None` without
+/// one): kinds 0 and 1 delay the card (the GUI's 200 ms timer), kind 2 also
+/// runs the game's use first, and a higher kind or no section builds the
+/// card at once. A pending card request swallows the right click.
+#[allow(clippy::too_many_arguments)]
 pub fn panel_event(
     button: u16,
     hit: Option<usize>,
     allow_drag: bool,
     is_container: bool,
     use_class: u8,
+    card_kind: Option<u8>,
     cell: i32,
     card_pending: bool,
 ) -> PanelEvent {
-    if button & 0x8000 != 0 && button & 0x2 == 0 && button & 0x1 != 0 && hit.is_some() {
+    if button & 0x2 != 0 || button & 0x1 == 0 {
+        return PanelEvent::None;
+    }
+    if button & 0x4000 != 0 {
+        return match mouse_intent(button, hit, allow_drag, is_container, cell) {
+            MouseIntent::StartDrag { grab } => PanelEvent::StartDrag { grab },
+            _ => PanelEvent::None,
+        };
+    }
+    if button & 0x8000 != 0 {
+        if hit.is_none() {
+            return PanelEvent::None;
+        }
         return match double_click(use_class, is_container) {
             DoubleClick::OpenContainer => PanelEvent::OpenContainer,
+            DoubleClick::CloseCard => PanelEvent::CloseCard,
             DoubleClick::UseItem => PanelEvent::UseItem,
             DoubleClick::Nothing => PanelEvent::None,
         };
     }
-    if button & 0x2000 != 0 && button & 0x2 == 0 && button & 0x1 != 0 {
+    if button & 0x2000 != 0 {
         if hit.is_none() || card_pending {
             return PanelEvent::None;
         }
-        return PanelEvent::ShowCard {
-            delayed: use_class <= 2,
-            run_use: use_class == 2,
+        return match card_kind {
+            Some(kind) if kind <= 2 => PanelEvent::ShowCard {
+                delayed: true,
+                run_use: kind == 2,
+            },
+            _ => PanelEvent::ShowCard {
+                delayed: false,
+                run_use: false,
+            },
         };
     }
-    match mouse_intent(button, hit, allow_drag, is_container, cell) {
-        MouseIntent::None => PanelEvent::None,
-        MouseIntent::StartDrag { grab } => PanelEvent::StartDrag { grab },
-        MouseIntent::Open => PanelEvent::OpenContainer,
-        MouseIntent::Use => PanelEvent::UseItem,
-        // The card path is handled above with its use class.
-        MouseIntent::Card => PanelEvent::ShowCard {
-            delayed: true,
-            run_use: false,
-        },
-    }
+    PanelEvent::None
 }
 
 /// The grab offset once a drag has started: the cell's centre, not the
@@ -950,67 +974,81 @@ mod mouse_tests {
 
     #[test]
     fn a_panel_event_composes_the_press_and_the_use_class() {
-        // Right click: delayed unless a use above 2, which runs first.
+        let ev = |button, hit, drag, container, class, kind, pending| {
+            panel_event(button, hit, drag, container, class, kind, 160, pending)
+        };
+        // Right click: kinds 0 and 1 delay the card, kind 2 also runs the
+        // use, a higher kind or no use section builds it at once.
         assert_eq!(
-            panel_event(0x2001, Some(0), true, false, 0, 160, false),
+            ev(0x2001, Some(0), true, false, 0, Some(0), false),
             PanelEvent::ShowCard {
                 delayed: true,
                 run_use: false
             }
         );
         assert_eq!(
-            panel_event(0x2001, Some(0), true, false, 2, 160, false),
+            ev(0x2001, Some(0), true, false, 0, Some(2), false),
             PanelEvent::ShowCard {
                 delayed: true,
                 run_use: true
             }
         );
+        for kind in [Some(5), None] {
+            assert_eq!(
+                ev(0x2001, Some(0), true, false, 0, kind, false),
+                PanelEvent::ShowCard {
+                    delayed: false,
+                    run_use: false
+                }
+            );
+        }
         assert_eq!(
-            panel_event(0x2001, Some(0), true, false, 5, 160, false),
-            PanelEvent::ShowCard {
-                delayed: false,
-                run_use: false
-            }
-        );
-        assert_eq!(
-            panel_event(0x2001, None, true, false, 0, 160, false),
+            ev(0x2001, None, true, false, 0, None, false),
             PanelEvent::None
         );
         assert_eq!(
-            panel_event(0x2001, Some(0), true, false, 0, 160, true),
+            ev(0x2001, Some(0), true, false, 0, None, true),
             PanelEvent::None
         );
-        // Double click: a container opens, class 1 does nothing, class 2 uses.
+        // Double click by the use class.
         assert_eq!(
-            panel_event(0x8001, Some(1), true, true, 0, 160, false),
+            ev(0x8001, Some(1), true, true, 0, None, false),
             PanelEvent::OpenContainer
         );
         assert_eq!(
-            panel_event(0x8001, Some(1), true, false, 0, 160, false),
+            ev(0x8001, Some(1), true, false, 0, None, false),
             PanelEvent::None
         );
         assert_eq!(
-            panel_event(0x8001, Some(1), true, true, 1, 160, false),
-            PanelEvent::None
+            ev(0x8001, Some(1), true, true, 1, None, false),
+            PanelEvent::CloseCard
         );
         assert_eq!(
-            panel_event(0x8001, Some(1), true, true, 2, 160, false),
+            ev(0x8001, Some(1), true, true, 2, None, false),
             PanelEvent::UseItem
         );
-        // Drags go through the base decision.
         assert_eq!(
-            panel_event(0x4001, Some(1), true, false, 0, 160, false),
+            ev(0x8001, None, true, true, 2, None, false),
+            PanelEvent::None
+        );
+        // The drag bit wins over the double click and the right click.
+        assert_eq!(
+            ev(0xe001, Some(1), true, false, 2, None, false),
             PanelEvent::StartDrag {
                 grab: Cell::new(80, 80)
             }
         );
         assert_eq!(
-            panel_event(0x4001, Some(1), false, false, 0, 160, false),
+            ev(0x6001, Some(1), false, false, 0, None, false),
             PanelEvent::None
         );
-        // The base form's bit swallows the event.
+        // The base form's bit and a press without the item bit.
         assert_eq!(
-            panel_event(0x8003, Some(1), true, true, 0, 160, false),
+            ev(0x8003, Some(1), true, true, 0, None, false),
+            PanelEvent::None
+        );
+        assert_eq!(
+            ev(0x2000, Some(1), true, true, 0, None, false),
             PanelEvent::None
         );
     }
@@ -2136,14 +2174,12 @@ impl CardTimer {
 /// The card window's fade: a card closes over 0x100 ms.
 pub const CARD_FADE_MS: u32 = 0x100;
 
-/// The card window's state: the request's item and flags, the delayed build,
-/// whether a card is shown, and when its close fade began.
+/// The card window's state: the delayed build ([`CardTimer`]), whether a
+/// card is shown, and when its close fade began.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct CardWindow {
-    pub item: u32,
-    pub flags: u32,
-    /// The real-time millisecond the delayed build comes due.
-    pub due: Option<u32>,
+    /// The pending request's item, flags and due time.
+    pub timer: CardTimer,
     pub open: bool,
     /// The millisecond the close fade began, while closing.
     pub closing: Option<u32>,
@@ -2161,36 +2197,30 @@ pub enum CardClose {
 }
 
 impl CardWindow {
-    /// The card request: a pending build is cancelled, the item and flags
-    /// are remembered, and the build is scheduled [`CARD_DELAY_MS`] later.
-    /// The original also drops its pointer to an open card here.
+    /// The card request: a pending build is cancelled (the original also
+    /// drops its pointer to the card then), and the build is scheduled
+    /// [`CARD_DELAY_MS`] later for the item and flags.
     pub fn toggle(&mut self, item: u32, flags: u32, now: u32) {
-        if self.due.take().is_some() {
+        if self.timer.cancel() {
             self.open = false;
         }
-        self.item = item;
-        self.flags = flags;
-        self.due = Some(now.wrapping_add(CARD_DELAY_MS));
+        self.timer.request(item, flags, now);
     }
 
     /// Builds the card once the delay has passed; `None` while it has not.
     /// A built card is open until a close begins.
     pub fn build_due(&mut self, now: u32) -> Option<(u32, u32)> {
-        let due = self.due?;
-        if (now.wrapping_sub(due) as i32) < 0 {
-            return None;
-        }
-        self.due = None;
+        let due = self.timer.take_due(now)?;
         self.open = true;
         self.closing = None;
-        Some((self.item, self.flags))
+        Some(due)
     }
 
     /// Closes the card: a pending build is cancelled; otherwise an open
     /// card starts its [`CARD_FADE_MS`] fade. An open card is not closed
     /// twice.
     pub fn close(&mut self, now: u32) -> CardClose {
-        if self.due.take().is_some() {
+        if self.timer.cancel() {
             return CardClose::Cancelled;
         }
         if self.open && self.closing.is_none() {
@@ -2223,11 +2253,13 @@ impl CardWindow {
 }
 
 /// What a double click on a panel entry does: the item's use class decides.
-/// Class 0 opens a container (and does nothing for anything else); classes
-/// 0 and 1 close an open card; a class above 1 runs the game's use hook.
+/// Class 0 opens a container (and does nothing for anything else); any
+/// other class closes an open card, and a class above 1 then runs the
+/// game's use hook.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DoubleClick {
     OpenContainer,
+    CloseCard,
     UseItem,
     Nothing,
 }
@@ -2235,16 +2267,11 @@ pub enum DoubleClick {
 /// The double click's decision for a use class and whether the item has a
 /// container section.
 pub fn double_click(use_class: u8, is_container: bool) -> DoubleClick {
-    if use_class == 0 {
-        if is_container {
-            DoubleClick::OpenContainer
-        } else {
-            DoubleClick::Nothing
-        }
-    } else if use_class == 1 {
-        DoubleClick::Nothing
-    } else {
-        DoubleClick::UseItem
+    match use_class {
+        0 if is_container => DoubleClick::OpenContainer,
+        0 => DoubleClick::Nothing,
+        1 => DoubleClick::CloseCard,
+        _ => DoubleClick::UseItem,
     }
 }
 
