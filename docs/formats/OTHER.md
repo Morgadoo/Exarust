@@ -149,9 +149,8 @@ random-table condition word, instancing, duplication, promotion, removal,
 template migration with the condition refresh, the item-use test, and the
 packed fields and amounts (`exa_formats::objdb`, `exa_formats::objstrings`).
 Not reproduced: the item factory's regeneration of `@` weapons during
-migration, the editor's palette randomiser, and the scene walks of the entity
-lookup and entity-id rewrite (the id rule itself is
-`ObjectDb::remap_entity_id`). The item fields themselves, their apparel
+migration, and the scene walks of the entity lookup and entity-id rewrite
+(the id rule itself is `ObjectDb::remap_entity_id`). The item fields themselves, their apparel
 meaning and their readers are in
 [Object database items and apparel painting](#object-database-items-and-apparel-painting)
 below.
@@ -267,6 +266,21 @@ three converters the entries list.
   byte `0x1C` = v (below `0x47`: 20 and 200; below `0x5A`: 2(v − 10) and
   2(v + 10); else 2(2v − 100) and 200, all in bytes); `0x18`–`0x1A` to
   `0x37`–`0x39`; the words at `0x20` and `0x24` to `0x44` and `0x48`.
+
+**The editor's look roll** (the dormant in-game object editor; Exarust keeps
+it as `exa_world::editor::roll`). Draws alternate between the engine's
+integer stream and the run-time library's unit stream, in this order: a
+two-way test, the first colour's family (one of the preferred families
+`0 4 8 14 19 25 28` when the test is 0, else one of 32), a unit draw for its
+shade `family × 8 + 7 − round(unit² · 6)` (the processor's to-nearest-even,
+the byte wrapping), the second colour's family (one of 32) and shade
+subtraction 0 or 1, a tone `3 + (0 or 1)`, a fresh roll's five-way test
+(a non-fresh roll does not draw it) and, when it is 0, a seven-way pick from
+the set/finish pairs `(7, 0x0C) (0x24, 0x18) (0x6C, 0x40) (0x9B, 0x18)
+(0xCC, 0x20) (0xE4, 0x18) (0xFD, 0x20)`, else set 3 and finish 0; a flag
+from a two-way test; and a style from a three-way test, `S`–`U` plus a
+three-way draw below 2, else `3 + (0 or 1)`. Two further fields are always
+zero.
 
 ### Records, sections and flags
 

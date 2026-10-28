@@ -8,6 +8,7 @@ pub mod bodies;
 pub mod cloth;
 pub mod cloth_draw;
 pub mod db_objects;
+pub mod editor;
 pub mod environment;
 pub mod fire;
 pub mod flame;
