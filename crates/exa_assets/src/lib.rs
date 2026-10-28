@@ -159,7 +159,13 @@ pub struct TreeSheets {
     pub frames: Option<RgbaImage>,
     pub mods: Option<RgbaImage>,
     pub flamelets: Option<RgbaImage>,
+    /// The domain wheel's texture as drawn: `domainwheel` resampled to the
+    /// GUI unit ([`TreeSheets::resample_wheel`]).
     pub wheel: Option<RgbaImage>,
+    /// The wheel's picture as it ships, with its format word and flags.
+    pub wheel_source: Option<(RgbaImage, u32, u32)>,
+    /// The GUI unit `wheel` was resampled for (0 before the first).
+    pub wheel_unit: i32,
     /// The GUI font atlas the tree's text samples. The running screen fills
     /// this with the interface level's font, or with the base font's atlas
     /// when the install does not ship that level's font (the packs ship only
@@ -201,13 +207,111 @@ impl Game {
         sheets.frames = self.load_rgba("pwrsframes").ok();
         sheets.mods = self.load_rgba("pwrsmods").ok();
         sheets.flamelets = self.load_rgba("flameletsa1").ok();
-        sheets.wheel = self.load_rgba("domainwheel").ok();
+        sheets.wheel_source = self.load_rgba_with_format("domainwheel").ok();
+        sheets.resample_wheel(4);
         sheets
+    }
+
+    /// An `.rfi` as raw RGBA (rows bottom-up) with its format word and its
+    /// header flags.
+    pub fn load_rgba_with_format(&self, name: &str) -> Result<(RgbaImage, u32, u32), String> {
+        let bytes = self
+            .0
+            .texture(name)
+            .ok_or_else(|| format!("texture {name:?} not found"))?;
+        let rfi = Rfi::parse(bytes).map_err(|e| e.to_string())?;
+        let pixels = rfi.decode_rgba8().map_err(|e| e.to_string())?;
+        Ok((
+            RgbaImage {
+                width: rfi.header.width,
+                height: rfi.header.height,
+                pixels,
+            },
+            rfi.header.format_word,
+            rfi.header.flags,
+        ))
+    }
+}
+
+/// The domain wheel's texture at the GUI unit `unit`, as the tree's sheet
+/// load makes it: the picture resampled to `unit · 32` pixels a side by the
+/// engine's resample-to-size path (the mip chain's level for a
+/// power-of-two ratio, else the phase-shifted window), in the space its
+/// format word picks and wrapping by its flags. `None` for a unit whose
+/// side is not positive or does not fit, or a picture the resample refuses.
+pub fn wheel_texture(
+    source: &RgbaImage,
+    format_word: u32,
+    flags: u32,
+    unit: i32,
+) -> Option<RgbaImage> {
+    let side = unit
+        .checked_mul(32)
+        .filter(|side| (1..=0x4000).contains(side))? as usize;
+    let pixels = exa_render::mipmap::resample_rgba8_to_size(
+        &source.pixels,
+        source.width as usize,
+        source.height as usize,
+        side,
+        side,
+        format_word,
+        flags,
+    );
+    (pixels.len() == side * side * 4).then_some(RgbaImage {
+        width: side as u32,
+        height: side as u32,
+        pixels,
+    })
+}
+
+impl TreeSheets {
+    /// Resamples the wheel's texture for the GUI unit `unit` when it was
+    /// made for another (the original's load runs again when the interface
+    /// is rescaled). Without a source picture the wheel stays empty.
+    pub fn resample_wheel(&mut self, unit: i32) {
+        if self.wheel_unit == unit && self.wheel.is_some() {
+            return;
+        }
+        self.wheel_unit = unit;
+        self.wheel = self
+            .wheel_source
+            .as_ref()
+            .and_then(|(source, format, flags)| wheel_texture(source, *format, *flags, unit));
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_wheel_texture_is_resampled_to_thirty_two_units() {
+        // A flat 96-pixel picture shrinks by three to 32 pixels at the
+        // one-pixel unit and stays flat; 64 pixels halve to the chain's first
+        // level; a unit with no side resamples nothing.
+        let flat = crate::RgbaImage {
+            width: 96,
+            height: 96,
+            pixels: [200u8, 100, 50, 255].repeat(96 * 96),
+        };
+        let small = crate::wheel_texture(&flat, 0x0100_2008, 0x2020_0000, 1).expect("a texture");
+        assert_eq!((small.width, small.height), (32, 32));
+        assert!(small.pixels.chunks(4).all(|p| p == [200, 100, 50, 255]));
+        let half = crate::RgbaImage {
+            width: 64,
+            height: 64,
+            pixels: [10u8, 20, 30, 40].repeat(64 * 64),
+        };
+        let level = crate::wheel_texture(&half, 0x0100_2008, 0, 1).expect("a level");
+        assert_eq!(level.pixels.len(), 32 * 32 * 4);
+        assert!(crate::wheel_texture(&flat, 0x0100_2008, 0, 0).is_none());
+        let mut sheets = crate::TreeSheets {
+            wheel_source: Some((flat, 0x0100_2008, 0)),
+            ..Default::default()
+        };
+        sheets.resample_wheel(2);
+        assert_eq!(sheets.wheel.as_ref().map(|w| w.width), Some(64));
+        assert_eq!(sheets.wheel_unit, 2);
+    }
+
     #[test]
     fn the_tree_sheets_load() {
         let Some(dir) = crate::locate_install(None) else {
@@ -239,8 +343,20 @@ mod tests {
         assert_eq!((mods.width, mods.height), (1024, 512));
         let flamelets = sheets.flamelets.as_ref().expect("the flamelets");
         assert_eq!((flamelets.width, flamelets.height), (1024, 1024));
-        let wheel = sheets.wheel.as_ref().expect("the domain wheel");
-        assert_eq!((wheel.width, wheel.height), (384, 384));
+        // The wheel ships at 384 pixels in the raw packed word 0x1002008
+        // without wrap flags and is drawn resampled to 32 units: 128 pixels
+        // at the four-pixel unit, 160 at five.
+        let (source, format, flags) = sheets.wheel_source.as_ref().expect("the domain wheel");
+        assert_eq!((source.width, source.height), (384, 384));
+        assert_eq!((*format, *flags), (0x0100_2008, 0x2020_0000));
+        let wheel = sheets.wheel.as_ref().expect("the resampled wheel");
+        assert_eq!(
+            (wheel.width, wheel.height, sheets.wheel_unit),
+            (128, 128, 4)
+        );
+        let mut sheets = sheets;
+        sheets.resample_wheel(5);
+        assert_eq!(sheets.wheel.as_ref().map(|w| w.width), Some(160));
         // The font atlas is the running screen's choice: the sheet loader
         // leaves it empty, and `fontbase24r` (the one the packs ship) is
         // loaded by the screen itself.
