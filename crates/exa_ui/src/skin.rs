@@ -4730,7 +4730,7 @@ pub fn selection_band(
 
 /// Rounds to nearest even and keeps the low byte, as the original does for
 /// an alpha word.
-fn rounded_byte_wrap(value: f32) -> u8 {
+pub(crate) fn rounded_byte_wrap(value: f32) -> u8 {
     if !value.is_finite() || value <= -2_147_483_648.0 || value >= 2_147_483_648.0 {
         0
     } else {

@@ -125,6 +125,20 @@ pub enum Program {
     Spline,
     /// The GUI skin's textured program, for the font atlas's glyph quads.
     SkinText,
+    /// The domain wheel's backdrop: two polar taps of the flamelets sheet
+    /// (`par0` the scroll, `par1` the reach) over the whole form
+    /// ([`crate::wheel_draw::WHEEL_BACK_SHADER`]).
+    WheelBack,
+    /// The domain wheel's chosen-domain glow: two polar taps, no alpha
+    /// written ([`crate::wheel_draw::WHEEL_GLOW_SHADER`]).
+    WheelGlow,
+    /// The domain wheel's six sector bands: three taps along the band
+    /// (`par0` the scroll, the `par1` vector the sector's phase, fall-off
+    /// and share) ([`crate::wheel_draw::WHEEL_SECTOR_SHADER`]).
+    WheelSector,
+    /// The GUI skin's rounded program: the ink with the alpha the `Scale`
+    /// uniform (`par0`) cuts out of the corner coordinate.
+    Rounded,
 }
 
 /// The texture a batch draws with.
@@ -168,6 +182,9 @@ pub struct Batch {
     pub program: Program,
     pub texture: Texture,
     pub uniforms: Uniforms,
+    /// The blend word ([`crate::gui_draw::blend_factors`]): `0x203` (source
+    /// alpha over one minus source alpha) unless the original sets another.
+    pub blend: u16,
     /// Three vertices for every triangle.
     pub vertices: Vec<TreeVertex>,
 }
@@ -178,6 +195,7 @@ impl Batch {
             program,
             texture,
             uniforms: Uniforms::default(),
+            blend: crate::gui_draw::BLEND_ALPHA,
             vertices: Vec::new(),
         }
     }
@@ -230,6 +248,7 @@ impl TreeDraw {
             && last.program == batch.program
             && last.texture == batch.texture
             && last.uniforms == batch.uniforms
+            && last.blend == batch.blend
         {
             last.vertices.extend(batch.vertices);
             return;
@@ -1634,12 +1653,24 @@ pub fn text_step(font: &crate::gui_font::GuiFont) -> f32 {
 /// the atlas size is known: the running screen loads it from the resource
 /// pack.
 fn text_line(out: &mut TreeDraw, view: &TreeView, text: &[u8], x: f32, y: f32, ink: [f32; 4]) {
-    let (tw, th) = view.font_size;
-    let Some((du, dv)) = crate::gui_text::font_uv(&view.font, (tw, th)) else {
+    glyph_line(out, &view.font, view.font_size, text, x, y, ink);
+}
+
+/// [`text_line`] for a caller with its own font and atlas size.
+pub(crate) fn glyph_line(
+    out: &mut TreeDraw,
+    font: &crate::gui_font::GuiFont,
+    font_size: (u16, u16),
+    text: &[u8],
+    x: f32,
+    y: f32,
+    ink: [f32; 4],
+) {
+    let Some((du, dv)) = crate::gui_text::font_uv(font, font_size) else {
         return;
     };
-    let quads = crate::gui_text::draw_line(&view.font, text, cvt_i32(x), cvt_i32(y));
-    push_glyphs(out, &view.font, &quads, ink, (du, dv));
+    let quads = crate::gui_text::draw_line(font, text, cvt_i32(x), cvt_i32(y));
+    push_glyphs(out, font, &quads, ink, (du, dv));
 }
 
 /// Appends a wrapped block's glyph quads on the GUI font's atlas.
@@ -2083,24 +2114,6 @@ pub fn prompt_draw(
     out
 }
 
-/// The domain wheel's sheet at the child's place: a square picture. The
-/// child's own sector-band draw is outside this component; this shows the
-/// sheet the tree loads.
-pub fn wheel_picture(x: f32, y: f32, size: f32, alpha: f32) -> TreeDraw {
-    let mut out = TreeDraw::default();
-    let mut batch = Batch::new(Program::SkinText, Texture::Wheel);
-    batch.uniforms.par0 = [1.0, 1.0, 0.0, 0.0];
-    let ink = [1.0, 1.0, 1.0, alpha];
-    batch.quad([
-        TreeVertex::new(x, y, 0.0, 0.0).with_colour(ink),
-        TreeVertex::new(x, y + size, 0.0, 1.0).with_colour(ink),
-        TreeVertex::new(x + size, y + size, 1.0, 1.0).with_colour(ink),
-        TreeVertex::new(x + size, y, 1.0, 0.0).with_colour(ink),
-    ]);
-    out.submit(batch);
-    out
-}
-
 /// The dragged power's preview at the pointer: its icon at 13 units, and
 /// its glow at 6 units by 2.5, the glow dimmed to a third unless the power
 /// is picked.
@@ -2149,6 +2162,7 @@ pub fn to_skin_batch(draw: &TreeDraw) -> SkinBatch {
     for entry in &draw.batches {
         let mode = match entry.program {
             Program::Ring => SkinMode::Solid,
+            Program::Rounded => SkinMode::Rounded,
             _ => SkinMode::Textured,
         };
         let first = batch.vertices.len();
@@ -2172,7 +2186,7 @@ pub fn to_skin_batch(draw: &TreeDraw) -> SkinBatch {
             blend: 0,
             draw: GuiDraw::Quads,
             texture_shift: [0.0, 0.0],
-            rounded_scale: None,
+            rounded_scale: (entry.program == Program::Rounded).then_some(entry.uniforms.par0),
             tex_col: None,
             subclass: 0,
             first,
