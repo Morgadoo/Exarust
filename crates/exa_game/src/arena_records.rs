@@ -374,8 +374,8 @@ mod tests {
     /// The installed object database's items, when `EXANIMA_DIR` names an
     /// installation.
     fn real_items() -> Option<Vec<exa_formats::objdb::Item>> {
-        let dir = exa_assets::locate_install(None)?;
-        let data = exa_assets::GameData::open(&dir).ok()?;
+        let dir = std::env::var("EXANIMA_DIR").ok()?;
+        let data = exa_assets::GameData::open(std::path::Path::new(&dir)).ok()?;
         let bytes = data
             .pack(exa_assets::PackKind::Resource)?
             .get("objdb.rdb")?;
