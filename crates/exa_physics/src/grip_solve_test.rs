@@ -226,3 +226,81 @@ fn a_slack_grip_link_damps_its_length() {
     let item_point = item_body.point_at(0, &[1.0, 0.0, 0.0, 0.0]).unwrap();
     assert!((item_point.x + 0.115).abs() < 1e-5, "{item_point}");
 }
+
+/// The cross-body stage keeps a held item at its hand over a run of solver
+/// ticks: the item's grip point stays within a few centimetres of the
+/// hand's while both fall.
+#[test]
+fn a_held_item_stays_at_its_hand_over_ticks() {
+    use crate::body::{PartSetup, SolverStage, solve_with};
+    use crate::grip::{GripPoint, GripSpec};
+    use bevy::math::Affine3A;
+
+    let owner = Entity::from_raw_u32(10).unwrap();
+    let hand = Entity::from_raw_u32(11).unwrap();
+    let item = Entity::from_raw_u32(20).unwrap();
+    let setup = |bone, entity, parent, at| PartSetup {
+        bone,
+        entity,
+        parent,
+        world: Affine3A::from_translation(at),
+        centre: Vec3::ZERO,
+        half: Vec3::splat(0.1),
+        origin: Vec3::ZERO,
+        links: vec![],
+        foot: None,
+        pins: Vec::new(),
+        spheres: None,
+    };
+    let mut holder = Ragdoll::new(&[
+        setup(1, owner, None, Vec3::ZERO),
+        setup(17, hand, Some(0), Vec3::new(0.3, 0.0, 0.0)),
+    ]);
+    let mut item_body = rigid(item, Vec3::new(0.3, 0.0, 0.0), 1.0);
+    let bindings = crate::grip::GripBindings {
+        item_part: 0,
+        hand_parts: [1, 1],
+        arm_parts: [1, 1],
+    };
+    let spec = GripSpec {
+        hand: 0,
+        links: vec![
+            GripPoint {
+                point: Vec3::new(0.0, 20.0, 0.0),
+                slack: 0.0,
+            },
+            GripPoint {
+                point: Vec3::new(5.0, 0.0, 0.0),
+                slack: 0.0,
+            },
+        ],
+        second_hand: None,
+        arm: None,
+        extra: None,
+    };
+    let item_to_hand = holder.parts[1].transform().inverse() * item_body.parts[0].transform();
+    let links = crate::grip::build(
+        &item_body,
+        &holder,
+        bindings,
+        &spec,
+        1.0,
+        1.0,
+        item_to_hand,
+        false,
+        1.0,
+    )
+    .unwrap();
+    let check = links.links[0].clone();
+    let stage = solver(item, hand, links);
+    let mut stages: Vec<Box<dyn SolverStage>> = vec![Box::new(stage)];
+    let ground: &[[Vec3; 3]] = &[];
+    for _ in 0..50 {
+        solve_with(&mut [&mut item_body, &mut holder], ground, &mut stages);
+        let a = item_body.point_at(check.item, &check.on_item).unwrap();
+        let b = holder
+            .point_at(check.hand.unwrap(), &check.on_hand)
+            .unwrap();
+        assert!((a.distance(b)) < 0.05, "{a} {b}");
+    }
+}
