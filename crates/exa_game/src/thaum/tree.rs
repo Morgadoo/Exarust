@@ -78,8 +78,9 @@
 //!   domain switch cuts the content out over 256 ms, swaps the domain at
 //!   the stamp and fades the new tree in over 1000 ms ([`TreeScreen::choose_domain`]
 //!   sets the domain and starts it). A domain wheel child
-//!   ([`DomainWheel`]) sits 280 pixels square at the form's lower left; its
-//!   sheet is shown there and a click picks one of its six sectors.
+//!   ([`DomainWheel`], the `effects::wheel` state) sits 280 pixels square
+//!   at the form's lower left; its sheet is shown there and a click on a
+//!   known, different domain's icon confirms it ([`TreeScreen::wheel_click`]).
 //! - **The bar's animation** ([`TreeScreen::open_bar`], [`close_bar`] and
 //!   [`step_bar`]): opening loads the bar, clears each slot's flash and
 //!   picked bits and runs a 900 ms rise whose height and size are a smooth
@@ -224,87 +225,53 @@ pub struct SkillTiers {
 }
 
 /// The domain wheel child the tree creates: 280 pixels square at the
-/// tree form's lower left, its picture the `domainwheel` sheet. Its own
-/// sector draw is outside this component, so Exarust keeps its state and
-/// shows the sheet at the child's place.
+/// tree form's lower left, its picture the `domainwheel` sheet. Its state,
+/// hit test and confirm are the wheel's own ([`crate::effects::wheel::Wheel`]);
+/// the tree places it, hands it the domain it opened as the choice, and
+/// writes the focus share into its eased value and its show into the
+/// wheel's alpha.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DomainWheel {
     pub left: f32,
     pub top: f32,
-    pub width: f32,
-    pub height: f32,
-    /// The child's fade (its form alpha).
-    pub alpha: f32,
-    /// The domain the wheel shows, 1 to 6.
-    pub domain: u8,
-    /// The domain under the pointer, or 0.
-    pub hovered: u8,
-    /// The stamp of the hover's fade.
-    pub stamp: u32,
-    /// The stamp a change's fade ends.
-    pub fade_at: u32,
-    /// The value the change's fade started from.
-    pub fade_previous: f32,
-    /// The six per-domain values the wheel's rings read, behind the focus's
-    /// share at index 0.
-    pub values: [f32; 7],
-    /// The wheel's state word.
-    pub mode: i32,
-    /// The wheel's count word.
-    pub count: i32,
-    /// The focused id.
-    pub focused: i32,
-    /// Which domains the record knows.
-    pub known: [bool; 6],
+    /// The child's side, 280 pixels.
+    pub size: f32,
+    /// The wheel's state: its `shown` is the child's alpha and its `fade`
+    /// the focus share the tree writes.
+    pub state: crate::effects::wheel::Wheel,
 }
 
 impl DomainWheel {
-    /// The child at the tree form's lower left, 280 pixels square.
+    /// The child at the tree form's lower left, 280 pixels square, with the
+    /// opened domain as its choice.
     pub fn new(left: f32, top: f32, domain: u8) -> Self {
         Self {
             left,
             top,
-            width: 280.0,
-            height: 280.0,
-            alpha: 1.0,
-            domain,
-            hovered: 0,
-            stamp: 0,
-            fade_at: 0,
-            fade_previous: 0.0,
-            values: [0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-            mode: 0,
-            count: 0,
-            focused: 0,
-            known: [false; 6],
+            size: crate::effects::wheel::SIZE_PX as f32,
+            state: crate::effects::wheel::Wheel {
+                chosen: i32::from(domain),
+                ..Default::default()
+            },
         }
     }
 
-    /// The domain under `x`,`y`, 1 to 6, or 0 outside the wheel's circle.
-    /// The six sectors are 60° wide and centred on the six label angles,
-    /// which start at 60°; a labelled guess at the child's hit rule (the
-    /// wheel's own class is outside this component).
+    /// The domain icon under the window point `x`,`y`, 1 to 6, or 0: the
+    /// wheel's own hit test about the child's centre, in whole client
+    /// pixels.
     pub fn domain_at(&self, x: f32, y: f32) -> u8 {
-        let cx = self.left + self.width * 0.5;
-        let cy = self.top + self.height * 0.5;
-        let dx = x - cx;
-        let dy = y - cy;
-        let reach = self.width * 0.5;
-        if dx * dx + dy * dy > reach * reach {
-            return 0;
-        }
-        let turn = std::f32::consts::TAU / 6.0;
-        let angle = dy.atan2(dx);
-        let sector = ((angle + turn * 0.5).rem_euclid(std::f32::consts::TAU) / turn).floor();
-        sector as u8 + 1
+        let half = (self.size * 0.5) as i32;
+        let mouse = (
+            (x - self.left).floor() as i32,
+            (y - self.top).floor() as i32,
+        );
+        crate::effects::wheel::Wheel::hit_test((half, half), mouse) as u8
     }
 
-    /// Starts the 300 ms fade a picked or dropped power triggers: the
-    /// fade's previous value is the first ring's value and its stamp is
-    /// now plus 300 ms.
+    /// Starts the 300 ms ease a picked or dropped power triggers: the
+    /// wheel's open, from its current value.
     pub fn begin_fade(&mut self, now: u32) {
-        self.fade_previous = self.values[0];
-        self.fade_at = now.wrapping_add(300);
+        self.state.open(now);
     }
 }
 
@@ -876,12 +843,13 @@ pub fn zoom_level(value: f32) -> i32 {
     for next in -8..=-1 {
         let level = ((4.0 - f64::from(-next).sqrt()) * 0.25) as f32;
         if value < level {
-            // The original compares the distance to the level just reached
-            // with the distance to the previous one; an unordered compare
-            // (the first level's previous is not a number) fails, so a
-            // value below the first threshold answers −9.
-            let near = (level - value).abs() <= (previous - value).abs();
-            return if near { next } else { next - 1 };
+            // The original asks whether the distance to the level just
+            // reached is greater than the distance to the previous one; an
+            // unordered compare (the first level's previous is not a
+            // number) takes the not-greater branch, so a value below the
+            // first threshold answers that level, −8.
+            let farther = (level - value).abs() > (previous - value).abs();
+            return if farther { next - 1 } else { next };
         }
         previous = level;
     }
@@ -1003,6 +971,10 @@ impl TreeScreen {
             },
             None => Self::empty(domain, mode),
         };
+        // The domain wheel child sits at the form's lower left, 280
+        // pixels square, and has the domain the tree opened as its choice;
+        // the record's wheel shares are written into it below.
+        screen.wheel_child = DomainWheel::new(10.0, height - 290.0, domain);
         match (mode, record) {
             (TreeMode::Test, _) => screen.marks.fill(SHOWN | LEARNED),
             (_, Some(record)) => {
@@ -1017,13 +989,10 @@ impl TreeScreen {
                 screen.focus_total = 48.0;
                 screen.available = 48.0;
                 screen.wheel.total = 48.0;
+                // With no record the original writes 48 into the wheel's
+                // eased value, not a share.
+                screen.wheel_child.state.fade = 48.0;
             }
-        }
-        // The domain wheel child sits at the form's lower left, 280
-        // pixels square, and shows the domain the tree opened.
-        screen.wheel_child = DomainWheel::new(10.0, height - 290.0, domain);
-        if record.is_none() {
-            screen.wheel_child.values[0] = 48.0;
         }
         // The level comes from the whole-pixel height over 2300, worked out
         // in double precision; the width is halved as an integer.
@@ -1075,19 +1044,15 @@ impl TreeScreen {
     pub fn refresh_wheel(&mut self, pairs: &[KnownPower]) {
         self.available = self.record_focus(pairs);
         let mut wheel = WheelMarks::default();
-        let mut known = [false; 6];
         for pair in pairs {
-            let domain = domain_of(pair.power);
-            if !(1..=6).contains(&domain) {
-                continue;
-            }
-            known[usize::from(domain) - 1] = true;
             if pair.flags & PICKED == 0 {
                 continue;
             }
-            wheel.domains[usize::from(domain) - 1] += 0.0625;
+            let domain = domain_of(pair.power);
+            if (1..=6).contains(&domain) {
+                wheel.domains[usize::from(domain) - 1] += 0.0625;
+            }
         }
-        self.wheel_child.known = known;
         wheel.total = self.available * 0.020_833_334;
         for share in &mut wheel.domains {
             if 1.0 < *share {
@@ -1102,10 +1067,9 @@ impl TreeScreen {
             wheel.total = 0.0;
         }
         self.wheel = wheel;
-        // The wheel child reads the same six values: the first is the
-        // focus's share, the rest the domains' picked shares.
-        self.wheel_child.values[0] = self.wheel.total;
-        self.wheel_child.values[1..].copy_from_slice(&self.wheel.domains);
+        // The shares are the wheel child's values: the first is its eased
+        // value.
+        self.wheel_child.state.fade = self.wheel.total;
     }
 
     fn record_focus(&self, pairs: &[KnownPower]) -> f32 {
@@ -1353,7 +1317,9 @@ impl TreeScreen {
                 return out;
             }
             if id > 0 && id & focus::SLOT != 0 {
-                let slot = (id & focus::NODE) - 1;
+                // The slot is the node the last press took (the press
+                // stores the focus's low word), not the focus now.
+                let slot = self.node_under - 1;
                 if (0..10).contains(&slot) && bar.select(slot as usize) {
                     out.slot = Some(slot as usize);
                     out.sound = Some(SLOT_SELECT_SOUND);
@@ -2141,72 +2107,6 @@ pub fn grant_power(
     true
 }
 
-/// One power of a saved character's list, as the save's power section holds
-/// it: the power word and the one-based prerequisite entry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SavedPower {
-    pub power: u32,
-    /// The one-based entry the power hangs from; 0 names none.
-    pub prerequisite: u32,
-}
-
-/// Re-validates a saved power against its domain tree, as loading a saved
-/// character does: the entry's flags are the flags of the last known pair
-/// whose id with bits 20 to 27 cleared equals the entry's power (0 when no
-/// pair holds it). The target is the last entry whose id with bits 20 to
-/// 24 cleared equals `power`; it must not be the first entry, its
-/// prerequisite must be set and that entry's flags must carry [`LEARNED`].
-/// The power then replaces the first known pair that matches it under
-/// [`word::MATCH`] with [`GRANTED_FLAGS`], or is appended. Returns whether
-/// it was written.
-///
-/// The save reader and the tree file's own power list are the caller's; this
-/// is the tree's half of the check.
-pub fn validate_saved_power(saved: &[SavedPower], known: &mut Vec<KnownPower>, power: u32) -> bool {
-    if saved.is_empty() {
-        return false;
-    }
-    let mut flags = vec![0u32; saved.len()];
-    for (index, entry) in saved.iter().enumerate() {
-        for pair in known.iter() {
-            if pair.power & 0xff0f_ffff == entry.power {
-                flags[index] = pair.flags;
-            }
-        }
-    }
-    let mut target = None;
-    for (index, entry) in saved.iter().enumerate() {
-        if entry.power & word::MATCH == power {
-            target = Some(index);
-        }
-    }
-    let Some(target) = target else {
-        return false;
-    };
-    if target == 0 {
-        return false;
-    }
-    let prerequisite = saved[target].prerequisite;
-    if prerequisite == 0
-        || prerequisite as usize > saved.len()
-        || flags[prerequisite as usize - 1] & LEARNED == 0
-    {
-        return false;
-    }
-    let entry = KnownPower {
-        power,
-        flags: GRANTED_FLAGS,
-    };
-    match known
-        .iter_mut()
-        .find(|pair| pair.power & word::MATCH == power)
-    {
-        Some(pair) => *pair = entry,
-        None => known.push(entry),
-    }
-    true
-}
-
 /// The domain a tree opens in: the last domain when the same character
 /// opens it again, else the mind domain.
 pub fn open_domain(same_character: bool, last_domain: u8) -> u8 {
@@ -2513,6 +2413,8 @@ impl TreeScreen {
         } else {
             bar_second
         };
+        // The domain wheel child is shown with the same value.
+        self.wheel_child.state.shown = self.bar_alpha;
     }
 
     /// Starts the domain switch's 256 ms fade-out. The wheel that turns the
@@ -2535,9 +2437,28 @@ impl TreeScreen {
         WheelView {
             x: wheel.left,
             y: wheel.top,
-            size: wheel.width,
-            alpha: wheel.alpha,
+            size: wheel.size,
+            alpha: wheel.state.shown,
         }
+    }
+
+    /// A click on the domain wheel child at the window point `x`,`y`: the
+    /// wheel's own hover and confirm (the click carries the confirm
+    /// modifier; the domain must be known and differ from the current
+    /// choice). A confirmed choice starts the tree's domain switch to it.
+    /// Returns whether the click fell on one of the wheel's icons.
+    pub fn wheel_click(&mut self, x: f32, y: f32, now: u32) -> bool {
+        let hit = self.wheel_child.domain_at(x, y);
+        let wheel = &mut self.wheel_child.state;
+        wheel.hover(i32::from(hit), now);
+        if hit == 0 {
+            return false;
+        }
+        let modifier = crate::effects::wheel::CONFIRM_MODIFIER;
+        if wheel.confirm(modifier, &self.known_domains, now, now) {
+            self.choose_domain(hit, now);
+        }
+        true
     }
 
     /// Loads the bar from the record and starts its 900 ms opening, as
@@ -2658,7 +2579,7 @@ impl TreeScreen {
                 self.read_record(record);
             }
         }
-        self.wheel_child.domain = domain;
+        self.wheel_child.state.chosen = i32::from(domain);
         self.refresh_placement();
         old
     }
@@ -3184,10 +3105,11 @@ mod tests {
     fn the_zoom_levels_pick_the_nearest() {
         assert_eq!(zoom_level(0.304_347_83), -8);
         // Below the first level's threshold the previous distance is not a
-        // number, so the unordered compare picks the level before it.
-        assert_eq!(zoom_level(0.25), -9);
-        assert_eq!(zoom_level(0.26), -9);
-        assert_eq!(zoom_level(0.29), -9);
+        // number; the unordered compare is not "greater", so the first
+        // level answers.
+        assert_eq!(zoom_level(0.25), -8);
+        assert_eq!(zoom_level(0.26), -8);
+        assert_eq!(zoom_level(0.29), -8);
         assert_eq!(zoom_level(0.30), -8);
         assert_eq!(zoom_level(0.65), -2);
         assert_eq!(zoom_level(0.74), -1);
@@ -3290,21 +3212,41 @@ mod tests {
         assert_eq!(screen.text_alpha, 0xa0);
         assert_eq!(screen.hint_alpha, 0x80);
         assert_eq!(screen.caption.to_bits(), 0xff00_0000);
-        // The wheel is 280 square at (10, height − 290), shows the opened
-        // domain and starts with the first ring at 48 on a tree with no
-        // record.
+        // The wheel is 280 square at (10, height − 290), has the opened
+        // domain as its choice and starts with its eased value at 48 on a
+        // tree with no record.
         let wheel = &screen.wheel_child;
         assert_eq!((wheel.left, wheel.top), (10.0, 410.0));
-        assert_eq!((wheel.width, wheel.height), (280.0, 280.0));
-        assert_eq!(wheel.domain, DOMAIN_MIND);
-        assert_eq!(wheel.alpha, 1.0);
-        assert_eq!(wheel.values[0], 48.0);
-        // The centre is in the first sector; straight right is the first
-        // sector and straight up the sixth.
-        assert_eq!(wheel.domain_at(150.0, 550.0), 1);
-        assert_eq!(wheel.domain_at(250.0, 550.0), 1);
-        assert_eq!(wheel.domain_at(150.0, 450.0), 6);
+        assert_eq!(wheel.size, 280.0);
+        assert_eq!(wheel.state.chosen, i32::from(DOMAIN_MIND));
+        assert_eq!(wheel.state.shown, 1.0);
+        assert_eq!(wheel.state.fade, 48.0);
+        // The wheel's own hit test about the child's centre (140, 140):
+        // icon 1 at (140, 64) and icon 4 at (140, 216); the centre is no
+        // icon.
+        assert_eq!(wheel.domain_at(150.0, 474.0), 1);
+        assert_eq!(wheel.domain_at(150.0, 626.0), 4);
+        assert_eq!(wheel.domain_at(150.0, 550.0), 0);
         assert_eq!(wheel.domain_at(0.0, 0.0), 0);
+    }
+
+    #[test]
+    fn a_wheel_click_switches_only_to_a_known_other_domain() {
+        let mut tree = TreeScreen::load(DOMAIN_MIND, TreeMode::Play, None, None, 1000.0, 700.0);
+        // An unknown domain is refused.
+        assert!(tree.wheel_click(150.0, 626.0, 1000));
+        assert_eq!(tree.domain_flags, 0);
+        tree.known_domains = [true; 6];
+        // The current choice is refused too.
+        assert!(tree.wheel_click(150.0, 474.0, 1000));
+        assert_eq!(tree.domain_flags, 0);
+        // A known other domain is chosen and its switch starts.
+        assert!(tree.wheel_click(150.0, 626.0, 1000));
+        assert_eq!(tree.wheel_child.state.chosen, i32::from(DOMAIN_ENERGY));
+        assert_eq!(tree.pending_domain, DOMAIN_ENERGY);
+        assert_eq!(tree.domain_flags, DOMAIN_OUT);
+        // Off the icons the click is not the wheel's.
+        assert!(!tree.wheel_click(150.0, 550.0, 2000));
     }
 
     #[test]
@@ -3318,11 +3260,11 @@ mod tests {
         assert!(tree.switch_due);
         assert_eq!(tree.domain_flags, DOMAIN_IN);
         assert_eq!(tree.domain_at, 2256);
-        // A pick starts the wheel's 300 ms fade from its first value.
-        tree.wheel_child.values[0] = 2.5;
+        // A pick starts the wheel's 300 ms ease from its value.
+        tree.wheel_child.state.fade = 2.5;
         tree.wheel_child.begin_fade(3000);
-        assert_eq!(tree.wheel_child.fade_previous, 2.5);
-        assert_eq!(tree.wheel_child.fade_at, 3300);
+        assert_eq!(tree.wheel_child.state.fade_start, 2.5);
+        assert_eq!(tree.wheel_child.state.fade_deadline, 3300);
     }
 
     #[test]
@@ -4543,60 +4485,6 @@ mod tests {
                 flags: LEARNED | PICKED
             }]
         );
-    }
-
-    #[test]
-    fn a_saved_power_is_revalidated_against_its_prerequisite() {
-        let saved = [
-            SavedPower {
-                power: 0x101,
-                prerequisite: 0,
-            },
-            SavedPower {
-                power: 0x102,
-                prerequisite: 1,
-            },
-        ];
-        let mut known = vec![KnownPower {
-            power: 0x101,
-            flags: LEARNED,
-        }];
-        assert!(validate_saved_power(&saved, &mut known, 0x102));
-        assert_eq!(known.len(), 2);
-        assert_eq!(known[1].power, 0x102);
-        assert_eq!(known[1].flags, GRANTED_FLAGS);
-        // The target is the last matching entry and it is not the first.
-        assert!(!validate_saved_power(&saved, &mut known, 0x101));
-        assert!(!validate_saved_power(&saved, &mut known, 0x103));
-        // The mask ignores bits 20 to 24 on the entry.
-        let masked = [
-            SavedPower {
-                power: 0x0010_0102,
-                prerequisite: 1,
-            },
-            SavedPower {
-                power: 0x102,
-                prerequisite: 0,
-            },
-        ];
-        assert!(!validate_saved_power(&masked, &mut known, 0x102));
-        // An unlearnt prerequisite refuses.
-        let mut empty = Vec::new();
-        assert!(!validate_saved_power(&saved, &mut empty, 0x102));
-        // An existing pair is overwritten, not appended.
-        let mut existing = vec![
-            KnownPower {
-                power: 0x101,
-                flags: LEARNED,
-            },
-            KnownPower {
-                power: 0x102,
-                flags: 0,
-            },
-        ];
-        assert!(validate_saved_power(&saved, &mut existing, 0x102));
-        assert_eq!(existing.len(), 2);
-        assert_eq!(existing[1].flags, GRANTED_FLAGS);
     }
 
     #[test]

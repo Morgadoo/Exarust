@@ -528,12 +528,14 @@ over 2300 picking the nearest; the pan and zoom ease by the original's
 springs. The draw blends the spring's last two zoom values by the frame's
 place in a 17 ms step and rescales the pan about the cursor; an opening or
 domain fade-in eases `1 − r²` into the scale the nodes are drawn at about the
-first node. A tree with no record seeds the character's two default pairs;
-a saved character's powers are revalidated against their saved prerequisite
-(`validate_saved_power`). The form's creation words, the 280-square domain
-wheel child at its lower left, and the wheel's six sectors and 300 ms
-pick/drop fade are kept; the child's own flame and label draw is outside the
-component, so its sheet is shown at the child's place.
+first node. A tree with no record seeds the character's two default pairs.
+The form's creation words and the 280-square domain wheel child at its
+lower left are kept; the child is the wheel of `effects::wheel` (its icon
+hit test, its confirm that needs a known, different domain, and the 300 ms
+ease a pick or drop starts), its eased value is the focus share and its
+show the bar child's fade. A confirmed icon starts the domain switch. The
+child's own ring, icon and label draw is outside the component, so its
+sheet is shown at the child's place.
 
 The power bar holds ten slots; the chosen one carries bit 20. Loading it
 from a record copies the words (clearing bits 23 and 24 and the technique

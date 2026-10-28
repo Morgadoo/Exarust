@@ -23,8 +23,8 @@ tree file and its marks, the technique a new power asks for, the click that
 picks or drops a learnt power against the record's focus budget, the pan,
 zoom and spring, the domain wheel child's place, shares and fades, the
 ten-slot power bar with its load, store, cycle, drop and flash timings, the
-cast entry that dispatches by domain, the persistent-slot budget and the
-saved-power revalidation. Its store writes a domain's learnt and picked
+cast entry that dispatches by domain and the persistent-slot budget. Its
+store writes a domain's learnt and picked
 nodes back into the record, plus the form's creation fields, the opening and
 closing fades, the 17 ms view frames whose zoom and pan blend about the
 cursor, the eased opening scale about the first node, the bar's 900 ms
@@ -309,8 +309,9 @@ Rules of the Mind casts and sight and the two force effects:
 [`docs/THAUMATURGY.md`](../../docs/THAUMATURGY.md) (Mind casts, Force blast
 and torrent).
 The reconstruction device starts the scan (`teleporters`); nothing
-starts the shell's aura entity or the wheel yet: their callers (the shell
-power's visual and the power tree) are not in. Drawing the flame ribbon's
+starts the shell's aura entity yet (its caller, the shell power's visual,
+is not in); the power tree carries the wheel as its domain wheel child and
+uses its hit test, confirm and open ease. Drawing the flame ribbon's
 vertices, the shell and scan mesh copies, the bubble and wheel geometry,
 the portal particle simulation and the bubble's GI light values is not in.
 

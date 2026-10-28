@@ -387,13 +387,17 @@ fn pointer(
         ..
     } = &mut *screen;
     let hidden = !*open || tree.closing();
-    // A click on the domain wheel turns the tree to that domain; the wheel
-    // is a child form, so its rectangle takes the click first.
-    if buttons.just_pressed(MouseButton::Left) && !hidden {
-        let domain = tree.wheel_child.domain_at(x, y);
-        if domain > 0 && domain != tree.domain {
-            tree.choose_domain(domain, now);
+    // The domain wheel is a child form, so a button over one of its icons
+    // is its own: the click (the release) confirms that domain through the
+    // wheel's rule and turns the tree to it.
+    if !hidden && drag.is_none() && tree.wheel_child.domain_at(x, y) > 0 {
+        if buttons.just_released(MouseButton::Left) {
+            *press_origin = None;
+            tree.wheel_click(x, y, now);
             *dirty = true;
+            return;
+        }
+        if buttons.just_pressed(MouseButton::Left) {
             return;
         }
     }
