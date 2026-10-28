@@ -2114,6 +2114,9 @@ mod tests {
         push_groups(&mut gi, &groups, &sources, [0; 64], Vec3::ZERO, Vec3::ONE);
         assert!((gi.lights[0].colour.x - 0.3).abs() < 1e-6);
         assert_eq!(gi.lights[0].shaping.w, 1.0);
+        // The original's separate GI sun map's numbers.
+        assert_eq!(GI_SUN_SHADOW_SIZE, 1024);
+        assert_eq!(GI_SUN_SOFTNESS, 1600.0);
     }
 
     #[test]
