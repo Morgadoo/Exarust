@@ -74,8 +74,8 @@ impl Store {
     /// nor checked against the blob: an entry outside it has no view. A
     /// database of an older layout (`0xDBAC0D08`, `0xDBAC0D07`,
     /// `0xDBAC0D06`) is then converted by the original's upgrade chain; any
-    /// other magic is refused. The oldest two layouts draw each converted
-    /// body's paint seed; this uses [`Self::parse_with_seeds`]'s fixed
+    /// other magic is refused. The oldest layout draws each converted
+    /// body's paint seed; this passes [`Self::parse_with_seeds`] a fixed
     /// stream.
     pub fn parse(b: &[u8]) -> Result<Self> {
         let mut seeds = fixed_paint_seeds();
@@ -370,9 +370,11 @@ impl Store {
 }
 
 /// The fixed paint-seed stream [`Store::parse`] hands the oldest body
-/// layout's conversion: two 32-bit draws of the run-time library's integer
-/// stream per seed, combined as the original's 64-bit draw is. No shipped
-/// file uses that layout, so the choice only keeps a load reproducible.
+/// layout's conversion: two 32-bit draws per seed, combined as the
+/// original's 64-bit draw is (low word first). The original draws them from
+/// the run-time library's Mersenne twister seeded from the clock; this
+/// stand-in is a fixed linear congruential stream (a guess, chosen only so
+/// a load is reproducible; no shipped file uses that layout).
 fn fixed_paint_seeds() -> impl FnMut() -> u64 {
     let mut state = 0x2545_F491u32;
     move || {

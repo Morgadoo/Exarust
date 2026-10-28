@@ -4,8 +4,10 @@
 //! `docs/formats/OTHER.md` (Object database, Older layouts).
 //!
 //! `0xDBAC0D08` (most of the shipped arena actors' databases) converts the
-//! operative section; `0xDBAC0D07` and `0xDBAC0D06` convert the body first,
-//! then the weapon and the operative section.
+//! operative section; `0xDBAC0D07` the weapon section, then the operative
+//! one; `0xDBAC0D06` the body first, then the weapon and the operative
+//! section (the original runs its table's converters from the matched
+//! entry down to the newest).
 
 use super::packed::FractionWord;
 use super::record::{section_range, set_u16, u16_at, u32_at};
@@ -23,7 +25,11 @@ pub(super) fn upgrade(
     match magic {
         super::MAGIC => {}
         0xDBAC_0D08 => store.rewrite_sections(OPERATIVE, 0x3C, convert_operative),
-        0xDBAC_0D07 | 0xDBAC_0D06 => {
+        0xDBAC_0D07 => {
+            store.rewrite_sections(WEAPON, 0x60, convert_weapon);
+            store.rewrite_sections(OPERATIVE, 0x3C, convert_operative);
+        }
+        0xDBAC_0D06 => {
             convert_bodies(store, paint_seeds);
             store.rewrite_sections(WEAPON, 0x60, convert_weapon);
             store.rewrite_sections(OPERATIVE, 0x3C, convert_operative);
@@ -157,9 +163,11 @@ fn convert_bodies(store: &mut Store, paint_seeds: &mut dyn FnMut() -> u64) {
             continue;
         };
         let mut payload = record.payload().to_vec();
-        let count = u32_at(&payload[range.clone()], 0x14) as i32;
+        // The row count at body 0xC, 16-byte rows from body 0x10, the
+        // condition word at row 0xA.
+        let count = u32_at(&payload[range.clone()], 0xC) as i32;
         for i in 0..count.max(0) as usize {
-            let condition = range.start + 0x18 + i * 0x10 + 0xA;
+            let condition = range.start + 0x10 + i * 0x10 + 0xA;
             if condition + 2 > range.end {
                 break;
             }
@@ -187,7 +195,7 @@ fn convert_body(old: &[u8], new: &mut [u8], paint_seeds: &mut dyn FnMut() -> u64
         set_byte(new, at, byte(at));
     }
     set_byte(new, 0x214, byte(0x1A7));
-    copy(old, 0x1A4, new, 0x218, 8);
+    copy(old, 0x1AC, new, 0x218, 8);
     set_byte(new, 0x1A8, byte(0x1A8));
     // The old condition word's low two bits become the current count's 1.
     set_byte(new, 0x1A9, 1);
@@ -333,6 +341,7 @@ fn convert_body(old: &[u8], new: &mut [u8], paint_seeds: &mut dyn FnMut() -> u64
 /// bit 7 set keeps the defaults (quality 0xA0, damage 0x40, a variant that
 /// says it is unrolled).
 fn old_body_kind(kind: u8, finish: u8) -> (u8, [(usize, u8); 2]) {
+    // Category 0 and anything past 8 keep the copied byte.
     let armour_type = match kind {
         1 | 4 => 1,
         2 | 5 => 2,
@@ -340,7 +349,7 @@ fn old_body_kind(kind: u8, finish: u8) -> (u8, [(usize, u8); 2]) {
         6 => 4,
         7 => 5,
         8 => 6,
-        _ => 0,
+        other => other,
     };
     if finish == 0 || finish & 0x80 != 0 {
         return (armour_type, [(0, 0); 2]);
@@ -384,26 +393,33 @@ fn old_body_kind(kind: u8, finish: u8) -> (u8, [(usize, u8); 2]) {
     (armour_type, pair)
 }
 
-/// A random table row's old condition word into the current packing: the
-/// bit-7 flag says the word was rolled, else the word is cleared first.
-/// Wealth becomes 1, damage the sign-magnitude 3-bit value at bits 0–3 plus
-/// 2 quarters, the damage spread the 3-bit value at bits 4–6, dirt a half
-/// and its spread a quarter.
+/// A random table row's old condition word into the current packing, the
+/// setters applied one after another to the same word as the original
+/// does. A word whose bit 7 is clear is cleared and takes wealth 1, damage
+/// 0.5 and spread 0.25, dirt 0.5 and spread 0.25 (`0x5284`). A word with
+/// bit 7 keeps its other bits; wealth 1 is set first, and the damage is
+/// then read from the updated word (the sign-magnitude value of bits 0–2,
+/// bit 3 the sign, plus 2, in quarters: always 1.5 once wealth holds 4),
+/// and the damage spread from bits 4–6 of the word after that (bit 6 now
+/// the damage's low bit, 0).
 fn convert_table_condition(word: u16) -> u16 {
-    let mut out = if word & 0x80 == 0 {
-        FractionWord(0)
+    let mut out = FractionWord(word);
+    if word & 0x80 == 0 {
+        out.0 = 0;
+        out.set_wealth(1.0);
+        out.set_damage(0.5);
+        out.set_damage_spread(0.25);
     } else {
-        FractionWord(word)
-    };
-    out.set_wealth(1.0);
-    let magnitude = (word & 7) as i16;
-    let signed = if word & 8 != 0 {
-        magnitude.wrapping_neg()
-    } else {
-        magnitude
-    };
-    out.set_damage((f32::from(signed) + 2.0) * 0.25);
-    out.set_damage_spread(f32::from((word & 0x70) >> 4) * 0.25);
+        out.set_wealth(1.0);
+        let magnitude = (out.0 & 7) as i16;
+        let signed = if out.0 & 8 != 0 {
+            magnitude.wrapping_neg()
+        } else {
+            magnitude
+        };
+        out.set_damage(f32::from(signed + 2) * 0.25);
+        out.set_damage_spread(f32::from((out.0 & 0x70) >> 4) * 0.25);
+    }
     out.set_dirt(0.5);
     out.set_dirt_spread(0.25);
     out.0
@@ -553,22 +569,23 @@ mod tests {
         ));
     }
 
-    /// A 0D07 database whose record has an old body and a random table:
+    /// A 0D06 database whose record has an old body and a random table:
     /// the body is converted first (with the seed from `parse_with_seeds`)
     /// and then each table row's condition word.
     #[test]
     fn the_old_body_and_random_tables_are_converted() {
         let old_body = old_body();
-        let mut table = vec![0u8; 0x18 + 2 * 0x10];
-        table[0x14..0x18].copy_from_slice(&2u32.to_le_bytes());
-        table[0x18 + 0xA..0x18 + 0xC].copy_from_slice(&0u16.to_le_bytes());
-        table[0x28 + 0xA..0x28 + 0xC].copy_from_slice(&0x00F0u16.to_le_bytes());
+        // A 16-byte header with the row count at 0xC, then 16-byte rows.
+        let mut table = vec![0u8; 0x10 + 2 * 0x10];
+        table[0xC..0x10].copy_from_slice(&2u32.to_le_bytes());
+        table[0x10 + 0xA..0x10 + 0xC].copy_from_slice(&0u16.to_le_bytes());
+        table[0x20 + 0xA..0x20 + 0xC].copy_from_slice(&0x00F0u16.to_le_bytes());
         let p = payload(&[
             (NAME, header("Old", 0, 0)),
             (BODY, old_body),
             (RANDOM_TABLE, table),
         ]);
-        let mut b = 0xDBAC_0D07u32.to_le_bytes().to_vec();
+        let mut b = 0xDBAC_0D06u32.to_le_bytes().to_vec();
         b.extend(32u32.to_le_bytes());
         for w in [1, NAME | BODY | RANDOM_TABLE, 0, p.len() as u32] {
             b.extend(w.to_le_bytes());
@@ -581,14 +598,21 @@ mod tests {
         assert_eq!(r.section(BODY).unwrap().len(), 0x224);
         assert_eq!(u32_at(r.section(BODY).unwrap(), 0x1AC), 0xACF1_3568);
         let t = r.section(RANDOM_TABLE).unwrap();
-        assert_eq!(u16_at(t, 0x18 + 0xA), 0x5084);
-        assert_eq!(u16_at(t, 0x28 + 0xA), 0x56B4);
+        assert_eq!(u16_at(t, 0x10 + 0xA), 0x5284);
+        assert_eq!(u16_at(t, 0x20 + 0xA), 0x57B4);
+        // A 0D07 database runs only the weapon and operative converters:
+        // the body and the table rows stay as they were.
+        b[0..4].copy_from_slice(&0xDBAC_0D07u32.to_le_bytes());
+        let s = Store::parse(&b).unwrap();
+        let r = s.find(1).unwrap();
+        assert_eq!(r.section(BODY).unwrap(), &self::old_body()[..]);
+        assert_eq!(u16_at(r.section(RANDOM_TABLE).unwrap(), 0x20 + 0xA), 0x00F0);
     }
 
     fn old_body() -> Vec<u8> {
         let mut b = vec![0u8; 0x224];
         b[0..8].copy_from_slice(b"WornMod\0");
-        b[0x1A4..0x1AC].copy_from_slice(&[0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18]);
+        b[0x1AC..0x1B4].copy_from_slice(&[0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18]);
         b[0x1A0..0x1A7].copy_from_slice(&[1, 2, 3, 4, 5, 6, 7]);
         b[0x1A7] = 7;
         b[0x1A8] = 3;
@@ -615,7 +639,11 @@ mod tests {
         assert_eq!(&new[0..8], b"WornMod\0");
         assert_eq!(&new[0x1A0..0x1A7], &[1, 2, 3, 4, 5, 6, 7]);
         assert_eq!(new[0x214], 7);
-        assert_eq!(&new[0x218..0x220], &[5, 6, 7, 7, 3, 0x82, 0xAA, 0xBB]);
+        // The power word takes the old bytes 0x1AC–0x1B3.
+        assert_eq!(
+            &new[0x218..0x220],
+            &[0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18]
+        );
         // The old category 3 is the armour type; the finish's bit 7 says
         // its appearance changes do not apply (the variant stays 0xFF).
         assert_eq!(new[0x1A8], 3);
@@ -658,7 +686,8 @@ mod tests {
             (6, 6, 4, 0x1B1, 0x40),
             (7, 2, 5, 0x1B1, 0xA0),
             (8, 5, 6, 0x1AA, 2),
-            (9, 1, 0, 0, 0),
+            // Past 8 the copied byte stays.
+            (9, 1, 9, 0, 0),
         ] {
             b[0x1A8] = kind;
             b[0x1A9] = finish;
@@ -685,14 +714,20 @@ mod tests {
     #[test]
     fn old_random_table_condition_words() {
         for (old, new) in [
-            (0x0000, 0x5084),
-            (0x00F0, 0x56B4),
-            (0x0085, 0x51C4),
-            // The sign bit: damage −3 quarters plus 2 is −1 quarter, whose
-            // integer conversion spills unmasked (0xFFC0).
-            (0x001B, 0x53C4),
-            // Bits 4–6 are the spread (1 quarter) even with the flag clear.
+            // Bit 7 clear: cleared, then the defaults.
+            (0x0000, 0x5284),
+            (0x001B, 0x5284),
             (0x0010, 0x5284),
+            // Bit 7 set: wealth 4 is written before the damage is read, so
+            // the damage is (4 + 2) quarters = 6; the spread then reads
+            // bits 4–5 (bit 6 is the damage's, 0): 3 quarters → 3.
+            (0x00F0, 0x57B4),
+            // Bits 4–5 = 2: spread 0.5 → 2.
+            (0x00A0, 0x55A4),
+            // Bits 4–5 = 0: the spread is cleared.
+            (0x0085, 0x5184),
+            // Higher bits are rewritten by the setters' masks.
+            (0x8E80, 0x5184),
         ] {
             assert_eq!(convert_table_condition(old), new, "{old:#06x}");
         }

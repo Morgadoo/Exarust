@@ -197,23 +197,21 @@ writes it back; it writes zeros for the slot once the table has grown.
 
 **Older layouts.** After loading, a magic other than `0xDBAC0D09` is looked up
 in a three-entry table and runs that converter and every newer one: `0D08`
-the operative converter; `0D07` and `0D06` the body converter, then the
-weapon and the operative ones. Any other magic logs "Invalid or obsolete
+the operative converter; `0D07` the weapon converter, then the operative
+one; `0D06` the body converter, then the weapon and the operative ones (the
+loop runs the table's converters from the matched entry down to the first). Any other magic logs "Invalid or obsolete
 database format." and empties the database (Exarust: an error). Each
 converter rewrites one section in every record: it gets the old section and a
 zeroed new body, the old section is deleted and the new body appended with
 the same tag. 17 of the 20 shipped arena actors' databases (`actors.rpk`) are
-`0D08`; none holds an operative section. The original's dispatch starts its
-converter loop one table entry above the oldest magic's, which would call the
-zero entry after the table; no shipped file is that old, and Exarust runs the
-three converters the entries list.
+`0D08`; none holds an operative section.
 
-- Body (`0D07`, `0D06`, 548-byte body): the worn model, occupancy, slot,
+- Body (`0D06`, 548-byte body): the worn model, occupancy, slot,
   coverage and protection blocks (`0x00`–`0x1A0`) sit at the same offsets.
   Bytes `0x1A0`–`0x1A6` copy; the old byte `0x1A7` is the special kind
-  (`0x214`); the old bytes `0x1A4`–`0x1AC` become the power word
+  (`0x214`); the old bytes `0x1AC`–`0x1B3` become the power word
   (`0x218`–`0x220`). The old category byte `0x1A8` becomes the armour type
-  (`1`, `2`, `3`, `1`, `2`, `4`, `5`, `6` for old categories 1–8, else 0);
+  (`1`, `2`, `3`, `1`, `2`, `4`, `5`, `6` for old categories 1–8; category 0 and anything past 8 keep the copied byte);
   the old finish byte `0x1A9` sets the variant `0x1AA` to `0xFF` when its
   bit 7 is set, else 0, and a finish of 1–7 rewrites the variant, the
   quality (`0x1B0`) or the damage byte (`0x1B1`): category 1/2: 1 damage
@@ -252,10 +250,14 @@ three converters the entries list.
   `0xFD`→`0xFD`, else finish 2 with byte 2 > `0x10` giving material
   `0x14`/colour `0x53`; sub-kind 1 or 2: set and material `0xB`). The
   remaining four layers stay empty. The random tables' rows then have their
-  low condition word at `+0xA` rewritten: when bit 7 is clear the word is
-  cleared first; wealth becomes 1, damage the sign-magnitude 3-bit value of
-  bits 0–2 (bit 3 the sign) plus 2 quarters, the damage spread the 3-bit
-  value of bits 4–6 in quarters, dirt 0.5 and its spread 0.25.
+  condition word at row `+0xA` rewritten (row count at body `0xC`, rows
+  from body `0x10`), the setters applied in turn to the same word: when bit
+  7 is clear the word is cleared and takes wealth 1, damage 0.5 and spread
+  0.25; when it is set, wealth 1 is written first and the damage is then
+  read from the updated word as the sign-magnitude value of bits 0–2 (bit 3
+  the sign) plus 2 quarters (so always 1.5), and the damage spread from
+  bits 4–6 of the word after that (bit 6 is then the damage's, 0) in
+  quarters; dirt 0.5 and its spread 0.25 follow in both cases.
 - Operative (`0D08`, 60-byte body): the old class byte maps through
   `[0, 1, 4, 3, 5, 6, 7, 8, 2, 0, 0, 0]`; the kind maps through
   `[0, 8, 11, 7, 1, 12, 2, 13, 6, 5, 14, 9, 10, 3, 4, 0]` (a higher kind

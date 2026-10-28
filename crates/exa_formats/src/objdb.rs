@@ -1113,9 +1113,9 @@ mod tests {
         assert!((spent - (17.0f32 / 255.0).powi(2)).abs() < 1e-6);
         // Other bytes of the word leave it alone.
         assert_eq!(salve.light_share(0xFF00_FFFF), 1.0);
-        // The step and the square are double precision: condition 20 gives
-        // 0x3F596AFD; squaring in single precision would give …FC.
-        assert_eq!(salve.light_share(20 << 16).to_bits(), 0x3F59_6AFD);
+        // The step and the square are double precision: condition 27 gives
+        // 0x3F4CA884; the single-precision path would give …85.
+        assert_eq!(salve.light_share(27 << 16).to_bits(), 0x3F4C_A884);
         // A model without the flag, and a section too short for the word.
         let mut lamp = padded("Lamp", 16);
         lamp.extend(0x50u32.to_le_bytes());
