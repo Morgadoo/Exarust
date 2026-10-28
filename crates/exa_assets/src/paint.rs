@@ -69,6 +69,10 @@ pub struct Tiling {
     pub material_offset: Vec2,
     /// The damage-scale offset (`DmgTile.zw`).
     pub damage_offset: Vec2,
+    /// The region's vertical texture scale (`UVScale`, see
+    /// `exa_formats::factory::Part::uv_scale`). Only the blade family reads
+    /// it: its mask, shade and region normal are sampled at `(u, v·scale)`.
+    pub uv_scale: f32,
 }
 
 impl Default for Tiling {
@@ -78,6 +82,7 @@ impl Default for Tiling {
             density: Vec2::ONE,
             material_offset: Vec2::ZERO,
             damage_offset: Vec2::ZERO,
+            uv_scale: 1.0,
         }
     }
 }
@@ -99,6 +104,22 @@ impl Tiling {
             density: region_texels / painted.max(Vec2::ONE),
             material_offset: Vec2::new(a, b),
             damage_offset: Vec2::new(c, d),
+            uv_scale: 1.0,
+        }
+    }
+
+    /// This tiling with the region's vertical texture scale.
+    pub fn with_uv_scale(self, uv_scale: f32) -> Self {
+        Self { uv_scale, ..self }
+    }
+
+    /// The vertical texture scale a family's programs apply: only the
+    /// blade programs declare `UVScale`, so every other family reads 1.
+    fn uv_scale_for(&self, family: Finish) -> f32 {
+        if family == Family::SteelBlade {
+            self.uv_scale
+        } else {
+            1.0
         }
     }
 }
@@ -1689,6 +1710,38 @@ pub struct PaintLayer<'a> {
     pub specular: Vec<Option<&'a Texels>>,
     /// Normal-pass textures in [`normal_library`] order.
     pub normals: Vec<Option<&'a Texels>>,
+    /// An emblem pattern over the layer: the layer then paints only its
+    /// colour pass, as the original skips patterned layers in the specular
+    /// and normal passes.
+    pub pattern: Option<Pattern<'a>>,
+}
+
+/// An emblem pattern a layer paints through (the painted-pattern program's
+/// `Tex` and `PtrnPos`).
+#[derive(Clone, Copy)]
+pub struct Pattern<'a> {
+    pub texels: &'a Texels,
+    /// `PtrnPos`: scale x, y and offset x, y of the pattern over the
+    /// region's coordinates.
+    pub position: [f32; 4],
+}
+
+impl Pattern<'_> {
+    /// The pattern's red channel at painted texel (`x`, `y`) of a `w`×`h`
+    /// region: `vrTex · PtrnPos.xy + PtrnPos.zw`, wrapping.
+    fn at(&self, x: usize, y: usize, w: usize, h: usize) -> f32 {
+        let [sx, sy, ox, oy] = self.position;
+        let u = (x as f32 / w as f32 * sx + ox) * self.texels.width as f32;
+        let v = (y as f32 / h as f32 * sy + oy) * self.texels.height as f32;
+        self.texels.at(u.floor() as i64, v.floor() as i64).x
+    }
+}
+
+/// Whether a layer's colour pass multiplies its mask by its pattern: only
+/// materials with the painted-pattern program do; the others fall back to
+/// the plain colour pass over the whole mask.
+fn paints_pattern(layer: &PaintLayer<'_>) -> bool {
+    layer.pattern.is_some() && procedural::material(layer.material).passes.painted_pattern
 }
 
 /// How a painted map's texels are read when sampled.
@@ -1765,13 +1818,27 @@ pub fn paint_with(
     let covers: Vec<Vec<f32>> = layers
         .iter()
         .map(|layer| {
+            let s = tiling.uv_scale_for(finish(layer.material));
+            let pattern = layer.pattern.filter(|_| paints_pattern(layer));
             (0..w * h)
-                .map(|i| sample_scaled(layer.mask, i % w, i / w, w, h).x)
+                .map(|i| {
+                    let (x, y) = (i % w, i / w);
+                    let mask = sample_stretched(layer.mask, x, y, w, h, s).x;
+                    pattern.map_or(mask, |p| mask * p.at(x, y, w, h))
+                })
                 .collect()
         })
         .collect();
     let texel = |layer: &PaintLayer<'_>, x: usize, y: usize| Texel {
-        shade: shade.at(x as i64, y as i64).x,
+        shade: sample_stretched(
+            shade,
+            x,
+            y,
+            w,
+            h,
+            tiling.uv_scale_for(finish(layer.material)),
+        )
+        .x,
         colour: layer.tint,
         weight: layer.wear,
         quality: condition.quality,
@@ -1799,8 +1866,12 @@ pub fn paint_with(
                 let c = colour_of(family, layer.material, &t, &samples);
                 let o = &mut out[y * w + x];
                 *o = mix(*o, c.clamp(Vec3::ZERO, Vec3::ONE), cover);
+                if layer.pattern.is_some() {
+                    continue;
+                }
                 if let Some(item) = item_normal {
-                    let item = unit_xy(sample_scaled(item, x, y, w, h));
+                    let s = tiling.uv_scale_for(family);
+                    let item = unit_xy(sample_stretched(item, x, y, w, h, s));
                     let n = normal_of(family, layer.material, &t, &samples, item);
                     let o = &mut normal_out[y * w + x];
                     *o += (n.clamp(Vec2::NEG_ONE, Vec2::ONE) - *o) * cover;
@@ -1822,6 +1893,9 @@ pub fn paint_with(
             .collect()
     });
     for (layer, cover) in layers.iter().zip(&covers) {
+        if layer.pattern.is_some() {
+            continue;
+        }
         let family = finish(layer.material);
         for y in 0..h {
             for x in 0..w {
@@ -1950,6 +2024,16 @@ fn sample_scaled(t: &Texels, x: usize, y: usize, w: usize, h: usize) -> Vec3 {
     t.at((x * t.width / w) as i64, (y * t.height / h) as i64)
 }
 
+/// [`sample_scaled`] with the region's vertical coordinate times `scale`
+/// (the blade programs' `UVScale`), wrapping past the texture's edge.
+fn sample_stretched(t: &Texels, x: usize, y: usize, w: usize, h: usize, scale: f32) -> Vec3 {
+    if scale == 1.0 {
+        return sample_scaled(t, x, y, w, h);
+    }
+    let v = (y as f32 * scale * t.height as f32 / h as f32).floor();
+    t.at((x * t.width / w) as i64, v as i64)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2001,6 +2085,7 @@ mod tests {
             library: vec![],
             specular: vec![],
             normals: vec![],
+            pattern: None,
         };
         let appearance = Appearance {
             quality: 255,
@@ -2018,6 +2103,151 @@ mod tests {
         .colour;
         assert!(out[0] > 3 * out[1] && out[1] == out[2], "{:?}", &out[..4]);
         assert_eq!(out[3], 255);
+    }
+
+    /// A `w`×`w` grey texture with value `f(x, y)`.
+    fn grey(w: usize, f: impl Fn(usize, usize) -> u8) -> Texels {
+        let rgba = (0..w * w)
+            .flat_map(|i| {
+                let v = f(i % w, i / w);
+                [v, v, v, 255]
+            })
+            .collect();
+        Texels {
+            width: w,
+            height: w,
+            rgba,
+        }
+    }
+
+    fn bare_layer(mask: &Texels, material: u8, tint: Vec3) -> PaintLayer<'_> {
+        PaintLayer {
+            mask,
+            material,
+            tint,
+            wear: 1.0,
+            library: vec![],
+            specular: vec![],
+            normals: vec![],
+            pattern: None,
+        }
+    }
+
+    const PLAIN: Condition = Condition {
+        quality: 1.0,
+        damage: 0.0,
+        dirt: 0.0,
+    };
+
+    #[test]
+    fn an_emblem_layer_paints_colour_through_its_picture_only() {
+        let shade = flat(4, 200);
+        let full = flat(4, 255);
+        let normal = flat(4, 128);
+        // The picture's left half is opaque.
+        let picture = grey(4, |x, _| if x < 2 { 255 } else { 0 });
+        let base = bare_layer(&full, 1, Vec3::new(0.8, 0.1, 0.1));
+        let emblem = PaintLayer {
+            pattern: Some(Pattern {
+                texels: &picture,
+                position: [1.0, 1.0, 0.0, 0.0],
+            }),
+            ..bare_layer(&full, 1, Vec3::new(0.1, 0.1, 0.8))
+        };
+        let alone = paint_with(
+            &shade,
+            Some(&normal),
+            std::slice::from_ref(&base),
+            PLAIN,
+            Tiling::default(),
+        );
+        let both = paint_with(
+            &shade,
+            Some(&normal),
+            &[bare_layer(&full, 1, Vec3::new(0.8, 0.1, 0.1)), emblem],
+            PLAIN,
+            Tiling::default(),
+        );
+        // Left of the picture's edge the emblem colour shows, right of it
+        // the base layer stays.
+        assert_ne!(both.colour[..4], alone.colour[..4]);
+        assert_eq!(both.colour[12..16], alone.colour[12..16]);
+        // The specular and normal passes skip the patterned layer.
+        assert_eq!(both.surface, alone.surface);
+        assert_eq!(both.normal, alone.normal);
+    }
+
+    #[test]
+    fn an_emblem_without_the_painted_pattern_program_covers_its_mask() {
+        let shade = flat(4, 200);
+        let full = flat(4, 255);
+        let picture = grey(4, |x, _| if x < 2 { 255 } else { 0 });
+        // ClothFine (2) has no painted-pattern program: the plain colour
+        // pass paints the whole mask.
+        let emblem = PaintLayer {
+            pattern: Some(Pattern {
+                texels: &picture,
+                position: [1.0, 1.0, 0.0, 0.0],
+            }),
+            ..bare_layer(&full, 2, Vec3::new(0.1, 0.1, 0.8))
+        };
+        let out = paint_with(
+            &shade,
+            None,
+            &[bare_layer(&full, 2, Vec3::new(0.8, 0.1, 0.1)), emblem],
+            PLAIN,
+            Tiling::default(),
+        );
+        assert_eq!(out.colour[..4], out.colour[12..16]);
+    }
+
+    #[test]
+    fn the_pattern_position_scales_and_moves_the_picture() {
+        let picture = grey(4, |x, _| (x * 60) as u8);
+        let p = Pattern {
+            texels: &picture,
+            position: [0.5, 1.0, 0.25, 0.0],
+        };
+        // u = 2/4·0.5 + 0.25 = 0.5 → texel 2.
+        assert_eq!(p.at(2, 0, 4, 4), 120.0 / 255.0);
+        // u = 0.25 → texel 1.
+        assert_eq!(p.at(0, 0, 4, 4), 60.0 / 255.0);
+    }
+
+    #[test]
+    fn only_blade_layers_stretch_their_mask_by_the_uv_scale() {
+        let shade = flat(4, 200);
+        // The mask's top half is set.
+        let mask = grey(4, |_, y| if y < 2 { 255 } else { 0 });
+        let tint = Vec3::new(0.8, 0.8, 0.8);
+        let paint_row1 = |material: u8, uv_scale: f32| {
+            let out = paint_with(
+                &shade,
+                None,
+                &[bare_layer(&mask, material, tint)],
+                PLAIN,
+                Tiling::default().with_uv_scale(uv_scale),
+            );
+            out.colour[4 * 4..4 * 4 + 3].to_vec()
+        };
+        // Row 1 reads mask row 2 at scale 2: the blade leaves it black.
+        assert_ne!(paint_row1(16, 1.0), vec![0, 0, 0]);
+        assert_eq!(paint_row1(16, 2.0), vec![0, 0, 0]);
+        // A cloth layer ignores the scale.
+        assert_eq!(paint_row1(1, 2.0), paint_row1(1, 1.0));
+    }
+
+    #[test]
+    fn the_stretched_sample_wraps_and_keeps_scale_one_exact() {
+        let t = grey(4, |_, y| (y * 50) as u8);
+        for y in 0..8 {
+            assert_eq!(
+                sample_stretched(&t, 0, y, 8, 8, 1.0),
+                sample_scaled(&t, 0, y, 8, 8)
+            );
+        }
+        // Row 3 of 4 at scale 2: v = 6 wraps to texel row 2.
+        assert_eq!(sample_stretched(&t, 0, 3, 4, 4, 2.0).x, 100.0 / 255.0);
     }
 
     #[test]
@@ -2112,6 +2342,7 @@ mod tests {
                 library: vec![None; 6],
                 specular: vec![None; 6],
                 normals: vec![None; 6],
+                pattern: None,
             };
             let samples = Samples {
                 layer: &layer,

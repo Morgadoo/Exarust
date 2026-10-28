@@ -704,6 +704,7 @@ fn paint_item(game: &GameData, model: &str, stem: &str, out: &Path) -> Result<()
                 library: lib.iter().map(Option::as_ref).collect(),
                 specular: specular.iter().map(Option::as_ref).collect(),
                 normals: normals.iter().map(Option::as_ref).collect(),
+                pattern: None,
             }
         })
         .collect();
