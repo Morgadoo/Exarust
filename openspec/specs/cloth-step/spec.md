@@ -27,17 +27,17 @@ A pin of weight 1 SHALL place its particle on the rest point. Wind above 0.001 S
 - **THEN** the pinned particle sits at 5 cm, the blown one moves 0.25 cm, and the last one stays
 
 ### Requirement: Sphere and plane
-A vertex inside a body sphere SHALL be pushed out to the radius plus 2 cm. A higher friction SHALL leave less tangential motion. A vertex behind a level plane SHALL be pushed out to 2 cm along the outward normal.
+A vertex behind a level plane SHALL be pushed out to 2 cm along the outward normal. Body spheres SHALL push the cloth's triangles through the body stage and push pass (physical-body: Cloth body contact pushes triangles, Cloth push pass), not each vertex in turn.
 
 #### Scenario: Clearance
-- **WHEN** a vertex at a sphere's centre of radius 10 cm is stepped, then one behind a horizontal plane
-- **THEN** the first ends 12 cm from the centre and the second sits 2 cm above the plane
+- **WHEN** a vertex behind a horizontal plane is stepped
+- **THEN** it sits 2 cm above the plane
 
 ### Requirement: Sleep
-A still cloth SHALL count its sleep down, and SHALL NOT go below its owner's count. At zero it SHALL NOT fall. A push SHALL wake it.
+A still cloth SHALL count its sleep down, and SHALL NOT go below its owner's count. Asleep, it SHALL NOT fall. A body that pushes it SHALL wake it only when the body's countdown is higher than the cloth's.
 
 #### Scenario: Still, then pushed
-- **WHEN** a still cloth counts down to sleep, then a sphere covers it
+- **WHEN** a still cloth counts down to sleep, then a moving body's sphere covers it
 - **THEN** it does not fall while asleep, and the push moves it and wakes it
 
 ### Requirement: Rustle and mesh
@@ -46,13 +46,6 @@ Rustle SHALL play when the squared sum of the velocities exceeds 400, and its en
 #### Scenario: Fast cloth
 - **WHEN** a fast cloth is stepped, then a quiet one, and a falling vertex is read as a mesh
 - **THEN** rustle plays and then decays, and the mesh matches the moved vertex
-
-### Requirement: Swept sphere
-A body sphere whose path crosses a cloth triangle SHALL push a vertex on that crossing out past the triangle. A path that misses the triangle SHALL leave the vertex.
-
-#### Scenario: Through and beside
-- **WHEN** a sphere sweeps through a cloth vertex, then another sweeps beside the same triangle
-- **THEN** the first vertex is 2 cm past the triangle and the second stays on it
 
 ### Requirement: Swept vertex
 A vertex whose segment crosses a level triangle SHALL stop 2 cm short of the face it came from. A segment that misses the triangle SHALL keep its end.
@@ -76,11 +69,11 @@ Scene wind SHALL be scaled by 0.3. Each tile sample inside −1 to 1 SHALL walk 
 - **THEN** the sample is 0.4 and the particle moves 1.25 cm along the wind
 
 ### Requirement: Body reaction
-The reaction SHALL be the opposite of the sum of this tick's collision pushes.
+The reaction SHALL be the opposite of the sum of the vertices' moves from this tick's collisions and push passes.
 
 #### Scenario: One push
-- **WHEN** a sphere pushes the only vertex
-- **THEN** the reaction is the opposite of that vertex's move
+- **WHEN** a moving body's sphere wakes a sleeping cloth and pushes its triangle
+- **THEN** the reaction is the opposite of the vertices' summed move
 
 ### Requirement: Pin distance
 Each vertex SHALL store its distance along triangle edges from the nearest pin. That distance SHALL follow the mesh when the straight line is not an edge. A pinned vertex SHALL have distance 0.
@@ -161,20 +154,6 @@ The sync SHALL skip its transform and pose when the object's meta flags carry 0x
 - **THEN** one transform and one pose call run with scale 1.0
 - **WHEN** the meta flags carry 0x10
 - **THEN** nothing runs
-
-### Requirement: Cloth pressure
-The pressure pass SHALL skip on gate 0x100. A normal under 1e-6 SHALL become zero with offset −1. Otherwise it SHALL normalize the normal, store the offset as its dot with the edge plus its length, remove the edge's normal component and scale or subtract it, then move the normal by the edge times the negative length. Afterwards it SHALL run coupled−1 calls, zero the normals and clear 0x1fe.
-
-#### Scenario: One normal and one degenerate particle
-- **WHEN** the gate is 0, the coupled word is 3, the first normal is zero and the second is (3,0,0) with edge (0,2,0) and e0 (0,2,5)
-- **THEN** the first normal is zero with offset −1
-- **AND** the second offset is 3 and its normal is about (1,−6,0.94868)
-- **AND** its edge becomes about (0,2,−0.31623)
-- **AND** two coupled calls run, the normals are zeroed and 0x1fe clears
-
-#### Scenario: The gate
-- **WHEN** the gate word carries 0x100 in its 0xf00 field
-- **THEN** the pass returns without particle work or coupled calls
 
 ### Requirement: Cloth destroy
 The destructor SHALL make one release and one final call on a positive free flag, free each of four stored pointers present, free the origin only for a root, destroy three managed fields, and free each list entry and the list when present. The base call SHALL always run.

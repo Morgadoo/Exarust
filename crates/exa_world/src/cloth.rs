@@ -93,9 +93,12 @@ impl ClothObjects {
 /// Off by default; `EXA_CLOTH_CONTACTS=1` turns them on. The rules are the
 /// original's (a cloth never meets its own node's mesh, the level never
 /// wakes it and its slide stops it, a sleeping cloth takes only awake
-/// bodies whose padded spheres reach its box), but on exanima01 the 14
-/// cloths still cost about 55 ms a tick with them on (round 26, RTX 3090);
-/// [`ClothDebug`] shows where.
+/// bodies whose padded spheres reach its box, a body pushes the cloth's
+/// triangles and trades countdowns with it, so a sleeping prop never holds
+/// it awake). They stay off until a GPU run of exanima01 shows its cloths
+/// asleep with them on (round 26 measured 12.7 ms a tick before the
+/// triangle contact, with 5 banners awake against sleeping props);
+/// [`ClothDebug`] shows where the time goes.
 #[derive(Resource, Debug, Clone, Copy)]
 pub struct ClothContacts(pub bool);
 
@@ -132,11 +135,14 @@ pub struct ClothWork {
     pub skipped: u32,
     /// Body parts offered after the sleep and own-character filters.
     pub parts: u32,
-    /// Body spheres kept, placed.
+    /// Of those, the parts handed to the cloth (a padded sphere reaches
+    /// its box).
+    pub bodies: u32,
+    /// Body spheres kept (standing and swept).
     pub spheres: u32,
-    /// Body spheres kept, swept.
+    /// Of those, the swept ones.
     pub swept: u32,
-    /// Swept spheres times cloth triangles: the sweep tests the step makes.
+    /// Cloth-triangle records the body stage's swept query looked at.
     pub sweep_tests: u64,
     /// Static records found around the cloth.
     pub records: u32,
@@ -162,6 +168,7 @@ impl ClothWork {
         self.asleep += other.asleep;
         self.skipped += other.skipped;
         self.parts += other.parts;
+        self.bodies += other.bodies;
         self.spheres += other.spheres;
         self.swept += other.swept;
         self.sweep_tests += other.sweep_tests;
@@ -194,12 +201,13 @@ impl ClothDebug {
         let n = self.ticks as f64;
         let s = &self.sum;
         info!(
-            "cloth stage per tick: {:.2} ms, awake {:.1}, asleep {:.1}, skipped {:.1}, parts {:.1}, spheres {:.1}, swept {:.1}, sweep tests {:.0}, records {:.1} (own {:.1}), pieces {:.1}, triangles {:.0}, level tests {:.0}",
+            "cloth stage per tick: {:.2} ms, awake {:.1}, asleep {:.1}, skipped {:.1}, parts {:.1}, bodies {:.1}, spheres {:.1}, swept {:.1}, body tests {:.0}, records {:.1} (own {:.1}), pieces {:.1}, triangles {:.0}, level tests {:.0}",
             s.micros as f64 / n / 1000.0,
             s.awake as f64 / n,
             s.asleep as f64 / n,
             s.skipped as f64 / n,
             s.parts as f64 / n,
+            s.bodies as f64 / n,
             s.spheres as f64 / n,
             s.swept as f64 / n,
             s.sweep_tests as f64 / n,
@@ -222,11 +230,12 @@ impl ClothDebug {
                 at = parent.parent();
             }
             info!(
-                "  cloth {entity} '{name}': sleep {}, particles {}, {} us, parts {}, spheres {}, swept {}, sweep tests {}, records {} (own {}), pieces {}, triangles {}, level tests {}",
+                "  cloth {entity} '{name}': sleep {}, particles {}, {} us, parts {}, bodies {}, spheres {}, swept {}, body tests {}, records {} (own {}), pieces {}, triangles {}, level tests {}",
                 w.sleep,
                 w.particles,
                 w.micros,
                 w.parts,
+                w.bodies,
                 w.spheres,
                 w.swept,
                 w.sweep_tests,
@@ -385,6 +394,7 @@ fn step_cloths(
     if live_contacts.0 {
         for body in &bodies {
             let asleep = body.asleep();
+            let countdown = body.countdown();
             for part in &body.parts {
                 if part.pairing.out || part.spheres.is_empty() {
                     continue;
@@ -400,7 +410,7 @@ fn step_cloths(
                         centre,
                         radius,
                         mesh: &part.pairing.mesh,
-                        friction: part.friction,
+                        countdown,
                     },
                 ));
             }
@@ -459,13 +469,14 @@ fn step_cloths(
                 let parts: Vec<ObjectBodyPart> = parts.collect();
                 work.parts = parts.len() as u32;
                 contacts.gather_bodies(&to_object, object, object_box, parts);
-                work.spheres = contacts.spheres.len() as u32;
-                work.swept = contacts.swept.len() as u32;
-                work.sweep_tests =
-                    contacts.swept.len() as u64 * instance.cloth.triangles.len() as u64;
+                work.bodies = contacts.bodies.len() as u32;
+                for body in &contacts.bodies {
+                    work.spheres += body.spheres.len() as u32;
+                    work.swept += body.spheres.iter().filter(|s| s.moving).count() as u32;
+                }
                 // A sleeping cloth that no body reaches, in a frame that did
                 // not move, is the level stage's fixed point: nothing to do.
-                if asleep && !moved && contacts.spheres.is_empty() && contacts.swept.is_empty() {
+                if asleep && !moved && contacts.bodies.is_empty() {
                     work.skipped = 1;
                     break 'cloth;
                 }
@@ -501,13 +512,13 @@ fn step_cloths(
                 // A sleeping cloth with no contacts does not step.
                 break 'cloth;
             }
-            instance.cloth.spheres = std::mem::take(&mut contacts.spheres);
-            instance.cloth.swept = std::mem::take(&mut contacts.swept);
+            instance.cloth.bodies = std::mem::take(&mut contacts.bodies);
             instance.cloth.level = std::mem::take(&mut contacts.level);
             instance.cloth.level_pieces = std::mem::take(&mut contacts.pieces);
             work.awake = u32::from(!asleep);
             cloth::step(&mut instance.cloth, gravity);
             work.level_tests = instance.cloth.level_tests as u64;
+            work.sweep_tests = instance.cloth.body_tests as u64;
             // The object list's re-bucket after its step, as the original's.
             let (after, _) = cloth_bound(&instance.cloth, at);
             objects.grid.migrate(id, after.centre);

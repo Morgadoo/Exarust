@@ -5,20 +5,28 @@
 //! acceleration, in centimetres per tick. Wind above 0.001 moves a particle
 //! by `direction · (noise + 0.25) · wind`. A pin moves toward its rest point
 //! by its weight. An edge corrects by
-//! `(L² / (|d|² + L²) − 0.5) · 0.8774` without a square root. One pass, which
-//! is the shipped cloth's mode. A sphere pushes a vertex out to its radius
-//! plus 2 cm, and a level plane does the same along its normal. The three
-//! body frictions are 0.002, 0.01 and 0.015; which body uses which was not
-//! read. Sleep counts down while the squared length of the particles'
-//! summed velocity (their travel over the last tick, before drag, gravity
-//! and wind) is under √(vertices × 10⁻⁶), and never below the owner's
-//! count; that sum over the vertex count is the mean the drag pulls toward.
-//! Rustle plays when the same sum's squared length exceeds 400. The mesh vertices are the particle
+//! `(L² / (|d|² + L²) − 0.5) · 0.8774` without a square root. The shipped
+//! cloth's mode makes one such pass in the step and, while awake, three
+//! more after the body stage ([`crate::cloth_body`]), which pushes the
+//! cloth's triangles off the body spheres the sector hands it and holds
+//! the pushed vertices on their push planes in those passes. A level plane
+//! pushes a vertex out to 2 cm along its normal. The three body frictions
+//! are 0.002, 0.01 and 0.015 (the body's share of a contact). Sleep counts
+//! down while the squared length of the particles' summed velocity (their
+//! travel over the last tick, before drag, gravity and wind) is under
+//! √(vertices × 10⁻⁶), counts up (capped at 32) over twice that squared,
+//! and never stays below the owner's count; a body that pushes the cloth
+//! hands it its own countdown when that is higher, and the tick's end puts
+//! an awake cloth whose count is under 2 to sleep. That sum over the vertex
+//! count is the mean the drag pulls toward. Rustle plays when the same
+//! sum's squared length exceeds 400. The mesh vertices are the particle
 //! positions.
 //!
 //! Evidence: the cloth step notes (retention, drag, wind, pins, edges, sleep,
-//! rustle, sphere and plane pushes, a sphere swept through a cloth triangle);
-//! the level's meshes are [`crate::cloth_level`]'s, after the step.
+//! rustle, plane pushes), the cloth's integrate slot, its post-body push
+//! pass and its end-of-tick slot (REA assembly); the bodies are
+//! [`crate::cloth_body`]'s and the level's meshes [`crate::cloth_level`]'s,
+//! after the step.
 
 use bevy::math::Vec3;
 use bevy::render::render_resource::Face;
@@ -39,10 +47,13 @@ pub const EDGE_STIFFNESS: f32 = 0.8774;
 pub const WIND_FLOOR: f32 = 0.001;
 /// Collision padding, centimetres.
 pub const PADDING_CM: f32 = 2.0;
-/// Friction on a cloth vertex, the three body factors. Which body uses which
-/// was not read.
+/// The share of a cloth contact handed back to the body: 0.015 for a body
+/// of the cloth-colliding class, 0.01 when the cloth's own class flag is
+/// set, else 0.002. The game does not hand it back yet
+/// ([`crate::cloth_body`]).
 pub const FRICTION: [f32; 3] = [0.002, 0.01, 0.015];
-/// Sleep countdown does not rise above this.
+/// Sleep countdown does not count itself up past this (a body may hand it
+/// a higher one).
 pub const SLEEP_CAP: i32 = 32;
 /// Rustle starts when the squared sum of the velocities exceeds this.
 pub const RUSTLE_SPEED_SQ: f32 = 400.0;
@@ -82,28 +93,11 @@ pub struct Pin {
     pub weight: f32,
 }
 
-/// A body sphere the cloth must stay outside, in centimetres.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct BodySphere {
-    pub center: Vec3,
-    pub radius: f32,
-    pub friction: f32,
-}
-
 /// A level plane. The normal points out of the solid.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LevelPlane {
     pub point: Vec3,
     pub normal: Vec3,
-}
-
-/// A body sphere swept from `from` to `to`, in centimetres.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct SweptSphere {
-    pub from: Vec3,
-    pub to: Vec3,
-    pub radius: f32,
-    pub friction: f32,
 }
 
 /// Three particle indices of a cloth triangle.
@@ -193,9 +187,16 @@ pub struct Cloth {
     pub sleep: i32,
     /// The owner's countdown. This cloth never sleeps deeper than that.
     pub owner_sleep: i32,
-    pub spheres: Vec<BodySphere>,
+    /// The bodies the sector hands the cloth this tick, in its order
+    /// ([`crate::cloth_body`]).
+    pub bodies: Vec<crate::cloth_body::ClothBody>,
+    /// The body stage's push buffer, one per particle (cm, the cloth's
+    /// frame); the awake cloth applies and clears it after the stage.
+    pub pushes: Vec<Vec3>,
+    /// How many triangle records the body stage's swept query looked at
+    /// last tick (a debug count; no rule reads it).
+    pub body_tests: usize,
     pub planes: Vec<LevelPlane>,
-    pub swept: Vec<SweptSphere>,
     pub triangles: Vec<ClothTri>,
     pub level: Vec<LevelTri>,
     /// The level meshes `level` came from, in order: each one's box and
@@ -236,9 +237,10 @@ impl Cloth {
             noise: Vec::new(),
             sleep: SLEEP_CAP,
             owner_sleep: 0,
-            spheres: Vec::new(),
+            bodies: Vec::new(),
+            pushes: Vec::new(),
+            body_tests: 0,
             planes: Vec::new(),
-            swept: Vec::new(),
             triangles: Vec::new(),
             level: Vec::new(),
             level_pieces: Vec::new(),
@@ -260,7 +262,7 @@ impl Cloth {
     pub fn grab(&mut self, index: usize, at: Vec3) {
         if index < self.particles.len() {
             self.grabbed = Some((index, at));
-            self.sleep = self.sleep.max(1).max(self.owner_sleep);
+            self.sleep = self.sleep.max(2).max(self.owner_sleep);
         }
     }
 
@@ -633,14 +635,24 @@ pub fn step(cloth: &mut Cloth, gravity: Vec3) {
             particle.position = next;
         }
     }
+    // The step itself runs only for an awake cloth; a sleeping one keeps
+    // its countdown (never below its owner's) and lets the rustle fade.
     cloth.mean_velocity = sum * (1.0 / count as f32);
-    settle_sleep(cloth, sum.length_squared());
+    if awake {
+        settle_sleep(cloth, sum.length_squared());
+    } else {
+        cloth.sleep = cloth.sleep.max(cloth.owner_sleep);
+    }
     settle_rustle(cloth, sum);
     if awake {
-        apply_constraints(cloth);
+        apply_constraints(cloth, &[]);
     }
+    // Whether the sector's object flags have the cloth awake this tick: set
+    // at its start, and by a body that raises its countdown.
+    let mut awake = awake;
     // The hand's grabbed vertex sits on its target after the tick's links,
-    // and wakes the cloth.
+    // and wakes the cloth. [Exarust's own wake: the original's grab call
+    // writes no countdown; 2 is the least that outlasts the tick's end.]
     if let Some((index, target)) = cloth.grabbed
         && target.is_finite()
         && index < count
@@ -648,18 +660,45 @@ pub fn step(cloth: &mut Cloth, gravity: Vec3) {
         let particle = &mut cloth.particles[index];
         particle.previous = target;
         particle.position = target;
-        cloth.sleep = cloth.sleep.max(1).max(cloth.owner_sleep);
+        cloth.sleep = cloth.sleep.max(2).max(cloth.owner_sleep);
+        awake = true;
     }
     let before: Vec<Vec3> = cloth
         .particles
         .iter()
         .map(|particle| particle.position)
         .collect();
-    let mut hit = false;
-    for index in 0..cloth.spheres.len() {
-        let sphere = cloth.spheres[index];
-        for particle in &mut cloth.particles {
-            hit |= push_sphere(particle, sphere);
+    // The body stage: each body's spheres push the cloth's triangles into
+    // the push buffer, and a body that pushed trades countdowns with it.
+    cloth.body_tests = 0;
+    cloth.pushes.resize(count, Vec3::ZERO);
+    if !cloth.bodies.is_empty() {
+        let bounds = crate::cloth_body::triangle_bounds(cloth);
+        let bodies = std::mem::take(&mut cloth.bodies);
+        for body in &bodies {
+            let touch = crate::cloth_body::touch_body(
+                &cloth.particles,
+                &cloth.triangles,
+                &bounds,
+                body,
+                &mut cloth.pushes,
+            );
+            cloth.body_tests += touch.tests;
+            if touch.pushed {
+                let (woke, _owed) =
+                    crate::cloth_body::trade_countdowns(&mut cloth.sleep, body.countdown);
+                awake |= woke;
+            }
+        }
+        cloth.bodies = bodies;
+    }
+    // The awake cloth's pass after the body stage: the pushes, then the
+    // remaining constraint passes holding the pushed vertices on their
+    // planes.
+    if awake {
+        let planes = crate::cloth_body::apply_pushes(cloth);
+        for _ in 0..crate::cloth_body::PUSH_PASSES {
+            apply_constraints(cloth, &planes);
         }
     }
     // A level plane pushes like the level's meshes and, like them, does not
@@ -670,23 +709,19 @@ pub fn step(cloth: &mut Cloth, gravity: Vec3) {
             push_plane(particle, plane);
         }
     }
-    for index in 0..cloth.swept.len() {
-        let body = cloth.swept[index];
-        for tri in 0..cloth.triangles.len() {
-            let tri = cloth.triangles[tri];
-            hit |= sweep_sphere_triangle(&mut cloth.particles, tri, body);
-        }
+    // The level's meshes last, after the step, as the sector calls them.
+    crate::cloth_level::touch_level(cloth);
+    // The end of the sector's tick: an awake cloth whose countdown is under
+    // 2 falls asleep where it is; a sleeping one stays where it is.
+    if awake && cloth.sleep < 2 {
+        cloth.sleep = 0;
+        awake = false;
     }
-    // A body's push wakes a sleeping cloth; the level's never does.
-    if hit && cloth.sleep == 0 {
-        cloth.sleep = 1.max(cloth.owner_sleep);
-    } else if cloth.sleep == 0 {
+    if !awake {
         for particle in &mut cloth.particles {
             particle.previous = particle.position;
         }
     }
-    // The level's meshes last, after the step, as the sector calls them.
-    crate::cloth_level::touch_level(cloth);
     cloth.reaction = Vec3::ZERO;
     for (particle, old) in cloth.particles.iter().zip(before) {
         cloth.reaction -= particle.position - old;
@@ -758,7 +793,9 @@ fn ordered(a: usize, b: usize) -> (usize, usize) {
     if a < b { (a, b) } else { (b, a) }
 }
 
-fn apply_constraints(cloth: &mut Cloth) {
+/// One constraint pass: pins, then edges, then (after the body push) the
+/// pushed vertices put back on their push planes.
+fn apply_constraints(cloth: &mut Cloth, planes: &[Option<(Vec3, f32)>]) {
     for index in 0..cloth.pins.len() {
         let pin = cloth.pins[index];
         let Some(particle) = cloth.particles.get_mut(pin.index) else {
@@ -774,19 +811,28 @@ fn apply_constraints(cloth: &mut Cloth) {
         let edge = cloth.edges[index];
         correct_edge(&mut cloth.particles, edge);
     }
+    crate::cloth_body::hold_planes(cloth, planes);
 }
 
 /// The countdown from the squared length of the velocity sum: under
 /// `√(vertices × 10⁻⁶)` it counts down, over twice that squared it counts
-/// up (a NaN does neither), never past the cap nor below the owner's.
+/// up (a NaN does neither), and only a count that went up is capped at
+/// [`SLEEP_CAP`] (a countdown a moving body handed over stays until the
+/// cloth slows). It is never left below the owner's. A count may go under
+/// zero: the tick's end puts a count under 2 to sleep.
 fn settle_sleep(cloth: &mut Cloth, sum_sq: f32) {
     let threshold = (cloth.particles.len() as f32 * 1e-6).sqrt();
     if sum_sq < threshold {
         cloth.sleep -= 1;
     } else if sum_sq > (2.0 * threshold) * (2.0 * threshold) {
         cloth.sleep += 1;
+        if cloth.sleep > SLEEP_CAP {
+            cloth.sleep = SLEEP_CAP;
+        }
     }
-    cloth.sleep = cloth.sleep.clamp(cloth.owner_sleep, SLEEP_CAP);
+    if cloth.sleep < cloth.owner_sleep {
+        cloth.sleep = cloth.owner_sleep;
+    }
 }
 
 fn settle_rustle(cloth: &mut Cloth, sum: Vec3) {
@@ -803,94 +849,6 @@ fn settle_rustle(cloth: &mut Cloth, sum: Vec3) {
         cloth.rustle_pitch = 0.0;
         cloth.rustle_tail *= 0.9;
     }
-}
-
-fn push_sphere(particle: &mut Particle, sphere: BodySphere) -> bool {
-    if !sphere.center.is_finite() || !sphere.radius.is_finite() || sphere.radius < 0.0 {
-        return false;
-    }
-    let reach = sphere.radius + PADDING_CM;
-    let mut offset = particle.position - sphere.center;
-    if offset.length_squared() <= f32::EPSILON {
-        offset = Vec3::Y;
-    }
-    let distance = offset.length();
-    if distance >= reach {
-        return false;
-    }
-    let normal = offset / distance;
-    let surface = sphere.center + normal * reach;
-    let motion = surface - particle.previous;
-    let along = normal * motion.dot(normal);
-    let tangent = motion - along;
-    let friction = sphere.friction.clamp(0.0, 1.0);
-    particle.position = particle.previous + along + tangent * (1.0 - friction);
-    true
-}
-
-/// Where a segment from `from` to `to` crosses a triangle, if it does.
-fn segment_triangle(from: Vec3, to: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Option<(f32, Vec3, Vec3)> {
-    let dir = to - from;
-    if !dir.is_finite() || dir.length_squared() <= f32::EPSILON {
-        return None;
-    }
-    let ab = b - a;
-    let ac = c - a;
-    let pvec = dir.cross(ac);
-    let det = ab.dot(pvec);
-    if !det.is_finite() || det.abs() < 1e-6 {
-        return None;
-    }
-    let inv = 1.0 / det;
-    let tvec = from - a;
-    let u = tvec.dot(pvec) * inv;
-    if !(0.0..=1.0).contains(&u) {
-        return None;
-    }
-    let qvec = tvec.cross(ab);
-    let v = dir.dot(qvec) * inv;
-    if v < 0.0 || u + v > 1.0 {
-        return None;
-    }
-    let t = ac.dot(qvec) * inv;
-    if !(0.0..=1.0).contains(&t) {
-        return None;
-    }
-    let mut normal = ab.cross(ac).normalize_or_zero();
-    if normal == Vec3::ZERO {
-        return None;
-    }
-    if normal.dot(dir) > 0.0 {
-        normal = -normal;
-    }
-    Some((t, from + dir * t, normal))
-}
-
-fn sweep_sphere_triangle(particles: &mut [Particle], tri: ClothTri, body: SweptSphere) -> bool {
-    if tri.a >= particles.len() || tri.b >= particles.len() || tri.c >= particles.len() {
-        return false;
-    }
-    if !body.radius.is_finite() || body.radius < 0.0 {
-        return false;
-    }
-    let (a, b, c) = (
-        particles[tri.a].position,
-        particles[tri.b].position,
-        particles[tri.c].position,
-    );
-    let Some((_, hit, normal)) = segment_triangle(body.from, body.to, a, b, c) else {
-        return false;
-    };
-    let sphere = BodySphere {
-        center: hit + normal * body.radius,
-        radius: body.radius,
-        friction: body.friction,
-    };
-    let mut struck = false;
-    for index in [tri.a, tri.b, tri.c] {
-        struck |= push_sphere(&mut particles[index], sphere);
-    }
-    struck
 }
 
 fn push_plane(particle: &mut Particle, plane: LevelPlane) -> bool {
@@ -1133,91 +1091,6 @@ pub fn sync_cloth(meta_flags: u32) -> ClothSync {
     }
 }
 
-/// One particle for the pressure pass.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ClothPressureParticle {
-    pub normal: Vec3,
-    pub d8: Vec3,
-    pub e0: Vec3,
-}
-
-/// The pressure pass's inputs.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ClothPressureInput {
-    pub gate: u32,
-    pub coupled: i32,
-    pub particles: Vec<ClothPressureParticle>,
-}
-
-/// The pressure pass's outputs.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ClothPressure {
-    pub skipped: bool,
-    pub normals: Vec<Vec3>,
-    pub ws: Vec<f32>,
-    pub d8: Vec<Vec3>,
-    pub coupled_calls: i32,
-    pub zeroed: bool,
-    pub flag_cleared: bool,
-}
-
-/// Normalizes the normals, projects each edge and couples the result.
-pub fn apply_cloth_pressure(input: ClothPressureInput) -> ClothPressure {
-    if (input.gate & 0xf00) == 0x100 {
-        return ClothPressure {
-            skipped: true,
-            normals: Vec::new(),
-            ws: Vec::new(),
-            d8: Vec::new(),
-            coupled_calls: 0,
-            zeroed: false,
-            flag_cleared: false,
-        };
-    }
-    let count = input.particles.len();
-    let mut normals = Vec::with_capacity(count);
-    let mut ws = Vec::with_capacity(count);
-    let mut d8s = Vec::with_capacity(count);
-    for particle in &input.particles {
-        let len2 = particle.normal.length_squared();
-        if len2 < 1e-6 {
-            normals.push(Vec3::ZERO);
-            ws.push(-1.0);
-            d8s.push(particle.d8);
-            continue;
-        }
-        let len = len2.sqrt();
-        let unit = particle.normal / len;
-        let w = unit.dot(particle.d8) + len;
-        let mut d8 = particle.d8;
-        let mut local = particle.e0 - d8;
-        local -= unit * local.dot(unit);
-        let local2 = local.length_squared();
-        if f64::from(local2) > 0.2 {
-            let scale = -(0.1f64 / f64::from(local2)).sqrt() as f32;
-            d8 += local * scale;
-        } else {
-            d8 -= local;
-        }
-        normals.push(unit + d8 * -len);
-        ws.push(w);
-        d8s.push(d8);
-    }
-    ClothPressure {
-        skipped: false,
-        normals,
-        ws,
-        d8: d8s,
-        coupled_calls: if input.coupled >= 2 {
-            input.coupled - 1
-        } else {
-            0
-        },
-        zeroed: true,
-        flag_cleared: true,
-    }
-}
-
 /// The cloth destroy's inputs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ClothDestroyInput {
@@ -1440,7 +1313,7 @@ mod tests {
     }
 
     #[test]
-    fn a_cloth_sleeps_rustles_and_clears_a_sphere_and_a_plane() {
+    fn a_cloth_sleeps_rustles_and_clears_a_plane() {
         let mut cloth = Cloth::new(vec![still(Vec3::ZERO)]);
         cloth.sleep = 4;
         cloth.owner_sleep = 4;
@@ -1456,37 +1329,6 @@ mod tests {
         step(&mut cloth, gravity_cm(1.0));
         assert_eq!(cloth.particles[0].position, parked);
         assert_eq!(cloth.vertices(), vec![parked]);
-
-        cloth.spheres.push(BodySphere {
-            center: parked,
-            radius: 10.0,
-            friction: 0.0,
-        });
-        step(&mut cloth, Vec3::ZERO);
-        let cleared = cloth.particles[0].position - parked;
-        assert!(
-            (cleared.length() - (10.0 + PADDING_CM)).abs() < 1e-3,
-            "{cleared}"
-        );
-        assert_eq!(cloth.sleep, 1);
-        assert_eq!(cloth.vertices(), vec![cloth.particles[0].position]);
-
-        let mut glancing = Cloth::new(vec![Particle {
-            position: Vec3::new(6.0, 4.0, 0.0),
-            previous: Vec3::new(10.0, 0.0, 0.0),
-        }]);
-        glancing.sleep = 0;
-        glancing.spheres.push(BodySphere {
-            center: Vec3::ZERO,
-            radius: 8.0,
-            friction: 0.0,
-        });
-        let mut rubbed = glancing.clone();
-        rubbed.spheres[0].friction = FRICTION[2];
-        step(&mut glancing, Vec3::ZERO);
-        step(&mut rubbed, Vec3::ZERO);
-        assert!(glancing.particles[0].position.y > rubbed.particles[0].position.y);
-        assert!(rubbed.particles[0].position.length() > 8.0);
 
         let mut cloth = Cloth::new(vec![still(Vec3::new(0.0, -5.0, 0.0))]);
         cloth.planes.push(LevelPlane {
@@ -1519,45 +1361,7 @@ mod tests {
     }
 
     #[test]
-    fn a_swept_sphere_and_a_vertex_meet_a_triangle() {
-        let mut cloth = Cloth::new(vec![
-            still(Vec3::new(2.0, 2.0, 0.0)),
-            still(Vec3::new(12.0, 2.0, 0.0)),
-            still(Vec3::new(2.0, 12.0, 0.0)),
-        ]);
-        cloth.sleep = 0;
-        cloth.triangles.push(ClothTri { a: 0, b: 1, c: 2 });
-        cloth.swept.push(SweptSphere {
-            from: Vec3::new(2.0, 2.0, 20.0),
-            to: Vec3::new(2.0, 2.0, -10.0),
-            radius: 4.0,
-            friction: 0.0,
-        });
-        step(&mut cloth, Vec3::ZERO);
-        assert!(
-            (cloth.particles[0].position.z + PADDING_CM).abs() < 1e-2,
-            "{:?}",
-            cloth.particles[0].position
-        );
-        assert!(
-            cloth.particles[1]
-                .position
-                .abs_diff_eq(Vec3::new(12.0, 2.0, 0.0), 1e-3)
-        );
-
-        let mut missed = cloth.clone();
-        missed.particles[0].position = Vec3::new(2.0, 2.0, 0.0);
-        missed.particles[0].previous = missed.particles[0].position;
-        missed.swept[0].from = Vec3::new(100.0, 100.0, 20.0);
-        missed.swept[0].to = Vec3::new(100.0, 100.0, -10.0);
-        missed.sleep = 0;
-        step(&mut missed, Vec3::ZERO);
-        assert!(
-            missed.particles[0]
-                .position
-                .abs_diff_eq(Vec3::new(2.0, 2.0, 0.0), 1e-3)
-        );
-
+    fn a_falling_particle_is_swept_back_off_the_floor() {
         let floor = LevelTri {
             a: Vec3::new(-1.0, -1.0, 0.0),
             b: Vec3::new(20.0, -1.0, 0.0),
@@ -1587,7 +1391,7 @@ mod tests {
     }
 
     #[test]
-    fn a_mesh_builds_edges_and_the_wind_tile_pushes_the_body() {
+    fn a_mesh_builds_edges_and_the_wind_tile_blows() {
         let vertices = [
             Vec3::new(0.0, 0.0, 0.0),
             Vec3::new(1.0, 0.0, 0.0),
@@ -1624,22 +1428,6 @@ mod tests {
         blown.tile = Some(flat);
         step(&mut blown, Vec3::ZERO);
         assert!((blown.particles[0].position.x - 1.25).abs() < 1e-3);
-
-        let mut cloth = Cloth::new(vec![still(Vec3::ZERO)]);
-        cloth.sleep = 0;
-        cloth.spheres.push(BodySphere {
-            center: Vec3::ZERO,
-            radius: 10.0,
-            friction: 0.0,
-        });
-        step(&mut cloth, Vec3::ZERO);
-        let push = cloth.particles[0].position;
-        assert!(
-            push.abs_diff_eq(-cloth.reaction, 1e-3),
-            "{:?} vs {:?}",
-            push,
-            cloth.reaction
-        );
     }
 
     #[test]
@@ -1778,49 +1566,6 @@ mod tests {
         let skipped = sync_cloth(0x10);
         assert!(!skipped.applied);
         assert_eq!((skipped.transform_calls, skipped.pose_calls), (0, 0));
-    }
-
-    #[test]
-    fn the_cloth_pressure_normalizes_and_corrects() {
-        let result = apply_cloth_pressure(ClothPressureInput {
-            gate: 0,
-            coupled: 3,
-            particles: vec![
-                ClothPressureParticle {
-                    normal: Vec3::ZERO,
-                    d8: Vec3::new(1.0, 1.0, 1.0),
-                    e0: Vec3::new(2.0, 2.0, 2.0),
-                },
-                ClothPressureParticle {
-                    normal: Vec3::new(3.0, 0.0, 0.0),
-                    d8: Vec3::new(0.0, 2.0, 0.0),
-                    e0: Vec3::new(0.0, 2.0, 5.0),
-                },
-            ],
-        });
-        assert!(!result.skipped);
-        assert_eq!(result.normals[0], Vec3::ZERO);
-        assert_eq!(result.ws[0], -1.0);
-        assert_eq!(result.d8[0], Vec3::new(1.0, 1.0, 1.0));
-        assert!((result.ws[1] - 3.0).abs() < 1e-5);
-        assert!((result.normals[1].x - 1.0).abs() < 1e-5);
-        assert!((result.normals[1].y + 6.0).abs() < 1e-5);
-        assert!((result.normals[1].z - 0.948_683_3).abs() < 1e-5);
-        assert!(result.d8[1].x.abs() < 1e-5);
-        assert!((result.d8[1].y - 2.0).abs() < 1e-5);
-        assert!((result.d8[1].z + 0.316_227_77).abs() < 1e-5);
-        assert_eq!(result.coupled_calls, 2);
-        assert!(result.zeroed);
-        assert!(result.flag_cleared);
-
-        let gated = apply_cloth_pressure(ClothPressureInput {
-            gate: 0x100,
-            coupled: 3,
-            particles: vec![],
-        });
-        assert!(gated.skipped);
-        assert_eq!(gated.coupled_calls, 0);
-        assert!(!gated.zeroed);
     }
 
     #[test]

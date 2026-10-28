@@ -228,10 +228,118 @@ pub fn slide(previous: Vec3, position: Vec3) -> Vec3 {
     }
 }
 
+/// A piece with more triangles than this gets a [`TriangleGrid`]; a
+/// smaller one is walked whole.
+pub const GRID_MIN_TRIANGLES: usize = 16;
+
+/// The cell edge of a [`TriangleGrid`] (cm), before a large piece widens it.
+pub const GRID_CELL_CM: f32 = 10.0;
+
+/// Cells along a [`TriangleGrid`]'s longest axis at most.
+pub const GRID_MAX_CELLS: usize = 32;
+
+/// The level triangles of one piece bucketed by their boxes, so a particle
+/// visits only the triangles near it, in list order: what the original's
+/// per-mesh sphere and sweep queries do with the mesh's own tree (they
+/// hand the push callback only the triangles around the particle's
+/// sphere). A triangle is in every cell its box overlaps.
+#[derive(Debug, Clone)]
+pub struct TriangleGrid {
+    lo: Vec3,
+    cell: f32,
+    dims: [usize; 3],
+    cells: Vec<Vec<u32>>,
+}
+
+impl TriangleGrid {
+    /// The grid over `triangles` (indices `first..` in the cloth's list).
+    pub fn new(triangles: &[LevelTri], first: usize) -> Self {
+        let mut lo = Vec3::splat(f32::INFINITY);
+        let mut hi = Vec3::splat(f32::NEG_INFINITY);
+        for t in triangles {
+            for v in [t.a, t.b, t.c] {
+                lo = lo.min(v);
+                hi = hi.max(v);
+            }
+        }
+        if !lo.is_finite() || !hi.is_finite() {
+            // A non-finite corner: one cell holding everything.
+            return Self {
+                lo: Vec3::ZERO,
+                cell: f32::INFINITY,
+                dims: [1, 1, 1],
+                cells: vec![(0..triangles.len()).map(|i| (first + i) as u32).collect()],
+            };
+        }
+        let extent = (hi - lo).max_element();
+        let cell = GRID_CELL_CM.max(extent / GRID_MAX_CELLS as f32);
+        let span =
+            |axis: usize| (((hi[axis] - lo[axis]) / cell) as usize + 1).min(GRID_MAX_CELLS + 1);
+        let dims = [span(0), span(1), span(2)];
+        let mut grid = Self {
+            lo,
+            cell,
+            dims,
+            cells: vec![Vec::new(); dims[0] * dims[1] * dims[2]],
+        };
+        for (i, t) in triangles.iter().enumerate() {
+            let tlo = t.a.min(t.b).min(t.c);
+            let thi = t.a.max(t.b).max(t.c);
+            let (a, b) = (grid.cell_of(tlo), grid.cell_of(thi));
+            for z in a[2]..=b[2] {
+                for y in a[1]..=b[1] {
+                    for x in a[0]..=b[0] {
+                        let at = grid.index(x, y, z);
+                        grid.cells[at].push((first + i) as u32);
+                    }
+                }
+            }
+        }
+        grid
+    }
+
+    fn cell_of(&self, p: Vec3) -> [usize; 3] {
+        let mut out = [0; 3];
+        for (axis, slot) in out.iter_mut().enumerate() {
+            let c = ((p[axis] - self.lo[axis]) / self.cell).floor();
+            // A NaN or a point before the grid lands in its first cell.
+            *slot = if c > 0.0 {
+                (c as usize).min(self.dims[axis] - 1)
+            } else {
+                0
+            };
+        }
+        out
+    }
+
+    fn index(&self, x: usize, y: usize, z: usize) -> usize {
+        (z * self.dims[1] + y) * self.dims[0] + x
+    }
+
+    /// The triangles whose cells the box `lo..hi` overlaps, in list order
+    /// and once each.
+    pub fn near(&self, lo: Vec3, hi: Vec3, out: &mut Vec<u32>) {
+        out.clear();
+        let (a, b) = (self.cell_of(lo), self.cell_of(hi));
+        for z in a[2]..=b[2] {
+            for y in a[1]..=b[1] {
+                for x in a[0]..=b[0] {
+                    out.extend_from_slice(&self.cells[self.index(x, y, z)]);
+                }
+            }
+        }
+        out.sort_unstable();
+        out.dedup();
+    }
+}
+
 /// The cloth's static stage over its level list: every piece in order (one
 /// piece holding the whole list when the cloth has none), and each particle
-/// against it as the module describes. Returns whether any particle was
-/// pushed. It never wakes the cloth.
+/// against it as the module describes. A particle that reaches a piece's
+/// box visits the piece's triangles near its sphere or sweep (the box about
+/// it, grown by the radius and, for the pushes it takes on the way, by the
+/// radius again), in list order. Returns whether any particle was pushed.
+/// It never wakes the cloth.
 pub fn touch_level(cloth: &mut Cloth) -> bool {
     cloth.level_tests = 0;
     if cloth.level.is_empty() {
@@ -252,12 +360,15 @@ pub fn touch_level(cloth: &mut Cloth) -> bool {
     let mut any = false;
     let mut tests = 0;
     let mut first = 0;
+    let mut near = Vec::new();
     for piece in pieces {
         let range = first.min(cloth.level.len())..piece.end.min(cloth.level.len());
         first = piece.end;
         if range.is_empty() {
             continue;
         }
+        let grid = (range.len() > GRID_MIN_TRIANGLES)
+            .then(|| TriangleGrid::new(&cloth.level[range.clone()], range.start));
         for particle in &mut cloth.particles {
             let start = particle.previous;
             let mut end = particle.position;
@@ -275,9 +386,22 @@ pub fn touch_level(cloth: &mut Cloth) -> bool {
             if !meets {
                 continue;
             }
+            near.clear();
+            if let Some(grid) = &grid {
+                let reach = Vec3::splat(2.0 * radius);
+                let (lo, hi) = if swept {
+                    (start.min(end), start.max(end))
+                } else {
+                    (end, end)
+                };
+                grid.near(lo - reach, hi + reach, &mut near);
+            } else {
+                near.extend(range.clone().map(|i| i as u32));
+            }
             let mut hit = false;
-            tests += range.len();
-            for index in range.clone() {
+            tests += near.len();
+            for &index in &near {
+                let index = index as usize;
                 let Some(plane) = planes[index] else {
                     continue;
                 };
@@ -427,6 +551,51 @@ mod tests {
             "{:?}",
             still.particles[1]
         );
+    }
+
+    /// The grid hands a particle the triangles near it, in list order, and
+    /// the stage pushes it as the whole walk would.
+    #[test]
+    fn the_triangle_grid_finds_the_triangles_near_a_particle() {
+        // A 2 m floor of 40 strips 5 cm wide, each two triangles, at z = 0.
+        let mut tris = Vec::new();
+        for i in 0..40 {
+            let x = i as f32 * 5.0;
+            tris.push(LevelTri {
+                a: Vec3::new(x, 0.0, 0.0),
+                b: Vec3::new(x + 5.0, 0.0, 0.0),
+                c: Vec3::new(x, 200.0, 0.0),
+            });
+            tris.push(LevelTri {
+                a: Vec3::new(x + 5.0, 0.0, 0.0),
+                b: Vec3::new(x + 5.0, 200.0, 0.0),
+                c: Vec3::new(x, 200.0, 0.0),
+            });
+        }
+        let grid = TriangleGrid::new(&tris, 0);
+        // 200 cm across: 10 cm cells (6.25 cm would be under the floor).
+        let mut near = Vec::new();
+        grid.near(
+            Vec3::new(51.0, 50.0, -1.0),
+            Vec3::new(53.0, 52.0, 1.0),
+            &mut near,
+        );
+        assert!(near.windows(2).all(|w| w[0] < w[1]));
+        assert!(near.contains(&20) && near.contains(&21));
+        assert!(near.len() < 12, "{near:?}");
+        // The stage with the grid: 1 cm over strip 10, pushed to 1.9 cm, after
+        // far fewer tests than the 80 triangles.
+        let mut cloth = Cloth::new(vec![Particle {
+            previous: Vec3::new(52.0, 51.0, 1.0),
+            position: Vec3::new(52.0, 51.0, 1.0),
+        }]);
+        cloth.level = tris;
+        cloth
+            .level_pieces
+            .push(LevelPiece::around(&cloth.level, 80));
+        assert!(touch_level(&mut cloth));
+        assert!((cloth.particles[0].position.z - 1.9).abs() < 1e-5);
+        assert!(cloth.level_tests < 20, "{}", cloth.level_tests);
     }
 
     #[test]

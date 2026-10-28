@@ -717,9 +717,10 @@ fn an_object_meets_a_body_between_its_bound_and_the_mesh_box() {
     ));
 }
 
-/// A body part meeting an object hands every one of its spheres over in the
-/// object's own frame and centimetres; a sphere that moved by more than
-/// 0.01 cm² over the tick is swept instead of placed.
+/// A body part meeting an object hands its spheres over in the object's own
+/// frame and centimetres, padded by 2 cm, its last sphere first, with its
+/// body's countdown; a sphere that moved by more than 0.01 cm² over the
+/// tick sweeps instead of standing.
 #[test]
 fn an_objects_body_stage_takes_the_parts_spheres_in_its_own_frame() {
     let object = ObjectBounds {
@@ -742,18 +743,29 @@ fn an_objects_body_stage_takes_the_parts_spheres_in_its_own_frame() {
         centre: Vec3::new(0.8, 0.0, 0.0),
         radius: 0.3,
         mesh: &mesh,
-        friction: 0.75,
+        countdown: 256,
+    };
+    let kept = |c: &ObjectContacts| -> Vec<(f32, bool)> {
+        c.bodies
+            .iter()
+            .flat_map(|b| b.spheres.iter().map(|s| (s.radius, s.moving)))
+            .collect()
     };
     let mut contacts = ObjectContacts::default();
     contacts.gather_bodies(&to_object, object, wide, [part]);
-    assert_eq!(contacts.swept.len(), 0);
-    assert_eq!(contacts.spheres.len(), 2);
-    // 10 cm behind the object's node, 10 cm across and 12 cm back.
-    assert_eq!(contacts.spheres[0].center, Vec3::new(-100.0, 0.0, 0.0));
-    assert_eq!(contacts.spheres[0].radius, 10.0);
-    assert_eq!(contacts.spheres[0].friction, 0.75);
-    assert_eq!(contacts.spheres[1].center, Vec3::new(-80.0, 0.0, 0.0));
-    assert_eq!(contacts.spheres[1].radius, 5.0);
+    assert_eq!(contacts.bodies.len(), 1);
+    assert_eq!(contacts.bodies[0].countdown, 256);
+    // The last sphere first: 12 cm back (5 + 2 cm), then 10 cm (10 + 2).
+    assert_eq!(kept(&contacts), vec![(7.0, false), (12.0, false)]);
+    let first = contacts.bodies[0].spheres[0];
+    assert_eq!(
+        (first.from, first.to),
+        (Vec3::new(-80.0, 0.0, 0.0), Vec3::new(-80.0, 0.0, 0.0))
+    );
+    assert_eq!(
+        contacts.bodies[0].spheres[1].to,
+        Vec3::new(-100.0, 0.0, 0.0)
+    );
     // A part whose bound is not near the object gives nothing.
     let far = ObjectBodyPart {
         centre: Vec3::new(5.0, 0.0, 0.0),
@@ -761,7 +773,7 @@ fn an_objects_body_stage_takes_the_parts_spheres_in_its_own_frame() {
     };
     let mut contacts = ObjectContacts::default();
     contacts.gather_bodies(&to_object, object, wide, [far]);
-    assert!(contacts.spheres.is_empty() && contacts.swept.is_empty());
+    assert!(contacts.bodies.is_empty());
     // A part whose bound meets the object's but whose mesh box is 0.5 m
     // from the object's centre (2500 <= 2500) gives nothing.
     let short = Bounds::of_box(Vec3::new(0.25, 0.0, 0.0), Vec3::new(0.25, 0.1, 0.1));
@@ -771,8 +783,8 @@ fn an_objects_body_stage_takes_the_parts_spheres_in_its_own_frame() {
     };
     let mut contacts = ObjectContacts::default();
     contacts.gather_bodies(&to_object, object, wide, [far]);
-    assert!(contacts.spheres.is_empty() && contacts.swept.is_empty());
-    // Moved 0.2 m over the tick (20 cm, 400 cm²), the sphere is swept from
+    assert!(contacts.bodies.is_empty());
+    // Moved 0.2 m over the tick (20 cm, 400 cm²), the sphere sweeps from
     // where the last tick left it.
     let moving = ObjectBodyPart {
         previous: Affine3A::from_translation(Vec3::new(-0.2, 0.0, 0.0)),
@@ -780,49 +792,43 @@ fn an_objects_body_stage_takes_the_parts_spheres_in_its_own_frame() {
     };
     let mut contacts = ObjectContacts::default();
     contacts.gather_bodies(&to_object, object, wide, [moving]);
-    assert_eq!(contacts.spheres.len(), 0);
-    assert_eq!(contacts.swept.len(), 2);
-    assert!(
-        contacts.swept[0]
-            .from
-            .abs_diff_eq(Vec3::new(-120.0, 0.0, 0.0), 1e-4)
-    );
-    assert_eq!(contacts.swept[0].to, Vec3::new(-100.0, 0.0, 0.0));
+    assert_eq!(kept(&contacts), vec![(7.0, true), (12.0, true)]);
+    let swept = contacts.bodies[0].spheres[1];
+    assert!(swept.from.abs_diff_eq(Vec3::new(-120.0, 0.0, 0.0), 1e-4));
+    assert_eq!(swept.to, Vec3::new(-100.0, 0.0, 0.0));
     // The cloth's own gate is 0.01 cm²: 0.2 cm (0.04 cm²) sweeps, 0.05 cm
-    // (0.0025 cm²) is placed.
+    // (0.0025 cm²) stands.
     let crept = ObjectBodyPart {
         previous: Affine3A::from_translation(Vec3::new(-0.002, 0.0, 0.0)),
         ..part
     };
     let mut contacts = ObjectContacts::default();
     contacts.gather_bodies(&to_object, object, wide, [crept]);
-    assert_eq!((contacts.spheres.len(), contacts.swept.len()), (0, 2));
+    assert_eq!(kept(&contacts), vec![(7.0, true), (12.0, true)]);
     let still = ObjectBodyPart {
         previous: Affine3A::from_translation(Vec3::new(-0.0005, 0.0, 0.0)),
         ..part
     };
     let mut contacts = ObjectContacts::default();
     contacts.gather_bodies(&to_object, object, wide, [still]);
-    assert_eq!((contacts.spheres.len(), contacts.swept.len()), (2, 0));
-    // Each sphere, padded by 2 cm, must reach the box about the particles:
-    // a box over x = -74..-46 keeps the 5 cm sphere at -80 (6 cm < 7 cm)
-    // and drops the 10 cm one at -100 (26 cm > 12 cm).
+    assert_eq!(kept(&contacts), vec![(7.0, false), (12.0, false)]);
+    // Each padded sphere must reach the box about the particles: a box over
+    // x = -74..-46 keeps the 5 cm sphere at -80 (6 cm < 7 cm) and drops the
+    // 10 cm one at -100 (26 cm > 12 cm).
     let narrow = (Vec3::new(-60.0, 0.0, 0.0), Vec3::splat(14.0));
     let mut contacts = ObjectContacts::default();
     contacts.gather_bodies(&to_object, object, narrow, [part]);
-    assert_eq!(contacts.spheres.len(), 1);
-    assert_eq!(contacts.spheres[0].radius, 5.0);
+    assert_eq!(kept(&contacts), vec![(7.0, false)]);
     // Swept, the 10 cm sphere ends at -100 (reach -88) and misses; the
     // 5 cm one ends at -80 (reach -73) and meets the box's -74 face.
     let mut contacts = ObjectContacts::default();
     contacts.gather_bodies(&to_object, object, narrow, [moving]);
-    assert_eq!(contacts.swept.len(), 1);
-    assert_eq!(contacts.swept[0].radius, 5.0);
-    // A box beside both gives nothing.
+    assert_eq!(kept(&contacts), vec![(7.0, true)]);
+    // A box beside both gives nothing: no body is handed over.
     let beside = (Vec3::ZERO, Vec3::splat(5.0));
     let mut contacts = ObjectContacts::default();
     contacts.gather_bodies(&to_object, object, beside, [part, moving]);
-    assert!(contacts.spheres.is_empty() && contacts.swept.is_empty());
+    assert!(contacts.bodies.is_empty());
 }
 
 /// A sleeping object takes only awake bodies; an awake one takes all.

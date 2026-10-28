@@ -1,0 +1,9 @@
+- [x] Port the cloth's triangle records, plane and smallest sphere (`cloth_body`)
+- [x] Port the body contact: swept walk, take test, closest point, weighted push, push buffer
+- [x] Countdown trade after a push; count-up cap only on a rise; end-of-tick sleep under 2
+- [x] Push pass after the body stage and three constraint passes holding the push planes
+- [x] Gather bodies as `ClothBody` (last sphere first, padded, countdown)
+- [x] Per-piece triangle grid in the level stage
+- [x] Remove the per-particle sphere push, the swept vertex push and the misread pressure record
+- [x] Debug counters: bodies handed over, body-stage triangle tests
+- [x] READMEs and DEBUGGING.md; GPU check written down for the integrator
