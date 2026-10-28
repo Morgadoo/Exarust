@@ -1185,3 +1185,18 @@ fn the_load_reset_clears_only_the_race_byte() {
     assert!(r.female);
     assert_eq!(r.profession(), 0x8001_0001);
 }
+
+/// The tree's technique check scans the funded slots and lets 0 match an
+/// empty one; the perks' check refuses 0.
+#[test]
+fn the_trees_technique_check_scans_funded_slots() {
+    let skill = Skill {
+        points: 10_000,
+        techniques: [0, 2, 7, 0, 0, 0],
+    };
+    assert!(skill.holds_funded(0));
+    assert!(skill.holds_funded(2));
+    assert!(!skill.holds_funded(7));
+    assert!(!skill.knows(0));
+    assert!(skill.knows(2));
+}

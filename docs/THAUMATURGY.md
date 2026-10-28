@@ -525,7 +525,17 @@ link end picked; a drop is refused while another picked node links to it.
 Closing replaces the domain's pairs with the learnt and picked nodes. The
 view's zoom is a charge of −9 to 5 levels (0.25 to 2.0), its opening height
 over 2300 picking the nearest; the pan and zoom ease by the original's
-springs.
+springs. The draw blends the spring's last two zoom values by the frame's
+place in a 17 ms step and rescales the pan about the cursor; an opening or
+domain fade-in eases `1 − r²` into the scale the nodes are drawn at about the
+first node. A tree with no record seeds the character's two default pairs.
+The form's creation words and the 280-square domain wheel child at its
+lower left are kept; the child is the wheel of `effects::wheel` (its icon
+hit test, its confirm that needs a known, different domain, and the 300 ms
+ease a pick or drop starts), its eased value is the focus share and its
+show the bar child's fade. A confirmed icon starts the domain switch. The
+child's own ring, icon and label draw is outside the component, so its
+sheet is shown at the child's place.
 
 The power bar holds ten slots; the chosen one carries bit 20. Loading it
 from a record copies the words (clearing bits 23 and 24 and the technique
@@ -541,8 +551,10 @@ displacement front end. A front end that answers "not now" queues the
 slot; a start stores the bar back with the chosen bit moved to the slot,
 closes the bar, flashes the slot (from where its state stood, back-dated by
 the elapsed share) and stores the last instant power; a refusal plays the
-failure sound. The running game does not play that sound or retry the
-queued slot yet. Opening the bar loads it and runs a 900 ms rise (the
+failure sound. The running screen plays the tree's `ThaumShow02`,
+`ThaumSel01`, `ThaumSlot02`, `ThaumChnl01`, `ThaumChnl02` and `ThaumFail01`
+sounds through the audio environment; a queued "not now" slot is still not
+retried. Opening the bar loads it and runs a 900 ms rise (the
 height and size rise as the smooth step `(3 − 2x)·x²` over the first 400,
 the pitch as the smooth step of the tree's ease over 900);
 closing runs 900 ms, the marked slots falling as `1 − f⁴` and the rest as
@@ -717,41 +729,47 @@ capacity. The bearing measure (1 less the
 cosine between the facing and the line to the target) is Exarust's. The
 tree screen and the caster share one record:
 the screen owns it while the tree is open and the caster takes it back when
-the tree closes. The constant displacement's veil, the grant routine and the
-tree's key handler are not wired. The
+the tree closes. The constant displacement's veil and the grant routine are
+not wired; the tree's key handler is wired for the arrows' bar cycle while
+the tree is open. The
 `--debug-arcs`, `--debug-barricade` and `--debug-wisps` flags still put
 those effects on the player ([DEBUGGING.md](DEBUGGING.md)).
 
 ### Drawing
 
 The power tree's drawing is `exa_ui::tree_draw`: the six immediate
-programs with their exact sources, uniform sets and textures, and the
-empty-slot, icon, frame, glow, flame and ring geometry. The helpers set
-only their own geometry and `par0` (and `tscl` for icons); the caller sets
-the colour, so the byte colours are the original's (a float times 255
-rounded half to even, saturated, while the alpha byte keeps only its low
-eight bits). The tree pass runs in the original's order: the black
-background (alpha 255 on the creation screen, else half the window), the
-links (a marked source draws bright, a marked destination soft, neither
-not at all), the icons, the technique and frame marks, the rings of the new
-nodes (the newest fading in over the learning time while the one it
-replaced fades out), the picked rings in the domain's colour (a flash
-swells the ring, a refusal dips it), and the glows (dimmed to a third
-unless picked, swollen by the flash, their alpha by what the node is);
-the bar follows unless this is the creation screen. The bar's icons take
-the opening and closing fades, group by domain and start each group at its
-first slot; the glow of each slot, the flame of the chosen one and the
-empty slots' rings finish it. A slot's flash is a signed time difference
-over 200 ms and its fade a double-precision ratio over its duration.
-Not modelled: the link ribbon's spline and texture (a plain quad strip
-stands in), the layout and text of the tooltip, the prompt and the drag
-preview, the screen's show and hide fades, the bar's opening and closing
-animation in the running game (the pose is implemented but the view always
-asks for a steady bar), the bar form's flags and opening stamps, the
-running-power mark callback on load, the persistent-pick bit of a slot (derived from
-the picked nodes) and the icon radius output. The running screen
-rasterises those batches in software (`power_screen::render`) with
-each fragment program's arithmetic and the loaded sheets; the shader
+programs with their exact sources, uniform sets and textures, the spline
+renderer's procedural ribbon, and the empty-slot, icon, frame, glow, flame
+and ring geometry. The helpers set only their own geometry and `par0` (and
+`tscl` for icons); the caller sets the colour, so the byte colours are the
+original's (a float times 255 rounded half to even, saturated, while the
+alpha byte keeps only its low eight bits). The tree pass runs in the
+original's order: the black background (alpha 255 on the creation screen,
+else half the window), the links (a marked source draws bright, a marked
+destination soft, neither not at all), the icons, the technique and frame
+marks, the rings of the new nodes (the newest fading in over the learning
+time while the one it replaced fades out), the picked rings in the domain's
+colour (a flash swells the ring, a refusal dips it), and the glows (dimmed to
+a third unless picked, swollen by the flash, their alpha by what the node
+is); the bar follows unless this is the creation screen. The links are the
+spline renderer's ribbons: two vertices a sample, the start and end handles
+one tangent step beyond the curve, the row and side coordinates, the join
+term and the source-to-end dim alpha, with `lnwdt` from the shown zoom. The
+node rings sample the flamelets sheet and the glows, the bar's flame and
+glow and the dragged preview the frame sheet, as the original binds them;
+the frame marks sample the mods sheet. The bar's icons take the opening and
+closing fades, group by domain and start each group at its first slot; the
+glow of each slot, the flame of the chosen one and the empty slots' rings
+finish it. A slot's flash is a signed time difference over 200 ms and its
+fade a double-precision ratio over its duration. The running screen adds
+the domain wheel's sheet, the tooltip's caption and wrapped description, the
+creation prompt, the label mode and the dragged preview; the texts are the
+GUI font's glyph quads on the Rayform08R atlas at the original's places.
+The installed packs do not ship that atlas (only the executable names it),
+so the running screen falls back to the game's bitmap font for the same
+runs. The
+running screen rasterises those batches in software (`power_screen::render`)
+with each fragment program's arithmetic and the loaded sheets; the shader
 bindings of the Force and Displacement effects are data in
 `thaum::effect_material` and `thaum::visuals` (the five materials, their
 blocks, node flags, sub-objects, signatures, `gi_multipoint`, the noise

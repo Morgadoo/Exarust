@@ -25,7 +25,10 @@
 //!   factor `0.25` to `2.0`; the opening height over 2300 picks the nearest
 //!   level. A middle-button drag pans, the wheel moves the charge by ten
 //!   times the wheel step, the left and right keys cycle the bar. A pan and
-//!   the zoom ease by the original's springs.
+//!   the zoom ease by the original's springs. The draw blends the spring's
+//!   last two zoom values by the frame's place in a 17 ms step and rescales
+//!   the pan about the cursor; an opening or domain fade-in eases `1 − r²`
+//!   into the scale every node is drawn at about the first node.
 //! - **Choosing** ([`TreeScreen::press`]): a click on a shown node that is
 //!   not learnt selects it as the new power to learn when the character has
 //!   the techniques it asks for ([`can_learn`]: Concentration's second for a
@@ -53,13 +56,15 @@
 //!   bar back, closes it and flashes the slot, and records the last instant
 //!   power (a sustained or persistent power clears it); a refused one plays
 //!   the failure sound. The sound and the queue are returned in the
-//!   [`CastEntry`]; the in-game screen does not play or retry them yet.
+//!   [`CastEntry`]; the running screen queues the sound for playback and
+//!   stops at the body that controls another.
 //! - **The draw** ([`TreeScreen::view`]): hands `exa_ui::tree_draw` the
-//!   placed nodes, their link curves, the marks, the flash and learn
-//!   timers and the bar's slots; the tree pass and the bar are laid out
-//!   there. A slot whose power matches a picked node is given the
-//!   persistent-pick bit in the view. The link ribbon's spline texture is
-//!   not modelled (the ribbon reads as white).
+//!   placed nodes, their link curves and handles, the marks, the flash and
+//!   learn timers and the bar's slots; the tree pass and the bar are laid
+//!   out there. A slot whose power matches a picked node is given the
+//!   persistent-pick bit in the view. The links are the spline renderer's
+//!   ribbons with the start and end handles; the node rings sample the
+//!   flamelets sheet and the glows the frame sheet, as the original binds.
 //! - **The view's clock** ([`TreeScreen::advance`]): the springs step in the
 //!   draw's 17 ms frames and the pan is shown between the step before the
 //!   last and the last by the frame's place in a step; a stretched link is
@@ -71,8 +76,11 @@
 //!   from halfway) and `1 − r²` fades the bar child; hiding cuts both over 256 ms from the closing stamp.
 //!   The backdrop takes the first alpha and the content the second; a
 //!   domain switch cuts the content out over 256 ms, swaps the domain at
-//!   the stamp and fades the new tree in over 1000 ms ([`fade_domain`]
-//!   starts it; the wheel that calls it is outside the pack).
+//!   the stamp and fades the new tree in over 1000 ms ([`TreeScreen::choose_domain`]
+//!   sets the domain and starts it). A domain wheel child
+//!   ([`DomainWheel`], the `effects::wheel` state) sits 280 pixels square
+//!   at the form's lower left; its sheet is shown there and a click on a
+//!   known, different domain's icon confirms it ([`TreeScreen::wheel_click`]).
 //! - **The bar's animation** ([`TreeScreen::open_bar`], [`close_bar`] and
 //!   [`step_bar`]): opening loads the bar, clears each slot's flash and
 //!   picked bits and runs a 900 ms rise whose height and size are a smooth
@@ -214,6 +222,67 @@ pub struct SkillTiers {
     /// Concentration: its second technique (Continuity) opens persistent
     /// powers.
     pub concentration: Skill,
+}
+
+/// The domain wheel child the tree creates: 280 pixels square at the
+/// tree form's lower left, its picture the `domainwheel` sheet. Its state,
+/// hit test and confirm are the wheel's own ([`crate::effects::wheel::Wheel`]);
+/// the tree places it, hands it the domain it opened as the choice, and
+/// writes the focus share into its eased value and its show into the
+/// wheel's alpha.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DomainWheel {
+    pub left: f32,
+    pub top: f32,
+    /// The child's side, 280 pixels.
+    pub size: f32,
+    /// The wheel's state: its `shown` is the child's alpha and its `fade`
+    /// the focus share the tree writes.
+    pub state: crate::effects::wheel::Wheel,
+}
+
+impl DomainWheel {
+    /// The child at the tree form's lower left, 280 pixels square, with the
+    /// opened domain as its choice.
+    pub fn new(left: f32, top: f32, domain: u8) -> Self {
+        Self {
+            left,
+            top,
+            size: crate::effects::wheel::SIZE_PX as f32,
+            state: crate::effects::wheel::Wheel {
+                chosen: i32::from(domain),
+                ..Default::default()
+            },
+        }
+    }
+
+    /// The domain icon under the window point `x`,`y`, 1 to 6, or 0: the
+    /// wheel's own hit test about the child's centre, in whole client
+    /// pixels.
+    pub fn domain_at(&self, x: f32, y: f32) -> u8 {
+        let half = (self.size * 0.5) as i32;
+        let mouse = (
+            (x - self.left).floor() as i32,
+            (y - self.top).floor() as i32,
+        );
+        crate::effects::wheel::Wheel::hit_test((half, half), mouse) as u8
+    }
+
+    /// Starts the 300 ms ease a picked or dropped power triggers: the
+    /// wheel's open, from its current value.
+    pub fn begin_fade(&mut self, now: u32) {
+        self.state.open(now);
+    }
+}
+
+/// What the draw places for the domain wheel: its sheet at the child's
+/// client rectangle.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WheelView {
+    pub x: f32,
+    pub y: f32,
+    pub size: f32,
+    pub alpha: f32,
 }
 
 /// The character's power record: what the tree reads and writes.
@@ -593,12 +662,14 @@ pub struct KeyInput {
 }
 
 /// What a key did.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct KeyResult {
     /// The tree should open.
     pub open: bool,
     /// The bar's chosen slot moved.
     pub cycled: bool,
+    /// The cycle's select sound, when it moved.
+    pub sound: Option<TreeSound>,
 }
 
 /// The power tree screen's state.
@@ -624,8 +695,20 @@ pub struct TreeScreen {
     pub charge: f32,
     /// The zoom's spring.
     pub zoom: ZoomSpring,
+    /// The zoom the draw shows: the spring's last two values blended by the
+    /// frame's place in a step, and scaled about the cursor.
+    pub shown_zoom: f32,
+    /// The opening fade's second value (`1 − r²`) the easing scale reads.
+    pub ease_share: f32,
+    /// The point the opening scale is applied about: the first node's
+    /// placed point as the draw head found it, before this frame's
+    /// placement.
+    pub scale_centre: [f32; 2],
     /// The zoom in 8.8 fixed point, rounded to even.
     pub zoom_fixed: f32,
+    /// The tree font atlas's pixel size, set by the running screen when it
+    /// loads the atlas; zero emits no glyph quads.
+    pub font_size: (u16, u16),
     /// The view is dragged, so places are not rounded.
     pub free_view: bool,
     /// The stamp the free view ends.
@@ -696,6 +779,8 @@ pub struct TreeScreen {
     /// The record and domain files are waiting for the switch's fade to run
     /// out; the caller performs it.
     pub switch_due: bool,
+    /// The domain the pending switch opens.
+    pub pending_domain: u8,
     /// The window's fade this frame (the backdrop's alpha).
     pub window_alpha: f32,
     /// The tree content's fade this frame.
@@ -713,6 +798,18 @@ pub struct TreeScreen {
     /// The simulated time the view's springs have reached: the draw
     /// advances it in 17 ms steps.
     pub step_at: u32,
+    /// The domain wheel child.
+    pub wheel_child: DomainWheel,
+    /// The form's creation word (`0x800`).
+    pub form_flags: u32,
+    /// The form's second creation word (`0xf0000`).
+    pub form_word: u32,
+    /// The form's text alpha byte (`0xa0`).
+    pub text_alpha: u8,
+    /// The form's hint alpha byte (`0x80`).
+    pub hint_alpha: u8,
+    /// The form's caption value, the engine's lowest float.
+    pub caption: f32,
 }
 
 /// The original's zoom levels' thresholds and gains.
@@ -750,7 +847,11 @@ pub fn zoom_level(value: f32) -> i32 {
     for next in -8..=-1 {
         let level = ((4.0 - f64::from(-next).sqrt()) * 0.25) as f32;
         if value < level {
-            // Unordered or not farther from this level: this level.
+            // The original asks whether the distance to the level just
+            // reached is greater than the distance to the previous one; an
+            // unordered compare (the first level's previous is not a
+            // number) takes the not-greater branch, so a value below the
+            // first threshold answers that level, −8.
             let farther = (level - value).abs() > (previous - value).abs();
             return if farther { next - 1 } else { next };
         }
@@ -801,7 +902,11 @@ impl TreeScreen {
                 target: 1.0,
                 previous: 1.0,
             },
+            shown_zoom: 1.0,
+            ease_share: 1.0,
+            scale_centre: [0.0; 2],
             zoom_fixed: 256.0,
+            font_size: (0, 0),
             free_view: false,
             free_view_stamp: 0,
             factor: 1.0,
@@ -835,6 +940,7 @@ impl TreeScreen {
             domain_flags: 0,
             domain_at: 0,
             switch_due: false,
+            pending_domain: domain,
             window_alpha: 1.0,
             content_alpha: 1.0,
             bar_alpha: 1.0,
@@ -843,6 +949,12 @@ impl TreeScreen {
             bar_close_at: 0,
             bar_phase_now: Some(exa_ui::tree_draw::BarPhase::Steady),
             step_at: 0,
+            wheel_child: DomainWheel::new(10.0, 700.0 - 290.0, domain),
+            form_flags: 0x800,
+            form_word: 0x000f_0000,
+            text_alpha: 0xa0,
+            hint_alpha: 0x80,
+            caption: f32::from_bits(0xff00_0000),
         }
     }
 
@@ -864,6 +976,10 @@ impl TreeScreen {
             },
             None => Self::empty(domain, mode),
         };
+        // The domain wheel child sits at the form's lower left, 280
+        // pixels square, and has the domain the tree opened as its choice;
+        // the record's wheel shares are written into it below.
+        screen.wheel_child = DomainWheel::new(10.0, height - 290.0, domain);
         match (mode, record) {
             (TreeMode::Test, _) => screen.marks.fill(SHOWN | LEARNED),
             (_, Some(record)) => {
@@ -878,6 +994,9 @@ impl TreeScreen {
                 screen.focus_total = 48.0;
                 screen.available = 48.0;
                 screen.wheel.total = 48.0;
+                // With no record the original writes 48 into the wheel's
+                // eased value, not a share.
+                screen.wheel_child.state.fade = 48.0;
             }
         }
         // The level comes from the whole-pixel height over 2300, worked out
@@ -890,6 +1009,7 @@ impl TreeScreen {
             target: gain,
             previous: gain,
         };
+        screen.shown_zoom = gain;
         let centre = (width as i64 / 2) as f32;
         let seed = [centre, height - 250.0 * gain];
         screen.pan = Spring2 {
@@ -952,6 +1072,9 @@ impl TreeScreen {
             wheel.total = 0.0;
         }
         self.wheel = wheel;
+        // The shares are the wheel child's values: the first is its eased
+        // value.
+        self.wheel_child.state.fade = self.wheel.total;
     }
 
     fn record_focus(&self, pairs: &[KnownPower]) -> f32 {
@@ -968,12 +1091,13 @@ impl TreeScreen {
         available
     }
 
-    /// The node's one-based place at `x`,`y`, or 0.
+    /// The node's one-based place at `x`,`y`, or 0: the node's placed point
+    /// and half the fixed zoom.
     pub fn node_at(&self, x: f32, y: f32) -> usize {
-        let radius = self.zoom.value * 0.5;
-        for (index, node) in self.nodes.iter().enumerate() {
-            let dx = x - node.x;
-            let dy = y - node.y;
+        let radius = self.zoom_fixed * 0.5;
+        for (index, at) in self.placed.iter().enumerate() {
+            let dx = x - at[0];
+            let dy = y - at[1];
             if dy * dy + dx * dx < radius * radius {
                 return index + 1;
             }
@@ -993,26 +1117,68 @@ impl TreeScreen {
 
     /// Shows the pan at `alpha` of the way from its previous point to its
     /// point (the original blends the last two steps by the frame's share
-    /// of a step; one is the end of a step) and places the nodes from it.
+    /// of a step; one is the end of a step), blends the zoom the same way
+    /// and places the nodes from it.
     pub fn present(&mut self, alpha: f32) {
+        self.shown_zoom = (self.zoom.value - self.zoom.previous) * alpha + self.zoom.previous;
         self.shown_pan = lerp2(self.pan.previous, self.pan.position, alpha);
         self.refresh_placement();
     }
 
-    /// Places the nodes at ten times their place times the zoom plus the
-    /// shown pan, rounded to even unless the view is dragged.
+    /// The draw head's view for one frame: the frame's share of a step
+    /// blends the spring's previous and current zoom; every pan point is
+    /// rescaled about the cursor by the ratio of the blended zoom to the
+    /// zoom shown last frame (the zoom follows the cursor), and the shown
+    /// pan becomes the blended pan. A window or domain fade-in sets the
+    /// opening scale all nodes are drawn about the first node's placed
+    /// point, `ease(1 − r²)`; otherwise it is one.
+    pub fn present_draw(&mut self, alpha: f32, cursor: [f32; 2]) {
+        self.present_frame(alpha, Some(cursor));
+    }
+
+    /// [`TreeScreen::present_draw`] with the cursor optional: with none
+    /// (the pointer is outside the window) the pan is not rescaled.
+    fn present_frame(&mut self, alpha: f32, cursor: Option<[f32; 2]>) {
+        // The draw head takes the scale's centre before it steps and
+        // places the nodes again.
+        self.scale_centre = self.placed.first().copied().unwrap_or([0.0; 2]);
+        let old = self.shown_zoom;
+        self.shown_zoom = (self.zoom.value - self.zoom.previous) * alpha + self.zoom.previous;
+        if let Some(cursor) = cursor {
+            for point in [
+                &mut self.pan.goal,
+                &mut self.pan.position,
+                &mut self.pan.previous,
+            ] {
+                point[0] = (point[0] - cursor[0]) / old * self.shown_zoom + cursor[0];
+                point[1] = (point[1] - cursor[1]) / old * self.shown_zoom + cursor[1];
+            }
+        }
+        self.shown_pan = lerp2(self.pan.previous, self.pan.position, alpha);
+        self.factor = if self.fade_flags & FADING_IN != 0 || self.domain_flags & DOMAIN_IN != 0 {
+            ease(self.ease_share)
+        } else {
+            1.0
+        };
+        self.refresh_placement();
+    }
+
+    /// Places the nodes at ten times their place times the shown zoom plus
+    /// the shown pan, rounded to even unless the view is dragged. The
+    /// opening scale is not applied here: [`TreeScreen::view`] scales the
+    /// drawn places about the first node, as the draw's own placement call
+    /// does.
     pub fn refresh_placement(&mut self) {
-        self.zoom_fixed = (self.zoom.value * 256.0).round_ties_even();
+        self.zoom_fixed = (self.shown_zoom * 256.0).round_ties_even();
         for index in 0..self.nodes.len() {
-            let point = node_pixels(
+            self.placed[index] = node_pixels(
                 self.base[index][0],
                 self.base[index][1],
-                self.zoom.value,
+                self.shown_zoom,
                 self.shown_pan[0],
                 self.shown_pan[1],
                 !self.free_view,
             );
-            self.placed[index] = place_node(point, 0.0, 0.0, self.factor);
         }
     }
 
@@ -1050,8 +1216,15 @@ impl TreeScreen {
     /// Advances the pan and zoom springs to `now` in 17 ms steps, then
     /// shows the pan blended from the step before the last to the last by
     /// the frame's place inside a step, as the draw does. The first call or
-    /// an opening sets the step clock.
+    /// an opening sets the step clock. No cursor is given, so the blended
+    /// zoom does not move the pan.
     pub fn advance(&mut self, now: u32) {
+        self.advance_at(now, None);
+    }
+
+    /// [`TreeScreen::advance`] with the cursor the zoom is anchored at: the
+    /// draw head rescales the pan about it by the blended zoom's ratio.
+    pub fn advance_at(&mut self, now: u32, cursor: Option<[f32; 2]>) {
         if self.step_at == 0 {
             self.step_at = now;
         }
@@ -1064,7 +1237,8 @@ impl TreeScreen {
         }
         // The blend is taken in double: one less the overshoot over 17.
         let overshoot = (u64::from(self.step_at) as i64 - u64::from(now) as i64) as f64;
-        self.present((1.0 - overshoot * 0.058_823_529_411_764_705) as f32);
+        let alpha = (1.0 - overshoot * 0.058_823_529_411_764_705) as f32;
+        self.present_frame(alpha, cursor);
     }
 
     /// One step of the pan and zoom springs. Returns whether anything
@@ -1156,6 +1330,8 @@ impl TreeScreen {
                 return out;
             }
             if id > 0 && id & focus::SLOT != 0 {
+                // The slot is the node the last press took (the press
+                // stores the focus's low word), not the focus now.
                 let slot = self.node_under - 1;
                 if (0..10).contains(&slot) && bar.select(slot as usize) {
                     out.slot = Some(slot as usize);
@@ -1262,6 +1438,7 @@ impl TreeScreen {
                 return;
             }
             self.marks[node] &= !PICKED;
+            self.wheel_child.begin_fade(now);
             out.sound = Some(DROP_SOUND);
         } else {
             // The cost is the one of the domain the screen shows.
@@ -1282,6 +1459,7 @@ impl TreeScreen {
                 return;
             }
             self.marks[node] |= PICKED;
+            self.wheel_child.begin_fade(now);
             out.sound = Some(PICK_SOUND);
         }
         if let Some(record) = record {
@@ -1340,11 +1518,14 @@ impl TreeScreen {
                     return 3;
                 };
                 let node = node as usize;
-                let centre = [self.nodes[node].x, self.nodes[node].y];
+                let Some(centre) = self.placed.get(node).copied() else {
+                    return 3;
+                };
                 let dx = x - centre[0];
                 let dy = y - centre[1];
-                let reach = self.zoom.value * 0.55;
-                if reach * reach <= dy * dy + dx * dx {
+                // The reach is squared in double against the single sum.
+                let reach = f64::from(self.zoom_fixed) * 0.55;
+                if reach * reach <= f64::from(dy * dy + dx * dx) {
                     if self.drag != DragState::Link {
                         self.drag = DragState::Link;
                         self.link_turn =
@@ -1371,7 +1552,14 @@ impl TreeScreen {
     /// each tangent beyond the ends, for the ribbon's end directions) are
     /// not points of the curve and are not kept.
     pub fn drag_link_points(&self) -> Option<Vec<[f32; 2]>> {
-        if !matches!(self.drag, DragState::LinkHover | DragState::Link) {
+        self.drag_link_spline().map(|spline| spline.0)
+    }
+
+    /// The drag link's curve and its two tangent handles. A labelled guess
+    /// at the far tangent: the engine's vector calls imply the handle points
+    /// back along the drag direction.
+    fn drag_link_spline(&self) -> Option<DragSpline> {
+        if self.drag != DragState::Link {
             return None;
         }
         let index = self.node_under.checked_sub(1)? as usize;
@@ -1384,7 +1572,7 @@ impl TreeScreen {
             0.29
         };
         let reach =
-            ((base - f64::from(self.zoom.value) * 0.003) * f64::from(self.zoom_fixed)) as f32;
+            ((base - f64::from(self.shown_zoom) * 0.003) * f64::from(self.zoom_fixed)) as f32;
         let start = [at[0] + sine * reach, at[1] + cosine * reach];
         let pointer = self.pointer;
         let delta = [pointer[0] - start[0], pointer[1] - start[1]];
@@ -1396,12 +1584,18 @@ impl TreeScreen {
             [delta[0] / length, delta[1] / length]
         };
         let out = [
-            sine * capped * self.zoom.value,
-            cosine * capped * self.zoom.value,
+            sine * capped * self.shown_zoom,
+            cosine * capped * self.shown_zoom,
         ];
         let in_ = [
-            -unit[0] * capped * self.zoom.value,
-            -unit[1] * capped * self.zoom.value,
+            unit[0] * capped * self.shown_zoom,
+            unit[1] * capped * self.shown_zoom,
+        ];
+        let out_step = 2.0 / 30.0;
+        let start_handle = [start[0] - out[0] * out_step, start[1] - out[1] * out_step];
+        let end_handle = [
+            pointer[0] + in_[0] * out_step,
+            pointer[1] + in_[1] * out_step,
         ];
         let mut points = Vec::with_capacity(31);
         points.push(start);
@@ -1411,7 +1605,7 @@ impl TreeScreen {
                 start, pointer, out, in_, t,
             ));
         }
-        Some(points)
+        Some((points, start_handle, end_handle))
     }
 
     /// Ends a drag: a link dropped on a node is added to the focused node.
@@ -1425,7 +1619,7 @@ impl TreeScreen {
             {
                 {
                     let node = node as usize;
-                    let turn = link_angle(self.nodes[end - 1].x, self.nodes[end - 1].y, x, y)
+                    let turn = link_angle(self.placed[end - 1][0], self.placed[end - 1][1], x, y)
                         / std::f32::consts::TAU;
                     let link = NodeLink {
                         out_turn: self.link_turn,
@@ -1454,7 +1648,7 @@ impl TreeScreen {
     pub fn wheel(&mut self, flags: u32, dx: f32, dy: f32, now: u32) -> PressResult {
         let mut out = PressResult::default();
         if flags & 0x10 != 0 {
-            let step = self.zoom.value + 2.0;
+            let step = self.shown_zoom + 2.0;
             self.pan.goal[0] -= step * dx * 4.0;
             self.pan.goal[1] -= step * dy * 4.0;
             if !self.free_view {
@@ -1474,7 +1668,7 @@ impl TreeScreen {
             } else if flags == 0x100 {
                 out.begin = true;
             }
-        } else if flags & 0x300 != 0 {
+        } else if flags & 0x300 != 0 && !self.closing() {
             out.open = true;
         }
         out
@@ -1510,10 +1704,16 @@ impl TreeScreen {
         if flags & 2 == 0 {
             if key == 0x27 {
                 out.cycled = bar.cycle(1, record);
+                if out.cycled {
+                    out.sound = Some(SLOT_SELECT_SOUND);
+                }
                 return out;
             }
             if key == 0x25 {
                 out.cycled = bar.cycle(-1, record);
+                if out.cycled {
+                    out.sound = Some(SLOT_SELECT_SOUND);
+                }
                 return out;
             }
         }
@@ -1568,6 +1768,9 @@ impl TreeScreen {
     }
 }
 
+/// A drag's curve and its two tangent handles.
+type DragSpline = (Vec<[f32; 2]>, [f32; 2], [f32; 2]);
+
 impl TreeScreen {
     /// The tooltip's name and description texts of a node.
     pub fn node_text<'a>(&self, index: usize, texts: &'a [Vec<u8>]) -> (&'a [u8], &'a [u8]) {
@@ -1616,8 +1819,9 @@ impl TreeScreen {
                 continue;
             }
             let node = &self.nodes[index];
-            let dx = x - node.x;
-            let dy = y - node.y;
+            let at = self.placed[index];
+            let dx = x - at[0];
+            let dy = y - at[1];
             let distance = f64::from(dy * dy + dx * dx);
             // A framed node's circle is half the size of the others'.
             let radius = if node.power & word::FRAME == 0 {
@@ -1631,7 +1835,7 @@ impl TreeScreen {
             }
             let reach = f64::from(radius) * 0.55 + 10.0;
             if reach * reach > distance {
-                let turn = link_angle(node.x, node.y, x, y) / std::f32::consts::TAU;
+                let turn = link_angle(at[0], at[1], x, y) / std::f32::consts::TAU;
                 let near = |other: f32| f64::from((turn - other).abs()) < 0.01;
                 for (at, link) in self.links[index].iter().enumerate() {
                     if near(link.out_turn) {
@@ -1951,12 +2155,21 @@ impl TreeScreen {
         now: u32,
     ) -> exa_ui::tree_draw::TreeView {
         use exa_ui::tree_draw as draw;
+        // The draw scales every placed node about the first node's placed
+        // point, as the draw head took it, by the opening ease (one when no
+        // fade runs).
+        let centre = self.scale_centre;
+        let drawn: Vec<[f32; 2]> = self
+            .placed
+            .iter()
+            .map(|at| place_node(*at, centre[0], centre[1], self.factor))
+            .collect();
         let mut nodes = Vec::with_capacity(self.nodes.len());
         for (index, node) in self.nodes.iter().enumerate() {
             nodes.push(draw::NodeView {
                 power: node.power,
-                x: self.placed[index][0],
-                y: self.placed[index][1],
+                x: drawn[index][0],
+                y: drawn[index][1],
                 flags: self.marks[index],
             });
         }
@@ -1970,32 +2183,36 @@ impl TreeScreen {
                 }
                 let Some(curve) = exa_formats::power_tree::tree_link(
                     exa_formats::power_tree::LinkEnd {
-                        at: self.placed[index],
+                        at: drawn[index],
                         power: node.power,
                         mark: self.marks[index],
                     },
                     exa_formats::power_tree::LinkEnd {
-                        at: self.placed[end - 1],
+                        at: drawn[end - 1],
                         power: self.nodes[end - 1].power,
                         mark: self.marks[end - 1],
                     },
                     raw,
-                    self.zoom.value,
+                    self.shown_zoom,
                 ) else {
                     continue;
                 };
                 links.push(draw::LinkView {
                     points: curve.points,
+                    start_handle: curve.start_handle,
+                    end_handle: curve.end_handle,
                     source_mark: self.marks[index],
                     dest_mark: self.marks[end - 1],
                 });
             }
         }
         // The link a drag has out of a node is drawn as it is stretched.
-        if let Some(points) = self.drag_link_points() {
+        if let Some((points, start_handle, end_handle)) = self.drag_link_spline() {
             let index = self.node_under as usize - 1;
             links.push(draw::LinkView {
                 points,
+                start_handle,
+                end_handle,
                 source_mark: self.marks.get(index).copied().unwrap_or(0),
                 dest_mark: 0,
             });
@@ -2024,10 +2241,11 @@ impl TreeScreen {
             width,
             height,
             scale,
+            font_size: self.font_size,
             window: self.window_alpha,
             content: self.content_alpha,
             bar_alpha: self.bar_alpha,
-            zoom: self.zoom.value,
+            zoom: self.shown_zoom,
             icon_size: self.zoom_fixed,
             mode: match self.mode {
                 TreeMode::Play => draw::ScreenMode::Play,
@@ -2112,7 +2330,7 @@ impl TreeScreen {
     /// Showing the tree starts its 1000 ms opening fade and remembers the
     /// domain for the next opening.
     pub fn show(&mut self, now: u32) -> ShowState {
-        self.fade_flags |= FADING_IN;
+        self.fade_flags = FADING_IN;
         self.open_at = now.wrapping_add(OPEN_MS);
         self.faded_out = false;
         self.step_at = now;
@@ -2146,7 +2364,8 @@ impl TreeScreen {
     /// Computes this frame's three fades and the domain switch, as the
     /// draw's head does. The closing fade clears its flag and marks the
     /// screen faded out once its stamp is reached; the opening fade clears
-    /// its flag at the same point.
+    /// its flag at the same point. The second value (`1 − r²`) the opening
+    /// scale eases is kept in [`TreeScreen::ease_share`].
     pub fn present_window(&mut self, now: u32) {
         let mut window = 1.0;
         let mut second = 1.0;
@@ -2167,6 +2386,7 @@ impl TreeScreen {
                 self.window_alpha = 0.0;
                 self.content_alpha = 0.0;
                 self.bar_alpha = 0.0;
+                self.ease_share = 1.0;
                 self.faded_out = true;
                 return;
             }
@@ -2179,10 +2399,12 @@ impl TreeScreen {
         let mut content = window;
         if self.domain_flags & DOMAIN_IN != 0 {
             if now < self.domain_at {
-                let (raised, _) = open_fade(self.domain_at, now);
+                let (raised, inner) = open_fade(self.domain_at, now);
                 content = raised;
+                second = inner;
             } else {
                 self.domain_flags &= !DOMAIN_IN;
+                second = 1.0;
             }
         }
         if self.domain_flags & DOMAIN_OUT != 0 {
@@ -2198,6 +2420,7 @@ impl TreeScreen {
                 content = 0.0;
             }
         }
+        self.ease_share = second;
         self.window_alpha = window;
         self.content_alpha = content;
         self.bar_alpha = if self.fade_flags & FADING_OUT != 0 {
@@ -2205,13 +2428,52 @@ impl TreeScreen {
         } else {
             bar_second
         };
+        // The domain wheel child is shown with the same value.
+        self.wheel_child.state.shown = self.bar_alpha;
     }
 
     /// Starts the domain switch's 256 ms fade-out. The wheel that turns the
-    /// domain is outside this module; its click calls this.
+    /// domain is outside this module; its click calls [`TreeScreen::choose_domain`]
+    /// or this.
     pub fn fade_domain(&mut self, now: u32) {
         self.domain_flags = DOMAIN_OUT;
         self.domain_at = now.wrapping_add(CLOSE_MS);
+    }
+
+    /// Chooses the domain the pending switch opens and starts its fade.
+    pub fn choose_domain(&mut self, domain: u8, now: u32) {
+        self.pending_domain = domain;
+        self.fade_domain(now);
+    }
+
+    /// The wheel child's picture at its place.
+    pub fn wheel_view(&self) -> WheelView {
+        let wheel = &self.wheel_child;
+        WheelView {
+            x: wheel.left,
+            y: wheel.top,
+            size: wheel.size,
+            alpha: wheel.state.shown,
+        }
+    }
+
+    /// A click on the domain wheel child at the window point `x`,`y`: the
+    /// wheel's own hover and confirm (the click carries the confirm
+    /// modifier; the domain must be known and differ from the current
+    /// choice). A confirmed choice starts the tree's domain switch to it.
+    /// Returns whether the click fell on one of the wheel's icons.
+    pub fn wheel_click(&mut self, x: f32, y: f32, now: u32) -> bool {
+        let hit = self.wheel_child.domain_at(x, y);
+        let wheel = &mut self.wheel_child.state;
+        wheel.hover(i32::from(hit), now);
+        if hit == 0 {
+            return false;
+        }
+        let modifier = crate::effects::wheel::CONFIRM_MODIFIER;
+        if wheel.confirm(modifier, &self.known_domains, now, now) {
+            self.choose_domain(hit, now);
+        }
+        true
     }
 
     /// Loads the bar from the record and starts its 900 ms opening, as
@@ -2288,19 +2550,52 @@ impl TreeScreen {
         Some(phase)
     }
 
+    /// Replaces the tree's nodes, keeping the form's view and fades: the
+    /// domain switch reads a new tree into the same screen.
+    fn adopt_nodes(&mut self, domain: u8, nodes: Vec<PowerNode>) {
+        self.links = nodes
+            .iter()
+            .map(|node| node.links.iter().map(NodeLink::read).collect())
+            .collect();
+        self.base = nodes.iter().map(|node| [node.x, node.y]).collect();
+        self.placed = vec![[0.0; 2]; nodes.len()];
+        self.marks = vec![0; nodes.len()];
+        self.nodes = nodes;
+        self.domain = domain;
+    }
+
     /// Changes the domain: the current one is stored back into the record
-    /// and the new tree is loaded. Returns the old domain.
+    /// and the new tree is read into the same form, so the view, fades and
+    /// wheel stay as they were. Returns the old domain.
     pub fn switch_domain(
         &mut self,
         domain: u8,
         record: &mut PowerRecord,
         bytes: Option<&[u8]>,
-        width: f32,
-        height: f32,
+        _width: f32,
+        _height: f32,
     ) -> u8 {
         let old = self.domain;
         self.store_domain(record);
-        *self = TreeScreen::load(domain, self.mode, Some(record), bytes, width, height);
+        let nodes = match bytes {
+            Some(bytes) => match exa_formats::power_tree::read_power_tree(bytes) {
+                Ok(tree) => tree.nodes,
+                Err(_) => Self::empty(domain, self.mode).nodes,
+            },
+            None => Self::empty(domain, self.mode).nodes,
+        };
+        self.adopt_nodes(domain, nodes);
+        match self.mode {
+            TreeMode::Test => self.marks.fill(SHOWN | LEARNED),
+            _ => {
+                let mut pairs = record.pairs.clone();
+                filter_known(&mut pairs, &self.nodes, domain);
+                self.apply_marks(&pairs);
+                self.read_record(record);
+            }
+        }
+        self.wheel_child.state.chosen = i32::from(domain);
+        self.refresh_placement();
         old
     }
 }
@@ -2334,11 +2629,11 @@ pub fn filter_known(pairs: &mut Vec<KnownPower>, nodes: &[PowerNode], domain: u8
 /// power asks for Concentration's technique 2, and a power whose high
 /// nibble is set asks for that technique among Insight's.
 pub fn can_learn(record: &PowerRecord, power: u32) -> bool {
-    if is_persistent(power) && !record.skills.concentration.knows(2) {
+    if is_persistent(power) && !record.skills.concentration.holds_funded(2) {
         return false;
     }
     let technique = technique_of(power);
-    technique == 0 || record.skills.insight.knows(technique)
+    technique == 0 || record.skills.insight.holds_funded(technique)
 }
 
 /// Tells the running powers past `slots` to end. Returns false when one
@@ -2386,11 +2681,13 @@ impl BarSlot {
     /// Moves the state on as the original's draw does: a flash that has run
     /// its 200 ms becomes lit, and a fade that has run its duration ends.
     pub fn step(&mut self, now: u32) {
+        let clock = u64::from(now);
         if self.state & bar_state::FLASH != 0 {
-            if self.stamp.wrapping_add(bar_state::FLASH_MS) < now {
+            if u64::from(self.stamp) + u64::from(bar_state::FLASH_MS) < clock {
                 self.state = (self.state & !bar_state::FLASH) | bar_state::LIT;
             }
-        } else if self.state & bar_state::FADE != 0 && self.stamp.wrapping_add(self.duration) < now
+        } else if self.state & bar_state::FADE != 0
+            && u64::from(self.stamp) + u64::from(self.duration) < clock
         {
             self.state &= !bar_state::FADE;
         }
@@ -2822,8 +3119,12 @@ mod tests {
     #[test]
     fn the_zoom_levels_pick_the_nearest() {
         assert_eq!(zoom_level(0.304_347_83), -8);
+        // Below the first level's threshold the previous distance is not a
+        // number; the unordered compare is not "greater", so the first
+        // level answers.
         assert_eq!(zoom_level(0.25), -8);
         assert_eq!(zoom_level(0.26), -8);
+        assert_eq!(zoom_level(0.29), -8);
         assert_eq!(zoom_level(0.30), -8);
         assert_eq!(zoom_level(0.65), -2);
         assert_eq!(zoom_level(0.74), -1);
@@ -2915,6 +3216,108 @@ mod tests {
         };
         assert!(!step_pan(&mut lost));
         assert!(lost.position[0].is_nan());
+    }
+
+    #[test]
+    fn the_tree_creates_its_form_and_domain_wheel() {
+        let screen = TreeScreen::load(DOMAIN_MIND, TreeMode::Play, None, None, 1000.0, 700.0);
+        // The form's creation words and alphas.
+        assert_eq!(screen.form_flags, 0x800);
+        assert_eq!(screen.form_word, 0x000f_0000);
+        assert_eq!(screen.text_alpha, 0xa0);
+        assert_eq!(screen.hint_alpha, 0x80);
+        assert_eq!(screen.caption.to_bits(), 0xff00_0000);
+        // The wheel is 280 square at (10, height − 290), has the opened
+        // domain as its choice and starts with its eased value at 48 on a
+        // tree with no record.
+        let wheel = &screen.wheel_child;
+        assert_eq!((wheel.left, wheel.top), (10.0, 410.0));
+        assert_eq!(wheel.size, 280.0);
+        assert_eq!(wheel.state.chosen, i32::from(DOMAIN_MIND));
+        assert_eq!(wheel.state.shown, 1.0);
+        assert_eq!(wheel.state.fade, 48.0);
+        // The wheel's own hit test about the child's centre (140, 140):
+        // icon 1 at (140, 64) and icon 4 at (140, 216); the centre is no
+        // icon.
+        assert_eq!(wheel.domain_at(150.0, 474.0), 1);
+        assert_eq!(wheel.domain_at(150.0, 626.0), 4);
+        assert_eq!(wheel.domain_at(150.0, 550.0), 0);
+        assert_eq!(wheel.domain_at(0.0, 0.0), 0);
+    }
+
+    #[test]
+    fn a_wheel_click_switches_only_to_a_known_other_domain() {
+        let mut tree = TreeScreen::load(DOMAIN_MIND, TreeMode::Play, None, None, 1000.0, 700.0);
+        // An unknown domain is refused.
+        assert!(tree.wheel_click(150.0, 626.0, 1000));
+        assert_eq!(tree.domain_flags, 0);
+        tree.known_domains = [true; 6];
+        // The current choice is refused too.
+        assert!(tree.wheel_click(150.0, 474.0, 1000));
+        assert_eq!(tree.domain_flags, 0);
+        // A known other domain is chosen and its switch starts.
+        assert!(tree.wheel_click(150.0, 626.0, 1000));
+        assert_eq!(tree.wheel_child.state.chosen, i32::from(DOMAIN_ENERGY));
+        assert_eq!(tree.pending_domain, DOMAIN_ENERGY);
+        assert_eq!(tree.domain_flags, DOMAIN_OUT);
+        // Off the icons the click is not the wheel's.
+        assert!(!tree.wheel_click(150.0, 550.0, 2000));
+    }
+
+    #[test]
+    fn a_chosen_domain_switches_at_the_fade_stamp() {
+        let mut tree = TreeScreen::load(DOMAIN_MIND, TreeMode::Play, None, None, 1000.0, 700.0);
+        tree.choose_domain(DOMAIN_ENERGY, 1000);
+        assert_eq!(tree.pending_domain, DOMAIN_ENERGY);
+        assert_eq!(tree.domain_flags, DOMAIN_OUT);
+        assert_eq!(tree.domain_at, 1256);
+        tree.present_window(1256);
+        assert!(tree.switch_due);
+        assert_eq!(tree.domain_flags, DOMAIN_IN);
+        assert_eq!(tree.domain_at, 2256);
+        // A pick starts the wheel's 300 ms ease from its value.
+        tree.wheel_child.state.fade = 2.5;
+        tree.wheel_child.begin_fade(3000);
+        assert_eq!(tree.wheel_child.state.fade_start, 2.5);
+        assert_eq!(tree.wheel_child.state.fade_deadline, 3300);
+    }
+
+    #[test]
+    fn the_draw_head_blends_the_zoom_about_the_cursor_and_eases_the_opening() {
+        let mut screen = TreeScreen::from_nodes(
+            DOMAIN_MIND,
+            TreeMode::Play,
+            vec![node(0x101, vec![]), node(0x102, vec![])],
+        );
+        screen.zoom.previous = 1.0;
+        screen.zoom.value = 1.2;
+        screen.shown_zoom = 1.0;
+        screen.pan.goal = [100.0, 200.0];
+        screen.pan.position = [300.0, 400.0];
+        screen.pan.previous = [200.0, 300.0];
+        let cursor = [50.0, 60.0];
+        screen.present_draw(0.5, cursor);
+        // (1.2 - 1.0) * 0.5 + 1.0
+        assert_eq!(screen.shown_zoom, 1.1);
+        // Each pan point is rescaled about the cursor by 1.1 / 1.0.
+        assert_eq!(screen.pan.goal, [105.0, 214.0]);
+        assert_eq!(screen.pan.position, [325.0, 434.0]);
+        assert_eq!(screen.pan.previous, [215.0, 324.0]);
+        // The shown pan is half way from the previous to the position.
+        assert_eq!(screen.shown_pan, [270.0, 379.0]);
+        // No fade: the opening scale is one.
+        assert_eq!(screen.factor, 1.0);
+        // An opening fade of 1000 ms at its half: r = 0.5, second = 0.75,
+        // and the draw's quick rise ease gives 1 + 0.111·0.75 − 1/7.
+        screen.fade_flags = FADING_IN;
+        screen.ease_share = 0.75;
+        screen.present_draw(0.5, cursor);
+        assert!((screen.factor - 0.940_392_85).abs() < 1e-6);
+        // Once the flag clears the scale is one again.
+        screen.fade_flags = 0;
+        screen.ease_share = 0.75;
+        screen.present_draw(0.5, cursor);
+        assert_eq!(screen.factor, 1.0);
     }
 
     #[test]
@@ -3749,6 +4152,11 @@ mod tests {
         // A key with bit 1 set in its flags never cycles.
         let out = screen.key(input(0x27, 2, false, false, 0, 0), &mut bar, None);
         assert!(out.open && !out.cycled);
+        // The next key steps to the first set slot and plays the select
+        // sound.
+        let out = screen.key(input(0x27, 0, false, false, 0, 0), &mut bar, None);
+        assert!(out.cycled && !out.open);
+        assert_eq!(out.sound, Some(SLOT_SELECT_SOUND));
         // The guard holds keys until 950 ms before the stamp is past.
         let out = screen.key(input(0x50, 0, true, false, 2000, 1049), &mut bar, None);
         assert!(!out.open);
@@ -3784,7 +4192,7 @@ mod tests {
         screen.zoom_fixed = 256.0;
         screen.placed[0] = [0.0, 0.0];
         assert!(screen.drag_link_points().is_none());
-        screen.drag = DragState::LinkHover;
+        screen.drag = DragState::Link;
         screen.node_under = 1;
         screen.link_turn = 0.0;
         screen.pointer = [0.0, 100.0];
@@ -3798,10 +4206,11 @@ mod tests {
         assert!((points[30][1] - 100.0).abs() < 1e-3);
         // The tangents' reach is held to 400: halfway to a pointer ten
         // thousand away the curve is at the ends' mean plus an eighth of
-        // each tangent, (129.28 + 10000)/2 + 50 + 50.
+        // the start tangent and less an eighth of the end one, (129.28 +
+        // 10000)/2 + 50 − 50.
         screen.pointer = [0.0, 10_000.0];
         let far = screen.drag_link_points().expect("the drag draws");
-        assert!((far[15][1] - 5_164.64).abs() < 1e-2);
+        assert!((far[15][1] - 5_064.64).abs() < 1e-2);
         // A framed power starts nearer its centre: 0.29 − 0.003 over 256.
         screen.nodes[0].power = 0x0100_0101;
         screen.pointer = [0.0, 100.0];
@@ -3821,9 +4230,12 @@ mod tests {
         screen.node_under = 1;
         screen.drag = DragState::Link;
         screen.link_turn = 0.0;
-        screen.zoom.value = 1.0;
+        screen.zoom.value = 0.1;
+        screen.shown_zoom = 0.1;
         screen.nodes[1].x = 100.0;
         screen.nodes[1].y = 0.0;
+        screen.base[1] = [100.0, 0.0];
+        screen.refresh_placement();
         let added = screen.release_drag(100.0, 0.0);
         assert!(added);
         assert_eq!(screen.nodes[0].links.len(), 1);
@@ -3857,16 +4269,20 @@ mod tests {
             vec![node(0x101, vec![link_to(2)]), node(0x102, vec![])],
         );
         screen.marks = vec![SHOWN, SHOWN];
+        screen.nodes[0].x = 0.0;
+        screen.nodes[0].y = 0.0;
+        screen.nodes[1].x = 0.0;
+        screen.nodes[1].y = 10.0;
+        screen.base[0] = [0.0, 0.0];
+        screen.base[1] = [0.0, 10.0];
+        screen.shown_zoom = 1.0;
+        screen.refresh_placement();
         screen.zoom_fixed = 4.0;
         assert_eq!(screen.hover(194.0, 32.0, 1000.0, 700.0, false), 0x40_0001);
         assert_eq!(screen.hover(0.0, 0.0, 1000.0, 700.0, false), 1);
         assert_eq!(screen.hover(0.0, 0.0, 1000.0, 700.0, true), 0);
         // A node's link: at 10 px straight above the second node with an
         // incoming turn of zero.
-        screen.nodes[0].x = 0.0;
-        screen.nodes[0].y = 0.0;
-        screen.nodes[1].x = 0.0;
-        screen.nodes[1].y = 100.0;
         let mut link = [0u8; 16];
         link[4..8].copy_from_slice(&(-0.5_f32).to_le_bytes());
         link[8..12].copy_from_slice(&1_u32.to_le_bytes());
@@ -3897,10 +4313,14 @@ mod tests {
             vec![node(0x101, vec![]), node(0x102, vec![])],
         );
         screen.marks = vec![SHOWN, SHOWN];
-        screen.nodes[0].x = 500.0;
-        screen.nodes[0].y = 500.0;
-        screen.nodes[1].x = 100.0;
-        screen.nodes[1].y = 100.0;
+        screen.nodes[0].x = 50.0;
+        screen.nodes[0].y = 50.0;
+        screen.nodes[1].x = 10.0;
+        screen.nodes[1].y = 10.0;
+        screen.base[0] = [50.0, 50.0];
+        screen.base[1] = [10.0, 10.0];
+        screen.shown_zoom = 1.0;
+        screen.refresh_placement();
         screen.zoom_fixed = 100.0;
         // Inside 0.45 of the circle's size: the node; outside it, and with no
         // link there, nothing.

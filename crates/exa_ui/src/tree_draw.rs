@@ -101,7 +101,8 @@ impl TreeVertex {
     }
 }
 
-/// The six immediate-mode programs the tree binds.
+/// The six immediate-mode programs the tree binds, and the spline renderer's
+/// program the links draw with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Program {
     /// The link's soft background (`vrTex`, `par0`); also the ring helper's
@@ -119,6 +120,11 @@ pub enum Program {
     /// The empty slot's radial ring (`vrTex`; `par0` is declared and not
     /// read).
     Ring,
+    /// The spline renderer's procedural ribbon (`vrTex`, `vrTx2`, the line
+    /// width `lnwdt`): the tree's links.
+    Spline,
+    /// The GUI skin's textured program, for the font atlas's glyph quads.
+    SkinText,
 }
 
 /// The texture a batch draws with.
@@ -132,6 +138,8 @@ pub enum Texture {
     Flamelets,
     /// The domain wheel's picture.
     Wheel,
+    /// A GUI font's 16 × 16 glyph atlas, by its texture name.
+    Font(&'static str),
 }
 
 /// A batch's uniform set.
@@ -570,54 +578,100 @@ pub fn ring(
     }
 }
 
-/// A link as a ribbon: `points` along the curve, `half_width` to each side,
-/// the texture running along it and the cross coordinate on the second set.
-/// An approximation: the original builds its ribbons with the spline
-/// renderer, whose triangulation this does not reproduce. The batch's
-/// program is the caller's.
-pub fn link_ribbon(batch: &mut Batch, points: &[[f32; 2]], half_width: f32, colour: [f32; 4]) {
-    if points.len() < 2 {
+/// A link as the spline renderer builds it: two vertices at every curve
+/// sample, offset by the ribbon's half width along the normal of the chord
+/// through its neighbours. The first row's normal comes from the start
+/// handle one tangent step behind the curve and the last row's from the end
+/// handle one step past it, as the spline's first and last tangents do.
+///
+/// The texture coordinates are the row (0 upward) and the side (1 or 0);
+/// the second coordinate set carries the row's join, the cross-direction
+/// miter term: `(offset·(point − previous) − offset·(next − point)) ·
+/// −0.09 / width²`. A dim link's alpha byte runs from zero at its source to
+/// `alpha · 0.5 · index/steps`, as the spline renderer darkens it.
+#[allow(clippy::too_many_arguments)]
+pub fn link_ribbon(
+    batch: &mut Batch,
+    points: &[[f32; 2]],
+    start_handle: [f32; 2],
+    end_handle: [f32; 2],
+    half_width: f32,
+    steps: usize,
+    colour: [f32; 4],
+    dim: bool,
+) {
+    if points.is_empty() {
         return;
     }
-    let count = points.len();
-    let mut previous = None;
-    for index in 0..count {
-        let (before, after) = if index == 0 {
-            (points[0], points[1])
-        } else if index == count - 1 {
-            (points[count - 2], points[count - 1])
+    let alpha = low_byte(colour[3] * 255.0);
+    let width_sq = f64::from(half_width) * f64::from(half_width);
+    let mut rows = Vec::with_capacity(points.len());
+    for (row, point) in points.iter().enumerate() {
+        let previous = if row == 0 {
+            start_handle
         } else {
-            (points[index - 1], points[index + 1])
+            points[row - 1]
         };
-        let dx = after[0] - before[0];
-        let dy = after[1] - before[1];
-        let length = (dx * dx + dy * dy).sqrt();
-        let normal = if length == 0.0 {
+        let next = if row + 1 < points.len() {
+            points[row + 1]
+        } else {
+            end_handle
+        };
+        let delta = [next[0] - previous[0], next[1] - previous[1]];
+        let length = (delta[0] * delta[0] + delta[1] * delta[1]).sqrt();
+        let offset = if length == 0.0 {
             [0.0, 0.0]
         } else {
-            [-dy / length * half_width, dx / length * half_width]
+            [
+                -delta[1] / length * half_width,
+                delta[0] / length * half_width,
+            ]
         };
-        let u = index as f32 / (count - 1).max(1) as f32;
-        let left = TreeVertex::new(
-            points[index][0] - normal[0],
-            points[index][1] - normal[1],
-            u,
-            0.0,
-        )
-        .with_uv2(0.0, 0.0)
-        .with_colour(colour);
-        let right = TreeVertex::new(
-            points[index][0] + normal[0],
-            points[index][1] + normal[1],
-            u,
-            0.0,
-        )
-        .with_uv2(1.0, 0.0)
-        .with_colour(colour);
-        if let Some((previous_left, previous_right)) = previous {
-            batch.quad([previous_left, previous_right, right, left]);
-        }
-        previous = Some((left, right));
+        let dot = |a: [f32; 2], b: [f32; 2]| f64::from(a[0] * b[0] + a[1] * b[1]);
+        let incoming = [point[0] - previous[0], point[1] - previous[1]];
+        let outgoing = [next[0] - point[0], next[1] - point[1]];
+        let join = ((dot(offset, incoming) - dot(offset, outgoing)) * -0.09 / width_sq) as f32;
+        let row_alpha = |vertex: usize| {
+            if dim {
+                let share = if steps == 0 {
+                    0.0
+                } else {
+                    vertex as f64 / steps as f64
+                };
+                cvt_i32_f64(f64::from(alpha) * share * 0.5) as u8
+            } else {
+                alpha
+            }
+        };
+        let vertex = |at: [f32; 2], side: f32, index: usize| {
+            TreeVertex::new(at[0], at[1], row as f32, side)
+                .with_uv2(join, 0.0)
+                .with_colour([
+                    colour[0],
+                    colour[1],
+                    colour[2],
+                    f32::from(row_alpha(index)) / 255.0,
+                ])
+        };
+        rows.push([
+            vertex([point[0] - offset[0], point[1] - offset[1]], 1.0, row * 2),
+            vertex(
+                [point[0] + offset[0], point[1] + offset[1]],
+                0.0,
+                row * 2 + 1,
+            ),
+        ]);
+    }
+    // The index buffer pairs every row: (2r, 2r+1, 2r+3) and
+    // (2r, 2r+3, 2r+2), one quad between each two rows.
+    for row in 0..rows.len() - 1 {
+        let [first, second] = rows[row];
+        let [third_side, fourth_side] = rows[row + 1];
+        // The next row's left vertex is 2r+2 and its right 2r+3.
+        let (third, fourth) = (fourth_side, third_side);
+        batch
+            .vertices
+            .extend([first, second, third, first, third, fourth]);
     }
 }
 
@@ -700,6 +754,9 @@ pub struct TreeView {
     pub height: f32,
     /// The GUI unit: the bar's slots are 17 units apart and 13 across.
     pub scale: f32,
+    /// The tree font atlas's pixel size, when the screen loaded it; zero
+    /// emits no glyph quads (the texts stay as runs for measurement only).
+    pub font_size: (u16, u16),
     /// The opening or closing window's alpha, 0 to 1: the backdrop's and
     /// the form's own.
     pub window: f32,
@@ -758,6 +815,10 @@ pub struct NodeView {
 #[derive(Debug, Clone, PartialEq)]
 pub struct LinkView {
     pub points: Vec<[f32; 2]>,
+    /// The start's tangent handle, one step behind the curve.
+    pub start_handle: [f32; 2],
+    /// The end's tangent handle, one step past the curve.
+    pub end_handle: [f32; 2],
     pub source_mark: u32,
     pub dest_mark: u32,
 }
@@ -828,6 +889,17 @@ pub const FRAME_SHADER: &str = "in vec2 vrTex;\r\nin vec2 vrTx2;\r\nin vec4 vrCo
 pub const ICON_SHADER: &str = "in vec2 vrTex;\r\nin vec4 vrCol;\r\nout vec4 FragColor;\r\nuniform vec4 par0;\r\nuniform vec4 par1;\r\nuniform vec2 tscl;\r\nuniform sampler2D Tex;\r\nvoid main() {\r\nvec2 t = vrTex - par0.xy;\r\nfloat a = (t.x*tscl.x)*(t.x*tscl.x) + (t.y*tscl.y)*(t.y*tscl.y);\r\nfloat b = clamp((a + par1.x) * par1.y, 0.0, 1.0);\r\na = 1.0 - a * 83.0;\r\nfloat c = clamp(a * par0.w, 0.0, 1.0);\r\nt = par0.xy + t * par0.z;\r\nvec3 col = texture(Tex, t).rgb;\r\nfloat d = clamp(a + par1.z, 0.0, 1.0);\r\nFragColor.rgb = col * d;\r\nb = clamp(b * 0.85 + 0.15, 0.0, 1.0);\r\na = 1.0 - a;\r\na = a * a * 0.3 * c;\r\nc = c * b + a;\r\nFragColor.a = vrCol.a * c;\r\n}";
 /// The empty slot's radial ring program.
 pub const RING_SHADER: &str = "in vec2 vrTex;\r\nin vec4 vrCol;\r\nout vec4 FragColor;\r\nuniform vec4 par0;\r\nuniform sampler2D Tex;\r\nvoid main() {\r\nvec2 t = vrTex - 0.5;\r\nfloat a = dot(t,t) * 5.0;\r\nfloat b = a + 0.2;\r\nb = b * b;\r\nb = min(b*b, 1.0);\r\nfloat d = b + 0.4;\r\na = (a - 0.8) * 5.0;\r\nfloat e = 1.0 - a;\r\nb = clamp((a+0.6) * 3.0, 0.0, 1.0);\r\na = clamp(e * 3.0, 0.0, 1.0);\r\nFragColor.rgb = vrCol.rgb * b * a;\r\ne = clamp(e * 0.6 + 0.8, 0.0, 1.0);\r\ne = clamp(e * e * d, 0.0, 1.0);\r\nFragColor.a = vrCol.a * e;\r\n}";
+/// The spline renderer's vertex program: the position through the
+/// projection and the two coordinate sets and ink through.
+pub const SPLINE_VERTEX_SHADER: &str = "in vec3 vPos;\r\nin vec2 vTex;\r\nin vec2 vTx2;\r\nin vec4 vCol;\r\nout vec2 vrTex;\r\nout vec2 vrTx2;\r\nout vec4 vrCol;\r\nuniform mat4 PrjMat;\r\nvoid main() {\r\ngl_Position = PrjMat * vec4(vPos,1.0);\r\nvrTex = vTex;\r\nvrTx2 = vTx2;\r\nvrCol = vCol * 0.003921568;\r\n}";
+/// The spline renderer's procedural ribbon: the row coordinate's fraction
+/// shapes the cross-section, the join shifts its middle, and `lnwdt` holds
+/// the width, the offset and the softness.
+pub const SPLINE_FRAGMENT_SHADER: &str = "in vec2 vrTex;\r\nin vec2 vrTx2;\r\nin vec4 vrCol;\r\nout vec4 FragColor;\r\nuniform vec3 lnwdt;\r\nvoid main() {\r\nfloat a = abs(0.5 - fract(vrTex.x));\r\na = sqrt(1.0 - a * 2.0);\r\na = clamp(0.5 + a * vrTx2.x, 0.0, 1.0);\r\na = 0.5 - abs(vrTex.y - a);\r\nfloat b = clamp(a * lnwdt.x + lnwdt.y, 0.0, 1.0);\r\nFragColor.rgb = vrCol.rgb * b;\r\na = clamp(a * lnwdt.z * 0.2, 0.0, 1.0);\r\na = clamp(a + b, 0.0, 1.0);\r\nFragColor.a = vrCol.a * a * a;\r\n}";
+
+/// The GUI skin's textured program, which draws a font atlas's glyphs with
+/// `TexCol` folded into the atlas colour.
+pub const SKIN_TEXT_SHADER: &str = crate::skin::SKIN_TEXTURED_SHADER;
 
 /// One program's source and the uniforms it binds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -838,8 +910,9 @@ pub struct ShaderBinding {
     pub texture_uniform: &'static str,
 }
 
-/// The six programs the tree binds, in the original's creation order.
-pub const TREE_SHADERS: [ShaderBinding; 6] = [
+/// The seven programs the tree binds: the six immediate ones and the
+/// spline renderer's.
+pub const TREE_SHADERS: [ShaderBinding; 7] = [
     ShaderBinding {
         program: Program::Link,
         source: LINK_SHADER,
@@ -876,6 +949,12 @@ pub const TREE_SHADERS: [ShaderBinding; 6] = [
         uniforms: &["par0"],
         texture_uniform: "Tex",
     },
+    ShaderBinding {
+        program: Program::Spline,
+        source: SPLINE_FRAGMENT_SHADER,
+        uniforms: &["lnwdt"],
+        texture_uniform: "",
+    },
 ];
 
 /// Share per millisecond of the new-power ring's fade.
@@ -906,8 +985,8 @@ fn framed(power: u32) -> bool {
     power & 0x0f00_0000 != 0
 }
 
-/// A power's domain.
-fn power_domain(power: u32) -> u8 {
+/// A power's domain byte.
+pub fn power_domain(power: u32) -> u8 {
     ((power >> 8) & 0xff) as u8
 }
 
@@ -938,7 +1017,7 @@ fn alpha_byte(value: f32) -> u8 {
 }
 
 /// The glow shader's `FrameCol` at rest: the accent's colour at 0.4 and its
-/// alpha.
+/// alpha (the vector scale the original calls multiplies three lanes).
 fn accent_frame(accent: [u8; 4]) -> [f32; 4] {
     let [red, green, blue, alpha] = ink(accent);
     [red * 0.4, green * 0.4, blue * 0.4, alpha]
@@ -984,20 +1063,38 @@ fn background(out: &mut TreeDraw, view: &TreeView) {
 }
 
 /// The links: bright when the source has any mark, otherwise dim when the
-/// destination has one, and not at all when neither does.
+/// destination has one, and not at all when neither does. Each is a spline
+/// ribbon; the line width is ten times the shown zoom and the program's
+/// `lnwdt` carries the spline renderer's three width terms.
 fn links(out: &mut TreeDraw, view: &TreeView) {
     let colour = link_ink(low_byte(view.content * 200.0));
     let half_width = view.zoom * 10.0;
+    let lnwdt = [
+        // Single precision: the width's half plus the root of four widths.
+        half_width * 0.5 + (half_width * 4.0).sqrt(),
+        -(f64::from(half_width) * 0.3 + 0.15) as f32,
+        f64::from(half_width * 6.0).sqrt() as f32,
+    ];
     for entry in &view.links {
-        let program = if entry.source_mark != 0 {
-            Program::LinkGlow
+        let dim = if entry.source_mark != 0 {
+            false
         } else if entry.dest_mark != 0 {
-            Program::Link
+            true
         } else {
             continue;
         };
-        let mut batch = Batch::new(program, Texture::None);
-        link_ribbon(&mut batch, &entry.points, half_width, colour);
+        let mut batch = Batch::new(Program::Spline, Texture::None);
+        batch.uniforms.par0 = [lnwdt[0], lnwdt[1], lnwdt[2], 0.0];
+        link_ribbon(
+            &mut batch,
+            &entry.points,
+            entry.start_handle,
+            entry.end_handle,
+            half_width,
+            entry.points.len().saturating_sub(1),
+            colour,
+            dim,
+        );
         out.submit(batch);
     }
 }
@@ -1104,7 +1201,7 @@ fn node_ring(
     } else {
         (times(view.zoom, 0.599), times(view.zoom, 0.3))
     };
-    let mut batch = Batch::new(Program::Link, Texture::Frames);
+    let mut batch = Batch::new(Program::Link, Texture::Flamelets);
     ring(
         &mut batch, node.x, node.y, size, outer, alpha, flag, view.now, colour,
     );
@@ -1215,7 +1312,7 @@ fn glows(out: &mut TreeDraw, view: &TreeView, new_ease: f32, retired: i32) {
         } else {
             (view.icon_size * 0.5, times(view.icon_size, 0.1))
         };
-        let mut batch = Batch::new(Program::Frame, Texture::Flamelets);
+        let mut batch = Batch::new(Program::Frame, Texture::Frames);
         batch.uniforms.frame_col = frame_col;
         glow(
             &mut batch,
@@ -1397,7 +1494,7 @@ fn bar_glows(out: &mut TreeDraw, view: &TreeView, pose: &BarPose) {
             continue;
         }
         if slot.word & 0x10_0000 != 0 {
-            let mut batch = Batch::new(Program::Frame, Texture::Flamelets);
+            let mut batch = Batch::new(Program::Frame, Texture::Frames);
             batch.uniforms.frame_col = frame_col;
             flame(
                 &mut batch,
@@ -1441,7 +1538,7 @@ fn bar_glows(out: &mut TreeDraw, view: &TreeView, pose: &BarPose) {
             rest[2] + (FLASH_GLOW[2] - rest[2]) * lit,
             rest[3],
         ];
-        let mut batch = Batch::new(Program::Frame, Texture::Flamelets);
+        let mut batch = Batch::new(Program::Frame, Texture::Frames);
         batch.uniforms.frame_col = frame_col;
         glow(
             &mut batch,
@@ -1532,6 +1629,66 @@ pub fn text_split(text: &[u8], width: f32) -> Vec<String> {
 /// The line step in pixels at the GUI unit `unit`.
 pub fn text_step(unit: f32) -> f32 {
     TREE_FONT.line_height as f32 * unit / TREE_UNIT
+}
+
+/// Appends one line's glyph quads, at the pixel `x` and baseline `y`, with
+/// the GUI font's cells on its 16 × 16 atlas. Nothing is appended before
+/// the atlas size is known: the running screen loads it from the resource
+/// pack.
+fn text_line(out: &mut TreeDraw, view: &TreeView, text: &[u8], x: f32, y: f32, ink: [f32; 4]) {
+    let (tw, th) = view.font_size;
+    let Some((du, dv)) = crate::gui_text::font_uv(TREE_FONT, (tw, th)) else {
+        return;
+    };
+    let quads = crate::gui_text::draw_line(TREE_FONT, text, cvt_i32(x), cvt_i32(y));
+    push_glyphs(out, &quads, ink, (du, dv));
+}
+
+/// Appends a wrapped block's glyph quads on the GUI font's atlas.
+#[allow(clippy::too_many_arguments)]
+fn text_block(
+    out: &mut TreeDraw,
+    view: &TreeView,
+    text: &[u8],
+    x: f32,
+    y: f32,
+    width: i32,
+    height: i32,
+    ink: [f32; 4],
+) {
+    let (tw, th) = view.font_size;
+    let Some((du, dv)) = crate::gui_text::font_uv(TREE_FONT, (tw, th)) else {
+        return;
+    };
+    let draw = crate::gui_text::draw_wrapped_at(TREE_FONT, text, x, y, width, height, 0, true);
+    push_glyphs(out, &draw.quads, ink, (du, dv));
+}
+
+/// One font layer's quads, with the skin's textured program and the font's
+/// atlas. The original's text batch order is top left, bottom left, bottom
+/// right, top right; the atlas cell's far row is the top.
+fn push_glyphs(
+    out: &mut TreeDraw,
+    quads: &[crate::gui_text::TextQuad],
+    ink: [f32; 4],
+    (du, dv): (f32, f32),
+) {
+    if quads.is_empty() {
+        return;
+    }
+    let mut batch = Batch::new(Program::SkinText, Texture::Font(TREE_FONT.texture));
+    batch.uniforms.par0 = [1.0, 1.0, 0.0, 0.0];
+    for quad in quads {
+        let [x, top, w, h] = quad.rect;
+        let (u0, v0) = quad.cell;
+        batch.quad([
+            TreeVertex::new(x as f32, top as f32, u0, v0 + dv).with_colour(ink),
+            TreeVertex::new(x as f32, (top + h) as f32, u0, v0).with_colour(ink),
+            TreeVertex::new((x + w) as f32, (top + h) as f32, u0 + du, v0).with_colour(ink),
+            TreeVertex::new((x + w) as f32, top as f32, u0 + du, v0 + dv).with_colour(ink),
+        ]);
+    }
+    out.submit(batch);
 }
 
 /// One panel of the tooltip, in pixels.
@@ -1703,6 +1860,19 @@ pub fn tooltip_draw(
                 text: text.clone(),
             });
         }
+        // The skin's own wrapped draw: the lines centred in the 59-unit
+        // text width, at the box's top.
+        let joined = description.join("\r\n");
+        text_block(
+            &mut out,
+            view,
+            joined.as_bytes(),
+            tip.text[0],
+            tip.text[1],
+            (TIP_TEXT_WIDTH * view.scale) as i32,
+            (tip.panel[3] + view.scale) as i32,
+            [1.0, 1.0, 1.0, tip.alpha],
+        );
     }
     if let Some(tip) = layout.name {
         boxed(&mut out, tip.panel, tip.alpha);
@@ -1713,6 +1883,14 @@ pub fn tooltip_draw(
             colour: [0.9, 0.9, 0.9, tip.alpha],
             text: name.to_string(),
         });
+        text_line(
+            &mut out,
+            view,
+            name.as_bytes(),
+            tip.text[0],
+            tip.text[1],
+            [0.9, 0.9, 0.9, tip.alpha],
+        );
     }
     out
 }
@@ -1761,6 +1939,14 @@ pub fn labels_draw(view: &TreeView, names: &[(String, f32)]) -> TreeDraw {
             colour: [1.0, 1.0, 1.0, 160.0 / 255.0],
             text: text.clone(),
         });
+        text_line(
+            &mut out,
+            view,
+            text.as_bytes(),
+            text_x,
+            text_y,
+            [1.0, 1.0, 1.0, 160.0 / 255.0],
+        );
     }
     out
 }
@@ -1855,6 +2041,48 @@ pub fn prompt_draw(
         colour: button(focused == 0x200_0000),
         text: begin.to_string(),
     });
+    text_line(
+        &mut out,
+        view,
+        title.as_bytes(),
+        title_x + unit,
+        title_y + unit * 3.0,
+        [1.0, 1.0, 1.0, 1.0],
+    );
+    text_line(
+        &mut out,
+        view,
+        back.as_bytes(),
+        back_x,
+        button_y,
+        button(focused == 0x100_0000),
+    );
+    text_line(
+        &mut out,
+        view,
+        begin.as_bytes(),
+        begin_x,
+        button_y,
+        button(focused == 0x200_0000),
+    );
+    out
+}
+
+/// The domain wheel's sheet at the child's place: a square picture. The
+/// child's own sector-band draw is outside this component; this shows the
+/// sheet the tree loads.
+pub fn wheel_picture(x: f32, y: f32, size: f32, alpha: f32) -> TreeDraw {
+    let mut out = TreeDraw::default();
+    let mut batch = Batch::new(Program::SkinText, Texture::Wheel);
+    batch.uniforms.par0 = [1.0, 1.0, 0.0, 0.0];
+    let ink = [1.0, 1.0, 1.0, alpha];
+    batch.quad([
+        TreeVertex::new(x, y, 0.0, 0.0).with_colour(ink),
+        TreeVertex::new(x, y + size, 0.0, 1.0).with_colour(ink),
+        TreeVertex::new(x + size, y + size, 1.0, 1.0).with_colour(ink),
+        TreeVertex::new(x + size, y, 1.0, 0.0).with_colour(ink),
+    ]);
+    out.submit(batch);
     out
 }
 
@@ -1880,7 +2108,7 @@ pub fn preview_draw(power: u32, flags: u32, x: f32, y: f32, unit: f32, domain: u
         });
         out.submit(batch);
     }
-    let mut glow_batch = Batch::new(Program::Frame, Texture::Flamelets);
+    let mut glow_batch = Batch::new(Program::Frame, Texture::Frames);
     glow_batch.uniforms.frame_col = accent_frame([255, 250, 230, 100]);
     let mut colour = domain_colour(domain);
     if flags & mark::PICKED == 0 {
@@ -1957,6 +2185,7 @@ mod tests {
             width: 1000.0,
             height: 700.0,
             scale: 4.0,
+            font_size: (0, 0),
             window: 1.0,
             content: 1.0,
             bar_alpha: 1.0,
@@ -2203,13 +2432,21 @@ mod tests {
         link_ribbon(
             &mut batch,
             &[[0.0, 0.0], [100.0, 0.0], [200.0, 0.0]],
+            [-10.0, 0.0],
+            [210.0, 0.0],
             2.0,
+            2,
             [1.0; 4],
+            false,
         );
         assert_eq!(batch.vertices.len(), 2 * 6);
         assert_eq!((batch.vertices[0].x, batch.vertices[0].y), (0.0, -2.0));
         assert_eq!((batch.vertices[1].x, batch.vertices[1].y), (0.0, 2.0));
-        assert_eq!(batch.vertices[5].u2, 0.0);
+        // The texture coordinate's second component alternates sides.
+        assert_eq!(batch.vertices[0].v, 1.0);
+        assert_eq!(batch.vertices[1].v, 0.0);
+        // The second row sits at x 100 in the cleared fan's fourth slot.
+        assert_eq!(batch.vertices[4].x, 100.0);
     }
 
     #[test]
@@ -2237,23 +2474,32 @@ mod tests {
         let points = vec![[100.0, 100.0], [200.0, 100.0]];
         let make = |source_mark, dest_mark| LinkView {
             points: points.clone(),
+            start_handle: [100.0, 90.0],
+            end_handle: [200.0, 90.0],
             source_mark,
             dest_mark,
         };
         view.links = vec![make(0x1000, 0), make(0, 0x1000), make(0, 0)];
         let draw = tree_draw(&view);
-        assert_eq!(count(&draw, Program::LinkGlow), 1);
-        assert_eq!(count(&draw, Program::Link), 1);
-        let bright = draw
+        let spline: Vec<_> = draw
             .batches
             .iter()
-            .find(|b| b.program == Program::LinkGlow)
-            .unwrap();
+            .filter(|b| b.program == Program::Spline)
+            .collect();
+        // Both ribbons share one spline batch: six vertices each.
+        assert_eq!(spline.len(), 1);
+        assert_eq!(spline[0].vertices.len(), 12);
+        let bright = spline[0];
         // The link ink: 103, 100, 92 and the window's 200.
+        let first = bright.vertices[0];
         assert_eq!(
-            bright.vertices[0].colour,
-            [103.0 / 255.0, 100.0 / 255.0, 92.0 / 255.0, 200.0 / 255.0]
+            [first.colour[0], first.colour[1], first.colour[2]],
+            [103.0 / 255.0, 100.0 / 255.0, 92.0 / 255.0]
         );
+        // The second, with no source mark, starts transparent at its source;
+        // both ribbons share one spline batch.
+        let dim_start = 6;
+        assert_eq!(bright.vertices[dim_start].colour[3], 0.0);
     }
 
     #[test]
@@ -2353,6 +2599,7 @@ mod tests {
             .find(|b| b.program == Program::Frame)
             .unwrap();
         assert!(close(glow.uniforms.frame_col[0], 0.4));
+        // The vector scale takes three lanes: the alpha stays.
         assert!(close(glow.uniforms.frame_col[3], 100.0 / 255.0));
         // A flash on the first node scales its colour by 0.333 + 0.667
         // smoothstep(share), the share being the time left over 300 ms.
@@ -2379,7 +2626,7 @@ mod tests {
         let rings: Vec<_> = draw
             .batches
             .iter()
-            .filter(|b| b.program == Program::Link && b.texture == Texture::Frames)
+            .filter(|b| b.program == Program::Link && b.texture == Texture::Flamelets)
             .collect();
         // The retired node's ring, then the new node's.
         assert_eq!(rings.len(), 2);
@@ -2406,7 +2653,7 @@ mod tests {
         let rings = draw
             .batches
             .iter()
-            .filter(|b| b.program == Program::Link && b.texture == Texture::Frames)
+            .filter(|b| b.program == Program::Link && b.texture == Texture::Flamelets)
             .count();
         assert_eq!(rings, 1);
         assert_eq!(glow_alpha(&draw, 1), 1.0);
@@ -2423,7 +2670,7 @@ mod tests {
             tree_draw(view)
                 .batches
                 .into_iter()
-                .filter(|b| b.program == Program::LinkGlow && b.texture == Texture::Frames)
+                .filter(|b| b.program == Program::LinkGlow && b.texture == Texture::Flamelets)
                 .collect()
         };
         let quiet = rings(&view);
@@ -2728,7 +2975,7 @@ mod tests {
 
     #[test]
     fn the_shaders_bind_their_uniforms_and_textures() {
-        assert_eq!(TREE_SHADERS.len(), 6);
+        assert_eq!(TREE_SHADERS.len(), 7);
         assert!(LINK_SHADER.contains("uniform sampler2D Tex0"));
         assert!(ICON_SHADER.contains("uniform vec2 tscl"));
         assert!(FRAME_SHADER.contains("uniform vec4 FrameCol"));
@@ -2855,6 +3102,32 @@ mod tests {
             draw.batches[0].vertices[0].y - draw.batches[0].vertices[2].y,
             16.0
         );
+    }
+
+    #[test]
+    fn the_skin_font_draws_its_glyph_quads_when_the_atlas_is_loaded() {
+        let mut view = view();
+        view.font_size = (1024, 1024);
+        view.nodes = vec![node(0x101, 100.0, mark::SHOWN)];
+        let draw = labels_draw(&view, &[("Blast".to_string(), 40.0)]);
+        let batch = draw
+            .batches
+            .iter()
+            .find(|b| b.program == Program::SkinText)
+            .expect("the glyph quads draw");
+        assert_eq!(batch.texture, Texture::Font(TREE_FONT.texture));
+        // Five glyphs, two triangles each.
+        assert_eq!(batch.vertices.len(), 5 * 6);
+        let first = batch.vertices[0];
+        // The label's text x is 80 and its baseline 156: the glyph's top is
+        // 140. The B's cell is column 2, row 4.
+        assert_eq!((first.x, first.y), (80.0, 140.0));
+        assert!((first.u - 0.125).abs() < 1e-6);
+        assert!((first.v - (0.25 + 16.0 / 1024.0)).abs() < 1e-6);
+        assert!((batch.vertices[1].v - 0.25).abs() < 1e-6);
+        assert!((batch.vertices[2].u - (0.125 + 11.0 / 1024.0)).abs() < 1e-6);
+        // The advance moves the second glyph to 80 + 8.
+        assert_eq!(batch.vertices[6].x, 88.0);
     }
 
     #[test]

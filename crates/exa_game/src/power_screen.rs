@@ -21,13 +21,16 @@
 //! handler and the cast plugin ([`crate::thaum::cast`]), which keeps the
 //! caster's record and this screen's in step.
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use bevy::asset::RenderAssetUsages;
+use bevy::audio::AudioSource;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::window::PrimaryWindow;
 use exa_assets::{Game, RgbaImage, TreeSheets};
+use exa_audio::{AudioEnvironment, SoundBank};
 use exa_formats::rfi::Rfi;
 use exa_ui::font::{BASE_FONT, GameFont};
 use exa_ui::gui_core::{FormHost, FormId, GuiRect, GuiTask};
@@ -110,7 +113,7 @@ impl Plugin for PowerScreenPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<PowerScreen>()
             .add_systems(Startup, (load_screen, setup_router))
-            .add_systems(Update, (hotkeys, pointer, draw).chain());
+            .add_systems(Update, (hotkeys, pointer, draw, ui_sounds).chain());
     }
 }
 
@@ -184,6 +187,12 @@ fn load_screen(mut commands: Commands, game: Option<Res<Game>>, mut screen: ResM
             }
         }
         screen.sheets = game.load_tree_sheets();
+        screen.tree.font_size = screen
+            .sheets
+            .font
+            .as_ref()
+            .map(|image| (image.width as u16, image.height as u16))
+            .unwrap_or((0, 0));
         if let Some(bytes) = game.0.texture(BASE_FONT)
             && let Ok(rfi) = Rfi::parse(bytes)
         {
@@ -198,6 +207,12 @@ fn load_screen(mut commands: Commands, game: Option<Res<Game>>, mut screen: ResM
             1000.0,
             700.0,
         );
+        screen.tree.font_size = screen
+            .sheets
+            .font
+            .as_ref()
+            .map(|image| (image.width as u16, image.height as u16))
+            .unwrap_or((0, 0));
         screen.texts = Vec::new();
     }
     commands.insert_resource(AssetsLoaded);
@@ -228,6 +243,7 @@ fn hotkeys(
         bar,
         texts,
         domain_files,
+        sheets,
         dirty,
         sound,
         ..
@@ -243,6 +259,9 @@ fn hotkeys(
             tree.hide(now);
             tree.close_bar(now);
         } else {
+            // A record that knows no power starts with the two default
+            // pairs, as the tree's first opening seeds them.
+            crate::thaum::tree::seed_defaults(record);
             let domain = tree.domain;
             let file = domain_files.get(usize::from(domain)).cloned().flatten();
             *texts = file
@@ -258,6 +277,11 @@ fn hotkeys(
                 width,
                 height,
             );
+            tree.font_size = sheets
+                .font
+                .as_ref()
+                .map(|image| (image.width as u16, image.height as u16))
+                .unwrap_or((0, 0));
             *open = true;
             *bar_open = true;
             tree.bar_open = true;
@@ -266,6 +290,36 @@ fn hotkeys(
         }
         *dirty = true;
         return;
+    }
+    // The bar's cycle keys: the original's next (0x27) and previous
+    // (0x25) keys step the chosen slot and play the select sound. The tree
+    // screen's key handler takes them while it is open.
+    if *open {
+        let cycle = if keys.just_pressed(KeyCode::ArrowRight) {
+            Some(0x27)
+        } else if keys.just_pressed(KeyCode::ArrowLeft) {
+            Some(0x25)
+        } else {
+            None
+        };
+        if let Some(key) = cycle {
+            let out = tree.key(
+                crate::thaum::tree::KeyInput {
+                    key,
+                    flags: 0,
+                    guarded: false,
+                    hidden: false,
+                    stamp: 0,
+                    now,
+                },
+                bar,
+                Some(record),
+            );
+            if out.sound.is_some() {
+                *sound = out.sound;
+            }
+            *dirty = true;
+        }
     }
     // The bar's own keys are the hotkey handler's (the cast plugin); the
     // tree keeps its screen and its Escape.
@@ -329,9 +383,24 @@ fn pointer(
         dirty,
         drag,
         press_origin,
+        sound,
         ..
     } = &mut *screen;
     let hidden = !*open || tree.closing();
+    // The domain wheel is a child form, so a button over one of its icons
+    // is its own: the click (the release) confirms that domain through the
+    // wheel's rule and turns the tree to it.
+    if !hidden && drag.is_none() && tree.wheel_child.domain_at(x, y) > 0 {
+        if buttons.just_released(MouseButton::Left) {
+            *press_origin = None;
+            tree.wheel_click(x, y, now);
+            *dirty = true;
+            return;
+        }
+        if buttons.just_pressed(MouseButton::Left) {
+            return;
+        }
+    }
     let hover = tree.hover(x, y, width, height, hidden);
     if hover != tree.focus {
         tree.set_focus(hover, now);
@@ -352,7 +421,10 @@ fn pointer(
         };
         *dirty = true;
         tree.drag = crate::thaum::tree::DragState::Idle;
-        let _ = tree.press(input, Some(record), bar);
+        let out = tree.press(input, Some(record), bar);
+        if out.sound.is_some() {
+            *sound = out.sound;
+        }
         *press_origin = Some([x, y]);
     }
     if buttons.pressed(MouseButton::Left)
@@ -400,9 +472,15 @@ fn pointer(
                 kind: crate::thaum::tree::press::POWER_DRAG,
                 origin: held.origin,
             };
-            bar.drop(x, y, width, &power);
+            let (_, drop_sound) = bar.drop(x, y, width, &power);
+            if drop_sound.is_some() {
+                *sound = drop_sound;
+            }
         } else {
-            let _ = tree.press(input, Some(record), bar);
+            let out = tree.press(input, Some(record), bar);
+            if out.sound.is_some() {
+                *sound = out.sound;
+            }
         }
         *dirty = true;
     }
@@ -428,13 +506,11 @@ fn pointer(
         tree.release_drag(x, y);
         *dirty = true;
     }
-    let mut steps = 0.0;
     for event in wheel.read() {
-        steps += event.y;
-    }
-    if steps != 0.0 {
-        tree.zoom_by(steps, now);
-        *dirty = true;
+        let out = tree.wheel(0x20, 0.0, event.y, now);
+        if out.result == 3 {
+            *dirty = true;
+        }
     }
 }
 
@@ -491,8 +567,33 @@ fn draw(
                 screen.tree.close_bar(now_at);
             }
         }
-        screen.tree.advance(now_at);
         screen.tree.present_window(now_at);
+        if screen.tree.switch_due {
+            // The old tree has faded out: store it, load the chosen
+            // domain's tree and start the new fade-in.
+            let domain = screen.tree.pending_domain;
+            let PowerScreen {
+                tree,
+                record,
+                domain_files,
+                texts,
+                ..
+            } = &mut *screen;
+            let file = domain_files.get(usize::from(domain)).cloned().flatten();
+            *texts = file
+                .as_deref()
+                .and_then(|bytes| exa_formats::power_tree::read_power_tree(bytes).ok())
+                .map(|tree| tree.texts)
+                .unwrap_or_default();
+            let font_size = tree.font_size;
+            tree.switch_domain(domain, record, file.as_deref(), width as f32, height as f32);
+            tree.font_size = font_size;
+            screen.dirty = true;
+        }
+        let cursor = window
+            .cursor_position()
+            .map(|c| [c.x * window.scale_factor(), c.y * window.scale_factor()]);
+        screen.tree.advance_at(now_at, cursor);
         let PowerScreen { tree, bar, .. } = &mut *screen;
         tree.step_bar(bar, now_at);
         if screen.tree.faded_out {
@@ -532,9 +633,28 @@ fn draw(
     let draw = if tree_open {
         // The tree pass already ends with the bar.
         let mut draw = tree_draw::tree_draw(&view);
+        // The domain wheel child at the form's lower left.
+        let wheel = tree.wheel_view();
+        draw.batches
+            .extend(tree_draw::wheel_picture(wheel.x, wheel.y, wheel.size, wheel.alpha).batches);
         // The tooltip: the shown choice's name caption and its wrapped
         // description box, measured with the GUI font's advances (the
         // glyphs are the running font's).
+        if view.mode == tree_draw::ScreenMode::Create {
+            const TITLE: &str = "Choose which new power you wish to learn first.";
+            let prompt = tree_draw::prompt_draw(
+                &view,
+                TITLE,
+                tree_draw::text_width(TITLE.as_bytes(), scale),
+                "BACK",
+                tree_draw::text_width(b"BACK", scale),
+                "BEGIN",
+                tree_draw::text_width(b"BEGIN", scale),
+                tree.focus,
+            );
+            draw.batches.extend(prompt.batches);
+            draw.texts.extend(prompt.texts);
+        }
         if !view.labels && view.hovered > 0 && (view.hovered as usize) <= tree.nodes.len() {
             let (name, description) = tree.node_text(view.hovered as usize - 1, texts);
             let lines = tree_draw::text_split(description, tree_draw::TIP_TEXT_WIDTH);
@@ -547,6 +667,15 @@ fn draw(
             );
             draw.batches.extend(tooltip.batches);
             draw.texts.extend(tooltip.texts);
+            // The caption's fade ends 200 ms after the focus leaves; the
+            // draw then clears the shown choice, as the original does after
+            // drawing the description for the last frame.
+            if !view.still_hovering
+                && tree.shown_choice > 0
+                && now.wrapping_sub(u128::from(tree.choice_stamp)) >= 200
+            {
+                tree.shown_choice = 0;
+            }
         }
         if view.labels {
             let mut names = Vec::with_capacity(tree.nodes.len());
@@ -576,7 +705,7 @@ fn draw(
                     dragged.at[0],
                     dragged.at[1],
                     scale,
-                    tree.domain,
+                    tree_draw::power_domain(dragged.power),
                 )
                 .batches,
             );
@@ -639,6 +768,35 @@ fn draw(
     screen.dirty = false;
 }
 
+/// Plays the UI sound an action queued, through the original's voice
+/// environment: the tree's sounds are 2D, at the listener's origin, with the
+/// volume and pitch the action names. A missing sound is remembered so the
+/// pack is not searched again.
+fn ui_sounds(
+    game: Option<Res<Game>>,
+    mut screen: ResMut<PowerScreen>,
+    bank: Option<ResMut<SoundBank>>,
+    sources: Option<ResMut<Assets<AudioSource>>>,
+    env: Option<ResMut<AudioEnvironment>>,
+    mut loaded: Local<HashMap<&'static str, Option<u32>>>,
+) {
+    let Some(sound) = screen.sound.take() else {
+        return;
+    };
+    let Some(game) = game else {
+        return;
+    };
+    let (Some(mut bank), Some(mut sources), Some(mut env)) = (bank, sources, env) else {
+        return;
+    };
+    let buffer = *loaded
+        .entry(sound.name)
+        .or_insert_with(|| bank.load_buffer(&game, &mut sources, sound.name));
+    if let Some(buffer) = buffer {
+        env.play_buffer(buffer, Vec3::ZERO, sound.volume, sound.pitch, 0);
+    }
+}
+
 /// Wraps a description at `width` characters, keeping its text.
 pub fn wrap_text(text: &[u8], width: usize) -> Vec<String> {
     let text = String::from_utf8_lossy(text);
@@ -686,7 +844,13 @@ pub fn render(
         };
         raster_batch(&mut canvas, width, height, batch, texture, level);
     }
-    if let Some(font) = font {
+    // The runs are the layout's metrics; their glyph quads are in the
+    // batches of the skin's text program when the atlas is loaded. The
+    // installed packs do not ship the GUI font atlas, so without it the
+    // runs are drawn with the game's bitmap font instead.
+    if sheets.font.is_none()
+        && let Some(font) = font
+    {
         for run in &draw.texts {
             blit_text(&mut canvas, width, height, run, font);
         }
@@ -705,6 +869,13 @@ fn texture_of(texture: Texture, sheets: &TreeSheets) -> Option<&RgbaImage> {
         Texture::Mods => sheets.mods.as_ref(),
         Texture::Flamelets => sheets.flamelets.as_ref(),
         Texture::Wheel => sheets.wheel.as_ref(),
+        Texture::Font(name) => {
+            if name == tree_draw::TREE_FONT.texture {
+                sheets.font.as_ref()
+            } else {
+                None
+            }
+        }
     }
 }
 
@@ -954,31 +1125,34 @@ fn shade(
             [rgb[0], rgb[1], rgb[2], col[3] * band * inner * 0.63]
         }
         Program::Link | Program::LinkGlow => {
-            // The link's texture is the spline's white gradient.
-            let t = [vertex.u, vertex.v];
+            // The ring program: two taps of the flamelets sheet, the first
+            // along the turned y and the second a quarter away, with the
+            // soft program raising the first to the eighth power.
             let b = vertex.u2;
             let a0 = 0.5 - b;
             let a0 = 0.25 - a0 * a0;
-            let bb = t[1] + (t[1] * 0.05 + uniforms.par0[2] * a0) * 2.0;
-            let ty = t[1] * uniforms.par0[0];
-            let c = if batch.program == Program::Link {
-                let mut a = 1.0 - bb;
+            let mut ty = vertex.v * 0.05 + uniforms.par0[2] * a0;
+            let bb = vertex.v + ty * 2.0;
+            ty *= uniforms.par0[0];
+            let uy = (ty + uniforms.par0[1]) * 0.25;
+            ty += uniforms.par0[1];
+            let ux = vertex.u - uniforms.par0[1];
+            let mut c = sample(texture, vertex.u, ty)[0];
+            let mut a = 1.0 - bb;
+            a *= a;
+            if batch.program == Program::Link {
                 a *= a;
                 a *= a;
-                a *= a;
-                let mut c = 1.0 + a;
-                c *= 1.0 * 0.75;
-                c
-            } else {
-                let a = (1.0 - bb).powi(2);
-                let c = 1.0 + a;
-                let c = c * 1.0 * 0.75;
-                c + (a - c) * 0.75
-            };
-            let _ = ty;
-            let a = clamp01(bb * 32.0);
-            let b2 = clamp01(c - (bb * bb + uniforms.par0[3]));
-            let alpha = a * b2 * b2;
+            }
+            c += a;
+            let d = sample(texture, ux, uy)[0];
+            c = c * d * 0.75;
+            if batch.program == Program::LinkGlow {
+                c = c + (a - c) * 0.75;
+            }
+            let mask = clamp01(bb * 32.0);
+            let under = clamp01(c - (bb * bb + uniforms.par0[3]));
+            let alpha = mask * under * under;
             if batch.program == Program::Link {
                 [col[0] * 1.25, col[1] * 1.25, col[2] * 1.25, col[3] * alpha]
             } else {
@@ -989,6 +1163,36 @@ fn shade(
                     col[3] * alpha,
                 ]
             }
+        }
+        Program::Spline => {
+            // The spline renderer's ribbon: the row coordinate's fraction
+            // shapes the cross-section and the join shifts its middle.
+            let row = vertex.u - vertex.u.floor();
+            let across = (0.5 - row).abs();
+            let profile = (1.0 - across * 2.0).max(0.0).sqrt();
+            let middle = clamp01(0.5 + profile * vertex.u2);
+            let band = 0.5 - (vertex.v - middle).abs();
+            let wide = clamp01(band * uniforms.par0[0] + uniforms.par0[1]);
+            let soft = clamp01(band * uniforms.par0[2] * 0.2);
+            let alpha = clamp01(soft + wide);
+            [
+                col[0] * wide,
+                col[1] * wide,
+                col[2] * wide,
+                col[3] * alpha * alpha,
+            ]
+        }
+        Program::SkinText => {
+            // The skin's textured program with `TexCol` one: the atlas
+            // colour multiplies the run's ink.
+            let tex = sample(texture, vertex.u, vertex.v);
+            let tex_col = uniforms.par0[0];
+            [
+                col[0] * (tex[0] * tex_col + 1.0 - tex_col),
+                col[1] * (tex[1] * tex_col + 1.0 - tex_col),
+                col[2] * (tex[2] * tex_col + 1.0 - tex_col),
+                col[3] * tex[3],
+            ]
         }
     };
     out.iter_mut().for_each(|v| *v = clamp01(*v));

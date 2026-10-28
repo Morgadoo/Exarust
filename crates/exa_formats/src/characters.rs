@@ -643,6 +643,13 @@ impl Skill {
         technique != 0 && self.learnt().contains(&technique)
     }
 
+    /// The tree's technique check: every slot the points fund is scanned,
+    /// from the last down to the first, and a technique of 0 matches an
+    /// empty slot.
+    pub fn holds_funded(&self, technique: u8) -> bool {
+        self.learnt().iter().rev().any(|&slot| slot == technique)
+    }
+
     /// The record's own technique check, as the arena and the powers tree
     /// ask it: the first of the five written slots that holds `technique`
     /// counts when the points fund its level (level i needs i × 5000). A

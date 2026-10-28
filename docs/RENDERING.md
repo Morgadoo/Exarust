@@ -2391,8 +2391,9 @@ precision and `√(6w)`; the viewport's reciprocals are computed but never
 uploaded. The fragment rule computes the soft edge from the strip
 coordinate, scales the coverage by the width and multiplies the vertex
 colour (bytes scaled by 0.003921568). `splines.rs` holds the CPU geometry
-and the fragment rule as WGSL; no caller exists yet (Exarust has no
-thaumaturgy tree).
+and the fragment rule as WGSL; no caller exists yet (the power tree's
+ribbon is built and sampled on the CPU in `exa_ui::tree_draw`, not through
+this render object).
 
 ## Effect shells
 

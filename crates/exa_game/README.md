@@ -23,13 +23,22 @@ when the actors are installed and gives it that team and delay.
 The power tree (`thaum::tree`) is the whole screen's rules: the domain's
 tree file and its marks, the technique a new power asks for, the click that
 picks or drops a learnt power against the record's focus budget, the pan,
-zoom and spring, the domain wheel's shares, the ten-slot power bar with its
-load, store, cycle, drop and flash timings, the cast entry that dispatches
-by domain and the persistent-slot budget; its store writes a domain's
-learnt and picked nodes back into the record, plus the form's opening and
-closing fades, the 17 ms view frames, the bar's 900 ms open/close
-animation, the tooltip and label layout, the stretched link's own cubic,
-and the caster's grant caller. A constantly displaced body
+zoom and spring, the domain wheel child's place, shares and fades, the
+ten-slot power bar with its load, store, cycle, drop and flash timings, the
+cast entry that dispatches by domain and the persistent-slot budget. Its
+store writes a domain's learnt and picked
+nodes back into the record, plus the form's creation fields, the opening and
+closing fades, the 17 ms view frames whose zoom and pan blend about the
+cursor, the eased opening scale about the first node, the bar's 900 ms
+open/close animation, the tooltip and label layout, the stretched link's own
+cubic, and the caster's grant caller. The running screen (`power_screen`)
+opens the tree with P, draws the tree, the domain wheel's sheet and the bar
+through `exa_ui::tree_draw`, draws the tooltip, labels and prompt with the
+GUI skin's Rayform08R glyph quads when the atlas is present (the installed
+packs lack it, so the game's bitmap font draws them), plays the screen's `ThaumShow02`, `ThaumSel01`,
+`ThaumSlot02`, `ThaumChnl01`, `ThaumChnl02` and `ThaumFail01` sounds through
+the audio environment, and takes the arrows as the bar's cycle keys. A
+constantly displaced body
 (`thaum::veil`) gets its shell effect (starting dead, fading the body's mesh and skin
 parts), its displaced collision bit, its hum start point, its tendril
 image, its visibility bits and the hit veto with the 500 ms collision
@@ -303,8 +312,9 @@ Rules of the Mind casts and sight and the two force effects:
 [`docs/THAUMATURGY.md`](../../docs/THAUMATURGY.md) (Mind casts, Force blast
 and torrent).
 The reconstruction device starts the scan (`teleporters`); nothing
-starts the shell's aura entity or the wheel yet: their callers (the shell
-power's visual and the power tree) are not in. Drawing the flame ribbon's
+starts the shell's aura entity yet (its caller, the shell power's visual,
+is not in); the power tree carries the wheel as its domain wheel child and
+uses its hit test, confirm and open ease. Drawing the flame ribbon's
 vertices, the shell and scan mesh copies, the bubble and wheel geometry,
 the portal particle simulation and the bubble's GI light values is not in.
 
