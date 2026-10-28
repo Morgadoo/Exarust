@@ -68,6 +68,9 @@ pub const TURN_EPSILON: f32 = 1.192_09e-7;
 /// The placement's far limit: the fallback point is where the ray crosses
 /// this height (cm).
 pub const PLACEMENT_LIMIT_CM: f32 = -100_000.0;
+/// The drag's reach (cm): a hit at or beyond it is left, as the original's
+/// drag target search does.
+pub const DRAG_REACH_CM: f32 = 1000.0;
 /// The grab's slack (m), the original's link slack.
 pub const LIFT_SLACK: f32 = 0.003;
 /// The lift's grab strength.
@@ -163,6 +166,17 @@ pub fn turn_delta(right: Vec3, offset: Vec2f) -> Mat3 {
 /// compose; this one-shot form is for a single turn.
 pub fn turned_rotation(saved: Mat3, right: Vec3, offset: Vec2f) -> Mat3 {
     saved * turn_delta(right, offset)
+}
+
+/// The nearest hit under [`DRAG_REACH_CM`], in cm; a hit at or past the
+/// reach is left, and no hit gives none. A NaN hit is left too (the
+/// original's ordered "under" fails).
+pub fn drag_hit(hits: impl IntoIterator<Item = f32>) -> Option<f32> {
+    hits.into_iter()
+        .filter(|d| *d < DRAG_REACH_CM)
+        .fold(None, |best: Option<f32>, d| {
+            Some(best.map_or(d, |b| b.min(d)))
+        })
 }
 
 /// Where the cursor's ray puts the item (m): the hit when it is at least
@@ -506,6 +520,15 @@ mod tests {
     /// A hit at least as far as the limit is taken; a nearer hit and a miss
     /// fall back to the ray's crossing of the limit plane, and a climbing
     /// ray has none.
+    #[test]
+    fn the_drag_reach() {
+        assert_eq!(drag_hit([1200.0, 400.0]), Some(400.0));
+        assert_eq!(drag_hit([1200.0, 1000.0]), None);
+        assert_eq!(drag_hit([999.9]), Some(999.9));
+        assert_eq!(drag_hit([f32::NAN, 5.0]), Some(5.0));
+        assert_eq!(drag_hit([]), None);
+    }
+
     #[test]
     fn the_placement_point() {
         let o = Vec3::new(0.0, 2.0, 0.0);

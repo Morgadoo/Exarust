@@ -465,8 +465,10 @@ without Ctrl grabs the prop (strength 1, 0.003 m of slack) and rides it on
 the cursor; the mouse turns it by `0.25·sensitivity·0.0025` rad a frame,
 ramping to `1.0` after 300 ms of turning and falling back after 500 ms of
 quiet, keys W/S/A/D standing in for a stick under 0.1; each frame the
-cursor's ray places it where its rest-point box stays within 280 cm up and
-−1000 cm down (a miss lands 1000 m along the ray, a climbing ray refuses),
+cursor's ray places it at the nearest hit under the drag's 1000 cm reach
+where its rest-point box stays within 280 cm up and −1000 cm down (the
+spawn's first placement takes any hit; a miss lands 1000 m along the ray,
+a climbing ray refuses),
 and the release puts it back at the frames the lift saved, leaves it on the
 give-back hover, or lets the GUI take it. The GUI drop's branch (an entry,
 from a GUI, with a body) and its next-frame queue, and the put-down's

@@ -1363,11 +1363,15 @@ fn hold_hand(
                 });
                 let ray = cursor_ray(&scripted, &windows, &cameras);
                 let picked = pick_with(ray, &physics, &stand_ins, &bodies, own);
+                // The drag's reach is 1000 cm: a farther (or no) hit keeps
+                // the last point that fitted.
                 if let Some(ray) = ray
+                    && let Some(distance) =
+                        item_cursor::drag_hit(picked.map(|p| (p.at - ray.origin).length() * CM))
                     && let Some(point) = item_cursor::place_point(
                         ray.origin,
                         *ray.direction,
-                        picked.map(|p| (p.at, (p.at - ray.origin).length())),
+                        picked.map(|p| (p.at, distance / CM)),
                         item_cursor::PLACEMENT_LIMIT_CM,
                     )
                     && let Some(frame) =

@@ -687,10 +687,11 @@ the last starts from `0.25` again; s is the scene's sensitivity scalar
 (Exarust passes 1, a guess). The offset under 1.19209e−7 is no turn.
 
 Each frame the cursor's ray is picked against the level and the item goes
-to the hit point (the lift's placement limit, 100000 cm, is beyond every
-hit); with no hit it goes where the ray crosses that plane, 1000 m along,
-unless the ray climbs (its height part over −1.19209e−7) and the placement
-is refused. The item's box (its rest points' centre and half extents in its
+to the nearest hit under the drag's 1000 cm reach; a farther hit (or none)
+keeps the last point that fitted. The lift's first placement (the spawn)
+instead takes any hit (its limit, 100000 cm, is beyond every one); with no
+hit it goes where the ray crosses that plane, 1000 m along, unless the ray
+climbs (its height part over −1.19209e−7) and the placement is refused. The item's box (its rest points' centre and half extents in its
 saved frame, turned as above) must stay at most 280 cm high and at least
 −1000 cm low; a box that does not fit keeps the last point that did.
 
