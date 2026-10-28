@@ -426,10 +426,10 @@ pub(crate) fn cursor_ground(
     scripted: Res<exa_ui::ScriptedPointer>,
     windows: Query<&Window, With<PrimaryWindow>>,
     cameras: Query<(&Camera, &GlobalTransform, &Projection), With<ChaseCamera>>,
-    players: Query<(&GlobalTransform, &Children), With<Player>>,
+    players: Query<(&GlobalTransform, Option<&Children>), With<Player>>,
     bodies: Query<&PlayerBody>,
     targets: Query<(&GlobalTransform, Option<&Ragdoll>)>,
-    physics: Res<Physics>,
+    physics: Option<Res<Physics>>,
 ) {
     ground.0 = None;
     let (Ok(window), Ok((camera, eye, projection)), Some((player, children))) =
@@ -437,7 +437,7 @@ pub(crate) fn cursor_ground(
     else {
         return;
     };
-    let body = children.iter().find_map(|child| bodies.get(child).ok());
+    let body = children.and_then(|c| c.iter().find_map(|child| bodies.get(child).ok()));
     let Some(cursor) = scripted.position(window) else {
         return;
     };
@@ -474,7 +474,8 @@ pub(crate) fn cursor_ground(
         return;
     }
     let hit = physics
-        .fixed_hit(ray.origin, *ray.direction, AIM_PICK_RANGE)
+        .as_ref()
+        .and_then(|physics| physics.fixed_hit(ray.origin, *ray.direction, AIM_PICK_RANGE))
         .filter(|distance| *distance > 0.0)
         .map(|distance| ray.origin + *ray.direction * distance);
     // The raise rule's 200 cm is in centimetres: the points go to the
@@ -854,15 +855,16 @@ pub(crate) fn steer_player(
                     .and_then(|r| r.drive.as_ref())
                     .map(|d| d.balance().extension())
                     .unwrap_or(1.0);
-                let (step_cm, long_step_cm) =
-                    fighter.map_or(footwork_lengths(STEP_LENGTH * 100.0, 0.0, extension), |f| {
-                        let cm = exa_formats::weapon_record::step_reach(
-                            f.stats.scale,
-                            f.stats.feral,
-                            f.stats.encumbrance,
-                        );
-                        footwork_lengths(cm, f.stats.encumbrance, extension)
-                    });
+                let reach_cm = fighter.map_or(STEP_LENGTH * 100.0, |f| {
+                    exa_formats::weapon_record::step_reach(
+                        f.stats.scale,
+                        f.stats.feral,
+                        f.stats.encumbrance,
+                    )
+                });
+                let encumbrance = fighter.map_or(0.0, |f| f.stats.encumbrance);
+                let (step_cm, long_step_cm) = footwork_lengths(reach_cm, encumbrance, extension);
+                let crouched_step_cm = crouched_step_length(reach_cm, extension);
                 let scale_root = fighter.map_or(1.0, |f| f.stats.scale.sqrt());
                 let chest = ragdoll
                     .and_then(|r| r.drive.as_ref())
@@ -873,6 +875,7 @@ pub(crate) fn steer_player(
                     ground: standing.y,
                     step_cm,
                     long_step_cm,
+                    crouched_step_cm,
                     scale_root,
                     line: &line,
                 };
@@ -1037,6 +1040,14 @@ fn footwork_lengths(reach_cm: f32, encumbrance: f32, extension: f32) -> (f32, f3
     let long = long_step_length(reach_cm, encumbrance);
     (reach_cm * extension, long * extension)
 }
+
+/// The deep-crouched step's `fd4` before √scale (cm): [`CROUCH_STEP`] of
+/// the stored reach, one double product narrowed once, then the legs'
+/// `extension`, in the original's order (the 0.7 is taken of the reach, not
+/// of the extended step).
+fn crouched_step_length(reach_cm: f32, extension: f32) -> f32 {
+    ((f64::from(reach_cm) * CROUCH_STEP) as f32) * extension
+}
 /// A side key weighs this share of the facing. The sum is normalised, so
 /// a diagonal aims 0.8 as far sideways as forward and a pure side step
 /// stays a full step.
@@ -1053,6 +1064,9 @@ struct Footwork<'a> {
     step_cm: f32,
     /// The long step's fd4: (1.5 − 0.3·encumbrance) of that reach (cm).
     long_step_cm: f32,
+    /// The deep-crouched step's fd4: 0.7 of that reach, then the legs'
+    /// extension (cm).
+    crouched_step_cm: f32,
     /// The body's √scale, the other factor of the target's length.
     scale_root: f32,
     line: LineWalk<'a>,
@@ -1132,10 +1146,11 @@ fn combat_steps(
         pb.long = false;
     }
     let fd4 = if CROUCH_SHORT < pb.crouch {
-        // Crouched past a half, the step is 0.7 of the plain one, worked in
-        // double precision and narrowed once, even with the long-step latch;
-        // a NaN crouch fails the ordered compare and keeps the mode's step.
-        (f64::from(footing.step_cm) * CROUCH_STEP) as f32
+        // Crouched past a half, the step is 0.7 of the reach (in double,
+        // narrowed once, before the extension), even with the long-step
+        // latch; a NaN crouch fails the ordered compare and keeps the mode's
+        // step.
+        footing.crouched_step_cm
     } else if key_mask != 0 && pb.long {
         footing.long_step_cm
     } else {
@@ -2232,6 +2247,7 @@ mod tests {
             ground: 0.0,
             step_cm: STEP_LENGTH * 100.0,
             long_step_cm: STEP_LENGTH * 100.0,
+            crouched_step_cm: crouched_step_length(STEP_LENGTH * 100.0, 1.0),
             scale_root: 1.0,
             line: &open,
         };
@@ -2268,6 +2284,7 @@ mod tests {
                 ground: 0.0,
                 step_cm: STEP_LENGTH * 100.0,
                 long_step_cm: STEP_LENGTH * 100.0,
+                crouched_step_cm: crouched_step_length(STEP_LENGTH * 100.0, 1.0),
                 scale_root: 1.0,
                 line: &wall,
             };
@@ -2317,6 +2334,7 @@ mod tests {
                 ground: 0.0,
                 step_cm,
                 long_step_cm,
+                crouched_step_cm: crouched_step_length(step_cm, 1.0),
                 scale_root: 1.0,
                 line: &open,
             };
@@ -2363,6 +2381,7 @@ mod tests {
                 ground: 0.0,
                 step_cm: STEP_LENGTH * 100.0,
                 long_step_cm: long_step_length(80.0, 0.0),
+                crouched_step_cm: crouched_step_length(STEP_LENGTH * 100.0, 1.0),
                 scale_root: 1.0,
                 line: &open,
             };
@@ -2392,7 +2411,7 @@ mod tests {
 
     /// Past a crouch of a half the footwork's step is 0.7 of the plain one,
     /// even with the long-step latch held; at a half it is the plain step,
-    /// and a NaN crouch takes the 0.7 branch.
+    /// and a NaN crouch fails the ordered compare and keeps the plain step.
     #[test]
     fn a_deep_crouch_shortens_the_step_to_seven_tenths() {
         let open = |_: Vec3, to: Vec3| (to, false);
@@ -2411,6 +2430,7 @@ mod tests {
                 ground: 0.0,
                 step_cm: STEP_LENGTH * 100.0,
                 long_step_cm: long_step_length(80.0, 0.0),
+                crouched_step_cm: crouched_step_length(STEP_LENGTH * 100.0, 1.0),
                 scale_root: 1.0,
                 line: &open,
             };
@@ -2440,6 +2460,19 @@ mod tests {
         assert_eq!(aim(f32::NAN, false).to_bits(), STEP_LENGTH.to_bits());
     }
 
+    /// The deep-crouched step takes 0.7 of the reach in double precision
+    /// and only then the legs' extension: a 72 cm reach at an extension of
+    /// 0.9 gives 45.36 (the bits 1110798500), one ulp over the 0.7 of the
+    /// already extended step.
+    #[test]
+    fn the_crouched_step_extends_after_the_seven_tenths() {
+        assert_eq!(crouched_step_length(72.0, 0.9).to_bits(), 1_110_798_500);
+        let extended_first = (f64::from(72.0f32 * 0.9) * CROUCH_STEP) as f32;
+        assert_eq!(extended_first.to_bits(), 1_110_798_499);
+        assert_eq!(crouched_step_length(80.0, 1.0), 56.0);
+        assert!(crouched_step_length(80.0, f32::NAN).is_nan());
+    }
+
     /// The long step is a latch: the same keys must be held strictly over
     /// 200 ms (the 17th 12 ms tick), and a crouch raised afterwards does not
     /// clear it; a key change or a release does.
@@ -2455,6 +2488,7 @@ mod tests {
             ground: 0.0,
             step_cm: 80.0,
             long_step_cm: 120.0,
+            crouched_step_cm: crouched_step_length(80.0, 1.0),
             scale_root: 1.0,
             line: &open,
         };
@@ -2561,6 +2595,7 @@ mod tests {
             ground: 0.0,
             step_cm: 80.0,
             long_step_cm: 120.0,
+            crouched_step_cm: crouched_step_length(80.0, 1.0),
             scale_root: 1.0,
             line: &open,
         };
@@ -2622,6 +2657,7 @@ mod tests {
                 ground: 0.0,
                 step_cm: STEP_LENGTH * 100.0,
                 long_step_cm: STEP_LENGTH * 100.0,
+                crouched_step_cm: crouched_step_length(STEP_LENGTH * 100.0, 1.0),
                 scale_root: 1.0,
                 line: &open,
             };
@@ -2666,6 +2702,7 @@ mod tests {
                     ground: 0.0,
                     step_cm: STEP_LENGTH * 100.0,
                     long_step_cm: STEP_LENGTH * 100.0,
+                    crouched_step_cm: crouched_step_length(STEP_LENGTH * 100.0, 1.0),
                     scale_root: 1.0,
                     line: &line,
                 };
