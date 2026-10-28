@@ -396,24 +396,28 @@ impl Rooms {
     }
 
     /// Whether a door passage joins two points (metres, X/Z), as the
-    /// original's control-side door query answers it: both points in room
-    /// cells; the same room always; otherwise a link of the first point's
-    /// room straight into the second point's cell, through a door that is
-    /// open. Unlike [`Self::light_reach`] this does not look at the second
-    /// room's links and does not measure the door point.
-    pub fn door_reach(&self, a: Vec2, b: Vec2, open: impl Fn(DoorLink) -> bool) -> bool {
+    /// original's control-side door query answers it. Both points' cells
+    /// are read without the room checks the light query makes: two points
+    /// in the same room reach, and so do two points that are both in no
+    /// room (open ground). Otherwise the first link of the first point's
+    /// room into the second point's cell decides, through `passable`, the
+    /// door's own test (a missing door passes; the original reads a door
+    /// flag other than the one [`Self::light_reach`] reads). It does not look
+    /// at the second room's links or measure the door point. A first point
+    /// in no room, with the second in one, never reaches (the original
+    /// would index before its room list).
+    pub fn door_reach(&self, a: Vec2, b: Vec2, passable: impl Fn(DoorLink) -> bool) -> bool {
         let (Some(cell_a), Some(cell_b)) = (self.linear_cell(a), self.linear_cell(b)) else {
             return false;
         };
-        let (Some(room_a), Some(room_b)) = (self.room_of_index(cell_a), self.room_of_index(cell_b))
-        else {
-            return false;
-        };
+        let (room_a, room_b) = (self.room_of_index(cell_a), self.room_of_index(cell_b));
         if room_a == room_b {
             return true;
         }
-        self.room(room_a)
-            .is_some_and(|r| r.links.iter().any(|&link| link.to == cell_b && open(link)))
+        room_a
+            .and_then(|r| self.room(r))
+            .and_then(|r| r.links.iter().find(|link| link.to == cell_b))
+            .is_some_and(|&link| passable(link))
     }
 
     /// The rooms a light at `light` (metres, X/Z) spills into, as the
@@ -722,15 +726,18 @@ impl RoomTracker {
         self.fade.get(room as usize).copied().unwrap_or_default()
     }
 
-    /// The original's active-room flag (the room's working state's low bit):
-    /// true while the room is in the active list and not fading in or out,
-    /// including a room that turned around mid-fade and is fading back in.
+    /// The original's active-room flag (the low bit of the room's working
+    /// state): true once the room has faded in and while it is wanted again
+    /// mid fade-out (until the next update turns it into a fade-in), false
+    /// while it fades in or out and when it is not in the active list. The
+    /// debug reset in the original leaves the working state alone; here
+    /// [`Self::show_all`] and [`Self::hide_all`] clear it, so the flag is off
+    /// after either.
     pub fn is_active(&self, room: u16) -> bool {
-        self.state(room) == RoomState::Active
-            && matches!(
-                self.fade.get(room as usize).copied().unwrap_or_default(),
-                Fade::None | Fade::Active | Fade::Reentering
-            )
+        matches!(
+            self.fade.get(room as usize).copied().unwrap_or_default(),
+            Fade::Active | Fade::Reentering
+        )
     }
 
     /// The active list, in order.
@@ -958,16 +965,17 @@ impl RoomLights {
 
     /// Gives every room the lights of each room whose portal leads into it,
     /// once, as the original runs this after the rooms exist. Rooms are
-    /// visited in order, so a list that already grew can be the source of a
-    /// later pass. Only a room whose list ends with one of its own lights
-    /// propagates (the original's trailing-owner test), so a light travels
-    /// one doorway, not the whole level.
+    /// visited in order and a room passes on its whole list, the lights it
+    /// received included, so a list that already grew carries them a
+    /// doorway further. Only a room that owns at least one light of its own
+    /// passes anything on (the original searches its list from the end for
+    /// an entry it owns); a room lit only through its doors passes nothing.
     pub fn propagate(&mut self, rooms: &Rooms) {
         for room in 0..self.per_room.len() {
-            let Some(&last) = self.per_room[room].last() else {
-                continue;
-            };
-            if self.home(last) != Some(room as u16) {
+            let owns_one = self.per_room[room]
+                .iter()
+                .any(|&id| self.home(id) == Some(room as u16));
+            if !owns_one {
                 continue;
             }
             let Some(links) = rooms.room(room as u16).map(|r| r.links.clone()) else {
@@ -1581,11 +1589,41 @@ mod tests {
         assert!(!rooms.door_reach(a, b, |_| false));
         // Same room reaches whether the door is open or not.
         assert!(rooms.door_reach(Vec2::new(-9.0, 3.0), Vec2::new(-4.0, 3.0), |_| false));
-        // A point in no room never reaches.
-        assert!(!rooms.door_reach(a, Vec2::new(-15.0, -5.0), |_| true));
+        // A point in no room never reaches one in a room, but two points
+        // both in no room do.
+        let outside = Vec2::new(-15.0, -5.0);
+        assert!(!rooms.door_reach(a, outside, |_| true));
+        assert!(!rooms.door_reach(outside, a, |_| true));
+        assert!(rooms.door_reach(outside, Vec2::new(-14.0, -5.0), |_| false));
         // It looks only from the first point's room and only into the
         // second point's cell: the same pair reversed has no link.
         assert!(!rooms.door_reach(b, a, |_| true));
+    }
+
+    #[test]
+    fn the_first_link_into_the_cell_decides_the_door_query() {
+        // Room A bends around cell (3, 1) of room B and has two doors into
+        // it: from (3, 2) below, found first by the flood, and from (2, 1).
+        let mut g = Grid::new(6, 4);
+        g.open(2, 1, [7, 7, 0, 0xB])
+            .open(2, 2, [0, 7, 7, 0])
+            .open(3, 2, [0xB, 0, 7, 7])
+            .open(3, 1, [7, 0xB, 0xB, 0])
+            .open(4, 1, [7, 0, 7, 7]);
+        let rooms = Rooms::flood(&g.0);
+        let from: Vec<u32> = rooms
+            .room(0)
+            .unwrap()
+            .links
+            .iter()
+            .map(|l| l.from)
+            .collect();
+        assert_eq!(from, [g.cell(3, 2), g.cell(2, 1)]);
+        let (a, b) = (Vec2::new(-3.0, 3.0), Vec2::new(3.0, -3.0));
+        // Only the second door passes: the original stops at the first.
+        let second_only = |l: DoorLink| l.from == g.cell(2, 1);
+        assert!(!rooms.door_reach(a, b, second_only));
+        assert!(rooms.door_reach(a, b, |l| l.from == g.cell(3, 2)));
     }
 
     #[test]
@@ -1609,13 +1647,13 @@ mod tests {
         assert!(!t.is_active(0));
         t.update(&rooms, inside, 3_400);
         assert!(t.is_active(0));
-        // Every room shown by the debug view counts as active.
+        // The debug view's reset clears the working states here.
         t.show_all();
-        assert!(t.is_active(1));
+        assert!(!t.is_active(0) && !t.is_active(1));
     }
 
     #[test]
-    fn lights_belong_to_the_room_they_stand_in_and_reach_one_doorway() {
+    fn lights_belong_to_their_room_and_pass_through_rooms_that_own_one() {
         // Rooms A (0) and B (1) side by side, and C (2) behind B.
         let mut g = Grid::new(8, 3);
         g.open(1, 1, [7, 7, 7, 0])
@@ -1634,12 +1672,21 @@ mod tests {
         assert_eq!(lights.add(&rooms, 5, Vec2::new(0.0, -15.0)), None);
         assert_eq!(lights.of(0), &[7][..]);
         assert_eq!(lights.of(2), &[9][..]);
+        let mut owning_b = lights.clone();
         lights.propagate(&rooms);
-        // B receives both; A and C keep only their own, because B's list no
-        // longer ends with one of its own lights.
+        // B receives both; A and C keep only their own, because B owns no
+        // light and so passes nothing on.
         assert_eq!(lights.of(0), &[7][..]);
         assert_eq!(lights.of(1), &[7, 9][..]);
         assert_eq!(lights.of(2), &[9][..]);
+        // With a light of its own (8), B passes on its whole list, A's light
+        // included, so A's light reaches C two doorways away; C, visited
+        // later, passes its grown list back to B.
+        assert_eq!(owning_b.add(&rooms, 8, Vec2::new(-3.0, 3.0)), Some(1));
+        owning_b.propagate(&rooms);
+        assert_eq!(owning_b.of(0), &[7, 8][..]);
+        assert_eq!(owning_b.of(1), &[8, 7, 9][..]);
+        assert_eq!(owning_b.of(2), &[9, 8, 7][..]);
         assert_eq!(lights.home(7), Some(0));
         lights.remove(7);
         assert_eq!(lights.of(0), &[] as &[u32]);
