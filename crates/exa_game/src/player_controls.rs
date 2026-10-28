@@ -214,6 +214,54 @@ impl TimedList {
     }
 }
 
+/// An entry in the controls' deferred interaction list: the game clock
+/// (ms) at which it runs and the target word it hands to the level's
+/// trigger. The double click's consumable (usable kind 0, subtype 1, see
+/// [`interact_object`]) adds one due 2100 ms on with its section's target
+/// word.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PendingUse {
+    pub due_ms: u32,
+    pub target: u32,
+}
+
+/// The controls' deferred interaction list. The original keeps it in an
+/// array and takes a done entry out by shifting every later entry down one
+/// place, so the list keeps its order (not the timed cleaning list's
+/// swap-remove).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct UseQueue {
+    pub entries: Vec<PendingUse>,
+}
+
+impl UseQueue {
+    /// Adds an entry, returning its index.
+    pub fn push(&mut self, entry: PendingUse) -> usize {
+        self.entries.push(entry);
+        self.entries.len() - 1
+    }
+
+    /// One frame at `now_ms` (the per-frame update, while the controls are
+    /// not paused and a player exists): the entries whose time is not after
+    /// `now` run, in order, the list shifting down over each. Returns them
+    /// in order. [No caller yet: the double click's consumable is not
+    /// wired.]
+    pub fn tick(&mut self, now_ms: u32) -> Vec<PendingUse> {
+        let mut done = Vec::new();
+        let mut i = 0;
+        while i < self.entries.len() {
+            let entry = self.entries[i];
+            if now_ms < entry.due_ms {
+                i += 1;
+                continue;
+            }
+            done.push(entry);
+            self.entries.remove(i);
+        }
+        done
+    }
+}
+
 /// The squared activation radius (cm²) the start of play gives the AI
 /// around the player: 16 000 000, 40 m.
 pub const START_ACTIVATION_RADIUS2: f32 = 16_000_000.0;
@@ -826,6 +874,102 @@ pub fn use_press(has_body: bool, usable: Option<u8>) -> UsePress {
     }
 }
 
+/// The values the use cursor reads from a world item: its operative
+/// section and the condition bytes of its weapon or apparel section. The
+/// material byte the repair kit's step divides by is the model section's
+/// byte [`exa_formats::objdb::Item::equip_lock`] reads (the same byte the
+/// equip lock uses).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ItemUseFields {
+    /// [`exa_formats::objdb::operative`] class.
+    pub class: u8,
+    pub kind: u8,
+    pub flags: u16,
+    pub value: u16,
+    pub target: u32,
+    /// The section's name bytes (body offset 16): a sound's name for the
+    /// usable classes, a teleporter's atlas for a device.
+    pub name: String,
+    /// The weapon or apparel section's wear byte (the repair kit lowers
+    /// it), from the copy's condition.
+    pub wear: Option<u8>,
+    /// The weapon or apparel section's dirt byte (the cleaning kit lowers
+    /// it), from the copy's condition.
+    pub dirt: Option<u8>,
+    /// The model section's material byte (body offset 0x24).
+    pub material: Option<u8>,
+}
+
+/// The fields the use cursor reads of an item, or none when it has no
+/// operative section or the record is not in the database. The wear and
+/// dirt bytes are the copy's condition bytes when it has one; a template
+/// with no copy has none.
+pub fn item_use_fields(
+    item: &exa_formats::objdb::Item,
+    condition: Option<&exa_items::instance::MadeCondition>,
+) -> Option<ItemUseFields> {
+    let operative = item.operative.as_ref()?;
+    let name_end = operative
+        .atlas
+        .iter()
+        .position(|b| *b == 0)
+        .unwrap_or(operative.atlas.len());
+    let name = String::from_utf8_lossy(&operative.atlas[..name_end]).into_owned();
+    let has_condition =
+        item.weapon.is_some() || item.armour.is_some() || !item.worn_model.is_empty();
+    let (wear, dirt) = match (has_condition, condition) {
+        (true, Some(c)) => (Some(c.damage), Some(c.dirt)),
+        _ => (None, None),
+    };
+    Some(ItemUseFields {
+        class: operative.class,
+        kind: operative.kind,
+        flags: operative.flags,
+        value: operative.value,
+        target: operative.target,
+        name,
+        wear,
+        dirt,
+        material: (!item.model.is_empty()).then_some(item.equip_lock),
+    })
+}
+
+/// What the deferred GUI drop's spawn task does when it runs.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SpawnRun {
+    /// No node was queued.
+    Nothing,
+    /// The controls' state word lacks bit 0x1000: the node is freed and
+    /// nothing is placed.
+    Dropped,
+    /// The node's body has no physics: the original's "Game object has no
+    /// physics: <name>" content error, the node freed.
+    ContentError,
+    /// The node is attached at its frame, its condition word written, the
+    /// lift begun and the placement run at the lift's height limit.
+    Placed { condition: u32, place_limit_cm: f32 },
+}
+
+/// The deferred drop task's run: a node is required, the controls' state
+/// word must hold bit 0x1000 (`armed`), and the node's body must have
+/// physics. A placed node takes the drag's condition word and the lift's
+/// −100000 cm placement limit. [The content error also resets the state
+/// word to 0x1000 and forgets the node.]
+pub fn run_spawn(queued: bool, armed: bool, has_body: bool, condition: u32) -> SpawnRun {
+    if !queued {
+        SpawnRun::Nothing
+    } else if !armed {
+        SpawnRun::Dropped
+    } else if !has_body {
+        SpawnRun::ContentError
+    } else {
+        SpawnRun::Placed {
+            condition,
+            place_limit_cm: -100_000.0,
+        }
+    }
+}
+
 /// What a use aimed at the world hits, from the pick's classification: a
 /// hinge (4), a living character (0x10), a usable item (bit 2 set, so class
 /// 3) or nothing.
@@ -1188,6 +1332,7 @@ pub fn register_game_modes(registered: u32) -> [GameModeEntry; 2] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use exa_formats::objdb::{Item, Operative};
 
     /// A salve fills the heal pool by 0.2, or 0.1 when the value word is
     /// 50, in double precision: 0.3 + 0.2 is 0.5 exactly once narrowed.
@@ -1274,6 +1419,44 @@ mod tests {
         assert_eq!(list.entries.len(), 2);
         assert_eq!(at(&mut list, 2000), vec![(7, 0), (9, 0x10)]);
         assert!(list.entries.is_empty());
+    }
+
+    /// The deferred interaction list runs the entries due at or before the
+    /// clock, in order, and shifts the rest down so the order holds; an
+    /// entry due later waits.
+    #[test]
+    fn the_deferred_interactions_run_in_order() {
+        let mut q = UseQueue::default();
+        q.push(PendingUse {
+            due_ms: 3100,
+            target: 7,
+        });
+        q.push(PendingUse {
+            due_ms: 5000,
+            target: 8,
+        });
+        q.push(PendingUse {
+            due_ms: 3100,
+            target: 9,
+        });
+        assert!(q.tick(3099).is_empty());
+        assert_eq!(
+            q.tick(3100),
+            vec![
+                PendingUse {
+                    due_ms: 3100,
+                    target: 7
+                },
+                PendingUse {
+                    due_ms: 3100,
+                    target: 9
+                }
+            ]
+        );
+        assert_eq!(q.entries.len(), 1);
+        assert_eq!(q.entries[0].target, 8);
+        assert_eq!(q.tick(5000).len(), 1);
+        assert!(q.entries.is_empty());
     }
 
     /// The start of play centres the AI's activation on the player with
@@ -1913,5 +2096,103 @@ mod tests {
         let goal = walk_stop(feet, far, true).unwrap();
         assert!((goal.z - (5.0 - 3.5)).abs() < 1e-5, "{goal}");
         assert_eq!(walk_stop(feet, Vec3::new(0.0, 0.0, 2.0), false), None);
+    }
+
+    fn operative(class: u8, kind: u8, flags: u16, value: u16, target: u32) -> Operative {
+        Operative {
+            class,
+            kind,
+            flags,
+            value,
+            time: 0,
+            target,
+            second: 0,
+            atlas: [0; 16],
+            destinations: [0; exa_formats::objdb::DESTINATIONS],
+        }
+    }
+
+    fn item_with(operative: Option<Operative>, worn_model: &str, equip_lock: u8) -> Item {
+        Item {
+            id: 7,
+            name: "thing".into(),
+            model: "ThingA01".into(),
+            model_flags: 0,
+            worn_model: worn_model.into(),
+            appearance: None,
+            slot_layers: [0; exa_formats::objdb::SLOTS],
+            slot_words: [0; exa_formats::objdb::SLOTS],
+            occupancy: [0; exa_formats::objdb::OCCUPANCY_BONES],
+            weapon: None,
+            armour: None,
+            shield: None,
+            door: None,
+            operative,
+            burden: None,
+            equip_lock,
+            torch: false,
+            volume: None,
+        }
+    }
+
+    /// The use reader takes the operative section's class, kind, flags,
+    /// value, target and name, the copy's wear and dirt bytes when the item
+    /// has a condition, and the model section's material byte.
+    #[test]
+    fn the_use_fields_come_from_the_sections() {
+        let mut section = operative(0, 1, 4, 50, 0x1234);
+        section.atlas[..4].copy_from_slice(b"LqdA");
+        let item = item_with(Some(section), "", 25);
+        let fields = item_use_fields(&item, None).unwrap();
+        assert_eq!(
+            (
+                fields.class,
+                fields.kind,
+                fields.flags,
+                fields.value,
+                fields.target
+            ),
+            (0, 1, 4, 50, 0x1234)
+        );
+        assert_eq!(fields.name, "LqdA");
+        assert_eq!(fields.wear, None);
+        // A worn item with a condition copy reads its bytes; a template
+        // without a copy has none.
+        let worn = item_with(Some(operative(3, 1, 0, 0, 0)), "CoatA01", 25);
+        let condition = exa_items::instance::MadeCondition {
+            flags: 0,
+            seeds: [1, 2],
+            quality: 200,
+            damage: 120,
+            dirt: 0x40,
+            spreads: Default::default(),
+        };
+        let fields = item_use_fields(&worn, Some(&condition)).unwrap();
+        assert_eq!(
+            (fields.wear, fields.dirt, fields.material),
+            (Some(120), Some(0x40), Some(25))
+        );
+        let fields = item_use_fields(&worn, None).unwrap();
+        assert_eq!((fields.wear, fields.dirt), (None, None));
+        // No operative section: the use cursor has nothing to read.
+        assert!(item_use_fields(&item_with(None, "", 25), None).is_none());
+    }
+
+    /// The deferred drop task: no queued node does nothing; the controls
+    /// without bit 0x1000 free the node; a node without physics is the
+    /// content error; a placed node takes the drag's condition word and the
+    /// lift's −100000 cm limit.
+    #[test]
+    fn the_deferred_spawn_runs_in_order() {
+        assert_eq!(run_spawn(false, true, true, 7), SpawnRun::Nothing);
+        assert_eq!(run_spawn(true, false, true, 7), SpawnRun::Dropped);
+        assert_eq!(run_spawn(true, true, false, 7), SpawnRun::ContentError);
+        assert_eq!(
+            run_spawn(true, true, true, 7),
+            SpawnRun::Placed {
+                condition: 7,
+                place_limit_cm: -100_000.0
+            }
+        );
     }
 }

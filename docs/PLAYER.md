@@ -22,6 +22,15 @@ decides from it each tick (below). Outside combat:
   second of the game clock has passed since **any** turn key (a quarter
   turn, or A or D steering a walk); A and D together cancel but count. An
   object held by the left button blocks it (The hand, below).
+- **A tap** under 200 ms keeps its movement word until 200 ms after the
+  press, so a quick tap still takes a step; a word held longer clears as
+  soon as it is released. Opposing keys cancel in the word (A with D, W
+  with S). A word that stays the same past 200 ms while the body's crouch
+  is under 0.1 is flagged a tap (the footwork's long step, not wired);
+  the movement target is let go once the word has been zero 200 ms past
+  its last nonzero tick. The pad's analog stick is its own word once its
+  squared length is over 0.01 (in double precision; a NaN reads the keys)
+  (`steering::MoveWord`).
 - **Releasing W** does not stop at once: the request holds until the
   playing walk reaches key segment 0 or 4 (its keys run every 10 frames
   from 10 to 80; segment 0 is the wrap before key 10, segment 4 the one
@@ -706,19 +715,28 @@ item goes there whether or not its box (its rest points' centre and half
 extents in its saved frame, turned as above) stays within 280 cm up and
 −1000 cm down: the box only decides the routine's answer. The original
 then backs the ray's point off 600 cm along the ray and sweeps every
-collision sphere of the item against the level's meshes from there,
-starting at a 1000 cm reach and keeping a contact only when it is strictly
-nearer. Exarust sweeps the held part's widest collision sphere from 600 cm
-before the picked point (never before the ray's origin) and stops at the
-nearer of that contact and the pick; a sweep that starts inside the level
-is no contact, and a cursor over nothing keeps the last point
-(`item_cursor::{sweep_to_contact, placement_distance, placement_point}`).
+collision sphere of every part of the item against the level's meshes from
+there, starting at a 1000 cm reach and keeping a contact only when it is
+strictly nearer. Exarust carries each sphere with the grab point the
+cursor places, sweeps it at its own radius against rapier's level
+colliders from 600 cm before the pick (never from behind the eye), and
+stops at the nearer of that contact and the pick; a sweep that starts
+inside the level is no contact, and a cursor over nothing keeps the last
+point (`item_cursor::{per_sphere_contact, placement_distance,
+placement_point}`).
 
 The lift's hover word comes from its frame: an item that snaps onto a
-level placement marker matching its class gives 0x10, or 0x30 when the
-marker's link byte reads `L`; otherwise a free placement that passed its
-checks gives 1 (`item_cursor::hover_word`). Exarust has no placement
-markers, and the live hand leaves the word at zero.
+level placement marker gives 0x10, or 0x30 when the marker's link byte
+reads `L`; otherwise a free placement that passed its checks gives 1
+(`item_cursor::hover_word`). The marker is an entry of a level node whose
+eight name characters, read as hexadecimal up to the first other
+character, give the item's object id or its model's id; the cursor's
+segment (to the pick, or 10 000 cm with none) must meet the entry's
+sphere, the item must have an object id and fit the marker's frame, and
+the ray must not climb; the first marker in order wins
+(`item_cursor::{snap_to_marker, marker_id, segment_meets_sphere}`).
+Exarust's level loader does not register the marker nodes and its props
+carry no object id yet, so the live hand leaves the word at zero.
 
 A plain release leaves the item where the cursor put it: the release hands
 the saved rest points to the deferred restore only to take the body out of
@@ -747,6 +765,24 @@ the cursor's ray meets the level plane at the grab's height, kept within
 200 cm of the hip across the ground (and then at the grab's height), and the
 body is woken to 256; out of reach the anchor stays on the grabbed point.
 Releasing the button lets go.
+
+A door or a wheel is recorded as a drag until the release: its leaf's pull
+point 100 cm from the hinge-side point toward the cursor, and a sliding
+leaf's projected onto its axis (`hand::{door_pull_anchor,
+door_drag_frame}`); Exarust's doors and wheels are static level geometry,
+so nothing moves yet. (The original's door drag also stamps the dragged
+body with the player as its last pusher for 2000 ms, which impacts read;
+that is not the hold's end.) A scene object's mesh that is a cloth takes
+the vertex within 10 cm of the press point in the cloth's own frame (a
+stand-in: the original takes the mesh element the pick hit and its own
+radius) and sets the drag plane through the press point, its normal the
+camera's view axis. Each frame the vertex's target is the pick's point on
+the cloth while it stays strictly within the radius of the vertex (the
+ray's nearest point to the vertex stands in for the pick), else the
+cursor's ray on that plane, both in the cloth's frame
+(`hand::cloth_drag_frame`); the cloth's step puts the grabbed vertex on
+its target after its links (`exa_physics::cloth::Cloth::grab`, an Exarust
+stand-in for the cloth's own grab record).
 
 The grab is a world link of the body solver (`exa_physics::body::Grab`):
 in each pass it runs in, after the part's own links, the gap from the point
@@ -952,16 +988,22 @@ original's player behaviour and body tick skip them for mask `0xAC0`.
 
 ### The behaviour's aim and contact rules
 
-The player's behaviour keeps rules that Exarust holds as tested functions
-with no caller yet (`player_behaviour`):
+The player's behaviour keeps these rules (`player_behaviour`); the gamepad
+aim's point and ease are wired, the others are tested functions with no
+caller yet:
 
 - **Aim point.** The cursor's point on the plane 80 cm over the player's
-  ground; with a target, its head and its nearest bone on screen (the
-  bone's fraction `t = (b − a)·(c − a)/|b − a|²`, clamped into [0, 1]) set
-  a lock: within the pixel radius 80 cm make at the head's depth the aim
-  height is the locked point's, within twice it the two blend by
-  `(d − r)/r`. Without a target the point the cursor's pick meets replaces
-  it when it is above the plane's point and under the ground plus 200 cm.
+  ground; with a target, the nearest of its bones on screen (each bone's
+  fraction `t = (b − a)·(c − a)/|b − a|²` from the target's projected
+  reference point `a`, clamped into [0, 1] by the ordered tests, so a NaN
+  stays NaN; the first bone taken outright, a later one only when strictly
+  nearer) sets a lock on the reference point moved toward that bone by
+  `t`: within the pixel radius 80 cm make at the reference point's depth
+  (`width·scale·0.5·80 / depth`) the aim height is that point's, within
+  twice it the two blend by `(d − r)/r`. Without a target
+  the point the cursor's pick meets replaces it when it is above the
+  plane's point and under the ground plus 200 cm
+  (`aim_lock_bones`, `bone_screen`, `bone_lock_radius`, `aim_raised`).
 - **Contacts.** Every character within 12 m, rebuilt each tick: closeness
   `1 − d·0.00083333335` capped at 0.99, facing weight `0.75·(0.5 −
   0.5·facing·dir) + 0.25·(0.5 − 0.5·cursor·dir)²`, score half of each;
@@ -970,12 +1012,33 @@ with no caller yet (`player_behaviour`):
   the player's reach plus 70 cm, in front of the heading by more than 0.3
   of their distance (in double precision), whose own contact score for the
   player is over 2.
-- **Attack timing.** The wind-up step `(1 − 0.05·√E)` (1 at no energy),
-  floored at 0.1, over the weapon's rate, times 0.03, floored at 0.01; the
-  next attack `1000/(80·step)` ms on, at most the swing's length; the
-  recovery `(2f + 1)·(round(100·rate) + 100)` ms, f being `(3 − 2b)·b²` for
-  `b = balance/0.7` while a swing's leg mode (5 to 12) is on and the balance
-  is at most 0.7, else 1.
+- **Attack timing.** Computed on an attack's first tick: the wind-up step
+  `(1 − 0.05·√E)` (1 at no energy), floored at 0.1, over the primary
+  weapon's recoil (W17), times 0.03,
+  floored at 0.01; the expected end `1000/(80·step)` ms on, at most the
+  swing's length; the recovery `(2f + 1)·(round(100·recoil) + 100)` ms, f
+  being `(3 − 2b)·b²` for `b = balance/0.7` while the attack motion (5 to
+  12) is on and the balance is at most 0.7, else 1. The executor reads the
+  recovery clock only for Feint, which the running swing already keeps
+  (`exa_combat::swing`), so this copy has no caller. The fists' 0.1 recoil at
+  full energy give a 0.285 step, a 44 ms expected end and 330 ms of
+  recovery at full balance.
+- **Auto-target.** The visible opponent within 500 cm whose
+  `(500 − d)·(δ·cursor/d + 0.5)` is the largest, strictly over the best
+  from zero (so a zero, negative or NaN score never wins), the first on a
+  tie; the target is dropped when it dies, and the stance picks 3
+  (Defence) or 4 (Cmbt - Idle) from it (350 cm × the target's scale, or
+  3 s since the player's attack, and the energy within 0.05 of the most)
+  (`auto_target`; the stance rule is `exa_combat::stance::player_stance`).
+- **Look.** Strictly over 30° (the single 30 times the single degree)
+  between the look and the cursor's direction, the gap wrapped into ±π in
+  double precision, the look snaps to the cursor's direction
+  (`look_snaps`). When the camera follows the body, a camera yaw more than
+  0.1π from the body's is put back to the body's yaw 0.1π on the camera's
+  side, wrapped into ±π; within it nothing changes (`camera_follow_yaw`). The cursor
+  follower itself is the same second-order one as the steering's
+  (`steering::CursorFollower`: error clamped to ±π/2, speed
+  `(speed + 0.015708·error)·0.7`, a speed under 1e-5 still).
 - **On screen.** The living character whose point shows nearest the cursor.
 
 ## The combat stance

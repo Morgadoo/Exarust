@@ -130,6 +130,9 @@ pub struct PlayerBody {
     attack: AttackInput,
     /// The exploration behaviour's state between ticks.
     steering: Steering,
+    /// The exploration movement word's persistence: a tap moves for up to
+    /// 200 ms after the press.
+    move_word: crate::steering::MoveWord,
     /// Seconds the combat footwork keys have been held.
     held: f32,
     /// The keys held last tick (W, S, A, D as bits 0–3 once opposing keys
@@ -163,6 +166,7 @@ impl PlayerBody {
             aim: yaw,
             attack: AttackInput::default(),
             steering: Steering::default(),
+            move_word: crate::steering::MoveWord::default(),
             held: 0.0,
             held_keys: 0,
             long: false,
@@ -785,6 +789,21 @@ pub(crate) fn steer_player(
                 continue;
             }
             pb.walk_from = None;
+            // The exploration movement word's persistence: a key pressed
+            // for less than 200 ms keeps moving for a step, a held one
+            // stops at once, and the pad's analog stick is its own word.
+            let analog = gamepad.map_or(Vec2::ZERO, |g| g.move_raw);
+            let crouch = pb.crouch;
+            let word = pb
+                .move_word
+                .tick(now, [input.w, input.s, input.a, input.d], analog, crouch);
+            if word != crate::steering::MOVE_ANALOG {
+                let [w, s, a, d] = crate::steering::MoveWord::keys(word);
+                input.w = w;
+                input.s = s;
+                input.a = a;
+                input.d = d;
+            }
             let segment = motions
                 .as_deref()
                 .filter(|_| GAITS.contains(&anim.action.as_str()))
@@ -2606,22 +2625,28 @@ mod tests {
         assert!((req.heading + std::f32::consts::FRAC_PI_2).abs() < 1e-5);
         assert_eq!(clip_and_stance(&app, body).0, "Cmbt - Idle");
         // W walks in the body tick that decides it moves: its locomotion
-        // starts the walk; released (no walk segment to finish) it stops
-        // softly, its capsule braking (its goal never nearing here, where
-        // no controller moves it: 49 ticks from 1.687 to 0.5 cm a tick),
-        // and the walk ends in Idle once the body tick has stopped it.
+        // starts the walk; released, a tap under 200 ms keeps the movement
+        // word until 200 ms after the press, then it stops softly, its
+        // capsule braking from the speed the tap reached (65 ticks to Idle
+        // here, where no controller moves it), and the walk ends in Idle
+        // once the body tick has stopped it.
         set_key(&mut app, KeyCode::KeyW, true);
         behaviour_tick(&mut app);
         assert_eq!(clip_and_stance(&app, body).0, "Walk");
         behaviour_tick(&mut app);
         assert_eq!(clip_and_stance(&app, body).0, "Walk");
         set_key(&mut app, KeyCode::KeyW, false);
+        // The clock advances a tick at a time, as the game's does: the tap's
+        // word holds until 200 ms after the press (17 ticks), then the
+        // capsule brakes from the speed it reached; the walk ends in Idle
+        // 65 ticks after the release.
         let mut ticks = 0;
-        while clip_and_stance(&app, body).0 == "Walk" && ticks < 83 {
+        while clip_and_stance(&app, body).0 == "Walk" && ticks < 220 {
+            app.world_mut().resource_mut::<BodyTicks>().0 += 1;
             behaviour_tick(&mut app);
             ticks += 1;
         }
-        assert_eq!(ticks, 49);
+        assert_eq!(ticks, 65);
         assert_eq!(clip_and_stance(&app, body), ("Idle".into(), Stance::Idle));
     }
 

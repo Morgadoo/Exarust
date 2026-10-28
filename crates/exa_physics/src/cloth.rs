@@ -210,6 +210,9 @@ pub struct Cloth {
     pub rustle_pitch: f32,
     /// The rustle envelope, which decays by 0.9 each tick.
     pub rustle_tail: f32,
+    /// The hand's grab: the vertex it holds and the point it is pulled to
+    /// (centimetres, the cloth's own frame).
+    pub grabbed: Option<(usize, Vec3)>,
 }
 
 impl Cloth {
@@ -237,7 +240,22 @@ impl Cloth {
             rustle_volume: 0.0,
             rustle_pitch: 0.0,
             rustle_tail: 0.0,
+            grabbed: None,
         }
+    }
+
+    /// The hand grabs vertex `index` and pulls it to `at` (centimetres, the
+    /// cloth's own frame). The item's own drag rules decide the point.
+    pub fn grab(&mut self, index: usize, at: Vec3) {
+        if index < self.particles.len() {
+            self.grabbed = Some((index, at));
+            self.sleep = self.sleep.max(1).max(self.owner_sleep);
+        }
+    }
+
+    /// The hand lets go.
+    pub fn release_grab(&mut self) {
+        self.grabbed = None;
     }
 
     /// Build a cloth from a triangle mesh. Each vertex is a particle. Each
@@ -609,6 +627,17 @@ pub fn step(cloth: &mut Cloth, gravity: Vec3) {
     settle_rustle(cloth, sum);
     if awake {
         apply_constraints(cloth);
+    }
+    // The hand's grabbed vertex sits on its target after the tick's links,
+    // and wakes the cloth.
+    if let Some((index, target)) = cloth.grabbed
+        && target.is_finite()
+        && index < count
+    {
+        let particle = &mut cloth.particles[index];
+        particle.previous = target;
+        particle.position = target;
+        cloth.sleep = cloth.sleep.max(1).max(cloth.owner_sleep);
     }
     let before: Vec<Vec3> = cloth
         .particles
@@ -2053,5 +2082,25 @@ mod tests {
         assert_eq!(out, [Vec3::new(2.25, 3.0, 4.0), Vec3::new(5.0, 6.0, 8.5)]);
         // The inputs are left as they were.
         assert_eq!(base[0], Vec3::new(1.0, 2.0, 3.0));
+    }
+
+    /// A grabbed vertex is put on the hand's target after the tick's
+    /// links and wakes the cloth; letting go leaves it to gravity.
+    #[test]
+    fn a_grabbed_vertex_follows_the_hand() {
+        let mut cloth = Cloth::new(vec![still(Vec3::ZERO), still(Vec3::new(10.0, 0.0, 0.0))]);
+        cloth.sleep = 0;
+        let target = Vec3::new(0.0, 0.0, 50.0);
+        cloth.grab(0, target);
+        assert!(cloth.sleep > 0);
+        step(&mut cloth, Vec3::new(0.0, 0.0, 0.0));
+        assert_eq!(cloth.particles[0].position, target);
+        cloth.release_grab();
+        let at = cloth.particles[0].position;
+        step(&mut cloth, Vec3::new(0.0, 0.0, -1.0));
+        assert!(cloth.particles[0].position.z < at.z);
+        // A grab on a vertex the cloth does not have is ignored.
+        cloth.grab(9, target);
+        assert!(cloth.grabbed.is_none());
     }
 }
