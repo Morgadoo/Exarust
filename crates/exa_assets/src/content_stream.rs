@@ -348,7 +348,8 @@ pub fn character_node_flags(node: u32, request: u32) -> u32 {
 
 /// A character's saved AI state, which the builder restores into the
 /// controller when the request does not set [`KEEP_SAVED_AI`]: a position
-/// and a facing.
+/// and a facing. The fourth word is copied into the controller's next field;
+/// it is read as a facing angle. **[guess: the fourth word is a heading]**
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SavedAiPose {
     pub position: [f32; 3],
@@ -356,7 +357,7 @@ pub struct SavedAiPose {
 }
 
 /// Reads the 16 bytes a character request keeps for its saved AI state: the
-/// position as three floats, then a heading float. Any shorter input has no
+/// position as three floats, then a fourth word. Any shorter input has no
 /// pose, and the builder starts the AI from its own state instead.
 pub fn saved_ai_pose(bytes: &[u8]) -> Option<SavedAiPose> {
     let bytes: &[u8; 16] = bytes.get(..16)?.try_into().ok()?;
