@@ -8,7 +8,11 @@
 //!   S asks to move backwards (braking first, and turning the brake into a
 //!   backpedal, when faster than 1 cm a tick). Let go while the body walks,
 //!   the request holds until the playing walk's key segment is 0 or 4 (its
-//!   two double-support keys), so the body finishes its stride.
+//!   two double-support keys), so the body finishes its stride. A key
+//!   pressed for under 200 ms keeps its movement word until 200 ms after
+//!   the press (`MoveWord`), so a tap still takes a step; a held key stops
+//!   at once, and the movement target is cleared 200 ms after the last
+//!   nonzero tick. The pad's analog stick is its own word.
 //! - **The cursor.** Its point on the plane 80 cm over the ground gives a
 //!   direction once it is 50 cm or more away, which a second-order yaw
 //!   follower smooths.
@@ -110,6 +114,121 @@ pub(crate) struct Keys {
     pub(crate) shift: bool,
     /// The right button is held over the view.
     pub(crate) mouse: bool,
+}
+
+/// The exploration movement word's bits, in the order the reader takes
+/// them: forward, right, back and left, and the gamepad's analog word.
+pub(crate) const MOVE_FORWARD: u32 = 1;
+pub(crate) const MOVE_RIGHT: u32 = 2;
+pub(crate) const MOVE_BACK: u32 = 4;
+pub(crate) const MOVE_LEFT: u32 = 8;
+pub(crate) const MOVE_ANALOG: u32 = 0x8000;
+/// The movement word's persistence: a word the keys held for less than this
+/// is kept until this long after the press, so a tap moves for a step; the
+/// body's movement target is cleared this long after the last nonzero tick.
+pub(crate) const TAP_MS: u32 = 200;
+/// The body's speed (cm a tick) under which a held word counts as a tap.
+pub(crate) const TAP_SPEED: f32 = 0.1;
+/// The analog stick's square under which the key word is read (the squared
+/// length is compared as a single, `<= 0.01`).
+pub(crate) const ANALOG_DEAD_ZONE: f32 = 0.01;
+/// An analog tap needs the stick past this squared length.
+pub(crate) const ANALOG_TAP: f32 = 0.9;
+
+/// The exploration movement word's persistence, as the behaviour's key
+/// state machine keeps it: the raw word from the keys or the pad's analog
+/// stick, the word the movement request actually reads (`held`), the tap
+/// flag, and the three clocks. A word pressed for less than [`TAP_MS`] is
+/// kept until [`TAP_MS`] after the press, so a quick tap still moves; a
+/// word held longer clears as soon as it is released. The movement target
+/// stays for [`TAP_MS`] after the last nonzero tick.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub(crate) struct MoveWord {
+    /// The word the request reads.
+    pub(crate) held: u32,
+    /// The keys were held past [`TAP_MS`] with the body nearly still.
+    pub(crate) tap: bool,
+    /// When `held` became nonzero (ms).
+    down_ms: u32,
+    /// When the raw word last changed (ms).
+    change_ms: u32,
+    /// The last tick the raw word was nonzero (ms).
+    quiet_ms: u32,
+    /// The pad's analog stick last read.
+    pub(crate) analog: Vec2,
+    /// The body's movement target is kept.
+    pub(crate) keep: bool,
+}
+
+impl MoveWord {
+    /// One tick at `now_ms`: the keys `forward`…`right` as a word, and the
+    /// pad's analog stick (its squared length at most
+    /// [`ANALOG_DEAD_ZONE`] reads the keys; a NaN is not under it and reads
+    /// the analog word, as the ordered test does). `speed` is the body's
+    /// speed in cm a tick.
+    /// Returns the word the request reads.
+    pub(crate) fn tick(&mut self, now_ms: u32, keys: [bool; 4], analog: Vec2, speed: f32) -> u32 {
+        let squared = analog.x * analog.x + analog.y * analog.y;
+        let word = if squared <= ANALOG_DEAD_ZONE {
+            let bit = |on: bool, bit: u32| if on { bit } else { 0 };
+            bit(keys[0], MOVE_FORWARD)
+                | bit(keys[3], MOVE_RIGHT)
+                | bit(keys[1], MOVE_BACK)
+                | bit(keys[2], MOVE_LEFT)
+        } else {
+            self.analog = analog;
+            MOVE_ANALOG
+        };
+        if word == self.held {
+            if word == 0 {
+                self.tap = false;
+                self.change_ms = now_ms;
+                if self.down_ms.wrapping_add(TAP_MS) < now_ms {
+                    self.held = 0;
+                }
+                if self.quiet_ms.wrapping_add(TAP_MS) < now_ms {
+                    self.keep = false;
+                }
+            } else {
+                self.quiet_ms = now_ms;
+                self.keep = true;
+                if self.change_ms.wrapping_add(TAP_MS) < now_ms && speed < TAP_SPEED {
+                    if word == MOVE_ANALOG {
+                        let squared = analog.x * analog.x + analog.y * analog.y;
+                        if squared > ANALOG_TAP {
+                            self.tap = true;
+                        }
+                    } else {
+                        self.tap = true;
+                    }
+                }
+            }
+        } else {
+            self.tap = false;
+            self.change_ms = now_ms;
+            if word == 0 {
+                if self.down_ms.wrapping_add(TAP_MS) < now_ms {
+                    self.held = 0;
+                }
+            } else {
+                self.held = word;
+                self.down_ms = now_ms;
+                self.quiet_ms = now_ms;
+                self.keep = true;
+            }
+        }
+        self.held
+    }
+
+    /// The word as the request's four keys.
+    pub(crate) fn keys(word: u32) -> [bool; 4] {
+        [
+            word & MOVE_FORWARD != 0,
+            word & MOVE_BACK != 0,
+            word & MOVE_LEFT != 0,
+            word & MOVE_RIGHT != 0,
+        ]
+    }
 }
 
 /// What the cursor asks of the movement while it is not the keys: the
