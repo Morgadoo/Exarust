@@ -581,6 +581,16 @@ impl PeriodicTimers {
 /// A deferred call: returns whether it wants to run again next frame.
 pub type Deferred = Box<dyn FnMut() -> bool>;
 
+/// One queued call and the identities it was registered with. The original
+/// stores a procedure and a data word beside every entry so a caller can
+/// cancel all work for an object or a routine; a call queued without tags
+/// matches neither.
+struct QueuedCall {
+    procedure: Option<u64>,
+    data: Option<u64>,
+    call: Deferred,
+}
+
 /// The original's ring of calls that run again next frame until they return
 /// false.
 ///
@@ -593,7 +603,7 @@ pub type Deferred = Box<dyn FnMut() -> bool>;
 /// compared as plain integers, so once the calls wrap past the ring's end
 /// only the call at the head runs in a tick (the original's quirk, kept).
 pub struct DeferredCalls {
-    slots: Vec<Option<Deferred>>,
+    slots: Vec<Option<QueuedCall>>,
     head: usize,
     tail: usize,
 }
@@ -617,13 +627,62 @@ impl DeferredCalls {
     /// Pushes a call for the next run; returns false when the ring is full
     /// and the call is dropped.
     pub fn push(&mut self, call: Deferred) -> bool {
+        self.push_tagged(None, None, call)
+    }
+
+    /// Pushes a call tagged with the procedure and data identities its
+    /// cancel routines match; `None` for either means it cannot be found by
+    /// that identity (the untagged [`DeferredCalls::push`]).
+    pub fn push_tagged(
+        &mut self,
+        procedure: Option<u64>,
+        data: Option<u64>,
+        call: Deferred,
+    ) -> bool {
         let next = (self.tail + 1) % DEFERRED_SLOTS;
         if next == self.head {
             return false;
         }
-        self.slots[self.tail] = Some(call);
+        self.slots[self.tail] = Some(QueuedCall {
+            procedure,
+            data,
+            call,
+        });
         self.tail = next;
         true
+    }
+
+    /// Removes every queued call with this data identity and returns how
+    /// many went. Removal rotates the ring and advances its head, so the
+    /// remaining calls keep their order.
+    pub fn remove_data(&mut self, data: u64) -> usize {
+        self.remove_where(|call| call.data == Some(data))
+    }
+
+    /// Removes every queued call with this procedure identity and returns
+    /// how many went.
+    pub fn remove_procedure(&mut self, procedure: u64) -> usize {
+        self.remove_where(|call| call.procedure == Some(procedure))
+    }
+
+    /// The original's removal walk: every live slot from the head is
+    /// visited once; a match is removed in place (which advances the head)
+    /// and the scan moves on to the next physical slot.
+    fn remove_where(&mut self, mut matches: impl FnMut(&QueuedCall) -> bool) -> usize {
+        let mut removed = 0;
+        let mut at = self.head;
+        while at != self.tail {
+            let remove = self.slots[at].as_ref().is_some_and(&mut matches);
+            if remove {
+                self.remove(at);
+                removed += 1;
+            }
+            at += 1;
+            if at >= DEFERRED_SLOTS {
+                at = 0;
+            }
+        }
+        removed
     }
 
     /// Runs the pending calls once and keeps the ones that ask for another
@@ -636,7 +695,7 @@ impl DeferredCalls {
         let mut index = self.head;
         loop {
             let keep = match self.slots[index].as_mut() {
-                Some(call) => call(),
+                Some(queued) => (queued.call)(),
                 None => false,
             };
             if !keep {
@@ -992,5 +1051,42 @@ mod tests {
         assert_eq!(LogPresentation::status_kind(4), None);
         assert_eq!(overlay_lifetime_ms("abcd"), 2_200);
         assert_eq!(overlay_lifetime_ms(""), 2_000);
+    }
+
+    #[test]
+    fn tagged_calls_cancel_by_data_or_procedure() {
+        let log = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut calls = DeferredCalls::new();
+        calls.push_tagged(Some(10), Some(100), counting(&log, 1, 1));
+        calls.push_tagged(Some(11), Some(100), counting(&log, 2, 1));
+        calls.push_tagged(Some(10), Some(200), counting(&log, 3, 1));
+        calls.push(counting(&log, 4, 1));
+        assert_eq!(calls.remove_data(100), 2);
+        assert_eq!(calls.len(), 2);
+        // An untagged call was not registered with data 0.
+        assert_eq!(calls.remove_data(0), 0);
+        assert_eq!(calls.remove_procedure(10), 1);
+        assert_eq!(calls.len(), 1);
+        calls.run();
+        assert_eq!(*log.borrow(), [4]);
+        assert!(calls.is_empty());
+    }
+
+    #[test]
+    fn cancellation_keeps_the_remaining_calls_in_order() {
+        let log = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut calls = DeferredCalls::new();
+        for id in 1..=5u32 {
+            calls.push_tagged(Some(1), Some(u64::from(id)), counting(&log, id, 2));
+        }
+        // Cancel the middle one; the rest still run in their order.
+        assert_eq!(calls.remove_data(3), 1);
+        calls.run();
+        assert_eq!(*log.borrow(), [1, 2, 4, 5]);
+        assert_eq!(calls.len(), 4);
+        log.borrow_mut().clear();
+        calls.run();
+        assert_eq!(*log.borrow(), [1, 2, 4, 5]);
+        assert!(calls.is_empty());
     }
 }

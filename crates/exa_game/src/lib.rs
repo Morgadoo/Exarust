@@ -46,6 +46,7 @@ pub mod gui_paint;
 pub mod gui_screens;
 pub mod hand;
 pub mod hirelings;
+pub mod hooks;
 pub mod hotkeys;
 pub mod hub_windows;
 pub mod hud;
