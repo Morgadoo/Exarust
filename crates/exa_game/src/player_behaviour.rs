@@ -10,11 +10,12 @@
 //! swing (`exa_combat`). They are plain functions so that the arithmetic,
 //! the comparisons and the branch order are pinned by tests; the running
 //! game feeds the gamepad aim's point and ease ([`crate::player`]) and
-//! records [`windup`] when an attack starts (its next-attack clock gates
-//! the following attack). The auto-target, look snap and pin-cursor aim
-//! step ([`auto_target`], [`look_snap`], [`step_aim_yaw`]) and the bone
-//! lock are tested rules: the stance keeps no target entity and no target
-//! bones are read to the screen.
+//! the others are tested rules with no caller yet: the auto-target, the
+//! look snap and the camera's follow step ([`auto_target`],
+//! [`look_snaps`], [`camera_follow_yaw`]), the bone lock (the stance
+//! keeps no target entity and no target bones are read to the screen) and
+//! the attack timing [`windup`] (the running swing keeps its own stall and
+//! renewal clocks in `exa_combat::swing`).
 //!
 //! Evidence: the behaviour's aim point, gamepad aim, contacts, engaged
 //! enemy, screen-nearest character and attack timing, read in the
@@ -147,20 +148,16 @@ pub fn aim_lock_height(plane: f32, point: f32, distance2: f32, radius: f32) -> f
 }
 
 /// A bone's projected point against the cursor, in screen pixels: from
-/// `start` (the target's projected head point) toward `end` (the bone's),
-/// the fraction `t = (end − start)·(cursor − start) / |end − start|²`,
-/// clamped into [0, 1] by the original's two ordered tests (so a NaN
-/// fraction becomes zero), and the squared distance from `start + (end −
-/// start)·t` to the cursor, which the lock compares with its radii.
+/// `start` (the target's projected reference point) toward `end` (the
+/// bone's), the fraction `t = (end − start)·(cursor − start) / |end −
+/// start|²`, clamped into [0, 1] by the original's two ordered tests (a NaN
+/// fraction fails both and stays NaN; −0 passes), and the squared distance
+/// from `start + (end − start)·t` to the cursor, which the lock compares
+/// with its radii.
 pub fn bone_screen(start: Vec2, end: Vec2, cursor: Vec2) -> (f32, f32) {
     let bone = end - start;
     let to = cursor - start;
-    let raw = (bone.x * to.x + bone.y * to.y) / (bone.x * bone.x + bone.y * bone.y);
-    let t = if raw >= 0.0 {
-        if raw > 1.0 { 1.0 } else { raw }
-    } else {
-        0.0
-    };
+    let t = ((bone.x * to.x + bone.y * to.y) / (bone.x * bone.x + bone.y * bone.y)).clamp(0.0, 1.0);
     let d = start + bone * t - cursor;
     (t, d.x * d.x + d.y * d.y)
 }
@@ -173,42 +170,39 @@ pub struct AimBone {
     pub height: f32,
 }
 
-/// The aim height with a locked target, over the target's bones in order:
-/// each bone's projected point gives its squared distance to the cursor
-/// through [`bone_screen`] from the target's `head` point, and the nearest
-/// one wins (an unordered distance never replaces a nearer one). Within
-/// one pixel radius the aim height is that bone's; within two it blends by
-/// `(d − r) / r` toward the plane's; beyond, it is the plane's. Returns the
-/// height and whether a bone locked at all (the raised-surface rule is
-/// skipped when one did).
+/// The aim height with a locked target. Each of the target's bones, in
+/// order, is measured through [`bone_screen`] from the target's reference
+/// point `root`; the first bone is taken outright and a later one replaces
+/// it only when strictly nearer (so an unordered distance never replaces a
+/// nearer one, and a NaN first one is kept). The point the lock follows is
+/// `root` moved toward the nearest bone by its fraction, `root + (bone −
+/// root)·t` (the original lerps the two view-space points and maps the
+/// result back to the world; its height is what is kept here), and
+/// [`aim_lock_height`] blends it with the `plane`. Returns the height and
+/// whether the bone was within two radii (the raised-surface rule is
+/// skipped then).
 pub fn aim_lock_bones(
     plane: f32,
-    head: Vec2,
+    root: AimBone,
     bones: &[AimBone],
     cursor: Vec2,
     radius: f32,
 ) -> (f32, bool) {
     let mut nearest: Option<(f32, f32)> = None;
     for bone in bones {
-        let (_, d2) = bone_screen(head, bone.screen, cursor);
+        let (t, d2) = bone_screen(root.screen, bone.screen, cursor);
         if nearest.is_none_or(|(_, best)| d2 < best) {
-            nearest = Some((bone.height, d2));
+            nearest = Some((root.height + (bone.height - root.height) * t, d2));
         }
     }
-    let Some((height, d2)) = nearest else {
+    let Some((point, d2)) = nearest else {
         return (plane, false);
     };
     let twice = radius * AIM_LOCK_RADII;
-    if twice * twice > d2 {
-        if radius * radius >= d2 {
-            (height, true)
-        } else {
-            let blend = (d2.sqrt() - radius) / radius;
-            (plane * blend + (1.0 - blend) * height, true)
-        }
-    } else {
-        (plane, false)
-    }
+    (
+        aim_lock_height(plane, point, d2, radius),
+        twice * twice > d2,
+    )
 }
 
 /// The pixel radius 80 cm makes at a point `depth` cm in front of the eye:
@@ -354,7 +348,9 @@ pub fn auto_target(
         }
         let delta = other.at - player;
         let d2 = (delta.y * delta.y + delta.x * delta.x) + delta.z * delta.z;
-        if !(d2 <= AUTO_TARGET_CM * AUTO_TARGET_CM) {
+        // The reach test skips only an ordered "beyond": a NaN passes on
+        // to a NaN score, which never wins.
+        if AUTO_TARGET_CM * AUTO_TARGET_CM < d2 {
             continue;
         }
         let d = d2.sqrt();
@@ -368,51 +364,38 @@ pub fn auto_target(
     found
 }
 
-/// The aim yaw one tick after a pin-cursor frame: the angle to `toward`,
-/// taken within ±π of `current`, moved by at most `step` (the original's
-/// 0.1π), then wrapped into ±π.
-pub fn step_aim_yaw(current: f32, toward: f32, step: f32) -> f32 {
-    let mut delta = toward - current;
-    if delta > std::f32::consts::PI {
-        delta -= std::f32::consts::TAU;
-    } else if delta < -std::f32::consts::PI {
-        delta += std::f32::consts::TAU;
+/// The camera's follow step (the behaviour's per-tick call when the
+/// camera follows the body): `camera` is the camera's present yaw and
+/// `body` the yaw of the body's direction. With the signed gap `camera −
+/// body` wrapped into ±π (compared in double precision) more than 0.1π
+/// (the single 0.1 times π, in double) away, the camera's yaw becomes the
+/// body's yaw put back 0.1π toward the camera's side (the step's sign is
+/// the gap's), wrapped again; within it, nothing changes (`None`). A NaN
+/// fails the ordered compare and changes nothing.
+pub fn camera_follow_yaw(camera: f32, body: f32) -> Option<f32> {
+    let gap = exa_ai::combat::gap(camera, body);
+    let step = f64::from(CAMERA_FOLLOW_STEP) * std::f64::consts::PI;
+    if !(step < f64::from(gap.abs())) {
+        return None;
     }
-    let moving = if delta.abs() > step {
-        if delta >= 0.0 { step } else { -step }
-    } else {
-        delta
-    };
-    let out = current + moving;
-    if out > std::f32::consts::PI {
-        out - std::f32::consts::TAU
-    } else if out < -std::f32::consts::PI {
-        out + std::f32::consts::TAU
-    } else {
-        out
-    }
+    let sign = if gap.is_sign_negative() { -1.0 } else { 1.0 };
+    Some(exa_ai::combat::wrap(body + (sign * step) as f32))
 }
 
-/// The look's yaw after a frame: over 30° from the cursor's direction, the
-/// look snaps to it (`step` false); within it, the look stays. The
-/// comparison is the original's signed difference, so a NaN keeps the
-/// look.
-pub fn look_snap(look: f32, cursor: f32) -> f32 {
-    let mut delta = cursor - look;
-    if delta > std::f32::consts::PI {
-        delta -= std::f32::consts::TAU;
-    } else if delta < -std::f32::consts::PI {
-        delta += std::f32::consts::TAU;
-    }
-    if delta.abs() > SNAP_LOOK {
-        cursor
-    } else {
-        look
-    }
+/// The camera follow's step in half turns (times π): 0.1.
+const CAMERA_FOLLOW_STEP: f32 = 0.1;
+
+/// Whether the look snaps to the cursor's direction this tick: the gap
+/// `look − cursor` wrapped into ±π (compared in double precision), its
+/// magnitude strictly over 30° (the single 30 times the single degree).
+/// The original then copies the behaviour's cursor direction vector into
+/// the look. A NaN fails the ordered compare: no snap.
+pub fn look_snaps(look: f32, cursor: f32) -> bool {
+    SNAP_LOOK < exa_ai::combat::gap(look, cursor).abs()
 }
 
-/// The cone the look snaps within: 30°.
-const SNAP_LOOK: f32 = 0.523_598_8;
+/// The cone the look snaps beyond: 30°, the product of two singles.
+const SNAP_LOOK: f32 = 30.0 * 0.017_453_292;
 
 /// The strongest engaged enemy in front within the player's reach plus
 /// 70 cm (`from` the player's point and `heading` its heading, cm): the
@@ -586,9 +569,9 @@ mod tests {
         assert_eq!(t, 1.0);
         let (t, _) = bone_screen(Vec2::ZERO, Vec2::X * 10.0, Vec2::new(-5.0, 0.0));
         assert_eq!(t, 0.0);
-        // A zero-length bone's division is NaN, which the ordered tests take
-        // to zero.
-        assert_eq!(bone_screen(Vec2::ZERO, Vec2::ZERO, Vec2::X).0, 0.0);
+        // A zero-length bone's division is NaN, which fails both ordered
+        // tests and stays NaN.
+        assert!(bone_screen(Vec2::ZERO, Vec2::ZERO, Vec2::X).0.is_nan());
     }
 
     /// An aim point is fully locked within one cursor radius (its edge
@@ -603,59 +586,60 @@ mod tests {
         assert_eq!(aim_lock_height(0.8, 1.5, 400.0, 10.0), 0.8);
     }
 
-    /// The three-bone lock takes the nearest bone, locks to its height
-    /// within one radius, blends by (d − r)/r to two radii and keeps the
-    /// plane beyond; an unordered bone never replaces a nearer one. The
-    /// pixel radius of 80 cm is width·scale·0.5·80 over the depth.
+    /// The bone lock follows the reference point moved toward the nearest
+    /// bone by its fraction, locks to that point's height within one
+    /// radius, blends by (d − r)/r to two radii and keeps the plane beyond;
+    /// an unordered bone never replaces a nearer one. The pixel radius of
+    /// 80 cm is width·scale·0.5·80 over the depth.
     #[test]
-    fn the_aim_lock_follows_the_nearest_of_three_bones() {
-        let head = Vec2::new(100.0, 100.0);
-        let cursor = Vec2::new(110.0, 100.0);
-        let bones = [
-            AimBone {
-                screen: Vec2::new(300.0, 300.0),
-                height: 1.0,
-            },
-            AimBone {
-                screen: cursor,
-                height: 1.5,
-            },
-            AimBone {
-                screen: Vec2::new(140.0, 100.0),
-                height: 2.0,
-            },
-        ];
-        // The second bone is on the cursor: full lock.
-        assert_eq!(aim_lock_bones(0.8, head, &bones, cursor, 50.0), (1.5, true));
-        // A bone's segment that starts at the head and runs straight up:
-        // the cursor 30 px to its right shows a 30 px distance. With a
-        // 10 px radius that is past two radii, so the plane stays.
-        let above = AimBone {
-            screen: Vec2::new(100.0, 300.0),
-            height: 2.0,
+    fn the_aim_lock_follows_the_point_toward_the_nearest_bone() {
+        let root = AimBone {
+            screen: Vec2::new(100.0, 100.0),
+            height: 100.0,
         };
-        let cursor = Vec2::new(130.0, 100.0);
+        let far = AimBone {
+            screen: Vec2::new(300.0, 300.0),
+            height: 120.0,
+        };
+        // A bone straight up the screen from the root, 200 px long, 60 cm
+        // higher in the world.
+        let up = AimBone {
+            screen: Vec2::new(100.0, 300.0),
+            height: 160.0,
+        };
+        // The cursor at the bone's middle: t = 0.5, distance 0, so the
+        // point is halfway up, 130 cm, fully locked.
+        let cursor = Vec2::new(100.0, 200.0);
         assert_eq!(
-            aim_lock_bones(0.8, head, &[above], cursor, 10.0),
-            (0.8, false)
+            aim_lock_bones(80.0, root, &[far, up], cursor, 50.0),
+            (130.0, true)
         );
-        // A 20 px radius at 30 px: (30 − 20)/20 = 0.5 between the plane and
-        // 2.0.
-        let (height, locked) = aim_lock_bones(0.8, head, &[above], cursor, 20.0);
+        // 30 px to the right of the bone's middle, with a 20 px radius:
+        // (30 − 20)/20 = 0.5 between the plane (80) and the point (130).
+        let cursor = Vec2::new(130.0, 200.0);
+        let (height, locked) = aim_lock_bones(80.0, root, &[up], cursor, 20.0);
         assert!(locked);
-        assert!((height - 1.4).abs() < 1e-5, "{height}");
-        let cursor = Vec2::new(110.0, 100.0);
-        // NaN distances are never taken: with only a broken bone the plane
-        // stays.
-        let broken = [AimBone {
+        assert!((height - 105.0).abs() < 1e-4, "{height}");
+        // With a 10 px radius 30 px is past two radii: the plane, unlocked.
+        assert_eq!(
+            aim_lock_bones(80.0, root, &[up], cursor, 10.0),
+            (80.0, false)
+        );
+        // A later bone replaces the first only when strictly nearer.
+        let (height, _) = aim_lock_bones(80.0, root, &[up, up], Vec2::new(100.0, 200.0), 50.0);
+        assert_eq!(height, 130.0);
+        // A broken (NaN) first bone is kept: no later bone is nearer than
+        // NaN, and NaN is not within two radii, so the plane stays.
+        let broken = AimBone {
             screen: Vec2::new(f32::NAN, 0.0),
-            height: 3.0,
-        }];
-        let (height, locked) = aim_lock_bones(0.8, head, &broken, cursor, 50.0);
-        assert!((height - 0.8).abs() < 1e-5);
-        assert!(!locked);
+            height: 300.0,
+        };
+        assert_eq!(
+            aim_lock_bones(80.0, root, &[broken, up], Vec2::new(100.0, 200.0), 50.0),
+            (80.0, false)
+        );
         // No bones at all: the plane.
-        assert_eq!(aim_lock_bones(0.8, head, &[], cursor, 50.0), (0.8, false));
+        assert_eq!(aim_lock_bones(80.0, root, &[], cursor, 50.0), (80.0, false));
         // 1000 px across, scale 1, 800 cm deep: 50 px.
         assert_eq!(bone_lock_radius(1000.0, 1.0, 800.0), 50.0);
     }
@@ -735,22 +719,30 @@ mod tests {
         );
     }
 
-    /// The pin-cursor aim steps at most 0.1π a tick and wraps into ±π; the
-    /// look snaps to the cursor once it is over 30° off.
+    /// The camera follows the body: over 0.1π from the body's yaw, it is
+    /// put back to the body's yaw 0.1π on its own side (wrapped); within,
+    /// nothing changes. The look snaps once the gap is strictly over 30°.
     #[test]
-    fn the_pin_aim_and_the_look_snap() {
-        let step = std::f32::consts::PI * 0.1;
-        assert!((step_aim_yaw(0.0, 1.0, step) - step).abs() < 1e-6);
-        assert!((step_aim_yaw(0.0, 0.1, step) - 0.1).abs() < 1e-6);
-        assert!((step_aim_yaw(0.0, -1.0, step) + step).abs() < 1e-6);
-        // 3.1 to −3.1 is a +0.083 step the short way, which wraps to −3.1.
-        assert!((step_aim_yaw(3.1, -3.1, step) + 3.1).abs() < 1e-5);
-        // A NaN keeps the yaw (the ordered compares all fail).
-        assert!(step_aim_yaw(0.5, f32::NAN, step).is_nan());
-        assert_eq!(look_snap(0.0, 0.53), 0.53);
-        assert_eq!(look_snap(0.0, 0.52), 0.0);
-        assert_eq!(look_snap(0.0, -0.53), -0.53);
-        assert_eq!(look_snap(0.0, 0.523_598_8), 0.0);
+    fn the_camera_follow_and_the_look_snap() {
+        let step = f32::from_bits(0x3ea0_d97c);
+        assert_eq!(camera_follow_yaw(1.0, 0.0), Some(step));
+        assert_eq!(camera_follow_yaw(-1.0, 0.0), Some(-step));
+        assert_eq!(camera_follow_yaw(0.3, 0.0), None);
+        // −3.0 and 3.0 are 0.283 apart the short way: within the step.
+        assert_eq!(camera_follow_yaw(-3.0, 3.0), None);
+        // 2.9 is 0.383 the short way below −3.0 (gap wrapped negative):
+        // −3.0 − 0.1π = −3.3141594 wraps to 2.969026.
+        let got = camera_follow_yaw(2.9, -3.0).unwrap();
+        assert!((got - 2.969_026).abs() < 1e-5, "{got}");
+        assert_eq!(camera_follow_yaw(0.5, f32::NAN), None);
+        assert_eq!(SNAP_LOOK, f32::from_bits(0x3f06_0a92));
+        assert!(look_snaps(0.0, 0.53));
+        assert!(look_snaps(0.53, 0.0));
+        assert!(!look_snaps(0.0, 0.52));
+        assert!(!look_snaps(0.0, SNAP_LOOK));
+        // 3.0 and −3.0 are 0.283 apart across ±π.
+        assert!(!look_snaps(3.0, -3.0));
+        assert!(!look_snaps(f32::NAN, 0.0));
     }
 
     /// A raised surface under the cursor replaces the aim point when it is
