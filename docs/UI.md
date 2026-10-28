@@ -817,10 +817,9 @@ calling the rest of the game, so the order is testable.
   page with the flow's mode and phase words and hides the session hook while
   the page is up. `FlowSteps` collects every step and the app applies the
   menu, end-menu, title-logo, game-view, controls, health and music ones.
-  A direct launch (`play <level>` and the other views without `--splash`)
-  sets `BootToMenu(false)`, so the boot builds the flow's title state without
-  covering the level; the splash path still shows the title at its
-  hand-over.
+  The launcher sets `BootToMenu(false)`, so the boot builds the flow's title
+  state without covering the level or the splash; the splash path shows the
+  title at its hand-over.
   The world, save, camera, character and transition-screen steps are logged
   and left to the host; there is no in-process level reload, so a level
   load's request (a practice start on a fresh title, the next fight, a
