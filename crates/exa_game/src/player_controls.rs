@@ -854,6 +854,31 @@ pub fn use_target(classification: u8) -> UseTarget {
     }
 }
 
+/// What the release of the right-press use cursor does, after the pick's
+/// classification: a door rattles or unlocks, a character takes the poured
+/// liquid, a world item is cleaned or repaired, and a GUI entry is cleaned,
+/// repaired or moved to the held item's place.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UseEffect {
+    Door,
+    Character,
+    WorldItem,
+    GuiItem,
+    Nothing,
+}
+
+/// The use release's dispatch, in the original's order: a door (4), a
+/// character (0x10), a world item (bit 2), then the GUI's own item slot.
+pub fn use_effect(target: UseTarget, over_gui: bool) -> UseEffect {
+    match target {
+        UseTarget::Door => UseEffect::Door,
+        UseTarget::Character => UseEffect::Character,
+        UseTarget::Item => UseEffect::WorldItem,
+        UseTarget::Nothing if over_gui => UseEffect::GuiItem,
+        UseTarget::Nothing => UseEffect::Nothing,
+    }
+}
+
 /// The held item's use on a GUI item slot (the cursor over an inventory
 /// entry): a cleaning kit (kind 9) and a repair kit (10) work on the entry,
 /// and a kind 0x10 moves the entry when it is the same item the use holds.
@@ -1066,6 +1091,58 @@ impl PowerHold {
     pub fn taken(&mut self) {
         self.slot = 0;
     }
+}
+
+/// A game mode the controls unit registers: the story's Character mode and
+/// the Spectate view. The original appends them to the game's mode table in
+/// this order, each with a start and an end routine, and keeps the mode id
+/// (`index + 2`) for the session to enter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GameMode {
+    Character,
+    Spectate,
+}
+
+/// One mode-table entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GameModeEntry {
+    pub name: &'static str,
+    pub mode: GameMode,
+    /// Its place in the table, from zero.
+    pub index: u32,
+    /// The id the session asks for: the place plus two.
+    pub id: u32,
+}
+
+impl GameMode {
+    /// The name the original stores in the mode table.
+    pub fn name(self) -> &'static str {
+        match self {
+            GameMode::Character => "Character",
+            GameMode::Spectate => "Spectate",
+        }
+    }
+}
+
+/// The script class the same unit init registers before the modes.
+pub const SCRIPT_CLASS: &str = "ScriptInst";
+
+/// The two mode entries the unit init appends after `registered`, in order.
+pub fn register_game_modes(registered: u32) -> [GameModeEntry; 2] {
+    [
+        GameModeEntry {
+            name: GameMode::Character.name(),
+            mode: GameMode::Character,
+            index: registered,
+            id: registered + 2,
+        },
+        GameModeEntry {
+            name: GameMode::Spectate.name(),
+            mode: GameMode::Spectate,
+            index: registered + 1,
+            id: registered + 3,
+        },
+    ]
 }
 
 #[cfg(test)]
@@ -1637,6 +1714,37 @@ mod tests {
             mark_used(MarkTarget::Container { slot: 0, word: 2 }, 0, POUR_MARK),
             None
         );
+    }
+
+    /// The use release's target order: door, character, world item, then
+    /// the GUI's own slot.
+    #[test]
+    fn the_use_release_dispatch() {
+        assert_eq!(use_effect(UseTarget::Door, false), UseEffect::Door);
+        assert_eq!(
+            use_effect(UseTarget::Character, false),
+            UseEffect::Character
+        );
+        assert_eq!(use_effect(UseTarget::Item, true), UseEffect::WorldItem);
+        assert_eq!(use_effect(UseTarget::Nothing, true), UseEffect::GuiItem);
+        assert_eq!(use_effect(UseTarget::Nothing, false), UseEffect::Nothing);
+    }
+
+    /// The unit init registers ScriptInst and the two modes Character then
+    /// Spectate, each mode id two past its table place.
+    #[test]
+    fn the_game_modes_register_in_order() {
+        assert_eq!(SCRIPT_CLASS, "ScriptInst");
+        let modes = register_game_modes(0);
+        assert_eq!(modes[0].name, "Character");
+        assert_eq!(modes[0].mode, GameMode::Character);
+        assert_eq!((modes[0].index, modes[0].id), (0, 2));
+        assert_eq!(modes[1].name, "Spectate");
+        assert_eq!(modes[1].mode, GameMode::Spectate);
+        assert_eq!((modes[1].index, modes[1].id), (1, 3));
+        let modes = register_game_modes(7);
+        assert_eq!((modes[0].index, modes[0].id), (7, 9));
+        assert_eq!((modes[1].index, modes[1].id), (8, 10));
     }
 
     /// The right press: a usable kind zero opens the container, another

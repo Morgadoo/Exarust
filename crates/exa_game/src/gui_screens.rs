@@ -291,6 +291,40 @@ impl GameScreens {
         self.find(kind).is_some()
     }
 
+    /// The inventory pack's item slot under `pointer`, if the inventory is
+    /// open and an icon is there. The pack panel is the frame's client's
+    /// bottom [`gui_paint::PACK`] block, its icons inside its four-unit
+    /// border; an entry that is dragged, held or has no icon is neither
+    /// drawn nor hit. The panel keeps its entries in draw order, so the
+    /// top-most icon wins.
+    pub fn pack_slot_at(&self, pointer: IVec2, unit: i32) -> Option<u32> {
+        let screen = self.find(GameScreen::Inventory)?;
+        let bounds = self.task.form(screen.form)?.bounds();
+        let mut frame = Frame::new(bounds, unit, INVENTORY_TITLE);
+        frame.spacing = gui_paint::INVENTORY_SPACING;
+        let client = frame.client();
+        let pack = GuiRect::new(
+            client.left,
+            client.bottom - gui_paint::PACK.1,
+            gui_paint::PACK.0,
+            gui_paint::PACK.1,
+        );
+        let slots: Vec<crate::item_cursor::ItemSlot> = self
+            .pack
+            .entries
+            .iter()
+            .filter(|e| {
+                e.drag & 1 == 0 && e.flags & crate::item_container::HELD == 0 && e.icon != 0
+            })
+            .map(|e| crate::item_cursor::ItemSlot {
+                id: e.id,
+                at: (pack.left + 4 + e.cell.x, pack.top + 4 + e.cell.y),
+                side: self.pack.icon_size,
+            })
+            .collect();
+        crate::item_cursor::slot_at(&slots, pointer.x, pointer.y)
+    }
+
     /// The screen the window manager focuses.
     pub fn focused(&self) -> Option<GameScreen> {
         let active = self.task.active?;
@@ -1060,6 +1094,38 @@ mod tests {
             screens.open_inventory(false, true, 4),
             ScreenAction::Refused
         );
+    }
+
+    #[test]
+    fn the_inventory_pack_hits_its_icons() {
+        let mut screens = GameScreens::default();
+        screens.task.screen = (1600, 900);
+        assert_eq!(screens.pack_slot_at(IVec2::new(30, 488), 4), None);
+        screens.open_inventory(true, true, 4);
+        screens.pack.entries = vec![
+            crate::item_container::Entry {
+                cell: crate::item_container::Cell::new(10, 20),
+                id: 7,
+                icon: 3,
+                flags: 0,
+                drag: 0,
+            },
+            // A held or dragged entry is not hit.
+            crate::item_container::Entry {
+                cell: crate::item_container::Cell::new(100, 20),
+                id: 8,
+                icon: 4,
+                flags: crate::item_container::HELD,
+                drag: 0,
+            },
+        ];
+        // The frame's client starts at (16, 16); the pack's panel is its
+        // bottom 180, inside a four-unit border: (20, 468).
+        assert_eq!(screens.pack_slot_at(IVec2::new(29, 487), 4), None);
+        assert_eq!(screens.pack_slot_at(IVec2::new(30, 488), 4), Some(7));
+        assert_eq!(screens.pack_slot_at(IVec2::new(189, 647), 4), Some(7));
+        assert_eq!(screens.pack_slot_at(IVec2::new(190, 488), 4), None);
+        assert_eq!(screens.pack_slot_at(IVec2::new(200, 488), 4), None);
     }
 
     #[test]

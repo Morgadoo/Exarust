@@ -74,7 +74,7 @@ use exa_ui::ScriptedPointer;
 
 use crate::bindings::{Action, Bindings};
 use crate::control_nodes::Frame;
-use crate::gui_screens::ScreenRequest;
+use crate::gui_screens::{GameScreens, ScreenRequest};
 use crate::item_cursor::{self, HeldItem, ItemCursor, Release};
 use crate::pick::{self, Body, Pick, ReachTo, Target};
 use crate::player::{ChaseCamera, Player, PlayerBody, window_ray};
@@ -1190,6 +1190,7 @@ fn hold_hand(
     mut requests: Query<&mut Locomotion, With<PlayerBody>>,
     mut bodies: Query<OtherBodies, Without<PlayerBody>>,
     mut screens: Option<ResMut<Messages<ScreenRequest>>>,
+    games: Option<Res<GameScreens>>,
     (time, mut show_bars, pad, pad_status): (
         Option<Res<Time<Virtual>>>,
         Option<ResMut<HudShowUntil>>,
@@ -1379,8 +1380,22 @@ fn hold_hand(
                 // held item itself left out of the pick (as the original
                 // flags its node while it picks). The item goes there
                 // whether or not its box fits. A cursor over nothing keeps
-                // the last point [Exarust: no navigation mesh behind every
-                // pixel, and no sweep to the first contact].
+                // the last point (its pick has no navigation mesh behind
+                // every pixel). The item's rest box sweeps along the ray
+                // first, so a wall beside the cursor's point stops it at
+                // the first contact [Exarust sweeps the box's bounding
+                // sphere; the original sweeps its collision spheres against
+                // the meshes].
+                let pointer = windows.single().ok().and_then(|window| {
+                    scripted
+                        .position(window)
+                        .map(|p| (p * window.scale_factor()).as_ivec2())
+                });
+                let slot = pointer.and_then(|p| {
+                    games
+                        .as_deref()
+                        .and_then(|screens| screens.pack_slot_at(p, 4))
+                });
                 let ray = cursor_ray(&scripted, &windows, &cameras);
                 if let Some(ray) = ray {
                     let (origin, dir) = (ray.origin, *ray.direction);
@@ -1391,18 +1406,20 @@ fn hold_hand(
                                 .stand_ins
                                 .owner_of(h)
                                 .is_some_and(|(owner, _)| owner == body)
-                        })
-                        .map(|(_, t)| {
-                            let at = origin + dir * t;
-                            (at, at.y * CM)
                         });
-                    if hit.is_some()
-                        && let Some(point) = item_cursor::place_point(
-                            origin,
-                            dir,
-                            hit,
-                            item_cursor::PLACEMENT_LIMIT_CM,
-                        )
+                    let hit_cm = hit.map(|(_, t)| t * CM);
+                    let radius = box_half.length();
+                    let contact = hit_cm.and_then(|distance| {
+                        sources
+                            .physics
+                            .level_sweep(origin, dir, distance / CM, radius)
+                            .map(|t| t * CM)
+                    });
+                    let distance =
+                        hit_cm.and_then(|hit| item_cursor::placement_distance(hit, contact));
+                    items.hover = item_cursor::hover_word(slot, hit.is_some(), false);
+                    if let Some(distance) = distance
+                        && let Some(point) = item_cursor::placement_point(origin, dir, distance)
                     {
                         let (frame, _fits) =
                             item_cursor::place_frame(items.rotation, point, box_centre, box_half);
@@ -1415,6 +1432,8 @@ fn hold_hand(
                             ragdoll.wake_to(DRAG_WAKE);
                         }
                     }
+                } else {
+                    items.hover = item_cursor::hover_word(slot, false, false);
                 }
             }
         }
