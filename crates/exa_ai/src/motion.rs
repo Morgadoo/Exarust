@@ -698,9 +698,10 @@ pub fn alert_look(
         *roll = roll.wrapping_mul(0x0808_8405).wrapping_add(1);
         let narrow = ((u64::from(*roll) * NARROW_ODDS) >> 32) == 0;
         if narrow && alert.narrow_at_ms < now_ms {
-            // The narrow pan spreads in double precision over the f64 π.
-            let unit = f64::from(crate::personality::unit_draw(roll));
-            let target = (unit - 0.5) * std::f64::consts::PI;
+            // The narrow pan centres the f32 draw, then spreads it in double
+            // precision over the f64 π.
+            let unit = crate::personality::unit_draw(roll) - 0.5;
+            let target = f64::from(unit) * std::f64::consts::PI;
             alert.target = gap(facing_yaw + target as f32, 0.0);
             alert.narrow_at_ms = now_ms.wrapping_add(NARROW_EVERY_MS);
         }
