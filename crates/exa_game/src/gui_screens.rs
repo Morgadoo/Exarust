@@ -477,18 +477,15 @@ impl GameScreens {
         true
     }
 
-    /// The bodies whose loot window the deferred close takes, front to
-    /// back: a body marked 0x80000 or no longer dead (condition other than
-    /// 0xa00).
+    /// The bodies whose loot window the deferred close takes, in the given
+    /// bodies' order: a body with a window whose mark 0x80000 is set or
+    /// whose condition is no longer dead (other than 0xa00).
     pub fn loot_windows_to_close(&self, bodies: &[(i32, u32, u32)]) -> Vec<i32> {
-        let tags: Vec<(u32, u32, u32)> = bodies
+        bodies
             .iter()
             .filter(|(character, _, _)| self.loot_window(*character).is_some())
-            .map(|(_, flags, mode)| (exa_ui::game_gui::LOOT_SCREEN, *flags, *mode))
-            .collect();
-        exa_ui::game_gui::loot_windows_to_close(&tags)
-            .into_iter()
-            .filter_map(|i| bodies.get(i).map(|(character, _, _)| *character))
+            .filter(|(_, flags, mode)| exa_ui::game_gui::closes_loot_window(*flags, *mode))
+            .map(|(character, _, _)| *character)
             .collect()
     }
 
@@ -1188,6 +1185,23 @@ mod tests {
         assert!(
             (equipment.1 - client.top as f32).abs() < 2.0,
             "{equipment:?}"
+        );
+    }
+
+    #[test]
+    fn the_deferred_close_takes_the_windows_of_dead_bodies_only() {
+        let mut screens = GameScreens::default();
+        screens.task.screen = (1600, 900);
+        screens.open_loot(7, 0, 4);
+        screens.open_loot(8, 0, 4);
+        // 7 is still dead and unmarked; 8 is no longer dead; 9 has no window.
+        assert_eq!(
+            screens.loot_windows_to_close(&[(7, 0, 0xa00), (8, 0, 0), (9, 0x80000, 0xa00)]),
+            vec![8]
+        );
+        assert_eq!(
+            screens.loot_windows_to_close(&[(7, 0x80000, 0xa00)]),
+            vec![7]
         );
     }
 
