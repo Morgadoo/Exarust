@@ -315,6 +315,17 @@ fn tick_card(
             now,
         );
     }
+    // The card belongs to the item panels: when every panel is closed it
+    // goes too, holding no icon reference for a form that no longer exists.
+    if view.shown.is_some()
+        && screens
+            .find(exa_ui::game_gui::GameScreen::Inventory)
+            .is_none()
+        && screens.loot.is_empty()
+    {
+        view.close(&mut screens, &mut icons, now);
+        return;
+    }
     // The card closes when the pointer leaves it, as the popup's hover
     // handler starts its fade on the base form's leave answer.
     if let (Some(card), Ok(window)) = (view.shown.as_mut(), windows.single())
