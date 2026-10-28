@@ -438,7 +438,19 @@ fn apply_level_change(
         bc_supported: model::bc_supported(support.as_deref()),
     };
     info!("level change: loading {level} (spawn {spawn})");
-    if !begin_level(&mut commands, &mut loader, &level) {
+    let found = begin_level(&mut commands, &mut loader, &level);
+    // The save unit's transition flow around the change: which copy the
+    // destination comes from, the spawn matrix and the abort when the
+    // archive lacks the level. Kept for the save path's disable flag.
+    let transition = exa_game::level_transition::live_transition(&level, spawn, found);
+    debug!(
+        "level change: transition flow {:?} (aborted {}, saves disabled {})",
+        transition.flow.steps,
+        transition.flow.aborted,
+        transition.saves_disabled()
+    );
+    commands.insert_resource(transition);
+    if !found {
         warn!("level change: {level} is not in the resource pack");
         // Nothing will build: give the game time back.
         if !was_paused {

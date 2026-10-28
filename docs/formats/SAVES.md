@@ -190,6 +190,18 @@ object database has records), then the current level under its locale name
 Sections already in the package that are not written this time are left
 alone; nothing is deleted.
 
+**World database exports.** Before the sections, every scene character is
+flushed into its database. `#worldchrdb` holds one chunk `0xCECDDB00`: the
+world character database flushed (every live character re-serialised) and
+then saved as magic `0xDBACCD00`, a table size of `(records + 1) × 16`,
+and, with at least one record, the table (its sentinel entry included) and
+the payload. `#worldobjdb` holds chunk `0xDBDB`, the object database's
+world tier (magic `0xDBAC0D09`, same table rule), then chunk `0xDBCD`, the
+tier's string library (magic `0xAFBF0C02`). Each section is written only
+when its database's record count is above zero. Exarust:
+`slots::export_world_databases` (a `WorldExport`, whose `save_world` builds
+the `SaveWorld` for `Slots::save_full`).
+
 **Permadeath.** The player is dead when the health, widened to double, is
 below the double `0.01` (so the single-precision `0.01`, which is
 `0.0099999998`, is dead; a NaN health is not). Death **deletes the slot's
@@ -279,6 +291,15 @@ This is the level exporter's single-placement layout ([RFC.md](RFC.md),
 `exa_formats::rfc_write::write_character_state`); the reader's field order
 matches it.
 
+**Export.** The story and arena writers export the placement from the
+player's scene body in save mode. The player's own record is remembered
+the first time a save runs and the body is exported under that record (its
+current record is swapped in for the export and back); before the export
+the record is flushed into the world character database unless the
+transition state's first word is 2 (a pending respawn). Exarust:
+`session::export_player_placement`, written by `Session::placement` as the
+first chunk after the header (a `None` keeps a previous save's placement).
+
 A reference the lookup does not find makes the player-data reader answer
 zero: the slot is neither listed nor loaded.
 
@@ -301,8 +322,17 @@ zero: the slot is neither listed nor loaded.
   loadout's worn list, then the carried items, before the record's
   re-derive; the stash is compacted afterwards by its own pass). The
   repair is a tested function: Exarust's load does not decode and
-  re-encode the world character database to apply it. Regeneration and
-  the object-database id passes are not modelled.
+  re-encode the world character database to apply it. The object-database
+  id passes are not modelled.
+* **List regeneration** (after an arena load's id pass): each employee in
+  staff order whose profession byte is 4 has its own list emptied; any
+  other has its record's loadouts merged into its list (each loadout's
+  first two hand ids when non-zero, then its worn ids except the value 8,
+  through a unique append that adds `(id, 0, 0x28 | 4 << 16)` when the id
+  is not listed yet), its special duplicates removed and every entry
+  shelved with flag `0x400` when its shelf holds no copy. The manager's
+  list follows the same way from the manager's record, then every box of
+  the five shelves is deduplicated. Exarust: `arena_ids::regenerate_lists`.
 * Story start compatibility (the character creator, while the started byte
   is 0): a save with an `exanima06` section is refused; with an
   `exanima04` section it is refused unless its `#worldobjdb`'s **third
@@ -519,6 +549,11 @@ with its second chunk as the string library the records read their text
 through (a missing section clears the live object database). Exarust
 exposes both as `Slots`' `world_characters`/`world_objects`
 (`exa_game::slots`) and on a `LoadedSave`.
+
+**Live flow.** Exarust's in-process level change records this flow
+(`level_transition::live_transition`, stored as `LiveTransition`) with no
+save package open, the archive lookup's answer and a portal matrix for a
+non-zero spawn; the steps from the import on are its own loader's.
 
 **Flow.** A transition closes the open forms, reserves the kd trees, waits
 13 ms, resets the audio environment and the GUI, begins the object

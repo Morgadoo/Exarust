@@ -65,6 +65,10 @@ pub struct Session {
     /// shop or staff list, or a merchant a non-empty staff lacks, is
     /// removed).
     pub arena_tables: Option<ArenaTables>,
+    /// The player's character placement exported from the live scene (the
+    /// payload of the character chunk, see [`export_player_placement`]).
+    /// `None` keeps the placement a previous save of the same mode holds.
+    pub placement: Option<Vec<u8>>,
 }
 
 impl Session {
@@ -82,6 +86,7 @@ impl Session {
             memory_flags: None,
             transition: None,
             arena_tables: None,
+            placement: None,
         }
     }
 
@@ -99,6 +104,7 @@ impl Session {
             memory_flags: None,
             transition: None,
             arena_tables: None,
+            placement: None,
         }
     }
 
@@ -275,8 +281,62 @@ pub fn player_data(session: &Session) -> PlayerData {
             data
         }
     };
+    data.character = session.placement.clone();
     data.set_journal(&journal_records(&session.story));
     data
+}
+
+/// The transition-state word that skips the player record's flush at the
+/// placement export: a save made while the respawn state is pending (the
+/// transition chunk's first word is 2) keeps the record the database
+/// already has.
+pub const RESPAWN_PENDING: u32 = 2;
+
+/// What the player data's placement export produced.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlacementExport {
+    /// The character chunk's payload, for [`Session::placement`].
+    pub payload: Vec<u8>,
+    /// Whether the player's record is flushed into the world character
+    /// database before the export (every state but [`RESPAWN_PENDING`]).
+    pub flush_record: bool,
+}
+
+/// The player's placement as the player-data writers export it. The
+/// player's own record is remembered the first time a save runs
+/// (`saved_record`, kept across saves by the caller) and the scene body
+/// exports under that record, whatever record the body holds now; the body
+/// keeps its own afterwards (the original swaps the body's record in for
+/// the export and back). The export is the level exporter's placement in
+/// save mode ([`exa_formats::rfc_write::write_character_state`]): the
+/// reference, position, heading and condition, then the AI home, the pose
+/// and motion state of an AI in mode 1, and the attached objects. A
+/// character without its AI is an error, as for any saved character.
+pub fn export_player_placement(
+    body: &exa_formats::rfc_write::ExportCharacter,
+    saved_record: &mut Option<u32>,
+    transition_word: u32,
+) -> exa_formats::Result<PlacementExport> {
+    let record = *saved_record.get_or_insert(body.record);
+    let mut character = body.clone();
+    character.record = record;
+    let mut writer = exa_formats::rfc_write::ChunkWriter::new();
+    exa_formats::rfc_write::write_character_state(&mut writer, &character, true)?;
+    let chunk = writer.into_bytes();
+    Ok(PlacementExport {
+        payload: chunk.get(8..).unwrap_or_default().to_vec(),
+        flush_record: transition_word != RESPAWN_PENDING,
+    })
+}
+
+impl Session {
+    /// The transition chunk's first word (zero when the session has none),
+    /// the state [`export_player_placement`] reads.
+    pub fn transition_word(&self) -> u32 {
+        self.transition.map_or(0, |state| {
+            u32::from_le_bytes([state[0], state[1], state[2], state[3]])
+        })
+    }
 }
 
 /// The `#playerdata` section a session writes: the mode's header, the
@@ -746,6 +806,7 @@ fn read_body(bytes: &[u8]) -> Result<Session, SaveError> {
         memory_flags,
         transition,
         arena_tables: None,
+        placement: None,
     })
 }
 
@@ -1313,5 +1374,54 @@ mod tests {
             &mut loaded_arsenal,
             &mut stash
         ));
+    }
+
+    #[test]
+    fn the_placement_exports_under_the_first_saved_record_and_writes_first() {
+        use exa_formats::rfc_write::{ExportAi, ExportCharacter};
+        let body = ExportCharacter {
+            record: save_package::CHARACTER_IN_WORLD_DB | 9,
+            body_position: [100.0, 40.0, -20.0],
+            floor_height: 5.0,
+            heading: 0.5,
+            ai: Some(ExportAi::default()),
+            ..ExportCharacter::default()
+        };
+        let mut saved = None;
+        let first = export_player_placement(&body, &mut saved, 0).unwrap();
+        assert!(first.flush_record);
+        assert_eq!(saved, Some(save_package::CHARACTER_IN_WORLD_DB | 9));
+        // A later save exports under the remembered record even when the
+        // body holds another, and a pending respawn skips the flush.
+        let other = ExportCharacter {
+            record: save_package::CHARACTER_IN_WORLD_DB | 4,
+            ..body.clone()
+        };
+        let later = export_player_placement(&other, &mut saved, RESPAWN_PENDING).unwrap();
+        assert!(!later.flush_record);
+        assert_eq!(later.payload, first.payload);
+        let placement = save_package::CharacterPlacement::parse(&first.payload).unwrap();
+        assert_eq!(placement.reference, save_package::CHARACTER_IN_WORLD_DB | 9);
+        assert_eq!(placement.position, [100.0, 5.0, -20.0]);
+        assert_eq!(placement.heading, 0.5);
+        // The session writes it as the first chunk after the header.
+        let mut session = Session::story();
+        session.placement = Some(first.payload.clone());
+        let bytes = player_data(&session).write();
+        assert_eq!(&bytes[52..56], &save_package::CHARACTER_TAG.to_le_bytes());
+        assert_eq!(&bytes[60..60 + first.payload.len()], &first.payload[..]);
+        // A character without its AI does not export.
+        let bare = ExportCharacter { ai: None, ..body };
+        assert!(export_player_placement(&bare, &mut None, 0).is_err());
+    }
+
+    #[test]
+    fn the_transition_word_is_the_state_s_first_word() {
+        let mut session = Session::story();
+        assert_eq!(session.transition_word(), 0);
+        let mut state = [0u8; 16];
+        state[0] = 2;
+        session.transition = Some(state);
+        assert_eq!(session.transition_word(), RESPAWN_PENDING);
     }
 }

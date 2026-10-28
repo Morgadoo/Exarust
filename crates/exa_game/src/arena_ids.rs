@@ -341,6 +341,161 @@ pub fn remap_personal(old: u32, new: u32, character: &mut CharacterRecord) -> bo
     false
 }
 
+/// The item word a regenerated list entry carries after the id and flags:
+/// the low half `0x28`, the high half 4, as the original's list append
+/// stores them (the arsenal's own entries carry the same pair).
+pub const LIST_ENTRY_EXTRA: u32 = 0x28 | (4 << 16);
+
+/// A worn id the list regeneration steps over. The original skips a worn
+/// entry whose id word is exactly 8; what that value marks is not traced
+/// [guess: a placeholder slot value].
+pub const SKIPPED_WORN_ID: u32 = 8;
+
+/// The employee class whose own list is emptied, not regenerated, after a
+/// load (the class byte of a world character hired from the list).
+pub const CLASS_WITHOUT_LIST: u32 = 4;
+
+/// Adds an id to a twelve-byte list unless an entry already carries it, as
+/// the original's unique append does: the new entry is `(id, flags, 0x28 |
+/// 4 << 16)` at the end. Returns whether it was added.
+pub fn add_unique_entry(list: &mut Vec<ItemEntry>, id: u32, flags: u32) -> bool {
+    if list.iter().any(|entry| entry.id == id) {
+        return false;
+    }
+    list.push(ItemEntry {
+        id,
+        flags,
+        extra: LIST_ENTRY_EXTRA,
+    });
+    true
+}
+
+/// Merges a record's loadout items into a list, as the load's list
+/// regeneration does: for each loadout in order, its first two hand ids
+/// (a zero id is empty), then its worn ids other than
+/// [`SKIPPED_WORN_ID`], each through [`add_unique_entry`] with flags 0.
+/// The list is not cleared first.
+pub fn merge_loadout_items(record: &CharacterRecord, list: &mut Vec<ItemEntry>) {
+    for loadout in &record.loadouts {
+        for hand in loadout.hands.iter().take(2) {
+            if hand.id != 0 {
+                add_unique_entry(list, hand.id, 0);
+            }
+        }
+        for worn in &loadout.worn {
+            if worn.id != SKIPPED_WORN_ID {
+                add_unique_entry(list, worn.id, 0);
+            }
+        }
+    }
+}
+
+/// An employee as the load's list regeneration sees it: the profession
+/// word (its low byte is the class) and the record with its own list.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct StaffLists {
+    pub class: u32,
+    pub refs: EmployeeRefs,
+}
+
+fn dedup_entries(list: &mut Vec<ItemEntry>) {
+    let mut raw: Vec<[u8; 12]> = list
+        .iter()
+        .map(|entry| {
+            let mut bytes = [0u8; 12];
+            bytes[0..4].copy_from_slice(&entry.id.to_le_bytes());
+            bytes[4..8].copy_from_slice(&entry.flags.to_le_bytes());
+            bytes[8..12].copy_from_slice(&entry.extra.to_le_bytes());
+            bytes
+        })
+        .collect();
+    exa_formats::arena_save::remove_duplicate_item_ids(&mut raw);
+    let word =
+        |b: &[u8; 12], at: usize| u32::from_le_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]]);
+    *list = raw
+        .iter()
+        .map(|b| ItemEntry {
+            id: word(b, 0),
+            flags: word(b, 4),
+            extra: word(b, 8),
+        })
+        .collect();
+}
+
+fn dedup_arsenal_box(entries: &mut Vec<ArsenalEntry>) {
+    let mut list: Vec<ItemEntry> = entries
+        .iter()
+        .map(|entry| ItemEntry {
+            id: entry.item,
+            flags: entry.flags,
+            extra: u32::from(entry.first) | (u32::from(entry.second) << 16),
+        })
+        .collect();
+    dedup_entries(&mut list);
+    *entries = list
+        .iter()
+        .map(|entry| ArsenalEntry {
+            item: entry.id,
+            flags: entry.flags,
+            first: entry.extra as u16,
+            second: (entry.extra >> 16) as u16,
+        })
+        .collect();
+}
+
+/// The load's list regeneration over the arena's company, in the
+/// original's order:
+///
+/// 1. each employee in staff order: a [`CLASS_WITHOUT_LIST`] employee's
+///    own list is emptied; any other has its record's loadout items merged
+///    into it ([`merge_loadout_items`]), its duplicates removed
+///    ([`exa_formats::arena_save::remove_duplicate_item_ids`]) and every
+///    entry put on its arsenal shelf with the saved-item flag
+///    ([`add_classified`]);
+/// 2. the manager's own list (the company stash's twelve-byte list
+///    [guess: the field is the manager record's list beside the stash])
+///    the same way from the manager's record;
+/// 3. every box of every shelf (shelf by shelf, box by box) has its
+///    duplicates removed.
+///
+/// `kind_of` is the object database's classification of an id; an id the
+/// database does not know is not shelved. Returns how many entries were
+/// shelved.
+pub fn regenerate_lists(
+    manager: &CharacterRecord,
+    manager_items: &mut Vec<ItemEntry>,
+    staff: &mut [StaffLists],
+    arsenal: &mut Arsenal,
+    mut kind_of: impl FnMut(u32) -> ItemKind,
+) -> usize {
+    let mut shelved = 0;
+    let mut shelve = |list: &[ItemEntry], arsenal: &mut Arsenal| {
+        for entry in list {
+            if add_classified(arsenal, entry.id, kind_of(entry.id)) {
+                shelved += 1;
+            }
+        }
+    };
+    for employee in staff.iter_mut() {
+        if employee.class & 0xFF == CLASS_WITHOUT_LIST {
+            employee.refs.items.clear();
+            continue;
+        }
+        merge_loadout_items(&employee.refs.record, &mut employee.refs.items);
+        dedup_entries(&mut employee.refs.items);
+        shelve(&employee.refs.items, arsenal);
+    }
+    merge_loadout_items(manager, manager_items);
+    dedup_entries(manager_items);
+    shelve(manager_items, arsenal);
+    for shelf in arsenal.shelves.iter_mut() {
+        for entries in shelf.iter_mut() {
+            dedup_arsenal_box(entries);
+        }
+    }
+    shelved
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -686,5 +841,118 @@ mod tests {
         assert_eq!(unregistered.register, None);
         assert_eq!(unregistered.record_reference, None);
         assert_eq!(unregistered.attached_nodes, 0);
+    }
+
+    #[test]
+    fn regeneration_merges_loadouts_skips_eight_and_shelves_with_the_saved_flag() {
+        let weapon = ItemKind {
+            known: true,
+            apparel_layer: None,
+            weapon: true,
+            shield: false,
+        };
+        let unknown = ItemKind::default();
+        let manager = character([0, 0], &[], &[([11, 0], &[8, 12, 11])]);
+        let mut manager_items = vec![ItemEntry {
+            id: 12,
+            flags: 3,
+            extra: 0,
+        }];
+        let mut staff = vec![
+            StaffLists {
+                class: 0x104,
+                refs: EmployeeRefs {
+                    record: character([0, 0], &[], &[([21, 22], &[])]),
+                    items: vec![ItemEntry {
+                        id: 99,
+                        flags: 0,
+                        extra: 0,
+                    }],
+                },
+            },
+            StaffLists {
+                class: 16,
+                refs: EmployeeRefs {
+                    record: character([0, 0], &[], &[([31, 0], &[32])]),
+                    items: Vec::new(),
+                },
+            },
+        ];
+        let mut arsenal = Arsenal::default();
+        arsenal.shelves[WEAPONS][2].push(entry(32, 0));
+        let shelved = regenerate_lists(
+            &manager,
+            &mut manager_items,
+            &mut staff,
+            &mut arsenal,
+            |id| {
+                if id == 12 { unknown } else { weapon }
+            },
+        );
+        // Class 4 empties its own list and shelves nothing.
+        assert!(staff[0].refs.items.is_empty());
+        // The second employee gets 31 and 32 appended with the list word.
+        assert_eq!(
+            staff[1].refs.items,
+            vec![
+                ItemEntry {
+                    id: 31,
+                    flags: 0,
+                    extra: 0x0004_0028
+                },
+                ItemEntry {
+                    id: 32,
+                    flags: 0,
+                    extra: 0x0004_0028
+                },
+            ]
+        );
+        // The manager keeps 12 first, adds 11 once; worn id 8 is skipped.
+        assert_eq!(
+            manager_items.iter().map(|e| e.id).collect::<Vec<_>>(),
+            [12, 11]
+        );
+        // 31 and 11 are shelved; 32 is already on the shelf, 12 is unknown.
+        assert_eq!(shelved, 2);
+        let first_box: Vec<(u32, u32)> = arsenal.shelves[WEAPONS][0]
+            .iter()
+            .map(|e| (e.item, e.flags))
+            .collect();
+        assert_eq!(first_box, [(31, SAVED_ITEM), (11, SAVED_ITEM)]);
+    }
+
+    #[test]
+    fn regeneration_dedups_special_ids_in_every_arsenal_box() {
+        let mut arsenal = Arsenal::default();
+        let special = 0x8000_0005;
+        arsenal.shelves[ARMOUR][3] = vec![
+            entry(special, 1),
+            entry(7, 0),
+            entry(special, 2),
+            entry(7, 0),
+        ];
+        regenerate_lists(
+            &CharacterRecord::new(),
+            &mut Vec::new(),
+            &mut [],
+            &mut arsenal,
+            |_| ItemKind::default(),
+        );
+        // The special id's later copy goes; a plain id's repeat stays.
+        assert_eq!(
+            arsenal.shelves[ARMOUR][3]
+                .iter()
+                .map(|e| (e.item, e.flags))
+                .collect::<Vec<_>>(),
+            [(special, 1), (7, 0), (7, 0)]
+        );
+    }
+
+    #[test]
+    fn a_unique_append_ignores_an_id_already_listed() {
+        let mut list = Vec::new();
+        assert!(add_unique_entry(&mut list, 5, 0));
+        assert!(!add_unique_entry(&mut list, 5, 9));
+        assert_eq!(list.len(), 1);
     }
 }
