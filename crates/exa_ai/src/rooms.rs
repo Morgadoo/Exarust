@@ -29,6 +29,7 @@
 //! queries (the grid environment's cell centre and the cell-to-room table).
 
 use bevy::prelude::*;
+use exa_world::room_view::LevelRooms;
 use exa_world::rooms::{RoomTracker, Rooms};
 
 use crate::flee::RoomExit;
@@ -239,6 +240,32 @@ pub fn room_reference(rooms: &Rooms, room: u16) -> Option<Vec3> {
     Some(Vec3::new(centre.x, 0.0, centre.y))
 }
 
+/// Whether `from_cm` sees `to_cm` (x and z, centimetres), as the level's
+/// sight callback answers the AI's visible and nearby lists: a grid level
+/// installs the grid environment's room reach test
+/// ([`Rooms::light_reach`]: the same room, or a door between the rooms,
+/// open in the room tracker, whose point lies within 2 m of the other
+/// position); a level without a grid keeps the default callback, which
+/// always answers yes.
+///
+/// [guess: a position in no room of the grid is taken as seen. The
+/// original's reach test refuses it, but there it never happens, as every
+/// character stands in a room; Exarust's placements may sit on a cell the
+/// room flood left out, and such a brain would otherwise never see.]
+pub fn in_sight(level: Option<&LevelRooms>, from_cm: Vec3, to_cm: Vec3) -> bool {
+    let Some(level) = level else {
+        return true;
+    };
+    let from = Vec2::new(from_cm.x * 0.01, from_cm.z * 0.01);
+    let to = Vec2::new(to_cm.x * 0.01, to_cm.z * 0.01);
+    if level.rooms.room_at(from).is_none() || level.rooms.room_at(to).is_none() {
+        return true;
+    }
+    level
+        .rooms
+        .light_reach(from, to, |link| level.tracker.is_open(link))
+}
+
 impl From<RoomExit> for Exit {
     fn from(exit: RoomExit) -> Self {
         Exit {
@@ -384,5 +411,49 @@ mod tests {
             Some(Vec3::new(-900.0, 0.0, 300.0))
         );
         assert_eq!(room_reference(&rooms, 9), None);
+    }
+
+    /// The sight test is the room reach test: the same room sees, the
+    /// next room only near the door's point (¾ into the cell behind it,
+    /// within 2 m) and only while the door is open; no grid sees all.
+    #[test]
+    fn sight_is_the_room_reach_test() {
+        use exa_formats::level::LevelGrid;
+        use exa_world::rooms::{CELL_OPEN, DoorLink, Rooms};
+        let mut grid = LevelGrid {
+            wall_sets: vec!["GEWS_UWA01".into()],
+            floor_sets: vec!["GEFS_UWA01".into()],
+            width: 6,
+            height: 3,
+            edges: vec![0; 18],
+            plane_b: vec![0; 18],
+            plane_c: vec![0; 18],
+        };
+        let open = |edges: &mut Vec<u32>, x: u32, y: u32, sides: [u32; 4]| {
+            edges[(y * 6 + x) as usize] =
+                CELL_OPEN | sides[0] | sides[1] << 4 | sides[2] << 8 | sides[3] << 12;
+        };
+        open(&mut grid.edges, 1, 1, [7, 7, 7, 0]);
+        open(&mut grid.edges, 2, 1, [7, 0, 7, 0xB]);
+        open(&mut grid.edges, 3, 1, [7, 0xB, 7, 0]);
+        open(&mut grid.edges, 4, 1, [7, 0, 7, 7]);
+        let mut level = LevelRooms::new(std::sync::Arc::new(Rooms::flood(&grid)));
+        let far = Vec3::new(1000.0, 0.0, 300.0);
+        assert!(in_sight(None, Vec3::ZERO, far * 10.0), "no grid sees all");
+        // Cells (1, 1) and (2, 1) are one room.
+        let a = Vec3::new(-900.0, 0.0, 300.0);
+        assert!(in_sight(Some(&level), a, Vec3::new(-300.0, 0.0, 300.0)));
+        // Room 0's door (cell 8 to cell 9) has its point ¾ of the way from
+        // (−300, 300) to (300, 300): (150, 300) cm. A target at (300, 300),
+        // in the cell behind the door, is 1.5 m from it; one at (900, 300)
+        // stands in a cell no door of room 0 leads into, and `a` is in a
+        // cell no door of room 1 leads into.
+        assert!(in_sight(Some(&level), a, Vec3::new(300.0, 0.0, 300.0)));
+        assert!(!in_sight(Some(&level), a, far.with_x(900.0)));
+        level.tracker.set_open(DoorLink { from: 8, to: 9 }, false);
+        level.tracker.set_open(DoorLink { from: 9, to: 8 }, false);
+        assert!(!in_sight(Some(&level), a, Vec3::new(300.0, 0.0, 300.0)));
+        // A position in no room is taken as seen.
+        assert!(in_sight(Some(&level), a, Vec3::new(-900.0, 0.0, 1300.0)));
     }
 }

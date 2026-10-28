@@ -185,6 +185,9 @@ pub struct Gaze {
     pub body_look: Vec3,
     /// The body's look smoothing direction.
     pub body_smooth: Vec3,
+    /// The body's heading direction, which the gait helper
+    /// ([`smooth_look`]) compares with the look and rewrites when it lags.
+    pub body_heading: Vec3,
 }
 
 impl Gaze {
@@ -198,6 +201,7 @@ impl Gaze {
             pitch: 0.0,
             body_look: Vec3::ZERO,
             body_smooth: Vec3::ZERO,
+            body_heading: Vec3::ZERO,
         }
     }
 }
@@ -507,8 +511,8 @@ pub struct LookStep {
     /// The body's heading vector when the chain copies the look into it
     /// (stepping or attacking); `None` leaves it.
     pub heading: Option<Vec3>,
-    /// The body's look direction the gait helper writes when the look lags
-    /// the heading past 30°, as [`smooth_look`] returns it.
+    /// The body's heading direction the gait helper writes when the
+    /// heading lags the look yaw past 30°, as [`smooth_look`] returns it.
     pub turn: Option<Vec3>,
 }
 
@@ -522,9 +526,10 @@ pub struct LookStep {
 /// its pitch eases 1 % toward [`Gaze::pitch`]; the look direction is built
 /// from them and the look smoothing eases from the physical facing by 0.4
 /// of the gap to it (0.64 beyond 1.6 rad, both in double precision). A live
-/// look target only takes the yaw. The gait helper then turns
-/// [`Gaze::look`] toward the heading and writes the body's look when it
-/// lags more than 30°.
+/// look target only takes the yaw ([`idle_look`], [`look_smoothing`]). The
+/// gait helper ([`smooth_look`]) then turns [`Gaze::look`] toward the
+/// brain's heading and rewrites the body's heading direction when it lags
+/// that look by more than 30°.
 pub fn look_chain(gaze: &mut Gaze, turn: &Turning, body: BodyLook) -> LookStep {
     if body.stepping || body.attacking {
         return LookStep {
@@ -542,26 +547,15 @@ pub fn look_chain(gaze: &mut Gaze, turn: &Turning, body: BodyLook) -> LookStep {
             turn: None,
         };
     }
-    let mut yaw = yaw_of(body.look);
-    let mut look = body.look;
-    if !body.look_target_live {
-        let pitch = asin_fast(-body.look.y);
-        let mut d = gap(turn.offset, yaw);
-        if d.abs() > HALF_PI {
-            d = sign(d) * HALF_PI;
-        }
-        // The tenth is formed in double precision, then added in single.
-        yaw = gap(yaw + (f64::from(d) * 0.1) as f32, 0.0);
-        let pitch = (f64::from(gaze.pitch - pitch) * 0.01 + f64::from(pitch)) as f32;
-        look = pitched(pitch, yaw);
-    }
-    let mut d = gap(yaw, body.facing_yaw);
-    if f64::from(d.abs()) > WIDE_TURN {
-        d = (f64::from(sign(d)) * WIDE_RATE) as f32;
-    } else {
-        d = (f64::from(d) * NARROW_RATE) as f32;
-    }
-    let smooth_yaw = gap(body.facing_yaw + d, 0.0);
+    // The idle look steps with the brain's eased offset (the turn's
+    // offset is the same state as the gaze's).
+    let head = Gaze {
+        offset: turn.offset,
+        ..*gaze
+    };
+    let (written, yaw) = idle_look(&head, Looking { look: body.look }, body.look_target_live);
+    let look = written.unwrap_or(body.look);
+    let smooth_yaw = look_smoothing(body.facing_yaw, yaw);
     let turn = smooth_look(gaze, turn.heading, body.heading_yaw, LOOK_WRITE_DEGREES);
     LookStep {
         look,

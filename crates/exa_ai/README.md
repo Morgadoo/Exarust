@@ -42,16 +42,19 @@ so nothing calls it yet. Once a body tick (not once a frame, as the
 original runs it from the body tick) the brain's perception pass clears its
 contacts' concern targets, closeness and view (as the original's target
 pass does before it perceives), looks at every character within the largest
-perception reach that the pathfinder's straight-walk line of sight reaches
-(between eye points one and a half metres up) and every one it already
-knows, with that character's own contacts, the role database's attitude
+perception reach that the level's sight callback lets it see (in a grid
+level the room reach test, `rooms::in_sight`: the same room, or an open
+door whose point lies within 2 m of the other character; a level without a
+grid sees everyone) and every one it already knows, with that character's own contacts, the role database's attitude
 and the relations' trust in its threat estimate, and writes the contact
 words the integration reads. A race-class-`0x12xx` brain uses the standard
 per-contact sense; the other AI races use the ally-aware one
 (`combatant::ally_sense`), in which a fellow brain stands in for the race
 word's AI bit. A sleeper that rates the player above a notice drops the
-sleep role and wakes. A knocked-out or dead brain stops before its morale
-and state (the original's condition bit `0x800`).
+sleep role and wakes. A knocked-out or dead brain stops after its alert decay,
+before its morale and state (the original's condition bit `0x800`). No
+running race word selects the ally sense yet, so every level brain keeps
+the standard one.
 
 | module | what it holds |
 |---|---|
@@ -66,7 +69,7 @@ and state (the original's condition bit `0x800`).
 | `brain` | the components and systems that carry roles into the running game: applying roles again when the held set changes, the attitude rating and waking, the perception pass (line of sight, the ally sense and the sense a race installs), the AI tick once a body tick (morale, the group alert's ten-second decay, the contact integration, the target pass with the room graph, the room cell and nearby list, the engagement, the look chain and the out-of-combat body turn), and the flight's walk to a room's exit |
 | `idle` | roam, patrol, sentry and the wait, the wander and home-side points, follow, sleep, knock-out and waking |
 | `motion` | the AI's look and body motion: the head look toward a point (a quarter turn, 0.02 easing), the whole-look smoothing (`(0.0062831854·gap + sway)·0.7`, a 30° write threshold), the idle look (0.1 of the gap, 1 % pitch), the out-of-combat look chain (the body look toward the head offset, the 0.4/0.64 smoothing and the gait helper's 30° write, with the stepping, live-target and combat cases), the step/combat walk (the 0.7/0.007 facing threshold, the 150 cm goal hold, the run and sprint flags), the walk stop (8·crouch + 20), the steer line (120 cm, 3600 cm²), the way share, the alert pan (one draw in 300 and 75), the out-of-combat sway, and the aim, settle and snap |
-| `rooms` | the 600 cm room cell grid (the floored, half-offset flat index, the per-cell occupant lists, the old-cell memory and the cell's nearby characters) and the level's side of it: the cell-to-room table, a room's exits at the cell centres behind its door links with shut doors from the room tracker, and a room's reference point |
+| `rooms` | the 600 cm room cell grid (the floored, half-offset flat index, the per-cell occupant lists, the old-cell memory and the cell's nearby characters) and the level's side of it: the cell-to-room table, a room's exits at the cell centres behind its door links with shut doors from the room tracker, a room's reference point, and the sight test (the room reach test) |
 | `lifecycle` | the script-object factory, the scripted action hook, the removal/destroy/disable hooks, the investigation of a disturbance, the idle driver's state machine (turn, plan a room, walk, test the exit, use the object, plan home, search the room) with its exit/use/object checks and room walk, the go-to-object state, and the object goal |
 | `combatant` | the behaviour base: contacts, perception, the ally-class races' sense (the 3 concern floor, attitude 100 for a fellow AI, the 1200/1800 cm range, the threat to an ally weighed by the observed state, 0.3 of it as the concern target; a tested function, not called by the perception pass), the attitude and trust overrides, concern, references, the queued step, the nav footprint |
 | `combat` | the combat state: the follow check, practice, the foe estimate, the weapon draw and the lunge, the chase count and eagerness, the footwork drives, the seventeen-place search, the attack decision with the friend test and the keep-off, the step, the guard, the fierce stance and the body turn |
@@ -165,8 +168,8 @@ longer decides the engagement. Exarust's duellist fights only its own
 target, so an entry against another character does not start it. A
 duellist without a brain, the practice opponent, is started by the fight's
 setup as before. The brain's passes run once a body tick, the perception
-filters by the pathfinder's line of sight, and the flight reads the level's
-room graph. Not yet: the one-planner-a-tick turn (`route::PlanTurn`) gates
+filters by the room reach test, and the flight reads the level's room
+graph (it steers straight to the exit, without a nav route). Not yet: the one-planner-a-tick turn (`route::PlanTurn`) gates
 only the path planner, and an NPC's idle walk to its room exits has no
 driver yet (only the flight walks).
 
