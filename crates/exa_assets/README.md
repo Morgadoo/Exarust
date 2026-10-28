@@ -191,7 +191,11 @@ detail class, target) join the word. An uncompressed format word with bit 16
 set, or a compressed one whose top byte is `0x82` or `0x92`, is data whatever
 the slot asks. The target bits are the original's switch: `0x10000000` a 1D
 texture, `0x20000000` and every value from `0x50000000` up 2D, `0x30000000`
-3D and `0x40000000` the cube. The seven uncompressed formats the original
+3D and `0x40000000` the cube. A cube map uploads as six faces, each from the
+detail level the word keeps with its levels back to back, and a cube view;
+the three shipped cubes (`genref01r`, `genref02r`, `genref02rm`) take that
+path. A block-compressed cube is refused (none ships). No shipped image asks
+for 1D or 3D; those still upload as 2D. The seven uncompressed formats the original
 uploads as they are (`texture::COMPATIBLE_FORMATS`, compared under
 `0x800CFFFF`) decide whether a colour word has an sRGB internal format:
 ALPHA8 and the two-channel AB8/XY8 do not, so they upload linear.

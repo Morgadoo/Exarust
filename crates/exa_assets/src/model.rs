@@ -1216,11 +1216,21 @@ impl ModelLoader<'_> {
         if let Some(h) = &self.cache.environment {
             return h.clone();
         }
+        let settings = *self.cache.textures.settings();
         let image = self
             .game
             .texture(ENVIRONMENT_MAP)
             .and_then(|b| Rfi::parse(b).ok())
-            .and_then(|rfi| cube_image(&rfi));
+            .and_then(|rfi| {
+                rfi_to_texture(
+                    &rfi,
+                    ColorSpace::Srgb,
+                    self.bc_supported,
+                    texture::default_flags(),
+                    &settings,
+                )
+                .ok()
+            });
         if image.is_none() {
             self.warn_once(format!(
                 "environment map {ENVIRONMENT_MAP} could not be read"
@@ -2094,39 +2104,6 @@ fn blend_mode(word: u32, has_alpha: bool) -> AlphaMode {
 
 /// The environment cube of indoor scenes.
 const ENVIRONMENT_MAP: &str = "genref01r";
-
-/// A cube map from a `.rfi` whose six faces each store their own mip chain
-/// (in any format the codec decodes). Every face's chain is decoded to
-/// RGBA8 and the files are laid back to back, the layout a Bevy cube array
-/// expects.
-fn cube_image(rfi: &Rfi) -> Option<Image> {
-    use bevy::render::render_resource::{
-        Extent3d, TextureDimension, TextureFormat, TextureViewDescriptor, TextureViewDimension,
-    };
-    let (w, h) = (rfi.header.width, rfi.header.height);
-    let faces = rfi.decode_faces_mips_rgba8().ok()?;
-    if faces.len() != 6 {
-        return None;
-    }
-    let data: Vec<u8> = faces.into_iter().flatten().collect();
-    let mut image = Image::new_uninit(
-        Extent3d {
-            width: w,
-            height: h,
-            depth_or_array_layers: 6,
-        },
-        TextureDimension::D2,
-        TextureFormat::Rgba8UnormSrgb,
-        RenderAssetUsages::RENDER_WORLD,
-    );
-    image.texture_descriptor.mip_level_count = rfi.mip_count;
-    image.data = Some(data);
-    image.texture_view_descriptor = Some(TextureViewDescriptor {
-        dimension: Some(TextureViewDimension::Cube),
-        ..default()
-    });
-    Some(image)
-}
 
 /// An image of a painted map with a box-filtered mip chain. An sRGB map keeps
 /// its texels as painted and averages its colour in linear light, as the GPU

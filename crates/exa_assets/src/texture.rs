@@ -437,35 +437,24 @@ pub fn rfi_to_texture(
     flags: u32,
     settings: &TextureSettings,
 ) -> exa_formats::Result<Image> {
+    // The word's target kind picks the upload: a cube map stores six faces,
+    // each with its own chain; every shipped image asks for 2D.
+    if TextureTarget::from_flags(flags | (rfi.header.flags & IMAGE_FLAG_MASK))
+        == TextureTarget::Cube
+    {
+        return cube_to_texture(rfi, space, flags, settings);
+    }
     let w = rfi.header.width;
     let h = rfi.header.height;
-    // The image's own header keeps the wrap, chain, detail and target bits;
-    // the request supplies the filtering and data bits.
-    let mut word = flags | (rfi.header.flags & IMAGE_FLAG_MASK);
-    let compressed = rfi.header.format_word & 0x8000_0000 != 0;
-    let chain = rfi.header.has_mip_chain();
-    // A compressed image without a stored chain cannot be mipmapped: the
-    // original drops both mip bits from its word and uploads the base alone.
-    if compressed && !chain && settings.quality_mask & word & flags::MIPMAP != 0 {
-        word &= !(flags::MIPMAP | flags::MIP_LINEAR);
-    }
-    let srgb = is_srgb(space, word, rfi.header.format_word);
+    let UploadPlan {
+        word,
+        srgb,
+        mut first,
+        mipmapped,
+        compressed,
+        chain,
+    } = upload_plan(rfi, space, flags, settings);
     let sampler = TextureSampler::from_flags(word, settings);
-    let mut first = rfi
-        .header
-        .first_mip_level(settings.texture_detail, settings.max_texture_size);
-    if compressed && !chain {
-        first = 0;
-    }
-    if chain {
-        // A chosen level past the stored chain uploads the smallest stored
-        // one; the original would upload nothing (retail data never asks
-        // for this).
-        first = first.min(rfi.mip_count.saturating_sub(1));
-    }
-    // The chain runs to its end only when the quality mask lets the word's
-    // mip bit through.
-    let mipmapped = settings.quality_mask & word & flags::MIPMAP != 0;
     let block_format = match rfi.format {
         PixelFormat::Bc1 | PixelFormat::Bc1Alpha if srgb => Some(TextureFormat::Bc1RgbaUnormSrgb),
         PixelFormat::Bc1 | PixelFormat::Bc1Alpha => Some(TextureFormat::Bc1RgbaUnorm),
@@ -563,6 +552,160 @@ pub fn rfi_to_texture(
     };
     let mut image = image;
     image.sampler = ImageSampler::Descriptor(sampler.descriptor());
+    Ok(image)
+}
+
+/// What a request's word resolves to before the upload: the creation word
+/// (image header flags joined), the colour space, the first level the detail
+/// setting keeps, whether the chain runs to its end, and the image's own
+/// compression and chain bits.
+struct UploadPlan {
+    word: u32,
+    srgb: bool,
+    first: u32,
+    mipmapped: bool,
+    compressed: bool,
+    chain: bool,
+}
+
+fn upload_plan(rfi: &Rfi, space: ColorSpace, flags: u32, settings: &TextureSettings) -> UploadPlan {
+    // The image's own header keeps the wrap, chain, detail and target bits;
+    // the request supplies the filtering and data bits.
+    let mut word = flags | (rfi.header.flags & IMAGE_FLAG_MASK);
+    let compressed = rfi.header.format_word & 0x8000_0000 != 0;
+    let chain = rfi.header.has_mip_chain();
+    // A compressed image without a stored chain cannot be mipmapped: the
+    // original drops both mip bits from its word and uploads the base alone.
+    if compressed && !chain && settings.quality_mask & word & flags::MIPMAP != 0 {
+        word &= !(flags::MIPMAP | flags::MIP_LINEAR);
+    }
+    let srgb = is_srgb(space, word, rfi.header.format_word);
+    let mut first = rfi
+        .header
+        .first_mip_level(settings.texture_detail, settings.max_texture_size);
+    if compressed && !chain {
+        first = 0;
+    }
+    if chain {
+        // A chosen level past the stored chain uploads the smallest stored
+        // one; the original would upload nothing (retail data never asks
+        // for this).
+        first = first.min(rfi.mip_count.saturating_sub(1));
+    }
+    // The chain runs to its end only when the quality mask lets the word's
+    // mip bit through.
+    let mipmapped = settings.quality_mask & word & flags::MIPMAP != 0;
+    UploadPlan {
+        word,
+        srgb,
+        first,
+        mipmapped,
+        compressed,
+        chain,
+    }
+}
+
+/// A cube map as the original uploads it: six faces, each from the chosen
+/// detail level, in face order with each face's levels back to back. A
+/// stored chain is sliced per face; a cube without one gets the Kaiser chain
+/// generated per face, and a block-compressed cube is refused (no shipped
+/// image is one; the original's per-face block upload is not decoded here).
+fn cube_to_texture(
+    rfi: &Rfi,
+    space: ColorSpace,
+    flags: u32,
+    settings: &TextureSettings,
+) -> exa_formats::Result<Image> {
+    use bevy::render::render_resource::{TextureViewDescriptor, TextureViewDimension};
+
+    let UploadPlan {
+        word,
+        srgb,
+        first,
+        mipmapped,
+        compressed,
+        chain,
+    } = upload_plan(rfi, space, flags, settings);
+    let (w, h) = (rfi.header.width, rfi.header.height);
+    if compressed {
+        return Err(exa_formats::Error::Unsupported(
+            "a block-compressed cube map".into(),
+        ));
+    }
+    let first = if chain {
+        first.min(rfi.mip_count.saturating_sub(1))
+    } else {
+        first
+    };
+    let mut data = Vec::new();
+    let mut levels = 1u32;
+    for face in 0..rfi.header.faces() {
+        let decoded = rfi.decode_face_mips_rgba8(face)?;
+        if chain {
+            let last = if mipmapped {
+                rfi.mip_count.saturating_sub(1)
+            } else {
+                first
+            };
+            let mut offset = 0usize;
+            for level in 0..=last {
+                let (lw, lh) = level_dims(w, h, level);
+                let size = (lw as usize) * (lh as usize) * 4;
+                if level >= first {
+                    data.extend_from_slice(decoded.get(offset..offset + size).ok_or(
+                        exa_formats::Error::Truncated {
+                            offset,
+                            needed: size,
+                            len: decoded.len(),
+                        },
+                    )?);
+                }
+                offset += size;
+            }
+            levels = last + 1 - first;
+        } else {
+            // A single stored level is filtered up from that base, as the
+            // 2D path does.
+            let last = if mipmapped { u32::MAX } else { first };
+            let options = exa_render::mipmap::ChainOptions::for_image(
+                rfi.header.format_word,
+                rfi.header.flags,
+                first,
+                last,
+            );
+            let (chain, generated) = exa_render::mipmap::build_mip_chain_rgba8_with(
+                &decoded, w as usize, h as usize, &options,
+            );
+            if generated > 0 {
+                data.extend(chain);
+                levels = generated;
+            } else {
+                data.extend_from_slice(&decoded);
+            }
+        }
+    }
+    let mut image = Image::new_uninit(
+        Extent3d {
+            width: (w >> first.min(31)).max(1),
+            height: (h >> first.min(31)).max(1),
+            depth_or_array_layers: rfi.header.faces(),
+        },
+        TextureDimension::D2,
+        if srgb {
+            TextureFormat::Rgba8UnormSrgb
+        } else {
+            TextureFormat::Rgba8Unorm
+        },
+        RenderAssetUsages::RENDER_WORLD,
+    );
+    image.texture_descriptor.mip_level_count = levels;
+    image.data = Some(data);
+    image.texture_view_descriptor = Some(TextureViewDescriptor {
+        dimension: Some(TextureViewDimension::Cube),
+        ..default()
+    });
+    image.sampler =
+        ImageSampler::Descriptor(TextureSampler::from_flags(word, settings).descriptor());
     Ok(image)
 }
 
@@ -1381,6 +1524,97 @@ mod level_tests {
         assert_eq!(image.texture_descriptor.size.width, 2);
         assert_eq!(image.texture_descriptor.mip_level_count, 2);
         assert!(decode_uploaded(b"not an image", ColorSpace::Srgb, 0, &settings, true).is_none());
+    }
+
+    /// A cube map: six faces, each a 2x2 RGB8 base filled with its face
+    /// number and a 1x1 level holding 40 + the face number.
+    fn cube_image_bytes(flags: u32) -> Vec<u8> {
+        let mut data = Vec::new();
+        for face in 0..6u8 {
+            for pixel in 0..4u8 {
+                data.extend_from_slice(&[face, pixel * 10, 0]);
+            }
+            data.extend_from_slice(&[face, 40, 0]);
+        }
+        let header = RfiHeader {
+            width: 2,
+            height: 2,
+            depth: 1,
+            format_word: 0x0100_C600,
+            flags: flags | exa_formats::rfi::FLAG_CUBE | exa_formats::rfi::FLAG_MIP_CHAIN,
+            storage: 0x1000_0000,
+            data_size: 15,
+        };
+        rfi_bytes(&header, &data)
+    }
+
+    /// A cube target uploads six faces with their chains, sliced at the
+    /// detail level; its view says cube, and every face's texels are in
+    /// face order.
+    #[test]
+    fn a_cube_map_uploads_six_faces() {
+        use bevy::render::render_resource::TextureViewDimension;
+        let bytes = cube_image_bytes(0);
+        let rfi = Rfi::parse(&bytes).unwrap();
+        assert_eq!(rfi.mip_count, 2);
+        let image = rfi_to_texture(
+            &rfi,
+            ColorSpace::Srgb,
+            false,
+            default_flags(),
+            &TextureSettings::default(),
+        )
+        .unwrap();
+        assert_eq!(image.texture_descriptor.size.width, 2);
+        assert_eq!(image.texture_descriptor.size.height, 2);
+        assert_eq!(image.texture_descriptor.size.depth_or_array_layers, 6);
+        assert_eq!(image.texture_descriptor.mip_level_count, 2);
+        let view = image.texture_view_descriptor.as_ref().unwrap();
+        assert_eq!(view.dimension, Some(TextureViewDimension::Cube));
+        let data = image.data.as_ref().unwrap();
+        // Each face is its 2x2 base (16 bytes) then its 1x1 level (4).
+        assert_eq!(data.len(), 6 * (16 + 4));
+        assert_eq!(&data[..4], &[0, 0, 0, 255]);
+        assert_eq!(&data[16..20], &[0, 40, 0, 255]);
+        assert_eq!(&data[20..24], &[1, 0, 0, 255]);
+        assert_eq!(&data[116..120], &[5, 40, 0, 255]);
+        // Without mipmapping each face is its base alone.
+        let image = rfi_to_texture(
+            &rfi,
+            ColorSpace::Srgb,
+            false,
+            default_flags() & !flags::MIPMAP,
+            &TextureSettings::default(),
+        )
+        .unwrap();
+        assert_eq!(image.texture_descriptor.mip_level_count, 1);
+        assert_eq!(image.data.as_ref().unwrap().len(), 6 * 16);
+    }
+
+    /// The detail setting slices each face's chain at the chosen level, and
+    /// a level past the chain clamps to its smallest one.
+    #[test]
+    fn a_cube_map_starts_at_its_detail_level() {
+        let settings = TextureSettings {
+            texture_detail: 2,
+            ..TextureSettings::default()
+        };
+        let bytes = cube_image_bytes(3 << 22);
+        let rfi = Rfi::parse(&bytes).unwrap();
+        let image =
+            rfi_to_texture(&rfi, ColorSpace::Srgb, false, default_flags(), &settings).unwrap();
+        // Class 3, detail 2 asks for level 2; the chain has two levels, so
+        // the smallest one is the base.
+        assert_eq!(image.texture_descriptor.size.width, 1);
+        assert_eq!(image.texture_descriptor.mip_level_count, 1);
+        let data = image.data.as_ref().unwrap();
+        assert_eq!(data.len(), 6 * 4);
+        for face in 0..6u8 {
+            assert_eq!(
+                &data[face as usize * 4..face as usize * 4 + 4],
+                &[face, 40, 0, 255]
+            );
+        }
     }
 }
 
