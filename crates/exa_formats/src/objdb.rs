@@ -797,6 +797,14 @@ pub fn worn_as<'a>(items: &'a [Item], model: &str) -> Option<&'a Item> {
         .find(|i| i.appearance.is_some() && i.worn_model.eq_ignore_ascii_case(model))
 }
 
+/// The experience amount the experience system reads for a level: 10, 20,
+/// 50, 100, 200, 500, 1000 and 2000 for levels 0–7, and 2000 from 8 up (the
+/// unit's table; the original keeps it beside the database).
+pub fn experience_for_level(level: u32) -> u32 {
+    const TABLE: [u32; 8] = [10, 20, 50, 100, 200, 500, 1000, 2000];
+    TABLE.get(level as usize).copied().unwrap_or(2000)
+}
+
 mod migrate;
 mod packed;
 mod record;
@@ -815,7 +823,7 @@ pub use record::{
     Header, Model, Record, Section, Sections, append_section, remove_section, resize_section,
 };
 pub use store::{Store, TableEntry};
-pub use tiers::{ObjectDb, Tier};
+pub use tiers::{ObjectDb, Tier, UseEffect};
 
 /// The object database's magic (`objdb.rdb` and a level's local database).
 pub const MAGIC: u32 = 0xDBAC_0D09;
@@ -1358,6 +1366,13 @@ mod tests {
         // The first fire job lights a fire of size 200.
         let fire = by_id[&0x15].operative.unwrap();
         assert_eq!((fire.class, fire.kind, fire.value), (6, 12, 200));
+    }
+
+    #[test]
+    fn the_experience_table() {
+        let levels: Vec<u32> = (0..10).map(experience_for_level).collect();
+        assert_eq!(levels, [10, 20, 50, 100, 200, 500, 1000, 2000, 2000, 2000]);
+        assert_eq!(experience_for_level(u32::MAX), 2000);
     }
 
     #[test]

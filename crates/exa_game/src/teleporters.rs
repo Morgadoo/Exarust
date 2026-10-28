@@ -564,6 +564,7 @@ mod tests {
         world.spawn((
             PlacedItem {
                 id: crystal,
+                tagged_id: exa_formats::objdb::LOCAL | crystal,
                 condition: 0,
             },
             GlobalTransform::from_translation(Vec3::new(0.0, 0.16, 0.002)),

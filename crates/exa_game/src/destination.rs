@@ -393,6 +393,7 @@ mod tests {
             .world_mut()
             .spawn(PlacedItem {
                 id: item_id,
+                tagged_id: exa_formats::objdb::LOCAL | item_id,
                 condition: 3,
             })
             .id();

@@ -57,6 +57,18 @@ impl Tier {
 /// stack); Exarust stops here.
 const PROMOTION_DEPTH: usize = 64;
 
+/// What a use of an object with an operative section does besides the use
+/// test's screens: see [`ObjectDb::use_effect`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum UseEffect {
+    None,
+    /// The object's header name goes to the registered reader (its item
+    /// description).
+    ReadHeaderName,
+    /// The item container closes and the divination-card form opens.
+    OpenDivinationCard,
+}
+
 /// The three tiers of the object database and their string libraries.
 #[derive(Debug, Clone, Default)]
 pub struct ObjectDb {
@@ -658,6 +670,27 @@ impl ObjectDb {
         }
     }
 
+    /// What using an object does besides the screens, as the original's
+    /// class-0 use action runs it: only a class-0 object has one; kind 7
+    /// hands its header name to the registered reader ([`UseEffect::
+    /// ReadHeaderName`]) and kind 5 closes the item container and opens the
+    /// divination-card form ([`UseEffect::OpenDivinationCard`]). Other kinds
+    /// and classes do nothing. The original's reader callback and forms are
+    /// the caller's.
+    pub fn use_effect(&self, id: u32) -> UseEffect {
+        let Some(op) = self.section(id, OPERATIVE) else {
+            return UseEffect::None;
+        };
+        if op.first().copied().unwrap_or(0) != 0 {
+            return UseEffect::None;
+        }
+        match op.get(1).copied().unwrap_or(0) {
+            7 => UseEffect::ReadHeaderName,
+            5 => UseEffect::OpenDivinationCard,
+            _ => UseEffect::None,
+        }
+    }
+
     /// The original's guarded removal ("Remove DB reference"): a local or
     /// world object is deleted from its tier after releasing, in that
     /// tier's library, every model string id whose low 31 bits are not
@@ -1149,6 +1182,37 @@ mod tests {
         assert_eq!((db.use_kind(4, 0), db.use_kind(4, set)), (2, 2));
         assert_eq!((db.use_kind(5, set), db.use_kind(6, 0)), (0, 2));
         assert_eq!((db.use_kind(7, 0), db.use_kind(99, 0)), (0, 0));
+    }
+
+    #[test]
+    fn class_zero_use_actions() {
+        let mut db = ObjectDb::default();
+        for (id, class, kind) in [(1, 0, 7), (2, 0, 5), (3, 0, 0x11), (4, 1, 7), (5, 1, 5)] {
+            let mut op = vec![0u8; 0x3C];
+            op[0] = class;
+            op[1] = kind;
+            put(
+                &mut db.base,
+                id,
+                NAME | OPERATIVE,
+                &payload(&[(NAME, header("U", 0, 0)), (OPERATIVE, op)]),
+            );
+        }
+        assert_eq!(db.use_effect(1), UseEffect::ReadHeaderName);
+        assert_eq!(db.use_effect(2), UseEffect::OpenDivinationCard);
+        assert_eq!(db.use_effect(3), UseEffect::None);
+        // Only class 0 has the action.
+        assert_eq!(db.use_effect(4), UseEffect::None);
+        assert_eq!(db.use_effect(5), UseEffect::None);
+        // A record without an operative section does nothing.
+        put(
+            &mut db.base,
+            6,
+            NAME,
+            &payload(&[(NAME, header("N", 0, 0))]),
+        );
+        assert_eq!(db.use_effect(6), UseEffect::None);
+        assert_eq!(db.use_effect(99), UseEffect::None);
     }
 
     #[test]

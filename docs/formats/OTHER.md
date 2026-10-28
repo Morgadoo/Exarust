@@ -149,8 +149,10 @@ random-table condition word, instancing, duplication, promotion, removal,
 template migration with the condition refresh, the item-use test, and the
 packed fields and amounts (`exa_formats::objdb`, `exa_formats::objstrings`).
 Not reproduced: the item factory's regeneration of `@` weapons during
-migration, and the scene walks of the entity lookup and entity-id rewrite
-(the id rule itself is `ObjectDb::remap_entity_id`). The item fields themselves, their apparel
+migration. The scene lookup by database id and the entity-id rewrite walk
+the placed objects' model roots (`exa_world::object_entity` and
+`remap_placed_ids`); a model node's own id is not a database record in
+Exarust. The item fields themselves, their apparel
 meaning and their readers are in
 [Object database items and apparel painting](#object-database-items-and-apparel-painting)
 below.
@@ -450,9 +452,15 @@ resolve in their level's library.
   word are clear; for another kind the original first runs a use action:
   kind 7 hands the header name to a registered reader, kind 5 opens a form);
   1 for class 1 of kind 8, 9, 10 or 14 with those bits set; 2 otherwise.
+  Only class 0 has the action: kind 7 reads the header name and kind 5
+  closes the item container and opens the divination-card form
+  (`ObjectDb::use_effect`).
 - **Weapon variants**: a weapon section's word at `0x42` low five bits is
   the variant count, one less for the half-sword form (`flags & 0x30 ==
   0x10`), never below zero.
+- **Experience table**: the amount the experience system reads for a level
+  is 10, 20, 50, 100, 200, 500, 1000 and 2000 for levels 0–7 and 2000 from 8
+  up (`experience_for_level`).
 
 ### Migration
 

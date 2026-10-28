@@ -78,11 +78,16 @@ pub struct LevelRoot {
 }
 
 /// A placed object of the object database, on its model root: the record
-/// id and the condition byte of its placement word (bits 16..23), which a
-/// power crystal's charge is.
+/// id, the placed object's database id with its tier tag (the scene node's
+/// id word the original looks up and rewrites after a promotion) and the
+/// condition byte of its placement word (bits 16..23), which a power
+/// crystal's charge is.
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PlacedItem {
+    /// The record id, untagged.
     pub id: u32,
+    /// The placed object's id as the level names it, tag included.
+    pub tagged_id: u32,
     pub condition: u8,
 }
 
@@ -91,9 +96,46 @@ impl PlacedItem {
     pub fn of(item: &Item, object: &exa_formats::rfc::PlacedObject) -> Self {
         Self {
             id: item.id,
+            tagged_id: object.id,
             condition: ((object.flags >> 16) & 0xFF) as u8,
         }
     }
+}
+
+/// The scene entity whose placed object carries the database id `id`, as
+/// the original's lookup walks the scene's roots and their child nodes and
+/// compares each node's id word. Exarust keeps a placed object's id on its
+/// model root, so the walk covers those roots in spawn order; a model
+/// node's own id is not a database record here.
+pub fn object_entity<'a>(
+    placed: impl IntoIterator<Item = (Entity, &'a PlacedItem)>,
+    id: u32,
+) -> Option<Entity> {
+    placed
+        .into_iter()
+        .find(|(_, placed)| placed.tagged_id == id)
+        .map(|(entity, _)| entity)
+}
+
+/// Rewrites the placed ids of the scene through the database's promotion
+/// table, as the original does after a save promotes local objects to the
+/// world tier: an id tagged exactly local that the table holds becomes its
+/// world id, every other id stays. Returns how many ids changed. The
+/// caller's query supplies the roots (the original walks their child nodes
+/// too; they are not separate records here).
+pub fn remap_placed_ids<'a>(
+    placed: impl IntoIterator<Item = &'a mut PlacedItem>,
+    db: &exa_formats::objdb::ObjectDb,
+) -> usize {
+    let mut changed = 0;
+    for placed in placed {
+        let new = db.remap_entity_id(placed.tagged_id);
+        if new != placed.tagged_id {
+            placed.tagged_id = new;
+            changed += 1;
+        }
+    }
+    changed
 }
 
 /// A teleporter or reconstruction device placed in a level: its operative
@@ -2120,5 +2162,76 @@ mod tests {
         let z = app.world().get::<Transform>(box001).unwrap().translation.z;
         assert!((z - -0.028125).abs() < 1e-6, "{z}");
         assert_eq!(app.world().get::<Transform>(root), Some(&placement));
+    }
+
+    #[test]
+    fn scene_ids_are_looked_up_and_remapped() {
+        use exa_formats::objdb::{LOCAL, ObjectDb, Store, WORLD};
+        const NAME: u32 = 0x1000_0000;
+        let mut body = vec![0u8; 0x18];
+        body[..3].copy_from_slice(b"Box");
+        let mut payload = NAME.to_le_bytes().to_vec();
+        payload.extend((0x18u32 + 8).to_le_bytes());
+        payload.extend(body);
+        let mut db = ObjectDb::default();
+        db.local = Store::from_records([(1u32, NAME, &payload[..])]);
+        db.set_remaps(true);
+        assert_eq!(db.promote(LOCAL | 1), WORLD | 1);
+
+        let mut world = World::new();
+        let local = world.spawn_empty().id();
+        let other = world.spawn_empty().id();
+        let placed = [
+            (
+                local,
+                PlacedItem {
+                    id: 1,
+                    tagged_id: LOCAL | 1,
+                    condition: 0,
+                },
+            ),
+            (
+                other,
+                PlacedItem {
+                    id: 2,
+                    tagged_id: 2,
+                    condition: 0,
+                },
+            ),
+        ];
+        let lookup = |id| object_entity(placed.iter().map(|(e, p)| (*e, p)), id);
+        assert_eq!(lookup(LOCAL | 1), Some(local));
+        assert_eq!(lookup(LOCAL | 2), None);
+        // The node id is compared whole: an untagged id does not find the
+        // local node.
+        assert_eq!(lookup(1), None);
+
+        let mut items = [
+            PlacedItem {
+                id: 1,
+                tagged_id: LOCAL | 1,
+                condition: 0,
+            },
+            PlacedItem {
+                id: 2,
+                tagged_id: 2,
+                condition: 0,
+            },
+            PlacedItem {
+                id: 3,
+                tagged_id: WORLD | 1,
+                condition: 0,
+            },
+            PlacedItem {
+                id: 4,
+                tagged_id: LOCAL | WORLD | 1,
+                condition: 0,
+            },
+        ];
+        assert_eq!(remap_placed_ids(items.iter_mut(), &db), 1);
+        assert_eq!(items[0].tagged_id, WORLD | 1);
+        assert_eq!(items[1].tagged_id, 2);
+        assert_eq!(items[2].tagged_id, WORLD | 1);
+        assert_eq!(items[3].tagged_id, LOCAL | WORLD | 1);
     }
 }
