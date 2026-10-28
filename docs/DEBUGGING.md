@@ -101,7 +101,7 @@ shift+S: cshd; msm
 | `--powers id,id,...` | in play mode, the powers the player knows (ids in hex or decimal, e.g. `0x20206,0x401`), filling the bar's slots in that order: C opens the bar, a digit picks and Q casts through the real front ends ([THAUMATURGY.md](THAUMATURGY.md), In the game) |
 | `EXA_SCENE_SEED=<n>` (environment) | fixes the clock seed a level load draws the outdoor day and weather from, so two runs of an outdoor level (`arenao1`, `exanima01`) show the same light, e.g. to compare `EXA_TERRAIN_SETS=1` with the default terrain draw |
 | `EXA_TERRAIN_SETS=1` (environment) | the terrain's composite sets are hosted, baked one block a frame and drawn from ([RENDERING.md](RENDERING.md), Terrain) |
-| `EXA_CLOTH_CONTACTS=1` (environment) | the level's cloths gather body and level contacts each tick (the sector's object stages). Off by default: on exanima01 the 14 cloths kept being pushed by the walls they hang against, never slept, and the sweeps cost about 55 ms a tick |
+| `EXA_CLOTH_CONTACTS=0` (environment) | the level's cloths stop gathering body and level contacts (the sector's object stages), which are on by default. Use it to tell a cloth-contact cost or artefact from the rest: a cloth at rest should fall asleep within 32 ticks, and a sleeping cloth only looks at awake bodies |
 | `--physique x,y[,h,a,f,w]` | the character view's body (or the player's) and its apparel morphed by this physique: the two physique values, then height, age and feral level (0 when left out) and female when w is not 0 ([Physique](#physique)) |
 
 ## Movement

@@ -49,6 +49,9 @@ pub struct ClothInstance {
     pub cloth: Cloth,
     /// The mesh whose vertices the cloth drives.
     pub mesh: Handle<Mesh>,
+    /// The node's world transform at the cloth's last tick: a sleeping
+    /// cloth whose frame moved meets the level again.
+    pub frame: Option<Affine3A>,
 }
 
 /// The sector's live simulated-object list: every cloth of the level in the
@@ -87,17 +90,17 @@ impl ClothObjects {
 }
 
 /// Whether the level's cloths gather body and level contacts each tick.
-/// Off by default: on a level with many cloths (exanima01 holds 14) every
-/// cloth kept being pushed by the walls it hangs against, never slept, and
-/// the contact sweeps cost about 55 ms a tick. `EXA_CLOTH_CONTACTS=1`
-/// turns them on until their cost and the cloth's sleep under contact are
-/// matched to the original.
+/// On by default; `EXA_CLOTH_CONTACTS=0` turns them off. Their cost is the
+/// original's: a cloth never meets its own node's mesh, the level never
+/// wakes it and its slide stops it, so a cloth at rest sleeps within its
+/// 32-tick countdown, and a sleeping cloth takes only awake bodies whose
+/// padded spheres reach its box ([`sector::object_takes_body`]).
 #[derive(Resource, Debug, Clone, Copy)]
 pub struct ClothContacts(pub bool);
 
 impl Default for ClothContacts {
     fn default() -> Self {
-        Self(std::env::var_os("EXA_CLOTH_CONTACTS").is_some_and(|v| v != "0"))
+        Self(std::env::var_os("EXA_CLOTH_CONTACTS").is_none_or(|v| v != "0"))
     }
 }
 
@@ -194,9 +197,14 @@ fn build_cloth_nodes(
         let cloth = cloth_of(&vertices, &triangles, &pins);
         let copy = mesh_data.clone();
         let own = meshes.add(copy);
-        commands
-            .entity(entity)
-            .insert((Mesh3d(own.clone()), ClothInstance { cloth, mesh: own }));
+        commands.entity(entity).insert((
+            Mesh3d(own.clone()),
+            ClothInstance {
+                cloth,
+                mesh: own,
+                frame: None,
+            },
+        ));
     }
 }
 
@@ -205,6 +213,7 @@ fn step_cloths(
     mut instances: Query<(Entity, &mut ClothInstance, &GlobalTransform)>,
     bodies: Query<&Ragdoll>,
     parents: Query<&ChildOf>,
+    scene_nodes: Query<(), With<exa_physics::StaticNode>>,
     physics: Option<Res<Physics>>,
     statics: Option<Res<exa_physics::StaticColliders>>,
     mut objects: ResMut<ClothObjects>,
@@ -227,29 +236,35 @@ fn step_cloths(
         );
     }
     let order = objects.order.clone();
-    // Every part of every body (asleep too) that can meet an object, built
-    // once a tick for all the cloths.
+    // Every part of every body (asleep too) that can meet an object, with
+    // its body's sleep, built once a tick for all the cloths.
     let mut all_parts = Vec::new();
-    for body in &bodies {
-        for part in &body.parts {
-            if part.pairing.out || part.spheres.is_empty() {
-                continue;
+    if live_contacts.0 {
+        for body in &bodies {
+            let asleep = body.asleep();
+            for part in &body.parts {
+                if part.pairing.out || part.spheres.is_empty() {
+                    continue;
+                }
+                let (centre, radius) = part.sphere_bound();
+                all_parts.push((
+                    part.entity,
+                    asleep,
+                    ObjectBodyPart {
+                        now: part.transform(),
+                        previous: part.settled_transform(),
+                        spheres: &part.spheres,
+                        centre,
+                        radius,
+                        mesh: &part.pairing.mesh,
+                        friction: part.friction,
+                    },
+                ));
             }
-            let (centre, radius) = part.sphere_bound();
-            all_parts.push((
-                part.entity,
-                ObjectBodyPart {
-                    now: part.transform(),
-                    previous: part.settled_transform(),
-                    spheres: &part.spheres,
-                    centre,
-                    radius,
-                    mesh: &part.pairing.mesh,
-                    friction: part.friction,
-                },
-            ));
         }
     }
+    let mut near = Vec::new();
+    let mut triangles = Vec::new();
     for (id, &entity) in order.iter().enumerate() {
         let Ok((_, mut instance, at)) = instances.get_mut(entity) else {
             continue;
@@ -260,56 +275,78 @@ fn step_cloths(
         } else {
             objects.grid.migrate(id, object.centre);
         }
-        // A sleeping cloth does not step, so its contacts would never be
-        // read: it keeps the last ones and skips the gathering.
-        if instance.cloth.sleep <= 0 {
-            continue;
-        }
-        // A cloth's own character does not push it [guess: the sector's
-        // body stage makes no such test; the cloth's own body-contact call,
-        // not in this pack, is taken to skip the parts above its node].
+        let asleep = instance.cloth.sleep <= 0;
+        let frame = at.affine();
+        let moved = instance.frame != Some(frame);
+        instance.frame = Some(frame);
+        // The cloth's own character, and the scene node whose static mesh
+        // the cloth is drawn from: neither pushes it. The original's static
+        // stage skips the mesh of the cloth's own node; the body skip is a
+        // guess [the cloth's body-contact call is taken to skip the parts
+        // above its node].
         let mut own = Vec::new();
+        let mut own_node = scene_nodes.contains(entity).then_some(entity);
         let mut above = entity;
         while let Ok(parent) = parents.get(above) {
             above = parent.parent();
             own.push(above);
+            if own_node.is_none() && scene_nodes.contains(above) {
+                own_node = Some(above);
+            }
             if own.len() > 64 {
                 break;
             }
         }
-        // Objects against bodies: the parts passing the sector's pre-test
-        // ([`sector::object_body_meet`]), less the cloth's own character.
-        let parts = all_parts
-            .iter()
-            .filter(|(owner, _)| !own.contains(owner))
-            .map(|&(_, part)| part);
         let mut contacts = ObjectContacts::default();
         if let (true, Some(physics), Some(statics)) = (live_contacts.0, &physics, &statics) {
-            contacts.gather_bodies(&to_object, object, parts);
+            // Objects against bodies: the parts passing the sector's
+            // pre-test ([`sector::object_body_meet`]), less the cloth's own
+            // character; a sleeping cloth takes awake bodies only.
+            let object_box = cloth::bounds(&instance.cloth.particles);
+            let parts = all_parts
+                .iter()
+                .filter(|(owner, body_asleep, _)| {
+                    sector::object_takes_body(asleep, *body_asleep) && !own.contains(owner)
+                })
+                .map(|&(_, _, part)| part);
+            contacts.gather_bodies(&to_object, object, object_box, parts);
+            // A sleeping cloth that no body reaches, in a frame that did
+            // not move, is the level stage's fixed point: nothing to do.
+            if asleep && !moved && contacts.spheres.is_empty() && contacts.swept.is_empty() {
+                continue;
+            }
             // Objects against the level: the static grid's records around
-            // the object's cell that pass its pre-test, their triangles
-            // within the object's bound box.
+            // the object's cell that pass its pre-test, less the cloth's own
+            // node's meshes, each one's triangles within the object's bound
+            // box as one piece.
             let centre_m = object.centre * 0.01;
             let radius_m = object.radius * 0.01;
             let (lo, hi) = (
                 centre_m - Vec3::splat(radius_m),
                 centre_m + Vec3::splat(radius_m),
             );
-            let mut near = Vec::new();
+            let own_index = own_node.map(|n| n.index().index());
+            near.clear();
             statics.near_object(object.centre, object.radius, &mut near);
-            let mut triangles = Vec::new();
-            for id in near {
-                let Some(record) = statics.grid().get(id) else {
+            for &record_id in &near {
+                let Some(record) = statics.grid().get(record_id) else {
                     continue;
                 };
+                if own_index.is_some_and(|n| n != 0 && n == record.node) {
+                    continue;
+                }
                 triangles.clear();
                 physics.0.triangles(record.piece, lo, hi, &mut triangles);
                 contacts.gather_level(&to_object, triangles.iter().copied());
             }
+        } else if asleep {
+            // A sleeping cloth with no contacts does not step.
+            continue;
         }
         instance.cloth.spheres = std::mem::take(&mut contacts.spheres);
         instance.cloth.swept = std::mem::take(&mut contacts.swept);
         instance.cloth.level = std::mem::take(&mut contacts.level);
+        instance.cloth.level_pieces = std::mem::take(&mut contacts.pieces);
         cloth::step(&mut instance.cloth, gravity);
         // The object list's re-bucket after its step, as the original's.
         let (after, _) = cloth_bound(&instance.cloth, at);
@@ -401,6 +438,47 @@ mod tests {
     /// the cloth's cell.
     #[test]
     fn a_free_cloth_lands_on_the_static_grids_level() {
+        let (mut app, entity) = falling_cloth(false);
+        let instance = app.world().entity(entity).get::<ClothInstance>().unwrap();
+        assert!(!instance.cloth.level.is_empty());
+        let low = lowest_m(&app, entity);
+        assert!(low > 0.5, "the cloth fell through the level: {low} m");
+        let objects = app.world().resource::<ClothObjects>();
+        assert_eq!(objects.order, [entity]);
+        assert_eq!(objects.grid.objects().len(), 1);
+        // Landed and still, it falls asleep: the level never wakes it.
+        for _ in 0..200 {
+            app.world_mut().run_schedule(FixedUpdate);
+        }
+        let instance = app.world().entity(entity).get::<ClothInstance>().unwrap();
+        assert_eq!(instance.cloth.sleep, 0, "the landed cloth never slept");
+    }
+
+    /// The level mesh of the cloth's own scene node does not push it, as
+    /// the original's static stage skips the cloth's own node.
+    #[test]
+    fn a_cloth_passes_through_its_own_nodes_mesh() {
+        let (app, entity) = falling_cloth(true);
+        let low = lowest_m(&app, entity);
+        assert!(low < 0.5, "the cloth's own mesh held it: {low} m");
+    }
+
+    /// The lowest vertex of a cloth, in metres.
+    fn lowest_m(app: &App, entity: Entity) -> f32 {
+        let instance = app.world().entity(entity).get::<ClothInstance>().unwrap();
+        instance
+            .cloth
+            .vertices()
+            .iter()
+            .map(|p| p.y)
+            .fold(f32::MAX, f32::min)
+            * 0.01
+    }
+
+    /// A 1 m cloth dropped from 1-2 m onto a floor quad at y = 0.5 m, in
+    /// the world and in the sector's grid, after 150 ticks. With `own`, the
+    /// floor belongs to the scene node the cloth hangs under.
+    fn falling_cloth(own: bool) -> (App, Entity) {
         use exa_physics::Physics;
         use exa_physics::StaticColliders;
         use rapier3d::prelude::ColliderBuilder;
@@ -411,7 +489,10 @@ mod tests {
             .insert_resource(Physics::default())
             .insert_resource(StaticColliders::default())
             .insert_resource(ClothContacts(true));
-        // A floor quad at y = 0.5 m, in the world and in the sector's grid.
+        let node = app
+            .world_mut()
+            .spawn((exa_physics::StaticNode, GlobalTransform::default()))
+            .id();
         let vertices = vec![
             Vec3::new(-2.0, 0.5, -2.0),
             Vec3::new(2.0, 0.5, -2.0),
@@ -425,13 +506,14 @@ mod tests {
             .resource_mut::<Physics>()
             .0
             .insert_collider(collider, None);
+        let floor_node = if own { node.index().index() } else { 0 };
         app.world_mut()
             .resource_mut::<StaticColliders>()
             .insert_aabb(
                 handle.into_raw_parts().0,
                 Vec3::new(-2.0, 0.5, -2.0),
                 Vec3::new(2.0, 0.5, 2.0),
-                0,
+                floor_node,
                 exa_physics::sector::MASK_SMALL,
             );
         let mesh = app
@@ -450,23 +532,19 @@ mod tests {
         let cloth = cloth_of(&corners, &[[0, 1, 2], [0, 2, 3]], &[]);
         let entity = app
             .world_mut()
-            .spawn((ClothInstance { cloth, mesh }, GlobalTransform::default()))
+            .spawn((
+                ClothInstance {
+                    cloth,
+                    mesh,
+                    frame: None,
+                },
+                GlobalTransform::default(),
+                ChildOf(node),
+            ))
             .id();
         for _ in 0..150 {
             app.world_mut().run_schedule(FixedUpdate);
         }
-        let instance = app.world().entity(entity).get::<ClothInstance>().unwrap();
-        assert!(!instance.cloth.level.is_empty());
-        let low = instance
-            .cloth
-            .vertices()
-            .iter()
-            .map(|p| p.y)
-            .fold(f32::MAX, f32::min)
-            * 0.01;
-        assert!(low > 0.5, "the cloth fell through the level: {low} m");
-        let objects = app.world().resource::<ClothObjects>();
-        assert_eq!(objects.order, [entity]);
-        assert_eq!(objects.grid.objects().len(), 1);
+        (app, entity)
     }
 }
