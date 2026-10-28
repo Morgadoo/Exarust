@@ -155,7 +155,8 @@ pub fn apply_pending_hands(
     }
 }
 
-/// Applies the hand plans of swapped weapon sets.
+/// Applies the hand plans of swapped weapon sets, and runs the bodies' worn
+/// item effects once a fixed tick.
 pub struct EquipPlugin;
 
 impl Plugin for EquipPlugin {
@@ -166,7 +167,13 @@ impl Plugin for EquipPlugin {
                 .after(exa_items::catalogue::swap_weapon_sets)
                 .before(refresh_encumbrance),
         )
-        .add_systems(Update, refresh_encumbrance);
+        .add_systems(Update, refresh_encumbrance)
+        .add_systems(
+            FixedUpdate,
+            crate::item_effects::run_worn_effects
+                .after(exa_combat::regen::HealthTick)
+                .before(exa_physics::body::CharacterTicks),
+        );
     }
 }
 

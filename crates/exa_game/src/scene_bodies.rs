@@ -526,10 +526,20 @@ pub fn spawn_scene_body(
         }
     }
     let mut fighter = exa_combat::Fighter::of_stats(race, stats).with_perks(record.perks());
-    // A worn item of special kind 2 grants the second wind (the armour
-    // pass's flag), for the arena's generated fighters as for the level's.
-    fighter.second_wind.granted =
-        exa_formats::encumbrance::second_wind_of_record(&record, |id| item_of(context.items, id));
+    // The armour pass's special kinds, for the arena's generated fighters
+    // as for the level's: kind 2 grants the second wind, 3/4/6 register
+    // their item effects, 5 wards the mind, 7 quickens the focus.
+    let specials =
+        exa_formats::encumbrance::WornSpecials::of_record(&record, |id| item_of(context.items, id));
+    fighter.second_wind.granted = specials.second_wind;
+    if let Some(effects) = crate::item_effects::WornEffects::of_specials(&specials, stats.rules.0) {
+        commands.entity(model_entity).insert(effects);
+    }
+    if specials.mind_ward {
+        commands
+            .entity(model_entity)
+            .insert(exa_ai::brain::MindWarded);
+    }
     fighter.health.yellow = fighter.health.max * plan.health;
     fighter.health.red = fighter.health.yellow;
     let worn = look
@@ -630,7 +640,7 @@ pub fn spawn_scene_body(
                 exa_ai::Mind::new(0.0),
                 exa_ai::Duellist::new(context.player),
             ));
-            insert_powers(commands, model_entity, &record);
+            insert_powers(commands, model_entity, &record, &specials);
         }
     }
     commands.entity(model_entity).insert(SceneFighter {
@@ -653,10 +663,12 @@ fn insert_powers(
     commands: &mut Commands,
     fighter: Entity,
     record: &exa_formats::characters::CharacterRecord,
+    specials: &exa_formats::encumbrance::WornSpecials,
 ) {
-    let Some(caster) = crate::thaum::cast::PowerCaster::of_character(record) else {
+    let Some(mut caster) = crate::thaum::cast::PowerCaster::of_character(record) else {
         return;
     };
+    caster.apply_worn(specials);
     if caster.known.is_empty() {
         return;
     }

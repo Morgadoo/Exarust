@@ -246,8 +246,9 @@ pub struct PlacedCharacter {
     /// What it wears and the shield it holds weigh, as the spawn's armour
     /// pass sums them.
     pub encumbrance: f32,
-    /// A worn item of special kind 2 grants it a second wind.
-    pub second_wind: bool,
+    /// What its worn items' special kinds do, as the spawn's armour pass
+    /// dispatches them (kind 2 grants it a second wind).
+    pub specials: exa_formats::encumbrance::WornSpecials,
     /// The pose the level saved with it, if any.
     pub pose: exa_formats::characters::SavedPose,
     /// Spawn the dead from their built pose and let them collapse. Only the
@@ -378,7 +379,7 @@ pub fn placed_characters(
                 hands: look.hands,
                 record: record.clone(),
                 encumbrance: exa_formats::encumbrance::of_record(record, find),
-                second_wind: exa_formats::encumbrance::second_wind_of_record(record, find),
+                specials: exa_formats::encumbrance::WornSpecials::of_record(record, find),
                 pose: p.pose.clone(),
                 fall: false,
             })
