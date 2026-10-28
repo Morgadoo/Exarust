@@ -280,8 +280,10 @@ it had when the muscles went, the 0.05 height ease and key-flag plants
 (`limp_plant`). It is not scheduled: the original samples only a body
 whose muscles are off and which is not dead, and a dead body's tick
 samples nothing.
-The placement's leg snap (`Ragdoll::snap_placement`) is called by the
-spawn after it samples the first clip (`exa_game::limp::spawn_pose`):
+The placement's leg snap (`Ragdoll::snap_placement`) is a tested rule,
+not called by the spawn (run after the first clip sample with the
+controller moved to its ground, it left the player squatting for about a
+second):
 each probe is the clip ankle plus 5·scale cm
 along the shin, a 10 cm sphere from the frame's height plus the leg's
 length is dropped 300 cm for the ground, the hits average to the
@@ -291,8 +293,7 @@ clip leaves, sole), each anchor
 is the clip ankle at its ground plus the sole, and the standing IK writes
 its corrections at once (`Ragdoll::snap_legs`). `Ragdoll::placement_feet`
 maps that frame height back to the character ground Exarust's model root
-stands at; the spawn moves the controller's node there and samples the
-snapped frame again.
+stands at.
 The plain body's own collision sound and its scrape sources are in
 `body::sound` (`src/body_sound.rs`): an impact over 0.5 sounds after the
 cooldown or when it is strictly louder than twice the last one, at volume

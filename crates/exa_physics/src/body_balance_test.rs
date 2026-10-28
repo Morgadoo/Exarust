@@ -1027,23 +1027,6 @@ fn the_placement_snaps_the_legs_onto_the_ground_it_finds() {
     assert_eq!(empty.snap_placement(NONE, Affine3A::IDENTITY), None);
 }
 
-/// A placed character's targets are the pose it was placed in, so the
-/// placement snap's standing IK runs even before the first sample: a stored
-/// knee correction is replaced by the snap's.
-#[test]
-fn placing_a_body_gives_the_snap_its_targets() {
-    let platform = square(Vec2::ZERO, 0.15, 10.0);
-    let mut body = biped();
-    let pose: Vec<Affine3A> = body.parts.iter().map(|p| p.transform()).collect();
-    body.place_at(&pose);
-    body.legs[0].knee = 0.5;
-    body.legs[0].knee_rate = 0.2;
-    body.snap_placement(&platform[..], Affine3A::IDENTITY)
-        .unwrap();
-    assert_ne!(body.legs[0].knee, 0.5);
-    assert_eq!(body.legs[0].knee_rate, 0.0);
-}
-
 /// The snap's character ground is where the placement puts the feet: a 15 cm
 /// platform puts them at 15 cm, not at the pelvis's frame height.
 #[test]
