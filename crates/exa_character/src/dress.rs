@@ -19,6 +19,7 @@
 //! model whose nodes do not number slots (the demons) or a character
 //! without its body model keeps the per-node draw.
 
+use bevy::prelude::Transform;
 use exa_assets::Model;
 use exa_formats::morph::Frame;
 
@@ -340,13 +341,28 @@ fn node_of(node: &exa_assets::ModelNode, world: Frame) -> Node {
     Node {
         name: node.name.clone(),
         parent: node.parent,
-        local: crate::pose::rows_of(&node.transform),
+        local: file_frame(&node.transform),
         world,
         chunk_kind: if node.mesh { crate::runtime::MESH } else { 0 },
         render_flags: node.render_flags,
         layer: crate::layers::layer_of(&node.name),
         ..Node::default()
     }
+}
+
+/// A node transform as the file's row-vector frame (the inverse of
+/// [`exa_assets::transform_from_rows`]): its first row is where the x axis
+/// goes, its last the translation, as [`exa_formats::morph::compose`] and
+/// the merge's placement take them. (`pose::rows_of` stores the rotation's
+/// matrix rows instead, the transpose, for the pose module's own maps.)
+pub fn file_frame(t: &Transform) -> Frame {
+    let m = t.compute_affine();
+    [
+        m.matrix3.x_axis.to_array(),
+        m.matrix3.y_axis.to_array(),
+        m.matrix3.z_axis.to_array(),
+        m.translation.to_array(),
+    ]
 }
 
 /// The frame of every node of a model in its first root's space: each
@@ -368,10 +384,7 @@ pub fn model_frames(model: &Model) -> Vec<Frame> {
         }
         let mut frame = exa_assets::merge::IDENTITY;
         for &at in chain.iter().rev() {
-            frame = exa_formats::morph::compose(
-                &frame,
-                &crate::pose::rows_of(&model.nodes[at].transform),
-            );
+            frame = exa_formats::morph::compose(&frame, &file_frame(&model.nodes[at].transform));
         }
         out.push(frame);
     }
@@ -867,5 +880,28 @@ mod tests {
                 .as_ref()
                 .is_some_and(|s| s.len() == merged.merged.mesh.positions.len())
         );
+    }
+
+    /// A transform turned into the file's frame and back is the same
+    /// transform, and composing frames places a child as Bevy's hierarchy
+    /// does: a child one metre along x under a parent turned a quarter
+    /// about z sits one metre along y.
+    #[test]
+    fn file_frames_compose_as_the_hierarchy() {
+        use bevy::math::{Quat, Vec3};
+        let parent = Transform::from_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2))
+            .with_translation(Vec3::new(0.0, 1.0, 0.0));
+        let child = Transform::from_xyz(1.0, 0.0, 0.0).with_rotation(Quat::from_rotation_x(0.3));
+        let back = exa_assets::transform_from_rows(&file_frame(&parent));
+        assert!(back.rotation.angle_between(parent.rotation) < 1e-5);
+        assert!(back.translation.distance(parent.translation) < 1e-6);
+        let world = exa_formats::morph::compose(&file_frame(&parent), &file_frame(&child));
+        let expected = parent * child;
+        assert!(Vec3::from(world[3]).distance(Vec3::new(0.0, 2.0, 0.0)) < 1e-6);
+        assert!(Vec3::from(world[3]).distance(expected.translation) < 1e-6);
+        let x = Vec3::from(world[0]);
+        assert!(x.distance(expected.rotation * Vec3::X) < 1e-6);
+        let y = Vec3::from(world[1]);
+        assert!(y.distance(expected.rotation * Vec3::Y) < 1e-6);
     }
 }
