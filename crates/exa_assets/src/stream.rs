@@ -12,12 +12,13 @@
 //! instead of waiting for room, so no request is ever dropped; the original
 //! blocks its producer until the consumer catches up.
 //!
-//! The loader thread never waits for the main thread: it decodes requests
-//! from its ring back to back and, once the ring is empty, sleeps until it
-//! is woken. When it finishes a decode while earlier uploads are still
-//! waiting, it wakes the main thread before queueing its own upload (unless
-//! the request was promoted), so the frame drains them; a paused loader only
-//! stops the wake-ups, not the decoding.
+//! The loader thread decodes its ring one request at a time. When it has
+//! decoded a request while earlier uploads are still waiting for the main
+//! thread, and the request was not promoted, it suspends itself holding the
+//! decoded image until the main thread's upload pass wakes it; then it
+//! queues that upload and goes on. With an empty ring it marks itself idle
+//! and sleeps until a request wakes it. A paused loader is not woken by new
+//! requests.
 
 use std::collections::{HashMap, HashSet};
 
@@ -316,9 +317,10 @@ pub enum RequestOutcome {
 ///
 /// The loader clears the first four bits of the record it just finished when
 /// it starts looking for its next request, so a priority load of a texture
-/// that is already decoded finds nothing to promote ("Priority item not
-/// found."); a release of a record the loader holds waits for that pass to
-/// end.
+/// that is already decoded and queued for upload finds nothing to promote
+/// ("Priority item not found."); only the record the loader still holds,
+/// decoding it or waiting with it for the upload pass, is found. A release
+/// of a record the loader holds waits for that pass to end.
 #[derive(Default)]
 pub struct TextureStream {
     requests: Option<RingQueue<TextureRequest>>,
@@ -335,16 +337,17 @@ pub struct TextureStream {
     /// Whether the request decoded last was promoted.
     last_promoted: bool,
     paused: bool,
-    /// The loader was woken by a queued request (the original's wake to the
-    /// loader thread).
+    /// The loader was woken (the original's wake to the loader thread): by a
+    /// queued request or by an upload pass that let it go on.
     loader_wake: bool,
-    /// The loader finished a decode or found its ring empty and wants the
-    /// main thread to run an upload pass (the original's wake to the main
-    /// thread).
-    main_wake: bool,
+    /// The decoded request the loader holds while it waits for the main
+    /// thread's upload pass: it finished it while earlier uploads were
+    /// waiting and it was not promoted. Exarust has already queued its
+    /// upload (behind the earlier ones, so the order is the same); the
+    /// loader starts no other decode until a pass releases it.
+    holding: Option<TextureKey>,
     /// The loader's idle flag: its ring was empty when it last looked. The
-    /// original sets it before it sleeps and clears it when it takes a
-    /// request.
+    /// original sets it before it sleeps, and a queued request clears it.
     loader_idle: bool,
     completion: Option<UploadCallback>,
     settings: TextureSettings,
@@ -375,19 +378,21 @@ impl TextureStream {
         self.next_id += 1;
         queue.push(request);
         self.in_flight += 1;
+        // The push clears the loader's idle flag before it wakes it.
+        self.loader_idle = false;
         self.wake();
         RequestOutcome::Queued
     }
 
     /// Moves a queued request to the front and marks it promoted: the
     /// original's "priority item". A request the loader holds right now
-    /// (status bit 4) counts as found and stays where it is, as does one
-    /// decoded and waiting for its upload: the loader clears the record's
-    /// bits only when it starts its next request, so the priority wait can
-    /// still see it and drain its upload. One already uploaded is not found
-    /// (the caller reports "Priority item not found.").
+    /// (status bit 4) counts as found and stays where it is: one it is
+    /// decoding, or the decoded one it waits with for the upload pass. One
+    /// already handed to the upload list is not (the loader cleared its
+    /// bits when it went on), nor one already uploaded; the caller reports
+    /// "Priority item not found.".
     pub fn promote(&mut self, key: &TextureKey) -> bool {
-        if self.in_hand.contains_key(key) || self.uploads.iter().any(|item| &item.key == key) {
+        if self.in_hand.contains_key(key) || self.holding.as_ref() == Some(key) {
             return true;
         }
         let Some(queue) = self.requests.as_mut() else {
@@ -457,10 +462,9 @@ impl TextureStream {
                 Some(request)
             }
             None => {
-                // The loader found its ring empty: it tells the main thread
-                // and sleeps until a request wakes it.
+                // The loader found its ring empty: it marks itself idle and
+                // sleeps until a request wakes it.
                 self.loader_idle = true;
-                self.main_wake = true;
                 None
             }
         }
@@ -480,18 +484,10 @@ impl TextureStream {
         if self.in_hand.get(&request.key) == Some(&request.id) {
             self.in_hand.remove(&request.key);
         }
-        if self.requests.as_ref().is_none_or(RingQueue::is_empty) {
-            // The next pass finds the ring empty: idle, and a wake to the
-            // frame.
-            self.loader_idle = true;
-            self.main_wake = true;
-        }
-        // The loader wakes the main thread when uploads are waiting and the
-        // request it just decoded was not promoted; the frame drains them
-        // while the loader goes on with its ring.
-        if !self.uploads.is_empty() && !self.last_promoted {
-            self.main_wake = true;
-        }
+        // The loader waits for the main thread when earlier uploads are
+        // still queued and this request was not promoted; it holds the
+        // record (its in-hand bit stays set) until the upload pass wakes it.
+        let waits = !self.uploads.is_empty() && !self.last_promoted;
         if self.cancelled.remove(&request.id) {
             self.in_flight = self.in_flight.saturating_sub(1);
             return false;
@@ -502,6 +498,12 @@ impl TextureStream {
                 false,
             )
         });
+        if waits {
+            self.holding = Some(request.key);
+        } else if self.requests.as_ref().is_none_or(RingQueue::is_empty) {
+            // Its next look finds the ring empty.
+            self.loader_idle = true;
+        }
         self.uploads.push(TextureUpload {
             key: request.key,
             image,
@@ -526,21 +528,21 @@ impl TextureStream {
         true
     }
 
-    /// Whether the loader should wake the main thread before queueing its
-    /// upload: it finished a decode while earlier uploads wait and the
-    /// request was not promoted. The wake does not hold the decode back;
-    /// the original's loader thread goes straight on with its ring.
-    pub fn wakes_main_before_upload(&self) -> bool {
-        !self.uploads.is_empty() && !self.last_promoted
+    /// Whether the loader is waiting for the main thread: it decoded a
+    /// request while earlier uploads were queued, the request was not
+    /// promoted, and no upload pass has run since. Pausing does not change
+    /// it.
+    pub fn wants_to_yield(&self) -> bool {
+        self.holding.is_some()
     }
 
-    /// Whether the loader may start another decode now: whenever a request
-    /// is queued. Pausing only stops the wake-ups; it does not stop the
-    /// loader's thread.
+    /// Whether the loader may start another decode now: a request is queued
+    /// and it is not waiting for an upload pass.
     pub fn can_decode(&self) -> bool {
         self.requests
             .as_ref()
             .is_some_and(|queue| !queue.is_empty())
+            && !self.wants_to_yield()
     }
 
     /// Whether the loader's ring was empty when it last looked (the
@@ -556,6 +558,11 @@ impl TextureStream {
     pub fn pump_uploads(&mut self, budget: usize, mut upload: impl FnMut(TextureUpload)) -> usize {
         let ready = self.uploads.len().min(budget);
         if ready == 0 {
+            // An empty pass still wakes a loader that is not idle.
+            if self.uploads.is_empty() && !self.loader_idle {
+                self.holding = None;
+                self.wake();
+            }
             return 0;
         }
         let rest = self.uploads.split_off(ready);
@@ -571,8 +578,11 @@ impl TextureStream {
             done += 1;
         }
         // The original wakes the loader after the pass unless it is asleep
-        // with an empty ring; a new request wakes it too.
-        if done > 0 && !self.loader_idle {
+        // with an empty ring; a loader waiting with a decoded record goes
+        // on (its upload is already queued here). A new request wakes it
+        // too.
+        if !self.loader_idle {
+            self.holding = None;
             self.wake();
         }
         done
@@ -592,20 +602,13 @@ impl TextureStream {
         }
     }
 
-    /// Whether the main thread was asked to run an upload pass since the
-    /// last call: the loader found its ring empty, or finished a decode
-    /// while uploads waited.
-    pub fn take_main_wake(&mut self) -> bool {
-        std::mem::take(&mut self.main_wake)
-    }
-
     pub fn is_paused(&self) -> bool {
         self.paused
     }
 
-    /// Whether a queued request asked for the loader to wake up since the
-    /// last call (the original's wake to the loader thread; a paused loader
-    /// is not woken).
+    /// Whether the loader was woken since the last call, by a queued request
+    /// or an upload pass (the original's wake to the loader thread; a
+    /// paused loader is not woken).
     pub fn take_wake(&mut self) -> bool {
         std::mem::take(&mut self.loader_wake)
     }
@@ -699,7 +702,7 @@ impl TextureStream {
         self.in_hand.clear();
         self.in_flight = 0;
         self.last_promoted = false;
-        self.main_wake = false;
+        self.holding = None;
         self.loader_idle = false;
     }
 
@@ -949,25 +952,33 @@ mod tests {
         assert!(!stream.load_now(&key("zz"), |_| None, |_| {}));
     }
 
-    /// A priority load of a texture already decoded but not yet uploaded
-    /// finds it and drains its upload, as the original's wait does.
+    /// A priority load finds the decoded texture the loader holds while it
+    /// waits for the upload pass and drains it; one already handed to the
+    /// upload list is not found, and no upload pass runs for it.
     #[test]
-    fn a_priority_load_drains_a_decoded_texture() {
+    fn a_priority_load_drains_only_the_held_texture() {
         let mut stream = TextureStream::new();
-        stream.request(request("a"));
-        let taken = stream.take_next().unwrap();
-        assert!(stream.finish_decode(taken, Some((Image::default(), false))));
+        for name in ["a", "b"] {
+            stream.request(request(name));
+        }
+        let decode = |_: &TextureRequest| Some((Image::default(), false));
+        assert!(stream.decode_next(decode));
+        assert!(stream.decode_next(decode));
+        // b was decoded behind a's waiting upload: the loader holds it.
+        assert!(stream.wants_to_yield());
+        assert!(!stream.load_now(&key("a"), |_| None, |_| {}));
+        assert_eq!(stream.pending_uploads(), 2);
         let mut uploaded = Vec::new();
         let done = stream.load_now(
-            &key("a"),
+            &key("b"),
             |_| None,
             |item| uploaded.push(item.key.name.as_str().to_string()),
         );
         assert!(done);
-        assert_eq!(uploaded, ["a"]);
-        assert!(stream.take_finished() == vec![key("a")]);
+        assert_eq!(uploaded, ["a", "b"]);
+        assert!(!stream.wants_to_yield());
         // It is uploaded now: not found again.
-        assert!(!stream.load_now(&key("a"), |_| None, |_| {}));
+        assert!(!stream.load_now(&key("b"), |_| None, |_| {}));
     }
 
     #[test]
@@ -1000,52 +1011,52 @@ mod tests {
         assert!(!stream.cancel(&key("decoded")));
     }
 
-    /// The loader never waits for the main thread: with an upload pending
-    /// it decodes the next request and only *wakes* the frame before
-    /// queueing its own upload.
+    /// The loader waits for the main thread when it has decoded a request
+    /// while earlier uploads are queued, unless the request was promoted;
+    /// the upload pass lets it go on. An empty ring makes it idle, and an
+    /// idle loader is not woken by the pass.
     #[test]
-    fn the_loader_goes_on_and_wakes_the_frame_before_its_upload() {
+    fn the_loader_waits_behind_queued_uploads() {
         let mut stream = TextureStream::new();
-        for name in ["a", "b", "c"] {
+        for name in ["a", "b", "c", "d"] {
             stream.request(request(name));
         }
-        assert!(!stream.take_main_wake());
-        // Decode a: it is the first upload, so nothing waits behind it and
-        // the loader does not wake the frame for it.
-        assert!(stream.decode_next(|_| Some((Image::default(), false))));
-        // The upload is pending, but no earlier upload waited behind it, so
-        // the frame was not woken for it.
-        assert!(!stream.take_main_wake());
-        assert!(stream.wakes_main_before_upload());
-        // Decode b: a waits, so the loader goes on and wakes the frame to
-        // drain a while it queues b.
-        assert!(stream.decode_next(|_| Some((Image::default(), false))));
-        assert!(stream.take_main_wake());
-        // A promoted request is queued without that wake. Finishing the
-        // empty ring still reports the loader idle and wakes the frame.
-        assert!(stream.promote(&key("c")));
-        assert!(stream.decode_next(|_| Some((Image::default(), false))));
-        assert!(!stream.wakes_main_before_upload());
-        assert!(stream.loader_idle());
-        assert!(stream.take_main_wake());
-        // Pausing stops the wake-ups to the loader, not the decoding.
-        stream.request(request("d"));
         assert!(stream.take_wake());
-        stream.pause();
+        let decode = |_: &TextureRequest| Some((Image::default(), false));
+        // a: no earlier upload, so the loader goes straight on.
+        assert!(stream.decode_next(decode));
+        assert!(!stream.wants_to_yield());
         assert!(stream.can_decode());
-        assert_eq!(stream.request(request("e")), RequestOutcome::Queued);
-        assert!(!stream.take_wake());
+        // b: a's upload is waiting, so the loader holds b.
+        assert!(stream.decode_next(decode));
+        assert!(stream.wants_to_yield());
+        assert!(!stream.can_decode());
+        // Pausing does not change it.
+        stream.pause();
+        assert!(stream.wants_to_yield());
         stream.resume();
         assert!(stream.take_wake());
-        // A decoded request waiting for its upload is still found (the
-        // loader clears its record only when it starts the next request);
-        // once uploaded it is not.
-        assert!(stream.promote(&key("a")));
-        stream.pump_uploads(usize::MAX, |_| {});
-        assert!(!stream.promote(&key("a")));
-        // An empty ring is the loader's idle flag and its wake to the frame.
-        while stream.take_next().is_some() {}
+        // The pass uploads a and b in order and wakes the loader.
+        let mut order = Vec::new();
+        stream.pump_uploads(usize::MAX, |item| {
+            order.push(item.key.name.as_str().to_string())
+        });
+        assert_eq!(order, ["a", "b"]);
+        assert!(!stream.wants_to_yield());
+        assert!(stream.take_wake());
+        // c: nothing waits; d is promoted and goes on past c's upload.
+        assert!(stream.decode_next(decode));
+        assert!(stream.promote(&key("d")));
+        assert!(stream.decode_next(decode));
+        assert!(!stream.wants_to_yield());
+        // The ring is empty: the loader is idle and the pass does not wake
+        // it; a new request clears the flag and wakes it.
         assert!(stream.loader_idle());
-        assert!(stream.take_main_wake());
+        assert!(stream.take_next().is_none());
+        stream.pump_uploads(usize::MAX, |_| {});
+        assert!(!stream.take_wake());
+        stream.request(request("e"));
+        assert!(!stream.loader_idle());
+        assert!(stream.take_wake());
     }
 }

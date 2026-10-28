@@ -266,20 +266,22 @@ in order; a promotion that moves one request to the front and lets the last
 fill its place (the original's "Priority item"); removal; and an upload pass
 that takes only what was ready and honours a budget. `TextureStream` is the
 texture loader's queue: `request` (a duplicate of a queued name is refused),
-`promote` (which finds a request queued, held by the loader, or decoded and
-waiting for its upload; one already uploaded is no longer found, as the
-loader clears its status bits when it goes on), `cancel` (a queued request or a
+`promote` (which finds a request queued or held by the loader, decoding it
+or waiting with it for the upload pass; one already in the upload list or
+uploaded is no longer found, as the loader clears its status bits when it
+goes on), `cancel` (a queued request or a
 decoded one is dropped, one decoding is marked by its request id so its
 upload is skipped and a later request for the same name still loads),
 `take_next`/`finish_decode` for an executor that decodes between them (or
-`decode_next` for a synchronous one), the loader's wake to the frame when a
-finished decode has uploads waiting behind it (skipped for a promoted
-request; pausing only stops the wake-ups; the loader never waits for the
-frame),
+`decode_next` for a synchronous one), the loader's wait (`wants_to_yield`:
+it decoded a request while earlier uploads were queued and the request was
+not promoted, so it starts no other decode until an upload pass; pausing
+only stops the wake-ups),
 `load_now` for the priority path (promote, decode and drain every ready
 upload, as the original's pump does; no budget, because the original has
 none), and `pump_uploads(budget, upload)` on the main thread with a
-per-upload completion callback. The pass wakes the loader after it uploads.
+per-upload completion callback. The pass wakes the loader unless it is idle
+with an empty ring.
 The `upload_budget` is Exarust's addition for bounded callers (unbounded with
 `usize::MAX`).
 
@@ -296,10 +298,10 @@ Consumers whose bindings the upload cannot refresh (terrain and particle
 materials) load through `texture_sync`, and the parallax depth is read from
 the loaded size. A BC4 image is one grey channel (`TextureRecord::grey`) that
 the shaders repeat into colour for diffuse maps, apparel, race skins and the
-skin scatter; emissive and unpacked specular maps are not greyed. The loader does not wait
-for uploads (the original's thread keeps decoding and wakes the frame before
-it queues a decode that has earlier uploads behind it); the frame uploads
-before it starts new decodes, the pump drains every ready upload,
+skin scatter; emissive and unpacked specular maps are not greyed. The loader waits for
+the upload pass only when it decoded a request behind waiting uploads; the
+frame uploads before it starts new decodes, so that wait never idles it, the
+pump drains every ready upload,
 and a record freed at its last reference drops its queued load and its image
 (`ModelLoader::release_texture`). `texture_now` decodes on the calling
 thread (the original's synchronous path and its priority load); `wait_decodes`
