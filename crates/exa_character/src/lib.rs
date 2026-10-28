@@ -2131,6 +2131,7 @@ mod tests {
             bounds: (Vec3::ZERO, 0.1),
             half_extents: Vec3::splat(0.1),
             gi_points: Default::default(),
+            gi_centred: false,
             rigid: Some(model::NodeRigidBody {
                 body: std::sync::Arc::new(RigidBody {
                     class: 0x1000_0000,

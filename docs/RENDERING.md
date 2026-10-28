@@ -1272,9 +1272,11 @@ in world space there too):
   word, a count, then object-space points in cm) are transformed to the
   world and splatted:
   - trilinearly with weight 20, each cell's share rounded on its own, the
-    sum saturating at 255; a mesh marked thin (`GiThinMesh`) weighs a
-    quarter, and a centred one (`GiCentredMesh`) adds half a voxel in height
-    and leaves its column's lowest slice alone;
+    sum saturating at 255; a mesh marked thin (`GiThinMesh`, the mesh
+    body's first-child byte the reader does not expose) weighs a quarter,
+    and a centred one (`GiCentredMesh`, the node's flags2 `0x10`, which the
+    model reader keeps) adds half a voxel in height and leaves its column's
+    lowest slice alone;
   - points within a voxel of the block's sides, or in its top slice, are
     dropped;
   - the spacing word is unused. Wall pieces store 100, and their points

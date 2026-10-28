@@ -800,6 +800,12 @@ pub fn spawn_model_nodes(
             commands
                 .entity(e)
                 .insert(gi_volume::GiPoints(node.gi_points.clone()));
+            // The node's centred GI variant (flags2 0x10): its points gain
+            // half a voxel in height and leave their column's lowest slice
+            // alone, as the original's second splat path does.
+            if node.gi_centred {
+                commands.entity(e).insert(gi_volume::GiCentredMesh);
+            }
         }
         if !node.tracks.is_empty() {
             commands
@@ -1758,6 +1764,7 @@ mod tests {
             bounds: (Vec3::ZERO, 1.0),
             half_extents: Vec3::ZERO,
             gi_points: Default::default(),
+            gi_centred: false,
             rigid: None,
             tracks: Vec::new(),
             shadow_bias: 0,
@@ -1767,6 +1774,36 @@ mod tests {
             mesh: false,
             render_flags: 0,
         }
+    }
+
+    /// A node's centred GI flag (flags2 0x10) reaches its entity as
+    /// [`crate::gi_volume::GiCentredMesh`], and only a node with points.
+    #[test]
+    fn a_centred_gi_node_carries_its_splat_variant() {
+        let mut model = Model {
+            nodes: vec![node("Plain", None, None), node("Centred", None, None)],
+        };
+        model.nodes[0].gi_points = std::sync::Arc::new(vec![Vec3::ZERO]);
+        model.nodes[1].gi_points = std::sync::Arc::new(vec![Vec3::ZERO]);
+        model.nodes[1].gi_centred = true;
+        let mut queue = CommandQueue::default();
+        let mut world = World::new();
+        {
+            let mut commands = Commands::new(&mut queue, &world);
+            spawn_model_nodes(&mut commands, &model, None);
+        }
+        queue.apply(&mut world);
+        let mut query = world.query::<(
+            Has<crate::gi_volume::GiPoints>,
+            Has<crate::gi_volume::GiCentredMesh>,
+        )>();
+        let (with_points, centred) = query
+            .iter(&world)
+            .fold((0, 0), |(points, centred), (has, is)| {
+                (points + has as usize, centred + is as usize)
+            });
+        assert_eq!(with_points, 2);
+        assert_eq!(centred, 1);
     }
 
     /// A placement's node transforms change the named direct child of the

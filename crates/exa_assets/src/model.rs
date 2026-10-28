@@ -70,6 +70,10 @@ pub struct ModelNode {
     /// The mesh's GI sample points in the node's space (metres), which mark
     /// the voxels it fills.
     pub gi_points: Arc<Vec<Vec3>>,
+    /// The node's centred GI variant (flags2 `0x10`): the splat adds half a
+    /// voxel to the sample's height and leaves the column's lowest slice
+    /// alone (the original's second point path).
+    pub gi_centred: bool,
     /// The node's rigid body, when it carries one that decodes and the
     /// node is not marked as level geometry
     /// ([`exa_formats::rfc::Node::is_static`]).
@@ -545,6 +549,7 @@ impl ModelLoader<'_> {
                     }
                     _ => Vec::new(),
                 }),
+                gi_centred: node.flags2 & 0x10 != 0,
                 fire: match &node.body {
                     NodeBody::Emitter { kind, size } if *kind == exa_formats::rfc::FIRE => {
                         Some(*size)
@@ -601,6 +606,7 @@ impl ModelLoader<'_> {
                 part_materials,
                 collision,
                 gi_points,
+                gi_centred,
                 shadow_bias,
                 light,
                 voxel_light,
@@ -613,6 +619,7 @@ impl ModelLoader<'_> {
                     src.part_materials.clone(),
                     src.collision.clone(),
                     src.gi_points.clone(),
+                    src.gi_centred,
                     src.shadow_bias,
                     src.light,
                     src.voxel_light,
@@ -625,6 +632,7 @@ impl ModelLoader<'_> {
             dst.part_materials = part_materials;
             dst.collision = collision;
             dst.gi_points = gi_points;
+            dst.gi_centred = gi_centred;
             dst.shadow_bias = shadow_bias;
             dst.light = light;
             dst.voxel_light = voxel_light;
@@ -2828,6 +2836,7 @@ mod tests {
             bounds: (Vec3::ZERO, 0.0),
             half_extents: Vec3::ZERO,
             gi_points: Arc::new(Vec::new()),
+            gi_centred: false,
             rigid: None,
             tracks: Vec::new(),
             shadow_bias: 0,
