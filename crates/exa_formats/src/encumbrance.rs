@@ -111,6 +111,25 @@ pub fn encumbrance(worn: &[Burden], shield: Option<&ShieldRecord>, skills: Skill
     enc.min(CAP)
 }
 
+/// Whether a worn set grants its wearer a second wind: the armour pass sets
+/// the character's second-wind flag for an item of special kind 2.
+pub fn second_wind(worn: &[Burden]) -> bool {
+    worn.iter().any(|b| b.special == Burden::SECOND_WIND)
+}
+
+/// Whether a character's record grants a second wind, resolved as the
+/// armour pass resolves its worn items ([`of_record`]).
+pub fn second_wind_of_record<'a>(
+    record: &CharacterRecord,
+    find: impl Fn(u32) -> Option<&'a Item>,
+) -> bool {
+    record
+        .worn
+        .iter()
+        .filter_map(|worn| find(worn.id)?.burden)
+        .any(|b| b.special == Burden::SECOND_WIND)
+}
+
 /// The encumbrance a character's record spawns with: its worn items and
 /// the shield it holds, found by `find` (an id of the level's or the
 /// actor's own database, or of the game's), and its techniques. Ids that

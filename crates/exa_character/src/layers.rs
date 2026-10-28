@@ -301,6 +301,10 @@ pub fn layer_level(occupancy: &[u64]) -> u8 {
         .unwrap_or(0)
 }
 
+/// The entries the original's slot-walk stack holds before it logs an
+/// overflow.
+const STACK_ENTRIES: usize = 31;
+
 /// The per-slot body masks the builder tests a slot's chosen node against:
 /// a node is kept (and a body part merged) when its slot's mask meets the
 /// visible mask. Each holds the slot's own bit; the pelvis, belly, chest,
@@ -505,9 +509,16 @@ impl<'a> Assembler<'a> {
                         self.groups.push(group);
                     }
                 } else {
-                    // The original logs "Body part stack overflow" past 32
-                    // entries; the stack here grows instead.
                     push_children(&mut stack, n);
+                    // The original's stack is a fixed 32-slot buffer: a push
+                    // that brings it past 31 entries logs "Body part stack
+                    // overflow" through the engine's message hook (level 4,
+                    // logged and queued on screen, nothing raised) and the
+                    // walk carries on. The stack here grows instead of
+                    // overrunning, so the walk continues the same way.
+                    if stack.len() > STACK_ENTRIES {
+                        bevy::log::warn!("body part stack overflow");
+                    }
                 }
             }
         }
@@ -878,6 +889,45 @@ mod tests {
         }
     }
 
+    /// The original logs past 31 stack entries and carries on: a body with
+    /// forty children under one node still assembles its slot.
+    #[test]
+    fn the_stack_walk_goes_on_past_thirty_one_entries() {
+        use crate::runtime::Body;
+        let mut pass = GarmentPass {
+            visible: !0,
+            ..GarmentPass::default()
+        };
+        pass.cover[9] = 0x01;
+        pass.words[9] = 0x01;
+        let wide = |n: usize| {
+            let children: Vec<usize> = (1..=n).collect();
+            let mut nodes = vec![node("00Root", None, children)];
+            for i in 1..=n {
+                let name = if i == n { "0900Chest" } else { "00Leaf" };
+                nodes.push(node(name, Some(0), vec![]));
+            }
+            Body::new(nodes)
+        };
+        // Thirty children fit; the chest is met last, so it is visited first.
+        let body = wide(30);
+        let roots = [0];
+        let mut a = Assembler::new(&body, &roots, &pass);
+        assert!(a.assemble_slot(9));
+        assert_eq!(
+            a.chosen[9].map(|i| body.nodes[i].name.clone()).as_deref(),
+            Some("0900Chest")
+        );
+        // Forty overflow the original's buffer; the walk still finds it.
+        let body = wide(40);
+        let mut a = Assembler::new(&body, &roots, &pass);
+        assert!(a.assemble_slot(9));
+        assert_eq!(
+            a.chosen[9].map(|i| body.nodes[i].name.clone()).as_deref(),
+            Some("0900Chest")
+        );
+    }
+
     /// The fallback looks under nodes of the parent slot whose layer is the
     /// wanted one; the first parent-slot node of another layer ends that
     /// tree's walk.
@@ -985,7 +1035,8 @@ mod tests {
     }
 
     /// The layer level is the highest layer any occupancy word holds:
-    /// braies sit on layer 0, plate on layer 6.
+    /// braies sit on layer 0, plate on layer 6. The builder scans all twenty
+    /// words (bones 1 to 20), not only the eighteen slots.
     #[test]
     fn the_layer_level_is_the_garments_highest() {
         let mut braies = [0u64; 20];
@@ -995,6 +1046,11 @@ mod tests {
         plate[8] = 0x06_0000_0000_0000;
         plate[19] = 0x0300;
         assert_eq!(layer_level(&plate), 6);
+        let mut bone20 = [0u64; 20];
+        bone20[0] = 0x01;
+        bone20[19] = 0x0700_0000_0000_0000;
+        assert_eq!(layer_level(&bone20), 7);
+        assert_eq!(layer_level(&bone20[..18]), 0);
         assert_eq!(layer_level(&[0; 20]), 0);
     }
 }

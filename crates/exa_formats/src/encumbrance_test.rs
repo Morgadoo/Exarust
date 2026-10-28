@@ -385,3 +385,38 @@ fn shipped_outfits() {
     let plate = outfit(&["fptdhrnsa", "fptdhelma", "fptdlegsa"]);
     assert!((plate - 0.625).abs() < 1e-6, "{plate}");
 }
+
+/// A worn item of special kind 2 grants its wearer a second wind; nothing
+/// else does, and a record grants it through the item its worn id finds.
+#[test]
+fn a_second_wind_talisman_grants_it() {
+    let talisman = Burden {
+        special: Burden::SECOND_WIND,
+        ..plain(5)
+    };
+    assert!(second_wind(&[talisman]));
+    assert!(!second_wind(&[plain(5)]));
+    assert!(!second_wind(&[]));
+    let record = characters::CharacterRecord {
+        worn: vec![ItemRef {
+            id: 7,
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    // An item body of special kind 2, parsed as the object database gives
+    // it (only the 0x1000 section, with the special byte).
+    let item = |special: u8| {
+        let mut body = vec![0u8; 0x218];
+        body[0x214] = special;
+        let mut payload = 0x1000u32.to_le_bytes().to_vec();
+        payload.extend((body.len() as u32 + 8).to_le_bytes());
+        payload.extend_from_slice(&body);
+        objdb::Item::parse(7, &payload).unwrap()
+    };
+    let found = item(Burden::SECOND_WIND);
+    assert!(second_wind_of_record(&record, |id| (id == 7).then_some(&found)));
+    let plain_item = item(0);
+    assert!(!second_wind_of_record(&record, |_| Some(&plain_item)));
+    assert!(!second_wind_of_record(&record, |_| None));
+}

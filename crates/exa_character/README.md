@@ -104,7 +104,9 @@ physique values and the body morphs they select remain the body's concern
   bits are scored against and the garment's visible mask), the slot
   assembler (best groups per slot, child slots pruned under the group's
   parent-slot node, the same-bits fallback, the first group chosen where
-  the slot's select mask meets the visible mask), the cull bits and the
+  the slot's select mask meets the visible mask; past 31 node-stack
+  entries it logs the original's "Body part stack overflow" warning and
+  walks on), the cull bits and the
   body mask (the union's innermost byte, which agrees with
   `Item::hidden_slots`). The dressed-mesh pass drives them: the running
   game plans each character from its items, so the mask decides which body
@@ -115,7 +117,9 @@ physique values and the body morphs they select remain the body's concern
   set (men's or women's; both sexes take the men's extra normal map), the
   six beards and their `bearda0N d/n` maps, the normal-map layers (weight
   `i` drives physique map `i + 1`, over 0.01 in double, none without a
-  morph controller), the darkening and the two random skin-map offsets
+  morph controller), the darkening (the record's feral level and age kept
+  within 0…1 as the build's clamp leaves them) and the two random skin-map
+  offsets
   drawn from the record's look seed (`search_seed`; a zero word is
   replaced). The hair rules read the worn set's head coverage union: bit 0
   shows the style's `?` roots, bit 1 grows no hair, and the look rebuild
@@ -143,7 +147,9 @@ physique values and the body morphs they select remain the body's concern
   original's 64-bit word, gives the body part its hit-sound class.
 - Garments are planned in their layer-level order whatever order the worn
   list gives them: the original inserts each into the character's apparel
-  cache by its highest occupied layer, outermost last.
+  cache by its highest occupied layer over all twenty occupancy words
+  (bones 1 to 20, so a piece that only occupies a bone past the eighteen
+  slots still sorts by it), outermost last.
 - `exa_assets::merge::merge` takes a slot's cull bits as the append's
   cull argument (`MergePart::cull`, tested against the vertices' slot
   masks; nothing is written on the triangles, as in the original's mesh
@@ -235,8 +241,9 @@ tested rules of their own.
   and its own seed (`retexture_layer`). `preview` and `retexture_only` are
   the two public wrappers.
 - `spawn` plans the spawns the levels and arena call: a placed character's
-  motion (the saved attack motions 5–12 written back as stance 3, else the
-  saved motion, else 0x13, or 0x19 for a profession word with `0x1000`),
+  motion (the saved attack motions 5–12 written back as stance 3 and a zero
+  phase, else the saved motion, else 0x13, or 0x19 for a profession word
+  with `0x1000`),
   its lying flags (`0x1000`) and ground height (placement + standing −
   8 cm, or standing − 5 while lying; a saved pose places the body itself),
   the player's spawn (mode 1 stance 3 with its stance byte, mode 2 lying,
@@ -251,7 +258,10 @@ tested rules of their own.
   hand 1's torch, else its second weapon); a weapon's hand flag lights it
   and the last weapon's sets the character's flipped grip
   (`holds_flipped`; the dresser's `HeldFlipped` builds the grip at that
-  end of the flip). The viewer still stands living placed characters on the ground and does
+  end of the flip). The appearance editor's hair refresh (`hair_rebuild`)
+  always removes a body's hair and grows the style again only for a race
+  with hair whose head word lacks bit 1; the scene attach and registration
+  are the caller's. The viewer still stands living placed characters on the ground and does
   not set the motion, so those are plans; it places a level's dead from
   their saved pose: muscles off, every part on its saved world frame, the
   character frame at the restored root's origin, and the bodies registered

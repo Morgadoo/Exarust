@@ -517,6 +517,8 @@ struct ApparelInfo {
     armour: Option<Armour>,
     occupancy: [u64; 18],
     coverage: [u64; 18],
+    /// The layer level over all twenty of the item's occupancy words.
+    level: u8,
     material: u8,
 }
 
@@ -529,6 +531,7 @@ impl ApparelInfo {
             occupancy: std::array::from_fn(|i| item.occupancy.get(i).copied().unwrap_or(0)),
             // `slot_word` takes the slot number; slot 1 is the first byte.
             coverage: std::array::from_fn(|i| item.slot_word(i + 1)),
+            level: layers::layer_level(&item.occupancy),
             material: item.armour.map_or(0, |a| a.material),
         })
     }
@@ -1077,6 +1080,7 @@ fn spawn_merged_character(
                 model: model.as_ref(),
                 occupancy: info.occupancy,
                 coverage: info.coverage,
+                level: info.level,
                 material: info.material,
             }
         })

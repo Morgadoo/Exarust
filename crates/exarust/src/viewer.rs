@@ -1314,6 +1314,7 @@ fn spawn_players(
             hands: [const { None }; exa_formats::characters::HANDS],
             record: exa_formats::characters::CharacterRecord::reset(),
             encumbrance: 0.0,
+            second_wind: false,
             pose: exa_formats::characters::SavedPose::None,
             fall: true,
         })
@@ -2207,7 +2208,13 @@ fn spawn_placed_characters(
                     })
                     .collect(),
             ),
-            exa_combat::Fighter::of_stats(race, stats).with_perks(c.record.perks()),
+            {
+                let mut fighter =
+                    exa_combat::Fighter::of_stats(race, stats).with_perks(c.record.perks());
+                // A worn item of special kind 2 grants the second wind.
+                fighter.second_wind.granted = c.second_wind;
+                fighter
+            },
             // What it holds, wears and carries, as its record keeps it.
             exa_items::possession::Possessions::of_record(&c.record),
             race.map_or_else(
@@ -2229,7 +2236,7 @@ fn spawn_placed_characters(
                     c.record.hair_colour[1],
                     c.record.hair_colour[2],
                 ],
-                feral: c.record.feral,
+                feral: exa_character::look::build_feral(&c.record),
                 light_variant: c.record.profession_rest & 0x1_0000 != 0,
                 head_word: c.worn.iter().fold(0, |w, g| w | g.head_word),
             },

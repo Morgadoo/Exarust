@@ -1561,15 +1561,20 @@ template's id reads the template's bytes. Exarust reads what each item
 stores and scales nothing again (`exa_combat::damage::armour_layers`).
 Races add a natural inner layer: `races.rdb` coverage at `0x21C`,
 protection at `0x11C`. Skeletons, golems, demons and the Fael head have
-one.
+one. Its coverage is the byte × 0.01 in double, narrowed; its padding the
+byte × 0.005 in double times that coverage, narrowed; its resistances the
+byte × 0.0071428574 in float times the coverage.
 
 Each body part keeps two layers, filled in equipment order. A new item
 folds the old outer layer into the inner one:
-- each layer's effective coverage is γ(c) = c, or c + 1.75(1 − c)(c − 0.5)
-  above ½;
-- padding adds as γ-weighted;
-- resistances combine as s0′ + (1 − s0′)·γ1·s1, with s0′ = γ0·s0;
-- the inner layer's coverage becomes 1.
+- each layer's effective coverage is γ(c) = c below or at ½, and
+  (1 − c)·((c − ½)·1.75) + c above it (the products in that order, in
+  float; a NaN keeps the layer's own coverage);
+- padding adds as γ-weighted: γ1·p1 + γ0·p0;
+- resistances combine as (1 − s0′)·(s1·γ1) + s0′, with s0′ = γ0·s0 (the
+  outer layer's product is formed first, as the listing does);
+- the inner layer's coverage becomes 1, and the outer layer's material
+  replaces the inner's when the old outer coverage is over ½.
 
 An item's coverage of a part is its percent × 0.01 (in double, stored as a
 float); with the Deflection technique learnt it is c + 0.1 up to ½, else c
@@ -1588,7 +1593,9 @@ and is stored as a float:
    body (an actor's local ids name its own database, a level's its own, the
    rest the game's): an unpowered golem suit adds 2.0, powered gauntlets of
    kind 6 make the held shield weightless (unpowered ones make it count
-   again), then + encumbrance byte × 0.0025;
+   again), a worn item of special kind 2 grants the wearer a second wind
+   (`exa_formats::encumbrance::second_wind`, wired into a level's placed
+   characters and the scene bodies, the arena's generated fighters among them), then + encumbrance byte × 0.0025;
 2. each articulated piece (set word ≠ 0) whose covered bones touch another
    articulated piece's takes 0.025 off, once: piece A touches piece B when
    A's bones meet the bones B's bones neighbour, or the other way round. The
