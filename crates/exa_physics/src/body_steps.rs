@@ -155,6 +155,13 @@ pub(super) struct Steps {
     pub landings_seen: u32,
     /// The AI was told about the queued step this tick.
     pub told_ai: bool,
+    /// The jolt's decaying term (`+0xaa8`), its one-per-episode latch
+    /// (`+0xc88` bit 0), the countdown that clears the latch (`+0xc8c`)
+    /// and whether the behaviour was told this tick.
+    jolt_decay: Vec3,
+    jolt_latch: bool,
+    jolt_quiet: i32,
+    pub jolt_told: bool,
 }
 
 impl Default for Steps {
@@ -177,6 +184,10 @@ impl Default for Steps {
             queued_landings: 0,
             landings_seen: 0,
             told_ai: false,
+            jolt_decay: Vec3::ZERO,
+            jolt_latch: false,
+            jolt_quiet: 0,
+            jolt_told: false,
         }
     }
 }
@@ -532,6 +543,50 @@ pub(super) fn take_queued(
         return None;
     }
     super::feet::queued_step(chest, target, queued, facing, scale, landings)
+}
+
+/// The jolt a body takes from its chest's velocity: the difference
+/// between its fast and slow chest velocities across the ground less the
+/// decaying term, compared with `2.5·scale` cm a tick while it walks and
+/// `125·scale` otherwise (a thousand times either when it jumps or has no
+/// support). Above it, once per episode, the standing position moves
+/// toward the feet's centre plus 100 × the jolt, capped at 100·scale cm,
+/// and the behaviour is told while the body locomotes. The decaying term
+/// loses a seventh of itself a tick (× 0.85); the latch is held for 80
+/// quiet ticks. Returns the standing position to move to, if any.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn jolt(
+    fast: Vec3,
+    slow: Vec3,
+    steps: &mut Steps,
+    walking: bool,
+    unsupported: bool,
+    scale: f32,
+    feet_centre: Vec3,
+) -> Option<Vec3> {
+    let jolt = (fast - slow).with_y(0.0) - steps.jolt_decay;
+    steps.jolt_decay *= 0.85;
+    let base = if walking { 2.5 } else { 125.0 } * scale;
+    let threshold = if unsupported { base * 1000.0 } else { base };
+    if cm(jolt).length_squared() > threshold * threshold {
+        steps.jolt_told = walking;
+        if steps.jolt_latch {
+            return None;
+        }
+        steps.jolt_latch = true;
+        steps.jolt_quiet = 80;
+        let reach = 100.0 * scale;
+        let offset = (cm(jolt) * 100.0).clamp_length_max(reach);
+        Some((cm(feet_centre) + offset) / CM)
+    } else {
+        if steps.jolt_quiet > 0 {
+            steps.jolt_quiet -= 1;
+            if steps.jolt_quiet == 0 {
+                steps.jolt_latch = false;
+            }
+        }
+        None
+    }
 }
 
 /// What one footwork pass reads. Positions are metres.

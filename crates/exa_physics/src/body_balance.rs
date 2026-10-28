@@ -816,6 +816,29 @@ impl Ragdoll {
             }
         }
 
+        // The jolt: the chest's fast velocity less its slow one, less the
+        // decaying term. Above its threshold the step ends and, once per
+        // episode, the standing position moves toward the feet's centre
+        // plus 100 × the jolt.
+        {
+            let walking = bearing.walking || bearing.moving;
+            let steps_state = &mut drive.steps;
+            if let Some(standing) = steps::jolt(
+                b.fast,
+                b.slow,
+                steps_state,
+                walking,
+                !b.has_support,
+                scale,
+                b.feet_centre,
+            ) {
+                steps_state.stepping = false;
+                steps_state.standing = standing;
+                steps_state.placed = true;
+                steps_state.still_at = steps_state.clock as f32 * steps::MS_PER_TICK - 500.0;
+            }
+        }
+
         // The recovery step, from this tick's balance and last tick's
         // support, before the feet are moved.
         let fast = b.fast;

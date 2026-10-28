@@ -472,3 +472,38 @@ fn the_trigger_compares_squared_and_respects_a_shock() {
     let _ = consider(&mut stepping, &t);
     assert!(close(stepping.target.y, 3.0), "{}", stepping.target.y);
 }
+
+/// The jolt: a walking body whose chest's fast velocity is 3 cm a tick over
+/// its slow one (and no decaying term) is past the 2.5·scale cm threshold.
+/// The first tick moves the standing position to the feet's centre plus
+/// 100 × 3 cm, capped at 100·scale cm; the latch holds for the episode and
+/// the behaviour is told. Below the threshold 80 ticks clear the latch.
+#[test]
+fn a_walking_body_jolts_past_its_chest_velocity() {
+    let mut steps = Steps::default();
+    let feet = Vec3::new(1.0, 0.0, 2.0);
+    let jolt_vec = Vec3::new(0.03, 0.0, 0.0);
+    let moved = jolt(jolt_vec, Vec3::ZERO, &mut steps, true, false, 1.0, feet).unwrap();
+    // 3 cm × 100 = 300 cm, capped at 100 cm.
+    assert!(close(moved.x, 2.0));
+    assert!(close(moved.z, 2.0));
+    assert!(steps.jolt_told);
+    assert!(steps.jolt_latch);
+    // The latch holds the episode.
+    assert!(jolt(jolt_vec, Vec3::ZERO, &mut steps, true, false, 1.0, feet).is_none());
+    // Nothing below the threshold, and after 80 quiet ticks the latch is
+    // clear.
+    let mut quiet = Steps::default();
+    assert!(jolt(jolt_vec, Vec3::ZERO, &mut quiet, true, false, 1.0, feet).is_some());
+    let mut n = 0;
+    while quiet.jolt_latch {
+        assert!(jolt(Vec3::ZERO, Vec3::ZERO, &mut quiet, true, false, 1.0, feet).is_none());
+        n += 1;
+        assert!(n < 100);
+    }
+    assert_eq!(n, 80);
+    // Standing, the threshold is 125 cm a tick, so the same 3 cm is quiet.
+    let mut standing = Steps::default();
+    assert!(jolt(jolt_vec, Vec3::ZERO, &mut standing, false, false, 1.0, feet).is_none());
+    assert!(!standing.jolt_told);
+}

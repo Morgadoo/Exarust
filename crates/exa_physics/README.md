@@ -207,7 +207,11 @@ reproduced. A footwork step asked for
 while a balance step runs is queued and taken by the original's rule at the
 next landing (`Ragdoll::{queue_step, take_queued_step}`), and a force
 release ends the running step and stops the clip rate
-(`Ragdoll::force_release`). The muscles-off sampler's rules are tested
+(`Ragdoll::force_release`). The chest's fast velocity over its slow one,
+less a term that decays ×0.85 a tick, is the body's jolt: past 2.5·scale
+cm a tick walking (125 standing, ×1000 unsupported) it ends the step and,
+once in the episode, moves the standing position to the feet's centre plus
+100 × the jolt, at most 100·scale cm (`steps::jolt`, `Ragdoll::jolt_told`). The muscles-off sampler's rules are tested
 (`body_limp.rs`): full root travel, key-flag plants, a 0.05 height ease and
 a snap of the particles to the animated pose; nothing samples with them
 yet, since a limp body keeps its physical pose.

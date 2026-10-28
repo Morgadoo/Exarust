@@ -2182,6 +2182,11 @@ impl Ragdoll {
         self.drive.as_ref().is_some_and(|d| d.step_told_ai())
     }
 
+    /// This tick's jolt told the body's behaviour (it locomoted).
+    pub fn jolt_told(&self) -> bool {
+        self.drive.as_ref().is_some_and(|d| d.steps.jolt_told)
+    }
+
     /// The legs whose feet planted this tick (the walk's gait plants), in
     /// the body's leg order.
     pub fn planted_feet(&self) -> impl Iterator<Item = usize> + '_ {
