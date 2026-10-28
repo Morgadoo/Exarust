@@ -1322,6 +1322,29 @@ mod tests {
     }
 
     #[test]
+    fn space_no_longer_runs_the_end_screens_continue() {
+        let mut app = arena_app();
+        let mut arena = ArenaMatch::begin(1);
+        arena.state = MatchState::Won;
+        arena.screen = Some(Screen::End);
+        app.insert_resource(arena);
+        app.insert_resource(scene());
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::Space);
+        app.update();
+        assert_eq!(app.world().resource::<ArenaMatch>().state, MatchState::Won);
+        assert!(app.world().resource::<ArenaEndScreen>().open);
+        assert!(
+            app.world_mut()
+                .resource_mut::<Messages<ArenaExit>>()
+                .drain()
+                .next()
+                .is_none()
+        );
+    }
+
+    #[test]
     fn a_dead_manager_goes_to_the_main_menu() {
         let mut app = arena_app();
         let mut arena = ArenaMatch::begin(1);
