@@ -1016,15 +1016,11 @@ fn alpha_byte(value: f32) -> u8 {
     low_byte(255.0 * value)
 }
 
-/// The glow shader's `FrameCol` at rest: the accent at 0.4, every lane.
+/// The glow shader's `FrameCol` at rest: the accent's colour at 0.4 and its
+/// alpha (the vector scale the original calls multiplies three lanes).
 fn accent_frame(accent: [u8; 4]) -> [f32; 4] {
-    let colour = ink(accent);
-    [
-        colour[0] * 0.4,
-        colour[1] * 0.4,
-        colour[2] * 0.4,
-        colour[3] * 0.4,
-    ]
+    let [red, green, blue, alpha] = ink(accent);
+    [red * 0.4, green * 0.4, blue * 0.4, alpha]
 }
 
 /// The tree screen's draw order: the background, the links, the icons, the
@@ -1074,7 +1070,8 @@ fn links(out: &mut TreeDraw, view: &TreeView) {
     let colour = link_ink(low_byte(view.content * 200.0));
     let half_width = view.zoom * 10.0;
     let lnwdt = [
-        (f64::from(half_width) * 0.5 + f64::from(half_width * 4.0).sqrt()) as f32,
+        // Single precision: the width's half plus the root of four widths.
+        half_width * 0.5 + (half_width * 4.0).sqrt(),
         -(f64::from(half_width) * 0.3 + 0.15) as f32,
         f64::from(half_width * 6.0).sqrt() as f32,
     ];
@@ -2602,7 +2599,8 @@ mod tests {
             .find(|b| b.program == Program::Frame)
             .unwrap();
         assert!(close(glow.uniforms.frame_col[0], 0.4));
-        assert!(close(glow.uniforms.frame_col[3], 100.0 / 255.0 * 0.4));
+        // The vector scale takes three lanes: the alpha stays.
+        assert!(close(glow.uniforms.frame_col[3], 100.0 / 255.0));
         // A flash on the first node scales its colour by 0.333 + 0.667
         // smoothstep(share), the share being the time left over 300 ms.
         view.flash = 0;
