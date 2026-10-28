@@ -671,6 +671,11 @@ impl Ragdoll {
         &self.legs
     }
 
+    /// The legs, for the muscles-off sampler's foot plants.
+    pub fn legs_mut(&mut self) -> &mut [Leg] {
+        &mut self.legs
+    }
+
     /// The feet's landing count in the running step episode.
     pub fn landings(&self) -> u32 {
         self.drive.as_ref().map_or(0, |d| d.balance.landings)

@@ -437,6 +437,12 @@ fn weights(part: &Part, local: Vec3) -> [f32; 4] {
 }
 
 impl Part {
+    /// Where the part's origin sits in its parent's space (the model's
+    /// translation of the part), which the clip's chain uses.
+    pub fn rest_offset(&self) -> Vec3 {
+        self.origin
+    }
+
     fn new(s: &PartSetup) -> Self {
         let PartSetup {
             bone,
@@ -1411,6 +1417,18 @@ pub struct Ragdoll {
     /// The level impacts this tick's detection found (a fall or scrape hard
     /// enough to sound and hurt), one per part.
     level_impacts: Vec<LevelImpact>,
+    /// The character frame the body had when it lost its muscles: the
+    /// muscles-off sampler places its clip pose on it.
+    limp_frame: Option<Affine3A>,
+    /// The race's base clip rate, kept when the muscles go: the
+    /// muscles-off sampler runs at 0.9 of it while the body has no support
+    /// (the original's unsupported, non-locomoting clock).
+    limp_clip_rate: f32,
+    /// The standing height the muscles-off sampler eases (cm, the
+    /// original's `+0xac0`): 0.05 of its target a tick.
+    limp_height: f32,
+    /// The body scale the muscles-off sampler's height target reads.
+    limp_scale: f32,
 }
 
 /// Muscles of a living body: the animated pose it follows.
@@ -2134,7 +2152,38 @@ impl Ragdoll {
             held_count: 0,
             held_by: None,
             level_impacts: Vec::new(),
+            limp_frame: None,
+            limp_clip_rate: 1.0,
+            limp_height: 0.0,
+            limp_scale: 1.0,
         }
+    }
+
+    /// The character frame the body had when its muscles went; the
+    /// muscles-off sampler places the clip pose on it.
+    pub fn limp_frame(&self) -> Option<Affine3A> {
+        self.limp_frame
+    }
+
+    /// The race's base clip rate the muscles-off sampler runs from.
+    pub fn limp_clip_rate(&self) -> f32 {
+        self.limp_clip_rate
+    }
+
+    /// The standing height (cm) the muscles-off sampler eases toward its
+    /// target, 0.05 a tick.
+    pub fn limp_height(&self) -> f32 {
+        self.limp_height
+    }
+
+    /// Sets the eased standing height.
+    pub fn set_limp_height(&mut self, height: f32) {
+        self.limp_height = height;
+    }
+
+    /// The body scale the muscles-off sampler's height target reads.
+    pub fn limp_scale(&self) -> f32 {
+        self.limp_scale
     }
 
     /// A recovery or stagger step is running.
@@ -2547,6 +2596,13 @@ impl Ragdoll {
     /// the lower legs off the living layer, and each limb's limp state and
     /// mobility. The callers set the sleep countdown.
     fn become_limp(&mut self) {
+        // What the muscles-off sampler needs, before the drive goes.
+        if let Some(d) = self.drive.as_ref() {
+            self.limp_frame = d.frame;
+            self.limp_clip_rate = d.race.clip_rate;
+            self.limp_height = d.lift_target.unwrap_or(0.0) * CM;
+            self.limp_scale = d.stats.scale;
+        }
         self.drive = None;
         pairs::set_leg_layers(&mut self.parts, 0);
         for p in &self.parts {
