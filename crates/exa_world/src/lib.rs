@@ -14,6 +14,7 @@ pub mod flame;
 pub mod gi_volume;
 pub mod grid;
 pub mod grid_sets;
+pub mod level_lifecycle;
 pub mod light_flood;
 pub mod light_source;
 pub mod mechanisms;
@@ -55,6 +56,7 @@ impl Plugin for WorldPlugin {
             room_view::RoomViewPlugin,
             sun_shadow::SunShadowPlugin,
             cloth::ClothPlugin,
+            level_lifecycle::LevelChangePlugin,
         ));
     }
 }
@@ -1045,6 +1047,7 @@ impl LevelLoad {
                 LevelRoot {
                     name: entry.clone(),
                 },
+                level_lifecycle::LevelEntity,
                 Transform::default(),
                 Visibility::default(),
             ))

@@ -85,6 +85,22 @@ const LOOK_REACH: f32 = 60.0;
 const MARK_LIFT: f32 = 0.02;
 const MARK_INSET: f32 = 0.03;
 
+/// Drops the last level's grid and any build still running: a level change
+/// starts from [`NavState::None`] and installs the fallback pathfinder until
+/// the next level's grid is built. The overlay flag is kept (a debug tool's
+/// setting, not level state).
+pub fn unload_level(
+    commands: &mut Commands,
+    state: &mut NavState,
+    installed: &mut InstalledPathfinder,
+) {
+    commands.remove_resource::<PendingNav>();
+    commands.remove_resource::<NavGrid>();
+    commands.remove_resource::<NavBuild>();
+    *state = NavState::None;
+    *installed = InstalledPathfinder::install_fallback();
+}
+
 #[allow(clippy::too_many_arguments)]
 fn collect_source(
     mut commands: Commands,

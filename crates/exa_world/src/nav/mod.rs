@@ -52,7 +52,7 @@ pub use path::{ACCEPT_GOAL_CELL, Look, Path, disturbance, find_path, find_path_w
 pub use query::{LineHit, line_walk, obstacle, straight_walk};
 pub use source::NavSource;
 pub use stamp::{NavPatch, stamp_line, unstamp_line};
-pub use view::{NavOverlay, NavPlugin, NavState, PendingNav};
+pub use view::{NavOverlay, NavPlugin, NavState, PendingNav, unload_level as unload_nav};
 pub use walkable::{cost_at, layer_at, nearest_walkable};
 
 /// Edge of a cell, metres (30 cm).

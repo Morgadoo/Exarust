@@ -2111,6 +2111,14 @@ impl Flow {
         };
         let mut steps = self.close_end_menu();
         steps.extend([
+            Step::LoadLevel {
+                locale: match self.practice.ladder {
+                    Ladder::Novice => "arena",
+                    Ladder::Expert => "arenae",
+                },
+                spawn: 0,
+                teardown: true,
+            },
             Step::MenuHelp(false),
             Step::Controls(true),
             Step::Health {
@@ -2835,6 +2843,7 @@ impl Plugin for FlowPlugin {
             .init_resource::<GameView>()
             .init_resource::<BootToMenu>()
             .add_message::<MenuChoice>()
+            .add_message::<exa_world::level_lifecycle::LevelChangeRequest>()
             .add_systems(Startup, boot)
             .add_systems(
                 Update,
@@ -3053,12 +3062,18 @@ fn apply_steps(
     mut view: Option<ResMut<GameView>>,
     mut session: Option<ResMut<crate::player_controls::PlaySession>>,
     mut fighters: Query<&mut exa_combat::Fighter, With<crate::player::PlayerBody>>,
+    mut changes: MessageWriter<exa_world::level_lifecycle::LevelChangeRequest>,
     mut exit: MessageWriter<AppExit>,
 ) {
     if queued.steps.is_empty() {
         return;
     }
     let steps = core::mem::take(&mut queued.steps);
+    // A teardown in the same batch as a load is the load's own; one request
+    // does both, so the destination is not torn down twice.
+    let loads = steps
+        .iter()
+        .any(|step| matches!(step, Step::LoadLevel { .. }));
     for step in steps {
         match step {
             Step::ShowMenu(page) => {
@@ -3084,18 +3099,31 @@ fn apply_steps(
                     end.close();
                 }
             }
-            Step::LoadLevel { .. } => {
+            Step::LoadLevel {
+                locale,
+                spawn,
+                teardown,
+            } => {
                 // The level loader's first work is the app's: it hides the
                 // menu form and closes the end menu and the prelude. The
-                // load itself is the host's; Exarust has no in-process level
-                // reload, so the loaded level stays.
+                // change itself is the lifecycle's; the host loads the level
+                // through the same stages as a start-up load.
                 if let Some(menu) = menu.as_mut() {
                     menu.close();
                 }
                 if let Some(end) = end.as_mut() {
                     end.close();
                 }
-                debug!("game flow step not applied by the app: {step:?}");
+                crate::level_change::request(&mut changes, Some(locale), spawn, teardown);
+            }
+            Step::TeardownWorld => {
+                // A load in this batch tears down by itself.
+                if !loads {
+                    crate::level_change::request(&mut changes, None, 0, true);
+                }
+            }
+            Step::PlacePlayer(placement) => {
+                commands.insert_resource(crate::level_change::PlayerPlacement::of_flow(&placement));
             }
             Step::EndMenuUnselected(unselected) => {
                 if let Some(end) = end.as_mut() {

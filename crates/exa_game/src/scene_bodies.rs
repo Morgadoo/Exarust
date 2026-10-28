@@ -416,6 +416,7 @@ pub fn spawn_scene_body(
             Visibility::default(),
             Name::new(record.name.clone()),
             exa_world::room_view::RoomTracked,
+            exa_world::level_lifecycle::LevelEntity,
             exa_physics::CharacterBody::default(),
         ))
         .id();

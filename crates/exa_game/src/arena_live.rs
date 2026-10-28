@@ -32,7 +32,7 @@ use crate::arena;
 use crate::arena_handoff::{self, Handoff, MatchSetup};
 use crate::arena_match::{ArenaMatch, CompanyRecords, Finish, MatchState, any_entry};
 use crate::arena_session::{
-    EndAction, RETURN_PLACEMENT, ReturnFighter, RoundFight, Screen, regenerate_round, settle_return,
+    EndAction, ReturnFighter, RoundFight, Screen, regenerate_round, settle_return,
 };
 use crate::arena_spawn::{MANAGER_ROLE, generic_plan, hire_plan};
 use crate::match_layout::{
@@ -344,7 +344,6 @@ fn continue_round(
     keys: Option<Res<ButtonInput<KeyCode>>>,
     auto: Res<ArenaAutoContinue>,
     clock: Option<Res<crate::effects::EffectClock>>,
-    path: Option<Res<HandoffPath>>,
     fighters: Query<MatchBody<'_>>,
     mut commands: MessageWriter<SceneCommand>,
     mut exits: MessageWriter<ArenaExit>,
@@ -411,18 +410,9 @@ fn continue_round(
             for (entity, ..) in &fighters {
                 commands.write(SceneCommand::Despawn(entity));
             }
-            let handoff = Handoff {
-                career: career.as_deref().cloned(),
-                launch: None,
-                returned: Some(RETURN_PLACEMENT),
-            };
-            let path = path
-                .as_ref()
-                .map_or_else(arena_handoff::default_path, |path| path.0.clone());
-            match arena_handoff::write(&path, &handoff) {
-                Ok(()) => info!("arena return: wrote the settled career for the hub"),
-                Err(error) => warn!("arena return: cannot write the hand-off: {error}"),
-            }
+            // The career resource and the settle survive into the hub; the
+            // host's arena exit sets the return placement and changes the
+            // level in process.
             exits.write(ArenaExit::Hub);
             arena.screen = None;
         }
@@ -595,6 +585,7 @@ pub fn screen_word(screen: Option<Screen>) -> Option<u32> {
 mod tests {
     use super::*;
     use crate::arena_match::ArenaMatch;
+    use crate::arena_session::RETURN_PLACEMENT;
     use crate::match_layout::{opponent_place, our_place};
     use crate::scene_bodies::SceneFighter;
 
@@ -819,8 +810,6 @@ mod tests {
     #[test]
     fn the_end_of_the_match_settles_the_career_and_asks_for_the_hub() {
         let mut app = arena_app();
-        let path = handoff_path("settle");
-        app.insert_resource(path.clone());
         let mut arena = ArenaMatch::begin(1);
         arena.state = MatchState::Won;
         arena.screen = Some(Screen::End);
@@ -852,9 +841,9 @@ mod tests {
             .drain()
             .collect();
         assert_eq!(exits, vec![ArenaExit::Hub]);
-        let handoff = arena_handoff::take_at(&path.0).expect("a settled hand-off");
-        assert_eq!(handoff.returned, Some(RETURN_PLACEMENT));
-        let career = handoff.career.expect("the career");
+        // The match settles into the live career resource; the hub's level
+        // change then reads the same career in process (no hand-off file).
+        let career = app.world().resource::<crate::hub_windows::ArenaCareer>();
         assert_eq!(career.company.copper, 355);
         assert_eq!(career.company.won, 1);
         assert_eq!(career.matches_today, 1);

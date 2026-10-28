@@ -2593,6 +2593,7 @@ dependencies = [
  "exa_formats",
  "exa_physics",
  "exa_render",
+ "rapier3d",
 ]
 
 [[package]]
