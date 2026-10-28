@@ -119,6 +119,10 @@ const GET_UP_SUPPORT: f32 = 0.5;
 /// The sole height is the depth of the foot's box under its origin less
 /// this (cm).
 const SOLE_INSET: f32 = 0.5;
+/// The Ground Query starts this far (cm) over the foot's ground and looks
+/// this far down under the toe.
+const GROUND_QUERY_ABOVE: f32 = 30.0;
+const GROUND_QUERY_DEPTH: f32 = 60.0;
 /// A walking foot's swing clearance decays by this (cm) a tick while it
 /// touches the ground (in double precision).
 const SWING_DECAY: f64 = 0.3;
@@ -1101,14 +1105,27 @@ impl Ragdoll {
                 leg.smoothed = ground / CM;
                 leg.ground = Some(leg.smoothed);
                 leg.anchor.y = feet::anchor_height(ground, cm(sole), cm(c.y)) / CM;
-                // The sole's floor: the original's Ground Query is a ray
-                // against floor-flagged meshes only, which no Exarust
-                // level has, so it misses and the floor is the ground plus
-                // the leg's offset, never over the lower leg's origin.
+                // The sole's floor: the original's Ground Query is a point
+                // ray under the toe, from 30 cm over the ground down 60 cm,
+                // against the floor pieces only. A hit raises a moving
+                // body's ground to it (the foot steps onto what it is over);
+                // the floor is the higher of the hit and the old ground
+                // (10 cm lower while the foot touches) plus its clearance,
+                // never over the lower leg's origin.
                 let knee = parts[leg.shin].transform().translation.y;
                 let touching = leg.state.has(FootState::TOUCHING);
-                leg.floor =
-                    feet::sole_floor(ground, touching, leg.contact_lag, None, cm(knee)) / CM;
+                let toe = leg.foot.map_or(c, |f| parts[f].point(&leg.toe));
+                let over = Vec3::new(toe.x, ground / CM + GROUND_QUERY_ABOVE / CM, toe.z);
+                let hit = level.floor_below(over, GROUND_QUERY_DEPTH / CM).map(cm);
+                leg.floor = feet::sole_floor(ground, touching, leg.contact_lag, hit, cm(knee)) / CM;
+                if let Some(h) = hit
+                    && bearing.moving
+                    && ground <= h
+                    && h != ground
+                {
+                    leg.smoothed = h / CM;
+                    leg.ground = Some(leg.smoothed);
+                }
                 if bearing.walking && !down && touching {
                     // Locomoting and touching: the swing clearance decays
                     // by the double 0.3 a tick, the step lift is none, and

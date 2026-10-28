@@ -844,3 +844,96 @@ fn the_late_walking_foot_swings_and_cuts_the_push() {
     let half = 1.0 - (30.0f32 / 60.0).powi(2);
     assert!((drive(&body).bearing.lag - half * half).abs() < 1e-5);
 }
+
+/// The Ground Query is a point ray under the toe: it finds the floor and a
+/// step's top under it, stops at its depth, ignores faces turned down and
+/// skips a movable piece (a prop's stand-in), as the original's class-word
+/// filter does.
+#[test]
+fn the_ground_query_is_a_point_ray_over_floor_pieces() {
+    struct Pieces {
+        tris: Vec<[Vec3; 3]>,
+        movable: bool,
+    }
+    impl Level for Pieces {
+        fn pieces(&self, _: Vec3, _: Vec3, out: &mut Vec<u32>) {
+            out.push(0);
+        }
+        fn triangles(&self, _: u32, _: Vec3, _: Vec3, out: &mut Vec<[Vec3; 3]>) {
+            out.extend_from_slice(&self.tris);
+        }
+        fn movable(&self, _: u32) -> bool {
+            self.movable
+        }
+    }
+    let mut tris = floor();
+    tris.extend(square(Vec2::new(0.55, 0.0), 0.3, 0.5));
+    let pieces = Pieces {
+        tris: tris.clone(),
+        movable: false,
+    };
+    let over = |x: f32, y: f32| Vec3::new(x, y, 0.0);
+    assert_eq!(pieces.floor_below(over(0.0, 0.4), 0.6), Some(0.0));
+    assert_eq!(pieces.floor_below(over(0.55, 0.4), 0.6), Some(0.3));
+    // A point that starts below the step top is under it.
+    assert_eq!(pieces.floor_below(over(0.55, 0.2), 0.6), Some(0.0));
+    // 0.4 m to the floor is deeper than 0.3 m.
+    assert_eq!(pieces.floor_below(over(0.0, 0.4), 0.3), None);
+    // A ray inside the face's depth but past it: none.
+    assert_eq!(pieces.floor_below(over(0.0, 0.4), 0.05), None);
+    // Faces turned down are not floor.
+    let down: Vec<[Vec3; 3]> = floor().iter().map(|t| [t[0], t[2], t[1]]).collect();
+    let flipped = Pieces {
+        tris: down,
+        movable: false,
+    };
+    assert_eq!(flipped.floor_below(over(0.0, 0.4), 0.6), None);
+    // A movable piece is some body's stand-in, not the level's floor.
+    let stand_in = Pieces {
+        tris,
+        movable: true,
+    };
+    assert_eq!(stand_in.floor_below(over(0.0, 0.4), 0.6), None);
+    // A NaN or negative depth asks nothing.
+    assert_eq!(pieces.floor_below(over(0.0, 0.4), f32::NAN), None);
+    assert_eq!(pieces.floor_below(over(0.0, 0.4), -1.0), None);
+}
+
+/// The Ground Query's hit raises a moving body's foot ground: the biped
+/// stands on the low floor with its ankles at z ≈ 1 cm, and a step top
+/// 15 cm up starts under its toes (20 cm ahead, at z ≈ 21 cm). The query
+/// finds the step and the foot's ground and floor rise to it; a still body
+/// keeps the ground its Height Query found.
+#[test]
+fn the_ground_query_raises_a_moving_feet_ground() {
+    let mut level = floor();
+    level.extend(square(Vec2::new(0.0, 0.30), 0.15, 0.15));
+    let mut body = biped();
+    body.measure_balance(&level[..]);
+    body.set_bearing(Bearing {
+        moving: true,
+        walking: true,
+        facing: Vec3::Z,
+        align: 1.0,
+        ..Bearing::default()
+    });
+    body.measure_balance(&level[..]);
+    let grounds: Vec<f32> = body.legs.iter().map(|l| l.ground.unwrap_or(-1.0)).collect();
+    assert!(
+        grounds.iter().all(|g| (g - 0.15).abs() < 1e-4),
+        "{grounds:?}"
+    );
+    for leg in body.legs.iter() {
+        assert!((leg.floor - 0.15).abs() < 1e-4, "{}", leg.floor);
+    }
+    let mut still = biped();
+    still.measure_balance(&level[..]);
+    still.measure_balance(&level[..]);
+    for leg in still.legs.iter() {
+        assert!(
+            leg.ground.is_none_or(|g| g.abs() < 1e-4),
+            "{:?}",
+            leg.ground
+        );
+    }
+}

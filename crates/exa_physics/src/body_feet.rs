@@ -819,9 +819,9 @@ pub fn step_loudness(length_cm: f32) -> f32 {
 }
 
 /// How far the floor may lie under the ground while the foot touches and
-/// the Ground Query hits (cm). The query itself (a ray from 30 cm over the
-/// ground, 60 cm down, against floor-flagged meshes) has no Exarust
-/// counterpart: no level carries the flag, so it always misses.
+/// the Ground Query hits (cm). The query itself is a point ray from 30 cm
+/// over the ground 60 cm down against floor pieces (`Level::floor_below`);
+/// a miss leaves the ground.
 const FLOOR_TOUCHING: f32 = 10.0;
 
 /// The loudness of a walking footstep before the random share: the
@@ -874,9 +874,9 @@ pub struct Footstep {
 /// A foot's sole floor (cm) from the Ground Query's `hit`: the higher of
 /// the hit and the ground (10 cm lower while the foot touches) plus the
 /// leg's own offset, or the ground plus the offset where the query misses;
-/// never above the knee. The original's Ground Query is a ray at the toe,
-/// starting 30 cm over the ground and looking 60 cm down; the body passes
-/// `None` (see [`FLOOR_TOUCHING`]).
+/// never above the knee. The original's Ground Query is a point ray at the
+/// toe, starting 30 cm over the ground and looking 60 cm down
+/// (`Level::floor_below`).
 pub fn sole_floor(
     ground_cm: f32,
     touching: bool,
