@@ -10,7 +10,7 @@
 //! [`VisualSpawn`] message into a scene entity carrying [`EffectVisual`].
 //! The creators that are active power objects also have their fields in
 //! [`ActiveObjectSpec`] ([`active_object`]): the id their base registers,
-//! the state word, the cost, the long door's drain/destination/orientation,
+//! the state word, the cost, the long door's drain/destination/forward axis,
 //! the AI flag, whether they add a scene node and the sounds they play.
 //! The entity has no mesh yet (the effect geometries are their own classes),
 //! so it marks the node for the renderer rather than drawing it. The
@@ -163,7 +163,7 @@ impl ActiveNode {
 
 /// What one creator's active power object holds, as the creator writes it:
 /// the id its base registers, the state word `+0x18` (always 1), the focus
-/// it holds, the long door's per-tick drain, destination and orientation,
+/// it holds, the long door's per-tick drain, destination and forward axis,
 /// the AI flag `+0xa0`, the scene nodes and the sounds it plays there.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ActiveObjectSpec {
@@ -175,8 +175,10 @@ pub struct ActiveObjectSpec {
     pub tick_cost: Option<f32>,
     /// The long door's and the summoning's destination (cm).
     pub destination: Option<Vec3>,
-    /// The long door's copied orientation.
-    pub orientation: Option<Quat>,
+    /// The long door's copied vector: the caster's frame forward axis on
+    /// the player's cast. The AI cast hands the creator a vector it never
+    /// set, so it is none there.
+    pub forward: Option<Vec3>,
     /// The creator's `+0xa0` byte.
     pub ai: bool,
     pub node: ActiveNode,
@@ -200,7 +202,7 @@ pub fn active_object(
         cost: Some(cost),
         tick_cost: None,
         destination: None,
-        orientation: None,
+        forward: None,
         ai: false,
         node,
         sounds: Vec::new(),
@@ -217,6 +219,8 @@ pub fn active_object(
             ..quiet(0x20A, ActiveNode::None)
         }),
         EffectKind::Strikes => Some(ActiveObjectSpec {
+            // The creator plays it only when the activation leaves its
+            // count word positive; the record lists what it plays then.
             sounds: vec![("thmfrc_ss", shell_pitch)],
             ..quiet(0x2020B, ActiveNode::None)
         }),
@@ -227,7 +231,7 @@ pub fn active_object(
             cost: None,
             tick_cost: Some(tick_ms * cost * 0.001),
             destination: input.point,
-            orientation: Some(input.body_rotation),
+            forward: (!ai).then_some(input.heading),
             ai,
             node: ActiveNode::IfActivationLeaves,
             sounds: Vec::new(),
@@ -235,10 +239,11 @@ pub fn active_object(
         EffectKind::Constant => Some(ActiveObjectSpec {
             id: 0x20603,
             kind: 1,
-            cost: None,
+            // Like the shell, the creator hands its cost to the base class.
+            cost: Some(cost),
             tick_cost: None,
             destination: None,
-            orientation: None,
+            forward: None,
             ai: false,
             node: ActiveNode::ShellAndImage,
             sounds: Vec::new(),
@@ -249,7 +254,7 @@ pub fn active_object(
             cost: None,
             tick_cost: None,
             destination: input.point,
-            orientation: None,
+            forward: None,
             ai,
             node: ActiveNode::None,
             sounds: Vec::new(),
@@ -1010,7 +1015,7 @@ mod tests {
 
         // The vanish and the long door add their node only when the
         // activation leaves the byte clear; the long door keeps its drain,
-        // destination and orientation.
+        // destination and the caster's forward axis.
         let vanish = active_object(EffectKind::Vanish, &input, 0.1, 12.0, false);
         let vanish = vanish.expect("a vanish");
         assert_eq!(vanish.id, 0x601);
@@ -1021,14 +1026,17 @@ mod tests {
         assert_eq!(door.cost, None);
         assert_eq!(door.tick_cost, Some(12.0 * 0.2 * 0.001));
         assert_eq!(door.destination, input.point);
-        assert_eq!(door.orientation, Some(Quat::IDENTITY));
+        assert_eq!(door.forward, None, "the AI cast's vector is unset");
+        let player_door =
+            active_object(EffectKind::LongDoor, &input, 0.2, 12.0, false).expect("a door");
+        assert_eq!(player_door.forward, Some(input.heading));
         assert!(door.ai);
         assert_eq!(door.node, ActiveNode::IfActivationLeaves);
         assert!(door.sounds.is_empty());
 
         let constant =
             active_object(EffectKind::Constant, &input, 0.35, 12.0, false).expect("constant");
-        assert_eq!(constant.id, 0x20603);
+        assert_eq!((constant.id, constant.cost), (0x20603, Some(0.35)));
         assert_eq!(constant.node, ActiveNode::ShellAndImage);
         let summon = active_object(EffectKind::Summon, &input, 0.35, 12.0, true).expect("summon");
         assert_eq!((summon.id, summon.ai), (0x604, true));

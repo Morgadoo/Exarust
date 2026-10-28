@@ -1489,22 +1489,20 @@ fn create_displacement(
             debug!("displacement vanish: effect node {entity:?}");
             entity
         }
-        DisplacementStart::LongDoor { tick_cost, to, .. } => {
+        DisplacementStart::LongDoor {
+            cost,
+            tick_cost,
+            to,
+        } => {
             let power = LongDoor::new(context.now, to.map(|p| p.to_array()), false, tick_cost);
             caster.body.cast_hook = Some(super::power::displacement::LONG_DOOR_HOOK);
             let mut input = visual_input(context, ragdoll, 0.0);
             if let Some(to) = to {
                 input.point = Some(to);
             }
-            let entity = active_object(
-                EffectKind::LongDoor,
-                &input,
-                tick_cost,
-                TICK_MS as f32,
-                false,
-            )
-            .filter(|object| object.node.adds(false))
-            .map(|_| spawn_visual(commands, creator(EffectKind::LongDoor, &input)));
+            let entity = active_object(EffectKind::LongDoor, &input, cost, TICK_MS as f32, false)
+                .filter(|object| object.node.adds(false))
+                .map(|_| spawn_visual(commands, creator(EffectKind::LongDoor, &input)));
             push_active(
                 caster,
                 LONG_DOOR,
