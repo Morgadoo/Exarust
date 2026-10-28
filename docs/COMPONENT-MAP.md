@@ -5,8 +5,8 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 ## Headline
 
 - **8,783 functions**, 2,616 KB of code, in **445 components** across 16 sections.
-- Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **66.7% reimplemented** by Exarust's own code and **4.9% provided** by Bevy, wgpu, rapier or the Rust standard library.
-- Weighted by function count (zero-byte imported names left out): 60.3% and 11.8%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
+- Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **67.2% reimplemented** by Exarust's own code and **4.9% provided** by Bevy, wgpu, rapier or the Rust standard library.
+- Weighted by function count (zero-byte imported names left out): 60.7% and 11.8%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
 - The 24 combat-rule functions (52 KB of damage, armour and weapon-stat rules inside body, part, AI and item owners) are **45.4%** reproduced.
 
 ## By section
@@ -16,17 +16,17 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 | Runtime & platform | 2,407 | 293 | 26 | 13% | 72% | Win32 clipboard image/icon glue |
 | Core, math & threading | 282 | 37 | 11 | 80% | 1% |  |
 | Data, assets & I/O | 440 | 91 | 26 | 71% | 0% | TStringLibrary, RF_DataManager, TRFCExporter |
-| Rendering & GPU | 823 | 334 | 63 | 74% | 1% | FLX_IconRender, Screen-quad GLSL snippets, TTexLoaderThread |
+| Rendering & GPU | 823 | 334 | 63 | 75% | 1% | FLX_IconRender, Screen-quad GLSL snippets, TTexLoaderThread |
 | World, levels & terrain | 454 | 174 | 31 | 67% | 0% | Scene node despawn and viewport step (TSceneTaskInt by address) |
 | Physics, bodies & cloth | 363 | 242 | 13 | 65% | 0% |  |
-| Characters, motion & animation | 506 | 198 | 23 | 69% | 0% |  |
+| Characters, motion & animation | 506 | 198 | 23 | 70% | 0% |  |
 | Combat, weapons & damage | 14 | 3 | 3 | 31% | 0% | RFE_Effects_Blood, TBloodSprays |
-| Items, materials & crafting | 341 | 140 | 40 | 65% | 0% | TCharLoot, TPopUpDesc, TPopUpContainer |
+| Items, materials & crafting | 341 | 140 | 40 | 67% | 0% | TCharLoot, TPopUpDesc, TPopUpContainer |
 | AI & behaviour | 437 | 206 | 17 | 71% | 0% | FG_AI_Behaviours, FLX_Entities, TEntity |
 | Thaumaturgy & effects | 697 | 296 | 83 | 69% | 0% |  |
 | Audio | 59 | 18 | 4 | 84% | 0% |  |
 | Script, dialogue & story | 184 | 46 | 11 | 76% | 0% | TJournal, TScriptActor |
-| Game modes, arena & session | 646 | 193 | 23 | 70% | 0% | Save-package section delete (SG_EmblemGen by address), TSaveGameManager |
+| Game modes, arena & session | 646 | 193 | 23 | 71% | 0% | Save-package section delete (SG_EmblemGen by address), TSaveGameManager |
 | UI | 959 | 312 | 63 | 76% | 0% | TReadKeyScreen, THairEditForm, TCharEditForm |
 | Other, tools & editor | 171 | 33 | 8 | 55% | 0% |  |
 
@@ -84,21 +84,21 @@ Ordered by code size; these are where most of the original still has no counterp
 | component | section | KB | coverage | Exarust |
 |---|---|---:|---:|---|
 | TMotileDynamics | Physics, bodies & cloth | 121 | 53% | exa_physics/src/body_feet.rs; exa_physics/src/body_gait.rs |
-| XA_Arena | Game modes, arena & session | 71 | 79% | exa_game/src/arena_outfit.rs; exa_game/src/arena_outfit_data.rs |
+| XA_Arena | Game modes, arena & session | 71 | 81% | exa_game/src/arena_outfit.rs; exa_game/src/arena_outfit_data.rs |
 | TMotileAI | AI & behaviour | 60 | 74% | exa_ai/src/chase.rs; exa_ai/src/route.rs |
+| SG_CharacterGen | Characters, motion & animation | 43 | 75% | exa_character/src/layers.rs; exa_character/src/look.rs |
 | TGUIDrawSkin | UI | 35 | 90% | exa_ui/src/skin.rs; exa_ui/src/gui_draw.rs |
-| SG_CharacterGen | Characters, motion & animation | 43 | 72% | exa_character/src/layers.rs; exa_character/src/look.rs |
 | TMotilePart | Characters, motion & animation | 53 | 54% | exa_physics/src/part.rs; exa_physics/src/grip.rs |
 | TPathFinder | AI & behaviour | 32 | 86% | exa_world/src/nav/path.rs; exa_world/src/nav/mover.rs |
 | TThaumTree | Thaumaturgy & effects | 38 | 66% | exa_game/src/thaum/tree.rs; exa_game/src/power_screen.rs |
 | TVCCloth | Physics, bodies & cloth | 30 | 84% | exa_physics/src/cloth.rs; exa_world/src/cloth.rs |
 | SG_PlayerControls | AI & behaviour | 47 | 53% | exa_game/src/player_controls.rs; exa_game/src/idle_orbit.rs |
-| TVXGIManager | Rendering & GPU | 29 | 76% | exa_render/src/gi.rs; exa_render/src/gi.wesl |
-| FLX_ItemFactory | Items, materials & crafting | 24 | 87% | exa_formats/src/factory.rs; exa_formats/src/weapon_stats.rs |
+| TVXGIManager | Rendering & GPU | 29 | 79% | exa_render/src/gi.rs; exa_render/src/gi.wesl |
+| FLX_ItemFactory | Items, materials & crafting | 24 | 89% | exa_formats/src/factory.rs; exa_formats/src/weapon_stats.rs |
 | TGSLines | UI | 24 | 85% | exa_ui/src/skin.rs; exa_ui/src/line_skin.rs |
+| TGUIItemContainer | Items, materials & crafting | 26 | 80% | exa_game/src/item_container.rs; exa_items/src/card.rs |
 | TMesh | Rendering & GPU | 25 | 82% | exa_formats/src/rfc.rs; exa_assets/src/model.rs |
 | RF_Skinning | Characters, motion & animation | 25 | 82% | exa_assets/src/skin.rs; exa_assets/src/model.rs |
-| TGUIItemContainer | Items, materials & crafting | 26 | 79% | exa_game/src/item_container.rs; exa_items/src/card.rs |
 | TSimSector | Physics, bodies & cloth | 28 | 70% | exa_physics/src/sector.rs; exa_physics/src/body_pairs.rs |
 | RF_SceneNodes | World, levels & terrain | 24 | 80% | exa_world/src/scene_nodes.rs; exa_world/src/light_flood.rs |
 | RFE_MeshTools | Rendering & GPU | 19 | 95% | exa_assets/src/mesh_weld.rs; exa_assets/src/mesh_edit.rs |
