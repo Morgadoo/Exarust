@@ -6,16 +6,21 @@
 //! wait and then runs two per-frame passes: the frame hook ([`stream`]) that
 //! inserts, uploads or unloads at most one tile, and the block selection
 //! ([`composite`]) that ranks every 6 m block and bakes one composite a
-//! frame. Exarust layers the materials per pixel instead of baking sets, so
-//! the selection drives the block ranks, the set pools and the per-block
-//! composite state; its set assignments are handed to
-//! [`exa_render::terrain_composite`] when a host is present.
+//! frame. The selection drives the block ranks, the set pools and the
+//! per-block composite state; its set assignments are handed to
+//! [`exa_render::terrain_composite`] when a host is present, and with
+//! `EXA_TERRAIN_SETS=1` [`super::composite_draw`] bakes the held sets and
+//! draws the blocks from them (otherwise the layers stack per pixel).
 //!
 //! Evidence: REA on the priority slot, the block selector and the frame
 //! hook; the numbers and orders are pinned in `stream` and `composite`.
 //! The light volume's planes are a guess: the pack shows the distance
 //! arithmetic and the plane list, not what fills the list, so Exarust
 //! models a point light's reach as a box (see [`super::stream::LightVolume`]).
+//! A hidden block is ranked against its room's light list
+//! ([`crate::rooms::RoomLights`]: the room's own lights and those a portal
+//! carries in), as the original ranks it against its sector's lights; a
+//! level without rooms ranks every block against every light.
 
 use bevy::camera::visibility::ViewVisibility;
 use bevy::prelude::*;
@@ -235,19 +240,20 @@ fn view_camera(cameras: &Query<(&Camera, &GlobalTransform)>) -> Option<(Vec2, Ve
         })
 }
 
-/// The level's lights as the reach volumes the block rank tests. A light's
-/// stored radius (the GI radius, which an unranged light keeps) is the reach;
-/// without one, the point light's range stands in. (Guess: see the module
-/// note.)
+/// The level's lights as the reach volumes the block rank tests, with each
+/// light's X/Z position in metres. A light's stored radius (the GI radius,
+/// which an unranged light keeps) is the reach; without one, the point
+/// light's range stands in. (Guess: see the module note.)
 fn light_volumes(
     lights: &Query<(
         &GlobalTransform,
         Option<&exa_render::gi::GiRadius>,
         Option<&PointLight>,
     )>,
-) -> Vec<LightVolume> {
+) -> (Vec<LightVolume>, Vec<Vec2>) {
     const REACH: f32 = 1.25;
     let mut volumes = Vec::new();
+    let mut positions = Vec::new();
     for (transform, radius, point) in lights {
         let reach = radius
             .map(|radius| radius.0 * REACH)
@@ -258,8 +264,39 @@ fn light_volumes(
         }
         let centre = transform.translation() * 100.0;
         volumes.push(LightVolume::box_volume(centre, Vec3::splat(reach)));
+        positions.push(Vec2::new(
+            transform.translation().x,
+            transform.translation().z,
+        ));
     }
-    volumes
+    (volumes, positions)
+}
+
+/// The rooms' light lists for lights at `positions` (metres, X/Z), each
+/// light's id its index: every light joins the room of the cell it stands
+/// in, then the rooms pass their lists through their portals, as the
+/// original builds its sector light lists once the rooms exist. Exarust
+/// builds them from the lights' current places each time it ranks (a
+/// carried light moves rooms), which the original does when a light is
+/// added.
+pub fn room_light_lists(
+    rooms: &crate::rooms::Rooms,
+    positions: &[Vec2],
+) -> crate::rooms::RoomLights {
+    let mut lists = crate::rooms::RoomLights::new(rooms.len());
+    for (id, &at) in positions.iter().enumerate() {
+        lists.add(rooms, id as u32, at);
+    }
+    lists.propagate(rooms);
+    lists
+}
+
+/// Each block's room and the rooms' light lists, when the level has rooms.
+#[derive(Clone, Copy, Debug)]
+pub struct BlockRooms<'a> {
+    /// Per block, its room.
+    pub rooms: &'a [Option<u16>],
+    pub lights: &'a crate::rooms::RoomLights,
 }
 
 /// The nearest-light distance of every block that is hidden and within the
@@ -271,6 +308,19 @@ pub fn block_light_distances(
     blocks: &[LiveBlock],
     visible: &[bool],
     lights: &[LightVolume],
+) -> Vec<Option<f32>> {
+    block_light_distances_in_rooms(focus, blocks, visible, lights, None)
+}
+
+/// [`block_light_distances`], each block in a room ranked only against its
+/// room's light list (none listed: the original's 65 000 cm); a block in no
+/// room, or a level without rooms, ranks against every light.
+pub fn block_light_distances_in_rooms(
+    focus: Vec2,
+    blocks: &[LiveBlock],
+    visible: &[bool],
+    lights: &[LightVolume],
+    rooms: Option<BlockRooms<'_>>,
 ) -> Vec<Option<f32>> {
     blocks
         .iter()
@@ -286,18 +336,33 @@ pub fn block_light_distances(
             if shown || !in_reach || lights.is_empty() {
                 return None;
             }
-            Some(nearest_light_distance(lights.iter(), &block.volume()))
+            let room = rooms.and_then(|r| {
+                r.rooms
+                    .get(index)
+                    .copied()
+                    .flatten()
+                    .map(|room| r.lights.of(room))
+            });
+            Some(match room {
+                Some(ids) => nearest_light_distance(
+                    ids.iter().filter_map(|&id| lights.get(id as usize)),
+                    &block.volume(),
+                ),
+                None => nearest_light_distance(lights.iter(), &block.volume()),
+            })
         })
         .collect()
 }
 
 /// The per-frame terrain driver: the frame hook's tile walk, then the
 /// composite selection around the camera's look-ahead point.
+#[allow(clippy::too_many_arguments)]
 pub fn drive_terrain_stream(
     mut commands: Commands,
     streaming: Option<ResMut<TerrainStreaming>>,
     cameras: Query<(&Camera, &GlobalTransform)>,
-    blocks: Query<&ViewVisibility>,
+    blocks: Query<(&ViewVisibility, Option<&super::TerrainBlock>)>,
+    level_rooms: Option<Res<crate::room_view::LevelRooms>>,
     lights: Query<(
         &GlobalTransform,
         Option<&exa_render::gi::GiRadius>,
@@ -344,22 +409,48 @@ pub fn drive_terrain_stream(
         .map(|block| {
             blocks
                 .get(block.entity)
-                .map(|visibility| visibility.get())
+                .map(|(visibility, _)| visibility.get())
                 .unwrap_or(true)
         })
         .collect();
     // A hidden, in-reach block ranks by its nearest light; the volumes are
     // built only then, so a view where every block is visible costs nothing.
     let distances = if visible.iter().any(|shown| !shown) {
-        let volumes = light_volumes(&lights);
-        block_light_distances(focus, &streaming.blocks, &visible, &volumes)
+        let (volumes, positions) = light_volumes(&lights);
+        match &level_rooms {
+            Some(level) => {
+                let lists = room_light_lists(&level.rooms, &positions);
+                let rooms: Vec<Option<u16>> = streaming
+                    .blocks
+                    .iter()
+                    .map(|block| {
+                        blocks
+                            .get(block.entity)
+                            .ok()
+                            .and_then(|(_, terrain)| terrain.and_then(|t| t.room))
+                    })
+                    .collect();
+                block_light_distances_in_rooms(
+                    focus,
+                    &streaming.blocks,
+                    &visible,
+                    &volumes,
+                    Some(BlockRooms {
+                        rooms: &rooms,
+                        lights: &lists,
+                    }),
+                )
+            }
+            None => block_light_distances(focus, &streaming.blocks, &visible, &volumes),
+        }
     } else {
         vec![None; streaming.blocks.len()]
     };
     let tick = streaming.tick(focus, &visible, &distances);
     // Hand the sets the selection holds to the renderer's composite host.
     // One new set a frame: making many render targets at once would stall
-    // the frame, and nothing draws them yet (the per-pixel shader does).
+    // the frame. The bakes and the draws from them follow in
+    // `composite_draw`.
     if let (Some(mut host), Some(mut assets)) = (host, assets)
         && host.enabled()
     {
@@ -588,6 +679,82 @@ mod tests {
         );
         assert_eq!(far, [None, None]);
         let _ = tick;
+    }
+
+    #[test]
+    fn a_hidden_block_ranks_against_its_rooms_lights_only() {
+        let streaming = streaming(&[(0.0, 0.0), (6.0, 0.0)]);
+        // Light 0 near block 1, light 1 far off.
+        let lights = [
+            LightVolume::box_volume(Vec3::new(1000.0, 0.0, 0.0), Vec3::splat(200.0)),
+            LightVolume::box_volume(Vec3::new(-2000.0, 0.0, 0.0), Vec3::splat(200.0)),
+        ];
+        // Three rooms in a row joined by doors (6 m cells, 8 × 3 grid):
+        // A over cells 1–2, B over cell 3, C over cells 4–5. Block 0 is in
+        // A, whose list holds only the far light; block 1 is in B, which
+        // lists nothing (no propagation run).
+        let w = 8u32;
+        let mut edges = vec![0u32; (w * 3) as usize];
+        let open = crate::rooms::CELL_OPEN;
+        for (x, [back, left, front, right]) in [
+            (1u32, [7u32, 7, 7, 0]),
+            (2, [7, 0, 7, 0xB]),
+            (3, [7, 0xB, 7, 0xB]),
+            (4, [7, 0xB, 7, 0]),
+            (5, [7, 0, 7, 7]),
+        ] {
+            edges[(w + x) as usize] = open | back | left << 4 | front << 8 | right << 12;
+        }
+        let grid = exa_formats::level::LevelGrid {
+            wall_sets: vec!["GEWS_UWA01".into()],
+            floor_sets: vec!["GEFS_UWA01".into()],
+            width: w,
+            height: 3,
+            plane_b: vec![0; edges.len()],
+            plane_c: vec![0; edges.len()],
+            edges,
+        };
+        let rooms = crate::rooms::Rooms::flood(&grid);
+        let room_a = rooms.room_of_node(Vec2::new(-15.0, 3.0)).unwrap();
+        let room_b = rooms.room_of_node(Vec2::new(-3.0, 3.0)).unwrap();
+        assert_ne!(room_a, room_b);
+        let mut lists = crate::rooms::RoomLights::new(rooms.len());
+        lists.add(&rooms, 1, Vec2::new(-15.0, 3.0));
+        let block_rooms = [Some(room_a), Some(room_b)];
+        let distances = block_light_distances_in_rooms(
+            Vec2::ZERO,
+            streaming.blocks(),
+            &[false; 2],
+            &lights,
+            Some(BlockRooms {
+                rooms: &block_rooms,
+                lights: &lists,
+            }),
+        );
+        // Block 0 sees only the far light: 2000 − 200 − 300.
+        assert_eq!(distances[0], Some(1500.0));
+        // Block 1's room lists no light: the original's 65 000 cm, though a
+        // light overlaps it.
+        assert_eq!(
+            distances[1],
+            Some(crate::terrain::composite::NO_LIGHT_DISTANCE)
+        );
+        // A block in no room ranks against every light.
+        let distances = block_light_distances_in_rooms(
+            Vec2::ZERO,
+            streaming.blocks(),
+            &[false; 2],
+            &lights,
+            Some(BlockRooms {
+                rooms: &[None, None],
+                lights: &lists,
+            }),
+        );
+        assert_eq!(distances[1], Some(0.0));
+        // The lists come from the lights' places: a light in room A's cell
+        // joins room A.
+        let built = room_light_lists(&rooms, &[Vec2::new(-15.0, 3.0), Vec2::new(0.0, -15.0)]);
+        assert_eq!(built.of(room_a), &[0][..]);
     }
 
     #[test]

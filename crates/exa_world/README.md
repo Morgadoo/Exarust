@@ -66,8 +66,13 @@ and the grid's rooms; portal clipping is next (see
   every frame from the active camera's look-ahead focus, marking an inserted
   tile's blocks wanted, dropping an unloaded tile's blocks and handing the
   sets the selection holds to `exa_render::terrain_composite` (opt-in with
-  `EXA_TERRAIN_SETS=1`); the priority slot is `reprioritise`, not run every
-  frame because its caller is not identified; `terrain::wireframe` draws each block's
+  `EXA_TERRAIN_SETS=1`); a hidden block ranks against its room's light list
+  (`room_light_lists`, the rooms' own lights and those their portals carry
+  in), or every light in a level without rooms; `terrain::composite_draw`
+  bakes each held set (one block a frame) and swaps the block onto its own
+  material that reads the set at its `TexPos`, back to the tile's per-pixel
+  material when it loses the set; the priority slot is `reprioritise`, not
+  run every frame because its caller is not identified; `terrain::wireframe` draws each block's
   triangle edges as lines under `EXA_TERRAIN_WIRE` (the original's debug
   wireframe hook). Grass and
   small plants take the original's upward normals turned with the instance,
