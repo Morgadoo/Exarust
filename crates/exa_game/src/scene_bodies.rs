@@ -183,6 +183,9 @@ pub fn opponent_plan(
     body.look = BodyLook::Actor(fighter_template(plan.level, plan.outfit_level).to_string());
     body.team = OPPONENT_TEAM;
     body.roles = vec![role];
+    // The original's body takes the id its freshly written record gets; with
+    // the stand-in template the id is only a non-zero tag the match tick
+    // reads for a non-company body, whose falls are not resolved [guess].
     body.id = u32::try_from(plan.level).unwrap_or(0).wrapping_add(1);
     body.damage = plan.damage;
     body.condition_health = plan.health;
@@ -723,19 +726,31 @@ fn apply_scene_commands(
     support: Option<Res<bevy::image::CompressedImageFormatSupport>>,
     players: Query<Entity, With<crate::player::Player>>,
     bodies: Query<Option<&exa_physics::CharacterHandles>>,
+    models: Query<&ChildOf, With<SceneFighter>>,
+    mut tables: Local<Option<GameTables>>,
     mut messages: MessageReader<SceneCommand>,
     mut built: MessageWriter<SceneBodyBuilt>,
 ) {
+    // Most frames ask for nothing: the game's tables are only read (once)
+    // when a command comes.
+    if messages.is_empty() {
+        return;
+    }
     let Some(game) = game else {
         messages.clear();
         return;
     };
-    let Some(items) = game_items(&game) else {
+    if tables.is_none() {
+        *tables = game_items(&game).map(|items| GameTables {
+            items,
+            races: game_races(&game),
+            book: game_roles(&game),
+        });
+    }
+    let Some(GameTables { items, races, book }) = tables.as_ref() else {
         messages.clear();
         return;
     };
-    let races = game_races(&game);
-    let book = game_roles(&game);
     let player = players.iter().next();
     for command in messages.read() {
         match command {
@@ -756,10 +771,10 @@ fn apply_scene_commands(
                 let mut context = SpawnContext {
                     game: &game,
                     loader: &mut loader,
-                    items: &items,
-                    races: &races,
+                    items,
+                    races,
                     actors: cache,
-                    book: &book,
+                    book,
                     player,
                     now_ms: clock.as_ref().map_or(0, |clock| clock.now_ms),
                     roll,
@@ -772,11 +787,16 @@ fn apply_scene_commands(
                 }
             }
             SceneCommand::Despawn(entity) => {
-                if let Ok(handles) = bodies.get(*entity) {
+                // A body is named by its root or by its body model (the
+                // entity the match's queries see); the capsule hangs on the
+                // root (until the body goes limp), so a model's root goes
+                // with it.
+                let root = models.get(*entity).map_or(*entity, ChildOf::parent);
+                if let Ok(handles) = bodies.get(root) {
                     if let Some(handles) = handles {
                         physics.0.remove_body_with_colliders(handles.body, true);
                     }
-                    commands.entity(*entity).despawn();
+                    commands.entity(root).despawn();
                 }
             }
             SceneCommand::Place { body, at, yaw } => {
@@ -788,6 +808,13 @@ fn apply_scene_commands(
             }
         }
     }
+}
+
+/// The game's tables a spawn reads, parsed once per process.
+struct GameTables {
+    items: Vec<Item>,
+    races: Vec<Race>,
+    book: exa_formats::roles::RoleDb,
 }
 
 /// The game's object database as items.
@@ -1043,10 +1070,31 @@ mod tests {
                 .get::<exa_physics::body::Physical>(built[0].body.model)
                 .is_some()
         );
-        // A despawn removes the root and the body with it.
+        // The capsule was registered on the root.
+        let capsules = app
+            .world()
+            .resource::<exa_physics::Physics>()
+            .0
+            .bodies
+            .len();
+        assert!(
+            app.world()
+                .get::<exa_physics::CharacterHandles>(built[0].body.root)
+                .is_some()
+        );
+        // A despawn by the body model (what the match's queries see)
+        // removes the root, its capsule and the body with it.
         app.world_mut()
-            .write_message(SceneCommand::Despawn(built[0].body.root));
+            .write_message(SceneCommand::Despawn(built[0].body.model));
         app.update();
+        assert_eq!(
+            app.world()
+                .resource::<exa_physics::Physics>()
+                .0
+                .bodies
+                .len(),
+            capsules - 1
+        );
         assert!(app.world().get_entity(built[0].body.root).is_err());
         assert!(app.world().get_entity(built[0].body.model).is_err());
     }
