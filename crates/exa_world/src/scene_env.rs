@@ -57,6 +57,15 @@ pub const AMBIENT_SCALE_SKY: f32 = 3.0;
 pub const SUN_INTENSITY: f32 = 3.0;
 pub const SUN_INTENSITY_SKY: f32 = 4.5;
 
+/// The sun light's node flags, its kind word and its range, as the original
+/// creates the `_Sunlight` node: type and shadow flags, light kind 2 and a
+/// 3 m reach. The direction it is given before its matrix is built is a
+/// short vector to the body, not the unit one the shading uses.
+pub const SUN_LIGHT_FLAGS: u32 = 0x2000_1000;
+pub const SUN_LIGHT_KIND: u32 = 2;
+pub const SUN_LIGHT_RANGE: f32 = 3.0;
+pub const SUN_NODE_DIRECTION: [f32; 3] = [0.0, 260.0, -280.0];
+
 /// The constructor's defaults.
 pub const DEFAULT_TIME: f32 = 0.7516;
 pub const DEFAULT_AZIMUTH: f32 = -0.21;
@@ -121,6 +130,12 @@ pub fn linearise(rgb: [f32; 3]) -> [f32; 3] {
     rgb.map(linearise_channel)
 }
 
+/// Linearises the colour channels of an RGBA colour; the scalar is kept.
+fn linearise4(rgba: [f32; 4]) -> [f32; 4] {
+    let rgb = linearise([rgba[0], rgba[1], rgba[2]]);
+    [rgb[0], rgb[1], rgb[2], rgba[3]]
+}
+
 /// One record of the scene environment's time-of-day track. Its slots are
 /// the original's record fields in order; the ones whose role is known are
 /// named for it.
@@ -164,6 +179,284 @@ pub struct EnvRecord {
     pub q: f32,
 }
 
+/// The engine's built-in environment track: six records over the daylight
+/// factor, at the keys 0.38, 0.44, 0.47, 0.54, 0.62 and 0.70. The values are
+/// the track's data as the image stores them; the start-up pass runs
+/// [`EnvironmentTrack::day`] over them.
+const DAY_RECORDS: [EnvRecord; 6] = [
+    EnvRecord {
+        key: 0.3799999952316284,
+        a: [0.30000001192092896, 0.30000001192092896, 0.25],
+        b: [0.0, 0.0, 0.0, 0.23999999463558197],
+        sun: [0.1014999970793724; 3],
+        fill: [0.21199999749660492, 0.2644999921321869, 0.32499998807907104],
+        fog: [
+            0.08479999750852585,
+            0.10580000281333923,
+            0.15000000596046448,
+        ],
+        sky_tint: [0.550000011920929, 0.6000000238418579, 0.6499999761581421],
+        sky_away: [0.08550000190734863, 0.10499999672174454, 0.1509999930858612],
+        sky_towards: [0.08550000190734863, 0.10499999672174454, 0.1509999930858612],
+        i: [
+            0.06650000065565109,
+            0.08500000089406967,
+            0.12600000202655792,
+        ],
+        j: [
+            0.06440000236034393,
+            0.08799999952316284,
+            0.12080000340938568,
+        ],
+        k: [
+            0.30000001192092896,
+            0.30000001192092896,
+            0.30000001192092896,
+            48.0,
+        ],
+        l: [
+            0.03500000014901161,
+            0.05000000074505806,
+            0.07500000298023224,
+            1.0,
+        ],
+        m: [
+            0.07000000029802322,
+            0.07999999821186066,
+            0.07500000298023224,
+        ],
+        n: [0.5, 0.5, 0.5, 24.0],
+        o: [
+            0.07999999821186066,
+            0.10999999940395355,
+            0.18000000715255737,
+        ],
+        p: [0.0, 0.6000000238418579, 1.0, 0.30000001192092896],
+        q: 6.0,
+    },
+    EnvRecord {
+        key: 0.4399999976158142,
+        a: [0.0, 0.0, 0.0],
+        b: [0.0, 0.0, 0.0, 0.5],
+        sun: [0.0, 0.0, 0.0],
+        fill: [0.2150000035762787, 0.25049999356269836, 0.3255000114440918],
+        fog: [0.1289999932050705, 0.15029999613761902, 0.19529999792575836],
+        sky_tint: [0.550000011920929, 0.6000000238418579, 0.6499999761581421],
+        sky_away: [
+            0.12880000472068787,
+            0.18400000035762787,
+            0.25760000944137573,
+        ],
+        sky_towards: [
+            0.12880000472068787,
+            0.18400000035762787,
+            0.25760000944137573,
+        ],
+        i: [
+            0.11969999969005585,
+            0.16200000047683716,
+            0.24480000138282776,
+        ],
+        j: [
+            0.12880000472068787,
+            0.18400000035762787,
+            0.25760000944137573,
+        ],
+        k: [0.0, 0.0, 0.0, 32.0],
+        l: [
+            0.11999999731779099,
+            0.14000000059604645,
+            0.18000000715255737,
+            1.0,
+        ],
+        m: [0.0, 0.0, 0.0],
+        n: [0.0, 0.0, 0.0, 0.0],
+        o: [
+            0.08500000089406967,
+            0.10000000149011612,
+            0.15000000596046448,
+        ],
+        p: [0.0, 0.6000000238418579, 1.0, 0.30000001192092896],
+        q: 7.0,
+    },
+    EnvRecord {
+        key: 0.4699999988079071,
+        a: [0.03999999910593033, 0.03999999910593033, 0.0],
+        b: [0.800000011920929, 0.36000001430511475, 0.0, 2.0],
+        sun: [0.019999999552965164, 0.009999999776482582, 0.0],
+        fill: [0.1679999977350235, 0.2003999948501587, 0.2720000147819519],
+        fog: [
+            0.12600000202655792,
+            0.15029999613761902,
+            0.20399999618530273,
+        ],
+        sky_tint: [0.6499999761581421, 0.7099999785423279, 0.7400000095367432],
+        sky_away: [
+            0.14499999582767487,
+            0.20000000298023224,
+            0.30000001192092896,
+        ],
+        sky_towards: [0.3400000035762787, 0.2800000011920929, 0.25999999046325684],
+        i: [0.2029999941587448, 0.23999999463558197, 0.36000001430511475],
+        j: [0.20000000298023224, 0.25999999046325684, 0.4099999964237213],
+        k: [
+            0.8999999761581421,
+            0.8500000238418579,
+            0.10000000149011612,
+            6.0,
+        ],
+        l: [
+            0.14000000059604645,
+            0.15000000596046448,
+            0.20999999344348907,
+            1.100000023841858,
+        ],
+        m: [
+            0.07999999821186066,
+            0.07000000029802322,
+            0.07999999821186066,
+        ],
+        n: [
+            0.3499999940395355,
+            0.20000000298023224,
+            0.10000000149011612,
+            8.0,
+        ],
+        o: [0.17000000178813934, 0.1899999976158142, 0.30000001192092896],
+        p: [0.0, 0.6000000238418579, 1.0, 0.15000000596046448],
+        q: 1.0,
+    },
+    EnvRecord {
+        key: 0.5400000214576721,
+        a: [0.029999999329447746, 0.029999999329447746, 0.0],
+        b: [
+            0.4000000059604645,
+            0.10000000149011612,
+            0.10000000149011612,
+            1.5,
+        ],
+        sun: [0.800000011920929, 0.5600000023841858, 0.36000001430511475],
+        fill: [0.4300000071525574, 0.46000000834465027, 0.5],
+        fog: [0.5099999904632568, 0.5600000023841858, 0.6399999856948853],
+        sky_tint: [0.7599999904632568, 0.7900000214576721, 0.8999999761581421],
+        sky_away: [0.3799999952316284, 0.36000001430511475, 0.3700000047683716],
+        sky_towards: [0.699999988079071, 0.4300000071525574, 0.3400000035762787],
+        i: [
+            0.27000001072883606,
+            0.33000001311302185,
+            0.44999998807907104,
+        ],
+        j: [0.4399999976158142, 0.4000000059604645, 0.4300000071525574],
+        k: [0.6000000238418579, 0.3100000023841858, 0.0, 6.0],
+        l: [
+            0.20000000298023224,
+            0.18000000715255737,
+            0.23999999463558197,
+            1.0,
+        ],
+        m: [0.5, 0.3499999940395355, 0.20000000298023224],
+        n: [0.6000000238418579, 0.1599999964237213, 0.0, 3.0],
+        o: [0.28999999165534973, 0.3100000023841858, 0.4000000059604645],
+        p: [0.0, 0.0, 0.0, 0.0],
+        q: 0.0,
+    },
+    EnvRecord {
+        key: 0.6200000047683716,
+        a: [0.029999999329447746, 0.029999999329447746, 0.0],
+        b: [
+            0.4000000059604645,
+            0.3400000035762787,
+            0.25,
+            1.2000000476837158,
+        ],
+        sun: [0.8235294818878174, 0.7647059559822083, 0.6274510025978088],
+        fill: [0.45098042488098145, 0.4705882668495178, 0.4901961088180542],
+        fog: [0.37254902720451355, 0.5098039507865906, 0.7058823704719543],
+        sky_tint: [0.8500000238418579, 0.8999999761581421, 1.0],
+        sky_away: [
+            0.36000001430511475,
+            0.38999998569488525,
+            0.44999998807907104,
+        ],
+        sky_towards: [0.5, 0.5, 0.5],
+        i: [0.17000000178813934, 0.2199999988079071, 0.3400000035762787],
+        j: [0.4399999976158142, 0.4699999988079071, 0.550000011920929],
+        k: [
+            0.4000000059604645,
+            0.33000001311302185,
+            0.1599999964237213,
+            8.0,
+        ],
+        l: [
+            0.33000001311302185,
+            0.3400000035762787,
+            0.4000000059604645,
+            1.0,
+        ],
+        m: [0.27000001072883606, 0.25, 0.1599999964237213],
+        n: [
+            0.3400000035762787,
+            0.2199999988079071,
+            0.10000000149011612,
+            10.0,
+        ],
+        o: [0.4300000071525574, 0.4000000059604645, 0.4300000071525574],
+        p: [0.0, 0.0, 0.0, 0.0],
+        q: 0.0,
+    },
+    EnvRecord {
+        key: 0.699999988079071,
+        a: [0.0, 0.0, 0.0],
+        b: [
+            0.5600000023841858,
+            0.47999998927116394,
+            0.25,
+            1.2999999523162842,
+        ],
+        sun: [0.8627451658248901, 0.8274510502815247, 0.7254902124404907],
+        fill: [0.43137258291244507, 0.4705882668495178, 0.5098039507865906],
+        fog: [0.3921568989753723, 0.5490196347236633, 0.7843137979507446],
+        sky_tint: [0.8500000238418579, 0.8999999761581421, 1.0],
+        sky_away: [0.4000000059604645, 0.4399999976158142, 0.5],
+        sky_towards: [0.4000000059604645, 0.4399999976158142, 0.5],
+        i: [0.17000000178813934, 0.2199999988079071, 0.36000001430511475],
+        j: [0.41999998688697815, 0.4699999988079071, 0.550000011920929],
+        k: [
+            0.27000001072883606,
+            0.27000001072883606,
+            0.23000000417232513,
+            16.0,
+        ],
+        l: [
+            0.2800000011920929,
+            0.30000001192092896,
+            0.36000001430511475,
+            1.0,
+        ],
+        m: [
+            0.23000000417232513,
+            0.20999999344348907,
+            0.12999999523162842,
+        ],
+        n: [
+            0.3100000023841858,
+            0.30000001192092896,
+            0.23000000417232513,
+            10.0,
+        ],
+        o: [0.3799999952316284, 0.4099999964237213, 0.47999998927116394],
+        p: [0.0, 0.0, 0.0, 0.0],
+        q: 0.0,
+    },
+];
+
+/// The start-up pass's scale on the sky's away and towards colours, the two
+/// sky colour records and the sky cube's tint.
+const DAY_SKY_SCALE: f32 = 0.75;
+/// The share of the way from the sky's away colour to its `j` colour at
+/// which a record without its own `o` colour takes it.
+const DAY_O_FILL: f32 = 0.25;
+
 fn lerp3(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
     [
         (b[0] - a[0]) * t + a[0],
@@ -185,6 +478,39 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
     (b - a) * t + a
 }
 
+/// The original's start-up pass over the built-in track, applied to the
+/// records in place (see [`EnvironmentTrack::day`]).
+fn day_startup(records: &mut [EnvRecord; 6], linear: bool) {
+    for r in records {
+        if linear {
+            r.a = linearise(r.a);
+            r.b = linearise4(r.b);
+            r.sun = linearise(r.sun);
+            r.fill = linearise(r.fill);
+            r.sky_away = linearise(r.sky_away);
+            r.sky_towards = linearise(r.sky_towards);
+            r.i = linearise(r.i);
+            r.j = linearise(r.j);
+            r.k = linearise4(r.k);
+            r.l = linearise4(r.l);
+            r.m = linearise(r.m);
+            r.n = linearise4(r.n);
+            if r.o[0] > 0.0 {
+                r.o = linearise(r.o);
+                scale(&mut r.o, DAY_SKY_SCALE);
+            }
+            scale(&mut r.sky_away, DAY_SKY_SCALE);
+            scale(&mut r.sky_towards, DAY_SKY_SCALE);
+            scale(&mut r.i, DAY_SKY_SCALE);
+            scale(&mut r.j, DAY_SKY_SCALE);
+            scale4(&mut r.k, DAY_SKY_SCALE);
+        }
+        if r.o[0] == 0.0 {
+            r.o = lerp3(r.sky_away, r.j, DAY_O_FILL);
+        }
+    }
+}
+
 /// The track: up to six records entered at climbing positions. A value
 /// picks the interval it falls in and blends that interval's two records.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -193,6 +519,18 @@ pub struct EnvironmentTrack {
 }
 
 impl EnvironmentTrack {
+    /// The engine's built-in track after its start-up pass. In linear light
+    /// the pass linearises the track's colours (a, b, the sun, the fill, the
+    /// sky's away and towards colours, i, j, k, l, m, n and, when its first
+    /// channel is positive, o) and scales the five sky colours and the sky
+    /// cube's tint by 0.75. A record whose `o` is black then takes its `o`
+    /// colour a quarter of the way from the sky's away colour to `j`.
+    pub fn day(linear: bool) -> Self {
+        let mut records = DAY_RECORDS;
+        day_startup(&mut records, linear);
+        Self { records }
+    }
+
     /// Picks and blends the record for `value` (a daylight factor). The
     /// value below the first key is the first record; above the sixth
     /// record's key, the fifth and sixth blend at 1, which is the sixth.
@@ -604,6 +942,16 @@ pub struct Frame {
     pub sky_colour: [f32; 3],
     /// Whether a lightning flash is on.
     pub flash: bool,
+    /// The scene's far clip the frame sets from the sun's height: −100000
+    /// while the body is at or below 0.4, −25 above it (centimetres, as the
+    /// original stores the negative near plane).
+    pub shadow_far: f32,
+    /// The rain-driven wind strength the frame publishes (the current rain
+    /// times 0.3).
+    pub wind: f32,
+    /// The tint the renderer is given: the tint colour times the tint
+    /// strength.
+    pub tint: [f32; 3],
 }
 
 /// One frame's fog.
@@ -671,6 +1019,9 @@ pub struct SceneEnvironment {
     pub global_light: [f32; 4],
     /// The global tint, sRGB RGBA.
     pub tint: [f32; 4],
+    /// The global tint's strength. The renderer receives the tint colour
+    /// times it.
+    pub tint_strength: f32,
     /// The fill light's colour, sRGB.
     pub fill: [f32; 3],
     /// The clear colour the level asks for, sRGB RGBA.
@@ -745,11 +1096,12 @@ impl SceneEnvironment {
                 [rgb[0], rgb[1], rgb[2], DEFAULT_GLOBAL_LIGHT[3]]
             },
             tint: [1.0; 4],
+            tint_strength: 1.0,
             fill: DEFAULT_FILL,
             background: DEFAULT_BACKGROUND,
             record_fog: [0.0; 3],
             current: EnvRecord::default(),
-            track: None,
+            track: Some(EnvironmentTrack::day(true)),
             sun_towards: [0.0, 1.0, 0.0],
             sky_map_resolution,
             sun_dim: 0.0,
@@ -764,6 +1116,9 @@ impl SceneEnvironment {
                 ambient_scale: AMBIENT_SCALE_INDOOR,
                 sky_colour: [0.0; 3],
                 flash: false,
+                shadow_far: -100_000.0,
+                wind: 0.0,
+                tint: [1.0; 3],
             },
             linear: true,
         }
@@ -1240,12 +1595,13 @@ impl SceneEnvironment {
                 } else {
                     if l.next_step < now {
                         let r = rng.unit() as f64;
-                        // A rising step turns down; a falling, zero or NaN
-                        // one turns up.
-                        l.step = if l.step > 0.0 {
-                            (-0.1 - r * 0.2) as f32
-                        } else {
+                        // A rising step (anything not at or below zero,
+                        // NaN included, turns down) turns down; a falling,
+                        // zero or NaN one turns up.
+                        l.step = if l.step <= 0.0 {
                             (r * 0.2 + 0.1) as f32
+                        } else {
+                            (-0.1 - r * 0.2) as f32
                         };
                         l.next_step = rng.below(40) + now + 50;
                     }
@@ -1388,6 +1744,17 @@ impl SceneEnvironment {
             },
             sky_colour: horizon,
             flash: self.weather.flash,
+            shadow_far: if (self.sun_height as f64) > 0.4 {
+                -25.0
+            } else {
+                -100_000.0
+            },
+            wind: (self.weather.rain as f64 * 0.3) as f32,
+            tint: [
+                self.tint[0] * self.tint_strength,
+                self.tint[1] * self.tint_strength,
+                self.tint[2] * self.tint_strength,
+            ],
         };
         self.frame
     }
@@ -2116,5 +2483,89 @@ mod tests {
         assert_eq!(env.global_light[3], 0.75);
         // The sun light's own colour is not touched.
         assert_eq!(env.sun_colour, [0.75; 3]);
+    }
+
+    #[test]
+    fn the_day_track_is_the_engines_six_records() {
+        let raw = EnvironmentTrack::day(false);
+        let keys: Vec<f32> = raw.records.iter().map(|r| r.key).collect();
+        assert_eq!(keys, [0.38, 0.44, 0.47, 0.54, 0.62, 0.7]);
+        // The raw third record's fill and fog colours.
+        assert_eq!(raw.records[2].fill, [0.168, 0.2004, 0.272]);
+        assert_eq!(raw.records[2].fog, [0.126, 0.1503, 0.204]);
+        // The track the scene starts with is the linear-light one.
+        let scene = SceneEnvironment::new(5);
+        let linear = scene.track.unwrap();
+        // The sun's colour through the sRGB curve, then the sky colours by
+        // the start-up pass's 0.75.
+        let sun = linear.records[2].sun[0];
+        assert!((sun - 0.001_547_988).abs() < 1e-8, "{sun}");
+        let away = linear.records[2].sky_away[0];
+        // 0.145 sRGB → 0.0185 linear, × 0.75.
+        assert!((away - 0.013_858_855).abs() < 1e-6, "{away}");
+        // `o` is positive, so it is linearised and scaled too.
+        let o = linear.records[2].o[0];
+        assert!((o - 0.018_386_26).abs() < 1e-6, "{o}");
+        // No shipped record lacks `o`; the fill rule still holds on a
+        // synthetic one.
+        let mut loose = DAY_RECORDS;
+        loose[0].o = [0.0; 3];
+        loose[0].sky_away = [0.2, 0.2, 0.2];
+        loose[0].j = [0.6, 0.6, 0.6];
+        day_startup(&mut loose, false);
+        assert_eq!(loose[0].o, [0.3; 3]);
+    }
+
+    #[test]
+    fn the_sky_placement_takes_the_tracks_colours() {
+        let mut env = SceneEnvironment::new(5);
+        env.sky = true;
+        env.set_sun_position(DEFAULT_AZIMUTH, DEFAULT_TIME);
+        // The daylight 0.4978 falls between the third and fourth records.
+        assert_eq!(env.current.key, 0.47);
+        // The record's fog is linearised by the blend and stored at 0.375.
+        assert_eq!(
+            env.record_fog,
+            [
+                env.current.fog[0] * 0.375,
+                env.current.fog[1] * 0.375,
+                env.current.fog[2] * 0.375
+            ]
+        );
+        assert_eq!(env.fill, env.current.fill);
+        assert_eq!(env.sky_sun_colour, env.current.sun);
+        // The sun colour at 0.4978, worked from the raw table: record 3's
+        // 0.8 sRGB → 0.603827 linear by the startup pass, blended towards
+        // record 4's 0.823529.
+        assert!(
+            (env.sky_sun_colour[0] - 0.240_332).abs() < 2e-4,
+            "{:?}",
+            env.sky_sun_colour
+        );
+    }
+
+    #[test]
+    fn a_frame_publishes_the_shadow_far_plane_the_wind_and_the_tint() {
+        let mut env = SceneEnvironment::new(5);
+        env.fog.enabled = true;
+        env.sun_height = 0.39;
+        let frame = env.apply_frame([0.0, 0.0, 1.0]);
+        // Up to the threshold the far clip is the deep one; at the single
+        // 0.4 (which is a shade above the double 0.4) and past it, the near.
+        assert_eq!(frame.shadow_far, -100_000.0);
+        env.sun_height = 0.4;
+        assert_eq!(env.apply_frame([0.0, 0.0, 1.0]).shadow_far, -25.0);
+        // The wind is the rain times 0.3, in double precision.
+        env.weather.rain = 0.5;
+        assert_eq!(env.apply_frame([0.0, 0.0, 1.0]).wind, 0.15);
+        // The tint the renderer receives is the colour times its strength.
+        env.tint = [0.5, 0.25, 0.75, 1.0];
+        env.tint_strength = 2.0;
+        assert_eq!(env.apply_frame([0.0, 0.0, 1.0]).tint, [1.0, 0.5, 1.5]);
+        // The light node's constants.
+        assert_eq!(SUN_LIGHT_FLAGS, 0x2000_1000);
+        assert_eq!(SUN_LIGHT_KIND, 2);
+        assert_eq!(SUN_LIGHT_RANGE, 3.0);
+        assert_eq!(SUN_NODE_DIRECTION, [0.0, 260.0, -280.0]);
     }
 }
