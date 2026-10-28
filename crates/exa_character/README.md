@@ -287,16 +287,19 @@ tested rules of their own.
   An assembled factory weapon has no stored rigid node and starts as the
   original's one merged part.
 - A wielded weapon or torch becomes a solver body: every model node that
-  stores a rigid body is a part, its parent the nearest rigid ancestor,
-  each moved by its own node entity, with a `PendingProp` and an
-  `exa_physics::grip::HeldGrip` carrying its grip spec, holder body and
-  hand and forearm entities. A model with no stored rigid node (an
-  assembled factory weapon) gets one part fitted by the original's
-  factory-weapon shape builder over its meshes. The physics grip stage
-  builds the links once both bodies exist and pulls the item to the hand;
-  the item never meets its holder's body. The grip runtime
-  (`grip_runtime`) reads the holder's clip every tick, applies the grip
-  table entry's mode, steps an active flip, turns the item's node and
+  stores a rigid body is a part, its parent the nearest rigid ancestor;
+  the top part moves the item's root entity (which carries its blade,
+  grip and carried fire), the others their own node entities. A
+  `PendingProp` and an `exa_physics::grip::HeldGrip` carry its grip spec,
+  holder body, hand and forearm entities and the parry-weld gate (off in
+  the heavy-claws state). A model with no stored rigid node (an assembled
+  factory weapon) stays a scene child of the hand: `assembled_item_body`
+  fits one part with the original's factory-weapon shape builder, tested
+  but not attached. The physics grip stage builds the links once both
+  bodies exist and pulls the item to the hand; the item never meets its
+  holder's body. The grip runtime (`grip_runtime`) reads the holder's clip
+  every tick, applies the grip table entry's mode, steps an active flip
+  (started by a `FlipWeaponRequest` for the character's entity) and
   rebuilds its `Blade` record from the flipped weapon section.
 - A wielded weapon sits under the hand its grip names
   (`exa_combat::grip`, by its weapon class as the first held item: a

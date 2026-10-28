@@ -260,7 +260,7 @@ and the Talk key ends it; with neither, the Talk key starts talking, if
 allowed. Any other key then goes on, in this order: Q uses the picked power
 (if powers are allowed), Tab toggles combat mode, I opens the inventory (if
 allowed; in the modes that hide it, only while collapsing), R asks for the
-weapon sets to swap (if allowed), F turns the held weapon over, K
+weapon sets to swap (if allowed), F lights or puts out the held light, K
 the skills and J the journal (if allowed and not hidden), P the power tree
 (if powers are allowed and the player has some), and C the power bar (when
 the player, or else the companion, has powers). The permissions are a mask
@@ -270,9 +270,11 @@ the game sets: skills and journal 1, inventory 2, powers 4, talk 8 and swap
 Entering combat mode lets go of what the hand holds and clears the
 request's backpedal, keys' heading and turn-about bits. The swap is refused
 while the body is busy (its condition word has any of 0x10202) or a lift is
-on the cursor. F asks the grip runtime to turn the held weapon over
-(0x100136f40); the light toggle has no key of its own in the shipped
-table.
+on the cursor. F toggles the record's light flag of the first held item
+when it gives light and the body is not switching weapons (0x10000), and
+then asks the grip runtime to start the held item's flip, as the original
+does in the same branch. (The original's gate reads the weapon section's
+flipped-side kind byte rather than a light; Exarust keeps the light test.)
 
 Wired in Exarust: Tab, R and F, and C with the digits, Q and the arrows:
 the hotkey handler sends the cast plugin the bar's commands, so C opens and
@@ -1179,12 +1181,14 @@ held items change (by the character's), both giving the same grip
   player's two-hander; a polearm is held in the left hand at the chest,
   its haft running down to the right hand at the hip.
 - **In Exarust.** Every rigid node of a held item is a solver part joined
-  to its hand; an assembled factory weapon gets one fitted part. The grip
-  modes switch the two-hander's second hand, arm and stab links and slide
-  the polearm's grip by the motion, and F runs the flip animation and
-  rebuilds the weapon record from its flipped side. A held shield item
-  takes the shield builder's face pivots. Second weapons and the starting
-  flip flag are not attached yet.
+  to its hand, the top one moving the item's root. An assembled factory
+  weapon's fitted part is built by a tested function but not attached yet:
+  those weapons stay scene children of the hand. The grip modes switch the
+  two-hander's second hand, arm and stab links and slide the polearm's
+  grip by the motion, and a flip request (sent by F) runs the flip
+  animation and rebuilds the weapon record from its flipped side. A held
+  shield item takes the shield builder's face pivots. Second weapons and
+  the starting flip flag are not attached yet.
 
 ## Weapon sets and what a character carries
 

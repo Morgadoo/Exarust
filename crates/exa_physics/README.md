@@ -327,7 +327,7 @@ contact): above 0.5 and either past its clock or
 over twice the last strength, the volume `1.5·min(0.01·S, 1)` (times
 `8·mobility + 0.2` under 0.1), the pitch `(0.02·mobility + 0.9)·(0.6·v +
 0.7)` (or `7·mobility + 0.3` under 0.1) and the clock `now + 220 −
-round(170·v)` plus the caller's draw.
+round(170·v)` plus a draw below 100 ms, made only when it rings.
 
 A held item's body (`grip`) is joined to the hand that holds it by the
 grip table's link records, in the original's order and numbers: the second
@@ -344,19 +344,20 @@ link slides at 15·scale cm, `relax` takes the post-change slack off the
 links enabled once, and `flip_step` turns the flip point about the item's y
 by `f·π` while a flip is active and the character is not attacking away
 from its middle; either end clears the active flag, turns the item's
-flipped state and marks its record for a rebuild. A shield's soft world
-weld stiffens to strength 1 when its holder dies (`weld_on_death`). `GripLink` is plain data
+flipped state and marks its record for a rebuild (the middle and end tests
+are double compares, as the original's). The death routine's stiffening
+of a soft world weld to strength 1 is `weld_on_death`, not called yet:
+Exarust frees a dead holder's item links. `GripLink` is plain data
 with the law documented: a correction is shared by the item's and the
 hand's particle weights and mobilities; a world link moves only the item.
 `grip_solve` runs the records as a cross-body solver stage: a held item is
-its own `Ragdoll` (one part per stored rigid node, or one fitted part for
-an assembled factory weapon), pulled every iteration to the hand, second
+its own `Ragdoll` (one part per stored rigid node), pulled every iteration to the hand, second
 hand and arm by their mobility shares with the body's own limp link law (a
 slack link's smoothed length kept from tick to tick), and kept off its
 holder's body and the other items of the same character (the original's
 all-ones group mask, as `Ragdoll::held_by`). Its generic world weld is the
-stiff origin link only; the soft weld is built under the original's
-natural-weapon gate. A shield item takes the shield builder's three face
+stiff origin link, plus the soft (parry) weld when the holder may parry,
+0.3 of the node box's top above the grip (at the grip for a polearm). A shield item takes the shield builder's three face
 pivots and its own soft world link. The character's equip and the torch
 light a held item's body and its `HeldGrip`.
 
