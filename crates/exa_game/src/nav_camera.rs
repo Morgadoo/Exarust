@@ -618,6 +618,40 @@ pub struct Preset {
     /// The pitch speed and the zoom ease per tick the preset sets.
     pub pitch_speed: f32,
     pub zoom_speed: f32,
+    /// The viewport callbacks the flags install.
+    pub handlers: Handlers,
+}
+
+/// The viewport callbacks a preset installs, by its flags. The original
+/// hands the viewport a wheel handler when the record asks for it; for the
+/// editor camera it installs the press and move callbacks, otherwise (when
+/// the stepped camera is not the editor's) a free-camera press and, unless
+/// the flag says otherwise, a move handler. Exarust has no viewport; the
+/// set a record asks for is this value and the host's to install.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Handlers {
+    /// The wheel's zoom handler (`0x200`).
+    pub wheel: bool,
+    /// The editor's press and move drag handlers (`0x100000`).
+    pub editor_press: bool,
+    pub editor_move: bool,
+    /// The free camera's press drag (`0x200000` without the editor bit).
+    pub free_press: bool,
+    /// The free camera's move handler unless `0x1000000` suppresses it.
+    pub free_move: bool,
+}
+
+/// The handlers a preset record's flags install.
+pub fn preset_handlers(flags: u32) -> Handlers {
+    let editor = flags & 0x10_0000 != 0;
+    let stepped = flags & 0x20_0000 != 0;
+    Handlers {
+        wheel: flags & 0x200 != 0,
+        editor_press: editor,
+        editor_move: editor,
+        free_press: !editor && (!stepped || flags & 1 != 0),
+        free_move: !editor && flags & 0x100_0000 == 0,
+    }
 }
 
 /// The field of view scale a preset value gives: `value / 59²`.
@@ -714,6 +748,7 @@ pub fn apply_preset(fields: PresetFields) -> Preset {
         extra: fields.extra,
         pitch_speed,
         zoom_speed,
+        handlers: preset_handlers(fields.flags),
     }
 }
 
@@ -1169,6 +1204,10 @@ mod tests {
         });
         assert_eq!(fixed.pitch_speed, 5.0);
         assert!((fixed.zoom_speed - 5.0 / 59.0).abs() < 1e-6);
+        // The stepped record installs no wheel handler (its 0x200 is not
+        // set) but takes the free press only with the plain-camera bit.
+        assert!(!fixed.handlers.wheel);
+        assert!(!fixed.handlers.free_press);
     }
 
     #[test]
@@ -1403,6 +1442,35 @@ mod tests {
         let moved = translate_points(points, Vec3::new(0.5, -1.0, 2.0));
         assert_eq!(moved.0, Vec3::new(1.5, 1.0, 5.0));
         assert_eq!(moved.1, Vec3::new(4.5, 4.0, 8.0));
+    }
+
+    #[test]
+    fn a_preset_installs_the_handlers_its_flags_ask_for() {
+        // The plain free camera: no wheel, the free press (no stepped flag)
+        // and the free move.
+        let handlers = preset_handlers(0);
+        assert_eq!(
+            handlers,
+            Handlers {
+                wheel: false,
+                editor_press: false,
+                editor_move: false,
+                free_press: true,
+                free_move: true,
+            }
+        );
+        // The wheel and the stepped camera: the press needs the plain-camera
+        // bit, the move is suppressed by 0x1000000.
+        let handlers = preset_handlers(0x20_0000 | 0x200 | 0x100_0000);
+        assert!(handlers.wheel);
+        assert!(!handlers.free_press);
+        assert!(!handlers.free_move);
+        let handlers = preset_handlers(0x20_0000 | 1);
+        assert!(handlers.free_press);
+        // The editor takes the press and move; the free handlers stay off.
+        let handlers = preset_handlers(0x10_0000 | 0x20_0000);
+        assert!(handlers.editor_press && handlers.editor_move);
+        assert!(!handlers.free_press && !handlers.free_move);
     }
 
     #[test]

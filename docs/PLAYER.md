@@ -1325,8 +1325,10 @@ character body's possession routines; addresses are in the research notes.
   on the stepped camera, 15 × the largest distance / 59² and 6.6/59
   otherwise). Under the editor flag it scans the scene for a `0xA9` node
   of class word 1 and takes its place and its x/z half extents, a `0xAE`
-  marker raising its extra flag (`nav_camera::scan_target`). Its GUI
-  callbacks and viewport handler swap have no Exarust counterpart. The
+  marker raising its extra flag (`nav_camera::scan_target`). The callback
+  set its flags ask for (the wheel, the editor's press and move, the free
+  camera's press and move) is `nav_camera::preset_handlers`; installing
+  them on a viewport has no Exarust counterpart. The
   chase camera uses the shared pieces; the placement, free-zoom, preset
   and drag paths are modelled (`exa_game::nav_camera`, `nav_drag`) with
   tests but have no Exarust caller yet except the wheel.

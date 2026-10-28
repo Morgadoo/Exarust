@@ -599,8 +599,8 @@ arc-sine pitch with its pixel bounds and quarter-turn release snap, the
 stepped wheel zoom (the chase camera's wheel goes through it), the stick
 zoom (the gamepad's), the vertical zoom slide, the zoom's cubed pitch
 offset and the editor's grab drag and face-aligned target. The editor's
-viewport attachment flags are in `nav_camera`; its callbacks have no
-Exarust counterpart.
+viewport attachment flags and the handler set a preset's flags ask for are
+in `nav_camera`; installing them has no Exarust counterpart.
 
 The arena's per-rank kits are in (`loadout`): `Member::loadouts` holds
 six of the record's own loadouts (hands and worn items); the editor takes
