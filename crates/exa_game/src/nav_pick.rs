@@ -1,8 +1,8 @@
 //! The original's picking routines: a screen point's ray, the point where it
-//! meets a plane, the nearest mesh along it and the kinesis pick. The
-//! cursor's aim plane (`crate::player::cursor_ground`) uses them; the world
-//! cursor's reach is the hand's (`crate::hand`), which picks the level and
-//! the props through the physics world directly.
+//! meets a plane, the nearest mesh along it, the ground pick and the kinesis
+//! pick. The cursor's aim plane (`crate::player::cursor_ground`) uses them;
+//! the world cursor's reach is the hand's (`crate::hand`), which picks the
+//! level and the props through the physics world directly.
 //!
 //! The original finds the nearest hit by walking its scene's sectors and
 //! their geometry nodes, rejecting nodes by class, layer and option bits and

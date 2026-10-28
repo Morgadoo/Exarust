@@ -1,8 +1,10 @@
 //! The original's camera navigation routines: where the view sits, the yaw
 //! that turns it behind a body, the orbit drag and its pitch limits, the
-//! zoom steps, the frame clock and a kick. The chase camera in
-//! [`crate::player`] uses these; the rules they reproduce are in
-//! `docs/PLAYER.md` (Camera).
+//! zoom steps, the frame clock, a kick, the preset record with its editor
+//! target scan and handler set, the viewport attachment, and the unit's
+//! jittered offset table. The chase camera in [`crate::player`] uses these;
+//! the free-camera drags and zoom handlers are [`crate::nav_drag`]. The
+//! rules they reproduce are in `docs/PLAYER.md` (Camera).
 //!
 //! The original keeps its camera state in one controller and its arithmetic
 //! in a navigation unit. This module is that unit: plain functions, no
