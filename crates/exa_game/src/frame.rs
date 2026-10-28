@@ -746,6 +746,19 @@ impl DeferredCalls {
     }
 }
 
+/// The original's millisecond clock: the performance counter's ticks since
+/// `start`, multiplied by 1000 as a wrapping signed 64-bit product and
+/// divided by the counter's frequency (truncating, so a tick short of a
+/// millisecond does not round up). A negative elapsed time divides toward
+/// zero. The frequency is never zero in the original (it is read once at
+/// start-up); zero answers zero here instead of dividing.
+pub fn elapsed_ms(counter: i64, start: i64, frequency: i64) -> i64 {
+    if frequency == 0 {
+        return 0;
+    }
+    counter.wrapping_sub(start).wrapping_mul(1000) / frequency
+}
+
 /// The original's sleep: zero yields the processor, anything else sleeps on
 /// a high-resolution waitable timer (or `Sleep` with a one-millisecond timer
 /// period where that timer is missing). Exarust uses
@@ -1051,6 +1064,23 @@ mod tests {
         assert_eq!(LogPresentation::status_kind(4), None);
         assert_eq!(overlay_lifetime_ms("abcd"), 2_200);
         assert_eq!(overlay_lifetime_ms(""), 2_000);
+    }
+
+    #[test]
+    fn the_millisecond_clock_multiplies_then_divides() {
+        // A 1 MHz counter: ticks are microseconds.
+        assert_eq!(elapsed_ms(1_000_000, 0, 1_000_000), 1_000);
+        // 1.999999 s truncates to 1999 ms.
+        assert_eq!(elapsed_ms(1_999_999, 0, 1_000_000), 1_999);
+        // The counter's start is subtracted first.
+        assert_eq!(elapsed_ms(2_500_000, 500_000, 1_000_000), 2_000);
+        // A 3 Hz counter: 10 ticks are 3333 ms and a fraction.
+        assert_eq!(elapsed_ms(10, 0, 3), 3_333);
+        // Before the start the division truncates toward zero.
+        assert_eq!(elapsed_ms(0, 1_500, 1_000_000), -1);
+        assert_eq!(elapsed_ms(0, 1_000, 1_000_000), -1);
+        assert_eq!(elapsed_ms(5, 5, 1_000_000), 0);
+        assert_eq!(elapsed_ms(5, 5, 0), 0);
     }
 
     #[test]

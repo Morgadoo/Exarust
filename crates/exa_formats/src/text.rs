@@ -753,6 +753,13 @@ impl Name16 {
     }
 }
 
+/// Lowers the ASCII letters of a byte string in place; every other byte is
+/// left alone. The original's copy-on-write ANSI-string lowering writes
+/// the same bytes back.
+pub fn lowercase_bytes(text: &mut [u8]) {
+    text.iter_mut().for_each(|byte| *byte = lower_ascii(*byte));
+}
+
 /// `A`..`Z` moved to lower case; every other byte unchanged.
 fn lower_ascii(byte: u8) -> u8 {
     if byte.is_ascii_uppercase() {
@@ -1232,6 +1239,10 @@ mod tests {
         let mut name = Name16::from_raw(*b"AbCdEfGhIjKlMnOp");
         name.lowercase();
         assert_eq!(name.as_bytes(), b"abcdefghijklmnop");
+        // The ANSI-string path lowers in place and leaves high bytes.
+        let mut text = *b"AbC\xE9 Z";
+        lowercase_bytes(&mut text);
+        assert_eq!(text, *b"abc\xE9 z");
     }
 
     #[test]
