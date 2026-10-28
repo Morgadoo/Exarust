@@ -381,12 +381,13 @@ impl TextureStream {
 
     /// Moves a queued request to the front and marks it promoted: the
     /// original's "priority item". A request the loader holds right now
-    /// (status bit 4) counts as found and stays where it is. One that is
-    /// decoded and waiting for its upload, or already uploaded, is not: the
-    /// loader cleared its bits when it went on, and the caller reports
-    /// "Priority item not found.".
+    /// (status bit 4) counts as found and stays where it is, as does one
+    /// decoded and waiting for its upload: the loader clears the record's
+    /// bits only when it starts its next request, so the priority wait can
+    /// still see it and drain its upload. One already uploaded is not found
+    /// (the caller reports "Priority item not found.").
     pub fn promote(&mut self, key: &TextureKey) -> bool {
-        if self.in_hand.contains_key(key) {
+        if self.in_hand.contains_key(key) || self.uploads.iter().any(|item| &item.key == key) {
             return true;
         }
         let Some(queue) = self.requests.as_mut() else {
@@ -948,6 +949,27 @@ mod tests {
         assert!(!stream.load_now(&key("zz"), |_| None, |_| {}));
     }
 
+    /// A priority load of a texture already decoded but not yet uploaded
+    /// finds it and drains its upload, as the original's wait does.
+    #[test]
+    fn a_priority_load_drains_a_decoded_texture() {
+        let mut stream = TextureStream::new();
+        stream.request(request("a"));
+        let taken = stream.take_next().unwrap();
+        assert!(stream.finish_decode(taken, Some((Image::default(), false))));
+        let mut uploaded = Vec::new();
+        let done = stream.load_now(
+            &key("a"),
+            |_| None,
+            |item| uploaded.push(item.key.name.as_str().to_string()),
+        );
+        assert!(done);
+        assert_eq!(uploaded, ["a"]);
+        assert!(stream.take_finished() == vec![key("a")]);
+        // It is uploaded now: not found again.
+        assert!(!stream.load_now(&key("a"), |_| None, |_| {}));
+    }
+
     #[test]
     fn a_released_load_is_dropped_wherever_it_is() {
         let mut stream = TextureStream::new();
@@ -1015,9 +1037,10 @@ mod tests {
         assert!(!stream.take_wake());
         stream.resume();
         assert!(stream.take_wake());
-        // A decoded request waiting for its upload, and an uploaded one,
-        // are no longer the loader's: nothing to promote.
-        assert!(!stream.promote(&key("a")));
+        // A decoded request waiting for its upload is still found (the
+        // loader clears its record only when it starts the next request);
+        // once uploaded it is not.
+        assert!(stream.promote(&key("a")));
         stream.pump_uploads(usize::MAX, |_| {});
         assert!(!stream.promote(&key("a")));
         // An empty ring is the loader's idle flag and its wake to the frame.

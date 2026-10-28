@@ -266,9 +266,9 @@ in order; a promotion that moves one request to the front and lets the last
 fill its place (the original's "Priority item"); removal; and an upload pass
 that takes only what was ready and honours a budget. `TextureStream` is the
 texture loader's queue: `request` (a duplicate of a queued name is refused),
-`promote` (which finds a request queued or held by the loader; one decoded
-or uploaded is no longer found, as the loader clears its status bits when it
-goes on), `cancel` (a queued request or a
+`promote` (which finds a request queued, held by the loader, or decoded and
+waiting for its upload; one already uploaded is no longer found, as the
+loader clears its status bits when it goes on), `cancel` (a queued request or a
 decoded one is dropped, one decoding is marked by its request id so its
 upload is skipped and a later request for the same name still loads),
 `take_next`/`finish_decode` for an executor that decodes between them (or
