@@ -490,14 +490,14 @@ pub fn calm_any(node: &Node) -> bool {
     (node.flags & 0xF0) >> 4 == 0
 }
 
-/// Whether a node passes the calm filter: calm class 0 is always accepted;
-/// otherwise the class (1..15) picks a threshold the stored arousal must
-/// not exceed. An unordered arousal counts as calm, as the original's
-/// `comiss`/`jp` does.
+/// Whether a node passes the calm filter: calm class 0 is refused (the
+/// predicate returns false on a zero class before any compare); a class
+/// from 1 picks a threshold the stored arousal must not exceed. An
+/// unordered arousal counts as calm, as the original's `comiss`/`jp` does.
 pub fn calm_enough(node: &Node, arousal: f32) -> bool {
     let class = ((node.flags & 0xF0) >> 4) as usize;
     if class == 0 {
-        return true;
+        return false;
     }
     let limit = f32::from_bits(CALM[class]);
     arousal.partial_cmp(&limit) != Some(std::cmp::Ordering::Greater)
@@ -1705,9 +1705,15 @@ impl Engine {
                             }
                             passed = true;
                         }
-                        // Candidates are collected per speaker; the list
-                        // grows for every line of the branch.
-                        buckets[s].push(line.text.clone());
+                        // Each speaker's candidate record holds six lines
+                        // (a 104-byte record: a count and six 16-byte
+                        // entries). The original appends with no bound
+                        // check, so a seventh line overwrites the next
+                        // record; keeping the first six is a labelled
+                        // guess at the defined behaviour.
+                        if buckets[s].len() < 6 {
+                            buckets[s].push(line.text.clone());
+                        }
                     }
                 }
             }

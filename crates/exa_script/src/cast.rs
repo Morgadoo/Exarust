@@ -119,20 +119,18 @@ impl Contact {
         }
     }
 
-    /// One heard stimulus from `other`: the amount a quarter, kept as the
-    /// loudest level; a stimulus no louder than the level moves the decay
-    /// floor up to `level − amount`, a louder one takes the level and
-    /// clears the decay. An unordered amount takes the level (the
-    /// original's ordered compares).
+    /// One heard stimulus from `other`: the amount a quarter. A stimulus
+    /// louder than the level takes it and clears the decay; otherwise one
+    /// louder than the decayed level (`level − decay`) sets the decay to
+    /// `level − amount`. Both compares are ordered, so an unordered amount
+    /// or level changes nothing.
     pub fn hear(&mut self, amount: f32) {
         let amount = amount * 0.25;
-        if amount <= self.hearing.level {
-            if self.hearing.level - self.hearing.decay < amount {
-                self.hearing.decay = self.hearing.level - amount;
-            }
-        } else {
+        if amount > self.hearing.level {
             self.hearing.level = amount;
             self.hearing.decay = 0.0;
+        } else if amount > self.hearing.level - self.hearing.decay {
+            self.hearing.decay = self.hearing.level - amount;
         }
     }
 }
@@ -203,10 +201,11 @@ impl Character {
         self.contacts.iter().find(|c| c.other == other)
     }
 
-    /// Hear `other` say something: the contact of the speaker takes the
-    /// stimulus (no contact, no hearing).
+    /// Hear `other` say something: every contact of the speaker takes the
+    /// stimulus (the original's walk does not stop at the first match; no
+    /// contact, no hearing).
     pub fn hear_from(&mut self, other: u32, amount: f32) {
-        if let Some(c) = self.contacts.iter_mut().find(|c| c.other == other) {
+        for c in self.contacts.iter_mut().filter(|c| c.other == other) {
             c.hear(amount);
         }
     }

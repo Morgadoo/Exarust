@@ -685,7 +685,7 @@ fn turning_away_ends_the_narrator() {
 
 /// A contact keeps the loudest stimulus and the decay floor the original's
 /// hearing routine writes: a no-louder sound only raises the floor; a
-/// louder one resets it. An unordered amount takes the level.
+/// louder one resets it. Unordered values change nothing.
 #[test]
 fn hearing_keeps_the_loudest_and_the_floor() {
     let mut c = Contact::new(2);
@@ -708,21 +708,25 @@ fn hearing_keeps_the_loudest_and_the_floor() {
     // A louder one takes the level and clears the floor.
     c.hear(30.0);
     assert_eq!((c.hearing.level, c.hearing.decay), (7.5, 0.0));
-    // An unordered amount is louder than any ordered compare: the level
-    // becomes unordered and the floor 0.
+    // An unordered amount fails both ordered compares: nothing changes.
+    c.hearing.decay = 1.0;
     c.hear(f32::NAN);
+    assert_eq!((c.hearing.level, c.hearing.decay), (7.5, 1.0));
+    // An unordered level fails them too.
+    c.hearing.level = f32::NAN;
+    c.hear(100.0);
     assert!(c.hearing.level.is_nan());
-    assert_eq!(c.hearing.decay, 0.0);
+    assert_eq!(c.hearing.decay, 1.0);
 }
 
 /// The calm filters: a greeting takes calm class 0 only; a start or reply
-/// takes class 0 as well and a higher class while the stored arousal is at
+/// refuses class 0 and takes a higher class while the stored arousal is at
 /// or under its threshold (an unordered arousal counts as calm).
 #[test]
 fn the_calm_filters_read_the_class_and_arousal() {
     let plain = node(NODE_ENTRY, "Plain", &[], vec![]).unwrap();
     assert!(dialogue::calm_any(&plain));
-    assert!(dialogue::calm_enough(&plain, 1e9));
+    assert!(!dialogue::calm_enough(&plain, 0.0));
     assert!(!dialogue::calm_any(
         &node(NODE_ENTRY | 0x10, "One", &[], vec![]).unwrap()
     ));
@@ -736,10 +740,11 @@ fn the_calm_filters_read_the_class_and_arousal() {
     assert!(!dialogue::calm_enough(&class4, 200.5));
 }
 
-/// Every line of a branch is a candidate: the random draw can reach the
-/// eighth line (the original's per-speaker list grows without a limit).
+/// A speaker's candidate record holds six lines: of eight, the draw is
+/// over the first six (seed 28 steps to 0xE0EE708D; × 6 >> 32 = 5, the
+/// sixth line, where eight candidates would give the eighth).
 #[test]
-fn every_candidate_line_is_eligible() {
+fn six_candidate_lines_per_speaker() {
     let texts = ["L1", "L2", "L3", "L4", "L5", "L6", "L7", "L8"];
     let lines: Vec<(u32, &str)> = texts.iter().map(|&t| (1u32, t)).collect();
     let greeting = node(
@@ -763,11 +768,10 @@ fn every_candidate_line_is_eligible() {
         characters: vec![person(GUARD, &[100], &db), person(TRAVELLER, &[1], &db)],
     };
     let mut e = Engine::default();
-    // Seed 28 draws the eighth candidate (indices 0..8).
     e.seed = 28;
     let mut s = scene(&db, None, &mut cast, 0);
     assert!(e.greet(&mut s, GUARD, TRAVELLER));
-    assert_eq!(e.bubbles.list[0].text, b"L8");
+    assert_eq!(e.bubbles.list[0].text, b"L6");
 }
 
 /// An AI event runs the matching node's action and clears its bit.
