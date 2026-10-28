@@ -279,16 +279,18 @@ its node to the camera's space (`doll_facing`) and the frame counter's
 clamped step. It also holds what a pointer and a drag do: the hover pick
 over the figure's nodes (the `0x89` and hidden-flag filters, the
 settled-item filter, the last node under the pointer, the record hand
-entry's or the carried entry's flags), the drag-over answer and the mind costs it
-shows (an apparel's protection value, twice a weapon's desirability), the
-drop onto the figure (apparel worn with both characters refit and the
-shown pack charged the bulk, a weapon or shield attached on both, the core
-crystal shown and unmarked, the shown pack handed the item marked held,
-and the weapon's cost twice its desirability less what it displaces), the
-release on the figure (a scheduled take-out of a hand on both characters,
-the shown item taken off, the dragged item taken off with the other pack
-charged its bulk, and the locked or cancelled drag charging its stored
-cost), the shown item, the drag start, the owner and player-pack lookups
+entry's or the carried entry's flags), the drag-over answer and the mind cost
+a drag off the figure refunds (twice a weapon's desirability, else an
+apparel's protection value), the drop onto the figure (apparel worn with
+both characters refit and the shown pack charged the bulk at its wear-room
+cost, a weapon or shield attached on both and handed to an unlocked shown
+pack marked held, the core crystal shown and the shown character
+unmarked, and the weapon's cost twice its desirability less what it
+displaces), the release on the figure (a scheduled take-out of a slot on
+the doll and the shown character, the shown item taken off with its mark
+set again, the dragged item taken off with the other pack charged its
+bulk, the cancelled drag charging its refunded cost and the locked
+flagged drag answering -1), the shown item, the drag start, the owner and player-pack lookups
 and the insight check. The two preview bars at the doll panel's bottom are
 painted with the HUD's bar painter (`game_gui::paint_preview_bars`), the
 health bar from the record's two shares and the focus bar full. The panel

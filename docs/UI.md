@@ -2120,13 +2120,15 @@ plain draw and input records.
   `0x1000000` flag is written to the body's flip byte and `0x2000000`
   lights its held part. The stance restarts with blend 20 after every
   re-dress unless the body is in its weapon-swap state (`0x1F`), and the
-  sets then trade only when a hand changed. A take-out clears the record
-  entry that names the item (either hand's) and, when it was scheduled for
-  the main hand, promotes the off hand's weapon or light into it — never a
-  shield — the promoted item taking the off hand's flags. A take-in refuses
-  an item whose weapon section is withheld (`0x2000000`) without the body's
-  permission `0x10000`, then follows the take-in order: the off-hand
-  light, the main hand's light moving to the off hand, the second weapon
+  sets then trade only when a hand changed. A weapon's take-out clears
+  the record entry that names it (either hand's) and, when it was scheduled
+  for the main hand and the weapon was the body's first attached weapon,
+  promotes the off hand's light or weapon into it — never a shield — the
+  promoted item taking the off hand's flags. An off-hand light's or
+  shield's take-out reads and clears the record's off-hand entry without
+  comparing its item. A take-in (once the original's item node has
+  loaded, which Exarust does not need to wait for) follows the take-in
+  order: the off-hand light, the main hand's light moving to the off hand, the second weapon
   only when asked for, and a two-hander freeing both hands. A shield frees the off hand and clears the body's weapon
   part when it holds none.
 - **Item renderer** (`exa_items::item_renderer`): a 160-pixel icon
@@ -2170,22 +2172,26 @@ changes; a withheld weapon or shield needs the matching body permission
 (`0x10000`, or `0x20000` for a weapon's second bit); a race whose core
 word takes the AL crystal accepts item 500 while nothing is shown. A view
 that allows changes answers for any item; a frozen one only while the
-pointer is over one of the doll's held items. The drag-over test shows the item's mind
-cost: an apparel's protection value, or twice a weapon's desirability; the
-shield and the core crystal have none.
+pointer is over one of the doll's held items. A drag off the figure refunds
+the item's mind cost (charged again by a drop back on the view or a
+cancelled release): twice a weapon's desirability, else an apparel's
+protection value, the weapon section read first; the shield and the core
+crystal have none.
 
-A drop from the view's own panel does nothing. Otherwise apparel is worn,
-with both the doll and the shown character's mesh and textures rebuilt,
-the character data told of the equip change, and the shown character's pack
-charged the item's bulk; a weapon is taken into the doll's hands and
-mirrored on the shown character; a shield likewise; and a body that takes
-the item as its core crystal shows it under the pointer and clears the
-shown character's mark. When the view is not locked and the shown
-character's pack is not where the drag began, the pack also takes the item
-at its centre, marked held. With the view's mind-cost flag on and a second
-character shown, the drop charges the cost first and a refusal hides the
-view: the apparel's protection value, or twice the weapon's desirability
-less what it displaces.
+A drop from the view's own panel only charges back the refunded cost.
+Otherwise apparel is worn, with both the doll and the shown character's
+mesh and textures rebuilt, the character data told of the equip change,
+and the shown character's pack (when it is not where the drag began)
+charged the item's bulk, locked or not; a weapon is taken into the doll's
+hands and mirrored on the shown character; a shield likewise; and a body
+that takes the item as its core crystal shows it under the pointer and
+clears the shown character's mark. For a weapon or a shield, when the
+view is not locked and the shown character's pack is not where the drag
+began, the pack also takes the item at its centre, marked held. With the
+view's mind-cost flag on, the drop charges the cost first and a refusal
+hides the view: the apparel's wear room (its value less the worn pieces
+it overlaps), or — only with a second character shown — twice the
+weapon's desirability less what it displaces.
 
 A hover shows the item under the pointer and its icon, and clears the
 shown item when the icon cannot be resolved. A hit on the shown icon
@@ -2199,15 +2205,19 @@ record's four hand flag words.) A frozen view starts drags
 only from a held item.
 
 A release takes a hand's item out: over one of the doll's item slots the
-take-out is scheduled on the doll and, when a second character is shown, on it too,
+take-out is scheduled on the doll (unless a view byte of unknown name
+keeps the doll's hands) and, when a second character is shown, on it too,
 and the shown character's pack drops its held icon; the doll is not
-rebuilt. A take-out of the main hand promotes the off hand's weapon or
-light into it (a shield stays), the promoted item taking the off hand's
-flags. Otherwise, when the dragged icon is the shown item, the shown item
-is taken off and cleared; and for anything else the dragged item is taken
-off, the shown pack is charged its bulk, and both characters are rebuilt.
-A locked drag of an item flagged `0x80000000`, and a cancelled drag,
-charge the stored mind cost instead.
+rebuilt. A take-out of the main hand's first weapon promotes the off
+hand's light or weapon into it (a shield stays), the promoted item taking
+the off hand's flags. Otherwise, when the dragged icon is the shown item,
+the shown item is taken off the worn list, the shown character's mark is
+set again and the shown item cleared, with no rebuild; and for anything
+else the dragged item is taken off, the shown pack is charged its bulk,
+and both characters are rebuilt. A cancelled drag charges the refunded
+mind cost again instead; a locked view's drag of an item flagged
+`0x80000000` is released normally with the answer -1 handed to the
+owner's callback.
 
 The view's owner lookup follows the first visible form of its class, and
 the player's pack is that view's; the insight check looks for technique 8

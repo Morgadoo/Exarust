@@ -536,20 +536,21 @@ pub fn hover_pick(
 pub struct DropPlan {
     /// The section the drop picked.
     pub kind: FigureDrop,
-    /// The mind cost the drop charges, when the view charges costs and a
-    /// second character is shown: the apparel's protection value, or twice
-    /// the weapon's desirability less what it displaces.
+    /// The mind cost the drop charges, when the view charges costs: the
+    /// apparel's wear room, or (only with a second character shown) twice
+    /// the weapon's desirability less what it displaces. A charge the mind
+    /// cannot pay cancels the drop.
     pub cost: Option<f32>,
     /// The item is attached on the doll and on the shown character.
     pub attach: [bool; 2],
     /// The doll's and the shown character's mesh and textures are rebuilt.
     pub refit: [bool; 2],
     /// The shown character's pack takes the item at its centre, marked
-    /// held: the view is not locked and the pack is not where the drag
-    /// began.
+    /// held (a weapon or a shield): the view is not locked and the pack is
+    /// not where the drag began.
     pub give_to_panel: bool,
-    /// The shown character's pack is charged the item's bulk (the apparel
-    /// path does this as well as handing the item over).
+    /// The shown character's pack is charged the item's bulk (worn
+    /// apparel, whether or not the view is locked).
     pub charge_panel: bool,
     /// The item is shown under the pointer (the core crystal).
     pub show: bool,
@@ -592,7 +593,8 @@ pub struct DropFacts {
     /// That character's pack is open.
     pub other_panel: bool,
     pub mind_cost: bool,
-    /// The apparel section's protection value.
+    /// The apparel's wear room: its value less that of the worn pieces it
+    /// overlaps (`exa_ai::search::wear_room` computes the same figure).
     pub apparel_cost: f32,
     /// The weapon's desirability and what it displaces.
     pub weapon_value: f32,
@@ -630,13 +632,13 @@ impl Default for DropFacts {
 }
 
 /// The drop onto the figure. A drag from the view's own panel does nothing
-/// (its mind cost is charged by the drag-over test). Otherwise the item's
-/// sections pick the action: apparel is worn (the doll and the shown
+/// but charge back the mind cost its drag start refunded. Otherwise the
+/// item's sections pick the action: apparel is worn (the doll and the shown
 /// character rebuilt, the shown pack charged its bulk), a weapon is taken
 /// into the doll's hands and mirrored on the shown character, a shield the
-/// same, and the body's core crystal is shown and unmarked. An item the
-/// shown character's pack does not already hold is also handed to that
-/// pack, marked held, when the view is not locked.
+/// same, and the body's core crystal is shown and the shown character
+/// unmarked. A weapon or shield from another pack is also handed to the
+/// shown character's pack, marked held, when the view is not locked.
 pub fn figure_drop(facts: DropFacts) -> DropPlan {
     if facts.from_self {
         // Dropped back where it came from: the stored cost is charged and
@@ -653,24 +655,25 @@ pub fn figure_drop(facts: DropFacts) -> DropPlan {
         has_shield: facts.has_shield,
         takes_core: facts.takes_core,
     });
-    let hand_over = !facts.locked && facts.other_panel && !facts.from_panel;
-    let cost = facts.mind_cost && facts.shown;
+    let from_other = facts.other_panel && !facts.from_panel;
+    let hand_over = !facts.locked && from_other;
     match kind {
         FigureDrop::None => DropPlan::nothing(),
         FigureDrop::Apparel => DropPlan {
             kind,
-            cost: cost.then_some(facts.apparel_cost),
+            cost: facts.mind_cost.then_some(facts.apparel_cost),
             attach: [false; 2],
             refit: [true, facts.shown],
-            give_to_panel: hand_over,
-            charge_panel: hand_over,
+            give_to_panel: false,
+            charge_panel: from_other,
             show: false,
             clear_mark: false,
             charge_cost: false,
         },
         FigureDrop::Weapon => DropPlan {
             kind,
-            cost: cost.then_some((facts.weapon_value - facts.displaced) * 2.0),
+            cost: (facts.mind_cost && facts.shown)
+                .then_some((facts.weapon_value - facts.displaced) * 2.0),
             attach: [true, facts.shown],
             refit: [false; 2],
             give_to_panel: hand_over,
@@ -698,25 +701,26 @@ pub fn figure_drop(facts: DropFacts) -> DropPlan {
             give_to_panel: false,
             charge_panel: false,
             show: true,
-            clear_mark: true,
+            clear_mark: facts.shown,
             charge_cost: false,
         },
     }
 }
 
-/// The mind cost the drag-over test shows for the item it is over: an
-/// apparel's protection value or twice a weapon's desirability; a shield
-/// and the core crystal have none.
+/// The mind cost a drag off the figure refunds for the item it picks up
+/// (and a drop back or a cancelled release charges again): twice a
+/// weapon's desirability, else an apparel's protection value; a shield and
+/// the core crystal have none. The weapon section is read first.
 pub fn drag_over_cost(
     has_apparel: bool,
     has_weapon: bool,
     apparel_cost: f32,
     weapon_value: f32,
 ) -> Option<f32> {
-    if has_apparel {
-        Some(apparel_cost)
-    } else if has_weapon {
+    if has_weapon {
         Some(weapon_value * 2.0)
+    } else if has_apparel {
+        Some(apparel_cost)
     } else {
         None
     }
@@ -725,12 +729,18 @@ pub fn drag_over_cost(
 /// What a release on the figure asks of the record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ReleasePlan {
-    /// The worn entry (0-based) whose hand take-out is scheduled on the
-    /// doll; the shown character's follows when [`shown_take_out`].
+    /// The item slot (0-based) whose take-out is scheduled: on the doll
+    /// when [`doll_take_out`], on the shown character when
+    /// [`shown_take_out`].
     ///
+    /// [`doll_take_out`]: Self::doll_take_out
     /// [`shown_take_out`]: Self::shown_take_out
     pub hand: Option<usize>,
+    pub doll_take_out: bool,
     pub shown_take_out: bool,
+    /// The answer handed on to the owner's drop callback: the drag's own,
+    /// or -1 for a locked view's drag of an item flagged `0x80000000`.
+    pub answer: i32,
     /// The dragged icon is the shown item: it is taken off.
     pub take_off_shown: bool,
     /// The dragged item is taken off the worn list.
@@ -741,12 +751,13 @@ pub struct ReleasePlan {
     pub charge_panel: bool,
     /// The doll's and the shown character's mesh and textures are rebuilt.
     pub refit: [bool; 2],
-    /// The shown character's worn mark is cleared.
-    pub clear_mark: bool,
+    /// The shown character's mark (the one a shown core crystal clears)
+    /// is set again.
+    pub set_mark: bool,
     /// The player's controls are refreshed.
     pub refresh_player: bool,
-    /// The mind cost stored by the drag-over test is charged (a locked
-    /// drag of an item flagged `0x80000000`, or a cancelled drag).
+    /// The mind cost the drag start refunded is charged again (a
+    /// cancelled drag).
     pub charge_cost: bool,
 }
 
@@ -768,26 +779,37 @@ pub struct ReleaseFacts {
     pub other_panel: bool,
     pub from_panel: bool,
     pub player_shown: bool,
+    /// [?] The view's control byte that leaves the doll's own hands alone
+    /// on a release over a slot (the shown character's take-out still
+    /// runs). Its name in the original is not known.
+    pub keep_doll: bool,
 }
 
-/// The release on the figure. A locked drag of an item flagged
-/// `0x80000000`, and a cancelled drag (`i32::MIN`), charge the stored mind
-/// cost and do nothing else. A release over a worn entry schedules that
-/// hand's take-out on the doll and, when a second character is shown, on it
-/// too; the other pack drops the held icon and the doll is not refit. A
-/// release over the shown item takes the shown item off and clears it;
-/// anything else takes the dragged item off, charges the other pack its
-/// bulk, and rebuilds both characters.
+/// The release on the figure. A cancelled drag (`i32::MIN`) charges the
+/// refunded mind cost again and does nothing else; a locked view's drag of
+/// an item flagged `0x80000000` goes on with the answer -1. A release over
+/// an item slot schedules that slot's take-out on the doll (unless the view
+/// keeps the doll's hands) and, when a second character is shown, on it
+/// too; the other pack drops its held icon and nothing is refit. A release
+/// of the shown item takes it off the worn list, sets the shown
+/// character's mark again and clears the shown item; anything else takes
+/// the dragged item off, charges the other pack its bulk, and rebuilds both
+/// characters.
 pub fn release_on_figure(facts: ReleaseFacts) -> ReleasePlan {
     let mut plan = ReleasePlan::default();
-    if (facts.locked && facts.payload_flags & 0x8000_0000 != 0) || facts.slot == i32::MIN {
-        if facts.mind_cost {
-            plan.charge_cost = true;
-        }
+    let answer = if facts.locked && facts.payload_flags & 0x8000_0000 != 0 {
+        -1
+    } else {
+        facts.slot
+    };
+    if answer == i32::MIN {
+        plan.charge_cost = facts.mind_cost;
         return plan;
     }
+    plan.answer = answer;
     if let Some(index) = facts.hand {
         plan.hand = Some(index);
+        plan.doll_take_out = !facts.keep_doll;
         plan.shown_take_out = facts.shown;
         plan.remove_held_icon = facts.other_panel && !facts.from_panel;
         plan.refresh_player = facts.player_shown;
@@ -795,9 +817,7 @@ pub fn release_on_figure(facts: ReleaseFacts) -> ReleasePlan {
     }
     if facts.shown_is_dragged {
         plan.take_off_shown = true;
-        plan.refit = [true, facts.shown];
-        plan.clear_mark = facts.shown;
-        plan.refresh_player = facts.player_shown;
+        plan.set_mark = facts.shown;
         return plan;
     }
     plan.take_off = true;
@@ -1144,22 +1164,33 @@ mod tests {
             })
             .charge_cost
         );
-        // Apparel: cost, both refits, the other pack charged the bulk, and
-        // the item handed over.
+        // Apparel: cost, both refits, the other pack charged the bulk but
+        // not handed the item, even when locked.
         let plan = figure_drop(DropFacts {
             has_apparel: true,
             race_wears_apparel: true,
             shown: true,
             other_panel: true,
             mind_cost: true,
+            locked: true,
             apparel_cost: 2.5,
             ..Default::default()
         });
         assert_eq!(plan.kind, FigureDrop::Apparel);
         assert_eq!(plan.cost, Some(2.5));
         assert_eq!(plan.refit, [true, true]);
-        assert!(plan.give_to_panel && plan.charge_panel);
+        assert!(!plan.give_to_panel && plan.charge_panel);
         assert_eq!(plan.attach, [false; 2]);
+        // The apparel's cost does not wait for a shown character.
+        let plan = figure_drop(DropFacts {
+            has_apparel: true,
+            race_wears_apparel: true,
+            mind_cost: true,
+            apparel_cost: 2.5,
+            ..Default::default()
+        });
+        assert_eq!(plan.cost, Some(2.5));
+        assert_eq!(plan.refit, [true, false]);
         // A weapon: no refit, both hands attach, and the cost is twice the
         // desirability less what it displaces.
         let plan = figure_drop(DropFacts {
@@ -1178,6 +1209,16 @@ mod tests {
         assert_eq!(plan.refit, [false; 2]);
         // Locked: the other pack is not handed the item.
         assert!(!plan.give_to_panel);
+        // Unlocked, the other pack takes it; without a shown character the
+        // weapon costs nothing.
+        let plan = figure_drop(DropFacts {
+            has_weapon: true,
+            mind_cost: true,
+            weapon_value: 5.0,
+            other_panel: true,
+            ..Default::default()
+        });
+        assert!(plan.give_to_panel && plan.cost.is_none());
         // A shield has no cost.
         let plan = figure_drop(DropFacts {
             has_shield: true,
@@ -1188,13 +1229,20 @@ mod tests {
         assert_eq!(plan.kind, FigureDrop::Shield);
         assert_eq!(plan.cost, None);
         assert_eq!(plan.attach, [true, true]);
-        // The core crystal is shown and its mark cleared.
+        // The core crystal is shown and the shown character's mark
+        // cleared; with no one shown there is no mark to clear.
         let plan = figure_drop(DropFacts {
             takes_core: true,
+            shown: true,
             ..Default::default()
         });
         assert_eq!(plan.kind, FigureDrop::Hand);
         assert!(plan.show && plan.clear_mark);
+        let plan = figure_drop(DropFacts {
+            takes_core: true,
+            ..Default::default()
+        });
+        assert!(plan.show && !plan.clear_mark);
         assert_eq!(plan.attach, [false; 2]);
         // An item with no section does nothing.
         assert_eq!(figure_drop(DropFacts::default()).kind, FigureDrop::None);
@@ -1225,25 +1273,37 @@ mod tests {
                     other_panel,
                     from_panel,
                     player_shown: true,
+                    keep_doll: false,
                 }
             };
-        // A locked drag of a flagged item only charges its stored cost.
-        let p = release_on_figure(facts(2, true, 0x8000_0000, None, false, true, false));
-        assert!(p.charge_cost && p.hand.is_none() && !p.take_off && !p.refit[0]);
-        // A cancelled drag does the same.
+        // A cancelled drag only charges the refunded cost again.
         let p = release_on_figure(facts(i32::MIN, false, 0, None, false, false, false));
-        assert!(p.charge_cost && p.hand.is_none());
-        // Over a worn entry: that hand's take-out is scheduled on both
+        assert!(p.charge_cost && p.hand.is_none() && !p.take_off && !p.refit[0]);
+        // A locked drag of a flagged item goes on with the answer -1 and
+        // charges nothing.
+        let p = release_on_figure(facts(2, true, 0x8000_0000, None, false, true, false));
+        assert!(!p.charge_cost && p.take_off && p.answer == -1);
+        // ... even when the drag itself was cancelled.
+        let p = release_on_figure(facts(i32::MIN, true, 0x8000_0000, None, false, true, false));
+        assert!(!p.charge_cost && p.answer == -1);
+        // Over a slot: that slot's take-out is scheduled on both
         // characters; the other pack drops the held icon; no refit.
         let p = release_on_figure(facts(2, false, 0, Some(1), true, true, false));
-        assert_eq!(p.hand, Some(1));
-        assert!(p.shown_take_out && p.remove_held_icon && p.refresh_player);
+        assert_eq!((p.hand, p.answer), (Some(1), 2));
+        assert!(p.doll_take_out && p.shown_take_out && p.remove_held_icon && p.refresh_player);
         assert!(!p.refit[0] && !p.take_off && !p.take_off_shown);
-        // The dragged icon is the shown item: the shown item is taken off.
+        // A view that keeps the doll's hands schedules the shown one only.
+        let p = release_on_figure(ReleaseFacts {
+            keep_doll: true,
+            ..facts(2, false, 0, Some(0), false, false, false)
+        });
+        assert!(!p.doll_take_out && p.shown_take_out);
+        // The dragged icon is the shown item: it is taken off and the mark
+        // set again, with no refit and no player refresh.
         let p = release_on_figure(facts(2, false, 0, None, true, false, false));
-        assert!(p.take_off_shown && p.clear_mark);
-        assert_eq!(p.refit, [true, true]);
-        assert!(!p.take_off);
+        assert!(p.take_off_shown && p.set_mark);
+        assert_eq!(p.refit, [false, false]);
+        assert!(!p.take_off && !p.refresh_player);
         // Anything else: the dragged item is taken off and both rebuilt.
         let p = release_on_figure(facts(2, false, 0, None, false, true, false));
         assert!(p.take_off && p.charge_panel);
@@ -1258,6 +1318,8 @@ mod tests {
     fn the_drag_over_test_and_its_costs() {
         assert_eq!(drag_over_cost(true, false, 3.0, 4.0), Some(3.0));
         assert_eq!(drag_over_cost(false, true, 3.0, 4.0), Some(8.0));
+        // An item with both sections is costed as a weapon.
+        assert_eq!(drag_over_cost(true, true, 3.0, 4.0), Some(8.0));
         assert_eq!(drag_over_cost(false, false, 3.0, 4.0), None);
         assert_eq!(drag_over(false, None, 4), DragAnswer::Accept);
         assert_eq!(drag_over(true, None, 4), DragAnswer::Refuse);
