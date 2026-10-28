@@ -165,11 +165,14 @@ pub const LINK_ITERATION_LIMIT: u32 = 0x4000;
 pub const LINK_DISABLED: u32 = 0x10_0000;
 pub const LINK_REANCHOR: u32 = 0x20_0000;
 pub const LINK_CODE: u32 = 0x40_0000;
-/// The stored skeleton link's pivot flag: a link without it is a limit
-/// link (compared by its squared slack, moving its part alone).
+/// A runtime link's pivot flag: a link without it is a limit link
+/// (compared by its squared slack, moving its part alone). The skeleton's
+/// registration sets it on every link of a part with a parent (keeping only
+/// the soft-weld bit of the stored word), so a character's links are never
+/// limit links; the shipped skeletons store the word as 0.
 pub const MODEL_LINK_PIVOT: u32 = 0x1_0000;
-/// The stored skeleton link's horizontal-only flag: the link ignores the
-/// vertical gap and runs in the tick's first two iterations.
+/// A limit link's horizontal-only flag: the link ignores the vertical gap
+/// and runs in the tick's first two iterations.
 pub const MODEL_LINK_HORIZONTAL: u32 = 0x200;
 /// Squared gaps (m², 1.19e-7 cm²) a link, or the pose drive, leaves alone.
 const LINK_EPSILON2: f32 = 1.19e-11;
@@ -1047,29 +1050,29 @@ impl Link {
     /// The correction of a living body's limit link with gap `d` (the
     /// parent's point minus the part's). The link's slack is a squared
     /// distance in the original's centimetres, so the test is
-    /// `slack ≤ |d|²` there (`slack ≤ |d|²·100` here, metres). Past it the
+    /// `|d|² > slack` there (`|d|²·100 > slack` here, metres). Past it the
     /// part alone moves by `strength·d`, its magnitude cut to 10 cm once
-    /// the gap is over 10 cm (2 cm and horizontal-only for a horizontal
-    /// link). The compares are ordered: a NaN gap takes neither branch.
+    /// the gap is over 10 cm (2 cm and horizontal-only, the vertical y gap
+    /// zeroed, for a horizontal link). The squared length sums x² + y²
+    /// first, then z². Only an ordered "inside the slack" compare returns
+    /// nothing: a NaN gap goes on to the strength-scaled move, as the
+    /// original's branch does (the caller drops a non-finite move).
     fn limit_correction(&self, d: Vec3) -> Option<Vec3> {
         let d = if self.horizontal {
-            Vec3::new(d.x, d.y, 0.0)
+            Vec3::new(d.x, 0.0, d.z)
         } else {
             d
         };
-        let len2 = d.length_squared();
-        let slack = self.slack;
-        #[allow(clippy::neg_cmp_op_on_partial_ord)]
-        let past = !(slack <= len2 * CM) || len2 * CM == slack;
-        if past {
+        let len2 = (d.x * d.x + d.y * d.y) + d.z * d.z;
+        if len2 * CM <= self.slack {
             return None;
         }
         let cap = if self.horizontal { 2.0 } else { 10.0 };
         let cap2 = (cap / CM) * (cap / CM);
-        if len2 <= cap2 {
-            Some(d * self.strength)
-        } else {
+        if len2 > cap2 {
             Some(d * (self.strength * cap / CM / len2.sqrt()))
+        } else {
+            Some(d * self.strength)
         }
     }
 
@@ -2223,12 +2226,14 @@ impl Ragdoll {
         }
     }
 
-    /// Marks part `part`'s stored skeleton links with their model flags: a
+    /// Marks part `part`'s stored links with their runtime flag words: a
     /// link without [`MODEL_LINK_PIVOT`] is a limit link, one with
     /// [`MODEL_LINK_HORIZONTAL`] ignores its vertical gap. The origin pivot
     /// the builder appends after them stays a pivot. A part without links,
     /// or a flag list longer than it has stored links, is left alone and
-    /// the call returns false.
+    /// the call returns false. Not for a skeleton's stored words: the
+    /// original's registration turns every parented part's link into a
+    /// pivot link, so the game never calls this for a character.
     pub fn set_link_flags(&mut self, part: usize, flags: &[u32]) -> bool {
         let Some(range) = self.links_of.get(part).cloned() else {
             return false;

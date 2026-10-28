@@ -240,13 +240,14 @@ fn a_limit_link_pulls_its_part_alone_and_caps_at_ten_centimetres() {
     let c = link.limit_correction(far).unwrap();
     assert!((c.length() - 0.1).abs() < 1e-6, "{c}");
     assert!(c.x > 0.0);
-    // A gap of zero or a NaN takes neither branch.
+    // A gap of zero is inside the slack; a NaN gap goes on to a
+    // non-finite move, which the iteration drops.
     assert_eq!(link.limit_correction(Vec3::ZERO), None);
-    assert_eq!(link.limit_correction(Vec3::NAN), None);
+    assert!(!link.limit_correction(Vec3::NAN).unwrap().is_finite());
     // The second link's 3.029 cm slack: a 1.7 cm gap's square (2.89) is
     // under it, so nothing moves.
     assert_eq!(link.limit_correction(Vec3::new(0.017, 0.0, 0.0)), None);
-    // Horizontal: the z gap is ignored and the cap is 2 cm.
+    // Horizontal: the vertical (y) gap is ignored and the cap is 2 cm.
     let mut body = pelvis_and_femur();
     assert!(body.set_link_flags(
         1,
@@ -256,15 +257,16 @@ fn a_limit_link_pulls_its_part_alone_and_caps_at_ten_centimetres() {
     assert!(flat.horizontal);
     assert!(!flat.limit);
     // A pivot link with the horizontal flag stays a pivot.
-    assert!(flat.living(Vec3::new(0.03, 0.0, 0.3)).is_some());
+    assert!(flat.living(Vec3::new(0.03, 0.3, 0.0)).is_some());
     let mut body = pelvis_and_femur();
     assert!(body.set_link_flags(1, &[0, super::MODEL_LINK_HORIZONTAL]));
     let flat = body.links_of(1)[1].clone();
     assert!(flat.limit && flat.horizontal);
-    assert_eq!(flat.limit_correction(Vec3::new(0.0, 0.0, 0.3)), None);
-    let c = flat.limit_correction(Vec3::new(0.3, 0.0, 0.3)).unwrap();
+    assert_eq!(flat.limit_correction(Vec3::new(0.0, 0.3, 0.0)), None);
+    let c = flat.limit_correction(Vec3::new(0.3, 0.3, 0.0)).unwrap();
     assert!((c.length() - 0.02).abs() < 1e-6, "{c}");
-    assert_eq!(c.z, 0.0);
+    assert_eq!(c.y, 0.0);
+    assert!((c.x - 0.02).abs() < 1e-6, "{c}");
     // A flag list longer than the part's stored links is refused.
     assert!(!body.set_link_flags(1, &[0, 0, 0]));
 }

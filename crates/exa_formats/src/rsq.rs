@@ -1268,5 +1268,15 @@ mod tests {
             ]
         );
         assert_eq!(spheres, 0);
+        // Every stored link's flag word is 0: no pivot (0x10000) or
+        // horizontal (0x200) bit. The engine's registration gives a
+        // parented part's links their pivot flag, so none is a limit link.
+        let links: Vec<u32> = seq
+            .bodies
+            .iter()
+            .flat_map(|b| b.links.iter().map(|l| l.flags))
+            .collect();
+        assert_eq!(links.len(), 36);
+        assert!(links.iter().all(|&f| f == 0), "{links:x?}");
     }
 }

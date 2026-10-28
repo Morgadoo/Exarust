@@ -407,14 +407,20 @@ stiff origin link, plus the soft (parry) weld when the holder may parry,
 the exact class 0x30). The character's equip and the torch
 light a held item's body and its `HeldGrip`.
 
-A skeleton link without the stored pivot flag is a **limit link**
-(`body::MODEL_LINK_PIVOT`): `Ragdoll::set_link_flags` carries the RSQ flags
-in, and the living iteration compares the link's slack with the gap's
-square (`slack ≤ |d|²·100` in metres, as the original's centimetres), moves
-the part alone by the strength times the gap, and cuts the move to 10 cm
-(2 cm for a `MODEL_LINK_HORIZONTAL` link, which ignores the vertical gap
-and runs only in the tick's first two passes). Limit links are left out of
-the anchors and of the limp law.
+A link without the runtime pivot flag is a **limit link**
+(`body::MODEL_LINK_PIVOT`, marked through `Ragdoll::set_link_flags`): the
+living iteration compares the link's slack with the gap's square
+(`|d|²·100 > slack` in metres, as the original's centimetres), moves the
+part alone by the strength times the gap, and cuts the move to 10 cm (2 cm
+for a `MODEL_LINK_HORIZONTAL` link, which ignores the vertical y gap and
+runs only in the tick's first two passes). A NaN gap is not "inside the
+slack"; its non-finite move is dropped. The original's skeleton
+registration sets the pivot flag on every link of a parented part (the
+shipped skeletons store the word as 0), so a character body has no limit
+links and the game does not call `set_link_flags`; the law is kept tested
+for the root world links that clear the flag. Limit links are left out of
+the anchors, and a limp body skips them (the original's limp solver has a
+separate limit law of its own, not ported).
 
 The mesh voxeliser (`voxel`) keeps the original's occupancy map of a
 rigid-body mesh (`VoxelMap`: the 0.02 resolution, unit scale and caller's
