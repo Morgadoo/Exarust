@@ -1797,9 +1797,10 @@ result reads as 0. Their rules:
   `round(Δy / pixels) × step` added to the remembered value (in that
   order), the integer by the same product added to the remembered bit
   pattern. The up and down halves mark `0x1000000`/`0x2000000` under style
-  bits `0x4000000`/`0x8000000`. The set message truncates a non-float
-  input to an `int` first, clamps with the ordered compares and lands only
-  a move over 1e-8.
+  bits `0x4000000`/`0x8000000`. The set message's word is an integer
+  converted to a float unless its flag marks it a float (an integer
+  spinner stores the word's bits as they are), clamps with the ordered
+  compares and lands only a move over 1e-8.
 - **Progress bar.** Setting a negative value stores zero (−0 and NaN stay)
   and tells the owner every time. The fill is `w × value` rounded half to
   even; the empty part draws at 0.4 alpha, the bar and its highlight two

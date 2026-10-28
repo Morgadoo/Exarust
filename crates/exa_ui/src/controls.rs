@@ -1180,29 +1180,31 @@ impl Spinner {
         String::from_utf8_lossy(&self.formatted()).into_owned()
     }
 
-    /// The set message: a float spinner truncates a non-float input
-    /// (`truncate`), clamps below the minimum and above the maximum with
-    /// the original's ordered compares, and lands only when it moves by
-    /// more than 1e-8 in double precision. An integer spinner assigns the
-    /// value when it differs. Returns whether the value changed; a caller's
-    /// reset of the edit state is separate.
-    pub fn set_value(&mut self, value: f32, truncate: bool) -> bool {
+    /// The set message. The message carries one 32-bit word: an integer
+    /// spinner stores it as is when its bits differ. A float spinner reads
+    /// it as a float when `float_word` (the message's flag bit 0), else as
+    /// an integer converted to a float; clamps below the minimum, else
+    /// above the maximum, with the original's ordered compares (a NaN
+    /// passes both); and lands only when it moves by more than 1e-8 (the
+    /// single-precision difference compared in double). Returns whether
+    /// the value changed; a caller's reset of the edit state is separate.
+    pub fn set_value(&mut self, word: u32, float_word: bool) -> bool {
         if self.integer {
-            if value != self.value {
-                self.value = value;
+            if word != self.value.to_bits() {
+                self.value = f32::from_bits(word);
                 self.text = self.formatted();
                 return true;
             }
             return false;
         }
-        let mut value = if truncate {
-            (value as i32) as f32
+        let mut value = if float_word {
+            f32::from_bits(word)
         } else {
-            value
+            word as i32 as f32
         };
         if value < self.min {
             value = self.min;
-        } else if value > self.max && value != self.max {
+        } else if value > self.max {
             value = self.max;
         }
         if f64::from((value - self.value).abs()) > 1e-8 {
@@ -1863,12 +1865,13 @@ pub fn spinner_draw(
 
 /// A progress bar's draw: its empty part (0.4 alpha), its four-stop bar and
 /// its one-ink highlight, each a rectangle in screen space.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ProgressDraw {
     pub rest: Option<(i32, i32, i32, i32)>,
     pub bar: Option<(i32, i32, i32, i32)>,
     pub highlight: Option<(i32, i32, i32, i32)>,
-    pub rest_alpha: u8,
+    /// The single-precision alpha the skin's rectangle call takes.
+    pub rest_alpha: f32,
 }
 
 /// Lays out the progress bar's draw from its fill. The empty part is drawn
@@ -1881,7 +1884,7 @@ pub fn progress_draw(rect: (i32, i32, i32, i32), pad: i32, value: f32) -> Progre
         rest: rects.rest,
         bar: rects.bar,
         highlight: rects.highlight,
-        rest_alpha: round_to_i64(0.4 * 255.0) as u8,
+        rest_alpha: 0.4,
     }
 }
 
@@ -2065,7 +2068,8 @@ pub fn combo_draw(rect: (i32, i32, i32, i32), unit: i32, style: u32, state: u32)
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TrackDraw {
     pub track: (i32, i32, i32, i32),
-    pub track_alpha: u8,
+    /// The single-precision alpha the skin's rectangle call takes.
+    pub track_alpha: f32,
     pub thumb: (i32, i32, i32, i32),
     pub pressed: bool,
     /// The knob's offset from `x + pad`.
@@ -2087,7 +2091,7 @@ pub fn track_draw(
     let offset = round_to_i64(travel as f32 * value) as i32;
     TrackDraw {
         track: (x + 2, y + 2, (x + w) - 2, (y + h) - 2),
-        track_alpha: round_to_i64(0.6 * 255.0) as u8,
+        track_alpha: 0.6,
         thumb: (x + pad + offset, y + pad, knob, (h - (pad << 1)).max(0)),
         pressed: state & 0x10 != 0,
         offset,
@@ -2095,10 +2099,11 @@ pub fn track_draw(
 }
 
 /// A scroll bar's draw: the track, the thumb and the value offset.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ScrollDraw {
     pub track: (i32, i32, i32, i32),
-    pub track_alpha: u8,
+    /// The single-precision alpha the skin's rectangle call takes.
+    pub track_alpha: f32,
     pub thumb: (i32, i32, i32, i32),
     pub pressed: bool,
 }
@@ -2117,7 +2122,7 @@ pub fn scroll_draw(
     let (width, offset) = scroll_thumb(unit, pad, w, value);
     ScrollDraw {
         track: (x + 2, y + 2, (x + w) - 2, (y + h) - 2),
-        track_alpha: round_to_i64(0.6 * 255.0) as u8,
+        track_alpha: 0.6,
         thumb: (x + pad + offset, y + pad, width, (h - (pad << 1)).max(0)),
         pressed: state & 0x10 != 0,
     }
@@ -2557,18 +2562,20 @@ mod extended_tests {
         assert_eq!(value.text(), "12.3");
         value.value = 12.0;
         value.text = value.formatted();
-        assert!(value.set_value(150.0, false));
+        assert!(value.set_value(150.0f32.to_bits(), true));
         assert_eq!(value.value, 100.0);
         assert_eq!(value.text, b"100.0");
-        assert!(value.set_value(3.9, true));
+        // An integer word is converted, not reinterpreted.
+        assert!(value.set_value(3, false));
         assert_eq!(value.value, 3.0);
-        assert!(!value.set_value(3.0, false));
-        assert!(!value.set_value(f32::NAN, false));
+        assert!(!value.set_value(3.0f32.to_bits(), true));
+        assert!(!value.set_value(f32::NAN.to_bits(), true));
         let mut whole = spinner();
         whole.integer = true;
         whole.value = f32::from_bits(7);
         whole.text = whole.formatted();
-        assert!(whole.set_value(f32::from_bits(9), false));
+        assert!(whole.set_value(9, false));
+        assert!(!whole.set_value(9, true));
         assert_eq!(whole.value.to_bits(), 9);
         assert_eq!(whole.text, b"9");
         assert_eq!(ProgressBar { value: 0.25 }.text_with(2), "25.00%");
@@ -2744,7 +2751,7 @@ mod extended_tests {
         assert_eq!(draw.rest, Some((59, 21, 109, 43)));
         assert_eq!(draw.bar, Some((14, 24, 56, 40)));
         assert_eq!(draw.highlight, Some((13, 23, 57, 41)));
-        assert_eq!(draw.rest_alpha, 102);
+        assert_eq!(draw.rest_alpha, 0.4);
         assert_eq!(progress_draw((0, 0, 100, 24), 2, 0.0).bar, None);
         assert_eq!(progress_draw((0, 0, 100, 24), 2, 1.0).rest, None);
     }
@@ -2777,7 +2784,7 @@ mod extended_tests {
         let track = track_draw((0, 0, 100, 20), 2, 20, 0.5, 0);
         assert_eq!(track.track, (2, 2, 98, 18));
         assert_eq!(track.thumb, (40, 2, 20, 16));
-        assert_eq!((track.offset, track.track_alpha), (38, 153));
+        assert_eq!((track.offset, track.track_alpha), (38, 0.6));
         let pressed = track_draw((0, 0, 100, 20), 2, 20, 0.0, 0x10);
         assert!(pressed.pressed);
         assert_eq!(pressed.thumb, (2, 2, 20, 16));
