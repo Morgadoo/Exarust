@@ -39,6 +39,10 @@ pub struct OffHeld {
     pub weapon: Option<exa_formats::objdb::Weapon>,
     /// The item's shield section, for a shield.
     pub shield: Option<ShieldRecord>,
+    /// The item starts turned over (the record's hand flag): its record is
+    /// built from the flipped side and its grip at the far end of the flip
+    /// animation.
+    pub flip: bool,
     pub kind: OffKind,
 }
 
@@ -179,7 +183,7 @@ fn attach_off_hands(
             scale,
             size,
             second_hand_factor,
-            flip: false,
+            flip: off.flip,
             class: class & 0xFFFF,
             soft_weld: true,
             kind,
@@ -228,6 +232,7 @@ fn attach_off_hands(
                 section.stats,
                 &holder,
                 &race,
+                off.flip,
             );
             let lengths = Lengths {
                 length: record.length,
@@ -280,7 +285,7 @@ fn placement(off: &OffHeld, race: &RaceWeaponry, size: f32, holder: Holder) -> T
             .as_ref()
             .and_then(|w| off_weapon_grip(w.flags))
             .map_or(Transform::IDENTITY, |g| {
-                g.placement(&race.grip_holder(size), false)
+                g.placement(&race.grip_holder(size), off.flip)
             }),
         OffKind::Shield => {
             let _ = holder;
@@ -421,6 +426,7 @@ mod tests {
             model: "ub05ssworda".into(),
             weapon: Some(sword),
             shield: None,
+            flip: false,
             kind: OffKind::Weapon,
         };
         let g = off_weapon_grip(0x11).unwrap();
@@ -438,11 +444,40 @@ mod tests {
                 block: 0.58,
                 bulk: 0.3,
             }),
+            flip: false,
             kind: OffKind::Shield,
         };
         assert_eq!(grip_hand(&shield), exa_combat::grip::GripHand::Left);
         let t = placement(&shield, &RaceWeaponry::default(), 1.0, Holder::AVERAGE);
         let want = Quat::from_rotation_z((-5.0f32).to_radians());
         assert!(t.rotation.abs_diff_eq(want, 1e-6));
+    }
+
+    #[test]
+    fn a_second_weapon_starts_flipped_when_its_hand_asks_for_it() {
+        let sword = exa_formats::objdb::Weapon {
+            flags: 0x11,
+            seeds: [0; 2],
+            quality: 0,
+            damage: 0,
+            dirt: 0,
+            materials: [(0, 0, 0, 0); 4],
+            selection: [0; 10],
+            stats: exa_formats::weapon_stats::StatBytes::default(),
+        };
+        let make = |flip| OffHeld {
+            model: "ub05ssworda".into(),
+            weapon: Some(sword),
+            shield: None,
+            flip,
+            kind: OffKind::Weapon,
+        };
+        let race = RaceWeaponry::default();
+        let plain = placement(&make(false), &race, 1.0, Holder::AVERAGE);
+        let flipped = placement(&make(true), &race, 1.0, Holder::AVERAGE);
+        // The flipped item takes the grip's half turn about y.
+        let want = plain.rotation * Quat::from_rotation_y(std::f32::consts::PI);
+        assert!(flipped.rotation.abs_diff_eq(want, 1e-6));
+        assert_eq!(flipped.translation, plain.translation);
     }
 }

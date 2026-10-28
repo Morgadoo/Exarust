@@ -518,6 +518,7 @@ pub fn spawn_scene_body(
                     model: item.model.clone(),
                     weapon: item.weapon,
                     shield: item.shield_record,
+                    flip: item.flags & exa_character::spawn::HAND_FLIPPED != 0,
                     kind,
                 });
         }
