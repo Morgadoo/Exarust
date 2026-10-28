@@ -8,7 +8,8 @@
 //! 128 per 1.0 of the fade (the text 160), and white text wrapped at the
 //! bubble's width starting four units below the box's top, less the glyph
 //! height and half a unit. The narrator's box is grown by four units on
-//! every side. Waiting bubbles are neither placed nor drawn.
+//! every side. A frame draws every box first, then every text in list
+//! order; waiting bubbles are neither placed nor drawn.
 //!
 //! The bubble list, its fades, the placement rule and the projection are
 //! [`exa_script::bubbles`]; this module measures text with the GUI font and
@@ -124,9 +125,9 @@ pub fn text_quads(font: &GuiFont, draw: &BubbleDraw) -> Vec<TextQuad> {
     .quads
 }
 
-/// The draw layers of a frame in draw order: each bubble's box, then its
-/// text, bubble by bubble (the original draws them interleaved, so an
-/// earlier bubble's text sits under a later bubble's box).
+/// The draw layers of a frame in draw order: every box, then every text
+/// (the original's frame closes its box loop before it selects the font and
+/// draws the texts).
 pub enum BubbleLayer {
     Box(SkinBatch),
     Text(SkinBatch),
@@ -139,18 +140,8 @@ pub fn layers(
     font: &GuiFont,
     texture: (u16, u16),
 ) -> Vec<BubbleLayer> {
-    let mut out = Vec::new();
+    let mut out = vec![BubbleLayer::Box(box_batch(draws, unit))];
     for draw in draws {
-        let [x, y, w, h] = draw.rect;
-        let mut batch = SkinBatch::new();
-        rounded_fill_fixed(
-            &mut batch,
-            GuiRect::sized(x as f32, y as f32, w as f32, h as f32),
-            unit,
-            BOX_RADIUS,
-            draw.box_alpha,
-        );
-        out.push(BubbleLayer::Box(batch));
         out.push(BubbleLayer::Text(text_layer(font, draw, texture)));
     }
     out
@@ -278,14 +269,17 @@ mod tests {
         assert!(quads.iter().all(|q| q.rect[1] == draws[0].text_at[1]));
         let text = text_layer(&FONT, &draws[0], (256, 256));
         assert_eq!(text.primitives.len(), 1);
-        // Two bubbles draw box, text, box, text, never all boxes first.
+        // Two bubbles draw both boxes first, then the texts in order.
         let mut more = draws.clone();
         more.push(draws[0].clone());
         let layers = layers(&more, 4, &FONT, (256, 256));
-        assert_eq!(layers.len(), 4);
+        assert_eq!(layers.len(), 3);
         assert!(matches!(layers[0], BubbleLayer::Box(_)));
         assert!(matches!(layers[1], BubbleLayer::Text(_)));
-        assert!(matches!(layers[2], BubbleLayer::Box(_)));
-        assert!(matches!(layers[3], BubbleLayer::Text(_)));
+        assert!(matches!(layers[2], BubbleLayer::Text(_)));
+        let BubbleLayer::Box(all) = &layers[0] else {
+            unreachable!()
+        };
+        assert_eq!(all.primitives.len(), 2);
     }
 }
