@@ -934,16 +934,28 @@ pub fn bar_control_place(x: i32, y: i32, width: i32) -> (i32, i32, i32) {
     (x + 2, y + 1, width - 4)
 }
 
+/// A bar's frame rectangle: from the bar's left and top to its right and
+/// `4·unit − 2` down, as the HUD and the character view draw it.
+pub fn bar_frame(x: i32, y: i32, width: i32, unit: i32) -> (i32, i32, i32, i32) {
+    (x, y, x + width, y + 4 * unit - 2)
+}
+
+/// A gauge's frame rectangle: one pixel up from the gauge's place and four
+/// past its height, as the original's second frame helper draws it.
+pub fn gauge_frame(x: i32, y: i32, width: i32, height: i32) -> (i32, i32, i32, i32) {
+    (x, y - 1, x + width, y + height + 3)
+}
+
 /// The three control classes the unit registers, in order, with their
 /// default sizes.
 pub const HUD_CONTROLS: [(u32, i32, i32); 3] = [(0xac3, 40, 40), (0xac2, 28, 16), (0xac4, 28, 16)];
 
 /// The pulse of the status marker and the skill-ready alert: `t = |1000 −
-/// (now − start) mod 2000| / 1000` with the 32-bit clocks widened to 64
-/// bits (so a clock behind the start gives a negative remainder), eased;
-/// the glow's alpha is the ease times 0.6.
+/// (now − start) mod 2000| / 1000` with the difference taken on the 32-bit
+/// clocks (so a clock behind the start wraps as the original's subtraction
+/// does), eased; the glow's alpha is the ease times 0.6.
 pub fn status_pulse(now: u32, start: u32) -> (f32, f32) {
-    let rem = (i64::from(now) - i64::from(start)) % 2000;
+    let rem = i64::from(now.wrapping_sub(start)) % 2000;
     let t = ((1000 - rem).abs() as f64 * 0.001) as f32;
     let e = ease(t);
     (e, (f64::from(e) * 0.6) as f32)
@@ -1042,9 +1054,10 @@ pub struct LevelCurtain {
 impl LevelCurtain {
     /// The black page's alpha and the world's brightness at `now`; the
     /// first frame past three seconds reports that the hold count rises.
+    /// The elapsed time is the 32-bit difference, so a clock behind the
+    /// start wraps far past three seconds and the page is fully down.
     pub fn step(&mut self, now: u32) -> (u8, f32, bool) {
-        let mut t =
-            ((i64::from(now) - i64::from(self.start)) as f64 * 0.000_333_333_333_333_333_3) as f32;
+        let mut t = (f64::from(now.wrapping_sub(self.start)) * 0.000_333_333_333_333_333_3) as f32;
         let mut held = false;
         if t > 1.0 {
             if self.state == 1 {
@@ -1094,17 +1107,17 @@ pub fn compass_centre(unit: i32, view_height: i32) -> (f32, f32) {
 }
 
 /// The compass's alpha from the GUI's fade value: `round((1 − fade) ·
-/// 192)` of 255.
+/// 192)` of 255, in single precision as the instruction computes it.
 pub fn compass_alpha(fade: f32) -> u8 {
-    (crate::form::cvtsd2si((1.0 - f64::from(fade)) * 192.0) & 0xff) as u8
+    (crate::form::cvtss2si((1.0 - fade) * 192.0) & 0xff) as u8
 }
 
 /// The heartbeat's sound gain while it fades out: `1 − (now − start)/1000`
-/// (the 32-bit clocks widened), times 0.3; `None` once the fade is below
-/// the GUI's invisible threshold, which stops the heartbeat. The border
-/// itself keeps its pulse.
+/// with the difference on the 32-bit clocks, times 0.3; `None` once the
+/// fade is below the GUI's invisible threshold, which stops the heartbeat.
+/// The border itself keeps its pulse.
 pub fn heartbeat_fade_gain(now: u32, start: u32) -> Option<f32> {
-    let alpha = (1.0 - (i64::from(now) - i64::from(start)) as f64 * 0.001) as f32;
+    let alpha = (1.0 - f64::from(now.wrapping_sub(start)) * 0.001) as f32;
     if alpha < 1.192_09e-7 {
         return None;
     }
@@ -1120,11 +1133,12 @@ pub fn bars_hold_until(now: u32, delay: u32) -> u32 {
     delay.wrapping_add(now)
 }
 
-/// The menu cursor's size: `round(scale · (height / 1080 · 32))` in
-/// double, at most 128.
-pub fn menu_cursor_size(screen_height: i32, gui_scale: f32) -> i32 {
+/// The menu cursor's size: `round(size · (height / 1080 · 32))` in double,
+/// at most 128. `size_setting` is the original's CursorSize setting (1 in
+/// the shipped data), not the GUI scale.
+pub fn menu_cursor_size(screen_height: i32, size_setting: f32) -> i32 {
     let size = crate::form::cvtsd2si(
-        f64::from(gui_scale) * (f64::from(screen_height) * 0.000_925_925_925_925_926 * 32.0),
+        f64::from(size_setting) * (f64::from(screen_height) * 0.000_925_925_925_925_926 * 32.0),
     );
     size.min(128)
 }

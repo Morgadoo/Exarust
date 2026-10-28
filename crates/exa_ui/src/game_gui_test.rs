@@ -278,6 +278,9 @@ fn the_counter() {
     assert_eq!(rects(&l.outlines).last(), Some(&(63, 22, 6, 12)));
     assert_eq!(bar_control_place(10, 20, 28), (12, 21, 24));
     assert_eq!(HUD_CONTROLS[0], (0xac3, 40, 40));
+    // The bars' and gauge's frame quads.
+    assert_eq!(bar_frame(550, 989, 240, 5), (550, 989, 790, 1007));
+    assert_eq!(gauge_frame(680, 969, 240, 10), (680, 968, 920, 982));
 }
 
 #[test]
@@ -287,8 +290,10 @@ fn the_status_marker_and_ready_alert() {
     let (e, glow) = status_pulse(1500, 0);
     assert_eq!(e, 0.5);
     assert!((glow - 0.3).abs() < 1e-7);
-    // A clock behind the start gives t = 1.5, which eases to 0.
-    assert_eq!(status_pulse(0, 500).0, 0.0);
+    // A clock behind the start wraps on the 32-bit subtraction: 1000 −
+    // (2³² − 500) mod 2000 = 204, eased.
+    let (e, _) = status_pulse(0, 500);
+    assert!((e - 0.107_868_68).abs() < 1e-6, "{e}");
     assert_eq!(status_place(1600, 900, 5), (1065, 860));
     assert_eq!(ready_place(1600, 900, 5), (500, 860));
     assert_eq!(status_glow((100, 200), 4), [112, 212, 120, 220]);
@@ -325,15 +330,22 @@ fn the_level_curtain() {
     assert_eq!(curtain.state, 2);
     assert_eq!(curtain.step(5000), (255, 0.0, false));
     assert!(curtain.reset());
+    // A start after the clock wraps is far past three seconds: the page
+    // falls at once.
+    let mut wrapped = LevelCurtain {
+        state: 1,
+        start: 2000,
+    };
+    assert_eq!(wrapped.step(1000), (255, 0.0, true));
     assert!(!curtain.reset());
-    // A clock behind the start: −85 keeps its low byte.
-    let (alpha, bright, _) = LevelCurtain {
+    // A start after the clock wraps is over a million seconds past: full
+    // black and the hold count rises.
+    let mut behind = LevelCurtain {
         state: 1,
         start: 1000,
-    }
-    .step(0);
-    assert_eq!(alpha, 171);
-    assert!((bright - 4.0 / 3.0).abs() < 1e-6);
+    };
+    assert_eq!(behind.step(0), (255, 0.0, true));
+    assert_eq!(behind.state, 2);
 }
 
 #[test]
@@ -347,10 +359,15 @@ fn the_compass_heartbeat_and_cursor() {
     assert_eq!(heartbeat_fade_gain(0, 0), Some(0.3));
     assert!((heartbeat_fade_gain(500, 0).unwrap() - 0.15).abs() < 1e-7);
     assert_eq!(heartbeat_fade_gain(1000, 0), None);
+    // A start after the clock wraps: the fade is long past.
+    assert_eq!(heartbeat_fade_gain(0, 500), None);
     assert_eq!(bars_hold_until(u32::MAX, 1), 0);
+    // The CursorSize setting (1 shipped) scales the sprite; never above
+    // 128 pixels.
     assert_eq!(menu_cursor_size(1080, 1.0), 32);
     assert_eq!(menu_cursor_size(2160, 1.0), 64);
     assert_eq!(menu_cursor_size(1080, 4.0), 128);
+    assert_eq!(menu_cursor_size(2160, 4.0), 128);
     assert_eq!(menu_cursor_hotspot(32), (6, 3));
     assert_eq!(menu_cursor_hotspot(128), (23, 10));
 }

@@ -1249,8 +1249,9 @@ drawing:
   to Bevy's linear blend. The status marker's glow and icon are not painted
   yet. The heartbeat's fade-out lowers its sound to
   `0.3 · (1 − elapsed / 1000)` and stops it; the border keeps its pulse.
-  The menu cursor is `round(scale · height / 1080 · 32)`, at most 128, with
-  a 0.176/0.08 hotspot. The draw order is the heartbeat, a hook, then (with
+  The menu cursor is `round(setting · height / 1080 · 32)`, at most 128,
+  with a 0.176/0.08 hotspot (`setting` is the CursorSize setting, 1 in the
+  shipped data, not the GUI scale). The draw order is the heartbeat, a hook, then (with
   the HUD on and a player) the curtain, compass, marker, bars and gauge,
   then the dialogue and the centred message.
 - **Scopes.** Saving the open screens saves a container, a loaded
