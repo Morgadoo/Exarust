@@ -508,6 +508,31 @@ pub fn wheel_turn(current: f32, wanted: f32, limit: f32) -> f32 {
     out
 }
 
+/// Wraps an angle into ±π as the wheel drag does: under −π (compared in
+/// double) adds the float 2π; over π (compared in double) takes it off. A
+/// NaN passes both compares and stays.
+pub fn wrap_half_turn(angle: f32) -> f32 {
+    if f64::from(angle) < -std::f64::consts::PI {
+        angle + std::f32::consts::TAU
+    } else if f64::from(angle) > std::f64::consts::PI {
+        angle - std::f32::consts::TAU
+    } else {
+        angle
+    }
+}
+
+/// The wheel's asked angle after a frame: the grip's angle plus the angle
+/// the grip was taken at, wrapped into ±π, then turned toward from the
+/// present angle (never back, at most `limit`). The values past the wrap
+/// are the caller's: the grip's angle comes from the cursor's point in the
+/// wheel's frame (or from the second grip's point, whose height is 30 cm,
+/// with a scale-looking 30 cm set on it). [inf: which of the two axes the
+/// grip's angle is taken about is not traced; the caller passes the angle
+/// already in the wheel's plane.]
+pub fn wheel_set(current: f32, grip_angle: f32, grabbed: f32, limit: f32) -> f32 {
+    wheel_turn(current, wrap_half_turn(grip_angle + grabbed), limit)
+}
+
 /// Whether the first wheel grip is the one the view picks: its direction
 /// from the wheel, on the camera's forward axis, is at least 0.2 in
 /// absolute value; otherwise the second grip is used.
@@ -1308,13 +1333,8 @@ fn hold_hand(
                     hand.holding = Holding::Nothing;
                     return;
                 };
-                let (body, part, saved_frame, box_centre, box_half) = (
-                    held.body,
-                    held.part,
-                    held.saved_frame,
-                    held.centre,
-                    held.half,
-                );
+                let (body, part, box_centre, box_half) =
+                    (held.body, held.part, held.centre, held.half);
                 if turned && let Ok((_, mut ragdoll, ..)) = bodies.get_mut(body) {
                     let rotation = bevy::math::Mat3::from_axis_angle(right, delta.x)
                         * bevy::math::Mat3::from_axis_angle(Vec3::Y, delta.y);
@@ -1344,14 +1364,8 @@ fn hold_hand(
                         picked.map(|p| (p.at, (p.at - ray.origin).length())),
                         item_cursor::PLACEMENT_LIMIT_CM,
                     )
-                    && let Some(frame) = item_cursor::place_frame(
-                        saved_frame,
-                        right,
-                        items.offset,
-                        point,
-                        box_centre,
-                        box_half,
-                    )
+                    && let Some(frame) =
+                        item_cursor::place_frame(items.rotation, point, box_centre, box_half)
                 {
                     if let Some(held) = items.held.as_mut() {
                         held.shown = frame;
@@ -2073,6 +2087,20 @@ mod tests {
         assert!(uses_first_wheel_grip(0.2));
         assert!(!uses_first_wheel_grip(0.19));
         assert!(uses_first_wheel_grip(-0.3));
+        // The wrap: a hair under −π takes a turn on; the single π is just
+        // over the double π, so it wraps to −π.
+        assert!((wrap_half_turn(-3.2) - (-3.2 + std::f32::consts::TAU)).abs() < 1e-5);
+        assert_eq!(wrap_half_turn(std::f32::consts::PI), -std::f32::consts::PI);
+        assert!((wrap_half_turn(3.2) - (3.2 - std::f32::consts::TAU)).abs() < 1e-5);
+        assert!(wrap_half_turn(f32::NAN).is_nan());
+        // The wheel's set: the grip's angle turns the wheel toward it by at
+        // most the limit, and a grip behind the present angle is no turn.
+        assert!((wheel_set(0.0, 0.5, 0.0, 1.0) - 0.5).abs() < 1e-6);
+        assert!((wheel_set(0.0, 2.0, 0.0, 1.0) - 1.0).abs() < 1e-6);
+        assert_eq!(wheel_set(0.5, -0.5, 0.0, 1.0), 0.5);
+        // A grip angle past π wraps to the near side, behind the present
+        // angle: no turn.
+        assert_eq!(wheel_set(0.0, 3.3, 0.0, 1.0), 0.0);
         let v = [Vec3::ZERO, Vec3::X, Vec3::Y];
         assert_eq!(cloth_vertex(&v, Vec3::new(0.99, 0.0, 0.0), 0.05), Some(1));
         assert_eq!(cloth_vertex(&v, Vec3::new(0.5, 0.0, 0.0), 0.05), None);

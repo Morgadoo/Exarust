@@ -54,6 +54,19 @@ impl Frame {
         Self { position, rotation }
     }
 
+    /// The rotation made orthonormal in the original's order: the first
+    /// axis is normalised, the second loses its share along the first and
+    /// is normalised, and the third is their cross product.
+    pub fn orthonormalized(self) -> Self {
+        let x = self.rotation.x_axis.normalize_or_zero();
+        let y = (self.rotation.y_axis - x * self.rotation.y_axis.dot(x)).normalize_or_zero();
+        let z = x.cross(y);
+        Self {
+            position: self.position,
+            rotation: Mat3::from_cols(x, y, z),
+        }
+    }
+
     /// This frame under `parent`: parent position plus its rotation of this
     /// position, and the rotations multiplied.
     pub fn under(self, parent: Frame) -> Self {
@@ -355,6 +368,28 @@ mod tests {
         n.restore_to(saved, parent);
         assert_eq!(n.local, saved);
         assert_eq!(n.world.position, Vec3::new(14.0, 5.0, 6.0));
+    }
+
+    /// A sheared or scaled rotation is pulled back to an orthonormal one,
+    /// its position untouched.
+    #[test]
+    fn a_frame_is_orthonormalised() {
+        let sheared = Mat3::from_cols(
+            Vec3::new(2.0, 0.0, 0.0),
+            Vec3::new(0.5, 3.0, 0.0),
+            Vec3::new(0.0, 0.0, 4.0),
+        );
+        let f = Frame::new(Vec3::new(1.0, 2.0, 3.0), sheared).orthonormalized();
+        assert_eq!(f.position, Vec3::new(1.0, 2.0, 3.0));
+        assert!((f.rotation.x_axis.length() - 1.0).abs() < 1e-5);
+        assert!((f.rotation.y_axis.length() - 1.0).abs() < 1e-5);
+        assert!((f.rotation.z_axis.length() - 1.0).abs() < 1e-5);
+        assert!(f.rotation.x_axis.dot(f.rotation.y_axis).abs() < 1e-5);
+        assert!((f.rotation.x_axis.cross(f.rotation.y_axis) - f.rotation.z_axis).length() < 1e-5);
+        // A frame with a zero axis stays finite.
+        let flat = Mat3::from_cols(Vec3::ZERO, Vec3::ZERO, Vec3::ZERO);
+        let f = Frame::new(Vec3::ZERO, flat).orthonormalized();
+        assert!(f.rotation.x_axis.is_finite());
     }
 
     /// Detaching returns the node and its descendants root first and leaves

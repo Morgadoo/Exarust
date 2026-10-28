@@ -33,13 +33,14 @@
 //! put into the scene.
 //!
 //! **The drop's scripts.** An item put down runs the scripts of the scene
-//! objects within 5 cm² of the point (squared distance, under 5).
+//! objects within 5 cm² of the point (`player_controls::nearby_scripts`,
+//! squared distance under 5).
 //!
 //! Evidence: the controls' lift, item-cursor turn, placement, release and
 //! drop routines, read in the instructions
 //! (`context/re/player-control-hand.md`).
 
-use bevy::math::{Affine3A, Mat3, Vec3};
+use bevy::math::{Affine3A, IVec2, Mat3, Vec3};
 use bevy::prelude::{Entity, Resource};
 
 use crate::control_nodes::Frame;
@@ -76,8 +77,6 @@ pub const LIFT_STRENGTH: f32 = 1.0;
 pub const HOVER_GUI: u32 = 1;
 pub const HOVER_WORLD: u32 = 0x10;
 pub const HOVER_GIVE_BACK: u32 = 0x30;
-/// The squared reach (cm²) of the scripts a put-down runs.
-pub const DROP_SCRIPT_REACH2: f32 = 5.0;
 
 /// The mouse turn's running speed: the frame clock, the ramp's start and
 /// whether the cursor was turning last call.
@@ -149,15 +148,21 @@ impl TurnRamp {
 /// A two-axis offset in the original's order (x across, y up and down).
 pub type Vec2f = bevy::math::Vec2;
 
-/// The item cursor's shown frame after a turn of `offset`: the item turns
-/// about the camera's `right` axis by the offset's across part and about
-/// the world's up axis by its up part, the two rotations composed (the
-/// across one first), then applied to the saved rotation. The offset is in
-/// radians; the caller scales it by the turn speed and the frame time.
-pub fn turned_rotation(saved: Mat3, right: Vec3, offset: Vec2f) -> Mat3 {
+/// One turn's rotation: about the camera's `right` axis by the offset's
+/// across part and about the world's up axis by its up part, composed with
+/// the across one first. The offset is in radians; the caller scales it by
+/// the turn speed and the frame time.
+pub fn turn_delta(right: Vec3, offset: Vec2f) -> Mat3 {
     let across = Mat3::from_axis_angle(right, offset.x);
     let up = Mat3::from_axis_angle(Vec3::Y, offset.y);
-    saved * across * up
+    across * up
+}
+
+/// The item cursor's shown rotation after a turn of `offset` from `saved`.
+/// The original turns the held frame a piece every frame, so repeated turns
+/// compose; this one-shot form is for a single turn.
+pub fn turned_rotation(saved: Mat3, right: Vec3, offset: Vec2f) -> Mat3 {
+    saved * turn_delta(right, offset)
 }
 
 /// Where the cursor's ray puts the item (m): the hit when it is at least
@@ -179,19 +184,11 @@ pub fn place_point(origin: Vec3, dir: Vec3, hit: Option<(Vec3, f32)>, limit: f32
     }
 }
 
-/// The item's placed frame at `at` (m): the saved local frame's rotation
-/// turned by `offset`, positioned at `at`. Returns `None` when the box at
-/// that frame does not fit (`hand::box_ok_local`), as the original clears
-/// its grab and refuses the spot.
-pub fn place_frame(
-    saved: Frame,
-    right: Vec3,
-    offset: Vec2f,
-    at: Vec3,
-    centre: Vec3,
-    half: Vec3,
-) -> Option<Frame> {
-    let rotation = turned_rotation(saved.rotation, right, offset);
+/// The item's placed frame at `at` (m): the cursor's turned `rotation`,
+/// positioned at `at`. Returns `None` when the box at that frame does not
+/// fit (`hand::box_ok_local`), as the original clears its grab and refuses
+/// the spot.
+pub fn place_frame(rotation: Mat3, at: Vec3, centre: Vec3, half: Vec3) -> Option<Frame> {
     let frame = Frame::new(at, rotation);
     let affine = Affine3A::from_mat3_translation(rotation, at);
     hand::box_ok_local(centre, half, affine).then_some(frame)
@@ -277,26 +274,6 @@ pub fn spawn_frame(cursor: Frame, camera: Frame) -> Frame {
     cursor.under(camera)
 }
 
-/// A scene object a put-down can run.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ScriptObject {
-    /// The object's place (cm).
-    pub at: Vec3,
-    /// The object's id; 0 is no object.
-    pub object: u32,
-}
-
-/// The scripts a put-down at `point` (cm) runs: every object in scene order
-/// whose id is not zero and whose squared distance from the point is under
-/// [`DROP_SCRIPT_REACH2`]. An unordered distance is no script.
-pub fn drop_scripts(point: Vec3, objects: impl IntoIterator<Item = ScriptObject>) -> Vec<u32> {
-    objects
-        .into_iter()
-        .filter(|o| o.object != 0 && (o.at - point).length_squared() < DROP_SCRIPT_REACH2)
-        .map(|o| o.object)
-        .collect()
-}
-
 /// The item the cursor holds: its body, the part the lift took, the frames
 /// every part had at the lift, and the box the placement tests.
 #[derive(Debug, Clone, PartialEq)]
@@ -316,22 +293,38 @@ pub struct HeldItem {
     pub target: Vec3,
 }
 
+/// A GUI drop waiting to run: the inventory entry, whether the drag came
+/// out of a GUI window, and the pointer it was dropped at. The original
+/// hands the task to a worker thread; Exarust runs it on the next frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DropTask {
+    pub entry: u32,
+    pub from_gui: bool,
+    pub pointer: IVec2,
+}
+
 /// The item cursor's state: the item it holds, the turn's ramp, the
-/// accumulated turn, and what is under the cursor.
+/// accumulated turn, what is under the cursor, and the drops waiting.
 #[derive(Resource, Debug, Default)]
 pub struct ItemCursor {
     pub held: Option<HeldItem>,
     pub turn: TurnRamp,
     /// The turn's accumulated two-axis offset (radians).
     pub offset: Vec2f,
+    /// The item's shown rotation, turned piece by piece as the original's
+    /// held frame is.
+    pub rotation: Mat3,
     /// The hover word: [`HOVER_GUI`], [`HOVER_WORLD`], [`HOVER_GIVE_BACK`]
     /// or zero.
     pub hover: u32,
+    /// The GUI drops queued for the next frame, in order.
+    pub drops: Vec<DropTask>,
 }
 
 impl ItemCursor {
     /// Begins a lift with `held`.
     pub fn begin(&mut self, held: HeldItem) {
+        self.rotation = held.saved_frame.rotation;
         self.held = Some(held);
         self.offset = Vec2f::ZERO;
         self.hover = 0;
@@ -348,6 +341,16 @@ impl ItemCursor {
         Some((outcome, held))
     }
 
+    /// Queues a GUI drop for the next frame.
+    pub fn queue_drop(&mut self, task: DropTask) {
+        self.drops.push(task);
+    }
+
+    /// Takes the queued drops in order, leaving the queue empty.
+    pub fn take_drops(&mut self) -> Vec<DropTask> {
+        std::mem::take(&mut self.drops)
+    }
+
     /// One frame of the cursor's turn: the offset's new piece and whether
     /// it turned, updating the accumulated offset.
     pub fn turn_frame(
@@ -356,10 +359,12 @@ impl ItemCursor {
         camera_sensitivity: f32,
         look: Vec2f,
         keys: [bool; 4],
+        right: Vec3,
     ) -> bool {
         let (delta, turned) = self.turn.frame(now_ms, camera_sensitivity, look, keys);
         if turned {
             self.offset += delta;
+            self.rotation *= turn_delta(right, delta);
         }
         turned
     }
@@ -492,46 +497,20 @@ mod tests {
     /// or −1000 cm down in the turned frame.
     #[test]
     fn the_placement_frame_refuses_a_bad_box() {
-        let saved = Frame::default();
         let centre = Vec3::ZERO;
         let half = Vec3::new(0.1, 0.1, 0.1);
-        assert!(
-            place_frame(
-                saved,
-                Vec3::X,
-                Vec2f::ZERO,
-                Vec3::new(0.0, 1.0, 0.0),
-                centre,
-                half
-            )
-            .is_some()
-        );
-        assert!(
-            place_frame(
-                saved,
-                Vec3::X,
-                Vec2f::ZERO,
-                Vec3::new(0.0, 3.0, 0.0),
-                centre,
-                half
-            )
-            .is_none()
-        );
+        assert!(place_frame(Mat3::IDENTITY, Vec3::new(0.0, 1.0, 0.0), centre, half).is_some());
+        assert!(place_frame(Mat3::IDENTITY, Vec3::new(0.0, 3.0, 0.0), centre, half).is_none());
         // Turned a quarter about X, a long box that fitted upright no
-        // longer does: 2 m of half height lies across, so at 1.5 m its low
-        // corner is fine but a 3 m half length would not be.
+        // longer does: its 3 m half length lies across and its top leaves
+        // the 280 cm limit.
         let long = Vec3::new(0.05, 0.05, 3.0);
-        assert!(
-            place_frame(
-                saved,
-                Vec3::X,
-                Vec2f::new(std::f32::consts::FRAC_PI_2, 0.0),
-                Vec3::new(0.0, 1.0, 0.0),
-                centre,
-                long
-            )
-            .is_none()
+        let turned = turned_rotation(
+            Mat3::IDENTITY,
+            Vec3::X,
+            Vec2f::new(std::f32::consts::FRAC_PI_2, 0.0),
         );
+        assert!(place_frame(turned, Vec3::new(0.0, 1.0, 0.0), centre, long).is_none());
     }
 
     /// A part's rest points box: the centre is their middle, the half the
@@ -570,52 +549,5 @@ mod tests {
         assert_eq!(drop(true, false, true), Drop::NotFromGui);
         assert_eq!(drop(true, true, false), Drop::NoBody);
         assert_eq!(drop(true, true, true), Drop::Spawn);
-    }
-
-    /// The scripts under a put-down are the objects within 5 cm² (not 5 cm),
-    /// in scene order, with id zero skipped.
-    #[test]
-    fn the_drop_scripts_are_within_five_squared_centimetres() {
-        let point = Vec3::ZERO;
-        let objects = [
-            ScriptObject {
-                at: Vec3::new(3.0, 0.0, 0.0),
-                object: 7,
-            },
-            ScriptObject {
-                at: Vec3::new(0.0, 0.0, 0.0),
-                object: 0,
-            },
-            ScriptObject {
-                at: Vec3::new(0.0, 0.0, 2.3),
-                object: 9,
-            },
-            ScriptObject {
-                at: Vec3::new(0.0, 0.0, 2.0),
-                object: 4,
-            },
-        ];
-        assert_eq!(drop_scripts(point, objects), vec![4]);
-        // Exactly 5 cm² is not under it.
-        assert!(
-            drop_scripts(
-                point,
-                [ScriptObject {
-                    at: Vec3::new(5.0f32.sqrt(), 0.0, 0.0),
-                    object: 1
-                }]
-            )
-            .is_empty()
-        );
-        assert!(
-            drop_scripts(
-                point,
-                [ScriptObject {
-                    at: Vec3::new(f32::NAN, 0.0, 0.0),
-                    object: 1
-                }]
-            )
-            .is_empty()
-        );
     }
 }

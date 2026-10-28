@@ -479,6 +479,8 @@ fn cursor_look(
     keys: Res<ButtonInput<KeyCode>>,
     bindings: Res<Bindings>,
     motion: Res<AccumulatedMouseMotion>,
+    pad: Option<Res<crate::gamepad::PlayPad>>,
+    pad_status: Option<Res<crate::gamepad::PadStatus>>,
     mut windows: Query<(&mut Window, &mut CursorOptions), With<PrimaryWindow>>,
     mut players: Query<(&mut PlayerBody, &mut Locomotion, &mut Locomotor)>,
     mut cameras: Query<&mut ChaseCamera>,
@@ -487,6 +489,26 @@ fn cursor_look(
     let Ok((mut window, mut options)) = windows.single_mut() else {
         return;
     };
+    // The pad's camera look takes the frame: the mouse capture is not
+    // started or kept while the stick looks, and the pad's own branch saves
+    // the view's basis and returns (the stick turns the camera in
+    // `chase_camera`).
+    let pad_look = pad_status.as_ref().is_some_and(|s| s.active())
+        && pad
+            .as_ref()
+            .is_some_and(|p| crate::gamepad::look_takes_over(true, p.frame().look));
+    if pad_look {
+        if look.active {
+            look.active = false;
+            options.grab_mode = CursorGrabMode::None;
+            options.visible = true;
+            if let Some(saved) = look.saved.take() {
+                window.set_cursor_position(Some(saved));
+            }
+        }
+        capture.0 = false;
+        return;
+    }
     let held = bindings.pressed(&keys, Action::CursorLook);
     if held && !look.active && window.focused {
         look.active = true;

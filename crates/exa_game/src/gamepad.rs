@@ -1249,6 +1249,14 @@ pub fn look_input(axes: Vec2) -> Option<Vec2> {
     (f64::from(y * y + x * x) > 0.01).then(|| Vec2::new(x * LOOK_YAW_GAIN, y * LOOK_PITCH_GAIN))
 }
 
+/// Whether the pad's camera look takes the frame: the controls' mouse-look
+/// routine gives the pad the frame before it starts, warps or ends the
+/// mouse capture, saving the view's basis instead. A connected pad in
+/// controller mode whose stick has left its dead zone does so.
+pub fn look_takes_over(active: bool, look: Option<Vec2>) -> bool {
+    active && look.is_some()
+}
+
 /// The camera after a look of `input` (from [`look_input`]), as the
 /// navigation unit's look routine turns it: `rate` is the orbit's radians
 /// per screen pixel ([`crate::nav_camera::orbit_per_pixel`]) times the
