@@ -29,6 +29,7 @@ pub mod control_nodes;
 pub mod create;
 pub mod cursor;
 pub mod destination;
+pub mod div_card_screen;
 pub mod drag;
 pub mod effects;
 pub mod emblem;
@@ -169,7 +170,7 @@ impl Plugin for GamePlugin {
         ))
         .add_plugins(thaum::cast::CastPlugin)
         .add_plugins(world_clock::WorldClockPlugin)
-        .add_plugins((flow::FlowPlugin, splash::SplashPlugin))
+        .add_plugins((flow::FlowPlugin, splash::SplashPlugin, div_card_screen::DivinationPlugin))
         // Debug tools: idle unless their flags or keys turn them on.
         .add_plugins((
             body_overlay::BodyOverlayPlugin,

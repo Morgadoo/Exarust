@@ -118,9 +118,10 @@ pub use cursor::{
     pointer_visibility,
 };
 pub use div_card::{
-    CARDS, CardDraw, CardVertex, Reading, SHEET, SOUND, ShadowVertex, back_quad, card_place,
-    card_size, clock_step, deal_cards, draw_order as div_draw_order, ease, face_quad, fade_alpha,
-    mouse as div_mouse, shadow_mesh, shadow_outline, turn, turn_share,
+    CARDS, CardDraw, CardVertex, Reading, SHEET, SOUND, ShadowVertex, back_image, back_quad,
+    card_place, card_sample, card_size, clock_step, deal_cards, draw_order as div_draw_order, ease,
+    face_image, face_quad, fade_alpha, frame as div_frame, mouse as div_mouse, rotation,
+    shadow_mesh, shadow_outline, turn, turn_share,
 };
 pub use drop_down::{
     DropCommand, DropDownList, DropDownOwner, DropLayout, DropPress, DropRelease, LIST_ATTRIBUTES,
