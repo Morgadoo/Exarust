@@ -1050,3 +1050,10 @@ The system SHALL sample the GI volume for a surface half a voxel above its heigh
 #### Scenario: Synthetic block
 - **WHEN** the synthetic grid's block at cells (3, 3) is 64 slices deep with 34 below the world's zero
 - **THEN** its offset is (0.1484375, 0.5390625, 0.1484375), and its Y is 0.53125 for terrain
+
+### Requirement: Blend layer
+A render state's blend layer SHALL be bits 4–7 of its blend word.
+
+#### Scenario: High and low bits ignored
+- **WHEN** the blend word is 0x0212
+- **THEN** the layer is 1
