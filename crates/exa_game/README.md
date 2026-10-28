@@ -474,16 +474,23 @@ on the cursor; the movement inputs (the pad's raw move stick past a squared
 0.1, else the move keys) turn it by `0.25·frame ms·0.0025` rad a frame,
 ramping to `1.0` after 300 ms of turning and falling back after 500 ms of
 quiet; each frame the cursor's ray, the held item left out, places it at
-the level hit (a miss keeps the last point), its rest-point box test
-(280 cm up, −1000 cm down) only answering; a plain release leaves it there,
-and a cancelled one goes to the GUI slot, stays on the world hover, or is
-put back at the frames the lift saved. The GUI drop's branch (an entry,
-from a GUI, with a body) and its next-frame queue, and the put-down's
-scripts within 5 cm² (`player_controls::nearby_scripts`), are tested rules.
-The right press's use start, its target class, the GUI use and the used
-item's removal, the point sound at 0.25 and pitch 1.0, and the door link's
-stop bit are likewise rules; the wheel's set wraps its grip angle into ±π
-(the single π over the double one) before turning toward it. The pad's
+the level hit (a miss keeps the last point), its rest box's bounding sphere
+sweeping from the 1000 cm reach to the first contact (strictly nearer
+contacts only, a NaN left), its rest-point box test (280 cm up, −1000 cm
+down) only answering; the hover word is the inventory pack's slot under the
+pointer, else the world hit, or the give-back word on a node whose link
+byte reads `L`; a plain release leaves it there, and a cancelled one goes
+to the GUI slot, stays on the world hover, or is put back at the frames the
+lift saved. The GUI drop's branch (an entry, from a GUI, with a body), its
+spawned record and next-frame queue, and the put-down's scripts within
+5 cm² (`player_controls::nearby_scripts`), are tested rules.
+The right press's use start, its target class, the use release's dispatch
+(door, character, world item, GUI slot), the GUI use and the used item's
+removal, the point sound at 0.25 and pitch 1.0, and the door link's stop
+bit are likewise rules; the wheel's set wraps its grip angle into ±π
+(the single π over the double one) before turning toward it. The controls
+unit also registers the Character and Spectate game modes in that order,
+their ids two past their table places (`register_game_modes`). The pad's
 camera look takes the frame from the mouse-look capture, as the original's
 gamepad branch returns before touching the pointer. The start and end of play set the AI's activation centre and
 radius (`PlaySession`, which the player tick and the AI read); `PlayerControl`

@@ -699,18 +699,29 @@ there; otherwise it goes where the ray crosses that height, unless the ray
 climbs (its height part over −1.19209e−7) and the placement is refused. The
 item goes there whether or not its box (its rest points' centre and half
 extents in its saved frame, turned as above) stays within 280 cm up and
-−1000 cm down: the box only decides the routine's answer. The original then
-slides the item from 600 cm back along the ray to its first contact (at
-most 1000 cm on); Exarust pulls its grab to the picked point, and a cursor
-over nothing keeps the last point.
+−1000 cm down: the box only decides the routine's answer. The original
+starts its sweep at the 1000 cm reach and pulls the item back to the first
+contact of its collision spheres with the level's meshes, keeping a contact
+only when it is strictly nearer. Exarust sweeps the rest box's bounding
+sphere along the ray and stops at the nearer of that contact and the pick
+(`item_cursor::{sweep_to_contact, placement_distance, placement_point}`); a
+cursor over nothing keeps the last point.
+
+The item cursor's hover word is the item GUI slot under the pointer
+(`HOVER_GUI`), else the world hit (`HOVER_WORLD`), with the give-back word
+(`HOVER_GIVE_BACK`) over a node whose link byte reads `L`
+(`item_cursor::{slot_at, hover_word, gives_back}`). The running inventory's
+pack is hit from its open form's frame and its draw-ordered icons, a dragged
+or held entry excluded (`gui_screens::GameScreens::pack_slot_at`).
 
 A plain release leaves the item where the cursor put it: the release hands
 the saved rest points to the deferred restore only to take the body out of
 its old sector. A release over a GUI item slot is the GUI's. A lift the
 movement request cancels (the point out of reach) goes to the slot it is
 over, stays with the world hover bit, and is otherwise put back at the
-saved rest points. The turn, placement, release and drop rules are
-`item_cursor::{TurnRamp, place_point, place_frame, release, drop, DropTask}`.
+saved rest points. The turn, placement, hover, release and drop rules are
+`item_cursor::{TurnRamp, place_point, place_frame, slot_at, hover_word,
+release, drop, DropTask, spawn_record}`.
 An item put down runs the scripts of the scene objects within 5 cm² of the
 point (`player_controls::nearby_scripts`), which have no placed nodes in
 Exarust yet. The GUI drop takes an inventory entry whose object has a body,

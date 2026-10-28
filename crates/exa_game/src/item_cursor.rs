@@ -304,11 +304,13 @@ pub fn sweep_to_contact(
 /// its contact search at the 1000 cm reach and keeps the nearest; no
 /// contact uses the pick. A point off the ray's finite end has none.
 pub fn placement_distance(hit: f32, contact: Option<f32>) -> Option<f32> {
-    let distance = contact.map_or(hit, |c| c.min(hit));
-    (distance >= 0.0
-        && distance <= DRAG_REACH_CM
-        && (hit.is_nan() || contact.is_none_or(|c| !c.is_nan())))
-    .then_some(distance)
+    let distance = match contact {
+        Some(contact) if contact < hit => contact,
+        _ => hit,
+    };
+    (0.0..=DRAG_REACH_CM)
+        .contains(&distance)
+        .then_some(distance)
 }
 
 /// The world point of a placement distance (cm) along a ray from `origin`
