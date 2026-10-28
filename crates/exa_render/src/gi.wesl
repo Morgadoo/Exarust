@@ -20,8 +20,8 @@ struct GiLight {
     // Per-step injection colour: linear colour × intensity × 0.15 (×0.3 for
     // the sun), before the fragment's 0.01.
     colour: vec4<f32>,
-    // x, z: the light's vertical shaping; w: 1/(2^z − 1). Unshaped lights
-    // carry (1, 1, 1). w: 0 for a point light, 1 for the sun.
+    // x, y: the light's vertical shaping (y, z); z: 1/(2^z − 1) (unshaped
+    // lights carry (1, 1, 1)); w: 0 for a point light, 1 for the sun.
     shaping: vec4<f32>,
     // x: the light's cube slot + 1 (0 without a shadow map).
     extra: vec4<u32>,
@@ -172,7 +172,10 @@ fn sun_light(at: vec3<f32>, occ: f32) -> f32 {
     if params.sun_flags.y != 0u {
         return first * occ;
     }
-    let second = textureSampleCompareLevel(sun_shadow, sun_shadow_sampler, uv, 0, ndc.z + 0.01);
+    // The original's second sample is 0.01 deeper; Bevy's map is reverse-Z,
+    // so deeper is smaller. [guess: the depth scale of 0.01 is the
+    // original's map's, kept as is]
+    let second = textureSampleCompareLevel(sun_shadow, sun_shadow_sampler, uv, 0, ndc.z - 0.01);
     return max(first - second, 0.0) * occ;
 }
 
@@ -238,13 +241,15 @@ fn propagate(@builtin(global_invocation_id) id: vec3<u32>) {
 
     // Direct light, from the lights of this sector's group only. Texture
     // axes are world X, Z, Y.
-    let size = vec3(params.extent.x, params.extent.z, params.extent.x);
     for (var i = 0u; i < plan.count; i++) {
         let lt = params.lights[plan.first + i];
         if lt.shaping.w == 1.0 {
             // The sun: its light is the fitted world position through the
             // shadow matrix (the original's `SdwMat` path).
-            let world = params.origin.xyz + at * size;
+            // `at` is in texture axes (x, z depth, height over width);
+            // `extent` and `origin` in world axes (X, height, Z).
+            let world = params.origin.xyz
+                + vec3(at.x * params.extent.x, at.z * params.extent.x, at.y * params.extent.z);
             rgb += lt.colour.rgb * sun_light(world, open) * 0.01;
             continue;
         }

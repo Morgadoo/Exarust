@@ -230,7 +230,7 @@ pub const SUN_LIGHT_ID: u32 = u32::MAX;
 /// The sun's fitted shadow matrix (world metres to Bevy's clip space) and
 /// whether it may be sampled. The world's sun-shadow fit writes it; without
 /// it the sun still lights the volume, unshadowed.
-#[derive(Resource, Clone, Copy, Debug, ExtractResource)]
+#[derive(Resource, Clone, Copy, Debug, PartialEq, ExtractResource)]
 #[extract_app(RenderApp)]
 pub struct GiSunShadow {
     pub clip_from_world: Mat4,
@@ -656,8 +656,8 @@ struct GiLight {
     /// radius in them in `w`; unused for the sun.
     position_radius: Vec4,
     colour: Vec4,
-    /// x, z: vertical shaping; w: 1/(2^z − 1); the fourth, kind, is 0 for a
-    /// point light and 1 for the sun.
+    /// x, y: vertical shaping (y, z); z: 1/(2^z − 1); w: 0 for a point
+    /// light and 1 for the sun.
     shaping: Vec4,
     /// x: the cube slot + 1 (0 without a shadow map).
     extra: UVec4,
@@ -1325,8 +1325,10 @@ fn push_groups(
     origin: Vec3,
     extent: Vec3,
 ) {
+    // `extent` is in world axes (X, height, Z): the texture's second axis
+    // is world Z, its third the height over the block's width.
     let width = extent.x.max(1e-6);
-    let depth = extent.y.max(1e-6);
+    let depth = extent.z.max(1e-6);
     for group in groups {
         let first = gi.lights.len();
         for id in group.lights.ids() {
@@ -1403,7 +1405,7 @@ fn gather_voxel_lights<'a>(
 ) {
     let centre = textures.dims.as_vec3() * 0.5;
     let width = textures.extent.x.max(1e-6);
-    let depth = textures.extent.y.max(1e-6);
+    let depth = textures.extent.z.max(1e-6);
     let mut near: Vec<(f32, GiVoxelLight)> = lights
         .filter(|(light, _)| light.colour.max_element() > 0.0)
         .filter_map(|(light, at)| {
@@ -2093,7 +2095,8 @@ mod tests {
             &sources,
             [0; 64],
             Vec3::new(0.0, -6.8, 0.0),
-            Vec3::new(51.2, 51.2, 12.8),
+            // World axes: 51.2 m across, 12.8 m tall.
+            Vec3::new(51.2, 12.8, 51.2),
         );
         let light = gi.lights[0];
         let expected = Vec4::new(10.0 / 51.2, 6.0 / 51.2, 8.8 / 51.2, 25.6);
