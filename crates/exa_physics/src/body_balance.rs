@@ -1316,11 +1316,12 @@ impl Ragdoll {
             return None;
         }
         let character_ground = sum / hits as f32;
-        // The lower foot chooses the height. Its clip's reach is the
-        // triangle of the thigh, the shin and 0.766 of their product (the
-        // original's 40° cosine) less the clip's horizontal ankle offset;
-        // a foot whose contact hangs too far under its hip hands the choice
-        // to the other.
+        // One foot's record chooses the height, the original's index 1
+        // when leg 0's ground is lower. Its clip's reach is the triangle of
+        // the thigh, the shin and 0.766 of their product (the original's
+        // 40° cosine) less the clip's horizontal ankle offset; a foot whose
+        // contact hangs too far under its hip hands the choice to the
+        // other.
         let pick = usize::from(grounds[0] - grounds[1] < 0.0);
         let mut chosen = pick;
         let mut reach = self.leg_reach_cm(chosen, &local);

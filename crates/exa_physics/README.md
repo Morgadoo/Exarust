@@ -244,8 +244,8 @@ A body placed into the scene takes the placement's leg snap
 (`Ragdoll::snap_placement`): each stance spot is the clip ankle plus
 5·scale cm along the shin, a 10 cm sphere from the frame's height plus the
 leg's length is dropped 300 cm for the ground, the hits average to the
-character's ground, the lower foot's record picks the height with the
-reach its clip leaves, and the standing IK writes its corrections at once
+character's ground, one foot's record (index 1 when leg 0's ground is
+lower) picks the height with the reach its clip leaves, and the standing IK writes its corrections at once
 (`Ragdoll::snap_legs`).
 Each character tick measures a living body's balance at its chest against
 its ankles and asks the level for the ground under each foot
