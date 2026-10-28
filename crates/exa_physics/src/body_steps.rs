@@ -51,10 +51,11 @@ const COAST_MS: f32 = 200.0;
 const NEAR_CM: f32 = 20.0;
 const COAST_CM: f32 = 0.05;
 const LANDINGS_END: u32 = 1;
-/// Stance score. The reference term loses one point per the first (cm); a
+/// Stance score. The reference term loses one point per 30 cm (the first is
+/// the single-precision 1/30 it multiplies by); a
 /// crouch wider than the second (less the third per crouch) is penalised;
 /// a spacing near the fourth and a side term near the fifth score well.
-const REF_CM: f32 = 30.0;
+const REF_RECIP: f32 = 0.033_333_335;
 const CROUCH_SPAN: f32 = 120.0;
 const CROUCH_NARROW: f32 = 30.0;
 const STANCE_WIDTH: f32 = 60.0;
@@ -81,6 +82,8 @@ const CHANGE_MS: f32 = 200.0;
 const REACH_SHARE: f32 = 0.6;
 const REACH_FROM: f32 = 0.65;
 const REACH_WEIGHT: f32 = 0.1;
+/// A wide crouch loses this (double) per centimetre past its span.
+const CROUCH_WEIGHT: f64 = 0.1;
 const ORIGIN_BLEND: f32 = 0.25;
 const ROOT_BLEND: f32 = 0.75;
 /// Thorax lead's clip share: Idle, and every other clip.
@@ -218,24 +221,26 @@ pub(super) enum Plan {
     Ended,
 }
 
-/// The radius R (cm): ((0.75E + 0.25) · base · scale) · 0.5 · (1 + bonus),
-/// times 1.25 while `stepping`. The products are in the original's order:
-/// the energy term times the base, then the scale, then the half.
+/// The radius R (cm): (0.75E + 0.25) · (base · scale) · 0.5, times 1.25
+/// while `stepping`, then times (1 + bonus). The products are in the
+/// original's order: the base times the scale first, that times the energy
+/// term, then the half.
 pub(super) fn radius(energy: f32, base: f32, scale: f32, stepping: bool, bonus: f32) -> f32 {
-    let mut r = ((0.75 * energy + 0.25) * base) * scale * 0.5;
+    let mut r = (0.75 * energy + 0.25) * (base * scale) * 0.5;
     if stepping {
         r *= STEPPING_RADIUS;
     }
     r * (1.0 + bonus)
 }
 
-/// One tick of the imbalance accumulator `+0xfac`, the share of the chest's
+/// One tick of the imbalance accumulator, the share of the chest's
 /// horizontal error past the step trigger that pushes it toward 1: (√h² −
-/// R·E⁴S) / (5 × scale) × 0.005. The cap compares in single precision, so
-/// a NaN is kept.
+/// R·E⁴S) / (5 × scale) in single precision, times the double 0.005 and
+/// added to the last value in double, narrowed once. The cap compares in
+/// single precision, so a NaN is kept.
 pub(super) fn add_imbalance(last: f32, h_cm: f32, radius_cm: f32, factor: f32, scale: f32) -> f32 {
-    let add = ((h_cm - radius_cm * factor) / (scale * 5.0)) * 0.005;
-    let next = last + add;
+    let excess = (h_cm - radius_cm * factor) / (5.0 * scale);
+    let next = (f64::from(excess) * 0.005 + f64::from(last)) as f32;
     if 1.0 < next { 1.0 } else { next }
 }
 
@@ -362,9 +367,9 @@ pub(super) fn consider(steps: &mut Steps, t: &Trigger) -> Plan {
             steps.standing
         };
         let offset = lead(t.fast, t.support, t.energy, t.scale);
-        // The target keeps the standing position's height, whether or not
-        // the episode is already running.
-        let new_target = Vec3::new(t.chest.x + offset.x, steps.standing.y, t.chest.z + offset.z);
+        // The target keeps the height of the point it is measured from: the
+        // running target while stepping, else the standing position.
+        let new_target = Vec3::new(t.chest.x + offset.x, from.y, t.chest.z + offset.z);
         let clear = cm((new_target - from).with_y(0.0)).length();
         if clear > TARGET_CLEAR * t.scale {
             if !steps.stepping {
@@ -461,12 +466,15 @@ pub(super) fn stance_score(
     scale: f32,
 ) -> f32 {
     let e = (b - a).with_y(0.0);
-    let length = e.length();
+    // The span is rooted only above the original's epsilon.
+    let ee = e.length_squared();
+    let length = if ee > SIDE_ROOT { ee.sqrt() } else { ee };
     let r = segment_distance(reference.with_y(0.0), a.with_y(0.0), b.with_y(0.0));
-    let mut along = 1.0 - r / REF_CM;
+    // The original multiplies by its single-precision 1/30.
+    let mut along = 1.0 - r * REF_RECIP;
     let span = CROUCH_SPAN - CROUCH_NARROW * crouch;
     if crouch > 0.0 && length > span {
-        along -= (length - span) * REACH_WEIGHT;
+        along = (f64::from(along) - f64::from(length - span) * CROUCH_WEIGHT) as f32;
     }
     let width = if scale <= 0.0 {
         1.0
@@ -482,7 +490,7 @@ pub(super) fn stance_score(
     } else {
         (STANCE_SIDE * scale - w).abs() / (STANCE_SIDE * scale)
     };
-    2.0 * (1.0 - side_term * side_term) + (1.0 - width * width) + along
+    (1.0 - side_term * side_term) * 2.0 + ((1.0 - width * width) + along)
 }
 
 /// One foot, as the choice reads it. Positions are centimetres.

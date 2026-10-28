@@ -428,30 +428,42 @@ pub(super) enum GaitPlant {
     Hold,
 }
 
-/// The leg's phase in the walk: the fraction of progress + 1.2 − 0.5×leg.
+/// The leg's phase in the walk: the fraction of progress + 1.2 − 0.5×leg,
+/// summed in double and narrowed before the (truncating) fraction.
 pub(super) fn gait_phase(progress: f32, leg: usize) -> f32 {
-    (progress + 1.2 - 0.5 * leg as f32).rem_euclid(1.0)
+    let x = (f64::from(progress) + 1.2 - f64::from(0.5 * leg as f32)) as f32;
+    x - x.trunc()
 }
 
-/// Plant in [0.2, 0.4] while the foot does not touch, or earlier (phase
-/// under 0.2) when its speed along the facing is at most 0.3 cm a tick
-/// (backpedalling, at least −0.2). Lift at phase 0 or at least 0.55 while
-/// it does.
+/// The sampler's plant and lift of a walking foot, its phase compared in
+/// double. Not touching, it plants unless the phase is past 0.4; under 0.2
+/// only when its speed along the facing is at most 0.3 cm a tick
+/// (backpedalling, at least −0.2). A NaN phase or speed plants. Touching,
+/// it lifts unless the phase is strictly between 0 and 0.55.
 pub(super) fn gait_plant(phase: f32, touching: bool, along_cm: f32, backwards: bool) -> GaitPlant {
-    if !touching
-        && ((0.2..=0.4).contains(&phase)
-            || (phase < 0.2
-                && if backwards {
-                    along_cm >= -0.2
-                } else {
-                    along_cm <= 0.3
-                }))
-    {
-        GaitPlant::Plant
-    } else if touching && (phase <= 0.0 || phase >= 0.55) {
-        GaitPlant::Lift
-    } else {
+    let p = f64::from(phase);
+    let along = f64::from(along_cm);
+    if !touching {
+        let plants = if p > 0.4 {
+            false
+        } else if p < 0.2 {
+            if backwards {
+                along >= -0.2 || along.is_nan()
+            } else {
+                along <= 0.3 || along.is_nan()
+            }
+        } else {
+            true
+        };
+        if plants {
+            GaitPlant::Plant
+        } else {
+            GaitPlant::Hold
+        }
+    } else if p > 0.0 && p < 0.55 {
         GaitPlant::Hold
+    } else {
+        GaitPlant::Lift
     }
 }
 
@@ -534,7 +546,7 @@ pub(super) fn plant(
         false
     } else if bearing.kicking {
         // A kick puts every foot on its stance spot, touching (the
-        // original's motion 0x0D branch).
+        // original's kick-motion branch).
         for (leg, spot) in legs.iter_mut().zip(spots) {
             leg.state = FootState(FootState::TOUCHING);
             if let Some(spot) = spot {
@@ -813,10 +825,10 @@ pub struct QueuedStep {
     pub countdown: i32,
 }
 
-/// A queued footwork step (`+0xfec > 0`): with the body's feet on their
-/// stance spots and the queue waiting, the step is taken when the queued
-/// direction is less than cos 0.7 off the line from the chest to the step
-/// target, or the target is nearer than 40 × scale cm. It aims at the chest
+/// A queued footwork step (a positive queue count): with the body's feet
+/// on their stance spots and the queue waiting, the step is taken when the
+/// cosine between the queued vector and the line from the chest to the
+/// step target is under 0.7, or the target is nearer than 40 × scale cm. It aims at the chest
 /// plus the queued vector and tells the AI when that vector points along
 /// the facing (the dot summed z + (y + x), strictly above 0). The original
 /// clamps the target through its pathfinder; the caller does. The
@@ -832,13 +844,21 @@ pub fn queued_step(
     landings: i32,
 ) -> Option<QueuedStep> {
     let d = (target - chest).with_y(0.0);
-    let cos = d.dot(queued.with_y(0.0)) / d.length();
-    let near = cm(d).length_squared() < (40.0 * scale) * (40.0 * scale);
-    // A NaN cosine (the chest already at the target) takes the queue, as
-    // the original's ordered compare does: `0.7 <= cos` is false when
-    // unordered.
-    let along = matches!(cos.partial_cmp(&0.7), None | Some(std::cmp::Ordering::Less));
-    if near || along {
+    // The engine's cosine between two vectors: their dot over the root of
+    // the product of their squared lengths, 0 when that product is at most
+    // 1e-8 (the chest on the target, or no queued vector).
+    let lengths = cm(d).length_squared() * cm(queued).length_squared();
+    let cos = if lengths > 1e-8 {
+        let (a, b) = (cm(d), cm(queued));
+        (a.z * b.z + (a.y * b.y + a.x * b.x)) / lengths.sqrt()
+    } else {
+        0.0
+    };
+    // Off the line by more than the double 0.7 takes the queue; a NaN
+    // cosine falls through to the distance test.
+    let off_line = f64::from(cos) < 0.7;
+    let near = (40.0 * scale) * (40.0 * scale) > cm(d).length_squared();
+    if off_line || near {
         let end = step_end(true, queued, facing, chest);
         Some(QueuedStep {
             target: end.target,
@@ -856,49 +876,46 @@ pub(super) fn probe_radius(blend: f32) -> f32 {
     PROBE_RADIUS + PROBE_RADIUS_BLEND * blend
 }
 
-/// The walk's two standing-ground weights. `a84` is the stored signed
-/// height difference between the feet, smoothed 0.9/0.1 toward the
-/// difference the clip's phase picks; the weight of the first foot is 0.5
-/// standing, and walking (1 − r)·0.5 + (1 − |2t − 1|)·r, r = 1 − run/2,
-/// t the fraction of the phase plus a bias from `a84` (0.4 positive, down
-/// to 0.4 − 0.005·|a84| to −20, 0.65 below). The second foot takes the
-/// rest. Returns `(a84, first, second)`.
+/// The walk's two standing-ground weights. `last` is the stored signed
+/// height difference between the feet (cm), smoothed 0.9/0.1 in double
+/// toward the difference the clip's phase picks (`g0 − g1` in the first
+/// half of the phase, else `g1 − g0`, from last tick's grounds). Moving,
+/// the first foot's weight is (1 − r)·0.5 + (1 − |2t − 1|)·r, r = 1 −
+/// run/2, t the fraction of the progress plus a bias from the difference
+/// (0.4 above 0, 0.65 below −20 cm, else 0.4 − 0.05·(0.25·difference) in
+/// double); the second foot takes the rest. Not moving, the difference
+/// only fades by 0.9 and each foot weighs 0.5. Returns
+/// `(difference, first, second)`.
 pub(super) fn gait_weights(
     progress: f32,
     run: f32,
-    locomoting: bool,
+    moving: bool,
     g0: f32,
     g1: f32,
     last: f32,
 ) -> (f32, f32, f32) {
-    if !locomoting {
+    if !moving {
         let last = (f64::from(last) * 0.9) as f32;
         return (last, 0.5, 0.5);
     }
-    let phase = frac64(f64::from(progress) + 0.45);
-    let diff = if phase <= 0.5 { g0 - g1 } else { g1 - g0 };
-    let last = diff * 0.1 + last * 0.9;
-    let c = if last <= 0.0 || last.is_nan() {
-        if -20.0 <= last || last.is_nan() {
-            0.4 - last * 0.25 * 0.05
-        } else {
-            0.65
-        }
-    } else {
+    // The phase is the fraction of the sum narrowed to single precision.
+    let phase = frac32((f64::from(progress) + 0.45) as f32);
+    let diff = if phase > 0.5 { g1 - g0 } else { g0 - g1 };
+    let last = (f64::from(diff) * 0.1 + f64::from(last) * 0.9) as f32;
+    let bias = if last > 0.0 {
         0.4
+    } else if last < -20.0 {
+        0.65
+    } else {
+        (0.4 - f64::from(0.25 * last) * 0.05) as f32
     };
-    let t = frac32(progress + c);
+    let t = frac32(progress + bias);
     let r = 1.0 - run * 0.5;
     let first = (1.0 - r) * 0.5 + (1.0 - (t * 2.0 - 1.0).abs()) * r;
     (last, first, 1.0 - first)
 }
 
-/// The fraction of a double, in the engine's (truncating) sense.
-fn frac64(x: f64) -> f32 {
-    (x - x.trunc()) as f32
-}
-
-/// The fraction of a single.
+/// The fraction of a single, in the engine's (truncating) sense.
 fn frac32(x: f32) -> f32 {
     x - x.trunc()
 }

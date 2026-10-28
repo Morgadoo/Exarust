@@ -950,7 +950,10 @@ fn a_stagger_target_walks_one_foot() {
     let spots = [Some(ankles[0]), Some(ankles[1])];
     let walked = near.walk_stagger(Vec3::new(0.0, 0.0, 0.5), Vec3::ZERO, &spots, 1.0);
     assert_eq!(walked.origin.z.to_bits(), 0x3f00_0000);
-    assert_eq!(walked.anchors[0].z.to_bits(), 0x3f00_0000);
+    // The two feet are mirror images here and score alike to the last bit
+    // or so; whichever steps lands on the target's line.
+    let foot = walked.foot.expect("one foot steps");
+    assert_eq!(walked.anchors[foot].z.to_bits(), 0x3f00_0000);
     let (mut still, ankles) = two_feet();
     let spots = [Some(ankles[0]), Some(ankles[1])];
     let walked = still.walk_stagger(Vec3::ZERO, Vec3::ZERO, &spots, 1.0);
@@ -1028,7 +1031,7 @@ fn state_masks_and_the_full_tone_are_the_originals() {
 #[test]
 fn the_walking_ground_weights_follow_the_phase_and_run() {
     // Phase 0.45 picks g0 − g1 = −10; the stored −1 biases the phase by
-    // 0.4125, so the first foot takes 1 − |0.825 − 1| = 0.825 at full run.
+    // 0.4125, so the first foot takes 1 − |0.825 − 1| = 0.825 at a walk.
     let (last, first, second) = gait_weights(0.0, 0.0, true, 10.0, 20.0, 0.0);
     assert!(close(last, -1.0, 1e-6), "{last}");
     assert!(close(first, 0.825, 1e-6), "{first}");
@@ -1076,15 +1079,23 @@ fn a_queued_step_aims_from_the_chest() {
 }
 
 /// A lifted walking foot plants early before phase 0.2 when it moves
-/// forward at most 0.3 cm a tick, or, backpedalling, back at least
-/// 0.2 cm a tick.
+/// forward at most 0.3 cm a tick, or, backpedalling, back at most 0.2 cm
+/// a tick. The bounds are the double 0.3 and −0.2: the single-precision
+/// 0.3 is just over and does not plant, nor does the single −0.2.
 #[test]
 fn a_slow_foot_plants_early() {
-    assert_eq!(gait_plant(0.1, false, 0.3, false), GaitPlant::Plant);
+    assert_eq!(gait_plant(0.1, false, 0.29, false), GaitPlant::Plant);
+    assert_eq!(gait_plant(0.1, false, 0.3, false), GaitPlant::Hold);
     assert_eq!(gait_plant(0.1, false, 0.31, false), GaitPlant::Hold);
-    assert_eq!(gait_plant(0.1, false, -0.2, true), GaitPlant::Plant);
-    assert_eq!(gait_plant(0.1, false, -0.21, true), GaitPlant::Hold);
+    assert_eq!(gait_plant(0.1, false, -0.19, true), GaitPlant::Plant);
+    assert_eq!(gait_plant(0.1, false, -0.2, true), GaitPlant::Hold);
+    assert_eq!(gait_plant(0.1, false, f32::NAN, false), GaitPlant::Plant);
     assert_eq!(gait_plant(0.2, false, 9.0, false), GaitPlant::Plant);
+    // The single 0.4 is past the double 0.4: no plant.
+    assert_eq!(gait_plant(0.4, false, 0.0, false), GaitPlant::Hold);
+    // A NaN phase lifts a touching foot and plants a free one.
+    assert_eq!(gait_plant(f32::NAN, true, 0.0, false), GaitPlant::Lift);
+    assert_eq!(gait_plant(f32::NAN, false, 9.0, false), GaitPlant::Plant);
 }
 
 /// A step's loudness is 0.01 + 0.0139 × its length up to 140 cm, and 1

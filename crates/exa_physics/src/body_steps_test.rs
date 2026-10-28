@@ -465,9 +465,10 @@ fn the_trigger_compares_squared_and_respects_a_shock() {
         standing: Vec3::new(0.0, 7.0, 0.0),
         ..Steps::default()
     };
-    // A new target takes the standing position's height while stepping.
+    // While stepping, a new target keeps the running target's height (the
+    // point it is measured from), not the standing position's.
     let mut t = trigger(1.0, true, 100.0);
     t.chest = Vec3::X * 20.0;
     let _ = consider(&mut stepping, &t);
-    assert!(close(stepping.target.y, 7.0), "{}", stepping.target.y);
+    assert!(close(stepping.target.y, 3.0), "{}", stepping.target.y);
 }
