@@ -72,8 +72,12 @@ and the grid's rooms; portal clipping is next (see
   wireframe hook). Grass and
   small plants take the original's upward normals, grass is drawn at 0.75
   size, the density mask is sampled on its
-  240 × 240 texels, and the baked chunks have no collider and cast shadows
-  only above shadow quality 4; wind is not ported.
+  240 × 240 texels, the two random draws of a plant's size and rotation use
+  the engine's double-precision unit, and each chunk's plants are ordered
+  small plants, grass, large plants by mean height as the original sorts
+  them; the baked chunks have no collider and cast shadows
+  only above shadow quality 4; the plant shader's normal-map variant is not
+  switched by quality (one Exarust plant material). Wind is not ported.
 - `voxeliser`: the GI sample-point generator's parameters: a 40 cm lattice spacing, the 4.0 and 0.4 tuning values and one work pass.
 - `gi_volume`: the voxel GI occupancy block, built on the async compute pool for the block the camera is in; each grid cell's floor meshes are merged and get the original's floor heightfield points (`exa_physics::voxel`) once per level, in the cell's own space, and `GiState` tells a loading screen where it stands. `GiBlockLayout` lays the level's blocks out once (the built cells' bounding box rounded to eight-cell blocks and slid inside the grid; the synthetic 8 × 8 grid and its block at cells (3, 3) for a level without one), the camera picks the block its cell falls in, the last three built occupancies are kept for reuse, and `GiBlockLayout::sample_transform`/`sample_at` give the original's per-object sample offset and scale (half a voxel up; the flag drops it). Thin and centred GI meshes splat their quarter weight or half-voxel height (the centred flag is the node's flags2 `0x10`, kept by the model reader; the thin byte is the mesh body's and is not exposed); `Occupancy::update_dynamic` takes a moving mesh's old points out and puts its new ones in; `VoxelRegion`/`sub_upload` carry the dirty bytes. Every frame it marks the cells within the reach that are built and in view, then the built cells next to a marked one, in the original's two passes, and lists each sector's lights from the 6 m cells' flood lists (`exa_render::gi::GiSectorLights`).
 - `point_light(light)`: the original omni light approximated as a Bevy `PointLight`.

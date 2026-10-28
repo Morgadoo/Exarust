@@ -368,10 +368,16 @@ One system grows grass and plants (`exa_world::terrain::vegetation`):
   point in chunk order, two steps decide: grass when (s·N)>>32 < 10 with
   N = round(50d²), then the variant. A second pass, two steps per point,
   gives rotation rand·2π (applied times 2π again) and scale
-  (2d + 0.1)(0.4 + 0.33·rand).
+  (2d + 0.1)(0.4 + 0.33·rand), each two-product sum in double precision.
+  Each chunk's growing points are then sorted by the original's key: small
+  plants −1, grass 0, large plants 1 + their mean vertex height × scale.
 - **Placement**: on the displaced ground of the cell, on the triangle the
   rendered patch splits it into (the low-to-high diagonal), rotated about Y
-  only, never tilted to the slope.
+  only (the instance's matrix turns by the stored angle less a quarter
+  turn), never tilted to the slope. A grass or small-plant mesh without a
+  UV stream gets `(1/128, 0)` for every vertex. The plant program takes its
+  normal-mapped variant only above shading quality 3 with
+  `PlantSet_01N` present (Exarust's single plant shader always carries it).
 
 Each tile also hangs a 0.5 m skirt from its edges (an Exarust addition). It
 hides cracks where neighbouring tiles, keeping different materials, lift a

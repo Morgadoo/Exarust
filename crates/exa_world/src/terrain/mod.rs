@@ -408,7 +408,6 @@ pub struct TerrainStats {
 /// large plants, sharing one material.
 struct Plants {
     variants: Vec<vegetation::Variant>,
-    grass: usize,
     material: Handle<exa_render::material::ExaMaterial>,
 }
 
@@ -417,16 +416,20 @@ impl Plants {
 
     fn load(loader: &mut ModelLoader<'_>, palette: &Palette) -> Option<Self> {
         let mut variants = Vec::new();
-        let mut grass = 0;
         for (kind, name) in Self::MODELS.iter().enumerate() {
             let model = loader.model(PackKind::Resource, name)?;
+            let kind = match kind {
+                0 => vegetation::Kind::Grass,
+                1 => vegetation::Kind::Small,
+                _ => vegetation::Kind::Large,
+            };
             for node in &model.nodes {
                 let mut v = vegetation::Variant::default();
                 for (mesh, _) in &node.parts {
                     let Some(mesh) = loader.meshes.get(mesh) else {
                         continue;
                     };
-                    append_mesh(&mut v, mesh);
+                    append_mesh(&mut v, mesh, kind != vegetation::Kind::Large);
                 }
                 if v.indices.is_empty() {
                     continue;
@@ -434,15 +437,17 @@ impl Plants {
                 // Grass and small plants are lit as if facing up (the
                 // original's plant loader sets their normals to +Y); grass
                 // is smaller.
-                if kind < 2 {
+                if kind != vegetation::Kind::Large {
                     v.normals.iter_mut().for_each(|n| *n = Vec3::Y);
                 }
-                if kind == 0 {
+                if kind == vegetation::Kind::Grass {
                     v.positions
                         .iter_mut()
                         .for_each(|p| *p *= vegetation::GRASS_SCALE);
-                    grass += 1;
                 }
+                v.height =
+                    v.positions.iter().map(|p| p.y).sum::<f32>() / v.positions.len().max(1) as f32;
+                v.kind = kind;
                 variants.push(v);
             }
         }
@@ -471,11 +476,7 @@ impl Plants {
             }
             .with_map_flags(),
         );
-        Some(Self {
-            variants,
-            grass,
-            material,
-        })
+        Some(Self { variants, material })
     }
 
     /// Grows a tile's plants as chunk meshes under `tile_entity`; returns
@@ -517,12 +518,7 @@ impl Plants {
             let (i, j) = vegetation::density_texel(p);
             built.density[j * n + i]
         };
-        let growth = vegetation::grow(
-            tile.vegetation_seed,
-            self.grass,
-            self.variants.len() - self.grass,
-            density,
-        );
+        let growth = vegetation::grow(tile.vegetation_seed, &self.variants, density);
         let s = terrain.spacing;
         let half = (n - 1) as f32 * 0.5 * s;
         let place = |p: bevy::math::Vec2| {
@@ -597,7 +593,9 @@ impl Plants {
 pub struct PlantChunk;
 
 /// Appends a Bevy mesh's positions, normals, UVs and indices to a variant.
-fn append_mesh(v: &mut vegetation::Variant, mesh: &Mesh) {
+/// A grass or small-plant shape with no UV stream gets the original's filler
+/// `(1/128, 0)` for every vertex (the large plants keep their own).
+fn append_mesh(v: &mut vegetation::Variant, mesh: &Mesh, fill_uv: bool) {
     use bevy::mesh::VertexAttributeValues as A;
     let Some(A::Float32x3(positions)) = mesh.attribute(Mesh::ATTRIBUTE_POSITION) else {
         return;
@@ -612,9 +610,14 @@ fn append_mesh(v: &mut vegetation::Variant, mesh: &Mesh) {
     }
     match mesh.attribute(Mesh::ATTRIBUTE_UV_0) {
         Some(A::Float32x2(uv)) => v.uvs.extend_from_slice(uv),
-        _ => v
-            .uvs
-            .extend(std::iter::repeat_n([0.0, 0.0], positions.len())),
+        _ => v.uvs.extend(std::iter::repeat_n(
+            if fill_uv {
+                [1.0 / 128.0, 0.0]
+            } else {
+                [0.0, 0.0]
+            },
+            positions.len(),
+        )),
     }
     if let Some(indices) = mesh.indices() {
         v.indices.extend(indices.iter().map(|i| i as u32 + base));
