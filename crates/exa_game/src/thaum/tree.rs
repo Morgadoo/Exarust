@@ -1362,18 +1362,21 @@ impl TreeScreen {
 
     /// The curve of the link being dragged out of the focused node, as the
     /// original draws it while the drag is live: a 30-sample cubic from the
-    /// node's edge to the pointer, its start along the drag's turn by
+    /// placed node's edge to the pointer, its start along the drag's turn by
     /// `(0.508 − zoom·0.003)·zoom_fixed` (0.29 when the power is framed),
-    /// and both tangents scaled by the distance, held to 400. The curve ends
-    /// a thirtieth of the far tangent past the pointer. The tangent
-    /// convention (the far one pointing back at the node) is inferred from
-    /// the engine's vector calls: a labelled guess.
+    /// and both tangents scaled by the distance, held to 400, times the
+    /// zoom. The tangent convention (the far one pointing back at the node)
+    /// is inferred from the engine's vector calls: a labelled guess. Like
+    /// the tree's own links, the spline's two end handles (a fifteenth of
+    /// each tangent beyond the ends, for the ribbon's end directions) are
+    /// not points of the curve and are not kept.
     pub fn drag_link_points(&self) -> Option<Vec<[f32; 2]>> {
         if !matches!(self.drag, DragState::LinkHover | DragState::Link) {
             return None;
         }
         let index = self.node_under.checked_sub(1)? as usize;
         let node = self.nodes.get(index)?;
+        let at = *self.placed.get(index)?;
         let (sine, cosine) = (self.link_turn * std::f32::consts::TAU).sin_cos();
         let base = if node.power & word::FRAME == 0 {
             0.508
@@ -1382,7 +1385,7 @@ impl TreeScreen {
         };
         let reach =
             ((base - f64::from(self.zoom.value) * 0.003) * f64::from(self.zoom_fixed)) as f32;
-        let start = [node.x + sine * reach, node.y + cosine * reach];
+        let start = [at[0] + sine * reach, at[1] + cosine * reach];
         let pointer = self.pointer;
         let delta = [pointer[0] - start[0], pointer[1] - start[1]];
         let length = (delta[0] * delta[0] + delta[1] * delta[1]).sqrt();
@@ -1400,7 +1403,7 @@ impl TreeScreen {
             -unit[0] * capped * self.zoom.value,
             -unit[1] * capped * self.zoom.value,
         ];
-        let mut points = Vec::with_capacity(32);
+        let mut points = Vec::with_capacity(31);
         points.push(start);
         for step in 1..=30 {
             let t = step as f32 / 30.0;
@@ -1408,10 +1411,6 @@ impl TreeScreen {
                 start, pointer, out, in_, t,
             ));
         }
-        points.push([
-            pointer[0] + in_[0] * 0.033_333_334,
-            pointer[1] + in_[1] * 0.033_333_334,
-        ]);
         Some(points)
     }
 
@@ -3783,25 +3782,26 @@ mod tests {
             TreeScreen::from_nodes(DOMAIN_MIND, TreeMode::Play, vec![node(0x101, vec![])]);
         screen.zoom.value = 1.0;
         screen.zoom_fixed = 256.0;
+        screen.placed[0] = [0.0, 0.0];
         assert!(screen.drag_link_points().is_none());
         screen.drag = DragState::LinkHover;
         screen.node_under = 1;
         screen.link_turn = 0.0;
         screen.pointer = [0.0, 100.0];
         let points = screen.drag_link_points().expect("the drag draws");
-        assert_eq!(points.len(), 32);
-        // The start is 0.508 − 0.003 of the zoom, times 256, straight up.
+        assert_eq!(points.len(), 31);
+        // The start is 0.508 − 0.003 of the zoom, times 256, straight up
+        // from the placed node.
         assert!((points[0][1] - 129.28).abs() < 1e-4);
         assert_eq!(points[0][0], 0.0);
-        // The cubic reaches the pointer at its thirtieth sample and runs a
-        // thirtieth of the far tangent past it.
+        // The cubic reaches the pointer at its thirtieth sample.
         assert!((points[30][1] - 100.0).abs() < 1e-3);
-        assert!((points[31][1] - 100.976).abs() < 1e-3);
-        // The far tangent's reach is held to 400: a pointer ten thousand
-        // away still ends 13.3 past it.
+        // The tangents' reach is held to 400: halfway to a pointer ten
+        // thousand away the curve is at the ends' mean plus an eighth of
+        // each tangent, (129.28 + 10000)/2 + 50 + 50.
         screen.pointer = [0.0, 10_000.0];
         let far = screen.drag_link_points().expect("the drag draws");
-        assert!((far[31][1] - (10_000.0 - 400.0 / 30.0)).abs() < 1e-2);
+        assert!((far[15][1] - 5_164.64).abs() < 1e-2);
         // A framed power starts nearer its centre: 0.29 − 0.003 over 256.
         screen.nodes[0].power = 0x0100_0101;
         screen.pointer = [0.0, 100.0];
