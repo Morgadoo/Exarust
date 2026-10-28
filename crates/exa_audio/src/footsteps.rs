@@ -45,7 +45,7 @@ pub(crate) fn footsteps(
         return;
     };
     // A physical body's feet sound where its sampler planted them; the
-    // gain and pitch are the original's rule with one engine draw.
+    // gain and pitch are the original's rule with two engine draws.
     for plant in plants.read() {
         let Some(name) = plant.set else { continue };
         let set = match races.get(name) {
@@ -56,8 +56,10 @@ pub(crate) fn footsteps(
                 set
             }
         };
-        let roll = bank.random_unit();
-        let step = gait_step(plant.speed_cm, roll);
+        // The original draws the pitch's share, then the gain's.
+        let pitch_roll = bank.random_unit();
+        let gain_roll = bank.random_unit();
+        let step = gait_step(plant.speed_cm, pitch_roll, gain_roll);
         env.play_set(&mut bank, set, plant.position, step.gain, step.pitch, 0);
     }
     for (e, body, gt, ragdoll, clock) in &mut walkers {

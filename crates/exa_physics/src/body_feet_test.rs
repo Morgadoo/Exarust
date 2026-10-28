@@ -1127,44 +1127,64 @@ fn the_sole_floor_is_the_ground_querys_rule() {
     assert_eq!(sole_floor(100.0, false, 0.0, None, 95.0), 95.0);
 }
 
-/// A walking footstep's gain and pitch from the draw: at a walk's 4.3 cm a
-/// tick, a draw of 0 is half of (0.344² + 0.01) and pitch 0.9 × 1.065; a
-/// draw of 1 is all of it and pitch 1.1 × 1.065. Its place is 3·speed + 4
-/// cm along the facing.
+/// A walking footstep's gain and pitch from the two draws: at a walk's
+/// 4.3 cm a tick, a pitch draw of 0 gives 0.9 × 1.065 and of 1 gives
+/// 1.1 × 1.065; a gain draw of 0 gives half of (0.344² + 0.01) and of 1
+/// all of it. Its place is 3·speed + 4 cm along the facing.
 #[test]
 fn a_walking_footstep_follows_the_speed_and_the_draw() {
-    let low = gait_step(4.3, 0.0);
+    let low = gait_step(4.3, 0.0, 0.0);
     assert!(close(low.gain, 0.064_168, 1e-5), "{}", low.gain);
     assert!(close(low.pitch, 0.9585, 1e-5), "{}", low.pitch);
-    let high = gait_step(4.3, 1.0);
+    let high = gait_step(4.3, 1.0, 1.0);
     assert!(close(high.gain, 0.128_336, 1e-5), "{}", high.gain);
     assert!(close(high.pitch, 1.1715, 1e-4), "{}", high.pitch);
+    // The draws are independent: a high pitch draw with a low gain draw.
+    let mixed = gait_step(4.3, 1.0, 0.0);
+    assert!(close(mixed.gain, low.gain, 1e-7) && close(mixed.pitch, high.pitch, 1e-7));
     // Standing still there is still the smallest gain, never none.
-    assert!(gait_step(0.0, 0.0).gain > 0.0);
+    assert!(gait_step(0.0, 0.0, 0.0).gain > 0.0);
     let at = step_position(Vec3::ZERO, Vec3::Z, 4.3);
     assert!(close(at.z, 0.169, 1e-6));
 }
 
-/// A queued footwork step is taken at a landing through the body's rule:
-/// its target moves by the queued vector and the AI is told when that
-/// points along the facing; the queue is then empty. With no chest offset
-/// the cosine is 0, so the step is taken at once.
+/// A queued footwork step is taken at a landing through the rule the
+/// balance runs: its target is the chest plus the queued vector and the AI
+/// is told when that points along the facing. With no chest offset the
+/// cosine is 0, so the step is taken at once; an empty queue takes none.
 #[test]
 fn a_queued_step_is_taken_at_a_landing() {
-    use super::super::floor_test::standing_at;
-    let (mut body, _) = standing_at(Vec3::ZERO);
-    body.queue_step(Vec3::new(0.0, 0.0, 0.5));
-    assert!(body.take_queued_step(Vec3::ZERO, Vec3::Z, 1.0));
-    assert!(body.step_told_ai());
-    assert!(!body.take_queued_step(Vec3::ZERO, Vec3::Z, 1.0));
-    // A step behind the facing tells no one.
-    body.queue_step(Vec3::new(0.0, 0.0, -0.5));
-    assert!(body.take_queued_step(Vec3::ZERO, Vec3::Z, 1.0));
-    assert!(!body.step_told_ai());
+    use super::super::steps::take_queued;
+    let ahead = take_queued(
+        Vec3::new(0.0, 0.0, 0.5),
+        Vec3::ZERO,
+        Vec3::ZERO,
+        Vec3::Z,
+        1.0,
+        1,
+    )
+    .unwrap();
+    assert!(ahead.tell_ai);
+    assert_eq!(ahead.countdown, -1);
+    assert!(take_queued(Vec3::ZERO, Vec3::ZERO, Vec3::ZERO, Vec3::Z, 1.0, 1).is_none());
+    // A step behind the facing tells no one; before the first landing the
+    // countdown is −2.
+    let behind = take_queued(
+        Vec3::new(0.0, 0.0, -0.5),
+        Vec3::ZERO,
+        Vec3::ZERO,
+        Vec3::Z,
+        1.0,
+        0,
+    )
+    .unwrap();
+    assert!(!behind.tell_ai);
+    assert_eq!(behind.countdown, -2);
 }
 
-/// A force release ends the step that runs, clears the queue, stops the
-/// clip rate and marks the body shocked; a body with no step keeps its
+/// A force release ends the step that runs, keeps a queued step (the
+/// original does not touch the queue), stops the clip rate and marks the
+/// body shocked; a body with no step keeps its
 /// step word clear. The release's busy time is 600 ms on.
 #[test]
 fn a_force_release_ends_the_step() {
@@ -1179,6 +1199,7 @@ fn a_force_release_ends_the_step() {
     assert!(!body.stepping());
     assert!(!body.step_told_ai());
     let drive = body.drive.as_ref().unwrap();
+    assert_eq!(drive.steps.queued, Vec3::Z);
     assert_eq!(drive.posture_rate, 0.0);
     assert!(drive.bearing.shocked);
     // No step running: the release ends none.

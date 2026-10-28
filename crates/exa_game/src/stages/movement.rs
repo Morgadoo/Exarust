@@ -376,13 +376,6 @@ pub(crate) fn measure_ground(
             drive.note_stance_yaw(l.stance_facing);
         }
     }
-    // A footwork step asked for while a balance step runs waits for the
-    // next landing (the original's `+0xfe0` queue).
-    if let Some(dir) = locomotion.and_then(|r| r.stepping)
-        && body.stepping()
-    {
-        body.queue_step(dir);
-    }
     if let Some(physics) = &physics {
         body.measure_balance(&physics.0);
     }

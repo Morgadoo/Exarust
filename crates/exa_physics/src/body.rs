@@ -53,7 +53,7 @@ mod bend;
 #[path = "body_limp.rs"]
 mod limp_sampler;
 pub use bend::{FemurPosture, femur_posture_turn, foot_pitch_target};
-pub use limp_sampler::{limp_plant, limp_pose_height, limp_root, snap_part};
+pub use limp_sampler::{limp_plant, limp_pose_height, snap_part};
 #[path = "body_hunch.rs"]
 mod hunch;
 pub use hunch::{ease_hunch, hunch_applies, hunch_turn, step_hunch};
@@ -1509,28 +1509,20 @@ pub struct Drive {
     gait_progress: f32,
     gait_speed: f32,
     gait_back: bool,
-    /// The sampler's stand-height block from this tick's pose: the root
-    /// over the lowest sole (`+0xac4`), over the mean ankle (`+0xff0`) and
-    /// the standing pelvis height (`+0xac0`, before smoothing).
-    pub stand_height: lift::StandHeight,
-    /// The standing pelvis height `+0xac0`, smoothed 0.1 a tick and taken
-    /// at once while the body is well supported.
-    pub pose_height: f32,
-    /// The walk's travel phase (`+0x12d8`): the pelvis's travel in cm times
+    /// The walk's travel phase: the pelvis's travel in cm times
     /// 0.0002 a tick, wrapped at 1, and its value before the tick.
     travel_phase: f32,
     travel_phase_before: f32,
 }
 
-/// One tick of the walk's travel phase (`+0x12d8`): the pelvis's squared
-/// travel this tick (cm²) adds its root times 0.0002 when that is over the
-/// engine's epsilon, and a phase over 1 loses 1, the phase before it too.
-/// A NaN squared travel leaves the phase.
+/// One tick of the walk's travel phase: the pelvis's squared travel this
+/// tick (cm²) adds its single-precision root times the double 0.0002 when
+/// that is over the engine's epsilon, and a phase over 1 loses 1, the
+/// phase before it too. A NaN squared travel leaves the phase.
 pub fn travel_phase(last: f32, before: &mut f32, moved2_cm: f32) -> f32 {
     let mut phase = last;
-    let moved2 = f64::from(moved2_cm);
-    if moved2 > 1.192_09e-7 {
-        phase += (moved2.sqrt() * 0.0002) as f32;
+    if moved2_cm > f32::from_bits(0x33ff_ffd7) {
+        phase = (f64::from(moved2_cm.sqrt()) * 0.0002 + f64::from(phase)) as f32;
     }
     if phase > 1.0 {
         phase -= 1.0;
@@ -1636,8 +1628,6 @@ impl Default for Drive {
             gait_progress: 0.0,
             gait_speed: 0.0,
             gait_back: false,
-            stand_height: lift::StandHeight::default(),
-            pose_height: 0.0,
             travel_phase: 0.0,
             travel_phase_before: 0.0,
         }
@@ -1780,7 +1770,7 @@ impl Drive {
     }
 
     /// Queues a footwork step whose vector is `vector` (m) for the landing
-    /// after the step that is running (the original's `+0xfe0`).
+    /// after the step that is running (the original's step queue).
     pub fn queue_step(&mut self, vector: Vec3) {
         self.steps.queued = vector;
         self.steps.queued_landings = self.balance.landings();
@@ -2134,7 +2124,6 @@ impl Ragdoll {
                 drive.steps.stepping = false;
                 drive.steps.knockback = false;
             }
-            drive.steps.queued = Vec3::ZERO;
             drive.posture_rate = release.clip_rate;
             drive.bearing.shocked = true;
         }
@@ -2147,33 +2136,6 @@ impl Ragdoll {
         if let Some(drive) = self.drive.as_mut() {
             drive.queue_step(vector);
         }
-    }
-
-    /// Takes a queued footwork step at a landing: the original's rule, from
-    /// the body's chest, its target and facing. Returns whether the step
-    /// was taken; the AI is told through [`Self::step_told_ai`].
-    pub fn take_queued_step(&mut self, chest: Vec3, facing: Vec3, scale: f32) -> bool {
-        let Some(drive) = self.drive.as_mut() else {
-            return false;
-        };
-        let landings = if drive.balance.landings() < 1 { 0 } else { 1 };
-        let Some(step) = crate::body::steps::take_queued(
-            drive.steps.queued,
-            chest,
-            drive.steps.target,
-            facing,
-            scale,
-            landings,
-        ) else {
-            return false;
-        };
-        drive.steps.target = step.target;
-        drive.steps.stepping = true;
-        drive.steps.started = drive.steps.clock;
-        drive.steps.near = 0;
-        drive.steps.queued = Vec3::ZERO;
-        drive.steps.told_ai = step.tell_ai;
-        true
     }
 
     /// The queued step taken this tick told the AI its vector points along
@@ -2197,19 +2159,8 @@ impl Ragdoll {
             .map(|(i, _)| i)
     }
 
-    /// The sampler's stand-height block from last tick's contacts
-    /// (`+0xac0`, `+0xac4` and `+0xff0`, cm).
-    pub fn stand_height(&self) -> Option<lift::StandHeight> {
-        self.drive.as_ref().map(|d| d.stand_height)
-    }
-
-    /// The standing pelvis height `+0xac0`, smoothed 0.1 a tick.
-    pub fn pose_height(&self) -> f32 {
-        self.drive.as_ref().map_or(0.0, |d| d.pose_height)
-    }
-
     /// How far (cm) leg `leg`'s contact sits over its ground and sole, as
-    /// the IK left it for the foot pitch (the original's `foot+0x630`).
+    /// the IK left it for the foot pitch.
     /// 0 until the IK has run.
     pub fn foot_contact_height(&self, leg: usize) -> f32 {
         self.legs.get(leg).map_or(0.0, |l| l.pitch_height)

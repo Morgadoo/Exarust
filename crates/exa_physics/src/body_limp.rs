@@ -4,8 +4,8 @@
 //!
 //! It shares the bracket of the living sampler but does not shift the clip
 //! time by a start's blend; every clip keeps its full root travel (the
-//! living sampler zeroes the walk, run and backpedal's travel), each
-//! part's particles are snapped to the animated pose with no velocity, the
+//! living sampler zeroes the walk, run and backpedal's travel; there is
+//! no rule to reproduce for it beyond not zeroing), each part's particles are snapped to the animated pose with no velocity, the
 //! target pelvis height eases by 0.05 a tick, and a foot plants from the
 //! keys' own flags rather than from the gait phase: the destination key's
 //! flag bit 0, and the source key's when the blend is at or under a half.
@@ -17,38 +17,27 @@
 //! (Included from body.rs: `#[path = "body_limp.rs"] mod limp_sampler;`)
 
 use bevy::math::Affine3A;
-use bevy::prelude::*;
 
 use super::Part;
 
-/// The muscles-off sampler's root travel: every clip keeps its full
-/// offset (the living sampler zeroes the walk, run and backpedal's travel).
-pub fn limp_root(root: Vec3) -> Vec3 {
-    root
-}
-
 /// Whether a foot plants from the two keys around the clip time: the
 /// destination key's flag bit 0, and the source key's when the blend `f`
-/// is at or under a half. (That both keys must ask is a reading of the
-/// original's "the destination key's flag, and the source key's when
-/// f ≤ 0.5".)
+/// is not over a half (a NaN blend asks it too, as the original's
+/// unordered compare does).
 pub fn limp_plant(source_planted: bool, destination_planted: bool, f: f32) -> bool {
-    // A NaN blend is not at or under a half: the source key is not asked.
-    #[allow(clippy::neg_cmp_op_on_partial_ord)]
-    {
-        destination_planted && (!(f64::from(f) <= 0.5) || source_planted)
-    }
+    destination_planted && (f > 0.5 || source_planted)
 }
 
-/// One tick of the muscles-off sampler's target pelvis height: 0.05 of the
-/// way from `last` to `target`, in double precision and narrowed once.
+/// One tick of the muscles-off sampler's target pelvis height:
+/// `0.05·target + 0.95·last`, in double precision and narrowed once.
 pub fn limp_pose_height(last: f32, target: f32) -> f32 {
-    (f64::from(last) + (f64::from(target) - f64::from(last)) * LIMP_HEIGHT_TAKE) as f32
+    (f64::from(target) * LIMP_HEIGHT_TAKE + f64::from(last) * LIMP_HEIGHT_KEEP) as f32
 }
 
-/// The share of the target the muscles-off sampler's pelvis height takes a
-/// tick.
+/// The shares of the target and of the last height the muscles-off
+/// sampler's pelvis height takes a tick.
 const LIMP_HEIGHT_TAKE: f64 = 0.05;
+const LIMP_HEIGHT_KEEP: f64 = 0.95;
 
 /// Snaps a part's four particles to where `target` puts its rest
 /// tetrahedron, with no velocity: both the current and the previous
@@ -64,6 +53,8 @@ pub fn snap_part(part: &mut Part, target: Affine3A) {
 
 #[cfg(test)]
 mod tests {
+    use bevy::prelude::*;
+
     use super::super::{PartSetup, Ragdoll};
     use super::*;
 
@@ -84,27 +75,23 @@ mod tests {
         Ragdoll::new(&setup)
     }
 
-    /// Every clip keeps its travel, and the pelvis height takes 0.05 of the
-    /// target a tick: 1 cm of a 20 cm gap is 1.95 at 1.0.
+    /// The pelvis height takes 0.05 of the target a tick: from 1 toward
+    /// 20 cm it is 0.95 + 1 = 1.95.
     #[test]
-    fn the_muscles_off_sampler_keeps_the_root_and_eases_the_height() {
-        assert_eq!(
-            limp_root(Vec3::new(1.0, 2.0, 3.0)),
-            Vec3::new(1.0, 2.0, 3.0)
-        );
+    fn the_muscles_off_sampler_eases_the_height() {
         assert!((limp_pose_height(1.0, 20.0) - 1.95).abs() < 1e-6);
     }
 
     /// A foot plants when the destination key asks, and the source key
-    /// asks too when the blend is at or under a half. A NaN blend takes
-    /// the destination's word alone.
+    /// asks too when the blend is not over a half (a NaN blend asks it).
     #[test]
     fn a_foot_plants_from_the_keys_flags() {
         assert!(limp_plant(true, true, 0.5));
         assert!(!limp_plant(false, true, 0.5));
         assert!(limp_plant(false, true, 0.7));
         assert!(!limp_plant(true, false, 0.7));
-        assert!(limp_plant(false, true, f32::NAN));
+        assert!(!limp_plant(false, true, f32::NAN));
+        assert!(limp_plant(true, true, f32::NAN));
     }
 
     /// Snapping a part puts its particles on its rest tetrahedron under the

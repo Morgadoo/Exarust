@@ -213,8 +213,7 @@ pub struct Leg {
     /// tick, so it stays 0 until the feet routine raises it.
     pub(super) contact_lag: f32,
     /// How far (cm) the foot stands over its ground (or, planted, over its
-    /// sole floor), which the foot pitch levels: the sampling tick's
-    /// `foot+0x630`.
+    /// sole floor), which the foot pitch levels, as the IK wrote it.
     pub(super) pitch_height: f32,
     /// The IK's corrections are the identity this tick while the stored
     /// angles ease back to zero (the original resets a part's correction
@@ -648,7 +647,7 @@ impl Ragdoll {
         &self.legs
     }
 
-    /// The feet's landing count (the original's `+0xde4`).
+    /// The feet's landing count in the running step episode.
     pub fn landings(&self) -> u32 {
         self.drive.as_ref().map_or(0, |d| d.balance.landings)
     }
@@ -818,24 +817,27 @@ impl Ragdoll {
 
         // The jolt: the chest's fast velocity less its slow one, less the
         // decaying term. Above its threshold the step ends and, once per
-        // episode, the standing position moves toward the feet's centre
-        // plus 100 × the jolt.
+        // episode, the standing position moves to the feet's centre plus
+        // 100 × the jolt.
         {
-            let walking = bearing.walking || bearing.moving;
             let steps_state = &mut drive.steps;
-            if let Some(standing) = steps::jolt(
+            if let Some(jolt) = steps::jolt(
                 b.fast,
                 b.slow,
                 steps_state,
-                walking,
+                bearing.walking,
+                bearing.moving,
+                bearing.off_feet,
                 !b.has_support,
                 scale,
                 b.feet_centre,
             ) {
                 steps_state.stepping = false;
-                steps_state.standing = standing;
-                steps_state.placed = true;
-                steps_state.still_at = steps_state.clock as f32 * steps::MS_PER_TICK - 500.0;
+                if let Some(standing) = jolt.standing {
+                    steps_state.standing = standing;
+                    steps_state.placed = true;
+                    steps_state.still_at = steps_state.clock as f32 * steps::MS_PER_TICK - 500.0;
+                }
             }
         }
 
@@ -984,7 +986,6 @@ impl Ragdoll {
         let landed = b.landings != drive.steps.landings_seen;
         drive.steps.landings_seen = b.landings;
         drive.steps.told_ai = false;
-        drive.steps.told_ai = false;
         if landed && drive.steps.queued != Vec3::ZERO {
             // The queued step is taken through the body's own rule, so its
             // target and its notice to the AI are one place.
@@ -1053,22 +1054,14 @@ impl Ragdoll {
                 leg.smoothed = ground / CM;
                 leg.ground = Some(leg.smoothed);
                 leg.anchor.y = feet::anchor_height(ground, cm(sole), cm(c.y)) / CM;
-                // The sole's floor: the original's Ground Query at the toe,
-                // 30 cm over the ground down 60 cm. Exarust's level answers
-                // it with its upward faces (the original's mask-4 colliders
-                // have no counterpart here), and the floor never rises
-                // above the lower leg's origin.
-                let toe = parts[leg.foot.unwrap_or(leg.shin)].point(&leg.toe);
-                let hit = level
-                    .height_below(
-                        Vec3::new(toe.x, leg.smoothed + feet::FLOOR_ABOVE / CM, toe.z),
-                        feet::FLOOR_RADIUS / CM,
-                        feet::FLOOR_DEPTH / CM,
-                    )
-                    .map(cm);
+                // The sole's floor: the original's Ground Query is a ray
+                // against floor-flagged meshes only, which no Exarust
+                // level has, so it misses and the floor is the ground plus
+                // the leg's offset, never over the lower leg's origin.
                 let knee = parts[leg.shin].transform().translation.y;
                 let touching = leg.state.has(FootState::TOUCHING);
-                leg.floor = feet::sole_floor(ground, touching, leg.contact_lag, hit, cm(knee)) / CM;
+                leg.floor =
+                    feet::sole_floor(ground, touching, leg.contact_lag, None, cm(knee)) / CM;
                 // Standing, no foot is lifted (a walking foot's swing comes
                 // with its gait).
                 leg.state.0 &= !FootState::LIFTED;

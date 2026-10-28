@@ -818,15 +818,11 @@ pub fn step_loudness(length_cm: f32) -> f32 {
     }
 }
 
-/// How far (cm) above the ground the sole's floor query starts, how far it
-/// looks down, and how far the floor may lie under the ground while the
-/// foot touches.
-pub(super) const FLOOR_ABOVE: f32 = 30.0;
-pub(super) const FLOOR_DEPTH: f32 = 60.0;
+/// How far the floor may lie under the ground while the foot touches and
+/// the Ground Query hits (cm). The query itself (a ray from 30 cm over the
+/// ground, 60 cm down, against floor-flagged meshes) has no Exarust
+/// counterpart: no level carries the flag, so it always misses.
 const FLOOR_TOUCHING: f32 = 10.0;
-/// The floor query's sphere (cm): a guess at the radius of the original's
-/// Ground Query (the notes give its start and depth, not its radius).
-pub(super) const FLOOR_RADIUS: f32 = 5.0;
 
 /// The loudness of a walking footstep before the random share: the
 /// original's two body fields (the character's step gain and its race's)
@@ -834,23 +830,25 @@ pub(super) const FLOOR_RADIUS: f32 = 5.0;
 const STEP_GAIN: f32 = 1.0;
 
 /// A walking footstep's gain and pitch from its speed along the heading
-/// (cm a tick) and the engine's draw `r` in [0, 1): the gain is
-/// `gain · (0.5r + 0.5) · ((0.08·speed)² + 0.01)`, the pitch
-/// `(0.2r + 0.9)(0.05·speed + 0.85)`. The product and sums are in double,
-/// narrowed once, as the original's are.
+/// (cm a tick) and the engine's two draws in [0, 1), the pitch's first:
+/// the pitch is `(0.2·p + 0.9)(0.05·speed + 0.85)` and the gain
+/// `gain · (0.5·g + 0.5) · ((0.08·speed)² + 0.01)`, the draw's share in
+/// single precision and the rest in double, narrowed once, as the
+/// original's are.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GaitStep {
     pub gain: f32,
     pub pitch: f32,
 }
 
-/// The walk's footstep gain and pitch.
-pub fn gait_step(speed_cm: f32, r: f32) -> GaitStep {
+/// The walk's footstep gain and pitch from the pitch draw `p` and the gain
+/// draw `g`, drawn in that order.
+pub fn gait_step(speed_cm: f32, p: f32, g: f32) -> GaitStep {
     let speed = f64::from(speed_cm);
-    let r = f64::from(r);
-    let gain =
-        (f64::from(STEP_GAIN) * (0.5 * r + 0.5) * (0.08 * speed * (0.08 * speed) + 0.01)) as f32;
-    let pitch = ((0.2 * r + 0.9) * (0.05 * speed + 0.85)) as f32;
+    let pitch = ((0.2 * f64::from(p) + 0.9) * (0.05 * speed + 0.85)) as f32;
+    let share = f64::from(g * 0.5 + 0.5);
+    let loud = 0.08 * speed * (0.08 * speed) + 0.01;
+    let gain = (f64::from(STEP_GAIN) * f64::from(STEP_GAIN) * (share * loud)) as f32;
     GaitStep { gain, pitch }
 }
 
@@ -876,8 +874,9 @@ pub struct Footstep {
 /// A foot's sole floor (cm) from the Ground Query's `hit`: the higher of
 /// the hit and the ground (10 cm lower while the foot touches) plus the
 /// leg's own offset, or the ground plus the offset where the query misses;
-/// never above the knee. The original's Ground Query is at the toe,
-/// starting 30 cm over the ground and looking 60 cm down.
+/// never above the knee. The original's Ground Query is a ray at the toe,
+/// starting 30 cm over the ground and looking 60 cm down; the body passes
+/// `None` (see [`FLOOR_TOUCHING`]).
 pub fn sole_floor(
     ground_cm: f32,
     touching: bool,

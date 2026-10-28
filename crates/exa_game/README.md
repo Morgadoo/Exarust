@@ -328,18 +328,17 @@ original's per-part pipeline (the Run clip overlaid on the Walk by
 turned by the torso twist (the lumbar half), the head turned toward the
 look by its ramping weight (its anchors then on the physical thorax), the
 thorax hunch on its pinned part, the foot pitched to the ground (a
-20 cm toe, eased 0.01 rad a tick from the IK's `foot+0x630`) and the leg
+20 cm toe, eased 0.01 rad a tick from the height the IK wrote) and the leg
 IK's knee, hip and thigh turns folded into the clip chain (the standing
 IK while it stands, the locomotion IK while it moves); the
 clock of a locomoting body takes the locomotion's step; a get-up's clip ending into the stance writes the condition
 word normal; sampler); its targets, the sampled parts on its character
 frame, and its lift, its controller told to follow the frame (carry); a
 walk's foot plant sends a `Footstep` at the character plus `3·speed + 4`
-cm along its facing for the race's set (`movement::gait_footsteps`), the
-player's combat footwork step asked for while a balance step runs is
-queued for the next landing, and a shock that releases a race ends its
-step and stops its clip rate (`Ragdoll::force_release`, from the energy
-arcs' `shock_fighters`); a body asked to go limp keeps its motion unless
+cm along its facing for the race's set (`movement::gait_footsteps`), and
+a shock on a releasing race ends its step and stops its clip rate
+(`Ragdoll::force_release`, from the energy arcs' `shock_fighters`), with
+its next shock 500 ms on, no draw and no burn; a body asked to go limp keeps its motion unless
 given a velocity (`limp`), and a level's placed dead are built limp from their
 saved pose and registered at rest (`exa_physics::body::PlacedCorpse`: one
 tick, then sleep; only a `--corpse` without a pose falls),

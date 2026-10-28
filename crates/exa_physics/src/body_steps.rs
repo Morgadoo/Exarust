@@ -155,8 +155,8 @@ pub(super) struct Steps {
     pub landings_seen: u32,
     /// The AI was told about the queued step this tick.
     pub told_ai: bool,
-    /// The jolt's decaying term (`+0xaa8`), its one-per-episode latch
-    /// (`+0xc88` bit 0), the countdown that clears the latch (`+0xc8c`)
+    /// The jolt's decaying term, its one-per-episode latch, the countdown
+    /// that clears the latch
     /// and whether the behaviour was told this tick.
     jolt_decay: Vec3,
     jolt_latch: bool,
@@ -545,46 +545,67 @@ pub(super) fn take_queued(
     super::feet::queued_step(chest, target, queued, facing, scale, landings)
 }
 
+/// What one tick's jolt asks of the body.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct Jolt {
+    /// Where the standing position moves (m), once per episode.
+    pub standing: Option<Vec3>,
+}
+
 /// The jolt a body takes from its chest's velocity: the difference
 /// between its fast and slow chest velocities across the ground less the
-/// decaying term, compared with `2.5·scale` cm a tick while it walks and
-/// `125·scale` otherwise (a thousand times either when it jumps or has no
-/// support). Above it, once per episode, the standing position moves
-/// toward the feet's centre plus 100 × the jolt, capped at 100·scale cm,
-/// and the behaviour is told while the body locomotes. The decaying term
-/// loses a seventh of itself a tick (× 0.85); the latch is held for 80
-/// quiet ticks. Returns the standing position to move to, if any.
+/// decaying term (which first loses 15 %), compared with `2.5·scale` cm a
+/// tick in the walking condition and `125·scale` in any other (a thousand
+/// times either while it has no support; the original's jump flag has no
+/// Exarust counterpart). Above it the step ends (`Some`), and once per
+/// episode the standing position moves to the feet's centre plus 100 ×
+/// the jolt, at most 100·scale cm away, and the behaviour is told while
+/// the body locomotes. Each jolt above the threshold holds the latch for
+/// 80 more ticks; the latch clears on the quiet tick after the countdown
+/// reaches 0. A body off its feet takes no jolt and loses its latch.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn jolt(
     fast: Vec3,
     slow: Vec3,
     steps: &mut Steps,
     walking: bool,
+    locomoting: bool,
+    off_feet: bool,
     unsupported: bool,
     scale: f32,
     feet_centre: Vec3,
-) -> Option<Vec3> {
+) -> Option<Jolt> {
     steps.jolt_told = false;
-    let jolt = (fast - slow).with_y(0.0) - steps.jolt_decay;
     steps.jolt_decay *= 0.85;
-    let base = if walking { 2.5 } else { 125.0 } * scale;
-    let threshold = if unsupported { base * 1000.0 } else { base };
-    if cm(jolt).length_squared() > threshold * threshold {
-        steps.jolt_told = walking;
-        if steps.jolt_latch {
-            return None;
-        }
-        steps.jolt_latch = true;
+    let jolt = (fast - slow).with_y(0.0) - steps.jolt_decay;
+    if off_feet {
+        steps.jolt_latch = false;
+        return None;
+    }
+    let base = if walking { 2.0 } else { 100.0 } * 1.25;
+    let base = if unsupported { base * 1000.0 } else { base };
+    let limit = base * scale;
+    let jolt2 = cm(jolt).length_squared();
+    if limit * limit < jolt2 {
+        let standing = if steps.jolt_latch {
+            None
+        } else {
+            steps.jolt_latch = true;
+            steps.jolt_told = locomoting;
+            let offset = if scale * scale < jolt2 {
+                cm(jolt) * (100.0 * scale / jolt2.sqrt())
+            } else {
+                cm(jolt) * 100.0
+            };
+            Some((cm(feet_centre) + offset) / CM)
+        };
         steps.jolt_quiet = 80;
-        let reach = 100.0 * scale;
-        let offset = (cm(jolt) * 100.0).clamp_length_max(reach);
-        Some((cm(feet_centre) + offset) / CM)
+        Some(Jolt { standing })
     } else {
-        if steps.jolt_quiet > 0 {
-            steps.jolt_quiet -= 1;
-            if steps.jolt_quiet == 0 {
-                steps.jolt_latch = false;
-            }
+        steps.jolt_quiet -= 1;
+        if steps.jolt_quiet < 0 {
+            steps.jolt_quiet = 0;
+            steps.jolt_latch = false;
         }
         None
     }

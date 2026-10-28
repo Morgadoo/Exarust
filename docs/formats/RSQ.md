@@ -323,12 +323,7 @@ How the original simulates a body (`exa_physics::body`):
     reproduced: a 70 cm times scale crouch once a standing body is displaced
     past 10 cm times scale (that latch is not a field Exarust keeps), a
     target 10 cm under the animated height, and a resting probe that copies
-    the animated height. The sampler's own stand-height block keeps the
-    root over the lowest sole (`+0xac4`) and the mean ankle (`+0xff0`), and
-    the standing pelvis height `+0xac0` = the root less the mean contact
-    plus 2 × the body scale, 5 cm more while it does not step, smoothed 0.1
-    a tick and taken at once above 0.95 support
-    (`body_lift::{stand_height_block, smooth_stand_height}`).
+    the animated height.
     Each foot's ground is its own; the controller's floor does not raise it.
   - **Link muscles** turn every joint (`exa_physics`, `body_muscle.rs`). Each
     slack link (slack over 0.01 cm) pulls its point on the part toward its
@@ -975,10 +970,11 @@ ticks.
   × the length up to 140 cm, else 1 (`feet::step_loudness`).
 - **Footstep sounds**: a walking foot's plant on a supported body with a
   race set sounds at the character's place plus `3·speed + 4` cm along its
-  facing, gain `g·(0.5r + 0.5)·((0.08·speed)² + 0.01)` and pitch
-  `(0.2r + 0.9)(0.05·speed + 0.85)`, r the engine's unit draw
-  (`feet::{gait_step, step_position}`, the `Footstep` message). The two
-  body gain fields g have no Exarust counterpart and are 1; the underwater
+  facing, pitch `(0.2p + 0.9)(0.05·speed + 0.85)` and gain
+  `k·(0.5g + 0.5)·((0.08·speed)² + 0.01)`, p and g the engine's unit draw
+  taken twice in that order (`feet::{gait_step, step_position}`, the
+  `Footstep` message). The two body gain fields k have no Exarust
+  counterpart and are 1; the underwater
   splash and the foley set are not in. The body tick's other sounds, the
   swing's and the recovery step's, are the combat stage's.
 - **Friction** each tick, on the lower leg and copied to its foot: 0 not
@@ -987,12 +983,12 @@ ticks.
   walk's share, at once otherwise) plus the sole height, at most 100 cm
   over the ankle; with no ground within reach the character's ground (the
   lowest foot's with support, their mean walking, the pelvis's query
-  without) and flags 0x30. The toe's floor is the tick's Ground Query at
-  the toe, 30 cm over the ground and 60 cm down: the higher of its hit and
-  the ground (10 cm less while the foot touches) plus the leg's offset, or
-  the ground plus the offset where it misses, never over the lower leg's
-  origin (`feet::sole_floor`; the radius is a guess, the notes give only
-  the start and depth).
+  without) and flags 0x30. The toe's floor is the Ground Query's miss
+  branch: the ground plus the leg's offset, never over the lower leg's
+  origin (`feet::sole_floor`, which also holds the hit branch: the higher
+  of the hit and the ground, 10 cm less while the foot touches). The
+  original's query is a ray from 30 cm over the ground, 60 cm down,
+  against floor-flagged meshes only; no Exarust level has them.
 - **The drive**, in each of the 20 iterations after the lower leg's links,
   for a body over half its tone with support and a contact more than 10 cm
   under the pelvis (the point refreshed every iteration): a touching foot
@@ -1870,7 +1866,7 @@ not landed is the identity and says which:
 | 3 | the hold toward the held pose by its weight, then normalised; the result kept as the targets | `exa_anim::hold_toward`, `Animator::keep` |
 | 4 | the femur posture: the thighs turned ±5° (or ±1.5° by the record's height) about the femur axis | `femur_posture_turn`, applied by the sampler in the combat conditions; identity otherwise |
 | 5 | the clip chain: each part placed by its rest translation and its posed turn under its parent's placement; the foot contacts read it | `clip_chain` |
-| 6 | the IK chain: each IK part's turn times its leg IK corrections, the chain recomposed; the targets and the pins read it | the standing IK (`body_bend::standing_leg`) and the locomotion IK (`locomoting_leg`), their knee, hip and thigh turns folded into the clip chain, and the foot pitch from `foot+0x630` |
+| 6 | the IK chain: each IK part's turn times its leg IK corrections, the chain recomposed; the targets and the pins read it | the standing IK (`body_bend::standing_leg`) and the locomotion IK (`locomoting_leg`), their knee, hip and thigh turns folded into the clip chain, and the foot pitch from the height the IK wrote |
 | 7 | the torso twist ([below](#torso-twist)): the midline chain's turns (the lumbar half) toward the look | `spine`, `exa_physics::body::locomotion::twist_spine` |
 | 8 | the head look ([below](#head-look): yaw, pitch and roll by a ramping weight), the foot pitch to the ground (smoothed), the thorax's attack hunch | the head look (`look_with_head`); the thorax hunch on the pinned part's local turn before the chain; the foot pitch (`foot_pitch`: a 20 cm toe, eased 0.01 rad a tick, 0.1 while a recovery step is on; a placement stores the angle and clears the rate) |
 | 9 | the anchors of every slack link and the pelvis height | the drive's, in the carry stage (`Ragdoll::aim`): a looking head's relative to the physical thorax, a head that does not look relative to its parent's pose from before the twist |

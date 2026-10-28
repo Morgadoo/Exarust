@@ -34,10 +34,9 @@ fn the_correction_advances_by_the_rate() {
     assert!(close(held, 0.01));
 }
 
-/// An anchored target is the midpoint of the contact and its anchor, at
-/// the contact's height. An unanchored one, standing at the target height,
-/// is the contact lowered by twice 1.125 cm: the original works from the
-/// contact the foot is at, not from the anchor.
+/// An anchored target is the midpoint, at the anchor's height. An
+/// unanchored one, standing at the target height, is the anchor lowered
+/// by twice 1.125 cm.
 #[test]
 fn the_bend_target_drops_an_unanchored_foot() {
     let foot = Vec3::new(0.0, 0.4, 0.0);
@@ -45,12 +44,12 @@ fn the_bend_target_drops_an_unanchored_foot() {
     let mid = bend_target(foot, anchor, true, 0.05);
     assert!(close((mid.x - foot.x).abs(), 0.1));
     assert!(close((mid.z - foot.z).abs(), 0.0));
-    assert!(close(mid.y, foot.y));
+    assert!(close(mid.y, anchor.y));
     let raw = super::super::lift::lift_unclamped(0.0, &Bearing::default(), 1.0);
     assert!(close(raw, 1.125));
     let dropped = bend_target(foot, anchor, false, 2.0 * raw / super::super::CM);
-    assert!(close(dropped.y, foot.y - 0.0225));
-    assert!(close(dropped.x, foot.x) && close(dropped.z, foot.z));
+    assert!(close(dropped.y, anchor.y - 0.0225));
+    assert!(close(dropped.x, anchor.x) && close(dropped.z, anchor.z));
 }
 
 /// 75% of 40° is 30°. Not stepping, 30° loses a tenth and is 27°.
@@ -302,7 +301,6 @@ fn the_locomotion_ik_bends_a_short_clip_leg_over_the_contact() {
         drop: 0.0,
         lift_cm: 0.0,
         stepping: false,
-        snap: false,
         running: false,
         stance: 0.5,
         crouch: 0.0,

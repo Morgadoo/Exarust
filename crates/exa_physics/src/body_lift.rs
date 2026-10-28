@@ -350,21 +350,6 @@ impl Ragdoll {
                 }
             })
             .collect();
-        // The sampler's stand-height block, from the pose the feet are on.
-        let contacts_cm: Vec<f32> = legs
-            .iter()
-            .map(|l| cm(parts[l.shin].point(&l.contact).y))
-            .collect();
-        let root_cm = cm(parts[root].transform().translation.y);
-        let block = stand_height_block(
-            root_cm,
-            &contacts_cm,
-            cm(*sole),
-            drive.stats.scale,
-            drive.steps.stepping,
-        );
-        drive.stand_height = block;
-        drive.pose_height = smooth_stand_height(drive.pose_height, block.target, drive.support);
         let pelvis = &parts[root];
         let height = cm(pelvis.transform().translation.y);
         // The legs' extension: the pelvis over the highest anchor, against
@@ -476,63 +461,3 @@ mod tests;
 #[cfg(test)]
 #[path = "body_climb_test.rs"]
 mod climb_tests;
-
-/// The sampler's stand-height block: the original's `+0xac4` (the root
-/// over the lowest contact) and `+0xff0` (the root over the mean contact),
-/// and the standing pelvis height `+0xac0`, all in centimetres.
-///
-/// `+0xac4` = root height − the lowest (contact height − sole). `+0xff0` =
-/// root height − half the sum of the contacts' heights. `+0xac0` = root
-/// height − the foot contact height + 2 × the body scale, plus 5 cm while
-/// the body does not step; the sampler smooths it 0.1 a tick (a well
-/// supported body takes it at once).
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
-pub struct StandHeight {
-    /// `+0xac4`: the root over the lowest sole.
-    pub stand: f32,
-    /// `+0xff0`: the root over the mean ankle.
-    pub pose_reach: f32,
-    /// `+0xac0`, before the sampler's smoothing.
-    pub target: f32,
-}
-
-/// The sampler's stand-height block from the root's height and the feet's
-/// contact heights (cm).
-pub fn stand_height_block(
-    root_y: f32,
-    contacts: &[f32],
-    sole: f32,
-    scale: f32,
-    stepping: bool,
-) -> StandHeight {
-    if contacts.is_empty() {
-        return StandHeight::default();
-    }
-    let lowest = contacts
-        .iter()
-        .map(|c| c - sole)
-        .fold(f32::INFINITY, f32::min);
-    let sum: f32 = contacts.iter().sum();
-    let mean = sum / contacts.len() as f32;
-    let lift = if stepping { 0.0 } else { TARGET_RAISE };
-    StandHeight {
-        stand: root_y - lowest,
-        pose_reach: root_y - mean,
-        target: root_y - mean + 2.0 * scale + lift,
-    }
-}
-
-/// The sampler's smoothing of `+0xac0`: 0.1 of the way to `target` a tick
-/// (in double, narrowed once), or the target at once while the support is
-/// at least 0.95.
-pub fn smooth_stand_height(last: f32, target: f32, support: f32) -> f32 {
-    if support >= SUPPORT_SET {
-        return target;
-    }
-    (f64::from(last) + (f64::from(target) - f64::from(last)) * STAND_HEIGHT_TAKE) as f32
-}
-
-/// A well supported body takes its standing height at once.
-const SUPPORT_SET: f32 = 0.95;
-/// The standing height's per-tick share.
-const STAND_HEIGHT_TAKE: f64 = 0.1;

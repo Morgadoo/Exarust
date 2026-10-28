@@ -260,9 +260,9 @@ race's step name), plus the name of the wet splash set (`StpWet`). The
 footstep sets are now chosen from the race record (`CharacterStats::
 footsteps`, its first five names): a physical body's sampler sends a
 `Footstep` message for each foot it plants, and `footsteps` loads the set,
-draws the engine's unit once and plays
-`gain = (0.5r + 0.5)((0.08·speed)² + 0.01)`,
-`pitch = (0.2r + 0.9)(0.05·speed + 0.85)` at the plant's place. The two
+draws the engine's unit twice (the pitch's p, then the gain's g) and plays
+`gain = (0.5g + 0.5)((0.08·speed)² + 0.01)`,
+`pitch = (0.2p + 0.9)(0.05·speed + 0.85)` at the plant's place. The two
 body gain fields the original multiplies in have no Exarust counterpart
 and are 1 (a guess), and the underwater splash and the foley set are not
 in. Nothing selects voices in the running game yet.
