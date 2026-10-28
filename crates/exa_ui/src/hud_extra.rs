@@ -135,10 +135,13 @@ pub fn paint_compass(
     let e = compass_extent(unit);
     let (sin, cos) = heading.sin_cos();
     let alpha = f32::from(compass_alpha(fade)) / 255.0;
-    let left = (cx - e).floor() as i32;
-    let top = (cy - e).floor() as i32;
-    let right = (cx + e).ceil() as i32;
-    let bottom = (cy + e).ceil() as i32;
+    // The turned square's axis-aligned box, which is wider than the square
+    // by up to √2 at a diagonal heading.
+    let half = e * (sin.abs() + cos.abs());
+    let left = (cx - half).floor() as i32;
+    let top = (cy - half).floor() as i32;
+    let right = (cx + half).ceil() as i32;
+    let bottom = (cy + half).ceil() as i32;
     let mut canvas = Canvas::new(
         left,
         top,
@@ -169,7 +172,13 @@ pub fn paint_compass(
 /// share, remapped so Bevy's linear blend darkens as the original's gamma
 /// blend does.
 pub fn curtain_colour(fall: f32) -> Color {
-    let alpha = fall.clamp(0.0, 1.0);
+    // A NaN share draws nothing, as the original's CVTSS2SI of a NaN gives
+    // an indefinite integer whose low byte is 0.
+    let alpha = if fall.is_nan() {
+        0.0
+    } else {
+        fall.clamp(0.0, 1.0)
+    };
     Color::srgba(0.0, 0.0, 0.0, linear_opacity([0.0; 3], alpha))
 }
 
@@ -465,6 +474,12 @@ mod tests {
         // 192 of 255.
         let mid = c.get(56, 844).unwrap();
         assert!((mid[3] - 192.0 / 255.0).abs() < 0.02, "{mid:?}");
+        // At a diagonal heading the turned square reaches √2 times as far:
+        // its corner is painted, not clipped.
+        let c = paint_compass(&texture(), 4, 900, std::f32::consts::FRAC_PI_4, 0.0);
+        assert_eq!((c.x, c.y, c.width, c.height), (-12, 776, 136, 136));
+        let corner = c.get(56, 777).unwrap();
+        assert!(corner[3] > 0.0, "{corner:?}");
     }
 
     #[test]
@@ -479,6 +494,7 @@ mod tests {
         // A share past either end clamps.
         assert_eq!(curtain_colour(-1.0).alpha(), 0.0);
         assert_eq!(curtain_colour(2.0).alpha(), 1.0);
+        assert_eq!(curtain_colour(f32::NAN).alpha(), 0.0);
     }
 
     /// The installed compass texture is square and has painted texels
