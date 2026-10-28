@@ -1765,10 +1765,14 @@ A push at a world point SHALL be shared among the body part's particles by the p
 - **THEN** the push is not applied
 
 ### Requirement: Femur posture
-In the combat conditions the thighs SHALL be turned about the axis (0, 0, 1) lerped 0.4 toward (-1, 0, 0) by 5 degrees with the splay flag or (1 - record height) times -1.5 degrees otherwise, the sign alternating by leg; outside them the clip's turn stays.
+While the behaviour is in combat and the condition is neither off its feet nor walking, the thighs SHALL be turned about the axis (0, 0, 1) lerped 0.4 toward (-1, 0, 0) by (1 - record height) times -1.5 degrees; otherwise they SHALL be turned 5 degrees with the state word's splay bit, else keep the clip's turn; the sign alternates by leg.
 
 #### Scenario: Standing
-- **WHEN** the body is not in a combat condition
+- **WHEN** the behaviour is not in combat and the splay bit is clear
+- **THEN** the thighs keep the clip's turn
+
+#### Scenario: Walking in combat
+- **WHEN** the behaviour is in combat and the condition is walking
 - **THEN** the thighs keep the clip's turn
 
 ### Requirement: Swing body rules
@@ -2050,7 +2054,14 @@ A living body placed into the scene SHALL probe each leg 5·scale cm along its s
 
 #### Scenario: A platform
 - **WHEN** a biped is placed over a platform 15 cm up
-- **THEN** each leg's ground and floor are 15 cm, each anchor 15 cm plus the sole, the character's ground 15 cm, and the corrections' rates zero
+- **THEN** each leg's ground and floor are 15 cm, each anchor 15 cm plus the sole, the character's ground 15 cm, the feet placed at 15 cm, and the corrections' rates zero
+
+### Requirement: Spawn placement
+The spawn SHALL run the placement leg snap after sampling the first clip, move the character's feet to the character ground the snap finds and sample the snapped frame again.
+
+#### Scenario: A raised spawn
+- **WHEN** a character is spawned with its feet 5 cm over a floor
+- **THEN** its controller and model root are moved down to the floor's height before its first tick
 
 ### Requirement: Placement frame height
 The placement's frame height SHALL be the root over the chosen thigh plus the chosen ground, the clip reach (from the ankle's horizontal offset from the hip, shaped r² + (1 − r)√r) and the sole. The lower leg SHALL be chosen unless its clip foot hangs too far under its hip.
@@ -2094,3 +2105,14 @@ The more mobile part's spheres SHALL be tested against the other part's collisio
 #### Scenario: Behind the face
 - **WHEN** a sphere's centre lies behind a mesh triangle
 - **THEN** it is not pushed
+
+### Requirement: Trailing-foot request
+A clip start that replaces Walk or Run SHALL leave a trailing-foot request with a deadline 500 ms on, unless the movement decision moves the body that tick. The body tick SHALL plant the trailing foot after its sample while the request is 2 and set it to 1. A request strictly past its deadline SHALL be dropped and the behaviour told; the movement decision's move branch SHALL drop it.
+
+#### Scenario: Leaving the walk
+- **WHEN** a standing body's Walk is replaced by an attack at 1000 ms
+- **THEN** the next sample plants its trailing foot, the request stays 1 at 1500 ms and is dropped at 1501 ms
+
+#### Scenario: Moving
+- **WHEN** a body with a request is moved by the movement decision
+- **THEN** its request is 0
