@@ -10,11 +10,12 @@
 //! the open screen is drawn, at most 33 ms apart; the in-game bar draws a
 //! strip `scale × 20` high.
 //!
-//! The tooltip is the shown choice's name box and description caption, laid
-//! out at the original's places (600 ms delay, a 60-unit name box, the
-//! widths and line step of the GUI main font at the tree's unit); while a
-//! power is dragged every shown node wears its name. Not modelled: the link programs' ribbon texture (the
-//! draw treats it as white, so links lack the spline's texture), the GUI
+//! The tooltip is the shown choice's name caption (at once) and its wrapped
+//! description box (after 600 ms), laid out at the original's places with
+//! the widths and line step of the GUI main font at the tree's unit; while
+//! a power is dragged every node wears its name instead. Not modelled: the
+//! link programs' ribbon texture (the draw treats it as white, so links
+//! lack the spline's texture), the GUI
 //! skin's own text metrics and button highlight, and the base form's key
 //! handlers. The bar's own keys (pick, step, use) belong to the hotkey
 //! handler and the cast plugin ([`crate::thaum::cast`]), which keeps the
@@ -531,31 +532,37 @@ fn draw(
     let draw = if tree_open {
         // The tree pass already ends with the bar.
         let mut draw = tree_draw::tree_draw(&view);
-        // The tooltip: the shown choice's name and description, as the
-        // running font measures them (the GUI skin's own metrics are
-        // outside the pack; a labelled guess).
-        if view.hovered > 0 && (view.hovered as usize) <= tree.nodes.len() {
+        // The tooltip: the shown choice's name caption and its wrapped
+        // description box, measured with the GUI font's advances (the
+        // glyphs are the running font's).
+        if !view.labels && view.hovered > 0 && (view.hovered as usize) <= tree.nodes.len() {
             let (name, description) = tree.node_text(view.hovered as usize - 1, texts);
-            let name = String::from_utf8_lossy(name).into_owned();
-            let description = String::from_utf8_lossy(description).into_owned();
-            let lines = divide_lines(name.as_bytes(), 59);
-            let line_step = tree_draw::text_step() * scale / tree_draw::TREE_UNIT;
-            let description_width =
-                tree_draw::text_width(description.as_bytes()) * scale / tree_draw::TREE_UNIT;
-            let tooltip =
-                tree_draw::tooltip_draw(&view, &lines, &description, line_step, description_width);
+            let lines = tree_draw::text_split(description, tree_draw::TIP_TEXT_WIDTH);
+            let tooltip = tree_draw::tooltip_draw(
+                &view,
+                &lines,
+                &String::from_utf8_lossy(name),
+                tree_draw::text_step(scale),
+                tree_draw::text_width(name, scale),
+            );
             draw.batches.extend(tooltip.batches);
             draw.texts.extend(tooltip.texts);
         }
         if view.labels {
             let mut names = Vec::with_capacity(tree.nodes.len());
             for node in &tree.nodes {
-                let text = texts
-                    .get(node.name_text as usize)
-                    .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
-                    .unwrap_or_default();
-                let width = tree_draw::text_width(text.as_bytes()) * scale / tree_draw::TREE_UNIT;
-                names.push((text, width));
+                let text = if node.name_text == 0 {
+                    &[][..]
+                } else {
+                    texts
+                        .get(node.name_text as usize)
+                        .map(Vec::as_slice)
+                        .unwrap_or_default()
+                };
+                names.push((
+                    String::from_utf8_lossy(text).into_owned(),
+                    tree_draw::text_width(text, scale),
+                ));
             }
             let labels = tree_draw::labels_draw(&view, &names);
             draw.batches.extend(labels.batches);
@@ -630,36 +637,6 @@ fn draw(
     }
     screen.last_draw = now;
     screen.dirty = false;
-}
-
-/// Splits a text into the lines the GUI font's line count takes at
-/// `width` tree units: a word wrap at the spaces that fit, without the
-/// markup the tooltip does not use.
-fn divide_lines(text: &[u8], width: usize) -> Vec<String> {
-    let text = String::from_utf8_lossy(text);
-    let mut lines = Vec::new();
-    let mut line = String::new();
-    for word in text.split([' ', '\r', '\n']) {
-        if word.is_empty() {
-            continue;
-        }
-        if !line.is_empty()
-            && tree_draw::text_width(format!("{line} {word}").as_bytes()) > width as f32
-        {
-            lines.push(std::mem::take(&mut line));
-        }
-        if !line.is_empty() {
-            line.push(' ');
-        }
-        line.push_str(word);
-    }
-    if !line.is_empty() {
-        lines.push(line);
-    }
-    if lines.is_empty() {
-        lines.push(String::new());
-    }
-    lines
 }
 
 /// Wraps a description at `width` characters, keeping its text.

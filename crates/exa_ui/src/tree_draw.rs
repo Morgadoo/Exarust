@@ -40,8 +40,8 @@
 //!   opening and closing animation.
 //! - [`prompt_draw`], [`tooltip_layout`], [`tooltip_draw`], [`labels_draw`]
 //!   and [`preview_draw`]: the creation prompt's three panels and texts,
-//!   the shown choice's tooltip (its 600 ms delay, 60-unit name box and
-//!   description caption), every node's name in the form's label mode, and
+//!   the shown choice's tooltip (its name caption at once and its 60-unit
+//!   description box after 600 ms), every node's name in the form's label mode, and
 //!   the dragged power's 13-unit icon and 6 × 2.5 glow.
 //!
 //! The window's two fades are the caller's numbers: the backdrop's
@@ -1413,7 +1413,8 @@ fn bar_glows(out: &mut TreeDraw, view: &TreeView, pose: &BarPose) {
         let mut bytes = domain_colour(power_domain(slot.word));
         match flashing {
             Some(node) if node.power & 0x0e0f_ffff == slot.word & 0x0e0f_ffff => {
-                let mut fade = smoothstep((remaining(view.flash_until, view.now) * FLASH_RATE) as f32);
+                let mut fade =
+                    smoothstep((remaining(view.flash_until, view.now) * FLASH_RATE) as f32);
                 if view.denied {
                     fade = 1.0 - 2.0 * (0.5 - fade).abs();
                 }
@@ -1484,9 +1485,10 @@ pub const TREE_FONT: &crate::gui_font::GuiFont = &crate::gui_font::RAYFORM_08;
 /// it.
 pub const TREE_UNIT: f32 = 4.0;
 
-/// A text's width in tree units, from the GUI font's advances.
-pub fn text_width(text: &[u8]) -> f32 {
-    TREE_FONT.text_width(text) as f32 / TREE_UNIT
+/// A text's width in pixels at the GUI unit `unit`: the GUI font's
+/// advances, which are pixels at four pixels to the unit, scaled.
+pub fn text_width(text: &[u8], unit: f32) -> f32 {
+    TREE_FONT.text_width(text) as f32 * unit / TREE_UNIT
 }
 
 /// The number of lines a text wraps to at `width` tree units (the
@@ -1495,121 +1497,185 @@ pub fn text_lines(text: &[u8], width: f32) -> u32 {
     crate::text_layout::line_count(text, (width * TREE_UNIT) as i32, TREE_FONT).max(1) as u32
 }
 
-/// The line step in tree units.
-pub fn text_step() -> f32 {
-    TREE_FONT.line_height as f32 / TREE_UNIT
+/// The lines a text wraps to at `width` tree units, broken as the GUI's
+/// line scan breaks them (a carriage return, after the last space that
+/// fits, or after the byte that overflows a line with no space). The
+/// break's own carriage return or space and a following line feed are
+/// left out of the lines.
+pub fn text_split(text: &[u8], width: f32) -> Vec<String> {
+    let width = (width * TREE_UNIT) as i32;
+    let len = text.len() as i32;
+    let mut lines = Vec::new();
+    let mut start = 1;
+    while start <= len {
+        let next = crate::text_layout::scan_line(text, start, width, TREE_FONT, false, &mut |_| {})
+            .next
+            .max(start + 1);
+        let mut end = (next - 1).min(len) as usize;
+        let from = (start - 1) as usize;
+        while end > from && matches!(text[end - 1], b' ' | b'\r') {
+            end -= 1;
+        }
+        lines.push(String::from_utf8_lossy(&text[from..end]).into_owned());
+        start = if next <= len && text[(next - 1) as usize] == b'\n' {
+            next + 1
+        } else {
+            next
+        };
+    }
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
 }
 
-/// The tooltip's panel and text places in pixels, from the shown choice's
-/// node and the measured texts.
+/// The line step in pixels at the GUI unit `unit`.
+pub fn text_step(unit: f32) -> f32 {
+    TREE_FONT.line_height as f32 * unit / TREE_UNIT
+}
+
+/// One panel of the tooltip, in pixels.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TipPanel {
+    /// The panel: x, y, width, height.
+    pub panel: [f32; 4],
+    /// The text's top-left.
+    pub text: [f32; 2],
+    /// The panel's and the text's alpha, 0 to 1.
+    pub alpha: f32,
+}
+
+/// The shown choice's tooltip: the node's name caption at once, and its
+/// wrapped description box once the choice is 601 ms old.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TooltipLayout {
-    /// The name box: x, y, width, height.
-    pub name_panel: [f32; 4],
-    /// The name text's top-left.
-    pub name_text: [f32; 2],
-    /// The wrapped name's line step.
+    /// The name caption under the node.
+    pub name: Option<TipPanel>,
+    /// The description box, 60 units wide.
+    pub description: Option<TipPanel>,
+    /// The wrapped description's line step.
     pub line_step: f32,
-    /// The description box: x, y, width, height.
-    pub description_panel: [f32; 4],
-    /// The description text's top-left.
-    pub description_text: [f32; 2],
-    /// The name box's alpha, 0 to 1.
-    pub alpha: f32,
-    /// The description box's alpha, 0 to 1.
-    pub description_alpha: f32,
 }
 
-/// The time before a tooltip appears, in milliseconds.
+/// The time before the description box appears, in milliseconds.
 pub const TIP_DELAY: u32 = 600;
-/// The tooltip's box width, in GUI units.
+/// The description box's width, in GUI units.
 pub const TIP_WIDTH: f32 = 60.0;
-/// The wrapped name's width, in GUI units.
+/// The wrapped description's width, in GUI units.
 pub const TIP_TEXT_WIDTH: f32 = 59.0;
 
-/// The hovered node's tooltip as the original lays it out.
+/// The 160/255 alpha the tooltip fades to.
+const TIP_ALPHA: u8 = 160;
+
+/// A tooltip fade's alpha byte: `ROUND(elapsed·160·rate)` while the focus
+/// holds, `160 − that` once it left.
+fn tip_fade(elapsed: i32, rate: f64, holding: bool) -> u8 {
+    let rise = (cvt_i32_f64(f64::from(elapsed) * 160.0 * rate) & 0xff) as u8;
+    if holding {
+        rise
+    } else {
+        TIP_ALPHA.wrapping_sub(rise)
+    }
+}
+
+/// The shown choice's tooltip as the original lays it out (not in label
+/// mode). `age` is the 32-bit difference between now and the choice stamp.
 ///
-/// The tooltip appears 600 ms (a strict 601) after the shown choice; the
-/// name box is `60 × (lines·step + 1)` units under the node (above it when
-/// it would leave the window) and fades to 160/255 over 300 ms, out again
-/// when the focus leaves. The description is a one-line caption of its
-/// measured width. The widths and the line step come from the GUI's main
-/// font at the tree's fixed unit ([`text_width`], [`text_lines`],
-/// [`text_step`]); the glyphs themselves are drawn with the running font.
+/// - The name caption is the name's measured width less two units, a unit
+///   right of `ROUND(x − ⌊width/2⌋)` and a unit under `ROUND(base)`, where
+///   `base = y + 0.54 · fixed zoom` (0.32 for a framed power) taken in
+///   double and rounded to single; its text is at `x − ⌊width/2⌋`, four
+///   units under `base`. It fades in to 160/255 over 200 ms, and out over
+///   200 ms once the focus left (after which the choice is cleared: the
+///   caller's [`TreeView::still_hovering`] and stamp).
+/// - The description box appears at an age of 601 ms: `60 × (lines · step)`
+///   (its panel a unit shorter than the text's `lines · step + unit`) at
+///   `ROUND(x − 31 units) + unit` across and `8 units + ROUND(base)` down,
+///   or, when that would leave the window, at `ROUND(base − 1.08 · fixed
+///   zoom)` (0.64 framed) less its height. It fades in to 160/255 over
+///   300 ms from the 600 ms mark (out again once the focus left) and holds
+///   at 160/255 after 900 ms.
+///
+/// The widths and the line step come from the GUI's main font at the
+/// tree's unit ([`text_width`], [`text_lines`], [`text_step`]); the glyphs
+/// themselves are drawn with the running font.
 pub fn tooltip_layout(
     view: &TreeView,
-    name_lines: u32,
+    description_lines: u32,
     line_step: f32,
-    description_width: f32,
+    name_width: f32,
 ) -> Option<TooltipLayout> {
     let node = usize::try_from(view.hovered - 1)
         .ok()
         .and_then(|index| view.nodes.get(index))?;
-    let age = i64::from(view.now) - i64::from(view.choice_stamp);
-    if age < i64::from(TIP_DELAY) + 1 {
-        return None;
-    }
+    let age = view.now.wrapping_sub(view.choice_stamp) as i32;
     let unit = view.scale;
     let framed = node.power & 0x0f00_0000 != 0;
-    // The drop below the node is 0.54 of the fixed zoom, 0.32 when framed.
     let drop = f64::from(view.icon_size) * if framed { 0.32 } else { 0.54 };
-    let base = f64::from(node.y) + drop;
-    let height = name_lines as f32 * line_step + unit;
-    let mut y = unit * 8.0 + cvt_i32_f64(base) as f32;
-    if view.height - height < y {
-        let lift = f64::from(view.icon_size) * if framed { 0.64 } else { 1.08 };
-        y = cvt_i32_f64(base - lift) as f32 - height;
-    }
-    // Names the pointer still holds fade in from the 600 ms mark; a focus
-    // that left fades the box out and ends it after 900 ms.
-    let alpha = if age < 901 {
-        let rise =
-            (cvt_i32_f64((age - 600) as f64 * 160.0 * 0.003_333_333_333_333_333_5) & 0xff) as u8;
-        if view.still_hovering {
-            f32::from(rise) / 255.0
-        } else {
-            f32::from(160u8.wrapping_sub(rise)) / 255.0
+    let base = (drop + f64::from(node.y)) as f32;
+    let holding = view.still_hovering;
+    let description = (age > TIP_DELAY as i32 && description_lines > 0).then(|| {
+        let height = description_lines as f32 * line_step + unit;
+        let x = cvt_i32(node.x - unit * 31.0) as f32 + unit;
+        let mut y = unit * 8.0 + cvt_i32(base) as f32;
+        if view.height - height < y {
+            let lift = f64::from(view.icon_size) * if framed { 0.64 } else { 1.08 };
+            y = cvt_i32_f64(f64::from(base) - lift) as f32 - height;
         }
-    } else if view.still_hovering {
-        160.0 / 255.0
+        let alpha = if age < 901 {
+            tip_fade(age - 600, 0.003_333_333_333_333_333_5, holding)
+        } else {
+            TIP_ALPHA
+        };
+        TipPanel {
+            panel: [x, y, unit * TIP_WIDTH, height - unit],
+            text: [x, y],
+            alpha: f32::from(alpha) / 255.0,
+        }
+    });
+    let name = if age < 200 {
+        Some(tip_fade(age, 0.005, holding))
+    } else if holding {
+        Some(TIP_ALPHA)
     } else {
-        return None;
-    };
-    let name_x = cvt_i32_f64(f64::from(node.x) - f64::from(unit) * 31.0) as f32 + unit;
-    let half = (description_width as u32 >> 1) as f32;
-    let description_x = node.x - half;
-    let description_alpha = if view.still_hovering {
-        160.0 / 255.0
-    } else {
-        0.0
-    };
+        None
+    }
+    .map(|alpha| {
+        let x = node.x - (name_width as u32 >> 1) as f32;
+        TipPanel {
+            panel: [
+                unit + cvt_i32(x) as f32,
+                unit + cvt_i32(base) as f32,
+                name_width - unit * 2.0,
+                unit * 2.0,
+            ],
+            text: [x, unit * 4.0 + base],
+            alpha: f32::from(alpha) / 255.0,
+        }
+    });
     Some(TooltipLayout {
-        name_panel: [name_x, y, unit * TIP_WIDTH, height - unit],
-        name_text: [name_x, y],
+        name,
+        description,
         line_step,
-        description_panel: [
-            unit + cvt_i32_f64(f64::from(description_x)) as f32,
-            unit + cvt_i32_f64(base) as f32,
-            description_width - unit * 2.0,
-            unit * 2.0,
-        ],
-        description_text: [description_x, base as f32 + unit * 4.0],
-        alpha,
-        description_alpha,
     })
 }
 
-/// The hovered node's tooltip: the name box and the description caption.
+/// The shown choice's tooltip: the name caption and the wrapped
+/// description box.
 pub fn tooltip_draw(
     view: &TreeView,
-    name: &[String],
-    description: &str,
+    description: &[String],
+    name: &str,
     line_step: f32,
-    description_width: f32,
+    name_width: f32,
 ) -> TreeDraw {
     let mut out = TreeDraw::default();
-    let line_count = name.len().max(1) as u32;
-    let Some(layout) = tooltip_layout(view, line_count, line_step, description_width) else {
+    let lines = if description.iter().all(String::is_empty) {
+        0
+    } else {
+        description.len() as u32
+    };
+    let Some(layout) = tooltip_layout(view, lines, line_step, name_width) else {
         return out;
     };
     let boxed = |out: &mut TreeDraw, rect: [f32; 4], alpha: f32| {
@@ -1624,35 +1690,40 @@ pub fn tooltip_draw(
         ]);
         out.submit(batch);
     };
-    boxed(&mut out, layout.name_panel, layout.alpha);
-    // The wrapped name: one run a line, a baseline four fifths down the
-    // step (the skin's own text draw is outside the pack).
-    for (line, text) in name.iter().enumerate() {
-        out.texts.push(TextRun {
-            x: layout.name_text[0] + view.scale,
-            y: layout.name_text[1] + layout.line_step * (line as f32 + 0.8),
-            size: layout.line_step,
-            colour: [1.0, 1.0, 1.0, layout.alpha],
-            text: text.clone(),
-        });
+    if let Some(tip) = layout.description {
+        boxed(&mut out, tip.panel, tip.alpha);
+        // The wrapped description: one run a line, a baseline four fifths
+        // down the step (the skin's own text draw is outside the pack).
+        for (line, text) in description.iter().enumerate() {
+            out.texts.push(TextRun {
+                x: tip.text[0],
+                y: tip.text[1] + layout.line_step * (line as f32 + 0.8),
+                size: layout.line_step,
+                colour: [1.0, 1.0, 1.0, tip.alpha],
+                text: text.clone(),
+            });
+        }
     }
-    if layout.description_alpha > 0.0 {
-        boxed(&mut out, layout.description_panel, layout.description_alpha);
+    if let Some(tip) = layout.name {
+        boxed(&mut out, tip.panel, tip.alpha);
         out.texts.push(TextRun {
-            x: layout.description_text[0],
-            y: layout.description_text[1] + view.scale * 1.6,
+            x: tip.text[0],
+            y: tip.text[1] + view.scale * 1.6,
             size: view.scale * 2.0,
-            colour: [0.9, 0.9, 0.9, layout.description_alpha],
-            text: description.to_string(),
+            colour: [0.9, 0.9, 0.9, tip.alpha],
+            text: name.to_string(),
         });
     }
     out
 }
 
-/// Every shown node's name, as the original's label mode draws it: a 128
-/// alpha box `w × 2` units under the node and the name in 160 alpha above
-/// the box. `names[i]` is node `i`'s name and measured width; no name is
-/// drawn for an empty entry.
+/// Every node's name, as the original's label mode draws it: a 128-alpha
+/// box of the measured width less two units at `ROUND(x − ⌊box/2⌋)`
+/// across and `ROUND(base + unit)` down, and the name a unit right of
+/// `ROUND(x − ⌊(width + 2 units)/2⌋)` at `ROUND(base + 4 units)`, where
+/// `base = y + 0.54 · fixed zoom` (0.32 framed), all in double rounded to
+/// single. `names[i]` is node `i`'s name and measured width in pixels; a
+/// node without a name (an empty entry) is skipped.
 pub fn labels_draw(view: &TreeView, names: &[(String, f32)]) -> TreeDraw {
     let mut out = TreeDraw::default();
     let unit = view.scale;
@@ -1665,21 +1736,28 @@ pub fn labels_draw(view: &TreeView, names: &[(String, f32)]) -> TreeDraw {
         }
         let framed = node.power & 0x0f00_0000 != 0;
         let drop = f64::from(view.icon_size) * if framed { 0.32 } else { 0.54 };
-        let y = unit + cvt_i32_f64(f64::from(node.y) + drop) as f32;
-        let x = cvt_i32_f64(f64::from(node.x) - f64::from(*width) * 0.5) as f32;
+        let base = drop + f64::from(node.y);
+        let panel = width - unit * 2.0;
+        let x = cvt_i32(node.x - (panel as u32 >> 1) as f32) as f32;
+        let y = cvt_i32((f64::from(unit) + base) as f32) as f32;
         let mut batch = Batch::new(Program::Mods, Texture::None);
         let ink = [0.55, 0.56, 0.58, 128.0 / 255.0];
         batch.quad([
             TreeVertex::new(x, y + unit * 2.0, 0.0, 0.0).with_colour(ink),
-            TreeVertex::new(x + *width, y + unit * 2.0, 0.0, 0.0).with_colour(ink),
-            TreeVertex::new(x + *width, y, 0.0, 0.0).with_colour(ink),
+            TreeVertex::new(x + panel, y + unit * 2.0, 0.0, 0.0).with_colour(ink),
+            TreeVertex::new(x + panel, y, 0.0, 0.0).with_colour(ink),
             TreeVertex::new(x, y, 0.0, 0.0).with_colour(ink),
         ]);
         out.submit(batch);
+        let text_x = unit + cvt_i32(node.x - ((width + unit * 2.0) as u32 >> 1) as f32) as f32;
+        let text_y = cvt_i32((f64::from(unit * 4.0) + base) as f32) as f32;
         out.texts.push(TextRun {
-            x: unit + cvt_i32_f64(f64::from(node.x) - f64::from(*width + unit * 2.0) * 0.5) as f32,
-            y: y + unit * 3.2,
+            x: text_x,
+            // A baseline four fifths down the text's two units.
+            y: text_y + unit * 1.6,
             size: unit * 2.0,
+            // The skin colour's alpha is outside the pack: 160, a labelled
+            // guess.
             colour: [1.0, 1.0, 1.0, 160.0 / 255.0],
             text: text.clone(),
         });
@@ -2298,7 +2376,8 @@ mod tests {
             node(0x102, 200.0, mark::SHOWN | mark::NEW),
         ];
         view.retired_new = 1;
-        view.learn_until = 1100;
+        // 50 ms left: the smooth step of 0.25, 0.15625.
+        view.learn_until = 1050;
         let draw = tree_draw(&view);
         let rings: Vec<_> = draw
             .batches
@@ -2307,7 +2386,8 @@ mod tests {
             .collect();
         // The retired node's ring, then the new node's.
         assert_eq!(rings.len(), 2);
-        let fade = smoothstep(0.5);
+        let fade = smoothstep(0.25);
+        assert_eq!(fade, 0.156_25);
         assert!(close(rings[0].uniforms.par0[3], 1.0 - fade));
         assert!(close(rings[1].uniforms.par0[3], fade));
         // A plain node's ring: 0.599 of the zoom, 0.3 outer.
@@ -2579,7 +2659,10 @@ mod tests {
         assert!(close(pose.a12, rise * (1.0 - 1.5 * fall)));
         assert!(close(pose.a11, rise * (1.0 - fall.powi(4))));
         let shrink = 150.0f64 / 900.0;
-        assert!(close(pose.size, 52.0 * rise * (1.0 - shrink * shrink) as f32));
+        assert!(close(
+            pose.size,
+            52.0 * rise * (1.0 - shrink * shrink) as f32
+        ));
         assert!(close(pose.pitch, 68.0 * smoothstep(ease(300.0 / 900.0))));
     }
 
@@ -2659,59 +2742,98 @@ mod tests {
     }
 
     #[test]
-    fn the_tooltip_needs_a_hovered_node_and_six_hundred_milliseconds() {
+    fn the_tooltip_names_at_once_and_describes_after_six_hundred_milliseconds() {
         let mut view = view();
         view.nodes = vec![node(0x101, 100.0, mark::SHOWN)];
         view.choice_stamp = 400;
         view.hovered = 1;
         view.still_hovering = true;
+        // A hundred milliseconds in: the name caption is half faded in
+        // (100·160·0.005 = 80) and the description box not there yet.
+        view.now = 500;
+        let early = tooltip_layout(&view, 1, 8.0, 120.0).expect("the caption draws");
+        assert_eq!(early.name.unwrap().alpha, 80.0 / 255.0);
+        assert!(early.description.is_none());
         // The age is 600 at now = 1000: one short of the strict 601.
-        assert!(tooltip_layout(&view, 1, 8.0, 120.0).is_none());
+        view.now = 1000;
+        assert!(
+            tooltip_layout(&view, 1, 8.0, 120.0)
+                .unwrap()
+                .description
+                .is_none()
+        );
         view.now = 1001;
         let layout = tooltip_layout(&view, 1, 8.0, 120.0).expect("the tooltip appears");
-        // The name box is 60 units wide and a line plus a unit high; its
-        // left is a unit in from ROUND(100 − 31 units) and its top eight
-        // units plus the node's 0.54 of the fixed zoom (40.5, to even 40).
-        assert_eq!(layout.name_panel, [-20.0, 172.0, 240.0, 8.0]);
-        // The fade is a quarter of the way: (601−600)·0.5333 rounds to 1.
-        assert_eq!(layout.alpha, 1.0 / 255.0);
-        assert_eq!(layout.description_alpha, 160.0 / 255.0);
-        // The description is centred on the node with the panel's unit
-        // inset and its own half width floor-halved.
-        assert_eq!(layout.description_panel, [44.0, 144.0, 112.0, 8.0]);
-        assert_eq!(layout.description_text, [40.0, 156.5]);
-        // Hovering ends: the box fades out and is gone after 900 ms.
+        let description = layout.description.expect("the box appears");
+        // The box is 60 units wide and a line high; its left is a unit in
+        // from ROUND(100 − 31 units) and its top eight units under
+        // ROUND(100 + 0.54·75) = ROUND(140.5), to even 140.
+        assert_eq!(description.panel, [-20.0, 172.0, 240.0, 8.0]);
+        assert_eq!(description.text, [-20.0, 172.0]);
+        // (601 − 600)·160/300 rounds to 1.
+        assert_eq!(description.alpha, 1.0 / 255.0);
+        // The caption is centred on the node with a unit's inset and its
+        // width floor-halved; its text sits four units under 140.5.
+        let name = layout.name.expect("the caption holds");
+        assert_eq!(name.alpha, 160.0 / 255.0);
+        assert_eq!(name.panel, [44.0, 144.0, 112.0, 8.0]);
+        assert_eq!(name.text, [40.0, 156.5]);
+        // The focus leaves: the box fades out from the 600 ms mark (800 ms
+        // in: 200·160/300 rounds to 107, so 53 remains) and the caption,
+        // past its 200 ms, is gone.
         view.still_hovering = false;
         view.now = 1200;
         let fade = tooltip_layout(&view, 1, 8.0, 120.0).expect("the fade still draws");
-        // 200 ms in: 200·160·0.003333 rounds to 107, so 53 remains.
-        assert!((fade.alpha - 53.0 / 255.0).abs() < 1e-6);
+        assert_eq!(fade.description.unwrap().alpha, 53.0 / 255.0);
+        assert!(fade.name.is_none());
+        // Past 900 ms the box holds at 160 (the draw clears the choice).
         view.now = 1301;
-        assert!(tooltip_layout(&view, 1, 8.0, 120.0).is_none());
-        // A node that would overflow the window is placed above it.
+        let held = tooltip_layout(&view, 1, 8.0, 120.0).unwrap();
+        assert_eq!(held.description.unwrap().alpha, 160.0 / 255.0);
+        // A caption whose focus left 50 ms after the choice fades out:
+        // 160 − 50·160·0.005.
+        view.now = 450;
+        let leaving = tooltip_layout(&view, 1, 8.0, 120.0).unwrap();
+        assert_eq!(leaving.name.unwrap().alpha, 120.0 / 255.0);
+        // A box that would leave the window goes above the node:
+        // ROUND(730.5 − 1.08·75) = ROUND(649.5) = 650, less its 12.
         view.still_hovering = true;
+        view.now = 2000;
         view.nodes[0].y = 690.0;
         let above = tooltip_layout(&view, 1, 8.0, 120.0).expect("above the node");
-        assert!(above.name_panel[1] < 690.0);
+        assert_eq!(above.description.unwrap().panel[1], 638.0);
+        // No description text, no box.
+        assert!(
+            tooltip_layout(&view, 0, 8.0, 120.0)
+                .unwrap()
+                .description
+                .is_none()
+        );
         view.hovered = 2;
         assert!(tooltip_layout(&view, 1, 8.0, 120.0).is_none());
     }
 
     #[test]
     fn the_tree_text_uses_the_gui_fonts_advances() {
-        // Rayform08's advances: B 8, l 4, a 7, s 6, t 5 = 30 pixels, four to
-        // a unit; its line height is 16 pixels, four units.
-        assert_eq!(text_width(b"Blast"), 7.5);
-        assert_eq!(text_width(b""), 0.0);
-        assert_eq!(text_step(), 4.0);
+        // Rayform08's advances: B 8, l 4, a 7, s 6, t 5 = 30 pixels at four
+        // pixels to the unit; its line height is 16 pixels.
+        assert_eq!(text_width(b"Blast", 4.0), 30.0);
+        assert_eq!(text_width(b"Blast", 8.0), 60.0);
+        assert_eq!(text_width(b"", 4.0), 0.0);
+        assert_eq!(text_step(4.0), 16.0);
         assert_eq!(text_lines(b"one two three", 59.0), 1);
-        // At one unit the 4-pixel width fits no 7-pixel glyph but the
-        // first: every later byte overflows its own line.
+        // At one unit the 4-pixel width fits no 7-pixel glyph: every byte
+        // overflows onto a line of its own.
         assert_eq!(text_lines(&[b'a'; 4], 1.0), 4);
+        assert_eq!(text_split(&[b'a'; 4], 1.0), vec!["a", "a", "a", "a"]);
+        // A break at a space or a carriage return and line feed drops them.
+        assert_eq!(text_split(b"aaaa aaaa", 10.0), vec!["aaaa", "aaaa"]);
+        assert_eq!(text_split(b"ab\r\ncd", 59.0), vec!["ab", "cd"]);
+        assert_eq!(text_split(b"", 59.0), vec![""]);
     }
 
     #[test]
-    fn a_wrapped_tooltip_name_keeps_every_line() {
+    fn a_wrapped_tooltip_description_keeps_every_line() {
         let mut view = view();
         view.nodes = vec![node(0x101, 100.0, mark::SHOWN)];
         view.hovered = 1;
@@ -2720,7 +2842,7 @@ mod tests {
         view.still_hovering = true;
         let draw = tooltip_draw(
             &view,
-            &["Choose".to_string(), "a power".to_string()],
+            &["Hurls a".to_string(), "bolt".to_string()],
             "Blast",
             8.0,
             60.0,
@@ -2729,8 +2851,9 @@ mod tests {
         assert_eq!(draw.batches.len(), 1);
         assert_eq!(draw.batches[0].vertices.len(), 12);
         assert_eq!(draw.texts.len(), 3);
-        assert_eq!(draw.texts[1].text, "a power");
-        // The name box grows a line: 2 × 8 + 4 − 4 = 16.
+        assert_eq!(draw.texts[1].text, "bolt");
+        assert_eq!(draw.texts[2].text, "Blast");
+        // The box grows a line: 2 × 8 + 4 − 4 = 16.
         assert_eq!(
             draw.batches[0].vertices[0].y - draw.batches[0].vertices[2].y,
             16.0
@@ -2772,12 +2895,17 @@ mod tests {
         assert_eq!(draw.batches.len(), 1);
         assert_eq!(draw.batches[0].vertices.len(), 12);
         assert_eq!(draw.texts.len(), 2);
-        // The box is the measured width under the node, the text centred
-        // and 3.2 units lower.
-        assert_eq!(draw.batches[0].vertices[0].x, 80.0);
-        assert_eq!(draw.batches[0].vertices[2].x, 120.0);
-        assert_eq!(draw.texts[0].x, 4.0 + 80.0 - 4.0);
-        assert_eq!(draw.batches[0].vertices[6].x, 188.0);
+        // The box is the width less two units (32), at ROUND(100 − 16)
+        // across and ROUND(4 + 140.5) = 144 (to even) down.
+        assert_eq!(draw.batches[0].vertices[0].x, 84.0);
+        assert_eq!(draw.batches[0].vertices[2].x, 116.0);
+        assert_eq!(draw.batches[0].vertices[2].y, 144.0);
+        // The text: a unit right of ROUND(100 − (40 + 8)/2), at
+        // ROUND(16 + 140.5) = 156, its baseline 1.6 units lower.
+        assert_eq!(draw.texts[0].x, 80.0);
+        assert_eq!(draw.texts[0].y, 156.0 + 6.4);
+        // The second box: 16 wide at ROUND(200 − 8).
+        assert_eq!(draw.batches[0].vertices[6].x, 192.0);
     }
 
     #[test]
