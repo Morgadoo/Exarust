@@ -16,8 +16,8 @@
 //! A next round despawns the round's bodies and stands the winner and the
 //! reserve or a fresh opponent after the original's 13 ms yield; a
 //! tournament's next round first resolves its bracket (the won group keeps
-//! team one, the other groups draw a winner) and stands every surviving
-//! side. Escape opens the arena's pause page and its FORFEIT row settles
+//! team one, the other groups draw a winner) and stands the first surviving
+//! teams, as many as the event has sides. Escape opens the arena's pause page and its FORFEIT row settles
 //! the match as forfeited. The end of the match settles the result into the
 //! career, drops the unfit on a tournament day and asks for the hub's level
 //! in process, whose entry places the manager at the saved 300 cm, half
@@ -40,8 +40,8 @@ use crate::arena_session::{
 };
 use crate::arena_spawn::{MANAGER_ROLE, generic_plan, hire_plan};
 use crate::match_layout::{
-    FREE_FOR_ALL, Fighter as SlotFighter, FreshMatch, HOSTILE, MATCH_ACT_GRACE_MS, NextRound,
-    RaisedBody, Slot, layout, opponent_place, our_place, raise_fresh_match,
+    Fighter as SlotFighter, FreshMatch, HOSTILE, MATCH_ACT_GRACE_MS, NextRound, RaisedBody, Slot,
+    layout, opponent_place, our_place, raise_fresh_match,
 };
 use crate::scene_bodies::{
     BodyBrain, SceneBodyPlan, SceneCommand, SceneFighter, beast_scene_plan, company_plan,
@@ -780,20 +780,18 @@ fn stand_bracket_round(
     let mut roll = scene.roll;
     let survivors = bracket_next_fight(bracket, 1, &mut roll);
     scene.roll = roll;
-    // The forced outfit table is indexed by the team ids after the
-    // player's. A team without an entry keeps the profile's own bytes.
+    // The forced outfit table is indexed by team id. The original reads
+    // the company each rival team id was drawn for; Exarust uses the team id
+    // itself [guess: the drawn rival field is not kept with the bracket].
     let outfits: Vec<i32> = (0..20).collect();
-    let teams = survivors.iter().filter(|&&id| id > 0).count()
-        / usize::try_from(bracket.team_size.max(1)).unwrap_or(1);
-    // The original's role flag follows the number of *groups* in the round,
-    // not the number of surviving teams: hostile below three groups, else a
-    // free-for-all.
-    let groups = teams / usize::try_from(bracket.sides.max(1)).unwrap_or(1);
-    let role = if groups < 3 { HOSTILE } else { FREE_FOR_ALL };
+    // The next fight is the first `sides` surviving teams in slot order (the
+    // player's group leads), as the original's team walk stops at the
+    // event's side count; the raise derives the role flag from how many
+    // teams it formed (hostile below three, else a free-for-all).
     let fight = FreshMatch {
         slots: &survivors,
         per_team: bracket.team_size,
-        teams: teams as i32,
+        teams: bracket.sides,
         spawn_at: scene.spawn_at,
         player_team: 1,
         company_entries: usize::try_from(bracket.team_size).unwrap_or(1),
@@ -847,7 +845,10 @@ fn stand_bracket_round(
                 commands.write(SceneCommand::Spawn(Box::new(body)));
             }
             RaisedBody::Opponent {
-                plan, act_at_ms, ..
+                plan,
+                role,
+                act_at_ms,
+                ..
             } => {
                 let mut body = match plan {
                     crate::match_layout::OpponentPlan::Generic(plan) => {
@@ -1442,11 +1443,16 @@ mod tests {
         app.insert_resource(arena);
         let mut scene = ArenaScene::new(7, spawn, 3, 2, true, Some(0), Vec::new(), 0, None);
         scene.roll = 42;
-        // The same bracket rule the system runs, for the expected count.
+        // Template 7 is four rounds of duels: sixteen one-fighter teams, two
+        // sides a fight. After the won first round eight teams survive, but
+        // the next fight is only the first two of them: the player and one
+        // drawn winner.
         let mut bracket = scene.bracket.clone().unwrap();
+        assert_eq!((bracket.team_size, bracket.sides), (1, 2));
         let mut roll = 42;
         let survivors = bracket_next_fight(&mut bracket, 1, &mut roll);
-        let expected = survivors.iter().filter(|&&id| id > 0).count() - 1;
+        assert_eq!(survivors.iter().filter(|&&id| id > 0).count(), 8);
+        let expected = 1;
         app.insert_resource(scene);
         let player = app
             .world_mut()
@@ -1489,9 +1495,9 @@ mod tests {
                 .all(|plan| matches!(plan.look, BodyLook::Generated(_)))
         );
         assert!(spawned.iter().any(|plan| plan.team != 1));
-        // Four groups fight this round, so every opponent is a free-for-all
-        // side (the original's role flag), not a hostile one.
-        assert!(spawned.iter().all(|plan| plan.roles == vec![FREE_FOR_ALL]));
+        // Two teams fight, so the opponent is hostile (the original's role
+        // flag is a free-for-all only from three teams up).
+        assert!(spawned.iter().all(|plan| plan.roles == vec![HOSTILE]));
     }
 
     #[test]

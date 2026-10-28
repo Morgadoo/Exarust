@@ -990,7 +990,8 @@ on screen 3, `EXIT;` on screen 2) and takes Enter or a pointer release over
 its first row: a next round stands the winner, brings `regenerate_round`'s
 fresh generic opponent, or the reserve entrant against the opponent who
 won, after the 13 ms yield; a tournament's next round resolves
-`arena_session::BracketState` and stands every surviving side; the end of
+`arena_session::BracketState` and stands the first `sides` surviving teams
+(the player's group leads); the end of
 the match resolves the company's records, writes the healths, books the
 result, drops the unfit on a tournament day and asks for the hub's level,
 with the settled career and the return placement kept in process. Escape

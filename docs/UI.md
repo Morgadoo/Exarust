@@ -610,7 +610,8 @@ and Down move the selection. The first row is the arena Continue: a dead
 manager goes to the main menu, a next round stands the winner and the
 reserve or a fresh opponent after 13 ms, a tournament's next round resolves
 its bracket first (the won group keeps team one, every other group draws a
-winner with the arena's roll) and stands every surviving side on the ring,
+winner with the arena's roll) and stands the first of the surviving teams, as many as the event has sides,
+on the ring,
 and the match's end settles the result into the running career and changes
 the level back to the hub with the 300 cm, half turn, `0x100` placement. Escape opens the
 arena pause page (`CONTINUE`, `SETTINGS`, `FORFEIT`, or `EXIT` once the
