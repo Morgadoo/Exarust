@@ -589,15 +589,13 @@ impl Strip {
         Some(mesh)
     }
 
-    /// Whether the segment from `a` to `b` (metres, world space) crosses one
-    /// of the strip's triangles. The room manager asks this of a room's
-    /// occluder and of its lid before it lets a force power reach through.
-    /// [guess] The original's mesh test is a two-sided segment–triangle
-    /// test over the mesh's triangles; the exact epsilon it uses is not in
-    /// the pack, so this uses [`SEGMENT_EPSILON`] and takes the first
-    /// triangle in index order.
-    pub fn segment_hits(&self, a: Vec3, b: Vec3) -> bool {
-        let d = b - a;
+    /// Whether a ray from `origin` along `dir` (world space) meets one of
+    /// the strip's triangles at a distance `t` (in lengths of `dir`) with
+    /// `0 < t < max_t`, as the engine's mesh ray test answers it. The test
+    /// is one-sided: only a triangle whose front (counter-clockwise, its
+    /// normal `(p1 − p0) × (p2 − p0)` against `dir`) faces the ray counts,
+    /// and a determinant below [`RAY_EPSILON`] is a miss.
+    pub fn ray_hits(&self, origin: Vec3, dir: Vec3, max_t: f32) -> bool {
         self.indices.as_chunks::<3>().0.iter().any(|tri| {
             let (Some(&p0), Some(&p1), Some(&p2)) = (
                 self.positions.get(tri[0] as usize),
@@ -606,74 +604,101 @@ impl Strip {
             ) else {
                 return false;
             };
-            segment_triangle(
-                a,
-                d,
-                Vec3::from_array(p0),
-                Vec3::from_array(p1),
-                Vec3::from_array(p2),
+            ray_triangle(
+                origin,
+                dir,
+                max_t,
+                [
+                    Vec3::from_array(p0),
+                    Vec3::from_array(p1),
+                    Vec3::from_array(p2),
+                ],
             )
         })
     }
 }
 
-/// The room manager's segment query: whether the segment from `a` to `b`
-/// (metres, world space) crosses the occluder (`lid` false) or the lid
-/// (`lid` true) of one of the rooms that are active. Rooms are visited in
-/// order; a room that is active but has no such shell leaves the query
-/// unanswered, as the original returns "no" as soon as it meets a null
-/// shell pointer. The caller in the original is the force powers' reach
-/// test, which Exarust has no caller for yet.
-pub fn segment_blocks(
+/// The room manager's ray query: whether a ray from `origin` along `dir`
+/// (world space) meets, before `max_t` lengths of `dir`, the occluder
+/// (`lid` false) or the lid (`lid` true) of one of the rooms that are
+/// active (`active`, the tracker's [`crate::rooms::RoomTracker::is_active`]
+/// in the game). Rooms are visited in
+/// order; an active room with no such shell ends the query with "no", as
+/// the original returns at once on a missing shell. Its callers pick under
+/// the cursor and test a segment ([`segment_blocks`]); Exarust has neither
+/// yet.
+pub fn ray_blocks(
     shells: &[ShellStrips],
-    tracker: &crate::rooms::RoomTracker,
-    a: Vec3,
-    b: Vec3,
+    active: impl Fn(u16) -> bool,
+    origin: Vec3,
+    dir: Vec3,
+    max_t: f32,
     lid: bool,
 ) -> bool {
     for (room, shell) in shells.iter().enumerate() {
-        if !tracker.is_active(room as u16) {
+        if !active(room as u16) {
             continue;
         }
         let strip = if lid { &shell.lid } else { &shell.occluder };
         if strip.positions.is_empty() {
             return false;
         }
-        if strip.segment_hits(a, b) {
+        if strip.ray_hits(origin, dir, max_t) {
             return true;
         }
     }
     false
 }
 
-/// The determinant below which a segment runs parallel to a triangle
-/// ([guess]: the original's constant is not in the pack).
-const SEGMENT_EPSILON: f32 = 1e-8;
+/// The ray query for the segment from `a` to `b`, as the original's segment
+/// caller asks it: the direction is the segment scaled by the reciprocal of
+/// its length, the limit that length.
+pub fn segment_blocks(
+    shells: &[ShellStrips],
+    active: impl Fn(u16) -> bool,
+    a: Vec3,
+    b: Vec3,
+    lid: bool,
+) -> bool {
+    let d = b - a;
+    let length = d.length();
+    ray_blocks(shells, active, a, d * (1.0 / length), length, lid)
+}
 
-/// A two-sided segment–triangle test: whether `a + t·d` with `t` in `[0, 1]`
-/// meets the triangle `p0 p1 p2`. Möller–Trumbore in the engine's single
-/// precision, without back-face culling.
-fn segment_triangle(a: Vec3, d: Vec3, p0: Vec3, p1: Vec3, p2: Vec3) -> bool {
+/// The smallest determinant the engine's mesh ray test accepts (the single
+/// precision machine epsilon, as stored: `0x33FF_FFD7`).
+const RAY_EPSILON: f32 = f32::from_bits(0x33ff_ffd7);
+
+/// Three-component dot product summed as the engine does: `(x + y) + z`.
+fn dot3(a: Vec3, b: Vec3) -> f32 {
+    (a.x * b.x + a.y * b.y) + a.z * b.z
+}
+
+/// The engine's one-sided ray–triangle test (Möller–Trumbore with the
+/// barycentric bounds checked before the division): `det ≥ ε`,
+/// `0 ≤ u ≤ det`, `v ≥ 0`, `u + v ≤ det`, and the distance
+/// `t = (e2 · q) / det` with `0 < t < max_t`. A NaN passes the bounds before
+/// the division, as the unordered compares do, and fails on `t`.
+fn ray_triangle(origin: Vec3, dir: Vec3, max_t: f32, [p0, p1, p2]: [Vec3; 3]) -> bool {
     let e1 = p1 - p0;
     let e2 = p2 - p0;
-    let h = d.cross(e2);
-    let det = e1.dot(h);
-    if det.abs() < SEGMENT_EPSILON {
+    let h = dir.cross(e2);
+    let det = dot3(h, e1);
+    if det < RAY_EPSILON {
         return false;
     }
-    let inv = 1.0 / det;
-    let s = a - p0;
-    let u = s.dot(h) * inv;
-    if !(0.0..=1.0).contains(&u) {
+    let s = origin - p0;
+    let u = dot3(s, h);
+    if u < 0.0 || det < u {
         return false;
     }
     let q = s.cross(e1);
-    let v = d.dot(q) * inv;
-    if v < 0.0 || u + v > 1.0 {
+    let v = dot3(dir, q);
+    if v < 0.0 || det < u + v {
         return false;
     }
-    let t = e2.dot(q) * inv;
-    (0.0..=1.0).contains(&t)
+    let t = dot3(e2, q) / det;
+    t > 0.0 && t < max_t
 }
 
 /// Spawns each room's occluder, lid and lid overlay (hidden until the room
@@ -1288,7 +1313,6 @@ fn spawn_node(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rooms::RoomTracker;
     use bevy::ecs::world::CommandQueue;
 
     /// A horizontal quad over x0..x1, z0..z1 at height y, facing up.
@@ -1542,7 +1566,9 @@ mod tests {
     }
 
     #[test]
-    fn a_segment_crosses_a_triangle() {
+    fn a_ray_meets_only_the_front_of_a_triangle() {
+        // A quad at y = 0 whose triangles face up: (p1 − p0) × (p2 − p0) is
+        // (0, 0, 2) × (2, 0, 2) = (0, 4, 0) for the first, +Y for both.
         let strip = Strip {
             positions: vec![
                 [-1.0, 0.0, -1.0],
@@ -1552,22 +1578,31 @@ mod tests {
             ],
             indices: vec![0, 1, 2, 0, 2, 3],
         };
-        let down = |x: f32, z: f32| strip.segment_hits(Vec3::new(x, 1.0, z), Vec3::new(x, -1.0, z));
-        assert!(down(0.0, 0.0));
-        // Each half is covered: (0.9, 0.9) lies in the second triangle.
-        assert!(down(0.9, 0.9));
-        // A segment starting on the plane counts (t = 1 at its end).
-        assert!(strip.segment_hits(Vec3::new(0.0, 1.0, 0.0), Vec3::ZERO));
-        // Beside the quad, above it, and parallel to it.
-        assert!(!down(1.5, 0.0));
-        assert!(!strip.segment_hits(Vec3::new(0.0, 1.0, 0.0), Vec3::new(0.0, 0.5, 0.0)));
-        assert!(!strip.segment_hits(Vec3::new(-1.0, 0.0, 0.0), Vec3::new(1.0, 0.0, 0.0)));
-        // A closed (three-point) strip crosses both ways.
-        assert!(strip.segment_hits(Vec3::new(0.0, -1.0, 0.0), Vec3::new(0.0, 1.0, 0.0)));
+        let down = Vec3::NEG_Y;
+        let above = |x: f32, z: f32| Vec3::new(x, 1.0, z);
+        // Straight down from 1 m: t = 1, inside a limit of 2.
+        assert!(strip.ray_hits(above(0.0, 0.0), down, 2.0));
+        // Each half is covered: (0.5, 0.9) lies in the first triangle,
+        // (0.9, −0.9) in the second.
+        assert!(strip.ray_hits(above(0.5, 0.9), down, 2.0));
+        assert!(strip.ray_hits(above(0.9, -0.9), down, 2.0));
+        // The limit is strict: a ray that ends on the quad misses it, and
+        // so does one that starts on it (t = 0).
+        assert!(!strip.ray_hits(above(0.0, 0.0), down, 1.0));
+        assert!(strip.ray_hits(above(0.0, 0.0), down, 1.0001));
+        assert!(!strip.ray_hits(Vec3::ZERO, down, 2.0));
+        // Beside the quad, and parallel to it.
+        assert!(!strip.ray_hits(above(1.5, 0.0), down, 2.0));
+        assert!(!strip.ray_hits(Vec3::new(-2.0, 0.0, 0.0), Vec3::X, 4.0));
+        // From below the quad faces away: one-sided, so no hit.
+        assert!(!strip.ray_hits(Vec3::new(0.0, -1.0, 0.0), Vec3::Y, 2.0));
+        // A direction twice as long halves t.
+        assert!(strip.ray_hits(above(0.0, 0.0), down * 2.0, 0.6));
+        assert!(!strip.ray_hits(above(0.0, 0.0), down * 2.0, 0.5));
     }
 
     #[test]
-    fn only_active_rooms_block_a_segment_and_a_null_shell_stops_the_walk() {
+    fn only_active_rooms_block_a_segment_and_a_missing_shell_ends_the_walk() {
         fn quad_at(x: f32) -> Strip {
             Strip {
                 positions: vec![
@@ -1582,28 +1617,34 @@ mod tests {
         let mut shells = vec![ShellStrips::default(); 3];
         shells[0].occluder = quad_at(0.0);
         shells[2].occluder = quad_at(20.0);
-        let mut all = RoomTracker::new(3);
-        all.show_all();
+        let all = |_| true;
+        // Downward segments through each quad, 2 m long.
         let seg = |x: f32| (Vec3::new(x, 1.0, 0.0), Vec3::new(x, -1.0, 0.0));
         let (a, b) = seg(0.0);
         // Room 0's occluder is crossed before the walk reaches room 1's
         // empty one.
-        assert!(segment_blocks(&shells, &all, a, b, false));
+        assert!(segment_blocks(&shells, all, a, b, false));
+        // Upward the same segment meets the quad's back: no.
+        assert!(!segment_blocks(&shells, all, b, a, false));
         // A miss at room 0 runs into room 1's missing occluder, which
         // answers "no" at once, so room 2 is never reached.
         let (a, b) = seg(20.0);
-        assert!(!segment_blocks(&shells, &all, a, b, false));
-        // With an occluder in room 1 the walk reaches room 2.
+        assert!(!segment_blocks(&shells, all, a, b, false));
+        // With room 1 inactive, or with an occluder there, the walk reaches
+        // room 2.
+        assert!(segment_blocks(&shells, |r| r != 1, a, b, false));
         shells[1].occluder = quad_at(10.0);
-        assert!(segment_blocks(&shells, &all, a, b, false));
+        assert!(segment_blocks(&shells, all, a, b, false));
+        // The ray form with the same numbers: origin, unit direction, length.
+        assert!(ray_blocks(&shells, all, a, Vec3::NEG_Y, 2.0, false));
+        assert!(!ray_blocks(&shells, all, a, Vec3::NEG_Y, 1.0, false));
         // A lid query does not see occluders; room 0 has no lid yet.
         let (a, b) = seg(0.0);
-        assert!(!segment_blocks(&shells, &all, a, b, true));
+        assert!(!segment_blocks(&shells, all, a, b, true));
         shells[0].lid = quad_at(0.0);
-        assert!(segment_blocks(&shells, &all, a, b, true));
+        assert!(segment_blocks(&shells, all, a, b, true));
         // No active room, nothing blocks.
-        let hidden = RoomTracker::new(3);
-        assert!(!segment_blocks(&shells, &hidden, a, b, false));
+        assert!(!segment_blocks(&shells, |_| false, a, b, false));
     }
 
     #[test]
