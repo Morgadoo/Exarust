@@ -524,6 +524,29 @@ drag pulls along the cursor direction by the nearest accepted hit, and that
 reach starts at 1000 cm. The grabbed box is refused when any placed corner
 is higher than 280 cm or lower than 1000 cm.
 
+The click's outcome is [`player_controls::click`]: on a placed object with
+no usable section it shows the item; a usable section of kind 2 is a lock:
+open, it opens its container; closed, with the key and its reward still
+due, its first opening pays 100, or 1000 when the lock's subtype is 3.
+Kinds 0 and 1 open the container and every other kind shows the item. A
+dead character runs its roles' interact scripts, the player's own body
+shows the health and focus bars for 5000 ms (then the click callback runs,
+as for a living character). Exarust wires the bars: a click on the own
+body sets `exa_ui::hud::HudShowUntil` 5000 ms ahead. The double-click
+interaction (in combat mode only with Ctrl held) is
+[`player_controls::{interaction_allowed, interact_object, interact_character}`]:
+while the object's used mark is clear, kind 0 subtype 1 is used after 2100
+ms and kind 1 is taken in hand (which ends the interaction); kind 5 is
+pushed while its flag allows; then a container section opens. The player's
+inventory opens, a corpse is looted, and a living character talks when its
+roles' condition passes or a role links it to the player. The double click
+is strict: the same button within the system's double-click time
+(`GetDoubleClickTime`, 500 ms by Windows' default, which Exarust uses) and
+under 2 pixels from the press before. The original takes it on the second
+press; Exarust reads it on that press's release. Exarust wires the player's
+own inventory; the other windows, the script registry and the item cursor
+are not in.
+
 ### Using an item
 
 An item used on a character acts by its operative section's kind byte.
@@ -534,16 +557,25 @@ potion flag, stamps the world clock (the save's seconds plus game time)
 plus 1800 s, and plays `LqdA_Pour_01` at volume 0.25 with pitch
 0.9 + 0.2 times one unit draw. Both kinds OR `0xC80000`, whether or not
 the body takes remedies, into the item's flags when it is used directly,
-or into its container's inventory entry (the entry word less one) when
-that word is above zero; a zero word marks nothing (`exa_combat::remedy`). Kind 9 is a cleaning kit that takes an item's dirt
+or into its container's inventory entry (the entry slot less one) when
+that slot is above zero; a zero slot marks nothing (`exa_combat::remedy`,
+`player_controls::mark_used`). The elixir's sound plays only with the
+potion. Kind 9 is a cleaning kit that takes an item's dirt
 byte down to 0x20, and 10 a repair kit that lowers its wear byte by 255
 over the material's rating step `(r + 5) / 10` (at least 1), never under
-zero. A kit's change runs over two seconds: the byte moves 0.0005 of its
+zero, and marks the item (or its entry) with `0xFF0000`; its sound plays at
+the player. A kit's change runs over two seconds: the byte moves 0.0005 of its
 gap a millisecond (rounded to the nearest, ties to even), and the timed
 list drops an entry once it arrives by moving the last into its place
-(`player_controls::{poured, clean_to, repair_to, Timed, TimedList}`). Not
-in Exarust: the item cursor that would carry the item, and the dispatcher
-that picks the target.
+(`player_controls::{use_on, salve, elixir, clean_timed, repair_timed, Timed,
+TimedList}`). A timed value is written only while it lowers a section's byte
+or arrives, and the same entry applies to the usable and weapon sections;
+when the item has the usable section and its byte is not written, the
+weapon section waits for the next frame.
+The sounds are `player_controls::use_sound`: the pour at 0.25, the cleaning
+kit at 0.3 and the repair kit at 0.15, each pitch 0.9 + 0.2 times one draw.
+Not in Exarust: the item cursor that would carry the item, and the GUI
+dispatcher that picks the target.
 
 The start of play makes the AI's activation centre the player with a 40 m
 radius; the end of play puts it back at the origin with 200 m
@@ -572,7 +604,10 @@ collapsing or dead lets go of everything and is out of reach. Not in
 Exarust: the original's two further tests for everything but a door, that
 the point's grid-environment room is the player's or joined to it by an
 open portal (6 m cells), and that no flagged mesh of the environment lies
-along the pick ray.
+along the pick ray. The region and the walk-to point's own test are
+[`pick::reach`] and [`pick::walk_within_reach`]; the runtime hand still
+passes the plain point test, since Exarust has no navigation region at a
+picked object yet.
 
 ### The hand
 
@@ -586,7 +621,8 @@ cursor's point once that is farther than 70 cm (the heading takes the
 cursor's direction); the original then names what was clicked (an object's
 description card, the narrator's line for a lock it opened, the HUD for the
 player's own body, a corpse's roles' scripts), which Exarust cannot show
-yet. A double click (a second press within 450 ms and less than 2 pixels
+yet, except the bars for the own body. A double click (a second press
+within the 500 ms double-click time and less than 2 pixels
 from the one before) opens containers, the player's own inventory, loots
 corpses and talks in the original, within reach only; Exarust has no window
 for them yet.

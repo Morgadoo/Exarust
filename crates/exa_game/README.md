@@ -407,11 +407,22 @@ yet. The right button walks to the cursor in combat mode too
 (`steering::Steering::combat_walk`), the chevrons showing while it is
 held.
 
-The controls' item-use values (`player_controls`) are a pour's warmth, the
-cleaning and repair kits' targets and the timed list that carries them over
-two seconds; the start and end of play set the AI's activation centre and
-radius (`PlaySession`, which nothing reads yet); `PlayerControl` is the
-player-control singleton's creation state (hotkey mask 31 and the two
+The controls' rules (`player_controls`) are the click's and the
+double-click interaction's outcomes (a lock's key and first-unlock
+reward, a container, an item use in hand, a button push, a corpse's scripts,
+a character's talk condition, the player's inventory), the item-use values
+(a pour's warmth and marks, the cleaning and repair kits' targets, their
+sounds) and the timed list that writes only while it lowers a section or
+arrives; the reach's navigation region and walk-to point; the movement
+request's drag modes, the controls' gates, the key permissions and the power
+bar's 500 ms hold. A click on the player's own body shows the HUD bars for
+5000 ms; a double click on it (with Ctrl in combat mode) opens the
+existing inventory screen; the other windows have no form and the script
+registry is `exa_ai::roles`. The controls' scene-node words are
+`control_nodes`, a tested model (the runtime hand holds physics bodies, not
+scene nodes). The start and end of play set the AI's activation centre and
+radius (`PlaySession`, which the player tick and the AI read); `PlayerControl`
+is the player-control singleton's creation state (hotkey mask 31 and the two
 constructor flags). The GUI character preview (`char_view`) turns the
 figure toward the mouse: 0.7 of the pointer's arc-cosine yaw clamped to
 ±1.5 rad, a 5 % step under 1 rad and a clamped 0.05 rad above (the wrap

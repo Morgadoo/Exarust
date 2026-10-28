@@ -1,31 +1,60 @@
 //! The player controls' rules that are not the hand's drags nor the hotkey
-//! dispatch: the values an item used on a character leaves (a salve, an
-//! elixir, a cleaning or a repair kit) and the timed list that carries a kit's change
-//! over two seconds, and the start and end of play. Rules: `docs/PLAYER.md`
-//! (Using what the cursor is over, Using an item).
+//! dispatch: what a click and the Ctrl/double-click interaction name and
+//! do, the values an item used on the world leaves (a salve, an elixir, a
+//! cleaning or a repair kit) with its timed list, the reach a walk-to use
+//! measures, the movement request's drag and lift modes, the controls'
+//! gates and permissions, the power bar's hold timer, and the start and end
+//! of play. Rules: `docs/PLAYER.md` (Using what the cursor is over, Using an
+//! item, The reach) and `docs/PLAYER.md` (Hotkeys, Combat mode).
+//!
+//! **A click.** The click turns a point farther than 70 cm toward first.
+//! On a placed object with no usable section it shows the item. A usable
+//! section of kind 2 is a lock: open, it opens its container; closed, with
+//! the key and its reward still due, its first opening writes a journal
+//! line and pays 100 experience, or 1000 when the lock's subtype is 3.
+//! Kinds 0 and 1 open the container; other kinds show the item. A dead
+//! character runs its roles' interact scripts; the player's own body shows
+//! the health and focus bars for 5000 ms and then runs the click callback,
+//! as a living character does (Exarust has no dialogue). The double-click
+//! interaction is separate (in combat mode it needs Ctrl held): while the
+//! object is unmarked a usable item is taken in hand (kind 1, which ends
+//! it) and a consumable (kind 0 subtype 1) is used after 2100 ms; a button
+//! (kind 5, its flag clear) is pushed; then a container section opens. The
+//! player opens the inventory, a corpse is looted, and a living character
+//! talks when its roles' condition passes or a dialogue role links it to
+//! the player.
 //!
 //! **Using an item.** The operative section's kind byte names the use: 8
 //! is a salve that adds 0.2 to the heal pool (0.1 when the value word is
 //! 50) when the body takes remedies, 14 is an elixir that sets the potion
-//! flag and stamps the world clock plus 1800 s (`exa_combat::remedy`), 9
-//! cleans and 10 repairs. A cleaning kit takes an item's dirt byte
-//! down to 0x20 when it is over that; a repair kit lowers the wear byte by
-//! 255 over the material's rating `(r + 5) / 10` (at least 1), never under
-//! zero. Both schedule a timed value that moves 0.0005 of the gap a
-//! millisecond (two seconds); a list entry is dropped when it arrives.
+//! flag and stamps the world clock's seconds plus 1800, 9 cleans and 10
+//! repairs. Both pour kinds also mark the item (or its container's entry)
+//! with 0xC80000, a repair with 0xFF0000. A cleaning kit takes an item's dirt byte down to 0x20
+//! when it is over that; a repair kit lowers the wear byte by 255 over the
+//! material's rating `(r + 5) / 10` (at least 1), never under zero. Both
+//! schedule a timed value that moves 0.0005 of the gap a millisecond (two
+//! seconds); a list entry is dropped when it arrives, and a value is
+//! written only while it lowers the item's byte or arrives.
+//!
+//! **The reach.** A point within 245 cm of the world's floor and 300 cm of
+//! the hip across the ground is in reach; a door's own place is measured to
+//! 300 cm high and 350 cm across, a wheel's with the plain limits. Outside
+//! combat mode a point that is not a door must also lie in the player's
+//! navigation region with no flagged mesh between. A comparison with a NaN
+//! passes. A walk-to point has its own world-height test (`pick::walk_within_reach`).
 //!
 //! **Start and end of play.** The start makes the AI's activation centre
 //! the player with a 40 m radius (its square, 16 000 000 cm²); the end puts
 //! the centre back at the origin with 200 m (400 000 000 cm²).
 //!
-//! Not in Exarust: the click and double-click handlers (the item card, the
-//! narrator's line, the inventory, loot and talk windows they open), the
-//! dispatcher that picks the target of a use. While play runs the player
-//! controller moves the centre to the player each tick, and the AI's
-//! presence (`exa_ai::presence`) reads it.
+//! Not wired in Exarust: the item cursor and inventory windows the click
+//! and use outcomes open, and the scene script registry behind a corpse's
+//! scripts and a living character's talk condition. Those outcomes are
+//! modelled and tested; `exa_ai::roles` owns the script lookup itself.
 //!
-//! Evidence: the use routines, the timed list and the start and end of
-//! play, read in the instructions (`context/re/player-control-hand.md`).
+//! Evidence: the controls' click, interaction, use, reach, request, gate,
+//! permission and start/end routines, read in the instructions
+//! (`context/re/player-control-hand.md`).
 
 use bevy::math::Vec3;
 use bevy::prelude::Resource;
@@ -102,8 +131,7 @@ impl Timed {
 /// The timed list: entries applied to an item each frame, removed when they
 /// arrive. The original holds them in an array, takes a finished entry out
 /// by moving the last into its place, and counts its entries with a length.
-/// (It writes a value only while it lowers the item's byte or arrives;
-/// Exarust returns every value and leaves that to the writer.)
+/// It writes a value only while it lowers the item's byte or arrives.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct TimedList {
     pub entries: Vec<TimedItem>,
@@ -123,17 +151,59 @@ impl TimedList {
         self.entries.len() - 1
     }
 
-    /// One frame at `now_ms`: every entry's value, and the entries that
-    /// arrive are removed (the last moved into the slot), as the original's
-    /// loop does. Returns the values to write, in the order the loop reads
-    /// the shrinking array.
+    /// One frame at `now_ms` against `current`, which gives the item's byte
+    /// at section `section` (0 the usable section, 1 the weapon section),
+    /// or `None` when the item has no such section. The value is written
+    /// only while it lowers that byte or arrives, as the original writes
+    /// it. When the item has the usable section and its byte is not
+    /// written, the weapon section is not looked at this frame (the
+    /// original goes straight to the next entry). An arriving entry is
+    /// removed by moving the last into its slot. Returns the section writes
+    /// in the loop's order.
+    pub fn tick_sections(
+        &mut self,
+        now_ms: u32,
+        mut current: impl FnMut(u32, u8) -> Option<u8>,
+    ) -> Vec<(u32, u8, u8)> {
+        let mut writes = Vec::with_capacity(self.entries.len() * 2);
+        let mut i = 0;
+        while i < self.entries.len() {
+            let entry = self.entries[i];
+            let (value, done) = entry.timed.value(now_ms);
+            let mut next_section = true;
+            if let Some(old) = current(entry.item, 0) {
+                if old > value || done {
+                    writes.push((entry.item, 0, value));
+                } else {
+                    next_section = false;
+                }
+            }
+            if next_section
+                && let Some(old) = current(entry.item, 1)
+                && (old > value || done)
+            {
+                writes.push((entry.item, 1, value));
+            }
+            if done {
+                self.entries.swap_remove(i);
+            } else {
+                i += 1;
+            }
+        }
+        writes
+    }
+
+    /// One frame against the entries' own starting bytes: every value that
+    /// lowers its start (or arrives) is returned, in the loop's order.
     pub fn tick(&mut self, now_ms: u32) -> Vec<(u32, u8)> {
         let mut writes = Vec::with_capacity(self.entries.len());
         let mut i = 0;
         while i < self.entries.len() {
             let entry = self.entries[i];
             let (value, done) = entry.timed.value(now_ms);
-            writes.push((entry.item, value));
+            if entry.timed.from > value || done {
+                writes.push((entry.item, value));
+            }
             if done {
                 self.entries.swap_remove(i);
             } else {
@@ -220,6 +290,647 @@ impl PlaySession {
         self.playing = false;
         self.activation_centre = Vec3::ZERO;
         self.activation_radius2 = END_ACTIVATION_RADIUS2;
+    }
+}
+
+/// A point farther than this (cm) is turned toward before it is used.
+pub const TURN_BEYOND_CM: f32 = 70.0;
+/// A point is used from at most this height (cm).
+pub const REACH_HEIGHT_CM: f32 = 245.0;
+/// A door's reach: 300 cm high and 350 cm across; a wheel's is the plain
+/// 300 cm across.
+pub const DOOR_HEIGHT_CM: f32 = 300.0;
+pub const DOOR_ACROSS_CM: f32 = 350.0;
+pub const REACH_ACROSS_CM: f32 = 300.0;
+/// A lock's unlock reward: 100, or 1000 when the lock section's subtype is
+/// [`MAIN_LOCK_SUBTYPE`].
+pub const UNLOCK_REWARD: u32 = 100;
+pub const UNLOCK_REWARD_MAIN: u32 = 1000;
+pub const MAIN_LOCK_SUBTYPE: u8 = 3;
+/// The usable section's kinds the click and the interaction read: a lock
+/// and a button (kinds 0 and 1 are the consumable and the hand-held item).
+pub const USABLE_LOCK: u8 = 2;
+pub const USABLE_BUTTON: u8 = 5;
+/// A click on the player's own body shows the health and focus bars for
+/// this many ms.
+pub const SHOW_BARS_MS: u32 = 5000;
+/// A consumable of usable kind 0, subtype 1, is used this many ms after
+/// the interaction.
+pub const CONSUME_MS: u32 = 2100;
+
+/// What the click (and the double-click interaction) sees under the
+/// cursor: a placed object's sections, or a character.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClickTarget {
+    /// Nothing was hit.
+    Nothing,
+    /// A placed object. `usable` is its usable section's kind byte when it
+    /// has one and `subtype` that section's subtype byte; `lock_open` and
+    /// `reward_ready` are the lock section's two words, `key_ok` the
+    /// player's key test, `container` whether it has a container section,
+    /// `unmarked` whether its used-mark byte (the one a pour or a repair
+    /// sets) is still clear, and `push_released` whether a button's own
+    /// flag word allows it to fire.
+    Placed {
+        usable: Option<u8>,
+        subtype: u8,
+        lock_open: bool,
+        reward_ready: bool,
+        key_ok: bool,
+        container: bool,
+        unmarked: bool,
+        push_released: bool,
+    },
+    /// A character.
+    Player,
+    DeadCharacter,
+    LivingCharacter,
+}
+
+impl ClickTarget {
+    /// A placed object with no usable or container section and no lock.
+    pub fn plain() -> Self {
+        ClickTarget::Placed {
+            usable: None,
+            subtype: 0,
+            lock_open: false,
+            reward_ready: false,
+            key_ok: false,
+            container: false,
+            unmarked: true,
+            push_released: true,
+        }
+    }
+}
+
+/// What a click does after the turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClickOutcome {
+    Nothing,
+    /// Show the item (its card or the narrator's line).
+    Inspect,
+    /// Open the container's window.
+    OpenContainer,
+    /// Unlock a lock: the journal line and the experience it pays.
+    Unlock {
+        reward: u32,
+    },
+    /// The click callback (the living character's line, or an object's
+    /// own click).
+    Callback,
+    /// The player's own body: the health and focus bars are shown for
+    /// `ms`, then the click callback runs.
+    ShowBars {
+        ms: u32,
+    },
+    /// A dead character's roles' interact scripts.
+    CorpseScripts,
+}
+
+/// The click's outcome. On a placed object: no usable section shows the
+/// item; a lock (kind 2) that is open opens its container, a closed one
+/// with the key and its reward still due pays 100 (1000 for the lock
+/// subtype 3), else nothing; kinds 0 and 1 open the container; any other
+/// kind shows the item. The object's first-touch bit is cleared by any
+/// hit.
+pub fn click(target: ClickTarget) -> ClickOutcome {
+    match target {
+        ClickTarget::Nothing => ClickOutcome::Nothing,
+        ClickTarget::Player => ClickOutcome::ShowBars { ms: SHOW_BARS_MS },
+        ClickTarget::DeadCharacter => ClickOutcome::CorpseScripts,
+        ClickTarget::LivingCharacter => ClickOutcome::Callback,
+        ClickTarget::Placed {
+            usable,
+            subtype,
+            lock_open,
+            reward_ready,
+            key_ok,
+            ..
+        } => match usable {
+            None => ClickOutcome::Inspect,
+            Some(USABLE_LOCK) => {
+                if lock_open {
+                    ClickOutcome::OpenContainer
+                } else if key_ok && reward_ready {
+                    ClickOutcome::Unlock {
+                        reward: if subtype == MAIN_LOCK_SUBTYPE {
+                            UNLOCK_REWARD_MAIN
+                        } else {
+                            UNLOCK_REWARD
+                        },
+                    }
+                } else {
+                    ClickOutcome::Nothing
+                }
+            }
+            Some(kind) if kind < USABLE_LOCK => ClickOutcome::OpenContainer,
+            Some(_) => ClickOutcome::Inspect,
+        },
+    }
+}
+
+/// What the double-click interaction does with a placed object's usable
+/// section.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ObjectInteraction {
+    Nothing,
+    /// Use kind 0, subtype 1: consumed after [`CONSUME_MS`].
+    Consume {
+        due_ms: u32,
+    },
+    /// Use kind 0, another subtype: the item is taken at once (guess: the
+    /// object database call it makes is not traced further).
+    Open,
+    /// Take the usable item in hand (kind 1); the interaction ends here.
+    UseInHand,
+    /// Push a button (kind 5, its flag clear).
+    Push,
+}
+
+/// The placed object's interaction, as the double click's handler decides
+/// it, and whether its container then opens. Kinds 0 and 1 act only while
+/// the object is unmarked; a button fires while its flag allows. Only the
+/// hand-held item (kind 1) ends the interaction; every other branch,
+/// including none, goes on to open the container section when there is
+/// one.
+pub fn interact_object(target: ClickTarget, now_ms: u32) -> (ObjectInteraction, bool) {
+    let ClickTarget::Placed {
+        usable,
+        subtype,
+        container,
+        unmarked,
+        push_released,
+        ..
+    } = target
+    else {
+        return (ObjectInteraction::Nothing, false);
+    };
+    let action = match usable {
+        Some(0) if unmarked => {
+            if subtype == 1 {
+                ObjectInteraction::Consume {
+                    due_ms: now_ms.wrapping_add(CONSUME_MS),
+                }
+            } else {
+                ObjectInteraction::Open
+            }
+        }
+        Some(1) if unmarked => return (ObjectInteraction::UseInHand, false),
+        Some(USABLE_BUTTON) if push_released => ObjectInteraction::Push,
+        _ => ObjectInteraction::Nothing,
+    };
+    (action, container)
+}
+
+/// What the Ctrl/double-click interaction does on a character.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CharacterInteraction {
+    Inventory,
+    Loot,
+    /// The roles' talk condition passed.
+    Talk,
+    /// A dialogue role links the character to the player.
+    Dialogue,
+    Nothing,
+}
+
+/// The character interaction: the player's inventory, a corpse's loot, or a
+/// living character's talk condition and dialogue role.
+pub fn interact_character(
+    target: ClickTarget,
+    condition_passes: bool,
+    role_links_player: bool,
+) -> CharacterInteraction {
+    match target {
+        ClickTarget::Player => CharacterInteraction::Inventory,
+        ClickTarget::DeadCharacter => CharacterInteraction::Loot,
+        ClickTarget::LivingCharacter => {
+            if condition_passes {
+                CharacterInteraction::Talk
+            } else if role_links_player {
+                CharacterInteraction::Dialogue
+            } else {
+                CharacterInteraction::Nothing
+            }
+        }
+        _ => CharacterInteraction::Nothing,
+    }
+}
+
+/// Whether the Ctrl/double-click interaction may run: in reach, no modal
+/// form, no GUI drag callback, not spectating, a player, and in combat mode
+/// only with Ctrl held.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InteractGate {
+    pub out_of_reach: bool,
+    pub modal: bool,
+    pub gui_callback: bool,
+    pub spectate: bool,
+    pub player: bool,
+    pub combat: bool,
+    pub ctrl: bool,
+}
+
+pub fn interaction_allowed(g: InteractGate) -> bool {
+    !g.out_of_reach
+        && !g.modal
+        && !g.gui_callback
+        && !g.spectate
+        && g.player
+        && (!g.combat || g.ctrl)
+}
+
+/// A second press of the same button within the system's double-click
+/// time of the first, under 2 pixels from it, is a double click. The
+/// original asks Windows for that time at start-up (`GetDoubleClickTime`);
+/// Exarust uses Windows' default, 500 ms.
+pub const DOUBLE_CLICK_MS: u64 = 500;
+pub const DOUBLE_CLICK_PX: i64 = 2;
+
+/// Whether a press at `at`, `now_ms`, is the double click of the press at
+/// `was`, `was_ms`: strictly under [`DOUBLE_CLICK_MS`] and strictly under 2
+/// pixels on both axes.
+pub fn is_double_click(was: (i32, i32), was_ms: u64, at: (i32, i32), now_ms: u64) -> bool {
+    now_ms < was_ms + DOUBLE_CLICK_MS
+        && (i64::from(at.0) - i64::from(was.0)).abs() < DOUBLE_CLICK_PX
+        && (i64::from(at.1) - i64::from(was.1)).abs() < DOUBLE_CLICK_PX
+}
+
+/// Where a walk-to use stops: the clicked point (m) and the player's feet
+/// (m). A point beyond 245 cm (350 cm for a door) leaves the walk's goal
+/// that far short along the ground; a nearer point needs no walk.
+pub fn walk_stop(at: Vec3, point: Vec3, door: bool) -> Option<Vec3> {
+    let flat = (point - at).with_y(0.0);
+    let distance = flat.length() * 100.0;
+    let stop = if door {
+        DOOR_ACROSS_CM
+    } else {
+        REACH_HEIGHT_CM
+    };
+    if distance > stop && distance > 0.0 {
+        Some(at + flat.normalize_or_zero() * ((distance - stop) / 100.0))
+    } else {
+        None
+    }
+}
+
+/// A sound a use asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UseSoundKind {
+    Pour,
+    Clean,
+    Repair,
+}
+
+/// A sound the use plays: its kind and the unit random draw for its pitch.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct UseSound {
+    pub kind: UseSoundKind,
+    pub volume: f32,
+    /// `0.9 + 0.2·draw`.
+    pub pitch: f32,
+    /// `true` at the point taken, `false` at the player.
+    pub at_point: bool,
+}
+
+/// The use a clicked object starts.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum UseOutcome {
+    Nothing,
+    /// A salve added this much to the target's heal pool (double precision).
+    Salve(f32),
+    /// An elixir: its potion flag and the world-seconds stamp it lasts to.
+    Elixir {
+        flag: u32,
+        until_s: u32,
+    },
+    /// A timed value on the item's sections.
+    Timed(Timed),
+}
+
+/// The complete use: what it does, the marks it sets on the item or its
+/// container entry (0xC80000 for both pour kinds, 0xFF0000 for a repair),
+/// and its sound.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Use {
+    pub outcome: UseOutcome,
+    pub marks: u32,
+    pub sound: Option<UseSound>,
+}
+
+/// The pour kinds' mark on the item or its container entry.
+pub const POUR_MARK: u32 = 0xC80000;
+/// The repair kit's mark on the item or its container entry.
+pub const REPAIR_MARK: u32 = 0xFF0000;
+/// The elixir's potion flag on the body, and the world seconds it lasts.
+pub const POTION_FLAG: u32 = exa_combat::condition::StateFlags::POTION;
+pub const ELIXIR_S: u32 = exa_combat::remedy::ELIXIR_S;
+
+/// A salve's heal-pool addition: 0.2, or 0.1 when the value word is 50, in
+/// double precision. Only when the body takes remedies.
+pub fn salve(liquid_type: u16, takes_remedies: bool) -> Option<f32> {
+    takes_remedies.then_some(if liquid_type == SMALL_POUR_TYPE {
+        0.1
+    } else {
+        0.2
+    })
+}
+
+/// An elixir: the potion flag and the world-clock second it lasts to, only
+/// when the body takes remedies.
+pub fn elixir(takes_remedies: bool, world_clock_s: u32) -> Option<(u32, u32)> {
+    takes_remedies.then_some((POTION_FLAG, world_clock_s.wrapping_add(ELIXIR_S)))
+}
+
+/// A use's pitch: `0.9 + 0.2·draw`, then its volume by kind.
+pub fn use_sound(kind: UseSoundKind, draw: f32, at_point: bool) -> UseSound {
+    let volume = match kind {
+        UseSoundKind::Pour => 0.25,
+        UseSoundKind::Clean => 0.3,
+        UseSoundKind::Repair => 0.15,
+    };
+    UseSound {
+        kind,
+        volume,
+        // The unit draw is a double; the sum is taken in double and stored
+        // as a float.
+        pitch: (f64::from(draw) * 0.2 + 0.9) as f32,
+        at_point,
+    }
+}
+
+/// The use of an item whose usable kind is `kind` on the world: a pour
+/// kind 8 or 14 marks the target and (when the body takes remedies) warms
+/// or lights it; a cleaning or repair kit schedules its timed byte.
+#[allow(clippy::too_many_arguments)]
+pub fn use_on(
+    kind: u8,
+    value_word: u16,
+    takes_remedies: bool,
+    world_clock_s: u32,
+    wear: Option<u8>,
+    dirt: Option<u8>,
+    rating: u8,
+    now_ms: u32,
+    sound_draw: f32,
+    at_point: bool,
+) -> Use {
+    match kind {
+        POUR => Use {
+            outcome: salve(value_word, takes_remedies)
+                .map_or(UseOutcome::Nothing, UseOutcome::Salve),
+            marks: POUR_MARK,
+            sound: None,
+        },
+        POUR_MARKS => {
+            let lit = elixir(takes_remedies, world_clock_s);
+            Use {
+                outcome: lit.map_or(UseOutcome::Nothing, |(flag, until_s)| UseOutcome::Elixir {
+                    flag,
+                    until_s,
+                }),
+                marks: POUR_MARK,
+                // The pour sound plays only with the potion, at the body.
+                sound: lit.map(|_| use_sound(UseSoundKind::Pour, sound_draw, at_point)),
+            }
+        }
+        CLEAN => {
+            let timed = dirt.and_then(clean_timed).map(|mut t| {
+                t.started_ms = now_ms;
+                t
+            });
+            Use {
+                outcome: timed.map_or(UseOutcome::Nothing, UseOutcome::Timed),
+                marks: 0,
+                sound: timed
+                    .is_some()
+                    .then(|| use_sound(UseSoundKind::Clean, sound_draw, at_point)),
+            }
+        }
+        REPAIR => {
+            let timed = wear.and_then(|w| repair_timed(w, rating)).map(|mut t| {
+                t.started_ms = now_ms;
+                t
+            });
+            // A repair marks the item (or its entry) 0xFF0000 and plays at
+            // the player, wherever the item is.
+            Use {
+                outcome: timed.map_or(UseOutcome::Nothing, UseOutcome::Timed),
+                marks: if timed.is_some() { REPAIR_MARK } else { 0 },
+                sound: timed
+                    .is_some()
+                    .then(|| use_sound(UseSoundKind::Repair, sound_draw, false)),
+            }
+        }
+        _ => Use {
+            outcome: UseOutcome::Nothing,
+            marks: 0,
+            sound: None,
+        },
+    }
+}
+
+impl UseOutcome {
+    /// The timed entry a use leaves, if any.
+    pub fn timed(self) -> Option<Timed> {
+        match self {
+            UseOutcome::Timed(t) => Some(t),
+            _ => None,
+        }
+    }
+}
+
+/// The cleaning kit's timed value: from the current dirt down to 0x20,
+/// when the dirt is over it.
+pub fn clean_timed(dirt: u8) -> Option<Timed> {
+    (dirt > CLEAN_TO).then_some(Timed {
+        kind: CLEAN,
+        from: dirt,
+        to: CLEAN_TO,
+        started_ms: 0,
+    })
+}
+
+/// The repair kit's timed value: from the current wear down by 255 over
+/// the material's `(rating + 5) / 10` (at least 1), never under zero. An
+/// unworn item is not repaired.
+pub fn repair_timed(wear: u8, rating: u8) -> Option<Timed> {
+    repair_to(wear, rating).map(|to| Timed {
+        kind: REPAIR,
+        from: wear,
+        to,
+        started_ms: 0,
+    })
+}
+
+/// A scene object that carries a script the player's use can run.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ScriptObject {
+    /// The node's place (cm).
+    pub at: Vec3,
+    pub object: u32,
+}
+
+/// The script objects within the use's reach: a node's distance squared
+/// from the point under 5 cm² and an object id. The scene walks its object
+/// nodes in order and keeps that order.
+pub fn nearby_scripts(point: Vec3, objects: impl IntoIterator<Item = ScriptObject>) -> Vec<u32> {
+    objects
+        .into_iter()
+        .filter(|o| o.object != 0 && (o.at - point).length_squared() < 5.0)
+        .map(|o| o.object)
+        .collect()
+}
+
+/// Where a use's marks go: the world item itself, or a container's entry.
+/// `slot` counts from one (zero is no entry) and `word` is the entry's own
+/// word.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MarkTarget {
+    Item,
+    Container { slot: u32, word: u32 },
+}
+
+/// The word a use marks: the item's flags word, or the container entry's
+/// word, ORed with `mark` ([`POUR_MARK`] or [`REPAIR_MARK`]). A container
+/// with no entry slot marks nothing.
+pub fn mark_used(target: MarkTarget, flags: u32, mark: u32) -> Option<u32> {
+    match target {
+        MarkTarget::Item => Some(flags | mark),
+        MarkTarget::Container { slot: 0, .. } => None,
+        MarkTarget::Container { word, .. } => Some(word | mark),
+    }
+}
+
+/// The controls' movement request mode, from the hand's drag state and the
+/// combat branch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequestMode {
+    /// The W/S/right-button request runs.
+    Normal,
+    /// Combat mode measures the reach and keeps no request.
+    Combat,
+    /// The lift places its object; no movement request.
+    Lift,
+    /// A door drag sets its cursor and leaves the request to the keys and
+    /// the right button.
+    Mechanism,
+    /// A refused press keeps the request as it was.
+    Refused,
+    /// An item use's reach only.
+    Use,
+}
+
+/// The movement request's mode, in the original's branch order (after the
+/// down-or-dead test, which the caller makes): an item use, the lift, a
+/// door (whose drag then runs the normal request), a refusal, combat mode,
+/// and the normal request. A wheel, cloth, physical or GUI drag is not
+/// tested here and takes the combat or normal branch.
+pub fn request_mode(state: crate::hand::DragState, combat: bool) -> RequestMode {
+    use crate::hand::DragState;
+    match state {
+        DragState::Use => RequestMode::Use,
+        DragState::Lift => RequestMode::Lift,
+        DragState::Door => RequestMode::Mechanism,
+        DragState::Refused => RequestMode::Refused,
+        _ if combat => RequestMode::Combat,
+        _ => RequestMode::Normal,
+    }
+}
+
+/// The controls' gates as the frame reads them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ControlGates {
+    /// The controls are off.
+    pub off: bool,
+    /// A screen blocks the controls.
+    pub blocked: bool,
+    /// A second block.
+    pub second_block: bool,
+    /// The spectating view.
+    pub spectate: bool,
+}
+
+/// What the controls' frame does this time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrameAction {
+    /// Run the request and the idle turn.
+    Run,
+    /// Turn the camera as a blocked screen and stop.
+    BlockedTurn,
+    /// Nothing (spectating, off or a second block).
+    Stop,
+    /// The active view is not the game's: stamp and stop.
+    Stamp,
+}
+
+/// The frame's order: spectate, no player, a blocked screen, the controls
+/// off, the second block, then the active view.
+pub fn frame_action(gates: ControlGates, player: bool, game_view_active: bool) -> FrameAction {
+    if gates.spectate || !player {
+        FrameAction::Stop
+    } else if gates.blocked {
+        FrameAction::BlockedTurn
+    } else if gates.off || gates.second_block {
+        FrameAction::Stop
+    } else if !game_view_active {
+        FrameAction::Stamp
+    } else {
+        FrameAction::Run
+    }
+}
+
+/// The permissions the key handler is given: all five in play, four while
+/// a spirit form or an open document holds the controls.
+pub const PERMISSIONS_PLAY: u32 = 0x1F;
+pub const PERMISSIONS_POWERS: u32 = 0x4;
+
+/// The key permissions for a frame: all five normally, four while a modal
+/// document (a dialogue or a spirit form) holds the controls.
+pub fn permissions(document_open: bool) -> u32 {
+    if document_open {
+        PERMISSIONS_POWERS
+    } else {
+        PERMISSIONS_PLAY
+    }
+}
+
+/// The power bar's hold on a picked slot: the slot (from 1) and the game
+/// clock (ms) the hold ends, 500 ms after the pick.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PowerHold {
+    pub slot: u8,
+    pub until_ms: u32,
+}
+
+pub const POWER_HOLD_MS: u32 = 500;
+
+impl PowerHold {
+    /// Picks `slot` (from 0) at `now_ms`, holding it for 500 ms (the
+    /// original stores the slot plus one and stamps `now + 500`).
+    pub fn pick(slot: i32, now_ms: u32) -> Self {
+        Self {
+            slot: (slot + 1).max(0) as u8,
+            until_ms: now_ms.wrapping_add(POWER_HOLD_MS),
+        }
+    }
+
+    /// One frame: the bar's command this frame, `Some(slot)` (from 0) while
+    /// the hold stands and `Some(-1)` (use the picked power) once it has
+    /// expired. The caller clears the hold when it takes the command.
+    pub fn frame(&mut self, now_ms: u32) -> Option<i32> {
+        if self.slot == 0 {
+            return None;
+        }
+        if now_ms > self.until_ms {
+            self.slot = 0;
+        }
+        Some(i32::from(self.slot) - 1)
+    }
+
+    /// The command was taken.
+    pub fn taken(&mut self) {
+        self.slot = 0;
     }
 }
 
@@ -342,5 +1053,468 @@ mod tests {
         assert!(c.controls);
         assert!(c.combat);
         assert_eq!(PlayerControl::default(), c);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn placed_with(
+        usable: Option<u8>,
+        subtype: u8,
+        lock_open: bool,
+        reward_ready: bool,
+        key_ok: bool,
+        container: bool,
+        unmarked: bool,
+        push_released: bool,
+    ) -> ClickTarget {
+        ClickTarget::Placed {
+            usable,
+            subtype,
+            lock_open,
+            reward_ready,
+            key_ok,
+            container,
+            unmarked,
+            push_released,
+        }
+    }
+
+    fn placed(usable: Option<u8>, subtype: u8) -> ClickTarget {
+        placed_with(usable, subtype, false, false, false, false, true, true)
+    }
+
+    /// No usable section inspects, container or not; a closed lock needs
+    /// the key and its reward due and pays 100, or 1000 for the lock
+    /// subtype 3; an open lock opens the container; kinds 0 and 1 always
+    /// open the container; other kinds (3 included) inspect. The player's
+    /// body shows the bars for 5000 ms.
+    #[test]
+    fn a_click_names_the_object_and_the_character() {
+        assert_eq!(click(ClickTarget::Nothing), ClickOutcome::Nothing);
+        assert_eq!(
+            click(ClickTarget::Player),
+            ClickOutcome::ShowBars { ms: 5_000 }
+        );
+        assert_eq!(
+            click(ClickTarget::DeadCharacter),
+            ClickOutcome::CorpseScripts
+        );
+        assert_eq!(click(ClickTarget::LivingCharacter), ClickOutcome::Callback);
+        let lock = placed(Some(USABLE_LOCK), 0);
+        assert_eq!(click(lock), ClickOutcome::Nothing);
+        let key = placed_with(Some(USABLE_LOCK), 0, false, true, true, false, true, true);
+        assert_eq!(click(key), ClickOutcome::Unlock { reward: 100 });
+        let main = placed_with(Some(USABLE_LOCK), 3, false, true, true, false, true, true);
+        assert_eq!(click(main), ClickOutcome::Unlock { reward: 1000 });
+        let spent = placed_with(Some(USABLE_LOCK), 3, false, false, true, false, true, true);
+        assert_eq!(click(spent), ClickOutcome::Nothing);
+        let open = placed_with(Some(USABLE_LOCK), 0, true, false, false, false, true, true);
+        assert_eq!(click(open), ClickOutcome::OpenContainer);
+        assert_eq!(click(placed(Some(0), 0)), ClickOutcome::OpenContainer);
+        assert_eq!(click(placed(Some(1), 0)), ClickOutcome::OpenContainer);
+        let kind3 = placed_with(Some(3), 0, false, true, true, true, true, true);
+        assert_eq!(click(kind3), ClickOutcome::Inspect);
+        assert_eq!(click(placed(Some(USABLE_BUTTON), 0)), ClickOutcome::Inspect);
+        assert_eq!(click(ClickTarget::plain()), ClickOutcome::Inspect);
+        let boxed = placed_with(None, 0, false, false, false, true, true, true);
+        assert_eq!(click(boxed), ClickOutcome::Inspect);
+    }
+
+    /// Kind 0 subtype 1 consumes after 2100 ms and another subtype is
+    /// taken, only while unmarked; kind 1 takes the item and ends the
+    /// interaction; kind 5 pushes while its flag allows; every other branch
+    /// goes on to the container section.
+    #[test]
+    fn the_interaction_reads_the_usable_section() {
+        let n = ObjectInteraction::Nothing;
+        assert_eq!(
+            interact_object(placed(Some(0), 1), 1_000),
+            (ObjectInteraction::Consume { due_ms: 3_100 }, false)
+        );
+        let full = placed_with(Some(0), 1, false, false, false, true, true, true);
+        assert_eq!(
+            interact_object(full, 1_000),
+            (ObjectInteraction::Consume { due_ms: 3_100 }, true)
+        );
+        assert_eq!(
+            interact_object(placed(Some(0), 0), 0),
+            (ObjectInteraction::Open, false)
+        );
+        let marked = placed_with(Some(0), 1, false, false, false, true, false, true);
+        assert_eq!(interact_object(marked, 0), (n, true));
+        let hand = placed_with(Some(1), 0, false, false, false, true, true, true);
+        assert_eq!(
+            interact_object(hand, 0),
+            (ObjectInteraction::UseInHand, false)
+        );
+        let marked = placed_with(Some(1), 0, false, false, false, true, false, true);
+        assert_eq!(interact_object(marked, 0), (n, true));
+        assert_eq!(
+            interact_object(placed(Some(USABLE_BUTTON), 0), 0),
+            (ObjectInteraction::Push, false)
+        );
+        let held = placed_with(
+            Some(USABLE_BUTTON),
+            0,
+            false,
+            false,
+            false,
+            false,
+            true,
+            false,
+        );
+        assert_eq!(interact_object(held, 0), (n, false));
+        let lock = placed_with(Some(2), 0, false, false, false, true, true, true);
+        assert_eq!(interact_object(lock, 0), (n, true));
+        let lone = placed_with(None, 0, false, false, false, false, true, true);
+        assert_eq!(interact_object(lone, 0), (n, false));
+        assert_eq!(interact_object(ClickTarget::Player, 0), (n, false));
+        assert_eq!(
+            interact_character(ClickTarget::Player, false, false),
+            CharacterInteraction::Inventory
+        );
+        assert_eq!(
+            interact_character(ClickTarget::DeadCharacter, false, false),
+            CharacterInteraction::Loot
+        );
+        assert_eq!(
+            interact_character(ClickTarget::LivingCharacter, true, false),
+            CharacterInteraction::Talk
+        );
+        assert_eq!(
+            interact_character(ClickTarget::LivingCharacter, false, true),
+            CharacterInteraction::Dialogue
+        );
+        assert_eq!(
+            interact_character(ClickTarget::LivingCharacter, false, false),
+            CharacterInteraction::Nothing
+        );
+    }
+
+    /// The interaction gate: in reach, no modal or GUI callback, not
+    /// spectating, a player, and combat mode only with Ctrl.
+    #[test]
+    fn the_interaction_gate() {
+        let ok = InteractGate {
+            out_of_reach: false,
+            modal: false,
+            gui_callback: false,
+            spectate: false,
+            player: true,
+            combat: false,
+            ctrl: false,
+        };
+        assert!(interaction_allowed(ok));
+        for blocked in [
+            InteractGate {
+                out_of_reach: true,
+                ..ok
+            },
+            InteractGate { modal: true, ..ok },
+            InteractGate {
+                gui_callback: true,
+                ..ok
+            },
+            InteractGate {
+                spectate: true,
+                ..ok
+            },
+            InteractGate {
+                player: false,
+                ..ok
+            },
+        ] {
+            assert!(!interaction_allowed(blocked));
+        }
+        assert!(!interaction_allowed(InteractGate {
+            combat: true,
+            ctrl: false,
+            ..ok
+        }));
+        assert!(interaction_allowed(InteractGate {
+            combat: true,
+            ctrl: true,
+            ..ok
+        }));
+    }
+
+    /// A double click is strictly under 500 ms and under 2 pixels on both
+    /// axes.
+    #[test]
+    fn the_double_click_window() {
+        assert!(is_double_click((10, 10), 1000, (11, 9), 1499));
+        assert!(!is_double_click((10, 10), 1000, (11, 9), 1500));
+        assert!(!is_double_click((10, 10), 1000, (12, 10), 1100));
+        assert!(!is_double_click((10, 10), 1000, (10, 12), 1100));
+    }
+
+    /// A liquid pours 0.1 for the 50 word and 0.2 otherwise, only when the
+    /// body takes remedies; both pour kinds mark the item 0xC80000. An
+    /// elixir stamps the world clock plus 1800 s.
+    #[test]
+    fn a_pour_warms_or_lights_and_marks() {
+        assert_eq!(salve(50, true), Some(0.1));
+        assert_eq!(salve(7, true), Some(0.2));
+        assert_eq!(salve(7, false), None);
+        let pour = use_on(8, 7, true, 0, None, None, 0, 0, 0.5, false);
+        assert_eq!(pour.outcome, UseOutcome::Salve(0.2));
+        assert_eq!(pour.marks, POUR_MARK);
+        assert_eq!(pour.sound, None);
+        let cold = use_on(8, 7, false, 0, None, None, 0, 0, 0.5, false);
+        assert_eq!(cold.outcome, UseOutcome::Nothing);
+        assert_eq!(cold.marks, POUR_MARK);
+        let light = use_on(14, 7, true, 100, None, None, 0, 0, 0.5, true);
+        assert_eq!(
+            light.outcome,
+            UseOutcome::Elixir {
+                flag: POTION_FLAG,
+                until_s: 1900
+            }
+        );
+        assert_eq!(light.marks, POUR_MARK);
+        let sound = light.sound.unwrap();
+        assert_eq!(sound.kind, UseSoundKind::Pour);
+        assert_eq!(sound.volume, 0.25);
+        assert!((sound.pitch - 1.0).abs() < 1e-6);
+        assert!(sound.at_point);
+        assert_eq!(elixir(false, 100), None);
+        // Without the remedy flag the elixir only marks: no potion, no sound.
+        let dull = use_on(14, 7, false, 100, None, None, 0, 0, 0.5, true);
+        assert_eq!(dull.outcome, UseOutcome::Nothing);
+        assert_eq!(dull.marks, POUR_MARK);
+        assert_eq!(dull.sound, None);
+        // The pitch sum is taken in double: 0.9 + 0.2·0.3 rounds once.
+        let p = use_sound(UseSoundKind::Pour, 0.3, false).pitch;
+        assert_eq!(p, (f64::from(0.3f32) * 0.2 + 0.9) as f32);
+    }
+
+    /// A cleaning kit stops at 0x20; a repair kit takes 255 over the rating
+    /// step and an unworn item is left. Both start their timed value now.
+    #[test]
+    fn a_kit_schedules_its_timed_value() {
+        let clean = use_on(9, 0, true, 0, None, Some(0x30), 0, 1000, 0.0, false);
+        let timed = clean.outcome.timed().unwrap();
+        assert_eq!(
+            (timed.kind, timed.from, timed.to, timed.started_ms),
+            (9, 0x30, 0x20, 1000)
+        );
+        assert_eq!(clean.sound.unwrap().volume, 0.3);
+        let repair = use_on(10, 0, true, 0, Some(100), None, 25, 2000, 0.0, false);
+        let timed = repair.outcome.timed().unwrap();
+        assert_eq!(
+            (timed.kind, timed.from, timed.to, timed.started_ms),
+            (10, 100, 15, 2000)
+        );
+        assert_eq!(repair.sound.unwrap().volume, 0.15);
+        assert_eq!(repair.marks, REPAIR_MARK);
+        assert!(!repair.sound.unwrap().at_point);
+        assert_eq!(clean.marks, 0);
+        assert_eq!(
+            use_on(10, 0, true, 0, Some(0), None, 25, 0, 0.0, false).outcome,
+            UseOutcome::Nothing
+        );
+        assert_eq!(clean_timed(0x20), None);
+        assert_eq!(repair_timed(0, 25), None);
+    }
+
+    /// The timed list writes a section only while the byte lowers or the
+    /// entry arrives, applies the same value to both sections, and removes
+    /// an arrived entry by moving the last into its slot.
+    #[test]
+    fn the_timed_list_writes_only_what_lowers() {
+        let mut list = TimedList::default();
+        list.push(TimedItem {
+            timed: Timed {
+                kind: 10,
+                from: 100,
+                to: 0,
+                started_ms: 1000,
+            },
+            item: 7,
+        });
+        // At the start neither section changes: no write.
+        assert!(list.tick_sections(1000, |_, _| Some(100)).is_empty());
+        // Halfway: both sections go to 50.
+        assert_eq!(
+            list.tick_sections(2000, |_, _| Some(100)),
+            vec![(7, 0, 50), (7, 1, 50)]
+        );
+        // The weapon section alone lower: it is written.
+        assert_eq!(
+            list.tick_sections(2500, |_, section| if section == 0 {
+                Some(50)
+            } else {
+                Some(20)
+            }),
+            vec![(7, 0, 25)]
+        );
+        // The usable section not lowered: the weapon section is skipped
+        // this frame even though it would lower.
+        assert!(
+            list.tick_sections(2600, |_, section| if section == 0 {
+                Some(10)
+            } else {
+                Some(90)
+            })
+            .is_empty()
+        );
+        // No usable section: the weapon section is tested on its own.
+        assert_eq!(
+            list.tick_sections(2600, |_, section| (section == 1).then_some(90)),
+            vec![(7, 1, 20)]
+        );
+        // Done writes both even when one is already at the target.
+        assert_eq!(
+            list.tick_sections(3000, |_, _| Some(0)),
+            vec![(7, 0, 0), (7, 1, 0)]
+        );
+        assert!(list.entries.is_empty());
+        // A clock behind the start raises the value and writes nothing.
+        list.push(TimedItem {
+            timed: Timed {
+                kind: 9,
+                from: 0x30,
+                to: 0x20,
+                started_ms: 1000,
+            },
+            item: 9,
+        });
+        assert_eq!(list.tick_sections(900, |_, _| Some(0x30)), Vec::new());
+    }
+
+    /// The movement request's mode branch order.
+    #[test]
+    fn the_request_mode() {
+        use crate::hand::DragState;
+        assert_eq!(request_mode(DragState::Idle, false), RequestMode::Normal);
+        assert_eq!(request_mode(DragState::Idle, true), RequestMode::Combat);
+        assert_eq!(request_mode(DragState::Physical, true), RequestMode::Combat);
+        assert_eq!(request_mode(DragState::Wheel, true), RequestMode::Combat);
+        assert_eq!(request_mode(DragState::Door, true), RequestMode::Mechanism);
+        assert_eq!(
+            request_mode(DragState::Physical, false),
+            RequestMode::Normal
+        );
+        assert_eq!(request_mode(DragState::Use, false), RequestMode::Use);
+        assert_eq!(request_mode(DragState::Lift, false), RequestMode::Lift);
+        assert_eq!(
+            request_mode(DragState::GuiPending, false),
+            RequestMode::Normal
+        );
+        assert_eq!(request_mode(DragState::Door, false), RequestMode::Mechanism);
+        assert_eq!(request_mode(DragState::Wheel, false), RequestMode::Normal);
+        assert_eq!(request_mode(DragState::Cloth, false), RequestMode::Normal);
+        assert_eq!(
+            request_mode(DragState::Refused, false),
+            RequestMode::Refused
+        );
+    }
+
+    /// The frame's gate order and the key permissions.
+    #[test]
+    fn the_control_gates() {
+        let run = ControlGates::default();
+        assert_eq!(frame_action(run, true, true), FrameAction::Run);
+        assert_eq!(frame_action(run, false, true), FrameAction::Stop);
+        assert_eq!(
+            frame_action(
+                ControlGates {
+                    spectate: true,
+                    ..run
+                },
+                true,
+                true
+            ),
+            FrameAction::Stop
+        );
+        assert_eq!(
+            frame_action(
+                ControlGates {
+                    blocked: true,
+                    ..run
+                },
+                true,
+                false
+            ),
+            FrameAction::BlockedTurn
+        );
+        assert_eq!(
+            frame_action(ControlGates { off: true, ..run }, true, true),
+            FrameAction::Stop
+        );
+        assert_eq!(
+            frame_action(
+                ControlGates {
+                    second_block: true,
+                    ..run
+                },
+                true,
+                true
+            ),
+            FrameAction::Stop
+        );
+        assert_eq!(frame_action(run, true, false), FrameAction::Stamp);
+        assert_eq!(permissions(false), PERMISSIONS_PLAY);
+        assert_eq!(permissions(true), PERMISSIONS_POWERS);
+    }
+
+    /// The power bar's hold selects its slot every frame and uses it at
+    /// 500 ms; the caller clears it.
+    #[test]
+    fn the_power_hold() {
+        let mut hold = PowerHold::pick(2, 1000);
+        assert_eq!(hold.frame(1000), Some(2));
+        assert_eq!(hold.frame(1500), Some(2));
+        assert_eq!(hold.frame(1501), Some(-1));
+        hold.taken();
+        assert_eq!(hold.frame(1600), None);
+        let mut no = PowerHold::pick(-1, 0);
+        assert_eq!(no.frame(0), None);
+    }
+
+    /// Script objects within 5 cm² of the point keep their order; the item
+    /// or container entry takes the pour mark, a zero entry nothing.
+    #[test]
+    fn the_script_reach_and_marks() {
+        let point = Vec3::ZERO;
+        let objects = [
+            ScriptObject {
+                at: Vec3::new(1.0, 0.0, 0.0),
+                object: 7,
+            },
+            ScriptObject {
+                at: Vec3::new(3.0, 0.0, 0.0),
+                object: 8,
+            },
+            ScriptObject {
+                at: Vec3::new(0.0, 0.0, 0.0),
+                object: 0,
+            },
+        ];
+        assert_eq!(nearby_scripts(point, objects), vec![7]);
+        assert_eq!(
+            mark_used(MarkTarget::Item, 1, POUR_MARK),
+            Some(POUR_MARK | 1)
+        );
+        assert_eq!(
+            mark_used(MarkTarget::Container { slot: 1, word: 2 }, 0, REPAIR_MARK),
+            Some(REPAIR_MARK | 2)
+        );
+        assert_eq!(
+            mark_used(MarkTarget::Container { slot: 0, word: 2 }, 0, POUR_MARK),
+            None
+        );
+    }
+
+    /// A walk-to point stops 245 cm short, or 350 cm for a door, along the
+    /// ground; a near point needs no walk.
+    #[test]
+    fn the_walk_stop() {
+        let feet = Vec3::ZERO;
+        let far = Vec3::new(0.0, 0.0, 5.0);
+        let goal = walk_stop(feet, far, false).unwrap();
+        assert!((goal.z - (5.0 - 2.45)).abs() < 1e-5, "{goal}");
+        let goal = walk_stop(feet, far, true).unwrap();
+        assert!((goal.z - (5.0 - 3.5)).abs() < 1e-5, "{goal}");
+        assert_eq!(walk_stop(feet, Vec3::new(0.0, 0.0, 2.0), false), None);
     }
 }

@@ -69,9 +69,12 @@ use exa_physics::prop::{PropBody, StandIns};
 use exa_ui::ScriptedPointer;
 
 use crate::bindings::{Action, Bindings};
+use crate::gui_screens::ScreenRequest;
 use crate::pick::{self, Body, Pick, ReachTo, Target};
 use crate::player::{ChaseCamera, Player, PlayerBody, window_ray};
+use crate::player_controls::{self, CharacterInteraction, ClickOutcome, ClickTarget};
 use crate::thaum::kinesis_live::{KinesisPickHook, KinesisPicked};
+use exa_ui::hud::HudShowUntil;
 
 /// Centimetres per metre: the original's rules are in cm.
 const CM: f32 = 100.0;
@@ -130,6 +133,9 @@ pub struct Hand {
     pub out_of_reach: bool,
     /// The left button's press, until its release.
     pub left: Option<LeftPress>,
+    /// The previous press's pointer and real time (ms), for the double
+    /// click test.
+    pub last_click: Option<(IVec2, i64)>,
 }
 
 /// Where and when the left button went down, and whether its drag started.
@@ -141,6 +147,8 @@ pub struct LeftPress {
     /// Real time (ms).
     pub ms: i64,
     pub dragging: bool,
+    /// The press was the second of a double click.
+    pub double: bool,
 }
 
 /// The pointer's allowance (pixels) `elapsed` ms after the press: 2 × ((200
@@ -168,6 +176,19 @@ pub fn click_turns(distance_cm: f32) -> bool {
 }
 
 impl Hand {
+    /// The drag state word the press left.
+    pub fn drag_state(&self) -> DragState {
+        match self.holding {
+            Holding::Nothing => DragState::Idle,
+            Holding::Lift => DragState::Lift,
+            Holding::Drag { .. } => DragState::Physical,
+            Holding::Mechanism(Pick::Hinge) => DragState::Door,
+            Holding::Mechanism(Pick::Wheel) => DragState::Wheel,
+            Holding::Mechanism(_) => DragState::Cloth,
+            Holding::Refused => DragState::Refused,
+        }
+    }
+
     /// Whether the frame's movement request is left as it was: while a
     /// press is refused or a lift holds the cursor.
     pub fn keeps_the_request(&self) -> bool {
@@ -287,6 +308,326 @@ pub fn box_ok(corners: impl IntoIterator<Item = Vec3>) -> bool {
         }
     }
     true
+}
+
+/// The same test on a box in its own frame: the eight corners `centre ±
+/// half` are placed by the affine `frame` (rotation and translation), in
+/// the original's order (x, then y, then z, the low corner before the high
+/// each time), and the first corner over 280 cm or under −1000 cm refuses
+/// the box. The placed height sums as the original's point transform does:
+/// `(x·r0 + y·r1) + (z·r2 + t)`.
+pub fn box_ok_local(centre: Vec3, half: Vec3, frame: bevy::math::Affine3A) -> bool {
+    let low = centre - half;
+    let high = centre + half;
+    let xs = [low.x, high.x];
+    let ys = [low.y, high.y];
+    let zs = [low.z, high.z];
+    for &x in &xs {
+        for &y in &ys {
+            for &z in &zs {
+                let m = frame.matrix3;
+                let placed_y =
+                    (x * m.x_axis.y + y * m.y_axis.y) + (z * m.z_axis.y + frame.translation.y);
+                let height = placed_y * CM;
+                if height > 280.0 || height < -1000.0 {
+                    return false;
+                }
+            }
+        }
+    }
+    true
+}
+
+/// The controls' drag state word, as the hand's press leaves it. The bits
+/// name the handler the release calls; a door's rattle may add the refused
+/// bit while it is latched.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum DragState {
+    #[default]
+    Idle,
+    /// An item is being used on the world.
+    Use,
+    /// A GUI item drag is pending.
+    GuiPending,
+    /// A prop is lifted onto the cursor.
+    Lift,
+    /// A door or a lever is pulled.
+    Door,
+    /// A prop or a corpse is dragged.
+    Physical,
+    /// A wheel is turned.
+    Wheel,
+    /// A sim object (cloth) is pulled.
+    Cloth,
+    /// A GUI callback's drag.
+    GuiCallback,
+    /// The press was refused.
+    Refused,
+}
+
+impl DragState {
+    /// The state word the original keeps.
+    pub fn word(self) -> u32 {
+        match self {
+            DragState::Idle => 0,
+            DragState::Use => 0x100,
+            DragState::GuiPending => 0x1000,
+            DragState::Lift => 0x2000,
+            DragState::Door => 0x4000,
+            DragState::Physical => 0x8000,
+            DragState::Wheel => 0x10000,
+            DragState::Cloth => 0x20000,
+            DragState::GuiCallback => 0x40000,
+            DragState::Refused => 0x80000,
+        }
+    }
+
+    /// The state a word names. The release dispatch tests `0x3000` (the
+    /// GUI item drag and the lift), then the door, physical, wheel, GUI and
+    /// cloth bits, so the more specific states come first.
+    pub fn from_word(word: u32) -> Self {
+        if word & 0x3000 != 0 {
+            if word & 0x2000 != 0 {
+                DragState::Lift
+            } else {
+                DragState::GuiPending
+            }
+        } else if word & 0x4000 != 0 {
+            DragState::Door
+        } else if word & 0x8000 != 0 {
+            DragState::Physical
+        } else if word & 0x10000 != 0 {
+            DragState::Wheel
+        } else if word & 0x40000 != 0 {
+            DragState::GuiCallback
+        } else if word & 0x20000 != 0 {
+            DragState::Cloth
+        } else if word & 0x80000 != 0 {
+            DragState::Refused
+        } else if word & 0x100 != 0 {
+            DragState::Use
+        } else {
+            DragState::Idle
+        }
+    }
+}
+
+/// The distance (cm) a closed door is pulled toward the cursor, out of its
+/// own hinge-side point.
+pub const DOOR_PULL_CM: f32 = 100.0;
+/// A door's drag link flags, its pass limit and its slack.
+pub const DOOR_LINK_FLAGS: u32 = 0x4000;
+pub const DOOR_LINK_LIMIT: u32 = 2;
+pub const DOOR_LINK_SLACK: f32 = 0.003;
+
+/// A door's drag as the press records it: where its pull started, whether
+/// the leaf slides, and whether it was latched.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DoorGrip {
+    /// The point the pull started from: the hinge-side point of a closing
+    /// door, or the hit point of a sliding one.
+    pub anchor: Vec3,
+    pub sliding: bool,
+    /// The door was latched and rattled instead of dragging.
+    pub latched: bool,
+}
+
+/// The rattle of a latched door: its volume and pitch, drawn in that order.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Rattle {
+    pub volume: f32,
+    pub pitch: f32,
+}
+
+/// A latched door's rattle: pitch `0.8 + 0.2·draw`, then volume `0.15 +
+/// 0.1·draw`, each draw a unit random. Returns `None` when the door is
+/// already being forced open.
+pub fn door_rattle(latched: bool, forcing: bool, mut draw: impl FnMut() -> f32) -> Option<Rattle> {
+    if !latched || forcing {
+        return None;
+    }
+    let pitch = draw() * 0.2 + 0.8;
+    let volume = draw() * 0.1 + 0.15;
+    Some(Rattle { volume, pitch })
+}
+
+/// A ray's point on the horizontal plane at `height` (m): `origin +
+/// dir·((height − origin.y)/dir.y)`. A ray parallel to the plane gives no
+/// finite point.
+pub fn plane_pick(origin: Vec3, dir: Vec3, height: f32) -> Option<Vec3> {
+    let at = origin + dir * ((height - origin.y) / dir.y);
+    at.is_finite().then_some(at)
+}
+
+/// A door's dragged anchor (m). A closing leaf is pulled 100 cm from its
+/// hinge-side point toward the cursor's point, wherever the cursor is. A
+/// sliding leaf's point is projected onto its own sliding axis `axis`
+/// (unit, across its frame), so it only moves along the slide.
+pub fn door_pull_anchor(grip: DoorGrip, cursor_point: Vec3, axis: Vec3) -> Vec3 {
+    let delta = cursor_point - grip.anchor;
+    if grip.sliding {
+        grip.anchor + axis * delta.dot(axis)
+    } else {
+        grip.anchor + delta * (1.0 / delta.length())
+    }
+}
+
+/// A wheel's asked angle after a frame: the gap `wanted − current` is taken
+/// as no turn when it is negative and stops at `limit` when it is longer;
+/// the current angle plus that turn is then wrapped into ±π, compared in
+/// double precision against the double π and moved by the float 2π. The
+/// gap is not wrapped before the clamp, as the original computes it, and a
+/// NaN gap passes both clamps.
+pub fn wheel_turn(current: f32, wanted: f32, limit: f32) -> f32 {
+    let delta = wanted - current;
+    let delta = if delta < 0.0 {
+        0.0
+    } else if delta > limit {
+        limit
+    } else {
+        delta
+    };
+    let mut out = current + delta;
+    if f64::from(out) < -std::f64::consts::PI {
+        out += std::f32::consts::TAU;
+    } else if f64::from(out) > std::f64::consts::PI {
+        out -= std::f32::consts::TAU;
+    }
+    out
+}
+
+/// Whether the first wheel grip is the one the view picks: its direction
+/// from the wheel, on the camera's forward axis, is at least 0.2 in
+/// absolute value; otherwise the second grip is used.
+pub fn uses_first_wheel_grip(alignment: f32) -> bool {
+    alignment.abs() >= 0.2
+}
+
+/// The cloth vertex a press grabbed: the first of the cloth's local
+/// vertices within `radius` (m) of the press point in the cloth's frame.
+pub fn cloth_vertex(vertices: &[Vec3], at: Vec3, radius: f32) -> Option<usize> {
+    let r2 = radius * radius;
+    vertices
+        .iter()
+        .position(|v| (*v - at).length_squared() < r2)
+}
+
+/// A cloth drag's anchor each frame: the grabbed vertex while the pick
+/// still finds it within `radius` (m), else the ray's point on the drag
+/// plane.
+pub fn cloth_drag_anchor(
+    vertex: Option<Vec3>,
+    picked: Option<Vec3>,
+    plane: Vec3,
+    radius: f32,
+) -> Vec3 {
+    match picked {
+        Some(p) if vertex.is_some_and(|v| (v - p).length_squared() < radius * radius) => p,
+        _ => plane,
+    }
+}
+
+/// What the press knows of the mechanism under the cursor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MechanismState {
+    /// The body's latched byte.
+    pub latched: bool,
+    /// The body is being forced, so a latch does not rattle.
+    pub forcing: bool,
+    /// The leaf slides instead of hinging.
+    pub sliding: bool,
+    /// The node has a body under it.
+    pub has_body: bool,
+}
+
+/// The mechanism press's branch.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum MechanismPress {
+    /// No body under the node, or a latched door that refuses the pull.
+    Refused,
+    /// A latched door rattled; `still_drags` is true for a sliding leaf,
+    /// whose drag continues after the rattle.
+    Rattle {
+        rattle: Rattle,
+        still_drags: bool,
+    },
+    /// A door (or lever) drag starts at this grip.
+    Door(DoorGrip),
+    Wheel,
+    Cloth,
+}
+
+/// The press on a mechanism, in the original's order: a latched closing
+/// door rattles and refuses (a sliding one rattles and still drags); no
+/// body refuses; else the door, wheel or cloth drag starts.
+pub fn mechanism_press(
+    pick: Pick,
+    node: Vec3,
+    hit: Vec3,
+    state: MechanismState,
+    mut draw: impl FnMut() -> f32,
+) -> MechanismPress {
+    match pick {
+        Pick::Hinge => {
+            if let Some(rattle) = door_rattle(state.latched, state.forcing, &mut draw) {
+                return MechanismPress::Rattle {
+                    rattle,
+                    still_drags: state.sliding,
+                };
+            }
+            if !state.has_body {
+                return MechanismPress::Refused;
+            }
+            // The press stores the hinge-side point 100 cm toward the hit;
+            // a sliding leaf stores the hit itself.
+            let anchor = if state.sliding {
+                hit
+            } else {
+                node + (hit - node).normalize_or_zero()
+            };
+            MechanismPress::Door(DoorGrip {
+                anchor,
+                sliding: state.sliding,
+                latched: state.latched,
+            })
+        }
+        Pick::Wheel => MechanismPress::Wheel,
+        Pick::Scene => MechanismPress::Cloth,
+        _ => MechanismPress::Refused,
+    }
+}
+
+/// The handler the release dispatch picks for a drag state word.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReleaseHandler {
+    None,
+    /// The lift's end (the item cursor).
+    Lift,
+    Door,
+    Physical,
+    Wheel,
+    GuiCallback,
+    Cloth,
+}
+
+/// The release handler, in the original's test order: the two GUI/lift
+/// bits together, then the door, physical, wheel, GUI and cloth bits.
+pub fn release_handler(word: u32) -> ReleaseHandler {
+    if word & 0x3000 != 0 {
+        ReleaseHandler::Lift
+    } else if word & 0x4000 != 0 {
+        ReleaseHandler::Door
+    } else if word & 0x8000 != 0 {
+        ReleaseHandler::Physical
+    } else if word & 0x10000 != 0 {
+        ReleaseHandler::Wheel
+    } else if word & 0x40000 != 0 {
+        ReleaseHandler::GuiCallback
+    } else if word & 0x20000 != 0 {
+        ReleaseHandler::Cloth
+    } else {
+        ReleaseHandler::None
+    }
 }
 
 /// Whether a press finds its point out of reach. While the player's
@@ -552,12 +893,26 @@ fn press_hand(
             .map(|p| (p, (p * w.scale_factor()).as_ivec2()))
     });
     if buttons.just_pressed(MouseButton::Left) {
+        let double = pointer.is_some_and(|(_, px)| {
+            hand.last_click.is_some_and(|(was, ms)| {
+                player_controls::is_double_click(
+                    (was.x, was.y),
+                    ms as u64,
+                    (px.x, px.y),
+                    now as u64,
+                )
+            })
+        });
         hand.left = pointer.map(|(at, pixels)| LeftPress {
             at,
             pixels,
             ms: now,
             dragging: false,
+            double,
         });
+        if let Some((_, pixels)) = pointer {
+            hand.last_click = Some((pixels, now));
+        }
         return;
     }
     let Some(mut left) = hand.left.filter(|l| !l.dragging) else {
@@ -675,7 +1030,11 @@ fn press_hand(
 /// The hold each frame: the drag follows the cursor, the release lets go.
 #[allow(clippy::too_many_arguments)]
 fn hold_hand(
+    keys: Res<ButtonInput<KeyCode>>,
     buttons: Res<ButtonInput<MouseButton>>,
+    bindings: Res<Bindings>,
+    physics: Res<Physics>,
+    stand_ins: Res<StandIns>,
     scripted: Res<ScriptedPointer>,
     windows: Query<&Window, With<PrimaryWindow>>,
     cameras: Query<(&Camera, &GlobalTransform), With<ChaseCamera>>,
@@ -684,22 +1043,81 @@ fn hold_hand(
     mut player_bodies: Query<PlayerParts, Without<PropBody>>,
     mut requests: Query<&mut Locomotion, With<PlayerBody>>,
     mut bodies: Query<OtherBodies, Without<PlayerBody>>,
+    mut screens: Option<ResMut<Messages<ScreenRequest>>>,
+    (time, mut show_bars): (Option<Res<Time<Virtual>>>, Option<ResMut<HudShowUntil>>),
 ) {
     let released = buttons.just_released(MouseButton::Left);
     let player = player_child(&players, &player_bodies);
     // A release before the drag started is a click: outside combat mode
-    // the player turns toward the cursor.
+    // the player turns toward the cursor, and a click on the player's own
+    // body shows the health and focus bars for 5000 ms. A double click
+    // (with Ctrl held in combat mode) then interacts with what is there.
+    // The original takes the double click on the second press; Exarust
+    // reads it on that press's release.
     if released {
         let left = hand.left.take();
-        if left.is_some_and(|l| !l.dragging)
+        if let Some(left) = left.filter(|l| !l.dragging)
             && let Some((_, child)) = player
-            && let Ok((pb, ..)) = player_bodies.get(child)
-            && !pb.combat
-            && let Some((yaw, distance)) = pb.cursor()
-            && click_turns(distance * CM)
-            && let Ok(mut req) = requests.get_mut(child)
+            && let Ok((pb, own, condition, _)) = player_bodies.get(child)
         {
-            req.heading = yaw;
+            let combat = pb.combat;
+            if !combat
+                && let Some((yaw, distance)) = pb.cursor()
+                && click_turns(distance * CM)
+                && let Ok(mut req) = requests.get_mut(child)
+            {
+                req.heading = yaw;
+            }
+            let interact = left.double && (!combat || bindings.pressed(&keys, Action::Interact));
+            if !combat || interact {
+                let condition = condition.copied().unwrap_or_default();
+                let ray =
+                    windows.single().ok().zip(cameras.single().ok()).and_then(
+                        |(window, (camera, eye))| window_ray(camera, eye, window, left.at),
+                    );
+                let picked = pick_with(
+                    ray,
+                    &physics,
+                    &stand_ins,
+                    &bodies,
+                    own.map(|r| (child, r, condition)),
+                );
+                let target = picked.and_then(|picked| match picked.hit {
+                    Hit::Character { body, .. } if body == child => Some(ClickTarget::Player),
+                    Hit::Character { dead, .. } if dead => Some(ClickTarget::DeadCharacter),
+                    Hit::Character { .. } => Some(ClickTarget::LivingCharacter),
+                    Hit::Prop { .. } => Some(ClickTarget::plain()),
+                    Hit::Level => None,
+                });
+                if let Some(target) = target {
+                    if !combat {
+                        let outcome = player_controls::click(target);
+                        debug!("click {target:?}: {outcome:?}");
+                        if let ClickOutcome::ShowBars { ms } = outcome
+                            && let Some(show) = show_bars.as_deref_mut()
+                            && let Some(time) = time.as_deref()
+                        {
+                            show.show_for(time.elapsed().as_millis() as i64, i64::from(ms));
+                        }
+                    }
+                    if interact {
+                        let interaction = player_controls::interact_character(target, false, false);
+                        debug!("double click {target:?}: {interaction:?}");
+                        // The player's own body opens Exarust's inventory
+                        // screen; the loot and talk windows have no
+                        // Exarust form yet.
+                        if interaction == CharacterInteraction::Inventory
+                            && let Some(messages) = screens.as_deref_mut()
+                        {
+                            messages.write(ScreenRequest {
+                                screen: exa_ui::game_gui::GameScreen::Inventory,
+                                player_ready: !condition.dying(),
+                                player_alive: !condition.is_dead(),
+                            });
+                        }
+                    }
+                }
+            }
         }
     }
     match hand.holding {
@@ -1150,5 +1568,235 @@ mod tests {
         ]));
         assert!(!box_ok([Vec3::new(0.0, -10.01, 0.0)]));
         assert!(box_ok([Vec3::new(0.0, f32::NAN, 0.0)]));
+    }
+
+    /// The box's eight corners are tested in the original's order; one over
+    /// 280 cm or under −1000 cm refuses it, and a NaN corner passes.
+    #[test]
+    fn a_box_is_placed_before_it_is_refused() {
+        use bevy::math::Affine3A;
+        let centre = Vec3::ZERO;
+        let half = Vec3::new(0.1, 1.4, 0.1);
+        assert!(box_ok_local(centre, half, Affine3A::IDENTITY));
+        assert!(!box_ok_local(
+            centre,
+            Vec3::new(0.1, 2.81, 0.1),
+            Affine3A::IDENTITY
+        ));
+        // Rotated so a corner reaches the ceiling while the unrotated box
+        // does not: 2 m wide, 2.9 m tall at 45° over 2.8 m.
+        let tall = Vec3::new(2.0, 2.0, 0.05);
+        assert!(box_ok_local(centre, tall, Affine3A::IDENTITY));
+        let tilt = Affine3A::from_rotation_z(std::f32::consts::FRAC_PI_4);
+        assert!(!box_ok_local(centre, tall, tilt));
+        // The frame's translation counts: lifted 1.5 m, the 1.4 m half
+        // height reaches 2.9 m; sunk 9 m, the low corner is under −10 m.
+        let lift = Affine3A::from_translation(Vec3::Y * 1.5);
+        assert!(!box_ok_local(centre, half, lift));
+        let sink = Affine3A::from_translation(Vec3::Y * -9.0);
+        assert!(!box_ok_local(centre, half, sink));
+        // A NaN height is an unordered pass.
+        assert!(box_ok_local(
+            centre,
+            Vec3::new(0.0, f32::NAN, 0.0),
+            Affine3A::IDENTITY
+        ));
+    }
+
+    /// A closing door pulls 100 cm from its hinge-side point toward the
+    /// cursor; a sliding one projects onto its own axis; a latch rattles
+    /// with the drawn volume and pitch.
+    #[test]
+    fn the_door_and_wheel_grips() {
+        let grip = DoorGrip {
+            anchor: Vec3::ZERO,
+            sliding: false,
+            latched: false,
+        };
+        let a = door_pull_anchor(grip, Vec3::new(0.0, 0.0, 3.0), Vec3::X);
+        assert!((a - Vec3::new(0.0, 0.0, 1.0)).length() < 1e-5, "{a}");
+        let sliding = DoorGrip {
+            sliding: true,
+            ..grip
+        };
+        let a = door_pull_anchor(sliding, Vec3::new(0.3, 1.0, 2.0), Vec3::Z);
+        assert!((a - Vec3::new(0.0, 0.0, 2.0)).length() < 1e-5, "{a}");
+        let rattle = door_rattle(true, false, || 0.5).unwrap();
+        assert!((rattle.pitch - 0.9).abs() < 1e-6);
+        assert!((rattle.volume - 0.2).abs() < 1e-6);
+        assert_eq!(door_rattle(true, true, || 0.5), None);
+        assert_eq!(door_rattle(false, false, || 0.5), None);
+        // The plane pick at a height, and no point for a level ray.
+        assert!(
+            (plane_pick(Vec3::Y * 2.0, Vec3::NEG_Y, 0.5).unwrap() - Vec3::Y * 0.5).length() < 1e-5
+        );
+        assert_eq!(plane_pick(Vec3::Y, Vec3::X, 0.5), None);
+    }
+
+    /// The wheel stops at its limit, never turns the other way, and picks
+    /// its first grip at an alignment of 0.2. The cloth grabs the first
+    /// vertex within its radius and follows the picked point.
+    #[test]
+    fn the_wheel_and_cloth_drags() {
+        assert!((wheel_turn(0.5, 2.0, 1.0) - 1.5).abs() < 1e-6);
+        assert!((wheel_turn(1.5, 2.0, 1.0) - 2.0).abs() < 1e-6);
+        assert!((wheel_turn(0.5, 0.0, 1.0) - 0.5).abs() < 1e-6);
+        // The gap is not wrapped: −6 is no turn, so the angle stays.
+        assert_eq!(wheel_turn(3.0, -3.0, 1.0), 3.0);
+        // The float π is over the double π: it wraps to −π.
+        assert_eq!(
+            wheel_turn(3.0, std::f32::consts::PI, 1.0),
+            std::f32::consts::PI - std::f32::consts::TAU
+        );
+        assert!(uses_first_wheel_grip(0.2));
+        assert!(!uses_first_wheel_grip(0.19));
+        assert!(uses_first_wheel_grip(-0.3));
+        let v = [Vec3::ZERO, Vec3::X, Vec3::Y];
+        assert_eq!(cloth_vertex(&v, Vec3::new(0.99, 0.0, 0.0), 0.05), Some(1));
+        assert_eq!(cloth_vertex(&v, Vec3::new(0.5, 0.0, 0.0), 0.05), None);
+        let grabbed = Vec3::new(1.0, 0.0, 0.0);
+        assert_eq!(
+            cloth_drag_anchor(
+                Some(grabbed),
+                Some(Vec3::new(1.01, 0.0, 0.0)),
+                Vec3::Y,
+                0.05
+            ),
+            Vec3::new(1.01, 0.0, 0.0)
+        );
+        assert_eq!(
+            cloth_drag_anchor(Some(grabbed), Some(Vec3::new(2.0, 0.0, 0.0)), Vec3::Y, 0.05),
+            Vec3::Y
+        );
+    }
+
+    /// The mechanism press: a latch rattles and refuses a closing leaf but
+    /// a sliding one still drags; no body refuses; a door grip is 100 cm
+    /// from the node toward the hit; a wheel and cloth are their drags.
+    #[test]
+    fn the_mechanism_press() {
+        let state = MechanismState {
+            latched: false,
+            forcing: false,
+            sliding: false,
+            has_body: true,
+        };
+        let node = Vec3::ZERO;
+        let hit = Vec3::new(0.0, 1.0, 3.0);
+        let pressed = mechanism_press(Pick::Hinge, node, hit, state, || 0.5);
+        let MechanismPress::Door(grip) = pressed else {
+            panic!("{pressed:?}");
+        };
+        assert!((grip.anchor - hit.normalize()).length() < 1e-5);
+        assert!(!grip.sliding && !grip.latched);
+        let sliding = MechanismState {
+            sliding: true,
+            ..state
+        };
+        let MechanismPress::Door(grip) = mechanism_press(Pick::Hinge, node, hit, sliding, || 0.5)
+        else {
+            panic!();
+        };
+        assert_eq!(grip.anchor, hit);
+        let latched = MechanismState {
+            latched: true,
+            ..state
+        };
+        let pressed = mechanism_press(Pick::Hinge, node, hit, latched, || 0.5);
+        let MechanismPress::Rattle {
+            rattle,
+            still_drags,
+        } = pressed
+        else {
+            panic!("{pressed:?}");
+        };
+        assert!(!still_drags);
+        assert!((rattle.pitch - 0.9).abs() < 1e-6);
+        let pressed = mechanism_press(
+            Pick::Hinge,
+            node,
+            hit,
+            MechanismState {
+                sliding: true,
+                ..latched
+            },
+            || 0.5,
+        );
+        assert!(matches!(
+            pressed,
+            MechanismPress::Rattle {
+                still_drags: true,
+                ..
+            }
+        ));
+        assert_eq!(
+            mechanism_press(
+                Pick::Hinge,
+                node,
+                hit,
+                MechanismState {
+                    has_body: false,
+                    ..state
+                },
+                || 0.5
+            ),
+            MechanismPress::Refused
+        );
+        assert_eq!(
+            mechanism_press(Pick::Wheel, node, hit, state, || 0.5),
+            MechanismPress::Wheel
+        );
+        assert_eq!(
+            mechanism_press(Pick::Scene, node, hit, state, || 0.5),
+            MechanismPress::Cloth
+        );
+    }
+
+    /// The release dispatch tests the two GUI/lift bits first, then door,
+    /// physical, wheel, GUI and cloth.
+    #[test]
+    fn the_release_dispatch_order() {
+        assert_eq!(release_handler(0), ReleaseHandler::None);
+        assert_eq!(release_handler(0x2000), ReleaseHandler::Lift);
+        assert_eq!(release_handler(0x1000), ReleaseHandler::Lift);
+        assert_eq!(release_handler(0x4000), ReleaseHandler::Door);
+        assert_eq!(release_handler(0x8000), ReleaseHandler::Physical);
+        assert_eq!(release_handler(0x10000), ReleaseHandler::Wheel);
+        assert_eq!(release_handler(0x40000), ReleaseHandler::GuiCallback);
+        assert_eq!(release_handler(0x20000), ReleaseHandler::Cloth);
+        // The first matching bit wins.
+        assert_eq!(release_handler(0x4000 | 0x8000), ReleaseHandler::Door);
+        assert_eq!(release_handler(0x10000 | 0x20000), ReleaseHandler::Wheel);
+    }
+
+    /// The state word round-trips and a hand's hold maps onto it.
+    #[test]
+    fn the_drag_state_word() {
+        for state in [
+            DragState::Idle,
+            DragState::Use,
+            DragState::GuiPending,
+            DragState::Lift,
+            DragState::Door,
+            DragState::Physical,
+            DragState::Wheel,
+            DragState::Cloth,
+            DragState::GuiCallback,
+            DragState::Refused,
+        ] {
+            assert_eq!(DragState::from_word(state.word()), state, "{state:?}");
+        }
+        let mut hand = Hand::default();
+        assert_eq!(hand.drag_state(), DragState::Idle);
+        hand.holding = Holding::Lift;
+        assert_eq!(hand.drag_state(), DragState::Lift);
+        hand.holding = Holding::Mechanism(Pick::Hinge);
+        assert_eq!(hand.drag_state(), DragState::Door);
+        hand.holding = Holding::Mechanism(Pick::Wheel);
+        assert_eq!(hand.drag_state(), DragState::Wheel);
+        hand.holding = Holding::Mechanism(Pick::Scene);
+        assert_eq!(hand.drag_state(), DragState::Cloth);
+        hand.holding = Holding::Refused;
+        assert_eq!(hand.drag_state(), DragState::Refused);
     }
 }

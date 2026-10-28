@@ -597,6 +597,25 @@ fn inner_shadow(
     }
 }
 
+/// The game clock (ms, virtual time) until which the bars are shown
+/// whatever else happens: a click on the player's own body sets it 5000 ms
+/// ahead. The bars show while `now` is under it.
+#[derive(Resource, Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HudShowUntil(pub i64);
+
+impl HudShowUntil {
+    /// Shows the bars for `ms` from `now`, as the original's setter stores
+    /// `now + ms` whatever was there.
+    pub fn show_for(&mut self, now: i64, ms: i64) {
+        self.0 = now + ms;
+    }
+
+    /// Whether the bars are held shown at `now`.
+    pub fn holds(&self, now: i64) -> bool {
+        now < self.0
+    }
+}
+
 /// The frame texture, when loaded.
 #[derive(Resource)]
 struct Texture(FrameTexture);
@@ -621,6 +640,7 @@ struct HudState {
 pub(crate) fn plugin(app: &mut App) {
     app.init_resource::<HudBars>()
         .init_resource::<HudState>()
+        .init_resource::<HudShowUntil>()
         .add_systems(Startup, spawn)
         .add_systems(Update, draw.in_set(DrawHud));
 }
@@ -659,6 +679,7 @@ fn draw(
     loading: Option<Res<LoadingStatus>>,
     texture: Option<Res<Texture>>,
     mut state: ResMut<HudState>,
+    show_until: Res<HudShowUntil>,
     mut images: ResMut<Assets<Image>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     mut nodes: Query<(&mut Node, &mut ImageNode, &mut Visibility), With<HudNode>>,
@@ -682,14 +703,15 @@ fn draw(
         return;
     }
     let now = time.elapsed().as_millis() as i64;
-    // Shown while in combat mode, in a frame where the yellow health
-    // changed or the focus dropped. The values compared against are taken
+    // Shown while in combat mode, while a click on the player's own body
+    // holds them, in a frame where the yellow health changed or the focus
+    // dropped. The values compared against are taken
     // only in a frame that shows the bars, as the original's show rule
     // stores them (a rise of the focus while hidden is not remembered).
     let changed = state
         .last
         .is_some_and(|(yellow, focus)| hud.yellow != yellow || hud.focus < focus);
-    let shown = hud.combat || changed;
+    let shown = hud.combat || show_until.holds(now) || changed;
     let bars_fade = state.bars.step(shown, now);
     let gauge_fade = state.gauge.step(hud.combat && hud.shield, now);
     if shown || state.last.is_none() {
@@ -747,6 +769,19 @@ fn draw(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A click on the own body holds the bars for 5000 ms: shown at
+    /// 4999 ms after, not at 5000; a later click restarts the span.
+    #[test]
+    fn a_click_on_the_own_body_holds_the_bars() {
+        let mut until = HudShowUntil::default();
+        assert!(!until.holds(0));
+        until.show_for(1000, 5000);
+        assert!(until.holds(5999));
+        assert!(!until.holds(6000));
+        until.show_for(2000, 1000);
+        assert_eq!(until, HudShowUntil(3000));
+    }
 
     /// The user's retail window: 1600 × 1014, GUI scale 5.
     fn retail() -> Layout {
