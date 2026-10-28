@@ -475,7 +475,11 @@ are double compares, as the original's). A flip command is refused while
 the character switches and for a section with no flipped-side kind byte
 (`GripLinks::begin_flip`), as the original's command does. The death
 routine stiffens each soft world weld to strength 1 (`weld_on_death`,
-called for a dead holder: a corpse keeps its weapon). `GripLink` is plain data
+called for a dead holder: a corpse keeps its weapon). Emptying the hands
+restores each hand's link-mobility and mass words (`empty_hand_words`:
+0.175 × and 1 × its base), and an unarmed equip then gives the mass word
+half its base, a quarter with heavy claws (`unarmed_hand_mobility`); no
+Exarust hand part has the two words yet, so both stay tested rules. `GripLink` is plain data
 with the law documented: a correction is shared by the item's and the
 hand's particle weights and mobilities; a world link moves only the item.
 `grip_solve` runs the records as a cross-body solver stage: a held item is

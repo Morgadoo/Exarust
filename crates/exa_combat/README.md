@@ -132,8 +132,15 @@ reach is `held_reach`: the item's length times a byte of its weapon record as a
 hundredth plus 60 cm, or the race's reach with no hands bits; the aim
 point sits `held_aim_height` above the grip. The equip/swap refresh
 (`refresh_hold`, `HoldRefresh`) reports the first held item's measures,
-the held count and the parry gate; `exa_character::grip_runtime` keeps it
-on the character. `Grip::placement` places an item for a `GripHolder`
+the held count and the parry gate, and the aim point (0, aim height, 0) as
+weights on the item body's four rest particles (`held_aim_weights`, the
+engine's exact barycentric routine); with an item that is not a weapon
+first, every held item's own point is weighted the same way
+(`held_point_weights`, `copies_item_points`). The refresh's reach is an
+intermediate: the equip pass it calls next clears the reach word and keeps
+the longest held record's reach (the race's unarmed), which is what the AI
+publishes. `exa_character::grip_runtime` keeps the refresh on the
+character. `Grip::placement` places an item for a `GripHolder`
 (size, race byte, the race's held offset) and a flip. The off-hand item takes entry 5 (a light, or the second of two
 weapons) and a shield keeps its own record through the spawn's equip and
 attach plans (`spawn::Equipped::shield_record`,
@@ -144,7 +151,9 @@ items and their grips).
 
 A weapon switch swaps the two held slots once past 60% of its clip
 (`condition::swap_due`); `exa_character::grip_runtime::swap_on_switch`
-trades the two blades' slots and the attacker's primary.
+trades the two blades' slots, the attacker's primary and the holder's
+main and second weapon in `Hands`, so the moveset is chosen again from
+the new main weapon.
 
 ## Weapon body impacts
 
