@@ -215,11 +215,12 @@ fn rough_normalize(v: Vec3) -> Vec3 {
     v * crate::thaum::reciprocal_sqrt(sum)
 }
 
-/// Wraps an angle into ±π once, the bounds tested in double precision.
+/// Wraps an angle into ±π once, in single precision as the original's
+/// bounds are.
 fn wrap(angle: f32) -> f32 {
-    if f64::from(angle) < -std::f64::consts::PI {
+    if angle < -std::f32::consts::PI {
         angle + std::f32::consts::TAU
-    } else if f64::from(angle) > std::f64::consts::PI {
+    } else if angle > std::f32::consts::PI {
         angle - std::f32::consts::TAU
     } else {
         angle
@@ -234,9 +235,10 @@ pub fn blast_aim(hand_node: Vec3, target: Vec3, facing: Vec3) -> Vec3 {
     let pitch = -exa_ai::combatant::asin_fast(dir.y);
     let body = planar_yaw(facing);
     let off = wrap(yaw + -body);
-    if f64::from(off) > std::f64::consts::FRAC_PI_4 {
+    // π/4 as the single the original compares with (0x3f490fdb).
+    if off > std::f32::consts::FRAC_PI_4 {
         yaw = wrap(body + std::f32::consts::FRAC_PI_4);
-    } else if f64::from(off) < -std::f64::consts::FRAC_PI_4 {
+    } else if off < -std::f32::consts::FRAC_PI_4 {
         yaw = wrap(body + -std::f32::consts::FRAC_PI_4);
     }
     let (sin_p, cos_p) = sin_cos(pitch);
@@ -664,7 +666,7 @@ pub fn alert_amount(caster: Vec3, other: Vec3, aim: Vec3) -> Option<f32> {
     let f = distance / ALERT_REACH;
     let f = f * f;
     let falloff = 1.0 - f * f;
-    let facing = aim.z * d.z + (aim.y * d.y + aim.x * d.x) + 3.0;
+    let facing = ((aim.x * d.x + aim.y * d.y) + aim.z * d.z) + 3.0;
     Some(0.25 * falloff * facing)
 }
 
@@ -705,7 +707,7 @@ pub fn limb_push(
         if 1.0 < f {
             f = 1.0;
         }
-        let scale = (f64::from(f) * (f64::from(-k) * 0.2)) as f32;
+        let scale = (f * -k) * 0.2;
         Some(motion * scale)
     } else {
         None
@@ -773,7 +775,7 @@ pub fn character_knock(body_mass: f32, energy: f32, impulse: Vec3) -> CharacterK
     } else {
         energy
     };
-    let size2 = (impulse.x * impulse.x + impulse.y * impulse.y) + impulse.z * impulse.z;
+    let size2 = (impulse.z * impulse.z + impulse.y * impulse.y) + impulse.x * impulse.x;
     let knock = if 1.0 < size2 {
         let size = size2.sqrt();
         let direction = impulse * (1.0 / size);
@@ -782,11 +784,13 @@ pub fn character_knock(body_mass: f32, energy: f32, impulse: Vec3) -> CharacterK
     } else {
         None
     };
-    let mut stun = (f64::from(1.0 - k) * 0.08) as f32;
-    if 0.0 > stun {
+    let mut stun = ((1.0 - f64::from(k)) * 0.08) as f32;
+    if 0.0 < stun || stun == 0.0 {
+        if 0.08 < stun {
+            stun = 0.008;
+        }
+    } else {
         stun = 0.0;
-    } else if f64::from(stun) > 0.08 {
-        stun = 0.008;
     }
     CharacterKnock {
         energy,
@@ -1265,7 +1269,9 @@ impl Blast {
                 for i in 0..RIBBON_SAMPLES - 2 {
                     let along = spine[i + 2] - spine[i];
                     let across = strip.positions[i + 2] - strip.positions[i];
-                    let dot = (along.x * across.x + along.y * across.y) + along.z * across.z;
+                    // The fix compares the screen-space directions: the
+                    // original's dot helper is two-dimensional.
+                    let dot = along.x * across.x + along.y * across.y;
                     if dot < 0.0 {
                         strip.positions[i] = lerp(strip.positions[i], strip.positions[i + 2], 0.5);
                         strip.positions[i + 2] = strip.positions[i];

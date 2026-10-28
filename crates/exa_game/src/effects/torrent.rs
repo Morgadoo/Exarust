@@ -949,7 +949,7 @@ pub fn limb_impulse(
 pub fn energy_after(energy: f32, body_mass: f32) -> f32 {
     let k = 1.0 / body_mass;
     if 0.25 < energy {
-        energy - k * 0.0005
+        (f64::from(energy) - f64::from(k) * 0.0005) as f32
     } else {
         energy
     }
@@ -961,7 +961,7 @@ pub fn energy_after(energy: f32, body_mass: f32) -> f32 {
 pub fn torrent_knock(body_mass: f32, energy: f32, impulse: Vec3) -> CharacterKnock {
     let k = 1.0 / body_mass;
     let energy = energy_after(energy, body_mass);
-    let size2 = (impulse.x * impulse.x + impulse.y * impulse.y) + impulse.z * impulse.z;
+    let size2 = (impulse.z * impulse.z + impulse.y * impulse.y) + impulse.x * impulse.x;
     let knock = if 1.0 < size2 {
         let size = size2.sqrt();
         let direction = impulse * (1.0 / size);
@@ -970,11 +970,13 @@ pub fn torrent_knock(body_mass: f32, energy: f32, impulse: Vec3) -> CharacterKno
     } else {
         None
     };
-    let mut stun = (f64::from(1.0 - k) * 0.08) as f32;
-    if 0.0 > stun {
+    let mut stun = ((1.0 - f64::from(k)) * 0.08) as f32;
+    if 0.0 < stun || stun == 0.0 {
+        if 0.08 < stun {
+            stun = 0.008;
+        }
+    } else {
         stun = 0.0;
-    } else if f64::from(stun) > 0.08 {
-        stun = 0.008;
     }
     CharacterKnock {
         energy,
