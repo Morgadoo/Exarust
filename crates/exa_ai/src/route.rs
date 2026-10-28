@@ -130,6 +130,18 @@ pub fn route_span2(points: &[Vec3]) -> f32 {
     }
 }
 
+/// The path's ground length (cm): the sum of its segments' flat lengths
+/// (`√(z² + x²)`).
+pub fn path_length(points: &[Vec3]) -> f32 {
+    let mut length = 0.0f32;
+    for pair in points.windows(2) {
+        let dx = pair[0].x - pair[1].x;
+        let dz = pair[0].z - pair[1].z;
+        length += (dz * dz + dx * dx).sqrt();
+    }
+    length
+}
+
 /// Asks `router` for the route and starts following it when the original
 /// does. `None` when it is not this brain's turn.
 pub fn plan(
@@ -179,6 +191,23 @@ impl Router for NavRouter<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The path length is the sum of the flat segments; a height change
+    /// adds nothing.
+    #[test]
+    fn the_path_length_sums_the_flat_segments() {
+        assert_eq!(path_length(&[]), 0.0);
+        assert_eq!(path_length(&[Vec3::ZERO]), 0.0);
+        assert_eq!(
+            path_length(&[
+                Vec3::ZERO,
+                Vec3::new(300.0, 0.0, 400.0),
+                Vec3::new(300.0, 100.0, 400.0)
+            ]),
+            500.0
+        );
+    }
+
     use exa_world::nav::{Layer, NavCell, NavGrid};
 
     /// A flat grid whose floors stand at voxel 100 (10 m over base 0): a

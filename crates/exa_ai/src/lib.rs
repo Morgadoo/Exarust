@@ -40,14 +40,17 @@ pub mod flee;
 pub mod golem;
 pub mod hear;
 pub mod idle;
+pub mod lifecycle;
 pub mod lookup;
 pub mod manager;
+pub mod motion;
 pub mod order;
 pub mod path;
 pub mod personality;
 pub mod place;
 pub mod presence;
 pub mod roles;
+pub mod rooms;
 pub mod route;
 pub mod search;
 pub mod sense;
@@ -65,6 +68,7 @@ pub struct DuelSystems;
 impl Plugin for AiPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<presence::ActivationArea>()
+            .init_resource::<rooms::RoomCells>()
             .add_message::<presence::Entered>()
             .add_message::<exa_combat::AttackAskedHook>()
             .add_systems(

@@ -1598,3 +1598,345 @@ mod tests {
         assert_eq!(asin_fast(-1.0), -std::f32::consts::FRAC_PI_2);
     }
 }
+
+/// The concern an ally-class sense puts on a contact it is already
+/// concerned with: a concern over 1 and under 3 becomes exactly 3.
+pub const ALLY_CONCERN_FLOOR: f32 = 3.0;
+/// The attitude the ally sense gives a fellow AI character (its race word
+/// has the AI flag).
+pub const ALLY_ATTITUDE: f32 = 100.0;
+/// The share of the largest threat to an ally the concern target takes.
+pub const ALLY_CONCERN_SHARE: f64 = 0.3;
+/// The ally threat's gain.
+pub const ALLY_THREAT_GAIN: f64 = 1.2;
+/// The ally sense's 1/1200 cm closeness factor, a float.
+pub const ALLY_INVERSE_RANGE: f32 = f32::from_bits(0x3a5a_740e);
+
+/// How much the observed character's state weighs its threat to an ally:
+/// 4 while it attacks, otherwise 0.25 with its poised byte or 0.1; down,
+/// that halves, or scales by `phase·0.5 + 0.5` getting up with a positive
+/// phase, and is 0 dead or asleep.
+pub fn ally_threat_factor(observed: &Observed) -> f32 {
+    if observed.condition == CONDITION_ATTACKING {
+        return 4.0;
+    }
+    let factor = if observed.poised { 0.25 } else { 0.1 };
+    if observed.condition & CONDITION_DOWN == 0 {
+        return factor;
+    }
+    if observed.condition == CONDITION_DEAD || observed.asleep {
+        0.0
+    } else if observed.condition == CONDITION_GETTING_UP {
+        if observed.phase > 0.0 {
+            factor * (observed.phase * 0.5 + 0.5)
+        } else {
+            factor
+        }
+    } else {
+        factor * 0.5
+    }
+}
+
+/// The ally sense, the contact routine of the ally-class races (the
+/// guardians): `observer` looks at `observed`, whose contact is
+/// `own[index]` among the observer's contacts. `ai_flagged` tells whether a
+/// character's race word has the AI flag (the observer itself counts as
+/// one). Returns the sense's level: −1 out of range, invisible or a fellow
+/// AI character, otherwise 0.
+///
+/// The alarm and threat clear. Only a character contact is sensed. A statue
+/// clears the noticed level and the concern. A concern between 1 and 3
+/// becomes 3. The range is 1200 cm (1800 while tracked) on the vector whose
+/// height is dropped under 150 cm; out of it the contact stops being
+/// tracked. In range it is tracked and noticed, its closeness is
+/// `1 − d/1200` (at most 0.99, compared in double) and its view the
+/// observer's `(look·t·−0.5 + 0.5)²·0.25 + (forward·t·−0.5 + 0.5)·0.75`.
+/// A fellow AI character takes attitude 100 and no concern. A dead or
+/// asleep one takes attitude 0 and no concern. Otherwise the attitude is 0
+/// and the noticeability is the closeness; with a concern of at least 1 the
+/// sense weighs, over the observer's character contacts, each one's
+/// `(view·0.75 + 0.25)·c²`, picks the heaviest as the contact's selected
+/// character, and takes the largest threat to an ally: for an ally contact
+/// (flag over 0.1) and a positive state factor ([`ally_threat_factor`]),
+/// `((1 − s)·ally + selected_ally·s)·w·factor` with `s` the previously
+/// selected contact's weight over its sum with `w`, times 1.2. A threat over
+/// the concern sets the concern target to 0.3 of it.
+///
+/// The original also holds an alarm branch (a draw against the alarm zone's
+/// odds that raises the concern to 20 and rings the alarm) which needs the
+/// observer to be a statue, and a statue has already left: it can never
+/// run, and is not reproduced.
+pub fn ally_sense(
+    observer: &Observer,
+    statue: bool,
+    observed: &Observed,
+    own: &mut [Contact],
+    index: usize,
+    ai_flagged: &dyn Fn(Entity) -> bool,
+) -> i32 {
+    let contact = &mut own[index];
+    contact.alarm = 0.0;
+    contact.threat = 0.0;
+    if contact.kind != 1 {
+        return 0;
+    }
+    if statue {
+        contact.noticed = 0.0;
+        contact.concern = 0.0;
+        return 0;
+    }
+    if 1.0 < contact.concern && contact.concern < ALLY_CONCERN_FLOOR {
+        contact.concern = ALLY_CONCERN_FLOOR;
+    }
+    if observed.invisible {
+        return -1;
+    }
+    let mut delta = observer.position_cm - observed.position_cm;
+    if delta.y.abs() < FLAT_BAND_CM {
+        delta.y = 0.0;
+    }
+    let distance_squared = delta.x * delta.x + delta.y * delta.y + delta.z * delta.z;
+    let mut radius = PERCEPTION_CM;
+    if contact.tracked() {
+        radius += TRACKED_CM;
+    }
+    if distance_squared < radius * radius {
+        contact.flags |= CONTACT_TRACKED;
+    } else {
+        contact.flags &= !CONTACT_TRACKED;
+        return -1;
+    }
+    contact.flags |= CONTACT_NOTICED;
+    let distance = distance_squared.sqrt();
+    let toward_observer = delta * (1.0 / distance);
+    let mut closeness = 1.0 - distance * ALLY_INVERSE_RANGE;
+    if f64::from(closeness) > 0.99 {
+        closeness = 0.99;
+    }
+    contact.closeness = closeness;
+    let view_forward = observer.forward.dot(toward_observer) * -0.5 + 0.5;
+    let view_look = observer.look.dot(toward_observer) * -0.5 + 0.5;
+    contact.view = view_look * view_look * 0.25 + view_forward * 0.75;
+    if ai_flagged(observed.entity) {
+        contact.attitude = ALLY_ATTITUDE;
+        contact.concern = 0.0;
+        return -1;
+    }
+    if observed.condition == CONDITION_DEAD || observed.asleep {
+        contact.attitude = 0.0;
+        contact.concern = 0.0;
+        return 0;
+    }
+    contact.attitude = 0.0;
+    contact.noticeability = closeness;
+    if contact.concern < 1.0 {
+        return 0;
+    }
+    let factor = ally_threat_factor(observed);
+    let previous = contact.selected;
+    let concern = contact.concern;
+    let ally_of = |c: &Contact| {
+        if c.character == observer.entity || ai_flagged(c.character) {
+            1.0f32
+        } else {
+            0.0
+        }
+    };
+    let weight = |c: &Contact| (c.view * 0.75 + 0.25) * (c.closeness * c.closeness);
+    // The previously selected contact's weight and allyness (the last match
+    // wins).
+    let mut selected_weight = 0.0f32;
+    let mut selected_ally = 0.0f32;
+    for c in own.iter() {
+        if previous == Some(c.character) {
+            selected_weight = weight(c);
+            selected_ally = ally_of(c);
+        }
+    }
+    let mut surround = 0.0f32;
+    let mut heaviest = 0.0f32;
+    let mut pick = None;
+    for c in own.iter() {
+        if c.kind != 1 {
+            continue;
+        }
+        let ally = ally_of(c);
+        let w = weight(c);
+        if heaviest < w {
+            heaviest = w;
+            pick = Some(c.character);
+        }
+        let threat = if factor > 0.0 && f64::from(ally) > 0.1 {
+            let share = if selected_weight > 0.0 {
+                selected_weight / (w + selected_weight)
+            } else {
+                0.0
+            };
+            let term = ((1.0 - share) * ally + selected_ally * share) * w;
+            if term > 0.0 { term * factor } else { 0.0 }
+        } else {
+            0.0
+        };
+        let gained = (f64::from(threat) * ALLY_THREAT_GAIN) as f32;
+        if surround < gained {
+            surround = gained;
+        }
+    }
+    let contact = &mut own[index];
+    contact.selected = pick;
+    if surround > concern {
+        contact.concern_target = (f64::from(surround) * ALLY_CONCERN_SHARE) as f32;
+    }
+    0
+}
+
+#[cfg(test)]
+mod ally_tests {
+    use super::*;
+
+    fn observer(entity: Entity) -> Observer {
+        Observer {
+            entity,
+            position_cm: Vec3::ZERO,
+            look: Vec3::Z,
+            forward: Vec3::Z,
+            asleep: false,
+            perception: 0.0,
+            calm: 0.0,
+            aggression: 0.0,
+            mind_aggression: 0.0,
+            resist_mind: false,
+            target: None,
+        }
+    }
+
+    fn observed(entity: Entity, position_cm: Vec3) -> Observed {
+        Observed {
+            entity,
+            position_cm,
+            look: Vec3::Z,
+            forward: Vec3::Z,
+            condition: 0,
+            invisible: false,
+            hidden: false,
+            mask: None,
+            asleep: false,
+            removed: false,
+            phase: 0.0,
+            in_combat: false,
+            stepping: false,
+            poised: false,
+            speed: 0.0,
+        }
+    }
+
+    /// The state factor: 4 attacking, 0.1 or 0.25 poised, halved down,
+    /// scaled by the getting-up phase, 0 dead.
+    #[test]
+    fn the_ally_threat_factor_follows_the_state() {
+        let mut o = observed(Entity::PLACEHOLDER, Vec3::ZERO);
+        assert_eq!(ally_threat_factor(&o), 0.1);
+        o.poised = true;
+        assert_eq!(ally_threat_factor(&o), 0.25);
+        o.condition = CONDITION_ATTACKING;
+        assert_eq!(ally_threat_factor(&o), 4.0);
+        o.condition = CONDITION_DOWN;
+        assert_eq!(ally_threat_factor(&o), 0.125);
+        o.condition = CONDITION_GETTING_UP;
+        o.phase = 0.5;
+        assert_eq!(ally_threat_factor(&o), 0.25 * 0.75);
+        o.phase = 0.0;
+        assert_eq!(ally_threat_factor(&o), 0.25);
+        o.condition = CONDITION_DEAD;
+        assert_eq!(ally_threat_factor(&o), 0.0);
+    }
+
+    /// The range, the floor, a fellow AI, the dead, and the threat to an
+    /// ally with its concern target.
+    #[test]
+    fn the_ally_sense_weighs_the_threat_to_allies() {
+        let mut world = World::new();
+        let me = world.spawn_empty().id();
+        let player = world.spawn_empty().id();
+        let friend = world.spawn_empty().id();
+        let flagged = move |e: Entity| e == friend;
+        let me_obs = observer(me);
+
+        // Out of range (1200 cm): -1 and untracked.
+        let mut own = vec![Contact::new(player)];
+        own[0].flags = CONTACT_TRACKED;
+        let far = observed(player, Vec3::new(0.0, 0.0, 1800.0));
+        assert_eq!(ally_sense(&me_obs, false, &far, &mut own, 0, &flagged), -1);
+        assert_eq!(own[0].flags & CONTACT_TRACKED, 0);
+        // Tracked, 1800 is the bound: 1799 cm is in.
+        own[0].flags = CONTACT_TRACKED;
+        let edge = observed(player, Vec3::new(0.0, 0.0, 1799.0));
+        assert_eq!(ally_sense(&me_obs, false, &edge, &mut own, 0, &flagged), 0);
+        // 1 − 1799/1200 is negative: the closeness is not clamped below.
+        assert!(own[0].closeness < 0.0);
+
+        // A concern of 2 rises to 3; a statue clears it.
+        let mut own = vec![Contact::new(player)];
+        own[0].concern = 2.0;
+        let near = observed(player, Vec3::new(0.0, 0.0, 600.0));
+        ally_sense(&me_obs, false, &near, &mut own, 0, &flagged);
+        assert_eq!(own[0].concern, 3.0);
+        assert_eq!(own[0].noticeability, 0.5);
+        assert_eq!(own[0].flags, CONTACT_TRACKED | CONTACT_NOTICED);
+        // The player is behind the observer's look and facing (+Z): the
+        // vector toward the observer is −Z, so each term is 1 and the view
+        // 0.25 + 0.75.
+        assert_eq!(own[0].view, 1.0);
+        ally_sense(&me_obs, true, &near, &mut own, 0, &flagged);
+        assert_eq!((own[0].concern, own[0].noticed), (0.0, 0.0));
+
+        // A fellow AI: attitude 100, no concern, -1.
+        let mut own = vec![Contact::new(friend)];
+        own[0].concern = 5.0;
+        let f = observed(friend, Vec3::new(0.0, 0.0, 600.0));
+        assert_eq!(ally_sense(&me_obs, false, &f, &mut own, 0, &flagged), -1);
+        assert_eq!((own[0].attitude, own[0].concern), (100.0, 0.0));
+
+        // Dead: attitude 0, no concern.
+        let mut own = vec![Contact::new(player)];
+        own[0].concern = 5.0;
+        let mut dead = near;
+        dead.condition = CONDITION_DEAD;
+        assert_eq!(ally_sense(&me_obs, false, &dead, &mut own, 0, &flagged), 0);
+        assert_eq!(own[0].concern, 0.0);
+
+        // The threat to an ally: the player at 600 cm with concern 4, the
+        // friend contact at closeness 0.9 and view 1, nothing selected
+        // before. The friend's weight is (0.75 + 0.25)·0.81, its threat that
+        // times the factor 0.1, gained by 1.2 (about 0.0972); the player's
+        // own entry is no ally and adds nothing. The concern 4 is above the
+        // threat, so the target stays.
+        let mut own = vec![Contact::new(player), Contact::new(friend)];
+        own[0].concern = 4.0;
+        own[1].closeness = 0.9;
+        own[1].view = 1.0;
+        let w = (1.0f32 * 0.75 + 0.25) * (0.9f32 * 0.9f32);
+        assert_eq!(ally_sense(&me_obs, false, &near, &mut own, 0, &flagged), 0);
+        // The player's own weight is (0.75 + 0.25)·0.25, the friend's 0.81:
+        // the friend is selected.
+        assert_eq!(own[0].selected, Some(friend));
+        assert_eq!(own[0].concern_target, 0.0);
+        // Attacking (factor 4) the gained threat is 0.81·4·1.2 ≈ 3.888; a
+        // concern of 1.5 rises to the floor 3, under it: the target is 0.3
+        // of the threat.
+        let mut attacking = near;
+        attacking.condition = CONDITION_ATTACKING;
+        own[0].concern = 1.5;
+        own[0].selected = None;
+        ally_sense(&me_obs, false, &attacking, &mut own, 0, &flagged);
+        assert_eq!(own[0].concern, 3.0);
+        let threat = 1.0f32 * w * 4.0;
+        let gained = (f64::from(threat) * 1.2) as f32;
+        assert_eq!(own[0].concern_target, (f64::from(gained) * 0.3) as f32);
+        // With the friend selected, its share is 0.81/(0.81 + 0.81) = 0.5:
+        // ((1 − 0.5)·1 + 1·0.5)·0.81 keeps the same threat.
+        own[0].concern_target = 0.0;
+        ally_sense(&me_obs, false, &attacking, &mut own, 0, &flagged);
+        assert_eq!(own[0].concern_target, (f64::from(gained) * 0.3) as f32);
+    }
+}

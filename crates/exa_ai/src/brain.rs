@@ -41,8 +41,10 @@ use crate::combat;
 use crate::combatant::{self, Attitude, Combatant, Contact, Observed, Observer};
 use crate::contacts::{self, ContactRecord, Integration, PassReport};
 use crate::idle::Routine;
+use crate::motion::{self, Gaze, Turning};
 use crate::personality::{self, Personality};
 use crate::roles::{self, Partner, Relations, Roles};
+use crate::rooms::{RoomCell, RoomCells};
 use crate::search::Search;
 use crate::sense::{Decision, Mind, decide};
 
@@ -101,6 +103,21 @@ pub struct Npc {
     /// [guess: the original reads a generator on the behaviour; Exarust
     /// keeps its state here].
     pub roll: u32,
+    /// Its look and head offset.
+    pub gaze: Gaze,
+    /// Its heading, look and the sway it turns by out of combat.
+    pub turn: Turning,
+    /// The key of the roles the applied state was derived from.
+    pub roles_key: u64,
+    /// The group-alert count the AI tick decays every 10 s.
+    pub alert_count: i32,
+    /// When the alert count is next checked (ms).
+    pub alert_until_ms: u32,
+    /// Its cell in the room grid and the cell before it.
+    pub room: RoomCell,
+    /// The nearby characters the room list gathered (their ids), by
+    /// distance.
+    pub nearby: Vec<u64>,
 }
 
 impl Npc {
@@ -117,6 +134,13 @@ impl Npc {
             cursor: 0,
             morale: combat::MoraleDrift::default(),
             roll: 0,
+            gaze: Gaze::default(),
+            turn: Turning::default(),
+            roles_key: 0,
+            alert_count: 1,
+            alert_until_ms: u32::MAX,
+            room: RoomCell::default(),
+            nearby: Vec::new(),
         }
     }
 
@@ -146,6 +170,7 @@ impl Npc {
 
     /// Applies the roles and installs the routine they choose.
     pub fn apply(&mut self, db: &RoleDatabase, roles: &Roles, now_ms: u32) -> &Applied {
+        self.roles_key = roles_key(roles);
         let before = Before {
             activity: self.applied.as_ref().map_or(1, |a| a.activity),
             idle: self.search.as_ref().map(|_| activity::SEARCH),
@@ -589,8 +614,10 @@ pub fn perceive_all(
 #[allow(clippy::type_complexity)]
 pub fn ai_tick(
     ticks: Option<Res<BodyTicks>>,
+    mut rooms: Option<ResMut<RoomCells>>,
     players: Query<(Entity, &GlobalTransform), With<RatedPlayer>>,
-    targets: Query<&GlobalTransform>,
+    targets: Query<(Entity, &GlobalTransform)>,
+    fighters: Query<(Entity, &GlobalTransform), With<Fighter>>,
     mut npcs: Query<(
         Entity,
         &mut Npc,
@@ -601,18 +628,35 @@ pub fn ai_tick(
         &Fighter,
         &Condition,
         Option<&Name>,
+        Option<&mut Transform>,
+        Option<&crate::presence::Presence>,
     )>,
 ) {
     let now = ticks.as_ref().map_or(0, |t| t.millis() as u32);
     let player = players.iter().next().map(|(entity, _)| entity);
-    for (_entity, mut npc, mut combatant, duellist, mind, gt, fighter, condition, name) in &mut npcs
+    for (
+        _entity,
+        mut npc,
+        mut combatant,
+        mut duellist,
+        mind,
+        gt,
+        fighter,
+        condition,
+        name,
+        transform,
+        presence,
+    ) in &mut npcs
     {
         let talking = name.map_or("character", |n| n.as_str());
+        // The AI tick's group alert decays one step every ten seconds.
+        (npc.alert_count, npc.alert_until_ms) =
+            crate::manager::decay_alert(npc.alert_count, npc.alert_until_ms, now);
         let target = duellist.as_deref().map(|d| d.target).or(player);
         let observer_cm = gt.map_or(Vec3::ZERO, |g| g.translation() * 100.0);
         let target_cm = target
             .and_then(|t| targets.get(t).ok())
-            .map_or(observer_cm, |g| g.translation() * 100.0);
+            .map_or(observer_cm, |(_, g)| g.translation() * 100.0);
         let flat_cm = Vec3::new(
             target_cm.x - observer_cm.x,
             0.0,
@@ -665,6 +709,30 @@ pub fn ai_tick(
         let in_combat = duellist
             .as_deref()
             .map_or(combatant.in_combat, |d| d.fighting());
+        // The room bookkeeping: the character is (re)linked into its
+        // 600 cm cell, and the nearby list weighs the cell's characters.
+        if let Some(rooms) = rooms.as_deref_mut() {
+            rooms.move_to(_entity, observer_cm, &mut npc.room);
+            // The player carries no room cell, so the gather scans every
+            // character of the brain's cell rather than the cell's linked
+            // list (the original links every character with a behaviour).
+            let size = rooms.size;
+            let around: Vec<(u64, f32, bool)> = fighters
+                .iter()
+                .filter(|(e, _)| *e != _entity)
+                .filter(|(_, g)| {
+                    crate::rooms::cell_index(g.translation() * 100.0, size) == Some(npc.room.cell)
+                })
+                .map(|(e, g)| {
+                    let at = g.translation() * 100.0;
+                    (e.to_bits(), (at - observer_cm).length_squared(), true)
+                })
+                .collect();
+            npc.nearby = contacts::nearby(&around)
+                .into_iter()
+                .map(|(id, _)| id)
+                .collect();
+        }
         let asleep = mind.is_some_and(|m| m.asleep);
         let down = condition.0 & combatant::CONDITION_DOWN != 0;
         let mut roll = npc.roll;
@@ -679,7 +747,7 @@ pub fn ai_tick(
             now,
             &mut roll,
         );
-        npc.roll = roll;
+        let seen_or_heard = npc.pass.attention.is_some();
         // The original keeps one contact list: the combat state, the
         // perception's threat estimate and the target pass read the same
         // hostility and concern. Exarust keeps the integration's on the
@@ -702,7 +770,7 @@ pub fn ai_tick(
         // own target, so an entry against another character does not
         // start it [guess: the original turns its body to whichever
         // character the pass picked].
-        if let Some(mut duellist) = duellist {
+        if let Some(duellist) = duellist.as_deref_mut() {
             if let Some(level) = npc.pass.enter {
                 if !duellist.engaged && npc.pass.target == target_id {
                     duellist.engage();
@@ -717,19 +785,72 @@ pub fn ai_tick(
                 info!("{talking}: the target pass leaves combat");
             }
         }
+        // Out of combat the AI sways its look about its heading and the
+        // body turns to that heading. Exarust turns the model directly: the
+        // original lets the body's locomotion turn it, and the running game
+        // ticks no locomotion request for an NPC.
+        let waiting = duellist
+            .as_deref()
+            .is_none_or(|d| !d.engaged && !d.fighting());
+        if waiting
+            && presence.is_none_or(|p| p.moves())
+            && let Some(mut transform) = transform
+        {
+            let facing = motion::yaw_of(transform.rotation * Vec3::Z);
+            // A brain that has never turned takes the body's placed facing
+            // as its look (the attach step's snap).
+            if npc.turn.heading == 0.0 && npc.turn.look == 0.0 && npc.turn.offset == 0.0 {
+                npc.turn.heading = facing;
+                npc.turn.look = facing;
+                npc.turn.offset = facing;
+            }
+            // [guess: the original's idle states attend the contact the
+            // target pass picked and set the look yaw toward it; Exarust
+            // looks along the line to the brain's target while it is seen
+            // or heard.]
+            if seen_or_heard {
+                npc.turn.look = motion::yaw_of(target_cm - observer_cm);
+            }
+            motion::turn_towards(
+                &mut npc.turn,
+                facing,
+                fighter.stats.encumbrance,
+                now,
+                &mut roll,
+            );
+            // The body turns to the eased yaw, look plus sway; the
+            // heading is the bare look and would snap the model.
+            transform.rotation = Quat::from_rotation_y(npc.turn.offset);
+        }
+        npc.roll = roll;
     }
 }
 
-/// Applies the roles of brains just added.
+/// A key over the held role ids, so a brain applies its roles only when the
+/// set (or an order) changed: the original re-applies them when the dirty
+/// flag is set and the script lock is free.
+pub fn roles_key(roles: &Roles) -> u64 {
+    let mut key = 0xcbf2_9ce4_8422_2325u64;
+    for id in roles.ids() {
+        key ^= u64::from(id);
+        key = key.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    key
+}
+
+/// Applies the roles of brains whose held roles changed (or that are new).
 #[allow(clippy::type_complexity)]
 pub fn apply_new_roles(
     db: Option<Res<RoleDatabase>>,
     ticks: Option<Res<BodyTicks>>,
-    mut npcs: Query<(&Roles, &mut Npc, Option<&mut Mind>, Option<&Name>), Added<Npc>>,
+    mut npcs: Query<(&Roles, &mut Npc, Option<&mut Mind>, Option<&Name>)>,
 ) {
     let Some(db) = db else { return };
     let now = ticks.map_or(0, |t| t.millis() as u32);
     for (roles, mut npc, mind, name) in &mut npcs {
+        if npc.roles_key == roles_key(roles) {
+            continue;
+        }
         let applied = npc.apply(&db, roles, now).clone();
         if let Some(mut mind) = mind {
             mind.asleep = applied.state == IdleState::Sleep;
@@ -1166,6 +1287,169 @@ mod tests {
             ))
             .id();
         (app, player, npc)
+    }
+
+    /// A brain that has seen nobody keeps the yaw its model was placed
+    /// with; the first tick takes it as the look.
+    #[test]
+    fn an_idle_brain_keeps_its_placed_facing() {
+        let mut app = App::new();
+        app.add_systems(Update, ai_tick);
+        let mut brain = Npc::new([0.0; 4]);
+        brain.turn.sway_at_ms = u32::MAX;
+        let npc = app
+            .world_mut()
+            .spawn((
+                brain,
+                Combatant::default(),
+                GlobalTransform::IDENTITY,
+                Fighter::default(),
+                Condition::NORMAL,
+                Transform::from_rotation(Quat::from_rotation_y(1.0)),
+            ))
+            .id();
+        app.update();
+        let t = app.world().get::<Transform>(npc).unwrap();
+        assert!((t.rotation.to_euler(bevy::math::EulerRot::YXZ).0 - 1.0).abs() < 1e-5);
+    }
+
+    /// The AI tick decays the brain's group alert a step every ten seconds,
+    /// down to 1 where it stays.
+    #[test]
+    fn the_ai_tick_decays_the_group_alert() {
+        let mut app = App::new();
+        app.add_systems(Update, ai_tick);
+        let player = app
+            .world_mut()
+            .spawn((GlobalTransform::default(), RatedPlayer))
+            .id();
+        let mut brain = Npc::new([0.0; 4]);
+        brain.alert_count = 3;
+        brain.alert_until_ms = 0;
+        let npc = app
+            .world_mut()
+            .spawn((
+                brain,
+                Combatant::default(),
+                crate::Duellist::new(player),
+                GlobalTransform::IDENTITY,
+                Fighter::default(),
+                Condition::NORMAL,
+            ))
+            .id();
+        app.insert_resource(BodyTicks(1));
+        app.update();
+        assert_eq!(app.world().get::<Npc>(npc).unwrap().alert_count, 2);
+        assert_eq!(app.world().get::<Npc>(npc).unwrap().alert_until_ms, 10_012);
+        // Inside the hold it stays; past it one step goes, and at 1 the
+        // next step keeps 1 for good.
+        app.world_mut().resource_mut::<BodyTicks>().0 = 2;
+        app.update();
+        assert_eq!(app.world().get::<Npc>(npc).unwrap().alert_count, 2);
+        app.world_mut().resource_mut::<BodyTicks>().0 = 835;
+        app.update();
+        assert_eq!(app.world().get::<Npc>(npc).unwrap().alert_count, 1);
+        assert_eq!(app.world().get::<Npc>(npc).unwrap().alert_until_ms, 20_020);
+        app.world_mut().resource_mut::<BodyTicks>().0 = 2000;
+        app.update();
+        assert_eq!(app.world().get::<Npc>(npc).unwrap().alert_count, 1);
+        assert_eq!(
+            app.world().get::<Npc>(npc).unwrap().alert_until_ms,
+            u32::MAX
+        );
+    }
+
+    /// The AI tick links the brain into its 600 cm room cell and fills the
+    /// nearby list with the characters of that cell, by distance.
+    #[test]
+    fn the_ai_tick_gathers_the_nearby_characters_of_its_room() {
+        let mut app = App::new();
+        app.add_systems(Update, ai_tick);
+        app.insert_resource(crate::rooms::RoomCells::new(crate::rooms::RoomGridSize {
+            width: 32,
+            height: 32,
+        }));
+        let player = app
+            .world_mut()
+            .spawn((
+                GlobalTransform::from_translation(Vec3::new(0.0, 0.0, 2.0)),
+                Fighter::default(),
+                RatedPlayer,
+            ))
+            .id();
+        let near = app
+            .world_mut()
+            .spawn((
+                Npc::new([0.0; 4]),
+                Combatant::default(),
+                GlobalTransform::from_translation(Vec3::new(0.0, 0.0, 1.0)),
+                Fighter::default(),
+                Condition::NORMAL,
+            ))
+            .id();
+        let far = app
+            .world_mut()
+            .spawn((
+                Npc::new([0.0; 4]),
+                Combatant::default(),
+                GlobalTransform::from_translation(Vec3::new(100.0, 0.0, 0.0)),
+                Fighter::default(),
+                Condition::NORMAL,
+            ))
+            .id();
+        app.update();
+        let w = app.world();
+        assert_eq!(w.get::<Npc>(near).unwrap().nearby, vec![player.to_bits()]);
+        // The far character is in its own cell, so its list holds neither.
+        assert!(w.get::<Npc>(far).unwrap().nearby.is_empty());
+        assert_eq!(
+            w.get::<Npc>(near).unwrap().room.cell,
+            crate::rooms::cell_index(
+                Vec3::ZERO,
+                crate::rooms::RoomGridSize {
+                    width: 32,
+                    height: 32
+                }
+            )
+            .unwrap()
+        );
+    }
+
+    /// An idle brain turns its model toward its look yaw: the out-of-combat
+    /// turn eases the yaw from the body's facing by 0.09 of the gap a tick
+    /// (no encumbrance), while it is not fighting.
+    #[test]
+    fn an_idle_brain_turns_its_model_to_its_look() {
+        let mut app = App::new();
+        app.add_systems(Update, ai_tick);
+        let player = app
+            .world_mut()
+            .spawn((
+                GlobalTransform::from_translation(Vec3::new(2.0, 0.0, 0.0)),
+                RatedPlayer,
+            ))
+            .id();
+        let mut brain = Npc::new([0.0; 4]);
+        brain.turn.look = std::f32::consts::FRAC_PI_2;
+        brain.turn.sway_at_ms = u32::MAX;
+        let npc = app
+            .world_mut()
+            .spawn((
+                brain,
+                Combatant::default(),
+                crate::Duellist::new(player),
+                GlobalTransform::IDENTITY,
+                Fighter::default(),
+                Condition::NORMAL,
+                Transform::default(),
+            ))
+            .id();
+        app.update();
+        let t = app.world().get::<Transform>(npc).unwrap();
+        // From facing 0 toward π/2: 0.09 · π/2 ≈ 0.141372.
+        let eased = (0.09 * f64::from(std::f32::consts::FRAC_PI_2)) as f32;
+        assert!((t.rotation.to_euler(bevy::math::EulerRot::YXZ).0 - eased).abs() < 1e-5);
+        assert_eq!(app.world().get::<Npc>(npc).unwrap().turn.offset, eased);
     }
 
     /// A visible player fills the brain's contact with the perception's
