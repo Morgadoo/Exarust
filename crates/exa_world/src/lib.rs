@@ -1252,6 +1252,7 @@ impl LevelLoad {
                 width: g.width,
                 height: g.height,
                 edges: std::sync::Arc::new(g.edges.clone()),
+                synthetic: false,
             })
             .unwrap_or_else(gi_volume::GiGrid::synthetic);
         commands.insert_resource(gi_volume::PendingGi {
