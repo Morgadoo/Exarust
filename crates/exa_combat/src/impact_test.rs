@@ -314,7 +314,7 @@ fn a_limb_impact_has_the_originals_volume_and_pitches() {
 /// level's impact call: the strength is halved (and a third taken unless
 /// the character is down), a part with a clock that has run out sounds at
 /// the character, and a volume over 0.25 deals impact damage with no other
-/// body to tell. A strength of 0.4 is under the sound's 0.5 gate.
+/// body to tell.
 #[test]
 fn a_limb_hitting_the_level_sounds_and_hurts() {
     // A floor triangle facing up, wide enough for the sphere.
@@ -376,6 +376,13 @@ fn a_limb_hitting_the_level_sounds_and_hurts() {
     if sound.volume > 0.25 {
         assert!(yellow_after < yellow);
     }
+    // No other body struck, so no one is told.
+    let told = app
+        .world()
+        .resource::<Messages<LimbImpact>>()
+        .iter_current_update_messages()
+        .count();
+    assert_eq!(told, 0);
     // The root's clock is set for the next sound.
     let body = app.world().get::<Ragdoll>(target).unwrap();
     assert!(body.parts[0].sound_ready_ms > 0);

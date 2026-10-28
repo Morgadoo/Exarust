@@ -163,10 +163,12 @@ once the root's sound clock is past, the limb curve (a third of the
 strength unless the character is down, then half) gives the volume and
 pitch for an `ImpactSounded` at the character (the foley when crowded),
 and a volume over 0.25 deals the same `limb_impact_damage` a body's blow
-does — the taken total, yellow health and its daze, the `LimbImpact`
-message and the death or collapse path — with the ticking clock's
-cooldown. A level contact has no other body, so no one is told; the
-original's pain voice and BadFall branch for it is not reproduced.
+does — the taken total, yellow health and its daze and the death or
+collapse path — with the ticking clock's cooldown; a hard impact on a
+striking part in an overhead swing is dropped as for a body blow. A level
+contact has no other body, so no `LimbImpact` is sent (the original skips
+the striker's combat-state step); the original's pain voice and BadFall
+branch is not reproduced.
 
 ## Fighters and their condition
 

@@ -695,15 +695,18 @@ pub fn strike_limbs(
 }
 
 /// The level's impacts on a character's parts from the last tick's body
-/// contacts: the original's slot 38 call with no other body
+/// contacts: the character part's impact call with no other body
 /// ([`exa_physics::body::LevelImpact`]). A part's recent-impact counter
 /// rises, and while the root's sound clock is over, the limb curve gives
-/// the volume and pitch (the strength is halved, and a part on a character
-/// that is down does not take the third), it sounds at the character and,
-/// over a volume of 0.25, deals its impact damage exactly as a body's blow
-/// does (yellow health, daze, the taken total). The original's "other is
-/// not a character part" branch — the pain voice and the BadFall message —
-/// is the only part of it a level contact reaches; no other body is told.
+/// the volume and pitch (a third of the strength unless the character is
+/// down, then half), it sounds at the character and, over a volume of
+/// 0.25, deals its impact damage exactly as a body's blow does (yellow
+/// health, daze, the taken total). As in [`strike_limbs`], a hard impact on
+/// a striking part during an overhead swing is dropped before the clock is
+/// set. With no other body the original skips the striker's combat-state
+/// step, so no [`LimbImpact`] is sent. The pain voice and the BadFall
+/// message the original adds for a scaled strength over 15 are not
+/// reproduced (nor are they for body blows).
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn level_impacts(
     mut commands: Commands,
@@ -716,18 +719,20 @@ pub fn level_impacts(
         &mut Condition,
         &mut StateFlags,
         Option<&mut exa_anim::Animator>,
+        Option<&Attacking>,
         &mut Ragdoll,
     )>,
     mut sounds: MessageWriter<ImpactSounded>,
     mut shoves: MessageWriter<Shove>,
-    mut impacts: MessageWriter<LimbImpact>,
     mut weakened: MessageWriter<Weakened>,
     mut winds: MessageWriter<SecondWindFired>,
     mut roll: Local<Roll>,
 ) {
     let now = ticks.as_ref().map_or(0, |t| t.millis()) as u32;
     let story = story.is_some_and(|s| s.0);
-    for (entity, mut f, mut book, mut condition, mut flags, mut anim, mut body) in &mut fighters {
+    for (entity, mut f, mut book, mut condition, mut flags, mut anim, attacking, mut body) in
+        &mut fighters
+    {
         let Some(root) = body.parts.iter().position(|p| p.parent.is_none()) else {
             continue;
         };
@@ -737,14 +742,14 @@ pub fn level_impacts(
         if toll.is_empty() {
             continue;
         }
-        // The original's falling bit: the strength is only halved for a
-        // character that is down (0x200).
+        // The strength is only halved, not cut to a third first, for a
+        // character that is down.
         let falling = condition.has(Condition::DOWN.0);
         for hit in toll {
             let Some(part) = body.parts.get(hit.part) else {
                 continue;
             };
-            let bone = part.bone;
+            let (bone, striking) = (part.bone, part.state.has(PartState::STRIKING));
             book.count(hit.part);
             if now <= body.parts[root].sound_ready_ms {
                 continue;
@@ -762,7 +767,17 @@ pub fn level_impacts(
                 foley: crowded > CROWDED,
             });
             let scale = part_multipliers(body.parts[root].bone).0;
-            let damage = limb_impact_damage(sound.volume, scale, book.sinking, book.taken, false);
+            let overhead = attacking.is_some_and(|a| a.motion == AttackMotion::Overhead);
+            let damage = limb_impact_damage(
+                sound.volume,
+                scale,
+                book.sinking,
+                book.taken,
+                overhead_drop(overhead, striking),
+            );
+            if damage.dropped {
+                continue;
+            }
             if let Some(hurt) = damage.hurt {
                 book.taken = hurt.total;
                 let half = hurt.amount * 0.5;
@@ -780,12 +795,6 @@ pub fn level_impacts(
                     daze: half,
                     step: None,
                     sag: None,
-                });
-                impacts.write(LimbImpact {
-                    target: entity,
-                    bone,
-                    other: entity,
-                    amount: hurt.amount,
                 });
                 info!(
                     "{entity:?} bone {bone} hit the level: impact {:.2}, damage {:.3} (taken {:.3})",
