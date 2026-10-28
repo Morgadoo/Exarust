@@ -384,6 +384,16 @@ fn pointer(
         ..
     } = &mut *screen;
     let hidden = !*open || tree.closing();
+    // A click on the domain wheel turns the tree to that domain; the wheel
+    // is a child form, so its rectangle takes the click first.
+    if buttons.just_pressed(MouseButton::Left) && !hidden {
+        let domain = tree.wheel_child.domain_at(x, y);
+        if domain > 0 && domain != tree.domain {
+            tree.choose_domain(domain, now);
+            *dirty = true;
+            return;
+        }
+    }
     let hover = tree.hover(x, y, width, height, hidden);
     if hover != tree.focus {
         tree.set_focus(hover, now);
@@ -553,6 +563,28 @@ fn draw(
             }
         }
         screen.tree.present_window(now_at);
+        if screen.tree.switch_due {
+            // The old tree has faded out: store it, load the chosen
+            // domain's tree and start the new fade-in.
+            let domain = screen.tree.pending_domain;
+            let PowerScreen {
+                tree,
+                record,
+                domain_files,
+                texts,
+                ..
+            } = &mut *screen;
+            let file = domain_files.get(usize::from(domain)).cloned().flatten();
+            *texts = file
+                .as_deref()
+                .and_then(|bytes| exa_formats::power_tree::read_power_tree(bytes).ok())
+                .map(|tree| tree.texts)
+                .unwrap_or_default();
+            let font_size = tree.font_size;
+            tree.switch_domain(domain, record, file.as_deref(), width as f32, height as f32);
+            tree.font_size = font_size;
+            screen.dirty = true;
+        }
         let cursor = window
             .cursor_position()
             .map(|c| [c.x * window.scale_factor(), c.y * window.scale_factor()]);
@@ -596,6 +628,10 @@ fn draw(
     let draw = if tree_open {
         // The tree pass already ends with the bar.
         let mut draw = tree_draw::tree_draw(&view);
+        // The domain wheel child at the form's lower left.
+        let wheel = tree.wheel_view();
+        draw.batches
+            .extend(tree_draw::wheel_picture(wheel.x, wheel.y, wheel.size, wheel.alpha).batches);
         // The tooltip: the shown choice's name caption and its wrapped
         // description box, measured with the GUI font's advances (the
         // glyphs are the running font's).

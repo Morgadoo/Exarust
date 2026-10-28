@@ -2067,6 +2067,24 @@ pub fn prompt_draw(
     out
 }
 
+/// The domain wheel's sheet at the child's place: a square picture. The
+/// child's own sector-band draw is outside this component; this shows the
+/// sheet the tree loads.
+pub fn wheel_picture(x: f32, y: f32, size: f32, alpha: f32) -> TreeDraw {
+    let mut out = TreeDraw::default();
+    let mut batch = Batch::new(Program::SkinText, Texture::Wheel);
+    batch.uniforms.par0 = [1.0, 1.0, 0.0, 0.0];
+    let ink = [1.0, 1.0, 1.0, alpha];
+    batch.quad([
+        TreeVertex::new(x, y, 0.0, 0.0).with_colour(ink),
+        TreeVertex::new(x, y + size, 0.0, 1.0).with_colour(ink),
+        TreeVertex::new(x + size, y + size, 1.0, 1.0).with_colour(ink),
+        TreeVertex::new(x + size, y, 1.0, 0.0).with_colour(ink),
+    ]);
+    out.submit(batch);
+    out
+}
+
 /// The dragged power's preview at the pointer: its icon at 13 units, and
 /// its glow at 6 units by 2.5, the glow dimmed to a third unless the power
 /// is picked.

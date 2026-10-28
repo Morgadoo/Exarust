@@ -216,6 +216,100 @@ pub struct SkillTiers {
     pub concentration: Skill,
 }
 
+/// The domain wheel child the tree creates: 280 pixels square at the
+/// tree form's lower left, its picture the `domainwheel` sheet. Its own
+/// sector draw is outside this component, so Exarust keeps its state and
+/// shows the sheet at the child's place.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DomainWheel {
+    pub left: f32,
+    pub top: f32,
+    pub width: f32,
+    pub height: f32,
+    /// The child's fade (its form alpha).
+    pub alpha: f32,
+    /// The domain the wheel shows, 1 to 6.
+    pub domain: u8,
+    /// The domain under the pointer, or 0.
+    pub hovered: u8,
+    /// The stamp of the hover's fade.
+    pub stamp: u32,
+    /// The stamp a change's fade ends.
+    pub fade_at: u32,
+    /// The value the change's fade started from.
+    pub fade_previous: f32,
+    /// The six per-domain values the wheel's rings read.
+    pub values: [f32; 6],
+    /// The wheel's state word.
+    pub mode: i32,
+    /// The wheel's count word.
+    pub count: i32,
+    /// The focused id.
+    pub focused: i32,
+    /// Which domains the record knows.
+    pub known: [bool; 6],
+}
+
+impl DomainWheel {
+    /// The child at the tree form's lower left, 280 pixels square.
+    pub fn new(left: f32, top: f32, domain: u8) -> Self {
+        Self {
+            left,
+            top,
+            width: 280.0,
+            height: 280.0,
+            alpha: 1.0,
+            domain,
+            hovered: 0,
+            stamp: 0,
+            fade_at: 0,
+            fade_previous: 0.0,
+            values: [0.5, 0.0, 0.0, 0.0, 0.0, 0.0],
+            mode: 0,
+            count: 0,
+            focused: 0,
+            known: [false; 6],
+        }
+    }
+
+    /// The domain under `x`,`y`, 1 to 6, or 0 outside the wheel's circle.
+    /// The six sectors are 60° wide and centred on the six label angles,
+    /// which start at 60°; a labelled guess at the child's hit rule (the
+    /// wheel's own class is outside this component).
+    pub fn domain_at(&self, x: f32, y: f32) -> u8 {
+        let cx = self.left + self.width * 0.5;
+        let cy = self.top + self.height * 0.5;
+        let dx = x - cx;
+        let dy = y - cy;
+        let reach = self.width * 0.5;
+        if dx * dx + dy * dy > reach * reach {
+            return 0;
+        }
+        let turn = std::f32::consts::TAU / 6.0;
+        let angle = dy.atan2(dx);
+        let sector = ((angle + turn * 0.5).rem_euclid(std::f32::consts::TAU) / turn).floor();
+        sector as u8 + 1
+    }
+
+    /// Starts the 300 ms fade a picked or dropped power triggers: the
+    /// fade's previous value is the first ring's value and its stamp is
+    /// now plus 300 ms.
+    pub fn begin_fade(&mut self, now: u32) {
+        self.fade_previous = self.values[0];
+        self.fade_at = now.wrapping_add(300);
+    }
+}
+
+/// What the draw places for the domain wheel: its sheet at the child's
+/// client rectangle.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WheelView {
+    pub x: f32,
+    pub y: f32,
+    pub size: f32,
+    pub alpha: f32,
+}
+
 /// The character's power record: what the tree reads and writes.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PowerRecord {
@@ -706,6 +800,8 @@ pub struct TreeScreen {
     /// The record and domain files are waiting for the switch's fade to run
     /// out; the caller performs it.
     pub switch_due: bool,
+    /// The domain the pending switch opens.
+    pub pending_domain: u8,
     /// The window's fade this frame (the backdrop's alpha).
     pub window_alpha: f32,
     /// The tree content's fade this frame.
@@ -723,6 +819,18 @@ pub struct TreeScreen {
     /// The simulated time the view's springs have reached: the draw
     /// advances it in 17 ms steps.
     pub step_at: u32,
+    /// The domain wheel child.
+    pub wheel_child: DomainWheel,
+    /// The form's creation word (`0x800`).
+    pub form_flags: u32,
+    /// The form's second creation word (`0xf0000`).
+    pub form_word: u32,
+    /// The form's text alpha byte (`0xa0`).
+    pub text_alpha: u8,
+    /// The form's hint alpha byte (`0x80`).
+    pub hint_alpha: u8,
+    /// The form's caption value, the engine's lowest float.
+    pub caption: f32,
 }
 
 /// The original's zoom levels' thresholds and gains.
@@ -848,6 +956,7 @@ impl TreeScreen {
             domain_flags: 0,
             domain_at: 0,
             switch_due: false,
+            pending_domain: domain,
             window_alpha: 1.0,
             content_alpha: 1.0,
             bar_alpha: 1.0,
@@ -856,6 +965,12 @@ impl TreeScreen {
             bar_close_at: 0,
             bar_phase_now: Some(exa_ui::tree_draw::BarPhase::Steady),
             step_at: 0,
+            wheel_child: DomainWheel::new(10.0, 700.0 - 290.0, domain),
+            form_flags: 0x800,
+            form_word: 0x000f_0000,
+            text_alpha: 0xa0,
+            hint_alpha: 0x80,
+            caption: f32::from_bits(0xff00_0000),
         }
     }
 
@@ -892,6 +1007,12 @@ impl TreeScreen {
                 screen.available = 48.0;
                 screen.wheel.total = 48.0;
             }
+        }
+        // The domain wheel child sits at the form's lower left, 280
+        // pixels square, and shows the domain the tree opened.
+        screen.wheel_child = DomainWheel::new(10.0, height - 290.0, domain);
+        if record.is_none() {
+            screen.wheel_child.values[0] = 48.0;
         }
         // The level comes from the whole-pixel height over 2300, worked out
         // in double precision; the width is halved as an integer.
@@ -943,15 +1064,19 @@ impl TreeScreen {
     pub fn refresh_wheel(&mut self, pairs: &[KnownPower]) {
         self.available = self.record_focus(pairs);
         let mut wheel = WheelMarks::default();
+        let mut known = [false; 6];
         for pair in pairs {
+            let domain = domain_of(pair.power);
+            if !(1..=6).contains(&domain) {
+                continue;
+            }
+            known[usize::from(domain) - 1] = true;
             if pair.flags & PICKED == 0 {
                 continue;
             }
-            let domain = domain_of(pair.power);
-            if (1..=6).contains(&domain) {
-                wheel.domains[usize::from(domain) - 1] += 0.0625;
-            }
+            wheel.domains[usize::from(domain) - 1] += 0.0625;
         }
+        self.wheel_child.known = known;
         wheel.total = self.available * 0.020_833_334;
         for share in &mut wheel.domains {
             if 1.0 < *share {
@@ -1319,6 +1444,7 @@ impl TreeScreen {
                 return;
             }
             self.marks[node] &= !PICKED;
+            self.wheel_child.begin_fade(now);
             out.sound = Some(DROP_SOUND);
         } else {
             // The cost is the one of the domain the screen shows.
@@ -1339,6 +1465,7 @@ impl TreeScreen {
                 return;
             }
             self.marks[node] |= PICKED;
+            self.wheel_child.begin_fade(now);
             out.sound = Some(PICK_SOUND);
         }
         if let Some(record) = record {
@@ -2308,10 +2435,28 @@ impl TreeScreen {
     }
 
     /// Starts the domain switch's 256 ms fade-out. The wheel that turns the
-    /// domain is outside this module; its click calls this.
+    /// domain is outside this module; its click calls [`TreeScreen::choose_domain`]
+    /// or this.
     pub fn fade_domain(&mut self, now: u32) {
         self.domain_flags = DOMAIN_OUT;
         self.domain_at = now.wrapping_add(CLOSE_MS);
+    }
+
+    /// Chooses the domain the pending switch opens and starts its fade.
+    pub fn choose_domain(&mut self, domain: u8, now: u32) {
+        self.pending_domain = domain;
+        self.fade_domain(now);
+    }
+
+    /// The wheel child's picture at its place.
+    pub fn wheel_view(&self) -> WheelView {
+        let wheel = &self.wheel_child;
+        WheelView {
+            x: wheel.left,
+            y: wheel.top,
+            size: wheel.width,
+            alpha: wheel.alpha,
+        }
     }
 
     /// Loads the bar from the record and starts its 900 ms opening, as
@@ -2388,19 +2533,52 @@ impl TreeScreen {
         Some(phase)
     }
 
+    /// Replaces the tree's nodes, keeping the form's view and fades: the
+    /// domain switch reads a new tree into the same screen.
+    fn adopt_nodes(&mut self, domain: u8, nodes: Vec<PowerNode>) {
+        self.links = nodes
+            .iter()
+            .map(|node| node.links.iter().map(NodeLink::read).collect())
+            .collect();
+        self.base = nodes.iter().map(|node| [node.x, node.y]).collect();
+        self.placed = vec![[0.0; 2]; nodes.len()];
+        self.marks = vec![0; nodes.len()];
+        self.nodes = nodes;
+        self.domain = domain;
+    }
+
     /// Changes the domain: the current one is stored back into the record
-    /// and the new tree is loaded. Returns the old domain.
+    /// and the new tree is read into the same form, so the view, fades and
+    /// wheel stay as they were. Returns the old domain.
     pub fn switch_domain(
         &mut self,
         domain: u8,
         record: &mut PowerRecord,
         bytes: Option<&[u8]>,
-        width: f32,
-        height: f32,
+        _width: f32,
+        _height: f32,
     ) -> u8 {
         let old = self.domain;
         self.store_domain(record);
-        *self = TreeScreen::load(domain, self.mode, Some(record), bytes, width, height);
+        let nodes = match bytes {
+            Some(bytes) => match exa_formats::power_tree::read_power_tree(bytes) {
+                Ok(tree) => tree.nodes,
+                Err(_) => Self::empty(domain, self.mode).nodes,
+            },
+            None => Self::empty(domain, self.mode).nodes,
+        };
+        self.adopt_nodes(domain, nodes);
+        match self.mode {
+            TreeMode::Test => self.marks.fill(SHOWN | LEARNED),
+            _ => {
+                let mut pairs = record.pairs.clone();
+                filter_known(&mut pairs, &self.nodes, domain);
+                self.apply_marks(&pairs);
+                self.read_record(record);
+            }
+        }
+        self.wheel_child.domain = domain;
+        self.refresh_placement();
         old
     }
 }
@@ -3015,6 +3193,50 @@ mod tests {
         };
         assert!(!step_pan(&mut lost));
         assert!(lost.position[0].is_nan());
+    }
+
+    #[test]
+    fn the_tree_creates_its_form_and_domain_wheel() {
+        let screen = TreeScreen::load(DOMAIN_MIND, TreeMode::Play, None, None, 1000.0, 700.0);
+        // The form's creation words and alphas.
+        assert_eq!(screen.form_flags, 0x800);
+        assert_eq!(screen.form_word, 0x000f_0000);
+        assert_eq!(screen.text_alpha, 0xa0);
+        assert_eq!(screen.hint_alpha, 0x80);
+        assert_eq!(screen.caption.to_bits(), 0xff00_0000);
+        // The wheel is 280 square at (10, height − 290), shows the opened
+        // domain and starts with the first ring at 48 on a tree with no
+        // record.
+        let wheel = &screen.wheel_child;
+        assert_eq!((wheel.left, wheel.top), (10.0, 410.0));
+        assert_eq!((wheel.width, wheel.height), (280.0, 280.0));
+        assert_eq!(wheel.domain, DOMAIN_MIND);
+        assert_eq!(wheel.alpha, 1.0);
+        assert_eq!(wheel.values[0], 48.0);
+        // The centre is in the first sector; straight right is the first
+        // sector and straight up the sixth.
+        assert_eq!(wheel.domain_at(150.0, 550.0), 1);
+        assert_eq!(wheel.domain_at(250.0, 550.0), 1);
+        assert_eq!(wheel.domain_at(150.0, 450.0), 6);
+        assert_eq!(wheel.domain_at(0.0, 0.0), 0);
+    }
+
+    #[test]
+    fn a_chosen_domain_switches_at_the_fade_stamp() {
+        let mut tree = TreeScreen::load(DOMAIN_MIND, TreeMode::Play, None, None, 1000.0, 700.0);
+        tree.choose_domain(DOMAIN_ENERGY, 1000);
+        assert_eq!(tree.pending_domain, DOMAIN_ENERGY);
+        assert_eq!(tree.domain_flags, DOMAIN_OUT);
+        assert_eq!(tree.domain_at, 1256);
+        tree.present_window(1256);
+        assert!(tree.switch_due);
+        assert_eq!(tree.domain_flags, DOMAIN_IN);
+        assert_eq!(tree.domain_at, 2256);
+        // A pick starts the wheel's 300 ms fade from its first value.
+        tree.wheel_child.values[0] = 2.5;
+        tree.wheel_child.begin_fade(3000);
+        assert_eq!(tree.wheel_child.fade_previous, 2.5);
+        assert_eq!(tree.wheel_child.fade_at, 3300);
     }
 
     #[test]
