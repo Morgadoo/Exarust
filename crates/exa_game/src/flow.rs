@@ -2111,6 +2111,12 @@ impl Flow {
         };
         let mut steps = self.close_end_menu();
         steps.extend([
+            // The original clears the scene and imports the arena's stored
+            // level section again, through the same practice scene filter
+            // the first fight's load used (the save unit's combatant
+            // preparation). Exarust reloads the arena from the archive in
+            // process and runs the filter after it, the same as
+            // `start_practice`.
             Step::LoadLevel {
                 locale: match self.practice.ladder {
                     Ladder::Novice => "arena",
@@ -2119,6 +2125,7 @@ impl Flow {
                 spawn: 0,
                 teardown: true,
             },
+            Step::PracticeFilter,
             Step::MenuHelp(false),
             Step::Controls(true),
             Step::Health {
@@ -3081,9 +3088,10 @@ fn apply_menu_choices(
 
 /// Applies the flow's steps to the running app's own pieces: the menu and
 /// end-menu forms, the title logo, the interface and controls flags and the
-/// practice heal's health. The world, camera, music, save and transition
-/// screen are logged and left to the host; Exarust has no live level change
-/// yet (see `docs/UI.md`, The main menu screen).
+/// practice heal's health. A level load or world teardown becomes an
+/// [`exa_world::level_lifecycle::LevelChangeRequest`] and a player placement
+/// a [`crate::level_change::PlayerPlacement`]; the camera, save and
+/// transition screen are logged and left to the host.
 #[allow(clippy::too_many_arguments)]
 fn apply_steps(
     mut commands: Commands,
@@ -3485,6 +3493,19 @@ mod tests {
         })));
         assert_eq!(flow.practice.fight, 8);
         assert_eq!(flow.phase, Phase::Playing);
+        // The arena is imported again through the practice filter.
+        let load = steps
+            .iter()
+            .position(|step| {
+                *step
+                    == Step::LoadLevel {
+                        locale: "arenae",
+                        spawn: 0,
+                        teardown: true,
+                    }
+            })
+            .expect("the arena reloads");
+        assert_eq!(steps[load + 1], Step::PracticeFilter);
         assert!(steps.contains(&Step::Controls(true)));
         assert!(steps.contains(&Step::HideEndMenu));
         // 0.2f32 as a double plus a tenth of 0.25, rounded to single:

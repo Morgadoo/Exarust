@@ -60,6 +60,12 @@ impl Plugin for ViewerPlugin {
                 apply_player_placement.after(finish_lighting),
             )
             .add_systems(
+                Update,
+                scripted_level_changes
+                    .run_if(|options: Res<Options>| !options.level_changes.is_empty())
+                    .before(exa_world::level_lifecycle::LevelChangeSystems::Teardown),
+            )
+            .add_systems(
                 PreUpdate,
                 (autowalk, press_keys)
                     .chain()
@@ -462,12 +468,11 @@ fn continue_level(
     play_camera: Option<Res<PlayCamera>>,
     gi: Res<exa_world::gi_volume::GiSettings>,
     mut arena_picks: ResMut<exa_game::arena_match::ArenaPicks>,
-    pending_arena: PendingArena<'_, '_>,
+    pending_arena: PendingArena<'_>,
 ) {
     let landing = pending_arena.landing.as_deref();
     let career = pending_arena.career.as_deref();
     let launch = pending_arena.launch.as_deref().map(|launch| &launch.0);
-    let existing_player = pending_arena.players.iter().next();
     let mut loader = ModelLoader {
         game: &game.0,
         cache: &mut cache,
@@ -520,7 +525,6 @@ fn continue_level(
                 landing,
                 career,
                 launch,
-                existing_player,
             );
             // A landing plan is used once.
             commands.remove_resource::<exa_game::level_transition::PendingLanding>();
@@ -652,7 +656,6 @@ fn play_level(
     landing: Option<&exa_game::level_transition::PendingLanding>,
     career: Option<&exa_game::hub_windows::ArenaCareer>,
     launch: Option<&exa_game::arena_hub_live::ArenaMatchLaunch>,
-    _existing_player: Option<Entity>,
 ) {
     commands.entity(root).insert(exa_physics::StaticGeometry);
     // An arena match draws its track as the original's match start does:
@@ -844,11 +847,10 @@ fn place_chase_camera(
 /// The arena state a level change carries: a save's landing, the career the
 /// running process keeps, and the board pick's launch when one is waiting.
 #[derive(SystemParam)]
-pub(crate) struct PendingArena<'w, 's> {
+pub(crate) struct PendingArena<'w> {
     landing: Option<Res<'w, exa_game::level_transition::PendingLanding>>,
     career: Option<Res<'w, exa_game::hub_windows::ArenaCareer>>,
     launch: Option<Res<'w, PendingArenaLaunch>>,
-    players: Query<'w, 's, Entity, With<exa_game::player::Player>>,
 }
 
 /// Play mode waiting for the level's collision, behind the loading screen.
@@ -1370,6 +1372,83 @@ fn apply_player_placement(
         transform.rotation = Quat::from_rotation_y(placement.yaw);
     }
     commands.remove_resource::<exa_game::level_change::PlayerPlacement>();
+}
+
+/// Frames after a level is in before `--level-change` counts it again, so
+/// the GI, the textures and the settling bodies have taken their memory.
+const CENSUS_SETTLE_FRAMES: u32 = 120;
+
+/// What a level holds, for the `--level-change` leak check.
+#[derive(SystemParam)]
+struct LevelCensus<'w, 's> {
+    entities: Query<'w, 's, Entity>,
+    level: Query<'w, 's, (), With<exa_world::level_lifecycle::LevelEntity>>,
+    players: Query<'w, 's, (), With<exa_game::player::Player>>,
+    physics: Option<Res<'w, exa_physics::Physics>>,
+    meshes: Res<'w, Assets<Mesh>>,
+    images: Res<'w, Assets<Image>>,
+    materials: Res<'w, Assets<exa_render::material::ExaMaterial>>,
+}
+
+impl LevelCensus<'_, '_> {
+    fn log(&self, level: &str, when: &str) {
+        let (bodies, colliders) = self.physics.as_ref().map_or((0, 0), |physics| {
+            (physics.body_count(), physics.collider_count())
+        });
+        info!(
+            "level census: {level} {when}: entities {}, level roots {}, players {}, \
+             physics bodies {bodies}, colliders {colliders}, meshes {}, images {}, materials {}",
+            self.entities.iter().count(),
+            self.level.iter().count(),
+            self.players.iter().count(),
+            self.meshes.len(),
+            self.images.len(),
+            self.materials.len(),
+        );
+    }
+}
+
+/// `--level-change level@frame,...`: unattended in-process level changes
+/// at frames after the first load (frames behind the loading screen do not
+/// count). Each level is counted when it is in and again
+/// [`CENSUS_SETTLE_FRAMES`] later, and once more just before it is left, so
+/// a run that comes back to a level shows whether the change leaks.
+fn scripted_level_changes(
+    options: Res<Options>,
+    view: Res<View>,
+    loading: Option<Res<exa_ui::LoadingStatus>>,
+    census: LevelCensus,
+    mut frames: Local<u32>,
+    mut since_load: Local<Option<u32>>,
+    mut changes: MessageWriter<exa_world::level_lifecycle::LevelChangeRequest>,
+) {
+    let level = match &*view {
+        View::Play(name) | View::Level(name) => name.as_str(),
+        _ => return,
+    };
+    if loading.is_some() {
+        *since_load = None;
+        return;
+    }
+    let settled = since_load.get_or_insert(0);
+    if *settled == 0 {
+        census.log(level, "loaded");
+    }
+    *settled += 1;
+    if *settled == CENSUS_SETTLE_FRAMES {
+        census.log(level, "settled");
+    }
+    *frames += 1;
+    for (next, at) in &options.level_changes {
+        if *frames == *at {
+            census.log(level, "left");
+            info!("level change: {level} -> {next} at frame {at}");
+            changes.write(exa_world::level_lifecycle::LevelChangeRequest::change(
+                next.clone(),
+                0,
+            ));
+        }
+    }
 }
 
 /// Play mode waiting for its characters to be dressed, behind the loading

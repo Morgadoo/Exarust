@@ -71,6 +71,8 @@
 //!                                     loading (e.g. `.@400,P@500,LMB@600`); `key@a-b` holds it from frame a to b
 //!          --cursor x,y               play mode: the cursor stays at this window point (logical pixels), for unattended runs
 //!          --click frame,...          click the left mouse button at frames after loading
+//!          --level-change lvl@frame,...  play mode: change level in process at frames after the first load (loading
+//!                                     frames do not count), logging entity, physics-body and asset counts per level
 //!          --debug-wound b,r[,dx,dy,dz]  a test wound on the player's (or the character view's) body part b
 //!                                     (1–18 or chest, luarm, …), radius r cm, smeared along d cm; repeatable
 //!          --weapon-blood <a>         the player's (or the character view's) weapon holds blood a (0–1) from the start
@@ -253,6 +255,9 @@ pub struct Options {
     pub cursor: Option<[f32; 2]>,
     /// Left mouse button clicks at frames after the load.
     pub clicks: Vec<u32>,
+    /// Play mode: in-process level changes at frames after the first load
+    /// (`level@frame`), each logged with an entity, physics and asset count.
+    pub level_changes: Vec<(String, u32)>,
     /// Test wounds on the player's or the character view's body.
     pub debug_wounds: Vec<exa_character::blood::DebugWound>,
     /// Test blood jets from the player's or the character view's body.
@@ -414,6 +419,17 @@ fn parse_max_fps(value: &str) -> Option<i32> {
         Ok(n) if n >= 0 => Some(n),
         _ => None,
     }
+}
+
+/// Reads `level@frame,...`.
+fn parse_level_changes(list: &str) -> Option<Vec<(String, u32)>> {
+    list.split(',')
+        .filter(|s| !s.trim().is_empty())
+        .map(|entry| {
+            let (level, frame) = entry.trim().rsplit_once('@')?;
+            (!level.is_empty()).then_some((level.to_string(), frame.parse().ok()?))
+        })
+        .collect()
 }
 
 /// Reads `frame,...`.
@@ -651,6 +667,16 @@ fn main() -> AppExit {
                     Some(c) => options.clicks = c,
                     None => {
                         eprintln!("--click: cannot read {list:?} (frame,...)");
+                        return AppExit::from_code(2);
+                    }
+                }
+            }
+            "--level-change" => {
+                let list = args.next().unwrap_or_default();
+                match parse_level_changes(&list) {
+                    Some(changes) => options.level_changes = changes,
+                    None => {
+                        eprintln!("--level-change: cannot read {list:?} (level@frame,...)");
                         return AppExit::from_code(2);
                     }
                 }
@@ -1029,6 +1055,12 @@ mod tests {
         assert_eq!(parse_presses(""), Some(vec![]));
         assert_eq!(parse_clicks("300, 420,540"), Some(vec![300, 420, 540]));
         assert_eq!(parse_clicks("300,x"), None);
+        assert_eq!(
+            parse_level_changes("arenahub@200, arena1@450"),
+            Some(vec![("arenahub".into(), 200), ("arena1".into(), 450)])
+        );
+        assert_eq!(parse_level_changes("arenahub"), None);
+        assert_eq!(parse_level_changes("@20"), None);
         for bad in [
             "P", "P@x", "F13@1", "esc@2", "@3", "lmb@4", "XMB@5", "RMB@5-5", "RMB@9-4", "W@1-x",
         ] {

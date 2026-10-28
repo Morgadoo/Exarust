@@ -99,67 +99,6 @@ pub struct LevelChangeState {
     pub changes: u64,
 }
 
-/// Runs a teardown on a world directly, without a frame: the helper tests
-/// and a host shutdown use. The world must have the level's plugin resources
-/// (the physics world, the GI and navigation states).
-pub fn teardown_now(world: &mut World) {
-    let roots: Vec<Entity> = world
-        .query_filtered::<Entity, With<LevelEntity>>()
-        .iter(world)
-        .collect();
-    let mut stack = roots;
-    let mut all = Vec::new();
-    while let Some(entity) = stack.pop() {
-        all.push(entity);
-        if let Some(children) = world.get::<Children>(entity) {
-            stack.extend(children.iter());
-        }
-    }
-    for entity in all {
-        world.despawn(entity);
-    }
-    let handled: Vec<Entity> = world
-        .query_filtered::<Entity, With<exa_physics::CharacterHandles>>()
-        .iter(world)
-        .collect();
-    for entity in handled {
-        world
-            .entity_mut(entity)
-            .remove::<exa_physics::CharacterHandles>();
-    }
-    let mut physics = world
-        .remove_resource::<exa_physics::Physics>()
-        .unwrap_or_default();
-    physics.clear();
-    world.insert_resource(physics);
-    world.insert_resource(exa_physics::StaticBuild::default());
-    world.insert_resource(exa_physics::ColliderNodes::default());
-    world.insert_resource(exa_physics::prop::StandIns::default());
-    world.insert_resource(exa_physics::PendingKinematics::default());
-    world.remove_resource::<room_view::LevelRooms>();
-    world.remove_resource::<shadow_links::LevelWalls>();
-    world.remove_resource::<terrain::ground::TerrainGround>();
-    world.remove_resource::<sun_shadow::SunShadowRegion>();
-    world.remove_resource::<crate::environment::LevelSky>();
-    world.remove_resource::<crate::environment::LevelFog>();
-    let mut gi = world
-        .remove_resource::<gi_volume::GiState>()
-        .unwrap_or_default();
-    let mut nav_state = world.remove_resource::<nav::NavState>().unwrap_or_default();
-    let mut installed = world
-        .remove_resource::<nav::InstalledPathfinder>()
-        .unwrap_or_default();
-    {
-        let mut commands = world.commands();
-        gi_volume::unload_level(&mut commands, &mut gi);
-        nav::unload_nav(&mut commands, &mut nav_state, &mut installed);
-    }
-    world.flush();
-    world.insert_resource(gi);
-    world.insert_resource(nav_state);
-    world.insert_resource(installed);
-}
-
 #[allow(clippy::too_many_arguments)]
 fn apply_requests(
     mut commands: Commands,
