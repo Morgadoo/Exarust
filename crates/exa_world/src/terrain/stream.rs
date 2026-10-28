@@ -13,7 +13,10 @@
 //! centimetres, the 189-entry list, and the pools of 21 high-res and 43
 //! low-res texture sets.
 
-use bevy::math::Vec2;
+use bevy::math::{Mat3, Vec2, Vec3};
+use exa_physics::engine_math::round_to_i64;
+
+use super::composite::{LIGHT_SORT_BIAS, NO_LIGHT_DISTANCE};
 
 /// Distance (metres) within which a block gets a high-resolution composite:
 /// the original compares the squared distance in centimetres against
@@ -192,6 +195,141 @@ pub fn neighbours<T: Copy>(
         }
     }
     out
+}
+
+/// One plane of a light's reach. Each plane faces outwards: `normal · p +
+/// distance` is how far a point lies beyond that face (positive outside the
+/// light, negative inside).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LightPlane {
+    pub normal: Vec3,
+    pub distance: f32,
+}
+
+/// A light's convex reach, as the original keeps it: a list of outward
+/// planes. The plane list is what the block selector's distance test reads
+/// from each light of a block's room; a box-shaped light (the model Exarust
+/// builds from a point light) is [`LightVolume::box_volume`]. (Guess: the
+/// original's plane list is the light's convex reach volume; the pack shows
+/// the list and the distance arithmetic, not what fills it.)
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LightVolume {
+    pub planes: Vec<LightPlane>,
+}
+
+impl LightVolume {
+    /// The six outward planes of an axis-aligned box of `half_extents` about
+    /// `centre`, the shape Exarust uses for a point light's reach. Each
+    /// plane's outward normal is an axis sign and its reach is the box's
+    /// extent along that normal.
+    pub fn box_volume(centre: Vec3, half_extents: Vec3) -> Self {
+        let mut planes = Vec::with_capacity(6);
+        for axis in 0..3 {
+            for sign in [1.0f32, -1.0] {
+                let mut normal = Vec3::ZERO;
+                normal[axis] = sign;
+                let reach = sign * centre[axis] + half_extents[axis];
+                planes.push(LightPlane {
+                    normal,
+                    distance: -reach,
+                });
+            }
+        }
+        Self { planes }
+    }
+}
+
+/// An oriented box: a centre, half extents and its axes as the matrix's
+/// columns.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OrientedBox {
+    pub centre: Vec3,
+    pub half_extents: Vec3,
+    pub axes: Mat3,
+}
+
+impl OrientedBox {
+    /// A box aligned with the world axes, as a terrain block's bounds are.
+    pub fn axis_aligned(centre: Vec3, half_extents: Vec3) -> Self {
+        Self {
+            centre,
+            half_extents,
+            axes: Mat3::IDENTITY,
+        }
+    }
+}
+
+/// The distance from an oriented box to a light's reach, centimetres, as the
+/// original's plane walk computes it: for every plane the box centre lies in
+/// front of, the centre's plane distance less the box's support radius along
+/// the plane's normal in the box's own frame; the largest non-negative value
+/// wins, and a box overlapping the light answers 0. The sums are the
+/// instruction order, `(z + (y + x))`, and the support's component signs are
+/// copied onto the half extents (so a signed zero or NaN half extent keeps
+/// its own payload).
+pub fn light_distance(light: &LightVolume, block: &OrientedBox) -> f32 {
+    let mut best = 0.0f32;
+    for plane in &light.planes {
+        let n = plane.normal;
+        let c = block.centre;
+        let centre_distance = (n.z * c.z + (n.y * c.y + n.x * c.x)) + plane.distance;
+        // Only the planes the centre is beyond take part. The instruction
+        // lets a NaN through here; its clearance is then NaN and fails the
+        // final compare, so skipping it now is the same.
+        if centre_distance.is_nan() || centre_distance < 0.0 {
+            continue;
+        }
+        // The normal in the box's frame: its dot product with each of the
+        // box's axes (the matrix's columns), summed `(x + y) + z` as the
+        // vector-by-matrix helper does.
+        let axis = |a: Vec3| (a.x * n.x + a.y * n.y) + a.z * n.z;
+        let v = Vec3::new(
+            axis(block.axes.x_axis),
+            axis(block.axes.y_axis),
+            axis(block.axes.z_axis),
+        );
+        let extent = |value: f32, half: f32| {
+            f32::from_bits(half.to_bits() | (value.to_bits() & 0x8000_0000))
+        };
+        let e = Vec3::new(
+            extent(v.x, block.half_extents.x),
+            extent(v.y, block.half_extents.y),
+            extent(v.z, block.half_extents.z),
+        );
+        let support = v.z * e.z + (v.y * e.y + v.x * e.x);
+        let clearance = centre_distance - support;
+        if clearance.is_nan() || clearance < 0.0 {
+            continue;
+        }
+        if best < clearance {
+            best = clearance;
+        }
+    }
+    best
+}
+
+/// The nearest light's distance for a block: the smallest
+/// [`light_distance`] over the block's room lights, starting from the
+/// original's 65 000 cm when there is none. A NaN answer is ignored, as the
+/// original's `value < nearest` test is.
+pub fn nearest_light_distance<'a>(
+    lights: impl IntoIterator<Item = &'a LightVolume>,
+    block: &OrientedBox,
+) -> f32 {
+    let mut nearest = NO_LIGHT_DISTANCE;
+    for light in lights {
+        let distance = light_distance(light, block);
+        if distance < nearest {
+            nearest = distance;
+        }
+    }
+    nearest
+}
+
+/// The sort key a block hidden from the camera takes: its nearest light's
+/// rounded distance plus the light bias.
+pub fn light_sort_key(nearest: f32) -> u32 {
+    (round_to_i64(nearest) + i64::from(LIGHT_SORT_BIAS)) as u32
 }
 
 /// A tile's streaming bits, as the original's terrain worker and frame hook
@@ -383,6 +521,42 @@ impl TerrainStream {
             break;
         }
         Some(step)
+    }
+
+    /// Whether every tile of the terrain has been inserted, as the
+    /// block-until-loaded slot tests (`state & 0x80`).
+    pub fn all_inserted(&self) -> bool {
+        self.tiles
+            .iter()
+            .all(|tile| tile.state & tile_flags::INSERTED != 0)
+    }
+
+    /// The block-until-loaded slot: run the frame hook until every tile is
+    /// inserted, handing each handled action to `on_action` (the caller
+    /// attaches or detaches the tile's nodes). Bounded so a level with an
+    /// unbuildable tile cannot spin forever; returns the calls made.
+    pub fn wait_until_inserted(&mut self, mut on_action: impl FnMut(usize, TileAction)) -> usize {
+        let cap = self.tiles.len().saturating_mul(4) + 64;
+        let mut calls = 0;
+        while !self.all_inserted() && calls < cap {
+            if let Some(step) = self.frame()
+                && let Some((index, action)) = step.handled
+            {
+                on_action(index, action);
+            }
+            calls += 1;
+        }
+        calls
+    }
+
+    /// The per-tile refresh pass: every tile detaches its nodes (or clears
+    /// their visibility when it was not inserted) and the terrain's refresh
+    /// delay goes up by one, as the refresh slot does.
+    pub fn refresh_all(&mut self) {
+        for tile in &mut self.tiles {
+            tile.refresh();
+        }
+        self.delay += 1;
     }
 }
 
@@ -589,6 +763,77 @@ mod tests {
         assert_eq!(reload.action(), TileAction::Unload);
         reload.apply(TileAction::Unload);
         assert_eq!(reload.state, 0x282f);
+    }
+
+    #[test]
+    fn a_block_with_no_light_in_reach_ranks_at_sixty_five_thousand() {
+        assert_eq!(light_sort_key(65_000.0), 65_000 + LIGHT_SORT_BIAS);
+        assert_eq!(light_sort_key(0.0), LIGHT_SORT_BIAS);
+        // Ties to even: 2.5 rounds to 2.
+        assert_eq!(light_sort_key(2.5), 2 + LIGHT_SORT_BIAS);
+    }
+
+    #[test]
+    fn the_light_distance_is_the_largest_plane_clearance() {
+        let light = LightVolume::box_volume(Vec3::ZERO, Vec3::splat(100.0));
+        let block = OrientedBox::axis_aligned(Vec3::new(500.0, 0.0, 0.0), Vec3::splat(50.0));
+        assert_eq!(light_distance(&light, &block), 350.0);
+        // Touching the +X face is 0, and so is a block overlapping the light.
+        let touching = OrientedBox::axis_aligned(Vec3::new(150.0, 0.0, 0.0), Vec3::splat(50.0));
+        assert_eq!(light_distance(&light, &touching), 0.0);
+        let inside = OrientedBox::axis_aligned(Vec3::new(120.0, 0.0, 0.0), Vec3::splat(50.0));
+        assert_eq!(light_distance(&light, &inside), 0.0);
+        // A rotated box reaches further along +X: 50·cos45 + 50·sin45.
+        let turned = OrientedBox {
+            centre: Vec3::new(500.0, 0.0, 0.0),
+            half_extents: Vec3::splat(50.0),
+            axes: Mat3::from_rotation_z(45f32.to_radians()),
+        };
+        let d = light_distance(&light, &turned);
+        assert!(
+            (d - (400.0 - 50.0 * std::f32::consts::SQRT_2)).abs() < 1e-3,
+            "{d}"
+        );
+    }
+
+    #[test]
+    fn the_light_distance_takes_the_normal_into_the_boxs_own_axes() {
+        // A sheared box: its x axis is (1, 1, 0) and its y axis (0, 1, 0).
+        // The +X plane's normal in the box's frame is (n·x_axis, n·y_axis,
+        // n·z_axis) = (1, 0, 0), so the support is the x half extent alone:
+        // 500 − 100 − 10 = 390. (Multiplying by the matrix instead would
+        // give (1, 1, 0) and a support of 10 + 20.)
+        let light = LightVolume::box_volume(Vec3::ZERO, Vec3::splat(100.0));
+        let sheared = OrientedBox {
+            centre: Vec3::new(500.0, 0.0, 0.0),
+            half_extents: Vec3::new(10.0, 20.0, 30.0),
+            axes: Mat3::from_cols(Vec3::new(1.0, 1.0, 0.0), Vec3::Y, Vec3::Z),
+        };
+        assert_eq!(light_distance(&light, &sheared), 390.0);
+    }
+
+    #[test]
+    fn the_light_distance_skips_nan_and_picks_the_nearest_light() {
+        // A NaN plane is skipped (its centre distance never compares >= 0).
+        let nan = LightVolume {
+            planes: vec![LightPlane {
+                normal: Vec3::new(f32::NAN, 0.0, 0.0),
+                distance: 1000.0,
+            }],
+        };
+        let block = OrientedBox::axis_aligned(Vec3::ZERO, Vec3::splat(50.0));
+        assert_eq!(light_distance(&nan, &block), 0.0);
+        // The nearest of two box lights.
+        let far = LightVolume::box_volume(Vec3::new(1000.0, 0.0, 0.0), Vec3::splat(100.0));
+        let near = LightVolume::box_volume(Vec3::new(400.0, 0.0, 0.0), Vec3::splat(100.0));
+        let distance = nearest_light_distance([&far, &near], &block);
+        // Near light: 400 − 100 − 50 = 250.
+        assert_eq!(distance, 250.0);
+        // No lights at all.
+        assert_eq!(
+            nearest_light_distance(std::iter::empty(), &block),
+            NO_LIGHT_DISTANCE
+        );
     }
 
     #[test]

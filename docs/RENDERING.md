@@ -622,9 +622,20 @@ parallax target at the default texture detail, a low set 512² with a 256²
 parallax target, 21 high and 43 low sets, four layers a pass with additive
 groups, the program key's textured/masked/`AddPass`/`BaseNrm` bits, the
 per-layer colour/gloss/height/displacement/mask values, the block's palette
-and mask quads, its `TexPos`, and the selection's cut-offs, sort keys, set
-stealing and one-block-a-frame rule. Exarust has no offscreen sets because
-the per-pixel shader reproduces their content.
+and mask quads, its `TexPos` (block coordinates and the level's block side
+over the tile side), the compositor driver's pass list (normal, colour,
+gloss, displacement, four layers a group, each group's mask upload), the
+mask and height passes with their clears, blending, clamping and quads, and
+the selection's cut-offs, sort keys, set stealing and one-block-a-frame
+rule. `exa_render::terrain_composite` hosts the set targets themselves
+(colour RGBA8 — wgpu has no renderable RGB8 — normal RG8, gloss R8 and
+half-size displacement R8, at 1024²/512² from the default texture detail)
+and creates a set the first time the live selector holds it, one a frame,
+dropping it when the set returns to its pool. Because nothing draws them
+yet and the full pools are about 235 MB of targets, the allocation is
+opt-in with `EXA_TERRAIN_SETS=1`. No pass bakes into the sets yet: the per-pixel shader
+reproduces their content, and a bake pass would read the set assignments
+the selector keeps.
 
 **Geometry.** A tile is a 241 × 241 vertex grid over 240 × 240 cells of
 20 cm, and the original draws it as one terrain mesh per 6 m block: a
@@ -660,9 +671,34 @@ with the stream bit `0x800` (nothing clears it): a ready, inserted tile
 handled and ends the walk (a reload bit `0x1000` unloads it, the insert test
 is `(state & 0x309f) == 0xf`, and an upload is `(state & 0x4080) ==
 0x4080`); tiles with no work are passed. A refresh pass detaches a tile and
-bumps the delay counter, during which frames only count down. Exarust builds and inserts every tile behind its loading
-screen and then evaluates the composite per pixel; `terrain::stream` keeps
-the tile bits and the one-tile frame hook as a tested model, and
+bumps the delay counter, during which frames only count down.
+Exarust runs the same hook: a built tile is spawned with its nodes hidden
+and the hook shows one tile a step during the load, with the
+block-until-loaded wait flushing the rest before the level shows (a tile a
+grid level leaves empty is built and inserted at once). `TerrainStreaming`
+keeps the tiles, their blocks and the streaming bits after the load and
+runs the hook and the block selection every frame (the selection is
+skipped while the refresh delay counts down, as in the original):
+- the frame hook handles at most one tile; an insert or a ready tile marks
+  its blocks as wanting a composite, an unload hides the tile and takes its
+  blocks out of the selection, handing their sets back;
+- the priority slot (`TerrainStreaming::reprioritise`) gives every
+  selected block `round(6000 − d)` and sets the ring to half the spread of
+  the wanted, visible blocks' old priorities plus 6000. The original
+  reaches it only through the terrain's method table (no direct caller; the
+  frame hook does not call it), so it is not run every frame: the ring
+  advances by one a frame that bakes and keeps its value otherwise;
+- the selection's focus is the active camera with the lowest order moved
+  10 m along its back axis and snapped to a 6 m block centre; blocks within
+  44.4 m are selected and those within 15 m high, the list is sorted by the
+  original's keys, and one block a frame is baked;
+- a hidden selected block's key is its nearest room light's distance: the
+  oriented box against the light's outward planes, the plane distance
+  `(z + (y + x)) + w` less the box's support along the plane normal in the
+  box's frame (its dot products with the box's axes), the largest non-negative clearance (0 when they overlap).
+  The light's plane list itself is not in the pack; Exarust models a point
+  light's reach as a box of its stored radius (1.25 radii, the falloff
+  reach) — a labelled guess.
 `terrain::wireframe` draws a block's edges as lines when `EXA_TERRAIN_WIRE`
 is set (the original's debug wireframe hook).
 

@@ -19,7 +19,6 @@
 
 use bevy::math::Vec2;
 use exa_formats::terrain::{TerrainMaterial as PaletteMaterial, TerrainTexture};
-use exa_physics::engine_math::round_to_i64;
 
 /// Side of a composite texture set at level 0 (the original's stored 32).
 pub const TEXTURE_BASE: u32 = 32;
@@ -47,11 +46,11 @@ pub const DETAIL_TEXTURE: &str = "trndtl01d.rfi";
 /// with no visible block.
 pub const RING_START: i32 = 6000;
 /// A block with no light in reach ranks at this many centimetres.
-const NO_LIGHT_DISTANCE: f32 = 65_000.0;
+pub const NO_LIGHT_DISTANCE: f32 = 65_000.0;
 /// Blocks without a light rank above the visible ones by this much.
-const LIGHT_SORT_BIAS: u32 = 0x1_0000;
+pub const LIGHT_SORT_BIAS: u32 = 0x1_0000;
 /// The largest visible-block sort key (0xffff).
-const SORT_LIMIT: u32 = 0xffff;
+pub const SORT_LIMIT: u32 = 0xffff;
 /// The width of the original's scratch mask atlas (2 MB).
 pub const MASK_ATLAS_BYTES: usize = 0x20_0000;
 /// The blur kernel's radius, in terrain vertices (the stored 120).
@@ -273,6 +272,39 @@ impl CompositePools {
     }
 }
 
+/// One set slot of the pool layout the static terrain allocates at load.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PoolSlot {
+    pub id: u32,
+    pub level: i32,
+}
+
+/// The records the static terrain lays out at load: the 189-entry selected
+/// list and the 64 set slots, 21 at the high level and 43 at the low one, in
+/// id order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PoolLayout {
+    pub selected_capacity: usize,
+    pub slots: Vec<PoolSlot>,
+}
+
+impl CompositePools {
+    /// The load-time layout of the pools and the selection list.
+    pub fn layout(&self) -> PoolLayout {
+        PoolLayout {
+            selected_capacity: MAX_SELECTED,
+            slots: self
+                .sets
+                .iter()
+                .map(|set| PoolSlot {
+                    id: set.id,
+                    level: set.level,
+                })
+                .collect(),
+        }
+    }
+}
+
 /// The per-material mask plane's texels: the original keeps 256 × 256 bytes
 /// per material channel.
 pub const MASK_PLANE_TEXELS: usize = 256 * 256;
@@ -396,6 +428,315 @@ pub const HEIGHT_CLEAR: f32 = 0.5;
 /// The height pass's opacity boost (`min(1.5·a, 1)`).
 pub const HEIGHT_OPACITY_BOOST: f32 = 1.5;
 
+/// The height pass's quad extends 4 + 1/60 palette units past the tile: the
+/// original's stored 4.016667.
+pub const HEIGHT_QUAD_SCALE: f32 = f32::from_bits(0x4080_8889);
+
+/// The height pass's per-corner colour scale (the original's stored
+/// 0.98770493).
+pub const HEIGHT_QUAD_TINT: f32 = f32::from_bits(0x3f7c_da3b);
+
+/// The height pass's texcoord scale at a composite level: `(241 >> level)`
+/// over the upload's side `(256 >> level)`, i.e. 30/32 = 0.9375 at level 3
+/// and 7/8 at level 5.
+pub fn height_uv_scale(level: i32) -> f32 {
+    if !(0..=7).contains(&level) {
+        return 0.0;
+    }
+    ((0xf1u32 >> level) as f32) / ((0x100u32 >> level) as f32)
+}
+
+/// One vertex of a composite pass's full-screen-in-block-space quad.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PassVertex {
+    /// The vertex position, in the palette's tile-scaled coordinates (the
+    /// height pass works in its own fixed 0…4.0167 square).
+    pub position: Vec2,
+    pub texcoord: Vec2,
+    /// The two colour channels the original's immediate-draw helper takes.
+    pub colour: Vec2,
+}
+
+/// One composite pass's quad, its four vertices in the original's emission
+/// order: low x and low v, high x and low v, high x and high v, low x and
+/// high v.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PassQuad {
+    pub vertices: [PassVertex; 4],
+}
+
+/// The quad the set passes and the mask pass share: the block's palette
+/// slice as positions, its mask window as texcoords, and a 0/1 corner
+/// colour.
+pub fn block_pass_quad(level: i32, bx: u32, by: u32) -> PassQuad {
+    let quad = block_quad(level, bx, by);
+    let corner = [
+        Vec2::new(0.0, 0.0),
+        Vec2::new(1.0, 0.0),
+        Vec2::new(1.0, 1.0),
+        Vec2::new(0.0, 1.0),
+    ];
+    PassQuad {
+        vertices: std::array::from_fn(|i| PassVertex {
+            position: quad.vertices[i],
+            texcoord: quad.mask_uv[i],
+            colour: corner[i],
+        }),
+    }
+}
+
+/// The height pass's quad: a fixed square 4.016667 palette units a side,
+/// texcoords over `241 / 256` of the height target, and the original's
+/// 0.987705 corner colours. The bias the original subtracts from the tile
+/// coordinate is overwritten before the draw, so only this square is used.
+pub fn height_pass_quad(level: i32) -> PassQuad {
+    let s = height_uv_scale(level);
+    let t = HEIGHT_QUAD_TINT;
+    PassQuad {
+        vertices: [
+            PassVertex {
+                position: Vec2::new(0.0, 0.0),
+                texcoord: Vec2::new(0.0, 0.0),
+                colour: Vec2::new(0.0, 0.0),
+            },
+            PassVertex {
+                position: Vec2::new(HEIGHT_QUAD_SCALE, 0.0),
+                texcoord: Vec2::new(s, 0.0),
+                colour: Vec2::new(t, 0.0),
+            },
+            PassVertex {
+                position: Vec2::new(HEIGHT_QUAD_SCALE, -HEIGHT_QUAD_SCALE),
+                texcoord: Vec2::new(s, s),
+                colour: Vec2::new(t, t),
+            },
+            PassVertex {
+                position: Vec2::new(0.0, -HEIGHT_QUAD_SCALE),
+                texcoord: Vec2::new(0.0, s),
+                colour: Vec2::new(0.0, t),
+            },
+        ],
+    }
+}
+
+/// One pass of a block's bake, as the original's compositor driver runs it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PassDraw {
+    pub program: PassProgram,
+    /// The first layer of the group, and how many layers it has (1 to 4).
+    pub start: usize,
+    pub layers: usize,
+    pub key: PassKey,
+    /// The set's level and the target side the pass writes.
+    pub level: i32,
+    pub side: u32,
+    /// The set target the pass writes; the mask and height passes write the
+    /// caller's working target instead.
+    pub target: Option<CompositeTarget>,
+    pub clear: Option<[f32; 4]>,
+    /// The additive groups blend; the base groups overwrite.
+    pub blend: bool,
+    /// The height pass clamps its texture to the edge; the others repeat.
+    pub wrap_clamp: bool,
+    /// The mask atlas region uploaded before the group's textures are bound,
+    /// with one channel per layer of the group.
+    pub mask: Option<MaskRegion>,
+    pub quad: PassQuad,
+}
+
+/// The passes the compositor driver runs for one block, in its order: the
+/// normal pass, the colour pass, the gloss pass (when the gloss feature is
+/// on) and the displacement pass (when on), each in groups of four layers
+/// with every group after the first additive. `layers[k]` describes layer
+/// `k`; the per-layer uniform values are [`LayerPass`]'s.
+pub fn set_passes(
+    features: CompositeFeatures,
+    base_normal: bool,
+    level: i32,
+    bx: u32,
+    by: u32,
+    layers: &[LayerFlags],
+) -> Vec<PassDraw> {
+    let total = layers.len();
+    let mut out = Vec::new();
+    for program in [
+        PassProgram::Normal,
+        PassProgram::Colour,
+        PassProgram::Gloss,
+        PassProgram::Displacement,
+    ] {
+        let target = match program {
+            PassProgram::Normal if !features.normal => continue,
+            PassProgram::Gloss if !features.gloss => continue,
+            PassProgram::Displacement if !features.displacement => continue,
+            _ => program.target(features),
+        };
+        let side = target.map_or(0, |t| t.size(level));
+        let mut start = 0;
+        while start < total {
+            let count = (total - start).min(4);
+            let group = &layers[start..start + count];
+            let key = pass_key(program, start, total, group, base_normal);
+            out.push(PassDraw {
+                program,
+                start,
+                layers: count,
+                key,
+                level,
+                side,
+                target,
+                clear: None,
+                blend: key.add,
+                wrap_clamp: false,
+                mask: Some(MaskRegion::new(level, bx, by, count)),
+                quad: block_pass_quad(level, bx, by),
+            });
+            start += count;
+        }
+    }
+    out
+}
+
+/// The mask pass for one group of up to four layers: cleared to 0, blended,
+/// and drawn over the block's palette slice with its mask window as
+/// texcoords. It writes the caller's working target, at the set's level.
+pub fn mask_pass(
+    level: i32,
+    bx: u32,
+    by: u32,
+    start: usize,
+    total: usize,
+    layers: &[LayerFlags],
+) -> PassDraw {
+    let count = total.saturating_sub(start).min(4);
+    let group = layers.get(start..start + count).unwrap_or(&[]);
+    let key = pass_key(PassProgram::Mask, start, total, group, false);
+    PassDraw {
+        program: PassProgram::Mask,
+        start,
+        layers: count,
+        key,
+        level,
+        side: set_size(level),
+        target: None,
+        clear: Some([0.0; 4]),
+        blend: true,
+        wrap_clamp: false,
+        mask: None,
+        quad: block_pass_quad(level, bx, by),
+    }
+}
+
+/// The height pass: cleared to 0.5 in every channel, blended, clamped, and
+/// drawn over the original's fixed 4.016667 square. `layers[k]` says whether
+/// layer `k` has a height map.
+pub fn height_pass(level: i32, start: usize, total: usize, layers: &[LayerFlags]) -> PassDraw {
+    let count = total.saturating_sub(start).min(4);
+    let group = layers.get(start..start + count).unwrap_or(&[]);
+    let key = pass_key(PassProgram::Height, start, total, group, false);
+    PassDraw {
+        program: PassProgram::Height,
+        start,
+        layers: count,
+        key,
+        level,
+        side: set_size(level),
+        target: None,
+        clear: Some([HEIGHT_CLEAR; 4]),
+        blend: true,
+        wrap_clamp: true,
+        mask: None,
+        quad: height_pass_quad(level),
+    }
+}
+
+/// The region of the mask atlas one block's mask pass samples from: the
+/// block's texel offset, the upload's side and the block's cells.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MaskRegion {
+    pub offset: usize,
+    pub side: u32,
+    pub cells: u32,
+    /// Channels the uploaded texture carries: one per layer of the group.
+    pub channels: u32,
+}
+
+impl MaskRegion {
+    /// The region of block (`bx`, `by`) at `level` for a group of `layers`
+    /// layers.
+    pub fn new(level: i32, bx: u32, by: u32, layers: usize) -> Self {
+        Self {
+            offset: mask_texel_offset(bx, by),
+            side: mask_side(level),
+            cells: mask_cells(level),
+            channels: layers.clamp(1, 4) as u32,
+        }
+    }
+}
+
+/// One block's bake: the passes the driver runs and the mipmaps generated
+/// afterwards (the colour and normal targets, when their filter words ask).
+#[derive(Clone, Debug, PartialEq)]
+pub struct BakePlan {
+    pub set: u32,
+    pub level: i32,
+    pub bx: u32,
+    pub by: u32,
+    pub mask: MaskRegion,
+    pub passes: Vec<PassDraw>,
+    /// Mipmaps for the normal and colour targets, from the two filter words.
+    pub mipmaps: [bool; 2],
+}
+
+/// The bake's program flags: the normal pass's base-normal bit and the two
+/// composite filter words (0x30 at the shipped settings; bit 0x40 asks for
+/// mipmaps).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BakeFilters {
+    pub base_normal: bool,
+    pub normal: u32,
+    pub colour: u32,
+}
+
+impl Default for BakeFilters {
+    fn default() -> Self {
+        Self {
+            base_normal: false,
+            normal: FILTER_WORD,
+            colour: FILTER_WORD,
+        }
+    }
+}
+
+impl BakePlan {
+    /// The bake of block (`bx`, `by`) into `set` of `pools`, as the
+    /// composite wrappers take it: the set's level, the driver's passes and
+    /// the program flags.
+    pub fn new(
+        pools: &CompositePools,
+        set: u32,
+        bx: u32,
+        by: u32,
+        layers: &[LayerFlags],
+        filters: BakeFilters,
+    ) -> Option<Self> {
+        let record = pools.set(set)?;
+        let features = CompositeFeatures {
+            normal: record.normal,
+            gloss: record.gloss,
+            displacement: record.displacement,
+        };
+        Some(Self {
+            set,
+            level: record.level,
+            bx,
+            by,
+            mask: MaskRegion::new(record.level, bx, by, layers.len().min(4)),
+            passes: set_passes(features, filters.base_normal, record.level, bx, by, layers),
+            mipmaps: [mipmaps(filters.normal), mipmaps(filters.colour)],
+        })
+    }
+}
+
 /// The targets a set copy writes, with the source's and the target set's
 /// sides: the original binds each target of the destination framebuffer,
 /// attaches the source's same target and draws a full-screen quad
@@ -429,13 +770,14 @@ pub enum PassProgram {
 }
 
 impl PassProgram {
-    /// Whether the pass samples each layer's own texture (the mask and
-    /// height passes sample only their mask layer).
+    /// Whether the pass samples each layer's own texture (the mask pass
+    /// samples only the blend mask).
     pub fn samples_layer(self) -> bool {
-        !matches!(self, Self::Mask | Self::Height)
+        !matches!(self, Self::Mask)
     }
 
-    /// The layer texture slot the pass samples.
+    /// The layer texture slot the pass samples. The height pass reads the
+    /// layer's height map; only the mask pass has no texture of its own.
     pub fn layer_slot(self) -> Option<exa_formats::terrain::TerrainTexture> {
         use exa_formats::terrain::TerrainTexture as T;
         match self {
@@ -443,7 +785,8 @@ impl PassProgram {
             Self::Colour => Some(T::Diffuse),
             Self::Gloss => Some(T::Gloss),
             Self::Displacement => Some(T::Bump),
-            Self::Mask | Self::Height => None,
+            Self::Height => Some(T::Height),
+            Self::Mask => None,
         }
     }
 
@@ -518,6 +861,68 @@ impl PassKey {
             base_normal: word & 0x2000_0000 != 0,
         }
     }
+}
+
+/// A pass program's sampler and uniform bindings, as the original's program
+/// builder assigns them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ProgramBindings {
+    /// The layer textures' sampler names and texture units.
+    pub samplers: Vec<(String, u32)>,
+    /// The uniform names the program sets, in the order it sets them. `Amnt`
+    /// is the normal pass's per-layer amount; the other programs use `Colr`.
+    pub uniforms: Vec<&'static str>,
+}
+
+/// The bindings of one program built from a pass key, as the original's
+/// program builder does it:
+/// - every textured layer of a normal, colour, gloss or displacement pass
+///   binds `Tex<layer>` at unit `2·layer + 1`, and every masked layer binds
+///   `Msk<layer>` at `2·layer + 2`;
+/// - the mask pass (kind 3) binds only `Msk<layer>` for its masked lanes at
+///   `layer + 1`, and the height pass (kind 2) only `Tex<layer>` for its
+///   textured lanes at `layer + 1` (the unit the height pass binds each
+///   lane's height map to);
+/// - the blend mask atlas binds as `Mask` at unit 0;
+/// - the uniforms are `Tile`, `Str`, then `Amnt` for the normal pass or
+///   `Colr` for the others, and `BNrm` at unit 9 when the base normal is on.
+pub fn program_bindings(program: PassProgram, key: PassKey, base_normal: bool) -> ProgramBindings {
+    let mut samplers = Vec::new();
+    for lane in 0..key.layers as u32 {
+        let textured = key.textured & (1 << lane) != 0;
+        let masked = key.masked & (1 << lane) != 0;
+        match program {
+            PassProgram::Mask => {
+                if masked {
+                    samplers.push((format!("Msk{lane}"), lane + 1));
+                }
+            }
+            PassProgram::Height => {
+                if textured {
+                    samplers.push((format!("Tex{lane}"), lane + 1));
+                }
+            }
+            _ => {
+                if textured {
+                    samplers.push((format!("Tex{lane}"), lane * 2 + 1));
+                }
+                if masked {
+                    samplers.push((format!("Msk{lane}"), lane * 2 + 2));
+                }
+            }
+        }
+    }
+    samplers.push(("Mask".to_string(), 0));
+    let mut uniforms = vec!["Tile", "Str"];
+    uniforms.push(if program == PassProgram::Normal {
+        "Amnt"
+    } else {
+        "Colr"
+    });
+    if program == PassProgram::Normal && base_normal {
+        uniforms.push("BNrm");
+    }
+    ProgramBindings { samplers, uniforms }
 }
 
 /// One layer's per-pass values, as the compositor uploads them.
@@ -619,7 +1024,7 @@ pub fn pass_key(
         if program.samples_layer() && flags.textured {
             key.textured |= 1 << lane;
         }
-        if flags.masked {
+        if flags.masked && program != PassProgram::Height {
             key.masked |= 1 << lane;
         }
     }
@@ -672,8 +1077,11 @@ pub struct BlockComposite {
     pub visible: bool,
     /// Its priority: the distance rank, then the composite ring once baked.
     pub priority: u32,
-    /// The nearest light's distance (metres? centimetres: the original's
-    /// light test answers centimetres), or `None` for no light in reach.
+    /// Its distance rank this frame: `round(6000 − d)` centimetres within
+    /// 60 m, else 0.
+    pub distance: i16,
+    /// The nearest light's distance, centimetres, or `None` for no light in
+    /// reach.
     pub light_distance: Option<f32>,
     state: u32,
     set: Option<u32>,
@@ -690,6 +1098,7 @@ impl BlockComposite {
             enabled: true,
             visible: false,
             priority: 0,
+            distance: 0,
             light_distance: None,
             state: block_flags::WANTED | block_flags::BLANK,
             set: None,
@@ -734,6 +1143,10 @@ pub struct CompositeSelector {
     pools: CompositePools,
     cursor: usize,
     ring: i32,
+    /// The blocks whose composite was written in the last selection.
+    baked: Vec<usize>,
+    /// Scratch for the priority pass.
+    scratch: Vec<super::stream::BlockPriority>,
 }
 
 impl Default for CompositeSelector {
@@ -753,6 +1166,8 @@ impl CompositeSelector {
             pools,
             cursor: 0,
             ring: RING_START,
+            baked: Vec::new(),
+            scratch: Vec::new(),
         }
     }
 
@@ -769,6 +1184,12 @@ impl CompositeSelector {
         &self.selected
     }
 
+    /// The blocks whose composite was written in the last selection, in the
+    /// order written (a stolen set's copy counts too).
+    pub fn last_baked(&self) -> &[usize] {
+        &self.baked
+    }
+
     pub fn pools(&self) -> &CompositePools {
         &self.pools
     }
@@ -782,15 +1203,46 @@ impl CompositeSelector {
     }
 
     /// Runs one frame of the selection from `focus` (metres, as
-    /// [`super::stream::composite_focus`] gives it; the blocks are walked in their list
-    /// order, which the original takes tile by tile): neighbours in and out of the list,
-    /// sort keys, the composite order, and at most one block baked once a
-    /// block that is not blank needs work. Returns whether anything was baked.
+    /// [`super::stream::composite_focus`] gives it; the blocks are walked in
+    /// their list order, which the original takes tile by tile): neighbours
+    /// in and out of the list, sort keys, the composite order, and at most
+    /// one block baked once a block that is not blank needs work. Returns
+    /// whether anything was baked.
     pub fn reselect(&mut self, focus: Vec2) -> bool {
         self.select(focus);
         self.assign_keys();
         self.order();
         self.composite()
+    }
+
+    /// The priority pass: the selected list's distance ranks from `focus`,
+    /// then the selected blocks that want work and are visible set the
+    /// priority base from the lowest and highest of their old priorities,
+    /// found in one pass where a rank that lowers the lowest is not also
+    /// tried as the highest. The base becomes the composite ring (as the
+    /// original writes its ring word) and the selected blocks' ranks follow
+    /// it. Blocks outside the list keep their old rank, as the original's
+    /// priority slot only walks the selected list. Returns the base.
+    pub fn rank(&mut self, focus: Vec2) -> u32 {
+        self.scratch.clear();
+        self.scratch.extend(self.selected.iter().map(|&index| {
+            let block = &self.blocks[index];
+            super::stream::BlockPriority {
+                centre: block.centre,
+                distance: 0,
+                rank: block.priority,
+                wants: block.state & block_flags::WANTED != 0,
+                visible: block.visible,
+            }
+        }));
+        let base = super::stream::update_priorities(&mut self.scratch, focus);
+        for (&index, ranked) in self.selected.iter().zip(&self.scratch) {
+            let block = &mut self.blocks[index];
+            block.distance = ranked.distance;
+            block.priority = ranked.rank;
+        }
+        self.ring = base as i32;
+        base
     }
 
     /// The distance test: a block within 44.4 m is selected, a NaN distance
@@ -827,23 +1279,44 @@ impl CompositeSelector {
                     }
                     block.state = (block.state & !block_flags::LOW_RES) | block_flags::HIGH_RES;
                 }
-            } else if let Some(at) = self.blocks[index].selection.take() {
-                let last = self.selected.len() - 1;
-                if at != last {
-                    let moved = self.selected[last];
-                    self.selected[at] = moved;
-                    self.blocks[moved].selection = Some(at);
-                }
-                self.selected.pop();
-                let state = self.blocks[index].state;
-                self.blocks[index].state = block_flags::WANTED | block_flags::BLANK;
-                if let Some(set) = self.blocks[index].set.take() {
-                    if state & block_flags::LOW_SET != 0 {
-                        self.pools.give_low(set);
-                    } else if state & block_flags::HIGH_SET != 0 {
-                        self.pools.give_high(set);
-                    }
-                }
+            } else {
+                self.remove(index);
+            }
+        }
+    }
+
+    /// Takes a block out of the selected list, hands its set back to its
+    /// pool and returns it to the wanted, blank state. This is the removal
+    /// the out-of-reach branch and a tile unload share.
+    fn remove(&mut self, index: usize) {
+        let Some(at) = self.blocks[index].selection.take() else {
+            return;
+        };
+        let last = self.selected.len() - 1;
+        if at != last {
+            let moved = self.selected[last];
+            self.selected[at] = moved;
+            self.blocks[moved].selection = Some(at);
+        }
+        self.selected.pop();
+        let state = self.blocks[index].state;
+        self.blocks[index].state = block_flags::WANTED | block_flags::BLANK;
+        if let Some(set) = self.blocks[index].set.take() {
+            if state & block_flags::LOW_SET != 0 {
+                self.pools.give_low(set);
+            } else if state & block_flags::HIGH_SET != 0 {
+                self.pools.give_high(set);
+            }
+        }
+    }
+
+    /// Removes blocks from the selection, as the frame hook does when a tile
+    /// is unloaded: each leaves the list, hands its set back and becomes
+    /// wanted and blank. Blocks that are not selected are left alone.
+    pub fn drop_blocks(&mut self, blocks: &[usize]) {
+        for &index in blocks {
+            if index < self.blocks.len() {
+                self.remove(index);
             }
         }
     }
@@ -863,7 +1336,7 @@ impl CompositeSelector {
                 {
                     nearest = distance;
                 }
-                (round_to_i64(nearest) + i64::from(LIGHT_SORT_BIAS)) as u32
+                super::stream::light_sort_key(nearest)
             } else if block.state & block_flags::BLANK != 0 {
                 0
             } else {
@@ -901,6 +1374,7 @@ impl CompositeSelector {
     /// walk (the original's "one block a frame" rule).
     fn composite(&mut self) -> bool {
         self.cursor = self.selected.len().saturating_sub(1);
+        self.baked.clear();
         let mut changed = false;
         let mut at = 0;
         while at < self.selected.len() {
@@ -957,7 +1431,12 @@ impl CompositeSelector {
                 return true;
             }
             // The original marks the frame as changed even when no high set
-            // could be had (only the low branch's failure leaves it alone).
+            // could be had. The low branch's failure is the one case that
+            // leaves the frame unchanged, so the walk goes on to the next
+            // block instead of stopping at a later non-zero key.
+            if state & block_flags::HIGH_RES == 0 {
+                return false;
+            }
             return true;
         }
         if state & 0xf00 == 0x600 {
@@ -1077,27 +1556,50 @@ impl CompositeSelector {
             .find(|&bi| self.blocks[bi].state & 0xf00 == 0x900)
     }
 
-    /// Records a bake: the block's priority becomes the ring it was baked in.
+    /// Records a bake: the block's priority becomes the ring it was baked in,
+    /// and its composite counts as written this frame.
     fn composited(&mut self, block: usize) {
         self.blocks[block].priority = self.ring as u32;
+        self.baked.push(block);
     }
 }
 
 /// The original's `TexPos`: the lit program's composite coordinate for a
-/// block. A whole-tile block (level 0) is (0.5, 0.5); at deeper levels the
+/// block. A whole-tile block (level 0) is (0.5, 0.5). At deeper levels the
 /// block's tile coordinate is shifted down to its own level and subtracted
-/// from half the split. The third component the original computes (the
-/// block's side over the tile side) is not uploaded.
-pub fn tex_pos(terrain_level: u32, level: u32, bx: u32, by: u32) -> Vec2 {
+/// from half the split; the third component is the level's block side over
+/// the tile side (`2^level / 4800`), which turns the block coordinate into
+/// the tile's texture coordinate.
+pub fn tex_pos(terrain_level: u32, level: u32, bx: u32, by: u32) -> bevy::math::Vec3 {
+    let scale = (1u32 << level.min(31)) as f32 / super::manager::TILE_CM;
     if level < 1 {
-        return Vec2::splat(0.5);
+        return bevy::math::Vec3::new(0.5, 0.5, scale);
     }
     let half = 1u32 << (level - 1);
     let shift = terrain_level.saturating_sub(level);
-    Vec2::new(
+    bevy::math::Vec3::new(
         (i64::from(half) - i64::from(bx >> shift)) as f32,
         (i64::from(half) - i64::from(by >> shift)) as f32,
+        scale,
     )
+}
+
+/// The mask upload's side at a composite level: `256 >> level`.
+pub fn mask_side(level: i32) -> u32 {
+    if !(0..=8).contains(&level) {
+        0
+    } else {
+        (MASK_UPLOAD << TILE_LEVEL) >> level
+    }
+}
+
+/// The block's cells on the mask upload at a composite level: `240 >> level`.
+pub fn mask_cells(level: i32) -> u32 {
+    if !(0..=8).contains(&level) {
+        0
+    } else {
+        (BLOCK_CELLS * BLOCK_SIDE) >> level
+    }
 }
 
 /// One composite pass's quad: its four vertices in the palette's tile-scaled
@@ -1108,27 +1610,33 @@ pub struct BlockQuad {
     /// them (low x and high v, high x and high v, high x and low v, low x and
     /// low v). The layer sampler multiplies these by its tiling.
     pub vertices: [Vec2; 4],
-    /// The same corners in the 32 × 32 mask upload, vertex centred.
+    /// The same corners in the level's mask upload, vertex centred.
     pub mask_uv: [Vec2; 4],
 }
 
 impl Default for BlockQuad {
     fn default() -> Self {
-        block_quad(0, 0)
+        block_quad(TILE_LEVEL as i32, 0, 0)
     }
 }
 
-/// The quad of block (`bx`, `by`) at the original's 8 blocks a side, palette
-/// scale 4, 30 cells and 32-texel mask upload.
-pub fn block_quad(bx: u32, by: u32) -> BlockQuad {
+/// The quad of block (`bx`, `by`) in a set at `level`, at the original's
+/// 8 blocks a side, palette scale 4 and a mask upload of `256 >> level`
+/// texels holding `240 >> level` block cells. The original's own quad
+/// builder subtracts a texel bias from the tile coordinate and then
+/// overwrites it with the tile-unit corners, so only these corners reach the
+/// draw.
+pub fn block_quad(level: i32, bx: u32, by: u32) -> BlockQuad {
     let side = BLOCK_SIDE as f32;
     let step = PALETTE_SCALE / side;
     let x0 = bx as f32 * step;
     let x1 = (bx + 1) as f32 * step;
     let v0 = -(by as f32 * step);
     let v1 = -((by + 1) as f32 * step);
-    let texel = 0.5 / MASK_UPLOAD as f32;
-    let span = (0.5 + BLOCK_CELLS as f32) / MASK_UPLOAD as f32;
+    let upload = mask_side(level).max(1) as f32;
+    let cells = mask_cells(level);
+    let texel = 0.5 / upload;
+    let span = (0.5 + cells as f32) / upload;
     BlockQuad {
         vertices: [
             Vec2::new(x0, v0),
@@ -1199,6 +1707,7 @@ impl Default for ScratchSizes {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bevy::math::Vec3;
 
     fn pools() -> CompositePools {
         CompositePools::new(detail_size(3), CompositeFeatures::default())
@@ -1256,6 +1765,18 @@ mod tests {
     }
 
     #[test]
+    fn the_pool_layout_has_64_slots_and_a_189_entry_list() {
+        let layout = pools().layout();
+        assert_eq!(layout.selected_capacity, 189);
+        assert_eq!(layout.slots.len(), 64);
+        assert!(layout.slots[..21].iter().all(|slot| slot.level == 5));
+        assert!(layout.slots[21..].iter().all(|slot| slot.level == 4));
+        assert_eq!(layout.slots[0], PoolSlot { id: 0, level: 5 });
+        assert_eq!(layout.slots[21], PoolSlot { id: 21, level: 4 });
+        assert_eq!(layout.slots[63], PoolSlot { id: 63, level: 4 });
+    }
+
+    #[test]
     fn the_pools_hand_sets_out_from_the_ends() {
         let mut pools = pools();
         assert_eq!((pools.high_free(), pools.low_free()), (21, 43));
@@ -1295,8 +1816,8 @@ mod tests {
         assert_eq!(key.layers, 2);
         assert!(key.add);
         assert_eq!(key.word(), 0x1000_0332);
-        // The mask and height passes sample only the blend mask, so they set
-        // no Textured bit.
+        // The mask pass samples only the blend mask, so it sets no Textured
+        // bit; the height pass samples the height map, so it does.
         let key = pass_key(PassProgram::Mask, 0, 3, &all[..3], false);
         assert_eq!(key.word(), 0x703);
         // Six layers are a base group of four and an additive group of two.
@@ -1307,34 +1828,235 @@ mod tests {
         assert_eq!(groups[1].word(), 0x1000_0332);
         assert_eq!(
             pass_groups(PassProgram::Height, &all[..1], false)[0].word(),
-            0x101
+            0x11
         );
         assert_eq!(PassKey::from_word(key.word()), key);
         assert_eq!(PassKey::from_word(0), PassKey::default());
         assert!(PassProgram::Normal.samples_layer());
         assert!(!PassProgram::Mask.samples_layer());
+        assert!(PassProgram::Height.samples_layer());
         assert_eq!(
             PassProgram::Displacement.layer_slot(),
             Some(exa_formats::terrain::TerrainTexture::Bump)
         );
-        assert_eq!(PassProgram::Height.layer_slot(), None);
+        assert_eq!(
+            PassProgram::Height.layer_slot(),
+            Some(exa_formats::terrain::TerrainTexture::Height)
+        );
+    }
+
+    #[test]
+    fn the_driver_runs_its_passes_in_order_and_sizes_their_targets() {
+        let all = [LayerFlags {
+            textured: true,
+            masked: true,
+        }; 6];
+        let passes = set_passes(CompositeFeatures::default(), false, 5, 3, 5, &all);
+        // Four programs, each split into a group of four and one of two.
+        assert_eq!(passes.len(), 8);
+        let programs: Vec<PassProgram> = passes.iter().map(|p| p.program).collect();
+        assert_eq!(
+            programs,
+            [
+                PassProgram::Normal,
+                PassProgram::Normal,
+                PassProgram::Colour,
+                PassProgram::Colour,
+                PassProgram::Gloss,
+                PassProgram::Gloss,
+                PassProgram::Displacement,
+                PassProgram::Displacement,
+            ]
+        );
+        assert_eq!(
+            passes.iter().map(|p| p.side).collect::<Vec<_>>(),
+            [1024, 1024, 1024, 1024, 1024, 1024, 512, 512]
+        );
+        assert_eq!(passes[0].layers, 4);
+        assert!(!passes[0].blend);
+        assert_eq!(passes[0].key.word(), 0xff4);
+        assert_eq!(passes[1].layers, 2);
+        assert!(passes[1].blend);
+        assert_eq!(passes[1].key.word(), 0x1000_0332);
+        // Every pass draws the block's palette slice and mask window with a
+        // 0/1 corner colour.
+        let quad = block_pass_quad(5, 3, 5);
+        assert_eq!(passes[0].quad, quad);
+        assert_eq!(quad.vertices[1].position, Vec2::new(2.0, -2.5));
+        assert_eq!(quad.vertices[1].texcoord, Vec2::new(7.5 / 8.0, 0.5 / 8.0));
+        assert_eq!(quad.vertices[2].colour, Vec2::new(1.0, 1.0));
+        // A disabled feature drops its program.
+        let few = set_passes(
+            CompositeFeatures {
+                normal: false,
+                gloss: false,
+                displacement: true,
+            },
+            true,
+            5,
+            0,
+            0,
+            &all[..3],
+        );
+        let programs: Vec<PassProgram> = few.iter().map(|p| p.program).collect();
+        assert_eq!(programs, [PassProgram::Colour, PassProgram::Displacement]);
+        // The base normal flag reaches the normal pass's key only.
+        let with_base = set_passes(CompositeFeatures::default(), true, 5, 0, 0, &all[..1]);
+        assert_eq!(with_base[0].key.word(), 0x2000_0111);
+        assert_eq!(with_base[1].key.word(), 0x0111);
+    }
+
+    #[test]
+    fn the_mask_and_height_passes_clear_blend_and_clamp_as_the_original() {
+        let all = [LayerFlags {
+            textured: true,
+            masked: true,
+        }; 4];
+        let mask = mask_pass(5, 3, 5, 0, 4, &all);
+        assert_eq!(mask.key.word(), 0xf04);
+        assert_eq!(mask.clear, Some([0.0; 4]));
+        assert!(mask.blend && !mask.wrap_clamp);
+        assert_eq!(mask.target, None);
+        assert_eq!(mask.quad, block_pass_quad(5, 3, 5));
+        let height = height_pass(5, 0, 4, &all);
+        assert_eq!(height.key.word(), 0xf4);
+        assert_eq!(height.clear, Some([0.5; 4]));
+        assert!(height.blend && height.wrap_clamp);
+        // The fixed 4.016667 square, 7/8 of the height target and the
+        // original's 0.987705 corner colours.
+        let quad = height.quad;
+        assert_eq!(quad.vertices[0].position, Vec2::new(0.0, 0.0));
+        assert_eq!(quad.vertices[2].position, Vec2::new(4.016667, -4.016667));
+        assert_eq!(quad.vertices[2].texcoord, Vec2::new(0.875, 0.875));
+        assert_eq!(quad.vertices[2].colour, Vec2::splat(HEIGHT_QUAD_TINT));
+        assert_eq!(height_uv_scale(3), 30.0 / 32.0);
+        assert_eq!(height_uv_scale(4), 15.0 / 16.0);
+        assert_eq!(height_uv_scale(2), 60.0 / 64.0);
+        assert_eq!(height_uv_scale(5), 7.0 / 8.0);
+        assert_eq!(height_uv_scale(8), 0.0);
+        // Tokens are pinned to the executable's floats.
+        assert_eq!(HEIGHT_QUAD_SCALE.to_bits(), 0x4080_8889);
+        assert_eq!(HEIGHT_QUAD_TINT.to_bits(), 0x3f7c_da3b);
+    }
+
+    #[test]
+    fn a_bake_plan_takes_the_sets_level_and_its_filter_words() {
+        let pools = pools();
+        let all = [LayerFlags {
+            textured: true,
+            masked: true,
+        }; 3];
+        let plan =
+            BakePlan::new(&pools, 0, 7, 5, &all, BakeFilters::default()).expect("set 0 exists");
+        assert_eq!((plan.level, plan.bx, plan.by), (5, 7, 5));
+        assert_eq!(plan.passes.len(), 4);
+        assert_eq!(plan.passes[0].side, 1024);
+        assert_eq!(
+            plan.mask,
+            MaskRegion {
+                offset: (5 * 256 + 7) * 30,
+                side: 8,
+                cells: 7,
+                channels: 3,
+            }
+        );
+        assert_eq!(plan.mipmaps, [false, false]);
+        let mip = BakePlan::new(
+            &pools,
+            21,
+            1,
+            2,
+            &all,
+            BakeFilters {
+                normal: FILTER_WORD | MIPMAP_BIT,
+                ..BakeFilters::default()
+            },
+        )
+        .expect("set 21 exists");
+        assert_eq!(mip.level, 4);
+        assert_eq!((mip.mask.side, mip.mask.cells), (16, 15));
+        assert_eq!(mip.mipmaps, [true, false]);
+        assert!(BakePlan::new(&pools, 64, 0, 0, &all, BakeFilters::default()).is_none());
+    }
+
+    #[test]
+    fn a_program_binds_its_layer_samplers_and_uniforms_as_the_original() {
+        let all = [LayerFlags {
+            textured: true,
+            masked: true,
+        }; 4];
+        let key = pass_key(PassProgram::Colour, 0, 4, &all, false);
+        let bind = program_bindings(PassProgram::Colour, key, false);
+        assert_eq!(
+            bind.samplers,
+            [
+                ("Tex0".to_string(), 1),
+                ("Msk0".to_string(), 2),
+                ("Tex1".to_string(), 3),
+                ("Msk1".to_string(), 4),
+                ("Tex2".to_string(), 5),
+                ("Msk2".to_string(), 6),
+                ("Tex3".to_string(), 7),
+                ("Msk3".to_string(), 8),
+                ("Mask".to_string(), 0),
+            ]
+        );
+        assert_eq!(bind.uniforms, ["Tile", "Str", "Colr"]);
+        // A normal pass binds Amnt and the base-normal sampler when it asks
+        // for one.
+        let normal = pass_key(PassProgram::Normal, 0, 1, &all[..1], true);
+        let bind = program_bindings(PassProgram::Normal, normal, true);
+        assert_eq!(
+            bind.samplers,
+            [
+                ("Tex0".to_string(), 1),
+                ("Msk0".to_string(), 2),
+                ("Mask".to_string(), 0)
+            ]
+        );
+        assert_eq!(bind.uniforms, ["Tile", "Str", "Amnt", "BNrm"]);
+        // The mask and height passes bind only their own lane's texture.
+        let mask = pass_key(PassProgram::Mask, 0, 2, &all[..2], false);
+        let bind = program_bindings(PassProgram::Mask, mask, false);
+        assert_eq!(
+            bind.samplers,
+            [
+                ("Msk0".to_string(), 1),
+                ("Msk1".to_string(), 2),
+                ("Mask".to_string(), 0)
+            ]
+        );
+        let height = pass_key(PassProgram::Height, 0, 2, &all[..2], false);
+        let bind = program_bindings(PassProgram::Height, height, false);
+        assert_eq!(
+            bind.samplers,
+            [
+                ("Tex0".to_string(), 1),
+                ("Tex1".to_string(), 2),
+                ("Mask".to_string(), 0)
+            ]
+        );
+        assert_eq!(bind.uniforms, ["Tile", "Str", "Colr"]);
     }
 
     #[test]
     fn tex_pos_maps_a_block_to_its_composite_coordinate() {
-        assert_eq!(tex_pos(3, 0, 7, 5), Vec2::splat(0.5));
+        // The third component is the level's block side over the tile side:
+        // 8 / 4800 at level 3, 32 / 4800 at level 5.
+        assert_eq!(tex_pos(3, 0, 7, 5), Vec3::new(0.5, 0.5, 1.0 / 4800.0));
         // The 8 blocks of a tile: half the split (4) less the block index.
-        assert_eq!(tex_pos(3, 3, 0, 0), Vec2::new(4.0, 4.0));
-        assert_eq!(tex_pos(3, 3, 7, 7), Vec2::new(-3.0, -3.0));
-        assert_eq!(tex_pos(3, 3, 3, 5), Vec2::new(1.0, -1.0));
+        assert_eq!(tex_pos(3, 3, 0, 0), Vec3::new(4.0, 4.0, 8.0 / 4800.0));
+        assert_eq!(tex_pos(3, 3, 7, 7), Vec3::new(-3.0, -3.0, 8.0 / 4800.0));
+        assert_eq!(tex_pos(3, 3, 3, 5), Vec3::new(1.0, -1.0, 8.0 / 4800.0));
         // A shallower split shifts the tile coordinate down: level 2 has two
         // blocks a side of the tile's eight, so block 7 is block 3.
-        assert_eq!(tex_pos(3, 2, 6, 7), Vec2::new(-1.0, -1.0));
+        assert_eq!(tex_pos(3, 2, 6, 7), Vec3::new(-1.0, -1.0, 4.0 / 4800.0));
+        assert_eq!(tex_pos(3, 5, 0, 0).z, 32.0 / 4800.0);
     }
 
     #[test]
     fn a_block_quad_covers_its_palette_slice_and_mask_window() {
-        let q = block_quad(0, 0);
+        let q = block_quad(3, 0, 0);
         assert_eq!(
             q.vertices,
             [
@@ -1356,14 +2078,29 @@ mod tests {
             ]
         );
         // Block (3, 5): x 1.5..2, v −2.5..−3 (v falls with +Z).
-        let q = block_quad(3, 5);
+        let q = block_quad(3, 3, 5);
         assert_eq!(q.vertices[0], Vec2::new(1.5, -2.5));
         assert_eq!(q.vertices[1], Vec2::new(2.0, -2.5));
         assert_eq!(q.vertices[2], Vec2::new(2.0, -3.0));
         assert_eq!(q.vertices[3], Vec2::new(1.5, -3.0));
         // The whole tile is 8×8 such slices, so the UV span is 4 (the
         // palette scale).
-        assert_eq!(block_quad(7, 0).vertices[1].x, 4.0);
+        assert_eq!(block_quad(3, 7, 0).vertices[1].x, 4.0);
+        // A high set's mask upload is 8 texels wide holding 7 cells; a low
+        // set's is 16 texels holding 15 cells.
+        assert_eq!((mask_side(5), mask_cells(5)), (8, 7));
+        assert_eq!((mask_side(4), mask_cells(4)), (16, 15));
+        assert_eq!((mask_side(3), mask_cells(3)), (32, 30));
+        assert_eq!(
+            block_quad(5, 0, 0).mask_uv[1],
+            Vec2::new(7.5 / 8.0, 0.5 / 8.0)
+        );
+        assert_eq!(
+            block_quad(4, 0, 0).mask_uv[1],
+            Vec2::new(15.5 / 16.0, 0.5 / 16.0)
+        );
+        assert_eq!(mask_side(9), 0);
+        assert_eq!(mask_cells(-1), 0);
     }
 
     #[test]
@@ -1792,6 +2529,29 @@ mod tests {
         sel2.blocks[2].visible = false;
         assert_eq!(sel2.take_low(0), Some(31));
         assert_eq!(sel2.blocks[2].state, 6);
+    }
+
+    #[test]
+    fn a_failed_low_hand_out_does_not_count_as_a_change() {
+        // Two visible, wanted blocks: the first wants a low set, the second a
+        // high one and is not blank (its key is non-zero). The low pool is
+        // empty and nobody holds a low set. The first block's failed hand-out
+        // must not stop the walk, so the second block is still baked, and the
+        // frame counts as changed.
+        let mut sel = selector(&[Vec2::new(20.0, 0.0), Vec2::new(6.0, 0.0)]);
+        for i in 0..2 {
+            sel.block_mut(i).unwrap().visible = true;
+        }
+        sel.pools.low_free.clear();
+        sel.blocks[1].state = block_flags::WANTED | block_flags::HIGH_RES;
+        sel.blocks[1].priority = 10_000;
+        let ring = sel.ring();
+        assert!(sel.reselect(Vec2::ZERO));
+        assert!(sel.blocks()[1].set().is_some());
+        assert_eq!(sel.blocks()[1].state(), 0xa00);
+        assert_eq!(sel.blocks()[0].set(), None);
+        assert_eq!(sel.blocks()[0].state() & 0xf00, 0x100);
+        assert_eq!(sel.ring(), ring + 1);
     }
 
     #[test]

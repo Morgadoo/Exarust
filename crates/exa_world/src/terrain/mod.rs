@@ -21,6 +21,7 @@ pub mod composite;
 pub mod frame;
 pub mod ground;
 pub mod height;
+pub mod live;
 pub mod patch;
 pub mod plugins;
 pub mod stream;
@@ -81,7 +82,8 @@ impl Plugin for TerrainPlugin {
                     sync_plant_shadows,
                 )
                     .chain(),
-            );
+            )
+            .add_systems(Update, live::drive_terrain_stream);
     }
 }
 
@@ -685,6 +687,11 @@ pub struct TerrainBuild {
     wireframe: Option<Handle<exa_render::material::ExaMaterial>>,
     /// Whether the world height query has been given to the world.
     ground_inserted: bool,
+    /// Each tile's spawned entity and block entities, for the live frame
+    /// hook and the composite selection.
+    live_tiles: Vec<Option<live::LiveTile>>,
+    /// Every spawned block, in the selector's order.
+    live_blocks: Vec<live::LiveBlock>,
     next: usize,
     parent: Entity,
     stats: TerrainStats,
@@ -872,6 +879,8 @@ impl TerrainBuild {
             stream: stream::TerrainStream::new(vec![stream::TileStream::raw(); tile_count]),
             wireframe,
             ground_inserted: false,
+            live_tiles: vec![None; tile_count],
+            live_blocks: Vec::new(),
             next: 0,
             parent,
             stats: TerrainStats::default(),
@@ -923,6 +932,9 @@ impl TerrainBuild {
     ) -> bool {
         let started = std::time::Instant::now();
         self.uploaded = 0;
+        // The frame hook's one tile a step, as the original runs it from the
+        // terrain's activation hook.
+        self.frame_hook(commands);
         while self.next < self.terrain.tiles.len() {
             // A surface map still being packed waits for a later step, and
             // so do textures past the step's upload budget.
@@ -945,8 +957,55 @@ impl TerrainBuild {
             }
             commands.insert_resource(field);
             self.ground_inserted = true;
+            // The block-until-loaded wait: every built tile is inserted
+            // before the level shows.
+            self.flush_insertions(commands);
+            commands.insert_resource(live::TerrainStreaming::new(
+                self.stream.clone(),
+                self.composite.clone(),
+                self.live_tiles.clone(),
+                self.live_blocks.clone(),
+            ));
         }
         done
+    }
+
+    /// Applies one frame-hook action to the tile's entity: an insert shows
+    /// the tile's nodes, an unload hides them.
+    fn apply_tile_action(&self, commands: &mut Commands, tile: usize, action: stream::TileAction) {
+        let Some(Some(live)) = self.live_tiles.get(tile) else {
+            return;
+        };
+        match action {
+            stream::TileAction::Insert => {
+                commands.entity(live.entity).insert(Visibility::Visible);
+            }
+            stream::TileAction::Unload => {
+                commands.entity(live.entity).insert(Visibility::Hidden);
+            }
+            stream::TileAction::Upload | stream::TileAction::None => {}
+        }
+    }
+
+    /// One call of the original's frame hook, handling at most one tile.
+    fn frame_hook(&mut self, commands: &mut Commands) {
+        let Some(step) = self.stream.frame() else {
+            return;
+        };
+        if let Some((tile, action)) = step.handled {
+            self.apply_tile_action(commands, tile, action);
+        }
+    }
+
+    /// Runs the frame hook until every tile is inserted, as the original's
+    /// block-until-loaded slot does before a level is shown.
+    fn flush_insertions(&mut self, commands: &mut Commands) {
+        let mut actions = Vec::new();
+        self.stream
+            .wait_until_inserted(|tile, action| actions.push((tile, action)));
+        for (tile, action) in actions {
+            self.apply_tile_action(commands, tile, action);
+        }
     }
 
     /// The first tile from `index` on that is built (in a grid level, one
@@ -996,6 +1055,10 @@ impl TerrainBuild {
             // while it does. A tile without a block in a grid level is not
             // built.
             if self.blocks.as_ref().is_some_and(|b| !b[self.next].any()) {
+                // A tile with no block has nothing to insert: it is built
+                // and inserted at once, so the block-until-loaded wait ends.
+                self.stream.tiles[self.next].mark_built(false);
+                self.stream.tiles[self.next].mark_inserted();
                 self.next += 1;
                 return true;
             }
@@ -1014,7 +1077,6 @@ impl TerrainBuild {
                 }
             };
             self.built = Some(built);
-            self.stream.tiles[self.next].mark_built(false);
             // The worker goes straight on to the next tile while this one's
             // textures load and it spawns.
             if AsyncComputeTaskPool::try_get().is_some()
@@ -1133,7 +1195,8 @@ impl TerrainBuild {
                 Name::new(format!("terrain {} {}", tile.x, tile.y)),
                 PendingSplat(splat),
                 Transform::from_xyz(centre[0], 0.0, centre[1]),
-                Visibility::default(),
+                // The frame hook inserts the tile's nodes.
+                Visibility::Hidden,
                 ChildOf(self.parent),
             ))
             .id();
@@ -1144,6 +1207,7 @@ impl TerrainBuild {
         );
         let tile_size = self.terrain.spacing * (TILE_VERTICES - 1) as f32;
         let wireframe = self.wireframe.clone();
+        let mut block_entities = Vec::new();
         for block in std::mem::take(&mut built.blocks) {
             let record = TerrainBlock {
                 bx: block.bx as u32,
@@ -1175,6 +1239,15 @@ impl TerrainBuild {
             if let Some(room) = block.room {
                 commands.entity(part).insert(InRoom(room));
             }
+            block_entities.push(part);
+            let centre_in_tile =
+                TerrainBlock::centre_in_tile(tile_size, record.bx, record.by, record.level);
+            self.live_blocks.push(live::LiveBlock {
+                entity: part,
+                tile: self.next,
+                centre: Vec2::new(centre[0] + centre_in_tile.x, centre[1] + centre_in_tile.z),
+                half: TerrainBlock::half_extents(tile_size, record.level),
+            });
             if let Some((mesh, material)) = overlay {
                 commands.spawn((
                     wireframe::WireframeOverlay,
@@ -1188,6 +1261,10 @@ impl TerrainBuild {
                 ));
             }
         }
+        self.live_tiles[self.next] = Some(live::LiveTile {
+            entity: tile_entity,
+            blocks: block_entities,
+        });
         // The navigation grid reads the ground of the blocks built here,
         // and the world height query keeps the same ground.
         let mut ground = ground::GroundTile::new(&self.terrain, tile, built.heights.clone());
@@ -1211,7 +1288,11 @@ impl TerrainBuild {
             );
         }
         self.grounds[slot] = Some(ground);
-        self.stream.tiles[slot].mark_inserted();
+        // The tile counts as built (ready for the frame hook's insert) only
+        // once its entity exists: the worker's geometry can finish steps
+        // before its textures load and it spawns, and an insert handled in
+        // between would find no entity to show and leave the tile hidden.
+        self.stream.tiles[slot].mark_built(false);
         self.stats.tiles += 1;
         self.built = None;
         self.next += 1;
@@ -2356,5 +2437,27 @@ mod build_tests {
         assert!(world.get_resource::<ground::TerrainGround>().is_some());
         let ground = world.get_resource::<ground::TerrainGround>().unwrap();
         assert!(ground.height(0.0, 0.0).is_some());
+        // The live driver has the tiles and every block, and a first frame
+        // ranks them and bakes the blank ones.
+        let mut live = world.remove_resource::<live::TerrainStreaming>().unwrap();
+        assert_eq!(live.tiles().len(), 20);
+        assert!(!live.blocks().is_empty());
+        assert!(live.blocks().iter().all(|block| block.tile < 20));
+        // The frame hook's inserts showed every spawned tile: none is left
+        // hidden by an insert handled before its entity existed.
+        for tile in live.tiles().iter().flatten() {
+            assert_eq!(
+                world.get::<Visibility>(tile.entity),
+                Some(&Visibility::Visible),
+                "a terrain tile stayed hidden"
+            );
+        }
+        let visible = vec![true; live.blocks().len()];
+        let distances = vec![None; live.blocks().len()];
+        let tick = live.tick(Vec2::ZERO, &visible, &distances);
+        assert!(tick.selected > 0);
+        assert!(tick.changed);
+        assert_eq!(live.frames(), 1);
+        assert!(live.stream().all_inserted());
     }
 }

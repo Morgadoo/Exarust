@@ -1042,6 +1042,10 @@ impl LevelLoad {
         for err in &scene.level_errors {
             loader.warn_once(format!("level {entry}: {err}"));
         }
+        // A previous level's terrain stream goes with its entities, and its
+        // composite sets go back to the renderer's host.
+        commands.remove_resource::<terrain::live::TerrainStreaming>();
+        commands.insert_resource(exa_render::terrain_composite::TerrainCompositeHost::default());
         let root = commands
             .spawn((
                 LevelRoot {
@@ -1540,6 +1544,19 @@ mod tests {
             .map(|n| n.to_string())
             .collect();
         names.sort();
+        // The outdoor preset draws its day from the process clock, so two
+        // loads of the same level differ there; the build comparison keeps
+        // the level's record and counts but not the clock-seeded lighting.
+        let info = info.map(|mut info| {
+            info.lighting = environment::Lighting {
+                ambient: Vec3::ZERO,
+                sun: None,
+                fog: None,
+                sky: false,
+                background: Vec3::ZERO,
+            };
+            info
+        });
         let mut out = vec![
             format!("{info:?}"),
             format!("{} entities", world.entities().len()),

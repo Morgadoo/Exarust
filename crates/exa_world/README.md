@@ -48,16 +48,26 @@ and the grid's rooms; portal clipping is next (see
   the high corner); `terrain::frame` is the
   lit program's normal-map tangent frame; `terrain::stream` holds the
   original's streaming decisions (60 m block priorities, the 44.4 m / 15 m
-  composite selection and its pools, the 3 × 3 tile gather) and the tile
-  streaming bits with the one-tile-a-frame hook as a tested model;
-  `terrain::composite` is the original's compositor as numbers: the 21 high
-  and 43 low set pools and their 1024²/512² targets (colour RGB8, normal
-  RG8, gloss R8, half-size parallax R8), the four-layer pass keys
+  composite selection and its pools, the 3 × 3 tile gather), the tile
+  streaming bits with the one-tile-a-frame hook, the block-until-loaded
+  wait, the per-tile refresh and the oriented-box/light-plane distance the
+  hidden blocks rank by; `terrain::composite` is the original's compositor
+  as numbers: the 21 high and 43 low set pools and their 1024²/512² targets
+  (colour, normal, gloss, half-size parallax), the four-layer pass keys
   (`AddPass`, `Textured`, `Masked`, `BaseNrm`), every per-layer value the
-  passes upload, the block palette and mask quads, `TexPos`, the
-  wet-floor gloss term (wired into `terrain.wesl` through the palette's
-  wetness) and the selection's look point, cut-offs, light-distance sort, set stealing
-  and one-block-a-frame rule; `terrain::wireframe` draws each block's
+  passes upload, the driver's pass list with its mask uploads, the mask and
+  height passes' clears/blending/clamps/quads, the block palette and mask
+  quads, `TexPos`, the wet-floor gloss term (wired into `terrain.wesl`
+  through the palette's wetness) and the selection's look point, cut-offs,
+  light-distance sort, set stealing and one-block-a-frame rule;
+  `terrain::live` is the live driver: a tile is spawned hidden and the frame
+  hook shows one a step during the load (the block-until-loaded wait flushes
+  the rest), and `TerrainStreaming` then runs the hook and the selection
+  every frame from the active camera's look-ahead focus, marking an inserted
+  tile's blocks wanted, dropping an unloaded tile's blocks and handing the
+  sets the selection holds to `exa_render::terrain_composite` (opt-in with
+  `EXA_TERRAIN_SETS=1`); the priority slot is `reprioritise`, not run every
+  frame because its caller is not identified; `terrain::wireframe` draws each block's
   triangle edges as lines under `EXA_TERRAIN_WIRE` (the original's debug
   wireframe hook). Grass and
   small plants take the original's upward normals, grass is drawn at 0.75

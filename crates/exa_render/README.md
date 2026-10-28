@@ -112,6 +112,11 @@ onto the surface, crossed with the vertex normal), its gloss is the
 composite gloss (roughness 1 − it, a full gloss being a mirror whose one
 singular point the shared light keeps at 0), and its specular is masked by
 the red of its diffuse colour (the composite times the terrain's 0.75).
+`terrain_composite::TerrainCompositeHost` hosts the original's offscreen
+composite sets as render-target images (colour, tangent normal, gloss and
+half-size displacement at the pools' 1024²/512² sizes), created one a frame
+as the live selector holds them and dropped when a set returns to its pool;
+no pass bakes into them yet, so allocation is opt-in (`EXA_TERRAIN_SETS=1`).
 Rules:
 [`docs/RENDERING.md`](../../docs/RENDERING.md) (Terrain).
 
