@@ -396,8 +396,11 @@ death fade's start, death and removal from the world; dead bodies below
 −50 m taken once, the player's kept),
 the world cursor's shape from the player's condition word (`cursor`), the
 hand (`hand`: the left press named by `pick`, the drag of props with Ctrl
-and of corpses through the solver's grab, the reach under the cursor and the
-refusal that keeps the movement request; `docs/PLAYER.md`, The hand), the health
+and of corpses through the solver's grab, the lift of a prop onto the item
+cursor, the reach under the cursor and the refusal that keeps the movement
+request; `docs/PLAYER.md`, The hand), the item cursor (`item_cursor`: the
+lift's turn ramp and rotation, the cursor's placement and box refusal, its
+release and the GUI drop's branch and queue), the health
 bars' values and the low-health heartbeat with its sound, started by a
 blow's low-health check on the player's body (`exa_combat::Weakened`;
 `hud`), the
@@ -452,10 +455,31 @@ arrives; the reach's navigation region and walk-to point; the movement
 request's drag modes, the controls' gates, the key permissions and the power
 bar's 500 ms hold. A click on the player's own body shows the HUD bars for
 5000 ms; a double click on it (with Ctrl in combat mode) opens the
-existing inventory screen; the other windows have no form and the script
-registry is `exa_ai::roles`. The controls' scene-node words are
+existing inventory screen; a double click on a corpse runs its roles'
+corpse scripts through `exa_script` (the corpse as actor 0, the player as
+actor 1) and sends their effects on, and the other windows have no form and
+the living character's talk condition is `exa_ai::roles`'s. The controls' scene-node words are
 `control_nodes`, a tested model (the runtime hand holds physics bodies, not
-scene nodes). The start and end of play set the AI's activation centre and
+scene nodes): the active and hold words, the grab switch and its release,
+the body-bearing subtrees, the frame refresh and orthonormalisation and the
+placement frame's bits. The item cursor (`item_cursor`) is live: a lift
+without Ctrl grabs the prop (strength 1, Exarust's stand-in) and rides it
+on the cursor; the movement inputs (the pad's raw move stick past a squared
+0.1, else the move keys) turn it by `0.25·frame ms·0.0025` rad a frame,
+ramping to `1.0` after 300 ms of turning and falling back after 500 ms of
+quiet; each frame the cursor's ray, the held item left out, places it at
+the level hit (a miss keeps the last point), its rest-point box test
+(280 cm up, −1000 cm down) only answering; a plain release leaves it there,
+and a cancelled one goes to the GUI slot, stays on the world hover, or is
+put back at the frames the lift saved. The GUI drop's branch (an entry,
+from a GUI, with a body) and its next-frame queue, and the put-down's
+scripts within 5 cm² (`player_controls::nearby_scripts`), are tested rules.
+The right press's use start, its target class, the GUI use and the used
+item's removal, the point sound at 0.25 and pitch 1.0, and the door link's
+stop bit are likewise rules; the wheel's set wraps its grip angle into ±π
+(the single π over the double one) before turning toward it. The pad's
+camera look takes the frame from the mouse-look capture, as the original's
+gamepad branch returns before touching the pointer. The start and end of play set the AI's activation centre and
 radius (`PlaySession`, which the player tick and the AI read); `PlayerControl`
 is the player-control singleton's creation state (hotkey mask 31 and the two
 constructor flags). The GUI character preview (`char_view`) turns the

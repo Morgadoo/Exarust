@@ -802,6 +802,140 @@ pub fn mark_used(target: MarkTarget, flags: u32, mark: u32) -> Option<u32> {
     }
 }
 
+/// What the right press on the picked object asks for (the use cursor): a
+/// usable section whose kind byte is zero opens its container; any other
+/// kind starts the use; an object with no usable section is left to the
+/// GUI's own release callback. No body under the node starts nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UsePress {
+    Ignore,
+    /// A usable kind of zero: the container opens.
+    Open,
+    /// A usable kind above zero: the use waits for the release.
+    Begin,
+}
+
+pub fn use_press(has_body: bool, usable: Option<u8>) -> UsePress {
+    if !has_body {
+        return UsePress::Ignore;
+    }
+    match usable {
+        Some(0) => UsePress::Open,
+        Some(_) => UsePress::Begin,
+        None => UsePress::Ignore,
+    }
+}
+
+/// What a use aimed at the world hits, from the pick's classification: a
+/// hinge (4), a living character (0x10), a usable item (bit 2 set, so class
+/// 3) or nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UseTarget {
+    /// A door: a matching key unlocks it, another rattles it.
+    Door,
+    /// A character: the held liquid is poured on it.
+    Character,
+    /// A world item: the clean/repair dispatch.
+    Item,
+    Nothing,
+}
+
+/// The use's target for a world classification, tested in the original's
+/// order (4, then 0x10, then bit 2).
+pub fn use_target(classification: u8) -> UseTarget {
+    if classification == 4 {
+        UseTarget::Door
+    } else if classification == 0x10 {
+        UseTarget::Character
+    } else if classification & 2 != 0 {
+        UseTarget::Item
+    } else {
+        UseTarget::Nothing
+    }
+}
+
+/// The held item's use on a GUI item slot (the cursor over an inventory
+/// entry): a cleaning kit (kind 9) and a repair kit (10) work on the entry,
+/// and a kind 0x10 moves the entry when it is the same item the use holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GuiUse {
+    Clean,
+    Repair,
+    Transfer,
+    Nothing,
+}
+
+pub fn gui_use(kind: u8, same_item: bool) -> GuiUse {
+    match kind {
+        9 => GuiUse::Clean,
+        10 => GuiUse::Repair,
+        0x10 if same_item => GuiUse::Transfer,
+        _ => GuiUse::Nothing,
+    }
+}
+
+/// Where the used item came from, so the use can remove it: the scene (a
+/// world body) or a container entry with a slot (0 for no entry).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UseHome {
+    Scene,
+    Container { slot: u32 },
+}
+
+/// What a finished use does with the item it used.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UseAfter {
+    /// The world body is taken out of the scene.
+    RemoveBody,
+    /// The container entry `slot` (from one) is taken out.
+    RemoveSlot(u32),
+    Nothing,
+}
+
+pub fn after_use(home: Option<UseHome>) -> UseAfter {
+    match home {
+        None => UseAfter::Nothing,
+        Some(UseHome::Scene) => UseAfter::RemoveBody,
+        Some(UseHome::Container { slot: 0 }) => UseAfter::Nothing,
+        Some(UseHome::Container { slot }) => UseAfter::RemoveSlot(slot - 1),
+    }
+}
+
+/// A sound played at a point: the original's volume 0.25, pitch 1.0.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PointSound {
+    pub name: String,
+    pub at: Vec3,
+    pub volume: f32,
+    pub pitch: f32,
+}
+
+/// A point sound for `name` at `at`, or `None` for an unnamed sound.
+pub fn point_sound(name: &str, at: Vec3) -> Option<PointSound> {
+    (!name.is_empty()).then(|| PointSound {
+        name: name.to_string(),
+        at,
+        volume: 0.25,
+        pitch: 1.0,
+    })
+}
+
+/// A door's drag link word bits: the stop bit a suppressed request sets,
+/// which the release clears, and the wake span.
+pub const DOOR_LINK_STOP: u32 = 0x100000;
+pub const DOOR_WAKE_MS: u32 = 2000;
+
+/// The link word after a release clears the stop bit.
+pub fn door_link_resumed(flags: u32) -> u32 {
+    flags & !DOOR_LINK_STOP
+}
+
+/// The link word while the movement request is suppressed: the stop bit
+/// is set.
+pub fn door_link_stopped(flags: u32) -> u32 {
+    flags | DOOR_LINK_STOP
+}
+
 /// The controls' movement request mode, from the hand's drag state and the
 /// combat branch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1503,6 +1637,57 @@ mod tests {
             mark_used(MarkTarget::Container { slot: 0, word: 2 }, 0, POUR_MARK),
             None
         );
+    }
+
+    /// The right press: a usable kind zero opens the container, another
+    /// kind waits for the release, and no body or no usable section asks
+    /// for nothing.
+    #[test]
+    fn the_use_press_and_its_target() {
+        assert_eq!(use_press(false, Some(9)), UsePress::Ignore);
+        assert_eq!(use_press(true, None), UsePress::Ignore);
+        assert_eq!(use_press(true, Some(0)), UsePress::Open);
+        assert_eq!(use_press(true, Some(9)), UsePress::Begin);
+        assert_eq!(use_press(true, Some(14)), UsePress::Begin);
+        assert_eq!(use_target(4), UseTarget::Door);
+        assert_eq!(use_target(0x10), UseTarget::Character);
+        assert_eq!(use_target(3), UseTarget::Item);
+        assert_eq!(use_target(1), UseTarget::Nothing);
+        assert_eq!(use_target(0x40), UseTarget::Nothing);
+        assert_eq!(use_target(0), UseTarget::Nothing);
+    }
+
+    /// A GUI use: a cleaning or repair kit works on the entry; a kind 0x10
+    /// moves it only when it is the same item.
+    #[test]
+    fn the_gui_use_and_the_used_item() {
+        assert_eq!(gui_use(9, false), GuiUse::Clean);
+        assert_eq!(gui_use(10, false), GuiUse::Repair);
+        assert_eq!(gui_use(0x10, true), GuiUse::Transfer);
+        assert_eq!(gui_use(0x10, false), GuiUse::Nothing);
+        assert_eq!(gui_use(8, true), GuiUse::Nothing);
+        // A used world body is removed; a container entry one less than its
+        // slot; no home and slot zero do nothing.
+        assert_eq!(after_use(None), UseAfter::Nothing);
+        assert_eq!(after_use(Some(UseHome::Scene)), UseAfter::RemoveBody);
+        assert_eq!(
+            after_use(Some(UseHome::Container { slot: 3 })),
+            UseAfter::RemoveSlot(2)
+        );
+        assert_eq!(
+            after_use(Some(UseHome::Container { slot: 0 })),
+            UseAfter::Nothing
+        );
+        // A point sound is at 0.25 and pitch 1.0; an unnamed one is silent.
+        let s = point_sound("CleanItem01", Vec3::new(1.0, 2.0, 3.0)).unwrap();
+        assert_eq!(s.volume, 0.25);
+        assert_eq!(s.pitch, 1.0);
+        assert_eq!(s.at, Vec3::new(1.0, 2.0, 3.0));
+        assert_eq!(point_sound("", Vec3::ZERO), None);
+        // The door link's stop bit.
+        assert_eq!(door_link_stopped(0x4000), 0x4000 | DOOR_LINK_STOP);
+        assert_eq!(door_link_resumed(0x4000 | DOOR_LINK_STOP), 0x4000);
+        assert_eq!(DOOR_WAKE_MS, 2000);
     }
 
     /// A walk-to point stops 245 cm short, or 350 cm for a door, along the

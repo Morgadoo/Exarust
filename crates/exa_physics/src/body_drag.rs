@@ -103,6 +103,18 @@ impl Ragdoll {
         self.grabs.pop().is_some()
     }
 
+    /// Turns every part about the world point `centre` by `rotation`, and
+    /// places the body there, as the original's held item cursor writes its
+    /// node's matrix: a held item may be turned without being let go.
+    pub fn turn_about(&mut self, centre: Vec3, rotation: bevy::math::Mat3) {
+        let around = bevy::math::Affine3A::from_translation(centre)
+            * bevy::math::Affine3A::from_mat3(rotation)
+            * bevy::math::Affine3A::from_translation(-centre);
+        let worlds: Vec<bevy::math::Affine3A> =
+            self.parts.iter().map(|p| around * p.transform()).collect();
+        self.place_at(&worlds);
+    }
+
     /// Part `i`'s grabs in this pass of a limp body's iterations.
     pub(super) fn pull_grabs(&mut self, i: usize) {
         let pass = self.pass;
@@ -253,5 +265,30 @@ mod tests {
         assert!(body.release_grab());
         assert!(!body.release_grab());
         assert_eq!(body.grab_point(), None);
+    }
+
+    /// Turning a held body about a world point rotates its rest points
+    /// around it, and leaves its centre where it was.
+    #[test]
+    fn a_held_body_turns_about_a_point() {
+        let mut body = crate_body();
+        // The part's rest points are around the origin; turn a quarter
+        // about Y at the origin: (-0.2, 0, -0.2) goes to (-0.2, 0, 0.2).
+        let yaw = bevy::math::Mat3::from_rotation_y(std::f32::consts::FRAC_PI_2);
+        body.turn_about(Vec3::ZERO, yaw);
+        let at = body.parts[0].transform().translation;
+        assert!(at.length() < 1e-6, "{at}");
+        // A rest point at (-0.2, 0, -0.2) is now at (-0.2, 0, 0.2).
+        let p = body.parts[0].positions[0];
+        assert!((p - Vec3::new(-0.2, 0.0, 0.2)).length() < 1e-5, "{p}");
+        // Turning about (1, 0, 0) moves the part at the origin to
+        // (1, 0, 1): the point a quarter turn away round the centre.
+        let mut body = crate_body();
+        body.turn_about(Vec3::new(1.0, 0.0, 0.0), yaw);
+        let at = body.parts[0].transform().translation;
+        assert!(
+            (Vec3::from(at) - Vec3::new(1.0, 0.0, 1.0)).length() < 1e-6,
+            "{at}"
+        );
     }
 }

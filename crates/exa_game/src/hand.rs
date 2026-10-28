@@ -73,7 +73,9 @@ use exa_physics::prop::{PropBody, StandIns};
 use exa_ui::ScriptedPointer;
 
 use crate::bindings::{Action, Bindings};
+use crate::control_nodes::Frame;
 use crate::gui_screens::ScreenRequest;
+use crate::item_cursor::{self, HeldItem, ItemCursor, Release};
 use crate::pick::{self, Body, Pick, ReachTo, Target};
 use crate::player::{ChaseCamera, Player, PlayerBody, window_ray};
 use crate::player_controls::{self, CharacterInteraction, ClickOutcome, ClickTarget};
@@ -119,7 +121,9 @@ pub enum Holding {
         /// The body is a character's (let go once it lives).
         character: bool,
     },
-    /// The lifting press (the original's item drag), until the release.
+    /// The item cursor's lift: the item rides the cursor, held by a grab
+    /// with a slack, and turns with the mouse; the release puts it back at
+    /// the frame its lift saved (or leaves it, or the GUI takes it).
     Lift,
     /// A door's, a wheel's or a cloth's drag, until the release. Unlike a
     /// lift or a refusal it leaves the movement request to the keys and the
@@ -191,6 +195,12 @@ impl Hand {
             Holding::Mechanism(_) => DragState::Cloth,
             Holding::Refused => DragState::Refused,
         }
+    }
+
+    /// Whether some interaction holds the cursor: any drag, lift, mechanism
+    /// or refusal (the original's drag-state word is not zero).
+    pub fn interacting(&self) -> bool {
+        self.holding != Holding::Nothing
     }
 
     /// Whether the frame's movement request is left as it was: while a
@@ -500,6 +510,31 @@ pub fn wheel_turn(current: f32, wanted: f32, limit: f32) -> f32 {
     out
 }
 
+/// Wraps an angle into ±π as the wheel drag does: under −π (compared in
+/// double) adds the float 2π; over π (compared in double) takes it off. A
+/// NaN passes both compares and stays.
+pub fn wrap_half_turn(angle: f32) -> f32 {
+    if f64::from(angle) < -std::f64::consts::PI {
+        angle + std::f32::consts::TAU
+    } else if f64::from(angle) > std::f64::consts::PI {
+        angle - std::f32::consts::TAU
+    } else {
+        angle
+    }
+}
+
+/// The wheel's asked angle after a frame: the grip's angle plus the angle
+/// the grip was taken at, wrapped into ±π, then turned toward from the
+/// present angle (never back, at most `limit`). The values past the wrap
+/// are the caller's: the grip's angle comes from the cursor's point in the
+/// wheel's frame (or from the second grip's point, whose height is 30 cm,
+/// with a scale-looking 30 cm set on it). [inf: which of the two axes the
+/// grip's angle is taken about is not traced; the caller passes the angle
+/// already in the wheel's plane.]
+pub fn wheel_set(current: f32, grip_angle: f32, grabbed: f32, limit: f32) -> f32 {
+    wheel_turn(current, wrap_half_turn(grip_angle + grabbed), limit)
+}
+
 /// Whether the first wheel grip is the one the view picks: its direction
 /// from the wheel, on the camera's forward axis, is at least 0.2 in
 /// absolute value; otherwise the second grip is used.
@@ -694,6 +729,8 @@ pub struct Picked {
 pub struct WorldClick {
     pub hit: Hit,
     pub pointer: IVec2,
+    /// The press was the second of a double click.
+    pub double: bool,
 }
 
 impl WorldClick {
@@ -702,6 +739,7 @@ impl WorldClick {
         Self {
             hit,
             pointer: IVec2::ZERO,
+            double: false,
         }
     }
 }
@@ -832,6 +870,7 @@ pub struct HandSystems;
 impl Plugin for HandPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Hand>()
+            .init_resource::<ItemCursor>()
             .add_message::<WorldClick>()
             .add_systems(
                 Update,
@@ -839,6 +878,12 @@ impl Plugin for HandPlugin {
                     .chain()
                     .in_set(HandSystems)
                     .after(crate::player::chase_camera)
+                    .before(crate::cursor::pick_cursor),
+            )
+            .add_systems(
+                Update,
+                run_corpse_scripts
+                    .after(HandSystems)
                     .before(crate::cursor::pick_cursor),
             );
     }
@@ -931,6 +976,7 @@ fn press_hand(
     windows: Query<&Window, With<PrimaryWindow>>,
     cameras: Query<(&Camera, &GlobalTransform), With<ChaseCamera>>,
     mut hand: ResMut<Hand>,
+    mut items: ResMut<ItemCursor>,
     players: Query<(&GlobalTransform, &Children), With<Player>>,
     mut player_bodies: Query<PlayerParts, Without<PropBody>>,
     mut bodies: Query<OtherBodies, Without<PlayerBody>>,
@@ -1043,7 +1089,55 @@ fn press_hand(
                 }
                 return;
             }
+            // The lift rides the item cursor (Exarust holds it with a plain
+            // grab), and saves the frames a cancelled release puts it back
+            // to.
+            let Some(Picked {
+                at,
+                hit: Hit::Prop { body, part },
+            }) = picked
+            else {
+                return;
+            };
+            let Ok((_, mut ragdoll, ..)) = bodies.get_mut(body) else {
+                return;
+            };
+            if !ragdoll.grab(part, at, item_cursor::LIFT_STRENGTH, None) {
+                return;
+            }
+            let saved: Vec<bevy::math::Affine3A> =
+                ragdoll.parts.iter().map(|p| p.transform()).collect();
+            let (centre, half) = ragdoll
+                .parts
+                .get(part)
+                .map(|p| item_cursor::rest_box(p.rest))
+                .unwrap_or((Vec3::ZERO, Vec3::ZERO));
+            // The lift saves the part's frame, rotation included, as the
+            // original copies the held node's frame.
+            let world = ragdoll
+                .parts
+                .get(part)
+                .map(|p| p.transform())
+                .unwrap_or_default();
+            let saved_frame = Frame::new(
+                Vec3::from(world.translation),
+                bevy::math::Mat3::from_cols(
+                    Vec3::from(world.x_axis),
+                    Vec3::from(world.y_axis),
+                    Vec3::from(world.z_axis),
+                ),
+            );
             pb.hold_object(true);
+            items.begin(HeldItem {
+                body,
+                part,
+                saved,
+                saved_frame,
+                shown: saved_frame,
+                centre,
+                half,
+                target: at,
+            });
             hand.holding = Holding::Lift;
         }
         Press::Drag {
@@ -1081,7 +1175,7 @@ fn press_hand(
 }
 
 /// The hold each frame: the drag follows the cursor, the release lets go.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn hold_hand(
     keys: Res<ButtonInput<KeyCode>>,
     buttons: Res<ButtonInput<MouseButton>>,
@@ -1090,13 +1184,18 @@ fn hold_hand(
     scripted: Res<ScriptedPointer>,
     windows: Query<&Window, With<PrimaryWindow>>,
     cameras: Query<(&Camera, &GlobalTransform), With<ChaseCamera>>,
-    mut hand: ResMut<Hand>,
+    (mut hand, mut items): (ResMut<Hand>, ResMut<ItemCursor>),
     players: Query<(&GlobalTransform, &Children), With<Player>>,
     mut player_bodies: Query<PlayerParts, Without<PropBody>>,
     mut requests: Query<&mut Locomotion, With<PlayerBody>>,
     mut bodies: Query<OtherBodies, Without<PlayerBody>>,
     mut screens: Option<ResMut<Messages<ScreenRequest>>>,
-    (time, mut show_bars): (Option<Res<Time<Virtual>>>, Option<ResMut<HudShowUntil>>),
+    (time, mut show_bars, pad, pad_status): (
+        Option<Res<Time<Virtual>>>,
+        Option<ResMut<HudShowUntil>>,
+        Option<Res<crate::gamepad::PlayPad>>,
+        Option<Res<crate::gamepad::PadStatus>>,
+    ),
     mut clicks: MessageWriter<WorldClick>,
 ) {
     let released = buttons.just_released(MouseButton::Left);
@@ -1134,6 +1233,7 @@ fn hold_hand(
                 clicks.write(WorldClick {
                     hit: picked.hit,
                     pointer,
+                    double: left.double,
                 });
             }
             if !combat
@@ -1217,6 +1317,104 @@ fn hold_hand(
                     && let Ok((mut pb, ..)) = player_bodies.get_mut(child)
                 {
                     pb.hold_object(false);
+                }
+                // The movement request's suppression cancels the lift.
+                let cancelled = hand.out_of_reach;
+                if let Some((outcome, held)) = items.end(cancelled)
+                    && let Ok((_, mut ragdoll, ..)) = bodies.get_mut(held.body)
+                {
+                    ragdoll.release_grab();
+                    // A plain release leaves the item where the cursor put
+                    // it; a cancelled one (and the GUI's, which Exarust has
+                    // no slot for) puts it back.
+                    if outcome != Release::Drop {
+                        ragdoll.place_at(&held.saved);
+                    }
+                    ragdoll.wake();
+                }
+            } else {
+                // The movement inputs turn the item (the lift keeps the
+                // movement request): the pad's raw move stick, or the move
+                // keys under its dead zone. The base speed ramps after
+                // 300 ms of turning; 500 ms of quiet drops it back.
+                let now = time
+                    .as_deref()
+                    .map_or(0, |t| t.elapsed().as_millis() as u64);
+                let frame_ms = time.as_deref().map_or(0.0, |t| t.delta_secs() * 1000.0);
+                let stick = if pad_status.as_ref().is_some_and(|s| s.active()) {
+                    pad.as_ref().map_or(Vec2::ZERO, |p| p.frame().move_raw)
+                } else {
+                    Vec2::ZERO
+                };
+                let keys_held = [
+                    bindings.pressed(&keys, Action::Forward),
+                    bindings.pressed(&keys, Action::Back),
+                    bindings.pressed(&keys, Action::Left),
+                    bindings.pressed(&keys, Action::Right),
+                ];
+                let right = cameras
+                    .single()
+                    .map(|(_, eye)| eye.right().as_vec3())
+                    .unwrap_or(Vec3::X);
+                let (delta, turned) = items.turn.frame(now, frame_ms, stick, keys_held);
+                if turned {
+                    items.offset += delta;
+                    items.rotation *= item_cursor::turn_delta(right, delta);
+                }
+                let Some(held) = items.held.as_ref() else {
+                    hand.holding = Holding::Nothing;
+                    return;
+                };
+                let (body, part, box_centre, box_half) =
+                    (held.body, held.part, held.centre, held.half);
+                if turned && let Ok((_, mut ragdoll, ..)) = bodies.get_mut(body) {
+                    let centre = ragdoll
+                        .parts
+                        .get(part)
+                        .map(|p| Vec3::from(p.transform().translation))
+                        .unwrap_or(Vec3::ZERO);
+                    ragdoll.turn_about(centre, item_cursor::turn_delta(right, delta));
+                }
+                // The cursor's ray places the item against the level, the
+                // held item itself left out of the pick (as the original
+                // flags its node while it picks). The item goes there
+                // whether or not its box fits. A cursor over nothing keeps
+                // the last point [Exarust: no navigation mesh behind every
+                // pixel, and no sweep to the first contact].
+                let ray = cursor_ray(&scripted, &windows, &cameras);
+                if let Some(ray) = ray {
+                    let (origin, dir) = (ray.origin, *ray.direction);
+                    let hit = sources
+                        .physics
+                        .fixed_pick_except(origin, dir, PICK_RANGE, &|h| {
+                            sources
+                                .stand_ins
+                                .owner_of(h)
+                                .is_some_and(|(owner, _)| owner == body)
+                        })
+                        .map(|(_, t)| {
+                            let at = origin + dir * t;
+                            (at, at.y * CM)
+                        });
+                    if hit.is_some()
+                        && let Some(point) = item_cursor::place_point(
+                            origin,
+                            dir,
+                            hit,
+                            item_cursor::PLACEMENT_LIMIT_CM,
+                        )
+                    {
+                        let (frame, _fits) =
+                            item_cursor::place_frame(items.rotation, point, box_centre, box_half);
+                        if let Some(held) = items.held.as_mut() {
+                            held.shown = frame;
+                            held.target = point;
+                        }
+                        if let Ok((_, mut ragdoll, ..)) = bodies.get_mut(body) {
+                            ragdoll.pull_grab_to(point);
+                            ragdoll.wake_to(DRAG_WAKE);
+                        }
+                    }
                 }
             }
         }
@@ -1317,6 +1515,84 @@ fn reach_hand(
         }
     };
     hand.out_of_reach = !in_reach;
+}
+
+/// Runs a dead character's role scripts on a double click: the roles in
+/// list order whose first Player-aimed entry carries the corpse section,
+/// each with the corpse as actor 0 and the player as actor 1, and the
+/// effects the scripts ask for go out as [`exa_script::ScriptEffect`].
+fn run_corpse_scripts(
+    mut clicks: MessageReader<WorldClick>,
+    scripts: Option<Res<exa_script::Scripts>>,
+    conversations: Option<ResMut<exa_script::Conversations>>,
+    corpses: Query<(&exa_ai::roles::Roles, Option<&exa_ai::brain::CharacterId>)>,
+    players: Query<Option<&exa_ai::brain::CharacterId>, With<PlayerBody>>,
+    time: Option<Res<Time<Virtual>>>,
+    mut effects: MessageWriter<exa_script::ScriptEffect>,
+) {
+    let (Some(scripts), Some(mut conversations)) = (scripts, conversations) else {
+        return;
+    };
+    for click in clicks.read() {
+        if !click.double {
+            continue;
+        }
+        let Hit::Character {
+            body, dead: true, ..
+        } = click.hit
+        else {
+            continue;
+        };
+        let Ok((roles, id)) = corpses.get(body) else {
+            continue;
+        };
+        let Some(corpse) = id.map(|id| id.0) else {
+            continue;
+        };
+        let player = players
+            .iter()
+            .next()
+            .and_then(|id| id.map(|id| id.0))
+            .unwrap_or(exa_ai::brain::PLAYER_ID);
+        let list = exa_ai::roles::corpse_scripts(&scripts.roles, roles);
+        if list.is_empty() {
+            continue;
+        }
+        let now = time.as_ref().map_or(0, |t| t.elapsed().as_millis() as u32);
+        let exa_script::Conversations {
+            engine,
+            cast,
+            player: scene_player,
+            player2,
+            world_base,
+            locale,
+            ..
+        } = &mut *conversations;
+        let mut scene = exa_script::dialogue::Scene {
+            library: exa_script::dialogue::Library {
+                roles: &scripts.roles,
+                narrator: scripts.narrator.as_ref(),
+            },
+            cast,
+            now,
+            world_time: exa_script::topics::world_time(*world_base, now, 0),
+            player: *scene_player,
+            player2: *player2,
+            locale: *locale,
+            effects: Vec::new(),
+        };
+        for script in list {
+            engine.run_script(
+                &mut scene,
+                vec![Some(corpse), Some(player)],
+                script.role,
+                script.script,
+            );
+        }
+        for effect in scene.effects.drain(..) {
+            effects.write(exa_script::ScriptEffect(effect));
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1802,6 +2078,7 @@ mod tests {
             .init_resource::<ColliderNodes>()
             .insert_resource(Physics::default())
             .init_resource::<Hand>()
+            .init_resource::<ItemCursor>()
             .add_message::<WorldClick>()
             .add_systems(Update, (press_hand, hold_hand, reach_hand).chain());
         app.world_mut()
@@ -1820,9 +2097,10 @@ mod tests {
     #[test]
     fn a_refused_press_keeps_the_request_and_shows_the_cross() {
         let mut hand = Hand::default();
+        assert!(!hand.interacting());
         assert!(!hand.keeps_the_request() && !hand.refused());
         hand.holding = Holding::Refused;
-        assert!(hand.keeps_the_request() && hand.refused());
+        assert!(hand.interacting() && hand.keeps_the_request() && hand.refused());
         hand.holding = Holding::Lift;
         assert!(hand.keeps_the_request() && !hand.refused());
         // A door's drag leaves the request to the keys.
@@ -1927,6 +2205,20 @@ mod tests {
         assert!(uses_first_wheel_grip(0.2));
         assert!(!uses_first_wheel_grip(0.19));
         assert!(uses_first_wheel_grip(-0.3));
+        // The wrap: a hair under −π takes a turn on; the single π is just
+        // over the double π, so it wraps to −π.
+        assert!((wrap_half_turn(-3.2) - (-3.2 + std::f32::consts::TAU)).abs() < 1e-5);
+        assert_eq!(wrap_half_turn(std::f32::consts::PI), -std::f32::consts::PI);
+        assert!((wrap_half_turn(3.2) - (3.2 - std::f32::consts::TAU)).abs() < 1e-5);
+        assert!(wrap_half_turn(f32::NAN).is_nan());
+        // The wheel's set: the grip's angle turns the wheel toward it by at
+        // most the limit, and a grip behind the present angle is no turn.
+        assert!((wheel_set(0.0, 0.5, 0.0, 1.0) - 0.5).abs() < 1e-6);
+        assert!((wheel_set(0.0, 2.0, 0.0, 1.0) - 1.0).abs() < 1e-6);
+        assert_eq!(wheel_set(0.5, -0.5, 0.0, 1.0), 0.5);
+        // A grip angle past π wraps to the near side, behind the present
+        // angle: no turn.
+        assert_eq!(wheel_set(0.0, 3.3, 0.0, 1.0), 0.0);
         let v = [Vec3::ZERO, Vec3::X, Vec3::Y];
         assert_eq!(cloth_vertex(&v, Vec3::new(0.99, 0.0, 0.0), 0.05), Some(1));
         assert_eq!(cloth_vertex(&v, Vec3::new(0.5, 0.0, 0.0), 0.05), None);

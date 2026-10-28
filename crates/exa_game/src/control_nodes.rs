@@ -54,6 +54,20 @@ impl Frame {
         Self { position, rotation }
     }
 
+    /// The rotation made orthonormal in the original's order: the second
+    /// axis is normalised first, the first loses its share along it and is
+    /// normalised, and the third is the first crossed with the second,
+    /// normalised.
+    pub fn orthonormalized(self) -> Self {
+        let y = self.rotation.y_axis.normalize_or_zero();
+        let x = (self.rotation.x_axis - y * self.rotation.x_axis.dot(y)).normalize_or_zero();
+        let z = x.cross(y).normalize_or_zero();
+        Self {
+            position: self.position,
+            rotation: Mat3::from_cols(x, y, z),
+        }
+    }
+
     /// This frame under `parent`: parent position plus its rotation of this
     /// position, and the rotations multiplied.
     pub fn under(self, parent: Frame) -> Self {
@@ -155,11 +169,11 @@ impl ControlNode {
         self.clear_bit(HOLD);
     }
 
-    /// The grab switch: a node without the middle bit takes the whole grab
+    /// The grab switch: a node without the end bit takes the whole grab
     /// word; one with it drops the middle bit and keeps the end bit. Every
     /// child follows.
     pub fn grab_switch(&mut self) {
-        if self.word & GRAB_MIDDLE == 0 {
+        if self.word & GRAB_END == 0 {
             self.word |= GRAB_WORD;
         } else {
             self.word &= !GRAB_MIDDLE;
@@ -297,8 +311,9 @@ mod tests {
         assert_eq!(fresh.word, DRAG_BITS);
     }
 
-    /// The grab switch sets the whole word once, then swaps the middle bit;
-    /// the release drops the end bit only from a node with the middle bit.
+    /// The grab switch sets the whole word once, then drops the middle bit
+    /// from a node that already has the end bit; the release drops the end
+    /// bit only from a node with the middle bit.
     #[test]
     fn the_grab_switch() {
         let mut n = ControlNode::new().with_child(ControlNode::new());
@@ -308,6 +323,11 @@ mod tests {
         n.grab_switch();
         assert_eq!(n.word, GRAB_END);
         assert_eq!(n.children[0].word, GRAB_END);
+        // A node with only the middle bit takes the whole word.
+        let mut middle = ControlNode::new();
+        middle.word = GRAB_MIDDLE;
+        middle.grab_switch();
+        assert_eq!(middle.word, GRAB_WORD);
         // Without the middle bit the release leaves the end bit.
         n.grab_release();
         assert_eq!(n.word, GRAB_END);
@@ -349,6 +369,31 @@ mod tests {
         n.restore_to(saved, parent);
         assert_eq!(n.local, saved);
         assert_eq!(n.world.position, Vec3::new(14.0, 5.0, 6.0));
+    }
+
+    /// A sheared or scaled rotation is pulled back to an orthonormal one,
+    /// its position untouched.
+    #[test]
+    fn a_frame_is_orthonormalised() {
+        let sheared = Mat3::from_cols(
+            Vec3::new(2.0, 0.0, 0.0),
+            Vec3::new(0.5, 3.0, 0.0),
+            Vec3::new(0.0, 0.0, 4.0),
+        );
+        let f = Frame::new(Vec3::new(1.0, 2.0, 3.0), sheared).orthonormalized();
+        assert_eq!(f.position, Vec3::new(1.0, 2.0, 3.0));
+        assert!((f.rotation.x_axis.length() - 1.0).abs() < 1e-5);
+        assert!((f.rotation.y_axis.length() - 1.0).abs() < 1e-5);
+        assert!((f.rotation.z_axis.length() - 1.0).abs() < 1e-5);
+        assert!(f.rotation.x_axis.dot(f.rotation.y_axis).abs() < 1e-5);
+        assert!((f.rotation.x_axis.cross(f.rotation.y_axis) - f.rotation.z_axis).length() < 1e-5);
+        // The second axis keeps its direction; the first is bent to it.
+        assert!((f.rotation.y_axis - Vec3::new(0.5, 3.0, 0.0).normalize()).length() < 1e-6);
+        assert!(f.rotation.x_axis.dot(Vec3::new(0.5, 3.0, 0.0)).abs() < 1e-5);
+        // A frame with a zero axis stays finite.
+        let flat = Mat3::from_cols(Vec3::ZERO, Vec3::ZERO, Vec3::ZERO);
+        let f = Frame::new(Vec3::ZERO, flat).orthonormalized();
+        assert!(f.rotation.x_axis.is_finite());
     }
 
     /// Detaching returns the node and its descendants root first and leaves

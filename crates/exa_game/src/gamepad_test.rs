@@ -397,6 +397,13 @@ fn the_camera_stick_has_a_half_dead_zone_vertically_and_a_squared_tenth_horizont
 }
 
 #[test]
+fn the_pad_look_takes_the_frame_from_the_mouse() {
+    assert!(look_takes_over(true, Some(Vec2::new(1.0, 0.0))));
+    assert!(!look_takes_over(true, None));
+    assert!(!look_takes_over(false, Some(Vec2::new(1.0, 0.0))));
+}
+
+#[test]
 fn the_look_turns_at_the_orbit_rate_and_raises_the_pitch_for_up() {
     let look = look_input(Vec2::new(1.0, 1.0)).unwrap();
     assert_eq!(look, Vec2::new(30.0, 10.0));

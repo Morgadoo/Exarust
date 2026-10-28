@@ -982,6 +982,7 @@ mod tests {
                 (bounds.left + bounds.right) / 2,
                 (bounds.top + bounds.bottom) / 2,
             ),
+            double: false,
         });
         app.update();
         assert!(

@@ -280,9 +280,9 @@ closes the bar, a digit picks, Q uses the picked slot and the arrows step
 the dialogue the other keys open; the extinguished light itself (the
 record's flag changes, the torch burns on); the original's cancel of a lift or drag
 on entering combat, which puts a lifted item back where its lift saved it
-and leaves a drag's link in place (Exarust's lift does not move the item,
-and it lets go of the drag rather than leave a link no release would end);
-the flag that keeps a player out of combat mode.
+and leaves a drag's link in place (Exarust's lift moves the item on the
+item cursor; entering combat lets go of the drag rather than leave a link
+no release would end); the flag that keeps a player out of combat mode.
 
 ## Gamepad
 
@@ -309,7 +309,11 @@ push word names (bit `0x8000` with the index in the low byte), directly.
 The player controls instead select the gameplay *layer*, which only
 becomes active while no form has the focus; popping the last form
 reselects that layer and primes its reader, rather than leaving the menus
-active (`gamepad::SetRegistry`, `gamepad::FocusStack`).
+active (`gamepad::SetRegistry`, `gamepad::FocusStack`). While the
+camera stick looks (outside its dead zones), the mouse-look routine does
+not start, keep or end the mouse capture: the original's gamepad branch
+saves the view's basis and returns before the pointer code
+(`gamepad::look_takes_over`), and the chase camera takes the stick's turn.
 
 | action | set | kind | default Bevy control |
 |---|---|---|---|
@@ -544,8 +548,13 @@ is strict: the same button within the system's double-click time
 (`GetDoubleClickTime`, 500 ms by Windows' default, which Exarust uses) and
 under 2 pixels from the press before. The original takes it on the second
 press; Exarust reads it on that press's release. Exarust wires the player's
-own inventory; the other windows, the script registry and the item cursor
-are not in.
+own inventory, the item cursor's lift and release (below) and a dead
+character's role scripts: a double click runs the scripts
+`exa_ai::roles::corpse_scripts` names with the corpse as actor 0 and the
+player as actor 1, and their effects go out as
+`exa_script::ScriptEffect` (`hand::run_corpse_scripts`). The registry is
+`exa_script::Scripts` (`charroles.rdb`/`narrator.rcd`). The other windows
+and the living character's talk condition are not in.
 
 ### Using an item
 
@@ -574,8 +583,16 @@ when the item has the usable section and its byte is not written, the
 weapon section waits for the next frame.
 The sounds are `player_controls::use_sound`: the pour at 0.25, the cleaning
 kit at 0.3 and the repair kit at 0.15, each pitch 0.9 + 0.2 times one draw.
-Not in Exarust: the item cursor that would carry the item, and the GUI
-dispatcher that picks the target.
+Wired in Exarust: the right press's use start (a usable kind of zero opens
+its container, any other kind begins the use), the target by the pick's
+class (a hinge, a living character, a usable item), the GUI use (a cleaning
+kit, a repair kit, a kind 0x10 moving the same item between slots) and the
+used item's removal from the scene or a container entry
+(`player_controls::{use_press, use_target, gui_use, after_use}`), and a
+sound played at a point at 0.25 and pitch 1.0 (`point_sound`). Not in
+Exarust: the right press itself is the movement request's walk and the
+combat attack, so the use cursor has no caller, and the GUI windows the use
+writes to do not take items yet.
 
 The start of play makes the AI's activation centre the player with a 40 m
 radius; the end of play puts it back at the origin with 200 m
@@ -637,9 +654,10 @@ there:
   locomote: the object's hold begins (the standing quarter turns wait), and
   with **Ctrl** held it is dragged: a grab on the part the pick hit, at the
   hit point, strength 1, in the first two of the tick's 20 passes. Without
-  Ctrl the original lifts it onto the cursor as an inventory item; Exarust
-  has no item cursor yet, so that press only holds until the release, whose
-  end also ends the object's hold. While the player's kinesis waits for its
+  Ctrl it is lifted onto the **item cursor** (`item_cursor`): the part's
+  frames saved and the item riding the cursor until the release (below);
+  Exarust holds it with a plain grab of strength 1 where the original moves
+  the node itself. While the player's kinesis waits for its
   pick, the lift hands the prop to the kinesis instead
   (`docs/THAUMATURGY.md`, Force), and the kinesis's pick callback answers
   the reach in place of the measure: a point the kinesis can take is in
@@ -659,6 +677,50 @@ there:
 The drag's release does not end the object's hold: in the original only the
 lift's release clears it, so after a drag the standing quarter turns wait
 until the next lift is released (kept as the original has it).
+
+### The item cursor
+
+A lift without Ctrl holds the item on the cursor. The movement inputs,
+which the lift leaves alone, turn it, not the mouse: the pad's raw move
+stick when its squared length is over 0.1 (double; a NaN reads the keys),
+its forward part about the camera's axis and its sideways part about the
+world's up axis; otherwise Forward (else Back) gives ± the speed about the
+camera's axis and Left (else Right) ± the speed about the up axis. The
+pieces turn the held frame every frame. The speed is `0.25·ms·0.0025` rad a
+frame at first (ms: the last frame's time), ramps to `1.0·ms·0.0025` once
+the cursor has been turning for more than 300 ms
+`(0.25 + (now − ramp)·0.003333…·0.75)` in between, and a frame 500 ms after
+the last starts from `0.25` again; the product is taken in double. A piece
+under 1.19209e−7 is no turn.
+
+Each frame the cursor's ray is picked against the level, the held item left
+out. A hit whose height is not under the limit (−100000 cm) places the item
+there; otherwise it goes where the ray crosses that height, unless the ray
+climbs (its height part over −1.19209e−7) and the placement is refused. The
+item goes there whether or not its box (its rest points' centre and half
+extents in its saved frame, turned as above) stays within 280 cm up and
+−1000 cm down: the box only decides the routine's answer. The original then
+slides the item from 600 cm back along the ray to its first contact (at
+most 1000 cm on); Exarust pulls its grab to the picked point, and a cursor
+over nothing keeps the last point.
+
+A plain release leaves the item where the cursor put it: the release hands
+the saved rest points to the deferred restore only to take the body out of
+its old sector. A release over a GUI item slot is the GUI's. A lift the
+movement request cancels (the point out of reach) goes to the slot it is
+over, stays with the world hover bit, and is otherwise put back at the
+saved rest points. The turn, placement, release and drop rules are
+`item_cursor::{TurnRamp, place_point, place_frame, release, drop, DropTask}`.
+An item put down runs the scripts of the scene objects within 5 cm² of the
+point (`player_controls::nearby_scripts`), which have no placed nodes in
+Exarust yet. The GUI drop takes an inventory entry whose object has a body,
+puts it into the scene and lifts it; an entry with no body is the
+"Game object has no physics" content error and spawns nothing. Both are
+rules with no inventory window to originate them: Exarust's inventory form
+has no item panel. A GUI drag (an item or object payload `0xFB01`/`0xFB02`)
+is the controls' while no dialogue is open, the movement request is free
+and no drop is queued; an item already held makes it busy
+(`item_cursor::claim_drag`).
 
 Each frame of a drag the grabbed point is let go once it is farther than
 330 cm from the player's hip (the squared distance compared in double

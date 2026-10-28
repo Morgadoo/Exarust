@@ -45,6 +45,7 @@ pub mod hud;
 pub mod hw_config;
 pub mod idle_orbit;
 pub mod item_container;
+pub mod item_cursor;
 pub mod item_effects;
 pub mod item_panel_draw;
 pub mod joint_trace;

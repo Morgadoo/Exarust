@@ -454,7 +454,9 @@ mobility and the group masks of its tree (`Part::rigid`'s pairing,
 The hand's grab (`body::Grab`, `Ragdoll::grab`) is the original's horizontal
 drag link: a limp part's point pulled across the ground toward a world
 anchor in the passes it runs in, twice the strength times the gap counted at
-most 3·√mobility (≤ 5) cm, less the motion already heading there.
+most 3·√mobility (≤ 5) cm, less the motion already heading there. `Ragdoll::turn_about` turns a held body's parts about
+a world point and places them there, as the item cursor's turn writes the
+held frame.
 `Physics::fixed_pick` and `prop::StandIns::owner_of` name the prop a ray
 meets.
 
