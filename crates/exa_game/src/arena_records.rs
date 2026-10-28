@@ -24,8 +24,24 @@
 //! record's main hand before the outfit pass, and the profile's flag 4 keeps
 //! the outfit from picking another weapon.
 //!
-//! Evidence: the generic and hire-list spawn routines' record calls and the
-//! record writer's field order (arena research notes, `docs/formats/RFC.md`).
+//! The random NPC pass's variant (the draw that avoids the previous
+//! fighter's) is the record's voice number, its 0.9…1.07 curve the voice
+//! pitch, and its appearance draw the undead voice set: the runtime record
+//! keeps voice, pitch and profession side by side, as the file does, and
+//! the undead voice beside the combat skill.
+//!
+//! The Beast ([`beast_record`]) is not a random NPC: its record is the
+//! Ogre race (profession word 0x300), a combat skill of 100, its tier's
+//! hand item and worn pieces, a voice pitch from one smooth draw, voice 0
+//! and 50000 experience spent on the profession grid.
+//!
+//! Every generated record starts from a sequence the spawn reseeds from the
+//! performance counter (its low 32 bits byte-reversed), as the original does
+//! before each generated body.
+//!
+//! Evidence: the generic, hire-list and beast spawn routines' record calls
+//! and the record writer's field order (arena research notes,
+//! `docs/formats/RFC.md`).
 
 use exa_formats::characters::{CharacterRecord, ItemRef, SKILLS};
 
@@ -34,7 +50,7 @@ use crate::arena_outfit::{
     GeneratedOutfit, Lcg, NameTable, NpcProfile, NpcRequest, OutfitCharacter, OutfitTables,
     ProfessionCatalog, generate_by_level_lcg, generate_profile_lcg, random_npc_lcg,
 };
-use crate::arena_spawn::{GenericPlan, HirePlan, OutfitProfile};
+use crate::arena_spawn::{GenericPlan, HirePlan, OutfitProfile, beast_plan, pick_weapon_slot};
 
 /// The wardrobe a generated fighter is dressed from.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -61,6 +77,10 @@ pub struct GeneratedFighter {
     pub traits: [f32; 4],
     /// An item id already in the main hand before the outfit pass.
     pub weapon: Option<u32>,
+    /// The event weapon row's three variants. When set, the variant is
+    /// drawn from the shared sequence after the random NPC pass and before
+    /// the outfit pass (the original's order), and it replaces `weapon`.
+    pub weapon_row: Option<[u32; 3]>,
 }
 
 impl GeneratedFighter {
@@ -77,6 +97,7 @@ impl GeneratedFighter {
             },
             traits: [-100.0, 100.0, 0.0, 0.0],
             weapon: None,
+            weapon_row: None,
         }
     }
 
@@ -90,6 +111,18 @@ impl GeneratedFighter {
             outfit: OutfitSource::Profile(plan.outfit),
             traits: [-100.0, 100.0, 0.0, 0.0],
             weapon,
+            weapon_row: None,
+        }
+    }
+
+    /// A hire-list opponent whose weapon is drawn from the event row during
+    /// the generation, as the original's hire spawn does: after the random
+    /// NPC pass, one step of the shared sequence picks the row's slot.
+    #[must_use]
+    pub fn hire_from_row(plan: HirePlan, row: [u32; 3]) -> Self {
+        Self {
+            weapon_row: Some(row),
+            ..Self::hire(plan, None)
         }
     }
 }
@@ -126,6 +159,15 @@ pub fn generated_record(
     };
     let profile = random_npc_lcg(lcg, &request, professions);
     *previous = profile.variant;
+    // The hire spawn draws the event weapon after the random NPC pass and
+    // before the outfit pass, from the same sequence.
+    let weapon = match fighter.weapon_row {
+        Some(row) => {
+            let roll = lcg.step();
+            Some(pick_weapon_slot(row, roll)).filter(|&id| id != 0)
+        }
+        None => fighter.weapon,
+    };
     let character = OutfitCharacter {
         // The premade-skill probe reads a skill technique this generated
         // record never has.
@@ -155,9 +197,7 @@ pub fn generated_record(
         }
     }
     record.traits = fighter.traits;
-    record.hands[0] = fighter
-        .weapon
-        .map_or(ItemRef::NONE, |id| ItemRef::new(id, 0));
+    record.hands[0] = weapon.map_or(ItemRef::NONE, |id| ItemRef::new(id, 0));
     apply_outfit(&mut record, &outfit, tables);
     record
 }
@@ -174,12 +214,15 @@ fn apply_profile(record: &mut CharacterRecord, profile: &NpcProfile<'_>) {
     record.hair_style = look.build_seed;
     record.hair_colour = [look.feature_seed, look.skin_tone, look.hair_tone, 0];
     record.face = [0, 0];
-    record.voice_number = profile.appearance;
-    record.voice = exa_formats::characters::voice_name(profile.appearance);
-    record.voice_pitch = 1.0;
+    // The variant (drawn not to repeat the previous fighter's) is the voice
+    // number and the 0.9…1.07 muscle curve the voice pitch; the appearance
+    // draw is the undead voice set, beside the combat skill.
+    record.voice_number = profile.variant;
+    record.voice = exa_formats::characters::voice_name(profile.variant);
+    record.voice_pitch = look.muscle;
     record.set_profession(look.flags);
     record.combat_skill = profile.skill;
-    record.undead_voice = profile.variant;
+    record.undead_voice = profile.appearance;
     record.search_seed = look.damage_seed;
     record.experience = 0;
     record.extra_word = 0;
@@ -210,6 +253,49 @@ fn apply_outfit(record: &mut CharacterRecord, outfit: &GeneratedOutfit, tables: 
             record.hands[slot] = ItemRef::new(held.variant, 0);
         }
     }
+}
+
+/// The experience the Beast's record spends on the profession grid.
+pub const BEAST_EXPERIENCE: u32 = 50_000;
+/// The Beast's combat skill.
+pub const BEAST_COMBAT_SKILL: f32 = 100.0;
+
+/// Write the Beast's record at `tier` from the reseeded shared sequence.
+///
+/// The original's order: the profession word 0x300 (race byte 3, the Ogre),
+/// the combat skill 100, the base hand item 0x44, then one smooth draw for
+/// the voice pitch `0.9 + 0.17 · smooth` (in double precision, narrowed
+/// once); tiers three to five replace the hand item and add their four worn
+/// pieces in order; the voice number is cleared and 50000 experience is
+/// spent on the profession grid, which steps the same sequence. The
+/// personality is the opponents' `-100, 100, 0`.
+pub fn beast_record(
+    tier: u32,
+    lcg: &mut Lcg,
+    professions: &mut ProfessionCatalog,
+) -> CharacterRecord {
+    let smooth = crate::arena_outfit::smooth_unit(lcg.unit());
+    let plan = beast_plan(tier, smooth);
+    let mut record = CharacterRecord::new();
+    record.set_profession(plan.profession);
+    record.combat_skill = BEAST_COMBAT_SKILL;
+    record.hands[0] = ItemRef::new(plan.body, 0);
+    record.voice_pitch = plan.voice_pitch;
+    for &item in &plan.equipment {
+        record.worn.push(ItemRef::new(item, 0));
+    }
+    record.voice_number = 0;
+    let mut progress = crate::arena_outfit::ProfessionProgress::default();
+    crate::arena_outfit::grant_profession_levels(lcg, professions, &mut progress, plan.ability);
+    for (index, skill) in record.skills.iter_mut().enumerate().take(4) {
+        let row = progress.rows[index];
+        skill.points = row.experience;
+        for (rank, &column) in row.levels.iter().enumerate().take(6) {
+            skill.techniques[rank] = column;
+        }
+    }
+    record.traits = [-100.0, 100.0, 0.0, 0.0];
+    record
 }
 
 #[cfg(test)]
@@ -276,11 +362,14 @@ mod tests {
         assert_eq!(record.skin, [37_889, 48_293]);
         assert_eq!(record.hair_style, 9);
         assert_eq!(record.hair_colour, [84, 56, 45, 0]);
-        assert_eq!(record.voice_number, 0);
-        assert_eq!(record.voice, "vi01");
+        // The variant is the voice number, the appearance draw the undead
+        // voice and the muscle curve the pitch.
+        assert_eq!(record.voice_number, 4);
+        assert_eq!(record.voice, "vi05");
+        assert!((0.9..=1.07).contains(&record.voice_pitch));
         assert_eq!(record.profession(), 0x1_0000);
         assert_eq!(record.combat_skill.to_bits(), 0x423d_c771);
-        assert_eq!(record.undead_voice, 4);
+        assert_eq!(record.undead_voice, 0);
         assert_eq!(record.search_seed, 0x07a5_0b31);
         assert_eq!(record.skills[0].points, 15_313);
         assert_eq!(record.skills[0].techniques, [1, 3, 4, 2, 0, 0]);
@@ -308,7 +397,80 @@ mod tests {
         assert!(record.voice.starts_with("vi"));
         assert_eq!(record.skills.len(), SKILLS);
         assert_eq!(record.traits, [-100.0, 100.0, 0.0, 0.0]);
-        assert!(previous > 0 || record.undead_voice == 0);
+        assert_eq!(previous, record.voice_number);
+    }
+
+    #[test]
+    fn a_row_drawn_weapon_follows_the_random_npc_pass() {
+        // The variant is drawn from the step after the random NPC pass: a
+        // second run that replays the pass and steps once picks the same
+        // slot.
+        let tables = tables();
+        let plan = hire_plan(3, 2, 2);
+        let row = [0x51, 0x52, 0x53];
+        let fighter = GeneratedFighter::hire_from_row(plan, row);
+        let mut lcg = Lcg::new(77);
+        let mut professions = ProfessionCatalog::default();
+        let mut previous = 0;
+        let record = generated_record(&fighter, &mut lcg, &tables, &mut professions, &mut previous);
+        let male: Vec<(&str, &str)> = MALE_NAMES.iter().map(|name| (*name, "")).collect();
+        let female: Vec<(&str, &str)> = FEMALE_NAMES.iter().map(|name| (*name, "")).collect();
+        let names = NameTable {
+            male: &male,
+            female: &female,
+        };
+        let mut replay = Lcg::new(77);
+        let _ = random_npc_lcg(
+            &mut replay,
+            &NpcRequest {
+                level: 6,
+                forced_flags: 0,
+                warmth: 0.0,
+                previous_variant: 0,
+                names: &names,
+            },
+            &mut ProfessionCatalog::default(),
+        );
+        let expected = pick_weapon_slot(row, replay.step());
+        assert_eq!(record.hands[0].id, expected);
+        assert!(row.contains(&record.hands[0].id));
+    }
+
+    #[test]
+    fn the_beast_is_an_ogre_with_its_tier_items() {
+        let mut lcg = Lcg::new(0x1234_5678);
+        let mut professions = ProfessionCatalog::default();
+        let record = beast_record(4, &mut lcg, &mut professions);
+        // Race byte 3 (the Ogre), no sex bit, the combat skill of 100.
+        assert_eq!(record.race, 3);
+        assert!(!record.female);
+        assert_eq!(record.profession(), 0x300);
+        assert_eq!(record.combat_skill, 100.0);
+        assert_eq!(record.hands[0].id, 0x207);
+        assert_eq!(
+            record.worn.iter().map(|worn| worn.id).collect::<Vec<_>>(),
+            [0x210, 0x20e, 0x20f, 0x213]
+        );
+        assert_eq!(record.voice_number, 0);
+        assert_eq!(record.traits, [-100.0, 100.0, 0.0, 0.0]);
+        // The pitch is the first draw of the reseeded sequence, smoothed.
+        let mut first = Lcg::new(0x1234_5678);
+        let smooth = crate::arena_outfit::smooth_unit(first.unit());
+        assert_eq!(
+            record.voice_pitch.to_bits(),
+            ((f64::from(smooth) * 0.17 + 0.9) as f32).to_bits()
+        );
+        // 50000 experience is spent: ten full ranks across the rows.
+        let total: u32 = record
+            .skills
+            .iter()
+            .map(|skill| u32::from(skill.points))
+            .sum();
+        assert_eq!(total, 50_000);
+        // Tiers one and two keep the base item and wear nothing.
+        let low = beast_record(1, &mut Lcg::new(1), &mut ProfessionCatalog::default());
+        assert_eq!(low.hands[0].id, 0x44);
+        assert!(low.worn.is_empty());
     }
 
     #[test]

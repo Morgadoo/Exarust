@@ -19,11 +19,15 @@
 //! An arena opponent takes a [`BodyLook::Generated`] plan: the spawn writes
 //! its own character record with [`crate::arena_records::generated_record`]
 //! (the random NPC pass and the outfit tables built from the object
-//! database), then dresses the merged mesh from that record. The actor
-//! templates (`opponent01`…`opponent16`, `arenashpkp`) remain the Beast's,
-//! a company entrant's and the hub specialists' stand-ins where the original
-//! reads a saved record or a creature body item Exarust does not keep yet
-//! [guess]; the hub shopkeeper is the exact `arenashpkp` template.
+//! database), then dresses the merged mesh from that record. The Beast takes
+//! a [`BodyLook::Beast`] plan: the spawn writes its Ogre record with its
+//! tier's hand item and worn pieces ([`crate::arena_records::beast_record`]).
+//! Before each generated or Beast record the shared sequence is reseeded
+//! from the performance counter, as the original does. The actor templates
+//! (`opponent01`…`opponent16`, `arenashpkp`) remain a company entrant's and
+//! the hub specialists' stand-ins where the original reads a saved record
+//! Exarust does not keep yet [guess]; the hub shopkeeper is the exact
+//! `arenashpkp` template.
 //!
 //! Evidence: the arena's generic and hire-list spawn routines, the manager
 //! and hub placements and the round setup (`arena_spawn`, `match_layout`),
@@ -38,7 +42,7 @@ use exa_formats::races::{Race, RaceBody};
 use exa_physics::body::{BodyStats, RaceMuscles};
 
 use crate::arena_outfit::{ItemFacts, Lcg, OutfitTables, ProfessionCatalog};
-use crate::arena_records::{GeneratedFighter, generated_record};
+use crate::arena_records::{GeneratedFighter, beast_record, generated_record};
 use crate::arena_spawn::{
     BeastPlan, GenericPlan, HirePlan, HubBodyPlan, OPPONENT_TEAM, PLAYER_TEAM, SPAWN_DAMAGE,
     SPAWN_HEALTH,
@@ -80,6 +84,9 @@ pub enum BodyLook {
     /// A fighter the generator writes a record for from the arena's random
     /// NPC and outfit passes (an arena opponent).
     Generated(GeneratedFighter),
+    /// The Beast at its tier (1 through 5): an Ogre record with the tier's
+    /// items.
+    Beast(u32),
 }
 
 /// Which brain drives a scene body.
@@ -156,7 +163,7 @@ impl SceneBodyPlan {
     pub fn actor(&self) -> Option<&str> {
         match &self.look {
             BodyLook::Actor(name) => Some(name),
-            BodyLook::Record(_) | BodyLook::Generated(_) => None,
+            BodyLook::Record(_) | BodyLook::Generated(_) | BodyLook::Beast(_) => None,
         }
     }
 }
@@ -233,21 +240,34 @@ pub fn hire_opponent_plan(
     body
 }
 
-/// The Beast's plan: its team and hostile role at the opponent's place.
-///
-/// The body item and tier equipment are the `arena_spawn::BeastPlan`'s. The
-/// character generator's body-item model is not modelled yet, so the body
-/// is the stand-in template until the beast's race and body item are
-/// established [guess].
+/// A hire-list opponent armed from the event's weapon row: the variant is
+/// drawn while its record is generated (after the random NPC pass, from the
+/// reseeded sequence), so the plan names no weapon of its own and the
+/// record's main hand shows the drawn one.
 #[must_use]
-pub fn beast_scene_plan(
-    plan: &BeastPlan,
+pub fn hire_row_plan(
+    plan: HirePlan,
     place: &Place,
+    role: u32,
+    row: [u32; 3],
     now_ms: u32,
     act_grace_ms: u32,
 ) -> SceneBodyPlan {
+    let mut body = hire_opponent_plan(plan, place, role, None, now_ms, act_grace_ms);
+    body.look = BodyLook::Generated(GeneratedFighter::hire_from_row(plan, row));
+    body
+}
+
+/// The Beast's plan at `tier`: its team and hostile role at the opponent's
+/// place.
+///
+/// The spawn writes the Beast's own record (the Ogre race, the tier's hand
+/// item and worn pieces, see [`crate::arena_records::beast_record`]).
+#[must_use]
+pub fn beast_scene_plan(tier: u32, place: &Place, now_ms: u32, act_grace_ms: u32) -> SceneBodyPlan {
+    let plan: BeastPlan = crate::arena_spawn::beast_plan(tier, 0.0);
     let mut body = SceneBodyPlan::base(place);
-    body.look = BodyLook::Actor(fighter_template(0, 0).to_string());
+    body.look = BodyLook::Beast(tier);
     body.team = plan.team;
     body.roles = vec![plan.role];
     body.id = plan.body;
@@ -367,6 +387,17 @@ pub struct SpawnContext<'a> {
     pub now_ms: u32,
     /// The jitter generator the brains draw from, kept across spawns.
     pub roll: &'a mut u32,
+    /// The seed the shared sequence restarts from before each generated or
+    /// Beast record: the performance counter's low 32 bits byte-reversed in
+    /// the game ([`clock_seed`]), a fixed word in the tests.
+    pub clock_seed: fn() -> u32,
+}
+
+/// The original's clock reseed: the performance counter's low 32 bits with
+/// their bytes reversed.
+#[must_use]
+pub fn clock_seed() -> u32 {
+    crate::career::roll_from_counter(crate::arena_match::counter_now())
 }
 
 /// The item a record's reference names in the game's object database.
@@ -388,11 +419,10 @@ pub fn spawn_scene_body(
         BodyLook::Record(record) => record.as_ref().clone(),
         BodyLook::Actor(name) => context.actors.template(context.game, name, false)?,
         BodyLook::Generated(fighter) => {
-            // The original reseeds the shared randomiser from the system
-            // clock before each generated body; Exarust continues the
-            // arena's roll instead [guess: a deterministic stand-in for the
-            // clock seed], so one body's draws lead into the next body's.
-            let mut lcg = Lcg::new(*context.roll);
+            // The original reseeds the shared randomiser from the clock
+            // before each generated body; the draws after it continue from
+            // where the generation left the sequence.
+            let mut lcg = Lcg::new((context.clock_seed)());
             let record = generated_record(
                 fighter,
                 &mut lcg,
@@ -400,6 +430,12 @@ pub fn spawn_scene_body(
                 context.professions,
                 context.previous_variant,
             );
+            *context.roll = lcg.state();
+            record
+        }
+        BodyLook::Beast(tier) => {
+            let mut lcg = Lcg::new((context.clock_seed)());
+            let record = beast_record(*tier, &mut lcg, context.professions);
             *context.roll = lcg.state();
             record
         }
@@ -873,6 +909,7 @@ fn apply_scene_commands(
                     player,
                     now_ms: clock.as_ref().map_or(0, |clock| clock.now_ms),
                     roll,
+                    clock_seed,
                 };
                 if let Some(body) = spawn_scene_body(&mut commands, &mut context, plan) {
                     built.write(SceneBodyBuilt {
@@ -997,12 +1034,24 @@ mod tests {
 
     #[test]
     fn the_beast_takes_its_item_id_and_role() {
-        let beast = crate::arena_spawn::beast_plan(3, 0.5);
-        let plan = beast_scene_plan(&beast, &place(), 100, 3_000);
+        let plan = beast_scene_plan(3, &place(), 100, 3_000);
+        assert_eq!(plan.look, BodyLook::Beast(3));
+        assert_eq!(plan.actor(), None);
         assert_eq!(plan.team, 2);
         assert_eq!(plan.roles, vec![0x12]);
         assert_eq!(plan.id, 0x1f6);
         assert_eq!(plan.act_at_ms, 3_100);
+    }
+
+    #[test]
+    fn a_row_armed_hire_draws_its_weapon_in_the_record() {
+        let plan = hire_row_plan(hire_plan(4, 0, 2), &place(), 0x12, [5, 6, 0], 0, 0);
+        assert_eq!(plan.weapon, None);
+        let BodyLook::Generated(fighter) = plan.look else {
+            panic!("a hire opponent takes a generated record");
+        };
+        assert_eq!(fighter.weapon_row, Some([5, 6, 0]));
+        assert_eq!(fighter.weapon, None);
     }
 
     #[test]
@@ -1113,6 +1162,7 @@ mod tests {
                 player,
                 now_ms: 0,
                 roll: &mut roll,
+                clock_seed: || 0x1234_5678,
             };
             spawn_scene_body(&mut commands, &mut context, &plan)
         }

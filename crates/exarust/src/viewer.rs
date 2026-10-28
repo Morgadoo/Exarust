@@ -731,21 +731,14 @@ fn play_level(
         _ => Vec::new(),
     };
     if arena.is_some() && matching {
-        // A launched match names its drawn weapons per opponent in layout
-        // order; `--arena-match` takes the command line's list instead.
+        // A launched tournament draws each side's weapon from the event
+        // row while its record is generated; `--arena-match` names the
+        // command line's weapons instead.
         let weapons = match launch {
-            Some(launch) => launch
-                .fighters
-                .iter()
-                .filter_map(|fighter| match &fighter.body {
-                    exa_game::arena_hub_live::LaunchedBody::Opponent(_) => {
-                        Some(fighter.weapon.unwrap_or(0))
-                    }
-                    _ => None,
-                })
-                .collect(),
+            Some(_) => Vec::new(),
             None => options.arena_weapons.clone(),
         };
+        let rivals = launch.map_or([0; 16], |launch| launch.rivals);
         commands.insert_resource(exa_game::arena_match::ArenaMatch::begin_match(
             template,
             spawn_at,
@@ -766,7 +759,8 @@ fn play_level(
                 setup.prize,
                 career,
             )
-            .with_weapon_variants(setup.weapon_variants),
+            .with_weapon_variants(setup.weapon_variants)
+            .with_rivals(rivals),
         );
     } else {
         commands.remove_resource::<exa_game::arena_match::ArenaMatch>();
