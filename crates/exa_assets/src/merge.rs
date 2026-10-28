@@ -12,10 +12,15 @@
 //! stores a run's last vertex inclusively and starts the next one past it;
 //! `docs/formats/RSQ.md`, Skinning).
 //!
-//! A hidden body slot's part is appended with a cull mask: vertices whose
-//! per-vertex slot mask meets the cull bits are left out, and triangles that
-//! needed one of them go with them. The per-triangle flags and corner bytes
-//! are carried along for the cull pass.
+//! A part is appended with cull bits: vertices whose per-vertex slot mask
+//! meets them are left out, and triangles that needed one of them go with
+//! them. The dressed-mesh pass gives a slot's bits (`0x200000` or
+//! `0x400000`, `exa_character::layers::cull_bits`) as the append's cull
+//! argument, which the append only tests against the vertex masks; it
+//! writes nothing on the triangles. The per-triangle flags and corner bytes
+//! are carried along from the parts. A part whose material carries the
+//! occlusion mark fades the merged vertices on the border of the marked
+//! region ([`occlusion_alpha`]).
 
 use exa_formats::morph::{Frame, place, unturn};
 use exa_formats::rfc::{Mesh, MeshGroup, SkinWeights};
@@ -38,9 +43,13 @@ pub struct MergePart<'a> {
     /// The body slot mask of each vertex, when the file stores one; a
     /// vertex whose mask meets `cull` is not merged.
     pub vertex_masks: Option<&'a [u32]>,
-    /// The visible body slots' bits: a vertex is left out when
-    /// `vertex_masks[v] & cull != 0`.
+    /// The cull bits of the append: a vertex is left out when
+    /// `vertex_masks[v] & cull != 0`. The dressed-mesh pass passes the
+    /// slot's cull bits (`0x200000` or `0x400000`, or 0) here.
     pub cull: u32,
+    /// The part's material carries the occlusion mark: its vertices fade at
+    /// the border of the marked region ([`occlusion_alpha`]).
+    pub occlude: bool,
     /// The part's slice of its mesh's index buffer, when it is one material
     /// group of a shared mesh.
     pub index_range: Option<(usize, usize)>,
@@ -64,6 +73,7 @@ impl<'a> MergePart<'a> {
             visible: true,
             vertex_masks: None,
             cull: 0,
+            occlude: false,
             index_range: None,
         }
     }
@@ -131,6 +141,8 @@ struct Appended {
     /// Flags and corner bytes of the kept triangles.
     flags: Vec<u32>,
     edges: Vec<u8>,
+    /// Whether each kept triangle's part carries the occlusion mark.
+    marked: Vec<bool>,
     has_uv: bool,
     has_colour: bool,
     has_flags: bool,
@@ -138,6 +150,9 @@ struct Appended {
 }
 
 /// Merges the visible parts into one mesh, or `None` when nothing is left.
+///
+/// When a part carries the occlusion mark, the merged mesh's vertex
+/// colours fade at the border of the marked region ([`occlusion_alpha`]).
 pub fn merge(parts: &[MergePart]) -> Option<Merged> {
     let skinned = parts.iter().any(|p| p.visible && p.skin.is_some());
     let mut appended = Appended {
@@ -152,6 +167,7 @@ pub fn merge(parts: &[MergePart]) -> Option<Merged> {
         triangles: Vec::new(),
         flags: Vec::new(),
         edges: Vec::new(),
+        marked: Vec::new(),
         has_uv: false,
         has_colour: false,
         has_flags: false,
@@ -162,6 +178,11 @@ pub fn merge(parts: &[MergePart]) -> Option<Merged> {
     let mut assigned: Vec<Vec<u32>> = Vec::new();
     let mut position_count = 0u32;
     let mut uv_count = 0u32;
+    // Each appended mesh's position and UV streams are moved past the
+    // meshes before it; parts that are groups of one mesh share its streams.
+    let mut last_mesh: Option<&Mesh> = None;
+    let mut position_base = 0u32;
+    let mut uv_base = 0u32;
     for part in parts.iter().filter(|p| p.visible) {
         let source = part.mesh;
         if source.indices.is_empty() {
@@ -188,6 +209,11 @@ pub fn merge(parts: &[MergePart]) -> Option<Merged> {
         }
         if !keep.iter().any(|&k| k) {
             continue;
+        }
+        if !last_mesh.is_some_and(|m| std::ptr::eq(m, source)) {
+            position_base = position_count;
+            uv_base = uv_count;
+            last_mesh = Some(source);
         }
         let at = materials.iter().position(|m| *m == part.material);
         let group = match at {
@@ -234,31 +260,25 @@ pub fn merge(parts: &[MergePart]) -> Option<Merged> {
                 .copied()
                 .unwrap_or_else(|| fallback(part.bone));
             appended.skin.push(weight);
-            appended
+            let position_id = source
                 .position_ids
-                .push(source.position_ids.get(v).copied().unwrap_or(v as u32));
-            appended
+                .get(v)
+                .copied()
+                .unwrap_or(v as u32)
+                .saturating_add(position_base);
+            let uv_id = source
                 .uv_ids
-                .push(source.uv_ids.get(v).copied().unwrap_or(v as u32));
+                .get(v)
+                .copied()
+                .unwrap_or(v as u32)
+                .saturating_add(uv_base);
+            appended.position_ids.push(position_id);
+            appended.uv_ids.push(uv_id);
             appended.material.push(group);
             local[v] = appended.positions.len() as u32 - 1;
             assigned[group].push(appended.positions.len() as u32 - 1);
-            position_count = position_count.max(
-                source
-                    .position_ids
-                    .get(v)
-                    .copied()
-                    .unwrap_or(v as u32)
-                    .saturating_add(1),
-            );
-            uv_count = uv_count.max(
-                source
-                    .uv_ids
-                    .get(v)
-                    .copied()
-                    .unwrap_or(v as u32)
-                    .saturating_add(1),
-            );
+            position_count = position_count.max(position_id.saturating_add(1));
+            uv_count = uv_count.max(uv_id.saturating_add(1));
         }
         for (offset, tri) in triangles_slice.as_chunks::<3>().0.iter().enumerate() {
             let t = from / 3 + offset;
@@ -287,6 +307,7 @@ pub fn merge(parts: &[MergePart]) -> Option<Merged> {
                         .copied()
                         .unwrap_or(0),
                 );
+                appended.marked.push(part.occlude);
             }
         }
     }
@@ -365,6 +386,7 @@ pub fn merge(parts: &[MergePart]) -> Option<Merged> {
     let mut indices = Vec::with_capacity(appended.triangles.len() * 3);
     let mut flags = Vec::with_capacity(appended.triangles.len());
     let mut edges = Vec::with_capacity(appended.triangles.len());
+    let mut marked = Vec::with_capacity(appended.triangles.len());
     let mut first = 0u32;
     for (index, subobject) in subobjects.iter_mut().enumerate() {
         let start = indices.len();
@@ -379,6 +401,7 @@ pub fn merge(parts: &[MergePart]) -> Option<Merged> {
             ]);
             flags.push(appended.flags[t]);
             edges.push(appended.edges[t]);
+            marked.push(appended.marked[t]);
         }
         let count = indices.len() - start;
         if count == 0 {
@@ -399,6 +422,15 @@ pub fn merge(parts: &[MergePart]) -> Option<Merged> {
     }
     if appended.has_edges {
         mesh.triangle_edges = Some(edges);
+    }
+    // A part with the occlusion mark fades the merged vertices on the
+    // border of the marked region (the generator's occlusion alpha pass).
+    if marked.iter().any(|&m| m) {
+        let alpha = occlusion_alpha(total, &mesh.indices, &mesh.position_ids, &marked);
+        let colours = mesh.colors.get_or_insert_with(|| vec![[255; 4]; total]);
+        for (colour, a) in colours.iter_mut().zip(alpha) {
+            colour[3] = a;
+        }
     }
     // Sub-object index runs are relative to the final grouped index buffer.
     let mut first = 0usize;
@@ -676,6 +708,71 @@ mod tests {
         assert_eq!(merged.subobjects[0].vertex_count, 6);
         assert_eq!(merged.mesh.positions.len(), 6);
         assert!(merge_parts(&[]).is_none());
+    }
+
+    /// The dressed-mesh pass's slot cull bits are the append's cull
+    /// argument: they drop the vertices whose slot mask holds them and write
+    /// nothing on the triangles. A marked part's border vertices fade, and
+    /// each mesh's position ids move past the meshes before it.
+    #[test]
+    fn slot_cull_bits_drop_masked_vertices_and_marked_parts_fade() {
+        let plain = mesh(
+            &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            &[0, 1, 2],
+        );
+        let marked = mesh(
+            &[[0.0, 0.0, 1.0], [1.0, 0.0, 1.0], [0.0, 1.0, 1.0]],
+            &[0, 1, 2],
+        );
+        let covered = mesh(
+            &[[5.0, 0.0, 0.0], [6.0, 0.0, 0.0], [5.0, 1.0, 0.0]],
+            &[0, 1, 2],
+        );
+        let masks = [0x20_0000, 0, 0];
+        let parts = [
+            MergePart {
+                cull: 0x40_0000,
+                ..part(&plain, None, 1, "m")
+            },
+            MergePart {
+                occlude: true,
+                ..part(&marked, None, 1, "m")
+            },
+            MergePart {
+                vertex_masks: Some(&masks),
+                cull: 0x20_0000,
+                ..part(&covered, None, 1, "m")
+            },
+        ];
+        let merged = merge_parts(&parts).unwrap();
+        // The covered part loses its masked vertex and its only triangle.
+        assert_eq!(merged.positions.len(), 8);
+        assert_eq!(merged.indices.len(), 6);
+        // No part's mesh has triangle flags, and the cull bits add none.
+        assert!(merged.triangle_flags.is_none());
+        // The marked triangle hangs alone: all three of its vertices fade,
+        // the others keep opaque.
+        let colours = merged.colors.unwrap();
+        assert_eq!(
+            colours.iter().map(|c| c[3]).collect::<Vec<_>>(),
+            [255, 255, 255, 0, 0, 0, 255, 255]
+        );
+        assert_eq!(merged.position_ids, [0, 1, 2, 3, 4, 5, 7, 8]);
+        assert_eq!(merged.position_count, 9);
+        // Groups of one mesh share its position stream.
+        let parts = [
+            MergePart {
+                index_range: Some((0, 3)),
+                ..part(&plain, None, 1, "a")
+            },
+            MergePart {
+                index_range: Some((0, 3)),
+                ..part(&plain, None, 1, "b")
+            },
+        ];
+        let merged = merge_parts(&parts).unwrap();
+        assert_eq!(merged.position_ids, [0, 1, 2, 0, 1, 2]);
+        assert_eq!(merged.position_count, 3);
     }
 
     /// Weights of a skinned part are kept vertex for vertex; a part without

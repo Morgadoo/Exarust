@@ -142,6 +142,20 @@ pub fn beard_textures(index: usize) -> Option<[String; 2]> {
     })
 }
 
+/// The hair maps of the material pass: colour, normal and gloss. The
+/// original's hair material names one of two sets, chosen by the record's
+/// profession bit `0x10000`: `harhps1…` by default and `harhpc1…` for the
+/// variant. Only the `S` set ships in `CharExt.rpk`; the variant's maps are
+/// absent, so the material keeps the maps the style's own material names.
+/// The creation preview's hair material always names the `C` set.
+pub fn hair_textures(light_variant: bool) -> [&'static str; 3] {
+    if light_variant {
+        ["harhpc1d", "harhpc1n", "harhpc1g"]
+    } else {
+        ["harhps1d", "harhps1n", "harhps1g"]
+    }
+}
+
 /// The beard a record wears: a man of a race with beards (look bit 5)
 /// whose record names one in bits 20–23 of its profession word. The stored
 /// number is one more than the texture index; six beards are shipped. The
@@ -363,6 +377,13 @@ mod tests {
         );
         assert_eq!(beard_textures(5).unwrap()[1], "bearda06n.rfi");
         assert_eq!(beard_textures(6), None);
+    }
+
+    /// The two hair map sets: the shipped `S` set and the variant's `C` set.
+    #[test]
+    fn the_hair_material_names_its_map_set() {
+        assert_eq!(hair_textures(false), ["harhps1d", "harhps1n", "harhps1g"]);
+        assert_eq!(hair_textures(true), ["harhpc1d", "harhpc1n", "harhpc1g"]);
     }
 
     #[test]

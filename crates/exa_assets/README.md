@@ -46,16 +46,23 @@ crate's `hair` system tints the hair materials with it.
 Merging (`merge`): `merge` appends the visible body parts and garment pieces
 into one skinned mesh as the original's character assembly does: each part
 placed by its frame, its vertices, normals, UVs and colours appended, its
-weights kept vertex for vertex (a part without them bound to its bone), and
-its triangles grouped by material in first-seen order. The final renumber
-pass is the original's: each material's vertices in order, each run
-starting right after the previous one's last vertex. A part's `vertex_masks` and `cull`
-drop the vertices a hidden body slot masks and the triangles that needed
-them; `culled_indices` drops triangles by a slot's per-triangle cull bits
-(`exa_character::layers::cull_bits`) and `occlusion_alpha` writes the
-generator's per-vertex occlusion alpha. `Merged::subobjects` states each
-material run's vertex and index ranges, and `model::scene_merged_mesh`
-merges a scene's skinned nodes group by group from their body-space frames.
+weights kept vertex for vertex (a part without them bound to its bone), its
+triangles grouped by material in first-seen order, and each mesh's own
+position-stream ids kept and moved past the meshes before it (groups of one
+mesh share its stream). The final renumber pass is the original's: each
+material's vertices in order, each run starting right after the previous
+one's last vertex. A part's `vertex_masks` and `cull` drop the vertices
+whose slot mask meets the cull bits and the triangles that needed them; the
+dressed-mesh pass passes a slot's cull bits (`0x200000`/`0x400000`,
+`exa_character::layers::cull_bits`) as that argument, and the append writes
+nothing on the triangles. A part whose material has the occlusion mark
+(`occlude`) fades the vertices on the border of the marked region
+(`occlusion_alpha`). `culled_indices` drops triangles by per-triangle flag
+bits (which triangle flags the original's draw tests is not traced).
+`Merged::subobjects` states each material run's vertex and index ranges,
+and `model::scene_merged_mesh` merges a scene's skinned nodes group by group
+from their body-space frames. The merge order and the per-slot cull bits
+come from the generator (`exa_character::dress` and `layers::cull_bits`).
 The loader still draws a mesh per node; the merged mesh is built by callers,
 not by the loader yet.
 

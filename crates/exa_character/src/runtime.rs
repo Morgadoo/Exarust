@@ -136,6 +136,11 @@ pub struct Node {
     /// The word the item loader writes through an item's model (its id;
     /// [`HAIR_OWNER`] on hair roots).
     pub owner: u32,
+    /// The skin texture job the node's mesh was built with, if any (the
+    /// original keeps it on the mesh object; a rebuild's apply step clears
+    /// the node's `0x20` render flag for it). A labelled guess: the job is
+    /// engine state this model keeps by identity.
+    pub texture: Option<usize>,
     /// The body slot its name gives.
     pub slot: usize,
     /// The layer bits of its name ([`crate::layers::layer_of`]).
@@ -167,6 +172,7 @@ impl Default for Node {
             flags: 0,
             render_flags: 0,
             owner: 0,
+            texture: None,
             slot: 0,
             layer: 0,
             morphed: false,
@@ -192,6 +198,15 @@ impl Node {
 pub struct PoseRecord {
     pub frame: Frame,
     pub children: u32,
+}
+
+/// One mesh node of the dressed mesh, as the building callback collects it:
+/// the node and the translation its vertices are placed by (the rest of the
+/// placement is the node's own frame).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CollectedNode {
+    pub node: usize,
+    pub offset: [f32; 3],
 }
 
 /// The two-digit number the slot passes parse from a name's first two
@@ -407,6 +422,61 @@ impl Body {
                 }
             }
         }
+    }
+
+    /// The meshes the dressed-mesh pass collects under `node`, as the
+    /// original's skin builder asks for them ([`CollectedNode`]): the
+    /// collection callback the builder runs for each slot node.
+    ///
+    /// A node in a body slot is replaced by the slot's chosen node from
+    /// `table`. The chosen node's parent is added first when it is a mesh
+    /// with render flag `0x400000`, at no offset. Then every direct child
+    /// that is a mesh with `0x400000` is added: a child in a slot takes the
+    /// slot's saved frame translation from `slot_world`, a child without one
+    /// its own world translation. (The original reads the saved slot frames
+    /// unconditionally; a missing one here falls back to the child's own
+    /// translation.)
+    pub fn collect_merge_nodes(
+        &self,
+        node: usize,
+        table: &[Option<usize>; 19],
+        slot_world: &[Option<Frame>; 19],
+    ) -> Vec<CollectedNode> {
+        let first = match self.nodes.get(node) {
+            Some(n) if n.slot > 0 => table.get(n.slot).copied().flatten().unwrap_or(node),
+            Some(_) => node,
+            None => return Vec::new(),
+        };
+        let mut out = Vec::with_capacity(self.nodes[first].children.len() + 2);
+        if let Some(parent) = self.nodes[first].parent {
+            let p = &self.nodes[parent];
+            if p.is_mesh() && p.render_flags & 0x40_0000 != 0 {
+                out.push(CollectedNode {
+                    node: parent,
+                    offset: [0.0; 3],
+                });
+            }
+        }
+        for &child in &self.nodes[first].children {
+            let n = &self.nodes[child];
+            if !(n.is_mesh() && n.render_flags & 0x40_0000 != 0) {
+                continue;
+            }
+            let offset = if n.slot > 0 {
+                slot_world
+                    .get(n.slot)
+                    .copied()
+                    .flatten()
+                    .map_or(n.world[3], |f| f[3])
+            } else {
+                n.world[3]
+            };
+            out.push(CollectedNode {
+                node: child,
+                offset,
+            });
+        }
+        out
     }
 
     /// The generator's slot chain: `root` takes slot 1, its subtrees their
@@ -766,10 +836,11 @@ impl Body {
     }
 }
 
-/// The merge order of a garment's chosen nodes: the slot tree walked from
-/// the pelvis, each slot's chosen node before its child slots' (1 to 13,
-/// 17, 14 to 16, 18). Only the chosen node itself is merged; the overlays
-/// ([`mark_overlays`]) follow once every garment is merged.
+/// The order the skin builder's weight pass visits a garment's chosen
+/// nodes: the slot tree walked from the pelvis, each slot's chosen node
+/// before its child slots' (1 to 13, 17, 14 to 16, 18). The geometry is
+/// appended afterwards in slot order ([`crate::dress::garment_steps`]); the
+/// overlays ([`mark_overlays`]) follow once every garment is merged.
 pub fn merge_order(chosen: &[Option<usize>; 19]) -> Vec<usize> {
     fn visit(slot: usize, chosen: &[Option<usize>; 19], out: &mut Vec<usize>) {
         if let Some(n) = chosen[slot] {
@@ -1213,5 +1284,62 @@ mod tests {
         assert_eq!(name_digits("99x"), 99);
         assert_eq!(name_digits("9Chest"), 0);
         assert_eq!(name_digits(""), 0);
+    }
+
+    /// The merge collection resolves a slot node to the slot table's chosen
+    /// node, adds the chosen node's marked parent at no offset, then its
+    /// marked mesh children: a child in a slot takes the saved slot frame's
+    /// translation, a child without one its own.
+    #[test]
+    fn the_merge_collection_takes_the_chosen_node_and_its_children() {
+        let mut nodes = vec![
+            node("00Root", None),
+            node("01Pelvis", Some(0)),
+            node("0906Chest", Some(1)),
+            node("1000Head", Some(2)),
+            node("strap", Some(2)),
+            node("0906Chest", Some(1)),
+            node("1106RShld", Some(5)),
+            node("x", Some(5)),
+        ];
+        nodes[1].render_flags = 0x40_0000;
+        nodes[2].render_flags = 0x40_0000;
+        nodes[2].slot = 9;
+        nodes[3].render_flags = 0x40_0000;
+        nodes[3].slot = 10;
+        nodes[4].render_flags = 0x40_0000;
+        nodes[6].render_flags = 0x40_0000;
+        nodes[6].slot = 11;
+        nodes[7].render_flags = 0x40_0000;
+        nodes[6].world = translated([1.0, 2.0, 3.0]);
+        nodes[7].world = translated([9.0, 9.0, 9.0]);
+        let b = Body::new(nodes);
+        let mut table = [None; 19];
+        table[9] = Some(5);
+        let mut slots = [None; 19];
+        slots[11] = Some(translated([1.0, 2.0, 3.0]));
+        let got = b.collect_merge_nodes(2, &table, &slots);
+        assert_eq!(
+            got,
+            [
+                CollectedNode {
+                    node: 1,
+                    offset: [0.0; 3]
+                },
+                CollectedNode {
+                    node: 6,
+                    offset: [1.0, 2.0, 3.0]
+                },
+                CollectedNode {
+                    node: 7,
+                    offset: [9.0, 9.0, 9.0]
+                },
+            ]
+        );
+        // Without a chosen node the slot node itself is collected; a slot
+        // child without a saved frame falls back to its own world position.
+        let got = b.collect_merge_nodes(2, &[None; 19], &[None; 19]);
+        assert_eq!(got[0].node, 1);
+        assert_eq!(got.iter().map(|c| c.node).collect::<Vec<_>>(), [1, 3, 4]);
     }
 }

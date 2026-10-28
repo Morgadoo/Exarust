@@ -740,6 +740,14 @@ worn item whose occupancy overlaps the new one: braies are dropped, other
 items return to the pack, and a human left bare at the groin wears braies
 again. The inventory windows are not in.
 
+A feral character's dressing and re-texture passes repaint the underwear
+it wears: its appearance's damage and dirt bytes (the block's second and
+third) become `(2 − f)·f·255` (the feral
+share, converted with round-to-even and cut to a byte) and the compositor
+seeds it with the record's look seed rather than the item's own. Every
+other apparel item keeps its stored appearance and seed
+(`exa_character::rebuild::retexture_layer`).
+
 The game never draws an apparel item's own textures. It paints a colour
 texture per item from the shade map `<stem>d` (cavities dark), stacking each
 layer's finish over its mask on black. Run-time materials `&<10 chars><digit>`

@@ -2351,6 +2351,7 @@ pub fn scene_merged_mesh(
                 visible: true,
                 vertex_masks: None,
                 cull: 0,
+                occlude: false,
                 index_range: Some((first, first + group.index_count as usize)),
             });
         }
