@@ -362,6 +362,15 @@ pub struct Locomotor {
     /// Another clip played this tick and the original cleared its held
     /// items' motion flag (and called the callback) there.
     pub start_notice: bool,
+    /// The trailing-foot request: 2 when a clip replaced Walk or Run, 1
+    /// once this tick has planted, 0 none. The body tick plants at the next
+    /// tick after the start and drops an unplanted request 500 ms on,
+    /// telling the behaviour its step is over.
+    pub plant_request: i32,
+    pub plant_deadline: u64,
+    /// The 500 ms deadline passed with the trailing foot still unplanted
+    /// and the behaviour is to be told; the caller clears it.
+    pub step_done_notice: bool,
     /// The game clock (ms) at this tick: the look target's deadline is
     /// compared with it.
     pub now: u64,
@@ -404,6 +413,9 @@ impl Default for Locomotor {
             jump_progress: 0.0,
             start_callback: false,
             start_notice: false,
+            plant_request: 0,
+            plant_deadline: 0,
+            step_done_notice: false,
             now: 0,
         }
     }

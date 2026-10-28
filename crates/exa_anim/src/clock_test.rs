@@ -730,3 +730,23 @@ fn the_shock_hold_turns_the_upper_body() {
     let down = shock_hold(&defence, &capture, true, &mut || draws.next().unwrap());
     assert!(down[0].abs_diff_eq(want, 1e-6));
 }
+
+/// Starting another clip from Walk or Run leaves a trailing-foot request,
+/// taken once; a stance or a clip that does not replace locomotion sets
+/// nothing, and a restart of Walk does not ask.
+#[test]
+fn leaving_walk_or_run_asks_for_the_trailing_foot() {
+    let mut anim = Animator::new("Default", "Walk");
+    anim.start("Attack Mid", false, None, 0, Ease::Smooth);
+    assert!(anim.take_left_locomotion());
+    assert!(!anim.take_left_locomotion());
+    anim.action = "Run".into();
+    anim.start("Idle", true, None, 20, Ease::Linear);
+    assert!(anim.take_left_locomotion());
+    anim.action = "Idle".into();
+    anim.start("Defence stance", true, None, 30, Ease::Smooth);
+    assert!(!anim.take_left_locomotion());
+    anim.action = "Walk".into();
+    anim.start("Walk", true, None, 0, Ease::Linear);
+    assert!(!anim.take_left_locomotion());
+}

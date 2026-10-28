@@ -1026,3 +1026,17 @@ fn the_placement_snaps_the_legs_onto_the_ground_it_finds() {
     empty.aim(Affine3A::IDENTITY, pose);
     assert_eq!(empty.snap_placement(NONE, Affine3A::IDENTITY), None);
 }
+
+/// The snap's character ground is where the placement puts the feet: a 15 cm
+/// platform puts them at 15 cm, not at the pelvis's frame height.
+#[test]
+fn the_placement_frame_height_maps_to_the_feet() {
+    let platform = square(Vec2::ZERO, 0.15, 10.0);
+    let mut body = biped();
+    let pose: Vec<Affine3A> = body.parts.iter().map(|p| p.transform()).collect();
+    body.aim(Affine3A::IDENTITY, pose);
+    body.snap_placement(&platform[..], Affine3A::IDENTITY)
+        .unwrap();
+    let feet = body.placement_feet();
+    assert!((feet - 0.15).abs() < 1e-4, "feet {feet}");
+}

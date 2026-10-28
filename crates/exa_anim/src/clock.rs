@@ -148,7 +148,9 @@ pub fn in_place(action: Option<usize>) -> bool {
 impl Animator {
     /// Starts `action` from its clock's zero: a capture is taken at the
     /// body's next tick, and the clip blends from it to its first key over
-    /// (first key + `blend`) frames, eased by `ease`.
+    /// (first key + `blend`) frames, eased by `ease`. Leaving Walk or Run
+    /// asks the body's tick for a trailing-foot plant, which
+    /// [`Animator::take_left_locomotion`] hands it once.
     pub fn start(
         &mut self,
         action: &str,
@@ -157,6 +159,9 @@ impl Animator {
         blend: u32,
         ease: Ease,
     ) {
+        if self.action != action {
+            self.left_locomotion = matches!(self.action.as_str(), "Walk" | "Run");
+        }
         self.action = action.into();
         self.time = 0.0;
         self.progress = 0.0;
@@ -169,6 +174,12 @@ impl Animator {
         self.capture_key = 0;
         self.capture = None;
         self.pending = Some(Capture::Plain);
+    }
+
+    /// Whether the clip just started replaced Walk or Run, taken by the
+    /// body's tick, which asks for the trailing foot to be planted.
+    pub fn take_left_locomotion(&mut self) -> bool {
+        std::mem::take(&mut self.left_locomotion)
     }
 
     /// Puts the clip just started `key` keys in, as the original's stagger

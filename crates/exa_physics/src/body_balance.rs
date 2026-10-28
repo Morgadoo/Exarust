@@ -1371,6 +1371,16 @@ impl Ragdoll {
         Some(height)
     }
 
+    /// Where the character's feet (Exarust's model root) go after a
+    /// placement snap: the character ground the snap averaged under the two
+    /// feet. The original's placement matrix is its character frame, whose
+    /// height the snap writes; Exarust's model root is rooted at the feet,
+    /// so it takes that ground directly. The caller moves the character and
+    /// this model root by the difference from where the frame was.
+    pub fn placement_feet(&self) -> f32 {
+        self.drive.as_ref().map_or(0.0, |d| d.balance.under)
+    }
+
     /// One leg's clip reach in the placement's height rule (cm): the thigh
     /// and shin lengths against the clip's horizontal (z, x) ankle offset
     /// from the hip, shaped by the original's `r² + (1 − r)·√r`.

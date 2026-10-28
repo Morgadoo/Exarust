@@ -259,7 +259,11 @@ times 0.0002, wrapped at 1, with the phase before the tick kept
 reproduced. A queued footwork step is taken by the original's rule at the
 next landing (`steps::take_queued`, `Ragdoll::queue_step`); nothing queues
 one yet, since Exarust's interim combat footwork is a capsule velocity,
-not the original's step vector. A force release ends the running step and
+not the original's step vector. A clip that replaces Walk or Run asks for
+the trailing foot (`Animator::take_left_locomotion`,
+`Locomotor::plant_request`): the character tick plants it after that
+tick's sample and keeps the request for 500 ms, then drops it and leaves
+`Locomotor::step_done_notice` for the behaviour. A force release ends the running step and
 stops the clip rate (`Ragdoll::force_release`, the feet's re-anchor waits
 for the next tick). The chest's fast velocity over its slow one, less a
 term that first decays ×0.85, is the body's jolt: past 2.5·scale cm a tick
@@ -275,17 +279,19 @@ it had when the muscles went, the 0.05 height ease and key-flag plants
 (`limp_plant`). It is not scheduled: the original samples only a body
 whose muscles are off and which is not dead, and a dead body's tick
 samples nothing.
-The placement's leg snap is a tested rule, not called by the spawn
-(`Ragdoll::snap_placement`; the spawn now samples the first clip,
-`exa_game::limp::spawn_pose`, but without the snap's frame height applied
-to the controller the snap left the standing player 4.5 cm lower): each probe is the clip ankle plus 5·scale cm
+The placement's leg snap (`Ragdoll::snap_placement`) is called by the
+spawn after it samples the first clip (`exa_game::limp::spawn_pose`):
+each probe is the clip ankle plus 5·scale cm
 along the shin, a 10 cm sphere from the frame's height plus the leg's
 length is dropped 300 cm for the ground, the hits average to the
 character's ground, one foot's record (index 1 when leg 0's ground is
 lower) picks the frame height (root over thigh, ground, the reach its
-clip leaves, sole; returned, not applied to the controller), each anchor
+clip leaves, sole), each anchor
 is the clip ankle at its ground plus the sole, and the standing IK writes
-its corrections at once (`Ragdoll::snap_legs`).
+its corrections at once (`Ragdoll::snap_legs`). `Ragdoll::placement_feet`
+maps that frame height back to the character ground Exarust's model root
+stands at; the spawn moves the controller's node there and samples the
+snapped frame again.
 The plain body's own collision sound and its scrape sources are in
 `body::sound` (`src/body_sound.rs`): an impact over 0.5 sounds after the
 cooldown or when it is strictly louder than twice the last one, at volume

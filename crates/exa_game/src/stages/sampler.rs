@@ -131,6 +131,19 @@ pub(crate) fn sample_clip(
             &nodes,
         )
     });
+    // A clip that replaced Walk or Run asks the body tick for the trailing
+    // foot, which it plants after this tick's sample; the request lapses
+    // 500 ms on and tells the behaviour its step is over.
+    if let Some((_, l)) = locomotion.as_mut() {
+        if anim.take_left_locomotion() {
+            l.plant_request = 2;
+            l.plant_deadline = l.now.saturating_add(PLANT_WINDOW_MS);
+        }
+        if l.plant_request > 0 && l.now > l.plant_deadline {
+            l.plant_request = 0;
+            l.step_done_notice = true;
+        }
+    }
     // A clip played once that ended into its stance this tick: a get-up
     // is over (the condition's clip-end writer).
     if once
@@ -154,15 +167,12 @@ pub(crate) fn sample_clip(
     let mut look = locomotion
         .as_mut()
         .and_then(|(req, l)| look_of(&body, req, l, looks));
-    // The thighs are posed only in the combat behaviour's conditions (the
-    // splay flag has no known writer).
-    let posture = if matches!(state, Condition::ATTACKING | Condition::COMBAT_IDLE) {
-        FemurPosture::Combat {
-            height: fighter.map_or(0.0, |f| f.stats.height),
-        }
-    } else {
-        FemurPosture::Level
-    };
+    // The body tick poses the thighs by whether its behaviour is in combat,
+    // not by its condition: every tick it calls the posture with that flag,
+    // and a body out of combat keeps the clip's turns (the splay flag has
+    // no writer).
+    let in_combat = body.drive.as_ref().is_some_and(|d| d.bearing.in_combat);
+    let posture = thigh_posture(in_combat, fighter.map_or(0.0, |f| f.stats.height));
     let posed = sample_parts(
         &mut anim,
         clip,
@@ -203,6 +213,21 @@ pub(crate) fn sample_clip(
 
 /// The clips below this action index let the head look.
 const LOOKING_CLIPS: usize = 0x2C;
+
+/// An unplanted trailing-foot request lapses after this many milliseconds.
+const PLANT_WINDOW_MS: u64 = 500;
+
+/// The thigh posture the body tick asks of the sampler: the combat turn
+/// (1 − height)·−1.5° while its behaviour is in combat, else the clip's own
+/// turns. The original's other branch is the state word's splay flag, which
+/// nothing in the shipped code writes.
+pub(crate) fn thigh_posture(in_combat: bool, height: f32) -> FemurPosture {
+    if in_combat {
+        FemurPosture::Combat { height }
+    } else {
+        FemurPosture::Level
+    }
+}
 
 /// What the head look reads this tick: its direction in the character
 /// frame (last tick's), its weight and the look yaw it follows.
@@ -666,6 +691,21 @@ mod tests {
         );
         body.drive.as_mut().unwrap().hunch = 0.0;
         assert_eq!(pitch_thorax(pose, &body, 1.0).rotations[7], Quat::IDENTITY);
+    }
+
+    /// The thigh posture the body tick asks for: the combat turn at the
+    /// record's height while the behaviour is in combat, the clip's own
+    /// turns otherwise; a body attacking out of combat keeps the clip.
+    #[test]
+    fn the_thigh_posture_follows_the_behaviours_combat_flag() {
+        assert_eq!(
+            thigh_posture(true, 0.5),
+            FemurPosture::Combat { height: 0.5 }
+        );
+        assert_eq!(thigh_posture(false, 0.5), FemurPosture::Level);
+        let fighting = FemurPosture::Combat { height: 0.5 };
+        let got = thigh_posture(true, 0.5);
+        assert_eq!(got, fighting);
     }
 
     /// A shin pointing straight up pitches its foot 0.01 rad on the first

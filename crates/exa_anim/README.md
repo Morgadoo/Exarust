@@ -15,7 +15,9 @@ holds pulls the sample by a weight, its quaternion components interpolated
 without the short-way sign check (two opposite turns half way give a NaN).
 The smooth ease is (3 − 2f)·f²; the fast one 1 + 0.11f − 1/(1 + 8f), the
 first sum in double and the reciprocal single, as the original computes
-them. A limp (muscles-off) body's sampler takes the bracket at the raw
+them. A start that replaces Walk or Run leaves a trailing-foot request
+(`Animator::take_left_locomotion`), which the body's tick hands to its
+footwork. A limp (muscles-off) body's sampler takes the bracket at the raw
 clock, with no blend and no hold, the root keeping its travel
 (`ragdoll_bracket`, `Animator::sample_ragdoll`); Exarust has no clip on a
 corpse yet. A sample is taken in the original's
