@@ -125,13 +125,18 @@ fn pick_hud(
 /// The compass's visibility and turn: the player's own pack carrying a
 /// usable item of the compass's kind (4, 11) shows it, and the chase
 /// camera's backward axis (the third row of its frame, as the original
-/// reads it) turns it. The interface fade is not modelled (0).
+/// reads it) turns it. The interface fade is the power tree's window fade
+/// (its opening rise, held at 1 while open, its 256 ms closing fall), which
+/// the original's tree draw leaves in the GUI's fade word: 0 before the
+/// tree first opens and once it has faded out, so the compass hides while
+/// the tree is up.
 fn pick_compass(
     players: Query<&Children, With<Player>>,
     bodies: Query<&Possessions>,
     catalogue: Option<Res<ItemCatalogue>>,
     cameras: Query<&Transform, With<ChaseCamera>>,
     hud: Res<HudBars>,
+    tree: Option<Res<crate::power_screen::PowerScreen>>,
     mut compass: ResMut<CompassView>,
 ) {
     let carried = catalogue.as_ref().is_some_and(|catalogue| {
@@ -149,7 +154,10 @@ fn pick_compass(
     let next = CompassView {
         visible: hud.active && carried,
         back,
-        fade: 0.0,
+        fade: tree
+            .as_deref()
+            .filter(|screen| screen.open)
+            .map_or(0.0, |screen| screen.tree.window_alpha),
     };
     if *compass != next {
         *compass = next;
@@ -291,6 +299,30 @@ mod tests {
         assert!(weaken(&mut app, player));
         let (mut arena, player, _) = beating(false);
         assert!(!weaken(&mut arena, player));
+    }
+
+    /// The compass's fade follows the open power tree's window fade and is
+    /// 0 with the tree shut.
+    #[test]
+    fn the_compass_fades_with_the_power_tree_window() {
+        let run = |open: Option<(bool, f32)>| {
+            let mut app = App::new();
+            app.init_resource::<HudBars>()
+                .init_resource::<CompassView>()
+                .add_systems(Update, pick_compass);
+            if let Some((open, window)) = open {
+                let mut screen = crate::power_screen::PowerScreen::default();
+                screen.open = open;
+                screen.tree.window_alpha = window;
+                app.insert_resource(screen);
+            }
+            app.update();
+            app.world().resource::<CompassView>().fade
+        };
+        assert_eq!(run(None), 0.0);
+        assert_eq!(run(Some((false, 1.0))), 0.0);
+        assert_eq!(run(Some((true, 0.25))), 0.25);
+        assert_eq!(run(Some((true, 1.0))), 1.0);
     }
 
     /// The power marker shows while the player's caster knows powers and

@@ -1277,7 +1277,10 @@ drawing:
   reset takes one off that count only from a fallen curtain, then clears
   the state and starts a running heartbeat's fade. The compass
   is a 12-unit diamond two units plus its half from the left and bottom at
-  `round((1 − fade) · 192)`; `exa_ui::hud_extra` paints it as one square
+  `round((1 − fade) · 192)`, the fade being the word the power tree's draw
+  leaves (its window fade: rising over the opening, 1 while open, falling
+  over the 256 ms close, 0 once faded out and before the first opening),
+  so the compass hides behind the open tree; `exa_ui::hud_extra` paints it as one square
   in a frame built from the camera's backward axis laid flat (x negated,
   normalised with the approximate reciprocal root) and its cross product
   with up, the frame's origin 3 px against that axis. The corners
