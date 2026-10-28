@@ -558,9 +558,8 @@ impl ContentStream {
     fn adopt(&mut self, object: &LevelNode) {
         let by_kind =
             object.operative_kind.is_some() && self.level.player_kind == object.operative_kind;
-        // The marker's record stores the entrance at +0x14 and the previous
-        // level's id at +0x18; a plain id compares both against the
-        // session's two globals.
+        // The marker's volume section stores the entrance and the previous
+        // level's id; both are compared with the session's two variables.
         let by_marker = object.marker == Some([self.level.arrival, self.level.previous_level]);
         let player = by_kind || by_marker;
         if player {
