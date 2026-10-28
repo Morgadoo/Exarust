@@ -120,7 +120,13 @@ checkpoints enabled, and writes the checkpoint only when the slot has none.
 The script side already exists as `exa_script::builtins::Global::CheckpointSave`.
 The load also clears a player record's race byte
 (`CharacterRecord::reset_loaded_identity`), leaving sex and the kept
-profession bits. The scene flush (object database begin, player flush,
+profession bits. The world clock (`world_clock`) continues across a save:
+a load restores the header's seconds at its tick (the reader's setter) and
+a save stamps the current world seconds back into the header (the writer's
+read), through `Session::world_clock`/`Session::stamp_world_clock`; the
+running game applies a restore from the `RestoreWorldClock` message, and a
+session start sends zero so the elixir's world time starts at the load.
+The scene flush (object database begin, player flush,
 migration list, end), the grid environment's zero arrays and the landing
 plan joining spawn placement and follower placement are in `save_level`;
 the load's global reset (old-settings flag clear, default settings tag,

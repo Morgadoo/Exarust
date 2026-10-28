@@ -2836,6 +2836,7 @@ fn follow_player(
     mut flow: ResMut<Flow>,
     players: Query<(), Added<crate::player::PlayerBody>>,
     ticks: Option<Res<exa_physics::body::BodyTicks>>,
+    mut clock: MessageWriter<crate::world_clock::RestoreWorldClock>,
 ) {
     if players.is_empty() || flow.mode.is_game() {
         return;
@@ -2844,6 +2845,10 @@ fn follow_player(
     for step in flow.switch_mode(Mode::Practice, now) {
         debug!("game flow: {step:?}");
     }
+    // A fresh session's world time starts at its load: the original's clock
+    // counts the saved seconds (zero here) plus the ticks since the load, so
+    // the splash and the menu do not age the world.
+    clock.write(crate::world_clock::RestoreWorldClock { saved_seconds: 0 });
     flow.menu_open = false;
     flow.phase = Phase::Playing;
     flow.hook = Hook::Practice;

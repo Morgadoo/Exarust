@@ -10,8 +10,8 @@
 //! `LqdA_Pour_01`. Either kind ORs `0xC80000`, whether or not the body
 //! takes remedies, into the item used directly or into its container's
 //! inventory entry when there is one ([`ItemSource`]). The clock is the
-//! game's [`WorldClock`]; nothing restores its saved base at a load yet,
-//! so it counts from zero. A later body tick clears the potion flag
+//! game's [`WorldClock`], whose saved base `exa_game::world_clock` restores
+//! at a load and at a session start. A later body tick clears the potion flag
 //! once the world clock is past that stamp. Rules: `docs/formats/OTHER.md`
 //! (Regeneration), `docs/PLAYER.md` (Using an item).
 
@@ -45,7 +45,9 @@ pub const ITEM_SPENT: u32 = 0x00C8_0000;
 
 /// The world clock behind the scripts' `WorldTime`: the save's whole
 /// seconds plus the game clock's seconds since the load. The game keeps it
-/// as a resource; without one the clock counts from zero.
+/// as a resource; the save's base is restored at a load and at a session
+/// start (`exa_game::world_clock`), and without one the clock counts from
+/// zero.
 #[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct WorldClock(pub GameClock);
 

@@ -89,6 +89,7 @@ pub mod tournament;
 pub mod trace;
 pub mod trade;
 pub mod window;
+pub mod world_clock;
 
 use bevy::prelude::*;
 
@@ -144,6 +145,7 @@ impl Plugin for GamePlugin {
             ),
         ))
         .add_plugins(thaum::cast::CastPlugin)
+        .add_plugins(world_clock::WorldClockPlugin)
         .add_plugins((flow::FlowPlugin, splash::SplashPlugin))
         // Debug tools: idle unless their flags or keys turn them on.
         .add_plugins((

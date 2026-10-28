@@ -101,6 +101,19 @@ impl Session {
             arena_tables: None,
         }
     }
+
+    /// The world clock this save restores at `ticks_ms` of the game clock:
+    /// the header's saved seconds and that tick as the base (the original's
+    /// setter, run by the player-data reader).
+    pub fn world_clock(&self, ticks_ms: u32) -> exa_combat::remedy::WorldClock {
+        crate::world_clock::restored(self.clock, ticks_ms)
+    }
+
+    /// Stamps the current world seconds into the header at `ticks_ms`, as
+    /// the player-data writer reads them at the save.
+    pub fn stamp_world_clock(&mut self, clock: &exa_combat::remedy::WorldClock, ticks_ms: u32) {
+        self.clock = crate::world_clock::stamped(clock, ticks_ms);
+    }
 }
 
 /// What a save slot's player data says without restoring the session.
@@ -1128,5 +1141,33 @@ mod tests {
             exa_formats::arena_save::parse_shop_stock(shop.payload).unwrap(),
             vec![7, 8]
         );
+    }
+
+    #[test]
+    fn the_session_clock_restores_and_stamps_the_world_clock() {
+        let mut session = Session::story();
+        session.clock = 8684;
+        // The reader's setter: the saved seconds plus the seconds since the
+        // load tick.
+        let clock = session.world_clock(1_000);
+        assert_eq!(crate::world_clock::stamped(&clock, 1_000), 8684);
+        assert_eq!(crate::world_clock::stamped(&clock, 61_000), 8744);
+        // The writer's stamp: the header carries the current world seconds.
+        session.stamp_world_clock(&clock, 61_000);
+        assert_eq!(session.clock, 8744);
+        // Through a package the stamp survives, and the next load restores
+        // it at its own tick.
+        let back = read(&write(&session)).unwrap();
+        assert_eq!(back.clock, 8744);
+        let reloaded = back.world_clock(0);
+        assert_eq!(crate::world_clock::stamped(&reloaded, 0), 8744);
+        assert_eq!(crate::world_clock::stamped(&reloaded, 3_000), 8747);
+        // The arena header carries the same clock.
+        let mut arena = Session::career("Rival");
+        arena.clock = 100;
+        let clock = arena.world_clock(0);
+        arena.stamp_world_clock(&clock, 5_000);
+        assert_eq!(arena.clock, 105);
+        assert_eq!(read(&write(&arena)).unwrap().clock, 105);
     }
 }

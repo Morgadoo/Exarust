@@ -446,6 +446,15 @@ zero-extended to 64 bits, subtracted, and the **signed** difference divided
 by 1000, rounding toward zero; the sum is kept to 32 bits. A tick before
 the load tick therefore counts back (−2001 ms is −2 s) instead of jumping.
 
+Exarust keeps the pair in [`exa_formats::save_chunk::GameClock`]; the
+player-data reader's setter is `exa_game::world_clock::restored` and the
+writer's read is `exa_game::world_clock::stamped`, with
+`Session::world_clock` and `Session::stamp_world_clock` applying them to a
+save. The running game restores the base when it receives a
+`RestoreWorldClock` message: the host sends a loaded save's seconds, and a
+session start sends zero so the world time begins at its load rather than at
+the process's start (the elixir's 1800 s stamp reads it).
+
 ## Practice
 
 Practice has no save file of its own in this unit: the practice and arena
