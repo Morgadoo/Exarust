@@ -135,16 +135,15 @@ pub(crate) fn sample_clip(
     // foot, which it plants after this tick's sample; the request lapses
     // 500 ms on and tells the behaviour its step is over.
     if let Some((_, l)) = locomotion.as_mut() {
+        l.step_done_notice = false;
         if anim.take_left_locomotion() {
             l.plant_request = 2;
             l.plant_deadline = l.now.saturating_add(PLANT_WINDOW_MS);
         }
-        if l.plant_request > 0 && l.now > l.plant_deadline {
-            l.plant_request = 0;
-            l.step_done_notice = true;
-        }
-    }
-    // A clip played once that ended into its stance this tick: a get-up
+        let (request, told) = plant_request_after(l.plant_request, l.plant_deadline, l.now);
+        l.plant_request = request;
+        l.step_done_notice = told;
+    } // A clip played once that ended into its stance this tick: a get-up
     // is over (the condition's clip-end writer).
     if once
         && anim.looping
@@ -216,6 +215,18 @@ const LOOKING_CLIPS: usize = 0x2C;
 
 /// An unplanted trailing-foot request lapses after this many milliseconds.
 const PLANT_WINDOW_MS: u64 = 500;
+
+/// The trailing-foot request one tick on: a live request (2 before its
+/// plant, 1 after) stays until the deadline; strictly past it the request
+/// clears and the behaviour is told. Returns the request and whether to
+/// tell the behaviour.
+pub(crate) fn plant_request_after(request: i32, deadline: u64, now: u64) -> (i32, bool) {
+    if request > 0 && now > deadline {
+        (0, true)
+    } else {
+        (request, false)
+    }
+}
 
 /// The thigh posture the body tick asks of the sampler: the combat turn
 /// (1 − height)·−1.5° while its behaviour is in combat, else the clip's own
@@ -706,6 +717,18 @@ mod tests {
         let fighting = FemurPosture::Combat { height: 0.5 };
         let got = thigh_posture(true, 0.5);
         assert_eq!(got, fighting);
+    }
+
+    /// A trailing-foot request stays at its deadline and lapses strictly
+    /// after it, telling the behaviour; an already planted request (1) and
+    /// no request are unchanged.
+    #[test]
+    fn an_unplanted_trailing_foot_lapses_after_500_ms() {
+        assert_eq!(plant_request_after(2, 1500, 1500), (2, false));
+        assert_eq!(plant_request_after(1, 1500, 1500), (1, false));
+        assert_eq!(plant_request_after(2, 1500, 1501), (0, true));
+        assert_eq!(plant_request_after(1, 1500, 1501), (0, true));
+        assert_eq!(plant_request_after(0, 1500, 1501), (0, false));
     }
 
     /// A shin pointing straight up pitches its foot 0.01 rad on the first

@@ -369,7 +369,8 @@ pub struct Locomotor {
     pub plant_request: i32,
     pub plant_deadline: u64,
     /// The 500 ms deadline passed with the trailing foot still unplanted
-    /// and the behaviour is to be told; the caller clears it.
+    /// and the behaviour is to be told; set by the body's tick for that
+    /// tick only.
     pub step_done_notice: bool,
     /// The game clock (ms) at this tick: the look target's deadline is
     /// compared with it.
