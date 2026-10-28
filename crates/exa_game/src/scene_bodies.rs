@@ -48,7 +48,7 @@ use crate::match_layout::{BehaviourReset, OPPONENT_BEHAVIOUR, Place};
 /// How far above the given feet point a body's root stands, metres: the
 /// placed-character spawn's lift.
 pub const BODY_RISE: f32 = 0.05;
-/// The template names a generated fighter's stand-in record comes from.
+/// The actor templates a body without a generated record stands in with.
 pub const FIGHTER_TEMPLATES: [&str; 16] = [
     "opponent01",
     "opponent02",
@@ -175,7 +175,8 @@ pub fn fighter_template(level: i32, tier: i32) -> &'static str {
 /// A generated opponent's plan: team 2, the hostile role, the spawn's health
 /// and damage words, the duellist brain and the match's action grace.
 ///
-/// `plan`'s level and outfit level select the stand-in template.
+/// The plan asks the spawn for a generated record at `plan`'s level and
+/// outfit level.
 #[must_use]
 pub fn opponent_plan(
     plan: GenericPlan,
@@ -190,9 +191,9 @@ pub fn opponent_plan(
     body.look = BodyLook::Generated(GeneratedFighter::generic(plan));
     body.team = OPPONENT_TEAM;
     body.roles = vec![role];
-    // The original's body takes the id its freshly written record gets; with
-    // the stand-in template the id is only a non-zero tag the match tick
-    // reads for a non-company body, whose falls are not resolved [guess].
+    // The original's body takes the id its freshly written record gets; this
+    // tag is the id the match tick reads for a non-company body, whose falls
+    // are not resolved [guess].
     body.id = u32::try_from(plan.level).unwrap_or(0).wrapping_add(1);
     body.damage = plan.damage;
     body.condition_health = plan.health;
@@ -202,8 +203,8 @@ pub fn opponent_plan(
 }
 
 /// A hire-list opponent's plan: the profile's level byte is the event's gear
-/// tier, so it selects the stand-in template; `weapon` is the event row's
-/// drawn variant, shown in the main hand.
+/// tier; `weapon` is the event row's drawn variant, put in the generated
+/// record's main hand before the outfit pass.
 #[must_use]
 pub fn hire_opponent_plan(
     plan: HirePlan,
