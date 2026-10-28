@@ -610,7 +610,7 @@ pub struct Preset {
     pub distance: f32,
     /// Whether the placement derives its distance from the eye instead: the
     /// record's first distance was not positive (the original tests the raw
-    /// field, not the clamped one).
+    /// field, not the clamped one, and a NaN takes this branch too).
     pub derive_distance: bool,
     pub min_distance: f32,
     pub max_distance: f32,
@@ -742,7 +742,7 @@ pub fn apply_preset(fields: PresetFields) -> Preset {
         extent_step: (f64::from(extent) * 0.001) as f32,
         rate,
         distance,
-        derive_distance: fields.distance <= 0.0,
+        derive_distance: fields.distance <= 0.0 || fields.distance.is_nan(),
         min_distance,
         max_distance,
         min_height: fields.min_height,
@@ -788,9 +788,9 @@ pub fn kick_offset(
     let third = draw() - 0.5;
     let mut offset = Vec3::new(first, second, third);
     let mut basis = direction;
-    // The original sums the squares z² + y² + x² in single precision and
-    // widens the sum for the 0.1 compare.
-    let squared = |v: Vec3| v.z * v.z + v.y * v.y + v.x * v.x;
+    // The original sums the squares z² + (y² + x²) in single precision
+    // and widens the sum for the 0.1 compare.
+    let squared = |v: Vec3| v.z * v.z + (v.y * v.y + v.x * v.x);
     if f64::from(squared(basis)) < KICK_DEGENERATE {
         basis = right * sign_or_zero(draw() - 0.5);
         basis.y += (draw() - 0.5) * 4.0;
@@ -904,8 +904,8 @@ pub struct TargetBox {
 /// The editor preset's scan (the preset flag `0x400000`): start from the
 /// view's `fallback` centre with an 800 by 0 by 1000 box and no raised flag;
 /// every node of class `0xA9` whose class word's low twelve bits are one
-/// replaces the box with its position and its x and z half extents (the y
-/// extent is zero), and a marker of `0xAE` raises the flag. The last such
+/// replaces the box with its position and its three half extents, and a
+/// marker of `0xAE` raises the flag. The last such
 /// node in the scene order wins. The class word's low bits are the caller's
 /// [`EditorNode::class`] check here.
 pub fn scan_target(nodes: &[EditorNode], fallback: Vec3) -> TargetBox {
@@ -920,7 +920,7 @@ pub fn scan_target(nodes: &[EditorNode], fallback: Vec3) -> TargetBox {
         }
         if node.class == 0xA9 {
             target.centre = node.position;
-            target.half_extents = Vec3::new(node.half_extents.x, 0.0, node.half_extents.z);
+            target.half_extents = node.half_extents;
         }
     }
     target
@@ -1238,6 +1238,14 @@ mod tests {
         assert!((preset.rate - 59f32.powf(1.0 / 59.0)).abs() < 1e-5);
         assert_eq!(preset.distance, 2000.0);
         assert!(!preset.derive_distance);
+        // A NaN first distance is not clamped (the unordered compare skips
+        // the minimum) and takes the derive branch.
+        let nan = apply_preset(PresetFields {
+            distance: f32::NAN,
+            ..PresetFields::default()
+        });
+        assert!(nan.distance.is_nan());
+        assert!(nan.derive_distance);
         assert_eq!((preset.min_distance, preset.max_distance), (1.0, 5000.0));
         assert_eq!(
             (preset.min_height, preset.max_height, preset.extra),
@@ -1516,9 +1524,10 @@ mod tests {
             },
         ];
         let target = scan_target(&nodes, view);
-        // The last 0xA9 wins, with a zero height; the 0xAE marks it raised.
+        // The last 0xA9 wins with all three half extents; the 0xAE marks it
+        // raised.
         assert_eq!(target.centre, Vec3::new(40.0, 50.0, 60.0));
-        assert_eq!(target.half_extents, Vec3::new(8.0, 0.0, 10.0));
+        assert_eq!(target.half_extents, Vec3::new(8.0, 9.0, 10.0));
         assert!(target.raised);
         // The marker alone does not raise the flag; it rides on the class.
         let target = scan_target(&nodes[..2], view);
