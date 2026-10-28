@@ -130,6 +130,11 @@ pub const MATERIAL_FIELDS: &[LayoutField] = &[
     },
 ];
 
+/// The result the material factory's shader-init hook returns after the
+/// material writer has filled the block: the factory's continuation code
+/// `4` (the hook itself only calls the writer).
+pub const SHADER_INIT_RESULT: u32 = 4;
+
 /// The three `vec4`s of one light, at their offsets in the `Light` array
 /// element (48 bytes, three times the six-slot stride).
 pub const LIGHT_FIELDS: &[LayoutField] = &[
@@ -959,6 +964,9 @@ mod tests {
             LIGHT_BYTES * crate::shader_program::MAX_LIGHTS,
             LIGHT_ARRAY_BYTES
         );
+        // The material factory's shader-init hook returns its continuation
+        // code after the writer ran.
+        assert_eq!(SHADER_INIT_RESULT, 4);
     }
 
     #[test]
