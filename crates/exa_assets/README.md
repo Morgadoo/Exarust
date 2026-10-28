@@ -66,6 +66,22 @@ come from the generator (`exa_character::dress` and `layers::cull_bits`).
 The loader still draws a mesh per node; the merged mesh is built by callers,
 not by the loader yet.
 
+The editable-form assembly is `merge::merge_editable`: the original's merge
+read instruction by instruction. Groups join by material (the destination's
+face count grows, a new group carries the joined count and no split flags),
+streams by their whole format word, channels by their low key; a channel's
+entries move past the largest destination element count over the streams that
+share it, so a part's positions, colours and weights start together, and a
+gap is filled with zero or 255. Only the position stream is placed (by
+the rigid `destination⁻¹ · source`, in the original's float order) and the
+normal stream (low key 2) is skipped, as the original does. The face → group map the
+merge keeps is `EditMesh::face_group`; `merge::regroup_by_material` sorts the
+faces into material runs and permutes every channel, the flags, the edge bits
+and the extra per-face word (`EditMesh::face_extra`), then drops the map.
+`EditMesh::duplicate` is the original's mesh copy: every array is its own.
+`merge::assemble_editable` appends several parts into the first one's space
+and regroups once, the sequence every original caller runs.
+
 Skin composite (`skin_composite`): the original's generated skin maps.
 `colour_texel` is `chargen_d`'s colour times the tone, `specular_texel`
 `chargen_s`'s packed intensity/gloss/metal, and `normal_texel`

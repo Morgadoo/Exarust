@@ -222,9 +222,41 @@ approximation `√(1 − c)·(1.571 − 0.1945c + 0.111c² − 0.111c³)` of the
 cosine c between the corner's two edges (0 when the product of their
 squared lengths is not above `0x33FFFFD7`, or c ≥ 1), and the sum is
 normalised. With triangle flags, a face carrying `0x10000` counts only for
-a group no face without it has reached. Established by REA on the normal
+a group no face without it has reached. The faces are walked in the
+original's incidence order: per position element, the corners last face
+first and each face's corners last first, the list then cut into
+smoothing-key runs in place (the first remaining corner opens a run and
+each later corner with its key is swapped into the run's next slot, which
+can reorder a second key's corners). Established by REA on the normal
 builder and its corner-angle helper; Exarust computes them the same way
-(`exa_formats::rfc`).
+(`exa_formats::rfc`). The cloth pass rebuilds them more cheaply: each
+smoothing group's normal is the unweighted sum of its faces' unit normals
+(the first face sets it, the rest are added), normalised
+(`Mesh::recompute_flat_normals`).
+
+Each triangle also keeps a face record for the mesh's queries: the unit
+normal, the plane offset `normal · corner0`, the three corners, the first
+edge's squared length and one reciprocal square root's reciprocal of the
+squared area (`1/(|e1|²|e2|² − (e1·e2)²)`). From it the original answers a
+point's barycentric weights (drop the point onto the plane, express it in
+the two edges, scale by the stored area reciprocal), the closest point on
+the triangle (the interior projection, then the edge and corner regions,
+with weights clamped to 0…1 by `<=` compares), a one-sided ray hit (the signed
+volumes of the ray against the two edges; the ray must run against the
+normal and the denominator must reach 1.19e-7), a sphere's push-out (from
+the centre to the closest point, lengthened to the radius, or along the
+normal when the centre is on the triangle), a swept sphere's first touch
+(the centre placed one radius in front of the plane, the closest point
+there, and the gap along the sweep; a sweep that grazes the plane uses its
+end) and a point's distance to the nearest face of a reach (the plane
+distance within the reach and the squared distance under the reach's square
+less the epsilon). The range rejections are "below"/"above" compares that a
+NaN passes; only the final distance checks (`0 < t < best`, the sweep's
+perpendicular gap) reject one. `exa_formats::rfc::Face` and
+`Mesh::{faces, ray_hit, ray_hit_inclusive, sphere_hit, swept_sphere_hit,
+within_hit}` reproduce them; the collision solver still uses rapier, so only the mesh
+class's rules are ported, not its kd-tree wiring or the callback forms of
+the same tests.
 
 Orientation: floor modules (`gefs_*`) lie at y = 0 with every horizontal face
 pointing +Y under right-handed, counter-clockwise winding, and floor modules
@@ -299,32 +331,34 @@ corner]]`) before the incidence is built; Exarust's decoded meshes store the
 element directly, and the indirect builder is kept for a generic import.
 
 **Assembly.** The original appends one mesh to another (`RF_Mesh`'s merge;
-REA, read against the disassembly): triangles whose material the destination
-already has (the shared material record) join that group, a new group is made
-otherwise, and the appended triangles take the next face numbers with the
-group each belongs to. The part's positions are transformed by its node's
-matrix times the destination's inverse. Each channel of the part is joined
-to the destination's channel of the same format word, made when the
-destination lacks it, and an index map's entries are offset by the
-destination channel's element count. A made channel's earlier elements are
-white for the colour stream (format `0x02B4…`) and zero otherwise; the
-destination's earlier triangles then index element 0. A channel the part
-lacks gets index 0 for the part's triangles in the texture-coordinate map
-(element 0 of the joined stream); the colour and skin streams share the
-position map, so a part without them leaves the destination's channel short.
-Face flags missing on a side join as 1 (smoothing group 1 only), edge bits
-as 7; the face smoothing bits are copied unchanged and the smoothing channel
-(key `0x2`) is left to be rebuilt from them. `Mesh::merge` reproduces this
-on the render form: vertices and triangles are appended and regrouped by
-material, texture coordinates join as above, the part's missing colours and
-weights are filled white and zero (a render-form choice where the original
-reads past the channel), and the smoothing keys are shifted apart because
-the render form's keys name a position's normal group, not the editable
-form's bit masks. GI points belong to the node and are not merged. The
-original uses the merge to draw a factory weapon or a grid room from one
-buffer; Exarust keeps its parts as separate Bevy meshes, which Bevy's
-batching draws together, so the merge is a library rule with tests rather
-than a load-time step.
+REA, read against the disassembly): groups whose material the destination
+already has (the shared material record) add the part's face count, a new
+group is made otherwise, and the appended faces take the next face numbers
+with their group in a face → group map. The part's position stream is placed
+by the rigid `destination⁻¹ · source` (the transposed turn and turned,
+negated origin; points placed as `(x·r0 + y·r1) + (z·r2 + t)`); the normal
+stream (low key 2) is skipped and every other stream is copied as it is. Each stream is joined to the
+destination's stream with the same whole format word, made when the
+destination lacks it, and each channel by its low key; a channel's entries
+are offset by the largest element count the destination has over the streams
+that share it, so a part's positions, colours and weights all start at the
+same element. A gap between the destination's count and that offset is
+filled with zero (255 for the colour stream). Face flags missing on a side
+join as 1, edge bits as 7; the source's smoothing channel is dropped and the
+destination's grows with zeros, since the regroup and render conversion
+rebuild it. `merge_editable` reproduces this on the editable form and
+`regroup_by_material` then gathers every group's faces into one run,
+permuting the channels (bar smoothing), the face flags, edge bits and extras
+with them; `EditMesh::duplicate` is the original's mesh copy, which owns
+every array. `Mesh::merge` remains the render-form shortcut: vertices and
+triangles are appended and regrouped by material, texture coordinates join
+as above, the part's missing colours and weights are filled white and zero
+(a render-form choice where the original reads past the channel), and the
+smoothing keys are shifted apart because the render form's keys name a
+position's normal group, not the editable form's bit masks. GI points belong
+to the node and are not merged. Exarust keeps a loaded level's parts as
+separate Bevy meshes, which Bevy's batching draws together, so the assembly
+is a library rule with tests rather than a load-time step.
 
 - **Incidence.** Each position element lists its corners, the last corner
   of the mesh first (the corners hang in a ring after the element's head).

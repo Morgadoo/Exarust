@@ -510,6 +510,442 @@ pub fn culled_indices(mesh: &Mesh, bits: u32) -> Vec<u32> {
         .collect()
 }
 
+// ---------------------------------------------------------------------------
+// The editable-form assembly.
+//
+// The original's item factory, grid builder and character generator append
+// mesh parts to one editable mesh and only then sort its faces into material
+// runs and turn it back to render form. The destination's groups count
+// faces (the group's stored last-face field means "count − 1" until the
+// regroup); the source's groups say which of its faces they hold. Every
+// stream is matched by its format word, every channel by its low key, and
+// every face of the source keeps its corner order. A source face's channel
+// values move past the destination's elements of that channel; positions
+// are placed from the source's frame into the destination's, the other
+// streams are copied as they are (the original only transforms the position
+// stream). The smoothing channel is left for the regroup to rebuild.
+
+use crate::mesh_edit::{
+    Channel, EditMesh, FaceGroup, KEY_MASK, KEY_SMOOTHING, MeshError, Smoothing, Stream, StreamData,
+};
+
+fn malformed(message: impl Into<String>) -> MeshError {
+    MeshError::Malformed(message.into())
+}
+
+/// The frame that takes a point of `src` into `dst`'s space: `dst⁻¹ · src`,
+/// in the original's float order. The inverse is the rigid one (the
+/// transposed turn and the turned, negated origin, summed first two terms
+/// first); each row of `src` is then multiplied through it, the origin row
+/// adding the inverse's origin to its third term before the final sum.
+fn relative_frame(dst: &Frame, src: &Frame) -> Frame {
+    let [r0, r1, r2, t] = *dst;
+    let inverse_turn = [
+        [r0[0], r1[0], r2[0]],
+        [r0[1], r1[1], r2[1]],
+        [r0[2], r1[2], r2[2]],
+    ];
+    let lane = |row: [f32; 3], k: usize| {
+        [
+            row[0] * inverse_turn[0][k],
+            row[1] * inverse_turn[1][k],
+            row[2] * inverse_turn[2][k],
+        ]
+    };
+    let inverse_origin: [f32; 3] = std::array::from_fn(|k| {
+        let [a, b, c] = lane([-t[0], -t[1], -t[2]], k);
+        (a + b) + c
+    });
+    let turn_row = |row: [f32; 3]| -> [f32; 3] {
+        std::array::from_fn(|k| {
+            let [a, b, c] = lane(row, k);
+            (a + b) + c
+        })
+    };
+    let origin: [f32; 3] = std::array::from_fn(|k| {
+        let [a, b, c] = lane(src[3], k);
+        (a + b) + (c + inverse_origin[k])
+    });
+    [turn_row(src[0]), turn_row(src[1]), turn_row(src[2]), origin]
+}
+
+/// A point placed by `frame` in the original's float order: the first two
+/// turned terms are summed, the third is added to the origin, then the two
+/// halves are summed.
+fn place_point(frame: &Frame, p: [f32; 3]) -> [f32; 3] {
+    let [r0, r1, r2, t] = *frame;
+    std::array::from_fn(|k| (p[0] * r0[k] + p[1] * r1[k]) + (p[2] * r2[k] + t[k]))
+}
+
+/// The number of elements of the destination's stream with `format`.
+fn stream_count(mesh: &EditMesh, format: u32) -> usize {
+    mesh.streams
+        .iter()
+        .find(|s| s.format == format)
+        .map_or(0, |s| s.data.len())
+}
+
+/// The face → material group map, from the groups' ranges when the mesh has
+/// none of its own (a mesh that has just been loaded).
+fn face_groups(mesh: &EditMesh) -> Result<Vec<u32>, MeshError> {
+    if let Some(map) = &mesh.face_group {
+        return Ok(map.clone());
+    }
+    let faces = mesh.face_count();
+    let mut map = vec![0u32; faces];
+    for (g, group) in mesh.groups.iter().enumerate() {
+        if group.first > group.end || group.end > faces {
+            return Err(malformed("a group lies outside the faces"));
+        }
+        for face in &mut map[group.first..group.end] {
+            *face = g as u32;
+        }
+    }
+    Ok(map)
+}
+
+/// Appends the editable mesh `src` to `dst`, as the original's assembly
+/// does, without regrouping the faces.
+///
+/// `src_frame` and `dst_frame` are the two meshes' frames: the source's
+/// position stream is placed into the destination's space by
+/// `dst_frame⁻¹ · src_frame`. Groups join the destination's group with the
+/// same material (its face count grows) or become new groups with no split
+/// flags. Each stream joins the destination stream with the same format
+/// word, at the destination's element count for that stream's channel; a
+/// gap between the two is filled with zeros (255 for a colour stream). A
+/// source smoothing channel is dropped and the destination's, if any, grows
+/// with zeros, because the regroup pass rebuilds it. The mesh keeps a
+/// face → group map ([`EditMesh::face_group`]) for
+/// [`regroup_by_material`].
+pub fn merge_editable(
+    dst: &mut EditMesh,
+    src: &EditMesh,
+    src_frame: Frame,
+    dst_frame: Frame,
+) -> Result<(), MeshError> {
+    src.validate()?;
+    dst.validate()?;
+    let dst_faces = dst.face_count();
+    let src_faces = src.face_count();
+    if src_faces == 0 {
+        return Ok(());
+    }
+    let src_group_of = face_groups(src)?;
+    let dst_group_of = face_groups(dst)?;
+
+    // The destination group each source group joins, and its count.
+    let mut group_map = Vec::with_capacity(src.groups.len());
+    for group in &src.groups {
+        let count = group.end.saturating_sub(group.first);
+        match dst
+            .groups
+            .iter()
+            .position(|existing| existing.material == group.material)
+        {
+            Some(j) => {
+                dst.groups[j].end += count;
+                group_map.push(j);
+            }
+            None => {
+                dst.groups.push(FaceGroup {
+                    material: group.material.clone(),
+                    first: 0,
+                    end: count,
+                    flags: 0,
+                });
+                group_map.push(dst.groups.len() - 1);
+            }
+        }
+    }
+
+    // The face → group map of the result.
+    let mut map = match dst.face_group.take() {
+        Some(mut map) => {
+            map.resize(dst_faces + src_faces, 0);
+            map
+        }
+        None => {
+            let mut map = dst_group_of;
+            map.resize(dst_faces + src_faces, 0);
+            map
+        }
+    };
+    for (face, &g) in src_group_of.iter().enumerate() {
+        let g = g as usize;
+        if g >= group_map.len() {
+            return Err(malformed("a source face names a missing group"));
+        }
+        map[dst_faces + face] = group_map[g] as u32;
+    }
+
+    // Each source channel's first element in the destination: the largest
+    // element count the destination has over the streams that share it.
+    let mut offset = vec![0usize; src.channels.len()];
+    for (c, channel) in src.channels.iter().enumerate() {
+        if channel.key & KEY_MASK == KEY_SMOOTHING {
+            continue;
+        }
+        for stream in &src.streams {
+            if stream.channel == c {
+                offset[c] = offset[c].max(stream_count(dst, stream.format));
+            }
+        }
+    }
+
+    // The channels: matched by low key, else appended. A smoothing channel
+    // is not merged; the destination's grows with zeros so the mesh stays
+    // square.
+    let mut channel_map = vec![usize::MAX; src.channels.len()];
+    for (c, channel) in src.channels.iter().enumerate() {
+        if channel.key & KEY_MASK == KEY_SMOOTHING {
+            continue;
+        }
+        match dst
+            .channels
+            .iter()
+            .position(|d| d.key & KEY_MASK == channel.key & KEY_MASK)
+        {
+            Some(d) => {
+                dst.channels[d]
+                    .corners
+                    .resize(dst_faces + src_faces, [0; 3]);
+                channel_map[c] = d;
+            }
+            None => {
+                dst.channels.push(Channel {
+                    key: channel.key,
+                    corners: vec![[0; 3]; dst_faces + src_faces],
+                });
+                channel_map[c] = dst.channels.len() - 1;
+            }
+        }
+    }
+    for (c, channel) in src.channels.iter().enumerate() {
+        if channel.key & KEY_MASK == KEY_SMOOTHING {
+            continue;
+        }
+        let d = channel_map[c];
+        for (face, corners) in channel.corners.iter().enumerate() {
+            dst.channels[d].corners[dst_faces + face] =
+                corners.map(|e| e.saturating_add(offset[c] as u32));
+        }
+    }
+    for channel in &mut dst.channels {
+        if channel.key & KEY_MASK == KEY_SMOOTHING {
+            channel.corners.resize(dst_faces + src_faces, [0; 3]);
+        }
+    }
+
+    // The streams: matched by their whole format word, else appended.
+    let relative = relative_frame(&dst_frame, &src_frame);
+    for stream in &src.streams {
+        // The original skips the normal stream (low key 2): normals are
+        // rebuilt after the assembly.
+        if stream.format & KEY_MASK == KEY_SMOOTHING {
+            continue;
+        }
+        let d = match dst.streams.iter().position(|s| s.format == stream.format) {
+            Some(d) => d,
+            None => {
+                let channel = match channel_map.get(stream.channel) {
+                    Some(&c) if c != usize::MAX => c,
+                    _ => continue,
+                };
+                let empty = match &stream.data {
+                    StreamData::Vec3(_) => StreamData::Vec3(Vec::new()),
+                    StreamData::Vec2(_) => StreamData::Vec2(Vec::new()),
+                    StreamData::Rgba8(_) => StreamData::Rgba8(Vec::new()),
+                    StreamData::Skin(_) => StreamData::Skin(Vec::new()),
+                };
+                dst.streams.push(Stream {
+                    id: stream.id,
+                    format: stream.format,
+                    channel,
+                    data: empty,
+                });
+                dst.streams.len() - 1
+            }
+        };
+        let at = offset.get(stream.channel).copied().unwrap_or(0);
+        let target = &mut dst.streams[d];
+        match (&mut target.data, &stream.data) {
+            (StreamData::Vec3(dst), StreamData::Vec3(src)) => {
+                dst.resize(at + src.len(), [0.0; 3]);
+                for (i, p) in src.iter().enumerate() {
+                    dst[at + i] = if stream.format & KEY_MASK == 1 {
+                        place_point(&relative, *p)
+                    } else {
+                        *p
+                    };
+                }
+            }
+            (StreamData::Vec2(dst), StreamData::Vec2(src)) => {
+                dst.resize(at + src.len(), [0.0; 2]);
+                dst[at..at + src.len()].copy_from_slice(src);
+            }
+            (StreamData::Rgba8(dst), StreamData::Rgba8(src)) => {
+                dst.resize(at + src.len(), [0xFF; 4]);
+                dst[at..at + src.len()].copy_from_slice(src);
+            }
+            (StreamData::Skin(dst), StreamData::Skin(src)) => {
+                dst.resize(
+                    at + src.len(),
+                    SkinWeights {
+                        bones: [0; 4],
+                        weights: [0.0; 4],
+                    },
+                );
+                dst[at..at + src.len()].copy_from_slice(src);
+            }
+            _ => {}
+        }
+    }
+
+    // The per-face arrays: a missing one on either side leaves the other's
+    // alone; the destination's existing faces take 1 (flags) or 7 (edges).
+    match (&mut dst.face_flags, &src.face_flags) {
+        (Some(mine), Some(theirs)) => mine.extend_from_slice(theirs),
+        (Some(mine), None) => mine.extend(std::iter::repeat_n(1, src_faces)),
+        (None, Some(theirs)) => {
+            let mut flags = vec![1; dst_faces];
+            flags.extend_from_slice(theirs);
+            dst.face_flags = Some(flags);
+        }
+        (None, None) => {}
+    }
+    match (&mut dst.face_edges, &src.face_edges) {
+        (Some(mine), Some(theirs)) => mine.extend_from_slice(theirs),
+        (Some(mine), None) => mine.extend(std::iter::repeat_n(7, src_faces)),
+        (None, Some(theirs)) => {
+            let mut edges = vec![7; dst_faces];
+            edges.extend_from_slice(theirs);
+            dst.face_edges = Some(edges);
+        }
+        (None, None) => {}
+    }
+
+    dst.face_group = Some(map);
+    dst.incidence = None;
+    dst.smoothing = Smoothing::Unset;
+    dst.validate()
+}
+
+/// Sorts the faces into material-group runs, as the original's regroup pass
+/// does after an assembly: every group's faces are gathered in their old
+/// order, ahead of the next group's, and every channel, the face flags, the
+/// face edge bits and the face extras follow the same permutation. (The
+/// original's own key-2 channel is position-indexed and left alone; Exarust
+/// keeps smoothing per corner, so it is permuted like the others.) The
+/// groups' ranges become the runs, the face → group map is dropped, and the
+/// incidence is rebuilt lazily.
+pub fn regroup_by_material(mesh: &mut EditMesh) -> Result<(), MeshError> {
+    mesh.validate()?;
+    let Some(map) = mesh.face_group.clone() else {
+        return Ok(());
+    };
+    let faces = mesh.face_count();
+    if map.len() != faces {
+        return Err(malformed("face groups do not match the faces"));
+    }
+    let counts: Vec<usize> = mesh
+        .groups
+        .iter()
+        .map(|g| g.end.saturating_sub(g.first))
+        .collect();
+    let mut starts = Vec::with_capacity(counts.len());
+    let mut start = 0usize;
+    for count in &counts {
+        starts.push(start);
+        start += count;
+    }
+    if start != faces {
+        return Err(malformed("the material groups do not cover the faces"));
+    }
+    let mut next = starts.clone();
+    let mut new_face = vec![usize::MAX; faces];
+    for (face, &g) in map.iter().enumerate() {
+        let g = g as usize;
+        let target = next
+            .get_mut(g)
+            .ok_or_else(|| malformed("a face names a missing group"))?;
+        if *target >= starts[g] + counts[g] {
+            return Err(malformed("a material group has more faces than it counts"));
+        }
+        new_face[face] = *target;
+        *target += 1;
+    }
+    for (g, group) in mesh.groups.iter_mut().enumerate() {
+        if next[g] != starts[g] + counts[g] {
+            return Err(malformed("a material group has fewer faces than it counts"));
+        }
+        group.first = starts[g];
+        group.end = next[g];
+    }
+    // The original's key-2 channel is position-indexed and is left alone;
+    // Exarust keeps smoothing per face corner, so it is permuted with the
+    // other channels to stay aligned with the reordered faces.
+    for channel in &mut mesh.channels {
+        let mut corners = vec![[0u32; 3]; faces];
+        for (face, corner) in channel.corners.iter().enumerate() {
+            corners[new_face[face]] = *corner;
+        }
+        channel.corners = corners;
+    }
+    let permute = |values: &mut Vec<u32>| {
+        let old = std::mem::take(values);
+        let mut new = vec![0u32; faces];
+        for (face, &v) in old.iter().enumerate() {
+            new[new_face[face]] = v;
+        }
+        *values = new;
+    };
+    if let Some(flags) = &mut mesh.face_flags {
+        permute(flags);
+    }
+    if let Some(extra) = &mut mesh.face_extra {
+        permute(extra);
+    }
+    if let Some(edges) = &mut mesh.face_edges {
+        let old = std::mem::take(edges);
+        let mut new = vec![0u8; faces];
+        for (face, &v) in old.iter().enumerate() {
+            new[new_face[face]] = v;
+        }
+        *edges = new;
+    }
+    mesh.face_group = None;
+    mesh.incidence = None;
+    mesh.smoothing = Smoothing::Unset;
+    mesh.validate()
+}
+
+/// Appends `src` to `dst` and regroups the faces, the pair of steps every
+/// caller of the original's assembly takes.
+pub fn merge_editable_and_regroup(
+    dst: &mut EditMesh,
+    src: &EditMesh,
+    src_frame: Frame,
+    dst_frame: Frame,
+) -> Result<(), MeshError> {
+    merge_editable(dst, src, src_frame, dst_frame)?;
+    regroup_by_material(dst)
+}
+
+/// Assembles parts into the first one's space: the first part is copied and
+/// every other is appended at its own frame and regrouped once at the end.
+pub fn assemble_editable(parts: &[(&EditMesh, Frame)]) -> Result<Option<EditMesh>, MeshError> {
+    let Some((first, first_frame)) = parts.first() else {
+        return Ok(None);
+    };
+    let mut dst = first.duplicate();
+    for (src, frame) in &parts[1..] {
+        merge_editable(&mut dst, src, *frame, *first_frame)?;
+    }
+    regroup_by_material(&mut dst)?;
+    Ok(Some(dst))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -795,5 +1231,243 @@ mod tests {
             (skin[3].bones[0], skin[4].bones[0], skin[5].bones[0]),
             (3, 4, 5)
         );
+    }
+
+    // ---- The editable-form assembly -------------------------------------
+
+    use exa_formats::rfc::MeshGroup;
+
+    /// A unit square in the XZ plane as one material group of two faces,
+    /// its four texture coordinates equal to its position ids and its
+    /// colours opaque.
+    fn square(material: &str) -> EditMesh {
+        let mut m = mesh(
+            &[
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 0.0, -1.0],
+                [0.0, 0.0, -1.0],
+            ],
+            &[0, 1, 2, 0, 2, 3],
+        );
+        m.uvs = Some(vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]);
+        m.uv_ids = vec![0, 1, 2, 3];
+        m.uv_count = 4;
+        m.groups = vec![MeshGroup {
+            material: material.into(),
+            first_index: 0,
+            index_count: 6,
+        }];
+        EditMesh::from_mesh(&m, &[]).unwrap()
+    }
+
+    /// Two squares of different materials: the second's faces follow the
+    /// first's, its elements move past the first's, and the regroup keeps
+    /// the two runs.
+    #[test]
+    fn two_editable_parts_append_their_streams_and_channels() {
+        let mut dst = square("a");
+        let src = square("b");
+        merge_editable(&mut dst, &src, IDENTITY, IDENTITY).unwrap();
+        assert_eq!(dst.face_count(), 4);
+        assert_eq!(dst.groups.len(), 2);
+        // The destination group counts the source's faces before the
+        // regroup; the source's new group holds two.
+        assert_eq!((dst.groups[0].first, dst.groups[0].end), (0, 2));
+        assert_eq!((dst.groups[1].first, dst.groups[1].end), (0, 2));
+        assert_eq!(dst.face_group.as_deref(), Some(&[0, 0, 1, 1][..]));
+        // Positions: the source's four follow the destination's.
+        let StreamData::Vec3(points) = &dst.streams[0].data else {
+            panic!("positions");
+        };
+        assert_eq!(points.len(), 8);
+        assert_eq!(points[4], [0.0, 0.0, 0.0]);
+        assert_eq!(points[6], [1.0, 0.0, -1.0]);
+        // Its corner values name its own elements, moved past the first's.
+        assert_eq!(dst.channels[0].corners[2], [4, 5, 6]);
+        assert_eq!(dst.channels[0].corners[3], [4, 6, 7]);
+        // The texture channel follows the same offset too; the smoothing
+        // channel is not merged: the destination's own is extended with
+        // zeros and the source's is dropped.
+        assert_eq!(dst.channels[1].corners[2], [4, 5, 6]);
+        let smoothing: Vec<_> = dst
+            .channels
+            .iter()
+            .filter(|c| c.key & KEY_MASK == KEY_SMOOTHING)
+            .collect();
+        assert_eq!(smoothing.len(), 1);
+        assert_eq!(smoothing[0].corners[2], [0, 0, 0]);
+        regroup_by_material(&mut dst).unwrap();
+        assert_eq!((dst.groups[0].first, dst.groups[0].end), (0, 2));
+        assert_eq!((dst.groups[1].first, dst.groups[1].end), (2, 4));
+        assert!(dst.face_group.is_none());
+    }
+
+    /// A source part whose material the destination already has joins that
+    /// group; the regroup gathers the source's faces into the group's run
+    /// and moves every per-face array with them.
+    #[test]
+    fn a_matching_material_joins_its_group_and_the_regroup_gathers_it() {
+        let mut dst = square("a");
+        dst.face_flags = Some(vec![9, 9]);
+        // A second destination group, so the gathered run is not the tail.
+        let mut other = square("b");
+        // Move the second group's faces behind the first's.
+        regroup_by_material(&mut other).unwrap();
+        merge_editable(&mut dst, &other, IDENTITY, IDENTITY).unwrap();
+        let again = square("a");
+        merge_editable(&mut dst, &again, IDENTITY, IDENTITY).unwrap();
+        assert_eq!(dst.face_count(), 6);
+        assert_eq!(dst.groups.len(), 2);
+        assert_eq!((dst.groups[0].first, dst.groups[0].end), (0, 4));
+        assert_eq!((dst.groups[1].first, dst.groups[1].end), (0, 2));
+        assert_eq!(dst.face_group.as_deref(), Some(&[0, 0, 1, 1, 0, 0][..]));
+        // The source parts carry no flags, so their faces take 1.
+        assert_eq!(dst.face_flags.as_deref(), Some(&[9, 9, 1, 1, 1, 1][..]));
+        regroup_by_material(&mut dst).unwrap();
+        assert_eq!((dst.groups[0].first, dst.groups[0].end), (0, 4));
+        assert_eq!((dst.groups[1].first, dst.groups[1].end), (4, 6));
+        assert_eq!(dst.face_flags.as_deref(), Some(&[9, 9, 1, 1, 1, 1][..]));
+        // The faces were 0, 1, 4, 5 ("a") then 2, 3 ("b"): the first
+        // appended "a" face (4) is now third, and the first "b" face (2)
+        // is now fifth.
+        assert_eq!(dst.channels[0].corners[2], [8, 9, 10]);
+        assert_eq!(dst.channels[0].corners[4], [4, 5, 6]);
+    }
+
+    /// A source part is placed from its frame into the destination's: only
+    /// the position stream turns and shifts, and the normal stream is not
+    /// merged at all.
+    #[test]
+    fn a_part_is_placed_into_the_destinations_frame() {
+        let mut dst = square("a");
+        let mut src = square("a");
+        // The normal builder's stream, as the after-load pass stores it.
+        src.streams.push(Stream {
+            id: 0x0000_0002,
+            format: 0x01F3_0002,
+            channel: 0,
+            data: StreamData::Vec3(vec![[0.0, 1.0, 0.0]; 4]),
+        });
+        // The destination sits 1 m along +X and a quarter turn about Y
+        // (x maps to −z).
+        let frame = [
+            [0.0, 0.0, -1.0],
+            [0.0, 1.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+        ];
+        merge_editable(&mut dst, &src, IDENTITY, frame).unwrap();
+        let StreamData::Vec3(points) = &dst.streams[0].data else {
+            panic!("positions");
+        };
+        // The source's (1, 0, 0) is the destination's origin: (0, 0, 0)
+        // there.
+        assert_eq!(points[5], [0.0, 0.0, 0.0]);
+        // Its (1, 0, −1) is (1, 0, 0) in the destination's turned space.
+        assert_eq!(points[6], [1.0, 0.0, 0.0]);
+        // The normal stream (low key 2) is not merged: the original skips
+        // it and rebuilds normals after the assembly.
+        assert!(!dst.streams.iter().any(|s| s.format == 0x01F3_0002));
+    }
+
+    /// A colour stream the destination lacks is filled with opaque white
+    /// over its own faces, and a source without one leaves the
+    /// destination's alone; the same holds for skin weights (zeros).
+    #[test]
+    fn missing_streams_are_filled_as_the_original_fills_them() {
+        let mut dst = square("a");
+        let mut src = square("a");
+        src.streams.push(Stream {
+            id: 0x0400_0001,
+            format: 0x02B4_0100,
+            channel: 0,
+            data: StreamData::Rgba8(vec![[1, 2, 3, 4]; 4]),
+        });
+        merge_editable(&mut dst, &src, IDENTITY, IDENTITY).unwrap();
+        let colours = dst
+            .streams
+            .iter()
+            .find_map(|s| match &s.data {
+                StreamData::Rgba8(c) => Some(c),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(colours.len(), 8);
+        assert_eq!(colours[0], [255; 4]);
+        assert_eq!(colours[4], [1, 2, 3, 4]);
+        // A source without colours leaves the destination's stream as it
+        // is: a stream sharing the position channel may be shorter than
+        // the channel (the original does not grow it either).
+        let mut dst = square("a");
+        dst.streams.push(Stream {
+            id: 0x0400_0001,
+            format: 0x02B4_0100,
+            channel: 0,
+            data: StreamData::Rgba8(vec![[5; 4]; 4]),
+        });
+        merge_editable(&mut dst, &square("a"), IDENTITY, IDENTITY).unwrap();
+        let colours = dst
+            .streams
+            .iter()
+            .find_map(|s| match &s.data {
+                StreamData::Rgba8(c) => Some(c),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(colours.len(), 4);
+    }
+
+    /// The copy is deep: no array is shared, so an edit of one leaves the
+    /// other as it was.
+    #[test]
+    fn a_duplicate_owns_every_array() {
+        let original = square("a");
+        let mut copy = original.duplicate();
+        copy.channels[0].corners[0] = [9, 9, 9];
+        copy.streams[0].data.resize(4);
+        copy.groups[0].material = "b".into();
+        copy.face_flags = Some(vec![1, 2]);
+        assert_eq!(original.channels[0].corners[0], [0, 1, 2]);
+        assert_eq!(original.streams[0].data.len(), 4);
+        assert_eq!(original.groups[0].material, "a");
+        assert!(original.face_flags.is_none());
+    }
+
+    /// The regroup refuses a map that does not agree with the counts, and a
+    /// mesh without a map is left as it is.
+    #[test]
+    fn the_regroup_needs_a_consistent_map() {
+        let mut m = square("a");
+        assert!(regroup_by_material(&mut m).is_ok());
+        assert_eq!((m.groups[0].first, m.groups[0].end), (0, 2));
+        m.face_group = Some(vec![0]);
+        assert!(regroup_by_material(&mut m).is_err());
+        m.face_group = Some(vec![0, 7]);
+        assert!(regroup_by_material(&mut m).is_err());
+    }
+
+    /// Assembling several parts keeps the first part's space and regroups
+    /// once at the end.
+    #[test]
+    fn assembly_takes_the_first_parts_space() {
+        let a = square("a");
+        let b = square("b");
+        let frame = [
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [2.0, 0.0, 0.0],
+        ];
+        let carved = assemble_editable(&[(&a, IDENTITY), (&b, frame)])
+            .unwrap()
+            .unwrap();
+        assert_eq!(carved.face_count(), 4);
+        assert_eq!((carved.groups[1].first, carved.groups[1].end), (2, 4));
+        let StreamData::Vec3(points) = &carved.streams[0].data else {
+            panic!("positions");
+        };
+        assert_eq!(points[4], [2.0, 0.0, 0.0]);
+        assert!(assemble_editable(&[]).unwrap().is_none());
     }
 }
