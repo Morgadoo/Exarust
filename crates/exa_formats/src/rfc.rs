@@ -857,6 +857,11 @@ pub struct PlacedObject {
     pub transform: [[f32; 3]; 4],
     /// Slot in a containing object (0 in the world).
     pub slot: i32,
+    /// The word after the slot, which the original copies under the object
+    /// node's `0xB80000` flags (only its placement bit matters in Exarust).
+    pub second_word: u32,
+    /// The extra word a version `0x3D22` file stores after the second word.
+    pub word_3d22: Option<u32>,
     /// What the placement changes in the object's own nodes, as for a prop
     /// ([`crate::level::PropAttachment`]).
     pub attachments: Vec<crate::level::PropAttachment>,
@@ -945,11 +950,13 @@ fn read_placed_objects(b: &[u8], version: u16) -> Result<Vec<PlacedObject>> {
             *v *= CENTIMETRES_TO_METRES;
         }
         let slot = o.u32()? as i32;
-        o.u32()?; // a second placement word
+        let second_word = o.u32()?;
         // Version 0x3D22 stores one more word before the sub-chunks.
-        if version == 0x3D22 {
-            o.u32()?;
-        }
+        let word_3d22 = if version == 0x3D22 {
+            Some(o.u32()?)
+        } else {
+            None
+        };
         let mut attachments = Vec::new();
         while o.remaining() >= 8 {
             let Ok((tag, sub)) = o.chunk() else { break };
@@ -963,6 +970,8 @@ fn read_placed_objects(b: &[u8], version: u16) -> Result<Vec<PlacedObject>> {
             object_flags,
             transform,
             slot,
+            second_word,
+            word_3d22,
             attachments,
         });
     }
@@ -2960,6 +2969,7 @@ mod tests {
         // The third word is the object's own flags: bit 19 makes it level
         // geometry, as the placement's bit 4 does.
         assert_eq!(o.object_flags, 0x8_0000);
+        assert_eq!((o.slot, o.second_word, o.word_3d22), (1, 0, None));
         assert!(o.is_static());
         for (got, want) in o.transform[3].iter().zip([0.1, 0.2, 0.3]) {
             assert!((got - want).abs() < 1e-6, "{got} != {want}");
