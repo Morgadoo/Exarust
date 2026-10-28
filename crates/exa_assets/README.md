@@ -356,8 +356,9 @@ implemented; the level-object chunk reader, the database object factory and
 the character builders remain in their own components, and Exarust's level
 loader does not drive this scheduler yet. `saved_chunks` reads the saved
 sub-chunk blob a streamed character carries (the builder scans from byte 4
-to the stored total length for the flat pose, motion state, pose tree and AI
-home, keeping the last of a repeated tag), and `stored_size_scale` is the
+for the flat pose, motion state, pose tree and AI home while the next record
+header lies inside the stored payload length, keeping the last of a repeated
+tag), and `stored_size_scale` is the
 character builders' size rule: the stored 16-bit word times the double
 constant 65537/2^32, times the body's base scale, narrowed to `f32` last.
 `root_node_flags` is the placed-object root rule: only the object's flags

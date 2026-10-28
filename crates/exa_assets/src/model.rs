@@ -1332,10 +1332,9 @@ impl ModelLoader<'_> {
     }
 
     /// Gets a live texture's image without creating or loading a record: the
-    /// manager lookup that takes a reference (`FUN_100072210`). `None` when
-    /// no record holds the name. A streamed record still holding its
-    /// placeholder returns the placeholder, as the original's lookup returns
-    /// the record it has.
+    /// manager's lookup that takes a reference. `None` when no record holds
+    /// the name. A streamed record still holding its placeholder returns the
+    /// placeholder, as the original's lookup returns the record it has.
     pub fn texture_existing(&mut self, name: &str, space: ColorSpace) -> CachedTexture {
         let key = TextureKey::new(name, space);
         let record = self.cache.textures.find(&key)?;
@@ -1343,8 +1342,8 @@ impl ModelLoader<'_> {
     }
 
     /// Gets a live texture, or else queues its load behind the original's
-    /// 1×1 placeholder: the terrain material path (`0x100071e00`), which
-    /// looks the record up first and never decodes on the caller. Unlike
+    /// 1×1 placeholder: the terrain material path, which looks the record up
+    /// first and never decodes on the caller. Unlike
     /// [`ModelLoader::texture_with_flags`] it queues even when the manager's
     /// general streaming switch is off, as this routine always does; a name
     /// the game does not ship leaves no handle.

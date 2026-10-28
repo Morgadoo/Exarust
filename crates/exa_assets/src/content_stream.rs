@@ -252,26 +252,28 @@ pub struct SavedChunks<'a> {
     pub ai_home: Option<&'a [u8]>,
 }
 
-/// Reads a streamed character's saved chunk blob: a 32-bit total length,
-/// then `{u32 tag, u32 size, bytes}` records for the rest of the blob. The
-/// builder's scan starts at byte 4 and runs while its offset is below the
-/// stored length; a record whose declared size runs past the blob ends the
-/// scan, and a size that would not move the offset ends it too, so malformed
-/// input reads nothing more rather than looping.
+/// Reads a streamed character's saved chunk blob: a 32-bit length of the
+/// bytes that follow it, then `{u32 tag, u32 size, bytes}` records. The
+/// builder's scan starts at byte 4 and runs while the next record's header
+/// lies within the stored length; a record whose declared size runs past the
+/// slice ends the scan, and a size that would not move the offset ends it
+/// too, so malformed input reads nothing more rather than looping.
 pub fn saved_chunks(blob: &[u8]) -> SavedChunks<'_> {
     let mut chunks = SavedChunks::default();
     if blob.len() < 4 {
         return chunks;
     }
-    let total = u32::from_le_bytes([blob[0], blob[1], blob[2], blob[3]]) as usize;
-    let limit = blob.len().min(total.max(4));
+    let declared = u32::from_le_bytes([blob[0], blob[1], blob[2], blob[3]]) as usize;
+    // The length counts the bytes after its own four, so the record area
+    // ends at 4 + length (the builder's loop bound, made safe).
+    let limit = declared.saturating_add(4).min(blob.len());
     let mut at = 4usize;
     while at + 8 <= limit {
         let tag = u32::from_le_bytes([blob[at], blob[at + 1], blob[at + 2], blob[at + 3]]);
         let size =
             u32::from_le_bytes([blob[at + 4], blob[at + 5], blob[at + 6], blob[at + 7]]) as usize;
         let start = at + 8;
-        let Some(end) = start.checked_add(size).filter(|end| *end <= limit) else {
+        let Some(end) = start.checked_add(size).filter(|end| *end <= blob.len()) else {
             break;
         };
         let body = &blob[start..end];
@@ -1493,14 +1495,17 @@ mod tests {
         for record in records {
             out.extend_from_slice(record);
         }
-        let total = out.len() as u32;
-        out[..4].copy_from_slice(&total.to_le_bytes());
+        // The stored length counts the bytes after its own four, as the
+        // character builder writes the remaining chunk bytes.
+        let payload = (out.len() - 4) as u32;
+        out[..4].copy_from_slice(&payload.to_le_bytes());
         out
     }
 
-    /// The saved-chunk scan starts after the stored total length and keeps
-    /// the four tags the character builders replay; unknown tags and their
-    /// payloads are stepped over.
+    /// The saved-chunk scan starts after the stored length and keeps the four
+    /// tags the character builders replay; unknown tags and their payloads
+    /// are stepped over. A short last body is read too: the bound covers the
+    /// bytes after the length.
     #[test]
     fn a_streamed_character_saved_chunks_are_found_by_tag() {
         let pose = [1u8, 2, 3, 4];
@@ -1515,19 +1520,24 @@ mod tests {
         assert_eq!(chunks.ai_home, Some(&ai[..]));
         assert_eq!(chunks.motion, None);
         assert_eq!(chunks.pose_tree, None);
-        // The builder scans only up to the stored length: a record past it
-        // is not read, even though the buffer holds its bytes.
-        let mut longer = blob.clone();
-        longer[..4].copy_from_slice(&(blob.len() as u32 - 8).to_le_bytes());
-        assert_eq!(saved_chunks(&longer).flat_pose, None);
-        assert_eq!(saved_chunks(&longer).ai_home, Some(&ai[..]));
+        // A one-byte body in the last record is still found: the length is
+        // the payload's, and the header of that record lies inside it.
+        let last = saved_blob(&[saved(SAVED_POSE_TREE, &[5])]);
+        assert_eq!(last[..4], 9u32.to_le_bytes());
+        assert_eq!(saved_chunks(&last).pose_tree, Some(&[5u8][..]));
+        // A record whose header lies past the stored payload is not read,
+        // even though the buffer holds its bytes.
+        let mut shorter = blob.clone();
+        shorter[..4].copy_from_slice(&10u32.to_le_bytes());
+        assert_eq!(saved_chunks(&shorter).flat_pose, None);
+        assert_eq!(saved_chunks(&shorter).ai_home, None);
         // A repeated tag keeps its last occurrence.
         let blob = saved_blob(&[saved(SAVED_MOTION, &[1]), saved(SAVED_MOTION, &[2, 3])]);
         assert_eq!(saved_chunks(&blob).motion, Some(&[2u8, 3][..]));
     }
 
-    /// Malformed blobs are total: a short header, a record running past the
-    /// stored length and a zero-length loop all end the scan.
+    /// Malformed blobs are total: a short header, a record whose bytes the
+    /// slice does not hold and a zero-length loop all end the scan.
     #[test]
     fn saved_chunks_are_total_on_malformed_blobs() {
         assert_eq!(saved_chunks(&[]), SavedChunks::default());
@@ -1537,9 +1547,14 @@ mod tests {
         trunc.extend_from_slice(&100u32.to_le_bytes());
         trunc.extend_from_slice(&[1, 2, 3]);
         assert_eq!(saved_chunks(&trunc), SavedChunks::default());
-        // A zero size is skipped as an empty payload and the scan goes on:
-        // the next record's header is at once 8 bytes further.
-        let mut blob = (24u32).to_le_bytes().to_vec();
+        // A valid blob cut inside its last body loses that record only.
+        let mut cut = saved_blob(&[saved(SAVED_MOTION, &[1]), saved(SAVED_FLAT_POSE, &[2, 3])]);
+        cut.truncate(cut.len() - 1);
+        assert_eq!(saved_chunks(&cut).motion, Some(&[1u8][..]));
+        assert_eq!(saved_chunks(&cut).flat_pose, None);
+        // A zero size is an empty payload and the scan goes on: the next
+        // record's header is eight bytes further.
+        let mut blob = (16u32).to_le_bytes().to_vec();
         blob.extend_from_slice(&SAVED_MOTION.to_le_bytes());
         blob.extend_from_slice(&0u32.to_le_bytes());
         blob.extend_from_slice(&saved(SAVED_POSE_TREE, &[5]));
