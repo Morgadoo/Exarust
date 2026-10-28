@@ -3,8 +3,10 @@
 `Resource.rpk` carries two shader libraries: `shading.flb` (54 programs: the
 surface, light, ambient, fog, reflection, GI and effect programs) and
 `textures.flb` (61 procedural texture generators). `exa_formats::flb` parses
-and decodes them; `exa_render::shader_template` expands their text and
-`exa_render::shader_program` chooses the program and its flags.
+and decodes them; `exa_render::shader_template` expands their text,
+`exa_render::shader_program` chooses the surface program and its flags, and
+`exa_render::texture_program` builds a `textures.flb` entry as its own
+fragment program with the fixed `MPrj` projection.
 `exa-tool shader` prints the result for a material (`--shader-library
 textures.flb --list` lists the procedural texture programs).
 
@@ -351,8 +353,10 @@ checked through these rules, not against a dump. Open:
 
 - `UseDither`, `AddPass`, `BaseNrm` and `Shd.DispSdwF` have no table entry:
   always false. The procedural texture code swaps in its own variable and
-  object tables (`Layers`, `Layer[i].Masked`); the texture programs are not
-  built.
+  object tables (`Layers`, `Layer[i].Masked`). `exa_render::texture_program`
+  expands each of the 61 texture entries (as its own fragment program, with
+  the surface fragment interface and the `MPrj` matrix); Exarust bakes the
+  textures on the CPU, so no entry is drawn.
 - The loader passes the feature bits through a factory method before the
   plug-in mask; it is taken as the identity [guess].
 - The factory's quality field is taken as the shading-quality setting and
