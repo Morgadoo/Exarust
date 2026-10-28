@@ -223,28 +223,37 @@ pub struct Placement {
     pub forward: Vec3,
 }
 
-/// The placement an entering body takes. The original re-places a body that
-/// is not collapsed or held before it joins the scene: with no path it keeps
-/// its stored placement; while it follows a path it keeps its stored point
-/// and faces the path's goal from the body's reference point (the angle
-/// ignores height). A goal straight above or below the reference leaves the
-/// stored facing.
+/// The placement an entering body takes before it joins the scene. A
+/// collapsed body keeps its whole stored placement. Any other takes its
+/// current point (`point_cm`) and keeps its stored facing, or, while it
+/// follows a path, faces the path's goal from the body's reference point
+/// (the engine's normalise of the flat offset; the angle ignores height). A
+/// goal straight above or below the reference leaves the stored facing
+/// [guess: the engine's basis builder keeps the old basis for a zero
+/// forward].
 ///
 /// The original's node transform and physics re-placement are the scene's;
-/// this is the direction they start from.
-pub fn replace_placement(stored: Placement, goal_cm: Option<Vec3>, base_cm: Vec3) -> Placement {
-    let Some(goal) = goal_cm else {
-        return stored;
-    };
-    let d = Vec3::new(goal.x - base_cm.x, 0.0, goal.z - base_cm.z);
-    let sum = d.z * d.z + d.x * d.x;
-    if sum == 0.0 {
+/// this is the placement they start from.
+pub fn replace_placement(
+    stored: Placement,
+    collapsed: bool,
+    point_cm: Vec3,
+    goal_cm: Option<Vec3>,
+    base_cm: Vec3,
+) -> Placement {
+    if collapsed {
         return stored;
     }
-    let s = 1.0 / sum.sqrt();
+    let forward = match goal_cm {
+        Some(goal) => {
+            let d = crate::motion::unit(Vec3::new(goal.x - base_cm.x, 0.0, goal.z - base_cm.z));
+            if d == Vec3::ZERO { stored.forward } else { d }
+        }
+        None => stored.forward,
+    };
     Placement {
-        at_cm: stored.at_cm,
-        forward: Vec3::new(d.x * s, 0.0, d.z * s),
+        at_cm: point_cm,
+        forward,
     }
 }
 
@@ -372,32 +381,39 @@ fn show(commands: &mut Commands, entity: Entity, in_scene: bool) {
 mod tests {
     use super::*;
 
-    /// Re-entering keeps the stored point; a followed goal turns the facing
-    /// toward it on the ground plane, and a goal on the spot keeps it.
+    /// A collapsed body keeps its stored placement; any other takes its
+    /// current point, and a followed goal turns the facing toward it on the
+    /// ground plane (a goal on the spot keeps it).
     #[test]
     fn an_entering_body_faces_its_path_goal() {
         let stored = Placement {
             at_cm: Vec3::new(10.0, 20.0, 30.0),
             forward: Vec3::X,
         };
-        assert_eq!(replace_placement(stored, None, Vec3::ZERO), stored);
-        let turned = replace_placement(stored, Some(Vec3::new(0.0, 500.0, 100.0)), Vec3::ZERO);
-        assert_eq!(turned.at_cm, stored.at_cm);
-        assert_eq!(turned.forward, Vec3::Z);
+        let point = Vec3::new(1.0, 2.0, 3.0);
+        let goal = Some(Vec3::new(0.0, 500.0, 100.0));
         assert_eq!(
-            replace_placement(stored, Some(Vec3::new(0.0, 0.0, -100.0)), Vec3::ZERO).forward,
-            -Vec3::Z
-        );
-        // The height is ignored.
-        assert_eq!(
-            replace_placement(stored, Some(Vec3::new(100.0, 900.0, 0.0)), Vec3::ZERO).forward,
-            Vec3::X
-        );
-        // A goal straight above the reference point keeps the stored facing.
-        assert_eq!(
-            replace_placement(stored, Some(Vec3::new(0.0, 100.0, 0.0)), Vec3::ZERO),
+            replace_placement(stored, true, point, goal, Vec3::ZERO),
             stored
         );
+        assert_eq!(
+            replace_placement(stored, false, point, None, Vec3::ZERO),
+            Placement {
+                at_cm: point,
+                forward: Vec3::X
+            }
+        );
+        let turned = replace_placement(stored, false, point, goal, Vec3::ZERO);
+        assert_eq!(turned.at_cm, point);
+        assert_eq!(turned.forward, Vec3::Z);
+        let f =
+            |goal: Vec3| replace_placement(stored, false, point, Some(goal), Vec3::ZERO).forward;
+        assert_eq!(f(Vec3::new(0.0, 0.0, -100.0)), -Vec3::Z);
+        // The height is ignored: (300, 400) normalises to (0.6, 0.8).
+        let d = f(Vec3::new(300.0, 900.0, 400.0));
+        assert!((d - Vec3::new(0.6, 0.0, 0.8)).length() < 1e-6, "{d}");
+        // A goal straight above the reference point keeps the stored facing.
+        assert_eq!(f(Vec3::new(0.0, 100.0, 0.0)), Vec3::X);
     }
 
     #[test]

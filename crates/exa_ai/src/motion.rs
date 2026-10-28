@@ -351,14 +351,14 @@ pub fn way_share(from_cm: Vec3, facing: Vec3, bodies: &[BodyAt], reach_cm: f32) 
 }
 
 /// The body in the way of the walk: each nearby live body's point is moved
-/// 20 cm along the AI's look and the steer line from the AI along the walk
-/// direction is tested; the first that can be steered to is returned. The
-/// ids in `skip` are the body already remembered as in the way and the
-/// body being carried (the original skips both).
+/// 20 cm along the walk direction and the steer line from the AI along that
+/// same direction is tested; the first that can be steered to is returned
+/// (the caller remembers it for 160 ticks). The ids in `skip` are the body
+/// already remembered as in the way and the body being carried (the
+/// original skips both).
 pub fn body_in_way(
     from_cm: Vec3,
     direction: Vec3,
-    look: Vec3,
     bodies: &[BodyAt],
     skip: &[usize],
 ) -> Option<usize> {
@@ -366,7 +366,7 @@ pub fn body_in_way(
         if body.dead || skip.contains(&body.id) {
             continue;
         }
-        let moved = body.position_cm + Vec3::new(look.x, 0.0, look.z) * 20.0;
+        let moved = body.position_cm + Vec3::new(direction.x, 0.0, direction.z) * 20.0;
         if steer_line(from_cm, direction, moved) {
             return Some(body.id);
         }
@@ -430,14 +430,16 @@ pub fn walk(gaze: &mut Gaze, at: Walking) -> Option<Walk> {
     let delta = at.goal_cm - at.body_cm;
     let flat = Vec3::new(delta.x, 0.0, delta.z);
     let len2 = flat.length_squared();
-    let (direction, dot) = if len2 <= 1.0 {
-        (at.facing, 0.0)
+    // Within 1 cm (or a NaN square) the facing is the direction and the
+    // length counts as 1; otherwise the direction is scaled by the
+    // reciprocal length and the dot is divided by the length.
+    let (direction, dot, len) = if !(len2 > 1.0) {
+        (at.facing, 0.0, 1.0)
     } else {
         let len = len2.sqrt();
-        (flat / len, flat.dot(at.facing) / len)
+        (flat * (1.0 / len), flat.dot(at.facing) / len, len)
     };
     let look = unit(at.look + (direction - at.look) * 0.1);
-    let len = len2.sqrt();
     // The short threshold is formed in double precision from the f64 0.007.
     let threshold = if len > 100.0 {
         FAR_GOAL
@@ -637,7 +639,7 @@ pub struct AlertLook {
     pub pitch: f32,
     pub wide_at_ms: u32,
     pub narrow_at_ms: u32,
-    /// The body's in-combat mark (`+0x12f6`), set once the panic passes 1.
+    /// The body's in-combat mark, set once the panic passes 1.
     pub marked: bool,
 }
 
@@ -743,15 +745,14 @@ pub fn snap_to_body(gaze: &mut Gaze, turn: &mut Turning, heading_yaw: f32) -> Ve
     look
 }
 
-/// The look after combat is left: the AI's look, its offset and its
-/// heading take the body's look yaw. No new sway is drawn.
+/// The look after combat is left: the AI's look, its heading and its eased
+/// offset (the head offset shares that slot) take the body's look yaw. The
+/// head look and its target are kept and no new sway is drawn.
 pub fn leave_look(gaze: &mut Gaze, turn: &mut Turning, body_look_yaw: f32) {
-    gaze.look = body_look_yaw;
-    gaze.offset = body_look_yaw;
-    gaze.target_offset = body_look_yaw;
     turn.look = body_look_yaw;
     turn.heading = body_look_yaw;
     turn.offset = body_look_yaw;
+    gaze.offset = body_look_yaw;
 }
 
 /// The aim: the look is snapped to the body's facing and a new sway draw is
@@ -770,8 +771,9 @@ pub fn aim(
     look
 }
 
-/// The settle after leaving combat: the look takes the body's look yaw and
-/// a new sway draw is made 1–4 s out.
+/// The settle after a room walk: the AI's look, its heading and the head
+/// look take the body's look yaw (the eased offset is kept) and a new sway
+/// draw is made 1–4 s out.
 pub fn settle_look(
     gaze: &mut Gaze,
     turn: &mut Turning,
@@ -779,7 +781,9 @@ pub fn settle_look(
     now_ms: u32,
     roll: &mut u32,
 ) {
-    leave_look(gaze, turn, body_look_yaw);
+    turn.look = body_look_yaw;
+    turn.heading = body_look_yaw;
+    gaze.look = body_look_yaw;
     *roll = roll.wrapping_mul(0x0808_8405).wrapping_add(1);
     let step = ((u64::from(*roll) * 3000) >> 32) as u32;
     turn.sway_at_ms = now_ms.wrapping_add(1000).wrapping_add(step);
@@ -1162,14 +1166,10 @@ mod tests {
     #[test]
     fn the_body_in_the_way_is_steered_to() {
         let bodies = [body(7, 0.0, 100.0, false), body(9, 0.0, 300.0, false)];
-        assert_eq!(
-            body_in_way(Vec3::ZERO, Vec3::Z, Vec3::Z, &bodies, &[]),
-            Some(7)
-        );
+        assert_eq!(body_in_way(Vec3::ZERO, Vec3::Z, &bodies, &[]), Some(7));
         assert_eq!(
             body_in_way(
                 Vec3::ZERO,
-                Vec3::Z,
                 Vec3::Z,
                 &[body(7, 0.0, 100.0, false), body(9, 0.0, 150.0, false)],
                 &[7]
@@ -1178,24 +1178,12 @@ mod tests {
             "the remembered body is skipped"
         );
         assert_eq!(
-            body_in_way(
-                Vec3::ZERO,
-                Vec3::Z,
-                Vec3::Z,
-                &[body(1, 0.0, 100.0, true)],
-                &[]
-            ),
+            body_in_way(Vec3::ZERO, Vec3::Z, &[body(1, 0.0, 100.0, true)], &[]),
             None
         );
         // The 20 cm look shift puts a body 330 cm out beyond the clamp.
         assert_eq!(
-            body_in_way(
-                Vec3::ZERO,
-                Vec3::Z,
-                Vec3::Z,
-                &[body(3, 0.0, 170.0, false)],
-                &[]
-            ),
+            body_in_way(Vec3::ZERO, Vec3::Z, &[body(3, 0.0, 170.0, false)], &[]),
             None
         );
     }
@@ -1334,7 +1322,8 @@ mod tests {
         let mut gaze = Gaze::default();
         let mut turn = Turning::default();
         settle_look(&mut gaze, &mut turn, 0.25, 200, &mut roll);
-        assert_eq!((gaze.look, turn.heading, turn.offset), (0.25, 0.25, 0.25));
+        assert_eq!((gaze.look, turn.look, turn.heading), (0.25, 0.25, 0.25));
+        assert_eq!((gaze.offset, turn.offset), (0.0, 0.0), "the offset is kept");
         assert_eq!(turn.sway_at_ms, 1294);
         let mut gaze = Gaze::default();
         let mut turn = Turning::default();
@@ -1348,7 +1337,8 @@ mod tests {
             (dir_of(-0.5), dir_of(-0.5), dir_of(-0.5))
         );
         // Leaving combat takes the body's look yaw into the look, offset
-        // and heading without drawing a new sway.
+        // and heading; the head look and its target are kept and no new
+        // sway is drawn.
         let mut gaze = Gaze::default();
         let mut turn = Turning {
             sway_at_ms: 77,
@@ -1356,9 +1346,10 @@ mod tests {
         };
         leave_look(&mut gaze, &mut turn, 0.75);
         assert_eq!(
-            (gaze.look, gaze.offset, turn.look, turn.heading, turn.offset),
-            (0.75, 0.75, 0.75, 0.75, 0.75)
+            (gaze.offset, turn.look, turn.heading, turn.offset),
+            (0.75, 0.75, 0.75, 0.75)
         );
+        assert_eq!((gaze.look, gaze.target_offset), (0.0, 0.0));
         assert_eq!(turn.sway_at_ms, 77);
     }
 }
