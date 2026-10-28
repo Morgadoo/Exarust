@@ -2279,9 +2279,35 @@ and the icon in size; each is the payload plus a 32-byte header (16-bit
 width and height, a word of 1, the format, the flags `0x20000000`, a word
 of `0x1000`, the payload's offset of 32 and its size). The icon is
 later framed at 70, 30 for apparel or 20 when close, with the weapon light
-preset (see `exa_items::item_gui`). The running game does not render its
-icons yet: the panel takes the manager's atlas from
-`exa_items::icon_cache` and draws it through the GUI path (below).
+preset (see `exa_items::item_gui`).
+
+**Camera and scene.** `exa_items::item_icon` turns the plan into the camera
+the render uses: the framing distance is a floor (0.2, 0.3 or 0.7 m after
+the original's centimetres), the item's projected box fills 0.9 of the icon,
+and the camera sits on +Z looking at the origin with a 30° field of view
+[guess: the item view's field of view is not among the traced constructor
+numbers]. The plan's screen scale is then the exact perspective scale,
+`icon · 1/tan(fov/2) / distance · 0.5`, so the plan's extents are the
+camera's own. The framing presets' two numbers are the sun's azimuth and
+height; the scene environment's sector builds the direction
+`(cos(π(1−h))cos(−πa), sin(π(1−h)), cos(π(1−h))sin(−πa))`.
+
+**The running renderer.** `exa_game::item_icon_render` starts at most two
+pending icons a frame. It resolves the item's ground model in the object
+database (a factory `@` name assembles the weapon), bakes the model's parts
+with `item_icon::IconScene`, and draws them with an off-screen `Camera3d`
+on render layer 30 into an image twice the icon's side; a white 120-lux
+sun with the framing preset's direction stands on the same layer, so the
+main view neither sees nor takes the icon light. The camera renders with
+the scene post-processing, as the original's private view does. A GPU
+readback returns the image: the alpha global's screen pass resolves each
+icon pixel as a 2 × 2 linear-light average of the 2× render [guess: the
+screen shader's sampler is not traced], else the Kaiser filter reduces the
+image and the halo (highlighted for the variant's bit) runs. The pixels go
+into the manager's atlas and the cache slot gets its cell and content half
+extents. A headless App paints the same scene with the CPU rasteriser in
+`item_icon` instead. The panel draws the filled cells through the HltCol
+program (below).
 
 **The render plan** (`item_renderer::render_plan`): the item is turned by
 (−0.1, 0.1, 0.5) when both the apparel and weapon bits are set; its sun is

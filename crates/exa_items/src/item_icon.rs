@@ -696,8 +696,8 @@ mod tests {
         let items = exa_formats::objdb::items(&db);
         let item = items
             .iter()
-            .find(|i| !i.model.is_empty() && !i.model.starts_with('@') && i.weapon.is_some())
-            .expect("the shipped object database holds a weapon with a ground model");
+            .find(|i| i.model.starts_with('@') && i.weapon.is_some())
+            .expect("the shipped object database holds a factory weapon");
         let mut meshes = Assets::<Mesh>::default();
         let mut materials = Assets::<ExaMaterial>::default();
         let mut images = Assets::<Image>::default();
@@ -710,9 +710,9 @@ mod tests {
             images: &mut images,
             bc_supported: false,
         };
-        let Some(model) = loader.object_model(&item.model) else {
-            return;
-        };
+        let model = loader
+            .factory_weapon(item.model.trim_start_matches('@'), item.weapon.as_ref())
+            .expect("a shipped factory weapon assembles");
         let scene = IconScene::from_model(&model, &meshes, &materials, false, false)
             .expect("a shipped weapon has drawable meshes");
         let variant = if item.model_flags & 1 != 0 {

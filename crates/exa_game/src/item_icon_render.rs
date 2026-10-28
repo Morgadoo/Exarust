@@ -20,7 +20,7 @@ use bevy::render::gpu_readback::{ReadbackComplete, ReadbackOnce};
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages};
 
 use exa_assets::model;
-use exa_assets::{Game, ModelCache, ModelLoader};
+use exa_assets::{Game, ModelCache, ModelLoader, PackKind};
 use exa_items::catalogue::ItemCatalogue;
 use exa_items::item_gui::framing;
 use exa_items::item_icon::{self, IconCamera, IconPixels, IconScene, sun_direction};
@@ -159,7 +159,15 @@ fn prepare_icon_scenes(
         };
         let model = match model_info.model.strip_prefix('@') {
             Some(factory) => loader.factory_weapon(factory, model_info.weapon.as_ref()),
-            None => loader.object_model(&model_info.model),
+            None => [PackKind::Objects, PackKind::Objlib]
+                .into_iter()
+                .find(|&pack| {
+                    loader
+                        .game
+                        .pack(pack)
+                        .is_some_and(|archive| archive.get(&model_info.model).is_some())
+                })
+                .and_then(|pack| loader.model(pack, &model_info.model)),
         };
         let Some(model) = model else {
             let pending = &mut icons.pending[index];
@@ -200,7 +208,18 @@ fn paint_icon_jobs(
     mode: Res<IconRenderMode>,
     mut jobs: ResMut<IconGpuJobs>,
     mut images: Option<ResMut<Assets<Image>>>,
+    cache: Option<Res<ModelCache>>,
 ) {
+    // The original flushes its procedural texture jobs before the render;
+    // Exarust waits for the streamed uploads so the icon does not keep the
+    // loader's grey placeholder.
+    if mode.gpu
+        && cache
+            .as_ref()
+            .is_some_and(|cache| cache.textures.entries().iter().any(|record| record.pending))
+    {
+        return;
+    }
     let mut budget = ICONS_PER_FRAME;
     let mut index = 0;
     while index < icons.pending.len() && budget > 0 {
@@ -569,6 +588,71 @@ mod tests {
         assert!(icon_from_readback(&data[..10], buffer, 2, true, false).is_none());
     }
 
+    /// The installed object database's first ground-modelled weapon fills
+    /// the pack's atlas through the pending pipeline (skipped without an
+    /// installation).
+    #[test]
+    fn a_shipped_weapons_icon_reaches_the_panel_atlas() {
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let Ok(data) = exa_assets::GameData::open(&dir) else {
+            return;
+        };
+        let Some(bytes) = data
+            .pack(exa_assets::PackKind::Resource)
+            .and_then(|pack| pack.get("objdb.rdb"))
+        else {
+            return;
+        };
+        let Ok(db) = exa_formats::rdb::Database::parse(bytes) else {
+            return;
+        };
+        let items = exa_formats::objdb::items(&db);
+        let Some(item) = items
+            .iter()
+            .find(|item| item.model.starts_with('@') && item.weapon.is_some())
+        else {
+            return;
+        };
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, bevy::asset::AssetPlugin::default()))
+            .init_asset::<Mesh>()
+            .init_asset::<exa_render::material::ExaMaterial>()
+            .init_asset::<Image>()
+            .init_resource::<ModelCache>()
+            .init_resource::<PanelIcons>()
+            .init_resource::<IconGpuJobs>()
+            .insert_resource(IconRenderMode { gpu: false })
+            .insert_resource(ItemCatalogue::of_database(&db))
+            .insert_resource(Game(std::sync::Arc::new(data)))
+            .add_systems(
+                Update,
+                (
+                    prepare_icon_scenes,
+                    paint_icon_jobs,
+                    start_icon_readbacks,
+                    expire_icon_jobs,
+                )
+                    .chain(),
+            );
+        let catalogue = app.world().resource::<ItemCatalogue>().clone();
+        let mut icons = app.world_mut().resource_mut::<PanelIcons>();
+        let (handle, _) = icons.reserve(item.id, 0, Some(&catalogue));
+        assert_eq!(handle, 1);
+        for _ in 0..4 {
+            app.update();
+        }
+        let icons = app.world().resource::<PanelIcons>();
+        assert!(
+            icons.cache.entries[0].cell >= 1,
+            "{} did not render: {:?}",
+            item.name,
+            icons.cache.entries[0]
+        );
+        assert!(icons.atlas.image.pixels.iter().any(|&b| b != 0));
+    }
+
     #[test]
     fn the_icon_plugin_caches_a_pending_icon() {
         let mut app = App::new();
@@ -602,5 +686,20 @@ mod tests {
         assert!(icons.atlas.find(7) >= 1);
         assert!(icons.atlas.image.pixels.iter().any(|&b| b != 0));
         assert!(icons.pending.is_empty());
+        // The panel draws the filled cell through its HltCol layer.
+        let mut container = crate::item_container::Container::form(4);
+        container.entries = vec![crate::item_container::Entry {
+            cell: crate::item_container::Cell::new(10, 20),
+            id: 7,
+            icon: 1,
+            flags: 0,
+            drag: 0,
+        }];
+        container.icon_size = 160;
+        container.green_mask = 0x400;
+        container.yellow_mask = 0x200;
+        let mut icons = app.world_mut().resource_mut::<PanelIcons>();
+        let layer = icons.layer(&container).expect("a filled icon draws");
+        assert_eq!(layer.batch.primitives.len(), 1);
     }
 }
