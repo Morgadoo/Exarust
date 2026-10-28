@@ -11,9 +11,9 @@
 //! and environment pair. Then it uploads the light array, the material
 //! block after an emissive or fade change, the GI corner and the liquid
 //! level, and renders the object's super-sampling sub-frames, each with its
-//! own shadow-tap window and sub-frame clock. The terrain and grass draws
-//! take the single-pass variant: one matrix, one tap window, no sub-frame
-//! clock.
+//! own shadow-tap window and sub-frame clock. With super-sampling off the
+//! engine takes the single-pass variant instead: one matrix, one tap
+//! window, no sub-frame clock; the terrain and grass draws use it too.
 //!
 //! Exarust's renderer lets Bevy draw, so this module is the original's own
 //! fill, kept tested beside [`crate::shader_cache`]; the live path draws
@@ -55,9 +55,21 @@ pub enum DrawPath {
     /// The surface path: one program with the scene's super-sampling
     /// sub-frames, each uploading its own shadow taps.
     Supersampled,
-    /// The terrain and grass path: one draw, the taps uploaded once, and
-    /// no sub-frame clock.
+    /// The single-pass path the engine takes when the scene draws no
+    /// super-sampling sub-frames (the terrain and grass draws use it too):
+    /// one draw, the taps uploaded once, and no sub-frame clock.
     Plain,
+}
+
+/// The variant a scene's sub-frame count selects: the single-pass path with
+/// at most one sub-frame (super-sampling off), the super-sampling path
+/// otherwise.
+pub fn draw_path(passes: u32) -> DrawPath {
+    if passes <= 1 {
+        DrawPath::Plain
+    } else {
+        DrawPath::Supersampled
+    }
 }
 
 /// The geometry record's own values a draw reads.
@@ -119,7 +131,8 @@ impl Default for DrawObject<'_> {
 pub struct DrawScene {
     /// The light fill's scene values.
     pub slot: SlotScene,
-    /// The scene's super-sampling sub-frame count.
+    /// The scene's super-sampling sub-frame count (1, 2 or 4), the value
+    /// that also picks the draw path.
     pub passes: u32,
     /// The frame's sub-frame index for the single-pass path's tap window.
     pub frame_pass: u32,
@@ -390,6 +403,14 @@ mod tests {
             frame_object: (2 - 1) << 24 | 0x1000,
             ..DrawObject::default()
         }
+    }
+
+    #[test]
+    fn the_pass_count_picks_the_single_pass_path() {
+        assert_eq!(draw_path(0), DrawPath::Plain);
+        assert_eq!(draw_path(1), DrawPath::Plain);
+        assert_eq!(draw_path(2), DrawPath::Supersampled);
+        assert_eq!(draw_path(4), DrawPath::Supersampled);
     }
 
     #[test]

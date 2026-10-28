@@ -33,7 +33,7 @@ values.
 `draw_state` is the drawing state's per-draw plan: the object word, the
 gather-or-clear of the light slots, the material block's fade and emissive
 rewrites, the liquid-level and GI-corner uploads, the super-sampling
-sub-frames with their tap windows and clocks, the single-pass terrain
+sub-frames with their tap windows and clocks, the single-pass (no super-sampling)
 variant, and the effect parent matrix. Nothing is wired into the WESL
 renderer (Bevy owns the pipelines, draws and lights).
 Rules and evidence: [`docs/formats/FLB.md`](../../docs/formats/FLB.md) and
