@@ -9,10 +9,11 @@
 //! the combat target and the stance ([`exa_combat::stance`]), nor the combat
 //! swing (`exa_combat`). They are plain functions so that the arithmetic,
 //! the comparisons and the branch order are pinned by tests; the running
-//! game feeds the gamepad aim's point and ease ([`crate::player`]), the
-//! others have no caller yet: the bone lock needs the behaviour's stored
-//! target and a screen read of its bones, which Exarust's stance does not
-//! keep as an entity.
+//! game feeds the gamepad aim's point and ease ([`crate::player`]) and
+//! records [`windup`] when an attack starts (its next-attack clock gates
+//! the following attack); the bone lock needs the behaviour's stored target
+//! and a screen read of its bones, which Exarust's stance does not keep as
+//! an entity.
 //!
 //! Evidence: the behaviour's aim point, gamepad aim, contacts, engaged
 //! enemy, screen-nearest character and attack timing, read in the
@@ -388,10 +389,11 @@ pub fn closest_to_cursor(
 
 /// The attack timing after a swing's tick: its wind-up step, the game clock
 /// (ms) of the next attack and of the recovery. `energy` is the fighter's
-/// energy, `rate` its weapon's rate, `swing_frames` its swing's expected
-/// length, `balance` its balance, `mode` its leg mode (5 to 12 being a
-/// swing's) and `no_recovery` the flag that skips the recovery's
-/// quadratic.
+/// raw energy, `rate` its primary weapon's recoil (W17; the original
+/// divides by the weapon record's +0x44), `swing_frames` its swing's
+/// expected length, `balance` its balance, `mode` its attack motion's
+/// number (5 to 12 being a swing's) and `no_recovery` the flag that skips
+/// the recovery's quadratic.
 pub fn windup(
     energy: f32,
     rate: f32,

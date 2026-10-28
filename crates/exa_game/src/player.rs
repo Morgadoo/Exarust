@@ -147,6 +147,10 @@ pub struct PlayerBody {
     walk_from: Option<String>,
     /// When its last attack last ticked (s, on the fixed clock).
     last_attack: Option<f32>,
+    /// The attack timing the behaviour computed when the last attack
+    /// started: the swing strength's drain, the expected attack end and the
+    /// recovery's end (the original's next-attack and recovery clocks).
+    attack_timing: Option<crate::player_behaviour::Windup>,
     /// How far it crouches, 0 to 1.
     crouch: f32,
 }
@@ -172,6 +176,7 @@ impl PlayerBody {
             long: false,
             walk_from: None,
             last_attack: None,
+            attack_timing: None,
             crouch: 0.0,
         }
     }
@@ -1361,6 +1366,17 @@ fn request_attacks(
         if !go {
             continue;
         }
+        // The behaviour's next-attack clock, computed when the last attack
+        // started (the original's +0xea4): a new attack waits for it, except
+        // a released swing's overhead or Feint, which the executor starts
+        // before its own cooldown.
+        if !state.has(swing::flags::RELEASED)
+            && pb
+                .attack_timing
+                .is_some_and(|t| now < u64::from(t.recovery))
+        {
+            continue;
+        }
         let cooldown = attacker.cooldown_ms(entity, blades.iter().map(|(b, _)| b));
         let busy = Busy {
             now_ms: now,
@@ -1426,6 +1442,25 @@ fn request_attacks(
             },
             stance.action(),
         );
+        // The attack's timing, computed once as the original computes it on
+        // an attack's first tick (the flags it sets keep it from running
+        // again): the strength's drain, the expected end and the recovery.
+        let last_key = motions
+            .as_deref()
+            .and_then(|m| SwingAt::of(now, &anim, m, base))
+            .map_or(0.0, |a| a.last_key);
+        let (energy, balance) = body
+            .and_then(|b| b.drive.as_ref())
+            .map_or((MAX_ENERGY, 0.5), |d| (d.energy, d.balance().value));
+        pb.attack_timing = Some(crate::player_behaviour::windup(
+            energy,
+            swing.recoil,
+            last_key.round_ties_even() as u32,
+            balance,
+            motion.index() as i32,
+            false,
+            now as u32,
+        ));
     }
 }
 
@@ -2936,6 +2971,29 @@ mod tests {
 
     fn swing_of(app: &App, body: Entity) -> SwingState {
         *app.world().get::<SwingState>(body).unwrap()
+    }
+
+    /// The attack's timing is computed when the attack starts, as the
+    /// behaviour computes it once on an attack's first tick: the strength's
+    /// drain, the expected end and the recovery clock.
+    #[test]
+    fn an_attack_records_the_behaviour_timing() {
+        let (mut app, body) = attack_app();
+        request_tick(&mut app, body, true);
+        let t = app
+            .world()
+            .get::<PlayerBody>(body)
+            .unwrap()
+            .attack_timing
+            .expect("an attack records its timing");
+        // Full energy, the fists' 0.1 recoil: 0.95/0.1·0.03 = 0.285, so
+        // 1000/(80·0.285) = 43.86 → 44 ms; the recovery's factor from the
+        // default balance 0.5 is 0.8017492, and (2·f + 1)·110 rounds to
+        // 286 ms.
+        assert!((t.step - 0.285).abs() < 1e-5, "{t:?}");
+        assert_eq!(t.next_attack, 12_044);
+        assert_eq!(t.recovery, 12_286);
+        assert_eq!(t.recovery_factor, 0.801_749_2);
     }
 
     /// A click (pressed one tick) checks the punch: the next tick, the
