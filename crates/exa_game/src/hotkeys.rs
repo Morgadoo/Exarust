@@ -9,7 +9,7 @@
 //! on, in this order: Q uses the picked power (if powers are allowed), Tab
 //! toggles combat mode, I opens the inventory (if allowed, and in the
 //! modes that hide it only while collapsing), R asks for the weapon sets to
-//! swap (if allowed), F turns the held weapon over, K the skills and
+//! swap (if allowed), F lights or puts out the held light, K the skills and
 //! J the journal (if allowed and not hidden), P the power tree (if powers
 //! are allowed and the player has some) and C the power bar (when the
 //! player or the companion has powers). The permissions are a mask the
@@ -18,7 +18,9 @@
 //!
 //! Wired in Exarust: Tab (with the hand's cancel and the request bits it
 //! clears), R (with the player's condition word and the lift counting as a
-//! drag) and F (a flip request to the grip runtime); I and J send a
+//! drag) and F (the record's light flag, then a flip request to the grip
+//! runtime, as the original starts the held item's flip in the same
+//! branch); I and J send a
 //! [`crate::gui_screens::ScreenRequest`], which opens the inventory and the
 //! journal on the window manager; C, the digits, Q and the arrows send the
 //! power bar's commands to [`crate::thaum::cast`]. The skills screen's
@@ -74,7 +76,6 @@ pub enum Hotkey {
     ToggleCombat,
     Inventory,
     SwapSets,
-    FlipWeapon,
     ToggleLight,
     Skills,
     Journal,
@@ -163,7 +164,7 @@ pub fn hotkey(key: u32, bindings: &Bindings, c: Context) -> Option<Hotkey> {
     } else if is(Action::SwitchEquipped) {
         allowed(allow::SWAP).then_some(Hotkey::SwapSets)
     } else if is(Action::FlipWeapon) {
-        Some(Hotkey::FlipWeapon)
+        Some(Hotkey::ToggleLight)
     } else if is(Action::Skills) {
         (allowed(allow::SKILLS) && !c.hides_journal).then_some(Hotkey::Skills)
     } else if is(Action::Journal) {
@@ -305,20 +306,21 @@ fn press_hotkeys(
                             .insert(exa_items::catalogue::SwapRequested);
                     }
                 }
-                Hotkey::FlipWeapon => {
-                    flips.write(FlipWeaponRequest { body: entity });
-                }
                 Hotkey::ToggleLight => {
                     let first =
                         hands.and_then(|h| h.main.map(|m| m.light).or(h.off_light.then_some(true)));
                     if let Some(p) = possessions.as_deref_mut() {
                         let burning = p.out[0].flags & LIT != 0;
-                        p.toggle_light(
+                        // The original's branch ends by starting the held
+                        // item's flip.
+                        if p.toggle_light(
                             first.is_some(),
                             word.0 & Condition::SWITCHING.0 != 0,
                             first.unwrap_or(false),
                             burning,
-                        );
+                        ) {
+                            flips.write(FlipWeaponRequest { body: entity });
+                        }
                     }
                 }
                 Hotkey::Inventory | Hotkey::Journal => {
@@ -383,7 +385,7 @@ mod tests {
         assert_eq!(on(TAB), Some(Hotkey::ToggleCombat));
         assert_eq!(on(0x49), Some(Hotkey::Inventory));
         assert_eq!(on(0x52), Some(Hotkey::SwapSets));
-        assert_eq!(on(0x46), Some(Hotkey::FlipWeapon));
+        assert_eq!(on(0x46), Some(Hotkey::ToggleLight));
         assert_eq!(on(0x4B), Some(Hotkey::Skills));
         assert_eq!(on(0x4A), Some(Hotkey::Journal));
         assert_eq!(on(T), Some(Hotkey::Talk));
@@ -459,7 +461,7 @@ mod tests {
             assert_eq!(hotkey(vk, &b, none), None, "{vk:#x}");
         }
         assert_eq!(hotkey(TAB, &b, none), Some(Hotkey::ToggleCombat));
-        assert_eq!(hotkey(0x46, &b, none), Some(Hotkey::FlipWeapon));
+        assert_eq!(hotkey(0x46, &b, none), Some(Hotkey::ToggleLight));
         let hidden = Context {
             hides_inventory: true,
             ..Context::default()

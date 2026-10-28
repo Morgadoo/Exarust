@@ -33,17 +33,29 @@ pub struct HeldRecord {
 /// A character asked to turn its held item over.
 #[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FlipWeaponRequest {
+    /// The character's entity (the one carrying its [`Ragdoll`]).
     pub body: Entity,
 }
 
-/// Starts the flip on every held item of the requested character.
+/// Starts the flip on every held item of the requested character. A held
+/// item names its holder by the holder body's first part, so the request's
+/// body is looked up for it.
 pub fn flip_requests(
     mut requests: MessageReader<FlipWeaponRequest>,
+    bodies: Query<&Ragdoll>,
     mut held: Query<&mut HeldGrip>,
 ) {
     for request in requests.read() {
+        let Some(key) = bodies
+            .get(request.body)
+            .ok()
+            .and_then(|b| b.parts.first())
+            .map(|p| p.entity)
+        else {
+            continue;
+        };
         for mut grip in &mut held {
-            if grip.holder_key != request.body {
+            if grip.holder_key != key {
                 continue;
             }
             if let Some(links) = grip.links.as_mut() {
@@ -54,14 +66,13 @@ pub fn flip_requests(
 }
 
 /// Derives each held item's grip mode from its holder's clip, then steps an
-/// active flip, turns the item's node when the flip lands and rebuilds the
-/// weapon record.
+/// active flip and rebuilds the weapon record when it lands. The item
+/// itself turns with its body, which the flip link pulls round.
 #[allow(clippy::type_complexity)]
 pub fn animate_grips(
     mut held: Query<(
         Entity,
         &mut HeldGrip,
-        &mut Transform,
         Option<&mut Blade>,
         Option<&HeldRecord>,
     )>,
@@ -69,7 +80,7 @@ pub fn animate_grips(
     owners: Query<(&Animator, &Condition)>,
     motions: Option<Res<Motions>>,
 ) {
-    for (item, mut grip, mut transform, blade, record) in &mut held {
+    for (item, mut grip, blade, record) in &mut held {
         let Ok((_, item_body)) = bodies.get(item) else {
             continue;
         };
@@ -110,13 +121,10 @@ pub fn animate_grips(
         if links.relaxing {
             links.relax();
         }
-        let before = links.flipped;
+        // The original's flip test reads the whole condition word.
         let attacking = *condition == Condition::ATTACKING;
-        links.flip_step(item_body, attacking);
-        if links.flipped != before {
-            // Half a turn about the item's own y axis, as the original's
-            // sign-bit flip of the x and z axes.
-            transform.rotate_local_y(std::f32::consts::PI);
+        if links.flip_active {
+            links.flip_step(item_body, attacking);
         }
         if links.record_dirty {
             links.record_dirty = false;
@@ -241,7 +249,7 @@ mod tests {
     }
 
     /// The clip's mode switches the two-hander's links, and a flip request
-    /// runs the animation to its end, turning the item and rebuilding the
+    /// runs the animation to its end and rebuilds the
     /// weapon record from its flipped side.
     #[test]
     fn the_clip_switches_the_links_and_a_flip_turns_the_record() {
@@ -353,8 +361,5 @@ mod tests {
             "{}",
             blade.record.slash
         );
-        // Half a turn about the item's y axis.
-        let turn = app.world().get::<Transform>(item_e).unwrap().rotation;
-        assert!((turn.to_euler(EulerRot::YXZ).0.abs() - std::f32::consts::PI).abs() < 1e-5);
     }
 }
