@@ -593,7 +593,8 @@ pub fn place_barricade(
         centre: point,
         facing,
         reach: [300.0, 300.0],
-        pitch: roll * 0.4 + 0.8,
+        // The original widens the draw and multiplies by the double 0.4.
+        pitch: (f64::from(roll) * 0.4 + 0.8) as f32,
     }
 }
 
@@ -670,9 +671,10 @@ pub fn place_dome(kind: ForceKind, ground: Vec3, heading: Vec3) -> Option<DomePl
 }
 
 /// The pitch of the sound the shell and strikes play as they start
-/// (`thmfrc_ss` at volume 0.3): 0.6 + 0.4·r.
+/// (`thmfrc_ss` at volume 0.3): the draw widened and multiplied by the
+/// double 0.4, plus the double 0.6, narrowed once.
 pub fn start_pitch(roll: f32) -> f32 {
-    roll * 0.4 + 0.6
+    (f64::from(roll) * 0.4 + 0.6) as f32
 }
 
 /// The material every blast-family node wears.
@@ -1160,6 +1162,21 @@ mod tests {
         assert_eq!((bubble.radius, bubble.facing), (120.0, None));
         assert!(place_dome(ForceKind::Blast, Vec3::ZERO, Vec3::Z).is_none());
         assert_eq!(start_pitch(0.5), 0.8);
+    }
+
+    #[test]
+    fn the_sound_pitches_take_the_double_step() {
+        // 0.029f32·0.4 + 0.6 in single rounds to 0.61160004; the original
+        // widens the draw first and gets 0.61159998.
+        assert_eq!(start_pitch(0.029), 0.611_599_98);
+        assert_eq!(start_pitch(0.124), 0.649_600_03);
+        let hit = GroundHit {
+            point: Vec3::ZERO,
+            normal: Vec3::Y,
+            exact: true,
+        };
+        let place = place_barricade(hit, Vec3::ZERO, |_, _| None, 0.029);
+        assert_eq!(place.pitch, 0.811_599_97);
     }
 
     #[test]

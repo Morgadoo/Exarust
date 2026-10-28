@@ -253,7 +253,7 @@ pub fn creator(kind: EffectKind, input: &CreatorInput) -> SceneNodeSpec {
             sounds: vec![
                 ("thmfrc_bi", 1.0),
                 ("thmfrc_bc01", 1.0),
-                ("thmfrc_ss", 0.8 + input.roll * 0.4),
+                ("thmfrc_ss", (f64::from(input.roll) * 0.4 + 0.8) as f32),
             ],
             ..material(
                 MaterialKind::Barrier,
@@ -264,7 +264,7 @@ pub fn creator(kind: EffectKind, input: &CreatorInput) -> SceneNodeSpec {
         EffectKind::Shell => SceneNodeSpec {
             flags: EFFECT_NODE | SHELL_FLAG,
             position: input.body,
-            sounds: vec![("thmfrc_ss", 0.6 + input.roll * 0.4)],
+            sounds: vec![("thmfrc_ss", (f64::from(input.roll) * 0.4 + 0.6) as f32)],
             ..material(MaterialKind::Aura, input.body, Quat::IDENTITY)
         },
         EffectKind::DecorativeShell => SceneNodeSpec {
@@ -307,14 +307,14 @@ pub fn creator(kind: EffectKind, input: &CreatorInput) -> SceneNodeSpec {
         EffectKind::Throw => SceneNodeSpec {
             position: input.point.unwrap_or(input.chest),
             sounds: vec![
-                ("thmfrc_knsst", 0.8 + input.roll * 0.4),
-                ("thmfrc_throw", 1.0 + input.roll * 0.2),
+                ("thmfrc_knsst", (f64::from(input.roll) * 0.4 + 0.8) as f32),
+                ("thmfrc_throw", (f64::from(input.roll) * 0.2 + 1.0) as f32),
             ],
             ..SceneNodeSpec::default()
         },
         EffectKind::Strikes => SceneNodeSpec {
             position: input.chest,
-            sounds: vec![("thmfrc_ss", 0.6 + input.roll * 0.4)],
+            sounds: vec![("thmfrc_ss", (f64::from(input.roll) * 0.4 + 0.6) as f32)],
             ..SceneNodeSpec::default()
         },
     }
@@ -700,7 +700,10 @@ mod tests {
         let barricade = creator(EffectKind::Barricade, &input());
         assert_eq!(barricade.position, Vec3::new(100.0, 110.0, 50.0));
         assert_eq!(barricade.sounds[1].0, "thmfrc_bc01");
-        assert_eq!(barricade.sounds[2], ("thmfrc_ss", 0.8 + 0.5 * 0.4));
+        assert_eq!(
+            barricade.sounds[2],
+            ("thmfrc_ss", (0.5f64 * 0.4 + 0.8) as f32)
+        );
         let bubble = creator(EffectKind::Bubble, &input());
         assert_eq!(bubble.sounds[2].0, "thmfrc_brf");
     }
@@ -846,8 +849,14 @@ mod tests {
         assert!(creator(EffectKind::Kinesis, &input()).sounds.is_empty());
         let throw = creator(EffectKind::Throw, &input());
         assert_eq!(throw.sounds.len(), 2);
-        assert_eq!(throw.sounds[0], ("thmfrc_knsst", 0.8 + 0.5 * 0.4));
-        assert_eq!(throw.sounds[1], ("thmfrc_throw", 1.0 + 0.5 * 0.2));
+        assert_eq!(
+            throw.sounds[0],
+            ("thmfrc_knsst", (0.5f64 * 0.4 + 0.8) as f32)
+        );
+        assert_eq!(
+            throw.sounds[1],
+            ("thmfrc_throw", (0.5f64 * 0.2 + 1.0) as f32)
+        );
         assert_eq!(throw.position, input().point.unwrap_or(input().chest));
         assert_eq!(creator(EffectKind::Strikes, &input()).sounds[0].1, 0.8);
         assert_eq!(creator(EffectKind::Kinesis, &input()).material, None);
