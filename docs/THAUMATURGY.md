@@ -228,19 +228,19 @@ takes a hook answering −1 that fizzles a charging torrent and ends a
 running one. Running keeps the hook, so the torrent pours until a later
 cast, the release flag or a shortfall (the drain while charging, half of
 it while running) calls it. Its delays draw from the effects' shared roll,
-its running points push other bodies' limb spheres at forty centimetres
-past their width's reach (each push costing a character the torrent's
-energy loss) and sweep the level as balls of their static reach, a point
+its running points push other bodies' limb spheres at ten centimetres
+past their width's reach and sweep the level as balls of their static reach, a point
 that meets it moving half way to the surface; a struck character is
 knocked by the gathered impulse, gets
-the torrent's stun, raises its instability counter by one and its concern
+the torrent's support-pin gain, loses the torrent's energy once a tick,
+raises its instability counter by one and its concern
 toward the caster by 1 at gain 0.01, and it leaves the scene on the first
 frame that would build no triangles: fizzled, or no stream with more than
 two samples. Its stream ribbons are built each frame with the eye as the
 normal reference and drawn with the glow material
 (`thaum::torrent_live::draw_torrents`). The turned aim (the blast aim
-here) and the sphere test are Exarust's; the sounds, the light and the
-stun's consumer are not wired. A cast motion is played through
+here) and the sphere test are Exarust's; the sounds, the light, the
+pin gain's and the recoil's consumers are not wired. A cast motion is played through
 the animator by its action name (0x22 Force Blast … 0x28 Disp Form),
 looping when its clip's mode has bit 0 (Force Barrier, Force Torrent). A
 cast hook answers by the event's bits (`casting::CastHook`): the engine
@@ -453,8 +453,10 @@ What the Mind domain shows is in `exa_game::mind::sight`:
   the contact less a twentieth of its move; the share and push are 0.02
   and `character_push·2/mass` on a character, 0.2 and `body_push` otherwise.
   A struck character loses `k/1000` energy above 0.25, is knocked by its
-  gathered impulse (capped at 30, doubled), gets a stun of `(1 − k)·0.08`
-  (0 below 0 and, the original's quirk, 0.008 above 0.08), hostility 1 at
+  gathered impulse (capped at 30, doubled), has its support-pin gain set
+  to `(1 − k)·0.08` (0 below 0 and, the original's quirk, 0.008 above
+  0.08; the living gain is 0.08 and recovers 0.001 a tick), its
+  instability counter raised by one, hostility 1 at
   0.01 toward the caster and a recoil of 5. A simulated object's point
   moves along the chunk's move by `(1 − d²/r²)·push·0.025` and stirs it by
   `(1 − d²/r²)·0.0001`.
@@ -472,8 +474,8 @@ What the Mind domain shows is in `exa_game::mind::sight`:
   `(0, scroll, 1)`; its samples feed up to sixteen light points that merge
   within 80 cm (or the nearest within 160 cm once sixteen are kept).
 - **Torrent hits**: a point reaches `width·scale + margin + 10` cm against
-  the level (scale 0.25) and `width·scale + margin + 40` against a rigid
-  body (scale 0.5 against a character), keeps the ease share of the way to
+  the level (scale 0.25) and a limb (scale 0.5 on a character), and
+  `width·scale + margin + 40` against a simulated object's points, keeps the ease share of the way to
   the contact and raises the loop sound's volume and pitch by its life
   share; a limb takes `k·f·straightness` of the point's move plus
   `(contact − point)·(1 − straightness)·(−k)`, `k = inverse/(inverse +
@@ -486,7 +488,8 @@ What the Mind domain shows is in `exa_game::mind::sight`:
   times (`0.5·w + 0.25·(w₊ + w₋)`), takes the spine into the camera's
   space and bends it across the view plane in ten passes by
   `(f/(x² + y² + f) − 0.5)·0.5` and 0.05, then emits eight quads a chunk:
-  the two vertices at `a ± (b − previous) × z`, the texture `(0, v)` and
+  the two vertices at `a ± (b − previous a) × z` (the neighbours' central
+  difference inside the strip), the texture `(0, v)` and
   `(1, v)`, the second coordinates `((40/reach·2.5)·w₇, row)` and the
   chunk's colour bytes. Each chunk's strip starts from the extrapolated
   point `2p₀ − p₁` and chains onto the previous chunk's closing pair. The
@@ -503,9 +506,10 @@ What the Mind domain shows is in `exa_game::mind::sight`:
   the node's matrix times each pass's texture matrix (`force_passes`).
 - **Contact walks**: the static walk rebounds a chunk half way to the
   level's closest surface point and keeps 0.9 of its weight; a limb takes
-  the push and keeps 0.9 (0.5 for a bolt on anything but a character); the
-  bolt's sampled walk moves a chunk onto the contact, zeroes its weight
-  and wears it 0.015; a simulated object's points move and stir; a
+  the push and keeps 0.9 (0.5 for a bolt on anything but a character); a
+  bolt meets static bodies with the sampled walk instead, which moves a
+  chunk onto the contact, zeroes its weight and wears it 0.015 (limbs
+  take the face walk for every blast); a simulated object's points move and stir; a
   torrent point moves half way to a static surface and raises the loop's
   channels by its life share.
 - **Lights**: one multi-point light each, coloured (0.16, 0.08, 1) and

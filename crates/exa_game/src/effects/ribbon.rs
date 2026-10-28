@@ -17,7 +17,7 @@
 //! drops that quad's two triangles. The torrent closes each stream instead.
 //!
 //! - **Blast quad** ([`RibbonMesh::push_blast_quad`]): the two vertices sit
-//!   at `a ± d`, where `d` is `(b − previous_a) × (0, 0, 1)` scaled by
+//!   at `a ± d`, where `d` is `(b − previous a) × (0, 0, 1)` scaled by
 //!   `half/|d|` — the strip widens across the view plane and the camera's
 //!   axis is the screen normal. The first texture coordinate is `(0, v)`
 //!   and `(1, v)`, the second the chunk's `(s, row)`.
@@ -72,7 +72,8 @@ impl RibbonMesh {
 
     /// One blast quad: the point `a` widened by `half` across
     /// `(b − previous_a) × (0, 0, 1)`, its texture `v` and the `(s, row)`
-    /// pair shared by the whole chunk. `previous_a` is updated to `b`.
+    /// pair shared by the whole chunk. `previous_a` becomes `a`, so an inner
+    /// call widens across the central difference of its neighbours.
     #[allow(clippy::too_many_arguments)]
     pub fn push_blast_quad(
         &mut self,
@@ -89,10 +90,9 @@ impl RibbonMesh {
         let cross = Vec3::new(delta.y, -delta.x, 0.0);
         let length = (cross.x * cross.x + cross.y * cross.y) + cross.z * cross.z;
         let length = length.sqrt();
-        // The closing call passes the last point twice and the original
-        // divides the zero cross length into the half width, leaving two
-        // NaN vertices that the strip's last triangles discard. Keep the
-        // pair at the point instead so the mesh stays finite.
+        // Only coincident samples give a zero cross; the original then
+        // divides by zero. Keep the pair at the point so the mesh stays
+        // finite. [deviation, unreachable for a moving trail]
         let dir = if length > 0.0 {
             cross * (half / length)
         } else {
@@ -106,7 +106,7 @@ impl RibbonMesh {
         self.uvs2.push(uv2);
         self.colours.push(colour);
         self.colours.push(colour);
-        *previous_a = b;
+        *previous_a = a;
     }
 
     /// One torrent quad: the point `a` widened by `normal·width`, the first
@@ -182,7 +182,25 @@ mod tests {
         assert_eq!(mesh.uvs2, [[0.25, 0.75]; 2]);
         assert_eq!(mesh.colours, [[1, 2, 3, 4]; 2]);
         assert_eq!(mesh.indices, [0, 1, 2, 2, 1, 3]);
-        assert_eq!(last, Vec3::new(10.0, 0.0, 0.0));
+        assert_eq!(last, Vec3::ZERO);
+    }
+
+    #[test]
+    fn an_inner_blast_quad_widens_across_its_neighbours() {
+        let mut mesh = RibbonMesh::default();
+        let mut last = Vec3::new(-10.0, 0.0, 0.0);
+        let first = Vec3::ZERO;
+        let second = Vec3::new(10.0, 0.0, 0.0);
+        let third = Vec3::new(6.0, 8.0, 0.0);
+        mesh.push_blast_quad(first, second, &mut last, 5.0, [0; 4], 0.0, [0.0; 2]);
+        mesh.push_blast_quad(second, third, &mut last, 5.0, [0; 4], 0.0, [0.0; 2]);
+        // The second call's delta is the third point less the first, (6, 8),
+        // whose cross with +z is (8, −6): five along it is (4, −3).
+        assert_eq!(
+            &mesh.positions[2..],
+            &[Vec3::new(6.0, 3.0, 0.0), Vec3::new(14.0, -3.0, 0.0)]
+        );
+        assert_eq!(last, second);
     }
 
     #[test]

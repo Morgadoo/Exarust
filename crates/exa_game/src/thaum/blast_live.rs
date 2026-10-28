@@ -21,14 +21,20 @@
 //!   limb takes [`limb_push`]'s impulse at the sphere's surface point
 //!   toward the chunk, the chunk moves and keeps [`contact_weight`] of its
 //!   weight, and a character struck takes [`character_knock`] of its
-//!   gathered impulse: the energy, and a knockback step along the knock.
+//!   gathered impulse: the energy, a knockback step along the knock, its
+//!   instability counter +1 and concern 1 at 0.01 toward the caster.
 //!   [inf: the original's mesh and sphere tests that find a contact are not
 //!   in the notes; this sphere test, the body's mass as the sum of its
 //!   parts' masses, and the knock as a knockback step are Exarust's.]
 //!
-//! Not wired: the alert, the sounds, the light, the stun, the hostility and
-//! the recoil a struck character takes, the simulated objects' points, the
-//! level's rebound and the draw. Another motion replacing the cast motion
+//! - **Release and level**: the release alerts the caster's known
+//!   characters ([`alert_amount`]); thrown chunks meet the level as a swept
+//!   ball ([`rebound`], or the bolt's sampled contact); the thrown ribbon
+//!   draws with the glow stand-in ([`draw_blasts`]).
+//!
+//! Not wired: the sounds, the light, the support-pin gain and the 5 s
+//! recoil a struck character takes (no body field takes them) and the
+//! simulated objects' points. Another motion replacing the cast motion
 //! calls the hook (`cast::call_motion_hooks`), which fizzles a charging
 //! blast.
 //!
@@ -340,17 +346,9 @@ pub(crate) fn strike_chunks(
                     }
                 }
                 let (weight, wear) = contact_weight(chunk.weight, setup.piercing, character);
-                if setup.sampled_contact {
-                    // The bolt's sampled walk: the chunk sits on the contact
-                    // and loses all its weight.
-                    chunk.at = point;
-                    chunk.weight = 0.0;
-                    chunk.wear = CONTACT_WEAR;
-                } else {
-                    chunk.weight = weight;
-                    if 0.0 < wear {
-                        chunk.wear = wear;
-                    }
+                chunk.weight = weight;
+                if 0.0 < wear {
+                    chunk.wear = wear;
                 }
                 struck = true;
                 pushed = true;
@@ -365,10 +363,13 @@ pub(crate) fn strike_chunks(
 }
 
 /// The level's static contact: every live chunk is swept as a ball of its
-/// contact reach along its move, and one that meets the level rebounds half
-/// way to the surface and keeps nine tenths of its weight. [inf: the
-/// original walks the level's static bodies' faces for the closest point to
-/// the chunk; Exarust asks rapier for the swept ball.]
+/// contact reach along its move. One that meets the level rebounds half way
+/// to the contact and keeps nine tenths of its weight; a piercing blast
+/// (the bolt) takes the sampled walk instead, which puts the chunk on the
+/// contact, zeroes its weight and wears it. (The limb contacts take the
+/// face walk for every blast.) [inf: the original walks the level's static
+/// bodies' faces or sample points for the closest point to the chunk;
+/// Exarust asks rapier for the swept ball and uses its centre at the hit.]
 fn strike_level(blast: &mut Blast, physics: &Physics) -> usize {
     let mut hits = 0;
     for index in 0..blast.chunks.len() {
@@ -390,7 +391,14 @@ fn strike_level(blast: &mut Blast, physics: &Physics) -> usize {
             continue;
         };
         let contact = chunk.previous + direction * (toi * CM);
-        rebound(&mut blast.chunks[index], contact);
+        let chunk = &mut blast.chunks[index];
+        if blast.setup.piercing {
+            chunk.at = contact;
+            chunk.weight = 0.0;
+            chunk.wear = CONTACT_WEAR;
+        } else {
+            rebound(chunk, contact);
+        }
         hits += 1;
     }
     hits
@@ -903,15 +911,9 @@ mod tests {
                         }
                     }
                     let (weight, wear) = contact_weight(chunk.weight, setup.piercing, character);
-                    if setup.sampled_contact {
-                        chunk.at = point;
-                        chunk.weight = 0.0;
-                        chunk.wear = CONTACT_WEAR;
-                    } else {
-                        chunk.weight = weight;
-                        if 0.0 < wear {
-                            chunk.wear = wear;
-                        }
+                    chunk.weight = weight;
+                    if 0.0 < wear {
+                        chunk.wear = wear;
                     }
                     struck = true;
                 }

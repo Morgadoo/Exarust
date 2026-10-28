@@ -182,11 +182,10 @@ pub struct BlastSetup {
     pub character_push: f32,
     /// The GI light's strength.
     pub light: f32,
-    /// A bolt flies through the level's static check.
+    /// The bolt: a struck limb wears the chunk (and halves a non-character
+    /// limb's share of it), and a static body is met by its sample-point
+    /// walk, which zeroes a struck chunk's weight and wears it.
     pub piercing: bool,
-    /// The effect walks a body's sample points instead of its mesh faces
-    /// (the bolt's walk zeroes a struck chunk's weight and wears it).
-    pub sampled_contact: bool,
     pub charge_sound: &'static str,
     pub release_sound: &'static str,
 }
@@ -206,7 +205,6 @@ pub const BLAST_SETUP: BlastSetup = BlastSetup {
     character_push: 0.8,
     light: 0.6,
     piercing: false,
-    sampled_contact: false,
     charge_sound: "thmfrc_cu01",
     release_sound: "thmfrc_bb",
 };
@@ -226,7 +224,6 @@ pub const BOLT_SETUP: BlastSetup = BlastSetup {
     character_push: 0.5,
     light: 0.6,
     piercing: true,
-    sampled_contact: true,
     charge_sound: "thmfrc_cu01",
     release_sound: "thmfrc_blt",
 };

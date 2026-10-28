@@ -738,13 +738,15 @@ pub fn limb_terms(
     }
 }
 
-/// A chunk weight's loss on a limb contact: 0.9 kept, or for a piercing
-/// blast 0.9 on a character and 0.5 on anything else, with the wear set.
+/// A chunk weight's loss on a limb contact: 0.9 kept (in double
+/// precision), or for a piercing blast 0.9 on a character and 0.5 (single
+/// precision) on anything else, with the wear set.
 pub fn contact_weight(weight: f32, piercing: bool, character: bool) -> (f32, f32) {
+    let kept = (f64::from(weight) * 0.9) as f32;
     if !piercing {
-        (weight * 0.9, 0.0)
+        (kept, 0.0)
     } else if character {
-        (weight * 0.9, CONTACT_WEAR)
+        (kept, CONTACT_WEAR)
     } else {
         (weight * 0.5, CONTACT_WEAR)
     }
@@ -758,8 +760,11 @@ pub struct CharacterKnock {
     /// The knock's direction and size (the impulse capped at 30, doubled),
     /// when the gathered impulse is longer than 1.
     pub knock: Option<(Vec3, f32)>,
-    /// The stun, `(1 − k)·0.08` (in double precision), 0 below 0 and 0.008
-    /// above 0.08.
+    /// The body's support-pin gain the hit leaves, `(1 − k)·0.08` (in
+    /// double precision): 0 below 0, 0.008 above 0.08 (compared in double),
+    /// a NaN kept. The living gain is 0.08 and recovers 0.001 a tick, so a
+    /// hit loosens the pins holding the torso up. (Called the stun in
+    /// earlier notes.)
     pub stun: f32,
 }
 
@@ -767,6 +772,28 @@ pub struct CharacterKnock {
 pub const HIT_HOSTILITY: (f32, f32) = (1.0, 0.01);
 /// The character's recoil timer a hit sets.
 pub const HIT_RECOIL: f32 = 5.0;
+
+/// The knock and the pin gain a struck character takes from the gathered
+/// `impulse` with `k` its mass term (shared by the blast and the torrent).
+/// The squared length sums `z² + (y² + x²)` as the instructions do.
+pub(crate) fn knock_and_pins(k: f32, impulse: Vec3) -> (Option<(Vec3, f32)>, f32) {
+    let size2 = impulse.z * impulse.z + (impulse.y * impulse.y + impulse.x * impulse.x);
+    let knock = if 1.0 < size2 {
+        let size = size2.sqrt();
+        let direction = impulse * (1.0 / size);
+        let size = if 30.0 < size { 30.0 } else { size };
+        Some((direction, size * 2.0))
+    } else {
+        None
+    };
+    let mut stun = ((1.0 - f64::from(k)) * 0.08) as f32;
+    if 0.0 > stun {
+        stun = 0.0;
+    } else if f64::from(stun) > 0.08 {
+        stun = 0.008;
+    }
+    (knock, stun)
+}
 
 /// A character struck by the chunks: `k = 2/mass`, its energy, the gathered
 /// impulse.
@@ -777,23 +804,7 @@ pub fn character_knock(body_mass: f32, energy: f32, impulse: Vec3) -> CharacterK
     } else {
         energy
     };
-    let size2 = (impulse.z * impulse.z + impulse.y * impulse.y) + impulse.x * impulse.x;
-    let knock = if 1.0 < size2 {
-        let size = size2.sqrt();
-        let direction = impulse * (1.0 / size);
-        let size = if 30.0 < size { 30.0 } else { size };
-        Some((direction, size * 2.0))
-    } else {
-        None
-    };
-    let mut stun = ((1.0 - f64::from(k)) * 0.08) as f32;
-    if 0.0 < stun || stun == 0.0 {
-        if 0.08 < stun {
-            stun = 0.008;
-        }
-    } else {
-        stun = 0.0;
-    }
+    let (knock, stun) = knock_and_pins(k, impulse);
     CharacterKnock {
         energy,
         knock,
@@ -802,10 +813,10 @@ pub fn character_knock(body_mass: f32, energy: f32, impulse: Vec3) -> CharacterK
 }
 
 /// A rebound: the chunk moves half way to the contact point and its weight
-/// keeps 0.9.
+/// keeps 0.9 (in double precision).
 pub fn rebound(chunk: &mut BlastChunk, point: Vec3) {
     chunk.at = lerp(chunk.at, point, 0.5);
-    chunk.weight *= 0.9;
+    chunk.weight = (f64::from(chunk.weight) * 0.9) as f32;
 }
 
 /// A contact sphere at `centre` of `radius` pushed out of `point`: moved to
@@ -889,7 +900,7 @@ pub fn static_contact(sampled: bool) -> StaticContact {
 impl Blast {
     /// Which walk the effect's contact dispatch picks.
     pub fn contact_walk(&self) -> ContactWalk {
-        if self.setup.sampled_contact {
+        if self.setup.piercing {
             ContactWalk::Sampled
         } else {
             ContactWalk::Mesh
@@ -1555,6 +1566,29 @@ mod tests {
         assert_eq!((soft.knock, soft.energy), (None, 0.2));
         // A light body: k over 1, the stun floors at 0.
         assert_eq!(character_knock(1.0, 1.0, Vec3::ZERO).stun, 0.0);
+    }
+
+    #[test]
+    fn the_knock_sums_its_length_as_the_instructions_do() {
+        // z² + (y² + x²) is 1.7699999 here; (z² + y²) + x² would be
+        // 1.7699997 and a knock one ulp short.
+        let knock = character_knock(80.0, 1.0, Vec3::new(0.2, 0.2, 1.3));
+        let (_, size) = knock.knock.unwrap();
+        assert_eq!(size, 1.769_999_9_f32.sqrt() * 2.0);
+        assert_ne!(size, 1.769_999_7_f32.sqrt() * 2.0);
+        // A NaN mass leaves a NaN pin gain, as the compares fall through.
+        assert!(character_knock(f32::NAN, 1.0, Vec3::ZERO).stun.is_nan());
+    }
+
+    #[test]
+    fn a_kept_weight_is_nine_tenths_in_double() {
+        // 0.1 × 0.9 rounds to 0.09 in double and to 0.089999996 in single.
+        assert_eq!(contact_weight(0.1, false, false).0, 0.09);
+        assert_eq!(contact_weight(0.1, true, true).0, 0.09);
+        let mut chunk = blast().chunks[0];
+        chunk.weight = 0.1;
+        rebound(&mut chunk, chunk.at);
+        assert_eq!(chunk.weight, 0.09);
     }
 
     #[test]

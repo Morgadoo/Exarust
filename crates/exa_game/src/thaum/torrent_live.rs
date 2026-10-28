@@ -16,17 +16,21 @@
 //!   charges and half of it while it runs; a shortfall calls the hook and
 //!   ends the cast. Its spawn delays draw from the effects' shared roll.
 //!   Once running (flags 0xb_0000), its live points push the limb spheres
-//!   of other bodies they reach ([`strike_streams`]), and each push costs a
-//!   struck character [`energy_after`]'s energy.
+//!   of other bodies they reach ([`strike_streams`]), and a struck
+//!   character takes [`torrent_knock`] of the gathered impulse once a tick:
+//!   the energy, a knockback step, its instability counter +1 and concern
+//!   1 at 0.01 toward the caster. The live points also meet the level
+//!   (a swept ball at the static reach) and move half way to the contact.
 //! - **Leaving**: the frame that would build no triangles removes it
 //!   ([`Torrent::builds_nothing`]): fizzled, or every stream spent.
 //!
 //! [inf: the frame's turned aim is the blast aim here (the player
 //! behaviour's turn spring is not wired), and the contact is Exarust's
 //! sphere test against a point's reach (its width times the limb scale,
-//! plus the margin, plus 10), as for the blast.] Not wired: the character
-//! knock, the simulated objects' points, the sounds, the light and the
-//! draw.
+//! plus the margin, plus 10), as for the blast.] The stream ribbon draws
+//! with the glow stand-in ([`draw_torrents`]). Not wired: the support-pin
+//! gain and the 5 s recoil the hit sets (no body field takes them), the
+//! simulated objects' points, the sounds and the light.
 //!
 //! Evidence: the torrent's creator, start, hook, tick and frame, read from
 //! `Exanima.exe`.
@@ -49,8 +53,7 @@ use super::live::{EffectDraws, EffectMesh, EffectRoll, mesh_of_ribbon, show};
 use crate::effects::blast::{EPSILON, HIT_HOSTILITY, blast_aim};
 use crate::effects::torrent::{
     CONTACT_EASE, POINTS, RUNNING_FLAGS, STATIC_CONTACT, Stream, StreamPoint, TORRENT_MOTION,
-    Torrent, TorrentEvents, TorrentView, body_reach, limb_impulse, limb_terms, torrent_knock,
-    torrent_reach,
+    Torrent, TorrentEvents, TorrentView, limb_impulse, limb_terms, torrent_knock, torrent_reach,
 };
 use crate::player::CursorGround;
 use crate::thaum::engine::lerp;
@@ -236,7 +239,7 @@ pub(crate) fn strike_streams(
 ) -> (usize, Vec3) {
     let Some(effect) = reach_box(torrent.records[..torrent.count].iter().flat_map(|stream| {
         live_points(stream).map(|point| {
-            let reach = most_reach(|scale| body_reach(point.width, scale, torrent.margin));
+            let reach = most_reach(|scale| torrent_reach(point.width, scale, torrent.margin));
             (point.at, reach)
         })
     })) else {
@@ -262,7 +265,7 @@ pub(crate) fn strike_streams(
                 }
                 let inverse = limbs[start].inverse_mass;
                 let (scale, push, _) = limb_terms(character, inverse, mass);
-                let reach = body_reach(point.width, scale, torrent.margin);
+                let reach = torrent_reach(point.width, scale, torrent.margin);
                 let mut pushed = false;
                 for limb in &limbs[start..end] {
                     let (centre, radius, velocity, sphere) =
@@ -602,7 +605,7 @@ mod tests {
                     let part = &body.parts[part_index];
                     let inverse = part.inverse_mass;
                     let (scale, push, _) = limb_terms(character, inverse, mass);
-                    let reach = body_reach(point.width, scale, torrent.margin);
+                    let reach = torrent_reach(point.width, scale, torrent.margin);
                     let world = part.transform();
                     let here: Vec3 = part.positions.iter().copied().sum::<Vec3>() * 0.25;
                     let before: Vec3 = part.previous.iter().copied().sum::<Vec3>() * 0.25;

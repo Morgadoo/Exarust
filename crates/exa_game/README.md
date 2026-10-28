@@ -247,7 +247,7 @@ alert to the characters within 18 m and "PowerUsed", then thrown with the
 original's growth, trail, retention, wear and separation; the torrent's
 sixteen streams fed from the hand, spawning, pulling together, splitting
 (up to 24) and removed as the original removes them. Their contact
-arithmetic (limb pushes, the character knock and its stun quirk, rebound,
+arithmetic (limb pushes, the character knock and its pin-gain quirk, rebound,
 push-out, simulated points), their frames' sounds, colour bytes, texture
 offsets and torrent light points, their geometry classes
 (`effects::effect_geometry`, including the per-pass object matrix) and
@@ -257,7 +257,7 @@ trail samples a chunk, its smoothed 0–1 coordinates, the camera-facing
 bend in the camera's space and the eight quads chained across chunks; the
 torrent's doubled samples with their eye-facing normals and per-sample
 widths. The contact walks are in too: the level's static rebound, the
-bolt's sampled walk that zeroes a chunk's weight, the simulated object's
+bolt's sampled walk on static bodies that zeroes a chunk's weight, the simulated object's
 stir and the torrent's surface push. The engine's GL passes are what
 remains out. A blast or bolt cast runs its
 blast as an entity (`thaum::blast_live`): the cast motion and hook as the
@@ -273,7 +273,7 @@ ending with its power. A wave cast runs its wave round the caster's body root
 tick, and thrown into other bodies' limbs. A torrent cast runs its streams from
 the caster's right hand (`thaum::torrent_live`): charging and pouring on
 its hook until the caster lets go or runs out, its points pushing other
-bodies' limbs at the body reach of forty, the knock, counter and concern
+bodies' limbs at the reach of ten, the level sweep, the knock, counter and concern
 a struck character takes, its ribbon drawn with the glow material, and
 leaving once its frame would draw nothing. Cast hooks answer by event
 (`thaum::casting::CastHook`): the shell's and the bubble's refuse another

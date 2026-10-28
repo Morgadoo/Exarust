@@ -112,11 +112,14 @@ pub const MOST_LIGHTS: usize = 16;
 /// runs: the squared distance between two samples times one of these.
 pub const RIBBON_STEP_CHARGING: f64 = 0.005;
 pub const RIBBON_STEP_RUNNING: f64 = 0.0003;
-/// The extra reach a torrent point tests a rigid body with, cm.
+/// The extra reach a torrent point tests a simulated object's points
+/// with, cm.
 pub const BODY_EXTRA: f32 = 40.0;
 
-/// The reach a torrent point tests a rigid body with: the width times the
-/// scale, plus the margin, plus forty.
+/// The reach a torrent point tests a simulated object's point cloud with
+/// (the object walk, not the limb or level contact, which take
+/// [`torrent_reach`]'s ten): the width times the scale, plus the margin,
+/// plus forty.
 pub fn body_reach(width: f32, scale: f32, margin: f32) -> f32 {
     width * scale + margin + BODY_EXTRA
 }
@@ -914,12 +917,12 @@ fn cross(a: Vec3, b: Vec3) -> Vec3 {
 }
 
 /// The limb contact's scale, push and ease: a character's limb 0.5,
-/// `0.8/mass` and `0.5/(inverse + 1)`; any other body's
+/// `(1/mass)·0.8` (the product in double precision) and `0.5/(inverse + 1)`; any other body's
 /// `min(inverse/4 + 1/2, 3)`, 0.5 and the same ease.
 pub fn limb_terms(character: bool, inverse_mass: f32, body_mass: f32) -> (f32, f32, f32) {
     let ease = 0.5 / (inverse_mass + 1.0);
     if character {
-        (0.5, (1.0 / body_mass) * 0.8, ease)
+        (0.5, (f64::from(1.0 / body_mass) * 0.8) as f32, ease)
     } else {
         ((inverse_mass * 0.25 + 0.5).min(3.0), 0.5, ease)
     }
@@ -968,28 +971,13 @@ pub fn energy_after(energy: f32, body_mass: f32) -> f32 {
 }
 
 /// A character struck by the torrents: `k = 1/mass`, its energy, the
-/// gathered impulse (the same cap at thirty, doubled) and the stun
-/// `(1 − k)·0.08` clamped below zero and above 0.08.
+/// gathered impulse (the same cap at thirty, doubled) and the support-pin
+/// gain `(1 − k)·0.08` clamped below zero and above 0.08, as the blast's
+/// [`super::blast::character_knock`] (only the energy term differs).
 pub fn torrent_knock(body_mass: f32, energy: f32, impulse: Vec3) -> CharacterKnock {
     let k = 1.0 / body_mass;
     let energy = energy_after(energy, body_mass);
-    let size2 = (impulse.z * impulse.z + impulse.y * impulse.y) + impulse.x * impulse.x;
-    let knock = if 1.0 < size2 {
-        let size = size2.sqrt();
-        let direction = impulse * (1.0 / size);
-        let size = if 30.0 < size { 30.0 } else { size };
-        Some((direction, size * 2.0))
-    } else {
-        None
-    };
-    let mut stun = ((1.0 - f64::from(k)) * 0.08) as f32;
-    if 0.0 < stun || stun == 0.0 {
-        if 0.08 < stun {
-            stun = 0.008;
-        }
-    } else {
-        stun = 0.0;
-    }
+    let (knock, stun) = super::blast::knock_and_pins(k, impulse);
     CharacterKnock {
         energy,
         knock,
@@ -1188,7 +1176,7 @@ mod tests {
         assert!((energy_after(1.0, 80.0) - (1.0 - 0.0125 * 0.0005)).abs() < 1e-7);
         assert_eq!(energy_after(0.2, 80.0), 0.2);
         assert_eq!(torrent_reach(12.0, 0.25, 0.0), 13.0);
-        // A rigid body's reach is forty past the same scale, not ten.
+        // A simulated object's reach is forty past the same scale, not ten.
         assert_eq!(body_reach(12.0, 0.25, 0.0), 43.0);
         assert_eq!(
             STATIC_CONTACT,
