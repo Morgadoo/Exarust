@@ -671,10 +671,15 @@ pub fn spawn_model_nodes(
                 }
                 parts.push(part);
             }
-            // `_null` geometry never draws but still collides: it takes part
-            // in the static colliders under this node and in no draw.
+            // `_null` geometry never draws, but the cursor's pick meets it:
+            // a pick-only static collider under this node, in no draw.
             for mesh in &node.collision {
-                commands.spawn((Mesh3d(mesh.clone()), Visibility::Hidden, ChildOf(e)));
+                commands.spawn((
+                    Mesh3d(mesh.clone()),
+                    exa_physics::PickOnly,
+                    Visibility::Hidden,
+                    ChildOf(e),
+                ));
             }
         }
         if !parts.is_empty() {

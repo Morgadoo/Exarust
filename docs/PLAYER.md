@@ -688,8 +688,9 @@ original tests every object's meshes, through spheres padded by 5 cm for
 interactive objects); the nearest hit wins. A static mesh under a named
 scene node comes back as that node (`Hit::SceneNode`), whose stored name a
 click hook compares as the original's scene pick does; generated geometry
-and every unnamed collider stay `Hit::Level`. The hub's shop sign is
-collision-only `_null` geometry, so it is built as a hidden collider. The
+and every unnamed collider stay `Hit::Level`. The hub's shop counter is a
+`_null` box (never drawn, but picked), built as a hidden pick-only collider
+that only this pick meets. The
 hip is the player's pelvis (the original's reference point the swing whoosh
 also plays at).
 

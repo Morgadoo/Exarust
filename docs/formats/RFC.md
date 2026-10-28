@@ -245,8 +245,11 @@ solids (the first face of the object above them faces up); open downward faces
 below 2 m are 2.7 %, mostly rock overhangs and foliage. Ceiling pieces (`+R…`)
 are black caps facing up (80.6 % of their horizontal area), not downward
 ceilings. No node and no prop placement is mirrored (negative determinant).
-`_null` groups (254 229 triangles, half of the horizontal ones up) are neither
-drawn nor built.
+`_null` groups (254 229 triangles, half of the horizontal ones up) are never
+drawn. Exarust builds a static mesh's `_null` groups as pick-only colliders
+the cursor's pick meets and nothing collides with (the arena hub's shop
+counter node holds only a `_null` box, the only thing a click on it can
+hit); skinned meshes' `_null` seams are not built.
 
 Textures pair with texture coordinates unchanged when images keep their
 stored (bottom-up) row order.

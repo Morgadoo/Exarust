@@ -195,7 +195,7 @@ impl Level for rapier3d::prelude::PhysicsWorld {
         use rapier3d::prelude::*;
         out.extend(
             self.intersect_aabb_conservative(Aabb::new(lo, hi), QueryFilter::only_fixed())
-                .filter(|(_, c)| c.shape().as_trimesh().is_some())
+                .filter(|(h, c)| c.shape().as_trimesh().is_some() && crate::solid(*h, c))
                 .map(|(h, _)| h.into_raw_parts().0),
         );
     }

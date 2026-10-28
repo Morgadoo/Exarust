@@ -46,8 +46,9 @@ pub struct ModelNode {
     /// Material name of each part, as stored in the file.
     pub part_materials: Vec<String>,
     /// Meshes of the node's `_null` groups: geometry the original never
-    /// draws but still collides with (the hub's shop sign). They are built
-    /// as mesh colliders and carry no material.
+    /// draws but its cursor pick still meets (the hub's shop counter box).
+    /// Bare positions and indices, never uploaded; built as pick-only
+    /// colliders. Empty for a skinned mesh.
     pub collision: Vec<Handle<Mesh>>,
     /// Bone whose space the parts are in, when their meshes carry skin
     /// weights (joint indices are bone numbers).
@@ -1429,7 +1430,7 @@ pub struct BuiltModel {
 struct BuiltNode {
     skin: Option<(u16, Vec<VertexSkin>)>,
     meshes: Vec<(usize, Mesh)>,
-    /// The node's `_null` groups' meshes, never drawn.
+    /// The node's `_null` groups' bare meshes, never drawn.
     collision: Vec<Mesh>,
 }
 
@@ -1635,14 +1636,48 @@ fn group_meshes(
         _ => groups.iter().map(|&g| build(g)).collect(),
     };
     let drawn = built.into_iter().flatten().collect();
-    // `_null` marks geometry the original never draws but still collides
-    // with, such as the hub's shop sign; keep it as collision-only meshes.
-    let collision = (0..mesh.groups.len())
-        .filter(|&g| is_null(g))
-        .filter_map(build)
-        .map(|(_, mesh)| mesh)
-        .collect();
+    // `_null` marks geometry the original never draws but its cursor pick
+    // still meets, such as the hub's shop counter box: keep it as bare
+    // pick meshes. A skinned mesh's `_null` seams are never static scenery.
+    let collision = match skin {
+        Some(_) => Vec::new(),
+        None => (0..mesh.groups.len())
+            .filter(|&g| is_null(g))
+            .filter_map(|g| {
+                let group = &mesh.groups[g];
+                let start = group.first_index as usize;
+                mesh.indices
+                    .get(start..start + group.index_count as usize)
+                    .and_then(|indices| pick_mesh(mesh, indices))
+            })
+            .collect(),
+    };
     (drawn, collision)
+}
+
+/// A `_null` group's triangles as a bare mesh: positions and indices only,
+/// kept in the main world for the static collider build and never uploaded.
+fn pick_mesh(mesh: &RfcMesh, indices: &[u32]) -> Option<Mesh> {
+    let mut remap = HashMap::with_capacity(indices.len());
+    let mut positions = Vec::new();
+    let mut local = Vec::with_capacity(indices.len());
+    for &i in indices {
+        let position = *mesh.positions.get(i as usize)?;
+        local.push(*remap.entry(i).or_insert_with(|| {
+            positions.push(position);
+            (positions.len() - 1) as u32
+        }));
+    }
+    if local.len() < 3 {
+        return None;
+    }
+    let mut built = Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::MAIN_WORLD,
+    );
+    built.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    built.insert_indices(Indices::U32(local));
+    Some(built)
 }
 
 /// A layer's mask, material, colour and library textures, owned while painting.
