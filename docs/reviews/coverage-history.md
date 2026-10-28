@@ -103,3 +103,4 @@ while the map was being built, so treat the row as a best-effort snapshot.
 | 2026-10-28 | f193f835 | dirty | 62.0% | 4.9% | 56.1% | 45.4% | round 19: thirteen reviewed lanes |
 | 2026-10-28 | 692e05af | clean | 63.7% | 4.9% | 57.4% | 45.4% | round 20: thirteen reviewed lanes |
 | 2026-10-28 | fbbb1899 | clean | 64.7% | 4.9% | 58.2% | 45.4% | round 21: thirteen reviewed lanes |
+| 2026-10-28 | 2c46a6c2 | clean | 65.7% | 4.9% | 59.0% | 45.4% | Rate round 22's reviewed lanes |
