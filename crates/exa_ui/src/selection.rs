@@ -788,10 +788,11 @@ pub fn travel_step(
 /// colours are Exarust's stand-in [guess]).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SelectionPalette {
-    /// The colour a row mixes from at 0.
-    pub symbol_from: [f32; 4],
-    /// The colour a row mixes to at 1.
-    pub symbol_to: [f32; 4],
+    /// The colour a row starts from (its colour at mix 0).
+    pub symbol_base: [f32; 4],
+    /// The colour added on top, scaled by the row's mix: the paint's
+    /// `base + add · mix`, not a blend between the two.
+    pub symbol_add: [f32; 4],
     /// The full-screen backdrop's ink.
     pub backdrop: [u8; 4],
 }
@@ -852,10 +853,12 @@ pub fn frame(
             SelectionDraw::Symbol {
                 quad, mix, alpha, ..
             } => {
+                // The paint adds the second colour scaled by the mix to the
+                // first, then overwrites the alpha.
                 let colour = [
-                    palette.symbol_from[0] * (1.0 - mix) + palette.symbol_to[0] * mix,
-                    palette.symbol_from[1] * (1.0 - mix) + palette.symbol_to[1] * mix,
-                    palette.symbol_from[2] * (1.0 - mix) + palette.symbol_to[2] * mix,
+                    palette.symbol_base[0] + palette.symbol_add[0] * mix,
+                    palette.symbol_base[1] + palette.symbol_add[1] * mix,
+                    palette.symbol_base[2] + palette.symbol_add[2] * mix,
                     alpha,
                 ];
                 let size = crate::engine_math::round_i64(quad.corners[2] - quad.corners[0]);
@@ -1191,13 +1194,33 @@ mod tests {
             },
         ];
         let palette = SelectionPalette {
-            symbol_from: [1.0, 1.0, 1.0, 1.0],
-            symbol_to: [1.0, 0.5, 0.0, 1.0],
+            symbol_base: [0.25, 0.25, 0.25, 1.0],
+            symbol_add: [0.5, 0.25, 0.0, 1.0],
             backdrop: [0, 0, 0, 128],
         };
         let frame = frame(&draws, &atlas, &palette, 200, 100);
         assert_eq!(frame.layers.len(), 2);
         assert!(frame.layers[1].batch.primitives.len() == 1);
+        // At mix 1 the colour is base + add: (0.75, 0.5, 0.25). The atlas
+        // coverage is 1, so the symbol's centre is that times
+        // `c = ring + 0.6 · d`, where the centre's ring term is 0 and d is 1.
+        let crate::gui_draw::LayerTexture::Owned(image) = &frame.layers[1].texture else {
+            panic!("the symbol carries its image");
+        };
+        let centre = image.pixels[(image.height / 2 * image.width + image.width / 2) as usize];
+        let expected = symbol_sample(
+            &atlas,
+            ((image.width / 2) as f32 + 0.5) / image.width as f32,
+            1.0 - ((image.height / 2) as f32 + 0.5) / image.height as f32,
+            symbol_quad((100.0, 50.0), 4, 1.0, &DestinationSlot::new(1)).tex_pos,
+            [0.0, 0.0],
+            [0.75, 0.5, 0.25, 0.6],
+        );
+        assert_eq!(
+            centre[0],
+            (expected[0].clamp(0.0, 1.0) * 255.0).round_ties_even() as u8
+        );
+        assert!(centre[0] > centre[1] && centre[1] > centre[2]);
     }
 
     #[test]

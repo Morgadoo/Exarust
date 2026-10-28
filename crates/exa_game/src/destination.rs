@@ -263,19 +263,13 @@ fn paint_screen(
         return;
     };
     let palette = exa_ui::line_skin::line_palette();
+    // The skin's bytes become floats by one multiply with 1/255 in single
+    // precision, as the engine's colour conversion does.
+    let unit_colour =
+        |bytes: [u8; 4]| bytes.map(|byte| f32::from(byte) * f32::from_bits(0x3b80_8081));
     let palette = SelectionPalette {
-        symbol_from: [
-            f32::from(palette.text[6][0]) / 255.0,
-            f32::from(palette.text[6][1]) / 255.0,
-            f32::from(palette.text[6][2]) / 255.0,
-            f32::from(palette.text[6][3]) / 255.0,
-        ],
-        symbol_to: [
-            f32::from(palette.highlight[9][0]) / 255.0,
-            f32::from(palette.highlight[9][1]) / 255.0,
-            f32::from(palette.highlight[9][2]) / 255.0,
-            f32::from(palette.highlight[9][3]) / 255.0,
-        ],
+        symbol_base: unit_colour(palette.text[6]),
+        symbol_add: unit_colour(palette.highlight[9]),
         backdrop: palette.form[3],
     };
     frames.push(selection::frame(&draws, atlas, &palette, width, height));

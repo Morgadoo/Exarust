@@ -638,7 +638,7 @@ pub fn save_on_close(editor: &LoadoutEditor) -> LoadoutSave {
     }
 }
 
-/// One of the form's 0x68-byte control records, decoded: class and id, the
+/// One of the form's control records, decoded: class and id, the
 /// x and y words (a negative y is the layout pass's anchor code), width and
 /// height, the caption, and the style and state words.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
