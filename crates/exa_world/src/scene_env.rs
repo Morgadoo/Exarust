@@ -1604,13 +1604,13 @@ impl SceneEnvironment {
                 } else {
                     if l.next_step < now {
                         let r = rng.unit() as f64;
-                        // A rising step (anything not at or below zero,
-                        // NaN included, turns down) turns down; a falling,
-                        // zero or NaN one turns up.
-                        l.step = if l.step <= 0.0 {
-                            (r * 0.2 + 0.1) as f32
-                        } else {
+                        // A rising step turns down; a falling, zero or NaN
+                        // one turns up (the compare's unordered result
+                        // takes the rising branch's jump past it).
+                        l.step = if l.step > 0.0 {
                             (-0.1 - r * 0.2) as f32
+                        } else {
+                            (r * 0.2 + 0.1) as f32
                         };
                         l.next_step = rng.below(40) + now + 50;
                     }
@@ -2381,6 +2381,26 @@ mod tests {
         env.weather.lightning.next_step = 5_000;
         env.tick(1_001, &mut rng, &mut system);
         assert!(env.weather.lightning.intensity.is_nan());
+    }
+
+    #[test]
+    fn a_nan_flicker_step_turns_up() {
+        let mut env = SceneEnvironment::new(5);
+        let mut rng = WeatherRng::new(0);
+        let mut system = || 0.5;
+        env.weather.raining = true;
+        let l = &mut env.weather.lightning;
+        l.active = true;
+        l.attenuation = 0.5;
+        l.intensity = 0.5;
+        l.step = f32::NAN;
+        l.next_step = 500;
+        env.weather.next_strike = 2_000;
+        env.tick(1_000, &mut rng, &mut system);
+        // The unordered compare takes the rising-or-zero branch: r · 0.2 +
+        // 0.1 with r = 1 / 2³² · state 1, so a hair above 0.1.
+        let step = env.weather.lightning.step;
+        assert!((step - 0.1).abs() < 1e-6, "{step}");
     }
 
     #[test]
