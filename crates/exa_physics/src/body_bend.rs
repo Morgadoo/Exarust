@@ -1,24 +1,48 @@
-//! The standing leg bend: each leg folds onto its bend target by the law
-//! of cosines, and the muscles follow that fold on the next tick.
+//! The legs in the animated pose: the standing leg IK and the locomotion
+//! leg IK, the foot pitch and the thigh posture.
 //!
-//! The correction from the clip's angle advances at most 0.02 rad a tick
-//! (0.2 while a recovery step is on), plus a stored rate, and never past
-//! the target. The rate then becomes half of that sum, within ±0.1 rad.
-//! From a zero correction and a zero rate, one tick toward a larger
-//! correction stores 0.02 rad. The pose this tick's muscles already follow
-//! is left as it was; the next aim multiplies the stored correction in.
+//! The original runs one of the two IK routines from its feet routine: the
+//! standing one while the body does not locomote, the locomotion one while
+//! it does. Both write, for each leg, a knee correction about the lower
+//! leg's lateral axis, a hip correction about the thigh's, and (standing)
+//! a turn of the thigh toward its target; the sampler multiplies them into
+//! the clip's pose ([`Ragdoll::pose_leg_bend`]).
 //!
-//! An anchored foot's target is the midpoint of the foot and its anchor,
-//! at the anchor's height. An unanchored foot's is its anchor, lowered by
-//! twice the lift term stored before clamping: 2.25 cm when a standing
-//! body is at its target height. While the leg is not stepping, the reach
-//! still measures its height from the anchor and its horizontal reach from
-//! the clip, which is how the original builds the standing triangle.
+//! **Standing**: the target is the anchor, lowered by twice the lift
+//! term ([`bend_target`]), or, for an anchored foot, the midpoint of the
+//! contact and its anchor at the anchor's height. The reach is the hip's
+//! height over the anchor (plus the lift term) with, while the recovery
+//! step runs, the horizontal distance to the target (anchored) or the
+//! anchor, and otherwise the clip's own horizontal hip-to-ankle offset,
+//! plus the step lift, clamped to a quarter of the leg through the whole
+//! leg; the knee and the hip are the law of cosines of that triangle, and
+//! the corrections are the clip's angles less the target's, eased at
+//! 0.2 rad a tick while the step runs and 0.02 otherwise (the feet routine
+//! never snaps them). The step also turns the thigh 75 % of the way toward
+//! the target; not stepping, that turn loses a tenth of itself a tick.
+//!
+//! **Locomoting**: the target leg reaches from the physical hip across to
+//! the foot's contact and down to its anchor (plus a per-leg lag); it acts
+//! only where the clip's leg is longer than the hip's height over the
+//! anchor (the ground is higher than the clip expects), or while a
+//! touching foot does not run. Its knee is
+//! the law of cosines of the target triangle; its hip is the angle between
+//! the clip's leg and the target leg, signed by whether the clip's foot
+//! is ahead of the character frame's origin (behind or level negates), less
+//! the target triangle's hip angle and plus the clip triangle's. The
+//! smoother runs at 0.04 × the speed plus 0.01 while moving. A leg whose
+//! target has no length, or whose correction is switched off, keeps the
+//! identity correction for that part while the stored angle still eases.
 //!
 //! Lying down (down, dormant or dead: off its feet, and not getting up)
-//! does not retarget. The stored knee and hip ease toward 0 by the standing
-//! step, 0.02 rad a tick, and the bend target, the step lift and the
-//! thigh's extra turn stay as they were. A get-up still folds.
+//! does not retarget: the stored knee, hip and foot pitch ease toward 0 by
+//! the standing step, 0.02 rad a tick, and the bend target, the step lift
+//! and the thigh's extra turn stay as they were. A get-up still folds.
+//!
+//! The foot pitch ([`foot_pitch_target`]) levels a toe 20 cm times the
+//! body scale ahead of the ankle; the height it works from is the foot's
+//! height over its floor, which each IK routine writes ([`Ragdoll`]'s legs
+//! keep it as `pitch_height`).
 //! (Included from body.rs: `#[path = "body_bend.rs"] mod bend;`)
 
 use bevy::math::Affine3A;
@@ -28,17 +52,23 @@ use crate::engine_math::acos_approx;
 
 use super::balance::cm;
 use super::feet::FootState;
+use super::locomotion::LegMode;
 use super::{CM, Leg, Part, Ragdoll};
 
-/// Above this cosine the knee is held at 30°.
-const FOLD_COS: f32 = 0.8660254;
+/// Above this cosine (compared in double, as the original does) the knee
+/// is held at 30°.
+const FOLD_COS: f64 = 0.866_025_403_784_438_6;
 /// 30°, and a straight knee.
 const FOLD: f32 = 0.5235988;
 const FLAT: f32 = 3.1415927;
 /// The most the correction advances in one tick (rad): standing, and
-/// while a recovery step is on.
+/// while a foot is stepping.
 const EASE_STANDING: f32 = 0.02;
 const EASE_STEPPING: f32 = 0.2;
+/// Moving, the locomotion IK's rate is 0.04 × the gait speed (cm a tick)
+/// plus 0.01, in double.
+const EASE_MOVING: f64 = 0.04;
+const EASE_MOVING_BASE: f64 = 0.01;
 /// The foot pitch eases at most this far (rad) a tick, plus its rate, and
 /// ten times that while a recovery step is on.
 pub(super) const PITCH_STEP: f32 = 0.01;
@@ -74,8 +104,9 @@ const LIFT_HELD: f32 = 0.9;
 const STANCE_BASE: f32 = 1.5;
 
 /// The knee angle (rad) for bones of length `thigh` and `shin` (m) and a
-/// hip-to-target reach `reach` (m). The cosine above [`FOLD_COS`] is 30°,
-/// and a cosine below −1 is 180°.
+/// hip-to-target reach `reach` (m). A cosine at or below −1 is 180°, and
+/// one above the double 0.8660254 is 30°; otherwise the engine's arc
+/// cosine (a NaN stays).
 pub(super) fn knee_angle(thigh: f32, shin: f32, reach: f32) -> f32 {
     let denom = 2.0 * thigh * shin;
     if denom <= 0.0 {
@@ -84,15 +115,15 @@ pub(super) fn knee_angle(thigh: f32, shin: f32, reach: f32) -> f32 {
     let cos = (thigh * thigh + shin * shin - reach * reach) / denom;
     if cos <= -1.0 {
         FLAT
-    } else if cos > FOLD_COS {
+    } else if f64::from(cos) > FOLD_COS {
         FOLD
     } else {
-        cos.acos()
+        acos_approx(cos)
     }
 }
 
-/// The hip angle (rad) of the same triangle: 0 when the thigh already
-/// points along the reach, 180° when the cosine is below −1.
+/// The hip angle (rad) of the same triangle: 0 when the cosine is at or
+/// above 1, 180° at or below −1, otherwise the engine's arc cosine.
 pub(super) fn hip_angle(thigh: f32, shin: f32, reach: f32) -> f32 {
     let denom = 2.0 * reach * thigh;
     if denom <= 0.0 {
@@ -104,7 +135,39 @@ pub(super) fn hip_angle(thigh: f32, shin: f32, reach: f32) -> f32 {
     } else if cos >= 1.0 {
         0.0
     } else {
-        cos.acos()
+        acos_approx(cos)
+    }
+}
+
+/// The hip angle of the locomotion IK's target triangle: 0 when the
+/// cosine compares at or above 1 (a NaN takes the arc cosine), otherwise
+/// the engine's arc cosine.
+fn target_hip_angle(cos: f32) -> f32 {
+    if cos < 1.0 || cos.is_nan() {
+        acos_approx(cos)
+    } else {
+        0.0
+    }
+}
+
+/// The clip's hip angle (the knee of the clip's own triangle): 0 while
+/// the leg's reach covers the clip's length, 180° for a clip of no length,
+/// otherwise the engine's arc cosine of the clip's triangle. `reach2` is
+/// the whole leg squared and `clip2` the clip's hip-to-ankle distance
+/// squared, both cm².
+fn clip_hip_angle(thigh: f32, shin: f32, reach2: f32, clip2: f32) -> f32 {
+    // The original's unordered compares: a NaN falls through to the arc
+    // cosine.
+    if reach2 <= clip2 {
+        0.0
+    } else if clip2 < PITCH_EPS {
+        FLAT
+    } else {
+        // The original takes the engine's arc cosine unclamped; a cosine
+        // at or over 1 (a clip shorter than thigh less shin) is held at 0
+        // here rather than becoming a NaN in the pose.
+        let cos = ((thigh * thigh + clip2) - shin * shin) / (clip2.sqrt() * 2.0 * thigh);
+        target_hip_angle(cos)
     }
 }
 
@@ -192,12 +255,12 @@ pub fn foot_pitch_target(
     }
 }
 
-/// The bend target (m). Anchored: the midpoint of `foot` and `anchor`, at
-/// the anchor's height. Unanchored: the anchor, lowered by `drop` (m),
-/// twice the lift term stored before clamping.
-pub(super) fn bend_target(foot: Vec3, anchor: Vec3, anchored: bool, drop: f32) -> Vec3 {
+/// The bend target (m). Anchored: the midpoint of the contact and the
+/// anchor, at the anchor's height. Unanchored: the anchor, lowered by
+/// `drop` (m), twice the lift term stored before clamping.
+pub(super) fn bend_target(contact: Vec3, anchor: Vec3, anchored: bool, drop: f32) -> Vec3 {
     if anchored {
-        let mid = foot.lerp(anchor, 0.5);
+        let mid = contact.lerp(anchor, 0.5);
         Vec3::new(mid.x, anchor.y, mid.z)
     } else {
         anchor - Vec3::Y * drop
@@ -252,7 +315,7 @@ pub(super) fn extra_turn(rest: Vec3, toward: Vec3) -> Quat {
     } else if cos >= 1.0 {
         0.0
     } else {
-        cos.acos()
+        acos_approx(cos)
     };
     let axis = rest.cross(toward);
     if axis.length_squared() <= TURN_TINY {
@@ -263,31 +326,38 @@ pub(super) fn extra_turn(rest: Vec3, toward: Vec3) -> Quat {
 
 /// Not stepping, the extra turn loses 10% of its angle.
 pub(super) fn decay_turn(turn: Quat) -> Quat {
-    turn.slerp(Quat::IDENTITY, TURN_DECAY)
+    turn.slerp(Quat::IDENTITY, TURN_DECAY).normalize()
 }
 
-/// The reach (m) clamped to a quarter of the leg through the whole leg,
-/// and the knee it gives. At the leg or past it the knee is straight.
-fn reached(thigh: f32, shin: f32, mut reach: f32) -> (f32, f32) {
-    let full = thigh + shin;
-    if full <= 0.0 {
-        return (0.0, FLAT);
-    }
-    if reach >= full {
-        return (full, FLAT);
-    }
-    let least = full * REACH_MIN;
-    if reach < least {
-        reach = least;
-    }
-    (reach, knee_angle(thigh, shin, reach))
+/// What one tick of the IK reads off the body, the same for every leg.
+struct IkTick {
+    /// The standing smoother's rate (0.02 or 0.2 rad).
+    step: f32,
+    /// The locomotion smoother's rate.
+    moving_step: f32,
+    /// Twice the lift term before clamping (m), which lowers an
+    /// unanchored standing target.
+    drop: f32,
+    /// The lift term before clamping (cm), which the locomotion IK adds
+    /// to the target's vertical difference.
+    lift_cm: f32,
+    /// Whether the balance routine runs a recovery step (its angle
+    /// smoother's 0.2 rad rate and its thigh's turn toward the target).
+    stepping: bool,
+    /// The run flag (the locomotion flags' bit 4).
+    running: bool,
+    stance: f32,
+    crouch: f32,
+    frame: Affine3A,
+    sole: f32,
 }
 
 impl Ragdoll {
     /// Multiplies last tick's leg bend into this tick's pose, and remembers
     /// the clip's hip-to-ankle offset for the bend computed after the
     /// solver. The muscles sample the pose after this, so they follow the
-    /// correction on the tick after it was computed.
+    /// correction on the tick after it was computed. A correction the IK
+    /// holds at the identity is not multiplied in.
     pub(super) fn pose_leg_bend(&mut self) {
         let Ragdoll {
             parts, legs, drive, ..
@@ -308,18 +378,24 @@ impl Ragdoll {
             let hip = Vec3::from(drive.targets[thigh].translation);
             let ankle = drive.targets[leg.shin].transform_point3(leg.point);
             leg.posed_offset = ankle - hip;
+            leg.anim_contact = ankle;
+            leg.anim_hip = hip;
             fold_pose(&mut drive.targets, thigh, leg.shin, leg);
         }
     }
 
-    /// One tick of the leg bend, from where the solver left the body.
-    /// The pose the muscles just followed is not rewritten. Lying down
-    /// (off its feet, and not getting up) eases the stored knee, hip and
-    /// foot pitch toward 0 by 0.02 rad and leaves the target, the lift
-    /// and the thigh's extra turn alone.
+    /// One tick of the leg IK, from where the solver left the body. The
+    /// pose the muscles just followed is not rewritten. Lying down (off
+    /// its feet, and not getting up) eases the stored knee, hip and foot
+    /// pitch toward 0 by 0.02 rad and leaves the target, the lift and the
+    /// thigh's extra turn alone.
     pub(super) fn bend_legs(&mut self) {
         let Ragdoll {
-            parts, legs, drive, ..
+            parts,
+            legs,
+            drive,
+            sole,
+            ..
         } = self;
         let Some(drive) = drive.as_mut() else {
             return;
@@ -341,50 +417,37 @@ impl Ragdoll {
             }
             return;
         }
-        let stepping = drive.steps.stepping;
-        let rate = if stepping {
-            EASE_STEPPING
-        } else {
-            EASE_STANDING
-        };
-        let drop = 2.0 * drive.lift_raw / CM;
-        let stance = drive.stance;
-        let crouch = drive.bearing.crouch;
-        let frame = drive.frame.unwrap_or(Affine3A::IDENTITY);
-        let tick = BendTick {
-            stepping,
-            rate,
-            drop,
-            stance,
-            crouch,
-            frame,
+        let moving = drive.bearing.moving;
+        let tick = IkTick {
+            step: if drive.steps.stepping {
+                EASE_STEPPING
+            } else {
+                EASE_STANDING
+            },
+            moving_step: (f64::from(drive.bearing.speed) * EASE_MOVING + EASE_MOVING_BASE) as f32,
+            drop: 2.0 * drive.lift_raw / CM,
+            lift_cm: drive.lift_raw,
+            stepping: drive.steps.stepping,
+            running: drive.bearing.legs == LegMode::Run,
+            stance: drive.stance,
+            crouch: drive.bearing.crouch,
+            frame: drive.frame.unwrap_or(Affine3A::IDENTITY),
+            sole: *sole,
         };
         for leg in legs.iter_mut() {
-            bend_leg(parts, leg, &tick);
+            if moving {
+                locomoting_leg(parts, leg, &tick);
+            } else {
+                standing_leg(parts, leg, &tick);
+            }
         }
     }
 }
 
-/// What one tick of the bend reads off the body, the same for every leg.
-struct BendTick {
-    stepping: bool,
-    rate: f32,
-    drop: f32,
-    stance: f32,
-    crouch: f32,
-    frame: Affine3A,
-}
-
-/// Folds one leg. Lengths are the two bones, not the lift's padded leg.
-fn bend_leg(parts: &[Part], leg: &mut Leg, tick: &BendTick) {
-    let BendTick {
-        stepping,
-        rate,
-        drop,
-        stance,
-        crouch,
-        frame,
-    } = *tick;
+/// One leg's standing IK: the original's targets, triangle and corrections.
+/// The feet routine runs it with its snap argument clear, so the
+/// corrections always ease (the placement's snap is not reproduced here).
+fn standing_leg(parts: &[Part], leg: &mut Leg, tick: &IkTick) {
     let Some(thigh) = parts[leg.shin].parent else {
         return;
     };
@@ -393,57 +456,83 @@ fn bend_leg(parts: &[Part], leg: &mut Leg, tick: &BendTick) {
     if shin_len <= 0.0 || thigh_len <= 0.0 {
         return;
     }
-    let foot = parts[leg.shin].point(&leg.contact);
+    let contact = parts[leg.shin].point(&leg.contact);
     let anchored = leg.state.has(FootState::ANCHORED);
-    let to_anchor = leg.anchor - foot;
+    // The standing IK clears the per-leg lag before it reads it.
+    leg.contact_lag = 0.0;
+    // The original's foot height for the pitch: the contact less the sole
+    // and the foot's floor.
+    leg.pitch_height = (contact.y - tick.sole - leg.floor) * CM;
+    let to_anchor = leg.anchor - contact;
     let fresh = step_lift(
         cm(to_anchor.with_y(0.0)).length(),
         cm(to_anchor).length(),
-        crouch,
-        stance,
+        tick.crouch,
+        tick.stance,
     );
     leg.lift = if leg.ground.is_none() {
         // A foot with no ground in reach keeps no step lift.
         0.0
     } else {
-        next_lift(leg.lift, anchored, stepping, fresh / CM)
+        // The feet routine's lift: fresh for an anchored foot while the
+        // body's recovery step runs.
+        next_lift(leg.lift, anchored, tick.stepping, fresh / CM)
     };
-    let goal = bend_target(foot, leg.anchor, anchored, drop);
+    let goal = bend_target(contact, leg.anchor, anchored, tick.drop);
     leg.goal = goal;
     let hip = Vec3::from(parts[thigh].transform().translation);
-    let horizontal = if stepping {
+    // Stepping, the horizontal reach is to the target (anchored) or the
+    // anchor; otherwise the clip's own hip-to-ankle offset.
+    let horizontal = if tick.stepping {
         let at = if anchored { goal } else { leg.anchor };
         (at - hip).with_y(0.0)
     } else {
         leg.posed_offset.with_y(0.0)
     };
-    let vertical = hip.y - leg.anchor.y + drop * 0.5;
+    // The hip over the anchor (plus the lag, 0 here), plus the lift term.
+    let vertical = hip.y - leg.anchor.y + tick.drop * 0.5;
     let reach = (vertical * vertical + horizontal.length_squared()).sqrt() + leg.lift;
     if !reach.is_finite() {
         return;
     }
-    let (reach, knee) = reached(thigh_len, shin_len, reach);
-    leg.reach_knee = knee;
-    let posed = leg.posed_offset.length();
-    let rest_knee = if posed > 0.0 {
-        knee_angle(thigh_len, shin_len, posed)
+    // The reach triangle and the clip's own (lengths in cm, as the
+    // original's eps compares are).
+    let full = thigh_len + shin_len;
+    let reach = if reach >= full {
+        full
+    } else {
+        (full * REACH_MIN).max(reach)
+    };
+    leg.reach_knee = knee_angle(thigh_len, shin_len, reach);
+    let clip = leg.posed_offset.length();
+    let clip_knee = if clip > 0.0 {
+        knee_angle(thigh_len, shin_len, clip)
     } else {
         FLAT
     };
-    let rest_hip = if posed > 0.0 {
-        hip_angle(thigh_len, shin_len, posed)
-    } else {
-        0.0
-    };
-    let (knee_corr, knee_rate) = ease(leg.knee, leg.knee_rate, rest_knee - knee, rate);
-    leg.knee = knee_corr;
+    let (full_cm, clip_cm) = (full * CM, clip * CM);
+    let clip_hip = clip_hip_angle(
+        thigh_len * CM,
+        shin_len * CM,
+        full_cm * full_cm,
+        clip_cm * clip_cm,
+    );
+    let target_hip = hip_angle(thigh_len, shin_len, reach);
+    leg.knee_shown = true;
+    leg.hip_shown = true;
+    let (knee, knee_rate) = ease(
+        leg.knee,
+        leg.knee_rate,
+        clip_knee - leg.reach_knee,
+        tick.step,
+    );
+    leg.knee = knee;
     leg.knee_rate = knee_rate;
-    let hip_now = hip_angle(thigh_len, shin_len, reach);
-    let (hip_corr, hip_rate) = ease(leg.hip, leg.hip_rate, rest_hip - hip_now, rate);
+    let (hip_corr, hip_rate) = ease(leg.hip, leg.hip_rate, clip_hip - target_hip, tick.step);
     leg.hip = hip_corr;
     leg.hip_rate = hip_rate;
-    if stepping {
-        let into = frame.inverse();
+    if tick.stepping {
+        let into = tick.frame.inverse();
         let rest = into.transform_vector3(leg.posed_offset);
         let toward = into.transform_vector3(goal - hip);
         leg.turn = extra_turn(rest, toward);
@@ -452,15 +541,175 @@ fn bend_leg(parts: &[Part], leg: &mut Leg, tick: &BendTick) {
     }
 }
 
+/// One leg's locomotion IK. The negated compares keep the original's
+/// unordered jumps on a NaN.
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
+fn locomoting_leg(parts: &[Part], leg: &mut Leg, tick: &IkTick) {
+    let Some(thigh) = parts[leg.shin].parent else {
+        return;
+    };
+    let shin_len = leg.point.length();
+    let thigh_len = parts[leg.shin].origin.length();
+    if shin_len <= 0.0 || thigh_len <= 0.0 {
+        return;
+    }
+    let full = thigh_len + shin_len;
+    let (thigh_cm, shin_cm) = (thigh_len * CM, shin_len * CM);
+    let full2 = (full * CM) * (full * CM);
+    let contact = parts[leg.shin].point(&leg.contact);
+    let touching = leg.state.has(FootState::TOUCHING);
+    let lifted = leg.state.has(FootState::LIFTED);
+    // The original's per-leg lag: zeroed by the standing IK and only ever
+    // lowered further, so from zero it stays zero (a guess about the value
+    // the feet routine leaves it at).
+    if !touching {
+        leg.contact_lag = 0.0;
+    }
+    let lag = leg.contact_lag / CM;
+    // The foot's height: planted, over its sole floor; lifted, over its
+    // smoothed ground and its ground offset.
+    leg.pitch_height = if touching {
+        (contact.y - tick.sole - leg.floor) * CM
+    } else {
+        (contact.y - leg.offset - leg.smoothed) * CM
+    };
+    let hip = Vec3::from(parts[thigh].transform().translation);
+    let anim_contact = leg.anim_contact;
+    let anim_hip = leg.anim_hip;
+    // The vertical difference from the physical hip down to the anchor
+    // (plus the lag), and the clip's own hip over its ankle. cm, in the
+    // original's order.
+    let d = (hip.y - (leg.anchor.y + lag)) * CM;
+    let clip_len = (anim_hip.y - anim_contact.y) * CM;
+    // The IK acts where the clip's leg is longer than the physical hip's
+    // height over the anchor (the ground is higher than the clip
+    // expects), or while a touching foot does not run. A NaN difference
+    // takes the IK, as the original's unordered jump does.
+    let acts = !(clip_len <= d) || (touching && !tick.running);
+    if !acts {
+        // Both corrections reset at once while their angles ease down.
+        let (knee, knee_rate) = ease(leg.knee, leg.knee_rate, 0.0, tick.moving_step);
+        leg.knee = knee;
+        leg.knee_rate = knee_rate;
+        leg.knee_shown = false;
+        let (hip_corr, hip_rate) = ease(leg.hip, leg.hip_rate, 0.0, tick.moving_step);
+        leg.hip = hip_corr;
+        leg.hip_rate = hip_rate;
+        leg.hip_shown = false;
+        return;
+    }
+    // The target leg: from the physical hip across the ground to the
+    // foot's contact, and down by `d`. Its length squared, capped at the
+    // whole leg's.
+    let horizontal = (contact - hip).with_y(0.0) * CM;
+    let horizontal2 = horizontal.length_squared();
+    let half = 0.5 / (thigh_cm * shin_cm);
+    let (distance2, knee_target, hip_target) = if horizontal2 <= PITCH_EPS {
+        (d * d, FLAT, 0.0)
+    } else {
+        let raw = d * d + horizontal2;
+        // Unordered: a NaN takes the triangle.
+        if !(full2 <= raw) {
+            let cos_knee = (thigh_cm * thigh_cm + shin_cm * shin_cm - raw) * half;
+            let knee = if cos_knee <= -1.0 {
+                FLAT
+            } else if f64::from(cos_knee) > FOLD_COS {
+                FOLD
+            } else {
+                acos_approx(cos_knee)
+            };
+            let cos_hip =
+                (thigh_cm * thigh_cm + raw - shin_cm * shin_cm) / (raw.sqrt() * 2.0 * thigh_cm);
+            (raw, knee, target_hip_angle(cos_hip))
+        } else {
+            (full2, FLAT, 0.0)
+        }
+    };
+    // The clip's triangle, from the clip's own hip-to-ankle vector.
+    let clip2 = (anim_contact - anim_hip).length_squared() * CM * CM;
+    let cos_clip_knee = (thigh_cm * thigh_cm + shin_cm * shin_cm - clip2) * half;
+    let clip_knee = if cos_clip_knee <= -1.0 {
+        FLAT
+    } else if f64::from(cos_clip_knee) > FOLD_COS {
+        FOLD
+    } else {
+        acos_approx(cos_clip_knee)
+    };
+    let clip_hip = clip_hip_angle(thigh_cm, shin_cm, full2, clip2);
+    let (knee, knee_rate) = ease(
+        leg.knee,
+        leg.knee_rate,
+        clip_knee - knee_target,
+        tick.moving_step,
+    );
+    leg.knee = knee;
+    leg.knee_rate = knee_rate;
+    leg.knee_shown = true;
+    // The angle between the clip's leg and the target leg: their length
+    // and the vertical difference of their ends give the third side. The
+    // original takes the anchor's height plus the lag (less twice the lift
+    // term while the foot touches or is lifted) off the hip's, then that
+    // off the clip's own difference, and its magnitude.
+    let target_y = leg.anchor.y + lag;
+    let mut physical = (target_y - hip.y) * CM;
+    if touching || lifted {
+        physical -= 2.0 * tick.lift_cm;
+    }
+    let side = ((anim_contact.y - anim_hip.y) * CM - physical).abs();
+    // Unordered: a NaN resets the hip too.
+    if !(distance2 > PITCH_EPS) {
+        let (hip_corr, hip_rate) = ease(leg.hip, leg.hip_rate, 0.0, tick.moving_step);
+        leg.hip = hip_corr;
+        leg.hip_rate = hip_rate;
+        leg.hip_shown = false;
+        return;
+    }
+    let cos = (distance2 + clip2 - side * side) / (distance2.sqrt() * (clip2.sqrt() * 2.0));
+    let between = if cos <= -1.0 {
+        FLAT
+    } else if cos >= 1.0 {
+        0.0
+    } else {
+        acos_approx(cos)
+    };
+    // The sign: the original negates the angle unless the clip's foot is
+    // ahead of the character frame's origin (its stance-local z above 0;
+    // a NaN negates).
+    let ahead = tick.frame.inverse().transform_point3(anim_contact).z;
+    let signed = if ahead > 0.0 { between } else { -between };
+    let (hip_corr, hip_rate) = ease(
+        leg.hip,
+        leg.hip_rate,
+        signed - hip_target + clip_hip,
+        tick.moving_step,
+    );
+    leg.hip = hip_corr;
+    leg.hip_rate = hip_rate;
+    leg.hip_shown = true;
+    leg.turn = decay_turn(leg.turn);
+}
+
 /// Writes one leg's stored correction into the pose: the thigh's turn and
-/// hip hinge, then the shin's knee hinge, each in the part's own axes.
+/// hip hinge, then the shin's knee hinge, each local to the clip's turn
+/// (the original's `q × turn × hinge` and `q × hinge`).
 fn fold_pose(targets: &mut [Affine3A], thigh: usize, shin: usize, leg: &Leg) {
-    let hip_q = leg.turn * Quat::from_rotation_x(leg.hip);
-    let knee_q = Quat::from_rotation_x(leg.knee);
-    let parent = targets[thigh];
-    let local = parent.inverse() * targets[shin];
-    targets[thigh] = parent * Affine3A::from_quat(hip_q);
-    targets[shin] = targets[thigh] * local * Affine3A::from_quat(knee_q);
+    if thigh >= targets.len() || shin >= targets.len() {
+        return;
+    }
+    let thigh_turn = if leg.hip_shown {
+        leg.turn * Quat::from_rotation_x(leg.hip)
+    } else {
+        Quat::IDENTITY
+    };
+    let knee_turn = if leg.knee_shown {
+        Quat::from_rotation_x(leg.knee)
+    } else {
+        Quat::IDENTITY
+    };
+    let clip_thigh = targets[thigh];
+    let local = clip_thigh.inverse() * targets[shin];
+    targets[thigh] = clip_thigh * Affine3A::from_quat(thigh_turn);
+    targets[shin] = targets[thigh] * local * Affine3A::from_quat(knee_turn);
 }
 
 #[cfg(test)]

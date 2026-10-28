@@ -497,6 +497,7 @@ pub(super) fn plant(
     work: &mut Work,
 ) -> bool {
     for (i, ((leg, &at), &down)) in legs.iter_mut().zip(ankles).zip(down).enumerate() {
+        leg.planted = false;
         if bearing.walking {
             let along = moves.get(i).map_or(0.0, |m| cm(*m).dot(bearing.facing));
             let along = if bearing.backpedal { -along } else { along };
@@ -510,6 +511,7 @@ pub(super) fn plant(
                     leg.anchor.x = at.x;
                     leg.anchor.z = at.z;
                     leg.state = FootState(FootState::TOUCHING);
+                    leg.planted = true;
                 }
                 GaitPlant::Lift => leg.state = FootState(0),
                 GaitPlant::Hold => {}
@@ -814,6 +816,80 @@ pub fn step_loudness(length_cm: f32) -> f32 {
     } else {
         1.0
     }
+}
+
+/// How far the floor may lie under the ground while the foot touches and
+/// the Ground Query hits (cm). The query itself (a ray from 30 cm over the
+/// ground, 60 cm down, against floor-flagged meshes) has no Exarust
+/// counterpart: no level carries the flag, so it always misses.
+const FLOOR_TOUCHING: f32 = 10.0;
+
+/// The loudness of a walking footstep before the random share: the
+/// original's two body fields (the character's step gain and its race's)
+/// have no Exarust counterpart, so both are 1 (a guess).
+const STEP_GAIN: f32 = 1.0;
+
+/// A walking footstep's gain and pitch from its speed along the heading
+/// (cm a tick) and the engine's two draws in [0, 1), the pitch's first:
+/// the pitch is `(0.2·p + 0.9)(0.05·speed + 0.85)` and the gain
+/// `gain · (0.5·g + 0.5) · ((0.08·speed)² + 0.01)`, the draw's share in
+/// single precision and the rest in double, narrowed once, as the
+/// original's are.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GaitStep {
+    pub gain: f32,
+    pub pitch: f32,
+}
+
+/// The walk's footstep gain and pitch from the pitch draw `p` and the gain
+/// draw `g`, drawn in that order.
+pub fn gait_step(speed_cm: f32, p: f32, g: f32) -> GaitStep {
+    let speed = f64::from(speed_cm);
+    let pitch = ((0.2 * f64::from(p) + 0.9) * (0.05 * speed + 0.85)) as f32;
+    let share = f64::from(g * 0.5 + 0.5);
+    let loud = 0.08 * speed * (0.08 * speed) + 0.01;
+    let gain = (f64::from(STEP_GAIN) * f64::from(STEP_GAIN) * (share * loud)) as f32;
+    GaitStep { gain, pitch }
+}
+
+/// Where a footstep sounds from: the character's place, this far (m)
+/// along its motion: `3·speed + 4` cm.
+pub fn step_position(character: Vec3, direction: Vec3, speed_cm: f32) -> Vec3 {
+    character + direction * ((3.0 * speed_cm + 4.0) / CM)
+}
+
+/// A walking footstep, as the body's sampler makes it: the sound's place,
+/// the speed along the heading (cm a tick), the body's scale and the
+/// race's footstep set (empty when the race has none).
+#[derive(Debug, Clone, Copy, Message, PartialEq)]
+pub struct Footstep {
+    pub position: Vec3,
+    pub speed_cm: f32,
+    pub scale: f32,
+    /// The race's footstep set's name in `Sound.rpk`; none for a race
+    /// without one.
+    pub set: Option<&'static str>,
+}
+
+/// A foot's sole floor (cm) from the Ground Query's `hit`: the higher of
+/// the hit and the ground (10 cm lower while the foot touches) plus the
+/// leg's own offset, or the ground plus the offset where the query misses;
+/// never above the knee. The original's Ground Query is a ray at the toe,
+/// starting 30 cm over the ground and looking 60 cm down; the body passes
+/// `None` (see [`FLOOR_TOUCHING`]).
+pub fn sole_floor(
+    ground_cm: f32,
+    touching: bool,
+    offset_cm: f32,
+    hit: Option<f32>,
+    knee_cm: f32,
+) -> f32 {
+    let low = ground_cm - if touching { FLOOR_TOUCHING } else { 0.0 } + offset_cm;
+    let floor = match hit {
+        Some(hit) => hit.max(low),
+        None => ground_cm + offset_cm,
+    };
+    floor.min(knee_cm)
 }
 
 /// What a queued step does: its new target, whether the AI is told, and the

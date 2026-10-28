@@ -737,7 +737,14 @@ mod tests {
         let parent = body.parts[1].transform();
         let placed = body.parts[2].transform();
         let local = parent.inverse() * placed;
-        let want = foot_pitch_target(parent.y_axis.y, parent.z_axis.y, local.z_axis.y, 0.0, 1.0);
+        let height = body.foot_contact_height(0);
+        let want = foot_pitch_target(
+            parent.y_axis.y,
+            parent.z_axis.y,
+            local.z_axis.y,
+            height,
+            1.0,
+        );
         assert!(want.abs() > 0.5, "{want}");
         assert!(
             (body.legs()[0].pitch - want).abs() < 1e-5,

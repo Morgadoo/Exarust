@@ -16,7 +16,7 @@ parameters are in. EFX is not applied by the backend (see [Gaps](#gaps)).
 | `music` | the two-track crossfader (A/B), its four states and the level's track; a story level's track, volume, ambience and preset by the bytes of its name, and whether entering it changes the music |
 | `ambience` | an area's looping bed and its scheduled one-shots |
 | `reverb` | the global EAX reverb parameter block and the level's decay offset |
-| `hits`, `footsteps` | the game's first two users of the mixer |
+| `hits`, `footsteps` | the game's first two users of the mixer; the footsteps read the body's gait plants (`exa_physics::body::Footstep`) with the original's gain and pitch, and keep a speed timer for bodies without a ragdoll |
 | `sounds` | the body's named sets: `SwingHA`, `StmHeal01`, the hit classes (`BdyCol`, `SkelHit`, `HitGlm`, cloth, leather, mail, plate) and the foley loops (`FoleyPlH`, `Golem_Foley`) |
 | `loops` | the looping sources a character keeps: one per held item and its body's voice and foley pair |
 | `playback` | one Bevy audio entity per real source slot, driven by the mixer's commands; the listener anchor |
@@ -256,5 +256,13 @@ is not set.
 `voices` holds the original's voice choice (a body with a feral level above
 0 speaks its undead voice, else its living one, with the record's sex bit)
 and the footstep set selection (the golem suit's `Golem_Stp`, else the
-race's step name), plus the name of the wet splash set (`StpWet`). Nothing
-selects voices in the running game yet.
+race's step name), plus the name of the wet splash set (`StpWet`). The
+footstep sets are now chosen from the race record (`CharacterStats::
+footsteps`, its first five names): a physical body's sampler sends a
+`Footstep` message for each foot it plants, and `footsteps` loads the set,
+draws the engine's unit twice (the pitch's p, then the gain's g) and plays
+`gain = (0.5g + 0.5)((0.08·speed)² + 0.01)`,
+`pitch = (0.2p + 0.9)(0.05·speed + 0.85)` at the plant's place. The two
+body gain fields the original multiplies in have no Exarust counterpart
+and are 1 (a guess), and the underwater splash and the foley set are not
+in. Nothing selects voices in the running game yet.

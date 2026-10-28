@@ -137,17 +137,23 @@ pub struct ShockReady(pub u64);
 
 /// The shock reaction's clock and health rule, as the original's character
 /// takes a shock: `None` while the shock comes too early, else the next
-/// shock time and the yellow health left (`dying` keeps it).
+/// shock time and the yellow health left (`dying` keeps it). A released
+/// race (`released`, and not dying) is not burnt: its next shock is 500 ms
+/// on with no draw and its health is kept.
 pub fn shock_reaction(
     ready: Option<u64>,
     now: u64,
     yellow: f32,
     strength: f32,
     dying: bool,
+    released: bool,
     roll: &mut Roll,
 ) -> Option<(u64, f32)> {
     if ready.is_some_and(|next| next > now + SHOCK_EARLY_MS) {
         return None;
+    }
+    if released && !dying {
+        return Some((now + SHOCK_SPACING_MS, yellow));
     }
     let spread = (u64::from(roll.step()) * SHOCK_SPREAD_MS) >> 32;
     let next = now + SHOCK_SPACING_MS + spread;
@@ -289,8 +295,9 @@ fn shock_fighters(
     mut fighters: Query<(
         &mut Fighter,
         Option<&mut ShockReady>,
-        Option<&Condition>,
+        Option<&mut Condition>,
         Option<&mut StateFlags>,
+        Option<&mut Ragdoll>,
     )>,
     ticks: Option<Res<BodyTicks>>,
     mut roll: ResMut<EffectRoll>,
@@ -301,10 +308,11 @@ fn shock_fighters(
     // component arrives with the commands).
     let mut set: Vec<(Entity, u64)> = Vec::new();
     for shock in shocks.read() {
-        let Ok((mut fighter, ready, condition, flags)) = fighters.get_mut(shock.body) else {
+        let Ok((mut fighter, ready, mut condition, flags, body)) = fighters.get_mut(shock.body)
+        else {
             continue;
         };
-        let dying = condition.is_some_and(|c| c.dying());
+        let dying = condition.as_deref().is_some_and(|c| c.dying());
         let known = ready.as_deref().map(|r| r.0).or_else(|| {
             set.iter()
                 .rev()
@@ -317,13 +325,25 @@ fn shock_fighters(
             fighter.health.yellow,
             shock.strength,
             dying,
+            fighter.stats.shocks_release,
             &mut roll.0,
         ) else {
             continue;
         };
-        fighter.health.yellow = yellow;
-        if !dying && let Some(mut flags) = flags {
-            flags.0 |= StateFlags::SHOCK_STAGGER;
+        if fighter.stats.shocks_release && !dying {
+            // A release race is not burnt: it is put into the shocked
+            // state, its step ends and its clip rate stops.
+            if let Some(mut body) = body {
+                body.force_release(now as u32);
+            }
+            if let Some(condition) = condition.as_deref_mut() {
+                *condition = Condition::SHOCKED;
+            }
+        } else {
+            fighter.health.yellow = yellow;
+            if !dying && let Some(mut flags) = flags {
+                flags.0 |= StateFlags::SHOCK_STAGGER;
+            }
         }
         match ready {
             Some(mut ready) => ready.0 = next,
@@ -876,26 +896,34 @@ mod tests {
         let mut roll = Roll(0);
         // Never shocked: it lands, the next is due 500 ms on plus a draw of
         // the generator (state 1: 0 ms).
-        let (next, yellow) = shock_reaction(None, 0, 0.25, 0.05, false, &mut roll).unwrap();
+        let (next, yellow) = shock_reaction(None, 0, 0.25, 0.05, false, false, &mut roll).unwrap();
         assert_eq!(next, 500);
         assert!((yellow - 0.2).abs() < 1e-6);
         // 499 + 150 is short of 500 by a millisecond.
         assert_eq!(
-            shock_reaction(Some(500), 349, 0.2, 0.05, false, &mut roll),
+            shock_reaction(Some(500), 349, 0.2, 0.05, false, false, &mut roll),
             None
         );
         assert_eq!(roll, Roll(1), "a refused shock draws nothing");
         // State 0x0808_8406 times 200, high half: 6 ms.
-        let (next, yellow) = shock_reaction(Some(500), 350, 0.2, 0.05, false, &mut roll).unwrap();
+        let (next, yellow) =
+            shock_reaction(Some(500), 350, 0.2, 0.05, false, false, &mut roll).unwrap();
         assert_eq!(next, 856);
         assert!((yellow - 0.15).abs() < 1e-6);
         // Collapsing or dead: the clock moves, the health stays.
-        let (_, kept) = shock_reaction(None, 0, 0.1, 0.05, true, &mut roll).unwrap();
+        let (_, kept) = shock_reaction(None, 0, 0.1, 0.05, true, false, &mut roll).unwrap();
         assert_eq!(kept, 0.1);
         assert_eq!(
-            shock_reaction(None, 0, 0.03, 0.05, false, &mut roll).map(|s| s.1),
+            shock_reaction(None, 0, 0.03, 0.05, false, false, &mut roll).map(|s| s.1),
             Some(0.0)
         );
+        // A released race: 500 ms on, no draw, its health kept.
+        let before = roll;
+        assert_eq!(
+            shock_reaction(None, 1_000, 0.2, 0.05, false, true, &mut roll),
+            Some((1_500, 0.2))
+        );
+        assert_eq!(roll, before, "a release draws nothing");
     }
 
     #[test]

@@ -58,6 +58,7 @@ impl Plugin for CharacterTickPlugin {
     fn build(&self, app: &mut App) {
         use CharacterStage::*;
         app.init_resource::<sampler::SampledPose>()
+            .add_message::<exa_physics::body::Footstep>()
             .add_systems(FixedUpdate, tick_characters.in_set(CharacterTicks))
             // A body that dies in its posture stage leaves its tick there.
             .configure_sets(
@@ -71,7 +72,11 @@ impl Plugin for CharacterTickPlugin {
                         .in_set(Posture)
                         .after(crate::balance::take_posture)
                         .after(crate::fall::fall_to_death),
-                    (movement::decide_movement, movement::measure_ground)
+                    (
+                        movement::decide_movement,
+                        movement::measure_ground,
+                        movement::gait_footsteps,
+                    )
                         .chain()
                         .in_set(Movement),
                     sampler::rise_thorax_hunch.in_set(Upkeep),

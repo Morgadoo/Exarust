@@ -135,6 +135,54 @@ impl BodyRules {
     }
 }
 
+/// The footstep set a race walks on, as the race record's `0x144` text
+/// names it. The five shipped sets; any other name plays nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FootstepSet {
+    /// No set (the race has none).
+    #[default]
+    None,
+    /// `StpSft` (humans, ancients, ghouls, gobblers, the manipulator, …).
+    Soft,
+    /// `SkelStp`.
+    Skeleton,
+    /// `StpHvy` (ogres, Sir, the demon).
+    Heavy,
+    /// `StpMed` (the fael).
+    Medium,
+    /// `Golem_Stp`.
+    Golem,
+}
+
+impl FootstepSet {
+    /// The set the race record's name asks for.
+    pub fn of(name: &str) -> Self {
+        match name {
+            "StpSft" => Self::Soft,
+            "SkelStp" => Self::Skeleton,
+            "StpHvy" => Self::Heavy,
+            "StpMed" => Self::Medium,
+            "Golem_Stp" => Self::Golem,
+            _ => Self::None,
+        }
+    }
+
+    /// The set's name in `Sound.rpk`, if it has one.
+    pub fn name(self) -> Option<&'static str> {
+        match self {
+            Self::None => None,
+            Self::Soft => Some("StpSft"),
+            Self::Skeleton => Some("SkelStp"),
+            Self::Heavy => Some("StpHvy"),
+            Self::Medium => Some("StpMed"),
+            Self::Golem => Some("Golem_Stp"),
+        }
+    }
+}
+
+/// The race word's bit whose races a shock releases rather than burns.
+pub const SHOCKS_RELEASE: u32 = 0x1000;
+
 /// The stats a character spawns with.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CharacterStats {
@@ -199,6 +247,11 @@ pub struct CharacterStats {
     /// Its race walks on four limbs (the second flag word's
     /// [`crate::races::QUADRUPED`]): its stab is resolved as a swing.
     pub quadruped: bool,
+    /// Its race's footstep set.
+    pub footsteps: FootstepSet,
+    /// The race word's release bit: a shock releases it into the shocked
+    /// state instead of burning it (the energy powers' races).
+    pub shocks_release: bool,
 }
 
 impl Default for CharacterStats {
@@ -287,6 +340,8 @@ impl CharacterStats {
             deflection: record.deflection(),
             encumbrance: 0.0,
             quadruped: stats.flags2 & QUADRUPED != 0,
+            footsteps: FootstepSet::of(&stats.footsteps),
+            shocks_release: flags & SHOCKS_RELEASE != 0,
         }
     }
 

@@ -188,11 +188,48 @@ the feet centre. Each foot's ground is its own: the controller's floor
 does not raise the lift (`src/body_lift.rs`). A standing leg bends onto
 its target by the law of cosines, at most 0.02 rad a tick (0.2 while a
 recovery step is on), and the muscles follow that bend on the next tick
-(`src/body_bend.rs`). While stepping the thigh turns 75% of the
-hip-to-target angle and an anchored foot takes the step lift. The walk's
-feet plant and lift by their phases, and a slow foot plants early (before
-phase 0.2); the gait plant events and the walking ground weights are in,
-the footstep sounds are not.
+(`src/body_bend.rs`). The standing target is the anchor lowered by twice
+the lift term, or, anchored, the midpoint of the contact and its anchor
+at the anchor's height; while the recovery step runs the reach is measured
+to the target and the thigh turns 75% of the hip-to-target angle (decaying
+a tenth a tick otherwise). While the body locomotes the other IK runs: the
+clip leg's own length against the physical hip's height over the anchor,
+the target leg from the hip across to the contact, the knee and hip by the
+law of cosines (the cosine's 30° fold compared in double, the engine's arc
+cosine), the angle between the clip's leg and the target's negated unless
+the clip's foot is ahead of the character frame's origin, all at 0.04 ×
+the speed plus 0.01 a tick; a leg where the clip's leg is not longer and
+the foot does not touch standing still eases both corrections back with
+the identity shown. Both write the knee and hip corrections the sampler
+composes into the clip's thigh and shin turns, and the foot's height over
+its floor, which the foot pitch levels. Each foot's sole floor is the
+Ground Query's miss branch (`feet::sole_floor`: the ground plus the leg's
+offset, never over the knee): the original's query is a ray against
+floor-flagged meshes, which no Exarust level carries.
+The walk's feet plant and lift by their phases, and a slow foot plants
+early (before phase 0.2); a plant starts a footstep at the character plus
+`3·speed + 4` cm along its facing, with the original's gain and pitch
+from two draws made when it plays (`feet::{gait_step, step_position}`,
+the `Footstep` message), and the walking ground weights are in. The
+post-step advances the walk's travel phase: the pelvis's travel in cm
+times 0.0002, wrapped at 1, with the phase before the tick kept
+(`body::travel_phase`); its consumer, the scene node's draw offset, is not
+reproduced. A queued footwork step is taken by the original's rule at the
+next landing (`steps::take_queued`, `Ragdoll::queue_step`); nothing queues
+one yet, since Exarust's interim combat footwork is a capsule velocity,
+not the original's step vector. A force release ends the running step and
+stops the clip rate (`Ragdoll::force_release`, the feet's re-anchor waits
+for the next tick). The chest's fast velocity over its slow one, less a
+term that first decays ×0.85, is the body's jolt: past 2.5·scale cm a tick
+in the walking condition (125 in any other, ×1000 unsupported) it ends the
+step and, once in the episode, moves the standing position to the feet's
+centre plus 100 × the jolt, at most 100·scale cm, telling the behaviour
+while the body locomotes (`steps::jolt`, `Ragdoll::jolt_told`); each jolt
+holds the latch 80 ticks, and a body off its feet takes none. The
+muscles-off sampler's rules are tested (`body_limp.rs`): key-flag plants,
+the 0.05/0.95 height ease and a snap of the particles to the animated
+pose; nothing samples with them yet, since a limp body keeps its physical
+pose.
 Each character tick measures a living body's balance at its chest against
 its ankles and asks the level for the ground under each foot
 (`contact::Level::height_below`, the original's Height Query), which give

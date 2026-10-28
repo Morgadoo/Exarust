@@ -40,10 +40,10 @@ fn the_correction_advances_by_the_rate() {
 #[test]
 fn the_bend_target_drops_an_unanchored_foot() {
     let foot = Vec3::new(0.0, 0.4, 0.0);
-    let anchor = Vec3::new(0.2, 0.4, 0.0);
+    let anchor = Vec3::new(0.2, 0.5, 0.0);
     let mid = bend_target(foot, anchor, true, 0.05);
-    assert!(close((mid - foot).length(), 0.1));
-    assert!(close((mid - anchor).length(), 0.1));
+    assert!(close((mid.x - foot.x).abs(), 0.1));
+    assert!(close((mid.z - foot.z).abs(), 0.0));
     assert!(close(mid.y, anchor.y));
     let raw = super::super::lift::lift_unclamped(0.0, &Bearing::default(), 1.0);
     assert!(close(raw, 1.125));
@@ -277,4 +277,63 @@ fn a_foot_on_a_15_cm_step_bends_its_knee() {
         contact.y
     );
     assert!(knee > 0.4, "knee correction {knee}");
+}
+
+/// The locomotion IK's first tick from a planted straight leg: the clip's
+/// ankle 30 cm under its hip (a 30 cm leg where 1 m is expected) asks the
+/// knee to bend −2.533 rad; the hip's angle between the clip's leg and the
+/// target is 0, the target triangle's hip angle 0 and the clip's 1.266, so
+/// the hip takes +1.266. The smoother runs at 0.01 rad a tick here.
+#[test]
+fn the_locomotion_ik_bends_a_short_clip_leg_over_the_contact() {
+    use super::super::floor_test::standing_at;
+    use super::super::locomotion::LegMode;
+    let (mut body, _) = standing_at(Vec3::ZERO);
+    body.set_bearing(Bearing {
+        moving: true,
+        legs: LegMode::Walk,
+        speed: 0.0,
+        ..Bearing::default()
+    });
+    let tick = IkTick {
+        step: EASE_STANDING,
+        moving_step: 0.01,
+        drop: 0.0,
+        lift_cm: 0.0,
+        stepping: false,
+        running: false,
+        stance: 0.5,
+        crouch: 0.0,
+        frame: Affine3A::IDENTITY,
+        sole: 0.0,
+    };
+    let leg = right_leg(&body);
+    {
+        let l = &mut body.legs[leg];
+        l.anim_contact = Vec3::new(0.1, 0.7, 0.0);
+        l.anim_hip = Vec3::new(0.1, 1.0, 0.0);
+        l.state = super::super::feet::FootState(super::super::feet::FootState::TOUCHING);
+    }
+    let thigh = body.parts[body.legs[leg].shin].parent.unwrap();
+    assert!((body.parts[thigh].transform().translation.y - 1.0).abs() < 1e-5);
+    locomoting_leg(&body.parts, &mut body.legs[leg], &tick);
+    let knee = body.legs[leg].knee;
+    let hip = body.legs[leg].hip;
+    // The first tick moves 0.01 rad toward each correction (−2.533 and
+    // +1.266).
+    assert!((knee + 0.01).abs() < 1e-4, "knee {knee}");
+    assert!((hip - 0.01).abs() < 1e-4, "hip {hip}");
+    assert!(body.legs[leg].knee_shown && body.legs[leg].hip_shown);
+    // A clip leg as long as the physical one asks for no correction and
+    // the smoother takes it back.
+    body.legs[leg].anim_contact = Vec3::new(0.1, 0.0, 0.0);
+    let tick = IkTick {
+        moving_step: 20.0,
+        ..tick
+    };
+    locomoting_leg(&body.parts, &mut body.legs[leg], &tick);
+    // The stored rates are negative and positive; one tick cannot reverse
+    // them, so each angle moves half its correction back.
+    assert!((body.legs[leg].knee + 0.005).abs() < 1e-5);
+    assert!((body.legs[leg].hip - 0.005).abs() < 1e-5);
 }

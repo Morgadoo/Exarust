@@ -50,7 +50,10 @@ mod balance;
 pub use balance::{Balance, Leg, reset_heading};
 #[path = "body_bend.rs"]
 mod bend;
+#[path = "body_limp.rs"]
+mod limp_sampler;
 pub use bend::{FemurPosture, femur_posture_turn, foot_pitch_target};
+pub use limp_sampler::{limp_plant, limp_pose_height, snap_part};
 #[path = "body_hunch.rs"]
 mod hunch;
 pub use hunch::{ease_hunch, hunch_applies, hunch_turn, step_hunch};
@@ -59,8 +62,8 @@ mod feet;
 #[path = "body_stagger.rs"]
 pub mod stagger;
 pub use feet::{
-    FootState, FullTone, QueuedStep, StepEnd, WalkedStep, full_tone, queued_step, step_end,
-    step_loudness,
+    FootState, Footstep, FullTone, GaitStep, QueuedStep, StepEnd, WalkedStep, full_tone, gait_step,
+    queued_step, step_end, step_loudness, step_position,
 };
 #[path = "body_pins.rs"]
 mod pins;
@@ -1536,6 +1539,26 @@ pub struct Drive {
     gait_progress: f32,
     gait_speed: f32,
     gait_back: bool,
+    /// The walk's travel phase: the pelvis's travel in cm times
+    /// 0.0002 a tick, wrapped at 1, and its value before the tick.
+    travel_phase: f32,
+    travel_phase_before: f32,
+}
+
+/// One tick of the walk's travel phase: the pelvis's squared travel this
+/// tick (cm²) adds its single-precision root times the double 0.0002 when
+/// that is over the engine's epsilon, and a phase over 1 loses 1, the
+/// phase before it too. A NaN squared travel leaves the phase.
+pub fn travel_phase(last: f32, before: &mut f32, moved2_cm: f32) -> f32 {
+    let mut phase = last;
+    if moved2_cm > f32::from_bits(0x33ff_ffd7) {
+        phase = (f64::from(moved2_cm.sqrt()) * 0.0002 + f64::from(phase)) as f32;
+    }
+    if phase > 1.0 {
+        phase -= 1.0;
+        *before -= 1.0;
+    }
+    phase
 }
 
 /// One tick of energy. The base is u = energy + the double 0.005; while
@@ -1635,6 +1658,8 @@ impl Default for Drive {
             gait_progress: 0.0,
             gait_speed: 0.0,
             gait_back: false,
+            travel_phase: 0.0,
+            travel_phase_before: 0.0,
         }
     }
 }
@@ -1683,6 +1708,11 @@ impl Drive {
     /// The character frame's origin (m): the character's place across the
     /// ground, at the pelvis's height when last anchored (none before the
     /// first aim). The character's controller follows it.
+    /// The body root's place when last aimed (m).
+    pub fn root_point(&self) -> Option<Vec3> {
+        self.root.map(|r| Vec3::from(r.translation))
+    }
+
     pub fn anchor(&self) -> Option<Vec3> {
         self.anchor
     }
@@ -1767,6 +1797,19 @@ impl Drive {
     /// A recovery or stagger step is already running.
     pub fn stepping(&self) -> bool {
         self.steps.stepping
+    }
+
+    /// Queues a footwork step whose vector is `vector` (m) for the landing
+    /// after the step that is running (the original's step queue).
+    pub fn queue_step(&mut self, vector: Vec3) {
+        self.steps.queued = vector;
+        self.steps.queued_landings = self.balance.landings();
+    }
+
+    /// The queued step taken this tick told the AI its vector points along
+    /// the facing.
+    pub fn step_told_ai(&self) -> bool {
+        self.steps.told_ai
     }
 
     /// The right arm's stiffness (its link muscle factor is 1.25 times it).
@@ -1911,6 +1954,7 @@ impl Plugin for BodyPlugin {
             .resource_mut::<SolverStages>()
             .add(Pairs::default());
         app.add_message::<Shove>()
+            .add_message::<Footstep>()
             .init_resource::<ShoveQueue>()
             .init_resource::<DealtShoves>()
             .init_resource::<BodyTicks>()
@@ -2093,17 +2137,65 @@ impl Ragdoll {
         }
     }
 
-    /// How far (cm) leg `leg`'s contact sits over its ground and sole.
-    /// None until a ground is measured, which leaves the pitch to the
-    /// shin's tilt alone.
-    pub fn foot_contact_height(&self, leg: usize) -> f32 {
-        let Some(leg) = self.legs.get(leg) else {
-            return 0.0;
-        };
-        match leg.ground {
-            Some(ground) => (leg.at.y - self.sole - ground) * CM,
-            None => 0.0,
+    /// A recovery or stagger step is running.
+    pub fn stepping(&self) -> bool {
+        self.drive.as_ref().is_some_and(|d| d.stepping())
+    }
+
+    /// The original's force release on a shocked body: the step that was
+    /// running ends (its feet are placed next tick), the clip rate is set
+    /// to 0 and the body's next allowed shock is stamped. The caller sets
+    /// the condition to the shocked state; a release in combat also
+    /// resets the swing's readiness, which waits on the combat stage.
+    /// Returns what the release asked of the parts Exarust does not drive.
+    pub fn force_release(&mut self, now_ms: u32) -> crate::shock::Release {
+        let stepping = self.stepping();
+        let release = crate::shock::force_release(now_ms, stepping, 0);
+        if let Some(drive) = self.drive.as_mut() {
+            if stepping {
+                drive.steps.stepping = false;
+                drive.steps.knockback = false;
+            }
+            drive.posture_rate = release.clip_rate;
+            drive.bearing.shocked = true;
         }
+        release
+    }
+
+    /// Queues a footwork step whose vector is `vector` (m) for the landing
+    /// after the step that is running.
+    pub fn queue_step(&mut self, vector: Vec3) {
+        if let Some(drive) = self.drive.as_mut() {
+            drive.queue_step(vector);
+        }
+    }
+
+    /// The queued step taken this tick told the AI its vector points along
+    /// the facing.
+    pub fn step_told_ai(&self) -> bool {
+        self.drive.as_ref().is_some_and(|d| d.step_told_ai())
+    }
+
+    /// This tick's jolt told the body's behaviour (it locomoted).
+    pub fn jolt_told(&self) -> bool {
+        self.drive.as_ref().is_some_and(|d| d.steps.jolt_told)
+    }
+
+    /// The legs whose feet planted this tick (the walk's gait plants), in
+    /// the body's leg order.
+    pub fn planted_feet(&self) -> impl Iterator<Item = usize> + '_ {
+        self.legs
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| l.planted)
+            .map(|(i, _)| i)
+    }
+
+    /// How far (cm) leg `leg`'s contact sits over its ground and sole, as
+    /// the IK left it for the foot pitch.
+    /// 0 until the IK has run.
+    pub fn foot_contact_height(&self, leg: usize) -> f32 {
+        self.legs.get(leg).map_or(0.0, |l| l.pitch_height)
     }
 
     /// One tick of leg `leg`'s foot pitch toward `target` (rad): at most
@@ -2150,14 +2242,18 @@ impl Ragdoll {
             let parent = self.parts[shin].transform();
             let placed = self.parts[foot].transform();
             let local = parent.inverse() * placed;
+            let height =
+                (self.parts[shin].point(&self.legs[i].contact).y - self.sole - self.legs[i].floor)
+                    * CM;
             let target = bend::foot_pitch_target(
                 parent.matrix3.y_axis.y,
                 parent.matrix3.z_axis.y,
                 local.matrix3.z_axis.y,
-                self.foot_contact_height(i),
+                height,
                 scale,
             );
             if let Some(leg) = self.legs.get_mut(i) {
+                leg.pitch_height = height;
                 leg.pitch = target;
                 leg.pitch_rate = 0.0;
             }
@@ -3112,6 +3208,21 @@ impl Ragdoll {
     /// The post-step: where the tick leaves each part, and sleep once the
     /// countdown is down to 1 (a living body's never is).
     fn post_step(&mut self) {
+        // The walk's travel phase, from the root's movement since the last
+        // tick, before the parts settle.
+        let moved2 = self
+            .parts
+            .iter()
+            .find(|p| p.parent.is_none())
+            .map_or(0.0, |p| {
+                let moved = (p.positions[0] - p.previous[0]) * CM;
+                moved.length_squared()
+            });
+        if let Some(drive) = self.drive.as_mut() {
+            drive.travel_phase_before = drive.travel_phase;
+            drive.travel_phase =
+                travel_phase(drive.travel_phase, &mut drive.travel_phase_before, moved2);
+        }
         for p in &mut self.parts {
             p.settled = p.transform();
             p.shown = (p.shown.1, p.settled);
