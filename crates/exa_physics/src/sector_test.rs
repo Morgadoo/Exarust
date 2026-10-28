@@ -467,51 +467,10 @@ fn an_overflow_resets_to_the_tick_before_last() {
     assert_eq!(overflow_cell(-1), 0);
 }
 
-/// A simulated object's state machine: a live one is put in the solver,
-/// a sleeping one rolls and counts down, and a deep sleeper is left alone.
-#[test]
-fn simulated_objects_step_and_sleep_by_their_state() {
-    assert_eq!(
-        object_tick(0, 7),
-        ObjectTick {
-            solve: true,
-            roll: false,
-            state: 2,
-            countdown: 7
-        }
-    );
-    assert_eq!(
-        object_tick(5, 3),
-        ObjectTick {
-            solve: false,
-            roll: true,
-            state: 5,
-            countdown: 2
-        }
-    );
-    assert_eq!(
-        object_tick(5, 0),
-        ObjectTick {
-            solve: false,
-            roll: true,
-            state: 13,
-            countdown: 0
-        }
-    );
-    assert_eq!(
-        object_tick(13, 0),
-        ObjectTick {
-            solve: false,
-            roll: false,
-            state: 13,
-            countdown: 0
-        }
-    );
-}
-
 /// The registration walk: a body node builds its body (unless the scene
-/// already built it), a static node registers a collider, a simulated
-/// object node registers with the sector, and everything else is skipped.
+/// already built it), a simulated object registers with the sector's
+/// object list, a mesh node registers a static collider, and everything
+/// else is skipped.
 #[test]
 fn node_flags_decide_what_registers() {
     assert_eq!(
@@ -524,7 +483,7 @@ fn node_flags_decide_what_registers() {
     );
     assert_eq!(
         registration(0x1_0000, 0x2000_0000, true, 0, 0),
-        Registration::Static
+        Registration::SimObject
     );
     assert_eq!(
         registration(0x1_0000, 0x1000_0000, false, 0, 0),
@@ -540,7 +499,7 @@ fn node_flags_decide_what_registers() {
     );
     assert_eq!(
         registration(0x89, 0x1000_0000, false, 0, 0x20_0000),
-        Registration::SimObject
+        Registration::Static
     );
     assert_eq!(
         registration(0x89, 0x1000_0000, false, 0, 0x10_0000),

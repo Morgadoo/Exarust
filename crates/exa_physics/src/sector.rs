@@ -594,11 +594,11 @@ pub fn mesh_box_distance2(point: Vec3, mesh: &Bounds, transform: &Affine3A) -> f
     sum
 }
 
-/// The state bit that marks a body placed (the original's `+0x1000`): its
-/// node is held by something else (a door or mechanism, a body put down at
-/// a fixed pose), and a contact with it moves only the placed side, leaving
-/// the other untouched ([`crate::body_pairs`]). Also the bit a pair takes
-/// for the hit event instead of the impact path.
+/// The state bit that marks a body placed (the original's 0x1000): set
+/// while its settling countdown runs (the integration clears it once the
+/// countdown is spent), and a contact with an unplaced body moves only the
+/// placed side, leaving the other untouched ([`crate::body_pairs`]). A
+/// pair with a placed body takes neither the hit event nor an impact.
 pub const PLACED_STATE: u32 = 0x1000;
 
 /// A body's world values the sector refreshes once a tick, before the
@@ -669,56 +669,12 @@ pub fn reset_overflow(
     *current = *previous_previous;
 }
 
-/// What a sector's step does with a simulated object (cloth, a particle
-/// system, a fire row) from its state word's low three bits and its sleep
-/// countdown, as the original's step switches on them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ObjectTick {
-    /// A live object is integrated and put in the solver's list.
-    pub solve: bool,
-    /// A sleeping object rolls its matrices and particle history, as a
-    /// body's sleep does.
-    pub roll: bool,
-    /// The state word after the tick.
-    pub state: u32,
-    /// The countdown after the tick.
-    pub countdown: i32,
-}
-
-/// [`ObjectTick`] for a state word and countdown: a state under 3 is live
-/// (bits 0 and 3 cleared, bit 1 set); a state at or over 3 with bit 3 clear
-/// rolls its history and counts down, falling asleep (bit 3) at a
-/// countdown under 1; a state with bit 3 set is left alone.
-pub fn object_tick(state: u32, countdown: i32) -> ObjectTick {
-    if state & 7 < 3 {
-        ObjectTick {
-            solve: true,
-            roll: false,
-            state: (state & !0x9) | 2,
-            countdown,
-        }
-    } else if state & 8 == 0 {
-        let slept = countdown < 1;
-        ObjectTick {
-            solve: false,
-            roll: true,
-            state: if slept { state | 8 } else { state },
-            countdown: if slept { countdown } else { countdown - 1 },
-        }
-    } else {
-        ObjectTick {
-            solve: false,
-            roll: false,
-            state,
-            countdown,
-        }
-    }
-}
-
 /// What a scene-node walk does with a node, as the original's registration
 /// pass decides from the node's words: nothing, a fresh rigid body (with
 /// its body children), a body into the grid only (one the scene already
-/// built, or a static stand-in), a static collider, or a simulated object.
+/// built), a simulated object (cloth, particles) into the sector's object
+/// list, or a mesh as a static collider with its level mask
+/// ([`static_mask`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Registration {
     None,
@@ -726,27 +682,29 @@ pub enum Registration {
     Body,
     /// A body handed to the grid without rebuilding it.
     GridOnly,
-    /// A mesh registered as a static collider.
+    /// A mesh registered as a static collider (and into the static grid
+    /// when the sector has one).
     Static,
-    /// A simulated object registered with the sector (cloth).
+    /// A simulated object registered with the sector's object list, given
+    /// the sector's world when it was not already built.
     SimObject,
 }
 
 /// The scene flags the registration pass reads: bit `0x10000` marks a node
 /// whose subtree carries bodies, `0x80000` a node that stays level geometry
-/// (any of `0x90000` clear or both set skips it), `0x89` marks a
-/// simulated-object node.
+/// (`0x10000` without `0x80000` is a body node), and `0x89` all set marks
+/// a mesh node.
 pub const NODE_BODY_FLAGS: u32 = 0x9_0000;
-/// The controller/body state bits: a body the scene already built
-/// (`0x10000000`) or a static stand-in (`0x20000000`).
+/// The body class bits the registration pass reads: a rigid body
+/// (`0x10000000`) or a simulated object (`0x20000000`).
 pub const BODY_LIVE: u32 = 0x1000_0000;
-pub const BODY_STATIC: u32 = 0x2000_0000;
+pub const BODY_SIM_OBJECT: u32 = 0x2000_0000;
 
 /// The registration decision for one scene node ([`Registration`]):
-/// `flags` is the node's runtime flag word, `body_state` its body's state
+/// `flags` is the node's runtime flag word, `body_state` its body's class
 /// word, `has_body` whether it carries a body, `body_flags` the body's own
-/// first word (bit `0x10000` = already built) and `node_class` the node's
-/// class word (bit `0x200000` marks a simulated object).
+/// state word (bit `0x10000` = already built) and `node_class` the node's
+/// class word (bit `0x200000` marks a collider mesh).
 pub fn registration(
     flags: u32,
     body_state: u32,
@@ -764,14 +722,14 @@ pub fn registration(
             } else {
                 Registration::GridOnly
             }
-        } else if body_state & BODY_STATIC != 0 {
-            Registration::Static
+        } else if body_state & BODY_SIM_OBJECT != 0 {
+            Registration::SimObject
         } else {
             Registration::None
         }
     } else if flags & 0x89 == 0x89 {
         if node_class & 0x20_0000 != 0 {
-            Registration::SimObject
+            Registration::Static
         } else {
             Registration::None
         }

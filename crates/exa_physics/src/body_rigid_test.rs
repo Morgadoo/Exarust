@@ -895,9 +895,10 @@ fn a_push_along_the_points_travel_is_dropped() {
 }
 
 /// A child's slider link keeps its stored travel as plain slack, and the
-/// original gives it a 0.01 smoothing; the other links keep theirs.
+/// link conversion gives every slider link (a root's to the world too) a
+/// 0.01 smoothing; the other links keep theirs.
 #[test]
-fn a_child_slider_link_takes_the_original_smoothing() {
+fn slider_links_take_the_original_smoothing() {
     let parent = RigidPart {
         mobility: 0.136_975_75,
         ..crate_at(Vec3::ZERO)
@@ -921,4 +922,16 @@ fn a_child_slider_link_takes_the_original_smoothing() {
     let stored = &body.links_of(1)[0];
     assert_eq!(stored.slack, 0.07);
     assert_eq!(stored.smoothing, 0.01);
+
+    let slider = RigidLink {
+        flags: world_link::SLIDER,
+        slack: 1.0,
+        axis: Vec3::Y,
+        on_body: Vec3::new(0.0, 0.2, 0.0),
+        on_parent: Vec3::ZERO,
+        strength: 1.0,
+        smoothing: 0.3,
+    };
+    let hung = Ragdoll::rigid(&[hung_crate(Vec3::new(0.0, -0.2, 0.0), Vec3::ZERO, slider)]);
+    assert_eq!(hung.world[0].smoothing, 0.01);
 }
