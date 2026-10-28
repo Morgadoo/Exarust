@@ -937,3 +937,39 @@ fn the_ground_query_raises_a_moving_feet_ground() {
         );
     }
 }
+
+/// The placement's leg snap: a biped put on a 15 cm platform finds that
+/// ground under each stance spot with the 10 cm sphere dropped from the
+/// frame's height plus its leg, sets each anchor to the ground plus the
+/// sole, its ground and floor to the hit, the character's ground to the
+/// average, and writes the standing IK's corrections at once (their rates
+/// zero, no thigh turn).
+#[test]
+fn the_placement_snaps_the_legs_onto_the_ground_it_finds() {
+    let platform = square(Vec2::ZERO, 0.15, 10.0);
+    let mut body = biped();
+    let pose: Vec<Affine3A> = body.parts.iter().map(|p| p.transform()).collect();
+    body.aim(Affine3A::IDENTITY, pose);
+    let height = body
+        .snap_placement(&platform[..], Affine3A::IDENTITY)
+        .expect("the platform is under both feet");
+    assert!(height.is_finite());
+    for leg in body.legs.iter() {
+        assert!(
+            (leg.ground.unwrap() - 0.15).abs() < 1e-4,
+            "{:?}",
+            leg.ground
+        );
+        assert!((leg.floor - 0.15).abs() < 1e-4);
+        assert!((leg.anchor.y - (0.15 + body.sole)).abs() < 1e-4);
+        assert_eq!(leg.knee_rate, 0.0);
+        assert_eq!(leg.hip_rate, 0.0);
+        assert_eq!(leg.turn, Quat::IDENTITY);
+    }
+    assert!((drive(&body).balance().under - 0.15).abs() < 1e-4);
+    // No ground under the feet leaves the body alone.
+    let mut empty = biped();
+    let pose: Vec<Affine3A> = empty.parts.iter().map(|p| p.transform()).collect();
+    empty.aim(Affine3A::IDENTITY, pose);
+    assert_eq!(empty.snap_placement(NONE, Affine3A::IDENTITY), None);
+}

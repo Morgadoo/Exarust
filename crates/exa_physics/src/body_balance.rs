@@ -123,6 +123,14 @@ const SOLE_INSET: f32 = 0.5;
 /// this far down under the toe.
 const GROUND_QUERY_ABOVE: f32 = 30.0;
 const GROUND_QUERY_DEPTH: f32 = 60.0;
+/// The placement's stance spot is the clip ankle plus this far (cm, ×
+/// scale) along the shin's forward axis; its Height Query starts at the
+/// frame's height plus the leg's length, with a 10 cm sphere swept 300 cm
+/// down. Its reach rule uses the 40° cosine 0.766.
+const STANCE_SIDE: f32 = 5.0;
+const HEIGHT_RADIUS: f32 = 10.0;
+const HEIGHT_DEPTH: f32 = 300.0;
+const REACH_COS: f32 = 0.766;
 /// A walking foot's swing clearance decays by this (cm) a tick while it
 /// touches the ground (in double precision).
 const SWING_DECAY: f64 = 0.3;
@@ -1249,6 +1257,132 @@ impl Ragdoll {
         ];
         // The feet routine's decay of the imbalance accumulator.
         b.decay_imbalance();
+    }
+
+    /// The placement's leg snap, as the original's placement runs it when a
+    /// character is put into the scene: each leg's stance spot is its clip
+    /// ankle plus 5·scale cm along the shin's forward axis; a sphere of
+    /// 10 cm starting at the frame's height plus the leg's length is swept
+    /// 300 cm down for the ground under it (a Height Query over the level);
+    /// the average of the hits is the character's ground. The lower leg
+    /// chooses the frame's height, with the reach its clip leaves it
+    /// (`f`); each leg's anchor is then (spot x, ground + sole, spot z), its
+    /// ground and sole floor that ground, and the standing IK is run with
+    /// its snap set. Returns the frame height the rule computes (cm), or
+    /// None when no foot finds ground.
+    ///
+    /// The original's frame height is (the clip foot's height less the
+    /// thigh's) plus the chosen ground, the reach and the sole. Exarust's
+    /// character frame origin sits at the character's anchor rather than at
+    /// the clip's feet, so the returned height is the ground the chosen
+    /// foot stands on plus its sole, less the clip's hip-to-ankle height:
+    /// the caller that moves a character into place applies it. [guess:
+    /// the frame origin's height convention, the ground and feet are the
+    /// original's]
+    pub fn snap_placement<L: Level + ?Sized>(&mut self, level: &L, frame: Affine3A) -> Option<f32> {
+        let drive = self.drive.as_ref()?;
+        if self.legs.len() != 2 {
+            return None;
+        }
+        let scale = drive.stats.scale;
+        let sole_cm = self.sole * CM;
+        let local = |p: Vec3| frame.inverse().transform_point3(p);
+        // Each leg's stance spot and the ground under it.
+        let mut spots = [Vec3::ZERO; 2];
+        let mut grounds = [NO_GROUND; 2];
+        let mut hits = 0;
+        let mut sum = 0.0;
+        for (i, leg) in self.legs.iter().enumerate() {
+            let contact = self.parts[leg.shin].point(&leg.contact);
+            let axis = Vec3::from(self.parts[leg.shin].transform().matrix3.z_axis);
+            let spot = contact + axis * (STANCE_SIDE * scale / CM);
+            let start = Vec3::new(spot.x, frame.translation.y + leg.length, spot.z);
+            let found = level
+                .height_below(start, HEIGHT_RADIUS / CM, HEIGHT_DEPTH / CM)
+                .map(cm);
+            spots[i] = spot;
+            if let Some(h) = found {
+                grounds[i] = h;
+                sum += h;
+                hits += 1;
+            }
+        }
+        if hits == 0 {
+            return None;
+        }
+        let character_ground = sum / hits as f32;
+        // The lower foot chooses the height. Its clip's reach is the
+        // triangle of the thigh, the shin and 0.766 of their product (the
+        // original's 40° cosine) less the clip's horizontal ankle offset;
+        // a foot whose contact hangs too far under its hip hands the choice
+        // to the other.
+        let pick = usize::from(grounds[0] - grounds[1] < 0.0);
+        let mut chosen = pick;
+        let mut reach = self.leg_reach_cm(chosen, &local);
+        let (low, high) = (chosen, 1 - chosen);
+        let clip_y = |i: usize| {
+            let leg = &self.legs[i];
+            local(self.parts[leg.shin].point(&leg.contact)).y * CM
+        };
+        let hip_y = |i: usize| {
+            let leg = &self.legs[i];
+            let thigh = self.parts[leg.shin].parent?;
+            Some(local(Vec3::from(self.parts[thigh].transform().translation)).y * CM)
+        };
+        if (grounds[0] - grounds[1]).abs() + clip_y(low) <= hip_y(low).unwrap_or(0.0) - reach {
+            chosen = high;
+            reach = hip_y(high).unwrap_or(0.0) - clip_y(high);
+        }
+        let foot = self.legs[chosen].foot;
+        let foot_y = foot.map_or(0.0, |f| {
+            local(Vec3::from(self.parts[f].transform().translation)).y * CM
+        });
+        let thigh_y = hip_y(chosen).unwrap_or(0.0);
+        // The frame's height the original writes: the clip's foot over its
+        // thigh, the chosen ground, the reach and the sole (cm).
+        let height = (foot_y - thigh_y) + grounds[chosen] + reach + sole_cm;
+        let sole = self.sole;
+        let Ragdoll { legs, drive, .. } = self;
+        let drive = drive.as_mut()?;
+        drive.balance.under = character_ground / CM;
+        for (i, leg) in legs.iter_mut().enumerate() {
+            let at = Vec3::new(spots[i].x, grounds[i] / CM + sole, spots[i].z);
+            leg.anchor = at;
+            leg.at = at;
+            leg.before = at;
+            leg.ground = Some(grounds[i] / CM);
+            leg.smoothed = grounds[i] / CM;
+            leg.floor = grounds[i] / CM;
+        }
+        self.snap_legs(frame);
+        Some(height)
+    }
+
+    /// One leg's clip reach in the placement's height rule (cm): the thigh
+    /// and shin lengths against the clip's horizontal ankle offset, shaped
+    /// by the original's `r² + (1 − r)·√r`.
+    fn leg_reach_cm(&self, i: usize, local: &impl Fn(Vec3) -> Vec3) -> f32 {
+        let Some(leg) = self.legs.get(i) else {
+            return 0.0;
+        };
+        let Some(thigh) = self.parts[leg.shin].parent else {
+            return 0.0;
+        };
+        let thigh_len = self.parts[leg.shin].origin.length() * CM;
+        let shin_len = leg.point.length() * CM;
+        let ankle = local(self.parts[leg.shin].point(&leg.contact)) * CM;
+        let hip = local(Vec3::from(self.parts[thigh].transform().translation)) * CM;
+        let v = ankle - hip;
+        let slack = ((shin_len * shin_len + thigh_len * thigh_len)
+            - thigh_len * 2.0 * shin_len * REACH_COS)
+            - (v.y * v.y + v.x * v.x);
+        let full = leg.length * CM;
+        if slack <= 0.0 || full <= 0.0 {
+            0.0
+        } else {
+            let r = slack.sqrt() / full;
+            (r * r + (1.0 - r) * r.sqrt()) * full
+        }
     }
 }
 
