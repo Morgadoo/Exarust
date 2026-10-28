@@ -265,35 +265,37 @@ pub fn strike_limbs(
         .and_then(|s| s.get::<Pairs>())
         .map_or(&[][..], Pairs::touches);
     // The held item bodies, their part states, and the character each
-    // belongs to, read without holding a body's borrow.
+    // belongs to, read without holding a body's borrow; only gathered when
+    // an item body exists and the pair stage found touches this tick.
     let mut owner_of: HashMap<Entity, Entity> = HashMap::default();
     let mut items: HashMap<Entity, Entity> = HashMap::default();
     let mut part_states: HashMap<(Entity, usize), PartState> = HashMap::default();
-    for (root, body) in fighters.iter().map(|(e, .., b)| (e, b)) {
-        let Some(key) = body.parts.first().map(|p| p.entity) else {
-            continue;
-        };
-        owner_of.insert(key, root);
-        for (i, part) in body.parts.iter().enumerate() {
-            part_states.insert((key, i), part.state);
+    if !touches.is_empty() && !weapon.weapons.is_empty() {
+        for (root, body, _) in &weapon.weapons {
+            let Some(key) = body.parts.first().map(|p| p.entity) else {
+                continue;
+            };
+            items.insert(key, root);
+            for (i, part) in body.parts.iter().enumerate() {
+                part_states.insert((key, i), part.state);
+            }
         }
-    }
-    for (root, body) in &bodies {
-        let Some(key) = body.parts.first().map(|p| p.entity) else {
-            continue;
-        };
-        for (i, part) in body.parts.iter().enumerate() {
-            part_states.insert((key, i), part.state);
+        for (root, body) in fighters.iter().map(|(e, .., b)| (e, b)) {
+            let Some(key) = body.parts.first().map(|p| p.entity) else {
+                continue;
+            };
+            owner_of.insert(key, root);
+            for (i, part) in body.parts.iter().enumerate() {
+                part_states.insert((key, i), part.state);
+            }
         }
-        let _ = root;
-    }
-    for (root, body, _) in &weapon.weapons {
-        let Some(key) = body.parts.first().map(|p| p.entity) else {
-            continue;
-        };
-        items.insert(key, root);
-        for (i, part) in body.parts.iter().enumerate() {
-            part_states.insert((key, i), part.state);
+        for (_, body) in &bodies {
+            let Some(key) = body.parts.first().map(|p| p.entity) else {
+                continue;
+            };
+            for (i, part) in body.parts.iter().enumerate() {
+                part_states.insert((key, i), part.state);
+            }
         }
     }
     let mut struck = Vec::new();
