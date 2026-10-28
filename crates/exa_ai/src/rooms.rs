@@ -6,9 +6,14 @@
 //! each horizontal axis (`0.0016666667`, the floor helper of the engine);
 //! the flat index is `width·(z + height/2) + (x + width/2)`, the cell grid
 //! being centred. A negative index, or one past the last cell, is off the
-//! grid: the character is unlinked and its cell becomes −1. Moving to
-//! another cell remembers the old one and puts the character at the head of
-//! the new cell's list.
+//! grid: the bookkeeping does nothing and the character stays linked where
+//! it was. Moving to another cell remembers the old one and puts the
+//! character at the head of the new cell's list.
+//!
+//! [guess: the original maps the grid cell to a level room through the
+//! level's cell-to-room table and links the character into that room's
+//! list, unlinking it when the cell has no room; the running game loads no
+//! room table, so Exarust treats each grid cell as its own room.]
 //!
 //! The original links each character into a doubly linked list per cell
 //! and walks the current cells and the cells of the room's exits when it
@@ -36,7 +41,7 @@ pub struct RoomGridSize {
 }
 
 impl Default for RoomGridSize {
-    /// A level's room grid, 64 × 64 cells (38.4 m a side) [guess: the
+    /// A level's room grid, 64 × 64 cells (384 m a side) [guess: the
     /// running game does not read the level's grid dimensions; the plugin
     /// inserts this grid].
     fn default() -> Self {
@@ -96,9 +101,12 @@ impl RoomCells {
 
     /// Moves `entity` to the cell holding `position_cm`: it leaves its old
     /// cell, is put at the head of the new one, and the old cell is
-    /// remembered. Returns whether the cell changed.
+    /// remembered. Off the grid nothing changes. Returns whether the cell
+    /// changed.
     pub fn move_to(&mut self, entity: Entity, position_cm: Vec3, at: &mut RoomCell) -> bool {
-        let cell = self.index_of(position_cm).unwrap_or(OFF_GRID);
+        let Some(cell) = self.index_of(position_cm) else {
+            return false;
+        };
         if cell == at.cell {
             return false;
         }
@@ -231,7 +239,7 @@ mod tests {
     }
 
     #[test]
-    fn off_the_grid_unlinks() {
+    fn off_the_grid_keeps_the_link() {
         let mut world = world();
         let a = world.spawn_empty().id();
         let size = RoomGridSize {
@@ -242,13 +250,12 @@ mod tests {
         let mut at = RoomCell::default();
         cells.move_to(a, Vec3::ZERO, &mut at);
         let old = at.cell;
-        assert!(cells.move_to(a, Vec3::new(10_000.0, 0.0, 0.0), &mut at));
-        assert_eq!(at.cell, OFF_GRID);
-        assert!(cells.occupants(old).is_empty());
-        // Back on the grid links again; the previous cell stays the last
-        // on-grid one (the off-grid move does not write it).
-        assert!(cells.move_to(a, Vec3::ZERO, &mut at));
-        assert_eq!(at.previous, old);
+        // Cell x 16 puts the flat index at 4·2 + 16 + 2 = 26, past the 16
+        // cells: nothing changes.
+        assert!(!cells.move_to(a, Vec3::new(10_000.0, 0.0, 0.0), &mut at));
+        assert_eq!(at.cell, old);
+        assert_eq!(at.previous, OFF_GRID);
+        assert_eq!(cells.occupants(old), &[a]);
         assert_eq!(cells.nearby(&at), vec![a]);
     }
 }
