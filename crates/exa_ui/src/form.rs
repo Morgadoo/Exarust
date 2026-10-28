@@ -1156,14 +1156,13 @@ pub fn find_control(tree: &ControlTree, id: u16) -> Option<(Vec<usize>, usize)> 
     })
 }
 
-/// A message sent to a control by its id: the message code and the three
-/// arguments the control's handler takes.
+/// A message sent to a control by its id: the three values the control's
+/// handler takes after the record (the message code and its two words).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ControlMessage {
     pub message: u32,
     pub first: u32,
     pub second: u32,
-    pub third: u32,
 }
 
 /// Sends a message to the first record with `id`, anywhere in the tree

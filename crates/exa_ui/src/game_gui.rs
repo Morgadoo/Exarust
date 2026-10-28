@@ -346,12 +346,31 @@ pub fn preview_plan(opening: bool) -> PreviewPlan {
     }
 }
 
-/// The build the bind's callback makes when the character's model exists:
-/// the model is kept and the view is asked for its camera distance from
-/// the character's height (the inventory helper `camera_distance`). It
-/// answers false when there is no model to keep.
-pub fn preview_built(has_model: bool) -> bool {
-    has_model
+/// What the bind's build callback (registered with
+/// [`PREVIEW_BUILD_DELAY`]) does each time it runs: it always takes the
+/// character's skinned model and answers 1 (done). When an open inventory
+/// shows this character view and the view still holds its character, the
+/// inventory refits its doll camera to ten times the character's height
+/// (`exa_items::inventory_window::camera_distance`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PreviewBuild {
+    /// The callback's answer: always done.
+    pub done: bool,
+    /// The doll camera's new distance, when an inventory refits it.
+    pub camera: Option<f32>,
+}
+
+/// The bind's build callback: see [`PreviewBuild`]. `character_height` is
+/// none when the view holds no character.
+pub fn preview_built(inventory_shows_view: bool, character_height: Option<f32>) -> PreviewBuild {
+    PreviewBuild {
+        done: true,
+        camera: if inventory_shows_view {
+            character_height.map(|height| height * 10.0)
+        } else {
+            None
+        },
+    }
 }
 
 /// The destroy releases the preview's scene node and forgets it only when
@@ -360,21 +379,35 @@ pub fn preview_destroyed(has_node: bool) -> bool {
     has_node
 }
 
-/// The preview bars' two rectangles at the bottom of the character view:
-/// the health bar 50 units left of the half width and 5 above the bottom,
-/// the focus bar 52 units further right, each 48 units wide and 4 units
-/// tall (the HUD bars' own frame is drawn 2 units out).
-pub fn preview_bar_rects(
-    window_width: u32,
-    window_height: i32,
-    unit: i32,
-) -> [(i32, i32, i32, i32); 2] {
+/// One preview bar in the character view: the fill's origin and width,
+/// the frame's rectangle (left, top, right, bottom) and the shadow quad
+/// under it, which spans the same rectangle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PreviewBar {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub frame: (i32, i32, i32, i32),
+}
+
+/// The preview bars at the bottom of the character view: the health bar
+/// starts 50 units left of the half width (the width halved unsigned) and
+/// 5 units above the bottom, the focus bar 52 units further right; each
+/// fill is 48 units wide. The frame and its shadow reach 2 pixels out on
+/// both sides and run from the bar's top to 4 units − 2 below it. The
+/// health bar takes the view's two shares; the focus bar is drawn full
+/// (1.0, 1.0).
+pub fn preview_bar_rects(window_width: u32, window_height: i32, unit: i32) -> [PreviewBar; 2] {
     let x0 = (window_width >> 1) as i32 - 50 * unit;
     let y = window_height - 5 * unit;
-    [
-        (x0, y, 48 * unit, 4 * unit - 4),
-        (x0 + 52 * unit, y, 48 * unit, 4 * unit - 4),
-    ]
+    let width = 48 * unit;
+    let bar = |x: i32| PreviewBar {
+        x,
+        y,
+        width,
+        frame: (x - 2, y, x + width + 2, y + 4 * unit - 2),
+    };
+    [bar(x0), bar(x0 + 52 * unit)]
 }
 
 /// The player controls' GUI flag the journal passes: 0 when it opens, 1
@@ -540,47 +573,56 @@ pub struct SlotAnswer {
 
 /// The slot's size at the GUI unit.
 pub const POWER_SLOT_SIZE: (i32, i32) = (40, 40);
-/// The icon's size inside a slot, and the empty slot's shadow icon.
+/// The icon's size inside a slot.
 pub const POWER_ICON: i32 = 32;
-pub const POWER_EMPTY_ICON: i32 = 16;
-/// The empty slot's icon colour byte.
+/// The empty slot's shadow alpha byte; its corner radius is two GUI units.
 pub const POWER_EMPTY_ALPHA: u8 = 0x40;
 
 /// The ink a drawn slot's icon takes, from the slot's state and kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SlotTint {
-    /// The pointer is over the slot (state bit 0x10000).
+    /// A filled slot under the pointer (state nibble 0x10000): no ink is
+    /// set (the current colour stays).
     Hover,
-    /// The slot is marked (state bit 0x10).
-    Selected,
-    /// The slot's style bit 0x40.
+    /// The bright ink: the slot is selected (state bit 0x10), or a kind-2
+    /// slot without either mark (the same ink).
+    Bright,
+    /// The marked ink (state bit 0x40, not selected).
     Marked,
-    /// A kind-2 slot without a mark.
-    KindTwo,
-    Default,
+    /// The plain ink, also the empty slot's kind icon's.
+    Plain,
 }
 
 /// What a slot draws: its frame (inset by the border), the icon's centred
-/// place, its ink and whether an empty slot's shadow and its kind icon are
-/// drawn.
+/// place, its ink, and for an empty slot its shadow and whether its kind
+/// icon shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SlotDraw {
     pub frame: (i32, i32, i32, i32),
     pub icon: (i32, i32),
     pub tint: SlotTint,
-    /// The slot has no icon handle: its shadow is drawn and the kind icon
-    /// (when the kind is past 2) shows instead.
+    /// The icon goes through the full-scale draw (scale 1.0) rather than
+    /// the inked one: the slot is under the pointer.
+    pub full_scale: bool,
+    /// The slot has no icon handle: a rounded shadow of radius two units
+    /// and alpha [`POWER_EMPTY_ALPHA`] fills the frame instead.
     pub empty: bool,
-    /// A frame is drawn again over the icon (the hovered slot).
+    /// An empty slot of kind past 2 draws its kind's icon: always under the
+    /// pointer, otherwise only for kind 4.
+    pub kind_icon: bool,
+    /// The marked (0x40) frame is drawn again over a filled slot.
     pub extra_frame: bool,
 }
 
 impl PowerSlot {
-    /// The slot's draw: the frame at the rect inset by `border`, the icon
-    /// centred at [`POWER_ICON`], the hover extra frame, and the ink by
-    /// state bit 0x10, style bit 0x40, kind 2 or the default. An empty slot
-    /// (no icon) draws its shadow and, when its kind is past 2, the kind's
-    /// icon at the centre unless the pointer is over it.
+    /// The slot's draw. The back pass draws a filled slot's frame at the
+    /// rect inset by `border` (marked and selected flags passed to it) and
+    /// the marked frame again; an empty slot draws its shadow there. The
+    /// front pass centres a [`POWER_ICON`] icon (both halves truncating):
+    /// a hovered filled slot draws it at full scale without an ink, else
+    /// the ink is chosen by state bit 0x10, bit 0x40, kind 2, then plain.
+    /// An empty slot draws its kind's icon only for a kind past 2, and then
+    /// only under the pointer (full scale) or for kind 4, in the plain ink.
     pub fn draw(&self, x: i32, y: i32, width: i32, height: i32, border: i32) -> SlotDraw {
         let frame = (
             x + border,
@@ -591,22 +633,26 @@ impl PowerSlot {
         let icon = (x + (width - POWER_ICON) / 2, y + (height - POWER_ICON) / 2);
         let hover = self.state & 0xf_0000 == 0x1_0000;
         let empty = self.icon < 1;
-        let tint = if hover {
+        let tint = if empty {
+            SlotTint::Plain
+        } else if hover {
             SlotTint::Hover
         } else if self.state & 0x10 != 0 {
-            SlotTint::Selected
+            SlotTint::Bright
         } else if self.state & 0x40 != 0 {
             SlotTint::Marked
         } else if self.kind == 2 {
-            SlotTint::KindTwo
+            SlotTint::Bright
         } else {
-            SlotTint::Default
+            SlotTint::Plain
         };
         SlotDraw {
             frame,
             icon,
             tint,
+            full_scale: hover,
             empty,
+            kind_icon: empty && self.kind > 2 && (hover || self.kind == 4),
             extra_frame: !empty && self.state & 0x40 != 0,
         }
     }
@@ -1118,7 +1164,10 @@ pub fn selector_rows(input: SelectorInput) -> ([u32; 9], bool) {
         rows[..8].fill(0x10);
     } else {
         for &t in input.skill.techniques.iter().take(5) {
-            if t != 0 && usize::from(t) <= 8 {
+            // The original writes the row byte − 1 unchecked: 9 reaches the
+            // ninth (forget) row; a byte past 9 would write past the form's
+            // records and is not reproduced.
+            if t != 0 && usize::from(t) <= 9 {
                 rows[usize::from(t) - 1] = 0x10;
             }
         }

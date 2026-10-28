@@ -1196,7 +1196,6 @@ fn a_control_message_finds_a_nested_record_or_answers_none() {
         message: 0x40,
         first: 1,
         second: 2,
-        third: 3,
     };
     assert_eq!(
         send_control(&tree, 11, message),

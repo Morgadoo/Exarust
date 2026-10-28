@@ -538,9 +538,9 @@ fn the_status_hide_clock_and_draw_values() {
 }
 
 #[test]
-fn a_selector_technique_byte_nine_writes_no_row() {
+fn a_selector_technique_byte_nine_marks_the_forget_row() {
     let requirements = [[0; 2]; 8];
-    let (rows, _) = selector_rows(SelectorInput {
+    let (rows, forget) = selector_rows(SelectorInput {
         locked: false,
         skill: Skill {
             points: 5000,
@@ -549,9 +549,24 @@ fn a_selector_technique_byte_nine_writes_no_row() {
         requirements,
         count: 0,
     });
-    // Nine is past the eight rows; eight sets the last one.
+    // The row byte − 1 is written unchecked: 9 reaches the ninth (forget)
+    // row and 8 the last technique row.
+    assert!(!forget);
+    assert_eq!(rows[8], 0x10);
     assert_eq!(rows[7], 0x10);
     assert_eq!(&rows[..7], &[0; 7]);
+    // A forget count clears the ninth row again afterwards.
+    let (rows, forget) = selector_rows(SelectorInput {
+        locked: false,
+        skill: Skill {
+            points: 5000,
+            techniques: [9, 0, 0, 0, 0, 0],
+        },
+        requirements,
+        count: 1,
+    });
+    assert!(forget);
+    assert_eq!(rows[8], 0);
 }
 
 #[test]
@@ -562,60 +577,115 @@ fn the_power_slot_draw() {
         state: 0,
         ..PowerSlot::default()
     };
-    let draw = slot.draw(10, 20, 40, 40, 2);
+    let draw = |slot: PowerSlot| slot.draw(10, 20, 40, 40, 2);
+    let plain = draw(slot);
     // The frame is inset by the border; a 32-pixel icon is centred four in.
-    assert_eq!(draw.frame, (12, 22, 36, 36));
-    assert_eq!(draw.icon, (14, 24));
-    assert_eq!(draw.tint, SlotTint::Default);
-    assert!(!draw.empty && !draw.extra_frame);
-    // The marked state draws the extra frame; the selected one wins the ink.
-    let marked = PowerSlot {
+    assert_eq!(plain.frame, (12, 22, 36, 36));
+    assert_eq!(plain.icon, (14, 24));
+    assert_eq!(plain.tint, SlotTint::Plain);
+    assert!(!plain.empty && !plain.extra_frame && !plain.full_scale && !plain.kind_icon);
+    // The marked state draws its frame again and takes the marked ink; the
+    // selected bit wins over it; kind 2 shares the selected (bright) ink.
+    let marked = draw(PowerSlot {
         state: 0x40,
         ..slot
-    };
-    assert!(marked.draw(10, 20, 40, 40, 2).extra_frame);
-    assert_eq!(marked.draw(10, 20, 40, 40, 2).tint, SlotTint::Marked);
+    });
+    assert!(marked.extra_frame);
+    assert_eq!(marked.tint, SlotTint::Marked);
     assert_eq!(
-        PowerSlot {
-            state: 0x10,
+        draw(PowerSlot {
+            state: 0x50,
             ..slot
-        }
-        .draw(10, 20, 40, 40, 2)
+        })
         .tint,
-        SlotTint::Selected
+        SlotTint::Bright
     );
+    assert_eq!(draw(PowerSlot { kind: 2, ..slot }).tint, SlotTint::Bright);
+    // Under the pointer the icon is drawn at full scale with no ink.
+    let hover = draw(PowerSlot {
+        state: 0x1_0040,
+        ..slot
+    });
+    assert_eq!(hover.tint, SlotTint::Hover);
+    assert!(hover.full_scale && hover.extra_frame);
+    // Only the 0x10000 nibble value is hover.
     assert_eq!(
-        PowerSlot { kind: 2, ..slot }.draw(10, 20, 40, 40, 2).tint,
-        SlotTint::KindTwo
-    );
-    assert_eq!(
-        PowerSlot {
-            state: 0x1_0000,
+        draw(PowerSlot {
+            state: 0x3_0000,
             ..slot
-        }
-        .draw(10, 20, 40, 40, 2)
+        })
         .tint,
-        SlotTint::Hover
+        SlotTint::Plain
     );
-    // An empty slot draws its shadow and no icon.
+    // An empty slot draws its shadow; its kind icon shows for kind 4, or
+    // for kind 3 only under the pointer, never for kind 2 or below.
     let empty = PowerSlot { icon: 0, ..slot };
-    let draw = empty.draw(10, 20, 40, 40, 2);
-    assert!(draw.empty);
-    assert_eq!(draw.icon, (14, 24));
+    let e = draw(empty);
+    assert!(e.empty && !e.kind_icon && !e.extra_frame);
+    assert!(draw(PowerSlot { kind: 4, ..empty }).kind_icon);
+    assert!(!draw(PowerSlot { kind: 3, ..empty }).kind_icon);
+    let hovered_three = draw(PowerSlot {
+        kind: 3,
+        state: 0x1_0000,
+        ..empty
+    });
+    assert!(hovered_three.kind_icon && hovered_three.full_scale);
+    assert_eq!(hovered_three.tint, SlotTint::Plain);
+    assert!(
+        !draw(PowerSlot {
+            kind: 2,
+            state: 0x1_0000,
+            ..empty
+        })
+        .kind_icon
+    );
 }
 
 #[test]
 fn the_preview_build_destroy_and_bars() {
-    assert!(preview_built(true));
-    assert!(!preview_built(false));
+    // The build always answers done; an inventory showing the view refits
+    // its camera to ten times the character's height.
+    assert_eq!(
+        preview_built(true, Some(1.7)),
+        PreviewBuild {
+            done: true,
+            camera: Some(17.0)
+        }
+    );
+    assert_eq!(preview_built(true, None).camera, None);
+    assert_eq!(
+        preview_built(false, Some(1.7)),
+        PreviewBuild {
+            done: true,
+            camera: None
+        }
+    );
     assert!(preview_destroyed(true));
     assert!(!preview_destroyed(false));
-    // The preview bars use the HUD bars' places: at the retail window
-    // (1600 x 1014, unit 5) the health bar is at 550, 989 and the focus bar
-    // at 810; the fills start two rows down.
+    // At a 1600 × 1014 view and unit 5: the health bar starts at
+    // 800 − 250 = 550, 1014 − 25 = 989, 240 wide; its frame runs from 548
+    // to 792 and down to 989 + 18; the focus bar is 260 further right.
     let [health, focus] = preview_bar_rects(1600, 1014, 5);
-    assert_eq!(health, (550, 989, 240, 16));
-    assert_eq!(focus, (810, 989, 240, 16));
+    assert_eq!(
+        health,
+        PreviewBar {
+            x: 550,
+            y: 989,
+            width: 240,
+            frame: (548, 989, 792, 1007)
+        }
+    );
+    assert_eq!(
+        focus,
+        PreviewBar {
+            x: 810,
+            y: 989,
+            width: 240,
+            frame: (808, 989, 1052, 1007)
+        }
+    );
+    // An odd width halves down.
+    assert_eq!(preview_bar_rects(1601, 1014, 5)[0].x, 550);
 }
 
 #[test]
