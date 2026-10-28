@@ -264,6 +264,9 @@ pub struct GameScreens {
     pub card: CardWindow,
     /// The open loot windows, one per body.
     pub loot: Vec<LootWindow>,
+    /// Icon handles freed by a closed panel, waiting for the icon manager
+    /// to drop their references (the destroy's sweep).
+    pub released_icons: Vec<usize>,
 }
 
 impl Default for GameScreens {
@@ -279,6 +282,7 @@ impl Default for GameScreens {
             pack: Container::default(),
             card: CardWindow::default(),
             loot: Vec::new(),
+            released_icons: Vec::new(),
         }
     }
 }
@@ -533,6 +537,13 @@ impl GameScreens {
             GameScreen::Inventory => {
                 self.containers.close(tagged_container(self.player));
                 self.inventory_place = place;
+                // The panel's destroy releases every icon reference before
+                // its entry array goes.
+                let unit = self.pack.unit;
+                let mut released = Vec::new();
+                self.pack.release_all_icons(|icon| released.push(icon));
+                self.released_icons.extend(released);
+                self.pack = Container::form(unit);
             }
             GameScreen::Loot => {
                 if let Some(window) = self
@@ -542,6 +553,11 @@ impl GameScreens {
                     .map(|index| self.loot.remove(index))
                 {
                     self.containers.close(tagged_container(window.character));
+                    let (mut pack, mut worn) = (window.pack, window.worn);
+                    let mut released = Vec::new();
+                    pack.release_all_icons(|icon| released.push(icon));
+                    worn.release_all_icons(|icon| released.push(icon));
+                    self.released_icons.extend(released);
                 }
             }
             _ => {}
@@ -620,7 +636,21 @@ impl Plugin for GameScreensPlugin {
             .add_systems(
                 Update,
                 (close_on_right_release, close_changed_loot_windows).after(open_requested_screens),
+            )
+            .add_systems(
+                Update,
+                release_closed_icons
+                    .after(close_on_right_release)
+                    .after(close_changed_loot_windows),
             );
+    }
+}
+
+/// Gives the icon manager back the handles of the panels the screens
+/// closed this frame.
+fn release_closed_icons(mut screens: ResMut<GameScreens>, mut icons: ResMut<PanelIcons>) {
+    for handle in screens.released_icons.drain(..) {
+        icons.release(handle);
     }
 }
 
@@ -743,10 +773,11 @@ fn open_requested_screens(
 /// A right-button release over a screen that has the handler closes it
 /// (the inventory's and the loot window's mouse routines); a release over
 /// another form or outside leaves the screens alone.
-fn close_on_right_release(
+pub(crate) fn close_on_right_release(
     buttons: Option<Res<ButtonInput<MouseButton>>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     mut screens: ResMut<GameScreens>,
+    card: Option<Res<crate::item_card::CardView>>,
 ) {
     let Some(buttons) = buttons else {
         return;
@@ -761,6 +792,14 @@ fn close_on_right_release(
         return;
     };
     let pointer = pointer * window.scale_factor();
+    // A right press over an entry is the panel's card request; it must not
+    // also close the screen. The next right release outside the card is
+    // the card's own close.
+    if card.as_deref().is_some_and(|card| card.active(&screens))
+        || crate::item_card::entry_under(&screens, pointer.as_ivec2())
+    {
+        return;
+    }
     let active = screens.task.active;
     let Some(screen) = screens
         .open

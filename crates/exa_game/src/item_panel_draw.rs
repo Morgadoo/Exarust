@@ -216,6 +216,48 @@ impl PanelIcons {
             .map(|entry| (entry.half_width, entry.half_height))
     }
 
+    /// Drops one reference to an icon slot, as the manager's release does:
+    /// the last reference frees the slot (its id and cell go, its variant
+    /// and half extents stay) and gives the atlas cell back. A pending
+    /// render for the slot is forgotten. False for no slot.
+    pub fn release(&mut self, handle: usize) -> bool {
+        let Some(at) = handle.checked_sub(1) else {
+            return false;
+        };
+        let Some(entry) = self.cache.entries.get_mut(at) else {
+            return false;
+        };
+        if entry.refs == 0 {
+            return false;
+        }
+        entry.refs -= 1;
+        if entry.refs > 0 {
+            return true;
+        }
+        let mut cell = entry.cell;
+        self.atlas.release(&mut cell);
+        entry.cell = cell;
+        entry.id = 0;
+        self.pending.retain(|pending| pending.entry != at);
+        self.version = self.version.wrapping_add(1);
+        true
+    }
+
+    /// Releases every icon a container's entries hold, as the panel's
+    /// destroy does, and leaves the entries without handles. Returns how
+    /// many slots were released.
+    pub fn release_container(&mut self, container: &mut Container) -> usize {
+        let mut handles = Vec::new();
+        container.release_all_icons(|icon| handles.push(icon));
+        let mut released = 0;
+        for handle in handles {
+            if self.release(handle) {
+                released += 1;
+            }
+        }
+        released
+    }
+
     /// The atlas's texture, rebuilt when its image changed.
     fn texture(&mut self) -> Option<&GuiTexture> {
         let image = &self.atlas.image;
@@ -372,6 +414,61 @@ mod tests {
         let mut container = panel(0);
         container.entries[0].icon = 9;
         assert!(manager.layer(&container).is_none());
+    }
+
+    #[test]
+    fn releasing_a_panel_drops_its_icon_references() {
+        let mut manager = PanelIcons::new(4);
+        let first = manager.atlas.add(&icon(255), 7);
+        let second = manager.atlas.add(&icon(128), 8);
+        manager.cache.entries = vec![
+            IconSlot {
+                id: 7,
+                cell: first,
+                variant: 0,
+                half_width: 84,
+                half_height: 84,
+                refs: 2,
+            },
+            IconSlot {
+                id: 8,
+                cell: second,
+                variant: 0,
+                half_width: 84,
+                half_height: 84,
+                refs: 1,
+            },
+        ];
+        let mut container = Container {
+            entries: vec![
+                crate::item_container::Entry {
+                    id: 7,
+                    icon: 1,
+                    ..Default::default()
+                },
+                crate::item_container::Entry {
+                    id: 8,
+                    icon: 2,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        assert_eq!(manager.release_container(&mut container), 2);
+        assert!(container.entries.iter().all(|entry| entry.icon == 0));
+        // The first slot keeps one reference; the second is freed.
+        assert_eq!(manager.cache.entries[0].refs, 1);
+        assert_eq!(manager.cache.entries[0].cell, first);
+        assert_eq!(manager.cache.entries[1].refs, 0);
+        assert_eq!(manager.cache.entries[1].id, 0);
+        // The last reference frees the first slot too.
+        assert!(manager.release(1));
+        assert_eq!(manager.cache.entries[0].refs, 0);
+        assert_eq!(manager.cache.entries[0].id, 0);
+        // A missing or already-freed slot is not released twice.
+        assert!(!manager.release(1));
+        assert!(!manager.release(9));
+        assert!(!manager.release(0));
     }
 
     #[test]

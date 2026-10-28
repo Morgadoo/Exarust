@@ -220,7 +220,7 @@ impl Burden {
     pub const LIGHT_SHIELD: u8 = 6;
 
     /// The burden of an item body; bytes past its end read as zero.
-    fn parse(body: &[u8]) -> Self {
+    pub fn parse(body: &[u8]) -> Self {
         let byte = |o: usize| body.get(o).copied().unwrap_or(0);
         let word = |o: usize| {
             body.get(o..o + 4)
