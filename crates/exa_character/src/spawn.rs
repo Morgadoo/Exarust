@@ -135,6 +135,8 @@ pub struct Equipped {
     pub kind: EquipKind,
     /// The weapon section, for a weapon.
     pub weapon: Option<Weapon>,
+    /// The shield section, for a shield.
+    pub shield_record: Option<exa_formats::weapon_record::ShieldRecord>,
     /// The record's flags for this hand.
     pub flags: u32,
 }
@@ -157,6 +159,8 @@ pub struct HandEntry {
     pub model: String,
     pub weapon: Option<Weapon>,
     pub shield: bool,
+    /// The shield's own record, when the item has one.
+    pub shield_record: Option<exa_formats::weapon_record::ShieldRecord>,
     /// The item has the torch section.
     pub torch: bool,
 }
@@ -192,6 +196,7 @@ pub fn equip_hands(
             model: item.model,
             kind,
             weapon: item.weapon,
+            shield_record: item.shield_record,
             flags: r.flags,
         });
     }
@@ -488,6 +493,7 @@ mod tests {
             model: name.into(),
             weapon,
             shield,
+            shield_record: None,
             torch: false,
         }
     }

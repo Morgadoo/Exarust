@@ -37,6 +37,35 @@ pub struct FlipWeaponRequest {
     pub body: Entity,
 }
 
+/// A held item whose grip waits for its holder's body: the character's
+/// entity. The dresser may attach an item in the frame before the holder's
+/// body exists; [`resolve_pending_grips`] fills the grip's holder key and
+/// drops the marker once the body's first part does.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PendingGrip {
+    pub holder: Entity,
+}
+
+/// Fills every pending grip's holder key from its character's body.
+pub fn resolve_pending_grips(
+    mut commands: Commands,
+    bodies: Query<&Ragdoll>,
+    mut held: Query<(Entity, &PendingGrip, &mut HeldGrip)>,
+) {
+    for (entity, pending, mut grip) in &mut held {
+        let Some(key) = bodies
+            .get(pending.holder)
+            .ok()
+            .and_then(|b| b.parts.first())
+            .map(|p| p.entity)
+        else {
+            continue;
+        };
+        grip.holder_key = key;
+        commands.entity(entity).remove::<PendingGrip>();
+    }
+}
+
 /// Starts the flip on every held item of the requested character. A held
 /// item names its holder by the holder body's first part, so the request's
 /// body is looked up for it. The original's flip command refuses while the
@@ -195,7 +224,11 @@ impl Plugin for GripRuntimePlugin {
         app.add_message::<FlipWeaponRequest>()
             .add_systems(FixedUpdate, flip_requests.before(GripSolveSet::Sync))
             .add_systems(FixedUpdate, animate_grips.before(GripSolveSet::Sync))
-            .add_systems(FixedUpdate, weld_states.before(GripSolveSet::Sync));
+            .add_systems(FixedUpdate, weld_states.before(GripSolveSet::Sync))
+            .add_systems(
+                FixedUpdate,
+                resolve_pending_grips.before(GripSolveSet::Sync),
+            );
     }
 }
 
@@ -230,6 +263,100 @@ mod tests {
                 at + Vec3::X * 0.2,
             ),
         ])
+    }
+
+    /// A dead holder keeps the item and stiffens its soft weld; a collapse
+    /// leaves it alone because Exarust does not carry the record state
+    /// word the loosen branch reads.
+    #[test]
+    fn a_dead_holder_stiffens_the_soft_weld() {
+        let mut app = App::new();
+        app.add_systems(Update, weld_states);
+        let owner = app.world_mut().spawn(Condition::COMBAT_IDLE).id();
+        let item_e = app.world_mut().spawn_empty().id();
+        let holder_body = holder(owner, Vec3::ZERO);
+        let item_body = item(body_root(), Vec3::new(0.2, 0.0, 0.0));
+        let key = holder_body.parts[0].entity;
+        let bindings = exa_physics::grip::GripBindings {
+            item_part: 0,
+            hand_parts: [1, 1],
+            arm_parts: [1, 1],
+        };
+        let shield = exa_physics::grip::shield_links(
+            &item_body,
+            &holder_body,
+            bindings,
+            1,
+            Affine3A::IDENTITY,
+            Vec3::ZERO,
+        )
+        .unwrap();
+        let soft = shield.world_soft.unwrap();
+        assert_eq!(shield.links[soft].strength, 0.05);
+        let grip = HeldGrip {
+            spec: spec(),
+            scale: 1.0,
+            size: 1.0,
+            second_hand_factor: 1.0,
+            flip: false,
+            class: 0x10,
+            soft_weld: true,
+            kind: exa_physics::grip::HeldKind::Shield,
+            holder_key: key,
+            hands: [Some(Entity::from_raw_u32(2).unwrap()); 2],
+            arms: [None, None],
+            links: Some(shield.clone()),
+            released: false,
+        };
+        app.world_mut().entity_mut(owner).insert(holder_body);
+        app.world_mut().entity_mut(item_e).insert((item_body, grip));
+        app.update();
+        // Alive: untouched.
+        let strength = |app: &App| {
+            let links = app
+                .world()
+                .get::<HeldGrip>(item_e)
+                .unwrap()
+                .links
+                .as_ref()
+                .unwrap();
+            links.links[soft].strength
+        };
+        assert_eq!(strength(&app), 0.05);
+        app.world_mut().entity_mut(owner).insert(Condition::DEAD);
+        app.update();
+        assert_eq!(strength(&app), 1.0);
+        assert!(
+            app.world().get::<HeldGrip>(item_e).is_some(),
+            "the corpse keeps the item"
+        );
+        let base = app.world().get::<HeldGrip>(item_e).unwrap().clone();
+        // A collapsing body leaves the weld alone: its record state word is
+        // not carried.
+        let mut app = App::new();
+        app.add_systems(Update, weld_states);
+        let owner = app.world_mut().spawn(Condition::COLLAPSING).id();
+        let holder_body = holder(owner, Vec3::ZERO);
+        let key = holder_body.parts[0].entity;
+        let mut shield2 = shield.clone();
+        shield2.set_soft_slack(0.0);
+        let grip = HeldGrip {
+            links: Some(shield2),
+            holder_key: key,
+            ..base
+        };
+        let item2 = app.world_mut().spawn_empty().id();
+        let body2 = item(body_root(), Vec3::new(0.2, 0.0, 0.0));
+        app.world_mut().entity_mut(owner).insert(holder_body);
+        app.world_mut().entity_mut(item2).insert((body2, grip));
+        app.update();
+        let links = app.world().get::<HeldGrip>(item2).unwrap();
+        assert_eq!(links.links.as_ref().unwrap().links[soft].slack, 0.0);
+    }
+
+    /// The root entity the item body is built on.
+    fn body_root() -> Entity {
+        Entity::from_raw_u32(9).unwrap()
     }
 
     fn item(root: Entity, at: Vec3) -> Ragdoll {
@@ -296,6 +423,47 @@ mod tests {
         app.add_message::<FlipWeaponRequest>()
             .add_systems(Update, (flip_requests, animate_grips).chain());
         app
+    }
+
+    /// A grip attached before its holder's body exists takes the holder's
+    /// first part as its key once the body is there.
+    #[test]
+    fn a_pending_grip_waits_for_its_holders_body() {
+        let mut app = App::new();
+        app.add_systems(Update, resolve_pending_grips);
+        let owner = app.world_mut().spawn_empty().id();
+        let item_e = app.world_mut().spawn_empty().id();
+        let grip = HeldGrip {
+            spec: spec(),
+            scale: 1.0,
+            size: 1.0,
+            second_hand_factor: 1.0,
+            flip: false,
+            class: 0x10,
+            soft_weld: false,
+            kind: exa_physics::grip::HeldKind::Weapon,
+            holder_key: Entity::PLACEHOLDER,
+            hands: [None, None],
+            arms: [None, None],
+            links: None,
+            released: false,
+        };
+        app.world_mut()
+            .entity_mut(item_e)
+            .insert((grip.clone(), PendingGrip { holder: owner }));
+        app.update();
+        // No body yet: the key stays and the marker stays.
+        assert!(app.world().get::<PendingGrip>(item_e).is_some());
+        assert_eq!(
+            app.world().get::<HeldGrip>(item_e).unwrap().holder_key,
+            Entity::PLACEHOLDER
+        );
+        let body = holder(owner, Vec3::ZERO);
+        let key = body.parts[0].entity;
+        app.world_mut().entity_mut(owner).insert(body);
+        app.update();
+        assert!(app.world().get::<PendingGrip>(item_e).is_none());
+        assert_eq!(app.world().get::<HeldGrip>(item_e).unwrap().holder_key, key);
     }
 
     /// The clip's mode switches the two-hander's links, and a flip request

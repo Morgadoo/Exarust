@@ -19,6 +19,8 @@ pub mod factory;
 
 pub mod grip_runtime;
 
+pub mod offhand;
+
 pub mod hair;
 
 pub mod held;
@@ -71,6 +73,7 @@ impl Plugin for CharacterPlugin {
             blood::BloodPlugin,
             spray::SprayPlugin,
             grip_runtime::GripRuntimePlugin,
+            offhand::OffHandPlugin,
         ))
         .init_resource::<Painting>()
         .init_resource::<Fitting>()
@@ -600,7 +603,7 @@ const CM_PER_M: f32 = 100.0;
 /// race `race`. A plain model (`name` in `Objects.rpk`) is measured along
 /// its first-child chain of rigid parts; an assembled factory weapon, one
 /// merged part in the original, up to its highest point, `top` (cm).
-fn held_record(
+pub(crate) fn held_record(
     game: &exa_assets::GameData,
     name: &str,
     top: impl FnOnce() -> f32,
@@ -883,7 +886,7 @@ pub fn assembled_item_body(
 
 /// The bones the original's grip links attach to: the forearms, right then
 /// left.
-const FOREARM_BONES: [usize; 2] = [13, 16];
+pub(crate) const FOREARM_BONES: [usize; 2] = [13, 16];
 
 fn fist_records(race: &RaceWeaponry, hands: [(f32, f32); 2], holder: &Holder) -> [WeaponRecord; 2] {
     let sections = weapon_record::unarmed(race.index, race.weapons.claws);
@@ -908,7 +911,7 @@ fn fist_transform(centre_x: f32) -> Transform {
 
 /// Length of a weapon model from its grip (the origin) to its farthest
 /// point along +Y, metres.
-fn weapon_length(model: &model::Model, meshes: &Assets<Mesh>) -> f32 {
+pub(crate) fn weapon_length(model: &model::Model, meshes: &Assets<Mesh>) -> f32 {
     let mut longest = 0.0f32;
     for (i, node) in model.nodes.iter().enumerate() {
         let t = blood::placement(model, i);
@@ -1604,12 +1607,14 @@ fn equip_outfits(
             }
             // The item's own bodies (every rigid node, or the assembled
             // factory body) and the grip links that tie them to the hand.
-            if let Some(key) = ragdolls
-                .get(body)
-                .ok()
-                .and_then(|r| r.parts.first())
-                .map(|p| p.entity)
+            // The holder's body may not exist yet: the grip then waits for
+            // it (`PendingGrip`), as the item's own body does.
             {
+                let key = ragdolls
+                    .get(body)
+                    .ok()
+                    .and_then(|r| r.parts.first())
+                    .map(|p| p.entity);
                 let parts = held_item_bodies(&weapon, holder, &node_entities);
                 if !parts.is_empty() {
                     commands.entity(holder).insert((
@@ -1640,7 +1645,7 @@ fn equip_outfits(
                             soft_weld: !weapon_record::unarmed(race.index, race.weapons.claws)
                                 .heavy_claws,
                             kind: exa_physics::grip::HeldKind::Weapon,
-                            holder_key: key,
+                            holder_key: key.unwrap_or(Entity::PLACEHOLDER),
                             hands: [
                                 by_bone.get(&RIGHT_HAND).copied(),
                                 by_bone.get(&LEFT_HAND).copied(),
@@ -1653,6 +1658,11 @@ fn equip_outfits(
                             released: false,
                         },
                     ));
+                    if key.is_none() {
+                        commands
+                            .entity(holder)
+                            .insert(grip_runtime::PendingGrip { holder: body });
+                    }
                 }
             }
             if let Some(mass) = mass {

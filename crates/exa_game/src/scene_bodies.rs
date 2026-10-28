@@ -431,12 +431,13 @@ pub fn spawn_scene_body(
         }
     }
     let mut hands = Hands::default();
-    let equip = exa_character::spawn::equip_hands(&record, |hand, _| {
+    let equip = exa_character::spawn::equip_hands(&record, |hand, r| {
         let item = look.hands.get(hand)?.as_ref()?;
         Some(exa_character::spawn::HandEntry {
             model: item.model.clone(),
             weapon: item.weapon,
             shield: item.shield,
+            shield_record: item_of(context.items, r.id).and_then(|i| i.shield),
             torch: item.torch,
         })
     });
@@ -465,6 +466,29 @@ pub fn spawn_scene_body(
         commands
             .entity(model_entity)
             .insert(exa_character::HeldFlipped);
+    }
+    // The off hand's item: a shield from either hand (hand 1's wins), else
+    // hand 1's torch (the light path), else a second weapon.
+    if let Some(plan) = exa_character::spawn::attach_plan(&equip)
+        .into_iter()
+        .find(|p| p.kind != exa_character::spawn::Attach::Weapon)
+        && let Some(item) = equip[plan.hand].as_ref()
+    {
+        let kind = match plan.kind {
+            exa_character::spawn::Attach::Shield => exa_character::offhand::OffKind::Shield,
+            exa_character::spawn::Attach::SecondWeapon => exa_character::offhand::OffKind::Weapon,
+            _ => exa_character::offhand::OffKind::Weapon,
+        };
+        if plan.kind != exa_character::spawn::Attach::Torch {
+            commands
+                .entity(model_entity)
+                .insert(exa_character::offhand::OffHeld {
+                    model: item.model.clone(),
+                    weapon: item.weapon,
+                    shield: item.shield_record,
+                    kind,
+                });
+        }
     }
     let mut fighter = exa_combat::Fighter::of_stats(race, stats).with_perks(record.perks());
     fighter.health.yellow = fighter.health.max * plan.health;
