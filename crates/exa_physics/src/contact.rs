@@ -49,6 +49,65 @@ pub trait Level {
     fn height_below(&self, at: Vec3, radius: f32, depth: f32) -> Option<f32> {
         height_query(self, at, radius, depth)
     }
+
+    /// Whether `piece` takes part in the original's Ground Query. The
+    /// original meets only meshes and bodies whose node carries the floor
+    /// bit (0x800000 in its second flag word: 85 library pieces and 2
+    /// objects ship with it), and skips a disabled body. Exarust's level
+    /// colliders do not carry that bit yet, so by default no piece is
+    /// floor and the query misses, as it does in the original over every
+    /// unflagged mesh.
+    fn floor_piece(&self, _piece: u32) -> bool {
+        false
+    }
+
+    /// The original's Ground Query: a point ray from `at` straight down at
+    /// most `depth`, against the front of upward faces of floor pieces
+    /// only. Returns the height of the first face it meets, or `None`.
+    /// The feet routine uses it from 30 cm over the ground to find the sole
+    /// floor under the toe (60 cm down).
+    fn floor_below(&self, at: Vec3, depth: f32) -> Option<f32> {
+        if !(depth > 0.0 && at.is_finite()) {
+            return None;
+        }
+        floor_query(self, at, depth)
+    }
+}
+
+/// The Ground Query over the level's floor pieces: the highest upward face
+/// under the point. The ray is vertical, so a face's hit is where its
+/// plane sits over the point, if the point is over the triangle and at or
+/// above the plane.
+fn floor_query<L: Level + ?Sized>(level: &L, at: Vec3, depth: f32) -> Option<f32> {
+    let (lo, hi) = (at - Vec3::Y * depth, at);
+    let (mut pieces, mut triangles) = (Vec::new(), Vec::new());
+    level.pieces(lo, hi, &mut pieces);
+    for &piece in &pieces {
+        if !level.floor_piece(piece) {
+            continue;
+        }
+        level.triangles(piece, lo, hi, &mut triangles);
+    }
+    let mut nearest: Option<f32> = None;
+    for t in &triangles {
+        let n = (t[1] - t[0]).cross(t[2] - t[0]);
+        if n.y <= 0.0 || n.dot(at - t[0]) < 0.0 {
+            continue;
+        }
+        // The plane's height over the point, if the point is over the
+        // triangle. Only the highest such face is the floor.
+        let y = (n.dot(t[0]) - n.x * at.x - n.z * at.z) / n.y;
+        if y > at.y || at.y - y > depth {
+            continue;
+        }
+        if !inside(t, n, Vec3::new(at.x, y, at.z)) {
+            continue;
+        }
+        if nearest.is_none_or(|best| y > best) {
+            nearest = Some(y);
+        }
+    }
+    nearest
 }
 
 /// How deep (m) a Height Query looks first; it looks the whole way down
@@ -186,6 +245,11 @@ impl Level for [[Vec3; 3]] {
             let (a, b) = (t[0].min(t[1]).min(t[2]), t[0].max(t[1]).max(t[2]));
             a.cmple(hi).all() && b.cmpge(lo).all()
         }));
+    }
+
+    /// A synthetic triangle list stands for a floor-flagged mesh.
+    fn floor_piece(&self, _: u32) -> bool {
+        true
     }
 }
 

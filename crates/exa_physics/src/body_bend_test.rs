@@ -301,6 +301,7 @@ fn the_locomotion_ik_bends_a_short_clip_leg_over_the_contact() {
         drop: 0.0,
         lift_cm: 0.0,
         stepping: false,
+        snap: false,
         running: false,
         stance: 0.5,
         crouch: 0.0,

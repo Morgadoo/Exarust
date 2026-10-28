@@ -331,6 +331,10 @@ impl Ragdoll {
             held_count: 0,
             held_by: None,
             level_impacts: Vec::new(),
+            limp_frame: None,
+            limp_clip_rate: 1.0,
+            limp_height: 0.0,
+            limp_scale: 1.0,
         }
     }
 }

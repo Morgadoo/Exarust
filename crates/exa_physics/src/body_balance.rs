@@ -40,6 +40,7 @@ use super::feet::{self, FootState};
 use super::steps::{self, Plan};
 use super::{CM, Part, PartSetup, Ragdoll, weights};
 use crate::contact::Level;
+use crate::engine_math;
 
 /// The chest's velocity follows its motion by these shares a tick: fast
 /// and slow.
@@ -118,6 +119,24 @@ const GET_UP_SUPPORT: f32 = 0.5;
 /// The sole height is the depth of the foot's box under its origin less
 /// this (cm).
 const SOLE_INSET: f32 = 0.5;
+/// The Ground Query starts this far (cm) over the foot's ground and looks
+/// this far down under the toe.
+const GROUND_QUERY_ABOVE: f32 = 30.0;
+const GROUND_QUERY_DEPTH: f32 = 60.0;
+/// The placement's ground probe is the clip ankle plus this far (cm, ×
+/// scale) along the shin's forward axis; its Height Query starts at the
+/// frame's height plus the leg's length, with a 10 cm sphere swept 300 cm
+/// down. Its reach rule uses the 40° cosine 0.766.
+const STANCE_SIDE: f32 = 5.0;
+const HEIGHT_RADIUS: f32 = 10.0;
+const HEIGHT_DEPTH: f32 = 300.0;
+const REACH_COS: f32 = 0.766;
+/// A walking foot's swing clearance decays by this (cm) a tick while it
+/// touches the ground (in double precision).
+const SWING_DECAY: f64 = 0.3;
+/// A run blend under this (compared in double) makes the late foot's
+/// swing threshold rise by the gait's ground difference.
+const WALK_RUN_BELOW: f64 = 0.01;
 
 /// Metres (or metres per tick) in the original's centimetres: every rule
 /// below is written in cm.
@@ -587,6 +606,11 @@ pub(super) fn build(setup: &[PartSetup], parts: &mut [Part]) -> (Vec<Pin>, Vec<L
         parts[i].foot = Some(point);
         let contact = weights(&parts[i], point);
         let at = parts[i].point(&contact);
+        // The clip's ankle as last sampled (the feet routine's own record):
+        // the model's own pose until the first sample writes one.
+        let anim_hip = parts[i]
+            .parent
+            .map_or(Vec3::ZERO, |p| Vec3::from(parts[p].transform().translation));
         legs.push(Leg {
             shin: i,
             point,
@@ -616,8 +640,8 @@ pub(super) fn build(setup: &[PartSetup], parts: &mut [Part]) -> (Vec<Pin>, Vec<L
             lift: 0.0,
             planted: false,
             posed_offset: Vec3::ZERO,
-            anim_contact: Vec3::ZERO,
-            anim_hip: Vec3::ZERO,
+            anim_contact: at,
+            anim_hip,
             goal: Vec3::ZERO,
             reach_knee: 0.0,
             contact_lag: 0.0,
@@ -645,6 +669,11 @@ impl Ragdoll {
     /// The legs the balance reads.
     pub fn legs(&self) -> &[Leg] {
         &self.legs
+    }
+
+    /// The legs, for the muscles-off sampler's foot plants.
+    pub fn legs_mut(&mut self) -> &mut [Leg] {
+        &mut self.legs
     }
 
     /// The feet's landing count in the running step episode.
@@ -721,6 +750,17 @@ impl Ragdoll {
             return;
         };
         let bearing = drive.bearing;
+        // The walk's ground difference this tick, read from last tick's
+        // grounds before this tick's feet move: the late foot's swing
+        // threshold adds its magnitude.
+        let gait_gap = feet::gait_gap(
+            bearing.progress,
+            drive.balance.gait_grounds_cm[0],
+            drive.balance.gait_grounds_cm[1],
+        );
+        // The locomotion lag factor: each walking leg whose contact trails
+        // its animated spot cuts the push, from 1.
+        let mut foot_lag = 1.0;
         let bonus = drive.race.balance_bonus;
         let scale = drive.stats.scale;
         // Down: lying, or getting up (a collapsing body, unsupported as it
@@ -1016,6 +1056,29 @@ impl Ragdoll {
             if let Some(f) = leg.foot {
                 parts[f].friction = friction;
             }
+            // The per-leg lag: how far the contact trails its animated spot
+            // along the facing, in cm. The original measures the animated
+            // contact in the character frame against the physical one along
+            // the frame's forward axis, negated while the walk is backwards
+            // (the bearing's facing is already negated then); a lead that
+            // is not ahead (or is a NaN) is none. A lead inside 60·size
+            // cuts the push by 1 − (lead/60·size)², and one at or past it
+            // ends the push (a NaN limit cuts, as the unordered compare
+            // falls through to the cut).
+            let lead = if bearing.walking && !down {
+                let along = cm(leg.anim_contact - c).dot(bearing.facing);
+                if along > 0.0 { along } else { 0.0 }
+            } else {
+                0.0
+            };
+            if bearing.walking && !down && lead > 0.0 {
+                let limit = 60.0 * drive.stats.size;
+                if limit <= lead {
+                    foot_lag = 0.0;
+                } else {
+                    foot_lag *= 1.0 - (lead / limit) * (lead / limit);
+                }
+            }
             // A walking foot's probe is at its ankle, swayed along the
             // facing, its sphere 10 cm widened by the gait up to 20. Any
             // other's is at its ankle, or toward its anchor while anchored,
@@ -1054,17 +1117,55 @@ impl Ragdoll {
                 leg.smoothed = ground / CM;
                 leg.ground = Some(leg.smoothed);
                 leg.anchor.y = feet::anchor_height(ground, cm(sole), cm(c.y)) / CM;
-                // The sole's floor: the original's Ground Query is a ray
-                // against floor-flagged meshes only, which no Exarust
-                // level has, so it misses and the floor is the ground plus
-                // the leg's offset, never over the lower leg's origin.
+                // The sole's floor: the original's Ground Query is a point
+                // ray under the toe, from 30 cm over the ground down 60 cm,
+                // against the floor pieces only. A hit raises a moving
+                // body's ground to it (the foot steps onto what it is over);
+                // the floor is the higher of the hit and the old ground
+                // (10 cm lower while the foot touches) plus its clearance,
+                // never over the lower leg's origin.
                 let knee = parts[leg.shin].transform().translation.y;
                 let touching = leg.state.has(FootState::TOUCHING);
-                leg.floor =
-                    feet::sole_floor(ground, touching, leg.contact_lag, None, cm(knee)) / CM;
-                // Standing, no foot is lifted (a walking foot's swing comes
-                // with its gait).
-                leg.state.0 &= !FootState::LIFTED;
+                let toe = leg.foot.map_or(c, |f| parts[f].point(&leg.toe));
+                let over = Vec3::new(toe.x, ground / CM + GROUND_QUERY_ABOVE / CM, toe.z);
+                let hit = level.floor_below(over, GROUND_QUERY_DEPTH / CM).map(cm);
+                leg.floor = feet::sole_floor(ground, touching, leg.contact_lag, hit, cm(knee)) / CM;
+                if let Some(h) = hit
+                    && bearing.moving
+                    && ground <= h
+                    && h != ground
+                {
+                    leg.smoothed = h / CM;
+                    leg.ground = Some(leg.smoothed);
+                }
+                if bearing.walking && !down && touching {
+                    // Locomoting and touching: the swing clearance decays
+                    // by the double 0.3 a tick, the step lift is none, and
+                    // the late foot's swing flag is set by its lead. The
+                    // threshold is 10·scale×(0.25 − frac(0.5·leg + progress
+                    // + 1)); at a walk it first rises by the gait's ground
+                    // difference, capped at 25 cm (the processor's minimum,
+                    // so a NaN gives 25). The flag is set while the lead
+                    // times the heading alignment is over it.
+                    leg.contact_lag =
+                        engine_math::max((f64::from(leg.contact_lag) - SWING_DECAY) as f32, 0.0);
+                    let phase =
+                        super::locomotion::fraction(i as f32 * 0.5 + (bearing.progress + 1.0));
+                    let mut threshold = (10.0 * scale) * (0.25 - phase);
+                    if f64::from(bearing.run) < WALK_RUN_BELOW {
+                        threshold = engine_math::min(threshold + gait_gap.abs(), 25.0);
+                    }
+                    if threshold < lead * bearing.align {
+                        leg.state.0 |= FootState::LIFTED;
+                    } else {
+                        leg.state.0 &= !FootState::LIFTED;
+                    }
+                    leg.lift = 0.0;
+                } else {
+                    // Any other foot is not lifted; a walking foot that
+                    // does not touch swings with its gait.
+                    leg.state.0 &= !FootState::LIFTED;
+                }
             } else {
                 leg.state.0 |= FootState::LIFTED | FootState::NO_GROUND;
                 leg.anchor.y = under;
@@ -1075,6 +1176,9 @@ impl Ragdoll {
                 .is_some_and(|g| foot_grounded(cm(c.y - g - leg.offset), bearing.moving, scale));
             grounded += usize::from(leg.grounded);
         }
+        // The push waits for the feet: the product of every walking leg's
+        // lag cut, 1 when no lead is positive (or the body does not walk).
+        drive.bearing.lag = foot_lag;
         if grounded > 0 {
             if !b.has_support {
                 b.landing = LANDING_WEIGHT;
@@ -1158,6 +1262,134 @@ impl Ragdoll {
         ];
         // The feet routine's decay of the imbalance accumulator.
         b.decay_imbalance();
+    }
+
+    /// The placement's leg snap, as the original's placement runs it when a
+    /// character is put into the scene: each leg's probe is its clip ankle
+    /// plus 5·scale cm along the shin's forward axis; a sphere of 10 cm
+    /// starting at the frame's height plus the leg's length is swept 300 cm
+    /// down for the ground under it (a Height Query over the level; a miss
+    /// is 10 000 cm under the frame); the average of the hits is the
+    /// character's ground. The lower leg chooses the frame's height, with
+    /// the reach its clip leaves it; each leg's anchor is then its clip
+    /// ankle across the ground (no probe offset) at its ground + sole, its
+    /// ground and sole floor that ground, and the standing IK is run with
+    /// its snap set. Returns the frame height the rule computes (cm), or
+    /// None when no foot finds ground.
+    ///
+    /// The original's frame height is (the root part's clip height less the
+    /// chosen leg's thigh) plus the chosen ground, the reach and the sole:
+    /// the root over its hip, the hip over its ankle. The caller decides
+    /// whether to move the character by it; Exarust's spawn keeps the
+    /// controller's own height. The original also moves each thigh to its
+    /// clip place on the new frame, which Exarust's freshly built body
+    /// already holds.
+    pub fn snap_placement<L: Level + ?Sized>(&mut self, level: &L, frame: Affine3A) -> Option<f32> {
+        let drive = self.drive.as_ref()?;
+        if self.legs.len() != 2 {
+            return None;
+        }
+        let scale = drive.stats.scale;
+        let sole_cm = self.sole * CM;
+        let local = |p: Vec3| frame.inverse().transform_point3(p);
+        // Each leg's probe and the ground under it.
+        let miss = frame.translation.y * CM + NO_GROUND;
+        let mut spots = [Vec3::ZERO; 2];
+        let mut grounds = [miss; 2];
+        let mut hits = 0;
+        let mut sum = 0.0;
+        for (i, leg) in self.legs.iter().enumerate() {
+            let contact = self.parts[leg.shin].point(&leg.contact);
+            let axis = Vec3::from(self.parts[leg.shin].transform().matrix3.z_axis);
+            let probe = contact + axis * (STANCE_SIDE * scale / CM);
+            let start = Vec3::new(probe.x, frame.translation.y + leg.length, probe.z);
+            let found = level
+                .height_below(start, HEIGHT_RADIUS / CM, HEIGHT_DEPTH / CM)
+                .map(cm);
+            spots[i] = contact;
+            if let Some(h) = found {
+                grounds[i] = h;
+                sum += h;
+                hits += 1;
+            }
+        }
+        if hits == 0 {
+            return None;
+        }
+        let character_ground = sum / hits as f32;
+        // One foot's record chooses the height, the original's index 1
+        // when leg 0's ground is lower. Its clip's reach is the triangle of
+        // the thigh, the shin and 0.766 of their product (the original's
+        // 40° cosine) less the clip's horizontal ankle offset; a foot whose
+        // contact hangs too far under its hip hands the choice to the
+        // other.
+        let pick = usize::from(grounds[0] - grounds[1] < 0.0);
+        let mut chosen = pick;
+        let mut reach = self.leg_reach_cm(chosen, &local);
+        let (low, high) = (chosen, 1 - chosen);
+        let clip_y = |i: usize| {
+            let leg = &self.legs[i];
+            local(self.parts[leg.shin].point(&leg.contact)).y * CM
+        };
+        let hip_y = |i: usize| {
+            let leg = &self.legs[i];
+            let thigh = self.parts[leg.shin].parent?;
+            Some(local(Vec3::from(self.parts[thigh].transform().translation)).y * CM)
+        };
+        if (grounds[0] - grounds[1]).abs() + clip_y(low) <= hip_y(low).unwrap_or(0.0) - reach {
+            chosen = high;
+            reach = hip_y(high).unwrap_or(0.0) - clip_y(high);
+        }
+        let root = self.parts.iter().position(|p| p.parent.is_none());
+        let root_y = root.map_or(0.0, |r| {
+            local(Vec3::from(self.parts[r].transform().translation)).y * CM
+        });
+        let thigh_y = hip_y(chosen).unwrap_or(0.0);
+        // The frame's height the original writes: the root over the chosen
+        // thigh, the chosen ground, the reach and the sole (cm).
+        let height = (root_y - thigh_y) + grounds[chosen] + reach + sole_cm;
+        let sole = self.sole;
+        let Ragdoll { legs, drive, .. } = self;
+        let drive = drive.as_mut()?;
+        drive.balance.under = character_ground / CM;
+        for (i, leg) in legs.iter_mut().enumerate() {
+            let at = Vec3::new(spots[i].x, grounds[i] / CM + sole, spots[i].z);
+            leg.anchor = at;
+            leg.at = at;
+            leg.before = at;
+            leg.ground = Some(grounds[i] / CM);
+            leg.smoothed = grounds[i] / CM;
+            leg.floor = grounds[i] / CM;
+        }
+        self.snap_legs(frame);
+        Some(height)
+    }
+
+    /// One leg's clip reach in the placement's height rule (cm): the thigh
+    /// and shin lengths against the clip's horizontal (z, x) ankle offset
+    /// from the hip, shaped by the original's `r² + (1 − r)·√r`.
+    fn leg_reach_cm(&self, i: usize, local: &impl Fn(Vec3) -> Vec3) -> f32 {
+        let Some(leg) = self.legs.get(i) else {
+            return 0.0;
+        };
+        let Some(thigh) = self.parts[leg.shin].parent else {
+            return 0.0;
+        };
+        let thigh_len = self.parts[leg.shin].origin.length() * CM;
+        let shin_len = leg.point.length() * CM;
+        let ankle = local(self.parts[leg.shin].point(&leg.contact)) * CM;
+        let hip = local(Vec3::from(self.parts[thigh].transform().translation)) * CM;
+        let v = ankle - hip;
+        let slack = ((shin_len * shin_len + thigh_len * thigh_len)
+            - thigh_len * 2.0 * shin_len * REACH_COS)
+            - (v.z * v.z + v.x * v.x);
+        let full = leg.length * CM;
+        if slack <= 0.0 || full <= 0.0 {
+            0.0
+        } else {
+            let r = slack.sqrt() / full;
+            (r * r + (1.0 - r) * r.sqrt()) * full
+        }
     }
 }
 

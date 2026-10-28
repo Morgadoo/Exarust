@@ -691,38 +691,41 @@ fn the_target_follows_a_30_cm_step() {
 }
 
 /// The feet's lag: a foot 10 cm behind its animated spot along the facing
-/// cuts the factor by (10/60)² (scale 1); 60 cm behind cuts it to 0.
+/// cuts the factor by (10/60)² (size 1); 60 cm behind cuts it to 0. The
+/// feet routine measures it from last tick's animated contact, so the body
+/// aims once before the feet move.
 #[test]
 fn the_feet_lag_cuts_the_push() {
     let (mut body, pose) = standing_at(Vec3::ZERO);
     let floor = floor_quad(0.0, 5.0);
     body.measure_balance(&floor[..]);
     body.aim(Affine3A::IDENTITY, pose.clone());
-    let facing = Vec3::Z;
-    let targets = drive(&body).targets().to_vec();
-    assert!(close(
-        feet_lag(&body.parts, &body.legs, &targets, facing, 1.0),
-        1.0,
-        1e-4
-    ));
+    body.set_bearing(Bearing {
+        moving: true,
+        walking: true,
+        facing: Vec3::Z,
+        align: 1.0,
+        ..Bearing::default()
+    });
+    body.measure_balance(&floor[..]);
+    assert!(close(drive(&body).bearing.lag, 1.0, 1e-4));
     let shins: Vec<usize> = body.legs.iter().map(|l| l.shin).collect();
     for &shin in &shins {
         for x in &mut body.parts[shin].positions {
-            *x -= facing * 0.1;
+            *x -= Vec3::Z * 0.1;
         }
     }
-    let lag = feet_lag(&body.parts, &body.legs, &targets, facing, 1.0);
+    body.measure_balance(&floor[..]);
+    let lag = drive(&body).bearing.lag;
     let one = 1.0 - (10.0f32 / 60.0).powi(2);
     assert!(close(lag, one * one, 1e-5), "{lag}");
     for &shin in &shins {
         for x in &mut body.parts[shin].positions {
-            *x -= facing * 0.5;
+            *x -= Vec3::Z * 0.5;
         }
     }
-    assert_eq!(
-        feet_lag(&body.parts, &body.legs, &targets, facing, 1.0),
-        0.0
-    );
+    body.measure_balance(&floor[..]);
+    assert_eq!(drive(&body).bearing.lag, 0.0);
 }
 
 /// A moving body's carry takes the locomotion drive × S² × the push gain ×

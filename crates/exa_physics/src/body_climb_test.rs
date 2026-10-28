@@ -273,14 +273,17 @@ fn climb(carried: bool) -> Climb {
     }
 }
 
-/// A body whose condition is walking stops at the first riser. At the
+/// A body whose condition is walking stops at the risers. At the
 /// game's 1.4 m/s the moving blend stays near the lowest foot, the support
 /// pins stay slack, and this body has no gait plants to step its feet up;
 /// the locomotion leg IK folds each leg onto the ground its own foot finds,
 /// so the feet rest on the step the body has reached. From 1.2 m before
 /// four 18 cm steps it finishes short of the landing, its feet on their
 /// grounds, balance 1 whether or not the controller carries it. The two
-/// pelvis heights agree, so the controller's floor does not raise it.
+/// pelvis heights agree, so the controller's floor does not raise it. Its
+/// stance feet trail the in-place walk's pose, so the late-foot swing flag
+/// (0x10) lifts them and it climbs to the second step (0.50 m) rather than
+/// stopping at the first (0.3 m).
 #[test]
 fn a_walking_body_stays_short_of_the_landing() {
     let up = climb(true);
@@ -298,7 +301,7 @@ fn a_walking_body_stays_short_of_the_landing() {
             climbed.place
         );
         assert!(
-            (-0.3..0.3).contains(&climbed.place),
+            (-0.3..0.7).contains(&climbed.place),
             "{label} pelvis at {}",
             climbed.place
         );

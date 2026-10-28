@@ -786,3 +786,243 @@ fn the_reset_heading() {
     assert_eq!(h, Vec2::ZERO);
     assert_eq!(super::reset_heading(Vec3::ZERO, Vec3::ZERO), Vec2::ZERO);
 }
+
+/// A walking foot that trails its animated spot cuts the push by
+/// (1 − (lead/60)²) on each leg, and a touching foot whose lead (times the
+/// alignment, 1 here) is over its swing threshold takes the swing flag
+/// (0x10). At progress 0 the thresholds are 10·(0.25 − frac(0.5·leg + 1)):
+/// 2.5 cm for leg 0 and −2.5 cm for leg 1, each capped at 25 cm with no
+/// ground difference. A 2 cm lead swings leg 1 only; 30 cm swings both.
+#[test]
+fn the_late_walking_foot_swings_and_cuts_the_push() {
+    let floor = floor();
+    let mut body = biped();
+    body.measure_balance(&floor[..]);
+    body.set_bearing(Bearing {
+        moving: true,
+        walking: true,
+        facing: Vec3::Z,
+        align: 1.0,
+        ..Bearing::default()
+    });
+    body.measure_balance(&floor[..]);
+    assert_eq!(drive(&body).bearing.lag, 1.0);
+    for leg in body.legs.iter() {
+        assert!(!leg.state.has(FootState::LIFTED), "planted, not swinging");
+    }
+    let shins: Vec<usize> = body.legs.iter().map(|l| l.shin).collect();
+    for &shin in &shins {
+        for x in &mut body.parts[shin].positions {
+            *x -= Vec3::Z * 0.02;
+        }
+    }
+    body.measure_balance(&floor[..]);
+    let touching = |l: &Leg| l.state.has(FootState::TOUCHING);
+    if touching(&body.legs[0]) {
+        assert!(
+            !body.legs[0].state.has(FootState::LIFTED),
+            "2 cm is under 2.5"
+        );
+    }
+    if touching(&body.legs[1]) {
+        assert!(
+            body.legs[1].state.has(FootState::LIFTED),
+            "2 cm is over −2.5"
+        );
+    }
+    let one = 1.0 - (2.0f32 / 60.0).powi(2);
+    assert!((drive(&body).bearing.lag - one * one).abs() < 1e-5);
+    for &shin in &shins {
+        for x in &mut body.parts[shin].positions {
+            *x -= Vec3::Z * 0.28;
+        }
+    }
+    body.measure_balance(&floor[..]);
+    // Only a foot that touches gets the swing flag: a foot in the air is
+    // already the gait's swing, and its flag is cleared.
+    assert!(
+        body.legs
+            .iter()
+            .any(|l| touching(l) && l.state.has(FootState::LIFTED)),
+        "the late touching foot swings"
+    );
+    for leg in body.legs.iter().filter(|l| touching(l)) {
+        assert!(leg.state.has(FootState::LIFTED), "30 cm is over both");
+    }
+    let half = 1.0 - (30.0f32 / 60.0).powi(2);
+    assert!((drive(&body).bearing.lag - half * half).abs() < 1e-5);
+}
+
+/// The swing threshold's ground-difference rise is capped at 25 cm by the
+/// processor's minimum (a NaN sum gives 25).
+#[test]
+fn the_swing_threshold_is_capped_at_25() {
+    use crate::engine_math::min;
+    assert_eq!(min(2.5 + 40.0, 25.0), 25.0);
+    assert_eq!(min(2.5 + 10.0, 25.0), 12.5);
+    assert_eq!(min(f32::NAN, 25.0), 25.0);
+}
+
+/// Walking backwards, the bearing's facing is already negated: a foot that
+/// trails its animated spot toward the walk's direction (behind it along
+/// the negated facing) cuts the push once, not twice negated into none.
+#[test]
+fn the_backward_lag_reads_the_negated_facing() {
+    let floor = floor();
+    let mut body = biped();
+    body.measure_balance(&floor[..]);
+    body.set_bearing(Bearing {
+        moving: true,
+        walking: true,
+        facing: -Vec3::Z,
+        backpedal: true,
+        align: 1.0,
+        ..Bearing::default()
+    });
+    if let Some(d) = body.drive.as_mut() {
+        d.note_gait(0.0, 0.0, true);
+    }
+    body.measure_balance(&floor[..]);
+    let shins: Vec<usize> = body.legs.iter().map(|l| l.shin).collect();
+    for &shin in &shins {
+        for x in &mut body.parts[shin].positions {
+            *x += Vec3::Z * 0.1;
+        }
+    }
+    body.measure_balance(&floor[..]);
+    let one = 1.0 - (10.0f32 / 60.0).powi(2);
+    assert!((drive(&body).bearing.lag - one * one).abs() < 1e-5);
+}
+
+/// The Ground Query is a point ray under the toe: it finds the floor and a
+/// step's top under it, stops at its depth, ignores faces turned down and
+/// skips a movable piece (a prop's stand-in), as the original's class-word
+/// filter does.
+#[test]
+fn the_ground_query_is_a_point_ray_over_floor_pieces() {
+    struct Pieces {
+        tris: Vec<[Vec3; 3]>,
+        movable: bool,
+    }
+    impl Level for Pieces {
+        fn pieces(&self, _: Vec3, _: Vec3, out: &mut Vec<u32>) {
+            out.push(0);
+        }
+        fn triangles(&self, _: u32, _: Vec3, _: Vec3, out: &mut Vec<[Vec3; 3]>) {
+            out.extend_from_slice(&self.tris);
+        }
+        fn movable(&self, _: u32) -> bool {
+            self.movable
+        }
+        // A floor-flagged mesh, unless it stands in for a movable prop.
+        fn floor_piece(&self, _: u32) -> bool {
+            !self.movable
+        }
+    }
+    let mut tris = floor();
+    tris.extend(square(Vec2::new(0.55, 0.0), 0.3, 0.5));
+    let pieces = Pieces {
+        tris: tris.clone(),
+        movable: false,
+    };
+    let over = |x: f32, y: f32| Vec3::new(x, y, 0.0);
+    assert_eq!(pieces.floor_below(over(0.0, 0.4), 0.6), Some(0.0));
+    assert_eq!(pieces.floor_below(over(0.55, 0.4), 0.6), Some(0.3));
+    // A point that starts below the step top is under it.
+    assert_eq!(pieces.floor_below(over(0.55, 0.2), 0.6), Some(0.0));
+    // 0.4 m to the floor is deeper than 0.3 m.
+    assert_eq!(pieces.floor_below(over(0.0, 0.4), 0.3), None);
+    // A ray inside the face's depth but past it: none.
+    assert_eq!(pieces.floor_below(over(0.0, 0.4), 0.05), None);
+    // Faces turned down are not floor.
+    let down: Vec<[Vec3; 3]> = floor().iter().map(|t| [t[0], t[2], t[1]]).collect();
+    let flipped = Pieces {
+        tris: down,
+        movable: false,
+    };
+    assert_eq!(flipped.floor_below(over(0.0, 0.4), 0.6), None);
+    // A movable piece is some body's stand-in, not the level's floor.
+    let stand_in = Pieces {
+        tris,
+        movable: true,
+    };
+    assert_eq!(stand_in.floor_below(over(0.0, 0.4), 0.6), None);
+    // A NaN or negative depth asks nothing.
+    assert_eq!(pieces.floor_below(over(0.0, 0.4), f32::NAN), None);
+    assert_eq!(pieces.floor_below(over(0.0, 0.4), -1.0), None);
+}
+
+/// The Ground Query's hit raises a moving body's foot ground: the biped
+/// stands on the low floor with its ankles at z ≈ 1 cm, and a step top
+/// 15 cm up starts under its toes (20 cm ahead, at z ≈ 21 cm). The query
+/// finds the step and the foot's ground and floor rise to it; a still body
+/// keeps the ground its Height Query found.
+#[test]
+fn the_ground_query_raises_a_moving_feet_ground() {
+    let mut level = floor();
+    level.extend(square(Vec2::new(0.0, 0.30), 0.15, 0.15));
+    let mut body = biped();
+    body.measure_balance(&level[..]);
+    body.set_bearing(Bearing {
+        moving: true,
+        walking: true,
+        facing: Vec3::Z,
+        align: 1.0,
+        ..Bearing::default()
+    });
+    body.measure_balance(&level[..]);
+    let grounds: Vec<f32> = body.legs.iter().map(|l| l.ground.unwrap_or(-1.0)).collect();
+    assert!(
+        grounds.iter().all(|g| (g - 0.15).abs() < 1e-4),
+        "{grounds:?}"
+    );
+    for leg in body.legs.iter() {
+        assert!((leg.floor - 0.15).abs() < 1e-4, "{}", leg.floor);
+    }
+    let mut still = biped();
+    still.measure_balance(&level[..]);
+    still.measure_balance(&level[..]);
+    for leg in still.legs.iter() {
+        assert!(
+            leg.ground.is_none_or(|g| g.abs() < 1e-4),
+            "{:?}",
+            leg.ground
+        );
+    }
+}
+
+/// The placement's leg snap: a biped put on a 15 cm platform finds that
+/// ground under each stance spot with the 10 cm sphere dropped from the
+/// frame's height plus its leg, sets each anchor to the ground plus the
+/// sole, its ground and floor to the hit, the character's ground to the
+/// average, and writes the standing IK's corrections at once (their rates
+/// zero, no thigh turn).
+#[test]
+fn the_placement_snaps_the_legs_onto_the_ground_it_finds() {
+    let platform = square(Vec2::ZERO, 0.15, 10.0);
+    let mut body = biped();
+    let pose: Vec<Affine3A> = body.parts.iter().map(|p| p.transform()).collect();
+    body.aim(Affine3A::IDENTITY, pose);
+    let height = body
+        .snap_placement(&platform[..], Affine3A::IDENTITY)
+        .expect("the platform is under both feet");
+    assert!(height.is_finite());
+    for leg in body.legs.iter() {
+        assert!(
+            (leg.ground.unwrap() - 0.15).abs() < 1e-4,
+            "{:?}",
+            leg.ground
+        );
+        assert!((leg.floor - 0.15).abs() < 1e-4);
+        assert!((leg.anchor.y - (0.15 + body.sole)).abs() < 1e-4);
+        assert_eq!(leg.knee_rate, 0.0);
+        assert_eq!(leg.hip_rate, 0.0);
+        assert_eq!(leg.turn, Quat::IDENTITY);
+    }
+    assert!((drive(&body).balance().under - 0.15).abs() < 1e-4);
+    // No ground under the feet leaves the body alone.
+    let mut empty = biped();
+    let pose: Vec<Affine3A> = empty.parts.iter().map(|p| p.transform()).collect();
+    empty.aim(Affine3A::IDENTITY, pose);
+    assert_eq!(empty.snap_placement(NONE, Affine3A::IDENTITY), None);
+}

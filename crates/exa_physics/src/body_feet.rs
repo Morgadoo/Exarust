@@ -819,9 +819,9 @@ pub fn step_loudness(length_cm: f32) -> f32 {
 }
 
 /// How far the floor may lie under the ground while the foot touches and
-/// the Ground Query hits (cm). The query itself (a ray from 30 cm over the
-/// ground, 60 cm down, against floor-flagged meshes) has no Exarust
-/// counterpart: no level carries the flag, so it always misses.
+/// the Ground Query hits (cm). The query itself is a point ray from 30 cm
+/// over the ground 60 cm down against floor pieces (`Level::floor_below`);
+/// a miss leaves the ground.
 const FLOOR_TOUCHING: f32 = 10.0;
 
 /// The loudness of a walking footstep before the random share: the
@@ -874,9 +874,9 @@ pub struct Footstep {
 /// A foot's sole floor (cm) from the Ground Query's `hit`: the higher of
 /// the hit and the ground (10 cm lower while the foot touches) plus the
 /// leg's own offset, or the ground plus the offset where the query misses;
-/// never above the knee. The original's Ground Query is a ray at the toe,
-/// starting 30 cm over the ground and looking 60 cm down; the body passes
-/// `None` (see [`FLOOR_TOUCHING`]).
+/// never above the knee. The original's Ground Query is a point ray at the
+/// toe, starting 30 cm over the ground and looking 60 cm down
+/// (`Level::floor_below`).
 pub fn sole_floor(
     ground_cm: f32,
     touching: bool,
@@ -994,6 +994,20 @@ pub(super) fn gait_weights(
 /// The fraction of a single, in the engine's (truncating) sense.
 fn frac32(x: f32) -> f32 {
     x - x.trunc()
+}
+
+/// The signed height difference (cm) the walk's gait phase picks from last
+/// tick's two grounds, before its smoothing: the feet routine's
+/// |difference| is the late foot's swing threshold's addition. The phase
+/// is the fraction of progress + 0.45, compared in double as the original
+/// compares it; a NaN phase picks the first.
+pub(super) fn gait_gap(progress: f32, g0: f32, g1: f32) -> f32 {
+    let phase = frac32((f64::from(progress) + 0.45) as f32);
+    if f64::from(phase) > 0.5 {
+        g1 - g0
+    } else {
+        g0 - g1
+    }
 }
 
 /// One walking foot's ground probe, from the leg's index and the clip

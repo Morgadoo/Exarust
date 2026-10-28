@@ -305,6 +305,9 @@ pub struct Bearing {
     /// The body's facing across the ground (negated while it backpedals),
     /// which the feet's lag is measured along.
     pub facing: Vec3,
+    /// How well its pelvis is aligned with its heading, 0.4 to 1, smoothed
+    /// by the movement decision: the late foot's swing flag reads it.
+    pub align: f32,
     /// It walks backwards this tick: the early gait plant takes a foot
     /// moving back at most 0.2 cm a tick.
     pub backpedal: bool,
@@ -373,6 +376,7 @@ impl Default for Bearing {
             push_gain: 0.0,
             lag: 1.0,
             facing: Vec3::Z,
+            align: 1.0,
             backpedal: false,
             stepping: false,
             dormant: false,

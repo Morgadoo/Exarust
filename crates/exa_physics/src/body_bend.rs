@@ -18,7 +18,8 @@
 //! leg; the knee and the hip are the law of cosines of that triangle, and
 //! the corrections are the clip's angles less the target's, eased at
 //! 0.2 rad a tick while the step runs and 0.02 otherwise (the feet routine
-//! never snaps them). The step also turns the thigh 75 % of the way toward
+//! never snaps them; the placement runs the same routine with its snap set,
+//! [`Ragdoll::snap_legs`]). The step also turns the thigh 75 % of the way toward
 //! the target; not stepping, that turn loses a tenth of itself a tick.
 //!
 //! **Locomoting**: the target leg reaches from the physical hip across to
@@ -344,6 +345,9 @@ struct IkTick {
     /// Whether the balance routine runs a recovery step (its angle
     /// smoother's 0.2 rad rate and its thigh's turn toward the target).
     stepping: bool,
+    /// The placement's snap: write each leg's correction at once instead
+    /// of easing toward it, and drop the thigh's extra turn.
+    snap: bool,
     /// The run flag (the locomotion flags' bit 4).
     running: bool,
     stance: f32,
@@ -428,6 +432,7 @@ impl Ragdoll {
             drop: 2.0 * drive.lift_raw / CM,
             lift_cm: drive.lift_raw,
             stepping: drive.steps.stepping,
+            snap: false,
             running: drive.bearing.legs == LegMode::Run,
             stance: drive.stance,
             crouch: drive.bearing.crouch,
@@ -442,11 +447,48 @@ impl Ragdoll {
             }
         }
     }
+
+    /// The placement's leg IK: the standing IK with its snap set, so every
+    /// leg takes the correction its anchor asks for at once (the
+    /// original's placement calls the same routine with its snap argument
+    /// set). The corrections are folded into the next sampled pose.
+    pub(super) fn snap_legs(&mut self, frame: Affine3A) {
+        let Ragdoll {
+            parts,
+            legs,
+            drive,
+            sole,
+            ..
+        } = self;
+        let Some(drive) = drive.as_mut() else {
+            return;
+        };
+        if drive.targets.len() != parts.len() {
+            return;
+        }
+        let tick = IkTick {
+            step: EASE_STANDING,
+            moving_step: EASE_STANDING,
+            drop: 2.0 * drive.lift_raw / CM,
+            lift_cm: drive.lift_raw,
+            stepping: false,
+            snap: true,
+            running: false,
+            stance: drive.stance,
+            crouch: drive.bearing.crouch,
+            frame,
+            sole: *sole,
+        };
+        for leg in legs.iter_mut() {
+            standing_leg(parts, leg, &tick);
+        }
+    }
 }
 
 /// One leg's standing IK: the original's targets, triangle and corrections.
 /// The feet routine runs it with its snap argument clear, so the
-/// corrections always ease (the placement's snap is not reproduced here).
+/// corrections always ease; the placement runs it with the snap set
+/// ([`Ragdoll::snap_legs`]).
 fn standing_leg(parts: &[Part], leg: &mut Leg, tick: &IkTick) {
     let Some(thigh) = parts[leg.shin].parent else {
         return;
@@ -520,18 +562,28 @@ fn standing_leg(parts: &[Part], leg: &mut Leg, tick: &IkTick) {
     let target_hip = hip_angle(thigh_len, shin_len, reach);
     leg.knee_shown = true;
     leg.hip_shown = true;
-    let (knee, knee_rate) = ease(
-        leg.knee,
-        leg.knee_rate,
-        clip_knee - leg.reach_knee,
-        tick.step,
-    );
+    let (knee, knee_rate) = if tick.snap {
+        (clip_knee - leg.reach_knee, 0.0)
+    } else {
+        ease(
+            leg.knee,
+            leg.knee_rate,
+            clip_knee - leg.reach_knee,
+            tick.step,
+        )
+    };
     leg.knee = knee;
     leg.knee_rate = knee_rate;
-    let (hip_corr, hip_rate) = ease(leg.hip, leg.hip_rate, clip_hip - target_hip, tick.step);
+    let (hip_corr, hip_rate) = if tick.snap {
+        (clip_hip - target_hip, 0.0)
+    } else {
+        ease(leg.hip, leg.hip_rate, clip_hip - target_hip, tick.step)
+    };
     leg.hip = hip_corr;
     leg.hip_rate = hip_rate;
-    if tick.stepping {
+    if tick.snap {
+        leg.turn = Quat::IDENTITY;
+    } else if tick.stepping {
         let into = tick.frame.inverse();
         let rest = into.transform_vector3(leg.posed_offset);
         let toward = into.transform_vector3(goal - hip);
