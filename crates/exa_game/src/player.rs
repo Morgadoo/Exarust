@@ -352,10 +352,10 @@ pub(crate) struct CursorGround(pub(crate) Option<Vec3>);
 const AIM_PICK_RANGE: f32 = 40.0;
 
 /// The skeleton's bone numbers the aim point's bone lock reads: the head,
-/// the chest and the belly. [guess: the original reads the target's head
-/// record's own points; Exarust stands these three part origins in for
-/// them.]
-const AIM_BONES: [usize; 3] = [10, 9, 8];
+/// the belly and the pelvis, three points away from the chest it locks
+/// from. [guess: the original reads the target's head record's own points;
+/// Exarust stands these three part origins in for them.]
+const AIM_BONES: [usize; 3] = [10, 8, 1];
 
 /// The aim point with a locked target: the target's chest as the lock's
 /// root and three of its bones, projected to the window, with the pixel
@@ -476,11 +476,15 @@ pub(crate) fn cursor_ground(
         .fixed_hit(ray.origin, *ray.direction, AIM_PICK_RANGE)
         .filter(|distance| *distance > 0.0)
         .map(|distance| ray.origin + *ray.direction * distance);
-    ground.0 = Some(crate::player_behaviour::aim_raised(
-        plane_point,
-        hit,
-        ground_y,
-    ));
+    // The raise rule's 200 cm is in centimetres: the points go to the
+    // rule's own units and back.
+    const PER_M: f32 = 100.0;
+    let raised = crate::player_behaviour::aim_raised(
+        plane_point * PER_M,
+        hit.map(|at| at * PER_M),
+        ground_y * PER_M,
+    );
+    ground.0 = Some(raised / PER_M);
 }
 
 /// The gamepad aim's eased cursor point in the world (m): the stick's

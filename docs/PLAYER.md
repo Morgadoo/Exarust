@@ -1012,7 +1012,7 @@ are wired, the rest are tested functions with no caller yet:
   (`aim_lock_bones`, `bone_screen`, `bone_lock_radius`, `aim_raised`).
   `player::cursor_ground` runs it each frame: the auto-target's opponent
   gives the reference point (its chest) and three of its part origins —
-  the head, the chest and the belly, a stand-in for the original's own
+  the head, the belly and the pelvis, a stand-in for the original's own
   three aim points — and the pixel radius uses the window's width and the
   projection's x scale. The raised point comes from the level's fixed
   colliders along the cursor's ray (the original's navigation pick also

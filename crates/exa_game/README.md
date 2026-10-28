@@ -531,7 +531,7 @@ gamepad's aim runs through the eased world cursor each behaviour tick
 (`player::AimCursor`, read by `player_combat`), and the combat auto-target
 stores its opponent on the player body each tick for the aim point's bone
 lock, which `player::cursor_ground` reads together with the raised surface
-(the bone lock reads the opponent's head, chest and belly part origins, a
+(the bone lock reads the opponent's head, belly and pelvis part origins, a
 stand-in for the original's own three points). The running game records the
 attack timing when an attack starts and holds the next attack until its
 recovery clock (the swing's own stall and Feint renewal still rule a
