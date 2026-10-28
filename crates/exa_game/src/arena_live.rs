@@ -104,7 +104,11 @@ impl ArenaScene {
             prize,
             placed: false,
             records: career.map_or_else(CompanyRecords::default, records_of),
-            bracket: tournament.then(|| bracket_for_template(template)).flatten(),
+            bracket: if tournament {
+                bracket_for_template(template)
+            } else {
+                None
+            },
             weapon_variants: None,
             roll: crate::arena_match::counter_now() as u32,
         }
