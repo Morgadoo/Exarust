@@ -37,6 +37,11 @@ pub const FALL_OUT_HEIGHT: f32 = -50.0;
 /// rejected.
 const MIN_REST_VOLUME: f32 = 1e-12;
 
+/// The smoothing the link conversion gives every slider link (flag 4),
+/// whatever the file stores: the share of the way a slider's point is drawn
+/// to where its last fraction put it.
+const SLIDER_SMOOTHING: f32 = 0.01;
+
 /// One rigid body of a model, as registration needs it (metres, the node's
 /// frame).
 #[derive(Debug, Clone, PartialEq)]
@@ -138,6 +143,7 @@ impl Part {
             friction: RIGID_FRICTION,
             start: positions,
             moved: [Vec3::ZERO; 4],
+            smoothed: [Vec3::ZERO; 4],
             own_origin: [1.0 - own.x - own.y - own.z, own.x, own.y, own.z],
             settled: Affine3A::IDENTITY,
             shown: (Affine3A::IDENTITY, Affine3A::IDENTITY),
@@ -158,6 +164,13 @@ impl Part {
             class_word: 0,
             state_word: 0,
             sound_ready_ms: 0,
+            reacts: true,
+            level_hits: 0,
+            level_point: Vec3::ZERO,
+            level_push: Vec3::ZERO,
+            level_travel: Vec3::ZERO,
+            level_travel2: 0.0,
+            placed_offset: [Vec3::ZERO; 4],
         }
         .settle()
     }
@@ -207,7 +220,13 @@ impl Ragdoll {
                     anchor,
                     slack: l.slack.max(0.0),
                     strength: l.strength,
-                    smoothing: l.smoothing,
+                    // The link conversion gives every slider link, the
+                    // root's to the world too, a 0.01 smoothing.
+                    smoothing: if slider {
+                        SLIDER_SMOOTHING
+                    } else {
+                        l.smoothing
+                    },
                     flags: l.flags,
                     axis,
                     length,
@@ -257,7 +276,13 @@ impl Ragdoll {
                         flags: (l.flags & super::LINK_SOFT_WELD) | super::LINK_BODY,
                         softness: super::PIVOT_SOFTENING,
                         iteration_limit: None,
-                        smoothing: l.smoothing,
+                        // The link conversion gives every slider link a
+                        // 0.01 smoothing; the other links keep the stored one.
+                        smoothing: if l.flags & world_link::SLIDER != 0 {
+                            SLIDER_SMOOTHING
+                        } else {
+                            l.smoothing
+                        },
                         length: 0.0,
                         shares,
                         mobility: (parts[i].inverse_mass, parts[parent].inverse_mass),
@@ -302,6 +327,7 @@ impl Ragdoll {
             pass: 0,
             held_flags: [0; 2],
             held_count: 0,
+            level_impacts: Vec::new(),
         }
     }
 }

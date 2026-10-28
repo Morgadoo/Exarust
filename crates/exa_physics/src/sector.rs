@@ -594,6 +594,213 @@ pub fn mesh_box_distance2(point: Vec3, mesh: &Bounds, transform: &Affine3A) -> f
     sum
 }
 
+/// The state bit that marks a body placed (the original's 0x1000): set
+/// while its settling countdown runs (the integration clears it once the
+/// countdown is spent), and a contact with an unplaced body moves only the
+/// placed side, leaving the other untouched ([`crate::body_pairs`]). A
+/// pair with a placed body takes neither the hit event nor an impact.
+pub const PLACED_STATE: u32 = 0x1000;
+
+/// A body's world values the sector refreshes once a tick, before the
+/// broad phase: its matrix from its particles and rest basis, the
+/// world-aligned box and sphere around its bounds, and the grid cell its
+/// mesh box's world centre falls in.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BodyPose {
+    /// The affine map from the rest tetrahedron to the particles (the
+    /// original's body matrix).
+    pub matrix: Affine3A,
+    /// The world box around the mesh bound: its centre and half extents.
+    pub box_centre: Vec3,
+    pub box_half: Vec3,
+    /// The mesh bound's bounding radius (a rotation keeps a radius).
+    pub box_radius: f32,
+    /// The world sphere around the collision spheres: its centre and
+    /// radius.
+    pub sphere_centre: Vec3,
+    pub sphere_radius: f32,
+    /// The grid cell of the mesh box's world centre, offset by the grid's
+    /// origin.
+    pub cell: (i32, i32),
+}
+
+/// The world values of a body part ([`BodyPose`]) from its rest points,
+/// the inverse rest basis, where the tick has its particles, and its mesh
+/// and sphere bounds in its own space. `origin` is the grid's origin cell.
+pub fn body_pose(
+    rest: &[Vec3; 4],
+    rest_inverse: &bevy::math::Mat3,
+    points: &[Vec3; 4],
+    mesh: &Bounds,
+    spheres: &Bounds,
+    origin: (i32, i32),
+) -> BodyPose {
+    let matrix = crate::body::affine_from_points(rest, rest_inverse, points);
+    let box_centre = matrix.transform_point3(mesh.centre);
+    BodyPose {
+        matrix,
+        box_centre,
+        box_half: mesh.world_half(&matrix),
+        box_radius: mesh.radius,
+        sphere_centre: matrix.transform_point3(spheres.centre),
+        sphere_radius: spheres.radius,
+        cell: cell_of(box_centre * 100.0, origin),
+    }
+}
+
+/// The cell the original parks a body in whose cell index overflowed the
+/// grid: just past the first row (`columns + 1`), which the next tick's
+/// bounds pass migrates it out of.
+pub fn overflow_cell(columns: i32) -> i32 {
+    columns.wrapping_add(1)
+}
+
+/// The original's reset of a body whose grid cell overflowed: its current
+/// and previous particles both become the particles of the tick before
+/// last, so the body is taken back to where it stood two ticks ago (the
+/// matrix and bounds are then recomputed from them). The part's drawn
+/// history is left where it was.
+pub fn reset_overflow(
+    current: &mut [Vec3; 4],
+    previous: &mut [Vec3; 4],
+    previous_previous: &[Vec3; 4],
+) {
+    *previous = *previous_previous;
+    *current = *previous_previous;
+}
+
+/// What a scene-node walk does with a node, as the original's registration
+/// pass decides from the node's words: nothing, a fresh rigid body (with
+/// its body children), a body into the grid only (one the scene already
+/// built), a simulated object (cloth, particles) into the sector's object
+/// list, or a mesh as a static collider with its level mask
+/// ([`static_mask`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Registration {
+    None,
+    /// A body the walker builds and then recurses into (clear).
+    Body,
+    /// A body handed to the grid without rebuilding it.
+    GridOnly,
+    /// A mesh registered as a static collider (and into the static grid
+    /// when the sector has one).
+    Static,
+    /// A simulated object registered with the sector's object list, given
+    /// the sector's world when it was not already built.
+    SimObject,
+}
+
+/// The scene flags the registration pass reads: bit `0x10000` marks a node
+/// whose subtree carries bodies, `0x80000` a node that stays level geometry
+/// (`0x10000` without `0x80000` is a body node), and `0x89` all set marks
+/// a mesh node.
+pub const NODE_BODY_FLAGS: u32 = 0x9_0000;
+/// The body class bits the registration pass reads: a rigid body
+/// (`0x10000000`) or a simulated object (`0x20000000`).
+pub const BODY_LIVE: u32 = 0x1000_0000;
+pub const BODY_SIM_OBJECT: u32 = 0x2000_0000;
+
+/// The registration decision for one scene node ([`Registration`]):
+/// `flags` is the node's runtime flag word, `body_state` its body's class
+/// word, `has_body` whether it carries a body, `body_flags` the body's own
+/// state word (bit `0x10000` = already built) and `node_class` the node's
+/// class word (bit `0x200000` marks a collider mesh).
+pub fn registration(
+    flags: u32,
+    body_state: u32,
+    has_body: bool,
+    body_flags: u32,
+    node_class: u32,
+) -> Registration {
+    if flags & NODE_BODY_FLAGS == 0x1_0000 {
+        if !has_body {
+            return Registration::None;
+        }
+        if body_state & BODY_LIVE != 0 {
+            if body_flags & 0x1_0000 == 0 {
+                Registration::Body
+            } else {
+                Registration::GridOnly
+            }
+        } else if body_state & BODY_SIM_OBJECT != 0 {
+            Registration::SimObject
+        } else {
+            Registration::None
+        }
+    } else if flags & 0x89 == 0x89 {
+        if node_class & 0x20_0000 != 0 {
+            Registration::Static
+        } else {
+            Registration::None
+        }
+    } else {
+        Registration::None
+    }
+}
+
+/// The impact sound scales the original's registration derives from a
+/// body's mobility (after the material divisor): the impact reaction
+/// class bit, the reciprocal of the squared sound factor and the sound
+/// factor itself.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ImpactScale {
+    /// Whether the body's material has a collision sound, which sets the
+    /// class bit `0x40000` (only such bodies take the impact call).
+    pub reactions: bool,
+    /// `1/v²`, the factor the impact's sound volume is squared by.
+    pub squared_reciprocal: f32,
+    /// `(√v + v)/2`, the mean of the sound factor and its root.
+    pub volume: f32,
+}
+
+/// [`ImpactScale`] for a mobility and whether the node's first mesh part has
+/// a material collision sound: `v = min(2m, 1) + 1` with the processor's
+/// minimum (so a NaN mobility gives 2).
+pub fn impact_scale(mobility: f32, has_sound: bool) -> ImpactScale {
+    let v = min_first(mobility * 2.0, 1.0) + 1.0;
+    ImpactScale {
+        reactions: has_sound,
+        squared_reciprocal: 1.0 / (v * v),
+        volume: (v.sqrt() + v) * 0.5,
+    }
+}
+
+/// The collider and body mask bits the level detection tests: a pair is
+/// skipped when the two masks share a bit. A static collider is mask 1, and
+/// mask 4 when it is flagged or a thin horizontal plate; a body anchored to
+/// the world is mask 1, and a living character's foot mask 4.
+pub const MASK_SMALL: u32 = 1;
+pub const MASK_THIN: u32 = 4;
+/// A thin horizontal collider: its local half height under this (cm).
+pub const THIN_HALF_HEIGHT_CM: f32 = 1.0;
+/// Its world up component over this makes it horizontal.
+pub const THIN_UP: f32 = 0.99;
+
+/// A static collider's level mask, as the original sets it when the mesh
+/// registers: 1, plus 4 when the node is flagged (the original's node word
+/// bit `0x800000`) or the mesh is a thin horizontal plate (local half
+/// height under 1 cm, world up over 0.99).
+pub fn static_mask(flagged: bool, half_height_cm: f32, world_up: f32) -> u32 {
+    let mut mask = MASK_SMALL;
+    if flagged || (half_height_cm < THIN_HALF_HEIGHT_CM && world_up > THIN_UP) {
+        mask |= MASK_THIN;
+    }
+    mask
+}
+
+/// A body's world mask for the level detection, as the original keeps it:
+/// bit 1 on a root anchored to the world (a hung body), bit 4 on a living
+/// character's foot (so it ignores thin plates and flagged meshes).
+pub fn body_mask(world_anchored: bool, foot: bool) -> u32 {
+    (if world_anchored { MASK_SMALL } else { 0 }) | (if foot { MASK_THIN } else { 0 })
+}
+
+/// Whether a body and a collider meet under their masks: only when they
+/// share no bit.
+pub fn level_meets(body_mask: u32, collider_mask: u32) -> bool {
+    body_mask & collider_mask == 0
+}
+
 /// The stages of one sector's 83 Hz step, in the original's order. The
 /// existing schedule runs them; this names them so a new piece of work
 /// joins the right stage instead of a new loop.

@@ -265,6 +265,13 @@ pub(super) fn register_legs(parts: &mut [Part]) {
         p.out = true;
         p.group = union;
     }
+    for p in parts.iter_mut() {
+        if p.pairing.out {
+            // A foot does not react to level impacts (the original clears
+            // the class bit at add-to-world).
+            p.reacts = false;
+        }
+    }
 }
 
 /// Puts a character's lower legs in `layer` (0 when it dies or collapses,
@@ -306,12 +313,6 @@ fn meets(p: &Part) -> bool {
     !p.pairing.out && p.pairing.radius() > 0.0 && !p.spheres.is_empty()
 }
 
-/// The world centre of the sphere around a part's spheres, from its
-/// particles' weights.
-fn bound_centre(p: &Part) -> Vec3 {
-    p.point(&p.pairing.centre)
-}
-
 /// A part found for this tick's detection, with the places the meet tests
 /// read: the original's world bounds, computed when the bodies are
 /// bucketed and refreshed for both parts after a pair with hits.
@@ -331,24 +332,24 @@ struct Seen {
 
 impl Seen {
     fn of(body: usize, part: usize, p: &Part) -> Self {
-        let now = p.transform();
-        let mesh = now.transform_point3(p.pairing.mesh.centre);
+        let pose = p.pose((0, 0));
         Self {
             body,
             part,
-            cell: cell_of(mesh),
-            sphere: bound_centre(p),
-            mesh,
-            now,
+            cell: pose.cell,
+            sphere: pose.sphere_centre,
+            mesh: pose.box_centre,
+            now: pose.matrix,
         }
     }
 
     /// The part's world bounds again, after a hit moved it; it stays in its
     /// cell, as the original's does until the next tick.
     fn refresh(&mut self, p: &Part) {
-        self.now = p.transform();
-        self.mesh = self.now.transform_point3(p.pairing.mesh.centre);
-        self.sphere = bound_centre(p);
+        let pose = p.pose((0, 0));
+        self.now = pose.matrix;
+        self.mesh = pose.box_centre;
+        self.sphere = pose.sphere_centre;
     }
 }
 
@@ -361,12 +362,6 @@ fn meeting(p: &Part, seen: &Seen) -> Meeting {
         previous: p.settled,
         current: seen.now,
     }
-}
-
-/// The grid cell (x, z) of a point (m): the original's round-down of
-/// x × 1/600 (cm).
-fn cell_of(x: Vec3) -> (i32, i32) {
-    sector::cell_of(x * 100.0, (0, 0))
 }
 
 /// The shares of a push or correction two parts of mobilities `a` and `b`
@@ -540,7 +535,11 @@ pub struct Touch {
     pub a: (Entity, usize),
     /// The touched side.
     pub b: (Entity, usize),
-    /// Hits of A's spheres on B's.
+    /// Any contact of A's spheres on B's keeps the pair: a placed pair
+    /// records its points here without counting impact hits.
+    pub met: bool,
+    /// Impact hits of A's spheres on B's (the dynamic path only; the
+    /// placed callback records none, so a placed pair never strikes).
     pub hits: u32,
     /// The mean touched point (world).
     pub point: Vec3,
@@ -612,6 +611,19 @@ pub enum BroadPhase {
     AllPairs,
 }
 
+impl BroadPhase {
+    /// The search a sector's constructor gives a scene's flag word: the
+    /// all-pairs walk unless either of the scene's grid bits (`0x2000000`,
+    /// `0x4000000`) is set, in which case the 600 cm grid.
+    pub fn for_scene(scene_flags: u32) -> Self {
+        if scene_flags & 0x0600_0000 == 0 {
+            Self::AllPairs
+        } else {
+            Self::Cells
+        }
+    }
+}
+
 /// The pair stage of the solver ([`SolverStage`]): body–body detection
 /// after the iterations, the pair pass at the start of each of the next
 /// tick's iterations, the pair friction at the start of each friction
@@ -644,6 +656,15 @@ impl Pairs {
     pub fn all_pairs() -> Self {
         Self {
             phase: BroadPhase::AllPairs,
+            ..Self::default()
+        }
+    }
+
+    /// A pair stage for a scene's flag word, as the original's sector
+    /// constructor chooses ([`BroadPhase::for_scene`]).
+    pub fn for_scene(scene_flags: u32) -> Self {
+        Self {
+            phase: BroadPhase::for_scene(scene_flags),
             ..Self::default()
         }
     }
@@ -869,6 +890,7 @@ impl Pairs {
         let mut touch = Touch {
             a: (pair.a.key, a.1),
             b: (pair.b.key, b.1),
+            met: false,
             hits: 0,
             point: Vec3::ZERO,
             push: Vec3::ZERO,
@@ -883,21 +905,28 @@ impl Pairs {
         // settling countdown stands for it). A pair with exactly one placed
         // body goes through the original's placed callback, which counts no
         // hits, so it takes no impact either.
-        let placed = (bodies[a.0].settling() > 0, bodies[b.0].settling() > 0);
+        let placed = (bodies[a.0].placed(), bodies[b.0].placed());
         {
             let Some((pa, pb)) = parts_mut(bodies, a, b) else {
                 return false;
             };
             touch.hit_event = !placed.0 && !placed.1 && hit_event(pa.state, pb.state);
-            collide(pa, pb, &mut pair, &mut touch);
+            let one_placed = match (placed.0, placed.1) {
+                (true, false) => Some(true),
+                (false, true) => Some(false),
+                _ => None,
+            };
+            collide(pa, pb, &mut pair, &mut touch, one_placed);
             if placed.0 == placed.1 {
                 touch.strike(pa.pairing.mobility, pb.pairing.mobility);
             }
         }
-        if touch.hits == 0 {
+        if !touch.met {
             return false;
         }
-        touch.point /= touch.hits as f32;
+        if touch.hits > 0 {
+            touch.point /= touch.hits as f32;
+        }
         self.pairs.push(pair);
         self.touches.push(touch);
         if let Some((ra, rb)) = bodies_mut(bodies, a.0, b.0) {
@@ -923,8 +952,10 @@ impl Pairs {
     }
 }
 
-/// A's spheres against B's ([`Pairs::generate`]).
-fn collide(pa: &mut Part, pb: &mut Part, pair: &mut Pair, touch: &mut Touch) {
+/// A's spheres against B's ([`Pairs::generate`]). `placed` is `Some(true)`
+/// when exactly A is placed and `Some(false)` when exactly B is, as the
+/// original's placed callback records the contact without impact data.
+fn collide(pa: &mut Part, pb: &mut Part, pair: &mut Pair, touch: &mut Touch, placed: Option<bool>) {
     let mut a_now = pa.transform();
     let mut b_now = pb.transform();
     let before = pb.settled.inverse() * pa.settled;
@@ -933,7 +964,9 @@ fn collide(pa: &mut Part, pb: &mut Part, pair: &mut Pair, touch: &mut Touch) {
         let (c, r) = pa.spheres[i];
         let start = before.transform_point3(c);
         let mut end = (b_now.inverse() * a_now).transform_point3(c);
-        let swept = cm(end - start).length_squared() > SWEEP_TRAVEL2;
+        // The placed callback always runs the static query (the original
+        // sweeps only in the dynamic path).
+        let swept = placed.is_none() && cm(end - start).length_squared() > SWEEP_TRAVEL2;
         let gap = if swept {
             segment_distance(b_centre, start, end)
         } else {
@@ -949,13 +982,19 @@ fn collide(pa: &mut Part, pb: &mut Part, pair: &mut Pair, touch: &mut Touch) {
             } else {
                 sphere_on_sphere(end, r, cb, rb)
             };
-            if let Some((q, delta)) = hit
-                && on_hit(pa, pb, &b_now, c, q, delta, pair, touch)
-            {
-                // Later spheres see where the push left both parts.
-                a_now = pa.transform();
-                b_now = pb.transform();
-                end = (b_now.inverse() * a_now).transform_point3(c);
+            if let Some((q, delta)) = hit {
+                let took = match placed {
+                    Some(a_placed) => {
+                        on_placed_hit(pa, pb, a_placed, &b_now, c, q, delta, pair, touch)
+                    }
+                    None => on_hit(pa, pb, &b_now, c, q, delta, pair, touch),
+                };
+                if took {
+                    // Later spheres see where the push left both parts.
+                    a_now = pa.transform();
+                    b_now = pb.transform();
+                    end = (b_now.inverse() * a_now).transform_point3(c);
+                }
             }
         }
     }
@@ -987,8 +1026,9 @@ fn on_hit(
     }
     let point = b_now.transform_point3(q);
     let push = b_now.transform_vector3(delta);
+    let deepest = point - push;
     let wa = pa
-        .weights_now(point - push)
+        .weights_now(deepest)
         .filter(|w| w.iter().all(|x| x.abs() <= MAX_WEIGHT))
         .unwrap_or_else(|| weights(pa, c));
     let wb = weights(pb, q);
@@ -997,17 +1037,77 @@ fn on_hit(
         b: wb,
         normal: push.normalize(),
     });
+    touch.met = true;
     touch.hits += 1;
     touch.point += point;
     touch.push += push;
     touch.deepest = touch.deepest.max(push.length());
-    let travel = cm(pa.slip(&wa)) - cm(pb.slip(&wb));
+    // The relative smoothed velocity of the two contact points, as the
+    // original takes it from the parts' smoothed displacement arrays (cm a
+    // tick).
+    let travel = cm(pa.smoothed_velocity(&wa) - pb.smoothed_velocity(&wb));
     let travel2 = travel.z * travel.z + (travel.y * travel.y + travel.x * travel.x);
     if travel2 > touch.travel2 {
         touch.travel = travel;
         touch.travel2 = travel2;
     }
     push_apart(pa, pb, wa, wb, push);
+    true
+}
+
+/// A hit of a pair with exactly one placed body (the original's placed
+/// callback): the point is offered to the pair with A's weights on the
+/// deepest point and B's on the touched point; the placed side takes the
+/// whole push with its weights normalised to sum, its edges restored past
+/// the push strain, and records the opposite push in its offset array; the
+/// other side does not move. No impact data is counted, so the pair never
+/// strikes. Returns whether the hit recorded a contact.
+#[allow(clippy::too_many_arguments)]
+fn on_placed_hit(
+    pa: &mut Part,
+    pb: &mut Part,
+    a_placed: bool,
+    b_now: &Affine3A,
+    c: Vec3,
+    q: Vec3,
+    delta: Vec3,
+    pair: &mut Pair,
+    touch: &mut Touch,
+) -> bool {
+    // A NaN push goes on, as the original's unordered compare does.
+    if cm(delta).length_squared() < MIN_PUSH2 {
+        return false;
+    }
+    let point = b_now.transform_point3(q);
+    let push = b_now.transform_vector3(delta);
+    let deepest = point - push;
+    let wa = pa
+        .weights_now(deepest)
+        .filter(|w| w.iter().all(|x| x.abs() <= MAX_WEIGHT))
+        .unwrap_or_else(|| weights(pa, c));
+    let wb = weights(pb, q);
+    pair.offer(Point {
+        a: wa,
+        b: wb,
+        normal: push.normalize(),
+    });
+    touch.met = true;
+    let (placed, weights, move_by) = if a_placed {
+        (pa, wa, push)
+    } else {
+        (pb, wb, -push)
+    };
+    if let Some(wn) = sector::normalise_sum(weights) {
+        // The callback's offset record takes the normalised weights as
+        // they are (the pass's record clamps them at zero).
+        if a_placed {
+            shove(placed, &wn, move_by);
+            placed.offset_push(&wn, -move_by);
+        } else {
+            placed.offset_push(&wn, -move_by);
+            shove(placed, &wn, move_by);
+        }
+    }
     true
 }
 
@@ -1023,23 +1123,84 @@ fn solve_pair(pa: &mut Part, pb: &mut Part, points: &[Point]) -> bool {
     let (sa, sb) = shares(pa.pairing.mobility, pb.pairing.mobility);
     let mut work = false;
     for p in points {
-        let a = pa.point(&p.a);
-        let b = pb.point(&p.b);
-        let depth = cm((b - a).dot(p.normal));
-        if depth.is_nan() || depth <= SLOP {
+        let Some(c) = correction(
+            pa.point(&p.a),
+            pb.point(&p.b),
+            pa.point_at_start(&p.a),
+            pb.point_at_start(&p.b),
+            p.normal,
+            mu,
+        ) else {
             continue;
-        }
-        let travel = (a - pa.point_at_start(&p.a)) - (b - pb.point_at_start(&p.b));
-        let across = travel - p.normal * travel.dot(p.normal);
-        let mut c = p.normal * ((depth - SLOP) / CM);
-        let limit = (FLAT_FRICTION + STEEP_FRICTION * p.normal.y * p.normal.y) * mu;
-        if limit >= cm(across).length_squared() {
-            c -= across * (SLIDE * limit);
-        } else {
-            c -= across;
-        }
+        };
         pa.push(&p.a.map(|w| w.max(0.0)), c * sa);
         pb.push(&p.b.map(|w| w.max(0.0)), c * -sb);
+        work = true;
+    }
+    if work {
+        keep_rigid(pa);
+        keep_rigid(pb);
+    }
+    work
+}
+
+/// The pair pass's correction for one point (m): the normal part that takes
+/// a depth over the 0.01 cm slop back to it, less the tangential travel of
+/// A against B this tick (cancelled under the friction limit, only a
+/// hundredth of the limit of it kept above). `mu` is the product of the two
+/// parts' level friction. None at or under the slop (a NaN depth too).
+fn correction(
+    a: Vec3,
+    b: Vec3,
+    a_start: Vec3,
+    b_start: Vec3,
+    normal: Vec3,
+    mu: f32,
+) -> Option<Vec3> {
+    let depth = cm((b - a).dot(normal));
+    if depth.is_nan() || depth <= SLOP {
+        return None;
+    }
+    // A's travel against B's this tick, across the normal.
+    let travel = (a - a_start) - (b - b_start);
+    let across = travel - normal * travel.dot(normal);
+    let mut c = normal * ((depth - SLOP) / CM);
+    let limit = (FLAT_FRICTION + STEEP_FRICTION * normal.y * normal.y) * mu;
+    if limit >= cm(across).length_squared() {
+        c -= across * (SLIDE * limit);
+    } else {
+        c -= across;
+    }
+    Some(c)
+}
+
+/// [`solve_pair`] for a pair with exactly one placed body: the placed side
+/// takes the whole correction (`a_placed` says it is A) over its
+/// non-negative weights and records the opposite push in its offset array;
+/// the other side does not move. The friction product is both parts' still.
+fn solve_placed_pair(pa: &mut Part, pb: &mut Part, a_placed: bool, points: &[Point]) -> bool {
+    let mu = pa.friction * pb.friction;
+    let mut work = false;
+    for p in points {
+        let Some(c) = correction(
+            pa.point(&p.a),
+            pb.point(&p.b),
+            pa.point_at_start(&p.a),
+            pb.point_at_start(&p.b),
+            p.normal,
+            mu,
+        ) else {
+            continue;
+        };
+        if a_placed {
+            let w = p.a.map(|w| w.max(0.0));
+            pa.push(&w, c);
+            pa.offset_push(&w, -c);
+        } else {
+            let w = p.b.map(|w| w.max(0.0));
+            pb.push(&w, -c);
+            pb.offset_push(&w, c);
+        }
         work = true;
     }
     if work {
@@ -1120,6 +1281,20 @@ impl SolverStage for Pairs {
             if !pair.live || pair.count == 0 {
                 continue;
             }
+            // Which side is placed decides the solver: a pair with exactly
+            // one placed body moves only that side (the original's placed
+            // pair pass).
+            let placed = if pair.a.body < bodies.len() && pair.b.body < bodies.len() {
+                let a = bodies[pair.a.body].placed();
+                let b = bodies[pair.b.body].placed();
+                match (a, b) {
+                    (true, false) => Some(true),
+                    (false, true) => Some(false),
+                    _ => None,
+                }
+            } else {
+                None
+            };
             let Some((pa, pb)) = parts_mut(
                 bodies,
                 (pair.a.body, pair.a.part),
@@ -1128,7 +1303,11 @@ impl SolverStage for Pairs {
                 pair.live = false;
                 continue;
             };
-            if !solve_pair(pa, pb, &pair.points[..pair.count]) {
+            let worked = match placed {
+                Some(a_placed) => solve_placed_pair(pa, pb, a_placed, &pair.points[..pair.count]),
+                None => solve_pair(pa, pb, &pair.points[..pair.count]),
+            };
+            if !worked {
                 pair.count = 0;
             }
         }

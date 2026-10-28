@@ -170,6 +170,7 @@ mod tests {
         let touch = Touch {
             a: (a, 16),
             b: (b, 1),
+            met: true,
             hits: 2,
             point: Vec3::new(0.5, 1.25, -2.0),
             push: Vec3::new(0.0, 0.03, 0.04),

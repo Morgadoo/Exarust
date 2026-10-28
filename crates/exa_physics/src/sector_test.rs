@@ -409,3 +409,136 @@ fn the_step_stages_and_budgets_are_the_originals() {
     assert_eq!(PAIR_POINTS, 4);
     assert_eq!(CELL_SIZE_CM, 600.0);
 }
+
+/// The sector's cached body values are the matrix from the particles and
+/// the rest basis, the world box and sphere of the bounds under it, and the
+/// cell of the box centre (cm, floored): a translated unit body keeps its
+/// half extents, a quarter-turned one swaps x and y.
+#[test]
+fn a_body_pose_is_its_matrix_bounds_and_cell() {
+    let rest = [Vec3::ZERO, Vec3::X, Vec3::Y, Vec3::Z];
+    let inverse = bevy::math::Mat3::from_cols(Vec3::X, Vec3::Y, Vec3::Z).inverse();
+    let mesh = Bounds {
+        centre: Vec3::ZERO,
+        half: Vec3::new(1.0, 2.0, 3.0),
+        radius: 3.7416575,
+    };
+    let spheres = Bounds {
+        centre: Vec3::new(0.1, 0.0, 0.0),
+        half: Vec3::ZERO,
+        radius: 0.2,
+    };
+    let moved = rest.map(|p| p + Vec3::new(1.0, 2.0, 3.0));
+    let pose = body_pose(&rest, &inverse, &moved, &mesh, &spheres, (2, -3));
+    assert_eq!(
+        pose.matrix,
+        Affine3A::from_translation(Vec3::new(1.0, 2.0, 3.0))
+    );
+    assert_eq!(pose.box_centre, Vec3::new(1.0, 2.0, 3.0));
+    assert_eq!(pose.box_half, Vec3::new(1.0, 2.0, 3.0));
+    assert_eq!(pose.box_radius, 3.7416575);
+    assert_eq!(pose.sphere_centre, Vec3::new(1.1, 2.0, 3.0));
+    assert_eq!(pose.sphere_radius, 0.2);
+    // x = 100 cm → floor(1/6) = 0, plus 2; z = 300 cm → floor(1/2) = 0, −3.
+    assert_eq!(pose.cell, (2, -3));
+
+    // A quarter turn about z: x′ = y, y′ = −x; the box's half extents swap.
+    let turned = [Vec3::ZERO, Vec3::Y, Vec3::NEG_X, Vec3::Z];
+    let pose = body_pose(&rest, &inverse, &turned, &mesh, &spheres, (0, 0));
+    assert_eq!(pose.box_half, Vec3::new(2.0, 1.0, 3.0));
+}
+
+/// An overflowed body goes back to its particles of the tick before last,
+/// and parks just past the first grid row.
+#[test]
+fn an_overflow_resets_to_the_tick_before_last() {
+    let before = [
+        Vec3::new(1.0, 0.0, 0.0),
+        Vec3::new(2.0, 0.0, 0.0),
+        Vec3::new(1.0, 1.0, 0.0),
+        Vec3::new(1.0, 0.0, 1.0),
+    ];
+    let mut current = before.map(|p| p + Vec3::splat(9.0));
+    let mut previous = before.map(|p| p + Vec3::splat(4.0));
+    reset_overflow(&mut current, &mut previous, &before);
+    assert_eq!(current, before);
+    assert_eq!(previous, before);
+    assert_eq!(overflow_cell(32), 33);
+    assert_eq!(overflow_cell(-1), 0);
+}
+
+/// The registration walk: a body node builds its body (unless the scene
+/// already built it), a simulated object registers with the sector's
+/// object list, a mesh node registers a static collider, and everything
+/// else is skipped.
+#[test]
+fn node_flags_decide_what_registers() {
+    assert_eq!(
+        registration(0x1_0000, 0x1000_0000, true, 0, 0),
+        Registration::Body
+    );
+    assert_eq!(
+        registration(0x1_0000, 0x1000_0000, true, 0x1_0000, 0),
+        Registration::GridOnly
+    );
+    assert_eq!(
+        registration(0x1_0000, 0x2000_0000, true, 0, 0),
+        Registration::SimObject
+    );
+    assert_eq!(
+        registration(0x1_0000, 0x1000_0000, false, 0, 0),
+        Registration::None
+    );
+    assert_eq!(
+        registration(0x9_0000, 0x1000_0000, true, 0, 0),
+        Registration::None
+    );
+    assert_eq!(
+        registration(0x0, 0x1000_0000, true, 0, 0),
+        Registration::None
+    );
+    assert_eq!(
+        registration(0x89, 0x1000_0000, false, 0, 0x20_0000),
+        Registration::Static
+    );
+    assert_eq!(
+        registration(0x89, 0x1000_0000, false, 0, 0x10_0000),
+        Registration::None
+    );
+}
+
+/// The registration's impact sound scales: v = min(2m, 1) + 1, its squared
+/// reciprocal, and the mean of v and its root.
+#[test]
+fn impact_scales_follow_the_mobility() {
+    let slow = impact_scale(0.05, true);
+    assert!(slow.reactions);
+    assert!((slow.squared_reciprocal - 1.0 / 1.21).abs() < 1e-7);
+    assert!((slow.volume - (1.1_f32.sqrt() + 1.1) * 0.5).abs() < 1e-7);
+    let fast = impact_scale(1.0, false);
+    assert!(!fast.reactions);
+    assert_eq!(fast.squared_reciprocal, 0.25);
+    assert_eq!(fast.volume, 1.7071068);
+    // The processor's minimum gives way to 1 on a NaN mobility.
+    assert_eq!(impact_scale(f32::NAN, true).volume, 1.7071068);
+}
+
+/// The level detection's masks: a collider is 1 and gains 4 when flagged or
+/// thin and horizontal; a hung body is 1, a living foot 4, and a pair is
+/// skipped only when the masks share a bit.
+#[test]
+fn level_masks_follow_the_collider_and_body_rules() {
+    assert_eq!(static_mask(false, 10.0, 0.0), MASK_SMALL);
+    assert_eq!(static_mask(true, 10.0, 0.0), MASK_SMALL | MASK_THIN);
+    // Thin is under 1 cm, and horizontal must be over 0.99.
+    assert_eq!(static_mask(false, 0.5, 0.995), MASK_SMALL | MASK_THIN);
+    assert_eq!(static_mask(false, 1.0, 0.995), MASK_SMALL);
+    assert_eq!(static_mask(false, 0.5, 0.99), MASK_SMALL);
+    assert_eq!(body_mask(true, false), MASK_SMALL);
+    assert_eq!(body_mask(false, true), MASK_THIN);
+    assert_eq!(body_mask(true, true), MASK_SMALL | MASK_THIN);
+    assert!(!level_meets(MASK_SMALL, MASK_SMALL));
+    assert!(!level_meets(MASK_THIN, MASK_THIN));
+    assert!(level_meets(MASK_THIN, MASK_SMALL));
+    assert!(level_meets(0, MASK_SMALL | MASK_THIN));
+}

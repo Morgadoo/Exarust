@@ -626,12 +626,50 @@ prop). Rules in cm and ticks:
 - **Wake.** After a pair's hits, the body with the lower sleep countdown
   takes the other's (a sleeper also drops its level contacts), so a living
   body (256) that touches a corpse wakes it for at least 1.5 s.
+- **Placed pairs.** A body in the placed state (the original's state bit
+  `0x1000`, set while the settling countdown runs) meets another body
+  one-sided: the same points are recorded but
+  the placed side takes the whole push (no mobility share) over its
+  non-negative weights, records the opposite push in its extra particle
+  array (its node controller's offset), and the other side is not touched.
+  The detection runs the static sphere query only, and its callback
+  normalises the placed side's weights to sum one; it counts no impact hit, so a placed pair is kept and wakes the
+  sleeper but never strikes.
+- **Hit events and impacts.** A pair whose one side carries the active
+  strike bit and whose other is hittable (a living limb or a held part)
+  takes the hit event instead of the impact path, unless either body is
+  placed: the event carries the mean contact point, the summed push and
+  the relative smoothed velocity. Otherwise, with at least one hit, a
+  relative smoothed velocity squared over 1 cm² a tick² (the parts'
+  smoothed velocity, a tenth of the way to each tick's displacement) and
+  different body roots, the impact is that square times the negated cosine
+  against the summed push; over 0.5 each side with the impact class bit is
+  struck with it over 2·m + 1 of the other's mobility.
+- **Level contacts' impacts.** A part's accepted level hits this tick give
+  the mean contact point and the fastest smoothed velocity against their
+  summed pushes; a part that reacts to impacts (the class bit 0x40000, not
+  a foot) whose travel square passes 0.1 cm² a tick² and whose strength
+  passes 0.1 records a level impact for the sound and damage the original's
+  impact call makes of it.
+- **Registration** (`exa_physics::sector::registration`) reads a scene
+  node's words as the original's walk does: a body node (flag `0x10000`,
+  `0x80000` clear) builds its body unless the scene already did (then the
+  body only joins the grid), a node whose body has the simulated-object bit
+  joins the sector's object list, and a mesh node (flags `0x89`, class bit
+  `0x200000`) registers as a static collider with its level mask. The sector picks the all-pairs walk unless the
+  scene's flag word has either grid bit (`0x2000000`, `0x4000000`).
+  Registration gives a body its countdown 0 and the asleep bits, its
+  mobility over the material divisor, and its material's impact sound
+  scale `v = min(2m, 1) + 1` (`1/v²` and `(√v + v)/2`) with the impact
+  class bit when the material has a collision sound.
 - Not yet in Exarust: spheres against the touched side's mesh and the
   parts' spheres fitted to their meshes (C20); held weapons, shields and
-  torches as parts, the hit events between a striking weapon and what it
-  struck, and impacts with their sounds and damage (C21, C22); the placed
-  state's one-sided pushes; the overlap-only queries of the AI and of
-  placement; Break Tangle and the two-handed grip bits.
+  torches as parts; the hit event's receiving slot (the combat routine
+  that classifies a striker's contact) and impacts with their sounds and
+  damage (C21, C22), whose payload the pair stage now provides; the
+  placed array's reader (the node controller that consumes the offset);
+  the overlap-only queries of the AI and of placement; Break Tangle and
+  the two-handed grip bits.
 
 Balance and support (`exa_physics::body::Balance`, `Ragdoll::measure_balance`;
 REA on the original's balance and feet routines, its Height Query, its body

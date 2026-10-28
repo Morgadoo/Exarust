@@ -267,6 +267,9 @@ pub struct Part {
     /// integration found it (before its inertia): the velocity the pose
     /// drive damps.
     moved: [Vec3; 4],
+    /// The original's smoothed velocity: a copy of [`moved`] lerped a tenth
+    /// of the way each tick, which the pair and level impacts read.
+    smoothed: [Vec3; 4],
     /// The weights of the part's own origin (its joint, the point (0, 0, 0)
     /// of its space) on its particles: where the pose drive turns it about.
     own_origin: [f32; 4],
@@ -322,6 +325,70 @@ pub struct Part {
     /// When this part may play its impact sound again, on the 32-bit game
     /// clock. A blow on it stamps [`crate::part::part_sound_ready`].
     pub sound_ready_ms: u32,
+    /// Whether the part takes the level's impact call (the original's class
+    /// bit 0x40000, set at add-to-world on every part but a foot and its
+    /// children; a rigid body has it when its material has a collision
+    /// sound, which Exarust takes as always).
+    pub reacts: bool,
+    /// This tick's accepted level hits of the part: their count, summed
+    /// world points and pushes, and the fastest smoothed velocity with its
+    /// square, from which the level impact is made.
+    level_hits: u32,
+    level_point: Vec3,
+    level_push: Vec3,
+    level_travel: Vec3,
+    level_travel2: f32,
+    /// The original's extra particle array a placed body's pair solves
+    /// record: each push it applies is recorded back with the opposite
+    /// sign, so the placed body's node controller can read how far a
+    /// contact wanted to move it. The two pushes cancel, so nothing moves
+    /// by this array; [`crate::body_pairs`] keeps it for the node owner.
+    pub(crate) placed_offset: [Vec3; 4],
+}
+
+/// A level impact: a part hit the static level hard enough for the
+/// original's impact call (a fall or a scrape), with the mean world contact
+/// point and the strength `|v|²·(−cos(v, Σδ))`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LevelImpact {
+    pub part: usize,
+    /// The mean contact point (world, m).
+    pub point: Vec3,
+    /// The impact strength (cm² a tick²).
+    pub strength: f32,
+}
+
+/// A level contact's fastest smoothed velocity squared must pass this to
+/// make an impact (the original's 0.1 cm² a tick²).
+pub const LEVEL_STRIKE_TRAVEL2: f32 = 0.1;
+/// The level impact's strength must pass this to be called (0.1).
+pub const LEVEL_STRIKE_IMPACT: f32 = 0.1;
+
+/// A level impact record is made for a part whose reaction class is set
+/// (the original's class bit 0x40000, cleared on a foot and its children)
+/// and whose fastest smoothed velocity squared `travel2` (cm² a tick²)
+/// passes 0.1: the strength is that square times the negated cosine
+/// against the summed pushes, and must pass 0.1.
+fn level_impact(
+    part: usize,
+    point: Vec3,
+    push: Vec3,
+    travel: Vec3,
+    travel2: f32,
+) -> Option<LevelImpact> {
+    if travel2.is_nan() || travel2 <= LEVEL_STRIKE_TRAVEL2 {
+        return None;
+    }
+    let strength = travel2 * -crate::engine_math::cosine(travel, balance::cm(push));
+    if strength > LEVEL_STRIKE_IMPACT {
+        Some(LevelImpact {
+            part,
+            point,
+            strength,
+        })
+    } else {
+        None
+    }
 }
 
 /// The share of a push at a point of a body that acts, as the original's
@@ -434,6 +501,7 @@ impl Part {
             },
             start: positions,
             moved: [Vec3::ZERO; 4],
+            smoothed: [Vec3::ZERO; 4],
             own_origin: [1.0 - own.x - own.y - own.z, own.x, own.y, own.z],
             settled: Affine3A::IDENTITY,
             shown: (Affine3A::IDENTITY, Affine3A::IDENTITY),
@@ -453,6 +521,13 @@ impl Part {
             class_word: 0,
             state_word: 0,
             sound_ready_ms: 0,
+            reacts: true,
+            level_hits: 0,
+            level_point: Vec3::ZERO,
+            level_push: Vec3::ZERO,
+            level_travel: Vec3::ZERO,
+            level_travel2: 0.0,
+            placed_offset: [Vec3::ZERO; 4],
         }
         .settle()
     }
@@ -463,6 +538,21 @@ impl Part {
         self.shown = (self.settled, self.settled);
         self.drawn_particles = (self.positions, self.positions);
         self
+    }
+
+    /// The part's world values the sector refreshes each tick: its matrix,
+    /// the world box around its mesh bound, the world sphere around its
+    /// spheres and the grid cell of the mesh box centre
+    /// ([`crate::sector::BodyPose`]).
+    pub(crate) fn pose(&self, origin: (i32, i32)) -> crate::sector::BodyPose {
+        crate::sector::body_pose(
+            &self.rest,
+            &self.rest_inverse,
+            &self.positions,
+            &self.pairing.mesh,
+            &self.pairing.sphere,
+            origin,
+        )
     }
 
     /// The part's transform `alpha` of the way from where the tick before
@@ -505,6 +595,15 @@ impl Part {
         }
     }
 
+    /// Records `delta` times the weights `w` in the placed-offset array
+    /// (the pair pass clamps its weights at zero first; the placed hit
+    /// does not).
+    fn offset_push(&mut self, w: &[f32; 4], delta: Vec3) {
+        for (p, wi) in self.placed_offset.iter_mut().zip(w) {
+            *p += delta * *wi;
+        }
+    }
+
     /// Weights of the world point `x` over the current particles.
     fn weights_now(&self, x: Vec3) -> Option<[f32; 4]> {
         let edges = Mat3::from_cols(
@@ -524,6 +623,12 @@ impl Part {
         (0..4)
             .map(|i| (self.positions[i] - self.start[i]) * w[i])
             .sum()
+    }
+
+    /// The part's smoothed velocity (m a tick) at the point with weights
+    /// `w`: the original's impact travel reads its smoothed array so.
+    fn smoothed_velocity(&self, w: &[f32; 4]) -> Vec3 {
+        (0..4).map(|i| self.smoothed[i] * w[i]).sum()
     }
 
     /// A level hit on sphere `centre` (part space): the closest point `q` on
@@ -557,6 +662,18 @@ impl Part {
             for (x, c) in self.positions.iter_mut().zip(clamped) {
                 *x += delta * (c / top);
             }
+        }
+        // The level impact's bookkeeping: the smoothed velocity at the
+        // contact weights as found (the original reads it before it
+        // normalises them for the push), and the point and push sums.
+        let travel = balance::cm(self.smoothed_velocity(&w));
+        let travel2 = travel.z * travel.z + (travel.y * travel.y + travel.x * travel.x);
+        self.level_hits += 1;
+        self.level_point += q;
+        self.level_push += delta;
+        if travel2 > self.level_travel2 {
+            self.level_travel = travel;
+            self.level_travel2 = travel2;
         }
         self.strain += len2.sqrt();
         if self.strain > PUSH_STRAIN {
@@ -1239,6 +1356,9 @@ pub struct Ragdoll {
     /// models, so the word is kept for them; no part reads it yet.
     held_flags: [u32; 2],
     held_count: usize,
+    /// The level impacts this tick's detection found (a fall or scrape hard
+    /// enough to sound and hurt), one per part.
+    level_impacts: Vec<LevelImpact>,
 }
 
 /// Muscles of a living body: the animated pose it follows.
@@ -1911,6 +2031,7 @@ impl Ragdoll {
             pass: 0,
             held_flags: [0; 2],
             held_count: 0,
+            level_impacts: Vec::new(),
         }
     }
 
@@ -2270,6 +2391,15 @@ impl Ragdoll {
     /// Ticks still to run with gravity but no inertia.
     pub fn settling(&self) -> i32 {
         self.settle
+    }
+
+    /// Whether the body is placed (the original's state bit 0x1000): the
+    /// original's integration keeps the bit only while the settling
+    /// countdown runs and clears it once the countdown is spent, so the
+    /// placed state is [`Ragdoll::settling`] above zero. A contact with
+    /// another, unplaced body moves only the placed side.
+    pub fn placed(&self) -> bool {
+        self.settle > 0
     }
 
     /// Moves the whole body by `offset` (m), as the original's translate
@@ -2864,6 +2994,12 @@ impl Ragdoll {
         self.fell_out
     }
 
+    /// The level impacts this tick's detection found, one per part, for the
+    /// sound and damage the original's impact call makes of them.
+    pub fn level_impacts(&self) -> &[LevelImpact] {
+        &self.level_impacts
+    }
+
     /// A tick the body sleeps through. The first one takes its velocity
     /// away (its positions become its previous ones) and puts it in deep
     /// sleep, where nothing is done. It is drawn where it lies, its level
@@ -2871,6 +3007,7 @@ impl Ragdoll {
     /// (the original counts down one left on a sleeper first; nothing in
     /// Exarust leaves one).
     fn sleep_tick(&mut self) {
+        self.level_impacts.clear();
         if self.sleep == Sleep::Asleep {
             for p in &mut self.parts {
                 p.previous = p.positions;
@@ -2923,8 +3060,10 @@ impl Ragdoll {
                 .unwrap_or(gravity);
             if settling {
                 // No velocity is carried or recorded: the next tick's
-                // velocity is this tick's move.
+                // velocity is this tick's move, and the placed offset array
+                // is zeroed, as the original's Verlet step does.
                 p.moved = [Vec3::ZERO; 4];
+                p.placed_offset = [Vec3::ZERO; 4];
                 for i in 0..4 {
                     p.previous[i] = p.positions[i];
                     p.positions[i] += pull * p.gravity[i];
@@ -2940,6 +3079,9 @@ impl Ragdoll {
             for i in 0..4 {
                 let v = p.positions[i] - p.previous[i];
                 p.moved[i] = v;
+                // The original's smoothed velocity: a tenth of the way to
+                // this tick's displacement.
+                p.smoothed[i] += (v - p.smoothed[i]) * 0.1;
                 p.previous[i] = p.positions[i];
                 p.positions[i] += v * keep + pull * p.gravity[i];
             }
@@ -3106,10 +3248,20 @@ impl Ragdoll {
     }
 
     /// Tests every sphere against the level: swept from where the last tick
-    /// left it when it moved far enough, else where it is.
+    /// left it when it moved far enough, else where it is. Each part's hits
+    /// this tick make up to one level impact ([`LevelImpact`]).
     fn detect<L: Level + ?Sized>(&mut self, level: &L) {
         let mut pieces = std::mem::take(&mut self.pieces);
         let mut triangles = std::mem::take(&mut self.triangles);
+        let mut impacts = std::mem::take(&mut self.level_impacts);
+        impacts.clear();
+        for p in &mut self.parts {
+            p.level_hits = 0;
+            p.level_point = Vec3::ZERO;
+            p.level_push = Vec3::ZERO;
+            p.level_travel = Vec3::ZERO;
+            p.level_travel2 = 0.0;
+        }
         for p in &mut self.parts {
             if p.no_level {
                 continue;
@@ -3158,6 +3310,19 @@ impl Ragdoll {
                 }
             }
         }
+        for (i, p) in self.parts.iter().enumerate() {
+            if p.level_hits == 0 || !p.reacts {
+                continue;
+            }
+            // The original scales the sum by the count's reciprocal.
+            let point = p.level_point * (1.0 / p.level_hits as f32);
+            if let Some(impact) =
+                level_impact(i, point, p.level_push, p.level_travel, p.level_travel2)
+            {
+                impacts.push(impact);
+            }
+        }
+        self.level_impacts = impacts;
         self.pieces = pieces;
         self.triangles = triangles;
     }
@@ -3309,7 +3474,11 @@ fn drive_parts(parts: &mut [Part], drive: &Drive) {
 /// The affine map taking `rest` to `points`, from the rest edges' inverse:
 /// the original's body matrix built from the particles and their inverse
 /// rest basis (it maps all four points exactly).
-fn affine_from_points(rest: &[Vec3; 4], rest_inverse: &Mat3, points: &[Vec3; 4]) -> Affine3A {
+pub(crate) fn affine_from_points(
+    rest: &[Vec3; 4],
+    rest_inverse: &Mat3,
+    points: &[Vec3; 4],
+) -> Affine3A {
     let edges = Mat3::from_cols(
         points[1] - points[0],
         points[2] - points[0],
@@ -3893,6 +4062,70 @@ mod tests {
         let once = daze_energy(energy, daze);
         assert_eq!(once.to_bits(), 0x3e41_98b0);
         assert_ne!(once, energy * (1.0 - daze));
+    }
+
+    /// A level impact needs a smoothed travel squared over 0.1 cm² and an
+    /// impact strength over 0.1: 1 cm a tick into a push straight against
+    /// it is the whole square, and equal values do not pass either gate.
+    #[test]
+    fn level_impacts_take_the_original_gates() {
+        let up = Vec3::new(0.0, 0.01, 0.0);
+        let down = Vec3::new(0.0, -1.0, 0.0);
+        let impact = level_impact(3, Vec3::ZERO, up, down, 1.0).unwrap();
+        assert_eq!(impact.part, 3);
+        assert_eq!(impact.strength, 1.0);
+        assert_eq!(level_impact(0, Vec3::ZERO, up, down, 0.1), None);
+        // A travel square of 0.09 is under the travel gate.
+        assert_eq!(level_impact(0, Vec3::ZERO, up, down, 0.09), None);
+        // No push gives the original's zero cosine, hence no strength.
+        assert_eq!(level_impact(0, Vec3::ZERO, Vec3::ZERO, down, 1.0), None);
+        // A push along the travel gives a negative cosine, hence none.
+        assert_eq!(level_impact(0, Vec3::ZERO, -up, down, 1.0), None);
+    }
+
+    /// A ball dropped onto a floor makes a level impact once it falls fast
+    /// enough for the smoothed velocity (a tenth of the way each tick) to
+    /// pass the gates, and nothing on its resting ticks.
+    #[test]
+    fn a_falling_body_makes_a_level_impact() {
+        let ground = floor_quad(0.0, 5.0);
+        let e = Entity::PLACEHOLDER;
+        // One cube a metre over the floor.
+        let mut body = Ragdoll::new(&[PartSetup {
+            bone: 1,
+            entity: e,
+            parent: None,
+            world: Affine3A::from_translation(Vec3::Y),
+            centre: Vec3::ZERO,
+            half: Vec3::splat(0.15),
+            origin: Vec3::ZERO,
+            links: vec![],
+            foot: None,
+            pins: Vec::new(),
+            spheres: None,
+        }]);
+        let mut impact = None;
+        for _ in 0..60 {
+            body.tick(ground.as_slice());
+            if let Some(&i) = body.level_impacts().first() {
+                impact = Some(i);
+                break;
+            }
+        }
+        let impact = impact.expect("no level impact on landing");
+        assert!(impact.strength > 0.1);
+        // Once it lies still, no further impact is made.
+        for _ in 0..300 {
+            body.tick(ground.as_slice());
+        }
+        for _ in 0..20 {
+            body.tick(ground.as_slice());
+            assert!(
+                body.level_impacts().is_empty(),
+                "{:?}",
+                body.level_impacts()
+            );
+        }
     }
 }
 

@@ -321,6 +321,9 @@ fn a_slider_projects_the_point_on_its_axis_and_applies_the_pull_twice() {
         ..rigid_part(Affine3A::IDENTITY, Vec3::ZERO, Vec::new())
     }]);
     body.world[0].length = 0.0;
+    // The link conversion gives a slider 0.01; this checks the pull at the
+    // half smoothing worked above.
+    body.world[0].smoothing = 0.5;
     let on_part = body.world[0].on_part;
     let before = body.parts[0].point(&on_part);
     body.pull_world_links(0);

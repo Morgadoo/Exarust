@@ -96,13 +96,44 @@ radius, a limb's its node box), the two-way meet test that gates a pair
 before contact generation (`sector::meet`, the original's slab test of
 each side's travel against the other's box grown by its radius), the
 overlap-only, placement and static-collider pre-tests, and the step's
-stages and budgets. The pair stage buckets parts by their mesh box's
+stages and budgets. Each part's world pose (`sector::body_pose`: the
+matrix from its particles and rest basis, the world box and sphere of its
+bounds, the cell of the mesh box's centre) is what the pair stage buckets
+and meets by. A body whose cell index overflows goes back to its
+particles of the tick before last and is parked past the first row
+(`sector::reset_overflow`). A sector tests every pair unless the scene's flag word asks for
+the grid (`BroadPhase::for_scene`), and the registration walk
+(`sector::registration`) decides from a node's words whether it builds a
+body, only inserts one, registers a simulated object or a mesh as a
+static collider.
+Registration's impact sound scale (`sector::impact_scale`, `v = min(2m, 1)
++ 1`) is the original's. The level detection's masks are the original's
+(`sector::static_mask`, `body_mask`, `level_meets`): a collider is 1 and
+gains 4 when flagged or thin and horizontal; a hung body is 1 and a living
+foot 4; a pair is skipped when the masks share a bit. The pair stage buckets parts by their mesh box's
 world centre and first asks that the awake part's sphere touch the
 other's mesh sphere; a small sector's all-pairs walk
 (`body::Pairs::all_pairs`) adds the original's two point-to-mesh-box
 tests. Not wired: the static-collider grid (rapier keeps the level's
 broad phase), the overflow guard's reset, the overlap and placement
 queries, and an automatic choice between the grid and all pairs.
+A pair with exactly one placed body (state bit 0x1000, which the original
+keeps only while the settling countdown runs, so `Ragdoll::placed` is
+`settling() > 0`) is one-sided: the placed side takes the whole correction
+over its non-negative weights and records the opposite push in its offset
+array (`Part::placed_offset`), which its node controller would read; the
+other side does not move. Its detection runs the static (unswept) sphere
+query only and records contacts without impact hits, so it never strikes.
+The impact path reads the parts' smoothed velocity (a tenth of the way to
+each tick's displacement), which the
+pair's touch carries as its travel alongside the mean contact point and
+the summed push for the hit event.
+A part's level contacts also make an impact record (`body::LevelImpact`):
+the mean point of its accepted hits, the fastest smoothed velocity against
+their summed pushes, and the original's gates (travel square over 0.1 cm²,
+strength over 0.1, a part that reacts: every part but a foot). The combat
+side that would play its sound and deal its damage is not wired; the
+records are there for it.
 Blows are queued for the next tick, and parts are drawn between their last
 two ticks by interpolating their four particles and building the part's
 matrix from them, as the original does (`body::BodyPlugin`). Every part is
