@@ -865,41 +865,37 @@ pub struct ShapeDraw {
 }
 
 /// The region the manager draws a shape's injection over, as its shape loop
-/// computes it: the centre and half extents in voxels (rounded ties to
-/// even), the columns clipped to the block's 8-voxel margins, and the
-/// slices from the centre less its vertical half extent, one more than twice
-/// it. Shapes whose centre is at or below the bottom, or whose clipped box
-/// is empty, draw nothing.
-pub fn shape_draw(volume: ShapeVolume, origin: Vec3, voxel: f32, dims: UVec3) -> Option<ShapeDraw> {
+/// computes it: the centre in voxels (CVTSS2SI, ties to even), the half
+/// extents rounded up (the engine's ceiling helper), the columns clipped to
+/// voxels 8 and 248 (the original's fixed bounds, the 8-voxel margins of a
+/// 256-wide block), and the slices from the centre less its vertical half
+/// extent, one more than twice it. Shapes whose centre is below slice 2, or
+/// whose clipped box is empty, draw nothing.
+pub fn shape_draw(volume: ShapeVolume, origin: Vec3, voxel: f32) -> Option<ShapeDraw> {
     let p = (volume.position - origin) / voxel;
-    let centre = Vec3::new(
-        p.x.round_ties_even(),
-        p.z.round_ties_even(),
-        p.y.round_ties_even(),
+    let centre = IVec3::new(
+        p.x.round_ties_even() as i32,
+        p.z.round_ties_even() as i32,
+        p.y.round_ties_even() as i32,
     );
-    let half = Vec3::new(
-        (volume.half.x / voxel).round_ties_even(),
-        (volume.half.z / voxel).round_ties_even(),
-        (volume.half.y / voxel).round_ties_even(),
+    let half = IVec3::new(
+        (volume.half.x / voxel).ceil() as i32,
+        (volume.half.z / voxel).ceil() as i32,
+        (volume.half.y / voxel).ceil() as i32,
     );
-    let margin = VOXEL_LIGHT_MARGIN as f32;
-    let lo = UVec2::new(
-        ((centre.x - half.x).max(margin)) as u32,
-        ((centre.y - half.y).max(margin)) as u32,
-    );
-    let hi = UVec2::new(
-        ((centre.x + half.x).min(dims.x as f32 - margin)) as u32,
-        ((centre.y + half.y).min(dims.y as f32 - margin)) as u32,
-    );
-    let first = centre.z as i32 - half.z as i32;
-    let count = half.z as i32 * 2 + 1;
-    (lo.x < hi.x && lo.y < hi.y && centre.z > 0.0).then_some(ShapeDraw {
-        lo,
-        hi,
-        first,
-        count,
+    let lo = (centre.xy() - half.xy()).max(IVec2::splat(SHAPE_LO));
+    let hi = (centre.xy() + half.xy()).min(IVec2::splat(SHAPE_HI));
+    (lo.x < hi.x && lo.y < hi.y && centre.z > 1).then_some(ShapeDraw {
+        lo: lo.as_uvec2(),
+        hi: hi.as_uvec2(),
+        first: centre.z - half.z,
+        count: half.z * 2 + 1,
     })
 }
+
+/// The first and one-past-last column a shape draws over (both axes).
+const SHAPE_LO: i32 = 8;
+const SHAPE_HI: i32 = 248;
 
 /// One margin copy between a block and a neighbour: the destination columns
 /// and the offset added to them to read the neighbour's light texture. The
@@ -1983,7 +1979,6 @@ mod tests {
 
     #[test]
     fn a_shapes_box_is_rounded_and_margin_clipped() {
-        let dims = UVec3::new(256, 256, 64);
         let draw = shape_draw(
             ShapeVolume {
                 position: Vec3::new(10.0, 2.0, 6.0),
@@ -1991,7 +1986,6 @@ mod tests {
             },
             Vec3::ZERO,
             0.2,
-            dims,
         )
         .unwrap();
         assert_eq!((draw.lo, draw.hi), (UVec2::new(45, 25), UVec2::new(55, 35)));
@@ -2004,23 +1998,26 @@ mod tests {
             },
             Vec3::ZERO,
             0.2,
-            dims,
         )
         .unwrap();
         assert_eq!((draw.lo, draw.hi), (UVec2::new(8, 8), UVec2::new(20, 20)));
-        // The bottom slice (or below) draws nothing.
-        assert!(
+        // A centre below slice 2 draws nothing; slice 2 draws. Half extents
+        // round up: 0.3 m is 1.5 voxels, so 2.
+        let at = |y: f32| {
             shape_draw(
                 ShapeVolume {
-                    position: Vec3::new(10.0, -1.0, 6.0),
-                    half: Vec3::splat(1.0),
+                    position: Vec3::new(10.0, y, 6.0),
+                    half: Vec3::splat(0.3),
                 },
                 Vec3::ZERO,
                 0.2,
-                dims,
             )
-            .is_none()
-        );
+        };
+        assert!(at(-1.0).is_none());
+        assert!(at(0.2).is_none());
+        let low = at(0.4).unwrap();
+        assert_eq!((low.first, low.count), (0, 5));
+        assert_eq!((low.lo, low.hi), (UVec2::new(48, 28), UVec2::new(52, 32)));
     }
 
     #[test]
