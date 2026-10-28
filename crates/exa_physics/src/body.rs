@@ -2192,6 +2192,33 @@ impl Ragdoll {
         crate::part::set_striking(&mut self.parts, root, on);
     }
 
+    /// Sets or clears only the strike-window bit on part `root` and its
+    /// chain (the original's class bit 1, which the weapon impact branch
+    /// reads), leaving the chain bit alone so the pair stage still measures
+    /// weapon-body impacts.
+    pub fn set_striking_window(&mut self, root: usize, on: bool) {
+        if root >= self.parts.len() {
+            return;
+        }
+        let mut stack = vec![root];
+        while let Some(i) = stack.pop() {
+            if i >= self.parts.len() {
+                continue;
+            }
+            let p = &mut self.parts[i];
+            p.state = if on {
+                p.state.with(crate::part::PartState::STRIKING)
+            } else {
+                p.state.without(crate::part::PartState::STRIKING)
+            };
+            for (j, q) in self.parts.iter().enumerate() {
+                if q.parent == Some(i) {
+                    stack.push(j);
+                }
+            }
+        }
+    }
+
     /// Gives every part the held item's all-ones group mask, as the
     /// original does when a character arms itself: its own weapons never
     /// meet its own body (and, through [`Ragdoll::held_by`], no other held

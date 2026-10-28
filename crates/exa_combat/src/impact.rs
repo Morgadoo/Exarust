@@ -627,7 +627,7 @@ fn sync_held_striking(mut blades: Query<(&Blade, &mut Ragdoll)>, swings: Query<&
         let open = swings
             .get(blade.wielder)
             .is_ok_and(|s| s.open[blade.slot.index()]);
-        body.set_striking(0, open);
+        body.set_striking_window(0, open);
     }
 }
 
