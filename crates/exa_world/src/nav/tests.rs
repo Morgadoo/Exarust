@@ -552,17 +552,18 @@ fn shipped_levels() {
             NavStats {
                 width: 640,
                 depth: 800,
-                columns_by_spans: [190_921, 320_149, 930, 0],
-                floors: [219_538, 825],
-                passable: [219_363, 825],
+                columns_by_spans: [190_923, 320_147, 930, 0],
+                floors: [219_536, 825],
+                passable: [219_361, 825],
                 sky: [101_541, 105],
             },
             // The height and mask planes now decode with the original's
             // truncating block arithmetic (no rounding term), which moves one
             // terrain cell from floor to sky. The grid's special tiles now
             // mask their edges in every rotation, as the original's start-up
-            // table does.
-            191_330,
+            // table does, and types 6–9 (not 5–8) keep their centre floor,
+            // which takes two floor columns (and two reached cells) away.
+            191_328,
             682,
         ),
     ];
