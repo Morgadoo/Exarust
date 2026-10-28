@@ -307,7 +307,10 @@ fn stand_first_round(
     let now = clock.as_ref().map_or(0, |clock| clock.now_ms);
     let slots = layout(scene.template, scene.level, scene.tier, scene.spawn_at);
     if slots.is_empty() {
-        warn!("arena match: template {} lays out nobody here", slots.len());
+        warn!(
+            "arena match: template {} lays out nobody here",
+            scene.template
+        );
     }
     let plans = round_plans(&scene, career.as_deref(), &slots, now, 3_000);
     for plan in plans {

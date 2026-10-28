@@ -827,3 +827,39 @@ routines that were read from the original.
   edit page's update from a character record (`edit_page`), and the
   physique, skin, hair-colour and hair-style callbacks. The skin and
   hair-colour callbacks round half to even like the original.
+
+## Scene bodies and the live arena round
+
+`scene_bodies` is the scene body generator: a `SceneBodyPlan` names the
+actor template or record a body looks like, its place and facing, its team
+and role words, its condition words, the item in its main hand (a drawn
+weapon variant's id) and its brain, and `spawn_scene_body` builds the
+merged body model morphed by the record's physique, the skinned parts and
+skin look, the garments, the physical body's stats, its fighter and held
+item, the record data and possessions, and a duellist or placed-character
+brain — the same components a level's placed characters carry. A
+`SceneCommand::Despawn` releases the character capsule and removes the
+root's whole subtree. The arena's generic and hire-list opponents, the
+Beast, company entrants and the hub's shopkeeper and specialists are built
+from `arena_spawn`'s plans (`opponent_plan`, `hire_opponent_plan`,
+`beast_scene_plan`, `company_plan`, `hub_body_plan`). A generated
+fighter's record is a random NPC the original writes itself and whose
+item-fact pass is not modelled, so it takes a practice opponent's actor
+template as a labelled stand-in; the shopkeeper is the exact `arenashpkp`
+template.
+
+`arena_live` runs the match's scene. The hub's launch is still a process
+restart (an in-process level change is blocked by the physics level
+teardown and the unexported scene, see `level_transition`), so
+`arena_handoff` carries the career and the match's setup across it in a
+small Exarust-only file; the match process restores the career, stands the
+first round from `match_layout::layout`, and the round tick ends the round
+as before. The end screen's Continue is Enter or Space while the screen is
+not drawn: a next round stands the winner, brings `regenerate_round`'s
+fresh generic opponent, or the reserve entrant against the opponent who
+won, after the 13 ms yield; the end of the match resolves the company's
+records, writes the healths, books the result, drops the unfit on a
+tournament day and writes the settled career and the return placement for
+the hub's process. The hub then puts the manager at the saved 300 cm, half
+turn placement and asks for the shopkeeper and one body per employed
+merchant or physician at their `arena_spawn` spots.

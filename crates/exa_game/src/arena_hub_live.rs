@@ -281,7 +281,9 @@ fn enter_loaded_hub(
         )];
         for member in &career.company.roster {
             if let Some(spot) = crate::arena_spawn::specialist_spot(member.profession) {
-                plans.push(crate::scene_bodies::hub_body_plan(&spot, false));
+                let mut plan = crate::scene_bodies::hub_body_plan(&spot, false);
+                plan.name = Some(member.name.clone());
+                plans.push(plan);
             }
         }
         let count = plans.len();
