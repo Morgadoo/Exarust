@@ -85,6 +85,8 @@ pub struct SkillBatch {
     pub texture: SkillTexture,
     /// The shader's `Colour`, when the program takes one.
     pub colour: Option<[f32; 4]>,
+    /// The bar program's `Prog`, when it takes one.
+    pub prog: Option<f32>,
     pub vertices: Vec<SkillVertex>,
 }
 
@@ -94,6 +96,7 @@ impl SkillBatch {
             program,
             texture,
             colour,
+            prog: None,
             vertices: Vec::new(),
         }
     }
@@ -152,6 +155,9 @@ pub struct SkillDraw {
     pub batches: Vec<SkillBatch>,
     pub tips: Vec<SkillTip>,
     pub labels: Vec<SkillLabel>,
+    /// The opening scale is below 0.999, so the draw ends with the skin's
+    /// full-screen fade call (both arguments 1).
+    pub closing: bool,
 }
 
 impl SkillDraw {
@@ -289,10 +295,15 @@ pub fn skill_draw(input: &SkillDrawInput<'_>) -> SkillDraw {
     }
     let alpha = fades.alpha;
     let scale = fades.scale;
+    // The compare is ordered: a NaN skips the closing call.
+    let closing = scale < 0.999;
     let width = (screen.bounds.right - screen.bounds.left) as f32;
     let height = (screen.bounds.bottom - screen.bounds.top) as f32;
     let unit = screen.unit as f32;
-    let mut draw = SkillDraw::default();
+    let mut draw = SkillDraw {
+        closing,
+        ..SkillDraw::default()
+    };
 
     // The page-2 background: the texture's lower-left cell over a 12 × 8
     // unit rectangle at the screen's centre. The UV pair is the constant
@@ -307,19 +318,20 @@ pub fn skill_draw(input: &SkillDrawInput<'_>) -> SkillDraw {
             Some(input.background_ink),
         );
         if let Some(batch) = draw.last() {
-            let (corners, _) = plate_corners(x, y, 6.0 * unit);
+            // The page background's four vertices and their texture
+            // coordinates, in the original's order.
             batch.quad(
                 [
-                    (corners[0].0, y - 4.0 * unit),
-                    (corners[1].0, y - 4.0 * unit),
-                    (corners[2].0, y + 4.0 * unit),
-                    (corners[3].0, y + 4.0 * unit),
+                    (x - 6.0 * unit, y + 4.0 * unit),
+                    (x - 6.0 * unit, y - 4.0 * unit),
+                    (x + 6.0 * unit, y - 4.0 * unit),
+                    (x + 6.0 * unit, y + 4.0 * unit),
                 ],
                 [
                     (0.785_714_3, 0.6),
                     (0.785_714_3, 1.0),
-                    (0.785_714_3, 1.0),
-                    (0.785_714_3, 0.6),
+                    (1.0, 1.0),
+                    (1.0, 0.6),
                 ],
                 [1.0; 4],
             );
@@ -391,7 +403,16 @@ pub fn skill_draw(input: &SkillDrawInput<'_>) -> SkillDraw {
                 ),
             ];
             if let Some(batch) = draw.last() {
-                batch.flat_quad(corners, [(0.0, 0.0); 4]);
+                // The spoke's per-vertex texture coordinates.
+                batch.flat_quad(
+                    corners,
+                    [
+                        (-0.071_428_6, 0.0),
+                        (-0.071_428_6, 0.7),
+                        (0.571_428_6, 0.7),
+                        (0.571_428_6, 0.0),
+                    ],
+                );
             }
         }
     }
@@ -455,20 +476,54 @@ pub fn skill_draw(input: &SkillDrawInput<'_>) -> SkillDraw {
 
     // The orbit bars: 20.3 to 26.3 units out, 14 either side, the shader
     // colour 1, 0.79, 0.286 at 0.5 × scale.
-    draw.batch(
-        SkillProgram::Bar,
-        SkillTexture::None,
-        Some([1.0, 0.79, 0.286, 0.5 * scale]),
-    );
+    let bar_uvs = [(0.0, 0.7), (0.0, 1.0), (0.5, 1.0), (0.5, 0.7)];
     for node in &nodes {
-        for bar in skill_orbit_bars(input.skills, node.group, node.x, node.y, screen.unit, alpha) {
-            let colour = [1.0, 0.79, 0.286, 0.5 * scale * bar.fill];
+        let bars = skill_orbit_bars(input.skills, node.group, node.x, node.y, screen.unit, alpha);
+        if bars.is_empty() {
+            continue;
+        }
+        let last = bars.len() - 1;
+        let partial = bars[last].fill < 0.99;
+        // The full bars share `Prog` 1; a partial last bar is its own run
+        // with `Prog` set to its fill.
+        if !partial || last > 0 {
+            draw.batch(
+                SkillProgram::Bar,
+                SkillTexture::None,
+                Some([1.0, 0.79, 0.286, 0.5 * scale]),
+            );
             if let Some(batch) = draw.last() {
-                batch.colour = Some(colour);
-                batch.vertices.extend(
-                    bar.corners
-                        .map(|corner| SkillVertex::new(corner[0], corner[1], 0.0, 0.0, [1.0; 4])),
-                );
+                batch.prog = Some(1.0);
+                for bar in &bars[..if partial { last } else { bars.len() }] {
+                    for (at, corner) in bar.corners.iter().enumerate() {
+                        batch.vertices.push(SkillVertex::new(
+                            corner[0],
+                            corner[1],
+                            bar_uvs[at].0,
+                            bar_uvs[at].1,
+                            [1.0; 4],
+                        ));
+                    }
+                }
+            }
+        }
+        if partial {
+            draw.batch(
+                SkillProgram::Bar,
+                SkillTexture::None,
+                Some([1.0, 0.79, 0.286, 0.5 * scale]),
+            );
+            if let Some(batch) = draw.last() {
+                batch.prog = Some(bars[last].fill);
+                for (at, corner) in bars[last].corners.iter().enumerate() {
+                    batch.vertices.push(SkillVertex::new(
+                        corner[0],
+                        corner[1],
+                        bar_uvs[at].0,
+                        bar_uvs[at].1,
+                        [1.0; 4],
+                    ));
+                }
             }
         }
     }
@@ -537,8 +592,8 @@ pub fn skill_draw(input: &SkillDrawInput<'_>) -> SkillDraw {
         }
     }
 
-    let tip_ink = [0xff, 0xf8, 0xf0, low_byte(255.0 * scale)];
     let popup = skill_popup_fade(screen.popup, screen.popup_deadline, input.clock);
+    let popup_ink = [0xff, 0xf8, 0xf0, low_byte(255.0 * scale * popup.alpha)];
     if screen.learning != 0 {
         let place = learning_node(&nodes, screen.learning);
         if let Some((x, y)) = place {
@@ -549,21 +604,31 @@ pub fn skill_draw(input: &SkillDrawInput<'_>) -> SkillDraw {
                 popup.scale,
                 input.window,
                 &input.offsets,
-                popup.alpha * scale,
+                popup.alpha * scale * scale,
                 &screen.requirements,
                 screen.hover,
             );
             draw.tips.push(row.tip.into());
+            let row_group = ((screen.learning >> 8) & 0xff) as usize;
+            let handles = row_group
+                .checked_sub(1)
+                .and_then(|group| input.icons.groups.get(group))
+                .copied()
+                .unwrap_or([0; NODES_PER_GROUP]);
             for icon in row.icons {
-                if let Some((corners, uvs)) = atlas_quad(
-                    icon.slot,
-                    group_cell as i32,
-                    input.group_atlas,
-                    icon.x,
-                    icon.y,
-                ) {
+                let handle = handles[usize::from(icon.slot as u8).saturating_sub(1)];
+                if handle == 0 {
+                    continue;
+                }
+                if let Some((corners, uvs)) =
+                    atlas_quad(handle, group_cell as i32, input.group_atlas, icon.x, icon.y)
+                {
                     draw.batch(SkillProgram::Textured, SkillTexture::GroupIcons, None);
-                    let icon_ink = if icon.hovered { hover_ink } else { plain_ink };
+                    let icon_ink = if icon.hovered {
+                        ink_of([0xff, 0xcc, 0x99, low_byte(255.0 * scale * popup.alpha)])
+                    } else {
+                        ink_of([0xff, 0xf8, 0xf0, low_byte(120.0 * scale * popup.alpha)])
+                    };
                     if let Some(batch) = draw.last() {
                         batch.quad(corners, uvs, icon_ink);
                     }
@@ -574,7 +639,7 @@ pub fn skill_draw(input: &SkillDrawInput<'_>) -> SkillDraw {
                 draw.labels.push(SkillLabel {
                     x: row.x,
                     y: row.title_y,
-                    ink: tip_ink,
+                    ink: popup_ink,
                     text: title,
                     centred: true,
                 });
@@ -582,7 +647,7 @@ pub fn skill_draw(input: &SkillDrawInput<'_>) -> SkillDraw {
                     draw.labels.push(SkillLabel {
                         x: row.text.0,
                         y: row.text.1,
-                        ink: tip_ink,
+                        ink: popup_ink,
                         text: status.to_string(),
                         centred: false,
                     });
@@ -605,14 +670,14 @@ pub fn skill_draw(input: &SkillDrawInput<'_>) -> SkillDraw {
             draw.labels.push(SkillLabel {
                 x: dialog.text_left,
                 y: dialog.title_y,
-                ink: tip_ink,
+                ink: popup_ink,
                 text: crate::skill::FORGET_TITLE.to_string(),
                 centred: false,
             });
             draw.labels.push(SkillLabel {
                 x: dialog.text_left,
                 y: dialog.question_y,
-                ink: tip_ink,
+                ink: popup_ink,
                 text: crate::skill::FORGET_QUESTION.to_string(),
                 centred: false,
             });
