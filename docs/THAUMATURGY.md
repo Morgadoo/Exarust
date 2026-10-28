@@ -471,10 +471,11 @@ What the Mind domain shows is in `exa_game::mind::sight`:
   stream). The sounds follow `step_torrent`. The frame's texture offset is
   `(0, scroll, 1)`; its samples feed up to sixteen light points that merge
   within 80 cm (or the nearest within 160 cm once sixteen are kept).
-- **Torrent hits**: a point reaches `age·scale + margin + 10` cm (0.25
-  against the level, 0.5 against a character), keeps the ease share of the
-  way to the contact and raises the loop sound's volume and pitch by its
-  life share; a limb takes `k·f·straightness` of the point's move plus
+- **Torrent hits**: a point reaches `width·scale + margin + 10` cm against
+  the level (scale 0.25) and `width·scale + margin + 40` against a rigid
+  body (scale 0.5 against a character), keeps the ease share of the way to
+  the contact and raises the loop sound's volume and pitch by its life
+  share; a limb takes `k·f·straightness` of the point's move plus
   `(contact − point)·(1 − straightness)·(−k)`, `k = inverse/(inverse +
   0.5)·push·0.3·(2 − s)·s`; a character as the blast's, with `k/2000` of
   energy. A simulated point moves by `(1 − d²/r²)·0.01` of the move.
