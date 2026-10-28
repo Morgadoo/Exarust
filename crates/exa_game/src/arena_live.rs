@@ -1322,6 +1322,49 @@ mod tests {
     }
 
     #[test]
+    fn escape_opens_the_arena_pause_page_and_a_closed_page_resumes() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<crate::flow::Flow>()
+            .init_resource::<crate::flow::FlowSteps>()
+            .init_resource::<crate::menu_screen::MenuScreen>()
+            .init_resource::<ArenaEndScreen>()
+            .add_systems(Update, arena_pause);
+        app.init_resource::<ButtonInput<KeyCode>>();
+        {
+            let mut flow = app.world_mut().resource_mut::<crate::flow::Flow>();
+            flow.mode = crate::flow::Mode::Arena;
+            flow.phase = crate::flow::Phase::Playing;
+        }
+        app.insert_resource(ArenaMatch::begin(1));
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::Escape);
+        app.update();
+        let flow = app.world().resource::<crate::flow::Flow>();
+        assert_eq!(flow.phase, crate::flow::Phase::Paused);
+        let steps = core::mem::take(
+            &mut app
+                .world_mut()
+                .resource_mut::<crate::flow::FlowSteps>()
+                .steps,
+        );
+        assert!(steps.contains(&crate::flow::Step::ShowMenu(
+            crate::menu_pages::Page::ArenaPause
+        )));
+        // The menu closed (its page's Escape, or its CONTINUE row): the pause
+        // ends on the next frame.
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .reset_all();
+        app.update();
+        assert_eq!(
+            app.world().resource::<crate::flow::Flow>().phase,
+            crate::flow::Phase::Playing
+        );
+    }
+
+    #[test]
     fn the_end_screen_shows_the_arenas_rows() {
         let mut screen = ArenaEndScreen::default();
         screen.show(Screen::NextRound);

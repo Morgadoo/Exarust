@@ -3023,6 +3023,7 @@ fn apply_menu_choices(
     mut choices: MessageReader<MenuChoice>,
     mut flow: ResMut<Flow>,
     mut queued: ResMut<FlowSteps>,
+    arena_match: Option<Res<crate::arena_match::ArenaMatch>>,
     ticks: Option<Res<exa_physics::body::BodyTicks>>,
 ) {
     let now = ticks.as_ref().map_or(0, |ticks| ticks.millis() as u32);
@@ -3054,9 +3055,14 @@ fn apply_menu_choices(
             }
             MenuCommand::ExitArena | MenuCommand::ExitToTitle => flow.quit_to_menu(),
             MenuCommand::QuitStory => flow.story_exit(now),
-            MenuCommand::FinishMatch { .. } => {
+            MenuCommand::FinishMatch { forfeit } => {
                 if flow.mode == Mode::Story {
                     flow.story_exit(now)
+                } else if *forfeit && arena_match.is_some() {
+                    // The arena pause page's FORFEIT: the live match settles
+                    // and returns to the hub. The end page's EXIT, a won
+                    // session's row, still leaves to the title.
+                    vec![Step::HideMenu, Step::Controls(true), Step::Forfeit]
                 } else {
                     flow.quit_to_menu()
                 }
@@ -4424,6 +4430,39 @@ mod tests {
         }));
         assert!(!steps.contains(&Step::ClearStoryFlag));
         assert!(steps.contains(&Step::Transition));
+    }
+
+    #[test]
+    fn the_arena_pauses_forfeit_row_runs_the_forfeit_step() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_message::<MenuChoice>()
+            .init_resource::<Flow>()
+            .init_resource::<FlowSteps>()
+            .add_systems(Update, apply_menu_choices);
+        app.insert_resource(crate::arena_match::ArenaMatch::begin(1));
+        app.world_mut().resource_mut::<Flow>().mode = Mode::Arena;
+        app.world_mut()
+            .write_message(MenuChoice(MenuCommand::FinishMatch { forfeit: true }));
+        app.update();
+        let steps = core::mem::take(&mut app.world_mut().resource_mut::<FlowSteps>().steps);
+        assert_eq!(
+            steps,
+            vec![Step::HideMenu, Step::Controls(true), Step::Forfeit]
+        );
+        // Without a live match the same row leaves to the title.
+        app.world_mut()
+            .remove_resource::<crate::arena_match::ArenaMatch>();
+        app.world_mut()
+            .write_message(MenuChoice(MenuCommand::FinishMatch { forfeit: true }));
+        app.update();
+        let steps = core::mem::take(&mut app.world_mut().resource_mut::<FlowSteps>().steps);
+        assert!(!steps.contains(&Step::Forfeit));
+        assert!(
+            steps
+                .iter()
+                .any(|step| matches!(step, Step::ShowMenu(Page::Title)))
+        );
     }
 
     #[test]
