@@ -442,9 +442,16 @@ fn stand_next_round(
     let opponent = opponent_place(scene.spawn_at);
     let ours = our_place(scene.spawn_at);
     for (entity, _, condition, body, _) in fighters {
-        // The opponent who won keeps its place, which is the round's
-        // opponent place already; every other body is cleared.
-        if body.company || !fight.keeps_opponent || *condition == Condition::DEAD {
+        // A company fighter that still stands fights on (`FreshOpponent`);
+        // a dead one is cleared and the reserve takes its place. The
+        // opponent who won keeps its place, which is the round's opponent
+        // place already; every other opponent is cleared.
+        let clear = if body.company {
+            *condition == Condition::DEAD
+        } else {
+            !fight.keeps_opponent || *condition == Condition::DEAD
+        };
+        if clear {
             commands.write(SceneCommand::Despawn(entity));
         }
     }
@@ -762,6 +769,43 @@ mod tests {
         assert_eq!(spawned, 1);
         assert!(!killed.contains(&opponent));
         assert_eq!(killed, vec![fallen]);
+    }
+
+    #[test]
+    fn a_living_company_fighter_stays_for_the_next_round() {
+        let mut app = arena_app();
+        let mut arena = ArenaMatch::begin(7);
+        arena.state = MatchState::NextFight;
+        arena.screen = Some(Screen::NextRound);
+        app.insert_resource(arena);
+        let mut scene = scene();
+        scene.player_entry = None;
+        app.insert_resource(scene);
+        let company = app.world_mut().spawn(body(1, true, Condition::NORMAL)).id();
+        let opponent = app
+            .world_mut()
+            .spawn(body(2, false, Condition::NORMAL))
+            .id();
+        press_continue(&mut app);
+        app.update();
+        let messages: Vec<SceneCommand> = app
+            .world_mut()
+            .resource_mut::<Messages<SceneCommand>>()
+            .drain()
+            .collect();
+        let mut spawned = 0;
+        let mut killed = Vec::new();
+        for message in messages {
+            match message {
+                SceneCommand::Spawn(_) => spawned += 1,
+                SceneCommand::Despawn(entity) => killed.push(entity),
+                SceneCommand::Place { .. } => {}
+            }
+        }
+        // The fighter fights on; a fresh opponent replaces the old one.
+        assert_eq!(spawned, 1);
+        assert_eq!(killed, vec![opponent]);
+        assert!(!killed.contains(&company));
     }
 
     #[test]
