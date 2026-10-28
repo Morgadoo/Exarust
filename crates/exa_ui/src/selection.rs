@@ -104,7 +104,8 @@ pub fn mark_destination(word: u32) -> Option<u32> {
 pub const MARK_FLAG: u16 = 4;
 
 /// One destination row: its flash deadline, its wobble and drift on two
-/// axes, and the record entry it shows.
+/// axes, the record entry it shows, and the marker word a click passes to
+/// the journey.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DestinationSlot {
     /// The time this row's hover flash ends.
@@ -116,16 +117,20 @@ pub struct DestinationSlot {
     /// The record entry the row shows: the index of its level id, which
     /// also picks the symbol's atlas cell.
     pub entry: usize,
+    /// The destination's marker word, handed to the journey (the high bit
+    /// names an object record; see [`mark_destination`]).
+    pub marker: u32,
 }
 
 impl DestinationSlot {
-    /// A row showing `entry`, with no flash and no wobble.
+    /// A row showing `entry`, with no flash, no wobble and no marker.
     pub fn new(entry: usize) -> Self {
         Self {
             flash_until: 0,
             wobble: [0.0; 2],
             drift: [0.0; 2],
             entry,
+            marker: 0,
         }
     }
 }
@@ -173,6 +178,9 @@ pub struct DestinationScreen {
     pub flash_clock: u32,
     /// The record's level ids, by entry.
     pub level_ids: Vec<u32>,
+    /// The record's destination words, by entry (the word a click hands to
+    /// the journey).
+    pub markers: Vec<u32>,
     /// The crystal is the large-crystal adapter: the orbit nodes wobble.
     pub adapter: bool,
 }
@@ -191,9 +199,27 @@ impl DestinationScreen {
     /// The screen of a teleporter record: `rows` rows over `level_ids`,
     /// opening at `now`.
     pub fn open(level_ids: Vec<u32>, rows: usize, adapter: bool, now: u32) -> Self {
+        Self::open_with_markers(level_ids, Vec::new(), rows, adapter, now)
+    }
+
+    /// The screen with the record's destination words: row `r` hands the
+    /// journey the word of the entry it shows.
+    pub fn open_with_markers(
+        level_ids: Vec<u32>,
+        markers: Vec<u32>,
+        rows: usize,
+        adapter: bool,
+        now: u32,
+    ) -> Self {
         let entries = fill_rows(&level_ids, rows);
         Self {
-            slots: entries.into_iter().map(DestinationSlot::new).collect(),
+            slots: entries
+                .into_iter()
+                .map(|entry| DestinationSlot {
+                    marker: markers.get(entry).copied().unwrap_or(0),
+                    ..DestinationSlot::new(entry)
+                })
+                .collect(),
             state: state::REVEALING,
             reveal_until: now.wrapping_add(REVEAL_MS),
             close_until: 0,
@@ -202,6 +228,7 @@ impl DestinationScreen {
             alpha: 0.0,
             flash_clock: now,
             level_ids,
+            markers,
             adapter,
         }
     }
@@ -335,12 +362,13 @@ impl DestinationScreen {
             return Click::Dismiss;
         }
         if self.state == 0 && mask & 1 != 0 && self.selected > 0 {
-            let entry = self
+            let (entry, marker) = self
                 .slots
                 .get(self.selected as usize - 1)
-                .map_or(0, |slot| slot.entry);
+                .map_or((0, 0), |slot| (slot.entry, slot.marker));
             return Click::Travel {
                 level: self.level_ids.get(entry).copied().unwrap_or(0),
+                marker,
             };
         }
         Click::Ignored
@@ -434,6 +462,72 @@ pub struct SymbolQuad {
     pub tex_pos: [f32; 4],
     /// `TexOfs`: the row's wobble times 0.1.
     pub tex_ofs: [f32; 2],
+}
+
+/// One fragment of the symbol shader at texture coordinates `(u, v)`: the
+/// colour the shader writes. `colour` is the `Colour` uniform, the atlas is
+/// its `Tex` (a coverage texture whose alpha is sampled), and `tex_pos` and
+/// `tex_ofs` are the quad's uniforms. The body is the shader's own, term by
+/// term, in single precision.
+pub fn symbol_sample(
+    atlas: &crate::gui_draw::GuiTexture,
+    u: f32,
+    v: f32,
+    tex_pos: [f32; 4],
+    tex_ofs: [f32; 2],
+    colour: [f32; 4],
+) -> [f32; 4] {
+    let a = [u - 0.5, v - 0.5];
+    let dot = a[0] * a[0] + a[1] * a[1];
+    let mut b = (dot * 4.0).min(1.0);
+    b *= b;
+    b = 1.0 - b * b;
+    b *= b;
+    let mut c = (dot * 128.0 - 25.0).abs();
+    c *= c;
+    c = (1.0 - c).max(0.0);
+    let mut d = (dot * 4.0).min(1.0);
+    d = ((0.6 - d) * 16.0).clamp(0.0, 1.0);
+    let mut t = [
+        u * tex_pos[0] * 1.3 + tex_pos[2] - tex_pos[0] * 0.15,
+        v * tex_pos[1] * 1.3 + tex_pos[3] - tex_pos[1] * 0.15,
+    ];
+    t[0] += tex_ofs[0] * 0.1;
+    t[1] += tex_ofs[1] * 0.1;
+    d *= 1.0 - (tex_ofs[0] * tex_ofs[0] + tex_ofs[1] * tex_ofs[1]) * 30.0;
+    let texel = atlas.sample(t[0], t[1]);
+    c += f32::from(texel[3]) / 255.0 * 0.6 * d;
+    [colour[0] * c, colour[1] * c, colour[2] * c, b * colour[3]]
+}
+
+/// A row's symbol drawn through [`symbol_sample`] at one texel per pixel.
+/// The image is `size` square, the quad's size rounded to an integer, and
+/// its rows run top-down as the draw path stores them. `colour`'s alpha is
+/// the symbol's own.
+pub fn symbol_image(
+    atlas: &crate::gui_draw::GuiTexture,
+    size: i32,
+    tex_pos: [f32; 4],
+    tex_ofs: [f32; 2],
+    colour: [f32; 4],
+) -> Option<crate::gui_draw::GuiTexture> {
+    let size = size.max(1) as u32;
+    let mut pixels = Vec::with_capacity((size * size) as usize);
+    for y in 0..size {
+        // A stored-top-down image is sampled with v running up it.
+        let v = 1.0 - (y as f32 + 0.5) / size as f32;
+        for x in 0..size {
+            let u = (x as f32 + 0.5) / size as f32;
+            let [r, g, b, a] = symbol_sample(atlas, u, v, tex_pos, tex_ofs, colour);
+            let byte = |value: f32| (value.clamp(0.0, 1.0) * 255.0).round_ties_even() as u8;
+            pixels.push([byte(r), byte(g), byte(b), byte(a)]);
+        }
+    }
+    Some(crate::gui_draw::GuiTexture {
+        width: size,
+        height: size,
+        pixels,
+    })
 }
 
 /// The quad of a row's symbol centred at `centre`: 32 units times the
@@ -532,8 +626,9 @@ pub enum Click {
     Ignored,
     /// The right button closes the screen.
     Dismiss,
-    /// Start the journey to this level id and close the screen.
-    Travel { level: u32 },
+    /// Start the journey to this level id and marker word and close the
+    /// screen.
+    Travel { level: u32, marker: u32 },
 }
 
 /// Power Crystal A, the teleporter's small crystal: the journey spends it.
@@ -685,6 +780,95 @@ pub fn travel_step(
         step.done = true;
     }
     step
+}
+
+/// The colours the destination screen paints with. The original takes its
+/// two symbol colours and its backdrop from the skinned form; the draw
+/// path's caller supplies them here (the line skin's text and highlight
+/// colours are Exarust's stand-in [guess]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SelectionPalette {
+    /// The colour a row mixes from at 0.
+    pub symbol_from: [f32; 4],
+    /// The colour a row mixes to at 1.
+    pub symbol_to: [f32; 4],
+    /// The full-screen backdrop's ink.
+    pub backdrop: [u8; 4],
+}
+
+/// The layer a symbol image draws as: a textured quad over its corners.
+fn symbol_layer(
+    quad: &SymbolQuad,
+    image: crate::gui_draw::GuiTexture,
+) -> crate::gui_draw::GuiLayer {
+    let mut batch = crate::skin::SkinBatch::new();
+    batch.select(2, 0, true);
+    batch.blend = crate::gui_draw::BLEND_ALPHA;
+    batch.tex_col = Some(1.0);
+    batch.set_ink([255, 255, 255, 255]);
+    batch.begin();
+    let [left, top, right, bottom] = quad.corners;
+    batch.set_uv(0.0, 1.0);
+    batch.vertex(left, top);
+    batch.set_uv(0.0, 0.0);
+    batch.vertex(left, bottom);
+    batch.set_uv(1.0, 0.0);
+    batch.vertex(right, bottom);
+    batch.set_uv(1.0, 1.0);
+    batch.vertex(right, top);
+    batch.end_quads();
+    crate::gui_draw::GuiLayer::new(batch, crate::gui_draw::LayerTexture::Owned(image))
+}
+
+/// A frame's backdrop layer.
+fn backdrop_layer(width: i32, height: i32, ink: [u8; 4]) -> crate::gui_draw::GuiLayer {
+    let mut batch = crate::skin::SkinBatch::new();
+    batch.select(1, 0, false);
+    batch.set_ink(ink);
+    batch.begin();
+    batch.vertex(0.0, 0.0);
+    batch.vertex(0.0, height as f32);
+    batch.vertex(width as f32, height as f32);
+    batch.vertex(width as f32, 0.0);
+    batch.end_quads();
+    crate::gui_draw::GuiLayer::new(batch, crate::gui_draw::LayerTexture::None)
+}
+
+/// Turns one paint's steps into the draw path's frame: the backdrop, then
+/// every symbol through [`symbol_image`], in the paint's order.
+pub fn frame(
+    draws: &[SelectionDraw],
+    atlas: &crate::gui_draw::GuiTexture,
+    palette: &SelectionPalette,
+    width: i32,
+    height: i32,
+) -> crate::gui_draw::GuiFrame {
+    let mut frame = crate::gui_draw::GuiFrame::new();
+    for draw in draws {
+        match *draw {
+            SelectionDraw::Backdrop => {
+                frame.push(backdrop_layer(width, height, palette.backdrop));
+            }
+            SelectionDraw::Symbol {
+                quad, mix, alpha, ..
+            } => {
+                let colour = [
+                    palette.symbol_from[0] * (1.0 - mix) + palette.symbol_to[0] * mix,
+                    palette.symbol_from[1] * (1.0 - mix) + palette.symbol_to[1] * mix,
+                    palette.symbol_from[2] * (1.0 - mix) + palette.symbol_to[2] * mix,
+                    alpha,
+                ];
+                let size = crate::engine_math::round_i64(quad.corners[2] - quad.corners[0]);
+                let Some(image) =
+                    symbol_image(atlas, size as i32, quad.tex_pos, quad.tex_ofs, colour)
+                else {
+                    continue;
+                };
+                frame.push(symbol_layer(&quad, image));
+            }
+        }
+    }
+    frame
 }
 
 #[cfg(test)]
@@ -950,6 +1134,73 @@ mod tests {
     }
 
     #[test]
+    fn a_rows_marker_word_goes_to_the_journey() {
+        let screen = DestinationScreen::open_with_markers(
+            vec![7, 10],
+            vec![0x8000_0007, 0x8000_000a],
+            2,
+            true,
+            0,
+        );
+        assert_eq!(screen.slots[0].marker, 0x8000_000a);
+        assert_eq!(screen.slots[1].marker, 0x8000_0007);
+        let mut screen = screen;
+        screen.frame(600);
+        screen.selected = 2;
+        assert_eq!(
+            screen.click(1),
+            Click::Travel {
+                level: 7,
+                marker: 0x8000_0007
+            }
+        );
+    }
+
+    #[test]
+    fn the_symbol_shader_body_is_pinned() {
+        let atlas = crate::gui_draw::GuiTexture::solid([0, 0, 0, 255]);
+        let tex_pos = [0.5, 0.5, 0.5, 0.0];
+        let colour = [0.25, 0.5, 0.75, 1.0];
+        // The centre: c = 1 · 0.6 · coverage, alpha = colour's.
+        let centre = symbol_sample(&atlas, 0.5, 0.5, tex_pos, [0.0, 0.0], colour);
+        assert!((centre[0] - 0.15).abs() < 1e-6);
+        assert!((centre[1] - 0.3).abs() < 1e-6);
+        assert!((centre[2] - 0.45).abs() < 1e-6);
+        assert!((centre[3] - 1.0).abs() < 1e-6);
+        // A corner: the ring term is 0 and the coverage weight 0 too.
+        let corner = symbol_sample(&atlas, 0.0, 0.0, tex_pos, [0.0, 0.0], colour);
+        assert_eq!(corner, [0.0, 0.0, 0.0, 0.0]);
+        // The wobble dims the sampled coverage by 1 − |offset|² · 30.
+        let dim = symbol_sample(&atlas, 0.5, 0.5, tex_pos, [0.1, 0.0], colour);
+        assert!((dim[0] - 0.15 * 0.7).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_symbol_renders_through_the_shader_and_draws_in_order() {
+        let atlas = crate::gui_draw::GuiTexture::solid([0, 0, 0, 255]);
+        let image = symbol_image(&atlas, 4, [0.5, 0.5, 0.5, 0.0], [0.0, 0.0], [1.0; 4]).unwrap();
+        assert_eq!((image.width, image.height), (4, 4));
+        assert!(image.pixels.iter().any(|pixel| pixel[3] != 0));
+        let draws = [
+            SelectionDraw::Backdrop,
+            SelectionDraw::Symbol {
+                row: 0,
+                quad: symbol_quad((100.0, 50.0), 4, 1.0, &DestinationSlot::new(1)),
+                mix: 1.0,
+                alpha: 0.6,
+            },
+        ];
+        let palette = SelectionPalette {
+            symbol_from: [1.0, 1.0, 1.0, 1.0],
+            symbol_to: [1.0, 0.5, 0.0, 1.0],
+            backdrop: [0, 0, 0, 128],
+        };
+        let frame = frame(&draws, &atlas, &palette, 200, 100);
+        assert_eq!(frame.layers.len(), 2);
+        assert!(frame.layers[1].batch.primitives.len() == 1);
+    }
+
+    #[test]
     fn clicks_travel_dismiss_or_go_to_the_base() {
         let mut screen = DestinationScreen::open(vec![7, 10, 12], 3, false, 1_000);
         // Still revealing: the left button does nothing.
@@ -957,9 +1208,21 @@ mod tests {
         assert_eq!(screen.click(1), Click::Ignored);
         screen.state = 0;
         // Row 2 shows entry 0 (7), row 1 entry 2 (12).
-        assert_eq!(screen.click(1), Click::Travel { level: 7 });
+        assert_eq!(
+            screen.click(1),
+            Click::Travel {
+                level: 7,
+                marker: 0
+            }
+        );
         screen.selected = 1;
-        assert_eq!(screen.click(1), Click::Travel { level: 12 });
+        assert_eq!(
+            screen.click(1),
+            Click::Travel {
+                level: 12,
+                marker: 0
+            }
+        );
         assert_eq!(screen.click(3), Click::Dismiss);
         assert_eq!(screen.click(0), Click::Ignored);
         screen.selected = 0;
