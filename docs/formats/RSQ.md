@@ -956,7 +956,11 @@ ticks.
   as staying. A get-up's
   start, the walk's stop and a queued clip switch clear every state (the
   last two are implied in Exarust: a walking body's feet do not touch, and
-  it has no queued switch). A queued combat step (`body::queued_step`,
+  it has no queued switch). A clip start that replaces Walk or Run leaves
+  a trailing-foot request (2); the body tick plants the trailing foot on
+  its next tick after the sample (the request becomes 1), and an
+  unplanted request is dropped 500 ms on, telling the behaviour its step
+  is over (`Animator::take_left_locomotion`, `Locomotor::plant_request`). A queued combat step (`body::queued_step`,
   tested, no caller) is taken when its direction is less than cos 0.7 off
   the line from the chest to the step target or the target is within
   40 × scale cm: it aims at the chest plus the queued vector, tells the AI
@@ -1884,13 +1888,25 @@ not landed is the identity and says which:
 | 1 | the keys blended: each turn slerped from the source (a key, or the start's capture) to the target key, the root lerped | `Animator::blend_keys` |
 | 2 | the gait overlay: a moving body's walk slerped toward its run at the same keys by 0.7 × the run blend (the run blend with the sprint latch) | `exa_anim::overlay_toward`, fed by the Run clip and its weight |
 | 3 | the hold toward the held pose by its weight, then normalised; the result kept as the targets | `exa_anim::hold_toward`, `Animator::keep` |
-| 4 | the femur posture: the thighs turned ±5° (or ±1.5° by the record's height) about the femur axis | `femur_posture_turn`, applied by the sampler in the combat conditions; identity otherwise |
+| 4 | the femur posture: the thighs turned ±5° while the state word's splay bit is set, or (1 − the record's height)·−1.5° while the behaviour is in combat; the clip's turns otherwise | `femur_posture_turn`, chosen by `sampler::thigh_posture` from `Bearing::in_combat` and `Bearing::splay` |
 | 5 | the clip chain: each part placed by its rest translation and its posed turn under its parent's placement; the foot contacts read it | `clip_chain` |
 | 6 | the IK chain: each IK part's turn times its leg IK corrections, the chain recomposed; the targets and the pins read it | the standing IK (`body_bend::standing_leg`) and the locomotion IK (`locomoting_leg`), their knee, hip and thigh turns folded into the clip chain, and the foot pitch from the height the IK wrote |
 | 7 | the torso twist ([below](#torso-twist)): the midline chain's turns (the lumbar half) toward the look | `spine`, `exa_physics::body::locomotion::twist_spine` |
 | 8 | the head look ([below](#head-look): yaw, pitch and roll by a ramping weight), the foot pitch to the ground (smoothed), the thorax's attack hunch | the head look (`look_with_head`); the thorax hunch on the pinned part's local turn before the chain; the foot pitch (`foot_pitch`: a 20 cm toe, eased 0.01 rad a tick, 0.1 while a recovery step is on; a placement stores the angle and clears the rate) |
 | 9 | the anchors of every slack link and the pelvis height | the drive's, in the carry stage (`Ragdoll::aim`): a looking head's relative to the physical thorax, a head that does not look relative to its parent's pose from before the twist |
 | 10 | the foot contacts' ground offsets and the gait plant events | the feet routine's; the plants with M16 |
+
+**Placement.** A living character put into the scene samples its first
+clip, then the placement's foot snap probes each stance spot 300 cm down,
+averages the hits into the character's ground, writes each anchor at its
+ground plus the sole, and runs the standing IK with its snap set. The
+original writes the frame height (root over thigh, ground, the clip's
+reach and the sole); Exarust's model root is at the feet, so it takes the
+snap's character ground (`Ragdoll::placement_feet`), the controller's node
+moves with it (`exa_game::limp::shift_placement`) and the snapped frame is
+sampled again. The original's placement also resets the twist, tone,
+energy, IK turns and look to the given matrix; Exarust's body is built
+fresh in that state and keeps the caller's heading.
 
 **Pose hold.** Each bone is then pulled toward the pose the body holds by
 w = 1 − (1 − S)²·(1 − s)·(E/Emax)⁴ while dazed (energy more than 0.05 under
