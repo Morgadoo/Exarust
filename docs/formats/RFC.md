@@ -237,12 +237,16 @@ the two edges, scale by the stored area reciprocal), the closest point on
 the triangle (the interior projection, then the edge and corner regions,
 with the original's 1e-6 and 1 limits), a one-sided ray hit (the signed
 volumes of the ray against the two edges; the ray must run against the
-normal and the denominator must reach 1.19e-7) and a sphere's push-out
-(from the centre to the closest point, lengthened to the radius, or along
-the normal when the centre is on the triangle). `exa_formats::rfc::Face`
-and `Mesh::{faces, ray_hit, sphere_hit}` reproduce them; the collision
-solver still uses rapier, so only the mesh class's rule is ported, not its
-kd-tree wiring.
+normal and the denominator must reach 1.19e-7), a sphere's push-out (from
+the centre to the closest point, lengthened to the radius, or along the
+normal when the centre is on the triangle) and a swept sphere's first touch
+(the centre placed one radius in front of the plane, the closest point
+there, and the gap along the sweep; a sweep that grazes the plane uses its
+end). `exa_formats::rfc::Face` and
+`Mesh::{faces, ray_hit, ray_hit_inclusive, sphere_hit, swept_sphere_hit}`
+reproduce them; the collision solver still uses rapier, so only the mesh
+class's rules are ported, not its kd-tree wiring or the callback forms of
+the same tests.
 
 Orientation: floor modules (`gefs_*`) lie at y = 0 with every horizontal face
 pointing +Y under right-handed, counter-clockwise winding, and floor modules

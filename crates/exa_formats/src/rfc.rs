@@ -1900,6 +1900,64 @@ impl Face {
         }
         Some(diff)
     }
+
+    /// The distance along a sphere's sweep at which it first touches the
+    /// face's front, if it does before `best`. `direction` is the unit
+    /// sweep direction and `length` its travel; `radius` is the sphere's.
+    /// `start` is the centre. The original finds the moment the centre is
+    /// one radius in front of the plane, the closest point there, and the
+    /// gap from that centre along the sweep; a sweep that only grazes the
+    /// plane (a zero change) uses its end.
+    #[allow(clippy::neg_cmp_op_on_partial_ord)] // NaN must take the miss branch
+    pub fn swept_sphere(
+        &self,
+        start: [f32; 3],
+        direction: [f32; 3],
+        length: f32,
+        radius: f32,
+        best: f32,
+    ) -> Option<f32> {
+        let start_distance = self.plane_distance(start);
+        if !(0.0 <= start_distance) {
+            return None;
+        }
+        let delta = dot3(direction, self.normal) * length;
+        if !(delta <= 0.0) {
+            return None;
+        }
+        if !(start_distance + delta <= radius) {
+            return None;
+        }
+        let centre = if delta.abs() >= FACE_EPSILON {
+            let travel = ((radius - start_distance) / delta) * length;
+            [
+                start[0] + direction[0] * travel,
+                start[1] + direction[1] * travel,
+                start[2] + direction[2] * travel,
+            ]
+        } else {
+            [
+                start[0] + direction[0] * length,
+                start[1] + direction[1] * length,
+                start[2] + direction[2] * length,
+            ]
+        };
+        let distance = self.plane_distance(centre);
+        let closest = self.closest_point(centre, distance);
+        let v = sub(closest, centre);
+        let along = dot3(v, direction);
+        let proj = [
+            v[0] - direction[0] * along,
+            v[1] - direction[1] * along,
+            v[2] - direction[2] * along,
+        ];
+        let perpendicular = dot3(proj, proj);
+        if !(perpendicular < radius * radius) {
+            return None;
+        }
+        let t = along - (radius * radius - perpendicular).sqrt();
+        if 0.0 < t && t < best { Some(t) } else { None }
+    }
 }
 
 impl Mesh {
@@ -1967,6 +2025,26 @@ impl Mesh {
                 face.sphere_push(centre, radius)
                     .map(|push| (triangle as u32, push))
             })
+    }
+
+    /// The nearest face a sphere's sweep meets, with the distance along the
+    /// sweep (see [`Face::swept_sphere`]).
+    pub fn swept_sphere_hit(
+        &self,
+        start: [f32; 3],
+        direction: [f32; 3],
+        length: f32,
+        radius: f32,
+    ) -> Option<(u32, f32)> {
+        let mut best = length;
+        let mut found = None;
+        for (triangle, face) in self.faces().iter().enumerate() {
+            if let Some(t) = face.swept_sphere(start, direction, length, radius, best) {
+                best = t;
+                found = Some((triangle as u32, t));
+            }
+        }
+        found
     }
 }
 
@@ -3108,6 +3186,54 @@ mod tests {
         assert!(push[0].abs() < 1e-3 && push[2].abs() < 1e-3, "{push:?}");
         // Well above the surface it reaches nothing.
         assert!(mesh.sphere_hit([0.5, 3.0, -0.5], 1.0).is_none());
+    }
+
+    /// A sphere swept straight down meets a face where its centre is one
+    /// radius over the plane, the closest point there sets the gap, and a
+    /// sweep that stops short or moves away misses.
+    #[test]
+    fn a_swept_sphere_meets_the_face_it_reaches() {
+        let face = Face::new([0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, -1.0]);
+        // Offset past the hypotenuse, so the closest point at the contact
+        // moment is the first corner and the gap is positive:
+        // (1, 0, 0) − (1.3, 0.5, −0.3) = (−0.3, −0.5, 0.3), whose
+        // perpendicular part is (−0.3, 0, 0.3) (0.18) and along part 0.5.
+        let t = face.swept_sphere([1.3, 1.5, -0.3], [0.0, -1.0, 0.0], 5.0, 0.5, 5.0);
+        assert!(t.is_some_and(|t| (t - 0.235_425).abs() < 1e-3), "{t:?}");
+        // The same sweep only 0.2 long stops well above the face.
+        assert_eq!(
+            face.swept_sphere([1.3, 1.5, -0.3], [0.0, -1.0, 0.0], 0.2, 0.5, 0.2),
+            None
+        );
+        // Upward it runs away from the front.
+        assert_eq!(
+            face.swept_sphere([1.3, 1.5, -0.3], [0.0, 1.0, 0.0], 5.0, 0.5, 5.0),
+            None
+        );
+        // A perpendicular sweep touches at the contact moment: no gap.
+        assert_eq!(
+            face.swept_sphere([0.3, 1.5, -0.3], [0.0, -1.0, 0.0], 5.0, 0.5, 5.0),
+            None
+        );
+        let mesh = Mesh {
+            positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, -1.0]],
+            normals: vec![[0.0, 1.0, 0.0]; 3],
+            position_ids: vec![0, 1, 2],
+            indices: vec![0, 1, 2],
+            groups: vec![MeshGroup {
+                material: "m".into(),
+                first_index: 0,
+                index_count: 3,
+            }],
+            smoothing: vec![0; 3],
+            position_count: 3,
+            ..Mesh::default()
+        };
+        let hit = mesh.swept_sphere_hit([1.3, 1.5, -0.3], [0.0, -1.0, 0.0], 5.0, 0.5);
+        assert!(
+            hit.is_some_and(|(_, t)| (t - 0.235_425).abs() < 1e-3),
+            "{hit:?}"
+        );
     }
 
     /// A face with the fallback flag shapes a smoothing group only when no
