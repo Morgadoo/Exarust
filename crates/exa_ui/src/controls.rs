@@ -635,9 +635,13 @@ pub struct TextField {
 impl TextField {
     /// A field as created: a zero limit becomes 255.
     pub fn new(text: &[u8], max_len: i32, style: u32) -> Self {
+        let text = text.to_vec();
         Self {
-            text: text.to_vec(),
-            edit: EditState::default(),
+            edit: EditState {
+                end: text.len() as u8,
+                ..EditState::default()
+            },
+            text,
             max_len: if max_len == 0 { 255 } else { max_len },
             style,
         }
@@ -674,6 +678,220 @@ impl TextField {
     pub fn focus(&mut self, focused: bool) {
         if focused {
             self.edit.select_all(self.text.len());
+        }
+    }
+}
+
+/// What a text field's message does. The message numbers and the owner
+/// callbacks are the original's; the text edit unit's own editing stays
+/// outside this model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextFieldMessage {
+    /// The back draw: the inner frame from [`text_border`] (if any).
+    DrawBack {
+        border: Option<(i32, i32, i32, i32)>,
+    },
+    /// The front draw: the text edit run.
+    DrawFront { start: u8, end: u8 },
+    /// The pointer query's word.
+    Pointer(u32),
+    /// The control redraws.
+    Redraw,
+    /// A drag or press placed the caret (the edit hit).
+    Caret(u8),
+    /// A left press in the edit state also dropped the anchor.
+    Anchor(u8),
+    /// Enter with an owner callback; `release` gives the focus up.
+    Submit { release: bool },
+    /// A typed byte the digits-only style drops.
+    Dropped,
+    /// A key the text edit unit takes with its limit.
+    Edit { max_len: i32, notify: bool },
+    /// A read-only field's move.
+    Move,
+    /// The field lost the focus with the reset bit: the run starts at 0 and
+    /// the caret at the text's end.
+    Reset,
+    /// The set message stored new text.
+    SetText,
+    /// The Steam on-screen keyboard was asked for.
+    OnScreenKeyboard,
+}
+
+impl TextField {
+    /// Handles a message. `word` is the message's first argument and
+    /// `flags` its second; `x` is the pointer's offset from the text's
+    /// origin for drags and presses. The key's `typed` flag comes from the
+    /// flags' bit 2, as the original's does.
+    pub fn message(
+        &mut self,
+        kind: u32,
+        word: u32,
+        flags: u32,
+        x: i32,
+        advances: &[i16],
+        has_callback: bool,
+    ) -> TextFieldMessage {
+        match kind {
+            1 => TextFieldMessage::DrawBack {
+                border: text_border((0, 0, 0, 0), self.style),
+            },
+            2 => TextFieldMessage::DrawFront {
+                start: self.edit.start,
+                end: self.edit.end,
+            },
+            0x10 => TextFieldMessage::Pointer(Self::CURSOR),
+            0x20 | 0x50 => TextFieldMessage::Redraw,
+            0x30 => TextFieldMessage::Caret(self.edit.hit(&self.text, x, advances)),
+            0x40 => {
+                if word & 7 == 1 && self.style & 0xf_0000 == 0x1_0000 {
+                    self.press_anchor(x, advances);
+                    TextFieldMessage::Anchor(self.edit.caret)
+                } else {
+                    TextFieldMessage::Redraw
+                }
+            }
+            0xa0 => {
+                let typed = flags & 2 != 0;
+                match self.key(word, typed, has_callback) {
+                    TextFieldKey::Submit { release } => TextFieldMessage::Submit { release },
+                    TextFieldKey::Dropped => TextFieldMessage::Dropped,
+                    TextFieldKey::Edit { max_len, notify } => {
+                        TextFieldMessage::Edit { max_len, notify }
+                    }
+                    TextFieldKey::Move => TextFieldMessage::Move,
+                }
+            }
+            0xb0 => {
+                if word == 0 && self.style & 0x400 != 0 {
+                    self.edit.reset(self.text.len());
+                    TextFieldMessage::Reset
+                } else {
+                    TextFieldMessage::Redraw
+                }
+            }
+            0xc0 => {
+                if word == 0x100 {
+                    TextFieldMessage::OnScreenKeyboard
+                } else {
+                    TextFieldMessage::Redraw
+                }
+            }
+            0x200 => {
+                let mut text = word.to_le_bytes().to_vec();
+                while text.last() == Some(&0) {
+                    text.pop();
+                }
+                text.truncate(usize::try_from(self.max_len).unwrap_or(0));
+                self.text = text;
+                self.edit.reset(self.text.len());
+                TextFieldMessage::SetText
+            }
+            0x300 => TextFieldMessage::DrawFront {
+                start: self.edit.start,
+                end: self.edit.end,
+            },
+            0x400 => {
+                self.edit.reset(self.text.len());
+                TextFieldMessage::Reset
+            }
+            _ => TextFieldMessage::Redraw,
+        }
+    }
+}
+
+/// What a combo box's message does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComboBoxMessage {
+    DrawBack,
+    DrawFront,
+    Pointer(u32),
+    Redraw,
+    Caret(u8),
+    Anchor(u8),
+    /// The drop-down list opens (or its drop-down draw runs).
+    Open,
+    /// Enter with an owner callback: the box enters its edit state.
+    Submit,
+    /// The selected item was taken (see [`ComboBox::choose`]).
+    Chosen,
+    /// The focus loss put the selected item's text back.
+    Restored,
+    /// The set, refresh or reset messages.
+    Refresh,
+}
+
+impl ComboBox {
+    /// Handles a message. `word` is the message's first argument and `x`
+    /// the pointer's offset for drags and presses.
+    #[allow(clippy::too_many_arguments)]
+    pub fn message(
+        &mut self,
+        kind: u32,
+        word: u32,
+        _flags: u32,
+        x: i32,
+        advances: &[i16],
+        style: u32,
+        state: u32,
+    ) -> ComboBoxMessage {
+        match kind {
+            1 => ComboBoxMessage::DrawBack,
+            2 => ComboBoxMessage::DrawFront,
+            0x10 => ComboBoxMessage::Pointer(combo_cursor(style, word, (0, 0, 0, 0), 0, 0)),
+            0x20 | 0x50 => ComboBoxMessage::Redraw,
+            0x30 => ComboBoxMessage::Caret(self.edit.hit(&self.text, x, advances)),
+            0x40 => {
+                if word & 7 == 1 {
+                    if state & 0xf_0000 == 0x2_0000 {
+                        self.edit.anchor = self.edit.hit(&self.text, x, advances);
+                        self.edit.caret = self.edit.anchor;
+                        ComboBoxMessage::Anchor(self.edit.caret)
+                    } else {
+                        ComboBoxMessage::Open
+                    }
+                } else {
+                    ComboBoxMessage::Redraw
+                }
+            }
+            0xa0 => {
+                if word == 0x0d {
+                    ComboBoxMessage::Submit
+                } else {
+                    ComboBoxMessage::Redraw
+                }
+            }
+            0xb0 => {
+                if word == 0 && state & 0x400 != 0 {
+                    if let Some(item) = self.item(self.selected) {
+                        self.text = item.to_vec();
+                    }
+                    self.edit.reset(self.text.len());
+                    ComboBoxMessage::Restored
+                } else {
+                    ComboBoxMessage::Redraw
+                }
+            }
+            0xc0 => {
+                if word == 0x100 {
+                    ComboBoxMessage::Open
+                } else {
+                    ComboBoxMessage::Redraw
+                }
+            }
+            0x200 => {
+                if self.choose(word) {
+                    ComboBoxMessage::Chosen
+                } else {
+                    ComboBoxMessage::Refresh
+                }
+            }
+            0x300 => ComboBoxMessage::Refresh,
+            0x400 => {
+                self.edit.reset(self.text.len());
+                ComboBoxMessage::Refresh
+            }
+            _ => ComboBoxMessage::Redraw,
         }
     }
 }
@@ -756,6 +974,8 @@ pub struct ComboBox {
     pub selected: i32,
     pub max_len: i32,
     pub text: Vec<u8>,
+    /// The edit run and caret.
+    pub edit: EditState,
 }
 
 impl ComboBox {
@@ -767,7 +987,11 @@ impl ComboBox {
             selected,
             max_len: if max_len == 0 { 255 } else { max_len },
             text: Vec::new(),
+            edit: EditState::default(),
         };
+        if let Some(item) = combo.item(selected) {
+            combo.edit.end = item.len() as u8;
+        }
         if let Some(item) = combo.item(selected) {
             combo.text = item.to_vec();
         }
@@ -2230,6 +2454,81 @@ mod extended_tests {
         assert!(quiet.commit(-3.0, true));
         assert_eq!(quiet.value, 0.0);
         assert!(!quiet.dirty);
+    }
+
+    #[test]
+    fn a_text_field_dispatches_its_messages() {
+        let mut field = TextField::new(b"AB", 0, text_style::EDITABLE);
+        let advances = advances();
+        assert_eq!(
+            field.message(1, 0, 0, 0, &advances, false),
+            TextFieldMessage::DrawBack { border: None }
+        );
+        assert_eq!(
+            field.message(0x10, 0, 0, 0, &advances, false),
+            TextFieldMessage::Pointer(0x801_0000)
+        );
+        assert_eq!(
+            field.message(0x30, 0, 0, 5, &advances, false),
+            TextFieldMessage::Caret(1)
+        );
+        assert_eq!(
+            field.message(0xa0, 0x0d, 0, 0, &advances, true),
+            TextFieldMessage::Submit { release: false }
+        );
+        field.style |= text_style::DIGITS;
+        assert_eq!(
+            field.message(0xa0, u32::from(b'x'), 2, 0, &advances, false),
+            TextFieldMessage::Dropped
+        );
+        field.style |= 0x400;
+        assert_eq!(
+            field.message(0xb0, 0, 0, 0, &advances, false),
+            TextFieldMessage::Reset
+        );
+        assert_eq!((field.edit.start, field.edit.caret), (0, 2));
+        assert_eq!(
+            field.message(
+                0x200,
+                u32::from_le_bytes(*b"Q\0\0\0"),
+                0,
+                0,
+                &advances,
+                false
+            ),
+            TextFieldMessage::SetText
+        );
+        assert_eq!(field.text, b"Q");
+    }
+
+    #[test]
+    fn a_combo_box_dispatches_its_messages() {
+        let items = vec![b"one".to_vec(), b"two".to_vec()];
+        let mut combo = ComboBox::new(items, 1, 0);
+        let advances = advances();
+        assert_eq!(
+            combo.message(0x40, 1, 0, 0, &advances, 0, 0),
+            ComboBoxMessage::Open
+        );
+        assert_eq!(
+            combo.message(0x40, 1, 0, 10, &advances, 0xd, 0x2_0000),
+            ComboBoxMessage::Anchor(3)
+        );
+        assert_eq!(
+            combo.message(0xa0, 0x0d, 0, 0, &advances, 0, 0),
+            ComboBoxMessage::Submit
+        );
+        assert_eq!(
+            combo.message(0x200, 2, 0, 0, &advances, 0, 0),
+            ComboBoxMessage::Chosen
+        );
+        assert_eq!(combo.text, b"two");
+        combo.text = b"t".to_vec();
+        assert_eq!(
+            combo.message(0xb0, 0, 0, 0, &advances, 0, 0x400),
+            ComboBoxMessage::Restored
+        );
+        assert_eq!(combo.text, b"two");
     }
 
     #[test]
