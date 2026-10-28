@@ -135,29 +135,26 @@ impl Prop {
 }
 
 /// The loader's border fill: every load writes the fixed edge words of the
-/// grid's outer row and column into plane A, whatever the file stored, then
-/// the four corners. Values are plane A's edge/corner words.
+/// grid's outer rows and columns into plane A, whatever the file stored:
+/// the whole top row, the left and right columns, the whole bottom row, then
+/// the four corners, in that order (a one-row or one-column grid ends with
+/// the last write). Values are plane A's edge/corner words.
 pub fn fill_borders(edges: &mut [u32], width: u32, height: u32) {
     let (w, h) = (width as usize, height as usize);
-    // The loader only runs for a grid with an inside: it never fills a 1-cell
-    // edge (and would index before its planes).
-    if w < 2 || h < 2 || edges.len() < w * h {
+    // An empty grid has no border (the original would write outside it).
+    if w == 0 || h == 0 || edges.len() < w * h {
         return;
     }
-    for cell in edges.iter_mut().take(w - 1) {
-        *cell = 0x2001_0007;
-    }
-    for row in 0..h - 1 {
+    edges[..w].fill(0x2001_0007);
+    for row in 0..h {
         edges[row * w] = 0x0012_0070;
         edges[row * w + w - 1] = 0x1200_7000;
     }
-    for cell in edges.iter_mut().skip((h - 1) * w).take(w - 1) {
-        *cell = 0x0120_0700;
-    }
+    edges[(h - 1) * w..w * h].fill(0x0120_0700);
     edges[0] = 0x2013_0077;
     edges[w - 1] = 0x3201_7007;
     edges[(h - 1) * w] = 0x0132_0770;
-    edges[w * h - 1] = 0x0132_0700;
+    edges[w * h - 1] = 0x1320_7700;
 }
 
 pub(crate) fn read_grid(b: &[u8]) -> Result<LevelGrid> {
@@ -283,9 +280,6 @@ fn read_prop_tree(b: &[u8], depth: usize) -> Result<PropAttachment> {
 }
 
 fn read_tree_entry(r: &mut Reader<'_>, depth: usize) -> Result<Option<PropAttachment>> {
-    if depth > ATTACHMENT_DEPTH {
-        return Ok(None);
-    }
     let start = r.pos;
     let name = r.name()?;
     let word = r.u32()?;
@@ -301,7 +295,10 @@ fn read_tree_entry(r: &mut Reader<'_>, depth: usize) -> Result<Option<PropAttach
     let children = r.u32()? as usize;
     let descendants = r.u32()? as usize;
     let mut kids = Vec::new();
-    if children > 0 {
+    // Past the depth limit the record is still skipped by its stride, so
+    // its siblings stay in step, but it is not kept.
+    let too_deep = depth > ATTACHMENT_DEPTH;
+    if !too_deep {
         for _ in 0..children {
             if let Some(kid) = read_tree_entry(r, depth + 1)? {
                 kids.push(kid);
@@ -319,6 +316,9 @@ fn read_tree_entry(r: &mut Reader<'_>, depth: usize) -> Result<Option<PropAttach
         return Err(Error::Malformed("a placement tree record overlaps".into()));
     }
     r.bytes(target - r.pos)?;
+    if too_deep {
+        return Ok(None);
+    }
     Ok(Some(PropAttachment::Transform {
         name,
         word,
@@ -503,41 +503,35 @@ mod tests {
         let mut edges = vec![0u32; w * h];
         fill_borders(&mut edges, w as u32, h as u32);
         assert_eq!(
-            &edges[0..w],
-            &[0x2013_0077, 0x2001_0007, 0x2001_0007, 0x3201_7007]
+            edges,
+            [
+                0x2013_0077,
+                0x2001_0007,
+                0x2001_0007,
+                0x3201_7007,
+                0x0012_0070,
+                0,
+                0,
+                0x1200_7000,
+                0x0132_0770,
+                0x0120_0700,
+                0x0120_0700,
+                0x1320_7700,
+            ]
         );
-        for row in 0..h {
-            assert_eq!(
-                edges[row * w],
-                if row == 0 {
-                    0x2013_0077
-                } else if row == h - 1 {
-                    0x0132_0770
-                } else {
-                    0x0012_0070
-                }
-            );
-            assert_eq!(
-                edges[row * w + w - 1],
-                if row == 0 {
-                    0x3201_7007
-                } else if row == h - 1 {
-                    0x0132_0700
-                } else {
-                    0x1200_7000
-                }
-            );
-        }
-        // The bottom row keeps its right corner from the right column, then
-        // the corner writes.
-        assert_eq!(
-            &edges[2 * w..],
-            &[0x0132_0770, 0x0120_0700, 0x0120_0700, 0x0132_0700]
-        );
-        // A 1-cell edge is left alone.
-        let mut small = vec![9u32; 2];
-        fill_borders(&mut small, 2, 1);
-        assert_eq!(small, [9, 9]);
+        // One row: the bottom-row and corner writes land on the same cells;
+        // the last corner wins.
+        let mut row = vec![9u32; 3];
+        fill_borders(&mut row, 3, 1);
+        assert_eq!(row, [0x0132_0770, 0x0120_0700, 0x1320_7700]);
+        // One cell takes the last corner word.
+        let mut one = vec![9u32; 1];
+        fill_borders(&mut one, 1, 1);
+        assert_eq!(one, [0x1320_7700]);
+        // An empty grid is left alone.
+        let mut empty: Vec<u32> = Vec::new();
+        fill_borders(&mut empty, 0, 3);
+        assert!(empty.is_empty());
     }
 
     #[test]

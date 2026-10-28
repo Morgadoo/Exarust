@@ -789,7 +789,9 @@ with fixed values (`0x20010007` top row, `0x00120070` left column,
 `0x12007000` right column, `0x01200700` bottom row, distinct corner values)
 on every load, overwriting whatever the file stored; Exarust's grid reader
 does the same (`level::fill_borders`). The corner values are
-`0x20130077`, `0x32017007`, `0x01320770` and `0x01320700`. `7` is a solid
+`0x20130077` (top left), `0x32017007` (top right), `0x01320770`
+(bottom left) and `0x13207700` (bottom right), written after the whole top
+row, both columns and the whole bottom row. `7` is a solid
 wall edge. Planes B and C (floor and ceiling data) and the selection of set
 pieces are decoded in the grid-builder work.
 
@@ -1362,10 +1364,13 @@ elements (normals recomputed from them, cached per distinct set), and an
 subtree follows its stored descendant count). A placed object (`DB01`,
 below) carries the same records, which Exarust also applies.
 
-The reader keeps the original's unknown-chunk registry: `ChunkHandlers`
-holds tag→handler entries in registration order (the first tag wins) and
-`Scene::parse_with` hands every unknown root chunk and node sub-chunk to it
-after recording the tag; `Scene::parse` uses an empty registry.
+The reader keeps the original's sub-chunk registry: `ChunkHandlers` holds
+tag→handler entries in registration order (the first tag wins). In the
+original's registry mode (set by particular loaders) every node's
+sub-chunks go to the registry instead of the reader's own sub-chunk loop;
+root chunks never do. `Scene::parse_with` is that mode when a handler is
+registered; `Scene::parse` and an empty registry read as before. The game
+registers none.
 
 All 79 935 props in the 29 retail levels name existing Objlib objects.
 
