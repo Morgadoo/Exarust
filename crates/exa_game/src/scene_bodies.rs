@@ -113,6 +113,7 @@ pub struct SceneBodyPlan {
     /// The item its main hand shows, replacing the record's (a drawn weapon
     /// variant's item id).
     pub weapon: Option<u32>,
+    /// What drives it.
     pub brain: BodyBrain,
     /// Its first action, on the game clock, ms.
     pub act_at_ms: u32,

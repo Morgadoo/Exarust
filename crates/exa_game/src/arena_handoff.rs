@@ -44,9 +44,13 @@ const HAS_RETURN: u8 = 4;
 /// A launched match's setup, as the hub's board chose it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MatchSetup {
+    /// The layout's template id.
     pub template: i32,
+    /// The event's rank: the generated fighters' level.
     pub level: i32,
+    /// The event's gear tier.
     pub tier: i32,
+    /// A tournament event's match.
     pub tournament: bool,
     /// The company entry that is the player's own, as the launch planned it.
     pub player: Option<usize>,
@@ -57,7 +61,9 @@ pub struct MatchSetup {
 /// The career, the match and the return the two processes pass.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Handoff {
+    /// The career the writing process hands over.
     pub career: Option<ArenaCareer>,
+    /// A launched match's setup, when the file carries one.
     pub launch: Option<MatchSetup>,
     /// The placement the settled match returned the company to.
     pub returned: Option<ReturnPlacement>,
