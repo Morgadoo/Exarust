@@ -94,8 +94,10 @@ between bodies (`body::Pairing` on each part), the more mobile one's
 spheres against the other part's collision mesh (`body::Pairs`, the
 original's mesh query: the swept/static choice on 0.1 cm² of travel, the
 mesh-box and mesh-sphere pre-tests, the one-sided per-triangle tests with
-the sphere re-read after every hit), or its spheres where the loader has
-handed no mesh over (`Ragdoll::set_part_triangles`), with an immediate
+the sphere re-read after every hit), or its spheres, pre-tested against
+their own bound, where the loader has handed no mesh over
+(`Ragdoll::set_part_triangles`; no loader does yet, so the game runs the
+sphere fallback), with an immediate
 push by mobility shares and φ; up to four points per pair are solved in
 the next tick's
 iterations before the links (0.01 cm slop, the reversed pair friction,

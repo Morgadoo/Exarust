@@ -597,8 +597,9 @@ prop). Rules in cm and ticks:
   60).
 - **Each sphere** of the sphere side, where it is in the other part's
   frame, or swept from where the last tick left both parts when it moved
-  over 0.1 cm² relative to the other part (a held item's static-only mode
-  and a placed pair use the static path). It must first touch the other's
+  over 0.1 cm² relative to the other part (a placed pair uses the static
+  path; unlike the level detection, the pair stage has no static-only
+  gate). It must first touch the other's
   mesh box and mesh sphere (the swept capsule the same two, with the box
   slab-tested); then the other's mesh query tests it against every
   triangle, once more from the sphere's new place after each hit. A

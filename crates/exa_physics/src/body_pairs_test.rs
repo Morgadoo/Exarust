@@ -508,10 +508,11 @@ fn the_pair_friction_sticks_below_its_limit() {
 /// Pairs whose friction product is under 1.19e-7 do not rub: one limb on
 /// another (n_y = 1, so the limit is the product itself) keeps a slip of
 /// 3e-4 cm (9e-8 cm², under either limit) with a product of 1.1e-7, and
-/// has it cancelled with 1.2e-7.
+/// has it cancelled with 1.2e-7. A product exactly at the epsilon rubs,
+/// and so does a NaN one (the original's compare takes the parity branch).
 #[test]
 fn pairs_with_almost_no_friction_do_not_rub() {
-    for (mu, rubs) in [(1.1e-7_f32, false), (1.2e-7, true)] {
+    for (mu, rubs) in [(1.1e-7_f32, false), (1.2e-7, true), (MIN_FRICTION, true)] {
         let (mut a, mut b, pair) = kept_pair(0.0, Vec3::Z * 3e-6, true);
         a.parts[0].friction = 1.0;
         b.parts[0].friction = mu;
@@ -1133,9 +1134,9 @@ fn a_sphere_behind_a_mesh_triangle_is_left_alone() {
 }
 
 /// A fast sphere crosses a wall in one tick: the swept query takes it back
-/// to where it first touched (its centre one radius in front of the plane),
-/// while a held item's static-only mode tests only the end, finds it behind
-/// nothing and lets it through.
+/// to where it first touched (its centre one radius in front of the plane).
+/// The pair stage has no static-only gate (only the level detection has
+/// one), so a held item's static-only mode sweeps the same.
 #[test]
 fn a_fast_sphere_is_caught_by_the_swept_mesh_query() {
     let run = |static_only: bool| {
@@ -1149,13 +1150,10 @@ fn a_fast_sphere_is_caught_by_the_swept_mesh_query() {
         a.set_velocity(Vec3::NEG_X * 60.0);
         let mut stages = pairs();
         step(&mut [&mut a, &mut b], NONE, &mut stages);
-        let x = a.parts[0].positions[0].x;
-        println!(
-            "static_only={static_only}: x={x} touches={} sleep={:?}",
+        (
+            a.parts[0].positions[0].x,
             the_pairs(&stages).touches().len(),
-            a.sleep
-        );
-        (x, the_pairs(&stages).touches().len())
+        )
     };
     let (swept, touches) = run(false);
     assert_eq!(touches, 1);
@@ -1164,9 +1162,7 @@ fn a_fast_sphere_is_caught_by_the_swept_mesh_query() {
     // the plane in the same tick, but it is nowhere near the -0.42 m it
     // would have travelled freely.
     assert!((-0.15..0.3).contains(&swept), "swept to {swept}");
-    let (through, touches) = run(true);
-    assert_eq!(touches, 0);
-    assert!(through < -0.2, "passed to {through}");
+    assert_eq!(run(true), (swept, touches));
 }
 
 /// The contact offset array a placed body's hits record is readable by its

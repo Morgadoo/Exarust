@@ -962,24 +962,29 @@ impl Pairs {
 ///
 /// Each sphere is one of A's stored collision spheres, put in B's space by
 /// the current and previous relative transforms. It uses the swept query
-/// when it moved over 0.1 cm² (unless A's held-item static-only mode is on,
-/// or the pair has one placed body), and the static one otherwise. The
-/// original's pre-tests come first: the sphere against B's mesh box and
-/// mesh sphere (or the swept sphere against the box and B's mesh sphere as
-/// a capsule); then B's mesh query, one triangle at a time, with the sphere
-/// re-read after every hit (so later triangles see the push). A part
-/// without triangles falls back to B's stored spheres, which is Exarust's
+/// when it moved over 0.1 cm² (unless the pair has one placed body), and
+/// the static one otherwise. The original's pre-tests come first: the
+/// sphere against B's mesh box and mesh sphere (or the swept sphere against
+/// the box and B's mesh sphere as a capsule); then B's mesh query, one
+/// triangle at a time, with the sphere re-read after every hit (so later
+/// triangles see the push). A part without triangles falls back to B's
+/// stored spheres, pre-tested against their own bound, which is Exarust's
 /// stand-in until the loaders hand over the model meshes.
 fn collide(pa: &mut Part, pb: &mut Part, pair: &mut Pair, touch: &mut Touch, placed: Option<bool>) {
     let mut a_now = pa.transform();
     let mut b_now = pb.transform();
     let previous = pb.settled.inverse() * pa.settled;
-    let (mesh_centre, mesh_half, mesh_radius) = (
-        pb.pairing.mesh.centre,
-        pb.pairing.mesh.half,
-        pb.pairing.mesh.radius,
-    );
     let triangles = pb.triangles.clone();
+    // The pre-tests take B's mesh box and sphere. The sphere fallback tests
+    // B's spheres instead, so it pre-tests against the bound of those
+    // spheres: a node box need not hold every collision sphere, and the
+    // bound never rejects a sphere the fallback would hit.
+    let bound = if triangles.is_some() {
+        pb.pairing.mesh
+    } else {
+        pb.pairing.sphere
+    };
+    let (mesh_centre, mesh_half, mesh_radius) = (bound.centre, bound.half, bound.radius);
     // The fallback's sphere list is copied only when the mesh is absent.
     let spheres = if triangles.is_none() {
         pb.spheres.clone()
@@ -991,10 +996,9 @@ fn collide(pa: &mut Part, pb: &mut Part, pair: &mut Pair, touch: &mut Touch, pla
         let start = previous.transform_point3(c);
         let mut end = (b_now.inverse() * a_now).transform_point3(c);
         // The placed callback always runs the static query (the original
-        // sweeps only in the dynamic path); a held item's static-only mode
-        // turns the sweep off too.
-        let swept =
-            placed.is_none() && !pa.static_only && cm(end - start).length_squared() > SWEEP_TRAVEL2;
+        // sweeps only in the dynamic path). Unlike the level detection, the
+        // pair stage has no static-only gate.
+        let swept = placed.is_none() && cm(end - start).length_squared() > SWEEP_TRAVEL2;
 
         if swept {
             let sweep = intersect::Sweep::new(start, end);
@@ -1279,9 +1283,9 @@ fn solve_placed_pair(pa: &mut Part, pb: &mut Part, a_placed: bool, points: &[Poi
 /// weights. Pairs with a friction product under 1.19e-7 do not rub.
 fn rub_pair(pa: &mut Part, pb: &mut Part, pair: &Pair) {
     let mu = pa.friction * pb.friction;
-    // The original rubs only when the product is strictly over the
-    // epsilon (a NaN product is not).
-    if MIN_FRICTION.partial_cmp(&mu) != Some(std::cmp::Ordering::Less) {
+    // Only a product under the epsilon is skipped: the original's compare
+    // takes the parity branch on a NaN and rubs, and rubs at the epsilon.
+    if mu < MIN_FRICTION {
         return;
     }
     let (sa, sb) = shares(pa.pairing.mobility, pb.pairing.mobility);
