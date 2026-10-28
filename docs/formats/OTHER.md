@@ -925,9 +925,8 @@ over 255 and the damage as 2/(2 − x) − 1; apparel takes damage x/(2 − x)
 too and dirt (x² + x)/2. The rest of the factory job is under Weapon
 factories (Paint).
 
-Not yet painted: the per-area emblem layers (the factory appends an extra
-layer in another palette colour with a generated emblem texture; the emblem
-generator is outside the factory), pattern opacity textures, the factory's
+Not yet painted: the gemstone's pattern pass (a texture the factory never
+sets), the alpha pass, the factory's
 shared atlas (each part is painted on its own at its component's
 resolution) and per-instance randomized appearances. The painter samples
 the nearest texel where the GPU filters.
@@ -1305,10 +1304,28 @@ factory weapons of a real save, part for part and material for material.
   − 1) and dirt bytes /255. Material-scale textures repeat once per as
   many atlas texels as the material's first colour texture is wide,
   damage-scale ones once per 1024; four offsets from seed B,
-  round(512r)/512 − ½ each, shift them. Not reproduced yet: texture-only
-  overlay parts (part flag 1) and the mask-gated shade of parts flagged 2,
-  emblem layers, the texture-only deform's `UVScale`, and the low-quality
-  half-size atlas.
+  round(512r)/512 − ½ each, shift them.
+- **Emblem layers**: an area with an emblem adds a layer right after its
+  own, with the same mask, material and wear weight, the emblem's colour
+  and the picture `emblembkg0` + the id's tens and ones digits
+  (`Emblems.rpk`). The layer paints only the colour pass (the specular and
+  normal passes skip it). A material with the painted-pattern program
+  (1 ClothBasic, 7–8 leather, 25 painted planks) multiplies the mask by
+  the picture's red at `vrTex · PtrnPos.xy + PtrnPos.zw` (region
+  coordinates); any other material paints the whole mask. `PtrnPos`
+  starts at (atlas width / height, 1, 0, 0) and every assembled part
+  whose chosen variant has flag `0x1000` changes it with
+  f = 1 − scale_byte/254 (`/127` for a negative byte, in double): the
+  scale is multiplied by f, the offset moves by −(f − 1)/2 (float) and
+  then by f · offset_byte/127 (double).
+- **`UVScale`**: the last of a part's deforms whose header word is exactly
+  6 (texture only) gives the region `UVScale` = F(−value) with the
+  deform's amount, else 1. Only the blade programs (`steelbld_*`) read it:
+  their mask, shade and region normal are sampled at (u, v · UVScale).
+- Not reproduced yet: texture-only overlay parts (part flag 1) and the
+  mask-gated shade of parts flagged 2, the region's width crop by the
+  part's texture parameter, the alternate normal program (part flag 4),
+  and the low-quality half-size atlas.
 - **Items** name a factory by a model name starting with `@`. Their weapon
   section (`0x4000`, 96 bytes) holds flags, seeds, quality, damage, dirt,
   4 material slots (material, finish, colour, mode), stats, and the stored
