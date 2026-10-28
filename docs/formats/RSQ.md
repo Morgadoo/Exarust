@@ -450,11 +450,17 @@ How the original simulates a body (`exa_physics::body`):
     a zombie under 0.85), the pose hold, the swing clock and the attack
     gate all measure the energy against this most.
   - A recovery step starts when the chest leaves the feet (1.5 · R · E⁴ · S;
-    a settled human, balance bonus 1, at 45 cm), leads the target by the
-    chest's velocity, and the footwork's stance score moves one foot. The
-    episode ends by its timeouts and landings. The thorax pins then lead
-    by the horizontal error from the pin to the posed target plus the
-    step offset, times 0.7 (0.4 while Idle plays), (direction + 0.5),
+    a settled human, balance bonus 1, at 45 cm), compared squared (a NaN
+    offset starts none) and not while the shock-stagger flag is set. It
+    leads the target by the chest's velocity, and the footwork's stance
+    score moves one foot. The episode ends by its timeouts and landings.
+    Its stance origin and anchors are clamped by the footwork's own reach,
+    80·√scale·(1 − 0.2·encumbrance)·(1 − 0.3·feral) cm, not the attack
+    steps' extension-scaled length; a deep crouch makes it 0.7 of that,
+    and a new target keeps the height of the point it is measured from (the
+    running target while stepping, else the standing position). The thorax pins
+    then lead by the horizontal error from the pin to the posed target plus
+    the step offset, times 0.7 (0.4 while Idle plays), (direction + 0.5),
     (2 − 25·s), 1.2, the square root of body scale and the stance level.
     Direction is (h²/60 + 0.25)·0.36·forwardness. The support pins pull
     the thorax and the pelvis (below); its feet
@@ -690,14 +696,17 @@ tick and muscle setup). Every rule is in the original's cm and ticks:
   between the two ankles (the parameter taken horizontally, the point
   keeping the ankles' heights), moved halfway to the ankles' centre while
   standing. The chest is first led: standing after a landing by the slow
-  velocity × a weight that starts at 5 and fades 0.05 a tick; moving with
-  support by 3 × the fast velocity; back by 10 cm at a full crouch
-  (Exarust has no crouch yet).
+  velocity × a weight that starts at 5 and fades 0.05 a tick (the fade in
+  double precision); moving with support by 3 × the fast velocity; back by
+  10 cm at a full crouch. The point and the feet's centre (the mean of the
+  ankles) are kept on the balance (`Balance::support_point`,
+  `Balance::feet_centre`).
 - The **score** is q = u_y⁸ standing, u_y⁴ moving, plus 0.05 × the race's
-  balance bonus, at most 1, u being the unit offset from the support point
-  to the chest. A human (bonus 1) is steady (q > 0.99) within 15.6 cm of
-  lean with the chest 125 cm up and scores under 0.6 past 50.2 cm (52.2 cm
-  with the chest 130 cm up; 44 cm scores 0.698).
+  balance bonus. The sum is taken in double and narrowed once; the cap at
+  1 compares in single, so a NaN stays. A human (bonus 1) is steady
+  (q > 0.99) within 15.6 cm of lean with the chest 125 cm up and scores
+  under 0.6 past 50.2 cm (52.2 cm with the chest 130 cm up; 44 cm scores
+  0.698).
 - A slow vertical chest speed v over 3 cm/tick sets the counter to 100 and,
   for a body grounded last tick, cuts q by (1 − 0.333(v − 3))², to 0 above
   6.
@@ -709,7 +718,15 @@ tick and muscle setup). Every rule is in the original's cm and ticks:
   a slow chest speed v under 5 cm/tick (0.05 at rest). So once a body has
   stood, a second wobble topples it fast: a lean scoring 0.55 takes a fresh
   body 25 ticks, one that has stood 5. Getting up, balance rises 0.05 a
-  tick and the counter falls by 5 while above 2.
+  tick and the counter falls by 5 while above 2. Only a score over 0.99
+  is steady: a NaN takes the gain, whose 64-bit conversion leaves 0 in the
+  counter's word, and balance turns NaN only once the counter is full.
+- The **imbalance accumulator** (`Balance::imbalance`): while balance is at
+  least 0.2, a foot gives support and the shock-stagger flag is clear, a
+  chest past the step trigger adds (√h² − R·E⁴S)/(5 × scale) × 0.005,
+  capped at 1; the feet routine then takes 0.01 a tick off in double
+  precision, floored at 0. Nothing in the original reads it; it stays a
+  stored rule.
 - Then the **feet**. Each leg asks the level for the ground under it with a
   **Height Query**: a sphere whose lowest point starts at a point is swept
   straight down, and the answer is the height of its lowest point where it
@@ -910,8 +927,11 @@ ticks.
   level. The standing leg bend folds the leg onto its bend target; it
   does not change this plant. A walking body's feet plant and lift by the
   walk's phase: frac(progress + 1.2 − 0.5×leg), planted while not touching
-  and the phase is 0.2 to 0.4, lifted while touching and the phase is 0 or
-  at least 0.55.
+  and the phase is 0.2 to 0.4, or before 0.2 while the foot moves forward
+  at most 0.3 cm a tick (backpedalling, back at most 0.2; the bounds and the phases are double
+  compares), lifted while
+  touching and the phase is 0 or at least 0.55. A kick (motion 0x0D) puts
+  every foot on its stance spot, touching.
 - **Footwork** (standing, not moving): lying down (down, dormant, dead) no
   foot touches; getting up until nine tenths of its clip, or without
   support (last tick's), each foot touches on its stance spot, where the
@@ -926,7 +946,28 @@ ticks.
   as staying. A get-up's
   start, the walk's stop and a queued clip switch clear every state (the
   last two are implied in Exarust: a walking body's feet do not touch, and
-  it has no queued switch).
+  it has no queued switch). A queued combat step (`body::queued_step`,
+  tested, no caller) is taken when its direction is less than cos 0.7 off
+  the line from the chest to the step target or the target is within
+  40 × scale cm: it aims at the chest plus the queued vector, tells the AI
+  when that points along the facing, and counts down to −2 before the
+  first landing, −1 after it. Getting up clears the step without the
+  step-end placement.
+- **Walking ground**: while the walk or run plays, the character's ground
+  is the two feet's smoothed grounds blended by the original's gait
+  weights (`feet::gait_weights`, every tick, from last tick's grounds,
+  blended only while the body moves under its own power): the stored
+  signed height difference is smoothed 0.9/0.1 in double toward the
+  difference the phase picks (frac(progress +
+  0.45), the first minus the second or the reverse), and the first foot's
+  weight is (1 − r)·0.5 + (1 − |2t − 1|)·r, r = 1 − run/2, t =
+  frac(progress + c), c 0.4 at a positive difference down to 0.4 − 0.005·|
+  difference| at −20 or more, 0.65 below. Standing, the stored difference
+  decays by a tenth and the feet share the ground equally. A stepping
+  body takes the last anchored foot's ground; otherwise the lowest.
+- **Step length and loudness**: a foot that starts a step stores its
+  step's length (cm); the footstep sound's volume starts at 0.01 + 0.0139
+  × the length up to 140 cm, else 1 (`feet::step_loudness`).
 - **Friction** each tick, on the lower leg and copied to its foot: 0 not
   touching, 2.0 touching, 0 anchored (stick below 1 cm a tick on a floor).
 - **Anchor height**: the smoothed ground (it rises at once and falls by the
@@ -1790,7 +1831,16 @@ and starts from the keys, with no blend. The pose-only sampler (a clip at
 a time, no capture or blend: the gait floor, the viewer's first pose)
 takes the same bracket: a looping clip blends from its last key back to
 its first before the first key and past the last (no further than the
-first key), one played once holds its first and last keys there.
+first key), one played once holds its first and last keys there. The
+limp (muscles-off) sampler takes its bracket at the raw clock and the
+remaining blend (`exa_anim::ragdoll_bracket`, `Animator::sample_ragdoll`):
+before the first key plus the blend it blends from the last key of a
+looping clip; between the keys it blends as the living sampler does; at
+or past the last key a looping clip blends from it back to the first by
+(time − last)/first with no clamp, and one played once blends from the
+key before the last to the last with a share of 1. It takes no gait
+overlay, hold, twist, look or foot pitch, and the root keeps its travel.
+No Exarust corpse plays a clip yet.
 
 **Sampler pipeline.** A living body's sampler takes each sample in the
 original's steps, part by part in the model tree's order, one function a
@@ -1806,7 +1856,7 @@ not landed is the identity and says which:
 | 5 | the clip chain: each part placed by its rest translation and its posed turn under its parent's placement; the foot contacts read it | `clip_chain` |
 | 6 | the IK chain: each IK part's turn times its leg IK corrections, the chain recomposed; the targets and the pins read it | identity until C13 (standing) and C19 (walking) |
 | 7 | the torso twist ([below](#torso-twist)): the midline chain's turns (the lumbar half) toward the look | `spine`, `exa_physics::body::locomotion::twist_spine` |
-| 8 | the head look ([below](#head-look): yaw, pitch and roll by a ramping weight), the foot pitch to the ground (smoothed), the thorax's attack hunch | the head look (`look_with_head`); the thorax hunch on the pinned part's local turn before the chain; the foot pitch (`foot_pitch`: a 20 cm toe, eased 0.01 rad a tick; a placement stores the angle and clears the rate). While an unnamed flag is set the original eases 0.1 rad a tick instead; that flag is not ported. |
+| 8 | the head look ([below](#head-look): yaw, pitch and roll by a ramping weight), the foot pitch to the ground (smoothed), the thorax's attack hunch | the head look (`look_with_head`); the thorax hunch on the pinned part's local turn before the chain; the foot pitch (`foot_pitch`: a 20 cm toe, eased 0.01 rad a tick, 0.1 while a recovery step is on; a placement stores the angle and clears the rate) |
 | 9 | the anchors of every slack link and the pelvis height | the drive's, in the carry stage (`Ragdoll::aim`): a looking head's relative to the physical thorax, a head that does not look relative to its parent's pose from before the twist |
 | 10 | the foot contacts' ground offsets and the gait plant events | the feet routine's; the plants with M16 |
 
@@ -1822,7 +1872,12 @@ turn, taken each tick the body is dazed, has a sag, or its support is
 under 1. A dazed body standing on its feet holds its physical pose in
 full: the clip has no say until its energy recovers. The root is not held.
 The original lerps the quaternions' components without a sign check;
-Exarust takes the short way.
+Exarust does the same (two opposite turns half way give a NaN). A shock
+stagger's held pose (`exa_anim::shock_hold`, tested; no writer of the
+shock condition yet) copies the captured pose for bones 1 to 7 unless the
+body is down, and turns every other bone by a random axis (each draw less
+0.5, normalised) and a random angle, blended half way from the Defence
+stance's first key without a sign check and normalised.
 
 **Swing.** Every tick of an attack's clip (actions 5–12), with the
 fighter's condition attacking (balanced, not getting up), the original's

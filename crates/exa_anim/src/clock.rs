@@ -74,7 +74,9 @@ const SHORT_BLEND: u32 = 20;
 const LONG_BLEND_FROM: usize = 0x21;
 const LONG_BLEND: u32 = 60;
 /// The bones whose plain capture (and hold pose) keeps their last target:
-/// the pelvis and the legs; the upper body's take their physical turn.
+/// the pelvis and the legs, skin bones 1 to 7; the upper body's take their
+/// physical turn. The capture tests the 1-based skin bone (at most 7) and
+/// the hold the 0-based pose slot (at most 6): the same seven bones.
 const LOWER_BODY: RangeInclusive<usize> = 1..=7;
 /// Times and weights at or under this (the original's 1.19e-7) count as
 /// none.
@@ -82,7 +84,7 @@ const EPSILON: f32 = 1.192_09e-7;
 /// The smooth ease is f²(3 − 2f); the fast one 1 + 0.11f − 1/(1 + 8f).
 const SMOOTH_A: f32 = 3.0;
 const SMOOTH_B: f32 = 2.0;
-const FAST_SLOPE: f32 = 0.11;
+const FAST_SLOPE: f64 = 0.11;
 const FAST_RISE: f32 = 8.0;
 
 /// How a clip's blend from its capture eases.
@@ -103,8 +105,14 @@ impl Ease {
     pub fn apply(self, f: f32) -> f32 {
         match self {
             Ease::Linear => f,
-            Ease::Smooth => f * f * (SMOOTH_A - SMOOTH_B * f),
-            Ease::Fast => FAST_SLOPE * f + 1.0 - 1.0 / (1.0 + FAST_RISE * f),
+            // The square is taken first, then scaled by 3 − 2f.
+            Ease::Smooth => (SMOOTH_A - SMOOTH_B * f) * (f * f),
+            Ease::Fast => {
+                // The slope term and its sum are double (the double 0.11),
+                // the reciprocal single, as the original's ease computes it.
+                let recip = 1.0 / (f * FAST_RISE + 1.0);
+                ((f64::from(f) * FAST_SLOPE + 1.0) - f64::from(recip)) as f32
+            }
         }
     }
 }
@@ -372,6 +380,18 @@ impl Animator {
         self.pose = Some(pose.clone());
     }
 
+    /// Samples `clip` as a limp body's (muscles-off) sampler does: the
+    /// bracket at the raw clock ([`ragdoll_bracket`]), no gait overlay, no
+    /// hold, the root keeping its travel, and the pose kept as the targets.
+    /// The body still snaps its particles to the pose itself; that and the
+    /// contacts are the caller's. Exarust has no clip on a corpse yet.
+    pub fn sample_ragdoll(&mut self, clip: &Clip, looping: bool) -> Option<ClipPose> {
+        let b = ragdoll_bracket(clip, self.time, looping, self.blend)?;
+        let pose = self.blend_keys(clip, &b, false);
+        self.keep(&pose, 0.0);
+        Some(pose)
+    }
+
     /// Samples `clip` at the clock for a body without parts of its own.
     /// See [`Animator::sample_layered`].
     pub fn sample(
@@ -481,17 +501,112 @@ pub fn overlay_toward(pose: &mut ClipPose, over: &Clip, b: &Bracket, weight: f32
 
 /// The hold step of a sample: each bone's turn is pulled toward the held
 /// pose by the hold's weight (when it is over the original's 1.19e-7),
-/// then every turn is normalised. Returns the weight applied.
+/// then every turn is normalised. The components are interpolated without
+/// the short-way sign check (the original's own lerp): two opposite turns
+/// half way give a zero quaternion and a NaN. Returns the weight applied.
 pub fn hold_toward(pose: &mut ClipPose, hold: Option<(&[Quat], f32)>) -> f32 {
     let weight = hold.map_or(0.0, |(_, w)| w);
     for (i, q) in pose.rotations.iter_mut().enumerate() {
         *q = match hold.and_then(|(h, _)| h.get(i)) {
-            Some(&h) if weight > EPSILON => q.lerp(h, weight.min(1.0)),
+            Some(&h) if weight > EPSILON => {
+                let w = weight;
+                Quat::from_xyzw(
+                    q.x + (h.x - q.x) * w,
+                    q.y + (h.y - q.y) * w,
+                    q.z + (h.z - q.z) * w,
+                    q.w + (h.w - q.w) * w,
+                )
+            }
             _ => *q,
         }
         .normalize();
     }
     weight
+}
+
+/// The bracket of a limp body's (muscles-off) sample, taken at the raw
+/// clock `time` with no blend. Up to the first key (plus the remaining
+/// blend) it blends from the last key for a looping clip, else from the
+/// first, by time over (first key + blend). Between keys it blends as the
+/// living sampler does. At or past the last key a looping clip blends
+/// from it back to the first by (time − last) / first; a clip played once
+/// blends from the key before the last to the last with a share of 1 (it
+/// holds the last key). The share is not clamped: the original's looping
+/// branch can reach past 1.
+pub fn ragdoll_bracket(clip: &Clip, time: f32, looping: bool, blend: f32) -> Option<Bracket> {
+    let keys = &clip.keys;
+    let n = keys.len();
+    let (first, last) = (keys.first()?.time, keys.last()?.time);
+    let (src, dst, f) = if first + blend < time {
+        if time < last {
+            let k = (1..n).find(|&k| time <= keys[k].time).unwrap_or(n - 1);
+            let from = keys[k - 1].time;
+            let span = keys[k].time - from;
+            let f = if span > EPSILON {
+                (time - from) / span
+            } else {
+                0.0
+            };
+            (k - 1, k, f)
+        } else if looping {
+            (n - 1, 0, (time - last) / first)
+        } else {
+            (n.saturating_sub(2), n - 1, 1.0)
+        }
+    } else {
+        let src = if looping { n - 1 } else { 0 };
+        let span = first + blend;
+        let f = if span > EPSILON { time / span } else { 0.0 };
+        (src, 0, f)
+    };
+    Some(Bracket {
+        src,
+        dst,
+        f,
+        from_capture: false,
+    })
+}
+
+/// The held pose a shock stagger starts from: bones up to the
+/// pelvis and legs (1 to 7) keep the captured pose unless the body is down
+/// (its condition has the off-feet bit); every other bone takes a random
+/// turn of a random axis, each component drawn from 0..1 less 0.5 and
+/// normalised, an angle drawn from 0..1, blended half way from the
+/// Defence stance's first key without a short-way sign check and
+/// normalised. The caller supplies the draws in order (axis x, y, z, then
+/// the angle), one bone after another, as the original's random generator
+/// does.
+pub fn shock_hold(
+    defence_first: &[Quat],
+    capture: &[Quat],
+    down: bool,
+    rng: &mut impl FnMut() -> f32,
+) -> Vec<Quat> {
+    let n = capture.len().max(defence_first.len());
+    (0..n)
+        .map(|i| {
+            if (i + 1) <= 7 && !down {
+                capture.get(i).copied().unwrap_or(Quat::IDENTITY)
+            } else {
+                let axis = Vec3::new(rng() - 0.5, rng() - 0.5, rng() - 0.5);
+                let angle = rng();
+                let q = if axis.length_squared() > EPSILON {
+                    Quat::from_axis_angle(axis.normalize(), angle)
+                } else {
+                    Quat::IDENTITY
+                };
+                let base = defence_first.get(i).copied().unwrap_or(Quat::IDENTITY);
+                // The engine's component lerp: base + (turn − base) · 0.5.
+                Quat::from_xyzw(
+                    base.x + (q.x - base.x) * 0.5,
+                    base.y + (q.y - base.y) * 0.5,
+                    base.z + (q.z - base.z) * 0.5,
+                    base.w + (q.w - base.w) * 0.5,
+                )
+                .normalize()
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]

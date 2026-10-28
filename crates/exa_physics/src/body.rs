@@ -58,7 +58,10 @@ pub use hunch::{ease_hunch, hunch_applies, hunch_turn, step_hunch};
 mod feet;
 #[path = "body_stagger.rs"]
 pub mod stagger;
-pub use feet::{FootState, FullTone, StepEnd, WalkedStep, full_tone, step_end};
+pub use feet::{
+    FootState, FullTone, QueuedStep, StepEnd, WalkedStep, full_tone, queued_step, step_end,
+    step_loudness,
+};
 #[path = "body_pins.rs"]
 mod pins;
 #[path = "body_stages.rs"]
@@ -1644,6 +1647,13 @@ impl Drive {
         self.frame
     }
 
+    /// Places the character frame, whose side axis the footwork's stance
+    /// score reads. The body tick and a placement write it; a test of a
+    /// footwork pass without one writes it here.
+    pub fn set_frame(&mut self, frame: Affine3A) {
+        self.frame = Some(frame);
+    }
+
     /// The pose drive's strength this tick, which its gains are scaled by:
     /// t²·T·E⁴·(0.5T + 0.5)·S², t the tone, T = tone·s the tone target, E
     /// the energy and S the support.
@@ -2054,10 +2064,14 @@ impl Ragdoll {
     /// A placement uses [`Self::place_foot_pitches`] instead, which stores
     /// the angle at once and clears the rate.
     pub fn step_foot_pitch(&mut self, leg: usize, target: f32) -> f32 {
+        let step = match self.drive.as_ref() {
+            Some(d) if d.steps.stepping => bend::PITCH_STEP_STEPPING,
+            _ => bend::PITCH_STEP,
+        };
         let Some(leg) = self.legs.get_mut(leg) else {
             return 0.0;
         };
-        let (angle, rate) = bend::ease(leg.pitch, leg.pitch_rate, target, bend::PITCH_STEP);
+        let (angle, rate) = bend::ease(leg.pitch, leg.pitch_rate, target, step);
         leg.pitch = angle;
         leg.pitch_rate = rate;
         angle
@@ -2855,7 +2869,12 @@ impl Ragdoll {
             .iter()
             .map(|leg| self.parts[leg.shin].point(&leg.contact))
             .collect();
-        let walked = feet::walk_stagger(&mut self.legs, &ankles, spots, target, frame, scale);
+        let side = self
+            .drive
+            .as_ref()
+            .and_then(|d| d.frame)
+            .map_or(Vec3::X, |f| Vec3::from(f.matrix3.x_axis).with_y(0.0));
+        let walked = feet::walk_stagger(&mut self.legs, &ankles, spots, target, frame, side, scale);
         if let Some(drive) = self.drive.as_mut() {
             drive.steps.stepping = true;
             drive.steps.target = target;

@@ -658,7 +658,9 @@ pub fn step_reach(scale: f32, feral: f32, encumbrance: f32) -> f32 {
     } else {
         1.0
     };
-    (feral * encumbered * full) as f32
+    // The encumbrance factor takes the full reach first, then the feral
+    // factor takes that product.
+    (feral * (encumbered * full)) as f32
 }
 
 /// The light and heavy ends of the weapon mass table by hands (one-handed,

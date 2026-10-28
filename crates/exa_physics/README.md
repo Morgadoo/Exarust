@@ -180,8 +180,10 @@ does not raise the lift (`src/body_lift.rs`). A standing leg bends onto
 its target by the law of cosines, at most 0.02 rad a tick (0.2 while a
 recovery step is on), and the muscles follow that bend on the next tick
 (`src/body_bend.rs`). While stepping the thigh turns 75% of the
-hip-to-target angle and an anchored foot takes the step lift. Gait
-plants are not in yet.
+hip-to-target angle and an anchored foot takes the step lift. The walk's
+feet plant and lift by their phases, and a slow foot plants early (before
+phase 0.2); the gait plant events and the walking ground weights are in,
+the footstep sounds are not.
 Each character tick measures a living body's balance at its chest against
 its ankles and asks the level for the ground under each foot
 (`contact::Level::height_below`, the original's Height Query), which give
@@ -194,7 +196,14 @@ original's bits, `anchor`, `grip`, `ramp`) is planted where its foot meets
 the floor, stood on its stance spot getting up or unsupported, cleared
 lying, and steps to its stance spot by the footwork's stance score, one
 foot at a time (a free foot within 5 cm stays). A recovery step starts
-when the chest is past 1.5 · R · E⁴ · S (45 cm for a settled human).
+when the chest is past 1.5 · R · E⁴ · S (45 cm for a settled human),
+compared squared as the original does, and not during a shock stagger;
+the balance keeps the support point and the feet's centre
+(`Balance::support_point`, `feet_centre`) and an imbalance accumulator
+that grows past the trigger and fades 0.01 a tick (nothing reads it). Its
+stance origin and anchors use the footwork's own reach, 80·√scale·(1 −
+0.2·encumbrance)·(1 − 0.3·feral) cm, and a walking body's ground is its
+two feet's grounds blended by the gait's weights.
 While it runs and the chest is not past the trigger, the thorax pins
 lead by the horizontal error from the pin to the posed target plus the
 step offset: 0.7, or 0.4 while Idle, times (direction + 0.5) times

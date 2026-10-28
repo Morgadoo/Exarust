@@ -11,7 +11,14 @@ eased (a stagger's get-up jumps in a few keys, `Animator::jump_in`, and
 holds its first key); loops wrap by their last key; a clip played once ends into its
 follow-up with the original's blend table; the walk, run and backpedal
 play in place, every other clip keeps its root's travel; a pose the body
-holds pulls the sample by a weight. A sample is taken in the original's
+holds pulls the sample by a weight, its quaternion components interpolated
+without the short-way sign check (two opposite turns half way give a NaN).
+The smooth ease is (3 − 2f)·f²; the fast one 1 + 0.11f − 1/(1 + 8f), the
+first sum in double and the reciprocal single, as the original computes
+them. A limp (muscles-off) body's sampler takes the bracket at the raw
+clock, with no blend and no hold, the root keeping its travel
+(`ragdoll_bracket`, `Animator::sample_ragdoll`); Exarust has no clip on a
+corpse yet. A sample is taken in the original's
 steps (the bracket, which writes the progress; the keys blended; the
 gait overlay, the Run clip slerped over the Walk at the same keys; the
 hold; the pose kept as the targets), so a physical body's sampler can put

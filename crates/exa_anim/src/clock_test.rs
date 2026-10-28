@@ -655,3 +655,78 @@ fn the_six_tenths_clock_adds_in_double() {
     up.tick_double(&get_up(20.0, 120.0), 1.5 * 0.6 * 0.7, 0);
     assert_eq!(up.time, 0.684_800_03);
 }
+
+/// The limp sampler takes the bracket at the raw clock: before the first
+/// key (plus the remaining blend) it blends from the last key of a looping
+/// clip, or from the first; between keys it blends as the living sampler
+/// does; past the last key a looping clip blends from it back to the first
+/// without clamping, and one played once blends from the key before the
+/// last to the last with a share of 1.
+#[test]
+fn the_limp_sampler_brackets_at_the_raw_clock() {
+    let walk = clip(&[20.0, 80.0], &[Vec3::ZERO, Vec3::ZERO], true);
+    let b = ragdoll_bracket(&walk, 10.0, true, 4.0).unwrap();
+    assert_eq!((b.src, b.dst), (1, 0));
+    assert!((b.f - 10.0 / 24.0).abs() < 1e-6, "{}", b.f);
+    let b = ragdoll_bracket(&walk, 30.0, true, 0.0).unwrap();
+    assert_eq!((b.src, b.dst), (0, 1));
+    assert!((b.f - 10.0 / 60.0).abs() < 1e-6, "{}", b.f);
+    // Past the last key, looping: from it to the first, past 1 allowed.
+    let b = ragdoll_bracket(&walk, 110.0, true, 0.0).unwrap();
+    assert_eq!((b.src, b.dst), (1, 0));
+    assert!((b.f - 30.0 / 20.0).abs() < 1e-6, "{}", b.f);
+    // Played once past its last key: the key before the last holds it.
+    let once = get_up(20.0, 80.0);
+    let b = ragdoll_bracket(&once, 90.0, false, 0.0).unwrap();
+    assert_eq!((b.src, b.dst, b.f), (0, 1, 1.0));
+    // A sample starts from the keys and keeps the root's travel.
+    let mut anim = Animator::new("Default", "Walk");
+    anim.time = 110.0;
+    let pose = anim.sample_ragdoll(&walk, true).unwrap();
+    assert_eq!(pose.rotations.len(), BONES);
+}
+
+/// The hold pose keeps the last targets of skin bones 1 to 7 (its pose
+/// slots 0 to 6) and takes the physical turn from bone 8, the same bones as
+/// the plain capture.
+#[test]
+fn the_hold_keeps_the_same_bones_as_the_capture() {
+    let mut anim = Animator::new("Default", "Idle");
+    let mut pose = ClipPose {
+        rotations: vec![Quat::IDENTITY; BONES],
+        root: Vec3::ZERO,
+    };
+    pose.rotations[6] = Quat::from_rotation_y(0.2);
+    pose.rotations[7] = Quat::from_rotation_y(0.3);
+    anim.keep(&pose, 0.0);
+    let physical: Vec<Option<Quat>> = (0..BONES)
+        .map(|i| Some(Quat::from_rotation_x(0.1 * (i + 1) as f32)))
+        .collect();
+    let held = anim.hold_pose(&physical).unwrap();
+    // Bone 7 (index 6) keeps its target; bone 8 (index 7) is physical.
+    assert_eq!(held[5], pose.rotations[5]);
+    assert_eq!(held[6], pose.rotations[6]);
+    assert_eq!(held[7], physical[7].unwrap());
+}
+
+/// The shock hold copies the captured pose for bones 1 to 7 unless the body
+/// is down, and turns every other bone by a random axis and angle blended
+/// half way from the Defence stance's first key.
+#[test]
+fn the_shock_hold_turns_the_upper_body() {
+    let capture: Vec<Quat> = (0..BONES).map(|i| turn(0, i)).collect();
+    let defence: Vec<Quat> = (0..BONES).map(|_| Quat::IDENTITY).collect();
+    let mut draws = [0.5, 0.0, 0.5, 0.5].into_iter().cycle();
+    let held = shock_hold(&defence, &capture, false, &mut || draws.next().unwrap());
+    for i in 0..7 {
+        assert_eq!(held[i], capture[i]);
+    }
+    // Axis (0, −0.5, 0) normalised is −Y; angle 0.5; identity blended half
+    // way from it is half the angle.
+    let want = Quat::from_axis_angle(Vec3::NEG_Y, 0.25);
+    assert!(held[7].abs_diff_eq(want, 1e-6), "{}", held[7]);
+    // Down, every bone takes the random turn, the lower body included.
+    let mut draws = [0.5, 0.0, 0.5, 0.5].into_iter().cycle();
+    let down = shock_hold(&defence, &capture, true, &mut || draws.next().unwrap());
+    assert!(down[0].abs_diff_eq(want, 1e-6));
+}

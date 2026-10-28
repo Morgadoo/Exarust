@@ -428,20 +428,42 @@ pub(super) enum GaitPlant {
     Hold,
 }
 
-/// The leg's phase in the walk: the fraction of progress + 1.2 − 0.5×leg.
+/// The leg's phase in the walk: the fraction of progress + 1.2 − 0.5×leg,
+/// summed in double and narrowed before the (truncating) fraction.
 pub(super) fn gait_phase(progress: f32, leg: usize) -> f32 {
-    (progress + 1.2 - 0.5 * leg as f32).rem_euclid(1.0)
+    let x = (f64::from(progress) + 1.2 - f64::from(0.5 * leg as f32)) as f32;
+    x - x.trunc()
 }
 
-/// Plant in [0.2, 0.4] while the foot does not touch. Lift at phase 0 or
-/// at least 0.55 while it does.
-pub(super) fn gait_plant(phase: f32, touching: bool) -> GaitPlant {
-    if !touching && (0.2..=0.4).contains(&phase) {
-        GaitPlant::Plant
-    } else if touching && (phase <= 0.0 || phase >= 0.55) {
-        GaitPlant::Lift
-    } else {
+/// The sampler's plant and lift of a walking foot, its phase compared in
+/// double. Not touching, it plants unless the phase is past 0.4; under 0.2
+/// only when its speed along the facing is at most 0.3 cm a tick
+/// (backpedalling, at least −0.2). A NaN phase or speed plants. Touching,
+/// it lifts unless the phase is strictly between 0 and 0.55.
+pub(super) fn gait_plant(phase: f32, touching: bool, along_cm: f32, backwards: bool) -> GaitPlant {
+    let p = f64::from(phase);
+    let along = f64::from(along_cm);
+    if !touching {
+        let plants = if p > 0.4 {
+            false
+        } else if p < 0.2 {
+            if backwards {
+                along >= -0.2 || along.is_nan()
+            } else {
+                along <= 0.3 || along.is_nan()
+            }
+        } else {
+            true
+        };
+        if plants {
+            GaitPlant::Plant
+        } else {
+            GaitPlant::Hold
+        }
+    } else if p > 0.0 && p < 0.55 {
         GaitPlant::Hold
+    } else {
+        GaitPlant::Lift
     }
 }
 
@@ -463,10 +485,12 @@ pub(super) fn gait_plant(phase: f32, touching: bool) -> GaitPlant {
 /// under 5 cm of its spot (10 cm after a stall, outside a recovery step)
 /// scores as staying. Returns whether the other foot landing ended the
 /// recovery step.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn plant(
     legs: &mut [Leg],
     ankles: &[Vec3],
     spots: &[Option<Vec3>],
+    moves: &[Vec3],
     bearing: &Bearing,
     had_support: bool,
     down: &[bool],
@@ -474,9 +498,13 @@ pub(super) fn plant(
 ) -> bool {
     for (i, ((leg, &at), &down)) in legs.iter_mut().zip(ankles).zip(down).enumerate() {
         if bearing.walking {
+            let along = moves.get(i).map_or(0.0, |m| cm(*m).dot(bearing.facing));
+            let along = if bearing.backpedal { -along } else { along };
             match gait_plant(
                 gait_phase(bearing.progress, i),
                 leg.state.has(FootState::TOUCHING),
+                along,
+                bearing.backpedal,
             ) {
                 GaitPlant::Plant => {
                     leg.anchor.x = at.x;
@@ -516,6 +544,16 @@ pub(super) fn plant(
             }
         }
         false
+    } else if bearing.kicking {
+        // A kick puts every foot on its stance spot, touching (the
+        // original's kick-motion branch).
+        for (leg, spot) in legs.iter_mut().zip(spots) {
+            leg.state = FootState(FootState::TOUCHING);
+            if let Some(spot) = spot {
+                leg.anchor = *spot;
+            }
+        }
+        false
     } else {
         footwork(legs, ankles, spots, work)
     }
@@ -544,6 +582,7 @@ pub fn walk_stagger(
     spots: &[Option<Vec3>],
     target: Vec3,
     frame: Vec3,
+    side: Vec3,
     scale: f32,
 ) -> WalkedStep {
     let step_cm = steps::step_length(scale, 1.0);
@@ -564,6 +603,7 @@ pub fn walk_stagger(
         reference: frame,
         root: frame,
         origin,
+        side,
         step_cm,
         episode: true,
         episode_ms: 0.0,
@@ -611,7 +651,7 @@ fn footwork(legs: &mut [Leg], ankles: &[Vec3], spots: &[Option<Vec3>], work: &mu
     let Some(pair) = two_spots(spots) else {
         return false;
     };
-    let side = (pair[1] - pair[0]).with_y(0.0).normalize_or(Vec3::X);
+    let side = work.side.with_y(0.0).normalize_or(Vec3::X);
     let views = [
         foot_view(&legs[0], ankles[0]),
         foot_view(&legs[1], ankles[1]),
@@ -663,6 +703,8 @@ fn footwork(legs: &mut [Leg], ankles: &[Vec3], spots: &[Option<Vec3>], work: &mu
         legs[k].state.0 =
             legs[k].state.0 & !(FootState::REACHED | FootState::RAMP_HELD) | FootState::ANCHORED;
         legs[k].approach = 1.0;
+        // The step's length feeds its sound's loudness.
+        legs[k].step_length_cm = cm(anchor - ankles[k]).length();
         // A foot that starts moving stamps the body's earlier stand-still
         // stamp.
         work.still_at = work.now_ms;
@@ -764,10 +806,118 @@ pub(super) fn probe_blend(leg: &Leg) -> f32 {
     }
 }
 
+/// A step's loudness from its length (cm): 0.01 + 0.0139 × the length up
+/// to 140 cm, 1 beyond. The footstep sound's volume starts here.
+pub fn step_loudness(length_cm: f32) -> f32 {
+    if length_cm <= 140.0 {
+        length_cm * 0.0139 + 0.01
+    } else {
+        1.0
+    }
+}
+
+/// What a queued step does: its new target, whether the AI is told, and the
+/// countdown the queue takes (`−2` before the first landing, `−1` after).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct QueuedStep {
+    pub target: Vec3,
+    pub tell_ai: bool,
+    pub countdown: i32,
+}
+
+/// A queued footwork step (a positive queue count): with the body's feet
+/// on their stance spots and the queue waiting, the step is taken when the
+/// cosine between the queued vector and the line from the chest to the
+/// step target is under 0.7, or the target is nearer than 40 × scale cm. It aims at the chest
+/// plus the queued vector and tells the AI when that vector points along
+/// the facing (the dot summed z + (y + x), strictly above 0). The original
+/// clamps the target through its pathfinder; the caller does. The
+/// countdown becomes −2 before the first landing (`landings < 1`) and −1
+/// after it. This is a tested rule with no caller yet: Exarust's footwork
+/// does not queue combat steps.
+pub fn queued_step(
+    chest: Vec3,
+    target: Vec3,
+    queued: Vec3,
+    facing: Vec3,
+    scale: f32,
+    landings: i32,
+) -> Option<QueuedStep> {
+    let d = (target - chest).with_y(0.0);
+    // The engine's cosine between two vectors: their dot over the root of
+    // the product of their squared lengths, 0 when that product is at most
+    // 1e-8 (the chest on the target, or no queued vector).
+    let lengths = cm(d).length_squared() * cm(queued).length_squared();
+    let cos = if lengths > 1e-8 {
+        let (a, b) = (cm(d), cm(queued));
+        (a.z * b.z + (a.y * b.y + a.x * b.x)) / lengths.sqrt()
+    } else {
+        0.0
+    };
+    // Off the line by more than the double 0.7 takes the queue; a NaN
+    // cosine falls through to the distance test.
+    let off_line = f64::from(cos) < 0.7;
+    let near = (40.0 * scale) * (40.0 * scale) > cm(d).length_squared();
+    if off_line || near {
+        let end = step_end(true, queued, facing, chest);
+        Some(QueuedStep {
+            target: end.target,
+            tell_ai: end.tell_ai,
+            countdown: if landings < 1 { -2 } else { -1 },
+        })
+    } else {
+        None
+    }
+}
+
 /// The radius (cm) of a foot's ground probe when the body is not walking:
 /// 5 cm plus 10 times its blend. A walking foot uses [`gait_probe`].
 pub(super) fn probe_radius(blend: f32) -> f32 {
     PROBE_RADIUS + PROBE_RADIUS_BLEND * blend
+}
+
+/// The walk's two standing-ground weights. `last` is the stored signed
+/// height difference between the feet (cm), smoothed 0.9/0.1 in double
+/// toward the difference the clip's phase picks (`g0 − g1` in the first
+/// half of the phase, else `g1 − g0`, from last tick's grounds). Moving,
+/// the first foot's weight is (1 − r)·0.5 + (1 − |2t − 1|)·r, r = 1 −
+/// run/2, t the fraction of the progress plus a bias from the difference
+/// (0.4 above 0, 0.65 below −20 cm, else 0.4 − 0.05·(0.25·difference) in
+/// double); the second foot takes the rest. Not moving, the difference
+/// only fades by 0.9 and each foot weighs 0.5. Returns
+/// `(difference, first, second)`.
+pub(super) fn gait_weights(
+    progress: f32,
+    run: f32,
+    moving: bool,
+    g0: f32,
+    g1: f32,
+    last: f32,
+) -> (f32, f32, f32) {
+    if !moving {
+        let last = (f64::from(last) * 0.9) as f32;
+        return (last, 0.5, 0.5);
+    }
+    // The phase is the fraction of the sum narrowed to single precision.
+    let phase = frac32((f64::from(progress) + 0.45) as f32);
+    let diff = if phase > 0.5 { g1 - g0 } else { g0 - g1 };
+    let last = (f64::from(diff) * 0.1 + f64::from(last) * 0.9) as f32;
+    let bias = if last > 0.0 {
+        0.4
+    } else if last < -20.0 {
+        0.65
+    } else {
+        (0.4 - f64::from(0.25 * last) * 0.05) as f32
+    };
+    let t = frac32(progress + bias);
+    let r = 1.0 - run * 0.5;
+    let first = (1.0 - r) * 0.5 + (1.0 - (t * 2.0 - 1.0).abs()) * r;
+    (last, first, 1.0 - first)
+}
+
+/// The fraction of a single, in the engine's (truncating) sense.
+fn frac32(x: f32) -> f32 {
+    x - x.trunc()
 }
 
 /// One walking foot's ground probe, from the leg's index and the clip
@@ -841,9 +991,11 @@ pub(super) fn anchor_height(ground: f32, sole: f32, ankle: f32) -> f32 {
 /// ground.
 pub(super) fn level(last: f32, dy: f32, dx: f32, dz: f32) -> f32 {
     let dy2 = dy * dy;
-    // Two feet on one spot would make v 0/0 (Exarust's guard: level).
-    let v = dy2 / (dy2 + dz * dz + dx * dx);
-    let take = if v.is_nan() { 1.0 } else { 1.0 - v * v };
+    // The horizontal squares are summed first, as the original does; two
+    // feet on one spot give 0/0 and a NaN level (the original propagates
+    // it).
+    let v = dy2 / (dy2 + (dz * dz + dx * dx));
+    let take = 1.0 - v * v;
     (f64::from(last) * LEVEL_KEEP + f64::from(take) * LEVEL_TAKE) as f32
 }
 

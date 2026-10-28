@@ -164,6 +164,15 @@ pub struct BodyStats {
     /// Its support pins' factor (its race's, less 0.25 × its feral
     /// level²): it scales its feet's grip and its support pins.
     pub pin_factor: f32,
+    /// The character's size: the race's times 1 − 0.05 × its record's
+    /// height. The footwork widens its recent-change window by it.
+    pub size: f32,
+    /// Its record's feral level, 0 to 1: it shortens the footwork's reach
+    /// by 0.3 a unit.
+    pub feral: f32,
+    /// What its worn armour and shield weigh, 0 to 1: it shortens the
+    /// footwork's reach by 0.2 a unit.
+    pub encumbrance: f32,
 }
 
 impl BodyStats {
@@ -175,7 +184,18 @@ impl BodyStats {
         head_factor: 1.0,
         walking_arms: ARM_LOOSE,
         pin_factor: HUMAN_PINS,
+        size: 1.0,
+        feral: 0.0,
+        encumbrance: 0.0,
     };
+
+    /// The footwork's reach (cm): the character's step reach, 80 · √scale
+    /// · (1 − 0.2 × encumbrance) · (1 − 0.3 × feral) in double precision
+    /// ([`exa_formats::weapon_record::step_reach`]). The original's
+    /// stance-origin clamp, its foot scores and its anchor clamp read it.
+    pub fn foot_reach(&self) -> f32 {
+        exa_formats::weapon_record::step_reach(self.scale, self.feral, self.encumbrance)
+    }
 }
 
 impl Default for BodyStats {
@@ -285,6 +305,9 @@ pub struct Bearing {
     /// The body's facing across the ground (negated while it backpedals),
     /// which the feet's lag is measured along.
     pub facing: Vec3,
+    /// It walks backwards this tick: the early gait plant takes a foot
+    /// moving back at most 0.2 cm a tick.
+    pub backpedal: bool,
     /// It is stepping: an anchored stepping foot's leg limit eases to 0.2
     /// instead of following the leg mode, and its standing lift lead is
     /// 10 cm.
@@ -350,6 +373,7 @@ impl Default for Bearing {
             push_gain: 0.0,
             lag: 1.0,
             facing: Vec3::Z,
+            backpedal: false,
             stepping: false,
             dormant: false,
             kicking: false,

@@ -48,7 +48,7 @@ const SLOW_SMOOTHING: f32 = 0.1;
 /// On regaining support a standing chest leads by its slow velocity times
 /// a weight that starts at 5 and fades 0.05 a tick.
 const LANDING_WEIGHT: f32 = 5.0;
-const LANDING_FADE: f32 = 0.05;
+const LANDING_FADE: f64 = 0.05;
 /// A moving body with support leads by this many ticks of its fast
 /// velocity.
 const MOVING_LEAD: f32 = 3.0;
@@ -61,7 +61,7 @@ const TOWARD_CENTRE: f32 = 0.5;
 const STANDING_POWER: i32 = 8;
 const MOVING_POWER: i32 = 4;
 /// Each unit of the race's balance bonus adds this to the score.
-const BONUS_SCORE: f32 = 0.05;
+const BONUS_SCORE: f64 = 0.05;
 /// A slow vertical chest speed (cm/tick) above this sets the counter to
 /// 100 and, grounded, cuts the score by (1 − 0.333(v − 3))², to nothing
 /// above 6.
@@ -84,7 +84,7 @@ const RECOVERY_AT_REST: f32 = 0.05;
 const AT_REST2: f32 = 1.192_09e-7;
 /// Getting up, balance rises this much a tick and the counter falls by 5
 /// while above 2.
-const GET_UP_RISE: f32 = 0.05;
+const GET_UP_RISE: f64 = 0.05;
 const GET_UP_EASE_ABOVE: i32 = 2;
 /// Each leg's Height Query (cm): 5 cm (× scale) along the lower leg's
 /// forward axis from its contact, starting 70 cm above the contact, a
@@ -201,6 +201,9 @@ pub struct Leg {
     pub(super) goal: Vec3,
     /// The unsmoothed knee of the reach triangle (rad).
     pub(super) reach_knee: f32,
+    /// The length of the step this foot started (cm), which the footstep
+    /// sound's loudness follows: 0.01 + 0.0139 × it up to 140 cm, else 1.
+    pub step_length_cm: f32,
 }
 
 /// A living body's balance, kept from tick to tick.
@@ -243,6 +246,23 @@ pub struct Balance {
     pub(super) extension: f32,
     /// Feet that reached their anchors.
     landings: u32,
+    /// The mean of the foot contacts (m), the feet centre the support
+    /// point and the stance-origin clamps read.
+    feet_centre: Vec3,
+    /// The support point (m): the chest led by landings, gait and crouch,
+    /// projected onto the feet's segment (halfway to their centre while it
+    /// does not move).
+    support_point: Vec3,
+    /// The imbalance accumulator: how far past the step trigger
+    /// the chest has leaned, 0 to 1, decaying 0.01 a tick in the feet
+    /// routine. No caller of the original reads it; kept as the rule.
+    imbalance: f32,
+    /// The walking feet's stored signed height difference (cm), smoothed
+    /// toward the difference the clip's phase picks.
+    gait_height_cm: f32,
+    /// The two feet's grounds (cm) as last tick left them, which the walk's
+    /// height difference is read from before this tick's feet move.
+    gait_grounds_cm: [f32; 2],
 }
 
 impl Default for Balance {
@@ -266,6 +286,11 @@ impl Default for Balance {
             level: 1.0,
             extension: 1.0,
             landings: 0,
+            feet_centre: Vec3::ZERO,
+            support_point: Vec3::ZERO,
+            imbalance: 0.0,
+            gait_height_cm: 0.0,
+            gait_grounds_cm: [0.0; 2],
         }
     }
 }
@@ -353,6 +378,32 @@ impl Balance {
         self.landings
     }
 
+    /// The mean of the foot contacts (m).
+    pub fn feet_centre(&self) -> Vec3 {
+        self.feet_centre
+    }
+
+    /// The support point (m): where the lean is measured from.
+    pub fn support_point(&self) -> Vec3 {
+        self.support_point
+    }
+
+    /// The imbalance accumulator, 0 to 1.
+    pub fn imbalance(&self) -> f32 {
+        self.imbalance
+    }
+
+    /// One tick of the imbalance accumulator, from the chest's horizontal
+    /// error past the step trigger.
+    pub(super) fn add_imbalance(&mut self, h_cm: f32, radius_cm: f32, factor: f32, scale: f32) {
+        self.imbalance = steps::add_imbalance(self.imbalance, h_cm, radius_cm, factor, scale);
+    }
+
+    /// The feet routine's decay of the imbalance accumulator.
+    pub(super) fn decay_imbalance(&mut self) {
+        self.imbalance = steps::decay_imbalance(self.imbalance);
+    }
+
     /// Counts a foot that reached its anchor.
     pub(super) fn land(&mut self) {
         self.landings += 1;
@@ -364,7 +415,10 @@ impl Balance {
     /// less than 80 standing still, else by 10 to 0. At 100 balance is q;
     /// below it balance recovers.
     pub(super) fn settle(&mut self, q: f32, slow2: f32, still: bool) {
-        self.counter = if f64::from(q) <= STEADY {
+        // Only a score over 0.99 is steady: a NaN takes the gain, whose
+        // 64-bit conversion keeps 0 in its low word (Rust's cast gives 0).
+        let steady = f64::from(q) > STEADY;
+        self.counter = if !steady {
             self.counter + counter_gain(q)
         } else if still {
             (self.counter - STILL_EASE).max(COUNTER_FLOOR)
@@ -375,14 +429,18 @@ impl Balance {
             self.value = q;
             self.counter = COUNTER_FULL;
         } else if let Some(rise) = recovery(slow2) {
-            self.value = (self.value + rise).min(1.0);
+            // The cap compares in single precision, so a NaN is kept.
+            let v = self.value + rise;
+            self.value = if v > 1.0 { 1.0 } else { v };
         }
     }
 
     /// One tick of getting up: balance rises by 0.05, the counter falls by
     /// 5 while above 2.
     pub(super) fn get_up(&mut self) {
-        self.value = (self.value + GET_UP_RISE).min(1.0);
+        // The rise is the double 0.05; the cap keeps a NaN.
+        let v = (f64::from(self.value) + GET_UP_RISE) as f32;
+        self.value = if v > 1.0 { 1.0 } else { v };
         if self.counter > GET_UP_EASE_ABOVE {
             self.counter -= STILL_EASE;
         }
@@ -402,10 +460,14 @@ impl Balance {
 }
 
 /// The score of a lean whose unit offset has height `uy`: u_y⁸ standing,
-/// u_y⁴ moving, plus 0.05 × the race's balance bonus, at most 1.
+/// u_y⁴ moving, plus 0.05 × the race's balance bonus. The sum is taken in
+/// double and narrowed once; the cap compares in single precision, so a
+/// NaN is kept.
 pub(super) fn score(uy: f32, moving: bool, bonus: f32) -> f32 {
     let power = if moving { MOVING_POWER } else { STANDING_POWER };
-    (uy.powi(power) + BONUS_SCORE * bonus).min(1.0)
+    let q = uy.powi(power);
+    let sum = (f64::from(bonus) * BONUS_SCORE + f64::from(q)) as f32;
+    if sum > 1.0 { 1.0 } else { sum }
 }
 
 /// The score at a slow vertical chest speed `v` (cm a tick): a grounded
@@ -443,7 +505,9 @@ pub(super) fn recovery(slow2: f32) -> Option<f32> {
 /// the leg's `length` under the pelvis at `pelvis` (cm), or always while
 /// getting up.
 pub(super) fn within_reach(ground: f32, pelvis: f32, length: f32, getting_up: bool) -> bool {
-    getting_up || ground <= pelvis - REACH_SHARE * length
+    // The original's compare jumps to the "within reach" branch when the
+    // height is unordered, so a NaN ground is in reach.
+    getting_up || ground.is_nan() || ground <= pelvis - REACH_SHARE * length
 }
 
 /// Whether a foot whose contact stands `height` (cm) above its ground and
@@ -534,6 +598,7 @@ pub(super) fn build(setup: &[PartSetup], parts: &mut [Part]) -> (Vec<Pin>, Vec<L
             posed_offset: Vec3::ZERO,
             goal: Vec3::ZERO,
             reach_knee: 0.0,
+            step_length_cm: 0.0,
             pitch: 0.0,
             pitch_rate: 0.0,
         });
@@ -659,12 +724,14 @@ impl Ragdoll {
 
         // The lean, against the support point.
         let centre = contacts.iter().copied().sum::<Vec3>() / contacts.len() as f32;
+        b.feet_centre = centre;
         let mut m = chest;
-        if b.landing > LANDING_FADE {
+        // The landing's momentum fades by the double 0.05 a tick.
+        if f64::from(b.landing) > LANDING_FADE {
             if !bearing.moving {
                 m += b.slow * b.landing;
             }
-            b.landing -= LANDING_FADE;
+            b.landing = (f64::from(b.landing) - LANDING_FADE) as f32;
         }
         if bearing.moving && b.has_support {
             m += b.fast * MOVING_LEAD;
@@ -674,6 +741,7 @@ impl Ragdoll {
         if !bearing.moving {
             p = p.lerp(centre, TOWARD_CENTRE);
         }
+        b.support_point = p;
         let o = m - p;
         b.offset = o.length();
         if b.offset > 0.0 {
@@ -696,6 +764,24 @@ impl Ragdoll {
                 cm(b.slow).length_squared(),
                 !bearing.moving && !was_stepping,
             );
+            // The imbalance accumulator, once the chest has left the step
+            // trigger: the support pins' power E⁴S scales the radius. A
+            // shock stagger and a body under 0.2 (a double compare a NaN
+            // passes) do not accumulate.
+            let fallen = f64::from(b.value) < 0.2;
+            if !fallen && b.has_support && !bearing.shock_stagger {
+                let factor = drive.energy.powi(4) * drive.support;
+                let r = steps::radius(
+                    drive.energy,
+                    drive.steps.radius_base,
+                    scale,
+                    drive.steps.stepping,
+                    bonus,
+                );
+                if (r * 1.5 * factor) * (r * 1.5 * factor) < h_cm * h_cm {
+                    b.add_imbalance(h_cm, r, factor, scale);
+                }
+            }
         }
 
         // The recovery step, from this tick's balance and last tick's
@@ -715,9 +801,10 @@ impl Ragdoll {
             support: drive.support,
             scale,
             bonus,
-            extension: b.extension,
+            reach: drive.stats.foot_reach(),
             frame,
             landings: b.landings,
+            shock_stagger: bearing.shock_stagger,
         };
         let posed_spots = spots.clone();
         let plan = steps::consider(&mut drive.steps, &trigger);
@@ -752,6 +839,9 @@ impl Ragdoll {
                 / n
         });
         let stance_origin = origin.unwrap_or(frame);
+        let side = drive
+            .frame
+            .map_or(Vec3::X, |f| Vec3::from(f.matrix3.x_axis).with_y(0.0));
         let mut work = steps::Work {
             now_ms: drive.steps.clock as f32 * steps::MS_PER_TICK,
             scale,
@@ -766,8 +856,8 @@ impl Ragdoll {
             ),
             root: frame,
             origin: stance_origin,
-            step_cm: steps::step_length(scale, trigger.extension)
-                * steps::crouch_stride(bearing.crouch),
+            side,
+            step_cm: steps::foot_step_length(drive.stats.foot_reach(), bearing.crouch),
             episode: drive.steps.stepping,
             episode_ms: if drive.steps.stepping {
                 steps::elapsed_ms(&drive.steps)
@@ -775,7 +865,7 @@ impl Ragdoll {
                 0.0
             },
             chest_to_target_cm: cm((chest - drive.steps.target).with_y(0.0)).length(),
-            size: 1.0,
+            size: drive.stats.size.max(1.0),
             still_at: drive.steps.still_at,
             still_plus: drive.steps.still_plus,
         };
@@ -784,10 +874,15 @@ impl Ragdoll {
             .iter()
             .map(|l| !parts[l.foot.unwrap_or(l.shin)].contacts.is_empty())
             .collect();
+        let moves: Vec<Vec3> = legs
+            .iter()
+            .map(|l| parts[l.shin].slip(&l.contact))
+            .collect();
         let foot_ended = feet::plant(
             legs,
             &contacts,
             &spots,
+            &moves,
             &bearing,
             trigger.supported,
             &met,
@@ -919,6 +1014,19 @@ impl Ragdoll {
             b.level = feet::level(b.level, cm(h0 - h1), cm(d.x), cm(d.z));
         }
         b.ground = None;
+        // The walk's ground weights, from last tick's grounds, every tick:
+        // a body moving under its own power blends them by the gait phase,
+        // any other keeps 0.5 each and lets the stored difference fade.
+        let [last0, last1] = b.gait_grounds_cm;
+        let (gait_height, w0, w1) = feet::gait_weights(
+            bearing.progress,
+            bearing.run,
+            bearing.moving,
+            last0,
+            last1,
+            b.gait_height_cm,
+        );
+        b.gait_height_cm = gait_height;
         if !b.has_support {
             let found = level
                 .height_below(
@@ -934,13 +1042,35 @@ impl Ragdoll {
                 drive.support = GET_UP_SUPPORT * b.value;
             }
         } else if !bearing.off_feet && !bearing.getting_up {
-            let grounds = legs.iter().map(|l| l.ground.unwrap_or(under));
-            b.under = if bearing.walking {
-                grounds.sum::<f32>() / legs.len() as f32
+            let ground = |l: &Leg| l.ground.unwrap_or(under);
+            let g0 = legs.first().map_or(under, ground);
+            let g1 = legs.get(1).map_or(under, ground);
+            if bearing.walking {
+                // Walking, the character's ground is the two feet's
+                // smoothed grounds blended by the gait's weights.
+                b.under = g1 * w1 + g0 * w0;
             } else {
-                grounds.fold(pelvis.y + LOWEST_ABOVE / CM, f32::min)
-            };
+                // Stepping, the last anchored foot's ground; otherwise the
+                // lowest.
+                b.under = if bearing.stepping {
+                    legs.iter()
+                        .rev()
+                        .find(|l| l.state.has(FootState::ANCHORED))
+                        .map_or(under, ground)
+                } else {
+                    legs.iter()
+                        .map(ground)
+                        .fold(pelvis.y + LOWEST_ABOVE / CM, f32::min)
+                };
+            }
         }
+        let ground = |l: &Leg| cm(l.ground.unwrap_or(under));
+        b.gait_grounds_cm = [
+            legs.first().map_or(cm(under), ground),
+            legs.get(1).map_or(cm(under), ground),
+        ];
+        // The feet routine's decay of the imbalance accumulator.
+        b.decay_imbalance();
     }
 }
 

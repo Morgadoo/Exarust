@@ -51,10 +51,11 @@ const COAST_MS: f32 = 200.0;
 const NEAR_CM: f32 = 20.0;
 const COAST_CM: f32 = 0.05;
 const LANDINGS_END: u32 = 1;
-/// Stance score. The reference term loses one point per the first (cm); a
+/// Stance score. The reference term loses one point per 30 cm (the first is
+/// the single-precision 1/30 it multiplies by); a
 /// crouch wider than the second (less the third per crouch) is penalised;
 /// a spacing near the fourth and a side term near the fifth score well.
-const REF_CM: f32 = 30.0;
+const REF_RECIP: f32 = 0.033_333_335;
 const CROUCH_SPAN: f32 = 120.0;
 const CROUCH_NARROW: f32 = 30.0;
 const STANCE_WIDTH: f32 = 60.0;
@@ -81,6 +82,8 @@ const CHANGE_MS: f32 = 200.0;
 const REACH_SHARE: f32 = 0.6;
 const REACH_FROM: f32 = 0.65;
 const REACH_WEIGHT: f32 = 0.1;
+/// A wide crouch loses this (double) per centimetre past its span.
+const CROUCH_WEIGHT: f64 = 0.1;
 const ORIGIN_BLEND: f32 = 0.25;
 const ROOT_BLEND: f32 = 0.75;
 /// Thorax lead's clip share: Idle, and every other clip.
@@ -196,10 +199,15 @@ pub(super) struct Trigger {
     pub support: f32,
     pub scale: f32,
     pub bonus: f32,
-    pub extension: f32,
+    /// The footwork's reach (cm): 80·√scale·(1 − 0.2·encumbrance)·
+    /// (1 − 0.3·feral), in place of the extension-scaled length.
+    pub reach: f32,
     /// The character frame's origin (m).
     pub frame: Vec3,
     pub landings: u32,
+    /// The shock-stagger flag: the original's step trigger and its
+    /// imbalance accumulator do not run while it is set.
+    pub shock_stagger: bool,
 }
 
 /// Where the stance goes this tick.
@@ -213,14 +221,34 @@ pub(super) enum Plan {
     Ended,
 }
 
-/// The radius R (cm): (0.75E + 0.25) · base · scale · 0.5 · (1 + bonus),
-/// times 1.25 while `stepping`.
+/// The radius R (cm): (0.75E + 0.25) · (base · scale) · 0.5, times 1.25
+/// while `stepping`, then times (1 + bonus). The products are in the
+/// original's order: the base times the scale first, that times the energy
+/// term, then the half.
 pub(super) fn radius(energy: f32, base: f32, scale: f32, stepping: bool, bonus: f32) -> f32 {
-    let mut r = (0.75 * energy + 0.25) * base * scale * 0.5 * (1.0 + bonus);
+    let mut r = (0.75 * energy + 0.25) * (base * scale) * 0.5;
     if stepping {
         r *= STEPPING_RADIUS;
     }
-    r
+    r * (1.0 + bonus)
+}
+
+/// One tick of the imbalance accumulator, the share of the chest's
+/// horizontal error past the step trigger that pushes it toward 1: (√h² −
+/// R·E⁴S) / (5 × scale) in single precision, times the double 0.005 and
+/// added to the last value in double, narrowed once. The cap compares in
+/// single precision, so a NaN is kept.
+pub(super) fn add_imbalance(last: f32, h_cm: f32, radius_cm: f32, factor: f32, scale: f32) -> f32 {
+    let excess = (h_cm - radius_cm * factor) / (5.0 * scale);
+    let next = (f64::from(excess) * 0.005 + f64::from(last)) as f32;
+    if 1.0 < next { 1.0 } else { next }
+}
+
+/// The feet routine's decay of the imbalance accumulator: 0.01 a tick in
+/// double precision, floored at 0; a NaN stays.
+pub(super) fn decay_imbalance(last: f32) -> f32 {
+    let next = (f64::from(last) - 0.01) as f32;
+    if next < 0.0 { 0.0 } else { next }
 }
 
 /// How far (cm) the chest must be from the support point before a step is
@@ -240,6 +268,13 @@ pub(super) fn trigger_distance(
 /// The step length (cm): 80 · √scale · the leg extension.
 pub fn step_length(scale: f32, extension: f32) -> f32 {
     STEP_LENGTH * scale.max(0.0).sqrt() * extension.max(0.0)
+}
+
+/// The footwork's own reach (cm): the body's reach times the crouch's
+/// stride, with no leg extension. The original's stance-origin clamp, its
+/// foot scores and its step lift read this length.
+pub fn foot_step_length(reach: f32, crouch: f32) -> f32 {
+    reach * crouch_stride(crouch)
 }
 
 /// Crouched deeper than this, the footwork's steps are shorter.
@@ -284,13 +319,22 @@ pub(super) fn next_base(base: f32, down: bool) -> f32 {
 pub(super) fn consider(steps: &mut Steps, t: &Trigger) -> Plan {
     steps.clock = steps.clock.saturating_add(1);
     steps.radius_base = next_base(steps.radius_base, t.down || t.getting_up);
+    // Getting up clears the step and places no foot from its footwork: the
+    // original returns before the game tick's footwork block (the feet
+    // still follow their stance spots in `feet::plant`).
+    if t.getting_up {
+        steps.knockback = false;
+        steps.stepping = false;
+        steps.out_of_balance = false;
+        return Plan::Idle;
+    }
     if steps.knockback {
-        if t.balance < BALANCE_FLOOR || t.getting_up {
+        if t.balance < BALANCE_FLOOR {
             steps.knockback = false;
             steps.stepping = false;
             return Plan::Ended;
         }
-        let length = step_length(t.scale, t.extension);
+        let length = foot_step_length(t.reach, 0.0);
         return Plan::Stepping(stance_origin(steps.target, t.frame, length, t.scale));
     }
     steps.out_of_balance = false;
@@ -299,7 +343,7 @@ pub(super) fn consider(steps: &mut Steps, t: &Trigger) -> Plan {
         steps.target = t.frame;
         steps.placed = true;
     }
-    if t.balance < BALANCE_FLOOR || t.getting_up || t.locomoting {
+    if t.balance < BALANCE_FLOOR || t.locomoting {
         let ended = steps.stepping;
         steps.stepping = false;
         return if ended { Plan::Ended } else { Plan::Idle };
@@ -312,7 +356,9 @@ pub(super) fn consider(steps: &mut Steps, t: &Trigger) -> Plan {
         t.bonus,
         t.support,
     );
-    let wants = t.supported && t.h_cm > distance && distance.is_finite();
+    // The comparison is made squared, as the original's is: a NaN offset
+    // wants no step.
+    let wants = t.supported && !t.shock_stagger && t.h_cm * t.h_cm > distance * distance;
     steps.out_of_balance = wants;
     if wants {
         let from = if steps.stepping {
@@ -321,6 +367,8 @@ pub(super) fn consider(steps: &mut Steps, t: &Trigger) -> Plan {
             steps.standing
         };
         let offset = lead(t.fast, t.support, t.energy, t.scale);
+        // The target keeps the height of the point it is measured from: the
+        // running target while stepping, else the standing position.
         let new_target = Vec3::new(t.chest.x + offset.x, from.y, t.chest.z + offset.z);
         let clear = cm((new_target - from).with_y(0.0)).length();
         if clear > TARGET_CLEAR * t.scale {
@@ -336,7 +384,7 @@ pub(super) fn consider(steps: &mut Steps, t: &Trigger) -> Plan {
         }
     }
     if steps.stepping {
-        let length = step_length(t.scale, t.extension);
+        let length = foot_step_length(t.reach, 0.0);
         Plan::Stepping(stance_origin(steps.target, t.frame, length, t.scale))
     } else {
         Plan::Idle
@@ -418,12 +466,15 @@ pub(super) fn stance_score(
     scale: f32,
 ) -> f32 {
     let e = (b - a).with_y(0.0);
-    let length = e.length();
+    // The span is rooted only above the original's epsilon.
+    let ee = e.length_squared();
+    let length = if ee > SIDE_ROOT { ee.sqrt() } else { ee };
     let r = segment_distance(reference.with_y(0.0), a.with_y(0.0), b.with_y(0.0));
-    let mut along = 1.0 - r / REF_CM;
+    // The original multiplies by its single-precision 1/30.
+    let mut along = 1.0 - r * REF_RECIP;
     let span = CROUCH_SPAN - CROUCH_NARROW * crouch;
     if crouch > 0.0 && length > span {
-        along -= (length - span) * REACH_WEIGHT;
+        along = (f64::from(along) - f64::from(length - span) * CROUCH_WEIGHT) as f32;
     }
     let width = if scale <= 0.0 {
         1.0
@@ -439,7 +490,7 @@ pub(super) fn stance_score(
     } else {
         (STANCE_SIDE * scale - w).abs() / (STANCE_SIDE * scale)
     };
-    2.0 * (1.0 - side_term * side_term) + (1.0 - width * width) + along
+    (1.0 - side_term * side_term) * 2.0 + ((1.0 - width * width) + along)
 }
 
 /// One foot, as the choice reads it. Positions are centimetres.
@@ -461,6 +512,9 @@ pub(super) struct Work {
     pub reference: Vec3,
     pub root: Vec3,
     pub origin: Vec3,
+    /// The character frame's horizontal side axis, which the stance
+    /// score's side term is measured along.
+    pub side: Vec3,
     pub step_cm: f32,
     pub episode: bool,
     pub episode_ms: f32,
@@ -484,6 +538,7 @@ impl Work {
             reference: Vec3::ZERO,
             root: Vec3::ZERO,
             origin: Vec3::ZERO,
+            side: Vec3::X,
             step_cm: step_length(scale, 1.0),
             episode: false,
             episode_ms: 0.0,

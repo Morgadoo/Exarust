@@ -522,7 +522,15 @@ fn two_feet() -> (Ragdoll, [Vec3; 2]) {
         pins: Vec::new(),
         spheres: None,
     };
-    let body = Ragdoll::new(&[pelvis, shin(3, 0.3), shin(5, -0.3)]).with_drive();
+    let mut body = Ragdoll::new(&[pelvis, shin(3, 0.3), shin(5, -0.3)]).with_drive();
+    // The character frame faces away, so its side axis runs from foot 1 to
+    // foot 0, as the stagger's score reads it.
+    body.drive
+        .as_mut()
+        .unwrap()
+        .set_frame(Affine3A::from_quat(bevy::math::Quat::from_rotation_y(
+            std::f32::consts::PI,
+        )));
     let ankles = [Vec3::new(0.3, -0.2, 0.0), Vec3::new(-0.3, -0.2, 0.0)];
     (body, ankles)
 }

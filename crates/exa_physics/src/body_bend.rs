@@ -39,8 +39,10 @@ const FLAT: f32 = 3.1415927;
 /// while a recovery step is on.
 const EASE_STANDING: f32 = 0.02;
 const EASE_STEPPING: f32 = 0.2;
-/// The foot pitch eases at most this far (rad) a tick, plus its rate.
+/// The foot pitch eases at most this far (rad) a tick, plus its rate, and
+/// ten times that while a recovery step is on.
 pub(super) const PITCH_STEP: f32 = 0.01;
+pub(super) const PITCH_STEP_STEPPING: f32 = 0.1;
 /// The toe the pitch levels sits this far (cm) ahead of the ankle, times
 /// the body scale.
 const PITCH_REACH: f32 = 20.0;
@@ -206,7 +208,13 @@ pub(super) fn bend_target(foot: Vec3, anchor: Vec3, anchored: bool, drop: f32) -
 /// `horizontal` and `distance` are centimetres to the anchor, `crouch` is
 /// 0 to 1 and `stance` is the race's stance factor (a human's 0.5).
 pub(super) fn step_lift(horizontal: f32, distance: f32, crouch: f32, stance: f32) -> f32 {
-    let s = (LIFT_HORIZONTAL * horizontal).min(LIFT_CAP);
+    // Under a centimetre of horizontal travel the scale is the squared
+    // distance itself; beyond, 0.4 of it, at most 30 cm.
+    let s = if horizontal * horizontal <= 1.0 {
+        horizontal * horizontal
+    } else {
+        (LIFT_HORIZONTAL * horizontal).min(LIFT_CAP)
+    };
     let f = if s > 0.0 && distance <= 3.0 * s {
         let span = 3.0 * s;
         let r = (distance * distance) / (span * span);
@@ -394,7 +402,12 @@ fn bend_leg(parts: &[Part], leg: &mut Leg, tick: &BendTick) {
         crouch,
         stance,
     );
-    leg.lift = next_lift(leg.lift, anchored, stepping, fresh / CM);
+    leg.lift = if leg.ground.is_none() {
+        // A foot with no ground in reach keeps no step lift.
+        0.0
+    } else {
+        next_lift(leg.lift, anchored, stepping, fresh / CM)
+    };
     let goal = bend_target(foot, leg.anchor, anchored, drop);
     leg.goal = goal;
     let hip = Vec3::from(parts[thigh].transform().translation);
