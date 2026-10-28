@@ -315,3 +315,22 @@ fn an_effect_pushes_a_part_at_its_sphere() {
     body.push_sphere(0, 9, Vec3::X);
     body.push_sphere(9, 0, Vec3::X);
 }
+
+/// A body that falls asleep has its motion and smoothed buffers emptied, as
+/// the original's post-step does before its controllers are told.
+#[test]
+fn sleeping_empties_the_motion_buffers() {
+    let mut b = ball(Vec3::new(0.0, 4.0, 0.0));
+    b.set_velocity(Vec3::X * 0.5);
+    b.tick(NONE);
+    assert!(b.parts[0].moved.iter().any(|m| *m != Vec3::ZERO));
+    // A countdown of one takes the tick's post-step into sleep.
+    b.set_velocity(Vec3::ZERO);
+    b.countdown = 1;
+    b.tick(NONE);
+    assert!(b.asleep(), "countdown {}", b.countdown);
+    for p in &b.parts {
+        assert_eq!(p.moved, [Vec3::ZERO; 4]);
+        assert_eq!(p.smoothed, [Vec3::ZERO; 4]);
+    }
+}

@@ -3466,8 +3466,13 @@ impl Ragdoll {
         if self.countdown <= SLEEP_COUNT {
             self.countdown = 0;
             self.sleep = Sleep::Asleep;
-            // Sleep clears the placed body's contact offset array.
+            // Sleep clears the placed body's contact offset array, and the
+            // original's post-step empties its motion and smoothed buffers.
             self.clear_placed_offsets();
+            for p in &mut self.parts {
+                p.moved = [Vec3::ZERO; 4];
+                p.smoothed = [Vec3::ZERO; 4];
+            }
         }
         if let Some(&root) = self.outward.first()
             && self.parts[root].positions[0].y < FALL_OUT_HEIGHT
