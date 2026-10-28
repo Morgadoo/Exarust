@@ -237,6 +237,14 @@ pub fn ease(x: f32) -> f32 {
     (f64::from(x) * 0.111 + 1.0 - f64::from(rise)) as f32
 }
 
+/// The GUI's smooth step on a share `x`: `(3 − 2x)·x²` in single
+/// precision, unclamped. The tree's learn and flash fades and the bar's
+/// rise, pitch and fall take it.
+pub fn smoothstep(x: f32) -> f32 {
+    let square = x * x;
+    (3.0 - 2.0 * x) * square
+}
+
 /// `CVTSS2SI`: rounds half to even; the "integer indefinite" for NaN and
 /// out-of-range values.
 fn cvt_i32(value: f32) -> i32 {
@@ -1112,7 +1120,7 @@ fn new_rings(out: &mut TreeDraw, view: &TreeView) -> (f32, i32) {
             continue;
         }
         if view.learn_until > view.now {
-            fade = ease((remaining(view.learn_until, view.now) * NEW_RATE) as f32);
+            fade = smoothstep((remaining(view.learn_until, view.now) * NEW_RATE) as f32);
         } else {
             fade = 0.0;
             retired = 0;
@@ -1142,7 +1150,7 @@ fn picked_rings(out: &mut TreeDraw, view: &TreeView) {
         }
         let mut fade = 0.0;
         if flashing == Some(index) && view.flash_until > view.now {
-            fade = ease((remaining(view.flash_until, view.now) * FLASH_RATE) as f32);
+            fade = smoothstep((remaining(view.flash_until, view.now) * FLASH_RATE) as f32);
         }
         if view.denied {
             fade = 0.5 - (0.5 - fade).abs();
@@ -1156,7 +1164,7 @@ fn picked_rings(out: &mut TreeDraw, view: &TreeView) {
     if node.flags & mark::PICKED != 0 || view.flash_until <= view.now {
         return;
     }
-    let mut fade = 1.0 - ease((remaining(view.flash_until, view.now) * FLASH_RATE) as f32);
+    let mut fade = 1.0 - smoothstep((remaining(view.flash_until, view.now) * FLASH_RATE) as f32);
     if view.denied {
         fade = (0.5 - fade).abs();
     }
@@ -1176,7 +1184,7 @@ fn glows(out: &mut TreeDraw, view: &TreeView, new_ease: f32, retired: i32) {
         let mut bytes = domain_colour(view.domain);
         let picked = node.flags & mark::PICKED != 0;
         if flashing == Some(index) {
-            let mut fade = ease((remaining(view.flash_until, view.now) * FLASH_RATE) as f32);
+            let mut fade = smoothstep((remaining(view.flash_until, view.now) * FLASH_RATE) as f32);
             if view.denied {
                 fade = 1.0 - 2.0 * (0.5 - fade).abs();
             }
@@ -1260,13 +1268,13 @@ fn bar_pose(view: &TreeView) -> Option<BarPose> {
             if elapsed < 900 {
                 let elapsed = f64::from(elapsed);
                 if elapsed < 400.0 {
-                    let rise = ease((elapsed * 0.0025) as f32);
+                    let rise = smoothstep((elapsed * 0.0025) as f32);
                     pose.top *= rise;
                     pose.size *= rise;
                     pose.a11 = rise;
                     pose.a12 = rise;
                 }
-                pose.pitch *= ease(ease((elapsed * 0.001_111_111_111_111_111_1) as f32));
+                pose.pitch *= smoothstep(ease((elapsed * 0.001_111_111_111_111_111_1) as f32));
             }
         }
         BarPhase::Closing { elapsed } => {
@@ -1278,7 +1286,7 @@ fn bar_pose(view: &TreeView) -> Option<BarPose> {
                 pose.a11 = 0.0;
                 pose.a12 = 0.0;
             } else {
-                let fall = ease((elapsed * 0.001_666_666_666_666_666_8) as f32);
+                let fall = smoothstep((elapsed * 0.001_666_666_666_666_666_8) as f32);
                 let square = fall * fall;
                 pose.a11 *= 1.0 - square * square;
                 pose.a12 *= (1.0 - 1.5 * fall).max(0.0);
@@ -1400,7 +1408,7 @@ fn bar_glows(out: &mut TreeDraw, view: &TreeView, pose: &BarPose) {
         let mut bytes = domain_colour(power_domain(slot.word));
         match flashing {
             Some(node) if node.power & 0x0e0f_ffff == slot.word & 0x0e0f_ffff => {
-                let mut fade = ease((remaining(view.flash_until, view.now) * FLASH_RATE) as f32);
+                let mut fade = smoothstep((remaining(view.flash_until, view.now) * FLASH_RATE) as f32);
                 if view.denied {
                     fade = 1.0 - 2.0 * (0.5 - fade).abs();
                 }
@@ -1943,6 +1951,17 @@ mod tests {
     }
 
     #[test]
+    fn the_smooth_step_is_three_less_twice_x_times_x_squared() {
+        assert_eq!(smoothstep(0.0), 0.0);
+        assert_eq!(smoothstep(0.5), 0.5);
+        // (3 − 0.5)·0.0625
+        assert_eq!(smoothstep(0.25), 0.156_25);
+        assert_eq!(smoothstep(1.0), 1.0);
+        // Not clamped: past one it falls again.
+        assert_eq!(smoothstep(2.0), -4.0);
+    }
+
+    #[test]
     fn an_empty_slot_stretches_and_has_no_cell() {
         let mut batch = Batch::new(Program::Ring, Texture::None);
         empty_slot(&mut batch, 100.0, 50.0, 10.0, [1.0; 4]);
@@ -2256,10 +2275,10 @@ mod tests {
         assert!(close(glow.uniforms.frame_col[0], 0.4));
         assert!(close(glow.uniforms.frame_col[3], 100.0 / 255.0));
         // A flash on the first node scales its colour by 0.333 + 0.667
-        // ease(share), the share being the time left over 300 ms.
+        // smoothstep(share), the share being the time left over 300 ms.
         view.flash = 0;
         view.flash_until = 1150;
-        let share = ease(0.5);
+        let share = smoothstep(0.5);
         let scale = (f64::from(share) * 0.667 + 0.333) as f32;
         let want = scale_rgb([90, 50, 20, 255], scale);
         let draw = tree_draw(&view);
@@ -2283,7 +2302,7 @@ mod tests {
             .collect();
         // The retired node's ring, then the new node's.
         assert_eq!(rings.len(), 2);
-        let fade = ease(0.5);
+        let fade = smoothstep(0.5);
         assert!(close(rings[0].uniforms.par0[3], 1.0 - fade));
         assert!(close(rings[1].uniforms.par0[3], fade));
         // A plain node's ring: 0.599 of the zoom, 0.3 outer.
@@ -2334,20 +2353,20 @@ mod tests {
         view.flash = 0;
         view.flash_until = 1150;
         let flashed = rings(&view);
-        assert!(close(flashed[0].uniforms.par0[3], ease(0.5)));
+        assert!(close(flashed[0].uniforms.par0[3], smoothstep(0.5)));
         // A refusal dips it: 0.5 - |0.5 - fade|.
         view.denied = true;
         let denied = rings(&view);
         assert!(close(
             denied[0].uniforms.par0[3],
-            0.5 - (0.5 - ease(0.5)).abs()
+            0.5 - (0.5 - smoothstep(0.5)).abs()
         ));
         // A flash on an unpicked node adds the fading-out ring.
         view.denied = false;
         view.flash = 1;
         let extra = rings(&view);
         assert_eq!(extra.len(), 2);
-        assert!(close(extra[1].uniforms.par0[3], 1.0 - ease(0.5)));
+        assert!(close(extra[1].uniforms.par0[3], 1.0 - smoothstep(0.5)));
         // An expired flash adds nothing.
         view.flash_until = 900;
         assert_eq!(rings(&view).len(), 1);
@@ -2504,7 +2523,7 @@ mod tests {
             .iter()
             .find(|b| b.program == Program::Frame)
             .unwrap();
-        let scale = (f64::from(ease(0.5)) * 0.667 + 0.333) as f32;
+        let scale = (f64::from(smoothstep(0.5)) * 0.667 + 0.333) as f32;
         assert_eq!(
             glow.vertices[0].colour,
             ink(scale_rgb([90, 50, 20, 255], scale))
@@ -2518,11 +2537,11 @@ mod tests {
         view.bar[0].state = state::LIT;
         view.bar_phase = Some(BarPhase::Opening { elapsed: 200 });
         let pose = bar_pose(&view).unwrap();
-        let rise = ease(0.5);
+        let rise = smoothstep(0.5);
         assert!(close(pose.a12, rise));
         assert!(close(pose.size, 52.0 * rise));
         assert!(close(pose.top, 32.0 * rise));
-        assert!(close(pose.pitch, 68.0 * ease(ease(200.0 / 900.0))));
+        assert!(close(pose.pitch, 68.0 * smoothstep(ease(200.0 / 900.0))));
         // After 400 ms only the pitch is still opening.
         view.bar_phase = Some(BarPhase::Opening { elapsed: 500 });
         let pose = bar_pose(&view).unwrap();
@@ -2533,7 +2552,7 @@ mod tests {
         // Closing: fades first, then invisible, then gone.
         view.bar_phase = Some(BarPhase::Closing { elapsed: 300 });
         let pose = bar_pose(&view).unwrap();
-        let fall = ease(0.5);
+        let fall = smoothstep(0.5);
         assert!(close(pose.a11, 1.0 - fall.powi(4)));
         assert!(close(pose.a12, (1.0 - 1.5 * fall).max(0.0)));
         assert!(close(pose.size, 52.0 * (1.0 - (300.0f32 / 900.0).powi(2))));

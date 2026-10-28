@@ -75,8 +75,9 @@
 //!   starts it; the wheel that calls it is outside the pack).
 //! - **The bar's animation** ([`TreeScreen::open_bar`], [`close_bar`] and
 //!   [`step_bar`]): opening loads the bar, clears each slot's flash and
-//!   picked bits and runs a 900 ms rise whose height and size are an ease of
-//!   the elapsed share (the pitch eases twice); closing runs 900 ms, the
+//!   picked bits and runs a 900 ms rise whose height and size are a smooth
+//!   step `(3 − 2x)·x²` of the elapsed share over 400 ms (the pitch the
+//!   smooth step of the tree's ease over 900 ms); closing runs 900 ms, the
 //!   marked slots falling as `1 − f⁴` and the rest as `1 − 1.5f`, then
 //!   clears the animation and the slots' flash and picked bits.
 //! - **The slot budget** ([`limit_running_powers`]): the highest Concentration
