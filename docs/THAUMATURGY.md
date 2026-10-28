@@ -817,11 +817,13 @@ finish it. A slot's flash is a signed time difference over 200 ms and its
 fade a double-precision ratio over its duration. The running screen adds
 the domain wheel's sheet, the tooltip's caption and wrapped description, the
 creation prompt, the label mode and the dragged preview; the texts are the
-GUI font's glyph quads on the Rayform08R atlas at the original's places.
-The installed packs do not ship that atlas (only the executable names it),
-so the running screen falls back to the game's bitmap font for the same
-runs. The
-running screen rasterises those batches in software (`power_screen::render`)
+interface level's main font's glyph quads at the original's places (a
+focused prompt caption is the skin's glowing text). The installed packs do
+not ship the Rayform atlases, so the glyphs sample the base `fontbase24r`
+atlas scaled to the level's glyph quad; with no GUI atlas at all the
+running screen falls back to the game's bitmap font for the same runs. A
+flash ends, with the refusal that shaped it, when the draw finds its time
+up. The running screen rasterises those batches in software (`power_screen::render`)
 with each fragment program's arithmetic and the loaded sheets; the shader
 bindings of the Force and Displacement effects are data in
 `thaum::effect_material` and `thaum::visuals` (the five materials, their

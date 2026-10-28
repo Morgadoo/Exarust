@@ -46,15 +46,15 @@
 //!
 //! The window's two fades are the caller's numbers: the backdrop's
 //! [`TreeView::window`], the content's [`TreeView::content`] and the bar
-//! child's [`TreeView::bar_alpha`]. The texts' widths and line steps are
-//! the GUI main font's ([`TREE_FONT`]); their glyphs are the running
-//! font's. Not modelled: the link ribbons' spline texture (they read as
-//! white) and the skin's button highlight.
+//! child's [`TreeView::bar_alpha`]. The texts' widths, glyph quads and line
+//! steps are the GUI level's main font's ([`TreeView::font`], by default
+//! [`TREE_FONT`]); its glyphs sample the level's atlas, or the base font's
+//! scaled to the level's quad when only that ships. Not modelled: the link
+//! ribbons' spline texture (they read as white).
 //!
 //! Evidence: the immediate-draw routines and the screen and bar draws of
 //! TThaumTree, the six fragment programs, and the icon and frame sheet
-//! measurements. The font glyphs are the running game's font; the original
-//! draws them with the GUI skin's letter sheet.
+//! measurements.
 
 use crate::engine_math::sin_cos;
 use crate::skin::{GuiDraw, GuiPrimitive, GuiVertex, SkinBatch, SkinInk, SkinMode};
@@ -1335,21 +1335,6 @@ fn glows(out: &mut TreeDraw, view: &TreeView, new_ease: f32, retired: i32) {
     }
 }
 
-/// A domain sheet's columns: the 2048-pixel sheets have four, the 512
-/// ones one.
-pub fn icon_columns(domain: u8) -> u32 {
-    match domain {
-        1..=3 => 4,
-        4..=6 => 1,
-        _ => 1,
-    }
-}
-
-/// A domain sheet's rows.
-pub fn icon_rows(domain: u8) -> u32 {
-    icon_columns(domain)
-}
-
 /// The bar's size, place and fades at this moment of its animation:
 /// `a11` is the fade of marked slots, `a12` of the rest.
 struct BarPose {
@@ -1705,23 +1690,20 @@ fn push_glyphs(
     out.submit(batch);
 }
 
-/// One line of text drawn as the skin highlights a control's caption: the
-/// run at `x`,`y` over four copies one pixel above, below, left and right.
-/// The two inks (the caption's and the outline's) are the GUI skin's, which
-/// this pack does not carry: the brighter outline is a labelled guess.
-fn selected_text_line(
-    out: &mut TreeDraw,
-    view: &TreeView,
-    text: &[u8],
-    x: f32,
-    y: f32,
-    ink: [f32; 4],
-    outline: [f32; 4],
-) {
-    for offset in [[-1.0, 0.0], [1.0, 0.0], [0.0, -1.0], [0.0, 1.0]] {
-        text_line(out, view, text, x + offset[0], y + offset[1], outline);
+/// One line of text drawn as the skin's glowing caption
+/// ([`crate::skin::glow_text`]): the text in the label group's eighth shade
+/// and four copies a pixel left, right, below and above in the highlight
+/// group's first shade, from the line skin's palette. The original draws
+/// the text first and keeps it in front of the copies with the depth test;
+/// with no depth here the copies go first.
+fn glow_text_line(out: &mut TreeDraw, view: &TreeView, text: &[u8], x: f32, y: f32) {
+    let palette = crate::line_skin::line_palette();
+    let glow = crate::skin::glow_text(cvt_i32(x), cvt_i32(y), &palette);
+    let ink = |bytes: SkinInk| bytes.map(|byte| f32::from(byte) / 255.0);
+    for (gx, gy) in glow.glow_places {
+        text_line(out, view, text, gx as f32, gy as f32, ink(glow.glow_ink));
     }
-    text_line(out, view, text, x, y, ink);
+    text_line(out, view, text, x, y, ink(glow.text_ink));
 }
 
 /// One panel of the tooltip, in pixels.
@@ -1949,7 +1931,9 @@ pub fn labels_draw(view: &TreeView, names: &[(String, f32)]) -> TreeDraw {
         let drop = f64::from(view.icon_size) * if framed { 0.32 } else { 0.54 };
         let base = drop + f64::from(node.y);
         let panel = width - unit * 2.0;
-        let x = cvt_i32(node.x - ((*width as u32 >> 1) as f32)) as f32;
+        // The box is centred by its own width (the text's less two units),
+        // halved as an unsigned word.
+        let x = cvt_i32(node.x - ((panel as i32 as u32 >> 1) as f32)) as f32;
         let y = cvt_i32((f64::from(unit) + base) as f32) as f32;
         let mut batch = Batch::new(Program::Mods, Texture::None);
         let ink = [0.55, 0.56, 0.58, 128.0 / 255.0];
@@ -1987,8 +1971,9 @@ pub fn labels_draw(view: &TreeView, names: &[(String, f32)]) -> TreeDraw {
 /// The creation prompt's three panels and its texts. The panels are the
 /// title's measured width plus two units at an eighth of the height, and
 /// the two 30 × 2 buttons at seven units from the bottom; their texts sit a
-/// unit in and three units down. A focused button is drawn brighter (the
-/// skin's highlight call is outside the pack: a labelled guess).
+/// unit past the centring and three units down. A focused button's caption
+/// is the skin's glowing text; the bitmap-font run of a focused caption
+/// takes the glowing text's ink.
 #[allow(clippy::too_many_arguments)]
 pub fn prompt_draw(
     view: &TreeView,
@@ -2055,9 +2040,10 @@ pub fn prompt_draw(
         colour: [1.0, 1.0, 1.0, 1.0],
         text: title.to_string(),
     });
+    let glow_ink = crate::line_skin::line_palette().text[7].map(|byte| f32::from(byte) / 255.0);
     let button = |focused: bool| {
         if focused {
-            [1.0, 0.95, 0.8, 1.0]
+            glow_ink
         } else {
             [1.0, 1.0, 1.0, 1.0]
         }
@@ -2084,20 +2070,10 @@ pub fn prompt_draw(
         title_y + unit * 3.0,
         [1.0, 1.0, 1.0, 1.0],
     );
-    // A focused button's caption is the skin's selected text: the run with
-    // a one-pixel outline. The outline's ink is a labelled guess (the GUI
-    // skin's colours are outside this pack).
+    // A focused button's caption is the skin's glowing text.
     let button_text = |out: &mut TreeDraw, text: &[u8], x: f32, focused: bool| {
         if focused {
-            selected_text_line(
-                out,
-                view,
-                text,
-                x,
-                button_y,
-                [1.0, 1.0, 1.0, 1.0],
-                [1.0, 0.95, 0.8, 1.0],
-            );
+            glow_text_line(out, view, text, x, button_y);
         } else {
             text_line(out, view, text, x, button_y, [1.0, 1.0, 1.0, 1.0]);
         }
@@ -3212,7 +3188,27 @@ mod tests {
         assert_eq!(draw.texts[1].y, 672.0 + 12.0);
         // BEGIN: the right button's centre plus a unit.
         assert_eq!(draw.texts[2].x, 856.0 + 31.0);
-        assert_eq!(draw.texts[2].colour, [1.0, 0.95, 0.8, 1.0]);
+        // A focused caption takes the skin's glowing text ink.
+        let ink = crate::line_skin::line_palette().text[7].map(|byte| f32::from(byte) / 255.0);
+        assert_eq!(draw.texts[2].colour, ink);
+        assert_eq!(draw.texts[1].colour, [1.0, 1.0, 1.0, 1.0]);
+        // With the atlas loaded, the focused BEGIN glows: four copies of its
+        // five glyphs in the highlight ink, then the text in the label ink.
+        view.font_size = (1024, 1024);
+        let draw = prompt_draw(
+            &view, "Choose", 100.0, "BACK", 40.0, "BEGIN", 50.0, 0x200_0000,
+        );
+        let palette = crate::line_skin::line_palette();
+        let glow = palette.highlight[0].map(|byte| f32::from(byte) / 255.0);
+        let glyphs: Vec<&TreeVertex> = draw
+            .batches
+            .iter()
+            .filter(|batch| batch.program == Program::SkinText)
+            .flat_map(|batch| batch.vertices.iter())
+            .collect();
+        let glowing = glyphs.iter().filter(|v| v.colour == glow).count();
+        assert_eq!(glowing, 4 * 5 * 6);
+        assert_eq!(glyphs.iter().filter(|v| v.colour == ink).count(), 5 * 6);
     }
 
     #[test]
@@ -3225,17 +3221,17 @@ mod tests {
         assert_eq!(draw.batches.len(), 1);
         assert_eq!(draw.batches[0].vertices.len(), 12);
         assert_eq!(draw.texts.len(), 2);
-        // The box is the width less two units (32), centred by the text's
-        // own width at ROUND(100 − 20), and ROUND(4 + 140.5) = 144 down.
-        assert_eq!(draw.batches[0].vertices[0].x, 80.0);
-        assert_eq!(draw.batches[0].vertices[2].x, 112.0);
+        // The box is the width less two units (32), at ROUND(100 − 16)
+        // across and ROUND(4 + 140.5) = 144 (to even) down.
+        assert_eq!(draw.batches[0].vertices[0].x, 84.0);
+        assert_eq!(draw.batches[0].vertices[2].x, 116.0);
         assert_eq!(draw.batches[0].vertices[2].y, 144.0);
         // The text: a unit right of ROUND(100 − (40 + 8)/2), at
         // ROUND(16 + 140.5) = 156, its baseline 1.6 units lower.
         assert_eq!(draw.texts[0].x, 80.0);
         assert_eq!(draw.texts[0].y, 156.0 + 6.4);
-        // The second box: 16 wide at ROUND(200 − 12).
-        assert_eq!(draw.batches[0].vertices[6].x, 188.0);
+        // The second box: 16 wide at ROUND(200 − 8).
+        assert_eq!(draw.batches[0].vertices[6].x, 192.0);
     }
 
     #[test]

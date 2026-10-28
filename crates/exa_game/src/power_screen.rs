@@ -216,7 +216,6 @@ fn load_screen(
             1000.0,
             700.0,
         );
-        screen.tree.font_size = font_size_of(&screen);
         screen.tree.domain_cells = domain_cells(&screen.sheets);
         screen.texts = Vec::new();
     }
@@ -248,14 +247,15 @@ fn load_tree_font(game: &Game, unit: Option<i32>, screen: &mut PowerScreen) {
 }
 
 /// The tree's font at the interface unit `unit` and the atlas size its
-/// glyph quads sample, from the loaded atlas.
+/// glyph quads sample, from the loaded atlas (the draw sets the tree's
+/// font size from it every frame). Another level's atlas gives no glyphs.
 pub fn tree_font(unit: i32, atlas: Option<(&'static str, (u16, u16))>) -> (GuiFont, (u16, u16)) {
     let level = gui_level(level_for_unit(unit)).main;
     let level_size = atlas
         .filter(|(name, _)| *name == level.texture)
         .map(|(_, size)| size);
     let base_size = atlas
-        .filter(|(name, _)| *name != level.texture)
+        .filter(|(name, _)| *name == FONTBASE_24.texture)
         .map(|(_, size)| size);
     let (font, size) = font_with_fallback(level, level_size, base_size);
     (font, size.unwrap_or((0, 0)))
@@ -272,15 +272,6 @@ pub fn domain_cells(sheets: &TreeSheets) -> [u32; 7] {
         }
     }
     cells
-}
-
-fn font_size_of(screen: &PowerScreen) -> (u16, u16) {
-    screen
-        .sheets
-        .font
-        .as_ref()
-        .map(|image| (image.width as u16, image.height as u16))
-        .unwrap_or((0, 0))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -308,7 +299,6 @@ fn hotkeys(
         bar,
         texts,
         domain_files,
-        sheets,
         dirty,
         sound,
         ..
@@ -342,11 +332,6 @@ fn hotkeys(
                 width,
                 height,
             );
-            tree.font_size = sheets
-                .font
-                .as_ref()
-                .map(|image| (image.width as u16, image.height as u16))
-                .unwrap_or((0, 0));
             *open = true;
             *bar_open = true;
             tree.bar_open = true;
