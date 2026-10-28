@@ -197,9 +197,9 @@ pub fn neighbours<T: Copy>(
     out
 }
 
-/// One plane of a light's reach: the half-space `normal · p + distance ≥ 0`
-/// is inside the light, and each plane faces outwards, so the value is the
-/// distance a point lies beyond that face.
+/// One plane of a light's reach. Each plane faces outwards: `normal · p +
+/// distance` is how far a point lies beyond that face (positive outside the
+/// light, negative inside).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LightPlane {
     pub normal: Vec3,
@@ -273,14 +273,21 @@ pub fn light_distance(light: &LightVolume, block: &OrientedBox) -> f32 {
         let n = plane.normal;
         let c = block.centre;
         let centre_distance = (n.z * c.z + (n.y * c.y + n.x * c.x)) + plane.distance;
-        // Only the planes the centre is in front of take part (a NaN falls
-        // through here too).
+        // Only the planes the centre is beyond take part. The instruction
+        // lets a NaN through here; its clearance is then NaN and fails the
+        // final compare, so skipping it now is the same.
         if centre_distance.is_nan() || centre_distance < 0.0 {
             continue;
         }
-        // The normal in the box's frame: the box's axes are the matrix's
-        // columns.
-        let v = block.axes * n;
+        // The normal in the box's frame: its dot product with each of the
+        // box's axes (the matrix's columns), summed `(x + y) + z` as the
+        // vector-by-matrix helper does.
+        let axis = |a: Vec3| (a.x * n.x + a.y * n.y) + a.z * n.z;
+        let v = Vec3::new(
+            axis(block.axes.x_axis),
+            axis(block.axes.y_axis),
+            axis(block.axes.z_axis),
+        );
         let extent = |value: f32, half: f32| {
             f32::from_bits(half.to_bits() | (value.to_bits() & 0x8000_0000))
         };
@@ -787,6 +794,22 @@ mod tests {
             (d - (400.0 - 50.0 * std::f32::consts::SQRT_2)).abs() < 1e-3,
             "{d}"
         );
+    }
+
+    #[test]
+    fn the_light_distance_takes_the_normal_into_the_boxs_own_axes() {
+        // A sheared box: its x axis is (1, 1, 0) and its y axis (0, 1, 0).
+        // The +X plane's normal in the box's frame is (n·x_axis, n·y_axis,
+        // n·z_axis) = (1, 0, 0), so the support is the x half extent alone:
+        // 500 − 100 − 10 = 390. (Multiplying by the matrix instead would
+        // give (1, 1, 0) and a support of 10 + 20.)
+        let light = LightVolume::box_volume(Vec3::ZERO, Vec3::splat(100.0));
+        let sheared = OrientedBox {
+            centre: Vec3::new(500.0, 0.0, 0.0),
+            half_extents: Vec3::new(10.0, 20.0, 30.0),
+            axes: Mat3::from_cols(Vec3::new(1.0, 1.0, 0.0), Vec3::Y, Vec3::Z),
+        };
+        assert_eq!(light_distance(&light, &sheared), 390.0);
     }
 
     #[test]
