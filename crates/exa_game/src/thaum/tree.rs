@@ -66,9 +66,9 @@
 //!   the drag's own cubic (0.508 or 0.29 of the fixed zoom, a 400 cap on
 //!   the tangents).
 //! - **The form's windows** ([`TreeScreen::present_window`]): showing the
-//!   tree raises a 1000 ms fade whose alpha is `min(2·(1 − (1 −
-//!   dt·0.001)²), 1)` and whose inner value, `1 − (1 − dt·0.001)²`, fades
-//!   the bar child; hiding cuts both over 256 ms from the closing stamp.
+//!   tree raises a 1000 ms fade: with `r = 1 − (1 − left·0.001)` the share
+//!   still to run, the alpha is `min(2·(1 − r²), 1)` (0 at the opening, 1
+//!   from halfway) and `1 − r²` fades the bar child; hiding cuts both over 256 ms from the closing stamp.
 //!   The backdrop takes the first alpha and the content the second; a
 //!   domain switch cuts the content out over 256 ms, swaps the domain at
 //!   the stamp and fades the new tree in over 1000 ms ([`fade_domain`]
@@ -1066,8 +1066,9 @@ impl TreeScreen {
                 break;
             }
         }
-        let overshoot = self.step_at.wrapping_sub(now) as f32;
-        self.present(1.0 - overshoot * 0.058_823_529);
+        // The blend is taken in double: one less the overshoot over 17.
+        let overshoot = (u64::from(self.step_at) as i64 - u64::from(now) as i64) as f64;
+        self.present((1.0 - overshoot * 0.058_823_529_411_764_705) as f32);
     }
 
     /// One step of the pan and zoom springs. Returns whether anything
@@ -2161,13 +2162,16 @@ pub const BAR_OPENING: u8 = 2;
 /// The bar is steady after its opening animation.
 pub const BAR_STEADY: u8 = 4;
 
-/// The original's opening ease: `1 − (1 − dt·0.001)²` doubled and held to
-/// one, beside the inner `1 − (1 − dt·0.001)` value. The clock subtraction is
-/// signed over the two zero-extended 32-bit stamps.
+/// The original's opening fade, with `left` the milliseconds to the stamp:
+/// `shown = 1 − (1 − left·0.001)` (the inner difference in double, rounded
+/// to single, then taken from one in single), `second = 1 − shown²`, and
+/// the window `2·second` held to one. It rises from 0 at the opening to 1
+/// at the stamp. The clock subtraction is over the two zero-extended 32-bit
+/// stamps.
 fn open_fade(stamp: u32, now: u32) -> (f32, f32) {
     let left = (u64::from(stamp) as i64 - u64::from(now) as i64) as f64;
-    let inner = (1.0 - left * 0.001) as f32;
-    let second = 1.0 - inner * inner;
+    let shown = 1.0 - (1.0 - left * 0.001) as f32;
+    let second = 1.0 - shown * shown;
     let mut window = second * 2.0;
     // `COMISS`/`JBE`: an unordered or not-greater value is left alone.
     if window > 1.0 {
@@ -2221,8 +2225,7 @@ impl TreeScreen {
         self.faded_out = false;
         self.switch_due = false;
         if self.fade_flags & FADING_IN != 0 {
-            if now.wrapping_sub(self.open_at) >= 0x8000_0000 {
-                // now < open_at
+            if now < self.open_at {
                 let (raised, inner) = open_fade(self.open_at, now);
                 window = raised;
                 second = inner;
@@ -2231,8 +2234,7 @@ impl TreeScreen {
             }
         }
         if self.fade_flags & FADING_OUT != 0 {
-            if now.wrapping_sub(self.close_at) < 0x8000_0000 {
-                // now >= close_at
+            if self.close_at <= now {
                 self.fade_flags &= !FADING_OUT;
                 self.window_alpha = 0.0;
                 self.content_alpha = 0.0;
@@ -2248,7 +2250,7 @@ impl TreeScreen {
         let bar_second = second;
         let mut content = window;
         if self.domain_flags & DOMAIN_IN != 0 {
-            if now.wrapping_sub(self.domain_at) >= 0x8000_0000 {
+            if now < self.domain_at {
                 let (raised, _) = open_fade(self.domain_at, now);
                 content = raised;
             } else {
@@ -2256,7 +2258,7 @@ impl TreeScreen {
             }
         }
         if self.domain_flags & DOMAIN_OUT != 0 {
-            if now.wrapping_sub(self.domain_at) >= 0x8000_0000 {
+            if now < self.domain_at {
                 let left = (u64::from(self.domain_at) as i64 - u64::from(now) as i64) as f32;
                 content = left * content / 256.0;
             } else {
@@ -3005,7 +3007,7 @@ mod tests {
         // the way from the previous point to the new one.
         screen.advance(1000 + 17 + 5);
         assert_eq!(screen.step_at, 1000 + 34);
-        let alpha = 1.0 - 12.0 * 0.058_823_529;
+        let alpha = (1.0 - 12.0 * 0.058_823_529_411_764_705_f64) as f32;
         let expected =
             screen.pan.previous[0] + (screen.pan.position[0] - screen.pan.previous[0]) * alpha;
         assert_eq!(screen.pan.previous[0], 0.98);
@@ -4342,13 +4344,18 @@ mod tests {
         assert_eq!(tree.window_alpha, 1.0);
         assert_eq!(tree.content_alpha, 1.0);
         assert_eq!(tree.bar_alpha, 0.75);
-        // A millisecond before the fade ends it is nearly shut: the inner
-        // 0.999 squares to 0.99800104, so the window is its complement
-        // doubled, 0.003997922, and the bar's fade is 0.001998961.
-        tree.present_window(1999);
+        // A millisecond after the opening the fade has barely begun: 999 ms
+        // are left, the shown share is 1 − 0.001 = 0.999, its square's
+        // complement 0.001998961, and the window that doubled, 0.003997922.
+        tree.present_window(1001);
         assert!((tree.window_alpha - 0.003_997_922).abs() < 1e-9);
         assert!((tree.content_alpha - 0.003_997_922).abs() < 1e-9);
         assert!((tree.bar_alpha - 0.001_998_961).abs() < 1e-9);
+        // A millisecond before the stamp it is nearly whole: the bar's fade
+        // is 0.999999 and the window is held at one.
+        tree.present_window(1999);
+        assert_eq!(tree.window_alpha, 1.0);
+        assert!((tree.bar_alpha - 0.999_999).abs() < 1e-6);
         // At the stamp the flag clears and the window is whole.
         tree.present_window(2000);
         assert_eq!(tree.fade_flags, 0);
