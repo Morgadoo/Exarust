@@ -1061,7 +1061,7 @@ impl TreeScreen {
         }
         while self.step_at < now {
             self.step_at = self.step_at.wrapping_add(Self::STEP_MS);
-            if !self.settle() {
+            if !self.step_springs() {
                 self.step_at = now;
                 break;
             }
@@ -1070,12 +1070,20 @@ impl TreeScreen {
         self.present(1.0 - overshoot * 0.058_823_529);
     }
 
-    /// Eases the pan and the zoom. Returns whether anything moved.
-    pub fn settle(&mut self) -> bool {
+    /// One step of the pan and zoom springs. Returns whether anything
+    /// moved.
+    fn step_springs(&mut self) -> bool {
         let moved_pan = step_pan(&mut self.pan);
         let moved_zoom = step_zoom(&mut self.zoom);
-        self.present(1.0);
         moved_pan || moved_zoom
+    }
+
+    /// Eases the pan and the zoom and shows the result. Returns whether
+    /// anything moved.
+    pub fn settle(&mut self) -> bool {
+        let moved = self.step_springs();
+        self.present(1.0);
+        moved
     }
 
     /// Reads a focus id: a plain node selects, and a bar slot or a special
