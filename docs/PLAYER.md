@@ -1324,7 +1324,7 @@ character body's possession routines; addresses are in the research notes.
   clamp of the distance field to that range, and the speeds: 5 and 5/59
   on the stepped camera, 15 × the largest distance / 59² and 6.6/59
   otherwise). Under the editor flag it scans the scene for a `0xA9` node
-  of class word 1 and takes its place and its x/z half extents, a `0xAE`
+  of class word 1 and takes its place and its half extents, a `0xAE`
   marker raising its extra flag (`nav_camera::scan_target`). The callback
   set its flags ask for (the wheel, the editor's press and move, the free
   camera's press and move) is `nav_camera::preset_handlers`; installing
@@ -1335,11 +1335,11 @@ character body's possession routines; addresses are in the research notes.
 - **The ground pick** (the unit's point-to-ground routine, used by the
   player-control ground and reach probes): from the screen ray, the
   direction's reciprocal height is held to zero when it points up, the
-  reach is 40 m, and each pickable node grows its bounding sphere by 5 m
-  when the caller's accept test takes it and by 10 cm when it does not.
+  reach is 40 m, and each pickable node grows its bounding sphere by 5 cm
+  when the caller's accept test takes it and by 1 mm when it does not.
   The mesh is asked from the point where the ray crosses the grown
   sphere's top for what is left of the reach, the crossing added back to
-  the hit; the last node that answers wins, its face is the callback's
+  the hit (an eye under the top asks from the eye with the whole reach); the last node that answers wins, its face is the callback's
   count less one, and a miss records the ground plane (`nav_pick::ground_hit`).
   Modelled with tests; nothing calls it yet because the cursor still uses
   the aim plane and the hand picks through the physics world.

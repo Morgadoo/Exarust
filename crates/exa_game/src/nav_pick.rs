@@ -35,11 +35,11 @@ pub const KINESIS_FAR: f32 = 40.0;
 /// How far the ground pick looks (the original's 4000 cm).
 pub const GROUND_FAR: f32 = 40.0;
 /// The sphere a node the ground pick's accept callback refuses grows by
-/// (the original's 10 cm).
-pub const GROUND_RADIUS_REFUSED: f32 = 0.1;
+/// (the original's 0.1 cm).
+pub const GROUND_RADIUS_REFUSED: f32 = 0.001;
 /// The sphere a node the accept callback takes grows by (the original's
-/// 5 m: the whole reach of a raised ground surface).
-pub const GROUND_RADIUS_ACCEPTED: f32 = 5.0;
+/// 5 cm).
+pub const GROUND_RADIUS_ACCEPTED: f32 = 0.05;
 
 /// A ray: an origin and a direction. The direction may be a unit vector or
 /// a segment vector; distances are in its units.
@@ -329,11 +329,13 @@ pub fn ground_hit(
         }
         let crossing = (node.bounds.centre.y + radius - ray.origin.y) * ratio;
         // The original keeps the crossed point for a positive crossing and
-        // for a NaN one (its unordered compare jumps to the same branch).
-        let start = if crossing > 0.0 || crossing.is_nan() {
-            ray.at(crossing)
+        // for a NaN one (its unordered compare jumps to the same branch);
+        // otherwise the crossing becomes zero and the mesh is asked from
+        // the eye with the whole reach left.
+        let (start, crossing) = if crossing > 0.0 || crossing.is_nan() {
+            (ray.at(crossing), crossing)
         } else {
-            ray.origin
+            (ray.origin, 0.0)
         };
         if let Some((face, distance)) = node
             .mesh
@@ -663,22 +665,22 @@ mod tests {
         let down = ray(Vec3::new(0.0, 10.0, 0.0), -Vec3::Y);
         let mut target = node(u32::MAX, Vec3::ZERO, 0.5, &mesh);
         target.radius = 0.5;
-        // Taken: the sphere grows 5 m, its top is 5.5 m up (4.5 m along),
-        // and the floor is 5.5 m further: 10 m in all, face 0.
+        // Taken: the sphere grows 5 cm, its top is 0.55 m up (9.45 m
+        // along), and the floor is 0.55 m further: 10 m in all, face 0.
         let (hit, distance) = ground_hit(down, u32::MAX, |_| true, &[target]);
         let hit = hit.unwrap();
         assert_eq!((hit.node, hit.face), (0, 0));
-        assert_eq!(distance, 10.0);
-        assert!((hit.point - Vec3::ZERO).length() < 1e-5);
-        // Refused: the sphere only grows 10 cm, the top is 0.6 m up
-        // (9.4 m along) and the floor 0.6 m further: still 10 m.
+        assert!((distance - 10.0).abs() < 1e-5, "{distance}");
+        assert!(hit.point.length() < 1e-5);
+        // Refused: the sphere only grows 1 mm (top 0.501 m up); the floor
+        // is still 10 m away.
         let (hit, distance) = ground_hit(down, u32::MAX, |_| false, &[target]);
-        assert_eq!(hit.unwrap().distance, 10.0);
-        assert_eq!(distance, 10.0);
-        // Beside the node by 3 m, only the taken 5 m sphere reaches the
-        // floor; the refused 0.6 m sphere misses, and the miss records the
+        assert!((hit.unwrap().distance - 10.0).abs() < 1e-5);
+        assert!((distance - 10.0).abs() < 1e-5);
+        // 52 cm beside the node only the taken 0.55 m sphere is crossed;
+        // the refused 0.501 m one is missed, and the miss records the
         // ground plane below the eye: 10 m again but no hit.
-        let beside = ray(Vec3::new(3.0, 10.0, 0.0), -Vec3::Y);
+        let beside = ray(Vec3::new(0.52, 10.0, 0.0), -Vec3::Y);
         assert!(
             ground_hit(beside, u32::MAX, |_| true, &[target])
                 .0
@@ -687,6 +689,14 @@ mod tests {
         let (none, distance) = ground_hit(beside, u32::MAX, |_| false, &[target]);
         assert!(none.is_none());
         assert_eq!(distance, 10.0);
+        // An eye inside the grown sphere, under its top: the crossing is
+        // negative, so it becomes zero and the mesh is asked from the eye
+        // with the whole reach. The floor is 0.3 m below (a crossing kept
+        // negative would have given 0.05 m).
+        let inside = ray(Vec3::new(0.0, 0.3, 0.0), -Vec3::Y);
+        let (hit, distance) = ground_hit(inside, u32::MAX, |_| true, &[target]);
+        assert!(hit.is_some());
+        assert!((distance - 0.3).abs() < 1e-6, "{distance}");
         // The layer and class filters apply as in the nearest pick.
         assert!(ground_hit(down, 0, |_| true, &[target]).0.is_none());
         target.class = 0x09;
@@ -700,10 +710,8 @@ mod tests {
 
     #[test]
     fn a_ground_pick_keeps_the_last_node_that_answers_within_its_reach() {
-        // Two floors along the same downward ray: a taken high one nearer
-        // the eye and a refused low one. The second is asked with what is
-        // left after the first, so both are met and the later one is the
-        // pick (the original writes the node and face on every hit).
+        // A high floor at 6 m in a node about (0, 6, 0) and a low floor at
+        // the origin in a node about it, under the same downward ray.
         let high = [[
             Vec3::new(-20.0, 6.0, -20.0),
             Vec3::new(20.0, 6.0, -20.0),
@@ -717,14 +725,21 @@ mod tests {
         let high = Triangles(&high);
         let low = Triangles(&low);
         let down = ray(Vec3::new(0.0, 10.0, 0.0), -Vec3::Y);
-        let mut near = node(1, Vec3::ZERO, 0.5, &high);
-        near.radius = 0.5;
-        let mut far = node(1, Vec3::ZERO, 0.5, &low);
-        far.radius = 0.5;
-        let (hit, distance) = ground_hit(down, 1, |_| true, &[near, far]);
+        let mut upper = node(1, Vec3::new(0.0, 6.0, 0.0), 0.5, &high);
+        upper.radius = 0.5;
+        let mut lower = node(1, Vec3::ZERO, 0.5, &low);
+        lower.radius = 0.5;
+        // High first: it answers at 4 m, the segment shortens to 4 m and
+        // no longer reaches the low node's sphere, which is skipped.
+        let (hit, distance) = ground_hit(down, 1, |_| true, &[upper, lower]);
+        assert_eq!(hit.unwrap().node, 0);
+        assert!((distance - 4.0).abs() < 1e-5, "{distance}");
+        // Low first: it answers at 10 m, then the high node is still within
+        // the reach, answers nearer and becomes the pick.
+        let (hit, distance) = ground_hit(down, 1, |_| true, &[lower, upper]);
         let hit = hit.unwrap();
         assert_eq!(hit.node, 1);
-        assert_eq!(distance, 10.0);
-        assert!((hit.point.y).abs() < 1e-5);
+        assert!((distance - 4.0).abs() < 1e-5, "{distance}");
+        assert!((hit.point.y - 6.0).abs() < 1e-5);
     }
 }

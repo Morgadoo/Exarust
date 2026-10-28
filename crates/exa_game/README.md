@@ -590,7 +590,7 @@ cut-away segment, the kick offset and the 123-point jittered disc table.
 Its picking unit is `nav_pick`: the screen ray's near-to-far form, the
 plane pick, the node walk with the class, layer and option bits, the
 segment against each bounding sphere and box, the nearest mesh within the
-best distance, the ground pick with its 5 m/10 cm grown sphere and
+best distance, the ground pick with its 5 cm/1 mm grown sphere and
 top-of-sphere ask, the ground-plane fallback and the kinesis pick; the
 cursor's aim plane and reach use them, and the physics world answers as
 the mesh callback because Exarust keeps no CPU triangles. Its free-camera
