@@ -130,6 +130,83 @@ pub fn second_wind_of_record<'a>(
         .any(|b| b.special == Burden::SECOND_WIND)
 }
 
+/// The focus regeneration a worn [`Burden::FOCUS_CHARM`] sets: the float
+/// with bits `0x38D28EB4` (about 1.004e-4), added to the regeneration rate.
+pub const FOCUS_CHARM_REGEN: f32 = f32::from_bits(0x38d2_8eb4);
+
+/// A worn item whose special kind registers an item effect on its wearer:
+/// the id the record wears it by, and its crystal's flag and charge bytes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct EffectItem {
+    pub id: u32,
+    pub power_flags: u8,
+    pub charge: u8,
+}
+
+/// What a character's worn items' special kinds do to it, as the armour
+/// pass dispatches them. The pass first clears every result (no second
+/// wind, no ward, no focus bonus, and the item effects of worn items gone
+/// from the body's list), then walks the worn items in the record's order;
+/// kinds 0 and 1 do nothing here (kind 1, seeing in the dark, is read by
+/// the light switch).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct WornSpecials {
+    /// Kind 2: the second-wind flag.
+    pub second_wind: bool,
+    /// Kind 3: healing items, each given the healing tick when the body
+    /// takes remedies (its rule bit 2).
+    pub healing: Vec<EffectItem>,
+    /// Kind 4: golem suits, each given the worn item's light tick.
+    pub golem_suits: Vec<EffectItem>,
+    /// Kind 5: the mind ward. The body's masked bit is set (other minds see
+    /// it as a mind-masked character), its item word's bit 0x10 refuses
+    /// every power it casts, and every power running on it is told to end.
+    pub mind_ward: bool,
+    /// Kind 6: shield-lightening gauntlets, each given the apparel tick.
+    pub shield_gauntlets: Vec<EffectItem>,
+    /// Kind 7: what the focus regeneration rate gains
+    /// ([`FOCUS_CHARM_REGEN`], set rather than added: two charms give the
+    /// same), 0 without one.
+    pub focus_regen: f32,
+}
+
+impl WornSpecials {
+    /// The dispatch over `worn`, each item's id and burden in the record's
+    /// order.
+    pub fn of_worn(worn: impl IntoIterator<Item = (u32, Burden)>) -> Self {
+        let mut specials = Self::default();
+        for (id, burden) in worn {
+            let item = EffectItem {
+                id,
+                power_flags: burden.power_flags,
+                charge: burden.charge,
+            };
+            match burden.special {
+                Burden::SECOND_WIND => specials.second_wind = true,
+                Burden::HEALING => specials.healing.push(item),
+                Burden::GOLEM_SUIT => specials.golem_suits.push(item),
+                Burden::MIND_WARD => specials.mind_ward = true,
+                Burden::LIGHT_SHIELD => specials.shield_gauntlets.push(item),
+                Burden::FOCUS_CHARM => specials.focus_regen = FOCUS_CHARM_REGEN,
+                _ => {}
+            }
+        }
+        specials
+    }
+
+    /// The dispatch over a record's worn items, found by `find` as
+    /// [`of_record`] finds them; ids that find nothing, and items without
+    /// a body, do nothing.
+    pub fn of_record<'a>(record: &CharacterRecord, find: impl Fn(u32) -> Option<&'a Item>) -> Self {
+        Self::of_worn(
+            record
+                .worn
+                .iter()
+                .filter_map(|worn| Some((worn.id, find(worn.id)?.burden?))),
+        )
+    }
+}
+
 /// The encumbrance a character's record spawns with: its worn items and
 /// the shield it holds, found by `find` (an id of the level's or the
 /// actor's own database, or of the game's), and its techniques. Ids that

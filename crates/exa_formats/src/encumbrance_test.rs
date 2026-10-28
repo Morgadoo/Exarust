@@ -420,3 +420,85 @@ fn a_second_wind_talisman_grants_it() {
     assert!(!second_wind_of_record(&record, |_| Some(&plain_item)));
     assert!(!second_wind_of_record(&record, |_| None));
 }
+
+/// The armour pass's special kinds: 2 the second wind, 3 healing, 4 golem
+/// suits, 5 the mind ward, 6 the gauntlets, 7 the focus charm (a set
+/// value, the same for two charms); 0 and 1 do nothing here.
+#[test]
+fn the_special_kinds_dispatch_in_wearing_order() {
+    let worn = |special: u8, power_flags: u8, charge: u8| Burden {
+        special,
+        power_flags,
+        charge,
+        ..plain(5)
+    };
+    let specials = WornSpecials::of_worn([
+        (10, worn(Burden::SEES_IN_THE_DARK, 0, 0)),
+        (11, worn(Burden::HEALING, 2, 7)),
+        (12, worn(Burden::GOLEM_SUIT, 1, 0)),
+        (13, worn(Burden::LIGHT_SHIELD, 1, 0xff)),
+        (14, worn(Burden::HEALING, 0x22, 0)),
+        (15, worn(Burden::FOCUS_CHARM, 0, 0)),
+        (16, worn(Burden::FOCUS_CHARM, 0, 0)),
+    ]);
+    assert!(!specials.second_wind);
+    assert!(!specials.mind_ward);
+    let item = |id, power_flags, charge| EffectItem {
+        id,
+        power_flags,
+        charge,
+    };
+    assert_eq!(specials.healing, vec![item(11, 2, 7), item(14, 0x22, 0)]);
+    assert_eq!(specials.golem_suits, vec![item(12, 1, 0)]);
+    assert_eq!(specials.shield_gauntlets, vec![item(13, 1, 0xff)]);
+    assert_eq!(specials.focus_regen.to_bits(), 0x38d2_8eb4);
+    assert!((specials.focus_regen - 1.004_02e-4).abs() < 1e-9);
+
+    let ward = WornSpecials::of_worn([
+        (1, worn(Burden::MIND_WARD, 0, 0)),
+        (2, worn(Burden::SECOND_WIND, 0, 0)),
+    ]);
+    assert!(ward.mind_ward && ward.second_wind);
+    assert_eq!(ward.focus_regen, 0.0);
+    assert_eq!(WornSpecials::of_worn([]), WornSpecials::default());
+}
+
+/// A record's specials come from the items its worn ids find, with their
+/// crystal bytes as the body stores them.
+#[test]
+fn a_record_resolves_its_specials() {
+    let record = characters::CharacterRecord {
+        worn: vec![
+            ItemRef {
+                id: 7,
+                ..Default::default()
+            },
+            ItemRef {
+                id: 8,
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    let mut body = vec![0u8; 0x21a];
+    body[0x214] = Burden::HEALING;
+    body[0x218] = 0x2;
+    body[0x219] = 0x40;
+    let mut payload = 0x1000u32.to_le_bytes().to_vec();
+    payload.extend((body.len() as u32 + 8).to_le_bytes());
+    payload.extend_from_slice(&body);
+    let mask = objdb::Item::parse(7, &payload).unwrap();
+    let specials = WornSpecials::of_record(&record, |id| (id == 7).then_some(&mask));
+    assert_eq!(
+        specials.healing,
+        vec![EffectItem {
+            id: 7,
+            power_flags: 2,
+            charge: 0x40,
+        }]
+    );
+    assert_eq!(
+        WornSpecials::of_record(&record, |_| None),
+        WornSpecials::default()
+    );
+}
