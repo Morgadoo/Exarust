@@ -108,6 +108,7 @@ pub mod torch;
 pub mod tournament;
 pub mod trace;
 pub mod trade;
+pub mod transition_screen;
 pub mod window;
 pub mod world_clock;
 
@@ -175,7 +176,12 @@ impl Plugin for GamePlugin {
         ))
         .add_plugins(thaum::cast::CastPlugin)
         .add_plugins(world_clock::WorldClockPlugin)
-        .add_plugins((flow::FlowPlugin, splash::SplashPlugin, div_card_screen::DivinationPlugin))
+        .add_plugins((
+            flow::FlowPlugin,
+            splash::SplashPlugin,
+            div_card_screen::DivinationPlugin,
+            transition_screen::TransitionScreenPlugin,
+        ))
         // Debug tools: idle unless their flags or keys turn them on.
         .add_plugins((
             body_overlay::BodyOverlayPlugin,

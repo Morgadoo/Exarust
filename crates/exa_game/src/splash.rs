@@ -463,7 +463,7 @@ impl Plugin for SplashPlugin {
 }
 
 /// The real clock in milliseconds, as the splash's 32-bit clock words.
-fn clock_ms(time: &Time<Real>) -> u32 {
+pub(crate) fn clock_ms(time: &Time<Real>) -> u32 {
     time.elapsed().as_millis() as u32
 }
 

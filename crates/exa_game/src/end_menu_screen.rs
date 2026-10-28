@@ -202,11 +202,11 @@ impl EndMenuScreen {
         });
     }
 
-    /// Runs the selected row at `now`, returning the flow's steps. A row
+    /// Runs the selected row, returning the flow's steps. A row
     /// the dispatch handles closes the menu first; the flow's own end-menu
     /// steps then keep it hidden. A row it does not handle leaves the menu
     /// as it is.
-    pub fn confirm(&mut self, flow: &mut Flow, now: u32) -> Vec<Step> {
+    pub fn confirm(&mut self, flow: &mut Flow) -> Vec<Step> {
         let Some(menu) = self.menu else {
             return Vec::new();
         };
@@ -217,24 +217,31 @@ impl EndMenuScreen {
             return Vec::new();
         };
         self.close();
+        // Each row passes the original's music-fade argument: the next
+        // fight fades the music only into the last fight (whose boss track
+        // replaces it); the other rows that leave always fade it.
         match action {
-            EndAction::NextFight => flow.transition(Action::NextPracticeFight, now),
-            EndAction::StoryContinue => flow.continue_after_death(now),
-            EndAction::StoryExit => flow.story_exit(now),
+            EndAction::NextFight => {
+                let into_last = i64::from(crate::practice::PRACTICE_FIGHTS) - 1
+                    == i64::from(flow.practice.fight);
+                flow.transition(Action::NextPracticeFight, into_last)
+            }
+            EndAction::StoryContinue => flow.continue_after_death(),
+            EndAction::StoryExit => flow.story_exit(),
             EndAction::Restart => {
                 // The prelude closes first. The original also makes two
                 // calls (into the experience system and the GUI unit) whose
                 // roles are not identified; they are not modelled.
                 let mut steps = vec![Step::ClosePrelude];
-                steps.extend(flow.transition(Action::LeaveToMenuForm, now));
+                steps.extend(flow.transition(Action::LeaveToMenuForm, true));
                 steps
             }
             EndAction::ArenaContinue => {
                 // The arena unit's continue has no live session bridge yet;
                 // the stand-in leaves to the title.
-                flow.transition(Action::QuitToMenu, now)
+                flow.transition(Action::QuitToMenu, true)
             }
-            EndAction::QuitToMenu => flow.transition(Action::QuitToMenu, now),
+            EndAction::QuitToMenu => flow.transition(Action::QuitToMenu, true),
         }
     }
 }
@@ -260,12 +267,10 @@ fn update(
     keys: Res<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window, With<PrimaryWindow>>,
-    ticks: Option<Res<exa_physics::body::BodyTicks>>,
 ) {
     if !screen.open {
         return;
     }
-    let now = ticks.as_ref().map_or(0, |ticks| ticks.millis() as u32);
     if keys.just_pressed(KeyCode::ArrowDown) {
         screen.move_selection(1);
     }
@@ -275,7 +280,7 @@ fn update(
     if keys.just_pressed(KeyCode::Enter)
         && let Some(flow) = flow.as_mut()
     {
-        steps.steps.extend(screen.confirm(flow, now));
+        steps.steps.extend(screen.confirm(flow));
         return;
     }
     let Ok(window) = windows.single() else {
@@ -305,7 +310,7 @@ fn update(
         && hit == Some(pressed)
         && let Some(flow) = flow.as_mut()
     {
-        steps.steps.extend(screen.confirm(flow, now));
+        steps.steps.extend(screen.confirm(flow));
     }
 }
 
@@ -467,12 +472,12 @@ mod tests {
         flow.phase = crate::flow::Phase::Ended;
         let mut screen = EndMenuScreen::default();
         screen.show(end_menu(MENU_WON, Mode::Practice));
-        let steps = screen.confirm(&mut flow, 1000);
+        let steps = screen.confirm(&mut flow);
         assert_eq!(steps, vec![Step::ClosePrelude, Step::Transition]);
         assert!(!screen.open);
         assert_eq!(flow.phase, crate::flow::Phase::Transition);
-        // After 100 ms the session leaves to the menu form with its theme.
-        let steps = flow.transition_due(1100).unwrap();
+        // At black the session leaves to the menu form with its theme.
+        let steps = crate::flow::run_to_black(&mut flow);
         assert!(steps.iter().any(|step| matches!(step, Step::ShowMenu(_))));
         assert!(steps.iter().any(|step| matches!(step, Step::Music { .. })));
         // An unhandled row keeps the menu.
@@ -480,7 +485,7 @@ mod tests {
         flow.mode = Mode::Arena;
         screen.show(end_menu(crate::flow::MENU_ARENA, Mode::Arena));
         screen.selected = Some(2);
-        assert!(screen.confirm(&mut flow, 0).is_empty());
+        assert!(screen.confirm(&mut flow).is_empty());
         assert!(screen.open);
     }
 

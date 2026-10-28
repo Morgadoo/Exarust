@@ -34,6 +34,7 @@ use crate::end_menu_screen::EndMenuScreen;
 use crate::menu_pages::{MenuCommand, Page, PageState};
 use crate::menu_screen::{MenuChoice, MenuScreen, TitleLogo};
 use crate::practice::{self, Ladder};
+use exa_ui::transition::{Phase as ScreenPhase, TransitionFlags, TransitionScreen};
 
 /// The title menu: no game loaded.
 pub const MENU_MODE: u32 = 0;
@@ -77,9 +78,9 @@ pub const DEAD: u32 = 0xA00;
 pub const DYING: u32 = 0x800;
 /// The condition bit the story's wake-up check waits for.
 pub const WAKING: u32 = 0x20;
-/// How long the transition screen waits before it runs its action, in
-/// milliseconds.
-pub const TRANSITION_MS: u32 = 100;
+/// How many frames a transition waits for a level change it asked for to
+/// show up before it goes on without it (a host with no level loader).
+pub const LOAD_WAIT_FRAMES: u32 = 30;
 /// How long after a practice fight starts a round can be won.
 pub const PRACTICE_GUARD_MS: u32 = 1000;
 /// How long a knocked-out story player waits before it is revived.
@@ -1204,13 +1205,65 @@ pub enum Action {
     LeaveToMenuForm,
     /// Load a named level at a spawn point.
     Locale { locale: &'static str, spawn: u32 },
+    /// The class select's cancel: the scripted mode's end hook and the
+    /// return to the title.
+    ClassCancel,
 }
 
-/// The running transition.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// The running transition: its action, the screen's mode flags and, once
+/// it has run a frame, the screen itself
+/// ([`exa_ui::transition::TransitionScreen`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct Transition {
     action: Action,
-    at_ms: u32,
+    flags: TransitionFlags,
+    screen: Option<TransitionScreen>,
+    /// The action asked for a level change: the screen stays black (its
+    /// clock held) until the change is done, as the original's action loads
+    /// the level before it returns to the screen.
+    load: Option<LoadWait>,
+}
+
+/// A transition waiting for the level change its action asked for.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct LoadWait {
+    /// The change was seen in progress.
+    seen: bool,
+    /// Frames waited without seeing it.
+    frames: u32,
+}
+
+/// What the running app reads from one frame of the transition screen.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TransitionFrame {
+    /// The steps the screen's action returned, on the frame it ran.
+    pub steps: Vec<Step>,
+    /// The screen's black alpha byte (0 when no transition runs).
+    pub alpha: u8,
+    /// The music gain to write while the music fades out with the screen.
+    pub music: Option<f32>,
+    /// The screen reached black with the music fade on: the main track
+    /// stops and forgets its name.
+    pub stop_music: bool,
+    /// The screen-transition audio fade to write.
+    pub audio_fade: Option<f32>,
+    /// The screen reached black: the world fade is reset to 1.
+    pub world_fade_reset: bool,
+    /// The screen faded back in and closed this frame.
+    pub closed: bool,
+}
+
+/// What the transition screen reads from the running app each frame.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TransitionInput {
+    /// The real clock, in milliseconds (the screen's stamp clock).
+    pub clock_ms: u32,
+    /// The main track's current gain, when it has a voice.
+    pub music: Option<f32>,
+    /// The screen-transition audio fade now in force.
+    pub audio_fade: f32,
+    /// A level change is in progress (torn down, loading).
+    pub loading: bool,
 }
 
 /// A practice start's data. The partner is `opponent01` (novice) or
@@ -1470,6 +1523,9 @@ pub struct Flow {
     pub menu_open: bool,
     pub hook: Hook,
     transition: Option<Transition>,
+    /// The level exit's fade bit set the transition screen's long hold
+    /// (a 2000 ms fade and a 1000 ms hold) for the next transition.
+    long_transition: bool,
     pub story: StoryState,
     pub practice: PracticeState,
     pub unlocks: Unlocks,
@@ -1516,6 +1572,7 @@ impl Default for Flow {
             menu_open: false,
             hook: Hook::None,
             transition: None,
+            long_transition: false,
             story: StoryState {
                 knockout_ms: u32::MAX - KNOCKOUT_MS,
                 ..Default::default()
@@ -1933,26 +1990,116 @@ impl Flow {
         Vec::new()
     }
 
-    /// Opens the transition screen over `action`; it runs after
-    /// [`TRANSITION_MS`]. The phase before the transition is kept.
-    pub fn transition(&mut self, action: Action, now: u32) -> Vec<Step> {
+    /// Opens the transition screen over `action`: the screen fades to black
+    /// and runs the action there ([`Flow::transition_tick`]). `fade_audio`
+    /// fades the music out with the screen and stops it at black; each
+    /// caller passes the original's argument. The screen's short-hold flag
+    /// (the third argument) is clear for every caller in this unit; the
+    /// long hold is the level exit's fade bit, which the original sets on
+    /// the screen before it opens and the open leaves alone. The phase
+    /// before the transition is kept and the phase word becomes the
+    /// transition's.
+    pub fn transition(&mut self, action: Action, fade_audio: bool) -> Vec<Step> {
         self.saved_phase = self.phase;
         self.phase = Phase::Transition;
+        let hold_1000 = core::mem::take(&mut self.long_transition)
+            || self.transition.is_some_and(|t| t.flags.hold_1000);
         self.transition = Some(Transition {
             action,
-            at_ms: now.wrapping_add(TRANSITION_MS),
+            flags: TransitionFlags {
+                fade_audio,
+                hold_1000,
+                ..Default::default()
+            },
+            screen: None,
+            load: None,
         });
         vec![Step::Transition]
     }
 
-    /// Runs the transition's action when its time has come, or `None`.
-    pub fn transition_due(&mut self, now: u32) -> Option<Vec<Step>> {
-        let transition = self.transition?;
-        if u64::from(now) < u64::from(transition.at_ms) {
-            return None;
+    /// Whether a transition screen is up.
+    pub fn transition_running(&self) -> bool {
+        self.transition.is_some()
+    }
+
+    /// One frame of the transition screen, which the original runs as a GUI
+    /// task whatever covers the game. The screen starts on its first frame
+    /// (the clock is the frame's real clock, as the screen's stamp clock),
+    /// fades to black, runs its action there, holds two frames and the
+    /// hold time and fades back in. An action that changes the level holds
+    /// the screen at black until the change is done: the original loads the
+    /// level inside the action, so its hold starts after the load. The
+    /// original's close also hides the form and clears four engine words
+    /// whose roles are not identified; they are not modelled.
+    pub fn transition_tick(&mut self, input: TransitionInput, now: u32) -> TransitionFrame {
+        let mut frame = TransitionFrame::default();
+        let Some(mut transition) = self.transition else {
+            return frame;
+        };
+        let clock = input.clock_ms;
+        let mut screen = transition.screen.unwrap_or_else(|| {
+            let mut screen =
+                TransitionScreen::new(clock, transition.flags, input.music.unwrap_or(0.0));
+            // The screen writes the audio fade only below 1, from the value
+            // the engine holds.
+            screen.dim = input.audio_fade;
+            screen
+        });
+        if let Some(mut wait) = transition.load {
+            if input.loading {
+                wait.seen = true;
+            } else if !wait.seen && wait.frames < LOAD_WAIT_FRAMES {
+                wait.frames += 1;
+            }
+            let done = !input.loading && (wait.seen || wait.frames >= LOAD_WAIT_FRAMES);
+            // Held: the screen's clock follows the frame's, so its hold
+            // starts when the change is done.
+            screen.start = clock;
+            if !done {
+                transition.load = Some(wait);
+                transition.screen = Some(screen);
+                self.transition = Some(transition);
+                frame.alpha = screen.alpha;
+                return frame;
+            }
+            transition.load = None;
         }
-        self.transition = None;
-        Some(self.apply(transition.action, now))
+        let before = screen.phase;
+        let dim = screen.dim;
+        let step = screen.step(clock);
+        let fading_out = before == ScreenPhase::FadingOut;
+        if fading_out && transition.flags.fade_audio && input.music.is_some() {
+            frame.music = Some(screen.music);
+        }
+        if fading_out && screen.phase != ScreenPhase::FadingOut {
+            // Black: the original resets the world fade on every path, and
+            // with the music fade on it stops the main track and zeroes the
+            // screen's audio fade.
+            frame.world_fade_reset = true;
+            frame.stop_music = transition.flags.fade_audio;
+        }
+        if screen.dim != dim {
+            frame.audio_fade = Some(screen.dim);
+        }
+        frame.alpha = step.alpha;
+        transition.flags = screen.flags;
+        transition.screen = Some(screen);
+        self.transition = Some(transition);
+        if step.callback {
+            frame.steps = self.apply(transition.action, now);
+            let changes_level = frame
+                .steps
+                .iter()
+                .any(|step| matches!(step, Step::LoadLevel { .. } | Step::TeardownWorld));
+            if changes_level && let Some(running) = self.transition.as_mut() {
+                running.load = Some(LoadWait::default());
+            }
+        }
+        if step.close {
+            self.transition = None;
+            frame.closed = true;
+        }
+        frame
     }
 
     fn apply(&mut self, action: Action, now: u32) -> Vec<Step> {
@@ -1962,6 +2109,7 @@ impl Flow {
             Action::Revive => self.revive(now),
             Action::NextPracticeFight => self.practice_next(now),
             Action::LeaveToMenuForm => self.leave_to_menu_form(),
+            Action::ClassCancel => self.class_cancel(),
             Action::Locale { locale, spawn } => {
                 self.phase = Phase::Playing;
                 vec![Step::LoadLevel {
@@ -1975,16 +2123,15 @@ impl Flow {
 
     /// The frame's whole game work, in the original's order: the dialogue
     /// engine and then the session hook, but only while no main menu covers
-    /// the game and no transition is running.
+    /// the game and the phase word is not the transition's (zero). Any
+    /// other phase runs it: the phases that end a session (won, ended)
+    /// clear the hook themselves, so only the dialogue engine ticks there.
     pub fn frame(&mut self, now: u32, player: Option<PlayerReading>, others: &[u32]) -> Vec<Step> {
         self.frames = self.frames.wrapping_add(1);
         if self.menu_open {
             return Vec::new();
         }
         if self.phase == Phase::Transition {
-            return self.transition_due(now).unwrap_or_default();
-        }
-        if self.phase != Phase::Playing {
             return Vec::new();
         }
         let mut steps = vec![Step::Dialogue];
@@ -2218,7 +2365,7 @@ impl Flow {
         }
         if u64::from(self.story.knockout_ms) + u64::from(KNOCKOUT_MS) < u64::from(now) {
             self.story.knockout_ms = u32::MAX - KNOCKOUT_MS;
-            self.transition(Action::Revive, now)
+            self.transition(Action::Revive, false)
         } else {
             Vec::new()
         }
@@ -2333,7 +2480,7 @@ impl Flow {
     /// A player the reconstruction device stripped clears its story bit and
     /// is saved without the death rule; any other story writes its save with
     /// the death rule, then leaves to the title behind the transition.
-    pub fn story_exit(&mut self, now: u32) -> Vec<Step> {
+    pub fn story_exit(&mut self) -> Vec<Step> {
         let mut steps = vec![Step::GameGui(false), Step::Controls(false), Step::Dialogue];
         if self.story.reconstruction == STRIPPED {
             steps.push(Step::ClearStoryFlag);
@@ -2345,7 +2492,7 @@ impl Flow {
                 drop_on_low_health: true,
             });
         }
-        steps.extend(self.transition(Action::QuitToMenu, now));
+        steps.extend(self.transition(Action::QuitToMenu, true));
         steps
     }
 
@@ -2419,9 +2566,9 @@ impl Flow {
 
     /// The end-of-life story CONTINUE of a save with no record: the player
     /// data is written back, then the respawn runs behind the transition.
-    pub fn continue_after_death(&mut self, now: u32) -> Vec<Step> {
+    pub fn continue_after_death(&mut self) -> Vec<Step> {
         let mut steps = vec![Step::PlayerData];
-        steps.extend(self.transition(Action::StoryRespawn, now));
+        steps.extend(self.transition(Action::StoryRespawn, true));
         steps
     }
 
@@ -2523,14 +2670,17 @@ impl Flow {
     /// name. Otherwise a player whose condition has neither dead bit loses
     /// the controls, the game view goes, the save rule runs (every exit
     /// saves; early levels also keep a checkpoint) and the new level loads at
-    /// the exit's spawn point behind the transition. The fade bit's effects
-    /// and AI hand-over and the locale's ambient music are the host's.
+    /// the exit's spawn point behind the transition. The fade bit also gives
+    /// the transition screen its long hold (a 2000 ms fade, a 1000 ms hold);
+    /// `music_changes` is the story's level-entry music check for the
+    /// destination ([`exa_audio::story_music_changes`]), which fades the
+    /// music out with the screen.
     pub fn level_exit(
         &mut self,
         exit: LevelExit,
         rule: CheckpointRule,
         player_condition: u32,
-        now: u32,
+        music_changes: bool,
     ) -> Vec<Step> {
         if self.phase == Phase::Transition {
             return Vec::new();
@@ -2553,13 +2703,14 @@ impl Flow {
         if exit.flags & 1 != 0 {
             steps.push(Step::FadeOut);
             steps.push(Step::AiHandover);
+            self.long_transition = true;
         }
         steps.extend(self.transition(
             Action::Locale {
                 locale,
                 spawn: exit.spawn,
             },
-            now,
+            music_changes,
         ));
         steps
     }
@@ -2577,16 +2728,24 @@ impl Flow {
 
     /// The named-locale exit: the original checks the locale exists before it
     /// transitions to its load. A missing locale does nothing.
-    pub fn leave_to_locale(&mut self, locale: &'static str, exists: bool, now: u32) -> Vec<Step> {
+    pub fn leave_to_locale(&mut self, locale: &'static str, exists: bool) -> Vec<Step> {
         if !exists {
             return Vec::new();
         }
-        self.transition(Action::Locale { locale, spawn: 0 }, now)
+        self.transition(Action::Locale { locale, spawn: 0 }, false)
     }
 
-    /// The class select's cancel: a scripted mode's end hook runs, then the
-    /// session leaves to the title behind the transition.
-    pub fn cancel_class_select(&mut self, now: u32) -> Vec<Step> {
+    /// The class select's cancel: behind the transition (the music fading
+    /// with it when the caller asks), the class select form is released, a
+    /// scripted mode's end hook runs and the session leaves to the title.
+    /// The original runs all of it as the transition's action, at black.
+    pub fn cancel_class_select(&mut self, fade_audio: bool) -> Vec<Step> {
+        self.transition(Action::ClassCancel, fade_audio)
+    }
+
+    /// The class cancel's action: the scripted mode's end hook, then back
+    /// to the title.
+    fn class_cancel(&mut self) -> Vec<Step> {
         let mut steps = Vec::new();
         if let Mode::Other(word) = self.mode
             && word & SCRIPT_MODE_BIT != 0
@@ -2596,7 +2755,7 @@ impl Flow {
                 hook: ScriptHook::End,
             });
         }
-        steps.extend(self.transition(Action::QuitToMenu, now));
+        steps.extend(self.quit_to_menu());
         steps
     }
 
@@ -2855,6 +3014,7 @@ impl Plugin for FlowPlugin {
             .add_message::<ForfeitMatch>()
             .init_resource::<GameView>()
             .init_resource::<BootToMenu>()
+            .init_resource::<crate::transition_screen::TransitionOverlay>()
             .add_message::<MenuChoice>()
             .add_message::<exa_world::level_lifecycle::LevelChangeRequest>()
             .add_systems(Startup, boot)
@@ -2865,6 +3025,7 @@ impl Plugin for FlowPlugin {
                     tick,
                     follow_player,
                     travel,
+                    run_transition,
                     apply_steps,
                     reset_level_state,
                 )
@@ -2978,18 +3139,22 @@ fn follow_player(
     debug!("game flow: a play level is running as a practice-mode session");
 }
 
-/// A teleporter journey is the game's level exit.
+/// A teleporter journey is the game's level exit. The destination's
+/// level-entry music check reads the track the music's main voice plays.
 fn travel(
     mut flow: ResMut<Flow>,
     mut queued: ResMut<FlowSteps>,
     mut journeys: Option<MessageReader<crate::destination::TravelToLevel>>,
-    ticks: Option<Res<exa_physics::body::BodyTicks>>,
+    audio: Option<Res<exa_audio::AudioEnvironment>>,
 ) {
-    let now = ticks.as_ref().map_or(0, |ticks| ticks.millis() as u32);
     let Some(journeys) = journeys.as_mut() else {
         return;
     };
+    let playing = audio.as_ref().map_or("", |audio| audio.music_name());
     for journey in journeys.read() {
+        let music_changes = level_locale(journey.level).is_some_and(|locale| {
+            exa_audio::story_music_changes_for_key(locale.as_bytes(), playing)
+        });
         let steps = flow.level_exit(
             LevelExit {
                 level: journey.level,
@@ -3002,7 +3167,7 @@ fn travel(
                 already_saved: false,
             },
             0,
-            now,
+            music_changes,
         );
         for step in steps {
             info!(
@@ -3012,6 +3177,63 @@ fn travel(
             queued.steps.push(step);
         }
     }
+}
+
+/// Runs the transition screen once a frame on the real clock, whatever
+/// covers the game (the original runs it as a GUI task). Its action's steps
+/// join the frame's; its music fade, music stop and audio fades go to the
+/// audio environment; its alpha byte to [`crate::transition_screen`]. A
+/// level change counts as in progress from its teardown to the end of its
+/// loading screen.
+#[allow(clippy::too_many_arguments)]
+fn run_transition(
+    mut flow: ResMut<Flow>,
+    mut queued: ResMut<FlowSteps>,
+    mut overlay: ResMut<crate::transition_screen::TransitionOverlay>,
+    time: Res<Time<Real>>,
+    ticks: Option<Res<exa_physics::body::BodyTicks>>,
+    mut audio: Option<ResMut<exa_audio::AudioEnvironment>>,
+    mut bank: Option<ResMut<exa_audio::SoundBank>>,
+    loading: (
+        Option<Res<exa_ui::LoadingStatus>>,
+        Option<Res<exa_world::level_lifecycle::LevelChangeReady>>,
+    ),
+) {
+    if !flow.transition_running() {
+        if overlay.0 != 0 {
+            overlay.0 = 0;
+        }
+        return;
+    }
+    let now = ticks.as_ref().map_or(0, |ticks| ticks.millis() as u32);
+    let input = TransitionInput {
+        clock_ms: crate::splash::clock_ms(&time),
+        music: audio.as_ref().and_then(|audio| audio.music_gain()),
+        audio_fade: audio.as_ref().map_or(1.0, |audio| audio.buses.transition),
+        loading: loading.0.is_some() || loading.1.is_some(),
+    };
+    let frame = flow.transition_tick(input, now);
+    if let Some(audio) = audio.as_mut() {
+        if let Some(gain) = frame.music {
+            audio.set_music_gain(gain);
+        }
+        if frame.stop_music
+            && let Some(bank) = bank.as_mut()
+        {
+            audio.music_stop(bank, true);
+        }
+        if let Some(fade) = frame.audio_fade {
+            audio.buses.transition = fade;
+        }
+        if frame.world_fade_reset {
+            audio.buses.world_fade = 1.0;
+        }
+    }
+    overlay.0 = frame.alpha;
+    for step in &frame.steps {
+        debug!("game flow: transition action: {step:?}");
+    }
+    queued.steps.extend(frame.steps);
 }
 
 /// Runs the commands the main menu handed over. The menu's own page changes
@@ -3054,10 +3276,10 @@ fn apply_menu_choices(
                 flow.begin_session(start)
             }
             MenuCommand::ExitArena | MenuCommand::ExitToTitle => flow.quit_to_menu(),
-            MenuCommand::QuitStory => flow.story_exit(now),
+            MenuCommand::QuitStory => flow.story_exit(),
             MenuCommand::FinishMatch { forfeit } => {
                 if flow.mode == Mode::Story {
-                    flow.story_exit(now)
+                    flow.story_exit()
                 } else if *forfeit && arena_match.is_some() {
                     // The arena pause page's FORFEIT: the live match settles
                     // and returns to the hub. The end page's EXIT, a won
@@ -3102,8 +3324,9 @@ fn apply_menu_choices(
 /// end-menu forms, the title logo, the interface and controls flags and the
 /// practice heal's health. A level load or world teardown becomes an
 /// [`exa_world::level_lifecycle::LevelChangeRequest`] and a player placement
-/// a [`crate::level_change::PlayerPlacement`]; the camera, save and
-/// transition screen are logged and left to the host.
+/// a [`crate::level_change::PlayerPlacement`]; the camera and save are
+/// logged and left to the host. The transition screen runs in
+/// [`run_transition`].
 #[allow(clippy::too_many_arguments)]
 fn apply_steps(
     mut commands: Commands,
@@ -3238,6 +3461,28 @@ fn apply_steps(
             }
         }
     }
+}
+
+/// Runs a transition screen to black (its first frame at clock 0, the
+/// next 3 s on, past every fade) and returns its action's steps, run at the
+/// game clock `now`.
+#[cfg(test)]
+pub(crate) fn run_to_black_at(flow: &mut Flow, now: u32) -> Vec<Step> {
+    let input = |clock_ms| TransitionInput {
+        clock_ms,
+        music: None,
+        audio_fade: 1.0,
+        loading: false,
+    };
+    let first = flow.transition_tick(input(0), now);
+    assert!(first.steps.is_empty(), "the action runs only at black");
+    flow.transition_tick(input(3000), now).steps
+}
+
+/// [`run_to_black_at`] at game clock 0.
+#[cfg(test)]
+pub(crate) fn run_to_black(flow: &mut Flow) -> Vec<Step> {
+    run_to_black_at(flow, 0)
 }
 
 #[cfg(test)]
@@ -3564,7 +3809,7 @@ mod tests {
         let steps = flow.knockout_tick(6001, Some(dead));
         assert_eq!(flow.phase, Phase::Transition);
         assert!(steps.contains(&Step::Transition));
-        let steps = flow.transition_due(6101).unwrap();
+        let steps = run_to_black_at(&mut flow, 6101);
         assert_eq!(flow.phase, Phase::Playing);
         assert_eq!(flow.hook, Hook::Story);
         assert!(
@@ -3786,7 +4031,7 @@ mod tests {
             spawn: 0,
             flags: 0,
         };
-        assert!(flow.level_exit(none, rule, 0, 1000).is_empty());
+        assert!(flow.level_exit(none, rule, 0, false).is_empty());
         let steps = flow.level_exit(
             LevelExit {
                 level: 3,
@@ -3795,7 +4040,7 @@ mod tests {
             },
             rule,
             0,
-            1000,
+            false,
         );
         assert_eq!(
             steps,
@@ -3818,10 +4063,9 @@ mod tests {
             spawn: 0,
             flags: 0,
         };
-        assert!(flow.level_exit(next, rule, 0, 1000).is_empty());
-        // The level loads at the exit's spawn point when the transition runs.
-        assert!(flow.transition_due(1099).is_none());
-        let steps = flow.transition_due(1100).unwrap();
+        assert!(flow.level_exit(next, rule, 0, false).is_empty());
+        // The level loads at the exit's spawn point when the screen is black.
+        let steps = run_to_black(&mut flow);
         assert_eq!(
             steps,
             vec![Step::LoadLevel {
@@ -3832,7 +4076,7 @@ mod tests {
         );
         assert_eq!(flow.phase, Phase::Playing);
         // A dead player keeps no controls to lose.
-        let steps = flow.level_exit(next, held, DEAD, 2000);
+        let steps = flow.level_exit(next, held, DEAD, false);
         assert_eq!(steps[0], Step::GameGui(false));
         assert!(!steps.contains(&Step::Checkpoint));
         // Without the fade bit nothing fades or hands over.
@@ -4196,15 +4440,20 @@ mod tests {
         flow.menu_open = true;
         assert!(flow.frame(2000, alive, &[]).is_empty());
         flow.menu_open = false;
+        // Any phase but the transition's runs the frame: an ended session
+        // has no hook, so only the dialogue ticks.
         flow.phase = Phase::Ended;
-        assert!(flow.frame(2000, alive, &[]).is_empty());
+        flow.hook = Hook::None;
+        assert_eq!(flow.frame(2000, alive, &[]), vec![Step::Dialogue]);
         assert_eq!(flow.frames(), 3);
-        // The transition runs first.
+        // The transition's phase word stops it; the screen's action runs on
+        // its own frame, at black.
         flow.phase = Phase::Playing;
-        flow.transition(Action::Revive, 3000);
+        flow.hook = Hook::Story;
+        flow.transition(Action::Revive, false);
         assert!(flow.frame(3050, alive, &[]).is_empty());
         assert!(
-            flow.frame(3100, alive, &[])
+            run_to_black_at(&mut flow, 3100)
                 .iter()
                 .any(|step| matches!(step, Step::Hook(Hook::Story)))
         );
@@ -4233,10 +4482,10 @@ mod tests {
         assert!(!steps.contains(&Step::Transition));
         // The quit to the title runs behind the transition.
         assert_eq!(
-            flow.transition(Action::QuitToMenu, 100),
+            flow.transition(Action::QuitToMenu, true),
             vec![Step::Transition]
         );
-        let steps = flow.transition_due(200).unwrap();
+        let steps = run_to_black(&mut flow);
         assert_eq!(flow.mode, Mode::Menu);
         assert!(steps.contains(&Step::ShowMenu(Page::Title)));
         assert!(steps.iter().any(|step| matches!(
@@ -4293,12 +4542,12 @@ mod tests {
             phase: Phase::Playing,
             ..Default::default()
         };
-        assert!(flow.leave_to_locale("exanima04", false, 100).is_empty());
+        assert!(flow.leave_to_locale("exanima04", false).is_empty());
         assert_eq!(flow.phase, Phase::Playing);
-        let steps = flow.leave_to_locale("exanima04", true, 100);
+        let steps = flow.leave_to_locale("exanima04", true);
         assert!(steps.contains(&Step::Transition));
         assert_eq!(flow.phase, Phase::Transition);
-        let steps = flow.transition_due(200).unwrap();
+        let steps = run_to_black(&mut flow);
         assert!(steps.contains(&Step::LoadLevel {
             locale: "exanima04",
             spawn: 0,
@@ -4313,13 +4562,18 @@ mod tests {
             phase: Phase::Playing,
             ..Default::default()
         };
-        let steps = flow.cancel_class_select(500);
-        assert!(steps.contains(&Step::ScriptMode {
-            mode: VERSUS_MODE,
-            hook: ScriptHook::End
-        }));
-        assert!(steps.contains(&Step::Transition));
-        let _ = flow.transition_due(600);
+        // The end hook and the return to the title are the transition's
+        // action, at black.
+        let steps = flow.cancel_class_select(false);
+        assert_eq!(steps, vec![Step::Transition]);
+        let steps = run_to_black(&mut flow);
+        assert_eq!(
+            steps.first(),
+            Some(&Step::ScriptMode {
+                mode: VERSUS_MODE,
+                hook: ScriptHook::End
+            })
+        );
         assert_eq!(flow.mode, Mode::Menu);
         // The class select's direct cancel goes back to the title at once,
         // after the scripted mode's end hook.
@@ -4400,7 +4654,7 @@ mod tests {
             },
             ..Default::default()
         };
-        let steps = flow.story_exit(5000);
+        let steps = flow.story_exit();
         assert_eq!(
             steps,
             vec![
@@ -4415,7 +4669,7 @@ mod tests {
             ]
         );
         assert_eq!(flow.phase, Phase::Transition);
-        let _ = flow.transition_due(5100);
+        let _ = run_to_black(&mut flow);
         assert_eq!(flow.mode, Mode::Menu);
         // Any other story writes its save with the death rule and does not
         // clear the mark.
@@ -4424,7 +4678,7 @@ mod tests {
             phase: Phase::Ended,
             ..Default::default()
         };
-        let steps = flow.story_exit(100);
+        let steps = flow.story_exit();
         assert!(steps.contains(&Step::Save {
             drop_on_low_health: true
         }));
@@ -4873,16 +5127,238 @@ mod tests {
                 .resource::<crate::end_menu_screen::EndMenuScreen>()
                 .open
         );
-        // The transition's 100 ms elapse and the quit to the title shows the
-        // title page again.
-        app.world_mut().resource_mut::<BodyTicks>().0 = 200;
-        app.update();
+        // The screen fades to black on the real clock and the quit to the
+        // title shows the title page again.
+        app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+            std::time::Duration::from_millis(400),
+        ));
+        for _ in 0..4 {
+            app.update();
+        }
+        assert_ne!(
+            app.world()
+                .resource::<crate::transition_screen::TransitionOverlay>()
+                .0,
+            0
+        );
         let flow = app.world().resource::<Flow>();
         assert_eq!(flow.mode, Mode::Menu);
         assert_eq!(flow.phase, Phase::Menu);
         let menu = app.world().resource::<crate::menu_screen::MenuScreen>();
         assert!(menu.open);
         assert_eq!(menu.page, Page::Title);
+    }
+
+    fn screen_input(clock_ms: u32) -> TransitionInput {
+        TransitionInput {
+            clock_ms,
+            music: None,
+            audio_fade: 1.0,
+            loading: false,
+        }
+    }
+
+    /// The screen fades to black over 600 ms and runs its action only past
+    /// it, holds two frames and 500 ms, fades back in over 600 ms and closes.
+    #[test]
+    fn the_transition_runs_its_action_at_black() {
+        let mut flow = Flow {
+            mode: Mode::Story,
+            phase: Phase::Playing,
+            hook: Hook::Knockout,
+            ..Default::default()
+        };
+        assert_eq!(
+            flow.transition(Action::Revive, false),
+            vec![Step::Transition]
+        );
+        assert!(flow.transition_running());
+        let first = flow.transition_tick(screen_input(1000), 0);
+        assert_eq!((first.alpha, first.steps.len()), (0, 0));
+        let half = flow.transition_tick(screen_input(1300), 0);
+        assert_eq!(half.alpha, 128);
+        // 600 ms make exactly one, which is not past black.
+        let full = flow.transition_tick(screen_input(1600), 0);
+        assert_eq!(full.alpha, 255);
+        assert!(full.steps.is_empty());
+        assert_eq!(flow.phase, Phase::Transition);
+        let black = flow.transition_tick(screen_input(1601), 0);
+        assert!(black.world_fade_reset && !black.stop_music);
+        assert!(black.steps.contains(&Step::Hook(Hook::Story)));
+        // Two frames, then the 500 ms hold, still black.
+        for clock in [1610, 1620, 1630] {
+            assert_eq!(flow.transition_tick(screen_input(clock), 0).alpha, 255);
+        }
+        assert_eq!(flow.transition_tick(screen_input(2130), 0).alpha, 255);
+        // Past the hold the fade back in starts and takes 600 ms.
+        flow.transition_tick(screen_input(2131), 0);
+        assert_eq!(flow.transition_tick(screen_input(2431), 0).alpha, 128);
+        let closed = flow.transition_tick(screen_input(2731), 0);
+        assert!(closed.closed);
+        assert_eq!(closed.alpha, 0);
+        assert!(!flow.transition_running());
+        assert_eq!(
+            flow.transition_tick(screen_input(2800), 0),
+            TransitionFrame::default()
+        );
+    }
+
+    /// The level exit's fade bit gives the screen its long hold: a 2000 ms
+    /// fade and a 1000 ms hold; an exit without it fades over 600 ms.
+    #[test]
+    fn the_exit_fade_bit_lengthens_the_transition() {
+        let rule = CheckpointRule {
+            level: 3,
+            setting: false,
+            already_saved: false,
+        };
+        let mut flow = Flow {
+            mode: Mode::Story,
+            phase: Phase::Playing,
+            ..Default::default()
+        };
+        let exit = LevelExit {
+            level: 3,
+            spawn: 0,
+            flags: 1,
+        };
+        flow.level_exit(exit, rule, 0, false);
+        flow.transition_tick(screen_input(0), 0);
+        assert_eq!(flow.transition_tick(screen_input(1000), 0).alpha, 128);
+        assert!(flow.transition_tick(screen_input(2000), 0).steps.is_empty());
+        let black = flow.transition_tick(screen_input(2001), 0);
+        assert!(
+            black
+                .steps
+                .iter()
+                .any(|step| matches!(step, Step::LoadLevel { .. }))
+        );
+        // A plain exit: the 600 ms fade.
+        let mut flow = Flow {
+            mode: Mode::Story,
+            phase: Phase::Playing,
+            ..Default::default()
+        };
+        flow.level_exit(LevelExit { flags: 0, ..exit }, rule, 0, false);
+        flow.transition_tick(screen_input(0), 0);
+        assert!(!flow.transition_tick(screen_input(601), 0).steps.is_empty());
+    }
+
+    /// With the music fade on the music falls with the screen, stops at
+    /// black with the audio fade at 0, and the audio fade rises back with
+    /// the fade in. Without it the audio fade at 1 is never written.
+    #[test]
+    fn the_transition_fades_the_music_with_the_screen() {
+        let mut flow = Flow {
+            mode: Mode::Story,
+            phase: Phase::Playing,
+            ..Default::default()
+        };
+        flow.continue_after_death();
+        let input = |clock_ms, audio_fade, loading| TransitionInput {
+            clock_ms,
+            music: Some(0.5),
+            audio_fade,
+            loading,
+        };
+        let first = flow.transition_tick(input(0, 1.0, false), 0);
+        assert_eq!(first.music, Some(0.5));
+        let half = flow.transition_tick(input(300, 1.0, false), 0);
+        assert_eq!(half.music, Some(0.25));
+        let black = flow.transition_tick(input(700, 1.0, false), 0);
+        assert!(black.stop_music && black.world_fade_reset);
+        assert_eq!(black.audio_fade, Some(0.0));
+        assert!(!black.steps.is_empty());
+        // The respawn loads a level: held while it loads.
+        let held = flow.transition_tick(input(710, 0.0, true), 0);
+        assert_eq!((held.music, held.alpha), (None, 255));
+        flow.transition_tick(input(720, 0.0, false), 0);
+        flow.transition_tick(input(730, 0.0, false), 0);
+        flow.transition_tick(input(740, 0.0, false), 0);
+        flow.transition_tick(input(1241, 0.0, false), 0);
+        let rising = flow.transition_tick(input(1541, 0.0, false), 0);
+        assert_eq!(rising.audio_fade, Some(0.5));
+        let closed = flow.transition_tick(input(1841, 0.5, false), 0);
+        assert!(closed.closed);
+        assert_eq!(closed.audio_fade, Some(1.0));
+
+        let mut flow = Flow::default();
+        flow.transition(Action::Revive, false);
+        for clock in [0, 300, 700, 710, 720, 730, 1240, 1540, 1840] {
+            let frame = flow.transition_tick(input(clock, 1.0, false), 0);
+            assert_eq!((frame.music, frame.audio_fade), (None, None));
+            assert!(!frame.stop_music);
+        }
+        assert!(!flow.transition_running());
+    }
+
+    /// An action that changes the level keeps the screen black while the
+    /// change runs; the hold starts when it is done. A change that never
+    /// shows up is waited for a bounded number of frames.
+    #[test]
+    fn the_transition_waits_for_the_level_change() {
+        let mut flow = Flow {
+            mode: Mode::Story,
+            phase: Phase::Playing,
+            ..Default::default()
+        };
+        flow.leave_to_locale("exanima04", true);
+        let input = |clock_ms, loading| TransitionInput {
+            clock_ms,
+            music: None,
+            audio_fade: 1.0,
+            loading,
+        };
+        flow.transition_tick(input(0, false), 0);
+        assert!(!flow.transition_tick(input(601, false), 0).steps.is_empty());
+        for clock in (700..5000).step_by(100) {
+            assert_eq!(flow.transition_tick(input(clock, true), 0).alpha, 255);
+        }
+        // Done at 5000: two frames, the 500 ms hold from then, still black.
+        for clock in [5000, 5010, 5020, 5520] {
+            assert_eq!(flow.transition_tick(input(clock, false), 0).alpha, 255);
+        }
+        flow.transition_tick(input(5521, false), 0);
+        assert_eq!(flow.transition_tick(input(5821, false), 0).alpha, 128);
+
+        let mut flow = Flow::default();
+        flow.leave_to_locale("exanima04", true);
+        flow.transition_tick(input(0, false), 0);
+        flow.transition_tick(input(601, false), 0);
+        for _ in 0..LOAD_WAIT_FRAMES {
+            assert_eq!(flow.transition_tick(input(700, false), 0).alpha, 255);
+        }
+        // The wait is over: the hold starts.
+        flow.transition_tick(input(700, false), 0);
+        flow.transition_tick(input(700, false), 0);
+        flow.transition_tick(input(700, false), 0);
+        flow.transition_tick(input(1201, false), 0);
+        assert!(flow.transition_tick(input(1801, false), 0).closed);
+    }
+
+    /// The end menu's next fight fades the music only into the last fight.
+    #[test]
+    fn the_next_fight_fades_the_music_into_the_boss() {
+        use crate::end_menu_screen::EndMenuScreen;
+        for (fight, fades) in [(6, false), (7, true)] {
+            let mut flow = Flow {
+                mode: Mode::Practice,
+                phase: Phase::RoundWon,
+                ..Default::default()
+            };
+            flow.practice.fight = fight;
+            let mut screen = EndMenuScreen::default();
+            screen.show(end_menu(MENU_NEXT, Mode::Practice));
+            screen.selected = Some(0);
+            assert_eq!(screen.confirm(&mut flow), vec![Step::Transition]);
+            let input = TransitionInput {
+                clock_ms: 0,
+                music: Some(1.0),
+                audio_fade: 1.0,
+                loading: false,
+            };
+            assert_eq!(flow.transition_tick(input, 0).music.is_some(), fades);
+        }
     }
 
     /// A load step becomes a level change request, a teardown step is

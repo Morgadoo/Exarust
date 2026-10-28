@@ -34,7 +34,7 @@ pub use environment::{
 pub use loops::{LoopSources, MAX_HELD};
 pub use music::{
     LevelMusic, LevelMusicStart, LevelMusicVolume, MUSIC_VOLUME, MusicSetting, StoryMusic,
-    music_for_level, story_music, story_music_changes,
+    music_for_level, story_music, story_music_changes, story_music_changes_for_key,
 };
 pub use playback::{ANCHOR_HEIGHT_M, ListenerAnchor};
 pub use reverb::{EaxReverb, LevelReverb, Reverb};
