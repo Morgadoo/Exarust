@@ -5,6 +5,7 @@
 pub mod arena;
 pub mod arena_board;
 pub mod arena_hub;
+pub mod arena_hub_live;
 pub mod arena_ids;
 pub mod arena_log;
 pub mod arena_match;
@@ -37,6 +38,7 @@ pub mod gui_screens;
 pub mod hand;
 pub mod hirelings;
 pub mod hotkeys;
+pub mod hub_windows;
 pub mod hud;
 pub mod hw_config;
 pub mod idle_orbit;
@@ -134,6 +136,7 @@ impl Plugin for GamePlugin {
             (
                 menu_screen::MenuScreenPlugin,
                 arena_match::ArenaMatchPlugin,
+                arena_hub_live::ArenaHubPlugin,
                 gui_screens::GameScreensPlugin,
                 power_screen::PowerScreenPlugin,
             thaum::visuals::VisualPlugin,

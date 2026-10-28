@@ -678,6 +678,25 @@ pub struct Picked {
     pub hit: Hit,
 }
 
+/// A left click that did not become a drag: what it hit and where the
+/// pointer was, in physical window pixels. The hub's click hook reads it;
+/// the world's own click path turns the player toward the point.
+#[derive(Message, Debug, Clone, Copy, PartialEq)]
+pub struct WorldClick {
+    pub hit: Hit,
+    pub pointer: IVec2,
+}
+
+impl WorldClick {
+    /// A click on `hit` at no particular pointer place, for tests.
+    pub fn picked(hit: Hit) -> Self {
+        Self {
+            hit,
+            pointer: IVec2::ZERO,
+        }
+    }
+}
+
 /// How far along the unit ray (`origin`, `dir`) a sphere at `centre` of
 /// `radius` is first met, within `max`.
 fn ray_sphere(origin: Vec3, dir: Vec3, centre: Vec3, radius: f32, max: f32) -> Option<f32> {
@@ -796,14 +815,16 @@ pub struct HandSystems;
 
 impl Plugin for HandPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<Hand>().add_systems(
-            Update,
-            (press_hand, hold_hand, reach_hand)
-                .chain()
-                .in_set(HandSystems)
-                .after(crate::player::chase_camera)
-                .before(crate::cursor::pick_cursor),
-        );
+        app.init_resource::<Hand>()
+            .add_message::<WorldClick>()
+            .add_systems(
+                Update,
+                (press_hand, hold_hand, reach_hand)
+                    .chain()
+                    .in_set(HandSystems)
+                    .after(crate::player::chase_camera)
+                    .before(crate::cursor::pick_cursor),
+            );
     }
 }
 
@@ -1045,15 +1066,16 @@ fn hold_hand(
     mut bodies: Query<OtherBodies, Without<PlayerBody>>,
     mut screens: Option<ResMut<Messages<ScreenRequest>>>,
     (time, mut show_bars): (Option<Res<Time<Virtual>>>, Option<ResMut<HudShowUntil>>),
+    mut clicks: MessageWriter<WorldClick>,
 ) {
     let released = buttons.just_released(MouseButton::Left);
     let player = player_child(&players, &player_bodies);
     // A release before the drag started is a click: outside combat mode
-    // the player turns toward the cursor, and a click on the player's own
-    // body shows the health and focus bars for 5000 ms. A double click
-    // (with Ctrl held in combat mode) then interacts with what is there.
-    // The original takes the double click on the second press; Exarust
-    // reads it on that press's release.
+    // the player turns toward the cursor, the hub's click hook sees what
+    // the click hit, and a click on the player's own body shows the health
+    // and focus bars for 5000 ms. A double click (with Ctrl held in combat
+    // mode) then interacts with what is there. The original takes the double
+    // click on the second press; Exarust reads it on that press's release.
     if released {
         let left = hand.left.take();
         if let Some(left) = left.filter(|l| !l.dragging)
@@ -1061,6 +1083,27 @@ fn hold_hand(
             && let Ok((pb, own, condition, _)) = player_bodies.get(child)
         {
             let combat = pb.combat;
+            let condition = condition.copied().unwrap_or_default();
+            let window = windows.single().ok();
+            let ray = window
+                .zip(cameras.single().ok())
+                .and_then(|(window, (camera, eye))| window_ray(camera, eye, window, left.at));
+            let picked = pick_with(
+                ray,
+                &physics,
+                &stand_ins,
+                &bodies,
+                own.map(|r| (child, r, condition)),
+            );
+            if let Some(picked) = picked {
+                let pointer = window
+                    .map(|window| (left.at * window.scale_factor()).as_ivec2())
+                    .unwrap_or(IVec2::ZERO);
+                clicks.write(WorldClick {
+                    hit: picked.hit,
+                    pointer,
+                });
+            }
             if !combat
                 && let Some((yaw, distance)) = pb.cursor()
                 && click_turns(distance * CM)
@@ -1070,18 +1113,6 @@ fn hold_hand(
             }
             let interact = left.double && (!combat || bindings.pressed(&keys, Action::Interact));
             if !combat || interact {
-                let condition = condition.copied().unwrap_or_default();
-                let ray =
-                    windows.single().ok().zip(cameras.single().ok()).and_then(
-                        |(window, (camera, eye))| window_ray(camera, eye, window, left.at),
-                    );
-                let picked = pick_with(
-                    ray,
-                    &physics,
-                    &stand_ins,
-                    &bodies,
-                    own.map(|r| (child, r, condition)),
-                );
                 let target = picked.and_then(|picked| match picked.hit {
                     Hit::Character { body, .. } if body == child => Some(ClickTarget::Player),
                     Hit::Character { dead, .. } if dead => Some(ClickTarget::DeadCharacter),
@@ -1527,6 +1558,7 @@ mod tests {
             .init_resource::<StandIns>()
             .insert_resource(Physics::default())
             .init_resource::<Hand>()
+            .add_message::<WorldClick>()
             .add_systems(Update, (press_hand, hold_hand, reach_hand).chain());
         app.world_mut()
             .resource_mut::<ButtonInput<MouseButton>>()

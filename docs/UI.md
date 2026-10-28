@@ -501,9 +501,12 @@ caller. The board does not count matches; the arena does.
 
 ## Arena company windows
 
-The hub's company windows are modelled as rules (`exa_game::manage`); no
-hub screen draws them yet. Their controls are read from the original's form
-tables. The roster cells, manage refresh and `arsenalico.rfi` icon sheet are in
+The hub's company windows are modelled as rules (`exa_game::manage`) and
+drawn through the GUI path from the hub (`exa_game::hub_windows`): the match
+board, Manage Company and the trade window open from the hub's click hook on
+a `GuiTask`, and their board paint list, roster rows and stock are painted
+there. Their controls are read from the original's form tables. The roster
+cells, manage refresh and `arsenalico.rfi` icon sheet are in
 `exa_game::manage` and `exa_game::manage_icons`.
 
 - **Manage Company** (0x2c4 × 0x1d4): Roster and Report tables, Manage,
@@ -539,6 +542,44 @@ tables. The roster cells, manage refresh and `arsenalico.rfi` icon sheet are in
   Morale "Good", Total Staff (the manager counted) and Masters (fighters
   above Expert, or "None"). **Company Records** lists the thirteen company
   records, the last two as coins.
+
+## The running hub
+
+`exa_game::arena_hub_live` enters the hub once when a play level named
+`arenahub` is loaded: it calls `arena_hub::enter_hub` with the hub's roll and
+the flow's alternative-music setting, plays the drawn track through the audio
+crate's level-music resources, installs the click and session hooks, and
+places the manager by `arena_spawn::manager_plan` on the hub's known start
+(0, floor + 5, 300 cm). Each frame `arena_hub::hub_fall` checks a manager who
+is dead while the session plays: the answer ends the session, and a health
+under 0.01 wipes the arena slot through `slots::Slots::drops_after_death`
+when the host supplied the slot (`HubSlots`).
+
+A left click that is not a drag reaches the hook through `hand::WorldClick`.
+The hook reads the object's name and side, or the character's condition and
+merchant profession, asks `hub_click`, and opens the answered window on
+`hub_windows`: the board from `arena_board::open`, Manage Company from
+`manage_refresh`, and the trade window from `shop_window` with the shop's or
+the merchant's stock. A board pick of Enter, Begin or Continue plans the
+match (`arena_match::start_match`, `match_layout::layout`, `generic_plan`,
+`hire_plan`, `beast_plan`, `player_participant`, `pick_weapon_slot`) and the
+launcher restarts on the drawn arena with `--arena-match`. Escape and a
+right-button release close an open window. Opening the board or Manage
+Company makes the hub busy (the board's open and close set and clear the flag
+in the original); the trade window leaves it alone.
+
+In the running game the click does not reach the hub's objects yet: the
+nodes the hook names (`\xaaArenaShop` in the library's `shop_arena`,
+`\xaaArenaMach` in its two notice boards) are static scenery with no body,
+and the static colliders are built in batches that keep no node, so a click
+on them picks the level. The ArenaMach side value is a float the original
+reads from the clicked node; which field it is is not traced, and the node's
+world x stands in for it.
+
+Not drawn: the board's pictures, prize items and reward slots, the manage
+window's controls and report lines, the trade window's item icons and
+character preview, and the windows' own close controls. The match's return
+to the hub is not wired; the career records stay in the hub process.
 
 ## Forms
 
