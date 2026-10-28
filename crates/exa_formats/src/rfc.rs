@@ -998,8 +998,52 @@ pub struct MeshGroup {
     pub index_count: u32,
 }
 
+/// A handler for chunk tags this reader does not know, as the original's
+/// registry (`0x1001c5e80`) holds them: the tag, the chunk's body, and
+/// whether the handler took it. A handler is registered once and is called
+/// for a root chunk or a node sub-chunk of its tag.
+pub type ChunkHandler = fn(u32, &[u8]) -> bool;
+
+/// The registered unknown-chunk handlers, in registration order. The
+/// original appends a tag and a callback and dispatches the first tag that
+/// matches; Exarust's reader keeps the same order and the same first-match
+/// rule.
+#[derive(Default)]
+pub struct ChunkHandlers {
+    entries: Vec<(u32, ChunkHandler)>,
+}
+
+impl ChunkHandlers {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Registers a handler. A tag registered twice keeps both, the first
+    /// one winning, as the original's appended list does.
+    pub fn register(&mut self, tag: u32, handler: ChunkHandler) {
+        self.entries.push((tag, handler));
+    }
+
+    /// Hands a chunk to the first handler registered for its tag; false
+    /// when none takes it.
+    pub fn dispatch(&self, tag: u32, body: &[u8]) -> bool {
+        self.entries
+            .iter()
+            .find(|(known, _)| *known == tag)
+            .is_some_and(|(_, handler)| handler(tag, body))
+    }
+}
+
 impl Scene {
+    /// Parses a file with no unknown-chunk handlers (the original's default
+    /// registry is empty until other units register theirs).
     pub fn parse(b: &[u8]) -> Result<Self> {
+        Self::parse_with(b, &ChunkHandlers::new())
+    }
+
+    /// Parses a file, handing every unknown root chunk and node sub-chunk to
+    /// `handlers` after recording its tag.
+    pub fn parse_with(b: &[u8], handlers: &ChunkHandlers) -> Result<Self> {
         let mut c = Cursor::new(b);
         if c.u16()? != SANITY {
             return Err(Error::Malformed(
@@ -1060,10 +1104,11 @@ impl Scene {
                 nodes.reserve(count);
                 for _ in 0..count {
                     let (kind, node) = chunk.chunk()?;
-                    nodes.push(read_node(kind, node, version)?);
+                    nodes.push(read_node(kind, node, version, handlers)?);
                 }
             } else {
                 unknown_chunks.push(tag);
+                handlers.dispatch(tag, chunk.b);
             }
         }
         Ok(Self {
@@ -1227,7 +1272,7 @@ struct SubChunks {
     unknown: Vec<u32>,
 }
 
-fn read_sub_chunks(c: &mut Cursor<'_>) -> SubChunks {
+fn read_sub_chunks(c: &mut Cursor<'_>, handlers: &ChunkHandlers) -> SubChunks {
     let mut out = SubChunks::default();
     let mut points = None;
     while c.remaining() >= 8 {
@@ -1236,6 +1281,7 @@ fn read_sub_chunks(c: &mut Cursor<'_>) -> SubChunks {
         };
         if !KNOWN_SUB_CHUNKS.contains(&tag) {
             out.unknown.push(tag);
+            handlers.dispatch(tag, sub.b);
         }
         if tag == RIGID_BODY && out.rigid_body.is_none() {
             out.rigid_body = Some(RigidBody::parse(sub.b).map_err(|e| e.to_string()));
@@ -1289,7 +1335,7 @@ fn emitter(body: &[u8]) -> Option<NodeBody> {
     })
 }
 
-fn read_node(kind: u32, mut c: Cursor<'_>, version: u16) -> Result<Node> {
+fn read_node(kind: u32, mut c: Cursor<'_>, version: u16, handlers: &ChunkHandlers) -> Result<Node> {
     let name = c.name()?;
     let flags = c.u32()?;
     let mut flags2 = c.u32()?;
@@ -1324,7 +1370,7 @@ fn read_node(kind: u32, mut c: Cursor<'_>, version: u16) -> Result<Node> {
         }
         match read_mesh(&mut c, version) {
             Ok(mut m) => {
-                sub = read_sub_chunks(&mut c);
+                sub = read_sub_chunks(&mut c, handlers);
                 m.gi_points = std::mem::take(&mut sub.gi_points);
                 morph = sub
                     .morph
@@ -1338,10 +1384,10 @@ fn read_node(kind: u32, mut c: Cursor<'_>, version: u16) -> Result<Node> {
         match read_light(&mut c, flags2) {
             Ok(mut l) => {
                 if l.flags & LIGHT_EXTRA_FLAGS == 0 {
-                    sub = read_sub_chunks(&mut c);
+                    sub = read_sub_chunks(&mut c, handlers);
                 } else if let Ok(animation) = read_light_animation(&mut c) {
                     l.animation = Some(animation);
-                    sub = read_sub_chunks(&mut c);
+                    sub = read_sub_chunks(&mut c, handlers);
                 }
                 NodeBody::Light(l)
             }
@@ -1350,7 +1396,7 @@ fn read_node(kind: u32, mut c: Cursor<'_>, version: u16) -> Result<Node> {
     } else if kind == NODE_VOXEL_LIGHT {
         match read_voxel_light(&mut c) {
             Ok(l) => {
-                sub = read_sub_chunks(&mut c);
+                sub = read_sub_chunks(&mut c, handlers);
                 NodeBody::VoxelLight(l)
             }
             Err(e) => NodeBody::Invalid(e.to_string()),
@@ -1358,18 +1404,18 @@ fn read_node(kind: u32, mut c: Cursor<'_>, version: u16) -> Result<Node> {
     } else if kind == NODE_3D08 {
         let target = c.u32()?;
         let value = c.u32()?;
-        sub = read_sub_chunks(&mut c);
+        sub = read_sub_chunks(&mut c, handlers);
         NodeBody::Camera {
             target: (target > 0).then_some(target as usize),
             value,
         }
     } else if kind == NODE_SECTOR {
-        sub = read_sub_chunks(&mut c);
+        sub = read_sub_chunks(&mut c, handlers);
         NodeBody::Sector
     } else {
         let mut chunks = Cursor::new(c.b);
         chunks.pos = c.pos;
-        sub = read_sub_chunks(&mut chunks);
+        sub = read_sub_chunks(&mut chunks, handlers);
         emitter(c.bytes(c.remaining())?).unwrap_or(NodeBody::NotMesh)
     };
     Ok(Node {
@@ -3695,6 +3741,33 @@ mod tests {
         assert_eq!(left.colors.as_deref().unwrap()[0], [255; 4]);
         assert_eq!(left.colors.as_deref().unwrap()[3], [40, 50, 60, 128]);
         assert_eq!(left.triangle_flags.as_deref(), Some(&[1, 0x20][..]));
+    }
+
+    #[test]
+    fn unknown_chunk_handlers_take_their_tag() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static SEEN: AtomicUsize = AtomicUsize::new(0);
+        fn handler(tag: u32, body: &[u8]) -> bool {
+            if tag == 0x1234_5678 && body == [9, 8, 7] {
+                SEEN.fetch_add(1, Ordering::SeqCst);
+                true
+            } else {
+                false
+            }
+        }
+        let mut handlers = ChunkHandlers::new();
+        handlers.register(0x1234_5678, handler);
+        let mut file = vec![0xCF, 0xAF, 0x23, 0x3D];
+        file.extend(chunk(0x1234_5678, &[9, 8, 7]));
+        let scene = Scene::parse_with(&file, &handlers).unwrap();
+        assert_eq!(scene.unknown_chunks, [0x1234_5678]);
+        assert_eq!(SEEN.load(Ordering::SeqCst), 1);
+        // Another tag is kept but reaches no handler.
+        let mut other = vec![0xCF, 0xAF, 0x23, 0x3D];
+        other.extend(chunk(0x8765_4321, &[1]));
+        let scene = Scene::parse_with(&other, &handlers).unwrap();
+        assert_eq!(scene.unknown_chunks, [0x8765_4321]);
+        assert_eq!(SEEN.load(Ordering::SeqCst), 1);
     }
 
     #[test]

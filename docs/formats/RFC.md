@@ -1362,6 +1362,11 @@ elements (normals recomputed from them, cached per distinct set), and an
 subtree follows its stored descendant count). A placed object (`DB01`,
 below) carries the same records, which Exarust also applies.
 
+The reader keeps the original's unknown-chunk registry: `ChunkHandlers`
+holds tag→handler entries in registration order (the first tag wins) and
+`Scene::parse_with` hands every unknown root chunk and node sub-chunk to it
+after recording the tag; `Scene::parse` uses an empty registry.
+
 All 79 935 props in the 29 retail levels name existing Objlib objects.
 
 **Flags** (REA on the original's prop reader): `flags & 0xB80000` is copied
