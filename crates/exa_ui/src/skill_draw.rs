@@ -881,6 +881,37 @@ mod tests {
     }
 
     #[test]
+    fn a_hovered_node_draws_its_tip_and_title() {
+        let mut screen = screen();
+        screen.reveal_deadline = 0;
+        screen.hover = 0x0101;
+        let mut skills = [Skill::default(); SKILLS];
+        skills[0] = Skill {
+            points: 5_000,
+            techniques: [1, 0, 0, 0, 0, 0],
+        };
+        let input = SkillDrawInput {
+            screen: &screen,
+            skills: Some(&skills),
+            icons: &icons(),
+            group_atlas: (0x300, 0x2a0),
+            single_atlas: (0x240, 0x360),
+            window: 1200,
+            offsets: [0, 0],
+            clock: 1000,
+            hover_since: 0,
+            ready: true,
+            background_ink: [1.0; 4],
+            text_width: &measure,
+        };
+        let draw = skill_draw(&input);
+        assert_eq!(draw.tips.len(), 1);
+        assert_eq!(draw.labels.len(), 1);
+        assert!(!draw.labels[0].text.is_empty());
+        assert!(draw.labels[0].centred);
+    }
+
+    #[test]
     fn the_node_window_is_clamped_and_the_slot_order_official() {
         assert_eq!(page_groups(0), &RING_GROUPS);
         assert_eq!(page_groups(2), &PAGE_GROUPS);
