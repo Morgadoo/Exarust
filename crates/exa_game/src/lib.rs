@@ -39,6 +39,7 @@ pub mod experience;
 pub mod fall;
 pub mod flow;
 pub mod footprints;
+pub mod footwork;
 pub mod frame;
 pub mod game_event;
 pub mod gamepad;

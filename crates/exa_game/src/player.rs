@@ -29,7 +29,6 @@ use exa_combat::attack::{self, AttackKind, AttackMotion, Attacker, Busy, Request
 use exa_combat::stance::{self, Stance};
 use exa_combat::swing::{self, Swing, SwingAt, SwingState};
 use exa_combat::{AttackStart, Attacking, Blade, Condition, Fighter};
-use exa_formats::encumbrance::long_step_length;
 use exa_physics::body::locomotion::{Locomotion, Locomotor, flags, forward, turn_between, yaw_of};
 use exa_physics::body::{BodyTicks, Fallen, GoLimp, MAX_ENERGY, Ragdoll};
 use exa_physics::{CharacterBody, Physics};
@@ -41,6 +40,7 @@ use crate::nav_camera::{
     pitch_held,
 };
 
+use crate::footwork::{self, StepGate};
 pub(crate) use crate::steering::CURSOR_RUN_FROM;
 use crate::steering::{Keys, LineAsked, LineWalk, Steering, key_segment};
 
@@ -48,6 +48,7 @@ use crate::steering::{Keys, LineAsked, LineWalk, Steering, key_segment};
 /// speed (m/s) until the original's steps replace it.
 const FOOTWORK_SPEED: f32 = 1.4;
 /// The behaviour tick (the fixed step), per second.
+#[cfg(test)]
 const TICK_HZ: f32 = exa_physics::STEP_HZ as f32;
 /// The crouch falls by this much a tick once its key is let go.
 const CROUCH_FALL: f64 = 0.02;
@@ -79,18 +80,6 @@ const GRID_CELL: f32 = 0.3;
 /// The cursor's point lies on the plane this far above the player's ground
 /// (m): the original's aim plane, 80 cm.
 pub(crate) const AIM_HEIGHT: f32 = 0.8;
-/// Combat footwork held longer than this (s) walks on.
-const STEP_HOLD: f32 = 0.2;
-/// The footwork's key code for the combat cursor walk, which no key
-/// combination gives.
-const WALK_KEYS: u8 = 0x10;
-/// A held key takes the long step only while the crouch, promoted to
-/// double, is below this. The float 0.1 promotes to a double above it.
-const LONG_STEP_CROUCH: f64 = 0.1;
-/// Past a crouch of [`CROUCH_SHORT`] the footwork's step is this share of
-/// the plain one, in double precision.
-const CROUCH_SHORT: f32 = 0.5;
-const CROUCH_STEP: f64 = 0.7;
 /// In combat mode the heading turns to the cursor once it is further off
 /// than this (rad, 30°).
 const FACE_CURSOR_BEYOND: f32 = std::f32::consts::FRAC_PI_6;
@@ -134,19 +123,11 @@ pub struct PlayerBody {
     attack: AttackInput,
     /// The exploration behaviour's state between ticks.
     steering: Steering,
-    /// The exploration movement word's persistence: a tap moves for up to
-    /// 200 ms after the press.
+    /// The combat footwork's movement word: a tap moves for up to 200 ms
+    /// after the press, and a word held over 200 ms is flagged a tap.
     move_word: crate::steering::MoveWord,
-    /// Seconds the combat footwork keys have been held.
-    held: f32,
-    /// The keys held last tick (W, S, A, D as bits 0–3 once opposing keys
-    /// cancel, [`WALK_KEYS`] for the cursor walk): a change restarts the
-    /// hold and clears the long-step latch.
-    held_keys: u8,
-    /// The long step's latch: set once the same keys are held strictly
-    /// over 200 ms with the crouch below 0.1; cleared only by a key change
-    /// or a release.
-    long: bool,
+    /// The combat footwork's step, as its dispatcher lays it.
+    step: crate::footwork::StepRecord,
     /// The clip the combat footwork's walk replaced, which it gives back.
     walk_from: Option<String>,
     /// When its last attack last ticked (s, on the fixed clock).
@@ -174,9 +155,7 @@ impl PlayerBody {
             attack: AttackInput::default(),
             steering: Steering::default(),
             move_word: crate::steering::MoveWord::default(),
-            held: 0.0,
-            held_keys: 0,
-            long: false,
+            step: crate::footwork::StepRecord::default(),
             walk_from: None,
             last_attack: None,
             target: None,
@@ -761,9 +740,9 @@ pub(crate) fn steer_player(
         Has<Fallen>,
         Option<&Fighter>,
         Option<&Ragdoll>,
+        Has<Attacking>,
     )>,
 ) {
-    let dt = 1.0 / TICK_HZ;
     let now = ticks.map_or(0, |t| t.millis());
     let held = |action| bindings.pressed(&keys, action);
     let input = Keys {
@@ -784,8 +763,18 @@ pub(crate) fn steer_player(
     };
     for (capsule, mut at, children) in &mut players {
         for child in children.iter() {
-            let Ok((mut pb, mut req, body, mut anim, &stance, condition, fallen, fighter, ragdoll)) =
-                bodies.get_mut(child)
+            let Ok((
+                mut pb,
+                mut req,
+                body,
+                mut anim,
+                &stance,
+                condition,
+                fallen,
+                fighter,
+                ragdoll,
+                swinging,
+            )) = bodies.get_mut(child)
             else {
                 continue;
             };
@@ -863,21 +852,29 @@ pub(crate) fn steer_player(
                     )
                 });
                 let encumbrance = fighter.map_or(0.0, |f| f.stats.encumbrance);
-                let (step_cm, long_step_cm) = footwork_lengths(reach_cm, encumbrance, extension);
-                let crouched_step_cm = crouched_step_length(reach_cm, extension);
-                let scale_root = fighter.map_or(1.0, |f| f.stats.scale.sqrt());
+                let scale = fighter.map_or(1.0, |f| f.stats.scale);
                 let chest = ragdoll
                     .and_then(|r| r.drive.as_ref())
                     .and_then(|d| d.balance().chest())
                     .unwrap_or(standing + Vec3::Y * stance::CHEST_HEIGHT);
+                let energy = ragdoll
+                    .and_then(|r| r.drive.as_ref())
+                    .map_or(MAX_ENERGY, |d| d.energy);
                 let footing = Footwork {
                     chest,
                     ground: standing.y,
-                    step_cm,
-                    long_step_cm,
-                    crouched_step_cm,
-                    scale_root,
+                    reach_cm,
+                    extension,
+                    encumbrance,
+                    scale,
+                    scale_root: scale.sqrt(),
+                    gate: StepGate {
+                        condition: state.0,
+                        energy,
+                        swinging,
+                    },
                     line: &line,
+                    nearest: &nearest,
                 };
                 // The right button walks toward the cursor in combat mode
                 // too, however near it is; the keys then keep the footwork.
@@ -890,12 +887,12 @@ pub(crate) fn steer_player(
                     false
                 };
                 if walked {
-                    // The cursor walk is its own key code to the original:
-                    // switching to it, or back to the keys, is a key
-                    // change, which restarts the hold and clears the latch.
-                    pb.held = 0.0;
-                    pb.held_keys = WALK_KEYS;
-                    pb.long = false;
+                    // Exarust's own: the cursor walk owns the capsule, so
+                    // it drops the footwork's word and step (the original
+                    // keeps ticking its word under the walk, whose walking
+                    // condition then lays no step).
+                    pb.move_word = crate::steering::MoveWord::default();
+                    pb.step = crate::footwork::StepRecord::default();
                     pb.walk_from = None;
                     if anim.looping {
                         let gait = gait_of(body, &req, &anim.action);
@@ -911,28 +908,17 @@ pub(crate) fn steer_player(
                         stance,
                         body.moving(),
                         &footing,
-                        dt,
+                        now,
                     );
                 }
                 pb.steering = steering;
                 continue;
             }
             pb.walk_from = None;
-            // The exploration movement word's persistence: a key pressed
-            // for less than 200 ms keeps moving for a step, a held one
-            // stops at once, and the pad's analog stick is its own word.
-            let analog = gamepad.map_or(Vec2::ZERO, |g| g.move_raw);
-            let crouch = pb.crouch;
-            let word = pb
-                .move_word
-                .tick(now, [input.w, input.s, input.a, input.d], analog, crouch);
-            if word != crate::steering::MOVE_ANALOG {
-                let [w, s, a, d] = crate::steering::MoveWord::keys(word);
-                input.w = w;
-                input.s = s;
-                input.a = a;
-                input.d = d;
-            }
+            // The movement word is the combat footwork's: exploration reads
+            // the keys as they are.
+            pb.move_word = crate::steering::MoveWord::default();
+            pb.step = crate::footwork::StepRecord::default();
             let segment = motions
                 .as_deref()
                 .filter(|_| GAITS.contains(&anim.action.as_str()))
@@ -1028,72 +1014,52 @@ fn explore_clip(anim: &mut Animator, gait: Option<&str>) {
 /// reach.
 const STEP_LENGTH: f32 = 0.8;
 
-/// The tap and long step's `fd4` before √scale (cm). `reach_cm` is the
-/// stored step reach: 80·√scale shortened by feral level and encumbrance,
-/// so it already includes one √scale. The legs' `extension` scales that
-/// reach (1 with the legs as straight as the pose's); the same √scale then
-/// scales the displacement again in [`combat_steps`], in the original's
-/// `(fd4·√scale)/|v|` order. The long step is
-/// (1.5 − 0.3·encumbrance) × the reach, one double product narrowed once,
-/// before the extension. A character without stats is a human at scale 1.
-fn footwork_lengths(reach_cm: f32, encumbrance: f32, extension: f32) -> (f32, f32) {
-    let long = long_step_length(reach_cm, encumbrance);
-    (reach_cm * extension, long * extension)
-}
-
-/// The deep-crouched step's `fd4` before √scale (cm): [`CROUCH_STEP`] of
-/// the stored reach, one double product narrowed once, then the legs'
-/// `extension`, in the original's order (the 0.7 is taken of the reach, not
-/// of the extended step).
-fn crouched_step_length(reach_cm: f32, extension: f32) -> f32 {
-    ((f64::from(reach_cm) * CROUCH_STEP) as f32) * extension
-}
-/// A side key weighs this share of the facing. The sum is normalised, so
-/// a diagonal aims 0.8 as far sideways as forward and a pure side step
-/// stays a full step.
-const SIDE_SHARE: f32 = 0.8;
-
-/// Where the footwork steps from, how long a tap and a held step are, and
-/// the grid's line walk that clamps the target.
+/// Where the footwork steps from, the stride's parts, the dispatcher's
+/// gate and the grid's line walk and snap that clamp the goal.
 struct Footwork<'a> {
     /// The chest point a step is measured from (m).
     chest: Vec3,
     /// The ground height the line walk starts from (m).
     ground: f32,
-    /// A fresh press's fd4: one step reach times the legs' extension (cm).
-    step_cm: f32,
-    /// The long step's fd4: (1.5 − 0.3·encumbrance) of that reach (cm).
-    long_step_cm: f32,
-    /// The deep-crouched step's fd4: 0.7 of that reach, then the legs'
-    /// extension (cm).
-    crouched_step_cm: f32,
-    /// The body's √scale, the other factor of the target's length.
+    /// The stored step reach (cm): 80·√scale shortened by feral level and
+    /// encumbrance, so it already includes one √scale.
+    reach_cm: f32,
+    /// The legs' extension, which scales the stride.
+    extension: f32,
+    /// The encumbrance the tapped stride reads.
+    encumbrance: f32,
+    /// The body's scale and its root, the stride's other factor.
+    scale: f32,
     scale_root: f32,
+    /// What may lay a step.
+    gate: StepGate,
     line: LineWalk<'a>,
+    /// The grid's nearest walkable point.
+    nearest: &'a dyn Fn(Vec3) -> Vec3,
 }
 
-/// Combat footwork: W, S, A and D step along and across the cursor
-/// direction; held, they walk on. The original's footwork steps the feet
-/// and never changes the clip; Exarust's interim one moves the capsule (the
-/// request's stepping velocity, so the body does not locomote meanwhile),
-/// plays "Combat Walk" while a key is held and gives back the clip it
-/// replaced (the stance's, if that clip was a stance) once they are
-/// released. As the original's steps, a side key weighs 0.8 of the facing,
-/// and the target is the chest plus the raw key sum scaled by
-/// `(fd4·√scale)/|v|` in centimetres, clamped by the grid's line walk from
-/// the chest's x/z at the ground's height. The step goes only while the
-/// clamped target is over 400 cm² from the chest, in three dimensions. A
-/// fresh press aims one step reach times the legs' extension. The long
-/// step is a latch: once the same keys have been held strictly over 200 ms
-/// while the crouch promoted to double is below 0.1, it keeps
-/// (1.5 − 0.3·encumbrance) of that length, the product narrowed once from
-/// double before the extension, until a key changes or is released. At
-/// 0.1, above it, or when it is NaN, the held key keeps the short reach;
-/// past a crouch of a half any step is 0.7 of the plain one. A
-/// walk, run or backpedal of the exploration steering still playing when
-/// combat mode turned on ends in the stance once the body stands (`moving`
-/// false). A walk or a run blends over 20 frames, as the original's walk
-/// ends.
+/// Combat footwork, the original's step machine on Exarust's interim feet:
+/// W, S, A and D (opposing keys cancel) form the movement word along the
+/// cursor direction, whose persistence keeps a tap for 200 ms and flags a
+/// word held over 200 ms (with the crouch under 0.1) a tap. The dispatcher
+/// ([`crate::footwork::dispatch`]) then starts a step toward the movement
+/// goal, re-lays a young step at the long stride, or queues the next step
+/// while one is under way; a step already started finishes after the keys
+/// are let go. The goal is the chest plus the word's direction (a side key
+/// at 0.8 of the facing, summed W, A, D, S) scaled by
+/// `(stride·extension·√scale)/|dir|` cm, the stride the reach or, tapped,
+/// `(1.5 − 0.3·encumbrance)` of it in double; the line walk from the
+/// chest's x/z at the ground clamps it, and it is taken only when over
+/// 400 cm² from the chest, then snapped onto the grid. Exarust's feet move
+/// the capsule toward the step's target at the walking speed (the
+/// request's stepping velocity) and land it within 20·scale cm (or after
+/// [`crate::footwork::STEP_GIVE_UP_MS`]); a landing takes a queued step
+/// through the body's queue rule (`exa_physics::body::queued_step`). The
+/// clip is "Combat Walk" while a step is under way, giving back the clip it
+/// replaced (the stance's, if that clip was a stance). A walk, run or
+/// backpedal of the exploration steering still playing when combat mode
+/// turned on ends in the stance once the body stands (`moving` false), a
+/// walk or a run over 20 frames.
 #[allow(clippy::too_many_arguments)]
 fn combat_steps(
     input: &Keys,
@@ -1104,80 +1070,57 @@ fn combat_steps(
     stance: Stance,
     moving: bool,
     footing: &Footwork,
-    dt: f32,
+    now: u64,
 ) {
-    let look = forward(pb.aim);
-    let side = Vec3::new(look.z, 0.0, -look.x) * SIDE_SHARE;
-    let mut dir = Vec3::ZERO;
-    for (held, d) in [
-        (input.w, look),
-        (input.s, -look),
-        (input.a, side),
-        (input.d, -side),
-    ] {
-        if held {
-            dir += d;
+    let facing = forward(pb.aim);
+    // The pad reaches the footwork as keys (`gamepad::pad_keys`), so the
+    // analog word is not read here (Exarust's own).
+    let analog = Vec3::ZERO;
+    pb.move_word.take_queue(now, &mut pb.step.queue);
+    pb.move_word.tick(
+        now,
+        [input.w, input.s, input.a, input.d],
+        Vec2::ZERO,
+        pb.crouch,
+    );
+    if pb.move_word.queue_expired {
+        pb.step.queue = 0;
+    }
+    let under_way = pb.step.under_way(footing.chest, footing.scale);
+    let raw = pb.move_word.raw;
+    match footwork::dispatch(&pb.move_word, raw, now, &pb.step, under_way, footing.gate) {
+        footwork::StepAsk::Nothing => {}
+        footwork::StepAsk::Queue(word) => {
+            let (reach, root) = (footing.reach_cm, footing.scale_root);
+            pb.step
+                .queue_word(&mut pb.move_word, word, facing, analog, reach, root);
+        }
+        footwork::StepAsk::Start(word) => {
+            if lay_goal(pb, footing, facing, analog, word, steering) {
+                pb.step.start(now);
+            }
+        }
+        footwork::StepAsk::Relay(word) => {
+            lay_goal(pb, footing, facing, analog, word, steering);
         }
     }
-    let raw = dir;
-    // The keys as the original codes them: opposing keys cancel, so W and
-    // S together are no key, and W with A and D is W alone.
-    let key_mask = u8::from(input.w && !input.s)
-        | (u8::from(input.s && !input.w) << 1)
-        | (u8::from(input.a && !input.d) << 2)
-        | (u8::from(input.d && !input.a) << 3);
-    // The press itself stays a tap and the hold counts from the tick of a
-    // key change, as the original stamps the clock then. The long step is
-    // a latch, set once the same keys have been held strictly over 200 ms
-    // while the crouch, widened, is below 0.1. At 0.1, above it, or NaN,
-    // the latch stays clear. Only a key change or a release clears it.
-    if key_mask != pb.held_keys {
-        pb.held_keys = key_mask;
-        pb.held = 0.0;
-        pb.long = false;
-    } else if key_mask != 0 {
-        pb.held += dt;
-        if !pb.long && pb.held > STEP_HOLD && f64::from(pb.crouch) < LONG_STEP_CROUCH {
-            pb.long = true;
-        }
-    }
-    if key_mask == 0 {
-        pb.held = 0.0;
-        pb.long = false;
-    }
-    let fd4 = if CROUCH_SHORT < pb.crouch {
-        // Crouched past a half, the step is 0.7 of the reach (in double,
-        // narrowed once, before the extension), even with the long-step
-        // latch; a NaN crouch fails the ordered compare and keeps the mode's
-        // step.
-        footing.crouched_step_cm
-    } else if key_mask != 0 && pb.long {
-        footing.long_step_cm
-    } else {
-        footing.step_cm
-    };
-    let mut dir = raw.normalize_or_zero();
-    if raw != Vec3::ZERO {
-        // The original scales the raw key sum by (fd4·√scale)/|v|, in cm,
-        // and adds it to the chest; the line walk starts from the chest's
-        // x/z at the ground's height.
-        let length_cm = (fd4 * footing.scale_root) / raw.length();
-        let target = footing.chest + (raw * length_cm) / 100.0;
-        if steering
-            .step_target(footing.chest, footing.ground, target, footing.line)
-            .is_none()
-        {
-            // A blocked step leaves the hold and the latch: the original
-            // only skips the step.
-            dir = Vec3::ZERO;
-        }
-    }
-    let walking = dir != Vec3::ZERO && pb.held > STEP_HOLD;
-    req.stepping = (dir != Vec3::ZERO).then_some(dir * FOOTWORK_SPEED);
+    // The body's tick follows the behaviour's: the step lands (and takes a
+    // queued step) after the dispatcher, so the word takes a taken queue
+    // back on the next tick, as the original's order has it.
+    land_step(pb, footing, facing, now, steering);
+    let walking = pb.step.active && !pb.step.landed;
+    req.stepping = walking
+        .then(|| {
+            (pb.step.target - footing.chest)
+                .with_y(0.0)
+                .normalize_or_zero()
+        })
+        .filter(|d| *d != Vec3::ZERO)
+        .map(|d| d * FOOTWORK_SPEED);
     if !anim.looping {
         return;
     }
-    if walking || dir != Vec3::ZERO {
+    if req.stepping.is_some() {
         if anim.action != COMBAT_WALK {
             pb.walk_from = Some(anim.action.clone());
             anim.play_loop(COMBAT_WALK);
@@ -1192,6 +1135,97 @@ fn combat_steps(
     } else if GAITS.contains(&anim.action.as_str()) && !moving {
         pb.walk_from = None;
         end_gait(anim, stance.action());
+    }
+}
+
+/// Lays the movement goal for `word`, as the original's goal routine: the
+/// word becomes the last laid word; a tapped word lays the long stride and
+/// marks the step long; the target is the chest plus the direction scaled
+/// by `(stride·extension·√scale)/|dir|` cm, clamped by the line walk and,
+/// once over 400 cm² from the chest, snapped onto the grid. Returns
+/// whether it was taken. Not modelled: a lone forward word with a target
+/// lets the target's approach rule bend the goal.
+fn lay_goal(
+    pb: &mut PlayerBody,
+    footing: &Footwork,
+    facing: Vec3,
+    analog: Vec3,
+    word: u32,
+    steering: &mut Steering,
+) -> bool {
+    let dir = footwork::goal_direction(facing, word, analog);
+    let length = dir.length();
+    pb.move_word.last_word = word;
+    let tap = pb.move_word.tap;
+    if tap {
+        pb.step.long = true;
+    }
+    let stride = crate::steering::goal_stride(
+        footing.reach_cm,
+        footing.extension,
+        footing.scale_root,
+        footing.encumbrance,
+        tap,
+    );
+    let wanted = footing.chest + (dir * (stride / length)) / 100.0;
+    let (target, taken) = steering.step_target(
+        footing.chest,
+        footing.ground,
+        wanted,
+        footing.line,
+        footing.nearest,
+    );
+    pb.step.target = target;
+    taken
+}
+
+/// Exarust's landing of the interim footwork's step: within 20·scale cm of
+/// its target across the ground, or once it has run
+/// [`footwork::STEP_GIVE_UP_MS`]. A landing with a queued step takes it by
+/// the body's queue rule: the target becomes the chest plus the queued
+/// vector, clamped by the line walk, the queue its countdown, and the step
+/// goes on.
+fn land_step(
+    pb: &mut PlayerBody,
+    footing: &Footwork,
+    facing: Vec3,
+    now: u64,
+    steering: &mut Steering,
+) {
+    let step = &mut pb.step;
+    if !step.active || step.landed {
+        return;
+    }
+    let d = (step.target - footing.chest).with_y(0.0) * 100.0;
+    let near = d.length() <= footwork::UNDER_WAY_CM * footing.scale;
+    if !near && now < step.leg_ms + footwork::STEP_GIVE_UP_MS {
+        return;
+    }
+    step.landed = true;
+    step.long = false;
+    if step.queue > 0
+        && let Some(next) = exa_physics::body::queued_step(
+            footing.chest,
+            step.target,
+            step.queued,
+            facing,
+            footing.scale,
+            1,
+        )
+    {
+        let (target, _) = steering.step_target(
+            footing.chest,
+            footing.ground,
+            next.target,
+            footing.line,
+            footing.nearest,
+        );
+        step.target = target;
+        step.queue = next.countdown;
+        step.landed = false;
+        // The original's step clock is not restarted by a queued step;
+        // only Exarust's give-up clock is.
+        step.leg_ms = now;
     }
 }
 
@@ -2035,7 +2069,6 @@ pub(crate) fn chase_camera(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use exa_formats::encumbrance::long_step_length;
 
     #[test]
     fn steering_with_w_and_a_walks_a_circle() {
@@ -2231,26 +2264,53 @@ mod tests {
         assert!((behind.abs() - std::f32::consts::PI).abs() < 1e-6);
     }
 
-    /// The interim footwork, one behaviour tick, on open ground: a step of
-    /// 80 cm, the line walk ending where asked.
-    fn steps(
+    /// A footing on open ground for the footwork tests: the chest at
+    /// `chest`, a human's 80 cm reach, scale 1, a gate that lets steps
+    /// through.
+    fn footing<'a>(
+        chest: Vec3,
+        line: LineWalk<'a>,
+        nearest: &'a dyn Fn(Vec3) -> Vec3,
+    ) -> Footwork<'a> {
+        Footwork {
+            chest,
+            ground: 0.0,
+            reach_cm: STEP_LENGTH * 100.0,
+            extension: 1.0,
+            encumbrance: 0.0,
+            scale: 1.0,
+            scale_root: 1.0,
+            gate: StepGate {
+                condition: 0,
+                energy: 1.0,
+                swinging: false,
+            },
+            line,
+            nearest,
+        }
+    }
+
+    /// The line walk that ends where asked, and the grid snap that keeps
+    /// the point.
+    fn open(_: Vec3, to: Vec3) -> (Vec3, bool) {
+        (to, false)
+    }
+    fn stay(at: Vec3) -> Vec3 {
+        at
+    }
+
+    /// One footwork tick at `now` with `footing`.
+    #[allow(clippy::too_many_arguments)]
+    fn step_with(
         input: &Keys,
         req: &mut Locomotion,
         pb: &mut PlayerBody,
         anim: &mut Animator,
         stance: Stance,
         moving: bool,
+        footing: &Footwork,
+        now: u64,
     ) {
-        let open = |_: Vec3, to: Vec3| (to, false);
-        let footing = Footwork {
-            chest: Vec3::ZERO,
-            ground: 0.0,
-            step_cm: STEP_LENGTH * 100.0,
-            long_step_cm: STEP_LENGTH * 100.0,
-            crouched_step_cm: crouched_step_length(STEP_LENGTH * 100.0, 1.0),
-            scale_root: 1.0,
-            line: &open,
-        };
         let mut steering = pb.steering;
         combat_steps(
             input,
@@ -2260,476 +2320,418 @@ mod tests {
             anim,
             stance,
             moving,
-            &footing,
-            0.012,
+            footing,
+            now,
         );
         pb.steering = steering;
     }
+
+    /// The footwork, one behaviour tick at `now`, on open ground with the
+    /// chest at the origin.
+    fn steps(
+        input: &Keys,
+        req: &mut Locomotion,
+        pb: &mut PlayerBody,
+        anim: &mut Animator,
+        stance: Stance,
+        moving: bool,
+        now: u64,
+    ) {
+        let f = footing(Vec3::ZERO, &open, &stay);
+        step_with(input, req, pb, anim, stance, moving, &f, now);
+    }
+
+    const W: Keys = Keys {
+        w: true,
+        a: false,
+        s: false,
+        d: false,
+        shift: false,
+        mouse: false,
+    };
 
     /// A footwork step whose target the grid's line walk clamps within
     /// 20 cm is not taken: no walk, no clip; 21 cm away it is, and the
     /// step's target is recorded for the overlay.
     #[test]
     fn footwork_stops_where_its_step_target_is_clamped() {
-        let mut keys = ButtonInput::<KeyCode>::default();
         let mut req = Locomotion::default();
         let mut pb = PlayerBody::new(0.0);
         pb.set_combat(true);
         let mut anim = Animator::new("Default", "Defence stance");
-        keys.press(KeyCode::KeyW);
-        let mut walk = |near: f32, req: &mut Locomotion, anim: &mut Animator| {
+        let mut walk = |near: f32, now: u64, req: &mut Locomotion, anim: &mut Animator| {
             let wall = move |from: Vec3, to: Vec3| (from + (to - from).normalize() * near, true);
-            let footing = Footwork {
-                chest: Vec3::ZERO,
-                ground: 0.0,
-                step_cm: STEP_LENGTH * 100.0,
-                long_step_cm: STEP_LENGTH * 100.0,
-                crouched_step_cm: crouched_step_length(STEP_LENGTH * 100.0, 1.0),
-                scale_root: 1.0,
-                line: &wall,
-            };
-            let mut steering = pb.steering;
-            combat_steps(
-                &Keys {
-                    w: true,
-                    ..Keys::default()
-                },
-                req,
-                &mut steering,
-                &mut pb,
-                anim,
-                Stance::Defence,
-                false,
-                &footing,
-                0.012,
-            );
-            pb.steering = steering;
+            let f = footing(Vec3::ZERO, &wall, &stay);
+            step_with(&W, req, &mut pb, anim, Stance::Defence, false, &f, now);
             pb.steering.line
         };
-        let asked = walk(0.2, &mut req, &mut anim).unwrap();
+        let asked = walk(0.2, 1000, &mut req, &mut anim).unwrap();
         assert_eq!(req.stepping, None);
         assert_eq!(anim.action, "Defence stance");
         assert!(asked.blocked && (asked.to - Vec3::Z * 0.8).length() < 1e-6);
-        walk(0.21, &mut req, &mut anim);
+        walk(0.21, 1012, &mut req, &mut anim);
         assert!(req.stepping.is_some_and(|v| v.z > 0.0));
         assert_eq!(anim.action, "Combat Walk");
     }
 
-    /// A fresh press aims one step reach. Keys already held 200 ms aim
-    /// (1.5 − 0.3·encumbrance) × the reach, narrowed once from double:
-    /// 120 cm from 80 cm, and 97.2 cm from a reach already shortened to
-    /// 72 cm at encumbrance 0.5.
+    /// A word held over 200 ms becomes a tap, and a step younger than
+    /// 300 ms is then re-laid at (1.5 − 0.3·encumbrance) of the reach,
+    /// narrowed once from double: 120 cm from 80 cm, 97.2 cm from a reach
+    /// of 72 cm at encumbrance 0.5. A crouch of 0.1 (above the double 0.1)
+    /// is no tap; the float just under it is.
     #[test]
-    fn a_held_step_key_aims_a_long_step() {
-        let open = |_: Vec3, to: Vec3| (to, false);
-        let aim = |held: f32, step_cm: f32, long_step_cm: f32| {
+    fn a_tapped_word_relays_a_young_step_long() {
+        let long = |reach: f32, encumbrance: f32, crouch: f32| {
+            let mut req = Locomotion::default();
+            let mut pb = PlayerBody::new(0.0).crouching(crouch);
+            pb.set_combat(true);
+            let mut anim = Animator::new("Default", "Defence stance");
+            let mut f = footing(Vec3::ZERO, &open, &stay);
+            f.reach_cm = reach;
+            f.encumbrance = encumbrance;
+            for now in [1000, 1200, 1201] {
+                step_with(
+                    &W,
+                    &mut req,
+                    &mut pb,
+                    &mut anim,
+                    Stance::Defence,
+                    false,
+                    &f,
+                    now,
+                );
+                if now == 1000 {
+                    assert_eq!(pb.step.target.z, reach / 100.0);
+                }
+            }
+            pb.step.target.z
+        };
+        assert_eq!(long(80.0, 0.0, 0.0).to_bits(), 0x3f99_999a);
+        assert_eq!(long(72.0, 0.5, 0.0).to_bits(), 0x3f78_d4fd);
+        assert_eq!(long(80.0, 0.0, 0.1), 0.8);
+        let under = f32::from_bits(0.1f32.to_bits() - 1);
+        assert_eq!(long(80.0, 0.0, under).to_bits(), 0x3f99_999a);
+    }
+
+    /// A step 300 ms old queues the held raw word on the body (its full
+    /// step vector), and a landing takes it: the target becomes the chest
+    /// plus the queued vector and the queue its countdown (−1); the next
+    /// tick the word takes the queued word back and the queue clears.
+    #[test]
+    fn an_old_step_queues_the_next_and_a_landing_takes_it() {
+        let mut req = Locomotion::default();
+        let mut pb = PlayerBody::new(0.0);
+        pb.set_combat(true);
+        let mut anim = Animator::new("Default", "Defence stance");
+        steps(
+            &W,
+            &mut req,
+            &mut pb,
+            &mut anim,
+            Stance::Defence,
+            false,
+            1000,
+        );
+        steps(
+            &W,
+            &mut req,
+            &mut pb,
+            &mut anim,
+            Stance::Defence,
+            false,
+            1299,
+        );
+        assert_eq!(pb.step.queue, 0);
+        steps(
+            &W,
+            &mut req,
+            &mut pb,
+            &mut anim,
+            Stance::Defence,
+            false,
+            1300,
+        );
+        assert_eq!(pb.step.queue, 1);
+        assert_eq!(pb.move_word.queued_word, crate::steering::MOVE_FORWARD);
+        assert!((pb.step.queued - Vec3::Z * 0.8).length() < 1e-6);
+        // The chest reaches the long target: the step lands and the queued
+        // step goes on from there.
+        let at = pb.step.target;
+        let f = footing(at, &open, &stay);
+        step_with(
+            &W,
+            &mut req,
+            &mut pb,
+            &mut anim,
+            Stance::Defence,
+            false,
+            &f,
+            1400,
+        );
+        assert_eq!(pb.step.queue, -1);
+        assert!(!pb.step.landed);
+        assert!((pb.step.target - (at + Vec3::Z * 0.8)).length() < 1e-6);
+        assert!(pb.move_word.tap);
+        // The next tick the word takes the queued word back: the tap
+        // clears, and the old step queues the held word again.
+        step_with(
+            &W,
+            &mut req,
+            &mut pb,
+            &mut anim,
+            Stance::Defence,
+            false,
+            &f,
+            1412,
+        );
+        assert!(!pb.move_word.tap);
+        assert_eq!(pb.move_word.held, crate::steering::MOVE_FORWARD);
+        assert_eq!(pb.step.queue, 1);
+    }
+
+    /// Let go, a started step finishes: it walks on until it lands
+    /// (within 20 cm of its target: 30 cm short it walks on, 15 cm short
+    /// it lands; or after a second), and the clip then
+    /// goes back to the stance.
+    #[test]
+    fn a_released_step_walks_until_it_lands() {
+        let mut req = Locomotion::default();
+        let mut pb = PlayerBody::new(0.0);
+        pb.set_combat(true);
+        let mut anim = Animator::new("Default", "Defence stance");
+        steps(
+            &W,
+            &mut req,
+            &mut pb,
+            &mut anim,
+            Stance::Defence,
+            false,
+            1000,
+        );
+        steps(
+            &Keys::default(),
+            &mut req,
+            &mut pb,
+            &mut anim,
+            Stance::Defence,
+            false,
+            1012,
+        );
+        assert!(req.stepping.is_some());
+        let near = footing(Vec3::Z * 0.5, &open, &stay);
+        step_with(
+            &Keys::default(),
+            &mut req,
+            &mut pb,
+            &mut anim,
+            Stance::Defence,
+            false,
+            &near,
+            1500,
+        );
+        assert!(req.stepping.is_some(), "30 cm short");
+        let near = footing(Vec3::Z * 0.65, &open, &stay);
+        step_with(
+            &Keys::default(),
+            &mut req,
+            &mut pb,
+            &mut anim,
+            Stance::Defence,
+            false,
+            &near,
+            1512,
+        );
+        assert_eq!(req.stepping, None);
+        assert_eq!(anim.action, "Defence stance");
+        // A step that never arrives gives up after a second.
+        let mut pb = PlayerBody::new(0.0);
+        steps(
+            &W,
+            &mut req,
+            &mut pb,
+            &mut anim,
+            Stance::Defence,
+            false,
+            1000,
+        );
+        steps(
+            &Keys::default(),
+            &mut req,
+            &mut pb,
+            &mut anim,
+            Stance::Defence,
+            false,
+            1999,
+        );
+        assert!(req.stepping.is_some());
+        steps(
+            &Keys::default(),
+            &mut req,
+            &mut pb,
+            &mut anim,
+            Stance::Defence,
+            false,
+            2000,
+        );
+        assert_eq!(req.stepping, None);
+    }
+
+    /// No step is laid while walking (condition 1), under 0.7 energy (or a
+    /// NaN energy) or during a swing.
+    #[test]
+    fn the_gate_holds_the_footwork() {
+        for gate in [
+            StepGate {
+                condition: 1,
+                energy: 1.0,
+                swinging: false,
+            },
+            StepGate {
+                condition: 0,
+                energy: 0.69,
+                swinging: false,
+            },
+            StepGate {
+                condition: 0,
+                energy: f32::NAN,
+                swinging: false,
+            },
+            StepGate {
+                condition: 0,
+                energy: 1.0,
+                swinging: true,
+            },
+        ] {
             let mut req = Locomotion::default();
             let mut pb = PlayerBody::new(0.0);
-            pb.held = held;
-            pb.held_keys = 1;
-            pb.set_combat(true);
             let mut anim = Animator::new("Default", "Defence stance");
-            let footing = Footwork {
-                chest: Vec3::ZERO,
-                ground: 0.0,
-                step_cm,
-                long_step_cm,
-                crouched_step_cm: crouched_step_length(step_cm, 1.0),
-                scale_root: 1.0,
-                line: &open,
-            };
-            let mut steering = pb.steering;
-            combat_steps(
-                &Keys {
-                    w: true,
-                    ..Keys::default()
-                },
+            let mut f = footing(Vec3::ZERO, &open, &stay);
+            f.gate = gate;
+            step_with(
+                &W,
                 &mut req,
-                &mut steering,
                 &mut pb,
                 &mut anim,
                 Stance::Defence,
                 false,
-                &footing,
-                0.012,
+                &f,
+                1000,
             );
-            steering.line.unwrap().to
-        };
-        let tap = aim(0.0, 80.0, long_step_length(80.0, 0.0));
-        assert_eq!(tap.z.to_bits(), (STEP_LENGTH).to_bits());
-        let held = aim(STEP_HOLD, 80.0, long_step_length(80.0, 0.0));
-        assert_eq!(held.z.to_bits(), 0x3f99_999a);
-        let worn = aim(STEP_HOLD, 72.0, long_step_length(72.0, 0.5));
-        assert_eq!(worn.z.to_bits(), 0x3f78_d4fd);
-    }
-
-    /// A key held 200 ms keeps the short reach once the crouch, promoted
-    /// to double, is no longer below 0.1. The float 0.1 is above that
-    /// double, the float just under it is still below, and a NaN stays short.
-    #[test]
-    fn a_crouch_of_0_1_keeps_the_short_step() {
-        let open = |_: Vec3, to: Vec3| (to, false);
-        let aim = |crouch: f32| {
-            let mut req = Locomotion::default();
-            let mut pb = PlayerBody::new(0.0).crouching(crouch);
-            pb.held = STEP_HOLD;
-            pb.held_keys = 1;
-            pb.set_combat(true);
-            let mut anim = Animator::new("Default", "Defence stance");
-            let footing = Footwork {
-                chest: Vec3::ZERO,
-                ground: 0.0,
-                step_cm: STEP_LENGTH * 100.0,
-                long_step_cm: long_step_length(80.0, 0.0),
-                crouched_step_cm: crouched_step_length(STEP_LENGTH * 100.0, 1.0),
-                scale_root: 1.0,
-                line: &open,
-            };
-            let mut steering = pb.steering;
-            combat_steps(
-                &Keys {
-                    w: true,
-                    ..Keys::default()
-                },
-                &mut req,
-                &mut steering,
-                &mut pb,
-                &mut anim,
-                Stance::Defence,
-                false,
-                &footing,
-                0.012,
-            );
-            steering.line.unwrap().to.z
-        };
-        let at = aim(0.1);
-        assert_eq!(at.to_bits(), STEP_LENGTH.to_bits());
-        let under = aim(f32::from_bits(0.1f32.to_bits() - 1));
-        assert_eq!(under.to_bits(), 0x3f99_999a);
-        assert_eq!(aim(f32::NAN).to_bits(), STEP_LENGTH.to_bits());
-    }
-
-    /// Past a crouch of a half the footwork's step is 0.7 of the plain one,
-    /// even with the long-step latch held; at a half it is the plain step,
-    /// and a NaN crouch fails the ordered compare and keeps the plain step.
-    #[test]
-    fn a_deep_crouch_shortens_the_step_to_seven_tenths() {
-        let open = |_: Vec3, to: Vec3| (to, false);
-        let aim = |crouch: f32, long: bool| {
-            let mut req = Locomotion::default();
-            let mut pb = PlayerBody::new(0.0).crouching(crouch);
-            if long {
-                pb.held = STEP_HOLD;
-                pb.held_keys = 1;
-                pb.long = true;
-            }
-            pb.set_combat(true);
-            let mut anim = Animator::new("Default", "Defence stance");
-            let footing = Footwork {
-                chest: Vec3::ZERO,
-                ground: 0.0,
-                step_cm: STEP_LENGTH * 100.0,
-                long_step_cm: long_step_length(80.0, 0.0),
-                crouched_step_cm: crouched_step_length(STEP_LENGTH * 100.0, 1.0),
-                scale_root: 1.0,
-                line: &open,
-            };
-            let mut steering = pb.steering;
-            combat_steps(
-                &Keys {
-                    w: true,
-                    ..Keys::default()
-                },
-                &mut req,
-                &mut steering,
-                &mut pb,
-                &mut anim,
-                Stance::Defence,
-                false,
-                &footing,
-                0.012,
-            );
-            steering.line.unwrap().to.z
-        };
-        // 80 cm at a half, 56 cm past it.
-        assert_eq!(aim(0.5, false).to_bits(), STEP_LENGTH.to_bits());
-        assert_eq!(aim(0.6, false).to_bits(), 0.56f32.to_bits());
-        // Held long, the deep crouch is 0.7 of the plain 80, not of 120.
-        assert_eq!(aim(0.6, true).to_bits(), 0.56f32.to_bits());
-        // A NaN crouch fails the ordered compare: the plain step.
-        assert_eq!(aim(f32::NAN, false).to_bits(), STEP_LENGTH.to_bits());
-    }
-
-    /// The deep-crouched step takes 0.7 of the reach in double precision
-    /// and only then the legs' extension: a 72 cm reach at an extension of
-    /// 0.9 gives 45.36 (the bits 1110798500), one ulp over the 0.7 of the
-    /// already extended step.
-    #[test]
-    fn the_crouched_step_extends_after_the_seven_tenths() {
-        assert_eq!(crouched_step_length(72.0, 0.9).to_bits(), 1_110_798_500);
-        let extended_first = (f64::from(72.0f32 * 0.9) * CROUCH_STEP) as f32;
-        assert_eq!(extended_first.to_bits(), 1_110_798_499);
-        assert_eq!(crouched_step_length(80.0, 1.0), 56.0);
-        assert!(crouched_step_length(80.0, f32::NAN).is_nan());
-    }
-
-    /// The long step is a latch: the same keys must be held strictly over
-    /// 200 ms (the 17th 12 ms tick), and a crouch raised afterwards does not
-    /// clear it; a key change or a release does.
-    #[test]
-    fn the_long_step_latches_until_a_key_changes() {
-        let open = |_: Vec3, to: Vec3| (to, false);
-        let mut pb = PlayerBody::new(0.0);
-        pb.set_combat(true);
-        pb.held_keys = 1;
-        let mut anim = Animator::new("Default", "Defence stance");
-        let footing = Footwork {
-            chest: Vec3::ZERO,
-            ground: 0.0,
-            step_cm: 80.0,
-            long_step_cm: 120.0,
-            crouched_step_cm: crouched_step_length(80.0, 1.0),
-            scale_root: 1.0,
-            line: &open,
-        };
-        let mut req = Locomotion::default();
-        let mut steering = pb.steering;
-        let mut step = |keys: Keys, pb: &mut PlayerBody| {
-            combat_steps(
-                &keys,
-                &mut req,
-                &mut steering,
-                pb,
-                &mut anim,
-                Stance::Defence,
-                false,
-                &footing,
-                0.012,
-            );
-            steering.line.unwrap().to.z
-        };
-        for _ in 0..16 {
-            assert_eq!(
-                step(
-                    Keys {
-                        w: true,
-                        ..Keys::default()
-                    },
-                    &mut pb
-                ),
-                0.8
-            );
-            assert!(!pb.long);
+            assert_eq!(req.stepping, None, "{gate:?}");
         }
-        assert_eq!(
-            step(
-                Keys {
-                    w: true,
-                    ..Keys::default()
-                },
-                &mut pb
-            ),
-            1.2
-        );
-        assert!(pb.long);
-        pb.crouch = 0.5;
-        assert_eq!(
-            step(
-                Keys {
-                    w: true,
-                    ..Keys::default()
-                },
-                &mut pb
-            ),
-            1.2
-        );
-        assert!(pb.long);
-        // W, A and D together are W alone (A and D cancel): no change.
-        step(
-            Keys {
-                w: true,
-                a: true,
-                d: true,
-                ..Keys::default()
-            },
-            &mut pb,
-        );
-        assert!(pb.long);
-        // W+A is a key change: the latch clears and the hold restarts.
-        step(
-            Keys {
-                w: true,
-                a: true,
-                ..Keys::default()
-            },
-            &mut pb,
-        );
-        assert!(!pb.long);
-        assert_eq!(pb.held, 0.0);
-        step(
-            Keys {
-                w: true,
-                a: true,
-                ..Keys::default()
-            },
-            &mut pb,
-        );
-        assert_eq!(pb.held, 0.012);
-        // Releasing clears it too.
-        pb.long = true;
-        step(Keys::default(), &mut pb);
-        assert!(!pb.long && pb.held == 0.0);
     }
 
-    /// From a fresh press the hold counts from the press's tick: the latch
-    /// sets on the 17th tick after it (204 ms, strictly over 200), the 18th
-    /// call, as the original compares the clock stamped at the press.
+    /// A taken goal is moved onto the grid's nearest walkable point across
+    /// the ground, keeping its height; an untaken one is not.
     #[test]
-    fn a_fresh_press_latches_seventeen_ticks_later() {
-        let open = |_: Vec3, to: Vec3| (to, false);
-        let mut pb = PlayerBody::new(0.0);
-        pb.set_combat(true);
-        let mut anim = Animator::new("Default", "Defence stance");
-        let footing = Footwork {
-            chest: Vec3::ZERO,
-            ground: 0.0,
-            step_cm: 80.0,
-            long_step_cm: 120.0,
-            crouched_step_cm: crouched_step_length(80.0, 1.0),
-            scale_root: 1.0,
-            line: &open,
-        };
+    fn a_taken_goal_snaps_onto_the_grid() {
         let mut req = Locomotion::default();
-        let mut steering = pb.steering;
-        let w = Keys {
-            w: true,
-            ..Keys::default()
-        };
-        let mut calls = 0;
-        while !pb.long && calls < 40 {
-            combat_steps(
-                &w,
-                &mut req,
-                &mut steering,
-                &mut pb,
-                &mut anim,
-                Stance::Defence,
-                false,
-                &footing,
-                0.012,
-            );
-            calls += 1;
-        }
-        assert_eq!(calls, 18);
-        assert_eq!(steering.line.unwrap().to.z, 1.2);
+        let mut pb = PlayerBody::new(0.0);
+        let mut anim = Animator::new("Default", "Defence stance");
+        let shift = |at: Vec3| at + Vec3::new(0.1, -5.0, 0.0);
+        let f = footing(Vec3::ZERO, &open, &shift);
+        step_with(
+            &W,
+            &mut req,
+            &mut pb,
+            &mut anim,
+            Stance::Defence,
+            false,
+            &f,
+            1000,
+        );
+        assert!((pb.step.target - Vec3::new(0.1, 0.0, 0.8)).length() < 1e-6);
+        let mut pb = PlayerBody::new(0.0);
+        let short = |_: Vec3, _: Vec3| (Vec3::Z * 0.1, true);
+        let f = footing(Vec3::ZERO, &short, &shift);
+        step_with(
+            &W,
+            &mut req,
+            &mut pb,
+            &mut anim,
+            Stance::Defence,
+            false,
+            &f,
+            1000,
+        );
+        assert_eq!(pb.step.target, Vec3::Z * 0.1);
     }
 
-    /// The legs' extension scales the tap and the held step after the long
+    /// The legs' extension and the √scale scale the stride after the long
     /// step is narrowed: full extension keeps 80 cm and 120 cm, half
-    /// extension halves both. A scale of 4 applies √scale a second time to
-    /// the fd4, so half extension of a 160 cm reach aims 160 cm.
+    /// extension halves both, and √4 doubles a 160 cm reach's half.
     #[test]
-    fn the_legs_extension_scales_the_footwork_step() {
-        let (tap, held) = footwork_lengths(80.0, 0.0, 1.0);
-        assert_eq!(tap.to_bits(), 80.0f32.to_bits());
-        assert_eq!(held.to_bits(), 120.0f32.to_bits());
-        let (half, half_held) = footwork_lengths(80.0, 0.0, 0.5);
-        assert_eq!(half.to_bits(), 40.0f32.to_bits());
-        assert_eq!(half_held.to_bits(), 60.0f32.to_bits());
-        let (scaled, _) = footwork_lengths(160.0, 0.0, 0.5);
-        assert_eq!((scaled * 4.0f32.sqrt()).to_bits(), 160.0f32.to_bits());
-        assert!(footwork_lengths(80.0, 0.0, f32::NAN).0.is_nan());
+    fn the_legs_extension_scales_the_footwork_stride() {
+        use crate::steering::goal_stride;
+        assert_eq!(goal_stride(80.0, 1.0, 1.0, 0.0, false), 80.0);
+        assert_eq!(goal_stride(80.0, 1.0, 1.0, 0.0, true), 120.0);
+        assert_eq!(goal_stride(80.0, 0.5, 1.0, 0.0, false), 40.0);
+        assert_eq!(goal_stride(80.0, 0.5, 1.0, 0.0, true), 60.0);
+        assert_eq!(goal_stride(160.0, 0.5, 2.0, 0.0, false), 160.0);
+        assert!(goal_stride(80.0, f32::NAN, 1.0, 0.0, false).is_nan());
     }
 
     /// W and A together, facing +Z, aim 0.8 as far sideways as forward. A
-    /// side key alone still aims a full step: the 0.8 is weighed before
-    /// the direction is normalised.
+    /// side key alone still aims a full step: the stride is divided by the
+    /// direction's own length.
     #[test]
     fn a_diagonal_step_weighs_the_side_by_0_8() {
-        let open = |_: Vec3, to: Vec3| (to, false);
         let aim = |w: bool, a: bool, d: bool| {
             let mut req = Locomotion::default();
             let mut pb = PlayerBody::new(0.0);
-            pb.set_combat(true);
             let mut anim = Animator::new("Default", "Defence stance");
-            let footing = Footwork {
-                chest: Vec3::ZERO,
-                ground: 0.0,
-                step_cm: STEP_LENGTH * 100.0,
-                long_step_cm: STEP_LENGTH * 100.0,
-                crouched_step_cm: crouched_step_length(STEP_LENGTH * 100.0, 1.0),
-                scale_root: 1.0,
-                line: &open,
+            let keys = Keys {
+                w,
+                a,
+                d,
+                ..Keys::default()
             };
-            let mut steering = pb.steering;
-            combat_steps(
-                &Keys {
-                    w,
-                    a,
-                    d,
-                    ..Keys::default()
-                },
+            steps(
+                &keys,
                 &mut req,
-                &mut steering,
                 &mut pb,
                 &mut anim,
                 Stance::Defence,
                 false,
-                &footing,
-                0.012,
+                1000,
             );
-            steering.line.unwrap().to
+            pb.steering.line.unwrap().to
         };
         let diagonal = aim(true, true, false);
-        assert!((diagonal.x / diagonal.z - SIDE_SHARE).abs() < 1e-6);
+        assert!((diagonal.x / diagonal.z - 0.8).abs() < 1e-6);
         let side = aim(false, false, true);
         assert!((side - Vec3::new(-STEP_LENGTH, 0.0, 0.0)).length() < 1e-6);
     }
 
-    /// A clamp 15 cm ahead and 15 cm up is 450 cm² and is stepped to. The
-    /// same 15 cm on the level is 225 cm² and is not.
+    /// A clamp 15 cm ahead and 15 cm up is 450 cm² and starts a step (which
+    /// lands at once: it is within 20 cm across the ground). The same 15 cm
+    /// on the level is 225 cm² and starts none.
     #[test]
     fn footwork_takes_a_raised_clamp_inside_20_cm() {
-        let mut req = Locomotion::default();
-        let mut pb = PlayerBody::new(0.0);
-        pb.set_combat(true);
-        let mut anim = Animator::new("Default", "Defence stance");
-        let step_at =
-            |end: Vec3, req: &mut Locomotion, pb: &mut PlayerBody, anim: &mut Animator| {
-                let line = move |_: Vec3, _: Vec3| (end, true);
-                let footing = Footwork {
-                    chest: Vec3::ZERO,
-                    ground: 0.0,
-                    step_cm: STEP_LENGTH * 100.0,
-                    long_step_cm: STEP_LENGTH * 100.0,
-                    crouched_step_cm: crouched_step_length(STEP_LENGTH * 100.0, 1.0),
-                    scale_root: 1.0,
-                    line: &line,
-                };
-                let mut steering = pb.steering;
-                combat_steps(
-                    &Keys {
-                        w: true,
-                        ..Keys::default()
-                    },
-                    req,
-                    &mut steering,
-                    pb,
-                    anim,
-                    Stance::Defence,
-                    false,
-                    &footing,
-                    0.012,
-                );
-                pb.steering = steering;
-            };
-        step_at(Vec3::new(0.0, 0.15, 0.15), &mut req, &mut pb, &mut anim);
-        assert!(req.stepping.is_some());
-        step_at(Vec3::new(0.0, 0.0, 0.15), &mut req, &mut pb, &mut anim);
-        assert_eq!(req.stepping, None);
+        for (end, taken) in [
+            (Vec3::new(0.0, 0.15, 0.15), true),
+            (Vec3::new(0.0, 0.0, 0.15), false),
+        ] {
+            let mut req = Locomotion::default();
+            let mut pb = PlayerBody::new(0.0);
+            let mut anim = Animator::new("Default", "Defence stance");
+            let line = move |_: Vec3, _: Vec3| (end, true);
+            let f = footing(Vec3::ZERO, &line, &stay);
+            step_with(
+                &W,
+                &mut req,
+                &mut pb,
+                &mut anim,
+                Stance::Defence,
+                false,
+                &f,
+                1000,
+            );
+            assert_eq!(pb.step.active, taken, "{end}");
+        }
     }
 
-    /// The interim footwork plays the combat walk while a key is held and
+    /// The footwork plays the combat walk while a step is under way and
     /// gives back the clip it replaced: the guard stays the guard.
     #[test]
     fn the_combat_walk_gives_back_the_clip_it_replaced() {
@@ -2738,17 +2740,11 @@ mod tests {
         pb.set_combat(true);
         let mut anim = Animator::new("Default", "Defence stance");
         let stance = Stance::CombatIdle;
-        steps(
-            &Keys {
-                a: true,
-                ..Keys::default()
-            },
-            &mut req,
-            &mut pb,
-            &mut anim,
-            stance,
-            false,
-        );
+        let a = Keys {
+            a: true,
+            ..Keys::default()
+        };
+        steps(&a, &mut req, &mut pb, &mut anim, stance, false, 1000);
         assert_eq!(anim.action, "Combat Walk");
         assert!(
             req.stepping.is_some_and(|v| v.x > 0.0),
@@ -2762,6 +2758,7 @@ mod tests {
             &mut anim,
             stance,
             false,
+            2000,
         );
         assert_eq!(anim.action, "Defence stance");
         assert_eq!(req.stepping, None);
@@ -2779,7 +2776,15 @@ mod tests {
         for gait in ["Walk", "Run", "Backpedal"] {
             let mut anim = Animator::new("Default", gait);
             // Still moving (stopping softly) it walks on.
-            steps(&Keys::default(), &mut req, &mut pb, &mut anim, stance, true);
+            steps(
+                &Keys::default(),
+                &mut req,
+                &mut pb,
+                &mut anim,
+                stance,
+                true,
+                0,
+            );
             assert_eq!(anim.action, gait);
             steps(
                 &Keys::default(),
@@ -2788,6 +2793,7 @@ mod tests {
                 &mut anim,
                 stance,
                 false,
+                0,
             );
             assert_eq!(anim.action, "Defence stance", "{gait}");
             let (blend, ease) = if gait == "Backpedal" {
@@ -2808,6 +2814,7 @@ mod tests {
             &mut anim,
             stance,
             false,
+            0,
         );
         assert_eq!(anim.action, "Combat Walk");
         steps(
@@ -2817,6 +2824,7 @@ mod tests {
             &mut anim,
             stance,
             false,
+            1000,
         );
         assert_eq!(anim.action, "Defence stance");
     }
@@ -2940,28 +2948,27 @@ mod tests {
         assert!((req.heading + std::f32::consts::FRAC_PI_2).abs() < 1e-5);
         assert_eq!(clip_and_stance(&app, body).0, "Cmbt - Idle");
         // W walks in the body tick that decides it moves: its locomotion
-        // starts the walk; released, a tap under 200 ms keeps the movement
-        // word until 200 ms after the press, then it stops softly, its
-        // capsule braking from the speed the tap reached (65 ticks to Idle
-        // here, where no controller moves it), and the walk ends in Idle
-        // once the body tick has stopped it.
+        // starts the walk; released, it stops softly (exploration reads the
+        // keys as they are: the 200 ms word persistence is the combat
+        // footwork's), its capsule braking from the speed the tap reached
+        // (49 ticks to Idle here, where no controller moves it), and the
+        // walk ends in Idle once the body tick has stopped it.
         set_key(&mut app, KeyCode::KeyW, true);
         behaviour_tick(&mut app);
         assert_eq!(clip_and_stance(&app, body).0, "Walk");
         behaviour_tick(&mut app);
         assert_eq!(clip_and_stance(&app, body).0, "Walk");
         set_key(&mut app, KeyCode::KeyW, false);
-        // The clock advances a tick at a time, as the game's does: the tap's
-        // word holds until 200 ms after the press (17 ticks), then the
+        // The clock advances a tick at a time, as the game's does: the
         // capsule brakes from the speed it reached; the walk ends in Idle
-        // 65 ticks after the release.
+        // 49 ticks after the release.
         let mut ticks = 0;
         while clip_and_stance(&app, body).0 == "Walk" && ticks < 220 {
             app.world_mut().resource_mut::<BodyTicks>().0 += 1;
             behaviour_tick(&mut app);
             ticks += 1;
         }
-        assert_eq!(ticks, 65);
+        assert_eq!(ticks, 49);
         assert_eq!(clip_and_stance(&app, body), ("Idle".into(), Stance::Idle));
     }
 
