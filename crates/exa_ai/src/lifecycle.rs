@@ -42,7 +42,7 @@ pub struct ScriptKind(pub u32);
 pub struct ScriptObject {
     /// The object's kind id (`+8`).
     pub id: u32,
-    /// The brain that owns it (`+0x10`).
+    /// The brain that owns it.
     pub owner: u64,
 }
 

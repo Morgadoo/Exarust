@@ -804,6 +804,10 @@ pub fn ai_tick(
                 npc.turn.look = facing;
                 npc.turn.offset = facing;
             }
+            // [guess: the original's idle states attend the contact the
+            // target pass picked and set the look yaw toward it; Exarust
+            // looks along the line to the brain's target while it is seen
+            // or heard.]
             if seen_or_heard {
                 npc.turn.look = motion::yaw_of(target_cm - observer_cm);
             }
@@ -814,7 +818,9 @@ pub fn ai_tick(
                 now,
                 &mut roll,
             );
-            transform.rotation = Quat::from_rotation_y(npc.turn.heading);
+            // The body turns to the eased yaw, look plus sway; the
+            // heading is the bare look and would snap the model.
+            transform.rotation = Quat::from_rotation_y(npc.turn.offset);
         }
         npc.roll = roll;
     }
@@ -1410,7 +1416,8 @@ mod tests {
     }
 
     /// An idle brain turns its model toward its look yaw: the out-of-combat
-    /// sway routine's heading, while it is not fighting.
+    /// turn eases the yaw from the body's facing by 0.09 of the gap a tick
+    /// (no encumbrance), while it is not fighting.
     #[test]
     fn an_idle_brain_turns_its_model_to_its_look() {
         let mut app = App::new();
@@ -1439,10 +1446,10 @@ mod tests {
             .id();
         app.update();
         let t = app.world().get::<Transform>(npc).unwrap();
-        assert!(
-            (t.rotation.to_euler(bevy::math::EulerRot::YXZ).0 - std::f32::consts::FRAC_PI_2).abs()
-                < 1e-5
-        );
+        // From facing 0 toward π/2: 0.09 · π/2 ≈ 0.141372.
+        let eased = (0.09 * f64::from(std::f32::consts::FRAC_PI_2)) as f32;
+        assert!((t.rotation.to_euler(bevy::math::EulerRot::YXZ).0 - eased).abs() < 1e-5);
+        assert_eq!(app.world().get::<Npc>(npc).unwrap().turn.offset, eased);
     }
 
     /// A visible player fills the brain's contact with the perception's

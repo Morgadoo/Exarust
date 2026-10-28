@@ -95,7 +95,7 @@ pub const NARROW_EVERY_MS: u32 = 700;
 pub const WIDE_ODDS: u64 = 300;
 pub const NARROW_ODDS: u64 = 75;
 /// The out-of-combat sway's span (rad) and its timer (ms).
-pub const SWAY_SPAN: f32 = 3.6;
+pub const SWAY_SPAN: f64 = 3.6;
 pub const SWAY_EVERY_MS: u32 = 4000;
 /// The stop's pull-back: 8·crouch + 20 cm.
 pub const STOP_CROUCH: f32 = 8.0;
@@ -169,16 +169,16 @@ pub fn unit(v: Vec3) -> Vec3 {
 /// toward.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Gaze {
-    /// The look yaw (`+0x8d0`; the body's look yaw in combat).
+    /// The look yaw (the body's look yaw in combat).
     pub look: f32,
-    /// The head's offset from the look (`+0x8d4` in combat; a target yaw
+    /// The head's offset from the look (in combat; a target yaw
     /// out of combat).
     pub offset: f32,
-    /// Where the offset is heading (`+0x8dc`).
+    /// Where the offset is heading.
     pub target_offset: f32,
-    /// The sway rate (`+0x8e4`).
+    /// The sway rate.
     pub sway: f32,
-    /// The pitch the idle look's pitch eases toward (`+0x8d8`).
+    /// The pitch the idle look's pitch eases toward.
     pub pitch: f32,
 }
 
@@ -364,7 +364,7 @@ pub struct Walk {
     pub look: Vec3,
     /// The walk flags ([`MOVE`], [`RUN`], [`SPRINT`]).
     pub flags: u32,
-    /// The body is steering its own movement (`+0x12ea`).
+    /// The body is steering its own movement.
     pub steering: bool,
     /// The body's look smoothing direction (unit).
     pub look_smooth: Vec3,
@@ -384,7 +384,7 @@ pub struct Walking {
     pub goal_cm: Vec3,
     /// A path is followed.
     pub path: bool,
-    /// The climb/step count (`+0x860`).
+    /// The climb/step count.
     pub climb: i32,
     /// A foe's chest to look at (cm).
     pub foe_chest: Option<Vec3>,
@@ -474,15 +474,19 @@ pub fn stop_walk(body_cm: Vec3, facing: Vec3, crouch: f32, mut walk: Walk) -> Wa
     walk
 }
 
-/// The AI's heading, look and body turn state out of combat: the heading
-/// (`+0x8e0`), the look yaw (`+0x54`), the look offset (`+0x8d4`), the sway
-/// (`+0x8dc`), and the clock the next draw is due (`+0x8ac`).
+/// The AI's heading, look and body turn state out of combat.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Turning {
+    /// The heading: the look yaw copied each tick.
     pub heading: f32,
+    /// The yaw the AI wants to look along.
     pub look: f32,
+    /// The AI's eased yaw: it starts each tick at the body's facing and
+    /// eases toward the look plus the sway. The body turns toward it.
     pub offset: f32,
+    /// The random sway added to the look (rad).
     pub sway: f32,
+    /// When the next sway is drawn (ms).
     pub sway_at_ms: u32,
 }
 
@@ -502,14 +506,17 @@ pub fn turn_towards(
     turn.offset = facing_yaw;
     if turn.sway_at_ms < now_ms {
         *roll = roll.wrapping_mul(0x0808_8405).wrapping_add(1);
-        let unit = (*roll as f32) * (1.0 / 4_294_967_296.0);
-        turn.sway = unit * SWAY_SPAN - 1.8;
+        // The engine's float draw (the high word over 2^32, rounded to
+        // f32), then the span in double precision.
+        let unit = ((*roll as f64) * (1.0 / 4_294_967_296.0)) as f32;
+        turn.sway = (f64::from(unit) * SWAY_SPAN - 1.8) as f32;
         *roll = roll.wrapping_mul(0x0808_8405).wrapping_add(1);
         let step = ((u64::from(*roll) * 4000) >> 32) as u32;
         turn.sway_at_ms = now_ms.wrapping_add(SWAY_EVERY_MS).wrapping_add(step);
     }
     let target = gap(turn.look + turn.sway, 0.0);
-    let rate = (0.09 - encumbrance * 0.06) as f64;
+    // The rate is formed in double precision from the double constants.
+    let rate = 0.09 - f64::from(encumbrance) * 0.06;
     turn.offset = (rate * f64::from(target - turn.offset) + f64::from(turn.offset)) as f32;
 }
 
