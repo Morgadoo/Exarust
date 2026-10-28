@@ -375,6 +375,12 @@ pub(crate) fn order(
             edges[permute(face)] = v;
         }
     }
+    if let Some(extra) = faces.extra.as_deref_mut() {
+        let old = extra.clone();
+        for (face, &v) in old.iter().enumerate() {
+            extra[permute(face)] = v;
+        }
+    }
     if let Some(children) = faces.children.as_deref_mut() {
         for c in children.iter_mut().take(nf >> 2) {
             if let Some(&o) = order.get(*c as usize) {

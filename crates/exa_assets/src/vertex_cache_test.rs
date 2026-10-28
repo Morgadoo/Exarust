@@ -86,6 +86,7 @@ fn faces_are_drawn_greedily_and_vertices_renumbered_by_first_use() {
         tri: &mut tri,
         flags: Some(&mut flags),
         edges: None,
+        extra: None,
         children: None,
     };
     let renumber = order(&mut faces, &mut inc, &corners, &[group(0, 3)], 0);
@@ -108,6 +109,7 @@ fn flagged_meshes_sort_each_group_by_face_flags() {
         tri: &mut tri,
         flags: Some(&mut flags),
         edges: None,
+        extra: None,
         children: None,
     };
     order(
@@ -129,6 +131,7 @@ fn a_single_face_keeps_its_order() {
         tri: &mut tri,
         flags: None,
         edges: None,
+        extra: None,
         children: None,
     };
     assert_eq!(

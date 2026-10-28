@@ -292,6 +292,13 @@ pub struct EditMesh {
     pub groups: Vec<FaceGroup>,
     pub face_flags: Option<Vec<u32>>,
     pub face_edges: Option<Vec<u8>>,
+    /// A second per-face word the original only ever permutes: no reader in
+    /// the mesh unit was found, so it is carried through edits untouched.
+    pub face_extra: Option<Vec<u32>>,
+    /// The material group of every face, as an assembly leaves it before
+    /// the regroup pass sorts the faces into runs. `None` when the groups'
+    /// `first..end` ranges already say it.
+    pub face_group: Option<Vec<u32>>,
     /// After a subdivision: the centre child of every face before it.
     pub face_children: Option<Vec<u32>>,
     pub render_flags: u32,
@@ -472,6 +479,8 @@ impl EditMesh {
                 .as_ref()
                 .filter(|v| v.len() == faces.len())
                 .cloned(),
+            face_extra: None,
+            face_group: None,
             face_children: None,
             render_flags: mesh.render_flags,
             level: 0,
@@ -553,7 +562,31 @@ impl EditMesh {
         {
             return Err(malformed("face edge bits do not match the faces"));
         }
+        if let Some(x) = &self.face_extra
+            && x.len() != faces
+        {
+            return Err(malformed("face extras do not match the faces"));
+        }
+        if let Some(g) = &self.face_group
+            && g.len() != faces
+        {
+            return Err(malformed("face groups do not match the faces"));
+        }
+        if let Some(g) = &self.face_group
+            && g.iter().any(|&g| g as usize >= self.groups.len())
+        {
+            return Err(malformed("a face names a missing material group"));
+        }
         Ok(())
+    }
+
+    /// The original's mesh copy: every array is deep-copied (the editable
+    /// channels at one index per corner, the streams at their element
+    /// counts, the groups, the per-face arrays and the incidence) while the
+    /// materials themselves are shared, which Rust's `String` handles by
+    /// value. The copy is independent: editing it never touches `self`.
+    pub fn duplicate(&self) -> Self {
+        self.clone()
     }
 
     /// The incidence, built when missing.
@@ -740,6 +773,7 @@ impl EditMesh {
                 tri: &mut tri,
                 flags: self.face_flags.as_mut(),
                 edges: self.face_edges.as_mut(),
+                extra: self.face_extra.as_mut(),
                 children: self.face_children.as_mut(),
             };
             let renumber = vertex_cache::order(
@@ -905,6 +939,7 @@ pub(crate) struct FaceArrays<'a> {
     pub tri: &'a mut Vec<[u32; 3]>,
     pub flags: Option<&'a mut Vec<u32>>,
     pub edges: Option<&'a mut Vec<u8>>,
+    pub extra: Option<&'a mut Vec<u32>>,
     pub children: Option<&'a mut Vec<u32>>,
 }
 
