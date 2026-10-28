@@ -857,6 +857,11 @@ pub struct PlacedObject {
     pub transform: [[f32; 3]; 4],
     /// Slot in a containing object (0 in the world).
     pub slot: i32,
+    /// The word after the slot, which the original copies under the object
+    /// node's `0xB80000` flags (only its placement bit matters in Exarust).
+    pub second_word: u32,
+    /// The extra word a version `0x3D22` file stores after the second word.
+    pub word_3d22: Option<u32>,
     /// What the placement changes in the object's own nodes, as for a prop
     /// ([`crate::level::PropAttachment`]).
     pub attachments: Vec<crate::level::PropAttachment>,
@@ -945,11 +950,13 @@ fn read_placed_objects(b: &[u8], version: u16) -> Result<Vec<PlacedObject>> {
             *v *= CENTIMETRES_TO_METRES;
         }
         let slot = o.u32()? as i32;
-        o.u32()?; // a second placement word
+        let second_word = o.u32()?;
         // Version 0x3D22 stores one more word before the sub-chunks.
-        if version == 0x3D22 {
-            o.u32()?;
-        }
+        let word_3d22 = if version == 0x3D22 {
+            Some(o.u32()?)
+        } else {
+            None
+        };
         let mut attachments = Vec::new();
         while o.remaining() >= 8 {
             let Ok((tag, sub)) = o.chunk() else { break };
@@ -963,6 +970,8 @@ fn read_placed_objects(b: &[u8], version: u16) -> Result<Vec<PlacedObject>> {
             object_flags,
             transform,
             slot,
+            second_word,
+            word_3d22,
             attachments,
         });
     }
@@ -989,8 +998,58 @@ pub struct MeshGroup {
     pub index_count: u32,
 }
 
+/// A node sub-chunk handler, as the original's registry holds them: the
+/// tag, the chunk's body, and whether the handler took it.
+pub type ChunkHandler = fn(u32, &[u8]) -> bool;
+
+/// The registered node sub-chunk handlers, in registration order. The
+/// original appends a tag and a callback per registration; in the reader
+/// mode that uses them, every node's sub-chunks go to the first handler of
+/// their tag instead of the reader's own sub-chunk loop (root chunks never
+/// reach it). Exarust's game registers none, so `Scene::parse` reads as
+/// before.
+#[derive(Default)]
+pub struct ChunkHandlers {
+    entries: Vec<(u32, ChunkHandler)>,
+}
+
+impl ChunkHandlers {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Whether no handler is registered.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Registers a handler. A tag registered twice keeps both, the first
+    /// one winning, as the original's appended list does.
+    pub fn register(&mut self, tag: u32, handler: ChunkHandler) {
+        self.entries.push((tag, handler));
+    }
+
+    /// Hands a chunk to the first handler registered for its tag; false
+    /// when none takes it.
+    pub fn dispatch(&self, tag: u32, body: &[u8]) -> bool {
+        self.entries
+            .iter()
+            .find(|(known, _)| *known == tag)
+            .is_some_and(|(_, handler)| handler(tag, body))
+    }
+}
+
 impl Scene {
+    /// Parses a file with the reader's own sub-chunk loop.
     pub fn parse(b: &[u8]) -> Result<Self> {
+        Self::parse_with(b, &ChunkHandlers::new())
+    }
+
+    /// Parses a file; with handlers registered, every node sub-chunk goes to
+    /// the first handler of its tag in place of the reader's own sub-chunk
+    /// loop (the original's registry mode). An empty registry reads as
+    /// [`Scene::parse`].
+    pub fn parse_with(b: &[u8], handlers: &ChunkHandlers) -> Result<Self> {
         let mut c = Cursor::new(b);
         if c.u16()? != SANITY {
             return Err(Error::Malformed(
@@ -1051,7 +1110,7 @@ impl Scene {
                 nodes.reserve(count);
                 for _ in 0..count {
                     let (kind, node) = chunk.chunk()?;
-                    nodes.push(read_node(kind, node, version)?);
+                    nodes.push(read_node(kind, node, version, handlers)?);
                 }
             } else {
                 unknown_chunks.push(tag);
@@ -1218,13 +1277,17 @@ struct SubChunks {
     unknown: Vec<u32>,
 }
 
-fn read_sub_chunks(c: &mut Cursor<'_>) -> SubChunks {
+fn read_sub_chunks(c: &mut Cursor<'_>, handlers: &ChunkHandlers) -> SubChunks {
     let mut out = SubChunks::default();
     let mut points = None;
     while c.remaining() >= 8 {
         let Ok((tag, mut sub)) = c.chunk() else {
             break;
         };
+        if !handlers.is_empty() {
+            handlers.dispatch(tag, sub.b);
+            continue;
+        }
         if !KNOWN_SUB_CHUNKS.contains(&tag) {
             out.unknown.push(tag);
         }
@@ -1280,7 +1343,7 @@ fn emitter(body: &[u8]) -> Option<NodeBody> {
     })
 }
 
-fn read_node(kind: u32, mut c: Cursor<'_>, version: u16) -> Result<Node> {
+fn read_node(kind: u32, mut c: Cursor<'_>, version: u16, handlers: &ChunkHandlers) -> Result<Node> {
     let name = c.name()?;
     let flags = c.u32()?;
     let mut flags2 = c.u32()?;
@@ -1315,7 +1378,7 @@ fn read_node(kind: u32, mut c: Cursor<'_>, version: u16) -> Result<Node> {
         }
         match read_mesh(&mut c, version) {
             Ok(mut m) => {
-                sub = read_sub_chunks(&mut c);
+                sub = read_sub_chunks(&mut c, handlers);
                 m.gi_points = std::mem::take(&mut sub.gi_points);
                 morph = sub
                     .morph
@@ -1329,10 +1392,10 @@ fn read_node(kind: u32, mut c: Cursor<'_>, version: u16) -> Result<Node> {
         match read_light(&mut c, flags2) {
             Ok(mut l) => {
                 if l.flags & LIGHT_EXTRA_FLAGS == 0 {
-                    sub = read_sub_chunks(&mut c);
+                    sub = read_sub_chunks(&mut c, handlers);
                 } else if let Ok(animation) = read_light_animation(&mut c) {
                     l.animation = Some(animation);
-                    sub = read_sub_chunks(&mut c);
+                    sub = read_sub_chunks(&mut c, handlers);
                 }
                 NodeBody::Light(l)
             }
@@ -1341,7 +1404,7 @@ fn read_node(kind: u32, mut c: Cursor<'_>, version: u16) -> Result<Node> {
     } else if kind == NODE_VOXEL_LIGHT {
         match read_voxel_light(&mut c) {
             Ok(l) => {
-                sub = read_sub_chunks(&mut c);
+                sub = read_sub_chunks(&mut c, handlers);
                 NodeBody::VoxelLight(l)
             }
             Err(e) => NodeBody::Invalid(e.to_string()),
@@ -1349,18 +1412,18 @@ fn read_node(kind: u32, mut c: Cursor<'_>, version: u16) -> Result<Node> {
     } else if kind == NODE_3D08 {
         let target = c.u32()?;
         let value = c.u32()?;
-        sub = read_sub_chunks(&mut c);
+        sub = read_sub_chunks(&mut c, handlers);
         NodeBody::Camera {
             target: (target > 0).then_some(target as usize),
             value,
         }
     } else if kind == NODE_SECTOR {
-        sub = read_sub_chunks(&mut c);
+        sub = read_sub_chunks(&mut c, handlers);
         NodeBody::Sector
     } else {
         let mut chunks = Cursor::new(c.b);
         chunks.pos = c.pos;
-        sub = read_sub_chunks(&mut chunks);
+        sub = read_sub_chunks(&mut chunks, handlers);
         emitter(c.bytes(c.remaining())?).unwrap_or(NodeBody::NotMesh)
     };
     Ok(Node {
@@ -2960,6 +3023,7 @@ mod tests {
         // The third word is the object's own flags: bit 19 makes it level
         // geometry, as the placement's bit 4 does.
         assert_eq!(o.object_flags, 0x8_0000);
+        assert_eq!((o.slot, o.second_word, o.word_3d22), (1, 0, None));
         assert!(o.is_static());
         for (got, want) in o.transform[3].iter().zip([0.1, 0.2, 0.3]) {
             assert!((got - want).abs() < 1e-6, "{got} != {want}");
@@ -2995,6 +3059,7 @@ mod tests {
             for attachment in &prop.attachments {
                 match attachment {
                     crate::level::PropAttachment::Transform { .. } => transforms += 1,
+                    crate::level::PropAttachment::Tree { .. } => {}
                     crate::level::PropAttachment::MeshPositions {
                         name, positions, ..
                     } => {
@@ -3049,6 +3114,7 @@ mod tests {
                         n.nested += usize::from(nested);
                     }
                     A::MeshPositions { .. } => n.positions += 1,
+                    A::Tree { .. } => {}
                 }
                 let Some(t) = target else {
                     n.unresolved += 1;
@@ -3063,6 +3129,7 @@ mod tests {
                             n.matching += 1;
                         }
                     }
+                    A::Tree { entries } => walk(scene, t, entries, nested, n),
                 }
             }
         }
@@ -3682,6 +3749,40 @@ mod tests {
         assert_eq!(left.colors.as_deref().unwrap()[0], [255; 4]);
         assert_eq!(left.colors.as_deref().unwrap()[3], [40, 50, 60, 128]);
         assert_eq!(left.triangle_flags.as_deref(), Some(&[1, 0x20][..]));
+    }
+
+    #[test]
+    fn registered_handlers_take_every_node_sub_chunk() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static SEEN: AtomicUsize = AtomicUsize::new(0);
+        fn handler(tag: u32, body: &[u8]) -> bool {
+            if tag == 0x1234_5678 && body == [9, 8, 7, 6] {
+                SEEN.fetch_add(1, Ordering::SeqCst);
+            }
+            true
+        }
+        let mut sector = node_with("Sector", 0, &[]);
+        sector.extend(chunk(0x1234_5678, &[9, 8, 7, 6]));
+        let file = {
+            let mut list = u32s(&[1]);
+            list.extend(chunk(NODE_SECTOR, &sector));
+            let mut file = vec![0xCF, 0xAF, 0x23, 0x3D];
+            file.extend(chunk(NODE_LIST, &list));
+            // A root chunk never reaches the registry.
+            file.extend(chunk(0x1234_5678, &[9, 8, 7, 6]));
+            file
+        };
+        let mut handlers = ChunkHandlers::new();
+        handlers.register(0x1234_5678, handler);
+        let scene = Scene::parse_with(&file, &handlers).unwrap();
+        assert_eq!(SEEN.load(Ordering::SeqCst), 1);
+        // The registry replaces the reader's own sub-chunk loop.
+        assert!(scene.nodes[0].unknown_sub_chunks.is_empty());
+        assert_eq!(scene.unknown_chunks, [0x1234_5678]);
+        // Without handlers the reader records the tag itself.
+        let scene = Scene::parse(&file).unwrap();
+        assert_eq!(scene.nodes[0].unknown_sub_chunks, [0x1234_5678]);
+        assert_eq!(SEEN.load(Ordering::SeqCst), 1);
     }
 
     #[test]

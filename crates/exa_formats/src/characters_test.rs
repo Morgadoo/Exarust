@@ -1200,3 +1200,40 @@ fn the_trees_technique_check_scans_funded_slots() {
     assert!(!skill.knows(0));
     assert!(skill.knows(2));
 }
+
+/// A save's placement carries the motion state and the AI home beside the
+/// pose; a level placement carries neither.
+#[test]
+fn a_placement_reads_its_motion_state_and_ai_home() {
+    let mut b = u32s(&[7]);
+    b.extend(f32s(&[100.0, 200.0, 300.0, 0.5]));
+    b.extend(u32s(&[0]));
+    b.extend(u32s(&[MOTION, 12]));
+    b.extend(u32s(&[3]));
+    b.extend(f32s(&[1.5]));
+    b.extend(u32s(&[0]));
+    b.extend(u32s(&[AI_HOME, 20]));
+    b.extend(f32s(&[100.0, 200.0, 300.0, 0.25]));
+    b.extend(u32s(&[0]));
+    let p = read_placement(&b).unwrap();
+    assert_eq!(
+        p.motion,
+        Some(MotionState {
+            state: 3,
+            value: 1.5
+        })
+    );
+    assert_eq!(
+        p.ai_home,
+        Some(AiHome {
+            position: [1.0, 2.0, 3.0],
+            heading: 0.25
+        })
+    );
+    // The same placement without the two chunks has neither.
+    let mut plain = u32s(&[7]);
+    plain.extend(f32s(&[100.0, 200.0, 300.0, 0.5]));
+    plain.extend(u32s(&[0]));
+    let p = read_placement(&plain).unwrap();
+    assert_eq!((p.motion, p.ai_home), (None, None));
+}

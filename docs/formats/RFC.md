@@ -787,9 +787,13 @@ Plane A packs four 4-bit edge codes in the low 16 bits (top, left, bottom,
 right) and four corner codes in the high 16 bits. The engine fills borders
 with fixed values (`0x20010007` top row, `0x00120070` left column,
 `0x12007000` right column, `0x01200700` bottom row, distinct corner values)
-that rotate the codes one nibble per side; `7` is a solid wall edge. Planes B
-and C (floor and ceiling data) and the selection of set pieces are decoded in
-the grid-builder work.
+on every load, overwriting whatever the file stored; Exarust's grid reader
+does the same (`level::fill_borders`). The corner values are
+`0x20130077` (top left), `0x32017007` (top right), `0x01320770`
+(bottom left) and `0x13207700` (bottom right), written after the whole top
+row, both columns and the whole bottom row. `7` is a solid
+wall edge. Planes B and C (floor and ceiling data) and the selection of set
+pieces are decoded in the grid-builder work.
 
 Set pieces are named `<prefix><type><sub><variant>`: prefix `+` main piece,
 `[` attachment; type `W` wall, `C` corner, `F` floor, `R` roof/ceiling,
@@ -1352,12 +1356,21 @@ empty name, their word always 0; 85 position records (ten levels; a
 banner's stored drape), word 0 and no trailing data; no `0x3DE0EC00`.
 Every exanima01 record resolves, and its 14 position records match their
 meshes' counts (`shipped_props_keep_their_placement_overrides`). Exarust
-parses the first two into `PropAttachment` trees and applies them when the
+parses all three into `PropAttachment` trees and applies them when the
 prop spawns, before its bodies register: transforms on the model's nodes,
 positions by rebuilding the object's model from its file with the new
-elements (normals recomputed from them, cached per distinct set).
-`0x3DE0EC00` is skipped. A placed object (`DB01`, below) carries the same
-records, which Exarust also applies.
+elements (normals recomputed from them, cached per distinct set), and an
+`0x3DE0EC00` tree's named entries under the prop's root (each entry's
+subtree follows its stored descendant count). A placed object (`DB01`,
+below) carries the same records, which Exarust also applies.
+
+The reader keeps the original's sub-chunk registry: `ChunkHandlers` holds
+tag→handler entries in registration order (the first tag wins). In the
+original's registry mode (set by particular loaders) every node's
+sub-chunks go to the registry instead of the reader's own sub-chunk loop;
+root chunks never do. `Scene::parse_with` is that mode when a handler is
+registered; `Scene::parse` and an empty registry read as before. The game
+registers none.
 
 All 79 935 props in the 29 retail levels name existing Objlib objects.
 

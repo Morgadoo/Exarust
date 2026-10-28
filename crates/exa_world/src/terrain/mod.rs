@@ -408,7 +408,6 @@ pub struct TerrainStats {
 /// large plants, sharing one material.
 struct Plants {
     variants: Vec<vegetation::Variant>,
-    grass: usize,
     material: Handle<exa_render::material::ExaMaterial>,
 }
 
@@ -417,9 +416,13 @@ impl Plants {
 
     fn load(loader: &mut ModelLoader<'_>, palette: &Palette) -> Option<Self> {
         let mut variants = Vec::new();
-        let mut grass = 0;
         for (kind, name) in Self::MODELS.iter().enumerate() {
             let model = loader.model(PackKind::Resource, name)?;
+            let kind = match kind {
+                0 => vegetation::Kind::Grass,
+                1 => vegetation::Kind::Small,
+                _ => vegetation::Kind::Large,
+            };
             for node in &model.nodes {
                 let mut v = vegetation::Variant::default();
                 for (mesh, _) in &node.parts {
@@ -434,15 +437,17 @@ impl Plants {
                 // Grass and small plants are lit as if facing up (the
                 // original's plant loader sets their normals to +Y); grass
                 // is smaller.
-                if kind < 2 {
+                if kind != vegetation::Kind::Large {
                     v.normals.iter_mut().for_each(|n| *n = Vec3::Y);
                 }
-                if kind == 0 {
+                if kind == vegetation::Kind::Grass {
                     v.positions
                         .iter_mut()
                         .for_each(|p| *p *= vegetation::GRASS_SCALE);
-                    grass += 1;
                 }
+                v.height =
+                    v.positions.iter().map(|p| p.y).sum::<f32>() / v.positions.len().max(1) as f32;
+                v.kind = kind;
                 variants.push(v);
             }
         }
@@ -471,11 +476,7 @@ impl Plants {
             }
             .with_map_flags(),
         );
-        Some(Self {
-            variants,
-            grass,
-            material,
-        })
+        Some(Self { variants, material })
     }
 
     /// Grows a tile's plants as chunk meshes under `tile_entity`; returns
@@ -517,12 +518,7 @@ impl Plants {
             let (i, j) = vegetation::density_texel(p);
             built.density[j * n + i]
         };
-        let growth = vegetation::grow(
-            tile.vegetation_seed,
-            self.grass,
-            self.variants.len() - self.grass,
-            density,
-        );
+        let growth = vegetation::grow(tile.vegetation_seed, &self.variants, density);
         let s = terrain.spacing;
         let half = (n - 1) as f32 * 0.5 * s;
         let place = |p: bevy::math::Vec2| {
@@ -538,7 +534,9 @@ impl Plants {
                 continue;
             }
             grown += chunk.len();
-            let baked = vegetation::bake(&self.variants, chunk, place);
+            let baked = vegetation::bake(&self.variants, chunk, place, |p| {
+                vegetation::terrain_normal(&built.normals, n, p)
+            });
             let mut mesh = Mesh::new(
                 PrimitiveTopology::TriangleList,
                 RenderAssetUsages::default(),
@@ -1487,6 +1485,8 @@ struct BuiltTile {
     /// Displaced vertex heights (metres) and vegetation density per vertex.
     heights: Vec<f32>,
     density: Vec<f32>,
+    /// The tile's vertex normals, `n` × `n`, which large plants take.
+    normals: Vec<[f32; 3]>,
     /// Palette material indices, one per layer, ascending.
     materials: Vec<usize>,
     /// The layers' over opacities per vertex, as the splat texture holds
@@ -1605,6 +1605,7 @@ fn build_tile(
         }
     }
     let normals = grid_normals(&positions, n);
+    let ground_normals = normals.clone();
     let heights: Vec<f32> = positions.iter().map(|p| p[1]).collect();
 
     // Each 6 m block draws the original's shared block patch (serpentine
@@ -1693,6 +1694,7 @@ fn build_tile(
         blocks: built,
         heights,
         density,
+        normals: ground_normals,
         materials: used,
         splat,
         unresolved,

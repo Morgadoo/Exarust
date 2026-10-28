@@ -10,7 +10,7 @@
 use std::sync::OnceLock;
 
 use bevy::math::{Vec2, Vec3};
-use exa_physics::engine_math::sin_cos;
+use exa_physics::engine_math::{reciprocal_sqrt, sin_cos};
 
 /// Point-set seed, radius (in 20 cm vertex steps) and attempts per point.
 const POINT_SEED: u32 = 0x1797_2D3E;
@@ -25,8 +25,9 @@ pub const DENSITY_STEP: f32 = f32::from_bits(0x3f7e_eeef);
 /// Chunks per tile side (6 m each).
 pub const CHUNKS: usize = 8;
 const CHUNK_SIDE: f32 = SIDE / CHUNKS as f32;
-/// Below this density nothing grows.
-const MIN_DENSITY: f32 = 0.35;
+/// Below this density nothing grows. The original compares the density,
+/// widened to double, against the double `0.35` (not the `f32` 0.35).
+const MIN_DENSITY: f64 = 0.35;
 /// Grass models are shrunk by this.
 pub const GRASS_SCALE: f32 = 0.75;
 
@@ -43,6 +44,12 @@ impl Lcg {
     /// Uniform in [0, 1).
     pub fn unit(&mut self) -> f32 {
         self.step() as f32 / 4_294_967_296.0
+    }
+
+    /// Uniform in [0, 1) as the engine's unit draw makes it: the 32-bit
+    /// step as a double times 2⁻³², rounded to `f32` once.
+    pub fn unit_exact(&mut self) -> f32 {
+        ((self.step() as f64) * (1.0 / 4_294_967_296.0)) as f32
     }
 
     /// Uniform in 0..n.
@@ -146,6 +153,18 @@ fn partition(items: &mut [Vec2], keep: impl Fn(Vec2) -> bool) -> usize {
     k
 }
 
+/// The three plant libraries, in the order the loader reads them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Kind {
+    /// `trn_grassa02.rfc`: the grass, shrunk to [`GRASS_SCALE`].
+    #[default]
+    Grass,
+    /// `trn_splnta02.rfc`: the small plants.
+    Small,
+    /// `trn_lplnta02.rfc`: the large plants.
+    Large,
+}
+
 /// What grows at a point.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Growth {
@@ -159,15 +178,18 @@ pub struct Growth {
 }
 
 /// What grows in each chunk of a tile. `density(at)` gives the vegetation
-/// density (−1 in holes); `grass` and `plants` count the variants.
-pub fn grow(
-    seed: u32,
-    grass: usize,
-    plants: usize,
-    density: impl Fn(Vec2) -> f32,
-) -> Vec<Vec<Growth>> {
+/// density (−1 in holes); `variants` are the plant shapes in library order.
+///
+/// The original sorts each chunk's growing points before it bakes them:
+/// small plants first (−1), grass next (0), large plants last by their
+/// average height times the instance's scale plus one. The order does not
+/// change the drawn image (the plants are alpha-tested and depth-written)
+/// but the buffer's order is the original's.
+pub fn grow(seed: u32, variants: &[Variant], density: impl Fn(Vec2) -> f32) -> Vec<Vec<Growth>> {
     let chunks = points();
     let mut rng = Lcg(seed);
+    let grass = variants.iter().filter(|v| v.kind == Kind::Grass).count();
+    let plants = variants.len() - grass;
     // First pass: what grows, two random steps per point.
     let chosen: Vec<Vec<Option<(usize, f32)>>> = chunks
         .iter()
@@ -176,46 +198,118 @@ pub fn grow(
                 .iter()
                 .map(|&p| {
                     let d = density(p);
+                    // The threshold compare is in double precision and a NaN
+                    // takes the growing branch, as the original's unordered
+                    // `comisd` does.
                     let n = (d * d * 50.0).round_ties_even().max(0.0) as u32;
                     let roll = rng.below(n);
                     let pick = rng.step();
-                    if d < MIN_DENSITY || grass + plants == 0 {
+                    if (d as f64) < MIN_DENSITY || variants.is_empty() {
                         return None;
                     }
-                    let is_grass = roll < 10 && grass > 0 || plants == 0;
-                    let variant = if is_grass {
+                    let is_grass = roll < 10;
+                    let variant = if is_grass && grass > 0 {
                         ((pick as u64 * grass as u64) >> 32) as usize
-                    } else {
+                    } else if plants > 0 {
                         grass + ((pick as u64 * plants as u64) >> 32) as usize
+                    } else {
+                        ((pick as u64 * grass as u64) >> 32) as usize
                     };
-                    Some((variant, 2.0 * d + 0.1))
+                    // `2d` is one f32 multiply; the `+ 0.1` is a double
+                    // addition, rounded back to f32.
+                    let base = ((d * 2.0) as f64 + 0.1) as f32;
+                    Some((variant, base))
                 })
                 .collect()
         })
         .collect();
-    // Second pass: size and rotation, two more steps per point.
+    // Second pass: size and rotation, two more steps per point, then the
+    // original's per-chunk sort.
     chunks
         .iter()
         .zip(chosen)
         .map(|(chunk, chosen)| {
-            chunk
+            let mut growth: Vec<Growth> = chunk
                 .iter()
                 .zip(chosen)
                 .filter_map(|(&at, c)| {
-                    let rot = rng.unit() * std::f32::consts::TAU;
-                    let size = 0.4 + 0.33 * rng.unit();
+                    let angle = rng.unit_exact() * std::f32::consts::TAU;
+                    let size = (rng.unit_exact() as f64) * 0.33 + 0.4;
                     let (variant, base) = c?;
                     Some(Growth {
                         variant,
                         at,
-                        scale: base * size,
-                        // The original turns the angle by a full turn again.
-                        angle: rot * std::f32::consts::TAU,
+                        scale: (base as f64 * size) as f32,
+                        // The original turns the stored angle by a full turn
+                        // again when it bakes.
+                        angle: angle * std::f32::consts::TAU,
                     })
                 })
-                .collect()
+                .collect();
+            growth.sort_by(|a, b| growth_key(*a, variants).total_cmp(&growth_key(*b, variants)));
+            growth
         })
         .collect()
+}
+
+/// The original's search key for a chunk's sort: small plants −1, grass 0,
+/// a large plant one plus its average height times its scale.
+fn growth_key(growth: Growth, variants: &[Variant]) -> f32 {
+    match variants.get(growth.variant).map_or(Kind::Large, |v| v.kind) {
+        Kind::Grass => 0.0,
+        Kind::Small => -1.0,
+        Kind::Large => {
+            let height = variants.get(growth.variant).map_or(0.0, |v| v.height);
+            height * growth.scale + 1.0
+        }
+    }
+}
+
+/// Whether the plant program uses its normal-mapped variant: the renderer's
+/// shading quality above 3 and the plant normal texture present. The
+/// original switches a shader feature word and its program variant here.
+/// Exarust has one plant shader, so the rule is
+/// kept as data; the material carries the normal map at every quality.
+pub fn plant_normal_mapping(shading_quality: i32, normal_texture: bool) -> bool {
+    shading_quality > 3 && normal_texture
+}
+
+/// The terrain's normal under a point in vertex steps, from the tile's
+/// `n` × `n` vertex normals, as the original's plant baker blends it: the
+/// point's cell corner `(i, j)` (truncated) weighs `fx·fy`, `(i+1, j)`
+/// `(1−fx)·fy`, `(i, j+1)` `(1−fy)·fx` and `(i+1, j+1)` `(1−fx)(1−fy)` (the
+/// weights run opposite to a plain bilinear blend, as the original's do),
+/// accumulated in that order and normalised by the processor's approximate
+/// reciprocal square root (a zero sum stays zero). A point past the grid
+/// takes +Y.
+pub fn terrain_normal(normals: &[[f32; 3]], n: usize, at: Vec2) -> Vec3 {
+    let (i, j) = (at.x as i64, at.y as i64);
+    let (fx, fy) = (at.x - i as i32 as f32, at.y - j as i32 as f32);
+    let corner = |di: i64, dj: i64| {
+        let (ci, cj) = (i + di, j + dj);
+        if ci < 0 || cj < 0 || ci as usize >= n || cj as usize >= n {
+            return None;
+        }
+        normals
+            .get(cj as usize * n + ci as usize)
+            .map(|v| Vec3::from(*v))
+    };
+    let (Some(a), Some(b), Some(c), Some(d)) =
+        (corner(0, 0), corner(1, 0), corner(0, 1), corner(1, 1))
+    else {
+        return Vec3::Y;
+    };
+    let mut sum = a * (fx * fy);
+    sum += b * ((1.0 - fx) * fy);
+    sum += c * ((1.0 - fy) * fx);
+    sum += d * ((1.0 - fy) * (1.0 - fx));
+    let length2 = sum.y * sum.y + (sum.x * sum.x + sum.z * sum.z);
+    let scale = if length2 == 0.0 {
+        0.0
+    } else {
+        reciprocal_sqrt(length2)
+    };
+    sum * scale
 }
 
 /// Ground height under a point of an `n` × `n` vertex grid of heights, on
@@ -243,6 +337,10 @@ pub struct Variant {
     pub normals: Vec<Vec3>,
     pub uvs: Vec<[f32; 2]>,
     pub indices: Vec<u32>,
+    /// Which library the shape came from.
+    pub kind: Kind,
+    /// The mean vertex height, the large plants' sort key.
+    pub height: f32,
 }
 
 /// The density mask texel of a vertex-step point, row-major on 240 × 240.
@@ -254,26 +352,53 @@ pub fn density_texel(at: Vec2) -> (usize, usize) {
 }
 
 /// Bakes `growths` into one vertex set, tile-local metres, with `place`
-/// mapping a point in vertex steps to its ground position.
-pub fn bake(variants: &[Variant], growths: &[Growth], place: impl Fn(Vec2) -> Vec3) -> Variant {
+/// mapping a point in vertex steps to its ground position and
+/// `ground_normal` to the terrain's normal there (see [`terrain_normal`]).
+pub fn bake(
+    variants: &[Variant],
+    growths: &[Growth],
+    place: impl Fn(Vec2) -> Vec3,
+    ground_normal: impl Fn(Vec2) -> Vec3,
+) -> Variant {
     let mut out = Variant::default();
     for g in growths {
         let Some(v) = variants.get(g.variant) else {
             continue;
         };
-        let (s, c) = g.angle.sin_cos();
+        // The original's instance matrix, applied to row vectors: x row
+        // `(cos·s, 0, −sin·s)`, y row `(0, s, 0)`, z row `(sin·s, 0, cos·s)`,
+        // then the translation; each coordinate sums `(x·r0 + y·r1) +
+        // (z·r2 + t)` in f32, as the engine's packed transform does.
+        let (sin, cos) = sin_cos(g.angle);
+        let s = g.scale;
+        let rows = [
+            Vec3::new(cos * s, 0.0, -sin * s),
+            Vec3::new(0.0, s, 0.0),
+            Vec3::new(sin * s, 0.0, cos * s),
+        ];
         let at = place(g.at);
         let base = out.positions.len() as u32;
         out.positions.extend(
             v.positions
                 .iter()
-                .map(|p| Vec3::new(c * p.x + s * p.z, p.y, -s * p.x + c * p.z) * g.scale + at),
+                .map(|p| (rows[0] * p.x + rows[1] * p.y) + (rows[2] * p.z + at)),
         );
-        out.normals.extend(
-            v.normals
-                .iter()
-                .map(|n| Vec3::new(c * n.x + s * n.z, n.y, -s * n.x + c * n.z)),
-        );
+        // Grass and small plants (whose normals the loader set to +Y) turn
+        // their normals by the same scaled rows without the translation,
+        // `(x·r0 + y·r1) + z·r2`, then scale them by `1/s`. A large plant
+        // takes the terrain's normal under it for every vertex instead.
+        if v.kind == Kind::Large {
+            let n = ground_normal(g.at);
+            out.normals
+                .extend(std::iter::repeat_n(n, v.positions.len()));
+        } else {
+            let inverse = 1.0 / s;
+            out.normals.extend(
+                v.normals
+                    .iter()
+                    .map(|n| ((rows[0] * n.x + rows[1] * n.y) + rows[2] * n.z) * inverse),
+            );
+        }
         out.uvs.extend_from_slice(&v.uvs);
         out.indices.extend(v.indices.iter().map(|i| i + base));
     }
@@ -336,19 +461,171 @@ mod tests {
         }
     }
 
+    fn sample_variants() -> Vec<Variant> {
+        let mut shapes = Vec::new();
+        for (kind, height) in [
+            (Kind::Grass, 0.2),
+            (Kind::Small, 0.3),
+            (Kind::Small, 0.4),
+            (Kind::Large, 1.0),
+        ] {
+            shapes.push(Variant {
+                positions: vec![Vec3::new(0.0, height, 0.0)],
+                kind,
+                height,
+                ..Default::default()
+            });
+        }
+        shapes
+    }
+
     #[test]
     fn density_decides_what_grows() {
-        let none = grow(7, 1, 35, |_| 0.2);
+        let variants = sample_variants();
+        let none = grow(7, &variants, |_| 0.2);
         assert!(none.iter().all(|c| c.is_empty()));
-        let sparse = grow(7, 1, 35, |_| 0.4);
+        let sparse = grow(7, &variants, |_| 0.4);
         let grass = sparse.iter().flatten().filter(|g| g.variant == 0).count();
         let total = sparse.iter().flatten().count();
         assert_eq!(grass, total, "low density is all grass");
-        let lush = grow(7, 1, 35, |_| 0.8);
+        let lush = grow(7, &variants, |_| 0.8);
         let plants = lush.iter().flatten().filter(|g| g.variant > 0).count();
         assert!(plants > lush.iter().flatten().count() / 2);
         // Same seed, same growth.
-        assert_eq!(grow(7, 1, 35, |_| 0.8), lush);
+        assert_eq!(grow(7, &variants, |_| 0.8), lush);
+    }
+
+    #[test]
+    fn each_chunk_is_sorted_small_grass_large() {
+        let variants = sample_variants();
+        let growth = grow(11, &variants, |_| 0.9);
+        for chunk in &growth {
+            for pair in chunk.windows(2) {
+                let kind = |g: &Growth| variants[g.variant].kind;
+                let key = |g: &Growth| growth_key(*g, &variants);
+                assert!(
+                    key(&pair[0]) <= key(&pair[1]),
+                    "{:?} before {:?}",
+                    kind(&pair[0]),
+                    kind(&pair[1])
+                );
+            }
+        }
+        // The three classes are ordered small (< 0), grass (0), large (> 1).
+        assert_eq!(
+            growth_key(
+                Growth {
+                    variant: 1,
+                    scale: 1.0,
+                    ..growth[0][0]
+                },
+                &variants
+            ),
+            -1.0
+        );
+        assert_eq!(
+            growth_key(
+                Growth {
+                    variant: 0,
+                    ..growth[0][0]
+                },
+                &variants
+            ),
+            0.0
+        );
+        let large = Growth {
+            variant: 3,
+            scale: 2.0,
+            ..growth[0][0]
+        };
+        assert_eq!(growth_key(large, &variants), 1.0 * 2.0 + 1.0);
+    }
+
+    #[test]
+    fn the_unit_draw_matches_the_engine_division() {
+        let mut rng = Lcg(0x1797_2D3E);
+        assert_eq!(rng.unit_exact(), 0.762_570_98);
+        assert_eq!(rng.unit_exact(), 0.149_713_46);
+    }
+
+    #[test]
+    fn the_plant_uses_its_normal_map_above_shading_quality_three() {
+        assert!(!plant_normal_mapping(3, true));
+        assert!(plant_normal_mapping(4, true));
+        assert!(!plant_normal_mapping(4, false));
+    }
+
+    #[test]
+    fn the_instance_matrix_turns_row_vectors() {
+        // Row vectors through `(cos, 0, −sin)`, `(0, 1, 0)`, `(sin, 0, cos)`
+        // scaled: angle 0 keeps the shape, a quarter turn takes +X to −Z.
+        let variant = Variant {
+            positions: vec![Vec3::X],
+            normals: vec![Vec3::X],
+            uvs: vec![[0.0; 2]],
+            indices: vec![0],
+            kind: Kind::Small,
+            height: 0.0,
+        };
+        let at = Vec3::new(10.0, 1.0, -3.0);
+        let ground = |_| Vec3::new(0.0, 0.6, 0.8);
+        let mut growth = Growth {
+            variant: 0,
+            at: Vec2::ZERO,
+            scale: 2.0,
+            angle: 0.0,
+        };
+        let baked = bake(std::slice::from_ref(&variant), &[growth], |_| at, ground);
+        assert_eq!(baked.positions[0], Vec3::new(12.0, 1.0, -3.0));
+        assert_eq!(baked.normals[0], Vec3::X);
+        growth.angle = std::f32::consts::FRAC_PI_2;
+        let (sin, cos) = sin_cos(growth.angle);
+        let baked = bake(std::slice::from_ref(&variant), &[growth], |_| at, ground);
+        let want = Vec3::new(cos * 2.0 + 10.0, 1.0, -sin * 2.0 + -3.0);
+        assert_eq!(baked.positions[0], want);
+        assert!((baked.positions[0] - Vec3::new(10.0, 1.0, -5.0)).length() < 1e-5);
+        // The normal turns with the scaled rows, then loses the scale.
+        assert!((baked.normals[0] - Vec3::NEG_Z).length() < 1e-6);
+        // A large plant takes the terrain's normal at its point instead.
+        let large = Variant {
+            kind: Kind::Large,
+            ..variant
+        };
+        let baked = bake(&[large], &[growth], |_| at, ground);
+        assert_eq!(baked.normals[0], Vec3::new(0.0, 0.6, 0.8));
+    }
+
+    #[test]
+    fn the_terrain_normal_weighs_the_far_corner_by_the_near_fraction() {
+        // A 3 × 3 grid: +X at (0, 0), +Z at (1, 0), +Y everywhere else.
+        let mut normals = vec![[0.0, 1.0, 0.0]; 9];
+        normals[0] = [1.0, 0.0, 0.0];
+        normals[1] = [0.0, 0.0, 1.0];
+        // At the corner itself (fx = fy = 0) only (i+1, j+1) counts.
+        assert_eq!(
+            terrain_normal(&normals, 3, Vec2::ZERO),
+            Vec3::Y * reciprocal_sqrt(1.0)
+        );
+        // At (0.75, 0.5): (0,0) weighs 0.375, (1,0) 0.125, (0,1) 0.375,
+        // (1,1) 0.125.
+        let got = terrain_normal(&normals, 3, Vec2::new(0.75, 0.5));
+        let sum = Vec3::new(0.375, 0.5, 0.125);
+        let length2 = sum.y * sum.y + (sum.x * sum.x + sum.z * sum.z);
+        assert_eq!(got, sum * reciprocal_sqrt(length2));
+        // Past the grid: +Y.
+        assert_eq!(terrain_normal(&normals, 3, Vec2::new(2.5, 0.0)), Vec3::Y);
+    }
+
+    #[test]
+    fn the_density_threshold_is_the_double_0_35() {
+        // The f32 nearest 0.35 is just below the double 0.35: nothing grows.
+        let variants = sample_variants();
+        assert!(grow(5, &variants, |_| 0.35).iter().all(|c| c.is_empty()));
+        let above = f32::from_bits(0.35f32.to_bits() + 1);
+        assert!(grow(5, &variants, |_| above).iter().any(|c| !c.is_empty()));
+        // A NaN density takes the growing branch (unordered compare).
+        let nan = grow(5, &variants, |_| f32::NAN);
+        assert!(nan.iter().any(|c| !c.is_empty()));
     }
 
     #[test]

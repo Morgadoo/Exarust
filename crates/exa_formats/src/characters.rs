@@ -23,6 +23,8 @@ const CHARACTER_DB: u32 = 0xCECD_DB00;
 const PLACEMENT: u32 = 0xCAC0_CA00;
 const POSE: u32 = 0xCAC0_EB00;
 const LEGACY_POSE: u32 = 0xCAC0_E100;
+const MOTION: u32 = 0xCAC0_EA00;
+const AI_HOME: u32 = 0xCACE_0F77;
 /// Condition of a dead body, placed from its pose.
 pub const DEAD: i32 = 0xA00;
 const CENTIMETRES_PER_METRE: f32 = 100.0;
@@ -248,6 +250,25 @@ pub struct Placement {
     pub condition: i32,
     /// The body's saved pose, if the placement carries one.
     pub pose: SavedPose,
+    /// The character's saved motion state (`CAC0EA00`), when a save stored it.
+    pub motion: Option<MotionState>,
+    /// The AI's home (`CACE0F77`), when a save stored it.
+    pub ai_home: Option<AiHome>,
+}
+
+/// A saved motion state: the state word and its value.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MotionState {
+    pub state: u32,
+    pub value: f32,
+}
+
+/// A saved AI home: where the character belongs and which way it faces.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AiHome {
+    /// Metres.
+    pub position: [f32; 3],
+    pub heading: f32,
 }
 
 impl Placement {
@@ -1064,6 +1085,8 @@ fn read_placement(b: &[u8]) -> Result<Placement> {
     let yaw = r.f32()?;
     let condition = r.i32()?;
     let mut pose = SavedPose::None;
+    let mut motion = None;
+    let mut ai_home = None;
     let mut saw_tree = false;
     while r.remaining() >= 8 {
         let tag = r.u32()?;
@@ -1086,6 +1109,29 @@ fn read_placement(b: &[u8]) -> Result<Placement> {
                 }
                 pose = SavedPose::Flat(frames);
             }
+            // The original's placement reader only keeps a pointer to each
+            // of these bodies (a later chunk of the same tag replaces an
+            // earlier one); the field layouts below are inferred from the
+            // body sizes, not from a reader of them (guess).
+            MOTION => {
+                let mut p = Reader { b: body, pos: 0 };
+                if p.remaining() >= 12 {
+                    motion = Some(MotionState {
+                        state: p.u32()?,
+                        value: p.f32()?,
+                    });
+                }
+            }
+            AI_HOME => {
+                let mut p = Reader { b: body, pos: 0 };
+                if p.remaining() >= 20 {
+                    let at = [p.f32()?, p.f32()?, p.f32()?];
+                    ai_home = Some(AiHome {
+                        position: at.map(|v| v / CENTIMETRES_PER_METRE),
+                        heading: p.f32()?,
+                    });
+                }
+            }
             _ => {}
         }
     }
@@ -1095,6 +1141,8 @@ fn read_placement(b: &[u8]) -> Result<Placement> {
         yaw,
         condition,
         pose,
+        motion,
+        ai_home,
     })
 }
 

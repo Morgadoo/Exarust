@@ -348,7 +348,9 @@ One system grows grass and plants (`exa_world::terrain::vegetation`):
   (6 small) and `trn_lplnta02.rfc` (29 large) is a variant, all textured with
   `PlantSet_01D`/`N`. Grass is shrunk to 0.75. Grass and small plants are
   lit as if facing up: the plant loader sets their normals to (0, 1, 0)
-  (the large plants keep theirs). No plant library stores vertex colours,
+  (adding the stream when a mesh has none); the baker turns those with the
+  instance and takes the terrain's normal under the plant for every vertex
+  of a large plant. No plant library stores vertex colours,
   and the plant program's fourth stream is the tangent, so the plants are
   not tinted per vertex. Alpha test 0.1, no fade.
   The original's grass program sways them in the wind; Exarust draws them
@@ -368,10 +370,24 @@ One system grows grass and plants (`exa_world::terrain::vegetation`):
   point in chunk order, two steps decide: grass when (s·N)>>32 < 10 with
   N = round(50d²), then the variant. A second pass, two steps per point,
   gives rotation rand·2π (applied times 2π again) and scale
-  (2d + 0.1)(0.4 + 0.33·rand).
+  (2d + 0.1)(0.4 + 0.33·rand), each two-product sum in double precision.
+  Each chunk's growing points are then sorted by the original's key: small
+  plants −1, grass 0, large plants 1 + their mean vertex height × scale.
 - **Placement**: on the displaced ground of the cell, on the triangle the
   rendered patch splits it into (the low-to-high diagonal), rotated about Y
-  only, never tilted to the slope.
+  only, never tilted to the slope. The instance matrix applies to row
+  vectors: rows `(cos·s, 0, −sin·s)`, `(0, s, 0)`, `(sin·s, 0, cos·s)` and
+  the ground point, each coordinate summed `(x·r0 + y·r1) + (z·r2 + t)`.
+  Grass and small-plant normals turn by the same rows and are scaled by
+  `1/s`; a large plant's vertices all take the terrain normal at its point,
+  blended from the four vertex normals around it with the corner `(i, j)`
+  weighing `fx·fy`, `(i+1, j)` `(1−fx)·fy`, `(i, j+1)` `(1−fy)·fx` and
+  `(i+1, j+1)` `(1−fx)(1−fy)` (opposite to a plain bilinear blend) and
+  normalised by the approximate reciprocal square root. The density
+  threshold compares the density, widened to double, with the double 0.35.
+  The plant program takes its
+  normal-mapped variant only above shading quality 3 with
+  `PlantSet_01N` present (Exarust's single plant shader always carries it).
 
 Each tile also hangs a 0.5 m skirt from its edges (an Exarust addition). It
 hides cracks where neighbouring tiles, keeping different materials, lift a

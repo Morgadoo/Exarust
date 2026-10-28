@@ -506,8 +506,12 @@ impl BlockDescriptor {
                         }
                     }
                 }
-                let half = (hi - lo) * 0.5;
-                (lo + half, half)
+                let raw = (hi - lo) * 0.5;
+                let centre = lo + raw;
+                // The original keeps a flat block's half extent at 1 mm;
+                // the centre keeps the raw half.
+                let half = if raw < 0.001 { 0.001 } else { raw };
+                (centre, half)
             }
             None => (0.0, 10.0),
         };
@@ -829,6 +833,12 @@ mod tests {
         let block = BlockDescriptor::new(3, 2, 5, Some(&local));
         assert_eq!(block.centre[1], 2.0);
         assert_eq!(block.half[1], 7.0);
+        // A flat block keeps the original's 1 mm half extent (plus the one
+        // every block gets).
+        let flat = [[(5.0f32, 5.0f32); BOUND_CELLS]; BOUND_CELLS];
+        let block = BlockDescriptor::new(3, 0, 0, Some(&flat));
+        assert_eq!(block.centre[1], 5.0);
+        assert!((block.half[1] - 1.001).abs() < 1e-6);
     }
 
     #[test]
