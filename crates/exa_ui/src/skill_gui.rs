@@ -79,8 +79,16 @@ pub const COLOUR: &str = "Colour";
 pub const TEX: &str = "Tex";
 /// The bar program's progress uniform.
 pub const PROG: &str = "Prog";
-/// The value `MPrj` is set to: 2, 0, 0, 0.
-pub const M_PRJ_VALUE: [f32; 4] = [2.0, 0.0, 0.0, 0.0];
+/// The matrix both programs upload to `MPrj` (one 4 × 4 matrix, not
+/// transposed), in column order: the engine's fixed projection mapping
+/// [0, 1] to clip space, the same constant as
+/// `exa_render::texture_program::MPRJ`.
+pub const M_PRJ_VALUE: [[f32; 4]; 4] = [
+    [2.0, 0.0, 0.0, 0.0],
+    [0.0, 2.0, 0.0, 0.0],
+    [0.0, 0.0, -0.001, 0.0],
+    [-1.0, -1.0, -0.001, 1.0],
+];
 /// The reveal sound the screen's setup loads.
 pub const SKILL_SHOW_SOUND: &str = "SkillShow_01";
 /// The reveal sound's play arguments: the environment handle, the sound,
@@ -111,7 +119,7 @@ pub struct SkillPrograms {
 }
 
 /// The skill screen's one-time program setup as [`crate::skill_gui`] runs
-/// it: the rounded ring program with `MPrj` = (2, 0, 0, 0) and `Colour`,
+/// it: the rounded ring program with `MPrj` ([`M_PRJ_VALUE`]) and `Colour`,
 /// then the bar program with the same projection, its `Tex` set to unit 0,
 /// `Colour` and `Prog`, then the reveal sound handle.
 pub fn skill_programs() -> SkillPrograms {
@@ -359,7 +367,8 @@ mod tests {
         assert_eq!(programs.ring.texture, None);
         assert_eq!(programs.bar.texture, Some("Tex"));
         assert_eq!(programs.bar.progress, Some("Prog"));
-        assert_eq!(M_PRJ_VALUE, [2.0, 0.0, 0.0, 0.0]);
+        assert_eq!(M_PRJ_VALUE[0], [2.0, 0.0, 0.0, 0.0]);
+        assert_eq!(M_PRJ_VALUE[3], [-1.0, -1.0, -0.001, 1.0]);
         assert_eq!(programs.sound, "SkillShow_01");
         assert_eq!(SKILL_SHOW_GAIN, 0.03);
         assert_eq!(SKILL_SHOW_FLAGS, 0x4060);

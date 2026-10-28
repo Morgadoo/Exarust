@@ -384,7 +384,7 @@ opening keeps the content alpha and the opening scale apart (the hide
 scales the scale), its open/toggle plan builds the atlases, starts the
 reveal sound, suspends the controls and shows the form, and its close
 restores them. `skill_gui` holds the two shader sources, their uniforms
-and `MPrj` = (2, 0, 0, 0) with the reveal sound, and `skill_draw` builds
+and the fixed `MPrj` projection matrix with the reveal sound, and `skill_draw` builds
 the screen's vertices: the page background, the ring page's dim, the node
 plates and five spokes, the node and level icons, the orbit bars and the
 tooltip, learning-row and forget-dialog boxes and text anchors. The
