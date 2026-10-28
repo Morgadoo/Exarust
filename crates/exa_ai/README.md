@@ -25,9 +25,17 @@ its brain's personality, else Exarust's default (skill 0, blend 1).
 
 A level's living characters carry a brain (`brain`): their record's roles,
 their relations and traits. When they appear their roles choose their idle
-activity; every frame they rate the player from both sides' roles, which
-feeds the contact rating (`sense`), and the brain's target pass decides
-whether the character engages the player. Every frame the brain's
+activity, and they choose it again whenever the held roles change; every
+frame they rate the player from both sides' roles, which feeds the contact
+rating (`sense`), and the brain's target pass decides whether the character
+engages the player. The AI tick links each brain into its 600 cm room cell,
+gathers the characters of that cell as its nearby list, decays its group
+alert a step every ten seconds, and out of combat sways its look about its
+heading and turns its model to it (the original lets the body's locomotion
+turn the body; the running game ticks no locomotion request for an NPC, so
+the model is turned directly). A character that re-enters the scene from
+the dormant holder heals to its lasting health, forgets every contact and
+leaves combat (`presence::reenter_on_entered`). Every frame the brain's
 perception pass clears its contacts' concern targets, closeness and view
 (as the original's target pass does before it perceives), looks at every
 character within the largest perception reach and every one it already
@@ -48,15 +56,18 @@ wakes.
 | `search` | the companion's search: gathering over the room grid, picking, the look sweep, the forced path, arrival, kneeling, looting worn items, packs and containers, item worth, wear room, comments to the leader, re-arming, tidying, and the world edits its deeds carry out (`apply_deed`) |
 | `manager` | the AI manager's frame (dormant ticks, rising undead, the 3 cm zone check), zone deeds, the group alert (raised, held ten seconds and dropped one every ten), the approach clamp, and the scene node the level's AI start-up makes once (`_Temp`, flag `0x100000`) |
 | `lookup` | a simulation's character by record id and a status effect by a masked word (first match in list order) |
-| `brain` | the components and systems that carry roles into the running game |
+| `brain` | the components and systems that carry roles into the running game: applying roles again when the held set changes, the attitude rating and waking, the perception pass, and the AI tick (morale, the group alert's ten-second decay, the contact integration, the target pass, the room cell and nearby list, the engagement, and the out-of-combat body turn) |
 | `idle` | roam, patrol, sentry and the wait, the wander and home-side points, follow, sleep, knock-out and waking |
+| `motion` | the AI's look and body motion: the head look toward a point (a quarter turn, 0.02 easing), the whole-look smoothing (`(0.0062831854·gap + sway)·0.7`, a 30° write threshold), the idle look (0.1 of the gap, 1 % pitch), the step/combat walk (the 0.7/0.007 facing threshold, the 150 cm goal hold, the run and sprint flags), the walk stop (8·crouch + 20), the steer line (120 cm, 3600 cm²), the way share, the alert pan (one draw in 300 and 75), the out-of-combat sway, and the aim, settle and snap |
+| `rooms` | the 600 cm room cell grid: the floored, half-offset flat index, the per-cell occupant lists, the old-cell memory, and the cell's nearby characters |
+| `lifecycle` | the script-object factory, the scripted action hook, the removal/destroy/disable hooks, the investigation of a disturbance, the idle driver's exit/use/object checks and its room walk, the go-to-object state, and the object goal |
 | `combatant` | the behaviour base: contacts, perception, the attitude and trust overrides, concern, references, the queued step, the nav footprint |
 | `combat` | the combat state: the follow check, practice, the foe estimate, the weapon draw and the lunge, the chase count and eagerness, the footwork drives, the seventeen-place search, the attack decision with the friend test and the keep-off, the step, the guard, the fierce stance and the body turn |
 | `contacts` | the contact classifier (the stress flight, the engagement threshold, the concern flight, the watch and the notice score), the twelve-contact list, the per-tick contact integration (the hostility drift from the perceived attitude, the concern rising toward its target, the noticed level following the sighting, the attention, the bad-route marks, the aggregates and the readiness), the target pass (the scripted focus, the visible and nearby lists, the sleeper's waking, the clean-up, the alarm mean, the encounter and the greeting, the round-robin dialogue refresh), the nearby list (sixteen nearest seen within 30 m, by squared distance) |
 | `flee` | the flee start's morale, the way out of a room away from a threat, the fled-room memory, the flee state's tick and the cornered fall-back |
 | `cast` | the power-cast chooser (ten slots, per-slot cooldowns, the power system's word, the pool budget after a round to even, the flat 20 and the cumulative draw, the 6 s rest written to the slot of the chosen power's table place) |
 | `chase` | the chase route: the bark, the fresh-target and moved-foe (3-D) tests, the goal on the foe's ground and the route through the navigation grid, the reach test from the estimate to the route's end, the unreachable mark and its 3 s plus draw, and the leave-without-timers case |
-| `route` | the one-planner-a-frame turn (the longest waiter remembered, strictly), the route start (two points and 150 cm, or forced), and the navigation grid as the router (`exa_world::nav::find_path`, not a second pathfinder) |
+| `route` | the one-planner-a-frame turn (the longest waiter remembered, strictly), the route start (two points and 150 cm, or forced), the path's flat length, and the navigation grid as the router (`exa_world::nav::find_path`, not a second pathfinder) |
 | `sense`, `hear`, `fight`, `place`, `path`, `order` | contact rating, noise and alert, attack choice, combat positions, path following (the planner is `exa_world::nav::path`), steering orders |
 | `golem` | the golem guardians: wake (`golem_act`, the glow material at full, the limbs' mass restored) and sleep (the hidden render bit, a twentieth of the mass, a fiftieth of each part's value), the alarm trigger's arming and wake callback, the homeward callback, the `Alarm_` box that holds the armed point, the strict plane-distance radius query over a 6 m sector, the player's post 200 cm past the box at 10 cm up, and the pose reset |
 

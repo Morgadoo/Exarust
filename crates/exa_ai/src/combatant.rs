@@ -1598,3 +1598,171 @@ mod tests {
         assert_eq!(asin_fast(-1.0), -std::f32::consts::FRAC_PI_2);
     }
 }
+
+/// The noticeability floor an ally-class sense puts on a noticed contact:
+/// a noticeability over 1 and under 3 becomes exactly 3.
+pub const ALLY_NOTICE_FLOOR: f32 = 3.0;
+/// The noticed level the ally sense gives a body controlled by the player's
+/// controller (the race word lacks the AI flag).
+pub const PLAYER_NOTICE: f32 = 100.0;
+/// The crowd term an ally contact keeps, a share of the largest threat it
+/// feels toward its allies.
+pub const ALLY_CROWD: f32 = 0.3;
+/// The ally threat term's gain.
+pub const ALLY_THREAT_GAIN: f32 = 1.2;
+
+/// A neighbour of the ally-sensed character: how well it sees the neighbour
+/// and whether that neighbour is itself an AI character (its race word has
+/// the AI flag) or the character the ally sense is about.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AllyNeighbour {
+    /// The neighbour's closeness to the sensed character.
+    pub closeness: f32,
+    /// The sensed character's view weight toward the neighbour.
+    pub view: f32,
+    /// The neighbour is an AI character (an ally), not the player.
+    pub ally: bool,
+    /// The neighbour is the character the ally sense is about.
+    pub is_target: bool,
+}
+
+/// What the ally (guardian) sense writes on a contact.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct AllySight {
+    /// The noticed level.
+    pub noticed: f32,
+    /// The closeness, which the ally sense keeps as the concern.
+    pub concern: f32,
+    /// The crowd term, raised from the threat the sensed character poses to
+    /// its allies.
+    pub crowd: f32,
+    /// The sense's own level: −1 for a player-controlled body, 0 for a
+    /// dead, asleep or removed one, 1 otherwise (2 if the inert alarm
+    /// branch ever fired).
+    pub level: i32,
+}
+
+/// The ally sense (the guardian races' contact routine), from the
+/// observer's statue mark, the contact's current noticed level, whether
+/// the observed body is controlled by the player (its race word lacks the
+/// AI flag), its condition and sleep, the closeness, and the observed
+/// character's contacts. The noticeability floor raises a noticed level
+/// between 1 and 3 to 3. A player-controlled body is noticed at 100 and
+/// ends the sense at −1; a dead or asleep one is cleared and ends at 0.
+/// Otherwise the closeness becomes the concern, and when the noticed level
+/// is at least 1 the crowd term is the largest threat the sensed character
+/// feels toward its allies: each neighbour's `(view·0.75 + 0.25)·c²`
+/// weighted by `(1 − share)·ally + self·share`, share being the target's
+/// weight over the sum, times 1.2, kept at 0.3 of it when the noticed level
+/// is not above it.
+#[allow(clippy::too_many_arguments)]
+pub fn ally_sense(
+    statue: bool,
+    noticed: f32,
+    player_controlled: bool,
+    condition: u32,
+    asleep: bool,
+    closeness: f32,
+    self_ally: bool,
+    neighbours: &[AllyNeighbour],
+) -> AllySight {
+    let mut noticed = noticed;
+    if !statue && 1.0 < noticed && noticed < ALLY_NOTICE_FLOOR {
+        noticed = ALLY_NOTICE_FLOOR;
+    }
+    if player_controlled {
+        return AllySight {
+            noticed: PLAYER_NOTICE,
+            level: -1,
+            ..AllySight::default()
+        };
+    }
+    if condition == CONDITION_DEAD || asleep {
+        return AllySight {
+            noticed: 0.0,
+            level: 0,
+            ..AllySight::default()
+        };
+    }
+    let mut out = AllySight {
+        noticed,
+        concern: closeness,
+        level: 1,
+        ..AllySight::default()
+    };
+    if noticed < 1.0 {
+        return out;
+    }
+    let weight = |n: &AllyNeighbour| (n.view * 0.75 + 0.25) * n.closeness * n.closeness;
+    let target = neighbours.iter().find(|n| n.is_target).map_or(0.0, weight);
+    let _ = self_ally;
+    let mut surround = 0.0f32;
+    for n in neighbours {
+        let w = weight(n);
+        let ally = if n.is_target { true } else { n.ally };
+        let own = if ally { 1.0 } else { 0.0 };
+        // The observed character itself is an ally of itself.
+        let share = if target <= 0.0 {
+            0.0
+        } else {
+            target / (w + target)
+        };
+        let term = ((1.0 - share) * own + own * share) * w;
+        let term = if term <= 0.0 { 0.0 } else { term };
+        if surround < term * ALLY_THREAT_GAIN {
+            surround = term * ALLY_THREAT_GAIN;
+        }
+    }
+    if noticed <= surround {
+        out.crowd = surround * ALLY_CROWD;
+    }
+    out
+}
+
+#[cfg(test)]
+mod ally_tests {
+    use super::*;
+
+    /// The noticeability floor, the player and dead cases, and the crowd
+    /// term from an ally's threat.
+    #[test]
+    fn the_ally_sense_floors_notice_and_weighs_allies() {
+        // 1 < noticed < 3 becomes 3.
+        let n = |closeness, view, ally| AllyNeighbour {
+            closeness,
+            view,
+            ally,
+            is_target: false,
+        };
+        let out = ally_sense(false, 2.0, false, 0, false, 0.5, true, &[]);
+        assert_eq!((out.noticed, out.concern, out.level), (3.0, 0.5, 1));
+        // A player body is noticed at 100 and the sense ends at −1.
+        let out = ally_sense(false, 3.0, true, 0, false, 0.5, false, &[]);
+        assert_eq!((out.noticed, out.level), (100.0, -1));
+        // Dead and asleep clear it.
+        for (condition, asleep) in [(CONDITION_DEAD, false), (0, true)] {
+            let out = ally_sense(false, 3.0, false, condition, asleep, 0.5, true, &[]);
+            assert_eq!((out.noticed, out.level), (0.0, 0));
+        }
+        // Two allies at closeness 0.99 in full view: each weight is 0.9801
+        // and the term 1.2·weight; a noticed level of 1 is not above it, so
+        // the crowd is 0.3·1.17612.
+        let out = ally_sense(
+            false,
+            1.0,
+            false,
+            0,
+            false,
+            0.5,
+            true,
+            &[n(0.99, 1.0, true), n(0.99, 1.0, true)],
+        );
+        assert!((out.crowd - 0.352836).abs() < 1e-5, "{}", out.crowd);
+        // An unnoticed contact (0) skips the threat.
+        let out = ally_sense(false, 0.0, false, 0, false, 0.5, true, &[n(0.5, 0.5, true)]);
+        assert_eq!(out.crowd, 0.0);
+        // A statue keeps the floor off but still senses.
+        let out = ally_sense(true, 2.0, false, 0, false, 0.5, true, &[]);
+        assert_eq!(out.noticed, 2.0);
+    }
+}
