@@ -187,6 +187,58 @@ pub struct Worn {
     pub armour: Option<exa_formats::objdb::Armour>,
 }
 
+/// A record's appearance as a spawn reads it: its worn items and the items
+/// in its four hands.
+#[derive(Debug, Clone, Default)]
+pub struct RecordLook {
+    /// Worn items, outermost last.
+    pub worn: Vec<Worn>,
+    /// The four hand slots, resolved.
+    pub hands: [Option<HandItem>; exa_formats::characters::HANDS],
+    /// The main hand's item: model and weapon data.
+    pub held: Option<(String, Option<exa_formats::objdb::Weapon>)>,
+}
+
+/// Resolves a record's worn items and hands from the items `find` names.
+///
+/// A worn item is shown as the model its body names, which may differ from
+/// the one it shows on the ground or lack one. An item without a model is
+/// not shown at all. `find` receives the record's reference (its local bit
+/// kept), so a caller with a level's local database can route on it.
+pub fn record_look<'a>(
+    record: &exa_formats::characters::CharacterRecord,
+    mut find: impl FnMut(u32) -> Option<&'a Item>,
+) -> RecordLook {
+    let hand = |hand: exa_formats::characters::ItemRef| -> Option<HandItem> {
+        let item = find(hand.id)?;
+        (!item.model.is_empty()).then(|| HandItem {
+            model: item.model.clone(),
+            weapon: item.weapon,
+            shield: item.shield.is_some(),
+            torch: item.torch,
+        })
+    };
+    let hands = record.hands.map(hand);
+    let held = hands[0]
+        .as_ref()
+        .map(|item| (item.model.clone(), item.weapon));
+    let worn = record
+        .worn
+        .iter()
+        .filter_map(|worn| {
+            let item = find(worn.id)?;
+            (!item.worn_model.is_empty()).then(|| Worn {
+                model: item.worn_model.clone(),
+                appearance: item.appearance,
+                hides: item.hidden_slots(),
+                head_word: item.slot_word(10),
+                armour: item.armour,
+            })
+        })
+        .collect();
+    RecordLook { worn, hands, held }
+}
+
 /// Resolves a level's placed characters: records from its own database,
 /// worn items from its local object database or the game's.
 pub fn placed_characters(
@@ -217,35 +269,7 @@ pub fn placed_characters(
                 };
                 items.iter().find(|i| i.id == id & ID_MASK)
             };
-            let hand = |hand: exa_formats::characters::ItemRef| -> Option<HandItem> {
-                let item = find(hand.id)?;
-                (!item.model.is_empty()).then(|| HandItem {
-                    model: item.model.clone(),
-                    weapon: item.weapon,
-                    shield: item.shield.is_some(),
-                    torch: item.torch,
-                })
-            };
-            let hands = record.hands.map(hand);
-            let held = hands[0]
-                .as_ref()
-                .map(|item| (item.model.clone(), item.weapon));
-            let worn = record
-                .worn
-                .iter()
-                .filter_map(|worn| {
-                    // Worn as the model its body names, which may differ
-                    // from the one it shows on the ground or lack one.
-                    let item = find(worn.id)?;
-                    (!item.worn_model.is_empty()).then(|| Worn {
-                        model: item.worn_model.clone(),
-                        appearance: item.appearance,
-                        hides: item.hidden_slots(),
-                        head_word: item.slot_word(10),
-                        armour: item.armour,
-                    })
-                })
-                .collect();
+            let look = record_look(record, find);
             Some(PlacedCharacter {
                 name: record.name.clone(),
                 position: Vec3::from_array(p.position),
@@ -253,9 +277,9 @@ pub fn placed_characters(
                 dead: p.is_dead(),
                 race: record.race,
                 female: record.female,
-                worn,
-                held,
-                hands,
+                worn: look.worn,
+                held: look.held,
+                hands: look.hands,
                 record: record.clone(),
                 encumbrance: exa_formats::encumbrance::of_record(record, find),
                 pose: p.pose.clone(),

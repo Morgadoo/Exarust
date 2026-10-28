@@ -80,6 +80,11 @@ with nested packs as `exanima://Resource/common.rml/bontile`.
   physical still run once a frame.
 - Physics uses a fixed step with a fixed iteration count. Floating-point
   determinism is expected per build and per platform, not across platforms.
+- A level change is still a process restart: the loaded level keeps no
+  exportable scene and the physics level's colliders and bodies have no
+  owner-based teardown. The arena's hub-to-match launch and its return
+  therefore hand the career over in `exa_game::arena_handoff`, an
+  Exarust-only file, while the match's own rounds run in process.
 
 ## Units and axes (to be confirmed in Phase 1)
 

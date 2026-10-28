@@ -60,6 +60,11 @@ pub struct ArenaHub {
     pub manager_placed: bool,
     /// The session hook's answer, once the manager fell.
     pub fall: Option<HubFall>,
+    /// The placement a settled match returned the company to: the hub puts
+    /// the manager there instead of its own start.
+    pub returned: Option<crate::arena_session::ReturnPlacement>,
+    /// The shopkeeper and the specialists' bodies were asked for.
+    pub npcs_spawned: bool,
     /// The roll the entry used.
     pub roll: u32,
 }
@@ -74,6 +79,8 @@ impl Default for ArenaHub {
             manager: None,
             manager_placed: false,
             fall: None,
+            returned: None,
+            npcs_spawned: false,
             roll: 0,
         }
     }
@@ -125,6 +132,7 @@ impl Plugin for ArenaHubPlugin {
             .init_resource::<HubRoll>()
             .add_message::<WorldClick>()
             .add_message::<ArenaMatchLaunch>()
+            .add_message::<crate::scene_bodies::SceneCommand>()
             .init_resource::<HubWindows>()
             .init_resource::<crate::hub_windows::ArenaCareer>()
             .init_resource::<crate::hub_windows::HubItemNames>()
@@ -184,6 +192,7 @@ fn enter_loaded_hub(
     players: Query<&mut Transform, With<Player>>,
     bodies: Query<(&Condition, &Fighter, Option<&Ragdoll>), With<PlayerBody>>,
     mut career: ResMut<crate::hub_windows::ArenaCareer>,
+    mut scene_commands: MessageWriter<crate::scene_bodies::SceneCommand>,
 ) {
     let loaded = levels.iter().any(|root| is_hub_level(&root.name));
     if !loaded {
@@ -191,12 +200,9 @@ fn enter_loaded_hub(
         hub.manager_placed = false;
         return;
     }
-    if flow.as_deref().is_some_and(|flow| {
-        !matches!(
-            flow.mode,
-            crate::flow::Mode::Arena | crate::flow::Mode::Menu
-        )
-    }) {
+    // The play view's practice stand-in counts as the arena while the hub
+    // is loaded, as the click hook reads it; story mode does not.
+    if hub_mode(flow.as_deref(), true) != ARENA_MODE {
         return;
     }
     if !hub.entered {
@@ -215,6 +221,7 @@ fn enter_loaded_hub(
         hub.session_hook = entry.session_hook;
         hub.manager = Some(plan);
         hub.manager_placed = false;
+        hub.npcs_spawned = false;
         hub.fall = None;
         hub.roll = entry.roll;
         // Only a physician clears the weapon object at the hub's spot.
@@ -243,13 +250,49 @@ fn enter_loaded_hub(
     if !hub.manager_placed
         && let (Some(plan), Some(at)) = (hub.manager, player_start(HUB_LEVEL).map(|s| s.position))
     {
-        let manager = Vec3::new(at.x, plan.position[1] / 100.0, at.z);
+        // A settled match's return puts the company back at the saved
+        // placement: 300 cm out along the hub's entry direction (the hub's
+        // own start), a half turn round. Both are the same spot, which is
+        // why the entry's start and the return agree. The half turn is the
+        // hub start's own facing (towards -z), which the player's body
+        // already carries; the root, which holds only the position, is not
+        // turned again.
+        let distance = hub
+            .returned
+            .map_or(at.z, |placement| placement.distance / 100.0);
+        let manager = Vec3::new(at.x, plan.position[1] / 100.0, distance);
         let mut placed = false;
         for mut transform in players {
             transform.translation = manager;
             placed = true;
         }
+        if placed {
+            info!("arena hub: the manager stands at {manager}");
+        }
         hub.manager_placed = placed;
+    }
+    // The shopkeeper and one body per employed specialist stand at their
+    // planned spots once the manager is there. The original finds the
+    // shopkeeper's actor record by name and creates the specialists' bodies
+    // from the employees' records.
+    if hub.manager_placed && !hub.npcs_spawned {
+        let mut plans = vec![crate::scene_bodies::hub_body_plan(
+            &crate::arena_spawn::shopkeeper_plan(),
+            true,
+        )];
+        for member in &career.company.roster {
+            if let Some(spot) = crate::arena_spawn::specialist_spot(member.profession) {
+                let mut plan = crate::scene_bodies::hub_body_plan(&spot, false);
+                plan.name = Some(member.name.clone());
+                plans.push(plan);
+            }
+        }
+        let count = plans.len();
+        for plan in plans {
+            scene_commands.write(crate::scene_bodies::SceneCommand::Spawn(Box::new(plan)));
+        }
+        hub.npcs_spawned = true;
+        info!("arena hub: {count} bodies asked for (shopkeeper and specialists)");
     }
 }
 
@@ -272,6 +315,10 @@ pub struct ArenaMatchLaunch {
     pub tier: i32,
     /// The company entry that is the player's own, if any.
     pub player: Option<usize>,
+    /// A tournament event's match.
+    pub tournament: bool,
+    /// The prize a win pays, copper.
+    pub prize: u32,
     pub fighters: Vec<LaunchedFighter>,
 }
 
@@ -427,6 +474,8 @@ pub fn plan_launch_at(
         level,
         tier,
         player,
+        tournament,
+        prize: board.selected.prize,
         fighters,
     })
 }
@@ -1207,5 +1256,139 @@ mod tests {
         assert_eq!(clear_physician_weapon(&mut career), Some(0));
         assert_eq!(career.venue_items.len(), 1);
         assert_eq!(clear_physician_weapon(&mut career), None);
+    }
+
+    fn spawn_player(app: &mut App) -> Entity {
+        app.world_mut().spawn((Player, Transform::default())).id()
+    }
+
+    fn member(profession: crate::career::Profession) -> crate::career::Member {
+        crate::career::Member {
+            name: "Ash".into(),
+            profession,
+            xp: 0,
+            skills: [0; 6],
+            skill_xp: [0; 6],
+            techniques: [[0; 6]; 6],
+            loadouts: Default::default(),
+            health: u16::MAX,
+            in_entry: false,
+        }
+    }
+
+    /// The play view runs the hub under its practice stand-in mode: the
+    /// manager is still placed and the hub's bodies asked for; a story-mode
+    /// flow leaves the hub alone.
+    #[test]
+    fn the_play_views_practice_mode_still_enters_the_hub() {
+        for (mode, entered) in [
+            (crate::flow::Mode::Practice, true),
+            (crate::flow::Mode::Story, false),
+        ] {
+            let mut app = hub_app();
+            let mut flow = Flow::default();
+            flow.mode = mode;
+            flow.phase = Phase::Playing;
+            app.insert_resource(flow);
+            spawn_hub_level(&mut app);
+            spawn_player(&mut app);
+            app.update();
+            let hub = app.world().resource::<ArenaHub>();
+            assert_eq!(hub.manager_placed, entered, "{mode:?}");
+            assert_eq!(hub.npcs_spawned, entered, "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn the_hub_asks_for_its_shopkeeper_and_one_body_per_specialist() {
+        let mut app = hub_app();
+        let mut flow = Flow::default();
+        flow.mode = crate::flow::Mode::Arena;
+        flow.phase = Phase::Playing;
+        app.insert_resource(flow);
+        {
+            let mut career = app
+                .world_mut()
+                .resource_mut::<crate::hub_windows::ArenaCareer>();
+            career
+                .company
+                .roster
+                .push(member(crate::career::Profession::Merchant));
+            career
+                .company
+                .roster
+                .push(member(crate::career::Profession::Combatant));
+            career
+                .company
+                .roster
+                .push(member(crate::career::Profession::Physician));
+        }
+        spawn_hub_level(&mut app);
+        spawn_player(&mut app);
+        app.update();
+        assert!(app.world().resource::<ArenaHub>().npcs_spawned);
+        let commands: Vec<crate::scene_bodies::SceneCommand> = app
+            .world_mut()
+            .resource_mut::<Messages<crate::scene_bodies::SceneCommand>>()
+            .drain()
+            .collect();
+        assert_eq!(commands.len(), 3, "shopkeeper, merchant and physician");
+        let plans: Vec<&crate::scene_bodies::SceneBodyPlan> = commands
+            .iter()
+            .filter_map(|command| match command {
+                crate::scene_bodies::SceneCommand::Spawn(plan) => Some(plan.as_ref()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(plans[0].at, Vec3::new(-3.2, 0.0, -1.1));
+        assert_eq!(
+            plans[0].yaw.to_bits(),
+            (15.0f32 * crate::arena_spawn::DEGREE).to_bits()
+        );
+        assert_eq!(plans[0].roles, vec![0x11, 0x21]);
+        assert_eq!(plans[0].actor(), Some("arenashpkp"));
+        assert_eq!(plans[1].at, Vec3::new(4.4, 0.0, 0.1));
+        assert_eq!(
+            plans[1].actor(),
+            Some(crate::scene_bodies::FIGHTER_TEMPLATES[0])
+        );
+        assert_eq!(plans[2].at, Vec3::new(-27.0, 0.0, 12.5));
+        assert_eq!(
+            plans[2].yaw.to_bits(),
+            (140.0f32 * crate::arena_spawn::DEGREE).to_bits()
+        );
+        // The bodies are asked for once.
+        app.update();
+        assert!(
+            app.world_mut()
+                .resource_mut::<Messages<crate::scene_bodies::SceneCommand>>()
+                .drain()
+                .next()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_settled_match_puts_the_manager_back_at_the_return_placement() {
+        let mut app = hub_app();
+        let mut flow = Flow::default();
+        flow.mode = crate::flow::Mode::Arena;
+        flow.phase = Phase::Playing;
+        app.insert_resource(flow);
+        app.world_mut().resource_mut::<ArenaHub>().returned =
+            Some(crate::arena_session::ReturnPlacement {
+                distance: 250.0,
+                heading: 0.5,
+                flags: 0x100,
+                saves: true,
+            });
+        spawn_hub_level(&mut app);
+        let player = spawn_player(&mut app);
+        app.update();
+        let transform = app.world().get::<Transform>(player).unwrap();
+        // The saved distance is along z, in metres, over the floor lift;
+        // the facing stays the body's own.
+        assert_eq!(transform.translation, Vec3::new(0.0, 0.05, 2.5));
+        assert_eq!(transform.rotation, Quat::IDENTITY);
     }
 }

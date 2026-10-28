@@ -33,11 +33,21 @@ With `--opponent` the fight starts when the level shows: the duellist enters
 combat and, in a practice or arena level, the player's combat mode turns on.
 In an arena level the match is ticked as the original ticks a career match
 (its first second, then who stands), and the music is the arena track the
-original's match start draws, at its own volume. A career match started from
-the hub carries its rank and gear tier into the layout and holds, on each
-opponent, the weapon whose object id the match's event drew. The arena hub plays the hub track the
-original's hub entry draws (Msc_Hub01 two times in three), at 0.1, from one of
-its four start places.
+original's match start draws, at its own volume. The round's fighters are
+the scene body generator's (`exa_game::scene_bodies`): each opponent, the
+Beast and the company's other entrants is built from its spawn plan, so the
+player's own entry is the only body the play start makes. A career match
+started from the hub carries its rank and gear tier into the layout and
+holds, on each opponent, the weapon whose object id the match's event drew;
+the career itself and the match's setup travel in
+`exa_game::arena_handoff`, because the launch is still a process restart.
+The end screen's Continue is Enter or Space until the screen is drawn: a
+next round stands the winner with the reserve or a fresh opponent, and the
+end of the match settles the career and restarts on the hub, which places
+the manager at the return's 300 cm, half turn placement. The arena hub plays
+the hub track the original's hub entry draws (Msc_Hub01 two times in three),
+at 0.1, from one of its four start places, and asks for the shopkeeper and
+one body per employed specialist at their spots.
 Placed characters keep their records' perks (Remise, Feint, …); the player
 and the duellist are new records, with none unless `--perks` gives the
 player some.
