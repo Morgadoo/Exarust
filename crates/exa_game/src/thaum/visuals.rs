@@ -533,6 +533,34 @@ pub struct EffectVisual {
     pub marker: u32,
 }
 
+impl EffectVisual {
+    /// The material routine this node's material came from, when it has one.
+    pub fn material_kind(&self) -> Option<MaterialKind> {
+        let name = self.material?;
+        [
+            MaterialKind::Force,
+            MaterialKind::Barrier,
+            MaterialKind::Aura,
+            MaterialKind::Tendril,
+            MaterialKind::Shell,
+        ]
+        .into_iter()
+        .find(|kind| kind.name() == name)
+    }
+
+    /// The draws this node's material pass makes, as its material runs
+    /// them. A node without a material draws nothing.
+    pub fn pass_plan(
+        &self,
+        params: &super::effect_pass::PassParams,
+    ) -> Vec<super::effect_pass::PassDraw> {
+        let Some(kind) = self.material_kind() else {
+            return Vec::new();
+        };
+        super::effect_pass::plan(kind.draw(), params)
+    }
+}
+
 /// A request to add an effect node to the scene.
 #[derive(Message, Debug, Clone)]
 pub struct VisualSpawn(pub SceneNodeSpec);
@@ -811,5 +839,49 @@ mod tests {
             .fold(Vec3::ZERO, |sum, p| sum + *p)
             / 4.0;
         assert!((centre - Vec3::new(100.0, 0.0, 50.0)).length() < 1e-3);
+    }
+    #[test]
+    fn each_node_takes_its_material_and_its_pass_plan() {
+        let shell = creator(EffectKind::Shell, &input());
+        let visual = EffectVisual {
+            material: shell.material,
+            gi: shell.gi,
+            flags: shell.flags,
+            block: shell.block,
+            life_ms: shell.life_ms,
+            subobjects: shell.subobjects,
+            textures: shell.textures,
+            scale: shell.scale,
+            marker: shell.marker,
+        };
+        assert_eq!(visual.material_kind(), Some(MaterialKind::Aura));
+        let params = super::super::effect_pass::PassParams {
+            passes: 2,
+            frame: 0,
+            base: 0.0,
+            speed: 0.5,
+            ..super::super::effect_pass::PassParams::default()
+        };
+        let plan = visual.pass_plan(&params);
+        assert_eq!(plan.len(), 3);
+        // The aura's shader pass rows use the node's speed.
+        assert_eq!(plan[1].row, ((1.5 * 0.5) - 0.25));
+        let blast = creator(EffectKind::Blast, &input());
+        let visual = EffectVisual {
+            material: blast.material,
+            gi: blast.gi,
+            flags: blast.flags,
+            block: blast.block,
+            life_ms: blast.life_ms,
+            subobjects: blast.subobjects,
+            textures: blast.textures,
+            scale: blast.scale,
+            marker: blast.marker,
+        };
+        assert_eq!(visual.material_kind(), Some(MaterialKind::Force));
+        // The force material's rows step by 0.002.
+        let plan = visual.pass_plan(&params);
+        assert!((plan[1].row - (1.5 * 0.002 - 0.001)).abs() < 1e-6);
+        assert_eq!(creator(EffectKind::Vanish, &input()).material, None);
     }
 }

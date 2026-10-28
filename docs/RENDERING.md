@@ -2203,7 +2203,11 @@ then every face as built, the points scaled to the radius (the Barrier's
 cap with y and z exchanged, its node then scaled 85 by 85 by 25 cm). The
 force geometries' programs and uniform sets, their per-pass texture rows
 (offset by the node's level of detail, 500 over the squared camera
-distance) and their fades are in `effects::effect_geometry`; the
+distance) and their fades are in `effects::effect_geometry`; the five
+materials' bindings, signatures and noise upload are in
+`thaum::effect_material`, and their four layered passes (exact rows, layer
+colours, time and brightness uniforms and the shader's texture coordinate)
+in `thaum::effect_pass`, as CPU draw plans; the
 original's `effectbarrier`, `effectbubble` and `effectfbrcd` programs
 themselves are not ported and nothing draws the domes yet.
 `effects::emissive` models the seven GI lights the effects carry

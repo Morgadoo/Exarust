@@ -492,13 +492,16 @@ at the contact. The AI's long door and summoning words carry their cost.
 ## A constantly displaced body
 
 `exa_game::thaum::veil`. The body-side half of the constant displacement:
-the shell (`_EffectShell01`, fade from zero, node flags `0x21000000`, its
-end event zeroing the fade and asking the node to play `0x10`), the collision
+the shell (`_EffectShell01`, fade from zero, node flags `0x9000` from the
+material plus the creator's `0x20`, and `0x40000` when the shell is shared
+with a vanish; its end event zeroing the fade and asking the node to play
+`0x10`), the collision
 bit `0x4000` every physics node gains, the `thmdsp_cns01` hum that starts
 `0.8 × length × r` seconds into its loop (computed in double precision,
 silent at first), the left-behind image gathered
 from the body's mesh and skin nodes and ordered by its subobjects' `0x40`
-flags, and the visibility bits (`0x10` shown, `0x20` hidden, `0x4` fading,
+flags (its strand records start at the anchors the body's bone kinds fill
+and run to that count plus eight spare), and the visibility bits (`0x10` shown, `0x20` hidden, `0x4` fading,
 `0x8000_0000` dead) that hide a part with subobjects by setting its low
 hidden flag. The hit veto plays `thmdsp_phs` at pitch `0.9 + 0.2·r`, sets
 `0xC000` on the struck node and every part below it, lists it for 500 ms and
@@ -655,8 +658,11 @@ by twice the unit sum of its faces' normals and keeps the visible
 sections' triangles; a skinned copy keeps the skinned sections' vertices
 and places each at its place plus twice its normal every frame. The light
 is (0.14, 0.08, 1) times a tenth of its curve, and the hum's volume and
-pitch follow the opening and closing. The aura is not spawned by the
-running game yet.
+pitch follow the opening and closing. A Shell cast now spawns the aura
+node: the `_ForceAura01` material with its `0xf0` block, node flags
+`0x9020`, one sub-object of kind 35044 and the `_ForceNoise` picture. The
+node carries its material's pass plan (`thaum::effect_material`,
+`thaum::effect_pass`); nothing draws it yet.
 
 ## Displacement wisps
 
@@ -744,9 +750,17 @@ the picked nodes) and the icon radius output. The running screen
 rasterises those batches in software (`power_screen::render`) with
 each fragment program's arithmetic and the loaded sheets; the shader
 bindings of the Force and Displacement effects are data in
-`thaum::visuals` (materials, blocks, `gi_multipoint`, the noise picture and
-the per-pass texture offsets). The EffectShell, EffectShell pass selection
-and the tendril geometry are in `thaum::veil`/`thaum::visuals`.
+`thaum::effect_material` and `thaum::visuals` (the five materials, their
+blocks, node flags, sub-objects, signatures, `gi_multipoint`, the noise
+picture and its upload), and their four layered passes — the exact rows,
+layer colours, time and brightness uniforms and the shader's texture
+coordinate — are in `thaum::effect_pass`. The EffectShell, EffectShell pass
+selection and the tendril geometry are in
+`thaum::veil`/`exa_game::effects::shell`/`thaum::visuals`. A shell, strikes,
+vanish, long door, summon and constant displacement cast leave their effect
+nodes in the scene; a long door's move places the body at the destination
+after the caster tick. The vanish's show and hide are still the effect
+class's own, not applied to Exarust's drawn body.
 
 The effects' meshes come from their own builders but are drawn with
 `exa_render::glow::GlowMaterial`, an additive stand-in: the original's
@@ -755,7 +769,8 @@ force noise) are not ported, nor are the lights and sounds. The arcs
 upload their ribbon's UVs. The barricade's navigation stamp is applied to
 the grid (`exa_world::nav::stamp`); the AI's sight of it is still
 `effects::danger`, which nothing registers yet. The domes, the wave and
-the rain are not drawn yet; the GI emissive objects behind
+the rain are not drawn yet (the materials' pass plans are computed but no
+renderer binds them); the GI emissive objects behind
 the domes, the bubble, the barricade, the strikes, the tendril and the
 teleporter bubble are modelled in `effects::emissive` (their programs,
 extents, colours and boxes) but not injected into the voxel volume.

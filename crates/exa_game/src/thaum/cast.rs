@@ -1471,6 +1471,16 @@ fn create_displacement(
                 PowerBase::new(super::displacement::CONSTANT).accrue(&mut caster.body, cost);
             let entity =
                 ragdoll.map(|body| spawn_body_wisps(commands, caster_entity, body, draws, roll));
+            if let Some(entity) = entity {
+                let node = spawn_visual(
+                    commands,
+                    creator(
+                        EffectKind::Constant,
+                        &visual_input(context, ragdoll, roll.0.unit()),
+                    ),
+                );
+                commands.entity(entity).add_child(node);
+            }
             push_active(
                 caster,
                 super::displacement::CONSTANT,
