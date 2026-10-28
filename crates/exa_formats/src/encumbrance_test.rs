@@ -443,14 +443,21 @@ fn the_special_kinds_dispatch_in_wearing_order() {
     ]);
     assert!(!specials.second_wind);
     assert!(!specials.mind_ward);
-    let item = |id, power_flags, charge| EffectItem {
+    let item = |special, id, power_flags, charge| EffectItem {
+        special,
         id,
         power_flags,
         charge,
     };
-    assert_eq!(specials.healing, vec![item(11, 2, 7), item(14, 0x22, 0)]);
-    assert_eq!(specials.golem_suits, vec![item(12, 1, 0)]);
-    assert_eq!(specials.shield_gauntlets, vec![item(13, 1, 0xff)]);
+    assert_eq!(
+        specials.effects,
+        vec![
+            item(Burden::HEALING, 11, 2, 7),
+            item(Burden::GOLEM_SUIT, 12, 1, 0),
+            item(Burden::LIGHT_SHIELD, 13, 1, 0xff),
+            item(Burden::HEALING, 14, 0x22, 0),
+        ]
+    );
     assert_eq!(specials.focus_regen.to_bits(), 0x38d2_8eb4);
     assert!((specials.focus_regen - 1.004_02e-4).abs() < 1e-9);
 
@@ -490,8 +497,9 @@ fn a_record_resolves_its_specials() {
     let mask = objdb::Item::parse(7, &payload).unwrap();
     let specials = WornSpecials::of_record(&record, |id| (id == 7).then_some(&mask));
     assert_eq!(
-        specials.healing,
+        specials.effects,
         vec![EffectItem {
+            special: Burden::HEALING,
             id: 7,
             power_flags: 2,
             charge: 0x40,

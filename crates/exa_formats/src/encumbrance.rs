@@ -134,10 +134,12 @@ pub fn second_wind_of_record<'a>(
 /// with bits `0x38D28EB4` (about 1.004e-4), added to the regeneration rate.
 pub const FOCUS_CHARM_REGEN: f32 = f32::from_bits(0x38d2_8eb4);
 
-/// A worn item whose special kind registers an item effect on its wearer:
-/// the id the record wears it by, and its crystal's flag and charge bytes.
+/// A worn item whose special kind registers an item effect on its wearer
+/// (kinds 3, 4 and 6): the kind, the id the record wears it by, and its
+/// crystal's flag and charge bytes.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct EffectItem {
+    pub special: u8,
     pub id: u32,
     pub power_flags: u8,
     pub charge: u8,
@@ -153,17 +155,15 @@ pub struct EffectItem {
 pub struct WornSpecials {
     /// Kind 2: the second-wind flag.
     pub second_wind: bool,
-    /// Kind 3: healing items, each given the healing tick when the body
-    /// takes remedies (its rule bit 2).
-    pub healing: Vec<EffectItem>,
-    /// Kind 4: golem suits, each given the worn item's light tick.
-    pub golem_suits: Vec<EffectItem>,
+    /// The items that register an item effect, in wearing order: kind 3
+    /// the healing tick (only on a body that takes remedies, its rule bit
+    /// 2), kind 4 the golem suit's light tick, kind 6 the gauntlets'
+    /// apparel tick.
+    pub effects: Vec<EffectItem>,
     /// Kind 5: the mind ward. The body's masked bit is set (other minds see
     /// it as a mind-masked character), its item word's bit 0x10 refuses
     /// every power it casts, and every power running on it is told to end.
     pub mind_ward: bool,
-    /// Kind 6: shield-lightening gauntlets, each given the apparel tick.
-    pub shield_gauntlets: Vec<EffectItem>,
     /// Kind 7: what the focus regeneration rate gains
     /// ([`FOCUS_CHARM_REGEN`], set rather than added: two charms give the
     /// same), 0 without one.
@@ -176,17 +176,17 @@ impl WornSpecials {
     pub fn of_worn(worn: impl IntoIterator<Item = (u32, Burden)>) -> Self {
         let mut specials = Self::default();
         for (id, burden) in worn {
-            let item = EffectItem {
-                id,
-                power_flags: burden.power_flags,
-                charge: burden.charge,
-            };
             match burden.special {
                 Burden::SECOND_WIND => specials.second_wind = true,
-                Burden::HEALING => specials.healing.push(item),
-                Burden::GOLEM_SUIT => specials.golem_suits.push(item),
+                Burden::HEALING | Burden::GOLEM_SUIT | Burden::LIGHT_SHIELD => {
+                    specials.effects.push(EffectItem {
+                        special: burden.special,
+                        id,
+                        power_flags: burden.power_flags,
+                        charge: burden.charge,
+                    })
+                }
                 Burden::MIND_WARD => specials.mind_ward = true,
-                Burden::LIGHT_SHIELD => specials.shield_gauntlets.push(item),
                 Burden::FOCUS_CHARM => specials.focus_regen = FOCUS_CHARM_REGEN,
                 _ => {}
             }
