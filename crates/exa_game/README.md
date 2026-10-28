@@ -101,7 +101,8 @@ databases, character placement export and level sections are not exported
 yet, so a save made from nothing is not loadable by the original. The
 level-transition rules (`save_level`): the spawn height (108.18 less 11.1
 per body extent, plus 5 or 13 cm over the probed floor), the six follower
-offsets rotated by the spawn matrix, the duplicate-motile list and the
+offsets rotated by the spawn matrix, each follower's own lift
+(`place_followers`), the duplicate-motile list and the
 follower re-attach (UID and controls re-created, carry cleared, the
 minimum distance raised to 5 cm), the menu background scene
 (`menuscene.rfc`, fog 1.8, view (0, 500, 700), target (0, 0, −200)), the `<locale>.rft` terrain name and the scene-content classifier.
@@ -112,7 +113,20 @@ arena session may carry `arena_save::ArenaTables` (arsenal, stash, shop
 stock, company, day, employees, merchant, hireables, tournament); the
 player-data writer then emits them in the original's order, removes the
 optional lists the writer omits, and leaves an old save's tables alone
-when the session has none.
+when the session has none. The tables are filled from the live arena state
+(`arena_tables::from_live`, `Session::capture_arena`): the arsenal's
+twenty-five lists with the entry's two words packed into the wire entry's
+third word, the hub stash, the shop's shelf, the company's name, emblem and
+counters, the day's log, the staff (a fighter's kit or a specialist's
+carried, hand and worn items, its world id or custom flag) and the
+tournament's six forty-eight-byte roster rows. A load reads them back
+(`arena_save::read_tables`) and `Session::apply_arena_tables` puts them into
+the live company, staff, arsenal and stash; a save with none of the arena
+chunks leaves the session without tables. What Exarust has no live model
+for (the hireables, the tournament's field, prizes and events, the
+merchant's stock type, the day's specials and daily tallies, the company's
+second string and three words) keeps the chunk the save already held, and
+the merchant's specialisation is the writer's constant −1.
 
 The `CheckpointSave` script function's save side is
 `Slots::checkpoint_from_script`: it runs only for the player with
@@ -120,12 +134,28 @@ checkpoints enabled, and writes the checkpoint only when the slot has none.
 The script side already exists as `exa_script::builtins::Global::CheckpointSave`.
 The load also clears a player record's race byte
 (`CharacterRecord::reset_loaded_identity`), leaving sex and the kept
-profession bits. The scene flush (object database begin, player flush,
+profession bits. The world clock (`world_clock`) continues across a save:
+a load restores the header's seconds at its tick (the reader's setter) and
+a save stamps the current world seconds back into the header (the writer's
+read), through `Session::world_clock`/`Session::stamp_world_clock`; the
+running game applies a restore from the `RestoreWorldClock` message, and a
+session start sends zero so the elixir's world time starts at the load.
+The scene flush (object database begin, player flush,
 migration list, end), the grid environment's zero arrays and the landing
 plan joining spawn placement and follower placement are in `save_level`;
 the load's global reset (old-settings flag clear, default settings tag,
 zero saved word and sun height) is
 `save_chunk::load_reset` plus `SceneEnvironment::reset_for_load`.
+
+The level-change bridge (`level_transition`) ties the transition together:
+`export_for_save` writes the current level's section with the save's
+exporter and the story's settings-chunk gate, and `plan` pairs it with the
+landing (the player, the followers' own lifts, the migration list and the
+re-attach state). The loader takes a `PendingLanding` and starts the player
+there instead of the level's own start. A live level change does not exist
+yet (a change restarts the process) and the level loader keeps its own
+scene model rather than the exporter's, so the bridge waits for the RFC to
+export-scene conversion; see `docs/formats/SAVES.md` (Level transitions).
 
 Character creation (`create`): the record's gear (four hand items, its
 worn list and its carried list), the mode filters (story background 0 keeps

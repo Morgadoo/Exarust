@@ -13,6 +13,7 @@ pub mod arena_outfit;
 pub mod arena_outfit_data;
 pub mod arena_session;
 pub mod arena_spawn;
+pub mod arena_tables;
 pub mod arsenal;
 pub mod balance;
 pub mod bindings;
@@ -47,6 +48,7 @@ pub mod item_container;
 pub mod item_effects;
 pub mod item_panel_draw;
 pub mod joint_trace;
+pub mod level_transition;
 pub mod limp;
 pub mod loadout;
 pub mod look_overlay;
@@ -90,6 +92,7 @@ pub mod tournament;
 pub mod trace;
 pub mod trade;
 pub mod window;
+pub mod world_clock;
 
 use bevy::prelude::*;
 
@@ -145,6 +148,7 @@ impl Plugin for GamePlugin {
             ),
         ))
         .add_plugins(thaum::cast::CastPlugin)
+        .add_plugins(world_clock::WorldClockPlugin)
         .add_plugins((flow::FlowPlugin, splash::SplashPlugin))
         // Debug tools: idle unless their flags or keys turn them on.
         .add_plugins((

@@ -957,8 +957,14 @@ and a global light of 0.75. The day record track is a constant table in the
 executable (not decoded yet) and the weather's sound and lightning effects
 are not reproduced: Exarust keeps the outdoor haze as the fog stand-in,
 uses Bevy's physically based atmosphere lit by the level's sun for the sky
-(the original's sky shader is not decoded), and leaves time of day, rain and
-lightning at rest until something sets them.
+(the original's sky shader is not decoded). At a level load the outdoor
+preset draws the time of day, the rain, the fog distance and the clouds from
+a clock seed (the arena's match start seeds it with the tick count and lets
+only `arenao1`–`4` draw a night); Exarust shows the drawn sun direction and
+fog but not the rain, the cloud dimming or a dark night, which need the day
+record track. The story levels pick a 1.4, 1.8 or 2.0 fog variant of the
+indoor preset per level; with the indoor fog off the variant does not change
+the picture, so Exarust applies the 2.0 base to every indoor level.
 
 ## Starts, characters and placed objects
 

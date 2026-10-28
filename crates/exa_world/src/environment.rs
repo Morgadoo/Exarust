@@ -103,24 +103,64 @@ pub struct LevelFog {
     pub far: f32,
 }
 
-enum Preset {
+/// How the save unit lights a level it loads.
+///
+/// The original picks between two scene presets when a scene is created:
+/// the indoor/underground preset for the first arenas and the story levels,
+/// the outdoor preset for the later arenas, which also draws the day's
+/// weather. Every other level keeps its own environment record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LevelPreset {
+    /// No sun, no sky, fog at distance 2, a full-strength grey global light,
+    /// a black background and grey fog.
     Indoor,
-    Outdoor,
-    FromRecord,
+    /// The sun on, a sky, and a seeded draw of the time of day, the rain,
+    /// the fog distance, the cloudiness and the wind. `night_allowed` is the
+    /// original's per-arena flag: only the arenas it names may draw a night.
+    Outdoor { night_allowed: bool },
+    /// The level's own environment record decides the sun.
+    Record,
 }
 
-fn preset(level: &str) -> Preset {
-    let stem = level
-        .strip_suffix(".rfc")
-        .unwrap_or(level)
-        .to_ascii_lowercase();
+/// The outdoor arenas whose entry in the original's table allows the
+/// preset's night draw. The fifth outdoor arena does not.
+pub const NIGHT_ARENAS: [&str; 4] = ["arenao1", "arenao2", "arenao3", "arenao4"];
+
+/// The scene preset a level's name selects, as the original's scene creation
+/// chooses it from the level it was asked to load.
+pub fn level_preset(level: &str) -> LevelPreset {
+    let stem = level.to_ascii_lowercase();
+    let stem = stem.strip_suffix(".rfc").unwrap_or(&stem);
     if stem.starts_with("arenao") {
-        Preset::Outdoor
+        LevelPreset::Outdoor {
+            night_allowed: NIGHT_ARENAS.contains(&stem),
+        }
     } else if stem.starts_with("exanima") || stem.starts_with("arena") && stem != "arenahub" {
-        Preset::Indoor
+        LevelPreset::Indoor
     } else {
-        Preset::FromRecord
+        LevelPreset::Record
     }
+}
+
+/// What the scene presets draw from at a level load: the seed of the outdoor
+/// preset's local stream (zero asks the caller for a fresh one), the seed of
+/// the engine's shared weather stream (the thunder draw) and the tick the
+/// weather schedules on.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PresetInput {
+    pub seed: u32,
+    pub engine_seed: u32,
+    pub now: u32,
+}
+
+/// A seed for the presets' draws from the process clock, as the original
+/// takes one from the engine's clock when it creates a scene. This is read
+/// once per level load, never inside the fixed step.
+pub fn clock_seed() -> u32 {
+    let clock = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_nanos() as u64);
+    (clock as u32) ^ ((clock >> 32) as u32)
 }
 
 fn linear(srgb: [f32; 3]) -> Vec3 {
@@ -138,30 +178,69 @@ pub fn level_lighting(level: &str, record: Option<&Environment>, lights: usize) 
 /// tile-grid level built the original's older way, which forces a black
 /// background and grey fog and, without terrain, a grey ambient. Nothing in
 /// Exarust builds levels that way yet, so the game passes `None`.
+///
+/// This is the look the level's own data gives without the scene presets:
+/// the indoor and outdoor arenas take their preset only when
+/// [`level_lighting_preset`] is given the draw's input, as a load is.
 pub fn level_lighting_with(
     level: &str,
     record: Option<&Environment>,
     lights: usize,
     legacy_grid: Option<bool>,
 ) -> Lighting {
+    level_lighting_preset(level, record, lights, legacy_grid, None)
+}
+
+/// The lighting a level load settles on: the preset its name selects,
+/// applied from the load's [`PresetInput`] as the original applies it when
+/// it creates the scene, then the same derivation as
+/// [`level_lighting_with`].
+///
+/// The indoor preset changes the visible picture only where the level had a
+/// fog or a sky (it takes both away); an indoor level already had neither,
+/// so its look stands. The outdoor preset draws a new day and weather, which
+/// is the original's look for those arenas.
+pub fn level_lighting_preset(
+    level: &str,
+    record: Option<&Environment>,
+    lights: usize,
+    legacy_grid: Option<bool>,
+    input: Option<PresetInput>,
+) -> Lighting {
     let mut env = SceneEnvironment::new(SKY_QUALITY);
     if let Some(record) = record {
         env.apply_record(record);
     }
-    let sky = match preset(level) {
-        Preset::Outdoor => true,
-        Preset::Indoor => false,
-        Preset::FromRecord => false,
-    };
+    let preset = level_preset(level);
+    let mut sky = matches!(preset, LevelPreset::Outdoor { .. });
+    let mut preset_outdoor = false;
+    match (preset, input) {
+        (LevelPreset::Indoor, Some(_)) => env.apply_indoor_preset(),
+        (LevelPreset::Outdoor { night_allowed }, Some(input)) => {
+            let mut engine = crate::scene_env::WeatherRng::new(input.engine_seed);
+            env.apply_outdoor_preset(
+                night_allowed,
+                input.seed,
+                clock_seed,
+                input.now,
+                &mut engine,
+            );
+            preset_outdoor = true;
+        }
+        _ => {}
+    }
     if let Some(terrain) = legacy_grid {
         env.force_indoor(terrain);
+        sky = false;
     }
     if sky {
         // Turning the sky on places the sun or moon and dims the record.
         env.set_sky(true);
         env.fog.enabled = true;
         env.fog.colour = OUTDOOR_FOG_COLOUR;
-        env.fog.span = OUTDOOR_FOG_DISTANCE * 100.0;
+        if !preset_outdoor {
+            env.fog.span = OUTDOOR_FOG_DISTANCE * 100.0;
+        }
         env.fog.near = 0.0;
         // Under a sky the fog takes its colour from the day record, which
         // is not among the level files Exarust reads: the outdoor preset
@@ -173,13 +252,19 @@ pub fn level_lighting_with(
         ]);
         env.background = OUTDOOR_FOG_COLOUR;
     }
-    let lit = sky
-        || match (preset(level), env.sun_mode) {
-            (Preset::FromRecord, SunMode::On) => true,
-            (Preset::FromRecord, SunMode::Off) => false,
-            (Preset::FromRecord, SunMode::Auto) => lights == 0,
+    let lit = if input.is_some() && matches!(preset, LevelPreset::Indoor) {
+        // The indoor preset took the sun away.
+        false
+    } else if input.is_some() && preset_outdoor {
+        env.sun_light
+    } else {
+        sky || match (preset, env.sun_mode) {
+            (LevelPreset::Record, SunMode::On) => true,
+            (LevelPreset::Record, SunMode::Off) => false,
+            (LevelPreset::Record, SunMode::Auto) => lights == 0,
             _ => false,
-        };
+        }
+    };
     env.sun_light = lit;
     let placed = env.set_sun_position(env.azimuth, env.time_of_day);
     let frame = env.apply_frame([0.0, 0.0, 1.0]);
@@ -337,6 +422,7 @@ fn fog_cameras(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scene_env::{SceneEnvironment, WeatherRng};
 
     #[test]
     fn presets_by_level() {
@@ -349,6 +435,126 @@ mod tests {
         // Auto sunlight only without lights.
         assert!(level_lighting("menuscene", None, 0).sun.is_some());
         assert!(level_lighting("menuscene", None, 3).sun.is_none());
+    }
+
+    #[test]
+    fn the_level_name_selects_the_preset_and_the_night_flag() {
+        assert_eq!(
+            level_preset("arenao1"),
+            LevelPreset::Outdoor {
+                night_allowed: true
+            }
+        );
+        assert_eq!(
+            level_preset("ArenaO4.RFC"),
+            LevelPreset::Outdoor {
+                night_allowed: true
+            }
+        );
+        // The fifth outdoor arena's entry does not allow a night.
+        assert_eq!(
+            level_preset("arenao5"),
+            LevelPreset::Outdoor {
+                night_allowed: false
+            }
+        );
+        assert_eq!(level_preset("arena1"), LevelPreset::Indoor);
+        assert_eq!(level_preset("arena7.rfc"), LevelPreset::Indoor);
+        assert_eq!(level_preset("exanima01"), LevelPreset::Indoor);
+        // The hub and the menu scene follow their own records.
+        assert_eq!(level_preset("arenahub"), LevelPreset::Record);
+        assert_eq!(level_preset("menuscene"), LevelPreset::Record);
+    }
+
+    #[test]
+    fn the_indoor_preset_keeps_an_indoor_level_s_look() {
+        let record = Environment {
+            ambient: [0.62, 0.55, 0.48],
+            sun_colour: [0.9, 0.8, 0.7],
+            sun_mode: SunMode::On,
+            ..Default::default()
+        };
+        let plain = level_lighting("exanima01", Some(&record), 7);
+        let preset = level_lighting_preset(
+            "exanima01",
+            Some(&record),
+            7,
+            None,
+            Some(PresetInput::default()),
+        );
+        // The preset takes the sun and the sky away, so the level's lighting
+        // is the record's ambient with a black background and no sun: the
+        // picture the level already had.
+        assert_eq!(preset.ambient, plain.ambient);
+        assert_eq!(preset.background, plain.background);
+        assert!(preset.sun.is_none() && preset.sky == plain.sky);
+        assert_eq!(preset.fog.is_none(), plain.fog.is_none());
+    }
+
+    #[test]
+    fn the_outdoor_preset_draws_the_day_and_the_weather() {
+        // The first six-way roll of seed 1 is zero: a night when allowed.
+        let mut night = SceneEnvironment::new(SKY_QUALITY);
+        let mut engine = WeatherRng::new(7);
+        let drawn = night.apply_outdoor_preset(true, 1, || 9, 0, &mut engine);
+        assert!((drawn.time_of_day - 0.966_651_6).abs() < 1e-5, "{drawn:?}");
+        // Without the night flag the same seed draws a day.
+        let mut day = SceneEnvironment::new(SKY_QUALITY);
+        let mut engine = WeatherRng::new(7);
+        let drawn = day.apply_outdoor_preset(false, 1, || 9, 0, &mut engine);
+        assert!((drawn.time_of_day - 0.320_827_16).abs() < 1e-5, "{drawn:?}");
+        assert!((drawn.cloudiness - 1.202_580_9).abs() < 1e-5);
+        assert!((drawn.fog_distance - 0.536_592_7).abs() < 1e-6);
+        assert!((drawn.wind - 0.835_827_2).abs() < 1e-6);
+        assert_eq!(drawn.rain, 0.0);
+
+        // The loader's lighting is this environment's frame: the same sun
+        // direction and the same fog.
+        let lit = level_lighting_preset(
+            "arenao5",
+            None,
+            0,
+            None,
+            Some(PresetInput {
+                seed: 1,
+                engine_seed: 7,
+                now: 0,
+            }),
+        );
+        assert!(lit.sky);
+        let sun = lit.sun.expect("the preset's sun");
+        let want = Vec3::from_array(day.sun_towards).normalize();
+        assert!((sun.towards - want).abs().max_element() < 1e-6);
+        assert_eq!(sun.illuminance, SUN_INTENSITY_WITH_SKY * LUX_PER_INTENSITY);
+        let fog = lit.fog.expect("the preset's fog");
+        assert_eq!(fog.near, 0.0);
+        // The drawn fog distance reaches `distance² · 100 000 + 100` cm.
+        let span = drawn.fog_distance * drawn.fog_distance * 100_000.0 + 100.0;
+        assert!(
+            (fog.far - span * 0.01).abs() < 1e-2,
+            "{} vs {}",
+            fog.far,
+            span * 0.01
+        );
+    }
+
+    #[test]
+    fn a_level_without_the_preset_input_keeps_the_record_look() {
+        let lit = level_lighting("arenao3", None, 0);
+        let preset = level_lighting_preset(
+            "arenao3",
+            None,
+            0,
+            None,
+            Some(PresetInput {
+                seed: 4,
+                engine_seed: 4,
+                now: 0,
+            }),
+        );
+        // Both are outdoor levels; the preset only redraws the day.
+        assert!(lit.sky && preset.sky);
+        assert!(lit.fog.is_some() && preset.fog.is_some());
     }
 
     #[test]
@@ -432,5 +638,98 @@ mod tests {
         };
         let l = level_lighting("exanima02", Some(&env), 5);
         assert!((l.ambient.x - 0.3515).abs() < 1e-3);
+    }
+
+    /// The installed game's arenas (with `EXANIMA_DIR`): the seven indoor
+    /// arenas take the indoor preset (no sun, no sky, no fog), the five
+    /// outdoor ones the seeded preset (a sky, a sun or moon and fog), and
+    /// only the first four outdoor arcs may draw a night.
+    #[test]
+    fn shipped_arena_levels_take_their_preset() {
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let game = exa_assets::GameData::open(&dir).unwrap();
+        let pack = game.pack(exa_assets::PackKind::Resource).unwrap();
+        for number in 1..=7 {
+            let name = format!("arena{number}");
+            let bytes = pack
+                .get(&format!("{name}.rfc"))
+                .unwrap_or_else(|| panic!("{name} is shipped"));
+            let scene = exa_formats::rfc::Scene::parse(bytes).unwrap();
+            assert_eq!(level_preset(&name), LevelPreset::Indoor);
+            let lit = level_lighting_preset(
+                &name,
+                scene.environment.as_ref(),
+                0,
+                None,
+                Some(PresetInput::default()),
+            );
+            assert!(lit.sun.is_none() && !lit.sky && lit.fog.is_none(), "{name}");
+        }
+        // Every indoor level keeps the picture it had before the presets
+        // were applied at a load: the same ambient, background, sun and fog.
+        let mut indoor = 0;
+        for entry in pack.entries() {
+            let name = entry.name.to_ascii_lowercase();
+            let Some(stem) = name.strip_suffix(".rfc") else {
+                continue;
+            };
+            if level_preset(stem) != LevelPreset::Indoor {
+                continue;
+            }
+            let Some(bytes) = pack.get(&entry.name) else {
+                continue;
+            };
+            let Ok(scene) = exa_formats::rfc::Scene::parse(bytes) else {
+                continue;
+            };
+            indoor += 1;
+            // The light count only decides a record level's "auto" sun.
+            let plain = level_lighting(stem, scene.environment.as_ref(), 0);
+            let preset = level_lighting_preset(
+                stem,
+                scene.environment.as_ref(),
+                0,
+                None,
+                Some(PresetInput::default()),
+            );
+            assert_eq!(preset, plain, "{stem}");
+        }
+        assert!(indoor >= 7, "{indoor} indoor levels");
+        for number in 1..=5 {
+            let name = format!("arenao{number}");
+            let bytes = pack
+                .get(&format!("{name}.rfc"))
+                .unwrap_or_else(|| panic!("{name} is shipped"));
+            let scene = exa_formats::rfc::Scene::parse(bytes).unwrap();
+            let night = number <= 4;
+            assert_eq!(
+                level_preset(&name),
+                LevelPreset::Outdoor {
+                    night_allowed: night
+                }
+            );
+            // A seed whose six-way roll is zero draws a night when allowed
+            // and a day otherwise.
+            let lit = level_lighting_preset(
+                &name,
+                scene.environment.as_ref(),
+                0,
+                None,
+                Some(PresetInput {
+                    seed: 1,
+                    engine_seed: 1,
+                    now: 0,
+                }),
+            );
+            assert!(lit.sky, "{name}");
+            let sun = lit.sun.unwrap_or_else(|| panic!("{name} has a sun"));
+            // A night draw places the moon below the day path's sun: its
+            // height is still positive after the preset's lift.
+            assert!(sun.towards.y > 0.0, "{name}");
+            assert!(lit.fog.is_some(), "{name}");
+        }
+        assert_eq!(level_preset("arenahub"), LevelPreset::Record);
     }
 }

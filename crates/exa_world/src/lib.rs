@@ -1249,8 +1249,20 @@ impl LevelLoad {
 
     /// Lighting and the GI request; the load's last step.
     fn finish(&mut self, commands: &mut Commands) -> LoadProgress {
-        let lighting =
-            environment::level_lighting(&self.entry, self.scene.environment.as_ref(), self.lights);
+        // A level load applies the scene preset its name selects (the save
+        // unit's indoor and outdoor presets), drawing the outdoor day and
+        // weather from the clock seed the original takes at scene creation.
+        let lighting = environment::level_lighting_preset(
+            &self.entry,
+            self.scene.environment.as_ref(),
+            self.lights,
+            None,
+            Some(environment::PresetInput {
+                seed: 0,
+                engine_seed: environment::clock_seed(),
+                now: 0,
+            }),
+        );
         environment::apply_lighting(commands, &lighting, self.root);
         let (min, max) = if self.scene.props.is_empty() {
             (Vec3::splat(-10.0), Vec3::splat(10.0))

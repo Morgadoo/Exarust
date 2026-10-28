@@ -305,6 +305,31 @@ pub struct LandingPlan {
     pub followers: Vec<[f32; 3]>,
 }
 
+/// One travelling follower as the destination places it: the body's extent
+/// word, the floor its own probe found and whether it is raised. The offset
+/// position before the probe is [`follower_positions`]'s.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FollowerBody {
+    pub extent: f32,
+    pub floor: f32,
+    pub raised: bool,
+}
+
+/// The final placements of the travelling followers: each offset position
+/// around the placed player, then that body's own lift
+/// ([`spawn_placement`]).
+pub fn place_followers(
+    player: [f32; 3],
+    frame: [[f32; 3]; 3],
+    bodies: &[FollowerBody],
+) -> Vec<[f32; 3]> {
+    follower_positions(player, frame, bodies.len())
+        .into_iter()
+        .zip(bodies)
+        .map(|(at, body)| spawn_placement(at, body.extent, body.floor, body.raised))
+        .collect()
+}
+
 /// The landing plan: the player at the saved planar position and the
 /// lifted floor height, the travelling followers around them in the stored
 /// offset order, rotated by the spawn matrix's rotation rows `frame` (the
