@@ -374,9 +374,10 @@ hand's and the arm's links first (built disabled, the second hand's points
 by W24), then a two-hander's stab link, then the main links (points × the
 body scale, the hand-side point the item's node matrix into the hand,
 slack from the table, the second link's smoothing 0.01, every other
-runtime link the init's 0.001). A shield gets its three pivots (back and
-both face points, two to the other hand, which subtracts that hand's rest
-offset after the node's turn) and a soft world link; a torch, attached
+runtime link the init's 0.001). A shield gets its three pivots (the back
+point to its hand's forearm, in the forearm's frame; both face points to
+the left hand whichever hand holds it, that frame less the left hand's
+rest translation, with no turn) and a soft world link; a torch, attached
 outside the table, gets its own two pivots at (0, −20, 0) and (10, 0, 0) cm
 and its soft world link at the item's origin. The grip's
 modes (`apply_mode`, `mode_from_clip`, `set_mode`) switch the second-hand,

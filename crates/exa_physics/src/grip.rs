@@ -595,27 +595,28 @@ pub fn torch_links(
 }
 
 /// Builds a shield's links: three runtime pivots from points on
-/// the shield — its back at (−20, 0, 0) cm to the holding hand, and its two
-/// face points (5, 0, ±15) cm to the other hand — then a soft world link at
-/// its origin (strength 0.05, the world-link flags).
-/// `holding_hand` is the shield's hand (0 right, 1 left); the two face
-/// points are brought into the other hand's frame by subtracting
-/// `other_hand_offset` after the item node's turn (the original subtracts
-/// the other part's stored rest translation there; Exarust passes the
-/// other hand part's origin, metres, ×100 for cm). `None` when a part or
-/// point is malformed.
-#[allow(clippy::too_many_arguments)]
+/// the shield — its back at (−20, 0, 0) cm to the forearm of its hand, and
+/// its two face points (5, 0, ±15) cm to the left hand, whichever hand holds
+/// it — then a soft world link at its origin (strength 0.05, the
+/// world-link flags). `holding_hand` is the shield's hand (0 right, 1
+/// left), whose forearm is `bindings.arm_parts[holding_hand]`, and
+/// `item_to_arm` the shield node's matrix in that forearm's frame. The two
+/// face points are brought into the left hand's frame by subtracting
+/// `left_hand_offset` (cm) from their forearm-frame place, with no turn, as
+/// the original does with the left hand's stored rest translation (Exarust
+/// passes the left hand part's origin in its parent). `None` when a part
+/// or point is malformed.
 pub fn shield_links(
     item: &Ragdoll,
     hand: &Ragdoll,
     bindings: GripBindings,
     holding_hand: usize,
-    item_to_hand: Affine3A,
-    other_hand_offset: Vec3,
+    item_to_arm: Affine3A,
+    left_hand_offset: Vec3,
 ) -> Option<GripLinks> {
     let cm = 0.01;
-    let holding = *bindings.hand_parts.get(holding_hand)?;
-    let other = *bindings.hand_parts.get(1 - holding_hand)?;
+    let forearm = *bindings.arm_parts.get(holding_hand)?;
+    let left = bindings.hand_parts[1];
     let points = [
         Vec3::new(-20.0, 0.0, 0.0),
         Vec3::new(5.0, 0.0, 15.0),
@@ -625,11 +626,11 @@ pub fn shield_links(
     for (i, point) in points.into_iter().enumerate() {
         let local = point * cm;
         let on_item = item.weights_at(bindings.item_part, local)?;
-        let in_hand = item_to_hand.transform_point3(local);
+        let in_arm = item_to_arm.transform_point3(local);
         let (parent, on_parent) = if i == 0 {
-            (holding, in_hand)
+            (forearm, in_arm)
         } else {
-            (other, in_hand - other_hand_offset * cm)
+            (left, in_arm - left_hand_offset * cm)
         };
         let on_hand = hand.weights_at(parent, on_parent)?;
         let item_mobility = item.parts.get(bindings.item_part)?.inverse_mass;
@@ -1505,7 +1506,7 @@ mod tests {
     }
 
     #[test]
-    fn a_shields_face_points_take_the_other_hands_offset() {
+    fn a_shields_face_points_take_the_left_hands_offset() {
         let item = body_at(Vec3::ZERO);
         let hand = body_at(Vec3::ZERO);
         let none =
@@ -1530,6 +1531,21 @@ mod tests {
             };
             assert!((b - a - want).length() < 1e-6, "{i}: {:?}", b - a);
         }
+        // The back point goes to the holding hand's forearm and the face
+        // points to the left hand, whichever hand holds the shield (part 5
+        // is one the holder lacks, so a link to it refuses the build).
+        let parts = |hand_parts, arm_parts| GripBindings {
+            item_part: 0,
+            hand_parts,
+            arm_parts,
+        };
+        let build = |b, holding| {
+            shield_links(&item, &hand, b, holding, Affine3A::IDENTITY, Vec3::ZERO).is_some()
+        };
+        assert!(build(parts([0, 0], [0, 5]), 0));
+        assert!(!build(parts([0, 0], [0, 5]), 1));
+        assert!(!build(parts([0, 5], [0, 0]), 0));
+        assert!(build(parts([5, 0], [0, 0]), 0));
     }
 }
 

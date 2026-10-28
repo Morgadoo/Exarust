@@ -5,8 +5,8 @@
 //! (from either hand, hand 1's overriding hand 0's), else hand 1's torch,
 //! else a second weapon. The dresser attaches the main hand's weapon; this
 //! module attaches the other one, for the bodies the spawn's equip pass
-//! resolved. A shield is its own body with three face pivots to the two
-//! hands and a soft world weld ([`exa_physics::grip::shield_links`]); a
+//! resolved. A shield is its own body with a back pivot to its forearm,
+//! two face pivots to the left hand and a soft world weld ([`exa_physics::grip::shield_links`]); a
 //! second weapon is the grip table's off-hand entry (5) on the left hand.
 //!
 //! The shield's model sits where the original's own placement puts it: the

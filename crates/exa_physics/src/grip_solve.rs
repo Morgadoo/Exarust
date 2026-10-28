@@ -219,15 +219,27 @@ pub fn build_grips(mut held: Query<(Entity, &mut HeldGrip)>, bodies: Query<&Ragd
             // routine rather than the grip table.
             HeldKind::Torch => grip::torch_links(item, holder, bindings, holding, item_to_hand),
             HeldKind::Shield => {
-                // The original subtracts the other hand's stored rest
-                // translation from the two face points, after the item
-                // node's turn. [guess: the part's origin stands in]
-                let other = 1 - holding;
+                // The shield hangs from its hand's forearm: the back point
+                // in the forearm's frame goes to the forearm, and the face
+                // points, that same frame less the left hand's rest
+                // translation, go to the left hand (whichever hand holds
+                // it). Without a forearm the holding hand stands in.
+                let arm = grip.arms[holding].and_then(part_of).unwrap_or(hold_index);
+                let Some(arm_part) = holder.parts.get(arm) else {
+                    continue;
+                };
+                let item_to_arm = arm_part.transform().inverse() * item_part.transform();
                 let offset = holder
                     .parts
-                    .get(hands[other])
+                    .get(hands[1])
                     .map_or(Vec3::ZERO, |p| p.rest_offset() * 100.0);
-                grip::shield_links(item, holder, bindings, holding, item_to_hand, offset)
+                let mut arms = bindings.arm_parts;
+                arms[holding] = arm;
+                let bindings = grip::GripBindings {
+                    arm_parts: arms,
+                    ..bindings
+                };
+                grip::shield_links(item, holder, bindings, holding, item_to_arm, offset)
             }
             HeldKind::Weapon => grip::build(
                 item,

@@ -311,8 +311,8 @@ tested rules of their own.
   (`GripRelease`: the grip stage frees them) while the shield stays on the
   arm.
 - The off hand's item is attached by `offhand` after the dresser: a shield
-  from either hand (its own model, body, three face links to the two
-  hands and its soft weld, turned −5° about z on the hand) or a second
+  from either hand (its own model, body, a back pivot to its forearm and two face
+  pivots to the left hand, and its soft weld, turned −5° about z on the hand) or a second
   weapon in the grip table's off-hand slot (entry 5, left hand) with its
   own `Blade` in the second slot. The spawn's attach plan decides which
   (`attach_plan`, `OffHeld`), and the shield's record travels with it
