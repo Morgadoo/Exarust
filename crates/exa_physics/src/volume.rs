@@ -126,9 +126,11 @@ pub fn barycentric_weights(point: Vec3, rest: [Vec3; 4]) -> [f32; 4] {
 }
 
 /// Sorts entries by their float key with the original's quicksort: a middle
-/// pivot, values below it from the left and above it from the right, then
-/// both sides (the right one by looping, as the original recurses on the
-/// left and continues on the right).
+/// pivot, the left scan stopping at the pivot's own value and the right one
+/// at a value at or below it, a swap while the two have not crossed; the
+/// left side then recurses while the right is walked by looping, with the
+/// pivot of every pass taken halfway between the current low and the high
+/// this call was given.
 pub fn sort_by_key(entries: &mut [(f32, u32)]) {
     if entries.len() > 1 {
         quicksort(entries, 0, entries.len() as isize - 1);
@@ -136,30 +138,38 @@ pub fn sort_by_key(entries: &mut [(f32, u32)]) {
 }
 
 fn quicksort(entries: &mut [(f32, u32)], low: isize, high: isize) {
-    let mut i = low;
-    let mut j = high;
-    let pivot = entries[((low + high) / 2) as usize].0;
+    let mut low = low;
     loop {
-        while entries[i as usize].0 < pivot {
-            i += 1;
+        let pivot = entries[((low + high) / 2) as usize].0;
+        let mut i = low;
+        let mut j = high;
+        loop {
+            // The original's scans can step at most to the pivot's own entry
+            // (it is the one value the two halts share), so the bounds cannot
+            // be passed; they are still checked so a malformed key cannot
+            // panic. A NaN key halts both scans at once.
+            while i < high && entries[i as usize].0 <= pivot && entries[i as usize].0 != pivot {
+                i += 1;
+            }
+            while low < j && pivot < entries[j as usize].0 {
+                j -= 1;
+            }
+            if i <= j {
+                entries.swap(i as usize, j as usize);
+                i += 1;
+                j -= 1;
+            }
+            if i > j {
+                break;
+            }
         }
-        while entries[j as usize].0 > pivot {
-            j -= 1;
+        if low < j {
+            quicksort(entries, low, j);
         }
-        if i <= j {
-            entries.swap(i as usize, j as usize);
-            i += 1;
-            j -= 1;
-        }
-        if i > j {
+        low = i;
+        if i >= high {
             break;
         }
-    }
-    if low < j {
-        quicksort(entries, low, j);
-    }
-    if i < high {
-        quicksort(entries, i, high);
     }
 }
 
@@ -183,6 +193,15 @@ pub struct VolumeOptions {
     /// sphere of `√2/2` of half a cell and the inner one of `0.75·√2`
     /// (which setting raises it is not established; off by default).
     pub wide_queries: bool,
+    /// Whether the neighbour scans also read the table's last entry, the
+    /// `(+1, +1, +1)` corner.
+    ///
+    /// The shipped runtime's scans stop one entry short of the table's 26
+    /// ([`NEIGHBOURS`]), so that corner never counts, shares a mask or
+    /// pulls; this is the default. The stored sphere lists of the shipped
+    /// `Objlib` bodies were made by an older exporter that read all 26, so
+    /// the real-installation check turns this on to compare with them.
+    pub all_neighbours: bool,
 }
 
 impl Default for VolumeOptions {
@@ -194,6 +213,7 @@ impl Default for VolumeOptions {
             min_corners: 1,
             min_free_corners: 0,
             wide_queries: false,
+            all_neighbours: false,
         }
     }
 }
@@ -718,7 +738,14 @@ pub fn fit(mesh: &Mesh, options: &VolumeOptions) -> FittedVolume {
     }
 }
 
-/// The 26 neighbours, in the original's table order: x, then y, then z.
+/// The neighbours every scan walks, in the original's table order: x, then
+/// y, then z, the centre left out.
+///
+/// The original's table holds all 26 neighbours but every loop over it stops
+/// one entry short, so the `(+1, +1, +1)` neighbour is never read: the near
+/// surface wants five marked neighbours of these 25, the corner sphere's
+/// share and pull walks the same 25. It is kept out here so the counts are
+/// the original's.
 const NEIGHBOURS: [[i32; 3]; 26] = {
     let mut out = [[0i32; 3]; 26];
     let mut n = 0;
@@ -740,6 +767,16 @@ const NEIGHBOURS: [[i32; 3]; 26] = {
     }
     out
 };
+
+/// The neighbour scans' table: the runtime's 25 entries, or all 26 for the
+/// older exporter's lists ([`VolumeOptions::all_neighbours`]).
+fn neighbours(options: &VolumeOptions) -> &'static [[i32; 3]] {
+    if options.all_neighbours {
+        &NEIGHBOURS
+    } else {
+        &NEIGHBOURS[..25]
+    }
+}
 
 /// A cell's eight corner cells, as offsets: bit `4x + 2y + z` of a corner
 /// mask is the cell at `(x, y, z)` from it (the original's mask order).
@@ -940,7 +977,8 @@ pub fn fill_near_surface(map: &mut VoxelMap, mesh: &Mesh, options: &VolumeOption
     } else {
         half_cell * 1.0
     };
-    let offsets = NEIGHBOURS.map(|[x, y, z]| sx * x + sy * y + z);
+    let table = neighbours(options);
+    let offsets: Vec<i32> = table.iter().map(|[x, y, z]| sx * x + sy * y + z).collect();
     for i in 1..=nx {
         for j in 1..=ny {
             for k in 1..=nz {
@@ -949,7 +987,7 @@ pub fn fill_near_surface(map: &mut VoxelMap, mesh: &Mesh, options: &VolumeOption
                     continue;
                 }
                 let (mut marked, mut sum) = (0, [0i32; 3]);
-                for (offset, d) in offsets.iter().zip(NEIGHBOURS) {
+                for (offset, d) in offsets.iter().zip(table) {
                     if cells.get((at + offset) as usize) == Some(&1) {
                         marked += 1;
                         sum = [sum[0] + d[0], sum[1] + d[1], sum[2] + d[2]];
@@ -1132,7 +1170,9 @@ struct Candidate {
 /// Adds `by` to the coverage of every cell whose corner point (its +½
 /// corner) is within `limit` cells of the candidate's, over the original's
 /// window: from `lim − 1` cells below to `lim` above, `lim` the radius plus
-/// ½ rounded to even.
+/// ½ rounded to even (the original derives that window from the candidate's
+/// radius before it ever clears one, so a pruned candidate's coverage is
+/// taken back over its own window).
 fn cover(coverage: &mut [i32], strides: (i32, i32), c: Candidate, limit: f32, by: i32) {
     let lim = round_to_word(c.radius + 0.5);
     let squared = limit * limit;
@@ -1145,7 +1185,8 @@ fn cover(coverage: &mut [i32], strides: (i32, i32), c: Candidate, limit: f32, by
                     (y - cy) as f32 - 0.5,
                     (z - cz) as f32 - 0.5,
                 );
-                if (fz * fz + fy * fy) + fx * fx <= squared
+                // The original sums the offsets' squares z, then y, then x.
+                if fz * fz + (fy * fy + fx * fx) <= squared
                     && let Some(n) = coverage.get_mut((strides.0 * x + strides.1 * y + z) as usize)
                 {
                     *n += by;
@@ -1170,7 +1211,7 @@ fn redundant(coverage: &[i32], strides: (i32, i32), c: Candidate) -> bool {
                     (y - cy) as f32 - 0.5,
                     (z - cz) as f32 - 0.5,
                 );
-                if (fz * fz + fy * fy) + fx * fx <= squared
+                if fz * fz + (fy * fy + fx * fx) <= squared
                     && coverage
                         .get((strides.0 * x + strides.1 * y + z) as usize)
                         .is_some_and(|&n| n < 2)
@@ -1307,6 +1348,8 @@ pub fn extract_spheres(map: &mut VoxelMap, options: &VolumeOptions) {
     };
     for c in sorted.iter_mut().take(prunable) {
         if redundant(&coverage, strides, *c) {
+            // The original clears the candidate's radius after it has taken
+            // its coverage back, over the window its radius gave.
             cover(&mut coverage, strides, *c, c.radius - 0.25, -1);
             c.radius = 0.0;
         }
@@ -1384,10 +1427,10 @@ fn corner_sphere(
     let fill_at = |c: [i32; 3]| fill.get(index(c) as usize).copied().unwrap_or([0, 0]);
     let [count, mask] = fill_at(at);
     let mut free = free;
-    for d in NEIGHBOURS {
+    for d in neighbours(options) {
         let [ncount, nmask] = fill_at([at[0] + d[0], at[1] + d[1], at[2] + d[2]]);
         if i64::from(ncount) - i64::from(count) > 1 {
-            free &= !shared_corners(nmask, d);
+            free &= !shared_corners(nmask, *d);
         }
     }
     let corners = if free == 0 {
@@ -1417,7 +1460,7 @@ fn corner_sphere(
             }
         }
     }
-    for d in NEIGHBOURS {
+    for d in neighbours(options) {
         let n = i32::from(fill_at([at[0] + d[0], at[1] + d[1], at[2] + d[2]])[0]);
         if n < 8 {
             for a in 0..3 {

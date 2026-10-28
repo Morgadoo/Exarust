@@ -592,6 +592,11 @@ mod volume_fit {
     /// resolution; a body matches when one of those reproduces it. On the
     /// shipped build 1060 of the 1503 bodies match, 526 of them with the
     /// builders' defaults.
+    ///
+    /// A stored list also predates the shipped runtime's neighbour scan: it
+    /// counted all 26 neighbours, where the runtime (and so `fit`'s default)
+    /// stops one entry short ([`VolumeOptions::all_neighbours`]). The check
+    /// fits with the exporter's full scan to compare like with like.
     #[test]
     fn shipped_prop_meshes_fit_their_stored_bodies() {
         let Some(dir) = exa_assets::locate_install(None) else {
@@ -622,7 +627,10 @@ mod volume_fit {
                     .map(|s| [s.centre[0], s.centre[1], s.centre[2], s.radius].map(f32::to_bits))
                     .collect();
                 stored.sort();
-                let defaults = VolumeOptions::for_bounds(&mesh.bounds(), false);
+                let defaults = VolumeOptions {
+                    all_neighbours: true,
+                    ..VolumeOptions::for_bounds(&mesh.bounds(), false)
+                };
                 let begun = std::time::Instant::now();
                 let fitted = fit(&mesh, &defaults);
                 time += begun.elapsed();

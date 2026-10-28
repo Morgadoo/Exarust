@@ -3626,7 +3626,11 @@ impl Ragdoll {
                 // this tick's displacement.
                 p.smoothed[i] += (v - p.smoothed[i]) * 0.1;
                 p.previous[i] = p.positions[i];
-                p.positions[i] += v * keep + pull * p.gravity[i];
+                // Two adds, not one: the tick's kept motion first, then the
+                // gravity displacement the original computes into its own
+                // buffer and adds to the result.
+                p.positions[i] += v * keep;
+                p.positions[i] += pull * p.gravity[i];
             }
         }
     }
@@ -4063,17 +4067,24 @@ fn opposite_edges_lean(p: &[Vec3; 4]) -> f32 {
     dot_zyx(between, a.cross(b))
 }
 
+/// The length of a particle edge as the original's edge restore and its
+/// distance helper build it: the squares summed x, then z, then y.
+fn edge_length(v: Vec3) -> f32 {
+    ((v.x * v.x + v.z * v.z) + v.y * v.y).sqrt()
+}
+
 /// Restores a part's six edge lengths.
 fn keep_rigid(p: &mut Part) {
     const EDGES: [(usize, usize); 6] = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)];
     for (a, b) in EDGES {
-        let rest = (p.rest[b] - p.rest[a]).length();
+        let rest = edge_length(p.rest[b] - p.rest[a]);
         let d = p.positions[b] - p.positions[a];
-        let len = d.length();
+        let len = edge_length(d);
         if len <= 1e-6 {
             continue;
         }
-        let c = d * ((len - rest) / len) * 0.5;
+        // (len − rest) / (len + len), times the gap.
+        let c = d * ((len - rest) / (len + len));
         p.positions[a] += c;
         p.positions[b] -= c;
     }
