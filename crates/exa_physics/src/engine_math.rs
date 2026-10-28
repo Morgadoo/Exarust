@@ -19,7 +19,7 @@
 // negated compares say which.
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
 
-use bevy::math::{Mat3A, Mat4, Quat, Vec3, Vec3A, Vec4};
+use bevy::math::{Mat3A, Mat4, Quat, Vec2, Vec3, Vec3A, Vec4};
 
 /// The squared length at or below which an axis has no direction (single
 /// precision).
@@ -319,6 +319,114 @@ pub fn asin(x: f32) -> f32 {
 /// The arc cosine under its usual engine name.
 pub fn acos(x: f32) -> f32 {
     acos_approx(x)
+}
+
+/// The dot product of two 2D vectors: `x·x + y·y`, summed in that order.
+pub fn dot2(a: Vec2, b: Vec2) -> f32 {
+    a.x * b.x + a.y * b.y
+}
+
+/// The squared length of a 2D vector.
+pub fn length_squared2(v: Vec2) -> f32 {
+    v.x * v.x + v.y * v.y
+}
+
+/// The length of a 2D vector, the square root of [`length_squared2`].
+pub fn length2(v: Vec2) -> f32 {
+    length_squared2(v).sqrt()
+}
+
+/// The length of a 3D vector: `((x² + z²) + y²).sqrt()`, the original's
+/// association (x and z first, y last), which can differ from the usual
+/// (x, y, z) order in the last bit.
+pub fn length3(v: Vec3) -> f32 {
+    ((v.x * v.x + v.z * v.z) + v.y * v.y).sqrt()
+}
+
+/// The length of a 3D vector projected onto the ground plane:
+/// `(x² + z²).sqrt()`.
+pub fn length3_ground(v: Vec3) -> f32 {
+    (v.x * v.x + v.z * v.z).sqrt()
+}
+
+/// The per-component `MINPS`: each component is the minimum, and a NaN in
+/// either operand gives the second vector's component.
+pub fn min_components(a: Vec3, b: Vec3) -> Vec3 {
+    Vec3::new(min(a.x, b.x), min(a.y, b.y), min(a.z, b.z))
+}
+
+/// The per-component `MAXPS`, with the same NaN rule as
+/// [`min_components`].
+pub fn max_components(a: Vec3, b: Vec3) -> Vec3 {
+    Vec3::new(max(a.x, b.x), max(a.y, b.y), max(a.z, b.z))
+}
+
+/// The smallest component: `min(min(x, y), z)`.
+pub fn min_component(v: Vec3) -> f32 {
+    min(min(v.x, v.y), v.z)
+}
+
+/// The largest component: `max(max(x, y), z)`.
+pub fn max_component(v: Vec3) -> f32 {
+    max(max(v.x, v.y), v.z)
+}
+
+/// The part of `v` along the unit vector `unit`: the dot scaled back onto
+/// `unit`. The dot is the original's horizontal SSE sum, x and z first,
+/// then y: `(x·ux + z·uz) + y·uy`.
+pub fn project_onto_unit(v: Vec3, unit: Vec3) -> Vec3 {
+    let along = (v.x * unit.x + v.z * unit.z) + v.y * unit.y;
+    unit * along
+}
+
+/// `v` without its part along the unit vector `unit`: `v − project(v)`.
+pub fn remove_component(v: Vec3, unit: Vec3) -> Vec3 {
+    v - project_onto_unit(v, unit)
+}
+
+/// The squared XZ length below which [`heading`] answers zero: the same
+/// 1e-8 constant as [`cosine`]'s guard.
+pub const HEADING_EPSILON: f32 = f32::from_bits(0x322B_CC77);
+
+/// The signed heading of a direction in the XZ plane: the arc cosine of
+/// `z / |xz|`, negated when `x` is negative. Zero when the squared XZ
+/// length is below [`HEADING_EPSILON`]. A cosine at or below −1 answers π,
+/// above 1 zero, and a NaN length runs the division and the fast arc cosine
+/// (which gives NaN). The squared length sums z first, then x.
+pub fn heading(v: Vec3) -> f32 {
+    let length_squared = v.z * v.z + v.x * v.x;
+    if length_squared < HEADING_EPSILON {
+        return 0.0;
+    }
+    let cosine = v.z / length_squared.sqrt();
+    let angle = if cosine <= -1.0 {
+        PI
+    } else if cosine > 1.0 {
+        0.0
+    } else {
+        acos_approx(cosine)
+    };
+    if v.x < 0.0 {
+        f32::from_bits(angle.to_bits() ^ 0x8000_0000)
+    } else {
+        angle
+    }
+}
+
+/// The ground-plane direction at `yaw`: `(sin yaw, 0, cos yaw)`, so yaw 0
+/// looks along +Z and a positive yaw turns toward +X.
+pub fn direction_from_yaw(yaw: f32) -> Vec3 {
+    let (sin, cos) = sin_cos(yaw);
+    Vec3::new(sin, 0.0, cos)
+}
+
+/// The full direction at an elevation and a heading, in the original's
+/// argument order (elevation first): `(cos p·sin y, −sin p, cos p·cos y)`.
+/// Both angles use the engine's fast sine and cosine.
+pub fn direction_from_pitch_yaw(pitch: f32, yaw: f32) -> Vec3 {
+    let (sin_y, cos_y) = sin_cos(yaw);
+    let (sin_p, cos_p) = sin_cos(pitch);
+    Vec3::new(cos_p * sin_y, -sin_p, cos_p * cos_y)
 }
 
 /// The angles of a turn under the name the body code has always used.
@@ -1164,5 +1272,83 @@ mod tests {
         assert_eq!(wide.x_axis.x, 0.0);
         // (0 − (−2^31)) − (2^31 − 1) = 1 over 2^32 − 1.
         assert_eq!(wide.w_axis.x, (1.0f64 / 4_294_967_295.0) as f32);
+    }
+
+    #[test]
+    fn vector_lengths_use_the_original_association() {
+        assert_eq!(dot2(Vec2::new(1.0, 2.0), Vec2::new(3.0, 4.0)), 11.0);
+        assert_eq!(length_squared2(Vec2::new(3.0, 4.0)), 25.0);
+        assert_eq!(length2(Vec2::new(3.0, 4.0)), 5.0);
+        // A 3-4-12 triangle: x and z first, then y.
+        assert_eq!(length3(Vec3::new(3.0, 12.0, 4.0)), 13.0);
+        assert_eq!(length3_ground(Vec3::new(3.0, 100.0, 4.0)), 5.0);
+        // The written expression, not a tied compile-time fold.
+        let v = Vec3::new(0.3, 0.7, 0.1);
+        assert_eq!(length3(v), ((v.x * v.x + v.z * v.z) + v.y * v.y).sqrt());
+        // A NaN operand gives the second vector's component (MINPS/MAXPS).
+        let nan = Vec3::new(f32::NAN, 2.0, f32::NAN);
+        let other = Vec3::new(1.0, 5.0, 3.0);
+        assert_eq!(min_components(nan, other), Vec3::new(1.0, 2.0, 3.0));
+        assert_eq!(max_components(nan, other), Vec3::new(1.0, 5.0, 3.0));
+        // The smallest/largest fold: the second operand wins a NaN pair.
+        assert_eq!(min_component(Vec3::new(f32::NAN, 5.0, 0.5)), 0.5);
+        assert_eq!(max_component(Vec3::new(f32::NAN, -5.0, -0.5)), -0.5);
+        assert_eq!(min_component(Vec3::new(2.0, -3.0, 1.0)), -3.0);
+        assert_eq!(max_component(Vec3::new(2.0, -3.0, 1.0)), 2.0);
+    }
+
+    #[test]
+    fn projection_splits_a_vector_along_a_unit() {
+        let v = Vec3::new(1.0, 2.0, 3.0);
+        assert_eq!(project_onto_unit(v, Vec3::Z), Vec3::new(0.0, 0.0, 3.0));
+        assert_eq!(remove_component(v, Vec3::Z), Vec3::new(1.0, 2.0, 0.0));
+        // Onto a unit diagonal the part is the average on each axis.
+        let diag = Vec3::splat(1.0).normalize();
+        let along = project_onto_unit(v, diag);
+        assert!((along.length() - v.dot(diag)).abs() < 1e-6);
+        assert!((remove_component(v, diag).dot(diag)).abs() < 1e-6);
+        // The dot sums x and z before y: (2^-24 + 2^-24) + 1 is 1 + 2^-23,
+        // where the (x, y, z) order would round (2^-24 + 1) back to 1 twice.
+        let tiny = f32::from_bits(0x3380_0000); // 2^-24
+        let w = Vec3::new(tiny, 1.0, tiny);
+        assert_eq!(project_onto_unit(w, Vec3::ONE).x, 1.0 + 2.0 * tiny);
+        assert_ne!((tiny + 1.0) + tiny, 1.0 + 2.0 * tiny);
+    }
+
+    #[test]
+    fn heading_follows_the_xz_direction() {
+        // Yaw 0 looks along +Z; a quarter turn toward +X.
+        assert_eq!(heading(Vec3::Z), 0.0);
+        let quarter = heading(Vec3::X);
+        assert!((quarter - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
+        // Negative x flips the sign; z = -1 gives π.
+        assert!((heading(Vec3::NEG_X) + std::f32::consts::FRAC_PI_2).abs() < 1e-6);
+        assert!((heading(Vec3::NEG_Z) - std::f32::consts::PI).abs() < 1e-6);
+        // The height is ignored.
+        assert_eq!(heading(Vec3::new(0.0, 100.0, 5.0)), 0.0);
+        // A direction shorter than the guard is zero, even with x negative.
+        assert_eq!(heading(Vec3::new(-1.0e-5, 0.0, 1.0e-5)), 0.0);
+        // A cosine at the -1 end is π; NaN stays NaN.
+        assert_eq!(heading(Vec3::new(0.0, 0.0, -0.0)), 0.0);
+        assert!(heading(Vec3::new(f32::NAN, 0.0, 0.0)).is_nan());
+    }
+
+    #[test]
+    fn directions_come_from_the_fast_trig() {
+        assert_eq!(direction_from_yaw(0.0), Vec3::new(0.0, 0.0, 1.0));
+        // The fast sine at a quarter turn is 1 to within its polynomial.
+        let quarter = direction_from_yaw(std::f32::consts::FRAC_PI_2);
+        assert!((quarter.x - 1.0).abs() < 1e-6);
+        assert!(quarter.z.abs() < 1e-6);
+        // Positive pitch raises the direction: the Y term is −sin(pitch).
+        let up = direction_from_pitch_yaw(0.5, 0.0);
+        assert!((up.y + 0.5f32.sin()).abs() < 2e-6);
+        assert!((up.z - 0.5f32.cos()).abs() < 2e-6);
+        assert_eq!(up.x, 0.0);
+        // Elevation first, heading second: a heading of a quarter turn
+        // points along +X.
+        let right = direction_from_pitch_yaw(0.0, std::f32::consts::FRAC_PI_2);
+        assert!((right.x - 1.0).abs() < 1e-6);
+        assert_eq!(right.y, -0.0);
     }
 }

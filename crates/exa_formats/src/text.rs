@@ -1,6 +1,6 @@
 //! The engine's text and number helpers: decimal, hexadecimal and float
-//! formatting, parsers for the same, the 16-byte asset-name helpers, hex
-//! colours, the a/an vowel test and title-casing.
+//! formatting, parsers for the same, the fixed 16-byte name type and its
+//! helpers, the byte and string compares, hex colours, the a/an vowel test and title-casing.
 //!
 //! The formatting rules are the original's, not Rust's: integers are built
 //! from the least significant digit and prepended; the two-digit formatter
@@ -96,9 +96,10 @@ pub fn trunc_to_i32(value: f32) -> i32 {
 }
 
 /// The fractional part of a float: `x` less its truncation to a 32-bit
-/// integer. Out-of-range values are changed by the wrapping conversion,
-/// as the original's are.
-fn fraction(value: f32) -> f32 {
+/// integer (`CVTTSS2SI` then `CVTSI2SS`), so the sign follows `x`. NaN and
+/// out-of-range values convert to the integer indefinite, which is
+/// subtracted as −2 147 483 648, as the original's are.
+pub fn fraction(value: f32) -> f32 {
     value - trunc_to_i32(value) as f32
 }
 
@@ -562,6 +563,343 @@ pub fn title_case(text: &[u8]) -> Vec<u8> {
     out
 }
 
+/// The byte an ANSI-string-to-name conversion writes over the sixteenth
+/// byte when the text is longer than a name: the Latin-1 ellipsis.
+pub const NAME_ELLIPSIS: u8 = 0x85;
+/// Bytes in an engine name.
+pub const NAME_LEN: usize = 16;
+
+/// The engine's fixed sixteen-byte name: zero-padded, zero-terminated when
+/// shorter than sixteen, ASCII letters lower-cased on the ways in.
+///
+/// The original keeps these as bare `array[0..15] of Byte` and its helpers
+/// touch all sixteen bytes, so the type keeps the padding and compares it
+/// like the original does: a short name is compared with the zero padding
+/// still in place.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct Name16([u8; NAME_LEN]);
+
+impl std::fmt::Debug for Name16 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("Name16")
+            .field(&String::from_utf8_lossy(self.text()))
+            .finish()
+    }
+}
+
+impl Name16 {
+    /// A name from the sixteen bytes a file stored, unchanged.
+    pub const fn from_raw(bytes: [u8; NAME_LEN]) -> Self {
+        Self(bytes)
+    }
+
+    /// All-zero name.
+    pub const fn empty() -> Self {
+        Self([0; NAME_LEN])
+    }
+
+    /// The length up to the first zero byte, at most sixteen. The original
+    /// scans seventeen bytes; a name's sixteenth byte is its own terminator
+    /// at the latest, so both agree.
+    pub fn len(&self) -> usize {
+        self.0
+            .iter()
+            .position(|&byte| byte == 0)
+            .unwrap_or(NAME_LEN)
+    }
+
+    /// Whether the name has no text.
+    pub fn is_empty(&self) -> bool {
+        self.0[0] == 0
+    }
+
+    /// The sixteen stored bytes, padding included.
+    pub fn as_bytes(&self) -> &[u8; NAME_LEN] {
+        &self.0
+    }
+
+    /// The text up to the first zero byte.
+    pub fn text(&self) -> &[u8] {
+        &self.0[..self.len()]
+    }
+
+    /// A name from a zero-terminated byte string, ASCII letters lowered and
+    /// the rest zero: at most sixteen source bytes are read and the first
+    /// zero ends the name.
+    pub fn from_cstr(text: &[u8]) -> Self {
+        let mut name = [0u8; NAME_LEN];
+        for (slot, &byte) in name.iter_mut().zip(text.iter()) {
+            if byte == 0 {
+                break;
+            }
+            *slot = lower_ascii(byte);
+        }
+        Self(name)
+    }
+
+    /// A name from an ANSI string, the way the original stores one: a text
+    /// of at most sixteen bytes is copied and the tail zeroed; longer text
+    /// keeps its first fifteen bytes and the sixteenth becomes
+    /// [`NAME_ELLIPSIS`]. The bytes themselves are not lowered.
+    pub fn from_ansi(text: &[u8]) -> Self {
+        let mut name = [0u8; NAME_LEN];
+        if text.len() <= NAME_LEN {
+            name[..text.len()].copy_from_slice(text);
+        } else {
+            name[..NAME_LEN - 1].copy_from_slice(&text[..NAME_LEN - 1]);
+            name[NAME_LEN - 1] = NAME_ELLIPSIS;
+        }
+        Self(name)
+    }
+
+    /// Sixteen stored bytes copied with their ASCII letters lowered.
+    pub fn lowered(bytes: &[u8; NAME_LEN]) -> Self {
+        Self(crate::rfc_write::lowercase_name(bytes))
+    }
+
+    /// Lowers the name's ASCII letters in place.
+    pub fn lowercase(&mut self) {
+        self.0
+            .iter_mut()
+            .for_each(|byte| *byte = lower_ascii(*byte));
+    }
+
+    /// Writes `text` at `offset` and zeroes the rest, unless the text does
+    /// not fit before the sixteenth byte: then only the bytes up to the
+    /// name's end are copied, and an offset at or past sixteen writes
+    /// nothing. The original's offset is a signed 32-bit word; a negative
+    /// offset is outside this API.
+    pub fn write_at(&mut self, text: &[u8], offset: usize) {
+        if offset >= NAME_LEN {
+            return;
+        }
+        let end = offset.saturating_add(text.len());
+        if end < NAME_LEN {
+            self.0[offset..end].copy_from_slice(text);
+            self.0[end..].fill(0);
+        } else {
+            let copied = NAME_LEN - offset;
+            self.0[offset..].copy_from_slice(&text[..copied]);
+        }
+    }
+
+    /// Appends `text` at the name's length, as the original does: the whole
+    /// text when it fits in the remaining bytes (a name may end up full,
+    /// with no terminator), else as much as fits. Returns whether the whole
+    /// text fitted.
+    pub fn append(&mut self, text: &[u8]) -> bool {
+        let at = self.len();
+        let fitted = at + text.len() <= NAME_LEN;
+        let copied = text.len().min(NAME_LEN - at);
+        self.0[at..at + copied].copy_from_slice(&text[..copied]);
+        fitted
+    }
+
+    /// The name with its extension replaced by `extension`'s bytes from the
+    /// last dot (or from the name's end when it has none), zero-padded
+    /// ([`replace_extension`]).
+    pub fn with_extension(&self, extension: &[u8]) -> Self {
+        Self(replace_extension(&self.0, extension))
+    }
+
+    /// The text as a zero-terminated heap string, the original's name to
+    /// `PChar`: empty for an empty name.
+    pub fn to_cstr(&self) -> Vec<u8> {
+        let mut out = self.text().to_vec();
+        if !out.is_empty() {
+            out.push(0);
+        }
+        out
+    }
+
+    /// All sixteen bytes compared in order, returning the unsigned
+    /// difference of the first pair that differs (0 when equal).
+    pub fn compare(&self, other: &Self) -> i32 {
+        compare_bytes(&self.0, &other.0)
+    }
+
+    /// The names compared as four 32-bit words by wrapping subtraction,
+    /// returning the first non-zero difference.
+    pub fn compare_words(&self, other: &Self) -> i32 {
+        for at in (0..NAME_LEN).step_by(4) {
+            let a = i32::from_le_bytes(self.0[at..at + 4].try_into().unwrap());
+            let b = i32::from_le_bytes(other.0[at..at + 4].try_into().unwrap());
+            let difference = a.wrapping_sub(b);
+            if difference != 0 {
+                return difference;
+            }
+        }
+        0
+    }
+
+    /// Whether the sixteen bytes are equal as two 64-bit words.
+    pub fn equals(&self, other: &Self) -> bool {
+        self.0[..8] == other.0[..8] && self.0[8..] == other.0[8..]
+    }
+
+    /// The names compared over sixteen bytes with ASCII letters raised, so
+    /// case does not matter; the difference of the raised bytes.
+    pub fn compare_case_insensitive(&self, other: &Self) -> i32 {
+        for (a, b) in self.0.iter().zip(other.0.iter()) {
+            let a = upper_ascii(*a);
+            let b = upper_ascii(*b);
+            if a != b {
+                return i32::from(a) - i32::from(b);
+            }
+        }
+        0
+    }
+}
+
+/// The original's in-place ANSI-string lowering: ASCII capitals become
+/// lower case in every byte but the last. Its loop counts from zero to the
+/// length less one while indexing the one-based string, so it visits the
+/// byte before the text (the length word's top byte, always zero) and never
+/// reaches the final character; that quirk is kept.
+pub fn lowercase_bytes(text: &mut [u8]) {
+    let visited = text.len().saturating_sub(1);
+    text[..visited]
+        .iter_mut()
+        .for_each(|byte| *byte = lower_ascii(*byte));
+}
+
+/// `A`..`Z` moved to lower case; every other byte unchanged.
+fn lower_ascii(byte: u8) -> u8 {
+    if byte.is_ascii_uppercase() {
+        byte + 0x20
+    } else {
+        byte
+    }
+}
+
+/// `a`..`z` moved to upper case; every other byte unchanged.
+fn upper_ascii(byte: u8) -> u8 {
+    if byte.is_ascii_lowercase() {
+        byte - 0x20
+    } else {
+        byte
+    }
+}
+
+/// Up to the shorter length, the unsigned difference of the first pair of
+/// bytes that differs; zero when the common prefix is equal.
+pub fn compare_bytes(a: &[u8], b: &[u8]) -> i32 {
+    for (x, y) in a.iter().zip(b.iter()) {
+        if x != y {
+            return i32::from(*x) - i32::from(*y);
+        }
+    }
+    0
+}
+
+/// Whether the two byte strings are equal over their common length only
+/// (the original's bounded equality): a prefix counts as equal.
+pub fn equals_prefix(a: &[u8], b: &[u8]) -> bool {
+    a.iter().zip(b.iter()).all(|(x, y)| x == y)
+}
+
+/// [`compare_bytes`] with ASCII letters raised on both sides.
+pub fn compare_bytes_case_insensitive(a: &[u8], b: &[u8]) -> i32 {
+    for (x, y) in a.iter().zip(b.iter()) {
+        let x = upper_ascii(*x);
+        let y = upper_ascii(*y);
+        if x != y {
+            return i32::from(x) - i32::from(y);
+        }
+    }
+    0
+}
+
+/// [`compare_bytes`] with ASCII letters lowered on the second argument only
+/// (the original's mixed compare).
+pub fn compare_bytes_lower_second(a: &[u8], b: &[u8]) -> i32 {
+    for (x, y) in a.iter().zip(b.iter()) {
+        let y = lower_ascii(*y);
+        if *x != y {
+            return i32::from(*x) - i32::from(y);
+        }
+    }
+    0
+}
+
+/// Two ANSI strings compared the original's way: the common length's bytes
+/// first, and when they are equal the difference of the two lengths (the
+/// unsigned lengths as a signed 64-bit difference).
+pub fn compare_ansi(a: &[u8], b: &[u8]) -> i64 {
+    let common = a.len().min(b.len());
+    let difference = compare_bytes(&a[..common], &b[..common]);
+    if difference != 0 {
+        i64::from(difference)
+    } else {
+        a.len() as i64 - b.len() as i64
+    }
+}
+
+/// [`compare_ansi`] with ASCII letters raised on both sides: the first
+/// raised pair that differs, and when the common length matches, the
+/// difference of the two lengths as 32-bit words (the original subtracts
+/// the low halves of the length words).
+pub fn compare_ansi_case_insensitive(a: &[u8], b: &[u8]) -> i32 {
+    let common = a.len().min(b.len());
+    let difference = compare_bytes_case_insensitive(&a[..common], &b[..common]);
+    if difference != 0 {
+        difference
+    } else {
+        (a.len() as i32).wrapping_sub(b.len() as i32)
+    }
+}
+
+/// The original's zero-string compare of two byte strings: when their
+/// lengths differ it answers the last byte of the longer string; when they
+/// are equal but empty, zero; otherwise the bounded compare's first
+/// difference. Reproduced as the instructions have it, although the result
+/// is not an ordering.
+pub fn compare_by_last_byte(a: &[u8], b: &[u8]) -> i32 {
+    match a.len().cmp(&b.len()) {
+        std::cmp::Ordering::Greater => i32::from(a[a.len() - 1]),
+        std::cmp::Ordering::Less => i32::from(b[b.len() - 1]),
+        std::cmp::Ordering::Equal if a.is_empty() => 0,
+        std::cmp::Ordering::Equal => compare_bytes(a, b),
+    }
+}
+
+/// The first index holding `byte`, or -1. The original's forward byte
+/// search, unrelated to [`find_from`]'s substring search; its length
+/// argument is the slice's length here.
+pub fn find_byte(byte: u8, text: &[u8]) -> i32 {
+    text.iter()
+        .position(|&at| at == byte)
+        .map_or(-1, |at| at as i32)
+}
+
+/// The last index holding `byte`, or -1; an empty text answers 0, not -1,
+/// because the original's scan tests its zero flag after no step.
+/// ([`last_index`] made public for the name and path helpers.)
+pub fn last_byte(byte: u8, text: &[u8]) -> i32 {
+    last_index(byte, text)
+}
+
+/// The original's splice: `buffer[..from]`, then `insert`, then the rest of
+/// the buffer after the `remove` bytes at `from`. The tail is copied only
+/// when `from + remove` is below the buffer's length, as the original skips
+/// it past the end; the result's length is `insert.len() + buffer.len() -
+/// remove`, so the two lengths must leave the removal inside the buffer.
+pub fn splice(buffer: &[u8], from: usize, remove: usize, insert: &[u8]) -> Vec<u8> {
+    let from = from.min(buffer.len());
+    let remove = remove.min(buffer.len() - from);
+    let mut out = Vec::with_capacity(insert.len() + buffer.len() - remove);
+    out.extend_from_slice(&buffer[..from]);
+    out.extend_from_slice(insert);
+    out.extend_from_slice(&buffer[from + remove..]);
+    out
+}
+
+/// The seed the original makes from a performance-counter reading: its low
+/// 32 bits, byte-reversed.
+pub fn reversed_counter_seed(counter: u64) -> u32 {
+    (counter as u32).swap_bytes()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -768,5 +1106,216 @@ mod tests {
         assert_eq!(title_case(b"1st place"), b"1st Place");
         assert_eq!(title_case(b"\xE9t\xE9 ok"), b"\xE9t\xE9 Ok");
         assert!(!takes_an("Apple"));
+    }
+
+    #[test]
+    fn names_carry_sixteen_padded_bytes() {
+        let name = Name16::from_cstr(b"Hello.RFC\0junk");
+        assert_eq!(name.text(), b"hello.rfc");
+        assert_eq!(name.len(), 9);
+        assert_eq!(name.as_bytes()[9..], [0; 7]);
+        assert!(!name.is_empty());
+        assert_eq!(Name16::empty().len(), 0);
+        assert!(Name16::empty().is_empty());
+        // Sixteen source bytes all lower-cased, no terminator.
+        let full = Name16::from_cstr(b"ABCDEFGHIJKLMNOPQ");
+        assert_eq!(full.text(), b"abcdefghijklmnop");
+        assert_eq!(full.len(), 16);
+        // Non-letters and high bytes are copied.
+        let high = Name16::from_cstr(b"a1_\xFF");
+        assert_eq!(high.text(), b"a1_\xFF");
+    }
+
+    #[test]
+    fn ansi_text_becomes_a_name_or_an_ellipsis() {
+        assert_eq!(Name16::from_ansi(b"Hello.RFC").text(), b"Hello.RFC");
+        // Exactly sixteen bytes are copied whole.
+        let sixteen = Name16::from_ansi(b"0123456789abcdef");
+        assert_eq!(sixteen.text(), b"0123456789abcdef");
+        // Longer text keeps fifteen bytes and the Latin-1 ellipsis.
+        let long = Name16::from_ansi(b"0123456789abcdefgh");
+        assert_eq!(&long.as_bytes()[..15], b"0123456789abcde");
+        assert_eq!(long.as_bytes()[15], NAME_ELLIPSIS);
+        assert_eq!(long.len(), 16);
+        assert_eq!(Name16::from_ansi(b""), Name16::empty());
+    }
+
+    #[test]
+    fn lowercasing_touches_every_byte() {
+        let raw = *b"ABC\0DEFghijklmno";
+        let lowered = Name16::lowered(&raw);
+        assert_eq!(lowered.as_bytes(), b"abc\0defghijklmno");
+        let mut name = Name16::from_raw(*b"AbCdEfGhIjKlMnOp");
+        name.lowercase();
+        assert_eq!(name.as_bytes(), b"abcdefghijklmnop");
+        // The ANSI-string path lowers in place, leaves high bytes and,
+        // like the original's loop, never reaches the last byte.
+        let mut text = *b"AbC\xE9 Z";
+        lowercase_bytes(&mut text);
+        assert_eq!(text, *b"abc\xE9 Z");
+        let mut one = *b"A";
+        lowercase_bytes(&mut one);
+        assert_eq!(one, *b"A");
+        lowercase_bytes(&mut []);
+    }
+
+    #[test]
+    fn writing_at_an_offset_truncates_or_zero_fills() {
+        let mut name = Name16::from_cstr(b"abc");
+        name.write_at(b"de", 1);
+        assert_eq!(name.text(), b"ade");
+        assert_eq!(&name.as_bytes()[3..], [0; 13]);
+        // Too long: only the bytes before the end are copied, no padding.
+        let mut full = Name16::from_cstr(b"abcdefgh");
+        full.write_at(b"0123456789abcdef", 8);
+        assert_eq!(full.as_bytes(), b"abcdefgh01234567");
+        // A later, shorter write zeroes the tail after it.
+        let mut tail = Name16::from_cstr(b"abcdefgh");
+        tail.write_at(b"x", 2);
+        assert_eq!(tail.text(), b"abx");
+        // At or past sixteen nothing is written.
+        let mut untouched = Name16::from_cstr(b"abc");
+        untouched.write_at(b"x", 16);
+        assert_eq!(untouched.text(), b"abc");
+        untouched.write_at(b"x", 40);
+        assert_eq!(untouched.text(), b"abc");
+    }
+
+    #[test]
+    fn appending_stops_at_the_sixteenth_byte() {
+        let mut name = Name16::empty();
+        assert!(name.append(b"abc"));
+        assert_eq!(name.text(), b"abc");
+        // 3 + 13 = 16 exactly: the whole text fits, with no terminator.
+        assert!(name.append(b"0123456789abc"));
+        assert_eq!(name.text(), b"abc0123456789abc");
+        // A full name takes nothing.
+        let mut full = Name16::from_cstr(b"0123456789abcdef");
+        assert!(!full.append(b"x"));
+        assert_eq!(full.text(), b"0123456789abcdef");
+        // 15 + 2 does not fit; one byte is copied.
+        let mut almost = Name16::from_cstr(b"0123456789abcde");
+        assert!(!almost.append(b"XY"));
+        assert_eq!(almost.text(), b"0123456789abcdeX");
+        assert_eq!(almost.len(), 16);
+    }
+
+    #[test]
+    fn names_replace_their_extension_and_export_as_c_strings() {
+        let name = Name16::from_cstr(b"save.rsg");
+        assert_eq!(name.with_extension(b".rcp").text(), b"save.rcp");
+        assert_eq!(name.with_extension(b"x").text(), b"savex");
+        assert_eq!(
+            Name16::from_cstr(b"none").with_extension(b".x").text(),
+            b"none.x"
+        );
+        assert_eq!(name.to_cstr(), b"save.rsg\0");
+        assert!(Name16::empty().to_cstr().is_empty());
+    }
+
+    #[test]
+    fn name_compares_follow_the_stored_bytes() {
+        let abc = Name16::from_raw(*b"abc\0\0\0\0\0\0\0\0\0\0\0\0\0");
+        let abd = Name16::from_raw(*b"abd\0\0\0\0\0\0\0\0\0\0\0\0\0");
+        assert_eq!(abc.compare(&abd), -1);
+        assert_eq!(abd.compare(&abc), 1);
+        assert_eq!(abc.compare(&abc), 0);
+        // The padding counts: "ab" is below "abc" because its third byte is
+        // zero.
+        let ab = Name16::from_raw(*b"ab\0\0\0\0\0\0\0\0\0\0\0\0\0\0");
+        assert_eq!(ab.compare(&abc), -99);
+        // Word-wise order reports the first word's difference.
+        let mut one = [0u8; 16];
+        let mut two = [0u8; 16];
+        for (at, (a, b)) in [1i32, 2, 3, 4].into_iter().zip([1i32, 2, 7, 4]).enumerate() {
+            one[at * 4..at * 4 + 4].copy_from_slice(&a.to_le_bytes());
+            two[at * 4..at * 4 + 4].copy_from_slice(&b.to_le_bytes());
+        }
+        assert_eq!(
+            Name16::from_raw(one).compare_words(&Name16::from_raw(two)),
+            -4
+        );
+        assert_eq!(
+            Name16::from_raw(one).compare_words(&Name16::from_raw(one)),
+            0
+        );
+        assert!(Name16::from_raw(one).equals(&Name16::from_raw(one)));
+        let mut other = one;
+        other[9] = 1;
+        assert!(!Name16::from_raw(one).equals(&Name16::from_raw(other)));
+        // Case-insensitive compare raises both sides.
+        assert_eq!(
+            Name16::from_raw(*b"AbC\0\0\0\0\0\0\0\0\0\0\0\0\0")
+                .compare_case_insensitive(&Name16::from_raw(*b"aBc\0\0\0\0\0\0\0\0\0\0\0\0\0")),
+            0
+        );
+        assert_eq!(
+            Name16::from_raw(*b"ABC\0\0\0\0\0\0\0\0\0\0\0\0\0")
+                .compare_case_insensitive(&Name16::from_raw(*b"ABD\0\0\0\0\0\0\0\0\0\0\0\0\0")),
+            -1
+        );
+    }
+
+    #[test]
+    fn byte_compares_take_the_common_length() {
+        assert_eq!(compare_bytes(b"\x01\x02\x03", b"\x01\x09"), -7);
+        assert_eq!(compare_bytes(b"abc", b"abc"), 0);
+        assert_eq!(compare_bytes(b"", b"a"), 0);
+        assert!(equals_prefix(b"abc", b"ab"));
+        assert!(equals_prefix(b"", b"abc"));
+        assert!(!equals_prefix(b"abc", b"abd"));
+        assert_eq!(compare_bytes_case_insensitive(b"aX", b"Ay"), -1);
+        assert_eq!(compare_bytes_case_insensitive(b"aX", b"Ax"), 0);
+        assert_eq!(compare_bytes_lower_second(b"B", b"a"), -31);
+        assert_eq!(compare_bytes_lower_second(b"a", b"a"), 0);
+        assert_eq!(compare_bytes_lower_second(b"a", b"A"), 0);
+        assert_eq!(compare_ansi(b"abc", b"abd"), -1);
+        assert_eq!(compare_ansi(b"abc", b"ab"), 1);
+        assert_eq!(compare_ansi(b"ab", b"abc"), -1);
+        assert_eq!(compare_ansi(b"abc", b"abc"), 0);
+        assert_eq!(compare_ansi_case_insensitive(b"AbC", b"aBc"), 0);
+        assert_eq!(compare_ansi_case_insensitive(b"abc", b"abd"), -1);
+        // An equal common part answers the length difference.
+        assert_eq!(compare_ansi_case_insensitive(b"ABC", b"ab"), 1);
+        assert_eq!(compare_ansi_case_insensitive(b"a", b"Abcd"), -3);
+    }
+
+    #[test]
+    fn the_zero_string_compare_answers_the_longer_last_byte() {
+        assert_eq!(compare_by_last_byte(b"abc", b"de"), i32::from(b'c'));
+        assert_eq!(compare_by_last_byte(b"ab", b"xyz"), i32::from(b'z'));
+        assert_eq!(compare_by_last_byte(b"abc", b"abd"), -1);
+        assert_eq!(compare_by_last_byte(b"", b""), 0);
+    }
+
+    #[test]
+    fn byte_search_and_splice() {
+        assert_eq!(find_byte(b'x', b"abxc"), 2);
+        assert_eq!(find_byte(b'x', b"abc"), -1);
+        assert_eq!(last_byte(b'x', b"abxc"), 2);
+        assert_eq!(last_byte(b'x', b"abc"), -1);
+        assert_eq!(last_byte(b'x', b""), 0);
+        assert_eq!(splice(b"abcdef", 2, 2, b"XY"), b"abXYef");
+        assert_eq!(splice(b"abcdef", 0, 6, b""), b"");
+        assert_eq!(splice(b"abcdef", 5, 1, b"Z"), b"abcdeZ");
+        assert_eq!(splice(b"abcdef", 0, 0, b"1"), b"1abcdef");
+    }
+
+    #[test]
+    fn fraction_truncates_toward_zero() {
+        assert_eq!(fraction(2.75), 0.75);
+        assert_eq!(fraction(-2.75), -0.75);
+        assert_eq!(fraction(5.0), 0.0);
+        assert_eq!(fraction(-0.0).to_bits(), (-0.0f32).to_bits());
+        // Out of the 32-bit range the conversion is the indefinite integer.
+        assert_eq!(fraction(3.0e9), 3.0e9 - (-2_147_483_648.0));
+        assert!(fraction(f32::NAN).is_nan());
+    }
+
+    #[test]
+    fn the_counter_seed_is_byte_reversed() {
+        assert_eq!(reversed_counter_seed(0xAABB_CCDD), 0xDDCC_BBAA);
+        assert_eq!(reversed_counter_seed(0x0000_0001), 0x0100_0000);
+        assert_eq!(reversed_counter_seed(0x1_2345_6789), 0x8967_4523);
     }
 }

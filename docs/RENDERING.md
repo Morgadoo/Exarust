@@ -324,6 +324,10 @@ orderings, pinned by tests):
 9. the environment's weather effects, the closing hook list, then depth
    writes back on.
 
+A render state's blend layer is bits 4–7 of its blend word
+(`passes::blend_layer`); the low four bits are blend factors and play no
+part in the order.
+
 The opaque list is grouped by material program key: the first state stays
 first, each next slot takes the first unused state with the current key,
 and when none is left it takes the last unused state and moves to its key.

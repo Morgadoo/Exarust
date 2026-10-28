@@ -58,12 +58,19 @@ display's or the cap's period rounded to nearest with ties to even and
 (`FrameClock`), the periodic timer table (intervals scaled by the time
 multiplier, re-armed from the frame time, rescheduled from the interval),
 the 128-slot deferred-call ring (127 calls; once wrapped only its head runs
-a tick), the redraw-flag idle wait (`idle_wait`: 1, 32, 64 or 1024 ms, none
-for an immediate redraw, at least 32 ms minimised), the logger's
+a tick; a call carries the procedure and data tags its cancel routines
+match and can be dropped by either), the redraw-flag idle wait
+(`idle_wait`: 1, 32, 64 or 1024 ms, none for an immediate redraw, at least
+32 ms minimised), the logger's
 presentation levels (status line, timed overlay, message box, file only;
 level 5 skips the file), the sixteen-entry newest-first status history and
 the fifteen-line timed overlay whose `title : message` lines stay two
-seconds plus fifty milliseconds a byte and go one a tick. `window` holds the
+seconds plus fifty milliseconds a byte and go one a tick. `hooks` holds
+the engine's two callback lists: the priority-sorted method list (code,
+data and priority records, insert before the first greater priority,
+remove by code and data) and the procedure list (one entry per code,
+duplicates refused), both dispatching in order and dropping every call
+that answers false. `window` holds the
 display-mode list (modes at least 640 wide, every refresh rate per size,
 the original's exchange sort by area), the refresh rate (unknown below
 30 Hz), work-area fitting, the 640 × 480 minimum track size, the full-screen

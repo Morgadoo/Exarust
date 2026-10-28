@@ -227,6 +227,31 @@ pub fn latin1_to_utf8(latin1: &[u8]) -> Vec<u8> {
     out
 }
 
+/// The Latin-1 length of UTF-8 text by the same walk as
+/// [`utf8_to_latin1`]: one for a byte below 0x80 and for a `C2`/`C3`
+/// sequence, nothing for any other sequence.
+pub fn latin1_len(utf8: &[u8]) -> usize {
+    let mut count = 0;
+    let mut i = 0;
+    while i < utf8.len() {
+        let b = utf8[i];
+        if b < 0x80 {
+            count += 1;
+            i += 1;
+        } else if b < 0xe0 {
+            if b == 0xc2 || b == 0xc3 {
+                count += 1;
+            }
+            i += 2;
+        } else if b < 0xf0 {
+            i += 3;
+        } else {
+            i += 4;
+        }
+    }
+    count
+}
+
 /// UTF-8 back to Latin-1: a byte below 0x80 is kept; a two-byte sequence
 /// gives a character only when it starts with `C2` (the next byte) or `C3`
 /// (the next byte + 0x40); three- and four-byte sequences are dropped. A
@@ -313,6 +338,14 @@ mod tests {
             utf8_to_latin1(&[0xe2, 0x82, 0xac, b'x', 0xc4, 0x80, 0xf0, 1, 2, 3]),
             b"x"
         );
+        assert_eq!(
+            latin1_len(&[0xe2, 0x82, 0xac, b'x', 0xc4, 0x80, 0xf0, 1, 2, 3]),
+            1
+        );
+        assert_eq!(latin1_len(&[b'C', 0xc3, 0xa9, 0xc2, 0xa7]), 3);
+        // A lead cut off by the end still counts, as the conversion writes it.
+        assert_eq!(latin1_len(&[0xc3]), 1);
+        assert_eq!(utf8_to_latin1(&[0xc3]), [0x40]);
     }
 
     #[test]

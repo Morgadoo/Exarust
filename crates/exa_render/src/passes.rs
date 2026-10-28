@@ -108,6 +108,13 @@ impl Pass {
     }
 }
 
+/// The blend layer a render state's blend word names: bits 4–7, 0–15. The
+/// sorting routines read exactly these four bits; the low four bits are
+/// destination blend factors and play no part in the order.
+pub fn blend_layer(blend_word: u16) -> u8 {
+    ((blend_word & 0xF0) >> 4) as u8
+}
+
 /// One render-state list record.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RenderEntry {
@@ -369,6 +376,16 @@ mod tests {
         ];
         let order: Vec<u32> = sort_blended(&entries).iter().map(|e| e.material).collect();
         assert_eq!(order, [3, 2, 1]);
+    }
+
+    #[test]
+    fn the_blend_layer_is_bits_four_to_seven() {
+        assert_eq!(blend_layer(0x0000), 0);
+        assert_eq!(blend_layer(0x0010), 1);
+        assert_eq!(blend_layer(0x0212), 1);
+        assert_eq!(blend_layer(0x0073), 7);
+        assert_eq!(blend_layer(0x00F0), 15);
+        assert_eq!(blend_layer(0xFFFF), 15);
     }
 
     #[test]
