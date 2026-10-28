@@ -83,7 +83,7 @@ pub struct PanelDrag {
 
 /// The panel rectangles of every open screen, with the panels' inner
 /// clients.
-fn open_panels(screens: &GameScreens) -> Vec<(Panel, GuiRect)> {
+pub(crate) fn open_panels(screens: &GameScreens) -> Vec<(Panel, GuiRect)> {
     let mut out = Vec::new();
     if let Some(screen) = screens.find(GameScreen::Inventory)
         && let Some(form) = screens.task.form(screen.form)
@@ -112,7 +112,7 @@ fn open_panels(screens: &GameScreens) -> Vec<(Panel, GuiRect)> {
 }
 
 /// The panel under a physical-pixel point and the point inside its client.
-fn panel_at(panels: &[(Panel, GuiRect)], at: IVec2) -> Option<(Panel, Cell)> {
+pub(crate) fn panel_at(panels: &[(Panel, GuiRect)], at: IVec2) -> Option<(Panel, Cell)> {
     panels.iter().find_map(|(panel, client)| {
         client
             .contains(at.x, at.y)
@@ -121,7 +121,7 @@ fn panel_at(panels: &[(Panel, GuiRect)], at: IVec2) -> Option<(Panel, Cell)> {
 }
 
 /// The container a panel shows.
-fn container(screens: &GameScreens, panel: Panel) -> Option<&Container> {
+pub(crate) fn container(screens: &GameScreens, panel: Panel) -> Option<&Container> {
     match panel {
         Panel::PlayerPack => Some(&screens.pack),
         Panel::BodyPack(body) => screens.loot_window(body).map(|window| &window.pack),
@@ -147,7 +147,7 @@ fn container_mut(screens: &mut GameScreens, panel: Panel) -> Option<&mut Contain
 
 /// The top-most entry under a point inside a panel's client; held entries
 /// (the `0x100` mark) are not picked, as the original skips them.
-fn entry_at(container: &Container, local: Cell) -> Option<usize> {
+pub(crate) fn entry_at(container: &Container, local: Cell) -> Option<usize> {
     crate::item_container::hit_test(
         container.entries.len(),
         container.icon_size,

@@ -15,10 +15,74 @@
 
 use bevy::prelude::*;
 use exa_character::held::{Hands, HeldItem, ShieldStyle};
+use exa_formats::characters::ID_MASK;
+use exa_formats::encumbrance::{Skills, encumbrance};
 use exa_items::catalogue::{ItemCatalogue, PendingHands};
 use exa_items::possession::{ItemKind, Possessions};
 
 use crate::torch::CarriesTorch;
+
+/// A character's encumbrance from what its record currently wears and
+/// holds: the worn items' burdens, the shield of the first two hands (the
+/// second wins, as [`exa_formats::encumbrance::held_shield`] picks it), and
+/// the character's armour and shield techniques. An item the catalogue
+/// does not know weighs nothing, as a missing record does in the original's
+/// armour pass. Ids are looked up by their low 30 bits, as the spawn's sum
+/// looks them up in the base database, so the two agree.
+pub fn encumbrance_of(p: &Possessions, catalogue: &ItemCatalogue, skills: Skills) -> f32 {
+    let worn: Vec<_> = p
+        .worn
+        .iter()
+        .filter_map(|worn| catalogue.burden(worn.id & ID_MASK))
+        .collect();
+    let shield = [p.out[1], p.out[0]]
+        .into_iter()
+        .filter(|hand| hand.id != 0)
+        .map(|hand| hand.id & ID_MASK)
+        .filter(|&id| {
+            catalogue
+                .kind(id)
+                .is_some_and(|kind| kind.shield && kind.weapon.is_none())
+        })
+        .find_map(|id| catalogue.shield_record(id));
+    encumbrance(&worn, shield.as_ref(), skills)
+}
+
+/// Refreshes a body's encumbrance when its possessions change, as the
+/// armour pass does after an equip, unequip or swap. Both copies are
+/// written: the body's [`Physical::stats`](exa_physics::body::Physical)
+/// (gait, turn and step reach) and its fighter's stats (footwork and the
+/// movement stage). The body's live record supplies the techniques. A
+/// body's first frame keeps the value its spawn summed from the level's
+/// own item list.
+#[allow(clippy::type_complexity)]
+pub fn refresh_encumbrance(
+    catalogue: Option<Res<ItemCatalogue>>,
+    mut bodies: Query<
+        (
+            Ref<Possessions>,
+            Option<&exa_character::record::CharacterData>,
+            &mut exa_physics::body::Physical,
+            Option<&mut exa_combat::Fighter>,
+        ),
+        Changed<Possessions>,
+    >,
+) {
+    let Some(catalogue) = catalogue.as_deref() else {
+        return;
+    };
+    for (possessions, data, mut physical, fighter) in &mut bodies {
+        if possessions.is_added() {
+            continue;
+        }
+        let skills = data.map_or_else(Skills::default, |data| Skills::of_record(&data.record));
+        let value = encumbrance_of(&possessions, catalogue, skills);
+        physical.stats.encumbrance = value;
+        if let Some(mut fighter) = fighter {
+            fighter.stats.encumbrance = value;
+        }
+    }
+}
 
 /// The hands a character's out set makes. `kind` gives an item's sections.
 pub fn hands_of(p: &Possessions, kind: impl Fn(u32) -> Option<ItemKind>) -> Hands {
@@ -98,8 +162,11 @@ impl Plugin for EquipPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
             Update,
-            apply_pending_hands.after(exa_items::catalogue::swap_weapon_sets),
-        );
+            apply_pending_hands
+                .after(exa_items::catalogue::swap_weapon_sets)
+                .before(refresh_encumbrance),
+        )
+        .add_systems(Update, refresh_encumbrance);
     }
 }
 
@@ -166,6 +233,108 @@ mod tests {
             ..Default::default()
         };
         assert!(hands_of(&p, kind_of).main.is_none());
+    }
+
+    /// A catalogue with one worn body (encumbrance byte `worn`) and one
+    /// shield whose weight, block and bulk bytes are given.
+    fn catalogue(worn: u8, shield: [u8; 3]) -> ItemCatalogue {
+        let mut body = vec![0u8; 0x1B0];
+        body[0x1A5] = worn;
+        let mut shield_body = vec![0u8; 8];
+        shield_body[4..7].copy_from_slice(&shield);
+        let section = |tag: u32, body: &[u8]| {
+            let mut out = Vec::new();
+            out.extend_from_slice(&tag.to_le_bytes());
+            out.extend_from_slice(&((8 + body.len()) as u32).to_le_bytes());
+            out.extend_from_slice(body);
+            out
+        };
+        let first = section(0x1000, &body);
+        let second = section(0x8000, &shield_body);
+        let mut file = Vec::new();
+        file.extend_from_slice(&exa_formats::objdb::MAGIC.to_le_bytes());
+        file.extend_from_slice(&32u32.to_le_bytes());
+        for (id, offset, len) in [
+            (10u32, 0u32, first.len() as u32),
+            (20u32, first.len() as u32, second.len() as u32),
+        ] {
+            file.extend_from_slice(&id.to_le_bytes());
+            file.extend_from_slice(&0u32.to_le_bytes());
+            file.extend_from_slice(&offset.to_le_bytes());
+            file.extend_from_slice(&len.to_le_bytes());
+        }
+        file.extend_from_slice(&first);
+        file.extend_from_slice(&second);
+        let db = exa_formats::rdb::Database::parse(&file).unwrap();
+        ItemCatalogue::of_database(&db)
+    }
+
+    #[test]
+    fn the_encumbrance_follows_the_worn_items_and_the_shield() {
+        let catalogue = catalogue(10, [100, 0, 100]);
+        let p = Possessions {
+            out: [Hand::default(), Hand { id: 20, flags: 0 }],
+            worn: vec![exa_formats::characters::ItemRef { id: 10, flags: 0 }],
+            ..Default::default()
+        };
+        // 10 × 0.0025 plus the shield's (2 − 0) × 1 × 0.25.
+        assert!((encumbrance_of(&p, &catalogue, Skills::default()) - 0.525).abs() < 1e-6);
+        // An unknown worn item weighs nothing, and a weapon in the same
+        // hand is not the shield.
+        let p = Possessions {
+            out: [Hand { id: 10, flags: 0 }, Hand::default()],
+            worn: vec![exa_formats::characters::ItemRef { id: 99, flags: 0 }],
+            ..Default::default()
+        };
+        assert_eq!(encumbrance_of(&p, &catalogue, Skills::default()), 0.0);
+
+        // A level-local (tagged) id weighs as its base record, as the
+        // spawn's sum looks it up.
+        let p = Possessions {
+            out: [
+                Hand::default(),
+                Hand {
+                    id: 20 | 0x8000_0000,
+                    flags: 0,
+                },
+            ],
+            worn: vec![exa_formats::characters::ItemRef {
+                id: 10 | 0x8000_0000,
+                flags: 0,
+            }],
+            ..Default::default()
+        };
+        assert!((encumbrance_of(&p, &catalogue, Skills::default()) - 0.525).abs() < 1e-6);
+
+        // The system leaves a new body's spawn value and writes a changed
+        // body's into its physical stats.
+        let mut app = App::new();
+        app.insert_resource(catalogue).add_plugins(EquipPlugin);
+        let mut spawned = exa_physics::body::Physical::default();
+        spawned.stats.encumbrance = 0.25;
+        let body = app
+            .world_mut()
+            .spawn((Possessions::default(), spawned))
+            .id();
+        app.update();
+        let encumbrance = |app: &App| {
+            app.world()
+                .get::<exa_physics::body::Physical>(body)
+                .unwrap()
+                .stats
+                .encumbrance
+        };
+        assert_eq!(encumbrance(&app), 0.25);
+        {
+            let mut entity = app.world_mut().entity_mut(body);
+            let mut possessions = entity.get_mut::<Possessions>().unwrap();
+            possessions.out[1] = Hand { id: 20, flags: 0 };
+            possessions
+                .worn
+                .push(exa_formats::characters::ItemRef { id: 10, flags: 0 });
+        }
+        app.update();
+        assert!((encumbrance(&app) - 0.525).abs() < 1e-6);
     }
 
     #[test]

@@ -764,10 +764,19 @@ alpha global's screen pass, else the Kaiser downsample and halo) and fills
 the cache slot and atlas cell; a headless App, a blank readback and a lost
 one fall back to the CPU paint of the same scene. The card
 window (`CardWindow`) keeps the 200 ms request, its toggle and its 0x100 ms
-close fade on top of the card timer; a double click classifies a
-container's open, a card close and a use; a popup's inner panel and top
-are `open_container`'s. The inventory
-screen still has no bound item list.
+close fade on top of the card timer; `item_card` now draws it: a right
+click on a panel entry builds the item's page from the catalogue's card
+facts through the card's own page, value, tint, row and description rules,
+the card holds the panel manager's icon and fades on the popup's squared
+curve, and leaving it starts the fade. Closing the inventory or a loot
+window queues its icon handles and the manager frees their references and
+atlas cells. A body whose `Possessions` changed has its `Physical` stats'
+encumbrance recomputed by `equip::refresh_encumbrance` from the worn
+burdens, the held shield and its record's techniques (both the physical
+and the fighter copy; a new body keeps its spawn value). A double click
+classifies a container's open, a card close and a use; a popup's inner
+panel and top are `open_container`'s, but no live container popup is drawn
+yet. The inventory screen still has no bound item list.
 
 The gamepad (`gamepad`) reproduces the original's Steam Input action sets on
 Bevy's gamepad backend instead of Steam: the menu set and the interact and

@@ -52,6 +52,7 @@ pub mod hub_windows;
 pub mod hud;
 pub mod hw_config;
 pub mod idle_orbit;
+pub mod item_card;
 pub mod item_container;
 pub mod item_cursor;
 pub mod item_effects;
@@ -166,6 +167,7 @@ impl Plugin for GamePlugin {
                 arena_hub_live::ArenaHubPlugin,
                 (scene_bodies::SceneBodiesPlugin, arena_live::ArenaLivePlugin),
                 gui_screens::GameScreensPlugin,
+                item_card::ItemCardPlugin,
                 item_icon_render::ItemIconPlugin,
                 power_screen::PowerScreenPlugin,
             thaum::visuals::VisualPlugin,

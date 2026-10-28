@@ -115,21 +115,61 @@ impl PanelIcons {
             // slot still holds the entry so the panel can list it.
             None => key(flags, false),
         };
+        self.reserve_keyed(id, name, model.map_or(0, |m| m.flags))
+    }
+
+    /// The icon handle a description card holds, by the card's own acquire:
+    /// the entry's flags less their top four bits, or with the apparel
+    /// framing bit added when the model's flags have `0x1000`, keyed as
+    /// [`key`] keys them (no streamed or effect bit, unlike the panel's
+    /// object-database acquire). `model_flags` is the model section's
+    /// flags word, whose bit 0 lights the model.
+    pub fn reserve_card(&mut self, id: u32, flags: u32, model_flags: u32) -> (usize, (i32, i32)) {
+        if id == 0 {
+            return (0, self.icon_half());
+        }
+        let flags = if model_flags & 0x1000 == 0 {
+            flags & 0x0FFF_FFFF
+        } else {
+            flags | exa_items::icon_cache::variant::APPAREL
+        };
+        let name = key(flags, model_flags & 1 != 0);
+        self.reserve_keyed(id, name, model_flags)
+    }
+
+    /// The acquire's slot walk: a slot holding `id` under `name` gains a
+    /// reference; otherwise the first freed slot (no id) is reused, else
+    /// one is appended, and the new slot waits for the renderer.
+    fn reserve_keyed(&mut self, id: u32, name: u32, model_flags: u32) -> (usize, (i32, i32)) {
         if let Some(at) = self.entries_slot(id, name) {
             let entry = &mut self.cache.entries[at];
             entry.refs = entry.refs.saturating_add(1);
             return (at + 1, (entry.half_width, entry.half_height));
         }
         let (half_width, half_height) = self.icon_half();
-        self.cache.entries.push(exa_items::icon_cache::Entry {
+        let slot = exa_items::icon_cache::Entry {
             id,
             cell: -1,
             variant: name,
             half_width,
             half_height,
             refs: 1,
-        });
-        let entry = self.cache.entries.len() - 1;
+        };
+        let free = self
+            .cache
+            .entries
+            .iter()
+            .position(|entry| entry.id == 0 && entry.refs == 0);
+        let entry = match free {
+            Some(at) => {
+                self.cache.entries[at] = slot;
+                at
+            }
+            None => {
+                self.cache.entries.push(slot);
+                self.cache.entries.len() - 1
+            }
+        };
         // The render variant is the key: the framing bit (and a lit model's
         // condition byte) pick the framing and turn, the effect bit the
         // subdivision, the streamed bit the object-database resolve.
@@ -138,7 +178,7 @@ impl PanelIcons {
             key: name,
             variant: name,
             entry,
-            model_flags: model.map_or(0, |m| m.flags),
+            model_flags,
             scene: None,
             attempts: 0,
         });
@@ -214,6 +254,48 @@ impl PanelIcons {
             .entries
             .get(handle.checked_sub(1)?)
             .map(|entry| (entry.half_width, entry.half_height))
+    }
+
+    /// Drops one reference to an icon slot, as the manager's release does:
+    /// the last reference frees the slot (its id and cell go, its variant
+    /// and half extents stay) and gives the atlas cell back. A pending
+    /// render for the slot is forgotten. False for no slot.
+    pub fn release(&mut self, handle: usize) -> bool {
+        let Some(at) = handle.checked_sub(1) else {
+            return false;
+        };
+        let Some(entry) = self.cache.entries.get_mut(at) else {
+            return false;
+        };
+        if entry.refs == 0 {
+            return false;
+        }
+        entry.refs -= 1;
+        if entry.refs > 0 {
+            return true;
+        }
+        let mut cell = entry.cell;
+        self.atlas.release(&mut cell);
+        entry.cell = cell;
+        entry.id = 0;
+        self.pending.retain(|pending| pending.entry != at);
+        self.version = self.version.wrapping_add(1);
+        true
+    }
+
+    /// Releases every icon a container's entries hold, as the panel's
+    /// destroy does, and leaves the entries without handles. Returns how
+    /// many slots were released.
+    pub fn release_container(&mut self, container: &mut Container) -> usize {
+        let mut handles = Vec::new();
+        container.release_all_icons(|icon| handles.push(icon));
+        let mut released = 0;
+        for handle in handles {
+            if self.release(handle) {
+                released += 1;
+            }
+        }
+        released
     }
 
     /// The atlas's texture, rebuilt when its image changed.
@@ -372,6 +454,91 @@ mod tests {
         let mut container = panel(0);
         container.entries[0].icon = 9;
         assert!(manager.layer(&container).is_none());
+    }
+
+    #[test]
+    fn the_card_acquire_keys_its_slot_and_reuses_a_freed_one() {
+        use exa_items::icon_cache::variant;
+        let mut icons = PanelIcons::new(4);
+        // An unlit model: the flags lose their top four bits, so only the
+        // framing bit could stay, and it is not set here.
+        let (first, _) = icons.reserve_card(7, 0x1234_5678, 0);
+        assert_eq!(icons.cache.entries[first - 1].variant, 0);
+        // Model flag 0x1000 adds the apparel framing bit.
+        let (second, _) = icons.reserve_card(7, 0x0000_0001, 0x1000);
+        assert_eq!(icons.cache.entries[second - 1].variant, variant::APPAREL);
+        // A lit model keeps the condition byte and gains the lit bit; the
+        // masked flags lose the framing bit, and no streamed bit is added.
+        let (third, _) = icons.reserve_card(8, 0x40AB_0003, 1);
+        assert_eq!(
+            icons.cache.entries[third - 1].variant,
+            0x00AB_0000 | variant::LIT
+        );
+        // The same id and key gain a reference.
+        assert_eq!(icons.reserve_card(7, 0, 0).0, first);
+        assert_eq!(icons.cache.entries[first - 1].refs, 2);
+        // A freed slot is reused before the cache grows.
+        assert!(icons.release(second));
+        let (reused, _) = icons.reserve_card(9, 0, 0);
+        assert_eq!(reused, second);
+        assert_eq!(icons.cache.entries.len(), 3);
+        assert_eq!(icons.cache.entries[reused - 1].id, 9);
+        assert_eq!(icons.pending.back().map(|p| p.entry), Some(reused - 1));
+    }
+
+    #[test]
+    fn releasing_a_panel_drops_its_icon_references() {
+        let mut manager = PanelIcons::new(4);
+        let first = manager.atlas.add(&icon(255), 7);
+        let second = manager.atlas.add(&icon(128), 8);
+        manager.cache.entries = vec![
+            IconSlot {
+                id: 7,
+                cell: first,
+                variant: 0,
+                half_width: 84,
+                half_height: 84,
+                refs: 2,
+            },
+            IconSlot {
+                id: 8,
+                cell: second,
+                variant: 0,
+                half_width: 84,
+                half_height: 84,
+                refs: 1,
+            },
+        ];
+        let mut container = Container {
+            entries: vec![
+                crate::item_container::Entry {
+                    id: 7,
+                    icon: 1,
+                    ..Default::default()
+                },
+                crate::item_container::Entry {
+                    id: 8,
+                    icon: 2,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        assert_eq!(manager.release_container(&mut container), 2);
+        assert!(container.entries.iter().all(|entry| entry.icon == 0));
+        // The first slot keeps one reference; the second is freed.
+        assert_eq!(manager.cache.entries[0].refs, 1);
+        assert_eq!(manager.cache.entries[0].cell, first);
+        assert_eq!(manager.cache.entries[1].refs, 0);
+        assert_eq!(manager.cache.entries[1].id, 0);
+        // The last reference frees the first slot too.
+        assert!(manager.release(1));
+        assert_eq!(manager.cache.entries[0].refs, 0);
+        assert_eq!(manager.cache.entries[0].id, 0);
+        // A missing or already-freed slot is not released twice.
+        assert!(!manager.release(1));
+        assert!(!manager.release(9));
+        assert!(!manager.release(0));
     }
 
     #[test]
