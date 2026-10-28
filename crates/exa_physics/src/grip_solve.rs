@@ -215,16 +215,15 @@ pub fn build_grips(mut held: Query<(Entity, &mut HeldGrip)>, bodies: Query<&Ragd
             grip.flip,
             grip.second_hand_factor,
         ) {
-            // The two world welds every armed character's item gets: a soft
-            // one 0.3 of the item's node box height above the grip and a
-            // stiff one at its origin, both built disabled.
-            let centre = item
+            // The world weld every held item gets: a stiff one at its
+            // origin, built disabled. A natural weapon also takes the soft
+            // weld 0.3 of the node box's top above the grip.
+            let top = item
                 .parts
                 .first()
-                .map(|p| p.pairing.mesh.centre)
-                .unwrap_or(Vec3::ZERO);
-            let soft = Vec3::new(0.0, (centre.y * 2.0) * 0.3 * 100.0, 0.0);
-            if let Some((soft, hard)) = grip::world_links(
+                .map_or(0.0, |p| p.pairing.mesh.centre.y + p.pairing.mesh.half.y);
+            let soft = Vec3::new(0.0, top * 0.3 * 100.0, 0.0);
+            if let Some(welds) = grip::world_links(
                 item,
                 grip::GripBindings {
                     item_part: HeldGrip::ITEM_PART,
@@ -232,11 +231,16 @@ pub fn build_grips(mut held: Query<(Entity, &mut HeldGrip)>, bodies: Query<&Ragd
                     arm_parts: arms,
                 },
                 soft,
+                grip.soft_weld,
             ) {
-                links.world_soft = Some(links.links.len());
-                links.links.push(soft);
-                links.world_hard = Some(links.links.len());
-                links.links.push(hard);
+                for weld in welds {
+                    if weld.strength < 1.0 {
+                        links.world_soft = Some(links.links.len());
+                    } else {
+                        links.world_hard = Some(links.links.len());
+                    }
+                    links.links.push(weld);
+                }
             }
             grip.links = Some(links);
         }

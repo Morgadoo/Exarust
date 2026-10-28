@@ -1414,6 +1414,7 @@ fn equip_outfits(
                         size: grip_size,
                         second_hand_factor: record.second_hand,
                         flip: false,
+                        soft_weld: false,
                         holder_key: key,
                         hands: [
                             by_bone.get(&RIGHT_HAND).copied(),

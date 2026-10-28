@@ -55,6 +55,8 @@ fn links(link: GripLink) -> GripLinks {
         flip: None,
         flip_point: Vec3::ZERO,
         flip_progress: 0.0,
+        flipped: false,
+        flip_active: false,
         mode: -1,
         relaxing: false,
         record_dirty: false,
@@ -137,7 +139,8 @@ fn a_disabled_link_is_skipped_and_a_world_link_moves_the_item_alone() {
 }
 
 /// The builder turns a held item and its character body into the grip's
-/// links: the table's one main pivot, then the two disabled world welds.
+/// links: the table's one main pivot, then the stiff disabled origin weld
+/// (an ordinary item has no soft weld).
 #[test]
 fn a_held_items_links_are_built_from_its_bodies() {
     use crate::body::PartSetup;
@@ -180,6 +183,7 @@ fn a_held_items_links_are_built_from_its_bodies() {
         size: 1.0,
         second_hand_factor: 1.0,
         flip: false,
+        soft_weld: false,
         holder_key: owner,
         hands: [Some(hand), None],
         arms: [Some(hand), None],
@@ -193,10 +197,10 @@ fn a_held_items_links_are_built_from_its_bodies() {
     app.update();
     let grip = app.world().get::<HeldGrip>(item_e).unwrap();
     let links = grip.links.as_ref().expect("the links were not built");
-    assert_eq!(links.links.len(), 3);
+    assert_eq!(links.links.len(), 2);
     assert_eq!(links.main, 0);
-    assert_eq!(links.world_soft, Some(1));
-    assert_eq!(links.world_hard, Some(2));
+    assert_eq!(links.world_soft, None);
+    assert_eq!(links.world_hard, Some(1));
     assert_eq!(links.links[1].flags & DISABLED, DISABLED);
     assert!(links.links[0].enabled());
     assert!(holder_e != Entity::PLACEHOLDER);
@@ -329,6 +333,7 @@ fn a_grip_links_smoothed_length_carries_over_ticks() {
         size: 1.0,
         second_hand_factor: 1.0,
         flip: false,
+        soft_weld: false,
         holder_key: hand,
         hands: [Some(hand), None],
         arms: [None, None],
