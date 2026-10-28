@@ -23,7 +23,7 @@ use std::collections::HashMap;
 use bevy::math::Affine3A;
 use bevy::prelude::*;
 use exa_anim::{
-    ATTACKS, AnimSystems, Animator, BodyPart, ClipPose, Motions, Stature, TickedClips,
+    ATTACKS, AnimSystems, Animator, BodyPart, Capture, ClipPose, Motions, Stature, TickedClips,
     follow_up_blend, in_place, ragdoll_bracket, rising_frames, slerp, standing_frames,
 };
 use exa_assets::SkinnedPart;
@@ -32,7 +32,7 @@ use exa_combat::condition::{Branch, WEAK_BELOW, action};
 use exa_combat::swing::{Swing, pace_swings};
 use exa_formats::rsq::{BoneBody, Clip};
 use exa_physics::CharacterBody;
-use exa_physics::body::locomotion::{LegMode, Locomotion, Locomotor};
+use exa_physics::body::locomotion::{LegMode, Locomotion, Locomotor, half_lean};
 use exa_physics::body::{
     Bearing, BodyStats, Drive, FootState, GoLimp, PartSetup, Physical, PlacedCorpse, RaceMuscles,
     Ragdoll, limp_plant, limp_pose_height, snap_part,
@@ -448,9 +448,62 @@ impl Hold {
     }
 }
 
+/// What a plain start capture half-leans
+/// (`exa_physics::body::locomotion::half_lean`): the midline bones above
+/// the legs and below the head (the lumbar and the thorax, bone − 1
+/// indexed), against the twist before this tick's twist block for a start
+/// made earlier in the tick (`before`) or this tick's for a follow-up the
+/// clock starts (`now`).
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Lean {
+    pub(crate) bones: Vec<usize>,
+    pub(crate) before: Quat,
+    pub(crate) now: Quat,
+}
+
+/// The first bone past the pelvis and legs, and the head: the half-lean
+/// takes the midline bones from the one up to the other.
+const LEAN_FIRST: usize = 8;
+const LEAN_END: usize = 10;
+
+impl Lean {
+    /// The half-lean's bones of a body whose midline chain is `spine`
+    /// (part indices), with the two twists.
+    pub(crate) fn of(body: &Ragdoll, spine: &[usize], before: Quat, now: Quat) -> Self {
+        let bones = spine
+            .iter()
+            .filter_map(|&i| body.parts.get(i))
+            .filter(|p| (LEAN_FIRST..LEAN_END).contains(&p.bone))
+            .map(|p| p.bone - 1)
+            .collect();
+        Self { bones, before, now }
+    }
+
+    /// The turns a pending capture takes: a plain capture's midline
+    /// bones half-leaned against `twist`, every other turn (and a whole
+    /// capture's) as measured.
+    pub(crate) fn capture(
+        &self,
+        pending: Option<Capture>,
+        physical: &[Option<Quat>],
+        twist: Quat,
+    ) -> Vec<Option<Quat>> {
+        let mut out = physical.to_vec();
+        if pending == Some(Capture::Plain) {
+            for &b in &self.bones {
+                if let Some(Some(q)) = out.get_mut(b) {
+                    *q = half_lean(*q, twist);
+                }
+            }
+        }
+        out
+    }
+}
+
 /// One tick of a living body's clip clock: a start since the last tick
 /// captures where the body is (`turns` measures each bone's physical turn,
-/// only when needed); the clock advances by [`clip_frames`] and a clip
+/// only when needed; a plain capture's lumbar and thorax keep half of the
+/// twist, [`Lean`]); the clock advances by [`clip_frames`] and a clip
 /// played once may end into its follow-up (which captures at once).
 /// Returns what the sampler holds the sample toward: the body's physical
 /// pose by its drive's hold weight while it is dazed or unsteady. None for
@@ -460,6 +513,7 @@ pub(crate) fn clip_tick(
     anim: &mut Animator,
     body: &mut Ragdoll,
     pace: &Pace,
+    lean: &Lean,
     turns: impl Fn(&Ragdoll) -> Vec<Option<Quat>>,
 ) -> Option<Hold> {
     let set = &*motions.0;
@@ -469,7 +523,7 @@ pub(crate) fn clip_tick(
     };
     let physical = (anim.pending.is_some() || holding).then(|| turns(body));
     let physical = physical.as_deref().unwrap_or(&[]);
-    anim.take_capture(physical);
+    anim.take_capture(&lean.capture(anim.pending, physical, lean.before));
     let playing = set.action_index(&anim.action);
     if let Some(clip) = motions.clip(anim, &anim.action) {
         let progress = anim.clip_progress(clip);
@@ -486,11 +540,14 @@ pub(crate) fn clip_tick(
             anim.tick(clip, advance.frames as f32, follow_up)
         };
         if started {
-            if physical.is_empty() {
-                anim.take_capture(&turns(body));
+            let fresh;
+            let physical = if physical.is_empty() {
+                fresh = turns(body);
+                &fresh[..]
             } else {
-                anim.take_capture(physical);
-            }
+                physical
+            };
+            anim.take_capture(&lean.capture(anim.pending, physical, lean.now));
         }
     }
     Some(Hold {
@@ -1778,7 +1835,15 @@ pub(crate) mod tests {
                 stance: None,
                 still: false,
             };
-            let hold = clip_tick(&motions, &mut anim, &mut body, &pace, |_| Vec::new()).unwrap();
+            let hold = clip_tick(
+                &motions,
+                &mut anim,
+                &mut body,
+                &pace,
+                &Lean::default(),
+                |_| Vec::new(),
+            )
+            .unwrap();
             let walk = motions.clip(&anim, "Walk").unwrap();
             let gait = run_overlay(&motions, &anim, &pace);
             anim.sample_layered(walk, true, hold.toward(), gait)
@@ -2325,5 +2390,31 @@ pub(crate) mod tests {
         sample_limp(&mut anim, &mut body, &motions);
         assert!((anim.time - 1.8).abs() < 1e-5);
         assert_ne!(thigh, body.parts[1].positions, "the next sample moves it");
+    }
+
+    /// A plain capture half-leans the midline bones it names (the thorax,
+    /// index 8, here) against the twist it is given and leaves every other
+    /// turn; a whole capture, or none pending, takes the turns as measured.
+    #[test]
+    fn a_plain_capture_half_leans_the_lumbar_and_thorax() {
+        let lean = Lean {
+            bones: vec![8],
+            before: Quat::from_rotation_y(0.6),
+            now: Quat::IDENTITY,
+        };
+        let arm = Quat::from_rotation_z(0.2);
+        let mut physical = vec![None; 10];
+        physical[8] = Some(Quat::IDENTITY);
+        physical[9] = Some(arm);
+        let plain = lean.capture(Some(Capture::Plain), &physical, lean.before);
+        let want = Quat::from_rotation_y(-0.3);
+        assert!(plain[8].unwrap().dot(want).abs() > 1.0 - 1e-6);
+        assert_eq!(plain[9], Some(arm));
+        assert_eq!(plain[0], None);
+        assert_eq!(
+            lean.capture(Some(Capture::Whole), &physical, lean.before),
+            physical
+        );
+        assert_eq!(lean.capture(None, &physical, lean.before), physical);
     }
 }

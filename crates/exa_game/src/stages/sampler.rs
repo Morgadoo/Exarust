@@ -47,7 +47,7 @@ use exa_physics::body::{
     hunch_turn, step_hunch, world_with,
 };
 
-use crate::limp::{Pace, clip_pose, clip_tick, physical_turns, run_overlay};
+use crate::limp::{Lean, Pace, clip_pose, clip_tick, physical_turns, run_overlay};
 
 /// What the sampler gave the ticked body this tick, which the carry stage
 /// puts on its character frame: each part's placement in the body root's
@@ -121,7 +121,19 @@ pub(crate) fn sample_clip(
         still: condition.as_deref().is_some_and(|c| c.clip_stands_still()),
     };
     let once = !anim.looping;
-    let hold = clip_tick(&motions, &mut anim, &mut body, &pace, |body| {
+    // A plain capture's lumbar and thorax keep half of the twist: last
+    // tick's for a start made before this tick's twist block, this tick's
+    // for a follow-up the clock starts.
+    let lean = {
+        let (before, now) = locomotion
+            .as_ref()
+            .map_or((Quat::IDENTITY, Quat::IDENTITY), |(_, l)| {
+                (l.twist_before, l.twist)
+            });
+        let midline: Vec<usize> = spine(&body, &nodes).into_iter().map(|(i, _)| i).collect();
+        Lean::of(&body, &midline, before, now)
+    };
+    let hold = clip_tick(&motions, &mut anim, &mut body, &pace, &lean, |body| {
         physical_turns(
             body,
             root,
