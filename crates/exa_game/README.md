@@ -599,9 +599,12 @@ the title bit), the inventory's 228 × 180 pack panel, and the control
 records laid out by the two-pass layout (the inventory's Encumbrance label
 and Primary button, the journal's New and Erase buttons) with captions
 placed by the skin's own rule, and the journal's selected entry through the
-text box. The character view, the preview bars, the pack's item icons, the
-journal's entry list, the controls' callbacks and the inventory's unlocated
-second record are not wired; the text keeps the level font's metrics and
+text box. A dead body's double click in the world opens the body's loot
+window (400, 36; 244 × 440) with its pack and equipment panels; it joins
+the open-container registry under the body's tagged id and closes with the
+focused screen. The character view, the preview bars, the pack's and the
+loot panels' item icons, the journal's entry list, the controls' callbacks
+and the inventory's unlocated second record are not wired; the text keeps the level font's metrics and
 samples the base font's atlas while the Rayform faces are not shipped. The
 skills key's screen and the power tree are not opened.
 

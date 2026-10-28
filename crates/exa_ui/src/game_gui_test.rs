@@ -9,7 +9,7 @@ fn the_game_screens() {
     assert_eq!(GameScreen::Inventory.size(), Some((244, 644)));
     assert_eq!(GameScreen::Journal.size(), Some((244, 518)));
     assert_eq!(GameScreen::TechniqueSelector.size(), Some((332, 112)));
-    assert_eq!(GameScreen::Loot.size(), None);
+    assert_eq!(GameScreen::Loot.size(), Some((244, 440)));
     assert_eq!(
         (inventory_height(true, false), inventory_height(true, true)),
         (628, 590)
@@ -472,4 +472,238 @@ fn the_journal_keeps_its_text_and_place_when_it_closes() {
     journal.close((120, 40), "a note");
     assert_eq!(journal.place, Some((120, 40)));
     assert_eq!(journal.entries[0].text, "a note");
+}
+
+#[test]
+fn the_loot_window_is_a_body_of_its_own() {
+    // 244 × 440 at x 400; its y is unset and the show centres it at 36.
+    assert_eq!(LOOT_SIZE, (244, 440));
+    assert_eq!(
+        (LOOT_TITLE, LOOT_PLACE),
+        ("Body", (400, crate::form::UNPLACED))
+    );
+    let client = crate::form::ClientRect {
+        left: 0,
+        top: 0,
+        right: 1600,
+        bottom: 900,
+    };
+    assert_eq!(
+        crate::form::place_unset(
+            LOOT_PLACE.0,
+            LOOT_PLACE.1,
+            LOOT_SIZE.0,
+            LOOT_SIZE.1,
+            0x3000,
+            client
+        ),
+        (400, 36)
+    );
+    // An existing window on the same body is activated; another body opens
+    // a second window; a body whose flags' second byte is 3 is refused.
+    assert_eq!(loot_screen(0, false), ScreenAction::Opened);
+    assert_eq!(loot_screen(0, true), ScreenAction::Focused);
+    assert_eq!(loot_screen(0x300, true), ScreenAction::Refused);
+    assert_eq!((LOOT_PACK_HEIGHT, LOOT_PANEL_GAP), (180, 4));
+}
+
+#[test]
+fn the_preview_model_value_and_draw_words() {
+    let bound = preview_plan(false);
+    assert_eq!(
+        bound,
+        PreviewPlan {
+            model: 0.15,
+            scene_word: 0,
+            draw_word: 0x42,
+            appearance_words: 6,
+            build_delay: 100,
+        }
+    );
+    assert_eq!(preview_plan(true).model, 0.05);
+    assert_eq!(preview_plan(true).scene_word, 0x1000);
+}
+
+#[test]
+fn the_status_hide_clock_and_draw_values() {
+    assert_eq!(status_hide_until(1000, 500), 1500);
+    assert_eq!(status_hide_until(0xffff_fff0, 0x20), 0x10);
+    assert_eq!(STATUS_GLOW_RADIUS, 8.0);
+    assert_eq!(STATUS_GLOW_SHARE, 0.6);
+    assert_eq!(STATUS_ICON_TINT, [140, 160, 255]);
+    // The pulse at the glow: a start 1500 ms back is halfway.
+    let (pulse, glow) = status_pulse(1500, 0);
+    assert!((pulse - 0.5).abs() < 1e-6);
+    assert!((glow - 0.3).abs() < 1e-6);
+}
+
+#[test]
+fn a_selector_technique_byte_nine_marks_the_forget_row() {
+    let requirements = [[0; 2]; 8];
+    let (rows, forget) = selector_rows(SelectorInput {
+        locked: false,
+        skill: Skill {
+            points: 5000,
+            techniques: [9, 8, 0, 0, 0, 0],
+        },
+        requirements,
+        count: 0,
+    });
+    // The row byte − 1 is written unchecked: 9 reaches the ninth (forget)
+    // row and 8 the last technique row.
+    assert!(!forget);
+    assert_eq!(rows[8], 0x10);
+    assert_eq!(rows[7], 0x10);
+    assert_eq!(&rows[..7], &[0; 7]);
+    // A forget count clears the ninth row again afterwards.
+    let (rows, forget) = selector_rows(SelectorInput {
+        locked: false,
+        skill: Skill {
+            points: 5000,
+            techniques: [9, 0, 0, 0, 0, 0],
+        },
+        requirements,
+        count: 1,
+    });
+    assert!(forget);
+    assert_eq!(rows[8], 0);
+}
+
+#[test]
+fn the_power_slot_draw() {
+    let slot = PowerSlot {
+        icon: 5,
+        kind: 0,
+        state: 0,
+        ..PowerSlot::default()
+    };
+    let draw = |slot: PowerSlot| slot.draw(10, 20, 40, 40, 2);
+    let plain = draw(slot);
+    // The frame is inset by the border; a 32-pixel icon is centred four in.
+    assert_eq!(plain.frame, (12, 22, 36, 36));
+    assert_eq!(plain.icon, (14, 24));
+    assert_eq!(plain.tint, SlotTint::Plain);
+    assert!(!plain.empty && !plain.extra_frame && !plain.full_scale && !plain.kind_icon);
+    // The marked state draws its frame again and takes the marked ink; the
+    // selected bit wins over it; kind 2 shares the selected (bright) ink.
+    let marked = draw(PowerSlot {
+        state: 0x40,
+        ..slot
+    });
+    assert!(marked.extra_frame);
+    assert_eq!(marked.tint, SlotTint::Marked);
+    assert_eq!(
+        draw(PowerSlot {
+            state: 0x50,
+            ..slot
+        })
+        .tint,
+        SlotTint::Bright
+    );
+    assert_eq!(draw(PowerSlot { kind: 2, ..slot }).tint, SlotTint::Bright);
+    // Under the pointer the icon is drawn at full scale with no ink.
+    let hover = draw(PowerSlot {
+        state: 0x1_0040,
+        ..slot
+    });
+    assert_eq!(hover.tint, SlotTint::Hover);
+    assert!(hover.full_scale && hover.extra_frame);
+    // Only the 0x10000 nibble value is hover.
+    assert_eq!(
+        draw(PowerSlot {
+            state: 0x3_0000,
+            ..slot
+        })
+        .tint,
+        SlotTint::Plain
+    );
+    // An empty slot draws its shadow; its kind icon shows for kind 4, or
+    // for kind 3 only under the pointer, never for kind 2 or below.
+    let empty = PowerSlot { icon: 0, ..slot };
+    let e = draw(empty);
+    assert!(e.empty && !e.kind_icon && !e.extra_frame);
+    assert!(draw(PowerSlot { kind: 4, ..empty }).kind_icon);
+    assert!(!draw(PowerSlot { kind: 3, ..empty }).kind_icon);
+    let hovered_three = draw(PowerSlot {
+        kind: 3,
+        state: 0x1_0000,
+        ..empty
+    });
+    assert!(hovered_three.kind_icon && hovered_three.full_scale);
+    assert_eq!(hovered_three.tint, SlotTint::Plain);
+    assert!(
+        !draw(PowerSlot {
+            kind: 2,
+            state: 0x1_0000,
+            ..empty
+        })
+        .kind_icon
+    );
+}
+
+#[test]
+fn the_preview_build_destroy_and_bars() {
+    // The build always answers done; an inventory showing the view refits
+    // its camera to ten times the character's height.
+    assert_eq!(
+        preview_built(true, Some(1.7)),
+        PreviewBuild {
+            done: true,
+            camera: Some(17.0)
+        }
+    );
+    assert_eq!(preview_built(true, None).camera, None);
+    assert_eq!(
+        preview_built(false, Some(1.7)),
+        PreviewBuild {
+            done: true,
+            camera: None
+        }
+    );
+    assert!(preview_destroyed(true));
+    assert!(!preview_destroyed(false));
+    // At a 1600 × 1014 view and unit 5: the health bar starts at
+    // 800 − 250 = 550, 1014 − 25 = 989, 240 wide; its frame runs from 548
+    // to 792 and down to 989 + 18; the focus bar is 260 further right.
+    let [health, focus] = preview_bar_rects(1600, 1014, 5);
+    assert_eq!(
+        health,
+        PreviewBar {
+            x: 550,
+            y: 989,
+            width: 240,
+            frame: (548, 989, 792, 1007)
+        }
+    );
+    assert_eq!(
+        focus,
+        PreviewBar {
+            x: 810,
+            y: 989,
+            width: 240,
+            frame: (808, 989, 1052, 1007)
+        }
+    );
+    // An odd width halves down.
+    assert_eq!(preview_bar_rects(1601, 1014, 5)[0].x, 550);
+}
+
+#[test]
+fn the_hud_reset_takes_a_hold_only_from_a_fallen_curtain() {
+    let mut curtain = LevelCurtain { state: 2, start: 0 };
+    let mut holds = 3;
+    assert_eq!(curtain.reset_with_hold(&mut holds, true), (true, true));
+    assert_eq!(holds, 2);
+    assert_eq!(curtain.state, 0);
+    curtain.state = 1;
+    assert_eq!(curtain.reset_with_hold(&mut holds, false), (false, false));
+    assert_eq!(holds, 2);
+}
+
+#[test]
+fn a_right_release_closes_the_inventory_and_loot() {
+    assert!(right_release_closes(GameScreen::Inventory));
+    assert!(right_release_closes(GameScreen::Loot));
+    assert!(!right_release_closes(GameScreen::Journal));
+    assert!(!right_release_closes(GameScreen::TechniqueSelector));
 }

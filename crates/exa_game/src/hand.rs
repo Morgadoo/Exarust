@@ -1135,15 +1135,30 @@ fn hold_hand(
                         let interaction = player_controls::interact_character(target, false, false);
                         debug!("double click {target:?}: {interaction:?}");
                         // The player's own body opens Exarust's inventory
-                        // screen; the loot and talk windows have no
-                        // Exarust form yet.
+                        // screen; a dead body opens its loot window. The
+                        // talk and dialogue windows have no Exarust form
+                        // yet.
                         if interaction == CharacterInteraction::Inventory
                             && let Some(messages) = screens.as_deref_mut()
                         {
+                            messages.write(ScreenRequest::screen(
+                                exa_ui::game_gui::GameScreen::Inventory,
+                                !condition.dying(),
+                                !condition.is_dead(),
+                            ));
+                        }
+                        if interaction == CharacterInteraction::Loot
+                            && let Some(Hit::Character { body, .. }) = picked.map(|p| p.hit)
+                            && let Some(messages) = screens.as_deref_mut()
+                        {
                             messages.write(ScreenRequest {
-                                screen: exa_ui::game_gui::GameScreen::Inventory,
+                                screen: exa_ui::game_gui::GameScreen::Loot,
                                 player_ready: !condition.dying(),
                                 player_alive: !condition.is_dead(),
+                                target: Some(body.index().index() as i32),
+                                // The body's record flag word is not read
+                                // by this path yet; 0 passes the show rule.
+                                flags: 0,
                             });
                         }
                     }

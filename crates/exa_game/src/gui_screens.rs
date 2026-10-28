@@ -22,8 +22,9 @@ use bevy::window::PrimaryWindow;
 use exa_ui::form::{ClientRect, UNPLACED, place_unset};
 use exa_ui::game_gui::{
     CONTAINER_FAMILY, GameScreen, INVENTORY_PLACE, INVENTORY_TITLE, InventoryInput, JOURNAL_TEXT,
-    JOURNAL_TITLE, Journal, JournalInput, OpenContainers, ScreenAction, forms_with_tag,
-    inventory_place, inventory_screen, journal_screen, tagged_container,
+    JOURNAL_TITLE, Journal, JournalInput, LOOT_PLACE, LOOT_TITLE, OpenContainers, ScreenAction,
+    forms_with_tag, inventory_place, inventory_screen, journal_screen, loot_screen,
+    tagged_container,
 };
 use exa_ui::gui_controls::{Control, LayoutClient, layout_records};
 use exa_ui::gui_core::{FormHost, FormId, GuiRect, GuiTask, NO_CONTROL};
@@ -43,6 +44,23 @@ pub struct ScreenRequest {
     pub player_ready: bool,
     /// The player's condition is not the dead mode 0xa00.
     pub player_alive: bool,
+    /// The body a loot window is asked for (its entity index), if any.
+    pub target: Option<i32>,
+    /// The body's record flag word, for the loot window's show rule.
+    pub flags: u32,
+}
+
+impl ScreenRequest {
+    /// A request for a screen that is not a body's loot window.
+    pub fn screen(screen: GameScreen, player_ready: bool, player_alive: bool) -> Self {
+        Self {
+            screen,
+            player_ready,
+            player_alive,
+            target: None,
+            flags: 0,
+        }
+    }
 }
 
 /// One open screen.
@@ -50,6 +68,38 @@ pub struct ScreenRequest {
 pub struct OpenScreen {
     pub kind: GameScreen,
     pub form: FormId,
+}
+
+/// An open loot window: the body it shows, its pack and what that body
+/// wears and holds. The panels are the item container's (the pack's
+/// 228 × 180 panel at the client's bottom, the equipment panel above it).
+#[derive(Debug, Clone, PartialEq)]
+pub struct LootWindow {
+    pub form: FormId,
+    /// The body's record id (its entity index in Exarust).
+    pub character: i32,
+    /// The body's record flag word, as it was when the window opened.
+    pub flags: u32,
+    pub pack: Container,
+    /// What the body wears and holds.
+    pub worn: Container,
+}
+
+impl LootWindow {
+    /// An empty window's panels for a GUI unit.
+    fn new(form: FormId, character: i32, flags: u32, unit: i32) -> Self {
+        let mut pack = Container::form(unit);
+        pack.owner = Some(character as u32);
+        let mut worn = Container::form(unit);
+        worn.owner = Some(character as u32);
+        Self {
+            form,
+            character,
+            flags,
+            pack,
+            worn,
+        }
+    }
 }
 
 /// The class of the inventory's second record, whose draw and behaviour are
@@ -211,6 +261,8 @@ pub struct GameScreens {
     pub pack: Container,
     /// The description card the panel asked for.
     pub card: CardWindow,
+    /// The open loot windows, one per body.
+    pub loot: Vec<LootWindow>,
 }
 
 impl Default for GameScreens {
@@ -225,6 +277,7 @@ impl Default for GameScreens {
             player: 0,
             pack: Container::default(),
             card: CardWindow::default(),
+            loot: Vec::new(),
         }
     }
 }
@@ -256,7 +309,7 @@ impl GameScreens {
         }
     }
 
-    fn push(&mut self, kind: GameScreen, bounds: GuiRect) {
+    fn push(&mut self, kind: GameScreen, bounds: GuiRect) -> FormId {
         let root = self.task.root;
         let controls = screen_controls(kind, bounds);
         let form = self.task.add(Box::new(ScreenForm {
@@ -269,6 +322,7 @@ impl GameScreens {
         }));
         self.open.push(OpenScreen { kind, form });
         self.task.focus_set(Some(form), NO_CONTROL);
+        form
     }
 
     /// The player's inventory: the show rule (toggling), then a new one is
@@ -353,12 +407,107 @@ impl GameScreens {
         action
     }
 
+    /// The loot window for a body: refused for a body whose record flag
+    /// word has its second byte 3; an existing window on that body is
+    /// activated, else a new one opens at x 400 with an unset y, enters the
+    /// open-container registry under the body's tagged id, and takes an
+    /// empty pack and equipment panel until the body's items are bound.
+    /// Another body's window is not reused, as the original matches the
+    /// window's character as well as its tag.
+    pub fn open_loot(&mut self, character: i32, flags: u32, unit: i32) -> ScreenAction {
+        let existing = self
+            .loot
+            .iter()
+            .find(|window| window.character == character)
+            .map(|window| window.form);
+        let action = loot_screen(flags, existing.is_some());
+        match action {
+            ScreenAction::Focused => {
+                if let Some(form) = existing {
+                    self.task.focus_set(Some(form), NO_CONTROL);
+                }
+            }
+            ScreenAction::Opened => {
+                let (width, height) = GameScreen::Loot.size().unwrap_or((244, 440));
+                let (x, y) = place_unset(
+                    LOOT_PLACE.0,
+                    LOOT_PLACE.1,
+                    width,
+                    height,
+                    gui_paint::SCREEN_STYLE,
+                    self.root_client(),
+                );
+                self.containers.open(tagged_container(character));
+                let form = self.push(GameScreen::Loot, GuiRect::new(x, y, width, height));
+                self.loot
+                    .push(LootWindow::new(form, character, flags, unit));
+            }
+            _ => {}
+        }
+        action
+    }
+
+    /// The open loot window on a body, if any.
+    pub fn loot_window(&self, character: i32) -> Option<&LootWindow> {
+        self.loot
+            .iter()
+            .find(|window| window.character == character)
+    }
+
+    /// Binds a body's items to its loot window: the pack's entries and what
+    /// it wears and holds. The original loads both panels from the body's
+    /// record when the window is created; the running game has no body
+    /// inventory yet, so the caller supplies them (an empty body leaves the
+    /// panels as they are).
+    pub fn bind_loot(&mut self, character: i32, pack: Container, worn: Container) -> bool {
+        let Some(window) = self
+            .loot
+            .iter_mut()
+            .find(|window| window.character == character)
+        else {
+            return false;
+        };
+        window.pack = pack;
+        window.worn = worn;
+        true
+    }
+
+    /// The bodies whose loot window the deferred close takes, in the open
+    /// windows' order (the original walks the GUI's forms): a window whose
+    /// body's mark 0x80000 is set or whose condition is no longer dead
+    /// (other than 0xa00). `bodies` gives each body's (id, flags, mode); a
+    /// window whose body is not listed stays.
+    pub fn loot_windows_to_close(&self, bodies: &[(i32, u32, u32)]) -> Vec<i32> {
+        self.open
+            .iter()
+            .filter(|screen| screen.kind == GameScreen::Loot)
+            .filter_map(|screen| self.loot.iter().find(|w| w.form == screen.form))
+            .filter_map(|window| {
+                bodies
+                    .iter()
+                    .find(|(character, _, _)| *character == window.character)
+            })
+            .filter(|(_, flags, mode)| exa_ui::game_gui::closes_loot_window(*flags, *mode))
+            .map(|(character, _, _)| *character)
+            .collect()
+    }
+
     /// Closes a screen: its form closes and the task deletes it; the
     /// journal stores its text (its save) and the screens remember their
-    /// place; the inventory leaves the container registry. The focus falls
-    /// to the last screen left.
+    /// place; the inventory leaves the container registry; a loot window
+    /// leaves it under its body's id (the original also saves the body's
+    /// pack, which has no Exarust store yet).
+    /// The focus falls to the last screen left. The focused window of the
+    /// kind is closed when there are several (the loot windows of two
+    /// bodies).
     pub fn close(&mut self, kind: GameScreen) -> bool {
-        let Some(index) = self.open.iter().position(|screen| screen.kind == kind) else {
+        let focused = self.task.active;
+        let index = self
+            .open
+            .iter()
+            .position(|screen| screen.kind == kind && Some(screen.form) == focused)
+            .or_else(|| self.open.iter().position(|screen| screen.kind == kind));
+        let Some(index) = index else {
             return false;
         };
         let screen = self.open.remove(index);
@@ -378,6 +527,16 @@ impl GameScreens {
             GameScreen::Inventory => {
                 self.containers.close(tagged_container(self.player));
                 self.inventory_place = place;
+            }
+            GameScreen::Loot => {
+                if let Some(window) = self
+                    .loot
+                    .iter()
+                    .position(|window| window.form == screen.form)
+                    .map(|index| self.loot.remove(index))
+                {
+                    self.containers.close(tagged_container(window.character));
+                }
             }
             _ => {}
         }
@@ -429,7 +588,8 @@ impl Plugin for GameScreensPlugin {
                     .after(crate::hotkeys::HotkeySet)
                     .before(crate::player::player_combat),
             )
-            .add_systems(Update, draw_screens.after(open_requested_screens));
+            .add_systems(Update, draw_screens.after(open_requested_screens))
+            .add_systems(Update, close_on_right_release.after(open_requested_screens));
     }
 }
 
@@ -466,17 +626,65 @@ fn open_requested_screens(
         screens.player = entity.index().index() as i32;
     }
     for request in requests.read() {
+        if !request.player_ready || !request.player_alive {
+            continue;
+        }
         let action = match request.screen {
             GameScreen::Inventory => {
                 screens.open_inventory(request.player_ready, request.player_alive, 4)
             }
             GameScreen::Journal => screens.open_journal(request.player_ready, request.player_alive),
+            GameScreen::Loot => match request.target {
+                Some(target) => screens.open_loot(target, request.flags, 4),
+                None => continue,
+            },
             _ => continue,
         };
         debug!("GUI: {:?} {action:?}", request.screen);
     }
     if keys.just_pressed(KeyCode::Escape) && screens.close_focused() {
         debug!("GUI: the focused screen closes");
+    }
+}
+
+/// A right-button release over a screen that has the handler closes it
+/// (the inventory's and the loot window's mouse routines); a release over
+/// another form or outside leaves the screens alone.
+fn close_on_right_release(
+    buttons: Option<Res<ButtonInput<MouseButton>>>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    mut screens: ResMut<GameScreens>,
+) {
+    let Some(buttons) = buttons else {
+        return;
+    };
+    if !buttons.just_released(MouseButton::Right) {
+        return;
+    }
+    let Ok(window) = windows.single() else {
+        return;
+    };
+    let Some(pointer) = window.cursor_position() else {
+        return;
+    };
+    let pointer = pointer * window.scale_factor();
+    let active = screens.task.active;
+    let Some(screen) = screens
+        .open
+        .iter()
+        .find(|screen| Some(screen.form) == active)
+        .copied()
+    else {
+        return;
+    };
+    if !exa_ui::game_gui::right_release_closes(screen.kind) {
+        return;
+    }
+    let Some(form) = screens.task.form(screen.form) else {
+        return;
+    };
+    if form.bounds().contains(pointer.x as i32, pointer.y as i32) {
+        screens.close(screen.kind);
     }
 }
 
@@ -693,6 +901,66 @@ fn paint_journal(
     painted
 }
 
+/// The loot window's frame and its two panels: the pack at the client's
+/// bottom (228 × 180) and the equipment panel above it, ending four units
+/// before the pack. Each panel draws its entries' icons when the icon cache
+/// holds them, clipped to the panel's client.
+fn paint_loot(
+    bounds: GuiRect,
+    unit: i32,
+    textures: &GuiTextures,
+    window: &LootWindow,
+    mut icons: Option<&mut PanelIcons>,
+) -> gui_paint::Painted {
+    let palette = gui_paint::palette();
+    let level = exa_ui::gui_font::level_for_unit(unit);
+    let (font, size) = screen_font(exa_ui::gui_font::gui_level(level).main, textures);
+    let frame = Frame::new(bounds, unit, LOOT_TITLE);
+    let mut painted = gui_paint::paint_frame(&frame, &palette, &font, size);
+    let client = frame.client();
+    let pack = GuiRect::new(
+        client.left,
+        client.bottom - exa_ui::game_gui::LOOT_PACK_HEIGHT,
+        exa_items::char_loot::PACK_WIDTH,
+        exa_ui::game_gui::LOOT_PACK_HEIGHT,
+    );
+    let equipment = GuiRect::new(
+        client.left,
+        client.top,
+        exa_items::char_loot::PACK_WIDTH,
+        (pack.top - client.top - exa_ui::game_gui::LOOT_PANEL_GAP).max(0),
+    );
+    let mut paint_panel_with =
+        |rect: GuiRect, container: &Container, icons: &mut Option<&mut PanelIcons>| {
+            let panel = gui_paint::paint_panel(
+                rect,
+                unit,
+                &palette,
+                gui_paint::PACK_ATTRIBUTES,
+                gui_paint::PACK_STYLE,
+            );
+            let panel_client = panel.client;
+            for layer in panel.layers {
+                painted.push(layer);
+            }
+            if let Some(icons) = icons.as_deref_mut()
+                && let Some(mut layer) = icons.layer(container)
+            {
+                gui_paint::offset_batch(&mut layer.batch, panel_client.left, panel_client.top);
+                layer.clip = Some([
+                    panel_client.left,
+                    panel_client.top,
+                    panel_client.width(),
+                    panel_client.height(),
+                ]);
+                painted.push(layer);
+            }
+        };
+    paint_panel_with(pack, &window.pack, &mut icons);
+    paint_panel_with(equipment, &window.worn, &mut icons);
+    painted
+}
+
 /// Draws the open screens and the debug form into the GUI's queue.
 fn draw_screens(
     screens: Res<GameScreens>,
@@ -724,6 +992,10 @@ fn draw_screens(
                 paint_inventory(bounds, unit, textures, &screens.pack, Some(&mut icons))
             }
             GameScreen::Journal => paint_journal(bounds, &screens.journal, unit, textures),
+            GameScreen::Loot => match screens.loot.iter().find(|w| w.form == screen.form) {
+                Some(window) => paint_loot(bounds, unit, textures, window, Some(&mut icons)),
+                None => continue,
+            },
             _ => continue,
         };
         painted.submit(&mut frames);
@@ -803,6 +1075,147 @@ mod tests {
     }
 
     #[test]
+    fn the_loot_window_opens_per_body_and_remembers_its_panels() {
+        let mut screens = GameScreens::default();
+        screens.task.screen = (1600, 900);
+        assert_eq!(screens.open_loot(7, 0, 4), ScreenAction::Opened);
+        let form = screens.loot_window(7).unwrap().form;
+        assert_eq!(
+            screens.task.form(form).unwrap().bounds(),
+            GuiRect::new(400, 36, 244, 440)
+        );
+        assert_eq!(screens.focused(), Some(GameScreen::Loot));
+        assert!(screens.containers.is_open(0x2000_0007));
+        // The same body again focuses its window; another body opens a
+        // second one and keeps the first.
+        assert_eq!(screens.open_loot(7, 0, 4), ScreenAction::Focused);
+        assert_eq!(screens.open_loot(8, 0, 4), ScreenAction::Opened);
+        assert_eq!(screens.loot.len(), 2);
+        assert!(screens.containers.is_open(0x2000_0008));
+        assert_eq!(screens.focused(), Some(GameScreen::Loot));
+        // The focused window (body 8) closes; body 7's stays open.
+        assert!(screens.close_focused());
+        assert!(!screens.containers.is_open(0x2000_0008));
+        assert!(screens.containers.is_open(0x2000_0007));
+        assert_eq!(screens.loot.len(), 1);
+        // A body whose flag word's second byte is 3 is refused.
+        assert_eq!(screens.open_loot(9, 0x300, 4), ScreenAction::Refused);
+        assert!(screens.loot_window(9).is_none());
+    }
+
+    #[test]
+    fn the_loot_panels_bind_the_bodys_items() {
+        let mut screens = GameScreens::default();
+        screens.task.screen = (1600, 900);
+        screens.open_loot(7, 0, 4);
+        let mut pack = Container::form(4);
+        pack.entries = vec![crate::item_container::Entry {
+            cell: crate::item_container::Cell::new(10, 20),
+            id: 7,
+            icon: 1,
+            flags: 0,
+            drag: 0,
+        }];
+        let mut worn = Container::form(4);
+        worn.entries = vec![crate::item_container::Entry {
+            cell: crate::item_container::Cell::new(30, 40),
+            id: 8,
+            icon: 1,
+            flags: 0,
+            drag: 0,
+        }];
+        assert!(screens.bind_loot(7, pack, worn));
+        assert_eq!(screens.loot_window(7).unwrap().pack.entries[0].id, 7);
+        assert_eq!(screens.loot_window(7).unwrap().worn.entries[0].id, 8);
+        assert!(!screens.bind_loot(99, Container::default(), Container::default()));
+    }
+
+    #[test]
+    fn the_loot_form_draws_its_two_panels() {
+        let mut app = App::new();
+        app.init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<GameScreens>()
+            .add_message::<ScreenRequest>()
+            .add_systems(Update, open_requested_screens);
+        app.world_mut().write_message(ScreenRequest {
+            screen: GameScreen::Loot,
+            player_ready: true,
+            player_alive: true,
+            target: Some(7),
+            flags: 0,
+        });
+        app.update();
+        let screens = app.world().resource::<GameScreens>();
+        assert!(screens.loot_window(7).is_some());
+        // The loot form has no control records; its paint is the frame and
+        // the two item panels.
+        assert!(screen_controls(GameScreen::Loot, GuiRect::new(400, 36, 244, 440)).is_empty());
+        let window = screens.loot_window(7).unwrap();
+        let painted = paint_loot(
+            GuiRect::new(400, 36, 244, 440),
+            4,
+            &GuiTextures::default(),
+            window,
+            None,
+        );
+        assert!(painted.layers.len() >= 3);
+        // The pack panel's frame starts at the client's left and its bottom
+        // less 180; the equipment panel above it ends four units before.
+        let client = painted.client;
+        assert_eq!(
+            (client.left, client.top, client.width(), client.height()),
+            (402, 38, 240, 436)
+        );
+        let pack = painted.layers[1]
+            .batch
+            .vertices
+            .iter()
+            .map(|v| (v.x, v.y))
+            .fold((f32::MAX, f32::MAX), |a, b| (a.0.min(b.0), a.1.min(b.1)));
+        assert!((pack.0 - client.left as f32).abs() < 2.0, "{pack:?}");
+        assert!(
+            (pack.1 - (client.bottom - 180) as f32).abs() < 2.0,
+            "{pack:?}"
+        );
+        let equipment = painted.layers[2]
+            .batch
+            .vertices
+            .iter()
+            .map(|v| (v.x, v.y))
+            .fold((f32::MAX, f32::MAX), |a, b| (a.0.min(b.0), a.1.min(b.1)));
+        assert!(
+            (equipment.0 - client.left as f32).abs() < 2.0,
+            "{equipment:?}"
+        );
+        assert!(
+            (equipment.1 - client.top as f32).abs() < 2.0,
+            "{equipment:?}"
+        );
+    }
+
+    #[test]
+    fn the_deferred_close_takes_the_windows_of_dead_bodies_only() {
+        let mut screens = GameScreens::default();
+        screens.task.screen = (1600, 900);
+        screens.open_loot(7, 0, 4);
+        screens.open_loot(8, 0, 4);
+        // 7 is still dead and unmarked; 8 is no longer dead; 9 has no window.
+        assert_eq!(
+            screens.loot_windows_to_close(&[(7, 0, 0xa00), (8, 0, 0), (9, 0x80000, 0xa00)]),
+            vec![8]
+        );
+        assert_eq!(
+            screens.loot_windows_to_close(&[(7, 0x80000, 0xa00)]),
+            vec![7]
+        );
+        // Both close in the windows' order, whatever the bodies' order.
+        assert_eq!(
+            screens.loot_windows_to_close(&[(8, 0, 0), (7, 0, 0)]),
+            vec![7, 8]
+        );
+    }
+
+    #[test]
     fn the_journal_opens_and_remembers() {
         let mut screens = GameScreens::default();
         assert_eq!(screens.open_journal(true, true), ScreenAction::Opened);
@@ -828,11 +1241,8 @@ mod tests {
             app.update();
         }
         assert!(app.world().resource::<GuiFrames>().frames.is_empty());
-        app.world_mut().write_message(ScreenRequest {
-            screen: GameScreen::Inventory,
-            player_ready: true,
-            player_alive: true,
-        });
+        app.world_mut()
+            .write_message(ScreenRequest::screen(GameScreen::Inventory, true, true));
         for _ in 0..3 {
             app.update();
         }
@@ -847,11 +1257,8 @@ mod tests {
         app.add_plugins(MinimalPlugins)
             .init_resource::<ButtonInput<KeyCode>>()
             .add_plugins(GameScreensPlugin);
-        app.world_mut().write_message(ScreenRequest {
-            screen: GameScreen::Inventory,
-            player_ready: true,
-            player_alive: true,
-        });
+        app.world_mut()
+            .write_message(ScreenRequest::screen(GameScreen::Inventory, true, true));
         app.update();
         let frames = app.world().resource::<GuiFrames>();
         assert_eq!(frames.frames.len(), 1);
@@ -901,11 +1308,7 @@ mod tests {
                 drag: 0,
             }];
         }
-        let request = ScreenRequest {
-            screen: GameScreen::Inventory,
-            player_ready: true,
-            player_alive: true,
-        };
+        let request = ScreenRequest::screen(GameScreen::Inventory, true, true);
         app.world_mut().write_message(request);
         app.update();
         let frames = app.world().resource::<GuiFrames>();
@@ -1027,11 +1430,8 @@ mod tests {
             ];
             screens.journal.current = 1;
         }
-        app.world_mut().write_message(ScreenRequest {
-            screen: GameScreen::Journal,
-            player_ready: true,
-            player_alive: true,
-        });
+        app.world_mut()
+            .write_message(ScreenRequest::screen(GameScreen::Journal, true, true));
         app.update();
         let frames = app.world().resource::<GuiFrames>();
         assert_eq!(frames.frames.len(), 1);
@@ -1050,11 +1450,7 @@ mod tests {
             .init_resource::<GameScreens>()
             .add_message::<ScreenRequest>()
             .add_systems(Update, open_requested_screens);
-        let request = |screen| ScreenRequest {
-            screen,
-            player_ready: true,
-            player_alive: true,
-        };
+        let request = |screen| ScreenRequest::screen(screen, true, true);
         app.world_mut()
             .write_message(request(GameScreen::Inventory));
         app.update();

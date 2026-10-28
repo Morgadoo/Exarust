@@ -1104,3 +1104,104 @@ fn the_snap_slots() {
     };
     assert_eq!(snap_slots(0x20, client, &[hidden]), Some(Vec::new()));
 }
+
+#[test]
+fn the_eager_layout_resolves_unset_places_down_the_tree() {
+    let client = ClientRect {
+        left: 0,
+        top: 0,
+        right: 100,
+        bottom: 100,
+    };
+    let mut tree = UnsetForm {
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 100,
+        style: 0,
+        client,
+        children: vec![
+            // Centred both ways: (100 − 20) / 2 = 40.
+            UnsetForm {
+                x: UNPLACED,
+                y: UNPLACED,
+                width: 20,
+                height: 20,
+                style: style::CENTRE_X | style::CENTRE_Y,
+                client,
+                children: Vec::new(),
+            },
+            // Right and bottom: 100 − 30 − 4 = 66.
+            UnsetForm {
+                x: UNPLACED,
+                y: UNPLACED,
+                width: 30,
+                height: 30,
+                style: style::RIGHT | style::BOTTOM,
+                client,
+                children: vec![UnsetForm {
+                    // In the child's own 100 × 100 client: the default 4, 36.
+                    x: UNPLACED,
+                    y: UNPLACED,
+                    width: 10,
+                    height: 10,
+                    style: 0,
+                    client,
+                    children: Vec::new(),
+                }],
+            },
+            // Neither: 4, 36.
+            UnsetForm {
+                x: UNPLACED,
+                y: UNPLACED,
+                width: 10,
+                height: 10,
+                style: 0,
+                client,
+                children: Vec::new(),
+            },
+        ],
+    };
+    assert_eq!(layout_unset(&mut tree), 5);
+    assert_eq!((tree.children[0].x, tree.children[0].y), (40, 40));
+    assert_eq!((tree.children[1].x, tree.children[1].y), (66, 66));
+    assert_eq!(
+        (
+            tree.children[1].children[0].x,
+            tree.children[1].children[0].y
+        ),
+        (4, 36)
+    );
+    assert_eq!((tree.children[2].x, tree.children[2].y), (4, 36));
+    // A set place is kept.
+    tree.children[2].x = 12;
+    tree.children[2].y = 13;
+    assert_eq!(layout_unset(&mut tree), 5);
+    assert_eq!((tree.children[2].x, tree.children[2].y), (12, 13));
+}
+
+#[test]
+fn a_control_message_finds_a_nested_record_or_answers_none() {
+    let tree = ControlTree {
+        ids: vec![7],
+        children: vec![ControlTree {
+            ids: vec![2, 9],
+            children: vec![ControlTree {
+                ids: vec![11],
+                children: Vec::new(),
+            }],
+        }],
+    };
+    let message = ControlMessage {
+        message: 0x40,
+        first: 1,
+        second: 2,
+    };
+    assert_eq!(
+        send_control(&tree, 11, message),
+        Some((vec![0, 0], 0, message))
+    );
+    assert_eq!(send_control(&tree, 2, message), Some((vec![0], 0, message)));
+    assert_eq!(send_control(&tree, 7, message), Some((vec![], 0, message)));
+    assert_eq!(send_control(&tree, 8, message), None);
+}

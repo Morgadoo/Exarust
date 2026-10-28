@@ -1067,6 +1067,14 @@ tab stop, 0x100000 no keys) and state word (0x10 disabled, 0x400 focus,
   starts the repeat. A grip drag keeps the place at 0 or more and the page
   at least 90 wide and 76 high. A release over -6 maximises or restores,
   -5 hides, -4 closes; a snapping form snaps a released thumb.
+- **Eager layout and messages.** Showing a form resolves every unset
+  place in its whole tree, depth first: a centred x is `(client width −
+  width) / 2` truncating, a right x `client right − width − 4`, else 4; a
+  centred y is the half height (a floor), a bottom y `client bottom −
+  height − 4`, else 36; a place already set is kept. A message sent by a
+  control's id reaches the first record with that id anywhere in the tree
+  with its message code and two words; with no such record the original's default
+  control takes it and ignores it.
 - **Snap slots and rescale.** A snap container (attribute 0x20) cuts the
   space between its client's edges and its visible children's widened
   client rectangles into slots: from each free cell the longer free run
@@ -1090,8 +1098,10 @@ drawing:
   controller is ready and its condition is not 0xa00 (dead). An open
   inventory still filling is left alone, an active one closes when the
   call toggles, another is activated. The journal closes when active and
-  is activated otherwise. The loot window refuses a character whose flag
-  word's second byte is 3 and activates an open one.
+  is activated otherwise. The loot window ("Body", 244 × 440 at x 400 with
+  an unset y, so the show centres it at 36) refuses a character whose flag
+  word's second byte is 3, activates the window of the same body and opens
+  a second window for another body.
 - **Inventory.** 244 wide and 644 high (628 compact, 590 in the arsenal),
   titled "Inventory", at (8, 8); the player's own goes to its remembered
   place, another character's to the screen's right less its width and four
@@ -1099,7 +1109,17 @@ drawing:
   the third; the scene is told the first of the character's items 431,
   500, 451, 452 or 499. Its preview bars are the HUD's layout with the
   record's two health words over 65535; their draw callback is registered
-  only when the switch changes.
+  only when the switch changes. Binding a character to the preview writes
+  the model value 0.15 and opening the window 0.05, the scene word 0x1000
+  and the draw word 0x42 on every mesh node, copies the 48-byte appearance
+  block and registers the model's build callback 100 ticks ahead (the
+  opening's 0.05 and 0x1000 are written only when the view has a
+  character); the build always keeps the model and answers done, and an
+  open inventory showing the view refits its camera to ten times the
+  character's height; the destroy releases the node only when one exists.
+  The preview bars start 50 units left of the half width and 5 above the
+  bottom, 48 units wide and 52 apart, framed 2 pixels out and 4 units − 2
+  down; the health bar takes the view's two shares, the focus bar is full.
 - **Journal.** 244 × 518 with its text box 228 × 412 at (0, 88), titled
   "Journal", at its remembered place when set. Adding an entry stores the
   text box, appends "New Entry" and selects it; deleting with fewer than
@@ -1109,7 +1129,13 @@ drawing:
 - **Controls.** The power slot (0xac3, 40 × 40) answers its hint with 3
   (0x103 for a hovered slot with a count) and hides a visible tooltip;
   a press with 0x2000 on an enabled slot with an icon or a kind opens the
-  technique selector (kind 1 answers 0). The counter (0xac2, 28 × 16)
+  technique selector (kind 1 answers 0). Its frame is inset by the border,
+  its 32-pixel icon is centred (four units in in a 40 × 40 slot), an empty
+  slot draws a rounded shadow (radius two units, alpha 0x40) and its kind's
+  icon for kind 4, or for a kind past 2 only under the pointer; a hovered
+  filled slot draws its icon at full scale with no ink, else the ink is
+  state 0x10's, then 0x40's (which also draws the frame again), a kind-2
+  slot's (the same bright ink as 0x10), else the plain one. The counter (0xac2, 28 × 16)
   turns a negative value into 0 (−0 and NaN stay), shows `value × 100`
   with one decimal and `%`, and draws `round(width / (n + 1) − 1)`-wide
   blocks whose backs step one pixel and whose fills are three narrower and
@@ -1120,9 +1146,12 @@ drawing:
   units left) while the six skills' levels sum below 15 and no skill has
   more techniques among its first `level + 1` bytes than its level. Both
   pulse with `(3 − 2t)t²` at `t = |1000 − (now − start) mod 2000| / 1000`,
-  the glow at 0.6 of it. The level curtain falls to black over three
-  seconds (`round(t · 255)`, the world at `1 − t`) and raises the GUI's
-  hold count once it has fallen; the screen reset releases it. The compass
+  the glow at 0.6 of it with radius 8 and the icon tint (140, 160, 255);
+  a status hide clock is the delay added to the clock, wrapping. The level
+  curtain falls to black over three seconds (`round(t · 255)`, the world
+  at `1 − t`) and raises the GUI's hold count once it has fallen; the HUD
+  reset takes one off that count only from a fallen curtain, then clears
+  the state and starts a running heartbeat's fade. The compass
   is a 12-unit diamond two units plus its half from the left and bottom at
   `round((1 − fade) · 192)`. The heartbeat's fade-out lowers its sound to
   `0.3 · (1 − elapsed / 1000)` and stops it; the border keeps its pulse.
@@ -1134,10 +1163,12 @@ drawing:
   inventory or loot panel into its character and the journal's text.
   Closing a family takes the active task's forms front to back, then the
   root's back to front. The deferred close takes the loot windows whose
-  character has flag 0x80000 or is no longer dead. The technique selector
+  character has flag 0x80000 or is no longer dead, in the windows' order.
+  The technique selector
   is placed at the record's right and top with its left and bottom as the
   fallbacks; its rows are all disabled when the owner trains and the
-  record's level is reached, otherwise the chosen techniques' rows and the
+  record's level is reached, otherwise the chosen techniques' rows (the
+  byte − 1 unchecked, so a byte of 9 marks the forget row) and the
   rows whose requirement is not among the skill's first `level`
   techniques; a positive count opens its forget row.
 
@@ -1145,8 +1176,10 @@ drawing:
 hotkeys send a screen request through the hotkey handler (its
 permissions apply), the inventory and journal are forms on a `GuiTask`
 (so their focus follows the window manager), the inventory is registered
-as an open container, the journal keeps its session entries, and Escape
-closes the focused screen (Exarust's). Both screens now draw
+as an open container, the journal keeps its session entries, a right-button
+release over the inventory's or a loot window's form closes it (their own
+mouse handler), and Escape closes the focused screen (Exarust's). Both
+screens now draw
 (`exa_game::gui_paint`) with the words their constructors write. The form
 attribute word is 0x30022 (the journal adds 0x8000) and the frame style
 adds the centred-title bit 0x3000; the item pack adds 0x80 to its style and
@@ -1159,11 +1192,18 @@ its unlocated class-0xac01 record and its Primary button (108 × 24 at
 (4, 416)), and the journal's New (4, 20) and Erase (120, 20), 104 × 24
 each. A button caption takes the skin's placement from its style word
 (0x3000 centres horizontally, 0x300 centres vertically). The journal's
-selected entry draws through the text box. Not wired: the character view
-and its preview bars, the pack's item icons (the item renderer), the
-journal's entry list (its geometry is not in the traced units), the
-0xac01 record, the controls' callbacks, the loot window and the technique
-selector. The skills key's screen and the power tree are outside this unit,
+selected entry draws through the text box. A dead body's double click in
+the world opens its loot window (400, 36; 244 × 440): the frame and the
+two item panels, the pack 228 × 180 at the client's bottom and the
+equipment panel above it ending four units before the pack, each drawing
+its entries' icons when the icon cache holds them. The window joins the
+open-container registry under the body's tagged id, binds a body's pack and
+worn items through `bind_loot`, and leaves the registry when it closes.
+Not wired: the character view and its preview bars, the pack's item icons
+(the item renderer), the journal's entry list (its geometry is not in the
+traced units), the 0xac01 record, the controls' callbacks and the technique
+selector. The loot panels have no body inventory to load from yet; the
+body's record flag word is passed as 0 by the world path. The skills key's screen and the power tree are outside this unit,
 and the selector opens only from a power slot the HUD does not draw yet.
 The Rayform faces are not shipped, so the text keeps the level font's
 metrics (glyph quad, advances, line height) and samples its glyph cells

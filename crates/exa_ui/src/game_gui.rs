@@ -62,12 +62,11 @@ impl GameScreen {
         }
     }
 
-    /// The window's size at unit 4, where the evidence gives it (the loot
-    /// window's constructor is not in it).
+    /// The window's size at unit 4.
     pub fn size(self) -> Option<(i32, i32)> {
         match self {
             GameScreen::Inventory => Some((INVENTORY_WIDTH, inventory_height(false, false))),
-            GameScreen::Loot => None,
+            GameScreen::Loot => Some(LOOT_SIZE),
             GameScreen::Journal => Some(JOURNAL_SIZE),
             GameScreen::TechniqueSelector => Some((FORM_WIDTH, FORM_HEIGHT)),
         }
@@ -187,16 +186,37 @@ pub fn loot_allowed(flags: u32) -> bool {
     flags & 0xff00 != 0x300
 }
 
-/// The loot window's show rule: an open one for the character is
-/// activated, else a new one opens (no toggle).
-pub fn loot_screen(flags: u32, open: bool) -> ScreenAction {
+/// The loot window's show rule: refused for a character whose flag word's
+/// second byte is 3; an existing window for that same character is
+/// activated, else a new one opens (no toggle). The original matches the
+/// window's character pointer as well as its tag, so a body opened while
+/// another body's window is up gets a window of its own.
+pub fn loot_screen(flags: u32, open_for_character: bool) -> ScreenAction {
     if !loot_allowed(flags) {
         ScreenAction::Refused
-    } else if open {
+    } else if open_for_character {
         ScreenAction::Focused
     } else {
         ScreenAction::Opened
     }
+}
+
+/// The loot window's title, size and constructor place: "Body", 244 × 440
+/// at x 400 with an unset y (the show centres it like any other unplaced
+/// window).
+pub const LOOT_TITLE: &str = "Body";
+pub const LOOT_SIZE: (i32, i32) = (244, 440);
+pub const LOOT_PLACE: (i32, i32) = (400, crate::form::UNPLACED);
+/// The loot window's two item panels: the pack's height and the four units
+/// between the equipment panel and the pack.
+pub const LOOT_PACK_HEIGHT: i32 = 180;
+pub const LOOT_PANEL_GAP: i32 = 4;
+
+/// Whether a right-button release over a screen's own form closes it: the
+/// inventory and the loot window have a right-release close handler; the
+/// journal closes on its own key mask instead.
+pub fn right_release_closes(kind: GameScreen) -> bool {
+    matches!(kind, GameScreen::Inventory | GameScreen::Loot)
 }
 
 /// The journal's show inputs.
@@ -282,6 +302,112 @@ pub fn preview_bars_toggle(flag: &mut bool, on: bool) -> Option<bool> {
 pub fn preview_shares(first: u16, second: u16) -> (f32, f32) {
     const SCALE: f32 = 1.525_902_2e-5;
     (f32::from(first) * SCALE, f32::from(second) * SCALE)
+}
+
+/// The scene model value the inventory's bind writes on the character's
+/// preview, and the one its opening writes.
+pub const PREVIEW_MODEL_BOUND: f32 = 0.15;
+pub const PREVIEW_MODEL_OPEN: f32 = 0.05;
+/// The word the opening writes on the character's preview node.
+pub const PREVIEW_SCENE_WORD: u32 = 0x1000;
+/// The draw word every mesh node of the preview is given.
+pub const PREVIEW_DRAW_WORD: u32 = 0x42;
+/// The words copied from a node's appearance block to its display block
+/// (48 bytes).
+pub const PREVIEW_APPEARANCE_WORDS: usize = 6;
+/// The delay the bind's build callback is registered with, in ticks.
+pub const PREVIEW_BUILD_DELAY: u32 = 100;
+
+/// The preview settings the inventory writes when it binds a character or
+/// opens its window.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PreviewPlan {
+    pub model: f32,
+    pub scene_word: u32,
+    pub draw_word: u32,
+    pub appearance_words: usize,
+    pub build_delay: u32,
+}
+
+/// The preview's settings: binding a character sets [`PREVIEW_MODEL_BOUND`],
+/// opening the window [`PREVIEW_MODEL_OPEN`]; both give every mesh node
+/// [`PREVIEW_DRAW_WORD`] and copy the appearance block.
+pub fn preview_plan(opening: bool) -> PreviewPlan {
+    PreviewPlan {
+        model: if opening {
+            PREVIEW_MODEL_OPEN
+        } else {
+            PREVIEW_MODEL_BOUND
+        },
+        scene_word: if opening { PREVIEW_SCENE_WORD } else { 0 },
+        draw_word: PREVIEW_DRAW_WORD,
+        appearance_words: PREVIEW_APPEARANCE_WORDS,
+        build_delay: PREVIEW_BUILD_DELAY,
+    }
+}
+
+/// What the bind's build callback (registered with
+/// [`PREVIEW_BUILD_DELAY`]) does each time it runs: it always takes the
+/// character's skinned model and answers 1 (done). When an open inventory
+/// shows this character view and the view still holds its character, the
+/// inventory refits its doll camera to ten times the character's height
+/// (`exa_items::inventory_window::camera_distance`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PreviewBuild {
+    /// The callback's answer: always done.
+    pub done: bool,
+    /// The doll camera's new distance, when an inventory refits it.
+    pub camera: Option<f32>,
+}
+
+/// The bind's build callback: see [`PreviewBuild`]. `character_height` is
+/// none when the view holds no character.
+pub fn preview_built(inventory_shows_view: bool, character_height: Option<f32>) -> PreviewBuild {
+    PreviewBuild {
+        done: true,
+        camera: if inventory_shows_view {
+            character_height.map(|height| height * 10.0)
+        } else {
+            None
+        },
+    }
+}
+
+/// The destroy releases the preview's scene node and forgets it only when
+/// there was one.
+pub fn preview_destroyed(has_node: bool) -> bool {
+    has_node
+}
+
+/// One preview bar in the character view: the fill's origin and width,
+/// the frame's rectangle (left, top, right, bottom) and the shadow quad
+/// under it, which spans the same rectangle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PreviewBar {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub frame: (i32, i32, i32, i32),
+}
+
+/// The preview bars at the bottom of the character view: the health bar
+/// starts 50 units left of the half width (the width halved unsigned) and
+/// 5 units above the bottom, the focus bar 52 units further right; each
+/// fill is 48 units wide. The frame and its shadow reach 2 pixels out on
+/// both sides and run from the bar's top to 4 units − 2 below it. The
+/// health bar takes the view's two shares; the focus bar is drawn full
+/// (1.0, 1.0).
+pub fn preview_bar_rects(window_width: u32, window_height: i32, unit: i32) -> [PreviewBar; 2] {
+    let x0 = (window_width >> 1) as i32 - 50 * unit;
+    let y = window_height - 5 * unit;
+    let width = 48 * unit;
+    let bar = |x: i32| PreviewBar {
+        x,
+        y,
+        width,
+        frame: (x - 2, y, x + width + 2, y + 4 * unit - 2),
+    };
+    [bar(x0), bar(x0 + 52 * unit)]
 }
 
 /// The player controls' GUI flag the journal passes: 0 when it opens, 1
@@ -447,6 +573,90 @@ pub struct SlotAnswer {
 
 /// The slot's size at the GUI unit.
 pub const POWER_SLOT_SIZE: (i32, i32) = (40, 40);
+/// The icon's size inside a slot.
+pub const POWER_ICON: i32 = 32;
+/// The empty slot's shadow alpha byte; its corner radius is two GUI units.
+pub const POWER_EMPTY_ALPHA: u8 = 0x40;
+
+/// The ink a drawn slot's icon takes, from the slot's state and kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlotTint {
+    /// A filled slot under the pointer (state nibble 0x10000): no ink is
+    /// set (the current colour stays).
+    Hover,
+    /// The bright ink: the slot is selected (state bit 0x10), or a kind-2
+    /// slot without either mark (the same ink).
+    Bright,
+    /// The marked ink (state bit 0x40, not selected).
+    Marked,
+    /// The plain ink, also the empty slot's kind icon's.
+    Plain,
+}
+
+/// What a slot draws: its frame (inset by the border), the icon's centred
+/// place, its ink, and for an empty slot its shadow and whether its kind
+/// icon shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SlotDraw {
+    pub frame: (i32, i32, i32, i32),
+    pub icon: (i32, i32),
+    pub tint: SlotTint,
+    /// The icon goes through the full-scale draw (scale 1.0) rather than
+    /// the inked one: the slot is under the pointer.
+    pub full_scale: bool,
+    /// The slot has no icon handle: a rounded shadow of radius two units
+    /// and alpha [`POWER_EMPTY_ALPHA`] fills the frame instead.
+    pub empty: bool,
+    /// An empty slot of kind past 2 draws its kind's icon: always under the
+    /// pointer, otherwise only for kind 4.
+    pub kind_icon: bool,
+    /// The marked (0x40) frame is drawn again over a filled slot.
+    pub extra_frame: bool,
+}
+
+impl PowerSlot {
+    /// The slot's draw. The back pass draws a filled slot's frame at the
+    /// rect inset by `border` (marked and selected flags passed to it) and
+    /// the marked frame again; an empty slot draws its shadow there. The
+    /// front pass centres a [`POWER_ICON`] icon (both halves truncating):
+    /// a hovered filled slot draws it at full scale without an ink, else
+    /// the ink is chosen by state bit 0x10, bit 0x40, kind 2, then plain.
+    /// An empty slot draws its kind's icon only for a kind past 2, and then
+    /// only under the pointer (full scale) or for kind 4, in the plain ink.
+    pub fn draw(&self, x: i32, y: i32, width: i32, height: i32, border: i32) -> SlotDraw {
+        let frame = (
+            x + border,
+            y + border,
+            width - border * 2,
+            height - border * 2,
+        );
+        let icon = (x + (width - POWER_ICON) / 2, y + (height - POWER_ICON) / 2);
+        let hover = self.state & 0xf_0000 == 0x1_0000;
+        let empty = self.icon < 1;
+        let tint = if empty {
+            SlotTint::Plain
+        } else if hover {
+            SlotTint::Hover
+        } else if self.state & 0x10 != 0 {
+            SlotTint::Bright
+        } else if self.state & 0x40 != 0 {
+            SlotTint::Marked
+        } else if self.kind == 2 {
+            SlotTint::Bright
+        } else {
+            SlotTint::Plain
+        };
+        SlotDraw {
+            frame,
+            icon,
+            tint,
+            full_scale: hover,
+            empty,
+            kind_icon: empty && self.kind > 2 && (hover || self.kind == 4),
+            extra_frame: !empty && self.state & 0x40 != 0,
+        }
+    }
+}
 
 impl PowerSlot {
     /// The slot's message rule: 0x20 (hint) answers 3, or 0x103 for a
@@ -626,6 +836,18 @@ pub fn status_glow(place: (i32, i32), unit: i32) -> [i32; 4] {
     ]
 }
 
+/// The glow's radius and its share of the pulse, and the status icon's
+/// tint.
+pub const STATUS_GLOW_RADIUS: f32 = 8.0;
+pub const STATUS_GLOW_SHARE: f32 = 0.6;
+pub const STATUS_ICON_TINT: [u8; 3] = [140, 160, 255];
+
+/// The clock a status marker is hidden from: the caller's delay added to
+/// the clock (32-bit, wrapping).
+pub fn status_hide_until(now: u32, delay: u32) -> u32 {
+    delay.wrapping_add(now)
+}
+
 /// Whether the status marker draws: the player has status entries and the
 /// scan meets none with 0x2000 (the count of entries without 0x1000 is
 /// not looked at beyond being non-negative).
@@ -698,6 +920,19 @@ impl LevelCurtain {
         let released = self.state == 2;
         self.state = 0;
         released
+    }
+
+    /// The HUD reset: a fallen curtain (state 2) takes one off the GUI's
+    /// hold count, the state clears, and a running heartbeat starts its
+    /// fade. The hold count only falls for a fallen curtain, as the
+    /// original's check runs before the state clears.
+    pub fn reset_with_hold(&mut self, holds: &mut i32, heartbeat: bool) -> (bool, bool) {
+        let released = self.state == 2;
+        if released {
+            *holds -= 1;
+        }
+        self.state = 0;
+        (released, heartbeat)
     }
 }
 
@@ -929,6 +1164,9 @@ pub fn selector_rows(input: SelectorInput) -> ([u32; 9], bool) {
         rows[..8].fill(0x10);
     } else {
         for &t in input.skill.techniques.iter().take(5) {
+            // The original writes the row byte − 1 unchecked: 9 reaches the
+            // ninth (forget) row; a byte past 9 would write past the form's
+            // records and is not reproduced.
             if t != 0 && usize::from(t) <= 9 {
                 rows[usize::from(t) - 1] = 0x10;
             }
