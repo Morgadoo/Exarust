@@ -554,12 +554,22 @@ attack timing when an attack starts and holds the next attack until its
 recovery clock (the swing's own stall and Feint renewal still rule a
 released swing). The remaining rules have no caller yet: the 12 m contact
 list, the strongest engaged enemy, the look snap, the camera's follow step
-and the character nearest the cursor, and the movement goal's direction, step vector and
-tapped stride (`steering::key_goal_direction`, `key_step`, `goal_stride`;
-the 400 cm² release test is the footwork's). The right button walks to the cursor in
-combat mode too
-(`steering::Steering::combat_walk`), the chevrons showing while it is
-held.
+and the character nearest the cursor. The combat mode word
+(`player_behaviour::combat_mode`: down, dazed under 0.85 energy, switching
+or casting idle, the right button's walk, the left button's attack) gates
+the right button's walk to the cursor in combat mode
+(`steering::Steering::combat_walk`), the chevrons showing while it walks.
+
+The combat footwork (`footwork`) is the original's step machine on
+Exarust's interim feet: the movement word (`steering::MoveWord`, the 200 ms
+tap persistence and tap flag) feeds a dispatcher that starts a step toward
+the movement goal (`steering::key_goal_direction`, `goal_stride`, the
+line walk and its 400 cm² test, then the grid snap), re-lays a young step
+at the tapped stride, or queues the next step on the body (`key_step`);
+a landing takes the queue by `exa_physics::body::queued_step`, and the
+word takes the queued word back. Its gate is the condition mask `0x82C1`,
+0.7 energy and no swing; the capsule walks toward the step's target and
+lands within 20·scale cm (or after a second, Exarust's own).
 
 The controls' rules (`player_controls`) are the click's and the
 double-click interaction's outcomes (a lock's key and first-unlock
