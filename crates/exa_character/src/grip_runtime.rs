@@ -106,7 +106,9 @@ pub fn refresh_holds(
         let mut count = 0;
         let mut first: Option<(HeldItemSpec, bool)> = None;
         for (_, grip, blade, spec) in &held {
-            if grip.holder_key != key {
+            // The count is the hands' weapon slots: a shield or a torch
+            // is held through its own slot.
+            if grip.holder_key != key || grip.kind != HeldKind::Weapon {
                 continue;
             }
             count += 1;
@@ -644,8 +646,6 @@ mod tests {
         app
     }
 
-    /// A grip attached before its holder's body exists takes the holder's
-    /// first part as its key once the body is there.
     /// The switch's swap trades the two held weapons' slots and the primary
     /// striker once, on the tick past 60 % of the clip.
     #[test]
@@ -805,6 +805,8 @@ mod tests {
         assert!(!refresh.held && refresh.measures.is_none());
     }
 
+    /// A grip attached before its holder's body exists takes the holder's
+    /// first part as its key once the body is there.
     #[test]
     fn a_pending_grip_waits_for_its_holders_body() {
         let mut app = App::new();

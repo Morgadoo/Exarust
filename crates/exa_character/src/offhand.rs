@@ -67,14 +67,19 @@ pub const SHIELD_CLASS: u32 = 0x10;
 #[derive(Component)]
 struct OffAttached;
 
-/// The shield item a character carries in the off hand, whose equip gave it
-/// a [`exa_combat::damage::Guard::Shield`]. The shield's own body exists
-/// while it is held; when it leaves the world or its holder lets it go, the
-/// guard goes back to open and the marker is removed.
-#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+/// The shield a character carries in the off hand and the block factors its
+/// equip wrote on the holder ([`exa_combat::damage::shield_guard`]). The
+/// factors are kept here, not put in the fighter's guard: the original
+/// blocks only a blow that strikes the shield itself, and Exarust strikes
+/// limbs, never a shield body, so a standing guard would turn every blow
+/// on the holder into a block. When the shield leaves the world or its
+/// holder lets it go, the marker is removed.
+#[derive(Component, Debug, Clone, Copy, PartialEq)]
 pub struct ShieldHold {
     /// The shield's item body (the entity carrying its [`HeldGrip`]).
     pub item: Entity,
+    /// The guard the shield gives a blow that strikes it.
+    pub guard: exa_combat::damage::ShieldGuard,
 }
 
 /// The grip an off-hand weapon takes: the table's second slot.
@@ -96,7 +101,7 @@ fn attach_off_hands(
             &OffHeld,
             Option<&Ragdoll>,
             Option<&RaceWeaponry>,
-            Option<&mut exa_combat::Fighter>,
+            Option<&exa_combat::Fighter>,
         ),
         Without<OffAttached>,
     >,
@@ -109,7 +114,7 @@ fn attach_off_hands(
     support: Option<Res<CompressedImageFormatSupport>>,
 ) {
     let Some(game) = game else { return };
-    for (body, off, ragdoll, race, mut fighter) in &mut bodies {
+    for (body, off, ragdoll, race, fighter) in &mut bodies {
         let by_bone: std::collections::HashMap<usize, Entity> = children
             .iter_descendants(body)
             .filter_map(|e| parts.get(e).ok().map(|p| (p.bone, e)))
@@ -125,7 +130,7 @@ fn attach_off_hands(
             images: &mut images,
             bc_supported: model::bc_supported(support.as_deref()),
         };
-        let (size, scale, holder) = fighter.as_deref().map_or((1.0, 1.0, Holder::AVERAGE), |f| {
+        let (size, scale, holder) = fighter.map_or((1.0, 1.0, Holder::AVERAGE), |f| {
             (f.stats.size, f.stats.scale, f.stats.holder())
         });
         let race = race.copied().unwrap_or_default();
@@ -200,31 +205,30 @@ fn attach_off_hands(
         if ragdoll.is_none() {
             commands.entity(root).insert(PendingGrip { holder: body });
         }
-        // A shield's equip gives its holder the shield guard: the record's
-        // parry factor, leak and cost with its own shield techniques, and a
-        // full arm. The guard leaves with the shield ([`drop_shield_guards`]).
+        // A shield's equip writes its block factors on the holder: the
+        // record's parry factor, leak and cost with its own shield
+        // techniques, and a full arm. They wait on the marker, which leaves
+        // with the shield ([`drop_shield_holds`]); the fighter's guard is
+        // not changed.
         if off.kind == OffKind::Shield
             && let Some(record) = off.shield
-            && let Some(fighter) = fighter.as_mut()
+            && let Some(fighter) = fighter
         {
             let perks = fighter.perks;
-            fighter.guard = exa_combat::damage::Guard::Shield(exa_combat::damage::shield_guard(
+            let guard = exa_combat::damage::shield_guard(
                 &record,
                 perks.has(exa_formats::characters::Perk::Mobility),
                 perks.has(exa_formats::characters::Perk::Endure),
-            ));
-            commands.entity(body).insert(ShieldHold { item: root });
+            );
+            commands
+                .entity(body)
+                .insert(ShieldHold { item: root, guard });
         }
         // A second weapon strikes: its own blade beside the main hand's.
         if off.kind == OffKind::Weapon
-            && let Some((section, w_flags)) = off.weapon.as_ref().map(|w| {
-                (
-                    Section {
-                        flags: w.flags,
-                        stats: w.stats,
-                    },
-                    w.flags,
-                )
+            && let Some(section) = off.weapon.as_ref().map(|w| Section {
+                flags: w.flags,
+                stats: w.stats,
             })
         {
             // The model's own chain gives a plain weapon's lengths; a
@@ -255,7 +259,7 @@ fn attach_off_hands(
                         holder,
                     },
                     crate::grip_runtime::HeldItemSpec {
-                        class: (w_flags & 0xFFFF) as u16,
+                        class: (section.flags & 0xFFFF) as u16,
                         start_byte: section.stats.get(at::START),
                         item_cm: top,
                         race_reach: race.weapons.unarmed_reach,
@@ -306,21 +310,17 @@ fn placement(off: &OffHeld, race: &RaceWeaponry, size: f32, holder: Holder) -> T
     }
 }
 
-/// Puts a holder's guard back to open when the shield its equip gave it is
-/// no longer held: its item body left the world or its grip was released
-/// (dropped, or its holder collapsed if a shield ever could). The marker
-/// goes with it.
-pub fn drop_shield_guards(
+/// Removes a holder's [`ShieldHold`] when its shield is no longer held: its
+/// item body left the world or its grip was released (dropped, or its
+/// holder collapsed if a shield ever could).
+pub fn drop_shield_holds(
     mut commands: Commands,
-    mut holders: Query<(Entity, &ShieldHold, &mut exa_combat::Fighter)>,
+    holders: Query<(Entity, &ShieldHold)>,
     held: Query<&HeldGrip>,
 ) {
-    for (owner, hold, mut fighter) in &mut holders {
+    for (owner, hold) in &holders {
         if held.get(hold.item).is_ok_and(|grip| !grip.released) {
             continue;
-        }
-        if matches!(fighter.guard, exa_combat::damage::Guard::Shield(_)) {
-            fighter.guard = exa_combat::damage::Guard::Open;
         }
         commands.entity(owner).remove::<ShieldHold>();
     }
@@ -338,7 +338,7 @@ impl Plugin for OffHandPlugin {
                 .run_if(resource_exists::<Game>)
                 .after(super::equip_outfits),
         )
-        .add_systems(FixedUpdate, drop_shield_guards.after(GripSolveSet::Build));
+        .add_systems(FixedUpdate, drop_shield_holds.after(GripSolveSet::Build));
     }
 }
 
@@ -346,54 +346,50 @@ impl Plugin for OffHandPlugin {
 mod tests {
     use super::*;
 
+    /// A held shield keeps its marker and leaves the fighter's guard
+    /// alone; letting it go removes the marker.
     #[test]
-    fn a_dropped_shield_puts_the_guard_back_to_open() {
+    fn a_dropped_shield_takes_its_hold_away() {
         use exa_combat::damage::{Guard, ShieldGuard};
         let mut app = App::new();
-        app.add_systems(Update, drop_shield_guards);
-        let shield = app.world_mut().spawn_empty().id();
-        let armed = Guard::Shield(ShieldGuard {
+        app.add_systems(Update, drop_shield_holds);
+        let shield = app.world_mut().spawn(held(HeldKind::Shield)).id();
+        let guard = ShieldGuard {
             parry: 0.875,
             leak: 0.71,
             cost: 0.71,
             stamina: 1.0,
             ..ShieldGuard::default()
-        });
+        };
         let owner = app
             .world_mut()
             .spawn((
-                exa_combat::Fighter {
-                    guard: armed,
-                    ..exa_combat::Fighter::default()
+                exa_combat::Fighter::default(),
+                ShieldHold {
+                    item: shield,
+                    guard,
                 },
-                ShieldHold { item: shield },
             ))
             .id();
-        // A held shield (its grip exists and is not released) keeps the
-        // guard.
-        app.world_mut()
-            .entity_mut(shield)
-            .insert(held(HeldKind::Shield));
         app.update();
+        assert_eq!(app.world().get::<ShieldHold>(owner).unwrap().guard, guard);
         assert_eq!(
             app.world().get::<exa_combat::Fighter>(owner).unwrap().guard,
-            armed
+            Guard::Open
         );
-        assert!(app.world().get::<ShieldHold>(owner).is_some());
-        // Letting it go, or losing the item, opens the guard and drops the
-        // marker.
-        app.world_mut()
-            .entity_mut(shield)
-            .insert(held(HeldKind::Shield));
         app.world_mut()
             .get_mut::<HeldGrip>(shield)
             .unwrap()
             .released = true;
         app.update();
-        assert_eq!(
-            app.world().get::<exa_combat::Fighter>(owner).unwrap().guard,
-            Guard::Open
-        );
+        assert!(app.world().get::<ShieldHold>(owner).is_none());
+        // A shield whose item left the world goes the same way.
+        let other = app.world_mut().spawn(held(HeldKind::Shield)).id();
+        app.world_mut()
+            .entity_mut(owner)
+            .insert(ShieldHold { item: other, guard });
+        app.world_mut().entity_mut(other).despawn();
+        app.update();
         assert!(app.world().get::<ShieldHold>(owner).is_none());
     }
 

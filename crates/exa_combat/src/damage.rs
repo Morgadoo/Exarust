@@ -253,7 +253,9 @@ pub struct ShieldGuard {
 /// Endure shield techniques, and a full arm. The original's equip routine
 /// writes the parry factor, the leak and the cost from the shield's record
 /// and reserves its block clock; the arm starts full, which
-/// [`crate::regen::ShieldStamina::STAMP_FULL`] records.
+/// [`crate::regen::ShieldStamina::STAMP_FULL`] records. [guess: the equip
+/// itself stamps its own clock with the largest positive word and does not
+/// write a stamina; a full arm is the refill's resting state]
 pub fn shield_guard(record: &ShieldRecord, mobility: bool, endure: bool) -> ShieldGuard {
     let factors = record.factors(mobility, endure);
     ShieldGuard {
@@ -1625,12 +1627,6 @@ mod tests {
         pin!(o, hit_impact = 0.674_666_7, impact = 0.674_666_7);
     }
 
-    /// The block path on the cut's impact at the hit (0.6746667) against a
-    /// shield of block 0.58 (leak and cost 0.71) and yellow 0.25, bits from
-    /// a model of the listing: a tired arm leaks, a fresh one pays 0.8·I,
-    /// a shield parry 0.4·I and sags the stance, Synchrony while countering
-    /// at 0.15 of its clock pays (0.3·0.5 + 0.3)·I, Persist halves the
-    /// clock for the stall factor, a potion halves the leak.
     /// A freshly equipped shield takes the record's parry factor, leak and
     /// cost with the holder's techniques, and a full arm whose block clock
     /// is reserved at the full stamp.
@@ -1658,6 +1654,12 @@ mod tests {
         assert_eq!(skilled.leak, leak);
     }
 
+    /// The block path on the cut's impact at the hit (0.6746667) against a
+    /// shield of block 0.58 (leak and cost 0.71) and yellow 0.25, bits from
+    /// a model of the listing: a tired arm leaks, a fresh one pays 0.8·I,
+    /// a shield parry 0.4·I and sags the stance, Synchrony while countering
+    /// at 0.15 of its clock pays (0.3·0.5 + 0.3)·I, Persist halves the
+    /// clock for the stall factor, a potion halves the leak.
     #[test]
     fn a_shield_takes_the_blow_on_its_arm() {
         let impact = f32::from_bits(0x3f2c_b6f5);

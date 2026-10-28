@@ -518,7 +518,9 @@ pub fn spawn_scene_body(
                     model: item.model.clone(),
                     weapon: item.weapon,
                     shield: item.shield_record,
-                    flip: item.flags & exa_character::spawn::HAND_FLIPPED != 0,
+                    // The flip is the character's, set from the main hand's
+                    // item: every held item turns with it.
+                    flip: exa_character::spawn::holds_flipped(&equip).unwrap_or(false),
                     kind,
                 });
         }

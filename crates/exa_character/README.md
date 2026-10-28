@@ -331,15 +331,19 @@ tested rules of their own.
   own `Blade` in the second slot. The spawn's attach plan decides which
   (`attach_plan`, `OffHeld`), and the shield's record travels with it
   (`Equipped::shield_record`) for the arm's block factors. The shield's
-  equip gives the holder its guard: the record's parry factor, leak and
-  cost with its own Mobility and Endure techniques and a full arm
-  (`exa_combat::damage::shield_guard`, marked by `ShieldHold`); when the
-  shield leaves or its grip is released the guard goes back to open
-  (`drop_shield_guards`).
+  equip writes the holder's block factors: the record's parry factor,
+  leak and cost with its own Mobility and Endure techniques and a full
+  arm (`exa_combat::damage::shield_guard`, kept on `ShieldHold`); the
+  marker goes when the shield leaves or its grip is released
+  (`drop_shield_holds`). The fighter's guard is not changed: the original
+  blocks only a blow that strikes the shield, and Exarust does not strike
+  shield bodies yet. A second weapon turns with the character's starting
+  flip (the main hand's flag), as every held item does.
 - Each attached item carries what the equip refresh measures it by
   (weapon class, the record's start byte, the node's y extents and the
   race's reach): `HeldItemSpec`. A per-tick pass (`refresh_holds`) folds
-  the first striker's into the character's `HeldRefresh`—the held count,
+  the first striker's into the character's `HeldRefresh`—the held weapon
+  count (shields and torches have their own slots),
   the item's reach (start byte × extents in double plus 60 cm), its aim
   height and the parry gate—as the original's equip and every swap do. The
   AI's reach and the attack aim do not read it yet.

@@ -80,10 +80,10 @@ parry deals nothing and sags the parrier (`parried`), a shield takes it on
 its arm's stamina and leaks yellow (`block`, the block path with its
 Synchrony, Persist and Counter rules). A shield's own equip gives its
 holder the guard's factors from the shield's record and its techniques,
-with a full arm (`damage::shield_guard`); `exa_character::offhand` sets
-it when the shield is attached and opens it again when the shield goes.
-The guard's parry factor is stored for the shield parry, which is not run
-yet. Rules and
+with a full arm (`damage::shield_guard`); `exa_character::offhand` keeps
+them beside the shield (`ShieldHold`) and does not raise the guard, since
+only a blow on the shield itself is blocked and Exarust does not strike
+shield bodies yet. The parry factor waits for the shield parry. Rules and
 numbers: [`docs/formats/OTHER.md`](../../docs/formats/OTHER.md), Damage.
 
 The hit reaction then runs the striker's side (`SwingState::after_wound`):

@@ -1666,8 +1666,8 @@ fn equip_outfits(
                             links: None,
                             released: false,
                         },
-                        // What the equip refresh measures from this item
-                        // (0x100152100), for the character's refresh.
+                        // What the equip refresh measures from this item,
+                        // for the character's refresh.
                         crate::grip_runtime::HeldItemSpec {
                             class: (item.flags & 0xFFFF) as u16,
                             start_byte: stats.get(at::START),
