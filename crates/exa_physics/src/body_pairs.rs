@@ -980,7 +980,12 @@ fn collide(pa: &mut Part, pb: &mut Part, pair: &mut Pair, touch: &mut Touch, pla
         pb.pairing.mesh.radius,
     );
     let triangles = pb.triangles.clone();
-    let spheres = pb.spheres.clone();
+    // The fallback's sphere list is copied only when the mesh is absent.
+    let spheres = if triangles.is_none() {
+        pb.spheres.clone()
+    } else {
+        Vec::new()
+    };
     for i in 0..pa.spheres.len() {
         let (c, r) = pa.spheres[i];
         let start = previous.transform_point3(c);
