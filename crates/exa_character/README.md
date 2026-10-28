@@ -316,17 +316,33 @@ tested rules of their own.
   (started by a `FlipWeaponRequest` for the character's entity, refused
   while the character switches or the weapon section has no flipped-side
   kind byte) and rebuilds its `Blade` record from the flipped weapon
-  section. It also applies death's weld change (a dead holder stiffens the
-  soft weld, so the corpse keeps its weapon); a collapsing holder lets its weapons and torch go
+  section, and a weapon a hand flag says starts flipped is placed half a
+  turn about y and built from the flipped side at once. It also applies
+  death's weld change (a dead holder stiffens the soft weld, so the corpse
+  keeps its weapon); a collapsing holder lets its weapons and torch go
   (`GripRelease`: the grip stage frees them) while the shield stays on the
-  arm.
+  arm. When the switch clip passes 60% the runtime trades the two held
+  weapons' blade slots and the attacker's primary once
+  (`condition::swap_due`, `swap_on_switch`).
 - The off hand's item is attached by `offhand` after the dresser: a shield
   from either hand (its own model, body, a back pivot to its forearm and two face
   pivots to the left hand, and its soft weld, turned −5° about z on the hand) or a second
   weapon in the grip table's off-hand slot (entry 5, left hand) with its
   own `Blade` in the second slot. The spawn's attach plan decides which
   (`attach_plan`, `OffHeld`), and the shield's record travels with it
-  (`Equipped::shield_record`) for the arm's block factors.
+  (`Equipped::shield_record`) for the arm's block factors. The shield's
+  equip gives the holder its guard: the record's parry factor, leak and
+  cost with its own Mobility and Endure techniques and a full arm
+  (`exa_combat::damage::shield_guard`, marked by `ShieldHold`); when the
+  shield leaves or its grip is released the guard goes back to open
+  (`drop_shield_guards`).
+- Each attached item carries what the equip refresh measures it by
+  (weapon class, the record's start byte, the node's y extents and the
+  race's reach): `HeldItemSpec`. A per-tick pass (`refresh_holds`) folds
+  the first striker's into the character's `HeldRefresh`—the held count,
+  the item's reach (start byte × extents in double plus 60 cm), its aim
+  height and the parry gate—as the original's equip and every swap do. The
+  AI's reach and the attack aim do not read it yet.
 - A wielded weapon sits under the hand its grip names
   (`exa_combat::grip`, by its weapon class as the first held item: a
   polearm in the left hand), placed for the character's size and race
