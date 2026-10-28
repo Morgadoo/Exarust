@@ -37,6 +37,82 @@ pub struct PlacedItem {
 /// The point the physician's hub spot is cleared around, x and z.
 pub const PHYSICIAN_ITEM_POINT: [f32; 2] = [-2100.0, 0.0];
 
+/// The shopkeeper's hub spot (cm) and the yaw it faces, degrees.
+pub const SHOPKEEPER_SPOT: [f32; 3] = [-320.0, 0.0, -110.0];
+pub const SHOPKEEPER_YAW_DEGREES: f32 = 15.0;
+/// The merchant's hub spot and yaw.
+pub const MERCHANT_SPOT: [f32; 3] = [440.0, 0.0, 10.0];
+pub const MERCHANT_YAW_DEGREES: f32 = -40.0;
+/// The physician's hub spot and yaw.
+pub const PHYSICIAN_SPOT: [f32; 3] = [-2700.0, 0.0, 1250.0];
+pub const PHYSICIAN_YAW_DEGREES: f32 = 140.0;
+
+/// The shopkeeper's scene name, sixteen bytes.
+pub const SHOPKEEPER_NAME: [u8; 16] = *b"arenashpkp\0\0\0\0\0\0";
+/// One degree in radians, the single the placements multiply by.
+pub const DEGREE: f32 = f32::from_bits(0x3c8e_fa35);
+/// The two role words a placed specialist receives, in order.
+pub const SPECIALIST_ROLES: [u32; 2] = [0x11, 0x21];
+/// The item handle a placed specialist's record stores (0x2500).
+pub const SPECIALIST_ITEM_HANDLE: u32 = 0x2500;
+
+/// A hub body's placement as its record receives it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HubBodyPlan {
+    pub position: [f32; 3],
+    /// The yaw the record stores, radians.
+    pub yaw: f32,
+    pub health: f32,
+    pub damage: f32,
+    /// The third condition word, −100 for a specialist.
+    pub third: f32,
+    pub roles: [u32; 2],
+    /// The record's condition word is copied to the second one.
+    pub condition_copied: bool,
+    /// The record's item handle word.
+    pub item_handle: u32,
+}
+
+/// Convert a placement's degrees to the record's radians, in single
+/// precision.
+pub fn yaw_radians(degrees: f32) -> f32 {
+    degrees * DEGREE
+}
+
+/// A specialist's body plan: the health words 100, −100, −100, the two role
+/// words, the condition word copied to the second, and the item handle
+/// 0x2500.
+pub fn specialist_plan(position: [f32; 3], yaw_degrees: f32) -> HubBodyPlan {
+    HubBodyPlan {
+        position,
+        yaw: yaw_radians(yaw_degrees),
+        health: SPAWN_HEALTH,
+        damage: SPAWN_DAMAGE,
+        third: SPAWN_DAMAGE,
+        roles: SPECIALIST_ROLES,
+        condition_copied: true,
+        item_handle: SPECIALIST_ITEM_HANDLE,
+    }
+}
+
+/// Where a specialist is placed at the hub: the merchant at its spot and
+/// −40°, the physician at its spot and 140°. Any other profession is not
+/// placed.
+pub fn specialist_spot(profession: crate::career::Profession) -> Option<HubBodyPlan> {
+    use crate::career::Profession;
+    match profession {
+        Profession::Merchant => Some(specialist_plan(MERCHANT_SPOT, MERCHANT_YAW_DEGREES)),
+        Profession::Physician => Some(specialist_plan(PHYSICIAN_SPOT, PHYSICIAN_YAW_DEGREES)),
+        Profession::Combatant | Profession::Trainer => None,
+    }
+}
+
+/// The shopkeeper's body plan: −320, 0, −110 and 15°, the same words as a
+/// specialist's.
+pub fn shopkeeper_plan() -> HubBodyPlan {
+    specialist_plan(SHOPKEEPER_SPOT, SHOPKEEPER_YAW_DEGREES)
+}
+
 /// Find the first placed item that is a weapon object of the weapon kind
 /// within ten centimetres of `point` on both axes.
 ///
@@ -353,6 +429,28 @@ mod tests {
         assert_eq!(pick_weapon_slot([7, 8, 9], u32::MAX), 9);
         assert_eq!(pick_weapon_slot([7, 8, 0], u32::MAX), 8);
         assert_eq!(pick_weapon_slot([0, 0, 0], u32::MAX), 0);
+    }
+
+    #[test]
+    fn the_hub_places_its_shopkeeper_and_specialists() {
+        let keeper = shopkeeper_plan();
+        assert_eq!(keeper.position, [-320.0, 0.0, -110.0]);
+        assert_eq!(keeper.yaw.to_bits(), (15.0f32 * DEGREE).to_bits());
+        assert_eq!(keeper.health, 100.0);
+        assert_eq!(keeper.damage, -100.0);
+        assert_eq!(keeper.third, -100.0);
+        assert_eq!(keeper.roles, [0x11, 0x21]);
+        assert!(keeper.condition_copied);
+        assert_eq!(keeper.item_handle, 0x2500);
+        let merchant = specialist_spot(crate::career::Profession::Merchant).unwrap();
+        assert_eq!(merchant.position, [440.0, 0.0, 10.0]);
+        assert_eq!(merchant.yaw.to_bits(), (-40.0f32 * DEGREE).to_bits());
+        let physician = specialist_spot(crate::career::Profession::Physician).unwrap();
+        assert_eq!(physician.position, [-2700.0, 0.0, 1250.0]);
+        assert_eq!(physician.yaw.to_bits(), (140.0f32 * DEGREE).to_bits());
+        assert!(specialist_spot(crate::career::Profession::Combatant).is_none());
+        assert!(specialist_spot(crate::career::Profession::Trainer).is_none());
+        assert_eq!(yaw_radians(180.0).to_bits(), 3.1415927f32.to_bits());
     }
 
     #[test]
