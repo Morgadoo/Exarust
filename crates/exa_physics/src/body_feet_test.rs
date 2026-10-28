@@ -1107,3 +1107,81 @@ fn a_steps_loudness_follows_its_length() {
     assert_eq!(step_loudness(200.0), 1.0);
     assert_eq!(step_loudness(-10.0), -0.129);
 }
+
+/// The sole's floor: the higher of the Ground Query's hit and the ground
+/// (10 cm lower while the foot touches) plus the leg's offset, the ground
+/// plus the offset where the query misses, and never above the knee. A
+/// floor 20 cm over the ground is found; a hit 5 cm under the ground of a
+/// touching foot is lifted to 10 cm under it; no hit leaves the ground.
+#[test]
+fn the_sole_floor_is_the_ground_querys_rule() {
+    assert_eq!(sole_floor(100.0, false, 0.0, Some(120.0), 200.0), 120.0);
+    assert_eq!(sole_floor(100.0, false, 0.0, Some(95.0), 200.0), 100.0);
+    assert_eq!(sole_floor(100.0, false, 0.0, None, 200.0), 100.0);
+    assert_eq!(sole_floor(100.0, true, 0.0, Some(85.0), 200.0), 90.0);
+    assert_eq!(sole_floor(100.0, true, 0.0, Some(92.0), 200.0), 92.0);
+    assert_eq!(sole_floor(100.0, true, 0.0, None, 200.0), 100.0);
+    // A leg offset lifts it; the knee caps it.
+    assert_eq!(sole_floor(100.0, false, 2.5, None, 200.0), 102.5);
+    assert_eq!(sole_floor(100.0, false, 0.0, Some(300.0), 150.0), 150.0);
+    assert_eq!(sole_floor(100.0, false, 0.0, None, 95.0), 95.0);
+}
+
+/// A walking footstep's gain and pitch from the draw: at a walk's 4.3 cm a
+/// tick, a draw of 0 is half of (0.344² + 0.01) and pitch 0.9 × 1.065; a
+/// draw of 1 is all of it and pitch 1.1 × 1.065. Its place is 3·speed + 4
+/// cm along the facing.
+#[test]
+fn a_walking_footstep_follows_the_speed_and_the_draw() {
+    let low = gait_step(4.3, 0.0);
+    assert!(close(low.gain, 0.064_168, 1e-5), "{}", low.gain);
+    assert!(close(low.pitch, 0.9585, 1e-5), "{}", low.pitch);
+    let high = gait_step(4.3, 1.0);
+    assert!(close(high.gain, 0.128_336, 1e-5), "{}", high.gain);
+    assert!(close(high.pitch, 1.1715, 1e-4), "{}", high.pitch);
+    // Standing still there is still the smallest gain, never none.
+    assert!(gait_step(0.0, 0.0).gain > 0.0);
+    let at = step_position(Vec3::ZERO, Vec3::Z, 4.3);
+    assert!(close(at.z, 0.169, 1e-6));
+}
+
+/// A queued footwork step is taken at a landing through the body's rule:
+/// its target moves by the queued vector and the AI is told when that
+/// points along the facing; the queue is then empty. With no chest offset
+/// the cosine is 0, so the step is taken at once.
+#[test]
+fn a_queued_step_is_taken_at_a_landing() {
+    use super::super::floor_test::standing_at;
+    let (mut body, _) = standing_at(Vec3::ZERO);
+    body.queue_step(Vec3::new(0.0, 0.0, 0.5));
+    assert!(body.take_queued_step(Vec3::ZERO, Vec3::Z, 1.0));
+    assert!(body.step_told_ai());
+    assert!(!body.take_queued_step(Vec3::ZERO, Vec3::Z, 1.0));
+    // A step behind the facing tells no one.
+    body.queue_step(Vec3::new(0.0, 0.0, -0.5));
+    assert!(body.take_queued_step(Vec3::ZERO, Vec3::Z, 1.0));
+    assert!(!body.step_told_ai());
+}
+
+/// A force release ends the step that runs, clears the queue, stops the
+/// clip rate and marks the body shocked; a body with no step keeps its
+/// step word clear. The release's busy time is 600 ms on.
+#[test]
+fn a_force_release_ends_the_step() {
+    use super::super::floor_test::standing_at;
+    let (mut body, _) = standing_at(Vec3::ZERO);
+    body.drive.as_mut().unwrap().steps.stepping = true;
+    body.queue_step(Vec3::Z);
+    let release = body.force_release(1_000);
+    assert!(release.end_step);
+    assert_eq!(release.busy_until_ms, 1_600);
+    assert_eq!(release.clip_rate, 0.0);
+    assert!(!body.stepping());
+    assert!(!body.step_told_ai());
+    let drive = body.drive.as_ref().unwrap();
+    assert_eq!(drive.posture_rate, 0.0);
+    assert!(drive.bearing.shocked);
+    // No step running: the release ends none.
+    let (mut still, _) = standing_at(Vec3::ZERO);
+    assert!(!still.force_release(10).end_step);
+}

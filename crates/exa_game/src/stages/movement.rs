@@ -25,7 +25,7 @@ use exa_physics::body::locomotion::{
     self, CapsuleGaits, Footing, GaitTable, Locomotion, Locomotor, Start, Stride, TurnBy, TwistBy,
     flags, forward,
 };
-use exa_physics::body::{BodyTicks, Fallen, Ragdoll, TickedCharacter};
+use exa_physics::body::{BodyTicks, Fallen, Footstep, Ragdoll, TickedCharacter, step_position};
 use exa_physics::{CharacterBody, Physics};
 
 use crate::limp::{AnkleSample, ankle_sample, gait_floor, sprinting};
@@ -376,8 +376,45 @@ pub(crate) fn measure_ground(
             drive.note_stance_yaw(l.stance_facing);
         }
     }
+    // A footwork step asked for while a balance step runs waits for the
+    // next landing (the original's `+0xfe0` queue).
+    if let Some(dir) = locomotion.and_then(|r| r.stepping)
+        && body.stepping()
+    {
+        body.queue_step(dir);
+    }
     if let Some(physics) = &physics {
         body.measure_balance(&physics.0);
+    }
+}
+
+/// Emits the walk's footstep sounds at the feet the body planted this tick:
+/// at the character's place, `3·speed + 4` cm along its facing, in the
+/// race's set. The gain and pitch are drawn when the sound plays.
+pub(crate) fn gait_footsteps(
+    ticked: Res<TickedCharacter>,
+    bodies: Query<(&Ragdoll, Option<&exa_combat::Fighter>)>,
+    mut steps: MessageWriter<Footstep>,
+) {
+    let Ok((body, fighter)) = bodies.get(ticked.body) else {
+        return;
+    };
+    let Some(drive) = body.drive.as_ref() else {
+        return;
+    };
+    let Some(set) = fighter.and_then(|f| f.stats.footsteps.name()) else {
+        return;
+    };
+    let Some(origin) = drive.anchor().or_else(|| drive.root_point()) else {
+        return;
+    };
+    for _ in body.planted_feet() {
+        steps.write(Footstep {
+            position: step_position(origin, drive.bearing.facing, drive.bearing.speed),
+            speed_cm: drive.bearing.speed,
+            scale: drive.stats.scale,
+            set: Some(set),
+        });
     }
 }
 

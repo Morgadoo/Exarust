@@ -195,12 +195,32 @@ pub struct Leg {
     pub(super) turn: Quat,
     /// The step lift (m), added to the reach. Negative while a foot rises.
     pub(super) lift: f32,
+    /// The foot planted this tick (the walk's gait plant), which the
+    /// footstep sound follows.
+    pub planted: bool,
     /// The clip's hip-to-ankle offset (m) before this tick's bend.
     pub(super) posed_offset: Vec3,
+    /// Where the clip's ankle and hip are (world, m), as the locomotion IK
+    /// reads them before the corrections are folded in.
+    pub(super) anim_contact: Vec3,
+    pub(super) anim_hip: Vec3,
     /// The bend target last solved (m).
     pub(super) goal: Vec3,
     /// The unsmoothed knee of the reach triangle (rad).
     pub(super) reach_knee: f32,
+    /// How far (cm) the contact is lowered before the locomotion IK reads
+    /// it: the original's per-leg lag term. The standing IK clears it every
+    /// tick, so it stays 0 until the feet routine raises it.
+    pub(super) contact_lag: f32,
+    /// How far (cm) the foot stands over its ground (or, planted, over its
+    /// sole floor), which the foot pitch levels: the sampling tick's
+    /// `foot+0x630`.
+    pub(super) pitch_height: f32,
+    /// The IK's corrections are the identity this tick while the stored
+    /// angles ease back to zero (the original resets a part's correction
+    /// quaternion before its angle smoother reaches zero).
+    pub(super) knee_shown: bool,
+    pub(super) hip_shown: bool,
     /// The length of the step this foot started (cm), which the footstep
     /// sound's loudness follows: 0.01 + 0.0139 × it up to 140 cm, else 1.
     pub step_length_cm: f32,
@@ -595,9 +615,16 @@ pub(super) fn build(setup: &[PartSetup], parts: &mut [Part]) -> (Vec<Pin>, Vec<L
             hip_rate: 0.0,
             turn: Quat::IDENTITY,
             lift: 0.0,
+            planted: false,
             posed_offset: Vec3::ZERO,
+            anim_contact: Vec3::ZERO,
+            anim_hip: Vec3::ZERO,
             goal: Vec3::ZERO,
             reach_knee: 0.0,
+            contact_lag: 0.0,
+            pitch_height: 0.0,
+            knee_shown: true,
+            hip_shown: true,
             step_length_cm: 0.0,
             pitch: 0.0,
             pitch_rate: 0.0,
@@ -619,6 +646,11 @@ impl Ragdoll {
     /// The legs the balance reads.
     pub fn legs(&self) -> &[Leg] {
         &self.legs
+    }
+
+    /// The feet's landing count (the original's `+0xde4`).
+    pub fn landings(&self) -> u32 {
+        self.drive.as_ref().map_or(0, |d| d.balance.landings)
     }
 
     /// The feet's sole height (m).
@@ -922,6 +954,34 @@ impl Ragdoll {
             }
         }
 
+        // A queued footwork step, taken at the landing after the episode
+        // that was running when it was requested (the original's balance
+        // routine calls its queued-step taker there). The AI is told when
+        // the step points along the facing.
+        let landed = b.landings != drive.steps.landings_seen;
+        drive.steps.landings_seen = b.landings;
+        drive.steps.told_ai = false;
+        drive.steps.told_ai = false;
+        if landed && drive.steps.queued != Vec3::ZERO {
+            // The queued step is taken through the body's own rule, so its
+            // target and its notice to the AI are one place.
+            let queued = drive.steps.queued;
+            drive.steps.queued = Vec3::ZERO;
+            let landings = if b.landings < 1 { 0 } else { 1 };
+            if let Some(step) =
+                steps::take_queued(queued, chest, drive.steps.target, forward, scale, landings)
+            {
+                drive.steps.target = step.target;
+                drive.steps.stepping = true;
+                drive.steps.started = drive.steps.clock;
+                drive.steps.near = 0;
+                drive.steps.landed_from = b.landings;
+                drive.steps.told_ai = step.tell_ai;
+            } else {
+                drive.steps.queued = queued;
+            }
+        }
+
         // The feet.
         b.pelvis = pelvis.y;
         let under = b.under;
@@ -970,11 +1030,22 @@ impl Ragdoll {
                 leg.smoothed = ground / CM;
                 leg.ground = Some(leg.smoothed);
                 leg.anchor.y = feet::anchor_height(ground, cm(sole), cm(c.y)) / CM;
-                // No level face is a foot's floor alone (the original's
-                // Ground Query meets only those), so the floor is the
-                // ground, never over the lower leg's origin.
+                // The sole's floor: the original's Ground Query at the toe,
+                // 30 cm over the ground down 60 cm. Exarust's level answers
+                // it with its upward faces (the original's mask-4 colliders
+                // have no counterpart here), and the floor never rises
+                // above the lower leg's origin.
+                let toe = parts[leg.foot.unwrap_or(leg.shin)].point(&leg.toe);
+                let hit = level
+                    .height_below(
+                        Vec3::new(toe.x, leg.smoothed + feet::FLOOR_ABOVE / CM, toe.z),
+                        feet::FLOOR_RADIUS / CM,
+                        feet::FLOOR_DEPTH / CM,
+                    )
+                    .map(cm);
                 let knee = parts[leg.shin].transform().translation.y;
-                leg.floor = leg.smoothed.min(knee);
+                let touching = leg.state.has(FootState::TOUCHING);
+                leg.floor = feet::sole_floor(ground, touching, leg.contact_lag, hit, cm(knee)) / CM;
                 // Standing, no foot is lifted (a walking foot's swing comes
                 // with its gait).
                 leg.state.0 &= !FootState::LIFTED;

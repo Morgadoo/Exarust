@@ -147,6 +147,14 @@ pub(super) struct Steps {
     /// the later one. NaN until written.
     pub still_at: f32,
     pub still_plus: f32,
+    /// A queued footwork step's vector (m), zero when none waits, and the
+    /// landings seen when it was queued.
+    pub queued: Vec3,
+    pub queued_landings: u32,
+    /// The landings the feet last reported, so a new landing is recognised.
+    pub landings_seen: u32,
+    /// The AI was told about the queued step this tick.
+    pub told_ai: bool,
 }
 
 impl Default for Steps {
@@ -165,6 +173,10 @@ impl Default for Steps {
             knockback: false,
             still_at: f32::NAN,
             still_plus: f32::NAN,
+            queued: Vec3::ZERO,
+            queued_landings: 0,
+            landings_seen: 0,
+            told_ai: false,
         }
     }
 }
@@ -501,6 +513,25 @@ pub(super) struct FootView {
     pub point: Vec3,
     pub leg: f32,
     pub changed_ms: f32,
+}
+
+/// The queued footwork step's rule, run at the landing after the step
+/// ended: `chest` and `target` are the body's, `facing` its forward, and
+/// `step` takes the new target. `landings` is 0 before the first landing
+/// and 1 after it (the original's countdown). Returns whether the AI is to
+/// be told the step points its way.
+pub(super) fn take_queued(
+    queued: Vec3,
+    chest: Vec3,
+    target: Vec3,
+    facing: Vec3,
+    scale: f32,
+    landings: i32,
+) -> Option<super::feet::QueuedStep> {
+    if queued == Vec3::ZERO {
+        return None;
+    }
+    super::feet::queued_step(chest, target, queued, facing, scale, landings)
 }
 
 /// What one footwork pass reads. Positions are metres.

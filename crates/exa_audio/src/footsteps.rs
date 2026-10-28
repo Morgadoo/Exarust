@@ -3,9 +3,12 @@
 //! Each step is a one-shot from a numbered set, so it goes through the
 //! mixer's voice pool and source ranking.
 
+use std::collections::HashMap;
+
 use bevy::prelude::*;
 use exa_assets::Game;
 use exa_physics::CharacterBody;
+use exa_physics::body::{Footstep, gait_step};
 
 use crate::environment::AudioEnvironment;
 use crate::{SoundBank, SoundSet};
@@ -17,7 +20,7 @@ pub(crate) const HEAVY_STEPS: SoundSet<'static> = SoundSet::new("stphvy", 6);
 #[derive(Component, Default)]
 pub(crate) struct StepClock(f32);
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub(crate) fn footsteps(
     mut commands: Commands,
     time: Res<Time>,
@@ -26,15 +29,41 @@ pub(crate) fn footsteps(
     mut sources: ResMut<Assets<AudioSource>>,
     mut env: ResMut<AudioEnvironment>,
     mut sets: Local<[Option<u32>; 2]>,
+    mut races: Local<HashMap<&'static str, u32>>,
+    mut plants: MessageReader<Footstep>,
     mut walkers: Query<(
         Entity,
         &CharacterBody,
         &GlobalTransform,
+        Has<exa_physics::body::Ragdoll>,
         Option<&mut StepClock>,
     )>,
 ) {
-    let Some(game) = game else { return };
-    for (e, body, gt, clock) in &mut walkers {
+    let Some(game) = game else {
+        // The sounds a physical body's gait planted are still drained.
+        plants.clear();
+        return;
+    };
+    // A physical body's feet sound where its sampler planted them; the
+    // gain and pitch are the original's rule with one engine draw.
+    for plant in plants.read() {
+        let Some(name) = plant.set else { continue };
+        let set = match races.get(name) {
+            Some(&set) => set,
+            None => {
+                let set = bank.load_set(&game, &mut sources, name);
+                races.insert(name, set);
+                set
+            }
+        };
+        let roll = bank.random_unit();
+        let step = gait_step(plant.speed_cm, roll);
+        env.play_set(&mut bank, set, plant.position, step.gain, step.pitch, 0);
+    }
+    for (e, body, gt, ragdoll, clock) in &mut walkers {
+        if ragdoll {
+            continue;
+        }
         let Some(mut clock) = clock else {
             commands.entity(e).insert(StepClock::default());
             continue;

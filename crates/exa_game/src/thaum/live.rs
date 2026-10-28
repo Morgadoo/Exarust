@@ -289,8 +289,9 @@ fn shock_fighters(
     mut fighters: Query<(
         &mut Fighter,
         Option<&mut ShockReady>,
-        Option<&Condition>,
+        Option<&mut Condition>,
         Option<&mut StateFlags>,
+        Option<&mut Ragdoll>,
     )>,
     ticks: Option<Res<BodyTicks>>,
     mut roll: ResMut<EffectRoll>,
@@ -301,10 +302,11 @@ fn shock_fighters(
     // component arrives with the commands).
     let mut set: Vec<(Entity, u64)> = Vec::new();
     for shock in shocks.read() {
-        let Ok((mut fighter, ready, condition, flags)) = fighters.get_mut(shock.body) else {
+        let Ok((mut fighter, ready, mut condition, flags, body)) = fighters.get_mut(shock.body)
+        else {
             continue;
         };
-        let dying = condition.is_some_and(|c| c.dying());
+        let dying = condition.as_deref().is_some_and(|c| c.dying());
         let known = ready.as_deref().map(|r| r.0).or_else(|| {
             set.iter()
                 .rev()
@@ -321,9 +323,20 @@ fn shock_fighters(
         ) else {
             continue;
         };
-        fighter.health.yellow = yellow;
-        if !dying && let Some(mut flags) = flags {
-            flags.0 |= StateFlags::SHOCK_STAGGER;
+        if fighter.stats.shocks_release && !dying {
+            // A release race is not burnt: it is put into the shocked
+            // state, its step ends and its clip rate stops.
+            if let Some(mut body) = body {
+                body.force_release(now as u32);
+            }
+            if let Some(condition) = condition.as_deref_mut() {
+                *condition = Condition::SHOCKED;
+            }
+        } else {
+            fighter.health.yellow = yellow;
+            if !dying && let Some(mut flags) = flags {
+                flags.0 |= StateFlags::SHOCK_STAGGER;
+            }
         }
         match ready {
             Some(mut ready) => ready.0 = next,

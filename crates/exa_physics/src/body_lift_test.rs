@@ -782,3 +782,26 @@ fn only_a_walking_condition_measures_the_lag() {
     let expected = 2.0 * d.support() * d.support() * 0.5 / CM;
     assert!(close(d.carry().x, expected, 1e-6), "{}", d.carry().x);
 }
+
+/// The sampler's stand-height block: root 110 cm over contacts at 0 and
+/// 10 cm, sole 0: the stand height is 110, the pose's reach 105, and the
+/// standing pelvis height 110 − 5 + 2 × 1 + 5 = 112 cm (107 stepping).
+/// A well-supported body takes the target at once; any other moves a
+/// tenth of the way, in double.
+#[test]
+fn the_stand_height_block_is_the_samplers() {
+    let block = stand_height_block(110.0, &[0.0, 10.0], 0.0, 1.0, false);
+    assert_eq!(block.stand, 110.0);
+    assert_eq!(block.pose_reach, 105.0);
+    assert_eq!(block.target, 112.0);
+    let stepping = stand_height_block(110.0, &[0.0, 10.0], 0.0, 1.0, true);
+    assert_eq!(stepping.target, 107.0);
+    // A 1 cm sole lowers the lowest contact, so the root stands 111 above
+    // it.
+    let soled = stand_height_block(110.0, &[0.0, 10.0], 1.0, 1.0, false);
+    assert_eq!(soled.stand, 111.0);
+    assert_eq!(smooth_stand_height(0.0, 10.0, 1.0), 10.0);
+    assert!((smooth_stand_height(0.0, 10.0, 0.5) - 1.0).abs() < 1e-6);
+    assert_eq!(smooth_stand_height(0.0, 10.0, 0.95), 10.0);
+    assert_eq!(smooth_stand_height(0.0, 10.0, 0.94), 1.0);
+}

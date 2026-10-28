@@ -179,11 +179,34 @@ the feet centre. Each foot's ground is its own: the controller's floor
 does not raise the lift (`src/body_lift.rs`). A standing leg bends onto
 its target by the law of cosines, at most 0.02 rad a tick (0.2 while a
 recovery step is on), and the muscles follow that bend on the next tick
-(`src/body_bend.rs`). While stepping the thigh turns 75% of the
-hip-to-target angle and an anchored foot takes the step lift. The walk's
-feet plant and lift by their phases, and a slow foot plants early (before
-phase 0.2); the gait plant events and the walking ground weights are in,
-the footstep sounds are not.
+(`src/body_bend.rs`). The target is the contact lowered by twice the lift
+term, or, anchored, the midpoint of the contact and its anchor at the
+contact's height; a foot in a step snaps its corrections in at once, and
+the thigh turns 75% of the hip-to-target angle (decaying a tenth a tick
+while it does not step). While the body locomotes the other IK runs: the
+clip leg's own length against the physical hip's height over the contact,
+the knee and hip by the law of cosines, the angle between the clip's leg
+and the target's signed by the contact's side, all at 0.04 × the speed plus
+0.01 a tick. Both write the knee and hip corrections the sampler composes
+into the clip's thigh and shin turns, and the foot's pitch height
+(`foot+0x630`). Each foot's sole floor is the tick's Ground Query at its
+toe (30 cm over the ground, 60 down, never over the knee), at least the
+ground (10 cm less while it touches) plus the leg's offset
+(`feet::sole_floor`). The sampler's stand-height block keeps the root over
+the lowest sole and the mean ankle and the standing pelvis height
+`+0xac0`, smoothed 0.1 a tick (`body_lift::stand_height_block`).
+The walk's feet plant and lift by their phases, and a slow foot plants
+early (before phase 0.2); a plant starts a footstep at the character plus
+`3·speed + 4` cm along its facing, with the original's gain and pitch
+drawn when it plays (`feet::{gait_step, step_position}`, the `Footstep`
+message), and the walking ground weights are in. A footwork step asked for
+while a balance step runs is queued and taken by the original's rule at the
+next landing (`Ragdoll::{queue_step, take_queued_step}`), and a force
+release ends the running step and stops the clip rate
+(`Ragdoll::force_release`). The muscles-off sampler's rules are tested
+(`body_limp.rs`): full root travel, key-flag plants, a 0.05 height ease and
+a snap of the particles to the animated pose; nothing samples with them
+yet, since a limp body keeps its physical pose.
 Each character tick measures a living body's balance at its chest against
 its ankles and asks the level for the ground under each foot
 (`contact::Level::height_below`, the original's Height Query), which give
