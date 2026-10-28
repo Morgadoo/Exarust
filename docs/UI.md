@@ -1961,7 +1961,7 @@ pass a sixth level read the next skill's bytes, as the original's do.
   ring tooltip, the learning row (eight 10-unit icons in its eased box) or
   the forget dialog (its title, the question and YES/NO at
   `(alpha − 0.5) × 2`). The two shaders are the rounded ring source and
-  the bar source, both with `MPrj` (2, 0, 0, 0); the bar source also takes
+  the bar source, both with the fixed `MPrj` projection matrix; the bar source also takes
   `Tex` at unit 0 and `Prog`, and the screen's setup loads the
   `SkillShow_01` reveal sound.
 
