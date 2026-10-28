@@ -1100,6 +1100,7 @@ fn swap_warm_textures(
 }
 
 /// A light as the grouping and the uniforms need it.
+#[derive(Clone, Copy)]
 struct LightSource {
     colour: Vec3,
     intensity: f32,
@@ -1617,7 +1618,7 @@ fn prepare_bind_group(
     lights: Res<GiLights>,
     sun_shadow: Option<Res<GiSunShadow>>,
     sun_sky: Option<Res<GiSunSky>>,
-    shadow_views: Query<&bevy::pbr::ViewShadowBindings>,
+    shadow_views: Query<&bevy::pbr::ViewShadowBindings, Without<crate::supersample::DisplayCamera>>,
     pipeline: Option<Res<GiPipeline>>,
     cache: Res<PipelineCache>,
     images: Res<RenderAssets<GpuImage>>,
@@ -2035,6 +2036,79 @@ mod tests {
             (UVec2::new(248, 248), UVec2::new(256, 256))
         );
         assert_eq!(corner.offset, Vec2::splat(-0.9375));
+    }
+
+    #[test]
+    fn the_sun_is_the_first_light_of_every_group() {
+        let mut sectors = [GiSectorPlan::default(); 64];
+        sectors[0] = plan(true, 10, &[SUN_LIGHT_ID, 5]);
+        sectors[1] = plan(true, 10, &[SUN_LIGHT_ID, 5]);
+        let (groups, _) = group(&sectors, 64);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].lights.ids(), &[SUN_LIGHT_ID, 5]);
+        // The sun counts towards the twelve-light cap: eleven point lights
+        // plus it fill a group.
+        let eleven: Vec<u32> = (0..11).collect();
+        let mut with_sun = vec![SUN_LIGHT_ID];
+        with_sun.extend(eleven);
+        let mut sectors = [GiSectorPlan::default(); 64];
+        sectors[0] = plan(true, 10, &with_sun);
+        sectors[1] = plan(true, 10, &with_sun);
+        let (groups, _) = group(&sectors, 64);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].lights.ids().len(), 12);
+    }
+
+    #[test]
+    fn light_uniforms_use_the_blocks_texture_units() {
+        let mut sources = HashMap::new();
+        sources.insert(
+            1,
+            LightSource {
+                colour: Vec3::ONE,
+                intensity: 1.0,
+                radius: 2.0,
+                position: Vec3::new(10.0, 2.0, 6.0),
+                multiplier: 1.0,
+                shaping: Vec2::ONE,
+                dim: 0.0,
+                cube: 3,
+                sun: false,
+            },
+        );
+        let mut groups = vec![GiGroupPlan {
+            floor: 0,
+            lights: GiSector::new([1]),
+            sectors: 1,
+        }];
+        let mut gi = GiLights::default();
+        push_groups(
+            &mut gi,
+            &groups,
+            &sources,
+            [0; 64],
+            Vec3::new(0.0, -6.8, 0.0),
+            Vec3::new(51.2, 51.2, 12.8),
+        );
+        let light = gi.lights[0];
+        let expected = Vec4::new(10.0 / 51.2, 6.0 / 51.2, 8.8 / 51.2, 25.6);
+        assert!((light.position_radius - expected).abs().max_element() < 1e-6);
+        assert!((light.colour.x - 0.15).abs() < 1e-6);
+        assert_eq!(light.shaping, Vec4::new(1.0, 1.0, 1.0, 0.0));
+        assert_eq!(light.extra.x, 3);
+        // The sun's colour is scaled by 0.3, not 0.15.
+        sources.insert(
+            SUN_LIGHT_ID,
+            LightSource {
+                sun: true,
+                ..sources[&1]
+            },
+        );
+        let mut gi = GiLights::default();
+        groups[0].lights = GiSector::new([SUN_LIGHT_ID]);
+        push_groups(&mut gi, &groups, &sources, [0; 64], Vec3::ZERO, Vec3::ONE);
+        assert!((gi.lights[0].colour.x - 0.3).abs() < 1e-6);
+        assert_eq!(gi.lights[0].shaping.w, 1.0);
     }
 
     #[test]

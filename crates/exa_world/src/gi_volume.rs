@@ -51,6 +51,16 @@ impl Plugin for GiVolumePlugin {
 #[derive(Component, Clone)]
 pub struct GiPoints(pub Arc<Vec<Vec3>>);
 
+/// A GI mesh the original counts as thin: its sample points weigh a quarter
+/// (the node's first child carries the thin byte).
+#[derive(Component, Clone, Copy, Debug, Default)]
+pub struct GiThinMesh;
+
+/// A GI mesh with the original's centred vertical variant: its points gain
+/// half a voxel in height, and they leave the column's lowest slice alone.
+#[derive(Component, Clone, Copy, Debug, Default)]
+pub struct GiCentredMesh;
+
 /// A tile-grid floor mesh: with the other floor meshes of its grid cell it
 /// makes the cell's floor, whose upward faces become a solid layer of
 /// voxels just under the surface, as the original generates for each
@@ -404,7 +414,8 @@ enum SourceInputs {
 
 struct GiInputs {
     meshes: usize,
-    points: Vec<Vec3>,
+    /// Every mesh's world points, with its thin and centred flags.
+    points: Vec<(Vec3, bool, bool)>,
     /// The grid cells' floor points, world space.
     floor_points: Vec<Vec3>,
     terrain: Vec<[Vec3; 3]>,
@@ -517,7 +528,12 @@ fn collect_source(
     mut commands: Commands,
     pending: Option<Res<PendingGi>>,
     settings: Res<GiSettings>,
-    points: Query<(&GiPoints, &GlobalTransform)>,
+    points: Query<(
+        &GiPoints,
+        &GlobalTransform,
+        Has<GiThinMesh>,
+        Has<GiCentredMesh>,
+    )>,
     floors: Query<(&Mesh3d, &GlobalTransform, &GiFloor)>,
     terrain: Query<(&Mesh3d, &GlobalTransform), With<GiTerrain>>,
     meshes: Res<Assets<Mesh>>,
@@ -560,7 +576,7 @@ fn collect_source(
     // Only shared or copied here; the world-space work runs elsewhere.
     let points: Vec<_> = points
         .iter()
-        .map(|(gi, at)| (gi.0.clone(), at.affine()))
+        .map(|(gi, at, thin, centred)| (gi.0.clone(), at.affine(), thin, centred))
         .collect();
     let floors: Vec<(MeshCopy, GiFloor)> = floors
         .iter()
@@ -569,8 +585,8 @@ fn collect_source(
     let ground = mesh_copies(terrain.iter(), &meshes);
     let task = AsyncComputeTaskPool::get().spawn(async move {
         let mut world = Vec::new();
-        for (gi, m) in &points {
-            world.extend(gi.iter().map(|&p| m.transform_point3(p)));
+        for (gi, m, thin, centred) in &points {
+            world.extend(gi.iter().map(|&p| (m.transform_point3(p), *thin, *centred)));
         }
         GiInputs {
             meshes: points.len(),
@@ -974,8 +990,8 @@ fn build_block(
         ground.add(t);
     }
     let terrain_columns = ground.apply(&mut occupancy);
-    for &p in &inputs.points {
-        occupancy.splat(p);
+    for &(p, thin, centred) in &inputs.points {
+        occupancy.splat_styled(p, 1.0, thin, centred);
     }
     for &p in &inputs.floor_points {
         occupancy.splat(p);
