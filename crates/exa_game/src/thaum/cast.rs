@@ -326,6 +326,10 @@ impl PowerCaster {
     }
 }
 
+/// The live force-shell aura on its effect node.
+#[derive(Component, Debug, Clone, PartialEq)]
+pub struct LiveShellAura(pub crate::thaum::ForceShell);
+
 /// A vanish effect asking the body it hides to be placed somewhere else,
 /// after the caster tick that asked for it.
 #[derive(Message, Debug, Clone, Copy, PartialEq)]
@@ -393,6 +397,7 @@ impl Plugin for CastPlugin {
                 (
                     tick_casters,
                     apply_otherwhere.after(tick_casters),
+                    tick_shell_auras.after(tick_casters),
                     super::kinesis_live::steer_kinesis,
                     super::throw_live::push_throws,
                     super::throw_live::sound_throws,
@@ -1280,11 +1285,16 @@ fn create_force(
                 PowerBase::new(SHELL).accrue(body, cost)
             };
             power.held = held;
+            let start_pitch = roll.0.unit();
+            let tex_pos = [roll.0.unit(), roll.0.unit()];
+            let mut aura = crate::thaum::ForceShell::new(context.now, tex_pos);
+            aura.voice = true;
             let spec = creator(
                 EffectKind::Shell,
-                &visual_input(context, ragdoll, roll.0.unit()),
+                &visual_input(context, ragdoll, start_pitch),
             );
             let entity = spawn_visual(commands, spec);
+            commands.entity(entity).insert(LiveShellAura(aura));
             push_active(
                 caster,
                 SHELL,
@@ -1553,6 +1563,22 @@ fn visual_input(context: &CastContext, ragdoll: Option<&Ragdoll>, roll: f32) -> 
     }
 }
 
+/// Steps the force-shell auras: the ripples, then the fade machine. A
+/// closed aura leaves its node.
+fn tick_shell_auras(
+    mut commands: Commands,
+    ticks: Option<Res<BodyTicks>>,
+    mut auras: Query<(Entity, &mut LiveShellAura)>,
+) {
+    let now = ticks.as_deref().map_or(0, |t| t.millis() as u32);
+    for (entity, mut aura) in &mut auras {
+        aura.0.step_ripples();
+        if aura.0.frame(now).remove {
+            commands.entity(entity).despawn();
+        }
+    }
+}
+
 /// Gives a live effect its material node: a child at the effect's place
 /// carrying the creator's material, sub-objects, textures and block, so a
 /// renderer finds the node and its pass with the effect.
@@ -1730,6 +1756,7 @@ fn tick_casters(
     >,
     walls: Query<&LiveBarricade>,
     mut bubbles: Query<&mut LiveBubble>,
+    mut auras: Query<&mut LiveShellAura>,
     ticks: Option<Res<BodyTicks>>,
     buttons: Option<Res<ButtonInput<MouseButton>>>,
     pad: Option<Res<crate::gamepad::PlayPad>>,
@@ -1929,8 +1956,17 @@ fn tick_casters(
                 }
                 if let Some(entity) = entry.entity
                     && !matches!(entry.class, ActiveClass::Remote(_))
+                    && !matches!(entry.class, ActiveClass::Shell(_))
                 {
                     commands.entity(entity).despawn();
+                }
+                // A shell's power ends before its aura: the aura closes and
+                // takes its own node away once it has faded out.
+                if let Some(entity) = entry.entity
+                    && matches!(entry.class, ActiveClass::Shell(_))
+                    && let Ok(mut aura) = auras.get_mut(entity)
+                {
+                    aura.0.start_fade();
                 }
                 continue;
             }

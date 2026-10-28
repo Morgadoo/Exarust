@@ -1090,6 +1090,35 @@ fn a_shell_cast_adds_its_aura_node() {
     assert_eq!(visuals[0].3, vec!["_ForceNoise"]);
 }
 
+/// A shell's aura outlives the power: ending the power starts its close
+/// rather than taking its node away at once.
+#[test]
+fn a_shell_aura_closes_after_its_power_ends() {
+    let mut app = new_app();
+    let caster = caster(&mut app, &[SHELL]);
+    cast(&mut app, caster);
+    app.world_mut().run_schedule(FixedUpdate);
+    app.world_mut().run_schedule(FixedUpdate);
+    let mut query = app.world_mut().query::<(Entity, &LiveShellAura)>();
+    let (entity, state) = query
+        .iter(app.world())
+        .next()
+        .map(|(entity, aura)| (entity, aura.0.state))
+        .expect("an aura");
+    assert_eq!(state, 1);
+    assert!(app.world().get::<LiveShellAura>(entity).unwrap().0.voice);
+    // A second press tells the shell to end; its aura starts closing and
+    // stays in the scene.
+    cast(&mut app, caster);
+    app.world_mut().run_schedule(FixedUpdate);
+    let aura = app
+        .world()
+        .get::<LiveShellAura>(entity)
+        .expect("still there");
+    assert!(aura.0.state >= 2 && aura.0.state < 5, "{}", aura.0.state);
+    assert!(count::<LiveShellAura>(&mut app) == 1);
+}
+
 /// A vanish's creator leaves its effect node in the scene.
 #[test]
 fn a_vanish_cast_adds_its_effect_node() {
