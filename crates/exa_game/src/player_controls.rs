@@ -831,19 +831,24 @@ pub fn use_press(has_body: bool, usable: Option<u8>) -> UsePress {
 /// 3) or nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UseTarget {
+    /// A door: a matching key unlocks it, another rattles it.
     Door,
+    /// A character: the held liquid is poured on it.
     Character,
-    Gui,
+    /// A world item: the clean/repair dispatch.
+    Item,
     Nothing,
 }
 
+/// The use's target for a world classification, tested in the original's
+/// order (4, then 0x10, then bit 2).
 pub fn use_target(classification: u8) -> UseTarget {
     if classification == 4 {
         UseTarget::Door
     } else if classification == 0x10 {
         UseTarget::Character
     } else if classification & 2 != 0 {
-        UseTarget::Gui
+        UseTarget::Item
     } else {
         UseTarget::Nothing
     }
@@ -1646,7 +1651,7 @@ mod tests {
         assert_eq!(use_press(true, Some(14)), UsePress::Begin);
         assert_eq!(use_target(4), UseTarget::Door);
         assert_eq!(use_target(0x10), UseTarget::Character);
-        assert_eq!(use_target(3), UseTarget::Gui);
+        assert_eq!(use_target(3), UseTarget::Item);
         assert_eq!(use_target(1), UseTarget::Nothing);
         assert_eq!(use_target(0x40), UseTarget::Nothing);
         assert_eq!(use_target(0), UseTarget::Nothing);
