@@ -893,7 +893,9 @@ mod tests {
             .with_translation(Vec3::new(0.0, 1.0, 0.0));
         let child = Transform::from_xyz(1.0, 0.0, 0.0).with_rotation(Quat::from_rotation_x(0.3));
         let back = exa_assets::transform_from_rows(&file_frame(&parent));
-        assert!(back.rotation.angle_between(parent.rotation) < 1e-5);
+        for axis in [Vec3::X, Vec3::Y, Vec3::Z] {
+            assert!((back.rotation * axis).distance(parent.rotation * axis) < 1e-6);
+        }
         assert!(back.translation.distance(parent.translation) < 1e-6);
         let world = exa_formats::morph::compose(&file_frame(&parent), &file_frame(&child));
         let expected = parent * child;

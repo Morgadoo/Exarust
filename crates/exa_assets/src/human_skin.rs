@@ -388,10 +388,8 @@ impl ModelLoader<'_> {
         if let Some(cached) = self.cached_composite(job) {
             return cached;
         }
-        match self.skin_compose_inputs(job) {
-            Some(inputs) => Some(self.finish_composited_skin(job, inputs.generate())),
-            None => None,
-        }
+        let inputs = self.skin_compose_inputs(job)?;
+        Some(self.finish_composited_skin(job, inputs.generate()))
     }
 
     /// The cached composite of `job`: `Some(None)` when its maps were found
