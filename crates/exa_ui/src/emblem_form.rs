@@ -446,9 +446,10 @@ pub fn emblem_sample(
     let t1 = [(((u * 2.0 - 0.5) - 0.5) * mirror[1]) + 0.5, v * 2.0 - 0.5];
     let design = layers[1].sample(t1[0], t1[1]);
     let c = red(layers[2].sample(u, v));
-    c1 *= (c + 2.5) * 0.333;
-    c2 *= (c + 2.5) * 0.333;
-    c3 *= (c + 2.5) * 0.333;
+    // `v * (c+2.5) * 0.333` multiplies left to right.
+    c1 = c1 * (c + 2.5) * 0.333;
+    c2 = c2 * (c + 2.5) * 0.333;
+    c3 = c3 * (c + 2.5) * 0.333;
     let third = (f32::from(design[3]) / 255.0 * 3.0 - 2.0).max(0.0);
     c1 = mix(c1, colours[2][0] * (c + 0.5), third);
     c2 = mix(c2, colours[2][1] * (c + 0.5), third);
