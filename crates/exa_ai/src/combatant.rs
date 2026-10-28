@@ -1695,19 +1695,19 @@ pub fn ally_sense(
     }
     let weight = |n: &AllyNeighbour| (n.view * 0.75 + 0.25) * n.closeness * n.closeness;
     let target = neighbours.iter().find(|n| n.is_target).map_or(0.0, weight);
-    let _ = self_ally;
+    let self_own = if self_ally { 1.0 } else { 0.0 };
     let mut surround = 0.0f32;
     for n in neighbours {
         let w = weight(n);
-        let ally = if n.is_target { true } else { n.ally };
-        let own = if ally { 1.0 } else { 0.0 };
-        // The observed character itself is an ally of itself.
+        // A neighbour counts as an ally when its body carries the AI flag;
+        // the observer's own value is `self_own`.
+        let own = if n.ally { 1.0 } else { 0.0 };
         let share = if target <= 0.0 {
             0.0
         } else {
             target / (w + target)
         };
-        let term = ((1.0 - share) * own + own * share) * w;
+        let term = ((1.0 - share) * own + self_own * share) * w;
         let term = if term <= 0.0 { 0.0 } else { term };
         if surround < term * ALLY_THREAT_GAIN {
             surround = term * ALLY_THREAT_GAIN;
