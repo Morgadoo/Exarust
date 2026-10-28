@@ -1067,6 +1067,14 @@ tab stop, 0x100000 no keys) and state word (0x10 disabled, 0x400 focus,
   starts the repeat. A grip drag keeps the place at 0 or more and the page
   at least 90 wide and 76 high. A release over -6 maximises or restores,
   -5 hides, -4 closes; a snapping form snaps a released thumb.
+- **Eager layout and messages.** Showing a form resolves every unset
+  place in its whole tree, depth first: a centred x is `(client width −
+  width) / 2` truncating, a right x `client right − width − 4`, else 4; a
+  centred y is the half height (a floor), a bottom y `client bottom −
+  height − 4`, else 36; a place already set is kept. A message sent by a
+  control's id reaches the first record with that id anywhere in the tree
+  with its three arguments; with no such record the original's default
+  control takes it and ignores it.
 - **Snap slots and rescale.** A snap container (attribute 0x20) cuts the
   space between its client's edges and its visible children's widened
   client rectangles into slots: from each free cell the longer free run

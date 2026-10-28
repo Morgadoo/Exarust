@@ -532,6 +532,44 @@ pub fn place_unset(
     (x, y)
 }
 
+/// A form of the show's eager layout: its place and size, its style and the
+/// client rectangle its children are placed in (in its own coordinates).
+#[derive(Debug, Clone, PartialEq)]
+pub struct UnsetForm {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+    pub style: u32,
+    pub client: ClientRect,
+    pub children: Vec<UnsetForm>,
+}
+
+/// Resolves every unset place in a tree, depth first as the original's
+/// layout does: a centred x is `(client width − width) / 2` (truncating), a
+/// right-anchored x `client right − width − 4`, else 4; a centred y is
+/// `(client height − height) >> 1`, a bottom-anchored y
+/// `client bottom − height − 4`, else 36. The form's own client is its
+/// children's parent. Answers how many forms were visited.
+pub fn layout_unset(form: &mut UnsetForm) -> usize {
+    let parent = form.client;
+    let mut visited = 1;
+    for child in &mut form.children {
+        let (x, y) = place_unset(
+            child.x,
+            child.y,
+            child.width,
+            child.height,
+            child.style,
+            parent,
+        );
+        child.x = x;
+        child.y = y;
+        visited += layout_unset(child);
+    }
+    visited
+}
+
 /// The place a shown form takes after its layout: a centred style is
 /// re-centred in the parent's client every time, both axes truncating.
 pub fn show_place(
@@ -1116,6 +1154,28 @@ pub fn find_control(tree: &ControlTree, id: u16) -> Option<(Vec<usize>, usize)> 
             (path, record)
         })
     })
+}
+
+/// A message sent to a control by its id: the message code and the three
+/// arguments the control's handler takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ControlMessage {
+    pub message: u32,
+    pub first: u32,
+    pub second: u32,
+    pub third: u32,
+}
+
+/// Sends a message to the first record with `id`, anywhere in the tree
+/// (the original's find-by-code followed by the control's message slot).
+/// Without a record the original's default control takes the message and
+/// ignores it, so the answer is none.
+pub fn send_control(
+    tree: &ControlTree,
+    id: u16,
+    message: ControlMessage,
+) -> Option<(Vec<usize>, usize, ControlMessage)> {
+    find_control(tree, id).map(|(path, record)| (path, record, message))
 }
 
 /// The centre of a form's client for a control code: none for a code
