@@ -117,6 +117,11 @@ pub const RETENTION_SPEEDS: [f32; 2] = [40.0, 20.0];
 /// u² standing, and 0.5·u + 0.5 while walking or off its feet. A human's r
 /// of 1 makes both 1 at any balance.
 pub(crate) const LINK_ITERATIONS: usize = 20;
+/// A living character root's link-iteration count: the original's
+/// `round(1660 / 83)`.
+pub const LIVING_LINK_ITERATIONS: i32 = 20;
+/// A character root's count once it dies in play.
+pub const DEAD_LINK_ITERATIONS: i32 = 10;
 pub(crate) const FRICTION_PASSES: usize = 8;
 /// A held item body's motion flag: a walk's start clears it.
 pub const HELD_MOTION_FLAG: u32 = 0x10000;
@@ -1481,6 +1486,8 @@ pub struct Ragdoll {
     /// at its previous particles instead of integrating it
     /// ([`Ragdoll::freeze`]).
     frozen: bool,
+    /// The root's link-iteration count ([`Ragdoll::link_iterations`]).
+    link_iterations: i32,
     /// The hand's grabs on its parts ([`Ragdoll::grab`]).
     grabs: Vec<Grab>,
     /// Scratch lists for the level detection, kept across ticks so a tick
@@ -2241,6 +2248,7 @@ impl Ragdoll {
             simulated: false,
             fell_out: false,
             frozen: false,
+            link_iterations: LIVING_LINK_ITERATIONS,
             grabs: Vec::new(),
             pieces: Vec::new(),
             triangles: Vec::new(),
@@ -2729,6 +2737,43 @@ impl Ragdoll {
     pub fn go_limp(&mut self) {
         self.wake();
         self.become_limp();
+        // Death in play lowers the root's link-iteration count to 10.
+        self.link_iterations = DEAD_LINK_ITERATIONS;
+    }
+
+    /// The root's link-iteration count, the original's per-root word: 2 for
+    /// a plain body plus one per articulated child, 20 for a living
+    /// character (`round(1660/83)`), 10 once it dies in play. The original's
+    /// sector solve runs its 20 iterations over every root whatever the
+    /// count and only marks the root once the iteration index reaches it
+    /// ([`Ragdoll::iterations_reached`]), a mark nothing reads; so does
+    /// Exarust. [inf] The dormant statue's 5 is not set: Exarust's dormant
+    /// bodies keep 20, which changes nothing that is read.
+    pub fn link_iterations(&self) -> i32 {
+        self.link_iterations
+    }
+
+    /// Sets the root's link-iteration count.
+    pub fn set_link_iterations(&mut self, count: i32) {
+        self.link_iterations = count;
+    }
+
+    /// Whether iteration `pass` (counted from 1) has reached the root's
+    /// count: the original's mark after each pass, `count ≤ pass`.
+    pub fn iterations_reached(&self, pass: i32) -> bool {
+        self.link_iterations <= pass
+    }
+
+    /// Runs the link pass as many times as the root's count: the original's
+    /// whole-count iteration (a count of 0 or less runs none). No caller of
+    /// it is known in the original's tick, which runs single passes; it is
+    /// kept for a body solved on its own.
+    pub fn iterate_links(&mut self) {
+        // The passes are numbered from 0, as the original hands them on.
+        self.pass = 0;
+        for _ in 0..self.link_iterations.max(0) {
+            self.iterate();
+        }
     }
 
     /// The limp state itself: no muscles, the legs' limits at full

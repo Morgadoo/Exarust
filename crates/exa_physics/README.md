@@ -637,7 +637,12 @@ original's state bit 0x40) skips all of that: its step puts each part back
 on its previous particles and takes one tick off the countdown (floored at
 1). Nothing in Exarust freezes a body yet (the original does it for a
 walkable-platform node, which no shipped body has, and for an item the
-cursor holds).
+cursor holds). Each root keeps the original's link-iteration count
+(`Ragdoll::link_iterations`: 2 for a plain body plus one per articulated
+child, 20 for a character, 10 once it dies in play); as in the original,
+the solve runs 20 passes over every root regardless and the count only
+marks `count ≤ pass` (`iterations_reached`), which nothing reads.
+`iterate_links` is the original's whole-count iteration, with no caller.
 
 A limp body's links also carry the original's other kinds. A soft weld
 takes a quarter of its strength times the gap less 0.4 of its two points'
