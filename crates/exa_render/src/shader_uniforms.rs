@@ -130,6 +130,26 @@ pub const MATERIAL_FIELDS: &[LayoutField] = &[
     },
 ];
 
+/// The three `vec4`s of one light, at their offsets in the `Light` array
+/// element (48 bytes, three times the six-slot stride).
+pub const LIGHT_FIELDS: &[LayoutField] = &[
+    LayoutField {
+        name: "Light.position",
+        offset: 0,
+        bytes: 16,
+    },
+    LayoutField {
+        name: "Light.colour",
+        offset: 16,
+        bytes: 16,
+    },
+    LayoutField {
+        name: "Light.shape",
+        offset: 32,
+        bytes: 16,
+    },
+];
+
 /// Bytes of the `Global` block.
 pub const GLOBAL_BYTES: usize = 252;
 /// Bytes of the `Material` block.
@@ -926,6 +946,12 @@ mod tests {
         assert_eq!(
             MATERIAL_FIELDS[7].offset + MATERIAL_FIELDS[7].bytes,
             MATERIAL_BYTES
+        );
+        assert_eq!(LIGHT_FIELDS[0].offset, 0);
+        assert_eq!(LIGHT_FIELDS[2].offset + LIGHT_FIELDS[2].bytes, LIGHT_BYTES);
+        assert_eq!(
+            LIGHT_BYTES * crate::shader_program::MAX_LIGHTS,
+            LIGHT_ARRAY_BYTES
         );
     }
 
