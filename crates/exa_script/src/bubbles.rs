@@ -123,7 +123,7 @@ fn round_to_int(value: f32) -> i64 {
     let rounded = value.round_ties_even();
     // 2^63 is the first value out of range; unordered and out-of-range
     // values give the integer indefinite.
-    if rounded.is_finite() && rounded >= -9.223_372e18 && rounded < 9.223_372e18 {
+    if (-9.223_372e18..9.223_372e18).contains(&rounded) {
         rounded as i64
     } else {
         i64::MIN
