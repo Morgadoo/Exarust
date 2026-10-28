@@ -919,7 +919,7 @@ pub fn light_bundle(
     exa_render::gi::GiRadius,
     shadow_links::ShadowReach,
     exa_render::lights::LightShaping,
-    exa_render::gi::GiSoftness,
+    exa_render::gi::GiShadowBias,
     exa_render::gi::GiRanged,
 ) {
     /// The falloff reaches zero this far out, in radii.
@@ -953,9 +953,12 @@ pub fn light_bundle(
         },
         exa_render::lights::LightShaping(Vec2::new(y, z)),
         // The GI's cube lookup scales the receiver's distance by
-        // softness + 0.94 over the radius, and an unranged light's far plane
-        // is 3.4e38 (no shade).
-        exa_render::gi::GiSoftness(light.softness),
+        // bias + 0.94 over the radius; the bias is the shadow detail plus
+        // the light's own offset, and an unranged light's far plane is
+        // 3.4e38 (no shade).
+        exa_render::gi::GiShadowBias(exa_render::gi::gi_shadow_bias(
+            light_source::shadow_quality_offset(light.flags),
+        )),
         exa_render::gi::GiRanged(light.ranged),
     )
 }

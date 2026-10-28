@@ -1370,10 +1370,13 @@ its width, at the slice's middle ((slice + 0.5)/width), as the original's
   original's `Light[3i..3i+2]`: the position in texture units with 1/(R·s)
   in w, then the colour with the cube lookup's depth scale in w, then the
   shaping. The cube lookup is the cached shadow pool's linear depth
-  compared against d·(softness + 0.94)/R + 0.01 along (the point − the
-  light), the scale worked out in double precision (((softness + 0.94) /
-  far) × 5120); a light without its range flag has the 3.4e38 far plane, so
-  its lookup is unshadowed. The original binds light i's cube map to its
+  compared against d·(bias + 0.94)/R + 0.01 along (the point − the light),
+  the scale worked out in double precision (((bias + 0.94)/far) × 5120).
+  The bias is the shadow detail plus the light record's own quality offset
+  (0, +1, −1 or −2), capped at 6, times 0.005, or 0.025 above 5: the
+  shipped detail 5 gives 0.025, so the compare is d·0.965/R (q = 4 gives
+  0.02). A light without its range flag has the 3.4e38 far plane, so its
+  lookup is unshadowed. The original binds light i's cube map to its
   own `Shadow<i>` sampler; Exarust's shared pool carries the slot instead;
 - the sun joins each drawn sector's group first and adds
   lin(colour)·intensity·3·0.3·0.01 · visibility · open (the manager's sun
@@ -1388,6 +1391,13 @@ its width, at the slice's middle ((slice + 0.5)/width), as the original's
   sun is unshadowed;
 - a light's shading is (2^((ly + (1 − ly)·y)·z) − 1)/(2^z − 1), ly the
   light's vertical direction; unshaped lights carry (1, 1, 1);
+- the original's program carries two matrix-shadow light slots (`SdwMat`,
+  `SdwMat2` for the first two lights whose shadow is one 2D map, i.e. the
+  sun and spots); before drawing a group it moves the first such light at
+  index 2 or later to slot 1 when the sun owns slot 0, or the first at
+  index 1 or later to slot 0 without a sun. Exarust has no spot lights and
+  the sun is always slot 0, so a group keeps its order; every point light
+  carries its cube slot instead of a fixed `Shadow<i>` binding;
 - the lights injected are the sector's own: each sector's 6 m cell lists the
   lights whose flood windows reached it (up to 12), with the sun ahead of
   them when it is up (it counts towards the twelve). A spot-shaped light is

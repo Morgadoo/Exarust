@@ -20,8 +20,8 @@ struct GiLight {
     position_radius: vec4<f32>,
     // Per-step injection colour: linear colour × intensity × 0.15 (×0.9 for
     // the sun), before the fragment's 0.01; in w the cube lookup's depth
-    // scale, ((softness + 0.94)/R)·5120, so the compare value is
-    // d·(softness + 0.94)/R + 0.01.
+    // scale, ((bias + 0.94)/R)·5120 with the light's shadow bias (0.025 at
+    // the shipped detail), so the compare value is d·(bias + 0.94)/R + 0.01.
     colour_shadow: vec4<f32>,
     // x, y: the light's vertical shaping (y, z); z: 1/(2^z − 1) (unshaped
     // lights carry (1, 1, 1)); w: 0 for a point light, 1 for the sun, the
@@ -266,7 +266,7 @@ fn propagate(@builtin(global_invocation_id) id: vec3<u32>) {
         let d = length(to);
         var shadow = 1.0;
         // The original binds light i's cube map to `Shadow<i>`; the depth
-        // compared is d·(softness + 0.94)/R, formed by the CPU's scale.
+        // compared is d·(bias + 0.94)/R, formed by the CPU's scale.
         let slot = params.cubes[(plan.first + i) / 4u][(plan.first + i) % 4u];
         if slot != 0xffffffffu {
             let dir = normalize(vec3(to.x, to.z, to.y)) * FLIP_Z;

@@ -246,14 +246,38 @@ pub struct GiRadius(pub f32);
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq)]
 pub struct GiDim(pub f32);
 
-/// A light's shadow softness: the record's filter radius is
-/// (softness + 1)·0.005. The GI's cube lookup does not use the filter
-/// radius; it scales the receiver's distance by `softness + 0.94` instead,
-/// which is 0.94 at the constructor's default and 1.44 for a plain level
-/// light (0.5). The original copies the runtime light's `+0x238` from the
-/// TLightSource's softness field.
-#[derive(Component, Clone, Copy, Debug, Default, PartialEq)]
-pub struct GiSoftness(pub f32);
+/// A light's GI shadow bias: the original's runtime light bias, the shadow
+/// detail plus the light record's own quality offset (capped at 6) times
+/// 0.005, or 0.025 above 5. The GI's cube lookup scales the receiver's
+/// distance by `bias + 0.94`, so the shipped detail 5 with no offset gives
+/// the 0.965 factor. See [`gi_shadow_bias`].
+#[derive(Component, Clone, Copy, Debug, PartialEq)]
+pub struct GiShadowBias(pub f32);
+
+impl Default for GiShadowBias {
+    fn default() -> Self {
+        Self(gi_shadow_bias(0))
+    }
+}
+
+/// The user's shadow detail the original's GI cube bias is derived from:
+/// the shipped 5, the top setting.
+pub const GI_SHADOW_DETAIL: i32 = 5;
+
+/// The original's GI shadow bias for a light whose record keeps the
+/// shadow-quality offset `offset` (0, +1, −1 or −2 in the flags' low two
+/// bits): `q = detail + offset`, capped at 6, then `q·0.005`, or 0.025 when
+/// q is above 5. The shipped detail 5 gives 0.025 for offsets 0 and +1, so
+/// the cube compare is d·0.965/R.
+pub fn gi_shadow_bias(offset: i32) -> f32 {
+    let q = (GI_SHADOW_DETAIL + offset).min(6);
+    if q > 5 {
+        0.025
+    } else {
+        // The product is taken in double precision and rounded once.
+        (f64::from(q) * 0.005) as f32
+    }
+}
 
 /// Whether the light's range flag is on (with a positive radius). An unranged
 /// light floods with unlimited reach and injects over its stored radius, but
@@ -703,7 +727,7 @@ struct GiLight {
     /// radius in them in `w`; for the sun only `w` is read (unused).
     position_radius: Vec4,
     /// The injected colour in `rgb`; `w` is the cube lookup's depth scale
-    /// ((softness + 0.94)/R × 5120, the original's 5120 = 256 × 20 cm).
+    /// ((bias + 0.94)/R × 5120, the original's 5120 = 256 × 20 cm).
     colour_shadow: Vec4,
     /// x, y: vertical shaping (y, z); z: 1/(2^z − 1); w: 0 for a point
     /// light and 1 for the sun.
@@ -773,7 +797,7 @@ const INJECTION_SHARE: f32 = 0.1;
 /// The sun's intensity below which the original leaves it out of the GI.
 const SUN_EPSILON: f32 = 1.192_09e-7;
 /// The original's own sun shadow map for the GI: 1024², with its direct-light
-/// softness of 1600. Exarust samples Bevy's fitted sun map instead, so these
+/// softness of 1600 (the sun filter radius). Exarust samples Bevy's fitted sun map instead, so these
 /// stay as the original's numbers for reference.
 pub const GI_SUN_SHADOW_SIZE: u32 = 1024;
 pub const GI_SUN_SOFTNESS: f32 = 1600.0;
@@ -1278,8 +1302,8 @@ struct LightSource {
     shaping: Vec2,
     /// The light's dimming, as its record stores it.
     dim: f32,
-    /// The shadow softness the GI's cube lookup scales the distance by.
-    softness: f32,
+    /// The GI cube lookup's shadow bias (see [`GiShadowBias`]).
+    bias: f32,
     /// The range flag: an unranged light's cube lookup is unshadowed.
     ranged: bool,
     /// The cached cube shadow's slot + 1 (0 without one).
@@ -1308,7 +1332,7 @@ impl LightSource {
     }
 
     /// The cube lookup's depth scale: the original's
-    /// `((softness + 0.94) / far) × 5120`, worked out in double precision
+    /// `((bias + 0.94) / far) × 5120`, worked out in double precision
     /// and stored as a float. `far` is the light's radius in centimetres
     /// when its range is on, else the 3.4e38 the record holds, so an
     /// unranged light's compare value stays at the 0.01 bias and its taps
@@ -1319,7 +1343,7 @@ impl LightSource {
         } else {
             f64::from(f32::from_bits(UNRANGED_FAR))
         };
-        ((f64::from(self.softness) + 0.94) / far * 5120.0) as f32
+        ((f64::from(self.bias) + 0.94) / far * 5120.0) as f32
     }
 }
 
@@ -1336,7 +1360,7 @@ type GiLightQuery<'w, 's> = Query<
         Option<&'static crate::lights::LightShaping>,
         Option<&'static crate::cube_shadows::CubeSlot>,
         Option<&'static GiDim>,
-        Option<&'static GiSoftness>,
+        Option<&'static GiShadowBias>,
         Option<&'static GiRanged>,
     ),
 >;
@@ -1382,7 +1406,7 @@ fn gather_lights(
     }
     // The lights the cells record, by their shader id.
     sources.clear();
-    for (light, at, id, share, radius, shaping, cube, dim, softness, ranged) in &lights {
+    for (light, at, id, share, radius, shaping, cube, dim, bias, ranged) in &lights {
         let c = light.color.to_linear();
         sources.insert(
             id.0,
@@ -1394,7 +1418,7 @@ fn gather_lights(
                 multiplier: share.map_or(1.0, |m| m.0),
                 shaping: shaping.map_or(Vec2::ONE, |s| s.0),
                 dim: dim.map_or(0.0, |d| d.0),
-                softness: softness.map_or(0.0, |s| s.0),
+                bias: bias.map_or(gi_shadow_bias(0), |b| b.0),
                 ranged: ranged.is_none_or(|r| r.0),
                 cube: cube.and_then(|c| c.slot).map_or(0, |s| s + 1),
                 sun: false,
@@ -1425,7 +1449,7 @@ fn gather_lights(
                 multiplier: 1.0,
                 shaping: Vec2::ONE,
                 dim: 0.0,
-                softness: 0.0,
+                bias: 0.0,
                 ranged: true,
                 cube: 0,
                 sun: true,
@@ -2302,7 +2326,7 @@ mod tests {
                 multiplier: 1.0,
                 shaping: Vec2::ONE,
                 dim: 0.0,
-                softness: 0.5,
+                bias: 0.025,
                 ranged: true,
                 cube: 3,
                 sun: false,
@@ -2327,8 +2351,8 @@ mod tests {
         let expected = Vec4::new(10.0 / 51.2, 6.0 / 51.2, 8.8 / 51.2, 25.6);
         assert!((light.position_radius - expected).abs().max_element() < 1e-6);
         assert!((light.colour_shadow.x - 0.15).abs() < 1e-6);
-        // ((0.5 + 0.94 cm of softness) / 200 cm) × 5120, in double.
-        let scale = ((0.5f64 + 0.94) / 200.0 * 5120.0) as f32;
+        // ((0.025 bias + 0.94) / 200 cm) × 5120, in double.
+        let scale = ((0.025f64 + 0.94) / 200.0 * 5120.0) as f32;
         assert_eq!(light.colour_shadow.w, scale);
         assert_eq!(light.shaping, Vec4::new(1.0, 1.0, 1.0, 0.0));
         assert_eq!(gi.cube_slots, vec![2]);
@@ -2602,7 +2626,7 @@ mod tests {
             multiplier: 1.0,
             shaping: Vec2::new(y, 1.0),
             dim: 0.0,
-            softness: 0.5,
+            bias: 0.025,
             ranged: true,
             cube: 0,
             sun: false,
@@ -2682,8 +2706,20 @@ mod tests {
     }
 
     #[test]
-    fn the_gi_cube_lookup_scales_the_distance_by_softness_and_radius() {
-        let source = |softness: f32, radius: f32, ranged: bool| LightSource {
+    fn the_gi_shadow_bias_follows_the_shadow_detail() {
+        // The shipped detail 5: 0.025 at offsets 0 and +1 (capped at 6).
+        assert_eq!(gi_shadow_bias(0), 0.025);
+        assert_eq!(gi_shadow_bias(1), 0.025);
+        // A lower offset widens the shadow: q = 4, 3.
+        assert_eq!(gi_shadow_bias(-1), 0.02);
+        assert_eq!(gi_shadow_bias(-2), 0.015);
+        assert_eq!(GI_SHADOW_DETAIL, 5);
+        assert_eq!(GiShadowBias::default(), GiShadowBias(0.025));
+    }
+
+    #[test]
+    fn the_gi_cube_lookup_scales_the_distance_by_bias_and_radius() {
+        let source = |bias: f32, radius: f32, ranged: bool| LightSource {
             colour: Vec3::ONE,
             intensity: 1.0,
             radius,
@@ -2691,21 +2727,21 @@ mod tests {
             multiplier: 1.0,
             shaping: Vec2::ONE,
             dim: 0.0,
-            softness,
+            bias,
             ranged,
             cube: 1,
             sun: false,
         };
-        // A plain level light: ((0.5 + 0.94)/200 cm) × 5120 = 36.864.
-        let scale = source(0.5, 2.0, true).cube_shadow_scale();
-        assert_eq!(scale, ((0.5f64 + 0.94) / 200.0 * 5120.0) as f32);
-        assert!((scale - 36.864).abs() < 1e-5);
-        // The constructor's default softness 0.25 gives 0.94 + 0.25.
-        let scale = source(0.25, 2.0, true).cube_shadow_scale();
-        assert_eq!(scale, ((0.25f64 + 0.94) / 200.0 * 5120.0) as f32);
+        // The shipped bias 0.025: ((0.025 + 0.94)/200 cm) × 5120 = 24.704.
+        let scale = source(0.025, 2.0, true).cube_shadow_scale();
+        assert_eq!(scale, ((0.025f64 + 0.94) / 200.0 * 5120.0) as f32);
+        assert!((scale - 24.704).abs() < 1e-4);
+        // A lower shadow detail widens the bias: q = 3 gives 0.015.
+        let scale = source(0.015, 2.0, true).cube_shadow_scale();
+        assert_eq!(scale, ((0.015f64 + 0.94) / 200.0 * 5120.0) as f32);
         // An unranged light's far plane is 3.4e38: the compare value stays
         // at the 0.01 bias and every tap is lit.
-        let scale = source(0.5, 2.0, false).cube_shadow_scale();
+        let scale = source(0.025, 2.0, false).cube_shadow_scale();
         assert!(scale > 0.0 && scale < 1e-33, "{scale}");
     }
 

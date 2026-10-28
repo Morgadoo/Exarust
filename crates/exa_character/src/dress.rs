@@ -678,6 +678,7 @@ mod tests {
                 bounds: (bevy::prelude::Vec3::ZERO, 0.0),
                 half_extents: bevy::prelude::Vec3::ZERO,
                 gi_points: Default::default(),
+                gi_centred: false,
                 rigid: None,
                 tracks: Vec::new(),
                 shadow_bias: 0,
