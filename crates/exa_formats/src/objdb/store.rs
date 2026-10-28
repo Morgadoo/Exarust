@@ -72,11 +72,20 @@ impl Store {
     /// (the writer saves an empty database as the header alone), otherwise
     /// the blob is everything after the table. The table is neither sorted
     /// nor checked against the blob: an entry outside it has no view. A
-    /// database of an older layout (`0xDBAC0D08`, `0xDBAC0D07`) is then
-    /// converted by the original's upgrade chain; the oldest
-    /// (`0xDBAC0D06`) needs a converter that is not reproduced and is
-    /// refused, as is any other magic.
+    /// database of an older layout (`0xDBAC0D08`, `0xDBAC0D07`,
+    /// `0xDBAC0D06`) is then converted by the original's upgrade chain; any
+    /// other magic is refused. The oldest two layouts draw each converted
+    /// body's paint seed; this uses [`Self::parse_with_seeds`]'s fixed
+    /// stream.
     pub fn parse(b: &[u8]) -> Result<Self> {
+        let mut seeds = fixed_paint_seeds();
+        Self::parse_with_seeds(b, &mut seeds)
+    }
+
+    /// [`Self::parse`] with the source of the paint seeds an older body
+    /// layout's conversion stores (the original draws them from its process
+    /// RNG; a save loader can pass the game's own source here).
+    pub fn parse_with_seeds(b: &[u8], paint_seeds: &mut dyn FnMut() -> u64) -> Result<Self> {
         let magic = crate::read_u32(b, 0)?;
         let table_len = crate::read_u32(b, 4)? as usize;
         if !(0xDBAC_0D06..=super::MAGIC).contains(&magic) {
@@ -113,7 +122,7 @@ impl Store {
                 blob: b[blob_start..].to_vec(),
             }
         };
-        super::upgrade::upgrade(&mut store, magic)?;
+        super::upgrade::upgrade(&mut store, magic, paint_seeds)?;
         Ok(store)
     }
 
@@ -360,6 +369,20 @@ impl Store {
     }
 }
 
+/// The fixed paint-seed stream [`Store::parse`] hands the oldest body
+/// layout's conversion: two 32-bit draws of the run-time library's integer
+/// stream per seed, combined as the original's 64-bit draw is. No shipped
+/// file uses that layout, so the choice only keeps a load reproducible.
+fn fixed_paint_seeds() -> impl FnMut() -> u64 {
+    let mut state = 0x2545_F491u32;
+    move || {
+        state = state.wrapping_mul(0x0808_8405).wrapping_add(1);
+        let low = u64::from(state);
+        state = state.wrapping_mul(0x0808_8405).wrapping_add(1);
+        (u64::from(state) << 32) | low
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::record::test_util::*;
@@ -425,7 +448,7 @@ mod tests {
         assert!(matches!(Store::parse(&[]), Err(Error::Truncated { .. })));
         let mut old = empty.clone();
         old[0..4].copy_from_slice(&0xDBAC_0D06u32.to_le_bytes());
-        assert!(matches!(Store::parse(&old), Err(Error::Unsupported(_))));
+        assert!(Store::parse(&old).is_ok());
         let mut bad = empty.clone();
         bad[0..4].copy_from_slice(&0x1234_5678u32.to_le_bytes());
         assert!(matches!(Store::parse(&bad), Err(Error::BadMagic { .. })));

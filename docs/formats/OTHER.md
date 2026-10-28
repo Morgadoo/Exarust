@@ -143,16 +143,16 @@ word is its length, itself included; the game does not read it yet).
 ## Object database
 
 Status: **verified** for the file framing and its writer, the upgrade of the
-`0xDBAC0D08` and `0xDBAC0D07` layouts, the record chain, the three tiers, the
-string library and its writer, the sections below, the random-table condition word,
-instancing, duplication, promotion, removal, template migration with the
-condition refresh, the item-use test, and the packed fields and amounts
-(`exa_formats::objdb`, `exa_formats::objstrings`). Not reproduced: the body
-converter of the oldest layout (`0xDBAC0D06`, not shipped), the item factory's
-regeneration of `@` weapons during migration, the editor's palette
-randomiser, and the scene walks of the entity lookup and entity-id rewrite
-(the id rule itself is `ObjectDb::remap_entity_id`). The item fields
-themselves, their apparel meaning and their readers are in
+`0xDBAC0D08`, `0xDBAC0D07` and `0xDBAC0D06` layouts, the record chain, the
+three tiers, the string library and its writer, the sections below, the
+random-table condition word, instancing, duplication, promotion, removal,
+template migration with the condition refresh, the item-use test, and the
+packed fields and amounts (`exa_formats::objdb`, `exa_formats::objstrings`).
+Not reproduced: the item factory's regeneration of `@` weapons during
+migration, the editor's palette randomiser, and the scene walks of the entity
+lookup and entity-id rewrite (the id rule itself is
+`ObjectDb::remap_entity_id`). The item fields themselves, their apparel
+meaning and their readers are in
 [Object database items and apparel painting](#object-database-items-and-apparel-painting)
 below.
 
@@ -196,14 +196,62 @@ writes it back; it writes zeros for the slot once the table has grown.
 
 **Older layouts.** After loading, a magic other than `0xDBAC0D09` is looked up
 in a three-entry table and runs that converter and every newer one: `0D08`
-the operative converter; `0D07` the weapon converter, then the operative one;
-`0D06` the body converter, then both. Any other magic logs "Invalid or
-obsolete database format." and empties the database (Exarust: an error).
-Each converter rewrites one section in every record: it gets the old section
-and a zeroed new body, the old section is deleted and the new body appended
-with the same tag. 17 of the 20 shipped arena actors' databases
-(`actors.rpk`) are `0D08`; none holds an operative section.
+the operative converter; `0D07` and `0D06` the body converter, then the
+weapon and the operative ones. Any other magic logs "Invalid or obsolete
+database format." and empties the database (Exarust: an error). Each
+converter rewrites one section in every record: it gets the old section and a
+zeroed new body, the old section is deleted and the new body appended with
+the same tag. 17 of the 20 shipped arena actors' databases (`actors.rpk`) are
+`0D08`; none holds an operative section. The original's dispatch starts its
+converter loop one table entry above the oldest magic's, which would call the
+zero entry after the table; no shipped file is that old, and Exarust runs the
+three converters the entries list.
 
+- Body (`0D07`, `0D06`, 548-byte body): the worn model, occupancy, slot,
+  coverage and protection blocks (`0x00`–`0x1A0`) sit at the same offsets.
+  Bytes `0x1A0`–`0x1A6` copy; the old byte `0x1A7` is the special kind
+  (`0x214`); the old bytes `0x1A4`–`0x1AC` become the power word
+  (`0x218`–`0x220`). The old category byte `0x1A8` becomes the armour type
+  (`1`, `2`, `3`, `1`, `2`, `4`, `5`, `6` for old categories 1–8, else 0);
+  the old finish byte `0x1A9` sets the variant `0x1AA` to `0xFF` when its
+  bit 7 is set, else 0, and a finish of 1–7 rewrites the variant, the
+  quality (`0x1B0`) or the damage byte (`0x1B1`): category 1/2: 1 damage
+  `0xC4`, 2 variant 1, 3 and 4 variant 3; 3: 1 damage `0xC4`, 2 quality
+  `0x40`, 3 variant 1, 4 variant 2, 5 damage `0x40` and quality `0xBE`,
+  6 damage `0x10` and quality `0xF0`; 4: 1 damage `0xC4`, 2 quality
+  `0xBE`, 3 variant 4, 4 variant 3; 5: 1 damage `0xC4`, 2 quality `0x40`,
+  3 quality `0xBE`, 4 variant 4, 5 variant 3, 6 damage `0x40` and quality
+  `0xBE`; 6: 1 damage `0xC4`, 2 quality `0x40`, 3 quality `0xBE`, 4
+  variant 2, 5 variant 5, 6 damage `0x40` and quality `0xBE`, 7 damage
+  `0x10` and quality `0xF0`; 7/8: 1 damage `0xC4`, 2 damage `0xA0`, 3
+  quality `0x40`, 4 variant 1, 5 variant 2, 6 damage `0x40` and quality
+  `0xBE`, 7 damage `0x10` and quality `0xF0`. The old byte `0x1F9` becomes
+  `0x1B2`, byte `0x1B3` takes
+  three quarter fractions (`0x92`), the old bytes `0x1AA`/`0x1AB` become
+  `0x1A7`/`0x1AB`, the old word `0x1B4` becomes the articulated set
+  (`0x220`), quality starts at `0xA0` and damage at `0x40`, and the paint
+  seed (`0x1AC`) takes a 63-bit random draw modulo `0xFFFFFFFF`. The four
+  old 16-byte parts at `0x1B8` become the first four 12-byte appearance
+  layers at `0x1B4`: the mask is 1–4 (part 0 also sets layer byte 0 to 1),
+  byte 3 and byte 0xB start at 1, the colour is the part's byte 2, and the
+  part's kind/finish bytes map as the converter's three cases: kind 0 by its
+  byte 5 (set 3 and finish 1 for 0/1, set 6 and finish 2 for 2) and its
+  byte 1 (material 1; 2 or 3 by its byte 3 ≤ `0x80`; 4; set 9 when the
+  armour type is 3 else 2 with material 5; set 3 and material 6); kind 1 by
+  its byte 1 (set 4 for old categories 4/5 else 10 with material 8; the
+  same set with material 7; set 4 for old category 3 else 2 with material
+  9); kind 2 by its byte 1 (finish 1: set 7 and material `0x14`/colour
+  `0x4B`, or material `0xD`/colour 3 when its byte 2 ≤ `0x10`; else
+  material `0xE`/byte 3 = 2 or material `0xD`/colour 3/byte 3 = 0, set
+  `0xD`/byte 3 = 2 or `0xC`, then the colour table `0x9B`→`0x94`,
+  `0x24`→`0x24`, `0x6C`→`0x5C`, 7→6, `0xCC`→`0xCC`, `0xE4`→`0xE5`,
+  `0xFD`→`0xFD`, else finish 2 with byte 2 > `0x10` giving material
+  `0x14`/colour `0x53`; sub-kind 1 or 2: set and material `0xB`). The
+  remaining four layers stay empty. The random tables' rows then have their
+  low condition word at `+0xA` rewritten: when bit 7 is clear the word is
+  cleared first; wealth becomes 1, damage the sign-magnitude 3-bit value of
+  bits 0–2 (bit 3 the sign) plus 2 quarters, the damage spread the 3-bit
+  value of bits 4–6 in quarters, dirt 0.5 and its spread 0.25.
 - Operative (`0D08`, 60-byte body): the old class byte maps through
   `[0, 1, 4, 3, 5, 6, 7, 8, 2, 0, 0, 0]`; the kind maps through
   `[0, 8, 11, 7, 1, 12, 2, 13, 6, 5, 14, 9, 10, 3, 4, 0]` (a higher kind
