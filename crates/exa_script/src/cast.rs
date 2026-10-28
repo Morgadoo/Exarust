@@ -106,6 +106,14 @@ impl Contact {
     }
 }
 
+/// The item a character is busy with, as `ContextObj` reads it: the item's
+/// type word (`0x4000` weapons) and its object database name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContextItem {
+    pub kind: u32,
+    pub name: String,
+}
+
 /// One character.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Character {
@@ -127,7 +135,8 @@ pub struct Character {
     pub skills: [u16; 6],
     pub actions: Vec<u32>,
     pub context_phrase: String,
-    pub context_object: Option<String>,
+    /// The item the character last handled; `ContextObj` names it.
+    pub context_item: Option<ContextItem>,
     /// AI arousal (dialogues need it low).
     pub arousal: f32,
     /// Out of action (body state flag `0x800`): ends its dialogues.
@@ -152,7 +161,7 @@ impl Character {
             skills: [0; 6],
             actions: Vec::new(),
             context_phrase: String::new(),
-            context_object: None,
+            context_item: None,
             arousal: 0.0,
             out_of_action: false,
             zones: Vec::new(),

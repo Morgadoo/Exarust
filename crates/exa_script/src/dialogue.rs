@@ -678,9 +678,7 @@ impl Host for SceneHost<'_, '_> {
             .unwrap_or_default()
     }
     fn context_object(&self, actor: u32) -> String {
-        self.character(actor)
-            .and_then(|c| c.context_object.clone())
-            .unwrap_or_else(|| "nothing".to_string())
+        builtins::context_object(self.character(actor).and_then(|c| c.context_item.as_ref()))
     }
     fn game_event(&mut self, code: u32) {
         self.scene.effects.push(Effect::GameEvent(code));
@@ -1705,10 +1703,9 @@ impl Engine {
                             }
                             passed = true;
                         }
-                        // Six lines per speaker fit.
-                        if buckets[s].len() < 6 {
-                            buckets[s].push(line.text.clone());
-                        }
+                        // Candidates are collected per speaker; the list
+                        // grows for every line of the branch.
+                        buckets[s].push(line.text.clone());
                     }
                 }
             }
@@ -2385,6 +2382,13 @@ impl Engine {
                 Narration::Text(text.to_vec()),
             ));
         }
+    }
+
+    /// The player turned away from the narrator: the next frame ends every
+    /// narrator conversation. (The original's player behaviour sets the
+    /// flag; a topic pick clears it when the narrator starts again.)
+    pub fn end_narration(&mut self) {
+        self.narrator_done = true;
     }
 
     /// Whether `who` is in a live conversation.

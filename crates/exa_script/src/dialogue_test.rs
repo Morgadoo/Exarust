@@ -7,7 +7,8 @@ use exa_formats::roles::{
 };
 
 use crate::bubbles::{self, Bubbles, Phase, Speaker};
-use crate::cast::{Cast, Character, Contact};
+use crate::builtins;
+use crate::cast::{Cast, Character, Contact, ContextItem};
 use crate::dialogue::{self, Effect, Engine, Library, Scene, State};
 use crate::topics::{self, ACTIVATED, COUNTING, MemoryKey};
 
@@ -569,6 +570,100 @@ fn the_narrator_offers_replies() {
     let mut s = scene(&db, Some(&narrator), &mut cast, 61_000);
     e.update(&mut s);
     assert_eq!(e.bubbles.list.last().unwrap().text, b"You feel it.");
+}
+
+/// `ContextObj` names the weapon a character is busy with, or nothing.
+#[test]
+fn context_obj_names_the_item_in_hand() {
+    assert_eq!(builtins::context_object(None), "nothing");
+    let sword = ContextItem {
+        kind: 0x4000,
+        name: "Short Sword".into(),
+    };
+    assert_eq!(builtins::context_object(Some(&sword)), "a Short Sword");
+    // The type's low bits decide; a name the database lacks is empty.
+    let masked = ContextItem {
+        kind: 0x4200,
+        name: String::new(),
+    };
+    assert_eq!(builtins::context_object(Some(&masked)), "");
+    let other = ContextItem {
+        kind: 0x1000,
+        name: "Cap".into(),
+    };
+    assert_eq!(builtins::context_object(Some(&other)), "nothing");
+}
+
+/// Looking away from the narrator ends its conversation on the next frame.
+#[test]
+fn turning_away_ends_the_narrator() {
+    let corlian = node(
+        NODE_ENTRY,
+        "Corlian",
+        &[0],
+        vec![branch(0, &[(1, "Here lies the body.")], "", "", vec![])],
+    );
+    let narrator = graph(0, vec![corlian]);
+    let db = RoleDb { roles: vec![] };
+    let mut cast = Cast {
+        characters: vec![Character::new(PLAYER, "Ermus")],
+    };
+    let mut e = Engine::default();
+    let mut s = scene(&db, Some(&narrator), &mut cast, 0);
+    e.narrate(&mut s, name("Corlian"), 0);
+    assert_eq!(e.active.len(), 1);
+    let mut s = scene(&db, Some(&narrator), &mut cast, 10);
+    e.update(&mut s);
+    assert_eq!(e.active.len(), 1, "the narrator keeps its line");
+    e.end_narration();
+    e.update(&mut s);
+    assert!(e.active.is_empty(), "the narrator's conversation ends");
+    // A new narration is delayed while the old bubble closes; when it
+    // fires it clears the flag again.
+    e.narrate(&mut s, name("Corlian"), 0);
+    assert!(e.narrator_done);
+    // The old bubble is still up, so that request queues 500 ms too.
+    let mut s = scene(&db, Some(&narrator), &mut cast, 600);
+    e.update(&mut s);
+    assert!(e.narrator_done);
+    let mut s = scene(&db, Some(&narrator), &mut cast, 1101);
+    e.update(&mut s);
+    assert!(!e.narrator_done);
+    assert_eq!(e.active.len(), 1);
+}
+
+/// Every line of a branch is a candidate: the random draw can reach the
+/// eighth line (the original's per-speaker list grows without a limit).
+#[test]
+fn every_candidate_line_is_eligible() {
+    let texts = ["L1", "L2", "L3", "L4", "L5", "L6", "L7", "L8"];
+    let lines: Vec<(u32, &str)> = texts.iter().map(|&t| (1u32, t)).collect();
+    let greeting = node(
+        NODE_ENTRY,
+        "Greeting",
+        &[],
+        vec![branch(0, &lines, "", "", vec![])],
+    );
+    let db = RoleDb {
+        roles: vec![
+            role(
+                100,
+                0,
+                0,
+                vec![entry(0x2, 1, Some(graph(1, vec![greeting])))],
+            ),
+            role(1, 0, 0, vec![]),
+        ],
+    };
+    let mut cast = Cast {
+        characters: vec![person(GUARD, &[100], &db), person(TRAVELLER, &[1], &db)],
+    };
+    let mut e = Engine::default();
+    // Seed 28 draws the eighth candidate (indices 0..8).
+    e.seed = 28;
+    let mut s = scene(&db, None, &mut cast, 0);
+    assert!(e.greet(&mut s, GUARD, TRAVELLER));
+    assert_eq!(e.bubbles.list[0].text, b"L8");
 }
 
 /// An AI event runs the matching node's action and clears its bit.

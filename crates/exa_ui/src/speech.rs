@@ -124,6 +124,38 @@ pub fn text_quads(font: &GuiFont, draw: &BubbleDraw) -> Vec<TextQuad> {
     .quads
 }
 
+/// The draw layers of a frame in draw order: each bubble's box, then its
+/// text, bubble by bubble (the original draws them interleaved, so an
+/// earlier bubble's text sits under a later bubble's box).
+pub enum BubbleLayer {
+    Box(SkinBatch),
+    Text(SkinBatch),
+}
+
+/// Builds the frame's layers in draw order.
+pub fn layers(
+    draws: &[BubbleDraw],
+    unit: i32,
+    font: &GuiFont,
+    texture: (u16, u16),
+) -> Vec<BubbleLayer> {
+    let mut out = Vec::new();
+    for draw in draws {
+        let [x, y, w, h] = draw.rect;
+        let mut batch = SkinBatch::new();
+        rounded_fill_fixed(
+            &mut batch,
+            GuiRect::sized(x as f32, y as f32, w as f32, h as f32),
+            unit,
+            BOX_RADIUS,
+            draw.box_alpha,
+        );
+        out.push(BubbleLayer::Box(batch));
+        out.push(BubbleLayer::Text(text_layer(font, draw, texture)));
+    }
+    out
+}
+
 /// One bubble's text as a textured batch in the bubble's alpha.
 pub fn text_layer(font: &GuiFont, draw: &BubbleDraw, texture: (u16, u16)) -> SkinBatch {
     let quads = text_quads(font, draw);
@@ -246,5 +278,14 @@ mod tests {
         assert!(quads.iter().all(|q| q.rect[1] == draws[0].text_at[1]));
         let text = text_layer(&FONT, &draws[0], (256, 256));
         assert_eq!(text.primitives.len(), 1);
+        // Two bubbles draw box, text, box, text, never all boxes first.
+        let mut more = draws.clone();
+        more.push(draws[0].clone());
+        let layers = layers(&more, 4, &FONT, (256, 256));
+        assert_eq!(layers.len(), 4);
+        assert!(matches!(layers[0], BubbleLayer::Box(_)));
+        assert!(matches!(layers[1], BubbleLayer::Text(_)));
+        assert!(matches!(layers[2], BubbleLayer::Box(_)));
+        assert!(matches!(layers[3], BubbleLayer::Text(_)));
     }
 }

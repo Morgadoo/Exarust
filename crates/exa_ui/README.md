@@ -539,7 +539,12 @@ and binding table. `transition` is the state machine between game states
 (600/800/300/2000-unit fades, the switch, the hold and the fade back).
 `class_select` lays out the four story portraits and their chosen card,
 and has the picker's hit test and key steps. `dialogue_choices` is the
-reply list's hit test, pick, fading colours, rows and height animation.
+reply list's entry measure, hit test, pick, fading colours, rows and
+layout: the height target, the 30/17-unit minimum, the narrator's immediate
+height and the 500-unit animation from the height being drawn. `speech` is
+the speech-bubble frame: the width fit at 320, the placement's projection
+and margins, the rounded box of radius 3 at alpha 128 (the narrator's grown
+by four units) and the wrapped white text at alpha 160.
 `picker_fields` has the creator's marker, keys and physique cross, the
 point's body-shape weights and the press, release and change steps.
 `popups` has the item card, the container popup and the parchment. `dialogs` has the colour window's

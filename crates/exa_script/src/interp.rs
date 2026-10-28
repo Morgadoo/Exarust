@@ -138,6 +138,13 @@ impl<A: Copy + PartialEq> Context<A> {
         }
     }
 
+    /// Add a local variable of the script: the name is appended with its
+    /// value (the original's declaration routine appends; a lookup takes
+    /// the first match, so a redeclared name keeps the older value).
+    pub fn declare(&mut self, name: Name, value: i32) {
+        self.locals.push(Local { name, value });
+    }
+
     /// The actor in slot `i`, if the slot exists and is filled.
     pub fn actor_at(&self, i: i32) -> Option<A> {
         usize::try_from(i)

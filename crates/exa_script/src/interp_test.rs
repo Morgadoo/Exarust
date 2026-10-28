@@ -344,6 +344,13 @@ fn locals_are_read_and_assigned() {
     assert_eq!(run(&mut w, &mut c, "result = Count;"), 3);
     run(&mut w, &mut c, "Count = 9;");
     assert_eq!(c.locals[0].value, 9);
+    // The declaration routine appends; a name declared twice keeps the
+    // older local in front for lookups.
+    let mut d: Context<u32> = Context::new(Vec::new());
+    d.declare(Name::from_bytes(b"Count"), 4);
+    d.declare(Name::from_bytes(b"Count"), 5);
+    assert_eq!(d.locals.len(), 2);
+    assert_eq!(run(&mut w, &mut d, "result = Count;"), 4);
 }
 
 #[test]

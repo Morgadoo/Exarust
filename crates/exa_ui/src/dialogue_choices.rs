@@ -106,6 +106,8 @@ pub struct ChoicesView {
     pub picked: i32,
     /// The clock the pick's hold ends at.
     pub pick_end: u32,
+    /// The entry list changed and the height must be laid out again.
+    pub dirty: bool,
 }
 
 /// What the input handler did.
@@ -138,6 +140,7 @@ impl ChoicesView {
             branch,
             other: false,
         });
+        self.dirty = true;
         self.entries.last_mut().expect("just pushed")
     }
 
@@ -151,6 +154,7 @@ impl ChoicesView {
             branch: 0,
             other: true,
         });
+        self.dirty = true;
     }
 
     /// The panel's height for its entries: two units plus, per entry, the
@@ -408,6 +412,7 @@ mod tests {
         let mut v = ChoicesView::default();
         let e = v.push("One", 7, 2, &FONT, PANEL_WIDTH, 4);
         assert_eq!((e.lines, e.topic, e.branch, e.other), (1, 7, 2, false));
+        assert!(v.dirty);
         // Ten five-byte words wrap at 368 into two lines.
         let e = v.push(
             "aaaa aaaa aaaa aaaa aaaa aaaa aaaa aaaa aaaa aaaa aaaa",
