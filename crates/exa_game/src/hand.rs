@@ -18,13 +18,16 @@
 //!   of it. Otherwise it
 //!   holds an object (the standing quarter turns stop) and, with Ctrl held,
 //!   drags it: a grab on the part the pick hit, at the hit point, strength
-//!   1, in the tick's first two passes. Without Ctrl the original lifts it
-//!   onto the cursor (the item drag); Exarust has no item cursor, so the
-//!   press only holds until the release;
+//!   1, in the tick's first two passes. Without Ctrl it is lifted onto the
+//!   item cursor ([`crate::item_cursor`]), which rides the cursor until its
+//!   release;
 //! - a corpse: dragged by the limb the pick hit, strength 0.5, in every
 //!   pass;
-//! - a door, a wheel or a sim object: their drags (not taken: Exarust's
-//!   doors, wheels and cloth are not under the hand yet);
+//! - a door or a wheel: the drag is recorded and the door's grab ends 2000
+//!   ms after it started (Exarust's doors and wheels are static level
+//!   geometry, so nothing moves yet); a scene object's mesh that is a cloth
+//!   takes the vertex within 10 cm of the point, and the cloth's step puts
+//!   that vertex on the cursor's point on the cloth or on the drag plane;
 //! - anything else: refused until the release, the cursor a cross and the
 //!   movement request left as it was.
 //!
@@ -125,10 +128,17 @@ pub enum Holding {
     /// with a slack, and turns with the mouse; the release puts it back at
     /// the frame its lift saved (or leaves it, or the GUI takes it).
     Lift,
-    /// A door's, a wheel's or a cloth's drag, until the release. Unlike a
+    /// A door's, a wheel's or a scene's drag, until the release. Unlike a
     /// lift or a refusal it leaves the movement request to the keys and the
     /// right button, as the original's door, wheel and cloth drags do.
     Mechanism(Pick),
+    /// A cloth's vertex under the hand: the cloth, the vertex the press
+    /// took and the height of the plane the cursor pulls along (m).
+    Cloth {
+        cloth: Entity,
+        vertex: usize,
+        height: f32,
+    },
     /// A press on something the hand does not use, until the release.
     Refused,
 }
@@ -144,6 +154,10 @@ pub struct Hand {
     /// The previous press's pointer and real time (ms), for the double
     /// click test.
     pub last_click: Option<(IVec2, i64)>,
+    /// A scene press's point, for the cloth grab that follows it.
+    pub scene_press: Option<Vec3>,
+    /// When a door drag's grab ends (ms of the game clock).
+    pub mechanism_until: Option<u32>,
 }
 
 /// Where and when the left button went down, and whether its drag started.
@@ -192,7 +206,7 @@ impl Hand {
             Holding::Drag { .. } => DragState::Physical,
             Holding::Mechanism(Pick::Hinge) => DragState::Door,
             Holding::Mechanism(Pick::Wheel) => DragState::Wheel,
-            Holding::Mechanism(_) => DragState::Cloth,
+            Holding::Mechanism(_) | Holding::Cloth { .. } => DragState::Cloth,
             Holding::Refused => DragState::Refused,
         }
     }
@@ -429,6 +443,16 @@ impl DragState {
 /// The distance (cm) a closed door is pulled toward the cursor, out of its
 /// own hinge-side point.
 pub const DOOR_PULL_CM: f32 = 100.0;
+/// A door drag's grab lasts this long (ms of the game clock) before the
+/// hand lets go: the original stamps its grabbed body with the sim clock
+/// plus 2000.
+pub const MECHANISM_HOLD_MS: u32 = 2000;
+
+/// Whether a door drag whose grab ends at `until_ms` has expired at
+/// `now_ms`: strictly after it, as the original's compare.
+pub fn mechanism_expired(now_ms: u32, until_ms: u32) -> bool {
+    until_ms < now_ms
+}
 /// A door's drag link flags, its pass limit and its slack.
 pub const DOOR_LINK_FLAGS: u32 = 0x4000;
 pub const DOOR_LINK_LIMIT: u32 = 2;
@@ -581,6 +605,22 @@ pub fn cloth_vertex(vertices: &[Vec3], at: Vec3, radius: f32) -> Option<usize> {
     vertices
         .iter()
         .position(|v| (*v - at).length_squared() < r2)
+}
+
+/// One frame of a cloth drag in the cloth's own frame (centimetres): the
+/// grabbed vertex while the pick still finds it within `radius`, else the
+/// plane's point. The original's record holds the vertex's own radius and
+/// writes this target for the cloth step.
+pub fn cloth_drag_frame(
+    vertex_cm: Vec3,
+    picked_cm: Option<Vec3>,
+    plane_cm: Vec3,
+    radius_cm: f32,
+) -> Vec3 {
+    match picked_cm {
+        Some(p) if (vertex_cm - p).length_squared() < radius_cm * radius_cm => p,
+        _ => plane_cm,
+    }
 }
 
 /// A cloth drag's anchor each frame: the grabbed vertex while the pick
@@ -906,7 +946,7 @@ impl Plugin for HandPlugin {
             .add_message::<WorldClick>()
             .add_systems(
                 Update,
-                (press_hand, hold_hand, reach_hand)
+                (press_hand, take_cloth, hold_hand, reach_hand)
                     .chain()
                     .in_set(HandSystems)
                     .after(crate::player::chase_camera)
@@ -994,6 +1034,46 @@ fn player_child(
             .find(|&c| player_bodies.contains(c))
             .map(|c| (at.translation(), c))
     })
+}
+
+/// The cloth vertex a press takes, if one is within 10 cm of the point in
+/// the cloth's own frame [guess: the original takes the mesh element the
+/// pick hit and its own radius; Exarust's cloth does not keep that radius].
+fn grab_cloth(
+    cloths: &Query<(Entity, &exa_world::cloth::ClothInstance, &GlobalTransform)>,
+    at: Vec3,
+) -> Option<(Entity, usize, f32)> {
+    const RADIUS_CM: f32 = 10.0;
+    for (entity, instance, transform) in cloths {
+        let local = transform.affine().inverse().transform_point3(at) * CM;
+        let vertices: Vec<Vec3> = instance
+            .cloth
+            .particles
+            .iter()
+            .map(|p| p.position)
+            .collect();
+        if let Some(vertex) = cloth_vertex(&vertices, local, RADIUS_CM) {
+            return Some((entity, vertex, at.y));
+        }
+    }
+    None
+}
+
+/// A scene press on a cloth: the vertex under the point is grabbed.
+fn take_cloth(
+    mut hand: ResMut<Hand>,
+    cloths: Query<(Entity, &exa_world::cloth::ClothInstance, &GlobalTransform)>,
+) {
+    let Some(at) = hand.scene_press.take() else {
+        return;
+    };
+    if let Some((cloth, vertex, height)) = grab_cloth(&cloths, at) {
+        hand.holding = Holding::Cloth {
+            cloth,
+            vertex,
+            height,
+        };
+    }
 }
 
 /// A left press: the pick named and its interaction started.
@@ -1109,9 +1189,20 @@ fn press_hand(
     };
     match press(state, named) {
         Press::Ignored => {}
-        // Exarust's doors, wheels and cloth are not bodies under the hand:
-        // the press records the drag until the release.
-        Press::Mechanism(pick) => hand.holding = Holding::Mechanism(pick),
+        // A scene object's mesh can be a cloth: a vertex within reach is
+        // grabbed and its target follows the cursor. A hinge or a wheel
+        // stays a recorded drag: Exarust's doors and wheels are not bodies
+        // under the hand yet.
+        Press::Mechanism(pick) => {
+            hand.holding = Holding::Mechanism(pick);
+            // A door's grab lasts 2000 ms of the game clock.
+            hand.mechanism_until = (pick == Pick::Hinge).then_some(now as u32 + MECHANISM_HOLD_MS);
+            // A scene object's mesh can be a cloth: the next system takes a
+            // vertex near the point when there is one.
+            hand.scene_press = (pick == Pick::Scene)
+                .then(|| picked.map(|p| p.at))
+                .flatten();
+        }
         Press::Refused => hand.holding = Holding::Refused,
         Press::Lift => {
             if let (
@@ -1231,9 +1322,11 @@ fn hold_hand(
     mut player_bodies: Query<PlayerParts, Without<PropBody>>,
     mut requests: Query<&mut Locomotion, With<PlayerBody>>,
     mut bodies: Query<OtherBodies, Without<PlayerBody>>,
+    mut cloths: Query<(&mut exa_world::cloth::ClothInstance, &GlobalTransform)>,
     mut screens: Option<ResMut<Messages<ScreenRequest>>>,
-    (time, mut show_bars, pad, pad_status): (
+    (time, real, mut show_bars, pad, pad_status): (
         Option<Res<Time<Virtual>>>,
+        Option<Res<Time<Real>>>,
         Option<ResMut<HudShowUntil>>,
         Option<Res<crate::gamepad::PlayPad>>,
         Option<Res<crate::gamepad::PadStatus>>,
@@ -1349,8 +1442,60 @@ fn hold_hand(
             }
         }
         Holding::Mechanism(_) => {
-            if released {
+            let expired = hand.mechanism_until.is_some_and(|until| {
+                real.as_deref()
+                    .is_some_and(|t| mechanism_expired(t.elapsed().as_millis() as u32, until))
+            });
+            if released || expired {
                 hand.holding = Holding::Nothing;
+                hand.mechanism_until = None;
+            }
+        }
+        Holding::Cloth {
+            cloth,
+            vertex,
+            height,
+        } => {
+            let Ok((mut instance, transform)) = cloths.get_mut(cloth) else {
+                hand.holding = Holding::Nothing;
+                return;
+            };
+            if released {
+                instance.cloth.release_grab();
+                hand.holding = Holding::Nothing;
+            } else {
+                // The picked point on the cloth, else the cursor's plane
+                // point, in the cloth's own frame; the grabbed vertex keeps
+                // its own radius (a 10 cm stand-in).
+                let ray = cursor_ray(&scripted, &windows, &cameras);
+                let hip = player.and_then(|(feet, child)| {
+                    player_bodies
+                        .get(child)
+                        .ok()
+                        .map(|(_, own, ..)| hip_of(feet, own))
+                });
+                if let (Some(ray), Some(_hip)) = (ray, hip) {
+                    let to_local = |w: Vec3| transform.affine().inverse().transform_point3(w) * CM;
+                    let world_vertex = instance
+                        .cloth
+                        .particles
+                        .get(vertex)
+                        .map(|p| transform.transform_point(p.position / CM));
+                    let picked = world_vertex.and_then(|v| {
+                        let t = (v - ray.origin).dot(*ray.direction).max(0.0);
+                        let on = ray.origin + *ray.direction * t;
+                        ((on - v).length() < 0.1).then_some(on)
+                    });
+                    let plane = drag_anchor(ray.origin, *ray.direction, height, hip.unwrap())
+                        .unwrap_or(ray.origin + *ray.direction * 5.0);
+                    let target = cloth_drag_frame(
+                        to_local(world_vertex.unwrap_or(plane)),
+                        picked.map(to_local),
+                        to_local(plane),
+                        10.0,
+                    );
+                    instance.cloth.grab(vertex, target);
+                }
             }
         }
         Holding::Lift => {
@@ -2472,5 +2617,24 @@ mod tests {
         assert_eq!(hand.drag_state(), DragState::Cloth);
         hand.holding = Holding::Refused;
         assert_eq!(hand.drag_state(), DragState::Refused);
+    }
+
+    /// A cloth's grabbed vertex follows the cursor while the pick is within
+    /// its radius and the plane's point otherwise, both in the cloth's own
+    /// frame (cm); the door's grab expires strictly after its 2000 ms.
+    #[test]
+    fn the_cloth_frame_and_the_door_hold() {
+        let vertex = Vec3::new(10.0, 0.0, 0.0);
+        let plane = Vec3::new(0.0, 0.0, 50.0);
+        // The pick 9 cm from the vertex (within a 10 cm radius): the pick.
+        let picked = vertex + Vec3::new(9.0, 0.0, 0.0);
+        assert_eq!(cloth_drag_frame(vertex, Some(picked), plane, 10.0), picked);
+        // 11 cm away: the plane's point.
+        let picked = vertex + Vec3::new(11.0, 0.0, 0.0);
+        assert_eq!(cloth_drag_frame(vertex, Some(picked), plane, 10.0), plane);
+        assert_eq!(cloth_drag_frame(vertex, None, plane, 10.0), plane);
+        assert!(!mechanism_expired(2000, 2000));
+        assert!(mechanism_expired(2001, 2000));
+        assert_eq!(MECHANISM_HOLD_MS, 2000);
     }
 }
