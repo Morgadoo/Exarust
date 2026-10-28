@@ -227,5 +227,7 @@ mod tests {
         assert_eq!((flamelets.width, flamelets.height), (1024, 1024));
         let wheel = sheets.wheel.as_ref().expect("the domain wheel");
         assert_eq!((wheel.width, wheel.height), (384, 384));
+        let font = sheets.font.as_ref().expect("the tree font atlas");
+        assert_eq!((font.width, font.height), (1024, 1024));
     }
 }

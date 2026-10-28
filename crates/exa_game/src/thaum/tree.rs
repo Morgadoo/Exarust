@@ -25,7 +25,10 @@
 //!   factor `0.25` to `2.0`; the opening height over 2300 picks the nearest
 //!   level. A middle-button drag pans, the wheel moves the charge by ten
 //!   times the wheel step, the left and right keys cycle the bar. A pan and
-//!   the zoom ease by the original's springs.
+//!   the zoom ease by the original's springs. The draw blends the spring's
+//!   last two zoom values by the frame's place in a 17 ms step and rescales
+//!   the pan about the cursor; an opening or domain fade-in eases `1 − r²`
+//!   into the scale every node is drawn at about the first node.
 //! - **Choosing** ([`TreeScreen::press`]): a click on a shown node that is
 //!   not learnt selects it as the new power to learn when the character has
 //!   the techniques it asks for ([`can_learn`]: Concentration's second for a
@@ -53,13 +56,15 @@
 //!   bar back, closes it and flashes the slot, and records the last instant
 //!   power (a sustained or persistent power clears it); a refused one plays
 //!   the failure sound. The sound and the queue are returned in the
-//!   [`CastEntry`]; the in-game screen does not play or retry them yet.
+//!   [`CastEntry`]; the running screen queues the sound for playback and
+//!   stops at the body that controls another.
 //! - **The draw** ([`TreeScreen::view`]): hands `exa_ui::tree_draw` the
-//!   placed nodes, their link curves, the marks, the flash and learn
-//!   timers and the bar's slots; the tree pass and the bar are laid out
-//!   there. A slot whose power matches a picked node is given the
-//!   persistent-pick bit in the view. The link ribbon's spline texture is
-//!   not modelled (the ribbon reads as white).
+//!   placed nodes, their link curves and handles, the marks, the flash and
+//!   learn timers and the bar's slots; the tree pass and the bar are laid
+//!   out there. A slot whose power matches a picked node is given the
+//!   persistent-pick bit in the view. The links are the spline renderer's
+//!   ribbons with the start and end handles; the node rings sample the
+//!   flamelets sheet and the glows the frame sheet, as the original binds.
 //! - **The view's clock** ([`TreeScreen::advance`]): the springs step in the
 //!   draw's 17 ms frames and the pan is shown between the step before the
 //!   last and the last by the frame's place in a step; a stretched link is
@@ -71,8 +76,10 @@
 //!   from halfway) and `1 − r²` fades the bar child; hiding cuts both over 256 ms from the closing stamp.
 //!   The backdrop takes the first alpha and the content the second; a
 //!   domain switch cuts the content out over 256 ms, swaps the domain at
-//!   the stamp and fades the new tree in over 1000 ms ([`fade_domain`]
-//!   starts it; the wheel that calls it is outside the pack).
+//!   the stamp and fades the new tree in over 1000 ms ([`TreeScreen::choose_domain`]
+//!   sets the domain and starts it). A domain wheel child
+//!   ([`DomainWheel`]) sits 280 pixels square at the form's lower left; its
+//!   sheet is shown there and a click picks one of its six sectors.
 //! - **The bar's animation** ([`TreeScreen::open_bar`], [`close_bar`] and
 //!   [`step_bar`]): opening loads the bar, clears each slot's flash and
 //!   picked bits and runs a 900 ms rise whose height and size are a smooth

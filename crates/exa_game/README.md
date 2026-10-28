@@ -21,13 +21,21 @@ when the actors are installed and gives it that team and delay.
 The power tree (`thaum::tree`) is the whole screen's rules: the domain's
 tree file and its marks, the technique a new power asks for, the click that
 picks or drops a learnt power against the record's focus budget, the pan,
-zoom and spring, the domain wheel's shares, the ten-slot power bar with its
-load, store, cycle, drop and flash timings, the cast entry that dispatches
-by domain and the persistent-slot budget; its store writes a domain's
-learnt and picked nodes back into the record, plus the form's opening and
-closing fades, the 17 ms view frames, the bar's 900 ms open/close
-animation, the tooltip and label layout, the stretched link's own cubic,
-and the caster's grant caller. A constantly displaced body
+zoom and spring, the domain wheel child's place, shares and fades, the
+ten-slot power bar with its load, store, cycle, drop and flash timings, the
+cast entry that dispatches by domain, the persistent-slot budget and the
+saved-power revalidation. Its store writes a domain's learnt and picked
+nodes back into the record, plus the form's creation fields, the opening and
+closing fades, the 17 ms view frames whose zoom and pan blend about the
+cursor, the eased opening scale about the first node, the bar's 900 ms
+open/close animation, the tooltip and label layout, the stretched link's own
+cubic, and the caster's grant caller. The running screen (`power_screen`)
+opens the tree with P, draws the tree, the domain wheel's sheet and the bar
+through `exa_ui::tree_draw`, draws the tooltip, labels and prompt with the
+GUI skin's Rayform08R atlas, plays the screen's `ThaumShow02`, `ThaumSel01`,
+`ThaumSlot02`, `ThaumChnl01`, `ThaumChnl02` and `ThaumFail01` sounds through
+the audio environment, and takes the arrows as the bar's cycle keys. A
+constantly displaced body
 (`thaum::veil`) gets its shell effect (starting dead, fading the body's mesh and skin
 parts), its displaced collision bit, its hum start point, its tendril
 image, its visibility bits and the hit veto with the 500 ms collision

@@ -28,8 +28,10 @@
 //!
 //! Evidence: the tree reader (magic check, the seek to the count, the node
 //! fields, the link bytes, and the shift against the first node), and the
-//! draw that places each node and builds each link. The fast sine polynomial
-//! is not reproduced: a turn of zero is straight up, which matches.
+//! draw that places each node and builds each link. The engine's packed
+//! sine and cosine shape each end's direction, and the start and end
+//! handles one tangent step beyond the curve are kept for the spline
+//! renderer's ribbon.
 
 use crate::{Error, Result, read_u32};
 
