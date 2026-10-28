@@ -18,6 +18,8 @@ use exa_character::held::{Hands, HeldItem, ShieldStyle};
 use exa_items::catalogue::{ItemCatalogue, PendingHands};
 use exa_items::possession::{ItemKind, Possessions};
 
+use crate::torch::CarriesTorch;
+
 /// The hands a character's out set makes. `kind` gives an item's sections.
 pub fn hands_of(p: &Possessions, kind: impl Fn(u32) -> Option<ItemKind>) -> Hands {
     let mut hands = Hands::default();
@@ -49,19 +51,41 @@ pub fn hands_of(p: &Possessions, kind: impl Fn(u32) -> Option<ItemKind>) -> Hand
     hands
 }
 
+/// The hands after a swap, keeping Exarust's carried torch: the torch is
+/// outside the record, so the hand it is in keeps it whatever the record's
+/// out set holds there.
+pub fn keep_torch(mut next: Hands, before: &Hands) -> Hands {
+    if let Some(main) = before.main
+        && main.light
+        && main.flags == crate::torch::TORCH_FLAGS
+    {
+        next.main = Some(main);
+    }
+    if before.off_light {
+        next.off_light = true;
+        next.second = None;
+        next.shield = None;
+    }
+    next
+}
+
 /// Applies the plan a swap left on the body: the hands follow the record's
 /// out set and the plan is consumed. The plan itself is the record side of
 /// the work; the models are attached by the renderer's own draw of the
-/// hands, so nothing is spawned here.
+/// hands, so nothing is spawned here. A body carrying Exarust's torch keeps
+/// it in its hand ([`keep_torch`]).
 pub fn apply_pending_hands(
     mut commands: Commands,
     catalogue: Option<Res<ItemCatalogue>>,
-    mut bodies: Query<(Entity, &Possessions, &mut Hands), With<PendingHands>>,
+    mut bodies: Query<(Entity, &Possessions, &mut Hands, Has<CarriesTorch>), With<PendingHands>>,
 ) {
-    for (body, possessions, mut hands) in &mut bodies {
-        let next = hands_of(possessions, |id| {
+    for (body, possessions, mut hands, torch) in &mut bodies {
+        let mut next = hands_of(possessions, |id| {
             catalogue.as_ref().and_then(|c| c.kind(id))
         });
+        if torch {
+            next = keep_torch(next, &hands);
+        }
         hands.set_if_neq(next);
         commands.entity(body).remove::<PendingHands>();
     }
@@ -142,6 +166,35 @@ mod tests {
             ..Default::default()
         };
         assert!(hands_of(&p, kind_of).main.is_none());
+    }
+
+    #[test]
+    fn the_carried_torch_stays_in_its_hand() {
+        let torch = HeldItem {
+            flags: crate::torch::TORCH_FLAGS,
+            light: true,
+        };
+        let swapped = Hands {
+            main: Some(HeldItem::weapon(0x521)),
+            shield: Some(ShieldStyle::Plain),
+            ..Default::default()
+        };
+        // In the main hand: the record's weapon does not replace it.
+        let before = Hands {
+            main: Some(torch),
+            ..Default::default()
+        };
+        let kept = keep_torch(swapped, &before);
+        assert_eq!(kept.main, Some(torch));
+        assert_eq!(kept.shield, Some(ShieldStyle::Plain));
+        // In the off hand: it stays the off hand's light.
+        let before = Hands {
+            off_light: true,
+            ..Default::default()
+        };
+        let kept = keep_torch(swapped, &before);
+        assert!(kept.off_light && kept.shield.is_none());
+        assert_eq!(kept.main.unwrap().flags, 0x521);
     }
 
     #[test]
