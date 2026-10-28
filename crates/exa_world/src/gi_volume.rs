@@ -256,22 +256,55 @@ impl GiBlockLayout {
     }
 }
 
-/// The manager's per-object texture position (`VXGIPos`) for a world point
-/// in a block, as the original computes it: two axis positions relative to
-/// the block's centre plus half a texture, and the height from the volume's
-/// bottom divided by the block's **width** (the surface shader pairs it with
-/// a scale of the same units). Texture axes are X, Z depth, Y height.
-pub fn gi_position(block: &GiBlockSpec, at: Vec3) -> Vec3 {
-    let width = SIDE as f32 * VOXEL;
-    Vec3::new(
-        (at.x - block.centre.x) / width + 0.5,
-        (at.z - block.centre.z) / width + 0.5,
-        (at.y - block.origin.y) / width,
-    )
+/// A block's per-object GI sample transform: the original's `VXGIPos` and
+/// `VXGIScl` uniforms, so a surface at a world point `p` reads the light
+/// volume at `texture(p · scale + offset)` with `p` in world **centimetres**
+/// (the original's vertex stage). The texture axes are X, Z depth, Y height.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GiSample {
+    /// `VXGIPos`: X and Z are half a texture minus the block's centre over
+    /// the block width; Y is the block's bottom slice over its depth, plus
+    /// half a slice unless the draw drops the half-voxel offset.
+    pub offset: Vec3,
+    /// `VXGIScl`: one over the block width for X and Z, one over its
+    /// height (slice count × voxel) for Y.
+    pub scale: Vec3,
 }
 
 /// One over a block's 48 m width, in centimetres, as the original's f32.
 const BLOCK_INV_CM: f32 = 1.0 / 4800.0;
+
+impl GiBlockLayout {
+    /// A block's per-object GI sample transform, as the original builds it
+    /// for an object inside the block: the offset's X is
+    /// `((grid width/2 − block cell) − 4) · 30/256 + 0.5` (the block's
+    /// centre in texture units), its Y `(below + 0.5)/depth`, or
+    /// `below/depth` when the draw drops the half-voxel offset (the
+    /// original's per-object flag; its terrain and grass paths set it), and
+    /// its Z the same as X from the grid's height. The scale is
+    /// `(1/(W·fc), 1/(D·fc), 1/(H·fc))`.
+    pub fn sample_transform(&self, block: &GiBlockSpec, half_voxel: bool) -> GiSample {
+        let (w, h) = (self.grid.0 as f32, self.grid.1 as f32);
+        let below = -(block.origin.y / VOXEL).round();
+        let depth = block.depth.max(1) as f32;
+        GiSample {
+            offset: Vec3::new(
+                ((w * 0.5 - block.sector.x as f32) - 4.0) * (30.0 / 256.0) + 0.5,
+                (below + if half_voxel { 0.5 } else { 0.0 }) / depth,
+                ((h * 0.5 - block.sector.y as f32) - 4.0) * (30.0 / 256.0) + 0.5,
+            ),
+            scale: Vec3::new(1.0 / 5120.0, 1.0 / (depth * 20.0), 1.0 / 5120.0),
+        }
+    }
+
+    /// The texture position a surface at `at` (metres) in `block` samples,
+    /// as the original's `p · VXGIScl + VXGIPos` with `p` in centimetres.
+    /// Texture axes are X, Z depth, Y height.
+    pub fn sample_at(&self, block: &GiBlockSpec, at: Vec3, half_voxel: bool) -> Vec3 {
+        let sample = self.sample_transform(block, half_voxel);
+        (at * CM_PER_M) * sample.scale + sample.offset
+    }
+}
 
 /// The bounding box of the grid's built cells, as the original finds it:
 /// the border cells are skipped, and the first row and column come from the
@@ -1856,13 +1889,46 @@ mod tests {
         let grid = open_grid(32);
         let layout = GiBlockLayout::new(&grid, 6.0, 0.0);
         let block = layout.blocks[layout.block_at(Vec3::ZERO).unwrap()];
-        let p = gi_position(&block, block.centre);
-        assert_eq!((p.x, p.y), (0.5, 0.5));
-        assert!((p.z - (block.centre.y - block.origin.y) / 51.2).abs() < 1e-6);
-        // The world origin lies half a block before the block's centre in
-        // each direction.
-        let origin = gi_position(&block, Vec3::ZERO);
+        // `p · scale + offset` with p in centimetres: the block's centre is
+        // texture 0.5 in X and Z, and its bottom slice's middle in Y.
+        let p = layout.sample_at(&block, block.centre, true);
+        assert_eq!((p.x, p.z), (0.5, 0.5));
+        // The block's lowest point reads half a slice up (a voxel's centre)
+        // or its bottom edge.
+        let bottom = Vec3::new(block.centre.x, block.origin.y, block.centre.z);
+        let centre = layout.sample_at(&block, bottom, true);
+        assert!((centre.y - 0.5 / block.depth as f32).abs() < 1e-6);
+        assert!(layout.sample_at(&block, bottom, false).y.abs() < 1e-6);
+        // The world origin lies half a block before the block's centre.
+        let origin = layout.sample_at(&block, Vec3::ZERO, true);
         assert!((origin.x - (0.5 - 24.0 / 51.2)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_per_object_gi_uniform_follows_the_block_cells() {
+        // The synthetic 8 × 8 grid's one block at cells (3, 3), a level
+        // 6 m tall: 64 slices, 34 of them below the world's zero.
+        let grid = GiGrid::synthetic();
+        let layout = GiBlockLayout::new(&grid, 6.0, 0.0);
+        let block = layout.blocks[0];
+        assert_eq!(block.depth, 64);
+        let sample = layout.sample_transform(&block, true);
+        // ((8/2 − 3) − 4) · 30/256 + 0.5 = −3 · 0.1171875 + 0.5.
+        assert_eq!(sample.offset.x, 0.1484375);
+        assert_eq!(sample.offset.z, 0.1484375);
+        // (34 + 0.5)/64, and 34/64 without the half-voxel offset.
+        assert_eq!(sample.offset.y, 0.5390625);
+        assert_eq!(layout.sample_transform(&block, false).offset.y, 0.53125);
+        // One texture unit per 5120 cm across and per 1280 cm of height.
+        assert_eq!(
+            sample.scale,
+            Vec3::new(1.0 / 5120.0, 1.0 / 1280.0, 1.0 / 5120.0)
+        );
+        // Its own bottom is 6.8 m below the world's zero.
+        assert!((block.origin.y + 6.8).abs() < 1e-6);
+        // A point outside the block grid has no block (the original binds
+        // texture 0 and the zero offset there).
+        assert!(layout.block_at(Vec3::splat(-10_000.0)).is_none());
     }
 
     #[test]

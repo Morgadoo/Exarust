@@ -903,8 +903,10 @@ impl GiShapes {
 }
 
 /// A registered shape's volume for the manager's box: its world position
-/// and half extents (metres), in world X, Y, Z.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// and half extents (metres), in world X, Y, Z. A shape entity carries one
+/// and is listed in [`GiShapes`]; the effect classes outside this component
+/// add their own uniforms and fragment program.
+#[derive(Component, Clone, Copy, Debug, PartialEq)]
 pub struct ShapeVolume {
     pub position: Vec3,
     pub half: Vec3,
@@ -953,6 +955,89 @@ pub fn shape_draw(volume: ShapeVolume, origin: Vec3, voxel: f32) -> Option<Shape
 /// The first and one-past-last column a shape draws over (both axes).
 const SHAPE_LO: i32 = 8;
 const SHAPE_HI: i32 = 248;
+
+/// The shader-library program a registered GI shape injects with. The manager
+/// builds `gi_inject_v` and `gi_inject_g` once and links each program to one
+/// of these fragments; the shapes' own uniforms and fragment bodies belong
+/// to the effect classes, which are outside this component, so Exarust keeps
+/// only the manager's side: the name its program builder links.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GiShapeProgram {
+    /// `gi_dome`: a sphere shell with a dome texture.
+    Dome,
+    /// `gi_cuboid`: a box with a soft edge falloff.
+    Cuboid,
+    /// `gi_bubble`: a sphere shell with a bubble texture.
+    Bubble,
+    /// `gi_telebubble`: the teleporter's pulsing bubble.
+    TeleBubble,
+    /// `gi_gradline`: a line light with a gradient along it.
+    GradLine,
+    /// `gi_multipoint`: a run of point lights.
+    Multipoint,
+}
+
+impl GiShapeProgram {
+    /// Every program, in the shader library's order.
+    pub const ALL: [Self; 6] = [
+        Self::Dome,
+        Self::Cuboid,
+        Self::Bubble,
+        Self::TeleBubble,
+        Self::GradLine,
+        Self::Multipoint,
+    ];
+
+    /// The entry's name in the shader library (the manager links
+    /// `gi_inject_v` and `gi_inject_g` with it).
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Dome => "gi_dome",
+            Self::Cuboid => "gi_cuboid",
+            Self::Bubble => "gi_bubble",
+            Self::TeleBubble => "gi_telebubble",
+            Self::GradLine => "gi_gradline",
+            Self::Multipoint => "gi_multipoint",
+        }
+    }
+
+    /// The program a shader-library name names, if the manager knows it.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|p| p.name() == name)
+    }
+}
+
+/// The four corners of one shape injection quad, in texture units (x,
+/// Z depth, Y height), as the manager's shape loop builds them: the shape's
+/// clipped column box in x and y, and r at the group's first slice plus half
+/// a slice (the vertex shader adds each instance's layer). The quad walks the
+/// box's edges anticlockwise, as the original's four vertices do.
+pub fn shape_quad(draw: &ShapeDraw, dims: UVec3) -> [Vec3; 4] {
+    let w = dims.x.max(1) as f32;
+    let h = dims.y.max(1) as f32;
+    let d = dims.z.max(1) as f32;
+    let (x0, x1) = (draw.lo.x as f32, draw.hi.x as f32);
+    let (y0, y1) = (draw.lo.y as f32, draw.hi.y as f32);
+    // The base quad's z is `-(first + 0.5)/depth`, the first slice's centre
+    // negated; each instance adds its own layer.
+    let r = -((draw.first as f32 + 0.5) / d);
+    [
+        Vec3::new(x0 / w, y0 / h, r),
+        Vec3::new(x1 / w, y0 / h, r),
+        Vec3::new(x1 / w, y1 / h, r),
+        Vec3::new(x0 / w, y1 / h, r),
+    ]
+}
+
+/// The uniforms every shape program takes from the manager, for a block of
+/// `dims` texels: `SliceSz` (one over the slice count) and `ZTrn` (−D/W,
+/// D/W). The manager sets them once per program before the shape's own
+/// uniforms, as do the voxel-light and propagation paths.
+pub fn shape_uniforms(dims: UVec3) -> (f32, Vec2) {
+    let w = dims.x.max(1) as f32;
+    let d = dims.z.max(1) as f32;
+    (1.0 / d, Vec2::new(-d / w, d / w))
+}
 
 /// One margin copy between a block and a neighbour: the destination columns
 /// and the offset added to them to read the neighbour's light texture. The
@@ -2633,6 +2718,41 @@ mod tests {
         assert_eq!(t.sample_origin(), Vec4::new(1.0, -6.9, 2.0, 1.0));
         // Terrain and grass pass the flag that drops it.
         assert_eq!(t.sample_origin_floor(), Vec4::new(1.0, -6.8, 2.0, 1.0));
+    }
+
+    #[test]
+    fn a_shape_program_is_named_by_its_shader_library_entry() {
+        assert_eq!(GiShapeProgram::Dome.name(), "gi_dome");
+        assert_eq!(GiShapeProgram::Multipoint.name(), "gi_multipoint");
+        for program in GiShapeProgram::ALL {
+            assert_eq!(GiShapeProgram::from_name(program.name()), Some(program));
+        }
+        assert_eq!(GiShapeProgram::from_name("gi_inject_f"), None);
+    }
+
+    #[test]
+    fn a_shapes_quad_walks_its_clipped_box() {
+        let dims = UVec3::new(256, 256, 64);
+        let draw = shape_draw(
+            ShapeVolume {
+                position: Vec3::new(10.0, 2.0, 6.0),
+                half: Vec3::splat(1.0),
+            },
+            Vec3::ZERO,
+            0.2,
+        )
+        .unwrap();
+        // Columns 45..55 and 25..35, the base slice's centre negated
+        // (first 5, so r = −5.5/64) with the fragment flipping it back.
+        let quad = shape_quad(&draw, dims);
+        assert_eq!(quad[0], Vec3::new(45.0 / 256.0, 25.0 / 256.0, -5.5 / 64.0));
+        assert_eq!(quad[1], Vec3::new(55.0 / 256.0, 25.0 / 256.0, -5.5 / 64.0));
+        assert_eq!(quad[2], Vec3::new(55.0 / 256.0, 35.0 / 256.0, -5.5 / 64.0));
+        assert_eq!(quad[3], Vec3::new(45.0 / 256.0, 35.0 / 256.0, -5.5 / 64.0));
+        // The shared uniforms: 1/64 slices and (−64/256, 64/256).
+        let (slice, z) = shape_uniforms(dims);
+        assert_eq!(slice, 1.0 / 64.0);
+        assert_eq!(z, Vec2::new(-0.25, 0.25));
     }
 
     #[test]

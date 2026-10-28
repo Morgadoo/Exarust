@@ -1251,8 +1251,19 @@ in world space there too):
   one step. A level change drops both blocks. When a load ends, the block
   is rebuilt around the camera's starting view if it is not already there.
   Nine resident light textures, their per-object `VXGIPos` selection and
-  the neighbour margin blits are not wired (`margin_blit` keeps their
+  the neighbour margin blits are not wired (`GiBlockLayout::sample_transform`
+  and `sample_at` keep the per-object offset and scale, `margin_blit` the
   columns and UV offsets).
+- Surfaces **sample** the volume with the original's per-object transform:
+  `texture(p·scale + offset)` with `p` in world centimetres, the offset's X
+  and Z half a texture minus the block's centre over its width and its Y
+  the block's bottom slice over the depth, and the scale
+  (1/(W·fc), 1/(D·fc), 1/(H·fc)). A surface reads half a voxel up (the
+  offset's Y carries +0.5), as the original's per-object lookup does; the
+  terrain and grass callers pass the flag that drops it and read the
+  voxel's bottom instead. Both are `GiBlockLayout::sample_transform` /
+  `sample_at`, and the material paths take the same origins from
+  `GiTextures::sample_origin` and `sample_origin_floor`.
 - The top slice holds 26 and the slice below 5, a soft lid.
 - Terrain comes first: in each interior column (not the margins), voxels
   below the terrain surface hold 20, and the surface voxel its covered
@@ -1335,25 +1346,33 @@ original does not set that group's floor; it is 0 until a grid level has
 run [inf]), whatever the marks.
 
 For each updated voxel, with occ normalised. The light texture is read at
-the slice boundary, as the original's layered quads do (linear filtering
-averages the two neighbouring slices), and the shading maths uses the
-volume's height divided by its width, as the original's `ZTrn` does:
+the voxel's **own slice centre**: the original's quads put their vertex r
+at −0.5/depth and the vertex shader subtracts (instance + LyrOfs)/depth, so
+layer L reads r = (L + 0.5)/depth and only the ±1.33-voxel taps blend the
+neighbouring slices. The shading maths uses the volume's height divided by
+its width, at the slice's middle ((slice + 0.5)/width), as the original's
+`ZTrn` maps it:
 - open = max(1 − 13·occ, 0);
 - for the eight diagonal neighbours n at ±1.33 voxels:
   - a = open(n);
   - P = light(n) · a² (· a with a sun);
   - sum += mix(old, P, a);
 - open fades out over the lowest slices: · (1 − 2^(−16·r)), r the slice
-  over the block's slice count;
+  centre over the block's slice count;
 - k = min(8·Σa, 1) · (0.3·open + 0.699);
 - light = sum·k/8 + base·open + Σ lights;
 - base = level record `0x30` (as stored) × 0.001, per channel;
 - each point light adds
   lin(colour)·intensity·multiplier·(1 − dim)²·0.15·0.01 · (1 − d/R)⁴ ·
-  open · cube shadow · shaping. The cube lookup is the cached shadow pool's
-  linear depth compared against d/R + 0.01 along (the point − the light)
-  (the original scales d/R by the light's shadow bias + 0.94 here, which
-  Exarust leaves out [gap]);
+  open · cube shadow · shaping. The point light's uniforms are the
+  original's `Light[3i..3i+2]`: the position in texture units with 1/(R·s)
+  in w, then the colour with the cube lookup's depth scale in w, then the
+  shaping. The cube lookup is the cached shadow pool's linear depth
+  compared against d·(softness + 0.94)/R + 0.01 along (the point − the
+  light), the scale worked out in double precision (((softness + 0.94) /
+  far) × 5120); a light without its range flag has the 3.4e38 far plane, so
+  its lookup is unshadowed. The original binds light i's cube map to its
+  own `Shadow<i>` sampler; Exarust's shared pool carries the slot instead;
 - the sun joins each drawn sector's group first and adds
   lin(colour)·intensity·3·0.3·0.01 · visibility · open (the manager's sun
   factor 3, then three times the 0.1 injection share; it is left out when
@@ -1404,9 +1423,16 @@ volume's height divided by its width, as the original's `ZTrn` does:
   last entry over each match, and the draw box rounds the centre to
   voxels (ties to even) and the half extents up, clips the columns to
   voxels 8 and 248 and draws from centre − half height for 2·half + 1
-  slices, only for a centre above slice 1 (`GiShapes`, `shape_draw`). No gameplay shape registers yet, and the subclasses' own
-  injection programs are outside this component (dome, cuboid, bubble,
-  telebubble, gradient line, multi-point);
+  slices, only for a centre above slice 1 (`GiShapes`, `shape_draw`). The
+  manager's side of the draw is kept with it: the program each shape links
+  (`GiShapeProgram`: `gi_dome`, `gi_cuboid`, `gi_bubble`, `gi_telebubble`,
+  `gi_gradline`, `gi_multipoint`, built with `gi_inject_v` and
+  `gi_inject_g`), the four corners of a slice's quad in texture units
+  (`shape_quad`, r = −(first + 0.5)/depth with each instance adding its
+  layer) and the program-wide uniforms `SliceSz` = 1/depth and `ZTrn` =
+  (−D/W, D/W) (`shape_uniforms`). No gameplay shape registers yet; the
+  subclasses' own uniforms and fragment bodies belong to the effect
+  classes, which are outside this component;
 - a moving GI mesh takes its old points out (weight −20) and its new ones
   in (+20) over a box padded 1.5 voxels each side, rounded ties to even in
   world voxels (`Occupancy::update_dynamic`; the original pads the
