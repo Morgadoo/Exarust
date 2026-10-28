@@ -328,6 +328,34 @@ pub struct GridStats {
     pub shelled_rooms: usize,
 }
 
+/// A level's nodes sorted into its room sectors, plus the default sector
+/// that takes every node outside a room.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SectorLists<T> {
+    pub rooms: Vec<Vec<T>>,
+    pub default: Vec<T>,
+}
+
+/// Sorts `nodes` (each with its world position on X/Z, metres) into the
+/// rooms of `rooms`, in input order: the original's node distribution puts
+/// a node in the room sector holding the cell it stands in
+/// ([`Rooms::cell_of_node`], the floored cell clamped to the grid) and in
+/// the level's default sector when it is in none. The sector export copies
+/// those per-room lists out.
+pub fn sector_lists<T: Copy>(nodes: &[(T, Vec2)], rooms: &Rooms) -> SectorLists<T> {
+    let mut lists = SectorLists {
+        rooms: vec![Vec::new(); rooms.len()],
+        default: Vec::new(),
+    };
+    for &(node, at) in nodes {
+        match rooms.room_of_node(at) {
+            Some(room) => lists.rooms[room as usize].push(node),
+            None => lists.default.push(node),
+        }
+    }
+    lists
+}
+
 /// Spawns the walls and floors of `grid` under `parent`, and the black
 /// shells of its `rooms`, all at once ([`GridBuild`] spreads the same work
 /// over steps).
@@ -356,6 +384,10 @@ pub struct GridBuild {
     shells_spawned: bool,
     walls: Vec<Option<Arc<WallSet>>>,
     floors: Vec<Option<Arc<FloorSet>>>,
+    /// The level's set names, by index, as the original's two set tables
+    /// keep them.
+    wall_names: Vec<String>,
+    floor_names: Vec<String>,
     /// The level's set names and their load state, and the sets already
     /// indexed, so a name two cells share is indexed once.
     catalog: SetCatalog,
@@ -380,6 +412,8 @@ impl GridBuild {
             shells_spawned: false,
             walls: Vec::new(),
             floors: Vec::new(),
+            wall_names: Vec::new(),
+            floor_names: Vec::new(),
             catalog: SetCatalog::new(),
             walls_by_set: HashMap::new(),
             floors_by_set: HashMap::new(),
@@ -398,6 +432,28 @@ impl GridBuild {
     /// The grid's rooms.
     pub fn rooms(&self) -> Option<Arc<Rooms>> {
         self.rooms.clone()
+    }
+
+    /// The name of the wall set the grid's wall-set table holds at `index`,
+    /// the original's look-up by set index. The list fills as the sets load.
+    pub fn wall_set_name(&self, index: usize) -> Option<&str> {
+        self.wall_names.get(index).map(String::as_str)
+    }
+
+    /// The name of the floor set at `index`.
+    pub fn floor_set_name(&self, index: usize) -> Option<&str> {
+        self.floor_names.get(index).map(String::as_str)
+    }
+
+    /// Whether the wall set at `index` has been loaded.
+    pub fn wall_set_loaded(&self, index: usize) -> bool {
+        self.walls.get(index).is_some_and(Option::is_some)
+    }
+
+    /// Whether the floor set at `index` has been loaded. The `Terrain` set
+    /// is registered but never loaded: the terrain is the ground there.
+    pub fn floor_set_loaded(&self, index: usize) -> bool {
+        self.floors.get(index).is_some_and(Option::is_some)
     }
 
     /// Loads sets, or spawns rows of cells, until `budget` has passed (at
@@ -434,6 +490,7 @@ impl GridBuild {
         while self.walls.len() < grid.wall_sets.len() {
             let index = self.walls.len();
             let name = grid.wall_sets[index].clone();
+            self.wall_names.push(name.clone());
             let set = self.catalog.register_wall(&name);
             if let Some(cached) = self.walls_by_set.get(&set) {
                 self.walls.push(cached.clone());
@@ -453,6 +510,7 @@ impl GridBuild {
         while self.floors.len() < grid.floor_sets.len() {
             let index = self.floors.len();
             let name = grid.floor_sets[index].clone();
+            self.floor_names.push(name.clone());
             let set = self.catalog.register_floor(&name);
             if is_terrain_floor_set(&name) {
                 self.catalog.mark_terrain(set);
@@ -1771,5 +1829,54 @@ mod tests {
         assert!(subdivides_piece_child("brick"));
         assert!(subdivides_piece_child(""));
         assert_eq!(SUBDIVIDE_EXTENT, 20.0);
+    }
+
+    #[test]
+    fn set_names_are_looked_up_by_table_index() {
+        let mut build = GridBuild::new(Entity::PLACEHOLDER, None);
+        assert!(build.wall_set_name(0).is_none());
+        build.wall_names = vec!["GEWS_UWA01".into(), "GEWS_DWA01".into()];
+        build.floor_names = vec!["GEFS_UWA01".into(), "Terrain".into()];
+        assert_eq!(build.wall_set_name(1), Some("GEWS_DWA01"));
+        assert_eq!(build.floor_set_name(0), Some("GEFS_UWA01"));
+        assert!(build.floor_set_name(2).is_none());
+        assert!(is_terrain_floor_set(build.floor_set_name(1).unwrap()));
+        // Nothing is loaded before the loader runs.
+        assert!(!build.wall_set_loaded(0) && !build.floor_set_loaded(0));
+    }
+
+    #[test]
+    fn nodes_sort_into_their_rooms_and_the_default_sector() {
+        // Width 6, height 3: (1, 1) and (2, 1) are one room, (3, 1) and
+        // (4, 1) the next, a door between them.
+        let mut grid = LevelGrid {
+            wall_sets: vec!["GEWS_TEST".into()],
+            floor_sets: Vec::new(),
+            width: 6,
+            height: 3,
+            edges: vec![0; 18],
+            plane_b: vec![0; 18],
+            plane_c: vec![0; 18],
+        };
+        let open =
+            |sides: [u32; 4]| CELL_OPEN | sides[0] | sides[1] << 4 | sides[2] << 8 | sides[3] << 12;
+        grid.edges[6 + 1] = open([7, 7, 7, 0]);
+        grid.edges[6 + 2] = open([7, 0, 7, 0xB]);
+        grid.edges[6 + 3] = open([7, 0xB, 7, 0]);
+        grid.edges[6 + 4] = open([7, 0, 7, 7]);
+        let rooms = Rooms::flood(&grid);
+        assert_eq!(rooms.len(), 2);
+        // Cell (1, 1)'s centre is (−9, 3) m, (3, 1)'s is (3, 3), and a cell
+        // outside every room is the default sector.
+        let nodes = [
+            ("a", Vec2::new(-9.0, 3.0)),
+            ("outside", Vec2::new(0.0, -30.0)),
+            ("b", Vec2::new(3.0, 3.0)),
+            ("a2", Vec2::new(-3.0, 3.0)),
+        ];
+        let lists = sector_lists(&nodes, &rooms);
+        assert_eq!(lists.rooms[0], ["a", "a2"]);
+        assert_eq!(lists.rooms[1], ["b"]);
+        assert_eq!(lists.default, ["outside"]);
     }
 }

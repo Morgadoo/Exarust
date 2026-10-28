@@ -1606,10 +1606,22 @@ cube tint, a sky colour away from and towards the sun, and further colour
 slots. Blending leaves the record's key alone, and the fill, fog and one
 further colour are linearised after the blend when colours are managed in
 linear light (the others are linearised once when the table is set up).
-The track is a constant table in the executable, set up by the
-environment unit; Exarust has not decoded it, so the outdoor preset stands
-in with the original's haze colour for the fog and the level's own sun
-colour for the sun.
+The track is the executable's constant table, six records keyed 0.38,
+0.44, 0.47, 0.54, 0.62 and 0.70 that the environment unit sets up at
+start-up. The pass has an optional step that linearises every colour of a
+record (a, b, the sun, the fill, the two sky colours, i, j, k, l, m, n and o
+when its first channel is positive) and scales the two sky colours, i, j and
+k's colour by 0.75; that step hangs on a flag of its own that nothing in the
+executable sets, so the shipped game keeps the table in sRGB and instead
+linearises the frame's horizon colour (below). The pass always gives a
+record whose o is black an o a quarter of the way from its away sky colour
+to j (no shipped record needs it). Every scene starts with that track
+(`EnvironmentTrack::day` in `exa_world::scene_env`), so the sun placement
+takes the record's sun, fill and fog colours: the outdoor fog is the
+record's (0.0236 red at the default time, 0.375 of the fog colour
+linearised by the blend) rather than a stand-in haze, and the `_Sunlight`
+colour is the record's sun colour as stored (0.33 red at the default
+time).
 
 **Clouds.** A cloudiness above the clear 1.5, by a factor
 (cloudiness − 1.5)·0.4 clamped to 0.9 (a NaN counts as clear), desaturates
@@ -1640,7 +1652,12 @@ the colour between the record's two sky colours, weighted
 0.5 − 0.5·(light direction · view) (0.5 without a sun light), times the sky
 fog colour and 2, is the horizon colour; without a sky the fog colour is.
 A lightning flash clears to half the horizon colour. Exarust draws Bevy's
-atmosphere instead (see below) and keeps the gradient for the record.
+atmosphere instead (see below) and keeps the gradient for the record. The
+frame also publishes the values the renderer's globals take: a scene value
+from the sun's height (−100000 up to 0.4, −25 above it, compared in double
+precision; probably a shadow or clip distance, its reader is not ported),
+the weather wind (the current rain × 0.3) and the tint (the tint colour ×
+its fourth slot, the strength).
 
 **Ambient.** The plug-in's ambient is the level's main ambient through the
 sRGB transfer, scaled by the environment cube at 8 indoors and 3 outdoors
@@ -1653,9 +1670,13 @@ level's ambient colour itself is reproduced, and the model exposes the
 
 **The sun light.** `_Sunlight` is a directional light of sRGB 0.75 grey
 (4.5 units under a sky, 3 without; 160 lux a unit in Exarust) taking the
-day record's sun colour under a sky. In auto mode it exists only in a scene
-with no lights and no grid rooms, and disappears again when the scene has
-more than one room; the off and on modes remove and create it.
+day record's sun colour under a sky. Its node is created with the kind 2
+light word, flags `0x20001000`, a 3 m range and the short direction vector
+(0, 260, −280) before its matrix is built; `Lighting`'s sun carries the
+range as data, since a Bevy directional light has none. In auto mode it
+exists only in a scene with no lights and no grid rooms, and disappears
+again when the scene has more than one room; the off and on modes remove
+and create it.
 
 **Weather.** Each frame the rain amount fades toward its target at
 0.0001 a millisecond (in double precision; a NaN amount falls): a request

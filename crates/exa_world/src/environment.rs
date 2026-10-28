@@ -22,7 +22,7 @@ use bevy::pbr::{AtmosphereSettings, DistanceFog, FogFalloff};
 use bevy::prelude::*;
 use exa_formats::environment::{Environment, SunMode};
 
-use crate::scene_env::{OUTDOOR_FOG_COLOUR, SceneEnvironment};
+use crate::scene_env::{OUTDOOR_FOG_COLOUR, SUN_LIGHT_RANGE, SceneEnvironment};
 
 /// The render quality the original reads when it builds the environment's
 /// sky map (the top setting, 96 texels).
@@ -90,6 +90,9 @@ pub struct Sun {
     /// Linear colour.
     pub colour: Vec3,
     pub illuminance: f32,
+    /// The `_Sunlight` node's reach, metres (the original's 3 m light range;
+    /// Bevy's directional light has no range, so it travels as data).
+    pub range: f32,
 }
 
 /// Fog a level asks the cameras for.
@@ -244,13 +247,8 @@ pub fn level_lighting_preset(
         }
         env.fog.near = 0.0;
         // Under a sky the fog takes its colour from the day record, which
-        // is not among the level files Exarust reads: the outdoor preset
-        // keeps the original's haze colour as a stand-in.
-        env.record_fog = crate::scene_env::linearise([
-            OUTDOOR_FOG_COLOUR[0],
-            OUTDOOR_FOG_COLOUR[1],
-            OUTDOOR_FOG_COLOUR[2],
-        ]);
+        // `set_sky` has just placed. The background stays the original's
+        // haze: the sky cube, not the clear colour, draws the open sky.
         env.background = OUTDOOR_FOG_COLOUR;
     }
     let lit = if input.is_some() && matches!(preset, LevelPreset::Indoor) {
@@ -271,18 +269,22 @@ pub fn level_lighting_preset(
     let frame = env.apply_frame([0.0, 0.0, 1.0]);
     let sun = lit.then(|| Sun {
         towards: Vec3::from_array(placed.towards).normalize(),
-        // Under a sky the original takes the day record's sun colour; until
-        // Exarust has the record track, the level's own colour stands in.
-        colour: linear(if sky && env.track.is_some() {
-            env.sky_sun_colour
+        // Under a sky the original copies the day record's sun colour onto
+        // the light as it is: the track is not linearised at start-up and
+        // the blend leaves the sun colour alone, so the stored numbers are
+        // used as the light's colour. Without a sky the level's own sRGB
+        // colour is linearised.
+        colour: if sky && env.track.is_some() {
+            Vec3::from_array(env.sky_sun_colour)
         } else {
-            env.sun_colour
-        }),
+            linear(env.sun_colour)
+        },
         illuminance: (if sky {
             SUN_INTENSITY_WITH_SKY
         } else {
             SUN_INTENSITY
         }) * LUX_PER_INTENSITY,
+        range: SUN_LIGHT_RANGE,
     });
     Lighting {
         ambient: Vec3::from_array(frame.ambient),
@@ -572,8 +574,20 @@ mod tests {
         // 1 km, narrowed by the low sun the default time puts up (a
         // daylight factor of 0.4978): 0.8310.
         assert!((fog.far - 831.011).abs() < 2e-2, "{}", fog.far);
-        // 0.47 sRGB.
-        assert!((fog.colour.x - 0.1873).abs() < 1e-3, "{}", fog.colour.x);
+        // The fog colour is the day record's fog at the default time: the
+        // third and fourth records' colours, linearised and scaled by the
+        // 0.375 the sun placement applies.
+        assert!(
+            (fog.colour.x - 0.023_596_8).abs() < 1e-5,
+            "{}",
+            fog.colour.x
+        );
+        // The sun light takes the record's sun colour as stored: the third
+        // record's 0.02 red a share of 0.3965 towards the fourth's 0.8.
+        let sun = outdoor.sun.unwrap();
+        assert!((sun.colour.x - 0.329_25).abs() < 5e-4, "{}", sun.colour.x);
+        // The `_Sunlight` node's 3 m reach travels with the sun.
+        assert_eq!(outdoor.sun.unwrap().range, 3.0);
     }
 
     #[test]
