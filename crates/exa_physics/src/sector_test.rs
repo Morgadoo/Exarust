@@ -643,7 +643,15 @@ fn the_object_list_parks_an_overflowing_cell() {
     assert_eq!(objects.objects()[normal].cell, 9);
     objects.remove(low);
     assert_eq!(objects.objects().len(), 1);
-    assert_eq!(objects.objects()[0].id, normal);
+    assert_eq!(objects.objects()[0].id, 0);
+    // The surviving object was id 1; it is renumbered and its link points
+    // at the new id, so a later migration still finds it.
+    assert_eq!(objects.at((1, 1)), [0]);
+    // Cell (0, 0) is the border cell the object guard treats as an
+    // overflow; a real cell in the grid, (2, 1), is index 10.
+    objects.migrate(0, Vec3::new(1500.0, 0.0, 900.0));
+    assert_eq!(objects.objects()[0].cell, 10);
+    assert_eq!(objects.at((2, 1)), [0]);
 }
 
 /// A cell index splits into x and z with the engine's `z * columns + x`;

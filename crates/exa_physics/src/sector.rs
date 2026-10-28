@@ -1033,15 +1033,26 @@ impl ObjectGrid {
         self.objects[id].cell = to;
     }
 
-    /// Removes object `id` from the list and its cell, keeping the order of
-    /// the others. The original compacts its array and shifts the objects.
+    /// Removes object `id` from the list and its cell, compacting the list
+    /// and renumbering the objects after it, as the original's array
+    /// removal shifts them. The grid links follow the new ids.
     pub fn remove(&mut self, id: usize) {
         let Some(object) = self.objects.get(id).copied() else {
             return;
         };
         self.cells
             .remove(cell_of_index(object.cell, self.columns), id);
-        self.objects.retain(|o| o.id != id);
+        self.objects.remove(id);
+        for list in self.cells.cells.values_mut() {
+            for other in list.iter_mut() {
+                if *other > id {
+                    *other -= 1;
+                }
+            }
+        }
+        for (i, object) in self.objects.iter_mut().enumerate() {
+            object.id = i;
+        }
     }
 
     /// The objects bucketed in `cell`.
