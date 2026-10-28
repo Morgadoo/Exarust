@@ -691,11 +691,14 @@ pub fn object_word(samples: u32, supersample: u32, geometry: GeometryOptions) ->
 pub const HALF_PASSES: u32 = 0x4000_0000;
 
 /// The sub-frames a draw renders: the scene's super-sampling pass count,
-/// halved (rounded up, so a single pass stays one) for a frame word with
-/// [`HALF_PASSES`] while the sun shadow mode is 3.
+/// halved for a frame word with [`HALF_PASSES`] while the sun shadow mode
+/// is 3. The engine halves the last pass index (truncating toward zero), so
+/// a single pass stays one and an empty pass list (last index −1) becomes
+/// one pass.
 pub fn draw_passes(passes: u32, frame_word: u32, sun_shadow_mode: u32) -> u32 {
     if frame_word & HALF_PASSES != 0 && sun_shadow_mode == 3 {
-        passes.div_ceil(2)
+        let last = i64::from(passes) - 1;
+        (last / 2 + 1) as u32
     } else {
         passes
     }
@@ -1494,5 +1497,7 @@ mod tests {
         assert_eq!(draw_passes(3, HALF_PASSES, 3), 2);
         assert_eq!(draw_passes(2, HALF_PASSES, 3), 1);
         assert_eq!(draw_passes(0, 0, 0), 0);
+        // An empty list's last index −1 halves to 0: one pass.
+        assert_eq!(draw_passes(0, HALF_PASSES, 3), 1);
     }
 }

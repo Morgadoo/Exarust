@@ -237,7 +237,7 @@ impl DrawState {
         self.slots.set_scene(scene);
     }
 
-    /// The scene begin (`0x1001ff3c0`): empty every light slot and drop the
+    /// The scene begin: empty every light slot and drop the
     /// environment word's light bits, keeping the uploaded uniforms.
     pub fn begin_scene(&mut self) {
         self.slots.clear();
