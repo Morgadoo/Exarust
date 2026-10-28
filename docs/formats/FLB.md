@@ -318,7 +318,7 @@ light in the environment word (unlit rows have an empty one).
 | offset | field | value |
 |---|---|---|
 | 0 | `MatDif` | linear diffuse (×1.5 before linearising for type 0) × opacity if the blend source is ONE and the record is not in refraction mode (`0x300` = `0x200` in the plug-in-masked word), × `(1 − sss)`; rgb is zero on an unlit record; `w` = the stored opacity minus the fall-off's `(f+1)f` whenever the fall-off exceeds 0.01 (the factory's test for blended states compares a four-bit field with `0x100` and never holds) |
-| 16 | `MatSpc` | linear specular × specular level, zero without the specular bit, ×3 when the shader word's bit 0 is set (classes 1, 3, 5, 7) and the material word has a specular map; `w` = glossiness (raised to 0.01 only for type 0) |
+| 16 | `MatSpc` | linear specular × specular level with the specular bit, the unscaled colour with only a reflection layer; ×3 when the shader word's bit 0 is set (classes 1, 3, 5, 7) and the material word has a specular map; zero otherwise; `w` = glossiness (raised to 0.01 only for type 0) |
 | 32 | `MatEmi` | linear emissive × exposure (×2 when the plug-in-masked word keeps `MatEmi` `0x8`, the lit/specular bits and the emissive-layer bit `0x80000`); a record whose material word has the translucent or refracting mode bits (`0x300`) is not scaled by the exposure; the skin path uses the diffuse × sss, `w` = the secondary colour's `w` + 1 |
 | 48 | `MatDrt` | mode 4 the material record's dirt tint (`+0x248` of the runtime record: a spawned weapon writes `(1.0, 0.06, 0.04, 0.3)`, the hair record `(0.45, 0.03, 0.02)`); else `w = 2 − the record's dirt strength` |
 | 64 | `MatDsp` | parallax texel counts × 3·10⁻⁵ |

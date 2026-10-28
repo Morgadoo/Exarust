@@ -491,8 +491,10 @@ such names.
 
   Glossiness is the record's `0x3C` as stored. Gloss maps are dark, so the
   menu floor's 0.9 becomes a matte roughness of about 0.8.
-- The specular colour is zero unless the flags carry `0x4`. It is tripled
-  only for PBR materials (type 1) with a specular map.
+- The specular colour is zero unless the material word carries the
+  specular bit (the colour times the record's level) or only the
+  reflection layer (the unscaled colour). It is tripled only for programs
+  whose class has bit 0 with a specular map.
 - Dirt maps only act through vertex colours. Many prop and level meshes
   store a colour stream (859 of them draw a material with a dirt mode,
   `exa-tool corpus colours`); Exarust keeps it in `Mesh::colors` but does

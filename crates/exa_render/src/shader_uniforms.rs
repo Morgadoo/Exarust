@@ -483,7 +483,20 @@ impl MaterialUniforms {
             crate::material::linear(material.specular[1]) * material.specular_level,
             crate::material::linear(material.specular[2]) * material.specular_level,
         ];
-        let has_specular = material.flags & 0x4 != 0;
+        // The factory keeps the specular colour times its level for a record
+        // with the specular bit, the unscaled colour for a record with only
+        // a reflection cube, and zero otherwise.
+        let specular = if material.flags & 0x4 != 0 {
+            specular
+        } else if material.flags & 0x10_0000 != 0 {
+            [
+                crate::material::linear(material.specular[0]),
+                crate::material::linear(material.specular[1]),
+                crate::material::linear(material.specular[2]),
+            ]
+        } else {
+            [0.0; 3]
+        };
         let specular_scale = if inputs.class & 1 != 0
             && material.flags & 0x40000 != 0
             && material.layer(TextureSlot::Specular).is_some()
@@ -497,21 +510,9 @@ impl MaterialUniforms {
             gloss = 0.01;
         }
         let mat_spc = [
-            if has_specular {
-                specular[0] * specular_scale
-            } else {
-                0.0
-            },
-            if has_specular {
-                specular[1] * specular_scale
-            } else {
-                0.0
-            },
-            if has_specular {
-                specular[2] * specular_scale
-            } else {
-                0.0
-            },
+            specular[0] * specular_scale,
+            specular[1] * specular_scale,
+            specular[2] * specular_scale,
             gloss,
         ];
 
@@ -521,11 +522,16 @@ impl MaterialUniforms {
             crate::material::linear(material.emissive[1]),
             crate::material::linear(material.emissive[2]),
         ];
-        let emissive_scale = if lit && material.layer(TextureSlot::Emissive).is_some() {
-            2.0
-        } else {
-            1.0
-        };
+        // The factory doubles the emissive only when the plug-in-masked word
+        // keeps `MatEmi` (`0x8`) beside the lit or specular bits, and the
+        // emissive layer is there.
+        let emissive_key = crate::shader_program::feature_key(material);
+        let emissive_scale =
+            if emissive_key & 0x8 != 0 && lit && material.layer(TextureSlot::Emissive).is_some() {
+                2.0
+            } else {
+                1.0
+            };
         let mat_emi = if inputs.program == UniformProgram::Subsurface {
             [
                 linear_diffuse[0] * subsurface[0],
@@ -1190,6 +1196,44 @@ mod tests {
         close(u.mat_emi[0], crate::material::linear(0.5));
         close(u.mat_emi[1], crate::material::linear(0.25) * 0.8);
         close(u.mat_emi[3], 2.0);
+    }
+
+    #[test]
+    fn the_emissive_doubles_only_with_the_masked_bit_and_the_layer() {
+        let mut m = material();
+        m.flags = 0x3 | 0x8 | 0x8_0000;
+        m.emissive = [0.5, 0.5, 0.5, 1.0];
+        m.layers.push(exa_formats::material::TextureLayer {
+            slot: TextureSlot::Emissive,
+            texture: "e".into(),
+            parameter: 0,
+            amount: 0.0,
+        });
+        let u = MaterialUniforms::from_material(&m, &MaterialInputs::default());
+        close(u.mat_emi[0], crate::material::linear(0.5) * 2.0);
+        // The bit the plug-in mask keeps is `MatEmi`; without it the layer
+        // does not double the colour.
+        m.flags = 0x3 | 0x8_0000;
+        let u = MaterialUniforms::from_material(&m, &MaterialInputs::default());
+        close(u.mat_emi[0], crate::material::linear(0.5));
+    }
+
+    #[test]
+    fn a_reflection_only_record_keeps_its_unscaled_specular() {
+        let mut m = material();
+        // Lit and a reflection cube, but no specular bit: the factory takes
+        // the colour without the specular level.
+        m.flags = 0x2 | 0x10_0000;
+        m.specular = [0.5, 0.25, 0.125, 1.0];
+        m.specular_level = 0.5;
+        let u = MaterialUniforms::from_material(&m, &MaterialInputs::default());
+        close(u.mat_spc[0], crate::material::linear(0.5));
+        close(u.mat_spc[1], crate::material::linear(0.25));
+        close(u.mat_spc[2], crate::material::linear(0.125));
+        // Without either bit the colour is zero.
+        m.flags = 0x2;
+        let u = MaterialUniforms::from_material(&m, &MaterialInputs::default());
+        assert_eq!(u.mat_spc[0..3], [0.0, 0.0, 0.0]);
     }
 
     #[test]
