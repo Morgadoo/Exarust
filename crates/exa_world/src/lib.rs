@@ -631,6 +631,10 @@ pub fn spawn_model_nodes(
         let e = commands
             .spawn((
                 Name::new(node.name.clone()),
+                // A pick of a static mesh under this node returns the node,
+                // whose name the click hooks compare; generated level
+                // geometry carries no marker and stays the level.
+                exa_physics::StaticNode,
                 local,
                 Visibility::default(),
                 PartBounds {
@@ -667,6 +671,16 @@ pub fn spawn_model_nodes(
                         .insert(exa_render::lights::ShadowBias(node.shadow_bias));
                 }
                 parts.push(part);
+            }
+            // `_null` geometry never draws, but the cursor's pick meets it:
+            // a pick-only static collider under this node, in no draw.
+            for mesh in &node.collision {
+                commands.spawn((
+                    Mesh3d(mesh.clone()),
+                    exa_physics::PickOnly,
+                    Visibility::Hidden,
+                    ChildOf(e),
+                ));
             }
         }
         if !parts.is_empty() {
@@ -1586,6 +1600,7 @@ mod tests {
             transform: Transform::IDENTITY,
             parts: Vec::new(),
             part_materials: Vec::new(),
+            collision: Vec::new(),
             skin_bone: None,
             light: None,
             voxel_light: intensity.map(|intensity| exa_formats::rfc::VoxelLight {

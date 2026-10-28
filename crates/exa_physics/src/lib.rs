@@ -32,6 +32,8 @@ pub mod volume;
 pub mod voxel;
 pub mod weapon_mass;
 
+use std::collections::HashMap;
+
 use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on, poll_once};
 use rapier3d::control::{CharacterAutostep, CharacterLength, KinematicCharacterController};
@@ -55,6 +57,7 @@ impl Plugin for PhysicsPlugin {
         app.insert_resource(Physics(world))
             .init_resource::<PendingKinematics>()
             .init_resource::<StaticBuild>()
+            .init_resource::<ColliderNodes>()
             .insert_resource(Time::<Fixed>::from_hz(STEP_HZ))
             .add_systems(Startup, limit_backlog)
             .add_systems(
@@ -98,16 +101,18 @@ impl Default for Physics {
 impl Physics {
     /// How far along `direction` (unit) from `origin` the first fixed
     /// collider lies, within `max` metres.
+    /// Pick-only geometry ([`PickOnly`]) is not met.
     pub fn fixed_hit(&self, origin: Vec3, direction: Vec3, max: f32) -> Option<f32> {
         let ray = Ray::new(origin, direction);
-        self.0
-            .cast_ray(&ray, max, true, QueryFilter::only_fixed())
-            .map(|(_, toi)| toi)
+        let filter = QueryFilter::only_fixed().predicate(&solid);
+        self.0.cast_ray(&ray, max, true, filter).map(|(_, toi)| toi)
     }
 
     /// The first fixed collider along `direction` (unit) from `origin`
     /// within `max` metres, and how far along it lies: a prop's stand-in
-    /// ([`prop::StandIns::owner_of`] names its body) or the level.
+    /// ([`prop::StandIns::owner_of`] names its body), a scene node's mesh
+    /// ([`ColliderNodes::node_of`], pick-only geometry included) or the
+    /// level. The hand's cursor pick.
     pub fn fixed_pick(
         &self,
         origin: Vec3,
@@ -118,7 +123,8 @@ impl Physics {
         self.0.cast_ray(&ray, max, true, QueryFilter::only_fixed())
     }
 
-    /// [`Self::fixed_pick`] passing over the colliders `skip` names.
+    /// [`Self::fixed_pick`] passing over the colliders `skip` names and
+    /// pick-only geometry.
     pub fn fixed_pick_except(
         &self,
         origin: Vec3,
@@ -127,7 +133,7 @@ impl Physics {
         skip: &dyn Fn(ColliderHandle) -> bool,
     ) -> Option<(ColliderHandle, f32)> {
         let ray = Ray::new(origin, direction);
-        let keep = |h: ColliderHandle, _: &Collider| !skip(h);
+        let keep = |h: ColliderHandle, c: &Collider| solid(h, c) && !skip(h);
         let filter = QueryFilter::only_fixed().predicate(&keep);
         self.0.cast_ray(&ray, max, true, filter)
     }
@@ -138,7 +144,8 @@ impl Physics {
     pub fn level_sweep(&self, origin: Vec3, direction: Vec3, max: f32, radius: f32) -> Option<f32> {
         let ball = Ball::new(radius);
         let at = Pose::from_translation(origin);
-        let not_props = |_: ColliderHandle, c: &Collider| c.user_data != prop::STAND_IN;
+        let not_props =
+            |h: ColliderHandle, c: &Collider| c.user_data != prop::STAND_IN && solid(h, c);
         let filter = QueryFilter::only_fixed().predicate(&not_props);
         self.0
             .cast_shape(
@@ -166,6 +173,63 @@ pub struct StaticGeometry;
 #[derive(Component)]
 pub struct NoStaticCollider;
 
+/// A mesh under a [`StaticGeometry`] root that the cursor's pick meets but
+/// nothing collides with: a model's `_null` group, which the original never
+/// draws. The arena hub's shop counter is clicked through such a box. Its
+/// collider ([`PICK_ONLY`]) answers [`Physics::fixed_pick`] only; the
+/// character controller, the bodies' level contacts, sweeps and every other
+/// ray pass through it. [guess: whether the original's solver also meets
+/// these faces is not traced; leaving them out keeps every level's
+/// collision as it was]
+#[derive(Component)]
+pub struct PickOnly;
+
+/// `user_data` of a [`PickOnly`] mesh's collider.
+pub const PICK_ONLY: u128 = 0x5049_434B_4F4E_4C59;
+
+/// Whether a collider takes part in collision and the gameplay rays: every
+/// collider but pick-only geometry.
+pub fn solid(_: ColliderHandle, collider: &Collider) -> bool {
+    collider.user_data != PICK_ONLY
+}
+
+/// A named scene node whose colliders the pick can name: a static mesh under
+/// it maps back to it in [`ColliderNodes`], and a ray that meets that mesh
+/// returns the node rather than the plain level. Level builders put it on the
+/// nodes they spawn from a model; generated geometry (walls, floors, terrain)
+/// carries none and stays the level.
+#[derive(Component)]
+pub struct StaticNode;
+
+/// Which scene node built each static collider, by collider handle. One entry
+/// per collider that came from a [`StaticNode`]'s subtree; a collider of a
+/// rigid body is a prop's stand-in instead and has no entry. The name is not
+/// copied: the node entity's `Name` holds it.
+#[derive(Resource, Debug, Default)]
+pub struct ColliderNodes(HashMap<ColliderHandle, Entity>);
+
+impl ColliderNodes {
+    /// The scene node the collider was built from, if it has one.
+    pub fn node_of(&self, collider: ColliderHandle) -> Option<Entity> {
+        self.0.get(&collider).copied()
+    }
+
+    /// Records a collider as built from `node`.
+    pub fn insert(&mut self, collider: ColliderHandle, node: Entity) {
+        self.0.insert(collider, node);
+    }
+
+    /// How many colliders have a scene node.
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Whether no collider has a scene node.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
 /// The static colliders being built. A level's meshes are copied a batch at
 /// a time, within [`STATIC_BUILD_BUDGET`] per frame, and built into
 /// triangle-mesh colliders on the async compute pool: one large mesh (a
@@ -187,9 +251,9 @@ struct RootBuild {
     tasks: Vec<(usize, Task<Vec<BuiltCollider>>)>,
 }
 
-/// A built collider and, for a rigid body's stand-in, the body's root node
-/// and the part it follows.
-type BuiltCollider = (Collider, Option<(Entity, usize)>);
+/// A built collider, for a rigid body's stand-in the body's root node and
+/// the part it follows, and the scene node whose subtree the mesh was under.
+type BuiltCollider = (Collider, Option<(Entity, usize)>, Option<Entity>, bool);
 
 impl StaticBuild {
     /// The share of the meshes queued since the last idle moment that are
@@ -354,12 +418,15 @@ fn build_static_colliders(
     mut physics: ResMut<Physics>,
     mut build: ResMut<StaticBuild>,
     mut stand_ins: ResMut<prop::StandIns>,
+    mut collider_nodes: ResMut<ColliderNodes>,
     roots: Query<Entity, With<StaticGeometry>>,
     children: Query<&Children>,
     parents: Query<&ChildOf>,
     body_nodes: Query<&prop::BodyNode>,
+    static_nodes: Query<(), With<StaticNode>>,
     shapes: Query<(&Mesh3d, &GlobalTransform)>,
     no_collider: Query<(), With<NoStaticCollider>>,
+    pick_only: Query<(), With<PickOnly>>,
     meshes: Res<Assets<Mesh>>,
 ) {
     for root in &roots {
@@ -386,13 +453,19 @@ fn build_static_colliders(
             let Some(colliders) = block_on(poll_once(task)) else {
                 return true;
             };
-            for (mut collider, owner) in colliders {
+            for (mut collider, owner, node, pick_only) in colliders {
                 if owner.is_some() {
                     collider.user_data = prop::STAND_IN;
+                } else if pick_only {
+                    collider.user_data = PICK_ONLY;
+                    collider.set_collision_groups(InteractionGroups::none());
+                    collider.set_solver_groups(InteractionGroups::none());
                 }
                 let handle = physics.0.insert_collider(collider, None);
                 if let Some((body, part)) = owner {
                     stand_ins.0.entry(body).or_default().push((handle, part));
+                } else if let Some(node) = node {
+                    collider_nodes.insert(handle, node);
                 }
             }
             build.built += *count;
@@ -420,6 +493,8 @@ fn build_static_colliders(
                         meshes.get(&mesh.0).and_then(|m| MeshCopy::of(m, global))
                 {
                     copy.owner = moved_by(e, root.root, &parents, &body_nodes);
+                    copy.node = scene_node_of(e, root.root, &parents, &static_nodes);
+                    copy.pick_only = pick_only.contains(e);
                     triangles += copy.indices.len() / 3;
                     batch.push(copy);
                 }
@@ -430,7 +505,8 @@ fn build_static_colliders(
                     .into_iter()
                     .filter_map(|copy| {
                         let owner = copy.owner;
-                        copy.collider().map(|c| (c, owner))
+                        let (node, pick_only) = (copy.node, copy.pick_only);
+                        copy.collider().map(|c| (c, owner, node, pick_only))
                     })
                     .collect()
             });
@@ -472,14 +548,35 @@ fn moved_by(
     None
 }
 
+/// The nearest scene node over the mesh `e` ([`StaticNode`]), up to the
+/// static root: the node whose name a pick of the mesh returns.
+fn scene_node_of(
+    e: Entity,
+    root: Entity,
+    parents: &Query<&ChildOf>,
+    static_nodes: &Query<(), With<StaticNode>>,
+) -> Option<Entity> {
+    let mut node = Some(e);
+    while let Some(n) = node.filter(|&n| n != root) {
+        if static_nodes.contains(n) {
+            return Some(n);
+        }
+        node = parents.get(n).ok().map(ChildOf::parent);
+    }
+    None
+}
+
 /// A mesh's positions and triangles with its world transform, owned so a
-/// collider can be built from it on another thread, and the rigid body
-/// that moves it, if any.
+/// collider can be built from it on another thread, the rigid body that
+/// moves it, if any, and the scene node whose name a pick returns.
 struct MeshCopy {
     positions: Vec<[f32; 3]>,
     indices: Vec<u32>,
     transform: Mat4,
     owner: Option<(Entity, usize)>,
+    node: Option<Entity>,
+    /// The mesh is [`PickOnly`].
+    pick_only: bool,
 }
 
 impl MeshCopy {
@@ -491,6 +588,8 @@ impl MeshCopy {
             indices,
             transform: global.to_matrix(),
             owner: None,
+            node: None,
+            pick_only: false,
         })
     }
 
@@ -574,7 +673,8 @@ fn move_characters(
         let filter = match handles {
             Some(h) => QueryFilter::default().exclude_rigid_body(h.body),
             None => QueryFilter::default(),
-        };
+        }
+        .predicate(&solid);
         let queries = physics.0.query_pipeline_with_filter(filter);
         let shape = Capsule::new_y(body.half_height, body.radius);
         // The entity's origin is at the feet; the capsule is centred above.
@@ -698,6 +798,7 @@ mod tests {
             .insert_resource(Physics(PhysicsWorld::new()))
             .init_resource::<StaticBuild>()
             .init_resource::<prop::StandIns>()
+            .init_resource::<ColliderNodes>()
             .init_resource::<Assets<Mesh>>()
             .add_systems(Update, build_static_colliders);
         let mesh = app
@@ -822,6 +923,7 @@ mod tests {
             .insert_resource(Physics(PhysicsWorld::new()))
             .init_resource::<StaticBuild>()
             .init_resource::<prop::StandIns>()
+            .init_resource::<ColliderNodes>()
             .init_resource::<Assets<Mesh>>()
             .add_systems(Update, build_static_colliders);
         let mesh = app
@@ -867,6 +969,125 @@ mod tests {
             .filter(|(h, _)| !world.movable(h.into_raw_parts().0))
             .count();
         assert_eq!(static_count, 1);
+    }
+
+    /// A mesh under a `StaticNode` maps its collider back to that node; a
+    /// mesh of generated level geometry maps to no node and stays the level.
+    #[test]
+    fn a_static_collider_remembers_its_scene_node() {
+        let mut app = App::new();
+        app.add_plugins(TaskPoolPlugin::default())
+            .insert_resource(Physics(PhysicsWorld::new()))
+            .init_resource::<StaticBuild>()
+            .init_resource::<prop::StandIns>()
+            .init_resource::<ColliderNodes>()
+            .init_resource::<Assets<Mesh>>()
+            .add_systems(Update, build_static_colliders);
+        let mesh = app
+            .world_mut()
+            .resource_mut::<Assets<Mesh>>()
+            .add(bevy::prelude::Cuboid::new(1.0, 1.0, 1.0).mesh().build());
+        let root = app
+            .world_mut()
+            .spawn((StaticGeometry, Transform::default()))
+            .id();
+        let node = app
+            .world_mut()
+            .spawn((
+                StaticNode,
+                Name::new("\u{aa}ArenaShop"),
+                Transform::default(),
+                ChildOf(root),
+            ))
+            .id();
+        app.world_mut().spawn((
+            Mesh3d(mesh.clone()),
+            GlobalTransform::from_xyz(0.0, 1.0, 0.0),
+            ChildOf(node),
+        ));
+        app.world_mut().spawn((
+            Mesh3d(mesh),
+            GlobalTransform::from_xyz(0.0, 0.0, 2.0),
+            ChildOf(root),
+        ));
+        for _ in 0..2000 {
+            if !app.world().entity(root).contains::<StaticGeometry>() {
+                break;
+            }
+            app.update();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        app.world_mut().resource_mut::<Physics>().0.step();
+        let nodes = app.world().resource::<ColliderNodes>();
+        assert_eq!(nodes.len(), 1);
+        let physics = app.world().resource::<Physics>();
+        let at = Vec3::new(0.0, 1.0, 0.0);
+        let (handle, _) = physics
+            .fixed_pick(at + Vec3::Y, Vec3::NEG_Y, 2.0)
+            .expect("the node's mesh");
+        assert_eq!(nodes.node_of(handle), Some(node));
+        let (plain, _) = physics
+            .fixed_pick(Vec3::new(0.0, 1.0, 2.0), Vec3::NEG_Y, 2.0)
+            .expect("the plain mesh");
+        assert_eq!(nodes.node_of(plain), None);
+    }
+
+    /// A `PickOnly` mesh's collider names its scene node to the cursor's
+    /// pick, but the gameplay rays, sweeps and contacts pass through it.
+    #[test]
+    fn pick_only_geometry_answers_the_pick_alone() {
+        let mut app = App::new();
+        app.add_plugins(TaskPoolPlugin::default())
+            .insert_resource(Physics(PhysicsWorld::new()))
+            .init_resource::<StaticBuild>()
+            .init_resource::<prop::StandIns>()
+            .init_resource::<ColliderNodes>()
+            .init_resource::<Assets<Mesh>>()
+            .add_systems(Update, build_static_colliders);
+        let mesh = app
+            .world_mut()
+            .resource_mut::<Assets<Mesh>>()
+            .add(bevy::prelude::Cuboid::new(1.0, 1.0, 1.0).mesh().build());
+        let root = app
+            .world_mut()
+            .spawn((StaticGeometry, Transform::default()))
+            .id();
+        let node = app
+            .world_mut()
+            .spawn((StaticNode, Transform::default(), ChildOf(root)))
+            .id();
+        app.world_mut().spawn((
+            Mesh3d(mesh),
+            PickOnly,
+            GlobalTransform::from_xyz(0.0, 1.0, 0.0),
+            ChildOf(node),
+        ));
+        for _ in 0..2000 {
+            if !app.world().entity(root).contains::<StaticGeometry>() {
+                break;
+            }
+            app.update();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        app.world_mut().resource_mut::<Physics>().0.step();
+        let physics = app.world().resource::<Physics>();
+        let nodes = app.world().resource::<ColliderNodes>();
+        // From 3 m above, the box's top face is 1.5 m down.
+        let from = Vec3::new(0.0, 3.0, 0.0);
+        let (handle, t) = physics
+            .fixed_pick(from, Vec3::NEG_Y, 40.0)
+            .expect("the pick meets the box");
+        assert!((t - 1.5).abs() < 1e-4, "{t}");
+        assert_eq!(nodes.node_of(handle), Some(node));
+        assert_eq!(physics.fixed_hit(from, Vec3::NEG_Y, 40.0), None);
+        assert_eq!(
+            physics.fixed_pick_except(from, Vec3::NEG_Y, 40.0, &|_| false),
+            None
+        );
+        assert_eq!(physics.level_sweep(from, Vec3::NEG_Y, 40.0, 0.1), None);
+        let mut pieces = Vec::new();
+        contact::Level::pieces(&physics.0, Vec3::splat(-2.0), Vec3::splat(2.0), &mut pieces);
+        assert!(pieces.is_empty());
     }
 
     #[test]

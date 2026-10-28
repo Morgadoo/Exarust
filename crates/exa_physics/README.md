@@ -63,7 +63,16 @@ values). Nothing in the running game calls it yet.
 A subtree marked `StaticGeometry` has its meshes copied into static
 triangle-mesh colliders. `NoStaticCollider` on a mesh (or subtree) under it
 keeps that mesh out: the original draws terrain vegetation but never
-collides with it.
+collides with it. A `StaticNode` marks a scene node whose name a pick can
+return: `ColliderNodes` keeps one entry per static collider built under
+such a node, with no name copy (the node entity's `Name` holds it). A mesh
+of generated level geometry has no `StaticNode` above it and keeps no
+entry. A rigid body's mesh is its stand-in instead and is not in the map.
+A `PickOnly` mesh (a model's `_null` group, never drawn) becomes a
+pick-only collider (`PICK_ONLY`, no collision or solver groups): only
+`Physics::fixed_pick`, the hand's cursor pick, meets it; the character
+controller, the bodies' level contacts, `fixed_hit`, `fixed_pick_except`
+and `level_sweep` pass through it (`solid`).
 
 Each fixed tick (83 Hz) moves the character controllers, then runs the
 pre-step (`body::BodyPreStep`), the character ticks (`body::CharacterTicks`:

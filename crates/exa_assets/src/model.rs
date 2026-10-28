@@ -45,6 +45,11 @@ pub struct ModelNode {
     pub parts: Vec<Part>,
     /// Material name of each part, as stored in the file.
     pub part_materials: Vec<String>,
+    /// Meshes of the node's `_null` groups: geometry the original never
+    /// draws but its cursor pick still meets (the hub's shop counter box).
+    /// Bare positions and indices, never uploaded; built as pick-only
+    /// colliders. Empty for a skinned mesh.
+    pub collision: Vec<Handle<Mesh>>,
     /// Bone whose space the parts are in, when their meshes carry skin
     /// weights (joint indices are bone numbers).
     pub skin_bone: Option<u16>,
@@ -473,17 +478,25 @@ impl ModelLoader<'_> {
                             .map_or(1.0, |g| self.mobility_divisor(&entry, &scene, &g.material))
                     }),
                 });
-            let (parts, part_materials) = match mesh {
-                Some(mesh) => built
-                    .meshes
-                    .into_iter()
-                    .map(|(group, bevy_mesh)| {
-                        let name = &mesh.groups[group].material;
-                        let material = self.material(&entry, &scene, name);
-                        ((self.meshes.add(bevy_mesh), material), name.clone())
-                    })
-                    .unzip(),
-                None => (Vec::new(), Vec::new()),
+            let (parts, part_materials, collision) = match mesh {
+                Some(mesh) => {
+                    let (parts, part_materials) = built
+                        .meshes
+                        .into_iter()
+                        .map(|(group, bevy_mesh)| {
+                            let name = &mesh.groups[group].material;
+                            let material = self.material(&entry, &scene, name);
+                            ((self.meshes.add(bevy_mesh), material), name.clone())
+                        })
+                        .unzip();
+                    let collision = built
+                        .collision
+                        .into_iter()
+                        .map(|mesh| self.meshes.add(mesh))
+                        .collect();
+                    (parts, part_materials, collision)
+                }
+                None => (Vec::new(), Vec::new(), Vec::new()),
             };
             let is_skin = match &node.body {
                 NodeBody::Mesh(mesh) => mesh
@@ -501,6 +514,7 @@ impl ModelLoader<'_> {
                 transform: transform_from_rows(&node.transform),
                 parts,
                 part_materials,
+                collision,
                 skin_bone,
                 bounds: (Vec3::from(node.bounds_centre), node.bounds_radius),
                 half_extents: Vec3::from(node.bounds_half_extents),
@@ -559,11 +573,22 @@ impl ModelLoader<'_> {
             if owner == i || owner >= nodes.len() {
                 continue;
             }
-            let (parts, part_materials, gi_points, shadow_bias, light, voxel_light, fire, portal) = {
+            let (
+                parts,
+                part_materials,
+                collision,
+                gi_points,
+                shadow_bias,
+                light,
+                voxel_light,
+                fire,
+                portal,
+            ) = {
                 let src = &nodes[owner];
                 (
                     src.parts.clone(),
                     src.part_materials.clone(),
+                    src.collision.clone(),
                     src.gi_points.clone(),
                     src.shadow_bias,
                     src.light,
@@ -575,6 +600,7 @@ impl ModelLoader<'_> {
             let dst = &mut nodes[i];
             dst.parts = parts;
             dst.part_materials = part_materials;
+            dst.collision = collision;
             dst.gi_points = gi_points;
             dst.shadow_bias = shadow_bias;
             dst.light = light;
@@ -1404,6 +1430,8 @@ pub struct BuiltModel {
 struct BuiltNode {
     skin: Option<(u16, Vec<VertexSkin>)>,
     meshes: Vec<(usize, Mesh)>,
+    /// The node's `_null` groups' bare meshes, never drawn.
+    collision: Vec<Mesh>,
 }
 
 impl ModelJob {
@@ -1446,10 +1474,16 @@ impl ModelJob {
                     return BuiltNode {
                         skin: None,
                         meshes: Vec::new(),
+                        collision: Vec::new(),
                     };
                 };
-                let meshes = group_meshes(mesh, skin.as_ref().map(|(_, s)| s.as_slice()), pool);
-                BuiltNode { skin, meshes }
+                let (meshes, collision) =
+                    group_meshes(mesh, skin.as_ref().map(|(_, s)| s.as_slice()), pool);
+                BuiltNode {
+                    skin,
+                    meshes,
+                    collision,
+                }
             })
             .collect();
         BuiltModel {
@@ -1582,10 +1616,9 @@ fn group_meshes(
     mesh: &RfcMesh,
     skin: Option<&[VertexSkin]>,
     pool: Option<&bevy::tasks::ComputeTaskPool>,
-) -> Vec<(usize, Mesh)> {
-    let groups: Vec<usize> = (0..mesh.groups.len())
-        .filter(|&g| !mesh.groups[g].material.eq_ignore_ascii_case("_null"))
-        .collect();
+) -> (Vec<(usize, Mesh)>, Vec<Mesh>) {
+    let is_null = |g: usize| mesh.groups[g].material.eq_ignore_ascii_case("_null");
+    let groups: Vec<usize> = (0..mesh.groups.len()).filter(|&g| !is_null(g)).collect();
     let build = |g: usize| {
         let group = &mesh.groups[g];
         let start = group.first_index as usize;
@@ -1602,7 +1635,49 @@ fn group_meshes(
         }),
         _ => groups.iter().map(|&g| build(g)).collect(),
     };
-    built.into_iter().flatten().collect()
+    let drawn = built.into_iter().flatten().collect();
+    // `_null` marks geometry the original never draws but its cursor pick
+    // still meets, such as the hub's shop counter box: keep it as bare
+    // pick meshes. A skinned mesh's `_null` seams are never static scenery.
+    let collision = match skin {
+        Some(_) => Vec::new(),
+        None => (0..mesh.groups.len())
+            .filter(|&g| is_null(g))
+            .filter_map(|g| {
+                let group = &mesh.groups[g];
+                let start = group.first_index as usize;
+                mesh.indices
+                    .get(start..start + group.index_count as usize)
+                    .and_then(|indices| pick_mesh(mesh, indices))
+            })
+            .collect(),
+    };
+    (drawn, collision)
+}
+
+/// A `_null` group's triangles as a bare mesh: positions and indices only,
+/// kept in the main world for the static collider build and never uploaded.
+fn pick_mesh(mesh: &RfcMesh, indices: &[u32]) -> Option<Mesh> {
+    let mut remap = HashMap::with_capacity(indices.len());
+    let mut positions = Vec::new();
+    let mut local = Vec::with_capacity(indices.len());
+    for &i in indices {
+        let position = *mesh.positions.get(i as usize)?;
+        local.push(*remap.entry(i).or_insert_with(|| {
+            positions.push(position);
+            (positions.len() - 1) as u32
+        }));
+    }
+    if local.len() < 3 {
+        return None;
+    }
+    let mut built = Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::MAIN_WORLD,
+    );
+    built.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    built.insert_indices(Indices::U32(local));
+    Some(built)
 }
 
 /// A layer's mask, material, colour and library textures, owned while painting.
@@ -2528,6 +2603,7 @@ mod tests {
             transform: Transform::IDENTITY,
             parts: Vec::new(),
             part_materials: materials.iter().map(|m| (*m).to_string()).collect(),
+            collision: Vec::new(),
             skin_bone: None,
             light: None,
             voxel_light: None,

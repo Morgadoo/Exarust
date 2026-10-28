@@ -450,11 +450,13 @@ installs the click and session hooks and places the manager by
 `hub_fall` every frame; an answer ends the flow's session, and a wipe reaches
 `slots::Slots::drops_after_death` when the host inserted `HubSlots`.
 
-A left click that is not a drag sends `hand::WorldClick`. The hub reads the
-object's stored name bytes (the library keeps `\xaaArenaShop` and
-`\xaaArenaMach` with their leading 0xAA) and side, or a character's
-condition and merchant profession, calls `hub_click`, and opens
-the answered window on `hub_windows`. The board comes from
+A left click that is not a drag sends `hand::WorldClick`. A static mesh
+under a named scene node is that node (`hand::Hit::SceneNode`), the way the
+original's scene pick returns the node; plain geometry stays
+`hand::Hit::Level`. The hub reads the node's stored name bytes (the library
+keeps `\xaaArenaShop` and `\xaaArenaMach` with their leading 0xAA) and
+side, or a character's condition and merchant profession, calls
+`hub_click`, and opens the answered window on `hub_windows`. The board comes from
 `arena_board::open`, Manage Company from `manage_refresh`, and the trade
 window from `shop_window` with the shop's or the merchant's stock. The board's
 own paint list, the manage roster rows and the shop's panels and stock draw
@@ -465,13 +467,18 @@ which the launcher turns into a restart on the drawn arena with
 `--arena-match`.
 
 Opening the board or Manage Company makes the hub busy; closing either
-clears it. In the running game the hub's two notice boards and the shop
-counter are static scenery with no body, so a click on them picks the level
-and opens nothing yet: the static colliders are built in batches that do not
-remember their node. Not wired: that pick, the shop's first stock build
-(`trade::update_stock` needs a live `ShopWorld`), the match's return to the hub, the windows' own close controls,
-the board's pictures and prize items, the manage report lines and controls,
-and the trade window's item icons and character preview.
+clears it. The notice boards and the shop counter are static scenery with no
+rigid body; their colliders remember the scene node they were built under
+(`exa_physics::ColliderNodes`), so a click on `\xaaArenaShop` or
+`\xaaArenaMach` reaches the hook. The shop counter's node holds only a
+`_null` box, which the original never draws but picks; it is kept as a
+hidden pick-only collider that nothing collides with. In `play arenahub`
+the flow runs Exarust's practice stand-in once the player spawns; with the
+hub loaded the hook takes that (and the menu) as the arena mode. Not wired: the
+shop's first stock build (`trade::update_stock` needs a live `ShopWorld`),
+the match's return to the hub, the windows' own close controls, the board's
+pictures and prize items, the manage report lines and controls, and the
+trade window's item icons and character preview.
 
 ## Arena match board bridge
 
