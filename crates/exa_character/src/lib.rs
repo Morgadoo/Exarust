@@ -513,14 +513,19 @@ fn weapon_mass_of(
             parent = model.nodes.get(at).and_then(|n| n.parent);
         }
         // A rigid part's inverse mass is its mobility, so its mass is the
-        // reciprocal; a missing body cannot occur on this path. [guess: the
-        // original's mass word is the shape builder's, and the part's stored
-        // mobility is the closest body-side value Exarust keeps.]
+        // reciprocal (the shape builder's initial mass word is the same
+        // reciprocal of the mobility the body solver gives the part).
         let inverse = model.nodes[node]
             .rigid
             .as_ref()
             .map_or(0.0, |body| body.mobility());
         parts.push(WeaponMassPart::new(nearest, 1.0 / inverse));
+    }
+    // An assembled factory weapon is one merged part in the original; its
+    // assembled model stores no rigid node, so its tree starts as that one
+    // part with the weapon's table mass.
+    if parts.is_empty() {
+        parts.push(WeaponMassPart::new(None, total));
     }
     WeaponMass::new(parts, total, size)
 }

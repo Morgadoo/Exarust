@@ -300,6 +300,8 @@ fn a_built_shape_weighs_its_body() {
     );
     assert!(shape.volume > 0.0, "{shape:?}");
     assert_eq!(shape.mobility, volume::MOBILITY_VOLUME / shape.volume);
+    // The initial mass word is its reciprocal.
+    assert_eq!(shape.mass, 1.0 / shape.mobility);
     assert!(!shape.spheres.is_empty());
     assert!(shape.rest.iter().all(|p| p.is_finite()));
     assert!(shape.point_masses.iter().all(|m| m.is_finite()));

@@ -2192,6 +2192,16 @@ impl Ragdoll {
         crate::part::set_striking(&mut self.parts, root, on);
     }
 
+    /// Gives every part the held item's all-ones group mask, as the
+    /// original does when a character arms itself: its own weapons never
+    /// meet its own body (and, through [`Ragdoll::held_by`], no other held
+    /// item does either).
+    pub fn set_held_group(&mut self) {
+        for part in &mut self.parts {
+            part.pairing.group = crate::part::HELD_GROUP_MASK;
+        }
+    }
+
     /// Gives a living body its race's muscle factors.
     pub fn with_race(mut self, race: RaceMuscles) -> Self {
         if let Some(d) = self.drive.as_mut() {

@@ -122,10 +122,29 @@ a held item from its held slot and weapon class (`hand_class`, `grip`),
 and each grip's hand (the left for a polearm), offset (times the
 character's size; the ogre's own, unscaled), Euler angles (about the
 hand's X, then Z, then Y) and links (to the hand, the second hand and the
-arm, and the stab's; used once weapons are bodies). `Grip::placement`
-places an item for a `GripHolder` (size, race byte, the race's held
-offset) and a flip. Rules: [`docs/PLAYER.md`](../../docs/PLAYER.md) (Held
+arm, and the stab's; `spec` hands them to `exa_physics::grip`). The held
+reach is `held_reach`: the item's length times its `0x35` byte as a
+hundredth plus 60 cm, or the race's reach with no hands bits; the aim
+point sits `held_aim_height` above the grip. `Grip::placement` places an
+item for a `GripHolder` (size, race byte, the race's held offset) and a
+flip. Rules: [`docs/PLAYER.md`](../../docs/PLAYER.md) (Held
 items and their grips).
+
+## Weapon body impacts
+
+A held item that is its own body (`exa_physics::grip_solve`) is struck
+through the pair stage's struck side. While its owner's strike window is
+open the item is a striker; the weapon branch (`impact::strike_limbs`)
+rings the item's own hit set at `0.005·I + 0.3·(0.01·I)²` (volume at most
+1, silent under 0.005), pitch `0.3·v + 0.7`, cooldown `200 − round(80·v)`
+stamped on the item, its first-child chain and its striking weapon
+ancestors, and interrupts or stalls the owner's swing by the same
+`part::hard_impact` rules as an overhead or stab, recording
+`round(5√impact)` on the swing (`SwingState::strike_strength`). The
+contact classifier (`part::classify`) reads the striker's state for the
+kind when the other side is itself striking; the message carries it.
+Camera shake and the base collision sound of a non-striking item are the
+parts' tested rules, with the camera's kick left to the game.
 
 ## Fighters and their condition
 

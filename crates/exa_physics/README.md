@@ -277,20 +277,28 @@ hands to the sampler; the race's clip rates (`body::RaceMuscles`) set its
 clip clock.
 A held item's body (`grip`) is joined to the hand that holds it by the
 grip table's link records, in the original's order and numbers: the second
-hand's and the arm's links first (built disabled, points × the character's
-size, the second hand's y by W24), then a two-hander's stab link, then the
-main links (points × the body scale, the hand-side point the item's node
-matrix into the hand, slack from the table, the second link's smoothing
-0.01). A shield gets its three pivots (back and both face points, two to
-the other hand) and a soft world link. The grip's modes (`apply_mode`,
-`mode_from_clip`, `set_mode`) switch the second-hand, arm and extra links
-by the original's two callbacks, the polearm's main link slides at 15·scale
-cm, `relax` takes the post-change slack off the links enabled once, and
-`flip_step` turns the flip point about the item's y by `f·π`. `GripLink`
-is plain data with the law documented: a correction is shared by the
-item's and the hand's particle weights and mobilities; a world link moves
-only the item. The running game still draws held items as bone-attached
-models; the records are ready for the body solver to use.
+hand's and the arm's links first (built disabled, the second hand's points
+× the character's size, the arm's hand-side point raw, the second hand's y
+by W24), then a two-hander's stab link, then the main links (points × the
+body scale, the hand-side point the item's node matrix into the hand,
+slack from the table, the second link's smoothing 0.01, every other
+runtime link the init's 0.001). A shield gets its three pivots (back and
+both face points, two to the other hand) and a soft world link. The grip's
+modes (`apply_mode`, `mode_from_clip`, `set_mode`) switch the second-hand,
+arm and extra links by the original's two callbacks, the polearm's main
+link slides at 15·scale cm, `relax` takes the post-change slack off the
+links enabled once, and `flip_step` turns the flip point about the item's y
+by `f·π` while the character is not combat-ready. `GripLink` is plain data
+with the law documented: a correction is shared by the item's and the
+hand's particle weights and mobilities; a world link moves only the item.
+`grip_solve` runs the records as a cross-body solver stage: a held item is
+its own `Ragdoll` (built from its model's rigid root), pulled every
+iteration to the hand, second hand and arm by their mobility shares, and
+kept off its holder's body and the other items of the same character (the
+original's all-ones group mask, as `Ragdoll::held_by`). The character's
+equip and the torch light a held item's body and its `HeldGrip` when its
+model has a rigid root; an assembled factory weapon has none and stays
+bone-attached.
 
 The mesh voxeliser (`voxel`) keeps the original's occupancy map of a
 rigid-body mesh (`VoxelMap`: the 0.02 resolution, unit scale and caller's
@@ -355,9 +363,10 @@ centimetres), order the axes by extent smallest first (a mirrored body
 overrides the order from its own numbers), lay the regular tetrahedron over
 the box and scale and place all four points (the middle √2 sign fixes the
 handedness for every axis order; a mirrored body on the +x side flips x and
-y), and weigh the body: mobility 10 000 over the volume, point masses 4
-over the barycentric weights of the volume's centre, and gravity shares 4
-over each mass scaled to sum to four. The resolution comes from the node
+y), and weigh the body: mobility 10 000 over the volume, its reciprocal as the
+part's initial mass word, point masses 4 over the barycentric weights of
+the volume's centre, and gravity shares 4 over each mass scaled to sum to
+four. The resolution comes from the node
 box's smallest half extent; the quality flag gives one voxel per
 centimetre and eight cells at least; the wide-query flag reaches the grid;
 a factory weapon takes its resolution multiplier, even-axis word, depth,

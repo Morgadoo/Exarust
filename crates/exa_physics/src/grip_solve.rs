@@ -241,6 +241,7 @@ pub fn mark_held(mut held: Query<(&HeldGrip, &mut Ragdoll)>) {
             continue;
         }
         body.held_by = Some(grip.holder_key);
+        body.set_held_group();
         for part in &mut body.parts {
             part.state = part.state.with(crate::part::PartState::HELD);
         }

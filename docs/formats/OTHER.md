@@ -1408,8 +1408,9 @@ The part tree redistributes in two passes, parent before children
 mass; Exarust runs it when a weapon is equipped, over the rigid nodes of its
 model (`exa_character::weapon_mass_of`, kept as `WeaponMass` for the body
 solver). Each node's initial mass is the reciprocal of the mobility the body
-solver gives it; the original's word is the shape builder's (a guess, as
-Exarust's held weapons are not bodies yet). After the two passes the
+solver gives it, the same word the shape builder stores as its
+`Shape::mass`; a factory weapon's assembled model has no rigid node and
+starts as the original's one merged part. After the two passes the
 holding pass divides the root part's mass word (the weapon part's own) by
 the holder's size; its inverse word keeps the distributed value. A saved
 mass of zero is replaced by the

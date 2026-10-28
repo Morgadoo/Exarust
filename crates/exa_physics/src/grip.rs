@@ -228,6 +228,16 @@ impl HeldGrip {
 pub const SOFT_WORLD: f32 = 0.05;
 /// A stiff world weld's strength.
 pub const STIFF_WORLD: f32 = 1.0;
+/// The link mobility a free hand has, as a share of its base mass: the
+/// original's `0.175`.
+pub const HAND_LINK_SHARE: f32 = 0.175;
+
+/// An empty hand's link mobility and mass words from its base mass, as the
+/// original restores them when the hands are emptied: the mobility is the
+/// base mass times 0.175 and the mass is the base mass unchanged.
+pub fn empty_hand_words(base_mass: f32) -> (f32, f32) {
+    (base_mass * HAND_LINK_SHARE, base_mass * 1.0)
+}
 
 /// The distance (m) between a link's two points now.
 fn link_distance(link: &GripLink, item: &Ragdoll, hand: &Ragdoll) -> Option<f32> {
@@ -1172,5 +1182,19 @@ mod tests {
         assert_eq!(mode_from_clip(0x1F, 0, false), 0);
         assert_eq!(mode_from_clip(5, 0x2C, false), 0);
         assert_eq!(mode_from_clip(5, 0, true), 0);
+    }
+}
+
+#[cfg(test)]
+mod empty_hand_tests {
+    use super::*;
+
+    /// Emptying the hands restores a 0.175 share of the base mass as the
+    /// link mobility and the base mass itself.
+    #[test]
+    fn an_empty_hand_takes_its_own_weights_back() {
+        assert_eq!(empty_hand_words(2.0), (0.35, 2.0));
+        assert_eq!(empty_hand_words(1.0), (0.175, 1.0));
+        assert_eq!(empty_hand_words(0.0), (0.0, 0.0));
     }
 }

@@ -40,8 +40,8 @@ use bevy::prelude::*;
 use exa_physics::body::{BodySystems, BodyTicks, GoLimp, Pairs, Ragdoll, Shove, SolverStages};
 use exa_physics::body::{Fallen, daze_energy};
 use exa_physics::part::{
-    HardImpact, PartState, hard_impact, limb_impact_damage, limb_impact_sound,
-    stamp_sound_cooldown, weapon_impact_sound,
+    Contact, ContactKind, HardImpact, PartState, classify, hard_impact, limb_impact_damage,
+    limb_impact_sound, stamp_sound_cooldown, weapon_impact_sound,
 };
 
 use crate::attack::AttackMotion;
@@ -160,6 +160,9 @@ pub struct WeaponSounded {
     pub pitch: f32,
     /// The weapon's hit-sound set, when its record names one.
     pub set: Option<String>,
+    /// The contact classifier's kind for the strike that hit the weapon,
+    /// when the other side was itself striking.
+    pub kind: Option<ContactKind>,
 }
 
 /// One side of a touch a body struck.
@@ -569,6 +572,24 @@ pub fn strike_limbs(
             for (part, at) in item.parts.iter_mut().zip(ready) {
                 part.sound_ready_ms = at;
             }
+            let kind = if other_state.is_some_and(|s| s.strikes()) {
+                let contact = Contact {
+                    own: other_state.unwrap_or_default(),
+                    other: item.parts.first().map_or_default(|p| p.state),
+                    same_tree: false,
+                    faces: true,
+                    own_motion: 0,
+                    own_flags: 0,
+                    own_pending: 0,
+                    other_parrying: false,
+                    other_motion: 0,
+                    other_is_primary: false,
+                    other_guarded: false,
+                };
+                classify(&contact).map(|c| c.kind)
+            } else {
+                None
+            };
             weapon.sounds.write(WeaponSounded {
                 target,
                 point: item
@@ -580,6 +601,7 @@ pub fn strike_limbs(
                 set: blade
                     .and_then(|b| b.record.hit_sound_name())
                     .map(str::to_owned),
+                kind,
             });
         }
     }

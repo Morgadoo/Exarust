@@ -1107,3 +1107,53 @@ fn a_steps_loudness_follows_its_length() {
     assert_eq!(step_loudness(200.0), 1.0);
     assert_eq!(step_loudness(-10.0), -0.129);
 }
+
+/// A lower leg's child takes the original's second flag word bit when the
+/// leg joins the world, and loses its dynamic state bit.
+#[test]
+fn a_foot_child_takes_the_second_flag_words_bit() {
+    use crate::part::{FOOT_CHILD_FLAG, PartState};
+    let pelvis = PartSetup {
+        bone: 1,
+        entity: Entity::from_raw_u32(1).unwrap(),
+        parent: None,
+        world: Affine3A::from_translation(Vec3::ZERO),
+        centre: Vec3::ZERO,
+        half: Vec3::splat(0.1),
+        origin: Vec3::ZERO,
+        links: vec![],
+        foot: None,
+        pins: Vec::new(),
+        spheres: None,
+    };
+    let shin = PartSetup {
+        bone: 3,
+        entity: Entity::from_raw_u32(2).unwrap(),
+        parent: Some(0),
+        world: Affine3A::from_translation(Vec3::new(0.3, 0.0, 0.0)),
+        centre: Vec3::ZERO,
+        half: Vec3::new(0.06, 0.2, 0.06),
+        origin: Vec3::ZERO,
+        links: vec![],
+        foot: Some(Vec3::new(0.0, -0.2, 0.0)),
+        pins: Vec::new(),
+        spheres: None,
+    };
+    let foot = PartSetup {
+        bone: 4,
+        entity: Entity::from_raw_u32(3).unwrap(),
+        parent: Some(1),
+        world: Affine3A::from_translation(Vec3::new(0.3, -0.1, 0.0)),
+        centre: Vec3::ZERO,
+        half: Vec3::splat(0.07),
+        origin: Vec3::ZERO,
+        links: vec![],
+        foot: None,
+        pins: Vec::new(),
+        spheres: None,
+    };
+    let body = Ragdoll::new(&[pelvis, shin, foot]);
+    assert_ne!(body.parts[2].flags2 & FOOT_CHILD_FLAG, 0);
+    assert!(!body.parts[2].state.has(PartState::DYNAMIC));
+    assert!(body.parts[0].state.has(PartState::DYNAMIC) && body.parts[0].flags2 == 0);
+}

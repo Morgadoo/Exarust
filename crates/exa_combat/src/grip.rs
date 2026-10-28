@@ -491,3 +491,39 @@ mod spec_tests {
         assert_eq!(GRIPS[4].spec().links.len(), 0);
     }
 }
+
+/// The base of a held item's reach: 60 cm, the original's arm and hand.
+pub const HELD_REACH_BASE: f32 = 60.0;
+
+/// A held item's reach from its hand (cm, the character's `+0x990`): an
+/// unarmed item (`class & 0x30 == 0`) takes the race's own reach, anything
+/// held takes its length times the item's `0x35` byte as a hundredth, plus
+/// 60 cm. `item_length_cm` is the item node's two y extents summed.
+pub fn held_reach(class: u16, hand_byte: u8, item_length_cm: f32, race_reach: f32) -> f32 {
+    if class & 0x30 == 0 {
+        race_reach
+    } else {
+        f32::from(hand_byte) * 0.01 * item_length_cm + HELD_REACH_BASE
+    }
+}
+
+/// The height of a held item's aim point above its grip (cm): 0.9 of the
+/// item node's y extents.
+pub fn held_aim_height(item_length_cm: f32) -> f32 {
+    item_length_cm * 0.9
+}
+
+#[cfg(test)]
+mod held_measure_tests {
+    use super::*;
+
+    /// The held reach is the item's length times the byte's hundredth plus
+    /// 60; empty hands take the race's own.
+    #[test]
+    fn a_held_items_reach_grows_with_its_length() {
+        assert_eq!(held_reach(0, 200, 100.0, 50.0), 50.0);
+        assert_eq!(held_reach(0x10, 200, 100.0, 50.0), 260.0);
+        assert_eq!(held_reach(0x20, 128, 90.0, 50.0), 175.2);
+        assert_eq!(held_aim_height(100.0), 90.0);
+    }
+}

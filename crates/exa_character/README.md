@@ -256,8 +256,15 @@ These are tested rules the running game does not drive yet.
   ancestor as its parent, and the original's two-pass redistribution
   (`exa_physics::weapon_mass::WeaponMass`) scales them with the record's
   table mass, the root's mass word then divided by the holder's size. The
-  distributed parts stay on the weapon holder as a `WeaponMass` component
-  for the body solver, which does not read it yet.
+  distributed parts stay on the weapon holder as a `WeaponMass` component.
+  An assembled factory weapon has no stored rigid node and starts as the
+  original's one merged part.
+- A wielded weapon whose model has a rigid root also becomes a solver body:
+  its root node's rigid data, a `PendingProp` and a
+  `exa_physics::grip::HeldGrip` with its grip spec, holder body and hand
+  and forearm entities. The physics grip stage builds the links once both
+  bodies exist and pulls the item to the hand; the item never meets its
+  holder's body. The same is done for a carried torch.
 - A wielded weapon sits under the hand its grip names
   (`exa_combat::grip`, by its weapon class as the first held item: a
   polearm in the left hand), placed for the character's size and race
