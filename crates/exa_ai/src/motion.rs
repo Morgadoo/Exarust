@@ -352,10 +352,18 @@ pub fn way_share(from_cm: Vec3, facing: Vec3, bodies: &[BodyAt], reach_cm: f32) 
 
 /// The body in the way of the walk: each nearby live body's point is moved
 /// 20 cm along the AI's look and the steer line from the AI along the walk
-/// direction is tested; the first that can be steered to is returned.
-pub fn body_in_way(from_cm: Vec3, direction: Vec3, look: Vec3, bodies: &[BodyAt]) -> Option<usize> {
+/// direction is tested; the first that can be steered to is returned. The
+/// ids in `skip` are the body already remembered as in the way and the
+/// body being carried (the original skips both).
+pub fn body_in_way(
+    from_cm: Vec3,
+    direction: Vec3,
+    look: Vec3,
+    bodies: &[BodyAt],
+    skip: &[usize],
+) -> Option<usize> {
     for body in bodies {
-        if body.dead {
+        if body.dead || skip.contains(&body.id) {
             continue;
         }
         let moved = body.position_cm + Vec3::new(look.x, 0.0, look.z) * 20.0;
@@ -1045,6 +1053,19 @@ mod tests {
             "{}",
             yaw_of(w.look)
         );
+        // A NaN goal takes the near branch (the original's parity jump) and
+        // does not steer.
+        let mut gaze = Gaze::at(0.0);
+        let w = walk(
+            &mut gaze,
+            Walking {
+                goal_cm: Vec3::new(f32::NAN, 0.0, 0.0),
+                ..base
+            },
+        )
+        .unwrap();
+        assert_eq!(w.flags, MOVE);
+        assert!(!w.steering);
         // A goal exactly 100 cm ahead is held at 150 cm too.
         let mut gaze = Gaze::at(0.0);
         let w = walk(
@@ -1128,14 +1149,40 @@ mod tests {
     #[test]
     fn the_body_in_the_way_is_steered_to() {
         let bodies = [body(7, 0.0, 100.0, false), body(9, 0.0, 300.0, false)];
-        assert_eq!(body_in_way(Vec3::ZERO, Vec3::Z, Vec3::Z, &bodies), Some(7));
         assert_eq!(
-            body_in_way(Vec3::ZERO, Vec3::Z, Vec3::Z, &[body(1, 0.0, 100.0, true)]),
+            body_in_way(Vec3::ZERO, Vec3::Z, Vec3::Z, &bodies, &[]),
+            Some(7)
+        );
+        assert_eq!(
+            body_in_way(
+                Vec3::ZERO,
+                Vec3::Z,
+                Vec3::Z,
+                &[body(7, 0.0, 100.0, false), body(9, 0.0, 150.0, false)],
+                &[7]
+            ),
+            Some(9),
+            "the remembered body is skipped"
+        );
+        assert_eq!(
+            body_in_way(
+                Vec3::ZERO,
+                Vec3::Z,
+                Vec3::Z,
+                &[body(1, 0.0, 100.0, true)],
+                &[]
+            ),
             None
         );
         // The 20 cm look shift puts a body 330 cm out beyond the clamp.
         assert_eq!(
-            body_in_way(Vec3::ZERO, Vec3::Z, Vec3::Z, &[body(3, 0.0, 170.0, false)]),
+            body_in_way(
+                Vec3::ZERO,
+                Vec3::Z,
+                Vec3::Z,
+                &[body(3, 0.0, 170.0, false)],
+                &[]
+            ),
             None
         );
     }

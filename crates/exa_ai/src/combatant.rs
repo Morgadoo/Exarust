@@ -1613,14 +1613,19 @@ pub const ALLY_THREAT_GAIN: f64 = 1.2;
 pub const ALLY_INVERSE_RANGE: f32 = f32::from_bits(0x3a5a_740e);
 
 /// How much the observed character's state weighs its threat to an ally:
-/// 4 while it attacks, otherwise 0.25 with its poised byte or 0.1; down,
-/// that halves, or scales by `phase·0.5 + 0.5` getting up with a positive
-/// phase, and is 0 dead or asleep.
+/// 4 while it attacks, otherwise 0.25 with its in-combat mark (or the
+/// poised stand-in) or 0.1; down, that halves, or scales by
+/// `phase·0.5 + 0.5` getting up with a positive phase, and is 0 dead or
+/// asleep.
 pub fn ally_threat_factor(observed: &Observed) -> f32 {
     if observed.condition == CONDITION_ATTACKING {
         return 4.0;
     }
-    let factor = if observed.poised { 0.25 } else { 0.1 };
+    let factor = if observed.poised || observed.in_combat {
+        0.25
+    } else {
+        0.1
+    };
     if observed.condition & CONDITION_DOWN == 0 {
         return factor;
     }
@@ -1837,6 +1842,9 @@ mod ally_tests {
         let mut o = observed(Entity::PLACEHOLDER, Vec3::ZERO);
         assert_eq!(ally_threat_factor(&o), 0.1);
         o.poised = true;
+        assert_eq!(ally_threat_factor(&o), 0.25);
+        o.poised = false;
+        o.in_combat = true;
         assert_eq!(ally_threat_factor(&o), 0.25);
         o.condition = CONDITION_ATTACKING;
         assert_eq!(ally_threat_factor(&o), 4.0);
