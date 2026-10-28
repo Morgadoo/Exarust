@@ -62,7 +62,7 @@ impl LiveBlock {
 /// What one frame's selection produced.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TerrainTick {
-    /// The priority base the frame's ring was set to.
+    /// The composite ring the frame's selection started from.
     pub base: u32,
     /// The selection baked (or copied) something this frame.
     pub changed: bool,
@@ -164,9 +164,19 @@ impl TerrainStreaming {
         self.frames
     }
 
+    /// The terrain's priority slot: re-ranks the selected blocks from
+    /// `focus` and resets the composite ring to the priority base, which it
+    /// returns. The original reaches this slot only through the terrain's
+    /// method table (it has no direct caller and the frame hook does not
+    /// call it), so the live driver does not run it every frame; it stays
+    /// available for the caller that resets the view.
+    pub fn reprioritise(&mut self, focus: Vec2) -> u32 {
+        self.selector.rank(focus)
+    }
+
     /// One frame: take the visibility and nearest-light distances the
-    /// caller measured, rank the blocks from `focus` and run the selection:
-    /// cut-offs, sort, set hand-out and the one-block-a-frame bake.
+    /// caller measured and run the selection from `focus`: cut-offs, sort,
+    /// set hand-out and the one-block-a-frame bake.
     pub fn tick(&mut self, focus: Vec2, visible: &[bool], light: &[Option<f32>]) -> TerrainTick {
         self.focus = focus;
         self.frames += 1;
@@ -178,7 +188,7 @@ impl TerrainStreaming {
                 block.light_distance = distance;
             }
         }
-        let base = self.selector.rank(focus);
+        let base = self.selector.ring() as u32;
         let changed = self.selector.reselect(focus);
         let baked = self
             .selector
@@ -300,8 +310,12 @@ pub fn drive_terrain_stream(
         return;
     };
     // The frame hook, at most one tile; an inserted or ready tile marks its
-    // blocks as wanting a composite.
-    if let Some(step) = streaming.stream.frame() {
+    // blocks as wanting a composite. While the refresh delay counts down the
+    // hook does nothing else, and the block selection does not run either.
+    let Some(step) = streaming.stream.frame() else {
+        return;
+    };
+    {
         for tile in step.wanted.clone() {
             streaming.want_tile_blocks(tile);
         }
@@ -346,7 +360,9 @@ pub fn drive_terrain_stream(
     // Hand the sets the selection holds to the renderer's composite host.
     // One new set a frame: making many render targets at once would stall
     // the frame, and nothing draws them yet (the per-pixel shader does).
-    if let (Some(mut host), Some(mut assets)) = (host, assets) {
+    if let (Some(mut host), Some(mut assets)) = (host, assets)
+        && host.enabled()
+    {
         use exa_render::terrain_composite::SetFeatures;
         let held: Vec<(u32, i32, SetFeatures)> = streaming
             .selector()
@@ -467,8 +483,12 @@ mod tests {
         let mut streaming = streaming(&[(0.0, 0.0), (6.0, 0.0), (30.0, 0.0), (50.0, 0.0)]);
         let visible = [true; 4];
         streaming.tick(Vec2::ZERO, &visible, &[None; 4]);
-        // The next frame ranks the three selected blocks: 6000 − d each, and
-        // they are not wanted, so their priority follows the base.
+        // The slot ranks the three selected blocks: 6000 − d each, and they
+        // are not wanted, so their priority follows the base; the ring goes
+        // back to the base.
+        assert_eq!(streaming.selector().ring(), 6001);
+        assert_eq!(streaming.reprioritise(Vec2::ZERO), 6000);
+        assert_eq!(streaming.selector().ring(), 6000);
         let tick = streaming.tick(Vec2::ZERO, &visible, &[None; 4]);
         assert_eq!(tick.base, 6000);
         assert_eq!(
@@ -500,19 +520,21 @@ mod tests {
     }
 
     #[test]
-    fn a_quiet_frame_resets_the_ring_to_the_priority_base() {
+    fn a_quiet_frame_keeps_the_ring() {
         let mut streaming = streaming(&[(0.0, 0.0), (6.0, 0.0)]);
         let visible = [true; 2];
         assert!(streaming.tick(Vec2::ZERO, &visible, &[None; 2]).changed);
         assert_eq!(streaming.selector().ring(), 6001);
-        // The baked blocks no longer want work, so the base is 6000 again and
-        // the ring follows it, with no bake.
+        // The baked blocks no longer want work: no bake, and the ring stays
+        // where the last bake left it (only the priority slot resets it).
         let tick = streaming.tick(Vec2::ZERO, &visible, &[None; 2]);
-        assert_eq!(tick.base, 6000);
-        assert_eq!(streaming.selector().ring(), 6000);
+        assert_eq!(tick.base, 6001);
+        assert_eq!(streaming.selector().ring(), 6001);
         assert!(!tick.changed);
         assert!(tick.baked.is_empty());
         assert_eq!(tick.selected, 2);
+        // The baked blocks keep the ring they were baked in.
+        assert_eq!(streaming.selector().blocks()[0].priority, 6000);
     }
 
     #[test]

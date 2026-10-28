@@ -116,7 +116,7 @@ the red of its diffuse colour (the composite times the terrain's 0.75).
 composite sets as render-target images (colour, tangent normal, gloss and
 half-size displacement at the pools' 1024²/512² sizes), created one a frame
 as the live selector holds them and dropped when a set returns to its pool;
-no pass bakes into them yet (`EXA_TERRAIN_SETS=0` turns allocation off).
+no pass bakes into them yet, so allocation is opt-in (`EXA_TERRAIN_SETS=1`).
 Rules:
 [`docs/RENDERING.md`](../../docs/RENDERING.md) (Terrain).
 

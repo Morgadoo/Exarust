@@ -63,9 +63,10 @@ and the grid's rooms; portal clipping is next (see
   hook shows one a step during the load (the block-until-loaded wait flushes
   the rest), and `TerrainStreaming` then runs the hook and the selection
   every frame from the active camera's look-ahead focus, marking an inserted
-  tile's blocks wanted, dropping an unloaded tile's blocks, ranking them
-  from the priority slot and handing the sets the selection holds to
-  `exa_render::terrain_composite`; `terrain::wireframe` draws each block's
+  tile's blocks wanted, dropping an unloaded tile's blocks and handing the
+  sets the selection holds to `exa_render::terrain_composite` (opt-in with
+  `EXA_TERRAIN_SETS=1`); the priority slot is `reprioritise`, not run every
+  frame because its caller is not identified; `terrain::wireframe` draws each block's
   triangle edges as lines under `EXA_TERRAIN_WIRE` (the original's debug
   wireframe hook). Grass and
   small plants take the original's upward normals, grass is drawn at 0.75

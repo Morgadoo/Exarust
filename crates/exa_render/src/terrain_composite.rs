@@ -10,8 +10,9 @@
 //! its set assignments over through [`TerrainCompositeHost::sync`].
 //!
 //! A set's images are created the first time the selector holds it and
-//! dropped when the set goes back to its pool. `EXA_TERRAIN_SETS=0` turns
-//! the allocation off for memory-tight hosts; the selector's rules run
+//! dropped when the set goes back to its pool. Nothing draws into or from
+//! them yet, and the full pools are about 235 MB of render targets, so the
+//! allocation is opt-in with `EXA_TERRAIN_SETS=1`; the selector's rules run
 //! either way.
 //!
 //! Evidence: the composite set allocator and the set copies (see
@@ -92,7 +93,7 @@ impl Default for TerrainCompositeHost {
     fn default() -> Self {
         Self {
             sets: HashMap::new(),
-            enabled: std::env::var("EXA_TERRAIN_SETS").map_or(true, |v| v != "0"),
+            enabled: std::env::var("EXA_TERRAIN_SETS").is_ok_and(|v| v == "1"),
         }
     }
 }

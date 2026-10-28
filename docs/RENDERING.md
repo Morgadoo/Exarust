@@ -631,8 +631,9 @@ rule. `exa_render::terrain_composite` hosts the set targets themselves
 (colour RGBA8 — wgpu has no renderable RGB8 — normal RG8, gloss R8 and
 half-size displacement R8, at 1024²/512² from the default texture detail)
 and creates a set the first time the live selector holds it, one a frame,
-dropping it when the set returns to its pool; `EXA_TERRAIN_SETS=0` turns the
-allocation off. No pass bakes into the sets yet: the per-pixel shader
+dropping it when the set returns to its pool. Because nothing draws them
+yet and the full pools are about 235 MB of targets, the allocation is
+opt-in with `EXA_TERRAIN_SETS=1`. No pass bakes into the sets yet: the per-pixel shader
 reproduces their content, and a bake pass would read the set assignments
 the selector keeps.
 
@@ -676,14 +677,17 @@ and the hook shows one tile a step during the load, with the
 block-until-loaded wait flushing the rest before the level shows (a tile a
 grid level leaves empty is built and inserted at once). `TerrainStreaming`
 keeps the tiles, their blocks and the streaming bits after the load and
-runs the hook, the priority slot and the block selection every frame:
+runs the hook and the block selection every frame (the selection is
+skipped while the refresh delay counts down, as in the original):
 - the frame hook handles at most one tile; an insert or a ready tile marks
   its blocks as wanting a composite, an unload hides the tile and takes its
   blocks out of the selection, handing their sets back;
-- the priority slot gives every block `round(6000 − d)` and sets the ring
-  to half the spread of the wanted, visible blocks' old priorities plus
-  6000 (setting the ring is the original's own write, so the ring resets
-  every frame before the selection);
+- the priority slot (`TerrainStreaming::reprioritise`) gives every
+  selected block `round(6000 − d)` and sets the ring to half the spread of
+  the wanted, visible blocks' old priorities plus 6000. The original
+  reaches it only through the terrain's method table (no direct caller; the
+  frame hook does not call it), so it is not run every frame: the ring
+  advances by one a frame that bakes and keeps its value otherwise;
 - the selection's focus is the active camera with the lowest order moved
   10 m along its back axis and snapped to a 6 m block centre; blocks within
   44.4 m are selected and those within 15 m high, the list is sorted by the
@@ -691,7 +695,7 @@ runs the hook, the priority slot and the block selection every frame:
 - a hidden selected block's key is its nearest room light's distance: the
   oriented box against the light's outward planes, the plane distance
   `(z + (y + x)) + w` less the box's support along the plane normal in the
-  box's frame, the largest non-negative clearance (0 when they overlap).
+  box's frame (its dot products with the box's axes), the largest non-negative clearance (0 when they overlap).
   The light's plane list itself is not in the pack; Exarust models a point
   light's reach as a box of its stored radius (1.25 radii, the falloff
   reach) — a labelled guess.
