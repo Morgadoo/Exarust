@@ -29,19 +29,19 @@ use crate::shader_program::draw_passes;
 /// block: `0x33FFFFD7`, the engine's 2⁻²³-like epsilon.
 pub const FADE_EPSILON: f32 = f32::from_bits(0x33FF_FFD7);
 
-/// A geometry's word bit (`+0xC`) `0x8000`: the node is animated, so the
+/// A geometry record's word bit `0x8000`: the node is animated, so the
 /// draw uploads a vertex-delta stream and the engine changes its cull state.
 pub const GEOMETRY_VERTEX_DELTA: u32 = 0x8000;
 
-/// A geometry's word bit (`+0xC`) `0x10`: the object's clock advances with
+/// A geometry record's word bit `0x10`: the object's clock advances with
 /// each super-sampling sub-frame.
 pub const GEOMETRY_SUBFRAME_CLOCK: u32 = 0x10;
 
-/// A geometry's flag word (`+0xF0`) bit `0x10`: the material's emissive is
+/// A geometry record's flag word bit `0x10`: the material's emissive is
 /// rescaled for this draw.
 pub const EMISSIVE_PER_DRAW: u32 = 0x10;
 
-/// An object's frame word (`+0xE0`) bit `0x2000_0000`: the diffuse alpha is
+/// An object's frame word bit `0x2000_0000`: the diffuse alpha is
 /// the frame's fade, `1 − fade`.
 pub const FRAME_FADE: u32 = 0x2000_0000;
 
@@ -75,10 +75,10 @@ pub fn draw_path(passes: u32) -> DrawPath {
 /// The geometry record's own values a draw reads.
 #[derive(Clone, Copy, Debug)]
 pub struct GeometryRecord {
-    /// The record's word (`+0xC`): [`GEOMETRY_VERTEX_DELTA`] and
+    /// The record's word: [`GEOMETRY_VERTEX_DELTA`] and
     /// [`GEOMETRY_SUBFRAME_CLOCK`].
     pub word: u32,
-    /// The record's flag word (`+0xF0`): [`EMISSIVE_PER_DRAW`].
+    /// The record's flag word: [`EMISSIVE_PER_DRAW`].
     pub flags: u32,
 }
 
@@ -92,16 +92,16 @@ pub struct DrawObject<'a> {
     /// The builder's frame object word: the shadow-tap count less one from
     /// bit 24 and the quad bit when super-sampling is on.
     pub frame_object: u32,
-    /// The object's frame word (`+0xE0`).
+    /// The object's frame word.
     pub frame: u32,
-    /// The frame's fade (`+0x230`), 1 gone.
+    /// The frame's fade, 1 gone.
     pub fade: f32,
     /// The material block's diffuse alpha the material writer stored: the
     /// fade rewrite compares against it.
     pub diffuse_alpha: f32,
     /// The geometry record's values.
     pub geometry: GeometryRecord,
-    /// The object's own per-draw emissive scale (`+0xF4`).
+    /// The object's own per-draw emissive scale.
     pub emissive: f32,
     /// The mesh has a vertex-colour stream.
     pub vertex_colors: bool,

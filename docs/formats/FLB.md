@@ -320,7 +320,7 @@ light in the environment word (unlit rows have an empty one).
 | 0 | `MatDif` | linear diffuse (×1.5 before linearising for type 0) × opacity if the blend source is ONE and the record is not in refraction mode (`0x300` = `0x200` in the plug-in-masked word), × `(1 − sss)`; rgb is zero on an unlit record; `w` = the stored opacity minus the fall-off's `(f+1)f` whenever the fall-off exceeds 0.01 (the factory's test for blended states compares a four-bit field with `0x100` and never holds) |
 | 16 | `MatSpc` | linear specular × specular level with the specular bit, the unscaled colour with only a reflection layer; ×3 when the shader word's bit 0 is set (classes 1, 3, 5, 7) and the material word has a specular map; zero otherwise; `w` = glossiness (raised to 0.01 only for type 0) |
 | 32 | `MatEmi` | linear emissive × exposure (×2 when the plug-in-masked word keeps `MatEmi` `0x8`, the lit/specular bits and the emissive-layer bit `0x80000`); a record whose material word has the translucent or refracting mode bits (`0x300`) is not scaled by the exposure; the skin path uses the diffuse × sss, `w` = the secondary colour's `w` + 1 |
-| 48 | `MatDrt` | mode 4 the material record's dirt tint (`+0x248` of the runtime record: a spawned weapon writes `(1.0, 0.06, 0.04, 0.3)`, the hair record `(0.45, 0.03, 0.02)`); else `w = 2 − the record's dirt strength` |
+| 48 | `MatDrt` | mode 4 the material record's runtime dirt tint (a spawned weapon writes `(1.0, 0.06, 0.04, 0.3)`, the hair record `(0.45, 0.03, 0.02)`); else `w = 2 − the record's dirt strength` |
 | 64 | `MatDsp` | parallax texel counts × 3·10⁻⁵ |
 | 72 | `DrtUVs` | the diffuse map's aspect |
 | 80 | `OpcFll` | `(sign, 1.8·exponent, (f+1)·amount, refraction)`, both negated with extra flag `0x100` |
@@ -329,8 +329,7 @@ light in the environment word (unlit rows have an empty one).
 A record in the liquid mode (`0x300` = `0x200`) also binds a refraction
 background to the screen-copy unit: without the scene's own refraction
 texture it loads the built-in `BkgRfr01` for an opacity up to 0.85 (a NaN
-takes this branch) and `BkgRfr02` above it; with one, the scene's low
-(`+0x6C`) and high (`+0x64`) fields. Any other record binds the scene's low
+takes this branch) and `BkgRfr02` above it; with one, the scene's low and high fields. Any other record binds the scene's low
 field when it has an opacity map and the scene has the texture.
 
 ### Lights
@@ -381,7 +380,7 @@ checked through these rules, not against a dump. Open:
   precision. The light depth-scale denominator is the light's far radius
   times the scene's light scale, and `DspSdw.y` adds `0.125·PassIdx` to 1,
   both from the writer's own instructions.
-- The material record's dirt tint (`+0x248`) is a field of the runtime
+- The material record's dirt tint is a field of the runtime
   material, not of the 184-byte library block; Exarust's record reader has
   no value for it and the uniform writer takes the caller's tint (zero for
   a record on which nothing wrote one).

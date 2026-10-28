@@ -390,7 +390,7 @@ pub struct MaterialInputs {
     /// refracting (`0x200`) record's emissive colour is not scaled by the
     /// exposure.
     pub material_mode: u32,
-    /// The material record's dirt tint (`+0x248` of the runtime record),
+    /// The material record's runtime dirt tint,
     /// written to `MatDrt` in blood mode 4. A record starts with zero; the
     /// weapon-blood spawner writes
     /// [`WEAPON_BLOOD_TINT`](WEAPON_BLOOD_TINT) and the hair program's
@@ -401,7 +401,7 @@ pub struct MaterialInputs {
 
 /// The dirt tint a spawned weapon's first material gets when it can bleed:
 /// the item spawner writes `(1.0, 0.06, 0.04, 0.3)` at the record's
-/// `+0x248` beside dirt mode 4 and the `0x100` render flag.
+/// runtime dirt field beside dirt mode 4 and the `0x100` render flag.
 pub const WEAPON_BLOOD_TINT: [f32; 4] = [1.0, 0.06, 0.04, 0.3];
 
 /// The dirt tint the hair program's blood uses (`MatDrt.rgb`): its shader
@@ -653,14 +653,14 @@ pub enum RefractionMap {
     BkgRfr01,
     /// The built-in background refraction, for an opacity above 0.85.
     BkgRfr02,
-    /// The scene's own refraction texture, low field (`+0x6C`).
+    /// The scene's own refraction texture, low field.
     SceneLow,
-    /// The scene's own refraction texture, high field (`+0x64`).
+    /// The scene's own refraction texture, high field.
     SceneHigh,
 }
 
 /// The scene's refraction pair: the texture the engine binds for a nearly
-/// opaque surface (`low`, `+0x6C`) and for a clearer one (`high`, `+0x64`).
+/// opaque surface (`low`) and for a clearer one (`high`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SceneRefraction {
     pub low: u32,

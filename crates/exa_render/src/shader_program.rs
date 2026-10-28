@@ -588,7 +588,7 @@ pub struct SceneOptions {
     pub fog_mode: u32,
     /// Ambient bounce light (the game always has it on, GI mode 3).
     pub voxel_gi: bool,
-    /// The environment's GI mode (`+0x14C`): specular GI needs mode 3.
+    /// The environment's GI mode: specular GI needs mode 3.
     pub gi_mode: u32,
     /// Specular GI from the volume, at shading quality 6; dropped for
     /// programs with `FastLgt`.
