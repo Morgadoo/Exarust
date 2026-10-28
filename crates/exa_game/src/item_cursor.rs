@@ -30,11 +30,15 @@
 //! extents in its turned saved frame at most 280 cm high and at least
 //! −1000 cm low, `hand::box_ok_local`) only decides the routine's answer.
 //! The original then slides the item along the ray from 600 cm back to its
-//! first contact (at most 1000 cm on, [`drag_hit`]); Exarust sweeps the
-//! held part's widest collision sphere from 600 cm before the picked point
-//! instead of every sphere against the meshes, and a cursor that picks
-//! nothing keeps the last point (its pick has no navigation mesh behind
-//! every pixel).
+//! first contact (at most 1000 cm on, [`per_sphere_contact`]): every
+//! collision sphere of every part is swept against the level's meshes, and
+//! the nearest contact wins; a cursor that picks nothing keeps the last
+//! point (its pick has no navigation mesh behind every pixel). A level
+//! placement marker named for the item's object or model snaps the item
+//! onto the marker's frame when the cursor's ray passes within the marker's
+//! radius and the item fits there ([`snap_to_marker`]); its link byte `L`
+//! gives the give-back word. Exarust's level loader does not register the
+//! marker nodes yet, so the cursor's marker list is empty in the game.
 //!
 //! **The release.** A plain release leaves the item where the cursor put
 //! it: the original's release hands the saved rest points to the deferred
@@ -238,17 +242,69 @@ pub struct SweepSphere {
     pub radius: f32,
 }
 
+/// The part a collision sphere belongs to, so a hit can name the part the
+/// placement stopped against (the original sweeps every part's spheres).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SphereOf {
+    pub part: usize,
+    pub sphere: SweepSphere,
+}
+
+/// A sphere's first contact: the part and the distance along the ray, in cm
+/// from the sweep's start.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SphereHit {
+    pub part: usize,
+    /// The distance along the ray in cm, from the sweep's start.
+    pub contact: f32,
+}
+
+/// The first contact of every collision sphere of every part of the dragged
+/// item, in part and sphere order: `sweep` takes the part, the sphere's
+/// centre, the unit direction, the reach and the radius (all m) and gives
+/// the distance along the ray (m), or none when that sphere misses. A hit
+/// is kept only when it is nearer than the best so far (the original's
+/// ordered compare, so a NaN never is), and the best starts at the reach.
+/// A contact exactly at the reach is not nearer and is not kept.
+pub fn per_sphere_contact(
+    spheres: impl IntoIterator<Item = SphereOf>,
+    direction: Vec3,
+    mut sweep: impl FnMut(usize, Vec3, Vec3, f32, f32) -> Option<f32>,
+) -> Option<SphereHit> {
+    let reach = DRAG_REACH_CM;
+    let mut best: Option<SphereHit> = None;
+    for sphere in spheres {
+        let Some(toi) = sweep(
+            sphere.part,
+            sphere.sphere.centre,
+            direction,
+            DRAG_REACH_CM / 100.0,
+            sphere.sphere.radius,
+        ) else {
+            continue;
+        };
+        let contact = toi * 100.0;
+        if contact < reach && best.is_none_or(|b| contact < b.contact) {
+            best = Some(SphereHit {
+                part: sphere.part,
+                contact,
+            });
+        }
+    }
+    best
+}
+
 /// How far before the picked point the placement sweep starts (cm): the
 /// original backs the ray's point off by 600 along the ray and then
 /// searches [`DRAG_REACH_CM`] on from there.
 pub const SWEEP_BACK_CM: f32 = 600.0;
 
 /// The item's first contact along the cursor's ray, in cm from the sweep's
-/// start, through [`drag_hit`]: every sphere is swept and only a contact
-/// nearer than the best so far (starting at [`DRAG_REACH_CM`]) is kept, so
-/// a NaN never is. `sweep` takes a sphere's centre, the unit direction,
-/// the reach and the radius (all m) and gives the distance along the ray
-/// (m). [The original also pulls a sphere already under the level's
+/// start, through [`per_sphere_contact`]: every sphere is swept and only a
+/// contact nearer than the best so far (starting at [`DRAG_REACH_CM`]) is
+/// kept, so a NaN never is. `sweep` takes a sphere's centre, the unit
+/// direction, the reach and the radius (all m) and gives the distance along
+/// the ray (m). [The original also pulls a sphere already under the level's
 /// support plane back along the ray before its cast; that offset is not
 /// modelled.]
 pub fn sweep_to_contact(
@@ -256,10 +312,15 @@ pub fn sweep_to_contact(
     direction: Vec3,
     mut sweep: impl FnMut(Vec3, Vec3, f32, f32) -> Option<f32>,
 ) -> Option<f32> {
-    let reach = DRAG_REACH_CM / 100.0;
-    drag_hit(spheres.iter().filter_map(|sphere| {
-        sweep(sphere.centre, direction, reach, sphere.radius).map(|toi| toi * 100.0)
-    }))
+    per_sphere_contact(
+        spheres.iter().map(|sphere| SphereOf {
+            part: 0,
+            sphere: *sphere,
+        }),
+        direction,
+        |_, centre, dir, reach, radius| sweep(centre, dir, reach, radius),
+    )
+    .map(|hit| hit.contact)
 }
 
 /// Where the placement stops along the ray (cm from its origin): the
@@ -319,6 +380,94 @@ pub fn rest_box(rest: [Vec3; 4]) -> (Vec3, Vec3) {
         high = high.max(*p);
     }
     ((low + high) * 0.5, (high - low) * 0.5)
+}
+
+/// A level placement marker an item can snap onto: a node of the level's
+/// scene named for the item's object or model, its frame, the radius the
+/// cursor's ray must pass within, and the link byte that decides what the
+/// release does (`L` gives the item back).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PlacementMarker {
+    /// The marker's eight-byte name, read as a little-endian word.
+    pub name: u64,
+    pub frame: Frame,
+    /// The radius of the placement sphere (m).
+    pub radius: f32,
+    /// The marker's link byte.
+    pub link: u8,
+}
+
+/// Where a placement marker takes the item: the marker's frame and the
+/// lift's hover word ([`HOVER_WORLD`], or [`HOVER_GIVE_BACK`] for an `L`
+/// link).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Placement {
+    pub frame: Frame,
+    pub hover: u32,
+}
+
+/// The nearest point on a segment `origin + dir·t`, `t` in [0, max], to
+/// `point`: the parameter and the squared distance, or none for a
+/// zero-length segment. The parameter is clamped by ordered compares as the
+/// original clamps it, so a NaN parameter becomes zero.
+pub fn segment_closest(origin: Vec3, dir: Vec3, max: f32, point: Vec3) -> Option<(f32, f32)> {
+    let length2 = dir.length_squared();
+    if length2 == 0.0 {
+        return None;
+    }
+    let t = (point - origin).dot(dir) / length2;
+    let t = if t >= 0.0 {
+        if t > max { max } else { t }
+    } else {
+        0.0
+    };
+    let d = origin + dir * t - point;
+    Some((t, d.length_squared()))
+}
+
+/// The first placement marker the cursor's ray meets, in node order: the
+/// ray must descend (its height part at most −[`TURN_EPSILON`]; the original
+/// refuses a ray that climbs), it must pass within the marker's radius
+/// somewhere on its 10 000 cm length, the marker's name must be `item` or
+/// `model`, and the item must fit the marker's frame (`fits`). The original
+/// then puts the item's frame on the marker's and reports the hover word
+/// from the marker's link byte.
+pub fn snap_to_marker(
+    origin: Vec3,
+    dir: Vec3,
+    item: u64,
+    model: u64,
+    markers: &[PlacementMarker],
+    mut fits: impl FnMut(Frame) -> bool,
+) -> Option<Placement> {
+    if dir.y > -TURN_EPSILON {
+        return None;
+    }
+    let max = DRAG_REACH_CM / 10.0;
+    for marker in markers {
+        let Some((_, distance2)) = segment_closest(origin, dir, max, marker.frame.position) else {
+            continue;
+        };
+        if distance2 > marker.radius * marker.radius {
+            continue;
+        }
+        if marker.name != item && marker.name != model {
+            continue;
+        }
+        if !fits(marker.frame) {
+            continue;
+        }
+        let hover = if marker.link == GIVE_BACK_LINK {
+            HOVER_GIVE_BACK
+        } else {
+            HOVER_WORLD
+        };
+        return Some(Placement {
+            frame: marker.frame,
+            hover,
+        });
+    }
+    None
 }
 
 /// What a lift's release does.
@@ -441,6 +590,10 @@ pub struct HeldItem {
     pub half: Vec3,
     /// The last point the box fitted at (m).
     pub target: Vec3,
+    /// The object's id and model id a level placement marker is named for
+    /// (zero when the item carries neither).
+    pub item: u64,
+    pub model: u64,
 }
 
 /// A GUI drop waiting to run: the inventory entry, whether the drag came
@@ -510,6 +663,10 @@ pub struct ItemCursor {
     pub hover: u32,
     /// The GUI drops queued for the next frame, in order.
     pub drops: Vec<DropTask>,
+    /// The level's placement markers. The original walks the scene's nodes
+    /// for them; Exarust's level loader does not register the marker nodes
+    /// yet, so the list is empty and a lift always makes a free placement.
+    pub markers: Vec<PlacementMarker>,
 }
 
 impl ItemCursor {
@@ -540,6 +697,20 @@ impl ItemCursor {
     /// Takes the queued drops in order, leaving the queue empty.
     pub fn take_drops(&mut self) -> Vec<DropTask> {
         std::mem::take(&mut self.drops)
+    }
+
+    /// The placement marker the held item snaps onto, if the cursor's ray
+    /// meets one named for the item or its model and the item fits there:
+    /// the marker's frame and hover word. None without a held item or
+    /// markers.
+    pub fn snap(
+        &self,
+        origin: Vec3,
+        dir: Vec3,
+        fits: impl FnMut(Frame) -> bool,
+    ) -> Option<Placement> {
+        let held = self.held.as_ref()?;
+        snap_to_marker(origin, dir, held.item, held.model, &self.markers, fits)
     }
 
     /// One frame of the cursor's turn: the offset's new piece and whether
@@ -870,6 +1041,8 @@ mod tests {
             centre: Vec3::ZERO,
             half: Vec3::ONE,
             target: Vec3::ZERO,
+            item: 0,
+            model: 0,
         });
         assert!(cursor.held.is_some());
         assert_eq!(cursor.rotation, Mat3::IDENTITY);
@@ -908,6 +1081,141 @@ mod tests {
         ]);
         assert_eq!(c, Vec3::new(0.0, 1.0, 0.0));
         assert_eq!(h, Vec3::new(1.0, 1.0, 2.0));
+    }
+
+    /// Every part's spheres are swept, in part and sphere order, and the
+    /// nearest contact under the reach wins: a farther part hit does not
+    /// replace a nearer one, a NaN never does and a 1000 cm contact is not
+    /// nearer than the reach.
+    #[test]
+    fn every_part_sphere_is_swept() {
+        let spheres = [
+            SphereOf {
+                part: 0,
+                sphere: SweepSphere {
+                    centre: Vec3::ZERO,
+                    radius: 0.1,
+                },
+            },
+            SphereOf {
+                part: 1,
+                sphere: SweepSphere {
+                    centre: Vec3::Y,
+                    radius: 0.2,
+                },
+            },
+            SphereOf {
+                part: 2,
+                sphere: SweepSphere {
+                    centre: Vec3::X,
+                    radius: 0.3,
+                },
+            },
+        ];
+        let mut seen = Vec::new();
+        let hit = per_sphere_contact(spheres, Vec3::NEG_Y, |part, centre, dir, reach, radius| {
+            seen.push((part, centre, dir, reach, radius));
+            match part {
+                0 => Some(8.0),
+                1 => Some(2.5),
+                _ => Some(f32::NAN),
+            }
+        })
+        .unwrap();
+        assert_eq!(hit.part, 1);
+        assert_eq!(hit.contact, 250.0);
+        assert_eq!(seen.len(), 3);
+        assert_eq!(seen[1].3, 10.0);
+        // Only at the reach is not nearer.
+        assert_eq!(
+            per_sphere_contact(spheres, Vec3::NEG_Y, |_, _, _, _, _| Some(10.0)),
+            None
+        );
+        // A NaN contact never replaces the best; a later one does.
+        let hit = per_sphere_contact(spheres, Vec3::NEG_Y, |part, _, _, _, _| match part {
+            0 => Some(f32::NAN),
+            _ => Some(4.0),
+        })
+        .unwrap();
+        assert_eq!(hit.part, 1);
+    }
+
+    /// A marker takes the item when the cursor's ray descends within its
+    /// radius and its name is the item's or the model's; the item must fit
+    /// the marker's frame. An `L` link gives the give-back word, another
+    /// marker the world word.
+    #[test]
+    fn a_placement_marker_snaps_the_item() {
+        let marker = |name: u64, at: Vec3, radius: f32, link: u8| PlacementMarker {
+            name,
+            frame: Frame::new(at, Mat3::IDENTITY),
+            radius,
+            link,
+        };
+        let markers = [
+            marker(7, Vec3::new(0.5, 0.0, 10.0), 0.6, b'K'),
+            marker(9, Vec3::new(0.0, 0.0, 10.0), 0.1, b'L'),
+        ];
+        // The ray down +Z does not descend enough to place anything.
+        assert!(snap_to_marker(Vec3::ZERO, Vec3::Z, 7, 0, &markers, |_| true).is_none());
+        // A ray down from above, 50 cm from the first marker and inside its
+        // 60 cm radius, named for the item.
+        let p = snap_to_marker(
+            Vec3::new(0.0, 100.0, 10.0),
+            Vec3::NEG_Y,
+            7,
+            0,
+            &markers,
+            |_| true,
+        )
+        .unwrap();
+        assert_eq!(p.hover, HOVER_WORLD);
+        assert_eq!(p.frame.position, Vec3::new(0.5, 0.0, 10.0));
+        // The model id matches the second marker too, with the L link.
+        let p = snap_to_marker(
+            Vec3::new(0.0, 100.0, 10.0),
+            Vec3::NEG_Y,
+            0,
+            9,
+            &markers,
+            |_| true,
+        )
+        .unwrap();
+        assert_eq!(p.hover, HOVER_GIVE_BACK);
+        assert_eq!(p.frame.position, Vec3::new(0.0, 0.0, 10.0));
+        // A refused fit falls through to the next marker.
+        let mut tried = 0;
+        let p = snap_to_marker(
+            Vec3::new(0.0, 100.0, 10.0),
+            Vec3::NEG_Y,
+            7,
+            9,
+            &markers,
+            |_| {
+                tried += 1;
+                tried > 1
+            },
+        )
+        .unwrap();
+        assert_eq!(p.frame.position, Vec3::new(0.0, 0.0, 10.0));
+        assert_eq!(tried, 2);
+        // No name match gives none.
+        assert!(
+            snap_to_marker(
+                Vec3::new(0.0, 100.0, 10.0),
+                Vec3::NEG_Y,
+                3,
+                4,
+                &markers,
+                |_| true
+            )
+            .is_none()
+        );
+        // A ray just outside the radius misses; exactly on it is kept.
+        let outside = Vec3::new(1.1 + f32::EPSILON, 100.0, 10.0);
+        assert!(snap_to_marker(outside, Vec3::NEG_Y, 7, 0, &markers, |_| true).is_none());
+        let edge = Vec3::new(1.1, 100.0, 10.0);
+        assert!(snap_to_marker(edge, Vec3::NEG_Y, 7, 0, &markers, |_| true).is_some());
     }
 
     /// The release: a plain release leaves the item where it is unless a

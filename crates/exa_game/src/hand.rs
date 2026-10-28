@@ -1175,6 +1175,10 @@ fn press_hand(
                 centre,
                 half,
                 target: at,
+                // Exarust's picked props carry no database id, so a level
+                // placement marker is never named for one yet.
+                item: 0,
+                model: 0,
             });
             hand.holding = Holding::Lift;
         }
@@ -1422,10 +1426,11 @@ fn hold_hand(
                 // the last point (its pick has no navigation mesh behind
                 // every pixel). As in the original, the item then slides
                 // along the ray from 600 cm before the picked point and
-                // stops at its first contact [Exarust sweeps the held
-                // part's widest collision sphere; the original sweeps every
-                // sphere against the meshes]. A sweep that starts inside
-                // the level is no contact, so the item keeps the pick.
+                // stops at its first contact: every collision sphere of
+                // every part is swept from there, and the nearest contact
+                // under 1000 cm of the sweep's start wins. A sweep that
+                // starts inside the level is no contact, so the item keeps
+                // the pick.
                 let ray = cursor_ray(&scripted, &windows, &cameras);
                 if let Some(ray) = ray {
                     let (origin, dir) = (ray.origin, *ray.direction);
@@ -1437,30 +1442,68 @@ fn hold_hand(
                                 .owner_of(h)
                                 .is_some_and(|(owner, _)| owner == body)
                         });
-                    let radius = bodies
+                    // The spheres of every part as they stand now, in world
+                    // space, each with the part it belongs to.
+                    let spheres: Vec<item_cursor::SphereOf> = bodies
                         .get(body)
-                        .ok()
-                        .and_then(|(_, ragdoll, ..)| ragdoll.parts.get(part))
-                        .map(|part| {
-                            part.spheres
+                        .map(|(_, ragdoll, ..)| {
+                            ragdoll
+                                .parts
                                 .iter()
-                                .map(|(_, radius)| *radius)
-                                .fold(0.0_f32, f32::max)
+                                .enumerate()
+                                .flat_map(|(index, part)| {
+                                    let frame = part.transform();
+                                    part.spheres.iter().map(move |(centre, radius)| {
+                                        item_cursor::SphereOf {
+                                            part: index,
+                                            sphere: item_cursor::SweepSphere {
+                                                centre: frame.transform_point(*centre),
+                                                radius: *radius,
+                                            },
+                                        }
+                                    })
+                                })
+                                .filter(|s| s.sphere.radius > 0.0)
+                                .collect()
                         })
-                        .filter(|radius| *radius > 0.0)
-                        .unwrap_or_else(|| box_half.x.min(box_half.y).min(box_half.z).max(0.01));
+                        .unwrap_or_default();
                     let point = hit.and_then(|(_, t)| {
-                        let back = t.min(item_cursor::SWEEP_BACK_CM / CM);
-                        let start = t - back;
-                        let contact = sources
-                            .physics
-                            .level_sweep(origin + dir * start, dir, back, radius)
-                            .filter(|toi| *toi > 0.0)
-                            .map(|toi| (start + toi) * CM);
-                        let distance = item_cursor::placement_distance(t * CM, contact);
+                        let pick_cm = t * CM;
+                        let start_cm = pick_cm - item_cursor::SWEEP_BACK_CM;
+                        let start = origin + dir * (start_cm / CM);
+                        let contact = item_cursor::per_sphere_contact(
+                            spheres.iter().copied(),
+                            dir,
+                            |_, centre, dir, reach, radius| {
+                                let along = (centre - start).dot(dir);
+                                sources
+                                    .physics
+                                    .level_sweep(centre, dir, reach, radius)
+                                    .filter(|toi| *toi > 0.0)
+                                    .map(|toi| along + toi)
+                            },
+                        )
+                        .map(|hit| start_cm + hit.contact);
+                        let distance = item_cursor::placement_distance(pick_cm, contact);
                         item_cursor::placement_point(origin, dir, distance)
                     });
-                    if let Some(point) = point {
+                    // A level placement marker named for the item snaps it
+                    // onto the marker's frame; Exarust's level loader does
+                    // not register those nodes yet, so the list is empty.
+                    let snapped = point.and_then(|point| {
+                        items.snap(origin, dir, |_| true).map(|snap| (point, snap))
+                    });
+                    if let Some((_, snap)) = snapped {
+                        if let Some(held) = items.held.as_mut() {
+                            held.shown = snap.frame;
+                            held.target = snap.frame.position;
+                        }
+                        items.hover = snap.hover;
+                        if let Ok((_, mut ragdoll, ..)) = bodies.get_mut(body) {
+                            ragdoll.pull_grab_to(snap.frame.position);
+                            ragdoll.wake_to(DRAG_WAKE);
+                        }
+                    } else if let Some(point) = point {
                         let (frame, _fits) =
                             item_cursor::place_frame(items.rotation, point, box_centre, box_half);
                         if let Some(held) = items.held.as_mut() {
