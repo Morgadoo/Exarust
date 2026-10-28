@@ -1019,7 +1019,12 @@ fn alpha_byte(value: f32) -> u8 {
 /// The glow shader's `FrameCol` at rest: the accent at 0.4, every lane.
 fn accent_frame(accent: [u8; 4]) -> [f32; 4] {
     let colour = ink(accent);
-    [colour[0] * 0.4, colour[1] * 0.4, colour[2] * 0.4, colour[3] * 0.4]
+    [
+        colour[0] * 0.4,
+        colour[1] * 0.4,
+        colour[2] * 0.4,
+        colour[3] * 0.4,
+    ]
 }
 
 /// The tree screen's draw order: the background, the links, the icons, the

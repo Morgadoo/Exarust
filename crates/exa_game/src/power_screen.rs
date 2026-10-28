@@ -663,6 +663,15 @@ fn draw(
             );
             draw.batches.extend(tooltip.batches);
             draw.texts.extend(tooltip.texts);
+            // The caption's fade ends 200 ms after the focus leaves; the
+            // draw then clears the shown choice, as the original does after
+            // drawing the description for the last frame.
+            if !view.still_hovering
+                && tree.shown_choice > 0
+                && now.wrapping_sub(u128::from(tree.choice_stamp)) >= 200
+            {
+                tree.shown_choice = 0;
+            }
         }
         if view.labels {
             let mut names = Vec::with_capacity(tree.nodes.len());

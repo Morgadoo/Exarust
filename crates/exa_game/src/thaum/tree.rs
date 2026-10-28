@@ -2408,7 +2408,7 @@ impl TreeScreen {
     /// Showing the tree starts its 1000 ms opening fade and remembers the
     /// domain for the next opening.
     pub fn show(&mut self, now: u32) -> ShowState {
-        self.fade_flags |= FADING_IN;
+        self.fade_flags = FADING_IN;
         self.open_at = now.wrapping_add(OPEN_MS);
         self.faded_out = false;
         self.step_at = now;
@@ -2686,11 +2686,11 @@ pub fn filter_known(pairs: &mut Vec<KnownPower>, nodes: &[PowerNode], domain: u8
 /// power asks for Concentration's technique 2, and a power whose high
 /// nibble is set asks for that technique among Insight's.
 pub fn can_learn(record: &PowerRecord, power: u32) -> bool {
-    if is_persistent(power) && !record.skills.concentration.knows(2) {
+    if is_persistent(power) && !record.skills.concentration.holds_funded(2) {
         return false;
     }
     let technique = technique_of(power);
-    technique == 0 || record.skills.insight.knows(technique)
+    technique == 0 || record.skills.insight.holds_funded(technique)
 }
 
 /// Tells the running powers past `slots` to end. Returns false when one
