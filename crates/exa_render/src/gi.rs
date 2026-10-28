@@ -718,6 +718,11 @@ const LUMENS_PER_INTENSITY: f32 = 8.0;
 const SUN_LUX: f32 = 160.0;
 /// The sun's intensity below which the original leaves it out of the GI.
 const SUN_EPSILON: f32 = 1.192_09e-7;
+/// The original's own sun shadow map for the GI: 1024², with its direct-light
+/// softness of 1600. Exarust samples Bevy's fitted sun map instead, so these
+/// stay as the original's numbers for reference.
+pub const GI_SUN_SHADOW_SIZE: u32 = 1024;
+pub const GI_SUN_SOFTNESS: f32 = 1600.0;
 /// Light ranges are 1.25 radii; the volume falls off over one radius.
 const REACH: f32 = 1.25;
 /// A voxel light's colour per unit of √intensity (the original's linear
