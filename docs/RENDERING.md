@@ -172,6 +172,12 @@ taps, and a program with no tap uploads one entry (four in quadrant mode).
 `exa_render::shader_bindings` holds the table; Bevy owns the real
 bindings.
 
+**Texture programs.** `textures.flb`'s entries build on their own, as one
+fragment shader (no `shading_v`), and get the fixed `MPrj` matrix
+`(2x − 1, 2y − 1, −0.001, 1)` for a texture coordinate in [0, 1].
+`exa_render::texture_program` holds that rule; Exarust bakes the
+procedural textures on the CPU instead (`exa_assets`).
+
 **Light slots.** Each draw has six light slots. It gathers up to six of the
 object's linked lights in list order, stopping at a link with no id or a
 weight below 0.004 (a NaN weight passes), and orders them with the lights

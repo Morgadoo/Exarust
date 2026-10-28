@@ -36,6 +36,7 @@ pub mod spray;
 pub mod stain;
 pub mod sun_fit;
 pub mod supersample;
+pub mod texture_program;
 pub mod view;
 
 use bevy::prelude::*;

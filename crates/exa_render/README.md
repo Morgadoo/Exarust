@@ -33,6 +33,9 @@ values. Rules and evidence: [`docs/formats/FLB.md`](../../docs/formats/FLB.md) a
   template expansion, program choice and uniform blocks (above).
 - `shader_cache`, `shader_bindings`, `light_slots`: the program cache, the
   per-program bindings and the per-draw light slots (above).
+- `texture_program`: the procedural texture programs of `textures.flb`
+  (the entry alone as a fragment shader) and their fixed `MPrj` projection;
+  Exarust bakes those textures on the CPU.
 - `shader_reload`: the `cshd` debug command's reload of the 12 embedded render shaders through the asset server (the original's command reloads its shader programs; Exarust has no file watcher, so this rebuilds the compiled-in sources).
 - `bound_sphere`: the original's smallest enclosing sphere (move-to-front over a support set of 1–4 points, in f64), which fits its sun shadow map; with the f32/f64 vector helpers ([`docs/RENDERING.md`](../../docs/RENDERING.md), Sun shadow fit).
 - `camera`: the camera node's 70° default and its near and far planes (100 and 12 500 engine units; 1 and 125 m; held as data, no camera applies them yet), and the 3D view's constructor values: exposure 1, bloom 1, post on, no scene camera slot ([`docs/RENDERING.md`](../../docs/RENDERING.md), Cameras).
