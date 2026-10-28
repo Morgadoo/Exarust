@@ -209,8 +209,9 @@ built-in vertex shaders (`vPos`; `vPos`+`vTex`; `vPos`+`vCol`;
 draw state's stream word (`0x20` the second texture coordinate, `0x4` the
 colour, `0x10` the first), and get the fixed `MPrj` matrix
 `(2x − 1, 2y − 1, −0.001, 1)` for a texture coordinate in [0, 1]. The
-linker binds `vPos` to 0, `vTex` to 1, `vNrm` to 2, `vCol` to 3, `vTx2` to
-4, `vTng` to 6 and `vDlt` to 7 when the stream word has them.
+linker (the same one every surface and effect program uses) binds `vPos`
+to 0, `vTex` to 1, `vNrm` to 2, `vCol` to 3, `vTx2` to 4, `vTng` to 6 and
+`vDlt` to 7 when the stream word has them.
 `exa_render::texture_program` holds those rules; Exarust bakes the
 procedural textures on the CPU instead (`exa_assets`).
 

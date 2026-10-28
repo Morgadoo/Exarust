@@ -27,7 +27,8 @@ retried, reference counts, the last-bound program and the stale-flags bit,
 and a warm-up pass through the 29 rows and their light counts.
 `shader_bindings` holds the uniform-block bindings, the texture units the
 maps pack into (and the fixed environment, GI, screen-copy and shadow
-units) and the cached uniform locations, plus the `SdwSmp` upload window.
+units), the cached uniform locations, the linker's attribute locations
+for every program, and the `SdwSmp` upload window.
 `light_slots` fills a draw's six light slots in the original's order and
 values.
 `draw_state` is the drawing state's per-draw plan: the object word, the
@@ -47,8 +48,8 @@ Rules and evidence: [`docs/formats/FLB.md`](../../docs/formats/FLB.md) and
   per-program bindings and the per-draw light slots (above).
 - `texture_program`: the procedural texture programs of `textures.flb`
   (the entry alone as a fragment shader), the six built-in vertex shaders
-  the draw state's stream word picks, the linker's attribute locations and
-  their fixed `MPrj` projection; Exarust bakes those textures on the CPU.
+  the draw state's stream word picks and their fixed `MPrj` projection;
+  Exarust bakes those textures on the CPU.
 - `shader_reload`: the `cshd` debug command's reload of the 12 embedded render shaders through the asset server (the original's command reloads its shader programs; Exarust has no file watcher, so this rebuilds the compiled-in sources).
 - `bound_sphere`: the original's smallest enclosing sphere (move-to-front over a support set of 1–4 points, in f64), which fits its sun shadow map; with the f32/f64 vector helpers ([`docs/RENDERING.md`](../../docs/RENDERING.md), Sun shadow fit).
 - `camera`: the camera node's 70° default and its near and far planes (100 and 12 500 engine units; 1 and 125 m; held as data, no camera applies them yet), and the 3D view's constructor values: exposure 1, bloom 1, post on, no scene camera slot ([`docs/RENDERING.md`](../../docs/RENDERING.md), Cameras).

@@ -17,6 +17,7 @@
 //! side, kept for comparison and tests (`docs/RENDERING.md`, Shader
 //! builder).
 
+use crate::shader_bindings::{AttributeBinding, attribute_bindings};
 use crate::shader_template::{Includes, InterfaceMode, TemplateContext, TemplateError};
 
 /// The `MPrj` constant, in the engine's column order: the four columns of
@@ -165,64 +166,6 @@ vrCol = vCol * 0.003921568;\r\n\
             }
         }
     }
-}
-
-/// One attribute binding of a linked texture program: the GLSL name and
-/// the location the linker gives it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct AttributeBinding {
-    pub name: &'static str,
-    pub location: u32,
-}
-
-/// The attribute locations the engine binds before linking, from the draw
-/// state's stream word.
-///
-/// `vPos` is always location 0; `vTex` follows at 1 for bit `0x10`, `vTx2`
-/// at 4 for `0x20`, `vNrm` at 2 for `0x2`, `vCol` at 3 for `0x4`, `vTng` at
-/// 6 for `0x8` and `vDlt` at 7 for `0x40`.
-pub fn attribute_bindings(state: u32) -> Vec<AttributeBinding> {
-    let mut out = vec![AttributeBinding {
-        name: "vPos",
-        location: 0,
-    }];
-    if state & 0x10 != 0 {
-        out.push(AttributeBinding {
-            name: "vTex",
-            location: 1,
-        });
-    }
-    if state & 0x20 != 0 {
-        out.push(AttributeBinding {
-            name: "vTx2",
-            location: 4,
-        });
-    }
-    if state & 0x2 != 0 {
-        out.push(AttributeBinding {
-            name: "vNrm",
-            location: 2,
-        });
-    }
-    if state & 0x4 != 0 {
-        out.push(AttributeBinding {
-            name: "vCol",
-            location: 3,
-        });
-    }
-    if state & 0x8 != 0 {
-        out.push(AttributeBinding {
-            name: "vTng",
-            location: 6,
-        });
-    }
-    if state & 0x40 != 0 {
-        out.push(AttributeBinding {
-            name: "vDlt",
-            location: 7,
-        });
-    }
-    out
 }
 
 /// One procedural texture program: the six built-in vertex shaders and its
@@ -374,31 +317,6 @@ mod tests {
         // The fragment entry is missing, so the build errors rather than
         // inventing a program.
         assert!(program.is_err());
-    }
-
-    #[test]
-    fn attribute_bindings_follow_the_stream_word() {
-        let names = |state| {
-            attribute_bindings(state)
-                .into_iter()
-                .map(|b| (b.name, b.location))
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(names(0), vec![("vPos", 0)]);
-        assert_eq!(
-            names(0x10 | 0x20 | 0x2 | 0x4 | 0x8 | 0x40),
-            vec![
-                ("vPos", 0),
-                ("vTex", 1),
-                ("vTx2", 4),
-                ("vNrm", 2),
-                ("vCol", 3),
-                ("vTng", 6),
-                ("vDlt", 7),
-            ]
-        );
-        // The draw state's other bits bind nothing.
-        assert_eq!(names(0x1 | 0x80), vec![("vPos", 0)]);
     }
 
     #[test]
