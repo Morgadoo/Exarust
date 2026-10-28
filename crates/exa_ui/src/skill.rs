@@ -16,6 +16,7 @@
 //!
 //! Evidence: the retail skill screen's methods (`docs/UI.md`, Forms).
 
+use crate::engine_math::sin_cos;
 use exa_character::record::{CharacterData, technique_prerequisites};
 use exa_formats::characters::{
     MAX_TOTAL_LEVELS, POINTS_PER_TECHNIQUE, SKILL_NAMES, SKILLS, Skill, TECHNIQUE_NAMES,
@@ -265,8 +266,9 @@ fn ring_angle(slot: f32, shift: f32, ring: &SkillRing) -> f32 {
 fn ring_offset(angle: f32, ring: &SkillRing) -> (f32, f32) {
     let unit = ring.unit as f32;
     let radius = ring.radius as f32;
-    let x = (radius * (unit * angle.sin()) * ring.stretch).round_ties_even() * ring.turn;
-    let y = (radius * (unit * angle.cos())).round_ties_even() * ring.turn;
+    let (sin, cos) = sin_cos(angle);
+    let x = (radius * (unit * sin) * ring.stretch).round_ties_even() * ring.turn;
+    let y = (radius * (unit * cos)).round_ties_even() * ring.turn;
     (x, y)
 }
 
@@ -302,8 +304,9 @@ pub fn skill_node_hit(hit: SkillHit, nodes: &[(f32, f32)]) -> i32 {
         }
         for j in 0..5 {
             let angle = j as f32 * std::f32::consts::TAU * 0.2;
-            let ox = ((radius * f64::from(angle.sin())).round_ties_even() as f32) * hit.turn;
-            let oy = ((radius * f64::from(angle.cos())).round_ties_even() as f32) * hit.turn;
+            let (sin, cos) = sin_cos(angle);
+            let ox = ((radius * f64::from(sin)).round_ties_even() as f32) * hit.turn;
+            let oy = ((radius * f64::from(cos)).round_ties_even() as f32) * hit.turn;
             let ddx = hit.mouse.0 as f32 - (x + ox);
             let ddy = hit.mouse.1 as f32 - (y - oy);
             if ddx * ddx + ddy * ddy < inner * inner {
@@ -407,9 +410,10 @@ pub fn skill_satellite(stored: i32, sample: i32, ring: &SkillRing) -> (f32, f32)
 pub fn pentagon_offset(slot: i32, unit: i32) -> (f32, f32) {
     let angle = slot as f32 * std::f32::consts::TAU * 0.2;
     let radius = f64::from(unit) * 18.3;
+    let (sin, cos) = sin_cos(angle);
     (
-        (f64::from(angle.sin()) * radius).round_ties_even() as f32,
-        (f64::from(angle.cos()) * radius).round_ties_even() as f32,
+        (f64::from(sin) * radius).round_ties_even() as f32,
+        (f64::from(cos) * radius).round_ties_even() as f32,
     )
 }
 
@@ -1911,8 +1915,8 @@ fn pentagon_bar(
     turn: f32,
 ) -> SkillBar {
     let angle = slot as f32 * std::f32::consts::TAU * 0.2;
-    let sin = angle.sin() * turn;
-    let cos = angle.cos() * turn;
+    let (sin, cos) = sin_cos(angle);
+    let (sin, cos) = (sin * turn, cos * turn);
     [
         [
             (x - half * cos) - inner * sin,
@@ -1993,7 +1997,8 @@ pub fn skill_node_spokes(x: f32, y: f32, unit: i32, turn: f32) -> [SkillBar; 5] 
 /// then goes. `since` is the time since the change stamp.
 pub fn selection_tip_slide(hovered: i32, since: i32) -> Option<f32> {
     if since < 200 {
-        let t = since as f32 * 0.005;
+        // The step is a double product rounded to single.
+        let t = (f64::from(since) * 0.005) as f32;
         Some(if hovered < 1 { 1.0 - t } else { t })
     } else if hovered < 1 {
         None

@@ -27,12 +27,12 @@
 //! draws, the three tooltip bodies, and the two shader sources in the
 //! constants table. Guesses are labelled.
 
+use crate::engine_math::sin_cos;
 use crate::skill::{
-    NODES_PER_GROUP, PAGE_GROUPS, REQUIREMENT_MET, RING_GROUPS, STATUS_CHOSEN, STATUS_REQUIREMENTS,
-    STATUS_UNAVAILABLE, SkillLearningRow, SkillRing, SkillScreen, SkillTipBox, forget_dialog_place,
-    learning_row, pentagon_offset, ring_group_tooltip, ring_node_title, ring_node_tooltip,
-    selection_tip_slide, skill_group_icons, skill_icon_quad, skill_orbit_bars, skill_popup_fade,
-    skill_ring_position, skill_screen_fades,
+    NODES_PER_GROUP, STATUS_CHOSEN, STATUS_REQUIREMENTS, STATUS_UNAVAILABLE, SkillLearningRow,
+    SkillScreen, SkillTipBox, forget_dialog_place, learning_row, ring_group_tooltip,
+    ring_node_title, ring_node_tooltip, selection_tip_slide, skill_group_icons, skill_icon_quad,
+    skill_orbit_bars, skill_popup_fade, skill_ring_position, skill_screen_fades,
 };
 use crate::skill_gui::{ICON_UNITS, SINGLE_ICON_UNITS, SkillIconHandles};
 use exa_formats::characters::{SKILLS, Skill};
@@ -101,8 +101,8 @@ impl SkillBatch {
         }
     }
 
-    /// Appends one quad in the original's vertex order: top right, top
-    /// left, bottom left, bottom right.
+    /// Appends one quad, each corner with its texture coordinate, in the
+    /// original's submission order.
     fn quad(&mut self, corners: [(f32, f32); 4], uvs: [(f32, f32); 4], ink: [f32; 4]) {
         for ((x, y), (u, v)) in corners.into_iter().zip(uvs) {
             self.vertices.push(SkillVertex::new(x, y, u, v, ink));
@@ -155,6 +155,10 @@ pub struct SkillDraw {
     pub batches: Vec<SkillBatch>,
     pub tips: Vec<SkillTip>,
     pub labels: Vec<SkillLabel>,
+    /// The skin's full-screen fade the draw calls once the opening scale
+    /// reaches 0.001, with the opening scale as both arguments; `None`
+    /// when the scale is below it and the draw stops after the background.
+    pub opening_fade: Option<f32>,
     /// The opening scale is below 0.999, so the draw ends with the skin's
     /// full-screen fade call (both arguments 1).
     pub closing: bool,
@@ -185,11 +189,20 @@ pub struct SkillDrawInput<'a> {
     pub clock: i32,
     /// When the hovered code last changed.
     pub hover_since: i32,
+    /// The hovered node after the hover filter (0 for none): the tooltip
+    /// slides in while it is set and out once it clears.
+    pub hovered_node: i32,
+    /// The last node the filter passed, which the tooltip shows (0 for
+    /// none).
+    pub tip_code: i32,
     /// A level is ready to spend.
     pub ready: bool,
-    /// The ink the page-2 background's textured quad takes (guess: the
-    /// skin's own title ink, white in the shipped scheme).
-    pub background_ink: [f32; 4],
+    /// The skin's grey level the page-2 background takes when the
+    /// pointer is not on it (a skin byte outside this unit).
+    pub skin_grey: u8,
+    /// The skin's ink the background spokes take (a skin field outside
+    /// this unit; the screen never sets its own colour for them).
+    pub spoke_ink: [u8; 4],
     /// Measures a string in the GUI font.
     pub text_width: &'a dyn Fn(&str) -> i32,
 }
@@ -214,6 +227,21 @@ fn low_byte(value: f32) -> u8 {
 fn ink_of(bytes: [u8; 4]) -> [f32; 4] {
     bytes.map(|byte| f32::from(byte) / 255.0)
 }
+
+/// A popup glow's alpha as the tooltip bodies compute it: the popup's
+/// alpha times 0.6, then the opening scale, in double precision.
+fn glow_alpha(alpha: f32, scale: f32) -> f32 {
+    (f64::from(scale) * (f64::from(alpha) * 0.6)) as f32
+}
+
+/// The page-2 background's highlighted pointer code.
+const BACKGROUND_HOVER: i32 = 0x1_0000;
+/// The forget dialog's Yes and No pointer codes.
+const FORGET_YES: i32 = 1;
+const FORGET_NO: i32 = 2;
+/// The base ink of the screen's text and icons, and its highlight.
+const PLAIN: [u8; 4] = [0xff, 0xf8, 0xf0, 0x78];
+const HIGHLIGHT: [u8; 4] = [0xff, 0xcc, 0x99, 0xff];
 
 /// One ring node: its slot, group and position at the reveal value.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -244,14 +272,15 @@ type Corners = [(f32, f32); 4];
 type Uvs = [(f32, f32); 4];
 
 /// The corners of a node's soft plate: 30 units either side, spread by
-/// `alpha`, texture coordinates the whole square.
+/// `alpha`, texture coordinates the whole square (top left first, then
+/// down, across and up).
 fn plate_corners(x: f32, y: f32, half: f32) -> (Corners, Uvs) {
     (
         [
-            (x + half, y - half),
             (x - half, y - half),
             (x - half, y + half),
             (x + half, y + half),
+            (x + half, y - half),
         ],
         [(0.0, 0.0), (0.0, 1.0), (1.0, 1.0), (1.0, 0.0)],
     )
@@ -300,23 +329,24 @@ pub fn skill_draw(input: &SkillDrawInput<'_>) -> SkillDraw {
     let width = (screen.bounds.right - screen.bounds.left) as f32;
     let height = (screen.bounds.bottom - screen.bounds.top) as f32;
     let unit = screen.unit as f32;
-    let mut draw = SkillDraw {
-        closing,
-        ..SkillDraw::default()
-    };
+    let mut draw = SkillDraw::default();
 
-    // The page-2 background: the texture's lower-left cell over a 12 × 8
-    // unit rectangle at the screen's centre. The UV pair is the constant
-    // the original's texture-coordinate helper loads.
+    // The page-2 background: the texture's right-hand cell over a 12 × 8
+    // unit rectangle centred across, twelve units above the bottom. The
+    // pointer on it (code 0x10000) inks it in the highlight; otherwise it
+    // is the skin's grey at `60 × scale + 120`. The UVs are the constant
+    // table the original's texture-coordinate helper loads.
     if screen.page == 2 {
         let cx = (screen.bounds.right - screen.bounds.left) / 2;
-        let cy = (screen.bounds.bottom - screen.bounds.top) / 2 - 3 * screen.unit;
+        let cy = (screen.bounds.bottom - screen.bounds.top) - 12 * screen.unit;
         let (x, y) = (cx as f32, cy as f32);
-        draw.batch(
-            SkillProgram::Textured,
-            SkillTexture::Background,
-            Some(input.background_ink),
-        );
+        let ink = if screen.hover == BACKGROUND_HOVER {
+            HIGHLIGHT
+        } else {
+            let grey = input.skin_grey;
+            [grey, grey, grey, low_byte(scale * 60.0 + 120.0)]
+        };
+        draw.batch(SkillProgram::Textured, SkillTexture::Background, None);
         if let Some(batch) = draw.last() {
             // The page background's four vertices and their texture
             // coordinates, in the original's order.
@@ -333,10 +363,18 @@ pub fn skill_draw(input: &SkillDrawInput<'_>) -> SkillDraw {
                     (1.0, 1.0),
                     (1.0, 0.6),
                 ],
-                [1.0; 4],
+                ink_of(ink),
             );
         }
     }
+
+    // Below an opening scale of 0.001 (a double compare; a NaN passes) the
+    // draw stops here. Otherwise it calls the skin's full-screen fade.
+    if f64::from(scale) < 0.001 {
+        return draw;
+    }
+    draw.opening_fade = Some(scale);
+    draw.closing = closing;
 
     // The ring page dims the game's view: black at 77 × scale, rounded
     // to a byte.
@@ -345,7 +383,7 @@ pub fn skill_draw(input: &SkillDrawInput<'_>) -> SkillDraw {
         draw.batch(SkillProgram::Solid, SkillTexture::None, None);
         if let Some(batch) = draw.last() {
             batch.quad(
-                [(width, 0.0), (0.0, 0.0), (0.0, height), (width, height)],
+                [(0.0, 0.0), (0.0, height), (width, height), (width, 0.0)],
                 [(0.0, 0.0), (0.0, 1.0), (1.0, 1.0), (1.0, 0.0)],
                 ink,
             );
@@ -370,20 +408,20 @@ pub fn skill_draw(input: &SkillDrawInput<'_>) -> SkillDraw {
     }
 
     // The five spokes behind every node: 12.3 to 26.3 units out, 18 units
-    // either side, the sine and cosine scaled by the reveal value.
-    draw.batch(
-        SkillProgram::Rounded,
-        SkillTexture::Background,
-        Some([1.0, 0.98, 0.9, 0.4 * scale]),
-    );
+    // either side, the engine's sine and cosine scaled by the reveal value.
+    // They switch to the skin's textured program over the background
+    // texture in the skin's spoke ink. (The original builds a colour
+    // 1, 0.98, 0.9, 0.4 × scale here but never uploads it.)
+    draw.batch(SkillProgram::Textured, SkillTexture::Background, None);
+    let spoke_ink = ink_of(input.spoke_ink);
     let spoke_half = 18.0 * unit;
     let spoke_inner = -(unit as f64 * 12.3) as f32;
     let spoke_outer = spoke_inner - 14.0 * unit;
     for node in &nodes {
         for slot in 0..5 {
             let angle = slot as f32 * std::f32::consts::TAU * 0.2;
-            let sin = angle.sin() * alpha;
-            let cos = angle.cos() * alpha;
+            let (sin, cos) = sin_cos(angle);
+            let (sin, cos) = (sin * alpha, cos * alpha);
             let corners = [
                 (
                     (node.x - spoke_half * cos) - spoke_inner * sin,
@@ -395,16 +433,16 @@ pub fn skill_draw(input: &SkillDrawInput<'_>) -> SkillDraw {
                 ),
                 (
                     (spoke_half * cos + node.x) - spoke_outer * sin,
-                    spoke_outer * cos + spoke_half * sin + node.y,
+                    spoke_outer * cos + (spoke_half * sin + node.y),
                 ),
                 (
                     (spoke_half * cos + node.x) - spoke_inner * sin,
-                    spoke_inner * cos + spoke_half * sin + node.y,
+                    spoke_inner * cos + (spoke_half * sin + node.y),
                 ),
             ];
             if let Some(batch) = draw.last() {
                 // The spoke's per-vertex texture coordinates.
-                batch.flat_quad(
+                batch.quad(
                     corners,
                     [
                         (-0.071_428_6, 0.0),
@@ -412,6 +450,7 @@ pub fn skill_draw(input: &SkillDrawInput<'_>) -> SkillDraw {
                         (0.571_428_6, 0.7),
                         (0.571_428_6, 0.0),
                     ],
+                    spoke_ink,
                 );
             }
         }
@@ -489,7 +528,7 @@ pub fn skill_draw(input: &SkillDrawInput<'_>) -> SkillDraw {
         if !partial || last > 0 {
             draw.batch(
                 SkillProgram::Bar,
-                SkillTexture::None,
+                SkillTexture::Background,
                 Some([1.0, 0.79, 0.286, 0.5 * scale]),
             );
             if let Some(batch) = draw.last() {
@@ -510,7 +549,7 @@ pub fn skill_draw(input: &SkillDrawInput<'_>) -> SkillDraw {
         if partial {
             draw.batch(
                 SkillProgram::Bar,
-                SkillTexture::None,
+                SkillTexture::Background,
                 Some([1.0, 0.79, 0.286, 0.5 * scale]),
             );
             if let Some(batch) = draw.last() {
@@ -529,11 +568,15 @@ pub fn skill_draw(input: &SkillDrawInput<'_>) -> SkillDraw {
     }
 
     // The hover tooltip, then the learning row or the forget dialog.
-    if screen.hover > 0
-        && let Some(opacity) = selection_tip_slide(screen.hover, input.clock - input.hover_since)
+    if input.tip_code > 0
+        && let Some(opacity) =
+            selection_tip_slide(input.hovered_node, input.clock - input.hover_since)
     {
-        let ink = [0xff, 0xf8, 0xf0, low_byte(255.0 * scale * opacity)];
-        let code = screen.hover;
+        // The text takes the plain ink's 120 times the scale and the
+        // slide; the glow 0.6 of the slide times the scale, in double.
+        let ink = [0xff, 0xf8, 0xf0, low_byte(120.0 * scale * opacity)];
+        let glow = glow_alpha(opacity, scale);
+        let code = input.tip_code;
         if code & 0xff == 0 {
             let group = ((code >> 8) & 0xff) as usize;
             let name = crate::skill::SKILL_GROUP_NAMES
@@ -548,7 +591,10 @@ pub fn skill_draw(input: &SkillDrawInput<'_>) -> SkillDraw {
                 screen.unit,
                 opacity * scale,
             );
-            draw.tips.push(tip.into());
+            draw.tips.push(SkillTip {
+                alpha: glow,
+                ..tip.into()
+            });
             draw.labels.push(SkillLabel {
                 x: name_at.0,
                 y: name_at.1,
@@ -565,7 +611,10 @@ pub fn skill_draw(input: &SkillDrawInput<'_>) -> SkillDraw {
                 &input.offsets,
                 opacity * scale,
             );
-            draw.tips.push(tip.tip.into());
+            draw.tips.push(SkillTip {
+                alpha: glow,
+                ..tip.tip.into()
+            });
             if let Some(skills) = input.skills
                 && let Some((title, chosen)) = ring_node_title(skills, code)
             {
@@ -577,7 +626,7 @@ pub fn skill_draw(input: &SkillDrawInput<'_>) -> SkillDraw {
                     centred: true,
                 });
                 if !chosen {
-                    let status = node_status(skills, code, screen.ready);
+                    let status = node_status(skills, code);
                     if !status.is_empty() {
                         draw.labels.push(SkillLabel {
                             x: tip.text.0,
@@ -593,8 +642,13 @@ pub fn skill_draw(input: &SkillDrawInput<'_>) -> SkillDraw {
     }
 
     let popup = skill_popup_fade(screen.popup, screen.popup_deadline, input.clock);
-    let popup_ink = [0xff, 0xf8, 0xf0, low_byte(255.0 * scale * popup.alpha)];
     if screen.learning != 0 {
+        // The row's alpha is the popup's times the scale: its glow takes
+        // 0.6 of that times the scale again, its text and icons the plain
+        // ink's 120 times it (half for a slot with a requirement byte set),
+        // the hovered clear slot the highlight's 255 times it.
+        let row_alpha = popup.alpha * scale;
+        let popup_ink = [0xff, 0xf8, 0xf0, low_byte(120.0 * row_alpha)];
         let place = learning_node(&nodes, screen.learning);
         if let Some((x, y)) = place {
             let row: SkillLearningRow = learning_row(
@@ -604,11 +658,14 @@ pub fn skill_draw(input: &SkillDrawInput<'_>) -> SkillDraw {
                 popup.scale,
                 input.window,
                 &input.offsets,
-                popup.alpha * scale * scale,
+                row_alpha,
                 &screen.requirements,
                 screen.hover,
             );
-            draw.tips.push(row.tip.into());
+            draw.tips.push(SkillTip {
+                alpha: glow_alpha(row_alpha, scale),
+                ..row.tip.into()
+            });
             let row_group = ((screen.learning >> 8) & 0xff) as usize;
             let handles = row_group
                 .checked_sub(1)
@@ -624,10 +681,12 @@ pub fn skill_draw(input: &SkillDrawInput<'_>) -> SkillDraw {
                     atlas_quad(handle, group_cell as i32, input.group_atlas, icon.x, icon.y)
                 {
                     draw.batch(SkillProgram::Textured, SkillTexture::GroupIcons, None);
-                    let icon_ink = if icon.hovered {
-                        ink_of([0xff, 0xcc, 0x99, low_byte(255.0 * scale * popup.alpha)])
+                    let icon_ink = if icon.alpha < 1.0 {
+                        ink_of([0xff, 0xf8, 0xf0, low_byte(120.0 * row_alpha * 0.5)])
+                    } else if icon.hovered {
+                        ink_of([0xff, 0xcc, 0x99, low_byte(255.0 * row_alpha)])
                     } else {
-                        ink_of([0xff, 0xf8, 0xf0, low_byte(120.0 * scale * popup.alpha)])
+                        ink_of([0xff, 0xf8, 0xf0, low_byte(120.0 * row_alpha)])
                     };
                     if let Some(batch) = draw.last() {
                         batch.quad(corners, uvs, icon_ink);
@@ -664,9 +723,18 @@ pub fn skill_draw(input: &SkillDrawInput<'_>) -> SkillDraw {
                 popup.scale,
                 input.window,
                 &input.offsets,
-                popup.alpha * scale,
+                popup.alpha,
             );
-            draw.tips.push(dialog.tip.into());
+            // The glow takes 0.6 of the popup's alpha times the scale; the
+            // text the plain ink's 120 times the scale and the popup's
+            // alpha; the choices (once that alpha passes 0.5) the highlight
+            // under the pointer, else the plain ink, at
+            // `(alpha − 0.5) × (base × scale) × 2`.
+            draw.tips.push(SkillTip {
+                alpha: glow_alpha(popup.alpha, scale),
+                ..dialog.tip.into()
+            });
+            let popup_ink = [0xff, 0xf8, 0xf0, low_byte(120.0 * scale * popup.alpha)];
             draw.labels.push(SkillLabel {
                 x: dialog.text_left,
                 y: dialog.title_y,
@@ -682,23 +750,26 @@ pub fn skill_draw(input: &SkillDrawInput<'_>) -> SkillDraw {
                 centred: false,
             });
             if dialog.choices {
-                let choice_ink = [
-                    0xff,
-                    0xcc,
-                    0x99,
-                    low_byte(255.0 * scale * dialog.choice_alpha),
-                ];
+                let choice_ink = |code: i32| {
+                    let base = if screen.hover == code {
+                        HIGHLIGHT
+                    } else {
+                        PLAIN
+                    };
+                    let fade = (popup.alpha - 0.5) * (f32::from(base[3]) * scale) * 2.0;
+                    [base[0], base[1], base[2], low_byte(fade)]
+                };
                 draw.labels.push(SkillLabel {
                     x: dialog.yes_x,
                     y: dialog.choice_y,
-                    ink: choice_ink,
+                    ink: choice_ink(FORGET_YES),
                     text: "YES".to_string(),
                     centred: true,
                 });
                 draw.labels.push(SkillLabel {
                     x: dialog.no_x,
                     y: dialog.choice_y,
-                    ink: choice_ink,
+                    ink: choice_ink(FORGET_NO),
                     text: "NO".to_string(),
                     centred: true,
                 });
@@ -709,7 +780,7 @@ pub fn skill_draw(input: &SkillDrawInput<'_>) -> SkillDraw {
     draw
 }
 
-/// The x of the node a code names, clamped to the ring if it is not on it.
+/// The x of the node a code names (0 when no ring node shows its group).
 fn node_x(nodes: &[SkillNodePlace], code: i32) -> f32 {
     nodes
         .iter()
@@ -736,41 +807,19 @@ fn learning_node(nodes: &[SkillNodePlace], code: i32) -> Option<(f32, f32)> {
 
 /// The status line of a ring node the record does not hold, from the
 /// learning row's requirement mask of its group.
-fn node_status(skills: &[Skill; SKILLS], code: i32, ready: bool) -> &'static str {
+fn node_status(skills: &[Skill; SKILLS], code: i32) -> &'static str {
     let group = ((code >> 8) & 0xff) as usize;
     let level = (code & 0xff) as usize;
     if group == 0 || level == 0 {
         return STATUS_UNAVAILABLE;
     }
     let requirements = crate::skill::skill_requirements(group - 1, skills);
-    let _ = ready;
     match requirements.get(level - 1) {
         Some(&crate::skill::REQUIREMENT_CHOSEN) => STATUS_CHOSEN,
         Some(&crate::skill::REQUIREMENT_MISSING) => STATUS_REQUIREMENTS,
         Some(&crate::skill::REQUIREMENT_ABSENT) => STATUS_UNAVAILABLE,
         _ => "",
     }
-}
-
-/// The ring slot order a page uses, for the draw's callers.
-pub fn page_groups(page: i32) -> &'static [usize] {
-    if page > 0 { &PAGE_GROUPS } else { &RING_GROUPS }
-}
-
-/// The learning row's slot count and the empty-slot mark, re-exported so a
-/// caller can index the mask without importing `skill`.
-pub const ROW_SLOTS: usize = NODES_PER_GROUP;
-/// The clear requirement mark.
-pub const SLOT_FREE: u8 = REQUIREMENT_MET;
-
-/// A node's ring layout from its bounds.
-pub fn ring_of(screen: &SkillScreen, turn: f32) -> SkillRing {
-    screen.ring(turn)
-}
-
-/// The corner of a pentagon point, exposed for tests of the orbit bars.
-pub fn pentagon_point(slot: i32, unit: i32) -> (f32, f32) {
-    pentagon_offset(slot, unit)
 }
 
 #[cfg(test)]
@@ -806,38 +855,113 @@ mod tests {
     }
 
     #[test]
-    fn a_four_state_draws_only_degenerate_geometry() {
-        // The original keeps drawing with both fades at zero; the geometry
-        // collapses to zero-sized quads and zero alphas.
+    fn a_four_state_stops_after_the_background() {
+        // Both fades are zero, so the opening scale fails the 0.001 gate:
+        // the ring page draws nothing and page 2 only its background.
         let mut screen = screen();
         screen.state = 4;
-        let input = SkillDrawInput {
-            screen: &screen,
-            skills: None,
-            icons: &icons(),
+        let draw = skill_draw(&input_for(&screen, None, 1000));
+        assert!(draw.batches.is_empty());
+        assert_eq!(draw.opening_fade, None);
+        assert!(!draw.closing);
+        screen.page = 2;
+        let draw = skill_draw(&input_for(&screen, None, 1000));
+        assert_eq!(draw.batches.len(), 1);
+        assert_eq!(draw.batches[0].texture, SkillTexture::Background);
+        // The skin's grey at 60 × 0 + 120.
+        assert_eq!(
+            draw.batches[0].vertices[0].ink,
+            ink_of([0xc0, 0xc0, 0xc0, 120])
+        );
+        // Centred across (200 / 2), twelve units above the bottom (100 − 48),
+        // the first corner six units left and four down.
+        assert_eq!(
+            (draw.batches[0].vertices[0].x, draw.batches[0].vertices[0].y),
+            (100.0 - 24.0, 52.0 + 16.0)
+        );
+    }
+
+    const ICONS: SkillIconHandles = SkillIconHandles {
+        first: 1,
+        groups: [[2; 8]; 6],
+    };
+
+    fn input_for<'a>(
+        screen: &'a SkillScreen,
+        skills: Option<&'a [Skill; SKILLS]>,
+        clock: i32,
+    ) -> SkillDrawInput<'a> {
+        SkillDrawInput {
+            screen,
+            skills,
+            icons: &ICONS,
             group_atlas: (0x300, 0x2a0),
             single_atlas: (0x240, 0x360),
             window: 1200,
             offsets: [0, 0],
-            clock: 1000,
+            clock,
             hover_since: 0,
+            hovered_node: 0,
+            tip_code: 0,
             ready: true,
-            background_ink: [1.0; 4],
+            skin_grey: 0xc0,
+            spoke_ink: [0xff, 0xff, 0xff, 0x40],
             text_width: &measure,
-        };
-        let draw = skill_draw(&input);
-        let plates = draw
+        }
+    }
+
+    #[test]
+    fn the_spokes_take_the_skin_ink_and_the_engine_trig() {
+        let mut screen = screen();
+        screen.reveal_deadline = 0;
+        let draw = skill_draw(&input_for(&screen, None, 100));
+        let spokes = draw
             .batches
             .iter()
-            .find(|batch| batch.program == SkillProgram::Rounded)
+            .find(|batch| batch.program == SkillProgram::Textured)
             .unwrap();
-        assert!(
-            plates
-                .vertices
-                .iter()
-                .all(|vertex| vertex.x == plates.vertices[0].x)
-        );
-        assert_eq!(plates.colour.unwrap()[3], 0.0);
+        assert_eq!(spokes.colour, None);
+        assert_eq!(spokes.texture, SkillTexture::Background);
+        assert_eq!(spokes.vertices.len(), 6 * 5 * 4);
+        assert_eq!(spokes.vertices[0].ink, ink_of([0xff, 0xff, 0xff, 0x40]));
+        // Spoke 0 points straight up: sine 0, cosine 1; at unit 4 the inner
+        // end is −49.2 (single of −4 × 12.3 in double) and 18 × 4 either side.
+        let node = node_places(&screen, 1.0)[0];
+        let inner = -(4.0f64 * 12.3) as f32;
+        assert_eq!(spokes.vertices[0].x, node.x - 72.0);
+        assert_eq!(spokes.vertices[0].y, inner + node.y);
+        assert_eq!(spokes.vertices[2].x, 72.0 + node.x);
+        assert_eq!(spokes.vertices[2].y, (inner - 56.0) + (0.0 + node.y));
+        // Spoke 1 is a fifth of a turn round, by the engine's sine.
+        let (sin, cos) = sin_cos(std::f32::consts::TAU * 0.2);
+        assert_eq!(spokes.vertices[4].x, (node.x - 72.0 * cos) - inner * sin);
+        assert_eq!(opening(&draw), Some(1.0));
+    }
+
+    fn opening(draw: &SkillDraw) -> Option<f32> {
+        draw.opening_fade
+    }
+
+    #[test]
+    fn the_forget_dialog_inks_follow_the_popup_and_the_pointer() {
+        let mut screen = screen();
+        screen.reveal_deadline = 0;
+        screen.forgetting = 0x0102;
+        screen.hover = FORGET_NO;
+        let draw = skill_draw(&input_for(&screen, None, 100));
+        // Full popup, full scale: glow 0.6 (double, then single), text
+        // 120, Yes plain at (1 − 0.5) × 120 × 2 = 120, No highlighted 255.
+        assert_eq!(draw.tips[0].alpha, 0.6);
+        let title = &draw.labels[0];
+        assert_eq!(title.ink, [0xff, 0xf8, 0xf0, 120]);
+        let yes = draw
+            .labels
+            .iter()
+            .find(|label| label.text == "YES")
+            .unwrap();
+        let no = draw.labels.iter().find(|label| label.text == "NO").unwrap();
+        assert_eq!(yes.ink, [0xff, 0xf8, 0xf0, 120]);
+        assert_eq!(no.ink, [0xff, 0xcc, 0x99, 255]);
     }
 
     #[test]
@@ -855,8 +979,11 @@ mod tests {
             offsets: [0, 0],
             clock: 200,
             hover_since: 0,
+            hovered_node: 0,
+            tip_code: 0,
             ready: true,
-            background_ink: [1.0; 4],
+            skin_grey: 0xc0,
+            spoke_ink: [0xff, 0xff, 0xff, 0x40],
             text_width: &measure,
         };
         let draw = skill_draw(&input);
@@ -877,8 +1004,11 @@ mod tests {
             offsets: [0, 0],
             clock: 100,
             hover_since: 0,
+            hovered_node: 0,
+            tip_code: 0,
             ready: true,
-            background_ink: [1.0; 4],
+            skin_grey: 0xc0,
+            spoke_ink: [0xff, 0xff, 0xff, 0x40],
             text_width: &measure,
         };
         let draw = skill_draw(&input);
@@ -898,8 +1028,16 @@ mod tests {
             })
             .unwrap();
         assert_eq!(plates.vertices.len(), 24);
-        // The first node is at the ring's first slot.
-        assert_eq!(plates.vertices[0].x, nodes[0].x + 120.0);
+        // The first corner is the plate's top left, texture (0, 0).
+        assert_eq!(plates.vertices[0].x, nodes[0].x - 120.0);
+        assert_eq!(plates.vertices[0].y, nodes[0].y - 120.0);
+        assert_eq!((plates.vertices[1].u, plates.vertices[1].v), (0.0, 1.0));
+        assert_eq!(plates.vertices[1].y, nodes[0].y + 120.0);
+        // The dim starts at the origin and runs down, across and up.
+        let dim = &draw.batches[0].vertices;
+        assert_eq!((dim[0].x, dim[0].y), (0.0, 0.0));
+        assert_eq!((dim[1].x, dim[1].y, dim[1].v), (0.0, 100.0, 1.0));
+        assert_eq!((dim[3].x, dim[3].y, dim[3].u), (200.0, 0.0, 1.0));
     }
 
     #[test]
@@ -918,8 +1056,11 @@ mod tests {
             offsets: [0, 0],
             clock: 100,
             hover_since: 0,
+            hovered_node: 0,
+            tip_code: 0,
             ready: true,
-            background_ink: [1.0; 4],
+            skin_grey: 0xc0,
+            spoke_ink: [0xff, 0xff, 0xff, 0x40],
             text_width: &measure,
         };
         let draw = skill_draw(&input);
@@ -965,8 +1106,11 @@ mod tests {
             offsets: [0, 0],
             clock: 1000,
             hover_since: 0,
+            hovered_node: 0x0101,
+            tip_code: 0x0101,
             ready: true,
-            background_ink: [1.0; 4],
+            skin_grey: 0xc0,
+            spoke_ink: [0xff, 0xff, 0xff, 0x40],
             text_width: &measure,
         };
         let draw = skill_draw(&input);
@@ -974,16 +1118,5 @@ mod tests {
         assert_eq!(draw.labels.len(), 1);
         assert!(!draw.labels[0].text.is_empty());
         assert!(draw.labels[0].centred);
-    }
-
-    #[test]
-    fn the_node_window_is_clamped_and_the_slot_order_official() {
-        assert_eq!(page_groups(0), &RING_GROUPS);
-        assert_eq!(page_groups(2), &PAGE_GROUPS);
-        assert_eq!(row_slots(), 8);
-    }
-
-    fn row_slots() -> usize {
-        ROW_SLOTS
     }
 }

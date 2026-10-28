@@ -242,9 +242,9 @@ pub use skill::{
     skill_screen_key, spend_skill_experience, technique_name_for, unlearn_skill_level,
 };
 pub use skill_draw::{
-    ROW_SLOTS, SLOT_FREE, SkillBatch, SkillDraw, SkillDrawInput, SkillLabel, SkillNodePlace,
-    SkillProgram, SkillTexture, SkillTip, SkillVertex, atlas_quad as skill_atlas_quad,
-    node_places as skill_node_places, page_groups as skill_page_groups, skill_draw,
+    SkillBatch, SkillDraw, SkillDrawInput, SkillLabel, SkillNodePlace, SkillProgram, SkillTexture,
+    SkillTip, SkillVertex, atlas_quad as skill_atlas_quad, node_places as skill_node_places,
+    skill_draw,
 };
 pub use skill_gui::{
     BAR_SHADER, COLOUR, FIRST_ICON, ICON_CELL, ICON_FORMAT, ICON_SETS, ICON_UNITS, M_PRJ,
