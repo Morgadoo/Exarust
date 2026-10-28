@@ -373,6 +373,53 @@ fn the_compass_heartbeat_and_cursor() {
 }
 
 #[test]
+fn the_skins_compass_install_and_resets() {
+    assert_eq!((GUITEX_FILE, GUITEX_STEM), ("guitex.rfi", "guitex"));
+    let mut skins = GameSkins::default();
+    set_skin_unit(&mut skins, 5);
+    assert_eq!(skins.unit, 5);
+    assert!(compass_install(true).is_none());
+    let install = compass_install(false).unwrap();
+    assert_eq!(
+        (install.callback, install.texture, install.texture_flags),
+        (0x2f3, COMPASS, 0x3f0)
+    );
+    assert!(install.world_cursor && install.fade_hook);
+    assert_eq!(
+        shutdown_skin(true, false),
+        SkinShutdown {
+            close_guitex: true,
+            run_hook: false
+        }
+    );
+    // The screen reset releases a fallen curtain's hold and starts the
+    // heartbeat's fade at the clock.
+    let mut curtain = LevelCurtain { state: 2, start: 0 };
+    let mut holds = 1;
+    assert_eq!(screen_reset(&mut curtain, &mut holds, true, 700), Some(700));
+    assert_eq!((curtain.state, holds), (0, 0));
+    assert_eq!(start_heartbeat_fade(false, 700), None);
+    // The HUD's fades both end at the reset clock with no opacity.
+    let reset = reset_hud_fades(100, Some((0.5, 0.75)));
+    assert_eq!(
+        (reset.bars.end, reset.bars.opacity, reset.gauge.end),
+        (100, 0.0, 100)
+    );
+    assert_eq!(reset.hold, 0);
+    assert_eq!(reset.last, Some((0.5, 0.75)));
+    // The bars' own fade: half way up at 250 ms, full at 500, held 200 ms
+    // after the drop and half way down 1 s into the 2 s fall.
+    let mut fade = BarsFadeValue::default();
+    assert_eq!(fade.step(true, 1000), 0.0);
+    assert_eq!(fade.step(true, 1250), 0.5);
+    assert_eq!(fade.step(true, 1500), 1.0);
+    assert_eq!(fade.step(false, 6000), 1.0);
+    assert_eq!(fade.step(false, 6199), 1.0);
+    assert_eq!(fade.step(false, 7200), 0.5);
+    assert_eq!(fade.step(false, 8200), 0.0);
+}
+
+#[test]
 fn the_hud_layers() {
     let full = HudFrame {
         heartbeat: true,

@@ -24,6 +24,70 @@ pub const MENU_CURSOR: &str = "menucursor.rfi";
 /// The compass's texture.
 pub const COMPASS: &str = "compass.rfi";
 
+/// The game's own skin: the `guitex.rfi` texture, built at the interface
+/// unit. The original keeps one lazily created skin and gives it the
+/// current unit whenever the unit changes; the menu cursor's skin follows
+/// the same unit.
+pub const GUITEX_FILE: &str = "guitex.rfi";
+pub const GUITEX_STEM: &str = "guitex";
+
+/// The game skins' unit after a unit change. The original stores the unit
+/// on the GUI unit's global and on the guitex and menu-cursor skins that
+/// exist.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct GameSkins {
+    pub unit: i32,
+    pub guitex: bool,
+    pub menu_cursor: bool,
+}
+
+/// Sets the unit the game skins are built at.
+pub fn set_skin_unit(skins: &mut GameSkins, unit: i32) {
+    skins.unit = unit;
+}
+
+/// The compass's installation values: the callback id the unit registers
+/// (`0x2f3`), the texture and its flags, and the hooks the install chains.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CompassInstall {
+    pub callback: u32,
+    pub texture: &'static str,
+    pub texture_flags: u32,
+    /// The world cursor's draw hook is installed.
+    pub world_cursor: bool,
+    /// The fade hook is chained.
+    pub fade_hook: bool,
+}
+
+/// Installs the compass once: the unit's callback id, the texture with its
+/// flags (0x3f0), the world cursor's draw hook and the fade hook. A second
+/// call does nothing.
+pub fn compass_install(installed: bool) -> Option<CompassInstall> {
+    (!installed).then_some(CompassInstall {
+        callback: 0x2f3,
+        texture: COMPASS,
+        texture_flags: 0x3f0,
+        world_cursor: true,
+        fade_hook: true,
+    })
+}
+
+/// The unit's shutdown: the guitex skin is closed and the chained hook (if
+/// any) runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SkinShutdown {
+    pub close_guitex: bool,
+    pub run_hook: bool,
+}
+
+/// Closes the game skin at shutdown; the hook chain runs after it.
+pub fn shutdown_skin(guitex: bool, hook: bool) -> SkinShutdown {
+    SkinShutdown {
+        close_guitex: guitex,
+        run_hook: hook,
+    }
+}
+
 /// The screens' type tags. The high twelve bits 0xce1 mark every in-game
 /// screen; 0xce1c the inventory, container, journal and loot family.
 pub const INVENTORY_SCREEN: u32 = 0xce1c_2010;
@@ -1149,6 +1213,119 @@ pub fn menu_cursor_hotspot(size: i32) -> (i32, i32) {
         crate::form::cvtsd2si(f64::from(size) * 0.176),
         crate::form::cvtsd2si(f64::from(size) * 0.08),
     )
+}
+
+/// The HUD's two fade clocks, as the original stores them: whether each is
+/// rising, the clock it ends at and its opacity.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HudFadeClock {
+    pub rising: bool,
+    pub end: u32,
+    pub opacity: f32,
+}
+
+/// The HUD reset: both fade clocks end at the clock with no opacity, the
+/// bars' hold clock clears, and the values the bars' show rule compares
+/// come from the player again (none without one).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HudReset {
+    pub bars: HudFadeClock,
+    pub gauge: HudFadeClock,
+    pub hold: u32,
+    pub last: Option<(f32, f32)>,
+}
+
+/// The HUD's reset: both fades end at `now` with no opacity, the hold
+/// clock is 0, and the last health and focus are taken from the player.
+pub fn reset_hud_fades(now: u32, last: Option<(f32, f32)>) -> HudReset {
+    HudReset {
+        bars: HudFadeClock {
+            rising: false,
+            end: now,
+            opacity: 0.0,
+        },
+        gauge: HudFadeClock {
+            rising: false,
+            end: now,
+            opacity: 0.0,
+        },
+        hold: 0,
+        last,
+    }
+}
+
+/// Starts the heartbeat's fade-out at `now` when a heartbeat is running.
+pub fn start_heartbeat_fade(running: bool, now: u32) -> Option<u32> {
+    running.then_some(now)
+}
+
+/// The screen's reset: a fallen curtain takes one off the GUI's hold count,
+/// the curtain's state clears, and a running heartbeat starts its fade.
+/// Returns the faded heartbeat's clock.
+pub fn screen_reset(
+    curtain: &mut LevelCurtain,
+    holds: &mut i32,
+    heartbeat: bool,
+    now: u32,
+) -> Option<u32> {
+    let (_, running) = curtain.reset_with_hold(holds, heartbeat);
+    start_heartbeat_fade(running, now)
+}
+
+/// The bars' fade: the 500 ms rise and the 2 s fall (with a 200 ms hold
+/// first) of the original's show rule, on the GUI's 32-bit clock.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BarsFadeValue {
+    pub rising: bool,
+    pub end: u32,
+    pub opacity: f32,
+}
+
+impl Default for BarsFadeValue {
+    fn default() -> Self {
+        Self {
+            rising: false,
+            end: 0,
+            opacity: 0.0,
+        }
+    }
+}
+
+impl BarsFadeValue {
+    /// The opacity at `now`: the rise takes 500 ms and the fall 2 s, with
+    /// the hold making 2200 ms from full; a clock whose end has passed
+    /// shows them fully (rise) or not at all (fall).
+    pub fn step(&mut self, shown: bool, now: u32) -> f32 {
+        if shown {
+            if !self.rising {
+                self.end =
+                    (crate::form::cvtss2si((1.0 - self.opacity) * 500.0) as u32).wrapping_add(now);
+                self.rising = true;
+            }
+            self.opacity = if self.end < now {
+                1.0
+            } else {
+                1.0 - (self.end - now) as f32 * 0.002
+            };
+        } else {
+            if self.rising {
+                self.rising = false;
+                self.end = if self.opacity < 1.0 {
+                    (crate::form::cvtss2si(self.opacity * 2000.0) as u32).wrapping_add(now)
+                } else {
+                    now.wrapping_add(0x898)
+                };
+            }
+            self.opacity = if self.end < now {
+                0.0
+            } else if now < self.end.wrapping_sub(2000) {
+                1.0
+            } else {
+                (self.end - now) as f32 * 0.0005
+            };
+        }
+        self.opacity
+    }
 }
 
 /// One pass of the in-game HUD's draw.

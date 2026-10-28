@@ -25,7 +25,8 @@ pub struct FormMetrics {
 }
 
 impl FormMetrics {
-    /// The minimum horizontal scrollbar thumb (a skin value, 9).
+    /// The horizontal scrollbar's smallest thumb at unit 4
+    /// (`2·unit + 1`, a skin value of 9); other units scale it.
     pub const MIN_THUMB: i32 = 9;
 
     /// `6·unit − border` (the skin's base measure).
