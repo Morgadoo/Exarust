@@ -132,6 +132,7 @@ impl Plugin for TextureStreamPlugin {
 fn rebind_replaced_images(
     mut events: MessageReader<AssetEvent<Image>>,
     materials: Option<ResMut<Assets<ExaMaterial>>>,
+    mut flames: Option<ResMut<Assets<exa_render::flame::FlameMaterial>>>,
 ) {
     let replaced: HashSet<AssetId<Image>> = events
         .read()
@@ -140,12 +141,24 @@ fn rebind_replaced_images(
             _ => None,
         })
         .collect();
-    let Some(mut materials) = materials else {
-        return;
-    };
     if replaced.is_empty() {
         return;
     }
+    if let Some(flames) = flames.as_mut() {
+        // The flame material binds its particle texture directly, so a
+        // streamed fire texture rebuilds its bind group the same way.
+        let touched: Vec<AssetId<exa_render::flame::FlameMaterial>> = flames
+            .iter()
+            .filter(|(_, material)| replaced.contains(&material.texture.id()))
+            .map(|(id, _)| id)
+            .collect();
+        for id in touched {
+            let _ = flames.get_mut(id).map(bevy::asset::AssetMut::into_inner);
+        }
+    }
+    let Some(mut materials) = materials else {
+        return;
+    };
     let touched: Vec<AssetId<ExaMaterial>> = materials
         .iter()
         .filter(|(_, material)| binds_any(material, &replaced))
@@ -212,18 +225,35 @@ fn run_texture_loader(
             (Some(game), Some(pool)) => {
                 let data = game.0.clone();
                 let source = request.source.clone();
+                let pack = request.pack;
                 let (space, flags) = (request.space, request.flags);
                 let task = pool.spawn(async move {
-                    let bytes = data.texture(&source)?;
-                    texture::decode_uploaded(bytes, space, flags, &settings, bc)
+                    // The load keeps the pack its record was found in, as the
+                    // original keeps the provider index.
+                    let bytes = match pack {
+                        Some(kind) => data.pack(kind).and_then(|p| p.get(&source)),
+                        None => data.texture(&source),
+                    }?;
+                    texture::decode_entry(&source, bytes, space, flags, &settings, bc)
                 });
                 loader.decoding.push_back((request, task));
             }
             // No installation (a tool or a test without the game) or no pool:
             // the request fails and uploads the original's placeholder.
             (Some(game), None) => {
-                let decoded = game.0.texture(&request.source).and_then(|b| {
-                    texture::decode_uploaded(b, request.space, request.flags, &settings, bc)
+                let bytes = match request.pack {
+                    Some(kind) => game.0.pack(kind).and_then(|p| p.get(&request.source)),
+                    None => game.0.texture(&request.source),
+                };
+                let decoded = bytes.and_then(|b| {
+                    texture::decode_entry(
+                        &request.source,
+                        b,
+                        request.space,
+                        request.flags,
+                        &settings,
+                        bc,
+                    )
                 });
                 loader.stream.finish_decode(request, decoded);
             }
@@ -282,35 +312,41 @@ mod tests {
         Some((app, data))
     }
 
+    /// Runs `f` with a loader over the app's assets and cache.
+    fn with_loader<T>(
+        app: &mut App,
+        data: &crate::GameData,
+        f: impl FnOnce(&mut crate::ModelLoader<'_>) -> T,
+    ) -> T {
+        app.world_mut().resource_scope(
+            |world: &mut World, mut cache: bevy::ecs::change_detection::Mut<ModelCache>| {
+                let mut images = world.resource_mut::<Assets<Image>>();
+                let mut meshes = Assets::<Mesh>::default();
+                let mut materials = Assets::<exa_render::material::ExaMaterial>::default();
+                let mut loader = crate::ModelLoader {
+                    game: data,
+                    cache: &mut cache,
+                    meshes: &mut meshes,
+                    materials: &mut materials,
+                    images: &mut images,
+                    bc_supported: true,
+                };
+                f(&mut loader)
+            },
+        )
+    }
+
     /// Requests `name`; with `now`, through the synchronous priority path.
     fn request(app: &mut App, data: &crate::GameData, name: &str, now: bool) -> Handle<Image> {
-        app.world_mut()
-            .resource_scope(
-                |world: &mut World, mut cache: bevy::ecs::change_detection::Mut<ModelCache>| {
-                    let mut images = world.resource_mut::<Assets<Image>>();
-                    let mut meshes = Assets::<Mesh>::default();
-                    let mut materials = Assets::<exa_render::material::ExaMaterial>::default();
-                    let mut loader = crate::ModelLoader {
-                        game: data,
-                        cache: &mut cache,
-                        meshes: &mut meshes,
-                        materials: &mut materials,
-                        images: &mut images,
-                        bc_supported: true,
-                    };
-                    let texture = if now {
-                        loader.texture_now(
-                            name,
-                            texture::ColorSpace::Srgb,
-                            texture::default_flags(),
-                        )
-                    } else {
-                        loader.texture(name, texture::ColorSpace::Srgb)
-                    };
-                    texture.map(|(handle, _)| handle)
-                },
-            )
-            .unwrap_or_else(|| panic!("texture {name} is shipped"))
+        with_loader(app, data, |loader| {
+            let texture = if now {
+                loader.texture_now(name, texture::ColorSpace::Srgb, texture::default_flags())
+            } else {
+                loader.texture(name, texture::ColorSpace::Srgb)
+            };
+            texture.map(|(handle, _)| handle)
+        })
+        .unwrap_or_else(|| panic!("texture {name} is shipped"))
     }
 
     fn width(app: &App, handle: &Handle<Image>) -> u32 {
@@ -319,6 +355,75 @@ mod tests {
             .get(handle)
             .map(|image| image.texture_descriptor.size.width)
             .unwrap_or(0)
+    }
+
+    /// The terrain path looks the record up first and otherwise queues a
+    /// load behind the placeholder even with the manager's general streaming
+    /// switch off; a second call reuses the live record without queueing.
+    #[test]
+    fn the_terrain_path_queues_once_and_then_reuses_the_record() {
+        let Some((mut app, data)) = streaming_app() else {
+            return;
+        };
+        app.world_mut()
+            .resource_mut::<ModelCache>()
+            .textures
+            .set_streaming(false);
+        let first = with_loader(&mut app, &data, |loader| {
+            loader.texture_stream_first(
+                "spatter01",
+                texture::ColorSpace::Srgb,
+                texture::default_flags(),
+            )
+        })
+        .expect("the image is shipped")
+        .0;
+        assert_eq!(width(&app, &first), 1, "the placeholder first");
+        assert_eq!(
+            app.world()
+                .resource::<ModelCache>()
+                .textures
+                .queued_loads()
+                .len(),
+            1
+        );
+        // A live record (even the placeholder) wins without another load.
+        let second = with_loader(&mut app, &data, |loader| {
+            loader.texture_existing("spatter01", texture::ColorSpace::Srgb)
+        })
+        .expect("the record is live");
+        assert_eq!(second.0, first);
+        let third = with_loader(&mut app, &data, |loader| {
+            loader.texture_stream_first(
+                "spatter01",
+                texture::ColorSpace::Srgb,
+                texture::default_flags(),
+            )
+        })
+        .expect("the record is live");
+        assert_eq!(third.0, first);
+        assert_eq!(
+            app.world()
+                .resource::<ModelCache>()
+                .textures
+                .queued_loads()
+                .len(),
+            1
+        );
+        // A name that is not live and not shipped leaves no handle.
+        assert!(
+            with_loader(&mut app, &data, |loader| loader
+                .texture_existing("no_such_image_name", texture::ColorSpace::Srgb))
+            .is_none()
+        );
+        assert!(
+            with_loader(&mut app, &data, |loader| loader.texture_stream_first(
+                "no_such_image_name",
+                texture::ColorSpace::Srgb,
+                texture::default_flags()
+            ))
+            .is_none()
+        );
     }
 
     /// The streaming path decodes a shipped image on the task pool and
@@ -446,13 +551,15 @@ mod tests {
     }
 
     /// A material that binds an image is touched when the image is replaced
-    /// under its handle, and one that does not is left alone.
+    /// under its handle, and one that does not is left alone; a flame
+    /// material, which binds its particle texture directly, is touched too.
     #[test]
     fn replacing_an_image_touches_the_materials_that_bind_it() {
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, bevy::asset::AssetPlugin::default()))
             .init_asset::<Image>()
             .init_asset::<ExaMaterial>()
+            .init_asset::<exa_render::flame::FlameMaterial>()
             .add_systems(Update, rebind_replaced_images);
         let (image, other) = {
             let mut images = app.world_mut().resource_mut::<Assets<Image>>();
@@ -477,6 +584,12 @@ mod tests {
             });
             (bound, unbound)
         };
+        let flame = app
+            .world_mut()
+            .resource_mut::<Assets<exa_render::flame::FlameMaterial>>()
+            .add(exa_render::flame::FlameMaterial {
+                texture: image.clone(),
+            });
         // Settle the creation events, then replace the image.
         app.update();
         app.update();
@@ -496,5 +609,15 @@ mod tests {
         }
         assert!(modified.contains(&bound.id()));
         assert!(!modified.contains(&unbound.id()));
+        let events = app
+            .world()
+            .resource::<Messages<AssetEvent<exa_render::flame::FlameMaterial>>>();
+        let mut cursor = events.get_cursor();
+        assert!(
+            cursor
+                .read(events)
+                .any(|event| matches!(event, AssetEvent::Modified { id } if *id == flame.id())),
+            "the flame material is rebound"
+        );
     }
 }

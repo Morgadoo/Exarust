@@ -183,6 +183,14 @@ impl GameData {
     /// Finds an image by bare name (no extension), searching the texture
     /// packs first and the resource pack (where entries keep `.rfi`) last.
     pub fn texture(&self, name: &str) -> Option<&[u8]> {
+        self.texture_in(name).map(|(_, _, bytes)| bytes)
+    }
+
+    /// [`GameData::texture`] with the pack and exact entry name that held the
+    /// image: the loader keeps these with a queued load, as the original
+    /// keeps the provider and image index it found. A later lookup cannot
+    /// drift to another pack.
+    pub fn texture_in(&self, name: &str) -> Option<(PackKind, String, &[u8])> {
         const PACKS: [PackKind; 5] = [
             PackKind::Textures,
             PackKind::Apparel,
@@ -193,7 +201,8 @@ impl GameData {
         let with_ext = format!("{name}.rfi");
         PACKS.iter().find_map(|&kind| {
             let pack = self.pack(kind)?;
-            pack.get(name).or_else(|| pack.get(&with_ext))
+            let entry = pack.find(name).or_else(|| pack.find(&with_ext))?;
+            Some((kind, entry.name.clone(), pack.bytes(entry)))
         })
     }
 

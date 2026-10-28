@@ -409,6 +409,22 @@ pub fn decode_uploaded(
     settings: &TextureSettings,
     bc_supported: bool,
 ) -> Option<(Image, bool)> {
+    decode_entry("", bytes, space, flags, settings, bc_supported)
+}
+
+/// [`decode_uploaded`] for a named entry: the format dispatch runs first
+/// (see [`crate::image_format`]), then the `.rfi` decoder. A name with an
+/// unregistered extension or bytes that are not an image give `None`, which
+/// the caller shows as the original's grey placeholder.
+pub fn decode_entry(
+    name: &str,
+    bytes: &[u8],
+    space: ColorSpace,
+    flags: u32,
+    settings: &TextureSettings,
+    bc_supported: bool,
+) -> Option<(Image, bool)> {
+    crate::image_format::reader_for(name, bytes).ok()?;
     let rfi = Rfi::parse(bytes).ok()?;
     let alpha = has_alpha(&rfi);
     rfi_to_texture(&rfi, space, bc_supported, flags, settings)
@@ -1528,6 +1544,42 @@ mod level_tests {
         assert_eq!(image.texture_descriptor.size.width, 2);
         assert_eq!(image.texture_descriptor.mip_level_count, 2);
         assert!(decode_uploaded(b"not an image", ColorSpace::Srgb, 0, &settings, true).is_none());
+        // A named entry is dispatched before the decoder: `.rfi` reads it,
+        // an unregistered extension does not, whatever the bytes.
+        assert!(
+            decode_entry(
+                "wall01n.rfi",
+                &bytes,
+                ColorSpace::Srgb,
+                default_flags(),
+                &settings,
+                true
+            )
+            .is_some()
+        );
+        assert!(
+            decode_entry(
+                "emblem.dds",
+                &bytes,
+                ColorSpace::Srgb,
+                default_flags(),
+                &settings,
+                true
+            )
+            .is_none()
+        );
+        // A bare name passes on its magic.
+        assert!(
+            decode_entry(
+                "wall01n",
+                &bytes,
+                ColorSpace::Srgb,
+                default_flags(),
+                &settings,
+                true
+            )
+            .is_some()
+        );
     }
 
     /// A cube map: six faces, each a 2x2 RGB8 base filled with its face
@@ -1699,6 +1751,14 @@ mod corpus_tests {
                 if FileKind::detect(bytes) != FileKind::Image {
                     continue;
                 }
+                // The name dispatch finds the reader for every shipped
+                // image, whatever dots the entry name carries.
+                assert_eq!(
+                    crate::image_format::reader_for(&entry.name, bytes),
+                    Ok(crate::image_format::ImageFormat::Rfi),
+                    "{}",
+                    entry.name
+                );
                 let Ok(rfi) = Rfi::parse(bytes) else {
                     continue;
                 };

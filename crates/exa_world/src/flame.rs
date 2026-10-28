@@ -110,10 +110,10 @@ fn load_flame_assets(
         images: &mut images,
         bc_supported: exa_assets::model::bc_supported(support.as_deref()),
     };
-    let Some((small, _)) = loader.texture_sync(SMALL_TEXTURE, ColorSpace::Srgb) else {
+    let Some((small, _)) = loader.texture(SMALL_TEXTURE, ColorSpace::Srgb) else {
         return;
     };
-    let Some((large, _)) = loader.texture_sync(LARGE_TEXTURE, ColorSpace::Srgb) else {
+    let Some((large, _)) = loader.texture(LARGE_TEXTURE, ColorSpace::Srgb) else {
         return;
     };
     commands.insert_resource(FlameAssets {

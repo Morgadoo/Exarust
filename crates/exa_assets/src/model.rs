@@ -223,6 +223,13 @@ pub(crate) fn diffuse_shading_flags(word: u32, grey: bool) -> u32 {
     flags
 }
 
+/// The shading flag a specular or emissive slot adds when its image is a
+/// single-channel BC4 upload: the shader must repeat the red channel, as it
+/// does for a grey diffuse.
+pub(crate) fn grey_slot_flag(grey: bool, flag: u32) -> u32 {
+    if grey { flag } else { 0 }
+}
+
 /// Everything conversion needs from the world.
 pub struct ModelLoader<'a> {
     pub game: &'a GameData,
@@ -797,14 +804,17 @@ impl ModelLoader<'_> {
             } else {
                 base_flags
             };
-            mat.specular_map = self.texture_with_flags(t, space, flags).map(|t| t.0);
+            if let Some(info) = self.texture_info(t, space, flags) {
+                mat.specular_map = Some(info.image);
+                mat.params.flags |= grey_slot_flag(info.grey, flags::GREY_SPECULAR);
+            }
         }
         if maps.emissive
             && let Some(t) = m.texture(TextureSlot::Emissive)
+            && let Some(info) = self.texture_info(t, ColorSpace::Srgb, base_flags)
         {
-            mat.emissive_map = self
-                .texture_with_flags(t, ColorSpace::Srgb, base_flags)
-                .map(|t| t.0);
+            mat.emissive_map = Some(info.image);
+            mat.params.flags |= grey_slot_flag(info.grey, flags::GREY_EMISSIVE);
         }
         if maps.opacity
             && let Some(t) = m.texture(TextureSlot::Opacity)
@@ -1321,6 +1331,34 @@ impl ModelLoader<'_> {
         }
     }
 
+    /// Gets a live texture's image without creating or loading a record: the
+    /// manager's lookup that takes a reference. `None` when no record holds
+    /// the name. A streamed record still holding its placeholder returns the
+    /// placeholder, as the original's lookup returns the record it has.
+    pub fn texture_existing(&mut self, name: &str, space: ColorSpace) -> CachedTexture {
+        let key = TextureKey::new(name, space);
+        let record = self.cache.textures.find(&key)?;
+        record.image.clone().map(|image| (image, record.alpha))
+    }
+
+    /// Gets a live texture, or else queues its load behind the original's
+    /// 1×1 placeholder: the terrain material path, which looks the record up
+    /// first and never decodes on the caller. Unlike
+    /// [`ModelLoader::texture_with_flags`] it queues even when the manager's
+    /// general streaming switch is off, as this routine always does; a name
+    /// the game does not ship leaves no handle.
+    pub fn texture_stream_first(
+        &mut self,
+        name: &str,
+        space: ColorSpace,
+        flags: u32,
+    ) -> CachedTexture {
+        if let Some(existing) = self.texture_existing(name, space) {
+            return Some(existing);
+        }
+        self.texture_load(name, space, flags, true)
+    }
+
     /// Loads a texture now, on the calling thread: the original's priority
     /// path (its synchronous create, or its "load this one first" wait). A
     /// load still queued for the loader is dropped, so it cannot upload a
@@ -1358,10 +1396,16 @@ impl ModelLoader<'_> {
             .is_some_and(|record| record.pending);
         if created || (placeholder && !streaming) {
             let settings = *self.cache.textures.settings();
-            let Some(bytes) = self.game.texture(key.name.as_str()) else {
+            let Some((pack, entry, bytes)) = self.game.texture_in(key.name.as_str()) else {
                 self.warn_once(format!("texture {name:?} not found"));
                 return None;
             };
+            if let Err(e) = crate::image_format::reader_for(&entry, bytes) {
+                self.warn_once(format!("texture {name:?}: {e}"));
+                let image = crate::texture::placeholder_image(space, flags, &settings);
+                let handle = self.store_texture(key, image, false);
+                return Some((handle, false));
+            }
             let rfi = match Rfi::parse(bytes) {
                 Ok(rfi) => rfi,
                 Err(e) => {
@@ -1384,11 +1428,12 @@ impl ModelLoader<'_> {
                 self.cache.textures.set_pending(&key, true);
                 self.cache
                     .textures
-                    .queue(crate::stream::TextureRequest::new(
+                    .queue(crate::stream::TextureRequest::from_entry(
                         key.name.as_str(),
                         space,
                         flags,
-                        key.name.as_str(),
+                        pack,
+                        entry,
                     ));
                 return Some((handle, alpha));
             }
@@ -3039,6 +3084,31 @@ mod tests {
             diffuse_shading_flags(0x702F0, true),
             exa_render::material::flags::GREY_DIFFUSE
                 | exa_render::material::flags::SKIP_DIFFUSE_BIAS
+        );
+    }
+
+    /// A BC4 image in the specular or emissive slot is one grey channel
+    /// too: the shader repeats red over rgb on those paths, as the
+    /// hardware's luminance upload did in the original.
+    #[test]
+    fn the_specular_and_emissive_slots_take_the_grey_flag() {
+        use exa_render::material::flags;
+        assert_eq!(grey_slot_flag(false, flags::GREY_SPECULAR), 0);
+        assert_eq!(
+            grey_slot_flag(true, flags::GREY_SPECULAR),
+            flags::GREY_SPECULAR
+        );
+        assert_eq!(
+            grey_slot_flag(true, flags::GREY_EMISSIVE),
+            flags::GREY_EMISSIVE
+        );
+        // The three slot bits are distinct and do not overlap the diffuse
+        // bias skip.
+        assert_eq!(flags::GREY_SPECULAR, 1 << 26);
+        assert_eq!(flags::GREY_EMISSIVE, 1 << 27);
+        assert_eq!(
+            flags::GREY_DIFFUSE | flags::GREY_SPECULAR | flags::GREY_EMISSIVE,
+            0x0D00_0000
         );
     }
 

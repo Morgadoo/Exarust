@@ -206,6 +206,183 @@ pub const ARRIVAL_PLAYER_KIND: u32 = 15;
 /// The player's operative kind under [`SESSION_START_WORD`].
 pub const SESSION_START_PLAYER_KIND: u32 = 18;
 
+/// The flags word bits the level object builder copies from the placed
+/// object's own flags word onto its root node (the rest of the node's word
+/// stays): the static bit `0x80000` and bits `0x100000`, `0x200000` and
+/// `0x800000`, whose meanings are not traced. The original clears exactly
+/// these bits first (`node & 0xFF47FFFF`).
+pub const OBJECT_NODE_FLAGS: u32 = 0x00B8_0000;
+
+/// The placement flag that makes the root node level geometry
+/// (`PlacedObject::STATIC`): the builder adds the node's own static bit.
+pub const PLACEMENT_STATIC: u32 = 0x10;
+
+/// The root node's static bit.
+pub const NODE_STATIC: u32 = 0x0008_0000;
+
+/// The root node word a placed object gives its model: the object's own
+/// flags under [`OBJECT_NODE_FLAGS`] replace that field of the node's word,
+/// and the placement's static bit adds the node's static flag. The original
+/// copies no other bit.
+pub fn root_node_flags(node: u32, object: u32, placement: u32) -> u32 {
+    let mut word = (node & !OBJECT_NODE_FLAGS) | (object & OBJECT_NODE_FLAGS);
+    if placement & PLACEMENT_STATIC != 0 {
+        word |= NODE_STATIC;
+    }
+    word
+}
+
+/// The tags of the saved sub-chunks a streamed character carries: the flat
+/// pose, the motion state, the pose tree and the AI home. The character
+/// builder copies the whole trailing chunk list onto the stage node, then
+/// scans it for these four; other tags stay in the copied bytes unread.
+pub const SAVED_FLAT_POSE: u32 = 0xCAC0_E100;
+pub const SAVED_MOTION: u32 = 0xCAC0_EA00;
+pub const SAVED_POSE_TREE: u32 = 0xCAC0_EB00;
+pub const SAVED_AI_HOME: u32 = 0xCACE_0F77;
+
+/// The saved chunks of one streamed character, by tag. A tag that appears
+/// more than once keeps its last occurrence, as the builder overwrites its
+/// pointer each time it matches.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SavedChunks<'a> {
+    pub flat_pose: Option<&'a [u8]>,
+    pub motion: Option<&'a [u8]>,
+    pub pose_tree: Option<&'a [u8]>,
+    pub ai_home: Option<&'a [u8]>,
+}
+
+/// Reads a streamed character's saved chunk blob: a 32-bit length of the
+/// bytes that follow it, then `{u32 tag, u32 size, bytes}` records. The
+/// builder's scan starts at byte 4 and runs while the next record's header
+/// lies within the stored length; a record whose declared size runs past the
+/// slice ends the scan, and a size that would not move the offset ends it
+/// too, so malformed input reads nothing more rather than looping.
+pub fn saved_chunks(blob: &[u8]) -> SavedChunks<'_> {
+    let mut chunks = SavedChunks::default();
+    if blob.len() < 4 {
+        return chunks;
+    }
+    let declared = u32::from_le_bytes([blob[0], blob[1], blob[2], blob[3]]) as usize;
+    // The length counts the bytes after its own four, so the record area
+    // ends at 4 + length (the builder's loop bound, made safe).
+    let limit = declared.saturating_add(4).min(blob.len());
+    let mut at = 4usize;
+    while at + 8 <= limit {
+        let tag = u32::from_le_bytes([blob[at], blob[at + 1], blob[at + 2], blob[at + 3]]);
+        let size =
+            u32::from_le_bytes([blob[at + 4], blob[at + 5], blob[at + 6], blob[at + 7]]) as usize;
+        let start = at + 8;
+        let Some(end) = start.checked_add(size).filter(|end| *end <= blob.len()) else {
+            break;
+        };
+        let body = &blob[start..end];
+        match tag {
+            SAVED_FLAT_POSE => chunks.flat_pose = Some(body),
+            SAVED_MOTION => chunks.motion = Some(body),
+            SAVED_POSE_TREE => chunks.pose_tree = Some(body),
+            SAVED_AI_HOME => chunks.ai_home = Some(body),
+            _ => {}
+        }
+        if end <= at {
+            break;
+        }
+        at = end;
+    }
+    chunks
+}
+
+/// The constant the character builders multiply a stored 16-bit size word
+/// by: `1 / 65535` as a double, so a full word `0xFFFF` is exactly one.
+pub const SIZE_WORD_SCALE: f64 = 1.0 / 65535.0;
+
+/// The two size words a streamed character's record holds, defaulted as its
+/// builder does: when the second word is zero both become `0xFFFF`, which
+/// [`SIZE_WORD_SCALE`] scales to one, so an unset pair is the body's own
+/// size. Only the streamed builder defaults, and only for a body that is not
+/// dead (see [`streamed_size_words`]); the request builder scales the words
+/// as stored.
+pub fn normalised_size_words(words: [u16; 2]) -> [u16; 2] {
+    if words[1] == 0 { [u16::MAX; 2] } else { words }
+}
+
+/// The size words the streamed character builder scales: a dead body
+/// (condition [`exa_formats::characters::DEAD`]) goes to the corpse builder
+/// with its words as stored, any other body takes
+/// [`normalised_size_words`] first.
+pub fn streamed_size_words(words: [u16; 2], condition: i32) -> [u16; 2] {
+    if condition == exa_formats::characters::DEAD {
+        words
+    } else {
+        normalised_size_words(words)
+    }
+}
+
+/// One of the character's two stored size words, scaled by the body's base
+/// scale for its scale field: the stored word widened to double, times
+/// [`SIZE_WORD_SCALE`], times the base scale, narrowed to single precision
+/// in that order. The builder writes the second word first.
+///
+/// The two words the builder reads from the character definition are the
+/// values that size the body; the record layout's field names are not
+/// traced here. **[guess: the word pair is the body's two size words]**
+pub fn stored_size_scale(base: f32, stored: u16) -> f32 {
+    (f64::from(base) * (f64::from(stored) * SIZE_WORD_SCALE)) as f32
+}
+
+/// The character's two scale fields in the order the builder writes them:
+/// the second word's scale first, then the first word's. The words are
+/// scaled as given: the streamed builder passes them through
+/// [`streamed_size_words`] first, the request builder does not.
+pub fn character_scales(base: f32, words: [u16; 2]) -> (f32, f32) {
+    let [first, second] = words;
+    (
+        stored_size_scale(base, second),
+        stored_size_scale(base, first),
+    )
+}
+
+/// The stream request flags the character builder reads: bit `0x2000` marks
+/// the built character's node with its own bit `0x1000`; bit `0x1000` skips
+/// both the AI start and the saved AI pose restore.
+pub const MARK_NODE: u32 = 0x2000;
+pub const NO_AI_START: u32 = 0x1000;
+/// The node flag [`MARK_NODE`] sets.
+pub const NODE_MARK: u32 = 0x1000;
+
+/// The character node word for a request: the request's [`MARK_NODE`] adds
+/// [`NODE_MARK`] to the node's own word.
+pub fn character_node_flags(node: u32, request: u32) -> u32 {
+    if request & MARK_NODE != 0 {
+        node | NODE_MARK
+    } else {
+        node
+    }
+}
+
+/// A character's saved AI state, which the builders restore into the
+/// controller right after starting its AI: the request builder from the
+/// request's saved state unless the request sets [`NO_AI_START`], the
+/// streamed builder from the saved AI home chunk. A position and a facing. The fourth word is copied into the controller's next field;
+/// it is read as a facing angle. **[guess: the fourth word is a heading]**
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SavedAiPose {
+    pub position: [f32; 3],
+    pub heading: f32,
+}
+
+/// Reads the 16 bytes of a saved AI state (a request's, or the saved AI home
+/// chunk's): the position as three floats, then a fourth word. Any shorter input has no
+/// pose, and the builder starts the AI from its own state instead.
+pub fn saved_ai_pose(bytes: &[u8]) -> Option<SavedAiPose> {
+    let bytes: &[u8; 16] = bytes.get(..16)?.try_into().ok()?;
+    let float = |at: usize| f32::from_le_bytes(bytes[at..at + 4].try_into().expect("4 bytes"));
+    Some(SavedAiPose {
+        position: [float(0), float(4), float(8)],
+        heading: float(12),
+    })
+}
+
 /// The builders the scheduler calls. The original's stream thread calls into
 /// the database, character and item factories; Exarust supplies closures
 /// over its own loaders.
@@ -1318,6 +1495,170 @@ mod tests {
         assert_eq!(finished.len(), 1);
         assert_eq!(finished[0].node, 11);
         assert!(stream.wait_for_characters(&mut builders, || {}).is_empty());
+    }
+
+    /// A tag, its payload and the eight-byte header before it.
+    fn saved(tag: u32, body: &[u8]) -> Vec<u8> {
+        let mut out = tag.to_le_bytes().to_vec();
+        out.extend_from_slice(&(body.len() as u32).to_le_bytes());
+        out.extend_from_slice(body);
+        out
+    }
+
+    /// A saved blob: its total length, then the records.
+    fn saved_blob(records: &[Vec<u8>]) -> Vec<u8> {
+        let mut out = vec![0u8; 4];
+        for record in records {
+            out.extend_from_slice(record);
+        }
+        // The stored length counts the bytes after its own four, as the
+        // character builder writes the remaining chunk bytes.
+        let payload = (out.len() - 4) as u32;
+        out[..4].copy_from_slice(&payload.to_le_bytes());
+        out
+    }
+
+    /// The saved-chunk scan starts after the stored length and keeps the four
+    /// tags the character builders replay; unknown tags and their payloads
+    /// are stepped over. A short last body is read too: the bound covers the
+    /// bytes after the length.
+    #[test]
+    fn a_streamed_character_saved_chunks_are_found_by_tag() {
+        let pose = [1u8, 2, 3, 4];
+        let ai = [9u8, 8];
+        let blob = saved_blob(&[
+            saved(0xCAC0_0001, &[7; 5]),
+            saved(SAVED_AI_HOME, &ai),
+            saved(SAVED_FLAT_POSE, &pose),
+        ]);
+        let chunks = saved_chunks(&blob);
+        assert_eq!(chunks.flat_pose, Some(&pose[..]));
+        assert_eq!(chunks.ai_home, Some(&ai[..]));
+        assert_eq!(chunks.motion, None);
+        assert_eq!(chunks.pose_tree, None);
+        // A one-byte body in the last record is still found: the length is
+        // the payload's, and the header of that record lies inside it.
+        let last = saved_blob(&[saved(SAVED_POSE_TREE, &[5])]);
+        assert_eq!(last[..4], 9u32.to_le_bytes());
+        assert_eq!(saved_chunks(&last).pose_tree, Some(&[5u8][..]));
+        // A record whose header lies past the stored payload is not read,
+        // even though the buffer holds its bytes.
+        let mut shorter = blob.clone();
+        shorter[..4].copy_from_slice(&10u32.to_le_bytes());
+        assert_eq!(saved_chunks(&shorter).flat_pose, None);
+        assert_eq!(saved_chunks(&shorter).ai_home, None);
+        // A repeated tag keeps its last occurrence.
+        let blob = saved_blob(&[saved(SAVED_MOTION, &[1]), saved(SAVED_MOTION, &[2, 3])]);
+        assert_eq!(saved_chunks(&blob).motion, Some(&[2u8, 3][..]));
+    }
+
+    /// Malformed blobs are total: a short header, a record whose bytes the
+    /// slice does not hold and a zero-length loop all end the scan.
+    #[test]
+    fn saved_chunks_are_total_on_malformed_blobs() {
+        assert_eq!(saved_chunks(&[]), SavedChunks::default());
+        assert_eq!(saved_chunks(&[1, 2, 3]), SavedChunks::default());
+        let mut trunc = (40u32).to_le_bytes().to_vec();
+        trunc.extend_from_slice(&SAVED_FLAT_POSE.to_le_bytes());
+        trunc.extend_from_slice(&100u32.to_le_bytes());
+        trunc.extend_from_slice(&[1, 2, 3]);
+        assert_eq!(saved_chunks(&trunc), SavedChunks::default());
+        // A valid blob cut inside its last body loses that record only.
+        let mut cut = saved_blob(&[saved(SAVED_MOTION, &[1]), saved(SAVED_FLAT_POSE, &[2, 3])]);
+        cut.truncate(cut.len() - 1);
+        assert_eq!(saved_chunks(&cut).motion, Some(&[1u8][..]));
+        assert_eq!(saved_chunks(&cut).flat_pose, None);
+        // A zero size is an empty payload and the scan goes on: the next
+        // record's header is eight bytes further.
+        let mut blob = (16u32).to_le_bytes().to_vec();
+        blob.extend_from_slice(&SAVED_MOTION.to_le_bytes());
+        blob.extend_from_slice(&0u32.to_le_bytes());
+        blob.extend_from_slice(&saved(SAVED_POSE_TREE, &[5]));
+        assert_eq!(saved_chunks(&blob).motion, Some(&[][..]));
+        assert_eq!(saved_chunks(&blob).pose_tree, Some(&[5u8][..]));
+    }
+
+    /// The size word is scaled by 1/65535 in double precision, not by
+    /// 1/65536: at half scale the two differ in the single-precision result.
+    #[test]
+    fn a_stored_size_word_scales_by_one_over_65535() {
+        assert_eq!(stored_size_scale(1.0, 0), 0.0);
+        assert_eq!(stored_size_scale(1.0, 32768), 0.500_007_6);
+        assert_ne!(stored_size_scale(1.0, 32768), 0.5);
+        // A full word is exactly one.
+        assert_eq!(SIZE_WORD_SCALE.to_bits(), 0x3EF0_0010_0010_0010);
+        assert_eq!(stored_size_scale(1.0, 65535), 1.0);
+        assert_eq!(stored_size_scale(1.0, 21845), 0.333_333_34);
+        // The base scale multiplies after the word's factor, in double.
+        assert_eq!(stored_size_scale(0.5, 32768), 0.250_003_8);
+        // NaN propagates through the double multiply.
+        assert!(stored_size_scale(f32::NAN, 1).is_nan());
+    }
+
+    /// A zero second size word means "unset" to the streamed builder: both
+    /// become 0xFFFF, whose scale is exactly one, unless the body is dead;
+    /// the builder writes the second word's field before the first's.
+    #[test]
+    fn an_unset_size_pair_defaults_to_full_and_scales_to_one() {
+        assert_eq!(normalised_size_words([0x8000, 0]), [0xFFFF, 0xFFFF]);
+        assert_eq!(
+            normalised_size_words([0x8000, 0x4000]),
+            [0x8000, 0x4000],
+            "a set pair stays"
+        );
+        let dead = exa_formats::characters::DEAD;
+        assert_eq!(streamed_size_words([0x8000, 0], 0), [0xFFFF, 0xFFFF]);
+        assert_eq!(streamed_size_words([0x8000, 0], dead), [0x8000, 0]);
+        assert_eq!(
+            character_scales(1.0, streamed_size_words([0, 0], 0)),
+            (1.0, 1.0)
+        );
+        // The request builder and a dead body scale the stored zeros.
+        assert_eq!(character_scales(1.0, [0, 0]), (0.0, 0.0));
+        let (second, first) = character_scales(2.0, [32768, 65535]);
+        assert_eq!(second, 2.0);
+        assert_eq!(first, 1.000_015_3);
+    }
+
+    /// The request's 0x2000 marks the node with 0x1000; 0x1000 skips the AI
+    /// start and the pose restore; a saved AI state's 16 bytes are three
+    /// floats and a heading.
+    #[test]
+    fn the_character_request_flags_mark_the_node_and_keep_the_saved_ai() {
+        assert_eq!(character_node_flags(0x40, 0), 0x40);
+        assert_eq!(character_node_flags(0x40, MARK_NODE), 0x1040);
+        assert_eq!(character_node_flags(0x1000, MARK_NODE), 0x1000);
+        assert_ne!(MARK_NODE, NO_AI_START);
+        assert_eq!(NODE_MARK, 0x1000);
+        let mut bytes = Vec::new();
+        for value in [1.5f32, -2.0, 300.0, 0.25] {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        let pose = saved_ai_pose(&bytes).unwrap();
+        assert_eq!(pose.position, [1.5, -2.0, 300.0]);
+        assert_eq!(pose.heading, 0.25);
+        assert_eq!(saved_ai_pose(&bytes[..15]), None);
+        assert_eq!(saved_ai_pose(&[]), None);
+    }
+
+    /// The placed object's root node takes only the object's own flags
+    /// under 0xB80000, and the placement's static bit adds the node's.
+    #[test]
+    fn a_placed_object_gives_its_root_the_object_flags_and_the_static_bit() {
+        assert_eq!(OBJECT_NODE_FLAGS, 0x00B8_0000);
+        // The mask clears exactly the copied field.
+        assert_eq!(
+            root_node_flags(0xFFFF_FFFF, 0, 0),
+            0xFF47_FFFF,
+            "the other node bits stay"
+        );
+        assert_eq!(root_node_flags(0, 0x00B8_0000, 0), 0x00B8_0000);
+        assert_eq!(root_node_flags(0, 0x0008_0000, 0), NODE_STATIC);
+        assert_eq!(root_node_flags(0, 0, PLACEMENT_STATIC), NODE_STATIC);
+        // Object bits outside the field are not copied.
+        assert_eq!(root_node_flags(0, 0x0004_0000, 0), 0);
+        // The dynamic-node bit survives when the object does not carry it.
+        assert_eq!(root_node_flags(0x0100_0000, 0, 0), 0x0100_0000);
     }
 
     #[test]

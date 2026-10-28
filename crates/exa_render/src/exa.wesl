@@ -76,6 +76,10 @@ const BLOOD_HAIR: u32 = 8388608u;
 const GREY_DIFFUSE: u32 = 16777216u;
 // The diffuse map skips the LOD bias (a record with a secondary colour).
 const SKIP_DIFFUSE_BIAS: u32 = 33554432u;
+// The specular and emissive maps are single-channel BC4 images (the same
+// luminance LATC upload): the shader repeats the red channel over rgb.
+const GREY_SPECULAR: u32 = 67108864u;
+const GREY_EMISSIVE: u32 = 134217728u;
 const BLOOD_TINT = vec3(0.6, 0.03, 0.0);
 const HAIR_BLOOD_TINT = vec3(0.45, 0.03, 0.02);
 const SKIN_ALPHA_FLOOR: f32 = 0.02;
@@ -210,7 +214,10 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         var e = material.emissive.rgb;
         var a = material.emissive.a;
         if has(EMISSIVE_MAP) {
-            let em = textureSampleBias(emissive_map, emissive_sampler, uv, material.texture_bias);
+            var em = textureSampleBias(emissive_map, emissive_sampler, uv, material.texture_bias);
+            if has(GREY_EMISSIVE) {
+                em = vec4(em.rrr, em.a);
+            }
             e *= em.rgb;
             if has(OPACITY_FALLOFF) {
                 // The opacity fall-off with the view angle: a salve's glow is
@@ -289,7 +296,10 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     s.legacy = !has(PACKED_SPECULAR);
     if has(SPECULAR_MAP) {
         let bias = select(material.texture_bias, 0.0, has(PACKED_SPECULAR));
-        let rgm = textureSampleBias(specular_map, specular_sampler, uv, bias);
+        var rgm = textureSampleBias(specular_map, specular_sampler, uv, bias);
+        if has(GREY_SPECULAR) {
+            rgm = vec4(rgm.rrr, rgm.a);
+        }
         if has(PACKED_SPECULAR) {
             let metal = rgm.b;
             if has(DIFFUSE_MAP) {
@@ -490,7 +500,11 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     }
     var e = material.emissive.rgb;
     if has(EMISSIVE_MAP) {
-        e *= textureSampleBias(emissive_map, emissive_sampler, uv, material.texture_bias).rgb * (s.ndv * s.ndv * fall.z + 1.0 - fall.z);
+        var em = textureSampleBias(emissive_map, emissive_sampler, uv, material.texture_bias).rgb;
+        if has(GREY_EMISSIVE) {
+            em = em.rrr;
+        }
+        e *= em * (s.ndv * s.ndv * fall.z + 1.0 - fall.z);
     }
     colour += e;
     // The character screen's fade: black by FADE_RADIUS from the origin.

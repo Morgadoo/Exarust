@@ -257,8 +257,13 @@ pub struct TextureRequest {
     pub space: ColorSpace,
     /// The creation/sampler word the requesting material wants.
     pub flags: u32,
-    /// The image entry to decode.
+    /// The image entry to decode: the exact pack entry name when the
+    /// manager found one, else the name the caller asked for.
     pub source: String,
+    /// The pack the manager found the image in (the original's provider
+    /// index, kept so a later lookup cannot drift to another pack). `None`
+    /// when the request was not made through the manager.
+    pub pack: Option<crate::PackKind>,
     /// Promoted to the front (the original's "priority" mark, status bit 2):
     /// its decode does not yield to waiting uploads.
     pub promoted: bool,
@@ -276,8 +281,24 @@ impl TextureRequest {
             space,
             flags,
             source: source.into(),
+            pack: None,
             promoted: false,
             id: 0,
+        }
+    }
+
+    /// A request naming the pack and entry the manager found, as the
+    /// original's queued load keeps its provider and image indices.
+    pub fn from_entry(
+        name: &str,
+        space: ColorSpace,
+        flags: u32,
+        pack: crate::PackKind,
+        entry: impl Into<String>,
+    ) -> Self {
+        Self {
+            pack: Some(pack),
+            ..Self::new(name, space, flags, entry)
         }
     }
 }
@@ -730,6 +751,26 @@ mod tests {
             .iter()
             .map(|request| request.key.name.as_str().to_string())
             .collect()
+    }
+
+    /// A queued load keeps the pack and exact entry the manager found, as
+    /// the original keeps its provider and image indices; a bare request
+    /// falls back to searching every pack at decode time.
+    #[test]
+    fn a_request_can_keep_the_pack_and_entry_it_was_found_in() {
+        let queued = TextureRequest::from_entry(
+            "wall01n",
+            ColorSpace::Srgb,
+            0x700F0,
+            crate::PackKind::Textures,
+            "wall01n.rfi",
+        );
+        assert_eq!(queued.key, key("wall01n"));
+        assert_eq!(queued.pack, Some(crate::PackKind::Textures));
+        assert_eq!(queued.source, "wall01n.rfi");
+        let bare = request("wall01n");
+        assert_eq!(bare.pack, None);
+        assert_eq!(bare.source, "wall01n");
     }
 
     #[test]
