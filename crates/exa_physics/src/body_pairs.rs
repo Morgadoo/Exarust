@@ -45,7 +45,7 @@ use bevy::prelude::*;
 
 use super::balance::cm;
 use super::{CM, PUSH_STRAIN, Part, Ragdoll, SolverStage, equalise_sleep, keep_rigid, weights};
-use crate::contact::evicted;
+use crate::contact::{self, evicted};
 use crate::engine_math::cosine;
 use crate::intersect;
 use crate::part::PartState;
@@ -462,18 +462,6 @@ fn swept_on_sphere(start: Vec3, end: Vec3, r: f32, c: Vec3, rc: f32) -> Option<(
     Some((c + n * rc, first - end))
 }
 
-/// The distance from `x` to the segment `a`–`b`.
-fn segment_distance(x: Vec3, a: Vec3, b: Vec3) -> f32 {
-    let ab = b - a;
-    let len2 = ab.length_squared();
-    let t = if len2 > 0.0 {
-        ((x - a).dot(ab) / len2).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
-    x.distance(a + ab * t)
-}
-
 /// A kept point of a pair: its weights on each side's particles (A's raw,
 /// which may be negative; B's from its rest frame) and the unit normal A
 /// was pushed along.
@@ -676,6 +664,15 @@ impl Pairs {
     /// The contacts found in the last detection, one per pair of parts.
     pub fn touches(&self) -> &[Touch] {
         &self.touches
+    }
+
+    /// The contacts that take the hit event (the striker path) rather than
+    /// the impact: one side is an active striker and the other hittable, and
+    /// neither body is placed. The original calls the classifier on both
+    /// sides; Exarust's combat reads these and classifies with
+    /// [`crate::part::classify`].
+    pub fn hit_events(&self) -> impl Iterator<Item = &Touch> {
+        self.touches.iter().filter(|t| t.hit_event)
     }
 
     /// Pairs kept for the pair pass that still need solving.
@@ -962,34 +959,75 @@ impl Pairs {
 /// A's spheres against B's ([`Pairs::generate`]). `placed` is `Some(true)`
 /// when exactly A is placed and `Some(false)` when exactly B is, as the
 /// original's placed callback records the contact without impact data.
+///
+/// Each sphere is one of A's stored collision spheres, put in B's space by
+/// the current and previous relative transforms. It uses the swept query
+/// when it moved over 0.1 cm² (unless the pair has one placed body), and
+/// the static one otherwise. The original's pre-tests come first: the
+/// sphere against B's mesh box and mesh sphere (or the swept sphere against
+/// the box and B's mesh sphere as a capsule); then B's mesh query, one
+/// triangle at a time, with the sphere re-read after every hit (so later
+/// triangles see the push). A part without triangles falls back to B's
+/// stored spheres, pre-tested against their own bound, which is Exarust's
+/// stand-in until the loaders hand over the model meshes.
 fn collide(pa: &mut Part, pb: &mut Part, pair: &mut Pair, touch: &mut Touch, placed: Option<bool>) {
     let mut a_now = pa.transform();
     let mut b_now = pb.transform();
-    let before = pb.settled.inverse() * pa.settled;
-    let (b_centre, b_radius) = (pb.pairing.sphere.centre, pb.pairing.radius());
+    let previous = pb.settled.inverse() * pa.settled;
+    let triangles = pb.triangles.clone();
+    // The pre-tests take B's mesh box and sphere. The sphere fallback tests
+    // B's spheres instead, so it pre-tests against the bound of those
+    // spheres: a node box need not hold every collision sphere, and the
+    // bound never rejects a sphere the fallback would hit.
+    let bound = if triangles.is_some() {
+        pb.pairing.mesh
+    } else {
+        pb.pairing.sphere
+    };
+    let (mesh_centre, mesh_half, mesh_radius) = (bound.centre, bound.half, bound.radius);
+    // The fallback's sphere list is copied only when the mesh is absent.
+    let spheres = if triangles.is_none() {
+        pb.spheres.clone()
+    } else {
+        Vec::new()
+    };
     for i in 0..pa.spheres.len() {
         let (c, r) = pa.spheres[i];
-        let start = before.transform_point3(c);
+        let start = previous.transform_point3(c);
         let mut end = (b_now.inverse() * a_now).transform_point3(c);
         // The placed callback always runs the static query (the original
-        // sweeps only in the dynamic path).
+        // sweeps only in the dynamic path). Unlike the level detection, the
+        // pair stage has no static-only gate.
         let swept = placed.is_none() && cm(end - start).length_squared() > SWEEP_TRAVEL2;
-        let gap = if swept {
-            segment_distance(b_centre, start, end)
+
+        if swept {
+            let sweep = intersect::Sweep::new(start, end);
+            if !intersect::swept_sphere_aabb_hit(&sweep, r, mesh_centre, mesh_half) {
+                continue;
+            }
+            if intersect::sphere_segment_separated(&sweep, r, mesh_centre, mesh_radius) {
+                continue;
+            }
         } else {
-            end.distance(b_centre)
-        };
-        if gap.is_nan() || gap >= r + b_radius {
-            continue;
+            if intersect::sphere_aabb_separated(end, r, mesh_centre, mesh_half) {
+                continue;
+            }
+            if intersect::spheres_separated(end, r, mesh_centre, mesh_radius) {
+                continue;
+            }
         }
-        for j in 0..pb.spheres.len() {
-            let (cb, rb) = pb.spheres[j];
-            let hit = if swept {
-                swept_on_sphere(start, end, r, cb, rb)
-            } else {
-                sphere_on_sphere(end, r, cb, rb)
-            };
-            if let Some((q, delta)) = hit {
+        // B's mesh query: every triangle in turn. A hit moves both parts
+        // and the sphere is taken to where it now is in B's frame.
+        if let Some(triangles) = triangles.as_deref() {
+            for t in triangles {
+                let hit = if swept {
+                    contact::swept_hit(t, start, end, r)
+                } else {
+                    contact::sphere_hit(t, end, r)
+                };
+                let Some((q, delta)) = hit else {
+                    continue;
+                };
                 let took = match placed {
                     Some(a_placed) => {
                         on_placed_hit(pa, pb, a_placed, &b_now, c, q, delta, pair, touch)
@@ -997,11 +1035,32 @@ fn collide(pa: &mut Part, pb: &mut Part, pair: &mut Pair, touch: &mut Touch, pla
                     None => on_hit(pa, pb, &b_now, c, q, delta, pair, touch),
                 };
                 if took {
-                    // Later spheres see where the push left both parts.
                     a_now = pa.transform();
                     b_now = pb.transform();
                     end = (b_now.inverse() * a_now).transform_point3(c);
                 }
+            }
+            continue;
+        }
+        // The sphere fallback: B's stored spheres where the mesh would be.
+        for &(cb, rb) in &spheres {
+            let hit = if swept {
+                swept_on_sphere(start, end, r, cb, rb)
+            } else {
+                sphere_on_sphere(end, r, cb, rb)
+            };
+            let Some((q, delta)) = hit else {
+                continue;
+            };
+            let took = match placed {
+                Some(a_placed) => on_placed_hit(pa, pb, a_placed, &b_now, c, q, delta, pair, touch),
+                None => on_hit(pa, pb, &b_now, c, q, delta, pair, touch),
+            };
+            if took {
+                // Later spheres see where the push left both parts.
+                a_now = pa.transform();
+                b_now = pb.transform();
+                end = (b_now.inverse() * a_now).transform_point3(c);
             }
         }
     }
@@ -1224,6 +1283,8 @@ fn solve_placed_pair(pa: &mut Part, pb: &mut Part, a_placed: bool, points: &[Poi
 /// weights. Pairs with a friction product under 1.19e-7 do not rub.
 fn rub_pair(pa: &mut Part, pb: &mut Part, pair: &Pair) {
     let mu = pa.friction * pb.friction;
+    // Only a product under the epsilon is skipped: the original's compare
+    // takes the parity branch on a NaN and rubs, and rubs at the epsilon.
     if mu < MIN_FRICTION {
         return;
     }

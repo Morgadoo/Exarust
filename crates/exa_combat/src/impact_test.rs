@@ -309,3 +309,81 @@ fn a_limb_impact_has_the_originals_volume_and_pitches() {
     assert_eq!(limb_impact_sound(3.0, false), None);
     assert_eq!(limb_impact_sound(2.0, true).unwrap().cooldown_ms, 212);
 }
+
+/// A character's part falling onto the level strikes it through the
+/// level's impact call: the strength is halved (and a third taken unless
+/// the character is down), a part with a clock that has run out sounds at
+/// the character, and a volume over 0.25 deals impact damage with no other
+/// body to tell.
+#[test]
+fn a_limb_hitting_the_level_sounds_and_hurts() {
+    // A floor triangle facing up, wide enough for the sphere.
+    let floor = [[
+        Vec3::new(-5.0, 0.0, -5.0),
+        Vec3::new(-5.0, 0.0, 5.0),
+        Vec3::new(5.0, 0.0, 5.0),
+    ]];
+    // A ball dropped from 5 m until it hits; its smoothed velocity grows a
+    // tenth of the way a tick, so it takes many ticks.
+    let mut body = ball(1, 1, Vec3::new(0.0, 5.0, 0.0));
+    let mut found = None;
+    for _ in 0..500 {
+        body.tick(&floor[..]);
+        if let Some(&hit) = body.level_impacts().first() {
+            found = Some(hit);
+            break;
+        }
+    }
+    let hit = found.expect("the ball never hit the floor");
+    assert!(hit.strength > 0.1, "{hit:?}");
+
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins)
+        .insert_resource(BodyTicks(100))
+        .add_message::<LimbImpact>()
+        .add_message::<ImpactSounded>()
+        .add_message::<Weakened>()
+        .add_message::<SecondWindFired>()
+        .add_message::<Shove>();
+    let target = app
+        .world_mut()
+        .spawn((
+            Fighter::default(),
+            ImpactBook::default(),
+            Condition::NORMAL,
+            StateFlags::default(),
+            body,
+        ))
+        .id();
+    let yellow = app.world().get::<Fighter>(target).unwrap().health.yellow;
+    app.world_mut().run_system_once(level_impacts).unwrap();
+    let book = app.world().get::<ImpactBook>(target).unwrap().clone();
+    let sounded = app
+        .world()
+        .resource::<Messages<ImpactSounded>>()
+        .iter_current_update_messages()
+        .count();
+    // The impact is well over the sound gate; it is not falling (normal),
+    // so the limb curve takes a third of it and a half.
+    let sound = limb_impact_sound(hit.strength, false).expect("the level impact sounds");
+    assert_eq!(sounded, 1);
+    assert!(
+        (book.taken > 0.0) || sound.volume <= 0.25,
+        "taken {:?}",
+        book.taken
+    );
+    let yellow_after = app.world().get::<Fighter>(target).unwrap().health.yellow;
+    if sound.volume > 0.25 {
+        assert!(yellow_after < yellow);
+    }
+    // No other body struck, so no one is told.
+    let told = app
+        .world()
+        .resource::<Messages<LimbImpact>>()
+        .iter_current_update_messages()
+        .count();
+    assert_eq!(told, 0);
+    // The root's clock is set for the next sound.
+    let body = app.world().get::<Ragdoll>(target).unwrap();
+    assert!(body.parts[0].sound_ready_ms > 0);
+}

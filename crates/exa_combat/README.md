@@ -154,6 +154,22 @@ collision sound (`part::base_impact_sound`) on the item's own clock and
 last-strength threshold, with its weapon hit set standing in for the
 material's sound.
 
+## Level impacts
+
+A character's part that strikes the level makes the body's level impact
+record (`exa_physics::body::LevelImpact`); `impact::level_impacts`, after
+the limb strikes, reads them: the part's recent-impact counter rises, and
+once the root's sound clock is past, the limb curve (a third of the
+strength unless the character is down, then half) gives the volume and
+pitch for an `ImpactSounded` at the character (the foley when crowded),
+and a volume over 0.25 deals the same `limb_impact_damage` a body's blow
+does — the taken total, yellow health and its daze and the death or
+collapse path — with the ticking clock's cooldown; a hard impact on a
+striking part in an overhead swing is dropped as for a body blow. A level
+contact has no other body, so no `LimbImpact` is sent (the original skips
+the striker's combat-state step); the original's pain voice and BadFall
+branch is not reproduced.
+
 ## Fighters and their condition
 
 `fighter`: a `Fighter` (health bars, natural armour and armour layers,

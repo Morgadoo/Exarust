@@ -694,6 +694,148 @@ pub fn strike_limbs(
     }
 }
 
+/// The level's impacts on a character's parts from the last tick's body
+/// contacts: the character part's impact call with no other body
+/// ([`exa_physics::body::LevelImpact`]). A part's recent-impact counter
+/// rises, and while the root's sound clock is over, the limb curve gives
+/// the volume and pitch (a third of the strength unless the character is
+/// down, then half), it sounds at the character and, over a volume of
+/// 0.25, deals its impact damage exactly as a body's blow does (yellow
+/// health, daze, the taken total). As in [`strike_limbs`], a hard impact on
+/// a striking part during an overhead swing is dropped before the clock is
+/// set. With no other body the original skips the striker's combat-state
+/// step, so no [`LimbImpact`] is sent. The pain voice and the BadFall
+/// message the original adds for a scaled strength over 15 are not
+/// reproduced (nor are they for body blows).
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
+pub fn level_impacts(
+    mut commands: Commands,
+    ticks: Option<Res<BodyTicks>>,
+    story: Option<Res<StoryMode>>,
+    mut fighters: Query<(
+        Entity,
+        &mut Fighter,
+        &mut ImpactBook,
+        &mut Condition,
+        &mut StateFlags,
+        Option<&mut exa_anim::Animator>,
+        Option<&Attacking>,
+        &mut Ragdoll,
+    )>,
+    mut sounds: MessageWriter<ImpactSounded>,
+    mut shoves: MessageWriter<Shove>,
+    mut weakened: MessageWriter<Weakened>,
+    mut winds: MessageWriter<SecondWindFired>,
+    mut roll: Local<Roll>,
+) {
+    let now = ticks.as_ref().map_or(0, |t| t.millis()) as u32;
+    let story = story.is_some_and(|s| s.0);
+    for (entity, mut f, mut book, mut condition, mut flags, mut anim, attacking, mut body) in
+        &mut fighters
+    {
+        let Some(root) = body.parts.iter().position(|p| p.parent.is_none()) else {
+            continue;
+        };
+        // The parts a level contact hit, taken out of the body before it is
+        // borrowed mutably again.
+        let toll: Vec<_> = body.level_impacts().to_vec();
+        if toll.is_empty() {
+            continue;
+        }
+        // The strength is only halved, not cut to a third first, for a
+        // character that is down.
+        let falling = condition.has(Condition::DOWN.0);
+        for hit in toll {
+            let Some(part) = body.parts.get(hit.part) else {
+                continue;
+            };
+            let (bone, striking) = (part.bone, part.state.has(PartState::STRIKING));
+            book.count(hit.part);
+            if now <= body.parts[root].sound_ready_ms {
+                continue;
+            }
+            let Some(sound) = limb_impact_sound(hit.strength, falling) else {
+                continue;
+            };
+            let crowded = book.count_of(root);
+            sounds.write(ImpactSounded {
+                target: entity,
+                bone,
+                point: body.parts[root].transform().translation.into(),
+                volume: sound.volume,
+                pitch: sound.pitch_for(crowded),
+                foley: crowded > CROWDED,
+            });
+            let scale = part_multipliers(body.parts[root].bone).0;
+            let overhead = attacking.is_some_and(|a| a.motion == AttackMotion::Overhead);
+            let damage = limb_impact_damage(
+                sound.volume,
+                scale,
+                book.sinking,
+                book.taken,
+                overhead_drop(overhead, striking),
+            );
+            if damage.dropped {
+                continue;
+            }
+            if let Some(hurt) = damage.hurt {
+                book.taken = hurt.total;
+                let half = hurt.amount * 0.5;
+                let damage = Damage {
+                    yellow: half,
+                    red: 0.0,
+                    vital: hurt.staggers,
+                };
+                let rules = f.stats.rules;
+                let taken = f.health.take(damage, rules, *flags, story);
+                shoves.write(Shove {
+                    body: entity,
+                    bone,
+                    velocity: Vec3::ZERO,
+                    daze: half,
+                    step: None,
+                    sag: None,
+                });
+                info!(
+                    "{entity:?} bone {bone} hit the level: impact {:.2}, damage {:.3} (taken {:.3})",
+                    hit.strength, hurt.amount, hurt.total
+                );
+                if taken == Taken::Weakened {
+                    crate::answer_low(entity, now, &mut f.second_wind, &mut winds, &mut weakened);
+                }
+                if taken == Taken::Killed && !condition.dying() {
+                    let living = body.drive.as_ref();
+                    if let (Some(energy), Some(anim)) = (
+                        living.map(|d| daze_energy(d.energy, half)),
+                        anim.as_deref_mut(),
+                    ) {
+                        collapse::start_collapse(
+                            &mut condition,
+                            &mut flags,
+                            anim,
+                            Some(&mut body),
+                            energy,
+                            None,
+                        );
+                        commands
+                            .entity(entity)
+                            .insert(collapse::Collapse::default())
+                            .remove::<Fallen>();
+                    } else {
+                        condition.die();
+                        commands.entity(entity).insert(GoLimp {
+                            velocity: None,
+                            delay: 0,
+                        });
+                    }
+                }
+            }
+            let cooldown = sound.spread_cooldown(roll.below(CLOCK_SPREAD_MS));
+            body.parts[root].sound_ready_ms = now.wrapping_add(cooldown);
+        }
+    }
+}
+
 /// Sets each held item's strike flags from its owner's swing window: a
 /// weapon body is a striker (class bit 1) while its owner's striker window
 /// is open, as the original's attack sets it, and stops being one when the
@@ -717,7 +859,8 @@ pub(crate) fn plugin(app: &mut App) {
         .add_message::<WeaponSounded>()
         .add_message::<CameraHit>()
         .add_systems(FixedUpdate, sync_held_striking.before(BodySystems))
-        .add_systems(FixedUpdate, strike_limbs.after(BodySystems));
+        .add_systems(FixedUpdate, strike_limbs.after(BodySystems))
+        .add_systems(FixedUpdate, level_impacts.after(strike_limbs));
 }
 
 #[cfg(test)]
