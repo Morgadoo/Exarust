@@ -19,7 +19,7 @@ use exa_anim::{Animator, Motions};
 use exa_combat::{Blade, Condition};
 use exa_formats::weapon_record::{Holder, Lengths, Section, WeaponRecord};
 use exa_physics::body::Ragdoll;
-use exa_physics::grip::{GripKind, HeldGrip, mode_from_clip};
+use exa_physics::grip::{GripKind, HeldGrip, HeldKind, mode_from_clip};
 use exa_physics::grip_solve::GripSolveSet;
 
 /// The weapon data a flip rebuilds its record from.
@@ -140,6 +140,32 @@ pub fn weld_states(
     }
 }
 
+/// Marks the weapons and torches a collapsing holder lets go of: the
+/// collapse routine empties the hands, while a shield stays on the off arm
+/// (its weld stiffens at death instead). A body that is dead without a
+/// collapse keeps its items.
+pub fn release_collapsed(
+    mut commands: Commands,
+    held: Query<(Entity, &HeldGrip)>,
+    bodies: Query<(Entity, &Ragdoll)>,
+    owners: Query<&Condition>,
+) {
+    for (item, grip) in &held {
+        if grip.released || grip.kind == HeldKind::Shield {
+            continue;
+        }
+        let Some((owner, _)) = bodies
+            .iter()
+            .find(|(_, b)| b.parts.first().is_some_and(|p| p.entity == grip.holder_key))
+        else {
+            continue;
+        };
+        if owners.get(owner).is_ok_and(|c| *c == Condition::COLLAPSING) {
+            commands.entity(item).insert(exa_physics::grip::GripRelease);
+        }
+    }
+}
+
 /// Derives each held item's grip mode from its holder's clip, then steps an
 /// active flip and rebuilds the weapon record when it lands. The item
 /// itself turns with its body, which the flip link pulls round.
@@ -225,6 +251,10 @@ impl Plugin for GripRuntimePlugin {
             .add_systems(FixedUpdate, flip_requests.before(GripSolveSet::Sync))
             .add_systems(FixedUpdate, animate_grips.before(GripSolveSet::Sync))
             .add_systems(FixedUpdate, weld_states.before(GripSolveSet::Sync))
+            .add_systems(
+                FixedUpdate,
+                release_collapsed.before(exa_physics::grip_solve::GripSolveSet::Build),
+            )
             .add_systems(
                 FixedUpdate,
                 resolve_pending_grips.before(GripSolveSet::Sync),
@@ -378,6 +408,78 @@ mod tests {
             links: Vec::new(),
             mesh: None,
         }])
+    }
+
+    /// A collapsing holder lets go of its weapons and torch but keeps the
+    /// shield on its arm; a dead one keeps everything.
+    #[test]
+    fn a_collapse_drops_the_weapon_and_keeps_the_shield() {
+        let mut app = App::new();
+        app.add_systems(Update, release_collapsed);
+        let owner = app.world_mut().spawn(Condition::COLLAPSING).id();
+        let holder_body = holder(owner, Vec3::ZERO);
+        let key = holder_body.parts[0].entity;
+        app.world_mut().entity_mut(owner).insert(holder_body);
+        let spawn = |app: &mut App, kind| {
+            let e = app.world_mut().spawn_empty().id();
+            let body = item(Entity::from_raw_u32(30).unwrap(), Vec3::ZERO);
+            let grip = HeldGrip {
+                spec: spec(),
+                scale: 1.0,
+                size: 1.0,
+                second_hand_factor: 1.0,
+                flip: false,
+                class: 0x10,
+                soft_weld: false,
+                kind,
+                holder_key: key,
+                hands: [Some(Entity::from_raw_u32(2).unwrap()); 2],
+                arms: [None, None],
+                links: None,
+                released: false,
+            };
+            app.world_mut().entity_mut(e).insert((body, grip));
+            e
+        };
+        let weapon = spawn(&mut app, exa_physics::grip::HeldKind::Weapon);
+        let torch = spawn(&mut app, exa_physics::grip::HeldKind::Torch);
+        let shield = spawn(&mut app, exa_physics::grip::HeldKind::Shield);
+        app.update();
+        assert!(
+            app.world()
+                .get::<exa_physics::grip::GripRelease>(weapon)
+                .is_some()
+        );
+        assert!(
+            app.world()
+                .get::<exa_physics::grip::GripRelease>(torch)
+                .is_some()
+        );
+        assert!(
+            app.world()
+                .get::<exa_physics::grip::GripRelease>(shield)
+                .is_none()
+        );
+        // While alive nothing is marked; a dead body keeps its weapon too.
+        app.world_mut()
+            .entity_mut(owner)
+            .insert(Condition::COMBAT_IDLE);
+        app.world_mut()
+            .entity_mut(weapon)
+            .remove::<exa_physics::grip::GripRelease>();
+        app.update();
+        assert!(
+            app.world()
+                .get::<exa_physics::grip::GripRelease>(weapon)
+                .is_none()
+        );
+        app.world_mut().entity_mut(owner).insert(Condition::DEAD);
+        app.update();
+        assert!(
+            app.world()
+                .get::<exa_physics::grip::GripRelease>(weapon)
+                .is_none()
+        );
     }
 
     fn spec() -> GripSpec {

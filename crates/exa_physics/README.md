@@ -375,7 +375,10 @@ by W24), then a two-hander's stab link, then the main links (points × the
 body scale, the hand-side point the item's node matrix into the hand,
 slack from the table, the second link's smoothing 0.01, every other
 runtime link the init's 0.001). A shield gets its three pivots (back and
-both face points, two to the other hand) and a soft world link. The grip's
+both face points, two to the other hand, which subtracts that hand's rest
+offset after the node's turn) and a soft world link; a torch, attached
+outside the table, gets its own two pivots at (0, −20, 0) and (10, 0, 0) cm
+and its soft world link at the item's origin. The grip's
 modes (`apply_mode`, `mode_from_clip`, `set_mode`) switch the second-hand,
 arm and extra links by the original's two callbacks, the polearm's main
 link slides at 15·scale cm, `relax` takes the post-change slack off the
@@ -383,9 +386,14 @@ links enabled once, and `flip_step` turns the flip point about the item's y
 by `f·π` while a flip is active and the character is not attacking away
 from its middle; either end clears the active flag, turns the item's
 flipped state and marks its record for a rebuild (the middle and end tests
-are double compares, as the original's). The death routine's stiffening
-of a soft world weld to strength 1 is `weld_on_death`, not called yet:
-Exarust frees a dead holder's item links. `GripLink` is plain data
+are double compares, as the original's). A flip command is refused while
+the character switches and for a section with no flipped-side kind byte
+(`GripLinks::begin_flip`), as the original's command does. The death
+routine stiffens each soft world weld to strength 1 (`weld_on_death`,
+called for a dead holder: a corpse keeps its weapon), and the collapse of
+a body in the record state 0x800 gives it a 10 cm slack
+(`set_soft_slack`, `collapse_weld_state`; the state word is not carried
+yet). `GripLink` is plain data
 with the law documented: a correction is shared by the item's and the
 hand's particle weights and mobilities; a world link moves only the item.
 `grip_solve` runs the records as a cross-body solver stage: a held item is
@@ -395,9 +403,18 @@ slack link's smoothed length kept from tick to tick), and kept off its
 holder's body and the other items of the same character (the original's
 all-ones group mask, as `Ragdoll::held_by`). Its generic world weld is the
 stiff origin link, plus the soft (parry) weld when the holder may parry,
-0.3 of the node box's top above the grip (at the grip for a polearm). A shield item takes the shield builder's three face
-pivots and its own soft world link. The character's equip and the torch
+0.3 of the node box's top above the grip (at the grip for a two-hander of
+the exact class 0x30). The character's equip and the torch
 light a held item's body and its `HeldGrip`.
+
+A skeleton link without the stored pivot flag is a **limit link**
+(`body::MODEL_LINK_PIVOT`): `Ragdoll::set_link_flags` carries the RSQ flags
+in, and the living iteration compares the link's slack with the gap's
+square (`slack ≤ |d|²·100` in metres, as the original's centimetres), moves
+the part alone by the strength times the gap, and cuts the move to 10 cm
+(2 cm for a `MODEL_LINK_HORIZONTAL` link, which ignores the vertical gap
+and runs only in the tick's first two passes). Limit links are left out of
+the anchors and of the limp law.
 
 The mesh voxeliser (`voxel`) keeps the original's occupancy map of a
 rigid-body mesh (`VoxelMap`: the 0.02 resolution, unit scale and caller's

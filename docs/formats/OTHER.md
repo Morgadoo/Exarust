@@ -1363,6 +1363,12 @@ highest vertex within 0.05 cm; "Torch A01" is 58.3 cm (its shadow and
 flame nodes are not rigid), "Flail A" 84.4 cm and "Ogre Flail" 172.0 cm
 (their links are rigid).
 
+**Flip side.** The flipped block's type byte (`0x3A`) is zero when the
+section defines no second side. The flip command refuses a weapon whose
+`0x3A` is zero (or that has no weapon section), and a character in the
+switching condition; a flipped record takes code, striking part and damage
+from the flipped block (`exa_formats::weapon_record::Section::can_flip`).
+
 **Holding pass**, at the build and on every equip change:
 
 | element | value |
@@ -1428,7 +1434,10 @@ and s; the character's reach is the largest W23; W19 = round(W19 × race
 Sir, the harvester, the demon and four golems; 0.5 for the ogre, the
 gobbler and the golem suit; else 1); the AI's thrust preference is
 round(W14/(W11 + W12 + W13)·5) + 1 capped at 9, 10 without edges, 0
-holding nothing. Unarmed, the reach is race `0x84` (human, skeleton,
+holding nothing (`WeaponRecord::hand_pose`). A body whose record state
+word (`& 0xFF00`) is 0x600 or 0x700 holds at W20 = 1; one in the 0x500
+state halves W27 (`WeaponRecord::refresh`, whose state word Exarust does
+not carry yet). Unarmed, the reach is race `0x84` (human, skeleton,
 ancient, manipulator, wraith and golem suit 50 cm; ogre, ghouls, demon and
 the other golems 100; Fael 130; Sir, gobbler, harvester 150) and the
 hands weigh twice their part's mass (four times with heavy

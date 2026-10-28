@@ -545,7 +545,9 @@ impl WeaponRecord {
 /// The reach a character's held items give it after an equip refresh (cm):
 /// the longest held record's W23, taken with an ordered `>` so a NaN record
 /// never wins, or the race's unarmed reach when nothing is held. The
-/// original keeps it in its reach field for the AI's threat range.
+/// original keeps it in its reach field for the AI's threat range, and this
+/// pass overwrites the transient `held_reach` the attach pass computes
+/// (`exa_combat::grip::held_reach`).
 pub fn max_reach<'a>(records: impl IntoIterator<Item = &'a WeaponRecord>, unarmed: f32) -> f32 {
     let mut reach = unarmed;
     for record in records {

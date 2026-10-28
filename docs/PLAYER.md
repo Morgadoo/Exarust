@@ -273,8 +273,10 @@ while the body is busy (its condition word has any of 0x10202) or a lift is
 on the cursor. F toggles the record's light flag of the first held item
 when it gives light and the body is not switching weapons (0x10000), and
 then asks the grip runtime to start the held item's flip, as the original
-does in the same branch. (The original's gate reads the weapon section's
-flipped-side kind byte rather than a light; Exarust keeps the light test.)
+does in the same branch. (The original's command itself reads the weapon
+section's flipped-side kind byte, and the grip runtime refuses the flip
+for a section whose byte is zero; Exarust keeps the light test for whether
+F sends the request.)
 
 Wired in Exarust: Tab, R and F, and C with the digits, Q and the arrows:
 the hotkey handler sends the cast plugin the bar's commands, so C opens and
@@ -1125,9 +1127,10 @@ Their animators keep the race's moveset as the base and take the config.
 The character view plays the moveset its command line names, and level
 characters keep their race's moveset with no config until they have
 equipment. `exa-tool clips <base> [config]` prints any table. Not yet:
-shields and a second weapon (no Exarust item holds them), held items on
-creatures, and the flaming weapon (its config adds `0x10020000`, whose
-shared bit also lays the Torch overlay on a one-handed weapon).
+held items on creatures, and the flaming weapon (its config adds
+`0x10020000`, whose shared bit also lays the Torch overlay on a one-handed
+weapon). A shield or a second weapon in the off hand is attached as its
+own body (`exa_character::offhand`).
 
 The cursor is the game's own world cursor ([UI.md](UI.md), World cursor):
 a red ring in combat mode, and outside it an amber arrowhead over ground
@@ -1198,9 +1201,15 @@ held items change (by the character's), both giving the same grip
   those weapons stay scene children of the hand. The grip modes switch the
   two-hander's second hand, arm and stab links and slide the polearm's
   grip by the motion, and a flip request (sent by F) runs the flip
-  animation and rebuilds the weapon record from its flipped side. A held
-  shield item takes the shield builder's face pivots. Second weapons and
-  the starting flip flag are not attached yet.
+  animation and rebuilds the weapon record from its flipped side; a
+  weapon whose section has no flipped-side kind byte is refused, and a
+  dead holder's soft weld stiffens while a collapse drops the weapon and
+  keeps the shield. A held
+  shield item takes the shield builder's face pivots, and the off hand's
+  second weapon takes the grip table's off-hand entry; both are attached
+  by `exa_character::offhand` after the main hand's weapon, and the
+  record's flipped hand flag starts the main weapon turned over
+  (`HeldFlipped`).
 
 ## Weapon sets and what a character carries
 

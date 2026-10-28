@@ -23,7 +23,7 @@
 use bevy::prelude::*;
 
 use crate::body::{BodySystems, Ragdoll, SolverStage, SolverStages};
-use crate::grip::{self, DISABLED, GripLinks, HeldGrip, HeldKind};
+use crate::grip::{self, DISABLED, GripLinks, GripRelease, HeldGrip, HeldKind};
 
 /// The grip stage's order: the builder and the per-tick sync. The game's
 /// grip-mode and flip systems run before [`GripSolveSet::Sync`], so this
@@ -293,25 +293,26 @@ pub fn mark_held(mut held: Query<(&HeldGrip, &mut Ragdoll)>) {
     }
 }
 
-/// Releases the items whose holder has left the world: the link records
-/// stop acting, the item body loses its holder and held mask, takes the
-/// dropped weapon's friction and falls free. A holder that only went limp
+/// Releases the items whose holder has left the world, and those a
+/// collapse let go of ([`GripRelease`]): the link records stop acting, the
+/// item body loses its holder and held mask, takes the dropped weapon's
+/// friction and falls free. A holder that only went limp
 /// or died keeps its item: the original welds a held item to a dead body
 /// ([`GripLinks::weld_on_death`]) instead of dropping it, and its collapse
 /// is the routine that lets the hands go.
 pub fn release_freed_grips(
     mut commands: Commands,
-    mut held: Query<(Entity, &mut HeldGrip, &mut Ragdoll)>,
+    mut held: Query<(Entity, &mut HeldGrip, &mut Ragdoll, Has<GripRelease>)>,
     bodies: Query<&Ragdoll, Without<HeldGrip>>,
 ) {
-    for (entity, mut grip, mut body) in &mut held {
+    for (entity, mut grip, mut body, released) in &mut held {
         if grip.released || grip.links.is_none() {
             continue;
         }
         let owner = bodies
             .iter()
             .find(|b| b.parts.first().is_some_and(|p| p.entity == grip.holder_key));
-        if owner.is_some() {
+        if owner.is_some() && !released {
             continue;
         }
         grip.released = true;
@@ -326,6 +327,7 @@ pub fn release_freed_grips(
         commands
             .entity(entity)
             .remove::<crate::grip::HeldGrip>()
+            .remove::<crate::grip::GripRelease>()
             .remove::<ChildOf>();
     }
 }

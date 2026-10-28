@@ -212,6 +212,12 @@ pub struct GripLinks {
     pub world_hard: Option<usize>,
 }
 
+/// A held item its holder let go of: the collapse of a living body drops
+/// its weapons and torch (a shield stays on the arm). The grip stage frees
+/// the item's links and its body.
+#[derive(Component, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct GripRelease;
+
 /// A held item waiting for its grip links, or holding them. The physics
 /// side of an item held in a hand: the item's own body is a [`Ragdoll`]
 /// whose part 0 is the item's root, and the character's body holds the
