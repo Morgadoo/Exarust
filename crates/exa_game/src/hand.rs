@@ -1121,7 +1121,21 @@ fn press_hand(
                 .get(part)
                 .map(|p| item_cursor::rest_box(p.rest))
                 .unwrap_or((Vec3::ZERO, Vec3::ZERO));
-            let saved_frame = Frame::new(at, bevy::math::Mat3::IDENTITY);
+            // The lift saves the part's frame, rotation included, as the
+            // original copies the held node's frame.
+            let world = ragdoll
+                .parts
+                .get(part)
+                .map(|p| p.transform())
+                .unwrap_or_default();
+            let saved_frame = Frame::new(
+                Vec3::from(world.translation),
+                bevy::math::Mat3::from_cols(
+                    Vec3::from(world.x_axis),
+                    Vec3::from(world.y_axis),
+                    Vec3::from(world.z_axis),
+                ),
+            );
             pb.hold_object(true);
             items.begin(HeldItem {
                 body,
