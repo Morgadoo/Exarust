@@ -1,9 +1,12 @@
-// Terrain layering: up to four palette materials per tile, stacked in order.
+// Terrain layering: up to sixteen palette materials per tile, stacked in order.
 // The vertex colour holds each layer's "over" opacity (the first layer is
 // opaque); a layer with a blend mask sharpens its opacity against the mask so
 // stones and grass blades show through in their own shapes. Shaded like the
 // original's terrain program: its lighting (`exa_render::shading`) with a
-// gloss taken from the ground's colour.
+// gloss taken from the ground's colour. A block whose composite set is baked
+// (`exa_render::terrain_composite`, opt-in) reads its colour, normal, gloss
+// and parallax height from the set instead, as the original's `shadetrn`
+// program reads its block's composite.
 
 import bevy_pbr::render::{
     forward_io::{VertexOutput, FragmentOutput},
@@ -15,6 +18,7 @@ import exa_render::shading::{
     Surface, taps, direct, schlick, gi_sample, in_gi, gi_ambient,
     REFLECTION_STRENGTH, ENVIRONMENT_FALLBACK, AMBIENT_SCALE,
 };
+import exa_render::terrain_layers::{sharpen, stack_colour, stack_xy, normal_xy, layer_height};
 
 // Up to 16 layers: every palette material the tile uses, in palette order.
 const LAYERS: u32 = 16u;
@@ -31,6 +35,11 @@ struct TerrainSplat {
     surface: array<vec4<f32>, 16>,
     gi_origin: vec4<f32>,
     gi_extent: vec4<f32>,
+    // The block's `TexPos` (the composite coordinate is the tile-local
+    // position in centimetres × z, plus xy) and the tile's centre x, z in
+    // metres; read only with the COMPOSITE flag.
+    composite_pos: vec4<f32>,
+    composite_origin: vec4<f32>,
     // The palette's wet-floor source; only the flag below is read.
     wetness: f32,
     flags: u32,
@@ -46,6 +55,7 @@ const ENVIRONMENT: u32 = 2u;
 const DEBUG_GI: u32 = 4u;
 const SPLIT_TAPS: u32 = 8u;
 const WET_FLOOR: u32 = 16u;
+const COMPOSITE: u32 = 32u;
 
 @group(constants::MATERIAL_BIND_GROUP) @binding(100) var<uniform> splat: TerrainSplat;
 // Every layer texture is read through one repeating sampler.
@@ -54,6 +64,13 @@ const WET_FLOOR: u32 = 16u;
 // k % 4 of array layer k / 4.
 @group(constants::MATERIAL_BIND_GROUP) @binding(103) var cover_map: texture_2d_array<f32>;
 @group(constants::MATERIAL_BIND_GROUP) @binding(104) var cover_sampler: sampler;
+// The block's composite set: colour, normal xy, gloss and the half-size
+// parallax height, read through one clamped linear sampler.
+@group(constants::MATERIAL_BIND_GROUP) @binding(105) var composite_colour: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(106) var composite_sampler: sampler;
+@group(constants::MATERIAL_BIND_GROUP) @binding(107) var composite_normal: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(108) var composite_gloss: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(109) var composite_height: texture_2d<f32>;
 // Per layer: diffuse; parallax height (r), gloss (g), blend mask (b); normal.
 @group(constants::MATERIAL_BIND_GROUP) @binding(140) var diffuse0: texture_2d<f32>;
 @group(constants::MATERIAL_BIND_GROUP) @binding(141) var diffuse1: texture_2d<f32>;
@@ -206,28 +223,9 @@ fn covered(c: Covers, k: u32) -> bool {
     return k == 0u || c.a[k] > 0.0;
 }
 
-// Opacity of layer `k` from its over opacity `a` and mask value `m`, with
-// sharpness `s`, `t` (unmasked layers keep `a`).
-fn sharpen(a: f32, m: f32, s: f32, t: f32, masked: bool) -> f32 {
-    if !masked {
-        return a;
-    }
-    return clamp((s + t) * a - s * (1.0 - m), 0.0, 1.0);
-}
-
 // Colour (or gloss) of layer `k` stacked on `below`.
 fn stack(below: vec3<f32>, c: vec3<f32>, a: f32, m: f32, k: u32) -> vec3<f32> {
-    let b = splat.blend[k];
-    if b.z < 0.5 {
-        return mix(below, c, a);
-    }
-    let sharp = sharpen(a, m, b.x, b.y, true);
-    return below * clamp(1.0 - sharp * splat.colour[k].a, 0.0, 1.0) + c * sharp;
-}
-
-// Tangent-space normal xy of layer `k` from its normal-map sample.
-fn normal_xy(sample: vec4<f32>, k: u32) -> vec2<f32> {
-    return (sample.xy * 2.0 - 1.0) * splat.normal[k].z;
+    return stack_colour(below, c, a, m, splat.blend[k], splat.colour[k].a);
 }
 
 // Layer `k`'s texture coordinates at ground position `p` (metres along +X,
@@ -245,8 +243,7 @@ fn height_at(p: vec2<f32>, c: Covers) -> f32 {
             continue;
         }
         let su = layer_surface(k, layer_uv(p, k));
-        let q = splat.surface[k];
-        let lh = q.y + (su.r - q.z) * q.w;
+        let lh = layer_height(su.r, splat.surface[k]);
         if k == 0u {
             h = lh;
         } else {
@@ -267,8 +264,42 @@ const BLOCK: f32 = 6.0;
 
 // Normal xy of layer `k` stacked on `below`.
 fn stack_normal(below: vec2<f32>, n: vec2<f32>, a: f32, m: f32, k: u32) -> vec2<f32> {
-    let nb = splat.normal[k];
-    return mix(below, n, sharpen(a, m, nb.x, nb.y, splat.blend[k].z > 0.5));
+    return stack_xy(below, n, a, m, splat.normal[k], splat.blend[k].z > 0.5);
+}
+
+// What the shading reads from the ground at a pixel: the stacked colour
+// (before `MatDif`), gloss and tangent-space normal xy.
+struct Ground {
+    colour: vec3<f32>,
+    gloss: f32,
+    nxy: vec2<f32>,
+}
+
+// The block's composite set at the pixel, as the original's `shadetrn`
+// program reads it: the composite coordinate is the tile-local position in
+// centimetres × TexPos.z + TexPos.xy; the parallax shifts it by the set's
+// height in four accumulating steps, `dsp · (h − ½)` with
+// `dsp = vt.xy · 0.007 · (4 + 3·vt.z)`, then eases back toward the unshifted
+// coordinate by min((h₀ − h₃)·2, 1). The set's v runs along +Z, so the view
+// is taken on the lit program's own axes (+X projected, then its cross with
+// the normal).
+fn composite_ground(wp: vec3<f32>, vt: vec3<f32>) -> Ground {
+    let local = (vec2(wp.x, wp.z) - splat.composite_origin.xy) * 100.0;
+    let start = local * splat.composite_pos.z + splat.composite_pos.xy;
+    let dsp = vt.xy * PARALLAX * (4.0 + vt.z * 3.0);
+    let d = textureSampleLevel(composite_height, composite_sampler, start, 0.0).r - 0.5;
+    var uv = start - dsp * d;
+    var last = d;
+    for (var k = 0; k < 3; k++) {
+        last = textureSampleLevel(composite_height, composite_sampler, uv, 0.0).r - 0.5;
+        uv -= dsp * last;
+    }
+    uv = mix(uv, start, min((d - last) * 2.0, 1.0));
+    var out: Ground;
+    out.colour = textureSampleLevel(composite_colour, composite_sampler, uv, 0.0).rgb;
+    out.gloss = textureSampleLevel(composite_gloss, composite_sampler, uv, 0.0).r;
+    out.nxy = textureSampleLevel(composite_normal, composite_sampler, uv, 0.0).xy * 2.0 - 1.0;
+    return out;
 }
 
 @fragment
@@ -280,7 +311,6 @@ fn fragment(
 @if(VERTEX_UVS_A) {
     tile_uv = in.uv;
 }
-    let cover = covers(tile_uv);
     let wp = in.world_position.xyz;
     let v = normalize(view_bindings::view.world_position.xyz - wp);
     var ng = normalize(in.world_normal);
@@ -301,47 +331,57 @@ fn fragment(
     let tv = -cross(tu, ng);
     let eye = -v;
     let vt = vec3(dot(eye, tu), dot(eye, tv), dot(eye, ng));
-    let dsp = vt.xy * PARALLAX * (4.0 + 3.0 * vt.z);
-    let start = ground / BLOCK;
-    let d = height_at(start * BLOCK, cover) - 0.5;
-    var uvb = start - dsp * d;
-    var last = d;
-    for (var k = 0; k < 3; k++) {
-        last = height_at(uvb * BLOCK, cover) - 0.5;
-        uvb -= dsp * last;
-    }
-    uvb = mix(uvb, start, min((d - last) * 2.0, 1.0));
-    let p = uvb * BLOCK;
-
-    // The original composites each 6 m block into textures of about 170
-    // texels per metre without mip levels, so terrain always shows its
-    // layers' full detail: every layer is read at its base level
-    // (supersampling smooths what that aliases). Colour, gloss and normal
-    // stack in palette order; layers not covering this point are skipped.
     var colour = vec3<f32>(0.0);
     var gloss = vec3<f32>(0.0);
     var nxy = vec2<f32>(0.0);
-    for (var k = 0u; k < splat.layers; k++) {
-        if !covered(cover, k) {
-            continue;
+    if has(COMPOSITE) {
+        // The set's axes: +X projected, then its cross with the normal
+        // (+Z on flat ground), so its second component is −vt.y.
+        let g = composite_ground(wp, vec3(vt.x, -vt.y, vt.z));
+        colour = g.colour;
+        gloss = vec3(g.gloss);
+        nxy = g.nxy;
+    } else {
+        let cover = covers(tile_uv);
+        let dsp = vt.xy * PARALLAX * (4.0 + 3.0 * vt.z);
+        let start = ground / BLOCK;
+        let d = height_at(start * BLOCK, cover) - 0.5;
+        var uvb = start - dsp * d;
+        var last = d;
+        for (var k = 0; k < 3; k++) {
+            last = height_at(uvb * BLOCK, cover) - 0.5;
+            uvb -= dsp * last;
         }
-        let uv = layer_uv(p, k);
-        let su = layer_surface(k, uv);
-        let c = layer_diffuse(k, uv).rgb * splat.colour[k].rgb;
-        let g = vec3<f32>(su.g * splat.surface[k].x);
-        let nk = normal_xy(layer_normal(k, uv), k);
-        if k == 0u {
-            colour = c;
-            gloss = g;
-            nxy = nk;
-        } else {
-            let a = cover.a[k];
-            colour = stack(colour, c, a, su.b, k);
-            // The composited gloss map: each layer's gloss × its factor,
-            // stacked like the colour; roughness is 1 − gloss (no wetness
-            // indoors).
-            gloss = stack(gloss, g, a, su.b, k);
-            nxy = stack_normal(nxy, nk, a, su.b, k);
+        uvb = mix(uvb, start, min((d - last) * 2.0, 1.0));
+        let p = uvb * BLOCK;
+
+        // The original composites each 6 m block into textures of about 170
+        // texels per metre without mip levels, so terrain always shows its
+        // layers' full detail: every layer is read at its base level
+        // (supersampling smooths what that aliases). Colour, gloss and normal
+        // stack in palette order; layers not covering this point are skipped.
+        for (var k = 0u; k < splat.layers; k++) {
+            if !covered(cover, k) {
+                continue;
+            }
+            let uv = layer_uv(p, k);
+            let su = layer_surface(k, uv);
+            let c = layer_diffuse(k, uv).rgb * splat.colour[k].rgb;
+            let g = vec3<f32>(su.g * splat.surface[k].x);
+            let nk = normal_xy(layer_normal(k, uv), splat.normal[k].z);
+            if k == 0u {
+                colour = c;
+                gloss = g;
+                nxy = nk;
+            } else {
+                let a = cover.a[k];
+                colour = stack(colour, c, a, su.b, k);
+                // The composited gloss map: each layer's gloss × its factor,
+                // stacked like the colour; roughness is 1 − gloss (no wetness
+                // indoors).
+                gloss = stack(gloss, g, a, su.b, k);
+                nxy = stack_normal(nxy, nk, a, su.b, k);
+            }
         }
     }
     // The original's diffuse colour is the composite times `MatDif`, and the

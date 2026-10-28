@@ -1133,6 +1133,13 @@ impl LevelLoad {
         // composite sets go back to the renderer's host.
         commands.remove_resource::<terrain::live::TerrainStreaming>();
         commands.insert_resource(exa_render::terrain_composite::TerrainCompositeHost::default());
+        commands.queue(|world: &mut World| {
+            if let Some(mut queue) =
+                world.get_resource_mut::<exa_render::terrain_composite::TerrainBakeQueue>()
+            {
+                queue.clear();
+            }
+        });
         let root = commands
             .spawn((
                 LevelRoot {

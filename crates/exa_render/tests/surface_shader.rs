@@ -107,6 +107,12 @@ fn cache_with_every_shader_and(wanted: &str) -> (ShaderCache<naga::Module, ()>, 
     let own = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut crates = bevy_sources();
     crates.push(("exa_render".to_string(), own));
+    // The terrain draw (exa_world) imports this crate's shading and layer
+    // stacking; it is composed here with them.
+    crates.push((
+        "exa_world".to_string(),
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../exa_world/src"),
+    ));
     let mut next = 1u128;
     let mut surface = None;
     for (name, src) in crates {
@@ -200,6 +206,42 @@ fn the_smoke_shader_composes_and_validates() {
                 .iter()
                 .any(|entry| entry.stage == naga::ShaderStage::Fragment),
             "shadesmk.wesl has a fragment entry point"
+        );
+    }
+}
+
+#[test]
+fn the_terrain_bake_shader_composes_and_validates() {
+    let (mut cache, bake) = cache_with_every_shader_and("embedded://exa_render/terrain_bake.wesl");
+    let module = cache
+        .get(0, bake, &defs(&[]))
+        .unwrap_or_else(|error| panic!("terrain_bake.wesl: {error}"));
+    let fragments: Vec<&str> = module
+        .entry_points
+        .iter()
+        .filter(|entry| entry.stage == naga::ShaderStage::Fragment)
+        .map(|entry| entry.name.as_str())
+        .collect();
+    for entry in ["bake_normal", "bake_colour", "bake_gloss", "bake_height"] {
+        assert!(fragments.contains(&entry), "{entry} in {fragments:?}");
+    }
+}
+
+#[test]
+fn the_terrain_shader_composes_and_validates() {
+    let (mut cache, terrain) =
+        cache_with_every_shader_and("embedded://exa_world/terrain/terrain.wesl");
+    let variants: [&[&'static str]; 2] = [&["VERTEX_UVS", "VERTEX_UVS_A"], &[]];
+    for (pipeline, extra) in variants.iter().enumerate() {
+        let module = cache
+            .get(pipeline, terrain, &defs(extra))
+            .unwrap_or_else(|error| panic!("terrain.wesl with {extra:?}: {error}"));
+        assert!(
+            module
+                .entry_points
+                .iter()
+                .any(|entry| entry.stage == naga::ShaderStage::Fragment),
+            "terrain.wesl has a fragment entry point"
         );
     }
 }

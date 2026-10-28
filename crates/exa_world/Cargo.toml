@@ -20,3 +20,5 @@ workspace = true
 # The lifecycle tests put a body and a collider in the world to prove the
 # teardown empties it.
 rapier3d.workspace = true
+# The terrain material's uniform is laid out against its WGSL struct.
+naga = { version = "30", features = ["wgsl-in"] }

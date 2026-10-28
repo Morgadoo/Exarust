@@ -18,6 +18,7 @@ pub mod manager;
 
 pub mod blend;
 pub mod composite;
+pub mod composite_draw;
 pub mod frame;
 pub mod ground;
 pub mod height;
@@ -83,7 +84,15 @@ impl Plugin for TerrainPlugin {
                 )
                     .chain(),
             )
-            .add_systems(Update, live::drive_terrain_stream);
+            .init_resource::<composite_draw::CompositeDraws>()
+            .add_systems(
+                Update,
+                (
+                    live::drive_terrain_stream,
+                    composite_draw::draw_terrain_composites,
+                )
+                    .chain(),
+            );
     }
 }
 
@@ -109,6 +118,19 @@ macro_rules! terrain_splat {
             #[texture(103, dimension = "2d_array")]
             #[sampler(104)]
             pub splat: Option<Handle<Image>>,
+            /// The block's baked composite set (colour, normal, gloss and
+            /// half-size parallax height), read with
+            /// [`terrain_flags::COMPOSITE`]; the colour image's clamped
+            /// linear sampler reads all four.
+            #[texture(105)]
+            #[sampler(106)]
+            pub composite_colour: Option<Handle<Image>>,
+            #[texture(107)]
+            pub composite_normal: Option<Handle<Image>>,
+            #[texture(108)]
+            pub composite_gloss: Option<Handle<Image>>,
+            #[texture(109)]
+            pub composite_height: Option<Handle<Image>>,
             $(
                 #[texture($bd)]
                 pub $diffuse: Option<Handle<Image>>,
@@ -139,6 +161,14 @@ macro_rules! terrain_splat {
 
         impl TerrainSplat {
             /// Layer `k`'s diffuse, surface and normal textures.
+            pub fn layer(&self, k: usize) -> Option<[&Option<Handle<Image>>; 3]> {
+                match k {
+                    $($k => Some([&self.$diffuse, &self.$surface, &self.$normal]),)*
+                    _ => None,
+                }
+            }
+
+            /// Layer `k`'s diffuse, surface and normal textures, mutably.
             fn layer_mut(&mut self, k: usize) -> Option<[&mut Option<Handle<Image>>; 3]> {
                 match k {
                     $($k => Some([&mut self.$diffuse, &mut self.$surface, &mut self.$normal]),)*
@@ -153,6 +183,10 @@ macro_rules! terrain_splat {
                     params: SplatParams::default(),
                     layer_sampler: None,
                     splat: None,
+                    composite_colour: None,
+                    composite_normal: None,
+                    composite_gloss: None,
+                    composite_height: None,
                     $($diffuse: None, $surface: None, $normal: None,)*
                     gi_volume: None,
                     environment: None,
@@ -199,6 +233,13 @@ pub struct SplatParams {
     /// The GI volume's lowest corner and size (metres).
     pub gi_origin: Vec4,
     pub gi_extent: Vec4,
+    /// The block's `TexPos` (x, y and the scale z): the composite coordinate
+    /// is the tile-local position in centimetres × z, plus xy
+    /// ([`composite::tex_pos`]). Read only with [`terrain_flags::COMPOSITE`].
+    pub composite_pos: Vec4,
+    /// The block's tile centre x, z (metres, world) the composite coordinate
+    /// is measured from.
+    pub composite_origin: Vec4,
     /// The palette's wet-floor source ([`exa_formats::terrain::Palette::wetness`]).
     /// Non-zero only turns the wet-floor flag on; the shader reads no value.
     pub wetness: f32,
@@ -223,6 +264,8 @@ pub mod terrain_flags {
     /// The palette's wet-floor source is above 0.4 (the sewer): the lit
     /// program's wet-floor gloss term applies.
     pub const WET_FLOOR: u32 = 16;
+    /// The block draws its baked composite set (`EXA_TERRAIN_SETS=1`).
+    pub const COMPOSITE: u32 = 32;
 }
 
 impl exa_render::supersample::SplitTapsFlag for TerrainMaterial {
@@ -1908,6 +1951,37 @@ fn sobel_normal(tile: &TerrainTile, i: i32, j: i32, spacing: f32) -> Vec3 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The size naga lays the shader's `TerrainSplat` struct out at, cut
+    /// out of `terrain.wesl` (the shader itself imports Bevy's modules,
+    /// which exa_render's surface shader test composes).
+    fn shader_uniform_size() -> u64 {
+        let source = include_str!("terrain.wesl");
+        let start = source.find("struct TerrainSplat {").expect("declared");
+        let end = start + source[start..].find("\n}").expect("closed") + 2;
+        let module_source = format!(
+            "{}\n@group(0) @binding(0) var<uniform> probe: TerrainSplat;\n",
+            &source[start..end]
+        );
+        let module = naga::front::wgsl::parse_str(&module_source).expect("parses");
+        let mut layouter = naga::proc::Layouter::default();
+        layouter.update(module.to_ctx()).expect("lays out");
+        let (handle, _) = module
+            .types
+            .iter()
+            .find(|(_, ty)| ty.name.as_deref() == Some("TerrainSplat"))
+            .expect("a type");
+        u64::from(layouter[handle].size)
+    }
+
+    #[test]
+    fn the_material_uniform_matches_the_shaders_layout() {
+        // Four arrays of 16 vec4, the GI box and the composite's two vec4,
+        // then six words padded to 32 bytes.
+        let size = shader_uniform_size();
+        assert_eq!(size, 4 * 16 * 16 + 4 * 16 + 32);
+        assert_eq!(size, <SplatParams as ShaderType>::min_size().get());
+    }
 
     #[test]
     fn a_terrain_block_reports_its_flat_slab() {

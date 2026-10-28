@@ -6,10 +6,11 @@
 //! wait and then runs two per-frame passes: the frame hook ([`stream`]) that
 //! inserts, uploads or unloads at most one tile, and the block selection
 //! ([`composite`]) that ranks every 6 m block and bakes one composite a
-//! frame. Exarust layers the materials per pixel instead of baking sets, so
-//! the selection drives the block ranks, the set pools and the per-block
-//! composite state; its set assignments are handed to
-//! [`exa_render::terrain_composite`] when a host is present.
+//! frame. The selection drives the block ranks, the set pools and the
+//! per-block composite state; its set assignments are handed to
+//! [`exa_render::terrain_composite`] when a host is present, and with
+//! `EXA_TERRAIN_SETS=1` [`super::composite_draw`] bakes the held sets and
+//! draws the blocks from them (otherwise the layers stack per pixel).
 //!
 //! Evidence: REA on the priority slot, the block selector and the frame
 //! hook; the numbers and orders are pinned in `stream` and `composite`.
@@ -359,7 +360,8 @@ pub fn drive_terrain_stream(
     let tick = streaming.tick(focus, &visible, &distances);
     // Hand the sets the selection holds to the renderer's composite host.
     // One new set a frame: making many render targets at once would stall
-    // the frame, and nothing draws them yet (the per-pixel shader does).
+    // the frame. The bakes and the draws from them follow in
+    // `composite_draw`.
     if let (Some(mut host), Some(mut assets)) = (host, assets)
         && host.enabled()
     {
