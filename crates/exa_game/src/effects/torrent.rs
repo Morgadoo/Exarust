@@ -1159,10 +1159,8 @@ mod tests {
 
     #[test]
     fn the_contact_rules_carry_the_numbers() {
-        assert_eq!(
-            limb_terms(true, 1.0, 80.0),
-            (0.5, (1.0f32 / 80.0) * 0.8, 0.25)
-        );
+        // (1/80)·0.8 in double rounds to 0.01; in single it is 0.010000001.
+        assert_eq!(limb_terms(true, 1.0, 80.0), (0.5, 0.01, 0.25));
         assert_eq!(limb_terms(false, 12.0, 0.0), (3.0, 0.5, 0.5 / 13.0));
         let p = StreamPoint {
             at: Vec3::new(0.0, 0.0, 10.0),

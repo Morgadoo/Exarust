@@ -1581,13 +1581,27 @@ mod tests {
     }
 
     #[test]
+    fn the_face_passes_pull_an_even_spine_together() {
+        // Equal widths give f = 0: the head pass moves the head by
+        // (p₀ − p₁)·(−0.25), toward the second point, and the inner passes
+        // pull each pair together by 0.025. Nothing leaves the line.
+        let spine: [Vec3; RIBBON_SAMPLES] =
+            std::array::from_fn(|i| Vec3::new(10.0 * i as f32, 0.0, 0.0));
+        let widths = [1.0; RIBBON_SAMPLES];
+        let bent = Blast::face_camera(&spine, &widths, 1.0, &super::super::Frame::IDENTITY);
+        assert!(bent[0].x > 0.0 && bent[1].x - bent[0].x < 10.0);
+        assert!(bent.iter().all(|p| p.y == 0.0 && p.z == 0.0));
+    }
+
+    #[test]
     fn a_kept_weight_is_nine_tenths_in_double() {
         // 0.1 × 0.9 rounds to 0.09 in double and to 0.089999996 in single.
         assert_eq!(contact_weight(0.1, false, false).0, 0.09);
         assert_eq!(contact_weight(0.1, true, true).0, 0.09);
         let mut chunk = blast().chunks[0];
         chunk.weight = 0.1;
-        rebound(&mut chunk, chunk.at);
+        let at = chunk.at;
+        rebound(&mut chunk, at);
         assert_eq!(chunk.weight, 0.09);
     }
 
