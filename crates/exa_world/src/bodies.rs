@@ -605,6 +605,9 @@ mod volume_fit {
         let game = exa_assets::GameData::open(&dir).unwrap();
         let pack = game.pack(PackKind::Objlib).unwrap();
         let (mut bodies, mut by_default, mut matched) = (0usize, 0usize, 0usize);
+        // How many stored lists the shipped runtime's own scan (25 entries)
+        // reproduces: the priced evidence for the exporter option below.
+        let mut runtime = 0usize;
         let mut time = std::time::Duration::ZERO;
         for entry in pack.entries() {
             let Some(bytes) = pack.get(&entry.name) else {
@@ -644,6 +647,16 @@ mod volume_fit {
                     matched += 1;
                     continue;
                 }
+                let runtime_fit = fit(
+                    &mesh,
+                    &VolumeOptions {
+                        all_neighbours: false,
+                        ..defaults
+                    },
+                );
+                if same(&runtime_fit) {
+                    runtime += 1;
+                }
                 let other = if defaults.resolution == FINE_RESOLUTION {
                     COARSE_RESOLUTION
                 } else {
@@ -672,7 +685,8 @@ mod volume_fit {
         }
         eprintln!(
             "shipped bodies: {bodies}, {matched} fitted bit for bit ({by_default} with the \
-             builders' defaults); default fits took {time:?}"
+             builders' defaults, {runtime} with the runtime's 25-neighbour scan); default fits \
+             took {time:?}"
         );
         assert!(bodies > 1000, "too few shipped bodies found: {bodies}");
         assert!(
