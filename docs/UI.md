@@ -1261,7 +1261,20 @@ drawing:
   `(1,0)`; the frame reflects them, so the picture shows upright and
   unmirrored, turned clockwise by the camera's yaw, bilinear-filtered. The
   curtain is the black layer of `exa_ui::fade` (the death fade). The
-  status marker's glow and icon are not painted yet. The heartbeat's fade-out lowers its sound to
+  marker and the alert show the skill-icon atlas's first cell (the
+  96-pixel cell at the origin of `sgsklicons.rfi`, resampled to 8 units)
+  on a black halo: the skin's rounded fill over the two-unit square three
+  to five units into the icon, grown by eight units, at
+  `round(0.6 · pulse · 255)`. The marker's icon is tinted (140, 160, 255)
+  at `CVTSS2SI(pulse · 255)`; the alert's is outlined at the pulse, its
+  face in the skin's seventh label ink and its one-pixel copies in the
+  third highlight ink. One pulse clock serves both: the alert stamps it
+  on its first frame, the marker reads it as it is (zero before), and
+  only the HUD switched off clears the stamp. `exa_ui::hud_status` draws
+  them through the GUI draw path, each into a canvas the size of its
+  halo; the game shows the marker while the player's caster knows
+  powers and none is a new pick (the alert stays off: the running game
+  keeps no skill record for the player). The heartbeat's fade-out lowers its sound to
   `0.3 · (1 − elapsed / 1000)` and stops it; the border keeps its pulse.
   The menu cursor is `round(setting · height / 1080 · 32)`, at most 128,
   with a 0.176/0.08 hotspot (`setting` is the CursorSize setting, 1 in the

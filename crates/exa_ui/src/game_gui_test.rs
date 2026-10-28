@@ -844,3 +844,43 @@ fn the_preview_bars_are_painted_at_the_dolls_bottom() {
     let canvas = paint_preview_bars((1.0, 1.0), 0.0, 4, (800, 600), &texture);
     assert!(canvas.pixels.iter().all(|p| p[3] == 0.0));
 }
+
+#[test]
+fn the_status_clock_is_stamped_by_the_alert_and_cleared_by_the_hud_switch() {
+    let mut clock = StatusClock::default();
+    // The marker alone pulses from the unstamped clock (zero): at 1500 ms
+    // t = |1000 − 1500| / 1000 = 0.5.
+    let draw = clock.frame(true, true, true, false, 1500);
+    assert_eq!(draw.marker, Some(0.5));
+    assert_eq!(draw.ready, None);
+    assert!(!clock.started);
+    // The alert's first frame stamps the clock; the marker drawn first in
+    // that frame still reads the old stamp (3000 ms from zero is the
+    // pulse's low) while the alert starts at its peak.
+    let draw = clock.frame(true, true, true, true, 3000);
+    assert_eq!(draw.marker, Some(0.0));
+    assert_eq!(draw.ready, Some(1.0));
+    assert_eq!((clock.start, clock.started), (3000, true));
+    // A later frame keeps the stamp: 1000 ms in, the pulse is at its low.
+    assert_eq!(clock.frame(true, true, false, true, 4000).ready, Some(0.0));
+    assert_eq!(clock.start, 3000);
+    // No player: nothing draws and the stamp stays.
+    assert_eq!(
+        clock.frame(true, false, true, true, 9000),
+        StatusDraw::default()
+    );
+    assert!(clock.started);
+    // The HUD switched off clears the stamp; the next alert stamps again.
+    assert_eq!(
+        clock.frame(false, true, true, true, 9000),
+        StatusDraw::default()
+    );
+    assert!(!clock.started);
+    clock.frame(true, true, false, true, 9500);
+    assert_eq!(clock.start, 9500);
+    // The icon's alpha byte rounds half to even.
+    assert_eq!(status_icon_alpha(1.0), 255);
+    assert_eq!(status_icon_alpha(0.5), 128); // 127.5 → 128
+    assert_eq!(status_icon_alpha(0.0), 0);
+    assert_eq!(status_icon_alpha(f32::NAN), 0);
+}

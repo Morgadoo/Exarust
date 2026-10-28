@@ -17,9 +17,8 @@
 //! bars), already driven by the game.
 //!
 //! The game sets [`CompassView`] before [`DrawHud`]; this module paints it
-//! under the bars, as the original's draw order says. The status marker and the skill-ready alert are [`crate::game_gui`]
-//! rules but are not painted here: their icons are skin frames whose atlas
-//! the evidence does not name.
+//! under the bars, as the original's draw order says. The status marker and
+//! the skill-ready alert that follow it are [`crate::hud_status`]'s.
 //!
 //! Rules: `docs/UI.md` (The in-game GUI unit), `docs/RENDERING.md` (The
 //! interface).

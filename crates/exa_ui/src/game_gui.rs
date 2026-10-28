@@ -1039,7 +1039,13 @@ pub fn status_pulse(now: u32, start: u32) -> (f32, f32) {
     let rem = (i64::from(now) - i64::from(start)) % 2000;
     let t = ((1000 - rem).abs() as f64 * 0.001) as f32;
     let e = ease(t);
-    (e, (f64::from(e) * 0.6) as f32)
+    (e, status_glow_alpha(e))
+}
+
+/// The halo's share of a pulse: the eased pulse times 0.6 in double
+/// precision, narrowed to single.
+pub fn status_glow_alpha(pulse: f32) -> f32 {
+    (f64::from(pulse) * 0.6) as f32
 }
 
 /// The status marker's place: 53 units right of the centre, 8 above the
@@ -1121,6 +1127,67 @@ pub fn techniques_ahead(skills: &[Skill; 6]) -> bool {
 pub fn ready_alert(skills: &[Skill; 6]) -> bool {
     let levels: i32 = skills.iter().map(|s| i32::from(s.points / LEVEL_XP)).sum();
     levels < READY_LEVELS && !techniques_ahead(skills)
+}
+
+/// The pulse clock the status marker and the skill-ready alert share: the
+/// alert stamps it the first time it shows, and only a HUD switched off
+/// clears the stamp (the marker reads whatever the clock holds, zero
+/// before the alert ever showed).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StatusClock {
+    pub start: u32,
+    pub started: bool,
+}
+
+/// What one HUD frame draws of the marker and the alert: each one's eased
+/// pulse when it draws.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct StatusDraw {
+    pub marker: Option<f32>,
+    pub ready: Option<f32>,
+}
+
+impl StatusClock {
+    /// One HUD frame: with the HUD off the stamp clears and nothing draws;
+    /// otherwise the marker (when [`status_marker`] holds) pulses from the
+    /// current stamp, then the alert (when [`ready_alert`] holds) stamps
+    /// the clock if it has not yet and pulses from the stamp. The caller
+    /// passes `player` false when the view has no player, which draws
+    /// nothing and keeps the stamp, as the HUD draw returns early then.
+    pub fn frame(
+        &mut self,
+        enabled: bool,
+        player: bool,
+        marker: bool,
+        ready: bool,
+        now: u32,
+    ) -> StatusDraw {
+        if !enabled {
+            self.started = false;
+            return StatusDraw::default();
+        }
+        if !player {
+            return StatusDraw::default();
+        }
+        let mut draw = StatusDraw::default();
+        if marker {
+            draw.marker = Some(status_pulse(now, self.start).0);
+        }
+        if ready {
+            if !self.started {
+                self.start = now;
+                self.started = true;
+            }
+            draw.ready = Some(status_pulse(now, self.start).0);
+        }
+        draw
+    }
+}
+
+/// The status marker icon's alpha byte: the pulse times 255 in single
+/// precision, `CVTSS2SI`-rounded (ties to even) and kept to its low byte.
+pub fn status_icon_alpha(pulse: f32) -> u8 {
+    cvtss2si(pulse * 255.0) as u8
 }
 
 /// The level curtain: a black page that falls over three seconds when a
