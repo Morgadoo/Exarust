@@ -286,6 +286,29 @@ pub fn panel_health(word: u16) -> f32 {
     f32::from(word) * f32::from_bits(0x3780_0080)
 }
 
+/// The roster row's health gauge: its rectangle and fill fraction.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HealthMarker {
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
+    pub fill: f32,
+}
+
+/// The roster table's health gauge from the cell's right/bottom point and
+/// the record's word: 8 square units at (right − 13, bottom − 4), filled by
+/// the word times the single 1/65535.
+pub fn health_marker(right: i32, bottom: i32, word: u16) -> HealthMarker {
+    HealthMarker {
+        x: right - 13,
+        y: bottom - 4,
+        w: 8,
+        h: 8,
+        fill: panel_health(word),
+    }
+}
+
 /// The fighter-info panel's portrait scale: the preview's height field
 /// squared times 10, in single precision.
 pub fn portrait_scale(height: f32) -> f32 {
@@ -1252,6 +1275,17 @@ mod tests {
         assert_eq!(
             portrait_scale(1.1).to_bits(),
             (1.1f32 * 1.1 * 10.0).to_bits()
+        );
+    }
+
+    #[test]
+    fn the_roster_health_gauge_sits_at_the_cells_corner() {
+        let marker = health_marker(100, 50, 65535);
+        assert_eq!((marker.x, marker.y, marker.w, marker.h), (87, 46, 8, 8));
+        assert_eq!(marker.fill.to_bits(), 1.0f32.to_bits());
+        assert_eq!(
+            health_marker(0, 0, 32768).fill.to_bits(),
+            (32768.0f32 * f32::from_bits(0x3780_0080)).to_bits()
         );
     }
 

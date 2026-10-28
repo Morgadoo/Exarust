@@ -847,6 +847,31 @@ mod generation_tests {
     }
 
     #[test]
+    fn the_dropped_prize_slot_does_not_refuse_a_prize() {
+        // Seed 13's first draw is prize 8, which sits in the eighth history
+        // slot; only the first seven refuse it.
+        let mut rng = Rng(13);
+        let mut history = [1, 2, 3, 4, 5, 6, 7, 8];
+        assert_eq!(draw_prize(&mut rng, &mut history), TOURNAMENT_PRIZES[7]);
+        assert_eq!(history, [8, 1, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(
+            prize_conflict(8, &[7, 8], None),
+            PrizeConflict {
+                shop: true,
+                merchant: false
+            }
+        );
+        assert_eq!(
+            prize_conflict(8, &[], Some(&[8])),
+            PrizeConflict {
+                shop: false,
+                merchant: true
+            }
+        );
+        assert_eq!(prize_conflict(8, &[], Some(&[9])), PrizeConflict::default());
+    }
+
+    #[test]
     fn a_prize_is_drawn_around_the_history() {
         let mut rng = Rng(7);
         let prize = pick_prize(&mut rng, &TOURNAMENT_PRIZES[..17]).unwrap();
@@ -1336,12 +1361,34 @@ pub struct TournamentBoard {
 pub fn draw_prize(rng: &mut crate::item_container::Rng, history: &mut [u32; 8]) -> u32 {
     loop {
         let index = rng.below(TOURNAMENT_PRIZES.len() as u32);
-        if history.contains(&(index + 1)) {
+        // The last slot of the eight-entry history is about to be dropped,
+        // so only the first seven refuse a prize.
+        if history[..7].contains(&(index + 1)) {
             continue;
         }
         history.rotate_right(1);
         history[0] = index + 1;
         return TOURNAMENT_PRIZES[index as usize];
+    }
+}
+
+/// A tournament prize found in a stock, as the generator reports it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PrizeConflict {
+    /// The shop's shelf holds the prize.
+    pub shop: bool,
+    /// The merchant's stock holds the prize (only checked with a
+    /// merchant employed).
+    pub merchant: bool,
+}
+
+/// Whether the drawn prize is already on the shop's shelf, or on the
+/// merchant's when one is employed. The original reports these as "Reward
+/// Error" after drawing, without drawing another prize.
+pub fn prize_conflict(prize: u32, shop: &[u32], merchant: Option<&[u32]>) -> PrizeConflict {
+    PrizeConflict {
+        shop: shop.contains(&prize),
+        merchant: merchant.is_some_and(|stock| stock.contains(&prize)),
     }
 }
 

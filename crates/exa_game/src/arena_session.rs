@@ -191,6 +191,9 @@ pub struct RoundFight {
     pub clears_opponent: bool,
     /// A spare opponent is created for the round after this one.
     pub spare_opponent: bool,
+    /// The company's side is stood again from the participant list (the
+    /// last fighter died on a loss).
+    pub respawns_company: bool,
     /// The scene work starts after this many milliseconds.
     pub yield_ms: u32,
 }
@@ -207,6 +210,7 @@ pub fn regenerate_round(level: i32, tier: i32, losses: i32, fighter_dead: bool) 
         opponent: generic_plan(level, tier),
         clears_opponent: true,
         spare_opponent: true,
+        respawns_company: losses >= 1 && fighter_dead,
         yield_ms: NEXT_ROUND_YIELD_MS,
     }
 }
@@ -329,6 +333,35 @@ pub fn meet_participants(count: usize, staff: &[(i32, u8)]) -> Vec<i32> {
         }
     }
     list
+}
+
+/// What arriving at the hub (and the after-load hook) does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HubFixups {
+    /// A physician is employed: clear the weapon object at its spot.
+    pub clear_physician_weapon: bool,
+    /// The manager and fighters are numbered again.
+    pub number_fighters: bool,
+    /// No tournament was generated yet: generate one.
+    pub generate_tournament: bool,
+    /// Drop the unfit entrants.
+    pub drop_unfit: bool,
+    /// The hub's session hook is installed after the fixups.
+    pub install_session_hook: bool,
+}
+
+/// The hub's after-load fixups. The first physician in the staff clears the
+/// weapon object at the physician's spot; the manager is restored and the
+/// fighters renumbered; a missing tournament is generated; the unfit
+/// entrants are dropped; and the session hook is installed.
+pub fn hub_arrival(has_physician: bool, has_tournament: bool) -> HubFixups {
+    HubFixups {
+        clear_physician_weapon: has_physician,
+        number_fighters: true,
+        generate_tournament: !has_tournament,
+        drop_unfit: true,
+        install_session_hook: true,
+    }
 }
 
 /// The hub-return day's tournament work.
@@ -457,10 +490,12 @@ mod tests {
         assert_eq!(fight.opponent.outfit_level, 2);
         assert!(fight.clears_opponent);
         assert!(fight.spare_opponent);
+        assert!(!fight.respawns_company);
         assert_eq!(fight.yield_ms, 13);
         // A loss with a dead fighter brings the reserve entrant in.
         let fight = regenerate_round(3, 1, 2, true);
         assert_eq!(fight.company, NextRound::Reserve(2));
+        assert!(fight.respawns_company);
         // A loss with the fighter alive keeps it.
         assert_eq!(
             regenerate_round(3, 1, 2, false).company,
@@ -588,6 +623,22 @@ mod tests {
         assert_eq!(meet_participants(0, &staff), Vec::<i32>::new());
         // The manager is never taken even when no one else is on the books.
         assert_eq!(meet_participants(1, &[(9, 0)]), vec![0]);
+    }
+
+    #[test]
+    fn the_hub_arrival_clears_the_physician_weapon_and_fills_the_gaps() {
+        assert_eq!(
+            hub_arrival(true, false),
+            HubFixups {
+                clear_physician_weapon: true,
+                number_fighters: true,
+                generate_tournament: true,
+                drop_unfit: true,
+                install_session_hook: true
+            }
+        );
+        assert!(!hub_arrival(false, true).clear_physician_weapon);
+        assert!(!hub_arrival(false, true).generate_tournament);
     }
 
     #[test]
