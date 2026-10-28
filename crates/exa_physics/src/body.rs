@@ -325,6 +325,10 @@ pub struct Part {
     /// controller), which the body tick sets bits of (bit 4 marks a part
     /// in a tangle or a hit reaction).
     pub state_word: u32,
+    /// The original's second flag word on the body (its node's word beside
+    /// the class word): a lower leg's children take [`crate::part::FOOT_CHILD_FLAG`]
+    /// when the leg joins the world.
+    pub flags2: u32,
     /// When this part may play its impact sound again, on the 32-bit game
     /// clock. A blow on it stamps [`crate::part::part_sound_ready`].
     pub sound_ready_ms: u32,
@@ -523,6 +527,7 @@ impl Part {
             static_only: false,
             class_word: 0,
             state_word: 0,
+            flags2: 0,
             sound_ready_ms: 0,
             reacts: true,
             level_hits: 0,
@@ -942,6 +947,44 @@ pub struct Link {
     history: (Vec3, Vec3),
 }
 
+/// The limp link law on gap `d` (the parent's point minus the part's) for
+/// a link of `slack`, `strength`, pivot `softness` and length `smoothing`,
+/// with its smoothed `length`: [`Link`]'s limp law, shared with the
+/// cross-body grip links of a held item (`crate::grip_solve`).
+pub(crate) fn limp_law(
+    d: Vec3,
+    slack: f32,
+    strength: f32,
+    softness: f32,
+    smoothing: f32,
+    length: &mut f32,
+) -> Option<Vec3> {
+    let len2 = d.length_squared();
+    // The original has no guard on a pivot's gap; here gaps under the
+    // epsilon (3.4 µm) are left alone, as they always were: closing them
+    // too only lengthens a resting limp body's settling.
+    if len2 <= LINK_EPSILON2 {
+        return None;
+    }
+    if slack <= LIMP_PIVOT_SLACK {
+        return Some(d * (strength / (len2 * CM * CM * softness + 1.0)));
+    }
+    let len = len2.sqrt();
+    if len > slack {
+        *length = slack;
+        return Some(d * ((len - slack) / len * strength));
+    }
+    let old = *length;
+    // A NaN length change is left alone too (the original's compare).
+    #[allow(clippy::neg_cmp_op_on_partial_ord)]
+    let still = !((len - old).abs() > LENGTH_EPSILON);
+    if still {
+        return None;
+    }
+    *length = old * smoothing + (1.0 - smoothing) * len;
+    Some(d * ((len - old) / len * strength))
+}
+
 impl Link {
     /// The correction of a living body's link with gap `d` (the parent's
     /// point minus the part's): a pivot closes d/(1 + 0.001|d|) (cm), a
@@ -976,30 +1019,14 @@ impl Link {
     /// × (|d| − L)/|d|; beyond the slack it takes back strength times its
     /// excess, and L is the slack.
     fn limp(&mut self, d: Vec3) -> Option<Vec3> {
-        let len2 = d.length_squared();
-        // The original has no guard on a pivot's gap; here gaps under the
-        // epsilon (3.4 µm) are left alone, as they always were: closing them
-        // too only lengthens a resting limp body's settling.
-        if len2 <= LINK_EPSILON2 {
-            return None;
-        }
-        if self.slack <= LIMP_PIVOT_SLACK {
-            return Some(d * (self.strength / (len2 * CM * CM * self.softness + 1.0)));
-        }
-        let len = len2.sqrt();
-        if len > self.slack {
-            self.length = self.slack;
-            return Some(d * ((len - self.slack) / len * self.strength));
-        }
-        let old = self.length;
-        // A NaN length change is left alone too (the original's compare).
-        #[allow(clippy::neg_cmp_op_on_partial_ord)]
-        let still = !((len - old).abs() > LENGTH_EPSILON);
-        if still {
-            return None;
-        }
-        self.length = old * self.smoothing + (1.0 - self.smoothing) * len;
-        Some(d * ((len - old) / len * self.strength))
+        limp_law(
+            d,
+            self.slack,
+            self.strength,
+            self.softness,
+            self.smoothing,
+            &mut self.length,
+        )
     }
 
     /// Starts a limp slack link's smoothed length at the gap `d`, within
@@ -1371,10 +1398,13 @@ pub struct Ragdoll {
     /// The class flags of the bodies it holds (two hands at most), as the
     /// original keeps them on the held item bodies: bit 0x10000 is the
     /// motion flag a walk's start clears, bit 0x80000 makes every level
-    /// query static (no sweep). Exarust holds items as bone-attached
-    /// models, so the word is kept for them; no part reads it yet.
+    /// query static (no sweep). The grip links now own the held items;
+    /// this word is kept for them and no part reads it yet.
     held_flags: [u32; 2],
     held_count: usize,
+    /// The body of the character holding this one (a held item): the two
+    /// never meet, the original's all-ones group mask on the item.
+    pub held_by: Option<Entity>,
     /// The level impacts this tick's detection found (a fall or scrape hard
     /// enough to sound and hurt), one per part.
     level_impacts: Vec<LevelImpact>,
@@ -2027,6 +2057,7 @@ impl Ragdoll {
                 .collect();
             for child in children {
                 parts[child].state = crate::part::foot_child_state(parts[child].state);
+                parts[child].flags2 |= crate::part::FOOT_CHILD_FLAG;
             }
         }
         let (outward, inward) = tree_orders(&parts);
@@ -2057,6 +2088,7 @@ impl Ragdoll {
             pass: 0,
             held_flags: [0; 2],
             held_count: 0,
+            held_by: None,
             level_impacts: Vec::new(),
         }
     }
@@ -2180,6 +2212,49 @@ impl Ragdoll {
     /// original's strike flags on a weapon chain.
     pub fn set_striking(&mut self, root: usize, on: bool) {
         crate::part::set_striking(&mut self.parts, root, on);
+    }
+
+    /// Sets or clears only the strike-window bit on part `root` and its
+    /// chain (the original's class bit 1, which the weapon impact branch
+    /// reads), leaving the chain bit alone so the pair stage still measures
+    /// weapon-body impacts.
+    pub fn set_striking_window(&mut self, root: usize, on: bool) {
+        if root >= self.parts.len() {
+            return;
+        }
+        let mut stack = vec![root];
+        while let Some(i) = stack.pop() {
+            if i >= self.parts.len() {
+                continue;
+            }
+            let p = &mut self.parts[i];
+            p.state = if on {
+                p.state.with(crate::part::PartState::STRIKING)
+            } else {
+                p.state.without(crate::part::PartState::STRIKING)
+            };
+            for (j, q) in self.parts.iter().enumerate() {
+                if q.parent == Some(i) {
+                    stack.push(j);
+                }
+            }
+        }
+    }
+
+    /// Gives every part the held item's all-ones group mask, as the
+    /// original does when a character arms itself: its own weapons never
+    /// meet its own body (and, through [`Ragdoll::held_by`], no other held
+    /// item does either).
+    pub fn set_held_group(&mut self) {
+        for part in &mut self.parts {
+            part.pairing.group = crate::part::HELD_GROUP_MASK;
+        }
+    }
+
+    /// Rebuilds the body's own group masks after it stops being held (or
+    /// after a link change), as the original's group builder does.
+    pub fn reset_groups(&mut self) {
+        pairs::mask_groups(&mut self.parts);
     }
 
     /// Gives a living body its race's muscle factors.
@@ -2757,6 +2832,14 @@ impl Ragdoll {
     /// The point with weights `w` where the part is now (m).
     pub fn point_at(&self, part: usize, w: &[f32; 4]) -> Option<Vec3> {
         self.parts.get(part).map(|p| p.point(w))
+    }
+
+    /// Moves part `part` by `delta` (m) over the particles' weights `w`:
+    /// one link end's push, exactly as the body's own links apply it.
+    pub fn push_weights(&mut self, part: usize, w: &[f32; 4], delta: Vec3) {
+        if let Some(p) = self.parts.get_mut(part) {
+            p.push(w, delta);
+        }
     }
 
     /// Where the part's own origin is now (m).

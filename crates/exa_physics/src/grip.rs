@@ -8,9 +8,11 @@
 //! polearm grip, to the other hand and the arm). This module builds those
 //! link records and switches them as the grip's modes do; it is plain data
 //! so the body solver can apply a link to its item's and its parent's
-//! particles (`GripLink::apply` documents the law). Exarust's running game
-//! still draws a held item as a bone-attached model; the records here are
-//! the physics side, ready to replace that attachment.
+//! particles (`GripLink::apply` documents the law). `grip_solve` runs the
+//! records as a cross-body stage: a character's equip and torch put a
+//! `HeldGrip` on an item whose model has a rigid root, and its item body is
+//! pulled to the hand every solver iteration. A factory weapon with no
+//! stored rigid node stays bone-attached.
 //!
 //! The numbers are the original's, in its centimetres and flags. Evidence:
 //! the grip table, the link builder (points scaled by the body's scale,
@@ -18,6 +20,7 @@
 //! the two grip callbacks, the relax pass and the flip animation.
 
 use bevy::math::{Affine3A, Vec3};
+use bevy::prelude::{Component, Entity};
 
 use crate::body::{Part, Ragdoll};
 
@@ -32,6 +35,9 @@ pub const DISABLED: u32 = 0x10_0000;
 pub const HORIZONTAL: u32 = 0x200;
 /// A runtime (world or grip) link, not one from the model file.
 pub const RUNTIME: u32 = 0x40_0000;
+/// The smoothing every runtime link starts with when the builder leaves it
+/// at zero (the link init's 0.001).
+pub const DEFAULT_SMOOTHING: f32 = 0.001;
 
 /// A point on the item in its own frame (cm) and the slack (cm) its link
 /// allows.
@@ -124,8 +130,12 @@ pub struct GripLink {
     pub smoothing: f32,
     /// The original's link flags ([`PIVOT`], [`DISABLED`], …).
     pub flags: u32,
-    /// The item's and the parent's shares of a correction.
+    /// The item's and the parent's shares of a correction (both positive;
+    /// the parent is pushed the other way).
     pub shares: (f32, f32),
+    /// The world point a link with no parent part holds to, set when the
+    /// link is built.
+    pub anchor: Option<Vec3>,
 }
 
 impl GripLink {
@@ -182,6 +192,57 @@ pub struct GripLinks {
     pub world_hard: Option<usize>,
 }
 
+/// A held item waiting for its grip links, or holding them. The physics
+/// side of an item held in a hand: the item's own body is a [`Ragdoll`]
+/// whose part 0 is the item's root, and the character's body holds the
+/// hands and arms the links tie it to. A system builds `links` once both
+/// bodies exist; [`crate::grip_solve::GripSolver`] then pulls the item to
+/// the hand every iteration.
+#[derive(Component, Clone, Debug)]
+pub struct HeldGrip {
+    /// The grip table entry's links.
+    pub spec: GripSpec,
+    /// The character's body scale, which scales the main points.
+    pub scale: f32,
+    /// The character's size, which scales the second hand's points.
+    pub size: f32,
+    /// The weapon record's second-hand factor (W24).
+    pub second_hand_factor: f32,
+    /// The item is held flipped.
+    pub flip: bool,
+    /// The body of the character holding it, as the pair stage knows it
+    /// (its first part's entity).
+    pub holder_key: Entity,
+    /// The hand parts, right then left.
+    pub hands: [Option<Entity>; 2],
+    /// The forearms, right then left.
+    pub arms: [Option<Entity>; 2],
+    /// The built links, once both bodies exist.
+    pub links: Option<GripLinks>,
+    /// The holder let go (died or collapsed): the links are not rebuilt.
+    pub released: bool,
+}
+
+impl HeldGrip {
+    /// The item body's part index the links attach to.
+    pub const ITEM_PART: usize = 0;
+}
+
+/// A soft world weld's strength.
+pub const SOFT_WORLD: f32 = 0.05;
+/// A stiff world weld's strength.
+pub const STIFF_WORLD: f32 = 1.0;
+/// The link mobility a free hand has, as a share of its base mass: the
+/// original's `0.175`.
+pub const HAND_LINK_SHARE: f32 = 0.175;
+
+/// An empty hand's link mobility and mass words from its base mass, as the
+/// original restores them when the hands are emptied: the mobility is the
+/// base mass times 0.175 and the mass is the base mass unchanged.
+pub fn empty_hand_words(base_mass: f32) -> (f32, f32) {
+    (base_mass * HAND_LINK_SHARE, base_mass * 1.0)
+}
+
 /// The distance (m) between a link's two points now.
 fn link_distance(link: &GripLink, item: &Ragdoll, hand: &Ragdoll) -> Option<f32> {
     let a = item.point_at(link.item, &link.on_item)?;
@@ -227,9 +288,15 @@ fn make_link(
         slack,
         length: slack,
         strength,
-        smoothing,
+        // The link init turns a zero smoothing into 0.001.
+        smoothing: if smoothing == 0.0 {
+            DEFAULT_SMOOTHING
+        } else {
+            smoothing
+        },
         flags,
         shares: shares(item_mobility, parent_mobility),
+        anchor: None,
     })
 }
 
@@ -285,7 +352,9 @@ pub fn build(
             bindings,
             Some(holding_arm),
             spec.arm?.item * size * cm,
-            spec.arm?.part * size * cm,
+            // The arm's hand-side point is the table's raw point (the
+            // second hand's alone is scaled by the character's size).
+            spec.arm?.part * cm,
             0.0,
             1.0,
             0.0,
@@ -342,10 +411,13 @@ pub fn build(
     } else {
         Some(main)
     };
+    // The table's entries carry at least two main links; a one-link spec
+    // (not shipped) takes its only point, where the original would read
+    // the next slot.
     let flip_point = if spec.second_hand.is_some() {
         spec.links.first()?.point * scale
     } else {
-        spec.links.get(1)?.point * scale
+        spec.links.get(1).or_else(|| spec.links.first())?.point * scale
     };
     Some(GripLinks {
         links,
@@ -365,7 +437,7 @@ pub fn build(
 }
 
 /// Adds the two world links a held item gets when it is attached
-/// (`0x151ec0`): a soft one at `soft_point` (cm) with strength 0.05 and a
+///: a soft one at `soft_point` (cm) with strength 0.05 and a
 /// stiff one at the item's origin with strength 1, both to the world
 /// anchor, flags `0x500000`. `None` when the item part does not exist.
 pub fn world_links(
@@ -375,8 +447,10 @@ pub fn world_links(
 ) -> Option<(GripLink, GripLink)> {
     let cm = 0.01;
     let on_item = item.weights_at(bindings.item_part, soft_point * cm)?;
+    let soft_at = item.point_at(bindings.item_part, &on_item)?;
     let origin = item.weights_at(bindings.item_part, Vec3::ZERO)?;
-    let world = |on_item: [f32; 4], strength: f32| GripLink {
+    let origin_at = item.point_at(bindings.item_part, &origin)?;
+    let world = |on_item: [f32; 4], anchor: Vec3, strength: f32| GripLink {
         item: bindings.item_part,
         on_item,
         hand: None,
@@ -384,16 +458,17 @@ pub fn world_links(
         slack: 0.0,
         length: 0.0,
         strength,
-        smoothing: 0.0,
+        smoothing: DEFAULT_SMOOTHING,
         // The original leaves the world links' shares zero; a world anchor
         // does not move, so the item's share is the whole correction.
         flags: RUNTIME | DISABLED,
         shares: (1.0, 0.0),
+        anchor: Some(anchor),
     };
-    Some((world(on_item, 0.05), world(origin, 1.0)))
+    Some((world(on_item, soft_at, 0.05), world(origin, origin_at, 1.0)))
 }
 
-/// Builds a shield's links (`0x153ed0`): three runtime pivots from points on
+/// Builds a shield's links: three runtime pivots from points on
 /// the shield — its back at (−20, 0, 0) cm to the holding hand, and its two
 /// face points (5, 0, ±15) cm to the other hand — then a soft world link at
 /// its origin (strength 0.05, the world-link flags).
@@ -440,12 +515,14 @@ pub fn shield_links(
             slack: 0.0,
             length: 0.0,
             strength: 1.0,
-            smoothing: 0.0,
+            smoothing: DEFAULT_SMOOTHING,
             flags: PIVOT | RUNTIME,
             shares: shares(item_mobility, parent_mobility),
+            anchor: None,
         });
     }
     let on_item = item.weights_at(bindings.item_part, Vec3::ZERO)?;
+    let origin_at = item.point_at(bindings.item_part, &on_item)?;
     let world = links.len();
     links.push(GripLink {
         item: bindings.item_part,
@@ -455,9 +532,10 @@ pub fn shield_links(
         slack: 0.0,
         length: 0.0,
         strength: 0.05,
-        smoothing: 0.0,
+        smoothing: DEFAULT_SMOOTHING,
         flags: RUNTIME | DISABLED,
         shares: (1.0, 0.0),
+        anchor: Some(origin_at),
     });
     Some(GripLinks {
         links,
@@ -477,25 +555,29 @@ pub fn shield_links(
 }
 
 impl GripLinks {
-    /// The grip mode's word changed: the original stores it and calls
-    /// the entry's callback. Returns whether it changed.
-    pub fn set_mode(&mut self, mode: i32) -> bool {
+    /// The grip mode's word changed: the original stores it and, when the
+    /// entry has a callback (every kind but a one-hander), marks the links
+    /// as still relaxing. Returns whether it changed.
+    pub fn set_mode(&mut self, mode: i32, kind: GripKind) -> bool {
         if mode == self.mode {
             return false;
         }
         self.mode = mode;
-        self.relaxing = true;
+        if kind != GripKind::Other {
+            self.relaxing = true;
+        }
         true
     }
 
-    /// Applies a grip mode (`0x152a30` and `0x152e10`). The two-hander's
-    /// main link takes a 4 cm slack; modes 0, 1, 2 and 3 switch the second
-    /// hand's, arm's and extra links (the extra with the current distance
-    /// as its slack), and a polearm's main link slides with a 15·scale cm
-    /// slack in modes 1 and 3. `thrust_three` is the weapon record's
-    /// thrust class (class 3, which turns a two-handed
-    /// mode 2 into 1 for a half-sword grip, `stab_grip`). Returns false for
-    /// a configuration missing a link index (the original reports an
+    /// Applies a grip mode, the entry's
+    /// callback. The two-hander's main link takes a 4 cm slack; modes 0, 1,
+    /// 2 and 3 switch the second hand's, arm's and extra links (the extra
+    /// with the current distance as its slack), and a polearm's main link
+    /// slides with a 15·scale cm slack in modes 1 and 3. `thrust_three` is
+    /// the weapon record's thrust class (class 3, which turns a two-handed
+    /// mode 2 into 1 for a half-sword grip, `stab_grip`). The callback runs
+    /// only when the mode changed, as the mode setter does. Returns false
+    /// for a configuration missing a link index (the original reports an
     /// invalid configuration and writes nothing).
     #[allow(clippy::too_many_arguments)]
     pub fn apply_mode(
@@ -508,10 +590,15 @@ impl GripLinks {
         item: &Ragdoll,
         hand: &Ragdoll,
     ) -> bool {
+        if mode == self.mode {
+            return true;
+        }
         let current = |links: &GripLinks, i: usize| -> Option<f32> {
             link_distance(links.links.get(i)?, item, hand)
         };
-        let mut applied = mode;
+        // The setter stores the requested mode; the callback's half-sword
+        // turn of mode 2 into 1 is local to the callback.
+        let requested = mode;
         match kind {
             GripKind::TwoHanded => {
                 let (Some(second), Some(arm), Some(extra)) = (self.second, self.arm, self.extra)
@@ -529,7 +616,6 @@ impl GripLinks {
                 } else {
                     mode
                 };
-                applied = mode;
                 match mode {
                     0 => {
                         self.links[second].disable();
@@ -595,11 +681,14 @@ impl GripLinks {
             }
             GripKind::Other => {}
         }
-        self.set_mode(applied);
+        self.mode = requested;
+        if kind != GripKind::Other {
+            self.relaxing = true;
+        }
         true
     }
 
-    /// One relax pass after a grip change (`0x154530`): every link enabled
+    /// One relax pass after a grip change: every link enabled
     /// at least once loses slack — the main link 1 cm, the second hand
     /// `(√s + 0.02)·0.1` cm, the arm `s·0.02 + 0.15` cm and the extra
     /// `(√s + 0.01)·0.4` cm (s in cm) — until it reaches zero, when its
@@ -657,14 +746,14 @@ impl GripLinks {
         true
     }
 
-    /// One flip step (`0x154320`): only while the character is not attacking
-    /// or the flip is within 0.01 of its middle. The progress moves by
-    /// `(1 − (0.5 − f)²·4)·0.05 + 0.002` a tick toward 1 (or back to 0 once
-    /// `flipping`), and at either end the item's record must be rebuilt.
-    /// The flip link's point turns about the item's y axis by `f·π`. Returns
-    /// whether the link moved.
-    pub fn flip_step(&mut self, item: &Ragdoll, flipping: &mut bool, attacking: bool) -> bool {
-        if attacking && (self.flip_progress - 0.5).abs() > 0.49 {
+    /// One flip step: only while the character is not
+    /// combat-ready, or the flip is within 0.49 of its middle. The progress
+    /// moves by `(1 − (0.5 − f)²·4)·0.05 + 0.002` a tick toward 1 (or back
+    /// to 0 once `flipping`), and at either end the item's record must be
+    /// rebuilt. The flip link's point turns about the item's y axis by
+    /// `f·π`. Returns whether the link moved.
+    pub fn flip_step(&mut self, item: &Ragdoll, flipping: &mut bool, ready: bool) -> bool {
+        if ready && (self.flip_progress - 0.5).abs() > 0.49 {
             return false;
         }
         let Some(flip) = self.flip.filter(|&i| i < self.links.len()) else {
@@ -694,8 +783,8 @@ impl GripLinks {
         if !running {
             self.record_dirty = true;
         }
-        let angle = self.flip_progress * std::f32::consts::PI;
-        let (sin, cos) = angle.sin_cos();
+        let angle = (f64::from(self.flip_progress) * std::f64::consts::PI) as f32;
+        let (sin, cos) = crate::engine_math::sin_cos(angle);
         let p = self.flip_point * 0.01;
         let turned = Vec3::new(p.x * cos - p.z * sin, p.y, p.z * cos + p.x * sin);
         if let Some(on_item) = item.weights_at(self.links[flip].item, turned) {
@@ -707,7 +796,7 @@ impl GripLinks {
     }
 }
 
-/// The grip mode a clip's change asks for (`0x1547d0`): a knocked-down body
+/// The grip mode a clip's change asks for: a knocked-down body
 /// 0; Idle or Walk 2; Stab 3; a clip outside 0x0E..=0x11, 0x1C and 0x1F
 /// while the character's own clip is under 0x2C 1; anything else 0.
 pub fn mode_from_clip(clip: i32, current_clip: i32, down: bool) -> i32 {
@@ -828,7 +917,7 @@ mod tests {
         // The main links are pivots, the second one with 0.01 smoothing.
         assert_eq!(links.links[3].flags, PIVOT);
         assert!((links.links[3].slack - 0.05).abs() < 1e-6);
-        assert_eq!(links.links[3].smoothing, 0.0);
+        assert_eq!(links.links[3].smoothing, DEFAULT_SMOOTHING);
         assert!(links.links[4].slack.abs() < 1e-9);
         assert_eq!(links.links[4].smoothing, 0.01);
         // The table's points are the links' rest points (scale 1).
@@ -902,10 +991,14 @@ mod tests {
         assert!(links.apply_mode(3, GripKind::TwoHanded, 1.0, false, false, &item, &hand));
         assert!(links.links[2].enabled());
         assert!(!links.links[0].enabled());
-        // A half-sword thrust turns mode 2 into 1.
+        // A half-sword thrust turns mode 2 into 1 inside the callback; the
+        // stored mode stays the requested 2, so asking again does nothing.
         assert!(links.apply_mode(2, GripKind::TwoHanded, 1.0, true, true, &item, &hand));
-        assert_eq!(links.mode, 1);
+        assert_eq!(links.mode, 2);
         assert!(links.links[0].enabled());
+        links.links[0].disable();
+        assert!(links.apply_mode(2, GripKind::TwoHanded, 1.0, true, true, &item, &hand));
+        assert!(!links.links[0].enabled());
     }
 
     #[test]
@@ -1056,9 +1149,13 @@ mod tests {
             world_soft: None,
             world_hard: None,
         };
-        assert!(links.set_mode(1));
-        assert!(!links.set_mode(1));
+        assert!(links.set_mode(1, GripKind::TwoHanded));
+        assert!(!links.set_mode(1, GripKind::TwoHanded));
         assert!(links.relaxing);
+        // A one-hander has no callback, so it marks nothing to relax.
+        links.relaxing = false;
+        assert!(links.set_mode(4, GripKind::Other));
+        assert!(!links.relaxing);
     }
 
     #[test]
@@ -1097,5 +1194,19 @@ mod tests {
         assert_eq!(mode_from_clip(0x1F, 0, false), 0);
         assert_eq!(mode_from_clip(5, 0x2C, false), 0);
         assert_eq!(mode_from_clip(5, 0, true), 0);
+    }
+}
+
+#[cfg(test)]
+mod empty_hand_tests {
+    use super::*;
+
+    /// Emptying the hands restores a 0.175 share of the base mass as the
+    /// link mobility and the base mass itself.
+    #[test]
+    fn an_empty_hand_takes_its_own_weights_back() {
+        assert_eq!(empty_hand_words(2.0), (0.35, 2.0));
+        assert_eq!(empty_hand_words(1.0), (0.175, 1.0));
+        assert_eq!(empty_hand_words(0.0), (0.0, 0.0));
     }
 }

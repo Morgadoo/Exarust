@@ -513,23 +513,60 @@ fn weapon_mass_of(
             parent = model.nodes.get(at).and_then(|n| n.parent);
         }
         // A rigid part's inverse mass is its mobility, so its mass is the
-        // reciprocal; a missing body cannot occur on this path. [guess: the
-        // original's mass word is the shape builder's, and the part's stored
-        // mobility is the closest body-side value Exarust keeps.]
+        // reciprocal (the shape builder's initial mass word is the same
+        // reciprocal of the mobility the body solver gives the part).
         let inverse = model.nodes[node]
             .rigid
             .as_ref()
             .map_or(0.0, |body| body.mobility());
         parts.push(WeaponMassPart::new(nearest, 1.0 / inverse));
     }
+    // An assembled factory weapon is one merged part in the original; its
+    // assembled model stores no rigid node, so its tree starts as that one
+    // part with the weapon's table mass.
+    if parts.is_empty() {
+        parts.push(WeaponMassPart::new(None, total));
+    }
     WeaponMass::new(parts, total, size)
 }
 
-/// The records of an unarmed character's fists (or claws), right then left,
-/// from its race's unarmed sections (the right by the race index, the left
-/// by its clawed-hands word), each measured across its hand's box (`hands`:
-/// the box's centre and half extents along the hand's x, cm), then held by
-/// `holder` of the race ([`weapon_record::equip`]).
+/// A held item's rigid body: its root node's stored rigid body, with the
+/// node's box as the part's mesh bound. `None` when the model has no rigid
+/// root (an assembled factory weapon, whose body shape is not built yet).
+pub fn held_item_body(
+    model: &model::Model,
+    entity: bevy::prelude::Entity,
+) -> Option<exa_physics::body::RigidPart> {
+    let node = model.nodes.first()?;
+    let rigid = node.rigid.as_ref()?;
+    let b = &rigid.body;
+    Some(exa_physics::body::RigidPart {
+        entity,
+        parent: None,
+        world: bevy::math::Affine3A::IDENTITY,
+        rest: b.rest.map(Vec3::from),
+        point_masses: b.point_masses,
+        parent_world: bevy::math::Affine3A::IDENTITY,
+        mobility: rigid.mobility(),
+        spheres: b
+            .spheres
+            .iter()
+            .map(|s| (Vec3::from(s.centre), s.radius))
+            .collect(),
+        origin: node.transform.translation,
+        links: Vec::new(),
+        mesh: Some(exa_physics::sector::Bounds {
+            centre: node.bounds.0,
+            half: node.half_extents,
+            radius: node.bounds.1,
+        }),
+    })
+}
+
+/// The bones the original's grip links attach to: the forearms, right then
+/// left.
+const FOREARM_BONES: [usize; 2] = [13, 16];
+
 fn fist_records(race: &RaceWeaponry, hands: [(f32, f32); 2], holder: &Holder) -> [WeaponRecord; 2] {
     let sections = weapon_record::unarmed(race.index, race.weapons.claws);
     let build = |section: &Section, (centre, half): (f32, f32)| {
@@ -691,6 +728,7 @@ fn equip_outfits(
     >,
     children: Query<&Children>,
     parts: Query<(&BodyPart, Option<&PartBounds>)>,
+    ragdolls: Query<&exa_physics::body::Ragdoll>,
     mut cache: ResMut<ModelCache>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<exa_render::material::ExaMaterial>>,
@@ -899,6 +937,7 @@ fn equip_outfits(
             let length = (record.length / CM_PER_M).max(0.1);
             // Placed by its grip for the character's size and race; no
             // weapon starts flipped yet.
+            let (grip_scale, grip_size) = (holder.scale, holder.size);
             let placement = grip.placement(&race.grip_holder(holder.size), false);
             let holder = commands
                 .spawn((
@@ -909,6 +948,40 @@ fn equip_outfits(
                     exa_combat::wounds::BladeBlood::default(),
                 ))
                 .id();
+            // The item's own body, when its model carries a rigid root, and
+            // the grip links that tie it to the hand. A factory weapon's
+            // assembled model has no stored rigid node yet; it stays
+            // bone-attached.
+            if let Some(key) = ragdolls
+                .get(body)
+                .ok()
+                .and_then(|r| r.parts.first())
+                .map(|p| p.entity)
+                && let Some(part) = held_item_body(&weapon, holder)
+            {
+                commands.entity(holder).insert((
+                    exa_physics::prop::PendingProp(vec![part]),
+                    exa_combat::impact::ImpactBook::default(),
+                    exa_physics::grip::HeldGrip {
+                        spec: grip.spec(),
+                        scale: grip_scale,
+                        size: grip_size,
+                        second_hand_factor: record.second_hand,
+                        flip: false,
+                        holder_key: key,
+                        hands: [
+                            by_bone.get(&RIGHT_HAND).copied(),
+                            by_bone.get(&LEFT_HAND).copied(),
+                        ],
+                        arms: [
+                            by_bone.get(&FOREARM_BONES[0]).copied(),
+                            by_bone.get(&FOREARM_BONES[1]).copied(),
+                        ],
+                        links: None,
+                        released: false,
+                    },
+                ));
+            }
             if let Some(mass) = mass {
                 commands.entity(holder).insert(mass);
             }

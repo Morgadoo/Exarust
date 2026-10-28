@@ -823,7 +823,14 @@ impl Pairs {
         } else {
             layers_apart(px.pairing.layer, py.pairing.layer)
         };
-        if skip {
+        // A held item never meets its holder's body, nor another item its
+        // character holds (the original gives both an all-ones group mask,
+        // and the pair test sees them as one articulated group).
+        let held = (bodies[sx.body].held_by.is_some()
+            && bodies[sx.body].held_by == bodies[sy.body].held_by)
+            || bodies[sx.body].held_by == Some(body_key(bodies[sy.body]))
+            || bodies[sy.body].held_by == Some(body_key(bodies[sx.body]));
+        if skip || held {
             return;
         }
         if intersect::spheres_separated(

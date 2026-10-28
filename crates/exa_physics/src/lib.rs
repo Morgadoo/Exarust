@@ -12,6 +12,7 @@ pub mod door;
 pub mod dynamics;
 pub mod engine_math;
 pub mod grip;
+pub mod grip_solve;
 pub mod intersect;
 pub mod kd_tree;
 pub mod kdtree;
@@ -78,6 +79,7 @@ impl Plugin for PhysicsPlugin {
             )
             .add_systems(Update, release_characters)
             .add_plugins((body::BodyPlugin, prop::PropPlugin));
+        grip_solve::plugin(app);
     }
 }
 

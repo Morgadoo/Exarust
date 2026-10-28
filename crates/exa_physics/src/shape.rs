@@ -142,6 +142,10 @@ pub struct Shape {
     pub gravity: [f32; 4],
     /// 10 000 over the volume.
     pub mobility: f32,
+    /// The part's initial mass word: the reciprocal of [`Shape::mobility`]
+    /// (the volume over 10 000), which the original's mass redistribution
+    /// starts from.
+    pub mass: f32,
     /// The collision spheres, sorted around the node's sort centre.
     pub spheres: Vec<Sphere>,
     /// Cells per axis of the fit's grid.
@@ -379,11 +383,19 @@ fn assemble(
     let rest = tetrahedron(half, node.box_centre, order, mirror);
     let point_masses = fitted.summary.point_masses(node.box_centre, rest);
     let gravity = setup_gravity(point_masses);
+    let mobility = fitted.summary.mobility();
     Shape {
         rest,
         point_masses,
         gravity,
-        mobility: fitted.summary.mobility(),
+        mobility,
+        // The original's mass word is the reciprocal of the mobility the
+        // builder stores; a zero mobility has no finite mass.
+        mass: if mobility > 0.0 && mobility.is_finite() {
+            1.0 / mobility
+        } else {
+            0.0
+        },
         spheres,
         counts: fitted.counts,
         volume: fitted.summary.mass,

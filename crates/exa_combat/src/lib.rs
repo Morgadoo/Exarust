@@ -984,7 +984,7 @@ fn strike_back(
             );
             if blow.bite > BITES_FROM && !hit.strike.unarmed {
                 debug!(
-                    "{:?} would bite in by {:.3} (weapons are not bodies yet)",
+                    "{:?} would bite in by {:.3} (the weapon's body is not the bitten part yet)",
                     hit.attacker, blow.bite
                 );
             }

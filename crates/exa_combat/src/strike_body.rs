@@ -7,8 +7,8 @@
 //! [`crate::swing`]; the held weapon's own handling forces are in
 //! [`crate::weapon`]. The nudges here return the push (cm) at the striker's
 //! point; the caller applies it with its weights. They are reproduced but
-//! not wired: Exarust holds weapons as bone-attached meshes, so there is no
-//! striker body to push yet. Rules and constants: reverse engineering of
+//! not wired: a plain weapon model has a body now, but the swing does not
+//! push it yet. Rules and constants: reverse engineering of
 //! the swing routine.
 
 // The original compares floats so that a NaN takes the other branch; the

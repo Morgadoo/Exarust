@@ -935,3 +935,27 @@ fn slider_links_take_the_original_smoothing() {
     let hung = Ragdoll::rigid(&[hung_crate(Vec3::new(0.0, -0.2, 0.0), Vec3::ZERO, slider)]);
     assert_eq!(hung.world[0].smoothing, 0.01);
 }
+
+/// A held item's parts take the all-ones group mask; rebuilding the masks
+/// restores the body's own tree masks.
+#[test]
+fn a_held_items_group_mask_is_all_ones() {
+    use crate::part::HELD_GROUP_MASK;
+    let mut body = Ragdoll::rigid(&[crate_at(Vec3::ZERO)]);
+    body.set_held_group();
+    assert_eq!(body.parts[0].pairing.group, HELD_GROUP_MASK);
+    body.reset_groups();
+    assert_ne!(body.parts[0].pairing.group, HELD_GROUP_MASK);
+}
+
+/// The held item's window setter leaves the limb chain bit alone.
+#[test]
+fn a_held_items_window_is_not_its_chain() {
+    use crate::part::PartState;
+    let mut body = Ragdoll::rigid(&[crate_at(Vec3::ZERO)]);
+    body.set_striking_window(0, true);
+    assert!(body.parts[0].state.has(PartState::STRIKING));
+    assert!(!body.parts[0].state.has(PartState::STRIKE_CHAIN));
+    body.set_striking_window(0, false);
+    assert!(!body.parts[0].state.has(PartState::STRIKING));
+}

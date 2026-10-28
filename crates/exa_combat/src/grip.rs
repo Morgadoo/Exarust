@@ -491,3 +491,76 @@ mod spec_tests {
         assert_eq!(GRIPS[4].spec().links.len(), 0);
     }
 }
+
+/// The base of a held item's reach: 60 cm, the original's arm and hand.
+pub const HELD_REACH_BASE: f32 = 60.0;
+
+/// A held item's reach from its hand (cm, the character's reach word): an
+/// unarmed item (`class & 0x30 == 0`) takes the race's own reach, anything
+/// held takes its length times a byte of the item's weapon record as a hundredth, plus
+/// 60 cm. `item_length_cm` is the item node's two y extents summed.
+pub fn held_reach(class: u16, hand_byte: u8, item_length_cm: f32, race_reach: f32) -> f32 {
+    if class & 0x30 == 0 {
+        race_reach
+    } else {
+        // The byte's hundredth times the length is worked in double, then
+        // the 60 cm is added in single.
+        (f64::from(hand_byte) * 0.01 * f64::from(item_length_cm)) as f32 + HELD_REACH_BASE
+    }
+}
+
+/// The height of a held item's aim point above its grip (cm): 0.9 of the
+/// item node's y extents.
+pub fn held_aim_height(item_length_cm: f32) -> f32 {
+    // Multiplied in double, as the original does.
+    (f64::from(item_length_cm) * 0.9) as f32
+}
+
+#[cfg(test)]
+mod held_measure_tests {
+    use super::*;
+
+    /// The held reach is the item's length times the byte's hundredth plus
+    /// 60; empty hands take the race's own.
+    #[test]
+    fn a_held_items_reach_grows_with_its_length() {
+        assert_eq!(held_reach(0, 200, 100.0, 50.0), 50.0);
+        assert_eq!(held_reach(0x10, 200, 100.0, 50.0), 260.0);
+        assert_eq!(held_reach(0x20, 128, 90.0, 50.0), 175.2);
+        assert_eq!(held_aim_height(100.0), 90.0);
+        // The hundredth is multiplied in double: single precision would
+        // give 64.854996.
+        assert_eq!(held_reach(0x10, 5, 97.1, 50.0), 64.855);
+        let m = held_measures(0x521, 200, 100.0, 50.0);
+        assert_eq!((m.reach, m.aim_cm, m.greatsword), (260.0, 90.0, true));
+        assert!(!held_measures(0x10, 200, 100.0, 50.0).greatsword);
+    }
+}
+
+/// What the held-item refresh derives from the item's weapon
+/// class and node: the class word, the item's reach, the aim point's height
+/// and whether it is the special greatsword class (`0x521`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HeldMeasures {
+    pub class: u16,
+    pub reach: f32,
+    pub aim_cm: f32,
+    pub greatsword: bool,
+}
+
+/// The refresh's measures: with no hands bits the reach is the race's,
+/// otherwise [`held_reach`]; the aim height is [`held_aim_height`]; the
+/// special two-hander class is `0x521`.
+pub fn held_measures(
+    class: u16,
+    hand_byte: u8,
+    item_length_cm: f32,
+    race_reach: f32,
+) -> HeldMeasures {
+    HeldMeasures {
+        class,
+        reach: held_reach(class, hand_byte, item_length_cm, race_reach),
+        aim_cm: held_aim_height(item_length_cm),
+        greatsword: class == 0x521,
+    }
+}

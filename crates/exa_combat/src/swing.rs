@@ -501,6 +501,9 @@ pub struct SwingState {
     pub open: [bool; 2],
     /// Each held slot's striker tracker.
     pub tracker: [Tracker; 2],
+    /// A stab's or overhead's recorded impact strength (`round(5√impact)`)
+    /// from a hard weapon-body hit, 0 before one.
+    pub strike_strength: u32,
     /// The recoil's rest, kept until the stance returns: its blend and the
     /// arm stiffness the stance starts with.
     pub recoil: Option<RecoilRest>,
@@ -517,6 +520,7 @@ impl Default for SwingState {
             rate: 0.0,
             open: [false; 2],
             tracker: [Tracker::default(); 2],
+            strike_strength: 0,
             recoil: None,
         }
     }

@@ -111,6 +111,7 @@ fn a_thrown_ball_hurts_the_limb_it_strikes() {
             .insert_resource(BodyTicks(100))
             .add_message::<LimbImpact>()
             .add_message::<ImpactSounded>()
+            .add_message::<WeaponSounded>()
             .add_message::<Weakened>()
             .add_message::<SecondWindFired>();
         let target = app
@@ -153,6 +154,73 @@ fn a_thrown_ball_hurts_the_limb_it_strikes() {
     assert_eq!(run(0.5), None);
 }
 
+/// A weapon body struck while its owner's window is open rings its own set
+/// and records the overhead's impact strength; the item's clock is stamped
+/// with the weapon sound's cooldown.
+#[test]
+fn a_struck_weapon_body_rings_and_records_its_strength() {
+    use crate::swing::flags;
+
+    let mut app = App::new();
+    app.add_plugins((MinimalPlugins, BodyPlugin))
+        .insert_resource(Physics::default())
+        .insert_resource(BodyTicks(100))
+        .add_message::<LimbImpact>()
+        .add_message::<ImpactSounded>()
+        .add_message::<WeaponSounded>()
+        .add_message::<Weakened>()
+        .add_message::<SecondWindFired>();
+    let owner = app
+        .world_mut()
+        .spawn((
+            Fighter::default(),
+            ball(1, 1, Vec3::new(0.0, 100.0, 0.0)),
+            SwingState {
+                flags: flags::WINDOW_OPENED,
+                ..SwingState::default()
+            },
+            Attacking::new(AttackMotion::Overhead, 0x10),
+        ))
+        .id();
+    let mut item_body = ball(3, 0, Vec3::new(0.0, 5.0, 0.0));
+    item_body.parts[0].state = PartState::LIMB_FRESH
+        .with(PartState::HELD)
+        .with(PartState::STRIKING);
+    item_body.held_by = Some(Entity::from_raw_u32(1).unwrap());
+    item_body.wake();
+    let item = app
+        .world_mut()
+        .spawn((
+            item_body,
+            ImpactBook::default(),
+            Blade::new(owner, 0.9, crate::damage::sword_a()),
+        ))
+        .id();
+    let mut thrown_body = thrown_ball(8.0);
+    thrown_body.parts[0].state = PartState(0);
+    let thrown = app.world_mut().spawn(thrown_body).id();
+    let mut heard = Vec::new();
+    for i in 0..CARRY_TICKS + 60 {
+        tick(&mut app, item, thrown, 8.0, i);
+        let messages = app.world().resource::<Messages<WeaponSounded>>();
+        heard = messages
+            .iter_current_update_messages()
+            .cloned()
+            .collect::<Vec<_>>();
+        if !heard.is_empty() {
+            break;
+        }
+    }
+    let sound = heard.first().expect("the weapon body never rang");
+    assert_eq!(sound.target, item);
+    assert!(sound.volume > 0.0 && sound.volume <= 1.0);
+    let swing = app.world().get::<SwingState>(owner).unwrap();
+    assert_eq!(swing.flags & 0x6, 0x6);
+    assert!(swing.strike_strength > 0);
+    let body = app.world().get::<Ragdoll>(item).unwrap();
+    assert!(body.parts[0].sound_ready_ms > 100);
+}
+
 /// The same ball on a pelvis that strikes in an overhead swing still
 /// sounds, but the hard impact is dropped: no damage, no clock and no
 /// draw of the clock's spread.
@@ -164,6 +232,7 @@ fn an_overhead_strikers_hard_impact_sounds_and_is_dropped() {
         .insert_resource(BodyTicks(100))
         .add_message::<LimbImpact>()
         .add_message::<ImpactSounded>()
+        .add_message::<WeaponSounded>()
         .add_message::<Weakened>()
         .add_message::<SecondWindFired>();
     let mut pelvis = ball(1, 1, Vec3::new(0.0, 5.0, 0.0));
