@@ -795,11 +795,12 @@ pub fn merge_editable(
 
 /// Sorts the faces into material-group runs, as the original's regroup pass
 /// does after an assembly: every group's faces are gathered in their old
-/// order, ahead of the next group's, and every channel (but the smoothing
-/// one, which the original leaves alone because its own channel is
-/// position-indexed), the face flags, the face edge bits and the face
-/// extras follow the same permutation. The groups' ranges become the runs,
-/// the face → group map is dropped, and the incidence is rebuilt lazily.
+/// order, ahead of the next group's, and every channel, the face flags, the
+/// face edge bits and the face extras follow the same permutation. (The
+/// original's own key-2 channel is position-indexed and left alone; Exarust
+/// keeps smoothing per corner, so it is permuted like the others.) The
+/// groups' ranges become the runs, the face → group map is dropped, and the
+/// incidence is rebuilt lazily.
 pub fn regroup_by_material(mesh: &mut EditMesh) -> Result<(), MeshError> {
     mesh.validate()?;
     let Some(map) = mesh.face_group.clone() else {
@@ -843,10 +844,10 @@ pub fn regroup_by_material(mesh: &mut EditMesh) -> Result<(), MeshError> {
         group.first = starts[g];
         group.end = next[g];
     }
+    // The original's key-2 channel is position-indexed and is left alone;
+    // Exarust keeps smoothing per face corner, so it is permuted with the
+    // other channels to stay aligned with the reordered faces.
     for channel in &mut mesh.channels {
-        if channel.key & KEY_MASK == KEY_SMOOTHING {
-            continue;
-        }
         let mut corners = vec![[0u32; 3]; faces];
         for (face, corner) in channel.corners.iter().enumerate() {
             corners[new_face[face]] = *corner;

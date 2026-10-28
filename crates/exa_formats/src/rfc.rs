@@ -2039,8 +2039,10 @@ impl Mesh {
     pub fn ray_hit(&self, origin: [f32; 3], direction: [f32; 3], max: f32) -> Option<(u32, f32)> {
         let mut best = max;
         let mut found = None;
-        for (triangle, face) in self.faces().iter().enumerate() {
-            if let Some(t) = face.ray(origin, direction, best) {
+        for triangle in 0..self.indices.len() / 3 {
+            if let Some(face) = self.face(triangle)
+                && let Some(t) = face.ray(origin, direction, best)
+            {
                 best = t;
                 found = Some((triangle as u32, t));
             }
@@ -2058,8 +2060,10 @@ impl Mesh {
     ) -> Option<(u32, f32)> {
         let mut best = max;
         let mut found = None;
-        for (triangle, face) in self.faces().iter().enumerate() {
-            if let Some(t) = face.ray_inclusive(origin, direction, best) {
+        for triangle in 0..self.indices.len() / 3 {
+            if let Some(face) = self.face(triangle)
+                && let Some(t) = face.ray_inclusive(origin, direction, best)
+            {
                 best = t;
                 found = Some((triangle as u32, t));
             }
@@ -2070,25 +2074,21 @@ impl Mesh {
     /// The first face a sphere reaches, with the push-out vector the
     /// original reports (see [`Face::sphere_push`]).
     pub fn sphere_hit(&self, centre: [f32; 3], radius: f32) -> Option<(u32, [f32; 3])> {
-        self.faces()
-            .iter()
-            .enumerate()
-            .find_map(|(triangle, face)| {
-                face.sphere_push(centre, radius)
-                    .map(|push| (triangle as u32, push))
-            })
+        (0..self.indices.len() / 3).find_map(|triangle| {
+            let face = self.face(triangle)?;
+            face.sphere_push(centre, radius)
+                .map(|push| (triangle as u32, push))
+        })
     }
 
     /// The first face within `reach` of `point`, with the distance to its
     /// closest point (see [`Face::within`]).
     pub fn within_hit(&self, point: [f32; 3], reach: f32) -> Option<(u32, f32)> {
-        self.faces()
-            .iter()
-            .enumerate()
-            .find_map(|(triangle, face)| {
-                face.within(point, reach)
-                    .map(|distance| (triangle as u32, distance))
-            })
+        (0..self.indices.len() / 3).find_map(|triangle| {
+            let face = self.face(triangle)?;
+            face.within(point, reach)
+                .map(|distance| (triangle as u32, distance))
+        })
     }
 
     /// The nearest face a sphere's sweep meets, with the distance along the
@@ -2102,8 +2102,10 @@ impl Mesh {
     ) -> Option<(u32, f32)> {
         let mut best = length;
         let mut found = None;
-        for (triangle, face) in self.faces().iter().enumerate() {
-            if let Some(t) = face.swept_sphere(start, direction, length, radius, best) {
+        for triangle in 0..self.indices.len() / 3 {
+            if let Some(face) = self.face(triangle)
+                && let Some(t) = face.swept_sphere(start, direction, length, radius, best)
+            {
                 best = t;
                 found = Some((triangle as u32, t));
             }
