@@ -503,14 +503,17 @@ pub fn held_reach(class: u16, hand_byte: u8, item_length_cm: f32, race_reach: f3
     if class & 0x30 == 0 {
         race_reach
     } else {
-        f32::from(hand_byte) * 0.01 * item_length_cm + HELD_REACH_BASE
+        // The byte's hundredth times the length is worked in double, then
+        // the 60 cm is added in single.
+        (f64::from(hand_byte) * 0.01 * f64::from(item_length_cm)) as f32 + HELD_REACH_BASE
     }
 }
 
 /// The height of a held item's aim point above its grip (cm): 0.9 of the
 /// item node's y extents.
 pub fn held_aim_height(item_length_cm: f32) -> f32 {
-    item_length_cm * 0.9
+    // Multiplied in double, as the original does.
+    (f64::from(item_length_cm) * 0.9) as f32
 }
 
 #[cfg(test)]
@@ -525,6 +528,9 @@ mod held_measure_tests {
         assert_eq!(held_reach(0x10, 200, 100.0, 50.0), 260.0);
         assert_eq!(held_reach(0x20, 128, 90.0, 50.0), 175.2);
         assert_eq!(held_aim_height(100.0), 90.0);
+        // The hundredth is multiplied in double: single precision would
+        // give 64.854996.
+        assert_eq!(held_reach(0x10, 5, 97.1, 50.0), 64.855);
         let m = held_measures(0x521, 200, 100.0, 50.0);
         assert_eq!((m.reach, m.aim_cm, m.greatsword), (260.0, 90.0, true));
         assert!(!held_measures(0x10, 200, 100.0, 50.0).greatsword);
