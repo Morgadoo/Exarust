@@ -11,8 +11,10 @@
 //!   hum starts silent at normal pitch, looping from a random point
 //!   `0.8 × its length × a draw` seconds in (the product is taken in double
 //!   precision).
-//! - **The shell** ([`ShellWear`]): its end sets the fade to zero, tells the
-//!   node to play `0x10` and marks every subobject with bit 8. A timed
+//! - **The image's end** ([`TendrilImage::end`]): it marks every strand
+//!   record with bit 8, sets the image's fade to zero and tells its node to
+//!   play `0x10`. The restore tick ends the image this way (the original
+//!   finds it among the body's children by its class). A timed
 //!   segment shows `clamp((elapsed − start) / (end − start), 0, 1)`,
 //!   inverted unless the segment is reversed, and draws on its side of one
 //!   half ([`ShellTimeline`]).
@@ -23,7 +25,7 @@
 //!   descendants, makes a wisp at the contact and lists the node with the
 //!   stamp. The restore tick ([`ConstantVeil::restore`]) gives a listed
 //!   node its collisions back once more than 500 ms have passed, and ends
-//!   the shell effect of the node's owner (the last child that has one).
+//!   the tendril image of the node's owner (the last child that is one).
 //! - **Visibility** ([`set_visibility`]): a mesh node (kind 9) that is not
 //!   dead carries bit `0x10` or `0x20`; setting one clears the node's
 //!   hidden flag, and clearing them hides a node that has subobjects by
@@ -57,12 +59,14 @@ use super::engine::Roll;
 
 /// The node flags a tendril image starts with.
 pub const TENDRIL_FLAGS: u32 = 0x2100_0000;
-/// The end event the shell node is told.
-pub const SHELL_END: u32 = 0x10;
+/// The end event the tendril image's node is told.
+pub const IMAGE_END: u32 = 0x10;
 /// The visibility word of a node that starts dead.
 pub const DEAD: u32 = 0x8000_0000;
 /// The hum's first play is silent.
 pub const HUM_VOLUME: f32 = 0.0;
+/// The hum plays at normal pitch.
+pub const HUM_PITCH: f32 = 1.0;
 /// The node-flag bit a physics node carries.
 pub const PHYSICS: u32 = 0x2000;
 /// The node-flag bit that keeps a mesh out of the shell's parts.
@@ -71,7 +75,7 @@ pub const SKIPPED: u32 = 0x0008_0000;
 pub const SUBOBJECTS: u32 = 0x0100_0000;
 /// The part-flag bit the prune pass reads.
 pub const PRUNE_FLAG: u32 = 0x40;
-/// The subobject mark the shell's end sets.
+/// The mark the image's end sets on each strand record.
 pub const ENDED: u32 = 0x8;
 
 pub use super::effect_material::{AURA_FLAGS, SHARED_SHELL_FLAG as SHARED, SHELL_FLAG};
@@ -228,8 +232,6 @@ pub struct ShellWear {
     /// The shell belongs to a constant displacement and is shared with a
     /// vanish.
     pub shared: bool,
-    /// Every subobject was marked [`ENDED`].
-    pub hidden: bool,
 }
 
 impl ShellWear {
@@ -241,7 +243,6 @@ impl ShellWear {
             visibility: DEAD | AURA_FLAGS,
             flags: SHELL_FLAG,
             shared: false,
-            hidden: false,
         }
     }
 
@@ -252,14 +253,6 @@ impl ShellWear {
             shared: true,
             ..Self::new()
         }
-    }
-
-    /// The shell's end: every subobject is marked, its fade returns to zero
-    /// and the node is told [`SHELL_END`].
-    pub fn end(&mut self) {
-        self.hidden = true;
-        self.fade = 0.0;
-        self.event = SHELL_END;
     }
 }
 
@@ -284,6 +277,12 @@ pub struct TendrilImage {
     pub spare: usize,
     /// The image's scale: the geometry's own times the body's size factor.
     pub scale: f32,
+    /// The image's fade.
+    pub fade: f32,
+    /// The image node's event word.
+    pub event: u32,
+    /// Every strand record carries [`ENDED`].
+    pub ended: bool,
 }
 
 impl TendrilImage {
@@ -298,7 +297,18 @@ impl TendrilImage {
             last: anchors + super::displacement::SPARE_STRANDS,
             spare: super::displacement::SPARE_STRANDS,
             scale: base * size_factor,
+            fade: 0.0,
+            event: 0,
+            ended: false,
         }
+    }
+
+    /// The image's end: every strand record is marked [`ENDED`], the fade
+    /// returns to zero and the node is told [`IMAGE_END`].
+    pub fn end(&mut self) {
+        self.ended = true;
+        self.fade = 0.0;
+        self.event = IMAGE_END;
     }
 }
 
@@ -426,6 +436,21 @@ pub struct ConstantVeil {
     pub streak: PhaseStreak,
     /// Where in the hum's loop it starts, in seconds.
     pub hum_start: f32,
+    /// The hum's first volume (silent) and pitch (normal).
+    pub hum_volume: f32,
+    pub hum_pitch: f32,
+    /// The hum loops from its first play (bit 0x10 in its flags).
+    pub hum_loop: bool,
+    /// The body's size factor, which the shell and the image keep.
+    pub size_factor: f32,
+    /// The shell's fade may run (its hold byte starts zero).
+    pub shell_can_fade: bool,
+    /// The shell's fade callback was appended to the body's 100-room list.
+    pub fade_hook: bool,
+    /// The body's hit callback is the veil's.
+    pub hit_callback: bool,
+    /// The body's physics tick restores the phased nodes.
+    pub restore_callback: bool,
     /// The wisp the last passing blow made, if any.
     pub last_wisp: Option<[f32; 3]>,
     /// The passing blow's sound pitch.
@@ -435,7 +460,8 @@ pub struct ConstantVeil {
 impl ConstantVeil {
     /// Starts a constant displacement on `body`. `hum_length` is the hum
     /// sound's length in seconds, `size_factor` the body's size factor and
-    /// `roll` draws the hum's start point.
+    /// `roll` draws the hum's start point. The start always asks for an
+    /// unshared shell.
     pub fn start(body: VeilNode, hum_length: f32, size_factor: f32, roll: &mut Roll) -> Self {
         let mut body = body;
         add_physics_bits(&mut body, DISPLACED_BIT);
@@ -450,6 +476,15 @@ impl ConstantVeil {
             phased: PhasedWeapons::default(),
             streak: PhaseStreak::default(),
             hum_start,
+            hum_volume: HUM_VOLUME,
+            hum_pitch: HUM_PITCH,
+            hum_loop: true,
+            size_factor,
+            // The shell's fade word starts zero and may run.
+            shell_can_fade: true,
+            fade_hook: true,
+            hit_callback: true,
+            restore_callback: true,
             last_wisp: None,
             last_pitch: None,
         }
@@ -478,7 +513,7 @@ impl ConstantVeil {
     }
 
     /// Returns the collisions of the nodes whose 500 ms are over at `now`.
-    /// Each return ends a shell effect, as each restored weapon does.
+    /// A return ends the body's tendril image.
     pub fn restore(&mut self, now: u64) -> Vec<u64> {
         let freed = self.phased.restore(now);
         if !freed.is_empty() {
@@ -487,7 +522,7 @@ impl ConstantVeil {
                     clear_bits(node, PHASED_BITS);
                 }
             }
-            self.shell.end();
+            self.image.end();
         }
         freed
     }
@@ -706,13 +741,20 @@ mod tests {
     }
 
     #[test]
-    fn a_shell_starts_at_zero_and_ends_with_its_event() {
-        let mut shell = wear();
+    fn a_shell_starts_at_zero() {
+        let shell = wear();
         assert_eq!(shell.fade, 0.0);
         assert_eq!(shell.event, 0);
-        shell.end();
-        assert_eq!((shell.fade, shell.event), (0.0, SHELL_END));
-        assert!(shell.hidden);
+    }
+
+    #[test]
+    fn an_image_ends_with_its_event_and_marked_strands() {
+        let mut image = TendrilImage::new(1.0, 1.0, 3);
+        assert!(!image.ended);
+        image.fade = 0.4;
+        image.end();
+        assert_eq!((image.fade, image.event), (0.0, IMAGE_END));
+        assert!(image.ended);
     }
 
     #[test]
@@ -853,7 +895,12 @@ mod tests {
         let mut veil = ConstantVeil::start(body, 2.0, 1.0, &mut roll);
         assert!(veil.has_displaced_bit());
         assert_eq!(veil.hum_start, expected);
+        assert_eq!((veil.hum_volume, veil.hum_pitch), (0.0, 1.0));
+        assert!(veil.hum_loop && veil.shell_can_fade);
+        assert!(veil.fade_hook && veil.hit_callback && veil.restore_callback);
+        assert!(!veil.shell.shared);
         assert_eq!(veil.parts.meshes.len(), 2);
+        assert_eq!(veil.image.visibility, DEAD);
         // The first draw passes (the streak starts at zero): the node and
         // its child lose 0xC000.
         let through = veil.hit(&[0], 1000, [1.0, 2.0, 3.0], &mut Roll(0x26b0_5733));
@@ -862,10 +909,11 @@ mod tests {
         assert_eq!(veil.last_wisp, Some([1.0, 2.0, 3.0]));
         assert_eq!(veil.streak.0, 1);
         assert!(veil.restore(1500).is_empty());
-        assert_eq!(veil.shell.event, 0);
+        assert_eq!(veil.image.event, 0);
         assert_eq!(veil.restore(1501), vec![path_key(&[0])]);
         assert_eq!(veil.body.children[0].collision & PHASED_BITS, 0);
-        assert_eq!(veil.shell.event, SHELL_END);
+        assert_eq!(veil.image.event, IMAGE_END);
+        assert!(veil.image.ended);
         assert_eq!(veil.phased.list.len(), 0);
     }
 

@@ -8,6 +8,10 @@
 //! The creators build a [`SceneNodeSpec`] from the caster's hand and body,
 //! the effect's point and the power's numbers; [`VisualPlugin`] turns a
 //! [`VisualSpawn`] message into a scene entity carrying [`EffectVisual`].
+//! The creators that are active power objects also have their fields in
+//! [`ActiveObjectSpec`] ([`active_object`]): the id their base registers,
+//! the state word, the cost, the long door's drain/destination/forward axis,
+//! the AI flag, whether they add a scene node and the sounds they play.
 //! The entity has no mesh yet (the effect geometries are their own classes),
 //! so it marks the node for the renderer rather than drawing it. The
 //! materials, block sizes, GI programs, node flags, the barrier's raised
@@ -126,6 +130,136 @@ impl Default for SceneNodeSpec {
             marker: 0,
             life_ms: 0,
         }
+    }
+}
+
+/// Where a creator puts the active power object's scene node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActiveNode {
+    /// The creator adds no node; the class's own activation builds its
+    /// effect.
+    None,
+    /// The creator adds its own node.
+    Own,
+    /// The creator adds its node only when its activation left the "owns
+    /// its effect" byte zero.
+    IfActivationLeaves,
+    /// The constant displacement adds the shell node and the tendril image
+    /// node.
+    ShellAndImage,
+}
+
+impl ActiveNode {
+    /// Whether the creator adds a node when its activation leaves the flag
+    /// clear.
+    pub fn adds(self, activation_leaves: bool) -> bool {
+        match self {
+            Self::None => false,
+            Self::Own | Self::ShellAndImage => true,
+            Self::IfActivationLeaves => !activation_leaves,
+        }
+    }
+}
+
+/// What one creator's active power object holds, as the creator writes it:
+/// the id its base registers, the state word (always 1), the focus
+/// it holds, the long door's per-tick drain, destination and forward axis,
+/// the AI flag, the scene nodes and the sounds it plays there.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ActiveObjectSpec {
+    pub id: u32,
+    /// The creator's state word (1 for every active power).
+    pub kind: u32,
+    pub cost: Option<f32>,
+    /// The long door's `tick ms × cost × 0.001` (single precision).
+    pub tick_cost: Option<f32>,
+    /// The long door's and the summoning's destination (cm).
+    pub destination: Option<Vec3>,
+    /// The long door's copied vector: the caster's frame forward axis on
+    /// the player's cast. The AI cast hands the creator a vector it never
+    /// set, so it is none there.
+    pub forward: Option<Vec3>,
+    /// The creator's AI byte.
+    pub ai: bool,
+    pub node: ActiveNode,
+    /// The sounds the creator plays, with their pitch.
+    pub sounds: Vec<(&'static str, f32)>,
+}
+
+/// The active power object a creator makes, for the kinds that make one.
+/// The blast family, the domes, the barricade and the tendril are plain
+/// effect classes and answer none.
+pub fn active_object(
+    kind: EffectKind,
+    input: &CreatorInput,
+    cost: f32,
+    tick_ms: f32,
+    ai: bool,
+) -> Option<ActiveObjectSpec> {
+    let quiet = |id: u32, node: ActiveNode| ActiveObjectSpec {
+        id,
+        kind: 1,
+        cost: Some(cost),
+        tick_cost: None,
+        destination: None,
+        forward: None,
+        ai: false,
+        node,
+        sounds: Vec::new(),
+    };
+    let shell_pitch = (f64::from(input.roll) * 0.4 + 0.6) as f32;
+    match kind {
+        EffectKind::Shell => Some(ActiveObjectSpec {
+            sounds: vec![("thmfrc_ss", shell_pitch)],
+            ..quiet(0x20208, ActiveNode::Own)
+        }),
+        EffectKind::Kinesis => Some(quiet(0x10209, ActiveNode::None)),
+        EffectKind::Throw => Some(ActiveObjectSpec {
+            sounds: vec![("thmfrc_knsst", (f64::from(input.roll) * 0.4 + 0.8) as f32)],
+            ..quiet(0x20A, ActiveNode::None)
+        }),
+        EffectKind::Strikes => Some(ActiveObjectSpec {
+            // The creator plays it only when the activation leaves its
+            // count word positive; the record lists what it plays then.
+            sounds: vec![("thmfrc_ss", shell_pitch)],
+            ..quiet(0x2020B, ActiveNode::None)
+        }),
+        EffectKind::Vanish => Some(quiet(0x601, ActiveNode::IfActivationLeaves)),
+        EffectKind::LongDoor => Some(ActiveObjectSpec {
+            id: 0x602,
+            kind: 1,
+            cost: None,
+            tick_cost: Some(tick_ms * cost * 0.001),
+            destination: input.point,
+            forward: (!ai).then_some(input.heading),
+            ai,
+            node: ActiveNode::IfActivationLeaves,
+            sounds: Vec::new(),
+        }),
+        EffectKind::Constant => Some(ActiveObjectSpec {
+            id: 0x20603,
+            kind: 1,
+            // Like the shell, the creator hands its cost to the base class.
+            cost: Some(cost),
+            tick_cost: None,
+            destination: None,
+            forward: None,
+            ai: false,
+            node: ActiveNode::ShellAndImage,
+            sounds: Vec::new(),
+        }),
+        EffectKind::Summon => Some(ActiveObjectSpec {
+            id: 0x604,
+            kind: 1,
+            cost: None,
+            tick_cost: None,
+            destination: input.point,
+            forward: None,
+            ai,
+            node: ActiveNode::None,
+            sounds: Vec::new(),
+        }),
+        _ => None,
     }
 }
 
@@ -253,7 +387,7 @@ pub fn creator(kind: EffectKind, input: &CreatorInput) -> SceneNodeSpec {
             sounds: vec![
                 ("thmfrc_bi", 1.0),
                 ("thmfrc_bc01", 1.0),
-                ("thmfrc_ss", 0.8 + input.roll * 0.4),
+                ("thmfrc_ss", (f64::from(input.roll) * 0.4 + 0.8) as f32),
             ],
             ..material(
                 MaterialKind::Barrier,
@@ -264,7 +398,7 @@ pub fn creator(kind: EffectKind, input: &CreatorInput) -> SceneNodeSpec {
         EffectKind::Shell => SceneNodeSpec {
             flags: EFFECT_NODE | SHELL_FLAG,
             position: input.body,
-            sounds: vec![("thmfrc_ss", 0.6 + input.roll * 0.4)],
+            sounds: vec![("thmfrc_ss", (f64::from(input.roll) * 0.4 + 0.6) as f32)],
             ..material(MaterialKind::Aura, input.body, Quat::IDENTITY)
         },
         EffectKind::DecorativeShell => SceneNodeSpec {
@@ -281,7 +415,9 @@ pub fn creator(kind: EffectKind, input: &CreatorInput) -> SceneNodeSpec {
             ..SceneNodeSpec::default()
         },
         EffectKind::LongDoor => SceneNodeSpec {
-            position: input.point.unwrap_or(input.body),
+            // The long door's node is the vanish effect's, on the caster's
+            // body; the destination is stored on the power, not here.
+            position: input.body,
             ..SceneNodeSpec::default()
         },
         EffectKind::Constant => SceneNodeSpec {
@@ -291,7 +427,9 @@ pub fn creator(kind: EffectKind, input: &CreatorInput) -> SceneNodeSpec {
             ..material(MaterialKind::Shell, input.body, Quat::IDENTITY)
         },
         EffectKind::Summon => SceneNodeSpec {
-            position: input.point.unwrap_or(input.body),
+            // The summoning's creator adds no node; the class's vanish
+            // effect sits on the caster's body.
+            position: input.body,
             ..SceneNodeSpec::default()
         },
         EffectKind::Tendril => SceneNodeSpec {
@@ -299,21 +437,22 @@ pub fn creator(kind: EffectKind, input: &CreatorInput) -> SceneNodeSpec {
             ..material(MaterialKind::Tendril, input.body, Quat::IDENTITY)
         },
         EffectKind::Kinesis => SceneNodeSpec {
+            // The kinesis creator makes the active object only; it loads no
+            // sound and adds no node (the class's own activation does).
             position: input.hand,
-            sounds: vec![("thmfrc_knsst", 0.8 + input.roll * 0.4)],
             ..SceneNodeSpec::default()
         },
         EffectKind::Throw => SceneNodeSpec {
-            position: input.chest,
+            position: input.point.unwrap_or(input.chest),
             sounds: vec![
-                ("thmfrc_knsst", 0.8 + input.roll * 0.4),
-                ("thmfrc_throw", 0.8 + input.roll * 0.4),
+                ("thmfrc_knsst", (f64::from(input.roll) * 0.4 + 0.8) as f32),
+                ("thmfrc_throw", (f64::from(input.roll) * 0.2 + 1.0) as f32),
             ],
             ..SceneNodeSpec::default()
         },
         EffectKind::Strikes => SceneNodeSpec {
             position: input.chest,
-            sounds: vec![("thmfrc_ss", 0.6 + input.roll * 0.4)],
+            sounds: vec![("thmfrc_ss", (f64::from(input.roll) * 0.4 + 0.6) as f32)],
             ..SceneNodeSpec::default()
         },
     }
@@ -699,7 +838,10 @@ mod tests {
         let barricade = creator(EffectKind::Barricade, &input());
         assert_eq!(barricade.position, Vec3::new(100.0, 110.0, 50.0));
         assert_eq!(barricade.sounds[1].0, "thmfrc_bc01");
-        assert_eq!(barricade.sounds[2], ("thmfrc_ss", 0.8 + 0.5 * 0.4));
+        assert_eq!(
+            barricade.sounds[2],
+            ("thmfrc_ss", (0.5f64 * 0.4 + 0.8) as f32)
+        );
         let bubble = creator(EffectKind::Bubble, &input());
         assert_eq!(bubble.sounds[2].0, "thmfrc_brf");
     }
@@ -839,12 +981,103 @@ mod tests {
     }
 
     #[test]
-    fn the_active_powers_carry_their_sounds() {
+    fn each_active_creator_records_its_fields() {
+        let input = input();
+        let shell = active_object(EffectKind::Shell, &input, 0.35, 12.0, false).expect("a shell");
+        assert_eq!((shell.id, shell.kind), (0x20208, 1));
+        assert_eq!(shell.cost, Some(0.35));
+        assert_eq!(shell.node, ActiveNode::Own);
         assert_eq!(
-            creator(EffectKind::Kinesis, &input()).sounds[0].0,
-            "thmfrc_knsst"
+            shell.sounds,
+            vec![("thmfrc_ss", (0.5f64 * 0.4 + 0.6) as f32)]
         );
-        assert_eq!(creator(EffectKind::Throw, &input()).sounds.len(), 2);
+        assert!(ActiveNode::Own.adds(false) && ActiveNode::Own.adds(true));
+
+        let kinesis = active_object(EffectKind::Kinesis, &input, 0.02, 12.0, false);
+        let kinesis = kinesis.expect("a kinesis");
+        assert_eq!((kinesis.id, kinesis.cost), (0x10209, Some(0.02)));
+        assert_eq!((kinesis.node, kinesis.kind), (ActiveNode::None, 1));
+        assert!(kinesis.sounds.is_empty());
+
+        let throw = active_object(EffectKind::Throw, &input, 0.1, 12.0, false).expect("a throw");
+        assert_eq!(throw.id, 0x20A);
+        assert_eq!(
+            throw.sounds,
+            vec![("thmfrc_knsst", (0.5f64 * 0.4 + 0.8) as f32)]
+        );
+        assert_eq!(throw.node, ActiveNode::None);
+
+        let strikes =
+            active_object(EffectKind::Strikes, &input, 0.3, 12.0, false).expect("strikes");
+        assert_eq!(strikes.id, 0x2020B);
+        assert_eq!(strikes.node, ActiveNode::None);
+        assert_eq!(strikes.sounds[0].0, "thmfrc_ss");
+
+        // The vanish and the long door add their node only when the
+        // activation leaves the byte clear; the long door keeps its drain,
+        // destination and the caster's forward axis.
+        let vanish = active_object(EffectKind::Vanish, &input, 0.1, 12.0, false);
+        let vanish = vanish.expect("a vanish");
+        assert_eq!(vanish.id, 0x601);
+        assert!(vanish.node.adds(false));
+        assert!(!vanish.node.adds(true));
+        let door = active_object(EffectKind::LongDoor, &input, 0.2, 12.0, true).expect("a door");
+        assert_eq!((door.id, door.kind), (0x602, 1));
+        assert_eq!(door.cost, None);
+        assert_eq!(door.tick_cost, Some(12.0 * 0.2 * 0.001));
+        assert_eq!(door.destination, input.point);
+        assert_eq!(door.forward, None, "the AI cast's vector is unset");
+        let player_door =
+            active_object(EffectKind::LongDoor, &input, 0.2, 12.0, false).expect("a door");
+        assert_eq!(player_door.forward, Some(input.heading));
+        assert!(door.ai);
+        assert_eq!(door.node, ActiveNode::IfActivationLeaves);
+        assert!(door.sounds.is_empty());
+
+        let constant =
+            active_object(EffectKind::Constant, &input, 0.35, 12.0, false).expect("constant");
+        assert_eq!((constant.id, constant.cost), (0x20603, Some(0.35)));
+        assert_eq!(constant.node, ActiveNode::ShellAndImage);
+        let summon = active_object(EffectKind::Summon, &input, 0.35, 12.0, true).expect("summon");
+        assert_eq!((summon.id, summon.ai), (0x604, true));
+        assert_eq!(summon.destination, input.point);
+        assert_eq!(summon.node, ActiveNode::None);
+        assert!(summon.cost.is_none());
+        // The plain effect creators make no power object.
+        for kind in [
+            EffectKind::Blast,
+            EffectKind::Bolt,
+            EffectKind::Wave,
+            EffectKind::Torrent,
+            EffectKind::Barrier,
+            EffectKind::Bubble,
+            EffectKind::Barricade,
+            EffectKind::Tendril,
+            EffectKind::DecorativeShell,
+        ] {
+            assert!(
+                active_object(kind, &input, 0.1, 12.0, false).is_none(),
+                "{kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_active_powers_carry_their_sounds() {
+        // The kinesis creator loads no sound: `thmfrc_knsst` is the throw
+        // creator's pick sound, played at the picked body.
+        assert!(creator(EffectKind::Kinesis, &input()).sounds.is_empty());
+        let throw = creator(EffectKind::Throw, &input());
+        assert_eq!(throw.sounds.len(), 2);
+        assert_eq!(
+            throw.sounds[0],
+            ("thmfrc_knsst", (0.5f64 * 0.4 + 0.8) as f32)
+        );
+        assert_eq!(
+            throw.sounds[1],
+            ("thmfrc_throw", (0.5f64 * 0.2 + 1.0) as f32)
+        );
+        assert_eq!(throw.position, input().point.unwrap_or(input().chest));
         assert_eq!(creator(EffectKind::Strikes, &input()).sounds[0].1, 0.8);
         assert_eq!(creator(EffectKind::Kinesis, &input()).material, None);
     }

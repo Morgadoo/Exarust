@@ -768,7 +768,11 @@ caster, with no cursor and its hands free. A duellist or placed
 character's caster takes its body's technique word from the record's
 learnt techniques, and its persistent slots from Concentration's highest
 Continuity tier ([formats/RFC.md](formats/RFC.md), Techniques and perks);
-the player's caster keeps technique word 0 and one slot. A caster's running shell and
+the player's caster keeps technique word 0 and one slot. Every focus and
+advice comparison is the original's `COMISS`/`COMISD` followed by `JP`:
+the refuse branch runs only on its ordered side, so a focus, facing or
+distance that is not a number passes the check (`casting::{within,
+not_above, not_below}`). A caster's running shell and
 Force Strikes put their factors on its fighter (`exa_combat::PowerFactors`):
 a blow it takes keeps 1 − 0.5 of its impact, and a blow it deals is
 multiplied by 1 + 0.5 · 1. Every caster's body tick runs the two focus
@@ -826,13 +830,26 @@ picture and its upload), and their four layered passes — each layer
 matrix's depth term (double precision for the effect material and the
 tendril, single for the shader and the shell), the layer colours, the
 time and brightness uniforms and the shader's texture coordinate, with no
-draw at all while the pass count is zero — are in `thaum::effect_pass`. The EffectShell, EffectShell pass
+draw at all while the pass count is zero — are in `thaum::effect_pass`.
+`effect_material` also runs the material routines' node transitions
+(`dress`: the noise made before the shared shader, the flag and state
+bits, the aura's and shell's one replacement sub-object and the material's
+parameter block) and the `gi_multipoint` table's lookup, creation,
+`Light`/`Atten` binding and shutdown free. The force, barrier and aura
+materials register one release callback between them (the unit's
+shutdown: twelve program handles and the GI table) and the tendril and
+shell another (two program handles); the material shaders stay made. The EffectShell, EffectShell pass
 selection and the tendril geometry are in
 `thaum::veil`/`exa_game::effects::shell`/`thaum::visuals`. A shell, strikes,
-vanish, long door, summon and constant displacement cast leave their effect
-nodes in the scene; a long door's move places the body at the destination
+vanish, long door and constant displacement cast leave their effect nodes in
+the scene, on the caster's body (the summoning's creator adds none: its class
+builds the vanish effect); a long door's move places the body at the destination
 after the caster tick (the destination in centimetres, the root kept at
-its height above the body's lowest part). The vanish's show and hide are still the effect
+its height above the body's lowest part). The constant displacement's
+restore tick ends its tendril image (each strand record marked 0x8, the
+fade zeroed, event 0x10), and its start records the silent looping
+hum, the dead shell and tendril image, the body's hit and restore callbacks
+and the shell's fade hook. The vanish's show and hide are still the effect
 class's own, not applied to Exarust's drawn body.
 
 The effects' meshes come from their own builders but are drawn with

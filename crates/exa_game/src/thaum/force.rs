@@ -49,7 +49,8 @@ use bevy::math::Vec3;
 
 use super::casting::{
     AiView, CastBody, CastHook, ID_MASK, TickScale, WEAPON_IN_HAND, advice, body_gate, code,
-    free_slots, front_end_blocked, persistent_advice, price, start_cast, within,
+    free_slots, front_end_blocked, not_above, not_below, persistent_advice, price, start_cast,
+    within,
 };
 
 /// What a Force row's cast does.
@@ -331,7 +332,8 @@ pub fn cast_force(
             } else {
                 cost
             };
-            if need > body.focus || need.is_nan() || body.focus.is_nan() {
+            // `COMISS focus, need`: only an ordered shortfall refuses.
+            if need > body.focus {
                 return (code::REFUSED, None);
             }
             let gate = body_gate(body);
@@ -503,20 +505,22 @@ pub fn force_ai_front_end(asked: u32, view: &AiView) -> u32 {
     }
 }
 
-/// Blast: 1 when the AI should cast it.
+/// Blast: 1 when the AI should cast it. Each comparison refuses only on its
+/// ordered branch, so a not-a-number passes (`COMISD`/`COMISS` then `JP`).
 pub fn blast_advice(cost: f32, view: &AiView) -> u32 {
-    let use_it = f64::from(cost) * 1.2 <= f64::from(view.caster.focus)
-        && view.facing <= 1.0
-        && view.distance_sq <= 360_000.0
+    let enough = not_above(f64::from(cost) * 1.2, f64::from(view.caster.focus));
+    let use_it = enough
+        && not_above(view.facing, 1.0)
+        && not_above(view.distance_sq, 360_000.0)
         && view.target_condition & super::casting::OFF_FEET == 0;
     u32::from(use_it)
 }
 
 /// Barrier: 0x10 when the AI should cast it.
 pub fn barrier_advice(cost: f32, view: &AiView) -> u32 {
-    let use_it = view.caster.focus * 0.5 >= cost
-        && view.facing >= 1.0
-        && view.distance_sq <= 90_000.0
+    let use_it = not_below(view.caster.focus * 0.5, cost)
+        && not_below(view.facing, 1.0)
+        && not_above(view.distance_sq, 90_000.0)
         && view.target_condition & super::casting::OFF_FEET == 0;
     if use_it { advice::USE } else { 0 }
 }
@@ -589,7 +593,8 @@ pub fn place_barricade(
         centre: point,
         facing,
         reach: [300.0, 300.0],
-        pitch: roll * 0.4 + 0.8,
+        // The original widens the draw and multiplies by the double 0.4.
+        pitch: (f64::from(roll) * 0.4 + 0.8) as f32,
     }
 }
 
@@ -666,9 +671,10 @@ pub fn place_dome(kind: ForceKind, ground: Vec3, heading: Vec3) -> Option<DomePl
 }
 
 /// The pitch of the sound the shell and strikes play as they start
-/// (`thmfrc_ss` at volume 0.3): 0.6 + 0.4·r.
+/// (`thmfrc_ss` at volume 0.3): the draw widened and multiplied by the
+/// double 0.4, plus the double 0.6, narrowed once.
 pub fn start_pitch(roll: f32) -> f32 {
-    roll * 0.4 + 0.6
+    (f64::from(roll) * 0.4 + 0.6) as f32
 }
 
 /// The material every blast-family node wears.
@@ -785,7 +791,8 @@ pub fn creator_spec(kind: ForceKind) -> CreatorSpec {
             active: Some(0x20208),
         },
         ForceKind::Kinesis => CreatorSpec {
-            sounds: &[KINESIS_SOUND],
+            // The kinesis creator makes the active object; it loads no
+            // sound of its own.
             active: Some(0x10209),
             ..NONE
         },
@@ -1068,6 +1075,32 @@ mod tests {
     }
 
     #[test]
+    fn a_not_a_number_focus_or_facing_passes_the_checks() {
+        // A wave or torrent whose focus is not a number still starts: the
+        // original's `COMISS focus, cost` jumps past its refuse branch.
+        let mut body = standing(f32::NAN);
+        assert_eq!(
+            force_front_end(0x204, &mut body, &ForceWorld::default()).0,
+            code::STARTED
+        );
+        // The same holds for the AI evaluators' focus, facing and distance.
+        let view = AiView {
+            caster: standing(f32::NAN),
+            facing: f32::NAN,
+            distance_sq: f32::NAN,
+            ..AiView::default()
+        };
+        assert_eq!(force_ai_front_end(0x201, &view), 1);
+        assert_eq!(force_ai_front_end(0x10205, &view), advice::USE);
+        let shell = AiView {
+            caster: standing(f32::NAN),
+            facing: f32::NAN,
+            ..AiView::default()
+        };
+        assert_eq!(force_ai_front_end(0x20208, &shell), advice::USE);
+    }
+
+    #[test]
     fn a_restored_shell_holds_its_cost() {
         let mut body = standing(1.0);
         assert_eq!(restore_force_power(0x20208, &mut body), Some(0.35));
@@ -1129,6 +1162,21 @@ mod tests {
         assert_eq!((bubble.radius, bubble.facing), (120.0, None));
         assert!(place_dome(ForceKind::Blast, Vec3::ZERO, Vec3::Z).is_none());
         assert_eq!(start_pitch(0.5), 0.8);
+    }
+
+    #[test]
+    fn the_sound_pitches_take_the_double_step() {
+        // 0.029f32·0.4 + 0.6 in single rounds to 0.61160004; the original
+        // widens the draw first and gets 0.61159998.
+        assert_eq!(start_pitch(0.029), 0.611_599_98);
+        assert_eq!(start_pitch(0.124), 0.649_600_03);
+        let hit = GroundHit {
+            point: Vec3::ZERO,
+            normal: Vec3::Y,
+            exact: true,
+        };
+        let place = place_barricade(hit, Vec3::ZERO, |_, _| None, 0.029);
+        assert_eq!(place.pitch, 0.811_599_97);
     }
 
     #[test]
