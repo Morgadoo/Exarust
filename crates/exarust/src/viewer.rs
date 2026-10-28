@@ -709,6 +709,7 @@ fn play_level(
             tournament: launch.tournament,
             player: launch.player,
             prize: launch.prize,
+            weapon_variants: (launch.weapon_variants != [0; 3]).then_some(launch.weapon_variants),
         }),
         options.arena_match.unwrap_or(1),
         options.arena_level,
@@ -752,17 +753,20 @@ fn play_level(
             setup.tournament,
             setup.player,
         ));
-        commands.insert_resource(exa_game::arena_live::ArenaScene::new(
-            template,
-            spawn_at,
-            setup.level,
-            setup.tier,
-            setup.tournament,
-            setup.player,
-            weapons,
-            setup.prize,
-            career,
-        ));
+        commands.insert_resource(
+            exa_game::arena_live::ArenaScene::new(
+                template,
+                spawn_at,
+                setup.level,
+                setup.tier,
+                setup.tournament,
+                setup.player,
+                weapons,
+                setup.prize,
+                career,
+            )
+            .with_weapon_variants(setup.weapon_variants),
+        );
     } else {
         commands.remove_resource::<exa_game::arena_match::ArenaMatch>();
         commands.remove_resource::<exa_game::arena_live::ArenaScene>();

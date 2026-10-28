@@ -16,12 +16,14 @@
 //! capsule leaves the physics world first and the root with its whole
 //! subtree is despawned, so no collider is left behind.
 //!
-//! The actor templates (`opponent01`…`opponent16`, `arenashpkp`) are the
-//! shipped ones. A generated opponent's record is a random NPC the original
-//! writes itself, and the record writer its appearance generator needs has
-//! no item-fact pass wired yet, so a generated fighter takes a practice
-//! opponent's template instead [guess]; the hub shopkeeper is the exact
-//! `arenashpkp` template.
+//! An arena opponent takes a [`BodyLook::Generated`] plan: the spawn writes
+//! its own character record with [`crate::arena_records::generated_record`]
+//! (the random NPC pass and the outfit tables built from the object
+//! database), then dresses the merged mesh from that record. The actor
+//! templates (`opponent01`…`opponent16`, `arenashpkp`) remain the Beast's,
+//! a company entrant's and the hub specialists' stand-ins where the original
+//! reads a saved record or a creature body item Exarust does not keep yet
+//! [guess]; the hub shopkeeper is the exact `arenashpkp` template.
 //!
 //! Evidence: the arena's generic and hire-list spawn routines, the manager
 //! and hub placements and the round setup (`arena_spawn`, `match_layout`),
@@ -35,6 +37,8 @@ use exa_formats::objdb::Item;
 use exa_formats::races::{Race, RaceBody};
 use exa_physics::body::{BodyStats, RaceMuscles};
 
+use crate::arena_outfit::{ItemFacts, Lcg, OutfitTables, ProfessionCatalog};
+use crate::arena_records::{GeneratedFighter, generated_record};
 use crate::arena_spawn::{
     BeastPlan, GenericPlan, HirePlan, HubBodyPlan, OPPONENT_TEAM, PLAYER_TEAM, SPAWN_DAMAGE,
     SPAWN_HEALTH,
@@ -73,6 +77,9 @@ pub enum BodyLook {
     Record(Box<CharacterRecord>),
     /// A shipped actor template, named as `actors.rpk` stores it.
     Actor(String),
+    /// A fighter the generator writes a record for from the arena's random
+    /// NPC and outfit passes (an arena opponent).
+    Generated(GeneratedFighter),
 }
 
 /// Which brain drives a scene body.
@@ -149,17 +156,15 @@ impl SceneBodyPlan {
     pub fn actor(&self) -> Option<&str> {
         match &self.look {
             BodyLook::Actor(name) => Some(name),
-            BodyLook::Record(_) => None,
+            BodyLook::Record(_) | BodyLook::Generated(_) => None,
         }
     }
 }
 
-/// The template a generated fighter of `level` and gear `tier` stands in
-/// with.
-///
-/// The original writes the fighter's own record. Until that record writer is
-/// modelled the practice opponents stand in, picked from the level and the
-/// tier so a card of fighters is not one face [guess].
+/// The template a body without a generated record stands in with: the
+/// Beast, a company entrant and a hub specialist, picked from the level and
+/// the gear tier so a card of bodies is not one face [guess]. Generated
+/// arena opponents no longer use a template; they write their own record.
 #[must_use]
 pub fn fighter_template(level: i32, tier: i32) -> &'static str {
     let level = level.clamp(0, 5) as usize;
@@ -180,7 +185,9 @@ pub fn opponent_plan(
     act_grace_ms: u32,
 ) -> SceneBodyPlan {
     let mut body = SceneBodyPlan::base(place);
-    body.look = BodyLook::Actor(fighter_template(plan.level, plan.outfit_level).to_string());
+    // The original writes the fighter's own record: the random NPC pass at
+    // the match's level, dressed by the level-derived outfit.
+    body.look = BodyLook::Generated(GeneratedFighter::generic(plan));
     body.team = OPPONENT_TEAM;
     body.roles = vec![role];
     // The original's body takes the id its freshly written record gets; with
@@ -219,6 +226,7 @@ pub fn hire_opponent_plan(
         now_ms,
         act_grace_ms,
     );
+    body.look = BodyLook::Generated(GeneratedFighter::hire(plan, weapon));
     body.id = u32::try_from(plan.stat_level).unwrap_or(0).wrapping_add(1);
     body.weapon = weapon;
     body
@@ -340,6 +348,12 @@ pub struct SpawnContext<'a> {
     pub loader: &'a mut ModelLoader<'a>,
     /// The game's object database, as the spawn resolves items by id.
     pub items: &'a [Item],
+    /// The arena's outfit tables, built from the same item facts.
+    pub outfits: &'a OutfitTables,
+    /// The profession grid the random NPC pass spends experience on.
+    pub professions: &'a mut ProfessionCatalog,
+    /// The variant index the next random NPC avoids, shared across spawns.
+    pub previous_variant: &'a mut u32,
     /// The shipped race table.
     pub races: &'a [Race],
     /// The actor templates, read once and kept across spawns.
@@ -372,6 +386,20 @@ pub fn spawn_scene_body(
     let mut record = match &plan.look {
         BodyLook::Record(record) => record.as_ref().clone(),
         BodyLook::Actor(name) => context.actors.template(context.game, name, false)?,
+        BodyLook::Generated(fighter) => {
+            // The spawned bodies share the arena's sequence: one body's
+            // look and outfit draws continue into the next body's.
+            let mut lcg = Lcg::new(*context.roll);
+            let record = generated_record(
+                fighter,
+                &mut lcg,
+                context.outfits,
+                context.professions,
+                context.previous_variant,
+            );
+            *context.roll = lcg.state();
+            record
+        }
     };
     if let Some(name) = &plan.name {
         record.name = name.clone();
@@ -725,6 +753,10 @@ pub struct SceneBodyBuilt {
 pub struct SceneActors {
     pub cache: crate::prelude::ActorCache,
     pub roll: u32,
+    /// The profession grid's drift, shared across the process's spawns.
+    pub professions: ProfessionCatalog,
+    /// The last variant index a random NPC drew.
+    pub previous_variant: u32,
 }
 
 /// Runs the scene body generator.
@@ -773,13 +805,26 @@ fn apply_scene_commands(
         return;
     };
     if tables.is_none() {
-        *tables = game_items(&game).map(|items| GameTables {
-            items,
-            races: game_races(&game),
-            book: game_roles(&game),
+        *tables = game_items(&game).map(|items| {
+            let facts: std::collections::BTreeMap<u32, ItemFacts> = items
+                .iter()
+                .map(|item| (item.id, ItemFacts::of_item(item)))
+                .collect();
+            GameTables {
+                outfits: OutfitTables::build(|id| facts.get(&id.0).cloned()),
+                items,
+                races: game_races(&game),
+                book: game_roles(&game),
+            }
         });
     }
-    let Some(GameTables { items, races, book }) = tables.as_ref() else {
+    let Some(GameTables {
+        items,
+        races,
+        book,
+        outfits,
+    }) = tables.as_ref()
+    else {
         messages.clear();
         return;
     };
@@ -799,11 +844,19 @@ fn apply_scene_commands(
                     images: &mut images,
                     bc_supported: model::bc_supported(support.as_deref()),
                 };
-                let SceneActors { cache, roll } = &mut *actors;
+                let SceneActors {
+                    cache,
+                    roll,
+                    professions,
+                    previous_variant,
+                } = &mut *actors;
                 let mut context = SpawnContext {
                     game: &game,
                     loader: &mut loader,
                     items,
+                    outfits,
+                    professions,
+                    previous_variant,
                     races,
                     actors: cache,
                     book,
@@ -847,6 +900,7 @@ struct GameTables {
     items: Vec<Item>,
     races: Vec<Race>,
     book: exa_formats::roles::RoleDb,
+    outfits: OutfitTables,
 }
 
 /// The game's object database as items.
@@ -899,17 +953,19 @@ mod tests {
         assert_eq!(plan.behaviour, Some(OPPONENT_BEHAVIOUR));
         assert_eq!(plan.at, Vec3::new(9.0, 0.05, -1.0));
         assert!(plan.yaw.abs() < 1e-6);
-        assert_eq!(plan.actor(), Some(fighter_template(3, 2)));
-        assert_eq!(find_index(plan.actor().unwrap()), 9);
-    }
-
-    /// The template's number: `opponent01` is 1.
-    fn find_index(name: &str) -> usize {
-        FIGHTER_TEMPLATES
-            .iter()
-            .position(|entry| *entry == name)
-            .map(|index| index + 1)
-            .unwrap()
+        assert_eq!(plan.actor(), None);
+        let BodyLook::Generated(fighter) = plan.look else {
+            panic!("a generic opponent takes a generated record");
+        };
+        assert_eq!(fighter.level, 3);
+        assert_eq!(
+            fighter.outfit,
+            crate::arena_records::OutfitSource::Level {
+                level: 2,
+                warmth: (3.0f64 * 0.05) as f32,
+                mode_flags: 0
+            }
+        );
     }
 
     #[test]
@@ -920,6 +976,13 @@ mod tests {
         assert_eq!(plan.act_at_ms, 0);
         let unarmed = hire_opponent_plan(hire_plan(4, 0, 0), &place(), 0x12, None, 0, 0);
         assert_eq!(unarmed.weapon, None);
+        let BodyLook::Generated(fighter) = unarmed.look else {
+            panic!("a hire opponent takes a generated record");
+        };
+        assert_eq!(
+            fighter.outfit,
+            crate::arena_records::OutfitSource::Profile(hire_plan(4, 0, 0).outfit)
+        );
     }
 
     #[test]
@@ -1003,9 +1066,16 @@ mod tests {
             .unwrap();
         let mut images = world.remove_resource::<Assets<Image>>().unwrap();
         let items = game_items(&game).unwrap();
+        let facts: std::collections::BTreeMap<u32, ItemFacts> = items
+            .iter()
+            .map(|item| (item.id, ItemFacts::of_item(item)))
+            .collect();
+        let outfits = OutfitTables::build(|id| facts.get(&id.0).cloned());
         let races = game_races(&game);
         let book = game_roles(&game);
         let mut actors = crate::prelude::ActorCache::new();
+        let mut professions = ProfessionCatalog::default();
+        let mut previous_variant = 0;
         let mut roll = 0u32;
         let player = world.spawn(()).id();
         let mut plan = opponent_plan(generic_plan(3, 2), &place(), 0x12, 0, 3_000);
@@ -1024,6 +1094,9 @@ mod tests {
                 game: &game,
                 loader: &mut loader,
                 items: &items,
+                outfits: &outfits,
+                professions: &mut professions,
+                previous_variant: &mut previous_variant,
                 races: &races,
                 actors: &mut actors,
                 book: &book,

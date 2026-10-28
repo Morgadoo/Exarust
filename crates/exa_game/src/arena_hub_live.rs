@@ -332,6 +332,9 @@ pub struct ArenaMatchLaunch {
     pub tournament: bool,
     /// The prize a win pays, copper.
     pub prize: u32,
+    /// The event weapon row's three variants, when the event arms its
+    /// fighters (the bracket's later fights draw from it).
+    pub weapon_variants: [u32; 3],
     pub fighters: Vec<LaunchedFighter>,
 }
 
@@ -479,6 +482,14 @@ pub fn plan_launch_at(
             weapon,
         });
     }
+    let weapon_variants = if tournament && board.selected.weapon_row > 0 {
+        board
+            .weapon_row(tier.max(0) as usize)
+            .map(|row| row.variants)
+            .unwrap_or([0; 3])
+    } else {
+        [0; 3]
+    };
     Some(ArenaMatchLaunch {
         template,
         arena: start.arena,
@@ -489,6 +500,7 @@ pub fn plan_launch_at(
         player,
         tournament,
         prize: board.selected.prize,
+        weapon_variants,
         fighters,
     })
 }

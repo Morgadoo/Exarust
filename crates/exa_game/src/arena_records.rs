@@ -294,6 +294,70 @@ mod tests {
         assert_eq!(fighter.traits, [0.0; 4]);
     }
 
+    /// The installed object database dresses a generated fighter: its worn
+    /// list names parseable apparel, the skill rows are filled and a hire's
+    /// forced profile and weapon reach the record; skipped without
+    /// `EXANIMA_DIR`.
+    #[test]
+    fn a_real_generated_fighter_dresses_from_the_object_database() {
+        let Some(items) = real_items() else {
+            return;
+        };
+        let facts: std::collections::BTreeMap<u32, ItemFacts> = items
+            .iter()
+            .map(|item| (item.id, ItemFacts::of_item(item)))
+            .collect();
+        let tables = OutfitTables::build(|id| facts.get(&id.0).cloned());
+        let mut professions = ProfessionCatalog::default();
+        let mut previous = 0;
+        let mut lcg = Lcg::new(5_489);
+        let generic = generated_record(
+            &GeneratedFighter::generic(generic_plan(3, 2)),
+            &mut lcg,
+            &tables,
+            &mut professions,
+            &mut previous,
+        );
+        assert!(!generic.name.is_empty());
+        assert!(!generic.worn.is_empty());
+        assert!(
+            generic
+                .worn
+                .iter()
+                .all(|worn| items.iter().any(|item| item.id == worn.id)),
+            "every worn id is in the object database"
+        );
+        assert!(generic.worn.iter().all(|worn| {
+            items
+                .iter()
+                .find(|item| item.id == worn.id)
+                .is_some_and(|item| !item.worn_model.is_empty())
+        }));
+        // A hire profile with the event's second row: the weapon is in the
+        // main hand and the outfit does not replace it.
+        let weapon = items
+            .iter()
+            .find(|item| item.weapon.is_some() && !item.model.is_empty())
+            .map(|item| item.id)
+            .expect("a shipped weapon");
+        let fighter = GeneratedFighter::hire(hire_plan(3, 2, 1), Some(weapon));
+        let record = generated_record(&fighter, &mut lcg, &tables, &mut professions, &mut previous);
+        assert_eq!(record.hands[0].id, weapon);
+        assert!(!record.worn.is_empty());
+    }
+
+    /// The installed object database's items, when `EXANIMA_DIR` names an
+    /// installation.
+    fn real_items() -> Option<Vec<exa_formats::objdb::Item>> {
+        let dir = exa_assets::locate_install(None)?;
+        let data = exa_assets::GameData::open(&dir).ok()?;
+        let bytes = data
+            .pack(exa_assets::PackKind::Resource)?
+            .get("objdb.rdb")?;
+        let database = exa_formats::rdb::Database::parse(bytes).ok()?;
+        Some(exa_formats::objdb::items(&database))
+    }
+
     #[test]
     fn an_event_weapon_stays_in_the_main_hand_when_the_outfit_runs() {
         // A profile with flag 4: the outfit skips its weapon branch and

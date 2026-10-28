@@ -1423,6 +1423,11 @@ pub const REBUILDABLE: u8 = 1;
 /// The reconstruction state after a strip.
 pub const STRIPPED: u8 = 2;
 
+/// The arena pause page's FORFEIT row ran: the running arena match settles
+/// as forfeited and returns to the hub.
+#[derive(Message, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ForfeitMatch;
+
 /// The steps the flow asked for since the last frame: every producer pushes
 /// here and [`apply_steps`] applies the ones the running app owns.
 #[derive(Resource, Debug, Default)]
@@ -2847,6 +2852,7 @@ impl Plugin for FlowPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Flow>()
             .init_resource::<FlowSteps>()
+            .add_message::<ForfeitMatch>()
             .init_resource::<GameView>()
             .init_resource::<BootToMenu>()
             .add_message::<MenuChoice>()
@@ -3104,6 +3110,7 @@ fn apply_steps(
     mut session: Option<ResMut<crate::player_controls::PlaySession>>,
     mut fighters: Query<&mut exa_combat::Fighter, With<crate::player::PlayerBody>>,
     mut changes: MessageWriter<exa_world::level_lifecycle::LevelChangeRequest>,
+    mut forfeit: MessageWriter<ForfeitMatch>,
     mut exit: MessageWriter<AppExit>,
 ) {
     if queued.steps.is_empty() {
@@ -3213,6 +3220,9 @@ fn apply_steps(
                 if restart {
                     commands.insert_resource(exa_audio::LevelMusicStart(0.0));
                 }
+            }
+            Step::Forfeit => {
+                forfeit.write(ForfeitMatch);
             }
             Step::Quit => {
                 exit.write(AppExit::Success);
@@ -4847,6 +4857,7 @@ mod tests {
             .init_resource::<FlowSteps>()
             .init_resource::<GameView>()
             .add_message::<exa_world::level_lifecycle::LevelChangeRequest>()
+            .add_message::<ForfeitMatch>()
             .add_message::<AppExit>()
             .add_systems(Update, apply_steps);
         let placement = Placement {
