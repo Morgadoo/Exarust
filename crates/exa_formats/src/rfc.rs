@@ -788,7 +788,14 @@ impl Mesh {
             }
         }
         let face_flags = flags.map(|_| kept_flags.as_slice());
-        self.normals = smooth_normals(&self.positions, &indices, keys, face_flags);
+        let own_elements: Vec<u32>;
+        let elements = if self.position_ids.len() == n {
+            &self.position_ids
+        } else {
+            own_elements = (0..n as u32).collect();
+            &own_elements
+        };
+        self.normals = smooth_normals(&self.positions, &indices, keys, elements, face_flags);
     }
 }
 
@@ -1542,7 +1549,14 @@ fn read_mesh(c: &mut Cursor<'_>, version: u16) -> Result<Mesh> {
         Some(m) => m.clone(),
         None => pos_idx.iter().map(|&i| i as u32).collect(),
     };
-    let normals = smooth_normals(&positions, &indices, &smoothing, triangle_flags.as_deref());
+    let element_ids: Vec<u32> = pos_idx.iter().map(|&i| i as u32).collect();
+    let normals = smooth_normals(
+        &positions,
+        &indices,
+        &smoothing,
+        &element_ids,
+        triangle_flags.as_deref(),
+    );
     let position_count = pos_stream.count;
 
     let tri_count = indices.len() / 3;
@@ -1679,29 +1693,281 @@ fn normalised(v: [f32; 3]) -> Option<[f32; 3]> {
 /// `1/(d00·d11 − d01²)` is the processor's reciprocal estimate. A
 /// degenerate triangle gives infinite or NaN weights.
 pub fn barycentric(vertices: [[f32; 3]; 3], point: [f32; 3]) -> [f32; 3] {
-    let [a, b, c] = vertices;
-    let normal = face_normal(a, b, c);
-    let e1 = sub(b, a);
-    let e2 = sub(c, a);
-    // The face record: its plane offset and the edges' Gram terms.
-    let plane = dot3(a, normal);
-    let d00 = dot3(e1, e1);
-    let inverse = reciprocal(d00 * dot3(e2, e2) - dot3(e1, e2) * dot3(e1, e2));
-    // The point on the plane, relative to the first vertex.
-    let distance = -(dot3(point, normal) - plane);
-    let on_plane = [
-        point[0] + normal[0] * distance,
-        point[1] + normal[1] * distance,
-        point[2] + normal[2] * distance,
-    ];
-    let v = sub(on_plane, a);
-    let d01 = dot3(e1, e2);
-    let d11 = dot3(e2, e2);
-    let d20 = dot3(v, e1);
-    let d21 = dot3(v, e2);
-    let second = (d11 * d20 - d01 * d21) * inverse;
-    let third = (d00 * d21 - d01 * d20) * inverse;
-    [(1.0 - second) - third, second, third]
+    Face::new(vertices[0], vertices[1], vertices[2]).barycentric(point)
+}
+
+/// A triangle's precomputed face record, as the mesh class builds it: the
+/// unit normal and the plane offset, the corners, the first edge's squared
+/// length and the reciprocal of the triangle's squared area. The queries
+/// below all work from this record.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Face {
+    /// The unit face normal (the original's reciprocal-square-root
+    /// estimate; a degenerate face keeps a zero normal).
+    pub normal: [f32; 3],
+    /// `normal · corner[0]`: the plane `normal · x = plane`.
+    pub plane: f32,
+    /// The three corners in winding order.
+    pub corners: [[f32; 3]; 3],
+    /// `|corner[1] − corner[0]|²`, the record's stored first edge.
+    pub edge1_sq: f32,
+    /// `1/(|e1|²·|e2|² − (e1·e2)²)`, the processor's reciprocal.
+    pub inv_area_sq: f32,
+}
+
+/// The smallest value the ray and approach tests accept as a denominator.
+const FACE_EPSILON: f32 = 1.192_089_982_282_595_9e-07;
+/// The sphere tests' smaller epsilon (the mesh test's).
+const SPHERE_EPSILON: f32 = f32::from_bits(0x2EDB_E6FF);
+
+impl Face {
+    /// Builds a face record from three corners, as the original's face
+    /// helper does: the cross product of the two edges from the first
+    /// corner, scaled by one reciprocal square root, and the edges' Gram
+    /// terms.
+    pub fn new(a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> Self {
+        let e1 = sub(b, a);
+        let e2 = sub(c, a);
+        let normal = face_normal(a, b, c);
+        let edge1_sq = dot3(e1, e1);
+        let d12 = dot3(e1, e2);
+        Self {
+            normal,
+            plane: dot3(a, normal),
+            corners: [a, b, c],
+            edge1_sq,
+            inv_area_sq: reciprocal(edge1_sq * dot3(e2, e2) - d12 * d12),
+        }
+    }
+
+    /// The signed distance of `p` in front of the face's plane.
+    pub fn plane_distance(&self, p: [f32; 3]) -> f32 {
+        dot3(p, self.normal) - self.plane
+    }
+
+    /// The barycentric coordinates of `p`, as the original's face helper
+    /// computes them: the point is dropped onto the plane along the normal
+    /// and its offset from the first corner expressed in the two edges,
+    /// with the record's reciprocal area. A degenerate face gives infinite
+    /// or NaN weights.
+    pub fn barycentric(&self, p: [f32; 3]) -> [f32; 3] {
+        let [a, b, c] = self.corners;
+        let e1 = sub(b, a);
+        let e2 = sub(c, a);
+        let distance = -self.plane_distance(p);
+        let on_plane = [
+            p[0] + self.normal[0] * distance,
+            p[1] + self.normal[1] * distance,
+            p[2] + self.normal[2] * distance,
+        ];
+        let v = sub(on_plane, a);
+        let d01 = dot3(e1, e2);
+        let d11 = dot3(e2, e2);
+        let d20 = dot3(v, e1);
+        let d21 = dot3(v, e2);
+        let second = (d11 * d20 - d01 * d21) * self.inv_area_sq;
+        let third = (self.edge1_sq * d21 - d01 * d20) * self.inv_area_sq;
+        [(1.0 - second) - third, second, third]
+    }
+
+    /// The point of the triangle closest to `p`, whose signed distance to
+    /// the face's plane is `plane_distance`, as the original's closest-point
+    /// helper finds it (the interior projection, then the three edges and
+    /// corners). Weights are clamped to 0…1 where the original clamps them.
+    pub fn closest_point(&self, p: [f32; 3], plane_distance: f32) -> [f32; 3] {
+        let [a, b, c] = self.corners;
+        let e1 = sub(b, a);
+        let e2 = sub(c, a);
+        let e2_sq = dot3(e2, e2);
+        let d12 = dot3(e1, e2);
+        let w = sub(
+            [
+                p[0] - self.normal[0] * plane_distance,
+                p[1] - self.normal[1] * plane_distance,
+                p[2] - self.normal[2] * plane_distance,
+            ],
+            a,
+        );
+        let d1w = dot3(e1, w);
+        let d2w = dot3(e2, w);
+        let denom = self.edge1_sq * d2w - d12 * d1w;
+        if denom > 0.0 {
+            let t2 = d1w * e2_sq - d12 * d2w;
+            if t2 > 0.0 {
+                if (denom + t2) * self.inv_area_sq <= 1.0 {
+                    return [a[0] + w[0], a[1] + w[1], a[2] + w[2]];
+                }
+            } else if d2w <= e2_sq {
+                let v = (d2w * reciprocal(e2_sq)).max(0.0);
+                return [a[0] + e2[0] * v, a[1] + e2[1] * v, a[2] + e2[2] * v];
+            }
+        } else {
+            if d1w <= 0.0 {
+                let v = (d2w * reciprocal(e2_sq)).clamp(0.0, 1.0);
+                return [a[0] + e2[0] * v, a[1] + e2[1] * v, a[2] + e2[2] * v];
+            }
+            if d1w <= self.edge1_sq {
+                let v = d1w * reciprocal(self.edge1_sq);
+                return [a[0] + e1[0] * v, a[1] + e1[1] * v, a[2] + e1[2] * v];
+            }
+        }
+        // The edge from the second corner to the third.
+        let e = sub(c, b);
+        let v = (dot3(sub(w, e1), e) * reciprocal(dot3(e, e))).clamp(0.0, 1.0);
+        [b[0] + e[0] * v, b[1] + e[1] * v, b[2] + e[2] * v]
+    }
+
+    /// The distance along `direction` (unit length) at which a ray from
+    /// `origin` meets the face's front, if it does before `best`. This is
+    /// the original's ray test: the signed volumes of the ray and the two
+    /// edges, one-sided (the ray must run against the face normal), with
+    /// the denominator compared against the engine's epsilon.
+    #[allow(clippy::neg_cmp_op_on_partial_ord)] // NaN must take the miss branch
+    pub fn ray(&self, origin: [f32; 3], direction: [f32; 3], best: f32) -> Option<f32> {
+        let [a, b, c] = self.corners;
+        let e1 = sub(b, a);
+        let e2 = sub(c, a);
+        let h = cross3(direction, e2);
+        let denom = dot3(e1, h);
+        if !(denom >= FACE_EPSILON) {
+            return None;
+        }
+        let s = sub(origin, a);
+        let u = dot3(s, h);
+        if !(0.0 <= u && u <= denom) {
+            return None;
+        }
+        let q = cross3(s, e1);
+        let v = dot3(direction, q);
+        if !(0.0 <= v && u + v <= denom) {
+            return None;
+        }
+        let t = dot3(e2, q) / denom;
+        if 0.0 < t && t < best { Some(t) } else { None }
+    }
+
+    /// The original's second ray variant: the barycentric weights are
+    /// divided by the denominator first and the hit is accepted at
+    /// `t == best` too.
+    #[allow(clippy::neg_cmp_op_on_partial_ord)] // NaN must take the miss branch
+    pub fn ray_inclusive(&self, origin: [f32; 3], direction: [f32; 3], best: f32) -> Option<f32> {
+        let [a, b, c] = self.corners;
+        let e1 = sub(b, a);
+        let e2 = sub(c, a);
+        let h = cross3(direction, e2);
+        let denom = dot3(e1, h);
+        if !(denom.abs() >= FACE_EPSILON) {
+            return None;
+        }
+        let inverse = 1.0 / denom;
+        let s = sub(origin, a);
+        let u = dot3(s, h) * inverse;
+        if !(0.0..=1.0).contains(&u) {
+            return None;
+        }
+        let q = cross3(s, e1);
+        let v = dot3(direction, q) * inverse;
+        if !(0.0..=1.0).contains(&v) || !(u + v <= 1.0) {
+            return None;
+        }
+        let t = dot3(e2, q) * inverse;
+        if 0.0 < t && t <= best { Some(t) } else { None }
+    }
+
+    /// The push-out vector of a sphere at `centre` with `radius` that
+    /// reaches the face's front, as the original's mesh-side sphere test
+    /// reports it: from the centre to the closest point of the triangle,
+    /// lengthened to the radius less the distance (or straight along the
+    /// normal when the centre is on the triangle).
+    #[allow(clippy::neg_cmp_op_on_partial_ord)] // NaN must take the miss branch
+    pub fn sphere_push(&self, centre: [f32; 3], radius: f32) -> Option<[f32; 3]> {
+        let distance = self.plane_distance(centre);
+        if !(0.0 <= distance && distance < radius) {
+            return None;
+        }
+        let closest = self.closest_point(centre, distance);
+        let mut diff = sub(centre, closest);
+        let squared = dot3(diff, diff);
+        let room = radius - SPHERE_EPSILON;
+        if !(squared < room * room) {
+            return None;
+        }
+        if SPHERE_EPSILON <= squared {
+            let scale = (radius - squared.sqrt()) / squared.sqrt();
+            diff = diff.map(|x| x * scale);
+        } else {
+            diff = self.normal.map(|x| x * radius);
+        }
+        Some(diff)
+    }
+}
+
+impl Mesh {
+    /// The face record of triangle `triangle`, if the mesh has it.
+    pub fn face(&self, triangle: usize) -> Option<Face> {
+        let t = self.indices.as_chunks::<3>().0.get(triangle)?;
+        let point = |i: u32| self.positions.get(i as usize).copied();
+        Some(Face::new(point(t[0])?, point(t[1])?, point(t[2])?))
+    }
+
+    /// Every triangle's face record, in index order; triangles naming a
+    /// missing vertex are left out.
+    pub fn faces(&self) -> Vec<Face> {
+        self.indices
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .filter_map(|t| {
+                let point = |i: u32| self.positions.get(i as usize).copied();
+                Some(Face::new(point(t[0])?, point(t[1])?, point(t[2])?))
+            })
+            .collect()
+    }
+
+    /// The nearest face a ray meets in front of it, with the distance and
+    /// the triangle's index.
+    pub fn ray_hit(&self, origin: [f32; 3], direction: [f32; 3], max: f32) -> Option<(u32, f32)> {
+        let mut best = max;
+        let mut found = None;
+        for (triangle, face) in self.faces().iter().enumerate() {
+            if let Some(t) = face.ray(origin, direction, best) {
+                best = t;
+                found = Some((triangle as u32, t));
+            }
+        }
+        found
+    }
+
+    /// The nearest face a ray meets, accepting a hit exactly at the
+    /// previous best distance (the original's second ray walk).
+    pub fn ray_hit_inclusive(
+        &self,
+        origin: [f32; 3],
+        direction: [f32; 3],
+        max: f32,
+    ) -> Option<(u32, f32)> {
+        let mut best = max;
+        let mut found = None;
+        for (triangle, face) in self.faces().iter().enumerate() {
+            if let Some(t) = face.ray_inclusive(origin, direction, best) {
+                best = t;
+                found = Some((triangle as u32, t));
+            }
+        }
+        found
+    }
+
+    /// The first face a sphere reaches, with the push-out vector the
+    /// original reports (see [`Face::sphere_push`]).
+    pub fn sphere_hit(&self, centre: [f32; 3], radius: f32) -> Option<(u32, [f32; 3])> {
+        self.faces()
+            .iter()
+            .enumerate()
+            .find_map(|(triangle, face)| {
+                face.sphere_push(centre, radius)
+                    .map(|push| (triangle as u32, push))
+            })
+    }
 }
 
 /// The corner angle's weight in the original's normal averaging: the angle
@@ -1738,32 +2004,78 @@ fn smooth_normals(
     positions: &[[f32; 3]],
     indices: &[u32],
     keys: &[u32],
+    elements: &[u32],
     face_flags: Option<&[u32]>,
 ) -> Vec<[f32; 3]> {
     let key_count = keys.iter().copied().max().map_or(0, |m| m as usize + 1);
+    let element_count = elements
+        .iter()
+        .copied()
+        .max()
+        .map_or(0, |m| m as usize + 1)
+        .max(1);
+    // The corners of every position element, in the original's incidence
+    // order: faces are visited last-first and each face's corners last
+    // first, so an element's list starts with its last corner.
+    let mut counts = vec![0u32; element_count + 1];
+    for &v in indices {
+        let Some(&e) = elements.get(v as usize) else {
+            continue;
+        };
+        counts[e as usize + 1] += 1;
+    }
+    for e in 0..element_count {
+        counts[e + 1] += counts[e];
+    }
+    let mut fill = counts.clone();
+    let mut ring = vec![(0u32, 0u8); indices.len()];
+    for (face, t) in indices.as_chunks::<3>().0.iter().enumerate().rev() {
+        for corner in (0..3).rev() {
+            let v = t[corner] as usize;
+            let Some(&e) = elements.get(v) else {
+                continue;
+            };
+            ring[fill[e as usize] as usize] = (face as u32, corner as u8);
+            fill[e as usize] += 1;
+        }
+    }
     // Per key: the sum over unflagged faces, the sum over flagged faces,
     // and whether an unflagged face was seen.
     let mut acc = vec![[0.0f32; 3]; key_count];
     let mut fallback = vec![[0.0f32; 3]; key_count];
     let mut reached = vec![false; key_count];
-    for (face, t) in indices.as_chunks::<3>().0.iter().enumerate() {
-        let corners = [t[0] as usize, t[1] as usize, t[2] as usize];
-        let [a, b, c] = corners.map(|i| positions[i]);
-        let normal = face_normal(a, b, c);
-        let flagged = face_flags
-            .and_then(|flags| flags.get(face))
-            .is_some_and(|&flags| flags & FACE_NORMAL_FALLBACK != 0);
-        // The original's corner tables: next and previous corner.
-        const NEXT: [usize; 3] = [2, 0, 1];
-        const PREV: [usize; 3] = [1, 2, 0];
-        for corner in 0..3 {
-            let here = positions[corners[corner]];
-            let next = positions[corners[NEXT[corner]]];
-            let prev = positions[corners[PREV[corner]]];
-            let key = keys[corners[corner]] as usize;
-            if flagged && reached[key] {
+    // The original builds one normal per position element, walking that
+    // element's corners in ring order; an element whose vertices were split
+    // by smoothing group is one element per group here, so the corners are
+    // summed into their own keys.
+    const NEXT: [usize; 3] = [2, 0, 1];
+    const PREV: [usize; 3] = [1, 2, 0];
+    for e in 0..element_count {
+        for &(face, corner) in &ring[counts[e] as usize..counts[e + 1] as usize] {
+            let face = face as usize;
+            let corner = corner as usize;
+            let Some(t) = indices.as_chunks::<3>().0.get(face) else {
+                continue;
+            };
+            let corners = [t[0] as usize, t[1] as usize, t[2] as usize];
+            if corners.iter().any(|&i| i >= positions.len()) {
                 continue;
             }
+            let [a, b, c] = corners.map(|i| positions[i]);
+            let normal = face_normal(a, b, c);
+            let flagged = face_flags
+                .and_then(|flags| flags.get(face))
+                .is_some_and(|&flags| flags & FACE_NORMAL_FALLBACK != 0);
+            let vertex = corners[corner];
+            let key = keys.get(vertex).copied().unwrap_or(0) as usize;
+            if key >= key_count || (flagged && reached[key]) {
+                continue;
+            }
+            let (here, next, prev) = (
+                positions[vertex],
+                positions[corners[NEXT[corner]]],
+                positions[corners[PREV[corner]]],
+            );
             let weight = corner_angle_weight(sub(next, here), sub(prev, here));
             let target = if flagged {
                 &mut fallback[key]
@@ -1779,7 +2091,11 @@ fn smooth_normals(
     keys.iter()
         .map(|&k| {
             let k = k as usize;
-            let sum = if reached[k] { acc[k] } else { fallback[k] };
+            let sum = if reached.get(k).copied().unwrap_or(false) {
+                acc[k]
+            } else {
+                fallback.get(k).copied().unwrap_or([0.0; 3])
+            };
             normalised(sum).unwrap_or([0.0, 1.0, 0.0])
         })
         .collect()
@@ -2693,6 +3009,107 @@ mod tests {
         assert_eq!(corner[0], (1.0 - corner[1]) - corner[2]);
     }
 
+    /// The face record holds the unit normal, the plane offset and the
+    /// edges' Gram terms; the closest point walks the interior and the
+    /// three edge regions.
+    #[test]
+    fn the_face_record_and_its_closest_point() {
+        let near = |a: [f32; 3], b: [f32; 3]| (0..3).all(|i| (a[i] - b[i]).abs() < 1e-3);
+        // A right triangle in the XZ plane, normal +Y.
+        let face = Face::new([0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 0.0, -2.0]);
+        assert!(near(face.normal, [0.0, 1.0, 0.0]));
+        assert_eq!(face.plane, 0.0);
+        assert_eq!(face.edge1_sq, 4.0);
+        assert!(
+            (face.inv_area_sq - 0.0625).abs() < 1e-4,
+            "{}",
+            face.inv_area_sq
+        );
+        // Above the interior: the projection.
+        let p = [0.5, 3.0, -0.5];
+        let distance = face.plane_distance(p);
+        assert!((distance - 3.0).abs() < 1e-3, "{distance}");
+        assert!(near(face.closest_point(p, distance), [0.5, 0.0, -0.5]));
+        // Above the first corner: the corner.
+        let p = [-1.0, 2.0, 1.0];
+        assert!(near(
+            face.closest_point(p, face.plane_distance(p)),
+            [0.0, 0.0, 0.0]
+        ));
+        // Above the middle of the first edge: that edge's point.
+        let p = [1.0, 2.0, 1.0];
+        assert!(near(
+            face.closest_point(p, face.plane_distance(p)),
+            [1.0, 0.0, 0.0]
+        ));
+        // Above the hypotenuse: its nearest point, (1, 0, −1).
+        let p = [2.0, 1.0, -2.0];
+        assert!(near(
+            face.closest_point(p, face.plane_distance(p)),
+            [1.0, 0.0, -1.0]
+        ));
+    }
+
+    /// The ray test is one-sided and front-only: a ray running against the
+    /// normal hits where it crosses, one running with it misses, and the
+    /// nearest of two faces wins.
+    #[test]
+    fn a_ray_meets_the_front_of_a_face() {
+        let face = Face::new([0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 0.0, -2.0]);
+        let t = face.ray([0.5, 5.0, -0.5], [0.0, -1.0, 0.0], 10.0);
+        assert!(t.is_some_and(|t| (t - 5.0).abs() < 1e-4), "{t:?}");
+        // From below the ray runs with the normal: no front hit.
+        assert_eq!(face.ray([0.5, -5.0, -0.5], [0.0, 1.0, 0.0], 10.0), None);
+        // Past the first corner: the barycentric test rejects it.
+        assert_eq!(face.ray([5.0, 5.0, -5.0], [0.0, -1.0, 0.0], 10.0), None);
+        // A parallel ray never crosses the plane.
+        assert_eq!(face.ray([0.5, 5.0, -0.5], [1.0, 0.0, 0.0], 10.0), None);
+        // Not nearer than the limit already found.
+        assert_eq!(face.ray([0.5, 5.0, -0.5], [0.0, -1.0, 0.0], 5.0), None);
+        // The inclusive variant accepts a hit exactly at the limit.
+        let exact = face.ray_inclusive([0.5, 5.0, -0.5], [0.0, -1.0, 0.0], 5.0);
+        assert!(exact.is_some_and(|t| (t - 5.0).abs() < 1e-4), "{exact:?}");
+    }
+
+    /// The mesh walks its triangles and reports the nearest face, and a
+    /// sphere reports the push-out from the face it reaches.
+    #[test]
+    fn mesh_queries_walk_the_triangles() {
+        // Two triangles side by side in the XZ plane.
+        let mesh = Mesh {
+            positions: vec![
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 0.0, -1.0],
+                [0.0, 0.0, -1.0],
+            ],
+            normals: vec![[0.0, 1.0, 0.0]; 4],
+            position_ids: vec![0, 1, 2, 3],
+            indices: vec![0, 1, 2, 0, 2, 3],
+            groups: vec![MeshGroup {
+                material: "m".into(),
+                first_index: 0,
+                index_count: 6,
+            }],
+            smoothing: vec![0; 4],
+            position_count: 4,
+            ..Mesh::default()
+        };
+        assert_eq!(mesh.faces().len(), 2);
+        let hit = mesh.ray_hit([0.75, 4.0, -0.25], [0.0, -1.0, 0.0], 10.0);
+        let (triangle, t) = hit.expect("a hit");
+        assert!(t > 3.9 && t < 4.1, "{t}");
+        assert!(triangle < 2, "{triangle}");
+        // A sphere one metre wide sitting half a metre over the centre.
+        let (_, push) = mesh.sphere_hit([0.5, 0.5, -0.5], 1.0).expect("a sphere");
+        assert!((push[1] - 0.5).abs() < 1e-4, "{push:?}");
+        // The closest point's reciprocal estimate leaves a sub-millimetre
+        // sideways term.
+        assert!(push[0].abs() < 1e-3 && push[2].abs() < 1e-3, "{push:?}");
+        // Well above the surface it reaches nothing.
+        assert!(mesh.sphere_hit([0.5, 3.0, -0.5], 1.0).is_none());
+    }
+
     /// A face with the fallback flag shapes a smoothing group only when no
     /// face without it reaches the group.
     #[test]
@@ -2708,13 +3125,14 @@ mod tests {
         let indices = [0, 1, 2, 0, 3, 1];
         let keys = [0, 1, 2, 3];
         let flags = [0, FACE_NORMAL_FALLBACK];
-        let normals = smooth_normals(&positions, &indices, &keys, Some(&flags));
+        let elements = [0, 1, 2, 3];
+        let normals = smooth_normals(&positions, &indices, &keys, &elements, Some(&flags));
         assert!((normals[0][2] - 1.0).abs() < 1e-3, "{normals:?}");
         assert!(normals[0][1].abs() < 1e-6, "{normals:?}");
         // Vertex 3 is reached by the flagged face alone, which then counts.
         assert!((normals[3][1] - 1.0).abs() < 1e-3, "{normals:?}");
         // Without flags both faces count at vertex 0.
-        let plain = smooth_normals(&positions, &indices, &keys, None);
+        let plain = smooth_normals(&positions, &indices, &keys, &elements, None);
         assert!(plain[0][1] > 0.5 && plain[0][2] > 0.5, "{plain:?}");
     }
 
