@@ -527,6 +527,108 @@ pub struct Windup {
     pub recovery_factor: f32,
 }
 
+/// The behaviour's combat mode word, one combat tick: what the buttons
+/// ask of the body.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CombatMode {
+    /// Neither: the footwork alone.
+    #[default]
+    Idle,
+    /// The walk to the cursor (the right button or the pad's stick).
+    Walk,
+    /// An attack (the left button).
+    Attack,
+}
+
+/// What the combat mode word reads.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct CombatModeInput {
+    /// The body's condition word.
+    pub condition: u32,
+    /// Its energy (0 to 1).
+    pub energy: f32,
+    /// The right button is held over the view.
+    pub right: bool,
+    /// The pad's stick asks the walk (its squared length over 0.1 with the
+    /// pad driving).
+    pub stick: bool,
+    /// The left button is held.
+    pub left: bool,
+    /// A swing is under way.
+    pub swinging: bool,
+    /// The step latch is set with the body's speed over 2 cm a tick (a
+    /// lunge's dash).
+    pub dashing: bool,
+    /// The body plays the action that keeps the mode as it was under the
+    /// right button. A guess at its meaning: the original compares the
+    /// action number to 45.
+    pub keeps_mode: bool,
+}
+
+/// The condition bits the mode ladder tests: down (0x200), switching
+/// held items (4) and the casting word (0x20, compared whole).
+const MODE_DOWN: u32 = 0x200;
+const MODE_SWITCHING: u32 = 4;
+const MODE_CASTING: u32 = 0x20;
+/// Under this energy the mode is idle and the step latch clears. A NaN
+/// energy fails the original's compare toward the ladder, so it is read
+/// as enough.
+pub const MODE_ENERGY: f32 = 0.85;
+
+/// The button word the ladder leaves: which button's branch it took last
+/// (the right button's, the left button's, or neither).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ModeButton {
+    #[default]
+    None,
+    Left,
+    Right,
+}
+
+/// The combat mode word, as the behaviour tick's ladder sets it from
+/// `previous` (and the button word `button`, which it returns updated):
+/// down or dazed (energy under 0.85; a NaN reads as enough) is idle and
+/// leaves the button word; switching or casting is idle and clears it; the
+/// right button (or the stick) walks, unless the kept action plays, which
+/// leaves the mode; a dash is idle; the left button attacks on its press
+/// (with the left button's word already set, the mode stays; a swing under
+/// way is idle); otherwise idle.
+pub fn combat_mode(
+    previous: CombatMode,
+    button: ModeButton,
+    input: &CombatModeInput,
+) -> (CombatMode, ModeButton) {
+    use CombatMode::*;
+    if input.condition & MODE_DOWN != 0 {
+        return (Idle, button);
+    }
+    // The compare jumps to the ladder when unordered.
+    if input.energy < MODE_ENERGY {
+        return (Idle, button);
+    }
+    if input.condition & MODE_SWITCHING != 0 || input.condition == MODE_CASTING {
+        return (Idle, ModeButton::None);
+    }
+    if input.right || input.stick {
+        let mode = if input.keeps_mode { previous } else { Walk };
+        return (mode, ModeButton::Right);
+    }
+    if input.dashing {
+        return (Idle, ModeButton::None);
+    }
+    if input.left {
+        let mode = if input.swinging {
+            Idle
+        } else if button == ModeButton::Left {
+            previous
+        } else {
+            Attack
+        };
+        return (mode, ModeButton::Left);
+    }
+    (Idle, ModeButton::None)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -953,6 +1055,125 @@ mod tests {
         assert_eq!(
             windup(0.5, 0.1, 1000, 0.71, 5, false, 0).recovery_factor,
             1.0
+        );
+    }
+
+    /// The mode ladder: down, dazed, switching and casting are idle; the
+    /// right button walks (the kept action leaves the mode); a dash is
+    /// idle; the left button's press attacks and its hold keeps the mode.
+    #[test]
+    fn the_combat_mode_follows_the_buttons() {
+        let base = CombatModeInput {
+            energy: 1.0,
+            ..CombatModeInput::default()
+        };
+        let mode = |i: CombatModeInput| combat_mode(CombatMode::Attack, ModeButton::None, &i).0;
+        assert_eq!(mode(base), CombatMode::Idle);
+        let right = CombatModeInput {
+            right: true,
+            ..base
+        };
+        assert_eq!(mode(right), CombatMode::Walk);
+        assert_eq!(
+            mode(CombatModeInput {
+                stick: true,
+                ..base
+            }),
+            CombatMode::Walk
+        );
+        assert_eq!(
+            mode(CombatModeInput {
+                keeps_mode: true,
+                ..right
+            }),
+            CombatMode::Attack
+        );
+        for condition in [0x200, 0x300, 0xA00, 4, 0x10004, 0x20] {
+            assert_eq!(
+                mode(CombatModeInput { condition, ..right }),
+                CombatMode::Idle
+            );
+        }
+        // Casting is the whole word 0x20; another bit with it is not.
+        assert_eq!(
+            mode(CombatModeInput {
+                condition: 0x21,
+                ..right
+            }),
+            CombatMode::Walk
+        );
+        // Dazed under 0.85; exactly 0.85 and a NaN read the ladder.
+        let dazed = f32::from_bits(MODE_ENERGY.to_bits() - 1);
+        assert_eq!(
+            mode(CombatModeInput {
+                energy: dazed,
+                ..right
+            }),
+            CombatMode::Idle
+        );
+        assert_eq!(
+            mode(CombatModeInput {
+                energy: 0.85,
+                ..right
+            }),
+            CombatMode::Walk
+        );
+        assert_eq!(
+            mode(CombatModeInput {
+                energy: f32::NAN,
+                ..right
+            }),
+            CombatMode::Walk
+        );
+        let left = CombatModeInput { left: true, ..base };
+        assert_eq!(
+            combat_mode(CombatMode::Idle, ModeButton::None, &left),
+            (CombatMode::Attack, ModeButton::Left)
+        );
+        // Held on: the left button's word keeps the mode.
+        assert_eq!(
+            combat_mode(CombatMode::Idle, ModeButton::Left, &left),
+            (CombatMode::Idle, ModeButton::Left)
+        );
+        // Down or dazed leaves the word; switching clears it.
+        let down = CombatModeInput {
+            condition: 0x200,
+            ..left
+        };
+        assert_eq!(
+            combat_mode(CombatMode::Attack, ModeButton::Left, &down),
+            (CombatMode::Idle, ModeButton::Left)
+        );
+        let switching = CombatModeInput {
+            condition: 4,
+            ..left
+        };
+        assert_eq!(
+            combat_mode(CombatMode::Attack, ModeButton::Left, &switching),
+            (CombatMode::Idle, ModeButton::None)
+        );
+        assert_eq!(
+            mode(CombatModeInput {
+                swinging: true,
+                ..left
+            }),
+            CombatMode::Idle
+        );
+        assert_eq!(
+            mode(CombatModeInput {
+                dashing: true,
+                ..left
+            }),
+            CombatMode::Idle
+        );
+        // The right button outranks the dash and the left button.
+        assert_eq!(
+            mode(CombatModeInput {
+                dashing: true,
+                left: true,
+                ..right
+            }),
+            CombatMode::Walk
         );
     }
 }

@@ -41,6 +41,7 @@ use crate::nav_camera::{
 };
 
 use crate::footwork::{self, StepGate};
+use crate::player_behaviour;
 pub(crate) use crate::steering::CURSOR_RUN_FROM;
 use crate::steering::{Keys, LineAsked, LineWalk, Steering, key_segment};
 
@@ -128,6 +129,9 @@ pub struct PlayerBody {
     move_word: crate::steering::MoveWord,
     /// The combat footwork's step, as its dispatcher lays it.
     step: crate::footwork::StepRecord,
+    /// The behaviour's combat mode word and the button branch it took last.
+    mode: player_behaviour::CombatMode,
+    mode_button: player_behaviour::ModeButton,
     /// The clip the combat footwork's walk replaced, which it gives back.
     walk_from: Option<String>,
     /// When its last attack last ticked (s, on the fixed clock).
@@ -156,6 +160,8 @@ impl PlayerBody {
             steering: Steering::default(),
             move_word: crate::steering::MoveWord::default(),
             step: crate::footwork::StepRecord::default(),
+            mode: player_behaviour::CombatMode::Idle,
+            mode_button: player_behaviour::ModeButton::None,
             walk_from: None,
             last_attack: None,
             target: None,
@@ -878,10 +884,28 @@ pub(crate) fn steer_player(
                 };
                 // The right button walks toward the cursor in combat mode
                 // too, however near it is; the keys then keep the footwork.
-                steering.combat_request(input.mouse);
-                let walked = if input.mouse
-                    && let Some(to) = to_cursor
-                {
+                // The behaviour's mode word: the right button walks only
+                // while the ladder lets it (not down, dazed under 0.85
+                // energy, switching or casting). Exarust's own inputs: the
+                // pad reaches the footwork as keys (no stick walk), and the
+                // player has no dash latch nor the kept action.
+                let (mode, button) = player_behaviour::combat_mode(
+                    pb.mode,
+                    pb.mode_button,
+                    &player_behaviour::CombatModeInput {
+                        condition: state.0,
+                        energy,
+                        right: input.mouse,
+                        left: bindings.mouse_pressed(&buttons, Action::Primary),
+                        swinging,
+                        ..Default::default()
+                    },
+                );
+                pb.mode = mode;
+                pb.mode_button = button;
+                let walks = mode == player_behaviour::CombatMode::Walk;
+                steering.combat_request(walks);
+                let walked = if walks && let Some(to) = to_cursor {
                     steering.combat_walk(&mut req, body, standing, to, &line)
                 } else {
                     false
