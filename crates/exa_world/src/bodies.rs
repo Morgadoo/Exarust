@@ -392,7 +392,9 @@ mod tests {
                 continue;
             };
             if let Some(m) = model(&[PackKind::Objects, PackKind::Objlib], &item.model) {
-                let placement = if item.mechanism().is_some() {
+                let placement = if o.is_static() {
+                    Placement::Static
+                } else if item.mechanism().is_some() {
                     Placement::Mechanism
                 } else {
                     Placement::Loose
@@ -404,14 +406,14 @@ mod tests {
     }
 
     /// The installed levels' bodies (skipped without the game): what
-    /// registers and what stays static. `exanima01`: 4 713 trees of 6 023
+    /// registers and what stays static. `exanima01`: 4 710 trees of 6 020
     /// bodies register (props' sacks, buckets and carts with their children
     /// among them); 122 of the trees hang from the world (wall chains,
-    /// lamps, 1 023 bodies), 198 are doors, levers and plates, 492 belong to
-    /// props placed static. `arenao1`: 68 of its props are placed static (the
-    /// barrels, the cart), 3 lanterns hang, its own model's tavern table is a
-    /// node marked static; 20 bodies register (its tableware, clothes, a
-    /// basket and the lanterns).
+    /// lamps, 1 023 bodies), 198 are doors, levers and plates, 492 props and
+    /// 3 placed objects (tongs, back packs) belong to things placed static.
+    /// `arenao1`: 68 of its props and 15 of its placed objects (bundles,
+    /// clothes pegs, tableware) are placed static, 3 lanterns hang, its own
+    /// model's tavern table is a node marked static; 5 bodies register.
     #[test]
     fn shipped_level_bodies() {
         let Some(dir) = exa_assets::locate_install(None) else {
@@ -428,9 +430,9 @@ mod tests {
         };
         assert_eq!(
             level_counts(&game, "exanima01"),
-            counts(4713, 6023, 122, 198, 492)
+            counts(4710, 6020, 122, 198, 495)
         );
-        assert_eq!(level_counts(&game, "arenao1"), counts(20, 20, 3, 0, 68));
+        assert_eq!(level_counts(&game, "arenao1"), counts(5, 5, 3, 0, 83));
         // The levels' own bodies marked as level geometry: only the tavern
         // table of arenao1 (the six of exanima01 register).
         let res = game.pack(exa_assets::PackKind::Resource).unwrap();

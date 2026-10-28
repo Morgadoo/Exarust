@@ -846,7 +846,12 @@ pub struct PlacedObject {
     /// `0x80000000`: the level's own database; `0x40000000`: the world
     /// database; otherwise `objdb.rdb`. The low 30 bits are the record id.
     pub id: u32,
+    /// The placement flags word: condition in bits 16–23, bit `0x10` places
+    /// the object static.
     pub flags: u32,
+    /// The object's own flags word: bits 19–23 are copied onto its root
+    /// node (`0x80000` marks it level geometry; the rest are not decoded).
+    pub object_flags: u32,
     /// Row-major 3×4: three rotation rows, then the translation (metres).
     pub transform: [[f32; 3]; 4],
     /// Slot in a containing object (0 in the world).
@@ -858,8 +863,21 @@ pub struct PlacedObject {
 
 impl PlacedObject {
     pub const ID_MASK: u32 = 0x3FFF_FFFF;
+    /// The placement flags bit that marks the object (and every node under
+    /// it) as level geometry.
+    pub const STATIC: u32 = 0x10;
+    /// The object flag that marks the root node level geometry.
+    pub const OBJECT_STATIC: u32 = 0x8_0000;
+
     pub fn is_local(&self) -> bool {
         self.id & 0x8000_0000 != 0
+    }
+
+    /// Whether the object is level geometry: the placement's static bit or
+    /// the object's own static flag, either of which the original turns
+    /// into node flag `0x80000` on its root.
+    pub fn is_static(&self) -> bool {
+        self.flags & Self::STATIC != 0 || self.object_flags & Self::OBJECT_STATIC != 0
     }
 }
 
@@ -914,7 +932,7 @@ fn read_placed_objects(b: &[u8], version: u16) -> Result<Vec<PlacedObject>> {
         }
         let id = o.u32()?;
         let flags = if version >= 0x3D23 { o.u32()? } else { 0 };
-        o.u32()?; // object flags
+        let object_flags = o.u32()?;
         let mut transform = [[0.0f32; 3]; 4];
         for row in &mut transform {
             for v in row.iter_mut() {
@@ -940,6 +958,7 @@ fn read_placed_objects(b: &[u8], version: u16) -> Result<Vec<PlacedObject>> {
         out.push(PlacedObject {
             id,
             flags,
+            object_flags,
             transform,
             slot,
             attachments,
@@ -2918,7 +2937,7 @@ mod tests {
     /// A level's placed objects carry the same node overrides as props.
     #[test]
     fn placed_objects_keep_their_attachment() {
-        let mut body = u32s(&[0x8000_0001, 0, 0]);
+        let mut body = u32s(&[0x8000_0001, 0, 0x8_0000]);
         body.extend(f32s(&[
             1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 10.0, 20.0, 30.0,
         ]));
@@ -2936,6 +2955,10 @@ mod tests {
         let scene = Scene::parse(&file).unwrap();
         assert!(scene.level_errors.is_empty(), "{:?}", scene.level_errors);
         let o = &scene.placed_objects[0];
+        // The third word is the object's own flags: bit 19 makes it level
+        // geometry, as the placement's bit 4 does.
+        assert_eq!(o.object_flags, 0x8_0000);
+        assert!(o.is_static());
         for (got, want) in o.transform[3].iter().zip([0.1, 0.2, 0.3]) {
             assert!((got - want).abs() < 1e-6, "{got} != {want}");
         }

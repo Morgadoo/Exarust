@@ -468,8 +468,11 @@ fn spawn_placed_object(
             operative,
         });
     }
-    // A door, lever or push surface keeps its body for its mechanism.
-    let placement = if item.mechanism().is_some() {
+    // A placed object flagged static is level geometry; otherwise a door,
+    // lever or push surface keeps its body for its mechanism.
+    let placement = if object.is_static() {
+        bodies::Placement::Static
+    } else if item.mechanism().is_some() {
         bodies::Placement::Mechanism
     } else {
         bodies::Placement::Loose

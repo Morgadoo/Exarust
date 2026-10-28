@@ -1293,6 +1293,14 @@ spawns each as a static model, its item's model from `Objects.rpk` or
 `Objlib.rpk` (1763 in `exanima01`, none missing). Scripted (`@`) objects and
 model-less triggers or markers are skipped.
 
+The placement flags' bit 4 (`0x10`) and the object flags' bit 19
+(`0x80000`) both mark the object as level geometry: the original turns
+either into node flag `0x80000`, so its bodies never register
+(`PlacedObject::is_static`). 240 shipped placed objects are static (237 by
+bit 4, 2 by both, 1 by the object flag alone): `exanima01`'s tongs and two
+back packs, `arenao1`'s bundles, clothes pegs and tableware. Exarust registers
+the rest of a placed object's bodies, or keeps them for their mechanism.
+
 Bits 16–23 of the placement flags word are the object's condition byte c.
 For items whose model section sets bit 0 (`OTHER.md`, object database), the
 voxel lights directly under the model's root shine at k = (1 − c/255)² of
