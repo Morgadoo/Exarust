@@ -1140,6 +1140,12 @@ fn create_force(
                     },
                 ))
                 .id();
+            let kind = if setup.power == 0x202 {
+                EffectKind::Bolt
+            } else {
+                EffectKind::Blast
+            };
+            attach_visual(commands, entity, kind, context, ragdoll);
             debug!(
                 "force blast {:#x}: motion {hooked}, entity {entity:?}",
                 setup.power
@@ -1159,6 +1165,7 @@ fn create_force(
             );
             let hooked = live.hooked;
             let entity = commands.spawn((Name::new("_ForceWave"), live)).id();
+            attach_visual(commands, entity, EffectKind::Wave, context, ragdoll);
             debug!("force wave: motion {hooked}, entity {entity:?}");
             Some(entity)
         }
@@ -1177,6 +1184,7 @@ fn create_force(
             );
             let hooked = live.hooked;
             let entity = commands.spawn((Name::new("_ForceTorrent"), live)).id();
+            attach_visual(commands, entity, EffectKind::Torrent, context, ragdoll);
             debug!("force torrent: motion {hooked}, entity {entity:?}");
             Some(entity)
         }
@@ -1191,6 +1199,7 @@ fn create_force(
             );
             let hooked = live.hooked;
             let entity = commands.spawn((Name::new("_ForceBarrier"), live)).id();
+            attach_visual(commands, entity, EffectKind::Barrier, context, ragdoll);
             debug!("force barrier: motion {hooked}, entity {entity:?}");
             Some(entity)
         }
@@ -1213,6 +1222,7 @@ fn create_force(
             let mut power = RemotePower::new(at.to_array());
             power.held = held;
             let entity = commands.spawn((Name::new("_ForceBubble"), live)).id();
+            attach_visual(commands, entity, EffectKind::Bubble, context, ragdoll);
             debug!("force bubble at {at:?}: cast motion {motion}, entity {entity:?}");
             push_active(
                 caster,
@@ -1541,6 +1551,25 @@ fn visual_input(context: &CastContext, ragdoll: Option<&Ragdoll>, roll: f32) -> 
         point: context.cursor,
         roll,
     }
+}
+
+/// Gives a live effect its material node: a child at the effect's place
+/// carrying the creator's material, sub-objects, textures and block, so a
+/// renderer finds the node and its pass with the effect.
+fn attach_visual(
+    commands: &mut Commands,
+    parent: Entity,
+    kind: EffectKind,
+    context: &CastContext,
+    ragdoll: Option<&Ragdoll>,
+) -> Entity {
+    let node = spawn_visual(
+        commands,
+        creator(kind, &visual_input(context, ragdoll, 0.0)),
+    );
+    commands.entity(node).insert(Transform::IDENTITY);
+    commands.entity(parent).add_child(node);
+    node
 }
 
 /// Places a vanished body at the destination its Long Door reached. The
