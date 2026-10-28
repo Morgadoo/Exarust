@@ -48,3 +48,21 @@ character's `Possessions` (the carried list through
 between open panels; `exa_game::item_icon_render` fills the icon atlas
 from off-screen renders. Drawing the other windows and the character view
 remains unwired.
+
+The description card is live (`exa_game::item_card`): a right click on a
+panel entry runs the panel's own mouse decision (the use class delays the
+card by 200 ms or builds it at once), the card is the original's 268 by 260
+form scaled with the unit, holds the panel manager's icon until it closes,
+prints the page's rows, material/socket gates, rank/points gates and value,
+and fades on the popup's squared curve; leaving the card starts the fade.
+The catalogue now keeps each record's card facts (display name and
+description through `objstrings.rdb`, compact value expanded to copper,
+condition, weapon, apparel and shield sections, sockets, material gate,
+name id) and the worn burden and shield record. Closing an inventory or
+loot panel queues its icon handles and the manager releases its references
+and atlas cells. A body's encumbrance is recomputed from its possessions
+after an equipment change (`exa_game::equip::refresh_encumbrance`), using
+the same armour-pass sum as the spawn. The container popup's open geometry
+is modelled, but no live container popup is drawn yet, and the shipped
+phrase tables are not in the game data, so an `@` description is shown
+without its generated sentence.

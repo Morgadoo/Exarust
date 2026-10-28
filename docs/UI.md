@@ -2034,8 +2034,13 @@ cache, inventory, arsenal and item-card code. The running inventory screen
 paints its pack panel and the pack's icons through the GUI draw path
 (below); the loot window's two panels do the same. `exa_game::item_icon_render`
 fills the manager's atlas from off-screen renders of each item's model (see
-[RENDERING.md](RENDERING.md#item-icons)); the other windows wait for their
-forms.
+[RENDERING.md](RENDERING.md#item-icons)). A right click on an entry opens
+the live description card (`exa_game::item_card`): the panel's own mouse
+rule decides the 200 ms delay or an immediate build, the card holds the
+manager's icon, prints the page's rows and value and fades on the popup's
+squared curve; leaving it starts the fade. Closing the inventory or a loot
+window releases the panel's icon references and atlas cells. The container
+popup and the character view still wait for their hosts.
 
 - **Panel entries** (`exa_game::item_container`): an entry is drawn
   unless it is dragged, held (`0x100`, the item in a hand) or has no icon,
