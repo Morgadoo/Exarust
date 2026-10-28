@@ -825,9 +825,10 @@ reaches, one double product narrowed once (120 cm unencumbered, 97.2 cm
 at encumbrance 0.5 on a 72 cm reach). The float 0.1 is already above that
 double, so a crouch of 0.1 keeps the short reach, and a crouch raised
 after the latch is set does not clear it; only a key change or release
-does. Past a crouch of a half any step is 0.7 of the plain one, latch or
-not, the product worked in double precision; a NaN crouch fails the
-ordered compare and keeps the mode's step. The legs' extension scales both
+does. Past a crouch of a half any step is 0.7 of the reach, latch or
+not, the product worked in double precision and narrowed before the legs'
+extension; a NaN crouch fails the ordered compare and keeps the mode's
+step. The legs' extension scales both
 lengths, so a half extension halves
 the tap and the held step, and √scale scales the displacement once more.
 A side key weighs 0.8 of the facing, and the target is the chest plus the
@@ -1038,12 +1039,13 @@ are wired, the rest are tested functions with no caller yet:
   full energy give a 0.285 step, a 44 ms expected end and 330 ms of
   recovery at full balance.
 - **Movement goal.** A word's direction is the facing (W), the side
-  `(facing.z, 0, −facing.x)` at 0.8 (A, D) and back (S), summed; the step
-  vector is that direction scaled by `step·factor / |dir|` (the pad's own
-  stored direction instead, flattened), a tapped
-  word lays the goal at `(1.5 − 0.3·encumbrance)` of the step (in double
-  precision), and a goal more than 400 cm² from the body lets go of the
-  movement target. Exarust's exploration request walks by the body's
+  `(facing.z, 0, −facing.x)` at 0.8 (A, D) and back (S), summed and
+  flattened; the step vector sums the same keys with the full side vector
+  (no 0.8 share), flattens it (the pad's own stored direction instead) and
+  scales it by `step·factor / |dir|`; a tapped word lays the goal at
+  `(1.5 − 0.3·encumbrance)` of the reach (in double precision), then the
+  legs' extension and the clock factor; and a goal more than 400 cm² from
+  the body lets go of the movement target. Exarust's exploration request walks by the body's
   look-ahead and does not build this goal, so the direction, the step
   vector and the tap stride are tested rules with no caller
   (`steering::key_goal_direction`, `key_step`, `goal_stride`); the 400 cm²

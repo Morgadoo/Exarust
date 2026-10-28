@@ -140,17 +140,25 @@ pub(crate) const TAP_STRIDE_ENC: f64 = 0.3;
 /// target: 400, the square of 20 cm.
 pub(crate) const GOAL_RELEASE2: f32 = 400.0;
 
-/// The direction the movement word asks for, in the body's frame: forward
-/// is the facing, back its negation, left and right the side vector
-/// `(facing.z, 0, −facing.x)` (the cross of up and the facing) at
-/// [`GOAL_SIDE`]; no bit gives zero. The analog word is its own direction
-/// and does not come through here.
+/// The direction the movement goal asks for, in the body's frame: the
+/// word's key sum with the side at [`GOAL_SIDE`], its height dropped (the
+/// goal zeroes it before taking the length). The analog word is its own
+/// direction and does not come through here.
 ///
 /// Kept as a tested rule: Exarust's exploration request walks by the body's
 /// look-ahead, not by this goal, so nothing calls it yet.
 #[allow(dead_code)]
 pub(crate) fn key_goal_direction(facing: Vec3, word: u32) -> Vec3 {
-    let side = Vec3::new(facing.z, 0.0, -facing.x) * GOAL_SIDE;
+    key_sum(facing, word, GOAL_SIDE).with_y(0.0)
+}
+
+/// A movement word's raw key sum: forward is the facing, back its
+/// negation, left and right the side vector `(facing.z, 0, −facing.x)`
+/// (the cross of up and the facing) times `side_share`, added in the
+/// original's bit order (W, A, D, S); no bit gives zero.
+#[allow(dead_code)]
+fn key_sum(facing: Vec3, word: u32, side_share: f32) -> Vec3 {
+    let side = Vec3::new(facing.z, 0.0, -facing.x) * side_share;
     let mut dir = if word & MOVE_FORWARD != 0 {
         facing
     } else {
@@ -168,38 +176,47 @@ pub(crate) fn key_goal_direction(facing: Vec3, word: u32) -> Vec3 {
     dir
 }
 
-/// The stride (cm) a movement goal is laid at: the body's step times its
-/// clock factor, and while the word is a tap `(1.5 − 0.3·encumbrance)`
-/// times the step first (in double precision, narrowed once), as the
-/// original lengthens a tapped step.
+/// The stride (cm) a movement goal is laid at: the body's stored step
+/// reach (`step_cm`, before the legs' extension), while the word is a tap
+/// `(1.5 − 0.3·encumbrance)` times it (in double precision, narrowed once),
+/// then times the legs' `extension`, then times the clock factor, in the
+/// original's order.
 ///
 /// Kept as a tested rule with the same missing caller as
-/// [`key_goal_direction`].
+/// [`key_goal_direction`]. Not modelled: a lone forward word with a target
+/// lets the target's own approach rule bend the goal.
 #[allow(dead_code)]
-pub(crate) fn goal_stride(step_cm: f32, clock: f32, encumbrance: f32, tap: bool) -> f32 {
-    if tap {
-        let stride =
-            ((TAP_STRIDE - f64::from(encumbrance) * TAP_STRIDE_ENC) * f64::from(step_cm)) as f32;
-        stride * clock
+pub(crate) fn goal_stride(
+    step_cm: f32,
+    extension: f32,
+    clock: f32,
+    encumbrance: f32,
+    tap: bool,
+) -> f32 {
+    let stride = if tap {
+        ((TAP_STRIDE - f64::from(encumbrance) * TAP_STRIDE_ENC) * f64::from(step_cm)) as f32
     } else {
-        step_cm * clock
-    }
+        step_cm
+    };
+    (stride * extension) * clock
 }
 
 /// The step vector a movement word asks for (cm), the original's key
 /// direction scaled by `(step·factor)/|dir|`: W is the facing, S back, A and
-/// D the 0.8 side, the analog word its own stored direction; the height is
-/// dropped, and a zero direction divides by zero as the original does.
+/// D the full side vector (unlike the goal's 0.8 share), the analog word its
+/// own stored direction; the height is dropped from either, and a zero
+/// direction divides by zero as the original does.
 ///
 /// Kept as a tested rule: the running request walks by the look-ahead, so
 /// nothing calls it yet.
 #[allow(dead_code)]
 pub(crate) fn key_step(facing: Vec3, word: u32, analog: Vec3, step_cm: f32, factor: f32) -> Vec3 {
     let dir = if word == MOVE_ANALOG {
-        analog.with_y(0.0)
+        analog
     } else {
-        key_goal_direction(facing, word)
-    };
+        key_sum(facing, word, 1.0)
+    }
+    .with_y(0.0);
     let length = dir.length();
     dir * ((step_cm * 1.0 * factor) / length)
 }
