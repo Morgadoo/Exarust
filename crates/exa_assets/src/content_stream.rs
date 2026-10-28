@@ -1620,9 +1620,9 @@ mod tests {
         assert_eq!(first, 1.000_015_3);
     }
 
-    /// The request's 0x2000 marks the node with 0x1000; 0x1000 says the
-    /// saved AI state stays, and its 16 bytes are three floats and a
-    /// heading.
+    /// The request's 0x2000 marks the node with 0x1000; 0x1000 skips the AI
+    /// start and the pose restore; a saved AI state's 16 bytes are three
+    /// floats and a heading.
     #[test]
     fn the_character_request_flags_mark_the_node_and_keep_the_saved_ai() {
         assert_eq!(character_node_flags(0x40, 0), 0x40);

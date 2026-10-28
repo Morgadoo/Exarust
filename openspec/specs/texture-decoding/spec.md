@@ -166,11 +166,15 @@ Textures SHALL be kept by their stored name: the first sixteen bytes, cut at the
 - **THEN** the records are in the order brick02d, wood03d, stone01d, and stone01d keeps its first word with two references
 
 ### Requirement: Single-channel diffuse
-A diffuse map stored as BC4, the original's luminance format, SHALL be uploaded as one channel and shown as grey on every material path, with no diffuse bias for a record that has a secondary colour.
+A diffuse map stored as BC4, the original's luminance format, SHALL be uploaded as one channel and shown as grey on every material path, with no diffuse bias for a record that has a secondary colour. A BC4 specular or emissive map SHALL be shown as grey too.
 
 #### Scenario: A BC4 diffuse
 - **WHEN** a run-time apparel or race-skin material takes a BC4 diffuse
 - **THEN** the shader repeats the red channel as grey
+
+#### Scenario: A BC4 specular map
+- **WHEN** a material's specular map is BC4
+- **THEN** the material carries the grey specular flag and the shader repeats the red channel
 
 ### Requirement: Image size
 The system SHALL size one level from the format word's fields (block compressed: whole blocks of 1 + bits 19–23 bytes and 1 + bits 16–18 texels a side; bit-packed: ceil(w·h·bits / 8); otherwise w·h·ceil(bits / 8), the bits being bits 6–12 plus bits 0–5), and one face as its base level plus, only when the header flags carry the chain bit, every halved level while width + height exceeds 2. A face's size SHALL NOT include a cube's six faces.
@@ -242,3 +246,14 @@ An image whose creation word picks the cube target SHALL upload six faces with a
 #### Scenario: A two-level cube
 - **WHEN** a 2×2 RGB8 cube with two stored levels is uploaded at detail 0, and at a detail that asks for level 2
 - **THEN** it has six layers of two levels, and then six 1×1 layers holding each face's smallest level
+
+### Requirement: Image reader dispatch
+A name without a dot SHALL be read as a provider's image, by its magic. A name with a dot SHALL go to the reader registered for the text after its last dot, compared without ASCII case; the only reader SHALL be "rfi". An extension longer than 16 bytes, or a trailing dot, SHALL leave the extension empty, which matches no reader. A name with no reader SHALL report "Unrecognised file extension: " and the extension's first 15 bytes in the name's case, and SHALL load the grey placeholder.
+
+#### Scenario: An unknown extension
+- **WHEN** the name a.b.TGA is loaded
+- **THEN** it reports "Unrecognised file extension: TGA" and loads the placeholder
+
+#### Scenario: A leading dot
+- **WHEN** the name .rfi is dispatched
+- **THEN** its extension is rfi
