@@ -16,7 +16,7 @@ use bevy::prelude::*;
 use exa_assets::{Model, NodeRigidBody};
 use exa_formats::rigid_body::RigidBody;
 use exa_physics::body::{RigidLink, RigidPart};
-use exa_physics::prop::{BodyNode, PendingProp};
+use exa_physics::prop::{BodyNode, BodyScrape, PendingProp, PendingScrapes};
 use exa_physics::sector::Bounds;
 
 /// What a body tree (a top body and its body children) is to the solver.
@@ -231,18 +231,22 @@ pub fn register_bodies(
         .collect();
     let (counts, trees) = plan(&shape, placement);
     for tree in trees {
+        let mut scrapes = Vec::new();
+        let mut part_index = 0;
         let parts: Vec<RigidPart> = tree
             .nodes
             .iter()
             .filter_map(|&i| {
                 let node = &model.nodes[i];
+                let rigid = node.rigid.as_ref()?;
+                let entity = *nodes.get(i)?;
                 let parent = node
                     .parent
                     .and_then(|p| tree.nodes.iter().position(|&j| j == p));
-                Some(rigid_part(
-                    *nodes.get(i)?,
+                let part = rigid_part(
+                    entity,
                     parent,
-                    node.rigid.as_ref()?,
+                    rigid,
                     node.transform.translation,
                     // The node's box and radius, as the original copies
                     // them into the body's mesh bound.
@@ -251,12 +255,28 @@ pub fn register_bodies(
                         half: node.half_extents,
                         radius: node.bounds.1,
                     },
-                ))
+                );
+                for sound in &rigid.body.sounds {
+                    // The original drops a slot whose sound is not shipped.
+                    if !sound.sound.is_empty() {
+                        scrapes.push(BodyScrape {
+                            part: part_index,
+                            point: Vec3::from(sound.point),
+                            volume: sound.volume,
+                            pitch: sound.pitch,
+                        });
+                    }
+                }
+                part_index += 1;
+                Some(part)
             })
             .collect();
         let Some(root) = parts.first().map(|p| p.entity) else {
             continue;
         };
+        if !scrapes.is_empty() {
+            commands.entity(root).insert(PendingScrapes(scrapes));
+        }
         for (k, part) in parts.iter().enumerate() {
             commands.entity(part.entity).insert(BodyNode {
                 body: root,

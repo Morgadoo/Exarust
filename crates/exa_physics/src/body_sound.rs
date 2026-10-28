@@ -125,7 +125,9 @@ pub fn impact_sound(
 /// and the speed with which the point moves through the world.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ScrapeSource {
-    /// The point on the body, in its own space (metres).
+    /// The part whose frame holds the point (0 for a body's root).
+    pub part: usize,
+    /// The point on the part, in its own space (metres).
     pub point: Vec3,
     /// The volume per unit of speed.
     pub volume: f32,
@@ -141,10 +143,11 @@ pub struct ScrapeSource {
 }
 
 impl ScrapeSource {
-    /// A source at `point` (the body's space) whose first world position is
-    /// `world`.
-    pub fn new(point: Vec3, volume: f32, pitch: f32, world: Vec3) -> Self {
+    /// A source on part `part` at `point` (its space) whose first world
+    /// position is `world`.
+    pub fn new(part: usize, point: Vec3, volume: f32, pitch: f32, world: Vec3) -> Self {
         Self {
+            part,
             point,
             volume,
             pitch,

@@ -81,7 +81,7 @@ fn a_weak_or_unsounded_impact_is_silent() {
 /// its pitch `1.2 · (0.1·0.08 + 0.9)`, and it starts.
 #[test]
 fn a_scrape_starts_on_its_first_move() {
-    let mut source = ScrapeSource::new(Vec3::ZERO, 2.0, 1.2, Vec3::ZERO);
+    let mut source = ScrapeSource::new(0, Vec3::ZERO, 2.0, 1.2, Vec3::ZERO);
     let event = source.step(Vec3::new(0.04, 0.0, 0.0), Vec3::new(1.0, 2.0, 3.0));
     assert!((source.speed - 0.08).abs() < 1e-6, "{}", source.speed);
     assert!((event.volume - 0.16).abs() < 1e-6, "{}", event.volume);
@@ -95,7 +95,7 @@ fn a_scrape_starts_on_its_first_move() {
 /// still ticks it is under 0.02 and the source stops.
 #[test]
 fn a_scrape_stops_once_its_smoothed_speed_falls_under_the_floor() {
-    let mut source = ScrapeSource::new(Vec3::ZERO, 2.0, 1.2, Vec3::ZERO);
+    let mut source = ScrapeSource::new(0, Vec3::ZERO, 2.0, 1.2, Vec3::ZERO);
     let at = Vec3::new(0.04, 0.0, 0.0);
     assert!(source.step(at, Vec3::ZERO).started);
     let speeds = [
@@ -126,7 +126,7 @@ fn a_scrape_stops_once_its_smoothed_speed_falls_under_the_floor() {
 /// rises by a fifth of one.
 #[test]
 fn a_long_move_clamps_the_smoothed_distance() {
-    let mut source = ScrapeSource::new(Vec3::ZERO, 1.0, 1.0, Vec3::ZERO);
+    let mut source = ScrapeSource::new(0, Vec3::ZERO, 1.0, 1.0, Vec3::ZERO);
     let event = source.step(Vec3::new(1.0, 0.0, 0.0), Vec3::ZERO);
     assert_eq!(source.speed, 0.2);
     assert!((event.volume - 0.2).abs() < 1e-6);

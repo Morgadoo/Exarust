@@ -241,7 +241,10 @@ scrape source follows a point on the body: a move over 0.01 cm smooths to
 and a speed over 0.02 plays at `speed·volume` and `pitch·(0.1·speed + 0.9)`.
 The sources are stepped at the start of the post-step, before the body's
 matrices, and their events are left for `exa_audio`; that crate has no body
-hookup, so nothing adds a source in the running game yet.
+hookup, so the events are not played yet. A prop's stored sound slots
+(`0xDDB3` in its body chunk) are attached on their part when the body
+registers, with the slots whose sound is not shipped dropped as the
+original drops them.
 Each character tick measures a living body's balance at its chest against
 its ankles and asks the level for the ground under each foot
 (`contact::Level::height_below`, the original's Height Query), which give

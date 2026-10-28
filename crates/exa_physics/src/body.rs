@@ -3269,12 +3269,17 @@ impl Ragdoll {
     /// the body's stored sound slots when it joins the world; Exarust's
     /// callers have no audio hookup yet, so nothing adds one in the game.
     pub fn add_scrape(&mut self, point: Vec3, volume: f32, pitch: f32) {
+        self.add_scrape_on(0, point, volume, pitch);
+    }
+
+    /// Adds a scrape source on part `part` at `point` in that part's frame.
+    pub fn add_scrape_on(&mut self, part: usize, point: Vec3, volume: f32, pitch: f32) {
         let world = self
             .parts
-            .first()
+            .get(part)
             .map_or(point, |p| p.transform().transform_point3(point));
         self.scrapes
-            .push(ScrapeSource::new(point, volume, pitch, world));
+            .push(ScrapeSource::new(part, point, volume, pitch, world));
     }
 
     /// The body's scrape sources.
@@ -3288,19 +3293,23 @@ impl Ragdoll {
     }
 
     /// One tick of every scrape source: its point is put in the world by
-    /// the root part's frame, and the source updates its smoothed speed and
+    /// its part's frame, and the source updates its smoothed speed and
     /// playing state.
     fn step_scrapes(&mut self) {
         self.scrape_events.clear();
         let Some(root) = self.parts.first() else {
             return;
         };
-        let frame = root.transform();
-        let origin = frame.translation;
+        let root_frame = root.transform();
+        let root_origin = root_frame.translation;
         let mut events = Vec::with_capacity(self.scrapes.len());
         for source in &mut self.scrapes {
+            let frame = self
+                .parts
+                .get(source.part)
+                .map_or(root_frame, Part::transform);
             let world = frame.transform_point3(source.point);
-            events.push(source.step(world, origin.into()));
+            events.push(source.step(world, root_origin.into()));
         }
         self.scrape_events = events;
     }
