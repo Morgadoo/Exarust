@@ -50,8 +50,8 @@ pub const CRYSTAL: u32 = 499;
 pub const DRAIN: u8 = 2;
 /// The object whose use runs a once-per-session hook.
 pub const SESSION_HOOK_OBJECT: u32 = 588;
-/// The charge flag of a socketed item's flag word (weapon `+0x50`,
-/// apparel `+0x220`).
+/// The charge flag of a socketed item's flag word (the weapon form and the
+/// apparel form each keep a flag word with a charge byte beside it).
 pub const CHARGE_FLAG: u16 = 0x10;
 /// The pulse a scripted object's use schedules: fade and hold, ms. The use
 /// passes it as the object handler does (fade 1200, hold 0).
@@ -373,8 +373,8 @@ pub fn pulse_object_kind(
     out
 }
 
-/// A socketed item's charge: the flag word and the charge byte beside it
-/// (a weapon's `+0x50`/`+0x51`, an apparel item's `+0x220`/`+0x221`).
+/// A socketed item's charge: the flag word and the charge byte beside it,
+/// in either the weapon or the apparel form.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Socket {
     pub item: u32,
