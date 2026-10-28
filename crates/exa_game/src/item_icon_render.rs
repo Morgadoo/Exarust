@@ -4,7 +4,8 @@
 //! pending icons are started each frame, so opening a pack does not stall
 //! the frame. The plan, camera and scene are [`exa_items::item_icon`] and
 //! [`exa_items::item_renderer`]; a headless App paints the same scene on the
-//! CPU ([`IconRenderMode::gpu`] false), which the tests use.
+//! CPU ([`IconRenderMode::gpu`] false), which the tests use; a readback with
+//! no covered pixel, or one that times out, also takes that CPU paint.
 //!
 //! The camera renders at twice the icon's side and the plan's screen pass
 //! reduces it to the icon size (the alpha global's default); without the
@@ -446,30 +447,25 @@ fn icon_readback_complete(
         return;
     };
     let job = jobs.jobs.swap_remove(at);
-    let nonzero = trigger.event().data.iter().filter(|&&b| b != 0).count();
-    eprintln!(
-        "readback: {} bytes, {nonzero} nonzero, first {:?}",
-        trigger.event().data.len(),
-        &trigger.event().data[..8.min(trigger.event().data.len())]
-    );
-    if let Some(icon) = icon_from_readback(
+    let rendered = icon_from_readback(
         &trigger.event().data,
         job.buffer,
         job.icon,
         job.screen_pass,
         job.downsample,
-    ) {
-        let mut icon = icon;
-        if job.halo {
-            exa_items::item_gui::halo(
-                &mut icon.pixels,
-                icon.width as usize,
-                icon.height as usize,
-                job.halo_highlight,
-            );
-        }
-        icons.apply_rendered(job.id, job.key, icon, job.content_width, job.content_height);
+    )
+    .filter(IconPixels::any_alpha)
+    .unwrap_or_else(|| job.scene.paint(&job.paint_camera, job.sun, job.icon));
+    let mut icon = rendered;
+    if job.halo {
+        exa_items::item_gui::halo(
+            &mut icon.pixels,
+            icon.width as usize,
+            icon.height as usize,
+            job.halo_highlight,
+        );
     }
+    icons.apply_rendered(job.id, job.key, icon, job.content_width, job.content_height);
     for entity in [job.camera, job.light, job.root] {
         commands.entity(entity).despawn();
     }
