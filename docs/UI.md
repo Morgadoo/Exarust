@@ -1800,6 +1800,19 @@ result reads as 0. Their rules:
   anchor or the caret is at 0; Up and Down step, Enter commits and selects
   all, Ctrl+V pastes and Ctrl+C copies. The drag step is `96·unit /
   ((max − min) / step)` pixels, at most `8·unit`, then at least `unit / 2`.
+  Once the text drag has moved past the unit it captures the mouse over
+  the value's whole reach (the two clamp limits; the other two region
+  fields are the sentinel `0x80000001`) and remembers the cursor and the
+  value there; further moves step the value, the float by
+  `round(Δy / pixels) × step` added to the remembered value (in that
+  order), the integer by the same product added to the remembered bit
+  pattern. A point in the button column marks the up or down half
+  `0x1000000`/`0x2000000` when the state word enables it with
+  `0x4000000`/`0x8000000` (above the top counts as up; outside the column
+  clears both); a capture's bounds come from the current value. The set message's word is an integer
+  converted to a float unless its flag marks it a float (an integer
+  spinner stores the word's bits as they are), clamps with the ordered
+  compares and lands only a move over 1e-8.
 - **Progress bar.** Setting a negative value stores zero (−0 and NaN stay)
   and tells the owner every time. The fill is `w × value` rounded half to
   even; the empty part draws at 0.4 alpha, the bar and its highlight two
@@ -1836,6 +1849,28 @@ result reads as 0. Their rules:
   the right edge. The vertical switch likewise has 1, 3, 4 and 5, centred
   by the line height (halved by a shift) or the font base. A 2 is the
   default.
+- **Drawing.** `controls` lays each control's draw out as the skin calls
+  it. A spinner's field runs to its button column, its inner rectangle one
+  pixel in; the buttons are half the height plus the 1- or 2-pixel overlap
+  (2 from unit 5) and the arrows `(unit − 1)·2 | 1` wide, `(unit + 1) / 2`
+  into each. The up button's press bit is `0x1000000` and the down's
+  `0x2000000`; while the control is hot both arrows take `0xffffffff`,
+  else the up arrow takes 1 on style `0x20000` and the down 1 on `0x40000`.
+  A progress bar draws its empty part (`fill` to the right edge, one pixel
+  in, alpha 0.4), its four-stop bar two pads inside the fill, and its
+  one-ink highlight one more pixel in. A separator's line rectangles come
+  from its gap; its ink slots are `0x9c, 0xa0, 0xac, 0xb4`, or `0xb8,
+  0xb0, 0xa0, 0x9c` with style bit 0x40. A combo box's arrow sits as above;
+  state bit 0x10 picks the `0xd4` slot, the edit state `0x10000` draws it
+  through the textured path and its text through the text edit unit, else
+  the `0xe0` arrow and the `0xe4` text. A trackbar's track is inset two
+  pixels and drawn at alpha 0.6, its knob at `x + pad + rint(travel ×
+  value)`; a scroll bar's track is the same inset and its thumb `4·unit +
+  1` wide. An image's shade fades grey 128 from alpha 0 at the top to 255
+  at the bottom; a texture view fills its inset in its stored colour or
+  centres its cell; a colour drag draws its payload at alpha `0xa0`. A
+  text field draws its inner frame (style `0xf0`) and its aligned run; a
+  scroll bar draws its text, its `0x4000` suffix and its `0x3000` value.
 
 ## Skill screen
 
@@ -1921,7 +1956,27 @@ pass a sixth level read the next skill's bytes, as the original's do.
   precision.
 - **Fades.** The screen reveals over 500 ms from its creation (the alpha
   `t(2 − t)` capped at 1, the ring's spread that eased again) and hides
-  over 256 ms.
+  over 256 ms. The draw keeps the content alpha and the opening scale
+  apart: the ring's plates, spokes, icons and orbit bars multiply their
+  offsets by the alpha, while the dim, the shader alphas, the icon ink and
+  the tooltips take the scale; the hide scales the scale, not the alpha.
+- **Draw order** (`exa_ui::skill_draw`). A page-2 screen first draws its
+  background texture over 12 × 8 units at the centre. A ring page dims the
+  view black at `77 × scale` and then every node's soft plate (30 units
+  either side, black at `0.6 × scale`) and its five spokes (12.3 to 26.3
+  units out, 18 either side, colour 1, 0.98, 0.9 at `0.4 × scale`); the
+  sine and cosine are the engine's and the reveal alpha scales both. The
+  node's own group icon is 24 units a side one unit above the node's top
+  half (ink 255, 248, 240 at `120 × scale² × 0.75`), then the small level
+  icons (8 units; ink 255, 248, 240 at `120 × scale`, halved on a chosen
+  technique ahead of the points, 255, 204, 153 on the hovered one), then
+  the orbit bars (colour 1, 0.79, 0.286 at `0.5 × scale`). Last come the
+  ring tooltip, the learning row (eight 10-unit icons in its eased box) or
+  the forget dialog (its title, the question and YES/NO at
+  `(alpha − 0.5) × 2`). The two shaders are the rounded ring source and
+  the bar source, both with the fixed `MPrj` projection matrix; the bar source also takes
+  `Tex` at unit 0 and `Prog`, and the screen's setup loads the
+  `SkillShow_01` reveal sound.
 
 ## Item windows
 
