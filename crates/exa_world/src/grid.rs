@@ -814,6 +814,12 @@ struct SpecialTile {
     floor: bool,
 }
 
+/// The number of special-tile types whose rotated masks the original's
+/// start-up pass fills in (types 1–9). Type 10's table entry exists for
+/// rotation 0 only; its rotated entries stay zero, so a rotation of that
+/// type suppresses nothing.
+const ROTATED_SPECIAL_TYPES: usize = 9;
+
 /// Reads a cell's special tile from plane C. `None` when the cell is not a
 /// special tile (type 0). A type past the ten-entry table keeps no mask and
 /// its floor; no shipped level uses one, and the original would read past
@@ -826,7 +832,16 @@ fn special_tile(c: u32) -> Option<SpecialTile> {
     let rotation = (c >> 21) & 3;
     let index = kind as usize - 1;
     let (mask, floor) = match (SPECIAL_MASKS.get(index), SPECIAL_HAS_FLOOR.get(index)) {
-        (Some(&mask), Some(&floor)) => (rotate_edge_word(mask, rotation as u8), floor),
+        (Some(&mask), Some(&floor)) => {
+            let mask = if index < ROTATED_SPECIAL_TYPES {
+                rotate_edge_word(mask, rotation as u8)
+            } else if rotation == 0 {
+                mask
+            } else {
+                0
+            };
+            (mask, floor)
+        }
         _ => (0, true),
     };
     Some(SpecialTile {
@@ -1502,6 +1517,10 @@ mod tests {
         assert_eq!(special_tile(0), None);
         let unknown = special_tile(12 << 16).unwrap();
         assert_eq!((unknown.mask, unknown.floor), (0, true));
+        // Only types 1–9 get rotated table entries at start-up: type 10's
+        // unrotated mask exists, its rotations are zero.
+        assert_eq!(special_tile(10 << 16).unwrap().mask, 0x0077_0FFF);
+        assert_eq!(special_tile((10 << 16) | (1 << 21)).unwrap().mask, 0);
     }
 
     #[test]

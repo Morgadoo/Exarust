@@ -80,6 +80,27 @@ pub struct Rooms {
     rooms: Vec<Room>,
 }
 
+/// Groups a room's door links so links into the same room stand next to
+/// each other, as the original's pass after the flood does: for each link
+/// `i`, the first later link at least two places on with the same target
+/// room swaps into `i + 1`. Links into the same room are kept, not merged.
+fn group_links(links: &mut [DoorLink], cell_room: &[Option<u16>]) {
+    let target = |link: DoorLink| cell_room.get(link.to as usize).copied().flatten();
+    let count = links.len();
+    let mut i = 0;
+    while i + 1 < count {
+        let mut j = i + 2;
+        while j < count {
+            if target(links[i]) == target(links[j]) {
+                links.swap(i + 1, j);
+                break;
+            }
+            j += 1;
+        }
+        i += 1;
+    }
+}
+
 impl Rooms {
     /// Flood-fills `grid`'s open cells into rooms as the original does.
     ///
@@ -147,8 +168,8 @@ impl Rooms {
                             if cell_room[nb as usize] == Some(id) {
                                 continue;
                             }
-                            let facing = (edges(nb) >> (4 * ((side + 2) % 4))) & 0xF;
-                            if open(nb) && facing != EDGE_WALL {
+                            let facing = (side + 2) % 4;
+                            if open_side(grid, nb, facing) {
                                 room.links.push(DoorLink { from: c, to: nb });
                             }
                             if cell_room[nb as usize].is_none() {
@@ -165,6 +186,7 @@ impl Rooms {
                 }
             }
             room.links.retain(|l| cell_room[l.to as usize] != Some(id));
+            group_links(&mut room.links, &cell_room);
             rooms.push(room);
         }
         Self {
@@ -1610,6 +1632,21 @@ mod tests {
         assert_eq!(lights.of(0), &[] as &[u32]);
         assert_eq!(lights.of(1), &[7, 9][..]);
         assert_eq!(lights.home(7), None);
+    }
+
+    #[test]
+    fn links_into_one_room_are_grouped() {
+        // A room's links into X, Y, X, A: the later X swaps up next to the
+        // first, and the order of the rest is kept.
+        let cell_room = [Some(0), Some(1), Some(2), Some(1)];
+        let mut links = [
+            DoorLink { from: 9, to: 1 },
+            DoorLink { from: 9, to: 2 },
+            DoorLink { from: 9, to: 3 },
+            DoorLink { from: 9, to: 0 },
+        ];
+        group_links(&mut links, &cell_room);
+        assert_eq!(links.iter().map(|l| l.to).collect::<Vec<_>>(), [1, 3, 2, 0]);
     }
 
     pub(crate) fn shipped_grid(level: &str) -> Option<LevelGrid> {
