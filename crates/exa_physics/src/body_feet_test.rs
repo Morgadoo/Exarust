@@ -1185,3 +1185,18 @@ fn a_force_release_ends_the_step() {
     let (mut still, _) = standing_at(Vec3::ZERO);
     assert!(!still.force_release(10).end_step);
 }
+
+/// The walk's travel phase: 100 cm of pelvis travel adds 0.02, a phase of
+/// 0.95 that gains 0.1 wraps to 0.05 and the phase before it loses 1. No
+/// travel, and a squared travel under the epsilon, leave it.
+#[test]
+fn the_travel_phase_follows_the_pelvis() {
+    use super::super::travel_phase;
+    let mut before = 0.0;
+    assert!((travel_phase(0.0, &mut before, 10_000.0) - 0.02).abs() < 1e-6);
+    let mut before = 0.0;
+    assert_eq!(travel_phase(0.0, &mut before, 0.0), 0.0);
+    let mut before = 0.95;
+    assert!((travel_phase(0.95, &mut before, 250_000.0) - 0.05).abs() < 1e-6);
+    assert!((before + 0.05).abs() < 1e-6);
+}

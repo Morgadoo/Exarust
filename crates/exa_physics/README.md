@@ -199,7 +199,11 @@ The walk's feet plant and lift by their phases, and a slow foot plants
 early (before phase 0.2); a plant starts a footstep at the character plus
 `3·speed + 4` cm along its facing, with the original's gain and pitch
 drawn when it plays (`feet::{gait_step, step_position}`, the `Footstep`
-message), and the walking ground weights are in. A footwork step asked for
+message), and the walking ground weights are in. The post-step advances
+the walk's travel phase (`+0x12d8`): the pelvis's travel in cm times
+0.0002, wrapped at 1, with the phase before the tick kept
+(`body::travel_phase`); its consumer, the scene node's draw offset, is not
+reproduced. A footwork step asked for
 while a balance step runs is queued and taken by the original's rule at the
 next landing (`Ragdoll::{queue_step, take_queued_step}`), and a force
 release ends the running step and stops the clip rate

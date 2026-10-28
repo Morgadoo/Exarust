@@ -1516,6 +1516,27 @@ pub struct Drive {
     /// The standing pelvis height `+0xac0`, smoothed 0.1 a tick and taken
     /// at once while the body is well supported.
     pub pose_height: f32,
+    /// The walk's travel phase (`+0x12d8`): the pelvis's travel in cm times
+    /// 0.0002 a tick, wrapped at 1, and its value before the tick.
+    travel_phase: f32,
+    travel_phase_before: f32,
+}
+
+/// One tick of the walk's travel phase (`+0x12d8`): the pelvis's squared
+/// travel this tick (cm²) adds its root times 0.0002 when that is over the
+/// engine's epsilon, and a phase over 1 loses 1, the phase before it too.
+/// A NaN squared travel leaves the phase.
+pub fn travel_phase(last: f32, before: &mut f32, moved2_cm: f32) -> f32 {
+    let mut phase = last;
+    let moved2 = f64::from(moved2_cm);
+    if moved2 > 1.192_09e-7 {
+        phase += (moved2.sqrt() * 0.0002) as f32;
+    }
+    if phase > 1.0 {
+        phase -= 1.0;
+        *before -= 1.0;
+    }
+    phase
 }
 
 /// One tick of energy. The base is u = energy + the double 0.005; while
@@ -1617,6 +1638,8 @@ impl Default for Drive {
             gait_back: false,
             stand_height: lift::StandHeight::default(),
             pose_height: 0.0,
+            travel_phase: 0.0,
+            travel_phase_before: 0.0,
         }
     }
 }
@@ -3146,6 +3169,21 @@ impl Ragdoll {
     /// The post-step: where the tick leaves each part, and sleep once the
     /// countdown is down to 1 (a living body's never is).
     fn post_step(&mut self) {
+        // The walk's travel phase, from the root's movement since the last
+        // tick, before the parts settle.
+        let moved2 = self
+            .parts
+            .iter()
+            .find(|p| p.parent.is_none())
+            .map_or(0.0, |p| {
+                let moved = (p.positions[0] - p.previous[0]) * CM;
+                moved.length_squared()
+            });
+        if let Some(drive) = self.drive.as_mut() {
+            drive.travel_phase_before = drive.travel_phase;
+            drive.travel_phase =
+                travel_phase(drive.travel_phase, &mut drive.travel_phase_before, moved2);
+        }
         for p in &mut self.parts {
             p.settled = p.transform();
             p.shown = (p.shown.1, p.settled);
