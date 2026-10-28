@@ -278,8 +278,8 @@ the task's per-frame rules: the race share's easing, the figure turning
 its node to the camera's space (`doll_facing`) and the frame counter's
 clamped step. It also holds what a pointer and a drag do: the hover pick
 over the figure's nodes (the `0x89` and hidden-flag filters, the
-settled-item filter, the last node under the pointer, the worn entry's or
-the carried entry's flags), the drag-over answer and the mind costs it
+settled-item filter, the last node under the pointer, the record hand
+entry's or the carried entry's flags), the drag-over answer and the mind costs it
 shows (an apparel's protection value, twice a weapon's desirability), the
 drop onto the figure (apparel worn with both characters refit and the
 shown pack charged the bulk, a weapon or shield attached on both, the core

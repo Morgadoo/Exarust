@@ -2170,13 +2170,13 @@ changes; a withheld weapon or shield needs the matching body permission
 (`0x10000`, or `0x20000` for a weapon's second bit); a race whose core
 word takes the AL crystal accepts item 500 while nothing is shown. A view
 that allows changes answers for any item; a frozen one only while the
-pointer is over a worn entry. The drag-over test shows the item's mind
+pointer is over one of the doll's held items. The drag-over test shows the item's mind
 cost: an apparel's protection value, or twice a weapon's desirability; the
 shield and the core crystal have none.
 
 A drop from the view's own panel does nothing. Otherwise apparel is worn,
-with both the doll and the shown character rebuilt (`0x0f1420`), the
-character data told of the equip change, and the shown character's pack
+with both the doll and the shown character's mesh and textures rebuilt,
+the character data told of the equip change, and the shown character's pack
 charged the item's bulk; a weapon is taken into the doll's hands and
 mirrored on the shown character; a shield likewise; and a body that takes
 the item as its core crystal shows it under the pointer and clears the
@@ -2192,12 +2192,14 @@ shown item when the icon cannot be resolved. A hit on the shown icon
 answers the shown item. Otherwise the pick walks the figure's nodes and
 takes the last one under the pointer whose flags carry `0x89`, that is not
 flagged `0x4000000`, and whose item is not flagged `0x12000000` while
-settled; the worn entry the node belongs to gives the item's flags, else
-the first carried entry with that item does. A frozen view starts drags
+settled; the record hand entry that the node's slot names gives the item's
+flags, else the first carried entry with that item does. (The slot is the
+1-based place among the doll's attached items, so its flags are one of the
+record's four hand flag words.) A frozen view starts drags
 only from a held item.
 
-A release takes a hand's item out: over a worn entry the take-out is
-scheduled on the doll and, when a second character is shown, on it too,
+A release takes a hand's item out: over one of the doll's item slots the
+take-out is scheduled on the doll and, when a second character is shown, on it too,
 and the shown character's pack drops its held icon; the doll is not
 rebuilt. A take-out of the main hand promotes the off hand's weapon or
 light into it (a shield stays), the promoted item taking the off hand's

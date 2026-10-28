@@ -356,10 +356,12 @@ pub fn panels_to_save(views: &[ViewRef]) -> Vec<usize> {
         .collect()
 }
 
-/// The 1-based worn entry whose attachment is the pointer's scene node. A
-/// node not marked as a held item (`marker` false) or a body with no worn
-/// entries has none.
-pub fn worn_index(worn: &[Option<u32>], node: u32, marker: bool) -> Option<usize> {
+/// The 1-based item slot of the doll's attachments whose node is the
+/// pointer's node. A node not marked as an attached item (`marker` false)
+/// has none. The original walks the item's slots (the hands and their
+/// further attached items) and answers the slot; the record's hand flags it
+/// then reads are the four hand entries' flag words.
+pub fn hand_index(worn: &[Option<u32>], node: u32, marker: bool) -> Option<usize> {
     if !marker {
         return None;
     }
@@ -452,9 +454,10 @@ pub struct PickNode {
     pub item_settle: i32,
     /// The node was under the pointer.
     pub hit: bool,
-    /// The worn entry the node belongs to, 1-based (the original follows
-    /// the node's parent chain to a settled node and looks it up).
-    pub worn: Option<usize>,
+    /// The doll's item slot the node belongs to, 1-based (the original
+    /// follows the node's parent chain to a settled node and looks it up
+    /// among the attached items).
+    pub slot: Option<usize>,
 }
 
 /// The flags a pickable node carries: all of `0x89`.
@@ -480,29 +483,30 @@ pub fn pickable(node: &PickNode) -> bool {
 pub struct Hover {
     /// The item under the pointer, 0 for none.
     pub item: u32,
-    /// Its flags: the worn entry's when the node is a worn one, else the
-    /// first carried entry's with that item.
+    /// Its flags: the record hand entry's when the node is an attached
+    /// item, else the first carried entry's with that item.
     pub flags: u32,
-    /// The worn entry, 1-based.
-    pub worn: Option<usize>,
+    /// The item slot, 1-based.
+    pub slot: Option<usize>,
 }
 
 /// The item under the pointer. A hit on the item the view already shows
 /// answers that item and its flags. Otherwise the last pickable node under
-/// the pointer gives the item; the worn entry the node belongs to gives
-/// the flags when it has one, else the first carried entry naming the item
-/// does, else 0.
+/// the pointer gives the item; `hand_flags` are the record's four hand
+/// entries' flag words, and the slot the node belongs to picks one (the
+/// node's own carried entry is not consulted), else the first carried
+/// entry naming the item does, else 0.
 pub fn hover_pick(
     shown: Option<(u32, u32)>,
     nodes: &[PickNode],
-    worn_flags: &[u32],
+    hand_flags: &[u32],
     carried: &[(u32, u32)],
 ) -> Hover {
     if let Some((item, flags)) = shown {
         return Hover {
             item,
             flags,
-            worn: None,
+            slot: None,
         };
     }
     let picked = nodes.iter().rev().find(|node| node.hit && pickable(node));
@@ -510,11 +514,11 @@ pub fn hover_pick(
         return Hover {
             item: 0,
             flags: 0,
-            worn: None,
+            slot: None,
         };
     };
-    let flags = match node.worn {
-        Some(index) if index >= 1 => worn_flags.get(index - 1).copied().unwrap_or(0),
+    let flags = match node.slot {
+        Some(index) if index >= 1 => hand_flags.get(index - 1).copied().unwrap_or(0),
         _ => carried
             .iter()
             .find(|(id, _)| *id == node.item)
@@ -523,7 +527,7 @@ pub fn hover_pick(
     Hover {
         item: node.item,
         flags,
-        worn: node.worn.filter(|index| *index >= 1),
+        slot: node.slot.filter(|index| *index >= 1),
     }
 }
 
@@ -551,6 +555,9 @@ pub struct DropPlan {
     pub show: bool,
     /// The shown character's held mark is cleared (the core crystal).
     pub clear_mark: bool,
+    /// The mind cost the drag-over test stored is charged (a drop back on
+    /// the view the drag came from).
+    pub charge_cost: bool,
 }
 
 impl DropPlan {
@@ -564,6 +571,7 @@ impl DropPlan {
             charge_panel: false,
             show: false,
             clear_mark: false,
+            charge_cost: false,
         }
     }
 }
@@ -631,7 +639,12 @@ impl Default for DropFacts {
 /// pack, marked held, when the view is not locked.
 pub fn figure_drop(facts: DropFacts) -> DropPlan {
     if facts.from_self {
-        return DropPlan::nothing();
+        // Dropped back where it came from: the stored cost is charged and
+        // nothing else happens.
+        return DropPlan {
+            charge_cost: facts.mind_cost,
+            ..DropPlan::nothing()
+        };
     }
     let kind = drop_kind(FigureDropInput {
         race_flags: if facts.race_wears_apparel { 4 } else { 0 },
@@ -653,6 +666,7 @@ pub fn figure_drop(facts: DropFacts) -> DropPlan {
             charge_panel: hand_over,
             show: false,
             clear_mark: false,
+            charge_cost: false,
         },
         FigureDrop::Weapon => DropPlan {
             kind,
@@ -663,6 +677,7 @@ pub fn figure_drop(facts: DropFacts) -> DropPlan {
             charge_panel: false,
             show: false,
             clear_mark: false,
+            charge_cost: false,
         },
         FigureDrop::Shield => DropPlan {
             kind,
@@ -673,6 +688,7 @@ pub fn figure_drop(facts: DropFacts) -> DropPlan {
             charge_panel: false,
             show: false,
             clear_mark: false,
+            charge_cost: false,
         },
         FigureDrop::Hand => DropPlan {
             kind,
@@ -683,6 +699,7 @@ pub fn figure_drop(facts: DropFacts) -> DropPlan {
             charge_panel: false,
             show: true,
             clear_mark: true,
+            charge_cost: false,
         },
     }
 }
@@ -742,8 +759,9 @@ pub struct ReleaseFacts {
     /// The dragged item's payload flags.
     pub payload_flags: u32,
     pub mind_cost: bool,
-    /// The worn entry under the pointer, 0-based.
-    pub worn: Option<usize>,
+    /// The item slot under the pointer, 0-based (the hand whose take-out is
+    /// scheduled).
+    pub hand: Option<usize>,
     pub shown: bool,
     /// The dragged icon is the item the view shows.
     pub shown_is_dragged: bool,
@@ -768,7 +786,7 @@ pub fn release_on_figure(facts: ReleaseFacts) -> ReleasePlan {
         }
         return plan;
     }
-    if let Some(index) = facts.worn {
+    if let Some(index) = facts.hand {
         plan.hand = Some(index);
         plan.shown_take_out = facts.shown;
         plan.remove_held_icon = facts.other_panel && !facts.from_panel;
@@ -852,9 +870,9 @@ mod tests {
         assert_eq!(first_record(&views, 7), None);
         // The invisible view is not open, so its loaded flag does not count.
         assert_eq!(panels_to_save(&views), vec![1, 2]);
-        assert_eq!(worn_index(&[None, Some(4), Some(5)], 5, true), Some(3));
-        assert_eq!(worn_index(&[None, Some(4)], 4, false), None);
-        assert_eq!(worn_index(&[None, Some(4)], 9, true), None);
+        assert_eq!(hand_index(&[None, Some(4), Some(5)], 5, true), Some(3));
+        assert_eq!(hand_index(&[None, Some(4)], 4, false), None);
+        assert_eq!(hand_index(&[None, Some(4)], 9, true), None);
         assert!(!insight_blocks(0, &[8], 100, 100));
         assert!(insight_blocks(5000, &[8], 100, 100));
         assert!(!insight_blocks(5000, &[8], 50, 100));
@@ -1045,7 +1063,7 @@ mod tests {
             item_flags: 0,
             item_settle: -1,
             hit,
-            worn: None,
+            slot: None,
         }
     }
 
@@ -1057,7 +1075,7 @@ mod tests {
             Hover {
                 item: 0,
                 flags: 0,
-                worn: None
+                slot: None
             }
         );
         // The shown icon wins wherever the pointer is.
@@ -1066,7 +1084,7 @@ mod tests {
             Hover {
                 item: 7,
                 flags: 0x10,
-                worn: None
+                slot: None
             }
         );
         // A node must carry all of 0x89 and must not be hidden.
@@ -1079,20 +1097,20 @@ mod tests {
         hidden.item_settle = -1;
         assert!(pickable(&hidden));
         // The last node under the pointer wins; a non-hit node is skipped.
-        let mut worn_node = node(0x89, 12, true);
-        worn_node.worn = Some(2);
+        let mut held_node = node(0x89, 12, true);
+        held_node.slot = Some(2);
         let carried = [(12u32, 0x20u32)];
         assert_eq!(
             hover_pick(
                 None,
-                &[node(0x89, 8, true), worn_node, node(0x89, 9, false)],
+                &[node(0x89, 8, true), held_node, node(0x89, 9, false)],
                 &[1, 2],
                 &carried
             ),
             Hover {
                 item: 12,
                 flags: 2,
-                worn: Some(2)
+                slot: Some(2)
             }
         );
         // Without a worn entry the carried list gives the flags.
@@ -1101,14 +1119,15 @@ mod tests {
             Hover {
                 item: 12,
                 flags: 0x20,
-                worn: None
+                slot: None
             }
         );
     }
 
     #[test]
     fn a_drop_on_the_figure_follows_the_sections() {
-        // A drag from the view's own panel does nothing.
+        // A drag from the view's own panel does nothing but charge the
+        // cost the drag-over test stored.
         assert_eq!(
             figure_drop(DropFacts {
                 from_self: true,
@@ -1116,6 +1135,14 @@ mod tests {
                 ..Default::default()
             }),
             DropPlan::nothing()
+        );
+        assert!(
+            figure_drop(DropFacts {
+                from_self: true,
+                mind_cost: true,
+                ..Default::default()
+            })
+            .charge_cost
         );
         // Apparel: cost, both refits, the other pack charged the bulk, and
         // the item handed over.
@@ -1186,13 +1213,13 @@ mod tests {
     #[test]
     fn a_release_on_the_figure_takes_a_hand_or_an_item() {
         let facts =
-            |slot, locked, payload_flags, worn, shown_is_dragged, other_panel, from_panel| {
+            |slot, locked, payload_flags, hand, shown_is_dragged, other_panel, from_panel| {
                 ReleaseFacts {
                     slot,
                     locked,
                     payload_flags,
                     mind_cost: true,
-                    worn,
+                    hand,
                     shown: true,
                     shown_is_dragged,
                     other_panel,
