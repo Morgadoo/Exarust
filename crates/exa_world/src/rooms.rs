@@ -185,9 +185,22 @@ impl Rooms {
                     }
                 }
             }
-            room.links.retain(|l| cell_room[l.to as usize] != Some(id));
-            group_links(&mut room.links, &cell_room);
+            // Links back into the room itself go, each replaced by the
+            // last link (the original's unordered removal).
+            let mut i = 0;
+            while i < room.links.len() {
+                if cell_room[room.links[i].to as usize] == Some(id) {
+                    room.links.swap_remove(i);
+                } else {
+                    i += 1;
+                }
+            }
             rooms.push(room);
+        }
+        // Once every room exists, each room's links are grouped by the room
+        // they lead into.
+        for room in &mut rooms {
+            group_links(&mut room.links, &cell_room);
         }
         Self {
             width: w,
@@ -1632,6 +1645,25 @@ mod tests {
         assert_eq!(lights.of(0), &[] as &[u32]);
         assert_eq!(lights.of(1), &[7, 9][..]);
         assert_eq!(lights.home(7), None);
+    }
+
+    #[test]
+    fn links_are_grouped_once_every_room_exists() {
+        // A corridor along the bottom row with a door up into each of three
+        // closets. While the corridor floods, no closet has a room yet; the
+        // original groups after the flood, when the three differ, so the
+        // order stays the corridor's walk.
+        let mut g = Grid::new(5, 5);
+        g.open(1, 3, [0xB, 7, 7, 0])
+            .open(2, 3, [0xB, 0, 7, 0])
+            .open(3, 3, [0xB, 0, 7, 7])
+            .open(1, 2, [7, 7, 0xB, 7])
+            .open(2, 2, [7, 7, 0xB, 7])
+            .open(3, 2, [7, 7, 0xB, 7]);
+        let rooms = Rooms::flood(&g.0);
+        assert_eq!(rooms.len(), 4);
+        let to: Vec<u32> = rooms.room(0).unwrap().links.iter().map(|l| l.to).collect();
+        assert_eq!(to, [g.cell(1, 2), g.cell(2, 2), g.cell(3, 2)]);
     }
 
     #[test]
