@@ -1093,8 +1093,9 @@ in world space there too):
   original's integer division does (an odd grid's cells sit 3 m off a
   multiple of 6 m). The manager lays its blocks out **once per level**, as
   the original does: the bounding box of the level grid's built cells
-  (plane A's `0x80000`, the border skipped, and rows reached only by a
-  leftward extension do not extend the bottom), rounded up to whole blocks
+  (plane A's `0x80000`, the border skipped; a later row reaches the bottom
+  edge when it moves the left edge, has a built cell inside the current
+  span, both ends included, or one right of it), rounded up to whole blocks
   of eight cells a side and slid back inside the grid; every eight-by-eight
   block with a built cell becomes a block. A level without a sector grid
   gets the original's synthetic 8 × 8 grid and its one block at cells
@@ -1102,9 +1103,11 @@ in world space there too):
   truncated to whole voxels.
 - The original keeps up to nine blocks resident around a point 20 m in
   front of the camera; Exarust keeps one and picks the block the camera's
-  own cell falls in (the original's per-object lookup rounds the offset
-  into the block grid), or the nearest block's 24 m half extent when that
-  one has no geometry. Finished block occupancies are kept for the last
+  own cell falls in (the original's per-object lookup floors the offset
+  from the block grid's edge, counted from the level grid's half size in
+  float, over 48 m), or, when that one has no geometry, the block nearest
+  the focus 20 m ahead measured from its 24 m half extent, as the
+  residency sort ranks them. Finished block occupancies are kept for the last
   three blocks and reused when the camera walks back. One build runs at a
   time; a newer pick waits for it. The block already on screen stays bound
   while a newly built one warms behind it, so a move never reveals a cold
@@ -1212,11 +1215,17 @@ volume's height divided by its width, as the original's `ZTrn` does:
 - each point light adds
   lin(colour)·intensity·multiplier·(1 − dim)²·0.15·0.01 · (1 − d/R)⁴ ·
   open · cube shadow · shaping. The cube lookup is the cached shadow pool's
-  linear depth compared against d/R + 0.01 along (the point − the light);
+  linear depth compared against d/R + 0.01 along (the point − the light)
+  (the original scales d/R by the light's shadow bias + 0.94 here, which
+  Exarust leaves out [gap]);
 - the sun joins each drawn sector's group first and adds
-  lin(colour)·intensity·0.3·0.01 · visibility · open, visibility from the
+  lin(colour)·intensity·3·0.3·0.01 · visibility · open (the manager's sun
+  factor 3, then three times the 0.1 injection share; it is left out when
+  the scaled colour's third component is at most 1.19e−7), visibility from the
   same fitted sun map Bevy renders: under a sky its first comparison alone,
-  otherwise max(first comparison − the comparison 0.01 deeper, 0). The
+  otherwise max(first comparison − the comparison 0.01 deeper, 0) (on
+  Bevy's reverse-Z map, ndc.z − 0.01; the 0.01 is the original's depth
+  units, kept as is [guess]). The
   original keeps a separate 1024² map for this; Exarust reads Bevy's fitted
   map (4096² at the top shadow detail) [adaptation], and without one the
   sun is unshadowed;
@@ -1256,15 +1265,16 @@ volume's height divided by its width, as the original's `ZTrn` does:
   w = 1/8) and the shared quad index buffer (`corner_offsets`,
   `quad_indices`);
 - the emissive shape list: registration appends, unregistration swaps the
-  last entry over each match, and the draw box rounds the centre and half
-  extents to voxels, clips the columns to the 8-voxel margins and draws
-  from centre − half height for 2·half + 1 slices (`GiShapes`,
-  `shape_draw`). No gameplay shape registers yet, and the subclasses' own
+  last entry over each match, and the draw box rounds the centre to
+  voxels (ties to even) and the half extents up, clips the columns to
+  voxels 8 and 248 and draws from centre − half height for 2·half + 1
+  slices, only for a centre above slice 1 (`GiShapes`, `shape_draw`). No gameplay shape registers yet, and the subclasses' own
   injection programs are outside this component (dome, cuboid, bubble,
   telebubble, gradient line, multi-point);
 - a moving GI mesh takes its old points out (weight −20) and its new ones
-  in (+20) over a box padded 1.5 voxels each side (`Occupancy::
-  update_dynamic`); no GI mesh moves in Exarust's levels yet (doors and
+  in (+20) over a box padded 1.5 voxels each side, rounded ties to even in
+  world voxels (`Occupancy::update_dynamic`; the original pads the
+  object's oriented bounds, Exarust the points' extent [adaptation]); no GI mesh moves in Exarust's levels yet (doors and
   mechanisms are static), and a full block upload stands in for the
   original's sub-upload (the region and its bytes are `VoxelRegion`,
   `sub_upload`);
