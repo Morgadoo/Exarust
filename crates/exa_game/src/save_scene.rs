@@ -57,8 +57,9 @@ pub enum SceneLoadKind {
     /// there is one and the load asks for it, else the archive.
     SaveOrArchive,
     /// A level loaded by name for a new game or a practice fight: always
-    /// the archive, with the load's global reset and the sun's automatic
-    /// mode set on success.
+    /// the archive, with the save-disable flag cleared first, the load's
+    /// global reset, and the scene environment's outdoor word cleared on
+    /// success.
     NamedLevel,
     /// An arena level: always the archive, without the load's global reset.
     ArenaLevel,
@@ -88,9 +89,14 @@ pub struct SceneLoadPlan {
     /// The local item database is imported by the save's importer when the
     /// section came from the save; the archive's own comes with the file.
     pub save_local_database: bool,
-    /// Sets the sun to its automatic mode once the import succeeds (the
-    /// named-level path only).
-    pub sun_mode_auto: bool,
+    /// Clears the scene environment's word that the outdoor preset sets to
+    /// 1 and the indoor preset to 0, once the import succeeds (the
+    /// named-level path only). It is not the sun mode, which has its own
+    /// setter [guess at the word's meaning; the store is exact].
+    pub outdoor_word_cleared: bool,
+    /// Clears the save-disable flag before anything else (the named-level
+    /// path only: a new game or practice fight may save again).
+    pub saves_reenabled: bool,
 }
 
 impl SceneLoadPlan {
@@ -130,7 +136,8 @@ pub fn scene_load_plan(
         gui_reset: kind == SceneLoadKind::NamedLevel,
         settings_reset: kind == SceneLoadKind::NamedLevel,
         save_local_database: origin == LevelOrigin::SaveSection,
-        sun_mode_auto: kind == SceneLoadKind::NamedLevel,
+        outdoor_word_cleared: kind == SceneLoadKind::NamedLevel,
+        saves_reenabled: kind == SceneLoadKind::NamedLevel,
     })
 }
 
@@ -155,8 +162,8 @@ pub enum ImportStep {
     ClassifyContent,
     /// The node count is fixed.
     NumberNodes,
-    /// The renderer's view is reset.
-    ResetView,
+    /// The renderer's GI manager, when there is one, is reset.
+    ResetGi,
     /// The terrain `<locale>.rft` is read from the archive.
     Terrain,
     /// The arena task is told the terrain is missing (only with an arena
@@ -187,13 +194,14 @@ pub struct LevelImport {
     pub nodes: usize,
     /// The terrain's archive name.
     pub terrain_name: String,
-    /// Whether the archive had a terrain file that parsed.
+    /// Whether the archive had the terrain file and it was read: the
+    /// original's test, which does not depend on the terrain's contents.
     pub terrain_loaded: bool,
     /// Whether the arena task was told the terrain is missing.
     pub arena_terrain_missing: bool,
     /// The parsed chunk tree when it imported.
     pub scene: Option<Scene>,
-    /// The parsed terrain, when it loaded.
+    /// The parsed terrain, when it loaded and parsed.
     pub terrain: Option<Terrain>,
     /// The level's settings chunk, when the save's importer read one (the
     /// story's exporter writes it after the scene).
@@ -205,7 +213,7 @@ pub struct LevelImport {
 /// The order: reserve the trees; import the chunk tree (a section that does
 /// not parse imports nothing); free the section; release the reservation;
 /// when nodes came back, run the content pass (classify, number nodes),
-/// reset the view, read the terrain from the archive under the level's
+/// reset the GI manager, read the terrain from the archive under the level's
 /// locale (the original appends `.rft` to the **locale**, not to the save's
 /// section name), tell the arena task when it is missing, complete the
 /// tree/texture passes, register the nodes, rebuild the scene, update the
@@ -247,14 +255,15 @@ pub fn import_level(
         ImportStep::PreparePasses,
         ImportStep::ClassifyContent,
         ImportStep::NumberNodes,
-        ImportStep::ResetView,
+        ImportStep::ResetGi,
         ImportStep::Terrain,
     ]);
-    if let Some(bytes) = terrain_bytes
-        && let Ok(terrain) = Terrain::parse(bytes)
-    {
+    // The original reports the terrain loaded once the archive entry is
+    // found and read; the terrain importer's own result does not feed the
+    // arena hook.
+    if let Some(bytes) = terrain_bytes {
         out.terrain_loaded = true;
-        out.terrain = Some(terrain);
+        out.terrain = Terrain::parse(bytes).ok();
     }
     if !out.terrain_loaded && arena_present {
         out.arena_terrain_missing = true;
@@ -331,12 +340,12 @@ pub fn load_level(
 /// The values the game scene is created with, before any level is loaded:
 /// the scene's own flag word, the sound-slot count the original stores, the
 /// editor's (empty) name, the two node-manager flags, the scene
-/// environment's sky mode and fog distance, the view's flag and mode and the
+/// environment's sun mode and fog distance, the view's flag and mode and the
 /// renderer option word. The objects created on the way (the object
 /// manager, the audio environment, the GI manager, blood, the AI hooks) are
 /// the host's; these are the values it must see. The scene environment's
-/// *sun* mode is not set here; the indoor preset the caller runs next does
-/// that.
+/// sun mode is set to off here through the same setter the presets use
+/// (argument 1; the indoor preset sets it again, the outdoor preset to on).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GameSceneDefaults {
     /// The flag word the scene object starts with (`0x10000`).
@@ -346,8 +355,9 @@ pub struct GameSceneDefaults {
     pub sound_slots: u32,
     /// The node-manager flags the original sets (`1` and `1`).
     pub node_flags: [u8; 2],
-    /// The scene environment's sky mode, written through its setter (1).
-    pub sky_mode: u32,
+    /// The scene environment's sun mode, written through its setter
+    /// (argument 1: off).
+    pub sun_mode: exa_formats::environment::SunMode,
     /// The scene environment's first fog distance: `0x3F333333` (0.7).
     pub fog_distance: f32,
     /// The view's own byte the original sets to one.
@@ -378,8 +388,8 @@ pub enum GameSceneStep {
     CreateEditor,
     /// The node-manager flags are set.
     SetNodeFlags,
-    /// The scene environment's sky mode and fog distance are set.
-    SetSky,
+    /// The scene environment's sun mode and fog distance are set.
+    SetSunAndFog,
     /// The view's byte is set and its setter called with 1.
     SetView,
     /// The renderer's option word is stored and its create call runs.
@@ -405,7 +415,7 @@ pub fn game_scene_steps() -> Vec<GameSceneStep> {
         GameSceneStep::AddSceneNode,
         GameSceneStep::CreateEditor,
         GameSceneStep::SetNodeFlags,
-        GameSceneStep::SetSky,
+        GameSceneStep::SetSunAndFog,
         GameSceneStep::SetView,
         GameSceneStep::SetRenderer,
         GameSceneStep::CreateGi,
@@ -421,7 +431,7 @@ pub fn game_scene_defaults() -> GameSceneDefaults {
         scene_flags: 0x1_0000,
         sound_slots: 0x73,
         node_flags: [1, 1],
-        sky_mode: 1,
+        sun_mode: exa_formats::environment::SunMode::Off,
         fog_distance: 0.7,
         view_flag: true,
         view_mode: 1,
@@ -445,12 +455,18 @@ pub enum MenuStep {
     GuiReset,
     /// The dialogue engine's reset.
     DialogueReset,
+    /// The GUI's open form is closed (argument zero).
+    CloseForm,
+    /// The game scene becomes the current scene the other units read
+    /// [guess at the global's role; the store itself is exact].
+    SetCurrentScene,
     /// The archive's `menuscene.rfc` is opened.
     OpenArchive,
     /// It is imported with its own name for the terrain probe.
     Import,
-    /// The renderer's view word goes to zero.
-    ClearViewWord,
+    /// A word of the scene's grid object goes to zero (its meaning is not
+    /// traced) [guess at the field's role; the store is exact].
+    ClearGridWord,
     /// The scene editor is put in mode zero.
     EditorMode,
     /// The camera's field, view and target are set.
@@ -469,8 +485,8 @@ pub struct MenuSceneLoad {
     pub terrain: String,
     /// The indoor preset's fog distance.
     pub fog_distance: f32,
-    /// The renderer's view word after a successful import.
-    pub view_word: u32,
+    /// The scene grid's word after a successful import.
+    pub grid_word: u32,
     /// The scene editor's mode.
     pub editor_mode: u32,
     /// The camera's field of view (degrees; the field is only stored) [guess].
@@ -495,9 +511,11 @@ pub fn menu_scene_load() -> MenuSceneLoad {
             MenuStep::IndoorPreset,
             MenuStep::GuiReset,
             MenuStep::DialogueReset,
+            MenuStep::CloseForm,
+            MenuStep::SetCurrentScene,
             MenuStep::OpenArchive,
             MenuStep::Import,
-            MenuStep::ClearViewWord,
+            MenuStep::ClearGridWord,
             MenuStep::EditorMode,
             MenuStep::Camera,
             MenuStep::UpdateNodes,
@@ -505,7 +523,7 @@ pub fn menu_scene_load() -> MenuSceneLoad {
         file: scene.file,
         terrain: strip_extension_append(scene.file, TERRAIN_SUFFIX),
         fog_distance: scene.fog_distance,
-        view_word: 0,
+        grid_word: 0,
         editor_mode: 0,
         camera_field: scene.camera_field,
         view: scene.view,
@@ -658,7 +676,12 @@ mod tests {
         assert!(save.portal_cleared);
         assert_eq!(save.portal_word, -1);
         assert!(save.matrix_reset);
-        assert!(!save.gui_reset && !save.settings_reset && !save.sun_mode_auto);
+        assert!(
+            !save.gui_reset
+                && !save.settings_reset
+                && !save.outdoor_word_cleared
+                && !save.saves_reenabled
+        );
 
         // A save without the section falls back to the archive.
         let fallback = scene_load_plan(SceneLoadKind::SaveOrArchive, 27, false, true).unwrap();
@@ -671,7 +694,12 @@ mod tests {
         // automatic on success.
         let named = scene_load_plan(SceneLoadKind::NamedLevel, 5, true, true).unwrap();
         assert_eq!(named.origin, LevelOrigin::Archive);
-        assert!(named.gui_reset && named.settings_reset && named.sun_mode_auto);
+        assert!(
+            named.gui_reset
+                && named.settings_reset
+                && named.outdoor_word_cleared
+                && named.saves_reenabled
+        );
         assert!(!named.save_local_database);
         assert!(scene_load_plan(SceneLoadKind::NamedLevel, 5, false, false).is_none());
 
@@ -679,7 +707,12 @@ mod tests {
         // globals.
         let arena = scene_load_plan(SceneLoadKind::ArenaLevel, 9, true, true).unwrap();
         assert_eq!(arena.origin, LevelOrigin::Archive);
-        assert!(!arena.gui_reset && !arena.settings_reset && !arena.sun_mode_auto);
+        assert!(
+            !arena.gui_reset
+                && !arena.settings_reset
+                && !arena.outdoor_word_cleared
+                && !arena.saves_reenabled
+        );
     }
 
     #[test]
@@ -701,7 +734,7 @@ mod tests {
                 ImportStep::PreparePasses,
                 ImportStep::ClassifyContent,
                 ImportStep::NumberNodes,
-                ImportStep::ResetView,
+                ImportStep::ResetGi,
                 ImportStep::Terrain,
                 ImportStep::CompletePasses,
                 ImportStep::RegisterNodes,
@@ -746,6 +779,11 @@ mod tests {
         assert_eq!(import.terrain.as_ref().unwrap().palette, "pal0");
         assert!(!import.arena_terrain_missing);
         assert!(!import.steps.contains(&ImportStep::ArenaTerrainMissing));
+        // A terrain entry that was read but does not parse still counts as
+        // loaded: the arena hook only hears of a missing file.
+        let broken = import_level(&one_node_section(), "arenao1", Some(&[1, 2, 3]), true);
+        assert!(broken.terrain_loaded && broken.terrain.is_none());
+        assert!(!broken.arena_terrain_missing);
     }
 
     #[test]
@@ -791,7 +829,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(loaded.plan.origin, LevelOrigin::Archive);
-        assert!(loaded.plan.gui_reset && loaded.plan.sun_mode_auto);
+        assert!(loaded.plan.gui_reset && loaded.plan.outdoor_word_cleared);
         assert_eq!(loaded.import.terrain_name, "arenao1.rft");
         assert!(loaded.import.arena_terrain_missing);
         // Nothing to open at all.
@@ -902,7 +940,7 @@ mod tests {
         assert_eq!(scene.scene_flags, 0x1_0000);
         assert_eq!(scene.sound_slots, 0x73);
         assert_eq!(scene.node_flags, [1, 1]);
-        assert_eq!(scene.sky_mode, 1);
+        assert_eq!(scene.sun_mode, exa_formats::environment::SunMode::Off);
         assert_eq!(scene.fog_distance.to_bits(), 0x3f33_3333);
         assert!(scene.view_flag);
         assert_eq!(scene.view_mode, 1);
@@ -930,14 +968,31 @@ mod tests {
         assert_eq!(load.file, "menuscene.rfc");
         assert_eq!(load.terrain, "menuscene.rft");
         assert_eq!(load.fog_distance, 1.8);
-        assert_eq!(load.view_word, 0);
+        assert_eq!(load.grid_word, 0);
         assert_eq!(load.editor_mode, 0);
         assert_eq!(load.camera_field, 60.0);
         assert_eq!(load.view, [0.0, 500.0, 700.0]);
         assert_eq!(load.target, [0.0, 0.0, -200.0]);
-        assert_eq!(load.steps.first(), Some(&MenuStep::CreateScene));
-        assert_eq!(load.steps.last(), Some(&MenuStep::UpdateNodes));
-        assert_eq!(load.steps.len(), 12);
+        assert_eq!(
+            load.steps,
+            vec![
+                MenuStep::CreateScene,
+                MenuStep::ResetArena,
+                MenuStep::ClearPortal,
+                MenuStep::IndoorPreset,
+                MenuStep::GuiReset,
+                MenuStep::DialogueReset,
+                MenuStep::CloseForm,
+                MenuStep::SetCurrentScene,
+                MenuStep::OpenArchive,
+                MenuStep::Import,
+                MenuStep::ClearGridWord,
+                MenuStep::EditorMode,
+                MenuStep::Camera,
+                MenuStep::UpdateNodes,
+            ]
+        );
+        assert_eq!(load.steps.len(), 14);
     }
 
     #[test]

@@ -231,10 +231,13 @@ pub fn equip_kit(
 pub enum CombatantSceneStep {
     /// The GUI's current form is closed (no argument, the original's zero).
     CloseForm,
-    /// The item GUI's panels are reset.
-    ResetItemGui,
-    /// The prepared level's locale is put in place and its id looked up.
-    Locale,
+    /// The game scene becomes the current scene the other units read
+    /// [guess at the global's role; the store itself is exact].
+    SetCurrentScene,
+    /// The GUI's state field is restored from the one beside it, the same
+    /// helper call the level transition makes (the transition's
+    /// `RestoreGuiAudio`) [guess at its meaning]; no level id is looked up.
+    RestoreGuiAudio,
     /// The portal node goes to −1.
     ClearPortal,
     /// The kd-tree reservation.
@@ -271,14 +274,14 @@ pub fn combatant_scene(
 ) -> CombatantScene {
     let mut steps = vec![
         CombatantSceneStep::CloseForm,
-        CombatantSceneStep::ResetItemGui,
-        CombatantSceneStep::Locale,
+        CombatantSceneStep::SetCurrentScene,
+        CombatantSceneStep::RestoreGuiAudio,
         CombatantSceneStep::ClearPortal,
         CombatantSceneStep::ReserveTrees,
         CombatantSceneStep::ResetGui,
         CombatantSceneStep::ResetContent,
     ];
-    let arena_hook = imported && arena_present && arena_flags & 1 == 0;
+    let arena_hook = archive_found && imported && arena_present && arena_flags & 1 == 0;
     if archive_found {
         steps.push(CombatantSceneStep::OpenArchive);
         steps.push(CombatantSceneStep::Import);
@@ -427,8 +430,8 @@ mod tests {
             scene.steps,
             vec![
                 CombatantSceneStep::CloseForm,
-                CombatantSceneStep::ResetItemGui,
-                CombatantSceneStep::Locale,
+                CombatantSceneStep::SetCurrentScene,
+                CombatantSceneStep::RestoreGuiAudio,
                 CombatantSceneStep::ClearPortal,
                 CombatantSceneStep::ReserveTrees,
                 CombatantSceneStep::ResetGui,
@@ -446,6 +449,7 @@ mod tests {
         let failed = combatant_scene(true, false, true, 0);
         assert!(!failed.arena_hook);
         assert_eq!(failed.steps.last(), Some(&CombatantSceneStep::Import));
+        assert!(!combatant_scene(false, true, true, 0).arena_hook);
         let missing = combatant_scene(false, false, true, 0);
         assert_eq!(
             missing.steps.last(),
