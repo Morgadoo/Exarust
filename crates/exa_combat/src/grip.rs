@@ -499,6 +499,12 @@ pub const HELD_REACH_BASE: f32 = 60.0;
 /// unarmed item (`class & 0x30 == 0`) takes the race's own reach, anything
 /// held takes its length times a byte of the item's weapon record as a hundredth, plus
 /// 60 cm. `item_length_cm` is the item node's two y extents summed.
+///
+/// The refresh writes this value and then runs the equip pass
+/// ([`exa_formats::weapon_record::equip`]), which clears the same reach word
+/// and keeps the longest held record's reach (the race's when unarmed). The
+/// value the AI and the attack read is therefore the equip's, which is
+/// what `exa_ai` publishes. This one is the refresh's own intermediate.
 pub fn held_reach(class: u16, hand_byte: u8, item_length_cm: f32, race_reach: f32) -> f32 {
     if class & 0x30 == 0 {
         race_reach
@@ -581,6 +587,10 @@ pub struct HoldRefresh {
     pub may_parry: bool,
     /// The first held item's measures.
     pub measures: Option<HeldMeasures>,
+    /// The first held item's aim point as weights on its body's four rest
+    /// particles ([`held_aim_weights`]); none with empty hands or when the
+    /// item's body is not known.
+    pub aim_weights: Option<[f32; 4]>,
 }
 
 /// The equip/swap refresh: with `count` items held, the first one's class,
@@ -600,12 +610,14 @@ pub fn refresh_hold(
             held: false,
             may_parry: false,
             measures: None,
+            aim_weights: None,
         };
     }
     HoldRefresh {
         held: true,
         may_parry: parry_gate,
         measures: Some(held_measures(class, start_byte, item_cm, race_reach)),
+        aim_weights: None,
     }
 }
 
@@ -623,5 +635,75 @@ pub fn held_measures(
         reach: held_reach(class, hand_byte, item_length_cm, race_reach),
         aim_cm: held_aim_height(item_length_cm),
         greatsword: class == 0x521,
+    }
+}
+
+/// The weights of a held item's aim point on its body's four rest
+/// particles, as the equip/swap refresh stores them: the point
+/// (0, `aim_cm`, 0) in the item's frame ([`held_aim_height`] of its node
+/// extents), expressed in the rest tetrahedron `rest_cm` (cm, item frame)
+/// by the engine's barycentric routine (four triple products, one exact
+/// reciprocal; [`exa_physics::engine_math::barycentric_exact`]). The aim
+/// drive later puts the point back on the moving particles as the
+/// weighted sum.
+pub fn held_aim_weights(rest_cm: &[[f32; 3]; 4], aim_cm: f32) -> [f32; 4] {
+    held_point_weights(bevy::math::Vec3::new(0.0, aim_cm, 0.0), rest_cm)
+}
+
+/// A held item's own point as weights on its four rest particles. The
+/// refresh does this for every held item when the first one has no hands
+/// bits (an item that is not a weapon), from a point the item carries;
+/// with a weapon first it measures only the aim point.
+pub fn held_point_weights(point_cm: bevy::math::Vec3, rest_cm: &[[f32; 3]; 4]) -> [f32; 4] {
+    exa_physics::engine_math::barycentric_exact(point_cm, rest_cm)
+}
+
+/// Whether the refresh copies each held item's own point
+/// ([`held_point_weights`]): only when the measured class has no hands bits.
+pub fn copies_item_points(class: u16) -> bool {
+    class & 0x30 == 0
+}
+
+#[cfg(test)]
+mod aim_weight_tests {
+    use super::*;
+    use bevy::math::Vec3;
+
+    /// A unit corner tetrahedron, in cm.
+    const CORNER: [[f32; 3]; 4] = [
+        [0.0, 0.0, 0.0],
+        [10.0, 0.0, 0.0],
+        [0.0, 10.0, 0.0],
+        [0.0, 0.0, 10.0],
+    ];
+
+    /// The aim point 0.9 of the way up a 10 cm item sits 0.9 on the y
+    /// corner and 0.1 on the origin; the weights give the point back.
+    #[test]
+    fn the_aim_point_is_weighted_on_the_rest_particles() {
+        let aim = held_aim_height(10.0);
+        assert_eq!(aim, 9.0);
+        let w = held_aim_weights(&CORNER, aim);
+        // The reciprocal of the 1000 cm³ determinant is not exact in single
+        // precision, so the y weight rounds up.
+        assert_eq!(w, [0.1, 0.0, 0.900_000_04, 0.0]);
+        let back: Vec3 = CORNER
+            .iter()
+            .zip(w)
+            .map(|(p, k)| Vec3::from_array(*p) * k)
+            .sum();
+        assert!((back - Vec3::new(0.0, 9.0, 0.0)).length() < 1e-5);
+    }
+
+    /// An item's own point is weighted the same way; only items without
+    /// hands bits copy theirs.
+    #[test]
+    fn only_items_without_hands_bits_copy_their_points() {
+        let w = held_point_weights(Vec3::new(2.0, 3.0, 4.0), &CORNER);
+        assert_eq!(w, [0.1, 0.2, 0.3, 0.4]);
+        assert!(copies_item_points(0));
+        assert!(copies_item_points(0x41));
+        assert!(!copies_item_points(0x10));
+        assert!(!copies_item_points(0x521));
     }
 }

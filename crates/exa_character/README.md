@@ -322,8 +322,11 @@ tested rules of their own.
   keeps its weapon); a collapsing holder lets its weapons and torch go
   (`GripRelease`: the grip stage frees them) while the shield stays on the
   arm. When the switch clip passes 60% the runtime trades the two held
-  weapons' blade slots and the attacker's primary once
-  (`condition::swap_due`, `swap_on_switch`).
+  weapons' blade slots, the attacker's primary and the `Hands` main and
+  second weapon once, so `choose_held_movesets` picks the moveset again
+  from the new main weapon (a two-hander and a one-hander trade "Two
+  Handed" for the two-weapon moveset) (`condition::swap_due`,
+  `swap_on_switch`).
 - The off hand's item is attached by `offhand` after the dresser: a shield
   from either hand (its own model, body, a back pivot to its forearm and two face
   pivots to the left hand, and its soft weld, turned −5° about z on the hand) or a second
@@ -345,8 +348,11 @@ tested rules of their own.
   the first striker's into the character's `HeldRefresh`—the held weapon
   count (shields and torches have their own slots),
   the item's reach (start byte × extents in double plus 60 cm), its aim
-  height and the parry gate—as the original's equip and every swap do. The
-  AI's reach and the attack aim do not read it yet.
+  height, the aim point's weights on the item body's rest particles (cm)
+  and the parry gate—as the original's equip and every swap do. The aim
+  drive that reads the weights is outside this component, and the reach
+  the AI reads is the equip pass's longest record reach, which overwrites
+  the refresh's.
 - A wielded weapon sits under the hand its grip names
   (`exa_combat::grip`, by its weapon class as the first held item: a
   polearm in the left hand), placed for the character's size and race
