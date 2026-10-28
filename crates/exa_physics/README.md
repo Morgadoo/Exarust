@@ -203,9 +203,17 @@ the foot does not touch standing still eases both corrections back with
 the identity shown. Both write the knee and hip corrections the sampler
 composes into the clip's thigh and shin turns, and the foot's height over
 its floor, which the foot pitch levels. Each foot's sole floor is the
-Ground Query's miss branch (`feet::sole_floor`: the ground plus the leg's
-offset, never over the knee): the original's query is a ray against
-floor-flagged meshes, which no Exarust level carries.
+original's Ground Query (`contact::Level::floor_below`, a point ray from
+30 cm over the foot's ground 60 cm down against the level's floor pieces,
+a body's stand-ins skipped): the hit, or the ground plus the leg's offset
+where it misses, never over the knee (`feet::sole_floor`); a moving foot's
+ground rises to a higher hit, so a toe over a step stands on it.
+The push waits for the feet: each walking leg whose contact trails its
+animated spot along the facing (negated backpedalling) cuts the carry's
+lag factor by `1 − (lead/(60·character size))²`, to nothing at the limit
+(`measure_balance`), and the same lead marks a late touching foot with the
+swing flag (0x10) against `10·scale·(0.25 − frac(0.5·leg + progress + 1))`,
+at a walk raised by the gait's ground difference to at least 25 cm.
 The walk's feet plant and lift by their phases, and a slow foot plants
 early (before phase 0.2); a plant starts a footstep at the character plus
 `3·speed + 4` cm along its facing, with the original's gain and pitch
@@ -226,10 +234,19 @@ step and, once in the episode, moves the standing position to the feet's
 centre plus 100 × the jolt, at most 100·scale cm, telling the behaviour
 while the body locomotes (`steps::jolt`, `Ragdoll::jolt_told`); each jolt
 holds the latch 80 ticks, and a body off its feet takes none. The
-muscles-off sampler's rules are tested (`body_limp.rs`): key-flag plants,
-the 0.05/0.95 height ease and a snap of the particles to the animated
-pose; nothing samples with them yet, since a limp body keeps its physical
-pose.
+muscles-off sampler is live (`body_limp.rs`, `exa_game::limp::sample_limp`):
+a body that loses its muscles keeps its clip and samples it every fixed
+tick at 0.9 of the race's base rate with the clip's full root travel,
+snapping every part's particles to the pose on the frame it had when the
+muscles went, easing the standing height 0.05 and planting a foot from the
+keys' flag (`limp_plant`).
+A body placed into the scene takes the placement's leg snap
+(`Ragdoll::snap_placement`): each stance spot is the clip ankle plus
+5·scale cm along the shin, a 10 cm sphere from the frame's height plus the
+leg's length is dropped 300 cm for the ground, the hits average to the
+character's ground, the lower foot's record picks the height with the
+reach its clip leaves, and the standing IK writes its corrections at once
+(`Ragdoll::snap_legs`).
 Each character tick measures a living body's balance at its chest against
 its ankles and asks the level for the ground under each foot
 (`contact::Level::height_below`, the original's Height Query), which give

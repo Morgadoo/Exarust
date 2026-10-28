@@ -24,7 +24,7 @@ use bevy::math::Affine3A;
 use bevy::prelude::*;
 use exa_anim::{
     ATTACKS, AnimSystems, Animator, BodyPart, ClipPose, Motions, TickedClips, follow_up_blend,
-    rising_frames, slerp, standing_frames,
+    ragdoll_bracket, rising_frames, slerp, standing_frames,
 };
 use exa_assets::SkinnedPart;
 use exa_combat::Condition;
@@ -299,10 +299,14 @@ pub(crate) fn sample_limp(anim: &mut Animator, body: &mut Ragdoll, motions: &Mot
         return;
     };
     anim.tick(clip, LIMP_CLOCK * body.limp_clip_rate(), 0);
-    let Some(bracket) = anim.bracket(clip) else {
+    // The limp sampler's bracket is the raw clock with the remaining
+    // blend; its pose keeps the clip's full root travel.
+    let Some(bracket) = ragdoll_bracket(clip, anim.time, clip.loops(), anim.blend) else {
         return;
     };
-    let pose = anim.blend_keys(clip, &bracket, false);
+    let Some(pose) = anim.sample_ragdoll(clip, clip.loops()) else {
+        return;
+    };
     // The clip's character-space chain: each part's bone turn with its
     // rest offset, the root with the clip's root travel.
     let count = body.parts.len();

@@ -983,12 +983,19 @@ ticks.
   walk's share, at once otherwise) plus the sole height, at most 100 cm
   over the ankle; with no ground within reach the character's ground (the
   lowest foot's with support, their mean walking, the pelvis's query
-  without) and flags 0x30. The toe's floor is the Ground Query's miss
-  branch: the ground plus the leg's offset, never over the lower leg's
-  origin (`feet::sole_floor`, which also holds the hit branch: the higher
-  of the hit and the ground, 10 cm less while the foot touches). The
-  original's query is a ray from 30 cm over the ground, 60 cm down,
-  against floor-flagged meshes only; no Exarust level has them.
+  without) and flags 0x30. The toe's floor is the Ground Query: a point
+  ray from 30 cm over the ground, 60 cm down, against the level's floor
+  pieces (a rigid body's stand-in skipped; `Level::floor_below`), the
+  higher of its hit and the ground (10 cm less while the foot touches)
+  plus the leg's offset, never over the lower leg's origin
+  (`feet::sole_floor`); a miss leaves the ground plus the offset. A hit
+  above a moving foot's ground raises the ground to it. The push's lag is
+  the same routine's: each walking leg whose animated contact trails the
+  physical one along the facing (negated backpedalling) cuts the carry's
+  factor by 1 − (lead/(60·character size))², to 0 at the limit, and the
+  lead marks a late touching foot with the swing flag 0x10 against
+  10·scale·(0.25 − frac(0.5·leg + progress + 1)), at a walk raised by the
+  gait's ground difference to at least 25 cm.
 - **The drive**, in each of the 20 iterations after the lower leg's links,
   for a body over half its tone with support and a contact more than 10 cm
   under the pelvis (the point refreshed every iteration): a touching foot
@@ -1852,7 +1859,10 @@ or past the last key a looping clip blends from it back to the first by
 (time − last)/first with no clamp, and one played once blends from the
 key before the last to the last with a share of 1. It takes no gait
 overlay, hold, twist, look or foot pitch, and the root keeps its travel.
-No Exarust corpse plays a clip yet.
+Every body that loses its muscles keeps its clip and is sampled this way
+each fixed tick (`exa_game::limp::sample_limp`), its particles snapped to
+the pose on the character frame it had when the muscles went; a body
+placed from a saved pose has no clip and keeps its pose.
 
 **Sampler pipeline.** A living body's sampler takes each sample in the
 original's steps, part by part in the model tree's order, one function a
