@@ -38,7 +38,7 @@ An upload pass SHALL upload only the entries ready when it started, in order, up
 - **THEN** a priority load of b uploads a then b, and one of a is not found
 
 ### Requirement: Player focus
-The level's arrival variable SHALL give the operative kind that names the player: one kind for an arrival and another for a session start or load, and none otherwise. A placed actor SHALL be the player when its operative record's kind equals that kind. A transition marker SHALL be the player when its entrance word equals the arrival variable and its previous-level word equals the id of the level the session came from (all ones when it came from none). No other object SHALL be the player, whatever its own kind.
+The arrival variable SHALL give the operative kind that names the player: one kind for an arrival, another for a start or load, none otherwise. A placed actor SHALL be the player when its operative kind equals that kind. A transition marker SHALL be the player when its entrance equals the arrival variable and its previous level equals the level the session came from (all ones for none). No other object SHALL be the player.
 
 #### Scenario: An actor by kind
 - **WHEN** a level begins on an arrival and holds actors of operative kind 15 and 18
