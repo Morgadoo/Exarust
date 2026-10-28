@@ -322,7 +322,16 @@ clip leaves, sole), each anchor
 is the clip ankle at its ground plus the sole, and the standing IK writes
 its corrections at once (`Ragdoll::snap_legs`). `Ragdoll::placement_feet`
 maps that frame height back to the character ground Exarust's model root
-stands at.
+stands at. The placement's resets before its first sample are tested and
+not called (a spawned body already starts in that state):
+`Locomotor::placed` drops the twist and the move vector's reach and takes
+the yaw of the matrix's flattened forward by the original's arc cosine;
+`Ragdoll::clear_leg_corrections` holds the legs' knee and hip corrections
+at the identity until the IK writes them again. A plain start's capture
+keeps half of the twist in the lumbar and thorax (`locomotion::half_lean`:
+the forward axis halfway toward the turn out of the twist frame, the up
+squared to it); `Locomotor::twist_before` is the twist a start made earlier
+in the tick captures against.
 The plain body's own collision sound and its scrape sources are in
 `body::sound` (`src/body_sound.rs`): an impact over 0.5 sounds after the
 cooldown or when it is strictly louder than twice the last one, at volume
