@@ -47,6 +47,7 @@ pub mod item_container;
 pub mod item_effects;
 pub mod item_panel_draw;
 pub mod joint_trace;
+pub mod level_transition;
 pub mod limp;
 pub mod loadout;
 pub mod look_overlay;

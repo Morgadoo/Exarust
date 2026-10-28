@@ -355,6 +355,7 @@ fn continue_level(
     play_camera: Option<Res<PlayCamera>>,
     gi: Res<exa_world::gi_volume::GiSettings>,
     mut arena_picks: ResMut<exa_game::arena_match::ArenaPicks>,
+    landing: Option<Res<exa_game::level_transition::PendingLanding>>,
 ) {
     let mut loader = ModelLoader {
         game: &game.0,
@@ -396,15 +397,20 @@ fn continue_level(
         pending.started.elapsed()
     );
     match &*view {
-        View::Play(_) => play_level(
-            &mut commands,
-            &name,
-            root,
-            info,
-            play_camera.map(|c| c.0),
-            &options,
-            &mut arena_picks,
-        ),
+        View::Play(_) => {
+            play_level(
+                &mut commands,
+                &name,
+                root,
+                info,
+                play_camera.map(|c| c.0),
+                &options,
+                &mut arena_picks,
+                landing.as_deref(),
+            );
+            // A landing plan is used once.
+            commands.remove_resource::<exa_game::level_transition::PendingLanding>();
+        }
         _ => {
             begin_lighting(&mut commands, &gi, BUILT_AT);
             let centre = (info.bounds_min + info.bounds_max) * 0.5;
@@ -520,6 +526,7 @@ struct PlayStart {
 /// Play mode around a loaded level: its music, the player's start and the
 /// camera behind it. The level's collision is built next, behind the
 /// loading screen, before anyone stands on it.
+#[allow(clippy::too_many_arguments)]
 fn play_level(
     commands: &mut Commands,
     name: &str,
@@ -528,6 +535,7 @@ fn play_level(
     camera: Option<Entity>,
     options: &Options,
     arena_picks: &mut exa_game::arena_match::ArenaPicks,
+    landing: Option<&exa_game::level_transition::PendingLanding>,
 ) {
     commands.entity(root).insert(exa_physics::StaticGeometry);
     // An arena match draws its track as the original's match start does:
@@ -609,6 +617,12 @@ fn play_level(
         if layout.is_empty() {
             warn!("arena match: template {template} lays out nobody here");
         }
+    }
+    // A save's landing plan puts the player where the level change placed
+    // them, instead of the level's own start; it is used once.
+    if let Some((at, heading)) = landing.and_then(|landing| landing.player) {
+        position = Vec3::from_array(at);
+        yaw = heading;
     }
     if let Some(at) = options.at {
         position = Vec3::from_array(at);

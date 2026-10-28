@@ -101,7 +101,8 @@ databases, character placement export and level sections are not exported
 yet, so a save made from nothing is not loadable by the original. The
 level-transition rules (`save_level`): the spawn height (108.18 less 11.1
 per body extent, plus 5 or 13 cm over the probed floor), the six follower
-offsets rotated by the spawn matrix, the duplicate-motile list and the
+offsets rotated by the spawn matrix, each follower's own lift
+(`place_followers`), the duplicate-motile list and the
 follower re-attach (UID and controls re-created, carry cleared, the
 minimum distance raised to 5 cm), the menu background scene
 (`menuscene.rfc`, fog 1.8, view (0, 500, 700), target (0, 0, −200)), the `<locale>.rft` terrain name and the scene-content classifier.
@@ -145,6 +146,16 @@ plan joining spawn placement and follower placement are in `save_level`;
 the load's global reset (old-settings flag clear, default settings tag,
 zero saved word and sun height) is
 `save_chunk::load_reset` plus `SceneEnvironment::reset_for_load`.
+
+The level-change bridge (`level_transition`) ties the transition together:
+`export_for_save` writes the current level's section with the save's
+exporter and the story's settings-chunk gate, and `plan` pairs it with the
+landing (the player, the followers' own lifts, the migration list and the
+re-attach state). The loader takes a `PendingLanding` and starts the player
+there instead of the level's own start. A live level change does not exist
+yet (a change restarts the process) and the level loader keeps its own
+scene model rather than the exporter's, so the bridge waits for the RFC to
+export-scene conversion; see `docs/formats/SAVES.md` (Level transitions).
 
 Character creation (`create`): the record's gear (four hand items, its
 worn list and its carried list), the mode filters (story background 0 keeps
