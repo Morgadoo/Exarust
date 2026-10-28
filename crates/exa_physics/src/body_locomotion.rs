@@ -438,6 +438,22 @@ impl Locomotor {
     pub fn facing(&self) -> Vec3 {
         forward(self.yaw)
     }
+
+    /// The placement's reset of the locomotion, as the original's
+    /// placement at a matrix does before it samples the first clip: the
+    /// twist back to the identity, the move vector's reach 0, and the yaw
+    /// that of the matrix's forward (`forward`, its z axis) flattened and
+    /// normalised (a zero one kept zero), by the original's arc cosine
+    /// ([`heading_of`]). Returns that flattened heading, which the
+    /// original also takes as the behaviour's heading and its last.
+    pub fn placed(&mut self, forward: Vec3) -> Vec3 {
+        self.twist = Quat::IDENTITY;
+        self.twist_before = Quat::IDENTITY;
+        self.reach = 0.0;
+        let heading = Vec3::new(forward.x, 0.0, forward.z).normalize_or_zero();
+        self.yaw = heading_of(heading);
+        heading
+    }
 }
 
 /// What the movement decision reads of the body this tick.

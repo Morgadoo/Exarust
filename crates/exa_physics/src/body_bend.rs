@@ -397,6 +397,18 @@ impl Ragdoll {
         }
     }
 
+    /// The placement's reset of the legs' IK corrections: the knee's and
+    /// the hip's (with the thigh's step turn) are the identity until the
+    /// IK writes them again, as the original's placement resets every
+    /// part's correction turns before it samples the first clip; the
+    /// smoothed angles are kept.
+    pub fn clear_leg_corrections(&mut self) {
+        for leg in &mut self.legs {
+            leg.knee_shown = false;
+            leg.hip_shown = false;
+        }
+    }
+
     /// Puts the clip's hip-to-ankle record of this tick in the world
     /// (`root`, after the carry): the sampler's record when its IK step
     /// folded the pose; otherwise, for a pose given without a sample, the
