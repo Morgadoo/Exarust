@@ -114,10 +114,17 @@ pub struct ObjectResult {
 /// A finished character, waiting for the main thread.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CharacterResult {
+    /// The key a requested character was fetched by (its record owner); a
+    /// streamed character's stage node.
     pub owner: u64,
     pub scene: u64,
+    /// The built scene node.
     pub node: u64,
     pub sink: CharacterSink,
+    /// A streamed character's stage node, the stand-in the level placed:
+    /// the pump frees it and registers `node` in its place. `None` for a
+    /// character requested for the scene or attached to an entity.
+    pub placeholder: Option<u64>,
 }
 
 /// A character the level streams in place: its scene node and position.
@@ -493,6 +500,7 @@ impl ContentStream {
                     scene: request.scene,
                     node,
                     sink,
+                    placeholder: None,
                 };
                 match sink {
                     CharacterSink::Attach => self.attachments.push(result),
@@ -531,6 +539,7 @@ impl ContentStream {
                     scene: character.scene,
                     node,
                     sink: CharacterSink::Streamed,
+                    placeholder: Some(character.node),
                 });
             }
             self.stream_cursor += 1;
@@ -562,8 +571,13 @@ impl ContentStream {
 
     /// Runs the completion callbacks, then collects the streamed characters
     /// to insert into the scene and the characters to attach (the
-    /// original's pump, in its order). Requested characters without the
-    /// attach flag stay for [`ContentStream::fetch_character`].
+    /// original's pump, in its order). A streamed character's entry names
+    /// the stage node it was built into and the built node: the caller
+    /// frees the stage (it holds the object's transform and saved chunks)
+    /// and registers the built character in the scene and its sector. An
+    /// attach entry is the built character, registered into the entity it
+    /// was requested for. Requested characters without the attach flag stay
+    /// for [`ContentStream::fetch_character`].
     pub fn pump(&mut self) -> Pumped {
         let mut pumped = Pumped::default();
         while let Some(completion) = self.completions.pop() {
@@ -852,6 +866,54 @@ mod tests {
         assert_eq!(pumped.added.len(), 1);
         assert_eq!(pumped.added[0].node, 3);
         assert_eq!(pumped.added[0].sink, CharacterSink::Streamed);
+    }
+
+    /// The pump's streamed entry names the stage node the level placed and
+    /// the built character: the caller frees the one and registers the
+    /// other. A requested character has no stage node.
+    #[test]
+    fn a_streamed_result_names_its_stage_and_built_nodes() {
+        struct Staged;
+        impl ContentBuilders for Staged {
+            fn level_object(&mut self, _: usize) -> Option<LevelNode> {
+                None
+            }
+            fn object(&mut self, _: &ObjectRequest) -> Option<u64> {
+                None
+            }
+            fn character(&mut self, _: &CharacterRequest) -> Option<u64> {
+                Some(40)
+            }
+            fn streamed_character(&mut self, _: &StreamedCharacter) -> Option<u64> {
+                Some(99)
+            }
+        }
+        let mut stream = ContentStream::new();
+        stream.begin_characters(7, [character(3, [0.0; 3])]);
+        assert_eq!(stream.step(&mut Staged), Step::Streamed { built: true });
+        let pumped = stream.pump();
+        assert_eq!(pumped.added.len(), 1);
+        let result = pumped.added[0];
+        assert_eq!(result.owner, 3);
+        assert_eq!(result.placeholder, Some(3));
+        assert_eq!(result.node, 99);
+        assert_eq!(result.sink, CharacterSink::Streamed);
+        stream.request_character(CharacterRequest {
+            owner: 9,
+            scene: 7,
+            class: 0,
+            flags: 0,
+        });
+        assert!(matches!(
+            stream.step(&mut Staged),
+            Step::Requests {
+                character: Some(true),
+                ..
+            }
+        ));
+        let requested = stream.fetch_character(9, 7).unwrap();
+        assert_eq!(requested.node, 40);
+        assert_eq!(requested.placeholder, None);
     }
 
     #[test]

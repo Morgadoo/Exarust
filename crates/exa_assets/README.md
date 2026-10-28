@@ -217,8 +217,10 @@ mask, the anisotropy level and the bias base, −0.75 at quality 5),
 `TextureDetail`, the supersampling setting, the device's largest texture
 side and its units (clamped to 16); `fallback` is what the original forces
 on a generic (software) pixel format. **Bevy's sampler descriptor has no LOD
-bias**, so the value is computed and exposed but not applied; a renderer that
-wants the original's bias must pass it to the shader. The GL texture-unit and
+bias**, so each material carries it in its parameters and the shader adds it;
+a settings change rewrites every loaded material's bias
+(`exa_render::material::set_texture_bias`), as the original sets it on every
+bind. The GL texture-unit and
 render-target texture calls (selecting a unit, binding, creating an empty
 texture for a framebuffer attachment) have no Exarust item: Bevy owns render
 targets and binds per draw.
