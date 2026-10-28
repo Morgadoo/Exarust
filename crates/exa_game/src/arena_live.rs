@@ -284,6 +284,7 @@ type MatchBody<'a> = (
 #[allow(clippy::too_many_arguments)]
 fn stand_first_round(
     scene: Option<ResMut<ArenaScene>>,
+    arena: Option<ResMut<ArenaMatch>>,
     career: Option<Res<crate::hub_windows::ArenaCareer>>,
     loading: Option<Res<exa_ui::LoadingStatus>>,
     levels: Query<&exa_world::LevelRoot>,
@@ -305,6 +306,17 @@ fn stand_first_round(
         return;
     }
     let now = clock.as_ref().map_or(0, |clock| clock.now_ms);
+    if let Some(mut arena) = arena {
+        // A physician on the company's books saves a fall that would have
+        // killed (the fall rule's widened line).
+        arena.physician = career.as_ref().is_some_and(|career| {
+            career
+                .company
+                .roster
+                .iter()
+                .any(|member| member.profession == crate::career::Profession::Physician)
+        });
+    }
     let slots = layout(scene.template, scene.level, scene.tier, scene.spawn_at);
     if slots.is_empty() {
         warn!(
@@ -355,7 +367,13 @@ fn continue_round(
             exits.write(ArenaExit::MainMenu);
             arena.screen = None;
         }
-        EndAction::NextRound { round, .. } => {
+        EndAction::NextRound { round, bracket } => {
+            if bracket {
+                // The bracket's next fight is not raised yet: the round takes
+                // a fresh generic opponent (`match_layout::raise_fresh_match`
+                // holds the bracket's rules).
+                info!("arena match: tournament round {round} raises no bracket fight yet");
+            }
             let entered = scene.player_entry.is_some();
             let fighter_dead = fighters.iter().any(|(_, _, condition, body, player)| {
                 (if entered { player } else { body.company }) && *condition == Condition::DEAD
@@ -421,15 +439,9 @@ fn stand_next_round(
     let opponent = opponent_place(scene.spawn_at);
     let ours = our_place(scene.spawn_at);
     for (entity, _, condition, body, _) in fighters {
-        if body.company {
-            commands.write(SceneCommand::Despawn(entity));
-        } else if fight.keeps_opponent && *condition != Condition::DEAD {
-            commands.write(SceneCommand::Place {
-                body: entity,
-                at: Vec3::from_array(opponent.position) / 100.0,
-                yaw: opponent.forward[0].atan2(opponent.forward[2]),
-            });
-        } else {
+        // The opponent who won keeps its place, which is the round's
+        // opponent place already; every other body is cleared.
+        if body.company || !fight.keeps_opponent || *condition == Condition::DEAD {
             commands.write(SceneCommand::Despawn(entity));
         }
     }
@@ -544,7 +556,9 @@ pub fn setup_from(
             level,
             tier,
             tournament: false,
-            player: None,
+            // A match started from the command line has no hub entry list:
+            // the debug player is the company's entry zero.
+            player: Some(0),
             prize: 0,
         });
     (setup, handoff.and_then(|handoff| handoff.career.clone()))
@@ -623,6 +637,38 @@ mod tests {
     }
 
     #[test]
+    fn the_first_round_is_stood_once_the_level_is_ready() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_message::<SceneCommand>()
+            .add_systems(Update, stand_first_round);
+        app.insert_resource(crate::effects::EffectClock { now_ms: 1_000 });
+        app.insert_resource(scene());
+        app.world_mut().spawn(exa_world::LevelRoot {
+            name: "arena1.rfc".into(),
+        });
+        app.world_mut()
+            .spawn((crate::player::Player, Transform::default()));
+        app.update();
+        let spawned: Vec<SceneCommand> = app
+            .world_mut()
+            .resource_mut::<Messages<SceneCommand>>()
+            .drain()
+            .collect();
+        assert_eq!(spawned.len(), 1);
+        assert!(app.world().resource::<ArenaScene>().placed);
+        // The round is stood once.
+        app.update();
+        assert!(
+            app.world_mut()
+                .resource_mut::<Messages<SceneCommand>>()
+                .drain()
+                .next()
+                .is_none()
+        );
+    }
+
+    #[test]
     fn a_duel_lays_out_the_player_and_one_opponent() {
         let spawn = [900.0, 0.0, 100.0];
         let slots = layout(1, 3, 2, spawn);
@@ -695,7 +741,6 @@ mod tests {
         assert_eq!(arena.screen, None);
         assert_eq!(arena.started_ms, None);
         let mut spawned = 0;
-        let mut kept = false;
         let mut killed = Vec::new();
         let messages: Vec<SceneCommand> = app
             .world_mut()
@@ -705,13 +750,14 @@ mod tests {
         for message in messages {
             match message {
                 SceneCommand::Spawn(_) => spawned += 1,
-                SceneCommand::Place { body, .. } => kept = body == opponent,
                 SceneCommand::Despawn(entity) => killed.push(entity),
+                SceneCommand::Place { .. } => {}
             }
         }
-        // The reserve entrant comes in against the surviving opponent.
+        // The reserve entrant comes in against the opponent who won, which
+        // stays on its place.
         assert_eq!(spawned, 1);
-        assert!(kept);
+        assert!(!killed.contains(&opponent));
         assert_eq!(killed, vec![fallen]);
     }
 
@@ -849,6 +895,7 @@ mod tests {
         assert_eq!(setup.template, 6);
         assert_eq!((setup.level, setup.tier), (2, 1));
         assert!(!setup.tournament);
-        assert_eq!(setup.player, None);
+        // A bare command-line match's debug player is entry zero.
+        assert_eq!(setup.player, Some(0));
     }
 }
