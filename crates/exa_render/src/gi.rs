@@ -716,6 +716,10 @@ struct GiParams {
 const LUMENS_PER_INTENSITY: f32 = 8.0;
 /// Lux per unit of the original's sun intensity (see `exa_world`).
 const SUN_LUX: f32 = 160.0;
+/// The manager's sun factor: the scene's sun colour times 3 is the GI sun.
+const SUN_GI_SCALE: f32 = 3.0;
+/// The manager's injection share; point lights take 1.5 times it, the sun 3.
+const INJECTION_SHARE: f32 = 0.1;
 /// The sun's intensity below which the original leaves it out of the GI.
 const SUN_EPSILON: f32 = 1.192_09e-7;
 /// The original's own sun shadow map for the GI: 1024², with its direct-light
@@ -1125,13 +1129,17 @@ impl LightSource {
         self.shaping != Vec2::ONE
     }
 
-    /// The light's per-step colour: linear colour × intensity × 0.15 (× 0.3
-    /// for the sun), the original's `(1 − dim)²` factor and the uniform's
-    /// 0.01 still to come.
+    /// The light's per-step colour: the injection share 0.1 times 1.5 and
+    /// the original's `(1 − dim)²` for a point light; for the sun its colour
+    /// is first scaled by the manager's sun factor 3 and then by the share
+    /// times 3 (0.9 in all). The uniform's 0.01 is still to come.
     fn injection_colour(&self) -> Vec3 {
+        let colour = self.colour * self.intensity;
+        if self.sun {
+            return colour * SUN_GI_SCALE * (INJECTION_SHARE * 3.0);
+        }
         let dim = (1.0 - self.dim) * (1.0 - self.dim);
-        let gain = if self.sun { 0.3 } else { 0.15 };
-        self.colour * self.intensity * dim * gain
+        colour * (dim * INJECTION_SHARE * 1.5)
     }
 }
 
@@ -1214,10 +1222,11 @@ fn gather_lights(
         .iter()
         .next()
         .filter(|(light, _)| light.illuminance > 0.0);
+    // The original tests only the scaled colour's third component.
     let sun_active = sun.is_some_and(|(light, _)| {
         let c = light.color.to_linear();
         let i = light.illuminance / SUN_LUX;
-        (Vec3::new(c.red, c.green, c.blue) * i).max_element() > SUN_EPSILON
+        c.blue * i * SUN_GI_SCALE > SUN_EPSILON
     });
     if sun_active && let Some((light, _)) = sun {
         let c = light.color.to_linear();
@@ -2101,7 +2110,7 @@ mod tests {
         assert!((light.colour.x - 0.15).abs() < 1e-6);
         assert_eq!(light.shaping, Vec4::new(1.0, 1.0, 1.0, 0.0));
         assert_eq!(light.extra.x, 3);
-        // The sun's colour is scaled by 0.3, not 0.15.
+        // The sun's colour is scaled by 3 × 0.3, not 0.15.
         sources.insert(
             SUN_LIGHT_ID,
             LightSource {
@@ -2112,7 +2121,7 @@ mod tests {
         let mut gi = GiLights::default();
         groups[0].lights = GiSector::new([SUN_LIGHT_ID]);
         push_groups(&mut gi, &groups, &sources, [0; 64], Vec3::ZERO, Vec3::ONE);
-        assert!((gi.lights[0].colour.x - 0.3).abs() < 1e-6);
+        assert!((gi.lights[0].colour.x - 0.9).abs() < 1e-6);
         assert_eq!(gi.lights[0].shaping.w, 1.0);
         // The original's separate GI sun map's numbers.
         assert_eq!(GI_SUN_SHADOW_SIZE, 1024);

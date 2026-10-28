@@ -17,7 +17,7 @@ struct GiLight {
     // A point light's position in texture units (x, z depth, y height) and
     // the inverse of its radius in those units. Unused for the sun.
     position_radius: vec4<f32>,
-    // Per-step injection colour: linear colour × intensity × 0.15 (×0.3 for
+    // Per-step injection colour: linear colour × intensity × 0.15 (×0.9 for
     // the sun), before the fragment's 0.01.
     colour: vec4<f32>,
     // x, y: the light's vertical shaping (y, z); z: 1/(2^z − 1) (unshaped
