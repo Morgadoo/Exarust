@@ -1897,15 +1897,15 @@ not landed is the identity and says which:
 | 9 | the anchors of every slack link and the pelvis height | the drive's, in the carry stage (`Ragdoll::aim`): a looking head's relative to the physical thorax, a head that does not look relative to its parent's pose from before the twist |
 | 10 | the foot contacts' ground offsets and the gait plant events | the feet routine's; the plants with M16 |
 
-**Placement.** A living character put into the scene samples its first
+**Placement.** In the original, a living character put into the scene samples its first
 clip, then the placement's foot snap probes each stance spot 300 cm down,
 averages the hits into the character's ground, writes each anchor at its
 ground plus the sole, and runs the standing IK with its snap set. The
 original writes the frame height (root over thigh, ground, the clip's
 reach and the sole); Exarust's model root is at the feet, so it takes the
-snap's character ground (`Ragdoll::placement_feet`), the controller's node
-moves with it (`exa_game::limp::shift_placement`) and the snapped frame is
-sampled again. The original's placement also resets the twist, tone,
+snap's character ground (`Ragdoll::placement_feet`). The spawn does not
+call the snap yet: with the controller moved to that ground and the frame
+sampled again, the standing player squatted for about a second. The original's placement also resets the twist, tone,
 energy, IK turns and look to the given matrix; Exarust's body is built
 fresh in that state and keeps the caller's heading.
 

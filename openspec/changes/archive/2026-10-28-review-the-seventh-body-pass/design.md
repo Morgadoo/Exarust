@@ -3,11 +3,12 @@
 ## The placement height
 
 The original's placement matrix is its pelvis-high character frame;
-Exarust's model root is at the feet. The spawn therefore moves the
+Exarust's model root is at the feet. The mapped spawn would move the
 controller and the model root to the snap's averaged character ground
 (`Ragdoll::placement_feet`) rather than to the frame height the snap
-returns, and samples the snapped frame again. This is a unit mapping,
-labelled as such in the code.
+returns, and sample the snapped frame again. This is a unit mapping,
+labelled as such in the code. Live, it left the player squatting after
+spawn, so the spawn does not call it; it stays a tested rule.
 
 ## The trailing-foot request
 

@@ -2054,14 +2054,7 @@ A living body placed into the scene SHALL probe each leg 5·scale cm along its s
 
 #### Scenario: A platform
 - **WHEN** a biped is placed over a platform 15 cm up
-- **THEN** each leg's ground and floor are 15 cm, each anchor 15 cm plus the sole, the character's ground 15 cm, the feet placed at 15 cm, and the corrections' rates zero
-
-### Requirement: Spawn placement
-The spawn SHALL run the placement leg snap after sampling the first clip, move the character's feet to the character ground the snap finds and sample the snapped frame again.
-
-#### Scenario: A raised spawn
-- **WHEN** a character is spawned with its feet 5 cm over a floor
-- **THEN** its controller and model root are moved down to the floor's height before its first tick
+- **THEN** each leg's ground and floor are 15 cm, each anchor 15 cm plus the sole, the character's ground 15 cm, and the corrections' rates zero
 
 ### Requirement: Placement frame height
 The placement's frame height SHALL be the root over the chosen thigh plus the chosen ground, the clip reach (from the ankle's horizontal offset from the hip, shaped r² + (1 − r)√r) and the sole. The lower leg SHALL be chosen unless its clip foot hangs too far under its hip.

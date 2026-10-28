@@ -1375,8 +1375,8 @@ impl Ragdoll {
     /// placement snap: the character ground the snap averaged under the two
     /// feet. The original's placement matrix is its character frame, whose
     /// height the snap writes; Exarust's model root is rooted at the feet,
-    /// so it takes that ground directly. The caller moves the character and
-    /// this model root by the difference from where the frame was.
+    /// so it would take that ground directly [guess: unit mapping]. Nothing
+    /// calls it live: the spawn does not run the snap.
     pub fn placement_feet(&self) -> f32 {
         self.drive.as_ref().map_or(0.0, |d| d.balance.under)
     }
