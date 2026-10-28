@@ -60,7 +60,7 @@ shift+S: cshd; msm
 | `--debug-bodies` | start with the overlay and the readout shown |
 | `--joint-trace <file.csv>` | write every joint of every simulated character body after every 83 Hz tick ([columns](#joint-trace)) |
 | `--pair-trace <file.csv>` | write every contact between two body parts that each 83 Hz tick's body–body detection found ([columns](#pair-trace)) |
-| `--corpse x,y,z` | in play mode, a dead human (a new record, in underwear) lies down here as a level's placed dead do (metres); repeatable. For contacts with corpses outside the story levels, e.g. `--corpse 0,0,3.4 --press W@150-420 play arena` walks the player over one |
+| `--corpse x,y,z` | in play mode, a dead human (a new record, in underwear) lies down here (metres); repeatable. Unlike a level's placed dead it has no saved pose, so it is built standing and falls limp. For contacts with corpses outside the story levels, e.g. `--corpse 0,0,3.4 --press W@150-420 play arena` walks the player over one |
 | `--trace <file.csv>` | the body trace in the retail probe's columns ([formats/RSQ.md](formats/RSQ.md), the foot contacts' states and anchors among them), then Exarust's own (the sleep countdown and state, the frame, the blend and hold, the clip clock's `rate` this tick, its `progress` and `clip_end` (1 on the tick its end test fires), the ankles), the condition word in hex (`0x300` getting up), the swing: `swing_rate` (frames the attack's clip ran this tick), `strength` (P) and `attack_flags` (the state word in hex: `0x2` stalling, `0x10` released, `0x10000` chained, `0x80000` no Remise), and last the locomotion ([Movement](#movement)): `loco_flags`, `moving`, `free_walk`, `yaw`, `heading`, `turn_rate`, `align`, `speed`, `reach`, `stop`, `goal_x`, `goal_z`; character bodies only |
 | `--trace-all` | with `--trace`, every simulated character body is traced, the player's among them (by default only the player's when there is one), e.g. to follow a duellist's distance from the player across `root_x`/`root_z` |
 | `--shove <frame>` | a body blow to every simulated character body at that frame after the load |
@@ -191,8 +191,9 @@ info ("… bone b struck by …: impact …, damage …"). With
 first: the struck character's name, whether it lives and its condition,
 the part, the striking body's name, bone, sleep state, countdown and
 settling, and the pair's impact, squared travel, hits and push. A level's
-corpse takes and deals none until its body first sleeps (it is still
-falling into the pose the original places it in).
+corpse lies on its saved pose and sleeps after one tick, so it never falls
+into place; the pair gate that keeps a body in its placed settling state
+out of limb impacts is the original's.
 
 The world cursor's shape changes are logged at debug level
 (`RUST_LOG=info,exa_game::cursor=debug`), and its size once it is drawn:

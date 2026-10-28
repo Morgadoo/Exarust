@@ -171,8 +171,8 @@ the daze's stance) writes it once a tick: the daze's writer, then
 clip playing, last tick's balance (0.6, 0.3 in double), summed limb
 motion (25 cm) and tone (0.85), which also names the branch the original
 takes next (`PostureBranch`). The get-up's start, the stagger and the
-get-up clip's end (`exa_game`), the killing blow and placed corpses write
-it too. `ticked_lives` tells the later stages of a character's tick that
+get-up clip's end (`exa_game`) and the killing blow write it too.
+`ticked_lives` tells the later stages of a character's tick that
 it did not die in its posture stage. Rules:
 [`docs/formats/RSQ.md`](../../docs/formats/RSQ.md) (Condition).
 

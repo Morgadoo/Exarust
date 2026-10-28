@@ -237,7 +237,7 @@ In play mode `--health yellow,red` SHALL give the player that starting yellow an
 - **THEN** `c.png` shows the player 83 ticks (1 s) into its collapse, still on its feet in Fall Backward's lead-in
 
 ### Requirement: Debug corpses
-In play mode, `exarust --corpse x,y,z` SHALL lay a dead human of a new record down at that point (metres), as a level's placed dead lie down; the flag MAY be given more than once.
+In play mode, `exarust --corpse x,y,z` SHALL lay a dead human of a new record down at that point (metres); having no saved pose, it SHALL be built standing and fall limp, unlike a level's placed dead. The flag MAY be given more than once.
 
 #### Scenario: A corpse walked into
 - **WHEN** `exarust --corpse 0,0,3.4 --press W@150-420 play arena` runs

@@ -192,6 +192,10 @@ impl Node {
     }
 }
 
+/// The squared distance (m²) under which a saved bone-tree record matches a
+/// part: 20 cm.
+pub const POSE_MATCH_DISTANCE_SQ: f32 = 0.04;
+
 /// One record of a saved bone tree: the bone's world frame and how many
 /// child records follow it.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -768,9 +772,10 @@ impl Body {
     /// world frame; each later record is matched to the child of its
     /// parent bone nearest its position (under 20 cm, the first nearest
     /// winning), takes the record as its world frame and the rows that
-    /// place it there under the parent as its local rows. A record with no
-    /// match skips its whole subtree. Every node's [`POSE_PENDING`] bit is
-    /// cleared first.
+    /// place it there under the parent as its local rows; its local origin
+    /// stays the built one (the world frame is what places the body). A
+    /// record with no match skips its whole subtree. Every node's
+    /// [`POSE_PENDING`] bit is cleared first.
     pub fn restore_tree_pose(&mut self, root: usize, records: &[PoseRecord]) {
         for i in self.descendants(root) {
             self.nodes[i].chunk_kind &= !POSE_PENDING;
@@ -791,7 +796,7 @@ impl Body {
             };
             *next += 1;
             let p = unplace(&self.nodes[node].world, r.frame[3]);
-            let mut best = 400.0;
+            let mut best = POSE_MATCH_DISTANCE_SQ;
             let mut pick = None;
             for &c in &self.nodes[node].children {
                 let d = distance_sq(p, self.nodes[c].local[3]);
@@ -804,6 +809,9 @@ impl Body {
                 Some(c) => {
                     self.nodes[c].world = r.frame;
                     let parent = self.nodes[node].world;
+                    // Only the rows are re-derived: the local origin stays
+                    // the built one, so a later sibling record is still
+                    // matched against the child's rest offset.
                     for (row, w) in self.nodes[c].local.iter_mut().zip(&r.frame).take(3) {
                         *row = unturn(&parent, *w);
                     }
@@ -817,7 +825,8 @@ impl Body {
     /// Restores a flat saved pose, one world frame per bone: every bone
     /// takes its frame as its world frame, the root (bone 0) also as its
     /// local, and every other bone the rows that place it under its
-    /// parent's new world frame as its local rows.
+    /// parent's new world frame as its local rows (its local origin stays
+    /// the built one).
     pub fn restore_flat_pose(&mut self, bones: &[usize], frames: &[Frame]) {
         for (&i, frame) in bones.iter().zip(frames) {
             self.nodes[i].world = *frame;
@@ -1122,26 +1131,26 @@ mod tests {
     #[test]
     fn a_tree_pose_matches_children_by_position() {
         let mut b = body();
-        b.nodes[1].local[3] = [-8.0, -8.0, 0.0];
-        b.nodes[3].local[3] = [0.0, 9.0, 0.0];
-        b.nodes[4].local[3] = [0.0, 35.0, 0.0];
+        b.nodes[1].local[3] = [-0.08, -0.08, 0.0];
+        b.nodes[3].local[3] = [0.0, 0.09, 0.0];
+        b.nodes[4].local[3] = [0.0, 0.35, 0.0];
         let records = [
             PoseRecord {
-                frame: translated([0.0, 100.0, 0.0]),
+                frame: translated([0.0, 1.0, 0.0]),
                 children: 2,
             },
             // Near the chest's place: the chest.
             PoseRecord {
-                frame: translated([1.0, 110.0, 0.0]),
+                frame: translated([0.01, 1.1, 0.0]),
                 children: 1,
             },
             PoseRecord {
-                frame: translated([0.0, 200.0, 0.0]),
+                frame: translated([0.0, 2.0, 0.0]),
                 children: 0,
             },
             // Nowhere near a child of the pelvis: skipped with its child.
             PoseRecord {
-                frame: translated([90.0, 100.0, 0.0]),
+                frame: translated([0.9, 1.0, 0.0]),
                 children: 1,
             },
             PoseRecord {
@@ -1150,12 +1159,13 @@ mod tests {
             },
         ];
         b.restore_tree_pose(0, &records);
-        assert_eq!(b.nodes[0].local[3], [0.0, 100.0, 0.0]);
-        assert_eq!(b.nodes[3].world[3], [1.0, 110.0, 0.0]);
-        // Only the rows are re-derived; the head's record is 90 cm up, too
-        // far from the head.
-        assert_eq!(b.nodes[3].local[3], [0.0, 9.0, 0.0]);
+        assert_eq!(b.nodes[0].local[3], [0.0, 1.0, 0.0]);
+        assert_eq!(b.nodes[3].world[3], [0.01, 1.1, 0.0]);
+        // Only the rows are re-derived: the chest keeps its built offset.
+        assert_eq!(b.nodes[3].local[3], [0.0, 0.09, 0.0]);
+        // The head's record is 90 cm up, too far from the head.
         assert_eq!(b.nodes[4].world, IDENTITY);
+        assert_eq!(b.nodes[4].local[3], [0.0, 0.35, 0.0]);
         assert_eq!(b.nodes[1].world, IDENTITY);
     }
 
@@ -1172,6 +1182,34 @@ mod tests {
         assert_eq!(b.nodes[0].local, turned);
         assert_eq!(b.nodes[3].world, turned);
         assert_eq!(b.nodes[3].local[..3], IDENTITY[..3]);
+    }
+
+    /// Two records near the same child, 15 cm either side of its rest
+    /// offset: both match it, as the rest offset is left in place by the
+    /// first; the second record's frame is the one kept.
+    #[test]
+    fn a_tree_pose_matches_siblings_against_the_rest_offset() {
+        let mut b = body();
+        b.nodes[1].local[3] = [-0.5, 0.0, 0.0];
+        b.nodes[3].local[3] = [0.0, 0.1, 0.0];
+        let records = [
+            PoseRecord {
+                frame: translated([0.0, 1.0, 0.0]),
+                children: 2,
+            },
+            PoseRecord {
+                frame: translated([0.0, 1.25, 0.0]),
+                children: 0,
+            },
+            PoseRecord {
+                frame: translated([0.0, 0.95, 0.0]),
+                children: 0,
+            },
+        ];
+        b.restore_tree_pose(0, &records);
+        assert_eq!(b.nodes[3].world[3], [0.0, 0.95, 0.0]);
+        assert_eq!(b.nodes[3].local[3], [0.0, 0.1, 0.0]);
+        assert_eq!(b.nodes[1].world, IDENTITY);
     }
 
     /// The state copy pairs flagged children by slot.

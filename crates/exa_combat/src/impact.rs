@@ -29,13 +29,6 @@
 //!   over 0.01 (a dead body keeps it), and the root's sinking speed takes
 //!   a slower height change at once and blends a faster one in at 0.005.
 //!
-//! - **Corpses being laid out.** The original puts a level's corpse in the
-//!   pose saved with the level and lets it sleep after one tick, so it never
-//!   falls into the stretcher, table or bath it lies on. Exarust drops it
-//!   from standing until saved poses are placed; until that body first
-//!   sleeps ([`LayingOut`]) neither it nor what it falls against takes a limb
-//!   impact, which the original would not have dealt.
-//!
 //! [inf] The original reads the sinking point through the part's own
 //! weights; Exarust takes the root part's origin, and the character's
 //! counter as its root part's. The impact's voice request, the
@@ -125,26 +118,6 @@ impl ImpactBook {
     pub fn recover(&mut self) {
         if f64::from(self.taken) > TAKEN_DECAY {
             self.taken = (f64::from(self.taken) - TAKEN_DECAY) as f32;
-        }
-    }
-}
-
-/// A corpse placed by its level that is still falling into place:
-/// Exarust's stand-in for the original's saved pose (the corpse is built
-/// standing and collapses), lifted once its body first sleeps
-/// ([`finish_laying_out`]). Its limbs take no impacts meanwhile, and strike
-/// none.
-#[derive(Component, Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct LayingOut;
-
-/// A corpse whose body has gone to sleep has been laid out.
-pub fn finish_laying_out(
-    mut commands: Commands,
-    corpses: Query<(Entity, &Ragdoll), With<LayingOut>>,
-) {
-    for (entity, body) in &corpses {
-        if body.asleep() {
-            commands.entity(entity).remove::<LayingOut>();
         }
     }
 }
@@ -239,7 +212,6 @@ pub fn strike_limbs(
     mut winds: MessageWriter<SecondWindFired>,
     mut roll: Local<Roll>,
     names: Query<(Option<&Name>, Option<&ChildOf>)>,
-    laying_out: Query<(), With<LayingOut>>,
 ) {
     let now = ticks.as_ref().map_or(0, |t| t.millis()) as u32;
     let story = story.is_some_and(|s| s.0);
@@ -279,10 +251,7 @@ pub fn strike_limbs(
                 };
                 let other_strikes =
                     other_part.state.is_limb() && other_part.state.has(PartState::STRIKING);
-                if fighters.contains(target)
-                    && !laying_out.contains(target)
-                    && !laying_out.contains(other_root)
-                {
+                if fighters.contains(target) {
                     struck.push(Struck {
                         target,
                         part: own.1,
@@ -437,10 +406,7 @@ pub fn strike_limbs(
 pub(crate) fn plugin(app: &mut App) {
     app.add_message::<LimbImpact>()
         .add_message::<ImpactSounded>()
-        .add_systems(
-            FixedUpdate,
-            (strike_limbs, finish_laying_out).chain().after(BodySystems),
-        );
+        .add_systems(FixedUpdate, strike_limbs.after(BodySystems));
 }
 
 #[cfg(test)]

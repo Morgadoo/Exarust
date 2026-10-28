@@ -169,9 +169,20 @@ These are tested rules the running game does not drive yet.
   merge-node collection the skin builder
   asks for (the chosen node, its marked parent at no offset, its marked
   mesh children at the saved slot frame or their own world position), the
-  overlay marks and both saved-pose restores (a bone tree matched by
-  position, and a flat list). The rest vectors come from the engine's shape
-  builder, which the caller supplies.
+  overlay marks and both saved-pose restores (a bone tree matched to the
+  nearest child rest offset within 20 cm, and a flat list by slot; both
+  re-derive only the local rows, as the world frame is what places the
+  body). The rest vectors come from the engine's shape builder, which the
+  caller supplies.
+- `pose` puts a level's saved pose on a body model's scene tree: the bone
+  tree first (records in depth-first order, each to the parent part's
+  nearest child within 20 cm, an unmatched record skipping its subtree),
+  the legacy flat matrices otherwise (slots 1 to 18 by the saved part
+  table: pelvis, belly, chest, the right arm, the head, the left arm, the
+  legs), and with neither the built pose. It gives every node its local
+  frame and returns the character frame's translation (the restored root's
+  world origin), so a corpse is spawned lying exactly where the level saved
+  it instead of falling into place.
 - `factory` is the start-up data: the eighteen slots' child tables, the
   skin-map side/format from the pixel-format setting (512 below 3, 1024
   from 3), the inventory preview's side (`preview_side`: 512 unless the
@@ -212,8 +223,12 @@ These are tested rules the running game does not drive yet.
   weapon, then one off-hand item (a shield from either hand first, else
   hand 1's torch, else its second weapon); a weapon's hand flag lights it
   and the last weapon's sets the character's flipped grip
-  (`holds_flipped`). The viewer still stands placed characters on the
-  ground and does not set the motion, so these are plans.
+  (`holds_flipped`). The viewer still stands living placed characters on the ground and does
+  not set the motion, so those are plans; it places a level's dead from
+  their saved pose: muscles off, every part on its saved world frame, the
+  character frame at the restored root's origin, and the bodies registered
+  at rest (one tick, then sleep). Only a `--corpse` without a saved pose
+  keeps the built pose and the limp fall.
 
 ## Held items
 

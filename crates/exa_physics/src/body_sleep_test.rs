@@ -104,6 +104,24 @@ fn a_limp_body_sleeps_by_its_speed() {
     assert_eq!(drift(&mut body, 0.0, 400), Some(128));
 }
 
+/// A body registered at rest as a level places it runs one tick and sleeps
+/// in that tick's post-step; the next tick is deep sleep. Its countdown
+/// starts at zero and no wake resets it.
+#[test]
+fn a_placed_body_runs_one_tick_then_sleeps() {
+    let mut body = ball(Vec3::ZERO);
+    body.register_placed();
+    assert_eq!(body.countdown(), 0);
+    assert_eq!(body.sleep, Sleep::Awake);
+    assert!(!body.asleep());
+    body.tick(NONE);
+    assert_eq!(body.sleep, Sleep::Asleep);
+    assert_eq!(body.countdown(), 0);
+    assert!(body.asleep());
+    body.tick(NONE);
+    assert_eq!(body.sleep, Sleep::Deep);
+}
+
 /// A dormant statue's whole tree counts down by one a tick, floored at 1,
 /// whatever its motion: from 256 it sleeps in its 255th tick.
 #[test]

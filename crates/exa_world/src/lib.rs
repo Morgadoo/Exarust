@@ -151,8 +151,12 @@ pub struct PlacedCharacter {
     /// What it wears and the shield it holds weigh, as the spawn's armour
     /// pass sums them.
     pub encumbrance: f32,
-    /// The placement's saved bone matrices, in skeleton order.
-    pub pose: Vec<[[f32; 3]; 4]>,
+    /// The pose the level saved with it, if any.
+    pub pose: exa_formats::characters::SavedPose,
+    /// Spawn the dead from their built pose and let them collapse. Only the
+    /// command line's synthetic corpse does; a level's dead are placed from
+    /// their saved pose and never fall.
+    pub fall: bool,
 }
 
 /// An item in one of a record's four hand slots.
@@ -250,6 +254,7 @@ fn placed_characters(scene: &Scene, global: &[Item], locale: Option<u32>) -> Vec
                 record: record.clone(),
                 encumbrance: exa_formats::encumbrance::of_record(record, find),
                 pose: p.pose.clone(),
+                fall: false,
             })
         })
         .collect()
@@ -1766,7 +1771,7 @@ mod tests {
             position: [0.0; 3],
             yaw: 0.0,
             condition: 0,
-            pose: Vec::new(),
+            pose: exa_formats::characters::SavedPose::None,
         }
     }
 

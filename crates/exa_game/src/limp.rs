@@ -34,7 +34,7 @@ use exa_formats::rsq::{BoneBody, Clip};
 use exa_physics::CharacterBody;
 use exa_physics::body::locomotion::{LegMode, Locomotion, Locomotor};
 use exa_physics::body::{
-    Bearing, BodyStats, Drive, GoLimp, PartSetup, Physical, RaceMuscles, Ragdoll,
+    Bearing, BodyStats, Drive, GoLimp, PartSetup, Physical, PlacedCorpse, RaceMuscles, Ragdoll,
 };
 
 use crate::stages::CharacterTickPlugin;
@@ -59,8 +59,16 @@ fn build_bodies(
     mut commands: Commands,
     motions: Option<Res<Motions>>,
     mut requests: Query<
-        (Entity, Option<&mut Physical>, Option<&mut GoLimp>),
-        (Without<Ragdoll>, Or<(With<Physical>, With<GoLimp>)>),
+        (
+            Entity,
+            Option<&mut Physical>,
+            Option<&mut GoLimp>,
+            Option<&mut PlacedCorpse>,
+        ),
+        (
+            Without<Ragdoll>,
+            Or<(With<Physical>, With<GoLimp>, With<PlacedCorpse>)>,
+        ),
     >,
     children: Query<&Children>,
     parents: Query<&ChildOf>,
@@ -70,14 +78,19 @@ fn build_bodies(
     meshes: Res<Assets<Mesh>>,
 ) {
     let Some(motions) = motions else { return };
-    for (root, physical, limp) in &mut requests {
+    for (root, mut physical, mut limp, mut placed) in &mut requests {
         let race = physical.as_ref().map_or(RaceMuscles::HUMAN, |p| p.race);
         let stats = physical.as_ref().map_or(BodyStats::HUMAN, |p| p.stats);
+        let corpse = placed.is_some();
         // Wait until the body has been placed and posed.
-        let delay = match (physical, limp) {
-            (_, Some(l)) => &mut l.into_inner().delay,
-            (Some(p), None) => &mut p.into_inner().delay,
-            (None, None) => continue,
+        let delay = if let Some(p) = placed.as_mut() {
+            &mut p.delay
+        } else if let Some(l) = limp.as_mut() {
+            &mut l.delay
+        } else if let Some(p) = physical.as_mut() {
+            &mut p.delay
+        } else {
+            continue;
         };
         if *delay > 0 {
             *delay -= 1;
@@ -101,11 +114,15 @@ fn build_bodies(
                     .take_while(|&a| a != root)
                     .find_map(|a| index.get(&a).copied());
                 let (centre, half) = part_box(entity, bone, &children, &skinned, &meshes);
-                // The part's origin in its parent: the model's translation
-                // of the part (rotations play no part in joining them; the
-                // debug tools measure the joint from the rest turn).
+                // The part's origin in its parent: the model's rest
+                // translation of the part, or for a body registered where a
+                // level placed it, the translation its saved pose gives.
                 let rest = parent.map_or(Affine3A::IDENTITY, |p| {
-                    rest_under(entity, found[p].0, &parents, &parts, &locals)
+                    if corpse {
+                        current_under(entity, found[p].0, &parents, &locals)
+                    } else {
+                        rest_under(entity, found[p].0, &parents, &parts, &locals)
+                    }
                 });
                 let (_, turn, origin) = rest.to_scale_rotation_translation();
                 rest_turns.push(turn);
@@ -120,20 +137,30 @@ fn build_bodies(
                 )
             })
             .collect();
-        // A limp request is honoured by `go_limp` next. From now on the
-        // body's ticks advance and sample its clips.
-        commands
-            .entity(root)
-            .insert((
-                Ragdoll::new(&setup)
-                    .with_drive()
-                    .with_race(race)
-                    .with_stats(stats)
-                    .with_rest_turns(&rest_turns)
-                    .place_foot_pitches(),
-                TickedClips,
-            ))
-            .remove::<Physical>();
+        let body = if corpse {
+            // A level's dead are already in their saved pose: limp, no
+            // muscles, and registered at rest (one tick, then sleep).
+            let mut body = Ragdoll::new(&setup);
+            body.register_placed();
+            body
+        } else {
+            // A limp request is honoured by `go_limp` next. From now on the
+            // body's ticks advance and sample its clips.
+            Ragdoll::new(&setup)
+                .with_drive()
+                .with_race(race)
+                .with_stats(stats)
+                .with_rest_turns(&rest_turns)
+                .place_foot_pitches()
+        };
+        let mut entity = commands.entity(root);
+        entity
+            .insert(body)
+            .remove::<Physical>()
+            .remove::<PlacedCorpse>();
+        if !corpse {
+            entity.insert(TickedClips);
+        }
     }
 }
 
@@ -786,6 +813,29 @@ fn rest_under(
     placement
 }
 
+/// Where `part` sits in its ancestor `parent`'s space in the body's current
+/// pose: every node between contributes its current local transform (a
+/// placed body's joints are where its saved pose put them, not where its
+/// model rest pose has them).
+fn current_under(
+    part: Entity,
+    parent: Entity,
+    parents: &Query<&ChildOf>,
+    locals: &Query<&Transform>,
+) -> Affine3A {
+    let mut placement = Affine3A::IDENTITY;
+    let mut node = part;
+    while node != parent {
+        let local = locals.get(node).copied().unwrap_or_default();
+        placement = local.compute_affine() * placement;
+        match parents.get(node) {
+            Ok(up) => node = up.parent(),
+            Err(_) => break,
+        }
+    }
+    placement
+}
+
 /// Box of a part's own skinned body meshes, in its space.
 fn part_box(
     part: Entity,
@@ -1083,6 +1133,52 @@ pub(crate) mod tests {
             TickedClips,
         ));
         root
+    }
+
+    /// A body root registered where a level placed it is built limp at
+    /// rest, without clips: its parts' saved world frames place the
+    /// particles, its muscles stay off, and its countdown starts at zero.
+    #[test]
+    fn a_placed_corpse_is_built_limp_at_rest() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<Assets<Mesh>>()
+            .insert_resource(motions())
+            .add_systems(Update, build_bodies);
+        let root = app.world_mut().spawn(PlacedCorpse::default()).id();
+        let rest = |local_at: Vec3, world_at: Vec3, bone: usize| {
+            let t = Transform::from_translation(local_at);
+            (
+                t,
+                GlobalTransform::from_translation(world_at),
+                BodyPart { bone, rest: t },
+            )
+        };
+        let pelvis_world = Affine3A::from_translation(Vec3::new(1.0, 2.0, 3.0));
+        let pelvis = app
+            .world_mut()
+            .spawn((
+                rest(Vec3::ZERO, pelvis_world.translation.into(), 1),
+                ChildOf(root),
+            ))
+            .id();
+        let thigh_at = Vec3::new(0.1, -0.1, 0.0);
+        app.world_mut().spawn((
+            rest(thigh_at, pelvis_world.transform_point3(thigh_at), 2),
+            ChildOf(pelvis),
+        ));
+        for _ in 0..4 {
+            app.update();
+        }
+        let world = app.world();
+        assert!(!world.entity(root).contains::<PlacedCorpse>());
+        let body = world.get::<Ragdoll>(root).unwrap();
+        assert!(body.drive.is_none());
+        assert_eq!(body.countdown(), 0);
+        assert_eq!(body.sleep, exa_physics::body::Sleep::Awake);
+        assert!(!body.asleep());
+        assert_eq!(body.parts.len(), 2);
+        assert!(body.parts[0].positions.iter().all(|p| p.is_finite()));
     }
 
     /// The human body's joints from the installed `humanoid.rsq` and

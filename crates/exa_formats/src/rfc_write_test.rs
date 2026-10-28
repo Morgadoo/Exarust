@@ -938,7 +938,13 @@ fn a_dead_character_stores_its_pose_tree() {
     assert_eq!(pl.position, [5.0, 0.12, -2.0]);
     assert_eq!((pl.yaw, pl.condition), (1.5, DEAD));
     // The root and its one child of class 0x12, which as a leaf writes none.
-    assert_eq!(pl.pose.len(), 2);
+    let crate::characters::SavedPose::Tree(records) = &pl.pose else {
+        panic!("a bone tree: {:?}", pl.pose)
+    };
+    assert_eq!(records.len(), 2);
+    assert_eq!(records[0].children, 1);
+    assert_eq!(records[1].children, 0);
+    assert_eq!(records[0].word, 5);
 }
 
 #[test]

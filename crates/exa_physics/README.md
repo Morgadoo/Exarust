@@ -237,9 +237,16 @@ scale outside an attack), and a dormant body takes 0.95 of the fast value
 in double first. A limp body sleeps by the original's countdown
 (`body::Ragdoll::countdown`: 256, two off each tick under 20 cm/s, held at
 30–32 between 20 and 40 cm/s, back to 256 above) and is woken by a blow,
-by going limp or by a contact with an awake body; a living body never
+by going limp or by a contact with an awake body (a sleeper woken by a
+contact takes that tick's post-step, so one woken to a countdown under 2
+sleeps again at once); a living body never
 sleeps, though a dormant statue or golem counts down one a tick and
-sleeps 255 ticks after going dormant.
+sleeps 255 ticks after going dormant. A body a level placed from its saved
+pose is built limp and registered at rest
+(`body::Ragdoll::register_placed`, the `body::PlacedCorpse` request): every
+velocity zero and the countdown at 0, so it runs one tick and that tick's
+post-step puts it to sleep, with deep sleep from the next; it never wakes
+on its own.
 Each part also keeps its state word and the part's own impact and wound
 bookkeeping (`part`): the class bits this crate reads (`part::PartState`:
 the strike window and chain, a held item, an arm, a muscled limb, a sole,

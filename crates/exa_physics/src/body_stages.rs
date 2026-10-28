@@ -298,6 +298,16 @@ pub fn solve_among<L: Level + Sync + ?Sized>(
     drop(span);
     let _span = bevy::log::info_span!("solver: post-step").entered();
     each_body(bodies, None, Ragdoll::post_step);
+    // A sleeper an awake body's contact woke this tick is back in the
+    // solver list and takes this tick's post-step too, as the original's
+    // does: one woken to a countdown under 2 (by a body about to sleep)
+    // falls asleep again at once, and its next tick takes the push's
+    // motion away.
+    for b in sleeping.iter_mut() {
+        if b.sleep == super::Sleep::Awake {
+            b.post_step();
+        }
+    }
     for s in stages.iter_mut() {
         s.post_step(bodies);
     }

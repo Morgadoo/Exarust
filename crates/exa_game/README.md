@@ -330,7 +330,9 @@ chain; the
 clock of a locomoting body takes the locomotion's step; a get-up's clip ending into the stance writes the condition
 word normal; sampler); its targets, the sampled parts on its character
 frame, and its lift, its controller told to follow the frame (carry); a body asked to go limp keeps its motion unless given a
-velocity (`limp`),
+velocity (`limp`), and a level's placed dead are built limp from their
+saved pose and registered at rest (`exa_physics::body::PlacedCorpse`: one
+tick, then sleep; only a `--corpse` without a pose falls),
 the original's falls, staggers and get-ups from last tick's balance
 (`balance`, in the posture stage after the condition: upright the Defence
 stance or Rebalance, leaning a stagger (a get-up jumped in a few keys) or

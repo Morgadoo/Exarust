@@ -598,6 +598,52 @@ fn sleepers_are_woken_by_contact() {
     assert!(sleeper.parts[0].contacts.is_empty());
 }
 
+/// A sleeper touched by a body registered at rest (countdown 1 in its
+/// first tick) takes that countdown and this tick's post-step: it is
+/// asleep again at once, the next tick takes the push's motion away, and
+/// from then on neither moves.
+#[test]
+fn a_sleeper_woken_to_one_sleeps_in_the_same_tick() {
+    let ground = floor_quad(0.0, 5.0);
+    let mut sleeper = ball(1, 11, Vec3::new(0.0, 0.1, 0.0), 0.1);
+    let mut ticks = 0;
+    while sleeper.sleep != Sleep::Deep && ticks < 400 {
+        sleeper.tick(ground.as_slice());
+        ticks += 1;
+    }
+    assert_eq!(sleeper.sleep, Sleep::Deep);
+    // A placed body overlapping it by 2 cm.
+    let mut placed = ball(2, 11, Vec3::new(0.18, 0.1, 0.0), 0.1);
+    placed.register_placed();
+    let mut stages = pairs();
+    step(
+        &mut [&mut placed, &mut sleeper],
+        ground.as_slice(),
+        &mut stages,
+    );
+    assert_eq!(the_pairs(&stages).touches().len(), 1);
+    assert_eq!(placed.sleep, Sleep::Asleep);
+    assert_eq!(sleeper.sleep, Sleep::Asleep);
+    assert_eq!(sleeper.countdown(), 0);
+    step(
+        &mut [&mut placed, &mut sleeper],
+        ground.as_slice(),
+        &mut stages,
+    );
+    assert_eq!(placed.sleep, Sleep::Deep);
+    assert_eq!(sleeper.sleep, Sleep::Deep);
+    let (a, b) = (placed.parts[0].positions, sleeper.parts[0].positions);
+    for _ in 0..5 {
+        step(
+            &mut [&mut placed, &mut sleeper],
+            ground.as_slice(),
+            &mut stages,
+        );
+    }
+    assert_eq!(placed.parts[0].positions, a);
+    assert_eq!(sleeper.parts[0].positions, b);
+}
+
 /// A character's lower legs carry the living lower legs' layer and its
 /// feet are out of every contact with other parts: two characters' shins
 /// pass through each other while they live; once one is dead its shins
