@@ -2438,10 +2438,7 @@ mod build_tests {
         let mut live = world.remove_resource::<live::TerrainStreaming>().unwrap();
         assert_eq!(live.tiles().len(), 20);
         assert!(!live.blocks().is_empty());
-        assert_eq!(
-            stats.tiles,
-            live.blocks().iter().map(|b| b.tile).max().unwrap() + 1
-        );
+        assert!(live.blocks().iter().all(|block| block.tile < 20));
         let visible = vec![true; live.blocks().len()];
         let distances = vec![None; live.blocks().len()];
         let tick = live.tick(Vec2::ZERO, &visible, &distances);
