@@ -304,3 +304,46 @@ fn a_held_item_stays_at_its_hand_over_ticks() {
         assert!((a.distance(b)) < 0.05, "{a} {b}");
     }
 }
+
+/// The stage works on a copy of the links; after the tick a slack link's
+/// smoothed length is carried back to the item's grip, so the damper keeps
+/// its state from tick to tick.
+#[test]
+fn a_grip_links_smoothed_length_carries_over_ticks() {
+    use crate::body::SolverStages;
+    use crate::grip::{GripSpec, HeldGrip};
+
+    let hand = Entity::from_raw_u32(2).unwrap();
+    let mut link = pivot([1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0], (0.5, 0.5));
+    link.slack = 0.05;
+    link.length = 0.05;
+    let grip = HeldGrip {
+        spec: GripSpec {
+            hand: 0,
+            links: Vec::new(),
+            second_hand: None,
+            arm: None,
+            extra: None,
+        },
+        scale: 1.0,
+        size: 1.0,
+        second_hand_factor: 1.0,
+        flip: false,
+        holder_key: hand,
+        hands: [Some(hand), None],
+        arms: [None, None],
+        links: Some(links(link.clone())),
+        released: false,
+    };
+    let mut app = App::new();
+    let item_e = app.world_mut().spawn(grip).id();
+    let mut solved = link;
+    solved.length = 0.0321;
+    let mut stages = SolverStages::default();
+    stages.add(solver(item_e, hand, links(solved)));
+    app.insert_resource(stages)
+        .add_systems(Update, crate::grip_solve::store_grip_lengths);
+    app.update();
+    let grip = app.world().get::<HeldGrip>(item_e).unwrap();
+    assert_eq!(grip.links.as_ref().unwrap().links[0].length, 0.0321);
+}

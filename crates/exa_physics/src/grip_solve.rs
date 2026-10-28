@@ -325,6 +325,26 @@ pub fn sync_grips(held: Query<(Entity, &HeldGrip)>, mut stages: ResMut<SolverSta
     }
 }
 
+/// Keeps each grip link's smoothed length after the tick's solver: the
+/// stage works on a copy of the links, and a slack link's damper must carry
+/// its length from tick to tick as the original's link records do.
+pub fn store_grip_lengths(mut held: Query<&mut HeldGrip>, stages: Res<SolverStages>) {
+    let Some(solver) = stages.get::<GripSolver>() else {
+        return;
+    };
+    for group in &solver.groups {
+        let Ok(mut grip) = held.get_mut(group.item) else {
+            continue;
+        };
+        let Some(links) = grip.links.as_mut() else {
+            continue;
+        };
+        for (kept, solved) in links.links.iter_mut().zip(&group.links.links) {
+            kept.length = solved.length;
+        }
+    }
+}
+
 /// Installs the grip stage into the solver's stages.
 pub fn install_stage(mut stages: ResMut<SolverStages>) {
     if stages.get::<GripSolver>().is_none() {
@@ -335,12 +355,14 @@ pub fn install_stage(mut stages: ResMut<SolverStages>) {
 /// Adds the grip stage and its per-tick sync. Called by
 /// [`crate::PhysicsPlugin`].
 pub fn plugin(app: &mut App) {
-    app.add_systems(Startup, install_stage).add_systems(
-        FixedUpdate,
-        (build_grips, release_freed_grips, mark_held, sync_grips)
-            .chain()
-            .before(BodySystems),
-    );
+    app.add_systems(Startup, install_stage)
+        .add_systems(
+            FixedUpdate,
+            (build_grips, release_freed_grips, mark_held, sync_grips)
+                .chain()
+                .before(BodySystems),
+        )
+        .add_systems(FixedUpdate, store_grip_lengths.after(BodySystems));
 }
 
 #[cfg(test)]
