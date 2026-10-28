@@ -168,7 +168,10 @@ the object's, by the frame word's `0x20000`). The liquid level is uploaded
 for the refracting bit and the GI corner for the environment's GI bit. A
 surface draws the scene's super-sampling sub-frames (halved under sun mode
 3 for the object's `0x40000000` frame bit), each with its own `SdwSmp`
-window and, for an animated node, its own clock. With super-sampling off
+window and, for an animated node, its own clock. A node with the
+motion-blur flag (`0x20`) gets a shutter time per sub-frame,
+`((i + first + 0.5)·d / factor + clock) − d·0.5` in single precision, `d`
+the node's shutter length (`draw_state::motion_blur_time`). With super-sampling off
 the draw takes the single-pass variant (the one the terrain and grass draws
 share): one matrix, the taps uploaded once and no sub-frame clock. Effect
 draws take their parent's world matrix when they have none of their own

@@ -355,6 +355,19 @@ impl DrawState {
     }
 }
 
+/// The shutter time of one super-sampling sub-frame for a node that blurs
+/// its motion (the node's motion-blur flag `0x20`): the sub-frame's slot
+/// `index + first` (the frame's first sub-frame index) is centred with
+/// `+ 0.5`, scaled by the node's shutter `duration` over the sample factor,
+/// moved to the frame clock and back by half the shutter. Single precision
+/// in the engine's order: `((i + 0.5)·d / factor + clock) − d·0.5`.
+/// [The node field read as a shutter length and the added frame index are
+/// named from how the formula uses them; the arithmetic is exact.]
+pub fn motion_blur_time(index: u32, first: i32, duration: f32, factor: u32, clock: f32) -> f32 {
+    let slot = (i64::from(index) + i64::from(first)) as f32;
+    ((slot + 0.5) * duration / factor as f32 + clock) - duration * 0.5
+}
+
 /// The world matrix an effect draw uses, from the original's parent-transform
 /// pass: an object without its own matrix takes its parent's, unless its
 /// material word has bit `0x20`; an object with one keeps it. The pass also
@@ -690,6 +703,25 @@ mod tests {
         scene.sun_shadow_mode = 3;
         let plan = state.prepare(&object, &scene, DrawPath::Supersampled, false);
         assert_eq!(plan.subframes.len(), 1);
+    }
+
+    #[test]
+    fn motion_blur_spreads_the_subframes_over_the_shutter() {
+        // Four samples over a 0.1 s shutter at clock 2: the slots sit at
+        // 1.9625, 1.9875, 2.0125 and 2.0375 (each step one quarter shutter).
+        let times: Vec<f32> = (0..4)
+            .map(|i| motion_blur_time(i, 0, 0.1, 4, 2.0))
+            .collect();
+        assert_eq!(times[0], ((0.5f32 * 0.1) / 4.0 + 2.0) - 0.05);
+        assert!((times[0] - 1.9625).abs() < 1e-6);
+        assert!((times[3] - 2.0375).abs() < 1e-6);
+        // The frame's first sub-frame index shifts the slot.
+        assert_eq!(
+            motion_blur_time(0, 2, 0.1, 4, 2.0),
+            motion_blur_time(2, 0, 0.1, 4, 2.0)
+        );
+        // No shutter: every sub-frame is the clock.
+        assert_eq!(motion_blur_time(3, 0, 0.0, 4, 2.0), 2.0);
     }
 
     #[test]
