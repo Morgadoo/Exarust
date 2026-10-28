@@ -355,8 +355,9 @@ pub const OBJECT_PAYLOAD: u32 = 0xFB02;
 /// What the controls do with a GUI drag that starts over the world view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DragClaim {
-    /// The drag is the controls': the drop task is queued and the release
-    /// callback installed.
+    /// The drag is the controls': the release callback is installed, the
+    /// drop task queued for an item payload only ([`ITEM_PAYLOAD`]; an
+    /// object payload queues none), and the pending word set.
     Take,
     /// An item is already held: the drag is left to it.
     Busy,
