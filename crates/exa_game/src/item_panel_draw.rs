@@ -57,6 +57,53 @@ impl PanelIcons {
         }
     }
 
+    /// The icon handle and half extents for an item, reserving a cache slot
+    /// when the renderer has not made one. The original acquires an icon by
+    /// rendering it off screen; Exarust has no item renderer yet, so the
+    /// slot keeps the item's id and the panel icon's half extents with no
+    /// atlas cell (`-1`, which the draw skips). The panel's entry and its
+    /// drag payload stay whole until the renderer fills the slot. [guess]
+    pub fn reserve(&mut self, id: u32) -> (usize, (i32, i32)) {
+        let (half_width, half_height) = self.icon_half();
+        if let Some(at) = self.entries_slot(id) {
+            return (at + 1, (half_width, half_height));
+        }
+        self.cache.entries.push(exa_items::icon_cache::Entry {
+            id,
+            cell: -1,
+            variant: 0,
+            half_width,
+            half_height,
+            refs: 1,
+        });
+        (self.cache.entries.len(), (half_width, half_height))
+    }
+
+    /// A reserved slot for `id`, when the cache already holds one. A slot
+    /// the renderer made has a real cell and is used as it is.
+    fn entries_slot(&self, id: u32) -> Option<usize> {
+        self.cache
+            .entries
+            .iter()
+            .position(|entry| entry.id == id && entry.cell < 0)
+    }
+
+    /// The panel icon's half extents: the icon manager adds the GUI unit to
+    /// each (`icon_cache`'s own halves; a reserved icon has no pixels).
+    pub fn icon_half(&self) -> (i32, i32) {
+        let unit = self.cache.unit;
+        let half = self.atlas.cell / 2;
+        (unit + half, half + unit)
+    }
+
+    /// The half extents of an icon slot, for the panel's clamps.
+    pub fn half(&self, handle: usize) -> Option<(i32, i32)> {
+        self.cache
+            .entries
+            .get(handle.checked_sub(1)?)
+            .map(|entry| (entry.half_width, entry.half_height))
+    }
+
     /// The atlas's texture, rebuilt when its image changed.
     fn texture(&mut self) -> Option<&GuiTexture> {
         let image = &self.atlas.image;
@@ -100,6 +147,11 @@ impl PanelIcons {
             else {
                 continue;
             };
+            // A reserved slot has no atlas cell until the item renderer
+            // fills it.
+            if cached.cell < 0 {
+                continue;
+            }
             let Some(quad) =
                 self.atlas
                     .draw_batched(cached.cell, entry.cell.x as f32, entry.cell.y as f32)

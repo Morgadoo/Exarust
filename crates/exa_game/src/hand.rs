@@ -982,6 +982,7 @@ fn press_hand(
     mut bodies: Query<OtherBodies, Without<PlayerBody>>,
     kinesis: Option<Res<KinesisPickHook>>,
     mut kinesis_picks: Option<ResMut<Messages<KinesisPicked>>>,
+    over_gui: Option<Res<crate::panel_live::PointerOverGui>>,
 ) {
     let kinesis = kinesis.and_then(|k| k.0);
     let now = real.elapsed().as_millis() as i64;
@@ -990,6 +991,11 @@ fn press_hand(
             .position(w)
             .map(|p| (p, (p * w.scale_factor()).as_ivec2()))
     });
+    // The GUI's own press path takes a press over an open screen; the world
+    // sees neither the pick nor the click.
+    if over_gui.is_some_and(|over| over.0) && buttons.just_pressed(MouseButton::Left) {
+        return;
+    }
     if buttons.just_pressed(MouseButton::Left) {
         let double = pointer.is_some_and(|(_, px)| {
             hand.last_click.is_some_and(|(was, ms)| {
@@ -1283,14 +1289,20 @@ fn hold_hand(
                             && let Some(Hit::Character { body, .. }) = picked.map(|p| p.hit)
                             && let Some(messages) = screens.as_deref_mut()
                         {
+                            // The body's record flag word, as the original
+                            // reads it for the show rule: the condition word
+                            // carries the getting-up values it tests.
+                            let flags = bodies
+                                .get(body)
+                                .ok()
+                                .and_then(|(_, _, condition, _)| condition.copied())
+                                .map_or(0, |condition| condition.0);
                             messages.write(ScreenRequest {
                                 screen: exa_ui::game_gui::GameScreen::Loot,
                                 player_ready: !condition.dying(),
                                 player_alive: !condition.is_dead(),
                                 target: Some(body.index().index() as i32),
-                                // The body's record flag word is not read
-                                // by this path yet; 0 passes the show rule.
-                                flags: 0,
+                                flags,
                             });
                         }
                     }

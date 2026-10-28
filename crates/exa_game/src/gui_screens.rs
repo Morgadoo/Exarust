@@ -31,6 +31,7 @@ use exa_ui::gui_core::{FormHost, FormId, GuiRect, GuiTask, NO_CONTROL};
 use exa_ui::gui_draw::{GuiFrames, GuiTextures};
 use exa_ui::skin::SkinBatch;
 
+use crate::body_inventory;
 use crate::gui_paint::{self, Frame};
 use crate::item_container::{CardWindow, Container};
 use crate::item_panel_draw::PanelIcons;
@@ -611,10 +612,16 @@ fn sync_screen_size(
 
 /// Opens the screens the hotkeys asked for; Escape closes the focused one.
 /// Nothing happens while the main menu is open.
+#[allow(clippy::too_many_arguments)]
 fn open_requested_screens(
     keys: Res<ButtonInput<KeyCode>>,
     mut requests: MessageReader<ScreenRequest>,
     players: Query<Entity, With<crate::player::Player>>,
+    player_bodies: Query<Entity, With<crate::player::PlayerBody>>,
+    possessions: Query<(Entity, &exa_items::possession::Possessions)>,
+    conditions: Query<&exa_combat::Condition>,
+    catalogue: Option<Res<exa_items::catalogue::ItemCatalogue>>,
+    mut icons: Option<ResMut<PanelIcons>>,
     menu: Option<Res<MenuScreen>>,
     mut screens: ResMut<GameScreens>,
 ) {
@@ -631,11 +638,64 @@ fn open_requested_screens(
         }
         let action = match request.screen {
             GameScreen::Inventory => {
-                screens.open_inventory(request.player_ready, request.player_alive, 4)
+                let action = screens.open_inventory(request.player_ready, request.player_alive, 4);
+                // The pack is the player's own carried list, as the original
+                // loads it when the inventory opens.
+                if action == ScreenAction::Opened
+                    && let Some(body) = player_bodies.iter().next()
+                    && let Ok((_, possessions)) = possessions.get(body)
+                    && let Some(icons) = icons.as_deref_mut()
+                {
+                    body_inventory::bind_pack(
+                        &mut screens.pack,
+                        possessions,
+                        icons,
+                        catalogue.as_deref(),
+                    );
+                }
+                action
             }
             GameScreen::Journal => screens.open_journal(request.player_ready, request.player_alive),
             GameScreen::Loot => match request.target {
-                Some(target) => screens.open_loot(target, request.flags, 4),
+                Some(target) => {
+                    let entity = possessions
+                        .iter()
+                        .find(|(entity, _)| entity.index().index() as i32 == target)
+                        .map(|(entity, _)| entity);
+                    // The window's show rule reads the body's record flag
+                    // word; Exarust's condition word is the one with the
+                    // getting-up bits it tests.
+                    let flags = entity
+                        .and_then(|entity| conditions.get(entity).ok())
+                        .map_or(request.flags, |condition| condition.0);
+                    let action = screens.open_loot(target, flags, 4);
+                    if action == ScreenAction::Opened
+                        && let Some(entity) = entity
+                        && let Ok((_, body)) = possessions.get(entity)
+                        && let Some(bounds) = screens
+                            .find(GameScreen::Loot)
+                            .and_then(|screen| screens.task.form(screen.form))
+                            .map(|form| form.bounds())
+                        && let Some(icons) = icons.as_deref_mut()
+                    {
+                        let mut pack = Container::form(4);
+                        pack.owner = Some(target as u32);
+                        body_inventory::bind_pack(&mut pack, body, icons, catalogue.as_deref());
+                        let (_, equipment) = loot_panel_rects(bounds);
+                        let client = panel_client(equipment);
+                        let mut worn = Container::form(4);
+                        worn.owner = Some(target as u32);
+                        worn.client = (client.width(), client.height());
+                        body_inventory::bind_equipment(
+                            &mut worn,
+                            body,
+                            icons,
+                            (client.width(), client.height()),
+                        );
+                        screens.bind_loot(target, pack, worn);
+                    }
+                    action
+                }
                 None => continue,
             },
             _ => continue,
@@ -762,6 +822,59 @@ fn paint_controls(
     }
 }
 
+/// The inventory's pack panel, as its painter places it: the client's
+/// bottom, 228 × 180.
+pub fn inventory_pack_panel(bounds: GuiRect) -> GuiRect {
+    let client = GuiRect::new(
+        bounds.left + gui_paint::INVENTORY_SPACING,
+        bounds.top + gui_paint::INVENTORY_SPACING,
+        bounds.width() - gui_paint::INVENTORY_SPACING * 2,
+        bounds.height() - gui_paint::INVENTORY_SPACING * 2,
+    );
+    GuiRect::new(
+        client.left,
+        client.bottom - gui_paint::PACK.1,
+        gui_paint::PACK.0,
+        gui_paint::PACK.1,
+    )
+}
+
+/// A loot window's pack and equipment panels, as its painter places them:
+/// the pack at the client's bottom (228 × 180) and the equipment panel above
+/// it, ending four units before the pack.
+pub fn loot_panel_rects(bounds: GuiRect) -> (GuiRect, GuiRect) {
+    let client = GuiRect::new(
+        bounds.left + gui_paint::FORM_SPACING,
+        bounds.top + gui_paint::FORM_SPACING,
+        bounds.width() - gui_paint::FORM_SPACING * 2,
+        bounds.height() - gui_paint::FORM_SPACING * 2,
+    );
+    let pack = GuiRect::new(
+        client.left,
+        client.bottom - exa_ui::game_gui::LOOT_PACK_HEIGHT,
+        exa_items::char_loot::PACK_WIDTH,
+        exa_ui::game_gui::LOOT_PACK_HEIGHT,
+    );
+    let equipment = GuiRect::new(
+        client.left,
+        client.top,
+        exa_items::char_loot::PACK_WIDTH,
+        (pack.top - client.top - exa_ui::game_gui::LOOT_PANEL_GAP).max(0),
+    );
+    (pack, equipment)
+}
+
+/// A panel's inner client, the four-unit inset its painter uses for the
+/// entries' cells.
+pub fn panel_client(rect: GuiRect) -> GuiRect {
+    GuiRect::new(
+        rect.left + 4,
+        rect.top + 4,
+        rect.width() - 8,
+        rect.height() - 8,
+    )
+}
+
 /// The inventory's frame, the item pack's panel with its entries' icons
 /// (when the panel's icon atlas holds them) and the Encumbrance label and
 /// Primary button records. The character view and the preview bars are
@@ -779,13 +892,7 @@ fn paint_inventory(
     let mut frame = Frame::new(bounds, unit, INVENTORY_TITLE);
     frame.spacing = gui_paint::INVENTORY_SPACING;
     let mut painted = gui_paint::paint_frame(&frame, &palette, &font, size);
-    let client = frame.client();
-    let pack = GuiRect::new(
-        client.left,
-        client.bottom - gui_paint::PACK.1,
-        gui_paint::PACK.0,
-        gui_paint::PACK.1,
-    );
+    let pack = inventory_pack_panel(bounds);
     let panel = gui_paint::paint_panel(
         pack,
         unit,
@@ -917,19 +1024,7 @@ fn paint_loot(
     let (font, size) = screen_font(exa_ui::gui_font::gui_level(level).main, textures);
     let frame = Frame::new(bounds, unit, LOOT_TITLE);
     let mut painted = gui_paint::paint_frame(&frame, &palette, &font, size);
-    let client = frame.client();
-    let pack = GuiRect::new(
-        client.left,
-        client.bottom - exa_ui::game_gui::LOOT_PACK_HEIGHT,
-        exa_items::char_loot::PACK_WIDTH,
-        exa_ui::game_gui::LOOT_PACK_HEIGHT,
-    );
-    let equipment = GuiRect::new(
-        client.left,
-        client.top,
-        exa_items::char_loot::PACK_WIDTH,
-        (pack.top - client.top - exa_ui::game_gui::LOOT_PANEL_GAP).max(0),
-    );
+    let (pack, equipment) = loot_panel_rects(bounds);
     let mut paint_panel_with =
         |rect: GuiRect, container: &Container, icons: &mut Option<&mut PanelIcons>| {
             let panel = gui_paint::paint_panel(

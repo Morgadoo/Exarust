@@ -23,6 +23,10 @@ const SHIELD: u32 = 0x8000;
 pub struct ItemCatalogue {
     kinds: HashMap<u32, ItemKind>,
     contents: HashMap<u32, Vec<u32>>,
+    /// The model section's `0x24` byte: an item panel counts it as the
+    /// entry's bulk, and the equip conflict pass reads the same byte as an
+    /// item's weight class.
+    bulk: HashMap<u32, u8>,
 }
 
 impl ItemCatalogue {
@@ -48,6 +52,12 @@ impl ItemCatalogue {
                 out.contents
                     .insert(r.id, c.children.iter().map(|c| c.id).collect());
             }
+            // The parsed item carries the byte under its model section. The
+            // record is skipped when it does not parse, as no panel can show
+            // it either.
+            if let Ok(item) = exa_formats::objdb::Item::parse(r.id, payload) {
+                out.bulk.insert(r.id, item.equip_lock);
+            }
         }
         out
     }
@@ -66,6 +76,15 @@ impl ItemCatalogue {
             return None;
         }
         self.contents.get(&id).map(Vec::as_slice)
+    }
+
+    /// The item's bulk (the model section's `0x24` byte); `None` for an id
+    /// that is not a record of the game's database.
+    pub fn bulk(&self, id: u32) -> Option<u8> {
+        if id & !ID_MASK != 0 {
+            return None;
+        }
+        self.bulk.get(&id).copied()
     }
 
     pub fn is_empty(&self) -> bool {

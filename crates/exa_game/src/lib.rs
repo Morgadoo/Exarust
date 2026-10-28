@@ -17,6 +17,7 @@ pub mod arena_tables;
 pub mod arsenal;
 pub mod balance;
 pub mod bindings;
+pub mod body_inventory;
 pub mod body_overlay;
 pub mod career;
 pub mod char_view;
@@ -64,6 +65,7 @@ pub mod mind;
 pub mod nav_camera;
 pub mod nav_pick;
 pub mod pair_trace;
+pub mod panel_live;
 pub mod path_probe;
 pub mod pick;
 pub mod player;
@@ -116,6 +118,10 @@ impl Plugin for GamePlugin {
             exa_audio::AudioPlugin,
             exa_script::ScriptPlugin,
             exa_ui::UiPlugin,
+        ))
+        .add_plugins((
+            body_inventory::BodyInventoryPlugin,
+            panel_live::PanelLivePlugin,
         ))
         .init_resource::<prelude::Tips>()
         .add_plugins((
