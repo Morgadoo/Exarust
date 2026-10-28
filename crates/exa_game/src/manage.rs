@@ -280,31 +280,39 @@ pub fn record_value(kit: u32, rank: u32) -> u32 {
 }
 
 /// The health share the fighter-info panel writes into its two gauges: the
-/// record's word times the single 1.5259022e-05, in single precision (the
-/// double product lands one step off for some words).
+/// record's word times the double 1/65535, stored as single
+/// ([`crate::arena_match::health_bar`]).
 pub fn panel_health(word: u16) -> f32 {
-    f32::from(word) * f32::from_bits(0x3780_0080)
+    crate::arena_match::health_bar(word)
 }
 
-/// The roster row's health gauge: its rectangle and fill fraction.
+/// The roster row's health gauge, as the GUI's gauge draw receives it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct HealthMarker {
-    pub x: i32,
-    pub y: i32,
-    pub w: i32,
-    pub h: i32,
+    /// The gauge's left edge: the cell's left, unchanged.
+    pub left: i32,
+    /// The gauge's top: the cell's top less six units, plus half of five
+    /// units (rounded down), plus one.
+    pub top: i32,
+    /// The gauge's length: the cell's width less one unit.
+    pub length: i32,
+    /// The gauge's thickness: two units.
+    pub thickness: i32,
+    /// Both fill fractions: the record's word times the double 1/65535.
     pub fill: f32,
 }
 
-/// The roster table's health gauge from the cell's right/bottom point and
-/// the record's word: 8 square units at (right − 13, bottom − 4), filled by
-/// the word times the single 1/65535.
-pub fn health_marker(right: i32, bottom: i32, word: u16) -> HealthMarker {
+/// The roster table's health gauge from the cell's left, top and width, the
+/// GUI unit (4 at the base scale) and the record's word. At unit 4 a cell
+/// at (x, y) of width w draws an 8-thick gauge at (x, y − 13), w − 4 long.
+pub fn health_marker(left: i32, top: i32, width: i32, unit: i32, word: u16) -> HealthMarker {
+    let unit64 = i64::from(unit);
+    let half_five = ((unit64 * 7 - i64::from(unit.wrapping_mul(2))) as u64 >> 1) as i64;
     HealthMarker {
-        x: right - 13,
-        y: bottom - 4,
-        w: 8,
-        h: 8,
+        left,
+        top: (i64::from(top) - unit64 * 6 + half_five + 1) as i32,
+        length: width.wrapping_sub(unit),
+        thickness: unit.wrapping_mul(2),
         fill: panel_health(word),
     }
 }
@@ -1267,9 +1275,10 @@ mod tests {
         assert_eq!(record_value(15, 0), 24);
         assert_eq!(panel_health(0).to_bits(), 0.0f32.to_bits());
         assert_eq!(panel_health(65535).to_bits(), 1.0f32.to_bits());
+        // The double product rounds to the single nearest 1/65535.
         assert_eq!(
             panel_health(1).to_bits(),
-            f32::from_bits(0x3780_0080).to_bits()
+            ((1.0f64 / 65535.0) as f32).to_bits()
         );
         assert_eq!(portrait_scale(1.0).to_bits(), 10.0f32.to_bits());
         assert_eq!(
@@ -1280,12 +1289,18 @@ mod tests {
 
     #[test]
     fn the_roster_health_gauge_sits_at_the_cells_corner() {
-        let marker = health_marker(100, 50, 65535);
-        assert_eq!((marker.x, marker.y, marker.w, marker.h), (87, 46, 8, 8));
-        assert_eq!(marker.fill.to_bits(), 1.0f32.to_bits());
+        let marker = health_marker(100, 50, 60, 4, 65535);
         assert_eq!(
-            health_marker(0, 0, 32768).fill.to_bits(),
-            (32768.0f32 * f32::from_bits(0x3780_0080)).to_bits()
+            (marker.left, marker.top, marker.length, marker.thickness),
+            (100, 37, 56, 8)
+        );
+        assert_eq!(marker.fill.to_bits(), 1.0f32.to_bits());
+        // Unit 3: half of fifteen rounds down to 7.
+        let marker = health_marker(0, 0, 30, 3, 32768);
+        assert_eq!((marker.top, marker.length, marker.thickness), (-10, 27, 6));
+        assert_eq!(
+            marker.fill.to_bits(),
+            ((32768.0f64 * crate::arena_match::WORD_SHARE) as f32).to_bits()
         );
     }
 
@@ -1308,7 +1323,7 @@ mod tests {
         assert_eq!(panel.health[0].to_bits(), 1.0f32.to_bits());
         assert_eq!(
             panel.health[1].to_bits(),
-            (32768.0f32 * f32::from_bits(0x3780_0080)).to_bits()
+            crate::arena_match::health_bar(0x8000).to_bits()
         );
         assert_eq!(panel.portrait.to_bits(), 10.0f32.to_bits());
         let fighter = fighter_panel("Ash", None, 5, 0, 1, [0, 0], 0.5);

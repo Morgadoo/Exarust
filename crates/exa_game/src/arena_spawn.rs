@@ -108,9 +108,12 @@ pub fn specialist_spot(profession: crate::career::Profession) -> Option<HubBodyP
 }
 
 /// The shopkeeper's body plan: −320, 0, −110 and 15°, the same words as a
-/// specialist's.
+/// specialist's except that its condition word is not copied.
 pub fn shopkeeper_plan() -> HubBodyPlan {
-    specialist_plan(SHOPKEEPER_SPOT, SHOPKEEPER_YAW_DEGREES)
+    HubBodyPlan {
+        condition_copied: false,
+        ..specialist_plan(SHOPKEEPER_SPOT, SHOPKEEPER_YAW_DEGREES)
+    }
 }
 
 /// Find the first placed item that is a weapon object of the weapon kind
@@ -440,11 +443,12 @@ mod tests {
         assert_eq!(keeper.damage, -100.0);
         assert_eq!(keeper.third, -100.0);
         assert_eq!(keeper.roles, [0x11, 0x21]);
-        assert!(keeper.condition_copied);
+        assert!(!keeper.condition_copied);
         assert_eq!(keeper.item_handle, 0x2500);
         let merchant = specialist_spot(crate::career::Profession::Merchant).unwrap();
         assert_eq!(merchant.position, [440.0, 0.0, 10.0]);
         assert_eq!(merchant.yaw.to_bits(), (-40.0f32 * DEGREE).to_bits());
+        assert!(merchant.condition_copied);
         let physician = specialist_spot(crate::career::Profession::Physician).unwrap();
         assert_eq!(physician.position, [-2700.0, 0.0, 1250.0]);
         assert_eq!(physician.yaw.to_bits(), (140.0f32 * DEGREE).to_bits());
