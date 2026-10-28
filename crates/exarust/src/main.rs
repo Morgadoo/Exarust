@@ -44,6 +44,9 @@
 //!                                     3 skirmish, 4 fray, 5 reserve, 6 pugilism, 7 elimination, 8 challenger, 9 captain,
 //!                                     12 brawl, 13 valiance, 14 valour): the player takes the company's first place and a
 //!                                     duellist stands on each opponent's place; the match tick ends its rounds
+//!          --arena-level <n>          the arena match's rank, the generated opponents' level (default 0)
+//!          --arena-tier <n>           the arena match's gear tier (default 0)
+//!          --arena-weapons <ids>      the drawn weapon variant per opponent, comma separated
 //!          --trace <file.csv>         the player's body (else every simulated body) after every 83 Hz tick, in cm
 //!          --trace-all                with --trace: every simulated character body, the player's among them
 //!          --debug-bodies             start with the body overlay and joint readout shown (F3 toggles it)
@@ -200,6 +203,12 @@ pub struct Options {
     pub still_opponent: bool,
     /// Lay an arena match out as the original's template of this id does.
     pub arena_match: Option<i32>,
+    /// The arena match's rank, for the generated opponents' level.
+    pub arena_level: i32,
+    /// The arena match's gear tier.
+    pub arena_tier: i32,
+    /// The drawn weapon variants, per opponent in spawn order. Zero is none.
+    pub arena_weapons: Vec<u32>,
     /// Write the body state after every tick here (CSV).
     pub trace: Option<PathBuf>,
     /// Trace every simulated character body, the player's among them.
@@ -507,6 +516,25 @@ fn main() -> AppExit {
             "--arena-match" => {
                 options.opponent = true;
                 options.arena_match = args.next().and_then(|v| v.parse().ok());
+            }
+            "--arena-level" => {
+                options.opponent = true;
+                options.arena_level = args.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+            }
+            "--arena-tier" => {
+                options.opponent = true;
+                options.arena_tier = args.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+            }
+            "--arena-weapons" => {
+                options.opponent = true;
+                options.arena_weapons = args
+                    .next()
+                    .map(|list| {
+                        list.split(',')
+                            .filter_map(|value| value.parse().ok())
+                            .collect()
+                    })
+                    .unwrap_or_default();
             }
             "--still-opponent" => {
                 options.opponent = true;

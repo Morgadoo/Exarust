@@ -557,7 +557,7 @@ fn play_level(
     let layout = match arena {
         Some(index) if options.opponent => {
             let spawn = exa_game::arena_match::ARENA_MAPS[index].spawn;
-            exa_game::match_layout::layout(template, 0, 0, spawn)
+            exa_game::match_layout::layout(template, options.arena_level, options.arena_tier, spawn)
         }
         _ => Vec::new(),
     };
@@ -887,7 +887,7 @@ fn spawn_players(
         // `--weapon` still picks the weapon.
         let mut actors = exa_game::prelude::ActorCache::new();
         let template = actors.template(game, "opponent01", false);
-        for foe_at in foes {
+        for (foe_index, foe_at) in foes.into_iter().enumerate() {
             let foe_root = commands
                 .spawn((
                     Transform::from_translation(foe_at.position + Vec3::Y * 0.2),
@@ -922,9 +922,20 @@ fn spawn_players(
                         .map(String::from)
                         .to_vec()
                 });
+            // A career match's drawn weapon variant names an object id;
+            // its model is the weapon the foe holds. `--weapon` overrides.
+            let drawn = options
+                .arena_weapons
+                .get(foe_index)
+                .copied()
+                .filter(|&id| id != 0)
+                .and_then(|id| items.iter().find(|item| item.id == id))
+                .map(|item| item.model.clone())
+                .filter(|model| !model.is_empty());
             let weapon = options
                 .weapon
                 .clone()
+                .or(drawn)
                 .or_else(|| {
                     let hand = practice.as_ref()?.record.hands[0];
                     let item = items.iter().find(|item| item.id == hand.index())?;
@@ -1417,7 +1428,22 @@ fn launch_arena_match(
             "arena match launch: {} (template {}) at {}",
             map.name, launch.template, launch.track.name
         );
-        let extra = vec!["--arena-match".to_string(), launch.template.to_string()];
+        let weapons: Vec<String> = launch
+            .fighters
+            .iter()
+            .filter_map(|fighter| fighter.weapon)
+            .map(|weapon| weapon.to_string())
+            .collect();
+        let extra = vec![
+            "--arena-match".to_string(),
+            launch.template.to_string(),
+            "--arena-level".to_string(),
+            launch.level.to_string(),
+            "--arena-tier".to_string(),
+            launch.tier.to_string(),
+            "--arena-weapons".to_string(),
+            weapons.join(","),
+        ];
         crate::map_panel::restart_with(map.name, &extra, &mut exit);
         return;
     }

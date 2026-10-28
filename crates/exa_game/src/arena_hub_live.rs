@@ -259,6 +259,10 @@ pub struct ArenaMatchLaunch {
     pub track: crate::arena_match::Track,
     /// The arena's spawn spot, centimetres.
     pub spawn_at: [f32; 3],
+    /// The event's rank: the generic spawn plans' character level.
+    pub level: i32,
+    /// The event's gear tier.
+    pub tier: i32,
     /// The company entry that is the player's own, if any.
     pub player: Option<usize>,
     pub fighters: Vec<LaunchedFighter>,
@@ -406,6 +410,8 @@ pub fn plan_launch_at(
         arena: start.arena,
         track: start.track,
         spawn_at,
+        level,
+        tier,
         player,
         fighters,
     })

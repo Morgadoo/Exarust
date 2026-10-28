@@ -261,6 +261,78 @@ pub fn roster_row(
     }
 }
 
+/// A record's listed value: the square of one more than its rank times 12
+/// (in 32-bit arithmetic), plus four fifths of the kit's copper rounded to
+/// the nearest even integer. The original computes the four fifths in
+/// double precision and converts with the processor's nearest-even mode.
+pub fn record_value(kit: u32, rank: u32) -> u32 {
+    let rank_term = rank
+        .wrapping_add(1)
+        .wrapping_mul(rank.wrapping_add(1))
+        .wrapping_mul(12);
+    let share = (f64::from(kit) * 0.8).round_ties_even();
+    let share = if share.is_nan() || share >= 9.223_372_036_854_776e18 {
+        i64::MIN
+    } else {
+        share as i64
+    };
+    rank_term.wrapping_add(share as u32)
+}
+
+/// The health share the fighter-info panel writes into its two gauges: the
+/// record's word times the single 1.5259022e-05, in single precision (the
+/// double product lands one step off for some words).
+pub fn panel_health(word: u16) -> f32 {
+    f32::from(word) * f32::from_bits(0x3780_0080)
+}
+
+/// The fighter-info panel's portrait scale: the preview's height field
+/// squared times 10, in single precision.
+pub fn portrait_scale(height: f32) -> f32 {
+    height * height * 10.0
+}
+
+/// The fighter-info panel's fields.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FighterPanel {
+    /// The record's title: its name, then its profession or rank.
+    pub title: String,
+    /// "Profession: …" (fighter edit pages only).
+    pub profession_line: &'static str,
+    /// The profession's description.
+    pub profession_text: &'static str,
+    /// The kit's value: `(rank + 1)² · 12 + round(0.8 · kit)`.
+    pub value: u32,
+    /// The record's wage.
+    pub wage: u32,
+    /// The two health gauges, from the record's condition words.
+    pub health: [f32; 2],
+    /// The preview's portrait scale, `height² · 10`.
+    pub portrait: f32,
+}
+
+/// The fighter-info panel's values. The panel's edit mode decides whether
+/// the profession line is shown; the caller draws it then.
+pub fn fighter_panel(
+    name: &str,
+    role: Option<Profession>,
+    rank: u32,
+    kit: u32,
+    wage: u32,
+    condition: [u16; 2],
+    portrait_height: f32,
+) -> FighterPanel {
+    FighterPanel {
+        title: record_title(name, role, rank as usize),
+        profession_line: profession_line(role),
+        profession_text: profession_text(role),
+        value: record_value(kit, rank),
+        wage,
+        health: [panel_health(condition[0]), panel_health(condition[1])],
+        portrait: portrait_scale(portrait_height),
+    }
+}
+
 /// The arsenal form's pages.
 pub const PAGE_ROSTER: u32 = 0;
 pub const PAGE_HIRE: u32 = 1;
@@ -1159,6 +1231,54 @@ mod tests {
         );
         close_lineup(&mut rows, 2, [0x5_0000_0007, 0x9_0000_0008]);
         assert_eq!(rows[2].entries[0].weapon, [0x5_0000_0007, 0x9_0000_0000]);
+    }
+
+    #[test]
+    fn a_record_value_squares_the_rank_and_adds_four_fifths_of_the_kit() {
+        assert_eq!(record_value(0, 0), 12);
+        assert_eq!(record_value(7, 0), 12 + 6);
+        assert_eq!(record_value(7, 2), 9 * 12 + 6);
+        assert_eq!(record_value(58981, 5), 36 * 12 + 47185);
+        // Banker's rounding: 0.8 of 5 is exactly 4, of 15 is 12.
+        assert_eq!(record_value(5, 0), 16);
+        assert_eq!(record_value(15, 0), 24);
+        assert_eq!(panel_health(0).to_bits(), 0.0f32.to_bits());
+        assert_eq!(panel_health(65535).to_bits(), 1.0f32.to_bits());
+        assert_eq!(
+            panel_health(1).to_bits(),
+            f32::from_bits(0x3780_0080).to_bits()
+        );
+        assert_eq!(portrait_scale(1.0).to_bits(), 10.0f32.to_bits());
+        assert_eq!(
+            portrait_scale(1.1).to_bits(),
+            (1.1f32 * 1.1 * 10.0).to_bits()
+        );
+    }
+
+    #[test]
+    fn the_fighter_panel_takes_the_title_value_wage_and_gauges() {
+        let panel = fighter_panel(
+            "Bors",
+            Some(Profession::Trainer),
+            2,
+            7,
+            3,
+            [0xFFFF, 0x8000],
+            1.0,
+        );
+        assert_eq!(panel.title, "Bors (Trainer)");
+        assert_eq!(panel.profession_line, "Profession: Trainer");
+        assert!(panel.profession_text.starts_with("Trainers increase"));
+        assert_eq!(panel.value, 9 * 12 + 6);
+        assert_eq!(panel.wage, 3);
+        assert_eq!(panel.health[0].to_bits(), 1.0f32.to_bits());
+        assert_eq!(
+            panel.health[1].to_bits(),
+            (32768.0f32 * f32::from_bits(0x3780_0080)).to_bits()
+        );
+        assert_eq!(panel.portrait.to_bits(), 10.0f32.to_bits());
+        let fighter = fighter_panel("Ash", None, 5, 0, 1, [0, 0], 0.5);
+        assert_eq!(fighter.title, "Ash (Master)");
     }
 
     #[test]
