@@ -621,11 +621,22 @@ The original's own forms and controls that Exarust rebuilds, with the
   view starts at 59 units, the item list at 4, 116 (228 by 180), the
   details form at 0, 328 (236 wide, 320 or 260 tall) and the name inside
   it at 4, 40, 228 wide to its bottom. The continue toggle is enabled only
-  while both a save and a checkpoint exist. The rules (gear
-  filter, starting skills, experience budget, kit tables, page flow, save
-  choice) are plain functions in the game crate with tests pinned to
-  concrete numbers. The form itself, its model preview, sound playback and
-  the power tree are not drawn yet.
+  while both a save and a checkpoint exist. The form's opening (the GUI
+  clear, the removed task and three input actions) and the equipment page's
+  back switch (the first built of the weapons, skills and lobby forms
+  hidden, the skills panel's 0x2d slide when it is that one, the versus
+  forms hidden, a non-continued character's appearance panels shown again
+  with both tab words at 0x110, the NEXT button enabled) are modelled,
+  as are the preview's icon list, its material pass, the dummy-head
+  renderer (`dummyhead.rfc`, the `0x00a0a040` options, one added reference
+  and the three hooks), the continue page's character view (model polling,
+  item passes, the fifteen-byte name and the CONTINUE/VERSUS title), the
+  power tree's two creator callbacks, the name warning and the reset and
+  delete dialogs. The rules (gear
+  filter, underwear pass, starting skills, experience budget, kit tables,
+  page flow, save choice) are plain functions in the game crate with tests
+  pinned to concrete numbers. The form itself, its model preview, sound
+  playback and the painted power tree are not drawn yet.
 - **Technique selector** (`exa_ui::technique_selector`,
   `exa_game::techniques`): one skill's eight techniques, 332 × 112
   pixels, editing the record's six skills (an experience word and five

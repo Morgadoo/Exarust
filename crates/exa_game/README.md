@@ -172,49 +172,75 @@ Character creation (`create`): the record's gear (four hand items, its
 worn list and its carried list), the mode filters (story background 0 keeps
 braies only and clears the hands; the arena keeps the first two hands only
 when its kit offers them and keeps braies only; modes whose 2 bit is set
-clear the fist placeholder and the carried list), the story presets and
+clear the fist placeholder and the carried list), the underwear pass after
+a filter (flagged on the entry plan; the rule itself is
+`exa_character::record::CharacterData::ensure_underwear`), which records
+the entry makes and marks as new, the story presets and
 their settings keys (the first key per background, one shared character
 key), the free-create and entry plans (recruits are not filtered, story
 records lose their experience, every non-continued record is set to full
-health). The unknown background resets its gear and starts the
-thaumaturge's two powers; a named background always wears its template's
-gear. The chosen name, hands, worn and carried lists, skills and full pools
-are written into the spawned record. The starting skills write Close
-Combat, Armour and Shields at five levels with their first five
-techniques and leave the rest of the record; the skills page caps them to
-the account's experience (a knight or proctor has at least 10000), keeps
-the first truncated slot's chosen technique, gives the leftover to the
-skill in training up to its next level, and shows the account's worth less
-the committed character's, converted back to experience (each level of
-worth at weights 4, 5, …, only the first partial level, quartered toward
-zero). The apparel and weapon kits come from the original's seven tables
-by mode, skip what the record already holds and resolve aliases and new
-instances. The two pages name their tabs and final button (RECRUIT, BEGIN,
-READY or CREATE), list the equipment panels per mode, open the power tree
-for a record with powers, and the continue screen toggles between a save
-and a checkpoint only while both exist, with its list, details and name
-cut to fifteen characters. Appearance sliders settle and copy with the
-original's epsilon and 64-bit debounce (a NaN distance takes the write
-branch, as the unordered compare does), the face variant steps through
-seven values, and sex, hair visibility, the voice sample names
-(`VHM01_GruntS`, `VHMDA01_GruntS`), the pitch (worked in doubles), the
-voice preview's 300-unit throttle (a 64-bit difference) and its
-non-repeating random variant are in. The look a record carries (skin tone, hair style and colour, beards,
-normal-map layers, the look seed's skin-map offsets and the per-limb leg
-scale) is `exa_character::look`; the spawned body builds its `CharExt` hair
-with `exa_character::hair`. The creator icon sheet is four
-96-pixel cells at a scale of eight units. The form's labels and page
-captions live in `exa_ui::creation`. Of the form itself, the preview
-frame (180 units in, 24 down, the parent less 360 wide and 28 high), the
-two layouts (mode 12's ten-element table without editors, every other
-mode's seven elements with the two editor sub-forms) and the routing of a
-drop onto the preview (item 8 ignored; the mode's own list, game mode 8's
-apparel list, game mode `0x1010`'s hook, else by the item's kinds:
-apparel `0x1000`, weapons `0x4000`, and `0x8000` to the weapon list
-without the placing step) are modelled. Drawing the form, loading the
-model preview and sounds, the object database behind the kit, record
-serialization, the power tree and the running mode transitions are not
-in, and nothing here is wired into the running game yet. Rules are plain
+health — all four halves, pools and the save seed — and the underwear
+pass follows the filter). The unknown background resets its gear and
+starts the thaumaturge's two powers; a named background always wears its
+template's gear. The chosen name, hands, worn and carried lists, skills,
+full pools and seed are written into the spawned record. The starting
+skills write Close Combat, Armour and Shields at five levels with their
+first five techniques and leave the rest of the record; the skills page
+caps them to the account's experience (a knight or proctor has at least
+10000), keeps the first truncated slot's chosen technique, gives the
+leftover to the skill in training up to its next level, and shows the
+account's worth less the committed character's, converted back to
+experience (each level of worth at weights 4, 5, …, only the first partial
+level, quartered toward zero). The apparel and weapon kits come from the
+original's seven tables by mode, skip what the record already holds and
+resolve aliases and new instances. The two pages name their tabs and final
+button (RECRUIT, BEGIN, READY or CREATE), list the equipment panels per
+mode, open the power tree for a record with powers, and the continue screen
+toggles between a save and a checkpoint only while both exist, with its
+list, details and name cut to fifteen characters. Appearance sliders settle
+and copy with the original's epsilon and 64-bit debounce (a NaN distance
+takes the write branch, as the unordered compare does), the face variant
+steps through seven values, and sex, hair visibility, the voice sample
+names (`VHM01_GruntS`, `VHMDA01_GruntS`), the pitch (worked in doubles),
+the voice preview's 300-unit throttle (a 64-bit difference) and its
+non-repeating random variant are in. The preview is modelled as the
+original builds it: the 96-pixel icon list whose selection follows a hover
+on the old last entry, the material applied to every listed preview item,
+the dummy-head renderer (`dummyhead.rfc`, the options word `0x00a0a040`,
+the entry height two above the icon size, one reference added and the
+material/icon/release hooks) and the four-call character refresh. The
+continue page's character view loads or polls its model, attaches the
+carried item list, walks the figure's item passes, cuts the name to
+fifteen bytes, labels CONTINUE or VERSUS, binds both item panels and
+refreshes the look or the hair button. The power tree opens over the
+creator with the deferred-close and commit callbacks, the name warning
+keeps its `Character Name` / `Please name your character` box and code
+0xc1, the reset-to-portal and delete-confirmation dialogs take the creator
+as owner and centre at -1, and the icon sheet carries the 0x203 word, the
+`0x0100_2008` flags, an icon size of eight GUI units and the four 96-pixel cells cut at
+288, 192, 96 and 0 from the 96 by 384 sheet. The creator form's opening (cursor clear, task removal, three
+input actions) and the equipment page's back switch (the first built of
+the weapons, skills and lobby forms hidden, the skills slide 0x2d only when
+it is the one hidden, the versus forms hidden, and a non-continued
+character's appearance panels shown again with both tab words set to
+0x110) are modelled, as
+is the equipment page's layout: the preview frame, the 172-wide apparel
+and weapon panels and the 216-wide skills panel. The look a record carries
+(skin tone, hair style and colour, beards, normal-map layers, the look
+seed's skin-map offsets and the per-limb leg scale) is
+`exa_character::look`; the spawned body builds its `CharExt` hair with
+`exa_character::hair`. The form's labels and page captions live in
+`exa_ui::creation`. Of the form itself, the preview frame (180 units in,
+24 down, the parent less 360 wide and 28 high), the two layouts (mode 12's
+ten-element table without editors, every other mode's seven elements with
+the two editor sub-forms) and the routing of a drop onto the preview (item
+8 ignored; the mode's own list, game mode 8's apparel list, game mode
+`0x1010`'s hook, else by the item's kinds: apparel `0x1000`, weapons
+`0x4000`, and `0x8000` to the weapon list without the placing step) are
+modelled. Painting the form and its controls, loading the model and the
+sounds' samples, the object database behind the kit, record serialization,
+the power tree's own screen and the running mode transitions are not in,
+and nothing here is wired into the running game yet. Rules are plain
 functions with tests pinned to concrete numbers.
 
 Story experience (`experience`): new item kinds, kills and explored map
