@@ -564,6 +564,7 @@ pub(super) fn jolt(
     scale: f32,
     feet_centre: Vec3,
 ) -> Option<Vec3> {
+    steps.jolt_told = false;
     let jolt = (fast - slow).with_y(0.0) - steps.jolt_decay;
     steps.jolt_decay *= 0.85;
     let base = if walking { 2.5 } else { 125.0 } * scale;
