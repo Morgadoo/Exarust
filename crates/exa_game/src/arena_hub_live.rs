@@ -359,8 +359,9 @@ pub fn plan_launch_at(
     let tier = board.selected.tier;
     let slots = crate::match_layout::layout(template, level, tier, spawn_at);
     let roles = manager_roles(board.team.len());
-    let player =
-        (0..roles.len()).find_map(|index| crate::arena_spawn::player_participant(&roles, index));
+    // The player's own body is the team member whose pool slot is 0 (the
+    // manager), not merely the team's first member.
+    let player = board.team.iter().position(|&slot| slot == 0);
     let tournament = board.tab == exa_ui::match_board::BoardTab::Tournament;
     let mut fighters = Vec::with_capacity(slots.len());
     for slot in slots {
@@ -1069,6 +1070,37 @@ mod tests {
         // The match start took the Duel's 3 copper entry fee.
         assert_eq!(career.company.copper, 340);
         assert_eq!(career.company.spent, 3);
+    }
+
+    #[test]
+    fn the_player_body_is_the_manager_not_the_first_team_member() {
+        let mut career = crate::hub_windows::ArenaCareer::default();
+        career.company.roster.push(crate::career::Member {
+            name: "Ash".into(),
+            profession: crate::career::Profession::Combatant,
+            xp: 0,
+            skills: [6, 0, 0, 0, 0, 0],
+            skill_xp: [0; 6],
+            techniques: [[0; 6]; 6],
+            loadouts: Default::default(),
+            health: 65_000,
+            in_entry: false,
+        });
+        let board = career.board();
+        // A duel takes the combatant (pool slot 1), not the manager.
+        assert_eq!(board.team, vec![1]);
+        let launch = plan_launch_at(&mut career, &board, false, 0x1234_5678).unwrap();
+        assert_eq!(launch.player, None);
+        assert!(
+            launch
+                .fighters
+                .iter()
+                .all(|fighter| { !matches!(fighter.body, LaunchedBody::Player) })
+        );
+        assert!(matches!(
+            launch.fighters.last().unwrap().body,
+            LaunchedBody::Company { .. }
+        ));
     }
 
     #[test]
