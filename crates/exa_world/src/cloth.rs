@@ -86,6 +86,21 @@ impl ClothObjects {
     }
 }
 
+/// Whether the level's cloths gather body and level contacts each tick.
+/// Off by default: on a level with many cloths (exanima01 holds 14) every
+/// cloth kept being pushed by the walls it hangs against, never slept, and
+/// the contact sweeps cost about 55 ms a tick. `EXA_CLOTH_CONTACTS=1`
+/// turns them on until their cost and the cloth's sleep under contact are
+/// matched to the original.
+#[derive(Resource, Debug, Clone, Copy)]
+pub struct ClothContacts(pub bool);
+
+impl Default for ClothContacts {
+    fn default() -> Self {
+        Self(std::env::var_os("EXA_CLOTH_CONTACTS").is_some_and(|v| v != "0"))
+    }
+}
+
 /// A cloth's world bound in centimetres, from its particles' local bounds
 /// and its node's transform: the centre and the sphere around the box.
 fn cloth_bound(cloth: &Cloth, at: &GlobalTransform) -> (ObjectBounds, Affine3A) {
@@ -95,7 +110,8 @@ fn cloth_bound(cloth: &Cloth, at: &GlobalTransform) -> (ObjectBounds, Affine3A) 
     (
         ObjectBounds {
             centre: world * 100.0,
-            radius: half.length() * scale * 100.0,
+            // The particles are already in centimetres.
+            radius: half.length() * scale,
         },
         at.affine().inverse(),
     )
@@ -192,6 +208,7 @@ fn step_cloths(
     physics: Option<Res<Physics>>,
     statics: Option<Res<exa_physics::StaticColliders>>,
     mut objects: ResMut<ClothObjects>,
+    live_contacts: Res<ClothContacts>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
     let gravity = cloth::gravity_cm(1.0);
@@ -210,6 +227,29 @@ fn step_cloths(
         );
     }
     let order = objects.order.clone();
+    // Every part of every body (asleep too) that can meet an object, built
+    // once a tick for all the cloths.
+    let mut all_parts = Vec::new();
+    for body in &bodies {
+        for part in &body.parts {
+            if part.pairing.out || part.spheres.is_empty() {
+                continue;
+            }
+            let (centre, radius) = part.sphere_bound();
+            all_parts.push((
+                part.entity,
+                ObjectBodyPart {
+                    now: part.transform(),
+                    previous: part.settled_transform(),
+                    spheres: &part.spheres,
+                    centre,
+                    radius,
+                    mesh: &part.pairing.mesh,
+                    friction: part.friction,
+                },
+            ));
+        }
+    }
     for (id, &entity) in order.iter().enumerate() {
         let Ok((_, mut instance, at)) = instances.get_mut(entity) else {
             continue;
@@ -219,6 +259,11 @@ fn step_cloths(
             objects.grid.insert(object.centre);
         } else {
             objects.grid.migrate(id, object.centre);
+        }
+        // A sleeping cloth does not step, so its contacts would never be
+        // read: it keeps the last ones and skips the gathering.
+        if instance.cloth.sleep <= 0 {
+            continue;
         }
         // A cloth's own character does not push it [guess: the sector's
         // body stage makes no such test; the cloth's own body-contact call,
@@ -232,28 +277,14 @@ fn step_cloths(
                 break;
             }
         }
-        // Objects against bodies: every part of every body (asleep too)
-        // passing the sector's pre-test ([`sector::object_body_meet`]).
-        let mut parts = Vec::new();
-        for body in &bodies {
-            for part in &body.parts {
-                if part.pairing.out || part.spheres.is_empty() || own.contains(&part.entity) {
-                    continue;
-                }
-                let (centre, radius) = part.sphere_bound();
-                parts.push(ObjectBodyPart {
-                    now: part.transform(),
-                    previous: part.settled_transform(),
-                    spheres: &part.spheres,
-                    centre,
-                    radius,
-                    mesh: &part.pairing.mesh,
-                    friction: part.friction,
-                });
-            }
-        }
+        // Objects against bodies: the parts passing the sector's pre-test
+        // ([`sector::object_body_meet`]), less the cloth's own character.
+        let parts = all_parts
+            .iter()
+            .filter(|(owner, _)| !own.contains(owner))
+            .map(|&(_, part)| part);
         let mut contacts = ObjectContacts::default();
-        if let (Some(physics), Some(statics)) = (&physics, &statics) {
+        if let (true, Some(physics), Some(statics)) = (live_contacts.0, &physics, &statics) {
             contacts.gather_bodies(&to_object, object, parts);
             // Objects against the level: the static grid's records around
             // the object's cell that pass its pre-test, their triangles
@@ -279,9 +310,6 @@ fn step_cloths(
         instance.cloth.spheres = std::mem::take(&mut contacts.spheres);
         instance.cloth.swept = std::mem::take(&mut contacts.swept);
         instance.cloth.level = std::mem::take(&mut contacts.level);
-        if instance.cloth.sleep <= 0 {
-            continue;
-        }
         cloth::step(&mut instance.cloth, gravity);
         // The object list's re-bucket after its step, as the original's.
         let (after, _) = cloth_bound(&instance.cloth, at);
@@ -312,6 +340,7 @@ pub struct ClothPlugin;
 impl Plugin for ClothPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ClothObjects>()
+            .init_resource::<ClothContacts>()
             .add_systems(Update, build_cloth_nodes)
             // The sector runs its simulated objects after the bodies' tick
             // (the original's object step and contacts are inside it).
@@ -380,7 +409,8 @@ mod tests {
         app.add_plugins((MinimalPlugins, ClothPlugin))
             .init_resource::<Assets<Mesh>>()
             .insert_resource(Physics::default())
-            .insert_resource(StaticColliders::default());
+            .insert_resource(StaticColliders::default())
+            .insert_resource(ClothContacts(true));
         // A floor quad at y = 0.5 m, in the world and in the sector's grid.
         let vertices = vec![
             Vec3::new(-2.0, 0.5, -2.0),

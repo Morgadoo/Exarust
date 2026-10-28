@@ -1,0 +1,5 @@
+- [x] Bound radius in centimetres
+- [x] Body parts built once a tick
+- [x] Sleeping cloths skip the gathering
+- [x] `ClothContacts` opt-in and docs (README, DEBUGGING.md)
+- [x] GPU check of exanima01
