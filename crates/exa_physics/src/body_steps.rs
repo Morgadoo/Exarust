@@ -60,8 +60,9 @@ const CROUCH_SPAN: f32 = 120.0;
 const CROUCH_NARROW: f32 = 30.0;
 const STANCE_WIDTH: f32 = 60.0;
 const STANCE_SIDE: f32 = 55.0;
-/// Below this the side term is not rooted (a crossed stance).
-const SIDE_ROOT: f32 = 1.2e-7;
+/// Below this the side term is not rooted (a crossed stance): the
+/// original's general epsilon, just under 2⁻²³.
+const SIDE_ROOT: f32 = 1.192_09e-7;
 /// Foot scores. Under the first (cm, × scale; the second after a stall) a
 /// free foot scores the third and stays. A moving foot scores the fourth,
 /// plus the later bonuses inside their windows.
@@ -491,18 +492,20 @@ pub(super) fn stance_score(
     crouch: f32,
     scale: f32,
 ) -> f32 {
-    let e = b - a;
-    // The original measures the stance's span across the ground only:
-    // (z² + x²) + 0.0, its y left out.
-    let ee = e.z * e.z + e.x * e.x + 0.0;
+    // The original zeroes the feet's vertical difference first: the span,
+    // the projection and the side term all read it across the ground.
+    let e = (b - a).with_y(0.0);
+    // (z² + (y² + x²)) with y 0: z² + x².
+    let ee = e.z * e.z + (e.y * e.y + e.x * e.x);
     let length = if ee > SIDE_ROOT { ee.sqrt() } else { ee };
     // The reference's projection onto the feet's segment, by the original's
-    // z, y, x sum, clamped to it (a NaN stays, as its unordered jumps do).
+    // x, y, z sum, clamped to it (a NaN stays, as its unordered jumps do).
     let rv = reference - a;
-    let t = ((e.z * rv.z + e.y * rv.y + e.x * rv.x) / ee).clamp(0.0, 1.0);
+    let t = ((e.y * rv.y + e.x * rv.x) + e.z * rv.z) / ee;
+    let t = t.clamp(0.0, 1.0);
     let d = (a + e * t) - reference;
-    // The same horizontal distance as the span: (z² + x²) + 0.0.
-    let r2 = d.z * d.z + d.x * d.x + 0.0;
+    // The same horizontal distance as the span, its y zeroed.
+    let r2 = d.z * d.z + (0.0 + d.x * d.x);
     // The original takes the root unless the squared distance is under its
     // epsilon (a NaN takes it): 1 − r/30, the single-precision 0.033333335.
     let mut along = if r2 < SIDE_ROOT {
@@ -515,7 +518,7 @@ pub(super) fn stance_score(
         along = (f64::from(along) - f64::from(length - span) * CROUCH_WEIGHT) as f32;
     }
     let width = (STANCE_WIDTH * scale - length).abs() / (STANCE_WIDTH * scale);
-    let mut w = e.dot(side);
+    let mut w = e.z * side.z + (e.y * side.y + e.x * side.x);
     if w > SIDE_ROOT {
         w = w.sqrt();
     }

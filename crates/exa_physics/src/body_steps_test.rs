@@ -591,4 +591,19 @@ fn the_stance_score_keeps_the_originals_edges() {
         0.0,
     );
     assert!(zero.is_nan(), "{zero}");
+    // The feet's height difference is zeroed before the projection: feet
+    // 40 cm apart in height with the reference 20 cm up, over the
+    // segment's midpoint, project onto the midpoint (t = 1800/3600) and
+    // the reference is on the segment across the ground: along = 1, the
+    // score 2. (Projecting with the height left in, t would be 2600/3600 =
+    // 0.722, and along 1 − 13.3/30.)
+    let raised = stance_score(
+        Vec3::ZERO,
+        Vec3::new(0.0, 40.0, 60.0),
+        Vec3::new(0.0, 20.0, 30.0),
+        side,
+        0.0,
+        1.0,
+    );
+    assert!(close(raised, 2.0), "{raised}");
 }
