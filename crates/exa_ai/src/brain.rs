@@ -59,6 +59,8 @@ pub struct BrainClock {
     pub passed: u64,
     /// The tick [`flee_walk`] last steered on.
     pub walked: u64,
+    /// The tick [`idle_walk`] last steered on.
+    pub idled: u64,
 }
 
 /// The role database and the locale the level plays in (the id the
@@ -153,6 +155,13 @@ pub struct Npc {
     pub flight: Option<bevy::math::Vec3>,
     /// The velocity the flight walk last steered (m/s).
     pub flight_velocity: Vec3,
+    /// The alert look-around's pans and the body's in-combat mark.
+    pub alert: motion::AlertLook,
+    /// The roam's or patrol's walk ([`idle_walk`]).
+    pub walk: crate::walker::IdleWalk,
+    /// The idle head (the alert look or the attention) took this tick, so
+    /// the roam's phases did not run.
+    pub head_took: bool,
 }
 
 /// Where a brain stands and the room graph its flight reads: the brain's
@@ -210,6 +219,9 @@ impl Npc {
             previous_room: -1,
             flight: None,
             flight_velocity: Vec3::ZERO,
+            alert: motion::AlertLook::default(),
+            walk: crate::walker::IdleWalk::default(),
+            head_took: false,
         }
     }
 
@@ -937,7 +949,31 @@ pub fn ai_tick(
             &mut roll,
             &place,
         );
-        let seen_or_heard = npc.pass.attention.is_some();
+        // The contact the target pass attends, as the idle states' attention
+        // reads it: its notice score and the yaw from the body to it.
+        let attended = npc.pass.attention.map(|id| {
+            let at = if Some(id) == target_id {
+                target_cm
+            } else {
+                places
+                    .iter()
+                    .find(|(other, _)| *other == id)
+                    .map_or(observer_cm, |(_, at)| *at)
+            };
+            crate::walker::Attended {
+                score: npc.contacts.iter().find(|c| c.id == id).map(|c| {
+                    crate::walker::notice_score(c.concern, c.hostility, c.noticed, c.attention)
+                }),
+                yaw: motion::yaw_of(at - observer_cm),
+                // The running game sets no scripted focus.
+                focus_held: false,
+            }
+        });
+        // Entering combat marks the body in combat; the idle states clear
+        // the mark once the alert look lets them through.
+        if in_combat {
+            npc.alert.marked = true;
+        }
         // The original keeps one contact list: the combat state, the
         // perception's threat estimate and the target pass read the same
         // hostility and concern. Exarust keeps the integration's on the
@@ -994,20 +1030,62 @@ pub fn ai_tick(
                 npc.turn.look = facing;
                 npc.turn.offset = facing;
             }
-            // [guess: the original's idle states attend the contact the
-            // target pass picked and set the look yaw toward it; Exarust
-            // looks along the line to the brain's target while it is seen
-            // or heard.]
-            if seen_or_heard {
-                npc.turn.look = motion::yaw_of(target_cm - observer_cm);
-            }
-            motion::turn_towards(
+            // The idle states' head: the alert look-around, then the
+            // attention to the attended contact; only when neither takes
+            // the tick is the in-combat mark cleared and the body turned
+            // (not while a roam's leg walks: its route steers it). The
+            // investigation that opens it never fires: the pathfinder's
+            // disturbance value is 0 in the shipped game.
+            let encumbrance = fighter.stats.encumbrance;
+            let roaming = matches!(
+                npc.routine.kind,
+                crate::idle::Kind::Roam | crate::idle::Kind::Patrol
+            );
+            let walking = roaming
+                && matches!(
+                    npc.routine.phase,
+                    crate::idle::Phase::WalkWander | crate::idle::Phase::WalkHome
+                );
+            let mut alert = npc.alert;
+            // [guess: out of combat the body keeps no foe, so the look pans.]
+            let looked = motion::alert_look(
+                npc.morale.panic,
+                alert.marked,
+                &mut alert,
                 &mut npc.turn,
                 facing,
-                fighter.stats.encumbrance,
+                None,
+                encumbrance,
                 now,
                 &mut roll,
             );
+            npc.alert = alert;
+            npc.head_took = true;
+            match looked {
+                Some(motion::AlertLooked::Pan { look, smooth }) => {
+                    npc.gaze.body_look = look;
+                    npc.gaze.body_smooth = smooth;
+                }
+                Some(motion::AlertLooked::Foe { .. }) => {}
+                None if crate::walker::attend(
+                    &mut npc.turn,
+                    attended,
+                    crate::walker::ATTEND_LEVEL,
+                ) =>
+                {
+                    motion::turn_towards(&mut npc.turn, facing, encumbrance, now, &mut roll);
+                    if roaming {
+                        npc.routine.phase = crate::idle::Phase::Wait;
+                    }
+                }
+                None => {
+                    npc.head_took = false;
+                    npc.alert.marked = false;
+                    if !walking {
+                        motion::turn_towards(&mut npc.turn, facing, encumbrance, now, &mut roll);
+                    }
+                }
+            }
             // The look chain: the body's own look and smoothing directions
             // follow the head's offset, then the gait helper turns the look
             // toward the heading and writes the body's look when it lags.
@@ -1047,7 +1125,8 @@ pub fn ai_tick(
             // locomotion; the running game ticks none for an NPC, so the
             // model turns with the eased look, look plus sway, as before. A
             // fleeing brain is turned by its flight walk ([`flee_walk`]).
-            if npc.flight.is_none() {
+            // A roam's leg is turned by its walk ([`idle_walk`]).
+            if npc.flight.is_none() && npc.walk.route.is_empty() {
                 transform.rotation = Quat::from_rotation_y(npc.turn.offset);
             }
         }
@@ -1175,6 +1254,152 @@ pub fn flee_walk(
                     && anim.action == "Run"
                 {
                     anim.play_loop("Idle");
+                }
+            }
+        }
+    }
+}
+
+/// Walks a roaming or patrolling brain's legs ([`crate::walker`]): once a
+/// body tick, for a brain in the scene, standing, out of combat and not
+/// fleeing, whose idle head left the tick to its phases, it runs
+/// [`crate::walker::roam_step`] on the level's room table (its room's door
+/// exits) and the navigation grid (one planner a frame), then walks the
+/// followed route at the walk speed through the NPC driver
+/// ([`crate::order::follow`]) toward the route's carrot, playing the walk
+/// clip, and puts the idle clip back when the leg ends. A frame between
+/// ticks only puts back the velocity the duellist cleared.
+///
+/// The original's path follower walks the route through the body's own
+/// locomotion; Exarust steers the character body as the flight does.
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
+pub fn idle_walk(
+    ticks: Option<Res<BodyTicks>>,
+    mut clock: Option<ResMut<BrainClock>>,
+    level: Option<Res<exa_world::room_view::LevelRooms>>,
+    nav: Option<Res<exa_world::nav::NavGrid>>,
+    mut npcs: Query<(
+        Entity,
+        &mut Npc,
+        &crate::Duellist,
+        &Condition,
+        &mut Transform,
+        &ChildOf,
+        Option<&crate::presence::Presence>,
+        Option<&mut Animator>,
+    )>,
+    mut roots: Query<(&mut CharacterBody, &GlobalTransform)>,
+    mut planning: Local<(crate::route::PlanTurn, u32)>,
+) {
+    let mut steer = true;
+    if let (Some(ticks), Some(clock)) = (ticks.as_deref(), clock.as_deref_mut()) {
+        steer = clock.idled != ticks.0;
+        clock.idled = ticks.0;
+    }
+    let now = ticks.as_ref().map_or(0, |t| t.millis() as u32);
+    // One brain plans a route a frame: the longest waiter of the last one
+    // [Exarust: the idle walk keeps its own turn beside the duellists'].
+    let (turn, frame) = &mut *planning;
+    if steer {
+        *frame = frame.wrapping_add(1);
+        turn.next_turn();
+    }
+    for (entity, mut npc, duellist, condition, mut t, parent, presence, anim) in &mut npcs {
+        let roaming = matches!(
+            npc.routine.kind,
+            crate::idle::Kind::Roam | crate::idle::Kind::Patrol
+        );
+        let active = roaming
+            && presence.is_none_or(|p| p.moves())
+            && condition.0 & combatant::CONDITION_OUT == 0
+            && !duellist.engaged
+            && !duellist.fighting()
+            && npc.flight.is_none();
+        let Ok((mut body, root_gt)) = roots.get_mut(parent.parent()) else {
+            continue;
+        };
+        if !active {
+            // Combat, a flight or the scene takes the body: the leg ends.
+            if !npc.walk.route.is_empty() || npc.walk.velocity != Vec3::ZERO {
+                npc.walk.route.clear();
+                npc.walk.velocity = Vec3::ZERO;
+                if npc.flight.is_none() && !duellist.engaged {
+                    body.desired_velocity = Vec3::ZERO;
+                }
+                if let Some(mut anim) = anim
+                    && anim.action == "Walk"
+                {
+                    anim.play_loop("Idle");
+                }
+            }
+            continue;
+        }
+        if !steer {
+            if npc.walk.velocity != Vec3::ZERO {
+                body.desired_velocity = npc.walk.velocity;
+            }
+            continue;
+        }
+        let feet = root_gt.translation();
+        let feet_cm = feet * 100.0;
+        if !npc.head_took {
+            let room = npc.level_room;
+            let mut exits = || match level.as_deref() {
+                Some(level) if room >= 0 => crate::rooms::wander_exits(&level.rooms, room as u16),
+                _ => Vec::new(),
+            };
+            let mut router = nav
+                .as_deref()
+                .map(|grid| crate::route::NavRouter { grid, size: 0 });
+            let npc = &mut *npc;
+            let mut roll = npc.roll;
+            crate::walker::roam_step(
+                &mut npc.routine,
+                &mut npc.walk,
+                crate::walker::RoamPlace {
+                    at_cm: feet_cm,
+                    room,
+                    exits: &mut exits,
+                    avoid: npc.previous_room,
+                    turn,
+                    who: entity.to_bits(),
+                    frame: *frame,
+                    router: router.as_mut().map(|r| r as &mut dyn crate::route::Router),
+                },
+                &mut npc.gaze,
+                &mut npc.turn,
+                now,
+                &mut roll,
+            );
+            npc.roll = roll;
+        }
+        let was_walking = npc.walk.velocity != Vec3::ZERO;
+        match crate::walker::follow_walk(&mut npc.walk, feet_cm, now) {
+            Some(carrot) => {
+                let order = crate::order::follow(
+                    &[feet, carrot / 100.0],
+                    feet,
+                    motion::yaw_of(t.rotation * Vec3::Z),
+                    0,
+                );
+                body.desired_velocity = order.velocity;
+                npc.walk.velocity = order.velocity;
+                t.rotation = Quat::from_rotation_y(order.heading);
+                if let Some(mut anim) = anim
+                    && order.velocity != Vec3::ZERO
+                {
+                    anim.play_loop("Walk");
+                }
+            }
+            None => {
+                npc.walk.velocity = Vec3::ZERO;
+                if was_walking {
+                    body.desired_velocity = Vec3::ZERO;
+                    if let Some(mut anim) = anim
+                        && anim.action == "Walk"
+                    {
+                        anim.play_loop("Idle");
+                    }
                 }
             }
         }
@@ -1646,6 +1871,120 @@ mod tests {
             ))
             .id();
         (app, player, npc)
+    }
+
+    /// A roaming brain plans on its turn a route through the navigation
+    /// grid to a quarter of the way through its room's door, then walks it
+    /// with the walk clip, turning toward the route's carrot.
+    #[test]
+    fn a_roaming_brain_walks_toward_its_door() {
+        use exa_formats::level::LevelGrid;
+        use exa_world::nav::{Layer, NavCell, NavGrid};
+        use exa_world::room_view::LevelRooms;
+        use exa_world::rooms::{CELL_OPEN, Rooms};
+        use std::sync::Arc;
+
+        let mut grid = LevelGrid {
+            wall_sets: vec!["GEWS_UWA01".into()],
+            floor_sets: vec!["GEFS_UWA01".into()],
+            width: 6,
+            height: 3,
+            edges: vec![0; 18],
+            plane_b: vec![0; 18],
+            plane_c: vec![0; 18],
+        };
+        let open = |edges: &mut Vec<u32>, x: u32, y: u32, sides: [u32; 4]| {
+            edges[(y * 6 + x) as usize] =
+                CELL_OPEN | sides[0] | sides[1] << 4 | sides[2] << 8 | sides[3] << 12;
+        };
+        open(&mut grid.edges, 1, 1, [7, 7, 7, 0]);
+        open(&mut grid.edges, 2, 1, [7, 0, 7, 0xB]);
+        open(&mut grid.edges, 3, 1, [7, 0xB, 7, 0]);
+        open(&mut grid.edges, 4, 1, [7, 0, 7, 7]);
+        let rooms = Rooms::flood(&grid);
+        // A flat walkable yard with its floors at 10 m.
+        let mut nav = NavGrid::empty(80, 80, 0.0);
+        for z in 0..80 {
+            for x in 0..80 {
+                nav.set_cell(
+                    x,
+                    z,
+                    Layer::Lower,
+                    NavCell {
+                        floor: 100,
+                        ..NavCell::default()
+                    },
+                );
+            }
+        }
+
+        let mut app = App::new();
+        app.add_systems(Update, idle_walk);
+        app.insert_resource(LevelRooms::new(Arc::new(rooms)));
+        app.insert_resource(nav);
+        app.insert_resource(BodyTicks(1));
+        let at = Vec3::new(-9.0, 10.0, 3.0);
+        let player = app.world_mut().spawn(GlobalTransform::IDENTITY).id();
+        let root = app
+            .world_mut()
+            .spawn((
+                CharacterBody::default(),
+                GlobalTransform::from_translation(at),
+            ))
+            .id();
+        let mut brain = Npc::new([0.0; 4]);
+        brain.routine = Routine::roam(0);
+        brain.level_room = 0;
+        let npc = app
+            .world_mut()
+            .spawn((
+                brain,
+                crate::Duellist::new(player),
+                Condition::NORMAL,
+                Transform::default(),
+                ChildOf(root),
+                Animator::new("Default", "Idle"),
+            ))
+            .id();
+        let tick = |app: &mut App| {
+            app.world_mut().resource_mut::<BodyTicks>().0 += 1;
+            app.update();
+        };
+        // The deadline passes, the first try records the wait, the next
+        // frame's turn plans.
+        for _ in 0..3 {
+            tick(&mut app);
+        }
+        {
+            let brain = app.world().get::<Npc>(npc).unwrap();
+            assert_eq!(brain.routine.phase, crate::idle::Phase::WalkWander);
+            assert_eq!(brain.walk.goal, Some(Vec3::new(-150.0, 0.0, 300.0)));
+            assert_eq!(brain.walk.toward, 1);
+            assert!(brain.walk.route.len() >= 2, "{:?}", brain.walk.route);
+        }
+        // The heading eases toward the carrot (+x), then it walks.
+        for _ in 0..30 {
+            tick(&mut app);
+        }
+        let body = app.world().get::<CharacterBody>(root).unwrap();
+        assert!(body.desired_velocity.x > 1.0, "{:?}", body.desired_velocity);
+        assert_eq!(app.world().get::<Animator>(npc).unwrap().action, "Walk");
+        // A frame between ticks puts back the velocity a duellist clears.
+        app.world_mut()
+            .get_mut::<CharacterBody>(root)
+            .unwrap()
+            .desired_velocity = Vec3::ZERO;
+        app.update();
+        let body = app.world().get::<CharacterBody>(root).unwrap();
+        assert!(body.desired_velocity.x > 1.0);
+        // Engaged, the leg ends and the idle clip comes back.
+        app.world_mut()
+            .get_mut::<crate::Duellist>(npc)
+            .unwrap()
+            .engaged = true;
+        tick(&mut app);
+        assert!(app.world().get::<Npc>(npc).unwrap().walk.route.is_empty());
+        assert_eq!(app.world().get::<Animator>(npc).unwrap().action, "Idle");
     }
 
     /// A brain the target pass put at level 4 runs out of its room: it

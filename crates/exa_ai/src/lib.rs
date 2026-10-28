@@ -54,6 +54,7 @@ pub mod rooms;
 pub mod route;
 pub mod search;
 pub mod sense;
+pub mod walker;
 
 pub use order::{Order, follow};
 pub use sense::{Decision, Mind, decide, noticeability, tick, view_weight};
@@ -84,6 +85,7 @@ impl Plugin for AiPlugin {
                     brain::ai_tick,
                     duellist.in_set(DuelSystems),
                     brain::flee_walk,
+                    brain::idle_walk,
                 )
                     .chain(),
             );
