@@ -4,17 +4,18 @@
 //! providers searched by name first, and a list of file readers by the name's
 //! extension. A name a provider holds is read by that provider; otherwise the
 //! loader reads the file's bytes and hands them to the reader its extension
-//! names, reporting "Unrecognised file extension: …" when no reader is
-//! registered and "File format error" when the reader cannot decode the
-//! bytes.
+//! names, showing a "File format error" message, "Unrecognised file
+//! extension: …", when no reader is registered for it. A reader that cannot
+//! decode the bytes fails the load without a message.
 //!
 //! Exarust's installation is the provider: [`exa_rpk::GameData::texture`]
 //! finds an image by its bare name and its `.rfi` extension before this
 //! dispatch runs. `.rfi` is the only file reader Exarust has, so the registry
 //! holds that one reader; every other extension is reported and its record
-//! falls back to the original's grey placeholder. A name without an
-//! extension takes the file reader whose magic its bytes carry, which is how
-//! the packs' bare texture names reach the `.rfi` reader.
+//! falls back to the original's grey placeholder. A name without a dot stands
+//! for an image a provider holds (the texture packs' bare names): the
+//! provider's own reader decodes it, which here means the `.rfi` reader when
+//! the bytes carry its magic.
 
 use std::fmt;
 
@@ -43,10 +44,12 @@ impl ImageFormat {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ImageReadError {
     /// No reader is registered for the name's extension. The original
-    /// reports `Unrecognised file extension: <extension>`.
+    /// shows `Unrecognised file extension: <extension>` (at most 15 bytes,
+    /// as written in the name) under the title `File format error`.
     UnrecognisedExtension(String),
-    /// The name has no registered reader and its bytes are not an image the
-    /// loader knows: the original reports `File format error`.
+    /// A provider's image (a name without a dot) whose bytes are not an
+    /// image the loader knows. The original's provider reader fails without
+    /// a message; Exarust's warning says `File format error`.
     Format,
 }
 
@@ -63,21 +66,25 @@ impl fmt::Display for ImageReadError {
 
 impl std::error::Error for ImageReadError {}
 
-/// The extension a name is dispatched by: the bytes after its last dot,
-/// unless the dot leads the name (a hidden name has no extension) or ends it.
-/// The comparison is case-insensitive, as the original lowercases the name
-/// before it looks the extension up. At most 15 bytes are kept, the size of
-/// the original's stored name field.
+/// The extension a name is dispatched by: `None` without a dot, else the
+/// bytes after the last dot (a leading dot counts too). An extension longer
+/// than the original's 16-byte field is not copied at all, so it is empty,
+/// as is the extension of a name ending in a dot; an empty extension matches
+/// no reader. The reader lookup folds ASCII case.
 pub fn extension_of(name: &str) -> Option<&str> {
     let dot = name.rfind('.')?;
-    if dot == 0 {
-        return None;
-    }
     let extension = &name[dot + 1..];
-    if extension.is_empty() {
-        return None;
+    Some(if extension.len() > 16 { "" } else { extension })
+}
+
+/// The extension as the original's message prints it: the first 15 bytes,
+/// in the name's own case.
+fn reported_extension(extension: &str) -> String {
+    let mut end = extension.len().min(15);
+    while !extension.is_char_boundary(end) {
+        end -= 1;
     }
-    extension.get(..extension.len().min(15))
+    extension[..end].to_owned()
 }
 
 /// The reader a named image goes to, before its bytes are decoded. A name
@@ -90,9 +97,9 @@ pub fn reader_for(name: &str, bytes: &[u8]) -> Result<ImageFormat, ImageReadErro
         return if extension.eq_ignore_ascii_case(ImageFormat::Rfi.extension()) {
             Ok(ImageFormat::Rfi)
         } else {
-            Err(ImageReadError::UnrecognisedExtension(
-                extension.to_ascii_lowercase(),
-            ))
+            Err(ImageReadError::UnrecognisedExtension(reported_extension(
+                extension,
+            )))
         };
     }
     match FileKind::detect(bytes) {
@@ -114,15 +121,16 @@ mod tests {
         assert_eq!(extension_of("wall01n.rfi"), Some("rfi"));
         assert_eq!(extension_of("a.b.rfi"), Some("rfi"));
         assert_eq!(extension_of("wall01n"), None);
-        // A leading dot is a hidden name, not an extension; a trailing dot
-        // has none either.
-        assert_eq!(extension_of(".hidden"), None);
-        assert_eq!(extension_of("wall01n."), None);
-        // The stored name field keeps at most fifteen bytes.
+        // A leading dot starts an extension too; a trailing dot leaves it
+        // empty.
+        assert_eq!(extension_of(".rfi"), Some("rfi"));
+        assert_eq!(extension_of("wall01n."), Some(""));
+        // Sixteen bytes fit the field; seventeen are not copied at all.
         assert_eq!(
-            extension_of("wall01n.abcdefghijklmnopq"),
-            Some("abcdefghijklmno")
+            extension_of("wall01n.abcdefghijklmnop"),
+            Some("abcdefghijklmnop")
         );
+        assert_eq!(extension_of("wall01n.abcdefghijklmnopq"), Some(""));
     }
 
     #[test]
@@ -142,9 +150,21 @@ mod tests {
             reader_for("emblem.dds", b"DDS "),
             Err(ImageReadError::UnrecognisedExtension("dds".into()))
         );
+        // The message keeps the name's case and at most 15 bytes.
         assert_eq!(
             reader_for("a.b.TGA", b""),
-            Err(ImageReadError::UnrecognisedExtension("tga".into()))
+            Err(ImageReadError::UnrecognisedExtension("TGA".into()))
+        );
+        assert_eq!(
+            reader_for("x.abcdefghijklmnop", b""),
+            Err(ImageReadError::UnrecognisedExtension(
+                "abcdefghijklmno".into()
+            ))
+        );
+        // An empty extension matches no reader, whatever the bytes.
+        assert_eq!(
+            reader_for("wall01n.", &IMAGE_MAGIC),
+            Err(ImageReadError::UnrecognisedExtension(String::new()))
         );
         assert_eq!(
             ImageReadError::UnrecognisedExtension("dds".into()).to_string(),
