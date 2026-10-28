@@ -162,14 +162,34 @@ pub fn story_music(name: &[u8]) -> StoryMusic {
 /// `Msc_Countfour`, and compares it with the one playing on their first 15
 /// characters.
 pub fn story_music_changes(name: &[u8], playing: &str) -> bool {
+    let short = |s: &str| s.bytes().take(15).collect::<Vec<_>>();
+    short(entry_track(name)) != short(playing)
+}
+
+/// [`story_music_changes`] against the track A plays as Exarust names it:
+/// its lowercase key ([`AudioEnvironment::music_name`]). The original keeps
+/// the track's own spelling and compares exactly; both names come from the
+/// same table, whose tracks differ by more than case, so comparing the
+/// lowercase names gives the same answer.
+pub fn story_music_changes_for_key(name: &[u8], playing_key: &str) -> bool {
+    let short = |s: &str| {
+        s.bytes()
+            .take(15)
+            .map(|b| b.to_ascii_lowercase())
+            .collect::<Vec<_>>()
+    };
+    short(entry_track(name)) != short(playing_key)
+}
+
+/// The track the level-entry check names: [`story_music`]'s, except that
+/// byte 8 `7` names `Msc_Countfour`.
+fn entry_track(name: &[u8]) -> &'static str {
     let picked = story_music(name).track;
-    let track = if picked == "Msc_CountfourA" {
+    if picked == "Msc_CountfourA" {
         "Msc_Countfour"
     } else {
         picked
-    };
-    let short = |s: &str| s.bytes().take(15).collect::<Vec<_>>();
-    short(track) != short(playing)
+    }
 }
 
 /// The crossfader's state: two voices with their buffers and nominal volumes.
@@ -276,6 +296,25 @@ impl AudioEnvironment {
             voice.pitch = 1.0;
             voice.flags |= MUSIC_FLAGS;
             voice.offset = 0.0;
+        }
+    }
+
+    /// The gain A's voice plays at, when A has a voice (the transition
+    /// screen reads it before fading the music out).
+    pub fn music_gain(&self) -> Option<f32> {
+        self.music
+            .a
+            .and_then(|id| self.voice(id))
+            .map(|voice| voice.gain)
+    }
+
+    /// Writes A's voice gain, when A has a voice (the transition screen's
+    /// music fade). The nominal volume is left as it is.
+    pub fn set_music_gain(&mut self, gain: f32) {
+        if let Some(id) = self.music.a
+            && let Some(voice) = self.voice_mut(id)
+        {
+            voice.gain = gain;
         }
     }
 
@@ -866,6 +905,41 @@ mod tests {
         assert_ne!(voice.flags & voice_flags::RESTART, 0);
         assert!(bank.buffer(old).is_none());
         assert_eq!(env.music.name, "new");
+    }
+
+    /// The transition screen reads and writes A's voice gain only while A
+    /// has a voice.
+    #[test]
+    fn the_music_gain_is_a_voices() {
+        let (mut env, mut bank, _) = env_with_track(4.0);
+        assert_eq!(env.music_gain(), Some(1.0));
+        env.set_music_gain(0.25);
+        assert_eq!(env.music_gain(), Some(0.25));
+        assert_eq!(env.music.a_volume, 1.0);
+        env.music_stop(&mut bank, true);
+        assert_eq!(env.music_gain(), None);
+        env.set_music_gain(0.5);
+        assert_eq!(env.music_gain(), None);
+    }
+
+    /// The level-entry check against Exarust's lowercase key: the first
+    /// level's track is the same, the fourth's is not, `07` names the
+    /// Countfour track and only 15 characters count.
+    #[test]
+    fn the_entry_check_compares_lowercase_keys() {
+        assert!(!story_music_changes_for_key(b"exanima01", "msc_uw01amb"));
+        assert!(story_music_changes_for_key(b"exanima04", "msc_uw01amb"));
+        assert!(!story_music_changes_for_key(b"exanima07", "msc_countfour"));
+        assert!(story_music_changes_for_key(b"exanima07", "msc_countfoura"));
+        assert!(!story_music_changes_for_key(
+            b"exanima01__w",
+            "msc_sharpnaturalx"
+        ));
+        assert!(story_music_changes_for_key(b"exanima01", ""));
+        assert_eq!(
+            story_music_changes(b"exanima04", "Msc_UW01Amb"),
+            story_music_changes_for_key(b"exanima04", "msc_uw01amb")
+        );
     }
 
     /// The start offset is A's, until it is consumed.
