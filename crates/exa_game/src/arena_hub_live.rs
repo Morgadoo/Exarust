@@ -424,10 +424,13 @@ pub fn clear_physician_weapon(career: &mut crate::hub_windows::ArenaCareer) -> O
 }
 
 /// The mode word the click hook compares: the flow's mode, else the arena's
-/// while a hub level is loaded (play mode has no loaded session yet).
+/// while a hub level is loaded (play mode has no loaded session yet). The
+/// play view switches the flow to Exarust's practice stand-in once the
+/// player spawns; with the hub loaded that is the hub's play mode too.
 fn hub_mode(flow: Option<&Flow>, hub_loaded: bool) -> u32 {
+    use crate::flow::Mode;
     match flow {
-        Some(flow) if flow.mode == crate::flow::Mode::Menu && hub_loaded => ARENA_MODE,
+        Some(flow) if matches!(flow.mode, Mode::Menu | Mode::Practice) && hub_loaded => ARENA_MODE,
         Some(flow) => flow.mode.word(),
         None if hub_loaded => ARENA_MODE,
         None => 0,
@@ -550,6 +553,16 @@ fn hub_clicks(
             },
             crate::hand::Hit::Level => HubAction::Nothing,
         };
+        let picked = match click.hit {
+            crate::hand::Hit::SceneNode { node: e } | crate::hand::Hit::Prop { body: e, .. } => {
+                names.get(e).ok()
+            }
+            _ => None,
+        };
+        debug!(
+            "hub click on {:?} {:?} (busy {}, mode {:#x}): {:?}",
+            click.hit, picked, hub.busy, mode, action
+        );
         last.action = Some(action);
         match action {
             HubAction::Nothing => {}
@@ -835,6 +848,26 @@ mod tests {
             );
             assert!(!app.world().resource::<ArenaHub>().busy);
         }
+    }
+
+    /// The play view's practice stand-in and the menu count as the arena
+    /// while the hub is loaded; story mode and a practice without the hub
+    /// do not.
+    #[test]
+    fn the_play_view_hub_counts_as_the_arena() {
+        use crate::flow::Mode;
+        let mut flow = Flow::default();
+        for (mode, loaded, word) in [
+            (Mode::Practice, true, ARENA_MODE),
+            (Mode::Menu, true, ARENA_MODE),
+            (Mode::Practice, false, crate::flow::PRACTICE_MODE),
+            (Mode::Story, true, crate::flow::STORY_MODE),
+        ] {
+            flow.mode = mode;
+            assert_eq!(hub_mode(Some(&flow), loaded), word, "{mode:?} {loaded}");
+        }
+        assert_eq!(hub_mode(None, true), ARENA_MODE);
+        assert_eq!(hub_mode(None, false), 0);
     }
 
     #[test]

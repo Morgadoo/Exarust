@@ -470,8 +470,11 @@ Opening the board or Manage Company makes the hub busy; closing either
 clears it. The notice boards and the shop counter are static scenery with no
 rigid body; their colliders remember the scene node they were built under
 (`exa_physics::ColliderNodes`), so a click on `\xaaArenaShop` or
-`\xaaArenaMach` reaches the hook. The shop sign's `_null` mesh is
-collision-only geometry and is kept as a hidden collider. Not wired: the
+`\xaaArenaMach` reaches the hook. The shop counter's node holds only a
+`_null` box, which the original never draws but picks; it is kept as a
+hidden pick-only collider that nothing collides with. In `play arenahub`
+the flow runs Exarust's practice stand-in once the player spawns; with the
+hub loaded the hook takes that (and the menu) as the arena mode. Not wired: the
 shop's first stock build (`trade::update_stock` needs a live `ShopWorld`),
 the match's return to the hub, the windows' own close controls, the board's
 pictures and prize items, the manage report lines and controls, and the
