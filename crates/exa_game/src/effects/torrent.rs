@@ -45,9 +45,16 @@
 //!   source and its live points between their last two places, with their
 //!   width, life curve `(2 − s)·s` and age) and colour bytes; the GI
 //!   light's points ([`LightPoints::merge`]).
-//! - **Hits** ([`torrent_reach`], [`torrent_hit`], [`push_torrent_point`],
-//!   [`limb_terms`], [`limb_impulse`], [`character_knock`]): the contact
-//!   arithmetic; the engine's mesh tests are not ported.
+//! - **Hits** ([`torrent_reach`], [`body_reach`], [`torrent_hit`],
+//!   [`push_torrent_point`], [`limb_terms`], [`limb_impulse`],
+//!   [`torrent_knock`], [`surface_push`]): the contact arithmetic; the
+//!   engine's mesh query is the caller's surface callback.
+//! - **Ribbon** ([`Torrent::ribbon`]): each stream's samples doubled with
+//!   midpoints, eye-facing normals kept between frames, and quads widened
+//!   by the sample's age, walking the second texture coordinate by the
+//!   squared sample distance.
+//! - **Life** ([`Torrent::link`], [`Torrent::destroy`]): the geometry link
+//!   and the destroy slot's two loops and GI light.
 //!
 //! Evidence: the torrent's start, chunk setup, aim, tick, contact entries
 //! and callbacks, frame and light merge, read from `Exanima.exe`
@@ -60,6 +67,7 @@ use bevy::prelude::*;
 
 pub use super::blast::{CharacterKnock, character_knock};
 use super::blast::{EPSILON, Frame, blast_aim, chunk_directions};
+use super::ribbon::RibbonMesh;
 use crate::arena::Mt19937;
 use crate::thaum::casting::{CastBody, spend_tick};
 use crate::thaum::engine::{Roll, dist_sq, lerp, normalize, sin_cos};
@@ -100,6 +108,50 @@ pub const BOUNDS_MARGIN: f32 = 40.0;
 pub const LIGHT_REACH_SQ: f32 = 25_600.0;
 pub const LIGHT_MERGE_SQ: f32 = 6_400.0;
 pub const MOST_LIGHTS: usize = 16;
+/// The ribbon's texture steps along a stream while it charges and while it
+/// runs: the squared distance between two samples times one of these.
+pub const RIBBON_STEP_CHARGING: f64 = 0.005;
+pub const RIBBON_STEP_RUNNING: f64 = 0.0003;
+/// The extra reach a torrent point tests a simulated object's points
+/// with, cm.
+pub const BODY_EXTRA: f32 = 40.0;
+
+/// The reach a torrent point tests a simulated object's point cloud with
+/// (the object walk, not the limb or level contact, which take
+/// [`torrent_reach`]'s ten): the width times the scale, plus the margin,
+/// plus forty.
+pub fn body_reach(width: f32, scale: f32, margin: f32) -> f32 {
+    width * scale + margin + BODY_EXTRA
+}
+
+/// The static surface's contact scale, push and the ease a point takes
+/// toward the contact.
+pub const STATIC_SCALE: f32 = 0.25;
+pub const STATIC_PUSH: f32 = 0.5;
+pub const CONTACT_EASE: f32 = 0.5;
+
+/// What a static surface's contact tells the walk.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StaticContact {
+    pub scale: f32,
+    pub push: f32,
+    pub ease: f32,
+}
+
+/// The static surface's contact values.
+pub const STATIC_CONTACT: StaticContact = StaticContact {
+    scale: STATIC_SCALE,
+    push: STATIC_PUSH,
+    ease: CONTACT_EASE,
+};
+
+/// The normal-averaging weight and the normal lerps the ribbon keeps
+/// between frames.
+pub const NORMAL_AVERAGE: f32 = 0.1;
+pub const NORMAL_LERP: f32 = 0.03;
+/// The middle vertices' offset along the neighbours and the segment.
+pub const MID_NEIGHBOURS: f32 = 0.25;
+pub const MID_SEGMENT: f32 = -0.0625;
 
 /// The torrent's states.
 pub const FIZZLED: i32 = -2;
@@ -107,6 +159,28 @@ pub const FIZZLING: i32 = -1;
 pub const CHARGING: i32 = 0;
 pub const RUNNING: i32 = 1;
 pub const ENDING: i32 = 2;
+
+/// What linking a torrent to its geometry installs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TorrentLink {
+    /// The bits the geometry node's flags gain.
+    pub flags: u32,
+    /// The node runs the torrent's stream draw.
+    pub draws_streams: bool,
+}
+
+/// What the torrent's destroy slot releases.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TorrentTeardown {
+    /// The charge loop stops.
+    pub charge_sound: bool,
+    /// The stream loop stops.
+    pub loop_sound: bool,
+    /// The GI light is taken out of its manager and freed.
+    pub light: bool,
+    /// The object's own memory is freed.
+    pub object: bool,
+}
 
 /// One point of a stream.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -197,6 +271,8 @@ pub struct Torrent {
     pub centre: Vec3,
     pub half: Vec3,
     pub bound_radius: f32,
+    /// The effect has linked to its geometry node.
+    pub linked: bool,
 }
 
 impl Torrent {
@@ -252,6 +328,7 @@ impl Torrent {
             centre: Vec3::ZERO,
             half: Vec3::ZERO,
             bound_radius: 0.0,
+            linked: false,
         };
         for stream in &mut torrent.records[..torrent.count] {
             stream.head = 1;
@@ -281,6 +358,27 @@ impl Torrent {
         } else {
             ENDING
         };
+    }
+
+    /// Links the torrent to its geometry node, as the blast's link does.
+    pub fn link(&mut self) -> TorrentLink {
+        self.linked = true;
+        TorrentLink {
+            flags: crate::effects::blast::GEOMETRY_LINK_FLAG,
+            draws_streams: true,
+        }
+    }
+
+    /// The destroy slot: both loops stop, the GI light leaves its manager
+    /// and the object's memory goes.
+    pub fn destroy(&mut self) -> TorrentTeardown {
+        self.linked = false;
+        TorrentTeardown {
+            charge_sound: true,
+            loop_sound: true,
+            light: true,
+            object: true,
+        }
     }
 
     /// One tick. `caster` pays the drain; `random` draws the spawn angles.
@@ -677,7 +775,7 @@ impl Torrent {
                     if stream.split {
                         self.lights.merge(samples[0].at, samples[0].weight);
                     }
-                    for sample in &samples[1..] {
+                    for sample in &samples[1..samples.len() - 1] {
                         self.lights.merge(sample.at, sample.weight);
                     }
                 }
@@ -697,15 +795,134 @@ impl Torrent {
             streams,
         }
     }
+
+    /// The torrent's ribbon: one strip a stream, its samples doubled by
+    /// the midpoints between them — each midpoint the two neighbours'
+    /// middle, pulled a quarter of the way by the samples around it and a
+    /// sixteenth back along its own segment — and every pair widened by a
+    /// normal across the eye and the sample's age. The normals come from
+    /// the neighbour differences crossed with the eye: the first and last
+    /// averaged, the middles interpolated between the two ends' normals,
+    /// each kept between draws by [`NORMAL_LERP`]. The second texture
+    /// coordinate walks along the strip by the squared sample distance
+    /// times [`RIBBON_STEP_CHARGING`] while the torrent charges and
+    /// [`RIBBON_STEP_RUNNING`] while it runs.
+    ///
+    /// The original crosses the differences with the eye position carried
+    /// into the effect node's frame; Exarust uses the world eye, the same
+    /// when the node is unturned.
+    #[allow(clippy::needless_range_loop)]
+    pub fn ribbon(&mut self, frame: &TorrentFrame, eye: Vec3) -> RibbonMesh {
+        let mut mesh = RibbonMesh::default();
+        let charging = self.state < RUNNING;
+        let step = if charging {
+            RIBBON_STEP_CHARGING
+        } else {
+            RIBBON_STEP_RUNNING
+        };
+        for (index, (colour, samples)) in frame.streams.iter().enumerate() {
+            if samples.len() < 3 {
+                continue;
+            }
+            let mut points = Vec::with_capacity((samples.len() - 1) * 2);
+            let mut widths = Vec::with_capacity((samples.len() - 1) * 2);
+            for i in 0..samples.len() - 1 {
+                points.push(samples[i].at);
+                let mut middle = lerp(samples[i].at, samples[i + 1].at, 0.5);
+                if i > 0 {
+                    middle += (samples[i + 1].at - samples[i - 1].at) * MID_NEIGHBOURS;
+                }
+                middle += (samples[i + 1].at - samples[i].at) * MID_SEGMENT;
+                points.push(middle);
+                let midpoint = |a: f32, b: f32| a + (b - a) * 0.5;
+                widths.push(samples[i]);
+                widths.push(StreamSample {
+                    at: middle,
+                    width: midpoint(samples[i].width, samples[i + 1].width),
+                    weight: midpoint(samples[i].weight, samples[i + 1].weight),
+                    age: midpoint(samples[i].age, samples[i + 1].age),
+                });
+            }
+            let count = points.len();
+            let mut normals = vec![Vec3::ZERO; count];
+            let first = normalize(cross(points[1] - points[0], eye));
+            normals[0] = first;
+            let mut sum = first;
+            for i in 1..count - 1 {
+                let normal = normalize(cross(points[i + 1] - points[i - 1], eye));
+                normals[i] = normal;
+                sum += normal;
+            }
+            normals[count - 1] = first;
+            let sum = normalize(sum);
+            normals[0] = normalize(lerp(normals[0], sum, NORMAL_AVERAGE));
+            normals[count - 1] = normals[0];
+            let stream = &mut self.records[index];
+            stream.normals[0] = normals[0];
+            stream.normals[1] = normalize(lerp(
+                stream.normals[1],
+                normalize(cross(points[1] - points[0], eye)),
+                NORMAL_LERP,
+            ));
+            stream.normals[2] = normalize(lerp(
+                stream.normals[2],
+                normalize(cross(points[count - 1] - points[count - 3], eye)),
+                NORMAL_LERP,
+            ));
+            normals[0] = stream.normals[1];
+            for i in 1..count - 1 {
+                let t = i as f32 / (count - 2) as f32;
+                normals[i] = normalize(lerp(stream.normals[1], stream.normals[2], t));
+            }
+            stream.normals[3] = normals[count - 2];
+            let mut strip = RibbonMesh::default();
+            let mut along = 0.0f32;
+            for i in 0..count - 2 {
+                strip.push_torrent_quad(
+                    points[i],
+                    normals[i],
+                    widths[i].age,
+                    *colour,
+                    widths[i].width,
+                    widths[i].weight,
+                    along,
+                );
+                let delta = points[i + 1] - points[i];
+                let squared = (delta.x * delta.x + delta.y * delta.y) + delta.z * delta.z;
+                along = (f64::from(along) + f64::from(squared) * step) as f32;
+            }
+            let base = if mesh.positions.is_empty() {
+                0
+            } else {
+                mesh.vertex_count() as i32 - 2
+            };
+            if !mesh.positions.is_empty() {
+                mesh.drop_triangles(2);
+            }
+            mesh.append(&strip, base, |point| point);
+        }
+        mesh.drop_triangles(2);
+        mesh
+    }
+}
+
+/// `(a × b)`, each term in the original's cross order. The original's
+/// helper is the engine's shuffle form of the same product.
+fn cross(a: Vec3, b: Vec3) -> Vec3 {
+    Vec3::new(
+        a.y * b.z - a.z * b.y,
+        a.z * b.x - a.x * b.z,
+        a.x * b.y - a.y * b.x,
+    )
 }
 
 /// The limb contact's scale, push and ease: a character's limb 0.5,
-/// `0.8/mass` and `0.5/(inverse + 1)`; any other body's
+/// `(1/mass)·0.8` (the product in double precision) and `0.5/(inverse + 1)`; any other body's
 /// `min(inverse/4 + 1/2, 3)`, 0.5 and the same ease.
 pub fn limb_terms(character: bool, inverse_mass: f32, body_mass: f32) -> (f32, f32, f32) {
     let ease = 0.5 / (inverse_mass + 1.0);
     if character {
-        (0.5, (1.0 / body_mass) * 0.8, ease)
+        (0.5, (f64::from(1.0 / body_mass) * 0.8) as f32, ease)
     } else {
         ((inverse_mass * 0.25 + 0.5).min(3.0), 0.5, ease)
     }
@@ -747,10 +964,64 @@ pub fn limb_impulse(
 pub fn energy_after(energy: f32, body_mass: f32) -> f32 {
     let k = 1.0 / body_mass;
     if 0.25 < energy {
-        energy - k * 0.0005
+        (f64::from(energy) - f64::from(k) * 0.0005) as f32
     } else {
         energy
     }
+}
+
+/// A character struck by the torrents: `k = 1/mass`, its energy, the
+/// gathered impulse (the same cap at thirty, doubled) and the support-pin
+/// gain `(1 − k)·0.08` clamped below zero and above 0.08, as the blast's
+/// [`super::blast::character_knock`] (only the energy term differs).
+pub fn torrent_knock(body_mass: f32, energy: f32, impulse: Vec3) -> CharacterKnock {
+    let k = 1.0 / body_mass;
+    let energy = energy_after(energy, body_mass);
+    let (knock, stun) = super::blast::knock_and_pins(k, impulse);
+    CharacterKnock {
+        energy,
+        knock,
+        stun,
+    }
+}
+
+/// The static-surface walk: each live point whose centre is within
+/// `torrent_reach(width, scale, margin)` of the surface's nearest point
+/// moves half way to it, and the loop sound's channels rise by the point's
+/// life share: 0.005 on the first, and 0.01 on the second while it is under
+/// 1.8. Returns how many points met the surface.
+pub fn surface_push(
+    torrent: &mut Torrent,
+    nearest: impl Fn(Vec3) -> Option<Vec3>,
+    scale: f32,
+    sound: &mut crate::thaum::TorrentHit,
+) -> usize {
+    let margin = torrent.margin;
+    let point_life = torrent.point_life;
+    let mut hits = 0;
+    for stream in &mut torrent.records[..torrent.count] {
+        let head = stream.head;
+        let mut k = head;
+        loop {
+            let point = &mut stream.points[k];
+            if point.life < 1 {
+                break;
+            }
+            let reach = torrent_reach(point.width, scale, margin);
+            if let Some(contact) = nearest(point.at)
+                && dist_sq(point.at, contact) <= reach * reach
+            {
+                point.at = lerp(point.at, contact, 0.5);
+                *sound = torrent_hit(point.life, point_life, sound.left, sound.right);
+                hits += 1;
+            }
+            k = if k == 0 { POINTS - 1 } else { k - 1 };
+            if k == head {
+                break;
+            }
+        }
+    }
+    hits
 }
 
 #[cfg(test)]
@@ -888,10 +1159,8 @@ mod tests {
 
     #[test]
     fn the_contact_rules_carry_the_numbers() {
-        assert_eq!(
-            limb_terms(true, 1.0, 80.0),
-            (0.5, (1.0f32 / 80.0) * 0.8, 0.25)
-        );
+        // (1/80)·0.8 in double rounds to 0.01; in single it is 0.010000001.
+        assert_eq!(limb_terms(true, 1.0, 80.0), (0.5, 0.01, 0.25));
         assert_eq!(limb_terms(false, 12.0, 0.0), (3.0, 0.5, 0.5 / 13.0));
         let p = StreamPoint {
             at: Vec3::new(0.0, 0.0, 10.0),
@@ -905,5 +1174,86 @@ mod tests {
         assert!((energy_after(1.0, 80.0) - (1.0 - 0.0125 * 0.0005)).abs() < 1e-7);
         assert_eq!(energy_after(0.2, 80.0), 0.2);
         assert_eq!(torrent_reach(12.0, 0.25, 0.0), 13.0);
+        // A simulated object's reach is forty past the same scale, not ten.
+        assert_eq!(body_reach(12.0, 0.25, 0.0), 43.0);
+        assert_eq!(
+            STATIC_CONTACT,
+            StaticContact {
+                scale: 0.25,
+                push: 0.5,
+                ease: 0.5
+            }
+        );
+    }
+
+    #[test]
+    fn a_stream_becomes_a_doubled_strip_of_quads() {
+        let mut t = torrent();
+        // The source sits 20 cm behind the head, so the first quad has a
+        // length and the texture walk moves.
+        for stream in &mut t.records[..16] {
+            stream.source = stream.points[1].at + Vec3::new(0.0, 0.0, 20.0);
+        }
+        let frame = t.frame(1.0);
+        let mesh = t.ribbon(&frame, Vec3::new(1000.0, 1000.0, 0.0));
+        // Three samples make a four-point spine and two emitter calls a
+        // stream; the streams chain onto the previous stream's last pair
+        // and the final closing pair is dropped.
+        assert_eq!(mesh.positions.len(), 16 * 4);
+        assert_eq!(mesh.indices.len(), 96);
+        let (colour, _) = &frame.streams[0];
+        assert_eq!(mesh.colours[0], *colour);
+        assert_eq!(mesh.uvs[0][0], 0.0);
+        assert_eq!(mesh.uvs[1][0], 1.0);
+        assert!(mesh.positions.iter().all(|p| p.is_finite()));
+        assert!(mesh.uvs2.iter().flatten().all(|v| v.is_finite()));
+        // The first quad starts the texture walk at zero; the second has
+        // moved on by the squared sample distance times 0.005 (charging).
+        assert_eq!(mesh.uvs2[0][1], 0.0);
+        assert!(mesh.uvs2[2][1] > 0.0);
+        // The sample's age is the half width.
+        assert_eq!(mesh.uvs[0][1], frame.streams[0].1[0].width);
+        assert!(mesh.positions[0] != mesh.positions[1]);
+    }
+
+    #[test]
+    fn the_surface_walk_moves_points_and_raises_the_loop() {
+        let mut t = torrent();
+        t.state = RUNNING;
+        t.charge = 1.0;
+        // Every point sits on a floor at z = 0 and the surface is 2 cm up.
+        for stream in &mut t.records[..16] {
+            for point in &mut stream.points {
+                point.at = Vec3::new(0.0, 0.0, 0.0);
+            }
+        }
+        let mut sound = crate::thaum::TorrentHit {
+            left: 0.0,
+            right: 0.0,
+        };
+        let hits = surface_push(&mut t, |_| Some(Vec3::new(0.0, 0.0, 2.0)), 0.25, &mut sound);
+        // One live sample a stream: the head; the dead point stops the walk.
+        assert_eq!(hits, 16);
+        assert!((t.records[0].points[1].at.z - 1.0).abs() < 1e-6);
+        assert!((sound.left - 16.0 * 0.005).abs() < 1e-6);
+        assert!((sound.right - 16.0 * 0.01).abs() < 1e-6);
+    }
+
+    #[test]
+    fn linking_and_destroying_a_torrent_releases_its_two_loops() {
+        let mut t = torrent();
+        let link = t.link();
+        assert_eq!(link.flags, crate::effects::blast::GEOMETRY_LINK_FLAG);
+        assert!(link.draws_streams && t.linked);
+        assert_eq!(
+            t.destroy(),
+            TorrentTeardown {
+                charge_sound: true,
+                loop_sound: true,
+                light: true,
+                object: true,
+            }
+        );
+        assert!(!t.linked);
     }
 }

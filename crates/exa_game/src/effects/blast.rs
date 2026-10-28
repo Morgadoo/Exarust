@@ -52,11 +52,20 @@
 //!   toward the caster by `0.25·(1 − (d/1800)⁴)·(aim·dir + 3)` for 3 s.
 //! - **Hits**: the contact rules ([`limb_push`], [`character_knock`],
 //!   [`sim_point_push`], [`rebound`], [`push_out`]) are the original's
-//!   arithmetic; the engine's mesh and sphere tests that find the contacts
-//!   are not ported.
+//!   arithmetic; [`hit_static`], [`hit_sampled`] and [`hit_sim_object`]
+//!   walk the level's surface, a sampled body and a simulated object's
+//!   points. The engine's own surface queries are replaced by the callers'
+//!   (a sweep for the level) at the same reach and callback rules.
+//! - **Ribbon** ([`Blast::ribbon`]): each live chunk's trail is sampled
+//!   eight times five centimetres apart, its widths normalised and
+//!   smoothed, the spine bent across the camera plane and eight quads
+//!   emitted a chunk, chained onto the previous chunk's closing pair, as
+//!   `effects::ribbon` lays them out.
 //! - **Frame** ([`Blast::frame`]): the chunks' sounds and the per-chunk
 //!   colour bytes, and the texture offset `(0, r₀, texture_scale)` with the
 //!   first chunk's radius between its last two ticks.
+//! - **Life** ([`Blast::link`], [`Blast::destroy`]): the geometry link and
+//!   the destroy slot's sound, buffer, light and entity releases.
 //!
 //! Evidence: the blast's constructor, start, chunk setup, direction table,
 //! aim, release directions, tick, alert, contact entries and callbacks,
@@ -69,6 +78,7 @@
 use bevy::prelude::*;
 
 use super::force_wave::{TRAIL, TrailSlot};
+use super::ribbon::RibbonMesh;
 use crate::arena::Mt19937;
 use crate::nav_camera::planar_yaw;
 use crate::thaum::casting::{CastBody, spend_tick};
@@ -102,9 +112,13 @@ pub const ALERT_REACH: f32 = 1800.0;
 pub const ALERT_FLAT_BAND: f32 = 150.0;
 /// How long the alert keeps, s.
 pub const ALERT_SECONDS: f32 = 3.0;
+/// The gain the alert passes the AI's concern helper.
+pub const ALERT_GAIN: f32 = 3.0;
 /// The speed the release asks the blast's entity for, cm/s.
 pub const RELEASE_SPEED: f32 = 1200.0;
-/// The flag the release sets.
+/// The flags the start sets: in the world and drawable.
+pub const START_FLAGS: u32 = 0x9_0000;
+/// The flag the release adds.
 pub const THROWN_FLAG: u32 = 0x4_0000;
 /// The event a charge passing 1 raises.
 pub const POWER_USED: &str = "PowerUsed";
@@ -114,6 +128,21 @@ pub const EPSILON: f32 = f32::from_bits(0x33ff_ffd7);
 pub const RING_ELEVATION: f32 = 0.463_647_6;
 /// The ring's step, rad.
 pub const RING_STEP: f32 = 1.256_637_1;
+
+/// The spine samples the draw takes of each chunk's trail.
+pub const RIBBON_SAMPLES: usize = 8;
+/// The distance between two samples along the trail, cm: eight times the
+/// draw's 0.625.
+pub const SAMPLE_STEP: f32 = 5.0;
+/// The smoothing and camera-facing passes the draw runs.
+pub const SMOOTH_PASSES: usize = 10;
+pub const FACE_PASSES: usize = 10;
+/// A chunk's half width over its reach.
+pub const RIBBON_HALF_OVER_REACH: f32 = 2.5;
+/// The width the draw normalises by, cm.
+pub const RIBBON_WIDTH: f32 = 40.0;
+/// The factor the camera-facing pass multiplies the width difference by.
+pub const FACE_WIDTH_SCALE: f32 = 100.0;
 
 /// The sixteen chunk directions.
 pub fn chunk_directions() -> [Vec3; CHUNKS] {
@@ -188,11 +217,12 @@ fn rough_normalize(v: Vec3) -> Vec3 {
     v * crate::thaum::reciprocal_sqrt(sum)
 }
 
-/// Wraps an angle into ±π once, the bounds tested in double precision.
+/// Wraps an angle into ±π once, in single precision as the original's
+/// bounds are.
 fn wrap(angle: f32) -> f32 {
-    if f64::from(angle) < -std::f64::consts::PI {
+    if angle < -std::f32::consts::PI {
         angle + std::f32::consts::TAU
-    } else if f64::from(angle) > std::f64::consts::PI {
+    } else if angle > std::f32::consts::PI {
         angle - std::f32::consts::TAU
     } else {
         angle
@@ -207,9 +237,10 @@ pub fn blast_aim(hand_node: Vec3, target: Vec3, facing: Vec3) -> Vec3 {
     let pitch = -exa_ai::combatant::asin_fast(dir.y);
     let body = planar_yaw(facing);
     let off = wrap(yaw + -body);
-    if f64::from(off) > std::f64::consts::FRAC_PI_4 {
+    // π/4 as the single the original compares with (0x3f490fdb).
+    if off > std::f32::consts::FRAC_PI_4 {
         yaw = wrap(body + std::f32::consts::FRAC_PI_4);
-    } else if f64::from(off) < -std::f64::consts::FRAC_PI_4 {
+    } else if off < -std::f32::consts::FRAC_PI_4 {
         yaw = wrap(body + -std::f32::consts::FRAC_PI_4);
     }
     let (sin_p, cos_p) = sin_cos(pitch);
@@ -278,6 +309,45 @@ pub struct BlastView {
     pub facing: Vec3,
 }
 
+/// The flags word the geometry node gains when an effect links to it.
+pub const GEOMETRY_LINK_FLAG: u32 = 0x1_0000;
+
+/// What linking a blast to its geometry installs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BlastLink {
+    /// The bits the geometry node's flags gain.
+    pub flags: u32,
+    /// The node runs the blast's ribbon draw.
+    pub draws_ribbon: bool,
+}
+
+/// What the destroy slot releases.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct BlastTeardown {
+    /// The charge loop stops.
+    pub charge_sound: bool,
+    /// The release sound stops.
+    pub release_sound: bool,
+    /// The geometry's chunk records are freed.
+    pub chunk_records: bool,
+    /// The draw's spine, width and normal buffers are freed.
+    pub draw_buffers: bool,
+    /// The GI light is taken out of its manager and freed.
+    pub light: bool,
+    /// The blast's entity is freed.
+    pub entity: bool,
+    /// The two sound names the effect copied are freed.
+    pub strings: bool,
+}
+
+impl BlastTeardown {
+    /// Whether the object's own memory is freed too (the class's destructor
+    /// path); the slot always does.
+    pub fn frees_object(&self) -> bool {
+        true
+    }
+}
+
 /// A blast.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Blast {
@@ -297,6 +367,9 @@ pub struct Blast {
     pub centre: Vec3,
     pub half: Vec3,
     pub bound_radius: f32,
+    /// The effect has linked to its geometry node, so the node carries the
+    /// effect's draw.
+    pub linked: bool,
 }
 
 impl Blast {
@@ -363,11 +436,12 @@ impl Blast {
             frame,
             chunks,
             lives,
-            flags: 0,
+            flags: START_FLAGS,
             trail_step: 0.0,
             centre: Vec3::ZERO,
             half: Vec3::ZERO,
             bound_radius: 0.0,
+            linked: false,
         }
     }
 
@@ -482,7 +556,7 @@ impl Blast {
                 for slot in &mut chunk.trail {
                     slot.distance += trail_step;
                 }
-                if !(SPACING as f32 > chunk.trail[chunk.head].distance) {
+                if SPACING as f32 <= chunk.trail[chunk.head].distance {
                     let old = chunk.head;
                     chunk.head = if old + 1 > TRAIL - 1 { 0 } else { old + 1 };
                     chunk.trail[chunk.head].distance = trail_step;
@@ -594,7 +668,7 @@ pub fn alert_amount(caster: Vec3, other: Vec3, aim: Vec3) -> Option<f32> {
     let f = distance / ALERT_REACH;
     let f = f * f;
     let falloff = 1.0 - f * f;
-    let facing = aim.z * d.z + (aim.y * d.y + aim.x * d.x) + 3.0;
+    let facing = ((aim.x * d.x + aim.y * d.y) + aim.z * d.z) + 3.0;
     Some(0.25 * falloff * facing)
 }
 
@@ -635,7 +709,7 @@ pub fn limb_push(
         if 1.0 < f {
             f = 1.0;
         }
-        let scale = (f64::from(f) * (f64::from(-k) * 0.2)) as f32;
+        let scale = (f * -k) * 0.2;
         Some(motion * scale)
     } else {
         None
@@ -664,13 +738,15 @@ pub fn limb_terms(
     }
 }
 
-/// A chunk weight's loss on a limb contact: 0.9 kept, or for a piercing
-/// blast 0.9 on a character and 0.5 on anything else, with the wear set.
+/// A chunk weight's loss on a limb contact: 0.9 kept (in double
+/// precision), or for a piercing blast 0.9 on a character and 0.5 (single
+/// precision) on anything else, with the wear set.
 pub fn contact_weight(weight: f32, piercing: bool, character: bool) -> (f32, f32) {
+    let kept = (f64::from(weight) * 0.9) as f32;
     if !piercing {
-        (weight * 0.9, 0.0)
+        (kept, 0.0)
     } else if character {
-        (weight * 0.9, CONTACT_WEAR)
+        (kept, CONTACT_WEAR)
     } else {
         (weight * 0.5, CONTACT_WEAR)
     }
@@ -684,8 +760,11 @@ pub struct CharacterKnock {
     /// The knock's direction and size (the impulse capped at 30, doubled),
     /// when the gathered impulse is longer than 1.
     pub knock: Option<(Vec3, f32)>,
-    /// The stun, `(1 − k)·0.08` (in double precision), 0 below 0 and 0.008
-    /// above 0.08.
+    /// The body's support-pin gain the hit leaves, `(1 − k)·0.08` (in
+    /// double precision): 0 below 0, 0.008 above 0.08 (compared in double),
+    /// a NaN kept. The living gain is 0.08 and recovers 0.001 a tick, so a
+    /// hit loosens the pins holding the torso up. (Called the stun in
+    /// earlier notes.)
     pub stun: f32,
 }
 
@@ -693,6 +772,28 @@ pub struct CharacterKnock {
 pub const HIT_HOSTILITY: (f32, f32) = (1.0, 0.01);
 /// The character's recoil timer a hit sets.
 pub const HIT_RECOIL: f32 = 5.0;
+
+/// The knock and the pin gain a struck character takes from the gathered
+/// `impulse` with `k` its mass term (shared by the blast and the torrent).
+/// The squared length sums `z² + (y² + x²)` as the instructions do.
+pub(crate) fn knock_and_pins(k: f32, impulse: Vec3) -> (Option<(Vec3, f32)>, f32) {
+    let size2 = impulse.z * impulse.z + (impulse.y * impulse.y + impulse.x * impulse.x);
+    let knock = if 1.0 < size2 {
+        let size = size2.sqrt();
+        let direction = impulse * (1.0 / size);
+        let size = if 30.0 < size { 30.0 } else { size };
+        Some((direction, size * 2.0))
+    } else {
+        None
+    };
+    let mut stun = ((1.0 - f64::from(k)) * 0.08) as f32;
+    if 0.0 > stun {
+        stun = 0.0;
+    } else if f64::from(stun) > 0.08 {
+        stun = 0.008;
+    }
+    (knock, stun)
+}
 
 /// A character struck by the chunks: `k = 2/mass`, its energy, the gathered
 /// impulse.
@@ -703,21 +804,7 @@ pub fn character_knock(body_mass: f32, energy: f32, impulse: Vec3) -> CharacterK
     } else {
         energy
     };
-    let size2 = (impulse.x * impulse.x + impulse.y * impulse.y) + impulse.z * impulse.z;
-    let knock = if 1.0 < size2 {
-        let size = size2.sqrt();
-        let direction = impulse * (1.0 / size);
-        let size = if 30.0 < size { 30.0 } else { size };
-        Some((direction, size * 2.0))
-    } else {
-        None
-    };
-    let mut stun = (f64::from(1.0 - k) * 0.08) as f32;
-    if 0.0 > stun {
-        stun = 0.0;
-    } else if f64::from(stun) > 0.08 {
-        stun = 0.008;
-    }
+    let (knock, stun) = knock_and_pins(k, impulse);
     CharacterKnock {
         energy,
         knock,
@@ -726,10 +813,10 @@ pub fn character_knock(body_mass: f32, energy: f32, impulse: Vec3) -> CharacterK
 }
 
 /// A rebound: the chunk moves half way to the contact point and its weight
-/// keeps 0.9.
+/// keeps 0.9 (in double precision).
 pub fn rebound(chunk: &mut BlastChunk, point: Vec3) {
     chunk.at = lerp(chunk.at, point, 0.5);
-    chunk.weight *= 0.9;
+    chunk.weight = (f64::from(chunk.weight) * 0.9) as f32;
 }
 
 /// A contact sphere at `centre` of `radius` pushed out of `point`: moved to
@@ -749,6 +836,128 @@ pub fn push_out(centre: Vec3, radius: f32, point: Vec3) -> Option<Vec3> {
 /// object's points).
 pub fn contact_reach(chunk: &BlastChunk, scale: f32, margin: f32, extra: f32) -> f32 {
     chunk.reach * scale + margin + extra
+}
+
+/// The extra reach a static body's and a limb's contact test adds, and a
+/// simulated object's points.
+pub const STATIC_EXTRA: f32 = 10.0;
+pub const SIM_EXTRA: f32 = 40.0;
+
+/// The static-body walk: every live chunk whose centre is within
+/// `contact_reach(chunk, 2, margin, 10)` of `nearest`'s closest surface
+/// point rebounds half way to that point and keeps nine tenths of its
+/// weight. Returns how many chunks met the body.
+pub fn hit_static(blast: &mut Blast, nearest: impl Fn(Vec3) -> Option<Vec3>) -> usize {
+    let mut hits = 0;
+    for (index, chunk) in blast.chunks.iter_mut().enumerate() {
+        if blast.lives[index].ticks < 1 {
+            continue;
+        }
+        let reach = contact_reach(chunk, 2.0, blast.setup.margin, STATIC_EXTRA);
+        let Some(point) = nearest(chunk.at) else {
+            continue;
+        };
+        if dist_sq(chunk.at, point) <= reach * reach {
+            rebound(chunk, point);
+            hits += 1;
+        }
+    }
+    hits
+}
+
+/// The contact walk an effect takes over a target body: the mesh's faces
+/// with the limb callback, or the body's own sample points.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContactWalk {
+    Mesh,
+    Sampled,
+}
+
+/// The values a static body's contact passes the walk: the reach scale 2,
+/// the push 0.5 and the extra 10 cm.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StaticContact {
+    pub scale: f32,
+    pub push: f32,
+    pub extra: f32,
+    pub walk: ContactWalk,
+}
+
+/// The static body's contact setup.
+pub fn static_contact(sampled: bool) -> StaticContact {
+    StaticContact {
+        scale: 2.0,
+        push: 0.5,
+        extra: STATIC_EXTRA,
+        walk: if sampled {
+            ContactWalk::Sampled
+        } else {
+            ContactWalk::Mesh
+        },
+    }
+}
+
+impl Blast {
+    /// Which walk the effect's contact dispatch picks.
+    pub fn contact_walk(&self) -> ContactWalk {
+        if self.setup.piercing {
+            ContactWalk::Sampled
+        } else {
+            ContactWalk::Mesh
+        }
+    }
+}
+
+/// The sampled-body walk's hit: a chunk whose centre is within
+/// `contact_reach(chunk, scale, margin)` of the body's surface moves to the
+/// contact point, loses all its weight and is worn (0.015). Returns the
+/// contact reach when it met the body. The body's own push is the caller's
+/// callback.
+pub fn hit_sampled(chunk: &mut BlastChunk, point: Vec3, scale: f32, margin: f32) -> Option<f32> {
+    let reach = contact_reach(chunk, scale, margin, 0.0);
+    if dist_sq(chunk.at, point) <= reach * reach {
+        chunk.at = point;
+        chunk.weight = 0.0;
+        chunk.wear = CONTACT_WEAR;
+        Some(reach)
+    } else {
+        None
+    }
+}
+
+/// A simulated object's point cloud, as the blast's object walk stirs it.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SimPoints {
+    pub points: Vec<Vec3>,
+    /// The stirring the chunks left (the original's 0.0001 a point).
+    pub stir: f32,
+}
+
+/// The simulated-object walk: every live chunk's points within
+/// `reach·scale + margin + 40` of a point move it along the chunk's last
+/// move by `(1 − d²/r²)·push·0.025` and add `(1 − d²/r²)·0.0001` of stir
+/// (both in double precision). Returns whether any point was met.
+pub fn hit_sim_object(blast: &Blast, object: &mut SimPoints, scale: f32, push: f32) -> bool {
+    let mut hit = false;
+    for (index, chunk) in blast.chunks.iter().enumerate() {
+        if blast.lives[index].ticks < 1 {
+            continue;
+        }
+        let reach = contact_reach(chunk, scale, blast.setup.margin, SIM_EXTRA);
+        let r2 = reach * reach;
+        let motion = chunk.at - chunk.previous;
+        for point in &mut object.points {
+            let d2 = dist_sq(chunk.at, *point);
+            if d2 <= r2 {
+                let f = 1.0 - d2 / r2;
+                let scale = (f64::from(f) * f64::from(push) * 0.025) as f32;
+                *point += motion * scale;
+                object.stir += f * 0.0001;
+                hit = true;
+            }
+        }
+    }
+    hit
 }
 
 /// A simulated object's point a chunk reaches: it moves along the chunk's
@@ -845,6 +1054,259 @@ impl Blast {
         };
         [byte(life.draws[0]), byte(life.draws[1]), blue, byte(curve)]
     }
+
+    /// Whether the draw would make no triangle: every chunk's life is
+    /// spent.
+    pub fn builds_nothing(&self) -> bool {
+        !self.lives.iter().any(|life| life.ticks >= 1)
+    }
+
+    /// Links the blast to its geometry node: the node gains the link flag
+    /// and runs the blast's ribbon draw with this effect as its data. The
+    /// original keeps the node on the effect, so the destroy can release
+    /// the draw's buffers.
+    pub fn link(&mut self) -> BlastLink {
+        self.linked = true;
+        BlastLink {
+            flags: GEOMETRY_LINK_FLAG,
+            draws_ribbon: true,
+        }
+    }
+
+    /// The destroy slot: the charge and release sounds stop, the geometry's
+    /// chunk records and the draw's spine, width and normal buffers go, the
+    /// GI light leaves its manager and the blast's entity is freed. The
+    /// buffers are only there once the linked draw has built them, so a
+    /// blast that never drew reports none.
+    pub fn destroy(&mut self) -> BlastTeardown {
+        let drawn = self.linked;
+        self.linked = false;
+        BlastTeardown {
+            charge_sound: true,
+            release_sound: true,
+            chunk_records: true,
+            draw_buffers: drawn,
+            light: true,
+            entity: true,
+            strings: true,
+        }
+    }
+
+    /// The spine and the texture coordinates the draw samples along a
+    /// chunk's trail: eight points `5` cm apart from the head back along
+    /// the trail (each between its two trail slots), their widths the slot
+    /// sizes interpolated and offset by the head's share of the draw's
+    /// step, then the 0–1 coordinates the draw derives and smooths (ten
+    /// passes, each point half way to its neighbours' middle and its
+    /// coordinate `0.5·w + 0.25·(w₊ + w₋)`). The last coordinate is the
+    /// divisor the draw normalises by.
+    #[allow(clippy::needless_range_loop)]
+    pub fn trail_spine(
+        &self,
+        index: usize,
+        t: f32,
+    ) -> ([Vec3; RIBBON_SAMPLES], [f32; RIBBON_SAMPLES]) {
+        let (mut points, mut widths) = self.trail_curve(index, t);
+        let inverse = 1.0 / widths[RIBBON_SAMPLES - 1];
+        widths[0] = 1.0;
+        for i in 1..RIBBON_SAMPLES - 1 {
+            widths[i] = 1.0 - widths[i] * inverse;
+        }
+        for _ in 0..SMOOTH_PASSES {
+            for i in 1..RIBBON_SAMPLES - 1 {
+                let middle = lerp(points[i - 1], points[i + 1], 0.5);
+                points[i] = lerp(points[i], middle, 0.5);
+                widths[i] = widths[i] * 0.5 + (widths[i + 1] * 0.25 + widths[i - 1] * 0.25);
+            }
+        }
+        (points, widths)
+    }
+
+    /// The raw spine samples and widths before the draw normalises and
+    /// smooths them: each sample's place interpolated between the two
+    /// trail slots around it and its width `size·f + ((1 − f)·previous_size
+    /// − (length/distance)·head_size)`. The sample step walks a slot on
+    /// when the travelled length passes the slot's distance.
+    fn trail_curve(&self, index: usize, t: f32) -> ([Vec3; RIBBON_SAMPLES], [f32; RIBBON_SAMPLES]) {
+        let chunk = &self.chunks[index];
+        let mut points = [chunk.at; RIBBON_SAMPLES];
+        let mut widths = [0.0f32; RIBBON_SAMPLES];
+        let head = chunk.head;
+        let mut previous = if head == 0 { TRAIL - 1 } else { head - 1 };
+        let mut distance = chunk.trail[head].distance;
+        let mut size = chunk.trail[head].size;
+        let length = (1.0 - t) * self.trail_step;
+        let head_offset = (length / distance) * -size;
+        let mut start = 0.0f32;
+        let mut previous_size = 0.0f32;
+        let mut limit = length;
+        for i in 0..RIBBON_SAMPLES {
+            let f = (limit - start) / (distance - start);
+            points[i] = lerp(chunk.trail[head].at, chunk.trail[previous].at, f);
+            widths[i] = size * f + ((1.0 - f) * previous_size + head_offset);
+            limit += 8.0 * 0.625;
+            if distance < limit {
+                start = distance;
+                previous = if previous == 0 {
+                    TRAIL - 1
+                } else {
+                    previous - 1
+                };
+                distance = chunk.trail[previous].distance;
+                previous_size = size;
+                size += chunk.trail[previous].size;
+            }
+        }
+        (points, widths)
+    }
+
+    /// The spine in the camera's space, bent across the view plane by ten
+    /// passes. Each pass moves the first point by its difference from the
+    /// second (`p₀ − p₁`, depth dropped) scaled by `(f/(x² + y² + f) −
+    /// 0.5)·0.5`, where `f = ((w₀ − w₁)·100·scale)²`; the first half's points then
+    /// move apart and the second half's together by the matching factor
+    /// times 0.05 (the subtraction in single precision, the 0.05 in
+    /// double).
+    #[allow(clippy::needless_range_loop)]
+    fn face_camera(
+        spine: &[Vec3; RIBBON_SAMPLES],
+        widths: &[f32; RIBBON_SAMPLES],
+        width_scale: f32,
+        camera: &super::Frame,
+    ) -> [Vec3; RIBBON_SAMPLES] {
+        let mut points = spine.map(|point| camera.inverse_point(point));
+        for _ in 0..FACE_PASSES {
+            let mut delta = points[0] - points[1];
+            delta.z = 0.0;
+            let square = {
+                let f = (widths[0] - widths[1]) * FACE_WIDTH_SCALE * width_scale;
+                f * f
+            };
+            let factor = (square / ((delta.x * delta.x + delta.y * delta.y) + square) - 0.5) * 0.5;
+            points[0] += delta * factor;
+            for i in (1..=RIBBON_SAMPLES / 2).rev() {
+                let mut delta = points[i - 1] - points[i];
+                delta.z = 0.0;
+                let square = {
+                    let f = (widths[i - 1] - widths[i]) * FACE_WIDTH_SCALE * width_scale;
+                    f * f
+                };
+                let factor =
+                    f64::from(square / ((delta.x * delta.x + delta.y * delta.y) + square) - 0.5)
+                        * 0.05;
+                let factor = factor as f32;
+                points[i - 1] += delta * factor;
+                points[i] -= delta * factor;
+            }
+            for i in RIBBON_SAMPLES / 2..RIBBON_SAMPLES - 1 {
+                let mut delta = points[i] - points[i + 1];
+                delta.z = 0.0;
+                let square = {
+                    let f = (widths[i] - widths[i + 1]) * FACE_WIDTH_SCALE * width_scale;
+                    f * f
+                };
+                let factor =
+                    f64::from(square / ((delta.x * delta.x + delta.y * delta.y) + square) - 0.5)
+                        * 0.05;
+                let factor = factor as f32;
+                points[i] += delta * factor;
+                points[i + 1] -= delta * factor;
+            }
+        }
+        points
+    }
+
+    /// The blast's ribbon: one strip chained through every live chunk, each
+    /// chunk's trail sampled eight times, the spine bent across the camera
+    /// plane and widened by `reach·2.5`, then the quads emitted (two
+    /// vertices a call, the first call taking the extrapolated point
+    /// `2·p₀ − p₁` as its previous one and every chunk after the first
+    /// reusing the previous chunk's closing pair). The second texture
+    /// coordinate is the chunk's `((40/reach·2.5)·w₇, row)` with the row
+    /// the first chunk's radius between its last two ticks.
+    ///
+    /// The strip is built in the camera's space, as the original builds it
+    /// and draws it with an identity object matrix; the points are mapped
+    /// back to world space here so the scene renderer draws the same
+    /// geometry. The orientation pass (three rounds) pulls a vertex pair
+    /// across the spine when the strip doubles back on it.
+    #[allow(clippy::needless_range_loop)]
+    pub fn ribbon(&self, t: f32, camera: &super::Frame) -> RibbonMesh {
+        let mut mesh = RibbonMesh::default();
+        let Some(first) = self.chunks.first() else {
+            return mesh;
+        };
+        let row = (1.0 - t) * first.previous_radius + first.radius * t;
+        for index in 0..self.chunks.len() {
+            if self.lives[index].ticks < 1 {
+                continue;
+            }
+            let chunk = &self.chunks[index];
+            let half = chunk.reach * RIBBON_HALF_OVER_REACH;
+            let colour = self.chunk_colour(index);
+            let (spine, widths) = self.trail_spine(index, t);
+            let view = Self::face_camera(&spine, &widths, widths[RIBBON_SAMPLES - 1], camera);
+            let uv2 = [(RIBBON_WIDTH / half) * widths[RIBBON_SAMPLES - 1], row];
+            let mut strip = RibbonMesh::default();
+            let mut previous = view[0] - (view[1] - view[0]);
+            strip.push_blast_quad(
+                view[0],
+                view[1],
+                &mut previous,
+                half,
+                colour,
+                widths[0],
+                uv2,
+            );
+            for i in 1..=RIBBON_SAMPLES - 2 {
+                strip.push_blast_quad(
+                    view[i],
+                    view[i + 1],
+                    &mut previous,
+                    half,
+                    colour,
+                    widths[i],
+                    uv2,
+                );
+            }
+            strip.push_blast_quad(
+                view[RIBBON_SAMPLES - 1],
+                view[RIBBON_SAMPLES - 1],
+                &mut previous,
+                half,
+                colour,
+                widths[RIBBON_SAMPLES - 1],
+                uv2,
+            );
+            let view_spine = spine.map(|point| camera.inverse_point(point));
+            for _ in 0..3 {
+                for i in 0..RIBBON_SAMPLES - 2 {
+                    let along = view_spine[i + 2] - view_spine[i];
+                    let across = strip.positions[i + 2] - strip.positions[i];
+                    // The fix compares the screen-space directions: the
+                    // original's dot helper is two-dimensional.
+                    let dot = along.x * across.x + along.y * across.y;
+                    if dot < 0.0 {
+                        strip.positions[i] = lerp(strip.positions[i], strip.positions[i + 2], 0.5);
+                        strip.positions[i + 2] = strip.positions[i];
+                    }
+                }
+            }
+            let base = if mesh.positions.is_empty() {
+                0
+            } else {
+                mesh.vertex_count() as i32 - 2
+            };
+            if !mesh.positions.is_empty() {
+                mesh.drop_triangles(2);
+            }
+            mesh.append(&strip, base, |point| camera.point(point));
+        }
+        // The last closing call's two triangles point past the written
+        // vertices (the original's buffer is over-allocated there).
+        mesh.drop_triangles(2);
+        mesh
+    }
 }
 
 #[cfg(test)]
@@ -927,7 +1389,10 @@ mod tests {
         let pitch = events.released.expect("a release");
         assert!((0.9..=1.1).contains(&pitch));
         assert!(events.power_used);
-        assert_eq!((b.state, b.charge, b.flags), (THROWN, 0.0, THROWN_FLAG));
+        assert_eq!(
+            (b.state, b.charge, b.flags),
+            (THROWN, 0.0, START_FLAGS | THROWN_FLAG)
+        );
         assert_eq!((caster.cast_hook, caster.casting), (None, 0));
         // The throw is not the cast end: the cast motion plays on.
         assert_eq!(caster.condition, crate::thaum::casting::CASTING);
@@ -1104,6 +1569,43 @@ mod tests {
     }
 
     #[test]
+    fn the_knock_sums_its_length_as_the_instructions_do() {
+        // z² + (y² + x²) is 1.7699999 here; (z² + y²) + x² would be
+        // 1.7699997 and a knock one ulp short.
+        let knock = character_knock(80.0, 1.0, Vec3::new(0.2, 0.2, 1.3));
+        let (_, size) = knock.knock.unwrap();
+        assert_eq!(size, 1.769_999_9_f32.sqrt() * 2.0);
+        assert_ne!(size, 1.769_999_7_f32.sqrt() * 2.0);
+        // A NaN mass leaves a NaN pin gain, as the compares fall through.
+        assert!(character_knock(f32::NAN, 1.0, Vec3::ZERO).stun.is_nan());
+    }
+
+    #[test]
+    fn the_face_passes_pull_an_even_spine_together() {
+        // Equal widths give f = 0: the head pass moves the head by
+        // (p₀ − p₁)·(−0.25), toward the second point, and the inner passes
+        // pull each pair together by 0.025. Nothing leaves the line.
+        let spine: [Vec3; RIBBON_SAMPLES] =
+            std::array::from_fn(|i| Vec3::new(10.0 * i as f32, 0.0, 0.0));
+        let widths = [1.0; RIBBON_SAMPLES];
+        let bent = Blast::face_camera(&spine, &widths, 1.0, &super::super::Frame::IDENTITY);
+        assert!(bent[0].x > 0.0 && bent[1].x - bent[0].x < 10.0);
+        assert!(bent.iter().all(|p| p.y == 0.0 && p.z == 0.0));
+    }
+
+    #[test]
+    fn a_kept_weight_is_nine_tenths_in_double() {
+        // 0.1 × 0.9 rounds to 0.09 in double and to 0.089999996 in single.
+        assert_eq!(contact_weight(0.1, false, false).0, 0.09);
+        assert_eq!(contact_weight(0.1, true, true).0, 0.09);
+        let mut chunk = blast().chunks[0];
+        chunk.weight = 0.1;
+        let at = chunk.at;
+        rebound(&mut chunk, at);
+        assert_eq!(chunk.weight, 0.09);
+    }
+
+    #[test]
     fn the_small_contact_rules_carry_the_numbers() {
         let mut chunk = blast().chunks[0];
         chunk.at = Vec3::ZERO;
@@ -1144,5 +1646,187 @@ mod tests {
         assert_eq!((f.charge_volume, f.release_volume), (None, Some(0.3)));
         b.lives[0].ticks = 0;
         assert_eq!(b.chunk_colour(0)[3], 0);
+    }
+
+    /// A thrown blast whose first chunk trails 8 cm slots of 2 cm widths.
+    fn trailing_blast() -> Blast {
+        let mut b = blast();
+        b.state = THROWN;
+        b.trail_step = 10.0;
+        let chunk = &mut b.chunks[0];
+        chunk.head = 10;
+        chunk.reach = 4.0;
+        for k in 0..TRAIL {
+            let back = 10i32 - k as i32;
+            chunk.trail[k].distance = 8.0 * (1 + back) as f32;
+            chunk.trail[k].size = 2.0;
+            chunk.trail[k].at = Vec3::new(0.0, 0.0, -(back as f32) * 8.0);
+        }
+        b
+    }
+
+    #[test]
+    fn the_trail_curve_walks_its_slots() {
+        let b = trailing_blast();
+        let (points, widths) = b.trail_curve(0, 0.0);
+        // A 10 cm step over the 8 cm head slot: a zero width at the head,
+        // then the slot sizes interpolated, a slot further every 5 cm.
+        let want = [0.0, 0.375, 1.0, 1.75, 3.0, 4.25, 5.5, 6.75];
+        for (got, want) in widths.iter().zip(want) {
+            assert!((got - want).abs() < 1e-6, "{widths:?}");
+        }
+        // The first sample runs a quarter of the head slot past the
+        // previous point; the second is seven sixteenths of the way to the
+        // one two slots back.
+        assert!((points[0].z + 10.0).abs() < 1e-5);
+        assert!((points[1].z - -7.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn the_spine_normalises_and_smooths_its_widths() {
+        let b = trailing_blast();
+        let (_, widths) = b.trail_spine(0, 0.0);
+        // The draw sets the head's coordinate to 1 and spreads the rest
+        // over the last one (8.75), then smooths ten times. The head stays
+        // 1, the last stays 8.75, the middle fall between them.
+        assert_eq!(widths[0], 1.0);
+        assert_eq!(widths[RIBBON_SAMPLES - 1], 6.75);
+        assert!(widths[1] > 0.0 && widths[1] < 1.0);
+        assert!(widths[6].is_finite() && widths[6] > 0.0);
+    }
+
+    #[test]
+    fn a_chunk_builds_one_strip_of_eight_quads() {
+        let mut b = trailing_blast();
+        b.lives.iter_mut().skip(1).for_each(|life| life.ticks = 0);
+        let mesh = b.ribbon(0.0, &super::super::Frame::IDENTITY);
+        // Eight emitter calls: sixteen vertices and forty-eight indices,
+        // less the closing pair's two dangling triangles.
+        assert_eq!(mesh.positions.len(), 16);
+        assert_eq!(mesh.indices.len(), 42);
+        assert_eq!(mesh.positions.len(), mesh.uvs.len());
+        assert_eq!(mesh.positions.len(), mesh.uvs2.len());
+        assert_eq!(mesh.positions.len(), mesh.colours.len());
+        assert!(mesh.positions.iter().all(|p| p.is_finite()));
+        assert!(mesh.uvs.iter().flatten().all(|v| v.is_finite()));
+        // The first coordinate runs across each pair.
+        for i in 0..8 {
+            assert_eq!(mesh.uvs[i * 2][0], 0.0);
+            assert_eq!(mesh.uvs[i * 2 + 1][0], 1.0);
+            assert_eq!(mesh.uvs[i * 2][1], mesh.uvs[i * 2 + 1][1]);
+        }
+        // The chunk's colour bytes are on every vertex, the second texture
+        // coordinate its (40/10·8.75, row) pair.
+        let colour = b.chunk_colour(0);
+        assert!(mesh.colours.iter().all(|&c| c == colour));
+        assert_eq!(mesh.uvs2[0], [4.0 * 6.75, 0.0]);
+        assert!(!b.builds_nothing());
+    }
+
+    #[test]
+    fn a_second_chunk_chains_from_the_first_strips_closing_pair() {
+        let mut b = trailing_blast();
+        b.lives.iter_mut().skip(2).for_each(|life| life.ticks = 0);
+        let mesh = b.ribbon(0.0, &super::super::Frame::IDENTITY);
+        assert_eq!(mesh.positions.len(), 32);
+        // The first strip's forty-eight indices lose its closing two
+        // triangles, then the second strip's forty-eight follow and the
+        // last closing pair is dropped. Its first triangle begins at the
+        // pair the first strip ended on.
+        assert_eq!(mesh.indices.len(), 84);
+        assert_eq!(&mesh.indices[42..48], &[14, 15, 16, 16, 15, 17]);
+        let mut dead = trailing_blast();
+        dead.lives.iter_mut().for_each(|life| life.ticks = 0);
+        assert!(dead.builds_nothing());
+        assert!(dead.ribbon(0.0, &super::super::Frame::IDENTITY).is_empty());
+    }
+
+    #[test]
+    fn linking_and_destroying_a_blast_takes_the_draw_with_it() {
+        let mut b = blast();
+        assert!(!b.linked);
+        let link = b.link();
+        assert_eq!(link.flags, GEOMETRY_LINK_FLAG);
+        assert!(link.draws_ribbon);
+        assert!(b.linked);
+        let gone = b.destroy();
+        assert_eq!(
+            gone,
+            BlastTeardown {
+                charge_sound: true,
+                release_sound: true,
+                chunk_records: true,
+                draw_buffers: true,
+                light: true,
+                entity: true,
+                strings: true,
+            }
+        );
+        // Never drawn: no buffers to free.
+        assert!(!blast().destroy().draw_buffers);
+        assert!(gone.frees_object());
+    }
+
+    #[test]
+    fn the_static_walk_rebounds_and_the_sampled_walk_drops_the_weight() {
+        let mut b = trailing_blast();
+        b.lives.iter_mut().skip(1).for_each(|life| life.ticks = 0);
+        b.chunks[0].weight = 1.0;
+        let at = b.chunks[0].at;
+        // A surface 5 cm from the chunk, within reach·2 + 10 = 18.
+        let hits = hit_static(&mut b, |_| Some(at + Vec3::new(5.0, 0.0, 0.0)));
+        assert_eq!(hits, 1);
+        assert_eq!(b.chunks[0].at, at + Vec3::new(2.5, 0.0, 0.0));
+        assert_eq!(b.chunks[0].weight, 0.9);
+        // Past 18 cm nothing meets.
+        assert_eq!(
+            hit_static(&mut b, |_| Some(at + Vec3::new(40.0, 0.0, 0.0))),
+            0
+        );
+        let mut chunk = b.chunks[0];
+        chunk.at = Vec3::ZERO;
+        chunk.weight = 1.0;
+        assert_eq!(
+            hit_sampled(&mut chunk, Vec3::new(7.0, 0.0, 0.0), 2.0, 0.0),
+            Some(8.0)
+        );
+        assert_eq!(chunk.at, Vec3::new(7.0, 0.0, 0.0));
+        assert_eq!((chunk.weight, chunk.wear), (0.0, CONTACT_WEAR));
+        assert_eq!(
+            hit_sampled(&mut chunk, Vec3::new(20.0, 0.0, 0.0), 1.0, 0.0),
+            None
+        );
+        assert_eq!(b.contact_walk(), ContactWalk::Mesh);
+        let bolt = Blast::new(BOLT_SETUP, 0.1, 12, &view(), &mut Mt19937::new(1));
+        assert_eq!(bolt.contact_walk(), ContactWalk::Sampled);
+        assert_eq!(
+            static_contact(false),
+            StaticContact {
+                scale: 2.0,
+                push: 0.5,
+                extra: STATIC_EXTRA,
+                walk: ContactWalk::Mesh
+            }
+        );
+        assert_eq!(static_contact(true).walk, ContactWalk::Sampled);
+    }
+
+    #[test]
+    fn the_simulated_object_walk_moves_points_and_stirs() {
+        let mut b = trailing_blast();
+        b.lives.iter_mut().skip(1).for_each(|life| life.ticks = 0);
+        b.chunks[0].at = Vec3::new(0.0, 0.0, 10.0);
+        b.chunks[0].previous = Vec3::ZERO;
+        b.chunks[0].reach = 1.0;
+        let mut object = SimPoints {
+            points: vec![Vec3::ZERO, Vec3::new(0.0, 0.0, 30.0)],
+            stir: 0.0,
+        };
+        assert!(hit_sim_object(&b, &mut object, 2.0, 0.8));
+        // Reach 1·2 + 40 = 42: the first point at d² = 100 is inside, the
+        // second at 400 too. f = 1 − 100/1764; the move is +10·f·0.8·0.025.
+        let f = 1.0 - 100.0 / 1764.0;
+        assert!((object.points[0].z - 10.0 * f * 0.8 * 0.025).abs() < 1e-5);
+        assert!((object.stir - (f + (1.0 - 400.0 / 1764.0)) * 0.0001).abs() < 1e-9);
     }
 }

@@ -336,6 +336,13 @@ pub fn point_box(points: &[Vec3]) -> Option<(Vec3, Vec3)> {
     Some((centre, half))
 }
 
+/// The box a node-placed emissive light uses: the points' box middle
+/// moved by the node's place (the original adds the node's translation
+/// after the half extents are taken).
+pub fn node_box(centre: Vec3, half: Vec3, node_at: Vec3) -> (Vec3, Vec3) {
+    (centre + node_at, half)
+}
+
 /// The blast's and the torrent's light colours.
 pub const BLAST_COLOUR: Vec3 = Vec3::new(0.16, 0.08, 1.0);
 pub const TORRENT_COLOUR: Vec3 = Vec3::new(0.12, 0.06, 1.0);
@@ -526,6 +533,13 @@ mod tests {
         let (_, half) = world_box(Vec3::ZERO, turned, Vec3::splat(100.0), FALLOFF_CM);
         assert_eq!(half.x, 140.0 + 10.0 + 60.0);
         assert_eq!(half.z, 100.0 + 10.0 + 60.0);
+    }
+
+    #[test]
+    fn an_emissive_box_moves_with_its_node() {
+        let (centre, half) = node_box(Vec3::X, Vec3::splat(5.0), Vec3::new(0.0, 10.0, 0.0));
+        assert_eq!(centre, Vec3::new(1.0, 10.0, 0.0));
+        assert_eq!(half, Vec3::splat(5.0));
     }
 
     #[test]

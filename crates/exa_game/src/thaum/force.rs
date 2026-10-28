@@ -182,7 +182,9 @@ pub struct BlastSetup {
     pub character_push: f32,
     /// The GI light's strength.
     pub light: f32,
-    /// A bolt flies through the level's static check.
+    /// The bolt: a struck limb wears the chunk (and halves a non-character
+    /// limb's share of it), and a static body is met by its sample-point
+    /// walk, which zeroes a struck chunk's weight and wears it.
     pub piercing: bool,
     pub charge_sound: &'static str,
     pub release_sound: &'static str,

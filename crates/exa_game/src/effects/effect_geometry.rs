@@ -169,6 +169,49 @@ pub fn force_row(pass: i32, frame: i32, start: f32) -> f32 {
 /// The 0.002 step as the double literal the material passes multiply by.
 const FORCE_ROW_STEP_LITERAL: f64 = 0.002;
 
+/// The object matrix a supersample pass draws with: the node's own matrix
+/// times the pass's texture matrix, each row `((a₀·b₀ + a₁·b₁) + (a₂·b₂ +
+/// a₃·b₃))` — the two halves summed before each other, as the original's
+/// matrix product does.
+pub fn pass_matrix(node: [[f32; 4]; 4], pass: [[f32; 4]; 4]) -> [[f32; 4]; 4] {
+    let mut out = [[0.0f32; 4]; 4];
+    for (row, out_row) in node.iter().zip(out.iter_mut()) {
+        for (lane, value) in out_row.iter_mut().enumerate() {
+            *value = (row[0] * pass[0][lane] + row[1] * pass[1][lane])
+                + (row[2] * pass[2][lane] + row[3] * pass[3][lane]);
+        }
+    }
+    out
+}
+
+/// One supersample pass of a force geometry: the texture row the shared
+/// pass writes into the pass's matrix and the object matrix the geometry
+/// uploads before drawing.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PassDraw {
+    pub row: f32,
+    pub matrix: [[f32; 4]; 4],
+}
+
+/// The passes a force geometry draws in a frame: for each pass the texture
+/// row ([`force_row`]) and the object matrix [`pass_matrix`] makes of the
+/// node's matrix and the pass's texture matrix.
+pub fn force_passes(
+    node: [[f32; 4]; 4],
+    pass_matrices: &[[[f32; 4]; 4]],
+    frame: i32,
+    start: f32,
+) -> Vec<PassDraw> {
+    pass_matrices
+        .iter()
+        .enumerate()
+        .map(|(pass, texture)| PassDraw {
+            row: force_row(pass as i32, frame, start),
+            matrix: pass_matrix(node, *texture),
+        })
+        .collect()
+}
+
 /// The `Fade` a dome geometry draws at: `max(1 − alpha, 0)` while the
 /// effect is under state 3, the alpha itself from 3 on.
 pub fn dome_fade(state: u32, alpha: f32) -> f32 {
@@ -263,5 +306,61 @@ mod tests {
         assert!((barricade_alpha(3, 0.5) - 0.0625).abs() < 1e-6);
         assert!((barricade_alpha(4, 1.0) - 1.0).abs() < 1e-6);
         assert_eq!(strikes_alpha(0.25), 0.75);
+    }
+
+    #[test]
+    fn a_pass_multiplies_the_node_matrix_on_the_right() {
+        let node = [
+            [1.0, 0.0, 0.0, 10.0],
+            [0.0, 1.0, 0.0, 20.0],
+            [0.0, 0.0, 1.0, 30.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ];
+        let pass = [
+            [2.0, 0.0, 0.0, 0.0],
+            [0.0, 3.0, 0.0, 0.0],
+            [0.0, 0.0, 4.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ];
+        let out = pass_matrix(node, pass);
+        assert_eq!(out[0], [2.0, 0.0, 0.0, 10.0]);
+        assert_eq!(out[1], [0.0, 3.0, 0.0, 20.0]);
+        assert_eq!(out[2], [0.0, 0.0, 4.0, 30.0]);
+        // The halves sum before each other: (a₀b₀ + a₁b₁) + (a₂b₂ + a₃b₃).
+        let scaled = [
+            [0.0, 0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 0.0],
+            [0.5, 0.25, 0.125, 1.0],
+        ];
+        let texture = [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ];
+        let out = pass_matrix(scaled, texture);
+        assert_eq!(out[3], [0.5, 0.25, 0.125, 1.0]);
+    }
+
+    #[test]
+    fn a_force_geometry_draws_one_matrix_a_pass() {
+        let node = [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ];
+        let pass = [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ];
+        let draws = force_passes(node, &[pass, pass], 0, 0.0);
+        assert_eq!(draws.len(), 2);
+        assert_eq!(draws[0].row, 0.0);
+        assert!((draws[1].row - 0.002).abs() < 1e-7);
+        assert_eq!(draws[0].matrix, node);
     }
 }

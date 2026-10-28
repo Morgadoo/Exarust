@@ -36,6 +36,7 @@ pub mod force_wave;
 pub mod portal;
 pub mod portal_effect;
 pub mod rain;
+pub mod ribbon;
 pub mod scan;
 pub mod shell;
 pub mod torrent;
@@ -94,6 +95,22 @@ impl Frame {
     /// A direction in the frame's own space, in its parent's: the basis
     /// alone, without the translation.
     pub fn direction(&self, direction: Vec3) -> Vec3 {
+        (self.x * direction.x + self.y * direction.y) + self.z * direction.z
+    }
+
+    /// A point in the parent's space in the frame's own space: the
+    /// translation taken off, then each of the point's coordinates the
+    /// coefficient of the matching basis column. The sums pair as the
+    /// original's inverse transform does: the first two columns, then the
+    /// third.
+    pub fn inverse_point(&self, point: Vec3) -> Vec3 {
+        let d = point - self.at;
+        (self.x * d.x + self.y * d.y) + self.z * d.z
+    }
+
+    /// A direction in the parent's space in the frame's own space, without
+    /// the translation.
+    pub fn inverse_direction(&self, direction: Vec3) -> Vec3 {
         (self.x * direction.x + self.y * direction.y) + self.z * direction.z
     }
 

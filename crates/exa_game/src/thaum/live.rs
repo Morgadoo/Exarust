@@ -94,7 +94,14 @@ impl Plugin for ThaumEffectsPlugin {
             )
             .add_systems(
                 PostUpdate,
-                (draw_arcs, draw_barricades, draw_wisps).after(TransformSystems::Propagate),
+                (
+                    draw_arcs,
+                    draw_barricades,
+                    draw_wisps,
+                    super::blast_live::draw_blasts,
+                    super::torrent_live::draw_torrents,
+                )
+                    .after(TransformSystems::Propagate),
             );
     }
 }
@@ -615,7 +622,7 @@ fn mesh_of(positions: Vec<[f32; 3]>, colours: Vec<[f32; 4]>, indices: Vec<u32>) 
 }
 
 /// A mesh with its texture coordinates (the arcs' ribbon scrolls them).
-fn mesh_of_uv(
+pub(super) fn mesh_of_uv(
     positions: Vec<[f32; 3]>,
     uvs: Vec<[f32; 2]>,
     colours: Vec<[f32; 4]>,
@@ -634,8 +641,32 @@ fn mesh_of_uv(
     mesh
 }
 
+/// A force ribbon (cm, colour bytes) as a Bevy mesh (m, linear colours).
+pub(super) fn mesh_of_ribbon(ribbon: &crate::effects::ribbon::RibbonMesh) -> Mesh {
+    let positions = ribbon
+        .positions
+        .iter()
+        .map(|p| (*p / CM).to_array())
+        .collect();
+    let uvs = ribbon.uvs.clone();
+    let colours = ribbon
+        .colours
+        .iter()
+        .map(|c| {
+            [
+                f32::from(c[0]) / 255.0,
+                f32::from(c[1]) / 255.0,
+                f32::from(c[2]) / 255.0,
+                f32::from(c[3]) / 255.0,
+            ]
+        })
+        .collect();
+    let indices = ribbon.indices.iter().map(|&i| u32::from(i)).collect();
+    mesh_of_uv(positions, uvs, colours, indices)
+}
+
 #[allow(clippy::too_many_arguments)]
-fn show(
+pub(super) fn show(
     commands: &mut Commands,
     entity: Entity,
     drawn: Option<&EffectMesh>,
