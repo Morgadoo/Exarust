@@ -699,15 +699,19 @@ The original's own forms and controls that Exarust rebuilds, with the
   and turned over 900 ms each by the ease `(3 − 2t)·t²`, a half turn about
   an axis swinging from (0.3, 0.9, 0.2) to (0, 1, 0), held from 4.5 s,
   each card over a drop shadow with a four-unit fading band. The card
-   shader runs per fragment into owned images and the shadow mesh and
-   turned quads draw through the GUI path; `exa_game::div_card_screen`
-   opens, holds and closes a reading.
+  shader runs per fragment into owned images and the shadow mesh and
+  turned quads draw through the GUI path: a turning card uses the engine's
+  axis-angle matrix, its shadow turned and its shader light (`par0.z`) the
+  turned light's z; a held face is drawn mirrored back upright.
+  `exa_game::div_card_screen` opens, holds and closes a reading (nothing
+  sends its open message yet).
 - **Company emblem** (`exa_ui::emblem_form`, `exa_game::emblem`): the
   background (1…50) and design (1…80) layers, the two mirror bits, four
   palette indices (0xd3, 0x72, 0x5a, 0x4e on a new form) and the
   randomiser (`state · 0x8088405 + 1`, each draw the high half of `state ·
-  n`, four records of history), previewed by the four-texture shader, which runs per fragment into the
-   preview image (`emblem_form::preview_image`).
+  n`, four records of history), previewed by the four-texture shader,
+  which runs per fragment into the preview image
+  (`emblem_form::preview_image`).
 - **In-game screens** (`exa_ui::game_gui`, `exa_game::gui_screens`): the
   inventory, loot window and journal show rules, the eight-slot open
   container registry, the journal's entries, the power-slot and counter
@@ -723,7 +727,9 @@ The original's own forms and controls that Exarust rebuilds, with the
   orbit nodes; only the adapter's orbit wobbles. The row fill is the
   original's: the shipped 7, 10, 12, 13 show as 13, 7, 10, 12. The symbol
   shader runs per fragment into an image per row (`selection::symbol_image`),
-  drawn with the backdrop; rows carry their marker word to the journey. A click
+  drawn with the backdrop, coloured `base + add · mix` from two skin
+  colours (the line skin stands in); rows carry their marker word to the
+  journey. A click
   closes the screen and starts the journey: the bubble 98 cm above the
   teleporter, the teleporter's glow (1.5 s up and 7 s held for the
   adapter, 1 s and 1.4 s otherwise) and a small crystal charging a point
