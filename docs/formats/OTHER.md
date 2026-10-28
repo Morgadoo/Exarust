@@ -1610,7 +1610,23 @@ Apparel item body (`0x1000`) fields:
   the light switch, which reads this byte, and a corpus scan; 4 the golem
   suit, 6 gauntlets that lighten a held shield; 2, 3, 5, 7 other item
   effects: the strength bracelet, the healing mask, the null helm and the
-  spirit necklace carry them);
+  spirit necklace carry them). The armour pass (REA on its listing and the
+  handlers it calls) clears the second wind, the mind ward, the focus bonus
+  and the worn items' effects, then for each worn item of kind above 1:
+  2 sets the second wind; 3 registers the healing tick when the body takes
+  remedies (rule bit 2); 4 adds 2 unpowered and registers the suit's light
+  tick; 5 sets the body's mind-masked bit (perception sees it hidden), its
+  item bit 0x10 (every power it casts is refused) and tells every power
+  running on it to end; 6 sets the shield's weightless value and registers
+  the apparel tick; 7 sets the focus regeneration bonus to the float
+  `0x38D28EB4` (≈ 1.004e-4). The body tick runs the item-effect list right
+  after its focus tick once the game clock passes the stored clock, then
+  stores the clock + 1000 ms (an empty list clears the two impact counters
+  instead). The healing tick, while the flag byte's low five bits are 2 and
+  the charge byte is at most 0xFE, adds 0.004 × maximum health to red (in
+  double); above the maximum red is held there, otherwise the player's
+  HUD shows for 1000 ms and the charge byte advances
+  (`exa_formats::encumbrance::WornSpecials`, `exa_game::item_effects`);
 - `0x218` bit 0 and `0x219`: a power crystal is in and its charge (0xFF
   spent): the special item is powered;
 - `0x220`: the articulated set a piece belongs to, the item id of the set's

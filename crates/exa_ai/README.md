@@ -28,7 +28,10 @@ their relations and traits. When they appear their roles choose their idle
 activity, and they choose it again whenever the held roles change; every
 frame they rate the player from both sides' roles, which feeds the contact
 rating (`sense`), and the brain's target pass decides whether the character
-engages the player. The AI tick links each brain into its 600 cm room cell
+engages the player. A character wearing a mind ward carries
+`brain::MindWarded`, the original's mind-masked bit: perception, the
+brains' and a duellist's, sees it hidden, its range shrinking with the
+observer's perception. The AI tick links each brain into its 600 cm room cell
 and the level's room table, gathers the characters of that cell as its
 nearby list, decays its group alert a step every ten seconds, and out of
 combat runs the original's look chain (`motion::look_chain`) and turns its
