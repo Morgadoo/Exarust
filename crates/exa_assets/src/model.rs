@@ -728,8 +728,8 @@ impl ModelLoader<'_> {
         let packed = m.kind & 1 != 0;
         let key = exa_render::shader_program::feature_key(m);
         let lit = key & material_flags::LIT != 0;
-        let state_word =
-            exa_render::shader_program::state_words(m, SHADING_QUALITY).map_or(0, |(mat, _)| mat);
+        let (state_word, shader_word) =
+            exa_render::shader_program::state_words(m, SHADING_QUALITY).unwrap_or((0, 0));
         let maps = factory_maps(m, key, state_word);
         let diffuse = shaded_diffuse(m, key);
         let specular = material_specular(m);
@@ -822,27 +822,39 @@ impl ModelLoader<'_> {
                 .map(|t| t.0);
         }
         // Parallax: the height layer's depth as a fixed number of texels of
-        // the height map (loaded now: its size is the decoded image's); displacement shadows when the record asks.
+        // the height map (loaded now: its size is the decoded image's). A
+        // one-texel-tall map switches the layer off, clearing the material
+        // and shader bits as the loader's parallax pass does; the width
+        // takes no part in that test. Displacement shadows when the record
+        // asks.
         if maps.height
             && let Some(layer) = m.layer(TextureSlot::Height)
             && layer.amount > 0.0
             && let Some((img, _)) = self.texture_now(&layer.texture, ColorSpace::Linear, data_flags)
             && let Some(size) = self.images.get(&img).map(|i| i.size())
-            && size.x > 1
-            && size.y > 1
         {
-            let (x, y) = exa_render::shader_uniforms::parallax_texels(layer.amount, size.x, size.y);
-            mat.params.displacement = Vec4::new(
-                f32::from(x) * PARALLAX_UNIT,
-                f32::from(y) * PARALLAX_UNIT,
-                m.displacement_step * 0.004,
-                m.displacement_bias * 0.05,
+            let state = exa_render::shader_program::height_map(
+                state_word,
+                shader_word,
+                (size.x, size.y),
+                layer.amount,
             );
-            mat.params.flags |= flags::HEIGHT_MAP;
-            if m.extra & DISPLACEMENT_SHADOWS != 0 {
-                mat.params.flags |= flags::DISPLACEMENT_SHADOWS;
+            if state.displaces {
+                let (x, y) = state.parallax;
+                mat.params.displacement = Vec4::new(
+                    (f64::from(x) * PARALLAX_UNIT) as f32,
+                    (f64::from(y) * PARALLAX_UNIT) as f32,
+                    // The fixed-point step and bias widen to double, scale
+                    // and narrow, as the writer's `mulsd`/`cvtsd2ss` pair.
+                    (f64::from(m.displacement_step) * 0.004) as f32,
+                    (f64::from(m.displacement_bias) * 0.05) as f32,
+                );
+                mat.params.flags |= flags::HEIGHT_MAP;
+                if m.extra & DISPLACEMENT_SHADOWS != 0 {
+                    mat.params.flags |= flags::DISPLACEMENT_SHADOWS;
+                }
+                mat.height_map = Some(img);
             }
-            mat.height_map = Some(img);
         }
         mat.alpha_mode = blend_mode(blended_class(m), cut_out || mat.opacity_map.is_some());
         if mat.alpha_mode == AlphaMode::Add {
@@ -2215,7 +2227,7 @@ fn library_material(game: &GameData, name: &str) -> Option<Material> {
 }
 
 /// Parallax scale per unit of the height layer's texel count.
-const PARALLAX_UNIT: f32 = 3e-5;
+const PARALLAX_UNIT: f64 = 3e-5;
 /// Material extra flag (`0x4C`): casts no shadows.
 const NO_SHADOWS: u32 = 0x4;
 /// The record's material-mode bits (`0x48`): `0x100` translucent, `0x200`

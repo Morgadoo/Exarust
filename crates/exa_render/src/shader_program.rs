@@ -148,6 +148,15 @@ pub fn program_for_shader_word(word: u32) -> SurfaceProgram {
     }
 }
 
+/// The fragment entry the builder makes for a surface set: `<set>_f`.
+///
+/// The builder copies the set name into a sixteen-byte buffer and appends
+/// `_f` only while its length is below 15; a longer name builds nothing, so
+/// this returns `None` for it.
+pub fn surface_entry(set: &str) -> Option<String> {
+    (set.len() < 15).then(|| format!("{set}_f"))
+}
+
 /// The material type of a record: the low byte of its kind word (`0x50`).
 pub fn material_type(material: &Material) -> u32 {
     material.kind & 0xFF
@@ -368,6 +377,53 @@ pub fn state_words(material: &Material, quality: u32) -> Option<(u32, u32)> {
     Some((mat, shd))
 }
 
+/// The material and shader words after the height map's texture was read.
+///
+/// The material loader's parallax pass only looks at a record whose material
+/// word has the height map (`0x800000`). A one-texel-tall map disables the
+/// layer: the material word loses `0x800000`, the shader word its
+/// displacement bit `0x100`, and the parallax texel counts become zero. A
+/// taller map keeps the words and gets the texel scales
+/// [`crate::shader_uniforms::parallax_texels`] computes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HeightMapState {
+    pub material: u32,
+    pub shader: u32,
+    /// The parallax texel counts `(x, y)`; `(0, 0)` when the map is off.
+    pub parallax: (u16, u16),
+    /// Whether the layer still displaces.
+    pub displaces: bool,
+}
+
+/// Apply a height layer's texture size to the program words, as the material
+/// loader's parallax pass does when it has the height texture.
+pub fn height_map(material: u32, shader: u32, height: (u32, u32), amount: f32) -> HeightMapState {
+    if material & 0x80_0000 == 0 {
+        return HeightMapState {
+            material,
+            shader,
+            parallax: (0, 0),
+            displaces: false,
+        };
+    }
+    // The stored height is 16 bits; a one-texel-tall map is the loader's
+    // switch-off test.
+    if (height.1 & 0xFFFF) == 1 {
+        return HeightMapState {
+            material: material & !0x80_0000,
+            shader: shader & !shader::DISPLACEMENT_SHADOW,
+            parallax: (0, 0),
+            displaces: false,
+        };
+    }
+    HeightMapState {
+        material,
+        shader,
+        parallax: crate::shader_uniforms::parallax_texels(amount, height.0, height.1),
+        displaces: true,
+    }
+}
+
 /// The program class nibble the material factory gives a record.
 pub fn program_class(material: &Material, quality: u32) -> u32 {
     state_words(material, quality).map_or(PLUGIN_CLASSES[plugin(material)], |(_, shd)| shd & 0xF)
@@ -521,6 +577,8 @@ pub struct SceneOptions {
     pub fog_mode: u32,
     /// Ambient bounce light (the game always has it on, GI mode 3).
     pub voxel_gi: bool,
+    /// The environment's GI mode (`+0x14C`): specular GI needs mode 3.
+    pub gi_mode: u32,
     /// Specular GI from the volume, at shading quality 6; dropped for
     /// programs with `FastLgt`.
     pub voxel_gi_specular: bool,
@@ -542,6 +600,7 @@ impl Default for SceneOptions {
             supersample: 3,
             fog_mode: 1,
             voxel_gi: true,
+            gi_mode: 3,
             voxel_gi_specular: false,
             outdoor: false,
             wet_floor: false,
@@ -553,12 +612,15 @@ impl Default for SceneOptions {
 
 impl SceneOptions {
     /// The scene's environment word (before the light slots).
-    fn environment(&self) -> u32 {
+    ///
+    /// `VXGISpec` needs the GI on and the environment's GI mode at 3, as the
+    /// builder's first test does; the quality gate is the caller's.
+    pub fn environment(&self) -> u32 {
         let mut env = self.fog_mode & environment::FOG_MODE_MASK;
         if self.voxel_gi {
             env |= environment::VOXEL_GI;
         }
-        if self.voxel_gi_specular {
+        if self.voxel_gi && self.voxel_gi_specular && self.gi_mode == 3 {
             env |= environment::VOXEL_GI_SPECULAR;
         }
         if self.outdoor {
@@ -610,6 +672,22 @@ pub fn object_word(samples: u32, supersample: u32, geometry: GeometryOptions) ->
         word |= object::VERTEX_DELTA;
     }
     word
+}
+
+/// The object word's per-frame half-passes bit (`0x4000_0000`): such an
+/// object draws half the scene's super-sampling passes while the sun shadow
+/// mode is 3.
+pub const HALF_PASSES: u32 = 0x4000_0000;
+
+/// The sub-frames a draw renders: the scene's super-sampling pass count,
+/// halved for a frame word with [`HALF_PASSES`] while the sun shadow mode is
+/// 3, and never below zero.
+pub fn draw_passes(passes: u32, frame_word: u32, sun_shadow_mode: u32) -> u32 {
+    if frame_word & HALF_PASSES != 0 && sun_shadow_mode == 3 {
+        passes / 2
+    } else {
+        passes
+    }
 }
 
 /// Whether a draw gathers lights: an object with a light list whose
@@ -1322,5 +1400,71 @@ mod tests {
             program_for_shader_word(WARMUP[21].shader),
             SurfaceProgram::Shading
         );
+    }
+
+    #[test]
+    fn specular_gi_needs_the_gi_on_and_mode_three() {
+        let base = SceneOptions {
+            quality: 6,
+            voxel_gi_specular: true,
+            ..SceneOptions::default()
+        };
+        assert_ne!(base.environment() & environment::VOXEL_GI_SPECULAR, 0);
+        let mode = SceneOptions { gi_mode: 2, ..base };
+        assert_eq!(mode.environment() & environment::VOXEL_GI_SPECULAR, 0);
+        let off = SceneOptions {
+            voxel_gi: false,
+            ..base
+        };
+        assert_eq!(off.environment() & environment::VOXEL_GI_SPECULAR, 0);
+        // The light bits only occupy the low byte; the builder keeps them
+        // apart from the scene's.
+        assert_eq!(
+            base.environment() & (environment::FOG_MODE_MASK | environment::VOXEL_GI),
+            0x11
+        );
+    }
+
+    #[test]
+    fn a_height_texture_can_switch_the_layer_off() {
+        // A one-texel-tall map clears the material's height bit, the
+        // shader's displacement bit and both parallax counts.
+        let state = height_map(0x7 | 0x80_0000, 0x100, (1024, 1), 0.6);
+        assert_eq!(state.material, 0x7);
+        assert_eq!(state.shader, 0);
+        assert_eq!(state.parallax, (0, 0));
+        assert!(!state.displaces);
+        // Any other height keeps the words and scales the layer: 0.6 gives
+        // 30 texels of depth on a 1024 x 2048 map, so 30 rows and 60 across.
+        let state = height_map(0x7 | 0x80_0000, 0x100, (1024, 2048), 0.6);
+        assert_eq!(state.material, 0x7 | 0x80_0000);
+        assert_eq!(state.shader, 0x100);
+        assert_eq!(state.parallax, (60, 30));
+        assert!(state.displaces);
+        // Without the material word's bit nothing is touched.
+        let state = height_map(0x7, 0, (1024, 1), 0.6);
+        assert_eq!(state.material, 0x7);
+        assert_eq!(state.parallax, (0, 0));
+        assert!(!state.displaces);
+    }
+
+    #[test]
+    fn a_surface_entry_is_only_built_for_a_short_set_name() {
+        assert_eq!(surface_entry("shading").as_deref(), Some("shading_f"));
+        assert_eq!(surface_entry("shadehar").as_deref(), Some("shadehar_f"));
+        // Fourteen characters still fit the builder's sixteen-byte buffer
+        // once `_f` is appended; fifteen do not.
+        let fourteen = "abcdefghijklmn";
+        assert_eq!(surface_entry(fourteen).as_deref(), Some("abcdefghijklmn_f"));
+        assert_eq!(surface_entry("abcdefghijklmno"), None);
+    }
+
+    #[test]
+    fn a_half_pass_object_draws_half_the_passes_in_sun_mode_three() {
+        assert_eq!(draw_passes(4, HALF_PASSES, 3), 2);
+        assert_eq!(draw_passes(4, HALF_PASSES, 2), 4);
+        assert_eq!(draw_passes(4, 0, 3), 4);
+        assert_eq!(draw_passes(1, HALF_PASSES, 3), 0);
+        assert_eq!(draw_passes(0, 0, 0), 0);
     }
 }

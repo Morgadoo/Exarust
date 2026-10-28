@@ -91,6 +91,8 @@ pub enum InterfaceMode {
     /// The fragment stage: varyings, samplers, the `Global` block, shadow
     /// and `SdwSmp` declarations.
     Fragment,
+    /// The geometry stage: the builder generates no interface for it.
+    Geometry,
 }
 
 /// A parsed library the expander can include from.
@@ -358,12 +360,85 @@ pub fn expand_surface(
     set: &str,
     context: &TemplateContext,
 ) -> Result<ProgramText, TemplateError> {
+    let entry = crate::shader_program::surface_entry(set)
+        .ok_or_else(|| TemplateError::MissingEntry(format!("{set}_f")))?;
     let mut vertex_context = context.clone();
     vertex_context.interface = InterfaceMode::Vertex;
     let mut fragment_context = context.clone();
     fragment_context.interface = InterfaceMode::Fragment;
     let vertex = expand_with(library, "shading_v", &mut vertex_context)?;
-    let fragment = expand_with(library, &format!("{set}_f"), &mut fragment_context)?;
+    let fragment = expand_with(library, &entry, &mut fragment_context)?;
+    Ok(ProgramText { vertex, fragment })
+}
+
+/// The stage a program entry is compiled for.
+///
+/// The builder's stage also decides `{$Interface}`: the vertex and fragment
+/// stages expand their generated interface, the geometry stage expands none.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShaderStage {
+    Vertex,
+    Geometry,
+    Fragment,
+}
+
+impl ShaderStage {
+    /// The GL shader kind the engine creates for this stage.
+    pub fn kind(self) -> u32 {
+        match self {
+            Self::Vertex => 0x8B31,
+            Self::Geometry => 0x8DD9,
+            Self::Fragment => 0x8B30,
+        }
+    }
+
+    /// The interface this stage's `{$Interface}` expands.
+    pub fn interface(self) -> InterfaceMode {
+        match self {
+            Self::Vertex => InterfaceMode::Vertex,
+            Self::Geometry => InterfaceMode::Geometry,
+            Self::Fragment => InterfaceMode::Fragment,
+        }
+    }
+}
+
+/// A stage's expanded source and the GL kind it is compiled as.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompiledStage {
+    pub stage: ShaderStage,
+    pub kind: u32,
+    pub source: String,
+}
+
+/// Compile one library entry for a stage, as the builder's per-stage compile
+/// wrappers do: set the stage, expand the entry with that stage's interface
+/// and return the source with the GL kind.
+pub fn expand_stage(
+    library: &impl Includes,
+    entry: &str,
+    context: &TemplateContext,
+    stage: ShaderStage,
+) -> Result<CompiledStage, TemplateError> {
+    let mut context = context.clone();
+    context.interface = stage.interface();
+    let source = expand_with(library, entry, &mut context)?;
+    Ok(CompiledStage {
+        stage,
+        kind: stage.kind(),
+        source,
+    })
+}
+
+/// Build an effect program: a named vertex entry and a named fragment entry,
+/// each expanded with its own stage's interface.
+pub fn expand_pair(
+    library: &impl Includes,
+    vertex_entry: &str,
+    fragment_entry: &str,
+    context: &TemplateContext,
+) -> Result<ProgramText, TemplateError> {
+    let vertex = expand_stage(library, vertex_entry, context, ShaderStage::Vertex)?.source;
+    let fragment = expand_stage(library, fragment_entry, context, ShaderStage::Fragment)?.source;
     Ok(ProgramText { vertex, fragment })
 }
 
@@ -438,6 +513,10 @@ fn include(
             InterfaceMode::None => {}
             InterfaceMode::Vertex => out.push_str(&interface_vertex(&context.flags)),
             InterfaceMode::Fragment => out.push_str(&interface_fragment(context)),
+            // The geometry stage expands no generated interface: the
+            // builder's `{$Interface}` branch only serves the vertex and
+            // fragment stages.
+            InterfaceMode::Geometry => {}
         }
     } else {
         let name: String = name.iter().map(|&b| b as char).collect();
@@ -1438,6 +1517,45 @@ mod tests {
             expand(&library, "p", &context()).unwrap(),
             "#version 150\r\nab"
         );
+    }
+
+    #[test]
+    fn stage_expansion_sets_the_interface_and_the_gl_kind() {
+        let library = lib(&[
+            ("v", "void main(){}{$Interface}"),
+            ("f", "out vec4 C;{$Interface}"),
+        ]);
+        let c = context();
+        let vertex = expand_stage(&library, "v", &c, ShaderStage::Vertex).unwrap();
+        assert_eq!(vertex.kind, 0x8B31);
+        assert!(vertex.source.contains("in vec3 vNrm") || vertex.source.contains("uniform Global"));
+        let fragment = expand_stage(&library, "f", &c, ShaderStage::Fragment).unwrap();
+        assert_eq!(fragment.kind, 0x8B30);
+        assert!(fragment.source.contains("uniform Global"));
+        let geometry = expand_stage(&library, "v", &c, ShaderStage::Geometry).unwrap();
+        assert_eq!(geometry.kind, 0x8DD9);
+        assert!(!geometry.source.contains("uniform Global"));
+        // An effect program pairs a vertex entry with a fragment one.
+        let pair = expand_pair(&library, "v", "f", &c).unwrap();
+        assert!(pair.vertex.contains("uniform Global"));
+        assert!(pair.fragment.contains("uniform Global"));
+        // A missing stage entry is an error.
+        assert!(expand_stage(&library, "nope", &c, ShaderStage::Geometry).is_err());
+    }
+
+    #[test]
+    fn the_geometry_stage_generates_no_interface() {
+        let library = lib(&[("geometry", "void main(){}{$Interface}{$Interface}")]);
+        let mut c = context();
+        c.interface = InterfaceMode::Geometry;
+        assert_eq!(
+            expand(&library, "geometry", &c).unwrap(),
+            "#version 150\r\nvoid main(){}"
+        );
+        // The vertex and fragment stages still expand theirs.
+        c.interface = InterfaceMode::Vertex;
+        let text = expand(&library, "geometry", &c).unwrap();
+        assert!(text.contains("uniform Global"));
     }
 
     #[test]

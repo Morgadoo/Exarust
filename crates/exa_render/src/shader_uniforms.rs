@@ -144,7 +144,7 @@ pub const LIGHT_ARRAY_BYTES: usize = LIGHT_BYTES * crate::shader_program::MAX_LI
 pub struct ViewInputs {
     /// The camera's eye, world cm.
     pub eye: [f32; 3],
-    /// The frame's time delta, written into `ViewPos.w`.
+    /// The frame's clock, written into `ViewPos.w` after the exposure.
     pub frame_delta: f32,
     /// The window's width and height, texels.
     pub viewport: [u32; 2],
@@ -176,13 +176,16 @@ pub struct ViewInputs {
     pub fog_colour: [f32; 3],
     /// The fog distance in cm; `FogColr.w` is its inverse.
     pub fog_distance: f32,
-    /// `FogPos`: the fog plane's position. The builder computes it from the
-    /// camera's near and far points; the rule was not decoded [guess].
-    pub fog_position: [f32; 4],
+    /// The shadow camera's eye, world cm: `FogPos` is the midpoint of it and
+    /// the view's eye.
+    pub sun_eye: [f32; 3],
     /// `BufrPos`: the frame-copy offset used by screen-space refraction.
     pub buffer_position: [f32; 2],
     /// The environment's wetness.
     pub wetness: f32,
+    /// The super-sampling factor (the setting's 1, 2, 3, 4, 8 or 15):
+    /// `TimeDlt.y` is `−exposure` over it.
+    pub supersample_factor: u32,
 }
 
 impl Default for ViewInputs {
@@ -205,9 +208,10 @@ impl Default for ViewInputs {
             time_delta: 0.0,
             fog_colour: [0.0; 3],
             fog_distance: 50_100.0,
-            fog_position: [0.0; 4],
+            sun_eye: [0.0; 3],
             buffer_position: [0.0; 2],
             wetness: 0.0,
+            supersample_factor: 4,
         }
     }
 }
@@ -261,8 +265,22 @@ impl GlobalUniforms {
             view.ambient_linear[2] * view.exposure * view.ambient_scale,
             view.ambient_w,
         ];
+        // `FogPos` is the half-way point of the eye and the shadow camera's
+        // eye, as the engine's vec3 lerp builds it: `a + (b − a)·0.5` per
+        // component, in single precision; `w` is never written.
+        let fog_position = [
+            view.eye[0] + (view.sun_eye[0] - view.eye[0]) * 0.5,
+            view.eye[1] + (view.sun_eye[1] - view.eye[1]) * 0.5,
+            view.eye[2] + (view.sun_eye[2] - view.eye[2]) * 0.5,
+            0.0,
+        ];
         Self {
-            view_pos: [view.eye[0], view.eye[1], view.eye[2], view.frame_delta],
+            view_pos: [
+                view.eye[0],
+                view.eye[1],
+                view.eye[2],
+                view.frame_delta * view.exposure,
+            ],
             view_size: size,
             // `ViewPrj` is the projection's half extents at 500 cm [inf].
             view_proj: [half * 500.0, aspect * half * 500.0],
@@ -270,8 +288,12 @@ impl GlobalUniforms {
             sdw_mat: view.world_to_shadow,
             voxel_gi_scale: gi_scale,
             ambient,
-            // The builder writes (Δt, −Δt).
-            time_delta: [view.time_delta, -view.time_delta],
+            // `TimeDlt` is (the frame's clock, −1/factor), both after the
+            // exposure.
+            time_delta: [
+                view.time_delta * view.exposure,
+                -(1.0 / view.supersample_factor.max(1) as f32) * view.exposure,
+            ],
             view_reciprocal: [1.0 / width as f32, 1.0 / height as f32],
             fog_colour: [
                 view.fog_colour[0],
@@ -279,7 +301,7 @@ impl GlobalUniforms {
                 view.fog_colour[2],
                 1.0 / view.fog_distance.max(f32::EPSILON),
             ],
-            fog_position: view.fog_position,
+            fog_position,
             buffer_position: view.buffer_position,
             wetness: view.wetness,
         }
@@ -341,7 +363,28 @@ pub struct MaterialInputs {
     /// The shader word's `DispSdw`: the displacement taps and their scale
     /// are written only when the program has displacement shadows.
     pub displacement_shadows: bool,
+    /// The material word's `0x300` mode bits: a translucent (`0x100`) or
+    /// refracting (`0x200`) record's emissive colour is not scaled by the
+    /// exposure.
+    pub material_mode: u32,
+    /// The material record's dirt tint (`+0x248` of the runtime record),
+    /// written to `MatDrt` in blood mode 4. A record starts with zero; the
+    /// weapon-blood spawner writes
+    /// [`WEAPON_BLOOD_TINT`](WEAPON_BLOOD_TINT) and the hair program's
+    /// record carries [`HAIR_BLOOD_TINT`](HAIR_BLOOD_TINT) [the hair record's
+    /// value is a guess: the hair shader's note states its colour].
+    pub dirt_tint: Option<[f32; 4]>,
 }
+
+/// The dirt tint a spawned weapon's first material gets when it can bleed:
+/// the item spawner writes `(1.0, 0.06, 0.04, 0.3)` at the record's
+/// `+0x248` beside dirt mode 4 and the `0x100` render flag.
+pub const WEAPON_BLOOD_TINT: [f32; 4] = [1.0, 0.06, 0.04, 0.3];
+
+/// The dirt tint the hair program's blood uses (`MatDrt.rgb`): its shader
+/// note gives `(0.45, 0.03, 0.02)`. The fourth lane is not read by the
+/// program [guess].
+pub const HAIR_BLOOD_TINT: [f32; 4] = [0.45, 0.03, 0.02, 0.5];
 
 impl Default for MaterialInputs {
     fn default() -> Self {
@@ -355,6 +398,8 @@ impl Default for MaterialInputs {
             refraction: 0.0,
             subpass: 0,
             displacement_shadows: false,
+            material_mode: 0,
+            dirt_tint: None,
         }
     }
 }
@@ -399,6 +444,13 @@ impl MaterialUniforms {
             linear_diffuse[2] * premultiply * (1.0 - subsurface[2]),
             material.opacity,
         ];
+        // An unlit record draws emission only: the factory zeroes the
+        // diffuse's colour (the alpha stays its opacity).
+        if crate::shader_program::feature_key(material) & 3 == 0 {
+            mat_dif[0] = 0.0;
+            mat_dif[1] = 0.0;
+            mat_dif[2] = 0.0;
+        }
         // A surface with an opacity fall-off loses its floor from the
         // colour's alpha: (f + 1)·f. (The factory's test for blended states
         // compares a four-bit field with 0x100 and never holds, so every
@@ -464,10 +516,18 @@ impl MaterialUniforms {
                 subsurface[3] + 1.0,
             ]
         } else {
+            // The writer scales the emissive by the exposure only for a
+            // record without the material word's translucent or refracting
+            // mode bits; those copy the stored colour straight through.
+            let emissive_exposure = if inputs.material_mode & 0x300 == 0 {
+                inputs.exposure
+            } else {
+                1.0
+            };
             [
-                emissive[0] * inputs.exposure * emissive_scale,
-                emissive[1] * inputs.exposure * emissive_scale,
-                emissive[2] * inputs.exposure * emissive_scale,
+                emissive[0] * emissive_exposure * emissive_scale,
+                emissive[1] * emissive_exposure * emissive_scale,
+                emissive[2] * emissive_exposure * emissive_scale,
                 if lit {
                     material.emissive[3]
                 } else {
@@ -477,18 +537,17 @@ impl MaterialUniforms {
         };
 
         // The dirt block. Only a dirt mode writes it: mode 4 (blood) copies
-        // the diffuse texture's tint into `MatDrt` and leaves `DrtUVs`; any
-        // other mode stores `2 − the texture's dirt strength` in `MatDrt.w`
-        // and the diffuse map's aspect in `DrtUVs`. The engine's block lives
-        // on the drawing state, so a field it skips keeps the previous draw's
-        // value; Exarust writes zero there. The engine reads the strength and
-        // the tint from the diffuse texture's record; the record reader here
-        // carries the strength on the material and has no tint, so a blood
-        // material uses the shipped speckle's tint [guess].
+        // the material record's dirt tint into `MatDrt` and leaves `DrtUVs`;
+        // any other mode stores `2 − the record's dirt strength` in
+        // `MatDrt.w` and the diffuse map's aspect in `DrtUVs`. The engine's
+        // block lives on the drawing state, so a field it skips keeps the
+        // previous draw's value; Exarust writes zero there. The strength and
+        // the tint are the record's own fields; Exarust's material record
+        // carries the strength and the caller passes the tint.
         let dirt = crate::shader_program::dirt_mode(material);
         let (mat_drt, drt_uvs) = match dirt {
             0 => ([0.0; 4], [0.0, 0.0]),
-            4 => ([0.45, 0.03, 0.02, 0.5], [0.0, 0.0]),
+            4 => (inputs.dirt_tint.unwrap_or([0.0; 4]), [0.0, 0.0]),
             _ => (
                 [0.0, 0.0, 0.0, 2.0 - material.dirt_amount],
                 match inputs.diffuse_texture {
@@ -556,6 +615,61 @@ impl MaterialUniforms {
         put(&mut out, 96, &self.dsp_sdw);
         out
     }
+}
+
+/// The texture a record's refraction draws the screen copy from (unit 7).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RefractionMap {
+    /// The built-in background refraction, for a nearly opaque record.
+    BkgRfr01,
+    /// The built-in background refraction, for an opacity above 0.85.
+    BkgRfr02,
+    /// The scene's own refraction texture, low field (`+0x6C`).
+    SceneLow,
+    /// The scene's own refraction texture, high field (`+0x64`).
+    SceneHigh,
+}
+
+/// The scene's refraction pair: the texture the engine binds for a nearly
+/// opaque surface (`low`, `+0x6C`) and for a clearer one (`high`, `+0x64`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SceneRefraction {
+    pub low: u32,
+    pub high: u32,
+}
+
+/// The texture the material writer binds to the screen-copy unit when it
+/// updates a material.
+///
+/// Only a record in the liquid mode (the material word's `0x300` bits equal
+/// `0x200`) binds a refraction background: without the scene's own
+/// refraction texture it loads the built-in `BkgRfr01` for an opacity up to
+/// 0.85 (a NaN takes this branch) and `BkgRfr02` above it; with one, the
+/// scene's low and high fields. Any other record binds the scene's low field
+/// when it has an opacity map and the scene has the texture.
+pub fn refraction_map(
+    material_word: u32,
+    opacity: f32,
+    scene: Option<SceneRefraction>,
+) -> Option<RefractionMap> {
+    if material_word & 0x300 == 0x200 {
+        if scene.is_some() {
+            return Some(if opacity > 0.85 {
+                RefractionMap::SceneHigh
+            } else {
+                RefractionMap::SceneLow
+            });
+        }
+        return Some(if opacity > 0.85 {
+            RefractionMap::BkgRfr02
+        } else {
+            RefractionMap::BkgRfr01
+        });
+    }
+    if material_word & 0x40_0000 != 0 && scene.is_some() {
+        return Some(RefractionMap::SceneLow);
+    }
+    None
 }
 
 /// The parallax texel scale from a height layer: `P = round(50·amount)`,
@@ -679,13 +793,12 @@ impl LightUniform {
     /// A point or spot light: `position.w` is the cube map's depth scale,
     /// `colour.w` is `0.8/radius` (the attenuation's inverse reach).
     pub fn point(input: &LightInputs) -> Self {
-        let scale = TWO_OVER_PI / input.shadow_samples.max(1) as f32
-            * (1.0 - input.dimmer)
-            * input.exposure;
+        let normalise = TWO_OVER_PI / input.shadow_samples.max(1) as f32;
+        let dim = (1.0 - input.dimmer) * input.exposure;
         let colour = [
-            crate::material::linear(input.colour[0]) * input.intensity * scale,
-            crate::material::linear(input.colour[1]) * input.intensity * scale,
-            crate::material::linear(input.colour[2]) * input.intensity * scale,
+            crate::material::linear(input.colour[0]) * input.intensity * normalise * dim,
+            crate::material::linear(input.colour[1]) * input.intensity * normalise * dim,
+            crate::material::linear(input.colour[2]) * input.intensity * normalise * dim,
             if input.radius > 0.0 {
                 0.8 / input.radius
             } else {
@@ -713,9 +826,8 @@ impl LightUniform {
     /// A directional light: `position.xyz` is the direction, its `w` the
     /// depth scale, and the filter radius is half the softness's 0.005 step.
     pub fn directional(input: &LightInputs) -> Self {
-        let scale = TWO_OVER_PI / input.shadow_samples.max(1) as f32
-            * (1.0 - input.dimmer)
-            * input.exposure;
+        let normalise = TWO_OVER_PI / input.shadow_samples.max(1) as f32;
+        let dim = (1.0 - input.dimmer) * input.exposure;
         let filter = if input.fast_light { 0.003 } else { 0.005 };
         Self {
             position: [
@@ -725,9 +837,9 @@ impl LightUniform {
                 input.depth_scale,
             ],
             colour: [
-                crate::material::linear(input.colour[0]) * input.intensity * scale,
-                crate::material::linear(input.colour[1]) * input.intensity * scale,
-                crate::material::linear(input.colour[2]) * input.intensity * scale,
+                crate::material::linear(input.colour[0]) * input.intensity * normalise * dim,
+                crate::material::linear(input.colour[1]) * input.intensity * normalise * dim,
+                crate::material::linear(input.colour[2]) * input.intensity * normalise * dim,
                 if input.radius > 0.0 {
                     0.8 / input.radius
                 } else {
@@ -834,6 +946,8 @@ mod tests {
             time_delta: 0.5,
             fog_colour: [0.2, 0.3, 0.4],
             fog_distance: 1000.0,
+            sun_eye: [300.0, 500.0, -100.0],
+            supersample_factor: 4,
             ..ViewInputs::default()
         };
         let u = GlobalUniforms::from_view(&view);
@@ -844,7 +958,11 @@ mod tests {
         assert_eq!(u.voxel_gi_scale[2], 1.0 / (64.0 * 20.0));
         assert_eq!(u.voxel_gi_scale[3], 0.5);
         assert_eq!(u.ambient, [1.5, 3.0, 6.0, 8.0]);
-        assert_eq!(u.time_delta, [0.5, -0.5]);
+        // `TimeDlt` is the frame's clock after the exposure and −1 over the
+        // super-sampling factor, also after the exposure.
+        assert_eq!(u.time_delta, [0.5, -0.25]);
+        // `FogPos` is the eye + (shadow eye − eye)·0.5; `w` is untouched.
+        assert_eq!(u.fog_position, [200.0, 350.0, -200.0, 0.0]);
         assert_eq!(u.view_reciprocal, [1.0 / 1600.0, 1.0 / 900.0]);
         close(u.fog_colour[3], 0.001);
         let bytes = u.to_bytes();
@@ -852,6 +970,37 @@ mod tests {
         assert_eq!(f32::from_le_bytes(bytes[0..4].try_into().unwrap()), 100.0);
         assert_eq!(f32::from_le_bytes(bytes[240..244].try_into().unwrap()), 0.0);
         assert_eq!(f32::from_le_bytes(bytes[248..252].try_into().unwrap()), 0.0);
+    }
+
+    #[test]
+    fn the_global_time_pairs_follow_the_exposure_and_supersampling() {
+        let view = ViewInputs {
+            eye: [1.0, 2.0, 3.0],
+            frame_delta: 0.25,
+            time_delta: 0.25,
+            exposure: 2.0,
+            supersample_factor: 8,
+            ..ViewInputs::default()
+        };
+        let u = GlobalUniforms::from_view(&view);
+        assert_eq!(u.view_pos[3], 0.5);
+        assert_eq!(u.time_delta, [0.5, -0.25]);
+        // The factor is floored at one rather than dividing by zero.
+        let u = GlobalUniforms::from_view(&ViewInputs {
+            supersample_factor: 0,
+            exposure: 1.0,
+            ..ViewInputs::default()
+        });
+        assert_eq!(u.time_delta[1], -1.0);
+        // The midpoint is formed as a + (b − a)·0.5, not (a + b)·0.5: with
+        // values where the two orders differ the engine's lerp keeps the
+        // narrow rounding.
+        let u = GlobalUniforms::from_view(&ViewInputs {
+            eye: [0.1, 0.0, 0.0],
+            sun_eye: [0.3, 0.0, 0.0],
+            ..ViewInputs::default()
+        });
+        assert_eq!(u.fog_position[0], 0.1 + (0.3 - 0.1) * 0.5);
     }
 
     #[test]
@@ -919,8 +1068,8 @@ mod tests {
             assert!(u.drt_uvs[0].is_nan());
             assert_eq!(u.drt_uvs[1], 1.0);
         }
-        // Blood (mode 4) takes the speckle's tint and does not write the uv
-        // block (zero here).
+        // Blood (mode 4) takes the record's dirt tint and does not write the
+        // uv block (zero here).
         let mut m = material();
         m.extra = 0x4000;
         m.dirt_amount = 0.25;
@@ -928,11 +1077,30 @@ mod tests {
             &m,
             &MaterialInputs {
                 diffuse_texture: Some((512, 256)),
+                dirt_tint: Some(WEAPON_BLOOD_TINT),
+                ..MaterialInputs::default()
+            },
+        );
+        assert_eq!(u.mat_drt, [1.0, 0.06, 0.04, 0.3]);
+        assert_eq!(u.drt_uvs, [0.0, 0.0]);
+        // A record that has not had a tint written carries zero there.
+        let u = MaterialUniforms::from_material(
+            &m,
+            &MaterialInputs {
+                diffuse_texture: Some((512, 256)),
+                ..MaterialInputs::default()
+            },
+        );
+        assert_eq!(u.mat_drt, [0.0; 4]);
+        // The hair program's record tint.
+        let u = MaterialUniforms::from_material(
+            &m,
+            &MaterialInputs {
+                dirt_tint: Some(HAIR_BLOOD_TINT),
                 ..MaterialInputs::default()
             },
         );
         assert_eq!(u.mat_drt, [0.45, 0.03, 0.02, 0.5]);
-        assert_eq!(u.drt_uvs, [0.0, 0.0]);
         // A mode the factory does not name writes nothing.
         let mut m = material();
         m.extra = 0x3000;
@@ -999,6 +1167,98 @@ mod tests {
         close(u.mat_emi[0], crate::material::linear(0.5));
         close(u.mat_emi[1], crate::material::linear(0.25) * 0.8);
         close(u.mat_emi[3], 2.0);
+    }
+
+    #[test]
+    fn an_unlit_record_keeps_only_its_emission() {
+        let mut m = material();
+        // The lit bits are 0x3 in the record's flags; clearing them makes
+        // the factory zero the diffuse colour and keep its alpha.
+        m.flags = 0x8 | 0x20000;
+        m.emissive = [0.5, 0.5, 0.5, 0.25];
+        m.opacity = 0.75;
+        let u = MaterialUniforms::from_material(&m, &MaterialInputs::default());
+        assert_eq!(u.mat_dif[0..3], [0.0, 0.0, 0.0]);
+        assert_eq!(u.mat_dif[3], 0.75);
+        close(u.mat_emi[0], crate::material::linear(0.5));
+        // The emissive alpha of an unlit record is its opacity.
+        assert_eq!(u.mat_emi[3], 0.75);
+    }
+
+    #[test]
+    fn a_translucent_or_refracting_record_keeps_its_emissive_unexposed() {
+        let mut m = material();
+        m.emissive = [0.5, 0.25, 0.125, 0.75];
+        let inputs = MaterialInputs {
+            exposure: 2.0,
+            ..MaterialInputs::default()
+        };
+        let u = MaterialUniforms::from_material(&m, &inputs);
+        close(u.mat_emi[0], crate::material::linear(0.5) * 2.0);
+        // The material word's mode bits 0x100 (translucent) and 0x200
+        // (refracting) skip the exposure.
+        for mode in [0x100u32, 0x200] {
+            let u = MaterialUniforms::from_material(
+                &m,
+                &MaterialInputs {
+                    material_mode: mode,
+                    ..inputs
+                },
+            );
+            close(u.mat_emi[0], crate::material::linear(0.5));
+            close(u.mat_emi[1], crate::material::linear(0.25));
+        }
+        // Bits outside the word's 0x300 field do not count.
+        let u = MaterialUniforms::from_material(
+            &m,
+            &MaterialInputs {
+                material_mode: 0x400,
+                ..inputs
+            },
+        );
+        close(u.mat_emi[0], crate::material::linear(0.5) * 2.0);
+    }
+
+    #[test]
+    fn refraction_picks_the_background_or_the_scenes_own_texture() {
+        let scene = SceneRefraction { low: 11, high: 12 };
+        // The liquid mode with no scene texture loads the built-in pair; a
+        // NaN opacity takes the low branch, as the original's compare does.
+        assert_eq!(
+            refraction_map(0x200, 0.5, None),
+            Some(RefractionMap::BkgRfr01)
+        );
+        assert_eq!(
+            refraction_map(0x200, 0.85, None),
+            Some(RefractionMap::BkgRfr01)
+        );
+        assert_eq!(
+            refraction_map(0x200, 0.8501, None),
+            Some(RefractionMap::BkgRfr02)
+        );
+        assert_eq!(
+            refraction_map(0x200, f32::NAN, None),
+            Some(RefractionMap::BkgRfr01)
+        );
+        // With the scene's own refraction texture both fields are used.
+        assert_eq!(
+            refraction_map(0x200, 0.4, Some(scene)),
+            Some(RefractionMap::SceneLow)
+        );
+        assert_eq!(
+            refraction_map(0x200, 0.9, Some(scene)),
+            Some(RefractionMap::SceneHigh)
+        );
+        // Any other record takes the scene's low field only with an opacity
+        // map, and nothing without the scene texture.
+        assert_eq!(
+            refraction_map(0x7 | 0x40_0000, 1.0, Some(scene)),
+            Some(RefractionMap::SceneLow)
+        );
+        assert_eq!(refraction_map(0x7, 1.0, Some(scene)), None);
+        assert_eq!(refraction_map(0x7 | 0x40_0000, 1.0, None), None);
+        // The translucent bit 0x100 is not the refracting mode.
+        assert_eq!(refraction_map(0x100, 0.5, None), None);
     }
 
     #[test]

@@ -6,6 +6,7 @@ pub mod bound_sphere;
 pub mod camera;
 pub mod capture;
 pub mod cube_shadows;
+pub mod draw_state;
 pub mod electricity;
 pub mod flame;
 pub mod geometry;
