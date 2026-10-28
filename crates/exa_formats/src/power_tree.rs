@@ -70,14 +70,6 @@ pub struct PowerNode {
     pub links: Vec<[u8; LINK]>,
 }
 
-/// One power of a saved character's power list: the node's word and the
-/// end (one-based) of its first link, which is the power's prerequisite.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SavedPower {
-    pub power: u32,
-    pub prerequisite: u32,
-}
-
 /// The nodes of one domain's tree, and the texts that follow them.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PowerTree {
@@ -150,59 +142,6 @@ pub fn read_power_tree(bytes: &[u8]) -> Result<PowerTree> {
     }
     let texts = read_texts(bytes, offset)?;
     Ok(PowerTree { nodes, texts })
-}
-
-/// Reads the power list a saved character carries: the same header as a
-/// domain's tree, with each node's word and its first link's end. The rest
-/// of each node (its texts, place and other links) is skipped. A short file
-/// or a negative count is an error.
-///
-/// Evidence: the save validator's node walk (magic, count at byte 52, the
-/// power at a node's start and the first link's end sixteen bytes in).
-pub fn read_saved_powers(bytes: &[u8]) -> Result<Vec<SavedPower>> {
-    let magic = read_u32(bytes, 0)?;
-    if magic != MAGIC {
-        return Err(Error::BadMagic {
-            found: magic,
-            expected: MAGIC,
-        });
-    }
-    let count = read_u32(bytes, COUNT_AT)? as i32;
-    if count < 0 {
-        return Err(Error::Malformed("negative power count".into()));
-    }
-    let mut offset = NODES_AT;
-    let mut powers = Vec::with_capacity(count as usize);
-    for _ in 0..count {
-        let power = take_u32(bytes, &mut offset)?;
-        // The name and description indices, the place and the link count.
-        skip(bytes, &mut offset, 16)?;
-        let links = take_u32(bytes, &mut offset)? as i32;
-        let links = if links < 1 { 0 } else { links as usize };
-        let need = links.saturating_mul(LINK);
-        if need > bytes.len().saturating_sub(offset) {
-            return Err(Error::Truncated {
-                offset,
-                needed: need,
-                len: bytes.len().saturating_sub(offset),
-            });
-        }
-        let prerequisite = if links == 0 {
-            0
-        } else {
-            u32::from_le_bytes(
-                bytes[offset + 8..offset + 12]
-                    .try_into()
-                    .expect("four bytes of a link"),
-            )
-        };
-        offset += need;
-        powers.push(SavedPower {
-            power,
-            prerequisite,
-        });
-    }
-    Ok(powers)
 }
 
 /// The text chunk, when its first word matches. Anything else leaves no texts.
@@ -733,45 +672,6 @@ mod tests {
 
         assert!(read_power_tree(&[0, 0, 0, 0]).is_err());
         assert!(read_power_tree(&MAGIC.to_le_bytes()).is_err());
-    }
-
-    #[test]
-    fn a_saved_power_list_keeps_each_powers_prerequisite() {
-        let mut bytes = sample();
-        let powers = read_saved_powers(&bytes).expect("a saved list reads");
-        assert_eq!(
-            powers,
-            vec![
-                SavedPower {
-                    power: 7,
-                    prerequisite: 0
-                },
-                SavedPower {
-                    power: 9,
-                    // The sample's link bytes 9, 10, 11, 12 read little-endian.
-                    prerequisite: 0x0c0b_0a09
-                }
-            ]
-        );
-        // A short file is an error, and so is a negative count.
-        bytes.truncate(60);
-        assert!(read_saved_powers(&bytes).is_err());
-        let mut negative = sample();
-        negative[COUNT_AT..COUNT_AT + 4].copy_from_slice(&(-1i32).to_le_bytes());
-        assert!(read_saved_powers(&negative).is_err());
-        // Other links are skipped: a third node after the second link.
-        let mut two = sample();
-        two[COUNT_AT..COUNT_AT + 4].copy_from_slice(&3u32.to_le_bytes());
-        put_u32(&mut two, 11);
-        put_u32(&mut two, 0);
-        put_u32(&mut two, 0);
-        put_f32(&mut two, 0.0);
-        put_f32(&mut two, 0.0);
-        put_u32(&mut two, 0);
-        let powers = read_saved_powers(&two).expect("the third node reads");
-        assert_eq!(powers.len(), 3);
-        assert_eq!(powers[2].power, 11);
-        assert_eq!(powers[2].prerequisite, 0);
     }
 
     #[test]

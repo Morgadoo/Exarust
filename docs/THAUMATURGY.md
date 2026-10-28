@@ -549,13 +549,8 @@ told to end. The grant routine (`grant_power`) adds a power to a record
 that holds Insight's seventh technique when its node's first link names a
 learnt prerequisite, over the first matching pair or appended, with flags
 `0x9fff`; the caster's `PowerCaster::grant` is its caller, with no script
-or game function offering a power yet. A saved character's power list
-(`exa_formats::power_tree::read_saved_powers`) is re-validated by
-`validate_saved_power`: each entry takes the flags of the last record pair
-it matches under `0xff0f_ffff`, and the saved copy of a power is added with
-`0x9fff` when it is not the first entry and its first link's prerequisite
-entry is learnt. No character save loader exists yet, so that reader and
-rule are tested functions.
+or game function offering a power yet. Its domain tree is the
+ordinary tree file (`read_power_tree`).
 
 ## Electric arcs
 

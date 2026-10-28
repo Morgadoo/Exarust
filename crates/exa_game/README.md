@@ -27,7 +27,7 @@ by domain and the persistent-slot budget; its store writes a domain's
 learnt and picked nodes back into the record, plus the form's opening and
 closing fades, the 17 ms view frames, the bar's 900 ms open/close
 animation, the tooltip and label layout, the stretched link's own cubic,
-the saved-power re-validation and the caster's grant caller. A constantly displaced body
+and the caster's grant caller. A constantly displaced body
 (`thaum::veil`) gets its shell effect (starting dead, fading the body's mesh and skin
 parts), its displaced collision bit, its hum start point, its tendril
 image, its visibility bits and the hit veto with the 500 ms collision
