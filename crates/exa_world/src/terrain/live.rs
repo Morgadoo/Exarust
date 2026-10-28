@@ -262,6 +262,8 @@ pub fn drive_terrain_stream(
         Option<&exa_render::gi::GiRadius>,
         Option<&PointLight>,
     )>,
+    host: Option<ResMut<exa_render::terrain_composite::TerrainCompositeHost>>,
+    assets: Option<ResMut<Assets<Image>>>,
 ) {
     let Some(mut streaming) = streaming else {
         return;
@@ -304,8 +306,31 @@ pub fn drive_terrain_stream(
         vec![None; streaming.blocks.len()]
     };
     let tick = streaming.tick(focus, &visible, &distances);
-    // The selection's set assignments stay on the selector; a renderer with
-    // an offscreen composite host reads them from here.
+    // Hand the sets the selection holds to the renderer's composite host.
+    // One new set a frame: making many render targets at once would stall
+    // the frame, and nothing draws them yet (the per-pixel shader does).
+    if let (Some(mut host), Some(mut assets)) = (host, assets) {
+        use exa_render::terrain_composite::SetFeatures;
+        let held: Vec<(u32, i32, SetFeatures)> = streaming
+            .selector()
+            .blocks()
+            .iter()
+            .filter_map(|block| block.set())
+            .filter_map(|set| {
+                let record = streaming.selector().pools().set(set)?;
+                Some((
+                    set,
+                    record.level,
+                    SetFeatures {
+                        normal: record.normal,
+                        gloss: record.gloss,
+                        displacement: record.displacement,
+                    },
+                ))
+            })
+            .collect();
+        let _ = host.sync(&mut assets, &held, 1);
+    }
     let _ = tick;
 }
 
