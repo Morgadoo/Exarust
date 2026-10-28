@@ -7,9 +7,12 @@ use bevy::prelude::*;
 use exa_assets::Game;
 use exa_audio::SoundBank;
 use exa_combat::{Fighter, Weakened};
-use exa_ui::{Heartbeat, HudBars};
+use exa_items::catalogue::ItemCatalogue;
+use exa_items::inventory_window::carries_compass;
+use exa_items::possession::Possessions;
+use exa_ui::{CompassView, Heartbeat, HudBars};
 
-use crate::player::{Player, PlayerBody};
+use crate::player::{ChaseCamera, Player, PlayerBody};
 use crate::thaum::cast::PowerCaster;
 
 /// The heartbeat starts at most once in this long (s of game time).
@@ -48,7 +51,7 @@ impl Plugin for HudPlugin {
             .init_resource::<HeartbeatState>()
             .add_systems(
                 Update,
-                (pick_hud, heartbeat)
+                (pick_hud, pick_compass, heartbeat)
                     .chain()
                     .after(crate::player::chase_camera)
                     .before(exa_ui::DrawHud),
@@ -115,6 +118,40 @@ fn pick_hud(
             );
         }
         *hud = next;
+    }
+}
+
+/// The compass's visibility and turn: the player's own pack carrying a
+/// usable item of the compass's kind (4, 11) shows it, and the chase
+/// camera's backward axis (the third row of its frame, as the original
+/// reads it) turns it. The interface fade is not modelled (0).
+fn pick_compass(
+    players: Query<&Children, With<Player>>,
+    bodies: Query<&Possessions>,
+    catalogue: Option<Res<ItemCatalogue>>,
+    cameras: Query<&Transform, With<ChaseCamera>>,
+    hud: Res<HudBars>,
+    mut compass: ResMut<CompassView>,
+) {
+    let carried = catalogue.as_ref().is_some_and(|catalogue| {
+        players.iter().any(|children| {
+            children
+                .iter()
+                .filter_map(|c| bodies.get(c).ok())
+                .any(|possessions| carries_compass(possessions, |id| catalogue.usable(id)))
+        })
+    });
+    let back = cameras
+        .iter()
+        .next()
+        .map_or([0.0, 1.0], |t| [t.back().x, t.back().z]);
+    let next = CompassView {
+        visible: hud.active && carried,
+        back,
+        fade: 0.0,
+    };
+    if *compass != next {
+        *compass = next;
     }
 }
 

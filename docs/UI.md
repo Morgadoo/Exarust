@@ -1253,10 +1253,19 @@ drawing:
   reset takes one off that count only from a fallen curtain, then clears
   the state and starts a running heartbeat's fade. The compass
   is a 12-unit diamond two units plus its half from the left and bottom at
-  `round((1 − fade) · 192)`. The heartbeat's fade-out lowers its sound to
+  `round((1 − fade) · 192)`; `exa_ui::hud_extra` paints it as one square
+  in a frame built from the camera's backward axis laid flat (x negated,
+  normalised with the approximate reciprocal root) and its cross product
+  with up, the frame's origin 3 px against that axis. The corners
+  `(∓e, ∓e)` take the texture coordinates `(1,1)`, `(0,1)`, `(0,0)` and
+  `(1,0)`; the frame reflects them, so the picture shows upright and
+  unmirrored, turned clockwise by the camera's yaw, bilinear-filtered. The
+  curtain is the black layer of `exa_ui::fade` (the death fade). The
+  status marker's glow and icon are not painted yet. The heartbeat's fade-out lowers its sound to
   `0.3 · (1 − elapsed / 1000)` and stops it; the border keeps its pulse.
-  The menu cursor is `round(scale · height / 1080 · 32)`, at most 128, with
-  a 0.176/0.08 hotspot. The draw order is the heartbeat, a hook, then (with
+  The menu cursor is `round(setting · height / 1080 · 32)`, at most 128,
+  with a 0.176/0.08 hotspot (`setting` is the CursorSize setting, 1 in the
+  shipped data, not the GUI scale). The draw order is the heartbeat, a hook, then (with
   the HUD on and a player) the curtain, compass, marker, bars and gauge,
   then the dialogue and the centred message.
 - **Scopes.** Saving the open screens saves a container, a loaded

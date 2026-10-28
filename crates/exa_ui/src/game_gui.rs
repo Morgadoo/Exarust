@@ -24,6 +24,70 @@ pub const MENU_CURSOR: &str = "menucursor.rfi";
 /// The compass's texture.
 pub const COMPASS: &str = "compass.rfi";
 
+/// The game's own skin: the `guitex.rfi` texture, built at the interface
+/// unit. The original keeps one lazily created skin and gives it the
+/// current unit whenever the unit changes; the menu cursor's skin follows
+/// the same unit.
+pub const GUITEX_FILE: &str = "guitex.rfi";
+pub const GUITEX_STEM: &str = "guitex";
+
+/// The game skins' unit after a unit change. The original stores the unit
+/// on the GUI unit's global and on the guitex and menu-cursor skins that
+/// exist.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct GameSkins {
+    pub unit: i32,
+    pub guitex: bool,
+    pub menu_cursor: bool,
+}
+
+/// Sets the unit the game skins are built at.
+pub fn set_skin_unit(skins: &mut GameSkins, unit: i32) {
+    skins.unit = unit;
+}
+
+/// The compass's installation values: the callback id the unit registers
+/// (`0x2f3`), the texture and its flags, and the hooks the install chains.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CompassInstall {
+    pub callback: u32,
+    pub texture: &'static str,
+    pub texture_flags: u32,
+    /// The world cursor's draw hook is installed.
+    pub world_cursor: bool,
+    /// The fade hook is chained.
+    pub fade_hook: bool,
+}
+
+/// Installs the compass once: the unit's callback id, the texture with its
+/// flags (0x3f0), the world cursor's draw hook and the fade hook. A second
+/// call does nothing.
+pub fn compass_install(installed: bool) -> Option<CompassInstall> {
+    (!installed).then_some(CompassInstall {
+        callback: 0x2f3,
+        texture: COMPASS,
+        texture_flags: 0x3f0,
+        world_cursor: true,
+        fade_hook: true,
+    })
+}
+
+/// The unit's shutdown: the guitex skin is closed and the chained hook (if
+/// any) runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SkinShutdown {
+    pub close_guitex: bool,
+    pub run_hook: bool,
+}
+
+/// Closes the game skin at shutdown; the hook chain runs after it.
+pub fn shutdown_skin(guitex: bool, hook: bool) -> SkinShutdown {
+    SkinShutdown {
+        close_guitex: guitex,
+        run_hook: hook,
+    }
+}
+
 /// The screens' type tags. The high twelve bits 0xce1 mark every in-game
 /// screen; 0xce1c the inventory, container, journal and loot family.
 pub const INVENTORY_SCREEN: u32 = 0xce1c_2010;
@@ -807,14 +871,19 @@ impl Counter {
         crate::form::cvtsd2si(f64::from(width) / (f64::from(self.segments) + 1.0) - 1.0)
     }
 
-    /// The backs: one per segment, from one pixel in, each a pixel right
-    /// of the previous (so they overlap), `block − 1` wide.
+    /// The backs: one per segment, from one pixel in, `block − 1` wide and
+    /// `block + 1` apart (32-bit steps).
     pub fn backs(&self, x: i32, width: i32) -> Vec<CounterBlock> {
         let block = self.block(width);
+        let mut at = x.wrapping_add(1);
         (0..=self.segments.max(-1))
-            .map(|i| CounterBlock {
-                x: x + 1 + i,
-                width: block - 1,
+            .map(|_| {
+                let back = CounterBlock {
+                    x: at,
+                    width: block - 1,
+                };
+                at = at.wrapping_add(block).wrapping_add(1);
+                back
             })
             .collect()
     }
@@ -833,14 +902,109 @@ impl Counter {
                 break;
             }
             let fill = if share > 1.0 {
-                inner
+                inner.wrapping_abs()
             } else {
                 cvtss2si(inner as f32 * share)
             };
             out.push(CounterBlock { x: at, width: fill });
-            at += inner + 4;
+            at = at.wrapping_add(inner.wrapping_abs()).wrapping_add(4);
         }
         out
+    }
+}
+
+/// One rectangle of a counter's draw: its place and size.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CounterRect {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+}
+
+/// The two passes over a counter's segments: the backs and the inner
+/// outlines of the unfilled part (the back pass), and the filled parts
+/// (the front pass).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CounterLayout {
+    /// One back per segment, from one pixel in, `block − 1` wide and
+    /// `block + 1` apart, the control's full height.
+    pub backs: Vec<CounterRect>,
+    /// Each back's inner shade, drawn after it at 0.8: two pixels in on
+    /// every side.
+    pub shades: Vec<CounterRect>,
+    /// One outline per segment that has a filled part, from three pixels
+    /// in over the fill less two, the fill rows inset two.
+    pub outlines: Vec<CounterRect>,
+    /// The filled parts from two pixels in, the rows one pixel in.
+    pub fills: Vec<CounterRect>,
+}
+
+impl Counter {
+    /// The counter's rectangles for a control at `(x, y)` of `width` ×
+    /// `height` whose record keeps the row inset `margin`: `block =
+    /// round(width / (segments + 1) − 1)`; the backs and the fills step
+    /// `block + 1` apart (the fills by `|block − 3| + 4`). A segment whose
+    /// share `(segments + 1)·value − i` is at or below zero ends the fills
+    /// (a NaN does not); a share above one fills `|block − 3|`, others
+    /// `round((block − 3)·share)`. A fill of two pixels or less has no
+    /// outline, an empty one no fill; both are inset by `margin` rows.
+    pub fn layout(&self, x: i32, y: i32, width: i32, height: i32, margin: i32) -> CounterLayout {
+        let block = self.block(width);
+        let inner = block - 3;
+        let mut backs = Vec::new();
+        let mut shades = Vec::new();
+        for back in self.backs(x, width) {
+            backs.push(CounterRect {
+                x: back.x,
+                y,
+                width: block - 1,
+                height,
+            });
+            shades.push(CounterRect {
+                x: back.x + 2,
+                y: y + 2,
+                width: block - 5,
+                height: height - 4,
+            });
+        }
+        let mut outlines = Vec::new();
+        let mut fills = Vec::new();
+        let mut at = x + 2;
+        for i in 0..=self.segments {
+            let share = (self.segments + 1) as f32 * self.value - i as f32;
+            if share <= 0.0 {
+                break;
+            }
+            let fill = if share > 1.0 {
+                inner.wrapping_abs()
+            } else {
+                cvtss2si(inner as f32 * share)
+            };
+            if fill > 2 {
+                outlines.push(CounterRect {
+                    x: at + 1,
+                    y: y + margin + 2,
+                    width: fill - 2,
+                    height: height - 2 * margin - 4,
+                });
+            }
+            if fill > 0 {
+                fills.push(CounterRect {
+                    x: at,
+                    y: y + margin + 1,
+                    width: fill,
+                    height: height - 2 * margin - 2,
+                });
+            }
+            at = at.wrapping_add(inner.wrapping_abs()).wrapping_add(4);
+        }
+        CounterLayout {
+            backs,
+            shades,
+            outlines,
+            fills,
+        }
     }
 }
 
@@ -850,14 +1014,27 @@ pub fn bar_control_place(x: i32, y: i32, width: i32) -> (i32, i32, i32) {
     (x + 2, y + 1, width - 4)
 }
 
+/// A bar's frame rectangle: from the bar's left and top to its right and
+/// `4·unit − 2` down, as the HUD and the character view draw it.
+pub fn bar_frame(x: i32, y: i32, width: i32, unit: i32) -> (i32, i32, i32, i32) {
+    (x, y, x + width, y + 4 * unit - 2)
+}
+
+/// A gauge's frame rectangle: one pixel up from the gauge's place and four
+/// past its height, as the original's second frame helper draws it.
+pub fn gauge_frame(x: i32, y: i32, width: i32, height: i32) -> (i32, i32, i32, i32) {
+    (x, y - 1, x + width, y + height + 3)
+}
+
 /// The three control classes the unit registers, in order, with their
 /// default sizes.
 pub const HUD_CONTROLS: [(u32, i32, i32); 3] = [(0xac3, 40, 40), (0xac2, 28, 16), (0xac4, 28, 16)];
 
 /// The pulse of the status marker and the skill-ready alert: `t = |1000 −
-/// (now − start) mod 2000| / 1000` with the 32-bit clocks widened to 64
-/// bits (so a clock behind the start gives a negative remainder), eased;
-/// the glow's alpha is the ease times 0.6.
+/// (now − start) mod 2000| / 1000` with the 32-bit clocks zero-extended
+/// and subtracted in 64 bits (so a clock behind the start gives a negative
+/// remainder, as the signed division does), eased; the glow's alpha is the
+/// ease times 0.6.
 pub fn status_pulse(now: u32, start: u32) -> (f32, f32) {
     let rem = (i64::from(now) - i64::from(start)) % 2000;
     let t = ((1000 - rem).abs() as f64 * 0.001) as f32;
@@ -958,6 +1135,8 @@ pub struct LevelCurtain {
 impl LevelCurtain {
     /// The black page's alpha and the world's brightness at `now`; the
     /// first frame past three seconds reports that the hold count rises.
+    /// The elapsed time is the clocks zero-extended and subtracted in 64
+    /// bits, so a clock behind the start gives a negative share.
     pub fn step(&mut self, now: u32) -> (u8, f32, bool) {
         let mut t =
             ((i64::from(now) - i64::from(self.start)) as f64 * 0.000_333_333_333_333_333_3) as f32;
@@ -1010,15 +1189,15 @@ pub fn compass_centre(unit: i32, view_height: i32) -> (f32, f32) {
 }
 
 /// The compass's alpha from the GUI's fade value: `round((1 − fade) ·
-/// 192)` of 255.
+/// 192)` of 255, in single precision as the instruction computes it.
 pub fn compass_alpha(fade: f32) -> u8 {
-    (crate::form::cvtsd2si((1.0 - f64::from(fade)) * 192.0) & 0xff) as u8
+    (crate::form::cvtss2si((1.0 - fade) * 192.0) & 0xff) as u8
 }
 
 /// The heartbeat's sound gain while it fades out: `1 − (now − start)/1000`
-/// (the 32-bit clocks widened), times 0.3; `None` once the fade is below
-/// the GUI's invisible threshold, which stops the heartbeat. The border
-/// itself keeps its pulse.
+/// (the 32-bit clocks zero-extended and subtracted in 64 bits), times 0.3;
+/// `None` once the fade is below the GUI's invisible threshold, which stops
+/// the heartbeat. The border itself keeps its pulse.
 pub fn heartbeat_fade_gain(now: u32, start: u32) -> Option<f32> {
     let alpha = (1.0 - (i64::from(now) - i64::from(start)) as f64 * 0.001) as f32;
     if alpha < 1.192_09e-7 {
@@ -1036,11 +1215,12 @@ pub fn bars_hold_until(now: u32, delay: u32) -> u32 {
     delay.wrapping_add(now)
 }
 
-/// The menu cursor's size: `round(scale · (height / 1080 · 32))` in
-/// double, at most 128.
-pub fn menu_cursor_size(screen_height: i32, gui_scale: f32) -> i32 {
+/// The menu cursor's size: `round(size · (height / 1080 · 32))` in double,
+/// at most 128. `size_setting` is the original's CursorSize setting (1 in
+/// the shipped data), not the GUI scale.
+pub fn menu_cursor_size(screen_height: i32, size_setting: f32) -> i32 {
     let size = crate::form::cvtsd2si(
-        f64::from(gui_scale) * (f64::from(screen_height) * 0.000_925_925_925_925_926 * 32.0),
+        f64::from(size_setting) * (f64::from(screen_height) * 0.000_925_925_925_925_926 * 32.0),
     );
     size.min(128)
 }
@@ -1051,6 +1231,119 @@ pub fn menu_cursor_hotspot(size: i32) -> (i32, i32) {
         crate::form::cvtsd2si(f64::from(size) * 0.176),
         crate::form::cvtsd2si(f64::from(size) * 0.08),
     )
+}
+
+/// The HUD's two fade clocks, as the original stores them: whether each is
+/// rising, the clock it ends at and its opacity.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HudFadeClock {
+    pub rising: bool,
+    pub end: u32,
+    pub opacity: f32,
+}
+
+/// The HUD reset: both fade clocks end at the clock with no opacity, the
+/// bars' hold clock clears, and the values the bars' show rule compares
+/// come from the player again (none without one).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HudReset {
+    pub bars: HudFadeClock,
+    pub gauge: HudFadeClock,
+    pub hold: u32,
+    pub last: Option<(f32, f32)>,
+}
+
+/// The HUD's reset: both fades end at `now` with no opacity, the hold
+/// clock is 0, and the last health and focus are taken from the player.
+pub fn reset_hud_fades(now: u32, last: Option<(f32, f32)>) -> HudReset {
+    HudReset {
+        bars: HudFadeClock {
+            rising: false,
+            end: now,
+            opacity: 0.0,
+        },
+        gauge: HudFadeClock {
+            rising: false,
+            end: now,
+            opacity: 0.0,
+        },
+        hold: 0,
+        last,
+    }
+}
+
+/// Starts the heartbeat's fade-out at `now` when a heartbeat is running.
+pub fn start_heartbeat_fade(running: bool, now: u32) -> Option<u32> {
+    running.then_some(now)
+}
+
+/// The screen's reset: a fallen curtain takes one off the GUI's hold count,
+/// the curtain's state clears, and a running heartbeat starts its fade.
+/// Returns the faded heartbeat's clock.
+pub fn screen_reset(
+    curtain: &mut LevelCurtain,
+    holds: &mut i32,
+    heartbeat: bool,
+    now: u32,
+) -> Option<u32> {
+    let (_, running) = curtain.reset_with_hold(holds, heartbeat);
+    start_heartbeat_fade(running, now)
+}
+
+/// The bars' fade: the 500 ms rise and the 2 s fall (with a 200 ms hold
+/// first) of the original's show rule, on the GUI's 32-bit clock.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BarsFadeValue {
+    pub rising: bool,
+    pub end: u32,
+    pub opacity: f32,
+}
+
+impl Default for BarsFadeValue {
+    fn default() -> Self {
+        Self {
+            rising: false,
+            end: 0,
+            opacity: 0.0,
+        }
+    }
+}
+
+impl BarsFadeValue {
+    /// The opacity at `now`: the rise takes 500 ms and the fall 2 s, with
+    /// the hold making 2200 ms from full; a clock whose end has passed
+    /// shows them fully (rise) or not at all (fall).
+    pub fn step(&mut self, shown: bool, now: u32) -> f32 {
+        if shown {
+            if !self.rising {
+                self.end =
+                    (crate::form::cvtss2si((1.0 - self.opacity) * 500.0) as u32).wrapping_add(now);
+                self.rising = true;
+            }
+            self.opacity = if self.end < now {
+                1.0
+            } else {
+                1.0 - (self.end - now) as f32 * 0.002
+            };
+        } else {
+            if self.rising {
+                self.rising = false;
+                self.end = if self.opacity < 1.0 {
+                    (crate::form::cvtss2si(self.opacity * 2000.0) as u32).wrapping_add(now)
+                } else {
+                    now.wrapping_add(0x898)
+                };
+            }
+            self.opacity = if self.end < now {
+                0.0
+            } else if now < self.end.wrapping_sub(2000) {
+                1.0
+            } else {
+                (self.end - now) as f32 * 0.0005
+            };
+        }
+        self.opacity
+    }
 }
 
 /// One pass of the in-game HUD's draw.

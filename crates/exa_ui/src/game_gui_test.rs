@@ -224,10 +224,10 @@ fn the_counter() {
     counter.set(0.6);
     // The third share is 0.4: round(8.4) = 8.
     assert_eq!(w(&counter.fills(0, 100)), vec![(2, 21), (27, 21), (52, 8)]);
-    // The backs step one pixel each.
+    // The backs step block + 1 = 25 each.
     assert_eq!(
         w(&counter.backs(0, 100)),
-        vec![(1, 23), (2, 23), (3, 23), (4, 23)]
+        vec![(1, 23), (26, 23), (51, 23), (76, 23)]
     );
     counter.set(-0.2);
     assert_eq!(counter.value, 0.0);
@@ -245,8 +245,48 @@ fn the_counter() {
         segments: 0,
     };
     assert_eq!(w(&one.fills(0, 100)), vec![(2, 96)]);
+    // The full layout: backs over each segment, the filled parts, and the
+    // outline of every filled part wider than two pixels.
+    let mut counter = Counter {
+        segments: 3,
+        ..Counter::default()
+    };
+    counter.set(0.5);
+    let rects = |v: &[CounterRect]| {
+        v.iter()
+            .map(|r| (r.x, r.y, r.width, r.height))
+            .collect::<Vec<_>>()
+    };
+    let l = counter.layout(10, 20, 100, 16, 0);
+    assert_eq!(
+        rects(&l.backs),
+        vec![
+            (11, 20, 23, 16),
+            (36, 20, 23, 16),
+            (61, 20, 23, 16),
+            (86, 20, 23, 16)
+        ]
+    );
+    // Each back's shade: two pixels in, block − 5 wide.
+    assert_eq!(rects(&l.shades)[1], (38, 22, 19, 12));
+    assert_eq!(rects(&l.fills), vec![(12, 21, 21, 14), (37, 21, 21, 14)]);
+    assert_eq!(rects(&l.outlines), vec![(13, 22, 19, 12), (38, 22, 19, 12)]);
+    // The record's row inset moves the fills and outlines in.
+    let inset = counter.layout(10, 20, 100, 16, 1);
+    assert_eq!(rects(&inset.fills)[0], (12, 22, 21, 12));
+    assert_eq!(rects(&inset.outlines)[0], (13, 23, 19, 10));
+    counter.set(0.6);
+    let l = counter.layout(10, 20, 100, 16, 0);
+    assert_eq!(
+        rects(&l.fills),
+        vec![(12, 21, 21, 14), (37, 21, 21, 14), (62, 21, 8, 14)]
+    );
+    assert_eq!(rects(&l.outlines).last(), Some(&(63, 22, 6, 12)));
     assert_eq!(bar_control_place(10, 20, 28), (12, 21, 24));
     assert_eq!(HUD_CONTROLS[0], (0xac3, 40, 40));
+    // The bars' and gauge's frame quads.
+    assert_eq!(bar_frame(550, 989, 240, 5), (550, 989, 790, 1007));
+    assert_eq!(gauge_frame(680, 969, 240, 10), (680, 968, 920, 982));
 }
 
 #[test]
@@ -256,7 +296,8 @@ fn the_status_marker_and_ready_alert() {
     let (e, glow) = status_pulse(1500, 0);
     assert_eq!(e, 0.5);
     assert!((glow - 0.3).abs() < 1e-7);
-    // A clock behind the start gives t = 1.5, which eases to 0.
+    // A clock behind the start: the 64-bit difference −500 keeps its sign,
+    // t = |1000 + 500| / 1000 = 1.5, which eases to 0.
     assert_eq!(status_pulse(0, 500).0, 0.0);
     assert_eq!(status_place(1600, 900, 5), (1065, 860));
     assert_eq!(ready_place(1600, 900, 5), (500, 860));
@@ -295,7 +336,8 @@ fn the_level_curtain() {
     assert_eq!(curtain.step(5000), (255, 0.0, false));
     assert!(curtain.reset());
     assert!(!curtain.reset());
-    // A clock behind the start: −85 keeps its low byte.
+    // A clock behind the start: the 64-bit difference is negative and
+    // round(−85) keeps its low byte, 171; the world brightens past 1.
     let (alpha, bright, _) = LevelCurtain {
         state: 1,
         start: 1000,
@@ -316,12 +358,64 @@ fn the_compass_heartbeat_and_cursor() {
     assert_eq!(heartbeat_fade_gain(0, 0), Some(0.3));
     assert!((heartbeat_fade_gain(500, 0).unwrap() - 0.15).abs() < 1e-7);
     assert_eq!(heartbeat_fade_gain(1000, 0), None);
+    // A clock behind the start: the negative difference raises the gain.
+    assert!((heartbeat_fade_gain(0, 500).unwrap() - 0.45).abs() < 1e-6);
     assert_eq!(bars_hold_until(u32::MAX, 1), 0);
+    // The CursorSize setting (1 shipped) scales the sprite; never above
+    // 128 pixels.
     assert_eq!(menu_cursor_size(1080, 1.0), 32);
     assert_eq!(menu_cursor_size(2160, 1.0), 64);
     assert_eq!(menu_cursor_size(1080, 4.0), 128);
+    assert_eq!(menu_cursor_size(2160, 4.0), 128);
     assert_eq!(menu_cursor_hotspot(32), (6, 3));
     assert_eq!(menu_cursor_hotspot(128), (23, 10));
+}
+
+#[test]
+fn the_skins_compass_install_and_resets() {
+    assert_eq!((GUITEX_FILE, GUITEX_STEM), ("guitex.rfi", "guitex"));
+    let mut skins = GameSkins::default();
+    set_skin_unit(&mut skins, 5);
+    assert_eq!(skins.unit, 5);
+    assert!(compass_install(true).is_none());
+    let install = compass_install(false).unwrap();
+    assert_eq!(
+        (install.callback, install.texture, install.texture_flags),
+        (0x2f3, COMPASS, 0x3f0)
+    );
+    assert!(install.world_cursor && install.fade_hook);
+    assert_eq!(
+        shutdown_skin(true, false),
+        SkinShutdown {
+            close_guitex: true,
+            run_hook: false
+        }
+    );
+    // The screen reset releases a fallen curtain's hold and starts the
+    // heartbeat's fade at the clock.
+    let mut curtain = LevelCurtain { state: 2, start: 0 };
+    let mut holds = 1;
+    assert_eq!(screen_reset(&mut curtain, &mut holds, true, 700), Some(700));
+    assert_eq!((curtain.state, holds), (0, 0));
+    assert_eq!(start_heartbeat_fade(false, 700), None);
+    // The HUD's fades both end at the reset clock with no opacity.
+    let reset = reset_hud_fades(100, Some((0.5, 0.75)));
+    assert_eq!(
+        (reset.bars.end, reset.bars.opacity, reset.gauge.end),
+        (100, 0.0, 100)
+    );
+    assert_eq!(reset.hold, 0);
+    assert_eq!(reset.last, Some((0.5, 0.75)));
+    // The bars' own fade: half way up at 250 ms, full at 500, held 200 ms
+    // after the drop and half way down 1 s into the 2 s fall.
+    let mut fade = BarsFadeValue::default();
+    assert_eq!(fade.step(true, 1000), 0.0);
+    assert_eq!(fade.step(true, 1250), 0.5);
+    assert_eq!(fade.step(true, 1500), 1.0);
+    assert_eq!(fade.step(false, 6000), 1.0);
+    assert_eq!(fade.step(false, 6199), 1.0);
+    assert_eq!(fade.step(false, 7200), 0.5);
+    assert_eq!(fade.step(false, 8200), 0.0);
 }
 
 #[test]

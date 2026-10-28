@@ -58,6 +58,143 @@ fn the_client_rectangle() {
 }
 
 #[test]
+fn the_control_spans_keep_the_border_over_the_stretches() {
+    let skin = ControlSkin {
+        span_x: 8,
+        span_y: 9,
+        title: 20,
+        scroll: 7,
+    };
+    // No stretches: the border 2 is kept and remembered; the client is the
+    // form less the border, and without a title the top is the border.
+    let m = control_spans(302, 402, 2, 0, 0, 0, skin);
+    assert_eq!(
+        (m.border, m.saved_border, m.right, m.bottom, m.title),
+        (2, 2, 300, 400, 2)
+    );
+    assert!(!m.horizontal_scroll && !m.vertical_scroll);
+    // The frame's stretch (style 0x30 across, 0xc0 down) above the border
+    // becomes the border, and nothing is remembered.
+    let wide = control_spans(302, 402, 2, 0x30, 0, 0, skin);
+    assert_eq!(
+        (
+            wide.border,
+            wide.saved_border,
+            wide.span_x,
+            wide.right,
+            wide.title
+        ),
+        (8, 0, 8, 294, 8)
+    );
+    // A remembered border is restored over the one given.
+    let restored = control_spans(302, 402, 5, 0, 0, 2, skin);
+    assert_eq!(
+        (restored.border, restored.saved_border, restored.right),
+        (2, 2, 300)
+    );
+    // The scrollbars inset the client and the title takes the skin's
+    // height plus the top stretch (or the border metric 2 for 0x20).
+    let bars = control_spans(
+        302,
+        402,
+        2,
+        0xc0,
+        attribute::VSCROLL | attribute::HSCROLL | 1,
+        0,
+        skin,
+    );
+    assert_eq!(
+        (bars.border, bars.right, bars.bottom, bars.title),
+        (9, 286, 386, 29)
+    );
+    assert!(bars.horizontal_scroll && bars.vertical_scroll);
+    let thin = control_spans(302, 402, 2, 0xc0, 0x21, 0, skin);
+    assert_eq!(thin.title, 22);
+}
+
+#[test]
+fn setting_controls_copies_or_adopts_the_table() {
+    let input = SetControlsInput {
+        owns_old: false,
+        old_count: -1,
+        hover: 2,
+        adopt: false,
+        new_count: 3,
+        state: state::RESTYLE | state::LAYOUT,
+    };
+    let plan = set_controls(input);
+    assert_eq!(
+        plan,
+        SetControlsPlan {
+            free_old: false,
+            clear_hover: true,
+            table: ControlTable::Copy,
+            count: 3,
+            restyle: true,
+            spans: true,
+            metrics: false,
+            assign_owner: true,
+            setup: true,
+            rescale: false,
+        }
+    );
+    // A placed form recomputes the client area and rescales the records.
+    let placed = set_controls(SetControlsInput {
+        state: state::LAYOUT | state::PLACED,
+        ..input
+    });
+    assert!(placed.metrics && placed.rescale && !placed.spans);
+    // A negative count leaves no table; an adopted table is not copied.
+    let none = set_controls(SetControlsInput {
+        new_count: -1,
+        state: 0,
+        ..input
+    });
+    assert_eq!(
+        (none.table, none.count, none.assign_owner),
+        (ControlTable::Empty, -1, false)
+    );
+    assert_eq!(
+        set_controls(SetControlsInput {
+            adopt: true,
+            new_count: 2,
+            state: 0,
+            ..input
+        })
+        .table,
+        ControlTable::Adopt
+    );
+    // The adopt flag wins over a negative count, which is kept as given.
+    let adopted = set_controls(SetControlsInput {
+        adopt: true,
+        new_count: -1,
+        state: 0,
+        ..input
+    });
+    assert_eq!(
+        (adopted.table, adopted.count, adopted.assign_owner),
+        (ControlTable::Adopt, -1, false)
+    );
+    // A stored count of 0 still has its record's owner set.
+    assert!(
+        set_controls(SetControlsInput {
+            new_count: 0,
+            ..input
+        })
+        .assign_owner
+    );
+    // The old owned table is freed, an empty one included.
+    assert!(
+        set_controls(SetControlsInput {
+            owns_old: true,
+            old_count: 0,
+            ..input
+        })
+        .free_old
+    );
+}
+
+#[test]
 fn the_anchors() {
     assert_eq!(anchor(None, 0, 100, false, Anchor::Default), 4);
     assert_eq!(anchor(None, 0, 100, true, Anchor::Default), 36);
@@ -81,41 +218,55 @@ fn the_conversions_round_as_the_instructions() {
 fn the_horizontal_scrollbar() {
     // Client 400, track 400 − 38 = 362, thumb round(362 · 400/1200 =
     // 120.67) = 121.
-    let s = scroll_metrics(404, 1200, 2, 19, 0.0);
+    let s = scroll_metrics(404, 1200, 2, 0, 19, 0.0);
     assert!((s.step - 10.0 / 796.0).abs() < 1e-7);
     assert_eq!((s.thumb, s.thumb_x), (121, 21));
-    assert_eq!(scroll_metrics(404, 1200, 2, 19, 1.0).thumb_x, 262);
+    assert_eq!(scroll_metrics(404, 1200, 2, 0, 19, 1.0).thumb_x, 262);
+    // A vertical scrollbar insets the client's right edge: the step's
+    // denominator and the thumb follow it.
+    let s = scroll_metrics(404, 1200, 2, 7, 19, 0.5);
+    assert_eq!(s.thumb, 116);
+    assert!((s.step - 10.0 / 803.0).abs() < 1e-7);
+    assert_eq!(s.thumb_x, 141);
+    // A thumb below 9 becomes 9 at any unit (round(362 · 400/100000) = 1).
+    assert_eq!(scroll_metrics(404, 100_000, 2, 0, 19, 0.0).thumb, 9);
 }
 
 #[test]
 fn the_horizontal_scroll_setter() {
     // 241 · 0.5 = 120.5 rounds to the even 120.
     assert_eq!(
-        set_scroll_x(0.5, 0.1, false, false, 404, 1200, 2, 19, 121),
+        set_scroll_x(0.5, 0.1, false, false, 404, 1200, 2, 0, 19, 121),
         (0.5, 141)
     );
     // 0.55 / 0.1 is 5.5 in single precision: six steps, and the thumb
     // follows the snapped 0.6 (144.6 → 145).
     assert_eq!(
-        set_scroll_x(0.55, 0.1, true, false, 404, 1200, 2, 19, 121),
+        set_scroll_x(0.55, 0.1, true, false, 404, 1200, 2, 0, 19, 121),
         (0.6, 166)
     );
     // A held thumb follows the unsnapped fraction (132.55 → 133).
     assert_eq!(
-        set_scroll_x(0.55, 0.1, true, true, 404, 1200, 2, 19, 121),
+        set_scroll_x(0.55, 0.1, true, true, 404, 1200, 2, 0, 19, 121),
         (0.6, 154)
     );
     // Content that fits stores 0 but leaves the thumb where it was asked.
     assert_eq!(
-        set_scroll_x(0.5, 0.1, false, false, 404, 400, 2, 19, 121),
+        set_scroll_x(0.5, 0.1, false, false, 404, 400, 2, 0, 19, 121),
         (0.0, 141)
     );
-    let (f, x) = set_scroll_x(f32::NAN, 0.1, false, false, 404, 1200, 2, 19, 121);
+    let (f, x) = set_scroll_x(f32::NAN, 0.1, false, false, 404, 1200, 2, 0, 19, 121);
     assert!(f.is_nan());
     assert_eq!(x, 21);
     assert_eq!(
-        set_scroll_x(-1.0, 0.1, false, false, 404, 1200, 2, 19, 121).0,
+        set_scroll_x(-1.0, 0.1, false, false, 404, 1200, 2, 0, 19, 121).0,
         0.0
+    );
+    // A vertical scrollbar narrows the client: the same half fraction
+    // places the 116-pixel thumb at 141.
+    assert_eq!(
+        set_scroll_x(0.5, 0.1, false, false, 404, 1200, 2, 7, 19, 116),
+        (0.5, 141)
     );
 }
 
@@ -787,6 +938,18 @@ fn the_routes() {
     assert_eq!(route_drag(3, 5, 0), Route::Control(2, 0x4000));
     assert_eq!(route_drag(3, 5, i32::MIN), Route::Nothing);
     assert_eq!(route_drag(0, 5, 0), Route::Nothing);
+    // A held record takes pointer moves as message 0x30 with x low and y
+    // high; frame codes and out-of-range codes take nothing.
+    assert_eq!(held_move(2, 3, (5, 7)), Some((1, 0x30, 5 | (7 << 16))));
+    assert_eq!(
+        held_move(2, 3, (-1, 2)),
+        Some((1, 0x30, 0xffff | (2 << 16)))
+    );
+    assert_eq!(held_move(4, 3, (5, 7)), Some((3, 0x30, 5 | (7 << 16))));
+    assert_eq!(held_move(5, 3, (5, 7)), None);
+    assert_eq!(held_move(0, 3, (5, 7)), None);
+    // Dragging the title bar moves the form by the pointer's move.
+    assert_eq!(title_drag((100, 50), (120, 80), (10, 20)), (210, 110));
 }
 
 fn grip() -> GripDrag {
@@ -934,6 +1097,52 @@ fn the_drawn_records() {
     assert_eq!(
         drawn_records(&[0, 0x110, 0x100, 0x10, 0x111]),
         vec![0, 2, 3]
+    );
+    let [back, front] = control_passes(&[0, 0x110, 0x100]);
+    assert_eq!((back.blend, front.blend), (0x10, 2));
+    assert_eq!(back.draws, vec![(0, 1), (2, 1)]);
+    assert_eq!(front.draws, vec![(0, 2), (2, 2)]);
+}
+
+#[test]
+fn a_form_draws_through_its_fade() {
+    // No fade: drawn as it is.
+    let mut fade = FormFade::default();
+    assert_eq!(
+        form_draw(&mut fade, 100),
+        FormDraw {
+            paint: true,
+            alpha: None,
+            reset_alpha: false
+        }
+    );
+    // Showing in mode 0: half way at 128 ticks, and the alpha is reset
+    // after the draw.
+    let mut fade = FormFade {
+        state: 1,
+        end: 256,
+        mode: 0,
+    };
+    let draw = form_draw(&mut fade, 128);
+    assert_eq!(draw.alpha, Some(0.5));
+    assert!(draw.paint && draw.reset_alpha);
+    // Hiding that has ended draws nothing.
+    let mut fade = FormFade {
+        state: 2,
+        end: 512,
+        mode: 0,
+    };
+    assert!(!form_draw(&mut fade, 600).paint);
+    // A showing fade that has ended draws at full alpha and resets.
+    let mut fade = FormFade {
+        state: 1,
+        end: 512,
+        mode: 0,
+    };
+    let draw = form_draw(&mut fade, 600);
+    assert_eq!(
+        (draw.paint, draw.alpha, draw.reset_alpha),
+        (true, None, true)
     );
 }
 

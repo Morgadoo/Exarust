@@ -9,7 +9,7 @@ use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 use exa_assets::{Game, PackKind};
 use exa_formats::characters::ID_MASK;
-use exa_formats::containers::{CONTAINER, Container, LIGHT, section};
+use exa_formats::containers::{CONTAINER, Container, LIGHT, USABLE, section};
 use exa_formats::rdb::Database;
 
 const BODY: u32 = 0x1000;
@@ -46,6 +46,9 @@ pub struct ItemCatalogue {
     /// item's weight class.
     bulk: HashMap<u32, u8>,
     models: HashMap<u32, ItemModel>,
+    /// The usable section's first two bytes (its kind and sort): what a use
+    /// or the compass check reads. `None` for an item that is not usable.
+    usable: HashMap<u32, [u8; 2]>,
 }
 
 impl ItemCatalogue {
@@ -87,6 +90,9 @@ impl ItemCatalogue {
             if let Some(bulk) = model_bulk(payload) {
                 out.bulk.insert(r.id, bulk);
             }
+            if let Some(usable) = usable_of(payload) {
+                out.usable.insert(r.id, usable);
+            }
         }
         out
     }
@@ -116,6 +122,15 @@ impl ItemCatalogue {
         self.bulk.get(&id).copied()
     }
 
+    /// The item's usable section's kind and sort (the compass is kind 4,
+    /// sort 11); `None` when the item cannot be used.
+    pub fn usable(&self, id: u32) -> Option<[u8; 2]> {
+        if id & !ID_MASK != 0 {
+            return None;
+        }
+        self.usable.get(&id).copied()
+    }
+
     /// The item's ground model, when its record names one. An item without
     /// a model section has no icon, as the original's icon acquire returns
     /// 0 for it.
@@ -137,6 +152,14 @@ fn model_bulk(payload: &[u8]) -> Option<u8> {
     section(payload, MODEL)
         .and_then(|body| body.get(MODEL_BULK))
         .copied()
+}
+
+/// The usable section's first two bytes: the item's use kind and sort, as
+/// the compass check reads them. `None` for a short section.
+fn usable_of(payload: &[u8]) -> Option<[u8; 2]> {
+    section(payload, USABLE)
+        .and_then(|body| body.get(..2))
+        .map(|b| [b[0], b[1]])
 }
 
 /// Asks for a character's weapon sets to be swapped.
@@ -260,6 +283,23 @@ mod tests {
         assert_eq!(model_bulk(&payload), None);
         // A record with no model section has none.
         assert_eq!(model_bulk(&[]), None);
+    }
+
+    #[test]
+    fn the_usable_section_gives_its_kind_and_sort() {
+        // The compass's usable section: kind 4, sort 11.
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&USABLE.to_le_bytes());
+        payload.extend_from_slice(&10u32.to_le_bytes());
+        payload.extend_from_slice(&[4, 11]);
+        assert_eq!(usable_of(&payload), Some([4, 11]));
+        // Nothing usable, and a section shorter than two bytes.
+        assert_eq!(usable_of(&[]), None);
+        let mut short = Vec::new();
+        short.extend_from_slice(&USABLE.to_le_bytes());
+        short.extend_from_slice(&9u32.to_le_bytes());
+        short.push(4);
+        assert_eq!(usable_of(&short), None);
     }
 
     #[test]
