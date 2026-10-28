@@ -17,6 +17,8 @@
 
 pub mod factory;
 
+pub mod grip_runtime;
+
 pub mod hair;
 
 pub mod held;
@@ -65,13 +67,17 @@ pub struct CharacterPlugin;
 
 impl Plugin for CharacterPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins((blood::BloodPlugin, spray::SprayPlugin))
-            .init_resource::<Painting>()
-            .init_resource::<Fitting>()
-            .init_resource::<PendingSkins>()
-            .add_systems(
-                Update,
-                (
+        app.add_plugins((
+            blood::BloodPlugin,
+            spray::SprayPlugin,
+            grip_runtime::GripRuntimePlugin,
+        ))
+        .init_resource::<Painting>()
+        .init_resource::<Fitting>()
+        .init_resource::<PendingSkins>()
+        .add_systems(
+            Update,
+            (
                 apply_skin_looks.run_if(resource_exists::<Game>),
                 hair::attach_hair.run_if(resource_exists::<Game>),
                 load_underwear_items
@@ -88,7 +94,7 @@ impl Plugin for CharacterPlugin {
                 // bound fails wgpu validation (a skinned pipeline with the
                 // unskinned mesh bind group).
                 .before(exa_anim::AnimSystems),
-            );
+        );
     }
 }
 
@@ -1542,6 +1548,7 @@ fn equip_outfits(
             // Placed by its grip for the character's size and race; no
             // weapon starts flipped yet.
             let (grip_scale, grip_size) = (holder.scale, holder.size);
+            let weapon_holder = holder;
             let placement = grip.placement(&race.grip_holder(holder.size), false);
             let holder = commands
                 .spawn((
@@ -1587,6 +1594,17 @@ fn equip_outfits(
                     commands.entity(holder).insert((
                         exa_physics::prop::PendingProp(parts),
                         exa_combat::impact::ImpactBook::default(),
+                        grip_runtime::HeldRecord {
+                            section: Section {
+                                flags: item.flags,
+                                stats,
+                            },
+                            lengths: Lengths {
+                                length: record.length,
+                                sweet_spot: record.sweet_spot,
+                            },
+                            holder: weapon_holder,
+                        },
                         exa_physics::grip::HeldGrip {
                             spec: grip.spec(),
                             scale: grip_scale,
@@ -1594,6 +1612,7 @@ fn equip_outfits(
                             second_hand_factor: record.second_hand,
                             flip: false,
                             soft_weld: false,
+                            shield: false,
                             holder_key: key,
                             hands: [
                                 by_bone.get(&RIGHT_HAND).copied(),

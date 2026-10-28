@@ -149,6 +149,13 @@ pub struct ImpactSounded {
     pub foley: bool,
 }
 
+/// A hard overhead landing that may shake the camera: the attacker's
+/// position (m), where the original measures from its body centre.
+#[derive(Message, Debug, Clone, Copy, PartialEq)]
+pub struct CameraHit {
+    pub at: Vec3,
+}
+
 /// A held weapon's own impact sound: the weapon record's set at the item's
 /// point, with the volume and pitch the weapon branch works out.
 #[derive(Message, Debug, Clone, PartialEq)]
@@ -222,6 +229,7 @@ pub struct WeaponImpacts<'w, 's> {
     pub blades: Query<'w, 's, &'static Blade>,
     pub motions: Option<Res<'w, Motions>>,
     pub sounds: MessageWriter<'w, WeaponSounded>,
+    pub camera_hits: MessageWriter<'w, CameraHit>,
 }
 
 /// Limb impacts from the pair stage's last detection, then each
@@ -504,7 +512,7 @@ pub fn strike_limbs(
             let Some(&owner) = owner_of.get(&owner_key) else {
                 continue;
             };
-            let Ok((_, _, _, _, _, anim, attacking, _)) = fighters.get_mut(owner) else {
+            let Ok((_, f, _, _, _, anim, attacking, body)) = fighters.get_mut(owner) else {
                 continue;
             };
             let Ok(mut swing) = weapon.swings.get_mut(owner) else {
@@ -532,10 +540,18 @@ pub fn strike_limbs(
                 root_is_primary,
                 counter_taken,
                 now_ms: now,
-                // The original adds a shared simulation field here; its
-                // writer was not traced, so no time is added.
-                link_ticks: 0,
+                // The simulation's per-tick clock advance, added to the
+                // stab's or overhead's stall.
+                link_ticks: 12,
             };
+            if exa_physics::part::shakes_camera(&hit, f.stats.scale) {
+                let at = body
+                    .parts
+                    .iter()
+                    .find(|p| p.parent.is_none())
+                    .map_or(Vec3::ZERO, |p| p.transform().translation.into());
+                weapon.camera_hits.write(CameraHit { at });
+            }
             if let Some(reaction) = hard_impact(&hit) {
                 swing.flags = reaction.flags;
                 if reaction.interrupted {
@@ -653,6 +669,7 @@ pub(crate) fn plugin(app: &mut App) {
     app.add_message::<LimbImpact>()
         .add_message::<ImpactSounded>()
         .add_message::<WeaponSounded>()
+        .add_message::<CameraHit>()
         .add_systems(FixedUpdate, sync_held_striking.before(BodySystems))
         .add_systems(FixedUpdate, strike_limbs.after(BodySystems));
 }

@@ -211,6 +211,7 @@ fn light_torches(
                     second_hand_factor: 1.0,
                     flip: false,
                     soft_weld: false,
+                    shield: false,
                     holder_key: key,
                     hands: [
                         by_bone.get(&exa_character::RIGHT_HAND).copied(),

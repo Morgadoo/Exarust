@@ -348,6 +348,7 @@ impl Plugin for PlayerPlugin {
             .init_resource::<crate::gamepad::PlayPad>()
             .init_resource::<crate::gamepad::PadStatus>()
             .init_resource::<AimCursor>()
+            .init_resource::<CameraKickRng>()
             .init_resource::<crate::player_controls::PlaySession>()
             .add_message::<exa_combat::AttackAskedHook>()
             .add_systems(
@@ -368,7 +369,14 @@ impl Plugin for PlayerPlugin {
             .add_systems(Update, (begin_play_session, end_play_session))
             .add_systems(
                 Update,
-                (cursor_look, cursor_ground, player_combat, chase_camera).chain(),
+                (
+                    cursor_look,
+                    cursor_ground,
+                    player_combat,
+                    camera_hits,
+                    chase_camera,
+                )
+                    .chain(),
             );
     }
 }
@@ -1538,6 +1546,39 @@ impl Default for ChaseCamera {
     }
 }
 
+/// The random stream of the camera's hard-impact kick, seeded once per
+/// match like the other effect streams.
+#[derive(Resource)]
+pub(crate) struct CameraKickRng(pub crate::arena::Mt19937);
+
+impl Default for CameraKickRng {
+    fn default() -> Self {
+        Self(crate::arena::Mt19937::new(5489))
+    }
+}
+
+/// Kicks the chase camera when a hard overhead lands within 18 m: the
+/// original's `(2000 − distance)·0.001` cm strength along +Y, with its
+/// random offset. The distance is over 3 240 000 cm² (18 m) it is silent.
+fn camera_hits(
+    mut hits: MessageReader<exa_combat::impact::CameraHit>,
+    mut rng: ResMut<CameraKickRng>,
+    mut cameras: Query<(&GlobalTransform, &mut ChaseCamera)>,
+) {
+    let Ok((eye, mut camera)) = cameras.single_mut() else {
+        return;
+    };
+    for hit in hits.read() {
+        // The distance is measured in the original's centimetres.
+        let distance2 = hit.at.distance_squared(eye.translation()) * 10_000.0;
+        let Some(strength) = exa_physics::part::camera_shake(distance2) else {
+            continue;
+        };
+        let mut draw = || rng.0.unit() as f32;
+        camera.kick_random(Vec3::Y, Vec3::X, strength * 0.01, &mut draw);
+    }
+}
+
 impl ChaseCamera {
     /// A camera behind a character facing `yaw`.
     pub fn behind(yaw: f32) -> Self {
@@ -2463,6 +2504,7 @@ mod tests {
             .init_resource::<Bindings>()
             .init_resource::<CursorGround>()
             .init_resource::<AimCursor>()
+            .init_resource::<CameraKickRng>()
             .init_resource::<crate::player_controls::PlaySession>()
             .init_resource::<Physics>()
             .add_plugins(exa_combat::stance::StancePlugin)

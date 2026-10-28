@@ -25,6 +25,15 @@ use bevy::prelude::*;
 use crate::body::{BodySystems, Ragdoll, SolverStage, SolverStages};
 use crate::grip::{self, DISABLED, GripLinks, HeldGrip};
 
+/// The grip stage's order: the builder and the per-tick sync. The game's
+/// grip-mode and flip systems run before [`GripSolveSet::Sync`], so this
+/// tick's solver sees their links.
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum GripSolveSet {
+    Build,
+    Sync,
+}
+
 /// A pivot's softening per cm².
 const SOFTENING: f32 = 0.001;
 
@@ -200,46 +209,49 @@ pub fn build_grips(mut held: Query<(Entity, &mut HeldGrip)>, bodies: Query<&Ragd
             continue;
         };
         let item_to_hand = hold_part.transform().inverse() * item_part.transform();
-        if let Some(mut links) = grip::build(
-            item,
-            holder,
-            grip::GripBindings {
-                item_part: HeldGrip::ITEM_PART,
-                hand_parts: hands,
-                arm_parts: arms,
-            },
-            &grip.spec,
-            grip.scale,
-            grip.size,
-            item_to_hand,
-            grip.flip,
-            grip.second_hand_factor,
-        ) {
-            // The world weld every held item gets: a stiff one at its
-            // origin, built disabled. A natural weapon also takes the soft
-            // weld 0.3 of the node box's top above the grip.
-            let top = item
-                .parts
-                .first()
-                .map_or(0.0, |p| p.pairing.mesh.centre.y + p.pairing.mesh.half.y);
-            let soft = Vec3::new(0.0, top * 0.3 * 100.0, 0.0);
-            if let Some(welds) = grip::world_links(
+        let bindings = grip::GripBindings {
+            item_part: HeldGrip::ITEM_PART,
+            hand_parts: hands,
+            arm_parts: arms,
+        };
+        let built = if grip.shield {
+            // The original subtracts the other hand's rest translation
+            // from the two face points; Exarust has no separate rest field
+            // for a part, so the caller passes zero. [guess]
+            grip::shield_links(item, holder, bindings, holding, item_to_hand, Vec3::ZERO)
+        } else {
+            grip::build(
                 item,
-                grip::GripBindings {
-                    item_part: HeldGrip::ITEM_PART,
-                    hand_parts: hands,
-                    arm_parts: arms,
-                },
-                soft,
-                grip.soft_weld,
-            ) {
-                for weld in welds {
-                    if weld.strength < 1.0 {
-                        links.world_soft = Some(links.links.len());
-                    } else {
-                        links.world_hard = Some(links.links.len());
+                holder,
+                bindings,
+                &grip.spec,
+                grip.scale,
+                grip.size,
+                item_to_hand,
+                grip.flip,
+                grip.second_hand_factor,
+            )
+        };
+        if let Some(mut links) = built {
+            // The world weld every held weapon gets: a stiff one at its
+            // origin, built disabled. A natural weapon also takes the soft
+            // weld 0.3 of the node box's top above the grip. A shield's
+            // builder has already added its own soft weld.
+            if !grip.shield {
+                let top = item
+                    .parts
+                    .first()
+                    .map_or(0.0, |p| p.pairing.mesh.centre.y + p.pairing.mesh.half.y);
+                let soft = Vec3::new(0.0, top * 0.3 * 100.0, 0.0);
+                if let Some(welds) = grip::world_links(item, bindings, soft, grip.soft_weld) {
+                    for weld in welds {
+                        if weld.strength < 1.0 {
+                            links.world_soft = Some(links.links.len());
+                        } else {
+                            links.world_hard = Some(links.links.len());
+                        }
+                        links.links.push(weld);
                     }
-                    links.links.push(weld);
                 }
             }
             grip.links = Some(links);
@@ -284,6 +296,11 @@ pub fn release_freed_grips(
         let let_go = owner.is_none_or(|o| o.drive.is_none());
         if !let_go {
             continue;
+        }
+        // A dying shield's soft world weld stiffens before the item is
+        // freed, as the original's death routine sets its strength to 1.
+        if let Some(links) = grip.links.as_mut() {
+            links.weld_on_death();
         }
         grip.released = true;
         grip.links = None;
@@ -360,12 +377,19 @@ pub fn install_stage(mut stages: ResMut<SolverStages>) {
 /// [`crate::PhysicsPlugin`].
 pub fn plugin(app: &mut App) {
     app.add_systems(Startup, install_stage)
-        .add_systems(
+        .configure_sets(
             FixedUpdate,
-            (build_grips, release_freed_grips, mark_held, sync_grips)
-                .chain()
+            GripSolveSet::Build
+                .before(GripSolveSet::Sync)
                 .before(BodySystems),
         )
+        .add_systems(
+            FixedUpdate,
+            (build_grips, release_freed_grips, mark_held)
+                .chain()
+                .in_set(GripSolveSet::Build),
+        )
+        .add_systems(FixedUpdate, sync_grips.in_set(GripSolveSet::Sync))
         .add_systems(FixedUpdate, store_grip_lengths.after(BodySystems));
 }
 

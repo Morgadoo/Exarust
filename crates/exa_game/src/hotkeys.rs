@@ -9,7 +9,7 @@
 //! on, in this order: Q uses the picked power (if powers are allowed), Tab
 //! toggles combat mode, I opens the inventory (if allowed, and in the
 //! modes that hide it only while collapsing), R asks for the weapon sets to
-//! swap (if allowed), F lights or puts out the held light, K the skills and
+//! swap (if allowed), F turns the held weapon over, K the skills and
 //! J the journal (if allowed and not hidden), P the power tree (if powers
 //! are allowed and the player has some) and C the power bar (when the
 //! player or the companion has powers). The permissions are a mask the
@@ -18,7 +18,7 @@
 //!
 //! Wired in Exarust: Tab (with the hand's cancel and the request bits it
 //! clears), R (with the player's condition word and the lift counting as a
-//! drag) and F (the record's light flag); I and J send a
+//! drag) and F (a flip request to the grip runtime); I and J send a
 //! [`crate::gui_screens::ScreenRequest`], which opens the inventory and the
 //! journal on the window manager; C, the digits, Q and the arrows send the
 //! power bar's commands to [`crate::thaum::cast`]. The skills screen's
@@ -30,6 +30,7 @@
 //! (`context/re/player-control-hand.md`, Hotkeys).
 
 use bevy::prelude::*;
+use exa_character::grip_runtime::FlipWeaponRequest;
 use exa_character::held::Hands;
 use exa_combat::Condition;
 use exa_items::possession::{LIT, Possessions, SwapRequest};
@@ -73,6 +74,7 @@ pub enum Hotkey {
     ToggleCombat,
     Inventory,
     SwapSets,
+    FlipWeapon,
     ToggleLight,
     Skills,
     Journal,
@@ -161,7 +163,7 @@ pub fn hotkey(key: u32, bindings: &Bindings, c: Context) -> Option<Hotkey> {
     } else if is(Action::SwitchEquipped) {
         allowed(allow::SWAP).then_some(Hotkey::SwapSets)
     } else if is(Action::FlipWeapon) {
-        Some(Hotkey::ToggleLight)
+        Some(Hotkey::FlipWeapon)
     } else if is(Action::Skills) {
         (allowed(allow::SKILLS) && !c.hides_journal).then_some(Hotkey::Skills)
     } else if is(Action::Journal) {
@@ -200,6 +202,7 @@ impl Plugin for HotkeyPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<ScreenRequest>()
             .add_message::<BarCommand>()
+            .add_message::<FlipWeaponRequest>()
             .add_systems(
                 Update,
                 press_hotkeys
@@ -235,6 +238,7 @@ fn press_hotkeys(
     mut bodies: Query<&mut Ragdoll, Without<PlayerBody>>,
     mut screens: MessageWriter<ScreenRequest>,
     mut bars: MessageWriter<BarCommand>,
+    mut flips: MessageWriter<FlipWeaponRequest>,
 ) {
     let mut pressed: Vec<u32> = keys
         .get_just_pressed()
@@ -300,6 +304,9 @@ fn press_hotkeys(
                             .entity(entity)
                             .insert(exa_items::catalogue::SwapRequested);
                     }
+                }
+                Hotkey::FlipWeapon => {
+                    flips.write(FlipWeaponRequest { body: entity });
                 }
                 Hotkey::ToggleLight => {
                     let first =
@@ -376,7 +383,7 @@ mod tests {
         assert_eq!(on(TAB), Some(Hotkey::ToggleCombat));
         assert_eq!(on(0x49), Some(Hotkey::Inventory));
         assert_eq!(on(0x52), Some(Hotkey::SwapSets));
-        assert_eq!(on(0x46), Some(Hotkey::ToggleLight));
+        assert_eq!(on(0x46), Some(Hotkey::FlipWeapon));
         assert_eq!(on(0x4B), Some(Hotkey::Skills));
         assert_eq!(on(0x4A), Some(Hotkey::Journal));
         assert_eq!(on(T), Some(Hotkey::Talk));
@@ -452,7 +459,7 @@ mod tests {
             assert_eq!(hotkey(vk, &b, none), None, "{vk:#x}");
         }
         assert_eq!(hotkey(TAB, &b, none), Some(Hotkey::ToggleCombat));
-        assert_eq!(hotkey(0x46, &b, none), Some(Hotkey::ToggleLight));
+        assert_eq!(hotkey(0x46, &b, none), Some(Hotkey::FlipWeapon));
         let hidden = Context {
             hides_inventory: true,
             ..Context::default()
@@ -541,6 +548,7 @@ mod tests {
                 .init_resource::<Hand>()
                 .add_message::<ScreenRequest>()
                 .add_message::<BarCommand>()
+                .add_message::<FlipWeaponRequest>()
                 .add_systems(Update, press_hotkeys);
             let player = app.world_mut().spawn((PlayerBody::new(0.0), word)).id();
             app.world_mut()
@@ -564,6 +572,7 @@ mod tests {
                 .init_resource::<Hand>()
                 .add_message::<ScreenRequest>()
                 .add_message::<BarCommand>()
+                .add_message::<FlipWeaponRequest>()
                 .add_systems(Update, press_hotkeys);
             app.world_mut().spawn((PlayerBody::new(0.0), word));
             app.world_mut()

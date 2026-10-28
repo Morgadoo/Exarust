@@ -220,6 +220,9 @@ pub struct HeldGrip {
     /// character flag) takes it; an ordinary held item gets the stiff
     /// origin weld alone.
     pub soft_weld: bool,
+    /// The item is a shield: its three face pivots and its soft world weld
+    /// replace a weapon's table links.
+    pub shield: bool,
     /// The body of the character holding it, as the pair stage knows it
     /// (its first part's entity).
     pub holder_key: Entity,
@@ -769,6 +772,18 @@ impl GripLinks {
         true
     }
 
+    /// The death routine stiffens the shield's soft world weld: its
+    /// strength becomes 1 (the original sets the link at the shield's
+    /// special index to 1.0 when the holder dies). Returns whether a soft
+    /// weld was there.
+    pub fn weld_on_death(&mut self) -> bool {
+        let Some(soft) = self.world_soft.filter(|&i| i < self.links.len()) else {
+            return false;
+        };
+        self.links[soft].strength = 1.0;
+        true
+    }
+
     /// Starts a flip if the item has a flip link. The original's caller
     /// sets its "flip active" byte; the direction is the item's current
     /// flipped flag, so a second command turns it back.
@@ -1209,6 +1224,37 @@ mod tests {
         links.relaxing = false;
         assert!(links.set_mode(4, GripKind::Other));
         assert!(!links.relaxing);
+    }
+
+    #[test]
+    fn death_stiffens_the_shields_world_weld() {
+        let item = body_at(Vec3::ZERO);
+        let hand = body_at(Vec3::ZERO);
+        let mut shield =
+            shield_links(&item, &hand, bindings(), 1, Affine3A::IDENTITY, Vec3::ZERO).unwrap();
+        let soft = shield.world_soft.unwrap();
+        assert_eq!(shield.links[soft].strength, 0.05);
+        assert!(shield.weld_on_death());
+        assert_eq!(shield.links[soft].strength, 1.0);
+        // A weapon's stiff origin weld is not the shield's soft index.
+        let mut one = GripLinks {
+            links: Vec::new(),
+            main: 0,
+            second: None,
+            arm: None,
+            extra: None,
+            flip: None,
+            flip_point: Vec3::ZERO,
+            flip_progress: 0.0,
+            flipped: false,
+            flip_active: false,
+            mode: -1,
+            relaxing: false,
+            record_dirty: false,
+            world_soft: None,
+            world_hard: Some(0),
+        };
+        assert!(!one.weld_on_death());
     }
 
     #[test]

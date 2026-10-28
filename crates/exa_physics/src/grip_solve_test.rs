@@ -184,6 +184,7 @@ fn a_held_items_links_are_built_from_its_bodies() {
         second_hand_factor: 1.0,
         flip: false,
         soft_weld: false,
+        shield: false,
         holder_key: owner,
         hands: [Some(hand), None],
         arms: [Some(hand), None],
@@ -334,6 +335,7 @@ fn a_grip_links_smoothed_length_carries_over_ticks() {
         second_hand_factor: 1.0,
         flip: false,
         soft_weld: false,
+        shield: false,
         holder_key: hand,
         hands: [Some(hand), None],
         arms: [None, None],
@@ -351,4 +353,71 @@ fn a_grip_links_smoothed_length_carries_over_ticks() {
     app.update();
     let grip = app.world().get::<HeldGrip>(item_e).unwrap();
     assert_eq!(grip.links.as_ref().unwrap().links[0].length, 0.0321);
+}
+
+/// A shield item takes the shield builder's three face pivots and its soft
+/// world weld, not a weapon's table links.
+#[test]
+fn a_shield_item_builds_its_face_pivots() {
+    use crate::body::PartSetup;
+    use crate::grip::{GripSpec, HeldGrip};
+
+    let owner = Entity::from_raw_u32(10).unwrap();
+    let hand = Entity::from_raw_u32(11).unwrap();
+    let item = Entity::from_raw_u32(20).unwrap();
+    let setup = |bone, entity, parent, at| PartSetup {
+        bone,
+        entity,
+        parent,
+        world: Affine3A::from_translation(at),
+        centre: Vec3::ZERO,
+        half: Vec3::splat(0.1),
+        origin: Vec3::ZERO,
+        links: vec![],
+        foot: None,
+        pins: Vec::new(),
+        spheres: None,
+    };
+    let holder = Ragdoll::new(&[
+        setup(1, owner, None, Vec3::ZERO),
+        setup(17, hand, Some(0), Vec3::new(0.2, 0.0, 0.0)),
+    ]);
+    let item_body = rigid(item, Vec3::new(0.2, 0.2, 0.0), 1.0);
+    let grip = HeldGrip {
+        spec: GripSpec {
+            hand: 0,
+            links: Vec::new(),
+            second_hand: None,
+            arm: None,
+            extra: None,
+        },
+        scale: 1.0,
+        size: 1.0,
+        second_hand_factor: 1.0,
+        flip: false,
+        soft_weld: false,
+        shield: true,
+        holder_key: owner,
+        hands: [Some(hand), Some(hand)],
+        arms: [Some(hand), Some(hand)],
+        links: None,
+        released: false,
+    };
+    let mut app = App::new();
+    app.add_systems(Update, crate::grip_solve::build_grips);
+    app.world_mut().spawn(holder);
+    let item_e = app.world_mut().spawn((item_body, grip)).id();
+    app.update();
+    let grip = app.world().get::<HeldGrip>(item_e).unwrap();
+    let links = grip
+        .links
+        .as_ref()
+        .expect("the shield links were not built");
+    assert_eq!(links.links.len(), 4);
+    assert_eq!(links.world_soft, Some(3));
+    assert_eq!(links.world_hard, None);
+    for link in &links.links[..3] {
+        assert_eq!(link.flags, PIVOT | crate::grip::RUNTIME);
+    }
+    assert_eq!(links.links[3].flags, crate::grip::RUNTIME | DISABLED);
 }
