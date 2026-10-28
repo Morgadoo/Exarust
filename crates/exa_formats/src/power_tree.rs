@@ -257,7 +257,13 @@ pub struct LinkEnd {
 #[derive(Debug, Clone, PartialEq)]
 pub struct TreeLink {
     pub dim: bool,
+    /// The curve's samples from the start (t = 0) to the end (t = 1).
     pub points: Vec<[f32; 2]>,
+    /// The start's handle: the start a tangent step behind the curve, which
+    /// gives the ribbon's first cross direction.
+    pub start_handle: [f32; 2],
+    /// The end's handle: the end a tangent step past the curve.
+    pub end_handle: [f32; 2],
 }
 
 /// Where a node sits before the view factor. Dragging leaves the point unrounded.
@@ -292,6 +298,9 @@ pub fn tree_link(source: LinkEnd, dest: LinkEnd, link: &[u8; 16], zoom: f32) -> 
     let start = offset(source.at, out_turn, reach(source.power, zoom, scale));
     let end = offset(dest.at, in_turn, reach(dest.power, zoom, scale));
     let (out_dir, in_dir, steps) = tangents(start, end, out_turn, in_turn, zoom);
+    let step = 2.0 / steps as f32;
+    let start_handle = [start[0] + out_dir[0] * -step, start[1] + out_dir[1] * -step];
+    let end_handle = [end[0] + in_dir[0] * step, end[1] + in_dir[1] * step];
     let mut points = Vec::with_capacity(steps + 1);
     points.push(start);
     for step in 1..=steps {
@@ -301,6 +310,8 @@ pub fn tree_link(source: LinkEnd, dest: LinkEnd, link: &[u8; 16], zoom: f32) -> 
     Some(TreeLink {
         dim: source.mark == 0,
         points,
+        start_handle,
+        end_handle,
     })
 }
 
@@ -732,6 +743,14 @@ mod tests {
             [400.0, f32::from_bits(0x4295_8106)]
         );
         assert_eq!(line.points.len(), 19);
+        // The handles are one tangent step (2 / 18) beyond each end: the
+        // start's is below the start, the end's below the end.
+        let step = 2.0 / 18.0;
+        assert!((line.start_handle[0] - line.points[0][0]).abs() < 1e-4);
+        assert!((line.start_handle[1] - (line.points[0][1] - 400.0 * step)).abs() < 1.0);
+        let end = *line.points.last().unwrap();
+        assert!((line.end_handle[0] - end[0]).abs() < 1e-4);
+        assert!((line.end_handle[1] - (end[1] - 400.0 * step)).abs() < 1.0);
 
         let bright = tree_link(
             LinkEnd { mark: 1, ..origin },

@@ -491,8 +491,11 @@ fn draw(
                 screen.tree.close_bar(now_at);
             }
         }
-        screen.tree.advance(now_at);
         screen.tree.present_window(now_at);
+        let cursor = window
+            .cursor_position()
+            .map(|c| [c.x * window.scale_factor(), c.y * window.scale_factor()]);
+        screen.tree.advance_at(now_at, cursor);
         let PowerScreen { tree, bar, .. } = &mut *screen;
         tree.step_bar(bar, now_at);
         if screen.tree.faded_out {
@@ -989,6 +992,24 @@ fn shade(
                     col[3] * alpha,
                 ]
             }
+        }
+        Program::Spline => {
+            // The spline renderer's ribbon: the row coordinate's fraction
+            // shapes the cross-section and the join shifts its middle.
+            let row = vertex.u - vertex.u.floor();
+            let across = (0.5 - row).abs();
+            let profile = (1.0 - across * 2.0).max(0.0).sqrt();
+            let middle = clamp01(0.5 + profile * vertex.u2);
+            let band = 0.5 - (vertex.v - middle).abs();
+            let wide = clamp01(band * uniforms.par0[0] + uniforms.par0[1]);
+            let soft = clamp01(band * uniforms.par0[2] * 0.2);
+            let alpha = clamp01(soft + wide);
+            [
+                col[0] * wide,
+                col[1] * wide,
+                col[2] * wide,
+                col[3] * alpha * alpha,
+            ]
         }
     };
     out.iter_mut().for_each(|v| *v = clamp01(*v));
