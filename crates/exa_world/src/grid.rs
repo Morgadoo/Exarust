@@ -1351,6 +1351,7 @@ mod tests {
             bounds: (Vec3::ZERO, 1.0),
             half_extents: Vec3::ZERO,
             gi_points: Default::default(),
+            gi_centred: false,
             rigid: None,
             tracks: Vec::new(),
             shadow_bias: 0,

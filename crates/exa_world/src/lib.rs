@@ -803,6 +803,12 @@ pub fn spawn_model_nodes(
             commands
                 .entity(e)
                 .insert(gi_volume::GiPoints(node.gi_points.clone()));
+            // The node's centred GI variant (flags2 0x10): its points gain
+            // half a voxel in height and leave their column's lowest slice
+            // alone, as the original's second splat path does.
+            if node.gi_centred {
+                commands.entity(e).insert(gi_volume::GiCentredMesh);
+            }
         }
         if !node.tracks.is_empty() {
             commands
@@ -916,6 +922,8 @@ pub fn light_bundle(
     exa_render::gi::GiRadius,
     shadow_links::ShadowReach,
     exa_render::lights::LightShaping,
+    exa_render::gi::GiShadowBias,
+    exa_render::gi::GiRanged,
 ) {
     /// The falloff reaches zero this far out, in radii.
     const REACH: f32 = 1.25;
@@ -947,6 +955,14 @@ pub fn light_bundle(
             ..shadow_links::ShadowReach::new(c, light.intensity, light.radius)
         },
         exa_render::lights::LightShaping(Vec2::new(y, z)),
+        // The GI's cube lookup scales the receiver's distance by
+        // bias + 0.94 over the radius; the bias is the shadow detail plus
+        // the light's own offset, and an unranged light's far plane is
+        // 3.4e38 (see `GiRanged`).
+        exa_render::gi::GiShadowBias(exa_render::gi::gi_shadow_bias(
+            light_source::shadow_quality_offset(light.flags),
+        )),
+        exa_render::gi::GiRanged(light.ranged),
     )
 }
 
@@ -1754,6 +1770,7 @@ mod tests {
             bounds: (Vec3::ZERO, 1.0),
             half_extents: Vec3::ZERO,
             gi_points: Default::default(),
+            gi_centred: false,
             rigid: None,
             tracks: Vec::new(),
             shadow_bias: 0,
@@ -1763,6 +1780,36 @@ mod tests {
             mesh: false,
             render_flags: 0,
         }
+    }
+
+    /// A node's centred GI flag (flags2 0x10) reaches its entity as
+    /// [`crate::gi_volume::GiCentredMesh`], and only a node with points.
+    #[test]
+    fn a_centred_gi_node_carries_its_splat_variant() {
+        let mut model = Model {
+            nodes: vec![node("Plain", None, None), node("Centred", None, None)],
+        };
+        model.nodes[0].gi_points = std::sync::Arc::new(vec![Vec3::ZERO]);
+        model.nodes[1].gi_points = std::sync::Arc::new(vec![Vec3::ZERO]);
+        model.nodes[1].gi_centred = true;
+        let mut queue = CommandQueue::default();
+        let mut world = World::new();
+        {
+            let mut commands = Commands::new(&mut queue, &world);
+            spawn_model_nodes(&mut commands, &model, None);
+        }
+        queue.apply(&mut world);
+        let mut query = world.query::<(
+            Has<crate::gi_volume::GiPoints>,
+            Has<crate::gi_volume::GiCentredMesh>,
+        )>();
+        let (with_points, centred) = query
+            .iter(&world)
+            .fold((0, 0), |(points, centred), (has, is)| {
+                (points + has as usize, centred + is as usize)
+            });
+        assert_eq!(with_points, 2);
+        assert_eq!(centred, 1);
     }
 
     /// A placement's node transforms change the named direct child of the

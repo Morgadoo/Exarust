@@ -1254,8 +1254,20 @@ in world space there too):
   one step. A level change drops both blocks. When a load ends, the block
   is rebuilt around the camera's starting view if it is not already there.
   Nine resident light textures, their per-object `VXGIPos` selection and
-  the neighbour margin blits are not wired (`margin_blit` keeps their
+  the neighbour margin blits are not wired (`GiBlockLayout::sample_transform`
+  and `sample_at` keep the per-object offset and scale, `margin_blit` the
   columns and UV offsets).
+- Surfaces **sample** the volume with the original's per-object transform:
+  `texture(p·scale + offset)` with `p` in world centimetres, the offset's X
+  and Z half a texture minus the block's centre over its width and its Y
+  the block's bottom slice over the depth, and the scale
+  (1/(W·fc), 1/(D·fc), 1/(H·fc)). A surface reads half a voxel up (the
+  offset's Y carries +0.5), as the original's per-object lookup does,
+  unless the node's flags2 keeps `0x800000`; the terrain and grass callers
+  pass the flag that drops it and read the voxel's bottom instead (Exarust
+  does not model the per-node `0x800000` exception). Both are `GiBlockLayout::sample_transform` /
+  `sample_at`, and the material paths take the same origins from
+  `GiTextures::sample_origin` and `sample_origin_floor`.
 - The top slice holds 26 and the slice below 5, a soft lid.
 - Terrain comes first: in each interior column (not the margins), voxels
   below the terrain surface hold 20, and the surface voxel its covered
@@ -1264,9 +1276,11 @@ in world space there too):
   word, a count, then object-space points in cm) are transformed to the
   world and splatted:
   - trilinearly with weight 20, each cell's share rounded on its own, the
-    sum saturating at 255; a mesh marked thin (`GiThinMesh`) weighs a
-    quarter, and a centred one (`GiCentredMesh`) adds half a voxel in height
-    and leaves its column's lowest slice alone;
+    sum saturating at 255; a mesh marked thin (`GiThinMesh`, the mesh
+    body's first-child byte the reader does not expose) weighs a quarter,
+    and a centred one (`GiCentredMesh`, the node's flags2 `0x10`, which the
+    model reader keeps) adds half a voxel in height and leaves its column's
+    lowest slice alone;
   - points within a voxel of the block's sides, or in its top slice, are
     dropped;
   - the spacing word is unused. Wall pieces store 100, and their points
@@ -1338,25 +1352,40 @@ original does not set that group's floor; it is 0 until a grid level has
 run [inf]), whatever the marks.
 
 For each updated voxel, with occ normalised. The light texture is read at
-the slice boundary, as the original's layered quads do (linear filtering
-averages the two neighbouring slices), and the shading maths uses the
-volume's height divided by its width, as the original's `ZTrn` does:
+the voxel's **own slice centre**: the original's quads put their vertex r
+at −0.5/depth and the vertex shader subtracts (instance + LyrOfs)/depth, so
+layer L reads r = (L + 0.5)/depth and only the ±1.33-voxel taps blend the
+neighbouring slices. The shading maths uses the volume's height divided by
+its width, at the slice's middle ((slice + 0.5)/width), as the original's
+`ZTrn` maps it:
 - open = max(1 − 13·occ, 0);
 - for the eight diagonal neighbours n at ±1.33 voxels:
   - a = open(n);
   - P = light(n) · a² (· a with a sun);
   - sum += mix(old, P, a);
 - open fades out over the lowest slices: · (1 − 2^(−16·r)), r the slice
-  over the block's slice count;
+  centre over the block's slice count;
 - k = min(8·Σa, 1) · (0.3·open + 0.699);
 - light = sum·k/8 + base·open + Σ lights;
 - base = level record `0x30` (as stored) × 0.001, per channel;
 - each point light adds
   lin(colour)·intensity·multiplier·(1 − dim)²·0.15·0.01 · (1 − d/R)⁴ ·
-  open · cube shadow · shaping. The cube lookup is the cached shadow pool's
-  linear depth compared against d/R + 0.01 along (the point − the light)
-  (the original scales d/R by the light's shadow bias + 0.94 here, which
-  Exarust leaves out [gap]);
+  open · cube shadow · shaping. The point light's uniforms are the
+  original's `Light[3i..3i+2]`: the position in texture units with 1/(R·s)
+  in w, then the colour with the cube lookup's depth scale in w, then the
+  shaping (Exarust packs it in x, y, z with the sun flag in w; the original
+  keeps it in y, z, w). The cube lookup is the cached shadow pool's linear depth
+  compared against d·(bias + 0.94)/R + 0.01 along (the point − the light),
+  the scale worked out in double precision (((bias + 0.94)/far) × 5120).
+  The bias is the shadow detail plus the light record's own quality offset
+  (0, +1, −1 or −2), capped at 6, times 0.005, or 0.025 above 5: the
+  retail setting's detail 5 gives 0.025, so the compare is d·0.965/R (q = 4
+  gives 0.02). A light without its range flag has the 3.4e38 far plane, so
+  its compare value stays at 0.01 and, against Exarust's distance / R
+  faces, its lookup is lit [guess: the original draws its faces against the
+  same far plane, so they hold ≈ 0 and its unranged taps would be shadowed
+  wherever geometry is; not confirmed in a running game]. The original binds light i's cube map to its
+  own `Shadow<i>` sampler; Exarust's shared pool carries the slot instead;
 - the sun joins each drawn sector's group first and adds
   lin(colour)·intensity·3·0.3·0.01 · visibility · open (the manager's sun
   factor 3, then three times the 0.1 injection share; it is left out when
@@ -1370,6 +1399,13 @@ volume's height divided by its width, as the original's `ZTrn` does:
   sun is unshadowed;
 - a light's shading is (2^((ly + (1 − ly)·y)·z) − 1)/(2^z − 1), ly the
   light's vertical direction; unshaped lights carry (1, 1, 1);
+- the original's program carries two matrix-shadow light slots (`SdwMat`,
+  `SdwMat2` for the first two lights whose shadow is one 2D map, i.e. the
+  sun and spots); before drawing a group it moves the first such light at
+  index 2 or later to slot 1 when the sun owns slot 0, or the first at
+  index 1 or later to slot 0 without a sun. Exarust has no spot lights and
+  the sun is always slot 0, so a group keeps its order; every point light
+  carries its cube slot instead of a fixed `Shadow<i>` binding;
 - the lights injected are the sector's own: each sector's 6 m cell lists the
   lights whose flood windows reached it (up to 12), with the sun ahead of
   them when it is up (it counts towards the twelve). A spot-shaped light is
@@ -1407,9 +1443,16 @@ volume's height divided by its width, as the original's `ZTrn` does:
   last entry over each match, and the draw box rounds the centre to
   voxels (ties to even) and the half extents up, clips the columns to
   voxels 8 and 248 and draws from centre − half height for 2·half + 1
-  slices, only for a centre above slice 1 (`GiShapes`, `shape_draw`). No gameplay shape registers yet, and the subclasses' own
-  injection programs are outside this component (dome, cuboid, bubble,
-  telebubble, gradient line, multi-point);
+  slices, only for a centre above slice 1 (`GiShapes`, `shape_draw`). The
+  manager's side of the draw is kept with it: the program each shape links
+  (`GiShapeProgram`: `gi_dome`, `gi_cuboid`, `gi_bubble`, `gi_telebubble`,
+  `gi_gradline`, `gi_multipoint`, built with `gi_inject_v` and
+  `gi_inject_g`), the four corners of a slice's quad in texture units
+  (`shape_quad`, r = −(first + 0.5)/depth with each instance adding its
+  layer) and the program-wide uniforms `SliceSz` = 1/depth and `ZTrn` =
+  (−D/W, D/W) (`shape_uniforms`). No gameplay shape registers yet; the
+  subclasses' own uniforms and fragment bodies belong to the effect
+  classes, which are outside this component;
 - a moving GI mesh takes its old points out (weight −20) and its new ones
   in (+20) over a box padded 1.5 voxels each side, rounded ties to even in
   world voxels (`Occupancy::update_dynamic`; the original pads the
@@ -1418,9 +1461,10 @@ volume's height divided by its width, as the original's `ZTrn` does:
   original's sub-upload (the region and its bytes are `VoxelRegion`,
   `sub_upload`);
 - a neighbour block's margin copy: one margin column or row, the interior
-  on the other axis, UV offset ∓240/256, every slice but the top
-  (`margin_blit`). With one resident block no neighbour exists to copy
-  from.
+  on the other axis, UV offset ∓240/256, every slice but the top, and the
+  destination quad's four corners with the original's base z of
+  −0.5/depth (`margin_blit`, `margin_quad`). With one resident block no
+  neighbour light texture exists to copy from, so the pass is not run.
 
 **Voxel lights** (`0x3D0C` nodes: glowing items and a few level nodes)
 add straight into the volume, after the propagation, every step and in
