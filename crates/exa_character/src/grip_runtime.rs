@@ -70,11 +70,13 @@ pub fn resolve_pending_grips(
 /// item names its holder by the holder body's first part, so the request's
 /// body is looked up for it. The original's flip command refuses while the
 /// character is switching or the item has no weapon section with a
-/// flipped-side kind (`Section::can_flip`).
+/// flipped-side kind (`Section::can_flip`), and turns only the first held
+/// item (a second weapon's blade, in [`exa_combat::attack::Slot::Second`],
+/// stays as it is).
 pub fn flip_requests(
     mut requests: MessageReader<FlipWeaponRequest>,
     bodies: Query<&Ragdoll>,
-    mut held: Query<(&mut HeldGrip, Option<&HeldRecord>)>,
+    mut held: Query<(&mut HeldGrip, Option<&HeldRecord>, Option<&Blade>)>,
     owners: Query<&Condition>,
 ) {
     for request in requests.read() {
@@ -92,8 +94,12 @@ pub fn flip_requests(
         {
             continue;
         }
-        for (mut grip, record) in &mut held {
-            if grip.holder_key != key {
+        for (mut grip, record, blade) in &mut held {
+            // Only the first held item turns: the command reads and the
+            // flip step drives held slot 0 alone.
+            if grip.holder_key != key
+                || blade.is_some_and(|b| b.slot == exa_combat::attack::Slot::Second)
+            {
                 continue;
             }
             let can_flip = record.is_some_and(|r| r.section.can_flip());

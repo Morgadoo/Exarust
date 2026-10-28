@@ -524,16 +524,18 @@ pub const TORCH_POINTS: [Vec3; 2] = [Vec3::new(0.0, -20.0, 0.0), Vec3::new(10.0,
 /// to the holding hand) and its soft world weld at the item's origin
 /// (strength 0.05, the world-link flags). A torch is attached by its own
 /// routine, not by the grip table, and always gets the soft weld.
-/// `item_to_hand` is the torch node's matrix in the hand's frame. `None`
-/// when a part or point is malformed.
+/// `holding_hand` is the torch's hand (0 right, 1 left) and `item_to_hand`
+/// the torch node's matrix in that hand's frame. `None` when a part or
+/// point is malformed.
 pub fn torch_links(
     item: &Ragdoll,
     hand: &Ragdoll,
     bindings: GripBindings,
+    holding_hand: usize,
     item_to_hand: Affine3A,
 ) -> Option<GripLinks> {
     let cm = 0.01;
-    let holding = *bindings.hand_parts.first()?;
+    let holding = *bindings.hand_parts.get(holding_hand)?;
     let mut links = Vec::new();
     for point in TORCH_POINTS {
         let local = point * cm;
@@ -892,9 +894,7 @@ impl GripLinks {
         let Some(soft) = self.world_soft.filter(|&i| i < self.links.len()) else {
             return false;
         };
-        let link = &mut self.links[soft];
-        link.slack = slack;
-        link.length = slack;
+        self.links[soft].slack = slack;
         true
     }
 
@@ -1441,7 +1441,7 @@ mod tests {
     fn a_torch_holds_by_its_own_two_links_and_its_soft_weld() {
         let item = body_at(Vec3::ZERO);
         let hand = body_at(Vec3::new(0.3, 0.0, 0.0));
-        let links = torch_links(&item, &hand, bindings(), Affine3A::IDENTITY).unwrap();
+        let links = torch_links(&item, &hand, bindings(), 0, Affine3A::IDENTITY).unwrap();
         assert_eq!(links.links.len(), 3);
         assert_eq!(links.main, 1);
         assert_eq!(links.world_soft, Some(2));
@@ -1459,6 +1459,15 @@ mod tests {
         assert_eq!(world.flags, RUNTIME | DISABLED);
         let p = item.rest_point_at(0, &world.on_item).unwrap();
         assert!(p.length() < 1e-6);
+
+        // The torch hangs from its own hand: a left-hand torch takes the
+        // second hand part (here one the holder lacks, so nothing builds).
+        let left_missing = GripBindings {
+            hand_parts: [0, 5],
+            ..bindings()
+        };
+        assert!(torch_links(&item, &hand, left_missing, 0, Affine3A::IDENTITY).is_some());
+        assert!(torch_links(&item, &hand, left_missing, 1, Affine3A::IDENTITY).is_none());
     }
 
     #[test]
@@ -1498,7 +1507,6 @@ mod tests {
         assert!(shield.set_soft_slack(0.1));
         let soft = shield.world_soft.unwrap();
         assert_eq!(shield.links[soft].slack, 0.1);
-        assert_eq!(shield.links[soft].length, 0.1);
         // The state word's class 0x800 asks for it, another class does not.
         assert!(collapse_weld_state(0x800));
         assert!(collapse_weld_state(0x8FF));

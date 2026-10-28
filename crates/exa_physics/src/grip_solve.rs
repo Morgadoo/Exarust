@@ -217,7 +217,7 @@ pub fn build_grips(mut held: Query<(Entity, &mut HeldGrip)>, bodies: Query<&Ragd
         let built = match grip.kind {
             // The torch's own two pivots and its soft weld, from its attach
             // routine rather than the grip table.
-            HeldKind::Torch => grip::torch_links(item, holder, bindings, item_to_hand),
+            HeldKind::Torch => grip::torch_links(item, holder, bindings, holding, item_to_hand),
             HeldKind::Shield => {
                 // The original subtracts the other hand's stored rest
                 // translation from the two face points, after the item
