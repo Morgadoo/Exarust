@@ -835,7 +835,10 @@ draw at all while the pass count is zero — are in `thaum::effect_pass`.
 (`dress`: the noise made before the shared shader, the flag and state
 bits, the aura's and shell's one replacement sub-object and the material's
 parameter block) and the `gi_multipoint` table's lookup, creation,
-`Light`/`Atten` binding and shutdown free. The EffectShell, EffectShell pass
+`Light`/`Atten` binding and shutdown free. The force, barrier and aura
+materials register one release callback between them (the unit's
+shutdown: twelve program handles and the GI table) and the tendril and
+shell another (two program handles); the material shaders stay made. The EffectShell, EffectShell pass
 selection and the tendril geometry are in
 `thaum::veil`/`exa_game::effects::shell`/`thaum::visuals`. A shell, strikes,
 vanish, long door and constant displacement cast leave their effect nodes in
@@ -843,8 +846,8 @@ the scene, on the caster's body (the summoning's creator adds none: its class
 builds the vanish effect); a long door's move places the body at the destination
 after the caster tick (the destination in centimetres, the root kept at
 its height above the body's lowest part). The constant displacement's
-shell records the shell material's sub-object and its end marks every
-sub-object's render word with 0x8, and its start records the silent looping
+restore tick ends its tendril image (each strand record marked 0x8, the
+fade zeroed, event 0x10), and its start records the silent looping
 hum, the dead shell and tendril image, the body's hit and restore callbacks
 and the shell's fade hook. The vanish's show and hide are still the effect
 class's own, not applied to Exarust's drawn body.
