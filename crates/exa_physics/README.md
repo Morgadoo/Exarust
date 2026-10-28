@@ -781,9 +781,10 @@ push at a world point with the original's weighting (`push_fraction`, the
 `4·dot` test against the push's squared length). The stagger helper
 (`stagger`, `recoil`) gives a blow's stagger speed, decay, flags and
 countdown;
-`femur_posture_turn` is the thigh posture's alternating 5° (splayed) or
-(1 − height)·−1.5° (combat) turn, applied by the sampler to the clip's
-thigh turns in the combat conditions; and `MOTILE_ENVIRONMENT` is the class init's unused
+`femur_posture_turn` is the thigh posture's alternating 5° (the state
+word's splay bit, which no shipped code writes) or (1 − height)·−1.5°
+(the behaviour's in-combat flag), applied by the sampler to the clip's
+thigh turns; and `MOTILE_ENVIRONMENT` is the class init's unused
 0.2556/0.15/0.03 environment. `full_tone`/`clear_foot_state` are the
 original's resets.
 

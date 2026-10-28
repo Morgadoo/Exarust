@@ -168,10 +168,11 @@ pub(crate) fn sample_clip(
         .and_then(|(req, l)| look_of(&body, req, l, looks));
     // The body tick poses the thighs by whether its behaviour is in combat,
     // not by its condition: every tick it calls the posture with that flag,
-    // and a body out of combat keeps the clip's turns (the splay flag has
-    // no writer).
+    // and a body out of combat holds the clip's turns unless its state
+    // word asks for the splay.
     let in_combat = body.drive.as_ref().is_some_and(|d| d.bearing.in_combat);
-    let posture = thigh_posture(in_combat, fighter.map_or(0.0, |f| f.stats.height));
+    let splay = body.drive.as_ref().is_some_and(|d| d.bearing.splay);
+    let posture = thigh_posture(in_combat, splay, fighter.map_or(0.0, |f| f.stats.height));
     let posed = sample_parts(
         &mut anim,
         clip,
@@ -229,12 +230,13 @@ pub(crate) fn plant_request_after(request: i32, deadline: u64, now: u64) -> (i32
 }
 
 /// The thigh posture the body tick asks of the sampler: the combat turn
-/// (1 − height)·−1.5° while its behaviour is in combat, else the clip's own
-/// turns. The original's other branch is the state word's splay flag, which
-/// nothing in the shipped code writes.
-pub(crate) fn thigh_posture(in_combat: bool, height: f32) -> FemurPosture {
+/// (1 − height)·−1.5° while its behaviour is in combat, else the splay's
+/// 5° while the state word's splay bit is set, else the clip's own turns.
+pub(crate) fn thigh_posture(in_combat: bool, splay: bool, height: f32) -> FemurPosture {
     if in_combat {
         FemurPosture::Combat { height }
+    } else if splay {
+        FemurPosture::Splayed
     } else {
         FemurPosture::Level
     }
@@ -710,13 +712,15 @@ mod tests {
     #[test]
     fn the_thigh_posture_follows_the_behaviours_combat_flag() {
         assert_eq!(
-            thigh_posture(true, 0.5),
+            thigh_posture(true, false, 0.5),
             FemurPosture::Combat { height: 0.5 }
         );
-        assert_eq!(thigh_posture(false, 0.5), FemurPosture::Level);
-        let fighting = FemurPosture::Combat { height: 0.5 };
-        let got = thigh_posture(true, 0.5);
-        assert_eq!(got, fighting);
+        assert_eq!(
+            thigh_posture(true, true, 0.5),
+            FemurPosture::Combat { height: 0.5 }
+        );
+        assert_eq!(thigh_posture(false, true, 0.5), FemurPosture::Splayed);
+        assert_eq!(thigh_posture(false, false, 0.5), FemurPosture::Level);
     }
 
     /// A trailing-foot request stays at its deadline and lapses strictly

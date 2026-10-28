@@ -277,6 +277,10 @@ pub struct Bearing {
     /// Its behaviour is in combat (the original's in-combat flag): its
     /// standing retention factor is u, not u².
     pub in_combat: bool,
+    /// The state word's splay bit: the thighs turn 5° about the posture
+    /// axis instead of holding the clip's turns (no shipped code writes the
+    /// bit).
+    pub splay: bool,
     /// Its condition is off its feet: down, getting up, dormant or dead
     /// (the condition's bit 0x200). Its feet are probed from their ankles
     /// and their soles are not held over the floor. Its support pins do
@@ -368,6 +372,7 @@ impl Default for Bearing {
             walking: false,
             attacking: false,
             in_combat: false,
+            splay: false,
             off_feet: false,
             progress: 0.0,
             idle: false,
