@@ -143,12 +143,14 @@ stamped on the item, its first-child chain and its striking weapon
 ancestors, and interrupts or stalls the owner's swing by the same
 `part::hard_impact` rules as an overhead or stab, recording
 `round(5√impact)` on the swing (`SwingState::strike_strength`) with a
-zero stall that ends at once (the original adds a shared tick field that
-was not traced). The
+zero stall that ends at the tick clock. The
 contact classifier (`part::classify`) reads the striker's state for the
 kind when the other side is itself striking; the message carries it.
-Camera shake and the base collision sound of a non-striking item are the
-parts' tested rules, with the camera's kick left to the game.
+A hard overhead by a big attacker past 0.6 of its clip, over impact 60,
+emits a `CameraHit`; the game's chase camera measures it against the eye
+(under 18 m) and takes the original's `(2000 − distance)·0.001` vertical
+kick with its random offset. The base collision sound of a non-striking
+item is the parts' tested rule (`part::base_impact_sound`).
 
 ## Fighters and their condition
 
