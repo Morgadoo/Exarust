@@ -154,11 +154,14 @@ pub fn disabled(has_animation: bool, following: bool) -> Disabled {
 
 /// The disturbance inside the value's own fluctuation: the same cell whose
 /// value moved by less than this does not restart the walk.
-pub const SAME_DISTURBANCE: f32 = 0.02;
+/// Compared in double precision.
+pub const SAME_DISTURBANCE: f64 = 0.02;
 /// The disturbance the walk ignores (the stamp-only branch).
 pub const QUIET: f32 = 0.5;
 /// The disturbance that starts a walk to the noise.
-pub const LOUD: f32 = 0.3;
+/// Compared in double precision, so a value of `0.3f32` (just over the f64
+/// 0.3) walks.
+pub const LOUD: f64 = 0.3;
 
 /// The investigation's memory: the cell it last sampled and the value it
 /// kept.
@@ -188,15 +191,15 @@ pub enum Investigated {
 /// value over [`LOUD`] keeps it and enters the walk to the noise.
 pub fn investigate(state: &mut Investigation, cell: (i32, i32), value: f32) -> Investigated {
     let same_cell = state.cell == Some(cell);
-    if same_cell && (value - state.kept).abs() < SAME_DISTURBANCE {
-        return if value <= QUIET {
-            Investigated::Nothing
-        } else {
+    if same_cell && f64::from((value - state.kept).abs()) < SAME_DISTURBANCE {
+        return if QUIET < value {
             Investigated::Stamped
+        } else {
+            Investigated::Nothing
         };
     }
     state.cell = Some(cell);
-    if LOUD < value {
+    if LOUD < f64::from(value) {
         state.kept = value;
         return Investigated::Walking;
     }
@@ -442,8 +445,8 @@ impl Default for DriveInput {
 /// state 3 walks while its wait lasts, then tests the exit: near it the
 /// body moves on to the use state (4), otherwise it plans again (2) and
 /// remembers the exit to avoid. State 4 turns and uses the object, then
-/// plans the way home (5); a use that does not come within ten seconds
-/// plans again (2). State 5 plans a forced home route, and state 6, at the
+/// plans the way home (5); ten seconds after the exit was reached it plans
+/// again (2) and avoids the exit, even on the tick the use completed. State 5 plans a forced home route, and state 6, at the
 /// room, looks for an object before it walks and, when the walk stops,
 /// plans again with a 1–4 s wait. Returns the action for the caller.
 pub fn drive(state: &mut Explore, input: &DriveInput, roll: &mut u32) -> Drive {
@@ -482,8 +485,12 @@ pub fn drive(state: &mut Explore, input: &DriveInput, roll: &mut u32) -> Drive {
         4 => {
             if input.use_done {
                 state.step = 5;
-            } else if state.until_ms.wrapping_add(10_000) < input.now_ms {
-                exclude(&mut state.excluded, input.exit_index);
+            }
+            // The ten-second timeout is tested after the use too, on 64-bit
+            // sums (no wrap), and avoids the exit by its own bit: the first
+            // avoided exit's marker is set only at the exit test.
+            if u64::from(state.until_ms) + 10_000 < u64::from(input.now_ms) {
+                state.excluded |= 1 << (input.exit_index & 31);
                 state.target_cell = -1;
                 state.step = 2;
             }
@@ -679,7 +686,8 @@ mod tests {
     #[test]
     fn the_investigation_walks_to_a_loud_noise() {
         let mut state = Investigation::default();
-        assert_eq!(investigate(&mut state, (2, 3), 0.3), Investigated::Nothing);
+        // 0.29 is under the gate; the f32 0.3 is just over the double 0.3.
+        assert_eq!(investigate(&mut state, (2, 3), 0.29), Investigated::Nothing);
         assert_eq!(investigate(&mut state, (2, 3), 0.31), Investigated::Walking);
         assert_eq!(state.kept, 0.31);
         // The same cell and value: nothing.
@@ -694,10 +702,20 @@ mod tests {
         };
         assert_eq!(investigate(&mut state, (1, 1), 0.9), Investigated::Stamped);
         // A changed value stores it: 0.5 walks (it is over the 0.3 gate),
-        // 0.3 does not.
+        // and so does the f32 0.3, which the double compare puts over 0.3;
+        // 0.29 does not.
         assert_eq!(investigate(&mut state, (1, 1), 0.5), Investigated::Walking);
         assert_eq!(state.kept, 0.5);
-        assert_eq!(investigate(&mut state, (1, 1), 0.3), Investigated::Nothing);
+        assert_eq!(investigate(&mut state, (1, 1), 0.3), Investigated::Walking);
+        assert_eq!(investigate(&mut state, (1, 1), 0.29), Investigated::Nothing);
+        // A gap just under 0.02 is the same disturbance: only a stamp.
+        let mut state = Investigation {
+            cell: Some((1, 1)),
+            kept: 0.6,
+        };
+        let near = 0.6 + 0.02_f32;
+        assert!(f64::from((near - 0.6_f32).abs()) < SAME_DISTURBANCE);
+        assert_eq!(investigate(&mut state, (1, 1), near), Investigated::Stamped);
         // A kept 0.5 has no stamp; a kept 0.55 does.
         let mut state = Investigation {
             cell: Some((1, 1)),
@@ -942,6 +960,30 @@ mod tests {
         );
         assert_eq!(state.excluded, EXCLUDE_FIRST | 4);
         assert_eq!(state.step, 2);
+        // The timeout sets the exit's own bit even with no marker yet, and
+        // it still runs on the tick the use completes.
+        state.step = 4;
+        state.until_ms = 0;
+        state.excluded = 0;
+        assert_eq!(
+            drive(
+                &mut state,
+                &at(10_001, false, false, false, true, false, false, 0.0),
+                &mut roll
+            ),
+            Drive::UseObject
+        );
+        assert_eq!((state.excluded, state.step), (4, 2));
+        // The ten seconds are summed without a wrap.
+        state.step = 4;
+        state.until_ms = u32::MAX - 5;
+        drive(
+            &mut state,
+            &at(100, false, false, false, false, false, false, 0.0),
+            &mut roll,
+        );
+        assert_eq!(state.step, 4);
+        state.excluded = EXCLUDE_FIRST;
         // Plan, arrive, use, and plan home.
         state.step = 3;
         state.until_ms = 0;
