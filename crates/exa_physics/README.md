@@ -201,8 +201,11 @@ the clip's foot is ahead of the character frame's origin, all at 0.04 ×
 the speed plus 0.01 a tick; a leg where the clip's leg is not longer and
 the foot does not touch standing still eases both corrections back with
 the identity shown. Both write the knee and hip corrections the sampler folds into the clip's
-chain (`Ragdoll::fold_leg_ik`, which records each leg's clip ankle and hip
-before the fold), the chain the muscles and the drawn parts both read, and
+chain (`Ragdoll::fold_leg_ik`: it records each leg's clip ankle and hip
+before the fold, bends the thigh and shin and re-places the foot under the
+bent shin, as the original's IK chain places every part by its parent's;
+the next aim puts the record in the world after its carry), the chain the
+muscles follow, and
 the foot's height over its floor, which the foot pitch levels. Each foot's sole floor is the
 original's Ground Query (`contact::Level::floor_below`, a point ray from
 30 cm over the foot's ground 60 cm down against floor-flagged pieces): the
@@ -282,8 +285,9 @@ each leg's foot contact (`body::Leg`: `state`, a `body::FootState` of the
 original's bits, `anchor`, `grip`, `ramp`) is planted where its foot meets
 the floor, stood on its stance spot getting up or unsupported, cleared
 lying, and steps to its stance spot by the footwork's stance score, one
-foot at a time (a free foot within 5 cm stays). The score's reference
-term is 1 − the horizontal distance to the feet's segment × the
+foot at a time (a free foot within 5 cm stays). The score zeroes the
+feet's height difference before its span, projection and side terms; its
+reference term is 1 − the horizontal distance to the feet's segment × the
 single-precision 1/30, except under the squared epsilon where it stays 1
 (a NaN reference takes the root); the width and side terms divide by their
 spans unguarded, as the original's do. A recovery step starts

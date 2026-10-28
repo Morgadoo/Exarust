@@ -2871,8 +2871,10 @@ impl Ragdoll {
             drive.refresh_turns();
         }
         self.anchor_frame(root);
-        // The leg IK was folded into the sampled pose by the sampler
-        // (`Ragdoll::fold_leg_ik`); the muscles follow it here.
+        // The sampler folded last tick's bend into the pose
+        // (`Ragdoll::fold_leg_ik`); its clip record goes in the world here,
+        // after the carry (a pose given without a sample is folded here).
+        self.pose_leg_bend(root);
         self.tune_muscles();
         self.lift();
     }

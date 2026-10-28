@@ -387,18 +387,14 @@ fn the_sampler_folds_the_leg_bend_into_the_chain() {
     body.fold_leg_ik(&mut chain);
     let leg = &body.legs[0];
     // The leg's contact is its foot part's origin, here the shin's own
-    // origin: the clip's ankle 0.4 under the hip.
+    // origin: the clip's ankle 0.4 under the hip, kept in the chain's frame
+    // for the next aim.
+    let (hip, ankle) = leg.sampled_clip.expect("recorded");
+    assert!(hip.abs_diff_eq(Vec3::ZERO, 1e-6));
     assert!(
-        leg.posed_offset
-            .abs_diff_eq(Vec3::new(0.0, -0.4, 0.0), 1e-6),
-        "{:?}",
-        leg.posed_offset
+        ankle.abs_diff_eq(Vec3::new(0.0, -0.4, 0.0), 1e-6),
+        "{ankle:?}"
     );
-    assert!(
-        leg.anim_contact
-            .abs_diff_eq(Vec3::new(0.0, -0.4, 0.0), 1e-6)
-    );
-    assert!(leg.anim_hip.abs_diff_eq(Vec3::ZERO, 1e-6));
     // The thigh takes the extra turn and the hip hinge; the shin keeps its
     // clip offset under the turned thigh and takes the knee hinge.
     let want_thigh = Affine3A::from_quat(Quat::from_rotation_y(0.15) * Quat::from_rotation_x(-0.1));
@@ -408,6 +404,41 @@ fn the_sampler_folds_the_leg_bend_into_the_chain() {
     assert!(at.abs_diff_eq(shin, 1e-6));
     assert!(turn.abs_diff_eq(Quat::from_rotation_x(0.2), 1e-6), "{turn}");
     assert!(scale.abs_diff_eq(Vec3::ONE, 1e-6));
+    // The foot keeps its clip placement under the bent shin.
+    let foot_local = chain[1].inverse() * chain[2];
+    assert!(
+        foot_local.abs_diff_eq(Affine3A::from_translation(shin), 1e-6),
+        "{foot_local:?}"
+    );
+}
+
+/// The aim after the sampler's IK step puts its clip record in the world by
+/// the body root: a root 3 m along x and turned a quarter about the
+/// vertical moves the hip and ankle with it.
+#[test]
+fn the_aim_puts_the_sampled_record_in_the_world() {
+    let (mut body, pose) = standing_at(Vec3::ZERO);
+    let root = Affine3A::from_rotation_translation(
+        Quat::from_rotation_y(std::f32::consts::FRAC_PI_2),
+        Vec3::new(3.0, 0.0, 0.0),
+    );
+    let mut chain = pose.clone();
+    body.fold_leg_ik(&mut chain);
+    let leg = right_leg(&body);
+    let (hip, ankle) = body.legs[leg].sampled_clip.expect("recorded");
+    body.set_bearing(Bearing::default());
+    body.aim(root, chain.iter().map(|p| root * *p).collect());
+    let leg = &body.legs[leg];
+    assert!(leg.sampled_clip.is_none());
+    assert!(leg.anim_hip.abs_diff_eq(root.transform_point3(hip), 1e-5));
+    assert!(
+        leg.anim_contact
+            .abs_diff_eq(root.transform_point3(ankle), 1e-5)
+    );
+    assert!(
+        leg.posed_offset
+            .abs_diff_eq(root.transform_vector3(ankle - hip), 1e-5)
+    );
 }
 
 /// A body without muscles keeps its chain: there is no bend to fold.

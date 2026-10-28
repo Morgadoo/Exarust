@@ -357,32 +357,79 @@ struct IkTick {
 }
 
 impl Ragdoll {
-    /// The sampler's IK step: records each leg's clip hip-to-ankle offset
-    /// from `chain` (the clip's pose before the IK) and multiplies last
-    /// tick's leg bend into it. The muscles and the drawn parts both read
-    /// the folded chain, so they follow the correction on the tick after
-    /// it was computed, as the original's sampler does. A body without
-    /// muscles, or a chain of another length, is left alone.
+    /// The sampler's IK step, on `chain` (the sampled parts in the body
+    /// root's frame, the clip's pose before the IK): records each leg's
+    /// clip hip and ankle from it, multiplies last tick's leg bend into the
+    /// thigh and shin, and recomposes the parts under the shin (the foot)
+    /// on the bent shin, as the original's IK chain places every part by
+    /// its parent's. The next [`Ragdoll::aim`] puts the record in the world
+    /// after its carry. A body without muscles is left alone.
     pub fn fold_leg_ik(&mut self, chain: &mut [Affine3A]) {
         let Ragdoll {
             parts, legs, drive, ..
         } = self;
-        if drive.is_none() {
+        if drive.is_none() || chain.len() != parts.len() {
             return;
         }
         for leg in legs.iter_mut() {
             let Some(thigh) = parts[leg.shin].parent else {
                 continue;
             };
-            if thigh >= chain.len() || leg.shin >= chain.len() {
-                continue;
-            }
             let hip = Vec3::from(chain[thigh].translation);
             let ankle = chain[leg.shin].transform_point3(leg.point);
+            leg.sampled_clip = Some((hip, ankle));
+            let shin_before = chain[leg.shin];
+            fold_pose(chain, thigh, leg.shin, leg);
+            // Parts come after their parents: each descendant of the shin
+            // keeps its clip placement under its re-placed parent.
+            let mut before: Vec<(usize, Affine3A)> = vec![(leg.shin, shin_before)];
+            for i in leg.shin + 1..parts.len() {
+                let Some(parent) = parts[i].parent else {
+                    continue;
+                };
+                let Some(&(_, parent_before)) = before.iter().find(|(j, _)| *j == parent) else {
+                    continue;
+                };
+                let old = chain[i];
+                chain[i] = chain[parent] * (parent_before.inverse() * old);
+                before.push((i, old));
+            }
+        }
+    }
+
+    /// Puts the clip's hip-to-ankle record of this tick in the world
+    /// (`root`, after the carry): the sampler's record when its IK step
+    /// folded the pose; otherwise, for a pose given without a sample, the
+    /// record is read from the targets and last tick's bend folded into
+    /// them here. A correction the IK holds at the identity is not
+    /// multiplied in.
+    pub(super) fn pose_leg_bend(&mut self, root: Affine3A) {
+        let Ragdoll {
+            parts, legs, drive, ..
+        } = self;
+        let Some(drive) = drive.as_mut() else {
+            return;
+        };
+        if drive.targets.len() != parts.len() {
+            return;
+        }
+        for leg in legs.iter_mut() {
+            let Some(thigh) = parts[leg.shin].parent else {
+                continue;
+            };
+            if let Some((hip, ankle)) = leg.sampled_clip.take() {
+                let (hip, ankle) = (root.transform_point3(hip), root.transform_point3(ankle));
+                leg.posed_offset = ankle - hip;
+                leg.anim_contact = ankle;
+                leg.anim_hip = hip;
+                continue;
+            }
+            let hip = Vec3::from(drive.targets[thigh].translation);
+            let ankle = drive.targets[leg.shin].transform_point3(leg.point);
             leg.posed_offset = ankle - hip;
             leg.anim_contact = ankle;
             leg.anim_hip = hip;
-            fold_pose(chain, thigh, leg.shin, leg);
+            fold_pose(&mut drive.targets, thigh, leg.shin, leg);
         }
     }
 

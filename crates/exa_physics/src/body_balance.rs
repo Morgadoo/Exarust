@@ -223,6 +223,11 @@ pub struct Leg {
     /// reads them before the corrections are folded in.
     pub(super) anim_contact: Vec3,
     pub(super) anim_hip: Vec3,
+    /// The clip's hip and ankle as the sampler's IK step recorded them, in
+    /// the sampled chain's frame (the body root's), until the next aim puts
+    /// them in the world after its carry. None when no sample folded this
+    /// tick's pose.
+    pub(super) sampled_clip: Option<(Vec3, Vec3)>,
     /// The bend target last solved (m).
     pub(super) goal: Vec3,
     /// The unsmoothed knee of the reach triangle (rad).
@@ -642,6 +647,7 @@ pub(super) fn build(setup: &[PartSetup], parts: &mut [Part]) -> (Vec<Pin>, Vec<L
             posed_offset: Vec3::ZERO,
             anim_contact: at,
             anim_hip,
+            sampled_clip: None,
             goal: Vec3::ZERO,
             reach_knee: 0.0,
             contact_lag: 0.0,
