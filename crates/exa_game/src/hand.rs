@@ -201,6 +201,12 @@ impl Hand {
         }
     }
 
+    /// Whether some interaction holds the cursor: any drag, lift, mechanism
+    /// or refusal (the original's drag-state word is not zero).
+    pub fn interacting(&self) -> bool {
+        self.holding != Holding::Nothing
+    }
+
     /// Whether the frame's movement request is left as it was: while a
     /// press is refused or a lift holds the cursor.
     pub fn keeps_the_request(&self) -> bool {
@@ -1980,9 +1986,10 @@ mod tests {
     #[test]
     fn a_refused_press_keeps_the_request_and_shows_the_cross() {
         let mut hand = Hand::default();
+        assert!(!hand.interacting());
         assert!(!hand.keeps_the_request() && !hand.refused());
         hand.holding = Holding::Refused;
-        assert!(hand.keeps_the_request() && hand.refused());
+        assert!(hand.interacting() && hand.keeps_the_request() && hand.refused());
         hand.holding = Holding::Lift;
         assert!(hand.keeps_the_request() && !hand.refused());
         // A door's drag leaves the request to the keys.
