@@ -147,8 +147,8 @@ pub fn program_bindings(flags: &Flags, lights: usize) -> ProgramBindings {
         next += 1;
     }
     if material & sampler::DIRT != 0 {
-        // The dirt map does not advance the counter: it takes the number
-        // after the height map's, which the next test also uses.
+        // The last packed map; the engine still advances its counter, which
+        // nothing reads after it.
         units.dirt = Some(next);
     }
     if material & sampler::LIT != 0 {
@@ -184,37 +184,37 @@ pub fn program_bindings(flags: &Flags, lights: usize) -> ProgramBindings {
     }
 }
 
-/// How many floats of the `SdwSmp` array a sub-frame uploads, and where in
-/// the table its first tap is.
+/// How many `vec3` taps of the `SdwSmp` array a sub-frame uploads, and
+/// where in the tap table its first one is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ShadowSampleUpload {
-    /// The first tap's index in the table (three floats a tap).
+    /// The first tap's index in the table (each tap is three floats).
     pub first_tap: usize,
-    /// The number of floats written.
-    pub floats: usize,
+    /// The number of `vec3` taps written (the upload's element count).
+    pub taps: usize,
 }
 
 /// The `SdwSmp` window of a sub-frame.
 ///
 /// A super-sampled program (`object & 0x1000`) keeps four taps per output
 /// pixel and uploads all four; a plain one uploads the frame's taps. The
-/// window starts at the pass's own taps, three floats apart. A program with
-/// no tap still uploads one entry (four in quad mode), as the original's
-/// count clamp does.
+/// window starts at the pass's own taps (`pass · taps per pass`). A program
+/// with no tap still uploads one entry (four in quad mode), as the
+/// original's count clamp does.
 pub fn shadow_sample_upload(
     shadow_samples: u32,
     quad_render: bool,
     pass: u32,
 ) -> ShadowSampleUpload {
-    let first_tap = (pass.wrapping_mul(shadow_samples)).wrapping_mul(3) as usize;
-    let floats = if shadow_samples < 1 {
+    let first_tap = pass.wrapping_mul(shadow_samples) as usize;
+    let taps = if shadow_samples < 1 {
         if quad_render { 4 } else { 1 }
     } else if quad_render {
         (shadow_samples as usize) << 2
     } else {
         shadow_samples as usize
     };
-    ShadowSampleUpload { first_tap, floats }
+    ShadowSampleUpload { first_tap, taps }
 }
 
 #[cfg(test)]
@@ -273,7 +273,7 @@ mod tests {
     }
 
     #[test]
-    fn the_dirt_map_reuses_the_height_units_number() {
+    fn the_dirt_map_takes_the_unit_after_the_height_map() {
         let f = flags(0x7 | 0x20_000 | 0x80_0000 | 0x800_0000, 0, 0, 0);
         let b = program_bindings(&f, 0);
         assert_eq!(b.units.diffuse, Some(0));
@@ -365,17 +365,17 @@ mod tests {
             plain,
             ShadowSampleUpload {
                 first_tap: 0,
-                floats: 2
+                taps: 2
             }
         );
         let second = shadow_sample_upload(2, false, 1);
-        assert_eq!(second.first_tap, 6);
+        assert_eq!(second.first_tap, 2);
         let quad = shadow_sample_upload(2, true, 0);
-        assert_eq!(quad.floats, 8);
+        assert_eq!(quad.taps, 8);
         let quad_later = shadow_sample_upload(2, true, 3);
-        assert_eq!(quad_later.first_tap, 18);
+        assert_eq!(quad_later.first_tap, 6);
         // A program with no taps uploads one entry, four in quad mode.
-        assert_eq!(shadow_sample_upload(0, false, 0).floats, 1);
-        assert_eq!(shadow_sample_upload(0, true, 0).floats, 4);
+        assert_eq!(shadow_sample_upload(0, false, 0).taps, 1);
+        assert_eq!(shadow_sample_upload(0, true, 0).taps, 4);
     }
 }
