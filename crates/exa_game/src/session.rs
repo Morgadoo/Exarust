@@ -523,13 +523,14 @@ pub fn read_package(package: &PackageImage) -> Result<Session, SaveError> {
             })
             .collect();
         // A save without any arena table (one written before the tables
-        // were filled) carries none, rather than the reader's defaults.
+        // were filled) carries none, rather than the reader's defaults; so
+        // does one whose tables the model cannot write back byte for byte,
+        // whose chunks a later save then carries through unchanged.
         if chunks
             .iter()
             .any(|chunk| arena_save::is_table_chunk(chunk.id))
-            && let Ok(tables) = arena_save::read_tables(&chunks)
         {
-            session.arena_tables = Some(tables);
+            session.arena_tables = arena_save::read_tables_exact(&chunks);
         }
     }
     Ok(session)

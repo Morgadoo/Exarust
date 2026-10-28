@@ -730,6 +730,30 @@ pub fn is_table_chunk(id: u32) -> bool {
     )
 }
 
+/// Decode the arena tables only when writing them back reproduces the
+/// save's table chunks byte for byte (in any order). A save holding a
+/// table this model cannot rebuild exactly gives `None`, so whoever writes
+/// over it carries the original chunks through unchanged instead of a
+/// re-encoding that would lose what the model does not keep.
+pub fn read_tables_exact(chunks: &[Chunk<'_>]) -> Option<ArenaTables> {
+    let tables = read_tables(chunks).ok()?;
+    let mut encoded = Vec::new();
+    tables.write(&mut encoded);
+    let rebuilt = crate::save_package::parse_chunks(&encoded).ok()?;
+    let mut saved: Vec<(u32, &[u8])> = chunks
+        .iter()
+        .filter(|chunk| is_table_chunk(chunk.id))
+        .map(|chunk| (chunk.id, chunk.payload))
+        .collect();
+    let mut written: Vec<(u32, &[u8])> = rebuilt
+        .iter()
+        .map(|chunk| (chunk.id, chunk.payload))
+        .collect();
+    saved.sort_unstable();
+    written.sort_unstable();
+    (saved == written).then_some(tables)
+}
+
 /// Decode the arena chunks a save carries. Unknown ids are ignored; a
 /// missing always-written chunk leaves its default.
 pub fn read_tables(chunks: &[Chunk<'_>]) -> Result<ArenaTables, ArenaSaveError> {
@@ -828,6 +852,40 @@ impl ArenaLists {
 mod tests {
     use super::*;
     use crate::save_package::{parse_chunks, write_chunk};
+
+    #[test]
+    fn exact_table_reads_refuse_what_they_cannot_rebuild() {
+        let tables = ArenaTables {
+            shop_stock: vec![5, 6],
+            hireables: 0u32.to_le_bytes().to_vec(),
+            ..Default::default()
+        };
+        let mut out = Vec::new();
+        tables.write(&mut out);
+        let chunks = parse_chunks(&out).unwrap();
+        // The writer's own chunks come back, and write the same bytes.
+        let back = read_tables_exact(&chunks).expect("an exact read");
+        let mut again = Vec::new();
+        back.write(&mut again);
+        assert_eq!(again, out);
+        // A table chunk with trailing bytes the model drops is refused.
+        let mut padded = Vec::new();
+        for chunk in &chunks {
+            let mut payload = chunk.payload.to_vec();
+            if chunk.id == SHOP_STOCK_CHUNK {
+                payload.extend_from_slice(&[9, 9, 9, 9]);
+            }
+            write_chunk(&mut padded, chunk.id, &payload);
+        }
+        assert!(read_tables_exact(&parse_chunks(&padded).unwrap()).is_none());
+        // So is a save missing an always-written table.
+        let short: Vec<_> = chunks
+            .iter()
+            .copied()
+            .filter(|chunk| chunk.id != HIREABLES_CHUNK)
+            .collect();
+        assert!(read_tables_exact(&short).is_none());
+    }
 
     #[test]
     fn a_company_round_trips_through_its_chunk() {

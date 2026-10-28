@@ -667,6 +667,36 @@ mod tests {
             );
             assert!(lit.sun.is_none() && !lit.sky && lit.fog.is_none(), "{name}");
         }
+        // Every indoor level keeps the picture it had before the presets
+        // were applied at a load: the same ambient, background, sun and fog.
+        let mut indoor = 0;
+        for entry in pack.entries() {
+            let name = entry.name.to_ascii_lowercase();
+            let Some(stem) = name.strip_suffix(".rfc") else {
+                continue;
+            };
+            if level_preset(stem) != LevelPreset::Indoor {
+                continue;
+            }
+            let Some(bytes) = pack.get(&entry.name) else {
+                continue;
+            };
+            let Ok(scene) = exa_formats::rfc::Scene::parse(bytes) else {
+                continue;
+            };
+            indoor += 1;
+            // The light count only decides a record level's "auto" sun.
+            let plain = level_lighting(stem, scene.environment.as_ref(), 0);
+            let preset = level_lighting_preset(
+                stem,
+                scene.environment.as_ref(),
+                0,
+                None,
+                Some(PresetInput::default()),
+            );
+            assert_eq!(preset, plain, "{stem}");
+        }
+        assert!(indoor >= 7, "{indoor} indoor levels");
         for number in 1..=5 {
             let name = format!("arenao{number}");
             let bytes = pack
