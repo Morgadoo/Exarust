@@ -287,6 +287,20 @@ impl PowerCaster {
         Some(caster)
     }
 
+    /// What the armour pass's worn specials do to the caster's body: the
+    /// item word's power-refusing bit is cleared and set again by a mind
+    /// ward (special kind 5), and the focus regeneration bonus becomes the
+    /// focus charm's (kind 7) or 0. The ward also tells every power running
+    /// on the body to end; a body is given its caster at spawn, when none
+    /// runs yet.
+    pub fn apply_worn(&mut self, specials: &exa_formats::encumbrance::WornSpecials) {
+        self.body.item_flags &= !super::tree::ITEM_REFUSES_POWERS;
+        if specials.mind_ward {
+            self.body.item_flags |= super::tree::ITEM_REFUSES_POWERS;
+        }
+        self.body.regen_bonus = specials.focus_regen;
+    }
+
     /// Grants a power as the game's grant routine does: the record must
     /// hold Insight's seventh technique and the power's node must have a
     /// learnt prerequisite in `nodes`, after which the pair carries

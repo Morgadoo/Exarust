@@ -1361,3 +1361,27 @@ fn a_long_door_root_lands_in_metres_above_the_floor() {
         "{root:?}"
     );
 }
+
+/// A mind ward refuses the caster's powers and a focus charm sets its
+/// regeneration bonus; without them both are cleared.
+#[test]
+fn worn_specials_ward_the_caster_and_quicken_its_focus() {
+    let mut caster = PowerCaster::new(&[0x201]);
+    let worn = exa_formats::encumbrance::WornSpecials {
+        mind_ward: true,
+        focus_regen: exa_formats::encumbrance::FOCUS_CHARM_REGEN,
+        ..Default::default()
+    };
+    caster.apply_worn(&worn);
+    assert_eq!(
+        caster.body.item_flags & crate::thaum::tree::ITEM_REFUSES_POWERS,
+        crate::thaum::tree::ITEM_REFUSES_POWERS
+    );
+    assert_eq!(caster.body.regen_bonus.to_bits(), 0x38d2_8eb4);
+    caster.apply_worn(&Default::default());
+    assert_eq!(
+        caster.body.item_flags & crate::thaum::tree::ITEM_REFUSES_POWERS,
+        0
+    );
+    assert_eq!(caster.body.regen_bonus, 0.0);
+}

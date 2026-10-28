@@ -8,9 +8,11 @@
 //! counters on the body then lose one each while they are above one.
 //!
 //! The registrations that feed the list:
-//! - **The charge** ([`register_charge`], [`charge_tick`]): a held item is
-//!   given the charge tick when the body's flag word has
-//!   [`HELD_EFFECTS_BIT`]. While the item record's kind (low five bits) is
+//! - **The charge** ([`register_charge`], [`charge_tick`]): a worn healing
+//!   item (special kind 3, the armour pass's registration) is given the
+//!   charge tick when the body's rule word has [`HELD_EFFECTS_BIT`] (it
+//!   takes remedies); the accumulator is the body's lasting (red) health
+//!   and the source its maximum. While the item record's kind (low five bits) is
 //!   2 and its counter byte is below 0xff, the body's accumulator gains
 //!   `source·0.004`; while that stays at or under the source the player's
 //!   HUD is shown for 1000 ms and the counter byte advances, and once it
@@ -36,6 +38,14 @@
 //! - **The focus item** ([`focus_slot`]): an item whose power record names
 //!   effect 4 in either hand sets the body's slot word to 0x100 (and any
 //!   other word to 0); when the bit goes the power tree is refreshed.
+//!
+//! The list runs once a second of game time ([`WornEffects::run`]): the
+//! body tick, right after its focus tick, runs it when the game clock has
+//! passed the stored clock, and stores the clock plus 1000 ms; a body with
+//! an empty list instead clears its two impact counters. [`WornEffects`]
+//! is the list the armour pass fills from a spawned body's worn items,
+//! wired to the scene bodies and the level's placed characters
+//! ([`run_worn_effects`]).
 //!
 //! The material fades ([`fade_material`]) write the first skin material
 //! whose parameter word matches: the square of the value, and the material
@@ -501,6 +511,131 @@ impl EffectList {
     }
 }
 
+/// Game milliseconds between two runs of a body's effect list (1000).
+pub const EFFECT_PERIOD_MS: u32 = 1000;
+
+/// A spawned body's item effects: its list, the crystal bytes of the worn
+/// items that registered them, and the game clock past which the list next
+/// runs. The original keeps each item's bytes in the item record itself;
+/// Exarust keeps the body's copy, so a charge spent here is not written
+/// back to the item database.
+#[derive(bevy::prelude::Component, Debug, Clone, Default, PartialEq)]
+pub struct WornEffects {
+    pub list: EffectList,
+    pub items: Vec<exa_formats::encumbrance::EffectItem>,
+    pub next_run_ms: u32,
+}
+
+/// What one run of a body's list did, for the caller to apply.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct EffectRun {
+    /// The list ran this tick.
+    pub ran: bool,
+    /// The healing ticks advanced a charge (the player's HUD would show
+    /// for [`CHARGE_HUD_MS`]).
+    pub flash: bool,
+}
+
+impl WornEffects {
+    /// The armour pass's registrations for `specials` on a body whose rule
+    /// word is `rules`, in wearing order: a healing item (kind 3) only when
+    /// the rules take remedies ([`register_charge`]), a golem suit (4) the
+    /// worn tick, gauntlets (6) the apparel tick; an item already in the
+    /// list is not added twice. `None` when nothing registers.
+    pub fn of_specials(
+        specials: &exa_formats::encumbrance::WornSpecials,
+        rules: u32,
+    ) -> Option<Self> {
+        use exa_formats::objdb::Burden;
+        let mut effects = Self::default();
+        for item in &specials.effects {
+            let kind = match item.special {
+                Burden::HEALING if register_charge(rules) => EffectTick::Charge,
+                Burden::GOLEM_SUIT => EffectTick::Worn,
+                Burden::LIGHT_SHIELD => EffectTick::Apparel,
+                _ => continue,
+            };
+            let id = item.id as i32;
+            if effects.list.entries.iter().all(|entry| entry.id != id) {
+                effects.list.attach(id, kind);
+                effects.items.push(*item);
+            }
+        }
+        (!effects.list.entries.is_empty()).then_some(effects)
+    }
+
+    /// One body tick: when the game clock `now_ms` is past the stored clock
+    /// (an unsigned compare), the clock becomes `now_ms` + 1000 and the
+    /// list runs, or with an empty list the impact counters are cleared.
+    /// A healing entry heals `red` toward `max` ([`charge_tick`]); the
+    /// worn and apparel entries step their items' bytes ([`step_worn`],
+    /// [`step_apparel`]), their light and garment switches having no
+    /// drawing counterpart yet. Every entry stays: a worn item does not
+    /// leave a spawned body.
+    pub fn run(&mut self, now_ms: u32, red: &mut f32, max: f32, is_player: bool) -> EffectRun {
+        let mut outcome = EffectRun::default();
+        if self.next_run_ms >= now_ms {
+            return outcome;
+        }
+        self.next_run_ms = now_ms.wrapping_add(EFFECT_PERIOD_MS);
+        if self.list.entries.is_empty() {
+            self.list.impacts = [0.0; 2];
+            return outcome;
+        }
+        outcome.ran = true;
+        let impacts = self.list.impacts;
+        let items = &mut self.items;
+        self.list.tick(|entry| {
+            let Some(item) = items.iter_mut().find(|item| item.id as i32 == entry.id) else {
+                return false;
+            };
+            let kind = u16::from(item.power_flags);
+            match entry.kind {
+                EffectTick::Charge => {
+                    if let Some(step) = charge_tick(*red, max, kind, &mut item.charge, is_player) {
+                        *red = step.value;
+                        outcome.flash |= step.flash;
+                    }
+                }
+                EffectTick::Worn => {
+                    step_worn(kind, &mut item.charge, false, 0.0, impacts);
+                }
+                EffectTick::Apparel => {
+                    let value = part_glow(kind, item.charge);
+                    step_apparel(kind, &mut item.charge, value, impacts[1]);
+                }
+                EffectTick::Hand(_) => {}
+            }
+            true
+        });
+        outcome
+    }
+}
+
+/// Runs every spawned body's worn effects once a fixed tick, after the
+/// health bookkeeping and before the character ticks (the original runs the
+/// list from the body tick right after the focus tick [guess: Exarust's
+/// body tick has no such slot, so the run sits with the health tick]):
+/// a healing item heals the fighter's red health.
+pub fn run_worn_effects(
+    ticks: Option<bevy::prelude::Res<exa_physics::body::BodyTicks>>,
+    mut bodies: bevy::prelude::Query<(
+        &mut WornEffects,
+        &mut exa_combat::Fighter,
+        bevy::prelude::Has<crate::player::PlayerBody>,
+    )>,
+) {
+    let now_ms = ticks.as_ref().map_or(0, |t| t.millis() as u32);
+    for (mut effects, mut fighter, is_player) in &mut bodies {
+        let max = fighter.health.max;
+        let mut red = fighter.health.red;
+        let run = effects.run(now_ms, &mut red, max, is_player);
+        if run.ran && red.to_bits() != fighter.health.red.to_bits() {
+            fighter.health.red = red;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -728,5 +863,138 @@ mod tests {
         assert_eq!(list.impacts, [0.5, 0.5]);
         list.attach(1, EffectTick::Worn);
         assert_eq!(list.entries.len(), 3);
+    }
+
+    fn specials(items: &[(u8, u32, u8, u8)]) -> exa_formats::encumbrance::WornSpecials {
+        exa_formats::encumbrance::WornSpecials {
+            effects: items
+                .iter()
+                .map(
+                    |&(special, id, power_flags, charge)| exa_formats::encumbrance::EffectItem {
+                        special,
+                        id,
+                        power_flags,
+                        charge,
+                    },
+                )
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    /// The armour pass registers a healing item only on a body that takes
+    /// remedies (rule bit 2), the suit's and the gauntlets' ticks on any,
+    /// each item once, in wearing order.
+    #[test]
+    fn the_armour_pass_registers_worn_effects() {
+        use exa_formats::objdb::Burden;
+        let worn = specials(&[
+            (Burden::GOLEM_SUIT, 5, 1, 0),
+            (Burden::HEALING, 7, 2, 0),
+            (Burden::LIGHT_SHIELD, 9, 1, 0),
+            (Burden::HEALING, 7, 2, 0),
+        ]);
+        let effects = WornEffects::of_specials(&worn, HELD_EFFECTS_BIT).unwrap();
+        let kinds: Vec<_> = effects
+            .list
+            .entries
+            .iter()
+            .map(|e| (e.id, e.kind))
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![
+                (5, EffectTick::Worn),
+                (7, EffectTick::Charge),
+                (9, EffectTick::Apparel)
+            ]
+        );
+        assert_eq!(effects.items.len(), 3);
+        let creature = WornEffects::of_specials(&worn, 0x1).unwrap();
+        assert!(
+            creature
+                .list
+                .entries
+                .iter()
+                .all(|e| e.kind != EffectTick::Charge)
+        );
+        let mask = specials(&[(Burden::HEALING, 7, 2, 0)]);
+        assert!(WornEffects::of_specials(&mask, 0x1).is_none());
+        assert!(WornEffects::of_specials(&Default::default(), 2).is_none());
+    }
+
+    /// The list runs once the clock is past the stored one, then waits
+    /// 1000 ms; a healing mask heals red by 0.004 of the maximum a run (in
+    /// double) and spends a charge, and is held at the maximum without
+    /// spending one.
+    #[test]
+    fn a_healing_mask_heals_once_a_second() {
+        use exa_formats::objdb::Burden;
+        let mask = specials(&[(Burden::HEALING, 7, 2, 0)]);
+        let mut effects = WornEffects::of_specials(&mask, HELD_EFFECTS_BIT).unwrap();
+        let mut red = 0.1f32;
+        assert!(!effects.run(0, &mut red, 0.25, false).ran);
+        let run = effects.run(12, &mut red, 0.25, true);
+        assert!(run.ran && run.flash);
+        assert_eq!(red, (0.1f32 as f64 + 0.25f32 as f64 * 0.004) as f32);
+        assert_eq!(effects.items[0].charge, 1);
+        assert_eq!(effects.next_run_ms, 1012);
+        assert!(!effects.run(1012, &mut red, 0.25, false).ran);
+        assert!(effects.run(1013, &mut red, 0.25, false).ran);
+        assert_eq!(effects.items[0].charge, 2);
+        let mut full = 0.2495f32;
+        effects.run(3000, &mut full, 0.25, true);
+        assert_eq!(full, 0.25);
+        assert_eq!(effects.items[0].charge, 2);
+        // A spent crystal (0xFF) or a record kind other than 2 heals nothing.
+        effects.items[0].charge = 0xff;
+        let mut low = 0.1f32;
+        effects.run(5000, &mut low, 0.25, false);
+        assert_eq!(low, 0.1);
+        let other = specials(&[(Burden::HEALING, 7, 1, 0)]);
+        let mut other = WornEffects::of_specials(&other, HELD_EFFECTS_BIT).unwrap();
+        other.run(12, &mut low, 0.25, false);
+        assert_eq!(low, 0.1);
+    }
+
+    /// A body with an empty list clears its impact counters when its run
+    /// is due, and runs nothing.
+    #[test]
+    fn an_empty_list_clears_the_impacts() {
+        let mut effects = WornEffects::default();
+        effects.list.impacts = [3.0, 2.0];
+        let mut red = 0.1;
+        assert!(!effects.run(5, &mut red, 0.25, false).ran);
+        assert_eq!(effects.list.impacts, [0.0, 0.0]);
+        assert_eq!(effects.next_run_ms, 1005);
+    }
+
+    /// The fixed-tick system heals a spawned fighter wearing a healing mask.
+    #[test]
+    fn the_system_heals_the_fighters_red_health() {
+        use bevy::prelude::*;
+        use exa_formats::objdb::Burden;
+        let mut app = App::new();
+        app.insert_resource(exa_physics::body::BodyTicks(10));
+        app.add_systems(Update, run_worn_effects);
+        let mut fighter = exa_combat::Fighter::default();
+        fighter.health.max = 0.25;
+        fighter.health.red = 0.1;
+        let mask = specials(&[(Burden::HEALING, 7, 2, 0)]);
+        let body = app
+            .world_mut()
+            .spawn((
+                fighter,
+                WornEffects::of_specials(&mask, HELD_EFFECTS_BIT).unwrap(),
+            ))
+            .id();
+        app.update();
+        let red = app
+            .world()
+            .get::<exa_combat::Fighter>(body)
+            .unwrap()
+            .health
+            .red;
+        assert_eq!(red, (0.1f32 as f64 + 0.25f32 as f64 * 0.004) as f32);
     }
 }

@@ -414,8 +414,15 @@ is under its source), the hand-effect dispatch (electric, glow, flame), the
 power-curve glow with its level step, the worn item's light and the apparel
 effect with their 0.9/0.1 hysteresis, the skin material fade (the square of
 the value, first match) and the focus-item power slot. The golem guardians
-are in `exa_ai::golem`. Nothing spawns a golem or dresses a character from
-these yet.
+are in `exa_ai::golem`. A spawned body (the scene bodies, the arena's
+fighters and a level's placed characters) gets the list its worn items
+register (`item_effects::WornEffects`, from the armour pass's
+`exa_formats::encumbrance::WornSpecials`): a healing item on a body that
+takes remedies heals its red health by 0.004 of the maximum each second of
+game time and spends a charge; the golem suit's and gauntlets' ticks step
+their bytes but have no drawn light or garment switch. A worn mind ward
+also sets the caster's power-refusing bit and a focus charm its focus
+regeneration bonus (`thaum::cast::PowerCaster::apply_worn`).
 
 It already runs the character ticks of physical bodies, the player's last,
 each body's whole tick before the next, in the original's stages

@@ -1288,7 +1288,7 @@ fn spawn_players(
                 commands.entity(foe).insert(job);
             }
             if let Some(options) = practice.as_ref() {
-                insert_duel_powers(commands, foe, &options.record);
+                insert_duel_powers(commands, foe, &options.record, &Default::default());
             }
         }
     }
@@ -1308,7 +1308,7 @@ fn spawn_players(
             hands: [const { None }; exa_formats::characters::HANDS],
             record: exa_formats::characters::CharacterRecord::reset(),
             encumbrance: 0.0,
-            second_wind: false,
+            specials: Default::default(),
             pose: exa_formats::characters::SavedPose::None,
             fall: true,
         })
@@ -1346,10 +1346,12 @@ fn insert_duel_powers(
     commands: &mut Commands,
     fighter: Entity,
     record: &exa_formats::characters::CharacterRecord,
+    specials: &exa_formats::encumbrance::WornSpecials,
 ) {
-    let Some(caster) = exa_game::thaum::cast::PowerCaster::of_character(record) else {
+    let Some(mut caster) = exa_game::thaum::cast::PowerCaster::of_character(record) else {
         return;
     };
+    caster.apply_worn(specials);
     if caster.known.is_empty() {
         return;
     }
@@ -2206,7 +2208,7 @@ fn spawn_placed_characters(
                 let mut fighter =
                     exa_combat::Fighter::of_stats(race, stats).with_perks(c.record.perks());
                 // A worn item of special kind 2 grants the second wind.
-                fighter.second_wind.granted = c.second_wind;
+                fighter.second_wind.granted = c.specials.second_wind;
                 fighter
             },
             // What it holds, wears and carries, as its record keeps it.
@@ -2252,6 +2254,15 @@ fn spawn_placed_characters(
             });
         }
         if !c.dead {
+            // The armour pass's item effects and mind ward.
+            if let Some(effects) =
+                exa_game::item_effects::WornEffects::of_specials(&c.specials, stats.rules.0)
+            {
+                commands.entity(model).insert(effects);
+            }
+            if c.specials.mind_ward {
+                commands.entity(model).insert(exa_ai::brain::MindWarded);
+            }
             commands.entity(model).insert((
                 exa_ai::roles::Roles::of_record(&c.record, placing.book),
                 exa_ai::roles::Relations::default(),
@@ -2264,7 +2275,7 @@ fn spawn_placed_characters(
                     exa_ai::Mind::new(0.0),
                     exa_ai::Duellist::new(placing.player),
                 ));
-                insert_duel_powers(commands, model, &c.record);
+                insert_duel_powers(commands, model, &c.record, &c.specials);
             }
         }
         spawned += 1;

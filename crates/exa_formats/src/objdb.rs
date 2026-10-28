@@ -205,6 +205,12 @@ pub struct Burden {
     /// Its power crystal is in and not spent (flag word bit 0 set, charge
     /// byte not 0xFF): a golem suit runs, the gauntlets lighten the shield.
     pub powered: bool,
+    /// The power flag byte itself: bit 0 a crystal is in; the healing tick
+    /// reads its low five bits as the record kind (2 heals).
+    pub power_flags: u8,
+    /// The crystal's charge byte: each step of an item effect advances it,
+    /// 0xFF is spent.
+    pub charge: u8,
 }
 
 impl Burden {
@@ -214,10 +220,21 @@ impl Burden {
     /// A worn item that grants its wearer a second wind at low health (the
     /// armour pass sets the character's second-wind flag for it).
     pub const SECOND_WIND: u8 = 2;
+    /// A worn item that heals its wearer's lasting (red) health while its
+    /// crystal holds charge (the healing mask): the armour pass registers
+    /// its healing tick on a body that takes remedies.
+    pub const HEALING: u8 = 3;
     /// The golem suit: unpowered, it adds 2 to its wearer's encumbrance.
     pub const GOLEM_SUIT: u8 = 4;
+    /// A worn item that wards its wearer's mind (the null helm): other
+    /// minds perceive it as masked, its own powers are refused, and every
+    /// power running on it ends.
+    pub const MIND_WARD: u8 = 5;
     /// Gauntlets that make a held shield weightless while powered.
     pub const LIGHT_SHIELD: u8 = 6;
+    /// A worn item that quickens its wearer's focus regeneration (the
+    /// spirit necklace).
+    pub const FOCUS_CHARM: u8 = 7;
 
     /// The burden of an item body; bytes past its end read as zero.
     pub fn parse(body: &[u8]) -> Self {
@@ -235,6 +252,8 @@ impl Burden {
             set: word(SET_OFFSET),
             special: byte(SPECIAL_OFFSET),
             powered: byte(POWER_FLAGS_OFFSET) & POWERED != 0 && byte(CHARGE_OFFSET) != SPENT,
+            power_flags: byte(POWER_FLAGS_OFFSET),
+            charge: byte(CHARGE_OFFSET),
         }
     }
 }
