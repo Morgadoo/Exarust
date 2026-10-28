@@ -294,6 +294,14 @@ pub fn saved_chunks(blob: &[u8]) -> SavedChunks<'_> {
 /// by: `65537 / 2^32`, as a double. It is not exactly `1 / 65536`.
 pub const SIZE_WORD_SCALE: f64 = 1.525_902_189_669_642_2e-05;
 
+/// The two size words a streamed character's record holds, defaulted as its
+/// builder does: when the second word is zero both become `0xFFFF`. With
+/// [`SIZE_WORD_SCALE`] that pair scales to exactly one, so an unset pair is
+/// the body's own size.
+pub fn normalised_size_words(words: [u16; 2]) -> [u16; 2] {
+    if words[1] == 0 { [u16::MAX; 2] } else { words }
+}
+
 /// One of the character's two stored size words, scaled by the body's base
 /// scale for its scale field: the stored word widened to double, times
 /// [`SIZE_WORD_SCALE`], times the base scale, narrowed to single precision
@@ -304,6 +312,57 @@ pub const SIZE_WORD_SCALE: f64 = 1.525_902_189_669_642_2e-05;
 /// traced here. **[guess: the word pair is the body's two size words]**
 pub fn stored_size_scale(base: f32, stored: u16) -> f32 {
     (f64::from(base) * (f64::from(stored) * SIZE_WORD_SCALE)) as f32
+}
+
+/// The character's two scale fields in the order the builder writes them:
+/// the second word's scale first, then the first word's. A pair whose
+/// second word is zero first takes the `0xFFFF` default.
+pub fn character_scales(base: f32, words: [u16; 2]) -> (f32, f32) {
+    let [first, second] = normalised_size_words(words);
+    (
+        stored_size_scale(base, second),
+        stored_size_scale(base, first),
+    )
+}
+
+/// The stream request flags the character builder reads: bit `0x2000` marks
+/// the built character's node with its own bit `0x1000`;
+/// bit `0x1000` says the character keeps its saved AI state and starts no
+/// AI of its own.
+pub const MARK_NODE: u32 = 0x2000;
+pub const KEEP_SAVED_AI: u32 = 0x1000;
+/// The node flag [`MARK_NODE`] sets.
+pub const NODE_MARK: u32 = 0x1000;
+
+/// The character node word for a request: the request's [`MARK_NODE`] adds
+/// [`NODE_MARK`] to the node's own word.
+pub fn character_node_flags(node: u32, request: u32) -> u32 {
+    if request & MARK_NODE != 0 {
+        node | NODE_MARK
+    } else {
+        node
+    }
+}
+
+/// A character's saved AI state, which the builder restores into the
+/// controller when the request does not set [`KEEP_SAVED_AI`]: a position
+/// and a facing.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SavedAiPose {
+    pub position: [f32; 3],
+    pub heading: f32,
+}
+
+/// Reads the 16 bytes a character request keeps for its saved AI state: the
+/// position as three floats, then a heading float. Any shorter input has no
+/// pose, and the builder starts the AI from its own state instead.
+pub fn saved_ai_pose(bytes: &[u8]) -> Option<SavedAiPose> {
+    let bytes: &[u8; 16] = bytes.get(..16)?.try_into().ok()?;
+    let float = |at: usize| f32::from_le_bytes(bytes[at..at + 4].try_into().expect("4 bytes"));
+    Some(SavedAiPose {
+        position: [float(0), float(4), float(8)],
+        heading: float(12),
+    })
 }
 
 /// The builders the scheduler calls. The original's stream thread calls into
@@ -1503,6 +1562,45 @@ mod tests {
         assert_eq!(stored_size_scale(0.5, 32768), 0.250_003_8);
         // NaN propagates through the double multiply.
         assert!(stored_size_scale(f32::NAN, 1).is_nan());
+    }
+
+    /// A zero second size word means "unset": both become 0xFFFF, whose
+    /// scale is exactly one, and the builder writes the second word's field
+    /// before the first's.
+    #[test]
+    fn an_unset_size_pair_defaults_to_full_and_scales_to_one() {
+        assert_eq!(normalised_size_words([0x8000, 0]), [0xFFFF, 0xFFFF]);
+        assert_eq!(
+            normalised_size_words([0x8000, 0x4000]),
+            [0x8000, 0x4000],
+            "a set pair stays"
+        );
+        // 65535 × 65537 / 2^32 is 1 − 2^-32, which rounds to exactly 1.
+        assert_eq!(character_scales(1.0, [0, 0]), (1.0, 1.0));
+        let (second, first) = character_scales(2.0, [32768, 65535]);
+        assert_eq!(second, 2.0);
+        assert_eq!(first, 1.000_015_3);
+    }
+
+    /// The request's 0x2000 marks the node with 0x1000; 0x1000 says the
+    /// saved AI state stays, and its 16 bytes are three floats and a
+    /// heading.
+    #[test]
+    fn the_character_request_flags_mark_the_node_and_keep_the_saved_ai() {
+        assert_eq!(character_node_flags(0x40, 0), 0x40);
+        assert_eq!(character_node_flags(0x40, MARK_NODE), 0x1040);
+        assert_eq!(character_node_flags(0x1000, MARK_NODE), 0x1000);
+        assert_ne!(MARK_NODE, KEEP_SAVED_AI);
+        assert_eq!(NODE_MARK, 0x1000);
+        let mut bytes = Vec::new();
+        for value in [1.5f32, -2.0, 300.0, 0.25] {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        let pose = saved_ai_pose(&bytes).unwrap();
+        assert_eq!(pose.position, [1.5, -2.0, 300.0]);
+        assert_eq!(pose.heading, 0.25);
+        assert_eq!(saved_ai_pose(&bytes[..15]), None);
+        assert_eq!(saved_ai_pose(&[]), None);
     }
 
     /// The placed object's root node takes only the object's own flags
