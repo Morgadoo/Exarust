@@ -60,6 +60,7 @@ pub mod help_screen;
 pub mod help_system;
 pub mod hud;
 pub mod hud_extra;
+pub mod hud_status;
 pub mod icon_atlas;
 pub mod item_view;
 pub mod line_skin;
@@ -324,6 +325,7 @@ impl Plugin for UiPlugin {
             cursor::plugin,
             hud::plugin,
             hud_extra::plugin,
+            hud_status::plugin,
             heartbeat::plugin,
             fade::plugin,
             gui_draw::GuiDrawPlugin,

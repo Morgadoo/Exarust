@@ -19,7 +19,11 @@ its shape), the health and focus bars with their fade and the stamina gauge
 (`hud`, framed with `guitex.rfi`; `HudShowUntil` holds the bars shown, as
 a click on the player's own body does for 5000 ms), the compass's turned
 square from `compass.rfi` (`hud_extra`; the game crate shows it while the
-player carries a compass and passes the camera's backward axis), the low-health heartbeat's border
+player carries a compass and passes the camera's backward axis), the
+power marker and skill-ready alert (`hud_status`: the skill-icon atlas's
+first cell on a rounded black halo, tinted or outlined at the shared
+pulse, rasterised through `gui_draw` into canvases the size of the halo;
+the game crate says which shows), the low-health heartbeat's border
 (`heartbeat`; the game crate starts it), the fade to black of the
 player's fall to death (`fade`, `DeathFade`: 3 s of game time, under the
 bars; the game crate starts it), and gamma-space compositing for images
@@ -432,7 +436,10 @@ alpha), both scrollbars and their setters, the wheel, held arrows and
 thumb drags, the point conversions rounded with `CVTSS2SI`, the hit test
 (client, children, then records exactly and within two units), hover,
 focus, caret, Tab, the key/press/drag routes, the frame codes a press,
-grip drag and release act on, the snap slots and the records' rescale.
+grip drag and release act on, the snap slots and the records' rescale,
+the maximise and restore steps with the window-state hook's words, the
+close cascade over owned popups and children, and the control table's
+copy.
 
 `game_gui` is the in-game unit's non-drawing half: the screens' tags
 (0xce1c2010 inventory, 0xce1c2040 loot window, 0xce1c2030 journal), the

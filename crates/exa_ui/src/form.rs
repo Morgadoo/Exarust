@@ -790,6 +790,24 @@ pub fn set_controls(input: SetControlsInput) -> SetControlsPlan {
     }
 }
 
+/// The copy [`set_controls`] makes of a caller's table
+/// ([`ControlTable::Copy`]): a new table of the records `0..=last`, each
+/// copied whole (its text too), and the new last index. The original
+/// reads `last + 1` records whatever the source holds; a source shorter
+/// than that gives what it has, and the index follows it (Exarust's
+/// guard). A negative `last` copies nothing.
+pub fn copy_control_table(
+    source: &[crate::gui_controls::Control],
+    last: i32,
+) -> (Vec<crate::gui_controls::Control>, i32) {
+    let take = usize::try_from(i64::from(last) + 1)
+        .unwrap_or(0)
+        .min(source.len());
+    let mut table = Vec::with_capacity(take);
+    let last = crate::gui_controls::append_records(&mut table, -1, &source[..take]);
+    (table, last)
+}
+
 /// One control drawing pass: the records to draw (index and message) and
 /// the blend word the pass is drawn with.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1013,6 +1031,80 @@ pub fn restore(saved: WindowRecord, unit: i32, state: u32) -> Option<WindowPlace
     })
 }
 
+/// The word the GUI's window-state hook is told a form was maximised with.
+pub const WINDOW_HOOK_MAXIMISED: u32 = 2;
+/// The word the window-state hook is told a form was restored with.
+pub const WINDOW_HOOK_RESTORED: u32 = 0;
+
+/// One step of a maximise or a restore, in the original's order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowStep {
+    /// The form is made visible first.
+    Show,
+    /// The maximise record is allocated and the form saved into it
+    /// ([`WindowRecord`]), the unit last.
+    SaveRecord,
+    /// The GUI's window-state hook, when one is installed, is called with
+    /// the form, the word and a cleared answer byte.
+    StateHook(u32),
+    /// The place and words of [`maximise`] or [`restore`] are written.
+    Place,
+    /// The state word's low bits are set to maximised (2) or cleared.
+    SetState(u32),
+    /// The runtime resize ([`resize_form`]) to the new size.
+    Resize,
+    /// The record is freed.
+    FreeRecord,
+    /// The control spans are refreshed ([`control_spans`]).
+    ControlSpans,
+    /// The form's layout-changed virtual.
+    Changed,
+    Redraw,
+}
+
+/// A maximise's steps: show, save the record, tell the hook (before the
+/// form changes), write the place and words, set the state, resize to the
+/// screen's client, then the layout-changed virtual and the redraw.
+pub fn maximise_steps(hook: bool) -> Vec<WindowStep> {
+    let mut steps = vec![WindowStep::Show, WindowStep::SaveRecord];
+    if hook {
+        steps.push(WindowStep::StateHook(WINDOW_HOOK_MAXIMISED));
+    }
+    steps.extend([
+        WindowStep::Place,
+        WindowStep::SetState(state::MAXIMISED),
+        WindowStep::Resize,
+        WindowStep::Changed,
+        WindowStep::Redraw,
+    ]);
+    steps
+}
+
+/// A restore's steps: show; with a saved record, write the place and words
+/// back, resize to the saved size, free the record and refresh the control
+/// spans; tell the hook (whether or not a record was kept), clear the
+/// state's low bits, then the layout-changed virtual and the redraw.
+pub fn restore_steps(saved: bool, hook: bool) -> Vec<WindowStep> {
+    let mut steps = vec![WindowStep::Show];
+    if saved {
+        steps.extend([
+            WindowStep::Place,
+            WindowStep::Resize,
+            WindowStep::FreeRecord,
+            WindowStep::ControlSpans,
+        ]);
+    }
+    if hook {
+        steps.push(WindowStep::StateHook(WINDOW_HOOK_RESTORED));
+    }
+    steps.extend([
+        WindowStep::SetState(0),
+        WindowStep::Changed,
+        WindowStep::Redraw,
+    ]);
+    steps
+}
+
 /// The destination when a top-level form is raised among the root's
 /// children, from their attribute words in draw order (the last is the
 /// topmost): a lower-layer form goes to the first child not in the lower
@@ -1206,6 +1298,125 @@ pub fn close_plan(input: CloseInput) -> ClosePlan {
         plan.redraw = true;
     }
     plan
+}
+
+/// The style bit whose forms restore the controller's action set when they
+/// close (a Steam Input call, platform glue in Exarust).
+pub const STYLE_CONTROLLER_ACTIONS: u32 = 0x20;
+
+/// One form as the close cascade sees it.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CloseNode {
+    pub style: u32,
+    pub closing: bool,
+    /// The form marks itself closing (the constructor's choice).
+    pub closes_once: bool,
+    /// The form whose popup this one is.
+    pub owner: Option<usize>,
+    /// The form's task (itself for a task).
+    pub task: usize,
+    /// The form's children, in their list's order.
+    pub children: Vec<usize>,
+    pub has_callback: bool,
+    /// For a task: its active child.
+    pub active_child: Option<usize>,
+    /// For a task: the child it remembers to refocus.
+    pub remembered: Option<usize>,
+}
+
+/// One step of a close cascade, in the order the original takes it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CloseStep {
+    /// The controller's action set is restored (style bit 0x20); this runs
+    /// even for a form already closing.
+    ControllerActions(usize),
+    /// The GUI's closing flag is raised (a form that closes once).
+    ClosingFlag,
+    Callback(usize),
+    /// The task of an active child is closed in its place (the task class's
+    /// own close).
+    CloseTask(usize),
+    Hide(usize),
+    Redraw,
+}
+
+/// Closes `form` and what it takes with it. A form already closing does
+/// nothing more than the controller step. The task's active child runs its
+/// callback, clears the task's active child and closes the task. Any other
+/// form clears the task's remembered child when it is this one, then walks
+/// the task's children (the count read once, before the walk) closing each
+/// not yet closing whose owner is this form, then its own children not yet
+/// closing, then hides, runs its callback and redraws. Closing never
+/// removes a form from a list, so the walks see every entry; a form that
+/// does not close once can be closed again by a later walk, as in the
+/// original. The GUI main's notice and the tooltip's hide are
+/// [`close_plan`]'s. A malformed tree that links back into itself stops
+/// after [`CLOSE_DEPTH`] nested closes instead of recursing for ever.
+pub fn close_cascade(nodes: &mut [CloseNode], form: usize, steps: &mut Vec<CloseStep>) {
+    close_nested(nodes, form, steps, 0);
+}
+
+/// How deep a close cascade nests before it stops (Exarust's guard).
+pub const CLOSE_DEPTH: usize = 64;
+
+fn close_nested(nodes: &mut [CloseNode], form: usize, steps: &mut Vec<CloseStep>, depth: usize) {
+    if depth >= CLOSE_DEPTH {
+        return;
+    }
+    let Some(node) = nodes.get(form) else {
+        return;
+    };
+    if node.style & STYLE_CONTROLLER_ACTIONS != 0 {
+        steps.push(CloseStep::ControllerActions(form));
+    }
+    if node.closing {
+        return;
+    }
+    if node.closes_once {
+        nodes[form].closing = true;
+        steps.push(CloseStep::ClosingFlag);
+    }
+    let task = nodes[form].task;
+    let callback = nodes[form].has_callback;
+    if task < nodes.len() && nodes[task].active_child == Some(form) {
+        if callback {
+            steps.push(CloseStep::Callback(form));
+        }
+        nodes[task].active_child = None;
+        steps.push(CloseStep::CloseTask(task));
+        return;
+    }
+    if task < nodes.len() {
+        if nodes[task].remembered == Some(form) {
+            nodes[task].remembered = None;
+        }
+        let count = nodes[task].children.len();
+        for index in 0..count {
+            let Some(&child) = nodes[task].children.get(index) else {
+                break;
+            };
+            if nodes
+                .get(child)
+                .is_some_and(|c| !c.closing && c.owner == Some(form))
+            {
+                close_nested(nodes, child, steps, depth + 1);
+            }
+        }
+    }
+    let count = nodes[form].children.len();
+    for index in 0..count {
+        let Some(&child) = nodes[form].children.get(index) else {
+            break;
+        };
+        if nodes.get(child).is_some_and(|c| !c.closing) {
+            close_nested(nodes, child, steps, depth + 1);
+        }
+    }
+    steps.push(CloseStep::Hide(form));
+    if callback {
+        steps.push(CloseStep::Callback(form));
+    }
+    steps.push(CloseStep::Redraw);
 }
 
 /// What changing a form's visibility does.

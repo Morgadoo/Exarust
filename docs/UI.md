@@ -1135,7 +1135,25 @@ tab stop, 0x100000 no keys) and state word (0x10 disabled, 0x400 focus,
   spacing, attributes 0x4f and style 0xf0, the others attributes 0xc000.
   Restoring divides every saved coordinate and size by the saved unit
   (truncating) before multiplying by the current one; the border is
-  rounded (ties to even).
+  rounded (ties to even). Both first show the form. A maximise saves the
+  record, tells the GUI's window-state hook (word 2) before the form
+  changes, writes the place, sets the state's low bits to 2, resizes, then
+  runs the layout-changed virtual and redraws; a restore with a record
+  writes it back, resizes, frees it and refreshes the control spans, and
+  with or without one tells the hook (word 0) and clears the state.
+- **Close.** A form with style bit 0x20 restores the controller's action
+  set (Steam Input, platform glue) even when already closing. A form not
+  yet closing marks itself and raises the GUI's closing flag when it
+  closes once. The task's active child runs its callback, clears the
+  task's active child and closes the task. Any other form clears the
+  task's remembered child when it is this one, closes the task's children
+  it owns that are not closing (the count read once), then its own
+  children not closing, then hides, runs its callback and redraws; no walk
+  removes a form from a list, so a form that does not close once can be
+  taken twice (`form::close_cascade`, a tested model).
+- **Control table.** Setting the records copies the caller's records
+  `0..=last` whole into a new owned table (`form::copy_control_table`)
+  unless the table is adopted as given.
 - **Resize.** A form with a parent keeps its right or bottom edge when
   anchored there; a stretching child takes the change and is resized, an
   anchored child moves, any other is re-centred (truncating). The records
@@ -1265,6 +1283,12 @@ drawing:
   blocks whose backs step one pixel and whose fills are three narrower and
   `block + 1` apart. The bar control (0xac4) draws the HUD's two-share
   bar two pixels in.
+- **HUD message.** The draw's last layer is a one-line message in the
+  main font from half the width less five units, its baseline six units
+  plus the font's line height down: a shadow one pixel up and left in
+  black at 0x80, then the line in the skin's sixth label ink, not
+  centred. The shipped game never sets the flag it waits for, so it never
+  draws there (`hud_status::message_layers`, tested).
 - **HUD.** The status marker (53 units right of the centre, 8 above the
   bottom) draws while no status entry has 0x2000; the skill-ready alert (60
   units left) while the six skills' levels sum below 15 and no skill has
@@ -1277,7 +1301,10 @@ drawing:
   reset takes one off that count only from a fallen curtain, then clears
   the state and starts a running heartbeat's fade. The compass
   is a 12-unit diamond two units plus its half from the left and bottom at
-  `round((1 − fade) · 192)`; `exa_ui::hud_extra` paints it as one square
+  `round((1 − fade) · 192)`, the fade being the word the power tree's draw
+  leaves (its window fade: rising over the opening, 1 while open, falling
+  over the 256 ms close, 0 once faded out and before the first opening),
+  so the compass hides behind the open tree; `exa_ui::hud_extra` paints it as one square
   in a frame built from the camera's backward axis laid flat (x negated,
   normalised with the approximate reciprocal root) and its cross product
   with up, the frame's origin 3 px against that axis. The corners
@@ -1285,7 +1312,20 @@ drawing:
   `(1,0)`; the frame reflects them, so the picture shows upright and
   unmirrored, turned clockwise by the camera's yaw, bilinear-filtered. The
   curtain is the black layer of `exa_ui::fade` (the death fade). The
-  status marker's glow and icon are not painted yet. The heartbeat's fade-out lowers its sound to
+  marker and the alert show the skill-icon atlas's first cell (the
+  96-pixel cell at the origin of `sgsklicons.rfi`, resampled to 8 units)
+  on a black halo: the skin's rounded fill over the two-unit square three
+  to five units into the icon, grown by eight units, at
+  `round(0.6 · pulse · 255)`. The marker's icon is tinted (140, 160, 255)
+  at `CVTSS2SI(pulse · 255)`; the alert's is outlined at the pulse, its
+  face in the skin's seventh label ink and its one-pixel copies in the
+  third highlight ink. One pulse clock serves both: the alert stamps it
+  on its first frame, the marker reads it as it is (zero before), and
+  only the HUD switched off clears the stamp. `exa_ui::hud_status` draws
+  them through the GUI draw path, each into a canvas the size of its
+  halo; the game shows the marker while the player's caster knows
+  powers and none is a new pick (the alert stays off: the running game
+  keeps no skill record for the player). The heartbeat's fade-out lowers its sound to
   `0.3 · (1 − elapsed / 1000)` and stops it; the border keeps its pulse.
   The menu cursor is `round(setting · height / 1080 · 32)`, at most 128,
   with a 0.176/0.08 hotspot (`setting` is the CursorSize setting, 1 in the

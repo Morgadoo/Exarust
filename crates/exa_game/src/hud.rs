@@ -10,6 +10,7 @@ use exa_combat::{Fighter, Weakened};
 use exa_items::catalogue::ItemCatalogue;
 use exa_items::inventory_window::carries_compass;
 use exa_items::possession::Possessions;
+use exa_ui::hud_status::StatusView;
 use exa_ui::{CompassView, Heartbeat, HudBars};
 
 use crate::player::{ChaseCamera, Player, PlayerBody};
@@ -51,7 +52,7 @@ impl Plugin for HudPlugin {
             .init_resource::<HeartbeatState>()
             .add_systems(
                 Update,
-                (pick_hud, pick_compass, heartbeat)
+                (pick_hud, pick_compass, pick_status, heartbeat)
                     .chain()
                     .after(crate::player::chase_camera)
                     .before(exa_ui::DrawHud),
@@ -124,13 +125,18 @@ fn pick_hud(
 /// The compass's visibility and turn: the player's own pack carrying a
 /// usable item of the compass's kind (4, 11) shows it, and the chase
 /// camera's backward axis (the third row of its frame, as the original
-/// reads it) turns it. The interface fade is not modelled (0).
+/// reads it) turns it. The interface fade is the power tree's window fade
+/// (its opening rise, held at 1 while open, its 256 ms closing fall), which
+/// the original's tree draw leaves in the GUI's fade word: 0 before the
+/// tree first opens and once it has faded out, so the compass hides while
+/// the tree is up.
 fn pick_compass(
     players: Query<&Children, With<Player>>,
     bodies: Query<&Possessions>,
     catalogue: Option<Res<ItemCatalogue>>,
     cameras: Query<&Transform, With<ChaseCamera>>,
     hud: Res<HudBars>,
+    tree: Option<Res<crate::power_screen::PowerScreen>>,
     mut compass: ResMut<CompassView>,
 ) {
     let carried = catalogue.as_ref().is_some_and(|catalogue| {
@@ -148,10 +154,43 @@ fn pick_compass(
     let next = CompassView {
         visible: hud.active && carried,
         back,
-        fade: 0.0,
+        fade: tree
+            .as_deref()
+            .filter(|screen| screen.open)
+            .map_or(0.0, |screen| screen.tree.window_alpha),
     };
     if *compass != next {
         *compass = next;
+    }
+}
+
+/// The HUD's power marker and skill-ready alert: the HUD is always on in
+/// Exarust (it has no switch for it), the player is the HUD's, and the
+/// marker shows while the player's caster knows powers and none of them is
+/// a new pick ([`exa_ui::game_gui::status_marker`] over the known pairs'
+/// flags). The running game keeps no skill record for the player, so the
+/// alert's rule ([`exa_ui::game_gui::ready_alert`]) has nothing to read and
+/// the alert stays off.
+fn pick_status(
+    players: Query<&Children, With<Player>>,
+    casters: Query<&PowerCaster, With<PlayerBody>>,
+    hud: Res<HudBars>,
+    mut status: ResMut<StatusView>,
+) {
+    let flags: Vec<u32> = players
+        .iter()
+        .flat_map(|children| children.iter())
+        .find_map(|child| casters.get(child).ok())
+        .map(|caster| caster.record.pairs.iter().map(|pair| pair.flags).collect())
+        .unwrap_or_default();
+    let next = StatusView {
+        enabled: true,
+        player: hud.active,
+        marker: exa_ui::game_gui::status_marker(&flags),
+        ready: false,
+    };
+    if *status != next {
+        *status = next;
     }
 }
 
@@ -260,6 +299,62 @@ mod tests {
         assert!(weaken(&mut app, player));
         let (mut arena, player, _) = beating(false);
         assert!(!weaken(&mut arena, player));
+    }
+
+    /// The compass's fade follows the open power tree's window fade and is
+    /// 0 with the tree shut.
+    #[test]
+    fn the_compass_fades_with_the_power_tree_window() {
+        let run = |open: Option<(bool, f32)>| {
+            let mut app = App::new();
+            app.init_resource::<HudBars>()
+                .init_resource::<CompassView>()
+                .add_systems(Update, pick_compass);
+            if let Some((open, window)) = open {
+                let mut screen = crate::power_screen::PowerScreen::default();
+                screen.open = open;
+                screen.tree.window_alpha = window;
+                app.insert_resource(screen);
+            }
+            app.update();
+            app.world().resource::<CompassView>().fade
+        };
+        assert_eq!(run(None), 0.0);
+        assert_eq!(run(Some((false, 1.0))), 0.0);
+        assert_eq!(run(Some((true, 0.25))), 0.25);
+        assert_eq!(run(Some((true, 1.0))), 1.0);
+    }
+
+    /// The power marker shows while the player's caster knows powers and
+    /// none is a new pick; the alert has no skill record to read.
+    #[test]
+    fn the_power_marker_reads_the_players_known_powers() {
+        let run = |powers: &[u32], new_pick: bool| {
+            let mut app = App::new();
+            app.init_resource::<HudBars>()
+                .init_resource::<StatusView>()
+                .add_systems(Update, (pick_hud, pick_status).chain());
+            let mut caster = PowerCaster::new(powers);
+            if new_pick && let Some(pair) = caster.record.pairs.first_mut() {
+                pair.flags |= crate::thaum::tree::NEW;
+            }
+            let body = app.world_mut().spawn((PlayerBody::new(0.0), caster)).id();
+            app.world_mut().spawn(Player).add_children(&[body]);
+            app.update();
+            *app.world().resource::<StatusView>()
+        };
+        let known = run(&[0x201], false);
+        assert_eq!(
+            known,
+            StatusView {
+                enabled: true,
+                player: true,
+                marker: true,
+                ready: false,
+            }
+        );
+        assert!(!run(&[], false).marker);
+        assert!(!run(&[0x201], true).marker);
     }
 
     /// The focus bar shows the player's caster: its pool and its capacity.
