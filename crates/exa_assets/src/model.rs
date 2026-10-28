@@ -1400,7 +1400,7 @@ impl ModelLoader<'_> {
                 self.warn_once(format!("texture {name:?} not found"));
                 return None;
             };
-            if let Err(e) = crate::image_format::reader_for(key.name.as_str(), bytes) {
+            if let Err(e) = crate::image_format::reader_for(&entry, bytes) {
                 self.warn_once(format!("texture {name:?}: {e}"));
                 let image = crate::texture::placeholder_image(space, flags, &settings);
                 let handle = self.store_texture(key, image, false);
