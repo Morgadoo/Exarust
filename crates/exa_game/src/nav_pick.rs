@@ -19,6 +19,8 @@ use bevy::math::Vec3;
 use exa_physics::Physics;
 use exa_physics::intersect::{Obb, segment_obb_hit, segment_sphere};
 
+use crate::thaum::engine::length;
+
 /// The class mask a pickable node matches: `class & 0x89 == 0x89`.
 pub const PICK_CLASS: u32 = 0x89;
 /// A node with this class bit is left out of every pick.
@@ -77,11 +79,6 @@ pub fn screen_ray(near: Vec3, far: Vec3) -> Ray {
     Ray::new(near, far - near)
 }
 
-/// The original's length: `(x² + z²) + y²`, square-rooted.
-fn length(v: Vec3) -> f32 {
-    (v.x * v.x + v.z * v.z + v.y * v.y).sqrt()
-}
-
 /// A plane `normal · point = offset`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Plane {
@@ -113,9 +110,20 @@ pub struct PlaneHit {
     pub distance: f32,
 }
 
-/// The original's plane pick: `(offset − normal·origin) / (normal·dir)`.
+impl PlaneHit {
+    /// The distance in world units: the ray parameter times the direction's
+    /// length. The original's screen-plane routine records this in its
+    /// global for the GUI drag to read; Exarust returns it instead.
+    pub fn world_distance(&self, ray: Ray) -> f32 {
+        self.distance * length(ray.direction)
+    }
+}
+
+/// The original's plane pick: `(offset − normal·origin) / (normal·dir)`. The
+/// dots are summed in the original's order, `n.z·p.z + (n.y·p.y + n.x·p.x)`.
 pub fn plane_hit(ray: Ray, plane: Plane) -> PlaneHit {
-    let distance = (plane.offset - plane.normal.dot(ray.origin)) / plane.normal.dot(ray.direction);
+    let dot = |a: Vec3| plane.normal.z * a.z + (plane.normal.y * a.y + plane.normal.x * a.x);
+    let distance = (plane.offset - dot(ray.origin)) / dot(ray.direction);
     PlaneHit {
         point: ray.at(distance),
         distance,
@@ -462,6 +470,12 @@ mod tests {
             Plane::new(Vec3::Y, 0.0),
         );
         assert!(!hit.distance.is_finite());
+        // The world distance counts the direction's length: a 2 m direction
+        // halves the parameter.
+        let r = ray(Vec3::new(0.0, 2.0, 0.0), Vec3::new(0.0, -2.0, 0.0));
+        let hit = plane_hit(r, Plane::new(Vec3::Y, 0.0));
+        assert_eq!(hit.distance, 1.0);
+        assert_eq!(hit.world_distance(r), 2.0);
     }
 
     #[test]

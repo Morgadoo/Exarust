@@ -584,14 +584,23 @@ clock's nine ticks, the camera placement with its height, distance and
 pitch clamps, the free zoom's 0.2 % per wheel unit, the preset record's
 numeric fields (the 59² view and size scales, the 59th roots of the
 retention and the rate, the pitch bounds, the 10/10000 distance range and
-both cameras' speeds; its GUI callbacks and editor scan are not
-modelled), the cut-away segment and the kick offset. Its picking unit is
-`nav_pick`: the screen ray's plane pick, the node walk with the class,
-layer and option bits, the segment against each bounding sphere and box,
-the nearest mesh within the best distance, the ground-plane fallback and
-the kinesis pick; the cursor's aim plane and reach use them, and the
-physics world answers as the mesh callback because Exarust keeps no CPU
-triangles.
+both cameras' speeds, the distance raised to the smallest, and the
+editor-only target scan for the `0xA9` nodes with its `0xAE` marker), the
+cut-away segment, the kick offset and the 123-point jittered disc table.
+Its picking unit is `nav_pick`: the screen ray's near-to-far form, the
+plane pick, the node walk with the class, layer and option bits, the
+segment against each bounding sphere and box, the nearest mesh within the
+best distance, the ground pick with its 5 m/10 cm grown sphere and
+top-of-sphere ask, the ground-plane fallback and the kinesis pick; the
+cursor's aim plane and reach use them, and the physics world answers as
+the mesh callback because Exarust keeps no CPU triangles. Its free-camera
+drag and zoom handlers are `nav_drag`: the absolute drag's yaw and
+arc-sine pitch with its pixel bounds and quarter-turn release snap, the
+stepped wheel zoom (the chase camera's wheel goes through it), the stick
+zoom (the gamepad's), the vertical zoom slide, the zoom's cubed pitch
+offset and the editor's grab drag and face-aligned target. The editor's
+viewport attachment flags are in `nav_camera`; its callbacks have no
+Exarust counterpart.
 
 The arena's per-rank kits are in (`loadout`): `Member::loadouts` holds
 six of the record's own loadouts (hands and worn items); the editor takes

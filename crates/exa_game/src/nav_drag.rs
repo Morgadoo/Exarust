@@ -12,10 +12,11 @@
 
 use bevy::math::Vec3;
 use exa_physics::engine_math::{
-    acos, asin, exp, ln, max, min, reciprocal_sqrt, rotate_about, round_to_i64, sign, sin_cos,
+    acos, asin, exp, ln, max, min, rotate_about, round_to_i64, sign, sin_cos,
 };
 
 use crate::nav_camera::planar_yaw;
+use crate::thaum::engine::normalize;
 
 /// One wheel unit of the original's zoom handlers: the single nearest 1/120
 /// (120 units to a notch).
@@ -179,16 +180,16 @@ pub struct GrabDrag {
     pub base_height: f32,
 }
 
-/// Starts an editor grab drag on `node` (its world position and bounding
-/// radius) with the camera's looked-at `target` and its `zoom`: the grabbed
-/// point takes the node's place on the ground but the target's height, the
-/// camera keeps `radius + zoom` from it, and the base yaw is the engine's
-/// planar yaw of the target less the grabbed point.
-pub fn grab_start(node: Vec3, radius: f32, target: Vec3, zoom: f32) -> GrabDrag {
+/// Starts an editor grab drag on `node` (its world position and the x half
+/// extent of its box) with the camera's looked-at `target` and its `zoom`:
+/// the grabbed point takes the node's place on the ground but the target's
+/// height, the camera keeps `half_extent + zoom` from it, and the base yaw is
+/// the engine's planar yaw of the target less the grabbed point.
+pub fn grab_start(node: Vec3, half_extent: f32, target: Vec3, zoom: f32) -> GrabDrag {
     let grab = Vec3::new(node.x, target.y, node.z);
     GrabDrag {
         grab,
-        reach: radius + zoom,
+        reach: half_extent + zoom,
         base_yaw: planar_yaw(target - grab),
         base_height: target.y,
     }
@@ -220,18 +221,6 @@ impl GrabDrag {
     }
 }
 
-/// The unit's engine normalise: scale by the processor's reciprocal square
-/// root of `(x² + z²) + y²`, and by zero when that sum is exactly zero.
-fn fast_normalize(v: Vec3) -> Vec3 {
-    let squared = v.x * v.x + v.z * v.z + v.y * v.y;
-    let factor = if squared == 0.0 {
-        0.0
-    } else {
-        reciprocal_sqrt(squared)
-    };
-    v * factor
-}
-
 /// The editor's other grab target, from a mesh hit: the camera point is
 /// turned about the hit's face normal until it looks along it (the engine's
 /// arc cosine of their dot, then a rotation about their cross product, both
@@ -242,10 +231,10 @@ fn fast_normalize(v: Vec3) -> Vec3 {
 /// [guess: the original rotates about the unnormalised cross product, as its
 /// rotate call receives it; the axis's length is not corrected here]
 pub fn grab_target(click: Vec3, camera: Vec3, normal: Vec3, zoom: f32) -> Vec3 {
-    let view = fast_normalize(camera - click);
+    let view = normalize(camera - click);
     let angle = acos(view.dot(normal));
     let view = if angle > 0.0 {
-        fast_normalize(rotate_about(view.cross(normal), view, angle))
+        normalize(rotate_about(view.cross(normal), view, angle))
     } else {
         view
     };

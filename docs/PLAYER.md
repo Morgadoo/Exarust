@@ -1266,7 +1266,39 @@ character body's possession routines; addresses are in the research notes.
   traced (`ChaseCamera::kick_random`).
 - **Zoom is field of view**: fov = zoom / 2000 × 45° × √(1.6 / aspect),
   clamped to 10–100°. The wheel steps through six stops from 800 to 2000
-  (18° to 45°); the game starts at 1300.
+  (18° to 45°); the game starts at 1300. The unit's wheel handler reads the
+  present zoom as a stop level (`(zoom − min) / (range/5)`, rounded to the
+  nearest, ties to even), subtracts the wheel in 120-unit notches of
+  0.008333334 levels, holds the level between 0 and 5 (the processor's
+  max-then-min, so a NaN holds at the least) and writes `level · range/5 +
+  min`; one notch of Bevy's scroll line is 120 units
+  (`exa_game::nav_drag::zoom_detents`).
+- **The zoom's pitch offset.** When the preset gives the controller an
+  amplitude (field `0x164`, set outside this unit), each zoom change
+  computes `t = 1 − (zoom − min)/(max − min)` and sets the pitch offset to
+  `exp(3·ln t) · amplitude`, the engine's fast logarithm and exponential,
+  and lowers the pitch to `−offset` when that is steeper
+  (`nav_drag::zoom_pitch_offset`, `pitch_with_offset`). The chase camera's
+  preset leaves the amplitude zero, so the live camera is unchanged.
+- **The absolute drag** (the free and editor cameras): a press snapshots
+  the yaw and the pitch `−asin(back.y)`, and builds the pointer's vertical
+  range from the two pitch bounds, `y + round((bound + pitch)/(rate ·
+  sensitivity))`; a move sets `yaw = base − rate · sensitivity · dx` and
+  the pitch likewise, its negation held between the bounds; releasing after
+  more than an eighth of a turn snaps the yaw a quarter turn from the shown
+  yaw in the direction moved (`nav_drag::FreeDrag`). The vertical zoom
+  slide is `clamp(dy · 0.001 + base, 0, 1)² · range + min`
+  (`nav_drag::zoom_slide`). Modelled with tests; the chase camera uses its
+  own spring and the mouse's relative orbit.
+- **The editor's grab drag**: a press on a scene node holds the node's
+  place at the looked-at point's height, the camera `radius + zoom` from
+  it and the yaw of the target less the grabbed point; a move turns the
+  yaw by `dx · rate · 0.5` and raises the point by `dy · zoom /
+  (width · aspect / 2)`, the looked-at point following the drag at the new
+  yaw. A press on a node's face turns the view onto the face normal (the
+  engine's arc cosine and a rotation about the cross product) and puts the
+  target that many zoom units along it (`nav_drag::{grab_start, GrabDrag,
+  grab_target}`). Modelled; Exarust has no scene editor to drive it.
 - **Pitch**: 0.8 rad below the horizon under zoom 1000, then 0.000125 rad
   steeper per unit up to 0.925 rad at 2000 (the zoom less 1000 in single
   precision, the product and the sum with 0.8 in double). A vertical
@@ -1288,12 +1320,27 @@ character body's possession routines; addresses are in the research notes.
   numeric fields are applied as the original applies them (the 280 and
   16000 defaults over 59², the 59th roots of the retention, a double
   3.94e-13 by default whose root is the orbit's 0.616, and of the rate,
-  the −1.5 and 1.5 pitch bounds, the 10 and 10000 distance range, and the
-  speeds: 5 and 5/59 on the stepped camera, 15 × the largest distance /
-  59² and 6.6/59 otherwise); its GUI callbacks and editor scan have no
-  Exarust counterpart. The chase camera uses the shared pieces; the
-  placement, free-zoom and preset paths are modelled
-  (`exa_game::nav_camera`) with tests but have no Exarust caller yet.
+  the −1.5 and 1.5 pitch bounds, the 10 and 10000 distance range and its
+  clamp of the distance field to that range, and the speeds: 5 and 5/59
+  on the stepped camera, 15 × the largest distance / 59² and 6.6/59
+  otherwise). Under the editor flag it scans the scene for a `0xA9` node
+  of class word 1 and takes its place and its x/z half extents, a `0xAE`
+  marker raising its extra flag (`nav_camera::scan_target`). Its GUI
+  callbacks and viewport handler swap have no Exarust counterpart. The
+  chase camera uses the shared pieces; the placement, free-zoom, preset
+  and drag paths are modelled (`exa_game::nav_camera`, `nav_drag`) with
+  tests but have no Exarust caller yet except the wheel.
+- **The ground pick** (the unit's point-to-ground routine, used by the
+  player-control ground and reach probes): from the screen ray, the
+  direction's reciprocal height is held to zero when it points up, the
+  reach is 40 m, and each pickable node grows its bounding sphere by 5 m
+  when the caller's accept test takes it and by 10 cm when it does not.
+  The mesh is asked from the point where the ray crosses the grown
+  sphere's top for what is left of the reach, the crossing added back to
+  the hit; the last node that answers wins, its face is the callback's
+  count less one, and a miss records the ground plane (`nav_pick::ground_hit`).
+  Modelled with tests; nothing calls it yet because the cursor still uses
+  the aim plane and the hand picks through the physics world.
 - **Middle mouse** orbits: 4.8 rad per screen width (the division in
   double precision), through a near critically damped spring (stiffness
   0.0718 and retention 0.616 per tick), leading by at most 45° per tick.

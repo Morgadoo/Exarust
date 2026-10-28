@@ -751,15 +751,18 @@ pub fn kick_offset(
     let third = draw() - 0.5;
     let mut offset = Vec3::new(first, second, third);
     let mut basis = direction;
-    if f64::from(basis.length_squared()) < KICK_DEGENERATE {
+    // The original sums the squares z² + y² + x² in single precision and
+    // widens the sum for the 0.1 compare.
+    let squared = |v: Vec3| v.z * v.z + v.y * v.y + v.x * v.x;
+    if f64::from(squared(basis)) < KICK_DEGENERATE {
         basis = right * sign_or_zero(draw() - 0.5);
         basis.y += (draw() - 0.5) * 4.0;
     }
-    if basis.length_squared() > KICK_EPSILON {
+    if squared(basis) > KICK_EPSILON {
         basis = normalize(basis);
     }
     offset += basis;
-    let length_squared = offset.length_squared();
+    let length_squared = squared(offset);
     if length_squared > KICK_EPSILON {
         offset *= size / length_squared.sqrt();
     }
@@ -807,13 +810,23 @@ pub fn translate_points(points: (Vec3, Vec3), by: Vec3) -> (Vec3, Vec3) {
 /// drops its back-pointer to the controller, the editor's press and move
 /// callbacks are installed, and the viewport's saved zoom handler is put
 /// back on attach. Exarust has no viewport callbacks, so the two observable
-/// flags are kept here and the handler swap is the caller's.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// flags are kept here and the handler swap is the caller's. A new
+/// controller is bound (the constructor points the node at it).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Attachment {
     /// The editor's handlers are installed (`detached`).
     pub editing: bool,
     /// The camera node points back at this controller.
     pub bound: bool,
+}
+
+impl Default for Attachment {
+    fn default() -> Self {
+        Self {
+            editing: false,
+            bound: true,
+        }
+    }
 }
 
 impl Attachment {
@@ -875,6 +888,16 @@ pub fn scan_target(nodes: &[EditorNode], fallback: Vec3) -> TargetBox {
         }
     }
     target
+}
+
+/// The target box the preset asks for, or `None` when its flags do not carry
+/// the editor scan's `0x400000`.
+pub fn preset_target(
+    fields: &PresetFields,
+    nodes: &[EditorNode],
+    fallback: Vec3,
+) -> Option<TargetBox> {
+    (fields.flags & 0x40_0000 != 0).then(|| scan_target(nodes, fallback))
 }
 
 #[cfg(test)]
@@ -1432,5 +1455,15 @@ mod tests {
         let target = scan_target(&nodes[..2], view);
         assert_eq!(target.centre, Vec3::new(10.0, 20.0, 30.0));
         assert!(!target.raised);
+        // The preset only scans under its editor flag.
+        assert!(preset_target(&PresetFields::default(), &nodes, view).is_none());
+        let fields = PresetFields {
+            flags: 0x40_0000,
+            ..PresetFields::default()
+        };
+        let target = preset_target(&fields, &nodes, view).unwrap();
+        assert_eq!(target.centre, Vec3::new(40.0, 50.0, 60.0));
+        assert!(target.raised);
+        assert_eq!(preset_target(&fields, &[], view).unwrap().centre, view);
     }
 }
