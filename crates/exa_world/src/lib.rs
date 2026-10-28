@@ -1541,6 +1541,19 @@ mod tests {
             .map(|n| n.to_string())
             .collect();
         names.sort();
+        // The outdoor preset draws its day from the process clock, so two
+        // loads of the same level differ there; the build comparison keeps
+        // the level's record and counts but not the clock-seeded lighting.
+        let info = info.map(|mut info| {
+            info.lighting = environment::Lighting {
+                ambient: Vec3::ZERO,
+                sun: None,
+                fog: None,
+                sky: false,
+                background: Vec3::ZERO,
+            };
+            info
+        });
         let mut out = vec![
             format!("{info:?}"),
             format!("{} entities", world.entities().len()),

@@ -863,6 +863,67 @@ impl PassKey {
     }
 }
 
+/// A pass program's sampler and uniform bindings, as the original's program
+/// builder assigns them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ProgramBindings {
+    /// The layer textures' sampler names and texture units.
+    pub samplers: Vec<(String, u32)>,
+    /// The uniform names the program sets, in the order it sets them. `Amnt`
+    /// is the normal pass's per-layer amount; the other programs use `Colr`.
+    pub uniforms: Vec<&'static str>,
+}
+
+/// The bindings of one program built from a pass key, as the original's
+/// program builder does it:
+/// - every textured layer of a normal, colour, gloss or displacement pass
+///   binds `Tex<layer>` at unit `2·layer + 1`, and every masked layer binds
+///   `Msk<layer>` at `2·layer + 2`;
+/// - the mask pass (kind 3) binds only `Msk<layer>` for its masked lanes at
+///   `layer + 2`, and the height pass (kind 2) only `Tex<layer>` for its
+///   textured lanes at `layer + 2`;
+/// - the blend mask atlas binds as `Mask` at unit 0;
+/// - the uniforms are `Tile`, `Str`, then `Amnt` for the normal pass or
+///   `Colr` for the others, and `BNrm` at unit 9 when the base normal is on.
+pub fn program_bindings(program: PassProgram, key: PassKey, base_normal: bool) -> ProgramBindings {
+    let mut samplers = Vec::new();
+    for lane in 0..key.layers as u32 {
+        let textured = key.textured & (1 << lane) != 0;
+        let masked = key.masked & (1 << lane) != 0;
+        match program {
+            PassProgram::Mask => {
+                if masked {
+                    samplers.push((format!("Msk{lane}"), lane + 2));
+                }
+            }
+            PassProgram::Height => {
+                if textured {
+                    samplers.push((format!("Tex{lane}"), lane + 2));
+                }
+            }
+            _ => {
+                if textured {
+                    samplers.push((format!("Tex{lane}"), lane * 2 + 1));
+                }
+                if masked {
+                    samplers.push((format!("Msk{lane}"), lane * 2 + 2));
+                }
+            }
+        }
+    }
+    samplers.push(("Mask".to_string(), 0));
+    let mut uniforms = vec!["Tile", "Str"];
+    uniforms.push(if program == PassProgram::Normal {
+        "Amnt"
+    } else {
+        "Colr"
+    });
+    if program == PassProgram::Normal && base_normal {
+        uniforms.push("BNrm");
+    }
+    ProgramBindings { samplers, uniforms }
+}
+
 /// One layer's per-pass values, as the compositor uploads them.
 ///
 /// The colour pass's vector is the linear tint times `1.5·min(f9, 1)` with
@@ -1915,6 +1976,66 @@ mod tests {
         assert_eq!((mip.mask.side, mip.mask.cells), (16, 15));
         assert_eq!(mip.mipmaps, [true, false]);
         assert!(BakePlan::new(&pools, 64, 0, 0, &all, BakeFilters::default()).is_none());
+    }
+
+    #[test]
+    fn a_program_binds_its_layer_samplers_and_uniforms_as_the_original() {
+        let all = [LayerFlags {
+            textured: true,
+            masked: true,
+        }; 4];
+        let key = pass_key(PassProgram::Colour, 0, 4, &all, false);
+        let bind = program_bindings(PassProgram::Colour, key, false);
+        assert_eq!(
+            bind.samplers,
+            [
+                ("Tex0".to_string(), 1),
+                ("Msk0".to_string(), 2),
+                ("Tex1".to_string(), 3),
+                ("Msk1".to_string(), 4),
+                ("Tex2".to_string(), 5),
+                ("Msk2".to_string(), 6),
+                ("Tex3".to_string(), 7),
+                ("Msk3".to_string(), 8),
+                ("Mask".to_string(), 0),
+            ]
+        );
+        assert_eq!(bind.uniforms, ["Tile", "Str", "Colr"]);
+        // A normal pass binds Amnt and the base-normal sampler when it asks
+        // for one.
+        let normal = pass_key(PassProgram::Normal, 0, 1, &all[..1], true);
+        let bind = program_bindings(PassProgram::Normal, normal, true);
+        assert_eq!(
+            bind.samplers,
+            [
+                ("Tex0".to_string(), 1),
+                ("Msk0".to_string(), 2),
+                ("Mask".to_string(), 0)
+            ]
+        );
+        assert_eq!(bind.uniforms, ["Tile", "Str", "Amnt", "BNrm"]);
+        // The mask and height passes bind only their own lane's texture.
+        let mask = pass_key(PassProgram::Mask, 0, 2, &all[..2], false);
+        let bind = program_bindings(PassProgram::Mask, mask, false);
+        assert_eq!(
+            bind.samplers,
+            [
+                ("Msk0".to_string(), 2),
+                ("Msk1".to_string(), 3),
+                ("Mask".to_string(), 0)
+            ]
+        );
+        let height = pass_key(PassProgram::Height, 0, 2, &all[..2], false);
+        let bind = program_bindings(PassProgram::Height, height, false);
+        assert_eq!(
+            bind.samplers,
+            [
+                ("Tex0".to_string(), 2),
+                ("Tex1".to_string(), 3),
+                ("Mask".to_string(), 0)
+            ]
+        );
+        assert_eq!(bind.uniforms, ["Tile", "Str", "Colr"]);
     }
 
     #[test]
