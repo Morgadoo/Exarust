@@ -42,6 +42,15 @@ pub struct Bubble {
     pub phase: Phase,
     /// 0..1, from the last [`Bubbles::update`].
     pub alpha: f32,
+    /// The wrapped width and height (pixels), as the text measure gives
+    /// them; placement and drawing read them.
+    pub width: i32,
+    pub height: i32,
+    /// The wrapped line count (0 until [`Bubbles::layout`] measured it).
+    pub lines: i32,
+    /// The screen position of the box's top-left corner.
+    pub x: i32,
+    pub y: i32,
 }
 
 /// Fade-in time, ms.
@@ -50,6 +59,73 @@ pub const FADE_IN: u32 = 300;
 pub const FADE_OUT: u32 = 1500;
 /// Gap before a waiting bubble of the same speaker, ms.
 pub const QUEUE_GAP: u32 = 375;
+/// A bubble's initial wrap width: 80 times the GUI unit (4).
+pub const BUBBLE_WIDTH: i32 = 320;
+/// The margin a bubble keeps from the screen's edges, in GUI units.
+pub const MARGIN: i32 = 4;
+/// A character line is raised this far above the head (cm) before it is
+/// projected.
+pub const HEAD_LIFT: f32 = 120.0;
+
+/// The viewport a bubble is placed in: its size, the main font's glyph
+/// height, and (for character lines) the camera.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct View {
+    pub width: i32,
+    pub height: i32,
+    /// The font's glyph height (the quad it draws for one byte).
+    pub glyph_height: i32,
+    pub camera: Option<Camera>,
+}
+
+/// The camera as the original's bubble placement reads it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Camera {
+    /// The rigid inverse view: three basis rows, then the eye position.
+    /// A point becomes `(p − eye)` dotted with each row.
+    pub inverse_view: [f32; 12],
+    /// The projection's x and y scales.
+    pub projection: [f32; 2],
+}
+
+/// The screen point of a world point, as the original's viewport projects
+/// it: camera space first (a rigid inverse view), then a perspective
+/// divide. A point at or behind the camera's plane is clamped to the
+/// screen's edges; an unordered component counts as positive, as the
+/// original's ordered compares do.
+pub fn project(camera: &Camera, view: &View, point: [f32; 3]) -> [f32; 2] {
+    let m = &camera.inverse_view;
+    let d = [point[0] - m[9], point[1] - m[10], point[2] - m[11]];
+    // The original sums each row's products left to right (SSE pair, then
+    // the third), so keep that order.
+    let cam = [
+        (d[0] * m[0] + d[1] * m[1]) + d[2] * m[2],
+        (d[0] * m[3] + d[1] * m[4]) + d[2] * m[5],
+        (d[0] * m[6] + d[1] * m[7]) + d[2] * m[8],
+    ];
+    let w = view.width as f32;
+    let h = view.height as f32;
+    if cam[2] >= 0.0 || cam[2].is_nan() {
+        // At or behind the plane (an unordered depth included): the edges.
+        let x = if cam[0] >= 0.0 { w } else { 0.0 };
+        let y = if cam[1] >= 0.0 { h } else { 0.0 };
+        return [x, h - y];
+    }
+    let z = -cam[2];
+    let sx = w * 0.5 + (((camera.projection[0] * w) * 0.5) * cam[0]) / z;
+    let sy = h * 0.5 + (((camera.projection[1] * h) * 0.5) * cam[1]) / z;
+    [sx, h - sy]
+}
+
+/// The original's `round` to an integer: nearest, ties to even (CVTSS2SI).
+fn round_to_int(value: f32) -> i64 {
+    if value.is_finite() {
+        value.round_ties_even() as i64
+    } else {
+        // Out of range: the instruction leaves the integer indefinite.
+        i64::MIN
+    }
+}
 
 /// A hearing stimulus raised by speech: `listener`'s contact of `speaker`
 /// gets `amount` (the AI scales it by 0.25).
@@ -139,6 +215,11 @@ impl Bubbles {
             duration: duration(speaker, shown.len(), player),
             phase,
             alpha: 0.0,
+            width: BUBBLE_WIDTH,
+            height: 0,
+            lines: 0,
+            x: 0,
+            y: 0,
         });
         match rest {
             Some(rest) => self.say(speaker, None, rest, now, player),
@@ -194,6 +275,72 @@ impl Bubbles {
     /// bubble dropped this frame still holds back a later one of its
     /// speaker until the next frame.
     pub fn update(&mut self, now: u32) {
+        self.frame(now, None, |_| None);
+    }
+
+    /// Measure every bubble whose line count is not known yet: the text is
+    /// wrapped at [`BUBBLE_WIDTH`] and the width narrowed to its widest
+    /// line; the height is the line count times the font's line height,
+    /// less half the GUI unit (2 at unit 4). `fit` is the GUI's width fit
+    /// and returns the line count.
+    pub fn layout(&mut self, line_height: i32, fit: impl Fn(&[u8], &mut i32) -> i32) {
+        for bubble in &mut self.list {
+            if bubble.lines != 0 {
+                continue;
+            }
+            let mut width = BUBBLE_WIDTH;
+            let lines = fit(&bubble.text, &mut width);
+            bubble.width = width;
+            bubble.lines = lines;
+            bubble.height = lines.wrapping_mul(line_height).wrapping_sub(MARGIN >> 1);
+        }
+    }
+
+    /// Place one bubble, as the original does after its fade step: a
+    /// narrator line is centred 75 % down the screen, a character line is
+    /// its raised head position projected and centred on its width; both
+    /// are kept [`MARGIN`] inside the screen. (Free-standing so a frame's
+    /// list borrow does not conflict.)
+    pub fn place_bubble(bubble: &mut Bubble, view: &View, head: Option<[f32; 3]>) {
+        if bubble.speaker == Speaker::Narrator {
+            bubble.x = (view.width - bubble.width) / 2;
+            bubble.y =
+                view.glyph_height + round_to_int(view.height as f32 * 0.75) as i32 - bubble.height;
+        } else if let Some(head) = head {
+            let lifted = [head[0], head[1] + HEAD_LIFT, head[2]];
+            if let Some(camera) = view.camera {
+                let projected = project(&camera, view, lifted);
+                bubble.x = round_to_int(projected[0] - (bubble.width / 2) as f32) as i32;
+                bubble.y = view.glyph_height + round_to_int(projected[1]) as i32 - bubble.height;
+            }
+        }
+        // The margins: below the top/left edge is pulled in, past the
+        // opposite edge is pushed back.
+        if bubble.y < MARGIN {
+            bubble.y = MARGIN;
+        } else if i64::from(view.height) - i64::from(MARGIN)
+            < i64::from(bubble.height) + i64::from(bubble.y)
+        {
+            bubble.y = (view.height - bubble.height) - MARGIN;
+        }
+        if bubble.x < MARGIN {
+            bubble.x = MARGIN;
+        } else if i64::from(view.width) - i64::from(MARGIN)
+            < i64::from(bubble.width) + i64::from(bubble.x)
+        {
+            bubble.x = (view.width - bubble.width) - MARGIN;
+        }
+    }
+
+    /// One frame of the bubble draw: the state work of [`Bubbles::update`],
+    /// then – with a view – every showing bubble is placed. Waiting bubbles
+    /// are not placed or drawn. `head` answers a character's head position.
+    pub fn frame(
+        &mut self,
+        now: u32,
+        view: Option<&View>,
+        mut head: impl FnMut(Speaker) -> Option<[f32; 3]>,
+    ) {
         let list = &mut self.list;
         let mut write = 0;
         for read in 0..list.len() {
@@ -221,6 +368,10 @@ impl Bubbles {
                     continue;
                 }
                 b.alpha = smoothstep(((end - u64::from(t)) as f64 * (1.0 / 1500.0)) as f32);
+            }
+            if let Some(view) = view {
+                let speaker = b.speaker;
+                Bubbles::place_bubble(&mut b, view, head(speaker));
             }
             list[write] = b;
             write += 1;

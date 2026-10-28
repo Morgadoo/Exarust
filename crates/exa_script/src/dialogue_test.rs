@@ -280,6 +280,93 @@ fn bubbles_queue_split_and_fade() {
 }
 
 #[test]
+fn a_bubble_is_measured_placed_and_projected() {
+    // The text is wrapped at 320 and the height is lines × line height − 2.
+    let mut b = Bubbles::default();
+    b.say(Speaker::Character(7), None, b"One two", 0, None);
+    b.layout(20, |text, width| {
+        assert_eq!(*width, bubbles::BUBBLE_WIDTH);
+        *width = 123;
+        if text.len() > 7 { 2 } else { 1 }
+    });
+    assert_eq!((b.list[0].width, b.list[0].lines), (123, 1));
+    assert_eq!(b.list[0].height, 18);
+    // The layout runs once: a later call leaves the measured bubble alone.
+    b.layout(20, |_, width| {
+        *width = 9;
+        9
+    });
+    assert_eq!((b.list[0].width, b.list[0].height), (123, 18));
+
+    // A narrator line: centred and three quarters down the screen, then
+    // kept four units from the edges.
+    let view = bubbles::View {
+        width: 800,
+        height: 600,
+        glyph_height: 16,
+        camera: None,
+    };
+    let mut n = b.list[0].clone();
+    n.speaker = Speaker::Narrator;
+    n.width = 200;
+    n.height = 18;
+    Bubbles::place_bubble(&mut n, &view, None);
+    // (800 − 200) / 2 = 300; 16 + round(450) − 18 = 448.
+    assert_eq!((n.x, n.y), (300, 448));
+    // Too tall for the top margin: pulled to 4.
+    n.height = 600;
+    Bubbles::place_bubble(&mut n, &view, None);
+    assert_eq!(n.y, 4);
+    // Too wide: pushed inside the left margin.
+    n.width = 900;
+    n.height = 18;
+    Bubbles::place_bubble(&mut n, &view, None);
+    assert_eq!(n.x, 4);
+
+    // A character line: the head is raised 120 cm, taken to camera space
+    // by the rigid inverse view, then divided by the depth.
+    let camera = bubbles::Camera {
+        inverse_view: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 5.0],
+        projection: [2.0, 2.0],
+    };
+    let view = bubbles::View {
+        camera: Some(camera),
+        ..view
+    };
+    // Camera space is (x, y, z − 5); a point at (0, −120, 0) is 120 below
+    // the eye, so y = 300 − (2·600·0.5·120)/5 = −14100 and the screen y is
+    // 600 − (−14100) = 14700. The view does not flip y: the projection
+    // already returns a bottom-left origin.
+    let p = bubbles::project(&camera, &view, [0.0, -120.0, 0.0]);
+    assert_eq!(p, [400.0, 14700.0]);
+    // 60 cm right and 90 below: x = 400 + (2·800·0.5·60)/5 = 400 + 9600,
+    // y = 300 − (2·600·0.5·90)/5 = 300 − 10800, then 600 + 10500.
+    let p = bubbles::project(&camera, &view, [60.0, -90.0, 0.0]);
+    assert_eq!(p, [400.0 + 9600.0, 11100.0]);
+    // A point at or behind the camera's plane clamps to an edge: x >= 0
+    // gives the right edge, y < 0 the top (which the flip returns as 0).
+    let p = bubbles::project(&camera, &view, [0.0, -120.0, 10.0]);
+    assert_eq!(p, [800.0, 600.0]);
+    // An unordered component counts as positive; an unordered depth is
+    // treated as behind, so a NaN y also lands at the bottom edge.
+    let p = bubbles::project(&camera, &view, [f32::NAN, f32::NAN, f32::NAN]);
+    assert_eq!(p, [0.0, 600.0]);
+
+    // A character bubble at the screen centre: (300, 16 + 300 − 18).
+    let mut c = b.list[0].clone();
+    c.speaker = Speaker::Character(7);
+    c.width = 200;
+    c.height = 18;
+    Bubbles::place_bubble(&mut c, &view, Some([0.0, -120.0, 0.0]));
+    assert_eq!((c.x, c.y), (300, 298));
+    // Without a head the position stays, but the margin clamp still runs.
+    c.x = 1;
+    c.y = 2;
+    Bubbles::place_bubble(&mut c, &view, None);
+    assert_eq!((c.x, c.y), (4, 4));
+}
+
+#[test]
 fn moods_band_the_attitude() {
     let mut cast = Cast::default();
     let mut a = Character::new(GUARD, "A");
