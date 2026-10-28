@@ -15,6 +15,7 @@
 
 use bevy::prelude::*;
 use exa_character::held::{Hands, HeldItem, ShieldStyle};
+use exa_formats::characters::ID_MASK;
 use exa_formats::encumbrance::{Skills, encumbrance};
 use exa_items::catalogue::{ItemCatalogue, PendingHands};
 use exa_items::possession::{ItemKind, Possessions};
@@ -22,39 +23,47 @@ use exa_items::possession::{ItemKind, Possessions};
 use crate::torch::CarriesTorch;
 
 /// A character's encumbrance from what its record currently wears and
-/// holds: the worn items' burdens, the off hand's shield, and the
-/// character's armour and shield techniques. An item the catalogue does
-/// not know weighs nothing, as a missing record does in the original's
-/// armour pass.
+/// holds: the worn items' burdens, the shield of the first two hands (the
+/// second wins, as [`exa_formats::encumbrance::held_shield`] picks it), and
+/// the character's armour and shield techniques. An item the catalogue
+/// does not know weighs nothing, as a missing record does in the original's
+/// armour pass. Ids are looked up by their low 30 bits, as the spawn's sum
+/// looks them up in the base database, so the two agree.
 pub fn encumbrance_of(p: &Possessions, catalogue: &ItemCatalogue, skills: Skills) -> f32 {
     let worn: Vec<_> = p
         .worn
         .iter()
-        .filter_map(|worn| catalogue.burden(worn.id))
+        .filter_map(|worn| catalogue.burden(worn.id & ID_MASK))
         .collect();
     let shield = [p.out[1], p.out[0]]
         .into_iter()
         .filter(|hand| hand.id != 0)
-        .filter(|hand| {
+        .map(|hand| hand.id & ID_MASK)
+        .filter(|&id| {
             catalogue
-                .kind(hand.id)
+                .kind(id)
                 .is_some_and(|kind| kind.shield && kind.weapon.is_none())
         })
-        .find_map(|hand| catalogue.shield_record(hand.id));
+        .find_map(|id| catalogue.shield_record(id));
     encumbrance(&worn, shield.as_ref(), skills)
 }
 
 /// Refreshes a body's encumbrance when its possessions change, as the
-/// armour pass does after an equip, unequip or swap. The statistics are
-/// the body's [`Physical::stats`](exa_physics::body::Physical); the body's
-/// live record supplies the techniques.
+/// armour pass does after an equip, unequip or swap. Both copies are
+/// written: the body's [`Physical::stats`](exa_physics::body::Physical)
+/// (gait, turn and step reach) and its fighter's stats (footwork and the
+/// movement stage). The body's live record supplies the techniques. A
+/// body's first frame keeps the value its spawn summed from the level's
+/// own item list.
+#[allow(clippy::type_complexity)]
 pub fn refresh_encumbrance(
     catalogue: Option<Res<ItemCatalogue>>,
     mut bodies: Query<
         (
-            &Possessions,
+            Ref<Possessions>,
             Option<&exa_character::record::CharacterData>,
             &mut exa_physics::body::Physical,
+            Option<&mut exa_combat::Fighter>,
         ),
         Changed<Possessions>,
     >,
@@ -62,10 +71,16 @@ pub fn refresh_encumbrance(
     let Some(catalogue) = catalogue.as_deref() else {
         return;
     };
-    for (possessions, data, mut physical) in &mut bodies {
+    for (possessions, data, mut physical, fighter) in &mut bodies {
+        if possessions.is_added() {
+            continue;
+        }
         let skills = data.map_or_else(Skills::default, |data| Skills::of_record(&data.record));
-        let value = encumbrance_of(possessions, catalogue, skills);
+        let value = encumbrance_of(&possessions, catalogue, skills);
         physical.stats.encumbrance = value;
+        if let Some(mut fighter) = fighter {
+            fighter.stats.encumbrance = value;
+        }
     }
 }
 
@@ -273,26 +288,53 @@ mod tests {
         };
         assert_eq!(encumbrance_of(&p, &catalogue, Skills::default()), 0.0);
 
-        // The system writes the value into the body's physical stats.
+        // A level-local (tagged) id weighs as its base record, as the
+        // spawn's sum looks it up.
+        let p = Possessions {
+            out: [
+                Hand::default(),
+                Hand {
+                    id: 20 | 0x8000_0000,
+                    flags: 0,
+                },
+            ],
+            worn: vec![exa_formats::characters::ItemRef {
+                id: 10 | 0x8000_0000,
+                flags: 0,
+            }],
+            ..Default::default()
+        };
+        assert!((encumbrance_of(&p, &catalogue, Skills::default()) - 0.525).abs() < 1e-6);
+
+        // The system leaves a new body's spawn value and writes a changed
+        // body's into its physical stats.
         let mut app = App::new();
         app.insert_resource(catalogue).add_plugins(EquipPlugin);
+        let mut spawned = exa_physics::body::Physical::default();
+        spawned.stats.encumbrance = 0.25;
         let body = app
             .world_mut()
-            .spawn((
-                Possessions {
-                    out: [Hand::default(), Hand { id: 20, flags: 0 }],
-                    worn: vec![exa_formats::characters::ItemRef { id: 10, flags: 0 }],
-                    ..Default::default()
-                },
-                exa_physics::body::Physical::default(),
-            ))
+            .spawn((Possessions::default(), spawned))
             .id();
         app.update();
-        let physical = app
-            .world()
-            .get::<exa_physics::body::Physical>(body)
-            .unwrap();
-        assert!((physical.stats.encumbrance - 0.525).abs() < 1e-6);
+        let encumbrance = |app: &App| {
+            app.world()
+                .get::<exa_physics::body::Physical>(body)
+                .unwrap()
+                .stats
+                .encumbrance
+        };
+        assert_eq!(encumbrance(&app), 0.25);
+        {
+            let mut entity = app.world_mut().entity_mut(body);
+            let mut possessions = entity.get_mut::<Possessions>().unwrap();
+            possessions.out[1] = Hand { id: 20, flags: 0 };
+            possessions
+                .worn
+                .push(exa_formats::characters::ItemRef { id: 10, flags: 0 });
+        }
+        app.update();
+        assert!((encumbrance(&app) - 0.525).abs() < 1e-6);
     }
 
     #[test]
