@@ -89,8 +89,8 @@ pub struct BodyScrape {
 
 /// On a rigid body's root node: the stored sound slots to attach when the
 /// body is registered. The original keeps one source per slot and drops
-/// the slots whose sound is not shipped; the level loader keeps the shipped
-/// ones and this component carries them to the body.
+/// the slots whose sound the audio environment cannot find; the level
+/// loader keeps the named ones and this component carries them to the body.
 #[derive(Component, Debug, Clone, Default)]
 pub struct PendingScrapes(pub Vec<BodyScrape>);
 

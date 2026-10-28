@@ -257,7 +257,9 @@ pub fn register_bodies(
                     },
                 );
                 for sound in &rigid.body.sounds {
-                    // The original drops a slot whose sound is not shipped.
+                    // The original drops a slot whose sound the audio
+                    // environment cannot find; with no audio lookup here,
+                    // only an unnamed slot is dropped.
                     if !sound.sound.is_empty() {
                         scrapes.push(BodyScrape {
                             part: part_index,

@@ -236,15 +236,17 @@ cooldown or when it is strictly louder than twice the last one, at volume
 `min(impact/100, 1)·1.5`, pitched by the part's mobility (a light part
 below 0.1 scales its volume too), with a 220 ms cooldown less a rounded
 share of the volume plus a 0–99 ms draw from the engine's generator. A
-scrape source follows a point on the body: a move over 0.01 cm smooths to
+scrape source follows a point on the body, placed by the matrix the last
+tick recorded: its squared move `d` (cm²) over 0.01 smooths to
 `(√d·2 + d)·0.05`, at most one, the speed is a fifth of the way to it,
-and a speed over 0.02 plays at `speed·volume` and `pitch·(0.1·speed + 0.9)`.
+and a speed over 0.02 plays at `speed·volume` and `pitch·(0.1·speed + 0.9)`
+at its part's position (the curve, smoothing and pitch in double precision).
 The sources are stepped at the start of the post-step, before the body's
-matrices, and their events are left for `exa_audio`; that crate has no body
+matrices; a body without sources skips the step. Their events are left for `exa_audio`; that crate has no body
 hookup, so the events are not played yet. A prop's stored sound slots
 (`0xDDB3` in its body chunk) are attached on their part when the body
-registers, with the slots whose sound is not shipped dropped as the
-original drops them.
+registers. The original drops a slot whose sound name the audio
+environment cannot find; Exarust drops only the slots with an empty name.
 Each character tick measures a living body's balance at its chest against
 its ankles and asks the level for the ground under each foot
 (`contact::Level::height_below`, the original's Height Query), which give

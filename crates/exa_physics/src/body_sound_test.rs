@@ -77,40 +77,61 @@ fn a_weak_or_unsounded_impact_is_silent() {
     assert_eq!(roll, 1);
 }
 
-/// The first 4 cm move of a scrape: its speed is 0.08, its volume 0.16,
-/// its pitch `1.2 · (0.1·0.08 + 0.9)`, and it starts.
+/// The first 1 cm move of a scrape: the move is 1 cm², `(√1·2 + 1)·0.05 =
+/// 0.15`, the speed a fifth of it, 0.03; its volume is 0.06, its pitch
+/// `1.2 · (0.1·0.03 + 0.9)`, and it starts.
 #[test]
 fn a_scrape_starts_on_its_first_move() {
     let mut source = ScrapeSource::new(0, Vec3::ZERO, 2.0, 1.2, Vec3::ZERO);
-    let event = source.step(Vec3::new(0.04, 0.0, 0.0), Vec3::new(1.0, 2.0, 3.0));
-    assert!((source.speed - 0.08).abs() < 1e-6, "{}", source.speed);
-    assert!((event.volume - 0.16).abs() < 1e-6, "{}", event.volume);
-    assert!((event.pitch - 1.0896).abs() < 1e-4, "{}", event.pitch);
+    let event = source.step(Vec3::new(0.01, 0.0, 0.0), Vec3::new(1.0, 2.0, 3.0));
+    assert!((source.speed - 0.03).abs() < 1e-7, "{}", source.speed);
+    assert!((event.volume - 0.06).abs() < 1e-7, "{}", event.volume);
+    assert!((event.pitch - 1.0836).abs() < 1e-6, "{}", event.pitch);
     assert!(event.started && event.playing && !event.stopped);
     assert_eq!(event.point, Vec3::new(1.0, 2.0, 3.0));
-    assert_eq!(source.last, Vec3::new(0.04, 0.0, 0.0));
+    assert_eq!(source.last, Vec3::new(0.01, 0.0, 0.0));
 }
 
-/// Standing still decays the speed by four fifths a tick; after seven
-/// still ticks it is under 0.02 and the source stops.
+/// The move is squared, not a length: 4 cm is 16 cm², which the curve
+/// takes to 1.2 and clamps at one (a length would have given 0.5).
+#[test]
+fn a_scrape_measures_its_move_squared() {
+    let mut source = ScrapeSource::new(0, Vec3::ZERO, 1.0, 1.0, Vec3::ZERO);
+    source.step(Vec3::new(0.04, 0.0, 0.0), Vec3::ZERO);
+    assert_eq!(source.speed, 0.2);
+}
+
+/// A move of at most 0.01 cm² (here 0.05 cm, 0.0025 cm²) skips the curve
+/// and feeds its squared move straight into the smoothing.
+#[test]
+fn a_tiny_move_skips_the_curve() {
+    let mut source = ScrapeSource::new(0, Vec3::ZERO, 1.0, 1.0, Vec3::ZERO);
+    let event = source.step(Vec3::new(0.0005, 0.0, 0.0), Vec3::ZERO);
+    assert!((source.speed - 0.0005).abs() < 1e-8, "{}", source.speed);
+    assert!(!event.playing && !event.started);
+}
+
+/// A NaN move fails the speed compare and stops a playing source.
+#[test]
+fn a_nan_speed_stops_the_source() {
+    let mut source = ScrapeSource::new(0, Vec3::ZERO, 1.0, 1.0, Vec3::ZERO);
+    assert!(source.step(Vec3::new(0.01, 0.0, 0.0), Vec3::ZERO).started);
+    let event = source.step(Vec3::NAN, Vec3::ZERO);
+    assert!(event.stopped && !event.playing);
+}
+
+/// Standing still decays the speed by four fifths a tick: 0.03, 0.024,
+/// 0.0192, which is under 0.02 and stops the source.
 #[test]
 fn a_scrape_stops_once_its_smoothed_speed_falls_under_the_floor() {
     let mut source = ScrapeSource::new(0, Vec3::ZERO, 2.0, 1.2, Vec3::ZERO);
-    let at = Vec3::new(0.04, 0.0, 0.0);
+    let at = Vec3::new(0.01, 0.0, 0.0);
     assert!(source.step(at, Vec3::ZERO).started);
-    let speeds = [
-        0.063_999_996,
-        0.051_199_995,
-        0.040_959_995,
-        0.032_767_996,
-        0.026_214_397,
-        0.020_971_518,
-        0.016_777_214,
-    ];
+    let speeds = [0.024, 0.0192];
     for (i, speed) in speeds.iter().enumerate() {
         let event = source.step(at, Vec3::ZERO);
         assert!(
-            (source.speed - speed).abs() < 1e-6,
+            (source.speed - speed).abs() < 1e-7,
             "tick {i}: {}",
             source.speed
         );

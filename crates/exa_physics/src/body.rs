@@ -1415,7 +1415,7 @@ pub struct Ragdoll {
     /// enough to sound and hurt), one per part.
     level_impacts: Vec<LevelImpact>,
     /// The body's scrape and roll sound sources, each following a point in
-    /// its root's frame ([`Ragdoll::add_scrape`]).
+    /// its part's frame ([`Ragdoll::add_scrape_on`]).
     scrapes: Vec<ScrapeSource>,
     /// What this tick's scrape sources reported, for the audio side.
     scrape_events: Vec<ScrapeEvent>,
@@ -3277,7 +3277,7 @@ impl Ragdoll {
         let world = self
             .parts
             .get(part)
-            .map_or(point, |p| p.transform().transform_point3(point));
+            .map_or(point, |p| p.settled.transform_point3(point));
         self.scrapes
             .push(ScrapeSource::new(part, point, volume, pitch, world));
     }
@@ -3292,26 +3292,26 @@ impl Ragdoll {
         &self.scrape_events
     }
 
-    /// One tick of every scrape source: its point is put in the world by
-    /// its part's frame, and the source updates its smoothed speed and
-    /// playing state.
+    /// One tick of every scrape source. The original runs this at the head
+    /// of its post-step, before the tick's matrix is recorded, so the point
+    /// is put in the world by the matrix the last tick left (the part's
+    /// settled transform) and the playing source sits at that matrix's
+    /// translation (each original body is one part here). Bodies without
+    /// sources (all but a few shipped props) return at once.
     fn step_scrapes(&mut self) {
         self.scrape_events.clear();
-        let Some(root) = self.parts.first() else {
+        if self.scrapes.is_empty() {
+            return;
+        }
+        let Some(root) = self.parts.first().map(|p| p.settled) else {
             return;
         };
-        let root_frame = root.transform();
-        let root_origin = root_frame.translation;
-        let mut events = Vec::with_capacity(self.scrapes.len());
         for source in &mut self.scrapes {
-            let frame = self
-                .parts
-                .get(source.part)
-                .map_or(root_frame, Part::transform);
+            let frame = self.parts.get(source.part).map_or(root, |p| p.settled);
             let world = frame.transform_point3(source.point);
-            events.push(source.step(world, root_origin.into()));
+            let origin = Vec3::from(frame.translation);
+            self.scrape_events.push(source.step(world, origin));
         }
-        self.scrape_events = events;
     }
 
     /// The level impacts this tick's detection found, one per part, for the

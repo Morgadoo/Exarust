@@ -11,8 +11,8 @@
 //! strictly louder than twice the last one.
 //!
 //! A scrape source follows a point fixed on the body: each tick the world
-//! point is compared with the one before, the distance smoothed into a
-//! speed, and the source plays while the speed is over 0.02, its volume and
+//! point, put there by the matrix the last tick recorded, is compared with
+//! the one before, its squared move smoothed into a speed, and the source plays while the speed is over 0.02, its volume and
 //! pitch following the speed. The original keeps these sources on the body
 //! (one per stored sound slot) and starts them when the body joins the
 //! world; Exarust's audio crate has no body hookup yet, so the events are
@@ -136,8 +136,8 @@ pub struct ScrapeSource {
     pub volume: f32,
     /// The pitch per unit of speed, over the source's base.
     pub pitch: f32,
-    /// The smoothed speed, in the original's units (a fraction of the
-    /// body's size a tick).
+    /// The smoothed, capped move measure (from the point's squared move in
+    /// cm² a tick).
     pub speed: f32,
     /// Where the point was when the source last looked.
     pub last: Vec3,
@@ -174,32 +174,48 @@ pub struct ScrapeEvent {
     pub volume: f32,
     /// The pitch to play at (`pitch · (0.1·speed + 0.9)`).
     pub pitch: f32,
-    /// Where the source sits (its body's world position).
+    /// Where the source sits (its part's world position, from the last recorded matrix).
     pub point: Vec3,
 }
 
 impl ScrapeSource {
     /// One tick at `world` (where the followed point is now), with
-    /// `origin` the body's world position that the playing source sits at.
+    /// `origin` the world position of the part carrying the point, where the
+    /// playing source sits.
     ///
-    /// The point's distance is smoothed: a move over 0.01 becomes
-    /// `(√d · 2 + d) · 0.05`, at most 1, and the speed is a fifth of the
-    /// way to it over four fifths of the old speed. A speed of 0.02 or less
-    /// stops a playing source; otherwise a stopped source starts, and the
-    /// volume and pitch follow the speed.
+    /// The move is measured as the squared distance in centimetres (cm²,
+    /// not cm: the original's distance helper does not take the root). A
+    /// move over 0.01 cm² becomes `(√d · 2 + d) · 0.05`, at most 1, and the
+    /// speed is a fifth of the way to it over four fifths of the old speed.
+    /// A speed not above 0.02 (or NaN) stops a playing source; otherwise a
+    /// stopped source starts, and the volume and pitch follow the speed.
+    /// The thresholds, the 0.05 scale, the smoothing and the pitch are
+    /// worked in double precision and narrowed, as the original does.
     pub fn step(&mut self, world: Vec3, origin: Vec3) -> ScrapeEvent {
         // The body works in metres; the original's threshold and curve are
         // in its centimetres.
-        let mut distance = self.last.distance(world) * 100.0;
+        let mut moved = ((world - self.last) * 100.0).length_squared();
         self.last = world;
-        if distance > 0.01 {
-            distance = (distance.sqrt() * 2.0 + distance) * 0.05;
-            if distance > 1.0 {
-                distance = 1.0;
+        if f64::from(moved) > 0.01 {
+            moved = (f64::from(moved.sqrt() * 2.0 + moved) * 0.05) as f32;
+            if moved > 1.0 {
+                moved = 1.0;
             }
         }
-        self.speed = distance * 0.2 + self.speed * 0.8;
-        if self.speed <= 0.02 {
+        self.speed = (f64::from(moved) * 0.2 + f64::from(self.speed) * 0.8) as f32;
+        // Not above 0.02 (or NaN, the unordered compare) stops the source.
+        if f64::from(self.speed) > 0.02 {
+            let started = !self.playing;
+            self.playing = true;
+            ScrapeEvent {
+                started,
+                stopped: false,
+                playing: true,
+                volume: self.speed * self.volume,
+                pitch: (f64::from(self.pitch) * (f64::from(self.speed) * 0.1 + 0.9)) as f32,
+                point: origin,
+            }
+        } else {
             let stopped = self.playing;
             self.playing = false;
             ScrapeEvent {
@@ -208,17 +224,6 @@ impl ScrapeSource {
                 playing: false,
                 volume: 0.0,
                 pitch: 0.0,
-                point: origin,
-            }
-        } else {
-            let started = !self.playing;
-            self.playing = true;
-            ScrapeEvent {
-                started,
-                stopped: false,
-                playing: true,
-                volume: self.speed * self.volume,
-                pitch: self.pitch * (self.speed * 0.1 + 0.9),
                 point: origin,
             }
         }
