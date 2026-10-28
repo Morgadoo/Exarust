@@ -862,7 +862,7 @@ fn shader(game: &GameData, request: &ShaderRequest) -> Result<()> {
             );
         }
         println!(
-            "warm-up: {} keys intern {} material buckets, {} programs built, {} reused",
+            "warm-up: {} keys intern {} buckets, {} programs built, {} reused",
             stats.interned, stats.buckets, stats.compiled, stats.reused
         );
         return Ok(());

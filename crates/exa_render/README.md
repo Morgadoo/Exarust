@@ -16,8 +16,8 @@ binding and the emissive's doubling), the program choice
 sample splits, the warm-up variants; `shader_uniforms` the 252-byte `Global`
 block, the 112-byte `Material` block and the per-light `vec4`s.
 `exa-tool shader` prints a material's original GLSL for comparison.
-`shader_cache` keeps the program cache: one bucket per material word, one
-entry per object and environment word, a failed build stored and not
+`shader_cache` keeps the program cache: one bucket per material and shader
+word pair, one entry per object and environment word pair, a failed build stored and not
 retried, reference counts, the last-bound program and the stale-flags bit,
 and a warm-up pass through the 29 rows and their light counts.
 `shader_bindings` holds the uniform-block bindings, the texture units the
