@@ -6591,6 +6591,12 @@ mod tests {
         assert_eq!(continued.width, 676);
         assert_eq!(continued.tab_x, 0);
         assert_eq!(continued.tab_y, 0);
+
+        // The two label fields are 16-bit words: a larger product wraps.
+        let wrapped = skill_tab_place(40_000, 0, 1_000, 40, false);
+        assert_eq!(wrapped.tab_x, 36_000u16 as i16 as i32);
+        assert_eq!(wrapped.tab_y, 2_000);
+        assert_eq!(wrapped.tab_x, -29_536);
     }
 
     #[test]
