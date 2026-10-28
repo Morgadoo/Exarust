@@ -824,8 +824,9 @@ cursors, 400/150/30 ms repeats, three-millisecond set priming, the
 directional control pick at the GUI unit, the focus stack, and the gameplay
 reader's camera-relative move, aim, the look routine at the orbit rate, the
 stepped zoom, the power-bar and dialogue step modes, the 500 ms power-tree
-hold, the command word and rumble. The player reads it for movement
-(`pad_keys`), combat steps, aim, attack and alternate attack, crouch,
+hold, the command word and rumble. The player reads it for exploration
+movement (`pad_keys`), combat steps (its stick vector is the footwork's
+analog word once its squared length is over 0.01), aim, attack and alternate attack, crouch,
 sprint, weapon swap, combat mode and the chase camera's look and zoom; the
 controls page's `InputMode` drives its controller flag. There is no Steam
 library, no binding panel and no floating

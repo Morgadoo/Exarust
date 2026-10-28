@@ -820,7 +820,12 @@ level shows; not in the arena hub).
   tap still steps; a word held longer clears on release. A word that stays
   the same strictly over 200 ms while the crouch, widened to double, is
   under 0.1 is flagged a **tap** (the float 0.1 is above that double, so a
-  crouch of 0.1 is no tap). The pad reaches the footwork as keys.
+  crouch of 0.1 is no tap). The pad's stick vector (camera-relative, in
+  the world) takes the keys' place once its squared length, summed x, y,
+  then z, is over the double 0.01: it is the **analog word** `0x8000`,
+  whose goal and queued step run along that vector (kept as it was read);
+  an analog word is a tap only when the stick's squared length is also
+  over 0.9. In combat mode only the pad's sprint still reaches the keys.
 - **The gate.** No step is laid while the condition word has any of
   `0x82C1` (walking, the shocked bits, down, the kick), the energy is
   under 0.7, a swing is under way, or the word is zero.

@@ -707,7 +707,8 @@ pub fn mechanism_press(
     }
 }
 
-/// The handler the release dispatch picks for a drag state word.
+/// The handler the forced release (the movement request's cancel, a fall,
+/// the kinesis taking over) picks for a drag state word.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReleaseHandler {
     None,
@@ -715,13 +716,19 @@ pub enum ReleaseHandler {
     Lift,
     Door,
     Physical,
+    /// The wheel's end, which also ends a cloth drag.
     Wheel,
     GuiCallback,
-    Cloth,
 }
 
-/// The release handler, in the original's test order: the two GUI/lift
-/// bits together, then the door, physical, wheel, GUI and cloth bits.
+/// The forced release's handler, in the original's test order: the two
+/// GUI/lift bits together, then the door, physical, wheel, GUI callback
+/// and cloth bits. A cloth drag's bit calls the wheel's handler, not the
+/// cloth's own (the press installs the cloth's for the button's release;
+/// the forced release reaches the wheel's, which lets go of the dragged
+/// node and wakes its body without ending the cloth's grab). After any
+/// handler the state word and the GUI drag hooks clear, and so does the
+/// behaviour byte that lets the combat frame run the movement request.
 pub fn release_handler(word: u32) -> ReleaseHandler {
     if word & 0x3000 != 0 {
         ReleaseHandler::Lift
@@ -734,7 +741,7 @@ pub fn release_handler(word: u32) -> ReleaseHandler {
     } else if word & 0x40000 != 0 {
         ReleaseHandler::GuiCallback
     } else if word & 0x20000 != 0 {
-        ReleaseHandler::Cloth
+        ReleaseHandler::Wheel
     } else {
         ReleaseHandler::None
     }
@@ -2741,7 +2748,8 @@ mod tests {
         assert_eq!(release_handler(0x8000), ReleaseHandler::Physical);
         assert_eq!(release_handler(0x10000), ReleaseHandler::Wheel);
         assert_eq!(release_handler(0x40000), ReleaseHandler::GuiCallback);
-        assert_eq!(release_handler(0x20000), ReleaseHandler::Cloth);
+        // The cloth's bit reaches the wheel's handler.
+        assert_eq!(release_handler(0x20000), ReleaseHandler::Wheel);
         // The first matching bit wins.
         assert_eq!(release_handler(0x4000 | 0x8000), ReleaseHandler::Door);
         assert_eq!(release_handler(0x10000 | 0x20000), ReleaseHandler::Wheel);

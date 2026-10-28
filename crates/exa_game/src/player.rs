@@ -806,13 +806,18 @@ pub(crate) fn steer_player(
                     at.translation = standing;
                 }
             }
-            // The pad drives the same request the keys do
-            // (`gamepad::pad_keys`).
+            // Exploring, the pad drives the same request the keys do
+            // (`gamepad::pad_keys`); in combat mode its stick vector is the
+            // footwork's analog word and only its sprint reaches the keys.
             let mut input = input;
             let pad_crouch = gamepad.is_some_and(|g| g.crouch);
+            let pad_stick = gamepad.map_or(Vec3::ZERO, |g| g.move_world);
             if let Some(g) = gamepad {
-                input =
-                    crate::gamepad::pad_keys(input, &g, req.heading, pb.combat.then_some(pb.aim));
+                if pb.combat {
+                    input.shift |= g.sprint;
+                } else {
+                    input = crate::gamepad::pad_keys(input, &g, req.heading);
+                }
             }
             // The crouch is kept while down, so it is set before the
             // helpless bodies are left alone.
@@ -925,6 +930,7 @@ pub(crate) fn steer_player(
                 } else {
                     combat_steps(
                         &input,
+                        pad_stick,
                         &mut req,
                         &mut steering,
                         &mut pb,
@@ -1087,6 +1093,7 @@ struct Footwork<'a> {
 #[allow(clippy::too_many_arguments)]
 fn combat_steps(
     input: &Keys,
+    stick: Vec3,
     req: &mut Locomotion,
     steering: &mut Steering,
     pb: &mut PlayerBody,
@@ -1097,16 +1104,13 @@ fn combat_steps(
     now: u64,
 ) {
     let facing = forward(pb.aim);
-    // The pad reaches the footwork as keys (`gamepad::pad_keys`), so the
-    // analog word is not read here (Exarust's own).
-    let analog = Vec3::ZERO;
     pb.move_word.take_queue(now, &mut pb.step.queue);
-    pb.move_word.tick(
-        now,
-        [input.w, input.s, input.a, input.d],
-        Vec2::ZERO,
-        pb.crouch,
-    );
+    // The pad's stick vector, once its squared length is over 0.01, is the
+    // analog word in place of the keys; the vector it was read with is
+    // the direction the word's goal and queued step take.
+    pb.move_word
+        .tick(now, [input.w, input.s, input.a, input.d], stick, pb.crouch);
+    let analog = pb.move_word.analog;
     if pb.move_word.queue_expired {
         pb.step.queue = 0;
     }
@@ -2338,6 +2342,7 @@ mod tests {
         let mut steering = pb.steering;
         combat_steps(
             input,
+            Vec3::ZERO,
             req,
             &mut steering,
             pb,

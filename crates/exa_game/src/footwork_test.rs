@@ -152,8 +152,8 @@ fn a_queued_word_keeps_its_step_vector() {
 fn a_taken_queue_gives_the_word_back() {
     let mut keys = MoveWord::default();
     let fwd = [true, false, false, false];
-    keys.tick(1000, fwd, Vec2::ZERO, 0.0);
-    keys.tick(1300, fwd, Vec2::ZERO, 0.0);
+    keys.tick(1000, fwd, Vec3::ZERO, 0.0);
+    keys.tick(1300, fwd, Vec3::ZERO, 0.0);
     assert!(keys.tap);
     keys.queued_word = MOVE_LEFT;
     let mut queue = 1;
@@ -168,9 +168,9 @@ fn a_taken_queue_gives_the_word_back() {
     assert_eq!((keys.held, keys.queued_word, queue), (MOVE_LEFT, 0, 0));
     assert!(!keys.tap);
     let left = [false, false, true, false];
-    keys.tick(1600, left, Vec2::ZERO, 0.0);
+    keys.tick(1600, left, Vec3::ZERO, 0.0);
     assert!(!keys.tap);
-    keys.tick(1601, left, Vec2::ZERO, 0.0);
+    keys.tick(1601, left, Vec3::ZERO, 0.0);
     assert!(keys.tap);
 }
 

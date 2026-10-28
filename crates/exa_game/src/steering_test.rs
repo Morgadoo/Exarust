@@ -705,30 +705,30 @@ fn a_tap_keeps_the_movement_word_for_a_step() {
     let mut w = MoveWord::default();
     let fwd = [true, false, false, false];
     let none = [false; 4];
-    assert_eq!(w.tick(1000, fwd, Vec2::ZERO, 0.0), MOVE_FORWARD);
+    assert_eq!(w.tick(1000, fwd, Vec3::ZERO, 0.0), MOVE_FORWARD);
     // Released after 10 ms: the word is kept.
-    assert_eq!(w.tick(1010, none, Vec2::ZERO, 0.0), MOVE_FORWARD);
-    assert_eq!(w.tick(1200, none, Vec2::ZERO, 0.0), MOVE_FORWARD);
-    assert_eq!(w.tick(1201, none, Vec2::ZERO, 0.0), 0);
+    assert_eq!(w.tick(1010, none, Vec3::ZERO, 0.0), MOVE_FORWARD);
+    assert_eq!(w.tick(1200, none, Vec3::ZERO, 0.0), MOVE_FORWARD);
+    assert_eq!(w.tick(1201, none, Vec3::ZERO, 0.0), 0);
     assert_eq!(
         MoveWord::keys(MOVE_FORWARD | MOVE_LEFT),
         [true, false, true, false]
     );
     // Held 500 ms: released, the word clears at once.
     let mut w = MoveWord::default();
-    w.tick(1000, fwd, Vec2::ZERO, 0.0);
-    w.tick(1500, fwd, Vec2::ZERO, 0.0);
-    assert_eq!(w.tick(1510, none, Vec2::ZERO, 0.0), 0);
+    w.tick(1000, fwd, Vec3::ZERO, 0.0);
+    w.tick(1500, fwd, Vec3::ZERO, 0.0);
+    assert_eq!(w.tick(1510, none, Vec3::ZERO, 0.0), 0);
     // The target goes 200 ms after the last nonzero tick (the release
     // tick itself changes the word and does not count).
     let mut w = MoveWord::default();
-    w.tick(1000, fwd, Vec2::ZERO, 0.0);
-    w.tick(1400, fwd, Vec2::ZERO, 0.0);
-    w.tick(1500, none, Vec2::ZERO, 0.0);
+    w.tick(1000, fwd, Vec3::ZERO, 0.0);
+    w.tick(1400, fwd, Vec3::ZERO, 0.0);
+    w.tick(1500, none, Vec3::ZERO, 0.0);
     assert!(!w.queue_expired);
-    w.tick(1600, none, Vec2::ZERO, 0.0);
+    w.tick(1600, none, Vec3::ZERO, 0.0);
     assert!(!w.queue_expired);
-    w.tick(1601, none, Vec2::ZERO, 0.0);
+    w.tick(1601, none, Vec3::ZERO, 0.0);
     assert!(w.queue_expired);
 }
 
@@ -759,38 +759,47 @@ fn opposing_keys_cancel_in_the_movement_word() {
 fn a_held_word_counts_as_a_tap() {
     let mut w = MoveWord::default();
     let fwd = [true, false, false, false];
-    w.tick(1000, fwd, Vec2::ZERO, 0.0);
-    w.tick(1200, fwd, Vec2::ZERO, 0.0);
+    w.tick(1000, fwd, Vec3::ZERO, 0.0);
+    w.tick(1200, fwd, Vec3::ZERO, 0.0);
     assert!(!w.tap);
-    w.tick(1201, fwd, Vec2::ZERO, 0.0);
+    w.tick(1201, fwd, Vec3::ZERO, 0.0);
     assert!(w.tap);
     let mut w = MoveWord::default();
-    w.tick(1000, fwd, Vec2::ZERO, 1.0);
-    w.tick(1300, fwd, Vec2::ZERO, 1.0);
+    w.tick(1000, fwd, Vec3::ZERO, 1.0);
+    w.tick(1300, fwd, Vec3::ZERO, 1.0);
     assert!(!w.tap);
     // A stick at 0.5 (squared 0.25) is an analog word but not a tap; a full
     // one is.
     let mut w = MoveWord::default();
     assert_eq!(
-        w.tick(1000, [false; 4], Vec2::new(0.5, 0.0), 0.0),
+        w.tick(1000, [false; 4], Vec3::new(0.5, 0.0, 0.0), 0.0),
         MOVE_ANALOG
     );
-    w.tick(1300, [false; 4], Vec2::new(0.5, 0.0), 0.0);
+    w.tick(1300, [false; 4], Vec3::new(0.5, 0.0, 0.0), 0.0);
     assert!(!w.tap);
     let mut w = MoveWord::default();
-    w.tick(1000, [false; 4], Vec2::new(1.0, 0.0), 0.0);
-    w.tick(1300, [false; 4], Vec2::new(1.0, 0.0), 0.0);
+    w.tick(1000, [false; 4], Vec3::new(1.0, 0.0, 0.0), 0.0);
+    w.tick(1300, [false; 4], Vec3::new(1.0, 0.0, 0.0), 0.0);
     assert!(w.tap);
     // The stick's dead zone: its single squared length over the double
     // 0.01. The single 0.1 squares to 0.010000001, just over, so a tenth of
     // a stick already reads the analog word; a NaN fails the ordered test
     // and reads the keys.
     let mut w = MoveWord::default();
-    assert_eq!(w.tick(0, fwd, Vec2::new(0.09, 0.0), 0.0), MOVE_FORWARD);
+    assert_eq!(w.tick(0, fwd, Vec3::new(0.09, 0.0, 0.0), 0.0), MOVE_FORWARD);
     let mut w = MoveWord::default();
-    assert_eq!(w.tick(0, fwd, Vec2::new(0.1, 0.0), 0.0), MOVE_ANALOG);
+    assert_eq!(w.tick(0, fwd, Vec3::new(0.1, 0.0, 0.0), 0.0), MOVE_ANALOG);
+    assert_eq!(w.analog, Vec3::new(0.1, 0.0, 0.0));
+    // The world vector's every axis counts: a stick along z reads too, and
+    // the vector is kept for the goal.
     let mut w = MoveWord::default();
-    assert_eq!(w.tick(0, fwd, Vec2::new(f32::NAN, 0.0), 0.0), MOVE_FORWARD);
+    assert_eq!(w.tick(0, fwd, Vec3::new(0.0, 0.0, -0.5), 0.0), MOVE_ANALOG);
+    assert_eq!(w.analog, Vec3::new(0.0, 0.0, -0.5));
+    let mut w = MoveWord::default();
+    assert_eq!(
+        w.tick(0, fwd, Vec3::new(f32::NAN, 0.0, 0.0), 0.0),
+        MOVE_FORWARD
+    );
 }
 
 /// The movement goal's direction: W is the facing, S back, A and D the side
