@@ -825,18 +825,19 @@ impl Torrent {
             let mut widths = Vec::with_capacity((samples.len() - 1) * 2);
             for i in 0..samples.len() - 1 {
                 points.push(samples[i].at);
-                let mut middle = samples[i].at * 0.5 + samples[i + 1].at * 0.5;
+                let mut middle = lerp(samples[i].at, samples[i + 1].at, 0.5);
                 if i > 0 {
                     middle += (samples[i + 1].at - samples[i - 1].at) * MID_NEIGHBOURS;
                 }
                 middle += (samples[i + 1].at - samples[i].at) * MID_SEGMENT;
                 points.push(middle);
+                let midpoint = |a: f32, b: f32| a + (b - a) * 0.5;
                 widths.push(samples[i]);
                 widths.push(StreamSample {
                     at: middle,
-                    width: samples[i].width * 0.5 + samples[i + 1].width * 0.5,
-                    weight: samples[i].weight * 0.5 + samples[i + 1].weight * 0.5,
-                    age: samples[i].age * 0.5 + samples[i + 1].age * 0.5,
+                    width: midpoint(samples[i].width, samples[i + 1].width),
+                    weight: midpoint(samples[i].weight, samples[i + 1].weight),
+                    age: midpoint(samples[i].age, samples[i + 1].age),
                 });
             }
             let count = points.len();
@@ -844,7 +845,7 @@ impl Torrent {
             let first = normalize(cross(points[1] - points[0], eye));
             normals[0] = first;
             let mut sum = first;
-            for i in 1..count - 2 {
+            for i in 1..count - 1 {
                 let normal = normalize(cross(points[i + 1] - points[i - 1], eye));
                 normals[i] = normal;
                 sum += normal;
@@ -865,8 +866,8 @@ impl Torrent {
                 NORMAL_LERP,
             ));
             normals[0] = stream.normals[1];
-            for i in 1..count - 2 {
-                let t = i as f32 / (count - 1) as f32;
+            for i in 1..count - 1 {
+                let t = i as f32 / (count - 2) as f32;
                 normals[i] = normalize(lerp(stream.normals[1], stream.normals[2], t));
             }
             stream.normals[3] = normals[count - 2];

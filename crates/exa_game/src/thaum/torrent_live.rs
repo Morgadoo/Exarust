@@ -34,6 +34,7 @@
 use bevy::prelude::*;
 use exa_ai::brain::Npc;
 use exa_ai::combatant::Combatant;
+use exa_physics::Physics;
 use exa_physics::body::Ragdoll;
 use exa_physics::body::locomotion::Locomotor;
 
@@ -45,12 +46,14 @@ use super::blast_live::{
 use super::cast::PowerCaster;
 use super::casting::{self, CastBody, CastHook, spend_tick};
 use super::live::{EffectDraws, EffectMesh, EffectRoll, mesh_of_ribbon, show};
-use crate::effects::blast::{HIT_HOSTILITY, blast_aim};
+use crate::effects::blast::{EPSILON, HIT_HOSTILITY, blast_aim};
 use crate::effects::torrent::{
-    POINTS, RUNNING_FLAGS, Stream, StreamPoint, TORRENT_MOTION, Torrent, TorrentEvents,
-    TorrentView, body_reach, limb_impulse, limb_terms, torrent_knock,
+    CONTACT_EASE, POINTS, RUNNING_FLAGS, STATIC_CONTACT, Stream, StreamPoint, TORRENT_MOTION,
+    Torrent, TorrentEvents, TorrentView, body_reach, limb_impulse, limb_terms, torrent_knock,
+    torrent_reach,
 };
 use crate::player::CursorGround;
+use crate::thaum::engine::lerp;
 
 /// Centimetres a metre.
 const CM: f32 = 100.0;
@@ -183,6 +186,44 @@ fn live_points(stream: &Stream) -> impl Iterator<Item = &StreamPoint> {
     })
 }
 
+/// The level's static contact: every live point is swept as a ball of its
+/// static reach and one that meets the level moves half way to the
+/// surface. [inf: the original walks the level's static faces; Exarust
+/// asks rapier for the swept ball.]
+fn strike_level(torrent: &mut Torrent, physics: &Physics) -> usize {
+    let mut hits = 0;
+    for index in 0..torrent.count {
+        let head = torrent.records[index].head;
+        let mut k = head;
+        loop {
+            let point = torrent.records[index].points[k];
+            if point.life < 1 {
+                break;
+            }
+            let reach = torrent_reach(point.width, STATIC_CONTACT.scale, torrent.margin);
+            let motion = point.at - point.previous;
+            let squared = (motion.x * motion.x + motion.y * motion.y) + motion.z * motion.z;
+            if EPSILON < squared {
+                let length = squared.sqrt();
+                let direction = motion * (1.0 / length);
+                if let Some(toi) =
+                    physics.level_sweep(point.previous / CM, direction, length / CM, reach / CM)
+                {
+                    let contact = point.previous + direction * (toi * CM);
+                    let point = &mut torrent.records[index].points[k];
+                    point.at = lerp(point.at, contact, CONTACT_EASE);
+                    hits += 1;
+                }
+            }
+            k = if k == 0 { POINTS - 1 } else { k - 1 };
+            if k == head {
+                break;
+            }
+        }
+    }
+    hits
+}
+
 /// One tick of a running torrent's live points against `body`'s limb
 /// spheres. `limbs` is the caller's scratch buffer; a body whose limbs' box
 /// misses the live points' box grown by their most reach is skipped (the
@@ -266,6 +307,7 @@ pub(crate) fn tick_torrents(
     mut bodies: Query<(Entity, &mut Ragdoll)>,
     places: Query<&GlobalTransform>,
     cursor: Option<Res<CursorGround>>,
+    physics: Option<Res<Physics>>,
     mut combatants: Query<&mut Combatant>,
     npcs: Query<&Npc>,
     mut draws: ResMut<EffectDraws>,
@@ -320,6 +362,9 @@ pub(crate) fn tick_torrents(
             caster.sync_body();
         }
         if live.torrent.flags & RUNNING_FLAGS != 0 {
+            if let Some(physics) = physics.as_deref() {
+                strike_level(&mut live.torrent, physics);
+            }
             for (other, mut body) in &mut bodies {
                 if other == live.caster {
                     continue;

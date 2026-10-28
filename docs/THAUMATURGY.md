@@ -230,7 +230,9 @@ cast, the release flag or a shortfall (the drain while charging, half of
 it while running) calls it. Its delays draw from the effects' shared roll,
 its running points push other bodies' limb spheres at forty centimetres
 past their width's reach (each push costing a character the torrent's
-energy loss), a struck character is knocked by the gathered impulse, gets
+energy loss) and sweep the level as balls of their static reach, a point
+that meets it moving half way to the surface; a struck character is
+knocked by the gathered impulse, gets
 the torrent's stun, raises its instability counter by one and its concern
 toward the caster by 1 at gain 0.01, and it leaves the scene on the first
 frame that would build no triangles: fizzled, or no stream with more than
