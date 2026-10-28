@@ -49,6 +49,7 @@ pub mod personality;
 pub mod place;
 pub mod presence;
 pub mod roles;
+pub mod rooms;
 pub mod route;
 pub mod search;
 pub mod sense;
@@ -70,7 +71,10 @@ impl Plugin for AiPlugin {
             .add_message::<exa_combat::AttackAskedHook>()
             .add_systems(
                 FixedUpdate,
-                presence::check_presence.before(exa_physics::body::CharacterTicks),
+                (
+                    presence::check_presence.before(exa_physics::body::CharacterTicks),
+                    presence::reenter_on_entered.after(presence::check_presence),
+                ),
             )
             .add_systems(
                 Update,

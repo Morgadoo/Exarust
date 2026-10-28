@@ -44,6 +44,7 @@ use crate::idle::Routine;
 use crate::motion::{self, Gaze, Turning};
 use crate::personality::{self, Personality};
 use crate::roles::{self, Partner, Relations, Roles};
+use crate::rooms::{RoomCell, RoomCells};
 use crate::search::Search;
 use crate::sense::{Decision, Mind, decide};
 
@@ -106,6 +107,11 @@ pub struct Npc {
     pub gaze: Gaze,
     /// Its heading, look and the sway it turns by out of combat.
     pub turn: Turning,
+    /// Its cell in the room grid and the cell before it.
+    pub room: RoomCell,
+    /// The nearby characters the room list gathered (their ids), by
+    /// distance.
+    pub nearby: Vec<u64>,
 }
 
 impl Npc {
@@ -124,6 +130,8 @@ impl Npc {
             roll: 0,
             gaze: Gaze::default(),
             turn: Turning::default(),
+            room: RoomCell::default(),
+            nearby: Vec::new(),
         }
     }
 
@@ -596,8 +604,9 @@ pub fn perceive_all(
 #[allow(clippy::type_complexity)]
 pub fn ai_tick(
     ticks: Option<Res<BodyTicks>>,
+    mut rooms: Option<ResMut<RoomCells>>,
     players: Query<(Entity, &GlobalTransform), With<RatedPlayer>>,
-    targets: Query<&GlobalTransform>,
+    targets: Query<(Entity, &GlobalTransform)>,
     mut npcs: Query<(
         Entity,
         &mut Npc,
@@ -633,7 +642,7 @@ pub fn ai_tick(
         let observer_cm = gt.map_or(Vec3::ZERO, |g| g.translation() * 100.0);
         let target_cm = target
             .and_then(|t| targets.get(t).ok())
-            .map_or(observer_cm, |g| g.translation() * 100.0);
+            .map_or(observer_cm, |(_, g)| g.translation() * 100.0);
         let flat_cm = Vec3::new(
             target_cm.x - observer_cm.x,
             0.0,
@@ -686,6 +695,30 @@ pub fn ai_tick(
         let in_combat = duellist
             .as_deref()
             .map_or(combatant.in_combat, |d| d.fighting());
+        // The room bookkeeping: the character is (re)linked into its
+        // 600 cm cell, and the nearby list weighs the cell's characters.
+        if let Some(rooms) = rooms.as_deref_mut() {
+            rooms.move_to(_entity, observer_cm, &mut npc.room);
+            // The player carries no room cell, so the gather scans every
+            // character of the brain's cell rather than the cell's linked
+            // list (the original links every character with a behaviour).
+            let size = rooms.size;
+            let around: Vec<(u64, f32, bool)> = targets
+                .iter()
+                .filter(|(e, _)| *e != _entity)
+                .filter(|(_, g)| {
+                    crate::rooms::cell_index(g.translation() * 100.0, size) == Some(npc.room.cell)
+                })
+                .map(|(e, g)| {
+                    let at = g.translation() * 100.0;
+                    (e.to_bits(), (at - observer_cm).length_squared(), true)
+                })
+                .collect();
+            npc.nearby = contacts::nearby(&around)
+                .into_iter()
+                .map(|(id, _)| id)
+                .collect();
+        }
         let asleep = mind.is_some_and(|m| m.asleep);
         let down = condition.0 & combatant::CONDITION_DOWN != 0;
         let mut roll = npc.roll;
@@ -1212,6 +1245,62 @@ mod tests {
             ))
             .id();
         (app, player, npc)
+    }
+
+    /// The AI tick links the brain into its 600 cm room cell and fills the
+    /// nearby list with the characters of that cell, by distance.
+    #[test]
+    fn the_ai_tick_gathers_the_nearby_characters_of_its_room() {
+        let mut app = App::new();
+        app.add_systems(Update, ai_tick);
+        app.insert_resource(crate::rooms::RoomCells::new(crate::rooms::RoomGridSize {
+            width: 32,
+            height: 32,
+        }));
+        let player = app
+            .world_mut()
+            .spawn((
+                GlobalTransform::from_translation(Vec3::new(0.0, 0.0, 2.0)),
+                Fighter::default(),
+                RatedPlayer,
+            ))
+            .id();
+        let near = app
+            .world_mut()
+            .spawn((
+                Npc::new([0.0; 4]),
+                Combatant::default(),
+                GlobalTransform::from_translation(Vec3::new(0.0, 0.0, 1.0)),
+                Fighter::default(),
+                Condition::NORMAL,
+            ))
+            .id();
+        let far = app
+            .world_mut()
+            .spawn((
+                Npc::new([0.0; 4]),
+                Combatant::default(),
+                GlobalTransform::from_translation(Vec3::new(100.0, 0.0, 0.0)),
+                Fighter::default(),
+                Condition::NORMAL,
+            ))
+            .id();
+        app.update();
+        let w = app.world();
+        assert_eq!(w.get::<Npc>(near).unwrap().nearby, vec![player.to_bits()]);
+        // The far character is in its own cell, so its list holds neither.
+        assert!(w.get::<Npc>(far).unwrap().nearby.is_empty());
+        assert_eq!(
+            w.get::<Npc>(near).unwrap().room.cell,
+            crate::rooms::cell_index(
+                Vec3::ZERO,
+                crate::rooms::RoomGridSize {
+                    width: 32,
+                    height: 32
+                }
+            )
+            .unwrap()
+        );
     }
 
     /// An idle brain turns its model toward its look yaw: the out-of-combat
