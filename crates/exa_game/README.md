@@ -168,6 +168,14 @@ process (`exa_world::level_lifecycle`), so a landing plan can now be handed
 to a live load; the level loader still keeps its own scene model rather than
 the exporter's, so exporting the current level into a save waits for the RFC
 to export-scene conversion; see `docs/formats/SAVES.md` (Level transitions).
+The scene side of the load is `save_scene`: the three entry points (save
+section or `<locale>.rfc`, by name, arena), the import order with the
+terrain probe and the node, sector and grid-environment passes, the game
+scene's creation constants, the menu background scene's load, the GUI reset
+and the player's node set-up and spawn. The migration pass now keeps only
+the travelling characters: a repeated address is logged as a duplicate and
+is neither flushed again nor placed. These are tested rules; no running
+game calls them yet because the level loader keeps its own scene model.
 
 Character creation (`create`): the record's gear (four hand items, its
 worn list and its carried list), the mode filters (story background 0 keeps

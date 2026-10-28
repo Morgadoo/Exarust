@@ -31,7 +31,7 @@ use exa_formats::rfc_write::{ExportOptions, ExportScene, export_save_level};
 use exa_formats::save_chunk::{SettingsChunk, save_tag_bytes, settings_chunk_written};
 
 use crate::save_level::{
-    FollowerBody, FollowerReset, LandingPlan, Migration, SceneMotile, landing_plan, migrations,
+    FollowerBody, FollowerReset, LandingPlan, MigrationList, SceneMotile, landing_plan, migrations,
     place_followers, reattach_follower,
 };
 
@@ -129,8 +129,9 @@ pub struct TransitionPlan {
     /// Each follower's re-attach state (UID and controls re-created, carry
     /// cleared, controller 1, the minimum distance floor).
     pub resets: Vec<FollowerReset>,
-    /// The migration list the flush reported, duplicates included.
-    pub migrations: Vec<Migration>,
+    /// The migration list the flush reported: the characters that travel and
+    /// the repeated addresses it logged but did not add.
+    pub migrations: MigrationList,
 }
 
 /// Writes the current level's section for a save: the scene's chunk tree,
@@ -359,10 +360,11 @@ mod tests {
         assert_eq!(pending.followers.len(), 2);
         assert!((pending.followers[0][2] - 3.0).abs() < 1e-6);
         // The migration list keeps the travelling characters once and
-        // flags the repeat; a controller 3 does not travel.
-        assert_eq!(plan.migrations.len(), 2);
-        assert!(!plan.migrations[0].duplicate);
-        assert!(plan.migrations[1].duplicate);
+        // reports the repeat without adding it; a controller 3 does not
+        // travel.
+        assert_eq!(plan.migrations.travelling.len(), 1);
+        assert_eq!(plan.migrations.travelling[0].address, 1);
+        assert_eq!(plan.migrations.duplicates, vec![1]);
     }
 
     #[test]
