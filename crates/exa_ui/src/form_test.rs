@@ -1414,3 +1414,147 @@ fn a_control_message_finds_a_nested_record_or_answers_none() {
     assert_eq!(send_control(&tree, 7, message), Some((vec![], 0, message)));
     assert_eq!(send_control(&tree, 8, message), None);
 }
+
+#[test]
+fn the_close_cascade_takes_owned_popups_and_children() {
+    // 0 is the task; 1 its active child; 2 a window; 3 a popup of 2 in the
+    // task; 4 a popup of 1; 5 a child of 2 already closing; 6 a child of 2.
+    let task = CloseNode {
+        children: vec![1, 2, 3, 4],
+        active_child: Some(1),
+        remembered: Some(2),
+        ..CloseNode::default()
+    };
+    let form = |owner: Option<usize>, children: Vec<usize>| CloseNode {
+        closes_once: true,
+        owner,
+        children,
+        has_callback: true,
+        ..CloseNode::default()
+    };
+    let mut nodes = vec![
+        task,
+        form(None, vec![]),
+        CloseNode {
+            style: STYLE_CONTROLLER_ACTIONS,
+            ..form(None, vec![5, 6])
+        },
+        form(Some(2), vec![]),
+        form(Some(1), vec![]),
+        CloseNode {
+            closing: true,
+            ..form(None, vec![])
+        },
+        form(None, vec![]),
+    ];
+    let mut steps = Vec::new();
+    close_cascade(&mut nodes, 2, &mut steps);
+    use CloseStep::*;
+    assert_eq!(
+        steps,
+        [
+            ControllerActions(2),
+            ClosingFlag,
+            // The task's popup owned by 2, then 2's own child not closing.
+            ClosingFlag,
+            Hide(3),
+            Callback(3),
+            Redraw,
+            ClosingFlag,
+            Hide(6),
+            Callback(6),
+            Redraw,
+            Hide(2),
+            Callback(2),
+            Redraw,
+        ]
+    );
+    assert_eq!(nodes[0].remembered, None);
+    assert!(!nodes[4].closing);
+    // A form already closing only restores the controller's actions.
+    let mut again = Vec::new();
+    close_cascade(&mut nodes, 2, &mut again);
+    assert_eq!(again, [ControllerActions(2)]);
+    // The active child runs its callback and closes the task instead.
+    let mut active = Vec::new();
+    close_cascade(&mut nodes, 1, &mut active);
+    assert_eq!(active, [ClosingFlag, Callback(1), CloseTask(0)]);
+    assert_eq!(nodes[0].active_child, None);
+    assert!(
+        !nodes[4].closing,
+        "the task closes its popups, not the child"
+    );
+    // A form that does not close once is taken again by a later walk, and
+    // a tree that links into itself stops at the depth guard.
+    let mut cycle = vec![CloseNode {
+        children: vec![0],
+        ..CloseNode::default()
+    }];
+    cycle[0].task = 1;
+    let mut looped = Vec::new();
+    close_cascade(&mut cycle, 0, &mut looped);
+    assert_eq!(looped.iter().filter(|s| **s == Redraw).count(), CLOSE_DEPTH);
+    // An index past the tree closes nothing.
+    let mut none = Vec::new();
+    close_cascade(&mut cycle, 9, &mut none);
+    assert!(none.is_empty());
+}
+
+#[test]
+fn the_maximise_and_restore_steps_and_hook_words() {
+    use WindowStep::*;
+    assert_eq!(
+        maximise_steps(true),
+        [
+            Show,
+            SaveRecord,
+            StateHook(2),
+            Place,
+            SetState(2),
+            Resize,
+            Changed,
+            Redraw
+        ]
+    );
+    assert!(!maximise_steps(false).contains(&StateHook(2)));
+    assert_eq!(
+        restore_steps(true, true),
+        [
+            Show,
+            Place,
+            Resize,
+            FreeRecord,
+            ControlSpans,
+            StateHook(0),
+            SetState(0),
+            Changed,
+            Redraw
+        ]
+    );
+    // Without a record the hook is still told, and nothing moves.
+    assert_eq!(
+        restore_steps(false, true),
+        [Show, StateHook(0), SetState(0), Changed, Redraw]
+    );
+    assert_eq!(
+        restore_steps(false, false),
+        [Show, SetState(0), Changed, Redraw]
+    );
+}
+
+#[test]
+fn the_set_controls_copy_takes_records_up_to_the_last_index() {
+    use crate::gui_controls::Control;
+    let mut source = vec![Control::new(1, 0, 0, 10, 10), Control::new(5, 4, 4, 20, 8)];
+    source[1].text = b"Label".to_vec();
+    source.push(Control::new(2, 0, 0, 1, 1));
+    // The last index 1 copies two records, the text with them.
+    let (table, last) = copy_control_table(&source, 1);
+    assert_eq!(last, 1);
+    assert_eq!(table, source[..2]);
+    // A negative index copies nothing; a source short of the index gives
+    // what it holds.
+    assert_eq!(copy_control_table(&source, -1), (Vec::new(), -1));
+    let (table, last) = copy_control_table(&source, 9);
+    assert_eq!((table.len(), last), (3, 2));
+}

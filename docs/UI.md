@@ -1111,7 +1111,25 @@ tab stop, 0x100000 no keys) and state word (0x10 disabled, 0x400 focus,
   spacing, attributes 0x4f and style 0xf0, the others attributes 0xc000.
   Restoring divides every saved coordinate and size by the saved unit
   (truncating) before multiplying by the current one; the border is
-  rounded (ties to even).
+  rounded (ties to even). Both first show the form. A maximise saves the
+  record, tells the GUI's window-state hook (word 2) before the form
+  changes, writes the place, sets the state's low bits to 2, resizes, then
+  runs the layout-changed virtual and redraws; a restore with a record
+  writes it back, resizes, frees it and refreshes the control spans, and
+  with or without one tells the hook (word 0) and clears the state.
+- **Close.** A form with style bit 0x20 restores the controller's action
+  set (Steam Input, platform glue) even when already closing. A form not
+  yet closing marks itself and raises the GUI's closing flag when it
+  closes once. The task's active child runs its callback, clears the
+  task's active child and closes the task. Any other form clears the
+  task's remembered child when it is this one, closes the task's children
+  it owns that are not closing (the count read once), then its own
+  children not closing, then hides, runs its callback and redraws; no walk
+  removes a form from a list, so a form that does not close once can be
+  taken twice (`form::close_cascade`, a tested model).
+- **Control table.** Setting the records copies the caller's records
+  `0..=last` whole into a new owned table (`form::copy_control_table`)
+  unless the table is adopted as given.
 - **Resize.** A form with a parent keeps its right or bottom edge when
   anchored there; a stretching child takes the change and is resized, an
   anchored child moves, any other is re-centred (truncating). The records
@@ -1241,6 +1259,12 @@ drawing:
   blocks whose backs step one pixel and whose fills are three narrower and
   `block + 1` apart. The bar control (0xac4) draws the HUD's two-share
   bar two pixels in.
+- **HUD message.** The draw's last layer is a one-line message in the
+  main font from half the width less five units, its baseline six units
+  plus the font's line height down: a shadow one pixel up and left in
+  black at 0x80, then the line in the skin's sixth label ink, not
+  centred. The shipped game never sets the flag it waits for, so it never
+  draws there (`hud_status::message_layers`, tested).
 - **HUD.** The status marker (53 units right of the centre, 8 above the
   bottom) draws while no status entry has 0x2000; the skill-ready alert (60
   units left) while the six skills' levels sum below 15 and no skill has

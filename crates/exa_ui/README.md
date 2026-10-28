@@ -436,7 +436,10 @@ alpha), both scrollbars and their setters, the wheel, held arrows and
 thumb drags, the point conversions rounded with `CVTSS2SI`, the hit test
 (client, children, then records exactly and within two units), hover,
 focus, caret, Tab, the key/press/drag routes, the frame codes a press,
-grip drag and release act on, the snap slots and the records' rescale.
+grip drag and release act on, the snap slots and the records' rescale,
+the maximise and restore steps with the window-state hook's words, the
+close cascade over owned popups and children, and the control table's
+copy.
 
 `game_gui` is the in-game unit's non-drawing half: the screens' tags
 (0xce1c2010 inventory, 0xce1c2040 loot window, 0xce1c2030 journal), the

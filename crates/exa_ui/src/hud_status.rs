@@ -206,6 +206,37 @@ pub fn status_layers(
     [marker, ready]
 }
 
+/// The HUD's last layer, its one-line message: the main font from half the
+/// width less five units, its baseline six units plus the font's line
+/// height down (the font record's eighth word, after the glyph quad, the
+/// ascent, the slant and the gap, as the menu font's record shows the
+/// layout), first a shadow one pixel up and left in black at alpha 0x80,
+/// then the line in the skin's sixth label ink. The line starts at that
+/// pen; it is not centred. The shipped game never sets the flag this layer
+/// waits for, so it never draws there; Exarust keeps it as a tested draw.
+pub fn message_layers(
+    font: &crate::gui_font::GuiFont,
+    texture: (u16, u16),
+    text: &[u8],
+    window_width: u32,
+    unit: i32,
+    palette: &SkinPalette,
+) -> [GuiLayer; 2] {
+    let x = (window_width >> 1) as i32 - unit * 5;
+    let y = unit * 6 + font.line_height;
+    let line = |x: i32, y: i32, ink| {
+        let quads = crate::gui_text::draw_line(font, text, x, y);
+        GuiLayer::new(
+            crate::gui_draw::text_batch(font, &quads, ink, texture),
+            LayerTexture::Named(font.texture),
+        )
+    };
+    [
+        line(x - 1, y - 1, [0, 0, 0, 0x80]),
+        line(x, y, palette.text[6]),
+    ]
+}
+
 /// A small rasterised piece of the interface: its window-pixel corner,
 /// size and straight-alpha sRGB pixels, top row first.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -533,6 +564,23 @@ mod tests {
         // A corner of the box is outside the halo's rounded cut.
         assert_eq!(at(0, 0)[3], 0);
         assert!(rasterise_status(&[]).is_none());
+    }
+
+    #[test]
+    fn the_message_line_and_its_shadow() {
+        let font = &crate::gui_font::RAYFORM_08;
+        let palette = crate::line_skin::line_palette();
+        let [shadow, line] = message_layers(font, (256, 256), b"Hi", 1600, 4, &palette);
+        // Half of 1600 less 20, baseline 24 + 16 = 40; the glyph quad (11 ×
+        // 16) hangs above the baseline.
+        let first = line.batch.vertices[0];
+        assert_eq!((first.x, first.y), (780.0, 24.0));
+        assert_eq!(first.ink, palette.text[6]);
+        let shade = shadow.batch.vertices[0];
+        assert_eq!((shade.x, shade.y), (779.0, 23.0));
+        assert_eq!(shade.ink, [0, 0, 0, 0x80]);
+        assert_eq!(line.batch.vertices.len(), 8);
+        assert_eq!(line.texture, LayerTexture::Named("Rayform08R"));
     }
 
     /// The installed atlas holds the first cell (skipped without
