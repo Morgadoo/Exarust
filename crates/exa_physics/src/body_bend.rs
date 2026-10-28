@@ -6,7 +6,7 @@
 //! it does. Both write, for each leg, a knee correction about the lower
 //! leg's lateral axis, a hip correction about the thigh's, and (standing)
 //! a turn of the thigh toward its target; the sampler multiplies them into
-//! the clip's pose ([`Ragdoll::pose_leg_bend`]).
+//! the clip's pose ([`Ragdoll::fold_leg_ik`]).
 //!
 //! **Standing**: the target is the anchor, lowered by twice the lift
 //! term ([`bend_target`]), or, for an anchored foot, the midpoint of the
@@ -357,34 +357,32 @@ struct IkTick {
 }
 
 impl Ragdoll {
-    /// Multiplies last tick's leg bend into this tick's pose, and remembers
-    /// the clip's hip-to-ankle offset for the bend computed after the
-    /// solver. The muscles sample the pose after this, so they follow the
-    /// correction on the tick after it was computed. A correction the IK
-    /// holds at the identity is not multiplied in.
-    pub(super) fn pose_leg_bend(&mut self) {
+    /// The sampler's IK step: records each leg's clip hip-to-ankle offset
+    /// from `chain` (the clip's pose before the IK) and multiplies last
+    /// tick's leg bend into it. The muscles and the drawn parts both read
+    /// the folded chain, so they follow the correction on the tick after
+    /// it was computed, as the original's sampler does. A body without
+    /// muscles, or a chain of another length, is left alone.
+    pub fn fold_leg_ik(&mut self, chain: &mut [Affine3A]) {
         let Ragdoll {
             parts, legs, drive, ..
         } = self;
-        let Some(drive) = drive.as_mut() else {
-            return;
-        };
-        if drive.targets.len() != parts.len() {
+        if drive.is_none() {
             return;
         }
         for leg in legs.iter_mut() {
             let Some(thigh) = parts[leg.shin].parent else {
                 continue;
             };
-            if thigh >= drive.targets.len() {
+            if thigh >= chain.len() || leg.shin >= chain.len() {
                 continue;
             }
-            let hip = Vec3::from(drive.targets[thigh].translation);
-            let ankle = drive.targets[leg.shin].transform_point3(leg.point);
+            let hip = Vec3::from(chain[thigh].translation);
+            let ankle = chain[leg.shin].transform_point3(leg.point);
             leg.posed_offset = ankle - hip;
             leg.anim_contact = ankle;
             leg.anim_hip = hip;
-            fold_pose(&mut drive.targets, thigh, leg.shin, leg);
+            fold_pose(chain, thigh, leg.shin, leg);
         }
     }
 

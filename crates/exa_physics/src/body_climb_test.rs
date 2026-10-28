@@ -124,7 +124,9 @@ fn step(
 ) {
     body.set_bearing(bearing);
     body.measure_balance(level);
-    body.aim(root, pose.iter().map(|p| root * *p).collect());
+    let mut chain: Vec<Affine3A> = pose.iter().map(|p| root * *p).collect();
+    body.fold_leg_ik(&mut chain);
+    body.aim(root, chain);
     body.tick(level);
 }
 

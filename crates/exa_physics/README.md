@@ -200,9 +200,10 @@ cosine), the angle between the clip's leg and the target's negated unless
 the clip's foot is ahead of the character frame's origin, all at 0.04 ×
 the speed plus 0.01 a tick; a leg where the clip's leg is not longer and
 the foot does not touch standing still eases both corrections back with
-the identity shown. Both write the knee and hip corrections the sampler
-composes into the clip's thigh and shin turns, and the foot's height over
-its floor, which the foot pitch levels. Each foot's sole floor is the
+the identity shown. Both write the knee and hip corrections the sampler folds into the clip's
+chain (`Ragdoll::fold_leg_ik`, which records each leg's clip ankle and hip
+before the fold), the chain the muscles and the drawn parts both read, and
+the foot's height over its floor, which the foot pitch levels. Each foot's sole floor is the
 original's Ground Query (`contact::Level::floor_below`, a point ray from
 30 cm over the foot's ground 60 cm down against floor-flagged pieces): the
 hit, or the ground plus the leg's offset where it misses, never over the
@@ -279,7 +280,11 @@ each leg's foot contact (`body::Leg`: `state`, a `body::FootState` of the
 original's bits, `anchor`, `grip`, `ramp`) is planted where its foot meets
 the floor, stood on its stance spot getting up or unsupported, cleared
 lying, and steps to its stance spot by the footwork's stance score, one
-foot at a time (a free foot within 5 cm stays). A recovery step starts
+foot at a time (a free foot within 5 cm stays). The score's reference
+term is 1 − the horizontal distance to the feet's segment × the
+single-precision 1/30, except under the squared epsilon where it stays 1
+(a NaN reference takes the root); the width and side terms divide by their
+spans unguarded, as the original's do. A recovery step starts
 when the chest is past 1.5 · R · E⁴ · S (45 cm for a settled human),
 compared squared as the original does, and not during a shock stagger;
 the balance keeps the support point and the feet's centre

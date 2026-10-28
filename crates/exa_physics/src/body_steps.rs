@@ -479,7 +479,10 @@ pub(super) fn score_reference(
 
 /// The stance score of feet at `a` and `b` (cm) against `reference` (cm).
 /// `side` is horizontal; a positive `(b − a) · side` is the natural order
-/// and is rooted, a negative one is a crossed stance and is not.
+/// and is rooted, a negative one is a crossed stance and is not. The
+/// original's unordered edge cases are kept: a NaN reference distance takes
+/// the root and gives a NaN; a footing of no length gives a NaN distance
+/// (the division by zero), as the original's does.
 pub(super) fn stance_score(
     a: Vec3,
     b: Vec3,
@@ -488,31 +491,35 @@ pub(super) fn stance_score(
     crouch: f32,
     scale: f32,
 ) -> f32 {
-    let e = (b - a).with_y(0.0);
-    // The span is rooted only above the original's epsilon.
-    let ee = e.length_squared();
+    let e = b - a;
+    // The original measures the stance's span across the ground only:
+    // (z² + x²) + 0.0, its y left out.
+    let ee = e.z * e.z + e.x * e.x + 0.0;
     let length = if ee > SIDE_ROOT { ee.sqrt() } else { ee };
-    let r = segment_distance(reference.with_y(0.0), a.with_y(0.0), b.with_y(0.0));
-    // The original multiplies by its single-precision 1/30.
-    let mut along = 1.0 - r * REF_RECIP;
-    let span = CROUCH_SPAN - CROUCH_NARROW * crouch;
-    if crouch > 0.0 && length > span {
-        along = (f64::from(along) - f64::from(length - span) * CROUCH_WEIGHT) as f32;
-    }
-    let width = if scale <= 0.0 {
+    // The reference's projection onto the feet's segment, by the original's
+    // z, y, x sum, clamped to it (a NaN stays, as its unordered jumps do).
+    let rv = reference - a;
+    let t = ((e.z * rv.z + e.y * rv.y + e.x * rv.x) / ee).clamp(0.0, 1.0);
+    let d = (a + e * t) - reference;
+    // The same horizontal distance as the span: (z² + x²) + 0.0.
+    let r2 = d.z * d.z + d.x * d.x + 0.0;
+    // The original takes the root unless the squared distance is under its
+    // epsilon (a NaN takes it): 1 − r/30, the single-precision 0.033333335.
+    let mut along = if r2 < SIDE_ROOT {
         1.0
     } else {
-        (STANCE_WIDTH * scale - length).abs() / (STANCE_WIDTH * scale)
+        1.0 - r2.sqrt() * REF_RECIP
     };
-    let mut w = e.dot(side.with_y(0.0));
+    let span = CROUCH_SPAN - CROUCH_NARROW * crouch;
+    if crouch > 0.0 && span < length {
+        along = (f64::from(along) - f64::from(length - span) * CROUCH_WEIGHT) as f32;
+    }
+    let width = (STANCE_WIDTH * scale - length).abs() / (STANCE_WIDTH * scale);
+    let mut w = e.dot(side);
     if w > SIDE_ROOT {
         w = w.sqrt();
     }
-    let side_term = if scale <= 0.0 {
-        1.0
-    } else {
-        (STANCE_SIDE * scale - w).abs() / (STANCE_SIDE * scale)
-    };
+    let side_term = (STANCE_SIDE * scale - w).abs() / (STANCE_SIDE * scale);
     (1.0 - side_term * side_term) * 2.0 + ((1.0 - width * width) + along)
 }
 
@@ -830,17 +837,6 @@ pub(super) fn reach_penalty(g_cm: f32, leg_cm: f32, step_cm: f32) -> f32 {
 
 fn recent(stamp: f32, now: f32, window: f32) -> bool {
     stamp.is_finite() && now >= stamp && now - stamp < window
-}
-
-fn segment_distance(reference: Vec3, a: Vec3, b: Vec3) -> f32 {
-    let e = b - a;
-    let ee = e.length_squared();
-    let t = if ee < 1e-12 {
-        0.0
-    } else {
-        ((reference - a).dot(e) / ee).clamp(0.0, 1.0)
-    };
-    (reference - (a + e * t)).length()
 }
 
 #[cfg(test)]
