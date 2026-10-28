@@ -477,6 +477,11 @@ pub fn strike_limbs(
                 continue;
             };
             let other_state = part_states.get(&(other.0, other.1)).copied();
+            // A weapon meeting a limb: the original runs this branch too
+            // (and stays silent against a limb), but Exarust's blade sweep
+            // already resolves a weapon striking a body (damage, recoil and
+            // the swing's end), so the branch is left to weapon-on-weapon
+            // and weapon-on-prop contacts to keep from answering a hit twice.
             if other_state.is_some_and(|s| s.is_limb()) {
                 continue;
             }
@@ -537,13 +542,23 @@ pub fn strike_limbs(
                     swing.end_ms = u64::from(reaction.stall_end_ms);
                 }
                 if let Some(strength) = reaction.strike_strength {
+                    // The stab or overhead's stall: none, ending at the
+                    // reaction's clock.
                     swing.strike_strength = strength;
+                    swing.stall = 0.0;
+                    swing.end_ms = u64::from(reaction.stall_end_ms);
                 }
                 if reaction.clears_strike_chain {
                     for part in &mut item.parts {
                         part.state = part.state.without(PartState::STRIKE_CHAIN);
                     }
                 }
+            }
+            // Only once the item's own sound cooldown is over (the
+            // original's unsigned `ready < now`).
+            let ready = item.parts.first().map_or(0, |p| p.sound_ready_ms);
+            if ready >= now {
+                continue;
             }
             let Some(sound) = weapon_impact_sound(*impact) else {
                 continue;
