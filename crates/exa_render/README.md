@@ -128,10 +128,15 @@ composite gloss (roughness 1 − it, a full gloss being a mirror whose one
 singular point the shared light keeps at 0), and its specular is masked by
 the red of its diffuse colour (the composite times the terrain's 0.75).
 `terrain_composite::TerrainCompositeHost` hosts the original's offscreen
-composite sets as render-target images (colour, tangent normal, gloss and
-half-size displacement at the pools' 1024²/512² sizes), created one a frame
-as the live selector holds them and dropped when a set returns to its pool;
-no pass bakes into them yet, so allocation is opt-in (`EXA_TERRAIN_SETS=1`).
+composite sets as render-target images (sRGB colour, tangent normal, gloss
+and half-size displacement at the pools' 1024²/512² sizes), created one a
+frame as the live selector holds them and dropped when a set returns to its
+pool. `TerrainBakeQueue` takes one block's layers and a set, and a
+render-world pass (`terrain_bake.wesl`) bakes it in the compositor's order
+(normal, colour, gloss, displacement), one block a frame, with the layer
+stacking the per-pixel draw uses (`terrain_layers.wesl`, a shader library
+both import). `exa_world::terrain::composite_draw` then draws the block
+from its set. All of it is opt-in (`EXA_TERRAIN_SETS=1`).
 Rules:
 [`docs/RENDERING.md`](../../docs/RENDERING.md) (Terrain).
 

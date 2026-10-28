@@ -678,14 +678,55 @@ gloss, displacement, four layers a group, each group's mask upload), the
 mask and height passes with their clears, blending, clamping and quads, and
 the selection's cut-offs, sort keys, set stealing and one-block-a-frame
 rule. `exa_render::terrain_composite` hosts the set targets themselves
-(colour RGBA8 — wgpu has no renderable RGB8 — normal RG8, gloss R8 and
+(colour RGBA8 stored as sRGB — wgpu has no renderable RGB8, and sRGB keeps
+the 8 bits gamma-encoded like the original's — normal RG8, gloss R8 and
 half-size displacement R8, at 1024²/512² from the default texture detail)
 and creates a set the first time the live selector holds it, one a frame,
-dropping it when the set returns to its pool. Because nothing draws them
-yet and the full pools are about 235 MB of targets, the allocation is
-opt-in with `EXA_TERRAIN_SETS=1`. No pass bakes into the sets yet: the per-pixel shader
-reproduces their content, and a bake pass would read the set assignments
-the selector keeps.
+dropping it when the set returns to its pool.
+
+With `EXA_TERRAIN_SETS=1` the sets are also baked and drawn, as the
+original shows its terrain:
+- **Bake.** `terrain::composite_draw` queues one held set's bake a frame
+  (in selection order) with the block's tile material: its layers, covers
+  and values. The renderer runs the compositor's passes in its order —
+  normal, colour, gloss, then displacement at half the side — each a
+  full-target quad over the block, so target texel (i + ½)/N is the point
+  (i + ½)/N across the 6 m block (`terrain_bake.wesl`). Each pass stacks
+  the layers exactly as the per-pixel draw does (`terrain_layers.wesl`,
+  shared by both): the normal pass writes the stacked xy as xy·½ + ½, the
+  colour pass the stacked colour before `MatDif`, the gloss pass the
+  stacked gloss, and the displacement pass the stacked parallax height,
+  each clamped to its 8-bit target. The original's groups of four additive
+  layers fold into one stack, as in the per-pixel draw. A set copy (a
+  block traded from a high to a low set) is baked again from the layers
+  instead of blitted; only the copy's downsampling differs.
+- **Draw.** Once a block's bake has run it takes its own material, the
+  tile's with the set bound and the `COMPOSITE` flag, and `terrain.wesl`
+  reads the set as the shipped `shadetrn` program does: the composite
+  coordinate is the tile-local position in centimetres × `TexPos.z` +
+  `TexPos.xy`; the parallax shifts it by `dsp·(h − ½)` with
+  `dsp = vt.xy·0.007·(4 + 3·vt.z)` in four accumulating steps and eases
+  back by min((h₀ − h₃)·2, 1), with the view taken on the lit program's own
+  axes (+X projected, then its cross with the normal: the set's v runs
+  along +Z); colour, gloss and normal xy (× 2 − 1) are read there and the
+  lighting is unchanged. A block keeps the per-pixel draw until its bake
+  has run, and goes back to it when it loses its set or the set's targets
+  are rebuilt. Blocks the selection holds no set for (past 44.4 m, or
+  beyond the 64 sets) keep the per-pixel draw; the original shows them only
+  through a set.
+- **What changes on screen.** Near the camera nothing visible: the bake is
+  the per-pixel stack sampled at 170 texels a metre (high sets) or 85 (low
+  sets, 15–44.4 m), so fine layer detail beyond that resolution softens,
+  colour above 1 (a tint × 1.5 over a bright texel) clips at the 8-bit
+  composite as in the original, and the parallax reads the half-size
+  height. Checked on arenao1 with `EXA_SCENE_SEED=5`: 34 blocks draw from
+  sets after about a second and the frame matches the per-pixel draw to a
+  mean of about 1–3 levels in 255, the same as two runs of the default
+  draw.
+
+The full pools are about 235 MB of targets and the bake costs one block a
+frame, so all of it stays opt-in; without the variable no set is created,
+no bake runs and every block draws per pixel.
 
 **Geometry.** A tile is a 241 × 241 vertex grid over 240 × 240 cells of
 20 cm, and the original draws it as one terrain mesh per 6 m block: a
@@ -748,7 +789,13 @@ skipped while the refresh delay counts down, as in the original):
   box's frame (its dot products with the box's axes), the largest non-negative clearance (0 when they overlap).
   The light's plane list itself is not in the pack; Exarust models a point
   light's reach as a box of its stored radius (1.25 radii, the falloff
-  reach) — a labelled guess.
+  reach) — a labelled guess. The lights tested are the block's room's light
+  list (`rooms::RoomLights`): each light joins the room of the cell it
+  stands in and the rooms that own a light pass their lists through their
+  portals, once, in room order; a room listing no light leaves the
+  original's 65 000 cm. Exarust builds the lists from the lights' current
+  places each time it ranks (a carried light changes rooms); a level
+  without rooms ranks against every light.
 `terrain::wireframe` draws a block's edges as lines when `EXA_TERRAIN_WIRE`
 is set (the original's debug wireframe hook).
 
