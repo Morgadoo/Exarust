@@ -147,13 +147,15 @@ pub fn teardown(
     levels: Vec<Entity>,
     handled: Vec<Entity>,
 ) {
-    for entity in levels {
-        commands.entity(entity).despawn();
-    }
+    // The handles go first: a placed character's root is also a level
+    // root, and a command on it after its despawn would fail.
     for entity in handled {
         commands
             .entity(entity)
             .remove::<exa_physics::CharacterHandles>();
+    }
+    for entity in levels {
+        commands.entity(entity).despawn();
     }
     // The level's geometry and bodies are all fixed or stand-in colliders;
     // emptying the world frees them (and the player's old capsule) in one

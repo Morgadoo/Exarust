@@ -383,6 +383,8 @@ fn apply_level_change(
     mut images: ResMut<Assets<Image>>,
     support: Option<Res<CompressedImageFormatSupport>>,
     ready: Option<Res<exa_world::level_lifecycle::LevelChangeReady>>,
+    mut time: ResMut<Time<Virtual>>,
+    hold: Option<Res<LevelChangeHold>>,
 ) {
     let Some(ready) = ready else {
         return;
@@ -411,6 +413,17 @@ fn apply_level_change(
     // no longer reachable from any entity; drop the cache so the next load
     // reads them again and the old geometry and CPU texels are freed now.
     cache.clear();
+    // The surviving player must not simulate while the destination's
+    // collision is built: with the old level gone it would fall out of the
+    // world and die. The game time stands still until the collision is in,
+    // as the original builds its new scene before the player moves again.
+    let was_paused = hold
+        .as_ref()
+        .map_or(time.is_paused(), |hold| hold.was_paused);
+    if hold.is_none() {
+        commands.insert_resource(LevelChangeHold { was_paused });
+        time.pause();
+    }
     match &mut *view {
         View::Play(name) | View::Level(name) => *name = level.clone(),
         View::Model { .. } | View::Texture(_) | View::Character { .. } => {}
@@ -426,6 +439,11 @@ fn apply_level_change(
     info!("level change: loading {level} (spawn {spawn})");
     if !begin_level(&mut commands, &mut loader, &level) {
         warn!("level change: {level} is not in the resource pack");
+        // Nothing will build: give the game time back.
+        if !was_paused {
+            time.unpause();
+        }
+        commands.remove_resource::<LevelChangeHold>();
     }
 }
 
@@ -854,6 +872,13 @@ pub(crate) struct PendingArena<'w> {
 }
 
 /// Play mode waiting for the level's collision, behind the loading screen.
+/// The game time a level change stopped while the destination's collision
+/// is built, and whether it was already paused before.
+#[derive(Resource)]
+struct LevelChangeHold {
+    was_paused: bool,
+}
+
 #[derive(Resource)]
 struct PendingCollision {
     root: Entity,
@@ -886,6 +911,8 @@ fn finish_collision(
             Without<exa_game::player::Player>,
         ),
     >,
+    mut time: ResMut<Time<Virtual>>,
+    hold: Option<Res<LevelChangeHold>>,
 ) {
     if building.contains(pending.root) {
         if pending.since.elapsed() < STAGE_TIMEOUT {
@@ -897,6 +924,12 @@ fn finish_collision(
         warn!("level collision still building after {STAGE_TIMEOUT:?}; starting anyway");
     }
     commands.remove_resource::<PendingCollision>();
+    if let Some(hold) = hold {
+        if !hold.was_paused {
+            time.unpause();
+        }
+        commands.remove_resource::<LevelChangeHold>();
+    }
     let existing = players.iter().next().map(|(entity, _)| entity);
     if let Some((_, mut transform)) = players.into_iter().next() {
         // The player survives a level change; the new level's start moves
