@@ -123,7 +123,7 @@ const SOLE_INSET: f32 = 0.5;
 /// this far down under the toe.
 const GROUND_QUERY_ABOVE: f32 = 30.0;
 const GROUND_QUERY_DEPTH: f32 = 60.0;
-/// The placement's stance spot is the clip ankle plus this far (cm, ×
+/// The placement's ground probe is the clip ankle plus this far (cm, ×
 /// scale) along the shin's forward axis; its Height Query starts at the
 /// frame's height plus the leg's length, with a 10 cm sphere swept 300 cm
 /// down. Its reach rule uses the 40° cosine 0.766.
@@ -606,7 +606,7 @@ pub(super) fn build(setup: &[PartSetup], parts: &mut [Part]) -> (Vec<Pin>, Vec<L
         parts[i].foot = Some(point);
         let contact = weights(&parts[i], point);
         let at = parts[i].point(&contact);
-        // The clip's ankle as last sampled (the feet routine's `+0x30`):
+        // The clip's ankle as last sampled (the feet routine's own record):
         // the model's own pose until the first sample writes one.
         let anim_hip = parts[i]
             .parent
@@ -1058,26 +1058,25 @@ impl Ragdoll {
             }
             // The per-leg lag: how far the contact trails its animated spot
             // along the facing, in cm. The original measures the animated
-            // contact in the character frame against the physical one, and
-            // negates the lead while the walk is backwards; a lead that is
-            // not ahead (or is a NaN) is none. A lead inside 60·size cuts
-            // the push by 1 − (lead/60·size)², and one at or past it ends
-            // the push.
+            // contact in the character frame against the physical one along
+            // the frame's forward axis, negated while the walk is backwards
+            // (the bearing's facing is already negated then); a lead that
+            // is not ahead (or is a NaN) is none. A lead inside 60·size
+            // cuts the push by 1 − (lead/60·size)², and one at or past it
+            // ends the push (a NaN limit cuts, as the unordered compare
+            // falls through to the cut).
             let lead = if bearing.walking && !down {
-                let mut along = cm(leg.anim_contact - c).dot(bearing.facing);
-                if drive.gait_back {
-                    along = -along;
-                }
+                let along = cm(leg.anim_contact - c).dot(bearing.facing);
                 if along > 0.0 { along } else { 0.0 }
             } else {
                 0.0
             };
             if bearing.walking && !down && lead > 0.0 {
                 let limit = 60.0 * drive.stats.size;
-                if lead < limit {
-                    foot_lag *= 1.0 - (lead / limit) * (lead / limit);
-                } else {
+                if limit <= lead {
                     foot_lag = 0.0;
+                } else {
+                    foot_lag *= 1.0 - (lead / limit) * (lead / limit);
                 }
             }
             // A walking foot's probe is at its ankle, swayed along the
@@ -1145,15 +1144,16 @@ impl Ragdoll {
                     // the late foot's swing flag is set by its lead. The
                     // threshold is 10·scale×(0.25 − frac(0.5·leg + progress
                     // + 1)); at a walk it first rises by the gait's ground
-                    // difference to at least 25 cm. The flag is set while
-                    // the lead times the heading alignment is over it.
+                    // difference, capped at 25 cm (the processor's minimum,
+                    // so a NaN gives 25). The flag is set while the lead
+                    // times the heading alignment is over it.
                     leg.contact_lag =
                         engine_math::max((f64::from(leg.contact_lag) - SWING_DECAY) as f32, 0.0);
                     let phase =
                         super::locomotion::fraction(i as f32 * 0.5 + (bearing.progress + 1.0));
                     let mut threshold = (10.0 * scale) * (0.25 - phase);
                     if f64::from(bearing.run) < WALK_RUN_BELOW {
-                        threshold = engine_math::max(threshold + gait_gap.abs(), 25.0);
+                        threshold = engine_math::min(threshold + gait_gap.abs(), 25.0);
                     }
                     if threshold < lead * bearing.align {
                         leg.state.0 |= FootState::LIFTED;
@@ -1265,25 +1265,25 @@ impl Ragdoll {
     }
 
     /// The placement's leg snap, as the original's placement runs it when a
-    /// character is put into the scene: each leg's stance spot is its clip
-    /// ankle plus 5·scale cm along the shin's forward axis; a sphere of
-    /// 10 cm starting at the frame's height plus the leg's length is swept
-    /// 300 cm down for the ground under it (a Height Query over the level);
-    /// the average of the hits is the character's ground. The lower leg
-    /// chooses the frame's height, with the reach its clip leaves it
-    /// (`f`); each leg's anchor is then (spot x, ground + sole, spot z), its
+    /// character is put into the scene: each leg's probe is its clip ankle
+    /// plus 5·scale cm along the shin's forward axis; a sphere of 10 cm
+    /// starting at the frame's height plus the leg's length is swept 300 cm
+    /// down for the ground under it (a Height Query over the level; a miss
+    /// is 10 000 cm under the frame); the average of the hits is the
+    /// character's ground. The lower leg chooses the frame's height, with
+    /// the reach its clip leaves it; each leg's anchor is then its clip
+    /// ankle across the ground (no probe offset) at its ground + sole, its
     /// ground and sole floor that ground, and the standing IK is run with
     /// its snap set. Returns the frame height the rule computes (cm), or
     /// None when no foot finds ground.
     ///
-    /// The original's frame height is (the clip foot's height less the
-    /// thigh's) plus the chosen ground, the reach and the sole. Exarust's
-    /// character frame origin sits at the character's anchor rather than at
-    /// the clip's feet, so the returned height is the ground the chosen
-    /// foot stands on plus its sole, less the clip's hip-to-ankle height:
-    /// the caller that moves a character into place applies it. [guess:
-    /// the frame origin's height convention, the ground and feet are the
-    /// original's]
+    /// The original's frame height is (the root part's clip height less the
+    /// chosen leg's thigh) plus the chosen ground, the reach and the sole:
+    /// the root over its hip, the hip over its ankle. The caller decides
+    /// whether to move the character by it; Exarust's spawn keeps the
+    /// controller's own height. The original also moves each thigh to its
+    /// clip place on the new frame, which Exarust's freshly built body
+    /// already holds.
     pub fn snap_placement<L: Level + ?Sized>(&mut self, level: &L, frame: Affine3A) -> Option<f32> {
         let drive = self.drive.as_ref()?;
         if self.legs.len() != 2 {
@@ -1292,20 +1292,21 @@ impl Ragdoll {
         let scale = drive.stats.scale;
         let sole_cm = self.sole * CM;
         let local = |p: Vec3| frame.inverse().transform_point3(p);
-        // Each leg's stance spot and the ground under it.
+        // Each leg's probe and the ground under it.
+        let miss = frame.translation.y * CM + NO_GROUND;
         let mut spots = [Vec3::ZERO; 2];
-        let mut grounds = [NO_GROUND; 2];
+        let mut grounds = [miss; 2];
         let mut hits = 0;
         let mut sum = 0.0;
         for (i, leg) in self.legs.iter().enumerate() {
             let contact = self.parts[leg.shin].point(&leg.contact);
             let axis = Vec3::from(self.parts[leg.shin].transform().matrix3.z_axis);
-            let spot = contact + axis * (STANCE_SIDE * scale / CM);
-            let start = Vec3::new(spot.x, frame.translation.y + leg.length, spot.z);
+            let probe = contact + axis * (STANCE_SIDE * scale / CM);
+            let start = Vec3::new(probe.x, frame.translation.y + leg.length, probe.z);
             let found = level
                 .height_below(start, HEIGHT_RADIUS / CM, HEIGHT_DEPTH / CM)
                 .map(cm);
-            spots[i] = spot;
+            spots[i] = contact;
             if let Some(h) = found {
                 grounds[i] = h;
                 sum += h;
@@ -1339,14 +1340,14 @@ impl Ragdoll {
             chosen = high;
             reach = hip_y(high).unwrap_or(0.0) - clip_y(high);
         }
-        let foot = self.legs[chosen].foot;
-        let foot_y = foot.map_or(0.0, |f| {
-            local(Vec3::from(self.parts[f].transform().translation)).y * CM
+        let root = self.parts.iter().position(|p| p.parent.is_none());
+        let root_y = root.map_or(0.0, |r| {
+            local(Vec3::from(self.parts[r].transform().translation)).y * CM
         });
         let thigh_y = hip_y(chosen).unwrap_or(0.0);
-        // The frame's height the original writes: the clip's foot over its
+        // The frame's height the original writes: the root over the chosen
         // thigh, the chosen ground, the reach and the sole (cm).
-        let height = (foot_y - thigh_y) + grounds[chosen] + reach + sole_cm;
+        let height = (root_y - thigh_y) + grounds[chosen] + reach + sole_cm;
         let sole = self.sole;
         let Ragdoll { legs, drive, .. } = self;
         let drive = drive.as_mut()?;
@@ -1365,8 +1366,8 @@ impl Ragdoll {
     }
 
     /// One leg's clip reach in the placement's height rule (cm): the thigh
-    /// and shin lengths against the clip's horizontal ankle offset, shaped
-    /// by the original's `r² + (1 − r)·√r`.
+    /// and shin lengths against the clip's horizontal (z, x) ankle offset
+    /// from the hip, shaped by the original's `r² + (1 − r)·√r`.
     fn leg_reach_cm(&self, i: usize, local: &impl Fn(Vec3) -> Vec3) -> f32 {
         let Some(leg) = self.legs.get(i) else {
             return 0.0;
@@ -1381,7 +1382,7 @@ impl Ragdoll {
         let v = ankle - hip;
         let slack = ((shin_len * shin_len + thigh_len * thigh_len)
             - thigh_len * 2.0 * shin_len * REACH_COS)
-            - (v.y * v.y + v.x * v.x);
+            - (v.z * v.z + v.x * v.x);
         let full = leg.length * CM;
         if slack <= 0.0 || full <= 0.0 {
             0.0

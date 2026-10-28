@@ -787,10 +787,12 @@ fn the_reset_heading() {
     assert_eq!(super::reset_heading(Vec3::ZERO, Vec3::ZERO), Vec2::ZERO);
 }
 
-/// A walking foot that trails its animated spot by 30 cm at the start of
-/// the clip: the late-foot swing flag (0x10) is set (its threshold is 25 cm
-/// at a walk), and the push factor falls to (1 − (30/60)²)² on each leg.
-/// A foot only 10 cm behind stays under the threshold.
+/// A walking foot that trails its animated spot cuts the push by
+/// (1 − (lead/60)²) on each leg, and a touching foot whose lead (times the
+/// alignment, 1 here) is over its swing threshold takes the swing flag
+/// (0x10). At progress 0 the thresholds are 10·(0.25 − frac(0.5·leg + 1)):
+/// 2.5 cm for leg 0 and −2.5 cm for leg 1, each capped at 25 cm with no
+/// ground difference. A 2 cm lead swings leg 1 only; 30 cm swings both.
 #[test]
 fn the_late_walking_foot_swings_and_cuts_the_push() {
     let floor = floor();
@@ -811,18 +813,28 @@ fn the_late_walking_foot_swings_and_cuts_the_push() {
     let shins: Vec<usize> = body.legs.iter().map(|l| l.shin).collect();
     for &shin in &shins {
         for x in &mut body.parts[shin].positions {
-            *x -= Vec3::Z * 0.1;
+            *x -= Vec3::Z * 0.02;
         }
     }
     body.measure_balance(&floor[..]);
-    for leg in body.legs.iter() {
-        assert!(!leg.state.has(FootState::LIFTED), "10 cm is under 25");
+    let touching = |l: &Leg| l.state.has(FootState::TOUCHING);
+    if touching(&body.legs[0]) {
+        assert!(
+            !body.legs[0].state.has(FootState::LIFTED),
+            "2 cm is under 2.5"
+        );
     }
-    let one = 1.0 - (10.0f32 / 60.0).powi(2);
+    if touching(&body.legs[1]) {
+        assert!(
+            body.legs[1].state.has(FootState::LIFTED),
+            "2 cm is over −2.5"
+        );
+    }
+    let one = 1.0 - (2.0f32 / 60.0).powi(2);
     assert!((drive(&body).bearing.lag - one * one).abs() < 1e-5);
     for &shin in &shins {
         for x in &mut body.parts[shin].positions {
-            *x -= Vec3::Z * 0.2;
+            *x -= Vec3::Z * 0.28;
         }
     }
     body.measure_balance(&floor[..]);
@@ -831,18 +843,55 @@ fn the_late_walking_foot_swings_and_cuts_the_push() {
     assert!(
         body.legs
             .iter()
-            .any(|l| l.state.has(FootState::TOUCHING) && l.state.has(FootState::LIFTED)),
+            .any(|l| touching(l) && l.state.has(FootState::LIFTED)),
         "the late touching foot swings"
     );
-    for leg in body
-        .legs
-        .iter()
-        .filter(|l| l.state.has(FootState::TOUCHING))
-    {
-        assert!(leg.state.has(FootState::LIFTED), "30 cm is over 25");
+    for leg in body.legs.iter().filter(|l| touching(l)) {
+        assert!(leg.state.has(FootState::LIFTED), "30 cm is over both");
     }
     let half = 1.0 - (30.0f32 / 60.0).powi(2);
     assert!((drive(&body).bearing.lag - half * half).abs() < 1e-5);
+}
+
+/// The swing threshold's ground-difference rise is capped at 25 cm by the
+/// processor's minimum (a NaN sum gives 25).
+#[test]
+fn the_swing_threshold_is_capped_at_25() {
+    use crate::engine_math::min;
+    assert_eq!(min(2.5 + 40.0, 25.0), 25.0);
+    assert_eq!(min(2.5 + 10.0, 25.0), 12.5);
+    assert_eq!(min(f32::NAN, 25.0), 25.0);
+}
+
+/// Walking backwards, the bearing's facing is already negated: a foot that
+/// trails its animated spot toward the walk's direction (behind it along
+/// the negated facing) cuts the push once, not twice negated into none.
+#[test]
+fn the_backward_lag_reads_the_negated_facing() {
+    let floor = floor();
+    let mut body = biped();
+    body.measure_balance(&floor[..]);
+    body.set_bearing(Bearing {
+        moving: true,
+        walking: true,
+        facing: -Vec3::Z,
+        backpedal: true,
+        align: 1.0,
+        ..Bearing::default()
+    });
+    if let Some(d) = body.drive.as_mut() {
+        d.note_gait(0.0, 0.0, true);
+    }
+    body.measure_balance(&floor[..]);
+    let shins: Vec<usize> = body.legs.iter().map(|l| l.shin).collect();
+    for &shin in &shins {
+        for x in &mut body.parts[shin].positions {
+            *x += Vec3::Z * 0.1;
+        }
+    }
+    body.measure_balance(&floor[..]);
+    let one = 1.0 - (10.0f32 / 60.0).powi(2);
+    assert!((drive(&body).bearing.lag - one * one).abs() < 1e-5);
 }
 
 /// The Ground Query is a point ray under the toe: it finds the floor and a
@@ -864,6 +913,10 @@ fn the_ground_query_is_a_point_ray_over_floor_pieces() {
         }
         fn movable(&self, _: u32) -> bool {
             self.movable
+        }
+        // A floor-flagged mesh, unless it stands in for a movable prop.
+        fn floor_piece(&self, _: u32) -> bool {
+            !self.movable
         }
     }
     let mut tris = floor();

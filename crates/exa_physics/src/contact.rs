@@ -51,12 +51,14 @@ pub trait Level {
     }
 
     /// Whether `piece` takes part in the original's Ground Query. The
-    /// original meets only meshes and bodies whose class word carries the
-    /// floor bit (0x800000), and skips a body's stand-ins (state 0x800);
-    /// Exarust's level colliders all come from the level's solid meshes, so
-    /// a movable prop stand-in is not floor and every other piece is.
-    fn floor_piece(&self, piece: u32) -> bool {
-        !self.movable(piece)
+    /// original meets only meshes and bodies whose node carries the floor
+    /// bit (0x800000 in its second flag word: 85 library pieces and 2
+    /// objects ship with it), and skips a disabled body. Exarust's level
+    /// colliders do not carry that bit yet, so by default no piece is
+    /// floor and the query misses, as it does in the original over every
+    /// unflagged mesh.
+    fn floor_piece(&self, _piece: u32) -> bool {
+        false
     }
 
     /// The original's Ground Query: a point ray from `at` straight down at
@@ -243,6 +245,11 @@ impl Level for [[Vec3; 3]] {
             let (a, b) = (t[0].min(t[1]).min(t[2]), t[0].max(t[1]).max(t[2]));
             a.cmple(hi).all() && b.cmpge(lo).all()
         }));
+    }
+
+    /// A synthetic triangle list stands for a floor-flagged mesh.
+    fn floor_piece(&self, _: u32) -> bool {
+        true
     }
 }
 
