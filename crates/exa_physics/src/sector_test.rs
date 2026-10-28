@@ -670,29 +670,50 @@ fn a_cell_index_splits_into_its_row_and_column() {
 }
 
 /// The simulated object's body pre-test: the two bound spheres must not be
-/// apart (touching counts as meeting, and a NaN gap passes), and the body's
-/// centre must then lie strictly within the object's own radius.
+/// apart (touching counts as meeting, and a NaN gap passes), and the
+/// object's centre must then lie within its radius of the body's mesh box
+/// (only `r² <= d²` rejects, so a NaN distance passes).
 #[test]
-fn an_object_meets_a_body_between_its_two_bounds() {
+fn an_object_meets_a_body_between_its_bound_and_the_mesh_box() {
     let object = ObjectBounds {
         centre: Vec3::new(100.0, 50.0, 0.0),
         radius: 20.0,
     };
-    // The body's centre sits 15 cm away, inside the object's radius, and its
-    // bound sphere (radius 10) overlaps the object's.
-    assert!(object_body_meet(object, Vec3::new(100.0, 65.0, 0.0), 10.0));
-    // The spheres touch at exactly the sum: not apart, but the centre is
-    // 30 cm out, past the object's own radius.
-    assert!(!object_body_meet(object, Vec3::new(100.0, 80.0, 0.0), 10.0));
-    // The bounds are apart (30 > 20 + 5), though the centre is inside the
-    // object's radius: the first test rejects.
-    assert!(!object_body_meet(object, Vec3::new(100.0, 75.0, 0.0), 5.0));
-    // A NaN gap is not "apart" (the sign bit of a NaN difference is clear),
-    // so the second, ordered compare decides and fails.
+    // Bound spheres 15 cm apart (radii 20 + 10) and the box 15 cm away
+    // (225 < 400): met.
+    assert!(object_body_meet(
+        object,
+        Vec3::new(100.0, 65.0, 0.0),
+        10.0,
+        225.0
+    ));
+    // The box exactly 20 cm away (400 <= 400): rejected.
     assert!(!object_body_meet(
         object,
+        Vec3::new(100.0, 65.0, 0.0),
+        10.0,
+        400.0
+    ));
+    // Spheres touching at exactly the sum are not apart; the box decides.
+    assert!(object_body_meet(
+        object,
+        Vec3::new(100.0, 80.0, 0.0),
+        10.0,
+        0.0
+    ));
+    // The bounds are apart (30 > 20 + 5): rejected whatever the box.
+    assert!(!object_body_meet(
+        object,
+        Vec3::new(100.0, 80.0, 0.0),
+        5.0,
+        0.0
+    ));
+    // A NaN gap is not "apart" and a NaN box distance is not `<=`: met.
+    assert!(object_body_meet(
+        object,
         Vec3::new(f32::NAN, 0.0, 0.0),
-        10.0
+        10.0,
+        f32::NAN
     ));
 }
 
@@ -709,12 +730,16 @@ fn an_objects_body_stage_takes_the_parts_spheres_in_its_own_frame() {
     // origin there; the part is at the world origin with two spheres.
     let to_object = Affine3A::from_translation(Vec3::new(1.0, 0.0, 0.0)).inverse();
     let spheres = [(Vec3::ZERO, 0.1), (Vec3::new(0.2, 0.0, 0.0), 0.05)];
+    // The part's mesh box reaches x = 0.6 m, 0.4 m short of the object's
+    // centre (1 m along x): 1600 cm² < 50² cm².
+    let mesh = Bounds::of_box(Vec3::new(0.3, 0.0, 0.0), Vec3::new(0.3, 0.1, 0.1));
     let part = ObjectBodyPart {
         now: Affine3A::IDENTITY,
         previous: Affine3A::IDENTITY,
         spheres: &spheres,
-        centre: Vec3::new(80.0, 0.0, 0.0),
-        radius: 30.0,
+        centre: Vec3::new(0.8, 0.0, 0.0),
+        radius: 0.3,
+        mesh: &mesh,
         friction: 0.75,
     };
     let mut contacts = ObjectContacts::default();
@@ -729,7 +754,17 @@ fn an_objects_body_stage_takes_the_parts_spheres_in_its_own_frame() {
     assert_eq!(contacts.spheres[1].radius, 5.0);
     // A part whose bound is not near the object gives nothing.
     let far = ObjectBodyPart {
-        centre: Vec3::new(500.0, 0.0, 0.0),
+        centre: Vec3::new(5.0, 0.0, 0.0),
+        ..part
+    };
+    let mut contacts = ObjectContacts::default();
+    contacts.gather_bodies(&to_object, object, [far]);
+    assert!(contacts.spheres.is_empty() && contacts.swept.is_empty());
+    // A part whose bound meets the object's but whose mesh box is 0.5 m
+    // from the object's centre (2500 <= 2500) gives nothing.
+    let short = Bounds::of_box(Vec3::new(0.25, 0.0, 0.0), Vec3::new(0.25, 0.1, 0.1));
+    let far = ObjectBodyPart {
+        mesh: &short,
         ..part
     };
     let mut contacts = ObjectContacts::default();
@@ -782,10 +817,11 @@ fn exa_physics_cm(points: [[f32; 3]; 3]) -> crate::cloth::LevelTri {
     }
 }
 
-/// The static grid's box query finds every collider whose own box meets the
-/// box, and no other, wherever in its cells it lies.
+/// The object's static scan takes the records of the nine cells around
+/// the object's cell whose bound sphere meets the object's and whose box
+/// lies within the object's radius of its centre.
 #[test]
-fn the_static_grid_answers_a_world_box() {
+fn the_static_grid_answers_an_objects_bound() {
     let mut grid = StaticGrid::new(8, 8, (0, 0));
     let a = grid.insert(StaticBody {
         centre_cm: Vec3::new(300.0, 0.0, 300.0),
@@ -801,7 +837,7 @@ fn the_static_grid_answers_a_world_box() {
         node: 0,
         piece: 2,
     });
-    let c = grid.insert(StaticBody {
+    grid.insert(StaticBody {
         centre_cm: Vec3::new(-900.0, 0.0, 300.0),
         half_cm: Vec3::splat(10.0),
         mask: MASK_SMALL,
@@ -809,23 +845,21 @@ fn the_static_grid_answers_a_world_box() {
         piece: 3,
     });
     let mut out = Vec::new();
-    // A box over the first collider only: its centre cell and the record's
-    // own box decide.
-    grid.near_box(
-        Vec3::new(250.0, -50.0, 250.0),
-        Vec3::new(350.0, 50.0, 350.0),
-        &mut out,
-    );
+    // An object of radius 60 at (450, 0, 300) cm, cell (0, 0): 50 cm past
+    // the first box's +x face (2500 < 3600), so it takes it; the wide
+    // one's bound sphere (radius ~991, 1594 cm away) is apart from the
+    // object's; the third lies two cells away in x.
+    grid.near_object(Vec3::new(450.0, 0.0, 300.0), 60.0, &mut out);
     assert_eq!(out, [a]);
-    // A box over the wide collider's left edge and the third one's cell:
-    // both records, once each.
+    // At (800, 0, 800) cm, inside the wide box: it alone is taken (the
+    // first box is 400 cm away in x and z).
     out.clear();
-    grid.near_box(
-        Vec3::new(-950.0, -50.0, 250.0),
-        Vec3::new(850.0, 50.0, 850.0),
-        &mut out,
-    );
-    assert_eq!(out, [c, a, b]);
+    grid.near_object(Vec3::new(800.0, 0.0, 800.0), 60.0, &mut out);
+    assert_eq!(out, [b]);
+    // A NaN radius passes both compares for every record in reach.
+    out.clear();
+    grid.near_object(Vec3::new(300.0, 0.0, 300.0), f32::NAN, &mut out);
+    assert_eq!(out, [a, b]);
     // The object stage's nine-cell scan takes records from the own cell and
     // its neighbours, each once, whatever their box.
     let mut out = Vec::new();
@@ -833,24 +867,13 @@ fn the_static_grid_answers_a_world_box() {
     assert_eq!(out, [a, b]);
 }
 
-/// The simulated-object/object stage walks every pair in list order and
-/// keeps the ones whose bound spheres are not apart; touching counts.
+/// The simulated-object/object stage hands every object taking the stage
+/// each other offered object of the list, in list order, never itself.
 #[test]
-fn the_object_list_pairs_bounds_that_touch() {
-    let at = |x: f32, radius: f32| ObjectBounds {
-        centre: Vec3::new(x, 0.0, 0.0),
-        radius,
-    };
-    let bounds = [
-        at(0.0, 10.0),
-        at(15.0, 10.0),
-        at(100.0, 10.0),
-        at(-10.0, 2.0),
-    ];
-    // 0 and 1 are 15 apart with radii 10 + 10, so they meet; 3 and 0 are
-    // 10 apart with radii 10 + 2, so they meet too; 2 meets nothing.
-    assert_eq!(object_pairs(&bounds), [(0, 1), (0, 3)]);
-    // A NaN centre takes the pair (the sign of a NaN difference is clear).
-    let bounds = [at(f32::NAN, 1.0), at(0.0, 1.0)];
-    assert_eq!(object_pairs(&bounds), [(0, 1)]);
+fn the_object_list_pairs_every_ordered_couple() {
+    let takes = [true, false, true];
+    let offered = [true, true, false];
+    // 0 meets 1 (not itself); 1 takes no stage; 2 meets 0 and 1.
+    assert_eq!(object_pairs(&takes, &offered), [(0, 1), (2, 0), (2, 1)]);
+    assert!(object_pairs(&[true], &[true]).is_empty());
 }

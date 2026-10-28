@@ -3830,6 +3830,18 @@ impl Ragdoll {
     /// Tests every sphere against the level: swept from where the last tick
     /// left it when it moved far enough, else where it is. Each part's hits
     /// this tick make up to one level impact ([`LevelImpact`]).
+    /// A part's body mask for the level detection
+    /// ([`crate::sector::body_mask`]): 1 on a part kept off the level, 4 on
+    /// a living character's foot. Only a living body's feet carry the 4:
+    /// the original clears it when the body collapses or dies, so a limp
+    /// body's feet meet thin plates again.
+    pub fn level_mask(&self, part: usize) -> u32 {
+        let Some(p) = self.parts.get(part) else {
+            return 0;
+        };
+        crate::sector::body_mask(p.no_level, self.drive.is_some() && p.pairing.out)
+    }
+
     fn detect<L: Level + ?Sized>(&mut self, level: &L) {
         let mut pieces = std::mem::take(&mut self.pieces);
         let mut triangles = std::mem::take(&mut self.triangles);
@@ -3842,7 +3854,8 @@ impl Ragdoll {
             p.level_travel = Vec3::ZERO;
             p.level_travel2 = 0.0;
         }
-        for p in &mut self.parts {
+        let masks: Vec<u32> = (0..self.parts.len()).map(|k| self.level_mask(k)).collect();
+        for (k, p) in self.parts.iter_mut().enumerate() {
             if p.no_level {
                 continue;
             }
@@ -3860,8 +3873,8 @@ impl Ragdoll {
             // A rigid body's stand-ins are the character capsules': bodies
             // meet the rigid body itself through their pairs. A piece whose
             // level mask shares a bit with the part's body mask is skipped
-            // (a foot ignores thin plates and flagged meshes).
-            let own_mask = crate::sector::body_mask(p.no_level, p.pairing.out);
+            // (a living foot ignores thin plates and flagged meshes).
+            let own_mask = masks[k];
             pieces.retain(|&piece| {
                 !level.movable(piece) && crate::sector::level_meets(own_mask, level.mask(piece))
             });

@@ -916,35 +916,31 @@ impl StaticGrid {
         id
     }
 
-    /// The colliders whose recorded box may meet the world box `lo..hi`
-    /// (cm): the records of every cell the box reaches, one cell of margin
-    /// round (the original's static insertion gives every wide collider
-    /// that margin, so a collider whose footprint touches the box can lie
-    /// up to one cell away), each once, in id order. A caller then tests the
-    /// box itself against the records' own boxes.
-    pub fn near_box(&self, lo_cm: Vec3, hi_cm: Vec3, out: &mut Vec<usize>) {
-        let low = cell_of(lo_cm, self.origin);
-        let high = cell_of(hi_cm, self.origin);
-        // A NaN edge gives the indefinite cell, which no record is in.
-        let (min_x, max_x) = (low.0.saturating_sub(1), high.0.saturating_add(1));
-        let (min_z, max_z) = (low.1.saturating_sub(1), high.1.saturating_add(1));
-        if min_x > max_x || min_z > max_z {
-            return;
-        }
-        for z in min_z..=max_z {
-            for x in min_x..=max_x {
-                for &id in self.cells.get((x, z)) {
-                    if out.contains(&id) {
-                        continue;
-                    }
-                    let Some(body) = self.bodies.get(id) else {
-                        continue;
-                    };
-                    let (blo, bhi) = (body.centre_cm - body.half_cm, body.centre_cm + body.half_cm);
-                    if blo.cmple(hi_cm).all() && bhi.cmpge(lo_cm).all() {
-                        out.push(id);
-                    }
-                }
+    /// The colliders a simulated object with bound sphere `centre_cm`,
+    /// `radius_cm` takes in its static stage, as the original scans its
+    /// static grid for one: the records of the object's own cell and the
+    /// eight around it ([`NEAR_OFFSETS`]), each kept when the record's
+    /// bound sphere and the object's are not apart and the object's centre
+    /// lies within its radius of the record's box (the compare skips only
+    /// on `r² <= d²`, so a NaN passes). Each record is listed once; the
+    /// original walks each cell's list and would hand a wide collider once
+    /// per cell it is in. The record's box is its world-aligned box, where
+    /// the original measures against the mesh's oriented box [guess: Exarust
+    /// records only the world box of a level collider].
+    pub fn near_object(&self, centre_cm: Vec3, radius_cm: f32, out: &mut Vec<usize>) {
+        let mut cells = Vec::new();
+        self.near_offsets(cell_of(centre_cm, self.origin), &mut cells);
+        for id in cells {
+            let Some(body) = self.bodies.get(id) else {
+                continue;
+            };
+            let bound = Bounds::of_box(body.centre_cm, body.half_cm);
+            if intersect::spheres_separated(centre_cm, radius_cm, bound.centre, bound.radius) {
+                continue;
+            }
+            let d2 = mesh_box_distance2(centre_cm, &bound, &Affine3A::IDENTITY);
+            if !(radius_cm * radius_cm <= d2) {
+                out.push(id);
             }
         }
     }
@@ -1159,31 +1155,39 @@ pub struct ObjectBounds {
     pub radius: f32,
 }
 
-/// The original's simulated-object/body pre-test: the object's bound sphere
-/// and the body's must not be apart (the processor's sign of
-/// `(r + r')² − d²`, so a NaN passes), and the body's bound centre must then
-/// lie within the object's own radius (a strict compare, so a NaN fails).
-/// A body that passes is handed to the object's body-contact call.
-pub fn object_body_meet(object: ObjectBounds, body_centre: Vec3, body_radius: f32) -> bool {
-    let sum = object.radius + body_radius;
-    if (sum * sum - (body_centre - object.centre).length_squared()).is_sign_negative() {
+/// The original's simulated-object/body pre-test: the body's bound sphere
+/// and the object's must not be apart (the processor's sign of
+/// `(r + r')² − d²`, so a NaN passes), and the object's centre must then lie
+/// within its own radius of the body's mesh box (`box_distance2`, the
+/// squared distance of the object's centre outside that box, cm², as
+/// [`mesh_box_distance2`] gives it). The second compare skips only when
+/// `r² <= d²`, so a NaN distance passes too. A body that passes is handed to
+/// the object's body-contact call.
+pub fn object_body_meet(
+    object: ObjectBounds,
+    body_centre: Vec3,
+    body_radius: f32,
+    box_distance2: f32,
+) -> bool {
+    if intersect::spheres_separated(body_centre, body_radius, object.centre, object.radius) {
         return false;
     }
-    (body_centre - object.centre).length_squared() < object.radius * object.radius
+    !(object.radius * object.radius <= box_distance2)
 }
 
-/// The original's simulated-object/object stage: every pair of objects, in
-/// list order, whose bound spheres are not apart (the same sign-of-difference
-/// test as [`object_body_meet`], so touching counts and a NaN pair passes).
-/// The original walks the whole object list against the later entries, which
-/// is what the returned (earlier, later) pairs are.
-pub fn object_pairs(bounds: &[ObjectBounds]) -> Vec<(usize, usize)> {
+/// The original's simulated-object/object stage: every ordered pair of
+/// objects in list order, the first taking the stage (`takes`: its stage
+/// flag set and not asleep or disabled) and the second offered to it
+/// (`offered`: not asleep or disabled), never an object with itself. The
+/// sector makes no bound test here: the object's own call does.
+pub fn object_pairs(takes: &[bool], offered: &[bool]) -> Vec<(usize, usize)> {
     let mut pairs = Vec::new();
-    for a in 0..bounds.len() {
-        for b in a + 1..bounds.len() {
-            let reach = bounds[a].radius + bounds[b].radius;
-            let gap = (bounds[b].centre - bounds[a].centre).length_squared();
-            if !(reach * reach - gap).is_sign_negative() {
+    for (a, &take) in takes.iter().enumerate() {
+        if !take {
+            continue;
+        }
+        for (b, &offer) in offered.iter().enumerate() {
+            if offer && b != a {
                 pairs.push((a, b));
             }
         }
@@ -1207,6 +1211,9 @@ pub struct ObjectBodyPart<'a> {
     pub centre: Vec3,
     /// Its world radius (m).
     pub radius: f32,
+    /// The part's mesh box, in its space (m): the box the object's centre
+    /// is measured against.
+    pub mesh: &'a Bounds,
     /// The part's level friction.
     pub friction: f32,
 }
@@ -1230,8 +1237,9 @@ impl ObjectContacts {
         self.level.clear();
     }
 
-    /// The object's body-contact stage: every part whose bound sphere meets
-    /// the object's hands each of its collision spheres to the object, in
+    /// The object's body-contact stage: every part passing
+    /// [`object_body_meet`] (its bound sphere meets the object's, and the
+    /// object's centre lies within its radius of the part's mesh box) hands each of its collision spheres to the object, in
     /// the object's space and centimetres. A sphere the part moved by more
     /// than the pair stage's 0.1 cm² over the tick is swept from where the
     /// last tick left it instead [guess: the cloth subclass's own sweep gate
@@ -1243,7 +1251,14 @@ impl ObjectContacts {
         parts: impl IntoIterator<Item = ObjectBodyPart<'a>>,
     ) {
         for part in parts {
-            if !object_body_meet(object, part.centre, part.radius) {
+            let box_distance2 =
+                mesh_box_distance2(object.centre * 0.01, part.mesh, &part.now) * 1.0e4;
+            if !object_body_meet(
+                object,
+                part.centre * 100.0,
+                part.radius * 100.0,
+                box_distance2,
+            ) {
                 continue;
             }
             for &(centre, radius) in part.spheres {

@@ -220,8 +220,9 @@ fn step_cloths(
         } else {
             objects.grid.migrate(id, object.centre);
         }
-        // The original's object stage skips the body its own node belongs
-        // to: a cloth's own character does not push it.
+        // A cloth's own character does not push it [guess: the sector's
+        // body stage makes no such test; the cloth's own body-contact call,
+        // not in this pack, is taken to skip the parts above its node].
         let mut own = Vec::new();
         let mut above = entity;
         while let Ok(parent) = parents.get(above) {
@@ -231,8 +232,8 @@ fn step_cloths(
                 break;
             }
         }
-        // Objects against bodies: the parts whose bound sphere meets the
-        // object's, taken from every body of the sector (asleep too).
+        // Objects against bodies: every part of every body (asleep too)
+        // passing the sector's pre-test ([`sector::object_body_meet`]).
         let mut parts = Vec::new();
         for body in &bodies {
             for part in &body.parts {
@@ -240,17 +241,13 @@ fn step_cloths(
                     continue;
                 }
                 let (centre, radius) = part.sphere_bound();
-                let (centre, radius) = (centre * 100.0, radius * 100.0);
-                let reach = object.radius + radius;
-                if (centre - object.centre).length_squared() > reach * reach {
-                    continue;
-                }
                 parts.push(ObjectBodyPart {
                     now: part.transform(),
                     previous: part.settled_transform(),
                     spheres: &part.spheres,
                     centre,
                     radius,
+                    mesh: &part.pairing.mesh,
                     friction: part.friction,
                 });
             }
@@ -258,16 +255,19 @@ fn step_cloths(
         let mut contacts = ObjectContacts::default();
         if let (Some(physics), Some(statics)) = (&physics, &statics) {
             contacts.gather_bodies(&to_object, object, parts);
-            // Objects against the level, over the static grid's cells
-            // around the object's own.
+            // Objects against the level: the static grid's records around
+            // the object's cell that pass its pre-test, their triangles
+            // within the object's bound box.
             let centre_m = object.centre * 0.01;
             let radius_m = object.radius * 0.01;
             let (lo, hi) = (
                 centre_m - Vec3::splat(radius_m),
                 centre_m + Vec3::splat(radius_m),
             );
+            let mut near = Vec::new();
+            statics.near_object(object.centre, object.radius, &mut near);
             let mut triangles = Vec::new();
-            for id in statics.near(lo * 100.0, hi * 100.0) {
+            for id in near {
                 let Some(record) = statics.grid().get(id) else {
                     continue;
                 };

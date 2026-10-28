@@ -150,7 +150,9 @@ tests. A part's mask (`Level::mask`) is tested against its body mask
 before any triangle is queried; the body solver hands the detection the
 level with the static grid's stored masks (`body::MaskedLevel`), so a thin
 horizontal plate (local half height under 1 cm, world up over 0.99) is
-mask 1|4 and a living foot's mask-4 part never meets it; a piece with no
+mask 1|4 and a living foot's mask-4 part never meets it (`Ragdoll::level_mask`:
+only a body with muscles carries the foot's 4, as the original clears it on
+collapse and death, so a corpse's feet meet thin plates); a piece with no
 record answers 1. The original's flagged-mask bit has no traced node
 source, so it is never set [guess]. Not wired: the overflow guard's reset
 in the game (Exarust's grid is sparse and may hold any cell, so no body
@@ -173,15 +175,19 @@ the summed push; a pair that takes the hit event exposes the original's
 handler payload as `body::pairs::HitEvent` (the other side, the mean
 point, the fastest travel and the summed push).
 The sector's simulated-object stages (`sector::ObjectContacts`) hand a
-cloth the parts whose bound sphere meets the object's (the bound spheres
-must not be apart, then the body's centre strictly inside the object's
-radius), each collision sphere in the object's own centimetres, swept
-when the part moved over the pair stage's 0.1 cm², and the level's
-triangles over the static grid's cells around the object; the object's
-own body is skipped, as the original skips it. The object/object stage is
-`sector::object_pairs` (the whole list, later entries only, bounds that
-touch); the cloth's own contact law for another object is outside this
-component.
+cloth the parts passing `sector::object_body_meet` (the bound spheres
+must not be apart, then the object's centre within its radius of the
+part's mesh box, the original's point-to-box distance; a NaN passes both),
+each collision sphere in the object's own centimetres, swept when the part
+moved over the pair stage's 0.1 cm² [guess], and the level's triangles of
+the static records `StaticGrid::near_object` takes (the nine cells around
+the object's cell, the same two tests against each record's world box,
+where the original uses the mesh's oriented box). Skipping the cloth's
+own character is a guess (the sector makes no such test). The
+object/object stage is `sector::object_pairs` (every ordered pair of the
+list, never an object with itself, no bound test in the sector); the
+cloth's own contact law for another object is outside this component and
+nothing consumes the pairs yet.
 A part's level contacts also make an impact record (`body::LevelImpact`):
 the mean point of its accepted hits, the fastest smoothed velocity against
 their summed pushes, and the original's gates (travel square over 0.1 cm²,

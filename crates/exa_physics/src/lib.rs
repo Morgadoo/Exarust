@@ -332,13 +332,11 @@ impl StaticColliders {
             .unwrap_or(sector::MASK_SMALL)
     }
 
-    /// The colliders in the nine cells around a world box `lo..hi` (cm):
-    /// the ones a simulated object's static stage scans, each once. The
-    /// caller tests the box against each record's own box.
-    pub fn near(&self, lo_cm: Vec3, hi_cm: Vec3) -> Vec<usize> {
-        let mut out = Vec::new();
-        self.grid.near_box(lo_cm, hi_cm, &mut out);
-        out
+    /// The colliders a simulated object with bound sphere `centre_cm`,
+    /// `radius_cm` takes in its static stage
+    /// ([`sector::StaticGrid::near_object`]), appended to `out`.
+    pub fn near_object(&self, centre_cm: Vec3, radius_cm: f32, out: &mut Vec<usize>) {
+        self.grid.near_object(centre_cm, radius_cm, out);
     }
 }
 
@@ -1001,10 +999,8 @@ mod tests {
         // simulated-object stage scans it, with its world box and piece.
         let statics = app.world().resource::<StaticColliders>();
         assert_eq!(statics.len(), 40);
-        let mut near = statics.near(
-            Vec3::new(-150.0, -150.0, -150.0),
-            Vec3::new(150.0, 150.0, 150.0),
-        );
+        let mut near = Vec::new();
+        statics.near_object(Vec3::ZERO, 150.0, &mut near);
         assert_eq!(near.len(), 1);
         let record = statics.grid().get(near.pop().unwrap()).unwrap();
         assert!(record.centre_cm.abs_diff_eq(Vec3::ZERO, 1e-3));
