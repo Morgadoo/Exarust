@@ -498,6 +498,49 @@ pub fn model_marks(flags: u32) -> ModelMarks {
     }
 }
 
+/// What taking a weapon's model into a hand does before the take-in job
+/// runs: an item flagged `0x2000000` lights its held part, and a body with
+/// no weapon class bits has its weapon part cleared first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct WeaponAttach {
+    pub lit: bool,
+    pub clears_part: bool,
+}
+
+/// The weapon model's marks and the body's part reset.
+pub fn weapon_attach(flags: u32, class: u32) -> WeaponAttach {
+    WeaponAttach {
+        lit: flags & LIT != 0,
+        clears_part: class & 0x30 == 0,
+    }
+}
+
+/// What a shield's model does: the body's weapon part is cleared the same
+/// way, and a shield never lights.
+pub fn shield_attach(class: u32) -> bool {
+    class & 0x30 == 0
+}
+
+/// What attaching a node's item does when the job is over: the node leaves
+/// the scene, the body is refreshed when neither out hand holds an item,
+/// and a job whose mode has bit 1 restarts the stance and refreshes the
+/// textures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct NodeFinal {
+    pub detach_node: bool,
+    pub refresh_body: bool,
+    pub restart: bool,
+}
+
+/// The node finaliser's decisions.
+pub fn node_final(mode: u32, both_hands_empty: bool) -> NodeFinal {
+    NodeFinal {
+        detach_node: true,
+        refresh_body: both_hands_empty,
+        restart: mode & 2 != 0,
+    }
+}
+
 /// What a finished equipment job does. The three finalisers differ only in
 /// which of these they run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -1025,5 +1068,29 @@ mod tests {
         let light = finish(FinishKind::Light);
         assert!(light.rebuild_apparel && light.finish_job);
         assert!(!light.detach_effects && !light.refresh_player && !light.callback);
+    }
+
+    #[test]
+    fn the_model_attach_and_the_node_finaliser() {
+        assert_eq!(
+            weapon_attach(0x0200_0000, 0x10),
+            WeaponAttach {
+                lit: true,
+                clears_part: false
+            }
+        );
+        assert_eq!(
+            weapon_attach(0, 0x80),
+            WeaponAttach {
+                lit: false,
+                clears_part: true
+            }
+        );
+        assert!(!shield_attach(0x20));
+        assert!(shield_attach(0));
+        let finaliser = node_final(7, true);
+        assert!(finaliser.detach_node && finaliser.refresh_body && finaliser.restart);
+        assert!(!node_final(0, false).refresh_body);
+        assert!(!node_final(0, true).restart);
     }
 }
