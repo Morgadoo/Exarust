@@ -4,29 +4,50 @@ use bevy::prelude::Entity;
 
 use super::*;
 
+/// A lone body part with contact mobility `mobility`, its sound clock and
+/// threshold fresh.
+fn part(mobility: f32) -> Part {
+    let mut body = super::super::Ragdoll::new(&[super::super::PartSetup {
+        bone: 1,
+        entity: Entity::PLACEHOLDER,
+        parent: None,
+        world: Affine3A::IDENTITY,
+        centre: Vec3::ZERO,
+        half: Vec3::splat(0.1),
+        origin: Vec3::ZERO,
+        links: Vec::new(),
+        foot: None,
+        pins: Vec::new(),
+        spheres: None,
+    }]);
+    let mut p = body.parts.remove(0);
+    p.pairing.mobility = mobility;
+    p
+}
+
 /// A 0.5 impact with the builders' 0.3 mobility: the first sound, its exact
 /// volume, pitch and cooldown, and the generator's draw.
 #[test]
 fn a_plain_impact_sounds_at_the_originals_volume_and_pitch() {
-    let mut state = ImpactState::new(true);
+    let mut p = part(0.3);
     let mut roll = 1;
-    let sound = impact_sound(&mut state, 50.0, 0.3, 1000, &mut roll).unwrap();
+    let sound = impact_sound(&mut p, true, 50.0, 1000, &mut roll).unwrap();
     assert_eq!(sound.volume, 0.75);
     assert!((sound.pitch - 0.906).abs() < 1e-6, "{}", sound.pitch);
     // The draw is the third of a hundred, and round(0.5 · 170) is 85.
     assert_eq!(roll, 0x0808_8406);
     assert_eq!(sound.cooldown_ms, 1138);
-    assert_eq!(state.cooldown_ms, 1138);
-    assert_eq!(state.threshold, 100.0);
+    assert_eq!(p.sound_ready_ms, 1138);
+    assert_eq!(p.last_impact, 100.0);
 }
 
 /// Below the 0.1 mobility the volume is scaled too: 0.05 gives
 /// `(0.5·0.8 + 0.2)·0.75 = 0.45` and `(0.5·0.7 + 0.3)·1 = 0.65`.
 #[test]
 fn a_light_part_lowers_its_volume_as_well_as_its_pitch() {
-    let mut state = ImpactState::new(true);
+    let mut p = part(0.05);
     let mut roll = 1;
-    let sound = impact_sound(&mut state, 50.0, 0.05, 0, &mut roll).unwrap();
+    let sound = impact_sound(&mut p, true, 50.0, 1, &mut roll).unwrap();
     assert!((sound.volume - 0.45).abs() < 1e-6, "{}", sound.volume);
     assert!((sound.pitch - 0.65).abs() < 1e-6, "{}", sound.pitch);
 }
@@ -34,9 +55,9 @@ fn a_light_part_lowers_its_volume_as_well_as_its_pitch() {
 /// A NaN mobility follows the heavy branch, as the unordered compare does.
 #[test]
 fn a_nan_mobility_takes_the_heavy_branch() {
-    let mut state = ImpactState::new(true);
+    let mut p = part(f32::NAN);
     let mut roll = 1;
-    let sound = impact_sound(&mut state, 50.0, f32::NAN, 0, &mut roll).unwrap();
+    let sound = impact_sound(&mut p, true, 50.0, 1, &mut roll).unwrap();
     assert_eq!(sound.volume, 0.75);
     assert!(sound.pitch.is_nan());
 }
@@ -45,36 +66,40 @@ fn a_nan_mobility_takes_the_heavy_branch() {
 /// and one exactly at twice the last strength does not.
 #[test]
 fn a_repeat_sounds_only_when_it_is_strictly_louder() {
-    let mut state = ImpactState::new(true);
+    let mut p = part(0.3);
     let mut roll = 1;
-    let first = impact_sound(&mut state, 10.0, 0.3, 1000, &mut roll).unwrap();
-    assert_eq!(state.threshold, 20.0);
+    let first = impact_sound(&mut p, true, 10.0, 1000, &mut roll).unwrap();
+    assert_eq!(p.last_impact, 20.0);
+    let early = first.cooldown_ms - 1;
+    assert_eq!(impact_sound(&mut p, true, 10.0, early, &mut roll), None);
+    assert_eq!(impact_sound(&mut p, true, 20.0, early, &mut roll), None);
+    // At the cooldown itself the clock has not passed (the unsigned
+    // below-compare).
     assert_eq!(
-        impact_sound(&mut state, 10.0, 0.3, first.cooldown_ms - 1, &mut roll),
+        impact_sound(&mut p, true, 10.0, first.cooldown_ms, &mut roll),
         None
     );
-    assert_eq!(
-        impact_sound(&mut state, 20.0, 0.3, first.cooldown_ms - 1, &mut roll),
-        None
-    );
-    let louder = impact_sound(&mut state, 21.0, 0.3, first.cooldown_ms - 1, &mut roll).unwrap();
+    let louder = impact_sound(&mut p, true, 21.0, early, &mut roll).unwrap();
     assert!(louder.volume > 0.0);
     // Past the cooldown even a quiet impact sounds again.
-    assert!(impact_sound(&mut state, 10.0, 0.3, louder.cooldown_ms + 1, &mut roll).is_some());
+    assert!(impact_sound(&mut p, true, 10.0, louder.cooldown_ms + 1, &mut roll).is_some());
 }
 
 /// A strength at or under 0.5 is silent, and a part without a collision
-/// sound stays silent without advancing the generator.
+/// sound parks its clock without advancing the generator.
 #[test]
 fn a_weak_or_unsounded_impact_is_silent() {
-    let mut state = ImpactState::new(true);
+    let mut p = part(0.3);
     let mut roll = 1;
-    assert_eq!(impact_sound(&mut state, 0.5, 0.3, 0, &mut roll), None);
+    assert_eq!(impact_sound(&mut p, true, 0.5, 1, &mut roll), None);
     assert_eq!(roll, 1);
-    let mut state = ImpactState::new(false);
-    assert_eq!(impact_sound(&mut state, 50.0, 0.3, 0, &mut roll), None);
-    assert_eq!(state.cooldown_ms, u32::MAX);
+    assert_eq!(impact_sound(&mut p, false, 50.0, 1, &mut roll), None);
+    assert_eq!(p.sound_ready_ms, u32::MAX);
     assert_eq!(roll, 1);
+    // Parked, only a louder impact than the (unchanged) threshold passes
+    // the gate, and it parks again.
+    assert_eq!(impact_sound(&mut p, false, 50.0, 2, &mut roll), None);
+    assert_eq!(p.last_impact, 0.0);
 }
 
 /// The first 1 cm move of a scrape: the move is 1 cm², `(√1·2 + 1)·0.05 =

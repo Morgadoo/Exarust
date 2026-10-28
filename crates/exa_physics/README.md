@@ -335,11 +335,18 @@ tick recorded: its squared move `d` (cm²) over 0.01 smooths to
 and a speed over 0.02 plays at `speed·volume` and `pitch·(0.1·speed + 0.9)`
 at its part's position (the curve, smoothing and pitch in double precision).
 The sources are stepped at the start of the post-step, before the body's
-matrices; a body without sources skips the step. Their events are left for `exa_audio`; that crate has no body
-hookup, so the events are not played yet. A prop's stored sound slots
-(`0xDDB3` in its body chunk) are attached on their part when the body
-registers. The original drops a slot whose sound name the audio
-environment cannot find; Exarust drops only the slots with an empty name.
+matrices; a body without sources skips the step. A prop's stored sound
+slots (`0xDDB3` in its body chunk) are attached on their part when the
+body registers, and its root carries the names the audio side resolves
+(`prop::BodySounds`: each part's material collision set, each source's
+sound). `body::impact_sound` runs the collision call on a part's own clock
+and threshold (`Part::sound_ready_ms`, `Part::last_impact`) over
+`part::base_impact_sound`: a part with no sound that passes the gate parks
+its clock at the all-ones word; one that sounds stores twice the strength
+and sets its clock with the generator's draw taken after the play.
+`exa_audio` plays the impacts and drives the scrape loops. The original
+drops a slot whose sound name the audio environment cannot find; Exarust
+keeps the named slots and leaves an unshipped one silent.
 Each character tick measures a living body's balance at its chest against
 its ankles and asks the level for the ground under each foot
 (`contact::Level::height_below`, the original's Height Query), which give
@@ -438,7 +445,7 @@ hands to the sampler; the race's clip rates (`body::RaceMuscles`) set its
 clip clock.
 An ordinary rigid body's collision sound is the original's slot 38 base
 rule (`part::base_impact_sound`, read by a striking item's non-striker
-contact): above 0.5 and either past its clock or
+contact and, through `body::impact_sound`, by every prop): above 0.5 and either past its clock or
 over twice the last strength, the volume `1.5·min(0.01·S, 1)` (times
 `8·mobility + 0.2` under 0.1), the pitch `(0.02·mobility + 0.9)·(0.6·v +
 0.7)` (or `7·mobility + 0.3` under 0.1) and the clock `now + 220 −

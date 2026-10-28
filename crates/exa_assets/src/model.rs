@@ -108,11 +108,15 @@ pub struct ModelNode {
 
 /// A model node's rigid body and what its mobility is divided by when the
 /// body is registered: the physical divisor of the material of the node's
-/// first mesh part ([`Material::mobility_divisor`], 1 without a material).
+/// first mesh part ([`Material::mobility_divisor`], 1 without a material),
+/// and that material's collision sound set ([`Material::collision_sound_set`],
+/// none without a material), which the original resolves into the body's
+/// impact sound when it registers.
 #[derive(Debug, Clone)]
 pub struct NodeRigidBody {
     pub body: Arc<exa_formats::rigid_body::RigidBody>,
     pub mobility_divisor: f32,
+    pub collision_sound: Option<String>,
 }
 
 impl NodeRigidBody {
@@ -194,8 +198,9 @@ pub struct ModelCache {
     environment: Option<Option<Handle<Image>>>,
     /// Body model stems (lower case) of the races that bleed, once read.
     bleeding_stems: Option<HashSet<String>>,
-    /// Mobility divisors by material cache key ([`ModelLoader::mobility_divisor`]).
-    divisors: HashMap<String, f32>,
+    /// Mobility divisors and collision sound sets by material cache key
+    /// ([`ModelLoader::body_material`]).
+    divisors: HashMap<String, (f32, Option<String>)>,
     /// Morph bodies and the shares of the morphs models take
     /// ([`crate::morph`]).
     pub(crate) morph: MorphCache,
@@ -499,17 +504,18 @@ impl ModelLoader<'_> {
             }
             let skin_bone = built.skin.as_ref().map(|(bone, _)| *bone);
             // A node marked as level geometry never registers its body.
-            let rigid = node
-                .rigid()
-                .filter(|_| !node.is_static())
-                .map(|body| NodeRigidBody {
+            let rigid = node.rigid().filter(|_| !node.is_static()).map(|body| {
+                let (mobility_divisor, collision_sound) = mesh
+                    .and_then(|mesh| mesh.groups.first())
+                    .map_or((1.0, None), |g| {
+                        self.body_material(&entry, &scene, &g.material)
+                    });
+                NodeRigidBody {
                     body: Arc::new(body.clone()),
-                    mobility_divisor: mesh.map_or(1.0, |mesh| {
-                        mesh.groups
-                            .first()
-                            .map_or(1.0, |g| self.mobility_divisor(&entry, &scene, &g.material))
-                    }),
-                });
+                    mobility_divisor,
+                    collision_sound,
+                }
+            });
             let (parts, part_materials, collision) = match mesh {
                 Some(mesh) => {
                     let (parts, part_materials) = built
@@ -663,19 +669,22 @@ impl ModelLoader<'_> {
     }
 
     /// What a rigid body's stored mobility is divided by when its node's
-    /// first mesh part has the material `name`: the material's physical
-    /// divisor (its own record, else the libraries'), 1 when it has none.
-    fn mobility_divisor(&mut self, entry: &str, scene: &Scene, name: &str) -> f32 {
+    /// first mesh part has the material `name`, and that material's
+    /// collision sound set: the material's physical divisor (its own
+    /// record, else the libraries'), 1 and no sound when it has none.
+    fn body_material(&mut self, entry: &str, scene: &Scene, name: &str) -> (f32, Option<String>) {
         let key = Self::material_key(entry, scene, name);
-        if let Some(&d) = self.cache.divisors.get(&key) {
-            return d;
+        if let Some(d) = self.cache.divisors.get(&key) {
+            return d.clone();
         }
         let d = scene
             .material(name)
             .cloned()
             .or_else(|| library_material(self.game, name))
-            .map_or(1.0, |m| m.mobility_divisor());
-        self.cache.divisors.insert(key, d);
+            .map_or((1.0, None), |m| {
+                (m.mobility_divisor(), Some(m.collision_sound_set(name)))
+            });
+        self.cache.divisors.insert(key, d.clone());
         d
     }
 

@@ -2,8 +2,9 @@
 //! sound sets (`bank`), the original's virtual-voice mixer with 512 voices
 //! ranked onto 64 sources (`environment`), music crossfades (`music`), area
 //! ambience (`ambience`), the global EFX reverb's parameters (`reverb`),
-//! weapon impacts and pain sounds on hits (`hits`), and footsteps for moving
-//! characters (`footsteps`).
+//! weapon impacts and pain sounds on hits (`hits`), footsteps for moving
+//! characters (`footsteps`), and the plain rigid bodies' collision sounds
+//! and scrape loops (`bodies`).
 //!
 //! The original mixes through OpenAL with EFX; Bevy's rodio backend has
 //! neither EFX nor per-source auxiliary sends. The mixer computes the reverb
@@ -13,6 +14,7 @@
 
 mod ambience;
 mod bank;
+mod bodies;
 mod environment;
 mod footsteps;
 mod hits;
@@ -68,6 +70,10 @@ impl Plugin for AudioPlugin {
                     playback::apply_source_commands,
                 )
                     .chain(),
+            )
+            .add_systems(
+                FixedUpdate,
+                bodies::body_sounds.after(exa_physics::body::BodySystems),
             );
     }
 }

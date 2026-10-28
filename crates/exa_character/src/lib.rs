@@ -2181,6 +2181,7 @@ mod tests {
                     sounds: Vec::new(),
                 }),
                 mobility_divisor: 2.0,
+                collision_sound: None,
             }),
             tracks: Vec::new(),
             shadow_bias: 0,

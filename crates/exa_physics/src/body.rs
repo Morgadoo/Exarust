@@ -45,7 +45,7 @@ use crate::part::PartState;
 
 #[path = "body_sound.rs"]
 mod sound;
-pub use sound::{ImpactEvent, ImpactState, ScrapeEvent, ScrapeSource, impact_sound};
+pub use sound::{ImpactEvent, ScrapeEvent, ScrapeSource, impact_sound};
 #[path = "body_muscle.rs"]
 mod muscle;
 pub use muscle::{AttackArmTune, Bearing, BodyStats, RaceMuscles, attack_arms};
