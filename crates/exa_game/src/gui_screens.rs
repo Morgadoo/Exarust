@@ -587,7 +587,8 @@ impl Plugin for GameScreensPlugin {
                     .after(crate::hotkeys::HotkeySet)
                     .before(crate::player::player_combat),
             )
-            .add_systems(Update, draw_screens.after(open_requested_screens));
+            .add_systems(Update, draw_screens.after(open_requested_screens))
+            .add_systems(Update, close_on_right_release.after(open_requested_screens));
     }
 }
 
@@ -641,6 +642,47 @@ fn open_requested_screens(
     }
     if keys.just_pressed(KeyCode::Escape) && screens.close_focused() {
         debug!("GUI: the focused screen closes");
+    }
+}
+
+/// A right-button release over a screen that has the handler closes it
+/// (the inventory's and the loot window's mouse routines); a release over
+/// another form or outside leaves the screens alone.
+fn close_on_right_release(
+    buttons: Option<Res<ButtonInput<MouseButton>>>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    mut screens: ResMut<GameScreens>,
+) {
+    let Some(buttons) = buttons else {
+        return;
+    };
+    if !buttons.just_released(MouseButton::Right) {
+        return;
+    }
+    let Ok(window) = windows.single() else {
+        return;
+    };
+    let Some(pointer) = window.cursor_position() else {
+        return;
+    };
+    let pointer = pointer * window.scale_factor();
+    let active = screens.task.active;
+    let Some(screen) = screens
+        .open
+        .iter()
+        .find(|screen| Some(screen.form) == active)
+        .copied()
+    else {
+        return;
+    };
+    if !exa_ui::game_gui::right_release_closes(screen.kind) {
+        return;
+    }
+    let Some(form) = screens.task.form(screen.form) else {
+        return;
+    };
+    if form.bounds().contains(pointer.x as i32, pointer.y as i32) {
+        screens.close(screen.kind);
     }
 }
 

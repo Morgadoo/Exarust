@@ -1167,8 +1167,10 @@ drawing:
 hotkeys send a screen request through the hotkey handler (its
 permissions apply), the inventory and journal are forms on a `GuiTask`
 (so their focus follows the window manager), the inventory is registered
-as an open container, the journal keeps its session entries, and Escape
-closes the focused screen (Exarust's). Both screens now draw
+as an open container, the journal keeps its session entries, a right-button
+release over the inventory's or a loot window's form closes it (their own
+mouse handler), and Escape closes the focused screen (Exarust's). Both
+screens now draw
 (`exa_game::gui_paint`) with the words their constructors write. The form
 attribute word is 0x30022 (the journal adds 0x8000) and the frame style
 adds the centred-title bit 0x3000; the item pack adds 0x80 to its style and

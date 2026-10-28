@@ -629,3 +629,11 @@ fn the_hud_reset_takes_a_hold_only_from_a_fallen_curtain() {
     assert_eq!(curtain.reset_with_hold(&mut holds, false), (false, false));
     assert_eq!(holds, 2);
 }
+
+#[test]
+fn a_right_release_closes_the_inventory_and_loot() {
+    assert!(right_release_closes(GameScreen::Inventory));
+    assert!(right_release_closes(GameScreen::Loot));
+    assert!(!right_release_closes(GameScreen::Journal));
+    assert!(!right_release_closes(GameScreen::TechniqueSelector));
+}

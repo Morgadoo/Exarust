@@ -212,6 +212,13 @@ pub const LOOT_PLACE: (i32, i32) = (400, crate::form::UNPLACED);
 pub const LOOT_PACK_HEIGHT: i32 = 180;
 pub const LOOT_PANEL_GAP: i32 = 4;
 
+/// Whether a right-button release over a screen's own form closes it: the
+/// inventory and the loot window have a right-release close handler; the
+/// journal closes on its own key mask instead.
+pub fn right_release_closes(kind: GameScreen) -> bool {
+    matches!(kind, GameScreen::Inventory | GameScreen::Loot)
+}
+
 /// The journal's show inputs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct JournalInput {
