@@ -274,7 +274,8 @@ impl Plugin for ArenaLivePlugin {
                     forfeit_match,
                     draw_end_screen,
                 )
-                    .chain(),
+                    .chain()
+                    .after(crate::gui_screens::draw_screens),
             );
     }
 }
@@ -1389,6 +1390,16 @@ mod tests {
         screen.show(Screen::End);
         assert_eq!(screen.kind, 2);
         assert_eq!(screen.menu().unwrap().rows, ["EXIT;"]);
+        // The frame goes through the same GUI path as the other end menus:
+        // the backdrop alone when no font texture is installed.
+        let frame = crate::end_menu_screen::end_menu_frame(
+            1600,
+            1080,
+            &screen.menu().unwrap(),
+            Some(0),
+            &GuiTextures::default(),
+        );
+        assert_eq!(frame.layers.len(), 1);
         // Only the first row continues; confirming closes the screen.
         assert!(screen.confirm());
         assert!(!screen.open);

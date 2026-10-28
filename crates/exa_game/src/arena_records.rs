@@ -264,6 +264,31 @@ mod tests {
         let mut professions = ProfessionCatalog::default();
         let mut previous = 0;
         let record = generated_record(&fighter, &mut lcg, &tables, &mut professions, &mut previous);
+        // Pinned to the shipped name tables and this synthetic catalogue.
+        assert_eq!(record.name, "Thelmis");
+        assert_eq!(record.surname, "");
+        assert_eq!(record.physique[0].to_bits(), 0x3eea_1fc7);
+        assert_eq!(record.physique[1].to_bits(), 0x3f43_7001);
+        assert_eq!(record.height.to_bits(), 0xbd8e_f090);
+        assert_eq!(record.age.to_bits(), 0x3ddc_3b64);
+        assert_eq!(record.skin, [37_889, 48_293]);
+        assert_eq!(record.hair_style, 9);
+        assert_eq!(record.hair_colour, [84, 56, 45, 0]);
+        assert_eq!(record.voice_number, 0);
+        assert_eq!(record.voice, "vi01");
+        assert_eq!(record.profession(), 0x1_0000);
+        assert_eq!(record.combat_skill.to_bits(), 0x423d_c771);
+        assert_eq!(record.undead_voice, 4);
+        assert_eq!(record.search_seed, 0x07a5_0b31);
+        assert_eq!(record.skills[0].points, 15_313);
+        assert_eq!(record.skills[0].techniques, [1, 3, 4, 2, 0, 0]);
+        assert_eq!(record.skills[2].points, 5_000);
+        assert_eq!(
+            record.worn.iter().map(|worn| worn.id).collect::<Vec<_>>(),
+            [1360, 249, 216]
+        );
+        assert!(record.hands.iter().all(|hand| !hand.is_some()));
+        assert_eq!(previous, 4);
         // The name comes from the retail tables and has no surname.
         assert!(!record.name.is_empty());
         assert!(record.surname.is_empty());

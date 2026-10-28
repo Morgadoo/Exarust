@@ -2658,6 +2658,55 @@ mod tests {
     }
 
     #[test]
+    fn the_unit_draw_is_the_shared_sequence_over_two_to_the_thirty_two() {
+        let mut lcg = Lcg::new(0);
+        assert_eq!(lcg.unit().to_bits(), 0x2f80_0000);
+        assert_eq!(lcg.unit().to_bits(), 0x3d00_8840);
+        assert_eq!(lcg.state(), 0x0808_8406);
+    }
+
+    #[test]
+    fn item_facts_read_the_body_rank_quality_and_occupancy() {
+        let mut body = vec![0u8; 0x1B0 + 100];
+        body[0x1AB..0x1AD].copy_from_slice(&0x00A5u16.to_le_bytes());
+        body[0x1A8] = 3;
+        body[0x1B0] = 160;
+        body[0x1B1] = 64;
+        body[0x10..0x18].copy_from_slice(&0x8000_0000_0000_0001u64.to_le_bytes());
+        let mut payload = 0x1000u32.to_le_bytes().to_vec();
+        payload.extend(((body.len() + 8) as u32).to_le_bytes());
+        payload.extend(body);
+        let item = exa_formats::objdb::Item::parse(42, &payload).unwrap();
+        let facts = ItemFacts::of_item(&item);
+        assert_eq!(facts.id, ItemId(42));
+        assert_eq!(facts.rank_word, 0x00A5);
+        assert_eq!(facts.bulk(), 5);
+        assert_eq!(facts.quality, 160);
+        assert_eq!(facts.condition, 64);
+        assert_eq!(facts.apparel_class, 3);
+        assert_eq!(facts.bonus_words[0], 0x8000_0000_0000_0001);
+        assert_eq!(facts.bonus_floats, [0.0; BONUS_SLOTS]);
+    }
+
+    #[test]
+    fn item_facts_fall_back_to_the_weapon_rank() {
+        let mut body = vec![0u8; 0x5A];
+        body[0x42..0x44].copy_from_slice(&0x0043u16.to_le_bytes());
+        body[0x0C] = 90;
+        body[0x0D] = 12;
+        let mut payload = 0x4000u32.to_le_bytes().to_vec();
+        payload.extend(((body.len() + 8) as u32).to_le_bytes());
+        payload.extend(body);
+        let item = exa_formats::objdb::Item::parse(43, &payload).unwrap();
+        let facts = ItemFacts::of_item(&item);
+        assert_eq!(facts.rank_word, 0x0043);
+        assert_eq!(facts.bulk(), 3);
+        assert_eq!(facts.quality, 90);
+        assert_eq!(facts.condition, 12);
+        assert_eq!(facts.apparel_class, 0);
+    }
+
+    #[test]
     fn the_quality_markers_fill_by_mode() {
         let mut markers = [0u8; QUALITY_MARKERS];
         mark_quality(1, &mut markers, false);

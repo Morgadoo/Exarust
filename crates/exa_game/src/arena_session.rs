@@ -772,6 +772,11 @@ mod tests {
         let mut bracket = bracket_for_template(7).unwrap();
         let mut roll = 0;
         let survivors = bracket_next_fight(&mut bracket, 1, &mut roll);
+        assert_eq!(
+            survivors,
+            [1, 0, 3, 0, 5, 0, 0, 8, 9, 0, 11, 0, 0, 14, 15, 0]
+        );
+        assert_eq!(roll, 0x5195_c04b);
         assert_eq!(survivors.len(), 16);
         // Player team one beat team two; the other seven pairs draw a winner
         // each with the original's roll sequence.
@@ -783,6 +788,8 @@ mod tests {
         assert_ne!(roll, 0);
         // A second round groups the survivors and keeps team one again.
         let again = bracket_next_fight(&mut bracket, 1, &mut roll);
+        assert_eq!(again, [1, 0, 0, 0, 5, 0, 0, 0, 9, 0, 0, 0, 0, 14, 0, 0]);
+        assert_eq!(roll, 0x6cf8_f4be);
         assert_eq!(again.iter().filter(|&&id| id != 0).count(), 4);
         assert_eq!(again[0], 1);
     }
