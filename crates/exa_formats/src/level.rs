@@ -96,6 +96,11 @@ pub enum PropAttachment {
         word: u32,
         positions: Vec<[f32; 3]>,
     },
+    /// A whole tree of node transforms (`0x3DE0EC00`): each entry names a
+    /// child of the node the tree applies to, replaces its local transform
+    /// and carries its own children's entries. An entry whose node is not
+    /// found is skipped with its children.
+    Tree { entries: Vec<PropAttachment> },
 }
 
 impl PropAttachment {
@@ -103,6 +108,7 @@ impl PropAttachment {
     pub fn name(&self) -> &str {
         match self {
             Self::Transform { name, .. } | Self::MeshPositions { name, .. } => name,
+            Self::Tree { .. } => "",
         }
     }
 }
@@ -114,6 +120,7 @@ const ATTACHMENT_DEPTH: usize = 32;
 /// Sub-chunk tags of a placed object's node overrides.
 pub const PROP_TRANSFORM: u32 = 0x3DE0_ECAC;
 pub const PROP_MESH_POSITIONS: u32 = 0x3DE0_ECDB;
+pub const PROP_TREE: u32 = 0x3DE0_EC00;
 
 impl Prop {
     /// Placement flag: the whole object is level geometry. The original
@@ -125,6 +132,32 @@ impl Prop {
     pub fn is_static(&self) -> bool {
         self.flags & Self::STATIC != 0
     }
+}
+
+/// The loader's border fill: every load writes the fixed edge words of the
+/// grid's outer row and column into plane A, whatever the file stored, then
+/// the four corners. Values are plane A's edge/corner words.
+pub fn fill_borders(edges: &mut [u32], width: u32, height: u32) {
+    let (w, h) = (width as usize, height as usize);
+    // The loader only runs for a grid with an inside: it never fills a 1-cell
+    // edge (and would index before its planes).
+    if w < 2 || h < 2 || edges.len() < w * h {
+        return;
+    }
+    for cell in edges.iter_mut().take(w - 1) {
+        *cell = 0x2001_0007;
+    }
+    for row in 0..h - 1 {
+        edges[row * w] = 0x0012_0070;
+        edges[row * w + w - 1] = 0x1200_7000;
+    }
+    for cell in edges.iter_mut().skip((h - 1) * w).take(w - 1) {
+        *cell = 0x0120_0700;
+    }
+    edges[0] = 0x2013_0077;
+    edges[w - 1] = 0x3201_7007;
+    edges[(h - 1) * w] = 0x0132_0770;
+    edges[w * h - 1] = 0x0132_0700;
 }
 
 pub(crate) fn read_grid(b: &[u8]) -> Result<LevelGrid> {
@@ -142,7 +175,7 @@ pub(crate) fn read_grid(b: &[u8]) -> Result<LevelGrid> {
                 .is_some_and(|bytes| bytes <= c.remaining())
         })
         .ok_or_else(|| Error::Malformed(format!("grid {width}x{height} does not fit")))?;
-    let edges = c.u32s(cells)?;
+    let mut edges = c.u32s(cells)?;
     let mut plane_b = c.u32s(cells)?;
     let mut plane_c = c.u32s(cells)?;
     if marker == LEGACY_MARKER {
@@ -157,6 +190,7 @@ pub(crate) fn read_grid(b: &[u8]) -> Result<LevelGrid> {
                 | (v & 0xFF);
         }
     }
+    fill_borders(&mut edges, width, height);
     Ok(LevelGrid {
         wall_sets,
         floor_sets,
@@ -226,9 +260,76 @@ fn read_attachment_at(tag: u32, body: &[u8], depth: usize) -> Option<PropAttachm
     match tag {
         PROP_TRANSFORM => read_prop_transform(body, depth).ok(),
         PROP_MESH_POSITIONS => read_prop_positions(body).ok(),
+        PROP_TREE => read_prop_tree(body, depth).ok(),
         _ => None,
     }
 }
+
+/// One `0x3DE0EC00` tree: a count, a skipped word, then that many entries.
+/// Each entry is a name, a skipped word, a 3×4 transform in centimetres, a
+/// child count, the number of records its subtree holds, then its children;
+/// the next sibling follows the subtree.
+fn read_prop_tree(b: &[u8], depth: usize) -> Result<PropAttachment> {
+    let mut r = Reader { b, pos: 0 };
+    let count = r.u32()? as usize;
+    r.u32()?;
+    let mut entries = Vec::new();
+    for _ in 0..count {
+        if let Some(entry) = read_tree_entry(&mut r, depth + 1)? {
+            entries.push(entry);
+        }
+    }
+    Ok(PropAttachment::Tree { entries })
+}
+
+fn read_tree_entry(r: &mut Reader<'_>, depth: usize) -> Result<Option<PropAttachment>> {
+    if depth > ATTACHMENT_DEPTH {
+        return Ok(None);
+    }
+    let start = r.pos;
+    let name = r.name()?;
+    let word = r.u32()?;
+    let mut transform = [[0.0f32; 3]; 4];
+    for row in &mut transform {
+        for v in row.iter_mut() {
+            *v = f32::from_bits(r.u32()?);
+        }
+    }
+    for v in &mut transform[3] {
+        *v *= CENTIMETRES_TO_METRES;
+    }
+    let children = r.u32()? as usize;
+    let descendants = r.u32()? as usize;
+    let mut kids = Vec::new();
+    if children > 0 {
+        for _ in 0..children {
+            if let Some(kid) = read_tree_entry(r, depth + 1)? {
+                kids.push(kid);
+            }
+        }
+    }
+    // The next sibling follows the record and its whole subtree:
+    // `(descendants + 1)` records of 0x4c bytes from here.
+    let stride = descendants
+        .checked_add(1)
+        .and_then(|n| n.checked_mul(TREE_RECORD_BYTES))
+        .ok_or_else(|| Error::Malformed("a placement tree does not fit".into()))?;
+    let target = start + stride;
+    if r.pos > target {
+        return Err(Error::Malformed("a placement tree record overlaps".into()));
+    }
+    r.bytes(target - r.pos)?;
+    Ok(Some(PropAttachment::Transform {
+        name,
+        word,
+        transform,
+        children: kids,
+    }))
+}
+
+/// A tree record's fixed size: the 16-byte name, the word and transform,
+/// child count and descendant count.
+const TREE_RECORD_BYTES: usize = 0x4c;
 
 /// One `0x3DE0ECAC` record: the node's name, a word, a 3×4 transform whose
 /// translation is in centimetres (68 bytes), then sub-chunks: the records
@@ -394,6 +495,109 @@ mod tests {
         assert_eq!(g.edge(c, 1), 0);
         assert_eq!(g.plane_c, [3, 4]);
         assert!(g.cell(2, 0).is_none());
+    }
+
+    #[test]
+    fn the_loader_fills_the_grid_border() {
+        let (w, h) = (4usize, 3usize);
+        let mut edges = vec![0u32; w * h];
+        fill_borders(&mut edges, w as u32, h as u32);
+        assert_eq!(
+            &edges[0..w],
+            &[0x2013_0077, 0x2001_0007, 0x2001_0007, 0x3201_7007]
+        );
+        for row in 0..h {
+            assert_eq!(
+                edges[row * w],
+                if row == 0 {
+                    0x2013_0077
+                } else if row == h - 1 {
+                    0x0132_0770
+                } else {
+                    0x0012_0070
+                }
+            );
+            assert_eq!(
+                edges[row * w + w - 1],
+                if row == 0 {
+                    0x3201_7007
+                } else if row == h - 1 {
+                    0x0132_0700
+                } else {
+                    0x1200_7000
+                }
+            );
+        }
+        // The bottom row keeps its right corner from the right column, then
+        // the corner writes.
+        assert_eq!(
+            &edges[2 * w..],
+            &[0x0132_0770, 0x0120_0700, 0x0120_0700, 0x0132_0700]
+        );
+        // A 1-cell edge is left alone.
+        let mut small = vec![9u32; 2];
+        fill_borders(&mut small, 2, 1);
+        assert_eq!(small, [9, 9]);
+    }
+
+    #[test]
+    fn a_tree_override_reads_named_transforms_and_skips_its_word() {
+        let mut body = u32s(&[2, 0]);
+        let entry = |name_: &str, x: f32, children: u32, descendants: u32| {
+            let mut b = name(name_);
+            b.extend(u32s(&[7]));
+            for row in 0..4 {
+                for col in 0..3 {
+                    let v = if row == 3 && col == 0 { x } else { 0.0 };
+                    b.extend(u32s(&[v.to_bits()]));
+                }
+            }
+            b.extend(u32s(&[children, descendants]));
+            b
+        };
+        body.extend(entry("arm", 100.0, 0, 0));
+        body.extend(entry("head", 200.0, 0, 0));
+        let Some(PropAttachment::Tree { entries }) = read_attachment(PROP_TREE, &body) else {
+            panic!("not a tree");
+        };
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].name(), "arm");
+        let PropAttachment::Transform { transform, .. } = &entries[0] else {
+            panic!("not a transform");
+        };
+        assert_eq!(transform[3][0], 1.0);
+        let PropAttachment::Transform { transform, .. } = &entries[1] else {
+            panic!("not a transform");
+        };
+        assert_eq!(transform[3][0], 2.0);
+    }
+
+    #[test]
+    fn a_tree_child_follows_its_subtree_stride() {
+        let mut body = u32s(&[2, 0]);
+        // One parent with one child: the parent's descendants count is one,
+        // so the next sibling starts two records on.
+        body.extend(name("arm"));
+        body.extend(u32s(&[0]));
+        body.extend(u32s(&[0; 12]));
+        body.extend(u32s(&[1, 1]));
+        body.extend(name("hand"));
+        body.extend(u32s(&[0]));
+        body.extend(u32s(&[0; 12]));
+        body.extend(u32s(&[0, 0]));
+        body.extend(name("torso"));
+        body.extend(u32s(&[0]));
+        body.extend(u32s(&[0; 12]));
+        body.extend(u32s(&[0, 0]));
+        let Some(PropAttachment::Tree { entries }) = read_attachment(PROP_TREE, &body) else {
+            panic!("not a tree");
+        };
+        let PropAttachment::Transform { children, .. } = &entries[0] else {
+            panic!("not a transform");
+        };
+        assert_eq!(children.len(), 1);
+        assert_eq!(children[0].name(), "hand");
+        assert_eq!(entries[1].name(), "torso");
     }
 
     #[test]

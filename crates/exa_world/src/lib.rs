@@ -577,6 +577,26 @@ fn resolved_attachments<'a>(
         out: &mut Vec<(usize, &'a PropAttachment)>,
     ) {
         for a in list {
+            if let PropAttachment::Tree { entries } = a {
+                // A tree entry always names a direct child; an empty name
+                // matches no node (the original does not apply it to the
+                // tree's anchor).
+                for entry in entries {
+                    if entry.name().is_empty() {
+                        continue;
+                    }
+                    let target = model
+                        .nodes
+                        .iter()
+                        .position(|n| n.parent == Some(at) && n.name == entry.name());
+                    let Some(target) = target else { continue };
+                    out.push((target, entry));
+                    if let PropAttachment::Transform { children, .. } = entry {
+                        walk(model, target, children, out);
+                    }
+                }
+                continue;
+            }
             let target = if a.name().is_empty() {
                 Some(at)
             } else {
@@ -618,7 +638,7 @@ fn placement_base(
         .into_iter()
         .filter_map(|(node, a)| match a {
             PropAttachment::MeshPositions { positions, .. } => Some((node, positions.as_slice())),
-            PropAttachment::Transform { .. } => None,
+            PropAttachment::Transform { .. } | PropAttachment::Tree { .. } => None,
         })
         .collect();
     if edits.is_empty() {

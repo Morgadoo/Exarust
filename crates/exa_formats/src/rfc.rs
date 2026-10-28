@@ -2995,6 +2995,7 @@ mod tests {
             for attachment in &prop.attachments {
                 match attachment {
                     crate::level::PropAttachment::Transform { .. } => transforms += 1,
+                    crate::level::PropAttachment::Tree { .. } => {}
                     crate::level::PropAttachment::MeshPositions {
                         name, positions, ..
                     } => {
@@ -3049,6 +3050,7 @@ mod tests {
                         n.nested += usize::from(nested);
                     }
                     A::MeshPositions { .. } => n.positions += 1,
+                    A::Tree { .. } => {}
                 }
                 let Some(t) = target else {
                     n.unresolved += 1;
@@ -3063,6 +3065,7 @@ mod tests {
                             n.matching += 1;
                         }
                     }
+                    A::Tree { entries } => walk(scene, t, entries, nested, n),
                 }
             }
         }
