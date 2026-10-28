@@ -488,7 +488,11 @@ camera look takes the frame from the mouse-look capture, as the original's
 gamepad branch returns before touching the pointer. The start and end of play set the AI's activation centre and
 radius (`PlaySession`, which the player tick and the AI read); `PlayerControl`
 is the player-control singleton's creation state (hotkey mask 31 and the two
-constructor flags). The GUI character preview (`char_view`) turns the
+constructor flags). The character doll's equipment (`equip`) follows the record's out set:
+after a weapon-set swap the record's hands become the moveset's hands (the
+main hand's weapon, a second weapon, the off hand's shield or its torch;
+an off-hand weapon that also has a light section is the light). The GUI
+character preview (`char_view`) turns the
 figure toward the mouse: 0.7 of the pointer's arc-cosine yaw clamped to
 ±1.5 rad, a 5 % step under 1 rad and a clamped 0.05 rad above (the wrap
 and the products in double), then the head's look eases 5 % a tick toward

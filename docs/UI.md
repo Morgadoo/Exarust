@@ -2111,6 +2111,24 @@ plain draw and input records.
   under the button's anchor (x plus half its width, y plus its height) when
   the anchor bit is set; a colour button's popup uses the `0x6000` action
   set.
+- **Doll equipment** (`exa_items::doll`): the record's two weapon sets.
+  A re-dress compares the stowed set with the out set hand by hand; only a
+  changed hand is detached, then attached by its item's sections: a weapon
+  as a weapon part (the off hand's weapon that also has a light section as
+  an off-hand light), a shield as a shield, an item with only a light
+  section as an off-hand light, and anything else not at all. The item's
+  `0x1000000` flag is written to the body's flip byte and `0x2000000`
+  lights its held part. The stance restarts with blend 20 after every
+  re-dress unless the body is in its weapon-swap state (`0x1F`), and the
+  sets then trade only when a hand changed. A take-out clears the record
+  entry that names the item (either hand's) and, when it was scheduled for
+  the main hand, promotes the off hand's weapon or light into it — never a
+  shield — the promoted item taking the off hand's flags. A take-in refuses
+  an item whose weapon section is withheld (`0x2000000`) without the body's
+  permission `0x10000`, then follows the take-in order: the off-hand
+  light, the main hand's light moving to the off hand, the second weapon
+  only when asked for, and a two-hander freeing both hands. A shield frees the off hand and clears the body's weapon
+  part when it holds none.
 - **Item renderer** (`exa_items::item_renderer`): a 160-pixel icon
   rendered at 320 into colour and depth buffers, with the full and final
   RGBA images and the private scene and camera.
@@ -2138,21 +2156,60 @@ and blue 0.45 of the blue, as bytes of 255 at the top and 280 at the
 bottom, rounded to even. The view's task eases the figure's race share
 up to its race's value by 0.003 per frame millisecond, never past it.
 
+The scene's environment is given two colours, grey 0.5 and 0.75, its
+mode word 2 and a light level of 1; its view distance is 100 units. Each
+frame the figure's node takes the direction (0.5, 0.7, 0.5), already unit
+length within the original's rounding, turned into the camera's space and
+normalised, so the doll keeps facing the camera as it orbits; the body is
+also given the camera's point. A per-frame counter steps down by one and
+never below zero.
+
 A drag over the figure is accepted only when its item section allows it:
 apparel needs a race that wears it (bit 4) and a view that allows
 changes; a withheld weapon or shield needs the matching body permission
 (`0x10000`, or `0x20000` for a weapon's second bit); a race whose core
-word takes the AL crystal accepts item 500 while nothing is shown. A drop
-wears apparel, takes a weapon into a hand, takes a shield into the off
-hand, or takes the body's core crystal. A hover shows the item under the
-pointer and its icon, and clears the shown item when the icon cannot be
-resolved. A frozen view starts drags only from a held item. A release
-takes a held item out of its hand (the pack drops its held entry), takes
-the shown item off when the shown icon is the dragged one, and otherwise
-takes the dragged item off and charges the pack its bulk. The view's
-owner lookup follows the first visible form of its class, and the
-player's pack is that view's; the insight check looks for technique 8 in
-the skill block the view reads and blocks on the right half of the
+word takes the AL crystal accepts item 500 while nothing is shown. A view
+that allows changes answers for any item; a frozen one only while the
+pointer is over a worn entry. The drag-over test shows the item's mind
+cost: an apparel's protection value, or twice a weapon's desirability; the
+shield and the core crystal have none.
+
+A drop from the view's own panel does nothing. Otherwise apparel is worn,
+with both the doll and the shown character rebuilt (`0x0f1420`), the
+character data told of the equip change, and the shown character's pack
+charged the item's bulk; a weapon is taken into the doll's hands and
+mirrored on the shown character; a shield likewise; and a body that takes
+the item as its core crystal shows it under the pointer and clears the
+shown character's mark. When the view is not locked and the shown
+character's pack is not where the drag began, the pack also takes the item
+at its centre, marked held. With the view's mind-cost flag on and a second
+character shown, the drop charges the cost first and a refusal hides the
+view: the apparel's protection value, or twice the weapon's desirability
+less what it displaces.
+
+A hover shows the item under the pointer and its icon, and clears the
+shown item when the icon cannot be resolved. A hit on the shown icon
+answers the shown item. Otherwise the pick walks the figure's nodes and
+takes the last one under the pointer whose flags carry `0x89`, that is not
+flagged `0x4000000`, and whose item is not flagged `0x12000000` while
+settled; the worn entry the node belongs to gives the item's flags, else
+the first carried entry with that item does. A frozen view starts drags
+only from a held item.
+
+A release takes a hand's item out: over a worn entry the take-out is
+scheduled on the doll and, when a second character is shown, on it too,
+and the shown character's pack drops its held icon; the doll is not
+rebuilt. A take-out of the main hand promotes the off hand's weapon or
+light into it (a shield stays), the promoted item taking the off hand's
+flags. Otherwise, when the dragged icon is the shown item, the shown item
+is taken off and cleared; and for anything else the dragged item is taken
+off, the shown pack is charged its bulk, and both characters are rebuilt.
+A locked drag of an item flagged `0x80000000`, and a cancelled drag,
+charge the stored mind cost instead.
+
+The view's owner lookup follows the first visible form of its class, and
+the player's pack is that view's; the insight check looks for technique 8
+in the skill block the view reads and blocks on the right half of the
 figure.
 
 ## Settings options

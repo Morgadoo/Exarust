@@ -37,7 +37,7 @@
 //! (`context/re/item-gui-lane.md`).
 
 use crate::possession::{
-    Attach, Hand, HoldInto, HoldPlan, HoldStep, ItemKind, Possessions, hold_plan,
+    Attach, FLIPPED, Hand, HoldInto, HoldPlan, HoldStep, ItemKind, LIT, Possessions, hold_plan,
 };
 
 /// The blend a re-dress restarts the stance with.
@@ -462,6 +462,103 @@ pub fn attach_of(kind: ItemKind, hand: usize) -> Option<AttachKind> {
     }
 }
 
+/// The dress the hands from the record, as the loadout and trade screens
+/// do: the record's out set is replaced by the items the hand models hold
+/// (ids only), a two-handed item (both models the same) fills the main hand
+/// alone, and the plan attaches the record's real out set over them. The
+/// record is not changed. `None` when no hand differs.
+pub fn redress<F>(p: &Possessions, held: [Option<u32>; 2], kind: F) -> Option<AttachPlan>
+where
+    F: Fn(u32) -> Option<ItemKind>,
+{
+    let mut now = [Hand::default(); 2];
+    for hand in 0..2 {
+        now[hand].id = held[hand].unwrap_or(0);
+        if hand == 0 && now[0].id != 0 && now[1].id == now[0].id {
+            now[1].id = 0;
+        }
+    }
+    plan_from_record(&now, &p.out, kind)
+}
+
+/// The marks an attached item's model takes from its record flags: it is
+/// held flipped when `0x1000000` is set (the body keeps the bit) and its
+/// held part burns when `0x2000000` is set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ModelMarks {
+    pub flipped: bool,
+    pub lit: bool,
+}
+
+/// The marks for an item's record flags.
+pub fn model_marks(flags: u32) -> ModelMarks {
+    ModelMarks {
+        flipped: flags & FLIPPED != 0,
+        lit: flags & LIT != 0,
+    }
+}
+
+/// What a finished equipment job does. The three finalisers differ only in
+/// which of these they run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct FinishSteps {
+    /// The body's effect attachments are cleared.
+    pub detach_effects: bool,
+    /// The body's apparel is rebuilt.
+    pub rebuild_apparel: bool,
+    /// The body's effect attachments are refreshed.
+    pub refresh_effects: bool,
+    /// The player's controls are refreshed.
+    pub refresh_player: bool,
+    /// The view's view-side callback runs.
+    pub callback: bool,
+    /// The view's job slot is cleared (the job is over).
+    pub finish_job: bool,
+}
+
+/// Which finaliser runs after an equipment step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FinishKind {
+    /// The doll's own finaliser: effects cleared and refreshed, the apparel
+    /// rebuilt, the player's controls refreshed, the job finished.
+    Doll,
+    /// The other character's: the same on it, plus the view's callback and
+    /// its job cleared, then the player's controls refreshed.
+    Other,
+    /// The light one: the apparel rebuilt and the job finished.
+    Light,
+}
+
+/// The steps a finaliser runs, in the original's order.
+pub fn finish(kind: FinishKind) -> FinishSteps {
+    match kind {
+        FinishKind::Doll => FinishSteps {
+            detach_effects: true,
+            rebuild_apparel: true,
+            refresh_effects: true,
+            refresh_player: true,
+            callback: false,
+            finish_job: true,
+        },
+        FinishKind::Other => FinishSteps {
+            detach_effects: true,
+            rebuild_apparel: true,
+            refresh_effects: true,
+            refresh_player: true,
+            callback: true,
+            finish_job: true,
+        },
+        FinishKind::Light => FinishSteps {
+            detach_effects: false,
+            rebuild_apparel: true,
+            refresh_effects: false,
+            refresh_player: false,
+            callback: false,
+            finish_job: true,
+        },
+    }
+}
+
 /// The item and flags a hand takes, as the hand's plan step sees it: a
 /// weapon takes the lit and flipped bits of its flags, a light and a shield
 /// take none.
@@ -875,5 +972,58 @@ mod tests {
             }),
             Attach::Shield
         );
+    }
+
+    #[test]
+    fn redressing_attaches_the_record_over_what_the_hands_hold() {
+        let p = Possessions {
+            out: [hand(5, 0x0200_0000), hand(6, 0)],
+            ..Default::default()
+        };
+        // The hands hold nothing: both hands are attached from the record.
+        let plan = redress(&p, [None, None], |id| {
+            Some(match id {
+                5 => torch(),
+                6 => shield(),
+                _ => ItemKind::default(),
+            })
+        })
+        .unwrap();
+        assert_eq!(plan.changed, [true, true]);
+        assert_eq!(plan.attach[0].unwrap().flags, 0x0200_0000);
+        assert!(!plan.swap);
+        // The main hand already holds its item: only the off hand changes.
+        let plan = redress(&p, [Some(5), None], |_| Some(weapon(0x10))).unwrap();
+        assert_eq!(plan.changed, [false, true]);
+        // A two-hander held in both models is the main hand alone.
+        let plan = redress(&p, [Some(6), Some(6)], |_| Some(weapon(0x20))).unwrap();
+        assert_eq!(plan.changed, [true, false]);
+        assert!(redress(&p, [Some(5), Some(6)], |_| Some(weapon(0x10))).is_none());
+    }
+
+    #[test]
+    fn the_model_marks_and_the_finalisers() {
+        assert_eq!(
+            model_marks(0x0300_0000),
+            ModelMarks {
+                flipped: true,
+                lit: true
+            }
+        );
+        assert_eq!(
+            model_marks(0x0100_0000),
+            ModelMarks {
+                flipped: true,
+                lit: false
+            }
+        );
+        let doll = finish(FinishKind::Doll);
+        assert!(doll.detach_effects && doll.rebuild_apparel && doll.refresh_effects);
+        assert!(doll.refresh_player && doll.finish_job && !doll.callback);
+        let other = finish(FinishKind::Other);
+        assert!(other.callback && other.finish_job && other.rebuild_apparel);
+        let light = finish(FinishKind::Light);
+        assert!(light.rebuild_apparel && light.finish_job);
+        assert!(!light.detach_effects && !light.refresh_player && !light.callback);
     }
 }
