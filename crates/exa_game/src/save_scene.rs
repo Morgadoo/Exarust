@@ -195,6 +195,9 @@ pub struct LevelImport {
     pub scene: Option<Scene>,
     /// The parsed terrain, when it loaded.
     pub terrain: Option<Terrain>,
+    /// The level's settings chunk, when the save's importer read one (the
+    /// story's exporter writes it after the scene).
+    pub settings: Option<exa_formats::save_chunk::SaveSettingsRead>,
 }
 
 /// Imports a level section exactly as the save unit's import does.
@@ -230,6 +233,7 @@ pub fn import_level(
         arena_terrain_missing: false,
         scene: None,
         terrain: None,
+        settings: read_settings(section),
     };
     let Ok(scene) = Scene::parse(section) else {
         return out;
@@ -269,6 +273,29 @@ pub fn import_level(
     out.imported = true;
     out.scene = Some(scene);
     out
+}
+
+/// The settings chunk a save's level section carries, read as the load's
+/// settings hook does: the root chunk with the header id, its twelve-byte
+/// tag (its version float decides the old flag) and the two words. Chunk
+/// tags other than the settings header are skipped by the hook, so only the
+/// first matching chunk counts, as the importer dispatches each once.
+fn read_settings(section: &[u8]) -> Option<exa_formats::save_chunk::SaveSettingsRead> {
+    let body = section.get(4..)?;
+    let chunks = exa_formats::save_package::parse_chunks(body).ok()?;
+    let chunk = chunks
+        .iter()
+        .find(|chunk| chunk.id == exa_formats::save_chunk::SAVE_SETTINGS_ID)?;
+    let payload = chunk.payload;
+    if payload.len() < 20 {
+        return None;
+    }
+    let tag = f32::from_le_bytes(payload[4..8].try_into().ok()?);
+    let first = i32::from_le_bytes(payload[12..16].try_into().ok()?);
+    let second = i32::from_le_bytes(payload[16..20].try_into().ok()?);
+    Some(exa_formats::save_chunk::read_save_settings(
+        chunk.id, tag, first, second,
+    ))
 }
 
 /// The values the game scene is created with, before any level is loaded:
@@ -689,6 +716,64 @@ mod tests {
         assert_eq!(import.terrain.as_ref().unwrap().palette, "pal0");
         assert!(!import.arena_terrain_missing);
         assert!(!import.steps.contains(&ImportStep::ArenaTerrainMissing));
+    }
+
+    #[test]
+    fn a_level_sections_settings_chunk_is_read_by_the_import() {
+        let mut name = [0u8; 16];
+        name[..4].copy_from_slice(b"node");
+        let scene = exa_formats::rfc_write::ExportScene {
+            nodes: vec![exa_formats::rfc_write::SceneNode {
+                name,
+                flags: exa_formats::rfc_write::class::PLAIN,
+                local: exa_formats::rfc_write::IDENTITY,
+                world: exa_formats::rfc_write::IDENTITY,
+                ..Default::default()
+            }],
+            whole_scene: true,
+            ..Default::default()
+        };
+        let settings = exa_formats::save_chunk::SettingsChunk {
+            tag: exa_formats::save_chunk::save_tag_bytes(false, [0; 12]),
+            first: 3,
+            saved: 4,
+        };
+        let section = exa_formats::rfc_write::export_save_level(
+            &scene,
+            &exa_formats::rfc_write::ExportOptions::default(),
+            Some(settings),
+        )
+        .unwrap();
+        let import = import_level(&section, "exanima04", None, false);
+        let read = import.settings.unwrap();
+        assert!(read.accepted);
+        assert!(!read.old);
+        assert_eq!((read.first, read.second), (3, 4));
+        // An old tag (version under a million) sets the flag.
+        let mut old_tag = [0u8; 12];
+        old_tag[4..8].copy_from_slice(&900_000.0f32.to_le_bytes());
+        let section = exa_formats::rfc_write::export_save_level(
+            &scene,
+            &exa_formats::rfc_write::ExportOptions::default(),
+            Some(exa_formats::save_chunk::SettingsChunk {
+                tag: old_tag,
+                first: 0,
+                saved: 1,
+            }),
+        )
+        .unwrap();
+        assert!(
+            import_level(&section, "exanima04", None, false)
+                .settings
+                .unwrap()
+                .old
+        );
+        // The plain section has none.
+        assert!(
+            import_level(&one_node_section(), "exanima04", None, false)
+                .settings
+                .is_none()
+        );
     }
 
     #[test]

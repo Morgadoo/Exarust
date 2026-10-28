@@ -447,7 +447,9 @@ when the terrain is missing, run the tree and texture passes again, add the
 nodes to the scene, rebuild the sector and bounds passes, run the final node
 pass, update the grid environments when the scene has a grid, and report
 the scene ready. A malformed section imports nothing and still frees its
-stream; a section with no nodes does the same.
+stream; a section with no nodes does the same. A section imported from the
+save also reads the level's settings chunk (the tag with its version float
+and the two words) as it goes; the archive's own level has none.
 
 **Game scene.** The scene is created with its flag word `0x10000`, 115 sound
 slots [guess at the field's meaning], node-manager flags 1 and 1, the scene
