@@ -711,9 +711,10 @@ impl Portal {
         }
     }
 
-    /// The signed distance of `point` in front of the doorway plane.
+    /// The signed distance of `point` in front of the doorway plane, summed
+    /// in the original's order: `(z·nz + y·ny) + x·nx`, then the offset.
     pub fn distance(&self, point: Vec3) -> f32 {
-        self.normal.dot(point) + self.offset
+        (point.z * self.normal.z + point.y * self.normal.y) + point.x * self.normal.x + self.offset
     }
 }
 
@@ -1069,6 +1070,8 @@ pub struct Scene {
     pub removals: RemovalQueue,
     /// The renderers registered with the scene.
     pub renderers: Vec<u32>,
+    /// The scene plugins (the original's `+0x1d58` list).
+    pub plugins: Vec<u32>,
     /// The scene-wide lights.
     pub lights: Vec<u32>,
     /// The material manager's material count, as the add/remove flush grows
@@ -1100,6 +1103,7 @@ impl Scene {
             transitions: Vec::new(),
             removals: RemovalQueue::default(),
             renderers: Vec::new(),
+            plugins: Vec::new(),
             lights: Vec::new(),
             material_count: 0,
             material_adds: Vec::new(),
@@ -1165,9 +1169,9 @@ impl Scene {
             return false;
         };
         self.nodes[light].aliases.swap_remove(at);
-        if let Some(sector) = self.nodes[alias].sector {
-            self.sectors[sector].changes |= LINKS_CHANGED;
-        }
+        // The original marks the alias's owner scene, whose own sector is
+        // the scene's, then clears the alias's owner.
+        self.sectors[SCENE_SECTOR].changes |= LINKS_CHANGED;
         self.nodes[alias].sector = None;
         true
     }
@@ -1346,6 +1350,9 @@ impl Scene {
         if let Some(old) = old {
             self.sectors[old].changes |= LINKS_CHANGED | MOVED_OUT;
         }
+        // The original marks the node's owner scene; the scene's own sector
+        // is the scene's membership word.
+        self.sectors[SCENE_SECTOR].changes |= LINKS_CHANGED | MOVED_OUT;
         if let Some(parent) = self.nodes[node].parent {
             self.nodes[parent].children.retain(|&c| c != Some(node));
         }
@@ -1494,6 +1501,7 @@ impl Scene {
         for (index, &state) in states.iter().enumerate() {
             let sector = &mut self.sectors[index];
             sector.scissor = None;
+            sector.through_portal = false;
             if !sector.in_scene || state == SectorState::Hidden {
                 sector.mask = 0;
                 sector.visible_portals.clear();
@@ -1508,7 +1516,9 @@ impl Scene {
                         continue;
                     }
                     sector.visible_portals.push(at);
-                    let facing = (portal.normal.dot(eye) + portal.offset) as f64;
+                    let facing = ((eye.z * portal.normal.z + eye.y * portal.normal.y)
+                        + eye.x * portal.normal.x
+                        + portal.offset) as f64;
                     if facing < PORTAL_FACING {
                         continue;
                     }
@@ -1522,6 +1532,7 @@ impl Scene {
                 } else {
                     sector.mask = 1;
                     sector.scissor = Some(scissor_rect(&sector.views, project));
+                    sector.through_portal = true;
                 }
             } else {
                 sector.visible_portals.clear();
@@ -1789,6 +1800,19 @@ impl Scene {
     /// Registers a renderer and points it at the scene.
     pub fn add_renderer(&mut self, renderer: u32) {
         self.renderers.push(renderer);
+    }
+
+    /// Registers a scene plugin (the original's plugin list; the added-nodes
+    /// calls are the caller's).
+    pub fn add_plugin(&mut self, plugin: u32) {
+        self.plugins.push(plugin);
+    }
+
+    /// Sets the 6 m cell grid and puts the scene in grid mode, as allocating
+    /// the cell arrays does.
+    pub fn set_grid(&mut self, width: usize, height: usize) {
+        self.grid = (width, height);
+        self.grid_mode = width > 0 && height > 0;
     }
 
     /// Resets the far sort key of `node` and its whole subtree, as the
@@ -2465,7 +2489,7 @@ impl Scene {
             .min(self.sectors[index].aliases.len());
         let sector = self.sectors[index].clone();
         let (grid, grid_mode) = (self.grid, self.grid_mode);
-        let scissor = if sector.scissor.is_some() { SCISSOR } else { 0 };
+        let scissor = if sector.through_portal { SCISSOR } else { 0 };
         let mut through_door = false;
         let mut moved_seen = false;
         for &id in &meshes {
@@ -3210,7 +3234,7 @@ mod tests {
         // The last alias takes the removed one's place.
         assert_eq!(scene.nodes[light].aliases, vec![c, b]);
         assert_eq!(scene.nodes[a].sector, None);
-        assert_eq!(scene.sectors[1].changes, LINKS_CHANGED);
+        assert_eq!(scene.sectors[SCENE_SECTOR].changes, LINKS_CHANGED);
         assert!(!scene.remove_alias(light, a), "already gone");
     }
 
@@ -3600,6 +3624,7 @@ mod tests {
         scene.classify(eye, &[box_view(200.0), box_view(200.0)], &project);
         assert_eq!(scene.sectors[2].visible_portals, vec![0, 1]);
         assert_eq!(scene.sectors[2].mask, 1);
+        assert!(scene.sectors[2].through_portal);
         assert_eq!(scene.sectors[2].views.len(), 1);
         // ±10.5 and 0.5..30.5 round to even: −10, 10, 0, 30.
         assert_eq!(
@@ -3616,6 +3641,7 @@ mod tests {
         // (An eye on the plane faces neither doorway.)
         scene.classify(Vec3::new(10.0, 1.5, 5.0), &[box_view(200.0)], &project);
         assert_eq!(scene.sectors[2].mask, 0);
+        assert!(!scene.sectors[2].through_portal);
         assert!(scene.sectors[2].views.is_empty());
         assert_eq!(scene.sectors[2].visible_portals, vec![0, 1]);
         let mesh = scene.add_node(NodeKind::Mesh, None);
