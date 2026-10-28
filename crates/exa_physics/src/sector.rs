@@ -830,7 +830,7 @@ pub struct StaticBody {
 
 /// The nine cells a sector scans around a body's or object's own cell: the
 /// own cell first, then the eight around it, rows top to bottom and x left
-/// to right (the original's offset table at +0xb0).
+/// to right (the original's neighbour offset table).
 pub const NEAR_OFFSETS: [(i32, i32); 9] = [
     (0, 0),
     (-1, -1),
@@ -1251,6 +1251,12 @@ impl ObjectContacts {
         parts: impl IntoIterator<Item = ObjectBodyPart<'a>>,
     ) {
         for part in parts {
+            // The cheap sphere test first: the box distance inverts the
+            // part's matrix (the result is the same as the full test).
+            let (centre, radius) = (part.centre * 100.0, part.radius * 100.0);
+            if intersect::spheres_separated(centre, radius, object.centre, object.radius) {
+                continue;
+            }
             let box_distance2 =
                 mesh_box_distance2(object.centre * 0.01, part.mesh, &part.now) * 1.0e4;
             if !object_body_meet(
