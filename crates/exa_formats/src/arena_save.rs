@@ -713,6 +713,23 @@ pub fn merchant_chunk_written(employees: &EmployeesChunk) -> bool {
             .any(|employee| employee.class & 0xff == MERCHANT_CLASS)
 }
 
+/// Whether a chunk id is one of the arena's own tables (the nine the
+/// arena's writer emits, optional lists included).
+pub fn is_table_chunk(id: u32) -> bool {
+    matches!(
+        id,
+        ARSENAL_CHUNK
+            | HUB_STASH_CHUNK
+            | SHOP_STOCK_CHUNK
+            | COMPANY_CHUNK
+            | DAY_CHUNK
+            | EMPLOYEES_CHUNK
+            | MERCHANT_CHUNK
+            | HIREABLES_CHUNK
+            | TOURNAMENT_CHUNK
+    )
+}
+
 /// Decode the arena chunks a save carries. Unknown ids are ignored; a
 /// missing always-written chunk leaves its default.
 pub fn read_tables(chunks: &[Chunk<'_>]) -> Result<ArenaTables, ArenaSaveError> {

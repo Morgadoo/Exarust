@@ -112,7 +112,20 @@ arena session may carry `arena_save::ArenaTables` (arsenal, stash, shop
 stock, company, day, employees, merchant, hireables, tournament); the
 player-data writer then emits them in the original's order, removes the
 optional lists the writer omits, and leaves an old save's tables alone
-when the session has none.
+when the session has none. The tables are filled from the live arena state
+(`arena_tables::from_live`, `Session::capture_arena`): the arsenal's
+twenty-five lists with the entry's two words packed into the wire entry's
+third word, the hub stash, the shop's shelf, the company's name, emblem and
+counters, the day's log, the staff (a fighter's kit or a specialist's
+carried, hand and worn items, its world id or custom flag) and the
+tournament's six forty-eight-byte roster rows. A load reads them back
+(`arena_save::read_tables`) and `Session::apply_arena_tables` puts them into
+the live company, staff, arsenal and stash; a save with none of the arena
+chunks leaves the session without tables. What Exarust has no live model
+for (the hireables, the tournament's field, prizes and events, the
+merchant's stock type, the day's specials and daily tallies, the company's
+second string and three words) keeps the chunk the save already held, and
+the merchant's specialisation is the writer's constant −1.
 
 The `CheckpointSave` script function's save side is
 `Slots::checkpoint_from_script`: it runs only for the player with

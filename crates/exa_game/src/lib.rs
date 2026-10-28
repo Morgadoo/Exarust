@@ -12,6 +12,7 @@ pub mod arena_match;
 pub mod arena_outfit;
 pub mod arena_outfit_data;
 pub mod arena_spawn;
+pub mod arena_tables;
 pub mod arsenal;
 pub mod balance;
 pub mod bindings;

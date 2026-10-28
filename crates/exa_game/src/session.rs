@@ -114,6 +114,45 @@ impl Session {
     pub fn stamp_world_clock(&mut self, clock: &exa_combat::remedy::WorldClock, ticks_ms: u32) {
         self.clock = crate::world_clock::stamped(clock, ticks_ms);
     }
+
+    /// Fills the session's arena tables from the live company, staff and
+    /// arsenal, keeping every chunk the save already holds that Exarust has
+    /// no live model for. `stash` is the hub stash's item ids.
+    pub fn capture_arena(
+        &mut self,
+        career: &crate::hub_windows::ArenaCareer,
+        staff: &crate::staff::Staff,
+        arsenal: &crate::arsenal::Arsenal,
+        stash: &[u32],
+    ) {
+        let previous = self.arena_tables.take();
+        self.arena_tables = Some(crate::arena_tables::from_live(
+            career,
+            staff,
+            arsenal,
+            stash,
+            previous.as_ref(),
+        ));
+    }
+
+    /// Puts a loaded save's arena tables into the live models. `false` when
+    /// the session carries none (a save written before the tables were
+    /// filled, or one made from nothing).
+    pub fn apply_arena_tables(
+        &self,
+        career: &mut crate::hub_windows::ArenaCareer,
+        staff: &mut crate::staff::Staff,
+        arsenal: &mut crate::arsenal::Arsenal,
+        stash: &mut Vec<u32>,
+    ) -> bool {
+        match &self.arena_tables {
+            Some(tables) => {
+                crate::arena_tables::apply(career, staff, arsenal, stash, tables);
+                true
+            }
+            None => false,
+        }
+    }
 }
 
 /// What a save slot's player data says without restoring the session.
@@ -470,6 +509,28 @@ pub fn read_package(package: &PackageImage) -> Result<Session, SaveError> {
         }
         session.story = Story::restore(index, journal, session.story.topics_used().to_vec())
             .ok_or(SaveError::Malformed)?;
+    }
+    // The arena's own chunks are the live tables a load restores. They are
+    // read whatever their order, as the original's reader dispatches on the
+    // chunk ids; an absent always-written chunk keeps its default.
+    if data.header.flavour() == Flavour::Arena {
+        let chunks: Vec<save_package::Chunk<'_>> = data
+            .chunks
+            .iter()
+            .map(|chunk| save_package::Chunk {
+                id: chunk.id,
+                payload: &chunk.data,
+            })
+            .collect();
+        // A save without any arena table (one written before the tables
+        // were filled) carries none, rather than the reader's defaults.
+        if chunks
+            .iter()
+            .any(|chunk| arena_save::is_table_chunk(chunk.id))
+            && let Ok(tables) = arena_save::read_tables(&chunks)
+        {
+            session.arena_tables = Some(tables);
+        }
     }
     Ok(session)
 }
@@ -1169,5 +1230,87 @@ mod tests {
         arena.stamp_world_clock(&clock, 5_000);
         assert_eq!(arena.clock, 105);
         assert_eq!(read(&write(&arena)).unwrap().clock, 105);
+    }
+
+    #[test]
+    fn an_arena_save_carries_the_live_tables_and_reads_them_back() {
+        use crate::arsenal::{Arsenal, ItemKind};
+        use crate::hub_windows::ArenaCareer;
+        use crate::staff::{COMBATANT, Staff};
+        let mut career = ArenaCareer::default();
+        career.company.name = "Rivals".to_string();
+        career.company.copper = 700;
+        career.company.stock = vec![11, 12];
+        career.company.won = 4;
+        career.matches_today = 1;
+        career.merchant_stock = vec![13];
+        career.log.append_value(2, 3);
+        let mut staff = Staff::default();
+        staff.employees.push(crate::staff::Employee {
+            class: COMBATANT,
+            kit: vec![21],
+            world: Some(0x55),
+            ..Default::default()
+        });
+        let mut arsenal = Arsenal::default();
+        assert!(arsenal.stow(
+            21,
+            ItemKind {
+                known: true,
+                weapon: true,
+                ..Default::default()
+            },
+            0x600
+        ));
+        let mut session = Session::career("Rivals");
+        session.capture_arena(&career, &staff, &arsenal, &[31]);
+        // The session's own fields still decide the header.
+        session.company.copper = 700;
+        let back = read(&write(&session)).unwrap();
+        let tables = back.arena_tables.clone().expect("the arena chunks");
+        assert_eq!(tables.company.name, b"Rivals");
+        assert_eq!(tables.company.records[crate::arena_tables::RECORD_WON], 4);
+        assert_eq!(tables.arsenal.lists[0][0][0].id, 21);
+        assert_eq!(tables.stash[0].id, 31);
+        assert_eq!(tables.shop_stock, vec![11, 12]);
+        // A staff without a merchant skips the merchant chunk, as the
+        // original's writer does, so the merchant's stock is not saved.
+        assert!(tables.merchant.ids.is_empty());
+        assert_eq!(tables.day.matches_today, 1);
+        assert_eq!(tables.employees.employees.len(), 1);
+        assert_eq!(tables.employees.employees[0].character, 0x55);
+        // The writer's empty hireables is a zero count.
+        assert_eq!(tables.hireables, 0u32.to_le_bytes());
+
+        let mut loaded_career = ArenaCareer::default();
+        let mut loaded_staff = Staff::default();
+        let mut loaded_arsenal = Arsenal::default();
+        let mut stash = Vec::new();
+        assert!(back.apply_arena_tables(
+            &mut loaded_career,
+            &mut loaded_staff,
+            &mut loaded_arsenal,
+            &mut stash
+        ));
+        assert_eq!(stash, vec![31]);
+        assert_eq!(loaded_arsenal, arsenal);
+        assert_eq!(loaded_staff, staff);
+        assert_eq!(loaded_career.company.won, 4);
+        assert_eq!(loaded_career.log, career.log);
+        // With no staff the merchant chunk is written, and its stock comes
+        // back.
+        let mut empty_staff = Session::career("Rivals");
+        empty_staff.capture_arena(&career, &Staff::default(), &Arsenal::default(), &[]);
+        let merchant = read(&write(&empty_staff)).unwrap();
+        let tables = merchant.arena_tables.expect("the arena chunks");
+        assert_eq!(tables.merchant.ids, vec![13]);
+        assert!(tables.employees.employees.is_empty());
+        // A session without tables applies none.
+        assert!(!Session::career("Rival").apply_arena_tables(
+            &mut loaded_career,
+            &mut loaded_staff,
+            &mut loaded_arsenal,
+            &mut stash
+        ));
     }
 }

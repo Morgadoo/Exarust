@@ -472,7 +472,10 @@ and the world database sections;
 holds the settings chunk, the save number format and the slot, death,
 checkpoint and clock rules;
 [`exa_formats::arena_save`](../../crates/exa_formats/src/arena_save.rs)
-holds the arena table payloads and the load's list compactions;
+holds the arena table payloads and the load's list compactions, and
+[`exa_game::arena_tables`](../../crates/exa_game/src/arena_tables.rs) fills
+them from and applies them to the live company, staff, arsenal and
+tournament roster (the league's own chunks read back on a load);
 [`exa_game::session`](../../crates/exa_game/src/session.rs)
 writes and reads a session in this shape (the mode, level, journal, used
 topics, company, roster, focus, clock, seed, start background, discovery,
