@@ -185,7 +185,7 @@ save's world character and object databases into their world tiers
 has the transition's ordered flow: the teardown and flush, the destination
 read (save section or archive), the import, the spawn matrix choice, the
 story respawn, the grid arrays, the followers and the post-load pass, with
-a missing destination aborting and a failed import disabling saves. These
+a missing destination aborting and a failed archive import disabling saves (a section read from the save always lands). These
 are tested rules; no running game calls them yet because the level loader
 keeps its own scene model.
 

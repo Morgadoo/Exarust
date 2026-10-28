@@ -246,8 +246,9 @@ pub enum TransitionStep {
     /// The destination's locale and level ids are looked up; the previous
     /// id keeps the current one and the portal node is cleared to none.
     LocaleLookup,
-    /// The portal node is cleared to −1 (none).
-    ClearPortal,
+    /// The engine's portal id word takes the previous level's id (the level
+    /// being left), where the other entry points store −1.
+    StorePreviousLevel,
     /// The settings tag, saved word and sun height reset.
     SettingsReset,
     /// The save package is opened.
@@ -275,7 +276,8 @@ pub enum TransitionStep {
     /// The followers are spawned on the stored offsets around the player.
     SpawnFollowers,
     /// The followers are re-attached (UID, controls, carry, controller 1,
-    /// the 5 cm floor).
+    /// the 5 cm floor); the original calls the pass on every landing, with
+    /// or without followers.
     ReattachFollowers,
     /// The game functions' post-load pass runs.
     PostLoad,
@@ -291,15 +293,16 @@ pub enum SpawnMatrix {
 }
 
 /// The transition flow: its steps, whether it aborted before importing,
-/// whether saves were disabled by a failed import, and the spawn details.
+/// whether saves were disabled by a failed archive import, and the spawn details.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransitionFlow {
     pub steps: Vec<TransitionStep>,
     /// The destination could be neither read from the save nor found in
     /// the archive; the original returns without touching the rest.
     pub aborted: bool,
-    /// A read destination failed to import; the original then refuses to
-    /// save (its save-disable flag is set).
+    /// A destination read from the archive failed to import; the original
+    /// then refuses to save (its save-disable flag is set). A destination
+    /// read from the save counts as imported whatever the import returned.
     pub saves_disabled: bool,
     pub matrix: SpawnMatrix,
     pub respawn: bool,
@@ -343,7 +346,7 @@ pub fn transition_flow(
         TransitionStep::ResetContent,
         TransitionStep::ArenaLeave,
         TransitionStep::LocaleLookup,
-        TransitionStep::ClearPortal,
+        TransitionStep::StorePreviousLevel,
         TransitionStep::SettingsReset,
         TransitionStep::OpenSave,
     ]);
@@ -372,7 +375,9 @@ pub fn transition_flow(
         flow.steps.push(TransitionStep::ReadArchiveSection);
     }
     flow.steps.push(TransitionStep::ImportLevel);
-    if !imported {
+    // The save's section is taken as imported whatever the import says;
+    // only an archive import's failure stops the landing.
+    if !has_save_section && !imported {
         flow.saves_disabled = true;
         return flow;
     }
@@ -390,8 +395,8 @@ pub fn transition_flow(
     }
     if followers > 0 {
         flow.steps.push(TransitionStep::SpawnFollowers);
-        flow.steps.push(TransitionStep::ReattachFollowers);
     }
+    flow.steps.push(TransitionStep::ReattachFollowers);
     flow.steps.push(TransitionStep::PostLoad);
     flow
 }
@@ -450,9 +455,9 @@ mod tests {
         assert!(archive.steps.contains(&TransitionStep::ReadArchiveSection));
         assert!(!archive.steps.contains(&TransitionStep::ReadSaveSection));
         assert!(archive.steps.contains(&TransitionStep::StoryRespawn));
-        // No followers: neither follower step.
+        // No followers: no spawn, but the re-attach pass still runs.
         assert!(!archive.steps.contains(&TransitionStep::SpawnFollowers));
-        assert!(!archive.steps.contains(&TransitionStep::ReattachFollowers));
+        assert!(archive.steps.contains(&TransitionStep::ReattachFollowers));
         assert!(!archive.steps.contains(&TransitionStep::GridEnvironments));
     }
 
@@ -466,14 +471,21 @@ mod tests {
         assert!(!missing.steps.contains(&TransitionStep::ImportLevel));
         assert_eq!(missing.steps.last(), Some(&TransitionStep::OpenSave));
 
-        // A destination that read but did not import: saves are disabled
-        // and the player is not spawned.
-        let failed = transition_flow(true, true, false, false, false, false, 1);
+        // An archive destination that read but did not import: saves are
+        // disabled and the player is not spawned.
+        let failed = transition_flow(false, true, false, false, false, false, 1);
         assert!(!failed.aborted);
         assert!(failed.saves_disabled);
         assert!(failed.steps.contains(&TransitionStep::ImportLevel));
         assert!(!failed.steps.contains(&TransitionStep::SpawnPlayer));
         assert_eq!(failed.steps.last(), Some(&TransitionStep::ImportLevel));
+
+        // A section read from the save lands even when its import reports
+        // nothing: the original sets its success flag on that path.
+        let from_save = transition_flow(true, true, false, false, false, false, 0);
+        assert!(!from_save.saves_disabled);
+        assert!(from_save.steps.contains(&TransitionStep::SpawnPlayer));
+        assert_eq!(from_save.steps.last(), Some(&TransitionStep::PostLoad));
     }
 
     fn scene() -> ExportScene {
