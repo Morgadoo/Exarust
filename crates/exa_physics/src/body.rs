@@ -671,7 +671,9 @@ impl Part {
     /// part is pushed at once and the contact kept for the next tick.
     fn hit(&mut self, centre: Vec3, q: Vec3, delta: Vec3) -> bool {
         let len2 = delta.length_squared();
-        if !(len2 >= MIN_PUSH2 && len2.is_finite()) {
+        // The original's `eps <= |δ|²` lets a NaN through to its own check,
+        // which logs and returns; +∞ passes and is used unclamped.
+        if len2.is_nan() || len2 < MIN_PUSH2 {
             return false;
         }
         if len2 > EXCESSIVE_PUSH * EXCESSIVE_PUSH {
@@ -3746,8 +3748,13 @@ impl Ragdoll {
             pieces.clear();
             level.pieces(lo, hi, &mut pieces);
             // A rigid body's stand-ins are the character capsules': bodies
-            // meet the rigid body itself through their pairs.
-            pieces.retain(|&piece| !level.movable(piece));
+            // meet the rigid body itself through their pairs. A piece whose
+            // level mask shares a bit with the part's body mask is skipped
+            // (a foot ignores thin plates and flagged meshes).
+            let own_mask = crate::sector::body_mask(p.no_level, p.pairing.out);
+            pieces.retain(|&piece| {
+                !level.movable(piece) && crate::sector::level_meets(own_mask, level.mask(piece))
+            });
             for &piece in &pieces {
                 for k in 0..p.spheres.len() {
                     let (centre, r) = p.spheres[k];

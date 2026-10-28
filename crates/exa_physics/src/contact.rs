@@ -33,6 +33,15 @@ pub trait Level {
     /// Triangles of `piece` meeting the box `lo..hi`, in world space.
     fn triangles(&self, piece: u32, lo: Vec3, hi: Vec3, out: &mut Vec<[Vec3; 3]>);
 
+    /// The original's level mask of a piece (collider): 1, or 1|4 for a
+    /// flagged or thin horizontal mesh. A body whose own mask shares a bit
+    /// skips the piece. Exarust's colliders do not carry their masks yet
+    /// (the level loader does not hand them over), so every piece is the
+    /// plain 1; a test or a future loader can override it.
+    fn mask(&self, _piece: u32) -> u32 {
+        crate::sector::MASK_SMALL
+    }
+
     /// Whether `piece` is the stand-in of a rigid body's meshes, moved with
     /// it: the character capsules meet it, bodies skip it (they meet the
     /// rigid body through their pairs). None by default.

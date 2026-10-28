@@ -1274,7 +1274,9 @@ fn solve_placed_pair(pa: &mut Part, pb: &mut Part, a_placed: bool, points: &[Poi
 /// weights. Pairs with a friction product under 1.19e-7 do not rub.
 fn rub_pair(pa: &mut Part, pb: &mut Part, pair: &Pair) {
     let mu = pa.friction * pb.friction;
-    if mu < MIN_FRICTION {
+    // The original rubs only when the product is strictly over the
+    // epsilon (a NaN product is not).
+    if MIN_FRICTION.partial_cmp(&mu) != Some(std::cmp::Ordering::Less) {
         return;
     }
     let (sa, sb) = shares(pa.pairing.mobility, pb.pairing.mobility);

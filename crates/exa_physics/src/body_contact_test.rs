@@ -455,3 +455,37 @@ fn conflicting_links_do_not_propel_a_limp_body() {
 }
 
 const NONE_LEVEL: &[[Vec3; 3]] = &[];
+
+/// A piece's level mask is tested against the part's body mask: a living
+/// foot (mask 4) ignores a thin/flagged collider (mask 4), while an
+/// ordinary part (mask 0) still meets it. Pieces without a mask are 1.
+#[test]
+fn a_feet_mask_skips_a_thin_collider() {
+    struct Masked(Vec<[Vec3; 3]>, u32);
+    impl Level for Masked {
+        fn pieces(&self, lo: Vec3, hi: Vec3, out: &mut Vec<u32>) {
+            Level::pieces(&self.0[..], lo, hi, out);
+        }
+        fn triangles(&self, piece: u32, lo: Vec3, hi: Vec3, out: &mut Vec<[Vec3; 3]>) {
+            Level::triangles(&self.0[..], piece, lo, hi, out);
+        }
+        fn mask(&self, _piece: u32) -> u32 {
+            self.1
+        }
+    }
+    let level = Masked(quad_floor(0.0), crate::sector::MASK_THIN);
+    let run = |foot: bool| {
+        let mut b = ball(Vec3::new(0.0, 1.0, 0.0));
+        if foot {
+            b.parts[0].pairing.out = true;
+        }
+        for _ in 0..200 {
+            b.tick(&level);
+        }
+        b.parts[0].transform().translation.y
+    };
+    // The foot's mask 4 shares bit 4 with the thin collider: no contact,
+    // so it falls through. The ordinary part's mask 0 meets it and rests.
+    assert!(run(true) < 0.0, "the foot met a thin collider");
+    assert!(run(false) > 0.05, "the ordinary part fell through");
+}

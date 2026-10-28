@@ -586,9 +586,10 @@ prop). Rules in cm and ticks:
   Feet are `0x30`.
 - **Sides.** A part's order key is round(100 / mobility) (half to even,
   16 bits). The part with the smaller key, the more mobile one, brings its
-  spheres; the other is touched (on a tie the awake one brings them). In
-  the original the touched side is its mesh; Exarust tests sphere against
-  sphere until the parts' spheres are fitted to their meshes. A limb's
+  spheres; the other is touched (on a tie the awake one brings them). The
+  touched side is its collision mesh; a part whose loader hands no
+  triangles over (`Ragdoll::set_part_triangles`) keeps its spheres as the
+  stand-in. A limb's
   mobility is its part factor (pelvis 0.45 … hand 2.5) × n / ((20·size³ +
   V/10⁴)·d) with n parts, V the body's volume in cm³ and d the race's mass
   divisor: about 2/3 for a human (Exarust uses 2/3 until the parts'
@@ -596,10 +597,18 @@ prop). Rules in cm and ticks:
   60).
 - **Each sphere** of the sphere side, where it is in the other part's
   frame, or swept from where the last tick left both parts when it moved
-  over 0.1 cm² relative to the other part, against each sphere of the
-  other. A hit gives the touched point and the push that takes the sphere
-  off (pushes under 10⁻⁵ cm² are ignored; over 160 cm they are reported,
-  not clamped). The contact's weights on the sphere side are those of its
+  over 0.1 cm² relative to the other part (a held item's static-only mode
+  and a placed pair use the static path). It must first touch the other's
+  mesh box and mesh sphere (the swept capsule the same two, with the box
+  slab-tested); then the other's mesh query tests it against every
+  triangle, once more from the sphere's new place after each hit. A
+  triangle pushes only from its front: its plane is 0 to r in front of the
+  centre, the closest point is within r (1e-10; 1e-6 on the tree path),
+  and the push follows the closest-point direction; a swept centre that
+  crossed the plane is taken back to where it first touched (the push is
+  then the reversed motion). A hit gives the touched point and the push
+  (pushes under 10⁻⁵ cm² are ignored; over 160 cm they are reported, not
+  clamped). The contact's weights on the sphere side are those of its
   sphere's deepest point (or of the sphere's centre when that point lies
   far outside the tetrahedron, a weight past 1); on the other side those of
   the touched point in its rest frame.

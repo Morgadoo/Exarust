@@ -91,8 +91,13 @@ the plugin) keeps body parts out of each other as the original's pairs
 do: after the iterations every awake part meets the parts near it (awake
 or asleep) by the original's group masks within a body and layer masks
 between bodies (`body::Pairing` on each part), the more mobile one's
-spheres against the other's, with an immediate push by mobility shares
-and φ; up to four points per pair are solved in the next tick's
+spheres against the other part's collision mesh (`body::Pairs`, the
+original's mesh query: the swept/static choice on 0.1 cm² of travel, the
+mesh-box and mesh-sphere pre-tests, the one-sided per-triangle tests with
+the sphere re-read after every hit), or its spheres where the loader has
+handed no mesh over (`Ragdoll::set_part_triangles`), with an immediate
+push by mobility shares and φ; up to four points per pair are solved in
+the next tick's
 iterations before the links (0.01 cm slop, the reversed pair friction,
 dropped once satisfied) and rub in the friction passes; a contact
 equalises the two bodies' sleep countdowns (`body::equalise_sleep`). The
@@ -105,7 +110,14 @@ radius, a limb's its node box), the two-way meet test that gates a pair
 before contact generation (`sector::meet`, the original's slab test of
 each side's travel against the other's box grown by its radius), the
 overlap-only, placement and static-collider pre-tests, and the step's
-stages and budgets. Each part's world pose (`sector::body_pose`: the
+stages and budgets. Its static-collider grid (`sector::StaticGrid`: one
+cell per small collider, the footprint plus a one-cell margin with the
+wide bit for a larger one, a scan of the own cell then the eight
+neighbours, shared-mask and own-parent skips) and its simulated-object
+list and grid (`sector::ObjectGrid`: the object overflow guard that also
+takes the first cell of the second row, migration and removal) are live
+data structures; rapier still owns the level's broad phase, so the level
+detection walks its own pieces. Each part's world pose (`sector::body_pose`: the
 matrix from its particles and rest basis, the world box and sphere of its
 bounds, the cell of the mesh box's centre) is what the pair stage buckets
 and meets by. A body whose cell index overflows goes back to its
@@ -123,15 +135,18 @@ foot 4; a pair is skipped when the masks share a bit. The pair stage buckets par
 world centre and first asks that the awake part's sphere touch the
 other's mesh sphere; a small sector's all-pairs walk
 (`body::Pairs::all_pairs`) adds the original's two point-to-mesh-box
-tests. Not wired: the static-collider grid (rapier keeps the level's
-broad phase), the overflow guard's reset, the overlap and placement
-queries, and an automatic choice between the grid and all pairs.
+tests. A part's mask (`Level::mask`, default 1) is tested against its
+body mask before any triangle is queried; Exarust's colliders do not carry
+their stored masks yet, so every piece answers 1. Not wired: the overflow
+guard's reset in the game and a scene source of collider masks.
 A pair with exactly one placed body (state bit 0x1000, which the original
 keeps only while the settling countdown runs, so `Ragdoll::placed` is
 `settling() > 0`) is one-sided: the placed side takes the whole correction
 over its non-negative weights and records the opposite push in its offset
-array (`Part::placed_offset`), which its node controller would read; the
-other side does not move. Its detection runs the static (unswept) sphere
+array (`Part::placed_offset`, read by `Ragdoll::placed_offsets`), which
+its node controller would read; the other side does not move. The
+integration clears that array while the body is placed and sleep clears
+it too, as the original's `+0x1b0` is (`Ragdoll::clear_placed_offsets`). Its detection runs the static (unswept) sphere
 query only and records contacts without impact hits, so it never strikes.
 The impact path reads the parts' smoothed velocity (a tenth of the way to
 each tick's displacement), which the
@@ -140,9 +155,12 @@ the summed push for the hit event.
 A part's level contacts also make an impact record (`body::LevelImpact`):
 the mean point of its accepted hits, the fastest smoothed velocity against
 their summed pushes, and the original's gates (travel square over 0.1 cm²,
-strength over 0.1, a part that reacts: every part but a foot). The combat
-side that would play its sound and deal its damage is not wired; the
-records are there for it.
+strength over 0.1, a part that reacts: every part but a foot).
+`exa_combat::impact::level_impacts` consumes them: a character's part
+sounds through the limb curve (a third unless the character is down) and,
+over volume 0.25, deals the same impact damage and daze a body's blow
+does. A plain prop's level impact is still only the record and its clock:
+Exarust stores no collision-sound set on a prop.
 Blows are queued for the next tick, and parts are drawn between their last
 two ticks by interpolating their four particles and building the part's
 matrix from them, as the original does (`body::BodyPlugin`). Every part is
