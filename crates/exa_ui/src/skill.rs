@@ -128,15 +128,13 @@ pub struct SkillOpenPlan {
     /// The reveal sound was started.
     pub play_sound: bool,
     /// Player controls were suspended.
-    pub restore_controls: bool,
+    pub suspend_controls: bool,
     /// The screen's page: 0 is the ring, a positive value a four-group page.
     pub page: i32,
     /// The groups on the page: six on the ring, four on a page.
     pub groups: i32,
     /// A page's ring radius in units (the ring keeps the constructor's).
     pub radius: i32,
-    /// The screen's initial state byte (4 on a page: it opens already shown).
-    pub state: u8,
     pub show: bool,
     pub activate: bool,
     /// The Steam action bindings were set up for the screen.
@@ -146,9 +144,10 @@ pub struct SkillOpenPlan {
 /// Opens or closes the skill screen. With it already open the routine closes
 /// it and does nothing else; otherwise it builds the unit's atlases, starts
 /// the reveal sound when the handle is ready, suspends the player's
-/// controls, builds the screen (a positive page turns it into a four-group
-/// page at a 72-unit radius in state 4, the page group and slot tables set),
-/// refreshes its ready flag and shows and activates it.
+/// controls, builds the screen as a ring (a positive page then turns it into
+/// a four-group page at a 72-unit radius with the page group and slot
+/// tables, its stretch left as built), stores the character, refreshes its
+/// ready flag, binds the Steam actions and shows and activates it.
 pub fn open_skill_screen(
     open: bool,
     page: i32,
@@ -160,11 +159,10 @@ pub fn open_skill_screen(
             close_existing: true,
             build_resources: false,
             play_sound: false,
-            restore_controls: false,
+            suspend_controls: false,
             page: 0,
             groups: 0,
             radius: 0,
-            state: 0,
             show: false,
             activate: false,
             steam_bind: false,
@@ -176,11 +174,10 @@ pub fn open_skill_screen(
         close_existing: false,
         build_resources: true,
         play_sound: sound_ready,
-        restore_controls: has_controls,
+        suspend_controls: has_controls,
         page,
         groups: if paged { 4 } else { 6 },
         radius: if paged { 72 } else { 0 },
-        state: if paged { 4 } else { 1 },
         show: true,
         activate: true,
         steam_bind: true,
@@ -2389,15 +2386,12 @@ mod tests {
     #[test]
     fn the_screen_opens_or_closes_and_restores_controls() {
         let opened = open_skill_screen(false, 2, true, true);
-        assert!(opened.build_resources && opened.play_sound && opened.restore_controls);
-        assert_eq!(
-            (opened.page, opened.groups, opened.radius, opened.state),
-            (2, 4, 72, 4)
-        );
+        assert!(opened.build_resources && opened.play_sound && opened.suspend_controls);
+        assert_eq!((opened.page, opened.groups, opened.radius), (2, 4, 72));
         assert!(opened.show && opened.activate && opened.steam_bind);
         let ring = open_skill_screen(false, 0, false, false);
-        assert_eq!((ring.groups, ring.radius, ring.state), (6, 0, 1));
-        assert!(!ring.play_sound && !ring.restore_controls);
+        assert_eq!((ring.groups, ring.radius), (6, 0));
+        assert!(!ring.play_sound && !ring.suspend_controls);
         let toggle = open_skill_screen(true, 2, true, true);
         assert!(toggle.close_existing);
         assert!(!toggle.build_resources && !toggle.show);
