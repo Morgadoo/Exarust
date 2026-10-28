@@ -328,7 +328,9 @@ pub fn ground_hit(
             continue;
         }
         let crossing = (node.bounds.centre.y + radius - ray.origin.y) * ratio;
-        let start = if crossing > 0.0 {
+        // The original keeps the crossed point for a positive crossing and
+        // for a NaN one (its unordered compare jumps to the same branch).
+        let start = if crossing > 0.0 || crossing.is_nan() {
             ray.at(crossing)
         } else {
             ray.origin

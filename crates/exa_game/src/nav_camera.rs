@@ -784,8 +784,7 @@ pub const DISC_SCALE: f64 = 0.02;
 /// `(draw + 1) · 0.02` in double precision and given a z of one. The draw
 /// stream is the caller's: the original's is the process-wide generator at
 /// the moment of the fill, which a replay cannot reproduce without the
-/// earlier draws. [guess: the first angle is zero and the order is the
-/// original's groups in table order]
+/// earlier draws.
 pub fn disc_offsets(draw: &mut impl FnMut() -> f64) -> Vec<Vec3> {
     let mut offsets = Vec::with_capacity(DISC_POINTS);
     for count in DISC_GROUP_COUNTS {

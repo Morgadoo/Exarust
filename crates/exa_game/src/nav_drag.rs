@@ -232,7 +232,9 @@ impl GrabDrag {
 /// rotate call receives it; the axis's length is not corrected here]
 pub fn grab_target(click: Vec3, camera: Vec3, normal: Vec3, zoom: f32) -> Vec3 {
     let view = normalize(camera - click);
-    let angle = acos(view.dot(normal));
+    // The original's dot sums z·n.z + (y·n.y + x·n.x).
+    let dot = view.z * normal.z + (view.y * normal.y + view.x * normal.x);
+    let angle = acos(dot);
     let view = if angle > 0.0 {
         normalize(rotate_about(view.cross(normal), view, angle))
     } else {
