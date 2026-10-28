@@ -26,9 +26,9 @@
 //!   look-around, then the attention to the attended contact), and the
 //!   roam and patrol walk ([`idle_walk`]) plans through the level's room
 //!   table and navigation grid and walks its legs; the search is created
-//!   but has no containers or corpses to search. The mind powers' attitude overrides and
-//! their perception masks are not applied: the running game sets no mind
-//! effect yet.
+//!   but has no containers or corpses to search. The mind powers'
+//!   attitude overrides and their perception masks are not applied: the
+//!   running game sets no mind effect yet.
 
 use bevy::prelude::*;
 use exa_anim::{Animator, Motions};
