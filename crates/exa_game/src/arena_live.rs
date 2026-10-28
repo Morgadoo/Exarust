@@ -1,16 +1,13 @@
 //! The arena match's live scene: the round's bodies, the end screen's
 //! Continue, the next round and the way back to the hub.
 //!
-//! The hub's board pick starts a match by restarting the process on the
-//! drawn arena (a live level change is blocked; see
-//! [`crate::level_transition`]). Before the restart the hub writes the
-//! career and the match's setup into the hand-off file
-//! ([`crate::arena_handoff`]); this module reads it and stands the round's
-//! bodies from the match's layout and the spawn plans — a generated
-//! opponent from [`crate::arena_spawn::generic_plan`] or a tournament's
-//! hire-list profile with its drawn weapon, the Beast, and the company's
-//! other entrants. The player's own body is the one the play start already
-//! made.
+//! The hub's board pick changes the level to the drawn arena in process
+//! ([`exa_world::level_lifecycle`]) and keeps the career in its
+//! `ArenaCareer` resource. This module stands the round's bodies from the
+//! match's layout and the spawn plans — a generated opponent from
+//! [`crate::arena_spawn::generic_plan`] or a tournament's hire-list profile
+//! with its drawn weapon, the Beast, and the company's other entrants. The
+//! player's own body is the one the play start already made.
 //!
 //! When the round result opens a transition screen, the end screen's
 //! Continue runs on Enter or Space (the screen itself is not drawn yet; the
@@ -18,9 +15,8 @@
 //! despawns the round's bodies and stands the winner and the reserve or a
 //! fresh opponent after the original's 13 ms yield. The end of the match
 //! settles the result into the career, drops the unfit on a tournament day
-//! and writes the settled career and the return placement for the hub's
-//! process, which then places the manager at the saved 300 cm, half turn,
-//! flag `0x100` placement.
+//! and asks for the hub's level, whose entry places the manager at the saved
+//! 300 cm, half turn, flag `0x100` placement.
 //!
 //! Evidence: the arena's match tick, end screen, next-round routine and
 //! return (`arena_session`, `arena_match`, `match_layout`).
@@ -29,7 +25,6 @@ use bevy::prelude::*;
 use exa_combat::{Condition, Fighter};
 
 use crate::arena;
-use crate::arena_handoff::{self, Handoff, MatchSetup};
 use crate::arena_match::{ArenaMatch, CompanyRecords, Finish, MatchState, any_entry};
 use crate::arena_session::{
     EndAction, ReturnFighter, RoundFight, Screen, regenerate_round, settle_return,
@@ -116,30 +111,34 @@ fn records_of(career: &crate::hub_windows::ArenaCareer) -> CompanyRecords {
     }
 }
 
+/// A launched match's setup, as the hub's board chose it. It stays in
+/// process now that the level changes in place; the career itself is the
+/// running `ArenaCareer` resource.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MatchSetup {
+    /// The layout's template id.
+    pub template: i32,
+    /// The event's rank: the generated fighters' level.
+    pub level: i32,
+    /// The event's gear tier.
+    pub tier: i32,
+    /// A tournament event's match.
+    pub tournament: bool,
+    /// The company entry that is the player's own, as the launch planned it.
+    pub player: Option<usize>,
+    /// The match's prize when won, copper.
+    pub prize: u32,
+}
+
 /// The match's exit: where the process goes when the end screen's Continue
 /// settles it.
 #[derive(Message, Clone, Debug, PartialEq)]
 pub enum ArenaExit {
-    /// The settled match returns to the hub's level. The career and the
-    /// return placement are in the hand-off file.
+    /// The settled match returns to the hub's level in process, with the
+    /// career resource and the return placement the settle wrote.
     Hub,
     /// The manager is dead: the main menu.
     MainMenu,
-}
-
-/// The hand-off the process started with, once it was read.
-#[derive(Resource, Clone, Debug, Default, PartialEq)]
-pub struct HandedOver(pub Option<Handoff>);
-
-/// Where the hand-over file lives: the temporary directory by default, and a
-/// test's own file when it says so.
-#[derive(Resource, Clone, Debug, PartialEq, Eq)]
-pub struct HandoffPath(pub std::path::PathBuf);
-
-impl Default for HandoffPath {
-    fn default() -> Self {
-        Self(arena_handoff::default_path())
-    }
 }
 
 /// Whether the end screen's Continue runs without a key (unattended runs
@@ -153,44 +152,10 @@ pub struct ArenaLivePlugin;
 impl Plugin for ArenaLivePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ArenaAutoContinue>()
-            .init_resource::<HandedOver>()
-            .init_resource::<HandoffPath>()
             .add_message::<ArenaExit>()
             .add_message::<SceneCommand>()
-            .add_systems(PreStartup, restore_handoff)
             .add_systems(Update, (stand_first_round, continue_round).chain());
     }
-}
-
-/// Reads the hand-off once, at the process start: the hub's launched match
-/// takes the career and its setup, the hub takes the settled career and the
-/// return placement. The file is removed either way.
-fn restore_handoff(
-    mut commands: Commands,
-    mut handed: ResMut<HandedOver>,
-    path: Res<HandoffPath>,
-    mut hub: Option<ResMut<crate::arena_hub_live::ArenaHub>>,
-) {
-    let Some(handoff) = arena_handoff::take_at(&path.0) else {
-        return;
-    };
-    // The career the process starts with is the hub's own, so the hand-off's
-    // replaces it; the career resource itself is created by the hub plugin.
-    if let Some(career) = handoff.career.clone() {
-        commands.insert_resource(career);
-    }
-    if let Some(hub) = hub.as_mut()
-        && let Some(returned) = handoff.returned
-    {
-        hub.returned = Some(returned);
-    }
-    info!(
-        "arena hand-off: career {}, launch {}, return {}",
-        handoff.career.is_some(),
-        handoff.launch.is_some(),
-        handoff.returned.is_some()
-    );
-    *handed = HandedOver(Some(handoff));
 }
 
 /// The bodies a match's layout asks the generator for.
@@ -552,24 +517,21 @@ fn settle_match(
 /// carried comes with it.
 #[must_use]
 pub fn setup_from(
-    handoff: Option<&Handoff>,
+    launch: Option<MatchSetup>,
     options_template: i32,
     level: i32,
     tier: i32,
-) -> (MatchSetup, Option<crate::hub_windows::ArenaCareer>) {
-    let setup = handoff
-        .and_then(|handoff| handoff.launch)
-        .unwrap_or(MatchSetup {
-            template: options_template,
-            level,
-            tier,
-            tournament: false,
-            // A match started from the command line has no hub entry list:
-            // the debug player is the company's entry zero.
-            player: Some(0),
-            prize: 0,
-        });
-    (setup, handoff.and_then(|handoff| handoff.career.clone()))
+) -> MatchSetup {
+    launch.unwrap_or(MatchSetup {
+        template: options_template,
+        level,
+        tier,
+        tournament: false,
+        // A match started from the command line has no hub entry list: the
+        // debug player is the company's entry zero.
+        player: Some(0),
+        prize: 0,
+    })
 }
 
 /// The brain a company body takes.
@@ -585,7 +547,6 @@ pub fn screen_word(screen: Option<Screen>) -> Option<u32> {
 mod tests {
     use super::*;
     use crate::arena_match::ArenaMatch;
-    use crate::arena_session::RETURN_PLACEMENT;
     use crate::match_layout::{opponent_place, our_place};
     use crate::scene_bodies::SceneFighter;
 
@@ -610,17 +571,9 @@ mod tests {
             .add_message::<ArenaExit>()
             .init_resource::<ArenaAutoContinue>()
             .add_systems(Update, continue_round);
-        app.init_resource::<ButtonInput<KeyCode>>()
-            .init_resource::<HandoffPath>();
+        app.init_resource::<ButtonInput<KeyCode>>();
         app.insert_resource(crate::effects::EffectClock { now_ms: 1_000 });
         app
-    }
-
-    /// A test's own hand-off file, so the tests do not share one.
-    fn handoff_path(name: &str) -> HandoffPath {
-        HandoffPath(
-            std::env::temp_dir().join(format!("exarust-handoff-{name}-{}", std::process::id())),
-        )
     }
 
     fn press_continue(app: &mut App) {
@@ -869,73 +822,21 @@ mod tests {
     }
 
     #[test]
-    fn the_process_restores_the_handed_career_and_the_return_once() {
-        let mut career = crate::hub_windows::ArenaCareer::default();
-        career.company.name = "Handed".into();
-        career.company.copper = 99;
-        let handoff = Handoff {
-            career: Some(career.clone()),
-            launch: Some(MatchSetup {
-                template: 7,
-                level: 2,
-                tier: 1,
-                tournament: false,
-                player: Some(0),
-                prize: 8,
-            }),
-            returned: Some(RETURN_PLACEMENT),
-        };
-        let path = handoff_path("restore");
-        arena_handoff::write(&path.0, &handoff).unwrap();
-        let mut app = App::new();
-        app.add_plugins(MinimalPlugins).add_plugins(ArenaLivePlugin);
-        app.insert_resource(path.clone());
-        app.insert_resource(crate::arena_hub_live::ArenaHub::default());
-        app.insert_resource(crate::hub_windows::ArenaCareer::default());
-        app.update();
-        assert_eq!(
-            app.world().resource::<crate::hub_windows::ArenaCareer>(),
-            &career
-        );
-        assert_eq!(
-            app.world()
-                .resource::<crate::arena_hub_live::ArenaHub>()
-                .returned,
-            Some(RETURN_PLACEMENT)
-        );
-        assert_eq!(
-            app.world()
-                .resource::<HandedOver>()
-                .0
-                .as_ref()
-                .unwrap()
-                .launch,
-            handoff.launch
-        );
-        // The file is used once.
-        assert!(arena_handoff::read(&path.0).is_none());
-    }
-
-    #[test]
     fn the_match_setup_comes_from_the_hub_and_else_the_command_line() {
-        let handoff = Handoff {
-            launch: Some(MatchSetup {
-                template: 9,
-                level: 4,
-                tier: 2,
-                tournament: true,
-                player: Some(1),
-                prize: 20,
-            }),
-            ..Default::default()
+        let launch = MatchSetup {
+            template: 9,
+            level: 4,
+            tier: 2,
+            tournament: true,
+            player: Some(1),
+            prize: 20,
         };
-        let (setup, career) = setup_from(Some(&handoff), 1, 0, 0);
+        let setup = setup_from(Some(launch), 1, 0, 0);
         assert_eq!(setup.template, 9);
         assert!(setup.tournament);
         assert_eq!(setup.player, Some(1));
         assert_eq!(setup.prize, 20);
-        assert!(career.is_none());
-        let (setup, _) = setup_from(None, 6, 2, 1);
+        let setup = setup_from(None, 6, 2, 1);
         assert_eq!(setup.template, 6);
         assert_eq!((setup.level, setup.tier), (2, 1));
         assert!(!setup.tournament);

@@ -572,7 +572,7 @@ merchant profession, asks `hub_click`, and opens the answered window on
 the merchant's stock. A board pick of Enter, Begin or Continue plans the
 match (`arena_match::start_match`, `match_layout::layout`, `generic_plan`,
 `hire_plan`, `beast_plan`, `player_participant`, `pick_weapon_slot`) and the
-launcher restarts on the drawn arena with `--arena-match`. Escape and a
+launcher changes to the drawn arena in process. Escape and a
 right-button release close an open window. Opening the board or Manage
 Company makes the hub busy (the board's open and close set and clear the flag
 in the original); the trade window leaves it alone.
@@ -831,11 +831,12 @@ calling the rest of the game, so the order is testable.
   The launcher sets `BootToMenu(false)`, so the boot builds the flow's title
   state without covering the level or the splash; the splash path shows the
   title at its hand-over.
-  The world, save, camera, character and transition-screen steps are logged
-  and left to the host; there is no in-process level reload, so a level
-  load's request (a practice start on a fresh title, the next fight, a
-  teleporter) changes the flow state but keeps the loaded level; its
-  app-owned first steps (the menu form hides, the end menu closes) run.
+  The world, save, camera, character and transition-screen steps are left
+  to the host; a level load's request (a practice start on a fresh title,
+  the next fight, a teleporter, the story respawn) becomes an in-process
+  level change (`exa_world::level_lifecycle`), and the player is placed
+  across it. Its app-owned first steps (the menu form hides, the end menu
+  closes) run before the change.
   The end menu's rows follow the end-session dispatch, which branches on
   the mode first: practice's first row is RESTART (menu 2: the prelude
   closes and the session leaves to the menu form behind the transition)
@@ -942,11 +943,9 @@ and sends the rest through `MenuChoice`. `FlowPlugin` applies those the
 running game has: the resume, a practice start or restart, the story start
 (Exarust's unknown background), the story end-menu exit and the leave to
 the title, and it applies the flow's menu, end-menu, title-logo, interface,
-controls, health and music steps. The character screen, the creator, the
-manual, the settings form, the save and world steps, and a live level change
-are not wired; a practice next fight therefore changes the session state but
-does not reload the arena, because no in-process level reload exists yet
-(a level change restarts the process).
+controls, health and music steps, and a level load or teardown becomes an
+in-process level change. The character screen, the creator, the manual, the
+settings form and the live save and export steps are not wired.
 
 ### The window manager
 

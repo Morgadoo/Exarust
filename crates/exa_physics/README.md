@@ -74,6 +74,12 @@ pick-only collider (`PICK_ONLY`, no collision or solver groups): only
 controller, the bodies' level contacts, `fixed_hit`, `fixed_pick_except`
 and `level_sweep` pass through it (`solid`).
 
+`Physics::clear` empties the world (every body, collider and joint) and
+re-applies the fixed gravity and step; `body_count` and `collider_count`
+report what it holds. A level change uses it after despawning the old
+level's entities, with `CharacterHandles` removed from the surviving player
+so the fixed step registers its capsule again.
+
 Each fixed tick (83 Hz) moves the character controllers, then runs the
 pre-step (`body::BodyPreStep`), the character ticks (`body::CharacterTicks`:
 each living character, player last, runs the nine stages of the

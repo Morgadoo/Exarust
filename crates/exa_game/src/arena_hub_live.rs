@@ -86,6 +86,19 @@ impl Default for ArenaHub {
     }
 }
 
+impl ArenaHub {
+    /// The level changed: the entry must run again for the destination. The
+    /// settled return placement stays, since the hub it belongs to is the
+    /// destination of that change.
+    pub fn level_changed(&mut self) {
+        let returned = self.returned;
+        *self = Self {
+            returned,
+            ..Self::default()
+        };
+    }
+}
+
 /// The hub session hook's answer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HubFall {

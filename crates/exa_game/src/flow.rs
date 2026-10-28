@@ -2847,8 +2847,41 @@ impl Plugin for FlowPlugin {
             .add_systems(Startup, boot)
             .add_systems(
                 Update,
-                (apply_menu_choices, tick, follow_player, travel, apply_steps).chain(),
+                (
+                    apply_menu_choices,
+                    tick,
+                    follow_player,
+                    travel,
+                    apply_steps,
+                    reset_level_state,
+                )
+                    .chain(),
             );
+    }
+}
+
+/// Forgets the per-level state when the lifecycle tore a level down: the
+/// navigation room cells (their entity ids belong to the old world) and the
+/// hub entry (so the destination's hub runs its entry and places its
+/// manager). The settled return placement survives into the hub's level.
+fn reset_level_state(
+    changes: Option<Res<exa_world::level_lifecycle::LevelChangeState>>,
+    mut seen: Local<u64>,
+    mut rooms: Option<ResMut<exa_ai::rooms::RoomCells>>,
+    mut hub: Option<ResMut<crate::arena_hub_live::ArenaHub>>,
+) {
+    let Some(changes) = changes else {
+        return;
+    };
+    if changes.changes == *seen {
+        return;
+    }
+    *seen = changes.changes;
+    if let Some(rooms) = rooms.as_mut() {
+        **rooms = exa_ai::rooms::RoomCells::default();
+    }
+    if let Some(hub) = hub.as_mut() {
+        hub.level_changed();
     }
 }
 
@@ -4780,5 +4813,53 @@ mod tests {
         let menu = app.world().resource::<crate::menu_screen::MenuScreen>();
         assert!(menu.open);
         assert_eq!(menu.page, Page::Title);
+    }
+
+    /// A load step becomes a level change request, a teardown step is
+    /// folded into a load in the same batch, and a placement is carried to
+    /// the host in metres.
+    #[test]
+    fn the_app_turns_a_load_and_a_placement_into_a_level_change() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<Flow>()
+            .init_resource::<FlowSteps>()
+            .init_resource::<GameView>()
+            .add_message::<exa_world::level_lifecycle::LevelChangeRequest>()
+            .add_message::<AppExit>()
+            .add_systems(Update, apply_steps);
+        let placement = Placement {
+            rotation: yaw(90.0),
+            position: Vec3::new(100.0, 200.0, 300.0),
+        };
+        app.world_mut().resource_mut::<FlowSteps>().steps.extend([
+            Step::TeardownWorld,
+            Step::LoadLevel {
+                locale: "arenahub",
+                spawn: 2,
+                teardown: true,
+            },
+            Step::PlacePlayer(placement),
+        ]);
+        app.update();
+        let requests: Vec<exa_world::level_lifecycle::LevelChangeRequest> = app
+            .world_mut()
+            .resource_mut::<Messages<exa_world::level_lifecycle::LevelChangeRequest>>()
+            .drain()
+            .collect();
+        // One request: the teardown is the load's own.
+        assert_eq!(
+            requests,
+            vec![exa_world::level_lifecycle::LevelChangeRequest {
+                level: Some("arenahub".into()),
+                spawn: 2,
+                teardown: true,
+            }]
+        );
+        let at = app
+            .world()
+            .resource::<crate::level_change::PlayerPlacement>();
+        assert!((at.position - Vec3::new(1.0, 2.0, 3.0)).length() < 1e-6);
+        assert!((at.yaw - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
     }
 }

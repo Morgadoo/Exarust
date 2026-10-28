@@ -4,7 +4,6 @@
 
 pub mod arena;
 pub mod arena_board;
-pub mod arena_handoff;
 pub mod arena_hub;
 pub mod arena_hub_live;
 pub mod arena_ids;

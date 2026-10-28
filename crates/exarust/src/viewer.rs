@@ -392,8 +392,13 @@ fn apply_level_change(
     commands.remove_resource::<exa_ui::LoadingStatus>();
     let Some(level) = level else {
         debug!("level change: the world was torn down");
+        cache.clear();
         return;
     };
+    // The old level's parsed models, decoded texels and painted variants are
+    // no longer reachable from any entity; drop the cache so the next load
+    // reads them again and the old geometry and CPU texels are freed now.
+    cache.clear();
     match &mut *view {
         View::Play(name) | View::Level(name) => *name = level.clone(),
         View::Model { .. } | View::Texture(_) | View::Character { .. } => {}
@@ -454,7 +459,6 @@ fn continue_level(
     pending_arena: PendingArena<'_, '_>,
 ) {
     let landing = pending_arena.landing.as_deref();
-    let handed = pending_arena.handed.as_deref();
     let career = pending_arena.career.as_deref();
     let launch = pending_arena.launch.as_deref().map(|launch| &launch.0);
     let existing_player = pending_arena.players.iter().next();
@@ -508,7 +512,6 @@ fn continue_level(
                 &options,
                 &mut arena_picks,
                 landing,
-                handed,
                 career,
                 launch,
                 existing_player,
@@ -641,7 +644,6 @@ fn play_level(
     options: &Options,
     arena_picks: &mut exa_game::arena_match::ArenaPicks,
     landing: Option<&exa_game::level_transition::PendingLanding>,
-    handed: Option<&exa_game::arena_live::HandedOver>,
     career: Option<&exa_game::hub_windows::ArenaCareer>,
     launch: Option<&exa_game::arena_hub_live::ArenaMatchLaunch>,
     _existing_player: Option<Entity>,
@@ -672,25 +674,19 @@ fn play_level(
     // setup and drawn weapons are the ones the board picked, kept in
     // process instead of in a hand-off file.
     let arena = exa_game::arena_match::arena_index(name);
-    let (setup, handed_career) = match launch {
-        Some(launch) => (
-            exa_game::arena_handoff::MatchSetup {
-                template: launch.template,
-                level: launch.level,
-                tier: launch.tier,
-                tournament: launch.tournament,
-                player: launch.player,
-                prize: launch.prize,
-            },
-            None,
-        ),
-        None => exa_game::arena_live::setup_from(
-            handed.and_then(|handed| handed.0.as_ref()),
-            options.arena_match.unwrap_or(1),
-            options.arena_level,
-            options.arena_tier,
-        ),
-    };
+    let setup = exa_game::arena_live::setup_from(
+        launch.map(|launch| exa_game::arena_live::MatchSetup {
+            template: launch.template,
+            level: launch.level,
+            tier: launch.tier,
+            tournament: launch.tournament,
+            player: launch.player,
+            prize: launch.prize,
+        }),
+        options.arena_match.unwrap_or(1),
+        options.arena_level,
+        options.arena_tier,
+    );
     let template = setup.template;
     let spawn_at = arena.map_or([0.0; 3], |index| {
         exa_game::arena_match::ARENA_MAPS[index].spawn
@@ -705,7 +701,6 @@ fn play_level(
         ),
         _ => Vec::new(),
     };
-    let career = career.or(handed_career.as_ref());
     if arena.is_some() && matching {
         // A launched match names its drawn weapons per opponent in layout
         // order; `--arena-match` takes the command line's list instead.
@@ -840,12 +835,11 @@ fn place_chase_camera(
     ));
 }
 
-/// The arena state a level change carries: a save's landing, the launch the
-/// hub handed over, and the career it came with.
+/// The arena state a level change carries: a save's landing, the career the
+/// running process keeps, and the board pick's launch when one is waiting.
 #[derive(SystemParam)]
 pub(crate) struct PendingArena<'w, 's> {
     landing: Option<Res<'w, exa_game::level_transition::PendingLanding>>,
-    handed: Option<Res<'w, exa_game::arena_live::HandedOver>>,
     career: Option<Res<'w, exa_game::hub_windows::ArenaCareer>>,
     launch: Option<Res<'w, PendingArenaLaunch>>,
     players: Query<'w, 's, Entity, With<exa_game::player::Player>>,

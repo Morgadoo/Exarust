@@ -163,10 +163,11 @@ The level-change bridge (`level_transition`) ties the transition together:
 exporter and the story's settings-chunk gate, and `plan` pairs it with the
 landing (the player, the followers' own lifts, the migration list and the
 re-attach state). The loader takes a `PendingLanding` and starts the player
-there instead of the level's own start. A live level change does not exist
-yet (a change restarts the process) and the level loader keeps its own
-scene model rather than the exporter's, so the bridge waits for the RFC to
-export-scene conversion; see `docs/formats/SAVES.md` (Level transitions).
+there instead of the level's own start. The level change itself is in
+process (`exa_world::level_lifecycle`), so a landing plan can now be handed
+to a live load; the level loader still keeps its own scene model rather than
+the exporter's, so exporting the current level into a save waits for the RFC
+to export-scene conversion; see `docs/formats/SAVES.md` (Level transitions).
 
 Character creation (`create`): the record's gear (four hand items, its
 worn list and its carried list), the mode filters (story background 0 keeps
@@ -554,11 +555,11 @@ board Enter, Begin or Continue takes the event's entry fee from the purse
 (a short purse stops at 0; nothing refuses the match), warns once when the
 board's Begin enters the manager, drops the first unhealthy specialist,
 plans the match through `arena_match`, the layout and the spawn plans, and
-sends `arena_hub_live::ArenaMatchLaunch`, which the launcher turns into a
-restart on the drawn arena with `--arena-match`, the event's rank and gear
-tier, and each opponent's drawn weapon variant. The play-mode spawner uses
-the rank and tier for the layout and holds the weapon whose object id was
-drawn.
+sends `arena_hub_live::ArenaMatchLaunch`, which the launcher keeps in
+process and turns into a level change to the drawn arena, carrying the
+event's rank and gear tier and each opponent's drawn weapon variant. The
+play-mode spawner uses the rank and tier for the layout and holds the weapon
+whose object id was drawn.
 
 Opening the board or Manage Company makes the hub busy; closing either
 clears it. The notice boards and the shop counter are static scenery with no
@@ -768,12 +769,13 @@ hook), turns a teleporter's journey into a
 level exit, and hides the session hook while F1's in-game page is up (the
 menu screen calls `menu_opened`/`menu_closed`). Every producer queues its
 steps in `FlowSteps`; the app applies the menu, end-menu, title-logo,
-game-view, controls, health and music ones, and logs the world, save,
-camera, character and transition steps. `BootToMenu` keeps the
-launcher from covering the level or the splash with the boot title; the
-splash path shows it at the hand-over. F1 opens the in-game page while a
-session runs. There is no in-process level reload, so a step that loads a
-level changes the session state but keeps the level that is loaded. The camera shots (offsets added to the framed point)
+game-view, controls, health and music ones, and turns `LoadLevel` and
+`TeardownWorld` into `exa_world::level_lifecycle` requests. The viewer loads
+the destination through the same staged `LevelLoad` as a start-up load, and
+`PlacePlayer` is carried across it in `level_change::PlayerPlacement`.
+`BootToMenu` keeps the launcher from covering the level or the splash with
+the boot title; the splash path shows it at the hand-over. F1 opens the
+in-game page while a session runs. The camera shots (offsets added to the framed point)
 with their cursor warps, the spawn turns (the engine's angle builder), the
 exit-trigger nudge, the practice scene filter, the practice and menu music,
 the unlock words and the save managers' signatures are pinned by tests.
@@ -805,8 +807,7 @@ its rows follow the end-session dispatch (mode, then row, then menu
 number): the next practice fight, practice's RESTART back to the menu form,
 the story respawn or exit, and the returns to the title behind the
 transition. The title's BEGIN starts Exarust's unknown background;
-the save character screen, creator, manual, settings form and the in-process
-level reload are not wired.
+the save character screen, creator, manual and settings form are not wired.
 
 ## Main menu screen
 
@@ -914,18 +915,17 @@ item-fact pass is not modelled, so it takes a practice opponent's actor
 template as a labelled stand-in; the shopkeeper is the exact `arenashpkp`
 template.
 
-`arena_live` runs the match's scene. The hub's launch is still a process
-restart (an in-process level change is blocked by the physics level
-teardown and the unexported scene, see `level_transition`), so
-`arena_handoff` carries the career and the match's setup across it in a
-small Exarust-only file; the match process restores the career, stands the
-first round from `match_layout::layout`, and the round tick ends the round
-as before. The end screen's Continue is Enter or Space while the screen is
-not drawn: a next round stands the winner, brings `regenerate_round`'s
-fresh generic opponent, or the reserve entrant against the opponent who
-won, after the 13 ms yield; the end of the match resolves the company's
-records, writes the healths, books the result, drops the unfit on a
-tournament day and writes the settled career and the return placement for
-the hub's process. The hub (in arena mode or under the play view's practice stand-in)
+`arena_live` runs the match's scene. The hub's launch changes to the drawn
+arena in process (`exa_world::level_lifecycle`): the career is the running
+`ArenaCareer` resource and the board's setup is kept in `PendingArenaLaunch`,
+so no hand-off file is written or read. The match stands the first round
+from `match_layout::layout`, and the round tick ends the round as before.
+The end screen's Continue is Enter or Space while the screen is not drawn: a
+next round stands the winner, brings `regenerate_round`'s fresh generic
+opponent, or the reserve entrant against the opponent who won, after the
+13 ms yield; the end of the match resolves the company's records, writes the
+healths, books the result, drops the unfit on a tournament day and asks for
+the hub's level, with the settled career and the return placement kept in
+process. The hub (in arena mode or under the play view's practice stand-in)
 then puts the manager at the saved 300 cm, half turn placement and asks for the shopkeeper and one body per employed
 merchant or physician at their `arena_spawn` spots.
