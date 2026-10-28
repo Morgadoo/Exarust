@@ -158,8 +158,16 @@ pub struct PresetInput {
 
 /// A seed for the presets' draws from the process clock, as the original
 /// takes one from the engine's clock when it creates a scene. This is read
-/// once per level load, never inside the fixed step.
+/// once per level load, never inside the fixed step. `EXA_SCENE_SEED=<n>`
+/// (a debug aid) fixes it, so two runs of an outdoor level draw the same
+/// day and weather for side-by-side screenshots.
 pub fn clock_seed() -> u32 {
+    if let Some(seed) = std::env::var("EXA_SCENE_SEED")
+        .ok()
+        .and_then(|v| v.trim().parse::<u32>().ok())
+    {
+        return seed;
+    }
     let clock = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |since| since.as_nanos() as u64);
