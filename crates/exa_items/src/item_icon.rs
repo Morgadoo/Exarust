@@ -5,14 +5,15 @@
 //! The running game draws the scene through an off-screen Bevy camera
 //! (`exa_game::item_icon_render`); this module owns the numbers both paths
 //! share, and paints the same scene when no renderer is present. The camera
-//! is the plan's framing distance converted from the original's centimetres
-//! (`1/100` m, the unit [`exa_assets`] builds models in), pulled back far
-//! enough that the item's box fills [`ICON_FILL`] of the icon. A field of
-//! view of [`ICON_FOV_DEG`] is the character view's 30° [guess: the item
-//! view's field is not among the traced constructor numbers]; with it the
-//! plan's screen scale, `icon · view_scale / distance · 0.5`, is the exact
-//! perspective projection's pixel span, so the plan's extents are the
-//! camera's own.
+//! is the engine's scene fit ([`frame_distance`]) with the icon view's 40°
+//! field of view and the plan's framing distance converted from the
+//! original's centimetres (`1/100` m, the unit [`exa_assets`] builds models
+//! in; the fit is homogeneous in the two lengths). The plan's screen scale,
+//! `icon · view_scale / distance · 0.5`, is then the perspective
+//! projection's pixel span [guess: the view's scale field is read as
+//! `1 / tan(fov / 2)`], so the plan's extents are the camera's own. A small
+//! item is bent toward the framing distance and so draws small in its cell;
+//! one at least as big as the framing fills it.
 //!
 //! The framing presets' two numbers are the sun's azimuth and height, which
 //! `TSceneEnvironment` turns into a direction with the engine's
@@ -24,13 +25,12 @@ use exa_assets::Model;
 use exa_render::material::ExaMaterial;
 
 use crate::item_gui::Framing;
-use crate::item_renderer::{Transform3, extent_scale, projected_box_extents, render_plan};
+use crate::item_renderer::{
+    Transform3, extent_scale, frame_distance, projected_box_extents, render_plan, view,
+};
 
-/// The icon camera's vertical field of view, degrees.
-pub const ICON_FOV_DEG: f32 = 30.0;
-/// The share of the icon's shorter side the item's box fills when the
-/// camera is fitted.
-pub const ICON_FILL: f32 = 0.9;
+/// The icon view's field of view, degrees (its constructor's value).
+pub const ICON_FOV_DEG: f32 = 40.0;
 /// The original's model unit in metres: its geometry is in centimetres.
 pub const FRAMING_CM_PER_M: f32 = 0.01;
 /// The ambient share the CPU rasteriser adds to the sun.
@@ -67,23 +67,20 @@ pub struct IconCamera {
 }
 
 impl IconCamera {
-    /// The camera the plan frames a box with. The framing distance is a
-    /// floor (20, 30 or 70 cm); a box too big for it pulls the camera back
-    /// until it fills [`ICON_FILL`] of the icon.
+    /// The camera the plan frames a box with: on +Z from the box's centre at
+    /// the engine's scene-fit distance for the plan's framing (20, 30 or
+    /// 70 cm, in metres here) and the icon view's field of view.
     pub fn from_plan(plan: &crate::item_renderer::RenderPlan, bounds: IconBounds) -> Self {
         let fov_degrees = ICON_FOV_DEG;
         let half_angle = fov_degrees.to_radians() * 0.5;
         let view_scale = 1.0 / half_angle.tan();
-        let full = bounds.half * 2.0;
-        let span = full.x.max(full.y).max(1.0e-4);
-        let fit = span * view_scale / (2.0 * ICON_FILL);
         let frame = plan.framing.distance * FRAMING_CM_PER_M;
-        let distance = fit.max(frame);
+        let distance = frame_distance(bounds.half.to_array(), frame, fov_degrees).max(1.0e-4);
         Self {
-            position: Vec3::new(0.0, 0.0, distance),
-            target: Vec3::ZERO,
+            position: bounds.centre + Vec3::new(0.0, 0.0, distance),
+            target: bounds.centre,
             fov_degrees,
-            near: 0.01,
+            near: view(crate::item_renderer::ICON_SIZE).near * FRAMING_CM_PER_M,
             far: 1000.0,
             distance,
             view_scale,
@@ -592,7 +589,7 @@ mod tests {
     }
 
     #[test]
-    fn the_camera_follows_the_framing_and_fits_large_items() {
+    fn the_camera_is_the_engines_scene_fit() {
         let plan = crate::item_renderer::render_plan(
             v::APPAREL,
             false,
@@ -603,48 +600,56 @@ mod tests {
             1.0,
             true,
         );
-        // 30°: 1/tan(15°).
-        let view_scale = 1.0 / (15.0f32.to_radians()).tan();
-        assert!((view_scale - 3.732_051).abs() < 1.0e-5);
-        // A 10 cm box stays at the 30 cm apparel framing distance.
+        // 40°: 1/tan(20°).
+        let view_scale = 1.0 / (20.0f32.to_radians()).tan();
+        assert!((view_scale - 2.747_477).abs() < 1.0e-5);
+        // A 10 cm box at the 30 cm apparel framing: r = 1/6, the half bends
+        // to 0.3 · ((r · 0.11 + 1) − 1/(8r + 1)) = 0.176 93, over tan(20°)
+        // plus the depth half 0.05.
         let camera = IconCamera::from_plan(&plan, bounds(Vec3::new(0.05, 0.05, 0.05)));
-        assert_eq!(camera.fov_degrees, 30.0);
-        assert!((camera.distance - 0.3).abs() < 1.0e-6);
-        assert!((camera.position - Vec3::new(0.0, 0.0, 0.3)).length() < 1.0e-6);
+        assert_eq!(camera.fov_degrees, 40.0);
+        assert!(
+            (camera.distance - 0.536_107).abs() < 1.0e-5,
+            "{}",
+            camera.distance
+        );
+        assert!((camera.position - Vec3::new(0.0, 0.0, camera.distance)).length() < 1.0e-6);
         assert!((camera.view_scale - view_scale).abs() < 1.0e-5);
-        // A 1 m box pulls the camera back to fill 90 % of the icon:
-        // 1 · view_scale / (2 · 0.9).
-        let camera = IconCamera::from_plan(&plan, bounds(Vec3::new(0.5, 0.5, 0.5)));
-        assert!((camera.distance - view_scale / 1.8).abs() < 1.0e-5);
-        // The pixel span is the plan's scale: 0.9 of the icon.
-        let (w, h) = camera.pixel_extents(bounds(Vec3::new(0.5, 0.5, 0.5)), 160);
-        assert!((w - 144.0).abs() < 0.05 && (h - 144.0).abs() < 0.05);
-        // A 20 cm close framing keeps its own floor.
+        assert!((camera.near - 0.1).abs() < 1.0e-6);
+        // A small item draws small: 41 of 160 pixels.
+        let (w, _) = camera.pixel_extents(bounds(Vec3::new(0.05, 0.05, 0.05)), 160);
+        assert!((w - 41.0).abs() < 0.01, "{w}");
+        // A 1 m box is above the framing, so its half is used as it is:
+        // 0.5 / tan(20°) + 0.5.
+        let big = bounds(Vec3::new(0.5, 0.5, 0.5));
+        let camera = IconCamera::from_plan(&plan, big);
+        assert!((camera.distance - 1.873_739).abs() < 1.0e-5);
+        let (w, h) = camera.pixel_extents(big, 160);
+        assert!(
+            (w - 117.305).abs() < 0.01 && (h - 117.305).abs() < 0.01,
+            "{w} {h}"
+        );
+        // The close (20 cm) and default (70 cm) framings.
         let close = crate::item_renderer::render_plan(0, true, (1.0, 1.0), 0, 160, 1.0, 1.0, true);
-        assert!(
-            (IconCamera::from_plan(&close, bounds(Vec3::splat(0.02))).distance - 0.2).abs()
-                < 1.0e-6
-        );
-        // The default framing is 70 cm.
+        let d = IconCamera::from_plan(&close, bounds(Vec3::splat(0.02))).distance;
+        assert!((d - 0.270_265).abs() < 1.0e-5, "{d}");
         let far = crate::item_renderer::render_plan(0, false, (1.0, 1.0), 0, 160, 1.0, 1.0, true);
-        assert!(
-            (IconCamera::from_plan(&far, bounds(Vec3::splat(0.02))).distance - 0.7).abs() < 1.0e-6
-        );
+        let d = IconCamera::from_plan(&far, bounds(Vec3::splat(0.02))).distance;
+        assert!((d - 0.383_855).abs() < 1.0e-5, "{d}");
     }
 
     #[test]
     fn the_scene_plan_repeats_the_extents_in_pixels() {
         let bounds = bounds(Vec3::new(0.5, 0.5, 0.5));
-        let (camera, plan) = scene_plan(v::APPAREL, false, 0, bounds, 160, true);
+        let (_, plan) = scene_plan(v::APPAREL, false, 0, bounds, 160, true);
         assert_eq!(plan.framing.distance, 30.0);
-        assert!((plan.screen_extents.0 - 144.0).abs() < 0.1);
-        assert!((plan.screen_extents.1 - 144.0).abs() < 0.1);
+        assert!((plan.screen_extents.0 - 117.305).abs() < 0.01);
+        assert!((plan.screen_extents.1 - 117.305).abs() < 0.01);
         assert!(plan.screen_pass && !plan.downsample && !plan.halo);
         // The same at the icon's own size.
         let (_, small) = scene_plan(v::APPAREL, false, 0, bounds, 80, false);
-        assert!((small.screen_extents.0 - 72.0).abs() < 0.1);
+        assert!((small.screen_extents.0 - 58.652).abs() < 0.01);
         assert!(!small.screen_pass && small.downsample && small.halo);
-        let _ = camera;
     }
 
     #[test]
@@ -745,8 +750,8 @@ mod tests {
         let centre = icon.alpha(80, 80);
         assert_eq!(centre, 255);
         assert_eq!(icon.alpha(0, 0), 0);
-        // A 1 m box at the 70 cm framing is pulled back, so the square still
-        // fills most of the icon but leaves the border clear.
+        // A 1 m square is above the 70 cm framing, so it fills about 123 of
+        // the 160 pixels and leaves the border clear.
         let mut painted = 0;
         for y in 0..160 {
             for x in 0..160 {
