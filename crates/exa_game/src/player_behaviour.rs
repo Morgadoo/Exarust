@@ -10,7 +10,9 @@
 //! swing (`exa_combat`). They are plain functions so that the arithmetic,
 //! the comparisons and the branch order are pinned by tests; the running
 //! game feeds the gamepad aim's point and ease ([`crate::player`]), the
-//! others have no caller yet.
+//! others have no caller yet: the bone lock needs the behaviour's stored
+//! target and a screen read of its bones, which Exarust's stance does not
+//! keep as an entity.
 //!
 //! Evidence: the behaviour's aim point, gamepad aim, contacts, engaged
 //! enemy, screen-nearest character and attack timing, read in the
@@ -143,19 +145,77 @@ pub fn aim_lock_height(plane: f32, point: f32, distance2: f32, radius: f32) -> f
 }
 
 /// A bone's projected point against the cursor, in screen pixels: from
-/// `start` (the target's projected root point) toward `end` (the bone's),
+/// `start` (the target's projected head point) toward `end` (the bone's),
 /// the fraction `t = (end − start)·(cursor − start) / |end − start|²`,
-/// clamped into [0, 1], and the squared distance from `start + (end −
-/// start)·t` to the cursor, which the lock compares with its radii. A
-/// zero-length bone gives no fraction (an unordered one, as the original's
-/// division does).
+/// clamped into [0, 1] by the original's two ordered tests (so a NaN
+/// fraction becomes zero), and the squared distance from `start + (end −
+/// start)·t` to the cursor, which the lock compares with its radii.
 pub fn bone_screen(start: Vec2, end: Vec2, cursor: Vec2) -> (f32, f32) {
     let bone = end - start;
     let to = cursor - start;
-    // Clamped as the original's two ordered tests do: NaN and −0 pass.
-    let t = ((bone.x * to.x + bone.y * to.y) / (bone.x * bone.x + bone.y * bone.y)).clamp(0.0, 1.0);
+    let raw = (bone.x * to.x + bone.y * to.y) / (bone.x * bone.x + bone.y * bone.y);
+    let t = if raw >= 0.0 {
+        if raw > 1.0 { 1.0 } else { raw }
+    } else {
+        0.0
+    };
     let d = start + bone * t - cursor;
     (t, d.x * d.x + d.y * d.y)
+}
+
+/// A point of a locked target the aim height can follow: where it shows on
+/// screen (pixels) and its world height (cm).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AimBone {
+    pub screen: Vec2,
+    pub height: f32,
+}
+
+/// The aim height with a locked target, over the target's bones in order:
+/// each bone's projected point gives its squared distance to the cursor
+/// through [`bone_screen`] from the target's `head` point, and the nearest
+/// one wins (an unordered distance never replaces a nearer one). Within
+/// one pixel radius the aim height is that bone's; within two it blends by
+/// `(d − r) / r` toward the plane's; beyond, it is the plane's. Returns the
+/// height and whether a bone locked at all (the raised-surface rule is
+/// skipped when one did).
+pub fn aim_lock_bones(
+    plane: f32,
+    head: Vec2,
+    bones: &[AimBone],
+    cursor: Vec2,
+    radius: f32,
+) -> (f32, bool) {
+    let mut nearest: Option<(f32, f32)> = None;
+    for bone in bones {
+        let (_, d2) = bone_screen(head, bone.screen, cursor);
+        if nearest.is_none_or(|(_, best)| d2 < best) {
+            nearest = Some((bone.height, d2));
+        }
+    }
+    let Some((height, d2)) = nearest else {
+        return (plane, false);
+    };
+    let twice = radius * AIM_LOCK_RADII;
+    if twice * twice > d2 {
+        if radius * radius >= d2 {
+            (height, true)
+        } else {
+            let blend = (d2.sqrt() - radius) / radius;
+            (plane * blend + (1.0 - blend) * height, true)
+        }
+    } else {
+        (plane, false)
+    }
+}
+
+/// The pixel radius 80 cm makes at a point `depth` cm in front of the eye:
+/// the viewport's width times the projection's scale, halved, times 80,
+/// over the depth. The original takes the viewport's own pixel width and
+/// the projection's scale (the same terms Bevy's perspective projection
+/// gives as `1 / tan(fov_y / 2)`).
+pub fn bone_lock_radius(viewport_px: f32, projection_scale: f32, depth: f32) -> f32 {
+    viewport_px * projection_scale * 0.5 * 80.0 / depth
 }
 
 /// The aim point without a lock: the cursor's point on the aim plane, or the
@@ -429,8 +489,9 @@ mod tests {
         assert_eq!(t, 1.0);
         let (t, _) = bone_screen(Vec2::ZERO, Vec2::X * 10.0, Vec2::new(-5.0, 0.0));
         assert_eq!(t, 0.0);
-        // A zero-length bone has no fraction.
-        assert!(bone_screen(Vec2::ZERO, Vec2::ZERO, Vec2::X).0.is_nan());
+        // A zero-length bone's division is NaN, which the ordered tests take
+        // to zero.
+        assert_eq!(bone_screen(Vec2::ZERO, Vec2::ZERO, Vec2::X).0, 0.0);
     }
 
     /// An aim point is fully locked within one cursor radius (its edge
@@ -443,6 +504,63 @@ mod tests {
         // 15 px: blend (15 − 10)/10 = 0.5.
         assert!((aim_lock_height(0.8, 1.5, 225.0, 10.0) - 1.15).abs() < 1e-5);
         assert_eq!(aim_lock_height(0.8, 1.5, 400.0, 10.0), 0.8);
+    }
+
+    /// The three-bone lock takes the nearest bone, locks to its height
+    /// within one radius, blends by (d − r)/r to two radii and keeps the
+    /// plane beyond; an unordered bone never replaces a nearer one. The
+    /// pixel radius of 80 cm is width·scale·0.5·80 over the depth.
+    #[test]
+    fn the_aim_lock_follows_the_nearest_of_three_bones() {
+        let head = Vec2::new(100.0, 100.0);
+        let cursor = Vec2::new(110.0, 100.0);
+        let bones = [
+            AimBone {
+                screen: Vec2::new(300.0, 300.0),
+                height: 1.0,
+            },
+            AimBone {
+                screen: cursor,
+                height: 1.5,
+            },
+            AimBone {
+                screen: Vec2::new(140.0, 100.0),
+                height: 2.0,
+            },
+        ];
+        // The second bone is on the cursor: full lock.
+        assert_eq!(aim_lock_bones(0.8, head, &bones, cursor, 50.0), (1.5, true));
+        // A bone's segment that starts at the head and runs straight up:
+        // the cursor 30 px to its right shows a 30 px distance. With a
+        // 10 px radius that is past two radii, so the plane stays.
+        let above = AimBone {
+            screen: Vec2::new(100.0, 300.0),
+            height: 2.0,
+        };
+        let cursor = Vec2::new(130.0, 100.0);
+        assert_eq!(
+            aim_lock_bones(0.8, head, &[above], cursor, 10.0),
+            (0.8, false)
+        );
+        // A 20 px radius at 30 px: (30 − 20)/20 = 0.5 between the plane and
+        // 2.0.
+        let (height, locked) = aim_lock_bones(0.8, head, &[above], cursor, 20.0);
+        assert!(locked);
+        assert!((height - 1.4).abs() < 1e-5, "{height}");
+        let cursor = Vec2::new(110.0, 100.0);
+        // NaN distances are never taken: with only a broken bone the plane
+        // stays.
+        let broken = [AimBone {
+            screen: Vec2::new(f32::NAN, 0.0),
+            height: 3.0,
+        }];
+        let (height, locked) = aim_lock_bones(0.8, head, &broken, cursor, 50.0);
+        assert!((height - 0.8).abs() < 1e-5);
+        assert!(!locked);
+        // No bones at all: the plane.
+        assert_eq!(aim_lock_bones(0.8, head, &[], cursor, 50.0), (0.8, false));
+        // 1000 px across, scale 1, 800 cm deep: 50 px.
+        assert_eq!(bone_lock_radius(1000.0, 1.0, 800.0), 50.0);
     }
 
     /// A raised surface under the cursor replaces the aim point when it is
