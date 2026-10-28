@@ -73,7 +73,8 @@ streams by their whole format word, channels by their low key; a channel's
 entries move past the largest destination element count over the streams that
 share it, so a part's positions, colours and weights start together, and a
 gap is filled with zero or 255. Only the position stream is placed (by
-`destination⁻¹ · source`), as the original does. The face → group map the
+the rigid `destination⁻¹ · source`, in the original's float order) and the
+normal stream (low key 2) is skipped, as the original does. The face → group map the
 merge keeps is `EditMesh::face_group`; `merge::regroup_by_material` sorts the
 faces into material runs and permutes every channel, the flags, the edge bits
 and the extra per-face word (`EditMesh::face_extra`), then drops the map.

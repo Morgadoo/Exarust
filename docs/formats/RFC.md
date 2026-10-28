@@ -224,7 +224,10 @@ squared lengths is not above `0x33FFFFD7`, or c ≥ 1), and the sum is
 normalised. With triangle flags, a face carrying `0x10000` counts only for
 a group no face without it has reached. The faces are walked in the
 original's incidence order: per position element, the corners last face
-first and each face's corners last first. Established by REA on the normal
+first and each face's corners last first, the list then cut into
+smoothing-key runs in place (the first remaining corner opens a run and
+each later corner with its key is swapped into the run's next slot, which
+can reorder a second key's corners). Established by REA on the normal
 builder and its corner-angle helper; Exarust computes them the same way
 (`exa_formats::rfc`). The cloth pass rebuilds them more cheaply: each
 smoothing group's normal is the unweighted sum of its faces' unit normals
@@ -329,8 +332,9 @@ REA, read against the disassembly): groups whose material the destination
 already has (the shared material record) add the part's face count, a new
 group is made otherwise, and the appended faces take the next face numbers
 with their group in a face → group map. The part's position stream is placed
-by `destination⁻¹ · source`; every other stream is copied as it is (the
-original transforms no other stream). Each stream is joined to the
+by the rigid `destination⁻¹ · source` (the transposed turn and turned,
+negated origin; points placed as `(x·r0 + y·r1) + (z·r2 + t)`); the normal
+stream (low key 2) is skipped and every other stream is copied as it is. Each stream is joined to the
 destination's stream with the same whole format word, made when the
 destination lacks it, and each channel by its low key; a channel's entries
 are offset by the largest element count the destination has over the streams
