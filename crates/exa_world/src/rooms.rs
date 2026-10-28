@@ -199,7 +199,9 @@ impl Rooms {
         self.cell_room[(y * self.width as i64 + x) as usize]
     }
 
-    fn room_of_index(&self, cell: u32) -> Option<u16> {
+    /// The room of a grid cell index, or `None` when the cell is outside
+    /// the grid or in no room.
+    pub fn room_of_index(&self, cell: u32) -> Option<u16> {
         self.cell_room.get(cell as usize).copied().flatten()
     }
 
@@ -358,6 +360,27 @@ impl Rooms {
         })
     }
 
+    /// Whether a door passage joins two points (metres, X/Z), as the
+    /// original's control-side door query answers it: both points in room
+    /// cells; the same room always; otherwise a link of the first point's
+    /// room straight into the second point's cell, through a door that is
+    /// open. Unlike [`Self::light_reach`] this does not look at the second
+    /// room's links and does not measure the door point.
+    pub fn door_reach(&self, a: Vec2, b: Vec2, open: impl Fn(DoorLink) -> bool) -> bool {
+        let (Some(cell_a), Some(cell_b)) = (self.linear_cell(a), self.linear_cell(b)) else {
+            return false;
+        };
+        let (Some(room_a), Some(room_b)) = (self.room_of_index(cell_a), self.room_of_index(cell_b))
+        else {
+            return false;
+        };
+        if room_a == room_b {
+            return true;
+        }
+        self.room(room_a)
+            .is_some_and(|r| r.links.iter().any(|&link| link.to == cell_b && open(link)))
+    }
+
     /// The rooms a light at `light` (metres, X/Z) spills into, as the
     /// original's light-spill callback finds them: when the light stands
     /// within [`LIGHT_REACH`] of its own cell's centre, the rooms behind
@@ -452,6 +475,17 @@ pub fn rect_world_cm(rect: [u32; 4], width: u32, height: u32) -> [f32; 4] {
         (rect[1] as f32 - half_h) * CELL_CM,
         (rect[3] as f32 - half_h + 1.0) * CELL_CM,
     ]
+}
+
+/// The original's "open side" test on a cell word: the cell must carry the
+/// open flag, and the side's edge code must not be a solid wall. Every other
+/// code (a door included) is open. Used while a room's flood joins the cell
+/// behind a door.
+pub fn open_side(grid: &LevelGrid, cell: u32, side: u32) -> bool {
+    let Some(&word) = grid.edges.get(cell as usize) else {
+        return false;
+    };
+    word & CELL_OPEN != 0 && (word >> ((side & 7) * 4)) & 0xF != EDGE_WALL
 }
 
 /// Rotates a packed edge word by `quarter` quarter turns. The low four
@@ -653,6 +687,17 @@ impl RoomTracker {
         self.fade.get(room as usize).copied().unwrap_or_default()
     }
 
+    /// The original's active-room flag (the room's working state's low bit):
+    /// true while the room is in the active list and not fading in or out,
+    /// including a room that turned around mid-fade and is fading back in.
+    pub fn is_active(&self, room: u16) -> bool {
+        self.state(room) == RoomState::Active
+            && matches!(
+                self.fade.get(room as usize).copied().unwrap_or_default(),
+                Fade::None | Fade::Active | Fade::Reentering
+            )
+    }
+
     /// The active list, in order.
     pub fn active(&self) -> &[u16] {
         &self.list
@@ -803,6 +848,113 @@ impl RoomTracker {
         self.next.fill(RoomState::Active);
         self.fade.fill(Fade::None);
         self.list.clear();
+    }
+}
+
+/// The room manager's light lists: the light aliases each room's sector
+/// holds. A light is added to the room of the cell it stands in; after the
+/// rooms exist each room also receives the light list entries of every room
+/// that portals into it, once, so a lamp in one room lights the room behind
+/// its door too.
+///
+/// The original keeps one alias object per light and sector; Exarust keeps
+/// the light ids. The renderer's sector light lists are modelled here, not
+/// read by [`crate::room_view`] (Exarust's lights stay global, as the room
+/// drawing rules ask).
+#[derive(Debug, Clone, Default)]
+pub struct RoomLights {
+    /// Per room, the light ids its sector lists, in the order they were
+    /// added: its own lights first, then those a portal carried in.
+    per_room: Vec<Vec<u32>>,
+    /// The room each light id was placed in, indexed by id.
+    home: Vec<Option<u16>>,
+}
+
+impl RoomLights {
+    /// Lists for `rooms` rooms, all empty.
+    pub fn new(rooms: usize) -> Self {
+        Self {
+            per_room: vec![Vec::new(); rooms],
+            home: Vec::new(),
+        }
+    }
+
+    /// The ids a room's sector lists.
+    pub fn of(&self, room: u16) -> &[u32] {
+        self.per_room
+            .get(room as usize)
+            .map_or(&[], |list| &list[..])
+    }
+
+    /// The room a light id belongs to.
+    pub fn home(&self, id: u32) -> Option<u16> {
+        self.home.get(id as usize).copied().flatten()
+    }
+
+    /// Adds light `id` to the room of the cell at `at` (metres, X/Z), the
+    /// original's light-add hook. An id already in that room is kept once.
+    /// `None` when the point is in no room.
+    pub fn add(&mut self, rooms: &Rooms, id: u32, at: Vec2) -> Option<u16> {
+        let room = rooms.room_of_node(at)?;
+        self.home.resize(self.home.len().max(id as usize + 1), None);
+        if let Some(list) = self.per_room.get_mut(room as usize) {
+            if !list.contains(&id) {
+                list.push(id);
+            }
+            self.home[id as usize] = Some(room);
+            return Some(room);
+        }
+        None
+    }
+
+    /// Takes light `id` out of its room, the original's light-remove hook
+    /// (which turns the alias off; the id is dropped here).
+    pub fn remove(&mut self, id: u32) {
+        let Some(room) = self.home(id) else {
+            return;
+        };
+        if let Some(list) = self.per_room.get_mut(room as usize) {
+            list.retain(|&l| l != id);
+        }
+        if let Some(slot) = self.home.get_mut(id as usize) {
+            *slot = None;
+        }
+    }
+
+    /// Gives every room the lights of each room whose portal leads into it,
+    /// once, as the original runs this after the rooms exist. Rooms are
+    /// visited in order, so a list that already grew can be the source of a
+    /// later pass. Only a room whose list ends with one of its own lights
+    /// propagates (the original's trailing-owner test), so a light travels
+    /// one doorway, not the whole level.
+    pub fn propagate(&mut self, rooms: &Rooms) {
+        for room in 0..self.per_room.len() {
+            let Some(&last) = self.per_room[room].last() else {
+                continue;
+            };
+            if self.home(last) != Some(room as u16) {
+                continue;
+            }
+            let Some(links) = rooms.room(room as u16).map(|r| r.links.clone()) else {
+                continue;
+            };
+            for link in links {
+                let Some(target) = rooms.room_of_index(link.to) else {
+                    continue;
+                };
+                if target as usize == room {
+                    continue;
+                }
+                let source = self.per_room[room].clone();
+                if let Some(dest) = self.per_room.get_mut(target as usize) {
+                    for id in source {
+                        if !dest.contains(&id) {
+                            dest.push(id);
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1364,6 +1516,100 @@ mod tests {
         assert_eq!(cell_step_from_dir(Vec2::new(1.0, 0.0)), (-1, 0));
         assert_eq!(cell_step_from_dir(Vec2::new(0.0, -1.0)), (0, 1));
         assert_eq!(cell_step_from_dir(Vec2::new(-1.0, 0.0)), (1, 0));
+    }
+
+    #[test]
+    fn an_open_side_needs_the_open_flag_and_not_a_wall() {
+        let g = two_rooms();
+        let cell = g.cell(2, 1);
+        // (2, 1) faces a wall on side 0, open on side 1, and a door on
+        // side 3; every non-wall code counts as open.
+        assert!(!open_side(&g.0, cell, 0));
+        assert!(open_side(&g.0, cell, 1));
+        assert!(open_side(&g.0, cell, 3));
+        // A closed cell is never open.
+        let closed = g.cell(0, 0);
+        assert!(!open_side(&g.0, closed, 1));
+        // Past the grid there is no cell.
+        assert!(!open_side(&g.0, 999, 1));
+    }
+
+    #[test]
+    fn the_control_side_door_query_does_not_measure_the_door_point() {
+        let rooms = Rooms::flood(&two_rooms().0);
+        // Two points in the two rooms, far from the door point (1.5, 3):
+        // the light query measures it, this one only the joined cells.
+        let a = Vec2::new(-9.0, 1.0);
+        let b = Vec2::new(5.9, 0.1);
+        assert!(!rooms.light_reach(a, b, |_| true));
+        assert!(rooms.door_reach(a, b, |_| true));
+        assert!(!rooms.door_reach(a, b, |_| false));
+        // Same room reaches whether the door is open or not.
+        assert!(rooms.door_reach(Vec2::new(-9.0, 3.0), Vec2::new(-4.0, 3.0), |_| false));
+        // A point in no room never reaches.
+        assert!(!rooms.door_reach(a, Vec2::new(-15.0, -5.0), |_| true));
+        // It looks only from the first point's room and only into the
+        // second point's cell: the same pair reversed has no link.
+        assert!(!rooms.door_reach(b, a, |_| true));
+    }
+
+    #[test]
+    fn the_active_flag_is_off_while_a_room_fades_either_way() {
+        let rooms = Rooms::flood(&two_rooms().0);
+        let mut t = RoomTracker::new(rooms.len());
+        let inside = Vec2::new(-8.0, 3.0);
+        t.update(&rooms, inside, 0);
+        // Entering: the original's working state has its low bit clear.
+        assert!(!t.is_active(0));
+        t.update(&rooms, inside, 1_000);
+        assert!(t.is_active(0));
+        // Wanted away, it fades out and the flag clears at once.
+        t.update(&rooms, Vec2::new(9.0, 3.0), 2_000);
+        assert_eq!(t.fade(0), Fade::Leaving);
+        assert!(!t.is_active(0));
+        // Wanted again mid-fade, it turns around and keeps fading in, so the
+        // flag stays clear until that fade ends.
+        t.update(&rooms, inside, 2_400);
+        assert_eq!(t.fade(0), Fade::Entering);
+        assert!(!t.is_active(0));
+        t.update(&rooms, inside, 3_400);
+        assert!(t.is_active(0));
+        // Every room shown by the debug view counts as active.
+        t.show_all();
+        assert!(t.is_active(1));
+    }
+
+    #[test]
+    fn lights_belong_to_the_room_they_stand_in_and_reach_one_doorway() {
+        // Rooms A (0) and B (1) side by side, and C (2) behind B.
+        let mut g = Grid::new(8, 3);
+        g.open(1, 1, [7, 7, 7, 0])
+            .open(2, 1, [7, 0, 7, 0xB])
+            .open(3, 1, [7, 0xB, 7, 0xB])
+            .open(4, 1, [7, 0xB, 7, 0])
+            .open(5, 1, [7, 0, 7, 7]);
+        let rooms = Rooms::flood(&g.0);
+        assert_eq!(rooms.len(), 3);
+        let mut lights = RoomLights::new(rooms.len());
+        // Light 7 in A, light 9 in C; a duplicate add and a light in no
+        // room are ignored.
+        assert_eq!(lights.add(&rooms, 7, Vec2::new(-15.0, 3.0)), Some(0));
+        lights.add(&rooms, 7, Vec2::new(-15.0, 3.0));
+        assert_eq!(lights.add(&rooms, 9, Vec2::new(9.0, 3.0)), Some(2));
+        assert_eq!(lights.add(&rooms, 5, Vec2::new(0.0, -15.0)), None);
+        assert_eq!(lights.of(0), &[7][..]);
+        assert_eq!(lights.of(2), &[9][..]);
+        lights.propagate(&rooms);
+        // B receives both; A and C keep only their own, because B's list no
+        // longer ends with one of its own lights.
+        assert_eq!(lights.of(0), &[7][..]);
+        assert_eq!(lights.of(1), &[7, 9][..]);
+        assert_eq!(lights.of(2), &[9][..]);
+        assert_eq!(lights.home(7), Some(0));
+        lights.remove(7);
+        assert_eq!(lights.of(0), &[] as &[u32]);
+        assert_eq!(lights.of(1), &[7, 9][..]);
+        assert_eq!(lights.home(7), None);
     }
 
     pub(crate) fn shipped_grid(level: &str) -> Option<LevelGrid> {

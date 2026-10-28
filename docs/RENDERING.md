@@ -1951,7 +1951,16 @@ undrawn whatever the player should not see (`exa_world::rooms`,
   compares the light with the centre). Both index cells as row × width +
   column checked only against the cell count. Exarust reproduces both
   (`Rooms::light_reach`, `Rooms::light_spill`); every door still counts as
-  open because placed doors are not mechanisms yet.
+  open because placed doors are not mechanisms yet. The control-side query
+  (`Rooms::door_reach`) is looser: the same room always, otherwise a link
+  of the first point's room straight into the second point's cell with no
+  distance test. The room manager's active-room flag (`RoomTracker::is_active`)
+  is false while a room fades in or out and true once it is active.
+- **Lights in rooms.** The original gives each room's sector its own list of
+  light aliases (the lights of its cells) and then copies the lights of every
+  room that portals into it into its list, once, stopping after one doorway
+  (`RoomLights`). Exarust models those lists, but its renderer keeps lights
+  global, as the drawing rules ask, so nothing reads them yet.
 - **Shells.** Every placed piece's `[…` children (boxes from the floor to
   2.7 m behind the facade: most reach the cell edge, as `gews_swa01`'s
   fill the 55 cm behind its 20 cm facades, but the plain walls and inner
@@ -1962,7 +1971,12 @@ undrawn whatever the player should not see (`exa_world::rooms`,
   colour writes off, so what lies under them keeps the black clear colour.
   Exarust draws them as opaque, unlit pure black: the same image over a
   black clear, without depending on draw order. They cast no shadows,
-  receive no light, fill no GI and have no collision.
+  receive no light, fill no GI and have no collision. [missing] The original
+  also draws a light's own room's lid into that light's omni shadow faces,
+  so a ceiling blocks the light; Exarust's lids cast nothing, so point-light
+  shadows do not include ceilings. The manager's segment query against a
+  room's occluder or lid (`Strip::segment_hits`) is modelled for the force
+  powers' line test, which Exarust has no caller for yet.
 - **What each state draws.** Hidden: nothing of the room (its meshes are
   hidden; its lights, GI emitters, shadow links and colliders stay).
   Adjacent: the room with its occluder and its lid, so from above it is a
