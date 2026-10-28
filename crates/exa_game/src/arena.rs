@@ -30,18 +30,18 @@ pub struct MatchTemplate {
     pub flags: u32,
     pub min_rank: i32,
     pub max_rank: i32,
-    /// The template's rank preset at `+0x24`; −1 means unranked.
+    /// The template's rank preset; −1 means unranked.
     pub preset_rank: i32,
-    /// The secondary value at `+0x28`; scaled by the slot but not the cash.
+    /// The secondary value; scaled by the slot but not the cash.
     pub secondary: u32,
-    /// The raw packed base-12 cash prize at `+0x2c`.
+    /// The raw packed base-12 cash prize.
     pub cash: u32,
     pub teams: u32,
     /// Tournament only: total fighters.
     pub fighters: u32,
     /// Tournament only: rounds.
     pub rounds: u32,
-    /// The XP prize base at `+0x44`.
+    /// The XP prize base.
     pub xp: u32,
     /// The earliest week slot the template may take.
     pub min_slot: u32,
