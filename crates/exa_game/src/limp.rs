@@ -34,8 +34,8 @@ use exa_formats::rsq::{BoneBody, Clip};
 use exa_physics::CharacterBody;
 use exa_physics::body::locomotion::{LegMode, Locomotion, Locomotor};
 use exa_physics::body::{
-    Bearing, BodyStats, Drive, FootState, GoLimp, OutOfScene, PartSetup, Physical, PlacedCorpse,
-    RaceMuscles, Ragdoll, limp_plant, limp_pose_height, snap_part,
+    Bearing, BodyStats, Drive, FootState, GoLimp, PartSetup, Physical, PlacedCorpse, RaceMuscles,
+    Ragdoll, limp_plant, limp_pose_height, snap_part,
 };
 
 use crate::stages::CharacterTickPlugin;
@@ -46,10 +46,6 @@ impl Plugin for LimpPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Update, (build_bodies, go_limp).chain().after(AnimSystems))
             .add_systems(Update, pace_swings)
-            .add_systems(
-                FixedUpdate,
-                sample_limp_bodies.before(exa_physics::body::BodyPreStep),
-            )
             .add_plugins(CharacterTickPlugin);
     }
 }
@@ -252,9 +248,9 @@ fn go_limp(
         if let Some(velocity) = limp.velocity {
             body.set_velocity(velocity);
         }
-        // The body keeps its animator: a body without muscles still plays
-        // its clip, snapped onto the body by the muscles-off sampler.
-        commands.entity(root).remove::<(GoLimp, Physical)>();
+        commands
+            .entity(root)
+            .remove::<(GoLimp, Physical, Animator, TickedClips)>();
         if let Some(character) = parents
             .iter_ancestors(root)
             .find(|&a| controlled.contains(a))
@@ -269,26 +265,20 @@ fn go_limp(
 /// unsupported, non-locomoting branch).
 const LIMP_CLOCK: f32 = 0.9;
 
-/// The muscles-off sampler, one tick for every body that has no muscles
-/// and still has its clips (a corpse that fell from a living body): its
-/// clip clock runs at 0.9 of the race's base rate, its pose is sampled with
-/// the clip's full root travel, each part's particles snap to the pose on
-/// the character frame it had when its muscles went, the standing height
-/// eases 0.05 of its target a tick, and a foot plants where it is when the
-/// destination key's flag (and the source key's, under a half) asks.
-#[allow(clippy::type_complexity)]
-fn sample_limp_bodies(
-    motions: Option<Res<Motions>>,
-    mut bodies: Query<(&mut Animator, &mut Ragdoll), (With<TickedClips>, Without<OutOfScene>)>,
-) {
-    let Some(motions) = motions else { return };
-    for (mut anim, mut body) in &mut bodies {
-        sample_limp(&mut anim, &mut body, &motions);
-    }
-}
-
-/// One muscles-off body's sample (see [`sample_limp_bodies`]).
-pub(crate) fn sample_limp(anim: &mut Animator, body: &mut Ragdoll, motions: &Motions) {
+/// One tick of the muscles-off sampler for a body that has no muscles
+/// and still has its clip: its clip clock runs at 0.9 of the race's base
+/// rate, its pose is sampled with the clip's full root travel, each part's
+/// particles snap to the pose on the character frame it had when its
+/// muscles went, the standing height eases 0.05 of its target a tick, and
+/// a foot plants where it is when the destination key's flag (and the
+/// source key's, under a half) asks.
+///
+/// Not scheduled: the original's body tick runs it only for a body whose
+/// muscles are off and whose condition is not dead, and a dead body's tick
+/// returns before any sampling (its muscles go only as it dies, so a
+/// corpse is a free ragdoll). No Exarust body is in that state; snapping
+/// every limp body to its clip would freeze the dying in their last pose.
+pub fn sample_limp(anim: &mut Animator, body: &mut Ragdoll, motions: &Motions) {
     if body.drive.is_some() {
         return;
     }
@@ -789,8 +779,7 @@ pub(crate) fn bearing(
         off_feet: condition.off_feet(),
         progress: 0.0,
         idle: anim.action == "Idle",
-        // The movement decision's alignment of the pelvis with the heading
-        // (the original's `+0xa80`).
+        // The movement decision's alignment of the pelvis with the heading.
         align: locomotion.map_or(1.0, |(_, body)| body.align),
         // The sampler's head look sets it.
         head_looks: false,
