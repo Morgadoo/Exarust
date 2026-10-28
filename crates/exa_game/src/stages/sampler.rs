@@ -17,7 +17,8 @@
 //! 5. the clip chain ([`clip_chain`]): each part's placement from its
 //!    rest translation and posed turn under its parent's, the thorax
 //!    hunch on a pinned part's turn first ([`pitch_thorax`]);
-//! 6. the IK chain ([`ik_chain`]; C13, C19);
+//! 6. the IK chain ([`ik_chain`]): each leg's stored knee, hip and thigh
+//!    turn folded into the clip chain, its clip ankle recorded first;
 //! 7. the torso twist: the spine turned toward the look ([`spine`],
 //!    `exa_physics::body::locomotion::twist_spine`);
 //! 8. the head look ([`head_look`]; M8) and the foot pitch
