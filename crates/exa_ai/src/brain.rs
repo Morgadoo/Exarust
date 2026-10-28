@@ -1406,6 +1406,35 @@ pub fn idle_walk(
     }
 }
 
+/// Turns a brain's body as the scene takes it back
+/// ([`crate::presence::Entered`]): while its roam follows a route it faces
+/// the route's goal from where it stands, otherwise (and while collapsing)
+/// it keeps its facing ([`crate::presence::replace_placement`]). The
+/// original then moves the node and re-places the physics; Exarust's body
+/// stays where it is.
+pub fn face_entering(
+    mut entered: MessageReader<crate::presence::Entered>,
+    mut npcs: Query<(&Npc, &Condition, &GlobalTransform, &mut Transform)>,
+) {
+    for crate::presence::Entered(entity) in entered.read() {
+        let Ok((npc, condition, gt, mut t)) = npcs.get_mut(*entity) else {
+            continue;
+        };
+        let at_cm = gt.translation() * 100.0;
+        let placed = crate::presence::replace_placement(
+            crate::presence::Placement {
+                at_cm,
+                forward: t.rotation * Vec3::Z,
+            },
+            condition.0 & Condition::COLLAPSING.0 != 0,
+            at_cm,
+            npc.walk.route.last().copied(),
+            at_cm,
+        );
+        t.rotation = Quat::from_rotation_y(motion::yaw_of(placed.forward));
+    }
+}
+
 /// A key over the held role ids, so a brain applies its roles only when the
 /// set (or an order) changed: the original re-applies them when the dirty
 /// flag is set and the script lock is free.
@@ -1985,6 +2014,42 @@ mod tests {
         tick(&mut app);
         assert!(app.world().get::<Npc>(npc).unwrap().walk.route.is_empty());
         assert_eq!(app.world().get::<Animator>(npc).unwrap().action, "Idle");
+    }
+
+    /// A body the scene takes back mid-leg faces its route's goal; one
+    /// without a route keeps its facing.
+    #[test]
+    fn an_entering_walker_faces_its_route_goal() {
+        let mut app = App::new();
+        app.add_message::<crate::presence::Entered>()
+            .add_systems(Update, face_entering);
+        let mut walker = Npc::new([0.0; 4]);
+        walker.walk.route = vec![Vec3::ZERO, Vec3::new(500.0, 0.0, 0.0)];
+        let a = app
+            .world_mut()
+            .spawn((
+                walker,
+                Condition::NORMAL,
+                GlobalTransform::IDENTITY,
+                Transform::default(),
+            ))
+            .id();
+        let b = app
+            .world_mut()
+            .spawn((
+                Npc::new([0.0; 4]),
+                Condition::NORMAL,
+                GlobalTransform::IDENTITY,
+                Transform::default(),
+            ))
+            .id();
+        app.world_mut().write_message(crate::presence::Entered(a));
+        app.world_mut().write_message(crate::presence::Entered(b));
+        app.update();
+        let facing = app.world().get::<Transform>(a).unwrap().rotation * Vec3::Z;
+        assert!((facing - Vec3::X).length() < 1e-5, "{facing:?}");
+        let kept = app.world().get::<Transform>(b).unwrap().rotation * Vec3::Z;
+        assert!((kept - Vec3::Z).length() < 1e-5, "{kept:?}");
     }
 
     /// A brain the target pass put at level 4 runs out of its room: it

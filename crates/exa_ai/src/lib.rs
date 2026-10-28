@@ -85,6 +85,7 @@ impl Plugin for AiPlugin {
                     brain::ai_tick,
                     duellist.in_set(DuelSystems),
                     brain::flee_walk,
+                    brain::face_entering,
                     brain::idle_walk,
                 )
                     .chain(),
