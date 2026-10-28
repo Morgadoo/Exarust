@@ -169,7 +169,8 @@ to a live load; the level loader still keeps its own scene model rather than
 the exporter's, so exporting the current level into a save waits for the RFC
 to export-scene conversion; see `docs/formats/SAVES.md` (Level transitions).
 The scene side of the load is `save_scene`: the three entry points (save
-section or `<locale>.rfc`, by name, arena), the import order with the
+section or `<locale>.rfc`, by name, arena) as plans and as `load_level`
+(which imports the chosen copy), the import order with the
 terrain probe and the node, sector and grid-environment passes, the game
 scene's creation constants, the menu background scene's load, the GUI reset
 and the player's node set-up and spawn. The migration pass now keeps only

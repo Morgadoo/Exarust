@@ -298,6 +298,36 @@ fn read_settings(section: &[u8]) -> Option<exa_formats::save_chunk::SaveSettings
     ))
 }
 
+/// A level that an entry point opened and imported.
+#[derive(Debug, Clone)]
+pub struct LoadedLevel {
+    pub plan: SceneLoadPlan,
+    pub import: LevelImport,
+}
+
+/// Opens and imports a level for one of the three entry points: the plan
+/// chooses the save's section or the archive's file, the import runs on the
+/// chosen bytes with the locale for the terrain probe. The caller supplies
+/// the bytes it read (the save's section and the archive's `<locale>.rfc`);
+/// `None` when the chosen copy is not there or the plan refuses the load.
+pub fn load_level(
+    kind: SceneLoadKind,
+    locale: &str,
+    locale_id: u32,
+    save_section: Option<&[u8]>,
+    archive: Option<&[u8]>,
+    terrain: Option<&[u8]>,
+    arena_present: bool,
+) -> Option<LoadedLevel> {
+    let plan = scene_load_plan(kind, locale_id, save_section.is_some(), archive.is_some())?;
+    let bytes = match plan.origin {
+        LevelOrigin::SaveSection => save_section?,
+        LevelOrigin::Archive => archive?,
+    };
+    let import = import_level(bytes, locale, terrain, arena_present);
+    Some(LoadedLevel { plan, import })
+}
+
 /// The values the game scene is created with, before any level is loaded:
 /// the scene's own flag word, the sound-slot count the original stores, the
 /// editor's (empty) name, the two node-manager flags, the scene
@@ -716,6 +746,79 @@ mod tests {
         assert_eq!(import.terrain.as_ref().unwrap().palette, "pal0");
         assert!(!import.arena_terrain_missing);
         assert!(!import.steps.contains(&ImportStep::ArenaTerrainMissing));
+    }
+
+    #[test]
+    fn the_entry_points_open_the_chosen_copy_and_import_it() {
+        let section = one_node_section();
+        let archive = one_node_section();
+        // A save load with the section offered: the save's copy is
+        // imported, the archive's is not consulted.
+        let loaded = load_level(
+            SceneLoadKind::SaveOrArchive,
+            "exanima04",
+            27,
+            Some(&section),
+            Some(&archive),
+            None,
+            false,
+        )
+        .unwrap();
+        assert_eq!(loaded.plan.origin, LevelOrigin::SaveSection);
+        assert!(loaded.import.imported);
+        // Without the section the archive is imported.
+        let loaded = load_level(
+            SceneLoadKind::SaveOrArchive,
+            "exanima04",
+            27,
+            None,
+            Some(&archive),
+            None,
+            false,
+        )
+        .unwrap();
+        assert_eq!(loaded.plan.origin, LevelOrigin::Archive);
+        assert!(loaded.import.imported);
+        // A named level ignores an offered save section.
+        let loaded = load_level(
+            SceneLoadKind::NamedLevel,
+            "arenao1",
+            9,
+            Some(&section),
+            Some(&archive),
+            None,
+            true,
+        )
+        .unwrap();
+        assert_eq!(loaded.plan.origin, LevelOrigin::Archive);
+        assert!(loaded.plan.gui_reset && loaded.plan.sun_mode_auto);
+        assert_eq!(loaded.import.terrain_name, "arenao1.rft");
+        assert!(loaded.import.arena_terrain_missing);
+        // Nothing to open at all.
+        assert!(
+            load_level(
+                SceneLoadKind::SaveOrArchive,
+                "exanima04",
+                27,
+                None,
+                None,
+                None,
+                false
+            )
+            .is_none()
+        );
+        // A copy that does not parse is reported, not panicked on.
+        let broken = load_level(
+            SceneLoadKind::NamedLevel,
+            "exanima04",
+            27,
+            None,
+            Some(b"not a level"),
+            None,
+            false,
+        )
+        .unwrap();
+        assert!(!broken.import.imported);
     }
 
     #[test]

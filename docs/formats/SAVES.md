@@ -595,8 +595,9 @@ forced transition locale), the character screen's load
 order), checked save, checkpoint (`checkpoint_full`), death, delete,
 legacy removal and transition save (`transition_save_full`).
 [`exa_game::save_scene`](../../crates/exa_game/src/save_scene.rs) holds the
-three scene-load entry points, the import order, the game scene's constants,
-the menu scene's load, the GUI reset and the player's node set-up and spawn;
+three scene-load entry points (`scene_load_plan` and `load_level`), the
+import order, the game scene's constants, the menu scene's load, the GUI
+reset and the player's node set-up and spawn;
 [`exa_game::save_kit`](../../crates/exa_game/src/save_kit.rs) the practice
 and arena fighters' two kit passes and their scene preparation, and
 [`exa_game::level_transition`](../../crates/exa_game/src/level_transition.rs)
