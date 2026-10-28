@@ -272,6 +272,32 @@ mod tests {
         assert_eq!(t.height(1.0, 1.0), Some(7.0));
     }
 
+    /// The sum order is the instruction order (the +X corner added to the
+    /// low corner, then +Z, then the high corner), not a mathematically
+    /// equal one: with these corners the reverse order differs in the last
+    /// bit.
+    #[test]
+    fn the_corner_products_sum_in_the_instruction_order() {
+        let mut t = tile(0, 0, vec![0.0; TILE_VERTICES * TILE_VERTICES]);
+        let at = |i: usize, j: usize| j * TILE_VERTICES + i;
+        t.heights[at(0, 0)] = 1.0;
+        t.heights[at(1, 0)] = 1.0;
+        t.heights[at(0, 1)] = 1.0;
+        t.heights[at(1, 1)] = 10_000_000.0;
+        let (fu, fv) = (0.1f32, 0.1f32);
+        let h = t.height(fu, fv).unwrap();
+        let ordered = 1.0 * fu * (1.0 - fv)
+            + 1.0 * (1.0 - fu) * (1.0 - fv)
+            + 1.0 * (1.0 - fu) * fv
+            + 10_000_000.0 * fu * fv;
+        let reverse = 10_000_000.0 * fu * fv
+            + 1.0 * (1.0 - fu) * fv
+            + 1.0 * fu * (1.0 - fv)
+            + 1.0 * (1.0 - fu) * (1.0 - fv);
+        assert_ne!(ordered.to_bits(), reverse.to_bits());
+        assert_eq!(h.to_bits(), ordered.to_bits());
+    }
+
     #[test]
     fn holes_and_the_two_by_two_dilation() {
         let mut t = tile(0, 0, sloped(0.0, 0.0, 0.0));

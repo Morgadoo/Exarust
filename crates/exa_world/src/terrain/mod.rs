@@ -10,11 +10,14 @@
 //! per-tile splat texture, one texel per vertex. A tile's geometry and masks
 //! are built on the async compute pool, as the original's terrain worker
 //! does them; [`patch`] is the original's shared triangle list, [`ground`]
-//! its world height query, and [`stream`] its streaming decisions.
+//! its world height query, [`stream`] its streaming decisions and tile bits,
+//! [`composite`] its per-block texture sets, passes and selection, and
+//! [`wireframe`] its debug wireframe overlay.
 
 pub mod manager;
 
 pub mod blend;
+pub mod composite;
 pub mod frame;
 pub mod ground;
 pub mod height;
@@ -22,6 +25,7 @@ pub mod patch;
 pub mod plugins;
 pub mod stream;
 pub mod vegetation;
+pub mod wireframe;
 
 use bevy::asset::{AssetPath, RenderAssetUsages, embedded_asset, embedded_path};
 use bevy::mesh::{Indices, PrimitiveTopology};
@@ -193,12 +197,16 @@ pub struct SplatParams {
     /// The GI volume's lowest corner and size (metres).
     pub gi_origin: Vec4,
     pub gi_extent: Vec4,
+    /// The palette's wet-floor source ([`exa_formats::terrain::Palette::wetness`]).
+    /// Non-zero only turns the wet-floor flag on; the shader reads no value.
+    pub wetness: f32,
     /// [`terrain_flags`].
     pub flags: u32,
     /// Layers in use.
     pub layers: u32,
     pub pad1: u32,
     pub pad2: u32,
+    pub pad3: u32,
 }
 
 /// Which optional inputs a terrain material has.
@@ -210,6 +218,9 @@ pub mod terrain_flags {
     /// The frame is supersampled: each sub-frame takes its share of the
     /// shadow and GI taps (`exa_render::supersample::SplitTaps`).
     pub const SPLIT_TAPS: u32 = 8;
+    /// The palette's wet-floor source is above 0.4 (the sewer): the lit
+    /// program's wet-floor gloss term applies.
+    pub const WET_FLOOR: u32 = 16;
 }
 
 impl exa_render::supersample::SplitTapsFlag for TerrainMaterial {
@@ -658,6 +669,20 @@ pub struct TerrainBuild {
     /// Each tile's ground, shared with the navigation grid and the world
     /// height query.
     grounds: Vec<Option<Arc<ground::GroundTile>>>,
+    /// The original's composite pools, sized from the texture-detail
+    /// setting at load. Exarust layers the materials per pixel, so no set is
+    /// taken; the pool keeps the original's counts, levels and sizes.
+    composite: composite::CompositePools,
+    /// Whether the palette's detail texture exists. The original tries to
+    /// load it once and never samples it; the shipped install has no such
+    /// entry.
+    detail_texture: bool,
+    /// Each tile's streaming bits, as the original's worker and frame hook
+    /// keep them. The loading screen inserts every tile as it finishes, so
+    /// the frame hook itself has no work after a load.
+    stream: stream::TerrainStream,
+    /// The wireframe overlay's material, when `EXA_TERRAIN_WIRE` is set.
+    wireframe: Option<Handle<exa_render::material::ExaMaterial>>,
     /// Whether the world height query has been given to the world.
     ground_inserted: bool,
     next: usize,
@@ -798,6 +823,16 @@ impl TerrainBuild {
         let layer_sampler = loader.images.add(layer_sampler_image());
         let plants = Plants::load(loader, &palette);
         let tile_count = terrain.tiles.len();
+        let detail_texture = loader.game.texture("trndtl01d").is_some();
+        let wireframe = std::env::var_os("EXA_TERRAIN_WIRE").map(|_| {
+            loader.materials.add(exa_render::material::ExaMaterial {
+                params: exa_render::material::ExaParams {
+                    diffuse: Vec4::new(1.0, 0.55, 0.1, 1.0),
+                    ..default()
+                },
+                ..default()
+            })
+        });
         // The tile worker decodes height and mask planes itself; copy their
         // bytes now, while the install is at hand.
         let mut texture_bytes = HashMap::new();
@@ -829,6 +864,13 @@ impl TerrainBuild {
             built: None,
             blocks,
             grounds: vec![None; tile_count],
+            composite: composite::CompositePools::new(
+                composite::detail_size(manager::ManagerSettings::DEFAULT.texture_detail),
+                composite::CompositeFeatures::default(),
+            ),
+            detail_texture,
+            stream: stream::TerrainStream::new(vec![stream::TileStream::raw(); tile_count]),
+            wireframe,
             ground_inserted: false,
             next: 0,
             parent,
@@ -853,6 +895,22 @@ impl TerrainBuild {
     /// What the terrain spawned so far.
     pub fn stats(&self) -> &TerrainStats {
         &self.stats
+    }
+
+    /// The composite set pool the original sizes at load.
+    pub fn composite_pools(&self) -> &composite::CompositePools {
+        &self.composite
+    }
+
+    /// Whether the palette's detail texture is installed. The original loads
+    /// it once; no pass samples it.
+    pub fn detail_texture_loaded(&self) -> bool {
+        self.detail_texture
+    }
+
+    /// Each tile's streaming bits.
+    pub fn stream(&self) -> &stream::TerrainStream {
+        &self.stream
     }
 
     /// Does parts of the terrain until `budget` has passed (at least one);
@@ -956,6 +1014,7 @@ impl TerrainBuild {
                 }
             };
             self.built = Some(built);
+            self.stream.tiles[self.next].mark_built(false);
             // The worker goes straight on to the next tile while this one's
             // textures load and it spawns.
             if AsyncComputeTaskPool::try_get().is_some()
@@ -1029,6 +1088,10 @@ impl TerrainBuild {
             ..default()
         };
         splat.params.layers = built.materials.len() as u32;
+        splat.params.wetness = self.palette.wetness;
+        if self.palette.wetness > composite::WET_FLOOR_THRESHOLD {
+            splat.params.flags |= terrain_flags::WET_FLOOR;
+        }
         if splat.environment.is_some() {
             splat.params.flags |= terrain_flags::ENVIRONMENT;
         }
@@ -1080,6 +1143,7 @@ impl TerrainBuild {
             exa_render::lights::ShadowBias(exa_render::shadow_bias::FLOOR),
         );
         let tile_size = self.terrain.spacing * (TILE_VERTICES - 1) as f32;
+        let wireframe = self.wireframe.clone();
         for block in std::mem::take(&mut built.blocks) {
             let record = TerrainBlock {
                 bx: block.bx as u32,
@@ -1088,6 +1152,10 @@ impl TerrainBuild {
                 room: block.room,
             };
             let bounds = record.bounds(tile_size, Vec3::ZERO);
+            let overlay = wireframe.as_ref().and_then(|material| {
+                wireframe::overlay_mesh(&block.mesh)
+                    .map(|mesh| (loader.meshes.add(mesh), material.clone()))
+            });
             let part = commands
                 .spawn((
                     Name::new(format!(
@@ -1106,6 +1174,18 @@ impl TerrainBuild {
                 .id();
             if let Some(room) = block.room {
                 commands.entity(part).insert(InRoom(room));
+            }
+            if let Some((mesh, material)) = overlay {
+                commands.spawn((
+                    wireframe::WireframeOverlay,
+                    Mesh3d(mesh),
+                    MeshMaterial3d(material),
+                    exa_physics::NoStaticCollider,
+                    bevy::light::NotShadowCaster,
+                    Transform::IDENTITY,
+                    Visibility::default(),
+                    ChildOf(part),
+                ));
             }
         }
         // The navigation grid reads the ground of the blocks built here,
@@ -1131,6 +1211,7 @@ impl TerrainBuild {
             );
         }
         self.grounds[slot] = Some(ground);
+        self.stream.tiles[slot].mark_inserted();
         self.stats.tiles += 1;
         self.built = None;
         self.next += 1;
@@ -1268,6 +1349,16 @@ struct Look {
     /// Parallax height base, reference and scale (f20, f21, f22).
     parallax: [f32; 3],
     tiling: f32,
+    /// The cover strength (f9): how strongly a masked layer hides what is
+    /// below, and the colour pass's alpha.
+    cover: f32,
+    /// The height pass's base, reference and scale (f16, f17, f18).
+    height: [f32; 3],
+    /// The mask pass's colour (f12, f13, f14).
+    mask_colour: [f32; 3],
+    /// The texture repeats per tile before [`UV_PER_METRE`] (f0, or 1 when
+    /// not positive).
+    tile: f32,
 }
 
 impl Look {
@@ -1289,6 +1380,10 @@ impl Look {
             gloss: p(10, 0.25) * gain,
             parallax: [p(20, 0.5), p(21, 0.5), p(22, 1.0)],
             tiling: tile * UV_PER_METRE,
+            cover,
+            height: [p(16, 0.5), p(17, 0.5), p(18, 0.5)],
+            mask_colour: [p(12, 0.0), p(13, 0.0), p(14, 0.0)],
+            tile,
         }
     }
 }
@@ -2052,6 +2147,23 @@ mod tests {
         assert!(materials > 100, "{materials}");
     }
 
+    /// The detail texture the original loads once parses as an image (its
+    /// handle is never read again by the terrain draw; skipped without the
+    /// game).
+    #[test]
+    fn shipped_detail_texture_parses() {
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let game = exa_assets::GameData::open(&dir).unwrap();
+        let Some(bytes) = game.texture("trndtl01d") else {
+            return;
+        };
+        let rfi = Rfi::parse(bytes).unwrap();
+        assert!(rfi.header.width > 0 && rfi.header.height > 0);
+        assert!(rfi.decode_rgba8().is_ok());
+    }
+
     /// The palette's two header floats: every shipped palette is dry but
     /// the sewer, whose wet-floor source is 0.5 (skipped without the game).
     #[test]
@@ -2200,7 +2312,7 @@ mod build_tests {
             images: &mut images,
             bc_supported: true,
         };
-        let stats = {
+        let (stats, pools, stream, detail) = {
             let mut commands = Commands::new(&mut queue, &world);
             let started = std::time::Instant::now();
             let mut build = TerrainBuild::begin(&mut loader, "exanima01", root, None).unwrap();
@@ -2215,11 +2327,32 @@ mod build_tests {
                 steps,
                 started.elapsed().as_secs_f32()
             );
-            build.stats().clone()
+            (
+                build.stats().clone(),
+                build.composite_pools().clone(),
+                build.stream().clone(),
+                build.detail_texture_loaded(),
+            )
         };
         queue.apply(&mut world);
         assert_eq!(stats.tiles, 20);
         assert!(stats.plants > 0);
+        // The original's composite pools are sized at the default texture
+        // detail (8192): 21 sets at level 5 (1024²) and 43 at level 4
+        // (512²). The detail texture is optional: the shipped install has no
+        // `trndtl01d`, and no pass reads its handle either way.
+        let _ = detail;
+        assert_eq!((pools.high_level(), pools.low_level()), (5, 4));
+        assert_eq!((pools.high_free(), pools.low_free()), (21, 43));
+        // Every tile went through the reader, the worker and insertion.
+        assert!(stream.tiles.iter().all(|t| t.state & 0x80 != 0));
+        // Inserted, they stay in the frame hook's walk with nothing to do.
+        assert!(
+            stream
+                .tiles
+                .iter()
+                .all(|t| t.state & 0x800 != 0 && t.action() == stream::TileAction::None)
+        );
         assert!(world.get_resource::<ground::TerrainGround>().is_some());
         let ground = world.get_resource::<ground::TerrainGround>().unwrap();
         assert!(ground.height(0.0, 0.0).is_some());

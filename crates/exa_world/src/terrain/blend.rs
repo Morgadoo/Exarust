@@ -729,6 +729,20 @@ mod tests {
     }
 
     #[test]
+    fn the_terrain_init_kernel_is_the_radius_120_gaussian() {
+        // The compositor's init builds the blur kernel at radius 120: 241
+        // entries, mirrored, normalised, sigma 40.
+        let k = gaussian_kernel(120);
+        assert_eq!(k.len(), 241);
+        for i in 0..120 {
+            assert_eq!(k[i], k[240 - i]);
+        }
+        assert!((k.iter().sum::<f32>() - 1.0).abs() < 1e-5);
+        assert!(k[120] > k[0]);
+        assert_eq!(expand_kernel(&k)[120], [k[120]; 4]);
+    }
+
+    #[test]
     fn a_material_mask_merges_into_the_running_weight() {
         let mut weights = vec![100.0, 0.0];
         let mut mask = vec![100u8, 255];

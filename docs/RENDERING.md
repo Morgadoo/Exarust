@@ -533,14 +533,26 @@ layers that do not cover the pixel:
   program's roughness is `1 − min(G + 8c², 0.85)`, with
   `c = max((y + 35)·−0.03, 0)²·n.y` and y in world centimetres, so the
   gloss is capped at 0.85 and ground below −35 cm grows glossier. Exarust
-  reads the float (`Palette::wetness`) but does not apply the term: that
-  the palette's float reaches the draw's environment is inferred, not
-  traced.
+  reads the float into `Palette::wetness`, sets the `WET_FLOOR` flag above
+  0.4 and applies the term in `terrain.wesl`; `terrain::composite`'s
+  `wet_floor_gloss` is the tested model of it.
+- The composite's set sizes, pools, passes, program keys, per-layer values,
+  quads, `TexPos` and block selection are modelled in
+  `terrain::composite` (below); Exarust's per-pixel path produces the same
+  layer stacking without baking the sets.
 
 The original's composites hold about 170 texels per metre and have no mip
 levels, so its terrain always shows the layers' full detail. Exarust reads
 the colour and normal layers at their base level and lets supersampling
-smooth the aliasing.
+smooth the aliasing. `terrain::composite` keeps the compositor's own
+numbers: a high set is 1024² (colour RGB8, normal RG8, gloss R8) with a 512²
+parallax target at the default texture detail, a low set 512² with a 256²
+parallax target, 21 high and 43 low sets, four layers a pass with additive
+groups, the program key's textured/masked/`AddPass`/`BaseNrm` bits, the
+per-layer colour/gloss/height/displacement/mask values, the block's palette
+and mask quads, its `TexPos`, and the selection's cut-offs, sort keys, set
+stealing and one-block-a-frame rule. Exarust has no offscreen sets because
+the per-pixel shader reproduces their content.
 
 **Geometry.** A tile is a 241 × 241 vertex grid over 240 × 240 cells of
 20 cm, and the original draws it as one terrain mesh per 6 m block: a
@@ -569,10 +581,18 @@ Composites are chosen around the camera moved 10 m along its view and
 snapped to a 6 m block centre: blocks within 44.4 m get one, those within
 15 m a high-resolution set, from pools of 21 high and 43 low sets (at most
 189 blocks in the list). Terrain plugins gather the 3 × 3 tiles around one,
-missing tiles as an empty placeholder. Exarust builds and inserts every
-tile behind its loading screen and then evaluates the composite per pixel,
-as the original's "block until every tile is loaded" does at the end of a
-load (`terrain::stream` holds the three rules, pinned by tests).
+missing tiles as an empty placeholder. The worker marks a finished tile
+`(state & ~0x10) | 0x828` in the reader's state. The hook walks the tiles
+with the stream bit `0x800` (nothing clears it): a ready, inserted tile
+(`0xa0`) has its blocks marked wanted, and the first tile with work is
+handled and ends the walk (a reload bit `0x1000` unloads it, the insert test
+is `(state & 0x309f) == 0xf`, and an upload is `(state & 0x4080) ==
+0x4080`); tiles with no work are passed. A refresh pass detaches a tile and
+bumps the delay counter, during which frames only count down. Exarust builds and inserts every tile behind its loading
+screen and then evaluates the composite per pixel; `terrain::stream` keeps
+the tile bits and the one-tile frame hook as a tested model, and
+`terrain::wireframe` draws a block's edges as lines when `EXA_TERRAIN_WIRE`
+is set (the original's debug wireframe hook).
 
 **Height query** (`TerrainGround`): the original's ground slot floors the
 tile coordinate `width/2 + x/48 m`, takes tile slot `tz · width + tx`
