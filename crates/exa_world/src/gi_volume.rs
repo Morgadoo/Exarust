@@ -287,11 +287,17 @@ impl GiBlockLayout {
         let (w, h) = (self.grid.0 as f32, self.grid.1 as f32);
         let below = -(block.origin.y / VOXEL).round();
         let depth = block.depth.max(1) as f32;
+        // The cell difference is taken in single precision, then scaled by
+        // 30/256 and lifted by half a texture in double and rounded once,
+        // as the original does.
+        let centre = |half: f32, cell: i32| -> f32 {
+            (f64::from((half - cell as f32) - 4.0) * (30.0 / 256.0) + 0.5) as f32
+        };
         GiSample {
             offset: Vec3::new(
-                ((w * 0.5 - block.sector.x as f32) - 4.0) * (30.0 / 256.0) + 0.5,
+                centre(w * 0.5, block.sector.x),
                 (below + if half_voxel { 0.5 } else { 0.0 }) / depth,
-                ((h * 0.5 - block.sector.y as f32) - 4.0) * (30.0 / 256.0) + 0.5,
+                centre(h * 0.5, block.sector.y),
             ),
             scale: Vec3::new(1.0 / 5120.0, 1.0 / (depth * 20.0), 1.0 / 5120.0),
         }

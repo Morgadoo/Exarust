@@ -1370,14 +1370,18 @@ its width, at the slice's middle ((slice + 0.5)/width), as the original's
   open · cube shadow · shaping. The point light's uniforms are the
   original's `Light[3i..3i+2]`: the position in texture units with 1/(R·s)
   in w, then the colour with the cube lookup's depth scale in w, then the
-  shaping. The cube lookup is the cached shadow pool's linear depth
+  shaping (Exarust packs it in x, y, z with the sun flag in w; the original
+  keeps it in y, z, w). The cube lookup is the cached shadow pool's linear depth
   compared against d·(bias + 0.94)/R + 0.01 along (the point − the light),
   the scale worked out in double precision (((bias + 0.94)/far) × 5120).
   The bias is the shadow detail plus the light record's own quality offset
   (0, +1, −1 or −2), capped at 6, times 0.005, or 0.025 above 5: the
   retail setting's detail 5 gives 0.025, so the compare is d·0.965/R (q = 4
-  gives 0.02). A light without its range flag has the 3.4e38 far plane, so its
-  lookup is unshadowed. The original binds light i's cube map to its
+  gives 0.02). A light without its range flag has the 3.4e38 far plane, so
+  its compare value stays at 0.01 and, against Exarust's distance / R
+  faces, its lookup is lit [guess: the original draws its faces against the
+  same far plane, so they hold ≈ 0 and its unranged taps would be shadowed
+  wherever geometry is; not confirmed in a running game]. The original binds light i's cube map to its
   own `Shadow<i>` sampler; Exarust's shared pool carries the slot instead;
 - the sun joins each drawn sector's group first and adds
   lin(colour)·intensity·3·0.3·0.01 · visibility · open (the manager's sun

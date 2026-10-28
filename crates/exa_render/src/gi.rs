@@ -281,9 +281,12 @@ pub fn gi_shadow_bias(offset: i32) -> f32 {
 }
 
 /// Whether the light's range flag is on (with a positive radius). An unranged
-/// light floods with unlimited reach and injects over its stored radius, but
-/// the GI leaves its cube lookup unshadowed: the original's shadow far plane
-/// is then 3.4e38 instead of the radius.
+/// light floods with unlimited reach and injects over its stored radius; its
+/// record's shadow far plane is then 3.4e38 instead of the radius, which the
+/// GI's cube lookup scale divides by. [guess: the original's cube faces are
+/// drawn against the same far plane and hold ≈ 0, so its unranged taps would
+/// be shadowed wherever geometry is; Exarust's faces hold distance / R, so
+/// here the tiny scale leaves them lit.]
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct GiRanged(pub bool);
 
@@ -731,7 +734,9 @@ struct GiLight {
     /// ((bias + 0.94)/R × 5120, the original's 5120 = 256 × 20 cm).
     colour_shadow: Vec4,
     /// x, y: vertical shaping (y, z); z: 1/(2^z − 1); w: 0 for a point
-    /// light and 1 for the sun.
+    /// light and 1 for the sun. The original keeps the shaping one lane up
+    /// (y, z, w of `Light[3i+2]`, x unwritten) and splits the sun into its
+    /// own program branch.
     shaping: Vec4,
 }
 
@@ -805,7 +810,7 @@ pub const GI_SUN_SOFTNESS: f32 = 1600.0;
 /// Light ranges are 1.25 radii; the volume falls off over one radius.
 const REACH: f32 = 1.25;
 /// The shadow far plane an unranged light's record holds, 3.4e38, as the
-/// original has it (an unranged light's GI cube lookup never shades).
+/// original has it (see [`GiRanged`] for what the GI lookup makes of it).
 const UNRANGED_FAR: u32 = 0x7f7f_c99e;
 /// A voxel light's colour per unit of √intensity (the original's linear
 /// workflow; 0.6 on its legacy path).
@@ -1356,8 +1361,8 @@ impl LightSource {
     /// `((bias + 0.94) / far) × 5120`, worked out in double precision
     /// and stored as a float. `far` is the light's radius in centimetres
     /// when its range is on, else the 3.4e38 the record holds, so an
-    /// unranged light's compare value stays at the 0.01 bias and its taps
-    /// are always lit.
+    /// unranged light's compare value stays at the 0.01 bias (against
+    /// Exarust's distance / R faces its taps are lit; see [`GiRanged`]).
     fn cube_shadow_scale(&self) -> f32 {
         let far = if self.ranged {
             f64::from(self.radius * CM_PER_M)
@@ -2833,5 +2838,41 @@ mod tests {
         // The whole uniform block fits wgpu's default 64 KiB binding.
         let size = <GiParams as ShaderType>::min_size().get();
         assert!(size > 0 && size <= 64 * 1024, "{size} bytes");
+    }
+
+    /// The CPU's uniform structs are exactly as large as the shader's, so
+    /// the binding is neither short (a validation error on every GI frame)
+    /// nor read at shifted offsets.
+    #[test]
+    fn the_gi_uniforms_match_the_shaders_layout() {
+        let module =
+            naga::front::wgsl::parse_str(include_str!("gi.wesl")).expect("gi.wesl parses as WGSL");
+        let mut layouter = naga::proc::Layouter::default();
+        layouter.update(module.to_ctx()).expect("gi.wesl lays out");
+        let size_of = |name: &str| {
+            let (handle, _) = module
+                .types
+                .iter()
+                .find(|(_, ty)| ty.name.as_deref() == Some(name))
+                .unwrap_or_else(|| panic!("{name} is in gi.wesl"));
+            u64::from(layouter[handle].size)
+        };
+        assert_eq!(size_of("GiLight"), 48);
+        assert_eq!(
+            size_of("GiLight"),
+            <GiLight as ShaderType>::min_size().get()
+        );
+        assert_eq!(
+            size_of("GiVoxelLight"),
+            <GiVoxelLight as ShaderType>::min_size().get()
+        );
+        assert_eq!(
+            size_of("GiGroup"),
+            <GiGroupUniform as ShaderType>::min_size().get()
+        );
+        assert_eq!(
+            size_of("GiParams"),
+            <GiParams as ShaderType>::min_size().get()
+        );
     }
 }

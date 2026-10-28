@@ -955,7 +955,7 @@ pub fn light_bundle(
         // The GI's cube lookup scales the receiver's distance by
         // bias + 0.94 over the radius; the bias is the shadow detail plus
         // the light's own offset, and an unranged light's far plane is
-        // 3.4e38 (no shade).
+        // 3.4e38 (see `GiRanged`).
         exa_render::gi::GiShadowBias(exa_render::gi::gi_shadow_bias(
             light_source::shadow_quality_offset(light.flags),
         )),
