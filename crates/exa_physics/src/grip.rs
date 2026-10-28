@@ -596,7 +596,9 @@ impl GripLinks {
         let current = |links: &GripLinks, i: usize| -> Option<f32> {
             link_distance(links.links.get(i)?, item, hand)
         };
-        let mut applied = mode;
+        // The setter stores the requested mode; the callback's half-sword
+        // turn of mode 2 into 1 is local to the callback.
+        let requested = mode;
         match kind {
             GripKind::TwoHanded => {
                 let (Some(second), Some(arm), Some(extra)) = (self.second, self.arm, self.extra)
@@ -614,7 +616,6 @@ impl GripLinks {
                 } else {
                     mode
                 };
-                applied = mode;
                 match mode {
                     0 => {
                         self.links[second].disable();
@@ -680,7 +681,7 @@ impl GripLinks {
             }
             GripKind::Other => {}
         }
-        self.mode = applied;
+        self.mode = requested;
         if kind != GripKind::Other {
             self.relaxing = true;
         }
@@ -990,10 +991,14 @@ mod tests {
         assert!(links.apply_mode(3, GripKind::TwoHanded, 1.0, false, false, &item, &hand));
         assert!(links.links[2].enabled());
         assert!(!links.links[0].enabled());
-        // A half-sword thrust turns mode 2 into 1.
+        // A half-sword thrust turns mode 2 into 1 inside the callback; the
+        // stored mode stays the requested 2, so asking again does nothing.
         assert!(links.apply_mode(2, GripKind::TwoHanded, 1.0, true, true, &item, &hand));
-        assert_eq!(links.mode, 1);
+        assert_eq!(links.mode, 2);
         assert!(links.links[0].enabled());
+        links.links[0].disable();
+        assert!(links.apply_mode(2, GripKind::TwoHanded, 1.0, true, true, &item, &hand));
+        assert!(!links.links[0].enabled());
     }
 
     #[test]
