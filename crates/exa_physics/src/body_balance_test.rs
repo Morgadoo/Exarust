@@ -786,3 +786,61 @@ fn the_reset_heading() {
     assert_eq!(h, Vec2::ZERO);
     assert_eq!(super::reset_heading(Vec3::ZERO, Vec3::ZERO), Vec2::ZERO);
 }
+
+/// A walking foot that trails its animated spot by 30 cm at the start of
+/// the clip: the late-foot swing flag (0x10) is set (its threshold is 25 cm
+/// at a walk), and the push factor falls to (1 − (30/60)²)² on each leg.
+/// A foot only 10 cm behind stays under the threshold.
+#[test]
+fn the_late_walking_foot_swings_and_cuts_the_push() {
+    let floor = floor();
+    let mut body = biped();
+    body.measure_balance(&floor[..]);
+    body.set_bearing(Bearing {
+        moving: true,
+        walking: true,
+        facing: Vec3::Z,
+        align: 1.0,
+        ..Bearing::default()
+    });
+    body.measure_balance(&floor[..]);
+    assert_eq!(drive(&body).bearing.lag, 1.0);
+    for leg in body.legs.iter() {
+        assert!(!leg.state.has(FootState::LIFTED), "planted, not swinging");
+    }
+    let shins: Vec<usize> = body.legs.iter().map(|l| l.shin).collect();
+    for &shin in &shins {
+        for x in &mut body.parts[shin].positions {
+            *x -= Vec3::Z * 0.1;
+        }
+    }
+    body.measure_balance(&floor[..]);
+    for leg in body.legs.iter() {
+        assert!(!leg.state.has(FootState::LIFTED), "10 cm is under 25");
+    }
+    let one = 1.0 - (10.0f32 / 60.0).powi(2);
+    assert!((drive(&body).bearing.lag - one * one).abs() < 1e-5);
+    for &shin in &shins {
+        for x in &mut body.parts[shin].positions {
+            *x -= Vec3::Z * 0.2;
+        }
+    }
+    body.measure_balance(&floor[..]);
+    // Only a foot that touches gets the swing flag: a foot in the air is
+    // already the gait's swing, and its flag is cleared.
+    assert!(
+        body.legs
+            .iter()
+            .any(|l| l.state.has(FootState::TOUCHING) && l.state.has(FootState::LIFTED)),
+        "the late touching foot swings"
+    );
+    for leg in body
+        .legs
+        .iter()
+        .filter(|l| l.state.has(FootState::TOUCHING))
+    {
+        assert!(leg.state.has(FootState::LIFTED), "30 cm is over 25");
+    }
+    let half = 1.0 - (30.0f32 / 60.0).powi(2);
+    assert!((drive(&body).bearing.lag - half * half).abs() < 1e-5);
+}

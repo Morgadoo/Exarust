@@ -40,6 +40,7 @@ use super::feet::{self, FootState};
 use super::steps::{self, Plan};
 use super::{CM, Part, PartSetup, Ragdoll, weights};
 use crate::contact::Level;
+use crate::engine_math;
 
 /// The chest's velocity follows its motion by these shares a tick: fast
 /// and slow.
@@ -118,6 +119,12 @@ const GET_UP_SUPPORT: f32 = 0.5;
 /// The sole height is the depth of the foot's box under its origin less
 /// this (cm).
 const SOLE_INSET: f32 = 0.5;
+/// A walking foot's swing clearance decays by this (cm) a tick while it
+/// touches the ground (in double precision).
+const SWING_DECAY: f64 = 0.3;
+/// A run blend under this (compared in double) makes the late foot's
+/// swing threshold rise by the gait's ground difference.
+const WALK_RUN_BELOW: f64 = 0.01;
 
 /// Metres (or metres per tick) in the original's centimetres: every rule
 /// below is written in cm.
@@ -587,6 +594,11 @@ pub(super) fn build(setup: &[PartSetup], parts: &mut [Part]) -> (Vec<Pin>, Vec<L
         parts[i].foot = Some(point);
         let contact = weights(&parts[i], point);
         let at = parts[i].point(&contact);
+        // The clip's ankle as last sampled (the feet routine's `+0x30`):
+        // the model's own pose until the first sample writes one.
+        let anim_hip = parts[i]
+            .parent
+            .map_or(Vec3::ZERO, |p| Vec3::from(parts[p].transform().translation));
         legs.push(Leg {
             shin: i,
             point,
@@ -616,8 +628,8 @@ pub(super) fn build(setup: &[PartSetup], parts: &mut [Part]) -> (Vec<Pin>, Vec<L
             lift: 0.0,
             planted: false,
             posed_offset: Vec3::ZERO,
-            anim_contact: Vec3::ZERO,
-            anim_hip: Vec3::ZERO,
+            anim_contact: at,
+            anim_hip,
             goal: Vec3::ZERO,
             reach_knee: 0.0,
             contact_lag: 0.0,
@@ -721,6 +733,17 @@ impl Ragdoll {
             return;
         };
         let bearing = drive.bearing;
+        // The walk's ground difference this tick, read from last tick's
+        // grounds before this tick's feet move: the late foot's swing
+        // threshold adds its magnitude.
+        let gait_gap = feet::gait_gap(
+            bearing.progress,
+            drive.balance.gait_grounds_cm[0],
+            drive.balance.gait_grounds_cm[1],
+        );
+        // The locomotion lag factor: each walking leg whose contact trails
+        // its animated spot cuts the push, from 1.
+        let mut foot_lag = 1.0;
         let bonus = drive.race.balance_bonus;
         let scale = drive.stats.scale;
         // Down: lying, or getting up (a collapsing body, unsupported as it
@@ -1016,6 +1039,30 @@ impl Ragdoll {
             if let Some(f) = leg.foot {
                 parts[f].friction = friction;
             }
+            // The per-leg lag: how far the contact trails its animated spot
+            // along the facing, in cm. The original measures the animated
+            // contact in the character frame against the physical one, and
+            // negates the lead while the walk is backwards; a lead that is
+            // not ahead (or is a NaN) is none. A lead inside 60·size cuts
+            // the push by 1 − (lead/60·size)², and one at or past it ends
+            // the push.
+            let lead = if bearing.walking && !down {
+                let mut along = cm(leg.anim_contact - c).dot(bearing.facing);
+                if drive.gait_back {
+                    along = -along;
+                }
+                if along > 0.0 { along } else { 0.0 }
+            } else {
+                0.0
+            };
+            if bearing.walking && !down && lead > 0.0 {
+                let limit = 60.0 * drive.stats.size;
+                if lead < limit {
+                    foot_lag *= 1.0 - (lead / limit) * (lead / limit);
+                } else {
+                    foot_lag = 0.0;
+                }
+            }
             // A walking foot's probe is at its ankle, swayed along the
             // facing, its sphere 10 cm widened by the gait up to 20. Any
             // other's is at its ankle, or toward its anchor while anchored,
@@ -1062,9 +1109,33 @@ impl Ragdoll {
                 let touching = leg.state.has(FootState::TOUCHING);
                 leg.floor =
                     feet::sole_floor(ground, touching, leg.contact_lag, None, cm(knee)) / CM;
-                // Standing, no foot is lifted (a walking foot's swing comes
-                // with its gait).
-                leg.state.0 &= !FootState::LIFTED;
+                if bearing.walking && !down && touching {
+                    // Locomoting and touching: the swing clearance decays
+                    // by the double 0.3 a tick, the step lift is none, and
+                    // the late foot's swing flag is set by its lead. The
+                    // threshold is 10·scale×(0.25 − frac(0.5·leg + progress
+                    // + 1)); at a walk it first rises by the gait's ground
+                    // difference to at least 25 cm. The flag is set while
+                    // the lead times the heading alignment is over it.
+                    leg.contact_lag =
+                        engine_math::max((f64::from(leg.contact_lag) - SWING_DECAY) as f32, 0.0);
+                    let phase =
+                        super::locomotion::fraction(i as f32 * 0.5 + (bearing.progress + 1.0));
+                    let mut threshold = (10.0 * scale) * (0.25 - phase);
+                    if f64::from(bearing.run) < WALK_RUN_BELOW {
+                        threshold = engine_math::max(threshold + gait_gap.abs(), 25.0);
+                    }
+                    if threshold < lead * bearing.align {
+                        leg.state.0 |= FootState::LIFTED;
+                    } else {
+                        leg.state.0 &= !FootState::LIFTED;
+                    }
+                    leg.lift = 0.0;
+                } else {
+                    // Any other foot is not lifted; a walking foot that
+                    // does not touch swings with its gait.
+                    leg.state.0 &= !FootState::LIFTED;
+                }
             } else {
                 leg.state.0 |= FootState::LIFTED | FootState::NO_GROUND;
                 leg.anchor.y = under;
@@ -1075,6 +1146,9 @@ impl Ragdoll {
                 .is_some_and(|g| foot_grounded(cm(c.y - g - leg.offset), bearing.moving, scale));
             grounded += usize::from(leg.grounded);
         }
+        // The push waits for the feet: the product of every walking leg's
+        // lag cut, 1 when no lead is positive (or the body does not walk).
+        drive.bearing.lag = foot_lag;
         if grounded > 0 {
             if !b.has_support {
                 b.landing = LANDING_WEIGHT;

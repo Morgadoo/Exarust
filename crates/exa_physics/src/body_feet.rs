@@ -996,6 +996,20 @@ fn frac32(x: f32) -> f32 {
     x - x.trunc()
 }
 
+/// The signed height difference (cm) the walk's gait phase picks from last
+/// tick's two grounds, before its smoothing: the feet routine's
+/// |difference| is the late foot's swing threshold's addition. The phase
+/// is the fraction of progress + 0.45, compared in double as the original
+/// compares it; a NaN phase picks the first.
+pub(super) fn gait_gap(progress: f32, g0: f32, g1: f32) -> f32 {
+    let phase = frac32((f64::from(progress) + 0.45) as f32);
+    if f64::from(phase) > 0.5 {
+        g1 - g0
+    } else {
+        g0 - g1
+    }
+}
+
 /// One walking foot's ground probe, from the leg's index and the clip
 /// progress. The phase is the fraction of 2 − 0.5·index − progress
 /// (truncating toward zero). From it, s = max(0, 16p² − 64p⁴) and the

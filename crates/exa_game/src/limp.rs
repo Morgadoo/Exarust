@@ -663,6 +663,9 @@ pub(crate) fn bearing(
         off_feet: condition.off_feet(),
         progress: 0.0,
         idle: anim.action == "Idle",
+        // The movement decision's alignment of the pelvis with the heading
+        // (the original's `+0xa80`).
+        align: locomotion.map_or(1.0, |(_, body)| body.align),
         // The sampler's head look sets it.
         head_looks: false,
         ..Bearing::default()

@@ -401,57 +401,14 @@ impl Ragdoll {
         }
         // The locomotion drive, as the original adds it to the carry while
         // the body moves: drive × S² × the gait's push gain × the feet's
-        // lag, in cm a tick².
+        // lag, in cm a tick². The feet routine measured the lag from last
+        // tick's animated contacts; a body that does not walk keeps 1.
         if bearing.moving && drive.support > 0.0 {
-            // Only a walking condition measures it; any other keeps 1.
-            let lag = if bearing.walking {
-                feet_lag(
-                    parts,
-                    legs,
-                    &drive.targets,
-                    bearing.facing,
-                    drive.stats.scale,
-                )
-            } else {
-                1.0
-            };
-            drive.bearing.lag = lag;
-            let push = bearing.push * (drive.support * drive.support * bearing.push_gain * lag);
+            let push =
+                bearing.push * (drive.support * drive.support * bearing.push_gain * bearing.lag);
             drive.carry += push / CM;
         }
     }
-}
-
-/// The feet's lag factor: for each leg, how far its actual contact trails
-/// the animated one along the body's facing; a positive throw cuts the
-/// factor by 1 − (throw/60·scale)², none at all past 60·scale.
-fn feet_lag(
-    parts: &[super::Part],
-    legs: &[super::Leg],
-    targets: &[Affine3A],
-    facing: Vec3,
-    scale: f32,
-) -> f32 {
-    if targets.len() != parts.len() {
-        return 1.0;
-    }
-    let mut lag = 1.0;
-    let limit = 60.0 * scale;
-    for leg in legs {
-        let Some(part) = parts.get(leg.shin) else {
-            continue;
-        };
-        let posed = targets[leg.shin].transform_point3(leg.point);
-        let along = (posed - part.point(&leg.contact)).dot(facing) * CM;
-        if along > 0.0 {
-            lag *= if along < limit {
-                1.0 - (along / limit) * (along / limit)
-            } else {
-                0.0
-            };
-        }
-    }
-    lag
 }
 
 #[cfg(test)]

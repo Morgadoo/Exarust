@@ -2846,6 +2846,11 @@ impl Ragdoll {
             leg.anchor = carry.transform_point3(leg.anchor);
             leg.at = carry.transform_point3(leg.at);
             leg.before = carry.transform_point3(leg.before);
+            // The animated contact is in the character frame, which the
+            // carry moves: the feet's lag compares it with the physical
+            // contact after this tick's walk.
+            leg.anim_contact = carry.transform_point3(leg.anim_contact);
+            leg.anim_hip = carry.transform_point3(leg.anim_hip);
         }
         for t in &mut drive.targets {
             *t = carry * *t;
