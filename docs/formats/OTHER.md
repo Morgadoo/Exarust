@@ -1790,7 +1790,8 @@ victim rules). ε below is the routine's epsilon, 1.19e-7 (bits
   wounding each other in one frame take a follow-through before the other
   contact's stall.
 - An armed bite above 0.1 would stick the weapon (`exa_combat::bite`);
-  weapons are not bodies yet, so nothing sticks.
+  held items now have bodies, but the bite link is not wired to them, so
+  nothing sticks.
 
 **Applying damage** (REA on the damage call, its two callers and the
 low-health check, constants read from the executable; `Health::take` in

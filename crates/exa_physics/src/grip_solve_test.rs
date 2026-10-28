@@ -201,3 +201,28 @@ fn a_held_items_links_are_built_from_its_bodies() {
     assert!(links.links[0].enabled());
     assert!(holder_e != Entity::PLACEHOLDER);
 }
+
+/// Inside a slack link the limp law is a damper on the smoothed length:
+/// a 2 cm gap against a 5 cm length takes back 3 cm over the gap, and the
+/// length follows a thousandth of the way to the gap.
+#[test]
+fn a_slack_grip_link_damps_its_length() {
+    let item = Entity::from_raw_u32(1).unwrap();
+    let hand = Entity::from_raw_u32(2).unwrap();
+    let mut item_body = rigid(item, Vec3::ZERO, 1.0);
+    let mut holder = rigid(hand, Vec3::new(0.02, 0.0, 0.0), 1.0);
+    let mut link = pivot([1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0], (0.5, 0.5));
+    link.slack = 0.05;
+    link.length = 0.05;
+    link.smoothing = 0.001;
+    let mut stage = solver(item, hand, links(link));
+    stage.links(&mut [&mut item_body, &mut holder], 0);
+    let link = &stage.groups[0].links.links[0];
+    assert!(
+        link.length < 0.0201 && link.length > 0.0199,
+        "{}",
+        link.length
+    );
+    let item_point = item_body.point_at(0, &[1.0, 0.0, 0.0, 0.0]).unwrap();
+    assert!((item_point.x + 0.115).abs() < 1e-5, "{item_point}");
+}

@@ -402,9 +402,9 @@ fn tick_barricades(
                 };
                 let shove = live.wall.shove(&tested, now, &mut roll.0);
                 // The original's Force walls interrupt the holder's attack
-                // when they strike a weapon part; Exarust's weapons are
-                // bone-attached meshes, so the wall never classifies one
-                // and this stays unexercised.
+                // when they strike a weapon part; the wall does not
+                // classify a held item's body yet, so this stays
+                // unexercised.
                 if shove.interrupt
                     && let Some(state) = swing.as_mut()
                 {

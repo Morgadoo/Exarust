@@ -1376,8 +1376,8 @@ pub struct Ragdoll {
     /// The class flags of the bodies it holds (two hands at most), as the
     /// original keeps them on the held item bodies: bit 0x10000 is the
     /// motion flag a walk's start clears, bit 0x80000 makes every level
-    /// query static (no sweep). Exarust holds items as bone-attached
-    /// models, so the word is kept for them; no part reads it yet.
+    /// query static (no sweep). The grip links now own the held items;
+    /// this word is kept for them and no part reads it yet.
     held_flags: [u32; 2],
     held_count: usize,
     /// The body of the character holding this one (a held item): the two

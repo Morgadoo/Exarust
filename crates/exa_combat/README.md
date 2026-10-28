@@ -109,8 +109,8 @@ A Force effect's interrupt (`SwingState::force_interrupt`) breaks an
 attack into a full-strength stall with no drain, cleaving and recoiled,
 its window shut and the stance 600 ms on. The debug barricade calls it
 where the original's Force dome, barrier and barricade do, when their wall
-strikes a weapon part; Exarust's weapons are bone-attached meshes, so the
-wall never classifies one and the call stays unexercised. The original's
+strikes a weapon part; Exarust's held item bodies are not classified by
+the force wall yet, so the call stays unexercised. The original's
 50·clock attack-reach penalty has no attack reach to take it from.
 
 ## Grips

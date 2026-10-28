@@ -525,5 +525,36 @@ mod held_measure_tests {
         assert_eq!(held_reach(0x10, 200, 100.0, 50.0), 260.0);
         assert_eq!(held_reach(0x20, 128, 90.0, 50.0), 175.2);
         assert_eq!(held_aim_height(100.0), 90.0);
+        let m = held_measures(0x521, 200, 100.0, 50.0);
+        assert_eq!((m.reach, m.aim_cm, m.greatsword), (260.0, 90.0, true));
+        assert!(!held_measures(0x10, 200, 100.0, 50.0).greatsword);
+    }
+}
+
+/// What the held-item refresh (`0x152100`) derives from the item's weapon
+/// class and node: the class word, the item's reach, the aim point's height
+/// and whether it is the special greatsword class (`0x521`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HeldMeasures {
+    pub class: u16,
+    pub reach: f32,
+    pub aim_cm: f32,
+    pub greatsword: bool,
+}
+
+/// The refresh's measures: with no hands bits the reach is the race's,
+/// otherwise [`held_reach`]; the aim height is [`held_aim_height`]; the
+/// special two-hander class is `0x521`.
+pub fn held_measures(
+    class: u16,
+    hand_byte: u8,
+    item_length_cm: f32,
+    race_reach: f32,
+) -> HeldMeasures {
+    HeldMeasures {
+        class,
+        reach: held_reach(class, hand_byte, item_length_cm, race_reach),
+        aim_cm: held_aim_height(item_length_cm),
+        greatsword: class == 0x521,
     }
 }

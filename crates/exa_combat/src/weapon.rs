@@ -7,9 +7,8 @@
 //! at all. Rules and constants: reverse engineering of the held-weapon
 //! handling routine and the push-at-point helper.
 //!
-//! Exarust holds weapons as bone-attached meshes, so nothing calls this yet;
-//! it is the kernel step the weapon bodies will use, tested with its own
-//! numbers. Lengths are the original's centimetres.
+//! A plain weapon model now has a solver body, but nothing applies these
+//! forces to it yet: the step is tested with its own numbers. Lengths are the original's centimetres.
 
 use bevy::math::Affine3A;
 use bevy::prelude::*;

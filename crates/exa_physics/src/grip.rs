@@ -782,8 +782,8 @@ impl GripLinks {
         if !running {
             self.record_dirty = true;
         }
-        let angle = self.flip_progress * std::f32::consts::PI;
-        let (sin, cos) = angle.sin_cos();
+        let angle = (f64::from(self.flip_progress) * std::f64::consts::PI) as f32;
+        let (sin, cos) = crate::engine_math::sin_cos(angle);
         let p = self.flip_point * 0.01;
         let turned = Vec3::new(p.x * cos - p.z * sin, p.y, p.z * cos + p.x * sin);
         if let Some(on_item) = item.weights_at(self.links[flip].item, turned) {

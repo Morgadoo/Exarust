@@ -33,6 +33,8 @@ const SOFTENING: f32 = 0.001;
 const EPSILON2: f32 = 1.19e-11;
 /// A slack at or below this (m) is a pivot, as the limp link law reads it.
 const PIVOT_SLACK: f32 = 1.19e-9;
+/// A slack link's smoothed length does not follow a change below this (m).
+const LENGTH_EPSILON: f32 = 1.19e-9;
 
 /// One held item's links, as the solver stage reads them.
 #[derive(Debug, Clone)]
@@ -73,7 +75,7 @@ fn find_body(bodies: &[&mut Ragdoll], key: Entity) -> Option<usize> {
 fn link_correction(
     item: &Ragdoll,
     holder: &Ragdoll,
-    link: &crate::grip::GripLink,
+    link: &mut crate::grip::GripLink,
 ) -> Option<(Vec3, f32, f32)> {
     let a = item.point_at(link.item, &link.on_item)?;
     let b = match link.hand {
@@ -91,9 +93,18 @@ fn link_correction(
         // cm.
         d * (link.strength / (len2 * CM * CM * SOFTENING + 1.0))
     } else if len > link.slack {
+        link.length = link.slack;
         d * (link.strength * (len - link.slack) / len)
     } else {
-        return None;
+        // Inside the slack the limp link is a damper on its smoothed
+        // length (the grip main links' table slack starts full).
+        let old = link.length;
+        #[allow(clippy::neg_cmp_op_on_partial_ord)]
+        if !((len - old).abs() > LENGTH_EPSILON) {
+            return None;
+        }
+        link.length = old * link.smoothing + (1.0 - link.smoothing) * len;
+        d * (link.strength * (len - old) / len)
     };
     correction
         .is_finite()
@@ -102,7 +113,7 @@ fn link_correction(
 
 impl SolverStage for GripSolver {
     fn links(&mut self, bodies: &mut [&mut Ragdoll], _iteration: usize) {
-        for group in &self.groups {
+        for group in &mut self.groups {
             let Some(item_body) = find_body(bodies, group.item) else {
                 continue;
             };
@@ -112,7 +123,7 @@ impl SolverStage for GripSolver {
             if item_body == holder_body {
                 continue;
             }
-            for link in &group.links.links {
+            for link in &mut group.links.links {
                 if link.flags & DISABLED != 0 {
                     continue;
                 }
