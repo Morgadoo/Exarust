@@ -17,11 +17,15 @@
 //!
 //! Evidence: the panel's paint routine and the icon program.
 
+use std::collections::VecDeque;
+
 use bevy::prelude::*;
 
-use exa_items::icon_cache::IconCache;
+use exa_items::catalogue::ItemCatalogue;
+use exa_items::icon_cache::{IconCache, key, streamed_key, variant};
+use exa_items::item_icon::IconScene;
 use exa_ui::gui_draw::{GuiLayer, GuiTexture, LayerTexture};
-use exa_ui::icon_atlas::IconAtlas;
+use exa_ui::icon_atlas::{IconAtlas, IconImage};
 use exa_ui::skin::{SkinBatch, SkinMode};
 
 use crate::item_container::{Container, tint};
@@ -29,15 +33,40 @@ use crate::item_container::{Container, tint};
 /// The blend the item panel's icons draw with.
 pub const PANEL_BLEND: u16 = 0x203;
 
+/// An icon waiting for the off-screen renderer. `scene` is baked by the
+/// render pass (or filled by a headless test); a slot without one is still
+/// reserved, so the panel's entry keeps a handle.
+#[derive(Debug, Clone)]
+pub struct PendingIcon {
+    pub id: u32,
+    /// The cache key, from the item's model flags.
+    pub key: u32,
+    /// The render variant: the key plus the framing and condition bits.
+    pub variant: u32,
+    /// The index in [`IconCache::entries`].
+    pub entry: usize,
+    /// The model flags the render plan reads.
+    pub model_flags: u32,
+    /// The baked scene, once the model is loaded.
+    pub scene: Option<IconScene>,
+    /// How often the loader missed the model.
+    pub attempts: u32,
+}
+
 /// The item manager's icon atlas and cache, and the texture the panel
 /// samples. The atlas is empty until the item renderer fills it.
 #[derive(Resource)]
 pub struct PanelIcons {
     pub atlas: IconAtlas,
     pub cache: IconCache,
+    /// The icons the render pass still has to fill.
+    pub pending: VecDeque<PendingIcon>,
     texture: Option<GuiTexture>,
-    /// The atlas image the texture was built from.
-    revision: (u16, u16, bool),
+    /// The atlas image the texture was built from: its size and the icon
+    /// version.
+    revision: (u16, u16, u64),
+    /// Bumped whenever an icon is added to the atlas.
+    version: u64,
 }
 
 impl Default for PanelIcons {
@@ -52,41 +81,133 @@ impl PanelIcons {
         Self {
             atlas: IconAtlas::new(40 * unit, 4),
             cache: IconCache::new(unit),
+            pending: VecDeque::new(),
             texture: None,
-            revision: (0, 0, false),
+            revision: (0, 0, 0),
+            version: 0,
         }
     }
 
-    /// The icon handle and half extents for an item, reserving a cache slot
-    /// when the renderer has not made one. The original acquires an icon by
-    /// rendering it off screen; Exarust has no item renderer yet, so the
-    /// slot keeps the item's id and the panel icon's half extents with no
-    /// atlas cell (`-1`, which the draw skips). The panel's entry and its
-    /// drag payload stay whole until the renderer fills the slot. [guess]
-    pub fn reserve(&mut self, id: u32) -> (usize, (i32, i32)) {
-        if let Some(at) = self.entries_slot(id) {
-            let entry = &self.cache.entries[at];
+    /// The icon handle and half extents for an item with `flags`, reserving
+    /// a cache slot when the renderer has not made one. The cache key is the
+    /// original acquire's: a lit model keeps the framing bit and its
+    /// condition byte and gains the lit bit; a streamed icon keeps the top
+    /// tag bits and gains the effect bit for a model that asks for it. The
+    /// slot has no atlas cell (`-1`, which the draw skips) until the
+    /// off-screen renderer fills it.
+    pub fn reserve(
+        &mut self,
+        id: u32,
+        flags: u32,
+        catalogue: Option<&ItemCatalogue>,
+    ) -> (usize, (i32, i32)) {
+        if id == 0 {
+            return (0, self.icon_half());
+        }
+        let model = catalogue.and_then(|catalogue| catalogue.model(id));
+        let name = match model {
+            Some(model) => {
+                let lit = model.flags & 1 != 0;
+                let effect = model.flags & 0x2000 != 0;
+                streamed_key(flags, lit, effect)
+            }
+            // A record without a model has no icon in the original; the
+            // slot still holds the entry so the panel can list it.
+            None => key(flags, false),
+        };
+        if let Some(at) = self.entries_slot(id, name) {
+            let entry = &mut self.cache.entries[at];
+            entry.refs += 1;
             return (at + 1, (entry.half_width, entry.half_height));
         }
         let (half_width, half_height) = self.icon_half();
         self.cache.entries.push(exa_items::icon_cache::Entry {
             id,
             cell: -1,
-            variant: 0,
+            variant: name,
             half_width,
             half_height,
             refs: 1,
         });
-        (self.cache.entries.len(), (half_width, half_height))
+        let entry = self.cache.entries.len() - 1;
+        let render_variant = match model {
+            Some(model) => {
+                let base = if model.flags & 1 != 0 {
+                    (flags & (variant::APPAREL | variant::CONDITION)) | variant::LIT
+                } else {
+                    flags & variant::APPAREL
+                };
+                base | if model.flags & 0x2000 != 0 {
+                    variant::EFFECT
+                } else {
+                    0
+                } | variant::STREAMED
+            }
+            // A record the database does not know: the render pass finds no
+            // model and drops the pending icon; the slot stays reserved.
+            None => name,
+        };
+        self.pending.push_back(PendingIcon {
+            id,
+            key: name,
+            variant: render_variant,
+            entry,
+            model_flags: model.map_or(0, |m| m.flags),
+            scene: None,
+            attempts: 0,
+        });
+        (entry + 1, (half_width, half_height))
     }
 
-    /// A slot for `id`, when the cache already holds one. A slot the
-    /// renderer made has a real cell and is used as it is.
-    fn entries_slot(&self, id: u32) -> Option<usize> {
+    /// A slot for `id` with the exact cache `variant`, when the cache holds
+    /// one. A slot the renderer made has a real cell and is used as it is.
+    fn entries_slot(&self, id: u32, variant: u32) -> Option<usize> {
         self.cache
             .entries
             .iter()
-            .position(|entry| entry.id == id && (id != 0 || entry.cell < 0))
+            .position(|entry| entry.id == id && entry.variant == variant && entry.refs > 0)
+    }
+
+    /// Fills a reserved slot with the rendered icon: its atlas cell, its
+    /// half extents from the icon's content span, and the render-pass key
+    /// it was rendered for. Returns whether the slot still existed.
+    pub fn apply_rendered(
+        &mut self,
+        id: u32,
+        key: u32,
+        icon: exa_items::item_icon::IconPixels,
+        width: f32,
+        height: f32,
+    ) -> bool {
+        let Some(at) = self
+            .cache
+            .entries
+            .iter()
+            .position(|entry| entry.id == id && entry.variant == key && entry.cell < 0)
+        else {
+            return false;
+        };
+        if icon.width != self.atlas.cell as u32 || icon.height != self.atlas.cell as u32 {
+            return false;
+        }
+        let image = IconImage {
+            width: icon.width as u16,
+            height: icon.height as u16,
+            channels: 4,
+            pixels: icon.pixels,
+        };
+        let cell = self.atlas.add(&image, id as i32);
+        if cell <= 0 {
+            return false;
+        }
+        let unit = self.cache.unit;
+        let entry = &mut self.cache.entries[at];
+        entry.cell = cell;
+        entry.half_width = unit + (width * 0.5).round_ties_even() as i32;
+        entry.half_height = (height * 0.5).round_ties_even() as i32 + unit;
+        entry.variant = key;
+        self.version = self.version.wrapping_add(1);
+        true
     }
 
     /// The panel icon's half extents: the icon manager adds the GUI unit to
@@ -108,7 +229,7 @@ impl PanelIcons {
     /// The atlas's texture, rebuilt when its image changed.
     fn texture(&mut self) -> Option<&GuiTexture> {
         let image = &self.atlas.image;
-        let revision = (image.width, image.height, self.atlas.dirty);
+        let revision = (image.width, image.height, self.version);
         if self.texture.is_none() || revision != self.revision {
             self.texture = GuiTexture::from_bottom_up(
                 u32::from(image.width),

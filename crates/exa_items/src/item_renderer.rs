@@ -18,6 +18,9 @@
 
 /// The icon size global's start value, in pixels.
 pub const ICON_SIZE: i32 = 160;
+/// The alpha global's start value: set, so the screen-quad pass draws the
+/// full render into the final image and the downsample and halo do not run.
+pub const ALPHA_GLOBAL: bool = true;
 /// The render size: twice the icon size.
 pub const BUFFER_SIZE: i32 = ICON_SIZE * 2;
 /// The image header's size.

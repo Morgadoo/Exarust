@@ -52,6 +52,7 @@ pub mod idle_orbit;
 pub mod item_container;
 pub mod item_cursor;
 pub mod item_effects;
+pub mod item_icon_render;
 pub mod item_panel_draw;
 pub mod joint_trace;
 pub mod level_transition;
@@ -159,6 +160,7 @@ impl Plugin for GamePlugin {
                 arena_hub_live::ArenaHubPlugin,
                 (scene_bodies::SceneBodiesPlugin, arena_live::ArenaLivePlugin),
                 gui_screens::GameScreensPlugin,
+                item_icon_render::ItemIconPlugin,
                 power_screen::PowerScreenPlugin,
             thaum::visuals::VisualPlugin,
             ),

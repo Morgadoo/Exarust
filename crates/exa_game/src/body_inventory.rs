@@ -121,7 +121,7 @@ pub fn bind_pack(
     // slot has the panel icon's halves; a rendered one keeps its own.
     let mut slots = children
         .iter()
-        .map(|child| icons.reserve(child.id).0)
+        .map(|child| icons.reserve(child.id, child.flags, catalogue).0)
         .collect::<Vec<_>>()
         .into_iter();
     container.load_list(
@@ -147,7 +147,7 @@ pub fn bind_equipment(
     let mut state = DOLL_SEED;
     container.entries = worn_layout(
         &items,
-        &mut |id| Some(icons.reserve(id)),
+        &mut |id| Some(icons.reserve(id, 0, catalogue)),
         client,
         container.icon_size,
         &mut state,

@@ -240,15 +240,20 @@ pub struct IconScene {
 impl IconScene {
     /// Bakes a model's drawable meshes for an icon. `hide_star` drops the
     /// parts whose material name begins with `*` (the manager's model-flag
-    /// rule); the turn is the variant's rotation. `None` when the model has
-    /// no mesh with positions and triangles.
+    /// rule); `turned` applies the variant's rotation. `None` when the model
+    /// has no mesh with positions and triangles.
     pub fn from_model(
         model: &Model,
         meshes: &Assets<Mesh>,
         materials: &Assets<ExaMaterial>,
         hide_star: bool,
+        turned: bool,
     ) -> Option<Self> {
-        let turn = turn_rotation();
+        let turn = if turned {
+            turn_rotation()
+        } else {
+            Quat::IDENTITY
+        };
         let root = Mat4::from_quat(turn);
         let mut cache = vec![None; model.nodes.len()];
         let mut visiting = vec![false; model.nodes.len()];
@@ -708,7 +713,7 @@ mod tests {
         let Some(model) = loader.object_model(&item.model) else {
             return;
         };
-        let scene = IconScene::from_model(&model, &meshes, &materials, false)
+        let scene = IconScene::from_model(&model, &meshes, &materials, false, false)
             .expect("a shipped weapon has drawable meshes");
         let variant = if item.model_flags & 1 != 0 {
             crate::icon_cache::variant::LIT
