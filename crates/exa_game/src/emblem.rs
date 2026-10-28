@@ -41,13 +41,12 @@ pub fn preset_emblem(name: &str) -> Option<Emblem> {
 /// Picture name. The hundreds digit stays 0. The next two are the index
 /// divided by 10 and the remainder.
 pub fn emblem_texture(kind: EmblemKind, index: u32) -> String {
+    use exa_formats::procedural::{EMBLEM_BACKGROUND_STEM, EMBLEM_DESIGN_STEM, emblem_picture};
     let stem = match kind {
-        EmblemKind::Background => "emblembkg",
-        EmblemKind::Design => "emblemdes",
+        EmblemKind::Background => EMBLEM_BACKGROUND_STEM,
+        EmblemKind::Design => EMBLEM_DESIGN_STEM,
     };
-    let tens = b'0'.wrapping_add((index / 10) as u8);
-    let ones = b'0'.wrapping_add((index % 10) as u8);
-    format!("{stem}0{}{}", tens as char, ones as char)
+    emblem_picture(stem, index)
 }
 
 /// The editor on a company's emblem.
