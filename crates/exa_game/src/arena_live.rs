@@ -33,7 +33,6 @@ use exa_ui::gui_draw::{GuiFrames, GuiTextures};
 
 use crate::arena;
 use crate::arena_match::{ArenaMatch, CompanyRecords, Finish, MatchState, any_entry};
-use crate::arena_outfit::Lcg;
 use crate::arena_session::{
     BracketState, EndAction, ReturnFighter, RoundFight, Screen, bracket_for_template,
     bracket_next_fight, regenerate_round, settle_return,
@@ -45,7 +44,7 @@ use crate::match_layout::{
 };
 use crate::scene_bodies::{
     BodyBrain, SceneBodyPlan, SceneCommand, SceneFighter, beast_scene_plan, company_plan,
-    hire_opponent_plan, opponent_plan,
+    hire_opponent_plan, hire_row_plan, opponent_plan,
 };
 
 /// The running match's scene state.
@@ -75,7 +74,10 @@ pub struct ArenaScene {
     /// The event weapon row's three variants, when the event arms its
     /// fighters.
     pub weapon_variants: Option<[u32; 3]>,
-    /// The roll a bracket's unwatched pairs and its weapon draws use.
+    /// The week's tournament field: the rival company each team from 2 on
+    /// wears.
+    pub rivals: [i32; crate::career::RIVAL_FIELD],
+    /// The roll a bracket's unwatched pairs draw from.
     pub roll: u32,
 }
 
@@ -110,8 +112,16 @@ impl ArenaScene {
                 None
             },
             weapon_variants: None,
+            rivals: [0; crate::career::RIVAL_FIELD],
             roll: crate::arena_match::counter_now() as u32,
         }
+    }
+
+    /// The week's tournament field the rival sides wear.
+    #[must_use]
+    pub fn with_rivals(mut self, rivals: [i32; crate::career::RIVAL_FIELD]) -> Self {
+        self.rivals = rivals;
+        self
     }
 
     /// The event weapon row's variants, for the bracket's later fights.
@@ -329,22 +339,33 @@ pub fn round_plans(
                 flags,
             } => {
                 let mut body = if scene.tournament {
-                    let weapon = scene.weapons.get(opponent).copied().filter(|&id| id != 0);
-                    // The event's weapon field adds the profile's armed flag;
-                    // the drawn variant itself is the item shown.
-                    let event_weapon = i32::from(weapon.is_some());
-                    // The team ids after the player's are the company ids
-                    // the forced outfit table is indexed by [guess: the
-                    // bracket's company table is filled from the event's
-                    // teams].
-                    hire_opponent_plan(
-                        hire_plan(tier as u8, team as i32, event_weapon),
-                        &slot.place,
-                        flags,
-                        weapon,
-                        now_ms,
-                        act_grace_ms,
-                    )
+                    // Each rival side wears the company the week's field
+                    // names for its team.
+                    let company = crate::arena_spawn::rival_company(&scene.rivals, team as i32);
+                    match scene.weapon_variants {
+                        // The event's weapon row: the variant is drawn while
+                        // the record is generated.
+                        Some(row) => hire_row_plan(
+                            hire_plan(tier as u8, company, 1),
+                            &slot.place,
+                            flags,
+                            row,
+                            now_ms,
+                            act_grace_ms,
+                        ),
+                        // A command-line match names its weapons instead.
+                        None => {
+                            let weapon = scene.weapons.get(opponent).copied().filter(|&id| id != 0);
+                            hire_opponent_plan(
+                                hire_plan(tier as u8, company, i32::from(weapon.is_some())),
+                                &slot.place,
+                                flags,
+                                weapon,
+                                now_ms,
+                                act_grace_ms,
+                            )
+                        }
+                    }
                 } else {
                     opponent_plan(
                         generic_plan(level, tier),
@@ -359,9 +380,12 @@ pub fn round_plans(
                 plans.push(body);
             }
             SlotFighter::Beast { level, tier } => {
-                let beast =
-                    crate::arena_spawn::beast_plan(u32::try_from(tier).unwrap_or(1).max(1), 0.0);
-                let mut body = beast_scene_plan(&beast, &slot.place, now_ms, act_grace_ms);
+                let mut body = beast_scene_plan(
+                    u32::try_from(tier).unwrap_or(1).max(1),
+                    &slot.place,
+                    now_ms,
+                    act_grace_ms,
+                );
                 body.id = u32::try_from(level).unwrap_or(0);
                 plans.push(body);
             }
@@ -780,10 +804,9 @@ fn stand_bracket_round(
     let mut roll = scene.roll;
     let survivors = bracket_next_fight(bracket, 1, &mut roll);
     scene.roll = roll;
-    // The forced outfit table is indexed by team id. The original reads
-    // the company each rival team id was drawn for; Exarust uses the team id
-    // itself [guess: the drawn rival field is not kept with the bracket].
-    let outfits: Vec<i32> = (0..20).collect();
+    // The forced outfit table is indexed by team id: the company the
+    // week's field drew for each rival team.
+    let outfits = crate::arena_spawn::rival_outfits(&scene.rivals);
     // The next fight is the first `sides` surviving teams in slot order (the
     // player's group leads), as the original's team walk stops at the
     // event's side count; the raise derives the role flag from how many
@@ -854,18 +877,13 @@ fn stand_bracket_round(
                     crate::match_layout::OpponentPlan::Generic(plan) => {
                         opponent_plan(plan, &place, role, 0, act_at_ms)
                     }
+                    // The event row's variant is drawn while the record is
+                    // generated, from the reseeded sequence.
                     crate::match_layout::OpponentPlan::Hire(plan) => {
-                        let weapon = if plan.draw_weapon {
-                            plan.weapon_row.and(scene.weapon_variants).map(|row| {
-                                let mut lcg = Lcg::new(scene.roll);
-                                let step = lcg.step();
-                                scene.roll = lcg.state();
-                                crate::arena_spawn::pick_weapon_slot(row, step)
-                            })
-                        } else {
-                            None
-                        };
-                        hire_opponent_plan(plan, &place, role, weapon, 0, act_at_ms)
+                        match scene.weapon_variants.filter(|_| plan.draw_weapon) {
+                            Some(row) => hire_row_plan(plan, &place, role, row, 0, act_at_ms),
+                            None => hire_opponent_plan(plan, &place, role, None, 0, act_at_ms),
+                        }
                     }
                 };
                 body.team = u32::try_from(fighter.team).unwrap_or(0);
@@ -1168,7 +1186,7 @@ mod tests {
     #[test]
     fn a_tournament_side_takes_the_drawn_weapon_and_its_team() {
         let spawn = [0.0; 3];
-        let mut scene = scene();
+        let mut scene = scene().with_rivals(RIVALS);
         scene.tournament = true;
         scene.weapons = vec![0x1234];
         let slots = vec![Slot {
@@ -1184,8 +1202,8 @@ mod tests {
         assert_eq!(plans[0].weapon, Some(0x1234));
         assert_eq!(plans[0].team, 6);
         assert_eq!(plans[0].act_at_ms, 3_000);
-        // The team's company bytes are forced into the hire profile, and
-        // the event's weapon sets the profile's armed flag.
+        // Team 6's rival company (the field's fifth, 13) is forced into
+        // the hire profile, and the event's weapon sets the armed flag.
         let BodyLook::Generated(fighter) = plans[0].look else {
             panic!("a tournament side takes a generated record");
         };
@@ -1193,7 +1211,50 @@ mod tests {
             panic!("a hire side takes the profile pass");
         };
         assert_eq!(profile.flags(), 0x0f);
-        assert_eq!(&profile.0[5..8], &[96, 227, 0]);
+        assert_eq!(profile.level(), 2);
+        assert_eq!(&profile.0[5..8], &[97, 20, 0]);
+    }
+
+    const RIVALS: [i32; 16] = [15, 17, 4, 1, 13, 9, 5, 14, 8, 6, 11, 2, 18, 3, 19, 10];
+
+    #[test]
+    fn a_launched_tournament_side_draws_from_the_event_row() {
+        let mut scene = scene()
+            .with_rivals(RIVALS)
+            .with_weapon_variants(Some([7, 8, 0]));
+        scene.tournament = true;
+        let slots = vec![Slot {
+            who: SlotFighter::Opponent {
+                level: 3,
+                tier: 2,
+                team: 2,
+                flags: HOSTILE,
+            },
+            place: opponent_place([0.0; 3]),
+        }];
+        let plans = round_plans(&scene, None, &slots, 0, 3_000);
+        // No weapon is chosen before the record: the generation draws it.
+        assert_eq!(plans[0].weapon, None);
+        let BodyLook::Generated(fighter) = plans[0].look else {
+            panic!("a tournament side takes a generated record");
+        };
+        assert_eq!(fighter.weapon_row, Some([7, 8, 0]));
+        let crate::arena_records::OutfitSource::Profile(profile) = fighter.outfit else {
+            panic!("a hire side takes the profile pass");
+        };
+        // Team 2 wears the field's first company, 15.
+        assert_eq!(&profile.0[5..8], &crate::arena_spawn::COMPANY_OUTFITS[14]);
+    }
+
+    #[test]
+    fn the_beast_round_asks_for_the_beast_record() {
+        let slots = vec![Slot {
+            who: SlotFighter::Beast { level: 4, tier: 4 },
+            place: opponent_place([0.0; 3]),
+        }];
+        let plans = round_plans(&scene(), None, &slots, 0, 3_000);
+        assert_eq!(plans[0].look, BodyLook::Beast(4));
+        assert_eq!(plans[0].id, 4);
     }
 
     #[test]

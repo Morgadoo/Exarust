@@ -335,6 +335,9 @@ pub struct ArenaMatchLaunch {
     /// The event weapon row's three variants, when the event arms its
     /// fighters (the bracket's later fights draw from it).
     pub weapon_variants: [u32; 3],
+    /// The week's tournament field: the rival company each team from 2 on
+    /// wears.
+    pub rivals: [i32; crate::career::RIVAL_FIELD],
     pub fighters: Vec<LaunchedFighter>,
 }
 
@@ -344,8 +347,6 @@ pub struct LaunchedFighter {
     pub place: crate::match_layout::Place,
     pub team: u32,
     pub body: LaunchedBody,
-    /// The event weapon variant a hire-list opponent drew, if any.
-    pub weapon: Option<u32>,
 }
 
 /// What a launched fighter's scene body is generated from.
@@ -378,8 +379,9 @@ fn manager_roles(count: usize) -> Vec<u32> {
 /// layout, and each fighter's spawn plan.
 ///
 /// A standard match's opponents are [`generic_plan`] at the template's level
-/// and the event's gear tier; a tournament event's are [`hire_plan`]s with
-/// the event's weapon row drawn by [`pick_weapon_slot`]; the Beast uses
+/// and the event's gear tier; a tournament event's are [`hire_plan`]s at the
+/// event's tier wearing the team's rival company, whose weapon the record's
+/// generation draws from the event row; the Beast uses
 /// [`beast_plan`]. The manager is [`player_participant`] among the company
 /// entries.
 pub fn plan_launch(
@@ -424,9 +426,14 @@ pub fn plan_launch_at(
     // manager), not merely the team's first member.
     let player = board.team.iter().position(|&slot| slot == 0);
     let tournament = board.tab == exa_ui::match_board::BoardTab::Tournament;
+    let rivals = if tournament {
+        career.rival_field()
+    } else {
+        career.rivals
+    };
     let mut fighters = Vec::with_capacity(slots.len());
     for slot in slots {
-        let (team, body, weapon) = match slot.who {
+        let (team, body) = match slot.who {
             crate::match_layout::Fighter::Ours(index) => {
                 if index >= roles.len() {
                     continue;
@@ -436,33 +443,28 @@ pub fn plan_launch_at(
                 } else {
                     LaunchedBody::Company { role: roles[index] }
                 };
-                (crate::arena_match::PLAYER_TEAM as u32, body, None)
+                (crate::arena_match::PLAYER_TEAM as u32, body)
             }
             crate::match_layout::Fighter::Opponent {
                 level, tier, team, ..
             } => {
                 if tournament {
-                    let event_weapon = board.selected.weapon_row;
-                    let plan = crate::arena_spawn::hire_plan(team as u8, team as i32, event_weapon);
-                    let weapon = if plan.draw_weapon {
-                        board.weapon_row(tier.max(0) as usize).map(|row| {
-                            career.roll = crate::trade::step(career.roll);
-                            crate::arena_spawn::pick_weapon_slot(row.variants, career.roll)
-                        })
-                    } else {
-                        None
-                    };
+                    // The profile's level byte is the event's tier and its
+                    // forced outfit the team's rival company.
+                    let plan = crate::arena_spawn::hire_plan(
+                        tier as u8,
+                        crate::arena_spawn::rival_company(&rivals, team as i32),
+                        board.selected.weapon_row,
+                    );
                     (
                         team,
                         LaunchedBody::Opponent(crate::match_layout::OpponentPlan::Hire(plan)),
-                        weapon,
                     )
                 } else {
                     let plan = crate::arena_spawn::generic_plan(level, tier);
                     (
                         team,
                         LaunchedBody::Opponent(crate::match_layout::OpponentPlan::Generic(plan)),
-                        None,
                     )
                 }
             }
@@ -472,14 +474,12 @@ pub fn plan_launch_at(
                     u32::try_from(tier).unwrap_or(1).max(1),
                     0.0,
                 )),
-                None,
             ),
         };
         fighters.push(LaunchedFighter {
             place: slot.place,
             team,
             body,
-            weapon,
         });
     }
     let weapon_variants = if tournament && board.selected.weapon_row > 0 {
@@ -501,6 +501,7 @@ pub fn plan_launch_at(
         tournament,
         prize: board.selected.prize,
         weapon_variants,
+        rivals,
         fighters,
     })
 }
@@ -1242,12 +1243,24 @@ mod tests {
             })
             .collect();
         assert!(!hires.is_empty());
+        // The week's field was drawn for the tournament and travels with
+        // the launch; each rival side wears its team's company at the
+        // event's tier, armed from the row.
+        assert_ne!(launch.rivals[0], 0);
+        assert_eq!(launch.rivals, career.rivals);
+        assert_ne!(launch.weapon_variants, [0; 3]);
         for fighter in hires {
-            assert!(matches!(
-                fighter.body,
-                LaunchedBody::Opponent(crate::match_layout::OpponentPlan::Hire(_))
-            ));
-            assert!(fighter.weapon.is_some());
+            let LaunchedBody::Opponent(crate::match_layout::OpponentPlan::Hire(plan)) =
+                fighter.body
+            else {
+                panic!("a tournament side takes a hire plan");
+            };
+            let company = crate::arena_spawn::rival_company(&launch.rivals, fighter.team as i32);
+            assert_eq!(
+                plan,
+                crate::arena_spawn::hire_plan(plan.outfit.level(), company, 1)
+            );
+            assert!(plan.draw_weapon);
         }
     }
 

@@ -9,13 +9,14 @@
 //! Evidence: the arena's beast and opponent spawn routines, read from
 //! `Exanima.exe` 0.9.5.
 
-/// The beast's ability word.
+/// The experience the beast's record spends on the profession grid.
 pub const BEAST_ABILITY: u32 = 50_000;
 /// A generated fighter's full health.
 pub const SPAWN_HEALTH: f32 = 100.0;
 /// The damage seed a generated fighter starts with.
 pub const SPAWN_DAMAGE: f32 = -100.0;
-/// The profession word a beast's body starts with.
+/// The profession word a beast's record starts with (race byte 3, the
+/// Ogre).
 pub const BEAST_PROFESSION: u32 = 0x300;
 /// The hostile role word every spawned opponent receives.
 pub const HOSTILE_ROLE: u32 = 0x12;
@@ -199,28 +200,31 @@ pub fn player_participant(roles: &[u32], index: usize) -> Option<usize> {
 /// A beast's tier items and stats.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BeastPlan {
-    /// The body item. Tiers three to five replace the base body with their
-    /// own.
+    /// The item in the record's main hand. Tiers three to five replace the
+    /// base item with their own.
     pub body: u32,
-    /// The tier's extra equipment items, added in this order.
+    /// The tier's worn items, added in this order.
     pub equipment: Vec<u32>,
-    /// The profession word the body starts with.
+    /// The profession word the record starts with: race byte 3, the Ogre.
     pub profession: u32,
+    /// The experience spent on the profession grid.
     pub ability: u32,
+    /// The record's combat skill.
     pub health: f32,
+    /// The first personality value.
     pub damage: f32,
-    /// The beast's scale, `0.9 + 0.17 · smooth`.
-    pub scale: f32,
+    /// The record's voice pitch, `0.9 + 0.17 · smooth`.
+    pub voice_pitch: f32,
     pub team: u32,
     pub role: u32,
 }
 
 /// The beast at `tier` (1 through 5), from the smooth look draw.
 ///
-/// Tiers three to five swap the base body for the tier's own body item and
-/// add four equipment items. Every tier gives the same 50000 ability and
-/// experience. Tiers one and two, and any unknown tier, keep the base body
-/// only. The scale is computed in double precision and narrowed once.
+/// Tiers three to five swap the base hand item for the tier's own and add
+/// four worn items. Every tier spends the same 50000 experience. Tiers one
+/// and two, and any unknown tier, keep the base item only. The pitch is
+/// computed in double precision and narrowed once.
 #[must_use]
 pub fn beast_plan(tier: u32, smooth: f32) -> BeastPlan {
     let (body, equipment): (u32, &[u32]) = match tier {
@@ -236,7 +240,7 @@ pub fn beast_plan(tier: u32, smooth: f32) -> BeastPlan {
         ability: BEAST_ABILITY,
         health: SPAWN_HEALTH,
         damage: SPAWN_DAMAGE,
-        scale: (f64::from(smooth) * 0.17 + 0.9) as f32,
+        voice_pitch: (f64::from(smooth) * 0.17 + 0.9) as f32,
         team: OPPONENT_TEAM,
         role: HOSTILE_ROLE,
     }
@@ -353,6 +357,33 @@ pub fn hire_plan(team: u8, forced_outfit: i32, event_weapon: i32) -> HirePlan {
     }
 }
 
+/// The forced outfit a fresh tournament side wears: the rival company the
+/// week's field names for its team.
+///
+/// Teams 0 and 1 (the player's) wear none; team `t` from 2 on wears the
+/// field's `t − 2`th company id (1 through 19). A team past the sixteen
+/// field slots wears none [guess: the original reads past the field there,
+/// which no bracket reaches].
+#[must_use]
+pub fn rival_company(rivals: &[i32; crate::career::RIVAL_FIELD], team: i32) -> i32 {
+    if team <= 1 {
+        return 0;
+    }
+    usize::try_from(team - 2)
+        .ok()
+        .and_then(|slot| rivals.get(slot).copied())
+        .unwrap_or(0)
+}
+
+/// [`rival_company`] for every team id a bracket can hold, indexed by team
+/// id, as the fresh match's raise reads it.
+#[must_use]
+pub fn rival_outfits(rivals: &[i32; crate::career::RIVAL_FIELD]) -> Vec<i32> {
+    (0..crate::career::RIVAL_FIELD as i32 + 2)
+        .map(|team| rival_company(rivals, team))
+        .collect()
+}
+
 /// The weapon slot a hire-list opponent draws from an event row's three
 /// slots.
 ///
@@ -371,17 +402,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_beast_takes_its_tier_items_and_scale() {
+    fn a_tournament_team_wears_its_rival_company() {
+        let rivals = [15, 17, 4, 1, 13, 9, 5, 14, 8, 6, 11, 2, 18, 3, 19, 10];
+        assert_eq!(rival_company(&rivals, 0), 0);
+        assert_eq!(rival_company(&rivals, 1), 0);
+        assert_eq!(rival_company(&rivals, 2), 15);
+        assert_eq!(rival_company(&rivals, 3), 17);
+        assert_eq!(rival_company(&rivals, 17), 10);
+        assert_eq!(rival_company(&rivals, 18), 0);
+        let table = rival_outfits(&rivals);
+        assert_eq!(table.len(), 18);
+        assert_eq!(&table[..4], &[0, 0, 15, 17]);
+        // The rival's company bytes reach the hire profile.
+        let plan = hire_plan(3, rival_company(&rivals, 5), 0);
+        assert_eq!(plan.outfit.flags(), 0x0b);
+        assert_eq!(&plan.outfit.0[5..8], &COMPANY_OUTFITS[0]);
+    }
+
+    #[test]
+    fn a_beast_takes_its_tier_items_and_pitch() {
         let base = beast_plan(2, 0.0);
         assert_eq!(base.body, 0x44);
         assert!(base.equipment.is_empty());
         assert_eq!(base.profession, 0x300);
-        assert_eq!(base.scale, 0.9);
+        assert_eq!(base.voice_pitch, 0.9);
         assert_eq!(base.ability, 50_000);
         let third = beast_plan(3, 0.5);
         assert_eq!(third.body, 0x1f6);
         assert_eq!(third.equipment, [0x1fc, 0x1f9, 0x1fb, 0x1fa]);
-        assert!((third.scale - 0.985).abs() < 1e-6);
+        assert!((third.voice_pitch - 0.985).abs() < 1e-6);
         let fourth = beast_plan(4, 0.0);
         assert_eq!(fourth.body, 0x207);
         assert_eq!(fourth.equipment, [0x210, 0x20e, 0x20f, 0x213]);

@@ -281,8 +281,15 @@ pub fn from_live(
     };
 
     tables.hireables = previous.hireables;
+    // The week's field is the career's once drawn, else the loaded one.
+    let field = if career.rivals[0] != 0 {
+        career.rivals.map(|company| company as u32)
+    } else {
+        previous.tournament.field
+    };
     tables.tournament = TournamentChunk {
         rows: rows_from_roster(&career.entries),
+        field,
         ..previous.tournament
     };
     tables
@@ -355,6 +362,9 @@ pub fn apply(
 
     career.merchant_stock = tables.merchant.ids.clone();
     career.entries = roster_from_rows(&tables.tournament.rows);
+    // A field whose first company is 0 stays empty, so the next tournament
+    // asks for a new one.
+    career.rivals = tables.tournament.field.map(|company| company as i32);
 }
 
 #[cfg(test)]
@@ -489,6 +499,30 @@ mod tests {
         assert_eq!(kept.company.second, b"second");
         assert_eq!(kept.day.specials[0].template, 8);
         assert!(kept.stash.is_empty());
+    }
+
+    #[test]
+    fn the_weeks_field_round_trips_through_the_tournament_chunk() {
+        let mut career = career("Rivals");
+        let staff = Staff::default();
+        let arsenal = Arsenal::default();
+        let previous = ArenaTables::default();
+        // An undrawn field keeps the loaded one.
+        let tables = from_live(&career, &staff, &arsenal, &[], Some(&previous));
+        assert_eq!(tables.tournament.field, previous.tournament.field);
+        career.rivals = [15, 17, 4, 1, 13, 9, 5, 14, 8, 6, 11, 2, 18, 3, 19, 10];
+        let tables = from_live(&career, &staff, &arsenal, &[], Some(&previous));
+        assert_eq!(tables.tournament.field[0], 15);
+        assert_eq!(tables.tournament.field[15], 10);
+        let mut back = ArenaCareer::default();
+        apply(
+            &mut back,
+            &mut Staff::default(),
+            &mut Arsenal::default(),
+            &mut Vec::new(),
+            &tables,
+        );
+        assert_eq!(back.rivals, career.rivals);
     }
 
     #[test]

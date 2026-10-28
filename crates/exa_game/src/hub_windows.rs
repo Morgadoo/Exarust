@@ -84,6 +84,9 @@ pub struct ArenaCareer {
     /// The manager-entry warning is still armed: the first Begin that
     /// enters the manager shows the tip and waits for a second press.
     pub warn_manager: bool,
+    /// The week's tournament field: sixteen 1-based rival company ids, all
+    /// zero until drawn.
+    pub rivals: [i32; crate::career::RIVAL_FIELD],
 }
 
 impl Default for ArenaCareer {
@@ -109,11 +112,22 @@ impl Default for ArenaCareer {
             venue_items: Vec::new(),
             roll: 0,
             warn_manager: true,
+            rivals: [0; crate::career::RIVAL_FIELD],
         }
     }
 }
 
 impl ArenaCareer {
+    /// The week's tournament field. A field whose first company is 0 asks
+    /// for a new one, drawn from the career's roll (16 of the 19 rivals), as
+    /// the tournament chunk's load does.
+    pub fn rival_field(&mut self) -> [i32; crate::career::RIVAL_FIELD] {
+        if self.rivals[0] == 0 {
+            self.rivals = crate::career::draw_rival_field(&mut self.roll);
+        }
+        self.rivals
+    }
+
     /// The board from this career's company, player, day and daily rows.
     pub fn board(&self) -> Board {
         let rows = arena::generate_daily_board(0, || 0.5);
