@@ -486,6 +486,22 @@ impl From<Color> for ExaMaterial {
     }
 }
 
+/// Sets every loaded material's texture-bias base: the original sets the
+/// LOD bias from the texture quality's global on every bind (unless the
+/// texture's word carries the skip bit), so a quality change takes effect
+/// on the materials already built, not only on those built afterwards.
+/// Returns how many materials changed.
+pub fn set_texture_bias(materials: &mut Assets<ExaMaterial>, bias: f32) -> usize {
+    let mut changed = 0;
+    for (_, material) in materials.iter_mut() {
+        if material.params.texture_bias != bias {
+            material.params.texture_bias = bias;
+            changed += 1;
+        }
+    }
+    changed
+}
+
 /// What the pipeline needs to know about a material.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct ExaMaterialKey {
@@ -563,6 +579,27 @@ mod tests {
     /// The alpha the shader gives an unlit surface with fall-off.
     fn falloff_alpha(opacity: f32, f: Vec4, ndv: f32) -> f32 {
         opacity + ((f.x - ndv) * f.y).exp2() * f.z
+    }
+
+    /// A texture-quality change rewrites the bias of every loaded material,
+    /// as the original's bind does on each draw; one already at the value
+    /// is left alone.
+    #[test]
+    fn a_quality_change_rewrites_loaded_materials_bias() {
+        let mut materials = Assets::<ExaMaterial>::default();
+        let plain = materials.add(ExaMaterial::default());
+        let other = materials.add(ExaMaterial {
+            params: ExaParams {
+                texture_bias: -0.25,
+                ..default()
+            },
+            ..default()
+        });
+        assert_eq!(materials.get(&plain).unwrap().params.texture_bias, -0.75);
+        assert_eq!(set_texture_bias(&mut materials, -0.25), 1);
+        assert_eq!(materials.get(&plain).unwrap().params.texture_bias, -0.25);
+        assert_eq!(materials.get(&other).unwrap().params.texture_bias, -0.25);
+        assert_eq!(set_texture_bias(&mut materials, -0.25), 0);
     }
 
     #[test]

@@ -2378,9 +2378,11 @@ Texture quality and texture detail, with the super-sampling level, are
 pushed into the texture loader's settings (`exa_assets::texture::
 TextureSettings`) whenever the live options change: the quality's filter
 mask, anisotropy level and LOD bias base, the detail of the first uploaded
-level, and the level the LOD bias follows. Textures decoded afterwards take
-them; those already decoded keep theirs (whether the original reloads them
-was not traced).
+level, and the level the LOD bias follows. The filter mask, anisotropy and
+detail are upload-time settings, so textures decoded afterwards take them
+and those already decoded keep theirs. The LOD bias is not: the original
+sets it on every bind, so a change rewrites every loaded material's bias
+(`exa_render::material::set_texture_bias`).
 
 Not reproduced, for lack of the matching feature: shading quality (Exarust
 has one shader), shadow detail (no per-detail shadow path), vertex-buffer,

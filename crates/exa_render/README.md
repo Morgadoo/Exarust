@@ -74,6 +74,9 @@ and evidence: [`docs/formats/FLB.md`](../../docs/formats/FLB.md) and
 - `shell`: `ShellMaterial`, the rooms' shells drawn opaque, unlit pure black, and the fading lid overlay (blended, no depth test, drawn last) ([`docs/RENDERING.md`](../../docs/RENDERING.md), Rooms and black fill).
 - `electricity`: the electric arcs' rules and material. `ArcMaterial` is the original's `_ElecMat01` fragment program (the texture's red mixed a third into the ribbon's V, the 24th and 6th powers, EleCol and EdgCol, squared, additive and two-sided; `arc.wesl`); the module also holds the 84-byte arc record, the weapon, spark-burst and device presets (sustained or one-shot), the charge an electrified item spends, the arc checks' release and rebuild rules and the jittered tendril ribbon (U along, V across) ([`docs/RENDERING.md`](../../docs/RENDERING.md), Electricity).
 - `flame`: `FlameMaterial` for the fire presets' particles (`flame.wesl`, premultiplied blending).
+- `material`: the original's surface material, its programs and the
+  `set_texture_bias` pass that a texture-quality change runs over every
+  loaded material (the original sets the LOD bias on each bind).
 - `material_state`: the default material factory's type table (five built-ins, the reset and plug-in registration), its factory list (priority-ordered, every matching record called), the normal-map predicate, and the loader's diffuse scale order and gloss floor that `exa_assets` uses.
 - `smoke`: the original's `shadesmk_f` smoke and mist program (`shadesmk.wesl`, line for line without its fog and dither), its `UVOfst` scroll and state key (not spawned yet).
 - `quads`: the data path of the original's 2-D immediate-draw batcher: the begin scale, flipped y, cumulative 16-level translation stack, texture coordinates and RGBA colours, the quad index template and line pairs, the projections, the six built-in vertex programs and their attribute locations (nothing draws a batch yet).
