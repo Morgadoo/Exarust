@@ -441,7 +441,10 @@ request.
 
 ## The running hub
 
-`arena_hub_live` runs `arena_hub`'s rules from the game. When a play level
+`arena_match::ArenaMatch` keeps the transition screen (3 next round, 2 end)
+and exposes the Continue and forfeit branches (`end_action`, `forfeit`), but
+the play-mode match still has no end-screen input. `arena_hub_live` runs
+`arena_hub`'s rules from the game. When a play level
 named `arenahub` is in (or an arena session enters it), it calls `enter_hub`
 once with the hub roll and the flow's alternative-music setting, writes the
 track and its start offset through `exa_audio`'s level-music resources,
