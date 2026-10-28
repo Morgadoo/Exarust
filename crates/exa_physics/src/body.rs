@@ -325,6 +325,10 @@ pub struct Part {
     /// controller), which the body tick sets bits of (bit 4 marks a part
     /// in a tangle or a hit reaction).
     pub state_word: u32,
+    /// The original's second flag word on the body (its node's word beside
+    /// the class word): a lower leg's children take [`crate::part::FOOT_CHILD_FLAG`]
+    /// when the leg joins the world.
+    pub flags2: u32,
     /// When this part may play its impact sound again, on the 32-bit game
     /// clock. A blow on it stamps [`crate::part::part_sound_ready`].
     pub sound_ready_ms: u32,
@@ -523,6 +527,7 @@ impl Part {
             static_only: false,
             class_word: 0,
             state_word: 0,
+            flags2: 0,
             sound_ready_ms: 0,
             reacts: true,
             level_hits: 0,
@@ -1375,6 +1380,9 @@ pub struct Ragdoll {
     /// models, so the word is kept for them; no part reads it yet.
     held_flags: [u32; 2],
     held_count: usize,
+    /// The body of the character holding this one (a held item): the two
+    /// never meet, the original's all-ones group mask on the item.
+    pub held_by: Option<Entity>,
     /// The level impacts this tick's detection found (a fall or scrape hard
     /// enough to sound and hurt), one per part.
     level_impacts: Vec<LevelImpact>,
@@ -2027,6 +2035,7 @@ impl Ragdoll {
                 .collect();
             for child in children {
                 parts[child].state = crate::part::foot_child_state(parts[child].state);
+                parts[child].flags2 |= crate::part::FOOT_CHILD_FLAG;
             }
         }
         let (outward, inward) = tree_orders(&parts);
@@ -2057,6 +2066,7 @@ impl Ragdoll {
             pass: 0,
             held_flags: [0; 2],
             held_count: 0,
+            held_by: None,
             level_impacts: Vec::new(),
         }
     }
@@ -2757,6 +2767,14 @@ impl Ragdoll {
     /// The point with weights `w` where the part is now (m).
     pub fn point_at(&self, part: usize, w: &[f32; 4]) -> Option<Vec3> {
         self.parts.get(part).map(|p| p.point(w))
+    }
+
+    /// Moves part `part` by `delta` (m) over the particles' weights `w`:
+    /// one link end's push, exactly as the body's own links apply it.
+    pub fn push_weights(&mut self, part: usize, w: &[f32; 4], delta: Vec3) {
+        if let Some(p) = self.parts.get_mut(part) {
+            p.push(w, delta);
+        }
     }
 
     /// Where the part's own origin is now (m).

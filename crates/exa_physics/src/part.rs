@@ -207,6 +207,12 @@ pub fn world_state(state: PartState, has_foot_contacts: bool) -> PartState {
     }
 }
 
+/// A lower leg's child when the leg joins the world: the original sets a
+/// flag in the body's second flag word (`0x200`), and the child's collision
+/// layer. Exarust's layers are [`crate::body_pairs::register_legs`]', so
+/// only the flag is kept here.
+pub const FOOT_CHILD_FLAG: u32 = 0x200;
+
 /// The state of a lower leg's child when the leg joins the world: it is no
 /// longer dynamic. The original also sets a mark in a second flag word and
 /// the child's collision layers; Exarust keeps neither in [`PartState`]

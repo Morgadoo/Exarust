@@ -121,6 +121,28 @@ pub(crate) fn impact_sounds(
     }
 }
 
+/// Plays a held weapon's own impact sound at the item's point: the
+/// weapon's named hit set, or the sword fallback, at the branch's volume
+/// and pitch.
+pub(crate) fn weapon_sounds(
+    game: Option<Res<Game>>,
+    mut sounded: MessageReader<exa_combat::impact::WeaponSounded>,
+    mut bank: ResMut<SoundBank>,
+    mut sources: ResMut<Assets<AudioSource>>,
+    mut env: ResMut<AudioEnvironment>,
+    mut sets: Local<bevy::platform::collections::HashMap<Option<String>, u32>>,
+) {
+    let Some(game) = game else { return };
+    for sound in sounded.read() {
+        let key = sound.set.clone();
+        let id = *sets.entry(key).or_insert_with(|| {
+            let name = sound.set.as_deref().unwrap_or(SWORD_IMPACTS.prefix);
+            bank.load_set(&game, &mut sources, name)
+        });
+        env.play_set(&mut bank, id, sound.point, sound.volume, sound.pitch, 0);
+    }
+}
+
 /// The table index a part's material takes.
 fn sound_class(sound: exa_combat::sounds::HitSound) -> u8 {
     use exa_combat::sounds::HitSound;

@@ -130,6 +130,7 @@ fn light_torches(
     >,
     children: Query<&Children>,
     parts: Query<&BodyPart>,
+    ragdolls: Query<&exa_physics::body::Ragdoll>,
     mut cache: ResMut<ModelCache>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<exa_render::material::ExaMaterial>>,
@@ -173,6 +174,7 @@ fn light_torches(
         };
         // Placed by its grip for the holder's size and race.
         let size = fighter.map_or(1.0, |f| f.stats.size);
+        let scale = fighter.map_or(1.0, |f| f.stats.scale);
         let held_by = race.map_or(
             GripHolder {
                 size,
@@ -181,10 +183,39 @@ fn light_torches(
             |r| r.grip_holder(size),
         );
         let grip = hand.grip().placement(&held_by, false);
+        let model = torch.clone();
         let root = exa_world::spawn_model(&mut commands, &torch, Some(grip));
         commands
             .entity(root)
             .insert((TorchRoot, exa_world::flame::CarriedFire, ChildOf(holder)));
+        // The torch as a body, like a weapon: its rigid root, the grip
+        // links to its hand and the impact book its own collisions keep.
+        if let Some(key) = ragdolls
+            .get(body)
+            .ok()
+            .and_then(|r| r.parts.first())
+            .map(|p| p.entity)
+            && let Some(part) = exa_character::held_item_body(&model, root)
+        {
+            commands.entity(root).insert((
+                exa_physics::prop::PendingProp(vec![part]),
+                exa_combat::impact::ImpactBook::default(),
+                exa_physics::grip::HeldGrip {
+                    spec: hand.grip().spec(),
+                    scale,
+                    size,
+                    second_hand_factor: 1.0,
+                    flip: false,
+                    holder_key: key,
+                    hands: [
+                        by_bone.get(&exa_character::RIGHT_HAND).copied(),
+                        by_bone.get(&exa_character::LEFT_HAND).copied(),
+                    ],
+                    arms: [by_bone.get(&13).copied(), by_bone.get(&16).copied()],
+                    links: None,
+                },
+            ));
+        }
     }
 }
 

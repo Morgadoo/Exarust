@@ -39,12 +39,16 @@ use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 use exa_physics::body::{BodySystems, BodyTicks, GoLimp, Pairs, Ragdoll, Shove, SolverStages};
 use exa_physics::body::{Fallen, daze_energy};
-use exa_physics::part::{PartState, limb_impact_damage, limb_impact_sound};
+use exa_physics::part::{
+    HardImpact, PartState, hard_impact, limb_impact_damage, limb_impact_sound,
+    stamp_sound_cooldown, weapon_impact_sound,
+};
 
 use crate::attack::AttackMotion;
 use crate::damage::part_multipliers;
 use crate::fighter::{Damage, Fighter, SecondWindFired, StoryMode, Taken, Weakened};
-use crate::{Attacking, Condition, Roll, StateFlags, collapse};
+use crate::swing::SwingState;
+use crate::{Attacker, Attacking, Blade, Condition, Motions, Roll, StateFlags, collapse};
 
 /// What a character keeps for its limb impacts: the impact damage taken
 /// and its root's sinking speed (cm a tick, 0 or less) and last height.
@@ -145,6 +149,19 @@ pub struct ImpactSounded {
     pub foley: bool,
 }
 
+/// A held weapon's own impact sound: the weapon record's set at the item's
+/// point, with the volume and pitch the weapon branch works out.
+#[derive(Message, Debug, Clone, PartialEq)]
+pub struct WeaponSounded {
+    /// The item's body (its sound cooldown lives on it).
+    pub target: Entity,
+    pub point: Vec3,
+    pub volume: f32,
+    pub pitch: f32,
+    /// The weapon's hit-sound set, when its record names one.
+    pub set: Option<String>,
+}
+
 /// One side of a touch a body struck.
 struct Struck {
     target: Entity,
@@ -186,6 +203,24 @@ fn life(body: &Ragdoll) -> &'static str {
     }
 }
 
+/// The extra queries the weapon-body impact pass needs, bundled to stay
+/// within a system's parameter list.
+#[derive(bevy::ecs::system::SystemParam)]
+#[allow(clippy::type_complexity)]
+pub struct WeaponImpacts<'w, 's> {
+    pub weapons: Query<
+        'w,
+        's,
+        (Entity, &'static mut Ragdoll, &'static mut ImpactBook),
+        (Without<Fighter>, With<ImpactBook>),
+    >,
+    pub swings: Query<'w, 's, &'static mut SwingState>,
+    pub attackers: Query<'w, 's, &'static Attacker>,
+    pub blades: Query<'w, 's, &'static Blade>,
+    pub motions: Option<Res<'w, Motions>>,
+    pub sounds: MessageWriter<'w, WeaponSounded>,
+}
+
 /// Limb impacts from the pair stage's last detection, then each
 /// character's upkeep.
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
@@ -204,7 +239,8 @@ pub fn strike_limbs(
         Option<&Attacking>,
         &mut Ragdoll,
     )>,
-    bodies: Query<(Entity, &Ragdoll), Without<Fighter>>,
+    bodies: Query<(Entity, &Ragdoll), (Without<Fighter>, Without<ImpactBook>)>,
+    mut weapon: WeaponImpacts,
     mut shoves: MessageWriter<Shove>,
     mut impacts: MessageWriter<LimbImpact>,
     mut sounds: MessageWriter<ImpactSounded>,
@@ -225,6 +261,38 @@ pub fn strike_limbs(
         .as_deref()
         .and_then(|s| s.get::<Pairs>())
         .map_or(&[][..], Pairs::touches);
+    // The held item bodies, their part states, and the character each
+    // belongs to, read without holding a body's borrow.
+    let mut owner_of: HashMap<Entity, Entity> = HashMap::default();
+    let mut items: HashMap<Entity, Entity> = HashMap::default();
+    let mut part_states: HashMap<(Entity, usize), PartState> = HashMap::default();
+    for (root, body) in fighters.iter().map(|(e, .., b)| (e, b)) {
+        let Some(key) = body.parts.first().map(|p| p.entity) else {
+            continue;
+        };
+        owner_of.insert(key, root);
+        for (i, part) in body.parts.iter().enumerate() {
+            part_states.insert((key, i), part.state);
+        }
+    }
+    for (root, body) in &bodies {
+        let Some(key) = body.parts.first().map(|p| p.entity) else {
+            continue;
+        };
+        for (i, part) in body.parts.iter().enumerate() {
+            part_states.insert((key, i), part.state);
+        }
+        let _ = root;
+    }
+    for (root, body, _) in &weapon.weapons {
+        let Some(key) = body.parts.first().map(|p| p.entity) else {
+            continue;
+        };
+        items.insert(key, root);
+        for (i, part) in body.parts.iter().enumerate() {
+            part_states.insert((key, i), part.state);
+        }
+    }
     let mut struck = Vec::new();
     if touches.iter().any(|t| t.struck.iter().any(Option::is_some)) {
         let mut by_key: HashMap<Entity, (Entity, &Ragdoll)> = HashMap::default();
@@ -392,6 +460,129 @@ pub fn strike_limbs(
         let cooldown = sound.spread_cooldown(roll.below(CLOCK_SPREAD_MS));
         body.parts[root].sound_ready_ms = now.wrapping_add(cooldown);
     }
+    // A held item's own weapon-body impact: a weapon that is striking (its
+    // owner's window open) rings its own set and interrupts or stalls the
+    // swing by the original's weapon branch. A non-striking weapon takes
+    // the base collision path, which Exarust's rigid part sound covers.
+    for touch in touches {
+        let sides = [(touch.a, touch.b), (touch.b, touch.a)];
+        for (impact, (own, other)) in touch.struck.iter().zip(sides) {
+            let Some(impact) = impact else {
+                continue;
+            };
+            let Some(&target) = items.get(&own.0) else {
+                continue;
+            };
+            let other_state = part_states.get(&(other.0, other.1)).copied();
+            if other_state.is_some_and(|s| s.is_limb()) {
+                continue;
+            }
+            let Ok((_, mut item, mut book)) = weapon.weapons.get_mut(target) else {
+                continue;
+            };
+            book.count(0);
+            let striking = item
+                .parts
+                .first()
+                .is_some_and(|p| p.state.has(PartState::STRIKING));
+            if !striking {
+                continue;
+            }
+            let Some(owner_key) = item.held_by else {
+                continue;
+            };
+            let Some(&owner) = owner_of.get(&owner_key) else {
+                continue;
+            };
+            let Ok((_, _, _, _, _, anim, attacking, _)) = fighters.get_mut(owner) else {
+                continue;
+            };
+            let Ok(mut swing) = weapon.swings.get_mut(owner) else {
+                continue;
+            };
+            let clock = match (weapon.motions.as_ref(), anim.as_deref()) {
+                (Some(motions), Some(anim)) => motions
+                    .clip(anim, &anim.action)
+                    .map_or(0.0, |c| anim.clip_progress(c)),
+                _ => 0.0,
+            };
+            let motion = attacking.map_or(0, |a| a.motion.index() as i32);
+            let primary = weapon.attackers.get(owner).ok().and_then(|a| a.primary);
+            let blade = weapon.blades.get(target).ok();
+            let root_is_primary = blade.is_some_and(|b| primary == Some(b.slot));
+            let counter_taken = attacking.is_some_and(|a| a.weapon_class == 0x90)
+                && f64::from(clock) > 0.4
+                && exa_physics::part::immediate_counter(swing.flags, motion).is_some();
+            let hit = HardImpact {
+                flags: swing.flags,
+                motion,
+                clock,
+                impact: *impact,
+                has_children: item.parts.len() > 1,
+                root_is_primary,
+                counter_taken,
+                now_ms: now,
+                // The original adds a shared simulation field here; its
+                // writer was not traced, so no time is added.
+                link_ticks: 0,
+            };
+            if let Some(reaction) = hard_impact(&hit) {
+                swing.flags = reaction.flags;
+                if reaction.interrupted {
+                    swing.strength = 1.0;
+                    swing.stall = 0.0;
+                    swing.end_ms = u64::from(reaction.stall_end_ms);
+                }
+                if let Some(strength) = reaction.strike_strength {
+                    swing.strike_strength = strength;
+                }
+                if reaction.clears_strike_chain {
+                    for part in &mut item.parts {
+                        part.state = part.state.without(PartState::STRIKE_CHAIN);
+                    }
+                }
+            }
+            let Some(sound) = weapon_impact_sound(*impact) else {
+                continue;
+            };
+            // The original stamps the item, its first-child chain and any
+            // striking weapon ancestors with the sound's cooldown.
+            let states: Vec<PartState> = item.parts.iter().map(|p| p.state).collect();
+            let parents: Vec<Option<usize>> = item.parts.iter().map(|p| p.parent).collect();
+            let mut first_child = vec![None; item.parts.len()];
+            for (i, p) in item.parts.iter().enumerate() {
+                if let Some(parent) = p.parent
+                    && first_child[parent].is_none()
+                {
+                    first_child[parent] = Some(i);
+                }
+            }
+            let mut ready = vec![0u32; item.parts.len()];
+            stamp_sound_cooldown(
+                &states,
+                &parents,
+                &first_child,
+                0,
+                now.wrapping_add(sound.cooldown_ms),
+                &mut ready,
+            );
+            for (part, at) in item.parts.iter_mut().zip(ready) {
+                part.sound_ready_ms = at;
+            }
+            weapon.sounds.write(WeaponSounded {
+                target,
+                point: item
+                    .parts
+                    .first()
+                    .map_or(Vec3::ZERO, |p| p.transform().translation.into()),
+                volume: sound.volume,
+                pitch: sound.pitch,
+                set: blade
+                    .and_then(|b| b.record.hit_sound_name())
+                    .map(str::to_owned),
+            });
+        }
+    }
     for (_, _, mut book, condition, _, _, _, body) in &mut fighters {
         if let Some(root) = body.parts.iter().find(|p| p.parent.is_none()) {
             book.sink(root.transform().translation.y * 100.0);
@@ -402,10 +593,28 @@ pub fn strike_limbs(
     }
 }
 
+/// Sets each held item's strike flags from its owner's swing window: a
+/// weapon body is a striker (class bit 1) while its owner's striker window
+/// is open, as the original's attack sets it, and stops being one when the
+/// window shuts.
+fn sync_held_striking(mut blades: Query<(&Blade, &mut Ragdoll)>, swings: Query<&SwingState>) {
+    for (blade, mut body) in &mut blades {
+        if body.held_by.is_none() {
+            continue;
+        }
+        let open = swings
+            .get(blade.wielder)
+            .is_ok_and(|s| s.open[blade.slot.index()]);
+        body.set_striking(0, open);
+    }
+}
+
 /// Wires the limb impacts after each tick of the body solver.
 pub(crate) fn plugin(app: &mut App) {
     app.add_message::<LimbImpact>()
         .add_message::<ImpactSounded>()
+        .add_message::<WeaponSounded>()
+        .add_systems(FixedUpdate, sync_held_striking.before(BodySystems))
         .add_systems(FixedUpdate, strike_limbs.after(BodySystems));
 }
 
