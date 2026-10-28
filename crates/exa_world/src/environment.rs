@@ -234,6 +234,7 @@ pub fn reference_ambient() -> GlobalAmbientLight {
 /// `parent`, and fog for the cameras.
 pub fn apply_lighting(commands: &mut Commands, lighting: &Lighting, parent: Entity) {
     commands.insert_resource(ambient_light(lighting.ambient));
+    commands.insert_resource(exa_render::gi::GiSunSky(lighting.sky));
     let bg = lighting.background;
     commands.insert_resource(ClearColor(Color::linear_rgb(bg.x, bg.y, bg.z)));
     if let Some(sun) = lighting.sun {

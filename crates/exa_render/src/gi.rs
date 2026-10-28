@@ -23,11 +23,12 @@ use bevy::render::render_resource::binding_types::{
     sampler, texture_3d, texture_storage_3d, uniform_buffer,
 };
 use bevy::render::render_resource::{
-    BindGroupEntries, BindGroupLayoutDescriptor, BindGroupLayoutEntries, CachedComputePipelineId,
-    ComputePassDescriptor, ComputePipelineDescriptor, Extent3d, FilterMode, PipelineCache, Sampler,
-    SamplerBindingType, SamplerDescriptor, ShaderStages, ShaderType, StorageTextureAccess,
-    TexelCopyTextureInfo, TextureDimension, TextureFormat, TextureSampleType, TextureUsages,
-    TextureViewDescriptor, UniformBuffer,
+    BindGroupEntries, BindGroupLayoutDescriptor, BindGroupLayoutEntries, BindGroupLayoutEntry,
+    BindingType, CachedComputePipelineId, CompareFunction, ComputePassDescriptor,
+    ComputePipelineDescriptor, Extent3d, FilterMode, PipelineCache, Sampler, SamplerBindingType,
+    SamplerDescriptor, ShaderStages, ShaderType, StorageTextureAccess, TexelCopyTextureInfo,
+    Texture, TextureDimension, TextureFormat, TextureSampleType, TextureUsages, TextureView,
+    TextureViewDescriptor, TextureViewDimension, UniformBuffer,
 };
 use bevy::render::renderer::{RenderContext, RenderDevice, RenderQueue, ViewQuery};
 use bevy::render::texture::GpuImage;
@@ -50,6 +51,8 @@ impl Plugin for GiPlugin {
                 ExtractResourcePlugin::<GiTextures>::default(),
                 ExtractResourcePlugin::<GiPendingTextures>::default(),
                 ExtractResourcePlugin::<GiLights>::default(),
+                ExtractResourcePlugin::<GiSunShadow>::default(),
+                ExtractResourcePlugin::<GiSunSky>::default(),
             ))
             .add_systems(
                 PostUpdate,
@@ -213,6 +216,41 @@ pub struct GiMultiplier(pub f32);
 /// unranged light still injects over that radius.
 #[derive(Component, Clone, Copy, Debug, PartialEq)]
 pub struct GiRadius(pub f32);
+
+/// A light's dimming, as its record stores it: the injection multiplies the
+/// light by (1 − dim)². Shipped point lights leave it at 0.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq)]
+pub struct GiDim(pub f32);
+
+/// The id the sun has in the GI's light sets. Point lights count up from 0,
+/// so the largest value never names one.
+pub const SUN_LIGHT_ID: u32 = u32::MAX;
+
+/// The sun's fitted shadow matrix (world metres to Bevy's clip space) and
+/// whether it may be sampled. The world's sun-shadow fit writes it; without
+/// it the sun still lights the volume, unshadowed.
+#[derive(Resource, Clone, Copy, Debug, ExtractResource)]
+#[extract_app(RenderApp)]
+pub struct GiSunShadow {
+    pub clip_from_world: Mat4,
+    pub enabled: bool,
+}
+
+impl Default for GiSunShadow {
+    fn default() -> Self {
+        Self {
+            clip_from_world: Mat4::IDENTITY,
+            enabled: false,
+        }
+    }
+}
+
+/// Whether the level has an open sky: the original's sun branch then takes
+/// the shadow map's first sample alone rather than its two-sample
+/// difference.
+#[derive(Resource, Clone, Copy, Debug, Default, ExtractResource)]
+#[extract_app(RenderApp)]
+pub struct GiSunSky(pub bool);
 
 /// A GI light shape (the original's abstract `TGIEmissive` base: a dome, a
 /// cuboid, a bubble, a line or a multi-point shape). Gameplay effects
@@ -613,10 +651,15 @@ struct GiGroupUniform {
 
 #[derive(Clone, Copy, Default, ShaderType)]
 struct GiLight {
+    /// A point light at (x, z depth, y height) in texture units, its inverse
+    /// radius in them in `w`; unused for the sun.
     position_radius: Vec4,
     colour: Vec4,
-    /// Vertical shaping (y, z), as the surface shader reads it.
+    /// x, z: vertical shaping; w: 1/(2^z − 1); the fourth, kind, is 0 for a
+    /// point light and 1 for the sun.
     shaping: Vec4,
+    /// x: the cube slot + 1 (0 without a shadow map).
+    extra: UVec4,
 }
 
 /// Sectors across a block (X and Z): the original's 8 × 8 of 6 m cells.
@@ -654,6 +697,10 @@ struct GiParams {
     extent: Vec4,
     /// The base ambient every open voxel gains per step, per channel.
     base: Vec4,
+    /// The sun's fitted shadow matrix (world metres to clip space).
+    sun_matrix: [[f32; 4]; 4],
+    /// x: the shadow map may be sampled, y: the level has a sky.
+    sun_flags: UVec4,
     /// The groups of sectors drawn this frame.
     groups: [GiGroupUniform; MAX_GROUPS],
     /// Per sector (X fastest), its group or u32::MAX.
@@ -666,13 +713,16 @@ struct GiParams {
 
 /// Lumens per unit of the original's light intensity (see `exa_world`).
 const LUMENS_PER_INTENSITY: f32 = 8.0;
+/// Lux per unit of the original's sun intensity (see `exa_world`).
+const SUN_LUX: f32 = 160.0;
+/// The sun's intensity below which the original leaves it out of the GI.
+const SUN_EPSILON: f32 = 1.192_09e-7;
 /// Light ranges are 1.25 radii; the volume falls off over one radius.
 const REACH: f32 = 1.25;
-/// The per-step injection of a light: 0.15 × 0.01 of its colour.
-const INJECTION: f32 = 0.0015;
 /// A voxel light's colour per unit of √intensity (the original's linear
 /// workflow; 0.6 on its legacy path).
 const VOXEL_LIGHT_GAIN: f32 = 3.0;
+
 /// The share of a voxel light's colour added per step.
 const VOXEL_LIGHT_SHARE: f32 = 0.1;
 /// The columns a voxel light reaches on each side of the voxel corner
@@ -855,12 +905,27 @@ struct LightSource {
     multiplier: f32,
     /// The vertical shaping (y, z); (1, 1) for a light without a spot.
     shaping: Vec2,
+    /// The light's dimming, as its record stores it.
+    dim: f32,
+    /// The cached cube shadow's slot + 1 (0 without one).
+    cube: u32,
+    /// The sun, which is injected by its shadow map rather than a position.
+    sun: bool,
 }
 
 impl LightSource {
     /// Whether the light has the original's spot shaping.
     fn shaped(&self) -> bool {
         self.shaping != Vec2::ONE
+    }
+
+    /// The light's per-step colour: linear colour × intensity × 0.15 (× 0.3
+    /// for the sun), the original's `(1 − dim)²` factor and the uniform's
+    /// 0.01 still to come.
+    fn injection_colour(&self) -> Vec3 {
+        let dim = (1.0 - self.dim) * (1.0 - self.dim);
+        let gain = if self.sun { 0.3 } else { 0.15 };
+        self.colour * self.intensity * dim * gain
     }
 }
 
@@ -875,6 +940,8 @@ type GiLightQuery<'w, 's> = Query<
         Option<&'static GiMultiplier>,
         Option<&'static GiRadius>,
         Option<&'static crate::lights::LightShaping>,
+        Option<&'static crate::cube_shadows::CubeSlot>,
+        Option<&'static GiDim>,
     ),
 >;
 
@@ -893,6 +960,7 @@ const SHAPE_FLOOR: f32 = f32::from_bits(0x33ff_ffd7);
 fn gather_lights(
     mut gi: ResMut<GiLights>,
     lights: GiLightQuery,
+    suns: Query<(&DirectionalLight, &GlobalTransform)>,
     voxel_lights: Query<(&VoxelLight, &GlobalTransform)>,
     textures: Option<Res<GiTextures>>,
     pending: Option<Res<GiPendingTextures>>,
@@ -917,7 +985,7 @@ fn gather_lights(
     }
     // The lights the cells record, by their shader id.
     sources.clear();
-    for (light, at, id, share, radius, shaping) in &lights {
+    for (light, at, id, share, radius, shaping, cube, dim) in &lights {
         let c = light.color.to_linear();
         sources.insert(
             id.0,
@@ -928,6 +996,37 @@ fn gather_lights(
                 position: at.translation(),
                 multiplier: share.map_or(1.0, |m| m.0),
                 shaping: shaping.map_or(Vec2::ONE, |s| s.0),
+                dim: dim.map_or(0.0, |d| d.0),
+                cube: cube.and_then(|c| c.slot).map_or(0, |s| s + 1),
+                sun: false,
+            },
+        );
+    }
+    // The original's sun: the scene's directional light, its colour already
+    // in the original's units, injected from every marked sector's group.
+    let sun = suns
+        .iter()
+        .next()
+        .filter(|(light, _)| light.illuminance > 0.0);
+    let sun_active = sun.is_some_and(|(light, _)| {
+        let c = light.color.to_linear();
+        let i = light.illuminance / SUN_LUX;
+        (Vec3::new(c.red, c.green, c.blue) * i).max_element() > SUN_EPSILON
+    });
+    if sun_active && let Some((light, _)) = sun {
+        let c = light.color.to_linear();
+        sources.insert(
+            SUN_LIGHT_ID,
+            LightSource {
+                colour: Vec3::new(c.red, c.green, c.blue),
+                intensity: light.illuminance / SUN_LUX,
+                radius: 0.0,
+                position: Vec3::ZERO,
+                multiplier: 1.0,
+                shaping: Vec2::ONE,
+                dim: 0.0,
+                cube: 0,
+                sun: true,
             },
         );
     }
@@ -936,20 +1035,34 @@ fn gather_lights(
         // Without a sector grid the original draws one group of all 64
         // sectors from the bottom slice, with the scene's lights.
         groups.clear();
+        let mut list = GiSector::default();
+        if sun_active {
+            list.push(SUN_LIGHT_ID);
+        }
+        for &id in sectors.sectors[0].ids() {
+            list.push(id);
+        }
         groups.push(GiGroupPlan {
             floor: 0,
-            lights: sectors.sectors[0],
+            lights: list,
             sectors: (SECTORS * SECTORS) as u8,
         });
         let of_sector = [0; SECTORS * SECTORS];
-        push_groups(&mut gi, &groups, &sources, of_sector);
+        push_groups(
+            &mut gi,
+            &groups,
+            &sources,
+            of_sector,
+            textures.origin,
+            textures.extent,
+        );
         return;
     }
-    // Each marked sector keeps the lights of its cell that the downward
-    // shaping lets reach its floor slice, in the cell's order. A light the
-    // injection does not know is kept for the grouping and dropped from the
-    // draw, as the original drops a light without its GI flag after
-    // grouping.
+    // Each marked sector keeps the sun and then the lights of its cell that
+    // the downward shaping lets reach its floor slice, in the cell's order.
+    // A light the injection does not know is kept for the grouping and
+    // dropped from the draw, as the original drops a light without its GI
+    // flag after grouping.
     let below = (-textures.origin.y / textures.voxel).round();
     let mut plans = [GiSectorPlan::default(); SECTORS * SECTORS];
     for z in 0..SECTORS {
@@ -959,6 +1072,9 @@ fn gather_lights(
             let drawn = sectors.drawn[i];
             let mut kept = GiSector::default();
             if drawn && u32::from(floor) < depth {
+                if sun_active {
+                    kept.push(SUN_LIGHT_ID);
+                }
                 let cell = Vec2::new(
                     ((sectors.from_middle.x + x as i32) as f32 + 0.5) * CELL_CM,
                     ((sectors.from_middle.y + z as i32) as f32 + 0.5) * CELL_CM,
@@ -966,7 +1082,7 @@ fn gather_lights(
                 let floor_y = VOXEL_CM * ((f32::from(floor) + 0.5) - below);
                 for &id in sectors.sector(x, z).ids() {
                     match sources.get(&id) {
-                        Some(source) if !shape_reaches(source, cell, floor_y) => {}
+                        Some(source) if !source.sun && !shape_reaches(source, cell, floor_y) => {}
                         _ => kept.push(id),
                     }
                 }
@@ -979,7 +1095,14 @@ fn gather_lights(
         }
     }
     let of_sector = group_sectors(&plans, depth, &mut groups);
-    push_groups(&mut gi, &groups, &sources, of_sector);
+    push_groups(
+        &mut gi,
+        &groups,
+        &sources,
+        of_sector,
+        textures.origin,
+        textures.extent,
+    );
 }
 
 /// Lays the groups' lights out for the pass, dropping the lights the
@@ -989,19 +1112,40 @@ fn push_groups(
     groups: &[GiGroupPlan],
     sources: &HashMap<u32, LightSource>,
     of_sector: [u8; SECTORS * SECTORS],
+    origin: Vec3,
+    extent: Vec3,
 ) {
+    let width = extent.x.max(1e-6);
+    let depth = extent.y.max(1e-6);
     for group in groups {
         let first = gi.lights.len();
         for id in group.lights.ids() {
             let Some(source) = sources.get(id) else {
                 continue;
             };
-            let intensity = source.intensity * source.multiplier;
-            gi.lights.push(GiLight {
-                position_radius: source.position.extend(source.radius),
-                colour: (source.colour * intensity * INJECTION).extend(0.0),
-                shaping: source.shaping.extend(0.0).extend(0.0),
-            });
+            let colour = (source.injection_colour() * source.multiplier).extend(0.0);
+            let light = if source.sun {
+                GiLight {
+                    colour,
+                    shaping: Vec4::new(1.0, 1.0, 1.0, 1.0),
+                    ..default()
+                }
+            } else {
+                let p = source.position - origin;
+                let shaping = source.shaping;
+                GiLight {
+                    position_radius: Vec4::new(
+                        p.x / width,
+                        p.z / depth,
+                        p.y / width,
+                        width / source.radius.max(1e-6),
+                    ),
+                    colour,
+                    shaping: Vec4::new(shaping.x, shaping.y, 1.0 / (shaping.y.exp2() - 1.0), 0.0),
+                    extra: UVec4::new(source.cube, 0, 0, 0),
+                }
+            };
+            gi.lights.push(light);
         }
         gi.groups.push(GiGroupUniform {
             floor: u32::from(group.floor),
@@ -1048,6 +1192,8 @@ fn gather_voxel_lights<'a>(
     lights: impl Iterator<Item = (&'a VoxelLight, &'a GlobalTransform)>,
 ) {
     let centre = textures.dims.as_vec3() * 0.5;
+    let width = textures.extent.x.max(1e-6);
+    let depth = textures.extent.y.max(1e-6);
     let mut near: Vec<(f32, GiVoxelLight)> = lights
         .filter(|(light, _)| light.colour.max_element() > 0.0)
         .filter_map(|(light, at)| {
@@ -1055,10 +1201,14 @@ fn gather_voxel_lights<'a>(
             let p = (at.translation() - textures.origin) / textures.voxel;
             let voxels = Vec3::new(p.x, p.z, p.y);
             let (lo, hi) = voxel_light_box(voxels, textures.dims)?;
+            let metres = at.translation() - textures.origin;
             Some((
                 voxels.distance_squared(centre),
                 GiVoxelLight {
-                    position: voxels.extend(0.0),
+                    // The pass's world-scale texture units: the height is
+                    // divided by the block's width, not its slice count.
+                    position: Vec3::new(metres.x / width, metres.z / depth, metres.y / width)
+                        .extend(0.0),
                     colour: (light.colour * VOXEL_LIGHT_SHARE).extend(0.0),
                     lo: lo.extend(0),
                     hi: hi.extend(0),
@@ -1114,7 +1264,44 @@ fn give_materials_gi(
 struct GiPipeline {
     layout: BindGroupLayoutDescriptor,
     sampler: Sampler,
+    cube_sampler: Sampler,
+    sun_sampler: Sampler,
     pipeline: CachedComputePipelineId,
+    /// A 1-layer depth array and a six-face cube bound while the real shadow
+    /// maps are absent (before the first camera's view bindings exist).
+    dummy_sun: TextureView,
+    dummy_cube: TextureView,
+    /// Kept alive while the views above point into them.
+    _dummies: (Texture, Texture),
+}
+
+/// A depth texture and its view, for the fallback shadow maps.
+fn depth_texture(
+    device: &RenderDevice,
+    size: u32,
+    layers: u32,
+    format: TextureFormat,
+    dimension: TextureViewDimension,
+) -> (Texture, TextureView) {
+    let texture = device.create_texture(&bevy::render::render_resource::TextureDescriptor {
+        label: Some("exa_gi_fallback_shadow"),
+        size: Extent3d {
+            width: size,
+            height: size,
+            depth_or_array_layers: layers,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: TextureDimension::D2,
+        format,
+        usage: TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&TextureViewDescriptor {
+        dimension: Some(dimension),
+        ..default()
+    });
+    (texture, view)
 }
 
 fn init_pipeline(
@@ -1123,6 +1310,16 @@ fn init_pipeline(
     assets: Res<AssetServer>,
     cache: Res<PipelineCache>,
 ) {
+    let depth_texture_entry = |dimension| BindGroupLayoutEntry {
+        binding: u32::MAX,
+        visibility: ShaderStages::COMPUTE,
+        ty: BindingType::Texture {
+            sample_type: TextureSampleType::Depth,
+            view_dimension: dimension,
+            multisampled: false,
+        },
+        count: None,
+    };
     let layout = BindGroupLayoutDescriptor::new(
         "exa_gi",
         &BindGroupLayoutEntries::sequential(
@@ -1133,6 +1330,10 @@ fn init_pipeline(
                 sampler(SamplerBindingType::Filtering),
                 texture_storage_3d(TextureFormat::Rgba8Unorm, StorageTextureAccess::WriteOnly),
                 uniform_buffer::<GiParams>(false),
+                depth_texture_entry(TextureViewDimension::CubeArray),
+                sampler(SamplerBindingType::Comparison),
+                depth_texture_entry(TextureViewDimension::D2Array),
+                sampler(SamplerBindingType::Comparison),
             ),
         ),
     );
@@ -1144,6 +1345,20 @@ fn init_pipeline(
         entry_point: Some("propagate".into()),
         ..default()
     });
+    let (sun_texture, dummy_sun) = depth_texture(
+        &device,
+        1,
+        1,
+        TextureFormat::Depth32Float,
+        TextureViewDimension::D2Array,
+    );
+    let (cube_texture, dummy_cube) = depth_texture(
+        &device,
+        1,
+        6,
+        TextureFormat::Depth16Unorm,
+        TextureViewDimension::CubeArray,
+    );
     commands.insert_resource(GiPipeline {
         layout,
         sampler: device.create_sampler(&SamplerDescriptor {
@@ -1151,7 +1366,24 @@ fn init_pipeline(
             min_filter: FilterMode::Linear,
             ..default()
         }),
+        // The cached cubes' sampler (lit where the receiver is nearer).
+        cube_sampler: device.create_sampler(&SamplerDescriptor {
+            compare: Some(CompareFunction::Less),
+            mag_filter: FilterMode::Linear,
+            min_filter: FilterMode::Linear,
+            ..default()
+        }),
+        // Bevy's sun map is reverse-Z, compared greater-or-equal.
+        sun_sampler: device.create_sampler(&SamplerDescriptor {
+            compare: Some(CompareFunction::GreaterEqual),
+            mag_filter: FilterMode::Linear,
+            min_filter: FilterMode::Linear,
+            ..default()
+        }),
         pipeline,
+        dummy_sun,
+        dummy_cube,
+        _dummies: (sun_texture, cube_texture),
     });
 }
 
@@ -1179,6 +1411,9 @@ fn prepare_bind_group(
     textures: Option<Res<GiTextures>>,
     pending: Option<Res<GiPendingTextures>>,
     lights: Res<GiLights>,
+    sun_shadow: Option<Res<GiSunShadow>>,
+    sun_sky: Option<Res<GiSunSky>>,
+    shadow_views: Query<&bevy::pbr::ViewShadowBindings>,
     pipeline: Option<Res<GiPipeline>>,
     cache: Res<PipelineCache>,
     images: Res<RenderAssets<GpuImage>>,
@@ -1199,6 +1434,11 @@ fn prepare_bind_group(
     ) else {
         return;
     };
+    let cube = images.get(&crate::cube_shadows::CUBE_POOL);
+    let sun = shadow_views
+        .iter()
+        .next()
+        .map(|v| &v.directional_light_depth_texture_view);
     let mut entries = [GiLight::default(); MAX_GROUP_LIGHTS];
     for (slot, l) in entries.iter_mut().zip(&lights.lights) {
         *slot = *l;
@@ -1219,10 +1459,19 @@ fn prepare_bind_group(
     for (slot, l) in voxel_entries.iter_mut().zip(&lights.voxel_lights) {
         *slot = *l;
     }
+    let sun_shadow = sun_shadow.as_deref().copied().unwrap_or_default();
+    let shaded = sun_shadow.enabled && sun.is_some();
     let value = GiParams {
         origin: textures.origin.extend(0.0),
         extent: textures.extent.extend(0.0),
         base: textures.base_ambient.extend(0.0),
+        sun_matrix: sun_shadow.clip_from_world.to_cols_array_2d(),
+        sun_flags: UVec4::new(
+            shaded as u32,
+            sun_sky.as_deref().is_some_and(|s| s.0) as u32,
+            0,
+            0,
+        ),
         groups,
         sector_groups,
         lights: entries,
@@ -1255,6 +1504,10 @@ fn prepare_bind_group(
             &pipeline.sampler,
             &scratch.texture_view,
             binding,
+            cube.map_or(&pipeline.dummy_cube, |c| &c.texture_view),
+            &pipeline.cube_sampler,
+            sun.unwrap_or(&pipeline.dummy_sun),
+            &pipeline.sun_sampler,
         )),
     );
     if owed.serial != textures.serial {
@@ -1710,6 +1963,9 @@ mod tests {
             position,
             multiplier: 1.0,
             shaping: Vec2::new(y, 1.0),
+            dim: 0.0,
+            cube: 0,
+            sun: false,
         };
         // The cell's centre at the origin, the floor slice's middle 1 m up
         // (in centimetres).

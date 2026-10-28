@@ -36,6 +36,7 @@ use bevy::light::{
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 use exa_physics::intersect::ConvexVolume;
+use exa_render::gi::GiSunShadow;
 use exa_render::sun_fit::{
     CAMERA_FAR_CM, LightBasis, SceneBox, SunFit, SunMatrices, VerticalRange, frustum_volume,
     sun_softness, view_clip_planes,
@@ -87,9 +88,12 @@ impl Plugin for SunShadowPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<SunShadowFit>().add_systems(
             PostUpdate,
-            fit_sun_shadows
-                .after(SimulationLightSystems::UpdateDirectionalLightCascades)
-                .before(SimulationLightSystems::UpdateLightFrusta),
+            (
+                fit_sun_shadows
+                    .after(SimulationLightSystems::UpdateDirectionalLightCascades)
+                    .before(SimulationLightSystems::UpdateLightFrusta),
+                publish_gi_sun_shadow.after(fit_sun_shadows),
+            ),
         );
     }
 }
@@ -202,6 +206,39 @@ fn camera_volume(transform: &GlobalTransform, projection: &Projection) -> Convex
     let corners =
         corners.map(|corner| transform.transform_point(Vec3::from(corner)) * CM_PER_METRE);
     frustum_volume(corners)
+}
+
+/// Publishes the sun's map matrix for the GI injection: the scene camera's
+/// first cascade, whether the fitted map wrote it or Bevy's own cascades
+/// stand in. The GI reads the same depth texture. The layer is taken as 0
+/// (the shipped levels have one directional light). [guess: layer index]
+fn publish_gi_sun_shadow(
+    mut commands: Commands,
+    suns: Query<&Cascades, With<DirectionalLight>>,
+    cameras: Query<(
+        Entity,
+        &Camera,
+        Option<&exa_render::supersample::DisplayCamera>,
+    )>,
+) {
+    let Some(view) = cameras
+        .iter()
+        .find(|(_, camera, display)| camera.is_active && display.is_none())
+        .map(|(view, _, _)| view)
+    else {
+        return;
+    };
+    let cascade = suns
+        .iter()
+        .filter_map(|cascades| cascades.cascades.get(&view))
+        .find_map(|list| list.first());
+    commands.insert_resource(match cascade {
+        Some(cascade) => GiSunShadow {
+            clip_from_world: cascade.clip_from_world,
+            enabled: true,
+        },
+        None => GiSunShadow::default(),
+    });
 }
 
 #[cfg(test)]
