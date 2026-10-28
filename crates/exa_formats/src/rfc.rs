@@ -797,6 +797,38 @@ impl Mesh {
         };
         self.normals = smooth_normals(&self.positions, &indices, keys, elements, face_flags);
     }
+
+    /// Rebuilds the normals the way the cloth pass does: each smoothing
+    /// group's normal is the unweighted sum of its faces' unit normals,
+    /// walked in the original's incidence order, normalised. A group no
+    /// face reaches keeps +Y where the original leaves a zero normal (a
+    /// labelled safety deviation, as in [`Mesh::recompute_normals`]).
+    pub fn recompute_flat_normals(&mut self) {
+        let n = self.positions.len();
+        let own_keys: Vec<u32>;
+        let keys = if self.smoothing.len() == n {
+            &self.smoothing
+        } else if self.position_ids.len() == n {
+            &self.position_ids
+        } else {
+            own_keys = (0..n as u32).collect();
+            &own_keys
+        };
+        let own_elements: Vec<u32>;
+        let elements = if self.position_ids.len() == n {
+            &self.position_ids
+        } else {
+            own_elements = (0..n as u32).collect();
+            &own_elements
+        };
+        let mut indices = Vec::with_capacity(self.indices.len());
+        for t in self.indices.as_chunks::<3>().0 {
+            if t.iter().all(|&i| (i as usize) < n) {
+                indices.extend_from_slice(t);
+            }
+        }
+        self.normals = flat_face_normals(&self.positions, &indices, keys, elements);
+    }
 }
 
 /// A level's local database: sub-chunks for its objects, strings and
@@ -2118,37 +2150,7 @@ fn smooth_normals(
     face_flags: Option<&[u32]>,
 ) -> Vec<[f32; 3]> {
     let key_count = keys.iter().copied().max().map_or(0, |m| m as usize + 1);
-    let element_count = elements
-        .iter()
-        .copied()
-        .max()
-        .map_or(0, |m| m as usize + 1)
-        .max(1);
-    // The corners of every position element, in the original's incidence
-    // order: faces are visited last-first and each face's corners last
-    // first, so an element's list starts with its last corner.
-    let mut counts = vec![0u32; element_count + 1];
-    for &v in indices {
-        let Some(&e) = elements.get(v as usize) else {
-            continue;
-        };
-        counts[e as usize + 1] += 1;
-    }
-    for e in 0..element_count {
-        counts[e + 1] += counts[e];
-    }
-    let mut fill = counts.clone();
-    let mut ring = vec![(0u32, 0u8); indices.len()];
-    for (face, t) in indices.as_chunks::<3>().0.iter().enumerate().rev() {
-        for corner in (0..3).rev() {
-            let v = t[corner] as usize;
-            let Some(&e) = elements.get(v) else {
-                continue;
-            };
-            ring[fill[e as usize] as usize] = (face as u32, corner as u8);
-            fill[e as usize] += 1;
-        }
-    }
+    let (counts, ring, element_count) = element_rings(indices, elements);
     // Per key: the sum over unflagged faces, the sum over flagged faces,
     // and whether an unflagged face was seen.
     let mut acc = vec![[0.0f32; 3]; key_count];
@@ -2207,6 +2209,81 @@ fn smooth_normals(
                 fallback.get(k).copied().unwrap_or([0.0; 3])
             };
             normalised(sum).unwrap_or([0.0, 1.0, 0.0])
+        })
+        .collect()
+}
+
+/// The corners of every position element, in the original's incidence
+/// order: faces are visited last first and each face's corners last first,
+/// so an element's list starts with its last corner. Returns the prefix
+/// bounds, the corner list and the element count.
+fn element_rings(indices: &[u32], elements: &[u32]) -> (Vec<u32>, Vec<(u32, u8)>, usize) {
+    let element_count = elements
+        .iter()
+        .copied()
+        .max()
+        .map_or(0, |m| m as usize + 1)
+        .max(1);
+    let mut counts = vec![0u32; element_count + 1];
+    for &v in indices {
+        let Some(&e) = elements.get(v as usize) else {
+            continue;
+        };
+        counts[e as usize + 1] += 1;
+    }
+    for e in 0..element_count {
+        counts[e + 1] += counts[e];
+    }
+    let mut fill = counts.clone();
+    let mut ring = vec![(0u32, 0u8); indices.len()];
+    for (face, t) in indices.as_chunks::<3>().0.iter().enumerate().rev() {
+        for corner in (0..3).rev() {
+            let v = t[corner] as usize;
+            let Some(&e) = elements.get(v) else {
+                continue;
+            };
+            ring[fill[e as usize] as usize] = (face as u32, corner as u8);
+            fill[e as usize] += 1;
+        }
+    }
+    (counts, ring, element_count)
+}
+
+/// The cloth pass's normal builder: each smoothing group's normal is the
+/// unweighted sum of its faces' unit normals, walked in the incidence order
+/// (the first face's normal sets it and the rest are added), normalised. A
+/// group no face reaches keeps +Y (a labelled safety deviation).
+fn flat_face_normals(
+    positions: &[[f32; 3]],
+    indices: &[u32],
+    keys: &[u32],
+    elements: &[u32],
+) -> Vec<[f32; 3]> {
+    let key_count = keys.iter().copied().max().map_or(0, |m| m as usize + 1);
+    let (counts, ring, element_count) = element_rings(indices, elements);
+    let mut acc = vec![[0.0f32; 3]; key_count];
+    for e in 0..element_count {
+        for &(face, corner) in &ring[counts[e] as usize..counts[e + 1] as usize] {
+            let Some(t) = indices.as_chunks::<3>().0.get(face as usize) else {
+                continue;
+            };
+            let corners = [t[0] as usize, t[1] as usize, t[2] as usize];
+            if corners.iter().any(|&i| i >= positions.len()) {
+                continue;
+            }
+            let [a, b, c] = corners.map(|i| positions[i]);
+            let normal = face_normal(a, b, c);
+            let key = keys.get(corners[corner as usize]).copied().unwrap_or(0) as usize;
+            if key < key_count {
+                for axis in 0..3 {
+                    acc[key][axis] += normal[axis];
+                }
+            }
+        }
+    }
+    keys.iter()
+        .map(|&k| {
+            normalised(acc.get(k as usize).copied().unwrap_or([0.0; 3])).unwrap_or([0.0, 1.0, 0.0])
         })
         .collect()
 }
@@ -3300,6 +3377,48 @@ mod tests {
         // Without flags both faces count at vertex 0.
         let plain = smooth_normals(&positions, &indices, &keys, &elements, None);
         assert!(plain[0][1] > 0.5 && plain[0][2] > 0.5, "{plain:?}");
+    }
+
+    /// The cloth pass's normals are the unweighted average of each group's
+    /// face normals: two faces on different planes, in different groups,
+    /// keep their own normals, and a flat quad's group averages to +Y.
+    #[test]
+    fn the_cloth_normal_builder_averages_face_normals() {
+        let near = |a: [f32; 3], b: [f32; 3]| (0..3).all(|i| (a[i] - b[i]).abs() < 1e-3);
+        let mut m = Mesh {
+            positions: vec![
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 0.0, -1.0],
+                [0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+            ],
+            position_ids: vec![0, 1, 2, 3, 4, 5],
+            indices: vec![0, 1, 2, 3, 4, 5],
+            smoothing: vec![0, 0, 0, 1, 1, 1],
+            position_count: 6,
+            ..Mesh::default()
+        };
+        m.recompute_flat_normals();
+        assert!(near(m.normals[0], [0.0, 1.0, 0.0]), "{:?}", m.normals);
+        assert!(near(m.normals[3], [1.0, 0.0, 0.0]), "{:?}", m.normals);
+        // A flat quad in one group averages its two +Y faces to +Y.
+        let mut quad = Mesh {
+            positions: vec![
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0, 0.0, -1.0],
+                [0.0, 0.0, -1.0],
+            ],
+            position_ids: vec![0, 1, 2, 3],
+            indices: vec![0, 1, 2, 0, 2, 3],
+            smoothing: vec![0; 4],
+            position_count: 4,
+            ..Mesh::default()
+        };
+        quad.recompute_flat_normals();
+        assert!(quad.normals.iter().all(|n| near(*n, [0.0, 1.0, 0.0])));
     }
 
     #[test]

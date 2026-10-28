@@ -226,7 +226,10 @@ a group no face without it has reached. The faces are walked in the
 original's incidence order: per position element, the corners last face
 first and each face's corners last first. Established by REA on the normal
 builder and its corner-angle helper; Exarust computes them the same way
-(`exa_formats::rfc`).
+(`exa_formats::rfc`). The cloth pass rebuilds them more cheaply: each
+smoothing group's normal is the unweighted sum of its faces' unit normals
+(the first face sets it, the rest are added), normalised
+(`Mesh::recompute_flat_normals`).
 
 Each triangle also keeps a face record for the mesh's queries: the unit
 normal, the plane offset `normal · corner0`, the three corners, the first
