@@ -1130,8 +1130,7 @@ then the loadouts). Three details of its behaviour:
 - an inventory entry's third word is the saved pack cell: two signed
   16-bit words, x low and y high, in sixteenths of a GUI unit. A new entry
   gets (40, 4), `0x00040028`, which is where a given-back item lands. The
-  item panel's character-list load reads the same 12 bytes (see
-  `FUN_100109cc0`).
+  item panel's character-list load reads the same 12 bytes.
 
 `CharacterRecord::to_bytes` writes exactly those bytes: all 485 version 7
 records of the shipped levels and actors (478 + 7) come back byte for byte,
