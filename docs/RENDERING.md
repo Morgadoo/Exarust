@@ -1259,9 +1259,10 @@ in world space there too):
   and Z half a texture minus the block's centre over its width and its Y
   the block's bottom slice over the depth, and the scale
   (1/(W·fc), 1/(D·fc), 1/(H·fc)). A surface reads half a voxel up (the
-  offset's Y carries +0.5), as the original's per-object lookup does; the
-  terrain and grass callers pass the flag that drops it and read the
-  voxel's bottom instead. Both are `GiBlockLayout::sample_transform` /
+  offset's Y carries +0.5), as the original's per-object lookup does,
+  unless the node's flags2 keeps `0x800000`; the terrain and grass callers
+  pass the flag that drops it and read the voxel's bottom instead (Exarust
+  does not model the per-node `0x800000` exception). Both are `GiBlockLayout::sample_transform` /
   `sample_at`, and the material paths take the same origins from
   `GiTextures::sample_origin` and `sample_origin_floor`.
 - The top slice holds 26 and the slice below 5, a soft lid.
@@ -1374,8 +1375,8 @@ its width, at the slice's middle ((slice + 0.5)/width), as the original's
   the scale worked out in double precision (((bias + 0.94)/far) × 5120).
   The bias is the shadow detail plus the light record's own quality offset
   (0, +1, −1 or −2), capped at 6, times 0.005, or 0.025 above 5: the
-  shipped detail 5 gives 0.025, so the compare is d·0.965/R (q = 4 gives
-  0.02). A light without its range flag has the 3.4e38 far plane, so its
+  retail setting's detail 5 gives 0.025, so the compare is d·0.965/R (q = 4
+  gives 0.02). A light without its range flag has the 3.4e38 far plane, so its
   lookup is unshadowed. The original binds light i's cube map to its
   own `Shadow<i>` sampler; Exarust's shared pool carries the slot instead;
 - the sun joins each drawn sector's group first and adds

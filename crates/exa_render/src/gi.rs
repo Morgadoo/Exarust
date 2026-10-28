@@ -260,14 +260,15 @@ impl Default for GiShadowBias {
     }
 }
 
-/// The user's shadow detail the original's GI cube bias is derived from:
-/// the shipped 5, the top setting.
+/// The retail settings' shadow detail the original's GI cube bias is
+/// derived from: 5, the top setting. Exarust has no ShadowDetail option of
+/// its own, so this stays the retail value.
 pub const GI_SHADOW_DETAIL: i32 = 5;
 
 /// The original's GI shadow bias for a light whose record keeps the
 /// shadow-quality offset `offset` (0, +1, −1 or −2 in the flags' low two
 /// bits): `q = detail + offset`, capped at 6, then `q·0.005`, or 0.025 when
-/// q is above 5. The shipped detail 5 gives 0.025 for offsets 0 and +1, so
+/// q is above 5. The retail detail 5 gives 0.025 for offsets 0 and +1, so
 /// the cube compare is d·0.965/R.
 pub fn gi_shadow_bias(offset: i32) -> f32 {
     let q = (GI_SHADOW_DETAIL + offset).min(6);
