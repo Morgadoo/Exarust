@@ -161,10 +161,11 @@ pub struct LevelNode {
     /// The node's position (centimetres, the original's world units), which
     /// becomes the focus point when the object is the player.
     pub position: [f32; 3],
-    /// For an object of the marker class whose marker record exists and has
-    /// the player type: the record's two words in file order. The marker
-    /// names the player when the first word is the session's arrival word
-    /// and the second is all ones.
+    /// For a placed object of the player-marker class whose marker record
+    /// exists with type byte `0x40`: the two words the record stores, in
+    /// file order, `[entrance, previous level]`. The marker names the
+    /// player when the entrance is the session's arrival variable and the
+    /// previous level is the level the session came from.
     pub marker: Option<[u32; 2]>,
 }
 
@@ -186,9 +187,12 @@ pub const ARRIVAL_WORD: u32 = 0xEEEE_00DA;
 /// The arrival word a game started from the menu or loaded from a save
 /// leaves in the session: the player's operative kind is 18.
 pub const SESSION_START_WORD: u32 = 0xEEEE_00DB;
-/// The session's arrival word when nothing set one, and the marker record's
-/// second word.
+/// The session's arrival word when nothing set one.
 pub const NO_ARRIVAL_WORD: u32 = u32::MAX;
+/// The previous level id a session that did not come from a level has (the
+/// original resets the variable to all ones); a marker's own word must be
+/// this too to name the player on a fresh start.
+pub const NO_PREVIOUS_LEVEL: u32 = u32::MAX;
 /// The player's operative kind under [`ARRIVAL_WORD`].
 pub const ARRIVAL_PLAYER_KIND: u32 = 15;
 /// The player's operative kind under [`SESSION_START_WORD`].
@@ -230,6 +234,8 @@ struct LevelObjects {
     missing: usize,
     /// The arrival word the level began with.
     arrival: u32,
+    /// The id of the level the session came from.
+    previous_level: u32,
     /// The operative kind of the player's placed object, from the arrival
     /// word.
     player_kind: Option<u32>,
@@ -346,11 +352,13 @@ impl ContentStream {
     }
 
     /// Begins a level's object list: the scene, how many objects the chunk
-    /// holds and the session's arrival word, which names the player's
-    /// operative kind ([`NO_ARRIVAL_WORD`] when nothing set one). The
-    /// original's level handoff; any other word names no kind, so only a
+    /// holds, the session's arrival word (the entrance the player takes,
+    /// [`NO_ARRIVAL_WORD`] when nothing set one) and the id of the level
+    /// the session came from ([`NO_PREVIOUS_LEVEL`] for a fresh start), as
+    /// the original's two globals hold them. The arrival word names the
+    /// player's operative kind; any other word names no kind, so only a
     /// marker record can then name the player.
-    pub fn begin_level(&mut self, scene: u64, total: usize, arrival: u32) {
+    pub fn begin_level(&mut self, scene: u64, total: usize, arrival: u32, previous_level: u32) {
         let player_kind = match arrival {
             ARRIVAL_WORD => Some(ARRIVAL_PLAYER_KIND),
             SESSION_START_WORD => Some(SESSION_START_PLAYER_KIND),
@@ -360,6 +368,7 @@ impl ContentStream {
             scene,
             total,
             arrival,
+            previous_level,
             player_kind,
             ..LevelObjects::default()
         };
@@ -539,7 +548,10 @@ impl ContentStream {
     fn adopt(&mut self, object: &LevelNode) {
         let by_kind =
             object.operative_kind.is_some() && self.level.player_kind == object.operative_kind;
-        let by_marker = object.marker == Some([self.level.arrival, NO_ARRIVAL_WORD]);
+        // The marker's record stores the entrance at +0x14 and the previous
+        // level's id at +0x18; a plain id compares both against the
+        // session's two globals.
+        let by_marker = object.marker == Some([self.level.arrival, self.level.previous_level]);
         let player = by_kind || by_marker;
         if player {
             self.level.player = Some(object.node);
@@ -759,7 +771,7 @@ mod tests {
             streamed_ok: true,
             ..Recorder::default()
         };
-        stream.begin_level(7, 2, 0);
+        stream.begin_level(7, 2, 0, NO_PREVIOUS_LEVEL);
         stream.begin_characters(7, []);
         stream.submit_job(Job {
             work: Box::new(|| {}),
@@ -1007,7 +1019,7 @@ mod tests {
             player: Some((0, 15, [1.0, 2.0, 3.0])),
             ..Recorder::default()
         };
-        stream.begin_level(7, 1, ARRIVAL_WORD);
+        stream.begin_level(7, 1, ARRIVAL_WORD, NO_PREVIOUS_LEVEL);
         stream.step(&mut builders);
         assert_eq!(stream.player(), Some(41));
         let mut other = Recorder {
@@ -1015,7 +1027,7 @@ mod tests {
             player: Some((0, 15, [1.0, 2.0, 3.0])),
             ..Recorder::default()
         };
-        stream.begin_level(7, 1, 0);
+        stream.begin_level(7, 1, 0, NO_PREVIOUS_LEVEL);
         stream.step(&mut other);
         assert_eq!(stream.player(), None);
         let mut respawn = Recorder {
@@ -1023,7 +1035,7 @@ mod tests {
             player: Some((0, SESSION_START_PLAYER_KIND, [4.0, 5.0, 6.0])),
             ..Recorder::default()
         };
-        stream.begin_level(7, 1, SESSION_START_WORD);
+        stream.begin_level(7, 1, SESSION_START_WORD, NO_PREVIOUS_LEVEL);
         stream.step(&mut respawn);
         assert_eq!(stream.player(), Some(43));
         assert_eq!(stream.focus(), [4.0, 5.0, 6.0]);
@@ -1032,7 +1044,7 @@ mod tests {
     #[test]
     fn the_level_wait_reports_built_and_missing_objects() {
         let mut stream = ContentStream::new();
-        stream.begin_level(7, 3, 0);
+        stream.begin_level(7, 3, 0, NO_PREVIOUS_LEVEL);
         let mut builders = Recorder {
             level: vec![Some(1), None, Some(3)],
             ..Recorder::default()
@@ -1065,7 +1077,7 @@ mod tests {
             player: Some((1, ARRIVAL_PLAYER_KIND, [1200.0, 48.0, -600.0])),
             ..Recorder::default()
         };
-        stream.begin_level(7, 2, ARRIVAL_WORD);
+        stream.begin_level(7, 2, ARRIVAL_WORD, NO_PREVIOUS_LEVEL);
         stream.begin_characters(7, []);
         stream.step(&mut builders);
         assert_eq!(stream.player(), None);
@@ -1080,43 +1092,50 @@ mod tests {
             player: Some((0, ARRIVAL_PLAYER_KIND, [1.0, 2.0, 3.0])),
             ..Recorder::default()
         };
-        stream.begin_level(7, 1, SESSION_START_WORD);
+        stream.begin_level(7, 1, SESSION_START_WORD, NO_PREVIOUS_LEVEL);
         stream.step(&mut other);
         assert_eq!(stream.player(), None);
         // The focus point is the scene's, not the level's: a list that
         // builds no player leaves it where it was.
         assert_eq!(stream.focus(), [1200.0, 48.0, -600.0]);
-        // A marker record names the player when its first word is the
-        // session's arrival word and its second is all ones, whatever kind
-        // the actors have.
+        // A marker record names the player when its entrance word is the
+        // session's arrival variable and its second word is the level the
+        // session came from, whatever kind the actors have.
+        const CAME_FROM: u32 = 0x0100_0003;
         let mut builders = Recorder {
             level: vec![Some(43)],
-            marker: Some((0, [NO_ARRIVAL_WORD, NO_ARRIVAL_WORD], [4.0, 5.0, 6.0])),
+            marker: Some((0, [NO_ARRIVAL_WORD, CAME_FROM], [4.0, 5.0, 6.0])),
             ..Recorder::default()
         };
-        stream.begin_level(7, 1, NO_ARRIVAL_WORD);
+        stream.begin_level(7, 1, NO_ARRIVAL_WORD, CAME_FROM);
         stream.step(&mut builders);
         assert_eq!(stream.player(), Some(43));
         assert_eq!(stream.focus(), [4.0, 5.0, 6.0]);
-        // A marker for another arrival word, or with a second word that is
-        // not all ones, is not the player.
-        for words in [[0, NO_ARRIVAL_WORD], [NO_ARRIVAL_WORD, 0]] {
+        // A marker for another entrance, or from another level, is not the
+        // player.
+        for (words, arrival, previous) in [
+            ([0, CAME_FROM], NO_ARRIVAL_WORD, CAME_FROM),
+            ([NO_ARRIVAL_WORD, 0], NO_ARRIVAL_WORD, CAME_FROM),
+            ([NO_ARRIVAL_WORD, CAME_FROM], NO_ARRIVAL_WORD, 0x0100_0004),
+        ] {
             let mut builders = Recorder {
                 level: vec![Some(44)],
                 marker: Some((0, words, [7.0, 8.0, 9.0])),
                 ..Recorder::default()
             };
-            stream.begin_level(7, 1, NO_ARRIVAL_WORD);
+            stream.begin_level(7, 1, arrival, previous);
             stream.step(&mut builders);
             assert_eq!(stream.player(), None);
             assert_eq!(stream.focus(), [4.0, 5.0, 6.0]);
         }
+        // An entrance word that is not one of the two special ones still
+        // matches the marker's own entrance.
         let mut builders = Recorder {
             level: vec![Some(45)],
-            marker: Some((0, [0, NO_ARRIVAL_WORD], [1.0, 1.0, 1.0])),
+            marker: Some((0, [0, 0], [1.0, 1.0, 1.0])),
             ..Recorder::default()
         };
-        stream.begin_level(7, 1, 0);
+        stream.begin_level(7, 1, 0, 0);
         stream.step(&mut builders);
         assert_eq!(stream.player(), Some(45));
     }
@@ -1130,7 +1149,7 @@ mod tests {
             level: vec![Some(41)],
             ..Recorder::default()
         };
-        stream.begin_level(7, 1, ARRIVAL_WORD);
+        stream.begin_level(7, 1, ARRIVAL_WORD, NO_PREVIOUS_LEVEL);
         stream.step(&mut builders);
         assert_eq!(stream.player(), None);
     }
@@ -1185,7 +1204,7 @@ mod tests {
         });
         assert!(stream.cancel_character(4, 7));
         stream.begin_characters(7, [character(1, [0.0; 3])]);
-        stream.begin_level(7, 2, 0);
+        stream.begin_level(7, 2, 0, NO_PREVIOUS_LEVEL);
         stream.reset();
         assert_eq!(stream.queued_objects(), 0);
         assert_eq!(stream.queued_characters(), 0);
@@ -1207,7 +1226,7 @@ mod tests {
         assert_eq!(stream.step(&mut builders), Step::Idle);
         assert!(stream.is_terminated());
         // The waiting helpers must not spin on a terminated stream.
-        stream.begin_level(7, 4, 0);
+        stream.begin_level(7, 4, 0, NO_PREVIOUS_LEVEL);
         // A level that had a list reports the empty one it built.
         let level = stream.wait_for_level(&mut builders, || {}).unwrap();
         assert!(level.objects.is_empty());

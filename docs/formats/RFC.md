@@ -985,7 +985,10 @@ the picture, so Exarust applies the 2.0 base to every indoor level.
 - Level transitions: the arrival marker in the new level's placed objects.
   It is an objdb class `0x8000AC07` box whose flags' low byte is `0x40`, with
   +0x18 = the previous level's id (from `locales.rdb`, which is the level
-  list) and +0x14 = the entrance number. The player gets its matrix;
+  list) and +0x14 = the entrance number. The marker names the player only
+  when the level's two session variables hold those same words: the entrance
+  variable (the arrival word a journey or a start sets) and the previous
+  level id. The player gets its matrix;
   followers stand at offsets (−1,0,−1), (1,0,−1), (0,0,1.5), (1,0,2) m in its
   frame.
 

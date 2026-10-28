@@ -315,8 +315,10 @@ request that builds nothing is dropped. `StreamThread::new` holds the
 thread's two empty data streams, as the original's constructor creates
 them (unused so far); the loop above runs on the executor that drives it. A placed actor of the operative kind
 the session's arrival word names (15 after a journey, 18 after a start or a
-load), or an object whose marker record's first word is the arrival word,
-becomes the player and its position the point the stream orders by; an object that cannot
+load), or a placed object of the marker class whose record (type byte
+`0x40`) holds the session's arrival variable as its entrance word and the
+id of the level the session came from as its second, becomes the player and
+its position the point the stream orders by; an object that cannot
 be built raises the missing count and leaves no hole in the built list. Its
 rings have the original's capacities (16 jobs, completions and attachments,
 32 object and character requests and results, 128 streamed results);
