@@ -1860,12 +1860,9 @@ pub fn prompt_draw(
 
 /// The dragged power's preview at the pointer: its icon at 13 units, and
 /// its glow at 6 units by 2.5, the glow dimmed to a third unless the power
-/// is picked. A missing domain sheet draws nothing.
+/// is picked.
 pub fn preview_draw(power: u32, flags: u32, x: f32, y: f32, unit: f32, domain: u8) -> TreeDraw {
     let mut out = TreeDraw::default();
-    if icon_columns(domain) == 0 {
-        return out;
-    }
     let mut batch = Batch::new(Program::Icon, Texture::Domain(domain));
     batch.uniforms.par1 = [1.0, 1.0, 0.5, 0.0];
     if icon(
