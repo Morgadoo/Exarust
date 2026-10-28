@@ -564,7 +564,17 @@ the merchant's stock. A board pick of Enter, Begin or Continue plans the
 match (`arena_match::start_match`, `match_layout::layout`, `generic_plan`,
 `hire_plan`, `beast_plan`, `player_participant`, `pick_weapon_slot`) and the
 launcher restarts on the drawn arena with `--arena-match`. Escape and a
-right-button release close an open window.
+right-button release close an open window. Opening the board or Manage
+Company makes the hub busy (the board's open and close set and clear the flag
+in the original); the trade window leaves it alone.
+
+In the running game the click does not reach the hub's objects yet: the
+nodes the hook names (`\xaaArenaShop` in the library's `shop_arena`,
+`\xaaArenaMach` in its two notice boards) are static scenery with no body,
+and the static colliders are built in batches that keep no node, so a click
+on them picks the level. The ArenaMach side value is a float the original
+reads from the clicked node; which field it is is not traced, and the node's
+world x stands in for it.
 
 Not drawn: the board's pictures, prize items and reward slots, the manage
 window's controls and report lines, the trade window's item icons and

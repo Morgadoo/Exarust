@@ -408,8 +408,9 @@ installs the click and session hooks and places the manager by
 `slots::Slots::drops_after_death` when the host inserted `HubSlots`.
 
 A left click that is not a drag sends `hand::WorldClick`. The hub reads the
-object's name (putting back the executable's 0xAA first byte) and side, or a
-character's condition and merchant profession, calls `hub_click`, and opens
+object's stored name bytes (the library keeps `\xaaArenaShop` and
+`\xaaArenaMach` with their leading 0xAA) and side, or a character's
+condition and merchant profession, calls `hub_click`, and opens
 the answered window on `hub_windows`. The board comes from
 `arena_board::open`, Manage Company from `manage_refresh`, and the trade
 window from `shop_window` with the shop's or the merchant's stock. The board's
@@ -420,7 +421,12 @@ layout and the spawn plans and sends `arena_hub_live::ArenaMatchLaunch`,
 which the launcher turns into a restart on the drawn arena with
 `--arena-match`.
 
-Not wired: the match's return to the hub, the windows' own close controls,
+Opening the board or Manage Company makes the hub busy; closing either
+clears it. In the running game the hub's two notice boards and the shop
+counter are static scenery with no body, so a click on them picks the level
+and opens nothing yet: the static colliders are built in batches that do not
+remember their node. Not wired: that pick, the shop's first stock build
+(`trade::update_stock` needs a live `ShopWorld`), the match's return to the hub, the windows' own close controls,
 the board's pictures and prize items, the manage report lines and controls,
 and the trade window's item icons and character preview.
 

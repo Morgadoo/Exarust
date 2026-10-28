@@ -98,13 +98,13 @@ pub struct HubSlots {
 
 /// The hub's own frame roll, a stand-in for the engine's shared generator
 /// when no session roll is supplied. The play-mode hub begins from the
-/// performance counter, as the match draws do.
+/// byte-reversed performance counter, as the match start's draws do.
 #[derive(Resource, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HubRoll(pub u32);
 
 impl Default for HubRoll {
     fn default() -> Self {
-        Self(crate::arena_match::counter_now() as u32)
+        Self((crate::arena_match::counter_now() as u32).swap_bytes())
     }
 }
 
@@ -513,10 +513,10 @@ fn hub_clicks(
         }
         let action = match click.hit {
             crate::hand::Hit::Prop { body, .. } => {
-                let name = names.get(body).ok().map(|name| hub_name(name.as_bytes()));
-                // The original reads the node's +0x20 float as the side;
-                // Exarust's body has no such field, so the global x is a
-                // guess (the sign is what the hook compares).
+                let name = names.get(body).ok().map(|name| hub_name(name.as_str()));
+                // The original reads a float of the clicked node as the
+                // side; which field it is is not traced, so the global x is
+                // a guess (the sign is what the hook compares).
                 let side = transforms
                     .get(body)
                     .map(|transform| transform.translation().x)
@@ -556,7 +556,10 @@ fn hub_clicks(
                 windows.open_shop(true, &career, &item_names);
             }
             HubAction::MatchBoard => {
+                // Opening the board makes the hub busy; the board's close
+                // clears it again.
                 windows.open_board(&career);
+                hub.busy = true;
             }
             HubAction::ManageCompany => {
                 windows.open_manage(&career);
@@ -566,20 +569,17 @@ fn hub_clicks(
     }
 }
 
-/// The original's sixteen-byte scene name: the executable's copies begin
-/// with 0xAA. Exarust's level objects carry the object-database name, so the
-/// byte is put back for the comparison (a guess about the name text).
-/// A name that already begins with it is left alone.
-fn hub_name(name: &[u8]) -> [u8; 16] {
+/// A node's sixteen-byte scene name, as the click hook compares it. The
+/// object library stores the hub's names with a leading 0xAA byte
+/// ("\xaaArenaShop" in `shop_arena`, "\xaaArenaMach" in the notice boards);
+/// the scene reader keeps each stored byte as one character, so the name is
+/// turned back into those bytes. A character past one byte cannot be stored
+/// and makes the name match nothing.
+fn hub_name(name: &str) -> [u8; 16] {
     let mut out = [0u8; 16];
-    let (first, rest) = if name.first() == Some(&0xAA) {
-        (0xAA, &name[1..])
-    } else {
-        (0xAA, name)
-    };
-    out[0] = first;
-    let len = rest.len().min(15);
-    out[1..1 + len].copy_from_slice(&rest[..len]);
+    for (slot, c) in out.iter_mut().zip(name.chars()) {
+        *slot = u8::try_from(u32::from(c)).unwrap_or(0xFF);
+    }
     out
 }
 
@@ -784,7 +784,7 @@ mod tests {
             app.update();
             let shop = app
                 .world_mut()
-                .spawn((Name::new("ArenaShop"), GlobalTransform::default()))
+                .spawn((Name::new("\u{aa}ArenaShop"), GlobalTransform::default()))
                 .id();
             app.world_mut().write_message(WorldClick::picked(Hit::Prop {
                 body: shop,
@@ -804,7 +804,7 @@ mod tests {
             let machine = app
                 .world_mut()
                 .spawn((
-                    Name::new("ArenaMach"),
+                    Name::new("\u{aa}ArenaMach"),
                     GlobalTransform::from_xyz(side, 0.0, 0.0),
                 ))
                 .id();
@@ -815,12 +815,27 @@ mod tests {
             // The shop is still open (it is the confirming form), so close it.
             app.world_mut().resource_mut::<HubWindows>().close();
             app.update();
+            assert_eq!(app.world().resource::<LastHubClick>().action, Some(want));
+            let kind = if want == HubAction::MatchBoard {
+                HubWindowKind::Board
+            } else {
+                HubWindowKind::Manage
+            };
+            assert!(app.world().resource::<HubWindows>().is_kind(kind));
+            // The board and Manage Company both make the hub busy.
+            assert!(app.world().resource::<ArenaHub>().busy);
+            // A press outside the modal form closes it and clears the flag.
             app.world_mut().write_message(WorldClick::picked(Hit::Prop {
                 body: machine,
                 part: 0,
             }));
             app.update();
-            assert_eq!(app.world().resource::<LastHubClick>().action, Some(want));
+            assert!(
+                app.world()
+                    .resource::<HubWindows>()
+                    .is_kind(HubWindowKind::None)
+            );
+            assert!(!app.world().resource::<ArenaHub>().busy);
         }
     }
 
@@ -835,7 +850,7 @@ mod tests {
         app.update();
         let shop = app
             .world_mut()
-            .spawn((Name::new("ArenaShop"), GlobalTransform::default()))
+            .spawn((Name::new("\u{aa}ArenaShop"), GlobalTransform::default()))
             .id();
         app.world_mut().resource_mut::<ArenaHub>().busy = true;
         assert_eq!(
@@ -891,7 +906,7 @@ mod tests {
         let bounds = app.world().resource::<HubWindows>().bounds().unwrap();
         let shop = app
             .world_mut()
-            .spawn((Name::new("ArenaShop"), GlobalTransform::default()))
+            .spawn((Name::new("\u{aa}ArenaShop"), GlobalTransform::default()))
             .id();
         app.world_mut().write_message(WorldClick {
             hit: Hit::Prop {
@@ -971,17 +986,23 @@ mod tests {
     }
 
     #[test]
-    fn the_scene_name_puts_the_executables_byte_back() {
+    fn the_scene_name_is_the_stored_bytes() {
+        // The scene reader keeps byte 0xAA as the character U+00AA.
         assert!(same_name(
-            &hub_name(b"ArenaShop"),
+            &hub_name("\u{aa}ArenaShop"),
             &crate::arena_hub::SHOP_NAME
         ));
         assert!(same_name(
-            &hub_name(&[0xAA, b'A', b'r', b'e', b'n', b'a', b'S', b'h', b'o', b'p']),
+            &hub_name("\u{aa}ARENAMACH"),
+            &crate::arena_hub::MACHINE_NAME
+        ));
+        // Without the leading byte the stored name is a different one.
+        assert!(!same_name(
+            &hub_name("ArenaShop"),
             &crate::arena_hub::SHOP_NAME
         ));
         assert!(!same_name(
-            &hub_name(b"ArenaMach"),
+            &hub_name("\u{aa}ArenaMach"),
             &crate::arena_hub::SHOP_NAME
         ));
     }
