@@ -331,6 +331,23 @@ mod tests {
         assert!(!icon_sharpened(12));
     }
 
+    /// The installed skill atlases hold the cells the cut reads (skipped
+    /// without `EXANIMA_DIR`).
+    #[test]
+    fn the_installed_skill_atlases_hold_their_cells() {
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let game = exa_assets::GameData::open(&dir).unwrap();
+        let small = exa_formats::rfi::Rfi::parse(game.texture(SKILL_ICON_ATLAS).unwrap()).unwrap();
+        assert!(small.header.width >= 0x300);
+        assert!(small.header.height >= 0x240);
+        let single =
+            exa_formats::rfi::Rfi::parse(game.texture(SINGLE_ICON_ATLAS).unwrap()).unwrap();
+        assert!(single.header.width >= 0x240);
+        assert!(single.header.height >= 0x360);
+    }
+
     #[test]
     fn the_program_setup_binds_the_two_sources_and_the_sound() {
         let programs = skill_programs();

@@ -1405,6 +1405,25 @@ pub fn spinner_buttons(rect: (i32, i32, i32, i32), button: i32, unit: i32) -> Sp
     }
 }
 
+/// Whether the swatch's draw message draws its face: state bit
+/// `0x1000000`.
+pub fn swatch_draw(state: u32) -> bool {
+    state & 0x100_0000 != 0
+}
+
+/// The separator lets the pointer through (`0x800000`).
+pub const SEPARATOR_POINTER: u32 = PASS_THROUGH;
+
+/// The image's two corners through the parent's origin: the top-left and
+/// the bottom-right, as the corner routine hands them to the parent's
+/// conversion.
+pub fn image_corners(rect: (i32, i32, i32, i32), origin: (i32, i32)) -> ((i32, i32), (i32, i32)) {
+    (
+        (rect.0 + origin.0, rect.1 + origin.1),
+        (rect.0 + rect.2 + origin.0, rect.1 + rect.3 + origin.1),
+    )
+}
+
 /// A progress bar's value (a fraction, shown as a percentage).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ProgressBar {
@@ -2706,6 +2725,17 @@ mod extended_tests {
         // Style bit 0x20000 marks the up arrow when the control is not hot.
         let up = spinner_draw((0, 0, 60, 20), 13, 4, 0x2_0000, 0);
         assert_eq!((up.up_arrow_state, up.down_arrow_state), (1, 0));
+    }
+
+    #[test]
+    fn a_swatch_separator_and_image_expose_their_small_rules() {
+        assert!(swatch_draw(0x100_0000));
+        assert!(!swatch_draw(0));
+        assert_eq!(SEPARATOR_POINTER, PASS_THROUGH);
+        assert_eq!(
+            image_corners((10, 20, 100, 80), (5, 7)),
+            ((15, 27), (115, 107))
+        );
     }
 
     #[test]
