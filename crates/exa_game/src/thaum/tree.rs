@@ -275,24 +275,14 @@ impl DomainWheel {
     }
 }
 
-/// What the draw places for the domain wheel: its sheet at the child's
-/// client rectangle.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct WheelView {
-    pub x: f32,
-    pub y: f32,
-    pub size: f32,
-    pub alpha: f32,
-}
-
 /// The creation flags of the domain wheel's texture: the engine's shared
 /// texture flag word (`0x33` as shipped) with `0x100`.
 pub const WHEEL_TEXTURE_FLAGS: u32 = 0x133;
 
 /// The domain wheel's texture side at the GUI unit `unit`: the load
-/// resamples `domainwheel.rfi` with Kaiser mipmaps to 32 units a side (128
-/// pixels at the four-pixel unit). The running screen samples the sheet as
-/// it ships (384 pixels) and does not resample it yet.
+/// resamples `domainwheel.rfi` to 32 units a side (128 pixels at the
+/// four-pixel unit) through the engine's resample-to-size path
+/// ([`exa_assets::TreeSheets::resample_wheel`]).
 pub fn wheel_texture_side(unit: i32) -> i32 {
     unit << 5
 }
@@ -585,7 +575,10 @@ pub mod press {
     pub const HANDLED: u32 = 0x10;
 }
 
-/// The tree's drag state.
+/// The tree's drag state. Only [`DragState::Pan`] is ever entered: the
+/// retail press clears the state and starts the pan on the middle button,
+/// and no shipped code writes the node, link-turn or link states, so the
+/// move handler's edit branches (kept as it has them) are unreachable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DragState {
     Idle,
@@ -1018,6 +1011,7 @@ impl TreeScreen {
                 screen.focus_total = 48.0;
                 screen.available = 48.0;
                 screen.wheel.total = 48.0;
+                screen.wheel_child.state.fade = 48.0;
             }
         }
         // The level comes from the whole-pixel height over 2300, worked out
@@ -1092,6 +1086,9 @@ impl TreeScreen {
         } else {
             wheel.total = 0.0;
         }
+        // The total is the wheel child's own focus value: its paint eases
+        // toward it from where a pick or drop began the fade.
+        self.wheel_child.state.fade = wheel.total;
         self.wheel = wheel;
     }
 
@@ -2544,15 +2541,45 @@ impl TreeScreen {
         self.fade_domain(now);
     }
 
-    /// The wheel child's picture at its place.
-    pub fn wheel_view(&self) -> WheelView {
-        let wheel = &self.wheel_child;
-        WheelView {
-            x: wheel.left,
-            y: wheel.top,
-            size: wheel.size,
-            alpha: wheel.state.shown,
+    /// The wheel child's paint at the game time `now` with the GUI unit
+    /// `unit`: its show, the focus value eased toward the tree's focus
+    /// share, the six domains' picked shares, the hot, chosen and fading
+    /// icons, the choice's flash and the label of the last highlighted
+    /// icon. The flash clears the faded previous choice and a label whose
+    /// fade has run out, as the paint does; both read the one clock the
+    /// running screen keeps.
+    pub fn wheel_draw_view(
+        &mut self,
+        now: u32,
+        unit: i32,
+        font: exa_ui::gui_font::GuiFont,
+        font_size: (u16, u16),
+    ) -> exa_ui::wheel_draw::WheelDrawView {
+        let child = &mut self.wheel_child;
+        let side = child.size as i32;
+        let mut view = exa_ui::wheel_draw::WheelDrawView::new(child.left, child.top, side, unit);
+        let state = &mut child.state;
+        view.scale = crate::effects::wheel::GUI_SCALE;
+        view.size_word = wheel_size_word(unit);
+        view.shown = state.shown;
+        view.fade = state.fade(now);
+        view.shares = self.wheel.domains;
+        view.hot = state.hot;
+        view.chosen = state.chosen;
+        if state.chosen > 0 || state.before > 0 {
+            view.flash = state.choice_flash(now).0;
         }
+        view.before = state.before;
+        view.label = state
+            .label_fade(now)
+            .map(|fade| exa_ui::wheel_draw::WheelLabel {
+                sector: state.previous,
+                fade,
+            });
+        view.game_now = now;
+        view.font = font;
+        view.font_size = font_size;
+        view
     }
 
     /// A click on the domain wheel child at the window point `x`,`y`: the
@@ -3339,14 +3366,15 @@ mod tests {
         assert_eq!((wheel_texture_side(4), wheel_size_word(4)), (128, 32));
         assert_eq!((wheel_texture_side(5), wheel_size_word(5)), (160, 40));
         // The wheel is 280 square at (10, height − 290) and has the opened
-        // domain as its choice. A tree with no record gives it 48 focus
-        // points to share; its own open ease keeps its constructor value.
+        // domain as its choice. A tree with no record writes 48 focus
+        // points into the wheel's own focus value (the field its paint
+        // eases toward), over the constructor's one half.
         let wheel = &screen.wheel_child;
         assert_eq!((wheel.left, wheel.top), (10.0, 410.0));
         assert_eq!(wheel.size, 280.0);
         assert_eq!(wheel.state.chosen, i32::from(DOMAIN_MIND));
         assert_eq!(wheel.state.shown, 1.0);
-        assert_eq!(wheel.state.fade, 0.5);
+        assert_eq!(wheel.state.fade, 48.0);
         assert_eq!(screen.wheel.total, 48.0);
         // The wheel's own hit test about the child's centre (140, 140):
         // icon 1 at (140, 64) and icon 4 at (140, 216); the centre is no
@@ -3409,6 +3437,85 @@ mod tests {
         tree.wheel_child.begin_fade(3000);
         assert_eq!(tree.wheel_child.state.fade_start, 2.5);
         assert_eq!(tree.wheel_child.state.fade_deadline, 3300);
+    }
+
+    #[test]
+    fn the_wheel_paint_reads_the_child_and_the_focus_share() {
+        let mut tree = TreeScreen::load(DOMAIN_MIND, TreeMode::Play, None, None, 1000.0, 700.0);
+        // With no record the focus total of 48 is the wheel's value too.
+        assert_eq!(tree.wheel_child.state.fade, 48.0);
+        let pairs = [KnownPower {
+            power: 0x0201,
+            flags: PICKED,
+        }];
+        tree.focus_total = 4.0;
+        tree.refresh_wheel(&pairs);
+        // A picked force power: a sixteenth share; the total follows.
+        assert_eq!(tree.wheel.domains[1], 0.0625);
+        assert_eq!(tree.wheel_child.state.fade, tree.wheel.total);
+        tree.wheel_child.state.hot = 3;
+        tree.wheel_child.state.chosen_at = 1000;
+        tree.wheel_child.state.before = 4;
+        let view = tree.wheel_draw_view(1100, 4, *exa_ui::tree_draw::TREE_FONT, (0, 0));
+        assert_eq!(
+            (view.left, view.top),
+            (tree.wheel_child.left, tree.wheel_child.top)
+        );
+        assert_eq!(view.client, [0, 0, 280, 280]);
+        assert_eq!((view.hot, view.chosen, view.before), (3, 1, 4));
+        assert_eq!(view.size_word, 32);
+        // 100 ms into the choice's 200 ms flash.
+        assert_eq!(view.flash, 0.5);
+        assert_eq!(view.shares[1], 0.0625);
+        // Past the flash the faded choice is dropped.
+        let view = tree.wheel_draw_view(1300, 4, *exa_ui::tree_draw::TREE_FONT, (0, 0));
+        assert_eq!((view.flash, view.before), (1.0, 0));
+    }
+
+    #[test]
+    fn no_press_enters_the_edit_drags() {
+        // The retail press only ever starts the pan; the node, link-turn and
+        // link drags are the editor's, and no shipped code enters them.
+        let mut screen = TreeScreen::from_nodes(
+            DOMAIN_MIND,
+            TreeMode::Play,
+            vec![node(0x101, vec![link_to(2)]), node(0x102, vec![])],
+        );
+        let mut bar = PowerBar::default();
+        for (focus, word) in [
+            (1, press::LEFT | press::PRESS),
+            (1 | focus::LINK, press::LEFT | press::PRESS),
+            (1, press::LEFT | press::DRAG),
+            (1, press::RIGHT | press::PRESS),
+        ] {
+            screen.focus = focus;
+            let input = PressInput {
+                x: 0.0,
+                y: 0.0,
+                word,
+                width: 1000.0,
+                now: 0,
+                hidden: false,
+            };
+            screen.press(input, None, &mut bar);
+            assert!(
+                matches!(screen.drag, DragState::Idle),
+                "{focus:#x} {word:#x}"
+            );
+        }
+        screen.press(
+            PressInput {
+                x: 0.0,
+                y: 0.0,
+                word: press::MIDDLE | press::PRESS,
+                width: 1000.0,
+                now: 0,
+                hidden: false,
+            },
+            None,
+            &mut bar,
+        );
+        assert_eq!(screen.drag, DragState::Pan);
     }
 
     #[test]

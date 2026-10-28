@@ -91,6 +91,7 @@ pub mod transition;
 pub mod tree_draw;
 pub mod view_helpers;
 pub mod viewport;
+pub mod wheel_draw;
 
 use bevy::prelude::*;
 

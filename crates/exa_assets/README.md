@@ -36,6 +36,13 @@ build passes no context.
 wound and effect lookups (the `_`-named child, then the deepest skinned
 mesh in reverse child order).
 
+Power tree sheets (`Game::load_tree_sheets`): the domain icon sheets, the
+frames, mods and flamelets, and the domain wheel, which the tree's load
+resamples to 32 GUI units a side through `exa_render`'s resample-to-size
+path in its own format word and flags (`wheel_texture`; 384 → 128 pixels at
+the four-pixel unit); `TreeSheets::resample_wheel` does it again when the
+unit changes.
+
 Hair (`hair`): the original's hair colour picker (five decoded hue anchors,
 desaturation by the saturated value, a specular grey moved in, the engine's
 sRGB chain), with the feral level's lightening, the material's gloss

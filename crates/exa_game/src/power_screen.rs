@@ -16,8 +16,8 @@
 //! that quad (only `fontbase24r` ships). The tooltip is the shown choice's
 //! name caption (at once) and its wrapped description box (after 600 ms),
 //! laid out at the original's places; while a power is dragged every node
-//! wears its name instead. Not modelled: the link programs' ribbon texture
-//! (the draw treats it as white, so links lack the spline's texture) and the
+//! wears its name instead. The domain wheel child draws its own paint
+//! ([`exa_ui::wheel_draw`]) and is hovered every frame. Not modelled: the
 //! base form's key handlers. The bar's own keys (pick, step, use) belong to
 //! the hotkey handler and the cast plugin ([`crate::thaum::cast`]), which
 //! keeps the caster's record and this screen's in step.
@@ -453,6 +453,12 @@ fn pointer(
             return;
         }
     }
+    // The wheel child's own hover: the icon under the pointer, its
+    // highlight stamp and the label it keeps.
+    if !hidden {
+        let hit = tree.wheel_child.domain_at(x, y);
+        tree.wheel_child.state.hover(i32::from(hit), now);
+    }
     let hover = tree.hover(x, y, width, height, hidden);
     if hover != tree.focus {
         tree.set_focus(hover, now);
@@ -674,6 +680,9 @@ fn draw(
     let (font, font_size) = tree_font(scale as i32, screen.font_atlas);
     screen.tree.font_size = font_size;
     screen.tree.domain_cells = domain_cells(&screen.sheets);
+    // The wheel's texture follows the interface unit (a no-op unless it
+    // changed).
+    screen.sheets.resample_wheel(scale as i32);
     let tree_open = screen.open;
     let PowerScreen {
         tree,
@@ -692,10 +701,12 @@ fn draw(
     let draw = if tree_open {
         // The tree pass already ends with the bar.
         let mut draw = tree_draw::tree_draw(&view);
-        // The domain wheel child at the form's lower left.
-        let wheel = tree.wheel_view();
-        draw.batches
-            .extend(tree_draw::wheel_picture(wheel.x, wheel.y, wheel.size, wheel.alpha).batches);
+        // The domain wheel child at the form's lower left: its own paint
+        // (backdrop, sector bands, choice glow, icons, ring frame, label).
+        let wheel_view = tree.wheel_draw_view(now as u32, scale as i32, font, font_size);
+        let wheel = exa_ui::wheel_draw::wheel_draw(&wheel_view);
+        draw.batches.extend(wheel.batches);
+        draw.texts.extend(wheel.texts);
         // The tooltip: the shown choice's name caption and its wrapped
         // description box, measured with the GUI font's advances (the
         // glyphs are the running font's).
@@ -975,6 +986,16 @@ fn level_four(image: &RgbaImage) -> RgbaImage {
 /// Samples a texture at `(u, v)` with bilinear filtering, the way the
 /// original's GL sampler does. The image's rows are bottom-up.
 fn sample(image: Option<&RgbaImage>, u: f32, v: f32) -> [f32; 4] {
+    sample_with(image, u, v, false)
+}
+
+/// [`sample`] repeating the picture on both axes, as the flamelets sheet's
+/// wrap flags ask; the wheel's programs scroll across it.
+fn sample_repeat(image: Option<&RgbaImage>, u: f32, v: f32) -> [f32; 4] {
+    sample_with(image, u, v, true)
+}
+
+fn sample_with(image: Option<&RgbaImage>, u: f32, v: f32, repeat: bool) -> [f32; 4] {
     let Some(image) = image else {
         return [1.0, 1.0, 1.0, 1.0];
     };
@@ -988,8 +1009,17 @@ fn sample(image: Option<&RgbaImage>, u: f32, v: f32) -> [f32; 4] {
     let fx = x - x0;
     let fy = y - y0;
     let fetch = |x: i32, y: i32| {
-        let x = x.clamp(0, image.width as i32 - 1) as usize;
-        let y = y.clamp(0, image.height as i32 - 1) as usize;
+        let (x, y) = if repeat {
+            (
+                x.rem_euclid(image.width as i32) as usize,
+                y.rem_euclid(image.height as i32) as usize,
+            )
+        } else {
+            (
+                x.clamp(0, image.width as i32 - 1) as usize,
+                y.clamp(0, image.height as i32 - 1) as usize,
+            )
+        };
         let at = (y * image.width as usize + x) * 4;
         [
             f32::from(image.pixels[at]) / 255.0,
@@ -1055,8 +1085,12 @@ fn raster_batch(
                     continue;
                 }
                 let vertex = mix_vertex(a, b, c, w0, w1, w2);
-                let [r, g, bl, alpha] = shade(batch, vertex, texture, coarse);
-                blend(canvas, width, height, x, y, [r, g, bl, alpha]);
+                let colour = shade(batch, vertex, texture, coarse);
+                if batch.blend == exa_ui::wheel_draw::WHEEL_PROGRAM_BLEND {
+                    blend_premultiplied(canvas, width, height, x, y, colour);
+                } else {
+                    blend(canvas, width, height, x, y, colour);
+                }
             }
         }
     }
@@ -1239,6 +1273,29 @@ fn shade(
                 col[3] * alpha * alpha,
             ]
         }
+        Program::WheelBack => exa_ui::wheel_draw::back_fragment(
+            [vertex.u, vertex.v],
+            col,
+            uniforms.par0[0],
+            uniforms.par1[0],
+            |u, v| sample_repeat(texture, u, v)[0],
+        ),
+        Program::WheelGlow => exa_ui::wheel_draw::glow_fragment(
+            [vertex.u, vertex.v],
+            col,
+            uniforms.par0[0],
+            |u, v| sample_repeat(texture, u, v)[0],
+        ),
+        Program::WheelSector => exa_ui::wheel_draw::sector_fragment(
+            [vertex.u, vertex.v],
+            col,
+            uniforms.par0[0],
+            [uniforms.par1[0], uniforms.par1[1], uniforms.par1[2]],
+            |u, v| sample_repeat(texture, u, v)[0],
+        ),
+        Program::Rounded => {
+            exa_ui::wheel_draw::rounded_fragment([vertex.u, vertex.v], col, uniforms.par0)
+        }
         Program::SkinText => {
             // The skin's textured program with `TexCol` one: the atlas
             // colour multiplies the run's ink.
@@ -1254,6 +1311,29 @@ fn shade(
     };
     out.iter_mut().for_each(|v| *v = clamp01(*v));
     out
+}
+
+/// The blend word `0x103`: the source colour as it is over the destination
+/// scaled by one minus the source alpha.
+fn blend_premultiplied(
+    canvas: &mut [u8],
+    width: u32,
+    height: u32,
+    x: i32,
+    y: i32,
+    colour: [f32; 4],
+) {
+    if x < 0 || y < 0 || x >= width as i32 || y >= height as i32 {
+        return;
+    }
+    let a = colour[3];
+    let at = (y as usize * width as usize + x as usize) * 4;
+    for (index, channel) in colour.iter().take(3).enumerate() {
+        let dst = f32::from(canvas[at + index]);
+        canvas[at + index] = (channel * 255.0 + dst * (1.0 - a)).clamp(0.0, 255.0) as u8;
+    }
+    let dst_a = f32::from(canvas[at + 3]) / 255.0;
+    canvas[at + 3] = ((a + dst_a * (1.0 - a)) * 255.0).clamp(0.0, 255.0) as u8;
 }
 
 fn blend(canvas: &mut [u8], width: u32, height: u32, x: i32, y: i32, colour: [f32; 4]) {

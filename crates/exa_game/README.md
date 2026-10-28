@@ -34,8 +34,10 @@ closing fades, the 17 ms view frames whose zoom and pan blend about the
 cursor, the eased opening scale about the first node, the bar's 900 ms
 open/close animation, the tooltip and label layout, the stretched link's own
 cubic, and the caster's grant caller. The running screen (`power_screen`)
-opens the tree with P, draws the tree, the domain wheel's sheet and the bar
-through `exa_ui::tree_draw`, draws the tooltip, labels and prompt with the
+opens the tree with P, draws the tree and the bar through
+`exa_ui::tree_draw` and the domain wheel child's own paint (backdrop, sector
+bands, choice glow, icons, ring frame and label, hovered every frame)
+through `exa_ui::wheel_draw`, draws the tooltip, labels and prompt with the
 GUI skin's own font: the interface level's main font gives the advances,
 glyph quad and line step, and its glyphs sample the level's atlas when the
 install ships it, else the base `fontbase24r` atlas scaled to that quad (the
@@ -400,8 +402,9 @@ and torrent).
 The reconstruction device starts the scan (`teleporters`); nothing
 starts the shell's aura entity yet (its caller, the shell power's visual,
 is not in); the power tree carries the wheel as its domain wheel child and
-uses its hit test, confirm and open ease. Drawing the flame ribbon's
-vertices, the shell and scan mesh copies, the bubble and wheel geometry,
+uses its hit test, confirm and open ease; the wheel's paint is
+`exa_ui::wheel_draw`. Drawing the flame ribbon's
+vertices, the shell and scan mesh copies, the bubble geometry,
 the portal particle simulation and the bubble's GI light values is not in.
 
 The force and environment effects of the same powers are in as plain
