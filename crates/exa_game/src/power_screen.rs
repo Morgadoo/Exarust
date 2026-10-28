@@ -21,13 +21,16 @@
 //! handler and the cast plugin ([`crate::thaum::cast`]), which keeps the
 //! caster's record and this screen's in step.
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use bevy::asset::RenderAssetUsages;
+use bevy::audio::AudioSource;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::window::PrimaryWindow;
 use exa_assets::{Game, RgbaImage, TreeSheets};
+use exa_audio::{AudioEnvironment, SoundBank};
 use exa_formats::rfi::Rfi;
 use exa_ui::font::{BASE_FONT, GameFont};
 use exa_ui::gui_core::{FormHost, FormId, GuiRect, GuiTask};
@@ -110,7 +113,7 @@ impl Plugin for PowerScreenPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<PowerScreen>()
             .add_systems(Startup, (load_screen, setup_router))
-            .add_systems(Update, (hotkeys, pointer, draw).chain());
+            .add_systems(Update, (hotkeys, pointer, draw, ui_sounds).chain());
     }
 }
 
@@ -285,6 +288,36 @@ fn hotkeys(
         *dirty = true;
         return;
     }
+    // The bar's cycle keys: the original's next (0x27) and previous
+    // (0x25) keys step the chosen slot and play the select sound. The tree
+    // screen's key handler takes them while it is open.
+    if *open {
+        let cycle = if keys.just_pressed(KeyCode::ArrowRight) {
+            Some(0x27)
+        } else if keys.just_pressed(KeyCode::ArrowLeft) {
+            Some(0x25)
+        } else {
+            None
+        };
+        if let Some(key) = cycle {
+            let out = tree.key(
+                crate::thaum::tree::KeyInput {
+                    key,
+                    flags: 0,
+                    guarded: false,
+                    hidden: false,
+                    stamp: 0,
+                    now,
+                },
+                bar,
+                Some(record),
+            );
+            if out.sound.is_some() {
+                *sound = out.sound;
+            }
+            *dirty = true;
+        }
+    }
     // The bar's own keys are the hotkey handler's (the cast plugin); the
     // tree keeps its screen and its Escape.
     if keys.just_pressed(KeyCode::Escape) {
@@ -347,6 +380,7 @@ fn pointer(
         dirty,
         drag,
         press_origin,
+        sound,
         ..
     } = &mut *screen;
     let hidden = !*open || tree.closing();
@@ -370,7 +404,10 @@ fn pointer(
         };
         *dirty = true;
         tree.drag = crate::thaum::tree::DragState::Idle;
-        let _ = tree.press(input, Some(record), bar);
+        let out = tree.press(input, Some(record), bar);
+        if out.sound.is_some() {
+            *sound = out.sound;
+        }
         *press_origin = Some([x, y]);
     }
     if buttons.pressed(MouseButton::Left)
@@ -418,9 +455,15 @@ fn pointer(
                 kind: crate::thaum::tree::press::POWER_DRAG,
                 origin: held.origin,
             };
-            bar.drop(x, y, width, &power);
+            let (_, drop_sound) = bar.drop(x, y, width, &power);
+            if drop_sound.is_some() {
+                *sound = drop_sound;
+            }
         } else {
-            let _ = tree.press(input, Some(record), bar);
+            let out = tree.press(input, Some(record), bar);
+            if out.sound.is_some() {
+                *sound = out.sound;
+            }
         }
         *dirty = true;
     }
@@ -658,6 +701,35 @@ fn draw(
     }
     screen.last_draw = now;
     screen.dirty = false;
+}
+
+/// Plays the UI sound an action queued, through the original's voice
+/// environment: the tree's sounds are 2D, at the listener's origin, with the
+/// volume and pitch the action names. A missing sound is remembered so the
+/// pack is not searched again.
+fn ui_sounds(
+    game: Option<Res<Game>>,
+    mut screen: ResMut<PowerScreen>,
+    bank: Option<ResMut<SoundBank>>,
+    sources: Option<ResMut<Assets<AudioSource>>>,
+    env: Option<ResMut<AudioEnvironment>>,
+    mut loaded: Local<HashMap<&'static str, Option<u32>>>,
+) {
+    let Some(sound) = screen.sound.take() else {
+        return;
+    };
+    let Some(game) = game else {
+        return;
+    };
+    let (Some(mut bank), Some(mut sources), Some(mut env)) = (bank, sources, env) else {
+        return;
+    };
+    let buffer = *loaded
+        .entry(sound.name)
+        .or_insert_with(|| bank.load_buffer(&game, &mut sources, sound.name));
+    if let Some(buffer) = buffer {
+        env.play_buffer(buffer, Vec3::ZERO, sound.volume, sound.pitch, 0);
+    }
 }
 
 /// Wraps a description at `width` characters, keeping its text.

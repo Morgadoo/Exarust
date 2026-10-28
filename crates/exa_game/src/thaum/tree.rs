@@ -593,12 +593,14 @@ pub struct KeyInput {
 }
 
 /// What a key did.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct KeyResult {
     /// The tree should open.
     pub open: bool,
     /// The bar's chosen slot moved.
     pub cycled: bool,
+    /// The cycle's select sound, when it moved.
+    pub sound: Option<TreeSound>,
 }
 
 /// The power tree screen's state.
@@ -1580,10 +1582,16 @@ impl TreeScreen {
         if flags & 2 == 0 {
             if key == 0x27 {
                 out.cycled = bar.cycle(1, record);
+                if out.cycled {
+                    out.sound = Some(SLOT_SELECT_SOUND);
+                }
                 return out;
             }
             if key == 0x25 {
                 out.cycled = bar.cycle(-1, record);
+                if out.cycled {
+                    out.sound = Some(SLOT_SELECT_SOUND);
+                }
                 return out;
             }
         }
@@ -3879,6 +3887,11 @@ mod tests {
         // A key with bit 1 set in its flags never cycles.
         let out = screen.key(input(0x27, 2, false, false, 0, 0), &mut bar, None);
         assert!(out.open && !out.cycled);
+        // The next key steps to the first set slot and plays the select
+        // sound.
+        let out = screen.key(input(0x27, 0, false, false, 0, 0), &mut bar, None);
+        assert!(out.cycled && !out.open);
+        assert_eq!(out.sound, Some(SLOT_SELECT_SOUND));
         // The guard holds keys until 950 ms before the stamp is past.
         let out = screen.key(input(0x50, 0, true, false, 2000, 1049), &mut bar, None);
         assert!(!out.open);

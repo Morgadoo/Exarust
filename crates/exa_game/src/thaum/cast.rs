@@ -629,6 +629,9 @@ fn run_bar_commands(
                     &mut roll,
                 );
                 if let Some(screen) = screen.as_deref_mut() {
+                    if let Some(sound) = entry.sound {
+                        screen.sound = Some(sound);
+                    }
                     store_on_screen(screen, caster);
                 }
             }
