@@ -400,15 +400,10 @@ fn neighbours_share_their_coinciding_corners() {
 }
 
 /// The fallback of a 6 × 6 × 2 slab, too thin for a candidate: each of the
-/// 25 cells with eight corners gives a sphere one cell (2 cm) across.
-///
-/// The pulls are the original's. The runtime's neighbour scan walks 25 of
-/// the table's 26 entries, so the `(+1, +1, +1)` corner never pulls: the
-/// middle cell keeps a pull of +4 half-cell steps on every axis (its −z and
-/// +z neighbours' sparser counts cancel on z, while +x+y+z would have
-/// cancelled x and y), and the low-x edge cell is pulled +28 on x and +4 on
-/// y and z. The older exporter's scan reads all 26 and leaves the middle
-/// cell's pulls cancelling exactly.
+/// 25 cells with eight corners gives a sphere one cell (2 cm) across. The
+/// middle one sits on its corner point, the pulls of its empty neighbours
+/// cancelling over all 26 of them; the one at x = 1 is pulled 24 half cells
+/// (of 0.02 · 1 cm) toward +x by its sparser −x neighbours.
 #[test]
 fn a_thin_slab_takes_the_fallback_spheres() {
     let mut map = solid_map(Vec3::new(6.0, 6.0, 2.0), [6, 6, 2]);
@@ -417,57 +412,21 @@ fn a_thin_slab_takes_the_fallback_spheres() {
     assert_eq!(map.spheres().len(), 25);
     assert!(map.spheres().iter().all(|s| s.radius == 2.0));
     let middle = map.spheres()[12];
-    assert_eq!(middle.centre, Vec3::new(4.0, 4.0, 4.0) * 0.02);
+    assert_eq!(middle.centre, Vec3::ZERO);
     let edge = map.spheres()[2];
-    assert_eq!(
-        edge.centre,
-        Vec3::new(28.0 * 0.02 + (2.0 - 6.0), 4.0 * 0.02, 4.0 * 0.02)
-    );
-    // The exporter's full scan, for the shipped lists' comparison.
-    let mut map = solid_map(Vec3::new(6.0, 6.0, 2.0), [6, 6, 2]);
-    mark_corners(&mut map);
-    extract_spheres(
-        &mut map,
-        &VolumeOptions {
-            all_neighbours: true,
-            ..VolumeOptions::default()
-        },
-    );
-    assert_eq!(map.spheres()[12].centre, Vec3::ZERO);
-    assert_eq!(
-        map.spheres()[2].centre,
-        Vec3::new(24.0 * 0.02 + (2.0 - 6.0), 0.0, 0.0)
-    );
+    assert_eq!(edge.centre, Vec3::new(24.0 * 0.02 + (2.0 - 6.0), 0.0, 0.0));
 }
 
-/// The neighbour scans walk the original's 25 entries, every offset but the
-/// centre and `(+1, +1, +1)`, in x, y, z order; the exporter's scan reads
-/// the far corner too.
+/// The neighbour scans walk all 26 offsets but the centre, in x, y, z
+/// order, the far corner `(+1, +1, +1)` last.
 #[test]
-fn the_neighbour_scans_skip_the_far_corner() {
-    assert_eq!(neighbours(&VolumeOptions::default()).len(), 25);
-    assert_eq!(
-        neighbours(&VolumeOptions {
-            all_neighbours: true,
-            ..VolumeOptions::default()
-        })
-        .len(),
-        26
-    );
-    assert!(
-        neighbours(&VolumeOptions::default())
-            .iter()
-            .all(|d| *d != [1, 1, 1])
-    );
+fn the_neighbour_scans_read_all_26() {
     for x in -1..=1 {
         for y in -1..=1 {
             for z in -1..=1 {
-                let expected = (x, y, z) != (0, 0, 0) && (x, y, z) != (1, 1, 1);
+                let expected = (x, y, z) != (0, 0, 0);
                 assert_eq!(
-                    neighbours(&VolumeOptions::default())
-                        .iter()
-                        .filter(|d| **d == [x, y, z])
-                        .count(),
+                    NEIGHBOURS.iter().filter(|d| **d == [x, y, z]).count(),
                     usize::from(expected)
                 );
             }

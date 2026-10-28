@@ -592,11 +592,6 @@ mod volume_fit {
     /// resolution; a body matches when one of those reproduces it. On the
     /// shipped build 1060 of the 1503 bodies match, 526 of them with the
     /// builders' defaults.
-    ///
-    /// A stored list also predates the shipped runtime's neighbour scan: it
-    /// counted all 26 neighbours, where the runtime (and so `fit`'s default)
-    /// stops one entry short ([`VolumeOptions::all_neighbours`]). The check
-    /// fits with the exporter's full scan to compare like with like.
     #[test]
     fn shipped_prop_meshes_fit_their_stored_bodies() {
         let Some(dir) = exa_assets::locate_install(None) else {
@@ -605,9 +600,6 @@ mod volume_fit {
         let game = exa_assets::GameData::open(&dir).unwrap();
         let pack = game.pack(PackKind::Objlib).unwrap();
         let (mut bodies, mut by_default, mut matched) = (0usize, 0usize, 0usize);
-        // How many stored lists the shipped runtime's own scan (25 entries)
-        // reproduces: the priced evidence for the exporter option below.
-        let mut runtime = 0usize;
         let mut time = std::time::Duration::ZERO;
         for entry in pack.entries() {
             let Some(bytes) = pack.get(&entry.name) else {
@@ -630,10 +622,7 @@ mod volume_fit {
                     .map(|s| [s.centre[0], s.centre[1], s.centre[2], s.radius].map(f32::to_bits))
                     .collect();
                 stored.sort();
-                let defaults = VolumeOptions {
-                    all_neighbours: true,
-                    ..VolumeOptions::for_bounds(&mesh.bounds(), false)
-                };
+                let defaults = VolumeOptions::for_bounds(&mesh.bounds(), false);
                 let begun = std::time::Instant::now();
                 let fitted = fit(&mesh, &defaults);
                 time += begun.elapsed();
@@ -646,16 +635,6 @@ mod volume_fit {
                     by_default += 1;
                     matched += 1;
                     continue;
-                }
-                let runtime_fit = fit(
-                    &mesh,
-                    &VolumeOptions {
-                        all_neighbours: false,
-                        ..defaults
-                    },
-                );
-                if same(&runtime_fit) {
-                    runtime += 1;
                 }
                 let other = if defaults.resolution == FINE_RESOLUTION {
                     COARSE_RESOLUTION
@@ -685,8 +664,7 @@ mod volume_fit {
         }
         eprintln!(
             "shipped bodies: {bodies}, {matched} fitted bit for bit ({by_default} with the \
-             builders' defaults, {runtime} with the runtime's 25-neighbour scan); default fits \
-             took {time:?}"
+             builders' defaults); default fits took {time:?}"
         );
         assert!(bodies > 1000, "too few shipped bodies found: {bodies}");
         assert!(

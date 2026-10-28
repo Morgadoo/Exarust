@@ -348,9 +348,6 @@ pub fn weapon_options(bounds: &Bounds, fit: &WeaponFit, flags: BuilderFlags) -> 
         min_corners: 1,
         min_free_corners: fit.min_free_corners,
         wide_queries: flags.wide_queries,
-        // The runtime's builder scans 25 neighbours; only the comparison
-        // with an older exporter's stored lists reads all 26.
-        all_neighbours: false,
     }
 }
 

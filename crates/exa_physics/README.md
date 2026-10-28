@@ -477,16 +477,14 @@ that touch the surface again (both radii ×√2/2 and ×0.75√2 in double
 precision with the voxeliser's wide-query flag); a cell is solid when the
 rays along both directions of all three axes hit a face from behind (the
 −axis ray to the mesh box widened by 0.01 cm, the +axis ray 0.2 cm past
-it). The neighbour scans walk 25 of the table's 26 entries: every loop
-over it in the shipped runtime stops one short, so the `(+1, +1, +1)`
-corner never counts, shares a mask or pulls (`VolumeOptions::
-all_neighbours` reads all 26, the older exporter's convention the stored
-prop lists were made with). The corner masks cover the border cells too.
+it). The neighbour scans walk all 26 neighbours (the loops test their
+index against 25 after the body). The corner masks cover the border cells
+too.
 The volume is the filled cells times the cell volume and the centre
 the original's half-offset expression. The extraction takes candidates
 whose eight corners are filled, 3 or more cells in, with the radius to the
 nearest cell short of eight corners; covers each candidate's `r − ¼`
-disc (the offsets' squares summed z, then y, then x), sorts them with the
+disc (the squared offsets added as `z² + (y² + x²)`), sorts them with the
 original's quicksort and drops, smallest first, any whose cells another
 covers too (never the strictly largest), taking a dropped one's coverage
 back over the window its own radius gave; covers the survivors' `r + ½`
@@ -497,7 +495,7 @@ taken away, pulled toward the empty side by 0.02 of half a cell per unit
 (a mesh with no candidate takes the corner spheres without coverage).
 `volume::sort_by_key` is the original's quicksort: its pivot halfway
 between the current low and the call's fixed high, a left scan that stops
-at the pivot's own value, the left side recursing while the right loops.
+at a value not below the pivot, the left side recursing while the right loops.
 The mesh queries (`volume::Mesh`, `volume::Face`) are the original's
 triangle tests, with its approximate reciprocals: a sphere touches when
 the plane is within reach and its nearest point (the original's region
@@ -506,8 +504,7 @@ faces whose normal points along it. A bounding-volume tree over the faces
 only skips faces that cannot answer. Of the 1503 shipped `Objlib` body
 nodes, 1060 get their stored sphere lists bit for bit (the stored lists
 come from two versions of the fit, one without the `1 + 0.01 r` shrink,
-most were made with the wide-query flag and all with the exporter's full
-26-neighbour scan). `VolumeSummary` weighs a
+and most were made with the wide-query flag). `VolumeSummary` weighs a
 body: mobility 10 000 over the volume, and four point masses 4 over the
 barycentric weights (the original's triple products) of the centre on the
 rest tetrahedron. The original has no buoyancy or drag, so
