@@ -68,6 +68,7 @@ pub struct DuelSystems;
 impl Plugin for AiPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<presence::ActivationArea>()
+            .init_resource::<rooms::RoomCells>()
             .add_message::<presence::Entered>()
             .add_message::<exa_combat::AttackAskedHook>()
             .add_systems(

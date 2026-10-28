@@ -37,7 +37,8 @@ pub struct RoomGridSize {
 
 impl Default for RoomGridSize {
     /// A level's room grid, 64 × 64 cells (38.4 m a side) [guess: the
-    /// running game does not read the level's grid dimensions].
+    /// running game does not read the level's grid dimensions; the plugin
+    /// inserts this grid].
     fn default() -> Self {
         Self {
             width: 64,
@@ -47,10 +48,16 @@ impl Default for RoomGridSize {
 }
 
 /// The characters in each cell of the room grid.
-#[derive(Resource, Debug, Clone, Default, PartialEq)]
+#[derive(Resource, Debug, Clone, PartialEq)]
 pub struct RoomCells {
     pub size: RoomGridSize,
     pub cells: Vec<Vec<Entity>>,
+}
+
+impl Default for RoomCells {
+    fn default() -> Self {
+        Self::new(RoomGridSize::default())
+    }
 }
 
 /// A character's cell in the room grid and the cell it came from.

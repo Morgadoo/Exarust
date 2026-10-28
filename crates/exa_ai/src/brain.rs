@@ -617,6 +617,7 @@ pub fn ai_tick(
     mut rooms: Option<ResMut<RoomCells>>,
     players: Query<(Entity, &GlobalTransform), With<RatedPlayer>>,
     targets: Query<(Entity, &GlobalTransform)>,
+    fighters: Query<(Entity, &GlobalTransform), With<Fighter>>,
     mut npcs: Query<(
         Entity,
         &mut Npc,
@@ -716,7 +717,7 @@ pub fn ai_tick(
             // character of the brain's cell rather than the cell's linked
             // list (the original links every character with a behaviour).
             let size = rooms.size;
-            let around: Vec<(u64, f32, bool)> = targets
+            let around: Vec<(u64, f32, bool)> = fighters
                 .iter()
                 .filter(|(e, _)| *e != _entity)
                 .filter(|(_, g)| {
