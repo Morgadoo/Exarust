@@ -470,5 +470,5 @@ Mesh body).
 An instance node in a `.rfc` stores no body: it draws the geometry, light or
 emitter of the node its instance word names (1-based), at its own transform
 and parent. `ModelLoader` follows instance chains to the first stored node
-and copies its parts, GI points, light, emitters and shadow bias onto the
+and copies its parts, GI points and GI flags (centred, thin), light, emitters and shadow bias onto the
 instance's model node (`instance_root`).

@@ -1293,9 +1293,23 @@ in world space there too):
   from the block grid's edge, counted from the level grid's half size in
   float, over 48 m), or, when that one has no geometry, the block nearest
   the focus 20 m ahead measured from its 24 m half extent, as the
-  residency sort ranks them. Finished block occupancies are kept for the last
-  three blocks and reused when the camera walks back. One build runs at a
-  time; a newer pick waits for it. The block already on screen stays bound
+  residency sort ranks them. The residency itself runs as the original's
+  does (`exa_world::gi_residency`): the first nine blocks in creation order
+  hold the light textures; every frame each **built** block's distance from
+  the focus is `max(|f − c| − 2400, 0)` per axis in centimetres (a NaN axis
+  is not clamped), squared and summed Z first, and a stable insertion sort
+  moves a block forward only past a strictly farther one, so unbuilt blocks
+  (still at 0) lead in list order; the builder takes the first unbuilt or
+  dirty block in that order, and a built block among the first nine
+  without a texture takes the farthest textured block's beyond them. While
+  the camera's block stands, Exarust builds the block the residency names
+  next in the background; finished occupancies are kept for the whole
+  level, as the original keeps them, so walking into a neighbouring block
+  swaps its volume in from the cache. One build runs at a time; a camera
+  block that needs building cancels a background build (the residency asks
+  for that block again), and a newer camera pick waits for a camera build.
+  Exarust builds the camera's block before the residency's order, so a
+  load is lit first where the player stands. The block already on screen stays bound
   while a newly built one warms behind it, so a move never reveals a cold
   block's black patches or propagation halo; the warm block replaces it in
   one step. A level change drops both blocks. When a load ends, the block
@@ -1323,8 +1337,10 @@ in world space there too):
   word, a count, then object-space points in cm) are transformed to the
   world and splatted:
   - trilinearly with weight 20, each cell's share rounded on its own, the
-    sum saturating at 255; a mesh marked thin (`GiThinMesh`, the mesh
-    body's first-child byte the reader does not expose) weighs a quarter,
+    sum saturating at 255; a mesh marked thin (`GiThinMesh`: the
+    original's mesh set-up flags a surface thin when its material's render
+    class has `0x4000`, or it has an opacity layer and an opacity above
+    0.75, and the splat reads the first surface's) weighs a quarter,
     and a centred one (`GiCentredMesh`, the node's flags2 `0x10`, which the
     model reader keeps) adds half a voxel in height and leaves its column's
     lowest slice alone;
@@ -1390,7 +1406,10 @@ the same reach and plane A tests when its own first mark or a neighbour's
 is set; the neighbours are read at the cell's row-major index ± 1 and
 ± the grid's height (the original's stride, the row length only on a
 square grid). Sectors left unmarked, sectors with no points at all, the
-margins and the top slice are cleared to zero every step, as the original
+margins and the top slice are cleared to zero every step (the top slice is
+drawn instead when the environment record has flag `0x20`, as on the
+outdoor terrain arenas: the original then draws `D − floor` slices rather
+than `D − 1 − floor`, `drawn_slices`), as the original
 clears the scratch target and draws only the groups: they stay dark and
 absorb light that reaches them through open walls. Voxel lights still add
 into them, as the original's additive pass follows the clear. A level
