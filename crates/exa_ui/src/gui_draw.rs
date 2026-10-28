@@ -357,6 +357,42 @@ pub fn text_batch(
     batch
 }
 
+/// The menu font's atlas cell step: four columns and eight rows, as the
+/// menu font's line builder samples them.
+pub const MENU_CELL_STEP: (f32, f32) = (0.25, 0.125);
+
+/// Builds a textured batch for the menu font's line quads. `menu_text`
+/// selects the menu unit's own text program ([`menu_text_fragment`]);
+/// otherwise the batch draws as the ordinary textured GUI program. The ink
+/// is the vertex colour, as in [`text_batch`].
+pub fn menu_batch(quads: &[crate::gui_text::TextQuad], ink: SkinInk, menu_text: bool) -> SkinBatch {
+    let mut batch = SkinBatch::new();
+    if menu_text {
+        batch.select_menu_text();
+    } else {
+        batch.select(2, 0, true);
+        batch.tex_col = Some(1.0);
+    }
+    batch.blend = BLEND_ALPHA;
+    batch.begin();
+    let (du, dv) = MENU_CELL_STEP;
+    for quad in quads {
+        let [x, top, w, h] = quad.rect;
+        let (u0, v0) = quad.cell;
+        batch.set_ink(ink);
+        batch.set_uv(u0, v0 + dv);
+        batch.vertex(x as f32, top as f32);
+        batch.set_uv(u0, v0);
+        batch.vertex(x as f32, (top + h) as f32);
+        batch.set_uv(u0 + du, v0);
+        batch.vertex((x + w) as f32, (top + h) as f32);
+        batch.set_uv(u0 + du, v0 + dv);
+        batch.vertex((x + w) as f32, top as f32);
+    }
+    batch.end_quads();
+    batch
+}
+
 /// Builds a textured quad batch from a wrapped text draw's glyph quads (the
 /// text box's form), in the draw's order, with each glyph's own ink.
 pub fn glyph_batch(
@@ -469,6 +505,7 @@ fn load_gui_textures(
         fonts.main.texture,
         fonts.small.texture,
         crate::gui_font::FONTBASE_24.texture,
+        crate::gui_text::MENU_FONT_TEXTURE,
     ] {
         if textures.textures.contains_key(name) || textures.missing.iter().any(|n| n == name) {
             continue;
@@ -573,6 +610,19 @@ fn shade(
                 ink[3] * f32::from(texel[3]) / 255.0,
             ]
         }
+        SkinMode::MenuText => {
+            let Some(texture) = texture else {
+                return [0.0; 4];
+            };
+            let texel = texture.sample(uv.0, uv.1);
+            let texel = [
+                f32::from(texel[0]) / 255.0,
+                f32::from(texel[1]) / 255.0,
+                f32::from(texel[2]) / 255.0,
+                f32::from(texel[3]) / 255.0,
+            ];
+            menu_text_fragment(texel, ink)
+        }
         SkinMode::HltCol => {
             let Some(texture) = texture else {
                 return [0.0; 4];
@@ -596,6 +646,48 @@ fn shade(
         // skin game screens use binds it and draws the vertex's ink.
         SkinMode::Skin => ink,
     }
+}
+
+/// The menu text's tint at a glyph red channel of 0: the shader's
+/// `vec3(1.0, 0.75, 0.4)`.
+pub const MENU_TEXT_TINT_LOW: [f32; 3] = [1.0, 0.75, 0.4];
+/// The tint at a glyph red channel of 1: white.
+pub const MENU_TEXT_TINT_HIGH: [f32; 3] = [1.0, 1.0, 1.0];
+/// The warm gain before the menu text's tone map.
+pub const MENU_TEXT_GAIN: f32 = 1.1;
+/// The tone map's half point and scale.
+pub const MENU_TEXT_TONE_OFFSET: f32 = 0.5;
+pub const MENU_TEXT_TONE_SCALE: f32 = 1.5;
+
+/// One fragment of the main menu unit's text program: the glyph texel and
+/// the vertex colour in, the tinted and tone-mapped fragment out. The tint
+/// is mixed by the glyph's red channel, the rgb is warmed by
+/// [`MENU_TEXT_GAIN`], tone-mapped by `rgb / (offset + rgb) * scale` in the
+/// program's left-to-right order, then the vertex colour multiplies the rgb
+/// and its alpha the texel's.
+pub fn menu_text_fragment(texel: [f32; 4], vertex: [f32; 4]) -> [f32; 4] {
+    let a = texel[0];
+    let tint = [
+        MENU_TEXT_TINT_LOW[0] * (1.0 - a) + MENU_TEXT_TINT_HIGH[0] * a,
+        MENU_TEXT_TINT_LOW[1] * (1.0 - a) + MENU_TEXT_TINT_HIGH[1] * a,
+        MENU_TEXT_TINT_LOW[2] * (1.0 - a) + MENU_TEXT_TINT_HIGH[2] * a,
+    ];
+    let lit = [
+        texel[0] * tint[0] * MENU_TEXT_GAIN,
+        texel[1] * tint[1] * MENU_TEXT_GAIN,
+        texel[2] * tint[2] * MENU_TEXT_GAIN,
+    ];
+    let mapped = [
+        lit[0] / (MENU_TEXT_TONE_OFFSET + lit[0]) * MENU_TEXT_TONE_SCALE,
+        lit[1] / (MENU_TEXT_TONE_OFFSET + lit[1]) * MENU_TEXT_TONE_SCALE,
+        lit[2] / (MENU_TEXT_TONE_OFFSET + lit[2]) * MENU_TEXT_TONE_SCALE,
+    ];
+    [
+        vertex[0] * mapped[0],
+        vertex[1] * mapped[1],
+        vertex[2] * mapped[2],
+        vertex[3] * texel[3],
+    ]
 }
 
 /// The item panel's highlight colour (the shader's `HltCol` uniform's rgb).
@@ -1535,5 +1627,43 @@ mod tests {
         frame.push(GuiLayer::new(batch, LayerTexture::Named("absent")));
         let pixels = rasterise(&[frame], &GuiTextures::default(), 2, 2);
         assert!(pixels.iter().all(|byte| *byte == 0));
+    }
+
+    #[test]
+    fn the_menu_text_program_tints_and_tone_maps_a_glyph() {
+        // A quarter red channel mixes the tint to (1, 0.8125, 0.55), then
+        // warms and tone-maps every channel.
+        let out = menu_text_fragment([0.25, 0.5, 0.5, 1.0], [1.0, 1.0, 1.0, 1.0]);
+        assert!((out[0] - 0.532_258_06).abs() < 1e-6);
+        assert!((out[1] - 0.707_920_79).abs() < 1e-6);
+        assert!((out[2] - 0.565_420_56).abs() < 1e-6);
+        assert!((out[3] - 1.0).abs() < 1e-6);
+        // The vertex colour multiplies the mapped rgb and its alpha the
+        // texel's.
+        let half = menu_text_fragment([0.25, 0.5, 0.5, 1.0], [0.5, 0.5, 0.5, 0.5]);
+        assert!((half[0] - out[0] * 0.5).abs() < 1e-6);
+        assert!((half[3] - 0.5).abs() < 1e-6);
+        // A full red channel takes the white end of the tint.
+        let white = menu_text_fragment([1.0, 0.0, 0.0, 0.5], [1.0, 1.0, 1.0, 1.0]);
+        assert!((white[0] - 1.031_25).abs() < 1e-6);
+        assert!((white[3] - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_menu_line_batch_selects_the_menu_program_only_for_the_selected_row() {
+        let quads = [crate::gui_text::TextQuad {
+            byte: b'A',
+            rect: [0, 0, 112, 112],
+            cell: (0.0, 0.875),
+            pen: 0,
+            advance: 76,
+        }];
+        let selected = menu_batch(&quads, [255; 4], true);
+        assert_eq!(selected.mode, SkinMode::MenuText);
+        assert_eq!(selected.blend, BLEND_ALPHA);
+        assert_eq!(selected.primitives.len(), 1);
+        let plain = menu_batch(&quads, [255; 4], false);
+        assert_eq!(plain.mode, SkinMode::Textured);
+        assert_eq!(plain.tex_col, Some(1.0));
     }
 }

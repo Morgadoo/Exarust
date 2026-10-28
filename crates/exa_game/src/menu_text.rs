@@ -20,46 +20,22 @@ pub const MENU_TEXT_SHADER: &str = "in vec2 vrTex;\r\nin vec4 vrCol;\r\nout vec4
 
 /// The glyph tint's darker end, mixed from the glyph's red channel: the
 /// shader's `vec3(1.0, 0.75, 0.4)`.
-pub const TINT_LOW: [f32; 3] = [1.0, 0.75, 0.4];
+pub const TINT_LOW: [f32; 3] = exa_ui::gui_draw::MENU_TEXT_TINT_LOW;
 /// The tint's colour at a red channel of 1: white.
-pub const TINT_HIGH: [f32; 3] = [1.0, 1.0, 1.0];
+pub const TINT_HIGH: [f32; 3] = exa_ui::gui_draw::MENU_TEXT_TINT_HIGH;
 /// The warm gain before the tone map.
-pub const TINT_GAIN: f32 = 1.1;
+pub const TINT_GAIN: f32 = exa_ui::gui_draw::MENU_TEXT_GAIN;
 /// The tone map's half point and scale.
-pub const TONE_OFFSET: f32 = 0.5;
-pub const TONE_SCALE: f32 = 1.5;
+pub const TONE_OFFSET: f32 = exa_ui::gui_draw::MENU_TEXT_TONE_OFFSET;
+pub const TONE_SCALE: f32 = exa_ui::gui_draw::MENU_TEXT_TONE_SCALE;
 
 /// The shader's per-channel colour for a glyph texel `tcol` and vertex colour
 /// `vr_col`, in the program's order: mix the tint by `tcol.x`, multiply by
 /// the gain, tone-map, then modulate rgb by the vertex colour and alpha by
-/// the texel's.
+/// the texel's. The rule itself lives with the draw path, which runs the
+/// same program over the rows' quads.
 pub fn texel(tcol: [f32; 4], vr_col: [f32; 4]) -> [f32; 4] {
-    let a = tcol[0];
-    let c = [
-        TINT_LOW[0] * (1.0 - a) + TINT_HIGH[0] * a,
-        TINT_LOW[1] * (1.0 - a) + TINT_HIGH[1] * a,
-        TINT_LOW[2] * (1.0 - a) + TINT_HIGH[2] * a,
-    ];
-    // `tcol.rgb * c * 1.1` then `tcol.rgb / (0.5 + tcol.rgb) * 1.5`, each in
-    // the program's left-to-right order.
-    let rgb = {
-        let lit = [
-            tcol[0] * c[0] * TINT_GAIN,
-            tcol[1] * c[1] * TINT_GAIN,
-            tcol[2] * c[2] * TINT_GAIN,
-        ];
-        [
-            lit[0] / (TONE_OFFSET + lit[0]) * TONE_SCALE,
-            lit[1] / (TONE_OFFSET + lit[1]) * TONE_SCALE,
-            lit[2] / (TONE_OFFSET + lit[2]) * TONE_SCALE,
-        ]
-    };
-    [
-        vr_col[0] * rgb[0],
-        vr_col[1] * rgb[1],
-        vr_col[2] * rgb[2],
-        vr_col[3] * tcol[3],
-    ]
+    exa_ui::gui_draw::menu_text_fragment(tcol, vr_col)
 }
 
 #[cfg(test)]

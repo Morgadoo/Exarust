@@ -907,6 +907,7 @@ fn main() -> AppExit {
     )
     .add_plugins(exa_game::GamePlugin)
     .insert_resource(Game(Arc::new(data)))
+    .insert_resource(exa_game::flow::BootToMenu(false))
     .insert_resource(view)
     .insert_resource(options.gi)
     .insert_resource(exa_ui::ShowFps(!options.no_fps))

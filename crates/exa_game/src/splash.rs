@@ -32,12 +32,13 @@
 //! Evidence: the splash screen's load, state machine, logo draw and create
 //! routines, their state words and constants.
 
+use bevy::audio::{AudioPlayer, PlaybackSettings, Volume};
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 use exa_assets::{ColorSpace, Game};
 use exa_formats::rfi::Rfi;
 
-use crate::flow::Viewport;
+use crate::flow::{Step, Viewport, menu_theme};
 
 /// The first logo's texture.
 pub const LOGO_1: &str = "bmelogol01.rfi";
@@ -536,6 +537,10 @@ fn tick_splash(
     mut logos: Query<LogoParts, With<SplashLogo>>,
     mut menu: Option<ResMut<crate::menu_screen::MenuScreen>>,
     mut flow: Option<ResMut<crate::flow::Flow>>,
+    mut steps: Option<ResMut<crate::flow::FlowSteps>>,
+    game: Option<Res<Game>>,
+    mut bank: Option<ResMut<exa_audio::SoundBank>>,
+    mut sources: Option<ResMut<Assets<AudioSource>>>,
 ) {
     let Some(splash) = screen.0.as_mut() else {
         return;
@@ -552,14 +557,30 @@ fn tick_splash(
     let now = clock_ms(&time);
     let frame = splash.tick(now, now, viewport, true);
     if frame.sound {
+        if let (Some(game), Some(bank), Some(sources)) =
+            (game.as_deref(), bank.as_mut(), sources.as_mut())
+            && let Some(clip) = bank.get(game, sources, HAND_OVER_SOUND)
+        {
+            commands.spawn((
+                AudioPlayer(clip),
+                PlaybackSettings {
+                    volume: Volume::Linear(SOUND_VOLUME),
+                    ..default()
+                },
+            ));
+        }
         debug!("splash: {HAND_OVER_SOUND} at {SOUND_VOLUME}");
     }
     if frame.hand_over {
         // The hand-over callback: the title page is built and shown under
         // the splash.
         if let Some(flow) = flow.as_mut() {
-            for step in flow.after_splash() {
+            let after = flow.after_splash();
+            for step in &after {
                 debug!("game flow: {step:?}");
+            }
+            if let Some(steps) = steps.as_mut() {
+                steps.steps.extend(after);
             }
         }
         if let Some(menu) = menu.as_mut() {
@@ -567,6 +588,14 @@ fn tick_splash(
         }
     }
     if frame.theme {
+        let theme = menu_theme(flow.as_deref().is_some_and(|flow| flow.alternative_music));
+        if let Some(steps) = steps.as_mut() {
+            steps.steps.push(Step::Music {
+                name: theme.name,
+                volume: theme.volume,
+                restart: true,
+            });
+        }
         debug!("splash: the menu theme starts");
     }
     let scale = window.scale_factor();

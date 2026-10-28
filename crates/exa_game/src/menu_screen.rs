@@ -13,17 +13,14 @@
 
 use std::sync::{Arc, Mutex};
 
-use bevy::asset::RenderAssetUsages;
 use bevy::prelude::*;
-use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::window::PrimaryWindow;
-use exa_assets::Game;
-use exa_formats::rfi::Rfi;
-use exa_ui::font::{BASE_FONT, GameFont, Rendered};
 use exa_ui::gui_core::{FormHost, FormId, GuiRect, GuiTask};
+use exa_ui::gui_draw::{GuiFrame, GuiFrames, GuiTextures, LayerTexture, menu_batch, text_batch};
+use exa_ui::gui_font::{FONTBASE_24, gui_level, level_for_unit};
 use exa_ui::gui_text::{MenuFont, menu_font_scale};
 use exa_ui::menu::{back_main_menu, menu_row_scale};
-use exa_ui::scale::GuiScale;
+use exa_ui::skin::{SkinBatch, SkinInk};
 
 use crate::flow::Flow;
 use crate::menu_pages::{
@@ -36,9 +33,6 @@ const SHADE: u8 = 210;
 /// The title drawn over the page, until the art sheet is wired.
 const TITLE: &str = "EXANIMA";
 const TITLE_COLOUR: [u8; 3] = [230, 220, 190];
-const ROW_COLOUR: [u8; 3] = [255, 255, 255];
-const SELECTED_COLOUR: [u8; 3] = [255, 240, 190];
-const DISABLED_COLOUR: [u8; 3] = [128, 128, 128];
 
 /// The menu's screen state.
 #[derive(Resource, Debug, Clone)]
@@ -94,6 +88,11 @@ impl MenuScreen {
         self.open = false;
         self.pressed = None;
         self.dirty = true;
+    }
+
+    /// Sets the flag a manual opened from the menu covers it with.
+    pub fn set_covered(&mut self, covered: bool) {
+        self.covered = covered;
     }
 
     /// Shows `page` from its first row.
@@ -153,8 +152,22 @@ impl MenuScreen {
     }
 }
 
-#[derive(Resource)]
-struct MenuFontRes(Option<GameFont>);
+/// A command the running screen handed to the game modes. The screen runs
+/// its own page changes at once; the session, form and quit work behind the
+/// other commands is [`crate::flow`]'s and the host's.
+#[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MenuChoice(pub MenuCommand);
+
+/// Whether the title page draws the menu form's title logo. The boot and the
+/// return to the title set it; it is only drawn on the title page.
+#[derive(Resource, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TitleLogo(pub bool);
+
+impl Default for TitleLogo {
+    fn default() -> Self {
+        Self(true)
+    }
+}
 
 /// The geometry the menu's form hit tests against, shared with the GUI
 /// core's form record.
@@ -251,35 +264,21 @@ struct MenuRouter {
     form: FormId,
 }
 
-#[derive(Component)]
-struct MenuCanvas;
-
-/// The canvas the menu was last drawn into, to skip idle redraws.
-#[derive(Component, Default)]
-struct DrawnMenu {
-    page: Option<Page>,
-    selected: usize,
-    pressed: Option<usize>,
-    size: (u32, u32),
-}
-
 pub struct MenuScreenPlugin;
 
 impl Plugin for MenuScreenPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<MenuScreen>()
-            .add_systems(Startup, (load_font, setup_router))
-            .add_systems(Update, (toggle, input, draw).chain());
+            .init_resource::<TitleLogo>()
+            .add_message::<MenuChoice>()
+            .add_systems(Startup, setup_router)
+            .add_systems(
+                Update,
+                (toggle, input, draw)
+                    .chain()
+                    .after(crate::gui_screens::draw_screens),
+            );
     }
-}
-
-fn load_font(mut commands: Commands, game: Option<Res<Game>>) {
-    let font = game.and_then(|game| {
-        let bytes = game.0.texture(BASE_FONT)?;
-        let rfi = Rfi::parse(bytes).ok()?;
-        GameFont::from_rfi(&rfi)
-    });
-    commands.insert_resource(MenuFontRes(font));
 }
 
 /// Creates the menu's form in a GUI core task.
@@ -303,9 +302,13 @@ fn setup_router(mut commands: Commands) {
 fn toggle(
     keys: Res<ButtonInput<KeyCode>>,
     mut menu: ResMut<MenuScreen>,
+    end: Option<Res<crate::end_menu_screen::EndMenuScreen>>,
     mut flow: Option<ResMut<Flow>>,
 ) {
     if !keys.just_pressed(KeyCode::F1) {
+        return;
+    }
+    if end.is_some_and(|end| end.open) {
         return;
     }
     if menu.open {
@@ -327,25 +330,6 @@ fn toggle(
     }
 }
 
-/// The menu canvas's entity: its image, full-window node and drawn state.
-fn canvas_bundle(image: Handle<Image>, logical: (f32, f32), drawn: DrawnMenu) -> impl Bundle {
-    (
-        Name::new("MainMenu"),
-        MenuCanvas,
-        ImageNode { image, ..default() },
-        Node {
-            position_type: PositionType::Absolute,
-            left: Val::Px(0.0),
-            top: Val::Px(0.0),
-            width: Val::Px(logical.0),
-            height: Val::Px(logical.1),
-            ..default()
-        },
-        Visibility::Inherited,
-        drawn,
-    )
-}
-
 /// Reads the pointer and keys while the menu is open.
 fn input(
     mut menu: ResMut<MenuScreen>,
@@ -353,6 +337,7 @@ fn input(
     mouse: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     mut exit: MessageWriter<AppExit>,
+    mut choices: MessageWriter<MenuChoice>,
     mut router: ResMut<MenuRouter>,
 ) {
     if !menu.open {
@@ -372,7 +357,7 @@ fn input(
     }
     if keys.just_pressed(KeyCode::Enter) {
         let row = menu.selected + 1;
-        run(&mut menu, row, &mut exit);
+        run(&mut menu, row, &mut exit, &mut choices);
         return;
     }
     if keys.just_pressed(KeyCode::Backspace) {
@@ -434,7 +419,7 @@ fn input(
         && let Some(pressed) = menu.pressed
     {
         if hit_row == Some(pressed) {
-            run(&mut menu, pressed + 1, &mut exit);
+            run(&mut menu, pressed + 1, &mut exit, &mut choices);
         } else {
             menu.pressed = None;
         }
@@ -442,11 +427,20 @@ fn input(
     }
 }
 
-/// Runs the 1-based row's command; the title's EXIT leaves the app.
-fn run(menu: &mut MenuScreen, row: usize, exit: &mut MessageWriter<AppExit>) {
+/// Runs the 1-based row's command; the title's EXIT leaves the app. Its own
+/// page changes and resume happen at once; the rest goes to the game modes
+/// through [`MenuChoice`].
+fn run(
+    menu: &mut MenuScreen,
+    row: usize,
+    exit: &mut MessageWriter<AppExit>,
+    choices: &mut MessageWriter<MenuChoice>,
+) {
     let command = menu.command(row);
     if command == MenuCommand::Quit {
         exit.write(AppExit::Success);
+    } else {
+        choices.write(MenuChoice(command));
     }
     menu.apply(command);
     menu.dirty = true;
@@ -469,63 +463,31 @@ fn page_from_number(number: i32) -> Page {
     }
 }
 
-/// Draws the page into one screen-sized image and shows it.
-fn draw(
-    mut menu: ResMut<MenuScreen>,
-    font: Res<MenuFontRes>,
-    scale: Res<GuiScale>,
-    windows: Query<&Window, With<PrimaryWindow>>,
-    mut images: ResMut<Assets<Image>>,
-    mut canvas: Query<
-        (&mut ImageNode, &mut Node, &mut Visibility, &mut DrawnMenu),
-        With<MenuCanvas>,
-    >,
-    mut commands: Commands,
-) {
-    if !menu.open {
-        for (_, _, mut visibility, _) in &mut canvas {
-            *visibility = Visibility::Hidden;
-        }
-        return;
-    }
-    let Ok(window) = windows.single() else {
-        return;
-    };
-    let width = window.physical_width();
-    let height = window.physical_height();
-    let ui_scale = window.scale_factor();
-    if width == 0 || height == 0 {
-        return;
-    }
-    let Some(font) = font.0.as_ref() else {
-        return;
-    };
-    let drawn = canvas
-        .iter()
-        .next()
-        .map(|(_, _, _, drawn)| (drawn.page, drawn.selected, drawn.pressed, drawn.size));
-    let up_to_date = drawn.is_some_and(|(page, selected, pressed, size)| {
-        page == Some(menu.page)
-            && selected == menu.selected
-            && pressed == menu.pressed
-            && size == (width, height)
-            && !menu.dirty
-    });
-    if up_to_date && canvas.iter().next().is_some() {
-        return;
-    }
-    let mut pixels = vec![0u8; width as usize * height as usize * 4];
-    for y in 0..height as usize {
-        for x in 0..width as usize {
-            let i = (y * width as usize + x) * 4;
-            pixels[i] = 8;
-            pixels[i + 1] = 8;
-            pixels[i + 2] = 10;
-            pixels[i + 3] = SHADE;
-        }
-    }
-    let row_scale = menu_row_scale(height as i32);
-    let rows = page_rows(menu.page, menu.state);
+/// One row of a painted menu: its place, text, ink and whether it is the
+/// selected row (drawn last through the menu text program).
+#[derive(Clone, Debug, PartialEq)]
+pub struct MenuRowPaint {
+    pub x: i32,
+    pub baseline: i32,
+    pub text: String,
+    pub ink: SkinInk,
+    pub selected: bool,
+}
+
+/// The rows the page paints, in the original's order: every unselected row
+/// first, then the selected row (nudged a third of a unit down while it is
+/// pressed). This is [`paint`] with the menu font's own record.
+pub fn painted_rows(
+    width: i32,
+    height: i32,
+    page: Page,
+    state: PageState,
+    selected: usize,
+    pressed: Option<usize>,
+    unit: i32,
+) -> Vec<MenuRowPaint> {
+    let row_scale = menu_row_scale(height);
+    let rows = page_rows(page, state);
     let widths: Vec<i32> = rows
         .iter()
         .map(|row| row_width_px(row, row_scale))
@@ -534,161 +496,154 @@ fn draw(
     let marks: Vec<i32> = vec![0; rows.len()];
     let disabled: Vec<bool> = rows.iter().map(|row| !row.enabled).collect();
     let menu_font = MenuFont::at_scale(menu_font_scale(row_scale));
-    let painted = paint(
-        width as i32,
-        height as i32,
-        page_origin(menu.page, rows.len()),
-        row_h(height as i32),
+    paint(
+        width,
+        height,
+        page_origin(page, rows.len()),
+        row_h(height),
         menu_font.ascent,
-        Some(menu.selected),
-        menu.pressed,
+        Some(selected),
+        pressed,
         &labels,
         &widths,
         &marks,
         &disabled,
-        exa_ui::gui_font::gui_level(exa_ui::gui_font::level_for_unit(scale.scale as i32)).unit,
-    );
-    let atlas_scale = menu_font_scale(row_scale).min(1.0);
-    let title = font.render(TITLE);
-    let title_width = (title.width as f32 * atlas_scale * 2.0).round() as i32;
-    let title_top = (row_scale * 40.0) as i32;
-    blit(
-        &mut pixels,
-        width as usize,
-        height as usize,
-        (width as i32 - title_width) / 2,
-        title_top,
-        &title,
-        atlas_scale * 2.0,
-        TITLE_COLOUR,
-    );
-    for row in &painted {
-        let colour = if row.selected {
-            SELECTED_COLOUR
-        } else if row.colour[0] == 0x80 {
-            DISABLED_COLOUR
-        } else {
-            ROW_COLOUR
-        };
-        let text = font.render(&row.text);
-        let top = row.y - (font.line_height() as f32 * atlas_scale) as i32;
-        blit(
-            &mut pixels,
-            width as usize,
-            height as usize,
-            row.x,
-            top,
-            &text,
-            atlas_scale,
-            colour,
-        );
-    }
-    let hint = font.render("F1 closes the menu");
-    blit(
-        &mut pixels,
-        width as usize,
-        height as usize,
-        8,
-        height as i32 - 20,
-        &hint,
-        atlas_scale * 0.6,
-        [180, 180, 180],
-    );
-    let image = Image::new(
-        Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
-        },
-        TextureDimension::D2,
-        pixels,
-        TextureFormat::Rgba8UnormSrgb,
-        RenderAssetUsages::RENDER_WORLD,
-    );
-    let handle = images.add(image);
-    let logical = (width as f32 / ui_scale, height as f32 / ui_scale);
-    let mut spawned = false;
-    for (mut image_node, mut node, mut visibility, mut drawn) in &mut canvas {
-        image_node.image = handle.clone();
-        node.width = Val::Px(logical.0);
-        node.height = Val::Px(logical.1);
-        node.left = Val::Px(0.0);
-        node.top = Val::Px(0.0);
-        *visibility = Visibility::Inherited;
-        drawn.page = Some(menu.page);
-        drawn.selected = menu.selected;
-        drawn.pressed = menu.pressed;
-        drawn.size = (width, height);
-        spawned = true;
-    }
-    if !spawned {
-        commands.spawn(canvas_bundle(
-            handle,
-            logical,
-            DrawnMenu {
-                page: Some(menu.page),
-                selected: menu.selected,
-                pressed: menu.pressed,
-                size: (width, height),
-            },
-        ));
-    }
-    menu.dirty = false;
+        unit,
+    )
+    .into_iter()
+    .map(|row| MenuRowPaint {
+        x: row.x,
+        baseline: row.y,
+        text: row.text,
+        ink: row.colour,
+        selected: row.selected,
+    })
+    .collect()
 }
 
-/// Blits a rendered line into an RGBA canvas at `x`, `top`, scaled by
-/// `scale`, tinted by `colour` (nearest sampling).
+/// The full-screen backdrop the page draws over the game: near black at the
+/// screen's shade.
+pub fn backdrop(width: i32, height: i32) -> (SkinBatch, SkinInk) {
+    let mut batch = SkinBatch::new();
+    batch.select(1, 0, false);
+    let ink = [8, 8, 10, SHADE];
+    batch.set_ink(ink);
+    batch.begin();
+    batch.vertex(0.0, 0.0);
+    batch.vertex(0.0, height as f32);
+    batch.vertex(width as f32, height as f32);
+    batch.vertex(width as f32, 0.0);
+    batch.end_quads();
+    (batch, ink)
+}
+
+/// The page's frame through the GUI draw path: the backdrop, the title logo
+/// and the rows. The selected row is last and drawn with the unit's menu
+/// text program; the others use the plain textured program. When the menu
+/// font's sheet is not installed the rows fall back to the base font (the
+/// screen's earlier behaviour), still through the same draw path.
 #[allow(clippy::too_many_arguments)]
-fn blit(
-    canvas: &mut [u8],
-    width: usize,
-    height: usize,
-    x: i32,
-    top: i32,
-    text: &Rendered,
-    scale: f32,
-    colour: [u8; 3],
+pub fn menu_frame(
+    width: i32,
+    height: i32,
+    page: Page,
+    state: PageState,
+    selected: usize,
+    pressed: Option<usize>,
+    title_logo: bool,
+    textures: &GuiTextures,
+) -> GuiFrame {
+    let mut frame = GuiFrame::new();
+    if width <= 0 || height <= 0 {
+        return frame;
+    }
+    let (batch, _) = backdrop(width, height);
+    frame.push(exa_ui::gui_draw::GuiLayer::new(batch, LayerTexture::None));
+    let row_scale = menu_row_scale(height);
+    let unit = gui_level(level_for_unit(
+        exa_ui::scale::gui_scale(height as u32, 0) as i32
+    ))
+    .unit;
+    if page == Page::Title
+        && title_logo
+        && let Some(texture) = textures.get(FONTBASE_24.texture)
+    {
+        let size = (texture.width as u16, texture.height as u16);
+        let width_px = FONTBASE_24.text_width(TITLE.as_bytes());
+        let x = (width - width_px) / 2;
+        let baseline = (row_scale * 40.0) as i32 + FONTBASE_24.ascent;
+        let quads = exa_ui::gui_text::draw_line(&FONTBASE_24, TITLE.as_bytes(), x, baseline);
+        let batch = text_batch(
+            &FONTBASE_24,
+            &quads,
+            [TITLE_COLOUR[0], TITLE_COLOUR[1], TITLE_COLOUR[2], 255],
+            size,
+        );
+        frame.push(exa_ui::gui_draw::GuiLayer::new(
+            batch,
+            LayerTexture::Named(FONTBASE_24.texture),
+        ));
+    }
+    let rows = painted_rows(width, height, page, state, selected, pressed, unit);
+    if textures.get(exa_ui::gui_text::MENU_FONT_TEXTURE).is_some() {
+        let font = MenuFont::at_scale(menu_font_scale(row_scale));
+        for row in &rows {
+            let (quads, _) = font.draw_line(row.text.as_bytes(), row.x, row.baseline);
+            let batch = menu_batch(&quads, row.ink, row.selected);
+            frame.push(exa_ui::gui_draw::GuiLayer::new(
+                batch,
+                LayerTexture::Named(exa_ui::gui_text::MENU_FONT_TEXTURE),
+            ));
+        }
+    } else if let Some(texture) = textures.get(FONTBASE_24.texture) {
+        let size = (texture.width as u16, texture.height as u16);
+        for row in &rows {
+            let text = row.text.as_bytes();
+            let x = (width - FONTBASE_24.text_width(text)) / 2;
+            let quads = exa_ui::gui_text::draw_line(&FONTBASE_24, text, x, row.baseline);
+            let batch = text_batch(&FONTBASE_24, &quads, row.ink, size);
+            frame.push(exa_ui::gui_draw::GuiLayer::new(
+                batch,
+                LayerTexture::Named(FONTBASE_24.texture),
+            ));
+        }
+    }
+    frame
+}
+
+/// Draws the page into the GUI path's frame queue.
+fn draw(
+    mut menu: ResMut<MenuScreen>,
+    logo: Option<Res<TitleLogo>>,
+    textures: Option<Res<GuiTextures>>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    mut frames: ResMut<GuiFrames>,
 ) {
-    if scale <= 0.0 || text.width == 0 || text.height == 0 {
+    if !menu.open {
         return;
     }
-    let w = (text.width as f32 * scale).ceil() as i32;
-    let h = (text.height as f32 * scale).ceil() as i32;
-    for dy in 0..h {
-        let sy = (dy as f32 / scale) as usize;
-        if sy >= text.height {
-            continue;
-        }
-        let py = i64::from(top) + i64::from(dy);
-        if py < 0 || py as usize >= height {
-            continue;
-        }
-        for dx in 0..w {
-            let sx = (dx as f32 / scale) as usize;
-            if sx >= text.width {
-                continue;
-            }
-            // A row wider than the client sits far to the right (the
-            // original's unsigned shift): the sum must not overflow.
-            let px = i64::from(x) + i64::from(dx);
-            if px < 0 || px as usize >= width {
-                continue;
-            }
-            let coverage = text.alpha[sy * text.width + sx];
-            if coverage == 0 {
-                continue;
-            }
-            let a = f32::from(coverage) / 255.0;
-            let i = (py as usize * width + px as usize) * 4;
-            for c in 0..3 {
-                let under = f32::from(canvas[i + c]) / 255.0;
-                let over = f32::from(colour[c]) / 255.0;
-                canvas[i + c] = ((under * (1.0 - a) + over * a) * 255.0).round() as u8;
-            }
-            let under = f32::from(canvas[i + 3]) / 255.0;
-            canvas[i + 3] = ((under + a * (1.0 - under)) * 255.0).round() as u8;
-        }
+    let Ok(window) = windows.single() else {
+        return;
+    };
+    let width = window.physical_width() as i32;
+    let height = window.physical_height() as i32;
+    if width <= 0 || height <= 0 {
+        return;
     }
+    let empty = GuiTextures::default();
+    let textures = textures.as_deref().unwrap_or(&empty);
+    let frame = menu_frame(
+        width,
+        height,
+        menu.page,
+        menu.state,
+        menu.selected,
+        menu.pressed,
+        logo.as_deref().is_none_or(|logo| logo.0),
+        textures,
+    );
+    frames.push(frame);
+    menu.dirty = false;
 }
 
 #[cfg(test)]
@@ -732,18 +687,113 @@ mod tests {
         assert!(!menu.open);
     }
 
+    fn menu_textures() -> GuiTextures {
+        use exa_ui::gui_draw::GuiTexture;
+        let mut textures = GuiTextures::default();
+        let blank = vec![255u8; 448 * 896 * 4];
+        textures.textures.insert(
+            exa_ui::gui_text::MENU_FONT_TEXTURE.into(),
+            GuiTexture::from_top_down(448, 896, &blank).unwrap(),
+        );
+        let base = vec![255u8; 64 * 64 * 4];
+        textures.textures.insert(
+            FONTBASE_24.texture.into(),
+            GuiTexture::from_top_down(64, 64, &base).unwrap(),
+        );
+        textures
+    }
+
     #[test]
-    fn the_canvas_spawns_with_each_component_once() {
-        let mut world = World::new();
-        let entity = world
-            .spawn(canvas_bundle(
-                Handle::default(),
-                (800.0, 600.0),
-                DrawnMenu::default(),
-            ))
-            .id();
-        assert!(world.get::<MenuCanvas>(entity).is_some());
-        assert!(world.get::<DrawnMenu>(entity).is_some());
+    fn the_page_draws_through_the_gui_path_and_its_selected_row_uses_the_menu_text_program() {
+        let textures = menu_textures();
+        let frame = menu_frame(
+            1600,
+            1080,
+            Page::Title,
+            PageState::default(),
+            1,
+            None,
+            true,
+            &textures,
+        );
+        // The backdrop, the title logo and the six title rows.
+        assert_eq!(frame.layers.len(), 8);
+        assert_eq!(frame.layers[0].batch.mode, exa_ui::skin::SkinMode::Solid);
+        // The selected row is last, through the menu text program; every
+        // other row is the plain textured program.
+        let selected = frame.layers.last().unwrap();
+        assert_eq!(selected.batch.mode, exa_ui::skin::SkinMode::MenuText);
+        assert_eq!(
+            selected.texture,
+            LayerTexture::Named(exa_ui::gui_text::MENU_FONT_TEXTURE)
+        );
+        let plain = &frame.layers[2];
+        assert_eq!(plain.batch.mode, exa_ui::skin::SkinMode::Textured);
+        // Without the menu font's sheet the rows fall back to the base font.
+        let mut textures = GuiTextures::default();
+        let base = vec![255u8; 64 * 64 * 4];
+        textures.textures.insert(
+            FONTBASE_24.texture.into(),
+            exa_ui::gui_draw::GuiTexture::from_top_down(64, 64, &base).unwrap(),
+        );
+        let fallback = menu_frame(
+            1600,
+            1080,
+            Page::Title,
+            PageState::default(),
+            0,
+            None,
+            false,
+            &textures,
+        );
+        // The backdrop and the six rows; no title logo and no menu program.
+        assert_eq!(fallback.layers.len(), 7);
+        assert!(
+            fallback
+                .layers
+                .iter()
+                .all(|layer| layer.batch.mode != exa_ui::skin::SkinMode::MenuText)
+        );
+    }
+
+    #[test]
+    fn the_running_screen_opens_picks_and_closes_in_an_app() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<GuiFrames>()
+            .add_plugins(MenuScreenPlugin);
+        app.update();
+        let press = |app: &mut App, key: KeyCode| {
+            app.world_mut()
+                .resource_mut::<ButtonInput<KeyCode>>()
+                .press(key);
+            app.update();
+            app.world_mut()
+                .resource_mut::<ButtonInput<KeyCode>>()
+                .reset_all();
+        };
+        press(&mut app, KeyCode::F1);
+        let menu = app.world().resource::<MenuScreen>();
+        assert!(menu.open);
+        assert_eq!(menu.page, Page::Title);
+        // The in-game page's CONTINUE resumes: the screen closes and the
+        // command goes to the game modes.
+        {
+            let mut menu = app.world_mut().resource_mut::<MenuScreen>();
+            menu.page = Page::InGame;
+            menu.selected = 0;
+            menu.game = game_mode::MENU;
+        }
+        press(&mut app, KeyCode::Enter);
+        assert!(!app.world().resource::<MenuScreen>().open);
+        // F1 opens again, Down moves the selection and F1 closes.
+        press(&mut app, KeyCode::F1);
+        press(&mut app, KeyCode::ArrowDown);
+        assert_eq!(app.world().resource::<MenuScreen>().selected, 1);
+        press(&mut app, KeyCode::F1);
+        assert!(!app.world().resource::<MenuScreen>().open);
     }
 
     #[test]
@@ -759,20 +809,24 @@ mod tests {
     }
 
     #[test]
-    fn blitting_tints_and_blends() {
-        let text = Rendered {
-            width: 2,
-            height: 1,
-            alpha: vec![255, 0],
+    fn the_menu_reads_the_installed_title_sheet() {
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
         };
-        let mut canvas = vec![0u8; 16];
-        blit(&mut canvas, 4, 1, 0, 0, &text, 1.0, [255, 0, 0]);
-        assert_eq!(&canvas[0..4], &[255, 0, 0, 255]);
-        assert_eq!(&canvas[4..8], &[0, 0, 0, 0]);
-        // A row placed far to the right draws nothing.
-        let mut canvas = vec![0u8; 16];
-        blit(&mut canvas, 4, 1, i32::MAX, 0, &text, 1.0, [255, 0, 0]);
-        assert_eq!(canvas, vec![0u8; 16]);
+        let data = exa_assets::GameData::open(&dir).expect("the install opens");
+        let game = exa_assets::Game(std::sync::Arc::new(data));
+        let image = game
+            .load_rgba("titlefont")
+            .expect("titlefont.rfi is installed");
+        // Four columns of 112-pixel cells and eight rows.
+        assert!(image.width >= 448, "title sheet width {}", image.width);
+        assert!(image.height >= 896, "title sheet height {}", image.height);
+        // The draw reads a whole row of cells out of the sheet.
+        let cell =
+            exa_ui::gui_draw::GuiTexture::from_bottom_up(image.width, image.height, &image.pixels)
+                .expect("the sheet decodes");
+        let a = cell.sample(0.125, 0.9375);
+        assert_eq!(a.len(), 4);
     }
 
     #[test]
