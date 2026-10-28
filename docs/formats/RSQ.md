@@ -984,8 +984,9 @@ ticks.
   over the ankle; with no ground within reach the character's ground (the
   lowest foot's with support, their mean walking, the pelvis's query
   without) and flags 0x30. The toe's floor is the Ground Query: a point
-  ray from 30 cm over the ground, 60 cm down, against the level's floor
-  pieces (a rigid body's stand-in skipped; `Level::floor_below`), the
+  ray from 30 cm over the ground, 60 cm down, against floor-flagged
+  meshes and bodies only (`Level::floor_below`; Exarust's level colliders
+  carry no floor bit yet, so it misses in the game), the
   higher of its hit and the ground (10 cm less while the foot touches)
   plus the leg's offset, never over the lower leg's origin
   (`feet::sole_floor`); a miss leaves the ground plus the offset. A hit
@@ -995,7 +996,7 @@ ticks.
   factor by 1 − (lead/(60·character size))², to 0 at the limit, and the
   lead marks a late touching foot with the swing flag 0x10 against
   10·scale·(0.25 − frac(0.5·leg + progress + 1)), at a walk raised by the
-  gait's ground difference to at least 25 cm.
+  gait's ground difference and capped at 25 cm.
 - **The drive**, in each of the 20 iterations after the lower leg's links,
   for a body over half its tone with support and a contact more than 10 cm
   under the pelvis (the point refreshed every iteration): a touching foot
@@ -1859,10 +1860,9 @@ or past the last key a looping clip blends from it back to the first by
 (time − last)/first with no clamp, and one played once blends from the
 key before the last to the last with a share of 1. It takes no gait
 overlay, hold, twist, look or foot pitch, and the root keeps its travel.
-Every body that loses its muscles keeps its clip and is sampled this way
-each fixed tick (`exa_game::limp::sample_limp`), its particles snapped to
-the pose on the character frame it had when the muscles went; a body
-placed from a saved pose has no clip and keeps its pose.
+The original samples this way only a body whose muscles are off and which
+is not dead (a dead body's tick samples nothing), so no Exarust corpse
+plays a clip; the rule is `exa_game::limp::sample_limp`, not scheduled.
 
 **Sampler pipeline.** A living body's sampler takes each sample in the
 original's steps, part by part in the model tree's order, one function a
