@@ -203,6 +203,9 @@ pub struct ViewInputs {
     /// The shadow camera's eye, world cm: `FogPos` is the midpoint of it and
     /// the view's eye.
     pub sun_eye: [f32; 3],
+    /// The scene's whole-centimetre height limit for `FogPos` (340 when the
+    /// scene is created): it becomes `FogPos.w` and caps `FogPos.y`.
+    pub fog_ceiling: i32,
     /// `BufrPos`: the frame-copy offset used by screen-space refraction.
     pub buffer_position: [f32; 2],
     /// The environment's wetness.
@@ -232,6 +235,7 @@ impl Default for ViewInputs {
             fog_colour: [0.0; 3],
             fog_distance: 50_100.0,
             sun_eye: [0.0; 3],
+            fog_ceiling: 340,
             buffer_position: [0.0; 2],
             wetness: 0.0,
             supersample_factor: 4,
@@ -290,13 +294,18 @@ impl GlobalUniforms {
         ];
         // `FogPos` is the half-way point of the eye and the shadow camera's
         // eye, as the engine's vec3 lerp builds it: `a + (b − a)·0.5` per
-        // component, in single precision; `w` is never written.
-        let fog_position = [
+        // component, in single precision. `w` is the scene's integer height
+        // limit, and a `y` above it is lowered to it (a NaN `y` stays).
+        let ceiling = view.fog_ceiling as f32;
+        let mut fog_position = [
             view.eye[0] + (view.sun_eye[0] - view.eye[0]) * 0.5,
             view.eye[1] + (view.sun_eye[1] - view.eye[1]) * 0.5,
             view.eye[2] + (view.sun_eye[2] - view.eye[2]) * 0.5,
-            0.0,
+            ceiling,
         ];
+        if fog_position[1] > ceiling {
+            fog_position[1] = ceiling;
+        }
         Self {
             view_pos: [
                 view.eye[0],
@@ -1009,8 +1018,14 @@ mod tests {
         // `TimeDlt` is the frame's clock after the exposure and −1 over the
         // super-sampling factor, also after the exposure.
         assert_eq!(u.time_delta, [0.5, -0.25]);
-        // `FogPos` is the eye + (shadow eye − eye)·0.5; `w` is untouched.
-        assert_eq!(u.fog_position, [200.0, 350.0, -200.0, 0.0]);
+        // `FogPos` is the eye + (shadow eye − eye)·0.5 with `w` the scene's
+        // height limit 340 and `y` (350) lowered to it.
+        assert_eq!(u.fog_position, [200.0, 340.0, -200.0, 340.0]);
+        let low = GlobalUniforms::from_view(&ViewInputs {
+            fog_ceiling: 400,
+            ..view
+        });
+        assert_eq!(low.fog_position, [200.0, 350.0, -200.0, 400.0]);
         assert_eq!(u.view_reciprocal, [1.0 / 1600.0, 1.0 / 900.0]);
         close(u.fog_colour[3], 0.001);
         let bytes = u.to_bytes();

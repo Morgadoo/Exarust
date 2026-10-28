@@ -309,7 +309,7 @@ light in the environment word (unlit rows have an empty one).
 | 192 | `TimeDlt` | `(clock·exposure, −exposure/factor)`, the factor the super-sampling setting's 1–15 |
 | 200 | `ViewRcp` | `1/width`, `1/height` |
 | 208 | `FogColr` | linear fog colour, `w` = `1/fog distance` |
-| 224 | `FogPos` | the midpoint of the camera's eye and the sun camera's eye (`eye + (sun − eye)·0.5`); `w` is not written |
+| 224 | `FogPos` | the midpoint of the camera's eye and the sun camera's eye (`eye + (sun − eye)·0.5`), `y` capped at `w`; `w` is the scene's integer height limit (340 at scene creation) |
 | 240 | `BufrPos` | the frame-copy offset for refraction |
 | 248 | `Wetness` | the environment's wetness |
 
@@ -377,7 +377,8 @@ checked through these rules, not against a dump. Open:
   no shipped record has one].
 - `FogPos` was read from the builder: it lerps the camera's eye and the sun
   camera's eye at 0.5 with the engine's `a + (b − a)·t` helper, in single
-  precision. The light depth-scale denominator is the light's far radius
+  precision; the scene's integer height limit then fills `w` and caps `y`
+  (a NaN `y` is kept). The light depth-scale denominator is the light's far radius
   times the scene's light scale, and `DspSdw.y` adds `0.125·PassIdx` to 1,
   both from the writer's own instructions.
 - The material record's dirt tint is a field of the runtime

@@ -136,7 +136,8 @@ three `vec4`s; the fields and their values are in `docs/formats/FLB.md`.
 `ViewPos.w` and `TimeDlt.x` are the same frame clock after the exposure;
 `TimeDlt.y` is minus the exposure over the super-sampling factor. `FogPos`
 is the midpoint of the camera's eye and the sun camera's eye, built as
-`a + (b − a)·0.5`. The material writer's dirt block is written only by a
+`a + (b − a)·0.5`; its `w` is the scene's integer height limit (340 cm
+when the scene is created) and a `y` above that limit is lowered to it. The material writer's dirt block is written only by a
 dirt mode: modes 1–3 store `2 − strength` in `MatDrt.w` and the diffuse
 texture's aspect in `DrtUVs`, blood (4) copies the material record's dirt
 tint and skips `DrtUVs`, and a material with no dirt mode writes neither.
