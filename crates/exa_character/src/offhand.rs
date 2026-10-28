@@ -22,6 +22,7 @@ use exa_assets::{Game, ModelCache, ModelLoader, PackKind, model};
 use exa_combat::attack::Slot;
 use exa_combat::grip::{self, Grip};
 use exa_formats::weapon_record::{Holder, Lengths, Section, ShieldRecord};
+use exa_formats::weapon_stats::at;
 use exa_physics::body::Ragdoll;
 use exa_physics::grip::{HeldGrip, HeldKind};
 use exa_physics::grip_solve::GripSolveSet;
@@ -216,9 +217,14 @@ fn attach_off_hands(
         }
         // A second weapon strikes: its own blade beside the main hand's.
         if off.kind == OffKind::Weapon
-            && let Some(section) = off.weapon.as_ref().map(|w| Section {
-                flags: w.flags,
-                stats: w.stats,
+            && let Some((section, w_flags)) = off.weapon.as_ref().map(|w| {
+                (
+                    Section {
+                        flags: w.flags,
+                        stats: w.stats,
+                    },
+                    w.flags,
+                )
             })
         {
             // The model's own chain gives a plain weapon's lengths; a
@@ -247,6 +253,12 @@ fn attach_off_hands(
                         section,
                         lengths,
                         holder,
+                    },
+                    crate::grip_runtime::HeldItemSpec {
+                        class: (w_flags & 0xFFFF) as u16,
+                        start_byte: section.stats.get(at::START),
+                        item_cm: top,
+                        race_reach: race.weapons.unarmed_reach,
                     },
                 ))
                 .insert(exa_combat::impact::ImpactBook::default());

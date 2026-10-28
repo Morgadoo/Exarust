@@ -1551,7 +1551,12 @@ fn equip_outfits(
             if let Some(mut hands) = hands {
                 hands.main = Some(held::HeldItem::weapon(item.flags));
             }
-            let top = || weapon_length(&weapon, loader.meshes) * CM_PER_M;
+            // The item node's y extents (cm), which the held reach and aim
+            // height measure: the model's own top, as the record's length
+            // already uses it. [guess for a multi-node weapon, whose root
+            // node's own box the original reads]
+            let item_cm = weapon_length(&weapon, loader.meshes) * CM_PER_M;
+            let top = || item_cm;
             let record = held_record(
                 loader.game,
                 &held.model,
@@ -1660,6 +1665,14 @@ fn equip_outfits(
                             ],
                             links: None,
                             released: false,
+                        },
+                        // What the equip refresh measures from this item
+                        // (0x100152100), for the character's refresh.
+                        crate::grip_runtime::HeldItemSpec {
+                            class: (item.flags & 0xFFFF) as u16,
+                            start_byte: stats.get(at::START),
+                            item_cm,
+                            race_reach: race.weapons.unarmed_reach,
                         },
                     ));
                     if key.is_none() {
