@@ -48,7 +48,7 @@ use bevy::math::Vec3;
 use super::casting::{
     AiView, CastBody, ID_MASK, OFF_FEET, TickScale, VANISHED, advice, ask_hook, code,
     displacement_gate, displacement_hold_gate, free_slots, front_end_blocked, hook_event,
-    persistent_advice, price, spend, start_cast, within,
+    not_above, not_below, persistent_advice, price, spend, start_cast, within,
 };
 use super::engine::Roll;
 
@@ -289,11 +289,12 @@ pub fn displacement_ai_front_end(asked: u32, view: &AiView) -> u32 {
     }
 }
 
-/// The long door's advice word.
+/// The long door's advice word. Every comparison refuses only on its ordered
+/// branch (a not-a-number passes).
 pub fn long_door_advice(cost: f32, view: &AiView) -> u32 {
-    let use_it = f64::from(view.caster.focus) * 0.8 >= f64::from(cost)
-        && view.facing >= 1.0
-        && view.distance_sq <= 90_000.0
+    let use_it = not_below(f64::from(view.caster.focus) * 0.8, f64::from(cost))
+        && not_below(view.facing, 1.0)
+        && not_above(view.distance_sq, 90_000.0)
         && view.target_condition & OFF_FEET == 0
         && view.target_status & VANISHED == 0;
     if !use_it {
@@ -308,10 +309,10 @@ pub fn summon_advice(cost: f32, view: &AiView) -> u32 {
         return advice::UNAVAILABLE;
     }
     let word = (((cost * 200.0).round_ties_even() as i64) << 8) as u32;
-    let ready = view.health_ratio <= 0.75
-        && cost <= view.caster.focus
-        && view.facing <= 0.5
-        && 90_000.0 <= view.distance_sq;
+    let ready = not_above(view.health_ratio, 0.75)
+        && not_below(view.caster.focus, cost)
+        && not_above(view.facing, 0.5)
+        && not_below(view.distance_sq, 90_000.0);
     word | 0x800_0000 | if ready { 0x20 } else { 0 }
 }
 
@@ -636,6 +637,30 @@ mod tests {
         assert_eq!(
             displacement_ai_front_end(VANISH, &view),
             advice::UNAVAILABLE
+        );
+    }
+
+    #[test]
+    fn a_not_a_number_focus_passes_the_displacement_checks() {
+        let view = AiView {
+            caster: caster(f32::NAN),
+            facing: f32::NAN,
+            distance_sq: f32::NAN,
+            health_ratio: f32::NAN,
+            ..AiView::default()
+        };
+        // The ordered shortfall branches are skipped when the compare is
+        // unordered, so each evaluator answers as it would at a good range.
+        assert_eq!(displacement_ai_front_end(LONG_DOOR, &view), (32 << 8) | 4);
+        assert_eq!(
+            displacement_ai_front_end(SUMMON, &view),
+            (70 << 8) | 0x800_0000 | 0x20
+        );
+        assert_eq!(displacement_ai_front_end(CONSTANT, &view), advice::USE);
+        let mut body = caster(f32::NAN);
+        assert_eq!(
+            displacement_front_end(VANISH, &mut body, &DisplacementAim::default()).0,
+            code::STARTED
         );
     }
 

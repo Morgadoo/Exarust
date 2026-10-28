@@ -214,7 +214,7 @@ pub fn set_visibility(part: &mut VeilNode, mask: u32) {
 }
 
 /// The shell a constant displacement wears.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ShellWear {
     pub fade: f32,
     /// The node's event word.
@@ -230,6 +230,9 @@ pub struct ShellWear {
     pub shared: bool,
     /// Every subobject was marked [`ENDED`].
     pub hidden: bool,
+    /// The shell's sub-objects' render words; its end marks each with
+    /// [`ENDED`].
+    pub subobjects: Vec<u32>,
 }
 
 impl ShellWear {
@@ -242,6 +245,9 @@ impl ShellWear {
             flags: SHELL_FLAG,
             shared: false,
             hidden: false,
+            // The shell material replaces the sub-objects with one whose
+            // render word carries the aura bits.
+            subobjects: vec![AURA_FLAGS],
         }
     }
 
@@ -257,6 +263,9 @@ impl ShellWear {
     /// The shell's end: every subobject is marked, its fade returns to zero
     /// and the node is told [`SHELL_END`].
     pub fn end(&mut self) {
+        for subobject in &mut self.subobjects {
+            *subobject |= ENDED;
+        }
         self.hidden = true;
         self.fade = 0.0;
         self.event = SHELL_END;
@@ -426,6 +435,23 @@ pub struct ConstantVeil {
     pub streak: PhaseStreak,
     /// Where in the hum's loop it starts, in seconds.
     pub hum_start: f32,
+    /// The hum's first volume (silent) and the sound's base pitch.
+    pub hum_volume: f32,
+    pub hum_pitch: f32,
+    /// The hum loops from its first play (`+0x10` in its flags).
+    pub hum_loop: bool,
+    /// The shell was asked for as shared with a vanish.
+    pub shell_shared: bool,
+    /// The body's size factor, which the shell and the image keep.
+    pub size_factor: f32,
+    /// The shell's fade may run (its `+0x2d8` word starts zero).
+    pub shell_can_fade: bool,
+    /// The shell's fade callback was appended to the body's 100-room list.
+    pub fade_hook: bool,
+    /// The body's hit callback is the veil's.
+    pub hit_callback: bool,
+    /// The body's physics tick restores the phased nodes.
+    pub restore_callback: bool,
     /// The wisp the last passing blow made, if any.
     pub last_wisp: Option<[f32; 3]>,
     /// The passing blow's sound pitch.
@@ -434,9 +460,17 @@ pub struct ConstantVeil {
 
 impl ConstantVeil {
     /// Starts a constant displacement on `body`. `hum_length` is the hum
-    /// sound's length in seconds, `size_factor` the body's size factor and
-    /// `roll` draws the hum's start point.
-    pub fn start(body: VeilNode, hum_length: f32, size_factor: f32, roll: &mut Roll) -> Self {
+    /// sound's length in seconds and `hum_pitch` its base pitch,
+    /// `size_factor` the body's size factor, `shared` whether the shell is
+    /// the one a vanish may reuse, and `roll` draws the hum's start point.
+    pub fn start(
+        body: VeilNode,
+        hum_length: f32,
+        hum_pitch: f32,
+        size_factor: f32,
+        shared: bool,
+        roll: &mut Roll,
+    ) -> Self {
         let mut body = body;
         add_physics_bits(&mut body, DISPLACED_BIT);
         let parts = ShellParts::gather(&body);
@@ -444,12 +478,26 @@ impl ConstantVeil {
         let hum_start = (f64::from(hum_length) * 0.8 * f64::from(roll.unit())) as f32;
         Self {
             body,
-            shell: ShellWear::new(),
+            shell: if shared {
+                ShellWear::shared()
+            } else {
+                ShellWear::new()
+            },
             parts,
             image: TendrilImage::new(1.0, size_factor, anchors),
             phased: PhasedWeapons::default(),
             streak: PhaseStreak::default(),
             hum_start,
+            hum_volume: HUM_VOLUME,
+            hum_pitch,
+            hum_loop: true,
+            shell_shared: shared,
+            size_factor,
+            // The shell's fade word starts zero and may run.
+            shell_can_fade: true,
+            fade_hook: true,
+            hit_callback: true,
+            restore_callback: true,
             last_wisp: None,
             last_pitch: None,
         }
@@ -710,9 +758,12 @@ mod tests {
         let mut shell = wear();
         assert_eq!(shell.fade, 0.0);
         assert_eq!(shell.event, 0);
+        assert_eq!(shell.subobjects, vec![0x9000]);
         shell.end();
         assert_eq!((shell.fade, shell.event), (0.0, SHELL_END));
         assert!(shell.hidden);
+        // Every sub-object's render word gains the end mark.
+        assert_eq!(shell.subobjects, vec![0x9008]);
     }
 
     #[test]
@@ -850,10 +901,15 @@ mod tests {
         let expected = (2.0f64 * 0.8 * f64::from(draw.unit())) as f32;
         let mut roll = Roll(0x26b0_5733);
         let body = VeilNode::mesh(vec![VeilNode::mesh(vec![])]);
-        let mut veil = ConstantVeil::start(body, 2.0, 1.0, &mut roll);
+        let mut veil = ConstantVeil::start(body, 2.0, 1.25, 1.0, false, &mut roll);
         assert!(veil.has_displaced_bit());
         assert_eq!(veil.hum_start, expected);
+        assert_eq!((veil.hum_volume, veil.hum_pitch), (0.0, 1.25));
+        assert!(veil.hum_loop && veil.shell_can_fade);
+        assert!(veil.fade_hook && veil.hit_callback && veil.restore_callback);
+        assert!(!veil.shell_shared);
         assert_eq!(veil.parts.meshes.len(), 2);
+        assert_eq!(veil.image.visibility, DEAD);
         // The first draw passes (the streak starts at zero): the node and
         // its child lose 0xC000.
         let through = veil.hit(&[0], 1000, [1.0, 2.0, 3.0], &mut Roll(0x26b0_5733));

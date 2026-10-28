@@ -259,10 +259,12 @@ pub fn body_gate(body: &mut CastBody) -> i32 {
         if body.gait_bits & STOPPING == 0 {
             return code::FAILED;
         }
-        if 2.0 <= body.pace {
-            return code::NOT_NOW;
+        // The original's `COMISS pace, 2.0` sends both an ordered "two or
+        // more" and a not-a-number to the refused answer.
+        if body.pace < 2.0 {
+            return 1;
         }
-        return 1;
+        return code::NOT_NOW;
     }
     if c & CASTING != 0 {
         body.release = true;
@@ -297,7 +299,8 @@ pub fn displacement_gate(body: &mut CastBody, held: i32) -> i32 {
         body.release = true;
         return code::NOT_NOW;
     }
-    if 1.0 <= body.clip_rate && body.condition & COLLAPSING != 0 {
+    // `COMISS clip, 1.0` treats a not-a-number as "not below one".
+    if not_below(body.clip_rate, 1.0) && body.condition & COLLAPSING != 0 {
         return code::FAILED;
     }
     held
@@ -310,7 +313,7 @@ pub fn displacement_hold_gate(body: &mut CastBody, held: i32) -> i32 {
             body.release = true;
             return code::NOT_NOW;
         }
-        if 1.0 <= body.clip_rate && body.condition & FALLEN_OR_DYING != 0 {
+        if not_below(body.clip_rate, 1.0) && body.condition & FALLEN_OR_DYING != 0 {
             return code::FAILED;
         }
         return held;
@@ -697,12 +700,24 @@ pub fn price(row_id: u32, cost: f32, asked: u32, body: &CastBody, scale: TickSca
     }
 }
 
-/// Whether `cost` is within `focus` (false when either is not a number).
+/// Whether `cost` is within `focus`. The original compares `focus` with
+/// `cost` and refuses only on an ordered "cost is above focus" (`COMISS`
+/// then `JP` past the refuse branch), so a not-a-number on either side
+/// passes.
 pub fn within(cost: f32, focus: f32) -> bool {
-    matches!(
-        cost.partial_cmp(&focus),
-        Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
-    )
+    not_above(cost, focus)
+}
+
+/// `a ≤ b`, with an unordered compare (a not-a-number on either side)
+/// counting as true. The original's `COMISS`/`COMISD` refuse branches are
+/// preceded by `JP`, so a not-a-number skips them.
+pub fn not_above<T: PartialOrd>(a: T, b: T) -> bool {
+    !matches!(a.partial_cmp(&b), Some(std::cmp::Ordering::Greater))
+}
+
+/// `a ≥ b`, with an unordered compare counting as true.
+pub fn not_below<T: PartialOrd>(a: T, b: T) -> bool {
+    !matches!(a.partial_cmp(&b), Some(std::cmp::Ordering::Less))
 }
 
 /// Whether a player's Force or Displacement front end refuses outright.
@@ -752,7 +767,9 @@ pub mod advice {
 /// constant displacement, shock weapons): the cost within half the focus,
 /// facing within 0.5, the power not running and a slot free.
 pub fn persistent_advice(id: u32, cost: f32, view: &AiView) -> u32 {
-    if !(cost <= view.caster.focus * 0.5 && view.facing <= 0.5) {
+    // `COMISS focus·0.5, cost` and `COMISS facing, 0.5`: the refuse branches
+    // are the ordered below/above ones, so a not-a-number passes.
+    if !(not_below(view.caster.focus * 0.5, cost) && not_above(view.facing, 0.5)) {
         return 0;
     }
     let mut free = view.caster.slots;
@@ -796,6 +813,9 @@ mod tests {
         assert_eq!(body_gate(&mut walking), 1);
         walking.pace = 2.0;
         assert_eq!(body_gate(&mut walking), code::NOT_NOW);
+        // The unordered compare sends a not-a-number pace the same way.
+        walking.pace = f32::NAN;
+        assert_eq!(body_gate(&mut walking), code::NOT_NOW);
 
         let mut casting = CastBody {
             condition: CASTING,
@@ -836,6 +856,15 @@ mod tests {
         assert_eq!(displacement_gate(&mut dying, 0), code::FAILED);
         dying.clip_rate = 0.5;
         assert_eq!(displacement_gate(&mut dying, 0), 0);
+        // A not-a-number rate is "not below one": the condition bit decides.
+        dying.clip_rate = f32::NAN;
+        assert_eq!(displacement_gate(&mut dying, 0), code::FAILED);
+        let mut fallen = CastBody {
+            condition: 0xA00,
+            clip_rate: f32::NAN,
+            ..CastBody::default()
+        };
+        assert_eq!(displacement_hold_gate(&mut fallen, 0), code::FAILED);
 
         let mut dead = CastBody {
             condition: 0xA00,
@@ -848,6 +877,18 @@ mod tests {
         };
         assert_eq!(displacement_gate(&mut lying, 3), 3);
         assert_eq!(displacement_hold_gate(&mut lying, 3), code::FAILED);
+    }
+
+    #[test]
+    fn a_focus_check_passes_a_not_a_number() {
+        assert!(within(0.1, 0.1));
+        assert!(within(0.1, 0.2));
+        assert!(!within(0.2, 0.1));
+        // The original's `COMISS focus, cost` jumps over the refuse branch
+        // when the compare is unordered.
+        assert!(within(f32::NAN, 0.1));
+        assert!(within(0.1, f32::NAN));
+        assert!(within(f32::NAN, f32::NAN));
     }
 
     #[test]

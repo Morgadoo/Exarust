@@ -1,6 +1,9 @@
 //! The five materials the Force and Displacement effect nodes wear, the
 //! noise picture the barrier and the aura bind, the material signatures'
-//! defaults, and the shader programs those materials keep.
+//! defaults, the shader programs those materials keep, the node transition
+//! each material routine performs ([`dress`], [`MaterialNode`],
+//! [`ShaderBook`]) and the shared `gi_multipoint` emissive table
+//! ([`GiPrograms`]).
 //!
 //! Each material routine runs in the same order: it makes the material's
 //! shader object once (and registers its release with the frame's deferred
@@ -228,6 +231,275 @@ pub fn signature(kind: MaterialKind) -> Option<Signature> {
     }
 }
 
+/// The four shader objects the material routines make: the force material's,
+/// the barrier and aura materials' shared one, the tendril's and the
+/// displacement shell's. Each is made once and its release registered with
+/// the frame's deferred list; the tendril and shell share one release
+/// callback that frees two handles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ShaderSlot {
+    Force,
+    BarrierAura,
+    Tendril,
+    Shell,
+}
+
+/// A material node as the five material routines leave it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MaterialNode {
+    /// The material created for the node, if any.
+    pub material: Option<&'static str>,
+    /// The material's parameter block size.
+    pub block: usize,
+    /// The geometry node's flags word (`+0xc`).
+    pub flags: u32,
+    /// The geometry node's render word (`+8`); the aura and shell add
+    /// [`AURA_FLAGS`].
+    pub state: u32,
+    /// The node's sub-objects. The aura and shell replace them with one.
+    pub subobjects: usize,
+    /// The replacement sub-object's buffer usage.
+    pub subobject_usage: i32,
+    /// The replacement sub-object's parent points back at the node.
+    pub subobject_parent: bool,
+    /// The noise picture bound to the material's `+0x70` (the barrier and
+    /// the aura bind it; the shell does not).
+    pub noise: Option<&'static str>,
+}
+
+/// What one material routine did to its node and the shader table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MaterialOutcome {
+    pub slot: ShaderSlot,
+    /// This call made the shader object.
+    pub shader_created: bool,
+    /// This call made the `_ForceNoise` picture.
+    pub noise_created: bool,
+}
+
+/// The shader objects the effect materials hold, made once each; the
+/// barrier and the aura share one signature.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ShaderBook {
+    pub made: Vec<ShaderSlot>,
+    /// The release callbacks the deferred list holds.
+    pub releasing: Vec<ShaderSlot>,
+    /// The `_ForceNoise` picture exists.
+    pub noise: bool,
+}
+
+impl ShaderBook {
+    /// Makes the slot's shader object if the table has none and registers
+    /// its release. Answers whether this call made it.
+    pub fn ensure(&mut self, slot: ShaderSlot) -> bool {
+        if self.made.contains(&slot) {
+            return false;
+        }
+        self.made.push(slot);
+        if !self.releasing.contains(&slot) {
+            self.releasing.push(slot);
+        }
+        true
+    }
+
+    /// The material routine's noise creation: the barrier and the aura call
+    /// it before they make their shader. Answers whether this call made it.
+    pub fn ensure_noise(&mut self) -> bool {
+        if self.noise {
+            return false;
+        }
+        self.noise = true;
+        true
+    }
+
+    /// Runs the deferred releases, one slot at a time; the tendril and shell
+    /// slots share the displacement material's callback, which frees two
+    /// handles (the shader and its parameter block). Answers the handles
+    /// freed.
+    pub fn release(&mut self, slot: ShaderSlot) -> usize {
+        if let Some(at) = self.releasing.iter().position(|held| *held == slot) {
+            self.releasing.remove(at);
+            self.made.retain(|held| *held != slot);
+            if slot == ShaderSlot::Tendril || slot == ShaderSlot::Shell {
+                TENDRIL_HANDLES
+            } else {
+                1
+            }
+        } else {
+            0
+        }
+    }
+
+    /// Shutdown: every shader slot's handle goes.
+    pub fn release_all(&mut self) -> usize {
+        let slots = self.made.clone();
+        slots.iter().map(|slot| self.release(*slot)).sum()
+    }
+}
+
+impl MaterialKind {
+    /// The shader object this material's routine makes.
+    pub const fn shader_slot(self) -> ShaderSlot {
+        match self {
+            Self::Force => ShaderSlot::Force,
+            Self::Barrier | Self::Aura => ShaderSlot::BarrierAura,
+            Self::Tendril => ShaderSlot::Tendril,
+            Self::Shell => ShaderSlot::Shell,
+        }
+    }
+}
+
+/// Dresses `node` as one of the five material routines does, in the
+/// routine's own order: the noise picture (the barrier and the aura), the
+/// shader object (made once, its release deferred), the parameter block, the
+/// node's flag or state bits, the sub-object replacement (the aura and the
+/// shell), the material, and the noise bound to the material's `+0x70`.
+pub fn dress(
+    kind: MaterialKind,
+    node: &mut MaterialNode,
+    book: &mut ShaderBook,
+) -> MaterialOutcome {
+    let binding = kind.binding();
+    let noise_created = binding.noise && book.ensure_noise();
+    let shader_created = book.ensure(kind.shader_slot());
+    node.block = binding.block;
+    node.flags |= binding.node_flag;
+    node.state |= binding.state_flags;
+    if binding.adds_subobject {
+        node.subobjects = 1;
+        node.subobject_usage = SUB_OBJECT_USAGE;
+        node.subobject_parent = true;
+    }
+    node.material = Some(binding.name);
+    if binding.noise {
+        node.noise = Some(NOISE_TEXTURE);
+    }
+    MaterialOutcome {
+        slot: kind.shader_slot(),
+        shader_created,
+        noise_created,
+    }
+}
+
+/// The shared emissive program's name.
+pub const GI_NAME: &str = "gi_multipoint";
+/// The flags word of a GI entry whose program could not be made.
+pub const GI_FAILED: u32 = 0x8000_0000;
+/// The flags word a new GI entry starts with: its id with bit 30.
+pub const GI_CREATED: u32 = 0x4000_0000;
+/// The uniform names the program binds.
+pub const GI_UNIFORMS: [&str; 2] = ["Light", "Atten"];
+/// The parameter block the program's two uniform locations live in.
+pub const GI_PARAMS: usize = 0x14;
+/// The render state a new GI entry leaves: mode 0, flags failed, word 0,
+/// the two values 0x100.
+pub const GI_START_WORD: u32 = 0x100;
+
+/// One GI program the emissive geometries share, looked up by a material's
+/// id word.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GiProgram {
+    pub handle: u32,
+    pub params: u32,
+    pub light: u32,
+    pub atten: u32,
+}
+
+/// One entry of the shared GI program table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GiProgramEntry {
+    pub id: u32,
+    pub flags: u32,
+    pub program: Option<GiProgram>,
+}
+
+/// The state word the GI manager keeps for the program in use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GiState {
+    pub id: u32,
+    pub mode: u32,
+    pub flags: u32,
+    pub word: u32,
+    pub first: u32,
+    pub scale: u32,
+}
+
+impl Default for GiState {
+    fn default() -> Self {
+        Self {
+            id: 0,
+            mode: 0,
+            flags: GI_FAILED,
+            word: 0,
+            first: GI_START_WORD,
+            scale: GI_START_WORD,
+        }
+    }
+}
+
+/// The emissive program table. An id is looked up in order; a found entry
+/// whose flags are [`GI_FAILED`] answers none, any other is made current.
+/// A missing id appends an entry, sets the manager's state word and asks
+/// [`GI_NAME`] to be made; a failed make marks the entry [`GI_FAILED`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GiPrograms {
+    pub entries: Vec<GiProgramEntry>,
+    pub current: Option<usize>,
+    pub state: GiState,
+}
+
+impl GiPrograms {
+    /// Looks `id` up and makes its program when missing. `make` is the
+    /// renderer's program creation and uniform lookup, keyed by [`GI_NAME`];
+    /// it answers none when the program cannot be made.
+    pub fn acquire(
+        &mut self,
+        id: u32,
+        make: impl FnOnce(&'static str, [&'static str; 2]) -> Option<GiProgram>,
+    ) -> Option<usize> {
+        if let Some(at) = self.entries.iter().position(|entry| entry.id == id) {
+            if self.entries[at].flags == GI_FAILED {
+                return None;
+            }
+            self.current = Some(at);
+            return Some(at);
+        }
+        let flags = id | GI_CREATED;
+        self.entries.push(GiProgramEntry {
+            id,
+            flags,
+            program: None,
+        });
+        let at = self.entries.len() - 1;
+        self.state = GiState {
+            id,
+            ..GiState::default()
+        };
+        match make(GI_NAME, GI_UNIFORMS) {
+            Some(program) => {
+                self.entries[at].program = Some(program);
+                self.current = Some(at);
+                Some(at)
+            }
+            None => {
+                self.entries[at].flags = GI_FAILED;
+                None
+            }
+        }
+    }
+
+    /// Shutdown: the eleven global handles and each entry's program and
+    /// parameter block are freed, then the table empties. Answers how many
+    /// handles went.
+    pub fn cleanup(&mut self) -> usize {
+        let freed = GLOBAL_HANDLES + self.entries.len() * 2;
+        self.entries.clear();
+        self.current = None;
+        self.state = GiState::default();
+        freed
+    }
+}
+
 /// The noise picture's creation: its generator settings and its texture
 /// object's words.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -451,6 +723,105 @@ mod tests {
                 .expect("an upload")
                 .mipmaps
         );
+    }
+
+    #[test]
+    fn the_material_routines_dress_the_node_in_their_order() {
+        let mut book = ShaderBook::default();
+        let mut force = MaterialNode::default();
+        let made = dress(MaterialKind::Force, &mut force, &mut book);
+        assert_eq!(force.material, Some("_ForceMat01"));
+        assert_eq!((force.block, force.flags, force.state), (0xf0, 0x20, 0));
+        assert_eq!(force.subobjects, 0);
+        assert_eq!(force.noise, None);
+        assert!(made.shader_created && !made.noise_created);
+        assert_eq!(made.slot, ShaderSlot::Force);
+
+        // The barrier makes the noise and its shader, and binds the picture
+        // to the material.
+        let mut barrier = MaterialNode::default();
+        let made = dress(MaterialKind::Barrier, &mut barrier, &mut book);
+        assert_eq!((barrier.block, barrier.flags, barrier.state), (0xb8, 0, 0));
+        assert_eq!(barrier.noise, Some("_ForceNoise"));
+        assert!(made.noise_created);
+
+        // The aura shares the barrier's shader and the noise; it replaces
+        // the sub-objects with one and sets bit 0x9000 in the state word.
+        let mut aura = MaterialNode::default();
+        let made = dress(MaterialKind::Aura, &mut aura, &mut book);
+        assert_eq!(aura.state, 0x9000);
+        assert_eq!((aura.subobjects, aura.subobject_usage), (1, 35_044));
+        assert!(aura.subobject_parent);
+        assert_eq!(aura.noise, Some("_ForceNoise"));
+        assert!(!made.shader_created, "the barrier made the shared shader");
+        assert!(!made.noise_created);
+        assert_eq!(book.made, vec![ShaderSlot::Force, ShaderSlot::BarrierAura]);
+
+        // The shell keeps its own shader and adds no noise; the tendril
+        // sets the flag bit and keeps the geometry's sub-object.
+        let mut shell = MaterialNode::default();
+        let made = dress(MaterialKind::Shell, &mut shell, &mut book);
+        assert_eq!(
+            (shell.material, shell.state),
+            (Some("_EffectShell01"), 0x9000)
+        );
+        assert_eq!((shell.subobjects, shell.noise), (1, None));
+        assert!(made.shader_created);
+        let mut tendril = MaterialNode::default();
+        dress(MaterialKind::Tendril, &mut tendril, &mut book);
+        assert_eq!((tendril.flags, tendril.state), (0x20, 0));
+        assert_eq!(book.made.len(), 4);
+    }
+
+    #[test]
+    fn the_shader_book_releases_each_slot_once() {
+        let mut book = ShaderBook::default();
+        assert!(book.ensure(ShaderSlot::Tendril));
+        assert!(!book.ensure(ShaderSlot::Tendril));
+        assert!(book.ensure(ShaderSlot::Shell));
+        // The displacement material's one callback frees two handles.
+        assert_eq!(book.release(ShaderSlot::Tendril), TENDRIL_HANDLES);
+        assert_eq!(book.release(ShaderSlot::Tendril), 0);
+        assert_eq!(book.releasing.len(), 1);
+        assert_eq!(book.release(ShaderSlot::Shell), TENDRIL_HANDLES);
+        assert_eq!(book.release_all(), 0);
+    }
+
+    #[test]
+    fn the_gi_table_creates_once_and_binds_its_uniforms() {
+        let mut table = GiPrograms::default();
+        let mut calls = 0;
+        let made = table.acquire(0x201, |name, uniforms| {
+            calls += 1;
+            assert_eq!(name, "gi_multipoint");
+            assert_eq!(uniforms, ["Light", "Atten"]);
+            Some(GiProgram {
+                handle: 7,
+                params: 8,
+                light: 9,
+                atten: 10,
+            })
+        });
+        assert_eq!(made, Some(0));
+        assert_eq!(table.entries[0].flags, 0x4000_0201);
+        assert_eq!(table.state.id, 0x201);
+        assert_eq!((table.state.mode, table.state.flags), (0, GI_FAILED));
+        assert_eq!((table.state.first, table.state.scale), (0x100, 0x100));
+        // A second ask finds the entry and makes nothing.
+        let _ = table.acquire(0x201, |_, _| {
+            calls += 1;
+            None
+        });
+        assert_eq!(calls, 1);
+        assert_eq!(table.entries.len(), 1);
+
+        // A program that cannot be made marks the entry failed and answers
+        // none for it from then on.
+        assert_eq!(table.acquire(0x202, |_, _| None), None);
+        assert_eq!(table.entries[1].flags, GI_FAILED);
+        assert_eq!(table.acquire(0x202, |_, _| None), None);
+        assert_eq!(table.cleanup(), 11 + 4);
+        assert!(table.entries.is_empty());
     }
 
     #[test]

@@ -299,15 +299,16 @@ pub fn creator(kind: EffectKind, input: &CreatorInput) -> SceneNodeSpec {
             ..material(MaterialKind::Tendril, input.body, Quat::IDENTITY)
         },
         EffectKind::Kinesis => SceneNodeSpec {
+            // The kinesis creator makes the active object only; it loads no
+            // sound and adds no node (the class's own activation does).
             position: input.hand,
-            sounds: vec![("thmfrc_knsst", 0.8 + input.roll * 0.4)],
             ..SceneNodeSpec::default()
         },
         EffectKind::Throw => SceneNodeSpec {
-            position: input.chest,
+            position: input.point.unwrap_or(input.chest),
             sounds: vec![
                 ("thmfrc_knsst", 0.8 + input.roll * 0.4),
-                ("thmfrc_throw", 0.8 + input.roll * 0.4),
+                ("thmfrc_throw", 1.0 + input.roll * 0.2),
             ],
             ..SceneNodeSpec::default()
         },
@@ -840,11 +841,14 @@ mod tests {
 
     #[test]
     fn the_active_powers_carry_their_sounds() {
-        assert_eq!(
-            creator(EffectKind::Kinesis, &input()).sounds[0].0,
-            "thmfrc_knsst"
-        );
-        assert_eq!(creator(EffectKind::Throw, &input()).sounds.len(), 2);
+        // The kinesis creator loads no sound: `thmfrc_knsst` is the throw
+        // creator's pick sound, played at the picked body.
+        assert!(creator(EffectKind::Kinesis, &input()).sounds.is_empty());
+        let throw = creator(EffectKind::Throw, &input());
+        assert_eq!(throw.sounds.len(), 2);
+        assert_eq!(throw.sounds[0], ("thmfrc_knsst", 0.8 + 0.5 * 0.4));
+        assert_eq!(throw.sounds[1], ("thmfrc_throw", 1.0 + 0.5 * 0.2));
+        assert_eq!(throw.position, input().point.unwrap_or(input().chest));
         assert_eq!(creator(EffectKind::Strikes, &input()).sounds[0].1, 0.8);
         assert_eq!(creator(EffectKind::Kinesis, &input()).material, None);
     }
