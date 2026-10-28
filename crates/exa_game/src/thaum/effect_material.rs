@@ -233,15 +233,47 @@ pub fn signature(kind: MaterialKind) -> Option<Signature> {
 
 /// The four shader objects the material routines make: the force material's,
 /// the barrier and aura materials' shared one, the tendril's and the
-/// displacement shell's. Each is made once and its release registered with
-/// the frame's deferred list; the tendril and shell share one release
-/// callback that frees two handles.
+/// displacement shell's. Each is made once and never freed by these units.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ShaderSlot {
     Force,
     BarrierAura,
     Tendril,
     Shell,
+}
+
+/// The two release callbacks the material routines register with the
+/// deferred list, each once per run behind its own "registered" byte: the
+/// Force unit's (registered by whichever of the force, barrier and aura
+/// materials is made first; it is the unit's shutdown free, the twelve
+/// program handles and the GI table) and the Displacement unit's
+/// (registered by the tendril or shell material; it frees two program
+/// handles). Neither frees the material shader objects themselves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ReleaseUnit {
+    Force,
+    Displacement,
+}
+
+impl ReleaseUnit {
+    /// The program handles the callback frees when every one is live. The
+    /// Force callback also frees the GI table ([`GiPrograms::cleanup`]).
+    pub const fn handles(self) -> usize {
+        match self {
+            Self::Force => GLOBAL_HANDLES,
+            Self::Displacement => TENDRIL_HANDLES,
+        }
+    }
+}
+
+impl ShaderSlot {
+    /// The release callback this slot's material registers.
+    pub const fn unit(self) -> ReleaseUnit {
+        match self {
+            Self::Force | Self::BarrierAura => ReleaseUnit::Force,
+            Self::Tendril | Self::Shell => ReleaseUnit::Displacement,
+        }
+    }
 }
 
 /// A material node as the five material routines leave it.
@@ -282,22 +314,26 @@ pub struct MaterialOutcome {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ShaderBook {
     pub made: Vec<ShaderSlot>,
-    /// The release callbacks the deferred list holds.
-    pub releasing: Vec<ShaderSlot>,
+    /// The release callbacks registered with the deferred list, once each.
+    pub releasing: Vec<ReleaseUnit>,
+    /// The callbacks that have run; each zeroes the handles it frees, so a
+    /// second run frees none.
+    pub released: Vec<ReleaseUnit>,
     /// The `_ForceNoise` picture exists.
     pub noise: bool,
 }
 
 impl ShaderBook {
-    /// Makes the slot's shader object if the table has none and registers
-    /// its release. Answers whether this call made it.
+    /// Makes the slot's shader object if the table has none and, the first
+    /// time any material of its unit is made, registers the unit's release
+    /// callback. Answers whether this call made the shader object.
     pub fn ensure(&mut self, slot: ShaderSlot) -> bool {
         if self.made.contains(&slot) {
             return false;
         }
         self.made.push(slot);
-        if !self.releasing.contains(&slot) {
-            self.releasing.push(slot);
+        if !self.releasing.contains(&slot.unit()) {
+            self.releasing.push(slot.unit());
         }
         true
     }
@@ -312,39 +348,30 @@ impl ShaderBook {
         true
     }
 
-    /// Runs the deferred releases, one slot at a time. The tendril and shell
-    /// slots share the displacement material's callback, which frees two
-    /// handles (the shader and its parameter block) and is registered once,
-    /// so releasing either frees both. Answers the handles freed.
+    /// Runs the release callback `slot`'s material registered. The shader
+    /// objects stay made (the routines never make them again, and the
+    /// "registered" byte keeps the callback from being added twice); the
+    /// callback frees its unit's program handles and zeroes them, so a
+    /// second run frees none. Answers the handles freed.
     pub fn release(&mut self, slot: ShaderSlot) -> usize {
-        let shares = |held: &ShaderSlot| {
-            matches!(held, ShaderSlot::Tendril | ShaderSlot::Shell)
-                && matches!(slot, ShaderSlot::Tendril | ShaderSlot::Shell)
-        };
-        if !self
-            .releasing
-            .iter()
-            .any(|held| *held == slot || shares(held))
-        {
+        let unit = slot.unit();
+        if !self.releasing.contains(&unit) || self.released.contains(&unit) {
             return 0;
         }
-        if matches!(slot, ShaderSlot::Tendril | ShaderSlot::Shell) {
-            self.releasing
-                .retain(|held| !matches!(held, ShaderSlot::Tendril | ShaderSlot::Shell));
-            self.made
-                .retain(|held| !matches!(held, ShaderSlot::Tendril | ShaderSlot::Shell));
-            TENDRIL_HANDLES
-        } else {
-            self.releasing.retain(|held| *held != slot);
-            self.made.retain(|held| *held != slot);
-            1
-        }
+        self.released.push(unit);
+        unit.handles()
     }
 
-    /// Shutdown: every shader slot's handle goes.
+    /// Shutdown: every registered callback runs.
     pub fn release_all(&mut self) -> usize {
-        let slots = self.made.clone();
-        slots.iter().map(|slot| self.release(*slot)).sum()
+        let units = self.releasing.clone();
+        units
+            .iter()
+            .map(|unit| match unit {
+                ReleaseUnit::Force => self.release(ShaderSlot::Force),
+                ReleaseUnit::Displacement => self.release(ShaderSlot::Tendril),
+            })
+            .sum()
     }
 }
 
@@ -499,11 +526,16 @@ impl GiPrograms {
         }
     }
 
-    /// Shutdown: the eleven global handles and each entry's program and
-    /// parameter block are freed, then the table empties. Answers how many
-    /// handles went.
+    /// Shutdown: the twelve global handles and each entry's program and
+    /// parameter block are freed, then the table empties. A failed entry
+    /// holds neither, so it frees nothing. Answers how many handles went.
     pub fn cleanup(&mut self) -> usize {
-        let freed = GLOBAL_HANDLES + self.entries.len() * 2;
+        let made = self
+            .entries
+            .iter()
+            .filter(|entry| entry.program.is_some())
+            .count();
+        let freed = GLOBAL_HANDLES + made * 2;
         self.entries.clear();
         self.current = None;
         self.state = GiState::default();
@@ -611,8 +643,8 @@ pub fn noise_upload(texture: &NoiseTexture, fresh: bool, pixels: &[u8]) -> Optio
     })
 }
 
-/// The shader programs the effect materials keep. The original frees eleven
-/// global shader and buffer handles and the material table's entries when
+/// The shader programs the effect materials keep. The original frees twelve
+/// global program handles and the material table's entries when
 /// the renderer shuts down, then empties the table. Exarust's renderer owns
 /// the GPU objects; this keeps the material names so the table's lifecycle
 /// is still testable.
@@ -624,8 +656,8 @@ pub struct EffectShaders {
     pub tendril: Vec<&'static str>,
 }
 
-/// The eleven global handles the effect unit releases at shutdown.
-pub const GLOBAL_HANDLES: usize = 11;
+/// The twelve global program handles the Force unit's shutdown frees.
+pub const GLOBAL_HANDLES: usize = 12;
 /// The two tendril handles the displacement material releases.
 pub const TENDRIL_HANDLES: usize = 2;
 
@@ -637,7 +669,7 @@ impl EffectShaders {
         }
     }
 
-    /// Releases the effect shaders: the eleven global handles and the
+    /// Releases the effect shaders: the twelve global handles and the
     /// material table's entries are freed and the table emptied, then the
     /// tendril material frees its two. Returns how many handles went.
     pub fn release(&mut self) -> usize {
@@ -790,14 +822,24 @@ mod tests {
         assert!(book.ensure(ShaderSlot::Tendril));
         assert!(!book.ensure(ShaderSlot::Tendril));
         assert!(book.ensure(ShaderSlot::Shell));
-        // The displacement material's one callback frees both handles and
-        // is registered once, so either slot releases them both.
+        // The tendril and shell register one callback between them; it
+        // frees the two program handles once, and the shaders stay made.
+        assert_eq!(book.releasing, vec![ReleaseUnit::Displacement]);
         assert_eq!(book.release(ShaderSlot::Tendril), TENDRIL_HANDLES);
         assert_eq!(book.release(ShaderSlot::Tendril), 0);
         assert_eq!(book.release(ShaderSlot::Shell), 0);
-        assert!(book.releasing.is_empty() && book.made.is_empty());
+        assert_eq!(book.made, vec![ShaderSlot::Tendril, ShaderSlot::Shell]);
+        assert!(!book.ensure(ShaderSlot::Shell));
+        // The force, barrier and aura materials share the Force unit's one
+        // shutdown callback, the twelve program handles.
         assert!(book.ensure(ShaderSlot::Force));
-        assert_eq!(book.release(ShaderSlot::Force), 1);
+        assert!(book.ensure(ShaderSlot::BarrierAura));
+        assert_eq!(
+            book.releasing,
+            vec![ReleaseUnit::Displacement, ReleaseUnit::Force]
+        );
+        assert_eq!(book.release_all(), 12);
+        assert_eq!(book.release(ShaderSlot::BarrierAura), 0);
         assert_eq!(book.release_all(), 0);
     }
 
@@ -834,7 +876,9 @@ mod tests {
         assert_eq!(table.acquire(0x202, |_, _| None), None);
         assert_eq!(table.entries[1].flags, GI_FAILED);
         assert_eq!(table.acquire(0x202, |_, _| None), None);
-        assert_eq!(table.cleanup(), 11 + 4);
+        // Twelve globals and the one made entry's program and block; the
+        // failed entry holds neither.
+        assert_eq!(table.cleanup(), 12 + 2);
         assert!(table.entries.is_empty());
     }
 
@@ -844,7 +888,7 @@ mod tests {
             materials: vec!["_ForceMat01", "_ForceBarrier01", "_ForceAura01"],
             tendril: vec!["tendril", "shell"],
         };
-        assert_eq!(shaders.release(), 11 + 3 + 2);
+        assert_eq!(shaders.release(), 12 + 3 + 2);
         assert!(shaders.materials.is_empty());
         assert!(shaders.tendril.is_empty());
         shaders.register("_ForceMat01");
