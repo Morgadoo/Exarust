@@ -206,9 +206,10 @@ pub fn transfer(
     Some(flags)
 }
 
-/// The equipment panel's entries for a record, before any icon exists. This
-/// is the build a loot window binds at level load; it draws the same random
-/// numbers as [`bind_equipment`] for the same record.
+/// The equipment panel's entries for a record when there is no icon cache
+/// to reserve slots from (a level-load preview or a test). It draws the same
+/// random numbers as [`bind_equipment`] for the same record: the slot is the
+/// item id and the half extents a square icon's.
 pub fn equipment_layout(
     possessions: &Possessions,
     client: (i32, i32),

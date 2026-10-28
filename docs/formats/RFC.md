@@ -1048,7 +1048,7 @@ The rest of the record, in order (versions 5–7 alike up to the inventory):
 | experience | i32 | multiples of 5000 in the levels |
 | (word) | u32 | always 0 |
 | skills | `i32 n`, n × {u16 slot, u16 points, u8 k, k bytes} | six slots: Close Combat, Ranged Combat, Armour, Shields, Insight, Concentration; byte i = the technique chosen at level i (1-based id, at most six); one level per 5000 points |
-| inventory | `i32 n`, n × {u32 item, u32 flags, u32 ?} | carried items |
+| inventory | `i32 n`, n × {u32 item, u32 flags, s16 x, s16 y} | carried items; the saved cell in sixteenths of a GUI unit, x low and y high (`0x00040028` is the default (40, 4)) |
 | roles | v7: `u32 count`, `u32 len`, len bytes | count × {u32 role, f32 weight, u8 flags (bit 0 explicit), u8 inherited count, u8 n, u8 pad, n × u32 variables}, newest first |
 | relations | v7: table, then `i32 m` × {8 bytes, table} | table = `i32 n`; if n ≥ 1: n × {character, offset}, `i32 len`, blob; none in the shipped data |
 | saved state | `i32 n`, n × {u32 tag, u32 value} | `CECC0001` heal pool (f32 red still to heal), `CECC0002` potion expiry (world clock, s) |
@@ -1127,8 +1127,11 @@ then the loadouts). Three details of its behaviour:
   technique count up to the first empty slot (at most five, so a sixth
   technique is dropped) and that many technique bytes. A skill with points
   but no technique yet is lost.
-- an inventory entry's third word is `0x00040028` on an entry the game
-  appends; its meaning is not traced.
+- an inventory entry's third word is the saved pack cell: two signed
+  16-bit words, x low and y high, in sixteenths of a GUI unit. A new entry
+  gets (40, 4), `0x00040028`, which is where a given-back item lands. The
+  item panel's character-list load reads the same 12 bytes (see
+  `FUN_100109cc0`).
 
 `CharacterRecord::to_bytes` writes exactly those bytes: all 485 version 7
 records of the shipped levels and actors (478 + 7) come back byte for byte,
