@@ -272,6 +272,39 @@ impl CompositePools {
     }
 }
 
+/// One set slot of the pool layout the static terrain allocates at load.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PoolSlot {
+    pub id: u32,
+    pub level: i32,
+}
+
+/// The records the static terrain lays out at load: the 189-entry selected
+/// list and the 64 set slots, 21 at the high level and 43 at the low one, in
+/// id order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PoolLayout {
+    pub selected_capacity: usize,
+    pub slots: Vec<PoolSlot>,
+}
+
+impl CompositePools {
+    /// The load-time layout of the pools and the selection list.
+    pub fn layout(&self) -> PoolLayout {
+        PoolLayout {
+            selected_capacity: MAX_SELECTED,
+            slots: self
+                .sets
+                .iter()
+                .map(|set| PoolSlot {
+                    id: set.id,
+                    level: set.level,
+                })
+                .collect(),
+        }
+    }
+}
+
 /// The per-material mask plane's texels: the original keeps 256 × 256 bytes
 /// per material channel.
 pub const MASK_PLANE_TEXELS: usize = 256 * 256;
@@ -504,6 +537,9 @@ pub struct PassDraw {
     pub blend: bool,
     /// The height pass clamps its texture to the edge; the others repeat.
     pub wrap_clamp: bool,
+    /// The mask atlas region uploaded before the group's textures are bound,
+    /// with one channel per layer of the group.
+    pub mask: Option<MaskRegion>,
     pub quad: PassQuad,
 }
 
@@ -551,6 +587,7 @@ pub fn set_passes(
                 clear: None,
                 blend: key.add,
                 wrap_clamp: false,
+                mask: Some(MaskRegion::new(level, bx, by, count)),
                 quad: block_pass_quad(level, bx, by),
             });
             start += count;
@@ -584,6 +621,7 @@ pub fn mask_pass(
         clear: Some([0.0; 4]),
         blend: true,
         wrap_clamp: false,
+        mask: None,
         quad: block_pass_quad(level, bx, by),
     }
 }
@@ -606,6 +644,7 @@ pub fn height_pass(level: i32, start: usize, total: usize, layers: &[LayerFlags]
         clear: Some([HEIGHT_CLEAR; 4]),
         blend: true,
         wrap_clamp: true,
+        mask: None,
         quad: height_pass_quad(level),
     }
 }
@@ -1089,34 +1128,6 @@ impl CompositeSelector {
         &self.baked
     }
 
-    /// The priority pass: every block's distance rank from `focus`, then the
-    /// blocks that want work and are visible set the priority base from the
-    /// lowest and highest of their old priorities, found in one pass where a
-    /// rank that lowers the lowest is not also tried as the highest. The
-    /// base becomes the composite ring (as the original writes its ring
-    /// word) and every block's rank follows it. Returns the base.
-    pub fn rank(&mut self, focus: Vec2) -> u32 {
-        self.scratch.clear();
-        self.scratch.extend(
-            self.blocks
-                .iter()
-                .map(|block| super::stream::BlockPriority {
-                    centre: block.centre,
-                    distance: 0,
-                    rank: block.priority,
-                    wants: block.state & block_flags::WANTED != 0,
-                    visible: block.visible,
-                }),
-        );
-        let base = super::stream::update_priorities(&mut self.scratch, focus);
-        for (block, ranked) in self.blocks.iter_mut().zip(&self.scratch) {
-            block.distance = ranked.distance;
-            block.priority = ranked.rank;
-        }
-        self.ring = base as i32;
-        base
-    }
-
     pub fn pools(&self) -> &CompositePools {
         &self.pools
     }
@@ -1130,15 +1141,46 @@ impl CompositeSelector {
     }
 
     /// Runs one frame of the selection from `focus` (metres, as
-    /// [`super::stream::composite_focus`] gives it; the blocks are walked in their list
-    /// order, which the original takes tile by tile): neighbours in and out of the list,
-    /// sort keys, the composite order, and at most one block baked once a
-    /// block that is not blank needs work. Returns whether anything was baked.
+    /// [`super::stream::composite_focus`] gives it; the blocks are walked in
+    /// their list order, which the original takes tile by tile): neighbours
+    /// in and out of the list, sort keys, the composite order, and at most
+    /// one block baked once a block that is not blank needs work. Returns
+    /// whether anything was baked.
     pub fn reselect(&mut self, focus: Vec2) -> bool {
         self.select(focus);
         self.assign_keys();
         self.order();
         self.composite()
+    }
+
+    /// The priority pass: the selected list's distance ranks from `focus`,
+    /// then the selected blocks that want work and are visible set the
+    /// priority base from the lowest and highest of their old priorities,
+    /// found in one pass where a rank that lowers the lowest is not also
+    /// tried as the highest. The base becomes the composite ring (as the
+    /// original writes its ring word) and the selected blocks' ranks follow
+    /// it. Blocks outside the list keep their old rank, as the original's
+    /// priority slot only walks the selected list. Returns the base.
+    pub fn rank(&mut self, focus: Vec2) -> u32 {
+        self.scratch.clear();
+        self.scratch.extend(self.selected.iter().map(|&index| {
+            let block = &self.blocks[index];
+            super::stream::BlockPriority {
+                centre: block.centre,
+                distance: 0,
+                rank: block.priority,
+                wants: block.state & block_flags::WANTED != 0,
+                visible: block.visible,
+            }
+        }));
+        let base = super::stream::update_priorities(&mut self.scratch, focus);
+        for (&index, ranked) in self.selected.iter().zip(&self.scratch) {
+            let block = &mut self.blocks[index];
+            block.distance = ranked.distance;
+            block.priority = ranked.rank;
+        }
+        self.ring = base as i32;
+        base
     }
 
     /// The distance test: a block within 44.4 m is selected, a NaN distance
@@ -1175,23 +1217,44 @@ impl CompositeSelector {
                     }
                     block.state = (block.state & !block_flags::LOW_RES) | block_flags::HIGH_RES;
                 }
-            } else if let Some(at) = self.blocks[index].selection.take() {
-                let last = self.selected.len() - 1;
-                if at != last {
-                    let moved = self.selected[last];
-                    self.selected[at] = moved;
-                    self.blocks[moved].selection = Some(at);
-                }
-                self.selected.pop();
-                let state = self.blocks[index].state;
-                self.blocks[index].state = block_flags::WANTED | block_flags::BLANK;
-                if let Some(set) = self.blocks[index].set.take() {
-                    if state & block_flags::LOW_SET != 0 {
-                        self.pools.give_low(set);
-                    } else if state & block_flags::HIGH_SET != 0 {
-                        self.pools.give_high(set);
-                    }
-                }
+            } else {
+                self.remove(index);
+            }
+        }
+    }
+
+    /// Takes a block out of the selected list, hands its set back to its
+    /// pool and returns it to the wanted, blank state. This is the removal
+    /// the out-of-reach branch and a tile unload share.
+    fn remove(&mut self, index: usize) {
+        let Some(at) = self.blocks[index].selection.take() else {
+            return;
+        };
+        let last = self.selected.len() - 1;
+        if at != last {
+            let moved = self.selected[last];
+            self.selected[at] = moved;
+            self.blocks[moved].selection = Some(at);
+        }
+        self.selected.pop();
+        let state = self.blocks[index].state;
+        self.blocks[index].state = block_flags::WANTED | block_flags::BLANK;
+        if let Some(set) = self.blocks[index].set.take() {
+            if state & block_flags::LOW_SET != 0 {
+                self.pools.give_low(set);
+            } else if state & block_flags::HIGH_SET != 0 {
+                self.pools.give_high(set);
+            }
+        }
+    }
+
+    /// Removes blocks from the selection, as the frame hook does when a tile
+    /// is unloaded: each leaves the list, hands its set back and becomes
+    /// wanted and blank. Blocks that are not selected are left alone.
+    pub fn drop_blocks(&mut self, blocks: &[usize]) {
+        for &index in blocks {
+            if index < self.blocks.len() {
+                self.remove(index);
             }
         }
     }
@@ -1637,6 +1700,18 @@ mod tests {
                 CompositeTarget::Displacement
             ]
         );
+    }
+
+    #[test]
+    fn the_pool_layout_has_64_slots_and_a_189_entry_list() {
+        let layout = pools().layout();
+        assert_eq!(layout.selected_capacity, 189);
+        assert_eq!(layout.slots.len(), 64);
+        assert!(layout.slots[..21].iter().all(|slot| slot.level == 5));
+        assert!(layout.slots[21..].iter().all(|slot| slot.level == 4));
+        assert_eq!(layout.slots[0], PoolSlot { id: 0, level: 5 });
+        assert_eq!(layout.slots[21], PoolSlot { id: 21, level: 4 });
+        assert_eq!(layout.slots[63], PoolSlot { id: 63, level: 4 });
     }
 
     #[test]

@@ -1040,8 +1040,10 @@ impl LevelLoad {
         for err in &scene.level_errors {
             loader.warn_once(format!("level {entry}: {err}"));
         }
-        // A previous level's terrain stream goes with its entities.
+        // A previous level's terrain stream goes with its entities, and its
+        // composite sets go back to the renderer's host.
         commands.remove_resource::<terrain::live::TerrainStreaming>();
+        commands.insert_resource(exa_render::terrain_composite::TerrainCompositeHost::default());
         let root = commands
             .spawn((
                 LevelRoot {

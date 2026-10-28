@@ -80,6 +80,8 @@ pub struct TerrainStreaming {
     selector: CompositeSelector,
     tiles: Vec<Option<LiveTile>>,
     blocks: Vec<LiveBlock>,
+    /// The selector indices belonging to each tile, from the blocks' tile.
+    block_indices: Vec<Vec<usize>>,
     focus: Vec2,
     frames: u64,
 }
@@ -97,14 +99,43 @@ impl TerrainStreaming {
             .iter()
             .map(|block| BlockComposite::new(block.centre))
             .collect();
+        let mut block_indices = vec![Vec::new(); tiles.len()];
+        for (index, block) in blocks.iter().enumerate() {
+            if let Some(list) = block_indices.get_mut(block.tile) {
+                list.push(index);
+            }
+        }
         Self {
             stream,
             selector: CompositeSelector::new(blocks_for_selector, pools),
             tiles,
             blocks,
+            block_indices,
             focus: Vec2::ZERO,
             frames: 0,
         }
+    }
+
+    /// Marks every block of `tile` as wanting a composite, as the frame
+    /// hook does when it inserts a tile.
+    pub fn want_tile_blocks(&mut self, tile: usize) {
+        for &index in self.block_indices.get(tile).into_iter().flatten() {
+            if let Some(block) = self.selector.block_mut(index) {
+                block.want();
+            }
+        }
+    }
+
+    /// The selector indices of a tile's blocks.
+    pub fn tile_blocks(&self, tile: usize) -> &[usize] {
+        self.block_indices.get(tile).map_or(&[], Vec::as_slice)
+    }
+
+    /// Takes a tile's blocks out of the selection and hands their sets back,
+    /// as the frame hook's unload does.
+    pub fn drop_tile_blocks(&mut self, tile: usize) {
+        let blocks = self.block_indices.get(tile).cloned().unwrap_or_default();
+        self.selector.drop_blocks(&blocks);
     }
 
     pub fn stream(&self) -> &TerrainStream {
@@ -268,19 +299,25 @@ pub fn drive_terrain_stream(
     let Some(mut streaming) = streaming else {
         return;
     };
-    // The frame hook, at most one tile.
-    if let Some(step) = streaming.stream.frame()
-        && let Some((tile, action)) = step.handled
-        && let Some(entity) = streaming.entity_for(tile)
-    {
-        match action {
-            TileAction::Insert => {
-                commands.entity(entity).insert(Visibility::Visible);
+    // The frame hook, at most one tile; an inserted or ready tile marks its
+    // blocks as wanting a composite.
+    if let Some(step) = streaming.stream.frame() {
+        for tile in step.wanted.clone() {
+            streaming.want_tile_blocks(tile);
+        }
+        if let Some((tile, action)) = step.handled
+            && let Some(entity) = streaming.entity_for(tile)
+        {
+            match action {
+                TileAction::Insert => {
+                    commands.entity(entity).insert(Visibility::Visible);
+                }
+                TileAction::Unload => {
+                    streaming.drop_tile_blocks(tile);
+                    commands.entity(entity).insert(Visibility::Hidden);
+                }
+                TileAction::Upload | TileAction::None => {}
             }
-            TileAction::Unload => {
-                commands.entity(entity).insert(Visibility::Hidden);
-            }
-            TileAction::Upload | TileAction::None => {}
         }
     }
     let Some((camera, back)) = view_camera(&cameras) else {
@@ -382,19 +419,16 @@ mod tests {
         let mut streaming = streaming(&[(0.0, 0.0), (6.0, 0.0), (30.0, 0.0), (50.0, 0.0)]);
         let visible = [true; 4];
         let tick = streaming.tick(Vec2::ZERO, &visible, &[None; 4]);
-        // All four start wanted; the base is 6000 as their old priorities
-        // are all 0, and each rank is 6000 − its distance rank.
+        // The selected list starts empty, so the priority slot ranks nothing
+        // and the base is 6000; every baked block then takes the ring it was
+        // baked in. The out-of-reach block keeps its unranked priority.
         assert_eq!(tick.base, 6000);
-        // The ranks before the bake, and the priorities after it: a baked
-        // block carries the ring it was baked in.
-        assert_eq!(
+        assert!(
             streaming
                 .selector()
                 .blocks()
                 .iter()
-                .map(|b| b.distance)
-                .collect::<Vec<_>>(),
-            [6000, 5400, 3000, 1000]
+                .all(|b| b.distance == 0)
         );
         assert_eq!(
             streaming
@@ -403,7 +437,7 @@ mod tests {
                 .iter()
                 .map(|b| b.priority)
                 .collect::<Vec<_>>(),
-            [6000, 6000, 6000, 5000]
+            [6000, 6000, 6000, 0]
         );
         // Three blocks are in reach; the first two bake high, the third low,
         // and the frame's ring advances once.
@@ -426,6 +460,43 @@ mod tests {
         );
         assert_eq!(streaming.frames(), 1);
         assert_eq!(streaming.focus(), Vec2::ZERO);
+    }
+
+    #[test]
+    fn the_priority_slot_ranks_only_the_selected_list() {
+        let mut streaming = streaming(&[(0.0, 0.0), (6.0, 0.0), (30.0, 0.0), (50.0, 0.0)]);
+        let visible = [true; 4];
+        streaming.tick(Vec2::ZERO, &visible, &[None; 4]);
+        // The next frame ranks the three selected blocks: 6000 − d each, and
+        // they are not wanted, so their priority follows the base.
+        let tick = streaming.tick(Vec2::ZERO, &visible, &[None; 4]);
+        assert_eq!(tick.base, 6000);
+        assert_eq!(
+            streaming
+                .selector()
+                .blocks()
+                .iter()
+                .map(|b| b.distance)
+                .collect::<Vec<_>>(),
+            [6000, 5400, 3000, 0]
+        );
+        assert_eq!(
+            streaming
+                .selector()
+                .blocks()
+                .iter()
+                .map(|b| b.priority)
+                .collect::<Vec<_>>(),
+            [0, 600, 3000, 0]
+        );
+        // The near blocks sort first among the visible, non-blank blocks.
+        let keys: Vec<u32> = streaming
+            .selector()
+            .selected()
+            .iter()
+            .map(|&i| streaming.selector().blocks()[i].sort_key())
+            .collect();
+        assert!(keys[0] < keys[1] && keys[1] < keys[2], "{keys:?}");
     }
 
     #[test]
@@ -495,6 +566,70 @@ mod tests {
         );
         assert_eq!(far, [None, None]);
         let _ = tick;
+    }
+
+    #[test]
+    fn inserting_a_tile_marks_its_blocks_wanted() {
+        let blocks = vec![
+            LiveBlock {
+                entity: entity(1),
+                tile: 0,
+                centre: Vec2::ZERO,
+                half: Vec3::new(3.0, 0.1, 3.0),
+            },
+            LiveBlock {
+                entity: entity(2),
+                tile: 0,
+                centre: Vec2::new(6.0, 0.0),
+                half: Vec3::new(3.0, 0.1, 3.0),
+            },
+            LiveBlock {
+                entity: entity(3),
+                tile: 1,
+                centre: Vec2::new(30.0, 0.0),
+                half: Vec3::new(3.0, 0.1, 3.0),
+            },
+        ];
+        let stream = TerrainStream::new(vec![TileStream::raw(); 2]);
+        let pools = CompositePools::new(detail_size(3), CompositeFeatures::default());
+        let mut streaming = TerrainStreaming::new(stream, pools, vec![None; 2], blocks);
+        assert_eq!(streaming.tile_blocks(0), [0, 1]);
+        assert_eq!(streaming.tile_blocks(1), [2]);
+        let visible = [true; 3];
+        assert!(streaming.tick(Vec2::ZERO, &visible, &[None; 3]).changed);
+        assert!(
+            streaming
+                .selector()
+                .blocks()
+                .iter()
+                .all(|block| block.state() & 2 == 0)
+        );
+        streaming.want_tile_blocks(0);
+        assert!(
+            streaming
+                .selector()
+                .blocks()
+                .iter()
+                .take(2)
+                .all(|block| block.state() & 2 != 0)
+        );
+        assert_eq!(streaming.selector().blocks()[2].state() & 2, 0);
+        assert!(streaming.tick(Vec2::ZERO, &visible, &[None; 3]).changed);
+    }
+
+    #[test]
+    fn unloading_a_tile_hands_its_blocks_sets_back() {
+        let mut streaming = streaming(&[(0.0, 0.0), (6.0, 0.0)]);
+        let visible = [true; 2];
+        assert!(streaming.tick(Vec2::ZERO, &visible, &[None; 2]).changed);
+        assert_eq!(streaming.selector().pools().high_free(), 19);
+        streaming.drop_tile_blocks(0);
+        assert!(streaming.selector().selected().is_empty());
+        assert_eq!(streaming.selector().pools().high_free(), 21);
+        assert_eq!(streaming.selector().blocks()[0].state(), 6);
+        assert!(streaming.selector().blocks()[0].set().is_none());
+        // Dropping a tile that has no blocks is harmless.
+        streaming.drop_tile_blocks(7);
     }
 
     #[test]

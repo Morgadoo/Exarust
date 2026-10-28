@@ -171,6 +171,12 @@ impl TerrainCompositeHost {
         self.sets.remove(&id);
     }
 
+    /// Drops every set: the terrain's release slot, as a level unloads its
+    /// composite caches.
+    pub fn clear(&mut self) {
+        self.sets.clear();
+    }
+
     /// Reconciles the hosted sets with the selector's assignments: `held`
     /// lists every set a block holds as `(id, level, features)` in selection
     /// order. Missing sets are created at most `budget` at a time so a frame
@@ -197,6 +203,11 @@ impl TerrainCompositeHost {
             return made;
         }
         for &(id, level, features) in held {
+            // A set id reused by a new level (or a new texture-detail
+            // setting) is rebuilt at its level.
+            if self.sets.get(&id).is_some_and(|set| set.level != level) {
+                self.release(id);
+            }
             if made.len() >= budget {
                 break;
             }
@@ -339,11 +350,23 @@ mod tests {
         assert_eq!(host.sync(&mut images, &held, 1), [1]);
         // Nothing new now.
         assert!(host.sync(&mut images, &held, 1).is_empty());
+        // A set whose level changed is rebuilt at the new level.
+        let relaid = [(0u32, 4i32, SetFeatures::default())];
+        assert_eq!(host.sync(&mut images, &relaid, 1), [0]);
+        assert_eq!(host.set(0).unwrap().level, 4);
+        assert_eq!(host.len(), 1);
+        // The same set held again at the original level is rebuilt again.
+        assert_eq!(host.sync(&mut images, &held, 1), [0]);
+        assert_eq!(host.set(0).unwrap().level, 5);
         // A set no block holds goes back.
         let fewer = [held[0]];
         assert!(host.sync(&mut images, &fewer, 1).is_empty());
         assert!(host.set(21).is_none() && host.set(1).is_none());
         assert!(host.set(0).is_some());
+        // Clearing drops everything too.
+        host.clear();
+        assert!(host.is_empty());
+        assert!(host.sync(&mut images, &held, 1) == [0]);
         // Disabling drops everything.
         host.set_enabled(false);
         assert!(host.is_empty());
