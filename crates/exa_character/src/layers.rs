@@ -505,8 +505,14 @@ impl<'a> Assembler<'a> {
                         self.groups.push(group);
                     }
                 } else {
-                    // The original logs "Body part stack overflow" past 32
-                    // entries; the stack here grows instead.
+                    // The original's private stack holds at most 31 entries:
+                    // pushing the 32nd raises "Body part stack overflow",
+                    // which ends the slot's assembly. Nothing is kept then.
+                    if stack.len() + n.children.len() > 31 {
+                        self.groups.clear();
+                        self.best = -0x1000;
+                        return false;
+                    }
                     push_children(&mut stack, n);
                 }
             }
@@ -876,6 +882,44 @@ mod tests {
             children,
             ..crate::runtime::Node::default()
         }
+    }
+
+    /// The fallback looks under nodes of the parent slot whose layer is the
+    /// wanted one; the first parent-slot node of another layer ends that
+    /// tree's walk.
+    #[test]
+    fn the_stack_stops_at_thirty_one_entries() {
+        use crate::runtime::Body;
+        let mut pass = GarmentPass {
+            visible: !0,
+            ..GarmentPass::default()
+        };
+        pass.cover[9] = 0x01;
+        pass.words[9] = 0x01;
+        let wide = |n: usize| {
+            let children: Vec<usize> = (1..=n).collect();
+            let mut nodes = vec![node("00Root", None, children)];
+            for i in 1..=n {
+                let name = if i == n { "0900Chest" } else { "00Leaf" };
+                nodes.push(node(name, Some(0), vec![]));
+            }
+            Body::new(nodes)
+        };
+        // Thirty children fit; the chest is met last, so it is visited first.
+        let body = wide(30);
+        let roots = [0];
+        let mut a = Assembler::new(&body, &roots, &pass);
+        assert!(a.assemble_slot(9));
+        assert_eq!(
+            a.chosen[9].map(|i| body.nodes[i].name.clone()).as_deref(),
+            Some("0900Chest")
+        );
+        // Forty do not: the 32nd push ends the assembly with nothing kept.
+        let body = wide(40);
+        let mut a = Assembler::new(&body, &roots, &pass);
+        assert!(!a.assemble_slot(9));
+        assert!(a.groups.is_empty());
+        assert_eq!(a.chosen[9], None);
     }
 
     /// The fallback looks under nodes of the parent slot whose layer is the

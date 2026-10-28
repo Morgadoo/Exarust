@@ -104,7 +104,9 @@ physique values and the body morphs they select remain the body's concern
   bits are scored against and the garment's visible mask), the slot
   assembler (best groups per slot, child slots pruned under the group's
   parent-slot node, the same-bits fallback, the first group chosen where
-  the slot's select mask meets the visible mask), the cull bits and the
+  the slot's select mask meets the visible mask; its node stack keeps at
+  most 31 entries, as the original's does, and a deeper tree ends that
+  slot's assembly with nothing kept), the cull bits and the
   body mask (the union's innermost byte, which agrees with
   `Item::hidden_slots`). The dressed-mesh pass drives them: the running
   game plans each character from its items, so the mask decides which body
@@ -143,7 +145,9 @@ physique values and the body morphs they select remain the body's concern
   original's 64-bit word, gives the body part its hit-sound class.
 - Garments are planned in their layer-level order whatever order the worn
   list gives them: the original inserts each into the character's apparel
-  cache by its highest occupied layer, outermost last.
+  cache by its highest occupied layer over all twenty occupancy words
+  (bones 1 to 20, so a piece that only occupies a bone past the eighteen
+  slots still sorts by it), outermost last.
 - `exa_assets::merge::merge` takes a slot's cull bits as the append's
   cull argument (`MergePart::cull`, tested against the vertices' slot
   masks; nothing is written on the triangles, as in the original's mesh
