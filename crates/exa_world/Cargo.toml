@@ -15,3 +15,8 @@ exa_physics.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+# The lifecycle tests put a body and a collider in the world to prove the
+# teardown empties it.
+rapier3d.workspace = true

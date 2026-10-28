@@ -371,7 +371,12 @@ fn sky_cameras(
         Some(_) => {
             if skies.is_empty() {
                 let medium = media.add(ScatteringMedium::earth(SKY_RESOLUTION, SKY_RESOLUTION));
-                commands.spawn((Name::new("_Sky"), Sky, Atmosphere::earth(medium)));
+                commands.spawn((
+                    Name::new("_Sky"),
+                    crate::level_lifecycle::LevelEntity,
+                    Sky,
+                    Atmosphere::earth(medium),
+                ));
             }
             for (camera, has) in &cameras {
                 if !has {

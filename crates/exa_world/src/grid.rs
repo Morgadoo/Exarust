@@ -715,6 +715,7 @@ fn spawn_shells(
     let root = commands
         .spawn((
             Name::new("room shells"),
+            crate::level_lifecycle::LevelEntity,
             Transform::default(),
             Visibility::default(),
         ))

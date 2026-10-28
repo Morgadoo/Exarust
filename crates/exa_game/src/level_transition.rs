@@ -16,14 +16,15 @@
 //!   stored offset order, each with its own probe and lift, plus the
 //!   migration list and the per-follower re-attach state.
 //!
-//! **What blocks the live change.** Exarust's level loading keeps its own
-//! simplified [`exa_world::Scene`] and not the export model, and it does not
-//! track a level's changed state (moved props, taken items, corpses), so it
-//! has no [`ExportScene`] to hand to the exporter; converting the loaded
-//! RFC back into the export model is not written. A live level change is a
-//! process restart (`exarust::map_panel`), which also cannot carry a landing
-//! plan across. The plan is therefore a tested function the change will
-//! call: the scene, the floor probes and the follower bodies are its inputs.
+//! **What still blocks the save export.** Exarust's level loading keeps its
+//! own simplified [`exa_world::Scene`] and not the export model, and it does
+//! not track a level's changed state (moved props, taken items, corpses), so
+//! it has no [`ExportScene`] to hand to the exporter; converting the loaded
+//! RFC back into the export model is not written. The level change itself is
+//! now in process (`exa_world::level_lifecycle`), so `PendingLanding` reaches
+//! a live load; exporting the current level into a save waits for that
+//! conversion. The plan remains the tested function the save path will call:
+//! the scene, the floor probes and the follower bodies are its inputs.
 
 use bevy::prelude::Resource;
 use exa_formats::rfc_write::{ExportOptions, ExportScene, export_save_level};

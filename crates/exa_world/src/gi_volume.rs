@@ -568,6 +568,51 @@ fn collect_source(
         *state = GiState::Off;
         return;
     }
+    build_level(
+        &mut commands,
+        &pending,
+        points,
+        floors,
+        terrain,
+        meshes,
+        &mut state,
+    );
+}
+
+/// Drops everything the last level left in the GI manager: its pending and
+/// running build, its block layout and volumes, and the render textures the
+/// block was drawn into. The next level's `PendingGi` starts from a clean
+/// [`GiState::Off`], so a level change does not keep the old level's blocks
+/// or GPU memory alive.
+pub fn unload_level(commands: &mut Commands, state: &mut GiState) {
+    commands.remove_resource::<PendingGi>();
+    commands.remove_resource::<GiBlock>();
+    commands.remove_resource::<GiBuild>();
+    commands.remove_resource::<GiRefocus>();
+    commands.remove_resource::<GiVolume>();
+    commands.remove_resource::<GiSource>();
+    commands.remove_resource::<GiBlocks>();
+    commands.remove_resource::<exa_render::gi::GiTextures>();
+    commands.remove_resource::<exa_render::gi::GiPendingTextures>();
+    commands.insert_resource(GiBuiltBlocks::default());
+    *state = GiState::Off;
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_level(
+    commands: &mut Commands,
+    pending: &PendingGi,
+    points: Query<(
+        &GiPoints,
+        &GlobalTransform,
+        Has<GiThinMesh>,
+        Has<GiCentredMesh>,
+    )>,
+    floors: Query<(&Mesh3d, &GlobalTransform, &GiFloor)>,
+    terrain: Query<(&Mesh3d, &GlobalTransform), With<GiTerrain>>,
+    meshes: Res<Assets<Mesh>>,
+    state: &mut GiState,
+) {
     *state = GiState::Building;
     // The manager lays its blocks out once, from the level's grid and
     // height; the camera only picks which one it draws.

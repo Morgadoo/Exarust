@@ -2111,6 +2111,21 @@ impl Flow {
         };
         let mut steps = self.close_end_menu();
         steps.extend([
+            // The original clears the scene and imports the arena's stored
+            // level section again, through the same practice scene filter
+            // the first fight's load used (the save unit's combatant
+            // preparation). Exarust reloads the arena from the archive in
+            // process and runs the filter after it, the same as
+            // `start_practice`.
+            Step::LoadLevel {
+                locale: match self.practice.ladder {
+                    Ladder::Novice => "arena",
+                    Ladder::Expert => "arenae",
+                },
+                spawn: 0,
+                teardown: true,
+            },
+            Step::PracticeFilter,
             Step::MenuHelp(false),
             Step::Controls(true),
             Step::Health {
@@ -2835,11 +2850,45 @@ impl Plugin for FlowPlugin {
             .init_resource::<GameView>()
             .init_resource::<BootToMenu>()
             .add_message::<MenuChoice>()
+            .add_message::<exa_world::level_lifecycle::LevelChangeRequest>()
             .add_systems(Startup, boot)
             .add_systems(
                 Update,
-                (apply_menu_choices, tick, follow_player, travel, apply_steps).chain(),
+                (
+                    apply_menu_choices,
+                    tick,
+                    follow_player,
+                    travel,
+                    apply_steps,
+                    reset_level_state,
+                )
+                    .chain(),
             );
+    }
+}
+
+/// Forgets the per-level state when the lifecycle tore a level down: the
+/// navigation room cells (their entity ids belong to the old world) and the
+/// hub entry (so the destination's hub runs its entry and places its
+/// manager). The settled return placement survives into the hub's level.
+fn reset_level_state(
+    changes: Option<Res<exa_world::level_lifecycle::LevelChangeState>>,
+    mut seen: Local<u64>,
+    mut rooms: Option<ResMut<exa_ai::rooms::RoomCells>>,
+    mut hub: Option<ResMut<crate::arena_hub_live::ArenaHub>>,
+) {
+    let Some(changes) = changes else {
+        return;
+    };
+    if changes.changes == *seen {
+        return;
+    }
+    *seen = changes.changes;
+    if let Some(rooms) = rooms.as_mut() {
+        **rooms = exa_ai::rooms::RoomCells::default();
+    }
+    if let Some(hub) = hub.as_mut() {
+        hub.level_changed();
     }
 }
 
@@ -3039,9 +3088,10 @@ fn apply_menu_choices(
 
 /// Applies the flow's steps to the running app's own pieces: the menu and
 /// end-menu forms, the title logo, the interface and controls flags and the
-/// practice heal's health. The world, camera, music, save and transition
-/// screen are logged and left to the host; Exarust has no live level change
-/// yet (see `docs/UI.md`, The main menu screen).
+/// practice heal's health. A level load or world teardown becomes an
+/// [`exa_world::level_lifecycle::LevelChangeRequest`] and a player placement
+/// a [`crate::level_change::PlayerPlacement`]; the camera, save and
+/// transition screen are logged and left to the host.
 #[allow(clippy::too_many_arguments)]
 fn apply_steps(
     mut commands: Commands,
@@ -3053,12 +3103,18 @@ fn apply_steps(
     mut view: Option<ResMut<GameView>>,
     mut session: Option<ResMut<crate::player_controls::PlaySession>>,
     mut fighters: Query<&mut exa_combat::Fighter, With<crate::player::PlayerBody>>,
+    mut changes: MessageWriter<exa_world::level_lifecycle::LevelChangeRequest>,
     mut exit: MessageWriter<AppExit>,
 ) {
     if queued.steps.is_empty() {
         return;
     }
     let steps = core::mem::take(&mut queued.steps);
+    // A teardown in the same batch as a load is the load's own; one request
+    // does both, so the destination is not torn down twice.
+    let loads = steps
+        .iter()
+        .any(|step| matches!(step, Step::LoadLevel { .. }));
     for step in steps {
         match step {
             Step::ShowMenu(page) => {
@@ -3084,18 +3140,31 @@ fn apply_steps(
                     end.close();
                 }
             }
-            Step::LoadLevel { .. } => {
+            Step::LoadLevel {
+                locale,
+                spawn,
+                teardown,
+            } => {
                 // The level loader's first work is the app's: it hides the
                 // menu form and closes the end menu and the prelude. The
-                // load itself is the host's; Exarust has no in-process level
-                // reload, so the loaded level stays.
+                // change itself is the lifecycle's; the host loads the level
+                // through the same stages as a start-up load.
                 if let Some(menu) = menu.as_mut() {
                     menu.close();
                 }
                 if let Some(end) = end.as_mut() {
                     end.close();
                 }
-                debug!("game flow step not applied by the app: {step:?}");
+                crate::level_change::request(&mut changes, Some(locale), spawn, teardown);
+            }
+            Step::TeardownWorld => {
+                // A load in this batch tears down by itself.
+                if !loads {
+                    crate::level_change::request(&mut changes, None, 0, true);
+                }
+            }
+            Step::PlacePlayer(placement) => {
+                commands.insert_resource(crate::level_change::PlayerPlacement::of_flow(&placement));
             }
             Step::EndMenuUnselected(unselected) => {
                 if let Some(end) = end.as_mut() {
@@ -3424,6 +3493,19 @@ mod tests {
         })));
         assert_eq!(flow.practice.fight, 8);
         assert_eq!(flow.phase, Phase::Playing);
+        // The arena is imported again through the practice filter.
+        let load = steps
+            .iter()
+            .position(|step| {
+                *step
+                    == Step::LoadLevel {
+                        locale: "arenae",
+                        spawn: 0,
+                        teardown: true,
+                    }
+            })
+            .expect("the arena reloads");
+        assert_eq!(steps[load + 1], Step::PracticeFilter);
         assert!(steps.contains(&Step::Controls(true)));
         assert!(steps.contains(&Step::HideEndMenu));
         // 0.2f32 as a double plus a tenth of 0.25, rounded to single:
@@ -4752,5 +4834,53 @@ mod tests {
         let menu = app.world().resource::<crate::menu_screen::MenuScreen>();
         assert!(menu.open);
         assert_eq!(menu.page, Page::Title);
+    }
+
+    /// A load step becomes a level change request, a teardown step is
+    /// folded into a load in the same batch, and a placement is carried to
+    /// the host in metres.
+    #[test]
+    fn the_app_turns_a_load_and_a_placement_into_a_level_change() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<Flow>()
+            .init_resource::<FlowSteps>()
+            .init_resource::<GameView>()
+            .add_message::<exa_world::level_lifecycle::LevelChangeRequest>()
+            .add_message::<AppExit>()
+            .add_systems(Update, apply_steps);
+        let placement = Placement {
+            rotation: yaw(90.0),
+            position: Vec3::new(100.0, 200.0, 300.0),
+        };
+        app.world_mut().resource_mut::<FlowSteps>().steps.extend([
+            Step::TeardownWorld,
+            Step::LoadLevel {
+                locale: "arenahub",
+                spawn: 2,
+                teardown: true,
+            },
+            Step::PlacePlayer(placement),
+        ]);
+        app.update();
+        let requests: Vec<exa_world::level_lifecycle::LevelChangeRequest> = app
+            .world_mut()
+            .resource_mut::<Messages<exa_world::level_lifecycle::LevelChangeRequest>>()
+            .drain()
+            .collect();
+        // One request: the teardown is the load's own.
+        assert_eq!(
+            requests,
+            vec![exa_world::level_lifecycle::LevelChangeRequest {
+                level: Some("arenahub".into()),
+                spawn: 2,
+                teardown: true,
+            }]
+        );
+        let at = app
+            .world()
+            .resource::<crate::level_change::PlayerPlacement>();
+        assert!((at.position - Vec3::new(1.0, 2.0, 3.0)).length() < 1e-6);
+        assert!((at.yaw - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
     }
 }

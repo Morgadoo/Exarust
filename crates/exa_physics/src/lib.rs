@@ -101,6 +101,30 @@ impl Default for Physics {
 }
 
 impl Physics {
+    /// Empties the world: every body, collider and joint goes, and the
+    /// gravity and fixed step the plugin set are re-applied. A level change
+    /// uses it to free the level's colliders and the characters' capsules in
+    /// one go; entities that keep a controlled character have their
+    /// [`CharacterHandles`] removed first so [`register_characters`] makes it
+    /// a new capsule.
+    pub fn clear(&mut self) {
+        self.0 = PhysicsWorld::new();
+        self.0.gravity = Vec3::new(0.0, GRAVITY, 0.0);
+        self.0.integration_parameters.dt = (1.0 / STEP_HZ) as f32;
+    }
+
+    /// How many rigid bodies the world holds (the fixed step's capsules and
+    /// the props' bodies).
+    pub fn body_count(&self) -> usize {
+        self.0.bodies.len()
+    }
+
+    /// How many colliders the world holds (level geometry, capsules and
+    /// prop stand-ins).
+    pub fn collider_count(&self) -> usize {
+        self.0.colliders.len()
+    }
+
     /// How far along `direction` (unit) from `origin` the first fixed
     /// collider lies, within `max` metres.
     /// Pick-only geometry ([`PickOnly`]) is not met.

@@ -198,6 +198,17 @@ pub struct ModelCache {
     warned: HashSet<String>,
 }
 
+impl ModelCache {
+    /// Forgets every parsed, decoded and painted cache entry. A level change
+    /// calls it after the old level's entities are gone: the assets they
+    /// referenced (meshes, materials, textures) remain with the surviving
+    /// player and are reused, while the level's parsed geometry and decoded
+    /// texels are freed and the next level loads from the packs again.
+    pub fn clear(&mut self) {
+        *self = Self::default();
+    }
+}
+
 /// The shading flags a diffuse slot adds from its texture word: a BC4 image
 /// is one grey channel, and a word that skips the LOD bias makes the
 /// material select a zero bias for its diffuse sample.

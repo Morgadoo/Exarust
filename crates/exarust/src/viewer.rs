@@ -15,6 +15,12 @@ use exa_physics::body::RaceMuscles;
 
 use crate::{Options, View};
 
+/// A board pick's match, kept in process for the level change that follows:
+/// the arena, its setup and the drawn weapons. The process no longer
+/// restarts, so the hub's career stays the `ArenaCareer` resource.
+#[derive(Resource)]
+pub(crate) struct PendingArenaLaunch(pub exa_game::arena_hub_live::ArenaMatchLaunch);
+
 /// The character-creation scene the original shows a body in: a floor and
 /// two lights.
 const CREATION_SCENE: &str = "sgccflr01.rfc";
@@ -41,12 +47,23 @@ impl Plugin for ViewerPlugin {
             .add_systems(
                 Update,
                 (
+                    apply_level_change.after(exa_world::level_lifecycle::LevelChangeSystems::Teardown),
                     continue_level.run_if(resource_exists::<PendingLevel>),
                     finish_collision.run_if(resource_exists::<PendingCollision>),
                     finish_dressing.run_if(resource_exists::<PendingDressing>),
                     finish_lighting.run_if(resource_exists::<PendingLighting>),
                 )
                     .before(exa_anim::AnimSystems),
+            )
+            .add_systems(
+                Update,
+                apply_player_placement.after(finish_lighting),
+            )
+            .add_systems(
+                Update,
+                scripted_level_changes
+                    .run_if(|options: Res<Options>| !options.level_changes.is_empty())
+                    .before(exa_world::level_lifecycle::LevelChangeSystems::Teardown),
             )
             .add_systems(
                 PreUpdate,
@@ -285,7 +302,15 @@ fn setup(
                     foes: Vec::new(),
                 };
                 place_chase_camera(&mut commands, camera, &start, &options);
-                spawn_players(&mut commands, &mut loader, &game, name, &start, &options);
+                spawn_players(
+                    &mut commands,
+                    &mut loader,
+                    &game,
+                    name,
+                    &start,
+                    &options,
+                    None,
+                );
             }
             return;
         }
@@ -343,6 +368,85 @@ struct PendingLevel {
     started: std::time::Instant,
 }
 
+/// Starts the level a [`exa_world::level_lifecycle::LevelChangeReady`] names,
+/// after the lifecycle has torn the old level down. A request with no level
+/// only tears down (a session leave). A load already in flight is dropped and
+/// its partial level is torn down on the next change.
+#[allow(clippy::too_many_arguments)]
+fn apply_level_change(
+    mut commands: Commands,
+    game: Res<Game>,
+    mut view: ResMut<View>,
+    mut cache: ResMut<ModelCache>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<exa_render::material::ExaMaterial>>,
+    mut images: ResMut<Assets<Image>>,
+    support: Option<Res<CompressedImageFormatSupport>>,
+    ready: Option<Res<exa_world::level_lifecycle::LevelChangeReady>>,
+    mut time: ResMut<Time<Virtual>>,
+    hold: Option<Res<LevelChangeHold>>,
+) {
+    let Some(ready) = ready else {
+        return;
+    };
+    let level = ready.level.clone();
+    let spawn = ready.spawn;
+    commands.remove_resource::<exa_world::level_lifecycle::LevelChangeReady>();
+    // A level that was still building is abandoned with its state.
+    commands.remove_resource::<PendingLevel>();
+    commands.remove_resource::<PendingCollision>();
+    commands.remove_resource::<PendingDressing>();
+    commands.remove_resource::<PendingLighting>();
+    commands.remove_resource::<exa_ui::LoadingStatus>();
+    // The old level's music, ambience and reverb end with its world. The new
+    // level sets its own when it is in.
+    commands.insert_resource(exa_audio::LevelMusic(String::new()));
+    commands.insert_resource(exa_audio::LevelAmbience(None));
+    commands.remove_resource::<exa_audio::LevelMusicStart>();
+    commands.remove_resource::<exa_audio::LevelReverb>();
+    let Some(level) = level else {
+        debug!("level change: the world was torn down");
+        cache.clear();
+        return;
+    };
+    // The old level's parsed models, decoded texels and painted variants are
+    // no longer reachable from any entity; drop the cache so the next load
+    // reads them again and the old geometry and CPU texels are freed now.
+    cache.clear();
+    // The surviving player must not simulate while the destination's
+    // collision is built: with the old level gone it would fall out of the
+    // world and die. The game time stands still until the collision is in,
+    // as the original builds its new scene before the player moves again.
+    let was_paused = hold
+        .as_ref()
+        .map_or(time.is_paused(), |hold| hold.was_paused);
+    if hold.is_none() {
+        commands.insert_resource(LevelChangeHold { was_paused });
+        time.pause();
+    }
+    match &mut *view {
+        View::Play(name) | View::Level(name) => *name = level.clone(),
+        View::Model { .. } | View::Texture(_) | View::Character { .. } => {}
+    }
+    let mut loader = ModelLoader {
+        game: &game.0,
+        cache: &mut cache,
+        meshes: &mut meshes,
+        materials: &mut materials,
+        images: &mut images,
+        bc_supported: model::bc_supported(support.as_deref()),
+    };
+    info!("level change: loading {level} (spawn {spawn})");
+    if !begin_level(&mut commands, &mut loader, &level) {
+        warn!("level change: {level} is not in the resource pack");
+        // Nothing will build: give the game time back.
+        if !was_paused {
+            time.unpause();
+        }
+        commands.remove_resource::<LevelChangeHold>();
+    }
+}
+
 /// Starts loading `name` behind the loading screen; `false` when the level
 /// is not there.
 fn begin_level(commands: &mut Commands, loader: &mut ModelLoader, name: &str) -> bool {
@@ -385,8 +489,8 @@ fn continue_level(
     pending_arena: PendingArena<'_>,
 ) {
     let landing = pending_arena.landing.as_deref();
-    let handed = pending_arena.handed.as_deref();
     let career = pending_arena.career.as_deref();
+    let launch = pending_arena.launch.as_deref().map(|launch| &launch.0);
     let mut loader = ModelLoader {
         game: &game.0,
         cache: &mut cache,
@@ -437,8 +541,8 @@ fn continue_level(
                 &options,
                 &mut arena_picks,
                 landing,
-                handed,
                 career,
+                launch,
             );
             // A landing plan is used once.
             commands.remove_resource::<exa_game::level_transition::PendingLanding>();
@@ -568,8 +672,8 @@ fn play_level(
     options: &Options,
     arena_picks: &mut exa_game::arena_match::ArenaPicks,
     landing: Option<&exa_game::level_transition::PendingLanding>,
-    handed: Option<&exa_game::arena_live::HandedOver>,
     career: Option<&exa_game::hub_windows::ArenaCareer>,
+    launch: Option<&exa_game::arena_hub_live::ArenaMatchLaunch>,
 ) {
     commands.entity(root).insert(exa_physics::StaticGeometry);
     // An arena match draws its track as the original's match start does:
@@ -593,11 +697,19 @@ fn play_level(
     commands.insert_resource(exa_audio::LevelMusic(track));
     commands.insert_resource(exa_audio::LevelMusicVolume(volume));
     // An arena match: a duel with `--opponent`, or the match the hub's
-    // board launched (its setup comes from the hand-off when there is one),
-    // laid out around the arena's spawn spot.
+    // board launched, laid out around the arena's spawn spot. The launch's
+    // setup and drawn weapons are the ones the board picked, kept in
+    // process instead of in a hand-off file.
     let arena = exa_game::arena_match::arena_index(name);
-    let (setup, handed_career) = exa_game::arena_live::setup_from(
-        handed.and_then(|handed| handed.0.as_ref()),
+    let setup = exa_game::arena_live::setup_from(
+        launch.map(|launch| exa_game::arena_live::MatchSetup {
+            template: launch.template,
+            level: launch.level,
+            tier: launch.tier,
+            tournament: launch.tournament,
+            player: launch.player,
+            prize: launch.prize,
+        }),
         options.arena_match.unwrap_or(1),
         options.arena_level,
         options.arena_tier,
@@ -606,8 +718,9 @@ fn play_level(
     let spawn_at = arena.map_or([0.0; 3], |index| {
         exa_game::arena_match::ARENA_MAPS[index].spawn
     });
+    let matching = launch.is_some() || options.opponent || options.arena_match.is_some();
     let layout = match arena {
-        Some(index) if options.opponent => exa_game::match_layout::layout(
+        Some(index) if matching => exa_game::match_layout::layout(
             template,
             setup.level,
             setup.tier,
@@ -615,8 +728,22 @@ fn play_level(
         ),
         _ => Vec::new(),
     };
-    let career = career.or(handed_career.as_ref());
-    if arena.is_some() && options.opponent {
+    if arena.is_some() && matching {
+        // A launched match names its drawn weapons per opponent in layout
+        // order; `--arena-match` takes the command line's list instead.
+        let weapons = match launch {
+            Some(launch) => launch
+                .fighters
+                .iter()
+                .filter_map(|fighter| match &fighter.body {
+                    exa_game::arena_hub_live::LaunchedBody::Opponent(_) => {
+                        Some(fighter.weapon.unwrap_or(0))
+                    }
+                    _ => None,
+                })
+                .collect(),
+            None => options.arena_weapons.clone(),
+        };
         commands.insert_resource(exa_game::arena_match::ArenaMatch::begin_match(
             template,
             spawn_at,
@@ -632,7 +759,7 @@ fn play_level(
             setup.tier,
             setup.tournament,
             setup.player,
-            options.arena_weapons.clone(),
+            weapons,
             setup.prize,
             career,
         ));
@@ -640,6 +767,9 @@ fn play_level(
         commands.remove_resource::<exa_game::arena_match::ArenaMatch>();
         commands.remove_resource::<exa_game::arena_live::ArenaScene>();
     }
+    // The launch is used once: a later load of another arena starts no match
+    // unless a new board pick asks for one.
+    commands.remove_resource::<PendingArenaLaunch>();
     commands.insert_resource(exa_audio::LevelAmbience(exa_audio::ambience_for_level(
         name,
     )));
@@ -662,7 +792,7 @@ fn play_level(
     // The player's own entry is stood here; the other bodies are the scene
     // generator's (a generated opponent, the Beast, the other entrants).
     let foes = Vec::new();
-    if options.arena_match.is_some() {
+    if launch.is_some() || options.arena_match.is_some() {
         use exa_game::match_layout::Fighter;
         let start_of = |place: &exa_game::match_layout::Place| exa_world::start::Start {
             position: Vec3::from_array(place.position) / 100.0,
@@ -732,16 +862,23 @@ fn place_chase_camera(
     ));
 }
 
-/// The arena state a level change carries: a save's landing, the launch the
-/// hub handed over, and the career it came with.
+/// The arena state a level change carries: a save's landing, the career the
+/// running process keeps, and the board pick's launch when one is waiting.
 #[derive(SystemParam)]
 pub(crate) struct PendingArena<'w> {
     landing: Option<Res<'w, exa_game::level_transition::PendingLanding>>,
-    handed: Option<Res<'w, exa_game::arena_live::HandedOver>>,
     career: Option<Res<'w, exa_game::hub_windows::ArenaCareer>>,
+    launch: Option<Res<'w, PendingArenaLaunch>>,
 }
 
 /// Play mode waiting for the level's collision, behind the loading screen.
+/// The game time a level change stopped while the destination's collision
+/// is built, and whether it was already paused before.
+#[derive(Resource)]
+struct LevelChangeHold {
+    was_paused: bool,
+}
+
 #[derive(Resource)]
 struct PendingCollision {
     root: Entity,
@@ -766,6 +903,16 @@ fn finish_collision(
     mut materials: ResMut<Assets<exa_render::material::ExaMaterial>>,
     mut images: ResMut<Assets<Image>>,
     support: Option<Res<CompressedImageFormatSupport>>,
+    players: Query<(Entity, &mut Transform), With<exa_game::player::Player>>,
+    mut bodies: Query<
+        &mut Transform,
+        (
+            With<exa_game::player::PlayerBody>,
+            Without<exa_game::player::Player>,
+        ),
+    >,
+    mut time: ResMut<Time<Virtual>>,
+    hold: Option<Res<LevelChangeHold>>,
 ) {
     if building.contains(pending.root) {
         if pending.since.elapsed() < STAGE_TIMEOUT {
@@ -777,6 +924,21 @@ fn finish_collision(
         warn!("level collision still building after {STAGE_TIMEOUT:?}; starting anyway");
     }
     commands.remove_resource::<PendingCollision>();
+    if let Some(hold) = hold {
+        if !hold.was_paused {
+            time.unpause();
+        }
+        commands.remove_resource::<LevelChangeHold>();
+    }
+    let existing = players.iter().next().map(|(entity, _)| entity);
+    if let Some((_, mut transform)) = players.into_iter().next() {
+        // The player survives a level change; the new level's start moves
+        // it (the collision is in, so it cannot fall through).
+        transform.translation = pending.start.position + Vec3::Y * 0.2;
+    }
+    if let Ok(mut transform) = bodies.single_mut() {
+        transform.rotation = Quat::from_rotation_y(pending.start.yaw);
+    }
     let mut loader = ModelLoader {
         game: &game.0,
         cache: &mut cache,
@@ -792,11 +954,15 @@ fn finish_collision(
         &pending.name,
         &pending.start,
         &options,
+        existing,
     );
 }
 
 /// The player (and an opponent with `--opponent`) and the level's placed
-/// characters; the loading screen then waits for them to be dressed.
+/// characters; the loading screen then waits for them to be dressed. On a
+/// level change `existing` is the player root that survived the teardown:
+/// its body, record and possessions stay, only the level's own characters
+/// are new.
 fn spawn_players(
     commands: &mut Commands,
     loader: &mut ModelLoader,
@@ -804,6 +970,7 @@ fn spawn_players(
     name: &str,
     start: &PlayStart,
     options: &Options,
+    existing: Option<Entity>,
 ) {
     let (position, yaw) = (start.position, start.yaw);
     let races = game
@@ -864,26 +1031,34 @@ fn spawn_players(
             .collect();
         exa_formats::encumbrance::encumbrance(&worn, None, Default::default())
     };
-    let player = commands
-        .spawn((
-            Transform::from_translation(position + Vec3::Y * 0.2),
-            Visibility::default(),
-            exa_physics::CharacterBody::default(),
-            exa_game::player::Player,
-            // The rooms follow the player, as the original's follow its
-            // camera's target.
-            exa_world::room_view::RoomAnchor,
-            exa_world::room_view::RoomTracked,
-        ))
-        .id();
+    let player = existing.unwrap_or_else(|| {
+        commands
+            .spawn((
+                Transform::from_translation(position + Vec3::Y * 0.2),
+                Visibility::default(),
+                exa_physics::CharacterBody::default(),
+                exa_game::player::Player,
+                // The rooms follow the player, as the original's follow its
+                // camera's target.
+                exa_world::room_view::RoomAnchor,
+                exa_world::room_view::RoomTracked,
+            ))
+            .id()
+    });
     // The player has no record of its own: its body is as the model stores
     // it, or morphed by `--physique`.
     let morph = options
         .physique
         .map(|p| exa_assets::BodyMorph::of_model(model::BODY_MODEL, p));
-    let player_body = loader.morphed_model(PackKind::Resource, model::BODY_MODEL, morph.as_ref());
+    let player_body = existing
+        .is_none()
+        .then(|| loader.morphed_model(PackKind::Resource, model::BODY_MODEL, morph.as_ref()))
+        .flatten();
     // The duellist, without a record either, keeps the model's body.
-    let duellist_body = loader.model(PackKind::Resource, model::BODY_MODEL);
+    let duellist_body = existing
+        .is_none()
+        .then(|| loader.model(PackKind::Resource, model::BODY_MODEL))
+        .flatten();
     if let (Some(player_body), Some(body)) = (player_body, duellist_body) {
         // The player has no record: a human of the middle tone, its feral
         // level and physique the command line's.
@@ -1007,6 +1182,7 @@ fn spawn_players(
                     Visibility::default(),
                     exa_physics::CharacterBody::default(),
                     exa_world::room_view::RoomTracked,
+                    exa_world::level_lifecycle::LevelEntity,
                 ))
                 .id();
             let foe = exa_world::spawn_model(commands, &body, None);
@@ -1196,6 +1372,116 @@ fn log_encumbrance(who: &str, stats: &CharacterStats) {
         exa_formats::encumbrance::run_cap(enc, false),
         stats.step_reach(enc)
     );
+}
+
+/// Moves the surviving player to a flow placement once a level change has
+/// finished loading. The placement's position is already in metres (the flow
+/// gives centimetres and [`exa_game::level_change::PlayerPlacement`] converts
+/// them). The player entity keeps its record and possessions; only its root
+/// and body frame move.
+fn apply_player_placement(
+    mut commands: Commands,
+    placement: Option<Res<exa_game::level_change::PlayerPlacement>>,
+    loading: Option<Res<exa_ui::LoadingStatus>>,
+    mut players: Query<(Entity, &mut Transform), With<exa_game::player::Player>>,
+    mut bodies: Query<
+        &mut Transform,
+        (
+            With<exa_game::player::PlayerBody>,
+            Without<exa_game::player::Player>,
+        ),
+    >,
+) {
+    if loading.is_some() {
+        return;
+    }
+    let Some(placement) = placement else {
+        return;
+    };
+    for (_, mut transform) in &mut players {
+        transform.translation = placement.position;
+    }
+    if let Ok(mut transform) = bodies.single_mut() {
+        transform.rotation = Quat::from_rotation_y(placement.yaw);
+    }
+    commands.remove_resource::<exa_game::level_change::PlayerPlacement>();
+}
+
+/// Frames after a level is in before `--level-change` counts it again, so
+/// the GI, the textures and the settling bodies have taken their memory.
+const CENSUS_SETTLE_FRAMES: u32 = 120;
+
+/// What a level holds, for the `--level-change` leak check.
+#[derive(SystemParam)]
+struct LevelCensus<'w, 's> {
+    entities: Query<'w, 's, Entity>,
+    level: Query<'w, 's, (), With<exa_world::level_lifecycle::LevelEntity>>,
+    players: Query<'w, 's, (), With<exa_game::player::Player>>,
+    physics: Option<Res<'w, exa_physics::Physics>>,
+    meshes: Res<'w, Assets<Mesh>>,
+    images: Res<'w, Assets<Image>>,
+    materials: Res<'w, Assets<exa_render::material::ExaMaterial>>,
+}
+
+impl LevelCensus<'_, '_> {
+    fn log(&self, level: &str, when: &str) {
+        let (bodies, colliders) = self.physics.as_ref().map_or((0, 0), |physics| {
+            (physics.body_count(), physics.collider_count())
+        });
+        info!(
+            "level census: {level} {when}: entities {}, level roots {}, players {}, \
+             physics bodies {bodies}, colliders {colliders}, meshes {}, images {}, materials {}",
+            self.entities.iter().count(),
+            self.level.iter().count(),
+            self.players.iter().count(),
+            self.meshes.len(),
+            self.images.len(),
+            self.materials.len(),
+        );
+    }
+}
+
+/// `--level-change level@frame,...`: unattended in-process level changes
+/// at frames after the first load (frames behind the loading screen do not
+/// count). Each level is counted when it is in and again
+/// [`CENSUS_SETTLE_FRAMES`] later, and once more just before it is left, so
+/// a run that comes back to a level shows whether the change leaks.
+fn scripted_level_changes(
+    options: Res<Options>,
+    view: Res<View>,
+    loading: Option<Res<exa_ui::LoadingStatus>>,
+    census: LevelCensus,
+    mut frames: Local<u32>,
+    mut since_load: Local<Option<u32>>,
+    mut changes: MessageWriter<exa_world::level_lifecycle::LevelChangeRequest>,
+) {
+    let level = match &*view {
+        View::Play(name) | View::Level(name) => name.as_str(),
+        _ => return,
+    };
+    if loading.is_some() {
+        *since_load = None;
+        return;
+    }
+    let settled = since_load.get_or_insert(0);
+    if *settled == 0 {
+        census.log(level, "loaded");
+    }
+    *settled += 1;
+    if *settled == CENSUS_SETTLE_FRAMES {
+        census.log(level, "settled");
+    }
+    *frames += 1;
+    for (next, at) in &options.level_changes {
+        if *frames == *at {
+            census.log(level, "left");
+            info!("level change: {level} -> {next} at frame {at}");
+            changes.write(exa_world::level_lifecycle::LevelChangeRequest::change(
+                next.clone(),
+                0,
+            ));
+        }
+    }
 }
 
 /// Play mode waiting for its characters to be dressed, behind the loading
@@ -1542,15 +1828,15 @@ fn start_fight(
     }
 }
 
-/// A board pick in the hub asks for a career match: the launcher hands the
-/// career and the match's setup to the restarted process
-/// (`exa_game::arena_handoff`) and restarts on the drawn arena with
-/// `--arena-match`, whose bodies the scene generator stands.
+/// A board pick in the hub asks for a career match: the career stays in the
+/// running `ArenaCareer`, the launch is kept in [`PendingArenaLaunch`], and
+/// the level changes to the drawn arena in process (the original's own
+/// launch, no restarted process and no hand-off file).
 fn launch_arena_match(
+    mut commands: Commands,
     mut launches: MessageReader<exa_game::arena_hub_live::ArenaMatchLaunch>,
     loading: Option<Res<exa_ui::LoadingStatus>>,
-    career: Option<Res<exa_game::hub_windows::ArenaCareer>>,
-    mut exit: MessageWriter<AppExit>,
+    mut changes: MessageWriter<exa_world::level_lifecycle::LevelChangeRequest>,
 ) {
     if loading.is_some() {
         return;
@@ -1564,58 +1850,26 @@ fn launch_arena_match(
             "arena match launch: {} (template {}) at {}",
             map.name, launch.template, launch.track.name
         );
-        let handoff = exa_game::arena_handoff::Handoff {
-            career: career.as_deref().cloned(),
-            launch: Some(exa_game::arena_handoff::MatchSetup {
-                template: launch.template,
-                level: launch.level,
-                tier: launch.tier,
-                tournament: launch.tournament,
-                player: launch.player,
-                prize: launch.prize,
-            }),
-            returned: None,
-        };
-        match exa_game::arena_handoff::write(&exa_game::arena_handoff::default_path(), &handoff) {
-            Ok(()) => info!("arena match launch: the career is in the hand-off"),
-            Err(error) => warn!("arena match launch: cannot write the hand-off: {error}"),
-        }
-        // One entry per generated opponent, in layout order (the order
-        // play mode spawns its foes in); 0 keeps the default weapon.
-        let weapons: Vec<String> = launch
-            .fighters
-            .iter()
-            .filter(|fighter| {
-                matches!(
-                    fighter.body,
-                    exa_game::arena_hub_live::LaunchedBody::Opponent(_)
-                )
-            })
-            .map(|fighter| fighter.weapon.unwrap_or(0).to_string())
-            .collect();
-        let extra = vec![
-            "--arena-match".to_string(),
-            launch.template.to_string(),
-            "--arena-level".to_string(),
-            launch.level.to_string(),
-            "--arena-tier".to_string(),
-            launch.tier.to_string(),
-            "--arena-weapons".to_string(),
-            weapons.join(","),
-        ];
-        crate::map_panel::restart_with(map.name, &extra, &mut exit);
+        commands.insert_resource(PendingArenaLaunch(launch.clone()));
+        // The launch is an in-process level change: the new level's
+        // collision is built while the loading screen shows.
+        changes.write(exa_world::level_lifecycle::LevelChangeRequest::change(
+            map.name, 0,
+        ));
         return;
     }
 }
 
-/// The live match's exit: the settled match returns to the hub's level,
-/// whose process reads the career and the return placement from the
-/// hand-off. A dead manager's main menu is left to the end menu; the match
-/// only logs it.
+/// The live match's exit: the settled match returns to the hub's level in
+/// process, with the career resource and the return placement the settle
+/// wrote. A dead manager's main menu is left to the end menu; the match only
+/// logs it.
 fn arena_exit(
+    mut commands: Commands,
     mut exits: MessageReader<exa_game::arena_live::ArenaExit>,
     loading: Option<Res<exa_ui::LoadingStatus>>,
-    mut exit: MessageWriter<AppExit>,
+    mut hub: Option<ResMut<exa_game::arena_hub_live::ArenaHub>>,
+    mut changes: MessageWriter<exa_world::level_lifecycle::LevelChangeRequest>,
 ) {
     if loading.is_some() {
         exits.clear();
@@ -1626,8 +1880,15 @@ fn arena_exit(
     };
     match arena_exit {
         exa_game::arena_live::ArenaExit::Hub => {
-            info!("arena return: restarting on the hub");
-            crate::map_panel::restart_with("arenahub", &[], &mut exit);
+            info!("arena return: level change to the hub");
+            if let Some(hub) = hub.as_mut() {
+                hub.returned = Some(exa_game::arena_session::RETURN_PLACEMENT);
+            }
+            commands.remove_resource::<exa_game::arena_match::ArenaMatch>();
+            commands.remove_resource::<exa_game::arena_live::ArenaScene>();
+            changes.write(exa_world::level_lifecycle::LevelChangeRequest::change(
+                "arenahub", 0,
+            ));
         }
         exa_game::arena_live::ArenaExit::MainMenu => {
             info!("arena match: the manager is dead; the main menu is not drawn yet");
@@ -1793,6 +2054,7 @@ fn spawn_placed_characters(
             Visibility::default(),
             Name::new(c.name.clone()),
             exa_world::room_view::RoomTracked,
+            exa_world::level_lifecycle::LevelEntity,
         ));
         if !c.dead {
             root.insert(exa_physics::CharacterBody::default());

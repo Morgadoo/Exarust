@@ -446,9 +446,11 @@ fn restart(level: &str, exit: &mut MessageWriter<AppExit>) {
     restart_with(level, &[], exit);
 }
 
-/// Restarts on `level` with `extra` arguments appended (the hub's match
-/// launch adds `--arena-match`).
-pub(crate) fn restart_with(level: &str, extra: &[String], exit: &mut MessageWriter<AppExit>) {
+/// Restarts on `level` with `extra` arguments appended. The map panel's
+/// level buttons still restart the process (a debug view switch, which also
+/// serves the model and level views); the game's own level changes run in
+/// process (`exa_world::level_lifecycle`).
+fn restart_with(level: &str, extra: &[String], exit: &mut MessageWriter<AppExit>) {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let Some(mut next) = restart_args(&args, level) else {
         warn!("map panel: no level on the command line to replace");
