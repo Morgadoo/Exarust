@@ -656,6 +656,9 @@ pub enum BarPhase {
     /// Closing: 900 ms, the slots fading out over the first 600; after that
     /// nothing is drawn.
     Closing { elapsed: u32 },
+    /// Closing while the opening still runs: the opening's rise and pitch,
+    /// then the closing's fades and shrink on top, each from its own stamp.
+    OpeningClosing { opening: u32, closing: u32 },
 }
 
 /// The domains' colours from the tree's palette (RGBA bytes); index 0 is
@@ -1262,38 +1265,40 @@ fn bar_pose(view: &TreeView) -> Option<BarPose> {
         a11: 1.0,
         a12: 1.0,
     };
-    match view.bar_phase? {
-        BarPhase::Steady => {}
-        BarPhase::Opening { elapsed } => {
-            if elapsed < 900 {
-                let elapsed = f64::from(elapsed);
-                if elapsed < 400.0 {
-                    let rise = smoothstep((elapsed * 0.0025) as f32);
-                    pose.top *= rise;
-                    pose.size *= rise;
-                    pose.a11 = rise;
-                    pose.a12 = rise;
-                }
-                pose.pitch *= smoothstep(ease((elapsed * 0.001_111_111_111_111_111_1) as f32));
-            }
+    let (opening, closing) = match view.bar_phase? {
+        BarPhase::Steady => (None, None),
+        BarPhase::Opening { elapsed } => (Some(elapsed), None),
+        BarPhase::Closing { elapsed } => (None, Some(elapsed)),
+        BarPhase::OpeningClosing { opening, closing } => (Some(opening), Some(closing)),
+    };
+    if let Some(elapsed) = opening.filter(|elapsed| *elapsed < 900) {
+        let elapsed = f64::from(elapsed);
+        if elapsed < 400.0 {
+            let rise = smoothstep((elapsed * 0.0025) as f32);
+            pose.top *= rise;
+            pose.size *= rise;
+            pose.a11 = rise;
+            pose.a12 = rise;
         }
-        BarPhase::Closing { elapsed } => {
-            if elapsed >= 900 {
-                return None;
-            }
-            let elapsed = f64::from(elapsed);
-            if elapsed >= 600.0 {
-                pose.a11 = 0.0;
-                pose.a12 = 0.0;
-            } else {
-                let fall = smoothstep((elapsed * 0.001_666_666_666_666_666_8) as f32);
-                let square = fall * fall;
-                pose.a11 *= 1.0 - square * square;
-                pose.a12 *= (1.0 - 1.5 * fall).max(0.0);
-            }
-            let shrink = elapsed * 0.001_111_111_111_111_111_1;
-            pose.size *= (1.0 - shrink * shrink) as f32;
+        pose.pitch *= smoothstep(ease((elapsed * 0.001_111_111_111_111_111_1) as f32));
+    }
+    if let Some(elapsed) = closing {
+        if elapsed >= 900 {
+            return None;
         }
+        let elapsed = f64::from(elapsed);
+        if elapsed >= 600.0 {
+            pose.a11 = 0.0;
+            pose.a12 = 0.0;
+        } else {
+            // Both fades start from the opening's (equal) alpha.
+            let fall = smoothstep((elapsed * 0.001_666_666_666_666_666_8) as f32);
+            let square = fall * fall;
+            pose.a11 *= 1.0 - square * square;
+            pose.a12 *= (1.0 - 1.5 * fall).max(0.0);
+        }
+        let shrink = elapsed * 0.001_111_111_111_111_111_1;
+        pose.size *= (1.0 - shrink * shrink) as f32;
     }
     // The bar is a child form under the tree: its own fade multiplies the
     // slots' two alphas.
@@ -2562,6 +2567,20 @@ mod tests {
         view.bar_phase = Some(BarPhase::Closing { elapsed: 900 });
         assert!(bar_pose(&view).is_none());
         assert!(bar_draw(&view).batches.is_empty());
+        // Closing 150 ms into a 300 ms old opening: the rise (smooth step of
+        // 0.75, 0.84375) is cut by the fall (smooth step of 0.25, 0.15625).
+        view.bar_phase = Some(BarPhase::OpeningClosing {
+            opening: 300,
+            closing: 150,
+        });
+        let pose = bar_pose(&view).unwrap();
+        let rise = 0.843_75f32;
+        let fall = 0.156_25f32;
+        assert!(close(pose.a12, rise * (1.0 - 1.5 * fall)));
+        assert!(close(pose.a11, rise * (1.0 - fall.powi(4))));
+        let shrink = 150.0f64 / 900.0;
+        assert!(close(pose.size, 52.0 * rise * (1.0 - shrink * shrink) as f32));
+        assert!(close(pose.pitch, 68.0 * smoothstep(ease(300.0 / 900.0))));
     }
 
     #[test]

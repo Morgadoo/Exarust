@@ -2235,15 +2235,18 @@ impl TreeScreen {
     }
 
     /// Starts the bar's 900 ms closing animation, keeping an opening that
-    /// is still running flagged (the closing runs after it).
+    /// is still running flagged (both run together, each from its stamp).
     pub fn close_bar(&mut self, now: u32) {
         self.bar_flags = (self.bar_flags & BAR_OPENING) | BAR_CLOSING;
         self.bar_close_at = now;
     }
 
-    /// Steps the bar's slots and reads its animation for `now`. The bar
-    /// closing to its end clears the slots' flash and picked bits and
-    /// answers `None`.
+    /// Steps the bar's slots and reads its animation for `now`, as the bar
+    /// draw's head does: an opening past 900 ms becomes steady (or leaves
+    /// only the closing), and a closing runs from its own stamp, at the
+    /// same time as an opening that is still running. The bar closing to
+    /// its end clears the slots' flash and picked bits and answers `None`.
+    /// The stamps are compared unsigned in 64 bits, as the original does.
     pub fn step_bar(
         &mut self,
         bar: &mut PowerBar,
@@ -2253,41 +2256,37 @@ impl TreeScreen {
         for slot in &mut bar.slots {
             slot.step(now);
         }
-        let phase = if self.bar_flags & BAR_OPENING != 0 {
-            if now.wrapping_sub(self.bar_open_at) < BAR_ANIM_MS {
-                Some(BarPhase::Opening {
-                    elapsed: now.wrapping_sub(self.bar_open_at),
-                })
+        let clock = u64::from(now);
+        let mut opening = None;
+        if self.bar_flags & BAR_OPENING != 0 {
+            if clock < u64::from(self.bar_open_at) + u64::from(BAR_ANIM_MS) {
+                opening = Some(now.wrapping_sub(self.bar_open_at));
+            } else if self.bar_flags & BAR_CLOSING == 0 {
+                self.bar_flags = BAR_STEADY;
             } else {
-                self.bar_flags = if self.bar_flags & BAR_CLOSING == 0 {
-                    BAR_STEADY
-                } else {
-                    BAR_CLOSING
-                };
-                None
+                self.bar_flags = BAR_CLOSING;
             }
-        } else {
-            None
-        };
-        let phase = phase.or_else(|| {
-            if self.bar_flags & BAR_CLOSING != 0 {
-                if now.wrapping_sub(self.bar_close_at) >= BAR_ANIM_MS {
-                    self.bar_flags = 0;
-                    for slot in &mut bar.slots {
-                        slot.state &= 0xffff_fff6;
-                    }
-                    None
-                } else {
-                    Some(BarPhase::Closing {
-                        elapsed: now.wrapping_sub(self.bar_close_at),
-                    })
+        }
+        let mut closing = None;
+        if self.bar_flags & BAR_CLOSING != 0 {
+            if u64::from(self.bar_close_at) + u64::from(BAR_ANIM_MS) <= clock {
+                self.bar_flags = 0;
+                for slot in &mut bar.slots {
+                    slot.state &= 0xffff_fff6;
                 }
-            } else {
-                Some(BarPhase::Steady)
+                self.bar_phase_now = None;
+                return None;
             }
-        });
-        self.bar_phase_now = phase;
-        phase
+            closing = Some(now.wrapping_sub(self.bar_close_at));
+        }
+        let phase = match (opening, closing) {
+            (None, None) => BarPhase::Steady,
+            (Some(elapsed), None) => BarPhase::Opening { elapsed },
+            (None, Some(elapsed)) => BarPhase::Closing { elapsed },
+            (Some(opening), Some(closing)) => BarPhase::OpeningClosing { opening, closing },
+        };
+        self.bar_phase_now = Some(phase);
+        Some(phase)
     }
 
     /// Changes the domain: the current one is stored back into the record
@@ -4299,13 +4298,23 @@ mod tests {
         assert_eq!(tree.step_bar(&mut bar, 2900), None);
         assert_eq!(tree.bar_flags, 0);
         assert_eq!(bar.slots[1].state, bar_state::LIT);
-        // Closing while opening: the closing starts when the opening ends.
+        // Closing while opening: both run, each from its own stamp, and the
+        // opening's end leaves the closing alone.
         tree.open_bar(&mut bar, &record, 3000);
         tree.close_bar(3200);
+        assert_eq!(tree.bar_flags, BAR_OPENING | BAR_CLOSING);
+        assert_eq!(
+            tree.step_bar(&mut bar, 3500),
+            Some(BarPhase::OpeningClosing {
+                opening: 500,
+                closing: 300
+            })
+        );
         assert_eq!(
             tree.step_bar(&mut bar, 3900),
             Some(BarPhase::Closing { elapsed: 700 })
         );
+        assert_eq!(tree.bar_flags, BAR_CLOSING);
     }
 
     #[test]
