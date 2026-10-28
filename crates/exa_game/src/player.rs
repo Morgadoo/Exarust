@@ -1375,24 +1375,33 @@ pub(crate) fn player_combat(
         if fallen || condition.is_some_and(|c| c.helpless()) || !pb.combat {
             continue;
         }
-        // The eased aim cursor's direction, once a stick asks for it.
-        let pad_aim = aim_cursor
+        // The eased aim cursor's direction, once a stick asks for it; the
+        // mouse's point under the cursor otherwise.
+        let aim = aim_cursor
             .0
-            .map(|point| point - player.translation())
-            .filter(|to| to.xz().length() > 0.2)
-            .map(yaw_of);
-        let aim = pad_aim.or_else(|| {
-            cursor
-                .0
-                .map(|c| c - player.translation())
-                .filter(|to| to.xz().length() > 0.2)
-                .map(yaw_of)
-        });
+            .and_then(|point| aim_from(player.translation(), point))
+            .or_else(|| {
+                cursor
+                    .0
+                    .and_then(|point| aim_from(player.translation(), point))
+            });
         if let Some(aim) = aim {
             pb.aim = aim;
             req.heading = combat_heading(req.heading, aim, pb.attack.requested);
         }
     }
+}
+
+/// The point under the cursor is kept as the combat aim once it is 50 cm or
+/// more from the player across the ground (the original's aim direction is
+/// only rewritten from 50 cm out, so nearer points keep the last aim).
+const AIM_MIN_CM: f32 = 50.0;
+
+/// The combat aim's yaw from a point under the cursor (m), or none while the
+/// point is nearer than [`AIM_MIN_CM`].
+fn aim_from(from: Vec3, to: Vec3) -> Option<f32> {
+    let to = (to - from).with_y(0.0);
+    (to.length() >= AIM_MIN_CM / 100.0).then(|| yaw_of(to))
 }
 
 /// The player's attack request, each behaviour tick, as the original's: in
@@ -2183,6 +2192,23 @@ mod tests {
         assert_eq!(stance_of(&app, player), Stance::CombatIdle);
         time(&mut app, 0.2);
         assert_eq!(stance_of(&app, player), Stance::Defence);
+    }
+
+    /// The combat aim keeps a cursor point 50 cm or more out across the
+    /// ground, drops its height, and keeps the last aim below 50 cm.
+    #[test]
+    fn the_combat_aim_needs_a_fifty_centimetre_cursor() {
+        // +X 60 cm out is a quarter turn from +Z.
+        let aim = aim_from(Vec3::ZERO, Vec3::new(0.6, 3.0, 0.0)).unwrap();
+        assert!((aim - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
+        // Exactly 50 cm is kept; 49.9 cm is not; a point straight above the
+        // player is not.
+        assert!(aim_from(Vec3::ZERO, Vec3::new(0.0, 0.0, 0.5)).is_some());
+        assert!(aim_from(Vec3::ZERO, Vec3::new(0.0, 0.0, 0.499_9)).is_none());
+        assert!(aim_from(Vec3::ZERO, Vec3::new(0.0, 10.0, 0.0)).is_none());
+        // A point behind is the half turn.
+        let behind = aim_from(Vec3::ZERO, Vec3::new(0.0, 0.0, -1.0)).unwrap();
+        assert!((behind.abs() - std::f32::consts::PI).abs() < 1e-6);
     }
 
     /// The interim footwork, one behaviour tick, on open ground: a step of

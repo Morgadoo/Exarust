@@ -850,7 +850,9 @@ original's player behaviour and body tick skip them for mask `0xAC0`.
 
 - **Facing.** The heading turns to the cursor's direction once it is more
   than 30° off it, and follows it exactly while an attack is requested
-  (the left button held). The body turns toward the heading by the
+  (the left button held). The cursor's direction is kept only once its
+  point is 50 cm or more from the player across the ground; nearer points
+  keep the last aim. The body turns toward the heading by the
   table: standing 300°/s (combat mode has no slow turn), eased over the
   last 0.6 rad; while it attacks, at (1 − 0.6·enc)·(1 − 0.25·progress)·B·W16·P / scale a tick
   (B = 240°/s, W16 the primary striker's handling, P the swing strength,
