@@ -243,8 +243,10 @@ it had when the muscles went, the 0.05 height ease and key-flag plants
 (`limp_plant`). It is not scheduled: the original samples only a body
 whose muscles are off and which is not dead, and a dead body's tick
 samples nothing.
-The placement's leg snap is a tested rule, not yet called by the spawn
-(`Ragdoll::snap_placement`): each probe is the clip ankle plus 5·scale cm
+The placement's leg snap is run by the spawn after it samples the first
+clip (`Ragdoll::snap_placement`; `exa_game::limp::spawn_pose` puts the
+clip's pose on the body first, as the original's placement routine does
+before it moves the particles): each probe is the clip ankle plus 5·scale cm
 along the shin, a 10 cm sphere from the frame's height plus the leg's
 length is dropped 300 cm for the ground, the hits average to the
 character's ground, one foot's record (index 1 when leg 0's ground is
