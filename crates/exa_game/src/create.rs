@@ -16,6 +16,7 @@ use exa_formats::characters::{
     ARMOUR, CLOSE_COMBAT, Carried, CharacterRecord, ItemRef, Pools, SHIELDS, SKILLS, Skill,
     TECHNIQUE_SLOTS,
 };
+use exa_formats::text::round_to_i32;
 
 use crate::experience::{LEVEL_STEP, global_xp_for_worth, global_xp_worth, training_skill};
 
@@ -583,13 +584,17 @@ pub fn update_creation_look(female: bool, variant: i32) -> CreationLook {
 }
 
 /// Scales three normalised values to bytes.
+///
+/// Each product converts with the processor's `CVTSS2SI` (ties to even);
+/// a NaN or an out-of-range value is the integer indefinite, whose low byte
+/// is zero.
 pub fn appearance_bytes(values: [f32; 3]) -> [u8; 3] {
-    values.map(|value| (value * 255.0).round_ties_even() as i64 as u8)
+    values.map(|value| round_to_i32(value * 255.0) as u8)
 }
 
-/// Scales two normalised values to 16-bit words.
+/// Scales two normalised values to 16-bit words, with the same conversion.
 pub fn appearance_words(values: [f32; 2]) -> [u16; 2] {
-    values.map(|value| (value * 65535.0).round_ties_even() as i64 as u16)
+    values.map(|value| round_to_i32(value * 65535.0) as u16)
 }
 
 /// What stepping the creation variant did.
@@ -2885,7 +2890,8 @@ pub struct ContinueLayout {
     pub button: CreationContinue,
     pub previous_disabled: bool,
     pub next_disabled: bool,
-    /// The name shown, cut to fifteen bytes.
+    /// The name shown, cut to fifteen characters (the original copies
+    /// fifteen bytes of its single-byte strings).
     pub name: String,
 }
 
@@ -3220,6 +3226,9 @@ pub struct ResolvedKitItem {
     pub item: u32,
     /// The appearance to write, or none for a plain item.
     pub appearance: Option<KitAppearance>,
+    /// A made item's colour layers each end with this byte (five); an
+    /// alias writes its three bytes directly and has no marker.
+    pub layer_marker: Option<u8>,
 }
 
 /// The appearance a kit entry gives an item instance.
@@ -3261,20 +3270,31 @@ pub fn resolve_kit_item(
         return ResolvedKitItem {
             item: spec.item,
             appearance: None,
+            layer_marker: None,
         };
     }
     match (created, has_colour_block) {
-        (Some(item), _) => ResolvedKitItem {
+        // A created alias's bytes go straight into its three layers.
+        (Some(item), true) => ResolvedKitItem {
             item,
             appearance: Some(KitAppearance::from(spec)),
+            layer_marker: None,
+        },
+        // A made instance marks each colour layer with five.
+        (Some(item), false) => ResolvedKitItem {
+            item,
+            appearance: Some(KitAppearance::from(spec)),
+            layer_marker: Some(5),
         },
         (None, true) => ResolvedKitItem {
             item: spec.item,
             appearance: None,
+            layer_marker: None,
         },
         (None, false) => ResolvedKitItem {
             item: 0,
             appearance: None,
+            layer_marker: None,
         },
     }
 }
@@ -3381,6 +3401,15 @@ pub struct ContinuePlace {
     pub details: PanelPlace,
     /// The name box inside the details form, down to its bottom.
     pub name: PanelPlace,
+    /// The item list's scroll step and its two state words.
+    pub list_step: i32,
+    pub list_flags: u32,
+    pub list_word: u32,
+    /// The name box's two state words.
+    pub name_flags: u32,
+    pub name_word: u32,
+    /// The details form's own state word.
+    pub details_word: i32,
 }
 
 /// Lays out the continue screen. `tall` is the same window aspect flag the
@@ -3407,6 +3436,12 @@ pub fn continue_place(unit: i32, tall: bool) -> ContinuePlace {
             w: 0xe4,
             h: details.h - 0x28,
         },
+        list_step: 2,
+        list_flags: 0x80,
+        list_word: 0x0010_0010,
+        name_flags: 0x200,
+        name_word: 0x0600_0200,
+        details_word: 0x100,
     }
 }
 
@@ -4099,6 +4134,25 @@ pub fn delete_confirm_dialog(question: &str, name: &str) -> DeleteConfirmDialog 
 // The continue screen's list
 // ---------------------------------------------------------------------
 
+/// Where the main menu's continue entry sends the screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContinueEntry {
+    /// The arena's continue screen (screen mode 10).
+    Arena,
+    /// The story/menu session's continue screen.
+    Session,
+}
+
+/// Opens the continue screen from the main menu: recruiting goes to the
+/// arena's screen, every other mode to the session's.
+pub fn open_continue_from_menu(screen_mode: i32) -> ContinueEntry {
+    if screen_mode == 10 {
+        ContinueEntry::Arena
+    } else {
+        ContinueEntry::Session
+    }
+}
+
 /// What the continue screen's character view needs.
 #[derive(Debug, Clone, Copy)]
 pub struct ContinueViewInput<'a> {
@@ -4127,6 +4181,8 @@ pub struct ContinueViewInput<'a> {
 /// What building the continue screen's character view did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContinueView {
+    /// The view control was cleared before the model was set.
+    pub cleared_view: bool,
     /// The asynchronous loader reported nothing at least once, so the
     /// original slept a frame and asked again.
     pub waited: bool,
@@ -4212,6 +4268,7 @@ pub fn continue_view(input: ContinueViewInput<'_>) -> ContinueView {
         panel_targets = 2;
     }
     ContinueView {
+        cleared_view: true,
         waited,
         model: input.model_available,
         view_target: true,
@@ -4714,6 +4771,12 @@ mod tests {
         assert_eq!(appearance_bytes([0.0, 0.5, 1.0]), [0, 128, 255]);
         assert_eq!(appearance_words([0.0, 0.5]), [0, 32768]);
         assert_eq!(appearance_words([1.0, 0.0]), [65535, 0]);
+        // CVTSS2SI's indefinite makes the low byte zero, not 0xff.
+        assert_eq!(
+            appearance_bytes([f32::NAN, f32::INFINITY, 1.5]),
+            [0, 0, 126]
+        );
+        assert_eq!(appearance_words([f32::NAN, f32::NEG_INFINITY]), [0, 0]);
     }
 
     #[test]
@@ -6430,7 +6493,8 @@ mod tests {
             plain,
             ResolvedKitItem {
                 item: 12,
-                appearance: None
+                appearance: None,
+                layer_marker: None
             }
         );
 
@@ -6438,6 +6502,7 @@ mod tests {
         assert_eq!(resolve_kit_item(&spec, true, false, None).item, 0);
         let instance = resolve_kit_item(&spec, true, false, Some(30));
         assert_eq!(instance.item, 30);
+        assert_eq!(instance.layer_marker, Some(5));
         assert_eq!(
             instance.appearance,
             Some(KitAppearance {
@@ -6450,6 +6515,7 @@ mod tests {
         let alias = resolve_kit_item(&spec, true, true, Some(21));
         assert_eq!(alias.item, 21);
         assert!(alias.appearance.is_some());
+        assert_eq!(alias.layer_marker, None);
 
         let no_alias = resolve_kit_item(&spec, true, true, None);
         assert_eq!(no_alias.item, 12);
@@ -6514,6 +6580,12 @@ mod tests {
     fn the_continue_screen_places_its_list_and_name() {
         let place = continue_place(4, true);
         assert_eq!(place.view_x, 236);
+        assert_eq!(place.list_step, 2);
+        assert_eq!(place.list_flags, 0x80);
+        assert_eq!(place.list_word, 0x0010_0010);
+        assert_eq!(place.name_flags, 0x200);
+        assert_eq!(place.name_word, 0x0600_0200);
+        assert_eq!(place.details_word, 0x100);
         assert_eq!(
             place.list,
             PanelPlace {
@@ -7018,6 +7090,7 @@ mod tests {
         assert_eq!(plain.title, None);
         assert_eq!(plain.item_passes, 0);
         assert!(plain.model && plain.view_target);
+        assert!(plain.cleared_view);
 
         let mut input = continue_input("Mira");
         input.screen_mode = 12;
@@ -7100,6 +7173,13 @@ mod tests {
         );
         assert!(page.button.enabled);
         assert!(!page.reset_dialog);
+    }
+
+    #[test]
+    fn the_continue_screen_opens_from_the_menu() {
+        assert_eq!(open_continue_from_menu(10), ContinueEntry::Arena);
+        assert_eq!(open_continue_from_menu(0), ContinueEntry::Session);
+        assert_eq!(open_continue_from_menu(12), ContinueEntry::Session);
     }
 
     #[test]
