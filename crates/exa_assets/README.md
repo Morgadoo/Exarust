@@ -266,8 +266,10 @@ goes on), `cancel` (a queued request or a
 decoded one is dropped, one decoding is marked by its request id so its
 upload is skipped and a later request for the same name still loads),
 `take_next`/`finish_decode` for an executor that decodes between them (or
-`decode_next` for a synchronous one), the loader's yield while uploads are
-pending (skipped for a promoted request; pausing only stops the wake-ups),
+`decode_next` for a synchronous one), the loader's wake to the frame when a
+finished decode has uploads waiting behind it (skipped for a promoted
+request; pausing only stops the wake-ups; the loader never waits for the
+frame),
 `load_now` for the priority path (promote, decode and drain every ready
 upload, as the original's pump does; no budget, because the original has
 none), and `pump_uploads(budget, upload)` on the main thread with a
@@ -288,9 +290,10 @@ Consumers whose bindings the upload cannot refresh (terrain and particle
 materials) load through `texture_sync`, and the parallax depth is read from
 the loaded size. A BC4 image is one grey channel (`TextureRecord::grey`) that
 the shaders repeat into colour for diffuse maps, apparel, race skins and the
-skin scatter; emissive and unpacked specular maps are not greyed. The loader yields
-while uploads wait (the original's rule; the frame uploads before it starts
-new decodes), the pump drains every ready upload,
+skin scatter; emissive and unpacked specular maps are not greyed. The loader does not wait
+for uploads (the original's thread keeps decoding and wakes the frame before
+it queues a decode that has earlier uploads behind it); the frame uploads
+before it starts new decodes, the pump drains every ready upload,
 and a record freed at its last reference drops its queued load and its image
 (`ModelLoader::release_texture`). `texture_now` decodes on the calling
 thread (the original's synchronous path and its priority load); `wait_decodes`
