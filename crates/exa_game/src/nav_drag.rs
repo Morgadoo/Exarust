@@ -11,11 +11,9 @@
 //! reuses the parts it can ([`zoom_detents`] for the wheel).
 
 use bevy::math::Vec3;
-use exa_physics::engine_math::{
-    acos, asin, exp, ln, max, min, rotate_about, round_to_i64, sign, sin_cos,
-};
+use exa_physics::engine_math::{acos, asin, exp, ln, max, min, rotate_about, round_to_i64, sign};
 
-use crate::nav_camera::planar_yaw;
+use crate::nav_camera::{camera_axis, planar_yaw};
 use crate::thaum::engine::normalize;
 
 /// One wheel unit of the original's zoom handlers: the single nearest 1/120
@@ -51,12 +49,12 @@ pub fn zoom_detents(zoom: f32, units: i32, low: f32, high: f32) -> f32 {
 
 /// The zoom after a slide of the pointer `dy` pixels from where the slide
 /// began: `clamp(dy · 0.001 + base, 0, 1)² · (max − min) + min`, the clamp by
-/// the processor's max-then-min (a NaN passes), the square and the products
-/// in single precision.
+/// the processor's max-then-min (a NaN passes), the square taken first and
+/// then multiplied into the range, all in single precision.
 pub fn zoom_slide(dy: f32, base: f32, low: f32, high: f32) -> f32 {
     let t = max(0.0, dy * ZOOM_SLIDE_PER_PIXEL + base);
     let t = min(1.0, t);
-    (high - low) * t * t + low
+    (high - low) * (t * t) + low
 }
 
 /// The pitch offset a zoom asks for, when the controller's amplitude is not
@@ -128,8 +126,9 @@ pub fn free_drag_start(
         sensitivity,
         low,
         high,
-        pixel_low: pointer_y + round_to_i64((low + base_pitch) / divisor) as i32,
-        pixel_high: pointer_y + round_to_i64((high + base_pitch) / divisor) as i32,
+        // The 64-bit sum is stored as a 32-bit word: a wrapping add.
+        pixel_low: pointer_y.wrapping_add(round_to_i64((low + base_pitch) / divisor) as i32),
+        pixel_high: pointer_y.wrapping_add(round_to_i64((high + base_pitch) / divisor) as i32),
     }
 }
 
@@ -154,10 +153,12 @@ impl FreeDrag {
 /// message arrives: if the yaw is more than about an eighth of a turn from
 /// the shown yaw (the absolute distance over a right angle rounds above
 /// zero), it snaps a quarter turn from the shown yaw in the direction it
-/// moved; otherwise it stays. The turn is the single `π/2`.
+/// moved; otherwise it stays. The turn is the single `π/2`. The original
+/// tests only the low 32 bits of the rounded count, so a NaN (whose count
+/// is the integer indefinite) or a count of a multiple of 2³² stays.
 pub fn free_drag_release(yaw: f32, shown_yaw: f32) -> f32 {
     const QUARTER: f32 = std::f32::consts::FRAC_PI_2;
-    let quarters = round_to_i64((yaw - shown_yaw).abs() / QUARTER);
+    let quarters = round_to_i64((yaw - shown_yaw).abs() / QUARTER) as i32;
     if quarters > 0 {
         sign(yaw - shown_yaw) * QUARTER + shown_yaw
     } else {
@@ -184,13 +185,14 @@ pub struct GrabDrag {
 /// extent of its box) with the camera's looked-at `target` and its `zoom`:
 /// the grabbed point takes the node's place on the ground but the target's
 /// height, the camera keeps `half_extent + zoom` from it, and the base yaw is
-/// the engine's planar yaw of the target less the grabbed point.
+/// the engine's planar yaw of the target less the grabbed point, normalised
+/// first by the engine's normalise as the original does.
 pub fn grab_start(node: Vec3, half_extent: f32, target: Vec3, zoom: f32) -> GrabDrag {
     let grab = Vec3::new(node.x, target.y, node.z);
     GrabDrag {
         grab,
         reach: half_extent + zoom,
-        base_yaw: planar_yaw(target - grab),
+        base_yaw: planar_yaw(normalize(target - grab)),
         base_height: target.y,
     }
 }
@@ -201,7 +203,9 @@ impl GrabDrag {
     /// height is `dy · pan + base`, `pan` being the zoom over half the
     /// viewport's world width; the looked-at point is the grabbed point plus
     /// the view's backward vector at the new yaw (pitch zero) times the
-    /// reach. Returns the yaw, the height the camera keeps for the point and
+    /// reach. The grabbed point is raised to the new height before the
+    /// looked-at point is built from it, as the original writes the height
+    /// first. Returns the yaw, the height the camera keeps for the point and
     /// the new looked-at point.
     pub fn moved(
         &self,
@@ -215,8 +219,8 @@ impl GrabDrag {
         let yaw = self.base_yaw - dx * rate * GRAB_TURN_SHARE;
         let pan = zoom / (viewport_width * aspect * 0.5);
         let height = dy * pan + self.base_height;
-        let (sin, cos) = sin_cos(yaw);
-        let target = self.grab + Vec3::new(sin, 0.0, cos) * self.reach;
+        let grab = Vec3::new(self.grab.x, height, self.grab.z);
+        let target = grab + camera_axis(0.0, yaw) * self.reach;
         (yaw, height, target)
     }
 }
@@ -368,8 +372,10 @@ mod tests {
         assert!((turned - (drag.base_yaw - 0.125)).abs() < 1e-6);
         // 100 px down raises the point by 100 · zoom / (width·aspect/2) =
         // 100 · 10 / 1280.
-        let (_, height, _) = drag.moved(0.0, 100.0, 0.0025, 1600.0, 1.6, 10.0);
+        let (_, height, target) = drag.moved(0.0, 100.0, 0.0025, 1600.0, 1.6, 10.0);
         assert!((height - 100.0 * 10.0 / 1280.0).abs() < 1e-6);
+        // The looked-at point rides at the raised height.
+        assert_eq!(target.y, height);
     }
 
     #[test]
