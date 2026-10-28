@@ -781,45 +781,42 @@ pub const ITEM_MARKER: u32 = 0x8000_0000;
 /// The high-bit pair the arena's dedupe pass treats as special.
 pub const ENTRY_SPECIAL: u32 = 0xC000_0000;
 
-/// What the old arena load's record repair did.
+/// What the old arena load's record repair kept.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RecordRepair {
-    /// The manager's eight-byte item list's surviving entries.
-    pub manager_items: usize,
-    /// The twelve-byte lists of the manager's saved records, after each was
-    /// compacted.
-    pub record_lists: Vec<usize>,
-    /// The stash's surviving twelve-byte records.
-    pub stash: usize,
-    /// The record must be re-derived (its armour and appearance rebuilt
-    /// from the rewritten ids). What that pass recomputes is the character
-    /// unit's; the original calls it after the compactions [guess at the
-    /// pass's exact effect].
+    /// The worn items left.
+    pub worn: usize,
+    /// Each loadout's worn items left, in loadout order.
+    pub loadout_worn: Vec<usize>,
+    /// The carried items left.
+    pub inventory: usize,
+    /// The record must be re-derived next (the character unit's pass that
+    /// rebuilds what the record derives from its items; its exact effect is
+    /// that unit's) [guess at the pass's effect].
     pub rederive: bool,
 }
 
-/// The old arena save's record repair, in the original's order: the
-/// manager's own eight-byte item list is compacted, then each of his saved
-/// records' twelve-byte lists (the loadouts), then the hub stash's
-/// twelve-byte list, and only then is the record re-derived. The stash is
-/// also compacted once more by the load's separate stash pass, which does
-/// not change a compacted list.
-pub fn repair_converted_record(
-    manager_items: &mut Vec<[u8; 8]>,
-    record_lists: &mut [Vec<[u8; 12]>],
-    stash: &mut Vec<[u8; 12]>,
-) -> RecordRepair {
-    retain_plain_items(manager_items);
-    let mut sizes = Vec::with_capacity(record_lists.len());
-    for list in record_lists.iter_mut() {
-        retain_plain_records(list);
-        sizes.push(list.len());
-    }
-    retain_plain_records(stash);
+/// The old arena save's repair of the player's record, in the original's
+/// order: the worn list keeps only entries whose id has the top bit clear,
+/// then each loadout's worn list does (the eight-byte compaction), then the
+/// carried inventory does (the twelve-byte compaction), and only then is
+/// the record re-derived. The hands are not touched. The hub stash is
+/// compacted by the load's separate pass afterwards, not here.
+pub fn repair_converted_record(record: &mut crate::characters::CharacterRecord) -> RecordRepair {
+    record.worn.retain(|item| item.id & ITEM_MARKER == 0);
+    let loadout_worn = record
+        .loadouts
+        .iter_mut()
+        .map(|loadout| {
+            loadout.worn.retain(|item| item.id & ITEM_MARKER == 0);
+            loadout.worn.len()
+        })
+        .collect();
+    record.inventory.retain(|item| item.item & ITEM_MARKER == 0);
     RecordRepair {
-        manager_items: manager_items.len(),
-        record_lists: sizes,
-        stash: stash.len(),
+        worn: record.worn.len(),
+        loadout_worn,
+        inventory: record.inventory.len(),
         rederive: true,
     }
 }
@@ -865,16 +862,17 @@ pub fn remove_duplicate_item_ids(records: &mut Vec<[u8; 12]>) {
     }
 }
 
-/// A list of eight-byte item entries and a list of twelve-byte records as
-/// the arena's record repair sees them. The save unit compacts one
-/// eight-byte list, then every employee's eight-byte list, then the
-/// twelve-byte list, in that order.
+/// Eight-byte item lists and one twelve-byte record list in raw form, as
+/// the record repair walks them: one eight-byte list (the worn items), then
+/// each further eight-byte list (the loadouts' worn items), then the
+/// twelve-byte list (the carried items). [`repair_converted_record`] is the
+/// same pass over a decoded record.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ArenaLists {
-    /// The eight-byte lists in the order the repair walks them: the stash
-    /// list first, then one per employee.
+    /// The eight-byte lists in the order the repair walks them: the worn
+    /// list first, then one per loadout.
     pub lists8: Vec<Vec<[u8; 8]>>,
-    /// The twelve-byte record list.
+    /// The twelve-byte list (the carried items).
     pub records12: Vec<[u8; 12]>,
 }
 
@@ -1170,21 +1168,49 @@ mod tests {
 
     #[test]
     fn a_converted_records_lists_compact_before_its_rederive() {
-        let mut manager = vec![item(1), item(0x8000_0002), item(3)];
-        let mut lists = vec![
-            vec![record(1), record(0xc000_0002)],
-            vec![record(0x8000_0003), record(4), record(0x8000_0005)],
+        use crate::characters::{Carried, CharacterRecord, ItemRef, Loadout};
+        let mut record = CharacterRecord::new();
+        record.hands[0] = ItemRef::new(0x8000_0009, 0);
+        record.worn = vec![
+            ItemRef::new(1, 0),
+            ItemRef::new(0x8000_0002, 0),
+            ItemRef::new(3, 0),
         ];
-        let mut stash = vec![record(1), record(0x8000_0002), record(3)];
-        let repair = repair_converted_record(&mut manager, &mut lists, &mut stash);
-        assert_eq!(manager, vec![item(1), item(3)]);
-        assert_eq!(lists[0], vec![record(1)]);
-        assert_eq!(lists[1], vec![record(4)]);
-        assert_eq!(stash, vec![record(1), record(3)]);
-        assert_eq!(repair.manager_items, 2);
-        assert_eq!(repair.record_lists, vec![1, 1]);
-        assert_eq!(repair.stash, 2);
-        assert!(repair.rederive);
+        let first = Loadout {
+            worn: vec![ItemRef::new(1, 0), ItemRef::new(0xc000_0002, 0)],
+            ..Loadout::default()
+        };
+        let second = Loadout {
+            worn: vec![
+                ItemRef::new(0x8000_0003, 0),
+                ItemRef::new(4, 0),
+                ItemRef::new(0x8000_0005, 0),
+            ],
+            ..Loadout::default()
+        };
+        record.loadouts = vec![first, second];
+        let carried = |item| Carried {
+            item,
+            flags: 0,
+            extra: 0,
+        };
+        record.inventory = vec![carried(0x8000_0001), carried(6)];
+        let repair = repair_converted_record(&mut record);
+        assert_eq!(record.worn, vec![ItemRef::new(1, 0), ItemRef::new(3, 0)]);
+        assert_eq!(record.loadouts[0].worn, vec![ItemRef::new(1, 0)]);
+        assert_eq!(record.loadouts[1].worn, vec![ItemRef::new(4, 0)]);
+        assert_eq!(record.inventory, vec![carried(6)]);
+        // The hands are left alone.
+        assert_eq!(record.hands[0].id, 0x8000_0009);
+        assert_eq!(
+            repair,
+            RecordRepair {
+                worn: 2,
+                loadout_worn: vec![1, 1],
+                inventory: 1,
+                rederive: true,
+            }
+        );
     }
 
     #[test]
