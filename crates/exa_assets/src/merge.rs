@@ -2,10 +2,10 @@
 //! and every visible garment piece into one mesh, grouped by material, with
 //! one skin weight per vertex.
 //!
-//! Exarust keeps a mesh per node and draws each under the skeleton, so the
-//! merge is offered as a pure builder ([`merge`]) for callers that want the
-//! original's single mesh. Each part is placed by its frame in the body's
-//! space, its vertices, normals, UVs and colours are appended, and the
+//! The running game draws the merged mesh: `model::merge_dressed` turns the
+//! built material groups back into parts, calls [`merge`], and
+//! `model::run_mesh` makes one sub-mesh per material run. Each part is
+//! placed by its frame in the body's space, its vertices, normals, UVs and colours are appended, and the
 //! vertices are then regrouped by material, as the original's final renumber
 //! pass does: the first material's vertices come first, then the next
 //! material's, and so on, each run ending where the next begins (the pass

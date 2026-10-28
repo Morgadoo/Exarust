@@ -11,10 +11,13 @@
 //! cull bits, and the overlays (hair and other meshes numbered past the
 //! slots) come last. [`crate::rebuild::dress_plan`] gives the assembly; this
 //! module is the merge list a caller with model meshes turns into
-//! `exa_assets::merge::merge_parts` parts.
+//! `exa_assets::model::DressedPart`s.
 //!
-//! Exarust still draws one mesh per node, so nothing in the running game
-//! calls this yet; it is the tested list the original merges by.
+//! The running game drives it: [`assemble`] builds the character's runtime
+//! body tree and plan from its built models, and `exa_character`'s dressing
+//! pass merges the parts and draws one sub-mesh per material run. A body
+//! model whose nodes do not number slots (the demons) or a character
+//! without its body model keeps the per-node draw.
 
 use exa_assets::Model;
 use exa_formats::morph::Frame;

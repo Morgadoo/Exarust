@@ -5,7 +5,9 @@
 //!
 //! The generator's rebuild, re-dress and pose passes all walk this tree and
 //! write the same fields, so they are kept as plain data and pure functions
-//! here; nothing in the running game drives them yet. Each pass follows the
+//! here. The dressed-mesh plan drives the slot chain and re-framing; the
+//! dynamics, owner and saved-pose passes are tested rules the running game
+//! does not keep as state. Each pass follows the
 //! original's instructions: which word it tests, which nodes it recurses
 //! into, and the operation order of its vector helpers (the dot products
 //! sum x and z first where the original does, the normalising uses the
