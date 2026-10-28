@@ -880,8 +880,9 @@ pub struct ProgramBindings {
 ///   binds `Tex<layer>` at unit `2·layer + 1`, and every masked layer binds
 ///   `Msk<layer>` at `2·layer + 2`;
 /// - the mask pass (kind 3) binds only `Msk<layer>` for its masked lanes at
-///   `layer + 2`, and the height pass (kind 2) only `Tex<layer>` for its
-///   textured lanes at `layer + 2`;
+///   `layer + 1`, and the height pass (kind 2) only `Tex<layer>` for its
+///   textured lanes at `layer + 1` (the unit the height pass binds each
+///   lane's height map to);
 /// - the blend mask atlas binds as `Mask` at unit 0;
 /// - the uniforms are `Tile`, `Str`, then `Amnt` for the normal pass or
 ///   `Colr` for the others, and `BNrm` at unit 9 when the base normal is on.
@@ -893,12 +894,12 @@ pub fn program_bindings(program: PassProgram, key: PassKey, base_normal: bool) -
         match program {
             PassProgram::Mask => {
                 if masked {
-                    samplers.push((format!("Msk{lane}"), lane + 2));
+                    samplers.push((format!("Msk{lane}"), lane + 1));
                 }
             }
             PassProgram::Height => {
                 if textured {
-                    samplers.push((format!("Tex{lane}"), lane + 2));
+                    samplers.push((format!("Tex{lane}"), lane + 1));
                 }
             }
             _ => {
@@ -2020,8 +2021,8 @@ mod tests {
         assert_eq!(
             bind.samplers,
             [
-                ("Msk0".to_string(), 2),
-                ("Msk1".to_string(), 3),
+                ("Msk0".to_string(), 1),
+                ("Msk1".to_string(), 2),
                 ("Mask".to_string(), 0)
             ]
         );
@@ -2030,8 +2031,8 @@ mod tests {
         assert_eq!(
             bind.samplers,
             [
-                ("Tex0".to_string(), 2),
-                ("Tex1".to_string(), 3),
+                ("Tex0".to_string(), 1),
+                ("Tex1".to_string(), 2),
                 ("Mask".to_string(), 0)
             ]
         );
