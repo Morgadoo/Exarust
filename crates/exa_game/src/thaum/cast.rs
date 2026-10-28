@@ -1608,9 +1608,29 @@ fn attach_visual(
 fn apply_otherwhere(mut moves: MessageReader<Otherwhere>, mut bodies: Query<&mut Ragdoll>) {
     for Otherwhere { entity, to } in moves.read().copied() {
         if let Ok(mut doll) = bodies.get_mut(entity) {
-            super::visuals::teleport(&mut doll, to, None);
+            let target = otherwhere_root(&doll, to);
+            super::visuals::teleport(&mut doll, target, None);
         }
     }
+}
+
+/// Where a Long Door puts the body's root (m): the destination (cm, on the
+/// floor) with the root kept as high above it as it stood above the body's
+/// lowest part. The original asks the ground for the point with the body's
+/// own height offset; the lowest part stands in for that offset (a guess).
+fn otherwhere_root(doll: &Ragdoll, to: Vec3) -> Vec3 {
+    let heights = doll.parts.iter().map(|part| part.transform().translation.y);
+    let lowest = heights.clone().fold(f32::INFINITY, f32::min);
+    let root = doll
+        .parts
+        .first()
+        .map_or(lowest, |part| part.transform().translation.y);
+    let lift = if lowest.is_finite() {
+        root - lowest
+    } else {
+        0.0
+    };
+    to / CM + Vec3::Y * lift
 }
 
 fn push_active(

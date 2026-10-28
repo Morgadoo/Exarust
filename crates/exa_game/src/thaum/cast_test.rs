@@ -1336,3 +1336,28 @@ fn a_live_cast_end_returns_to_the_stance_that_tick() {
     let caster = app.world().get::<PowerCaster>(entity).expect("a caster");
     assert!(!caster.body.stance_return);
 }
+
+/// A Long Door's destination is in centimetres on the floor; the root lands
+/// in metres, as high above it as it stood above the body's lowest part.
+#[test]
+fn a_long_door_root_lands_in_metres_above_the_floor() {
+    let part = |bone, y: f32| PartSetup {
+        bone,
+        entity: Entity::PLACEHOLDER,
+        parent: None,
+        world: Affine3A::from_translation(Vec3::new(2.0, y, 3.0)),
+        centre: Vec3::ZERO,
+        half: Vec3::splat(0.1),
+        origin: Vec3::ZERO,
+        links: Vec::new(),
+        foot: None,
+        pins: Vec::new(),
+        spheres: None,
+    };
+    let doll = Ragdoll::new(&[part(1, 1.0), part(2, 0.1)]);
+    let root = super::otherwhere_root(&doll, Vec3::new(500.0, 20.0, -300.0));
+    assert!(
+        (root - Vec3::new(5.0, 1.1, -3.0)).length() < 1e-5,
+        "{root:?}"
+    );
+}
