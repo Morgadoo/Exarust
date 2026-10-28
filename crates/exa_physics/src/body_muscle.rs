@@ -189,13 +189,12 @@ impl BodyStats {
         encumbrance: 0.0,
     };
 
-    /// The footwork's reach (cm): 80 · √scale · (1 − 0.2 × encumbrance) ×
-    /// (1 − 0.3 × feral). The original's footwork reads this in place of
-    /// the attack steps' extension-scaled length.
+    /// The footwork's reach (cm): the character's step reach, 80 · √scale
+    /// · (1 − 0.2 × encumbrance) · (1 − 0.3 × feral) in double precision
+    /// ([`exa_formats::weapon_record::step_reach`]). The original's
+    /// stance-origin clamp, its foot scores and its anchor clamp read it.
     pub fn foot_reach(&self) -> f32 {
-        80.0 * self.scale.max(0.0).sqrt()
-            * (1.0 - 0.2 * self.encumbrance)
-            * (1.0 - 0.3 * self.feral)
+        exa_formats::weapon_record::step_reach(self.scale, self.feral, self.encumbrance)
     }
 }
 
