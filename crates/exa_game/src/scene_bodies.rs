@@ -342,6 +342,8 @@ pub struct SpawnContext<'a> {
     pub book: &'a exa_formats::roles::RoleDb,
     /// The player the duellists rate.
     pub player: Entity,
+    /// The game clock the plan's action time is read against, ms.
+    pub now_ms: u32,
     /// The jitter generator the brains draw from, kept across spawns.
     pub roll: &'a mut u32,
 }
@@ -534,8 +536,12 @@ pub fn spawn_scene_body(
     match plan.brain {
         BodyBrain::Duellist { reaction_ms } => {
             let mut duellist = exa_ai::Duellist::new(context.player);
-            duellist.reaction_ms = reaction_ms;
-            if reaction_ms == 0 {
+            // The plan's first action is the original's AI clock: an
+            // opponent it puts in the future engages then, not on the frame
+            // it is built.
+            let delay = plan.act_at_ms.saturating_sub(context.now_ms);
+            duellist.reaction_ms = reaction_ms.max(delay);
+            if duellist.reaction_ms == 0 {
                 duellist.engaged = true;
             } else {
                 duellist.engage_at_ms = Some(plan.act_at_ms.into());
@@ -705,6 +711,7 @@ fn apply_scene_commands(
     mut commands: Commands,
     mut physics: ResMut<exa_physics::Physics>,
     game: Option<Res<Game>>,
+    clock: Option<Res<crate::effects::EffectClock>>,
     mut actors: ResMut<SceneActors>,
     mut cache: ResMut<ModelCache>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -751,6 +758,7 @@ fn apply_scene_commands(
                     actors: cache,
                     book: &book,
                     player,
+                    now_ms: clock.as_ref().map_or(0, |clock| clock.now_ms),
                     roll,
                 };
                 if let Some(body) = spawn_scene_body(&mut commands, &mut context, plan) {
@@ -958,6 +966,7 @@ mod tests {
                 actors: &mut actors,
                 book: &book,
                 player,
+                now_ms: 0,
                 roll: &mut roll,
             };
             spawn_scene_body(&mut commands, &mut context, &plan)

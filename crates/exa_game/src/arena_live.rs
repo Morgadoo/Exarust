@@ -238,8 +238,11 @@ pub fn round_plans(
             } => {
                 let mut body = if scene.tournament {
                     let weapon = scene.weapons.get(opponent).copied().filter(|&id| id != 0);
+                    // The event's weapon field adds the profile's armed flag;
+                    // the drawn variant itself is the item shown.
+                    let event_weapon = i32::from(weapon.is_some());
                     hire_opponent_plan(
-                        hire_plan(tier as u8, 0, 0),
+                        hire_plan(tier as u8, 0, event_weapon),
                         &slot.place,
                         flags,
                         weapon,
@@ -445,10 +448,11 @@ fn stand_next_round(
             commands.write(SceneCommand::Despawn(entity));
         }
     }
-    let act = now_ms.wrapping_add(fight.yield_ms);
+    // The scene work waits the round's yield before it touches the bodies;
+    // the bodies' own AI clock starts at the action grace after that.
+    let now = now_ms.wrapping_add(fight.yield_ms);
     if let Some(plan) = &fight.opponent {
-        let mut body = opponent_plan(*plan, &opponent, HOSTILE, now_ms, MATCH_ACT_GRACE_MS);
-        body.act_at_ms = act;
+        let body = opponent_plan(*plan, &opponent, HOSTILE, now, MATCH_ACT_GRACE_MS);
         commands.write(SceneCommand::Spawn(Box::new(body)));
     }
     if let NextRound::Reserve(index) = fight.company {
@@ -459,8 +463,7 @@ fn stand_next_round(
                 .get(index.saturating_sub(1))
                 .map(|member| (member.name.as_str(), member.health))
         });
-        let mut body = company_plan(member, &ours, MANAGER_ROLE, now_ms, MATCH_ACT_GRACE_MS);
-        body.act_at_ms = act;
+        let body = company_plan(member, &ours, MANAGER_ROLE, now, MATCH_ACT_GRACE_MS);
         commands.write(SceneCommand::Spawn(Box::new(body)));
     }
 }
