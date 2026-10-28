@@ -8,9 +8,11 @@
 //! polearm grip, to the other hand and the arm). This module builds those
 //! link records and switches them as the grip's modes do; it is plain data
 //! so the body solver can apply a link to its item's and its parent's
-//! particles (`GripLink::apply` documents the law). Exarust's running game
-//! still draws a held item as a bone-attached model; the records here are
-//! the physics side, ready to replace that attachment.
+//! particles (`GripLink::apply` documents the law). `grip_solve` runs the
+//! records as a cross-body stage: a character's equip and torch put a
+//! `HeldGrip` on an item whose model has a rigid root, and its item body is
+//! pulled to the hand every solver iteration. A factory weapon with no
+//! stored rigid node stays bone-attached.
 //!
 //! The numbers are the original's, in its centimetres and flags. Evidence:
 //! the grip table, the link builder (points scaled by the body's scale,
