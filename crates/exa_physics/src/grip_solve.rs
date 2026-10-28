@@ -264,7 +264,7 @@ pub fn mark_held(mut held: Query<(&HeldGrip, &mut Ragdoll)>) {
 
 /// Releases the items whose holder has gone limp or left: the link records
 /// stop acting, the item body loses its holder and held mask, takes the
-/// dropped weapon's friction and falls free (`0x155a20`/`0x155880`).
+/// dropped weapon's friction and falls free.
 pub fn release_freed_grips(
     mut commands: Commands,
     mut held: Query<(Entity, &mut HeldGrip, &mut Ragdoll)>,

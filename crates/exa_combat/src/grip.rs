@@ -495,9 +495,9 @@ mod spec_tests {
 /// The base of a held item's reach: 60 cm, the original's arm and hand.
 pub const HELD_REACH_BASE: f32 = 60.0;
 
-/// A held item's reach from its hand (cm, the character's `+0x990`): an
+/// A held item's reach from its hand (cm, the character's reach word): an
 /// unarmed item (`class & 0x30 == 0`) takes the race's own reach, anything
-/// held takes its length times the item's `0x35` byte as a hundredth, plus
+/// held takes its length times a byte of the item's weapon record as a hundredth, plus
 /// 60 cm. `item_length_cm` is the item node's two y extents summed.
 pub fn held_reach(class: u16, hand_byte: u8, item_length_cm: f32, race_reach: f32) -> f32 {
     if class & 0x30 == 0 {
@@ -537,7 +537,7 @@ mod held_measure_tests {
     }
 }
 
-/// What the held-item refresh (`0x152100`) derives from the item's weapon
+/// What the held-item refresh derives from the item's weapon
 /// class and node: the class word, the item's reach, the aim point's height
 /// and whether it is the special greatsword class (`0x521`).
 #[derive(Clone, Copy, Debug, PartialEq)]

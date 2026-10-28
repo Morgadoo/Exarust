@@ -437,7 +437,7 @@ pub fn build(
 }
 
 /// Adds the two world links a held item gets when it is attached
-/// (`0x151ec0`): a soft one at `soft_point` (cm) with strength 0.05 and a
+///: a soft one at `soft_point` (cm) with strength 0.05 and a
 /// stiff one at the item's origin with strength 1, both to the world
 /// anchor, flags `0x500000`. `None` when the item part does not exist.
 pub fn world_links(
@@ -468,7 +468,7 @@ pub fn world_links(
     Some((world(on_item, soft_at, 0.05), world(origin, origin_at, 1.0)))
 }
 
-/// Builds a shield's links (`0x153ed0`): three runtime pivots from points on
+/// Builds a shield's links: three runtime pivots from points on
 /// the shield — its back at (−20, 0, 0) cm to the holding hand, and its two
 /// face points (5, 0, ±15) cm to the other hand — then a soft world link at
 /// its origin (strength 0.05, the world-link flags).
@@ -569,7 +569,7 @@ impl GripLinks {
         true
     }
 
-    /// Applies a grip mode (`0x152a30` and `0x152e10`), the entry's
+    /// Applies a grip mode, the entry's
     /// callback. The two-hander's main link takes a 4 cm slack; modes 0, 1,
     /// 2 and 3 switch the second hand's, arm's and extra links (the extra
     /// with the current distance as its slack), and a polearm's main link
@@ -688,7 +688,7 @@ impl GripLinks {
         true
     }
 
-    /// One relax pass after a grip change (`0x154530`): every link enabled
+    /// One relax pass after a grip change: every link enabled
     /// at least once loses slack — the main link 1 cm, the second hand
     /// `(√s + 0.02)·0.1` cm, the arm `s·0.02 + 0.15` cm and the extra
     /// `(√s + 0.01)·0.4` cm (s in cm) — until it reaches zero, when its
@@ -746,7 +746,7 @@ impl GripLinks {
         true
     }
 
-    /// One flip step (`0x154320`): only while the character is not
+    /// One flip step: only while the character is not
     /// combat-ready, or the flip is within 0.49 of its middle. The progress
     /// moves by `(1 − (0.5 − f)²·4)·0.05 + 0.002` a tick toward 1 (or back
     /// to 0 once `flipping`), and at either end the item's record must be
@@ -796,7 +796,7 @@ impl GripLinks {
     }
 }
 
-/// The grip mode a clip's change asks for (`0x1547d0`): a knocked-down body
+/// The grip mode a clip's change asks for: a knocked-down body
 /// 0; Idle or Walk 2; Stab 3; a clip outside 0x0E..=0x11, 0x1C and 0x1F
 /// while the character's own clip is under 0x2C 1; anything else 0.
 pub fn mode_from_clip(clip: i32, current_clip: i32, down: bool) -> i32 {

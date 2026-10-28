@@ -123,7 +123,7 @@ and each grip's hand (the left for a polearm), offset (times the
 character's size; the ogre's own, unscaled), Euler angles (about the
 hand's X, then Z, then Y) and links (to the hand, the second hand and the
 arm, and the stab's; `spec` hands them to `exa_physics::grip`). The held
-reach is `held_reach`: the item's length times its `0x35` byte as a
+reach is `held_reach`: the item's length times a byte of its weapon record as a
 hundredth plus 60 cm, or the race's reach with no hands bits; the aim
 point sits `held_aim_height` above the grip. `Grip::placement` places an
 item for a `GripHolder` (size, race byte, the race's held offset) and a
