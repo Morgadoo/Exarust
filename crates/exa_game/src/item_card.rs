@@ -12,12 +12,13 @@
 //! stats card puts them in the strip left of the icon and the plain card
 //! centres its icon and writes the description below it.
 //!
-//! The description is expanded through the card's condition blocks and
-//! pronoun markers. The original appends a generated quality and condition
-//! sentence to an apparel item's description, and to a weapon's when its
-//! model name starts with `@`; the phrase tables those sentences draw from
-//! are data in `Exanima.exe` that Exarust has not extracted yet, so the card
-//! shows the description without that sentence.
+//! The description is first rewritten into the generated quality and
+//! condition sentence ([`exa_items::desc_phrase`]): an apparel body's, or a
+//! weapon page's when the model name starts with `@`; an apparel sentence
+//! also puts the armour-variant word in front of the title. The phrase
+//! tables are read from the installed `Exanima.exe`; without them the
+//! description is kept as it is. It is then expanded through the card's
+//! condition blocks and pronoun markers.
 //!
 //! Evidence: the card builder and its helpers (`docs/UI.md`, item GUI).
 
@@ -26,6 +27,7 @@ use bevy::window::PrimaryWindow;
 
 use exa_items::card::{BuiltCard, CardBuildInput, CardGates, CardItem, build_card};
 use exa_items::catalogue::ItemCatalogue;
+use exa_items::desc_phrase::{PhraseBook, describe};
 use exa_items::item_gui::popup_place;
 use exa_ui::gui_core::GuiRect;
 use exa_ui::gui_draw::{GuiFrames, GuiLayer, GuiTextures, LayerTexture, text_batch};
@@ -67,6 +69,10 @@ pub struct ShownCard {
 #[derive(Resource, Default)]
 pub struct CardView {
     pub shown: Option<ShownCard>,
+    /// The generator the description sentences draw from. The original
+    /// draws from the engine's one shared generator; Exarust keeps the
+    /// card's own, seeded from the clock at the first card. [Exarust stand-in]
+    pub roll: u32,
 }
 
 impl CardView {
@@ -87,10 +93,13 @@ impl CardView {
     }
 }
 
-/// Builds a card's content from the item's catalogue record, or `None`
-/// when the record has no card page.
+/// Builds a card's title and content from the item's catalogue record, or
+/// `None` when the record has no card page. The description sentence draws
+/// from `roll`, which advances only when a card is built.
 pub fn build_for(
     catalogue: &ItemCatalogue,
+    phrases: &PhraseBook,
+    roll: &mut u32,
     item: u32,
     flags: u32,
     female: bool,
@@ -99,6 +108,15 @@ pub fn build_for(
     // The card builder shows nothing when the name does not resolve.
     if !facts.titled {
         return None;
+    }
+    let mut title = facts.name.clone();
+    let mut description = facts.description.clone();
+    let mut next_roll = *roll;
+    if let (Some(book), Some(source)) = (&phrases.0, facts.sentence) {
+        let described = describe(book, *roll, source, &title, &description);
+        next_roll = described.state;
+        title = described.title;
+        description = described.description;
     }
     let card_item = CardItem {
         id: item,
@@ -134,10 +152,11 @@ pub fn build_for(
         // The value gate is a settings byte in the original. Exarust shows
         // the value. [guess]
         value_shown: true,
-        description: &facts.description,
+        description: &description,
         female,
     })?;
-    Some((facts.name.clone(), built))
+    *roll = next_roll;
+    Some((title, built))
 }
 
 /// The card's least width and height at a unit.
@@ -167,6 +186,7 @@ fn show(
     screens: &mut GameScreens,
     icons: &mut PanelIcons,
     catalogue: &ItemCatalogue,
+    phrases: &PhraseBook,
     item: u32,
     flags: u32,
     pointer: (i32, i32),
@@ -174,7 +194,11 @@ fn show(
     now: u32,
 ) {
     view.close(screens, icons, now);
-    let Some((name, built)) = build_for(catalogue, item, flags, false) else {
+    if view.roll == 0 {
+        view.roll = now | 1;
+    }
+    let Some((name, built)) = build_for(catalogue, phrases, &mut view.roll, item, flags, false)
+    else {
         return;
     };
     let (width, height) = card_size(unit);
@@ -204,10 +228,12 @@ fn show(
 /// own mouse decision. The item's use class picks the delay: kinds 0 and 1
 /// wait on the 200 ms timer, anything else builds at once. A press away
 /// from every entry closes an open card.
+#[allow(clippy::too_many_arguments)]
 fn request_card(
     buttons: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     catalogue: Option<Res<ItemCatalogue>>,
+    phrases: Option<Res<PhraseBook>>,
     mut screens: ResMut<GameScreens>,
     mut view: ResMut<CardView>,
     mut icons: ResMut<PanelIcons>,
@@ -284,6 +310,7 @@ fn request_card(
         &mut screens,
         &mut icons,
         catalogue,
+        phrases.as_deref().unwrap_or(&PhraseBook::default()),
         entry.id,
         entry.flags,
         pointer,
@@ -296,6 +323,7 @@ fn request_card(
 /// fade is over.
 fn tick_card(
     catalogue: Option<Res<ItemCatalogue>>,
+    phrases: Option<Res<PhraseBook>>,
     mut screens: ResMut<GameScreens>,
     mut view: ResMut<CardView>,
     mut icons: ResMut<PanelIcons>,
@@ -312,6 +340,7 @@ fn tick_card(
             &mut screens,
             &mut icons,
             catalogue,
+            phrases.as_deref().unwrap_or(&PhraseBook::default()),
             item,
             flags,
             pointer,
@@ -672,8 +701,11 @@ mod tests {
     #[test]
     fn a_missing_record_has_no_card() {
         let catalogue = ItemCatalogue::default();
-        assert!(build_for(&catalogue, 7, 0, false).is_none());
-        assert!(build_for(&catalogue, 0, 0, false).is_none());
+        let phrases = PhraseBook::default();
+        let mut roll = 1;
+        assert!(build_for(&catalogue, &phrases, &mut roll, 7, 0, false).is_none());
+        assert!(build_for(&catalogue, &phrases, &mut roll, 0, 0, false).is_none());
+        assert_eq!(roll, 1);
     }
 
     #[test]

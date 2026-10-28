@@ -5,6 +5,7 @@
 //! leaves the hands' plan on the body.
 
 use crate::card::{ApparelStats, ShieldStats, WeaponStats};
+use crate::desc_phrase::SentenceSource;
 use crate::possession::{HandPlan, ItemKind, Possessions};
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
@@ -118,6 +119,9 @@ pub struct CardFacts {
     pub burden: Option<Burden>,
     /// The shield's held factors, when it has a shield section.
     pub shield_record: Option<ShieldRecord>,
+    /// The generated sentence the card adds to the description, and the
+    /// section bytes it reads.
+    pub sentence: Option<SentenceSource>,
 }
 
 impl ItemCatalogue {
@@ -385,6 +389,12 @@ fn card_facts<'a>(
         });
         facts.shield_record = ShieldRecord::from_section(shield);
     }
+    facts.sentence = SentenceSource::choose(
+        weapon_section.filter(|w| word(w, 0) & WITHHELD == 0),
+        body,
+        shield_section,
+        facts.factory,
+    );
     // The tint, rank and socket bytes are read by the builder of the page
     // the card shows, in the card builder's order: a weapon section that is
     // not withheld, else an apparel body of armour type 1 to 6, else a
@@ -718,6 +728,18 @@ mod tests {
         assert!(facts.titled && facts.factory);
         assert_eq!((facts.condition, facts.skill), (77, 0x21));
         assert!(!facts.sockets);
+        // No weapon page, so the apparel body gives the sentence.
+        assert_eq!(
+            facts.sentence,
+            Some(SentenceSource::Apparel {
+                seed: 0,
+                variant: 0,
+                quality: 77,
+                damage: 0
+            })
+        );
+        // A plain record with neither section has none.
+        assert_eq!(cat.card_facts(1).unwrap().sentence, None);
         let facts = cat.card_facts(3).unwrap();
         assert!(!facts.titled);
         assert_eq!(facts.description, "");

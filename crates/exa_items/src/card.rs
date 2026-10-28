@@ -1276,7 +1276,7 @@ pub struct ApparelSentence {
 /// side of 50 joins with ", but", and differing sides with " and". A
 /// leading "A " is removed. A dot that is not the last character saves the
 /// tail, which is appended after the condition phrase. Quality reads the
-/// first 14 made rows. Condition uses flawless, then perfect. An
+/// first 15 made rows. Condition uses flawless, then perfect. An
 /// unbracketed sentence takes "An " or "A ". A material from 1 through 8
 /// uppercases a lowercase side prefix. With a 0x10, that material name and
 /// a space replace the mark and the next byte. Any other mark is deleted.

@@ -9,6 +9,7 @@ pub mod card;
 pub mod carry;
 pub mod catalogue;
 pub mod char_loot;
+pub mod desc_phrase;
 pub mod doll;
 pub mod icon_cache;
 pub mod instance;
@@ -26,9 +27,14 @@ pub struct ItemsPlugin;
 
 impl Plugin for ItemsPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<catalogue::ItemCatalogue>().add_systems(
-            Update,
-            (catalogue::load_catalogue, catalogue::swap_weapon_sets).chain(),
-        );
+        app.init_resource::<catalogue::ItemCatalogue>()
+            .init_resource::<desc_phrase::PhraseBook>()
+            .add_systems(
+                Update,
+                (
+                    (catalogue::load_catalogue, catalogue::swap_weapon_sets).chain(),
+                    desc_phrase::load_phrases,
+                ),
+            );
     }
 }
