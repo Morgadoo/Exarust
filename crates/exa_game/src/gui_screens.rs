@@ -89,14 +89,9 @@ impl LootWindow {
     /// An empty window's panels for a GUI unit.
     fn new(form: FormId, character: i32, flags: u32, unit: i32) -> Self {
         let mut pack = Container::form(unit);
-        pack.client = (
-            exa_items::char_loot::PACK_WIDTH,
-            exa_items::char_loot::PACK_HEIGHT,
-        );
-        pack.capacity = exa_items::inventory_window::PACK_CAPACITY as i32;
-        pack.max_item = exa_items::inventory_window::PACK_MAX_ITEM as i32;
         pack.owner = Some(character as u32);
-        let worn = Container::form(unit);
+        let mut worn = Container::form(unit);
+        worn.owner = Some(character as u32);
         Self {
             form,
             character,
