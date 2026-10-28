@@ -215,6 +215,48 @@ pub fn reenter(
     result
 }
 
+/// Where a body stands when the scene puts it back: its point (cm) and the
+/// direction it faces (unit).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Placement {
+    pub at_cm: Vec3,
+    pub forward: Vec3,
+}
+
+/// The placement an entering body takes before it joins the scene. A
+/// collapsed body keeps its whole stored placement. Any other takes its
+/// current point (`point_cm`) and keeps its stored facing, or, while it
+/// follows a path, faces the path's goal from the body's reference point
+/// (the engine's normalise of the flat offset; the angle ignores height). A
+/// goal straight above or below the reference leaves the stored facing
+/// [guess: the engine's basis builder keeps the old basis for a zero
+/// forward].
+///
+/// The original's node transform and physics re-placement are the scene's;
+/// this is the placement they start from.
+pub fn replace_placement(
+    stored: Placement,
+    collapsed: bool,
+    point_cm: Vec3,
+    goal_cm: Option<Vec3>,
+    base_cm: Vec3,
+) -> Placement {
+    if collapsed {
+        return stored;
+    }
+    let forward = match goal_cm {
+        Some(goal) => {
+            let d = crate::motion::unit(Vec3::new(goal.x - base_cm.x, 0.0, goal.z - base_cm.z));
+            if d == Vec3::ZERO { stored.forward } else { d }
+        }
+        None => stored.forward,
+    };
+    Placement {
+        at_cm: point_cm,
+        forward,
+    }
+}
+
 /// Whether a body at squared distance `distance2` (cm²) from the centre is
 /// in the activation range of squared radius `radius2`.
 pub fn in_range(sector_live: bool, distance2: f32, radius2: f32) -> bool {
@@ -338,6 +380,41 @@ fn show(commands: &mut Commands, entity: Entity, in_scene: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A collapsed body keeps its stored placement; any other takes its
+    /// current point, and a followed goal turns the facing toward it on the
+    /// ground plane (a goal on the spot keeps it).
+    #[test]
+    fn an_entering_body_faces_its_path_goal() {
+        let stored = Placement {
+            at_cm: Vec3::new(10.0, 20.0, 30.0),
+            forward: Vec3::X,
+        };
+        let point = Vec3::new(1.0, 2.0, 3.0);
+        let goal = Some(Vec3::new(0.0, 500.0, 100.0));
+        assert_eq!(
+            replace_placement(stored, true, point, goal, Vec3::ZERO),
+            stored
+        );
+        assert_eq!(
+            replace_placement(stored, false, point, None, Vec3::ZERO),
+            Placement {
+                at_cm: point,
+                forward: Vec3::X
+            }
+        );
+        let turned = replace_placement(stored, false, point, goal, Vec3::ZERO);
+        assert_eq!(turned.at_cm, point);
+        assert_eq!(turned.forward, Vec3::Z);
+        let f =
+            |goal: Vec3| replace_placement(stored, false, point, Some(goal), Vec3::ZERO).forward;
+        assert_eq!(f(Vec3::new(0.0, 0.0, -100.0)), -Vec3::Z);
+        // The height is ignored: (300, 400) normalises to (0.6, 0.8).
+        let d = f(Vec3::new(300.0, 900.0, 400.0));
+        assert!((d - Vec3::new(0.6, 0.0, 0.8)).length() < 1e-6, "{d}");
+        // A goal straight above the reference point keeps the stored facing.
+        assert_eq!(f(Vec3::new(0.0, 100.0, 0.0)), Vec3::X);
+    }
 
     #[test]
     fn the_range_is_strict_and_a_nan_is_out() {

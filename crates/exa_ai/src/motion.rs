@@ -351,14 +351,22 @@ pub fn way_share(from_cm: Vec3, facing: Vec3, bodies: &[BodyAt], reach_cm: f32) 
 }
 
 /// The body in the way of the walk: each nearby live body's point is moved
-/// 20 cm along the AI's look and the steer line from the AI along the walk
-/// direction is tested; the first that can be steered to is returned.
-pub fn body_in_way(from_cm: Vec3, direction: Vec3, look: Vec3, bodies: &[BodyAt]) -> Option<usize> {
+/// 20 cm along the walk direction and the steer line from the AI along that
+/// same direction is tested; the first that can be steered to is returned
+/// (the caller remembers it for 160 ticks). The ids in `skip` are the body
+/// already remembered as in the way and the body being carried (the
+/// original skips both).
+pub fn body_in_way(
+    from_cm: Vec3,
+    direction: Vec3,
+    bodies: &[BodyAt],
+    skip: &[usize],
+) -> Option<usize> {
     for body in bodies {
-        if body.dead {
+        if body.dead || skip.contains(&body.id) {
             continue;
         }
-        let moved = body.position_cm + Vec3::new(look.x, 0.0, look.z) * 20.0;
+        let moved = body.position_cm + Vec3::new(direction.x, 0.0, direction.z) * 20.0;
         if steer_line(from_cm, direction, moved) {
             return Some(body.id);
         }
@@ -414,6 +422,7 @@ pub struct Walking {
 /// within 0.9, it runs (sprinting at climb 2); the look yaw is the body's
 /// look, its smoothing eases 0.1 toward it, and the head looks at the foe.
 /// Returns the walk, or none while the path runs out.
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
 pub fn walk(gaze: &mut Gaze, at: Walking) -> Option<Walk> {
     if !at.path {
         return None;
@@ -421,17 +430,25 @@ pub fn walk(gaze: &mut Gaze, at: Walking) -> Option<Walk> {
     let delta = at.goal_cm - at.body_cm;
     let flat = Vec3::new(delta.x, 0.0, delta.z);
     let len2 = flat.length_squared();
-    let (direction, dot) = if len2 <= 1.0 {
-        (at.facing, 0.0)
+    // Within 1 cm (or a NaN square) the facing is the direction and the
+    // length counts as 1; otherwise the direction is scaled by the
+    // reciprocal length and the dot is divided by the length.
+    let (direction, dot, len) = if !(len2 > 1.0) {
+        (at.facing, 0.0, 1.0)
     } else {
         let len = len2.sqrt();
-        (flat / len, flat.dot(at.facing) / len)
+        (flat * (1.0 / len), flat.dot(at.facing) / len, len)
     };
     let look = unit(at.look + (direction - at.look) * 0.1);
-    let len = len2.sqrt();
-    let threshold = if len > 100.0 { FAR_GOAL } else { len * 0.007 };
+    // The short threshold is formed in double precision from the f64 0.007.
+    let threshold = if len > 100.0 {
+        FAR_GOAL
+    } else {
+        (f64::from(len) * 0.007) as f32
+    };
     let mut goal_cm = at.goal_cm;
-    let (flags, steering) = if dot <= threshold {
+    // A NaN facing takes the near branch, as the original's parity jump does.
+    let (flags, steering) = if !(threshold < dot) {
         (MOVE, threshold * 0.5 < dot)
     } else {
         goal_cm = at.body_cm + flat * (GOAL_HOLD_CM / len);
@@ -458,8 +475,10 @@ pub fn walk(gaze: &mut Gaze, at: Walking) -> Option<Walk> {
             look_smooth: smooth,
         });
     }
-    gaze.offset =
-        (f64::from(gaze.target_offset - gaze.offset) * 0.02 + f64::from(gaze.offset)) as f32;
+    // With no foe the offset target is zeroed before the offset eases
+    // toward it, as the original's no-target branch writes.
+    gaze.target_offset = 0.0;
+    gaze.offset = (f64::from(-gaze.offset) * 0.02 + f64::from(gaze.offset)) as f32;
     let look = dir_of(gap(gaze.look + gaze.offset, 0.0));
     Some(Walk {
         goal_cm,
@@ -612,7 +631,7 @@ pub fn turn_towards(
 }
 
 /// The state [`alert_look`] keeps: the look offset, its target and pitch,
-/// and the two pan timers.
+/// the two pan timers, and the body's in-combat mark.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct AlertLook {
     pub offset: f32,
@@ -620,68 +639,120 @@ pub struct AlertLook {
     pub pitch: f32,
     pub wide_at_ms: u32,
     pub narrow_at_ms: u32,
+    /// The body's in-combat mark, set once the panic passes 1.
+    pub marked: bool,
 }
 
-/// One tick of the alert look-around: an AI whose panic is under 0.2, or
-/// that is in combat, does nothing. Past 1 panic the in-combat mark sets.
-/// The body stops, its motion becomes the stand, and with no foe one draw
-/// in 300 pans ±π about the body every 3 s (the next within 1 s), one draw
-/// in 75 pans ±π/2 every 700 ms; the head eases 0.05 toward the pan and the
-/// body's look smoothing follows it. With a foe the look turns toward it
-/// (over a quarter turn the look takes the foe's yaw) and the body turns
-/// ([`turn_towards`]). Returns the yaw the look smoothing should aim at.
+/// What one tick of the alert look-around wrote.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum AlertLooked {
+    /// No foe: the body's look direction and the aim of its look
+    /// smoothing.
+    Pan { look: Vec3, smooth: Vec3 },
+    /// A foe: the yaw the look was set to when it lay over 45° away (the
+    /// turn that follows always runs).
+    Foe { look: Option<f32> },
+}
+
+/// One tick of the alert look-around: an AI that is not in combat, or whose
+/// panic is under 0.2, does nothing (a NaN panic passes). Past 1 panic the
+/// body's in-combat mark sets ([`AlertLook::marked`]).
+///
+/// With no foe the body's look is built from the eased offset and its look
+/// smoothing eases from the physical facing: the wide draw (the generator
+/// stepped every tick, one in 300 taking) pans ±π about the facing every 3 s
+/// and restarts the narrow timer within 1 s; the narrow draw (one in 75)
+/// pans ±π/2 every 700 ms; the offset eases 0.05 toward the pan and the
+/// pitch target is zero.
+///
+/// With a foe the gap from the AI's look yaw is wrapped; past 45° the look
+/// takes the foe's yaw, and [`turn_towards`] then eases the body's offset
+/// toward the look plus its sway.
 #[allow(clippy::too_many_arguments, clippy::neg_cmp_op_on_partial_ord)]
 pub fn alert_look(
     panic: f32,
     in_combat: bool,
     alert: &mut AlertLook,
-    body_yaw: f32,
+    turn: &mut Turning,
+    facing_yaw: f32,
     foe_yaw: Option<f32>,
+    encumbrance: f32,
     now_ms: u32,
     roll: &mut u32,
-) -> Option<f32> {
-    if !(PANIC_FLOOR <= panic) || !in_combat {
+) -> Option<AlertLooked> {
+    if panic < PANIC_FLOOR || !in_combat {
         return None;
     }
+    if 1.0 < panic {
+        alert.marked = true;
+    }
     let Some(foe) = foe_yaw else {
-        if alert.wide_at_ms < now_ms {
-            *roll = roll.wrapping_mul(0x0808_8405).wrapping_add(1);
-            if ((u64::from(*roll) * WIDE_ODDS) >> 32) == 0 {
-                *roll = roll.wrapping_mul(0x0808_8405).wrapping_add(1);
-                let unit = (*roll as f32) * (1.0 / 4_294_967_296.0);
-                alert.target = gap(body_yaw + (unit - 0.5) * TWO_PI, 0.0);
-                alert.wide_at_ms = now_ms.wrapping_add(WIDE_EVERY_MS);
-                alert.narrow_at_ms = now_ms.wrapping_add(1000);
-            }
+        // Both draws are made every tick, before their timers are read.
+        *roll = roll.wrapping_mul(0x0808_8405).wrapping_add(1);
+        let wide = ((u64::from(*roll) * WIDE_ODDS) >> 32) == 0;
+        if wide && alert.wide_at_ms < now_ms {
+            // The engine's f32 draw, spread over ±π in single precision.
+            let unit = crate::personality::unit_draw(roll);
+            alert.target = gap(facing_yaw + (unit - 0.5) * TWO_PI, 0.0);
+            alert.wide_at_ms = now_ms.wrapping_add(WIDE_EVERY_MS);
+            alert.narrow_at_ms = now_ms.wrapping_add(1000);
         }
-        if alert.narrow_at_ms < now_ms {
-            *roll = roll.wrapping_mul(0x0808_8405).wrapping_add(1);
-            if ((u64::from(*roll) * NARROW_ODDS) >> 32) == 0 {
-                *roll = roll.wrapping_mul(0x0808_8405).wrapping_add(1);
-                let unit = (*roll as f32) * (1.0 / 4_294_967_296.0);
-                alert.target = gap(body_yaw + (unit - 0.5) * std::f32::consts::PI, 0.0);
-                alert.narrow_at_ms = now_ms.wrapping_add(NARROW_EVERY_MS);
-            }
+        *roll = roll.wrapping_mul(0x0808_8405).wrapping_add(1);
+        let narrow = ((u64::from(*roll) * NARROW_ODDS) >> 32) == 0;
+        if narrow && alert.narrow_at_ms < now_ms {
+            // The narrow pan centres the f32 draw, then spreads it in double
+            // precision over the f64 π.
+            let unit = crate::personality::unit_draw(roll) - 0.5;
+            let target = f64::from(unit) * std::f64::consts::PI;
+            alert.target = gap(facing_yaw + target as f32, 0.0);
+            alert.narrow_at_ms = now_ms.wrapping_add(NARROW_EVERY_MS);
         }
         alert.offset =
             (f64::from(alert.target - alert.offset) * 0.05 + f64::from(alert.offset)) as f32;
         alert.pitch = 0.0;
-        return Some(look_smoothing(body_yaw, alert.offset));
+        return Some(AlertLooked::Pan {
+            look: dir_of(alert.offset),
+            smooth: dir_of(look_smoothing(facing_yaw, alert.offset)),
+        });
     };
-    Some(foe)
+    let d = gap(foe, turn.look);
+    let took = f64::from(d.abs()) > std::f64::consts::FRAC_PI_4;
+    if took {
+        turn.look = foe;
+    }
+    turn_towards(turn, facing_yaw, encumbrance, now_ms, roll);
+    Some(AlertLooked::Foe {
+        look: took.then_some(foe),
+    })
 }
 
 /// The aim snap: the body's look yaw is taken as the AI's look, offset and
-/// offset target.
+/// offset target, and every body look direction the AI carries is set to
+/// it (the original copies the body's forward into its look, smoothing
+/// and head look and writes the facing too).
 pub fn snap_to_body(gaze: &mut Gaze, turn: &mut Turning, heading_yaw: f32) -> Vec3 {
+    let look = dir_of(heading_yaw);
     gaze.look = heading_yaw;
     gaze.offset = heading_yaw;
     gaze.target_offset = heading_yaw;
     gaze.sway = 0.0;
+    gaze.body_look = look;
+    gaze.body_smooth = look;
+    gaze.body_heading = look;
     turn.heading = heading_yaw;
     turn.look = heading_yaw;
     turn.offset = heading_yaw;
-    dir_of(heading_yaw)
+    look
+}
+
+/// The look after combat is left: the AI's look, its heading and its eased
+/// offset (the head offset shares that slot) take the body's look yaw. The
+/// head look and its target are kept and no new sway is drawn.
+pub fn leave_look(gaze: &mut Gaze, turn: &mut Turning, body_look_yaw: f32) {
+    turn.look = body_look_yaw;
+    turn.heading = body_look_yaw;
+    turn.offset = body_look_yaw;
+    gaze.offset = body_look_yaw;
 }
 
 /// The aim: the look is snapped to the body's facing and a new sway draw is
@@ -700,8 +771,9 @@ pub fn aim(
     look
 }
 
-/// The settle after leaving combat: the look takes the body's look yaw and
-/// a new sway draw is made 1–4 s out.
+/// The settle after a room walk: the AI's look, its heading and the head
+/// look take the body's look yaw (the eased offset is kept) and a new sway
+/// draw is made 1–4 s out.
 pub fn settle_look(
     gaze: &mut Gaze,
     turn: &mut Turning,
@@ -709,12 +781,9 @@ pub fn settle_look(
     now_ms: u32,
     roll: &mut u32,
 ) {
-    gaze.look = body_look_yaw;
-    gaze.offset = body_look_yaw;
-    gaze.target_offset = body_look_yaw;
     turn.look = body_look_yaw;
     turn.heading = body_look_yaw;
-    turn.offset = body_look_yaw;
+    gaze.look = body_look_yaw;
     *roll = roll.wrapping_mul(0x0808_8405).wrapping_add(1);
     let step = ((u64::from(*roll) * 3000) >> 32) as u32;
     turn.sway_at_ms = now_ms.wrapping_add(1000).wrapping_add(step);
@@ -1001,6 +1070,19 @@ mod tests {
             "{}",
             yaw_of(w.look)
         );
+        // A NaN goal takes the near branch (the original's parity jump) and
+        // does not steer.
+        let mut gaze = Gaze::at(0.0);
+        let w = walk(
+            &mut gaze,
+            Walking {
+                goal_cm: Vec3::new(f32::NAN, 0.0, 0.0),
+                ..base
+            },
+        )
+        .unwrap();
+        assert_eq!(w.flags, MOVE);
+        assert!(!w.steering);
         // A goal exactly 100 cm ahead is held at 150 cm too.
         let mut gaze = Gaze::at(0.0);
         let w = walk(
@@ -1084,14 +1166,24 @@ mod tests {
     #[test]
     fn the_body_in_the_way_is_steered_to() {
         let bodies = [body(7, 0.0, 100.0, false), body(9, 0.0, 300.0, false)];
-        assert_eq!(body_in_way(Vec3::ZERO, Vec3::Z, Vec3::Z, &bodies), Some(7));
+        assert_eq!(body_in_way(Vec3::ZERO, Vec3::Z, &bodies, &[]), Some(7));
         assert_eq!(
-            body_in_way(Vec3::ZERO, Vec3::Z, Vec3::Z, &[body(1, 0.0, 100.0, true)]),
+            body_in_way(
+                Vec3::ZERO,
+                Vec3::Z,
+                &[body(7, 0.0, 100.0, false), body(9, 0.0, 150.0, false)],
+                &[7]
+            ),
+            Some(9),
+            "the remembered body is skipped"
+        );
+        assert_eq!(
+            body_in_way(Vec3::ZERO, Vec3::Z, &[body(1, 0.0, 100.0, true)], &[]),
             None
         );
         // The 20 cm look shift puts a body 330 cm out beyond the clamp.
         assert_eq!(
-            body_in_way(Vec3::ZERO, Vec3::Z, Vec3::Z, &[body(3, 0.0, 170.0, false)]),
+            body_in_way(Vec3::ZERO, Vec3::Z, &[body(3, 0.0, 170.0, false)], &[]),
             None
         );
     }
@@ -1124,29 +1216,97 @@ mod tests {
         assert!((turn.offset - 0.12).abs() < 1e-6);
     }
 
-    /// The alert look does nothing under 0.2 panic and pans only on its
-    /// draws; a foe turns the look to the foe's yaw.
+    /// The alert look does nothing under 0.2 panic (a NaN passes) and pans
+    /// only on its draws, which are made every tick; a foe over 45° away
+    /// takes the look and turns the body.
     #[test]
     fn the_alert_look_pans_on_its_draws() {
         let mut alert = AlertLook::default();
+        let mut turn = Turning::default();
         let mut roll = 0u32;
-        assert!(alert_look(0.1, true, &mut alert, 0.0, None, 0, &mut roll).is_none());
+        assert!(
+            alert_look(
+                0.1, true, &mut alert, &mut turn, 0.0, None, 0.0, 0, &mut roll
+            )
+            .is_none()
+        );
         let mut alert = AlertLook::default();
+        let mut turn = Turning::default();
         let mut roll = 0u32;
         // Roll 1: 1·300 >> 32 = 0, so the wide pan draws on this tick.
-        let yaw = alert_look(0.5, true, &mut alert, 0.0, None, 10, &mut roll).unwrap();
+        let out = alert_look(
+            0.5, true, &mut alert, &mut turn, 0.0, None, 0.0, 10, &mut roll,
+        )
+        .unwrap();
+        assert!(matches!(out, AlertLooked::Pan { .. }));
         assert_eq!(alert.wide_at_ms, 3010);
         assert_eq!(alert.narrow_at_ms, 1010);
         // The draw after the first: roll 134775814 → unit 0.031377, so the
         // target is (0.031377 - 0.5)·2π = -2.94443.
         assert!((alert.target + 2.94443).abs() < 1e-4, "{}", alert.target);
         assert!((alert.offset - alert.target * 0.05).abs() < 1e-3);
-        assert!(yaw.is_finite());
-        // A foe: the yaw points at it.
+        // The narrow draw is made even though its timer has not passed: the
+        // generator ends two steps on (wide, unit, narrow).
+        assert_eq!(roll, 3_698_175_007);
+        // A NaN panic is not under the floor.
+        assert!(
+            alert_look(
+                f32::NAN,
+                false,
+                &mut alert,
+                &mut turn,
+                0.0,
+                None,
+                0.0,
+                10,
+                &mut roll
+            )
+            .is_none()
+        );
+        // A foe: the yaw points at it and the turn eases the offset.
         let mut alert = AlertLook::default();
+        let mut turn = Turning::default();
         let mut roll = 0u32;
-        let yaw = alert_look(0.5, true, &mut alert, 0.0, Some(HALF_PI), 10, &mut roll).unwrap();
-        assert!((yaw - HALF_PI).abs() < 1e-6);
+        let out = alert_look(
+            0.5,
+            true,
+            &mut alert,
+            &mut turn,
+            0.0,
+            Some(HALF_PI),
+            0.0,
+            10,
+            &mut roll,
+        )
+        .unwrap();
+        assert_eq!(
+            out,
+            AlertLooked::Foe {
+                look: Some(HALF_PI)
+            }
+        );
+        assert_eq!(turn.look, HALF_PI);
+        // A foe within 45° leaves the look alone but still turns.
+        let mut alert = AlertLook::default();
+        let mut turn = Turning {
+            look: 0.5,
+            ..Turning::default()
+        };
+        let out = alert_look(
+            1.5,
+            true,
+            &mut alert,
+            &mut turn,
+            0.0,
+            Some(0.6),
+            0.0,
+            10,
+            &mut roll,
+        )
+        .unwrap();
+        assert_eq!(out, AlertLooked::Foe { look: None });
+        assert_eq!(turn.look, 0.5);
+        assert!(alert.marked, "past 1 panic the body is marked");
     }
 
     /// The aim and settle take the body's yaw and draw a 1–4 s sway timer;
@@ -1162,7 +1322,8 @@ mod tests {
         let mut gaze = Gaze::default();
         let mut turn = Turning::default();
         settle_look(&mut gaze, &mut turn, 0.25, 200, &mut roll);
-        assert_eq!((gaze.look, turn.heading, turn.offset), (0.25, 0.25, 0.25));
+        assert_eq!((gaze.look, turn.look, turn.heading), (0.25, 0.25, 0.25));
+        assert_eq!((gaze.offset, turn.offset), (0.0, 0.0), "the offset is kept");
         assert_eq!(turn.sway_at_ms, 1294);
         let mut gaze = Gaze::default();
         let mut turn = Turning::default();
@@ -1171,5 +1332,24 @@ mod tests {
             (gaze.look, gaze.offset, gaze.target_offset, turn.look),
             (-0.5, -0.5, -0.5, -0.5)
         );
+        assert_eq!(
+            (gaze.body_look, gaze.body_smooth, gaze.body_heading),
+            (dir_of(-0.5), dir_of(-0.5), dir_of(-0.5))
+        );
+        // Leaving combat takes the body's look yaw into the look, offset
+        // and heading; the head look and its target are kept and no new
+        // sway is drawn.
+        let mut gaze = Gaze::default();
+        let mut turn = Turning {
+            sway_at_ms: 77,
+            ..Turning::default()
+        };
+        leave_look(&mut gaze, &mut turn, 0.75);
+        assert_eq!(
+            (gaze.offset, turn.look, turn.heading, turn.offset),
+            (0.75, 0.75, 0.75, 0.75)
+        );
+        assert_eq!((gaze.look, gaze.target_offset), (0.0, 0.0));
+        assert_eq!(turn.sway_at_ms, 77);
     }
 }

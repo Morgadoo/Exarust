@@ -154,11 +154,14 @@ pub fn disabled(has_animation: bool, following: bool) -> Disabled {
 
 /// The disturbance inside the value's own fluctuation: the same cell whose
 /// value moved by less than this does not restart the walk.
-pub const SAME_DISTURBANCE: f32 = 0.02;
+/// Compared in double precision.
+pub const SAME_DISTURBANCE: f64 = 0.02;
 /// The disturbance the walk ignores (the stamp-only branch).
 pub const QUIET: f32 = 0.5;
 /// The disturbance that starts a walk to the noise.
-pub const LOUD: f32 = 0.3;
+/// Compared in double precision, so a value of `0.3f32` (just over the f64
+/// 0.3) walks.
+pub const LOUD: f64 = 0.3;
 
 /// The investigation's memory: the cell it last sampled and the value it
 /// kept.
@@ -169,54 +172,38 @@ pub struct Investigation {
 }
 
 /// What an investigation tick asks the caller to do.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Investigated {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Investigated {
+    /// Nothing: the same quiet cell, or a disturbance too quiet to walk to.
+    Nothing,
+    /// The same cell's value is over [`QUIET`]: the caller stamps the
+    /// body's footprint at its goal and stays.
+    Stamped,
     /// The walk state was entered: the caller plans a forced walk to the
     /// noise (goal mode 4) and walks it.
-    pub walking: bool,
-    /// The cell was stamped at its goal (the quiet branch).
-    pub stamped: bool,
+    Walking,
 }
 
 /// One investigation tick at the body's `cell` with the pathfinder's
-/// disturbance `value`: the same cell and a value within
+/// disturbance `value`: the same cell with a value within
 /// [`SAME_DISTURBANCE`] of the kept one does nothing beyond stamping a
-/// value over [`QUIET`]; a changed cell or value stores it, and a value over
-/// [`LOUD`] enters the walk to the noise. Returns what to do.
-pub fn investigate(
-    state: &mut Investigation,
-    cell: (i32, i32),
-    value: f32,
-    now_ms: u32,
-    noise_at_ms: &mut u32,
-) -> Investigated {
+/// value over [`QUIET`]; a changed cell or value stores the cell, and a
+/// value over [`LOUD`] keeps it and enters the walk to the noise.
+pub fn investigate(state: &mut Investigation, cell: (i32, i32), value: f32) -> Investigated {
     let same_cell = state.cell == Some(cell);
-    if same_cell && (value - state.kept).abs() < SAME_DISTURBANCE {
-        if value <= QUIET {
-            return Investigated {
-                walking: false,
-                stamped: false,
-            };
-        }
-        // The original stamps the body's footprint at this point.
-        return Investigated {
-            walking: false,
-            stamped: true,
+    if same_cell && f64::from((value - state.kept).abs()) < SAME_DISTURBANCE {
+        return if QUIET < value {
+            Investigated::Stamped
+        } else {
+            Investigated::Nothing
         };
     }
     state.cell = Some(cell);
-    if LOUD < value {
+    if LOUD < f64::from(value) {
         state.kept = value;
-        *noise_at_ms = now_ms;
-        return Investigated {
-            walking: true,
-            stamped: false,
-        };
+        return Investigated::Walking;
     }
-    Investigated {
-        walking: false,
-        stamped: false,
-    }
+    Investigated::Nothing
 }
 
 /// A room exit the idle driver may walk to: the cell it leads to and its
@@ -232,6 +219,19 @@ pub struct ExitCell {
 pub const VISITED: u32 = 0x0100_0000;
 /// The cell is exhausted: all its exits were visited.
 pub const EXHAUSTED: u32 = 0x0200_0000;
+/// The first exit the driver avoids is marked with this bit instead of an
+/// exit's bit; later ones set their exit's bit.
+pub const EXCLUDE_FIRST: u32 = 0x8000_0000;
+
+/// Marks an exit avoided: the first time the marker, afterwards the exit's
+/// bit.
+fn exclude(mask: &mut u32, exit: u32) {
+    if *mask & EXCLUDE_FIRST == 0 {
+        *mask |= EXCLUDE_FIRST;
+    } else {
+        *mask |= 1 << (exit & 31);
+    }
+}
 
 fn draw(roll: &mut u32, count: usize) -> usize {
     *roll = roll.wrapping_mul(0x0808_8405).wrapping_add(1);
@@ -243,15 +243,22 @@ fn draw(roll: &mut u32, count: usize) -> usize {
 
 /// The idle driver's next room: the current cell's `exits` (in the room
 /// grid's order, each with the cell it leads to), the cell it came from
-/// (`previous`), the exits to avoid (a bit per exit index,
-/// `excluded`), and the per-cell visited words. The current cell is marked
-/// visited. Exits that lead to the previous cell or to an exhausted cell
-/// are skipped; with none of them left (and the current cell not yet
-/// exhausted) the walk goes back through the exit to the previous cell, and
-/// the current cell is marked exhausted when every exit was skipped. With
-/// exits left, one unvisited (and not avoided) is drawn at random, or, when
-/// all are visited, one of the remaining exits. Returns the chosen exit and
-/// the cell the walk leads to.
+/// (`previous`), the exits to avoid (a bit per exit index, `excluded`), and
+/// the per-cell words ([`VISITED`], [`EXHAUSTED`]).
+///
+/// The current cell is marked visited. The exits leading to the previous
+/// cell or to an exhausted cell are the candidates; with none of them left
+/// unexcluded (and the current cell not yet exhausted) the walk goes back
+/// through the exit to the previous cell, the current cell is marked
+/// exhausted when no candidate was left at all, and the exclusion word is
+/// cleared. Otherwise an unvisited, unexcluded exit is drawn (the original
+/// weighs every exit here, not only the candidates); with none unvisited,
+/// one of the candidates is drawn. Returns the chosen exit and the cell the
+/// walk leads to.
+///
+/// A cell with exits but no candidate at all draws nothing (the original
+/// would loop); the count is never zero in a level, where every exit leads
+/// somewhere.
 pub fn plan_next_cell(
     current: i32,
     previous: i32,
@@ -274,34 +281,35 @@ pub fn plan_next_cell(
         }
     };
     mark(words, current, VISITED);
-    let blocked =
-        |e: &ExitCell| -> bool { e.cell == previous || at(words, e.cell) & EXHAUSTED != 0 };
-    let fresh: Vec<usize> = exits
+    if exits.is_empty() {
+        return None;
+    }
+    let candidates: Vec<usize> = exits
         .iter()
         .enumerate()
-        .filter(|(_, e)| !blocked(e))
+        .filter(|(_, e)| e.cell != previous && at(words, e.cell) & EXHAUSTED == 0)
         .map(|(i, _)| i)
         .collect();
-    let chosen = if fresh.iter().all(|&i| *excluded & (1 << i) != 0)
-        && at(words, current) & EXHAUSTED == 0
-    {
-        if fresh.is_empty() {
+    let unexcluded = candidates.iter().any(|&i| *excluded & (1 << (i & 31)) == 0);
+    let chosen = if !unexcluded && at(words, current) & EXHAUSTED == 0 {
+        if candidates.is_empty() {
             mark(words, current, EXHAUSTED);
         }
+        *excluded = 0;
         exits.iter().position(|e| e.cell == previous)
     } else {
-        let unvisited: Vec<usize> = fresh
+        let unvisited: Vec<usize> = exits
             .iter()
-            .copied()
-            .filter(|&i| *excluded & (1 << i) == 0 && at(words, exits[i].cell) & VISITED == 0)
+            .enumerate()
+            .filter(|(i, e)| *excluded & (1 << (i & 31)) == 0 && at(words, e.cell) & VISITED == 0)
+            .map(|(i, _)| i)
             .collect();
         if unvisited.is_empty() {
-            if fresh.is_empty() {
-                return None;
-            }
-            Some(fresh[draw(roll, fresh.len())])
+            let k = draw(roll, candidates.len());
+            candidates.get(k).copied()
         } else {
-            Some(unvisited[draw(roll, unvisited.len())])
+            let k = draw(roll, unvisited.len());
+            unvisited.get(k).copied()
         }
     };
     let chosen = chosen?;
@@ -437,8 +445,8 @@ impl Default for DriveInput {
 /// state 3 walks while its wait lasts, then tests the exit: near it the
 /// body moves on to the use state (4), otherwise it plans again (2) and
 /// remembers the exit to avoid. State 4 turns and uses the object, then
-/// plans the way home (5); a use that does not come within ten seconds
-/// plans again (2). State 5 plans a forced home route, and state 6, at the
+/// plans the way home (5); ten seconds after the exit was reached it plans
+/// again (2) and avoids the exit, even on the tick the use completed. State 5 plans a forced home route, and state 6, at the
 /// room, looks for an object before it walks and, when the walk stops,
 /// plans again with a 1–4 s wait. Returns the action for the caller.
 pub fn drive(state: &mut Explore, input: &DriveInput, roll: &mut u32) -> Drive {
@@ -460,7 +468,9 @@ pub fn drive(state: &mut Explore, input: &DriveInput, roll: &mut u32) -> Drive {
             Drive::Plan { forced: true }
         }
         3 => {
-            if state.until_ms <= input.now_ms && input.walking {
+            // The walk runs while its timer lasts (the deadline equal to the
+            // clock still walks) and this tick ends there.
+            if input.now_ms <= state.until_ms && input.walking {
                 Drive::Walk
             } else if input.near_exit {
                 state.step = 4;
@@ -468,14 +478,18 @@ pub fn drive(state: &mut Explore, input: &DriveInput, roll: &mut u32) -> Drive {
                 Drive::NearExit
             } else {
                 state.step = 2;
-                state.excluded |= 1 << (input.exit_index & 31);
+                exclude(&mut state.excluded, input.exit_index);
                 Drive::NearExit
             }
         }
         4 => {
             if input.use_done {
                 state.step = 5;
-            } else if state.until_ms.wrapping_add(10_000) < input.now_ms {
+            }
+            // The ten-second timeout is tested after the use too, on 64-bit
+            // sums (no wrap), and avoids the exit by its own bit: the first
+            // avoided exit's marker is set only at the exit test.
+            if u64::from(state.until_ms) + 10_000 < u64::from(input.now_ms) {
                 state.excluded |= 1 << (input.exit_index & 31);
                 state.target_cell = -1;
                 state.step = 2;
@@ -672,36 +686,55 @@ mod tests {
     #[test]
     fn the_investigation_walks_to_a_loud_noise() {
         let mut state = Investigation::default();
-        let mut stamp = 0;
-        assert!(!investigate(&mut state, (2, 3), 0.3, 10, &mut stamp).walking);
-        let out = investigate(&mut state, (2, 3), 0.31, 20, &mut stamp);
-        assert!(out.walking);
-        assert_eq!(stamp, 20);
+        // 0.29 is under the gate; the f32 0.3 is just over the double 0.3.
+        assert_eq!(investigate(&mut state, (2, 3), 0.29), Investigated::Nothing);
+        assert_eq!(investigate(&mut state, (2, 3), 0.31), Investigated::Walking);
         assert_eq!(state.kept, 0.31);
         // The same cell and value: nothing.
-        assert!(!investigate(&mut state, (2, 3), 0.315, 30, &mut stamp).walking);
+        assert_eq!(
+            investigate(&mut state, (2, 3), 0.315),
+            Investigated::Nothing
+        );
         // A quiet value over 0.5 only stamps; at 0.5 exactly it does not.
         let mut state = Investigation {
             cell: Some((1, 1)),
             kept: 0.9,
         };
-        assert!(investigate(&mut state, (1, 1), 0.9, 40, &mut stamp).stamped);
-        // A changed value stores it and does not walk at 0.5 or 0.3.
-        assert!(!investigate(&mut state, (1, 1), 0.5, 50, &mut stamp).stamped);
-        assert!(!investigate(&mut state, (1, 1), 0.3, 60, &mut stamp).walking);
+        assert_eq!(investigate(&mut state, (1, 1), 0.9), Investigated::Stamped);
+        // A changed value stores it: 0.5 walks (it is over the 0.3 gate),
+        // and so does the f32 0.3, which the double compare puts over 0.3;
+        // 0.29 does not.
+        assert_eq!(investigate(&mut state, (1, 1), 0.5), Investigated::Walking);
+        assert_eq!(state.kept, 0.5);
+        assert_eq!(investigate(&mut state, (1, 1), 0.3), Investigated::Walking);
+        assert_eq!(investigate(&mut state, (1, 1), 0.29), Investigated::Nothing);
+        // A gap just under 0.02 is the same disturbance: only a stamp.
+        let mut state = Investigation {
+            cell: Some((1, 1)),
+            kept: 0.6,
+        };
+        let near = 0.6 + 0.02_f32;
+        assert!(f64::from((near - 0.6_f32).abs()) < SAME_DISTURBANCE);
+        assert_eq!(investigate(&mut state, (1, 1), near), Investigated::Stamped);
         // A kept 0.5 has no stamp; a kept 0.55 does.
         let mut state = Investigation {
             cell: Some((1, 1)),
             kept: 0.5,
         };
-        assert!(!investigate(&mut state, (1, 1), 0.5, 70, &mut stamp).stamped);
+        assert_eq!(investigate(&mut state, (1, 1), 0.5), Investigated::Nothing);
         state.kept = 0.55;
-        assert!(investigate(&mut state, (1, 1), 0.55, 80, &mut stamp).stamped);
+        assert_eq!(investigate(&mut state, (1, 1), 0.55), Investigated::Stamped);
+        // A NaN disturbance is neither quiet nor loud.
+        assert_eq!(
+            investigate(&mut state, (4, 4), f32::NAN),
+            Investigated::Nothing
+        );
     }
 
     /// The room walk marks the current cell visited, draws an unvisited
-    /// exit, and falls back to any exit (marking the cell exhausted) once
-    /// all are visited.
+    /// exit (the previous cell included), and goes back through the previous
+    /// cell's exit once every candidate is exhausted, clearing the avoided
+    /// exits and marking the current cell exhausted.
     #[test]
     fn the_room_walk_draws_an_unvisited_exit_and_goes_back_when_stuck() {
         let exits = [
@@ -720,32 +753,45 @@ mod tests {
         ];
         let mut words = vec![0u32; 10];
         let mut roll = 0u32;
-        // Roll 1: 1·2 >> 32 = 0, so the first unvisited exit is drawn.
+        // Roll 1: 1·3 >> 32 = 0, so the first unvisited exit is drawn.
         let (exit, cell) = plan_next_cell(4, 3, &exits, &mut 0, &mut words, &mut roll).unwrap();
         assert_eq!((exit.cell, cell), (5, 5));
         assert_eq!(words[4] & VISITED, VISITED);
-        // Mark cell 5 visited: only 6 is fresh.
+        // Mark cell 5 visited: the unvisited list starts at 6.
         words[5] |= VISITED;
         let (exit, cell) = plan_next_cell(4, 3, &exits, &mut 0, &mut words, &mut roll).unwrap();
         assert_eq!((exit.cell, cell), (6, 6));
-        // Both visited and not exhausted: an exit is still drawn.
+        // Both new cells visited: the only unvisited exit is the one back to
+        // the previous cell.
         words[6] |= VISITED;
-        let (exit, _) = plan_next_cell(4, 3, &exits, &mut 0, &mut words, &mut roll).unwrap();
-        assert!(exit.cell == 5 || exit.cell == 6);
-        // Both exhausted: the walk goes back through the exit to the
-        // previous cell and the current cell is marked exhausted.
-        words[5] |= EXHAUSTED;
-        words[6] |= EXHAUSTED;
         let (exit, cell) = plan_next_cell(4, 3, &exits, &mut 0, &mut words, &mut roll).unwrap();
         assert_eq!((exit.cell, cell), (3, 3));
+        // Both exhausted: the walk goes back through the previous cell's
+        // exit, the current cell is marked exhausted and the mask clears.
+        words[5] |= EXHAUSTED;
+        words[6] |= EXHAUSTED;
+        let mut mask = 0xff;
+        let (exit, cell) = plan_next_cell(4, 3, &exits, &mut mask, &mut words, &mut roll).unwrap();
+        assert_eq!((exit.cell, cell), (3, 3));
         assert_eq!(words[4] & EXHAUSTED, EXHAUSTED);
+        assert_eq!(mask, 0);
         // No exits: nothing.
         assert!(plan_next_cell(4, 3, &[], &mut 0, &mut words, &mut roll).is_none());
-        // An avoided exit is not drawn while another is fresh.
+        // An avoided exit is not drawn while another is unvisited.
         let mut words = vec![0u32; 10];
         let mut roll = 0u32;
         let (exit, _) = plan_next_cell(4, 3, &exits, &mut 1, &mut words, &mut roll).unwrap();
         assert_eq!(exit.cell, 6);
+        // With every cell visited, one of the candidates is drawn.
+        let mut words = vec![0u32; 10];
+        for cell in [3, 5, 6] {
+            words[cell] |= VISITED;
+        }
+        let mut roll = 0u32;
+        let mut mask = 0;
+        let (exit, cell) = plan_next_cell(4, 3, &exits, &mut mask, &mut words, &mut roll).unwrap();
+        assert_eq!((exit.cell, cell), (5, 5));
+        assert_eq!(words[4] & EXHAUSTED, 0);
     }
 
     /// The exit midpoint is 250 cm out at most; the use fires within 0.7
@@ -863,10 +909,19 @@ mod tests {
         assert_eq!(state.step, 3);
         // 300 cm × 20 ms + 2000 = 8000 ms after 120.
         assert_eq!(state.until_ms, 8120);
+        // The walk runs while the deadline lasts, the deadline itself too.
         assert_eq!(
             drive(
                 &mut state,
-                &at(8121, false, true, false, false, false, false, 0.0),
+                &at(5000, false, true, false, false, false, false, 0.0),
+                &mut roll
+            ),
+            Drive::Walk
+        );
+        assert_eq!(
+            drive(
+                &mut state,
+                &at(8120, false, true, false, false, false, false, 0.0),
                 &mut roll
             ),
             Drive::Walk
@@ -875,13 +930,60 @@ mod tests {
         assert_eq!(
             drive(
                 &mut state,
-                &at(9000, false, false, false, false, false, false, 0.0),
+                &at(8121, false, true, false, false, false, false, 0.0),
                 &mut roll
             ),
             Drive::NearExit
         );
         assert_eq!(state.step, 2);
-        assert_eq!(state.excluded, 4);
+        // The first avoided exit sets the marker rather than an exit bit.
+        assert_eq!(state.excluded, EXCLUDE_FIRST);
+        // A second avoided exit sets the exit's bit.
+        assert_eq!(
+            drive(
+                &mut state,
+                &at(9000, false, false, false, false, false, false, 0.0),
+                &mut roll
+            ),
+            Drive::Plan { forced: true }
+        );
+        // A use that does not come within ten seconds avoids the exit too.
+        state.step = 4;
+        state.until_ms = 0;
+        assert_eq!(
+            drive(
+                &mut state,
+                &at(10_001, false, false, false, false, false, false, 0.0),
+                &mut roll
+            ),
+            Drive::UseObject
+        );
+        assert_eq!(state.excluded, EXCLUDE_FIRST | 4);
+        assert_eq!(state.step, 2);
+        // The timeout sets the exit's own bit even with no marker yet, and
+        // it still runs on the tick the use completes.
+        state.step = 4;
+        state.until_ms = 0;
+        state.excluded = 0;
+        assert_eq!(
+            drive(
+                &mut state,
+                &at(10_001, false, false, false, true, false, false, 0.0),
+                &mut roll
+            ),
+            Drive::UseObject
+        );
+        assert_eq!((state.excluded, state.step), (4, 2));
+        // The ten seconds are summed without a wrap.
+        state.step = 4;
+        state.until_ms = u32::MAX - 5;
+        drive(
+            &mut state,
+            &at(100, false, false, false, false, false, false, 0.0),
+            &mut roll,
+        );
+        assert_eq!(state.step, 4);
+        state.excluded = EXCLUDE_FIRST;
         // Plan, arrive, use, and plan home.
         state.step = 3;
         state.until_ms = 0;
