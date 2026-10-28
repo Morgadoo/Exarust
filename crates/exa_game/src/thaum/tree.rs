@@ -238,8 +238,9 @@ pub struct DomainWheel {
     pub fade_at: u32,
     /// The value the change's fade started from.
     pub fade_previous: f32,
-    /// The six per-domain values the wheel's rings read.
-    pub values: [f32; 6],
+    /// The six per-domain values the wheel's rings read, behind the focus's
+    /// share at index 0.
+    pub values: [f32; 7],
     /// The wheel's state word.
     pub mode: i32,
     /// The wheel's count word.
@@ -264,7 +265,7 @@ impl DomainWheel {
             stamp: 0,
             fade_at: 0,
             fade_previous: 0.0,
-            values: [0.5, 0.0, 0.0, 0.0, 0.0, 0.0],
+            values: [0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
             mode: 0,
             count: 0,
             focused: 0,
@@ -868,9 +869,12 @@ pub fn zoom_level(value: f32) -> i32 {
     for next in -8..=-1 {
         let level = ((4.0 - f64::from(-next).sqrt()) * 0.25) as f32;
         if value < level {
-            // Unordered or not farther from this level: this level.
-            let farther = (level - value).abs() > (previous - value).abs();
-            return if farther { next - 1 } else { next };
+            // The original compares the distance to the level just reached
+            // with the distance to the previous one; an unordered compare
+            // (the first level's previous is not a number) fails, so a
+            // value below the first threshold answers −9.
+            let near = (level - value).abs() <= (previous - value).abs();
+            return if near { next } else { next - 1 };
         }
         previous = level;
     }
@@ -1091,6 +1095,10 @@ impl TreeScreen {
             wheel.total = 0.0;
         }
         self.wheel = wheel;
+        // The wheel child reads the same six values: the first is the
+        // focus's share, the rest the domains' picked shares.
+        self.wheel_child.values[0] = self.wheel.total;
+        self.wheel_child.values[1..].copy_from_slice(&self.wheel.domains);
     }
 
     fn record_focus(&self, pairs: &[KnownPower]) -> f32 {
@@ -1338,7 +1346,7 @@ impl TreeScreen {
                 return out;
             }
             if id > 0 && id & focus::SLOT != 0 {
-                let slot = self.node_under - 1;
+                let slot = (id & focus::NODE) - 1;
                 if (0..10).contains(&slot) && bar.select(slot as usize) {
                     out.slot = Some(slot as usize);
                     out.sound = Some(SLOT_SELECT_SOUND);
@@ -1593,8 +1601,8 @@ impl TreeScreen {
             cosine * capped * self.shown_zoom,
         ];
         let in_ = [
-            -unit[0] * capped * self.shown_zoom,
-            -unit[1] * capped * self.shown_zoom,
+            unit[0] * capped * self.shown_zoom,
+            unit[1] * capped * self.shown_zoom,
         ];
         let out_step = 2.0 / 30.0;
         let start_handle = [start[0] - out[0] * out_step, start[1] - out[1] * out_step];
@@ -1673,7 +1681,7 @@ impl TreeScreen {
             } else if flags == 0x100 {
                 out.begin = true;
             }
-        } else if flags & 0x300 != 0 {
+        } else if flags & 0x300 != 0 && !self.closing() {
             out.open = true;
         }
         out
@@ -2110,6 +2118,72 @@ pub fn grant_power(
         return false;
     };
     if flags_of(prerequisite) & LEARNED == 0 {
+        return false;
+    }
+    let entry = KnownPower {
+        power,
+        flags: GRANTED_FLAGS,
+    };
+    match known
+        .iter_mut()
+        .find(|pair| pair.power & word::MATCH == power)
+    {
+        Some(pair) => *pair = entry,
+        None => known.push(entry),
+    }
+    true
+}
+
+/// One power of a saved character's list, as the save's power section holds
+/// it: the power word and the one-based prerequisite entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SavedPower {
+    pub power: u32,
+    /// The one-based entry the power hangs from; 0 names none.
+    pub prerequisite: u32,
+}
+
+/// Re-validates a saved power against its domain tree, as loading a saved
+/// character does: the entry's flags are the flags of the last known pair
+/// whose id with bits 20 to 27 cleared equals the entry's power (0 when no
+/// pair holds it). The target is the last entry whose id with bits 20 to
+/// 24 cleared equals `power`; it must not be the first entry, its
+/// prerequisite must be set and that entry's flags must carry [`LEARNED`].
+/// The power then replaces the first known pair that matches it under
+/// [`word::MATCH`] with [`GRANTED_FLAGS`], or is appended. Returns whether
+/// it was written.
+///
+/// The save reader and the tree file's own power list are the caller's; this
+/// is the tree's half of the check.
+pub fn validate_saved_power(saved: &[SavedPower], known: &mut Vec<KnownPower>, power: u32) -> bool {
+    if saved.is_empty() {
+        return false;
+    }
+    let mut flags = vec![0u32; saved.len()];
+    for (index, entry) in saved.iter().enumerate() {
+        for pair in known.iter() {
+            if pair.power & 0xff0f_ffff == entry.power {
+                flags[index] = pair.flags;
+            }
+        }
+    }
+    let mut target = None;
+    for (index, entry) in saved.iter().enumerate() {
+        if entry.power & word::MATCH == power {
+            target = Some(index);
+        }
+    }
+    let Some(target) = target else {
+        return false;
+    };
+    if target == 0 {
+        return false;
+    }
+    let prerequisite = saved[target].prerequisite;
+    if prerequisite == 0
+        || prerequisite as usize > saved.len()
+        || flags[prerequisite as usize - 1] & LEARNED == 0
+    {
         return false;
     }
     let entry = KnownPower {
@@ -3100,8 +3174,11 @@ mod tests {
     #[test]
     fn the_zoom_levels_pick_the_nearest() {
         assert_eq!(zoom_level(0.304_347_83), -8);
-        assert_eq!(zoom_level(0.25), -8);
-        assert_eq!(zoom_level(0.26), -8);
+        // Below the first level's threshold the previous distance is not a
+        // number, so the unordered compare picks the level before it.
+        assert_eq!(zoom_level(0.25), -9);
+        assert_eq!(zoom_level(0.26), -9);
+        assert_eq!(zoom_level(0.29), -9);
         assert_eq!(zoom_level(0.30), -8);
         assert_eq!(zoom_level(0.65), -2);
         assert_eq!(zoom_level(0.74), -1);
@@ -4163,10 +4240,11 @@ mod tests {
         assert!((points[30][1] - 100.0).abs() < 1e-3);
         // The tangents' reach is held to 400: halfway to a pointer ten
         // thousand away the curve is at the ends' mean plus an eighth of
-        // each tangent, (129.28 + 10000)/2 + 50 + 50.
+        // the start tangent and less an eighth of the end one, (129.28 +
+        // 10000)/2 + 50 − 50.
         screen.pointer = [0.0, 10_000.0];
         let far = screen.drag_link_points().expect("the drag draws");
-        assert!((far[15][1] - 5_164.64).abs() < 1e-2);
+        assert!((far[15][1] - 5_064.64).abs() < 1e-2);
         // A framed power starts nearer its centre: 0.29 − 0.003 over 256.
         screen.nodes[0].power = 0x0100_0101;
         screen.pointer = [0.0, 100.0];
@@ -4456,6 +4534,60 @@ mod tests {
                 flags: LEARNED | PICKED
             }]
         );
+    }
+
+    #[test]
+    fn a_saved_power_is_revalidated_against_its_prerequisite() {
+        let saved = [
+            SavedPower {
+                power: 0x101,
+                prerequisite: 0,
+            },
+            SavedPower {
+                power: 0x102,
+                prerequisite: 1,
+            },
+        ];
+        let mut known = vec![KnownPower {
+            power: 0x101,
+            flags: LEARNED,
+        }];
+        assert!(validate_saved_power(&saved, &mut known, 0x102));
+        assert_eq!(known.len(), 2);
+        assert_eq!(known[1].power, 0x102);
+        assert_eq!(known[1].flags, GRANTED_FLAGS);
+        // The target is the last matching entry and it is not the first.
+        assert!(!validate_saved_power(&saved, &mut known, 0x101));
+        assert!(!validate_saved_power(&saved, &mut known, 0x103));
+        // The mask ignores bits 20 to 24 on the entry.
+        let masked = [
+            SavedPower {
+                power: 0x0010_0102,
+                prerequisite: 1,
+            },
+            SavedPower {
+                power: 0x102,
+                prerequisite: 0,
+            },
+        ];
+        assert!(!validate_saved_power(&masked, &mut known, 0x102));
+        // An unlearnt prerequisite refuses.
+        let mut empty = Vec::new();
+        assert!(!validate_saved_power(&saved, &mut empty, 0x102));
+        // An existing pair is overwritten, not appended.
+        let mut existing = vec![
+            KnownPower {
+                power: 0x101,
+                flags: LEARNED,
+            },
+            KnownPower {
+                power: 0x102,
+                flags: 0,
+            },
+        ];
+        assert!(validate_saved_power(&saved, &mut existing, 0x102));
+        assert_eq!(existing.len(), 2);
+        assert_eq!(existing[1].flags, GRANTED_FLAGS);
     }
 
     #[test]

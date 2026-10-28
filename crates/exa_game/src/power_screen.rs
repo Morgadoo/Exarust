@@ -259,6 +259,9 @@ fn hotkeys(
             tree.hide(now);
             tree.close_bar(now);
         } else {
+            // A record that knows no power starts with the two default
+            // pairs, as the tree's first opening seeds them.
+            crate::thaum::tree::seed_defaults(record);
             let domain = tree.domain;
             let file = domain_files.get(usize::from(domain)).cloned().flatten();
             *texts = file
@@ -499,13 +502,11 @@ fn pointer(
         tree.release_drag(x, y);
         *dirty = true;
     }
-    let mut steps = 0.0;
     for event in wheel.read() {
-        steps += event.y;
-    }
-    if steps != 0.0 {
-        tree.zoom_by(steps, now);
-        *dirty = true;
+        let out = tree.wheel(0x20, 0.0, event.y, now);
+        if out.result == 3 {
+            *dirty = true;
+        }
     }
 }
 

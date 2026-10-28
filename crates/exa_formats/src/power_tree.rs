@@ -331,7 +331,7 @@ fn reach(power: u32, zoom: f32, scale: f32) -> f32 {
 }
 
 fn direction(turn: f32) -> [f32; 2] {
-    let (sine, cosine) = (turn * std::f32::consts::TAU).sin_cos();
+    let (sine, cosine) = crate::factory::sin_cos(turn * std::f32::consts::TAU);
     [sine, cosine]
 }
 

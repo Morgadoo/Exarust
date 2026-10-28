@@ -510,6 +510,13 @@ fn run_bar_commands(
             continue;
         };
         let caster = &mut *caster;
+        // While the tree form is open, its own key handler owns the bar's
+        // toggle and step keys.
+        if screen.as_deref().is_some_and(|s| s.open)
+            && matches!(command.action, BarAction::Toggle | BarAction::Step(_))
+        {
+            continue;
+        }
         match command.action {
             BarAction::Toggle => {
                 if caster.bar_open {
@@ -523,11 +530,17 @@ fn run_bar_commands(
             BarAction::Pick(slot) => {
                 if caster.bar_open && caster.bar.select(slot) {
                     caster.bar.store(&mut caster.record, false);
+                    if let Some(screen) = screen.as_deref_mut() {
+                        screen.sound = Some(crate::thaum::tree::SLOT_SELECT_SOUND);
+                    }
                 }
             }
             BarAction::Step(direction) => {
                 if caster.bar.cycle(direction, Some(&mut caster.record)) {
                     caster.bar.store(&mut caster.record, false);
+                    if let Some(screen) = screen.as_deref_mut() {
+                        screen.sound = Some(crate::thaum::tree::SLOT_SELECT_SOUND);
+                    }
                 }
             }
             BarAction::Use => {
