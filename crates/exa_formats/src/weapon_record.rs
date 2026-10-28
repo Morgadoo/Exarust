@@ -75,6 +75,18 @@ impl Section {
             0, 100, 200, 0, 1, 150, 150, 60, 0, 40, 0, 0, 0, 0, 0, 0, 0, 7, 0,
         ]),
     };
+
+    /// The flipped side's type code (the kind byte six bytes after the
+    /// normal one). Zero means the section defines no flipped side.
+    pub fn flip_kind(&self) -> u8 {
+        self.stats.get(at::KIND + at::FLIP)
+    }
+
+    /// Whether the item can be turned over: the original's flip command
+    /// refuses a weapon whose flipped-side kind byte is zero.
+    pub fn can_flip(&self) -> bool {
+        self.flip_kind() != 0
+    }
 }
 
 /// The hit sound sets by a section's sound class (byte `0x41`).
@@ -827,6 +839,25 @@ mod tests {
             Lengths::one_part(90.0, 0.1, 1.0),
             &Holder::AVERAGE,
         )
+    }
+
+    #[test]
+    fn only_a_section_with_a_flip_side_can_turn_over() {
+        let mut s = sword_a_section();
+        assert!(!s.can_flip());
+        assert_eq!(s.flip_kind(), 0);
+        // The flipped side's kind sits six bytes after the normal one.
+        s.stats.set(at::KIND + at::FLIP, 3);
+        assert_eq!(s.flip_kind(), 3);
+        assert!(s.can_flip());
+        // A flipped record strikes with that side's code.
+        let w = WeaponRecord::build(
+            &s,
+            true,
+            Lengths::one_part(90.0, 0.1, 1.0),
+            &Holder::AVERAGE,
+        );
+        assert_eq!(w.code, 3);
     }
 
     #[test]

@@ -1864,6 +1864,7 @@ fn spawn_placed_characters(
                 model: item.model.clone(),
                 weapon: item.weapon,
                 shield: item.shield,
+                shield_record: None,
                 torch: item.torch,
             })
         });

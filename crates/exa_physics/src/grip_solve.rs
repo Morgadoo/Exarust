@@ -23,7 +23,7 @@
 use bevy::prelude::*;
 
 use crate::body::{BodySystems, Ragdoll, SolverStage, SolverStages};
-use crate::grip::{self, DISABLED, GripLinks, HeldGrip};
+use crate::grip::{self, DISABLED, GripLinks, GripRelease, HeldGrip, HeldKind};
 
 /// The grip stage's order: the builder and the per-tick sync. The game's
 /// grip-mode and flip systems run before [`GripSolveSet::Sync`], so this
@@ -214,13 +214,34 @@ pub fn build_grips(mut held: Query<(Entity, &mut HeldGrip)>, bodies: Query<&Ragd
             hand_parts: hands,
             arm_parts: arms,
         };
-        let built = if grip.shield {
-            // The original subtracts the other hand's rest translation
-            // from the two face points; Exarust has no separate rest field
-            // for a part, so the caller passes zero. [guess]
-            grip::shield_links(item, holder, bindings, holding, item_to_hand, Vec3::ZERO)
-        } else {
-            grip::build(
+        let built = match grip.kind {
+            // The torch's own two pivots and its soft weld, from its attach
+            // routine rather than the grip table.
+            HeldKind::Torch => grip::torch_links(item, holder, bindings, holding, item_to_hand),
+            HeldKind::Shield => {
+                // The shield hangs from its hand's forearm: the back point
+                // in the forearm's frame goes to the forearm, and the face
+                // points, that same frame less the left hand's rest
+                // translation, go to the left hand (whichever hand holds
+                // it). Without a forearm the holding hand stands in.
+                let arm = grip.arms[holding].and_then(part_of).unwrap_or(hold_index);
+                let Some(arm_part) = holder.parts.get(arm) else {
+                    continue;
+                };
+                let item_to_arm = arm_part.transform().inverse() * item_part.transform();
+                let offset = holder
+                    .parts
+                    .get(hands[1])
+                    .map_or(Vec3::ZERO, |p| p.rest_offset() * 100.0);
+                let mut arms = bindings.arm_parts;
+                arms[holding] = arm;
+                let bindings = grip::GripBindings {
+                    arm_parts: arms,
+                    ..bindings
+                };
+                grip::shield_links(item, holder, bindings, holding, item_to_arm, offset)
+            }
+            HeldKind::Weapon => grip::build(
                 item,
                 holder,
                 bindings,
@@ -230,16 +251,17 @@ pub fn build_grips(mut held: Query<(Entity, &mut HeldGrip)>, bodies: Query<&Ragd
                 item_to_hand,
                 grip.flip,
                 grip.second_hand_factor,
-            )
+            ),
         };
         if let Some(mut links) = built {
             // The world welds a held weapon gets, both built disabled: a
             // stiff one at its origin, and, when its holder may parry, the
             // soft (parry) weld 0.3 of the node box's top above the grip,
-            // at the grip itself for a polearm. A shield's builder has
-            // already added its own soft weld.
-            if !grip.shield {
-                let top = if grip.spec.kind() == grip::GripKind::Polearm {
+            // at the grip itself for a two-hander of the exact class 0x30.
+            // A shield's and a torch's builders have already added their
+            // own soft weld.
+            if grip.kind == HeldKind::Weapon {
+                let top = if grip.class == 0x30 {
                     0.0
                 } else {
                     item.parts.first().map_or(0.0, |p| {
@@ -283,23 +305,26 @@ pub fn mark_held(mut held: Query<(&HeldGrip, &mut Ragdoll)>) {
     }
 }
 
-/// Releases the items whose holder has gone limp or left: the link records
-/// stop acting, the item body loses its holder and held mask, takes the
-/// dropped weapon's friction and falls free.
+/// Releases the items whose holder has left the world, and those a
+/// collapse let go of ([`GripRelease`]): the link records stop acting, the
+/// item body loses its holder and held mask, takes the dropped weapon's
+/// friction and falls free. A holder that only went limp
+/// or died keeps its item: the original welds a held item to a dead body
+/// ([`GripLinks::weld_on_death`]) instead of dropping it, and its collapse
+/// is the routine that lets the hands go.
 pub fn release_freed_grips(
     mut commands: Commands,
-    mut held: Query<(Entity, &mut HeldGrip, &mut Ragdoll)>,
+    mut held: Query<(Entity, &mut HeldGrip, &mut Ragdoll, Has<GripRelease>)>,
     bodies: Query<&Ragdoll, Without<HeldGrip>>,
 ) {
-    for (entity, mut grip, mut body) in &mut held {
+    for (entity, mut grip, mut body, released) in &mut held {
         if grip.released || grip.links.is_none() {
             continue;
         }
         let owner = bodies
             .iter()
             .find(|b| b.parts.first().is_some_and(|p| p.entity == grip.holder_key));
-        let let_go = owner.is_none_or(|o| o.drive.is_none());
-        if !let_go {
+        if owner.is_some() && !released {
             continue;
         }
         grip.released = true;
@@ -314,6 +339,7 @@ pub fn release_freed_grips(
         commands
             .entity(entity)
             .remove::<crate::grip::HeldGrip>()
+            .remove::<crate::grip::GripRelease>()
             .remove::<ChildOf>();
     }
 }

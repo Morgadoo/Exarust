@@ -856,7 +856,7 @@ fn sample_anchors(
         let mut lowest = RELAX_TOP;
         let mut muscles = false;
         for l in &mut links[links_of[i].clone()] {
-            if l.slack <= PIVOT_SLACK {
+            if l.slack <= PIVOT_SLACK || l.limit {
                 continue;
             }
             muscles = true;

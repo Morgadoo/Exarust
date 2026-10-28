@@ -95,6 +95,20 @@ pub enum GripKind {
     Other,
 }
 
+/// What a held item is, as its grip is built: the table's weapon links, a
+/// shield's three face pivots, or a torch's own two pivots. A torch and a
+/// shield always carry their own soft world weld.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum HeldKind {
+    /// A weapon, from the grip table.
+    #[default]
+    Weapon,
+    /// A shield on the off hand.
+    Shield,
+    /// A torch in a hand.
+    Torch,
+}
+
 /// The parts of the two bodies a grip joins.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GripBindings {
@@ -198,6 +212,12 @@ pub struct GripLinks {
     pub world_hard: Option<usize>,
 }
 
+/// A held item its holder let go of: the collapse of a living body drops
+/// its weapons and torch (a shield stays on the arm). The grip stage frees
+/// the item's links and its body.
+#[derive(Component, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct GripRelease;
+
 /// A held item waiting for its grip links, or holding them. The physics
 /// side of an item held in a hand: the item's own body is a [`Ragdoll`]
 /// whose part 0 is the item's root, and the character's body holds the
@@ -216,14 +236,18 @@ pub struct HeldGrip {
     pub second_hand_factor: f32,
     /// The item is held flipped.
     pub flip: bool,
+    /// The item's weapon class (the low 16 bits of its weapon section): 0
+    /// for a light's own class word, which places a two-hander's soft weld
+    /// at the grip instead of up the box.
+    pub class: u32,
     /// The soft (parry) world weld's gate: the original's auto-parry
     /// flag, set for a holder that may parry (the global parry switch is
     /// on, the heavy-claws state and race flag bit 0 are clear). Without
-    /// it the item gets the stiff origin weld alone.
+    /// it the item gets the stiff origin weld alone. A shield or a torch
+    /// always gets its own soft weld.
     pub soft_weld: bool,
-    /// The item is a shield: its three face pivots and its soft world weld
-    /// replace a weapon's table links.
-    pub shield: bool,
+    /// What the item is: a weapon, a shield or a torch.
+    pub kind: HeldKind,
     /// The body of the character holding it, as the pair stage knows it
     /// (its first part's entity).
     pub holder_key: Entity,
@@ -492,27 +516,107 @@ pub fn world_links(
     Some(links)
 }
 
-/// Builds a shield's links: three runtime pivots from points on
-/// the shield — its back at (−20, 0, 0) cm to the holding hand, and its two
-/// face points (5, 0, ±15) cm to the other hand — then a soft world link at
-/// its origin (strength 0.05, the world-link flags).
-/// `holding_hand` is the shield's hand (0 right, 1 left); the two face
-/// points are brought into the other hand's frame by subtracting
-/// `other_hand_offset` (a guess: the original subtracts that part's rest
-/// translation, which is not a field of Exarust's parts). `None` when a
-/// part or point is malformed.
-#[allow(clippy::too_many_arguments)]
-pub fn shield_links(
+/// The torch's link points on the item, cm: 20 cm below its origin and
+/// 10 cm along x.
+pub const TORCH_POINTS: [Vec3; 2] = [Vec3::new(0.0, -20.0, 0.0), Vec3::new(10.0, 0.0, 0.0)];
+
+/// Builds a torch's links: its own two pivots (at [`TORCH_POINTS`], both
+/// to the holding hand) and its soft world weld at the item's origin
+/// (strength 0.05, the world-link flags). A torch is attached by its own
+/// routine, not by the grip table, and always gets the soft weld.
+/// `holding_hand` is the torch's hand (0 right, 1 left) and `item_to_hand`
+/// the torch node's matrix in that hand's frame. `None` when a part or
+/// point is malformed.
+pub fn torch_links(
     item: &Ragdoll,
     hand: &Ragdoll,
     bindings: GripBindings,
     holding_hand: usize,
     item_to_hand: Affine3A,
-    other_hand_offset: Vec3,
 ) -> Option<GripLinks> {
     let cm = 0.01;
     let holding = *bindings.hand_parts.get(holding_hand)?;
-    let other = *bindings.hand_parts.get(1 - holding_hand)?;
+    let mut links = Vec::new();
+    for point in TORCH_POINTS {
+        let local = point * cm;
+        let on_item = item.weights_at(bindings.item_part, local)?;
+        let in_hand = item_to_hand.transform_point3(local);
+        let on_hand = hand.weights_at(holding, in_hand)?;
+        let item_mobility = item.parts.get(bindings.item_part)?.inverse_mass;
+        let parent_mobility = hand.link_mobility(holding)?;
+        links.push(GripLink {
+            item: bindings.item_part,
+            on_item,
+            hand: Some(holding),
+            on_hand,
+            slack: 0.0,
+            length: 0.0,
+            strength: 1.0,
+            smoothing: DEFAULT_SMOOTHING,
+            flags: PIVOT | RUNTIME,
+            shares: shares(item_mobility, parent_mobility),
+            anchor: None,
+        });
+    }
+    let main = links.len() - 1;
+    let on_item = item.weights_at(bindings.item_part, Vec3::ZERO)?;
+    let origin_at = item.point_at(bindings.item_part, &on_item)?;
+    let world = links.len();
+    links.push(GripLink {
+        item: bindings.item_part,
+        on_item,
+        hand: None,
+        on_hand: [0.0; 4],
+        slack: 0.0,
+        length: 0.0,
+        strength: 0.05,
+        smoothing: DEFAULT_SMOOTHING,
+        flags: RUNTIME | DISABLED,
+        shares: (1.0, 0.0),
+        anchor: Some(origin_at),
+    });
+    Some(GripLinks {
+        links,
+        main,
+        second: None,
+        arm: None,
+        extra: None,
+        flip: None,
+        flip_point: Vec3::ZERO,
+        flip_progress: 0.0,
+        flipped: false,
+        flip_active: false,
+        mode: -1,
+        relaxing: false,
+        record_dirty: false,
+        world_soft: Some(world),
+        world_hard: None,
+    })
+}
+
+/// Builds a shield's links: three runtime pivots from points on
+/// the shield — its back at (−20, 0, 0) cm to the forearm of its hand, and
+/// its two face points (5, 0, ±15) cm to the left hand, whichever hand holds
+/// it — then a soft world link at its origin (strength 0.05, the
+/// world-link flags). `holding_hand` is the shield's hand (0 right, 1
+/// left), whose forearm is `bindings.arm_parts[holding_hand]`, and
+/// `item_to_arm` the shield node's matrix in that forearm's frame. The two
+/// face points are brought into the left hand's frame by subtracting
+/// `left_hand_offset` (cm) from their forearm-frame place, with no turn, as
+/// the original does with the left hand's stored rest translation (Exarust
+/// passes the left hand part's origin in its parent). `None` when a part
+/// or point is malformed.
+pub fn shield_links(
+    item: &Ragdoll,
+    hand: &Ragdoll,
+    bindings: GripBindings,
+    holding_hand: usize,
+    item_to_arm: Affine3A,
+    left_hand_offset: Vec3,
+) -> Option<GripLinks> {
+    let cm = 0.01;
+    let forearm = *bindings.arm_parts.get(holding_hand)?;
+    let left = bindings.hand_parts[1];
     let points = [
         Vec3::new(-20.0, 0.0, 0.0),
         Vec3::new(5.0, 0.0, 15.0),
@@ -522,11 +626,11 @@ pub fn shield_links(
     for (i, point) in points.into_iter().enumerate() {
         let local = point * cm;
         let on_item = item.weights_at(bindings.item_part, local)?;
-        let in_hand = item_to_hand.transform_point3(local);
+        let in_arm = item_to_arm.transform_point3(local);
         let (parent, on_parent) = if i == 0 {
-            (holding, in_hand)
+            (forearm, in_arm)
         } else {
-            (other, in_hand - other_hand_offset * cm)
+            (left, in_arm - left_hand_offset * cm)
         };
         let on_hand = hand.weights_at(parent, on_parent)?;
         let item_mobility = item.parts.get(bindings.item_part)?.inverse_mass;
@@ -775,8 +879,7 @@ impl GripLinks {
     /// The death routine stiffens each held item's soft (parry) world
     /// weld: its strength becomes 1. The original tests the weld's index
     /// as strictly positive, so a weld at index 0 is left alone. Returns
-    /// whether a weld was stiffened. Not called by the game yet: Exarust's
-    /// death frees the item's links ([`crate::grip_solve`]).
+    /// whether a weld was stiffened.
     pub fn weld_on_death(&mut self) -> bool {
         let Some(soft) = self.world_soft.filter(|&i| i > 0 && i < self.links.len()) else {
             return false;
@@ -785,11 +888,13 @@ impl GripLinks {
         true
     }
 
-    /// Starts a flip if the item has a flip link. The original's caller
-    /// sets its "flip active" byte; the direction is the item's current
-    /// flipped flag, so a second command turns it back.
-    pub fn begin_flip(&mut self) -> bool {
-        if self.flip.is_none_or(|i| i >= self.links.len()) {
+    /// Starts a flip if the item has a flip link and its section defines a
+    /// flip side (the original's flip command refuses a weapon whose
+    /// flipped-side kind byte is zero). The original's caller sets its
+    /// "flip active" byte; the direction is the item's current flipped
+    /// flag, so a second command turns it back.
+    pub fn begin_flip(&mut self, can_flip: bool) -> bool {
+        if !can_flip || self.flip.is_none_or(|i| i >= self.links.len()) {
             return false;
         }
         self.flip_active = true;
@@ -1156,7 +1261,7 @@ mod tests {
             1.0,
         )
         .unwrap();
-        assert!(links.begin_flip());
+        assert!(links.begin_flip(true));
         for _ in 0..200 {
             if !links.flip_active {
                 break;
@@ -1187,7 +1292,7 @@ mod tests {
         .unwrap();
         assert!(!links2.flip_active);
         assert!(!links2.flip_step(&item, true));
-        assert!(links2.begin_flip());
+        assert!(links2.begin_flip(true));
         assert!(!links2.flip_step(&item, true));
         // Near the middle an attack lets the flip run.
         links2.flip_progress = 0.5;
@@ -1312,6 +1417,135 @@ mod tests {
         assert_eq!(mode_from_clip(0x1F, 0, false), 0);
         assert_eq!(mode_from_clip(5, 0x2C, false), 0);
         assert_eq!(mode_from_clip(5, 0, true), 0);
+    }
+
+    #[test]
+    fn a_torch_holds_by_its_own_two_links_and_its_soft_weld() {
+        let item = body_at(Vec3::ZERO);
+        let hand = body_at(Vec3::new(0.3, 0.0, 0.0));
+        let links = torch_links(&item, &hand, bindings(), 0, Affine3A::IDENTITY).unwrap();
+        assert_eq!(links.links.len(), 3);
+        assert_eq!(links.main, 1);
+        assert_eq!(links.world_soft, Some(2));
+        assert_eq!(links.world_hard, None);
+        assert!(links.flip.is_none());
+        for (i, point) in TORCH_POINTS.into_iter().enumerate() {
+            let p = item.rest_point_at(0, &links.links[i].on_item).unwrap();
+            assert!((p - point * 0.01).length() < 1e-6, "{i}: {p}");
+            assert_eq!(links.links[i].flags, PIVOT | RUNTIME);
+            assert_eq!(links.links[i].strength, 1.0);
+            assert_eq!(links.links[i].hand, Some(0));
+        }
+        let world = &links.links[2];
+        assert_eq!(world.strength, 0.05);
+        assert_eq!(world.flags, RUNTIME | DISABLED);
+        let p = item.rest_point_at(0, &world.on_item).unwrap();
+        assert!(p.length() < 1e-6);
+
+        // The torch hangs from its own hand: a left-hand torch takes the
+        // second hand part (here one the holder lacks, so nothing builds).
+        let left_missing = GripBindings {
+            hand_parts: [0, 5],
+            ..bindings()
+        };
+        assert!(torch_links(&item, &hand, left_missing, 0, Affine3A::IDENTITY).is_some());
+        assert!(torch_links(&item, &hand, left_missing, 1, Affine3A::IDENTITY).is_none());
+    }
+
+    #[test]
+    fn the_flip_command_needs_a_flip_side() {
+        let item = body_at(Vec3::ZERO);
+        let hand = body_at(Vec3::ZERO);
+        let mut links = build(
+            &item,
+            &hand,
+            bindings(),
+            &grip(),
+            1.0,
+            1.0,
+            Affine3A::IDENTITY,
+            false,
+            1.0,
+        )
+        .unwrap();
+        assert!(!links.begin_flip(false));
+        assert!(!links.flip_active);
+        assert!(links.begin_flip(true));
+        assert!(links.flip_active);
+        // A shield has no flip link: the command refuses it.
+        let mut shield =
+            shield_links(&item, &hand, bindings(), 1, Affine3A::IDENTITY, Vec3::ZERO).unwrap();
+        assert!(shield.flip.is_none());
+        assert!(!shield.begin_flip(true));
+        assert!(!shield.flip_active);
+    }
+
+    #[test]
+    fn a_death_stiffens_only_a_soft_weld() {
+        let item = body_at(Vec3::ZERO);
+        let hand = body_at(Vec3::ZERO);
+        let mut shield =
+            shield_links(&item, &hand, bindings(), 1, Affine3A::IDENTITY, Vec3::ZERO).unwrap();
+        let soft = shield.world_soft.unwrap();
+        assert!(shield.weld_on_death());
+        assert_eq!(shield.links[soft].strength, 1.0);
+        // A group with no soft weld has nothing to stiffen.
+        let mut weapon = build(
+            &item,
+            &hand,
+            bindings(),
+            &grip(),
+            1.0,
+            1.0,
+            Affine3A::IDENTITY,
+            false,
+            1.0,
+        )
+        .unwrap();
+        assert!(!weapon.weld_on_death());
+    }
+
+    #[test]
+    fn a_shields_face_points_take_the_left_hands_offset() {
+        let item = body_at(Vec3::ZERO);
+        let hand = body_at(Vec3::ZERO);
+        let none =
+            shield_links(&item, &hand, bindings(), 1, Affine3A::IDENTITY, Vec3::ZERO).unwrap();
+        // The offset is subtracted after the item node's turn, cm.
+        let shifted = shield_links(
+            &item,
+            &hand,
+            bindings(),
+            1,
+            Affine3A::IDENTITY,
+            Vec3::new(5.0, 1.0, 0.0),
+        )
+        .unwrap();
+        for i in 0..3 {
+            let a = hand.rest_point_at(0, &none.links[i].on_hand).unwrap();
+            let b = hand.rest_point_at(0, &shifted.links[i].on_hand).unwrap();
+            let want = if i == 0 {
+                Vec3::ZERO
+            } else {
+                Vec3::new(-0.05, -0.01, 0.0)
+            };
+            assert!((b - a - want).length() < 1e-6, "{i}: {:?}", b - a);
+        }
+        // The back point goes to the holding hand's forearm and the face
+        // points to the left hand, whichever hand holds the shield (part 5
+        // is one the holder lacks, so a link to it refuses the build).
+        let parts = |hand_parts, arm_parts| GripBindings {
+            item_part: 0,
+            hand_parts,
+            arm_parts,
+        };
+        let build = |b, holding| {
+            shield_links(&item, &hand, b, holding, Affine3A::IDENTITY, Vec3::ZERO).is_some()
+        };
+        assert!(build(parts([0, 0], [0, 5]), 0));
+        assert!(!build(parts([0, 0], [0, 5]), 1));
+        assert!(!build(parts([0, 5], [0, 0]), 0));
+        assert!(build(parts([5, 0], [0, 0]), 0));
     }
 }
 

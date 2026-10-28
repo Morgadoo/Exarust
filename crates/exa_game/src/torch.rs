@@ -210,8 +210,11 @@ fn light_torches(
                     size,
                     second_hand_factor: 1.0,
                     flip: false,
-                    soft_weld: false,
-                    shield: false,
+                    // The torch's own attach routine always adds its soft
+                    // world weld; its class word is the light class 0x90.
+                    class: 0x90,
+                    soft_weld: true,
+                    kind: exa_physics::grip::HeldKind::Torch,
                     holder_key: key,
                     hands: [
                         by_bone.get(&exa_character::RIGHT_HAND).copied(),

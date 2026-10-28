@@ -290,6 +290,8 @@ impl Ragdoll {
                         shares,
                         mobility: (parts[i].inverse_mass, parts[parent].inverse_mass),
                         origin: k == s.links.len(),
+                        limit: false,
+                        horizontal: false,
                         anchor: None,
                         kept: None,
                         history: (Vec3::ZERO, Vec3::ZERO),

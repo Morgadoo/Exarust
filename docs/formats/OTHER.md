@@ -1369,6 +1369,12 @@ highest vertex within 0.05 cm; "Torch A01" is 58.3 cm (its shadow and
 flame nodes are not rigid), "Flail A" 84.4 cm and "Ogre Flail" 172.0 cm
 (their links are rigid).
 
+**Flip side.** The flipped block's type byte (`0x3A`) is zero when the
+section defines no second side. The flip command refuses a weapon whose
+`0x3A` is zero (or that has no weapon section), and a character in the
+switching condition; a flipped record takes code, striking part and damage
+from the flipped block (`exa_formats::weapon_record::Section::can_flip`).
+
 **Holding pass**, at the build and on every equip change:
 
 | element | value |
