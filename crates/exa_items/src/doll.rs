@@ -22,11 +22,14 @@
 //! off hand and then the main hand. The item is then attached as a weapon
 //! (or as the off-hand light) and its record entry written.
 //!
-//! Taking an item out of a hand clears the record's entry that names it
-//! (either hand's), and — when the take-out was scheduled and it was the
-//! main hand — promotes the off hand's item into the main hand if that
-//! item is a weapon or a light (a shield is not promoted). The promoted
-//! item takes the off hand's flags, as the original copies them.
+//! Taking a weapon out of a hand clears the record's entry that names it
+//! (either hand's), and — when the take-out was scheduled, it was the main
+//! hand and the weapon was the first of the body's attached weapons —
+//! promotes the off hand's item into the main hand if that item is a light
+//! or a weapon (a shield is not promoted). The promoted item takes the off
+//! hand's flags, as the original copies them. Taking out the off hand's
+//! light or shield reads and clears the record's off-hand entry whatever
+//! item it names.
 //!
 //! Every completed re-dress restarts the figure's stance with blend 20,
 //! unless the body is in its weapon-swap state (its animation does it
@@ -257,6 +260,18 @@ impl TakeOut {
     }
 }
 
+/// Where the item a take-out removes sits on the body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeldPlace {
+    /// One of the body's attached weapons; `first` when it is the first of
+    /// them (the promotion reads it).
+    Weapon { first: bool },
+    /// The off hand's light.
+    Light,
+    /// The off hand's shield.
+    Shield,
+}
+
 /// What a take-out did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Released {
@@ -270,23 +285,29 @@ pub struct Released {
     pub restarts: bool,
     /// Neither out hand holds an item after the take-out.
     pub both_empty: bool,
+    /// The light finaliser runs ([`FinishKind::Light`]): an off-hand light
+    /// was taken out by a job whose mode has bit 2.
+    pub light_finish: bool,
 }
 
-/// Takes an item out of a hand, as a drag off the figure and the weapon
-/// swap do. `held` is the item in the hand's model (`None` when the hand is
-/// empty), `off` the kind of the other hand's model, `off_id` its item.
+/// Takes an item out of a hand, as a drag off the figure, a take-in and a
+/// shield take do. `held` is the item in the hand's model and where it sits
+/// (`None` when the hand is empty), `off` the off hand's model's item and
+/// kind as it is once the item has left.
 ///
 /// The hand must be one of the two, must hold a model, and that model must
 /// not be the item the take-out makes room for (a hand that already holds
-/// it is left alone). The record
-/// entry naming the item is cleared in either hand when `record` is set.
-/// With `scheduled` and the main hand, the off hand's item is promoted into
-/// the main hand — it takes the off hand's flags — when it is a weapon or a
-/// light; a shield stays in the off hand.
+/// it is left alone). A weapon's record entry is the one naming it, in
+/// either hand; it is cleared when `record` is set. With `scheduled`, the
+/// main hand and the body's first weapon, the off hand's item is promoted
+/// into the main hand — it takes the off hand's flags — when it is a light
+/// or a weapon; a shield stays in the off hand. An off-hand light or shield
+/// reads the record's off-hand flags and clears that entry without
+/// comparing its item.
 pub fn take_out(
     p: &mut Possessions,
     job: &TakeOut,
-    held: Option<u32>,
+    held: Option<(u32, HeldPlace)>,
     off: Option<(u32, ItemKind)>,
 ) -> Released {
     let mut released = Released {
@@ -297,57 +318,65 @@ pub fn take_out(
     if hand > 1 {
         return released;
     }
-    let Some(held) = held else {
+    let Some((held, place)) = held else {
         return released;
     };
     if job.instead == Some(held) {
         return released;
     }
     released.done = true;
-    if p.out[hand].id == held {
-        released.flags = p.out[hand].flags;
-        if job.record {
-            p.out[hand].id = 0;
+    match place {
+        HeldPlace::Weapon { first } => {
+            if p.out[hand].id == held {
+                released.flags = p.out[hand].flags;
+                if job.record {
+                    p.out[hand].id = 0;
+                }
+            } else if p.out[1 - hand].id == held {
+                released.flags = p.out[1 - hand].flags;
+                if job.record {
+                    p.out[1 - hand].id = 0;
+                }
+            }
+            if job.scheduled
+                && first
+                && hand == 0
+                && let Some((off_id, off_kind)) = off
+                && (off_kind.light || off_kind.weapon.is_some())
+            {
+                if job.record {
+                    p.out[0] = Hand {
+                        id: off_id,
+                        flags: p.out[1].flags,
+                    };
+                    p.out[1].id = 0;
+                }
+                released.promoted = Some(off_id);
+            }
         }
-    } else if p.out[1 - hand].id == held {
-        released.flags = p.out[1 - hand].flags;
-        if job.record {
-            p.out[1 - hand].id = 0;
+        HeldPlace::Light | HeldPlace::Shield => {
+            released.flags = p.out[1].flags;
+            if job.record {
+                p.out[1].id = 0;
+            }
+            released.light_finish = place == HeldPlace::Light && job.mode & 4 != 0;
         }
-    }
-    if job.scheduled
-        && hand == 0
-        && let Some((off_id, off_kind)) = off
-        && (off_kind.weapon.is_some() || off_kind.light)
-    {
-        if job.record {
-            p.out[0] = Hand {
-                id: off_id,
-                flags: p.out[1].flags,
-            };
-            p.out[1].id = 0;
-        }
-        released.promoted = Some(off_id);
     }
     released.both_empty = p.out[0].id == 0 && p.out[1].id == 0;
     released
 }
 
-/// What taking an item into the hands did.
+/// What taking an item into the hands does.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Into {
-    /// The item wants the body's permission and does not have it.
-    Refused,
-    Taken {
-        /// The removals first, then the hand it goes into.
-        plan: HoldPlan,
-        /// The item is attached as a weapon, or as the off-hand light.
-        kind: AttachKind,
-        /// The light that moved from the main hand to the off hand: the
-        /// record's off hand takes the light's item and the *new* item's
-        /// flags, as the original copies the job's flags.
-        moved_light: Option<Hand>,
-    },
+pub struct Into {
+    /// The removals first, then the hand it goes into.
+    pub plan: HoldPlan,
+    /// The item is attached as a weapon, or as the off-hand light.
+    pub kind: AttachKind,
+    /// The light that moved from the main hand to the off hand: the
+    /// record's off hand takes the light's item and the *new* item's
+    /// flags, as the original copies the job's flags.
+    pub moved_light: Option<Hand>,
 }
 
 /// The facts a take-in needs.
@@ -361,20 +390,17 @@ pub struct IntoFacts {
     pub class: u32,
     /// The off hand was asked for.
     pub off_wanted: bool,
-    /// The item's permission (its weapon section's `0x2000000`, the flag
-    /// the drag test reads as withheld) is met by the body's `0x10000`.
-    pub permitted: bool,
 }
 
-/// Takes an item into the hands: a withheld item without the body's
-/// permission is refused; otherwise the item's take-in plan decides the
+/// Takes an item into the hands: the item's take-in plan decides the
 /// removals and the hand, and the item is attached as a weapon or as the
 /// off-hand light. `flags` are the item's record flags, which a light
 /// moving out of the main hand takes with it.
+///
+/// The original's job first waits, run after run, until the item's scene
+/// node and its part report themselves loaded; Exarust's items are whole
+/// when the job is made, so there is nothing to wait for.
 pub fn take_into_hands(facts: IntoFacts, flags: u32) -> Into {
-    if facts.kind.weapon.is_some_and(|f| f & 0x0200_0000 != 0) && !facts.permitted {
-        return Into::Refused;
-    }
     let plan = hold_plan(
         facts.kind.grip(),
         facts.kind.light,
@@ -397,7 +423,7 @@ pub fn take_into_hands(facts: IntoFacts, flags: u32) -> Into {
         HoldInto::OffLight => AttachKind::Light,
         HoldInto::Hand(_) => AttachKind::Weapon,
     };
-    Into::Taken {
+    Into {
         plan,
         kind: attach,
         moved_light,
@@ -424,19 +450,24 @@ pub struct ShieldTaken {
     pub clears_part: bool,
 }
 
-/// Takes a shield into the off hand: the off hand is released first, the
-/// record's off hand takes the shield and its flags, and the body's weapon
-/// part is cleared when it holds no weapon class bits. `off` is the item in
-/// the off hand's model.
+/// Takes a shield into the off hand: the off hand is released first (a
+/// take-out of the off hand that makes room for the shield and clears the
+/// record), the record's off hand takes the shield and its flags, and the
+/// body's weapon part is cleared when it holds no weapon class bits. `off`
+/// is the item in the off hand's model and where it sits.
 pub fn take_shield(
-    off: Option<u32>,
+    off: Option<(u32, HeldPlace)>,
     item: u32,
     flags: u32,
     p: &mut Possessions,
     class: u32,
 ) -> ShieldTaken {
-    if let Some(old) = off {
-        take_out(p, &TakeOut::plain(1, old), Some(old), None);
+    if off.is_some() {
+        let job = TakeOut {
+            record: true,
+            ..TakeOut::plain(1, item)
+        };
+        take_out(p, &job, off, None);
     }
     p.record_hold(1, item, flags);
     ShieldTaken {
@@ -815,6 +846,9 @@ mod tests {
         assert!(Busy(false).request());
     }
 
+    const FIRST: HeldPlace = HeldPlace::Weapon { first: true };
+    const LATER: HeldPlace = HeldPlace::Weapon { first: false };
+
     #[test]
     fn taking_out_clears_the_record_entry_that_names_the_item() {
         let mut p = Possessions {
@@ -827,7 +861,7 @@ mod tests {
             record: true,
             ..TakeOut::plain(1, 99)
         };
-        let r = take_out(&mut p, &job, Some(5), None);
+        let r = take_out(&mut p, &job, Some((5, FIRST)), None);
         assert!(r.done);
         assert_eq!(r.flags, 0);
         assert_eq!(p.out[0].id, 0);
@@ -835,18 +869,46 @@ mod tests {
         // An empty hand, a hand out of range, and a hand that already holds
         // the item the take-out makes room for do nothing.
         assert!(!take_out(&mut p, &TakeOut::plain(0, 5), None, None).done);
-        assert!(!take_out(&mut p, &TakeOut::plain(2, 5), Some(5), None).done);
-        assert!(!take_out(&mut p, &TakeOut::plain(1, 7), Some(7), None).done);
-        assert!(take_out(&mut p, &TakeOut::plain(1, 99), Some(7), None).done);
+        assert!(!take_out(&mut p, &TakeOut::plain(2, 5), Some((5, FIRST)), None).done);
+        assert!(!take_out(&mut p, &TakeOut::plain(1, 7), Some((7, LATER)), None).done);
+        assert!(take_out(&mut p, &TakeOut::plain(1, 99), Some((7, LATER)), None).done);
         // A plain take-out keeps the record.
         let mut p = Possessions {
             out: [hand(5, 0x0200_0000), hand(0, 0)],
             ..Default::default()
         };
-        let r = take_out(&mut p, &TakeOut::plain(0, 99), Some(5), None);
+        let r = take_out(&mut p, &TakeOut::plain(0, 99), Some((5, FIRST)), None);
         assert!(r.done);
         assert_eq!(r.flags, 0x0200_0000);
         assert_eq!(p.out[0].id, 5);
+    }
+
+    #[test]
+    fn an_off_hand_light_or_shield_clears_the_off_entry_unread() {
+        // The record's off hand names another item: its flags are read and
+        // it is cleared all the same.
+        let mut p = Possessions {
+            out: [hand(5, 0), hand(8, 0x40)],
+            ..Default::default()
+        };
+        let job = TakeOut {
+            mode: 4,
+            record: true,
+            ..TakeOut::plain(1, 99)
+        };
+        let r = take_out(&mut p, &job, Some((7, HeldPlace::Light)), None);
+        assert!(r.done && r.light_finish);
+        assert_eq!(r.flags, 0x40);
+        assert_eq!(p.out, [hand(5, 0), hand(0, 0x40)]);
+        // A shield never asks for the light finaliser.
+        let mut p = Possessions {
+            out: [hand(5, 0), hand(9, 0x10)],
+            ..Default::default()
+        };
+        let r = take_out(&mut p, &job, Some((9, HeldPlace::Shield)), None);
+        assert!(!r.light_finish);
+        assert_eq!(r.flags, 0x10);
+        assert_eq!(p.out[1].id, 0);
     }
 
     #[test]
@@ -855,7 +917,12 @@ mod tests {
             out: [hand(5, 0x0100_0000), hand(7, 0x0200_0000)],
             ..Default::default()
         };
-        let r = take_out(&mut p, &TakeOut::scheduled(0), Some(5), Some((7, torch())));
+        let r = take_out(
+            &mut p,
+            &TakeOut::scheduled(0),
+            Some((5, FIRST)),
+            Some((7, torch())),
+        );
         assert_eq!(r.promoted, Some(7));
         // The promoted item takes the off hand's flags.
         assert_eq!(p.out[0], hand(7, 0x0200_0000));
@@ -866,66 +933,79 @@ mod tests {
             out: [hand(5, 0), hand(9, 0)],
             ..Default::default()
         };
-        let r = take_out(&mut p, &TakeOut::scheduled(0), Some(5), Some((9, shield())));
+        let r = take_out(
+            &mut p,
+            &TakeOut::scheduled(0),
+            Some((5, FIRST)),
+            Some((9, shield())),
+        );
         assert_eq!(r.promoted, None);
         assert_eq!(p.out, [hand(0, 0), hand(9, 0)]);
+        // A main-hand weapon that is not the body's first weapon (the off
+        // hand's was attached before it) is not followed by a promotion.
+        let mut p = Possessions {
+            out: [hand(5, 0), hand(7, 0)],
+            ..Default::default()
+        };
+        let r = take_out(
+            &mut p,
+            &TakeOut::scheduled(0),
+            Some((5, LATER)),
+            Some((7, weapon(0x10))),
+        );
+        assert_eq!(r.promoted, None);
+        assert_eq!(p.out, [hand(0, 0), hand(7, 0)]);
         // A take-out from the off hand never promotes, and both hands
         // empty is reported.
         let mut p = Possessions {
             out: [hand(5, 0), hand(7, 0)],
             ..Default::default()
         };
-        let r = take_out(&mut p, &TakeOut::scheduled(1), Some(7), Some((5, torch())));
+        let r = take_out(
+            &mut p,
+            &TakeOut::scheduled(1),
+            Some((7, FIRST)),
+            Some((5, torch())),
+        );
         assert_eq!(r.promoted, None);
         assert_eq!(p.out[0].id, 5);
-        let r = take_out(&mut p, &TakeOut::scheduled(0), Some(5), None);
+        let r = take_out(&mut p, &TakeOut::scheduled(0), Some((5, FIRST)), None);
         assert!(r.both_empty && r.done);
         // The mode's bit 1 asks for the stance restart.
-        assert!(!take_out(&mut p, &TakeOut::plain(0, 1), Some(5), None).restarts);
-        assert!(take_out(&mut p, &TakeOut::scheduled(0), Some(5), None).restarts);
+        assert!(!take_out(&mut p, &TakeOut::plain(0, 1), Some((5, FIRST)), None).restarts);
+        assert!(take_out(&mut p, &TakeOut::scheduled(0), Some((5, FIRST)), None).restarts);
     }
 
     #[test]
     fn taking_an_item_into_the_hands_follows_the_branch_order() {
-        let facts = |kind, main, off, class, off_wanted, permitted| IntoFacts {
+        let facts = |kind, main, off, class, off_wanted| IntoFacts {
             kind,
             main,
             off,
             class,
             off_wanted,
-            permitted,
         };
         // Empty hands: the main hand, as a weapon.
-        let Into::Taken { plan, kind, .. } =
-            take_into_hands(facts(weapon(0x10), None, None, 0x80, false, true), 0)
-        else {
-            panic!("taken");
-        };
+        let Into { plan, kind, .. } =
+            take_into_hands(facts(weapon(0x10), None, None, 0x80, false), 0);
         assert_eq!(plan.into, HoldInto::Hand(0));
         assert_eq!(kind, AttachKind::Weapon);
         assert!(plan.steps.is_empty());
         // A torch beside a sword: the off hand is freed and the torch is an
         // off-hand light.
-        let Into::Taken { plan, kind, .. } = take_into_hands(
-            facts(torch(), Some((5, false)), Some(9), 0x10, false, true),
-            0,
-        ) else {
-            panic!("taken");
-        };
+        let Into { plan, kind, .. } =
+            take_into_hands(facts(torch(), Some((5, false)), Some(9), 0x10, false), 0);
         assert_eq!(plan.steps, vec![HoldStep::Release(1)]);
         assert_eq!(plan.into, HoldInto::OffLight);
         assert_eq!(kind, AttachKind::Light);
         // A sword taken while a torch is the main hand: the torch moves,
         // and the record's off hand takes the new item's flags.
-        let Into::Taken {
+        let Into {
             plan, moved_light, ..
         } = take_into_hands(
-            facts(weapon(0x10), Some((9, true)), None, 0x80, false, true),
+            facts(weapon(0x10), Some((9, true)), None, 0x80, false),
             0x0200_0000,
-        )
-        else {
-            panic!("taken");
-        };
+        );
         assert_eq!(plan.steps, vec![HoldStep::LightToOff]);
         assert_eq!(
             moved_light,
@@ -934,19 +1014,6 @@ mod tests {
                 flags: 0x0200_0000
             })
         );
-        // A withheld weapon without the body's permission is refused.
-        assert_eq!(
-            take_into_hands(
-                facts(weapon(0x0200_0010), None, None, 0x80, false, false),
-                0
-            ),
-            Into::Refused
-        );
-        // ... but with it, it is taken.
-        assert!(matches!(
-            take_into_hands(facts(weapon(0x0200_0010), None, None, 0x80, false, true), 0),
-            Into::Taken { .. }
-        ));
     }
 
     #[test]
@@ -989,7 +1056,7 @@ mod tests {
             out: [hand(5, 0), hand(9, 0)],
             ..Default::default()
         };
-        let taken = take_shield(Some(9), 11, 4, &mut p, 0x10);
+        let taken = take_shield(Some((9, HeldPlace::Shield)), 11, 4, &mut p, 0x10);
         assert!(taken.frees_off);
         assert!(!taken.clears_part);
         assert_eq!(p.out[1], hand(11, 4));
@@ -998,6 +1065,20 @@ mod tests {
         let taken = take_shield(None, 11, 0, &mut p, 0);
         assert!(!taken.frees_off && taken.clears_part);
         assert_eq!(p.out[1].id, 11);
+        // A two-hander's model in the off hand: the take-out finds it in
+        // the main hand's entry and clears it.
+        let mut p = Possessions {
+            out: [hand(9, 0), hand(0, 0)],
+            ..Default::default()
+        };
+        take_shield(
+            Some((9, HeldPlace::Weapon { first: true })),
+            11,
+            0,
+            &mut p,
+            0x20,
+        );
+        assert_eq!(p.out, [hand(0, 0), hand(11, 0)]);
     }
 
     #[test]
