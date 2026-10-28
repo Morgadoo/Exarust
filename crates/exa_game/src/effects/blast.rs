@@ -116,7 +116,9 @@ pub const ALERT_SECONDS: f32 = 3.0;
 pub const ALERT_GAIN: f32 = 3.0;
 /// The speed the release asks the blast's entity for, cm/s.
 pub const RELEASE_SPEED: f32 = 1200.0;
-/// The flag the release sets.
+/// The flags the start sets: in the world and drawable.
+pub const START_FLAGS: u32 = 0x9_0000;
+/// The flag the release adds.
 pub const THROWN_FLAG: u32 = 0x4_0000;
 /// The event a charge passing 1 raises.
 pub const POWER_USED: &str = "PowerUsed";
@@ -434,7 +436,7 @@ impl Blast {
             frame,
             chunks,
             lives,
-            flags: 0,
+            flags: START_FLAGS,
             trail_step: 0.0,
             centre: Vec3::ZERO,
             half: Vec3::ZERO,
@@ -1373,7 +1375,10 @@ mod tests {
         let pitch = events.released.expect("a release");
         assert!((0.9..=1.1).contains(&pitch));
         assert!(events.power_used);
-        assert_eq!((b.state, b.charge, b.flags), (THROWN, 0.0, THROWN_FLAG));
+        assert_eq!(
+            (b.state, b.charge, b.flags),
+            (THROWN, 0.0, START_FLAGS | THROWN_FLAG)
+        );
         assert_eq!((caster.cast_hook, caster.casting), (None, 0));
         // The throw is not the cast end: the cast motion plays on.
         assert_eq!(caster.condition, crate::thaum::casting::CASTING);
