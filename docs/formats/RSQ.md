@@ -457,7 +457,8 @@ How the original simulates a body (`exa_physics::body`):
     Its stance origin and anchors are clamped by the footwork's own reach,
     80·√scale·(1 − 0.2·encumbrance)·(1 − 0.3·feral) cm, not the attack
     steps' extension-scaled length; a deep crouch makes it 0.7 of that,
-    and a new target keeps the standing position's height. The thorax pins
+    and a new target keeps the height of the point it is measured from (the
+    running target while stepping, else the standing position). The thorax pins
     then lead by the horizontal error from the pin to the posed target plus
     the step offset, times 0.7 (0.4 while Idle plays), (direction + 0.5),
     (2 − 25·s), 1.2, the square root of body scale and the stance level.
@@ -679,9 +680,9 @@ tick and muscle setup). Every rule is in the original's cm and ticks:
   a slow chest speed v under 5 cm/tick (0.05 at rest). So once a body has
   stood, a second wobble topples it fast: a lean scoring 0.55 takes a fresh
   body 25 ticks, one that has stood 5. Getting up, balance rises 0.05 a
-  tick and the counter falls by 5 while above 2. A NaN score takes the
-  processor's integer conversion of NaN (INT_MIN), which wraps the counter
-  and leaves balance NaN at a full counter.
+  tick and the counter falls by 5 while above 2. Only a score over 0.99
+  is steady: a NaN takes the gain, whose 64-bit conversion leaves 0 in the
+  counter's word, and balance turns NaN only once the counter is full.
 - The **imbalance accumulator** (`Balance::imbalance`): while balance is at
   least 0.2, a foot gives support and the shock-stagger flag is clear, a
   chest past the step trigger adds (√h² − R·E⁴S)/(5 × scale) × 0.005,
@@ -889,7 +890,8 @@ ticks.
   does not change this plant. A walking body's feet plant and lift by the
   walk's phase: frac(progress + 1.2 − 0.5×leg), planted while not touching
   and the phase is 0.2 to 0.4, or before 0.2 while the foot moves forward
-  at most 0.3 cm a tick (backpedalling, back at least 0.2), lifted while
+  at most 0.3 cm a tick (backpedalling, back at most 0.2; the bounds and the phases are double
+  compares), lifted while
   touching and the phase is 0 or at least 0.55. A kick (motion 0x0D) puts
   every foot on its stance spot, touching.
 - **Footwork** (standing, not moving): lying down (down, dormant, dead) no
@@ -915,8 +917,10 @@ ticks.
   step-end placement.
 - **Walking ground**: while the walk or run plays, the character's ground
   is the two feet's smoothed grounds blended by the original's gait
-  weights (`feet::gait_weights`): the stored signed height difference is
-  smoothed 0.9/0.1 toward the difference the phase picks (frac(progress +
+  weights (`feet::gait_weights`, every tick, from last tick's grounds,
+  blended only while the body moves under its own power): the stored
+  signed height difference is smoothed 0.9/0.1 in double toward the
+  difference the phase picks (frac(progress +
   0.45), the first minus the second or the reverse), and the first foot's
   weight is (1 − r)·0.5 + (1 − |2t − 1|)·r, r = 1 − run/2, t =
   frac(progress + c), c 0.4 at a positive difference down to 0.4 − 0.005·|

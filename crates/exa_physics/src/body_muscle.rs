@@ -306,7 +306,7 @@ pub struct Bearing {
     /// which the feet's lag is measured along.
     pub facing: Vec3,
     /// It walks backwards this tick: the early gait plant takes a foot
-    /// moving back at least 0.2 cm a tick.
+    /// moving back at most 0.2 cm a tick.
     pub backpedal: bool,
     /// It is stepping: an anchored stepping foot's leg limit eases to 0.2
     /// instead of following the leg mode, and its standing lift lead is
