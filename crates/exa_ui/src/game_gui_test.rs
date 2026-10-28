@@ -224,10 +224,10 @@ fn the_counter() {
     counter.set(0.6);
     // The third share is 0.4: round(8.4) = 8.
     assert_eq!(w(&counter.fills(0, 100)), vec![(2, 21), (27, 21), (52, 8)]);
-    // The backs step one pixel each.
+    // The backs step block + 1 = 25 each.
     assert_eq!(
         w(&counter.backs(0, 100)),
-        vec![(1, 23), (2, 23), (3, 23), (4, 23)]
+        vec![(1, 23), (26, 23), (51, 23), (76, 23)]
     );
     counter.set(-0.2);
     assert_eq!(counter.value, 0.0);
@@ -257,20 +257,26 @@ fn the_counter() {
             .map(|r| (r.x, r.y, r.width, r.height))
             .collect::<Vec<_>>()
     };
-    let l = counter.layout(10, 20, 100, 16);
+    let l = counter.layout(10, 20, 100, 16, 0);
     assert_eq!(
         rects(&l.backs),
         vec![
             (11, 20, 23, 16),
-            (12, 20, 23, 16),
-            (13, 20, 23, 16),
-            (14, 20, 23, 16)
+            (36, 20, 23, 16),
+            (61, 20, 23, 16),
+            (86, 20, 23, 16)
         ]
     );
+    // Each back's shade: two pixels in, block − 5 wide.
+    assert_eq!(rects(&l.shades)[1], (38, 22, 19, 12));
     assert_eq!(rects(&l.fills), vec![(12, 21, 21, 14), (37, 21, 21, 14)]);
     assert_eq!(rects(&l.outlines), vec![(13, 22, 19, 12), (38, 22, 19, 12)]);
+    // The record's row inset moves the fills and outlines in.
+    let inset = counter.layout(10, 20, 100, 16, 1);
+    assert_eq!(rects(&inset.fills)[0], (12, 22, 21, 12));
+    assert_eq!(rects(&inset.outlines)[0], (13, 23, 19, 10));
     counter.set(0.6);
-    let l = counter.layout(10, 20, 100, 16);
+    let l = counter.layout(10, 20, 100, 16, 0);
     assert_eq!(
         rects(&l.fills),
         vec![(12, 21, 21, 14), (37, 21, 21, 14), (62, 21, 8, 14)]
@@ -290,10 +296,9 @@ fn the_status_marker_and_ready_alert() {
     let (e, glow) = status_pulse(1500, 0);
     assert_eq!(e, 0.5);
     assert!((glow - 0.3).abs() < 1e-7);
-    // A clock behind the start wraps on the 32-bit subtraction: 1000 −
-    // (2³² − 500) mod 2000 = 204, eased.
-    let (e, _) = status_pulse(0, 500);
-    assert!((e - 0.107_868_68).abs() < 1e-6, "{e}");
+    // A clock behind the start: the 64-bit difference −500 keeps its sign,
+    // t = |1000 + 500| / 1000 = 1.5, which eases to 0.
+    assert_eq!(status_pulse(0, 500).0, 0.0);
     assert_eq!(status_place(1600, 900, 5), (1065, 860));
     assert_eq!(ready_place(1600, 900, 5), (500, 860));
     assert_eq!(status_glow((100, 200), 4), [112, 212, 120, 220]);
@@ -330,22 +335,16 @@ fn the_level_curtain() {
     assert_eq!(curtain.state, 2);
     assert_eq!(curtain.step(5000), (255, 0.0, false));
     assert!(curtain.reset());
-    // A start after the clock wraps is far past three seconds: the page
-    // falls at once.
-    let mut wrapped = LevelCurtain {
-        state: 1,
-        start: 2000,
-    };
-    assert_eq!(wrapped.step(1000), (255, 0.0, true));
     assert!(!curtain.reset());
-    // A start after the clock wraps is over a million seconds past: full
-    // black and the hold count rises.
-    let mut behind = LevelCurtain {
+    // A clock behind the start: the 64-bit difference is negative and
+    // round(−85) keeps its low byte, 171; the world brightens past 1.
+    let (alpha, bright, _) = LevelCurtain {
         state: 1,
         start: 1000,
-    };
-    assert_eq!(behind.step(0), (255, 0.0, true));
-    assert_eq!(behind.state, 2);
+    }
+    .step(0);
+    assert_eq!(alpha, 171);
+    assert!((bright - 4.0 / 3.0).abs() < 1e-6);
 }
 
 #[test]
@@ -359,8 +358,8 @@ fn the_compass_heartbeat_and_cursor() {
     assert_eq!(heartbeat_fade_gain(0, 0), Some(0.3));
     assert!((heartbeat_fade_gain(500, 0).unwrap() - 0.15).abs() < 1e-7);
     assert_eq!(heartbeat_fade_gain(1000, 0), None);
-    // A start after the clock wraps: the fade is long past.
-    assert_eq!(heartbeat_fade_gain(0, 500), None);
+    // A clock behind the start: the negative difference raises the gain.
+    assert!((heartbeat_fade_gain(0, 500).unwrap() - 0.45).abs() < 1e-6);
     assert_eq!(bars_hold_until(u32::MAX, 1), 0);
     // The CursorSize setting (1 shipped) scales the sprite; never above
     // 128 pixels.

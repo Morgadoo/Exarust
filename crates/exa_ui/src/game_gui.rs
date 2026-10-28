@@ -871,14 +871,19 @@ impl Counter {
         crate::form::cvtsd2si(f64::from(width) / (f64::from(self.segments) + 1.0) - 1.0)
     }
 
-    /// The backs: one per segment, from one pixel in, each a pixel right
-    /// of the previous (so they overlap), `block − 1` wide.
+    /// The backs: one per segment, from one pixel in, `block − 1` wide and
+    /// `block + 1` apart (32-bit steps).
     pub fn backs(&self, x: i32, width: i32) -> Vec<CounterBlock> {
         let block = self.block(width);
+        let mut at = x.wrapping_add(1);
         (0..=self.segments.max(-1))
-            .map(|i| CounterBlock {
-                x: x + 1 + i,
-                width: block - 1,
+            .map(|_| {
+                let back = CounterBlock {
+                    x: at,
+                    width: block - 1,
+                };
+                at = at.wrapping_add(block).wrapping_add(1);
+                back
             })
             .collect()
     }
@@ -897,12 +902,12 @@ impl Counter {
                 break;
             }
             let fill = if share > 1.0 {
-                inner
+                inner.wrapping_abs()
             } else {
                 cvtss2si(inner as f32 * share)
             };
             out.push(CounterBlock { x: at, width: fill });
-            at += inner + 4;
+            at = at.wrapping_add(inner.wrapping_abs()).wrapping_add(4);
         }
         out
     }
@@ -922,9 +927,12 @@ pub struct CounterRect {
 /// (the front pass).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CounterLayout {
-    /// One back per segment, from one pixel in, `block − 1` wide, the
-    /// control's full height.
+    /// One back per segment, from one pixel in, `block − 1` wide and
+    /// `block + 1` apart, the control's full height.
     pub backs: Vec<CounterRect>,
+    /// Each back's inner shade, drawn after it at 0.8: two pixels in on
+    /// every side.
+    pub shades: Vec<CounterRect>,
     /// One outline per segment that has a filled part, from three pixels
     /// in over the fill less two, the fill rows inset two.
     pub outlines: Vec<CounterRect>,
@@ -934,23 +942,30 @@ pub struct CounterLayout {
 
 impl Counter {
     /// The counter's rectangles for a control at `(x, y)` of `width` ×
-    /// `height`: `block = round(width / (segments + 1) − 1)`; segment `i`
-    /// starts `i` pixels right of the previous one (the backs overlap), and
-    /// each segment's steps `block + 1` apart. A segment whose share
-    /// `(segments + 1)·value − i` is at or below zero ends the fills (a NaN
-    /// does not); a share above one fills `block − 3`, others
-    /// `round((block − 3)·share)`. A fill of three pixels or less has no
-    /// outline.
-    pub fn layout(&self, x: i32, y: i32, width: i32, height: i32) -> CounterLayout {
+    /// `height` whose record keeps the row inset `margin`: `block =
+    /// round(width / (segments + 1) − 1)`; the backs and the fills step
+    /// `block + 1` apart (the fills by `|block − 3| + 4`). A segment whose
+    /// share `(segments + 1)·value − i` is at or below zero ends the fills
+    /// (a NaN does not); a share above one fills `|block − 3|`, others
+    /// `round((block − 3)·share)`. A fill of two pixels or less has no
+    /// outline, an empty one no fill; both are inset by `margin` rows.
+    pub fn layout(&self, x: i32, y: i32, width: i32, height: i32, margin: i32) -> CounterLayout {
         let block = self.block(width);
         let inner = block - 3;
         let mut backs = Vec::new();
-        for i in 0..=self.segments.max(-1) {
+        let mut shades = Vec::new();
+        for back in self.backs(x, width) {
             backs.push(CounterRect {
-                x: x + 1 + i,
+                x: back.x,
                 y,
                 width: block - 1,
                 height,
+            });
+            shades.push(CounterRect {
+                x: back.x + 2,
+                y: y + 2,
+                width: block - 5,
+                height: height - 4,
             });
         }
         let mut outlines = Vec::new();
@@ -962,30 +977,31 @@ impl Counter {
                 break;
             }
             let fill = if share > 1.0 {
-                inner
+                inner.wrapping_abs()
             } else {
                 cvtss2si(inner as f32 * share)
             };
             if fill > 2 {
                 outlines.push(CounterRect {
                     x: at + 1,
-                    y: y + 2,
+                    y: y + margin + 2,
                     width: fill - 2,
-                    height: height - 4,
+                    height: height - 2 * margin - 4,
                 });
             }
             if fill > 0 {
                 fills.push(CounterRect {
                     x: at,
-                    y: y + 1,
+                    y: y + margin + 1,
                     width: fill,
-                    height: height - 2,
+                    height: height - 2 * margin - 2,
                 });
             }
-            at += inner + 4;
+            at = at.wrapping_add(inner.wrapping_abs()).wrapping_add(4);
         }
         CounterLayout {
             backs,
+            shades,
             outlines,
             fills,
         }
@@ -1015,11 +1031,12 @@ pub fn gauge_frame(x: i32, y: i32, width: i32, height: i32) -> (i32, i32, i32, i
 pub const HUD_CONTROLS: [(u32, i32, i32); 3] = [(0xac3, 40, 40), (0xac2, 28, 16), (0xac4, 28, 16)];
 
 /// The pulse of the status marker and the skill-ready alert: `t = |1000 −
-/// (now − start) mod 2000| / 1000` with the difference taken on the 32-bit
-/// clocks (so a clock behind the start wraps as the original's subtraction
-/// does), eased; the glow's alpha is the ease times 0.6.
+/// (now − start) mod 2000| / 1000` with the 32-bit clocks zero-extended
+/// and subtracted in 64 bits (so a clock behind the start gives a negative
+/// remainder, as the signed division does), eased; the glow's alpha is the
+/// ease times 0.6.
 pub fn status_pulse(now: u32, start: u32) -> (f32, f32) {
-    let rem = i64::from(now.wrapping_sub(start)) % 2000;
+    let rem = (i64::from(now) - i64::from(start)) % 2000;
     let t = ((1000 - rem).abs() as f64 * 0.001) as f32;
     let e = ease(t);
     (e, (f64::from(e) * 0.6) as f32)
@@ -1118,10 +1135,11 @@ pub struct LevelCurtain {
 impl LevelCurtain {
     /// The black page's alpha and the world's brightness at `now`; the
     /// first frame past three seconds reports that the hold count rises.
-    /// The elapsed time is the 32-bit difference, so a clock behind the
-    /// start wraps far past three seconds and the page is fully down.
+    /// The elapsed time is the clocks zero-extended and subtracted in 64
+    /// bits, so a clock behind the start gives a negative share.
     pub fn step(&mut self, now: u32) -> (u8, f32, bool) {
-        let mut t = (f64::from(now.wrapping_sub(self.start)) * 0.000_333_333_333_333_333_3) as f32;
+        let mut t =
+            ((i64::from(now) - i64::from(self.start)) as f64 * 0.000_333_333_333_333_333_3) as f32;
         let mut held = false;
         if t > 1.0 {
             if self.state == 1 {
@@ -1177,11 +1195,11 @@ pub fn compass_alpha(fade: f32) -> u8 {
 }
 
 /// The heartbeat's sound gain while it fades out: `1 − (now − start)/1000`
-/// with the difference on the 32-bit clocks, times 0.3; `None` once the
-/// fade is below the GUI's invisible threshold, which stops the heartbeat.
-/// The border itself keeps its pulse.
+/// (the 32-bit clocks zero-extended and subtracted in 64 bits), times 0.3;
+/// `None` once the fade is below the GUI's invisible threshold, which stops
+/// the heartbeat. The border itself keeps its pulse.
 pub fn heartbeat_fade_gain(now: u32, start: u32) -> Option<f32> {
-    let alpha = (1.0 - f64::from(now.wrapping_sub(start)) * 0.001) as f32;
+    let alpha = (1.0 - (i64::from(now) - i64::from(start)) as f64 * 0.001) as f32;
     if alpha < 1.192_09e-7 {
         return None;
     }
