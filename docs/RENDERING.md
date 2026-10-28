@@ -161,8 +161,9 @@ row's program. `exa_render::shader_cache` holds the rules, and
 The map units pack from 0 in declaration order (diffuse or, when the
 colour-slot word is exactly the opacity bit, the opacity map; then
 emissive, specular, normal, gloss, height, dirt), except that the
-environment cube takes unit 5, the GI volume 6, the screen copy 7 and the
-shadow maps 8 up. The height map's unit and the dirt map's can coincide
+environment cube takes unit 5, the GI volume 6, the screen copy 7 (a
+record with the specular bit, which the engine's refraction path binds)
+and the shadow maps 8 up. The height map's unit and the dirt map's can coincide
 with the environment and GI units, as the original's do. The engine caches
 `ObjMat`, `LqdLvl` (blend word `0x200`), `Light`, `SdwSmp` (a surface with
 the diffuse or specular bit, or the GI volume), `VXGIPos` (the GI volume)
