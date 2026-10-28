@@ -390,7 +390,8 @@ HUD draw order, and the save and close scopes. The loot window is "Body",
 244 × 440 at x 400 with an unset y, refused for a flag word whose second
 byte is 3 and matched to its body. The inventory's preview writes its model
 values 0.15 and 0.05, the scene and draw words, the appearance copy and the
-build delay, and its preview bars are the HUD's two bar rectangles. The
+build delay, its build callback's camera refit (ten times the height),
+and its preview bars' fills and frames. The
 bars and their frames are `hud`'s.
 `exa_game::gui_screens` opens the inventory and journal from the I and J
 hotkeys on a `GuiTask` and draws them through `gui_draw` and

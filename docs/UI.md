@@ -1073,7 +1073,7 @@ tab stop, 0x100000 no keys) and state word (0x10 disabled, 0x400 focus,
   centred y is the half height (a floor), a bottom y `client bottom −
   height − 4`, else 36; a place already set is kept. A message sent by a
   control's id reaches the first record with that id anywhere in the tree
-  with its three arguments; with no such record the original's default
+  with its message code and two words; with no such record the original's default
   control takes it and ignores it.
 - **Snap slots and rescale.** A snap container (attribute 0x20) cuts the
   space between its client's edges and its visible children's widened
@@ -1112,9 +1112,14 @@ drawing:
   only when the switch changes. Binding a character to the preview writes
   the model value 0.15 and opening the window 0.05, the scene word 0x1000
   and the draw word 0x42 on every mesh node, copies the 48-byte appearance
-  block and registers the model's build callback 100 ticks ahead; the
-  build keeps the model and asks the view for its camera distance, the
-  destroy releases the node only when one exists.
+  block and registers the model's build callback 100 ticks ahead (the
+  opening's 0.05 and 0x1000 are written only when the view has a
+  character); the build always keeps the model and answers done, and an
+  open inventory showing the view refits its camera to ten times the
+  character's height; the destroy releases the node only when one exists.
+  The preview bars start 50 units left of the half width and 5 above the
+  bottom, 48 units wide and 52 apart, framed 2 pixels out and 4 units − 2
+  down; the health bar takes the view's two shares, the focus bar is full.
 - **Journal.** 244 × 518 with its text box 228 × 412 at (0, 88), titled
   "Journal", at its remembered place when set. Adding an entry stores the
   text box, appends "New Entry" and selects it; deleting with fewer than
@@ -1126,9 +1131,11 @@ drawing:
   a press with 0x2000 on an enabled slot with an icon or a kind opens the
   technique selector (kind 1 answers 0). Its frame is inset by the border,
   its 32-pixel icon is centred (four units in in a 40 × 40 slot), an empty
-  slot draws a shadow and, for a kind past 2, the kind's icon; the ink is
-  the hover's, then state 0x10's, style 0x40's (which also draws the frame
-  again), a kind-2 slot's, else the default. The counter (0xac2, 28 × 16)
+  slot draws a rounded shadow (radius two units, alpha 0x40) and its kind's
+  icon for kind 4, or for a kind past 2 only under the pointer; a hovered
+  filled slot draws its icon at full scale with no ink, else the ink is
+  state 0x10's, then 0x40's (which also draws the frame again), a kind-2
+  slot's (the same bright ink as 0x10), else the plain one. The counter (0xac2, 28 × 16)
   turns a negative value into 0 (−0 and NaN stay), shows `value × 100`
   with one decimal and `%`, and draws `round(width / (n + 1) − 1)`-wide
   blocks whose backs step one pixel and whose fills are three narrower and
@@ -1156,10 +1163,12 @@ drawing:
   inventory or loot panel into its character and the journal's text.
   Closing a family takes the active task's forms front to back, then the
   root's back to front. The deferred close takes the loot windows whose
-  character has flag 0x80000 or is no longer dead. The technique selector
+  character has flag 0x80000 or is no longer dead, in the windows' order.
+  The technique selector
   is placed at the record's right and top with its left and bottom as the
   fallbacks; its rows are all disabled when the owner trains and the
-  record's level is reached, otherwise the chosen techniques' rows and the
+  record's level is reached, otherwise the chosen techniques' rows (the
+  byte − 1 unchecked, so a byte of 9 marks the forget row) and the
   rows whose requirement is not among the skill's first `level`
   techniques; a positive count opens its forget row.
 
