@@ -298,9 +298,49 @@ pub struct HeldItem {
 /// hands the task to a worker thread; Exarust runs it on the next frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DropTask {
-    pub entry: u32,
+    /// The dragged item's database id.
+    pub item: u32,
     pub from_gui: bool,
     pub pointer: IVec2,
+}
+
+/// The GUI item drag's payload kinds, an item and a scene object.
+pub const ITEM_PAYLOAD: u32 = 0xFB01;
+pub const OBJECT_PAYLOAD: u32 = 0xFB02;
+
+/// What the controls do with a GUI drag that starts over the world view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DragClaim {
+    /// The drag is the controls': the drop task is queued and the release
+    /// callback installed.
+    Take,
+    /// An item is already held: the drag is left to it.
+    Busy,
+    /// A dialogue, a suppressed movement request, a pending drop or
+    /// another payload: the drag is not the controls'.
+    Ignore,
+}
+
+/// Whether the controls take a GUI drag of `kind`: no dialogue, the
+/// movement request free (a lift or a walk not pending), no drop already
+/// queued, and an item or object payload; an item already held makes it
+/// busy instead.
+pub fn claim_drag(
+    kind: u32,
+    dialogue: bool,
+    request_suppressed: bool,
+    pending: bool,
+    holding: bool,
+) -> DragClaim {
+    if dialogue || request_suppressed || pending || (kind != ITEM_PAYLOAD && kind != OBJECT_PAYLOAD)
+    {
+        return DragClaim::Ignore;
+    }
+    if holding {
+        DragClaim::Busy
+    } else {
+        DragClaim::Take
+    }
 }
 
 /// The item cursor's state: the item it holds, the turn's ramp, the
@@ -511,6 +551,41 @@ mod tests {
             Vec2f::new(std::f32::consts::FRAC_PI_2, 0.0),
         );
         assert!(place_frame(turned, Vec3::new(0.0, 1.0, 0.0), centre, long).is_none());
+    }
+
+    /// The GUI drag claim: only an item or object payload with no dialogue,
+    /// no suppressed request and no queued drop is taken; an item already
+    /// held makes it busy.
+    #[test]
+    fn the_gui_drag_claim() {
+        assert_eq!(
+            claim_drag(ITEM_PAYLOAD, false, false, false, false),
+            DragClaim::Take
+        );
+        assert_eq!(
+            claim_drag(OBJECT_PAYLOAD, false, false, false, false),
+            DragClaim::Take
+        );
+        assert_eq!(
+            claim_drag(ITEM_PAYLOAD, true, false, false, false),
+            DragClaim::Ignore
+        );
+        assert_eq!(
+            claim_drag(ITEM_PAYLOAD, false, true, false, false),
+            DragClaim::Ignore
+        );
+        assert_eq!(
+            claim_drag(ITEM_PAYLOAD, false, false, true, false),
+            DragClaim::Ignore
+        );
+        assert_eq!(
+            claim_drag(0x8004, false, false, false, false),
+            DragClaim::Ignore
+        );
+        assert_eq!(
+            claim_drag(ITEM_PAYLOAD, false, false, false, true),
+            DragClaim::Busy
+        );
     }
 
     /// A part's rest points box: the centre is their middle, the half the

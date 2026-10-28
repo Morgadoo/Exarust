@@ -706,7 +706,10 @@ Exarust yet. The GUI drop takes an inventory entry whose object has a body,
 puts it into the scene and lifts it; an entry with no body is the
 "Game object has no physics" content error and spawns nothing. Both are
 rules with no inventory window to originate them: Exarust's inventory form
-has no item panel.
+has no item panel. A GUI drag (an item or object payload `0xFB01`/`0xFB02`)
+is the controls' while no dialogue is open, the movement request is free
+and no drop is queued; an item already held makes it busy
+(`item_cursor::claim_drag`).
 
 Each frame of a drag the grabbed point is let go once it is farther than
 330 cm from the player's hip (the squared distance compared in double
