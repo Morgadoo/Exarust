@@ -214,6 +214,49 @@ impl TimedList {
     }
 }
 
+/// An entry in the controls' deferred interaction list: the game clock
+/// (ms) at which it runs and the object it acts on. The world use's
+/// consumable (class 0, kind 1) adds one due 2100 ms on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PendingUse {
+    pub due_ms: u32,
+    pub target: u32,
+}
+
+/// The controls' deferred interaction list. The original keeps it in an
+/// array and takes a done entry out by shifting every later entry down one
+/// place, so the list keeps its order (not the timed cleaning list's
+/// swap-remove).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct UseQueue {
+    pub entries: Vec<PendingUse>,
+}
+
+impl UseQueue {
+    /// Adds an entry, returning its index.
+    pub fn push(&mut self, entry: PendingUse) -> usize {
+        self.entries.push(entry);
+        self.entries.len() - 1
+    }
+
+    /// One frame at `now_ms`: the entries whose time is not after `now` run,
+    /// in order, the list shifting down over each. Returns them in order.
+    pub fn tick(&mut self, now_ms: u32) -> Vec<PendingUse> {
+        let mut done = Vec::new();
+        let mut i = 0;
+        while i < self.entries.len() {
+            let entry = self.entries[i];
+            if now_ms < entry.due_ms {
+                i += 1;
+                continue;
+            }
+            done.push(entry);
+            self.entries.remove(i);
+        }
+        done
+    }
+}
+
 /// The squared activation radius (cm²) the start of play gives the AI
 /// around the player: 16 000 000, 40 m.
 pub const START_ACTIVATION_RADIUS2: f32 = 16_000_000.0;
@@ -1430,6 +1473,44 @@ mod tests {
         assert_eq!(list.entries.len(), 2);
         assert_eq!(at(&mut list, 2000), vec![(7, 0), (9, 0x10)]);
         assert!(list.entries.is_empty());
+    }
+
+    /// The deferred interaction list runs the entries due at or before the
+    /// clock, in order, and shifts the rest down so the order holds; an
+    /// entry due later waits.
+    #[test]
+    fn the_deferred_interactions_run_in_order() {
+        let mut q = UseQueue::default();
+        q.push(PendingUse {
+            due_ms: 3100,
+            target: 7,
+        });
+        q.push(PendingUse {
+            due_ms: 5000,
+            target: 8,
+        });
+        q.push(PendingUse {
+            due_ms: 3100,
+            target: 9,
+        });
+        assert!(q.tick(3099).is_empty());
+        assert_eq!(
+            q.tick(3100),
+            vec![
+                PendingUse {
+                    due_ms: 3100,
+                    target: 7
+                },
+                PendingUse {
+                    due_ms: 3100,
+                    target: 9
+                }
+            ]
+        );
+        assert_eq!(q.entries.len(), 1);
+        assert_eq!(q.entries[0].target, 8);
+        assert_eq!(q.tick(5000).len(), 1);
+        assert!(q.entries.is_empty());
     }
 
     /// The start of play centres the AI's activation on the player with

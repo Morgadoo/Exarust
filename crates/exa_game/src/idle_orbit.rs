@@ -88,7 +88,9 @@ pub struct Frame {
     pub window_open: bool,
 }
 
-/// Whether the pointer stayed within 2 pixels of `was` on both axes.
+/// Whether the pointer stayed still: under 3 pixels across (the original's
+/// `|dx| < 3`) and at most 2 down (`|dy| > 2` is busy), both exclusive of
+/// the busier bound.
 pub fn pointer_still(was: IVec2, now: IVec2) -> bool {
     let dx = (i64::from(was.x) - i64::from(now.x)).abs();
     let dy = (i64::from(was.y) - i64::from(now.y)).abs();

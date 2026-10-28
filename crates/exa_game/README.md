@@ -415,10 +415,12 @@ death fade's start, death and removal from the world; dead bodies below
 the world cursor's shape from the player's condition word (`cursor`), the
 hand (`hand`: the left press named by `pick`, the drag of props with Ctrl
 and of corpses through the solver's grab, the lift of a prop onto the item
-cursor, the reach under the cursor and the refusal that keeps the movement
-request; `docs/PLAYER.md`, The hand), the item cursor (`item_cursor`: the
-lift's turn ramp and rotation, the cursor's placement and box refusal, its
-release and the GUI drop's branch and queue), the health
+cursor, the door and wheel drags' record and the door's 2000 ms grab, a
+cloth vertex's grab and its per-frame target, the reach under the cursor and
+the refusal that keeps the movement request; `docs/PLAYER.md`, The hand),
+the item cursor (`item_cursor`: the lift's turn ramp and rotation, the
+cursor's per-sphere placement sweep and box refusal, its level placement
+markers and hover word, its release and the GUI drop's branch and queue), the health
 bars' values and the low-health heartbeat with its sound, started by a
 blow's low-health check on the player's body (`exa_combat::Weakened`;
 `hud`), the
@@ -452,14 +454,18 @@ tick, a stretched link, the first blood jet, the player's first landed
 blow or the first collapse).
 
 The player behaviour's own rules (`player_behaviour`) are the aim point's
-soft height lock on a target's bone and its raised surface, the gamepad
-aim's `250·|aim| + 50` cm point and its `(0.4·AimSpeed + 0.1)²` ease, the
-12 m contact list and its 12-entry eviction, the strongest engaged enemy
-(the enemy's own contact score for the player over 2), the character
-nearest the cursor on screen, and the attack wind-up and recovery times.
-The gamepad's aim runs through the eased world cursor each behaviour tick
-(`player::AimCursor`, read by `player_combat`); the others have no caller
-yet. The right button walks to the cursor in combat mode too
+soft height lock on the nearest of a target's three bones (its projected
+fraction and the 80 cm pixel radius at the bone's depth) and its raised
+surface, the gamepad aim's `250·|aim| + 50` cm point and its
+`(0.4·AimSpeed + 0.1)²` ease, the 12 m contact list and its 12-entry
+eviction, the strongest engaged enemy (the enemy's own contact score for
+the player over 2), the character nearest the cursor on screen, and the
+attack timing. The gamepad's aim runs through the eased world cursor each
+behaviour tick (`player::AimCursor`, read by `player_combat`), and an
+attack records the timing when it starts (the strength's drain, the
+expected end and the recovery, from the primary's recoil); a new attack
+waits for the recovery clock unless the swing is released. The other rules
+have no caller yet: the stance keeps no target entity to lock the aim onto. The right button walks to the cursor in combat mode too
 (`steering::Steering::combat_walk`), the chevrons showing while it is
 held.
 
@@ -468,8 +474,13 @@ double-click interaction's outcomes (a lock's key and first-unlock
 reward, a container, an item use in hand, a button push, a corpse's scripts,
 a character's talk condition, the player's inventory), the item-use values
 (a pour's warmth and marks, the cleaning and repair kits' targets, their
-sounds) and the timed list that writes only while it lowers a section or
-arrives; the reach's navigation region and walk-to point; the movement
+sounds), the usable-section reader (the operative class, kind, flags,
+value, target and name, the copy's wear and dirt bytes and the model's
+material byte) with the world use's consume (2100 ms on its deferred list,
+which shifts done entries down), inventory take, take-in-hand (state 0x100,
+hand word 0x40) and push (256 ticks) branches and the deferred drop's spawn
+run (free, content error, or place at the lift's −100000 cm limit), the
+timed list that writes only while it lowers a section or arrives; the reach's navigation region and walk-to point; the movement
 request's drag modes, the controls' gates, the key permissions and the power
 bar's 500 ms hold. A click on the player's own body shows the HUD bars for
 5000 ms; a double click on it (with Ctrl in combat mode) opens the

@@ -692,6 +692,7 @@ sets the instability counter (the barricade sets it to 100).
 - The destructor frees four pointers, the root origin, three managed fields and the list before the base and final calls.
 - The body collision calls back for accepted hits and pushes resolved particles to the body's radius surface.
 - The clone creates a new cloth with four copied fields.
+- The hand's grab (`Cloth::grab`/`release_grab`): one vertex is put on the hand's target after each tick's links, zeroing its velocity there, and wakes the cloth; letting go leaves it to its links.
 - The cloth helpers the step does not call yet: the bounds midpoint the particles' component extremes (vector min and max semantics) and floor the half extents at 1e-4 cm; the swept-particle query over an index range, with the closest-approach slack that goes negative outside the tick's motion; the blood painter, which draws the engine's generator and lowers the vertex alpha with a ties-to-even conversion; and the owner-move blend, which writes `(d + (target - d) k) weight + offset + base` into a third buffer.
 - Fixed-timestep deterministic simulation set, independent of frame rate.
 - The original's shared intersection routines (`intersect`): sweep set-up, point/segment/sphere/box distances and tests, the swept-sphere slab tests, segment/oriented-box separation, point-set bounds, and the convex-volume box tests, refresh, polygon clipping, plane cut with cap and directional shadow volume, in the original's arithmetic.
