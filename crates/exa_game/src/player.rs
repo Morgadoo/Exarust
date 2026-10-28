@@ -87,6 +87,10 @@ const WALK_KEYS: u8 = 0x10;
 /// A held key takes the long step only while the crouch, promoted to
 /// double, is below this. The float 0.1 promotes to a double above it.
 const LONG_STEP_CROUCH: f64 = 0.1;
+/// Past a crouch of [`CROUCH_SHORT`] the footwork's step is this share of
+/// the plain one, in double precision.
+const CROUCH_SHORT: f32 = 0.5;
+const CROUCH_STEP: f64 = 0.7;
 /// In combat mode the heading turns to the cursor once it is further off
 /// than this (rad, 30°).
 const FACE_CURSOR_BEYOND: f32 = std::f32::consts::FRAC_PI_6;
@@ -147,6 +151,9 @@ pub struct PlayerBody {
     walk_from: Option<String>,
     /// When its last attack last ticked (s, on the fixed clock).
     last_attack: Option<f32>,
+    /// The opponent the behaviour's auto-target picked this tick: what the
+    /// aim point's bone lock reads. Only in combat mode.
+    target: Option<Entity>,
     /// How far it crouches, 0 to 1.
     crouch: f32,
 }
@@ -172,8 +179,15 @@ impl PlayerBody {
             long: false,
             walk_from: None,
             last_attack: None,
+            target: None,
             crouch: 0.0,
         }
+    }
+
+    /// The opponent the behaviour's auto-target picked this tick (the
+    /// original's stored target), which the aim point's bone lock reads.
+    pub(crate) fn aim_target(&self) -> Option<Entity> {
+        self.target
     }
 
     /// How far it crouches, 0 to 1.
@@ -332,6 +346,148 @@ fn other_side(cursor: f32, yaw: f32, weapon_class: u8) -> bool {
 /// mouse button, combat facing and the world cursor.
 #[derive(Resource, Default)]
 pub(crate) struct CursorGround(pub(crate) Option<Vec3>);
+
+/// The cursor's aim pick reaches this far along its ray (m), as the
+/// navigation pick does.
+const AIM_PICK_RANGE: f32 = 40.0;
+
+/// The skeleton's bone numbers the aim point's bone lock reads: the head,
+/// the belly and the pelvis, three points away from the chest it locks
+/// from. [guess: the original reads the target's head record's own points;
+/// Exarust stands these three part origins in for them.]
+const AIM_BONES: [usize; 3] = [10, 8, 1];
+
+/// The aim point with a locked target: the target's chest as the lock's
+/// root and three of its bones, projected to the window, with the pixel
+/// radius 80 cm makes at the root's depth. Returns the locked height when a
+/// bone lies within twice the radius of the cursor.
+fn aim_locked_height(
+    plane: f32,
+    cursor: Vec2,
+    camera: &Camera,
+    eye: &GlobalTransform,
+    window: &Window,
+    projection: &Projection,
+    target: (&GlobalTransform, &Ragdoll),
+) -> Option<f32> {
+    let (gt, ragdoll) = target;
+    let root = stance::chest_point(gt, Some(ragdoll));
+    let root_screen = window_point(camera, eye, window, root)?;
+    let Projection::Perspective(perspective) = projection else {
+        return None;
+    };
+    // The projection's x scale, 1 / (aspect·tan(fov/2)): the pixels one
+    // unit makes at depth one, as the original's projection scale.
+    let aspect = perspective.aspect_ratio;
+    let aspect = if aspect.is_finite() && aspect > 0.0 {
+        aspect
+    } else {
+        window.width() / window.height().max(1.0)
+    };
+    let scale = 1.0 / (aspect * (perspective.fov * 0.5).tan());
+    let depth = (root - eye.translation()).dot(*eye.forward());
+    let radius = crate::player_behaviour::bone_lock_radius(window.width(), scale, depth);
+    let bones: Vec<crate::player_behaviour::AimBone> = AIM_BONES
+        .iter()
+        .filter_map(|bone| {
+            let part = ragdoll.parts.iter().find(|p| p.bone == *bone)?;
+            let at = Vec3::from(part.transform().translation);
+            Some(crate::player_behaviour::AimBone {
+                screen: window_point(camera, eye, window, at)?,
+                height: at.y,
+            })
+        })
+        .collect();
+    let (height, locked) = crate::player_behaviour::aim_lock_bones(
+        plane,
+        crate::player_behaviour::AimBone {
+            screen: root_screen,
+            height: root.y,
+        },
+        &bones,
+        cursor,
+        radius,
+    );
+    locked.then_some(height)
+}
+
+/// The aim point each frame: the cursor's ray on the plane 80 cm over the
+/// player's ground, its height locked onto the auto-target's bones when one
+/// shows within twice the pixel radius 80 cm makes at the target's depth,
+/// else raised onto the surface the cursor's pick meets when that lies
+/// above the plane's point and under the player's ground plus 200 cm.
+///
+/// The aim plane's normal is the world's up, as the original's; the pick is
+/// the level's fixed geometry (the original's navigation pick also admits
+/// non-solid nodes; Exarust's fixed colliders stand in).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn cursor_ground(
+    mut ground: ResMut<CursorGround>,
+    scripted: Res<exa_ui::ScriptedPointer>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    cameras: Query<(&Camera, &GlobalTransform, &Projection), With<ChaseCamera>>,
+    players: Query<(&GlobalTransform, Option<&Children>), With<Player>>,
+    bodies: Query<&PlayerBody>,
+    targets: Query<(&GlobalTransform, Option<&Ragdoll>)>,
+    physics: Option<Res<Physics>>,
+) {
+    ground.0 = None;
+    let (Ok(window), Ok((camera, eye, projection)), Some((player, children))) =
+        (windows.single(), cameras.single(), players.iter().next())
+    else {
+        return;
+    };
+    let body = children.and_then(|c| c.iter().find_map(|child| bodies.get(child).ok()));
+    let Some(cursor) = scripted.position(window) else {
+        return;
+    };
+    let Some(ray) = window_ray(camera, eye, window, cursor) else {
+        return;
+    };
+    let ground_y = player.translation().y;
+    let at = |height: f32| {
+        let hit = crate::nav_pick::plane_hit(
+            crate::nav_pick::Ray::new(ray.origin, *ray.direction),
+            crate::nav_pick::Plane::new(Vec3::Y, height),
+        );
+        (hit.distance > 0.0 && hit.point.is_finite()).then_some(hit.point)
+    };
+    let plane = ground_y + AIM_HEIGHT;
+    let Some(plane_point) = at(plane) else {
+        return;
+    };
+    let locked = body.and_then(|pb| {
+        let target = pb.aim_target()?;
+        let (gt, ragdoll) = targets.get(target).ok()?;
+        aim_locked_height(
+            plane,
+            cursor,
+            camera,
+            eye,
+            window,
+            projection,
+            (gt, ragdoll?),
+        )
+    });
+    if let Some(height) = locked {
+        ground.0 = at(height);
+        return;
+    }
+    let hit = physics
+        .as_ref()
+        .and_then(|physics| physics.fixed_hit(ray.origin, *ray.direction, AIM_PICK_RANGE))
+        .filter(|distance| *distance > 0.0)
+        .map(|distance| ray.origin + *ray.direction * distance);
+    // The raise rule's 200 cm is in centimetres: the points go to the
+    // rule's own units and back.
+    const PER_M: f32 = 100.0;
+    let raised = crate::player_behaviour::aim_raised(
+        plane_point * PER_M,
+        hit.map(|at| at * PER_M),
+        ground_y * PER_M,
+    );
+    ground.0 = Some(raised / PER_M);
+}
 
 /// The gamepad aim's eased cursor point in the world (m): the stick's
 /// direction places the point `250·|aim| + 50` cm out, and it eases toward
@@ -569,35 +725,6 @@ fn cursor_look(
     capture.0 = look.active;
 }
 
-pub(crate) fn cursor_ground(
-    mut ground: ResMut<CursorGround>,
-    scripted: Res<exa_ui::ScriptedPointer>,
-    windows: Query<&Window, With<PrimaryWindow>>,
-    cameras: Query<(&Camera, &GlobalTransform), With<ChaseCamera>>,
-    players: Query<&GlobalTransform, With<Player>>,
-) {
-    ground.0 = None;
-    let (Ok(window), Ok((camera, eye)), Some(player)) =
-        (windows.single(), cameras.single(), players.iter().next())
-    else {
-        return;
-    };
-    let Some(ray) = scripted
-        .position(window)
-        .and_then(|c| window_ray(camera, eye, window, c))
-    else {
-        return;
-    };
-    let plane = player.translation().y + AIM_HEIGHT;
-    let hit = crate::nav_pick::plane_hit(
-        crate::nav_pick::Ray::new(ray.origin, *ray.direction),
-        crate::nav_pick::Plane::new(Vec3::Y, plane),
-    );
-    if hit.distance > 0.0 && hit.point.is_finite() {
-        ground.0 = Some(hit.point);
-    }
-}
-
 /// The player's behaviour each fixed tick, before its body's tick (as the
 /// original's behaviour runs before its movement decision): on its third
 /// tick with a navigation grid the spawn snap onto the grid's nearest
@@ -728,15 +855,16 @@ pub(crate) fn steer_player(
                     .and_then(|r| r.drive.as_ref())
                     .map(|d| d.balance().extension())
                     .unwrap_or(1.0);
-                let (step_cm, long_step_cm) =
-                    fighter.map_or(footwork_lengths(STEP_LENGTH * 100.0, 0.0, extension), |f| {
-                        let cm = exa_formats::weapon_record::step_reach(
-                            f.stats.scale,
-                            f.stats.feral,
-                            f.stats.encumbrance,
-                        );
-                        footwork_lengths(cm, f.stats.encumbrance, extension)
-                    });
+                let reach_cm = fighter.map_or(STEP_LENGTH * 100.0, |f| {
+                    exa_formats::weapon_record::step_reach(
+                        f.stats.scale,
+                        f.stats.feral,
+                        f.stats.encumbrance,
+                    )
+                });
+                let encumbrance = fighter.map_or(0.0, |f| f.stats.encumbrance);
+                let (step_cm, long_step_cm) = footwork_lengths(reach_cm, encumbrance, extension);
+                let crouched_step_cm = crouched_step_length(reach_cm, extension);
                 let scale_root = fighter.map_or(1.0, |f| f.stats.scale.sqrt());
                 let chest = ragdoll
                     .and_then(|r| r.drive.as_ref())
@@ -747,6 +875,7 @@ pub(crate) fn steer_player(
                     ground: standing.y,
                     step_cm,
                     long_step_cm,
+                    crouched_step_cm,
                     scale_root,
                     line: &line,
                 };
@@ -911,6 +1040,14 @@ fn footwork_lengths(reach_cm: f32, encumbrance: f32, extension: f32) -> (f32, f3
     let long = long_step_length(reach_cm, encumbrance);
     (reach_cm * extension, long * extension)
 }
+
+/// The deep-crouched step's `fd4` before √scale (cm): [`CROUCH_STEP`] of
+/// the stored reach, one double product narrowed once, then the legs'
+/// `extension`, in the original's order (the 0.7 is taken of the reach, not
+/// of the extended step).
+fn crouched_step_length(reach_cm: f32, extension: f32) -> f32 {
+    ((f64::from(reach_cm) * CROUCH_STEP) as f32) * extension
+}
 /// A side key weighs this share of the facing. The sum is normalised, so
 /// a diagonal aims 0.8 as far sideways as forward and a pure side step
 /// stays a full step.
@@ -927,6 +1064,9 @@ struct Footwork<'a> {
     step_cm: f32,
     /// The long step's fd4: (1.5 − 0.3·encumbrance) of that reach (cm).
     long_step_cm: f32,
+    /// The deep-crouched step's fd4: 0.7 of that reach, then the legs'
+    /// extension (cm).
+    crouched_step_cm: f32,
     /// The body's √scale, the other factor of the target's length.
     scale_root: f32,
     line: LineWalk<'a>,
@@ -948,7 +1088,8 @@ struct Footwork<'a> {
 /// while the crouch promoted to double is below 0.1, it keeps
 /// (1.5 − 0.3·encumbrance) of that length, the product narrowed once from
 /// double before the extension, until a key changes or is released. At
-/// 0.1, above it, or when it is NaN, the held key keeps the short reach. A
+/// 0.1, above it, or when it is NaN, the held key keeps the short reach;
+/// past a crouch of a half any step is 0.7 of the plain one. A
 /// walk, run or backpedal of the exploration steering still playing when
 /// combat mode turned on ends in the stance once the body stands (`moving`
 /// false). A walk or a run blends over 20 frames, as the original's walk
@@ -1004,7 +1145,13 @@ fn combat_steps(
         pb.held = 0.0;
         pb.long = false;
     }
-    let fd4 = if key_mask != 0 && pb.long {
+    let fd4 = if CROUCH_SHORT < pb.crouch {
+        // Crouched past a half, the step is 0.7 of the reach (in double,
+        // narrowed once, before the extension), even with the long-step
+        // latch; a NaN crouch fails the ordered compare and keeps the mode's
+        // step.
+        footing.crouched_step_cm
+    } else if key_mask != 0 && pb.long {
         footing.long_step_cm
     } else {
         footing.step_cm
@@ -1070,12 +1217,14 @@ const GAITS: [&str; 3] = ["Walk", "Run", "Backpedal"];
 /// clip follows when it was the old stance's); in combat mode the guard,
 /// or the combat idle with a target within 3.5 m or within 3 s of its last
 /// attack's last tick. The target is the best of the other living fighters
-/// within 5 m of the cursor's direction (`exa_combat::stance`). The clip
-/// changes in the body tick, never from the combat idle. Not yet: the
-/// original's line-of-sight test on the target.
+/// within 5 m of the cursor's direction (`exa_combat::stance`); the
+/// behaviour's own auto-target picks the same list by the original's score
+/// and keeps the entity for the aim point's bone lock. The clip changes in
+/// the body tick, never from the combat idle.
 #[allow(clippy::type_complexity)]
 fn take_player_stance(
     time: Res<Time>,
+    physics: Option<Res<Physics>>,
     mut bodies: Query<(
         Entity,
         &mut PlayerBody,
@@ -1107,6 +1256,7 @@ fn take_player_stance(
             pb.last_attack = Some(now);
         }
         if !pb.combat {
+            pb.target = None;
             if *stance != Stance::Idle {
                 info!("player stance: Idle");
             }
@@ -1114,21 +1264,47 @@ fn take_player_stance(
             continue;
         }
         let from = stance::chest_point(gt, body);
+        // The other living fighters (the dead a level places lie limp), with
+        // their bodies' scale and their chest points.
+        let candidates: Vec<(Entity, f32, Vec3)> = others
+            .iter()
+            .filter(|(e, c, _, b, _)| {
+                *e != me && !c.is_dead() && b.is_none_or(|b| b.drive.is_some())
+            })
+            .map(|(e, _, gt, b, scale)| (e, scale.map_or(1.0, |s| s.0), stance::chest_point(gt, b)))
+            .collect();
         let target = stance::pick_target(
             from,
             forward(pb.aim),
-            others
+            candidates
                 .iter()
-                // Living: not dead, and with its muscles (the dead a level
-                // places lie limp).
-                .filter(|(e, c, _, b, _)| {
-                    *e != me && !c.is_dead() && b.is_none_or(|b| b.drive.is_some())
-                })
-                .map(|(e, _, gt, b, scale)| {
-                    ((e, scale.map_or(1.0, |s| s.0)), stance::chest_point(gt, b))
-                }),
+                .map(|(e, scale, chest)| ((*e, *scale), *chest)),
         )
         .map(|((_, scale), d)| (d, scale));
+        // The behaviour's auto-target: the visible opponent within 5 m with
+        // the best (500 − d)·(cursor·dir + 0.5). Its visibility is a ray at
+        // the fixed level between the two chests; the original also asks its
+        // behaviour's own can-see callback, which Exarust does not have.
+        let cursor = forward(pb.aim);
+        pb.target = crate::player_behaviour::auto_target(
+            from * 100.0,
+            cursor,
+            candidates.iter().map(|(_, _, chest)| {
+                let to = *chest - from;
+                let visible = to.length() < 1e-4
+                    || physics.as_ref().is_none_or(|physics| {
+                        physics
+                            .fixed_hit(from, to.normalize_or_zero(), to.length())
+                            .is_none()
+                    });
+                crate::player_behaviour::AimCandidate {
+                    at: *chest * 100.0,
+                    visible,
+                    skipped: false,
+                }
+            }),
+        )
+        .map(|index| candidates[index].0);
         // Dazed, its energy more than 0.05 under its most, it guards.
         let dazed = body
             .and_then(|b| b.drive.as_ref())
@@ -1219,24 +1395,33 @@ pub(crate) fn player_combat(
         if fallen || condition.is_some_and(|c| c.helpless()) || !pb.combat {
             continue;
         }
-        // The eased aim cursor's direction, once a stick asks for it.
-        let pad_aim = aim_cursor
+        // The eased aim cursor's direction, once a stick asks for it; the
+        // mouse's point under the cursor otherwise.
+        let aim = aim_cursor
             .0
-            .map(|point| point - player.translation())
-            .filter(|to| to.xz().length() > 0.2)
-            .map(yaw_of);
-        let aim = pad_aim.or_else(|| {
-            cursor
-                .0
-                .map(|c| c - player.translation())
-                .filter(|to| to.xz().length() > 0.2)
-                .map(yaw_of)
-        });
+            .and_then(|point| aim_from(player.translation(), point))
+            .or_else(|| {
+                cursor
+                    .0
+                    .and_then(|point| aim_from(player.translation(), point))
+            });
         if let Some(aim) = aim {
             pb.aim = aim;
             req.heading = combat_heading(req.heading, aim, pb.attack.requested);
         }
     }
+}
+
+/// The point under the cursor is kept as the combat aim once it is 50 cm or
+/// more from the player across the ground (the original's aim direction is
+/// only rewritten from 50 cm out, so nearer points keep the last aim).
+const AIM_MIN_CM: f32 = 50.0;
+
+/// The combat aim's yaw from a point under the cursor (m), or none while the
+/// point is nearer than [`AIM_MIN_CM`].
+fn aim_from(from: Vec3, to: Vec3) -> Option<f32> {
+    let to = (to - from).with_y(0.0);
+    (to.length() >= AIM_MIN_CM / 100.0).then(|| yaw_of(to))
 }
 
 /// The player's attack request, each behaviour tick, as the original's: in
@@ -1965,6 +2150,47 @@ mod tests {
         assert_eq!(stance_of(&app, player), Stance::Idle);
     }
 
+    /// The behaviour's auto-target stores the opponent the aim lock reads:
+    /// the one ahead within 5 m, cleared out of combat mode and for one
+    /// behind the cursor; a nearer one wins.
+    #[test]
+    fn the_aim_target_is_the_opponent_ahead() {
+        let (mut app, player, foe) = stance_app(4.0);
+        app.update();
+        assert_eq!(
+            app.world().get::<PlayerBody>(player).unwrap().aim_target(),
+            Some(foe)
+        );
+        place(&mut app, foe, Vec3::new(0.0, 0.0, -2.0));
+        app.update();
+        assert_eq!(
+            app.world().get::<PlayerBody>(player).unwrap().aim_target(),
+            None
+        );
+        place(&mut app, foe, Vec3::new(0.0, 0.0, 2.0));
+        let near = app
+            .world_mut()
+            .spawn((
+                Fighter::default(),
+                GlobalTransform::from_translation(Vec3::new(0.0, 0.0, 1.0)),
+            ))
+            .id();
+        app.update();
+        assert_eq!(
+            app.world().get::<PlayerBody>(player).unwrap().aim_target(),
+            Some(near)
+        );
+        app.world_mut()
+            .get_mut::<PlayerBody>(player)
+            .unwrap()
+            .set_combat(false);
+        app.update();
+        assert_eq!(
+            app.world().get::<PlayerBody>(player).unwrap().aim_target(),
+            None
+        );
+    }
+
     /// While attacking, and for 3 s after its attack's last tick, the
     /// player stays in the combat idle with no target near.
     #[test]
@@ -1988,6 +2214,23 @@ mod tests {
         assert_eq!(stance_of(&app, player), Stance::Defence);
     }
 
+    /// The combat aim keeps a cursor point 50 cm or more out across the
+    /// ground, drops its height, and keeps the last aim below 50 cm.
+    #[test]
+    fn the_combat_aim_needs_a_fifty_centimetre_cursor() {
+        // +X 60 cm out is a quarter turn from +Z.
+        let aim = aim_from(Vec3::ZERO, Vec3::new(0.6, 3.0, 0.0)).unwrap();
+        assert!((aim - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
+        // Exactly 50 cm is kept; 49.9 cm is not; a point straight above the
+        // player is not.
+        assert!(aim_from(Vec3::ZERO, Vec3::new(0.0, 0.0, 0.5)).is_some());
+        assert!(aim_from(Vec3::ZERO, Vec3::new(0.0, 0.0, 0.499_9)).is_none());
+        assert!(aim_from(Vec3::ZERO, Vec3::new(0.0, 10.0, 0.0)).is_none());
+        // A point behind is the half turn.
+        let behind = aim_from(Vec3::ZERO, Vec3::new(0.0, 0.0, -1.0)).unwrap();
+        assert!((behind.abs() - std::f32::consts::PI).abs() < 1e-6);
+    }
+
     /// The interim footwork, one behaviour tick, on open ground: a step of
     /// 80 cm, the line walk ending where asked.
     fn steps(
@@ -2004,6 +2247,7 @@ mod tests {
             ground: 0.0,
             step_cm: STEP_LENGTH * 100.0,
             long_step_cm: STEP_LENGTH * 100.0,
+            crouched_step_cm: crouched_step_length(STEP_LENGTH * 100.0, 1.0),
             scale_root: 1.0,
             line: &open,
         };
@@ -2040,6 +2284,7 @@ mod tests {
                 ground: 0.0,
                 step_cm: STEP_LENGTH * 100.0,
                 long_step_cm: STEP_LENGTH * 100.0,
+                crouched_step_cm: crouched_step_length(STEP_LENGTH * 100.0, 1.0),
                 scale_root: 1.0,
                 line: &wall,
             };
@@ -2089,6 +2334,7 @@ mod tests {
                 ground: 0.0,
                 step_cm,
                 long_step_cm,
+                crouched_step_cm: crouched_step_length(step_cm, 1.0),
                 scale_root: 1.0,
                 line: &open,
             };
@@ -2135,6 +2381,7 @@ mod tests {
                 ground: 0.0,
                 step_cm: STEP_LENGTH * 100.0,
                 long_step_cm: long_step_length(80.0, 0.0),
+                crouched_step_cm: crouched_step_length(STEP_LENGTH * 100.0, 1.0),
                 scale_root: 1.0,
                 line: &open,
             };
@@ -2162,6 +2409,70 @@ mod tests {
         assert_eq!(aim(f32::NAN).to_bits(), STEP_LENGTH.to_bits());
     }
 
+    /// Past a crouch of a half the footwork's step is 0.7 of the plain one,
+    /// even with the long-step latch held; at a half it is the plain step,
+    /// and a NaN crouch fails the ordered compare and keeps the plain step.
+    #[test]
+    fn a_deep_crouch_shortens_the_step_to_seven_tenths() {
+        let open = |_: Vec3, to: Vec3| (to, false);
+        let aim = |crouch: f32, long: bool| {
+            let mut req = Locomotion::default();
+            let mut pb = PlayerBody::new(0.0).crouching(crouch);
+            if long {
+                pb.held = STEP_HOLD;
+                pb.held_keys = 1;
+                pb.long = true;
+            }
+            pb.set_combat(true);
+            let mut anim = Animator::new("Default", "Defence stance");
+            let footing = Footwork {
+                chest: Vec3::ZERO,
+                ground: 0.0,
+                step_cm: STEP_LENGTH * 100.0,
+                long_step_cm: long_step_length(80.0, 0.0),
+                crouched_step_cm: crouched_step_length(STEP_LENGTH * 100.0, 1.0),
+                scale_root: 1.0,
+                line: &open,
+            };
+            let mut steering = pb.steering;
+            combat_steps(
+                &Keys {
+                    w: true,
+                    ..Keys::default()
+                },
+                &mut req,
+                &mut steering,
+                &mut pb,
+                &mut anim,
+                Stance::Defence,
+                false,
+                &footing,
+                0.012,
+            );
+            steering.line.unwrap().to.z
+        };
+        // 80 cm at a half, 56 cm past it.
+        assert_eq!(aim(0.5, false).to_bits(), STEP_LENGTH.to_bits());
+        assert_eq!(aim(0.6, false).to_bits(), 0.56f32.to_bits());
+        // Held long, the deep crouch is 0.7 of the plain 80, not of 120.
+        assert_eq!(aim(0.6, true).to_bits(), 0.56f32.to_bits());
+        // A NaN crouch fails the ordered compare: the plain step.
+        assert_eq!(aim(f32::NAN, false).to_bits(), STEP_LENGTH.to_bits());
+    }
+
+    /// The deep-crouched step takes 0.7 of the reach in double precision
+    /// and only then the legs' extension: a 72 cm reach at an extension of
+    /// 0.9 gives 45.36 (the bits 1110798500), one ulp over the 0.7 of the
+    /// already extended step.
+    #[test]
+    fn the_crouched_step_extends_after_the_seven_tenths() {
+        assert_eq!(crouched_step_length(72.0, 0.9).to_bits(), 1_110_798_500);
+        let extended_first = (f64::from(72.0f32 * 0.9) * CROUCH_STEP) as f32;
+        assert_eq!(extended_first.to_bits(), 1_110_798_499);
+        assert_eq!(crouched_step_length(80.0, 1.0), 56.0);
+        assert!(crouched_step_length(80.0, f32::NAN).is_nan());
+    }
+
     /// The long step is a latch: the same keys must be held strictly over
     /// 200 ms (the 17th 12 ms tick), and a crouch raised afterwards does not
     /// clear it; a key change or a release does.
@@ -2177,6 +2488,7 @@ mod tests {
             ground: 0.0,
             step_cm: 80.0,
             long_step_cm: 120.0,
+            crouched_step_cm: crouched_step_length(80.0, 1.0),
             scale_root: 1.0,
             line: &open,
         };
@@ -2283,6 +2595,7 @@ mod tests {
             ground: 0.0,
             step_cm: 80.0,
             long_step_cm: 120.0,
+            crouched_step_cm: crouched_step_length(80.0, 1.0),
             scale_root: 1.0,
             line: &open,
         };
@@ -2344,6 +2657,7 @@ mod tests {
                 ground: 0.0,
                 step_cm: STEP_LENGTH * 100.0,
                 long_step_cm: STEP_LENGTH * 100.0,
+                crouched_step_cm: crouched_step_length(STEP_LENGTH * 100.0, 1.0),
                 scale_root: 1.0,
                 line: &open,
             };
@@ -2388,6 +2702,7 @@ mod tests {
                     ground: 0.0,
                     step_cm: STEP_LENGTH * 100.0,
                     long_step_cm: STEP_LENGTH * 100.0,
+                    crouched_step_cm: crouched_step_length(STEP_LENGTH * 100.0, 1.0),
                     scale_root: 1.0,
                     line: &line,
                 };

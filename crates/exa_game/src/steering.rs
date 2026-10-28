@@ -65,9 +65,6 @@ const COMBAT_LOOK_AHEAD: f32 = 45.0;
 const LOOK_AHEAD_SPEED: f32 = 6.0;
 const LOOK_BEHIND: f32 = -70.0;
 const RUN_CUT_WITHIN: f32 = 100.0;
-/// A footwork step is not taken unless the clamped target's squared
-/// distance, in centimetres and in three dimensions, is over this (cm²).
-const STEP_FROM_CM2: f32 = 400.0;
 /// The behaviour tick on which the character is moved onto the grid's
 /// nearest walkable point, unless the condition has [`SNAP_HELD`] (down,
 /// getting up or dead).
@@ -132,6 +129,105 @@ pub(crate) const TAP_MS: u64 = 200;
 /// The crouch amount under which a held word counts as a tap (compared in
 /// double precision against 0.1).
 pub(crate) const TAP_CROUCH: f64 = 0.1;
+
+/// A side key's share of the facing in the movement goal's direction.
+pub(crate) const GOAL_SIDE: f32 = 0.8;
+/// A tap's stride share: `1.5 − 0.3·encumbrance`, worked in double
+/// precision.
+pub(crate) const TAP_STRIDE: f64 = 1.5;
+pub(crate) const TAP_STRIDE_ENC: f64 = 0.3;
+/// The squared distance (cm²) past which the goal lets go of the movement
+/// target: 400, the square of 20 cm.
+pub(crate) const GOAL_RELEASE2: f32 = 400.0;
+
+/// The direction the movement goal asks for, in the body's frame: the
+/// word's key sum with the side at [`GOAL_SIDE`], its height dropped (the
+/// goal zeroes it before taking the length). The analog word is its own
+/// direction and does not come through here.
+///
+/// Kept as a tested rule: Exarust's exploration request walks by the body's
+/// look-ahead, not by this goal, so nothing calls it yet.
+#[allow(dead_code)]
+pub(crate) fn key_goal_direction(facing: Vec3, word: u32) -> Vec3 {
+    key_sum(facing, word, GOAL_SIDE).with_y(0.0)
+}
+
+/// A movement word's raw key sum: forward is the facing, back its
+/// negation, left and right the side vector `(facing.z, 0, −facing.x)`
+/// (the cross of up and the facing) times `side_share`, added in the
+/// original's bit order (W, A, D, S); no bit gives zero.
+#[allow(dead_code)]
+fn key_sum(facing: Vec3, word: u32, side_share: f32) -> Vec3 {
+    let side = Vec3::new(facing.z, 0.0, -facing.x) * side_share;
+    let mut dir = if word & MOVE_FORWARD != 0 {
+        facing
+    } else {
+        Vec3::ZERO
+    };
+    if word & MOVE_LEFT != 0 {
+        dir += side;
+    }
+    if word & MOVE_RIGHT != 0 {
+        dir -= side;
+    }
+    if word & MOVE_BACK != 0 {
+        dir -= facing;
+    }
+    dir
+}
+
+/// The stride (cm) a movement goal is laid at: the body's stored step
+/// reach (`step_cm`, before the legs' extension), while the word is a tap
+/// `(1.5 − 0.3·encumbrance)` times it (in double precision, narrowed once),
+/// then times the legs' `extension`, then times the clock factor, in the
+/// original's order.
+///
+/// Kept as a tested rule with the same missing caller as
+/// [`key_goal_direction`]. Not modelled: a lone forward word with a target
+/// lets the target's own approach rule bend the goal.
+#[allow(dead_code)]
+pub(crate) fn goal_stride(
+    step_cm: f32,
+    extension: f32,
+    clock: f32,
+    encumbrance: f32,
+    tap: bool,
+) -> f32 {
+    let stride = if tap {
+        ((TAP_STRIDE - f64::from(encumbrance) * TAP_STRIDE_ENC) * f64::from(step_cm)) as f32
+    } else {
+        step_cm
+    };
+    (stride * extension) * clock
+}
+
+/// The step vector a movement word asks for (cm), the original's key
+/// direction scaled by `(step·factor)/|dir|`: W is the facing, S back, A and
+/// D the full side vector (unlike the goal's 0.8 share), the analog word its
+/// own stored direction; the height is dropped from either, and a zero
+/// direction divides by zero as the original does.
+///
+/// Kept as a tested rule: the running request walks by the look-ahead, so
+/// nothing calls it yet.
+#[allow(dead_code)]
+pub(crate) fn key_step(facing: Vec3, word: u32, analog: Vec3, step_cm: f32, factor: f32) -> Vec3 {
+    let dir = if word == MOVE_ANALOG {
+        analog
+    } else {
+        key_sum(facing, word, 1.0)
+    }
+    .with_y(0.0);
+    let length = dir.length();
+    dir * ((step_cm * 1.0 * factor) / length)
+}
+
+/// Whether a goal this far from the body (cm) lets go of the movement
+/// target: the squared distance, summed in the original's order, strictly
+/// over [`GOAL_RELEASE2`], so 20 cm does not and 20.1 cm does (a NaN never
+/// does).
+pub(crate) fn goal_released(offset: Vec3) -> bool {
+    GOAL_RELEASE2 < (offset.x * offset.x + offset.y * offset.y) + offset.z * offset.z
+}
 /// The analog stick's squared length over which the analog word replaces
 /// the keys (compared in double precision against 0.01).
 pub(crate) const ANALOG_DEAD_ZONE: f64 = 0.01;
@@ -713,7 +809,7 @@ impl Steering {
         let asked = ask(line, Asked::Step, from, target);
         self.line = Some(asked);
         let centimetres = (asked.end - chest) * CM;
-        (centimetres.length_squared() > STEP_FROM_CM2).then_some(asked.end)
+        goal_released(centimetres).then_some(asked.end)
     }
 }
 

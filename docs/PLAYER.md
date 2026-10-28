@@ -26,8 +26,9 @@ decides from it each tick (below). Outside combat:
   press, so a quick tap still takes a step; a word held longer clears as
   soon as it is released. Opposing keys cancel in the word (A with D, W
   with S). A word that stays the same past 200 ms while the body's crouch
-  is under 0.1 is flagged a tap (the footwork's long step, not wired);
-  the movement target is let go once the word has been zero 200 ms past
+  is under 0.1 is flagged a tap (the goal's longer stride, a tested rule
+  with no caller); the movement target is let go once the word has been
+  zero 200 ms past
   its last nonzero tick. The pad's analog stick is its own word once its
   squared length is over 0.01 (in double precision; a NaN reads the keys)
   (`steering::MoveWord`).
@@ -824,7 +825,11 @@ reaches, one double product narrowed once (120 cm unencumbered, 97.2 cm
 at encumbrance 0.5 on a 72 cm reach). The float 0.1 is already above that
 double, so a crouch of 0.1 keeps the short reach, and a crouch raised
 after the latch is set does not clear it; only a key change or release
-does. The legs' extension scales both lengths, so a half extension halves
+does. Past a crouch of a half any step is 0.7 of the reach, latch or
+not, the product worked in double precision and narrowed before the legs'
+extension; a NaN crouch fails the ordered compare and keeps the mode's
+step. The legs' extension scales both
+lengths, so a half extension halves
 the tap and the held step, and √scale scales the displacement once more.
 A side key weighs 0.8 of the facing, and the target is the chest plus the
 raw key sum scaled by (fd4·√scale)/|v| in centimetres, so a diagonal aims
@@ -846,7 +851,9 @@ original's player behaviour and body tick skip them for mask `0xAC0`.
 
 - **Facing.** The heading turns to the cursor's direction once it is more
   than 30° off it, and follows it exactly while an attack is requested
-  (the left button held). The body turns toward the heading by the
+  (the left button held). The cursor's direction is kept only once its
+  point is 50 cm or more from the player across the ground; nearer points
+  keep the last aim. The body turns toward the heading by the
   table: standing 300°/s (combat mode has no slow turn), eased over the
   last 0.6 rad; while it attacks, at (1 − 0.6·enc)·(1 − 0.25·progress)·B·W16·P / scale a tick
   (B = 240°/s, W16 the primary striker's handling, P the swing strength,
@@ -989,8 +996,8 @@ original's player behaviour and body tick skip them for mask `0xAC0`.
 ### The behaviour's aim and contact rules
 
 The player's behaviour keeps these rules (`player_behaviour`); the gamepad
-aim's point and ease are wired, the others are tested functions with no
-caller yet:
+aim's point and ease, the combat auto-target and the aim point's bone lock
+are wired, the rest are tested functions with no caller yet:
 
 - **Aim point.** The cursor's point on the plane 80 cm over the player's
   ground; with a target, the nearest of its bones on screen (each bone's
@@ -1004,6 +1011,13 @@ caller yet:
   the point the cursor's pick meets replaces it when it is above the
   plane's point and under the ground plus 200 cm
   (`aim_lock_bones`, `bone_screen`, `bone_lock_radius`, `aim_raised`).
+  `player::cursor_ground` runs it each frame: the auto-target's opponent
+  gives the reference point (its chest) and three of its part origins —
+  the head, the belly and the pelvis, a stand-in for the original's own
+  three aim points — and the pixel radius uses the window's width and the
+  projection's x scale. The raised point comes from the level's fixed
+  colliders along the cursor's ray (the original's navigation pick also
+  admits marked non-solid nodes).
 - **Contacts.** Every character within 12 m, rebuilt each tick: closeness
   `1 − d·0.00083333335` capped at 0.99, facing weight `0.75·(0.5 −
   0.5·facing·dir) + 0.25·(0.5 − 0.5·cursor·dir)²`, score half of each;
@@ -1018,11 +1032,24 @@ caller yet:
   floored at 0.01; the expected end `1000/(80·step)` ms on, at most the
   swing's length; the recovery `(2f + 1)·(round(100·recoil) + 100)` ms, f
   being `(3 − 2b)·b²` for `b = balance/0.7` while the attack motion (5 to
-  12) is on and the balance is at most 0.7, else 1. The executor reads the
-  recovery clock only for Feint, which the running swing already keeps
-  (`exa_combat::swing`), so this copy has no caller. The fists' 0.1 recoil at
+  12) is on and the balance is at most 0.7, else 1. The running game
+  records it when an attack starts and holds the next attack until the
+  recovery clock (unless the swing has been released, which keeps its own
+  stall and renewal). The fists' 0.1 recoil at
   full energy give a 0.285 step, a 44 ms expected end and 330 ms of
   recovery at full balance.
+- **Movement goal.** A word's direction is the facing (W), the side
+  `(facing.z, 0, −facing.x)` at 0.8 (A, D) and back (S), summed and
+  flattened; the step vector sums the same keys with the full side vector
+  (no 0.8 share), flattens it (the pad's own stored direction instead) and
+  scales it by `step·factor / |dir|`; a tapped word lays the goal at
+  `(1.5 − 0.3·encumbrance)` of the reach (in double precision), then the
+  legs' extension and the clock factor; and a goal more than 400 cm² from
+  the body lets go of the movement target. Exarust's exploration request walks by the body's
+  look-ahead and does not build this goal, so the direction, the step
+  vector and the tap stride are tested rules with no caller
+  (`steering::key_goal_direction`, `key_step`, `goal_stride`); the 400 cm²
+  test is the footwork's step test (`goal_released`).
 - **Auto-target.** The visible opponent within 500 cm whose
   `(500 − d)·(δ·cursor/d + 0.5)` is the largest, strictly over the best
   from zero (so a zero, negative or NaN score never wins), the first on a

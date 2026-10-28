@@ -778,3 +778,116 @@ fn a_held_word_counts_as_a_tap() {
     let mut w = MoveWord::default();
     assert_eq!(w.tick(0, fwd, Vec2::new(f32::NAN, 0.0), 0.0), MOVE_FORWARD);
 }
+
+/// The movement goal's direction: W is the facing, S back, A and D the side
+/// vector at 0.8, and the bits add in the original's order (W then A, D and
+/// S); no bit gives zero.
+#[test]
+fn the_key_goal_takes_the_facing_and_the_scaled_side() {
+    let facing = Vec3::Z;
+    assert_eq!(
+        key_goal_direction(facing, MOVE_FORWARD),
+        Vec3::new(0.0, 0.0, 1.0)
+    );
+    assert_eq!(key_goal_direction(facing, 0), Vec3::ZERO);
+    // +Z facing: the side is (1, 0, 0), so A adds 0.8 of it and D takes it.
+    assert_eq!(
+        key_goal_direction(facing, MOVE_LEFT),
+        Vec3::new(0.8, 0.0, 0.0)
+    );
+    assert_eq!(
+        key_goal_direction(facing, MOVE_RIGHT),
+        Vec3::new(-0.8, 0.0, 0.0)
+    );
+    assert_eq!(
+        key_goal_direction(facing, MOVE_FORWARD | MOVE_LEFT),
+        Vec3::new(0.8, 0.0, 1.0)
+    );
+    assert_eq!(
+        key_goal_direction(facing, MOVE_BACK | MOVE_RIGHT),
+        Vec3::new(-0.8, 0.0, -1.0)
+    );
+    // Facing +X: the side is (0, 0, -1), at 0.8.
+    let facing = Vec3::X;
+    assert_eq!(
+        key_goal_direction(facing, MOVE_LEFT),
+        Vec3::new(0.0, 0.0, -0.8)
+    );
+    // The goal zeroes the height of a raised facing.
+    assert_eq!(
+        key_goal_direction(Vec3::new(0.0, 0.5, 1.0), MOVE_FORWARD),
+        Vec3::new(0.0, 0.0, 1.0)
+    );
+}
+
+/// A tapped word lengthens the stride to `(1.5 − 0.3·encumbrance)` of the
+/// reach, in double precision, then multiplies the legs' extension and the
+/// clock factor; a held word keeps the reach.
+#[test]
+fn a_tap_takes_a_longer_stride() {
+    // 80 cm, encumbrance 0, clock 1: 120 cm; encumbrance 0.5: 108 cm.
+    assert_eq!(goal_stride(80.0, 1.0, 1.0, 0.0, true), 120.0);
+    assert_eq!(goal_stride(80.0, 1.0, 1.0, 0.5, true), 108.0);
+    assert_eq!(goal_stride(80.0, 1.0, 0.25, 0.0, true), 30.0);
+    assert_eq!(goal_stride(80.0, 1.0, 1.0, 0.0, false), 80.0);
+    // A half extension halves either stride.
+    assert_eq!(goal_stride(80.0, 0.5, 1.0, 0.0, true), 60.0);
+    assert_eq!(goal_stride(80.0, 0.5, 1.0, 0.0, false), 40.0);
+    // The double product narrows once: (1.5 − 0.3·0.1)·72 = 105.84.
+    assert_eq!(goal_stride(72.0, 1.0, 1.0, 0.1, true), 105.84);
+    // A NaN encumbrance makes a tap's stride NaN.
+    assert!(goal_stride(80.0, 1.0, 1.0, f32::NAN, true).is_nan());
+}
+
+/// The goal lets go of the movement target past 400 cm² (20 cm): 20 cm does
+/// not, 20.1 does, and a NaN height never does.
+#[test]
+fn the_goal_releases_past_four_hundred_squared_centimetres() {
+    assert!(!goal_released(Vec3::new(0.0, 0.0, 20.0)));
+    assert!(goal_released(Vec3::new(0.0, 0.0, 20.1)));
+    assert!(!goal_released(Vec3::new(20.0, 0.0, 0.0)));
+    assert!(goal_released(Vec3::new(20.1, 0.0, 0.0)));
+    assert!(!goal_released(Vec3::new(0.0, 20.0, 0.0)));
+    assert!(goal_released(Vec3::new(0.0, 20.1, 0.0)));
+    assert!(!goal_released(Vec3::new(0.0, f32::NAN, 0.0)));
+    // 400 cm² across the ground with 0 height.
+    assert!(!goal_released(Vec3::new(0.0, 0.0, 400.0f32.sqrt())));
+}
+
+/// The movement word's step vector is its direction scaled to the body's
+/// step times its factor, over the direction's length, with the height
+/// dropped: 80 cm along +Z, 80 cm of a diagonal kept with the full side
+/// vector (no 0.8 share here), the pad's own direction; a zero word divides
+/// by zero.
+#[test]
+fn the_key_step_is_the_word_scaled_to_the_step() {
+    let facing = Vec3::Z;
+    let step = key_step(facing, MOVE_FORWARD, Vec3::ZERO, 80.0, 1.0);
+    assert_eq!(step, Vec3::new(0.0, 0.0, 80.0));
+    // W and A: (1, 0, 1) over √2, times 80, is 56.5685 cm on each axis.
+    let diagonal = key_step(facing, MOVE_FORWARD | MOVE_LEFT, Vec3::ZERO, 80.0, 1.0);
+    assert!((diagonal.x - 56.568_5).abs() < 1e-3, "{diagonal}");
+    assert!((diagonal.z - 56.568_5).abs() < 1e-3, "{diagonal}");
+    assert_eq!(diagonal.x, diagonal.z);
+    assert!((diagonal.length() - 80.0).abs() < 1e-4);
+    // A raised facing loses its height before the length is taken.
+    let raised = key_step(
+        Vec3::new(0.0, 0.5, 1.0),
+        MOVE_FORWARD,
+        Vec3::ZERO,
+        80.0,
+        1.0,
+    );
+    assert_eq!(raised, Vec3::new(0.0, 0.0, 80.0));
+    // A pure side step keeps the full step.
+    let side = key_step(facing, MOVE_LEFT, Vec3::ZERO, 80.0, 1.0);
+    assert_eq!(side, Vec3::new(80.0, 0.0, 0.0));
+    // The factor scales it (the step's clock share).
+    let half = key_step(facing, MOVE_FORWARD, Vec3::ZERO, 80.0, 0.5);
+    assert_eq!(half, Vec3::new(0.0, 0.0, 40.0));
+    // The pad's direction, its height dropped.
+    let analog = key_step(facing, MOVE_ANALOG, Vec3::new(0.0, 3.0, 2.0), 50.0, 1.0);
+    assert_eq!(analog, Vec3::new(0.0, 0.0, 50.0));
+    // No direction: the division by zero gives a NaN vector.
+    assert!(key_step(facing, 0, Vec3::ZERO, 80.0, 1.0).is_nan());
+}
