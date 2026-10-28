@@ -135,3 +135,69 @@ fn a_disabled_link_is_skipped_and_a_world_link_moves_the_item_alone() {
     let point = item_body.point_at(0, &[1.0, 0.0, 0.0, 0.0]).unwrap();
     assert!((point - anchor).length() < 0.001);
 }
+
+/// The builder turns a held item and its character body into the grip's
+/// links: the table's one main pivot, then the two disabled world welds.
+#[test]
+fn a_held_items_links_are_built_from_its_bodies() {
+    use crate::body::PartSetup;
+    use crate::grip::{GripPoint, GripSpec, HeldGrip};
+
+    let owner = Entity::from_raw_u32(10).unwrap();
+    let hand = Entity::from_raw_u32(11).unwrap();
+    let item = Entity::from_raw_u32(20).unwrap();
+    let setup = |bone, entity, parent, at| PartSetup {
+        bone,
+        entity,
+        parent,
+        world: Affine3A::from_translation(at),
+        centre: Vec3::ZERO,
+        half: Vec3::splat(0.1),
+        origin: Vec3::ZERO,
+        links: vec![],
+        foot: None,
+        pins: Vec::new(),
+        spheres: None,
+    };
+    let holder = Ragdoll::new(&[
+        setup(1, owner, None, Vec3::ZERO),
+        setup(17, hand, Some(0), Vec3::new(0.2, 0.0, 0.0)),
+    ])
+    .with_drive();
+    let item_body = rigid(item, Vec3::new(0.2, 0.4, 0.0), 1.0);
+    let grip = HeldGrip {
+        spec: GripSpec {
+            hand: 0,
+            links: vec![GripPoint {
+                point: Vec3::new(0.0, 20.0, 0.0),
+                slack: 0.0,
+            }],
+            second_hand: None,
+            arm: None,
+            extra: None,
+        },
+        scale: 1.0,
+        size: 1.0,
+        second_hand_factor: 1.0,
+        flip: false,
+        holder_key: owner,
+        hands: [Some(hand), None],
+        arms: [Some(hand), None],
+        links: None,
+        released: false,
+    };
+    let mut app = App::new();
+    app.add_systems(Update, crate::grip_solve::build_grips);
+    let holder_e = app.world_mut().spawn(holder).id();
+    let item_e = app.world_mut().spawn((item_body, grip)).id();
+    app.update();
+    let grip = app.world().get::<HeldGrip>(item_e).unwrap();
+    let links = grip.links.as_ref().expect("the links were not built");
+    assert_eq!(links.links.len(), 3);
+    assert_eq!(links.main, 0);
+    assert_eq!(links.world_soft, Some(1));
+    assert_eq!(links.world_hard, Some(2));
+    assert_eq!(links.links[1].flags & DISABLED, DISABLED);
+    assert!(links.links[0].enabled());
+    assert!(holder_e != Entity::PLACEHOLDER);
+}

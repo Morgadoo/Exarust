@@ -2202,6 +2202,12 @@ impl Ragdoll {
         }
     }
 
+    /// Rebuilds the body's own group masks after it stops being held (or
+    /// after a link change), as the original's group builder does.
+    pub fn reset_groups(&mut self) {
+        pairs::mask_groups(&mut self.parts);
+    }
+
     /// Gives a living body its race's muscle factors.
     pub fn with_race(mut self, race: RaceMuscles) -> Self {
         if let Some(d) = self.drive.as_mut() {

@@ -150,7 +150,7 @@ impl SolverStage for GripSolver {
 /// solver; [`mark_held`] then wakes the item's body.
 pub fn build_grips(mut held: Query<(Entity, &mut HeldGrip)>, bodies: Query<&Ragdoll>) {
     for (entity, mut grip) in &mut held {
-        if grip.links.is_some() {
+        if grip.links.is_some() || grip.released {
             continue;
         }
         let Ok(item) = bodies.get(entity) else {
@@ -212,7 +212,7 @@ pub fn build_grips(mut held: Query<(Entity, &mut HeldGrip)>, bodies: Query<&Ragd
             continue;
         };
         let item_to_hand = hold_part.transform().inverse() * item_part.transform();
-        if let Some(links) = grip::build(
+        if let Some(mut links) = grip::build(
             item,
             holder,
             grip::GripBindings {
@@ -227,6 +227,29 @@ pub fn build_grips(mut held: Query<(Entity, &mut HeldGrip)>, bodies: Query<&Ragd
             grip.flip,
             grip.second_hand_factor,
         ) {
+            // The two world welds every armed character's item gets: a soft
+            // one 0.3 of the item's node box height above the grip and a
+            // stiff one at its origin, both built disabled.
+            let centre = item
+                .parts
+                .first()
+                .map(|p| p.pairing.mesh.centre)
+                .unwrap_or(Vec3::ZERO);
+            let soft = Vec3::new(0.0, (centre.y * 2.0) * 0.3 * 100.0, 0.0);
+            if let Some((soft, hard)) = grip::world_links(
+                item,
+                grip::GripBindings {
+                    item_part: HeldGrip::ITEM_PART,
+                    hand_parts: hands,
+                    arm_parts: arms,
+                },
+                soft,
+            ) {
+                links.world_soft = Some(links.links.len());
+                links.links.push(soft);
+                links.world_hard = Some(links.links.len());
+                links.links.push(hard);
+            }
             grip.links = Some(links);
         }
     }
@@ -244,8 +267,45 @@ pub fn mark_held(mut held: Query<(&HeldGrip, &mut Ragdoll)>) {
         body.set_held_group();
         for part in &mut body.parts {
             part.state = part.state.with(crate::part::PartState::HELD);
+            // A held item's friction is the character constructor's 0.5.
+            part.friction = 0.5;
         }
         body.wake_to(crate::body::WAKE_COUNT);
+    }
+}
+
+/// Releases the items whose holder has gone limp or left: the link records
+/// stop acting, the item body loses its holder and held mask, takes the
+/// dropped weapon's friction and falls free (`0x155a20`/`0x155880`).
+pub fn release_freed_grips(
+    mut commands: Commands,
+    mut held: Query<(Entity, &mut HeldGrip, &mut Ragdoll)>,
+    bodies: Query<&Ragdoll, Without<HeldGrip>>,
+) {
+    for (entity, mut grip, mut body) in &mut held {
+        if grip.released || grip.links.is_none() {
+            continue;
+        }
+        let owner = bodies
+            .iter()
+            .find(|b| b.parts.first().is_some_and(|p| p.entity == grip.holder_key));
+        let let_go = owner.is_none_or(|o| o.drive.is_none());
+        if !let_go {
+            continue;
+        }
+        grip.released = true;
+        grip.links = None;
+        body.held_by = None;
+        body.reset_groups();
+        for part in &mut body.parts {
+            part.state = crate::part::PartState(0);
+            part.friction = 0.75;
+        }
+        body.wake_to(crate::body::WAKE_COUNT);
+        commands
+            .entity(entity)
+            .remove::<crate::grip::HeldGrip>()
+            .remove::<ChildOf>();
     }
 }
 
@@ -289,7 +349,7 @@ pub fn install_stage(mut stages: ResMut<SolverStages>) {
 pub fn plugin(app: &mut App) {
     app.add_systems(Startup, install_stage).add_systems(
         FixedUpdate,
-        (build_grips, mark_held, sync_grips)
+        (build_grips, release_freed_grips, mark_held, sync_grips)
             .chain()
             .before(BodySystems),
     );

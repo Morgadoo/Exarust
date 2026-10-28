@@ -217,6 +217,8 @@ pub struct HeldGrip {
     pub arms: [Option<Entity>; 2],
     /// The built links, once both bodies exist.
     pub links: Option<GripLinks>,
+    /// The holder let go (died or collapsed): the links are not rebuilt.
+    pub released: bool,
 }
 
 impl HeldGrip {
@@ -407,10 +409,13 @@ pub fn build(
     } else {
         Some(main)
     };
+    // The table's entries carry at least two main links; a one-link spec
+    // (not shipped) takes its only point, where the original would read
+    // the next slot.
     let flip_point = if spec.second_hand.is_some() {
         spec.links.first()?.point * scale
     } else {
-        spec.links.get(1)?.point * scale
+        spec.links.get(1).or_else(|| spec.links.first())?.point * scale
     };
     Some(GripLinks {
         links,

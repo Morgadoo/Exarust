@@ -213,6 +213,7 @@ fn light_torches(
                     ],
                     arms: [by_bone.get(&13).copied(), by_bone.get(&16).copied()],
                     links: None,
+                    released: false,
                 },
             ));
         }

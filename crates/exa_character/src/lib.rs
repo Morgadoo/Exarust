@@ -978,6 +978,7 @@ fn equip_outfits(
                             by_bone.get(&FOREARM_BONES[1]).copied(),
                         ],
                         links: None,
+                        released: false,
                     },
                 ));
             }
