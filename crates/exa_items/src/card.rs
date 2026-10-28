@@ -534,40 +534,58 @@ pub struct CardContent {
 /// middle below `0x80` and between the middle and high above it, by the
 /// original's factors. A model whose flags carry bit 2 maps the byte over
 /// the whole range instead. The weapon and apparel cards read the two
-/// ranges' factors in opposite order.
+/// ranges' factors in opposite order. Every weight is a double-precision
+/// product narrowed to single.
 pub fn title_colour(condition: u8, model_tinted: bool, weapon: bool) -> (u32, u32, f32) {
+    const BY_255: f64 = 0.003_921_568_627_450_98;
+    const BY_127: f64 = 0.007_874_015_748_031_496;
+    const BY_128: f64 = 0.007_812_5;
     if model_tinted {
-        let weight = f32::from(condition) * 0.003_921_569;
+        let weight = (f64::from(condition) * BY_255) as f32;
         return (TITLE_COLOURS[0], TITLE_COLOURS[1], weight);
     }
     if condition < 0x80 {
-        let factor = if weapon { 0.007_874_016 } else { 0.007_812_5 };
+        let factor = if weapon { BY_127 } else { BY_128 };
         (
             TITLE_COLOURS[0],
             TITLE_COLOURS[1],
-            f32::from(condition) * factor,
+            (f64::from(condition) * factor) as f32,
         )
     } else {
-        let factor = if weapon { 0.007_812_5 } else { 0.007_874_016 };
+        let factor = if weapon { BY_128 } else { BY_127 };
         (
             TITLE_COLOURS[1],
             TITLE_COLOURS[2],
-            f64::from(condition - 0x80) as f32 * factor,
+            (f64::from(condition - 0x80) * factor) as f32,
         )
     }
 }
 
 /// The colour between `low` and `high` by `weight`, channel by channel on
-/// the palette word's four bytes.
+/// the palette word's four bytes: `a + (b − a)·weight` in single precision,
+/// rounded half to even and saturated to a byte, as the engine's packed
+/// colour blend does.
 pub fn blend_colour(low: u32, high: u32, weight: f32) -> u32 {
     let mut out = 0u32;
     for shift in [0u32, 8, 16, 24] {
         let a = ((low >> shift) & 0xff) as f32;
         let b = ((high >> shift) & 0xff) as f32;
-        let value = (a + (b - a) * weight).clamp(0.0, 255.0) as u32;
+        let value = (a + (b - a) * weight).round_ties_even().clamp(0.0, 255.0) as u32;
         out |= value << shift;
     }
     out
+}
+
+/// The points a weapon card shows, from the item's flags and its skill
+/// row: the skill's low five bits, one less (not below 0) when the flags'
+/// `0x30` bits are `0x10`.
+pub fn weapon_points(flags: u32, skill: u8) -> i32 {
+    let points = i32::from(skill & 0x1f);
+    if flags & 0x30 == 0x10 {
+        (points - 1).max(0)
+    } else {
+        points
+    }
 }
 
 /// The weapon card: weight, handling and balance rows, the four striking
@@ -575,7 +593,10 @@ pub fn blend_colour(low: u32, high: u32, weight: f32) -> u32 {
 /// the socket row, the rank and points rows and the value. The damage rows
 /// fill the card's three damage slots, so a hidden Slash moves Crush and
 /// Pierce up. The control ids follow the builder's: Slash is 0xd03, Crush
-/// and Pierce follow the shown ones, Thrust is 0x106.
+/// and Pierce follow the shown ones, Thrust is 0x106. The swatch adds its
+/// height only when more than two striking rows (thrust included) show.
+/// The points row shows while the skill's low five bits are set and reads
+/// [`weapon_points`].
 #[allow(clippy::too_many_arguments)]
 pub fn weapon_content(
     flags: u32,
@@ -589,7 +610,6 @@ pub fn weapon_content(
     material: bool,
     sockets: bool,
     skill: u8,
-    points: i32,
     value: u32,
     gates: CardGates,
     value_shown: bool,
@@ -635,14 +655,15 @@ pub fn weapon_content(
             label: "Thrust",
             value: (f64::from(thrust) * 0.05) as f32,
         });
+        shown += 1;
     }
     let rank = shield_rank(gates.rank, skill);
-    let points = if gates.points && points > 0 {
-        Some(points as f32 * 0.5)
+    let points = if gates.points && skill & 0x1f != 0 {
+        Some(weapon_points(flags, skill) as f32 * 0.5)
     } else {
         None
     };
-    let extra_height = i32::from(material) * CARD_SMALL_HEIGHT
+    let extra_height = i32::from(material && shown > 2) * CARD_SMALL_HEIGHT
         + i32::from(sockets) * CARD_SOCKET_HEIGHT
         + i32::from(rank.is_some()) * CARD_SMALL_HEIGHT
         + i32::from(points.is_some()) * CARD_SMALL_HEIGHT
@@ -721,7 +742,8 @@ pub fn apparel_content(
 
 /// The shield card: weight (byte times 0.01, or 1 when the fixed flags are
 /// set), impact (times 0.05), encumbrance (times 0.05, or 8 when fixed and
-/// left out for a zero byte otherwise), rank, points and value.
+/// left out for a zero byte otherwise), then rank, points and value, which
+/// a shield with the fixed flags never shows.
 #[allow(clippy::too_many_arguments)]
 pub fn shield_content(
     flags: u32,
@@ -753,8 +775,10 @@ pub fn shield_content(
             value,
         });
     }
-    let rank = shield_rank(gates.rank, skill);
-    let points = shield_points(gates.points, skill);
+    let fixed = flags & SHIELD_FIXED != 0;
+    let rank = shield_rank(gates.rank && !fixed, skill);
+    let points = shield_points(gates.points && !fixed, skill);
+    let value_shown = value_shown && !fixed;
     let extra_height = i32::from(rank.is_some()) * CARD_SMALL_HEIGHT
         + i32::from(points.is_some()) * CARD_SMALL_HEIGHT
         + i32::from(value_shown) * CARD_SOCKET_HEIGHT;
@@ -814,11 +838,11 @@ pub struct CardBuildInput<'a> {
     pub shield: Option<ShieldStats>,
     pub sockets: bool,
     pub material: bool,
-    /// The skill row's byte (rank and, for apparel, points) and a weapon's
-    /// separate points count.
+    /// The skill row's byte (rank and points).
     pub skill: u8,
-    pub points: i32,
     pub gates: CardGates,
+    /// The value row's gate (a global setting the cards share).
+    pub value_shown: bool,
     pub description: &'a str,
     pub female: bool,
 }
@@ -829,7 +853,8 @@ pub struct CardBuildInput<'a> {
 pub struct BuiltCard {
     pub page: CardPage,
     pub value: u32,
-    pub title_colour: u32,
+    /// The title's tint; only while the rank gate is off.
+    pub title_colour: Option<u32>,
     pub content: Option<CardContent>,
     pub description: String,
 }
@@ -856,10 +881,9 @@ pub fn build_card(input: &CardBuildInput<'_>) -> Option<BuiltCard> {
                 input.material,
                 input.sockets,
                 input.skill,
-                input.points,
                 value,
                 input.gates,
-                true,
+                input.value_shown,
             ))
         }
         CardPage::Apparel => {
@@ -875,7 +899,7 @@ pub fn build_card(input: &CardBuildInput<'_>) -> Option<BuiltCard> {
                 u16::from(input.skill),
                 value,
                 input.gates,
-                true,
+                input.value_shown,
             ))
         }
         CardPage::Shield => {
@@ -888,21 +912,26 @@ pub fn build_card(input: &CardBuildInput<'_>) -> Option<BuiltCard> {
                 input.skill,
                 value,
                 input.gates,
-                true,
+                input.value_shown,
             ))
         }
         CardPage::Plain => None,
         CardPage::None | CardPage::Map => return None,
     };
-    let (low, high, weight) = title_colour(
-        input.condition,
-        input.model_tinted,
-        card.page == CardPage::Weapon,
-    );
+    // The stats builders tint the title only while the rank gate is off.
+    let tinted = matches!(card.page, CardPage::Weapon | CardPage::Apparel) && !input.gates.rank;
+    let title = tinted.then(|| {
+        let (low, high, weight) = title_colour(
+            input.condition,
+            input.model_tinted,
+            card.page == CardPage::Weapon,
+        );
+        blend_colour(low, high, weight)
+    });
     Some(BuiltCard {
         page: card.page,
         value,
-        title_colour: blend_colour(low, high, weight),
+        title_colour: title,
         content,
         description: expand_card_text(input.description, input.item.flags, input.female),
     })
@@ -912,19 +941,26 @@ pub fn build_card(input: &CardBuildInput<'_>) -> Option<BuiltCard> {
 pub const VALUE_CONTROL: u32 = 0xa01;
 
 /// The values the card refresh writes into an open weapon card: the three
-/// striking rows (when the side's bytes are not 0), thrust, and the value.
-/// The weight, handling and balance rows are not refreshed.
+/// striking rows whose side bytes are not 0, each into the next bar from
+/// Slash's (0xd03 onward, so a zero byte moves the later ones up), thrust,
+/// and the value. The refresh skips only zero bytes where the builder hid
+/// bytes up to 5; the original's mismatch is kept. The weight, handling and
+/// balance rows are not refreshed.
 pub fn weapon_refresh(slash: u8, crush: u8, pierce: u8, thrust: u8, value: u32) -> Vec<(u32, f32)> {
-    let side = [slash, crush, pierce];
-    let mut out: Vec<(u32, f32)> = side
+    let mut out: Vec<(u32, f32)> = [slash, crush, pierce]
         .iter()
+        .filter(|byte| **byte != 0)
         .enumerate()
-        .filter(|(_, byte)| **byte != 0)
-        .map(|(row, byte)| (0xd03 + row as u32, *byte as f32 * 0.05))
+        .map(|(slot, byte)| (0xd03 + slot as u32, amount(*byte)))
         .collect();
-    out.push((0x106, thrust as f32 * 0.05));
+    out.push((0x106, amount(thrust)));
     out.push((VALUE_CONTROL, value as f32));
     out
+}
+
+/// A card byte times 0.05, in double precision narrowed to single.
+fn amount(byte: u8) -> f32 {
+    (f64::from(byte) * 0.05) as f32
 }
 
 /// The values the card refresh writes into an open apparel card: the
@@ -940,16 +976,16 @@ pub fn apparel_refresh(
     value: u32,
 ) -> Vec<(u32, f32)> {
     let mut out = vec![
-        (0x101, weight as f32 * 0.05),
-        (0x102, impact as f32 * 0.05),
-        (0xd03, slash as f32 * 0.05),
-        (0xd04, crush as f32 * 0.05),
-        (0xd05, pierce as f32 * 0.05),
+        (0x101, amount(weight)),
+        (0x102, amount(impact)),
+        (0xd03, amount(slash)),
+        (0xd04, amount(crush)),
+        (0xd05, amount(pierce)),
     ];
     out.push((
         0x107,
         if encumbrance < 0xa1 {
-            encumbrance as f32 * 0.05
+            amount(encumbrance)
         } else {
             8.0
         },
@@ -2135,7 +2171,7 @@ mod tests {
             points: true,
         };
         let card = weapon_content(
-            0, 100, 50, 127, 10, 0, 40, 60, true, true, 0x65, 4, 7, gates, true,
+            0, 100, 50, 127, 10, 0, 40, 60, true, true, 0x65, 7, gates, true,
         );
         let labels: Vec<_> = card.rows.iter().map(|r| r.label).collect();
         assert_eq!(
@@ -2151,10 +2187,20 @@ mod tests {
         assert_eq!((card.rows[5].control, card.rows[5].value), (0x106, 3.0));
         assert!(card.material && card.sockets);
         assert_eq!(card.rank, Some("Adept"));
-        assert_eq!(card.points, Some(2.0));
+        // The skill's low five bits (5), halved.
+        assert_eq!(card.points, Some(2.5));
         assert_eq!(card.value, Some(7));
-        // The swatch, socket, rank, points and value rows' additions.
+        // The swatch (three striking rows show), socket, rank, points and
+        // value rows' additions.
         assert_eq!(card.extra_height, 0x14 + 0x18 + 0x14 + 0x14 + 0x18);
+        // Two striking rows: the swatch adds nothing; a 0x10 flag pair
+        // takes one point off.
+        let two = weapon_content(
+            0x10, 100, 50, 127, 10, 0, 0, 60, true, false, 0x65, 7, gates, false,
+        );
+        assert!(two.material);
+        assert_eq!(two.points, Some(2.0));
+        assert_eq!(two.extra_height, 0x14 + 0x14);
         // A high-quality weapon maps its title over the high half; the
         // fixed flags show 1, 5 and 0.
         let fixed = weapon_content(
@@ -2168,7 +2214,6 @@ mod tests {
             0,
             false,
             false,
-            0,
             0,
             0,
             CardGates {
@@ -2216,10 +2261,16 @@ mod tests {
         assert_eq!(card.rows[0].value, 1.0);
         assert_eq!(card.rows[1].value, 0.5);
         assert_eq!(card.rows[2].value, 8.0);
-        assert_eq!(card.rank, Some("Novice"));
+        // The fixed flags show no rank, points or value rows.
+        assert_eq!(card.rank, None);
         assert_eq!(card.points, None);
         assert_eq!(card.value, None);
-        assert_eq!(card.extra_height, 0x14);
+        assert_eq!(card.extra_height, 0);
+        let ranked = shield_content(0, 7, 10, 3, 0x41, 9, gates, true);
+        assert_eq!(ranked.rank, Some("Novice"));
+        assert_eq!(ranked.points, Some(0.5));
+        assert_eq!(ranked.value, Some(9));
+        assert_eq!(ranked.extra_height, 0x14 + 0x14 + 0x18);
         let ordinary = shield_content(0, 7, 10, 0, 0, 0, gates, false);
         assert_eq!(ordinary.rows[0].value, 0.07);
         assert_eq!(ordinary.rows.len(), 2);
@@ -2234,21 +2285,22 @@ mod tests {
         assert_eq!(weight, 0.5);
         assert_eq!(
             title_colour(0x40, false, true).2,
-            0x40 as f32 * 0.007_874_016
+            (64.0 * 0.007_874_015_748_031_496f64) as f32
         );
         let (low, high, weight) = title_colour(0xc0, false, true);
         assert_eq!((low, high), (TITLE_COLOURS[1], TITLE_COLOURS[2]));
         assert_eq!(weight, 0.5);
         assert_eq!(
             title_colour(0xc0, false, false).2,
-            0x40 as f32 * 0.007_874_016
+            (64.0 * 0.007_874_015_748_031_496f64) as f32
         );
         // A model tinted by its flags maps the whole byte.
         let (low, high, weight) = title_colour(0xff, true, false);
         assert_eq!((low, high), (TITLE_COLOURS[0], TITLE_COLOURS[1]));
-        assert_eq!(weight, 255.0 * 0.003_921_569);
-        // The blend works a byte at a time.
-        assert_eq!(blend_colour(0x0000_0000, 0xff00_0000, 0.5), 0x7f00_0000);
+        assert_eq!(weight, (255.0 * 0.003_921_568_627_450_98f64) as f32);
+        // The blend works a byte at a time and rounds 127.5 to even.
+        assert_eq!(blend_colour(0x0000_0000, 0xff00_0000, 0.5), 0x8000_0000);
+        assert_eq!(blend_colour(0, 0x0300_0001, 0.5), 0x0200_0000);
         assert_eq!(blend_colour(0x1020_3040, 0x1020_3040, 0.7), 0x1020_3040);
         assert_eq!(CARD_CONTROL_STRIDE, 104);
     }
@@ -2289,11 +2341,11 @@ mod tests {
             sockets: false,
             material: false,
             skill: 0x65,
-            points: 4,
             gates: CardGates {
                 rank: true,
                 points: true,
             },
+            value_shown: true,
             description: "It is {\u{ae}HisHer} edge.",
             female: true,
         };
@@ -2304,7 +2356,22 @@ mod tests {
         let content = card.content.unwrap();
         assert_eq!(content.rows.len(), 6);
         assert_eq!(content.rank, Some("Adept"));
-        assert_eq!(content.points, Some(2.0));
+        assert_eq!(content.points, Some(2.5));
+        assert_eq!(content.value, Some(1));
+        // The rank gate turns the title tint off.
+        assert_eq!(card.title_colour, None);
+        let untinted = CardBuildInput {
+            gates: CardGates {
+                rank: false,
+                points: true,
+            },
+            ..input
+        };
+        let (low, high, weight) = title_colour(0x40, false, true);
+        assert_eq!(
+            build_card(&untinted).unwrap().title_colour,
+            Some(blend_colour(low, high, weight))
+        );
         assert_eq!(card.description, "It is her edge.");
         // A plain page has no stats content; a map has no card at all.
         let plain = CardBuildInput {
@@ -2338,8 +2405,17 @@ mod tests {
     fn a_card_refreshes_its_open_rows() {
         assert_eq!(
             weapon_refresh(10, 0, 40, 60, 7),
-            vec![(0xd03, 0.5), (0xd05, 2.0), (0x106, 3.0), (0xa01, 7.0)]
+            vec![(0xd03, 0.5), (0xd04, 2.0), (0x106, 3.0), (0xa01, 7.0)]
         );
+        // A zero Slash moves Crush into Slash's bar; bytes up to 5 still
+        // refresh, unlike the builder's rows.
+        assert_eq!(
+            weapon_refresh(0, 3, 40, 0, 0),
+            vec![(0xd03, 0.15), (0xd04, 2.0), (0x106, 0.0), (0xa01, 0.0)]
+        );
+        assert_eq!(weapon_points(0x30, 1), 1);
+        assert_eq!(weapon_points(0x10, 1), 0);
+        assert_eq!(weapon_points(0x10, 0), 0);
         assert_eq!(
             apparel_refresh(20, 5, 6, 0, 100, 0xa1, 3),
             vec![
