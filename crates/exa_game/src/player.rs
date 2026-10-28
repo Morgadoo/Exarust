@@ -426,17 +426,18 @@ pub(crate) fn cursor_ground(
     scripted: Res<exa_ui::ScriptedPointer>,
     windows: Query<&Window, With<PrimaryWindow>>,
     cameras: Query<(&Camera, &GlobalTransform, &Projection), With<ChaseCamera>>,
-    players: Query<&GlobalTransform, With<Player>>,
+    players: Query<(&GlobalTransform, &Children), With<Player>>,
     bodies: Query<&PlayerBody>,
     targets: Query<(&GlobalTransform, Option<&Ragdoll>)>,
     physics: Res<Physics>,
 ) {
     ground.0 = None;
-    let (Ok(window), Ok((camera, eye, projection)), Some(player)) =
+    let (Ok(window), Ok((camera, eye, projection)), Some((player, children))) =
         (windows.single(), cameras.single(), players.iter().next())
     else {
         return;
     };
+    let body = children.iter().find_map(|child| bodies.get(child).ok());
     let Some(cursor) = scripted.position(window) else {
         return;
     };
@@ -455,7 +456,7 @@ pub(crate) fn cursor_ground(
     let Some(plane_point) = at(plane) else {
         return;
     };
-    let locked = bodies.iter().next().and_then(|pb| {
+    let locked = body.and_then(|pb| {
         let target = pb.aim_target()?;
         let (gt, ragdoll) = targets.get(target).ok()?;
         aim_locked_height(
