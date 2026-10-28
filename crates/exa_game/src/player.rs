@@ -87,6 +87,10 @@ const WALK_KEYS: u8 = 0x10;
 /// A held key takes the long step only while the crouch, promoted to
 /// double, is below this. The float 0.1 promotes to a double above it.
 const LONG_STEP_CROUCH: f64 = 0.1;
+/// Past a crouch of [`CROUCH_SHORT`] the footwork's step is this share of
+/// the plain one, in double precision.
+const CROUCH_SHORT: f32 = 0.5;
+const CROUCH_STEP: f64 = 0.7;
 /// In combat mode the heading turns to the cursor once it is further off
 /// than this (rad, 30°).
 const FACE_CURSOR_BEYOND: f32 = std::f32::consts::FRAC_PI_6;
@@ -1065,7 +1069,8 @@ struct Footwork<'a> {
 /// while the crouch promoted to double is below 0.1, it keeps
 /// (1.5 − 0.3·encumbrance) of that length, the product narrowed once from
 /// double before the extension, until a key changes or is released. At
-/// 0.1, above it, or when it is NaN, the held key keeps the short reach. A
+/// 0.1, above it, or when it is NaN, the held key keeps the short reach;
+/// past a crouch of a half any step is 0.7 of the plain one. A
 /// walk, run or backpedal of the exploration steering still playing when
 /// combat mode turned on ends in the stance once the body stands (`moving`
 /// false). A walk or a run blends over 20 frames, as the original's walk
@@ -1121,7 +1126,12 @@ fn combat_steps(
         pb.held = 0.0;
         pb.long = false;
     }
-    let fd4 = if key_mask != 0 && pb.long {
+    let fd4 = if CROUCH_SHORT < pb.crouch {
+        // Crouched past a half, the step is 0.7 of the plain one, worked in
+        // double precision and narrowed once, even with the long-step latch;
+        // a NaN crouch fails the ordered compare and keeps the mode's step.
+        (f64::from(footing.step_cm) * CROUCH_STEP) as f32
+    } else if key_mask != 0 && pb.long {
         footing.long_step_cm
     } else {
         footing.step_cm
@@ -2347,6 +2357,56 @@ mod tests {
         let under = aim(f32::from_bits(0.1f32.to_bits() - 1));
         assert_eq!(under.to_bits(), 0x3f99_999a);
         assert_eq!(aim(f32::NAN).to_bits(), STEP_LENGTH.to_bits());
+    }
+
+    /// Past a crouch of a half the footwork's step is 0.7 of the plain one,
+    /// even with the long-step latch held; at a half it is the plain step,
+    /// and a NaN crouch takes the 0.7 branch.
+    #[test]
+    fn a_deep_crouch_shortens_the_step_to_seven_tenths() {
+        let open = |_: Vec3, to: Vec3| (to, false);
+        let aim = |crouch: f32, long: bool| {
+            let mut req = Locomotion::default();
+            let mut pb = PlayerBody::new(0.0).crouching(crouch);
+            if long {
+                pb.held = STEP_HOLD;
+                pb.held_keys = 1;
+                pb.long = true;
+            }
+            pb.set_combat(true);
+            let mut anim = Animator::new("Default", "Defence stance");
+            let footing = Footwork {
+                chest: Vec3::ZERO,
+                ground: 0.0,
+                step_cm: STEP_LENGTH * 100.0,
+                long_step_cm: long_step_length(80.0, 0.0),
+                scale_root: 1.0,
+                line: &open,
+            };
+            let mut steering = pb.steering;
+            combat_steps(
+                &Keys {
+                    w: true,
+                    ..Keys::default()
+                },
+                &mut req,
+                &mut steering,
+                &mut pb,
+                &mut anim,
+                Stance::Defence,
+                false,
+                &footing,
+                0.012,
+            );
+            steering.line.unwrap().to.z
+        };
+        // 80 cm at a half, 56 cm past it.
+        assert_eq!(aim(0.5, false).to_bits(), STEP_LENGTH.to_bits());
+        assert_eq!(aim(0.6, false).to_bits(), 0.56f32.to_bits());
+        // Held long, the deep crouch is 0.7 of the plain 80, not of 120.
+        assert_eq!(aim(0.6, true).to_bits(), 0.56f32.to_bits());
+        // A NaN crouch fails the ordered compare: the plain step.
+        assert_eq!(aim(f32::NAN, false).to_bits(), STEP_LENGTH.to_bits());
     }
 
     /// The long step is a latch: the same keys must be held strictly over

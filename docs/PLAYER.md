@@ -825,7 +825,10 @@ reaches, one double product narrowed once (120 cm unencumbered, 97.2 cm
 at encumbrance 0.5 on a 72 cm reach). The float 0.1 is already above that
 double, so a crouch of 0.1 keeps the short reach, and a crouch raised
 after the latch is set does not clear it; only a key change or release
-does. The legs' extension scales both lengths, so a half extension halves
+does. Past a crouch of a half any step is 0.7 of the plain one, latch or
+not, the product worked in double precision; a NaN crouch fails the
+ordered compare and keeps the mode's step. The legs' extension scales both
+lengths, so a half extension halves
 the tap and the held step, and √scale scales the displacement once more.
 A side key weighs 0.8 of the facing, and the target is the chest plus the
 raw key sum scaled by (fd4·√scale)/|v| in centimetres, so a diagonal aims
