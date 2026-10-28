@@ -879,6 +879,62 @@ pub fn use_effect(target: UseTarget, over_gui: bool) -> UseEffect {
     }
 }
 
+/// What a use's release actually does on the picked world object, as the
+/// dispatcher branches: a door unlocks with its key or rattles, a character
+/// takes the poured liquid, a world item is cleaned or repaired, and a GUI
+/// entry is cleaned, repaired or moved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UseRelease {
+    UnlockDoor,
+    RattleDoor,
+    Pour,
+    CleanWorld,
+    RepairWorld,
+    CleanGui,
+    RepairGui,
+    TransferGui,
+    Nothing,
+}
+
+/// The release of a use on `target`, given the held item's usable kind (0
+/// when it has none), whether a GUI entry is the same item the use holds,
+/// and whether the door's key matches. The original checks the door first,
+/// then a character, then a world item's bit 2, and otherwise the GUI
+/// entry. A liquid (kinds 8 and 14) pours on a character; kinds 9 and 10
+/// clean and repair; only kind 0x10 moves a GUI entry.
+pub fn use_release(
+    target: UseTarget,
+    held_kind: u8,
+    same_gui_item: bool,
+    key_matches: bool,
+) -> UseRelease {
+    match target {
+        UseTarget::Door => {
+            if key_matches {
+                UseRelease::UnlockDoor
+            } else {
+                UseRelease::RattleDoor
+            }
+        }
+        UseTarget::Character => {
+            if held_kind == POUR || held_kind == POUR_MARKS {
+                UseRelease::Pour
+            } else {
+                UseRelease::Nothing
+            }
+        }
+        UseTarget::Item => match held_kind {
+            CLEAN => UseRelease::CleanWorld,
+            REPAIR => UseRelease::RepairWorld,
+            _ => UseRelease::Nothing,
+        },
+        UseTarget::Nothing if held_kind == CLEAN => UseRelease::CleanGui,
+        UseTarget::Nothing if held_kind == REPAIR => UseRelease::RepairGui,
+        UseTarget::Nothing if held_kind == 0x10 && same_gui_item => UseRelease::TransferGui,
+        UseTarget::Nothing => UseRelease::Nothing,
+    }
+}
+
 /// The held item's use on a GUI item slot (the cursor over an inventory
 /// entry): a cleaning kit (kind 9) and a repair kit (10) work on the entry,
 /// and a kind 0x10 moves the entry when it is the same item the use holds.
@@ -1728,6 +1784,61 @@ mod tests {
         assert_eq!(use_effect(UseTarget::Item, true), UseEffect::WorldItem);
         assert_eq!(use_effect(UseTarget::Nothing, true), UseEffect::GuiItem);
         assert_eq!(use_effect(UseTarget::Nothing, false), UseEffect::Nothing);
+    }
+
+    /// The use release: a door unlocks or rattles by its key; a liquid
+    /// pours on a character; a kit cleans or repairs a world item or a GUI
+    /// entry; only kind 0x10 moves the same GUI item.
+    #[test]
+    fn the_use_release_branch() {
+        assert_eq!(
+            use_release(UseTarget::Door, 0, false, true),
+            UseRelease::UnlockDoor
+        );
+        assert_eq!(
+            use_release(UseTarget::Door, 0, false, false),
+            UseRelease::RattleDoor
+        );
+        assert_eq!(
+            use_release(UseTarget::Character, POUR, false, false),
+            UseRelease::Pour
+        );
+        assert_eq!(
+            use_release(UseTarget::Character, POUR_MARKS, false, false),
+            UseRelease::Pour
+        );
+        assert_eq!(
+            use_release(UseTarget::Character, CLEAN, false, false),
+            UseRelease::Nothing
+        );
+        assert_eq!(
+            use_release(UseTarget::Item, CLEAN, false, false),
+            UseRelease::CleanWorld
+        );
+        assert_eq!(
+            use_release(UseTarget::Item, REPAIR, false, false),
+            UseRelease::RepairWorld
+        );
+        assert_eq!(
+            use_release(UseTarget::Item, POUR, false, false),
+            UseRelease::Nothing
+        );
+        assert_eq!(
+            use_release(UseTarget::Nothing, CLEAN, false, false),
+            UseRelease::CleanGui
+        );
+        assert_eq!(
+            use_release(UseTarget::Nothing, REPAIR, false, false),
+            UseRelease::RepairGui
+        );
+        assert_eq!(
+            use_release(UseTarget::Nothing, 0x10, true, false),
+            UseRelease::TransferGui
+        );
+        assert_eq!(
+            use_release(UseTarget::Nothing, 0x10, false, false),
+            UseRelease::Nothing
+        );
     }
 
     /// The unit init registers ScriptInst and the two modes Character then

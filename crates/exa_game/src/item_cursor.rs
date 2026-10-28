@@ -443,6 +443,27 @@ pub fn spawn_record(kind: u32, item: u32, flags: u32) -> Option<SpawnRecord> {
     }
 }
 
+/// An object record's spawned node: its id, the condition its placement
+/// asks for, and whether the new node still has to be attached to its
+/// parent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SpawnedObject {
+    pub item: u32,
+    pub condition: u32,
+    pub attach: bool,
+}
+
+/// The node a record spawns: a missing record (or a zero id) gives none.
+/// A node whose parent is already the record's parent needs no attach, as
+/// the original's attach skips it.
+pub fn spawn_object(item: u32, condition: u32, already_attached: bool) -> Option<SpawnedObject> {
+    (item != 0).then_some(SpawnedObject {
+        item,
+        condition,
+        attach: !already_attached,
+    })
+}
+
 /// Where a spawned item goes: under the cursor, offset by the camera.
 pub fn spawn_frame(cursor: Frame, camera: Frame) -> Frame {
     cursor.under(camera)
@@ -792,6 +813,23 @@ mod tests {
             Some(SpawnRecord { item: 0, flags: 3 })
         );
         assert_eq!(spawn_record(0x8004, 42, 0), None);
+        assert_eq!(spawn_object(0, 0, false), None);
+        assert_eq!(
+            spawn_object(42, 7, false),
+            Some(SpawnedObject {
+                item: 42,
+                condition: 7,
+                attach: true
+            })
+        );
+        assert_eq!(
+            spawn_object(42, 7, true),
+            Some(SpawnedObject {
+                item: 42,
+                condition: 7,
+                attach: false
+            })
+        );
     }
 
     #[test]

@@ -486,6 +486,38 @@ pub fn door_pull_anchor(grip: DoorGrip, cursor_point: Vec3, axis: Vec3) -> Vec3 
     }
 }
 
+/// One frame of a door drag: the link's stop bit while the movement
+/// request suppresses the pull, else the anchor the leaf is pulled to.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DoorFrame {
+    pub anchor: Option<Vec3>,
+    /// The link word's stop bit (`0x100000`).
+    pub stop: bool,
+}
+
+/// The door drag's frame: a suppressed request sets the link's stop bit
+/// and leaves the leaf's point alone; otherwise the leaf is pulled to
+/// [`door_pull_anchor`] and the bit clears. A plain door drag therefore
+/// never turns the player's request off.
+pub fn door_drag_frame(
+    grip: DoorGrip,
+    cursor_point: Vec3,
+    axis: Vec3,
+    suppressed: bool,
+) -> DoorFrame {
+    if suppressed {
+        DoorFrame {
+            anchor: None,
+            stop: true,
+        }
+    } else {
+        DoorFrame {
+            anchor: Some(door_pull_anchor(grip, cursor_point, axis)),
+            stop: false,
+        }
+    }
+}
+
 /// A wheel's asked angle after a frame: the gap `wanted − current` is taken
 /// as no turn when it is negative and stops at `limit` when it is longer;
 /// the current angle plus that turn is then wrapped into ±π, compared in
@@ -2194,6 +2226,12 @@ mod tests {
         };
         let a = door_pull_anchor(sliding, Vec3::new(0.3, 1.0, 2.0), Vec3::Z);
         assert!((a - Vec3::new(0.0, 0.0, 2.0)).length() < 1e-5, "{a}");
+        let frame = door_drag_frame(grip, Vec3::new(0.0, 0.0, 3.0), Vec3::X, false);
+        assert!(!frame.stop);
+        assert!((frame.anchor.unwrap().z - 1.0).abs() < 1e-6);
+        let stopped = door_drag_frame(grip, Vec3::new(0.0, 0.0, 3.0), Vec3::X, true);
+        assert!(stopped.stop);
+        assert_eq!(stopped.anchor, None);
         let rattle = door_rattle(true, false, || 0.5).unwrap();
         assert!((rattle.pitch - 0.9).abs() < 1e-6);
         assert!((rattle.volume - 0.2).abs() < 1e-6);
