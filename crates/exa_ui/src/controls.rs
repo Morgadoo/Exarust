@@ -1692,19 +1692,23 @@ pub enum SpinnerDragAction {
     Hot,
 }
 
-/// The spinner's drag message. `cursor` is the GUI's cursor position and
-/// `press` the message's. The state starts idle; a press in the text
-/// places the caret. Once the text's drag state is on, moving past the
-/// unit's travel captures the mouse over the value's whole reach, and
+/// The spinner's drag message. `point` is the message's position, `press`
+/// the GUI's press position and `cursor` its cursor. The state starts
+/// idle; a press in the text places the caret. Once the text's drag state
+/// is on, moving the cursor more than a unit from the press captures the
+/// mouse over the value's whole reach (bounds from the current value), and
 /// further moves step the value by `spinner_repeat_step` pixels each.
-#[allow(clippy::too_many_arguments)]
+/// Otherwise a point in the button column lights the upper half
+/// (`0x0100_0000`, when the state word enables it with `0x0400_0000`) or
+/// the lower (`0x0200_0000` under `0x0800_0000`); a point above the
+/// control's top counts as the upper half and one outside the column
+/// clears both.
 pub fn spinner_drag(
     drag: &mut SpinnerDrag,
     spinner: &Spinner,
     rect: (i32, i32, i32, i32),
-    _button: i32,
+    point: (i32, i32),
     unit: i32,
-    style: u32,
     press: (i32, i32),
     cursor: (i32, i32),
 ) -> SpinnerDragAction {
@@ -1725,19 +1729,24 @@ pub fn spinner_drag(
     }
     // The text drag: a travel past the unit captures the mouse over the
     // value's whole reach.
-    let travel = (cursor.1 - press.1).unsigned_abs() as i32;
-    if travel > unit {
+    let travel = i64::from(cursor.1 - press.1).abs();
+    if i64::from(unit) < travel {
         let (low, high) = if spinner.integer {
+            // The bounds read the current value; the differences are
+            // 64-bit signed, the limits unsigned.
             let max = spinner.max.to_bits();
             let min = spinner.min.to_bits();
+            let value = spinner.value.to_bits();
             let step = spinner.step.to_bits();
             let to_left = if max <= 0x186a0 {
-                cursor.1 - cvt_div_u(pixels, max.wrapping_sub(drag.origin_bits), step) - pixels
+                let span = i64::from(max) - i64::from(value);
+                cursor.1 - cvt_div_u(pixels, span, step) - pixels
             } else {
                 i32::MIN
             };
-            let to_right = if min <= 0x186a0 {
-                cursor.1 + pixels + cvt_div_u(pixels, drag.origin_bits.wrapping_sub(min), step)
+            let to_right = if value <= 0x186a0 {
+                let span = i64::from(value) - i64::from(min);
+                cursor.1 + cvt_div_u(pixels, span, step) + pixels
             } else {
                 i32::MAX
             };
@@ -1759,16 +1768,18 @@ pub fn spinner_drag(
         drag.origin_bits = spinner.value.to_bits();
         return SpinnerDragAction::Capture { low, high };
     }
-    // The hot halves: the up half marks 0x0100_0000 when the style wants
-    // a hot button, the lower half 0x0200_0000. Other bits are kept.
-    let (top, h) = (rect.1, rect.3);
+    // The hot halves, in the button column (the cached text inset wide).
+    let (left, top, w, h) = rect;
+    let right = left + w;
     let mut bit = 0;
-    if cursor.1 >= top && cursor.1 < top + (((h as u32) >> 1) as i32) {
-        if style & 0x0400_0000 != 0 {
-            bit = 0x0100_0000;
+    if right - text_inset(unit) <= point.0 && point.0 < right {
+        if i64::from((h as u32) >> 1) > i64::from(point.1) - i64::from(top) {
+            if drag.state & 0x0400_0000 != 0 {
+                bit = 0x0100_0000;
+            }
+        } else if drag.state & 0x0800_0000 != 0 {
+            bit = 0x0200_0000;
         }
-    } else if style & 0x0800_0000 != 0 {
-        bit = 0x0200_0000;
     }
     let state = (drag.state & 0xfcff_ffff) | bit;
     if state != drag.state {
@@ -1790,10 +1801,11 @@ fn cvt_div(a: i32, b: i32) -> i32 {
     }
 }
 
-/// `round(pixels × (numerator / step))` on the unsigned difference of two
-/// integer values, as the integer drag reads them.
-fn cvt_div_u(pixels: i32, numerator: u32, step: u32) -> i32 {
-    let quotient = f64::from(pixels) * (f64::from(numerator) / f64::from(step));
+/// `round(pixels × (span / step))` in double, the span a signed 64-bit
+/// difference of two integer values and the step unsigned, as the integer
+/// drag reads them.
+fn cvt_div_u(pixels: i32, span: i64, step: u32) -> i32 {
+    let quotient = f64::from(pixels) * (span as f64 / f64::from(step));
     let rounded = quotient.round_ties_even();
     if rounded.is_nan() || !(-2_147_483_648.0..2_147_483_648.0).contains(&rounded) {
         i32::MIN
@@ -2848,13 +2860,13 @@ mod extended_tests {
         let rect = (0, 0, 60, 20);
         let mut drag = SpinnerDrag::default();
         assert_eq!(
-            spinner_drag(&mut drag, &spinner, rect, 13, 4, 0, (10, 10), (10, 10)),
+            spinner_drag(&mut drag, &spinner, rect, (10, 10), 4, (10, 10), (10, 10)),
             SpinnerDragAction::Text
         );
         // The text drag: a move past the unit captures over the value's reach.
         drag.state = 0x0100_0000;
         assert_eq!(
-            spinner_drag(&mut drag, &spinner, rect, 13, 4, 0, (10, 100), (10, 110)),
+            spinner_drag(&mut drag, &spinner, rect, (10, 10), 4, (10, 100), (10, 110)),
             SpinnerDragAction::Capture {
                 low: -254,
                 high: 154
@@ -2864,7 +2876,7 @@ mod extended_tests {
         assert_eq!((drag.origin_y, drag.origin_value), (110, 10.0));
         // And a live drag steps by the 4-pixel repeat.
         assert_eq!(
-            spinner_drag(&mut drag, &spinner, rect, 13, 4, 0, (10, 100), (10, 88)),
+            spinner_drag(&mut drag, &spinner, rect, (10, 10), 4, (10, 100), (10, 88)),
             SpinnerDragAction::SetFloat(16.0)
         );
         // Integer spinners add the step's bits to the value's bits.
@@ -2878,42 +2890,55 @@ mod extended_tests {
             origin_bits: 10,
         };
         assert_eq!(
-            spinner_drag(&mut drag, &whole, rect, 13, 4, 0, (0, 0), (0, 88)),
+            spinner_drag(&mut drag, &whole, rect, (0, 0), 4, (0, 0), (0, 88)),
             SpinnerDragAction::SetInt(16)
         );
-        // The hot halves: upper takes 0x01000000 under style 0x4000000.
+        // An integer capture's bounds come from the current value (12 of
+        // 0..100 at 4 pixels a step: 88 steps up, 12 down).
+        whole.value = f32::from_bits(12);
+        whole.min = f32::from_bits(0);
+        whole.max = f32::from_bits(100);
         let mut drag = SpinnerDrag {
-            state: 0x0200_0000,
+            state: 0x0100_0000,
+            origin_bits: 50,
             ..SpinnerDrag::default()
         };
         assert_eq!(
-            spinner_drag(
-                &mut drag,
-                &spinner,
-                rect,
-                13,
-                4,
-                0x400_0000,
-                (10, 5),
-                (10, 5)
-            ),
-            SpinnerDragAction::Hot
+            spinner_drag(&mut drag, &whole, rect, (0, 0), 4, (0, 0), (0, 10)),
+            SpinnerDragAction::Capture {
+                low: 10 - 352 - 4,
+                high: 10 + 48 + 4
+            }
         );
-        assert_eq!(drag.state, 0x0100_0000);
+        // The hot halves, in the 13-pixel button column (x 47..60): the
+        // upper half lights 0x01000000 when the state enables it.
+        let mut drag = SpinnerDrag {
+            state: 0x0600_0000,
+            ..SpinnerDrag::default()
+        };
         assert_eq!(
-            spinner_drag(
-                &mut drag,
-                &spinner,
-                rect,
-                13,
-                4,
-                0x400_0000,
-                (10, 15),
-                (10, 15)
-            ),
+            spinner_drag(&mut drag, &spinner, rect, (50, 5), 4, (50, 5), (50, 5)),
             SpinnerDragAction::Hot
         );
-        assert_eq!(drag.state, 0);
+        assert_eq!(drag.state, 0x0500_0000);
+        // Above the top still counts as the upper half: no change.
+        assert_eq!(
+            spinner_drag(&mut drag, &spinner, rect, (50, -3), 4, (50, -3), (50, -3)),
+            SpinnerDragAction::None
+        );
+        // The lower half is not enabled, so it clears the light.
+        assert_eq!(
+            spinner_drag(&mut drag, &spinner, rect, (50, 15), 4, (50, 15), (50, 15)),
+            SpinnerDragAction::Hot
+        );
+        assert_eq!(drag.state, 0x0400_0000);
+        // Left of the column clears both.
+        drag.state = 0x0500_0000;
+        assert_eq!(
+            spinner_drag(&mut drag, &spinner, rect, (10, 5), 4, (10, 5), (10, 5)),
+            SpinnerDragAction::Hot
+        );
+        assert_eq!(drag.state, 0x0400_0000);
     }
 
     #[test]

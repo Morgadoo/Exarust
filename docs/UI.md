@@ -1796,8 +1796,10 @@ result reads as 0. Their rules:
   value there; further moves step the value, the float by
   `round(Δy / pixels) × step` added to the remembered value (in that
   order), the integer by the same product added to the remembered bit
-  pattern. The up and down halves mark `0x1000000`/`0x2000000` under style
-  bits `0x4000000`/`0x8000000`. The set message's word is an integer
+  pattern. A point in the button column marks the up or down half
+  `0x1000000`/`0x2000000` when the state word enables it with
+  `0x4000000`/`0x8000000` (above the top counts as up; outside the column
+  clears both); a capture's bounds come from the current value. The set message's word is an integer
   converted to a float unless its flag marks it a float (an integer
   spinner stores the word's bits as they are), clamps with the ordered
   compares and lands only a move over 1e-8.
