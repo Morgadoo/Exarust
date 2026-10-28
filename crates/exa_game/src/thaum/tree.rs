@@ -700,6 +700,10 @@ pub struct TreeScreen {
     pub shown_zoom: f32,
     /// The opening fade's second value (`1 − r²`) the easing scale reads.
     pub ease_share: f32,
+    /// The point the opening scale is applied about: the first node's
+    /// placed point as the draw head found it, before this frame's
+    /// placement.
+    pub scale_centre: [f32; 2],
     /// The zoom in 8.8 fixed point, rounded to even.
     pub zoom_fixed: f32,
     /// The tree font atlas's pixel size, set by the running screen when it
@@ -900,6 +904,7 @@ impl TreeScreen {
             },
             shown_zoom: 1.0,
             ease_share: 1.0,
+            scale_centre: [0.0; 2],
             zoom_fixed: 256.0,
             font_size: (0, 0),
             free_view: false,
@@ -1128,15 +1133,26 @@ impl TreeScreen {
     /// opening scale all nodes are drawn about the first node's placed
     /// point, `ease(1 − r²)`; otherwise it is one.
     pub fn present_draw(&mut self, alpha: f32, cursor: [f32; 2]) {
+        self.present_frame(alpha, Some(cursor));
+    }
+
+    /// [`TreeScreen::present_draw`] with the cursor optional: with none
+    /// (the pointer is outside the window) the pan is not rescaled.
+    fn present_frame(&mut self, alpha: f32, cursor: Option<[f32; 2]>) {
+        // The draw head takes the scale's centre before it steps and
+        // places the nodes again.
+        self.scale_centre = self.placed.first().copied().unwrap_or([0.0; 2]);
         let old = self.shown_zoom;
         self.shown_zoom = (self.zoom.value - self.zoom.previous) * alpha + self.zoom.previous;
-        for point in [
-            &mut self.pan.goal,
-            &mut self.pan.position,
-            &mut self.pan.previous,
-        ] {
-            point[0] = (point[0] - cursor[0]) / old * self.shown_zoom + cursor[0];
-            point[1] = (point[1] - cursor[1]) / old * self.shown_zoom + cursor[1];
+        if let Some(cursor) = cursor {
+            for point in [
+                &mut self.pan.goal,
+                &mut self.pan.position,
+                &mut self.pan.previous,
+            ] {
+                point[0] = (point[0] - cursor[0]) / old * self.shown_zoom + cursor[0];
+                point[1] = (point[1] - cursor[1]) / old * self.shown_zoom + cursor[1];
+            }
         }
         self.shown_pan = lerp2(self.pan.previous, self.pan.position, alpha);
         self.factor = if self.fade_flags & FADING_IN != 0 || self.domain_flags & DOMAIN_IN != 0 {
@@ -1222,10 +1238,7 @@ impl TreeScreen {
         // The blend is taken in double: one less the overshoot over 17.
         let overshoot = (u64::from(self.step_at) as i64 - u64::from(now) as i64) as f64;
         let alpha = (1.0 - overshoot * 0.058_823_529_411_764_705) as f32;
-        match cursor {
-            Some(cursor) => self.present_draw(alpha, cursor),
-            None => self.present(alpha),
-        }
+        self.present_frame(alpha, cursor);
     }
 
     /// One step of the pan and zoom springs. Returns whether anything
@@ -1510,8 +1523,9 @@ impl TreeScreen {
                 };
                 let dx = x - centre[0];
                 let dy = y - centre[1];
-                let reach = self.zoom_fixed * 0.55;
-                if reach * reach <= dy * dy + dx * dx {
+                // The reach is squared in double against the single sum.
+                let reach = f64::from(self.zoom_fixed) * 0.55;
+                if reach * reach <= f64::from(dy * dy + dx * dx) {
                     if self.drag != DragState::Link {
                         self.drag = DragState::Link;
                         self.link_turn =
@@ -2142,8 +2156,9 @@ impl TreeScreen {
     ) -> exa_ui::tree_draw::TreeView {
         use exa_ui::tree_draw as draw;
         // The draw scales every placed node about the first node's placed
-        // point by the opening ease (one when no fade runs).
-        let centre = self.placed.first().copied().unwrap_or([0.0; 2]);
+        // point, as the draw head took it, by the opening ease (one when no
+        // fade runs).
+        let centre = self.scale_centre;
         let drawn: Vec<[f32; 2]> = self
             .placed
             .iter()
