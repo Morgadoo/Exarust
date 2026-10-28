@@ -554,9 +554,12 @@ Compressed images upload as their stored block format: BC1 and BC3 with an
 sRGB variant for colour, BC5 linear for two-channel normal maps, and BC4 as
 `Bc4RUnorm`, the original's single-channel luminance LATC upload. A BC4
 image has one grey channel and no sRGB variant, so nothing decodes it: the
-surface shader repeats its red over the whole colour
-(`GREY_DIFFUSE`), which is what the 4 600 BC4 apparel and item diffuse maps
-show. Without GPU BC support every image decodes to RGBA8 instead.
+surface shader repeats its red over the whole colour (`GREY_DIFFUSE`),
+which is what the 4 600 BC4 apparel and item diffuse maps show. The same
+holds for a BC4 specular or emissive map (`GREY_SPECULAR`,
+`GREY_EMISSIVE`): the hardware's luminance upload returned the stored grey
+on every channel whatever slot bound it. Without GPU BC support every image
+decodes to RGBA8 instead.
 
 The settings screen's `TextureQuality`, `TextureDetail` and `Supersample`
 reach these rules (`TextureSettings::with_settings`: the filter mask, the

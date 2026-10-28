@@ -143,6 +143,13 @@ pub mod flags {
     /// The diffuse map skips the LOD bias: a record with a secondary colour
     /// loads its diffuse that way (the original's per-slot skip bit).
     pub const SKIP_DIFFUSE_BIAS: u32 = 33554432;
+    /// The specular map is a single-channel BC4 image, uploaded as the
+    /// original's luminance LATC format: the shader repeats its red channel
+    /// over rgb, as the hardware would for a luminance upload.
+    pub const GREY_SPECULAR: u32 = 67108864;
+    /// The emissive map is a single-channel BC4 image: its red channel is
+    /// the whole colour, as [`Self::GREY_SPECULAR`].
+    pub const GREY_EMISSIVE: u32 = 134217728;
 }
 
 /// How a surface shows the blood that wounds paint into its mesh's vertex
