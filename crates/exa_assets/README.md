@@ -249,9 +249,11 @@ images the original builds at run time, so such a name may be one of those
 `image_format` is the loader's reader dispatch: a borrowed name goes first to
 a registered provider (Exarust's pack lookup is that provider) and then to
 the file reader its extension names. `.rfi` is the only reader registered; a
-name with another extension reports the original's "Unrecognised file
-extension: …", and a bare name whose bytes carry no image magic reports
-"File format error". Both paths end in the grey placeholder, as the
+name with another extension (or an empty one: a trailing dot, or more than
+the original's 16 bytes) reports the original's "Unrecognised file
+extension: …" message, titled "File format error"; a bare name stands for a
+provider's image, and one whose bytes carry no image magic fails like the
+provider's reader. Both paths end in the grey placeholder, as the
 original's failed load does. `texture::decode_entry` runs that dispatch
 before the `.rfi` decoder; the streaming task and the material loader use
 it.
@@ -360,7 +362,10 @@ for the flat pose, motion state, pose tree and AI home while the next record
 header lies inside the stored payload length, keeping the last of a repeated
 tag), and `stored_size_scale` is the
 character builders' size rule: the stored 16-bit word times the double
-constant 65537/2^32, times the body's base scale, narrowed to `f32` last.
+constant 1/65535, times the body's base scale, narrowed to `f32` last; the
+streamed builder first defaults a pair whose second word is zero to
+`0xFFFF`/`0xFFFF` unless the body is dead (`streamed_size_words`), the
+request builder scales the words as stored.
 `root_node_flags` is the placed-object root rule: only the object's flags
 under `0xB80000` replace that field of the node word, and the placement's
 bit `0x10` adds the node's static bit.

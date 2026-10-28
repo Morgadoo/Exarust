@@ -293,15 +293,29 @@ pub fn saved_chunks(blob: &[u8]) -> SavedChunks<'_> {
 }
 
 /// The constant the character builders multiply a stored 16-bit size word
-/// by: `65537 / 2^32`, as a double. It is not exactly `1 / 65536`.
-pub const SIZE_WORD_SCALE: f64 = 1.525_902_189_669_642_2e-05;
+/// by: `1 / 65535` as a double, so a full word `0xFFFF` is exactly one.
+pub const SIZE_WORD_SCALE: f64 = 1.0 / 65535.0;
 
 /// The two size words a streamed character's record holds, defaulted as its
-/// builder does: when the second word is zero both become `0xFFFF`. With
-/// [`SIZE_WORD_SCALE`] that pair scales to exactly one, so an unset pair is
-/// the body's own size.
+/// builder does: when the second word is zero both become `0xFFFF`, which
+/// [`SIZE_WORD_SCALE`] scales to one, so an unset pair is the body's own
+/// size. Only the streamed builder defaults, and only for a body that is not
+/// dead (see [`streamed_size_words`]); the request builder scales the words
+/// as stored.
 pub fn normalised_size_words(words: [u16; 2]) -> [u16; 2] {
     if words[1] == 0 { [u16::MAX; 2] } else { words }
+}
+
+/// The size words the streamed character builder scales: a dead body
+/// (condition [`exa_formats::characters::DEAD`]) goes to the corpse builder
+/// with its words as stored, any other body takes
+/// [`normalised_size_words`] first.
+pub fn streamed_size_words(words: [u16; 2], condition: i32) -> [u16; 2] {
+    if condition == exa_formats::characters::DEAD {
+        words
+    } else {
+        normalised_size_words(words)
+    }
 }
 
 /// One of the character's two stored size words, scaled by the body's base
@@ -317,10 +331,11 @@ pub fn stored_size_scale(base: f32, stored: u16) -> f32 {
 }
 
 /// The character's two scale fields in the order the builder writes them:
-/// the second word's scale first, then the first word's. A pair whose
-/// second word is zero first takes the `0xFFFF` default.
+/// the second word's scale first, then the first word's. The words are
+/// scaled as given: the streamed builder passes them through
+/// [`streamed_size_words`] first, the request builder does not.
 pub fn character_scales(base: f32, words: [u16; 2]) -> (f32, f32) {
-    let [first, second] = normalised_size_words(words);
+    let [first, second] = words;
     (
         stored_size_scale(base, second),
         stored_size_scale(base, first),
@@ -328,11 +343,10 @@ pub fn character_scales(base: f32, words: [u16; 2]) -> (f32, f32) {
 }
 
 /// The stream request flags the character builder reads: bit `0x2000` marks
-/// the built character's node with its own bit `0x1000`;
-/// bit `0x1000` says the character keeps its saved AI state and starts no
-/// AI of its own.
+/// the built character's node with its own bit `0x1000`; bit `0x1000` skips
+/// both the AI start and the saved AI pose restore.
 pub const MARK_NODE: u32 = 0x2000;
-pub const KEEP_SAVED_AI: u32 = 0x1000;
+pub const NO_AI_START: u32 = 0x1000;
 /// The node flag [`MARK_NODE`] sets.
 pub const NODE_MARK: u32 = 0x1000;
 
@@ -346,9 +360,10 @@ pub fn character_node_flags(node: u32, request: u32) -> u32 {
     }
 }
 
-/// A character's saved AI state, which the builder restores into the
-/// controller when the request does not set [`KEEP_SAVED_AI`]: a position
-/// and a facing. The fourth word is copied into the controller's next field;
+/// A character's saved AI state, which the builders restore into the
+/// controller right after starting its AI: the request builder from the
+/// request's saved state unless the request sets [`NO_AI_START`], the
+/// streamed builder from the saved AI home chunk. A position and a facing. The fourth word is copied into the controller's next field;
 /// it is read as a facing angle. **[guess: the fourth word is a heading]**
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SavedAiPose {
@@ -356,8 +371,8 @@ pub struct SavedAiPose {
     pub heading: f32,
 }
 
-/// Reads the 16 bytes a character request keeps for its saved AI state: the
-/// position as three floats, then a fourth word. Any shorter input has no
+/// Reads the 16 bytes of a saved AI state (a request's, or the saved AI home
+/// chunk's): the position as three floats, then a fourth word. Any shorter input has no
 /// pose, and the builder starts the AI from its own state instead.
 pub fn saved_ai_pose(bytes: &[u8]) -> Option<SavedAiPose> {
     let bytes: &[u8; 16] = bytes.get(..16)?.try_into().ok()?;
@@ -1563,15 +1578,15 @@ mod tests {
         assert_eq!(saved_chunks(&blob).pose_tree, Some(&[5u8][..]));
     }
 
-    /// The size word is scaled by 65537/2^32 in double precision, not by
+    /// The size word is scaled by 1/65535 in double precision, not by
     /// 1/65536: at half scale the two differ in the single-precision result.
     #[test]
-    fn a_stored_size_word_scales_by_65537_over_2_pow_32() {
+    fn a_stored_size_word_scales_by_one_over_65535() {
         assert_eq!(stored_size_scale(1.0, 0), 0.0);
         assert_eq!(stored_size_scale(1.0, 32768), 0.500_007_6);
         assert_ne!(stored_size_scale(1.0, 32768), 0.5);
-        // 65535 × 65537 = 2^32 − 1, so a full word is almost exactly one;
-        // the factor's extra 1/65536 cancels the shortfall.
+        // A full word is exactly one.
+        assert_eq!(SIZE_WORD_SCALE.to_bits(), 0x3EF0_0010_0010_0010);
         assert_eq!(stored_size_scale(1.0, 65535), 1.0);
         assert_eq!(stored_size_scale(1.0, 21845), 0.333_333_34);
         // The base scale multiplies after the word's factor, in double.
@@ -1580,9 +1595,9 @@ mod tests {
         assert!(stored_size_scale(f32::NAN, 1).is_nan());
     }
 
-    /// A zero second size word means "unset": both become 0xFFFF, whose
-    /// scale is exactly one, and the builder writes the second word's field
-    /// before the first's.
+    /// A zero second size word means "unset" to the streamed builder: both
+    /// become 0xFFFF, whose scale is exactly one, unless the body is dead;
+    /// the builder writes the second word's field before the first's.
     #[test]
     fn an_unset_size_pair_defaults_to_full_and_scales_to_one() {
         assert_eq!(normalised_size_words([0x8000, 0]), [0xFFFF, 0xFFFF]);
@@ -1591,8 +1606,15 @@ mod tests {
             [0x8000, 0x4000],
             "a set pair stays"
         );
-        // 65535 × 65537 / 2^32 is 1 − 2^-32, which rounds to exactly 1.
-        assert_eq!(character_scales(1.0, [0, 0]), (1.0, 1.0));
+        let dead = exa_formats::characters::DEAD;
+        assert_eq!(streamed_size_words([0x8000, 0], 0), [0xFFFF, 0xFFFF]);
+        assert_eq!(streamed_size_words([0x8000, 0], dead), [0x8000, 0]);
+        assert_eq!(
+            character_scales(1.0, streamed_size_words([0, 0], 0)),
+            (1.0, 1.0)
+        );
+        // The request builder and a dead body scale the stored zeros.
+        assert_eq!(character_scales(1.0, [0, 0]), (0.0, 0.0));
         let (second, first) = character_scales(2.0, [32768, 65535]);
         assert_eq!(second, 2.0);
         assert_eq!(first, 1.000_015_3);
@@ -1606,7 +1628,7 @@ mod tests {
         assert_eq!(character_node_flags(0x40, 0), 0x40);
         assert_eq!(character_node_flags(0x40, MARK_NODE), 0x1040);
         assert_eq!(character_node_flags(0x1000, MARK_NODE), 0x1000);
-        assert_ne!(MARK_NODE, KEEP_SAVED_AI);
+        assert_ne!(MARK_NODE, NO_AI_START);
         assert_eq!(NODE_MARK, 0x1000);
         let mut bytes = Vec::new();
         for value in [1.5f32, -2.0, 300.0, 0.25] {
