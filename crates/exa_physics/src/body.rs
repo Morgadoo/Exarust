@@ -1427,8 +1427,8 @@ pub struct Ragdoll {
     /// muscles-off sampler runs at 0.9 of it while the body has no support
     /// (the original's unsupported, non-locomoting clock).
     limp_clip_rate: f32,
-    /// The standing height the muscles-off sampler eases (cm, the
-    /// original's `+0xac0`): 0.05 of its target a tick.
+    /// The standing height the muscles-off sampler eases (cm): 0.05 of its
+    /// target a tick.
     limp_height: f32,
     /// The body scale the muscles-off sampler's height target reads.
     limp_scale: f32,
@@ -1537,7 +1537,7 @@ pub struct Drive {
     /// The clip rate the posture block last wrote. A weak tick, and a walk
     /// or a run, leave it; the clock reads it. It starts at the human base.
     pub posture_rate: f32,
-    /// The body tick's size adapters, look rate and countdowns.
+    /// The body tick's adapters, look rate and counters.
     pub timers: BodyTimers,
     /// A dormant statue or golem. Its limbs keep [`DORMANT_KEEP`] of the
     /// living retention, its sleep countdown runs, and its standing lift
@@ -2559,18 +2559,17 @@ impl Ragdoll {
         }
     }
 
-    /// One tick of the body tick's size adapters, look rate and
-    /// countdowns, from what the character tick just measured.
+    /// One tick of the body tick's adapters, look rate and counters, from
+    /// what the last tick measured.
     pub fn tick_timers(&mut self) {
         let Some(d) = self.drive.as_mut() else {
             return;
         };
         let input = timers::TimerInput {
-            scale: d.stats.scale,
-            tone: d.tone,
+            support: d.support,
+            balance: d.balance.value,
             energy: d.energy,
             moving: d.bearing.moving,
-            off_feet: d.bearing.off_feet,
             getting_up: d.bearing.getting_up,
             progress: d.bearing.progress,
         };
