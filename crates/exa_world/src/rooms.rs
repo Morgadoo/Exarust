@@ -718,6 +718,12 @@ impl RoomTracker {
         }
     }
 
+    /// Whether the door `link` is open: the room walk itself, and a
+    /// character looking for a way out of a room, both read it.
+    pub fn is_open(&self, link: DoorLink) -> bool {
+        !self.closed.contains(&link)
+    }
+
     pub fn state(&self, room: u16) -> RoomState {
         self.state.get(room as usize).copied().unwrap_or_default()
     }

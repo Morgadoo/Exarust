@@ -178,15 +178,22 @@ pub struct Standing {
     pub level: i32,
     /// The contact is the one it flees or attends.
     pub is_focus: bool,
+    /// The contact's position on the ground plane (cm), which a flight
+    /// treats as the threat.
+    pub threat: bevy::math::Vec2,
+    /// The contact's room, −1 unknown.
+    pub threat_room: i32,
 }
 
 /// Classifies `c`, which keeps its level; returns the level and its score.
-/// `way_out` answers whether a flight from the contact has somewhere to go.
+/// `way_out` answers whether a flight from the contact at `threat` (x, z,
+/// cm) toward its room has somewhere to go: the original asks the room
+/// graph for a way out of the brain's room with the contact as the threat.
 pub fn classify(
     c: &mut ContactRecord,
     morale: &mut Morale,
     at: Standing,
-    mut way_out: impl FnMut() -> bool,
+    mut way_out: impl FnMut(bevy::math::Vec2, i32) -> bool,
 ) -> (i32, f32) {
     if at.level == 3 {
         c.marks &= !1;
@@ -211,7 +218,7 @@ pub fn classify(
             fear = 0.75;
         }
     }
-    if s > 3.0 && fear < c.alarm && way_out() {
+    if s > 3.0 && fear < c.alarm && way_out(at.threat, at.threat_room) {
         c.level = 4;
         return (4, c.alarm);
     }
@@ -229,7 +236,7 @@ pub fn classify(
         return (c.level, heat);
     }
     if 1.0 < c.concern {
-        if 8.0 - s < c.concern && way_out() {
+        if 8.0 - s < c.concern && way_out(at.threat, at.threat_room) {
             c.level = 4;
             return (4, c.alarm);
         }
@@ -681,6 +688,22 @@ pub struct Sighting {
     pub contact: ContactRecord,
     /// It is a character (kind 1), not an object.
     pub character: bool,
+    /// Where the contact stands on the ground plane (cm); a flight treats
+    /// it as the threat.
+    pub position_cm: bevy::math::Vec3,
+    /// The contact's room, −1 unknown.
+    pub room: i32,
+}
+
+impl Default for Sighting {
+    fn default() -> Self {
+        Self {
+            contact: ContactRecord::default(),
+            character: true,
+            position_cm: bevy::math::Vec3::ZERO,
+            room: -1,
+        }
+    }
 }
 
 /// What the target pass did.
@@ -765,7 +788,7 @@ pub fn target_pass(
     visible: &[Sighting],
     nearby: &[Sighting],
     mut distance2: impl FnMut(u64) -> f32,
-    mut way_out: impl FnMut() -> bool,
+    mut way_out: impl FnMut(bevy::math::Vec2, i32) -> bool,
 ) -> PassReport {
     let scripted_id = input.scripted.map(|s| s.contact.id);
     let PassInput {
@@ -808,12 +831,14 @@ pub fn target_pass(
     let classify_into = |sighting: &Sighting,
                          contacts: &mut Vec<ContactRecord>,
                          morale: &mut Morale,
-                         way_out: &mut dyn FnMut() -> bool|
+                         way_out: &mut dyn FnMut(bevy::math::Vec2, i32) -> bool|
      -> (i32, f32) {
         let mut record = sighting.contact;
         let at = Standing {
             level,
             is_focus: Some(record.id) == foe,
+            threat: bevy::math::Vec2::new(sighting.position_cm.x, sighting.position_cm.z),
+            threat_room: sighting.room,
         };
         let (l, score) = classify(&mut record, morale, at, &mut *way_out);
         record.level = l;
@@ -830,7 +855,7 @@ pub fn target_pass(
                  best: &mut Best,
                  contacts: &mut Vec<ContactRecord>,
                  morale: &mut Morale,
-                 way_out: &mut dyn FnMut() -> bool| {
+                 way_out: &mut dyn FnMut(bevy::math::Vec2, i32) -> bool| {
         let (l, score) = classify_into(sighting, contacts, morale, way_out);
         if l >= 0 {
             best.weigh(Candidate {
@@ -848,7 +873,7 @@ pub fn target_pass(
             scripted,
             contacts,
             morale,
-            &mut way_out as &mut dyn FnMut() -> bool,
+            &mut way_out as &mut dyn FnMut(bevy::math::Vec2, i32) -> bool,
         );
         best.level = level;
         best.strong = Some(scripted.contact.id);
@@ -861,7 +886,7 @@ pub fn target_pass(
             &mut best,
             contacts,
             morale,
-            &mut way_out as &mut dyn FnMut() -> bool,
+            &mut way_out as &mut dyn FnMut(bevy::math::Vec2, i32) -> bool,
         );
     }
     if asleep && 0 < best.level {

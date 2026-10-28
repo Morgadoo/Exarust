@@ -118,6 +118,29 @@ pub struct Npc {
     /// The nearby characters the room list gathered (their ids), by
     /// distance.
     pub nearby: Vec<u64>,
+    /// The rooms a flight has left through (eight at most).
+    pub fled: crate::flee::FledRooms,
+    /// The level room it stands in, −1 unknown.
+    pub level_room: i32,
+    /// The level room before the current one: a room whose only exit leads
+    /// back to it is remembered as fled.
+    pub previous_room: i32,
+    /// The way out the last flight chose (cm, y 0), while it runs.
+    pub flight: Option<bevy::math::Vec3>,
+}
+
+/// Where a brain stands and the room graph its flight reads: the brain's
+/// position and room, the room before it and its room's exits.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct FleePlace<'a> {
+    /// The brain's position (cm); only x and z are read.
+    pub at_cm: bevy::math::Vec3,
+    /// Its level room, −1 unknown.
+    pub room: i32,
+    /// The room before it, −1 unknown.
+    pub home: i32,
+    /// Its room's exits (empty without a level room table).
+    pub exits: &'a [crate::flee::RoomExit],
 }
 
 impl Npc {
@@ -141,6 +164,10 @@ impl Npc {
             alert_until_ms: u32::MAX,
             room: RoomCell::default(),
             nearby: Vec::new(),
+            fled: crate::flee::FledRooms::default(),
+            level_room: -1,
+            previous_room: -1,
+            flight: None,
         }
     }
 
@@ -203,7 +230,9 @@ impl Npc {
     /// Integrates the brain's contacts and runs the target pass over the
     /// characters `visible` this tick: the level to fight at, 0 when
     /// nothing is noticed. `distance2` gives a character's squared distance
-    /// (cm²) for the greeting.
+    /// (cm²) for the greeting. `place` is where it stands and the room
+    /// graph it flees through: its position (cm), its room and the room
+    /// before it (−1 unknown) and its room's exits.
     #[allow(clippy::too_many_arguments)]
     pub fn run_pass(
         &mut self,
@@ -216,6 +245,7 @@ impl Npc {
         down: bool,
         now_ms: u32,
         roll: &mut u32,
+        place: &FleePlace<'_>,
     ) -> i32 {
         // The AI tick drifts the morale before the contacts are integrated.
         combat::drift_morale(
@@ -258,6 +288,22 @@ impl Npc {
             ..contacts::Morale::default()
         };
         let attended = self.pass.attention;
+        // The room graph answers each contact's way out as the original's
+        // classify asks it: from the brain's room, past the exits it has
+        // not fled through, away from the contact.
+        let mut fled = self.fled;
+        let mut way_out = |threat: bevy::math::Vec2, threat_room: i32| {
+            crate::flee::way_out(
+                place.room,
+                bevy::math::Vec2::new(place.at_cm.x, place.at_cm.z),
+                threat,
+                place.exits,
+                place.home,
+                threat_room,
+                &mut fled,
+            )
+            .is_some()
+        };
         let report = contacts::target_pass(
             contacts::PassInput {
                 contacts: &mut self.contacts,
@@ -276,8 +322,9 @@ impl Npc {
             &visible,
             &[],
             distance2,
-            || false,
+            &mut way_out,
         );
+        self.fled = fled;
         self.integration.level = report.level;
         self.integration.stress = report.stress;
         // The alarm mean raises the same stress the next drift decays.
@@ -615,6 +662,7 @@ pub fn perceive_all(
 pub fn ai_tick(
     ticks: Option<Res<BodyTicks>>,
     mut rooms: Option<ResMut<RoomCells>>,
+    level: Option<Res<exa_world::room_view::LevelRooms>>,
     players: Query<(Entity, &GlobalTransform), With<RatedPlayer>>,
     targets: Query<(Entity, &GlobalTransform)>,
     fighters: Query<(Entity, &GlobalTransform), With<Fighter>>,
@@ -667,16 +715,49 @@ pub fn ai_tick(
         } else {
             (target_cm - observer_cm).length()
         };
+        // The level's cell-to-room table: the character's room, the room
+        // before it (remembered when it changes) and the room's exits.
+        let level_room = |at: Vec3| match level.as_deref() {
+            Some(level) => crate::rooms::level_room(&level.rooms, at),
+            None => -1,
+        };
+        let room = level_room(observer_cm);
+        if room >= 0 && room != npc.level_room {
+            npc.previous_room = npc.level_room;
+            npc.level_room = room;
+        }
+        let exits = match level.as_deref() {
+            Some(level) if room >= 0 => {
+                crate::rooms::room_exits(&level.rooms, &level.tracker, room as u16)
+            }
+            _ => Vec::new(),
+        };
         // Every character the perception saw this tick is weighed, in the
         // contact list's order [guess: the original walks the world's
         // character list, which Exarust does not keep in that order].
+        let places: Vec<(u64, Vec3)> = fighters
+            .iter()
+            .map(|(e, g)| (e.to_bits(), g.translation() * 100.0))
+            .collect();
         let visible: Vec<contacts::Sighting> = npc
             .contacts
             .iter()
             .filter(|c| !c.object && contacts::TINY < c.seen)
-            .map(|&contact| contacts::Sighting {
-                contact,
-                character: true,
+            .map(|&contact| {
+                let at = if Some(contact.id) == target.map(Entity::to_bits) {
+                    target_cm
+                } else {
+                    places
+                        .iter()
+                        .find(|(id, _)| *id == contact.id)
+                        .map_or(Vec3::ZERO, |(_, at)| *at)
+                };
+                contacts::Sighting {
+                    contact,
+                    character: true,
+                    position_cm: at,
+                    room: level_room(at),
+                }
             })
             .collect();
         let sees_foe = target.is_some_and(|t| visible.iter().any(|s| s.contact.id == t.to_bits()));
@@ -700,10 +781,9 @@ pub fn ai_tick(
             sees_foe,
             foe_point: target_cm,
             // [guess: the model's translation stands in for the body's
-            // stored ground height; the running game has no room graph, so
-            // every foe is in room 0].
+            // stored ground height].
             foe_ground_y: target_cm.y,
-            foe_room: 0,
+            foe_room: level_room(target_cm),
             focus: None,
         };
         let in_combat = duellist
@@ -736,6 +816,12 @@ pub fn ai_tick(
         let asleep = mind.is_some_and(|m| m.asleep);
         let down = condition.0 & combatant::CONDITION_DOWN != 0;
         let mut roll = npc.roll;
+        let place = FleePlace {
+            at_cm: observer_cm,
+            room: npc.level_room,
+            home: npc.previous_room,
+            exits: &exits,
+        };
         let _ = npc.run_pass(
             &visible,
             sight,
@@ -746,6 +832,7 @@ pub fn ai_tick(
             down,
             now,
             &mut roll,
+            &place,
         );
         let seen_or_heard = npc.pass.attention.is_some();
         // The original keeps one contact list: the combat state, the
@@ -1075,6 +1162,8 @@ mod tests {
                 ..ContactRecord::default()
             },
             character: true,
+            position_cm: bevy::math::Vec3::ZERO,
+            room: -1,
         };
         let sight = contacts::FoeSight {
             foe: Some(1),
@@ -1095,6 +1184,7 @@ mod tests {
             false,
             0,
             &mut roll,
+            &FleePlace::default(),
         );
         assert_eq!(level, 3);
         assert_eq!(npc.pass.enter, Some(3));
@@ -1120,6 +1210,7 @@ mod tests {
             false,
             1,
             &mut roll,
+            &FleePlace::default(),
         );
         assert_eq!(level, 0);
         assert_eq!(npc.pass.target, None);
