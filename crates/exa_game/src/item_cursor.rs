@@ -31,14 +31,18 @@
 //! −1000 cm low, `hand::box_ok_local`) only decides the routine's answer.
 //! The original then slides the item along the ray from 600 cm back to its
 //! first contact (at most 1000 cm on, [`per_sphere_contact`]): every
-//! collision sphere of every part is swept against the level's meshes, and
-//! the nearest contact wins; a cursor that picks nothing keeps the last
-//! point (its pick has no navigation mesh behind every pixel). A level
-//! placement marker named for the item's object or model snaps the item
-//! onto the marker's frame when the cursor's ray passes within the marker's
-//! radius and the item fits there ([`snap_to_marker`]); its link byte `L`
-//! gives the give-back word. Exarust's level loader does not register the
-//! marker nodes yet, so the cursor's marker list is empty in the game.
+//! collision sphere of every part, carried with the placed point, is swept
+//! against the level, and the nearest contact wins (Exarust sweeps
+//! rapier's level colliders, not the CPU triangles, and starts no nearer
+//! than the eye); a cursor that picks nothing keeps the last point (its
+//! pick has no navigation mesh behind every pixel). A level placement
+//! marker whose eight-character hexadecimal name gives the item's object
+//! or model id snaps the item onto the marker's frame when the cursor's
+//! segment (to the pick, or 10 000 cm) meets the marker's sphere and the
+//! item fits there ([`snap_to_marker`]); its link byte `L` gives the
+//! give-back word. Exarust's level loader does not register the marker
+//! nodes and its props carry no object id yet, so nothing snaps in the
+//! game.
 //!
 //! **The release.** A plain release leaves the item where the cursor put
 //! it: the original's release hands the saved rest points to the deferred
@@ -382,19 +386,24 @@ pub fn rest_box(rest: [Vec3; 4]) -> (Vec3, Vec3) {
     ((low + high) * 0.5, (high - low) * 0.5)
 }
 
-/// A level placement marker an item can snap onto: a node of the level's
-/// scene named for the item's object or model, its frame, the radius the
-/// cursor's ray must pass within, and the link byte that decides what the
-/// release does (`L` gives the item back).
+/// A level placement marker an item can snap onto: an entry of a level
+/// scene node, named by eight hexadecimal characters for an object or a
+/// model id, with the sphere the cursor's ray must pass through, the frame
+/// it puts the item in, and the link byte after the name (`L` gives the
+/// item back).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PlacementMarker {
-    /// The marker's eight-byte name, read as a little-endian word.
-    pub name: u64,
-    pub frame: Frame,
-    /// The radius of the placement sphere (m).
-    pub radius: f32,
-    /// The marker's link byte.
+    /// The marker's eight name characters.
+    pub name: [u8; 8],
+    /// The byte after the name.
     pub link: u8,
+    /// The sphere's centre (m, world: the node's position plus the entry's
+    /// offset).
+    pub centre: Vec3,
+    /// The sphere's radius (m).
+    pub radius: f32,
+    /// The frame the item takes.
+    pub frame: Frame,
 }
 
 /// Where a placement marker takes the item: the marker's frame and the
@@ -406,65 +415,92 @@ pub struct Placement {
     pub hover: u32,
 }
 
-/// The nearest point on a segment `origin + dir·t`, `t` in [0, max], to
-/// `point`: the parameter and the squared distance, or none for a
-/// zero-length segment. The parameter is clamped by ordered compares as the
-/// original clamps it, so a NaN parameter becomes zero.
-pub fn segment_closest(origin: Vec3, dir: Vec3, max: f32, point: Vec3) -> Option<(f32, f32)> {
-    let length2 = dir.length_squared();
-    if length2 == 0.0 {
-        return None;
+/// The length (cm) of the marker test's segment when the cursor's pick met
+/// nothing; with a pick, the segment runs to the picked point.
+pub const MARKER_RAY_CM: f32 = 10_000.0;
+
+/// The ray's height part must be at most minus this for any placement
+/// (the engine's float epsilon).
+const MARKER_DESCENT: f32 = f32::from_bits(0x33ff_ffd7);
+
+/// The id a marker's name gives: its characters read as hexadecimal digits
+/// (either case), most significant first, stopping at the first character
+/// that is not one, in a wrapping 32-bit word.
+pub fn marker_id(name: &[u8; 8]) -> u32 {
+    let mut id = 0u32;
+    for c in name {
+        let digit = match c {
+            b'0'..=b'9' => c - b'0',
+            b'a'..=b'f' => c - b'a' + 10,
+            b'A'..=b'F' => c - b'A' + 10,
+            _ => break,
+        };
+        id = (id << 4).wrapping_add(u32::from(digit));
     }
-    let t = (point - origin).dot(dir) / length2;
-    let t = if t >= 0.0 {
-        if t > max { max } else { t }
-    } else {
-        0.0
-    };
-    let d = origin + dir * t - point;
-    Some((t, d.length_squared()))
+    id
 }
 
-/// The first placement marker the cursor's ray meets, in node order: the
-/// ray must descend (its height part at most −[`TURN_EPSILON`]; the original
-/// refuses a ray that climbs), it must pass within the marker's radius
-/// somewhere on its 10 000 cm length, the marker's name must be `item` or
-/// `model`, and the item must fit the marker's frame (`fits`). The original
-/// then puts the item's frame on the marker's and reports the hover word
-/// from the marker's link byte.
+/// Whether the segment from `origin` along `segment` (its full extent)
+/// passes within `radius` of `centre`, in the engine's arithmetic: with
+/// `w = centre − origin` and `s = segment·w`, a sphere behind the start
+/// (`s` not over 0, a NaN included) is measured from the start, one past
+/// the end (`|segment|²` not over `s`) from the end, and otherwise by
+/// `|w|² − s²/|segment|²`; it is met when `radius²` is at least that (an
+/// unordered distance is not met).
+pub fn segment_meets_sphere(origin: Vec3, segment: Vec3, centre: Vec3, radius: f32) -> bool {
+    let w = centre - origin;
+    let along = (segment.y * w.y + segment.x * w.x) + segment.z * w.z;
+    let r2 = radius * radius;
+    let squared = |v: Vec3| (v.y * v.y + v.x * v.x) + v.z * v.z;
+    if along > 0.0 {
+        let length2 = squared(segment);
+        if length2 > along {
+            r2 >= squared(w) - along * along / length2
+        } else {
+            let d = w - segment;
+            r2 >= (d.x * d.x + d.y * d.y) + d.z * d.z
+        }
+    } else {
+        r2 >= squared(w)
+    }
+}
+
+/// The first placement marker the cursor's ray meets, in order: the ray's
+/// unit direction `dir` must not climb (its height part at most minus the
+/// float epsilon; the original refuses the whole placement otherwise), the item must carry an object id (`item`, nonzero;
+/// `model` is that object's model id), the segment `dir·length` must meet
+/// the marker's sphere, the marker's name must give `item` or `model`, and
+/// the item must fit the marker's frame (`fits`). The item then takes the
+/// marker's frame, with the hover word from its link byte.
 pub fn snap_to_marker(
     origin: Vec3,
     dir: Vec3,
-    item: u64,
-    model: u64,
+    length: f32,
+    item: u32,
+    model: u32,
     markers: &[PlacementMarker],
     mut fits: impl FnMut(Frame) -> bool,
 ) -> Option<Placement> {
-    if dir.y > -TURN_EPSILON {
+    // Only an ordered climb refuses: a NaN height passes, as the
+    // original's compare lets it.
+    if -MARKER_DESCENT < dir.y || item == 0 {
         return None;
     }
-    let max = DRAG_REACH_CM / 10.0;
+    let segment = dir * length;
     for marker in markers {
-        let Some((_, distance2)) = segment_closest(origin, dir, max, marker.frame.position) else {
-            continue;
-        };
-        if distance2 > marker.radius * marker.radius {
+        if !segment_meets_sphere(origin, segment, marker.centre, marker.radius) {
             continue;
         }
-        if marker.name != item && marker.name != model {
+        let id = marker_id(&marker.name);
+        if id != item && id != model {
             continue;
         }
         if !fits(marker.frame) {
             continue;
         }
-        let hover = if marker.link == GIVE_BACK_LINK {
-            HOVER_GIVE_BACK
-        } else {
-            HOVER_WORLD
-        };
         return Some(Placement {
             frame: marker.frame,
-            hover,
+            hover: hover_word(Some(marker.link), true),
         });
     }
     None
@@ -590,10 +626,10 @@ pub struct HeldItem {
     pub half: Vec3,
     /// The last point the box fitted at (m).
     pub target: Vec3,
-    /// The object's id and model id a level placement marker is named for
-    /// (zero when the item carries neither).
-    pub item: u64,
-    pub model: u64,
+    /// The object's id and its model's id, which a level placement marker
+    /// is named for (zero when the item carries no object id).
+    pub item: u32,
+    pub model: u32,
 }
 
 /// A GUI drop waiting to run: the inventory entry, whether the drag came
@@ -700,17 +736,26 @@ impl ItemCursor {
     }
 
     /// The placement marker the held item snaps onto, if the cursor's ray
-    /// meets one named for the item or its model and the item fits there:
-    /// the marker's frame and hover word. None without a held item or
-    /// markers.
+    /// (unit `dir`, `length` m) meets one named for the item or its model
+    /// and the item fits there: the marker's frame and hover word. None
+    /// without a held item or markers.
     pub fn snap(
         &self,
         origin: Vec3,
         dir: Vec3,
+        length: f32,
         fits: impl FnMut(Frame) -> bool,
     ) -> Option<Placement> {
         let held = self.held.as_ref()?;
-        snap_to_marker(origin, dir, held.item, held.model, &self.markers, fits)
+        snap_to_marker(
+            origin,
+            dir,
+            length,
+            held.item,
+            held.model,
+            &self.markers,
+            fits,
+        )
     }
 
     /// One frame of the cursor's turn: the offset's new piece and whether
@@ -1140,82 +1185,107 @@ mod tests {
         assert_eq!(hit.part, 1);
     }
 
-    /// A marker takes the item when the cursor's ray descends within its
-    /// radius and its name is the item's or the model's; the item must fit
-    /// the marker's frame. An `L` link gives the give-back word, another
-    /// marker the world word.
+    /// A marker takes the item when the cursor's descending ray meets its
+    /// sphere and its hexadecimal name gives the item's or the model's id;
+    /// the item must fit the marker's frame. An `L` link gives the
+    /// give-back word, another marker the world word.
     #[test]
     fn a_placement_marker_snaps_the_item() {
-        let marker = |name: u64, at: Vec3, radius: f32, link: u8| PlacementMarker {
-            name,
-            frame: Frame::new(at, Mat3::IDENTITY),
-            radius,
+        assert_eq!(marker_id(b"00001A2f"), 0x1a2f);
+        assert_eq!(marker_id(b"12_45678"), 0x12);
+        assert_eq!(marker_id(b"ffffffff"), u32::MAX);
+        let marker = |name: &[u8; 8], at: Vec3, radius: f32, link: u8| PlacementMarker {
+            name: *name,
             link,
+            centre: at,
+            radius,
+            frame: Frame::new(at, Mat3::IDENTITY),
         };
         let markers = [
-            marker(7, Vec3::new(0.5, 0.0, 10.0), 0.6, b'K'),
-            marker(9, Vec3::new(0.0, 0.0, 10.0), 0.1, b'L'),
+            marker(b"00000007", Vec3::new(0.5, 0.0, 10.0), 0.6, b'K'),
+            marker(b"00000009", Vec3::new(0.0, 0.0, 10.0), 0.1, b'L'),
         ];
-        // The ray down +Z does not descend enough to place anything.
-        assert!(snap_to_marker(Vec3::ZERO, Vec3::Z, 7, 0, &markers, |_| true).is_none());
-        // A ray down from above, 50 cm from the first marker and inside its
-        // 60 cm radius, named for the item.
-        let p = snap_to_marker(
-            Vec3::new(0.0, 100.0, 10.0),
-            Vec3::NEG_Y,
-            7,
-            0,
-            &markers,
-            |_| true,
-        )
-        .unwrap();
+        let above = Vec3::new(0.0, 100.0, 10.0);
+        // A ray that does not descend, or an item without an id, places
+        // nothing.
+        assert!(snap_to_marker(Vec3::ZERO, Vec3::Z, 100.0, 7, 0, &markers, |_| true).is_none());
+        assert!(snap_to_marker(above, Vec3::NEG_Y, 100.0, 0, 9, &markers, |_| true).is_none());
+        // Straight down from above, 50 cm from the first marker and inside
+        // its 60 cm radius, named for the item.
+        let p = snap_to_marker(above, Vec3::NEG_Y, 100.0, 7, 0, &markers, |_| true).unwrap();
         assert_eq!(p.hover, HOVER_WORLD);
         assert_eq!(p.frame.position, Vec3::new(0.5, 0.0, 10.0));
-        // The model id matches the second marker too, with the L link.
-        let p = snap_to_marker(
-            Vec3::new(0.0, 100.0, 10.0),
-            Vec3::NEG_Y,
-            0,
-            9,
-            &markers,
-            |_| true,
-        )
-        .unwrap();
+        // The model id names the second marker, with the L link.
+        let p = snap_to_marker(above, Vec3::NEG_Y, 100.0, 3, 9, &markers, |_| true).unwrap();
         assert_eq!(p.hover, HOVER_GIVE_BACK);
-        assert_eq!(p.frame.position, Vec3::new(0.0, 0.0, 10.0));
+        // A segment that stops short of the markers meets neither: its end
+        // is 40 m above them.
+        assert!(snap_to_marker(above, Vec3::NEG_Y, 60.0, 7, 9, &markers, |_| true).is_none());
         // A refused fit falls through to the next marker.
         let mut tried = 0;
-        let p = snap_to_marker(
-            Vec3::new(0.0, 100.0, 10.0),
-            Vec3::NEG_Y,
-            7,
-            9,
-            &markers,
-            |_| {
-                tried += 1;
-                tried > 1
-            },
-        )
+        let p = snap_to_marker(above, Vec3::NEG_Y, 100.0, 7, 9, &markers, |_| {
+            tried += 1;
+            tried > 1
+        })
         .unwrap();
         assert_eq!(p.frame.position, Vec3::new(0.0, 0.0, 10.0));
         assert_eq!(tried, 2);
         // No name match gives none.
-        assert!(
-            snap_to_marker(
-                Vec3::new(0.0, 100.0, 10.0),
-                Vec3::NEG_Y,
-                3,
-                4,
-                &markers,
-                |_| true
-            )
-            .is_none()
-        );
-        // A ray just outside the radius misses; exactly on it is kept.
-        let outside = Vec3::new(1.1 + f32::EPSILON, 100.0, 10.0);
-        assert!(snap_to_marker(outside, Vec3::NEG_Y, 7, 0, &markers, |_| true).is_none());
-        let edge = Vec3::new(1.1, 100.0, 10.0);
-        assert!(snap_to_marker(edge, Vec3::NEG_Y, 7, 0, &markers, |_| true).is_some());
+        assert!(snap_to_marker(above, Vec3::NEG_Y, 100.0, 3, 4, &markers, |_| true).is_none());
+    }
+
+    /// The segment test: from the start behind it, from the end past it,
+    /// across in between; a radius exactly reaching counts.
+    #[test]
+    fn the_marker_segment_meets_its_sphere() {
+        let seg = Vec3::new(10.0, 0.0, 0.0);
+        // Across: 3 from the segment's middle.
+        assert!(segment_meets_sphere(
+            Vec3::ZERO,
+            seg,
+            Vec3::new(5.0, 3.0, 0.0),
+            3.0
+        ));
+        assert!(!segment_meets_sphere(
+            Vec3::ZERO,
+            seg,
+            Vec3::new(5.0, 3.0, 0.0),
+            2.9
+        ));
+        // Behind the start: measured from it (5 away).
+        assert!(segment_meets_sphere(
+            Vec3::ZERO,
+            seg,
+            Vec3::new(-3.0, 4.0, 0.0),
+            5.0
+        ));
+        assert!(!segment_meets_sphere(
+            Vec3::ZERO,
+            seg,
+            Vec3::new(-3.0, 4.0, 0.0),
+            4.9
+        ));
+        // Past the end: measured from it (5 away).
+        assert!(segment_meets_sphere(
+            Vec3::ZERO,
+            seg,
+            Vec3::new(13.0, 4.0, 0.0),
+            5.0
+        ));
+        assert!(!segment_meets_sphere(
+            Vec3::ZERO,
+            seg,
+            Vec3::new(13.0, 4.0, 0.0),
+            4.9
+        ));
+        // A NaN segment is measured from the start.
+        let nan = Vec3::new(f32::NAN, 0.0, 0.0);
+        assert!(segment_meets_sphere(
+            Vec3::ZERO,
+            nan,
+            Vec3::new(0.0, 1.0, 0.0),
+            1.0
+        ));
     }
 
     /// The release: a plain release leaves the item where it is unless a

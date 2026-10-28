@@ -23,11 +23,13 @@
 //!   release;
 //! - a corpse: dragged by the limb the pick hit, strength 0.5, in every
 //!   pass;
-//! - a door or a wheel: the drag is recorded and the door's grab ends 2000
-//!   ms after it started (Exarust's doors and wheels are static level
-//!   geometry, so nothing moves yet); a scene object's mesh that is a cloth
-//!   takes the vertex within 10 cm of the point, and the cloth's step puts
-//!   that vertex on the cursor's point on the cloth or on the drag plane;
+//! - a door or a wheel: the drag is recorded until the release (Exarust's
+//!   doors and wheels are static level geometry, so nothing moves yet); a
+//!   scene object's mesh that is a cloth takes the vertex within 10 cm of
+//!   the point [a stand-in for the mesh element the original's pick hit],
+//!   and each frame the vertex is pulled to the cursor's point on the cloth
+//!   while the pick stays within its radius, else to the cursor's ray on
+//!   the plane through the press point facing the camera;
 //! - anything else: refused until the release, the cursor a cross and the
 //!   movement request left as it was.
 //!
@@ -133,11 +135,14 @@ pub enum Holding {
     /// right button, as the original's door, wheel and cloth drags do.
     Mechanism(Pick),
     /// A cloth's vertex under the hand: the cloth, the vertex the press
-    /// took and the height of the plane the cursor pulls along (m).
+    /// took, and the drag plane the cursor pulls along when the pick leaves
+    /// the vertex: its normal (the camera's view axis at the press) and its
+    /// offset `normal·point` (m) through the press point.
     Cloth {
         cloth: Entity,
         vertex: usize,
-        height: f32,
+        normal: Vec3,
+        offset: f32,
     },
     /// A press on something the hand does not use, until the release.
     Refused,
@@ -156,8 +161,6 @@ pub struct Hand {
     pub last_click: Option<(IVec2, i64)>,
     /// A scene press's point, for the cloth grab that follows it.
     pub scene_press: Option<Vec3>,
-    /// When a door drag's grab ends (ms of the game clock).
-    pub mechanism_until: Option<u32>,
 }
 
 /// Where and when the left button went down, and whether its drag started.
@@ -443,16 +446,6 @@ impl DragState {
 /// The distance (cm) a closed door is pulled toward the cursor, out of its
 /// own hinge-side point.
 pub const DOOR_PULL_CM: f32 = 100.0;
-/// A door drag's grab lasts this long (ms of the game clock) before the
-/// hand lets go: the original stamps its grabbed body with the sim clock
-/// plus 2000.
-pub const MECHANISM_HOLD_MS: u32 = 2000;
-
-/// Whether a door drag whose grab ends at `until_ms` has expired at
-/// `now_ms`: strictly after it, as the original's compare.
-pub fn mechanism_expired(now_ms: u32, until_ms: u32) -> bool {
-    until_ms < now_ms
-}
 /// A door's drag link flags, its pass limit and its slack.
 pub const DOOR_LINK_FLAGS: u32 = 0x4000;
 pub const DOOR_LINK_LIMIT: u32 = 2;
@@ -607,10 +600,15 @@ pub fn cloth_vertex(vertices: &[Vec3], at: Vec3, radius: f32) -> Option<usize> {
         .position(|v| (*v - at).length_squared() < r2)
 }
 
-/// One frame of a cloth drag in the cloth's own frame (centimetres): the
-/// grabbed vertex while the pick still finds it within `radius`, else the
-/// plane's point. The original's record holds the vertex's own radius and
-/// writes this target for the cloth step.
+/// The radius (cm) a press takes a cloth vertex within, and the radius the
+/// pick must stay within to keep pulling on the vertex itself [a stand-in:
+/// the original keeps each grabbed element's own radius].
+pub const CLOTH_GRAB_CM: f32 = 10.0;
+
+/// One frame of a cloth drag's target in the cloth's own frame
+/// (centimetres): the picked point while it lies strictly within `radius`
+/// of the grabbed vertex, else the plane's point. The original's grab
+/// record holds the vertex's own radius and receives this target.
 pub fn cloth_drag_frame(
     vertex_cm: Vec3,
     picked_cm: Option<Vec3>,
@@ -1042,8 +1040,7 @@ fn player_child(
 fn grab_cloth(
     cloths: &Query<(Entity, &exa_world::cloth::ClothInstance, &GlobalTransform)>,
     at: Vec3,
-) -> Option<(Entity, usize, f32)> {
-    const RADIUS_CM: f32 = 10.0;
+) -> Option<(Entity, usize)> {
     for (entity, instance, transform) in cloths {
         let local = transform.affine().inverse().transform_point3(at) * CM;
         let vertices: Vec<Vec3> = instance
@@ -1052,26 +1049,33 @@ fn grab_cloth(
             .iter()
             .map(|p| p.position)
             .collect();
-        if let Some(vertex) = cloth_vertex(&vertices, local, RADIUS_CM) {
-            return Some((entity, vertex, at.y));
+        if let Some(vertex) = cloth_vertex(&vertices, local, CLOTH_GRAB_CM) {
+            return Some((entity, vertex));
         }
     }
     None
 }
 
-/// A scene press on a cloth: the vertex under the point is grabbed.
+/// A scene press on a cloth: the vertex under the point is grabbed, and
+/// the drag plane is set through the point facing the camera (the
+/// original takes the camera's view axis as the plane's normal).
 fn take_cloth(
     mut hand: ResMut<Hand>,
     cloths: Query<(Entity, &exa_world::cloth::ClothInstance, &GlobalTransform)>,
+    cameras: Query<&GlobalTransform, With<ChaseCamera>>,
 ) {
     let Some(at) = hand.scene_press.take() else {
         return;
     };
-    if let Some((cloth, vertex, height)) = grab_cloth(&cloths, at) {
+    let normal = cameras
+        .single()
+        .map_or(Vec3::NEG_Z, |eye| eye.forward().as_vec3());
+    if let Some((cloth, vertex)) = grab_cloth(&cloths, at) {
         hand.holding = Holding::Cloth {
             cloth,
             vertex,
-            height,
+            normal,
+            offset: normal.dot(at),
         };
     }
 }
@@ -1195,8 +1199,6 @@ fn press_hand(
         // under the hand yet.
         Press::Mechanism(pick) => {
             hand.holding = Holding::Mechanism(pick);
-            // A door's grab lasts 2000 ms of the game clock.
-            hand.mechanism_until = (pick == Pick::Hinge).then_some(now as u32 + MECHANISM_HOLD_MS);
             // A scene object's mesh can be a cloth: the next system takes a
             // vertex near the point when there is one.
             hand.scene_press = (pick == Pick::Scene)
@@ -1324,9 +1326,8 @@ fn hold_hand(
     mut bodies: Query<OtherBodies, Without<PlayerBody>>,
     mut cloths: Query<(&mut exa_world::cloth::ClothInstance, &GlobalTransform)>,
     mut screens: Option<ResMut<Messages<ScreenRequest>>>,
-    (time, real, mut show_bars, pad, pad_status): (
+    (time, mut show_bars, pad, pad_status): (
         Option<Res<Time<Virtual>>>,
-        Option<Res<Time<Real>>>,
         Option<ResMut<HudShowUntil>>,
         Option<Res<crate::gamepad::PlayPad>>,
         Option<Res<crate::gamepad::PadStatus>>,
@@ -1442,19 +1443,15 @@ fn hold_hand(
             }
         }
         Holding::Mechanism(_) => {
-            let expired = hand.mechanism_until.is_some_and(|until| {
-                real.as_deref()
-                    .is_some_and(|t| mechanism_expired(t.elapsed().as_millis() as u32, until))
-            });
-            if released || expired {
+            if released {
                 hand.holding = Holding::Nothing;
-                hand.mechanism_until = None;
             }
         }
         Holding::Cloth {
             cloth,
             vertex,
-            height,
+            normal,
+            offset,
         } => {
             let Ok((mut instance, transform)) = cloths.get_mut(cloth) else {
                 hand.holding = Holding::Nothing;
@@ -1463,36 +1460,34 @@ fn hold_hand(
             if released {
                 instance.cloth.release_grab();
                 hand.holding = Holding::Nothing;
-            } else {
-                // The picked point on the cloth, else the cursor's plane
-                // point, in the cloth's own frame; the grabbed vertex keeps
-                // its own radius (a 10 cm stand-in).
-                let ray = cursor_ray(&scripted, &windows, &cameras);
-                let hip = player.and_then(|(feet, child)| {
-                    player_bodies
-                        .get(child)
-                        .ok()
-                        .map(|(_, own, ..)| hip_of(feet, own))
-                });
-                if let (Some(ray), Some(_hip)) = (ray, hip) {
-                    let to_local = |w: Vec3| transform.affine().inverse().transform_point3(w) * CM;
-                    let world_vertex = instance
-                        .cloth
-                        .particles
-                        .get(vertex)
-                        .map(|p| transform.transform_point(p.position / CM));
-                    let picked = world_vertex.and_then(|v| {
-                        let t = (v - ray.origin).dot(*ray.direction).max(0.0);
-                        let on = ray.origin + *ray.direction * t;
-                        ((on - v).length() < 0.1).then_some(on)
-                    });
-                    let plane = drag_anchor(ray.origin, *ray.direction, height, hip.unwrap())
-                        .unwrap_or(ray.origin + *ray.direction * 5.0);
+            } else if let Some(ray) = cursor_ray(&scripted, &windows, &cameras) {
+                // The picked point on the cloth, else the cursor's ray on the
+                // drag plane, in the cloth's own frame; the grabbed vertex
+                // keeps its own radius (a 10 cm stand-in). Exarust's pick
+                // has no cloth triangles: the ray's nearest point to the
+                // vertex stands in for the pick's point on the cloth.
+                let (origin, dir) = (ray.origin, *ray.direction);
+                let to_local = |w: Vec3| transform.affine().inverse().transform_point3(w) * CM;
+                if let Some(world_vertex) = instance
+                    .cloth
+                    .particles
+                    .get(vertex)
+                    .map(|p| transform.transform_point(p.position / CM))
+                {
+                    let along = (world_vertex - origin).dot(dir).max(0.0);
+                    let picked = origin + dir * along;
+                    let across = normal.dot(dir);
+                    let plane = (offset - normal.dot(origin)) / across;
+                    let plane = if plane.is_finite() && plane > 0.0 {
+                        origin + dir * plane
+                    } else {
+                        world_vertex
+                    };
                     let target = cloth_drag_frame(
-                        to_local(world_vertex.unwrap_or(plane)),
-                        picked.map(to_local),
+                        to_local(world_vertex),
+                        Some(to_local(picked)),
                         to_local(plane),
-                        10.0,
+                        CLOTH_GRAB_CM,
                     );
                     instance.cloth.grab(vertex, target);
                 }
@@ -1554,8 +1549,8 @@ fn hold_hand(
                     hand.holding = Holding::Nothing;
                     return;
                 };
-                let (body, part, box_centre, box_half) =
-                    (held.body, held.part, held.centre, held.half);
+                let (body, part, box_centre, box_half, held_target) =
+                    (held.body, held.part, held.centre, held.half, held.target);
                 if turned && let Ok((_, mut ragdoll, ..)) = bodies.get_mut(body) {
                     let centre = ragdoll
                         .parts
@@ -1587,11 +1582,14 @@ fn hold_hand(
                                 .owner_of(h)
                                 .is_some_and(|(owner, _)| owner == body)
                         });
-                    // The spheres of every part as they stand now, in world
-                    // space, each with the part it belongs to.
+                    // The spheres of every part, in world space, each with
+                    // the part it belongs to, taken relative to the point
+                    // the cursor places (the body's grab point): the sweep
+                    // carries that point along the ray from its start.
                     let spheres: Vec<item_cursor::SphereOf> = bodies
                         .get(body)
                         .map(|(_, ragdoll, ..)| {
+                            let anchor = ragdoll.grab_point().unwrap_or(held_target);
                             ragdoll
                                 .parts
                                 .iter()
@@ -1602,7 +1600,7 @@ fn hold_hand(
                                         item_cursor::SphereOf {
                                             part: index,
                                             sphere: item_cursor::SweepSphere {
-                                                centre: frame.transform_point(*centre),
+                                                centre: frame.transform_point(*centre) - anchor,
                                                 radius: *radius,
                                             },
                                         }
@@ -1613,32 +1611,33 @@ fn hold_hand(
                         })
                         .unwrap_or_default();
                     let point = hit.and_then(|(_, t)| {
-                        let pick_cm = t * CM;
-                        let start_cm = pick_cm - item_cursor::SWEEP_BACK_CM;
-                        let start = origin + dir * (start_cm / CM);
+                        // The sweep starts 600 cm before the picked point
+                        // (Exarust never starts it behind the eye).
+                        let back = t.min(item_cursor::SWEEP_BACK_CM / CM);
+                        let start = t - back;
+                        let from = origin + dir * start;
                         let contact = item_cursor::per_sphere_contact(
                             spheres.iter().copied(),
                             dir,
-                            |_, centre, dir, reach, radius| {
-                                let along = (centre - start).dot(dir);
+                            |_, offset, dir, reach, radius| {
                                 sources
                                     .physics
-                                    .level_sweep(centre, dir, reach, radius)
+                                    .level_sweep(from + offset, dir, reach, radius)
                                     .filter(|toi| *toi > 0.0)
-                                    .map(|toi| along + toi)
                             },
                         )
-                        .map(|hit| start_cm + hit.contact);
-                        let distance = item_cursor::placement_distance(pick_cm, contact);
+                        .map(|hit| start * CM + hit.contact);
+                        let distance = item_cursor::placement_distance(t * CM, contact);
                         item_cursor::placement_point(origin, dir, distance)
                     });
                     // A level placement marker named for the item snaps it
-                    // onto the marker's frame; Exarust's level loader does
-                    // not register those nodes yet, so the list is empty.
-                    let snapped = point.and_then(|point| {
-                        items.snap(origin, dir, |_| true).map(|snap| (point, snap))
-                    });
-                    if let Some((_, snap)) = snapped {
+                    // onto the marker's frame: the ray's segment runs to the
+                    // picked point, or 10 000 cm without one. Exarust's level
+                    // loader does not register those nodes yet, so the list
+                    // is empty [and the item's fit there is not tested].
+                    let length = hit.map_or(item_cursor::MARKER_RAY_CM / CM, |(_, t)| t);
+                    let snapped = items.snap(origin, dir, length, |_| true);
+                    if let Some(snap) = snapped {
                         if let Some(held) = items.held.as_mut() {
                             held.shown = snap.frame;
                             held.target = snap.frame.position;
@@ -2619,11 +2618,11 @@ mod tests {
         assert_eq!(hand.drag_state(), DragState::Refused);
     }
 
-    /// A cloth's grabbed vertex follows the cursor while the pick is within
-    /// its radius and the plane's point otherwise, both in the cloth's own
-    /// frame (cm); the door's grab expires strictly after its 2000 ms.
+    /// A cloth's grabbed vertex follows the cursor while the pick is
+    /// strictly within its radius and the plane's point otherwise, both in
+    /// the cloth's own frame (cm).
     #[test]
-    fn the_cloth_frame_and_the_door_hold() {
+    fn the_cloth_drag_frame() {
         let vertex = Vec3::new(10.0, 0.0, 0.0);
         let plane = Vec3::new(0.0, 0.0, 50.0);
         // The pick 9 cm from the vertex (within a 10 cm radius): the pick.
@@ -2633,8 +2632,8 @@ mod tests {
         let picked = vertex + Vec3::new(11.0, 0.0, 0.0);
         assert_eq!(cloth_drag_frame(vertex, Some(picked), plane, 10.0), plane);
         assert_eq!(cloth_drag_frame(vertex, None, plane, 10.0), plane);
-        assert!(!mechanism_expired(2000, 2000));
-        assert!(mechanism_expired(2001, 2000));
-        assert_eq!(MECHANISM_HOLD_MS, 2000);
+        // Exactly on the radius is not within it.
+        let picked = vertex + Vec3::new(10.0, 0.0, 0.0);
+        assert_eq!(cloth_drag_frame(vertex, Some(picked), plane, 10.0), plane);
     }
 }

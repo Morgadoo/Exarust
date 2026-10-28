@@ -2084,8 +2084,8 @@ mod tests {
         assert_eq!(base[0], Vec3::new(1.0, 2.0, 3.0));
     }
 
-    /// A grabbed vertex is put on the hand's target before the tick's
-    /// integration and wakes the cloth; letting go leaves it to gravity.
+    /// A grabbed vertex is put on the hand's target after the tick's
+    /// links and wakes the cloth; letting go leaves it to gravity.
     #[test]
     fn a_grabbed_vertex_follows_the_hand() {
         let mut cloth = Cloth::new(vec![still(Vec3::ZERO), still(Vec3::new(10.0, 0.0, 0.0))]);
