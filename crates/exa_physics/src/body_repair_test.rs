@@ -365,3 +365,79 @@ fn a_disabled_or_late_world_link_is_skipped_and_only_its_part_moves() {
     body.pull_world_links(0);
     assert_eq!(body.parts[0].positions[0], first);
 }
+
+/// A limp ball of radius 6 cm at `at`, for the edge arithmetic.
+fn ball(at: Vec3) -> Ragdoll {
+    Ragdoll::new(&[PartSetup {
+        bone: 11,
+        entity: Entity::PLACEHOLDER,
+        parent: None,
+        world: Affine3A::from_translation(at),
+        centre: Vec3::ZERO,
+        half: Vec3::splat(0.06),
+        origin: Vec3::ZERO,
+        links: vec![],
+        foot: None,
+        pins: Vec::new(),
+        spheres: None,
+    }])
+}
+
+/// The edge restore takes its lengths with the squares summed x, then z,
+/// then y (the original's own inline sum), which is not the order its other
+/// distance helper uses: the vector here sums to 3.6789370 one way and
+/// 3.6789367 the other.
+#[test]
+fn the_edge_restore_sums_its_squares_x_z_y() {
+    let v = Vec3::new(0.9857491, 0.7262738, 1.4764017);
+    let xz_y = ((v.x * v.x + v.z * v.z) + v.y * v.y).sqrt();
+    let xy_z = ((v.x * v.x + v.y * v.y) + v.z * v.z).sqrt();
+    assert_ne!(xz_y.to_bits(), xy_z.to_bits());
+    assert_eq!(edge_length(v).to_bits(), xz_y.to_bits());
+}
+
+/// `keep_rigid` walks the six edges in order, moves both ends by half the
+/// correction each (the first edge's correction, with the later edges only
+/// adjusting it) and starts the strain afresh.
+#[test]
+fn the_edge_restore_moves_both_ends_half_way() {
+    let mut b = ball(Vec3::ZERO);
+    let p = &mut b.parts[0];
+    // A rest tetrahedron and a stretched copy of it.
+    p.rest = [
+        Vec3::ZERO,
+        Vec3::new(0.4, 0.0, 0.0),
+        Vec3::new(0.0, 0.5, 0.0),
+        Vec3::new(0.0, 0.0, 0.6),
+    ];
+    p.positions = p.rest;
+    p.positions[1] = Vec3::new(0.8, 0.0, 0.0);
+    p.strain = 0.7;
+    let before: Vec<f32> = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)]
+        .iter()
+        .map(|&(a, c)| edge_length(p.positions[c] - p.positions[a]))
+        .collect();
+    keep_rigid(p);
+    assert_eq!(p.strain, 0.0);
+    // The stretched edge is pulled to within a fifth of its rest length, and
+    // the six edges' total error falls (one pass leaves some edges short).
+    const EDGES: [(usize, usize); 6] = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)];
+    let len = edge_length(p.positions[1] - p.positions[0]);
+    assert!((len - 0.4).abs() < 0.08, "{len}");
+    let error = |p: &Part| {
+        EDGES
+            .iter()
+            .map(|&(a, c)| {
+                edge_length(p.positions[c] - p.positions[a]) - edge_length(p.rest[c] - p.rest[a])
+            })
+            .map(|e| e * e)
+            .sum::<f32>()
+    };
+    let after = error(p);
+    let mut was = 0.0;
+    for (n, &(a, c)) in EDGES.iter().enumerate() {
+        let rest = edge_length(p.rest[c] - p.rest[a]);
+        was += (before[n] - rest) * (before[n] - rest);
+    }
+    assert!(after < was, "{after} vs {was}");
+}

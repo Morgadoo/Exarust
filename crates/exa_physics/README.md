@@ -485,17 +485,25 @@ that touch the surface again (both radii ×√2/2 and ×0.75√2 in double
 precision with the voxeliser's wide-query flag); a cell is solid when the
 rays along both directions of all three axes hit a face from behind (the
 −axis ray to the mesh box widened by 0.01 cm, the +axis ray 0.2 cm past
-it). The volume is the filled cells times the cell volume and the centre
+it). The neighbour scans walk all 26 neighbours (the loops test their
+index against 25 after the body). The corner masks cover the border cells
+too.
+The volume is the filled cells times the cell volume and the centre
 the original's half-offset expression. The extraction takes candidates
 whose eight corners are filled, 3 or more cells in, with the radius to the
 nearest cell short of eight corners; covers each candidate's `r − ¼`
-disc, sorts them with the original's quicksort and drops, smallest first,
-any whose cells another covers too (never the strictly largest); covers
-the survivors' `r + ½` discs and makes them spheres of `r/(1 + 0.01 r)`
+disc (the squared offsets added as `z² + (y² + x²)`), sorts them with the
+original's quicksort and drops, smallest first, any whose cells another
+covers too (never the strictly largest), taking a dropped one's coverage
+back over the window its own radius gave; covers the survivors' `r + ½`
+discs and makes them spheres of `r/(1 + 0.01 r)`
 cells at their corner point; and then corner spheres one cell across for
 surface cells with uncovered corners, their neighbours' shared corners
 taken away, pulled toward the empty side by 0.02 of half a cell per unit
 (a mesh with no candidate takes the corner spheres without coverage).
+`volume::sort_by_key` is the original's quicksort: its pivot halfway
+between the current low and the call's fixed high, a left scan that stops
+at a value not below the pivot, the left side recursing while the right loops.
 The mesh queries (`volume::Mesh`, `volume::Face`) are the original's
 triangle tests, with its approximate reciprocals: a sphere touches when
 the plane is within reach and its nearest point (the original's region
@@ -770,6 +778,13 @@ sets the instability counter (the barricade sets it to 100).
 - Cloth and padded-armour layers (original engine has cloth classes per material: basic, fine, padded, silk, velvet).
 - Decision recorded in docs/plan: rapier3d for level colliders and the character controller; the
   body solver and its level contacts are in-house, as the original's (`docs/formats/RSQ.md`).
+
+The Verlet step adds the kept motion to the position and then the gravity
+displacement, as two rounded sums (the original computes the displacement
+into its own buffer and adds it), and the edge restore takes an edge's
+length with the squares summed x, then z, then y, its correction
+`(len − rest)/(len + len)`. A body that falls asleep empties its motion and
+smoothed buffers, as the original's post-step does.
 
 The body kernel also keeps the original's class and state words
 (`Part::class_word`/`state_word`): `Ragdoll::set_class_word` writes the

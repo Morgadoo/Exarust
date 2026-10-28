@@ -402,8 +402,8 @@ fn neighbours_share_their_coinciding_corners() {
 /// The fallback of a 6 × 6 × 2 slab, too thin for a candidate: each of the
 /// 25 cells with eight corners gives a sphere one cell (2 cm) across. The
 /// middle one sits on its corner point, the pulls of its empty neighbours
-/// cancelling; the one at x = 1 is pulled 24 half cells (of 0.02 · 1 cm)
-/// toward +x by its sparser −x neighbours.
+/// cancelling over all 26 of them; the one at x = 1 is pulled 24 half cells
+/// (of 0.02 · 1 cm) toward +x by its sparser −x neighbours.
 #[test]
 fn a_thin_slab_takes_the_fallback_spheres() {
     let mut map = solid_map(Vec3::new(6.0, 6.0, 2.0), [6, 6, 2]);
@@ -415,6 +415,43 @@ fn a_thin_slab_takes_the_fallback_spheres() {
     assert_eq!(middle.centre, Vec3::ZERO);
     let edge = map.spheres()[2];
     assert_eq!(edge.centre, Vec3::new(24.0 * 0.02 + (2.0 - 6.0), 0.0, 0.0));
+}
+
+/// The neighbour scans walk all 26 offsets but the centre, in x, y, z
+/// order, the far corner `(+1, +1, +1)` last.
+#[test]
+fn the_neighbour_scans_read_all_26() {
+    for x in -1..=1 {
+        for y in -1..=1 {
+            for z in -1..=1 {
+                let expected = (x, y, z) != (0, 0, 0);
+                assert_eq!(
+                    NEIGHBOURS.iter().filter(|d| **d == [x, y, z]).count(),
+                    usize::from(expected)
+                );
+            }
+        }
+    }
+    assert_eq!(NEIGHBOURS[24], [1, 1, 0]);
+    assert_eq!(NEIGHBOURS[25], [1, 1, 1]);
+}
+
+/// `mark_corners` walks the whole grid, its border rows included: every cell
+/// from index 0 to the last border cell gets its count and mask.
+#[test]
+fn the_corner_masks_cover_the_border_rows() {
+    let mut map = solid_map(Vec3::new(3.0, 3.0, 3.0), [2, 2, 2]);
+    mark_corners(&mut map);
+    let fill = |c: [usize; 3]| map.fill()[map.index(c).unwrap()];
+    // Cell (1, 1, 1) is filled at all eight corners.
+    assert_eq!(fill([1, 1, 1]), [8, 0xff]);
+    // A cell at the high border on x has only its low x corner cells filled:
+    // four of the eight, bits 0 to 3.
+    assert_eq!(fill([2, 1, 1]), [4, 0b0000_1111]);
+    assert_eq!(fill([3, 1, 1]), [0, 0]);
+    // At z = 2 its four filled corners are the ones at z = 0 of the corner
+    // offsets, bits 0, 2, 4 and 6.
+    assert_eq!(fill([1, 1, 2]), [4, 0b0101_0101]);
 }
 
 /// The four point masses are 4 over the barycentric weights of the centre

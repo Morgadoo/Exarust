@@ -126,9 +126,11 @@ pub fn barycentric_weights(point: Vec3, rest: [Vec3; 4]) -> [f32; 4] {
 }
 
 /// Sorts entries by their float key with the original's quicksort: a middle
-/// pivot, values below it from the left and above it from the right, then
-/// both sides (the right one by looping, as the original recurses on the
-/// left and continues on the right).
+/// pivot, the left scan stopping at a value at or above it and the right one
+/// at a value at or below it, a swap while the two have not crossed; the
+/// left side then recurses while the right is walked by looping, with the
+/// pivot of every pass taken halfway between the current low and the high
+/// this call was given.
 pub fn sort_by_key(entries: &mut [(f32, u32)]) {
     if entries.len() > 1 {
         quicksort(entries, 0, entries.len() as isize - 1);
@@ -136,30 +138,38 @@ pub fn sort_by_key(entries: &mut [(f32, u32)]) {
 }
 
 fn quicksort(entries: &mut [(f32, u32)], low: isize, high: isize) {
-    let mut i = low;
-    let mut j = high;
-    let pivot = entries[((low + high) / 2) as usize].0;
+    let mut low = low;
     loop {
-        while entries[i as usize].0 < pivot {
-            i += 1;
+        let pivot = entries[((low + high) / 2) as usize].0;
+        let mut i = low;
+        let mut j = high;
+        loop {
+            // The original's scans can step at most to the pivot's own entry
+            // (it is the one value the two halts share), so the bounds cannot
+            // be passed; they are still checked so a malformed key cannot
+            // panic. A NaN key halts both scans at once.
+            while i < high && entries[i as usize].0 < pivot {
+                i += 1;
+            }
+            while low < j && pivot < entries[j as usize].0 {
+                j -= 1;
+            }
+            if i <= j {
+                entries.swap(i as usize, j as usize);
+                i += 1;
+                j -= 1;
+            }
+            if i > j {
+                break;
+            }
         }
-        while entries[j as usize].0 > pivot {
-            j -= 1;
+        if low < j {
+            quicksort(entries, low, j);
         }
-        if i <= j {
-            entries.swap(i as usize, j as usize);
-            i += 1;
-            j -= 1;
-        }
-        if i > j {
+        low = i;
+        if i >= high {
             break;
         }
-    }
-    if low < j {
-        quicksort(entries, low, j);
-    }
-    if i < high {
-        quicksort(entries, i, high);
     }
 }
 
@@ -719,6 +729,10 @@ pub fn fit(mesh: &Mesh, options: &VolumeOptions) -> FittedVolume {
 }
 
 /// The 26 neighbours, in the original's table order: x, then y, then z.
+///
+/// Every scan reads all 26: the original's loops count up from 0 and test
+/// the index against 25 after the body, so the last entry, `(+1, +1, +1)`,
+/// is walked too.
 const NEIGHBOURS: [[i32; 3]; 26] = {
     let mut out = [[0i32; 3]; 26];
     let mut n = 0;
@@ -1132,7 +1146,9 @@ struct Candidate {
 /// Adds `by` to the coverage of every cell whose corner point (its +½
 /// corner) is within `limit` cells of the candidate's, over the original's
 /// window: from `lim − 1` cells below to `lim` above, `lim` the radius plus
-/// ½ rounded to even.
+/// ½ rounded to even (the original derives that window from the candidate's
+/// radius before it ever clears one, so a pruned candidate's coverage is
+/// taken back over its own window).
 fn cover(coverage: &mut [i32], strides: (i32, i32), c: Candidate, limit: f32, by: i32) {
     let lim = round_to_word(c.radius + 0.5);
     let squared = limit * limit;
@@ -1145,7 +1161,8 @@ fn cover(coverage: &mut [i32], strides: (i32, i32), c: Candidate, limit: f32, by
                     (y - cy) as f32 - 0.5,
                     (z - cz) as f32 - 0.5,
                 );
-                if (fz * fz + fy * fy) + fx * fx <= squared
+                // The original adds y² to x², then z² to that sum.
+                if fz * fz + (fy * fy + fx * fx) <= squared
                     && let Some(n) = coverage.get_mut((strides.0 * x + strides.1 * y + z) as usize)
                 {
                     *n += by;
@@ -1170,7 +1187,7 @@ fn redundant(coverage: &[i32], strides: (i32, i32), c: Candidate) -> bool {
                     (y - cy) as f32 - 0.5,
                     (z - cz) as f32 - 0.5,
                 );
-                if (fz * fz + fy * fy) + fx * fx <= squared
+                if fz * fz + (fy * fy + fx * fx) <= squared
                     && coverage
                         .get((strides.0 * x + strides.1 * y + z) as usize)
                         .is_some_and(|&n| n < 2)
@@ -1307,6 +1324,8 @@ pub fn extract_spheres(map: &mut VoxelMap, options: &VolumeOptions) {
     };
     for c in sorted.iter_mut().take(prunable) {
         if redundant(&coverage, strides, *c) {
+            // The original clears the radius first, but takes the coverage
+            // back with the window and limit its radius gave before.
             cover(&mut coverage, strides, *c, c.radius - 0.25, -1);
             c.radius = 0.0;
         }
