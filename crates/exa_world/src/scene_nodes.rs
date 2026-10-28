@@ -134,15 +134,18 @@ pub const INHERIT_FADE: u32 = 0x10;
 /// seen bit too.
 pub const INHERIT_HIDDEN: u32 = 0x20;
 
-/// Option word: a light's activation keeps no frame snapshot (`+0xc` bit
-/// `0x10`).
+/// Light word ([`SceneNode::light_flags`]): the light's activation keeps
+/// no position snapshot.
 pub const LIGHT_NO_SNAPSHOT: u32 = 0x10;
-/// Option word: the node's per-alias buckets are built before it is drawn
-/// (the original's `+0xc & 0x30000`).
+/// Option word: the node's per-alias buckets are built before it is drawn.
 pub const NEEDS_BUCKETS: u32 = 0x3_0000;
-/// Option word: a light flickers (`+0xc` bit `0x10000`; the same bit a
-/// split-bounds mesh carries).
+/// Light word ([`SceneNode::light_flags`]): the light flickers.
 pub const LIGHT_FLICKER: u32 = 0x1_0000;
+/// Option word bits that pick how a light's activation snapshot is taken;
+/// [`SNAPSHOT_FLAT`] in them drops the snapshot's height.
+pub const SNAPSHOT_MODE: u32 = 0x300;
+/// The [`SNAPSHOT_MODE`] value whose snapshot keeps a zero height.
+pub const SNAPSHOT_FLAT: u32 = 0x200;
 
 /// The class code (over 12 bits) the original's batch insertion tests for a
 /// sector.
@@ -178,11 +181,18 @@ pub const OBJECT_SLOT_LIVE: u32 = 0xc000_0000;
 /// fade and membership state; these lists are the render-side work.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct FrameEvents {
-    /// A seen mesh moved this frame.
+    /// A visible pass saw a change: an alias moved, a seen mesh moved, or
+    /// a seen mesh's part moved (the original's visible-pass answer).
     pub moved_seen: bool,
-    /// Lights activated this frame: their cells are flooded (an omni light)
-    /// or filled directionally.
+    /// Lights activated this frame in grid mode: their cells are flooded
+    /// (an omni light) or filled directionally.
     pub activated: Vec<usize>,
+    /// Lights activated outside grid mode: their alias's links are rebuilt
+    /// instead of a cell pass.
+    pub alias_links: Vec<usize>,
+    /// Meshes the node passes handled as moved: the scene's moved-node
+    /// callback runs for each.
+    pub moved: Vec<usize>,
     /// Flicker steps: (light, whether it already ran).
     pub flicker: Vec<(usize, bool)>,
     /// Nodes dropped from a sector because they no longer belong to it and
@@ -712,9 +722,9 @@ impl Portal {
     }
 
     /// The signed distance of `point` in front of the doorway plane, summed
-    /// in the original's order: `(z·nz + y·ny) + x·nx`, then the offset.
+    /// in the original's order: `(x·nx + y·ny) + z·nz`, then the offset.
     pub fn distance(&self, point: Vec3) -> f32 {
-        (point.z * self.normal.z + point.y * self.normal.y) + point.x * self.normal.x + self.offset
+        (point.x * self.normal.x + point.y * self.normal.y) + point.z * self.normal.z + self.offset
     }
 }
 
@@ -727,15 +737,16 @@ pub struct ScreenRect {
     pub max_y: i32,
 }
 
-/// One sub-object of a node: its own flags word (`+0xf0`) and the word at
-/// `+0xf4` a world light clears. The original's scene-node unit touches only
-/// these two words of a mesh's parts ([`Scene::clear_world_light`]).
+/// One sub-object of a node: its own flags word and the value word a world
+/// light clears. The original's scene-node unit touches only these two
+/// words of a mesh's parts ([`Scene::clear_world_light`]) and asks each
+/// part whether its own transform moved.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SubMesh {
     pub flags: u32,
     pub value: u32,
-    /// The part's own transform changed since the last pass (`+0xd0`
-    /// callback's answer).
+    /// The part's own transform changed since the last pass (the part's
+    /// transform callback's answer).
     pub moved: bool,
 }
 
@@ -745,21 +756,26 @@ pub struct SubMesh {
 pub struct LightAlias {
     /// The light node the alias copies.
     pub light: usize,
-    /// The light moved since the last pass (the original's `+0x1d0`).
+    /// The sector that owns the alias; `None` once its light dropped it.
+    /// The membership rebuild removes an alias this sector does not own.
+    pub owner: Option<usize>,
+    /// The light moved since the last pass (a new alias starts moved).
     pub moved: bool,
-    /// The link face mask the per-frame pass builds (the original's
-    /// `+0xe0`).
+    /// The link face mask the per-frame pass builds.
     pub mask: u32,
     /// The shadow map's needed-face word, when the light has a shadow map
-    /// (the original's `+0x240`, reset to `0x3f`).
+    /// (reset to `0x3f`, all six faces, when the alias moved).
     pub shadow_faces: Option<u32>,
+    /// The shadow map's linked-face word: the visible pass ORs the alias's
+    /// link mask into it (only while the light has a shadow map).
+    pub shadow_links: u32,
 }
 
 /// One entry of a node's per-alias bucket list: a doubly linked list over
 /// the sector's aliases, as [`Scene::rebuild_buckets`] builds it.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Bucket {
-    /// The left end of the entry (the original's `+0`, a weight).
+    /// The entry's leading word (a weight the alias test resets).
     pub weight: u32,
     pub prev: i32,
     pub next: i32,
@@ -767,6 +783,17 @@ pub struct Bucket {
     pub faces: u32,
     /// The alias the entry stands for.
     pub alias: usize,
+}
+
+impl Bucket {
+    /// A zero-filled entry, as growing the original's array leaves one.
+    pub const ZERO: Self = Self {
+        weight: 0,
+        prev: 0,
+        next: 0,
+        faces: 0,
+        alias: 0,
+    };
 }
 
 /// One node of the scene.
@@ -805,7 +832,7 @@ pub struct SceneNode {
     pub character: Option<u64>,
     /// The node's object-database word; see [`OBJECT_SLOT_LIVE`].
     pub object_slot: u32,
-    /// How many owners still hold the node (`+0x1bc`): a queued removal
+    /// How many owners still hold the node: a queued removal
     /// with a live reference is deferred to the free list.
     pub refs: i32,
     /// The node was flushed from the removal queue.
@@ -831,19 +858,23 @@ pub struct SceneNode {
     pub parts: Vec<SubMesh>,
     /// The material id of each part, in part order.
     pub part_materials: Vec<usize>,
-    /// The node's own `+0x244` word, cleared with its parts.
+    /// The node's own word cleared with its parts by a world light.
     pub part_word: u32,
-    /// The light's activation state (`+0xe4`): below 2 a registered light is
-    /// activated by the frame pass.
+    /// The node's state word: 0 never worked out, 1 its transform was just
+    /// updated ([`Scene::refresh`] writes it, as the original's transform
+    /// update does), 2 or more seen by a pass since. A light or auxiliary
+    /// node below 2 is activated by the frame; a mesh at 1 is handled as
+    /// moved by the node passes.
     pub light_state: u8,
-    /// The light's kind word (`+0x260`); 3 is omni and floods the cells.
+    /// The light's own word: [`LIGHT_NO_SNAPSHOT`], [`LIGHT_FLICKER`].
+    pub light_flags: u32,
+    /// The light's kind word; 3 is omni and floods the cells.
     pub light_type: u32,
-    /// The frame copied when a light activated, and its radius word.
+    /// The position copied when a light or auxiliary node activated.
     pub active_frame: Vec3,
-    pub active_value: f32,
-    /// The head of the node's bucket list (`+0x1dc`, −1 for none).
+    /// The head of the node's bucket list (−1 for none).
     pub bucket_head: i32,
-    /// One bucket per sector alias (`+0x1e0`).
+    /// One bucket per sector alias.
     pub buckets: Vec<Bucket>,
 }
 
@@ -880,9 +911,9 @@ impl SceneNode {
             part_materials: Vec::new(),
             part_word: 0,
             light_state: 0,
+            light_flags: 0,
             light_type: 0,
             active_frame: Vec3::ZERO,
-            active_value: 0.0,
             bucket_head: -1,
             buckets: Vec::new(),
         }
@@ -966,21 +997,21 @@ pub struct Sector {
     pub in_scene: bool,
     /// The registered meshes, in registration order.
     pub meshes: Vec<usize>,
-    /// How many of them have had their per-alias buckets built (`+0x1c8`).
+    /// How many of them have had their per-alias buckets built.
     /// The frame pass sees only this many until the additions are finished.
     pub meshes_done: usize,
-    /// The sector's light aliases (`+0x1f8`, one per light).
+    /// The sector's light aliases (one per light).
     pub aliases: Vec<LightAlias>,
-    /// How many aliases the last visibility pass saw (`+0x1f0`).
+    /// How many aliases the last visibility pass saw.
     pub aliases_done: usize,
     /// The registered (non-world) lights.
     pub lights: Vec<usize>,
     /// The registered auxiliary nodes.
     pub auxiliary: Vec<usize>,
-    /// For each material id, the (node, part) pairs that use it (`+0x210`),
+    /// For each material id, the (node, part) pairs that use it,
     /// as registration appends them.
     pub materials: Vec<Vec<(usize, usize)>>,
-    /// The sector is drawn through a portal (`+0x3a0`): its meshes start
+    /// The sector is drawn through a portal: its meshes start
     /// with the scissor bit.
     pub through_portal: bool,
     /// The sector's doorways.
@@ -1070,7 +1101,7 @@ pub struct Scene {
     pub removals: RemovalQueue,
     /// The renderers registered with the scene.
     pub renderers: Vec<u32>,
-    /// The scene plugins (the original's `+0x1d58` list).
+    /// The scene plugins.
     pub plugins: Vec<u32>,
     /// The scene-wide lights.
     pub lights: Vec<u32>,
@@ -1081,8 +1112,8 @@ pub struct Scene {
     pub material_adds: Vec<usize>,
     /// Materials queued for release (the remove queue).
     pub material_removes: Vec<usize>,
-    /// Nodes whose release was deferred to their owner (the original's
-    /// `+0x1bf8` free list).
+    /// Nodes whose release was deferred to their owner (the scene's free
+    /// list).
     pub pending_free: Vec<usize>,
 }
 
@@ -1169,9 +1200,10 @@ impl Scene {
             return false;
         };
         self.nodes[light].aliases.swap_remove(at);
-        // The original marks the alias's owner scene, whose own sector is
-        // the scene's, then clears the alias's owner.
-        self.sectors[SCENE_SECTOR].changes |= LINKS_CHANGED;
+        // The alias's owner is its sector, whose change word is marked.
+        if let Some(sector) = self.nodes[alias].sector {
+            self.sectors[sector].changes |= LINKS_CHANGED;
+        }
         self.nodes[alias].sector = None;
         true
     }
@@ -1350,9 +1382,6 @@ impl Scene {
         if let Some(old) = old {
             self.sectors[old].changes |= LINKS_CHANGED | MOVED_OUT;
         }
-        // The original marks the node's owner scene; the scene's own sector
-        // is the scene's membership word.
-        self.sectors[SCENE_SECTOR].changes |= LINKS_CHANGED | MOVED_OUT;
         if let Some(parent) = self.nodes[node].parent {
             self.nodes[parent].children.retain(|&c| c != Some(node));
         }
@@ -1394,6 +1423,7 @@ impl Scene {
         }
         body.stale = false;
         body.moved = true;
+        body.light_state = 1;
         let children: Vec<usize> = body.children.iter().flatten().copied().collect();
         for child in children {
             self.refresh(child);
@@ -1516,9 +1546,7 @@ impl Scene {
                         continue;
                     }
                     sector.visible_portals.push(at);
-                    let facing = ((eye.z * portal.normal.z + eye.y * portal.normal.y)
-                        + eye.x * portal.normal.x
-                        + portal.offset) as f64;
+                    let facing = f64::from(portal.distance(eye));
                     if facing < PORTAL_FACING {
                         continue;
                     }
@@ -1554,116 +1582,133 @@ impl Scene {
     }
 
     /// Rebuilds a sector's membership as the original's per-frame rebuild
-    /// does: light aliases whose light left the sector are dropped (the
-    /// scene's change word takes the links-changed bit), the meshes that
-    /// left are removed from the per-material lists and the child list, the
-    /// kept meshes' per-alias buckets follow the aliases' new indices, and
-    /// the membership change bits clear. The original compacts with an
-    /// index map; this rebuild reaches the same lists and links.
-    pub fn rebuild_membership(&mut self, sector: usize) {
-        let old_aliases = self.sectors[sector].aliases.clone();
-        let old_done = self.sectors[sector].aliases_done.min(old_aliases.len());
-        let mut removed = vec![false; old_aliases.len()];
-        let mut removed_any = false;
-        for (i, alias) in old_aliases.iter().enumerate() {
-            let owned = self
-                .nodes
-                .get(alias.light)
-                .is_some_and(|node| node.sector == Some(sector));
-            if !owned {
-                removed[i] = true;
-                removed_any = true;
+    /// does, in its order:
+    ///
+    /// 1. Aliases past the processed count that the sector does not own
+    ///    ([`LightAlias::owner`]) are removed, the last taking their place.
+    /// 2. Among the processed aliases, each one the sector does not own is
+    ///    removed and its slot is taken by the last kept, not yet moved
+    ///    alias after it (so the kept aliases do **not** keep their order);
+    ///    a removed alias's owner, if any, is marked [`LINKS_CHANGED`]. The
+    ///    unprocessed aliases then follow the compacted ones.
+    /// 3. Meshes the sector still owns stay, in order. A processed one that
+    ///    needs buckets has its bucket chain remapped to the moved aliases
+    ///    (when any alias went) and, when new aliases are waiting, linked to
+    ///    them ([`Scene::rebuild_buckets`]). A mesh that left is dropped,
+    ///    taken out of the per-material lists when it is not in the scene;
+    ///    a processed one lowers the processed count and gives each kept
+    ///    alias with a shadow map its bucket's faces as needed faces, so the
+    ///    shadow redraws where it was.
+    ///
+    /// Every alias then counts as processed and the membership change bits
+    /// clear. Returns whether a processed mesh was dropped (the original
+    /// then runs the sector's callback).
+    ///
+    /// The original keeps a removed slot's index in the map negated, so a
+    /// removed first alias with nothing to take its place maps to 0 and is
+    /// read as kept by the bucket remap; that quirk is kept.
+    pub fn rebuild_membership(&mut self, sector: usize) -> bool {
+        let owned = |alias: &LightAlias| alias.owner == Some(sector);
+        // 1. Unprocessed aliases that left.
+        {
+            let s = &mut self.sectors[sector];
+            let mut at = s.aliases_done.min(s.aliases.len());
+            while at < s.aliases.len() {
+                if owned(&s.aliases[at]) {
+                    at += 1;
+                } else {
+                    s.aliases.swap_remove(at);
+                }
             }
         }
-        if removed_any {
-            self.sectors[SCENE_SECTOR].changes |= LINKS_CHANGED;
-        }
-        let mut map = vec![usize::MAX; old_aliases.len()];
-        let mut aliases = Vec::with_capacity(old_aliases.len());
-        for (i, alias) in old_aliases.iter().enumerate() {
-            if removed[i] {
+        // 2. The processed aliases' index map.
+        let (done, pending) = {
+            let s = &self.sectors[sector];
+            let done = s.aliases_done.min(s.aliases.len());
+            (done, done < s.aliases.len())
+        };
+        let mut map: Vec<i64> = (0..done as i64).collect();
+        let mut removed: Vec<usize> = Vec::new();
+        for i in 0..done {
+            if owned(&self.sectors[sector].aliases[i]) {
                 continue;
             }
-            map[i] = aliases.len();
-            aliases.push(*alias);
-        }
-        // A dropped alias's face mask moves to the alias that takes its
-        // place, as the original ORs the removed bucket into the surviving
-        // alias's shadow map.
-        for i in 0..old_done {
-            if !removed[i] {
-                continue;
+            removed.push(i);
+            let mut j = done;
+            while j > i + 1 {
+                j -= 1;
+                if owned(&self.sectors[sector].aliases[j]) && map[j] == j as i64 {
+                    map[i] = -map[j];
+                    map[j] = i as i64;
+                    break;
+                }
             }
-            let Some(next) = (i + 1..old_done).find(|&j| !removed[j]) else {
-                continue;
-            };
-            let shadow = old_aliases[i].shadow_faces.unwrap_or(0);
-            if shadow != 0 {
-                aliases[map[next]].shadow_faces =
-                    Some(aliases[map[next]].shadow_faces.unwrap_or(0x3f) | shadow);
+            if map[i] == i as i64 {
+                map[i] = -(i as i64);
             }
         }
-        self.sectors[sector].aliases = aliases;
-        self.sectors[sector].aliases_done = self.sectors[sector].aliases.len();
+        let done_now = done - removed.len();
+        if !removed.is_empty() {
+            for &i in &removed {
+                if let Some(owner) = self.sectors[sector].aliases[i].owner {
+                    self.sectors[owner].changes |= LINKS_CHANGED;
+                }
+                let from = (-map[i]) as usize;
+                let s = &mut self.sectors[sector];
+                s.aliases[i] = s.aliases[from];
+            }
+            let s = &mut self.sectors[sector];
+            let mut aliases = s.aliases[..done_now].to_vec();
+            aliases.extend_from_slice(&s.aliases[done..]);
+            s.aliases = aliases;
+        }
+        self.sectors[sector].aliases_done = done_now;
+        // 3. The meshes.
         let old_meshes = self.sectors[sector].meshes.clone();
-        let old_meshes_done = self.sectors[sector].meshes_done.min(old_meshes.len());
+        let meshes_done = self.sectors[sector].meshes_done.min(old_meshes.len());
         let mut meshes = Vec::with_capacity(old_meshes.len());
-        let mut done = 0;
-        for (i, node) in old_meshes.iter().enumerate() {
-            if self.nodes[*node].sector != Some(sector) {
-                if self.nodes[*node].scene_flags & IN_SCENE == 0 {
-                    self.remove_from_materials(sector, *node);
+        let mut processed = meshes_done;
+        let mut dropped = false;
+        for (i, &node) in old_meshes.iter().enumerate() {
+            if self.nodes[node].sector == Some(sector) {
+                if self.nodes[node].flags & NEEDS_BUCKETS != 0 && i < meshes_done {
+                    if !removed.is_empty() {
+                        remap_buckets(&mut self.nodes[node], &map, &removed, done_now);
+                    }
+                    if pending {
+                        self.rebuild_buckets(sector, node, done_now);
+                    }
                 }
+                meshes.push(node);
                 continue;
             }
-            meshes.push(*node);
-            if i < old_meshes_done {
-                done += 1;
-                if removed_any && self.nodes[*node].bucket_head >= 0 {
-                    self.remap_buckets(*node, &map);
+            if self.nodes[node].scene_flags & IN_SCENE == 0 {
+                self.remove_from_materials(sector, node);
+            }
+            if i < meshes_done {
+                processed -= 1;
+                dropped = true;
+                if done_now > 0 && self.nodes[node].bucket_head >= 0 {
+                    for (k, &to) in map.iter().enumerate() {
+                        let faces = self.nodes[node].buckets.get(k).map_or(0, |b| b.faces);
+                        if to < 0 {
+                            continue;
+                        }
+                        if let Some(alias) = self.sectors[sector].aliases.get_mut(to as usize)
+                            && let Some(needed) = alias.shadow_faces
+                        {
+                            alias.shadow_faces = Some(needed | faces);
+                        }
+                    }
                 }
             }
         }
-        self.sectors[sector].meshes = meshes;
-        self.sectors[sector].meshes_done = done;
-        self.sectors[sector].changes &= !MEMBERSHIP_CHANGED;
-    }
-
-    /// Re-indexes a node's bucket list after aliases were removed: the
-    /// buckets of removed aliases go, and the kept ones chain in their new
-    /// order.
-    fn remap_buckets(&mut self, node: usize, map: &[usize]) {
-        let n = &mut self.nodes[node];
-        let old = n.buckets.clone();
-        let new_len = map.iter().filter(|&&m| m != usize::MAX).count();
-        let mut buckets = vec![
-            Bucket {
-                weight: 0,
-                prev: -1,
-                next: -1,
-                faces: 0,
-                alias: 0,
-            };
-            new_len
-        ];
-        for (old_at, &new_at) in map.iter().enumerate() {
-            if new_at == usize::MAX {
-                continue;
-            }
-            if let Some(bucket) = old.get(old_at) {
-                buckets[new_at] = *bucket;
-            }
-        }
-        for (i, bucket) in buckets.iter_mut().enumerate() {
-            bucket.prev = i as i32 - 1;
-            bucket.next = i as i32 + 1;
-            bucket.alias = i;
-        }
-        if let Some(last) = buckets.last_mut() {
-            last.next = -1;
-        }
-        n.bucket_head = if buckets.is_empty() { -1 } else { 0 };
-        n.buckets = buckets;
+        let s = &mut self.sectors[sector];
+        s.meshes = meshes;
+        s.meshes_done = processed;
+        s.aliases_done = s.aliases.len();
+        s.changes &= !MEMBERSHIP_CHANGED;
+        dropped
     }
 
     /// Runs the second half of the per-frame scene update: sectors whose
@@ -1672,7 +1717,8 @@ impl Scene {
     /// an active sector) or the visible pass, moving cut-away fades by
     /// `dt_ms` (whole milliseconds, as the original's frame delta is).
     /// `faces` is the alias shadow test (node, alias) → face mask.
-    /// Returns whether a seen mesh moved this frame.
+    /// Returns whether a visible pass saw a change (an alias moved, a seen
+    /// mesh or a seen mesh's part moved).
     pub fn update_visibility(&mut self, dt_ms: i32) -> bool {
         let mut no_faces = |_: usize, _: usize| 0u32;
         self.update_visibility_with(dt_ms, &mut no_faces)
@@ -1830,11 +1876,12 @@ impl Scene {
     }
 
     /// Clears the part flags a world light's fixture carries
-    /// ([`SubMesh::flags`] bit `0x10`): the light's parent when it is a
-    /// mesh, and each of its mesh children (the original follows a geometry
-    /// link the model does not carry; here the mesh child is cleared
-    /// itself, a guess). Each part keeps its flags with the bit set and its
-    /// value word zeroed; the node's own `+0x244` word is zeroed first.
+    /// ([`SubMesh::flags`] bit `0x10`, value word zeroed): every part of
+    /// the light's parent when it is a mesh, with the parent's own
+    /// [`SceneNode::part_word`]; and for each mesh child, its own word and
+    /// the **first** part only. (The original takes a mesh child's first
+    /// part through the child's geometry link, which the model does not
+    /// carry; here it is the child's own first part, a guess.)
     pub fn clear_world_light(&mut self, light: usize) {
         let parent = self.nodes[light]
             .parent
@@ -1850,7 +1897,12 @@ impl Scene {
             .filter(|&c| self.nodes[c].kind == NodeKind::Mesh)
             .collect();
         for child in children {
-            clear_parts(&mut self.nodes[child]);
+            let node = &mut self.nodes[child];
+            if let Some(part) = node.parts.first_mut() {
+                part.flags |= 0x10;
+                part.value = 0;
+            }
+            node.part_word = 0;
         }
     }
 
@@ -1883,15 +1935,10 @@ impl Scene {
             previous = -1;
             n.bucket_head = -1;
         }
-        n.buckets.resize_with(count, || Bucket {
-            weight: 0,
-            prev: -1,
-            next: -1,
-            faces: 0,
-            alias: 0,
-        });
+        // A grown dynamic array is zero-filled.
+        n.buckets.resize(count, Bucket::ZERO);
         if count == 0 {
-            n.bucket_head = -1;
+            // The head is left as it was (reset above when `from` is 0).
             return;
         }
         if n.bucket_head < 0 {
@@ -1934,25 +1981,38 @@ impl Scene {
     }
 
     /// Activates the sector's new or moved lights and auxiliary nodes, as
-    /// the original's per-sector light pass does. A light whose owner is no
-    /// longer the sector is dropped (reported when it was not in the
-    /// scene); a light whose activation state is below two takes the
-    /// activation stamp, gets its alias, and is reported for the cell
-    /// flood ([`NodeKind`] 3) or the directional fill. A light that already
-    /// ran and carries [`LIGHT_FLICKER`] is reported for a flicker step.
+    /// the original's per-sector light pass does.
+    ///
+    /// A light whose owner is no longer the sector leaves the list (the
+    /// last takes its place); when it is not in the scene either, it also
+    /// drops all its aliases (each alias's sector is marked
+    /// [`LINKS_CHANGED`] and loses the alias) and is reported in
+    /// [`FrameEvents::dropped`] for the scene to remove. A light whose
+    /// [`SceneNode::light_state`] is 2 or more only takes a flicker step
+    /// when it flickers. Below 2 the light is activated: it takes state 2,
+    /// snapshots its position unless [`LIGHT_NO_SNAPSHOT`] (with a zero
+    /// height in the [`SNAPSHOT_FLAT`] mode), finds or creates its alias in
+    /// the sector (a new one is owned by the sector, starts moved and marks
+    /// [`LIGHT_ADDED`]); in grid mode the light's cell is stored and it is
+    /// reported in [`FrameEvents::activated`] (an omni light floods the
+    /// cells, another kind fills them), otherwise its alias is relinked
+    /// ([`FrameEvents::alias_links`]); then a flickering light takes its
+    /// first step and its alias copies are refreshed. Auxiliary nodes below
+    /// state 2 take state 2 and snapshot their position.
     pub fn activate_lights(&mut self, sector: usize, events: &mut FrameEvents) {
         let mut at = 0;
         while at < self.sectors[sector].lights.len() {
             let light = self.sectors[sector].lights[at];
             if self.nodes[light].sector != Some(sector) {
                 if self.nodes[light].scene_flags & IN_SCENE == 0 {
+                    self.drop_light_aliases(light);
                     events.dropped.push(light);
                 }
                 self.sectors[sector].lights.swap_remove(at);
                 continue;
             }
             if self.nodes[light].light_state >= 2 {
-                if self.nodes[light].flags & LIGHT_FLICKER != 0 {
+                if self.nodes[light].light_flags & LIGHT_FLICKER != 0 {
                     events.flicker.push((light, true));
                 }
                 at += 1;
@@ -1960,9 +2020,11 @@ impl Scene {
             }
             let n = &mut self.nodes[light];
             n.light_state = 2;
-            if n.flags & LIGHT_NO_SNAPSHOT == 0 {
+            if n.light_flags & LIGHT_NO_SNAPSHOT == 0 {
                 n.active_frame = n.world;
-                n.active_value = n.half_extents.x;
+                if n.flags & SNAPSHOT_MODE == SNAPSHOT_FLAT {
+                    n.active_frame.y = 0.0;
+                }
             }
             if !self.sectors[sector]
                 .aliases
@@ -1971,14 +2033,21 @@ impl Scene {
             {
                 self.sectors[sector].aliases.push(LightAlias {
                     light,
-                    moved: false,
+                    owner: Some(sector),
+                    moved: true,
                     mask: 0,
                     shadow_faces: None,
+                    shadow_links: 0,
                 });
                 self.sectors[sector].changes |= LIGHT_ADDED;
             }
-            events.activated.push(light);
-            if self.nodes[light].flags & LIGHT_FLICKER != 0 {
+            if self.grid_mode {
+                store_cell(&mut self.nodes[light], self.grid);
+                events.activated.push(light);
+            } else {
+                events.alias_links.push(light);
+            }
+            if self.nodes[light].light_flags & LIGHT_FLICKER != 0 {
                 events.flicker.push((light, false));
             }
             events
@@ -2000,9 +2069,36 @@ impl Scene {
             if n.light_state < 2 {
                 n.light_state = 2;
                 n.active_frame = n.world;
-                n.active_value = n.half_extents.x;
             }
             at += 1;
+        }
+    }
+
+    /// A light that left the scene drops its aliases: each alias's sector
+    /// is marked [`LINKS_CHANGED`] and the alias loses its owner (the
+    /// sector's membership rebuild then removes it). The model keeps a
+    /// light's alias copies as nodes ([`SceneNode::aliases`]) and the
+    /// sectors' [`LightAlias`] entries; both are released.
+    fn drop_light_aliases(&mut self, light: usize) {
+        for alias in std::mem::take(&mut self.nodes[light].aliases) {
+            if let Some(owner) = self.nodes.get(alias).and_then(|n| n.sector) {
+                self.sectors[owner].changes |= LINKS_CHANGED;
+            }
+            if let Some(node) = self.nodes.get_mut(alias) {
+                node.sector = None;
+            }
+        }
+        for index in 0..self.sectors.len() {
+            let mut marked = false;
+            for alias in &mut self.sectors[index].aliases {
+                if alias.light == light && alias.owner.is_some() {
+                    alias.owner = None;
+                    marked = true;
+                }
+            }
+            if marked {
+                self.sectors[index].changes |= LINKS_CHANGED;
+            }
         }
     }
 
@@ -2397,9 +2493,14 @@ impl Scene {
         }
     }
 
-    /// The alias shadow test for one node: runs the caller's face test,
-    /// stores the faces on the node's bucket and ORs them into the alias's
-    /// shadow word. Returns whether the light's shadow needs the node.
+    /// The alias shadow test for one node: runs the caller's face test and
+    /// stores its faces on the node's bucket for that alias. For a node
+    /// whose option word carries [`BOUNDS_SPLIT`] (the bit the original's
+    /// test checks on the node) and an alias with a shadow map, the needed
+    /// faces gain both the new and the old faces, so a face the node left
+    /// is redrawn too. Returns whether the test asks for a relink (guess:
+    /// the original's test answers from its own distance comparison, which
+    /// the model leaves to the caller; here any face counts).
     fn alias_shadow(
         &mut self,
         node: usize,
@@ -2407,30 +2508,54 @@ impl Scene {
         faces: &mut dyn FnMut(usize, usize) -> u32,
     ) -> bool {
         let mask = faces(node, alias);
+        let mut old = 0;
         if let Some(bucket) = self.nodes[node].buckets.get_mut(alias) {
+            old = bucket.faces;
             bucket.faces = mask;
         }
-        if let Some(sector) = self.nodes[node].sector
+        if self.nodes[node].flags & BOUNDS_SPLIT != 0
+            && let Some(sector) = self.nodes[node].sector
             && let Some(entry) = self.sectors[sector].aliases.get_mut(alias)
             && let Some(shadow) = entry.shadow_faces
         {
-            entry.shadow_faces = Some(shadow | mask);
+            entry.shadow_faces = Some(shadow | mask | old);
         }
         mask != 0
     }
 
-    /// The hidden-sector pass: every mesh keeps only [`HIDDEN_KEEPS`] of its
-    /// mask, a moved light is activated, and a moved alias is tested
-    /// against the sector's moved meshes. (The original keeps node cells
-    /// current from the transform path; Exarust does it here so a doorway
-    /// test sees a current cell.)
+    /// The meshes a node pass walks: the sector's processed meshes (the
+    /// ones whose buckets were built).
+    fn processed_meshes(&self, sector: usize) -> Vec<usize> {
+        let s = &self.sectors[sector];
+        s.meshes[..s.meshes_done.min(s.meshes.len())].to_vec()
+    }
+
+    /// Whether a mesh's state word says its transform was just updated (the
+    /// model also keeps the [`SceneNode::moved`] marker), clearing both.
+    fn take_moved(&mut self, node: usize) -> bool {
+        let n = &mut self.nodes[node];
+        let moved = n.moved || n.light_state == 1;
+        if moved {
+            n.moved = false;
+            n.light_state = 2;
+        }
+        moved
+    }
+
+    /// The hidden-sector pass over the processed meshes: every mesh keeps
+    /// only [`HIDDEN_KEEPS`] of its mask. A moved mesh stores its cell in
+    /// grid mode, runs every alias's shadow test and is relinked when it
+    /// needs buckets, and is reported to the moved-node callback; another
+    /// mesh that needs buckets runs the moved aliases' tests and is
+    /// relinked when one asks. The pass reports nothing moved (the original
+    /// returns zero).
     fn hidden_pass(
         &mut self,
         sector: usize,
         faces: &mut dyn FnMut(usize, usize) -> u32,
         events: &mut FrameEvents,
     ) {
-        let meshes = self.sectors[sector].meshes.clone();
+        let meshes = self.processed_meshes(sector);
         self.refresh_stale(&meshes);
         let moved_aliases = self.begin_alias_pass(sector);
         let alias_count = self.sectors[sector]
@@ -2439,24 +2564,19 @@ impl Scene {
         let (grid, grid_mode) = (self.grid, self.grid_mode);
         for &id in &meshes {
             self.nodes[id].mask &= HIDDEN_KEEPS;
-            if self.nodes[id].light_state == 1 {
+            let needs = self.nodes[id].flags & NEEDS_BUCKETS != 0;
+            if self.take_moved(id) {
                 if grid_mode {
                     store_cell(&mut self.nodes[id], grid);
                 }
-                let needs = self.nodes[id].flags & NEEDS_BUCKETS != 0;
-                let mut relink = false;
                 if needs {
                     for alias in 0..alias_count {
-                        if self.alias_shadow(id, alias, faces) {
-                            relink = true;
-                        }
+                        self.alias_shadow(id, alias, faces);
                     }
-                }
-                if relink {
                     events.relinked.push(id);
                 }
-                self.nodes[id].light_state = 2;
-            } else if self.nodes[id].flags & NEEDS_BUCKETS != 0 && !moved_aliases.is_empty() {
+                events.moved.push(id);
+            } else if needs && !moved_aliases.is_empty() {
                 let mut relink = false;
                 for &alias in &moved_aliases {
                     if self.alias_shadow(id, alias, faces) {
@@ -2467,17 +2587,12 @@ impl Scene {
                     events.relinked.push(id);
                 }
             }
-            if self.nodes[id].moved {
-                if grid_mode {
-                    store_cell(&mut self.nodes[id], grid);
-                }
-                self.nodes[id].moved = false;
-            }
         }
     }
 
-    /// The visible-sector pass over the sector's meshes. Returns whether a
-    /// seen mesh moved.
+    /// The visible-sector pass over the processed meshes. Returns whether
+    /// the frame changed what the sector shows: an alias moved, a seen mesh
+    /// has a moved part, or a seen mesh moved.
     fn visible_pass(
         &mut self,
         index: usize,
@@ -2485,7 +2600,7 @@ impl Scene {
         faces: &mut dyn FnMut(usize, usize) -> u32,
         events: &mut FrameEvents,
     ) -> bool {
-        let meshes = self.sectors[index].meshes.clone();
+        let meshes = self.processed_meshes(index);
         self.refresh_stale(&meshes);
         let moved_aliases = self.begin_alias_pass(index);
         let alias_count = self.sectors[index]
@@ -2495,7 +2610,7 @@ impl Scene {
         let (grid, grid_mode) = (self.grid, self.grid_mode);
         let scissor = if sector.through_portal { SCISSOR } else { 0 };
         let mut through_door = false;
-        let mut moved_seen = false;
+        let mut changed = !moved_aliases.is_empty();
         for &id in &meshes {
             let beyond = if sector.visible_portals.is_empty() {
                 None
@@ -2530,53 +2645,46 @@ impl Scene {
             if inherited_hidden {
                 continue;
             }
-            if self.nodes[id].mask & SEEN != 0 && self.nodes[id].parts.iter().any(|part| part.moved)
-            {
+            let seen = self.nodes[id].mask & SEEN != 0;
+            if seen && self.nodes[id].parts.iter().any(|part| part.moved) {
                 events.parts_moved = true;
+                changed = true;
             }
             let needs = self.nodes[id].flags & NEEDS_BUCKETS != 0;
-            if self.nodes[id].light_state == 1 {
+            if self.take_moved(id) {
                 if grid_mode {
                     store_cell(&mut self.nodes[id], grid);
                 }
-                let mut relink = false;
                 if needs {
+                    // Every alias is tested; the relink and the face links
+                    // follow whatever the tests answered.
                     for alias in 0..alias_count {
+                        self.alias_shadow(id, alias, faces);
+                    }
+                    events.relinked.push(id);
+                    if seen {
+                        self.link_bucket_faces(id);
+                    }
+                }
+                events.moved.push(id);
+                if seen {
+                    changed = true;
+                }
+            } else if needs {
+                if !moved_aliases.is_empty() {
+                    let mut relink = false;
+                    for &alias in &moved_aliases {
                         if self.alias_shadow(id, alias, faces) {
                             relink = true;
                         }
                     }
-                }
-                if relink {
-                    events.relinked.push(id);
-                }
-                if self.nodes[id].mask & SEEN != 0 {
-                    moved_seen = true;
-                    self.link_bucket_faces(id);
-                }
-                self.nodes[id].light_state = 2;
-            } else if needs && !moved_aliases.is_empty() {
-                let mut relink = false;
-                for &alias in &moved_aliases {
-                    if self.alias_shadow(id, alias, faces) {
-                        relink = true;
+                    if relink {
+                        events.relinked.push(id);
                     }
                 }
-                if relink {
-                    events.relinked.push(id);
-                }
-                if self.nodes[id].mask & SEEN != 0 {
+                if seen {
                     self.link_bucket_faces(id);
                 }
-            }
-            if self.nodes[id].moved {
-                if grid_mode {
-                    store_cell(&mut self.nodes[id], grid);
-                }
-                if self.nodes[id].mask & SEEN != 0 {
-                    moved_seen = true;
-                }
-                self.nodes[id].moved = false;
             }
             fade_node(&mut self.nodes[id], dt_ms);
         }
@@ -2584,18 +2692,74 @@ impl Scene {
             // A mesh seen through a doorway marks its sector as seen.
             self.sectors[index].mask |= MAIN | SEEN;
         }
-        // Every alias's link mask goes into its shadow map's needed faces.
+        // Every alias's link mask goes into its shadow map's linked faces.
         let count = self.sectors[index]
             .aliases_done
             .min(self.sectors[index].aliases.len());
-        for at in 0..count {
-            let alias = self.sectors[index].aliases[at];
-            if let Some(shadow) = alias.shadow_faces {
-                self.sectors[index].aliases[at].shadow_faces = Some(shadow | alias.mask);
+        for alias in &mut self.sectors[index].aliases[..count] {
+            if alias.shadow_faces.is_some() {
+                alias.shadow_links |= alias.mask;
             }
         }
-        moved_seen
+        changed
     }
+}
+
+/// Remaps a node's bucket chain after the membership rebuild moved the
+/// sector's processed aliases (`map`: old slot → new slot, negative for a
+/// removed slot, as the rebuild builds it), as the original does: the head
+/// skips removed entries and takes its new index; each kept entry's `next`
+/// skips removed entries and the entry it reaches takes the kept entry's
+/// new index as `prev`; the entries of the aliases that moved into removed
+/// slots move with them; the array shrinks to `done` entries. A chain index
+/// past the map is read as kept in place (the original would read past its
+/// map; the model's chains never reach there).
+fn remap_buckets(node: &mut SceneNode, map: &[i64], removed: &[usize], done: usize) {
+    let mapped = |k: i32| map.get(k as usize).copied().unwrap_or(i64::from(k));
+    let b = &mut node.buckets;
+    let next_of = |b: &[Bucket], k: i32| b.get(k as usize).map_or(-1, |e| e.next);
+    while node.bucket_head >= 0 && mapped(node.bucket_head) < 0 {
+        node.bucket_head = next_of(b, node.bucket_head);
+    }
+    if done < 1 {
+        node.bucket_head = -1;
+    } else if node.bucket_head >= 0 {
+        if let Some(e) = b.get_mut(node.bucket_head as usize) {
+            e.prev = -1;
+        }
+        node.bucket_head = mapped(node.bucket_head) as i32;
+    }
+    for k in 0..map.len().min(b.len()) {
+        if map[k] < 0 {
+            continue;
+        }
+        while b[k].next >= 0 && mapped(b[k].next) < 0 {
+            b[k].next = next_of(b, b[k].next);
+        }
+        let next = b[k].next;
+        if next >= 0 {
+            if let Some(e) = b.get_mut(next as usize) {
+                e.prev = map[k] as i32;
+            }
+            b[k].next = mapped(next) as i32;
+        }
+    }
+    for &i in removed {
+        let from = (-map[i]) as usize;
+        if let Some(entry) = b.get(from).copied()
+            && let Some(slot) = b.get_mut(i)
+        {
+            // The entry follows its alias into the slot.
+            *slot = Bucket { alias: i, ..entry };
+        }
+    }
+    if done > 0
+        && node.bucket_head >= 0
+        && let Some(e) = b.get_mut(node.bucket_head as usize)
+    {
+        e.prev = -1;
+    }
+    b.resize(done, Bucket::ZERO);
 }
 
 /// Stores a node's cell and spill mask; returns whether the cell changed.
@@ -2715,13 +2879,16 @@ fn fade_node(node: &mut SceneNode, dt_ms: i32) {
     if node.mask & (MAIN | SEEN) == 0 {
         return;
     }
-    let step = dt_ms as f32 * FADE_RATE;
+    // The frame delta is read as an unsigned 32-bit count of milliseconds.
+    let step = dt_ms as u32 as f32 * FADE_RATE;
     if !node.cut_away {
         if 0.0 < node.fade {
             node.fade -= step;
             if !(f64::from(node.fade) > FADE_DONE) {
                 node.fade = 0.0;
-            } else if node.mask & MAIN != 0 {
+            } else {
+                // Unlike the cut-away branch, no test of the main bit: a
+                // seen-only mesh becomes dithered too.
                 node.mask = (node.mask & !MAIN) | DITHERED;
             }
         }
@@ -2745,8 +2912,9 @@ fn fade_node(node: &mut SceneNode, dt_ms: i32) {
 }
 
 /// The unit's scenes and its global default sector, as the original's unit
-/// keeps them: a newly created scene joins a global list, one marked owned
-/// survives the unit's cleanup hook, and the global `_World` sector is the
+/// keeps them: a newly created scene joins a global list; releasing a scene
+/// that has an owner only lists it for the unit's cleanup hook, which frees
+/// the listed scenes not marked [`OWNED`]; the global `_World` sector is the
 /// default parent of nodes without a scene (locked against registration).
 #[derive(Default)]
 pub struct SceneSet {
@@ -2754,10 +2922,15 @@ pub struct SceneSet {
     pub world: Option<Sector>,
     /// The live scenes; a freed scene's slot is left empty.
     pub scenes: Vec<Option<Scene>>,
-    /// The scenes the cleanup hook leaves alone.
+    /// Each scene's [`OWNED`] mark: a listed scene with it survives the
+    /// cleanup hook.
     pub owned: Vec<bool>,
-    /// The cleanup hook installed before this one, chained as the unit
-    /// chains its exit hook.
+    /// Scenes released while they had an owner, waiting for the cleanup
+    /// hook (in list order; the hook takes them out by swapping in the
+    /// last).
+    pub released: Vec<usize>,
+    /// The exit hook that was installed before the unit's, which the
+    /// unit's cleanup runs last.
     cleanup: Option<Box<dyn FnMut() -> bool>>,
 }
 
@@ -2769,9 +2942,7 @@ impl SceneSet {
         world.flags |= LOCKED;
         Self {
             world: Some(world),
-            scenes: Vec::new(),
-            owned: Vec::new(),
-            cleanup: None,
+            ..Self::default()
         }
     }
 
@@ -2794,34 +2965,39 @@ impl SceneSet {
         }
     }
 
-    /// Frees a scene, or marks it owned when it has an owner (the original's
-    /// release: an ownerless scene goes, an owned one is listed).
+    /// Releases a scene as the original does: an ownerless scene is freed
+    /// at once; one with an owner is listed for the cleanup hook. Returns
+    /// whether the id held a scene.
     pub fn release(&mut self, id: usize, has_owner: bool) -> bool {
-        if has_owner {
-            match self.owned.get_mut(id) {
-                Some(owned) => {
-                    *owned = true;
-                    self.scenes.get(id).is_some_and(Option::is_some)
-                }
-                None => false,
-            }
-        } else {
-            self.free(id)
+        if !has_owner {
+            return self.free(id);
         }
+        if !self.scenes.get(id).is_some_and(Option::is_some) {
+            return false;
+        }
+        self.released.push(id);
+        true
     }
 
-    /// Chains a cleanup hook in front of the installed one and returns the
-    /// old hook's slot (the unit's exit chain).
-    pub fn install_cleanup(&mut self, hook: Box<dyn FnMut() -> bool>) {
-        self.cleanup = Some(hook);
+    /// Stores the exit hook that was installed before the unit's, as the
+    /// unit's initialisation chains it.
+    pub fn install_cleanup(&mut self, previous: Box<dyn FnMut() -> bool>) {
+        self.cleanup = Some(previous);
     }
 
-    /// The cleanup hook: frees the scenes not marked owned, then runs the
-    /// previous hook. Returns the previous hook's answer, or true.
+    /// The cleanup hook: each listed scene not marked [`OWNED`] is freed
+    /// and leaves the list (the last listed takes its place and is checked
+    /// next), then the previous hook runs. Returns the previous hook's
+    /// answer, or true without one.
     pub fn cleanup(&mut self) -> bool {
-        for id in 0..self.scenes.len() {
-            if !self.owned[id] {
-                self.scenes[id] = None;
+        let mut at = 0;
+        while at < self.released.len() {
+            let id = self.released[at];
+            if self.owned.get(id).copied().unwrap_or(false) {
+                at += 1;
+            } else {
+                self.free(id);
+                self.released.swap_remove(at);
             }
         }
         match self.cleanup.as_mut() {
@@ -2835,6 +3011,7 @@ impl SceneSet {
         self.world = None;
         self.scenes.clear();
         self.owned.clear();
+        self.released.clear();
         self.cleanup = None;
     }
 }
@@ -3238,7 +3415,9 @@ mod tests {
         // The last alias takes the removed one's place.
         assert_eq!(scene.nodes[light].aliases, vec![c, b]);
         assert_eq!(scene.nodes[a].sector, None);
-        assert_eq!(scene.sectors[SCENE_SECTOR].changes, LINKS_CHANGED);
+        // The alias's own sector is marked, not the scene's.
+        assert_eq!(scene.sectors[1].changes, LINKS_CHANGED);
+        assert_eq!(scene.sectors[SCENE_SECTOR].changes, 0);
         assert!(!scene.remove_alias(light, a), "already gone");
     }
 
@@ -3975,9 +4154,11 @@ mod tests {
             assert_eq!(part.flags & 0x10, 0x10);
             assert_eq!(part.value, 0);
         }
-        for part in &scene.nodes[shade].parts {
-            assert_eq!(part.flags & 0x10, 0x10);
-            assert_eq!(part.value, 0);
+        // A mesh child loses only its first part's flags.
+        let shade_parts = &scene.nodes[shade].parts;
+        assert_eq!((shade_parts[0].flags, shade_parts[0].value), (0x10, 0));
+        for part in &shade_parts[1..] {
+            assert_eq!((part.flags, part.value), (0, 7));
         }
     }
 
@@ -3990,6 +4171,8 @@ mod tests {
                 moved: false,
                 mask: 0,
                 shadow_faces: None,
+                shadow_links: 0,
+                owner: Some(sector),
             };
             3
         ];
@@ -4007,6 +4190,8 @@ mod tests {
             moved: false,
             mask: 0,
             shadow_faces: None,
+            shadow_links: 0,
+            owner: Some(sector),
         });
         scene.rebuild_buckets(sector, mesh, 3);
         assert_eq!(scene.nodes[mesh].buckets.len(), 4);
@@ -4028,6 +4213,8 @@ mod tests {
                 moved: false,
                 mask: 0,
                 shadow_faces: None,
+                shadow_links: 0,
+                owner: Some(sector),
             };
             2
         ];
@@ -4054,6 +4241,11 @@ mod tests {
         assert_eq!(scene.nodes[light].active_frame, Vec3::new(4.0, 1.0, 0.0));
         assert_eq!(scene.sectors[sector].aliases.len(), 1);
         assert_eq!(scene.sectors[sector].aliases[0].light, light);
+        assert_eq!(scene.sectors[sector].aliases[0].owner, Some(sector));
+        assert!(
+            scene.sectors[sector].aliases[0].moved,
+            "a new alias starts moved"
+        );
         assert_eq!(scene.sectors[sector].changes, LIGHT_ADDED);
         // An activated light is not activated again.
         let mut events = FrameEvents::default();
@@ -4068,44 +4260,131 @@ mod tests {
         assert!(scene.sectors[sector].lights.is_empty());
     }
 
+    fn alias(light: usize, owner: Option<usize>) -> LightAlias {
+        LightAlias {
+            light,
+            owner,
+            moved: false,
+            mask: 0,
+            shadow_faces: None,
+            shadow_links: 0,
+        }
+    }
+
     #[test]
-    fn a_membership_rebuild_drops_aliases_and_remaps_buckets() {
+    fn a_membership_rebuild_fills_a_hole_from_the_end_and_remaps_buckets() {
         let (mut scene, sector, mesh) = node_scene();
-        let first = scene.add_node(NodeKind::Light, None);
-        let second = scene.add_node(NodeKind::Light, None);
-        scene.register(first, sector);
-        scene.register(second, sector);
+        let other = scene.add_node(NodeKind::Sector, None);
+        scene.add_batch(&[other]);
+        // A, B, C, D processed; E waiting. B now belongs to sector 2.
         scene.sectors[sector].aliases = vec![
-            LightAlias {
-                light: first,
-                moved: false,
-                mask: 0,
-                shadow_faces: None,
-            },
-            LightAlias {
-                light: second,
-                moved: false,
-                mask: 0,
-                shadow_faces: None,
-            },
+            alias(10, Some(sector)),
+            alias(11, Some(2)),
+            alias(12, Some(sector)),
+            alias(13, Some(sector)),
         ];
-        scene.sectors[sector].aliases_done = 2;
+        scene.nodes[mesh].flags |= NEEDS_BUCKETS;
         scene.rebuild_buckets(sector, mesh, 0);
+        scene.nodes[mesh].buckets[3].faces = 0x5;
+        scene.sectors[sector].aliases.push(alias(14, Some(sector)));
+        scene.sectors[sector].aliases_done = 4;
         scene.sectors[sector].meshes_done = 1;
         scene.sectors[sector].changes = LINKS_CHANGED;
-        scene.nodes[second].sector = None;
-        scene.rebuild_membership(sector);
-        assert_eq!(scene.sectors[sector].aliases.len(), 1);
-        assert_eq!(scene.sectors[sector].aliases_done, 1);
-        assert_eq!(scene.sectors[sector].aliases[0].light, first);
-        assert_eq!(scene.nodes[mesh].buckets.len(), 1);
-        assert_eq!(scene.nodes[mesh].buckets[0].alias, 0);
+        scene.sectors[2].changes = 0;
+        assert!(!scene.rebuild_membership(sector));
+        // The last kept alias (D) takes B's slot; E follows the processed
+        // ones.
+        let lights: Vec<usize> = scene.sectors[sector]
+            .aliases
+            .iter()
+            .map(|a| a.light)
+            .collect();
+        assert_eq!(lights, [10, 13, 12, 14]);
+        assert_eq!(scene.sectors[sector].aliases_done, 4);
+        // B's owner is marked.
+        assert_eq!(scene.sectors[2].changes, LINKS_CHANGED);
+        // The chain still visits A, C, D, then links E (whose `prev` is its
+        // index less one, as the original writes it).
+        let b = &scene.nodes[mesh].buckets;
+        assert_eq!(scene.nodes[mesh].bucket_head, 0);
+        let links: Vec<(i32, i32)> = b.iter().map(|e| (e.prev, e.next)).collect();
+        assert_eq!(links, [(-1, 2), (2, 3), (0, 1), (2, -1)]);
+        // D's bucket moved with it.
+        assert_eq!(b[1].faces, 0x5);
+        assert_eq!(b[1].alias, 1);
         assert_eq!(scene.sectors[sector].changes & MEMBERSHIP_CHANGED, 0);
-        assert_ne!(
-            scene.sectors[SCENE_SECTOR].changes & LINKS_CHANGED,
-            0,
-            "the alias removal marks the scene"
-        );
+        assert_eq!(scene.sectors[SCENE_SECTOR].changes & LINKS_CHANGED, 0);
+    }
+
+    #[test]
+    fn a_dropped_mesh_gives_its_faces_to_the_aliases_shadows() {
+        let (mut scene, sector, mesh) = node_scene();
+        let mut a = alias(10, Some(sector));
+        a.shadow_faces = Some(0x2);
+        scene.sectors[sector].aliases = vec![a, alias(11, Some(sector))];
+        scene.sectors[sector].aliases_done = 2;
+        scene.rebuild_buckets(sector, mesh, 0);
+        scene.nodes[mesh].buckets[0].faces = 0x9;
+        scene.nodes[mesh].buckets[1].faces = 0x4;
+        scene.sectors[sector].meshes_done = 1;
+        scene.nodes[mesh].sector = Some(SCENE_SECTOR);
+        assert!(scene.rebuild_membership(sector));
+        assert!(scene.sectors[sector].meshes.is_empty());
+        assert_eq!(scene.sectors[sector].meshes_done, 0);
+        // Only the alias with a shadow map takes the faces.
+        assert_eq!(scene.sectors[sector].aliases[0].shadow_faces, Some(0xb));
+        assert_eq!(scene.sectors[sector].aliases[1].shadow_faces, None);
+    }
+
+    #[test]
+    fn activation_snapshots_flat_and_relinks_without_a_grid() {
+        let mut scene = Scene::new((0, 0));
+        let sector = scene.add_node(NodeKind::Sector, None);
+        scene.add_batch(&[sector]);
+        let light = scene.add_node(NodeKind::Light, None);
+        scene.set_frame(light, Vec3::new(4.0, 2.5, 1.0), Mat3::IDENTITY, Vec3::ONE);
+        scene.refresh(light);
+        assert_eq!(scene.nodes[light].light_state, 1, "the transform update");
+        scene.nodes[light].flags |= SNAPSHOT_FLAT;
+        scene.nodes[light].light_flags |= LIGHT_FLICKER;
+        scene.register(light, 1);
+        let mut events = FrameEvents::default();
+        scene.activate_lights(1, &mut events);
+        assert_eq!(scene.nodes[light].active_frame, Vec3::new(4.0, 0.0, 1.0));
+        assert!(events.activated.is_empty());
+        assert_eq!(events.alias_links, [light]);
+        assert_eq!(events.flicker, [(light, false)]);
+        // A moved light activates again; a flickering active one steps.
+        let mut events = FrameEvents::default();
+        scene.activate_lights(1, &mut events);
+        assert_eq!(events.flicker, [(light, true)]);
+        // Without a snapshot the old position stays.
+        scene.nodes[light].light_flags |= LIGHT_NO_SNAPSHOT;
+        scene.set_frame(light, Vec3::new(9.0, 9.0, 9.0), Mat3::IDENTITY, Vec3::ONE);
+        scene.refresh(light);
+        let mut events = FrameEvents::default();
+        scene.activate_lights(1, &mut events);
+        assert_eq!(events.alias_links, [light]);
+        assert_eq!(scene.nodes[light].active_frame, Vec3::new(4.0, 0.0, 1.0));
+    }
+
+    #[test]
+    fn a_light_leaving_the_scene_drops_its_aliases() {
+        let (mut scene, sector, _) = node_scene();
+        let light = scene.add_node(NodeKind::Light, None);
+        scene.register(light, sector);
+        let mut events = FrameEvents::default();
+        scene.activate_lights(sector, &mut events);
+        scene.sectors[sector].changes = 0;
+        scene.nodes[light].sector = None;
+        scene.nodes[light].scene_flags &= !IN_SCENE;
+        let mut events = FrameEvents::default();
+        scene.activate_lights(sector, &mut events);
+        assert_eq!(events.dropped, [light]);
+        assert_eq!(scene.sectors[sector].aliases[0].owner, None);
+        assert_eq!(scene.sectors[sector].changes, LINKS_CHANGED);
+        assert!(!scene.rebuild_membership(sector));
+        assert!(scene.sectors[sector].aliases.is_empty());
     }
 
     #[test]
@@ -4192,11 +4471,21 @@ mod tests {
         assert_ne!(set.world.as_ref().unwrap().flags & LOCKED, 0);
         let a = set.create((4, 4));
         let b = set.create((0, 0));
-        set.release(a, true);
+        let c = set.create((0, 0));
+        let d = set.create((0, 0));
+        // An ownerless release frees at once; one with an owner waits.
+        assert!(set.release(d, false));
+        assert!(set.scenes[d].is_none());
+        assert!(set.release(a, true) && set.release(b, true));
+        set.owned[b] = true;
+        assert!(set.scenes[a].is_some());
         assert!(set.cleanup());
-        assert!(set.scenes[a].is_some(), "owned scenes survive");
-        assert!(set.scenes[b].is_none());
-        // The installed hook runs after the sweep.
+        // The listed scene without the mark goes; the marked one and the
+        // never-released one stay.
+        assert!(set.scenes[a].is_none());
+        assert!(set.scenes[b].is_some() && set.scenes[c].is_some());
+        assert_eq!(set.released, [b]);
+        // The previous hook runs after the sweep.
         set.install_cleanup(Box::new(|| false));
         assert!(!set.cleanup());
         set.finish();
@@ -4204,7 +4493,7 @@ mod tests {
     }
 
     #[test]
-    fn an_inherited_seen_only_mesh_does_not_become_dithered() {
+    fn an_inherited_seen_only_mesh_fading_in_becomes_dithered() {
         let (mut scene, sector, node) = node_scene();
         scene.sectors[sector].state = SectorState::Active;
         scene.rebuild_bounds();
@@ -4212,9 +4501,10 @@ mod tests {
         scene.nodes[node].inherited = INHERIT_FADE;
         scene.nodes[node].fade = 0.5;
         scene.update_visibility(100);
-        // Fading back in without the main bit: the amount moves, the mask
-        // keeps only the seen bit.
-        assert_eq!(scene.nodes[node].mask, SEEN);
+        // Fading back in without the main bit: the amount moves and the
+        // dithered bit is set all the same (the original tests no bit on
+        // this branch).
+        assert_eq!(scene.nodes[node].mask, SEEN | DITHERED);
         assert!((scene.nodes[node].fade - 0.2).abs() < 1e-6);
     }
 
