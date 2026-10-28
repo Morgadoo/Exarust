@@ -321,6 +321,46 @@ pub fn object_goal(
     (point, 50, 100.0)
 }
 
+/// A room object the idle driver can walk to and use.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RoomObject {
+    /// Its point (cm).
+    pub point_cm: bevy::math::Vec3,
+    /// Its item record is searchable and not fixed (the original's
+    /// `0x20` flag), its kind is not 5 and its value is not negative.
+    pub usable: bool,
+    /// Its reach in the item's unit, at most 0.7 to be used.
+    pub reach: f32,
+    /// Its use flag (`0x528` bit 8) is already set.
+    pub used: bool,
+}
+
+/// Whether the body stands within 250 cm (flat, squared 62 500) of the
+/// midpoint between the exit point `a` and the next one `b`.
+pub fn near_exit(body_cm: bevy::math::Vec3, a: bevy::math::Vec3, b: bevy::math::Vec3) -> bool {
+    let mid = (a + b) * 0.5;
+    let dx = mid.x - body_cm.x;
+    let dz = mid.z - body_cm.z;
+    dz * dz + dx * dx <= 62_500.0
+}
+
+/// One tick of the use-object check: an object within 0.7 of its reach
+/// that has not been used is used. Returns (a use fired, whether the
+/// state is done): a used object, or one out of reach, leaves the state
+/// done; an unused one in reach fires and is not done.
+pub fn use_object(object: RoomObject) -> (bool, bool) {
+    if object.used || 0.7 < object.reach {
+        return (false, true);
+    }
+    (true, false)
+}
+
+/// The first usable object of the current room: searchable, not fixed, not
+/// searched, its kind not 5, its value not negative.
+pub fn find_object(objects: &[RoomObject]) -> Option<RoomObject> {
+    objects.iter().copied().find(|o| o.usable)
+}
+
 /// The steps of the idle driver's go-to-object state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum GoTo {
@@ -552,6 +592,54 @@ mod tests {
         let mut roll = 0u32;
         let (exit, _) = plan_next_cell(4, 3, &exits, 1, &mut words, &mut roll).unwrap();
         assert_eq!(exit.cell, 6);
+    }
+
+    /// The exit midpoint is 250 cm out at most; the use fires within 0.7
+    /// once; the first usable object is found.
+    #[test]
+    fn the_exit_use_and_object_checks() {
+        assert!(near_exit(
+            Vec3::new(250.0, 0.0, 0.0),
+            Vec3::new(500.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 0.0)
+        ));
+        assert!(!near_exit(
+            Vec3::new(501.0, 0.0, 0.0),
+            Vec3::new(500.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 0.0)
+        ));
+        let object = RoomObject {
+            point_cm: Vec3::ZERO,
+            usable: true,
+            reach: 0.7,
+            used: false,
+        };
+        assert_eq!(use_object(object), (true, false));
+        assert_eq!(
+            use_object(RoomObject {
+                used: true,
+                ..object
+            }),
+            (false, true)
+        );
+        assert_eq!(
+            use_object(RoomObject {
+                reach: 0.71,
+                ..object
+            }),
+            (false, true)
+        );
+        assert_eq!(find_object(&[]), None);
+        assert_eq!(
+            find_object(&[
+                RoomObject {
+                    usable: false,
+                    ..object
+                },
+                object
+            ]),
+            Some(object)
+        );
     }
 
     #[test]
