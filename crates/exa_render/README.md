@@ -18,7 +18,7 @@ sample splits, the warm-up variants, the surface entry's `<set>_f` name
 rule, the height layer's one-texel switch-off and the sub-frame count;
 `shader_uniforms` the 252-byte `Global` block (the frame clock in `ViewPos.w`
 and `TimeDlt.x`, `−exposure/factor` in `TimeDlt.y`, the eye/sun-eye midpoint
-in `FogPos`), the 112-byte `Material` block, the per-light `vec4`s and the
+in `FogPos`, whose `w` is the scene height limit capping `y`), the 112-byte `Material` block, the per-light `vec4`s and the
 refraction background's choice. `exa-tool shader` prints a material's
 original GLSL for comparison.
 `shader_cache` keeps the program cache: one bucket per material and shader
