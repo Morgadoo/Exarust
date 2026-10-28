@@ -63,10 +63,12 @@ impl FractionWord {
     }
 
     /// Below 0.1875 clears the field, below 0.625 stores `round(v·4)`, and
-    /// anything else (NaN too) stores 3.
+    /// anything else stores 3. NaN takes the storing path, where its
+    /// conversion's shifted indefinite result ORs nothing in: the field is
+    /// cleared.
     pub fn set_damage_spread(&mut self, v: f32) {
         let kept = self.0 & 0xF9FF;
-        self.0 = if v < 0.1875 {
+        self.0 = if v.is_nan() || v < 0.1875 {
             kept
         } else if v < 0.625 {
             kept | (round_f32(v * 4.0) << 9) as u16
@@ -135,8 +137,11 @@ impl Quantised {
         (n as f64 * STEP) as f32
     }
 
-    /// `round(|v·31|) << 2` into byte 0 above the count (a magnitude past
-    /// 31 spills into bit 7), then bit 7 for a negative value.
+    /// `round(|v·31|) << 2` into byte 0 above the count, which the mask
+    /// keeps (bits 2–7 are cleared first, so an earlier sign does not
+    /// survive; a magnitude past 31 spills into bit 7), then bit 7 for a
+    /// negative value (NaN is not negative and its conversion ORs nothing
+    /// in).
     pub fn set_signed(&mut self, value: f32) {
         let magnitude = round_f32((value * 31.0).abs());
         self.0[0] = self.0[0] & 3 | (magnitude << 2) as u8;
@@ -280,6 +285,9 @@ mod tests {
         assert_eq!(f.damage_spread(), 0.125);
         f.set_damage_spread(0.9);
         assert_eq!(f.0 & 0x600, 0x600);
+        // NaN's conversion ORs nothing in after the field's mask: cleared.
+        f.set_damage_spread(f32::NAN);
+        assert_eq!(f.0 & 0x600, 0);
         f.set_dirt_spread(0.125);
         assert_eq!(f.dirt_spread(), 0.125);
         // 0.375·4 = 1.5 rounds to even: 2.
@@ -312,16 +320,29 @@ mod tests {
         assert_eq!(q.count(), 3);
         q.set_count(f32::NAN);
         assert_eq!(q.count(), 0);
-        // 0.5·31 = 15.5 rounds to 16, not 15: byte 0 = 16 << 2.
+        // 0.5·31 = 15.5 rounds to 16, not 15: byte 0 = 16 << 2, and the
+        // count in bits 0–1 is kept by the setter's mask.
         let mut q = Quantised([3, 0, 0, 0]);
         q.set_signed(0.5);
         assert_eq!(q.0[0], 0x40 | 3);
+        assert_eq!(q.count(), 3);
         assert_eq!(q.signed(), (16.0f64 * 0.032_258_064_516_129_03) as f32);
         q.set_signed(-0.5);
         assert_eq!(q.0[0], 0xC0 | 3);
         assert_eq!(q.signed(), -(16.0f64 * 0.032_258_064_516_129_03) as f32);
+        // Bits 2–7 are cleared before the magnitude goes in: a positive set
+        // after a negative one reads back positive.
         q.set_signed(1.0);
+        assert_eq!(q.0[0], 0x7C | 3);
         assert_eq!(q.signed(), 1.0);
+        let mut q = Quantised([0xFF, 0, 0, 0]);
+        q.set_signed(0.0);
+        assert_eq!(q.0[0], 3);
+        assert_eq!(q.signed(), 0.0);
+        // NaN: nothing ORed in, not negative.
+        let mut q = Quantised([0xFF, 0, 0, 0]);
+        q.set_signed(f32::NAN);
+        assert_eq!(q.0[0], 3);
         // 1.5·31 = 46.5 → 46; 46 << 2 = 0xB8 sets bit 7, so it reads back
         // negative, as in the game.
         let mut q = Quantised([0; 4]);

@@ -568,13 +568,16 @@ impl Item {
 
     /// The share of its voxel lights' intensity a placed copy keeps:
     /// (1 − c/255)² with c bits 16–23 of the placement's flags word, for
-    /// items whose model flags carry [`CONDITION_SCALED`]; 1 otherwise.
+    /// items whose model flags carry [`CONDITION_SCALED`]; 1 otherwise. The
+    /// step and the square are double precision, cast once to single, as
+    /// the original's light pass computes them.
     pub fn light_share(&self, placement_flags: u32) -> f32 {
         if self.model_flags & CONDITION_SCALED == 0 {
             return 1.0;
         }
-        let c = ((placement_flags >> 16) & 0xFF) as f32;
-        (1.0 - c / 255.0).powi(2)
+        let c = f64::from((placement_flags >> 16) & 0xFF);
+        let d = 1.0 - c * (1.0 / 255.0);
+        (d * d) as f32
     }
 
     /// Whether the item covers the groin on the innermost layer, as
@@ -797,6 +800,16 @@ pub fn worn_as<'a>(items: &'a [Item], model: &str) -> Option<&'a Item> {
         .find(|i| i.appearance.is_some() && i.worn_model.eq_ignore_ascii_case(model))
 }
 
+/// The experience amount the experience system reads for a level: 10, 20,
+/// 50, 100, 200, 500, 1000 and 2000 for levels 0–7, and 2000 from 8 up (the
+/// unit's table; the original keeps it beside the database). A level past
+/// the table reads 2000 here; the original reads the table's neighbour
+/// (unrelated memory) for a negative level.
+pub fn experience_for_level(level: u32) -> u32 {
+    const TABLE: [u32; 8] = [10, 20, 50, 100, 200, 500, 1000, 2000];
+    TABLE.get(level as usize).copied().unwrap_or(2000)
+}
+
 mod migrate;
 mod packed;
 mod record;
@@ -815,7 +828,7 @@ pub use record::{
     Header, Model, Record, Section, Sections, append_section, remove_section, resize_section,
 };
 pub use store::{Store, TableEntry};
-pub use tiers::{ObjectDb, Tier};
+pub use tiers::{ObjectDb, Tier, UseEffect};
 
 /// The object database's magic (`objdb.rdb` and a level's local database).
 pub const MAGIC: u32 = 0xDBAC_0D09;
@@ -1100,6 +1113,9 @@ mod tests {
         assert!((spent - (17.0f32 / 255.0).powi(2)).abs() < 1e-6);
         // Other bytes of the word leave it alone.
         assert_eq!(salve.light_share(0xFF00_FFFF), 1.0);
+        // The step and the square are double precision: condition 27 gives
+        // 0x3F4CA884; the single-precision path would give …85.
+        assert_eq!(salve.light_share(27 << 16).to_bits(), 0x3F4C_A884);
         // A model without the flag, and a section too short for the word.
         let mut lamp = padded("Lamp", 16);
         lamp.extend(0x50u32.to_le_bytes());
@@ -1358,6 +1374,13 @@ mod tests {
         // The first fire job lights a fire of size 200.
         let fire = by_id[&0x15].operative.unwrap();
         assert_eq!((fire.class, fire.kind, fire.value), (6, 12, 200));
+    }
+
+    #[test]
+    fn the_experience_table() {
+        let levels: Vec<u32> = (0..10).map(experience_for_level).collect();
+        assert_eq!(levels, [10, 20, 50, 100, 200, 500, 1000, 2000, 2000, 2000]);
+        assert_eq!(experience_for_level(u32::MAX), 2000);
     }
 
     #[test]
