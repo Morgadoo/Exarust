@@ -838,8 +838,10 @@ merged body model morphed by the record's physique, the skinned parts and
 skin look, the garments, the physical body's stats, its fighter and held
 item, the record data and possessions, and a duellist or placed-character
 brain — the same components a level's placed characters carry. A
-`SceneCommand::Despawn` releases the character capsule and removes the
-root's whole subtree. The arena's generic and hire-list opponents, the
+`SceneCommand::Despawn` naming the root or the body model releases the
+character capsule and removes the root's whole subtree. The generator reads
+the game's tables once, on its first command; frames without one cost
+nothing. The arena's generic and hire-list opponents, the
 Beast, company entrants and the hub's shopkeeper and specialists are built
 from `arena_spawn`'s plans (`opponent_plan`, `hire_opponent_plan`,
 `beast_scene_plan`, `company_plan`, `hub_body_plan`). A generated
@@ -860,6 +862,6 @@ fresh generic opponent, or the reserve entrant against the opponent who
 won, after the 13 ms yield; the end of the match resolves the company's
 records, writes the healths, books the result, drops the unfit on a
 tournament day and writes the settled career and the return placement for
-the hub's process. The hub then puts the manager at the saved 300 cm, half
-turn placement and asks for the shopkeeper and one body per employed
+the hub's process. The hub (in arena mode or under the play view's practice stand-in)
+then puts the manager at the saved 300 cm, half turn placement and asks for the shopkeeper and one body per employed
 merchant or physician at their `arena_spawn` spots.
