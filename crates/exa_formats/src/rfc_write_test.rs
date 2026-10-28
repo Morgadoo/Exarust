@@ -204,7 +204,10 @@ fn the_grid_stores_its_sets_size_fixed_words_and_planes() {
     assert_eq!((g.width, g.height), (1, 1));
     // The reader writes the loader's border words over plane A; a one-cell
     // grid takes the last corner.
-    assert_eq!((g.edges[0], g.plane_b[0], g.plane_c[0]), (0x1320_7700, 2, 3));
+    assert_eq!(
+        (g.edges[0], g.plane_b[0], g.plane_c[0]),
+        (0x1320_7700, 2, 3)
+    );
 }
 
 #[test]
