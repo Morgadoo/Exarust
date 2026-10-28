@@ -19,7 +19,7 @@
 //! player stands in its guard until a target comes close or it attacks
 //! (`exa_combat::stance`).
 
-use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll};
+use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll, MouseScrollUnit};
 use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 use exa_anim::Stature;
@@ -1456,7 +1456,8 @@ const ORBIT_RETENTION: f32 = 0.616;
 /// The yaw leads the shown yaw by at most this per tick (rad).
 const MAX_YAW_LEAD: f32 = std::f32::consts::FRAC_PI_4;
 /// Zoom stops: 800 + 240·level, in the original's units (2000 = 45°).
-const ZOOM_STOPS: usize = 6;
+const ZOOM_MIN: f32 = 800.0;
+const ZOOM_MAX: f32 = ZOOM_MIN + 240.0 * 5.0;
 const ZOOM_START: f32 = 1300.0;
 /// The steepest pitch the orbit drag reaches (rad below the horizon).
 const MAX_PITCH: f32 = 1.5;
@@ -1732,8 +1733,17 @@ pub(crate) fn chase_camera(
             );
         }
         if scroll.delta.y != 0.0 {
-            let level = ((cam.zoom - 800.0) / 240.0).round() - scroll.delta.y.signum();
-            cam.zoom = 800.0 + 240.0 * level.clamp(0.0, (ZOOM_STOPS - 1) as f32);
+            // The wheel's handler reads the zoom as a stop level, subtracts
+            // the notch in 120-unit steps and holds it below the sixth stop.
+            // A line is one notch; a touchpad's pixels are read at 24 to the
+            // notch (Exarust's guess, the map panel's line height) so a
+            // pixel delta does not jump the zoom to an end stop.
+            let notches = match scroll.unit {
+                MouseScrollUnit::Line => scroll.delta.y,
+                MouseScrollUnit::Pixel => scroll.delta.y / 24.0,
+            };
+            let units = (notches * crate::nav_drag::WHEEL_UNITS_PER_NOTCH).round() as i32;
+            cam.zoom = crate::nav_drag::zoom_detents(cam.zoom, units, ZOOM_MIN, ZOOM_MAX);
         }
         if pad_status.as_ref().is_some_and(|s| s.active())
             && let Some(pad) = pad.as_deref()

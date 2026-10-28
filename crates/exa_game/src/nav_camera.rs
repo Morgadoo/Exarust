@@ -1,8 +1,10 @@
 //! The original's camera navigation routines: where the view sits, the yaw
 //! that turns it behind a body, the orbit drag and its pitch limits, the
-//! zoom steps, the frame clock and a kick. The chase camera in
-//! [`crate::player`] uses these; the rules they reproduce are in
-//! `docs/PLAYER.md` (Camera).
+//! zoom steps, the frame clock, a kick, the preset record with its editor
+//! target scan and handler set, the viewport attachment, and the unit's
+//! jittered offset table. The chase camera in [`crate::player`] uses these;
+//! the free-camera drags and zoom handlers are [`crate::nav_drag`]. The
+//! rules they reproduce are in `docs/PLAYER.md` (Camera).
 //!
 //! The original keeps its camera state in one controller and its arithmetic
 //! in a navigation unit. This module is that unit: plain functions, no
@@ -603,7 +605,13 @@ pub struct Preset {
     pub extent: f32,
     pub extent_step: f32,
     pub rate: f32,
+    /// The controller's distance field after the minimum clamp: the record's
+    /// first distance, or the smallest distance when that is below it.
     pub distance: f32,
+    /// Whether the placement derives its distance from the eye instead: the
+    /// record's first distance was not positive (the original tests the raw
+    /// field, not the clamped one, and a NaN takes this branch too).
+    pub derive_distance: bool,
     pub min_distance: f32,
     pub max_distance: f32,
     pub min_height: f32,
@@ -612,6 +620,40 @@ pub struct Preset {
     /// The pitch speed and the zoom ease per tick the preset sets.
     pub pitch_speed: f32,
     pub zoom_speed: f32,
+    /// The viewport callbacks the flags install.
+    pub handlers: Handlers,
+}
+
+/// The viewport callbacks a preset installs, by its flags. The original
+/// hands the viewport a wheel handler when the record asks for it; for the
+/// editor camera it installs the press and move callbacks, otherwise (when
+/// the stepped camera is not the editor's) a free-camera press and, unless
+/// the flag says otherwise, a move handler. Exarust has no viewport; the
+/// set a record asks for is this value and the host's to install.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Handlers {
+    /// The wheel's zoom handler (`0x200`).
+    pub wheel: bool,
+    /// The editor's press and move drag handlers (`0x100000`).
+    pub editor_press: bool,
+    pub editor_move: bool,
+    /// The free camera's press drag (`0x200000` without the editor bit).
+    pub free_press: bool,
+    /// The free camera's move handler unless `0x1000000` suppresses it.
+    pub free_move: bool,
+}
+
+/// The handlers a preset record's flags install.
+pub fn preset_handlers(flags: u32) -> Handlers {
+    let editor = flags & 0x10_0000 != 0;
+    let stepped = flags & 0x20_0000 != 0;
+    Handlers {
+        wheel: flags & 0x200 != 0,
+        editor_press: editor,
+        editor_move: editor,
+        free_press: !editor && (!stepped || flags & 1 != 0),
+        free_move: !editor && flags & 0x100_0000 == 0,
+    }
 }
 
 /// The field of view scale a preset value gives: `value / 59²`.
@@ -654,6 +696,11 @@ pub fn apply_preset(fields: PresetFields) -> Preset {
     } else {
         1.0
     };
+    let distance = if fields.distance < min_distance {
+        min_distance
+    } else {
+        fields.distance
+    };
     let pitch_speed = if stepped {
         5.0
     } else {
@@ -694,7 +741,8 @@ pub fn apply_preset(fields: PresetFields) -> Preset {
         extent,
         extent_step: (f64::from(extent) * 0.001) as f32,
         rate,
-        distance: fields.distance,
+        distance,
+        derive_distance: fields.distance <= 0.0 || fields.distance.is_nan(),
         min_distance,
         max_distance,
         min_height: fields.min_height,
@@ -702,6 +750,7 @@ pub fn apply_preset(fields: PresetFields) -> Preset {
         extra: fields.extra,
         pitch_speed,
         zoom_speed,
+        handlers: preset_handlers(fields.flags),
     }
 }
 
@@ -739,19 +788,152 @@ pub fn kick_offset(
     let third = draw() - 0.5;
     let mut offset = Vec3::new(first, second, third);
     let mut basis = direction;
-    if f64::from(basis.length_squared()) < KICK_DEGENERATE {
+    // The original sums the squares z² + (y² + x²) in single precision
+    // and widens the sum for the 0.1 compare.
+    let squared = |v: Vec3| v.z * v.z + (v.y * v.y + v.x * v.x);
+    if f64::from(squared(basis)) < KICK_DEGENERATE {
         basis = right * sign_or_zero(draw() - 0.5);
         basis.y += (draw() - 0.5) * 4.0;
     }
-    if basis.length_squared() > KICK_EPSILON {
+    if squared(basis) > KICK_EPSILON {
         basis = normalize(basis);
     }
     offset += basis;
-    let length_squared = offset.length_squared();
+    let length_squared = squared(offset);
     if length_squared > KICK_EPSILON {
         offset *= size / length_squared.sqrt();
     }
     offset
+}
+
+/// The counts of the original's jittered offset table, group by group: discs
+/// of 1, 2, 3, 4, 8, 15, 24 and 66 points, 123 in all.
+pub const DISC_GROUP_COUNTS: [usize; 8] = [1, 2, 3, 4, 8, 15, 24, 66];
+/// The points in the jittered offset table.
+pub const DISC_POINTS: usize = 123;
+/// The table's largest radius (its scale is `(draw + 1) · 0.02`).
+pub const DISC_SCALE: f64 = 0.02;
+
+/// The original's table of jittered unit offsets, as the unit fills it at
+/// start-up: eight groups of a one, two, three, four, eight, fifteen,
+/// twenty-four and sixty-six points around a circle, each at
+/// `i · 2π / count` with `(sin, cos)` of the engine's fast pair, scaled by
+/// `(draw + 1) · 0.02` in double precision and given a z of one. The draw
+/// stream is the caller's: the original's is the process-wide generator at
+/// the moment of the fill, which a replay cannot reproduce without the
+/// earlier draws.
+pub fn disc_offsets(draw: &mut impl FnMut() -> f64) -> Vec<Vec3> {
+    let mut offsets = Vec::with_capacity(DISC_POINTS);
+    for count in DISC_GROUP_COUNTS {
+        for i in 0..count {
+            let angle = (i as f32 * std::f32::consts::TAU) / count as f32;
+            let (sin, cos) = sin_cos(angle);
+            let scale = ((draw() + 1.0) * DISC_SCALE) as f32;
+            offsets.push(Vec3::new(sin * scale, cos * scale, 1.0));
+        }
+    }
+    offsets
+}
+
+/// Moves both of a camera's stored points (the looked-at point and the eye)
+/// by `by`, as the unit's translate routine does. Returns the moved pair.
+pub fn translate_points(points: (Vec3, Vec3), by: Vec3) -> (Vec3, Vec3) {
+    (points.0 + by, points.1 + by)
+}
+
+/// A camera controller's attachment to its viewport. The original detaches
+/// its controller while the editor's own drag handlers run: the camera node
+/// drops its back-pointer to the controller, the editor's press and move
+/// callbacks are installed, and the viewport's saved zoom handler is put
+/// back on attach. Exarust has no viewport callbacks, so the two observable
+/// flags are kept here and the handler swap is the caller's. A new
+/// controller is bound (the constructor points the node at it).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Attachment {
+    /// The editor's handlers are installed (`detached`).
+    pub editing: bool,
+    /// The camera node points back at this controller.
+    pub bound: bool,
+}
+
+impl Default for Attachment {
+    fn default() -> Self {
+        Self {
+            editing: false,
+            bound: true,
+        }
+    }
+}
+
+impl Attachment {
+    /// Sets the attachment to `detached` and returns whether it changed.
+    /// Detaching installs the editor's handlers and unbinds the node;
+    /// attaching binds it again. Setting the state it already has does
+    /// nothing, as the original's byte compare does.
+    pub fn set_detached(&mut self, detached: bool) -> bool {
+        if self.editing == detached {
+            return false;
+        }
+        self.editing = detached;
+        self.bound = !detached;
+        true
+    }
+}
+
+/// One node the preset's editor scan reads: the class byte and marker at
+/// the node's two flags, its world position and its box's half extents.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EditorNode {
+    /// The node's class byte (`0xA9` is the editor's target).
+    pub class: u8,
+    /// The node's second class byte (`0xAE` raises the preset's extra flag).
+    pub marker: u8,
+    pub position: Vec3,
+    pub half_extents: Vec3,
+}
+
+/// The editor preset's target box: the centre and half extents it scans the
+/// scene for, and the raised flag.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TargetBox {
+    pub centre: Vec3,
+    pub half_extents: Vec3,
+    pub raised: bool,
+}
+
+/// The editor preset's scan (the preset flag `0x400000`): start from the
+/// view's `fallback` centre with an 800 by 0 by 1000 box and no raised flag;
+/// every node of class `0xA9` whose class word's low twelve bits are one
+/// replaces the box with its position and its three half extents, and a
+/// marker of `0xAE` raises the flag. The last such
+/// node in the scene order wins. The class word's low bits are the caller's
+/// [`EditorNode::class`] check here.
+pub fn scan_target(nodes: &[EditorNode], fallback: Vec3) -> TargetBox {
+    let mut target = TargetBox {
+        centre: fallback,
+        half_extents: Vec3::new(800.0, 0.0, 1000.0),
+        raised: false,
+    };
+    for node in nodes {
+        if node.class == 0xA9 && node.marker == 0xAE {
+            target.raised = true;
+        }
+        if node.class == 0xA9 {
+            target.centre = node.position;
+            target.half_extents = node.half_extents;
+        }
+    }
+    target
+}
+
+/// The target box the preset asks for, or `None` when its flags do not carry
+/// the editor scan's `0x400000`.
+pub fn preset_target(
+    fields: &PresetFields,
+    nodes: &[EditorNode],
+    fallback: Vec3,
+) -> Option<TargetBox> {
+    (fields.flags & 0x40_0000 != 0).then(|| scan_target(nodes, fallback))
 }
 
 #[cfg(test)]
@@ -1011,6 +1193,10 @@ mod tests {
             (1.0, -1.5, 1.5)
         );
         assert_eq!((preset.min_distance, preset.max_distance), (10.0, 10000.0));
+        // A zero first distance is held up to the minimum for the field,
+        // but the placement still derives its own distance.
+        assert_eq!(preset.distance, 10.0);
+        assert!(preset.derive_distance);
         assert!((preset.pitch_speed - 43.091_064).abs() < 1e-4);
         assert!((preset.zoom_speed - 0.111_864_41).abs() < 1e-6);
         // The stepped camera swaps in its own speeds.
@@ -1020,6 +1206,10 @@ mod tests {
         });
         assert_eq!(fixed.pitch_speed, 5.0);
         assert!((fixed.zoom_speed - 5.0 / 59.0).abs() < 1e-6);
+        // The stepped record installs no wheel handler (its 0x200 is not
+        // set) but takes the free press only with the plain-camera bit.
+        assert!(!fixed.handlers.wheel);
+        assert!(!fixed.handlers.free_press);
     }
 
     #[test]
@@ -1047,6 +1237,15 @@ mod tests {
         assert_eq!(preset.extent, 1.0);
         assert!((preset.rate - 59f32.powf(1.0 / 59.0)).abs() < 1e-5);
         assert_eq!(preset.distance, 2000.0);
+        assert!(!preset.derive_distance);
+        // A NaN first distance is not clamped (the unordered compare skips
+        // the minimum) and takes the derive branch.
+        let nan = apply_preset(PresetFields {
+            distance: f32::NAN,
+            ..PresetFields::default()
+        });
+        assert!(nan.distance.is_nan());
+        assert!(nan.derive_distance);
         assert_eq!((preset.min_distance, preset.max_distance), (1.0, 5000.0));
         assert_eq!(
             (preset.min_height, preset.max_height, preset.extra),
@@ -1227,5 +1426,122 @@ mod tests {
         let basis = normalize(Vec3::new(-1.0, 1.0, 0.0));
         assert_eq!(offset, basis * (3.0 / basis.length_squared().sqrt()));
         assert!(draws.next().is_none());
+    }
+
+    #[test]
+    fn the_jittered_table_rings_its_points_at_two_to_four_centimetres() {
+        let offsets = disc_offsets(&mut || 0.0);
+        assert_eq!(offsets.len(), DISC_POINTS);
+        // The first ring's only point is 2 cm up +Z with the table's unit
+        // height, and every point has that height.
+        assert!((offsets[0] - Vec3::new(0.0, 0.02, 1.0)).length() < 1e-6);
+        assert!(offsets.iter().all(|p| p.z == 1.0));
+        // The second ring's points are opposite: 2 cm up and 2 cm down.
+        assert!((offsets[1] - Vec3::new(0.0, 0.02, 1.0)).length() < 1e-6);
+        assert!((offsets[2] - Vec3::new(0.0, -0.02, 1.0)).length() < 1e-6);
+        // The draws scale the ring: a draw of 1 makes the radius 4 cm.
+        let offsets = disc_offsets(&mut || 1.0);
+        assert!((offsets[0] - Vec3::new(0.0, 0.04, 1.0)).length() < 1e-6);
+        // A draw of −1 is the zero radius (the original never draws it).
+        assert_eq!(disc_offsets(&mut || -1.0)[0], Vec3::new(0.0, 0.0, 1.0));
+    }
+
+    #[test]
+    fn both_stored_points_move_together() {
+        let points = (Vec3::new(1.0, 2.0, 3.0), Vec3::new(4.0, 5.0, 6.0));
+        let moved = translate_points(points, Vec3::new(0.5, -1.0, 2.0));
+        assert_eq!(moved.0, Vec3::new(1.5, 1.0, 5.0));
+        assert_eq!(moved.1, Vec3::new(4.5, 4.0, 8.0));
+    }
+
+    #[test]
+    fn a_preset_installs_the_handlers_its_flags_ask_for() {
+        // The plain free camera: no wheel, the free press (no stepped flag)
+        // and the free move.
+        let handlers = preset_handlers(0);
+        assert_eq!(
+            handlers,
+            Handlers {
+                wheel: false,
+                editor_press: false,
+                editor_move: false,
+                free_press: true,
+                free_move: true,
+            }
+        );
+        // The wheel and the stepped camera: the press needs the plain-camera
+        // bit, the move is suppressed by 0x1000000.
+        let handlers = preset_handlers(0x20_0000 | 0x200 | 0x100_0000);
+        assert!(handlers.wheel);
+        assert!(!handlers.free_press);
+        assert!(!handlers.free_move);
+        let handlers = preset_handlers(0x20_0000 | 1);
+        assert!(handlers.free_press);
+        // The editor takes the press and move; the free handlers stay off.
+        let handlers = preset_handlers(0x10_0000 | 0x20_0000);
+        assert!(handlers.editor_press && handlers.editor_move);
+        assert!(!handlers.free_press && !handlers.free_move);
+    }
+
+    #[test]
+    fn a_detach_swaps_the_handlers_once() {
+        let mut attachment = Attachment::default();
+        assert!(attachment.set_detached(true));
+        assert!(attachment.editing && !attachment.bound);
+        // Setting the state it already has changes nothing.
+        assert!(!attachment.set_detached(true));
+        assert!(attachment.editing && !attachment.bound);
+        assert!(attachment.set_detached(false));
+        assert!(!attachment.editing && attachment.bound);
+        assert!(!attachment.set_detached(false));
+    }
+
+    #[test]
+    fn the_editor_preset_scans_for_its_target_box() {
+        let view = Vec3::new(1.0, 2.0, 3.0);
+        let empty = scan_target(&[], view);
+        assert_eq!(empty.centre, view);
+        assert_eq!(empty.half_extents, Vec3::new(800.0, 0.0, 1000.0));
+        assert!(!empty.raised);
+        let nodes = [
+            EditorNode {
+                class: 0xA9,
+                marker: 0,
+                position: Vec3::new(10.0, 20.0, 30.0),
+                half_extents: Vec3::new(5.0, 6.0, 7.0),
+            },
+            EditorNode {
+                class: 0xA8,
+                marker: 0xAE,
+                position: Vec3::ZERO,
+                half_extents: Vec3::ZERO,
+            },
+            EditorNode {
+                class: 0xA9,
+                marker: 0xAE,
+                position: Vec3::new(40.0, 50.0, 60.0),
+                half_extents: Vec3::new(8.0, 9.0, 10.0),
+            },
+        ];
+        let target = scan_target(&nodes, view);
+        // The last 0xA9 wins with all three half extents; the 0xAE marks it
+        // raised.
+        assert_eq!(target.centre, Vec3::new(40.0, 50.0, 60.0));
+        assert_eq!(target.half_extents, Vec3::new(8.0, 9.0, 10.0));
+        assert!(target.raised);
+        // The marker alone does not raise the flag; it rides on the class.
+        let target = scan_target(&nodes[..2], view);
+        assert_eq!(target.centre, Vec3::new(10.0, 20.0, 30.0));
+        assert!(!target.raised);
+        // The preset only scans under its editor flag.
+        assert!(preset_target(&PresetFields::default(), &nodes, view).is_none());
+        let fields = PresetFields {
+            flags: 0x40_0000,
+            ..PresetFields::default()
+        };
+        let target = preset_target(&fields, &nodes, view).unwrap();
+        assert_eq!(target.centre, Vec3::new(40.0, 50.0, 60.0));
+        assert!(target.raised);
+        assert_eq!(preset_target(&fields, &[], view).unwrap().centre, view);
     }
 }
