@@ -190,6 +190,10 @@ pub struct FrameEvents {
     pub dropped: Vec<usize>,
     /// Nodes whose light links were refreshed.
     pub relinked: Vec<usize>,
+    /// A mesh part's own transform changed in a seen mesh.
+    pub parts_moved: bool,
+    /// Lights whose alias copies were refreshed after activation.
+    pub alias_updates: Vec<usize>,
     /// Nodes taken out of the scene by the removal queue.
     pub removed: Vec<usize>,
     /// Nodes whose release is deferred to their owner (the original's free
@@ -729,6 +733,9 @@ pub struct ScreenRect {
 pub struct SubMesh {
     pub flags: u32,
     pub value: u32,
+    /// The part's own transform changed since the last pass (`+0xd0`
+    /// callback's answer).
+    pub moved: bool,
 }
 
 /// One light alias of a sector: the light's copy in that sector, as the
@@ -797,6 +804,9 @@ pub struct SceneNode {
     pub character: Option<u64>,
     /// The node's object-database word; see [`OBJECT_SLOT_LIVE`].
     pub object_slot: u32,
+    /// How many owners still hold the node (`+0x1bc`): a queued removal
+    /// with a live reference is deferred to the free list.
+    pub refs: i32,
     /// The node was flushed from the removal queue.
     pub removed: bool,
     /// A light's aliases (copies of it registered in other sectors).
@@ -855,6 +865,7 @@ impl SceneNode {
             payload_flags: 0,
             character: None,
             object_slot: 0,
+            refs: 0,
             removed: false,
             aliases: Vec::new(),
             cell: CellSpill::MARKED,
@@ -1178,6 +1189,9 @@ impl Scene {
     /// owner (the scene's own sector when it has none) and ends the loop.
     /// Returns whether any sector was appended.
     pub fn add_batch(&mut self, roots: &[usize]) -> bool {
+        if !self.material_adds.is_empty() {
+            self.flush_materials();
+        }
         let mut added_sector = false;
         for &root in roots {
             if self.nodes[root].kind != NodeKind::Sector {
@@ -1239,6 +1253,11 @@ impl Scene {
                 n.flags |= PREPARED;
                 n.scene_flags |= IN_SCENE;
                 self.sectors[sector].changes |= LIGHT_ADDED;
+            }
+            NodeKind::Light => {
+                // A world light clears the shadow flags of its fixture's
+                // parts instead of joining the sector's list.
+                self.clear_world_light(node);
             }
             NodeKind::Mesh => {
                 self.sectors[sector].meshes.push(node);
@@ -1742,6 +1761,17 @@ impl Scene {
                 kept.push(entry);
                 continue;
             }
+            if self
+                .nodes
+                .get(entry.node)
+                .is_some_and(|node| node.refs >= 1)
+            {
+                // A node another owner still holds is marked deleting and
+                // put on the free list instead of being freed now.
+                self.mark_deleting(entry.node);
+                self.pending_free.push(entry.node);
+                continue;
+            }
             removed.push(entry.node);
             self.remove_subtree(entry.node, entry.sector);
         }
@@ -1923,6 +1953,9 @@ impl Scene {
             if self.nodes[light].flags & LIGHT_FLICKER != 0 {
                 events.flicker.push((light, false));
             }
+            events
+                .alias_updates
+                .extend(self.nodes[light].aliases.iter().copied());
             at += 1;
         }
         let mut at = 0;
@@ -2468,6 +2501,10 @@ impl Scene {
             }
             if inherited_hidden {
                 continue;
+            }
+            if self.nodes[id].mask & SEEN != 0 && self.nodes[id].parts.iter().any(|part| part.moved)
+            {
+                events.parts_moved = true;
             }
             let needs = self.nodes[id].flags & NEEDS_BUCKETS != 0;
             if self.nodes[id].light_state == 1 {
@@ -3886,11 +3923,21 @@ mod tests {
         let mut scene = Scene::new((0, 0));
         let fixture = scene.add_node(NodeKind::Mesh, None);
         scene.nodes[fixture].part_word = 9;
-        scene.nodes[fixture].parts = [SubMesh { flags: 1, value: 5 }; 2].to_vec();
+        scene.nodes[fixture].parts = [SubMesh {
+            flags: 1,
+            value: 5,
+            moved: false,
+        }; 2]
+            .to_vec();
         let light = scene.add_node(NodeKind::Light, Some(fixture));
         let shade = scene.add_node(NodeKind::Mesh, Some(light));
         scene.nodes[shade].part_word = 3;
-        scene.nodes[shade].parts = [SubMesh { flags: 0, value: 7 }; 3].to_vec();
+        scene.nodes[shade].parts = [SubMesh {
+            flags: 0,
+            value: 7,
+            moved: false,
+        }; 3]
+            .to_vec();
         scene.clear_world_light(light);
         assert_eq!(scene.nodes[fixture].part_word, 0);
         assert_eq!(scene.nodes[shade].part_word, 0);
@@ -4139,5 +4186,66 @@ mod tests {
         // keeps only the seen bit.
         assert_eq!(scene.nodes[node].mask, SEEN);
         assert!((scene.nodes[node].fade - 0.2).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_world_light_registration_clears_its_fixture() {
+        let (mut scene, sector, _) = node_scene();
+        let fixture = scene.add_node(NodeKind::Mesh, None);
+        scene.nodes[fixture].parts = vec![SubMesh {
+            flags: 1,
+            value: 3,
+            moved: false,
+        }];
+        let light = scene.add_node(NodeKind::Light, Some(fixture));
+        scene.nodes[light].flags |= WORLD_LIGHT;
+        scene.register(light, sector);
+        assert!(scene.sectors[sector].lights.is_empty());
+        assert_eq!(scene.nodes[light].sector, Some(sector));
+        assert_eq!(scene.nodes[fixture].parts[0].flags & 0x10, 0x10);
+        assert_eq!(scene.nodes[fixture].parts[0].value, 0);
+    }
+
+    #[test]
+    fn a_referenced_removal_goes_to_the_free_list() {
+        let mut scene = Scene::new((0, 0));
+        let node = scene.add_node(NodeKind::Mesh, None);
+        scene.register(node, 0);
+        scene.nodes[node].refs = 1;
+        assert!(scene.queue_removal(node, true));
+        assert!(scene.process_removals().is_empty());
+        assert_eq!(scene.pending_free, [node]);
+        assert_ne!(scene.nodes[node].scene_flags & DELETING, 0);
+        assert!(scene.removals.is_empty());
+        // The frame hands the free list out and clears it.
+        let report = scene.frame(0, Vec3::ZERO, &[], &no_project);
+        assert_eq!(report.freed, [node]);
+        assert!(scene.pending_free.is_empty());
+    }
+
+    #[test]
+    fn a_seen_mesh_with_a_moved_part_reports_it() {
+        let (mut scene, sector, node) = node_scene();
+        scene.nodes[node].parts = vec![SubMesh {
+            flags: 0,
+            value: 0,
+            moved: true,
+        }];
+        scene.sectors[sector].state = SectorState::Active;
+        scene.rebuild_bounds();
+        let report = scene.frame(16, Vec3::ZERO, &[box_view(10.0)], &no_project);
+        assert!(report.parts_moved);
+    }
+
+    #[test]
+    fn activation_refreshes_the_lights_alias_copies() {
+        let (mut scene, sector, _) = node_scene();
+        let light = scene.add_node(NodeKind::Light, None);
+        scene.register(light, sector);
+        let copy = scene.add_node(NodeKind::Light, None);
+        scene.nodes[light].aliases = vec![copy];
+        let mut events = FrameEvents::default();
+        scene.activate_lights(sector, &mut events);
+        assert_eq!(events.alias_updates, [copy]);
     }
 }
