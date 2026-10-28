@@ -233,16 +233,21 @@ pub fn build_grips(mut held: Query<(Entity, &mut HeldGrip)>, bodies: Query<&Ragd
             )
         };
         if let Some(mut links) = built {
-            // The world weld every held weapon gets: a stiff one at its
-            // origin, built disabled. A natural weapon also takes the soft
-            // weld 0.3 of the node box's top above the grip. A shield's
-            // builder has already added its own soft weld.
+            // The world welds a held weapon gets, both built disabled: a
+            // stiff one at its origin, and, when its holder may parry, the
+            // soft (parry) weld 0.3 of the node box's top above the grip,
+            // at the grip itself for a polearm. A shield's builder has
+            // already added its own soft weld.
             if !grip.shield {
-                let top = item
-                    .parts
-                    .first()
-                    .map_or(0.0, |p| p.pairing.mesh.centre.y + p.pairing.mesh.half.y);
-                let soft = Vec3::new(0.0, top * 0.3 * 100.0, 0.0);
+                let top = if grip.spec.kind() == grip::GripKind::Polearm {
+                    0.0
+                } else {
+                    item.parts.first().map_or(0.0, |p| {
+                        let box_top = p.pairing.mesh.centre.y + p.pairing.mesh.half.y;
+                        (f64::from(box_top * 100.0) * 0.3) as f32
+                    })
+                };
+                let soft = Vec3::new(0.0, top, 0.0);
                 if let Some(welds) = grip::world_links(item, bindings, soft, grip.soft_weld) {
                     for weld in welds {
                         if weld.strength < 1.0 {
@@ -296,11 +301,6 @@ pub fn release_freed_grips(
         let let_go = owner.is_none_or(|o| o.drive.is_none());
         if !let_go {
             continue;
-        }
-        // A dying shield's soft world weld stiffens before the item is
-        // freed, as the original's death routine sets its strength to 1.
-        if let Some(links) = grip.links.as_mut() {
-            links.weld_on_death();
         }
         grip.released = true;
         grip.links = None;

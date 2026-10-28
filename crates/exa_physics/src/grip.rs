@@ -216,9 +216,10 @@ pub struct HeldGrip {
     pub second_hand_factor: f32,
     /// The item is held flipped.
     pub flip: bool,
-    /// The soft world weld's gate: only a natural weapon (the original's
-    /// character flag) takes it; an ordinary held item gets the stiff
-    /// origin weld alone.
+    /// The soft (parry) world weld's gate: the original's auto-parry
+    /// flag, set for a holder that may parry (the global parry switch is
+    /// on, the heavy-claws state and race flag bit 0 are clear). Without
+    /// it the item gets the stiff origin weld alone.
     pub soft_weld: bool,
     /// The item is a shield: its three face pivots and its soft world weld
     /// replace a weapon's table links.
@@ -482,9 +483,8 @@ pub fn world_links(
         anchor: Some(anchor),
     };
     let mut links = Vec::with_capacity(2);
-    // The soft weld is only built under the original's gate (a natural
-    // weapon's flag word and the combat flag); the stiff origin weld is
-    // always built.
+    // The soft weld is only built under the original's auto-parry flag;
+    // the stiff origin weld is always built.
     if soft {
         links.push(world(on_item, soft_at, 0.05));
     }
@@ -772,12 +772,13 @@ impl GripLinks {
         true
     }
 
-    /// The death routine stiffens the shield's soft world weld: its
-    /// strength becomes 1 (the original sets the link at the shield's
-    /// special index to 1.0 when the holder dies). Returns whether a soft
-    /// weld was there.
+    /// The death routine stiffens each held item's soft (parry) world
+    /// weld: its strength becomes 1. The original tests the weld's index
+    /// as strictly positive, so a weld at index 0 is left alone. Returns
+    /// whether a weld was stiffened. Not called by the game yet: Exarust's
+    /// death frees the item's links ([`crate::grip_solve`]).
     pub fn weld_on_death(&mut self) -> bool {
-        let Some(soft) = self.world_soft.filter(|&i| i < self.links.len()) else {
+        let Some(soft) = self.world_soft.filter(|&i| i > 0 && i < self.links.len()) else {
             return false;
         };
         self.links[soft].strength = 1.0;
@@ -806,17 +807,25 @@ impl GripLinks {
         if !self.flip_active {
             return false;
         }
-        if attacking && (self.flip_progress - 0.5).abs() > 0.49 {
+        // The middle test subtracts and takes the magnitude in single
+        // precision and compares in double; a NaN lets the flip run.
+        if attacking && f64::from((self.flip_progress - 0.5).abs()) > 0.49 {
             return false;
         }
         let Some(flip) = self.flip.filter(|&i| i < self.links.len()) else {
             return false;
         };
+        // `1 − (0.5 − f)²·4` in single precision, then scaled and offset
+        // in double.
         let offset = 0.5 - self.flip_progress;
-        let step = (1.0 - offset * offset * 4.0) * 0.05 + 0.002;
+        let ease = 1.0 - offset * offset * 4.0;
+        let step = (f64::from(ease) * 0.05 + 0.002) as f32;
+        // The end tests are double compares on the single-precision
+        // progress; a NaN keeps the flip running.
         let running = if !self.flipped {
             self.flip_progress += step;
-            if self.flip_progress <= 0.99 {
+            if f64::from(self.flip_progress).partial_cmp(&0.99) != Some(std::cmp::Ordering::Greater)
+            {
                 true
             } else {
                 self.flip_progress = 1.0;
@@ -825,7 +834,7 @@ impl GripLinks {
             }
         } else {
             self.flip_progress -= step;
-            if self.flip_progress >= 0.01 {
+            if f64::from(self.flip_progress).partial_cmp(&0.01) != Some(std::cmp::Ordering::Less) {
                 true
             } else {
                 self.flip_progress = 0.0;
@@ -1183,6 +1192,16 @@ mod tests {
         // Near the middle an attack lets the flip run.
         links2.flip_progress = 0.5;
         assert!(links2.flip_step(&item, true));
+        // The middle test is a double compare: 0.99 in single precision is
+        // 0.490000009… from the middle, past the double 0.49, so an attack
+        // holds it (a single-precision compare would let it run).
+        links2.flip_progress = 0.99;
+        assert!(!links2.flip_step(&item, true));
+        // From 0.25 the step is (1 − 0.25²·4)·0.05 + 0.002 = 0.0395, worked
+        // in double and stored as a single.
+        links2.flip_progress = 0.25;
+        assert!(links2.flip_step(&item, false));
+        assert_eq!(links2.flip_progress, 0.25 + 0.0395_f64 as f32);
     }
 
     #[test]
