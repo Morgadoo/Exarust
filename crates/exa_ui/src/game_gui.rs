@@ -62,12 +62,11 @@ impl GameScreen {
         }
     }
 
-    /// The window's size at unit 4, where the evidence gives it (the loot
-    /// window's constructor is not in it).
+    /// The window's size at unit 4.
     pub fn size(self) -> Option<(i32, i32)> {
         match self {
             GameScreen::Inventory => Some((INVENTORY_WIDTH, inventory_height(false, false))),
-            GameScreen::Loot => None,
+            GameScreen::Loot => Some(LOOT_SIZE),
             GameScreen::Journal => Some(JOURNAL_SIZE),
             GameScreen::TechniqueSelector => Some((FORM_WIDTH, FORM_HEIGHT)),
         }
@@ -187,17 +186,31 @@ pub fn loot_allowed(flags: u32) -> bool {
     flags & 0xff00 != 0x300
 }
 
-/// The loot window's show rule: an open one for the character is
-/// activated, else a new one opens (no toggle).
-pub fn loot_screen(flags: u32, open: bool) -> ScreenAction {
+/// The loot window's show rule: refused for a character whose flag word's
+/// second byte is 3; an existing window for that same character is
+/// activated, else a new one opens (no toggle). The original matches the
+/// window's character pointer as well as its tag, so a body opened while
+/// another body's window is up gets a window of its own.
+pub fn loot_screen(flags: u32, open_for_character: bool) -> ScreenAction {
     if !loot_allowed(flags) {
         ScreenAction::Refused
-    } else if open {
+    } else if open_for_character {
         ScreenAction::Focused
     } else {
         ScreenAction::Opened
     }
 }
+
+/// The loot window's title, size and constructor place: "Body", 244 × 440
+/// at x 400 with an unset y (the show centres it like any other unplaced
+/// window).
+pub const LOOT_TITLE: &str = "Body";
+pub const LOOT_SIZE: (i32, i32) = (244, 440);
+pub const LOOT_PLACE: (i32, i32) = (400, crate::form::UNPLACED);
+/// The loot window's two item panels: the pack's height and the four units
+/// between the equipment panel and the pack.
+pub const LOOT_PACK_HEIGHT: i32 = 180;
+pub const LOOT_PANEL_GAP: i32 = 4;
 
 /// The journal's show inputs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -282,6 +295,48 @@ pub fn preview_bars_toggle(flag: &mut bool, on: bool) -> Option<bool> {
 pub fn preview_shares(first: u16, second: u16) -> (f32, f32) {
     const SCALE: f32 = 1.525_902_2e-5;
     (f32::from(first) * SCALE, f32::from(second) * SCALE)
+}
+
+/// The scene model value the inventory's bind writes on the character's
+/// preview, and the one its opening writes.
+pub const PREVIEW_MODEL_BOUND: f32 = 0.15;
+pub const PREVIEW_MODEL_OPEN: f32 = 0.05;
+/// The word the opening writes on the character's preview node.
+pub const PREVIEW_SCENE_WORD: u32 = 0x1000;
+/// The draw word every mesh node of the preview is given.
+pub const PREVIEW_DRAW_WORD: u32 = 0x42;
+/// The words copied from a node's appearance block to its display block
+/// (48 bytes).
+pub const PREVIEW_APPEARANCE_WORDS: usize = 6;
+/// The delay the bind's build callback is registered with, in ticks.
+pub const PREVIEW_BUILD_DELAY: u32 = 100;
+
+/// The preview settings the inventory writes when it binds a character or
+/// opens its window.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PreviewPlan {
+    pub model: f32,
+    pub scene_word: u32,
+    pub draw_word: u32,
+    pub appearance_words: usize,
+    pub build_delay: u32,
+}
+
+/// The preview's settings: binding a character sets [`PREVIEW_MODEL_BOUND`],
+/// opening the window [`PREVIEW_MODEL_OPEN`]; both give every mesh node
+/// [`PREVIEW_DRAW_WORD`] and copy the appearance block.
+pub fn preview_plan(opening: bool) -> PreviewPlan {
+    PreviewPlan {
+        model: if opening {
+            PREVIEW_MODEL_OPEN
+        } else {
+            PREVIEW_MODEL_BOUND
+        },
+        scene_word: if opening { PREVIEW_SCENE_WORD } else { 0 },
+        draw_word: PREVIEW_DRAW_WORD,
+        appearance_words: PREVIEW_APPEARANCE_WORDS,
+        build_delay: PREVIEW_BUILD_DELAY,
+    }
 }
 
 /// The player controls' GUI flag the journal passes: 0 when it opens, 1
@@ -626,6 +681,18 @@ pub fn status_glow(place: (i32, i32), unit: i32) -> [i32; 4] {
     ]
 }
 
+/// The glow's radius and its share of the pulse, and the status icon's
+/// tint.
+pub const STATUS_GLOW_RADIUS: f32 = 8.0;
+pub const STATUS_GLOW_SHARE: f32 = 0.6;
+pub const STATUS_ICON_TINT: [u8; 3] = [140, 160, 255];
+
+/// The clock a status marker is hidden from: the caller's delay added to
+/// the clock (32-bit, wrapping).
+pub fn status_hide_until(now: u32, delay: u32) -> u32 {
+    delay.wrapping_add(now)
+}
+
 /// Whether the status marker draws: the player has status entries and the
 /// scan meets none with 0x2000 (the count of entries without 0x1000 is
 /// not looked at beyond being non-negative).
@@ -929,7 +996,7 @@ pub fn selector_rows(input: SelectorInput) -> ([u32; 9], bool) {
         rows[..8].fill(0x10);
     } else {
         for &t in input.skill.techniques.iter().take(5) {
-            if t != 0 && usize::from(t) <= 9 {
+            if t != 0 && usize::from(t) <= 8 {
                 rows[usize::from(t) - 1] = 0x10;
             }
         }

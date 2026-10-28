@@ -9,7 +9,7 @@ fn the_game_screens() {
     assert_eq!(GameScreen::Inventory.size(), Some((244, 644)));
     assert_eq!(GameScreen::Journal.size(), Some((244, 518)));
     assert_eq!(GameScreen::TechniqueSelector.size(), Some((332, 112)));
-    assert_eq!(GameScreen::Loot.size(), None);
+    assert_eq!(GameScreen::Loot.size(), Some((244, 440)));
     assert_eq!(
         (inventory_height(true, false), inventory_height(true, true)),
         (628, 590)
@@ -472,4 +472,84 @@ fn the_journal_keeps_its_text_and_place_when_it_closes() {
     journal.close((120, 40), "a note");
     assert_eq!(journal.place, Some((120, 40)));
     assert_eq!(journal.entries[0].text, "a note");
+}
+
+#[test]
+fn the_loot_window_is_a_body_of_its_own() {
+    // 244 × 440 at x 400; its y is unset and the show centres it at 36.
+    assert_eq!(LOOT_SIZE, (244, 440));
+    assert_eq!(
+        (LOOT_TITLE, LOOT_PLACE),
+        ("Body", (400, crate::form::UNPLACED))
+    );
+    let client = crate::form::ClientRect {
+        left: 0,
+        top: 0,
+        right: 1600,
+        bottom: 900,
+    };
+    assert_eq!(
+        crate::form::place_unset(
+            LOOT_PLACE.0,
+            LOOT_PLACE.1,
+            LOOT_SIZE.0,
+            LOOT_SIZE.1,
+            0x3000,
+            client
+        ),
+        (400, 36)
+    );
+    // An existing window on the same body is activated; another body opens
+    // a second window; a body whose flags' second byte is 3 is refused.
+    assert_eq!(loot_screen(0, false), ScreenAction::Opened);
+    assert_eq!(loot_screen(0, true), ScreenAction::Focused);
+    assert_eq!(loot_screen(0x300, true), ScreenAction::Refused);
+    assert_eq!((LOOT_PACK_HEIGHT, LOOT_PANEL_GAP), (180, 4));
+}
+
+#[test]
+fn the_preview_model_value_and_draw_words() {
+    let bound = preview_plan(false);
+    assert_eq!(
+        bound,
+        PreviewPlan {
+            model: 0.15,
+            scene_word: 0,
+            draw_word: 0x42,
+            appearance_words: 6,
+            build_delay: 100,
+        }
+    );
+    assert_eq!(preview_plan(true).model, 0.05);
+    assert_eq!(preview_plan(true).scene_word, 0x1000);
+}
+
+#[test]
+fn the_status_hide_clock_and_draw_values() {
+    assert_eq!(status_hide_until(1000, 500), 1500);
+    assert_eq!(status_hide_until(0xffff_fff0, 0x20), 0x10);
+    assert_eq!(STATUS_GLOW_RADIUS, 8.0);
+    assert_eq!(STATUS_GLOW_SHARE, 0.6);
+    assert_eq!(STATUS_ICON_TINT, [140, 160, 255]);
+    // The pulse at the glow: a start 1500 ms back is halfway.
+    let (pulse, glow) = status_pulse(1500, 0);
+    assert!((pulse - 0.5).abs() < 1e-6);
+    assert!((glow - 0.3).abs() < 1e-6);
+}
+
+#[test]
+fn a_selector_technique_byte_nine_writes_no_row() {
+    let requirements = [[0; 2]; 8];
+    let (rows, _) = selector_rows(SelectorInput {
+        locked: false,
+        skill: Skill {
+            points: 5000,
+            techniques: [9, 8, 0, 0, 0, 0],
+        },
+        requirements,
+        count: 0,
+    });
+    // Nine is past the eight rows; eight sets the last one.
+    assert_eq!(rows[7], 0x10);
+    assert_eq!(&rows[..7], &[0; 7]);
 }

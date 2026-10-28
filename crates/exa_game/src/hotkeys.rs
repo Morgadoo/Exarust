@@ -315,15 +315,15 @@ fn press_hotkeys(
                     }
                 }
                 Hotkey::Inventory | Hotkey::Journal => {
-                    screens.write(ScreenRequest {
-                        screen: if action == Hotkey::Inventory {
+                    screens.write(ScreenRequest::screen(
+                        if action == Hotkey::Inventory {
                             GameScreen::Inventory
                         } else {
                             GameScreen::Journal
                         },
-                        player_ready: !word.dying(),
-                        player_alive: !word.is_dead(),
-                    });
+                        !word.dying(),
+                        !word.is_dead(),
+                    ));
                 }
                 Hotkey::PowerBar => {
                     bars.write(BarCommand {
@@ -578,11 +578,7 @@ mod tests {
         };
         assert_eq!(
             run(Condition::NORMAL, KeyCode::KeyI),
-            vec![ScreenRequest {
-                screen: GameScreen::Inventory,
-                player_ready: true,
-                player_alive: true,
-            }]
+            vec![ScreenRequest::screen(GameScreen::Inventory, true, true)]
         );
         assert_eq!(
             run(Condition::NORMAL, KeyCode::KeyJ)[0].screen,
