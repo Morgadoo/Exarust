@@ -1494,6 +1494,12 @@ impl SceneEnvironment {
         change
     }
 
+    /// Whether the frame updates the rain effect: the original moves and
+    /// refreshes its rain effect only while the rain amount is above 0.01.
+    pub fn rain_effect_live(&self) -> bool {
+        self.weather.rain > 0.01
+    }
+
     /// Stops the rain and any lightning at once.
     pub fn clear_weather(&mut self) {
         self.weather.target = 0.0;
@@ -2313,6 +2319,16 @@ mod tests {
         let mut env = SceneEnvironment::new(5);
         env.strike_lightning([0.0, 0.0, 6.0], 0, &mut rng, &mut system);
         assert_eq!(env.weather.thunder_at, 40);
+    }
+
+    #[test]
+    fn the_rain_effect_runs_above_a_hundredth() {
+        let mut env = SceneEnvironment::new(5);
+        assert!(!env.rain_effect_live());
+        env.weather.rain = 0.01;
+        assert!(!env.rain_effect_live());
+        env.weather.rain = 0.010_001;
+        assert!(env.rain_effect_live());
     }
 
     #[test]

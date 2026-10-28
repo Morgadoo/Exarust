@@ -255,6 +255,14 @@ impl Rooms {
         self.room_of_cell(x, y)
     }
 
+    /// The cell coordinates a character's room lookup writes onto it (the
+    /// original stores one byte each): the floored cell plus half the grid,
+    /// truncated to the byte and **not** clamped, unlike the node sort.
+    pub fn cell_bytes(&self, p: Vec2) -> (u8, u8) {
+        let (x, y) = self.cell_of(p);
+        (x as u8, y as u8)
+    }
+
     /// The grid cell a node stands in (metres, on X/Z), as the original
     /// sorts a node into its room: [`Self::cell_of`] clamped to the grid.
     /// The original's integer conversion here sets the rounding mode
@@ -1171,6 +1179,12 @@ mod tests {
             rooms.cell_centre(rooms.cell_index(3, 1).unwrap()),
             Vec2::new(3.0, 3.0)
         );
+        // The character's stored cell bytes are the same cell, truncated to
+        // a byte and not clamped: a point past the right edge overflows the
+        // grid width.
+        assert_eq!(rooms.cell_bytes(Vec2::new(0.0, 0.0)), (3, 1));
+        let (far, _) = rooms.cell_bytes(Vec2::new(100.0, 0.0));
+        assert_eq!(far, 19);
     }
 
     /// The anchor `d` metres from the door point of room 0's door cell
