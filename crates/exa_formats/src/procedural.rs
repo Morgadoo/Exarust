@@ -454,6 +454,21 @@ pub const EMBLEM_IDS: [u8; 40] = [
     33, 34, 35, 36, 39, 43, 44, 45, 46, 47, 48, 49, 50, 51,
 ];
 
+/// Stem of the emblem background pictures (`Emblems.rpk`); a factory
+/// pattern layer's picture is one of them.
+pub const EMBLEM_BACKGROUND_STEM: &str = "emblembkg";
+/// Stem of the emblem design pictures.
+pub const EMBLEM_DESIGN_STEM: &str = "emblemdes";
+
+/// An emblem picture's name: the stem, a `0`, then the index's tens and
+/// ones as digit characters (`emblembkg012` for 12). Indices of 100 or more
+/// give characters past `9`, as the original's byte arithmetic does.
+pub fn emblem_picture(stem: &str, index: u32) -> String {
+    let tens = b'0'.wrapping_add((index / 10) as u8);
+    let ones = b'0'.wrapping_add((index % 10) as u8);
+    format!("{stem}0{}{}", tens as char, ones as char)
+}
+
 /// The materials a random-set layer can take. Sets 1 and 5 are the same
 /// list, as are several cloth sets.
 pub const RANDOM_SETS: [&[u8]; 16] = [
@@ -559,6 +574,13 @@ mod tests {
         assert_eq!(random_set(15), &[23]);
         assert!(random_set(0).is_empty());
         assert!(random_set(16).is_empty());
+    }
+
+    #[test]
+    fn emblem_pictures_are_named_by_two_digits() {
+        assert_eq!(emblem_picture(EMBLEM_BACKGROUND_STEM, 12), "emblembkg012");
+        assert_eq!(emblem_picture(EMBLEM_BACKGROUND_STEM, 1), "emblembkg001");
+        assert_eq!(emblem_picture(EMBLEM_DESIGN_STEM, 81), "emblemdes081");
     }
 
     #[test]

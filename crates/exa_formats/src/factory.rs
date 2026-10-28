@@ -831,6 +831,80 @@ fn area_material(area: &Area, q: f32, metal: u8, rng: &mut Lcg) -> AreaMaterial 
     }
 }
 
+/// A variant flag: the variant moves and scales the emblem pattern.
+pub const VARIANT_PATTERN_PLACEMENT: u16 = 0x1000;
+
+impl Deform {
+    /// A texture-only stretch: its whole header word is 6 (kind 6, no axis
+    /// and no flags), as the paint job compares it.
+    pub fn is_texture_stretch(&self) -> bool {
+        self.kind == 6 && self.axis == 0 && self.flags == 0
+    }
+}
+
+impl Part {
+    /// The paint region's vertical texture scale (`UVScale`): 1, or for the
+    /// last of the part's deforms that is a texture-only stretch, the
+    /// deform factor of its negated value. Only the blade programs read
+    /// it: they sample the region's mask, shade and normal map at
+    /// `(u, v·scale)`.
+    pub fn uv_scale(&self, values: [f32; 3]) -> f32 {
+        let mut scale = 1.0;
+        for (d, value) in self.deforms.iter().zip(values) {
+            if d.is_texture_stretch() {
+                scale = deform_factor(-value, d.amount);
+            }
+        }
+        scale
+    }
+}
+
+impl Factory {
+    /// Where the emblem pattern falls on a paint region (`PtrnPos`: scale
+    /// x, y, then offset x, y in region coordinates). It starts at
+    /// (atlas width / height, 1, 0, 0), and every assembled part whose
+    /// chosen variant has [`VARIANT_PATTERN_PLACEMENT`] shrinks the scale
+    /// by `f = 1 − scale_byte/254` (`/127` for a negative byte), re-centres
+    /// the offset by `(f − 1)/2` and moves it by `f · offset_byte/127`.
+    ///
+    /// The assembler does this in part order for parts that are not
+    /// texture-only overlays, have a selection and whose component mesh
+    /// loaded (`loaded(part)`). Precision is the original's: the ratio and
+    /// the factor in double, the scale and the re-centring in float, the
+    /// offset move in double.
+    pub fn pattern_position(&self, selection: &[u8], loaded: impl Fn(usize) -> bool) -> [f32; 4] {
+        let ratio = (f64::from(self.atlas[0]) / f64::from(self.atlas[1])) as f32;
+        let mut p = [ratio, 1.0, 0.0, 0.0];
+        for (i, part) in self.parts.iter().enumerate() {
+            let sel = selection.get(i).copied().unwrap_or(0) as usize;
+            if part.flags & 1 != 0 || sel == 0 || !loaded(i) {
+                continue;
+            }
+            let Some(v) = part.variants.get(sel - 1) else {
+                continue;
+            };
+            if v.flags & VARIANT_PATTERN_PLACEMENT == 0 {
+                continue;
+            }
+            let step = if v.texture_scale < 0 {
+                1.0 / 127.0
+            } else {
+                1.0 / 254.0
+            };
+            let f = (1.0 - f64::from(v.texture_scale) * step) as f32;
+            p[0] *= f;
+            p[1] *= f;
+            p[2] -= (f - 1.0) * 0.5;
+            p[3] -= (f - 1.0) * 0.5;
+            for (k, &o) in v.texture_offset.iter().enumerate() {
+                let moved = f64::from(f) * (f64::from(o) * (1.0 / 127.0)) + f64::from(p[2 + k]);
+                p[2 + k] = moved as f32;
+            }
+        }
+        p
+    }
+}
+
 /// Scale factor of a deform value: grows above 0, shrinks reciprocally below.
 pub fn deform_factor(value: f32, amount: f32) -> f32 {
     let x = value * amount;
@@ -1455,6 +1529,60 @@ mod tests {
         let f = deform_factor(0.5, 1.0);
         assert!((p[1][1] - ((2.0 - 1.0) * f + 1.0)).abs() < 1e-5);
         assert!((p[2][1] - ((-2.0 + 1.0) * f - 1.0)).abs() < 1e-5);
+    }
+
+    #[test]
+    fn the_uv_scale_takes_the_last_texture_stretch() {
+        let mut part = tiny_factory().parts.remove(0);
+        assert_eq!(part.uv_scale([0.5, 0.5, 0.5]), 1.0);
+        part.deforms[1] = deform(6, 0, 0, 0.5, 0.0, 0.0);
+        // The negated value: −0.5·0.5 = −0.25 → 1/1.25.
+        assert_eq!(part.uv_scale([0.0, 0.5, 0.0]), 0.8);
+        assert_eq!(part.uv_scale([0.0, -0.5, 0.0]), 1.25);
+        // An axis or flag in the header word is not a texture stretch.
+        part.deforms[1] = deform(6, 1, 0, 0.5, 0.0, 0.0);
+        assert_eq!(part.uv_scale([0.0, 0.5, 0.0]), 1.0);
+        part.deforms[1] = deform(6, 0, 0x10000, 0.5, 0.0, 0.0);
+        assert_eq!(part.uv_scale([0.0, 0.5, 0.0]), 1.0);
+    }
+
+    #[test]
+    fn the_pattern_position_follows_the_placing_variants() {
+        let mut f = tiny_factory();
+        f.atlas = [512, 256];
+        // No placing variant: the atlas ratio and no offset.
+        assert_eq!(f.pattern_position(&[1], |_| true), [2.0, 1.0, 0.0, 0.0]);
+        let v = &mut f.parts[0].variants[0];
+        v.flags |= VARIANT_PATTERN_PLACEMENT;
+        v.texture_scale = 127;
+        v.texture_offset = [127, -127];
+        // f = 1 − 127/254 = 0.5; offsets 0.25 then ±0.5.
+        assert_eq!(f.pattern_position(&[1], |_| true), [1.0, 0.5, 0.75, -0.25]);
+        // A negative byte steps in 127ths: f = 1 + 127/127 = 2.
+        f.parts[0].variants[0].texture_scale = -127;
+        f.parts[0].variants[0].texture_offset = [0, 0];
+        assert_eq!(f.pattern_position(&[1], |_| true), [4.0, 2.0, -0.5, -0.5]);
+        // Unselected, unloaded or overlay parts do not place it.
+        assert_eq!(f.pattern_position(&[0], |_| true), [2.0, 1.0, 0.0, 0.0]);
+        assert_eq!(f.pattern_position(&[1], |_| false), [2.0, 1.0, 0.0, 0.0]);
+        f.parts[0].flags |= 1;
+        assert_eq!(f.pattern_position(&[1], |_| true), [2.0, 1.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn the_pattern_offset_moves_in_double() {
+        let mut f = tiny_factory();
+        let v = &mut f.parts[0].variants[0];
+        v.flags |= VARIANT_PATTERN_PLACEMENT;
+        v.texture_scale = 3;
+        v.texture_offset = [5, 0];
+        let p = f.pattern_position(&[1], |_| true);
+        let scale = (1.0 - 3.0f64 / 254.0) as f32;
+        let centred = 0.0f32 - (scale - 1.0) * 0.5;
+        let moved = (f64::from(scale) * (5.0f64 / 127.0) + f64::from(centred)) as f32;
+        assert_eq!(p[0], scale);
+        assert_eq!(p[2], moved);
+        assert_eq!(p[3], centred);
     }
 
     fn tiny_factory() -> Factory {

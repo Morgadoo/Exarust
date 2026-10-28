@@ -396,7 +396,10 @@ creases on that painted normal map. Library textures tile by the original's
 (`model::FactoryPaint`) paints each mask with its area's material (0 as
 SteelGen), lifted colour bytes and finish level, the factory's condition
 (damage 2/(2 − d) − 1) and the region's atlas tiling with four offsets from
-seed B; apparel takes its palette colour, the material's wear weight and the
+seed B. An area's emblem adds a colour-only layer over the same mask
+through its `emblembkg` picture placed by the factory's `PtrnPos`
+(`paint::Pattern`), and blade layers sample their mask, shade and region
+normal stretched by the part's `UVScale` (`Tiling::uv_scale`); apparel takes its palette colour, the material's wear weight and the
 loader's condition.
 
 Factory weapons (`weapon`): a `.fty` recipe and an item's seeds choose,

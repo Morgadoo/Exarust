@@ -131,6 +131,8 @@ impl ModelLoader<'_> {
         }
 
         let placed = factory.place(&built.generated, &boxes);
+        // The emblem placement counts the parts whose component loaded.
+        let pattern_position = factory.pattern_position(selection, |i| !meshes[i].is_empty());
         let mut nodes = vec![ModelNode {
             name: name.to_string(),
             parent: None,
@@ -192,6 +194,7 @@ impl ModelLoader<'_> {
                         material: m.map_or(0, |m| m.material),
                         finish: m.map_or(0, |m| m.finish),
                         colour: m.map_or(0, |m| m.colour),
+                        emblem: m.and_then(|m| m.emblem),
                     }
                 })
                 .collect();
@@ -207,6 +210,15 @@ impl ModelLoader<'_> {
                 layers,
                 region_texels: atlas * Vec2::new(part.atlas[2], part.atlas[3]),
                 seed_b: built.seeds[1],
+                uv_scale: part.uv_scale(
+                    built
+                        .generated
+                        .deform
+                        .get(placed.part)
+                        .copied()
+                        .unwrap_or([0.0; 3]),
+                ),
+                pattern_position,
             };
             let material = self.painted_factory(&paint);
             let mut parts = Vec::new();
@@ -338,6 +350,33 @@ mod tests {
         assert_eq!(extent(0.0, 100.0), 0);
         assert_eq!(extent(50.0, 100.0), 100);
         assert_eq!(extent(75.0, 100.0), 150);
+    }
+
+    /// Every emblem a factory pattern area can roll names a shipped
+    /// background picture that decodes (skipped without the game).
+    #[test]
+    fn every_factory_emblem_picture_decodes() {
+        let Some(dir) = crate::locate_install(None) else {
+            return;
+        };
+        let game = crate::GameData::open(dir).unwrap();
+        let mut cache = ModelCache::default();
+        let mut meshes = Assets::<Mesh>::default();
+        let mut materials = Assets::<ExaMaterial>::default();
+        let mut images = Assets::<Image>::default();
+        let mut loader = ModelLoader {
+            game: &game,
+            cache: &mut cache,
+            meshes: &mut meshes,
+            materials: &mut materials,
+            images: &mut images,
+            bc_supported: false,
+        };
+        use exa_formats::procedural::{EMBLEM_BACKGROUND_STEM, EMBLEM_IDS, emblem_picture};
+        for id in EMBLEM_IDS {
+            let name = emblem_picture(EMBLEM_BACKGROUND_STEM, u32::from(id));
+            assert!(loader.texels(&name).is_some(), "{name}");
+        }
     }
 
     /// Assembles the first few shipped factories (skipped without the game):

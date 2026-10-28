@@ -18,14 +18,17 @@ use crate::mesh_edit::material_split_flags;
 use crate::mesh_smooth::smooth_mesh;
 use crate::morph::{BuiltMorph, JobMorph, MorphCache, model_key};
 use crate::paint::{
-    Condition, Encoding, PaintLayer, Painted, Texels, Tiling, apparel_tint, factory_colour,
-    factory_wear, layer_material, library, normal_library, paint_with, specular_library,
+    Condition, Encoding, PaintLayer, Painted, Pattern, Texels, Tiling, apparel_tint,
+    factory_colour, factory_wear, layer_material, library, normal_library, paint_with,
+    specular_library,
 };
 use crate::skin::{Joint, Seams, VertexSkin, auto_skin};
 use crate::texture::{self, ColorSpace, has_alpha, material_word, rfi_to_texture};
 use crate::texture_cache::{TextureCache, TextureKey};
+use exa_formats::factory::EmblemLayer;
 use exa_formats::material::flags as material_flags;
 use exa_formats::objdb::Appearance;
+use exa_formats::procedural::{EMBLEM_BACKGROUND_STEM, emblem_picture};
 use exa_render::material::{
     BloodProgram, ExaMaterial, ExaParams, SPATTER, flags, linear, linear_rgb,
 };
@@ -1074,15 +1077,36 @@ impl ModelLoader<'_> {
                 layer.material
             };
             let (lib, spec, normals) = self.material_texels(material);
+            let wear = factory_wear(layer.finish);
+            // An emblem layer repeats the area's mask, material and wear
+            // with its own colour, through the emblem picture. [guess] A
+            // picture that does not load drops the layer (the original's
+            // fallback for a missing picture was not traced).
+            let emblem = layer.emblem.and_then(|e| {
+                let name = emblem_picture(EMBLEM_BACKGROUND_STEM, u32::from(e.emblem));
+                let picture = self.texels(&name)?;
+                Some(OwnedLayer {
+                    mask: mask.clone(),
+                    material,
+                    tint: factory_colour(e.colour),
+                    wear,
+                    library: lib.clone(),
+                    specular: spec.clone(),
+                    normals: normals.clone(),
+                    pattern: Some((picture, paint.pattern_position)),
+                })
+            });
             layers.push(OwnedLayer {
                 mask,
                 material,
                 tint: factory_colour(layer.colour),
-                wear: factory_wear(layer.finish),
+                wear,
                 library: lib,
                 specular: spec,
                 normals,
+                pattern: None,
             });
+            layers.extend(emblem);
         }
         let item_normal = self.texels(&format!("{stem}n"));
         let painted_size = Vec2::new(shade.width as f32, shade.height as f32);
@@ -1092,7 +1116,8 @@ impl ModelLoader<'_> {
             item_normal,
             layers,
             condition: Condition::factory(&paint.condition),
-            tiling: Tiling::factory(paint.region_texels, painted_size, paint.seed_b),
+            tiling: Tiling::factory(paint.region_texels, painted_size, paint.seed_b)
+                .with_uv_scale(paint.uv_scale),
         };
         let painted = job.paint();
         self.painted_material(painted)
@@ -1211,6 +1236,7 @@ impl ModelLoader<'_> {
                 library: lib,
                 specular: spec,
                 normals,
+                pattern: None,
             });
         }
         let item_normal = self.texels(&format!("{stem}n"));
@@ -1828,6 +1854,8 @@ struct OwnedLayer {
     library: TexelList,
     specular: TexelList,
     normals: TexelList,
+    /// An emblem picture and its `PtrnPos`, for a factory pattern layer.
+    pattern: Option<(Arc<Texels>, [f32; 4])>,
 }
 
 /// Which cache a painted set belongs to.
@@ -1857,6 +1885,9 @@ pub struct FactoryLayer {
     pub finish: u8,
     /// Palette index.
     pub colour: u8,
+    /// The area's emblem layer, painted next over the same mask with its
+    /// own colour through the emblem picture.
+    pub emblem: Option<EmblemLayer>,
 }
 
 /// What a factory region paints with.
@@ -1874,6 +1905,10 @@ pub struct FactoryPaint {
     pub region_texels: Vec2,
     /// The item's seed B, which places the library tiles.
     pub seed_b: u32,
+    /// The region's vertical texture scale (`Part::uv_scale`).
+    pub uv_scale: f32,
+    /// Where emblem pictures fall on the region (`Factory::pattern_position`).
+    pub pattern_position: [f32; 4],
 }
 
 impl FactoryPaint {
@@ -1881,7 +1916,7 @@ impl FactoryPaint {
     pub fn key(&self) -> String {
         let c = &self.condition;
         format!(
-            "{}|{},{},{}|{:?}|{},{}|{}",
+            "{}|{},{},{}|{:?}|{},{}|{}|{}|{:?}",
             self.stem.to_ascii_lowercase(),
             c.quality,
             c.damage,
@@ -1889,7 +1924,9 @@ impl FactoryPaint {
             self.layers,
             self.region_texels.x,
             self.region_texels.y,
-            self.seed_b
+            self.seed_b,
+            self.uv_scale,
+            self.pattern_position
         )
     }
 }
@@ -2106,6 +2143,10 @@ impl PaintJob {
                 library: l.library.iter().map(|t| t.as_deref()).collect(),
                 specular: l.specular.iter().map(|t| t.as_deref()).collect(),
                 normals: l.normals.iter().map(|t| t.as_deref()).collect(),
+                pattern: l.pattern.as_ref().map(|(texels, position)| Pattern {
+                    texels,
+                    position: *position,
+                }),
             })
             .collect();
         let shade = &self.shade;
@@ -2856,6 +2897,7 @@ mod tests {
                 library: vec![Some(&grey); 4],
                 specular: vec![],
                 normals: vec![],
+                pattern: None,
             };
             let painted = crate::paint::paint(&shade, None, &[layer], &appearance);
             let image = painted_image(4, 4, painted.colour, Painted::COLOUR);
