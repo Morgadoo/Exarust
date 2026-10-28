@@ -13,11 +13,11 @@ A roam SHALL wait, walk to a wander point, wait 500 ms plus a draw of 2000 ms, w
 - **THEN** the roam's first pause ends at 2500 ms and its home pause ends at 4125 ms, the patrol's pause ends at 510 ms and its next plan is another wander, and the noise leaves the roam waiting
 
 ### Requirement: Wander point
-A walker with no room SHALL not pick. A pick SHALL be one exit, drawn by the roll, and a second draw only when that exit leads back to the room the walker came from. The goal SHALL be a quarter of the way from the exit toward the room point, at height 0, with a stop of 20 cm and a radius of 150 cm, ignoring height. A second draw of the same exit SHALL still be kept.
+A walker with no room or no exits SHALL not pick nor step the roll. A pick SHALL draw one exit, and draw once more (keeping that draw) when it leads to the avoided room. The goal SHALL be a quarter of the way from the door's near cell centre to the centre of the cell behind it, at height 0, stop 20 cm, radius 150 cm, ignoring height; the pick SHALL remember the room behind the exit and its place.
 
 #### Scenario: A quarter of the way, unless the exit leads back
-- **WHEN** a walker with no room is asked to pick, a walker draws the only exit from the origin toward a room point 100 cm ahead, a walker draws an exit 100 cm deep toward a room point at the origin, a walker whose first exit leads back draws the next exit 200 cm ahead, and a walker whose only exit leads back draws again
-- **THEN** the walker with no room picks nothing and the roll stays, the ahead goal is 25 cm forward at height 0 with stop 20 cm and radius 150 cm after one step of the roll, the deep goal is 75 cm deep at height 0, the retry uses the second exit at 150 cm and steps the roll twice, and the only exit is kept after two steps
+- **WHEN** a walker in room 0 draws its only door, from a near cell at the origin to a cell at 600 cm on x, leading to room 5, the roll starting at 1, and another walker whose first draw leads to the avoided room has a second door leading to room 7 from the origin to −600 cm on x
+- **THEN** the first goal is 150 cm on x at height 0, stop 20 cm, radius 150 cm, room 5, place 0, with the roll at 134775814, and the second walker draws again, takes the second door and its goal is −150 cm on x
 
 ### Requirement: Follow a leader
 No leader: stand if there is no activity or panic is at least 1, otherwise run the activity. Not walking, inside (1 + facing toward the follower / 2) times 100 cm, SHALL close; at that distance SHALL not. The band is 400 cm, 280 while following, and 1200 while busy. Outside it, urgency is 0 up to 800 cm, 1 up to 1600 cm, and 2 past 1600 cm or when the leader sprints. More than 100 cm from the planned spot replans; exactly 100 cm does not. The plan stops at 50 cm.
@@ -161,3 +161,38 @@ The idle driver's object search SHALL run over every object of the room, and the
 #### Scenario: Two usable objects
 - **WHEN** a room holds two usable objects and two unusable ones
 - **THEN** the later usable object is the goal
+
+### Requirement: Idle attention
+An idle state SHALL attend the contact the target pass attends when its notice score `(concern + hostility)·6 + (noticed − attention)` is not under 1 (a NaN score attends). The look SHALL take the yaw to the contact when the wrapped gap from the look passes the window `clamp(1 − 0.1·score, 0.25, 0.7)·π` (50° while the scripted focus holds). Attending SHALL turn the body and put a roam or patrol back in its wait.
+
+#### Scenario: Window
+- **WHEN** a contact with score 5 lies 1 rad from the look, then 2 rad
+- **THEN** the first leaves the look and the second takes it, both attend, and a score of 0.5 does not attend
+
+### Requirement: Idle head
+Every waiting brain SHALL first run the alert look-around (panic at least 0.2 with the body's in-combat mark), then the attention; only when neither takes the tick SHALL it clear the in-combat mark and run its phase. Fighting SHALL set the mark.
+
+#### Scenario: Calm brain
+- **WHEN** a waiting brain has panic 0 and nothing attended
+- **THEN** its mark is cleared and its roam phase runs
+
+### Requirement: Roam planning in play
+A roaming or patrolling brain in the scene, standing, out of combat and not fleeing SHALL plan on its turn of the one-planner-a-frame turn, picking its goal only then. A turn SHALL end the planning phase whether or not the route is followed; a wander route SHALL be followed only past 150 cm end to end and a home-side route always.
+
+#### Scenario: Short route
+- **WHEN** a patrol's wander route is 50 cm long
+- **THEN** it is not followed, the walk ends on the next step and the patrol pauses 0.5 to 2.5 s
+
+### Requirement: Roam walk in play
+The followed route SHALL be walked at the walk speed toward its carrot with the walk clip and SHALL end within 100 cm of its last point; a leg's end SHALL settle the look before the pause is drawn.
+
+#### Scenario: Through the door
+- **WHEN** a roaming brain in a room whose only door leads east waits out its deadline and gets its turn
+- **THEN** its goal is a quarter of the way through the door, it follows a route there, and after the heading eases it walks east with the walk clip
+
+### Requirement: Entering walker facing
+A brain the scene takes back while its walk follows a route SHALL face the route's goal; without a route, or collapsing, it SHALL keep its facing.
+
+#### Scenario: Mid-leg
+- **WHEN** a brain following a route ending 500 cm along x enters the scene
+- **THEN** it faces +x

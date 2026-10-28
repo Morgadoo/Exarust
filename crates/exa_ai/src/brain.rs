@@ -22,9 +22,11 @@
 //!   its report stays on the brain. A target pass that enters combat
 //!   engages the brain's duellist, and one that calms down leaves it.
 //!
-//! Exarust has no navigation grid in the running game yet, so the roam and
-//! patrol routines stand at their wait; the search is created but has no
-//! containers or corpses to search. The mind powers' attitude overrides and
+//! - Out of combat the AI tick runs the idle states' head (the alert
+//!   look-around, then the attention to the attended contact), and the
+//!   roam and patrol walk ([`idle_walk`]) plans through the level's room
+//!   table and navigation grid and walks its legs; the search is created
+//!   but has no containers or corpses to search. The mind powers' attitude overrides and
 //! their perception masks are not applied: the running game sets no mind
 //! effect yet.
 
