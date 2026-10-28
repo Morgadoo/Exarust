@@ -568,13 +568,16 @@ impl Item {
 
     /// The share of its voxel lights' intensity a placed copy keeps:
     /// (1 − c/255)² with c bits 16–23 of the placement's flags word, for
-    /// items whose model flags carry [`CONDITION_SCALED`]; 1 otherwise.
+    /// items whose model flags carry [`CONDITION_SCALED`]; 1 otherwise. The
+    /// step and the square are double precision, cast once to single, as
+    /// the original's light pass computes them.
     pub fn light_share(&self, placement_flags: u32) -> f32 {
         if self.model_flags & CONDITION_SCALED == 0 {
             return 1.0;
         }
-        let c = ((placement_flags >> 16) & 0xFF) as f32;
-        (1.0 - c / 255.0).powi(2)
+        let c = f64::from((placement_flags >> 16) & 0xFF);
+        let d = 1.0 - c * (1.0 / 255.0);
+        (d * d) as f32
     }
 
     /// Whether the item covers the groin on the innermost layer, as
@@ -1108,6 +1111,9 @@ mod tests {
         assert!((spent - (17.0f32 / 255.0).powi(2)).abs() < 1e-6);
         // Other bytes of the word leave it alone.
         assert_eq!(salve.light_share(0xFF00_FFFF), 1.0);
+        // The step and the square are double precision: condition 20 gives
+        // 0x3F596AFD; squaring in single precision would give …FC.
+        assert_eq!(salve.light_share(20 << 16).to_bits(), 0x3F59_6AFD);
         // A model without the flag, and a section too short for the word.
         let mut lamp = padded("Lamp", 16);
         lamp.extend(0x50u32.to_le_bytes());
