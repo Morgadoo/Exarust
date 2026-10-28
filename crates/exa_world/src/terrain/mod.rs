@@ -378,8 +378,10 @@ fn give_terrain_gi(
             continue;
         };
         m.gi_volume = Some(textures.light.clone());
-        m.params.gi_origin = textures.origin.extend(1.0);
-        m.params.gi_extent = textures.extent.extend(0.0);
+        // The terrain and grass callers read the voxel's bottom, not its
+        // centre (the original passes the flag that drops the half slice).
+        m.params.gi_origin = textures.sample_origin_floor();
+        m.params.gi_extent = textures.sample_extent();
         m.params.flags |= terrain_flags::GI;
         if std::env::var_os("EXA_GI_DEBUG").is_some() {
             m.params.flags |= terrain_flags::DEBUG_GI;

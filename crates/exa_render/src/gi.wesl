@@ -8,9 +8,10 @@
 // the original's.
 //
 // The original rasterises one quad per slice with a layered framebuffer and
-// reads its 3D light texture at the slice boundary (so linear filtering
-// averages the two neighbouring slices); this compute pass writes the same
-// voxel of each slice and samples at the same boundary coordinates.
+// reads its 3D light texture at the layer's slice centre (the vertex
+// shader's -(layer + 0.5)/D), so the ±1.33-voxel taps blend the neighbouring
+// slices; this compute pass writes the same voxel of each slice and samples
+// at the same coordinates.
 // Rules: docs/RENDERING.md (Voxel GI).
 
 struct GiLight {
@@ -18,13 +19,14 @@ struct GiLight {
     // the inverse of its radius in those units. Unused for the sun.
     position_radius: vec4<f32>,
     // Per-step injection colour: linear colour × intensity × 0.15 (×0.9 for
-    // the sun), before the fragment's 0.01.
-    colour: vec4<f32>,
+    // the sun), before the fragment's 0.01; in w the cube lookup's depth
+    // scale, ((softness + 0.94)/R)·5120, so the compare value is
+    // d·(softness + 0.94)/R + 0.01.
+    colour_shadow: vec4<f32>,
     // x, y: the light's vertical shaping (y, z); z: 1/(2^z − 1) (unshaped
-    // lights carry (1, 1, 1)); w: 0 for a point light, 1 for the sun.
+    // lights carry (1, 1, 1)); w: 0 for a point light, 1 for the sun, the
+    // original's two program branches.
     shaping: vec4<f32>,
-    // x: the light's cube slot + 1 (0 without a shadow map).
-    extra: vec4<u32>,
 }
 
 struct GiVoxelLight {
@@ -61,6 +63,9 @@ struct GiParams {
     // Per sector (X fastest), its group or 0xffffffff.
     sector_groups: array<vec4<u32>, 16>,
     lights: array<GiLight, 768>,
+    // Each light's cached cube slot (0xffffffff for none): the original
+    // binds a light's cube map to its own `Shadow<i>` sampler.
+    cubes: array<vec4<u32>, 192>,
     // x = the number of voxel lights.
     voxel_count: vec4<u32>,
     voxel_lights: array<GiVoxelLight, 64>,
@@ -94,24 +99,28 @@ fn openness(occ: f32) -> f32 {
     return max(1.0 - 13.0 * occ, 0.0);
 }
 
-// The slice the original's layered quad writes and the texture coordinates
-// it reads: x and y at the texel centres, z on the slice boundary.
+// The fragment the original's layered quad writes and the coordinates it
+// reads: the layer's slice centre, as the vertex shader's
+// `-(layer + 0.5)/D` gives it, and x and y at the texel centres. So each
+// voxel reads its own slice exactly; only the ±1.33-voxel taps blend the
+// neighbouring slices.
 fn volume_uv(id: vec3<u32>, dims: vec3<u32>) -> vec3<f32> {
     return vec3(
         (f32(id.x) + 0.5) / f32(dims.x),
         (f32(id.y) + 0.5) / f32(dims.y),
-        f32(id.z) / f32(dims.z),
+        (f32(id.z) + 0.5) / f32(dims.z),
     );
 }
 
 // The original's world-scale volume coordinates: x and y as texture units,
 // z the height divided by the block's width (not its slice count), so one
-// vertical voxel is one 1/width step.
+// vertical voxel is one 1/width step and the slice's middle sits at
+// (slice + 0.5)/width.
 fn volume_height(id: vec3<u32>, dims: vec3<u32>) -> vec3<f32> {
     return vec3(
         (f32(id.x) + 0.5) / f32(dims.x),
         (f32(id.y) + 0.5) / f32(dims.y),
-        f32(id.z) / f32(dims.x),
+        (f32(id.z) + 0.5) / f32(dims.x),
     );
 }
 
@@ -250,20 +259,23 @@ fn propagate(@builtin(global_invocation_id) id: vec3<u32>) {
             // `extent` and `origin` in world axes (X, height, Z).
             let world = params.origin.xyz
                 + vec3(at.x * params.extent.x, at.z * params.extent.x, at.y * params.extent.z);
-            rgb += lt.colour.rgb * sun_light(world, open) * 0.01;
+            rgb += lt.colour_shadow.rgb * sun_light(world, open) * 0.01;
             continue;
         }
         let to = at - lt.position_radius.xyz;
         let d = length(to);
         var shadow = 1.0;
-        if lt.extra.x != 0u {
+        // The original binds light i's cube map to `Shadow<i>`; the depth
+        // compared is d·(softness + 0.94)/R, formed by the CPU's scale.
+        let slot = params.cubes[(plan.first + i) / 4u][(plan.first + i) % 4u];
+        if slot != 0xffffffffu {
             let dir = normalize(vec3(to.x, to.z, to.y)) * FLIP_Z;
             shadow = textureSampleCompareLevel(
                 shadow_cubes,
                 shadow_cube_sampler,
                 dir,
-                i32(lt.extra.x - 1u),
-                d * lt.position_radius.w + 0.01,
+                i32(slot),
+                d * lt.colour_shadow.w + 0.01,
             );
         }
         var atn = max(1.0 - d * lt.position_radius.w, 0.0);
@@ -271,7 +283,7 @@ fn propagate(@builtin(global_invocation_id) id: vec3<u32>) {
         atn = atn * atn * open * shadow;
         let ly = -to.z / d;
         let shaped = max((exp2((ly + (1.0 - ly) * lt.shaping.x) * lt.shaping.y) - 1.0) * lt.shaping.z, 0.0);
-        rgb += lt.colour.rgb * atn * shaped * 0.01;
+        rgb += lt.colour_shadow.rgb * atn * shaped * 0.01;
     }
     rgb += voxel_lights(id, dims);
     textureStore(light_next, vec3<i32>(id), vec4(to_srgb(max(rgb, vec3(0.0))), stored_alpha));

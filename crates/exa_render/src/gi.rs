@@ -197,6 +197,29 @@ impl GiTextures {
     pub fn dims(&self) -> UVec3 {
         self.dims
     }
+
+    /// The origin a surface samples the light volume from, for
+    /// `texture(p·scale + offset)` with `p` in world metres: the block's
+    /// lowest corner, less half a voxel in height. The original's per-object
+    /// lookup adds half a slice to the height coordinate
+    /// (`(b4 + 0.5)/depth`) so a surface reads its voxel's centre; the
+    /// terrain and grass paths pass the flag that drops it, and use
+    /// [`GiTextures::sample_origin_floor`] instead.
+    pub fn sample_origin(&self) -> Vec4 {
+        (self.origin - Vec3::Y * (0.5 * self.voxel)).extend(1.0)
+    }
+
+    /// The origin for the draw paths that read the voxel's bottom rather
+    /// than its centre (the original's terrain and grass callers).
+    pub fn sample_origin_floor(&self) -> Vec4 {
+        self.origin.extend(1.0)
+    }
+
+    /// The scale a surface samples the light volume with: one texture unit
+    /// per voxel width horizontally and per voxel height vertically.
+    pub fn sample_extent(&self) -> Vec4 {
+        self.extent.extend(0.0)
+    }
 }
 
 /// The next block's textures, warming while the previous block stays
@@ -222,6 +245,22 @@ pub struct GiRadius(pub f32);
 /// light by (1 − dim)². Shipped point lights leave it at 0.
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq)]
 pub struct GiDim(pub f32);
+
+/// A light's shadow softness: the record's filter radius is
+/// (softness + 1)·0.005. The GI's cube lookup does not use the filter
+/// radius; it scales the receiver's distance by `softness + 0.94` instead,
+/// which is 0.94 at the constructor's default and 1.44 for a plain level
+/// light (0.5). The original copies the runtime light's `+0x238` from the
+/// TLightSource's softness field.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq)]
+pub struct GiSoftness(pub f32);
+
+/// Whether the light's range flag is on (with a positive radius). An unranged
+/// light floods with unlimited reach and injects over its stored radius, but
+/// the GI leaves its cube lookup unshadowed: the original's shadow far plane
+/// is then 3.4e38 instead of the radius.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GiRanged(pub bool);
 
 /// The id the sun has in the GI's light sets. Point lights count up from 0,
 /// so the largest value never names one.
@@ -624,6 +663,10 @@ pub struct GiLights {
     /// The groups' lights, one run of [`GiGroupUniform::count`] after
     /// another.
     lights: Vec<GiLight>,
+    /// The cached cube slot of each light in `lights` (u32::MAX for none).
+    /// The original binds a light's cube map to `Shadow<i>`, one sampler per
+    /// light index; Exarust's one cube pool needs the slot beside the light.
+    cube_slots: Vec<u32>,
     groups: Vec<GiGroupUniform>,
     /// Per sector (X fastest), its group or 255.
     sector_groups: [u8; SECTORS * SECTORS],
@@ -634,6 +677,7 @@ impl Default for GiLights {
     fn default() -> Self {
         Self {
             lights: Vec::new(),
+            cube_slots: Vec::new(),
             groups: Vec::new(),
             sector_groups: [u8::MAX; SECTORS * SECTORS],
             voxel_lights: Vec::new(),
@@ -650,17 +694,20 @@ struct GiGroupUniform {
     _pad: u32,
 }
 
+/// One light as the injection's `Light[3i..3i+2]` uniforms: the position and
+/// inverse radius in texture units, the colour and the cube-shadow depth
+/// scale, and the vertical shaping.
 #[derive(Clone, Copy, Default, ShaderType)]
 struct GiLight {
     /// A point light at (x, z depth, y height) in texture units, its inverse
-    /// radius in them in `w`; unused for the sun.
+    /// radius in them in `w`; for the sun only `w` is read (unused).
     position_radius: Vec4,
-    colour: Vec4,
+    /// The injected colour in `rgb`; `w` is the cube lookup's depth scale
+    /// ((softness + 0.94)/R × 5120, the original's 5120 = 256 × 20 cm).
+    colour_shadow: Vec4,
     /// x, y: vertical shaping (y, z); z: 1/(2^z − 1); w: 0 for a point
     /// light and 1 for the sun.
     shaping: Vec4,
-    /// x: the cube slot + 1 (0 without a shadow map).
-    extra: UVec4,
 }
 
 /// Sectors across a block (X and Z): the original's 8 × 8 of 6 m cells.
@@ -707,6 +754,9 @@ struct GiParams {
     /// Per sector (X fastest), its group or u32::MAX.
     sector_groups: [UVec4; SECTORS * SECTORS / 4],
     lights: [GiLight; MAX_GROUP_LIGHTS],
+    /// The cached cube slot of each light, `u32::MAX` for none: the
+    /// original binds each light's cube map to its own `Shadow<i>` sampler.
+    cubes: [UVec4; MAX_GROUP_LIGHTS / 4],
     /// x = the number of voxel lights.
     voxel_count: UVec4,
     voxel_lights: [GiVoxelLight; MAX_VOXEL_LIGHTS],
@@ -729,6 +779,9 @@ pub const GI_SUN_SHADOW_SIZE: u32 = 1024;
 pub const GI_SUN_SOFTNESS: f32 = 1600.0;
 /// Light ranges are 1.25 radii; the volume falls off over one radius.
 const REACH: f32 = 1.25;
+/// The shadow far plane an unranged light's record holds, 3.4e38, as the
+/// original has it (an unranged light's GI cube lookup never shades).
+const UNRANGED_FAR: u32 = 0x7f7f_c99e;
 /// A voxel light's colour per unit of √intensity (the original's linear
 /// workflow; 0.6 on its legacy path).
 const VOXEL_LIGHT_GAIN: f32 = 3.0;
@@ -999,6 +1052,29 @@ pub fn voxel_light_weight(offset: Vec3, dims: UVec3, blocked: f32) -> f32 {
     atn * 0.25 * (1.0 - blocked * (1.0 - near))
 }
 
+/// A voxel's texture coordinate as the injection reads it: the texel centre
+/// of its column and the centre of its *own* slice, since the original's
+/// vertex shader maps layer L to `r = (L + 0.5)/depth` (the quad's vertex r
+/// is −0.5/depth and the layer offset is subtracted). Texture axes are X,
+/// Z depth, Y height. Mirrors `volume_uv` in `gi.wesl`.
+pub fn voxel_uv(id: UVec3, dims: UVec3) -> Vec3 {
+    let d = dims.max(UVec3::ONE).as_vec3();
+    (id.as_vec3() + Vec3::splat(0.5)) / Vec3::new(d.x, d.y, d.z)
+}
+
+/// A voxel's position in the injection's world-scale texture units: x and
+/// z depth as texture units, the height over the block's **width** (not its
+/// slice count), as the original's `ZTrn` maps it. Mirrors `volume_height`
+/// in `gi.wesl`.
+pub fn voxel_height(id: UVec3, dims: UVec3) -> Vec3 {
+    let d = dims.max(UVec3::ONE).as_vec3();
+    Vec3::new(
+        (id.x as f32 + 0.5) / d.x,
+        (id.y as f32 + 0.5) / d.y,
+        (id.z as f32 + 0.5) / d.x,
+    )
+}
+
 fn volume_image(size: UVec3, format: TextureFormat, data: Vec<u8>, storage: bool) -> Image {
     let mut image = Image::new(
         Extent3d {
@@ -1117,6 +1193,10 @@ struct LightSource {
     shaping: Vec2,
     /// The light's dimming, as its record stores it.
     dim: f32,
+    /// The shadow softness the GI's cube lookup scales the distance by.
+    softness: f32,
+    /// The range flag: an unranged light's cube lookup is unshadowed.
+    ranged: bool,
     /// The cached cube shadow's slot + 1 (0 without one).
     cube: u32,
     /// The sun, which is injected by its shadow map rather than a position.
@@ -1141,6 +1221,21 @@ impl LightSource {
         let dim = (1.0 - self.dim) * (1.0 - self.dim);
         colour * (dim * INJECTION_SHARE * 1.5)
     }
+
+    /// The cube lookup's depth scale: the original's
+    /// `((softness + 0.94) / far) × 5120`, worked out in double precision
+    /// and stored as a float. `far` is the light's radius in centimetres
+    /// when its range is on, else the 3.4e38 the record holds, so an
+    /// unranged light's compare value stays at the 0.01 bias and its taps
+    /// are always lit.
+    fn cube_shadow_scale(&self) -> f32 {
+        let far = if self.ranged {
+            f64::from(self.radius * CM_PER_M)
+        } else {
+            f64::from(f32::from_bits(UNRANGED_FAR))
+        };
+        ((f64::from(self.softness) + 0.94) / far * 5120.0) as f32
+    }
 }
 
 /// The point lights the injection reads.
@@ -1156,6 +1251,8 @@ type GiLightQuery<'w, 's> = Query<
         Option<&'static crate::lights::LightShaping>,
         Option<&'static crate::cube_shadows::CubeSlot>,
         Option<&'static GiDim>,
+        Option<&'static GiSoftness>,
+        Option<&'static GiRanged>,
     ),
 >;
 
@@ -1183,6 +1280,7 @@ fn gather_lights(
     mut groups: Local<Vec<GiGroupPlan>>,
 ) {
     gi.lights.clear();
+    gi.cube_slots.clear();
     gi.groups.clear();
     gi.voxel_lights.clear();
     gi.sector_groups = [u8::MAX; SECTORS * SECTORS];
@@ -1199,7 +1297,7 @@ fn gather_lights(
     }
     // The lights the cells record, by their shader id.
     sources.clear();
-    for (light, at, id, share, radius, shaping, cube, dim) in &lights {
+    for (light, at, id, share, radius, shaping, cube, dim, softness, ranged) in &lights {
         let c = light.color.to_linear();
         sources.insert(
             id.0,
@@ -1211,6 +1309,8 @@ fn gather_lights(
                 multiplier: share.map_or(1.0, |m| m.0),
                 shaping: shaping.map_or(Vec2::ONE, |s| s.0),
                 dim: dim.map_or(0.0, |d| d.0),
+                softness: softness.map_or(0.0, |s| s.0),
+                ranged: ranged.is_none_or(|r| r.0),
                 cube: cube.and_then(|c| c.slot).map_or(0, |s| s + 1),
                 sun: false,
             },
@@ -1240,6 +1340,8 @@ fn gather_lights(
                 multiplier: 1.0,
                 shaping: Vec2::ONE,
                 dim: 0.0,
+                softness: 0.0,
+                ranged: true,
                 cube: 0,
                 sun: true,
             },
@@ -1340,10 +1442,10 @@ fn push_groups(
             let Some(source) = sources.get(id) else {
                 continue;
             };
-            let colour = (source.injection_colour() * source.multiplier).extend(0.0);
+            let colour = source.injection_colour() * source.multiplier;
             let light = if source.sun {
                 GiLight {
-                    colour,
+                    colour_shadow: colour.extend(1.0),
                     shaping: Vec4::new(1.0, 1.0, 1.0, 1.0),
                     ..default()
                 }
@@ -1357,12 +1459,16 @@ fn push_groups(
                         p.y / width,
                         width / source.radius.max(1e-6),
                     ),
-                    colour,
+                    colour_shadow: colour.extend(source.cube_shadow_scale()),
                     shaping: Vec4::new(shaping.x, shaping.y, 1.0 / (shaping.y.exp2() - 1.0), 0.0),
-                    extra: UVec4::new(source.cube, 0, 0, 0),
                 }
             };
             gi.lights.push(light);
+            gi.cube_slots.push(if source.cube == 0 {
+                u32::MAX
+            } else {
+                source.cube - 1
+            });
         }
         gi.groups.push(GiGroupUniform {
             floor: u32::from(group.floor),
@@ -1468,8 +1574,8 @@ fn give_materials_gi(
             continue;
         }
         m.gi_volume = Some(textures.light.clone());
-        m.params.gi_origin = textures.origin.extend(1.0);
-        m.params.gi_extent = textures.extent.extend(0.0);
+        m.params.gi_origin = textures.sample_origin();
+        m.params.gi_extent = textures.sample_extent();
         m.params.flags |= flags::GI;
         if std::env::var_os("EXA_GI_DEBUG").is_some() {
             m.params.flags |= flags::DEBUG_GI;
@@ -1666,6 +1772,10 @@ fn prepare_bind_group(
     for (slot, l) in entries.iter_mut().zip(&lights.lights) {
         *slot = *l;
     }
+    let mut cubes = [UVec4::splat(u32::MAX); MAX_GROUP_LIGHTS / 4];
+    for (i, &slot) in lights.cube_slots.iter().enumerate() {
+        cubes[i / 4][i % 4] = slot;
+    }
     let mut groups = [GiGroupUniform::default(); MAX_GROUPS];
     for (slot, g) in groups.iter_mut().zip(&lights.groups) {
         *slot = *g;
@@ -1698,6 +1808,7 @@ fn prepare_bind_group(
         groups,
         sector_groups,
         lights: entries,
+        cubes,
         voxel_count: UVec4::new(
             lights.voxel_lights.len().min(MAX_VOXEL_LIGHTS) as u32,
             0,
@@ -2106,6 +2217,8 @@ mod tests {
                 multiplier: 1.0,
                 shaping: Vec2::ONE,
                 dim: 0.0,
+                softness: 0.5,
+                ranged: true,
                 cube: 3,
                 sun: false,
             },
@@ -2128,22 +2241,27 @@ mod tests {
         let light = gi.lights[0];
         let expected = Vec4::new(10.0 / 51.2, 6.0 / 51.2, 8.8 / 51.2, 25.6);
         assert!((light.position_radius - expected).abs().max_element() < 1e-6);
-        assert!((light.colour.x - 0.15).abs() < 1e-6);
+        assert!((light.colour_shadow.x - 0.15).abs() < 1e-6);
+        // ((0.5 + 0.94 cm of softness) / 200 cm) × 5120, in double.
+        let scale = ((0.5f64 + 0.94) / 200.0 * 5120.0) as f32;
+        assert_eq!(light.colour_shadow.w, scale);
         assert_eq!(light.shaping, Vec4::new(1.0, 1.0, 1.0, 0.0));
-        assert_eq!(light.extra.x, 3);
+        assert_eq!(gi.cube_slots, vec![2]);
         // The sun's colour is scaled by 3 × 0.3, not 0.15.
         sources.insert(
             SUN_LIGHT_ID,
             LightSource {
                 sun: true,
+                cube: 0,
                 ..sources[&1]
             },
         );
         let mut gi = GiLights::default();
         groups[0].lights = GiSector::new([SUN_LIGHT_ID]);
         push_groups(&mut gi, &groups, &sources, [0; 64], Vec3::ZERO, Vec3::ONE);
-        assert!((gi.lights[0].colour.x - 0.9).abs() < 1e-6);
+        assert!((gi.lights[0].colour_shadow.x - 0.9).abs() < 1e-6);
         assert_eq!(gi.lights[0].shaping.w, 1.0);
+        assert_eq!(gi.cube_slots, vec![u32::MAX]);
         // The original's separate GI sun map's numbers.
         assert_eq!(GI_SUN_SHADOW_SIZE, 1024);
         assert_eq!(GI_SUN_SOFTNESS, 1600.0);
@@ -2399,6 +2517,8 @@ mod tests {
             multiplier: 1.0,
             shaping: Vec2::new(y, 1.0),
             dim: 0.0,
+            softness: 0.5,
+            ranged: true,
             cube: 0,
             sun: false,
         };
@@ -2453,6 +2573,66 @@ mod tests {
         assert_eq!(t.sector_floor(2, 5), 255);
         assert_eq!(t.sector_floor(3, 4), 255);
         assert_eq!(t.sector_floor(8, 0), 255);
+    }
+
+    #[test]
+    fn the_injection_reads_each_voxels_own_slice_centre() {
+        // The vertex shader's quad r is −0.5/depth and the layer offset is
+        // subtracted, so layer 0 reads r = 0.5/64, not 0.
+        let dims = UVec3::new(256, 256, 64);
+        assert_eq!(
+            voxel_uv(UVec3::ZERO, dims),
+            Vec3::new(0.5 / 256.0, 0.5 / 256.0, 0.5 / 64.0)
+        );
+        assert_eq!(
+            voxel_uv(UVec3::new(255, 255, 63), dims),
+            Vec3::new(255.5 / 256.0, 255.5 / 256.0, 63.5 / 64.0)
+        );
+        // The light distances use the height over the width, a slice's
+        // middle sitting at (slice + 0.5)/256.
+        assert_eq!(
+            voxel_height(UVec3::new(0, 0, 46), dims),
+            Vec3::new(0.5 / 256.0, 0.5 / 256.0, 46.5 / 256.0)
+        );
+    }
+
+    #[test]
+    fn the_gi_cube_lookup_scales_the_distance_by_softness_and_radius() {
+        let source = |softness: f32, radius: f32, ranged: bool| LightSource {
+            colour: Vec3::ONE,
+            intensity: 1.0,
+            radius,
+            position: Vec3::ZERO,
+            multiplier: 1.0,
+            shaping: Vec2::ONE,
+            dim: 0.0,
+            softness,
+            ranged,
+            cube: 1,
+            sun: false,
+        };
+        // A plain level light: ((0.5 + 0.94)/200 cm) × 5120 = 36.864.
+        let scale = source(0.5, 2.0, true).cube_shadow_scale();
+        assert_eq!(scale, ((0.5f64 + 0.94) / 200.0 * 5120.0) as f32);
+        assert!((scale - 36.864).abs() < 1e-5);
+        // The constructor's default softness 0.25 gives 0.94 + 0.25.
+        let scale = source(0.25, 2.0, true).cube_shadow_scale();
+        assert_eq!(scale, ((0.25f64 + 0.94) / 200.0 * 5120.0) as f32);
+        // An unranged light's far plane is 3.4e38: the compare value stays
+        // at the 0.01 bias and every tap is lit.
+        let scale = source(0.5, 2.0, false).cube_shadow_scale();
+        assert!(scale > 0.0 && scale < 1e-33, "{scale}");
+    }
+
+    #[test]
+    fn surfaces_read_the_voxels_centre_and_terrain_its_bottom() {
+        let mut t = fake_textures(1);
+        t.origin = Vec3::new(1.0, -6.8, 2.0);
+        t.voxel = 0.2;
+        // Half a slice up: the original's per-object `(b4 + 0.5)/depth`.
+        assert_eq!(t.sample_origin(), Vec4::new(1.0, -6.9, 2.0, 1.0));
+        // Terrain and grass pass the flag that drops it.
+        assert_eq!(t.sample_origin_floor(), Vec4::new(1.0, -6.8, 2.0, 1.0));
     }
 
     #[test]
