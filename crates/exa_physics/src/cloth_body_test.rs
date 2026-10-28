@@ -277,6 +277,14 @@ fn only_a_moving_body_wakes_a_sleeping_cloth() {
         "{:?}",
         cloth.particles[0]
     );
+    // The reaction is the opposite of the vertices' summed move.
+    let moved: Vec3 = cloth
+        .particles
+        .iter()
+        .zip(&particles)
+        .map(|(now, was)| now.position - was.position)
+        .sum();
+    assert!(cloth.reaction.abs_diff_eq(-moved, 1e-4));
 }
 
 /// A loosely pinned cloth whose rest overlaps a sleeping body's sphere (a

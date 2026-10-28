@@ -182,26 +182,47 @@ The sector's simulated-object stages (`sector::ObjectContacts`) hand a
 cloth the parts passing `sector::object_body_meet` (the bound spheres
 must not be apart, then the object's centre within its radius of the
 part's mesh box, the original's point-to-box distance; a NaN passes both),
-each collision sphere in the object's own centimetres, padded by the
-cloth's 2 cm and kept only when it reaches the box about the cloth's
-particles, swept when it moved over 0.01 cm² (compared in double, the
-cloth's own gate), and the level's triangles of the static records
-`StaticGrid::near_object` takes (the nine cells around the object's cell,
-the same two tests against each record's world box, where the original
-uses the mesh's oriented box), each record one `cloth_level::LevelPiece`.
-A sleeping object takes only awake bodies (`sector::object_takes_body`).
-Skipping the cloth's own character is a guess (the sector makes no such
-test); skipping the static meshes of the cloth's own scene node is the
-original's.
+each as a `cloth_body::ClothBody` with its body's countdown and its
+collision spheres in the object's own centimetres, last sphere first,
+padded by the cloth's 2 cm and kept only when it reaches the box about
+the cloth's particles, swept when it moved over 0.01 cm² (compared in
+double, the cloth's own gate), and the level's triangles of the static
+records `StaticGrid::near_object` takes (the nine cells around the
+object's cell, the same two tests against each record's world box, where
+the original uses the mesh's oriented box), each record one
+`cloth_level::LevelPiece`. A sleeping object takes only awake bodies
+(`sector::object_takes_body`). Skipping the cloth's own character is a
+guess (the sector makes no such test); skipping the static meshes of the
+cloth's own scene node is the original's.
+The cloth's body contact (`cloth_body`) pushes cloth *triangles*, not
+particles: each sphere walks the cloth's triangle records (the sphere
+about each triangle at the last tick and now) with the swept query, takes
+a triangle it came from and ends within its padded radius of, puts its
+sweep's midpoint on the face, finds the triangle's closest point (the
+original's branch order and weights) and pushes the three vertices off it
+by `depth × weight / largest weight` into a push buffer that never adds
+the same direction twice. A body that pushed trades countdowns with the
+cloth (the lower takes the higher), so a sleeping body never wakes or
+keeps a cloth awake and a moving one hands it its countdown (256 for a
+character). An awake cloth applies the buffer after the body stage: the
+vertex's travel across its push is cancelled up to 0.2 cm² (else
+shortened by √0.1 cm), the vertex moves out by the push, and three more
+constraint passes (the shipped iteration count less the step's one) end
+by putting it back on its push plane. The body's share (0.002, 0.01 or
+0.015 of the push, the friction and rustle energy) is not handed back:
+the cloth stage has no mutable body.
 The cloth's level contact (`cloth_level`) runs after its step, mesh by
 mesh: each particle that moved over 0.1 cm² sweeps a 2 cm sphere through
 the mesh, any other is a 2 cm sphere where it is, tested against the
-piece's box and then every triangle in order with the mesh's own sphere
-and sweep queries (front faces only, pushed out to 2 cm); a pushed
-particle's travel is then shortened by 0.1 cm, or cancelled when shorter.
-A level push (or a level plane's) never wakes a cloth; a body's does. The
-cloth's countdown reads the squared length of its particles' summed
-velocity (not the tick's step, which carries gravity), so a cloth held at
+piece's box and then the piece's triangles near it (a per-piece grid, as
+the mesh's own tree query hands only the triangles around the sphere) in
+order with the mesh's own sphere and sweep queries (front faces only,
+pushed out to 2 cm); a pushed particle's travel is then shortened by
+0.1 cm, or cancelled when shorter. A level push (or a level plane's)
+never wakes a cloth. The cloth's countdown reads the squared length of
+its particles' summed velocity (not the tick's step, which carries
+gravity), only a count that went up is capped at 32, and the tick's end
+puts an awake cloth whose count is under 2 to sleep, so a cloth held at
 rest falls asleep. The
 object/object stage is `sector::object_pairs` (every ordered pair of the
 list, never an object with itself, no bound test in the sector); the
@@ -839,9 +860,9 @@ sets the instability counter (the barricade sets it to 100).
 - Activation sets the cloth's flag words, phase and 0.4 scale; the transform visits all three particle buffers plus the object's origin and extent.
 - The rebuild copies the origin, rejects a mismatched override and transforms every particle point into a fresh submitted buffer.
 - The sync skips its transform and pose on the meta bit 0x10.
-- The pressure pass normalizes the normals, projects each edge, couples the result and zeroes the normals.
+- The push pass after the body stage (`cloth_body::apply_pushes`): each buffered push moves its vertex out after stopping or shortening its travel across it, and holds it on its plane through the remaining constraint passes.
 - The destructor frees four pointers, the root origin, three managed fields and the list before the base and final calls.
-- The body collision calls back for accepted hits and pushes resolved particles to the body's radius surface.
+- The body collision calls back for accepted hits and pushes resolved particles to the body's radius surface (the per-particle mode; the shipped cloth's triangle contact is `cloth_body`).
 - The clone creates a new cloth with four copied fields.
 - The hand's grab (`Cloth::grab`/`release_grab`): one vertex is put on the hand's target after each tick's links, zeroing its velocity there, and wakes the cloth; letting go leaves it to its links.
 - The cloth helpers the step does not call yet: the bounds midpoint the particles' component extremes (vector min and max semantics) and floor the half extents at 1e-4 cm; the swept-particle query over an index range, with the closest-approach slack that goes negative outside the tick's motion; the blood painter, which draws the engine's generator and lowers the vertex alpha with a ties-to-even conversion; and the owner-move blend, which writes `(d + (target - d) k) weight + offset + base` into a third buffer.
