@@ -2366,7 +2366,7 @@ pub fn plan_creation_entry(
         filter,
         full_health: true,
         clear_experience: mode == CreationScreenMode::Story,
-        ensure_underwear: mode != CreationScreenMode::Recruit,
+        ensure_underwear: filter,
         marks_new_character: source == EntrySource::NewDefault
             || (mode == CreationScreenMode::Story && background == 0 && !preset_loaded),
         background,
@@ -2450,6 +2450,10 @@ pub struct Submit {
     pub button: Option<&'static str>,
     /// The screen flags that a versus lobby button needs.
     pub ready_flags: bool,
+    /// The equipment page's tab state word gained `0x110`.
+    pub tab_flags: bool,
+    /// The equipment page was shown.
+    pub form_shown: bool,
     pub commit: Option<CommitKind>,
 }
 
@@ -2516,6 +2520,8 @@ pub fn submit_creation(input: SubmitInput) -> Submit {
                 panels: EquipmentPanels::default(),
                 button: None,
                 ready_flags: false,
+                tab_flags: false,
+                form_shown: false,
                 commit: None,
             };
         }
@@ -2535,6 +2541,8 @@ pub fn submit_creation(input: SubmitInput) -> Submit {
             panels: equipment_panels(input.game_mode, input.equipment_hook),
             button,
             ready_flags: input.known_powers == 0 && input.game_mode == 0x1010,
+            tab_flags: true,
+            form_shown: true,
             commit: None,
         };
     }
@@ -2547,6 +2555,8 @@ pub fn submit_creation(input: SubmitInput) -> Submit {
             panels: EquipmentPanels::default(),
             button: None,
             ready_flags: false,
+            tab_flags: false,
+            form_shown: false,
             commit: Some(CommitKind::PowerTree),
         };
     }
@@ -2567,6 +2577,8 @@ pub fn submit_creation(input: SubmitInput) -> Submit {
         panels: EquipmentPanels::default(),
         button: None,
         ready_flags: false,
+        tab_flags: false,
+        form_shown: false,
         commit: Some(commit),
     }
 }
@@ -3301,10 +3313,12 @@ pub fn resolve_kit_item(
 
 /// The creator icon sheet's frame size.
 pub const CREATION_ICON_SIZE: i32 = 96;
-/// The two sheets' cells are stacked top first at these offsets.
+/// The sheet's four 96-pixel cells are stacked vertically, cut at these
+/// offsets largest first (a 96 by 384 image).
 pub const CREATION_ICON_OFFSETS: [i32; 4] = [288, 192, 96, 0];
 
-/// The icon size the creator's icon sheet is scaled to.
+/// The icon size the creator's icon renderer is given: eight times the
+/// GUI unit (32 at unit 4), with its entry height two more.
 pub fn creation_icon_size(unit: i32) -> i32 {
     unit * 8
 }
@@ -4195,6 +4209,8 @@ pub struct ContinueView {
     pub name: String,
     /// The header, when the screen is a continue page or versus.
     pub title: Option<&'static str>,
+    /// The record was pushed into the figure (continue mode).
+    pub record_applied: bool,
     /// Passes over the figure's items in continue mode.
     pub item_passes: usize,
     /// Of those passes, the ones that also refreshed the extra item.
@@ -4275,6 +4291,7 @@ pub fn continue_view(input: ContinueViewInput<'_>) -> ContinueView {
         item_list_attached: input.item_list,
         name,
         title,
+        record_applied: input.screen_mode == 12,
         item_passes,
         extra_passes,
         panels_bound,
@@ -4400,11 +4417,9 @@ pub const CREATION_ICON_SHEET: &str = "charcreate.rfi";
 pub const CREATION_ICON_WORD: u32 = 0x203;
 /// The icon manager's flags the sheet sets.
 pub const CREATION_ICON_FLAGS: u32 = 0x0100_2008;
-/// The slot count the manager is given: four cells at a scale of eight.
+/// The word the manager is given: four cells at a scale of eight [guess:
+/// the field's meaning is not established].
 pub const CREATION_ICON_SLOTS: i32 = 32;
-/// The four mip levels the 96-pixel sheet is reduced through, largest
-/// first; the last is the base size.
-pub const CREATION_ICON_MIP_LEVELS: [i32; 4] = [0x120, 0xc0, 0x60, 0];
 
 /// What building the creator's icon sheet did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4416,16 +4431,16 @@ pub struct CreationIconSheet {
     pub slots: i32,
     /// The sheet loaded.
     pub loaded: bool,
-    /// The mip levels added, in order.
-    pub levels: usize,
+    /// The 96-pixel cells added, in the order the original cuts them.
+    pub cells: usize,
 }
 
 /// Builds or rebinds the creator's icon sheet.
 ///
 /// An existing manager is reset first; otherwise one is made with the
-/// 0x203 word and the `0x0100_2008` flags. The slot count is set to four
-/// times the eight-unit scale. A missing sheet adds no levels. A present one
-/// is made 96 by 96 and reduced through 288, 192, 96 and 0, each registered
+/// 0x203 word and the `0x0100_2008` flags. The slot word is set to four
+/// times the eight-unit scale. A missing sheet adds no cells. A present one
+/// is cut into four 96-pixel cells at 288, 192, 96 and 0, each registered
 /// as an icon, then the manager finishes.
 pub fn build_creation_icons(existing: bool, load_ok: bool) -> CreationIconSheet {
     CreationIconSheet {
@@ -4434,8 +4449,8 @@ pub fn build_creation_icons(existing: bool, load_ok: bool) -> CreationIconSheet 
         flags: CREATION_ICON_FLAGS,
         slots: CREATION_ICON_SLOTS,
         loaded: load_ok,
-        levels: if load_ok {
-            CREATION_ICON_MIP_LEVELS.len()
+        cells: if load_ok {
+            CREATION_ICON_OFFSETS.len()
         } else {
             0
         },
@@ -6064,6 +6079,8 @@ mod tests {
         assert!(named.build_equipment);
         assert_eq!(named.button, Some("BEGIN"));
         assert!(!named.ready_flags);
+        assert!(named.tab_flags && named.form_shown);
+        assert!(named.warning.is_none());
         assert_eq!(
             named.panels,
             EquipmentPanels {
@@ -7091,6 +7108,7 @@ mod tests {
         assert_eq!(plain.item_passes, 0);
         assert!(plain.model && plain.view_target);
         assert!(plain.cleared_view);
+        assert!(!plain.record_applied);
 
         let mut input = continue_input("Mira");
         input.screen_mode = 12;
@@ -7101,6 +7119,7 @@ mod tests {
         assert_eq!(continued.title, Some(exa_ui::creation::CONTINUE));
         assert_eq!(continued.item_passes, 3);
         assert_eq!(continued.extra_passes, 3);
+        assert!(continued.record_applied);
 
         input.game_mode = 0x1010;
         assert_eq!(continue_view(input).title, Some(exa_ui::creation::VERSUS));
@@ -7240,21 +7259,20 @@ mod tests {
     }
 
     #[test]
-    fn the_icon_sheet_adds_four_mip_levels() {
+    fn the_icon_sheet_adds_four_cells() {
         assert_eq!(CREATION_ICON_SHEET, "charcreate.rfi");
-        assert_eq!(CREATION_ICON_MIP_LEVELS, CREATION_ICON_OFFSETS);
         let built = build_creation_icons(false, true);
         assert!(!built.reused);
         assert_eq!(built.word, 0x203);
         assert_eq!(built.flags, 0x0100_2008);
         assert_eq!(built.slots, 32);
         assert!(built.loaded);
-        assert_eq!(built.levels, 4);
+        assert_eq!(built.cells, 4);
 
         let missing = build_creation_icons(true, false);
         assert!(missing.reused);
         assert!(!missing.loaded);
-        assert_eq!(missing.levels, 0);
+        assert_eq!(missing.cells, 0);
     }
 
     #[test]
@@ -7292,5 +7310,27 @@ mod tests {
         let free = open_creator_form(0, SaveAvailability(3), true);
         assert_eq!(free.continue_kind, None);
         assert!(!free.reset_dialog);
+    }
+
+    /// The installed sheet is the 96 by 384 image the four cells are cut
+    /// from; skipped without `EXANIMA_DIR`.
+    #[test]
+    fn the_installed_creator_sheet_has_four_cells() {
+        let Ok(root) = std::env::var("EXANIMA_DIR") else {
+            return;
+        };
+        let Ok(data) = exa_rpk::GameData::open(root) else {
+            return;
+        };
+        let Some(bytes) = data.texture("charcreate") else {
+            return;
+        };
+        let rfi = exa_formats::rfi::Rfi::parse(bytes).expect("charcreate.rfi parses");
+        assert_eq!(rfi.header.width, CREATION_ICON_SIZE as u32);
+        assert_eq!(
+            rfi.header.height,
+            CREATION_ICON_SIZE as u32 * CREATION_ICON_OFFSETS.len() as u32
+        );
+        assert_eq!(rfi.mip_count, 1);
     }
 }

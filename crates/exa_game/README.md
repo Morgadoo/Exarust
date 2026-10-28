@@ -216,8 +216,8 @@ creator with the deferred-close and commit callbacks, the name warning
 keeps its `Character Name` / `Please name your character` box and code
 0xc1, the reset-to-portal and delete-confirmation dialogs take the creator
 as owner and centre at -1, and the icon sheet carries the 0x203 word, the
-`0x0100_2008` flags, the 32-slot count and the four 288/192/96/0 mip
-levels. The creator form's opening (cursor clear, task removal, three
+`0x0100_2008` flags, the 32-slot word and the four 96-pixel cells cut at
+288, 192, 96 and 0 from the 96 by 384 sheet. The creator form's opening (cursor clear, task removal, three
 input actions) and the equipment page's back switch (the first panel
 hidden, the skills slide 0x2d, the two tab words cleared) are modelled, as
 is the equipment page's layout: the preview frame, the 172-wide apparel
