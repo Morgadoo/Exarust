@@ -10,7 +10,7 @@
 use std::sync::OnceLock;
 
 use bevy::math::{Vec2, Vec3};
-use exa_physics::engine_math::sin_cos;
+use exa_physics::engine_math::{reciprocal_sqrt, sin_cos};
 
 /// Point-set seed, radius (in 20 cm vertex steps) and attempts per point.
 const POINT_SEED: u32 = 0x1797_2D3E;
@@ -25,8 +25,9 @@ pub const DENSITY_STEP: f32 = f32::from_bits(0x3f7e_eeef);
 /// Chunks per tile side (6 m each).
 pub const CHUNKS: usize = 8;
 const CHUNK_SIDE: f32 = SIDE / CHUNKS as f32;
-/// Below this density nothing grows.
-const MIN_DENSITY: f32 = 0.35;
+/// Below this density nothing grows. The original compares the density,
+/// widened to double, against the double `0.35` (not the `f32` 0.35).
+const MIN_DENSITY: f64 = 0.35;
 /// Grass models are shrunk by this.
 pub const GRASS_SCALE: f32 = 0.75;
 
@@ -45,8 +46,8 @@ impl Lcg {
         self.step() as f32 / 4_294_967_296.0
     }
 
-    /// Uniform in [0, 1) as the engine's `FUN_1000176e0` draws it: the
-    /// 32-bit step as a double times 2⁻³², rounded to `f32` once.
+    /// Uniform in [0, 1) as the engine's unit draw makes it: the 32-bit
+    /// step as a double times 2⁻³², rounded to `f32` once.
     pub fn unit_exact(&mut self) -> f32 {
         ((self.step() as f64) * (1.0 / 4_294_967_296.0)) as f32
     }
@@ -203,7 +204,7 @@ pub fn grow(seed: u32, variants: &[Variant], density: impl Fn(Vec2) -> f32) -> V
                     let n = (d * d * 50.0).round_ties_even().max(0.0) as u32;
                     let roll = rng.below(n);
                     let pick = rng.step();
-                    if ((d as f64) < MIN_DENSITY as f64) || variants.is_empty() {
+                    if (d as f64) < MIN_DENSITY || variants.is_empty() {
                         return None;
                     }
                     let is_grass = roll < 10;
@@ -266,11 +267,49 @@ fn growth_key(growth: Growth, variants: &[Variant]) -> f32 {
 
 /// Whether the plant program uses its normal-mapped variant: the renderer's
 /// shading quality above 3 and the plant normal texture present. The
-/// original switches a shader feature word and its program index
-/// (0x11b against 0x113) here. Exarust has one plant shader, so the rule is
+/// original switches a shader feature word and its program variant here.
+/// Exarust has one plant shader, so the rule is
 /// kept as data; the material carries the normal map at every quality.
 pub fn plant_normal_mapping(shading_quality: i32, normal_texture: bool) -> bool {
     shading_quality > 3 && normal_texture
+}
+
+/// The terrain's normal under a point in vertex steps, from the tile's
+/// `n` × `n` vertex normals, as the original's plant baker blends it: the
+/// point's cell corner `(i, j)` (truncated) weighs `fx·fy`, `(i+1, j)`
+/// `(1−fx)·fy`, `(i, j+1)` `(1−fy)·fx` and `(i+1, j+1)` `(1−fx)(1−fy)` (the
+/// weights run opposite to a plain bilinear blend, as the original's do),
+/// accumulated in that order and normalised by the processor's approximate
+/// reciprocal square root (a zero sum stays zero). A point past the grid
+/// takes +Y.
+pub fn terrain_normal(normals: &[[f32; 3]], n: usize, at: Vec2) -> Vec3 {
+    let (i, j) = (at.x as i64, at.y as i64);
+    let (fx, fy) = (at.x - i as i32 as f32, at.y - j as i32 as f32);
+    let corner = |di: i64, dj: i64| {
+        let (ci, cj) = (i + di, j + dj);
+        if ci < 0 || cj < 0 || ci as usize >= n || cj as usize >= n {
+            return None;
+        }
+        normals
+            .get(cj as usize * n + ci as usize)
+            .map(|v| Vec3::from(*v))
+    };
+    let (Some(a), Some(b), Some(c), Some(d)) =
+        (corner(0, 0), corner(1, 0), corner(0, 1), corner(1, 1))
+    else {
+        return Vec3::Y;
+    };
+    let mut sum = a * (fx * fy);
+    sum += b * ((1.0 - fx) * fy);
+    sum += c * ((1.0 - fy) * fx);
+    sum += d * ((1.0 - fy) * (1.0 - fx));
+    let length2 = sum.y * sum.y + (sum.x * sum.x + sum.z * sum.z);
+    let scale = if length2 == 0.0 {
+        0.0
+    } else {
+        reciprocal_sqrt(length2)
+    };
+    sum * scale
 }
 
 /// Ground height under a point of an `n` × `n` vertex grid of heights, on
@@ -313,30 +352,53 @@ pub fn density_texel(at: Vec2) -> (usize, usize) {
 }
 
 /// Bakes `growths` into one vertex set, tile-local metres, with `place`
-/// mapping a point in vertex steps to its ground position.
-pub fn bake(variants: &[Variant], growths: &[Growth], place: impl Fn(Vec2) -> Vec3) -> Variant {
+/// mapping a point in vertex steps to its ground position and
+/// `ground_normal` to the terrain's normal there (see [`terrain_normal`]).
+pub fn bake(
+    variants: &[Variant],
+    growths: &[Growth],
+    place: impl Fn(Vec2) -> Vec3,
+    ground_normal: impl Fn(Vec2) -> Vec3,
+) -> Variant {
     let mut out = Variant::default();
     for g in growths {
         let Some(v) = variants.get(g.variant) else {
             continue;
         };
-        // The original's instance matrix has the x row `sin, 0, −cos` and
-        // the z row `cos, 0, sin`: a rotation by the stored angle less a
-        // quarter turn, evaluated as those rows rather than as a subtraction
-        // before the engine's sine and cosine.
+        // The original's instance matrix, applied to row vectors: x row
+        // `(cos·s, 0, −sin·s)`, y row `(0, s, 0)`, z row `(sin·s, 0, cos·s)`,
+        // then the translation; each coordinate sums `(x·r0 + y·r1) +
+        // (z·r2 + t)` in f32, as the engine's packed transform does.
         let (sin, cos) = sin_cos(g.angle);
+        let s = g.scale;
+        let rows = [
+            Vec3::new(cos * s, 0.0, -sin * s),
+            Vec3::new(0.0, s, 0.0),
+            Vec3::new(sin * s, 0.0, cos * s),
+        ];
         let at = place(g.at);
         let base = out.positions.len() as u32;
         out.positions.extend(
-            v.positions.iter().map(|p| {
-                Vec3::new(sin * p.x - cos * p.z, p.y, cos * p.x + sin * p.z) * g.scale + at
-            }),
-        );
-        out.normals.extend(
-            v.normals
+            v.positions
                 .iter()
-                .map(|n| Vec3::new(sin * n.x - cos * n.z, n.y, cos * n.x + sin * n.z)),
+                .map(|p| (rows[0] * p.x + rows[1] * p.y) + (rows[2] * p.z + at)),
         );
+        // Grass and small plants (whose normals the loader set to +Y) turn
+        // their normals by the same scaled rows without the translation,
+        // `(x·r0 + y·r1) + z·r2`, then scale them by `1/s`. A large plant
+        // takes the terrain's normal under it for every vertex instead.
+        if v.kind == Kind::Large {
+            let n = ground_normal(g.at);
+            out.normals
+                .extend(std::iter::repeat_n(n, v.positions.len()));
+        } else {
+            let inverse = 1.0 / s;
+            out.normals.extend(
+                v.normals
+                    .iter()
+                    .map(|n| ((rows[0] * n.x + rows[1] * n.y) + rows[2] * n.z) * inverse),
+            );
+        }
         out.uvs.extend_from_slice(&v.uvs);
         out.indices.extend(v.indices.iter().map(|i| i + base));
     }
@@ -494,29 +556,76 @@ mod tests {
     }
 
     #[test]
-    fn a_zero_angle_turns_the_shape_a_quarter_turn() {
-        // The instance matrix's x row is `sin, 0, −cos` and its z row
-        // `cos, 0, sin`; at angle 0 a +X vertex lands on +Z.
-        let mut variant = Variant {
+    fn the_instance_matrix_turns_row_vectors() {
+        // Row vectors through `(cos, 0, −sin)`, `(0, 1, 0)`, `(sin, 0, cos)`
+        // scaled: angle 0 keeps the shape, a quarter turn takes +X to −Z.
+        let variant = Variant {
             positions: vec![Vec3::X],
             normals: vec![Vec3::X],
             uvs: vec![[0.0; 2]],
             indices: vec![0],
-            kind: Kind::Large,
+            kind: Kind::Small,
             height: 0.0,
         };
-        let growth = Growth {
+        let at = Vec3::new(10.0, 1.0, -3.0);
+        let ground = |_| Vec3::new(0.0, 0.6, 0.8);
+        let mut growth = Growth {
             variant: 0,
             at: Vec2::ZERO,
-            scale: 1.0,
+            scale: 2.0,
             angle: 0.0,
         };
-        let baked = bake(&[variant.clone()], &[growth], |_| Vec3::ZERO);
-        assert_eq!(baked.positions[0], Vec3::Z);
-        assert_eq!(baked.normals[0], Vec3::Z);
-        variant.kind = Kind::Grass;
-        let baked = bake(&[variant], &[growth], |_| Vec3::ZERO);
-        assert_eq!(baked.positions[0], Vec3::Z);
+        let baked = bake(std::slice::from_ref(&variant), &[growth], |_| at, ground);
+        assert_eq!(baked.positions[0], Vec3::new(12.0, 1.0, -3.0));
+        assert_eq!(baked.normals[0], Vec3::X);
+        growth.angle = std::f32::consts::FRAC_PI_2;
+        let (sin, cos) = sin_cos(growth.angle);
+        let baked = bake(std::slice::from_ref(&variant), &[growth], |_| at, ground);
+        let want = Vec3::new(cos * 2.0 + 10.0, 1.0, -sin * 2.0 + -3.0);
+        assert_eq!(baked.positions[0], want);
+        assert!((baked.positions[0] - Vec3::new(10.0, 1.0, -5.0)).length() < 1e-5);
+        // The normal turns with the scaled rows, then loses the scale.
+        assert!((baked.normals[0] - Vec3::NEG_Z).length() < 1e-6);
+        // A large plant takes the terrain's normal at its point instead.
+        let large = Variant {
+            kind: Kind::Large,
+            ..variant
+        };
+        let baked = bake(&[large], &[growth], |_| at, ground);
+        assert_eq!(baked.normals[0], Vec3::new(0.0, 0.6, 0.8));
+    }
+
+    #[test]
+    fn the_terrain_normal_weighs_the_far_corner_by_the_near_fraction() {
+        // A 3 × 3 grid: +X at (0, 0), +Z at (1, 0), +Y everywhere else.
+        let mut normals = vec![[0.0, 1.0, 0.0]; 9];
+        normals[0] = [1.0, 0.0, 0.0];
+        normals[1] = [0.0, 0.0, 1.0];
+        // At the corner itself (fx = fy = 0) only (i+1, j+1) counts.
+        assert_eq!(
+            terrain_normal(&normals, 3, Vec2::ZERO),
+            Vec3::Y * reciprocal_sqrt(1.0)
+        );
+        // At (0.75, 0.5): (0,0) weighs 0.375, (1,0) 0.125, (0,1) 0.375,
+        // (1,1) 0.125.
+        let got = terrain_normal(&normals, 3, Vec2::new(0.75, 0.5));
+        let sum = Vec3::new(0.375, 0.5, 0.125);
+        let length2 = sum.y * sum.y + (sum.x * sum.x + sum.z * sum.z);
+        assert_eq!(got, sum * reciprocal_sqrt(length2));
+        // Past the grid: +Y.
+        assert_eq!(terrain_normal(&normals, 3, Vec2::new(2.5, 0.0)), Vec3::Y);
+    }
+
+    #[test]
+    fn the_density_threshold_is_the_double_0_35() {
+        // The f32 nearest 0.35 is just below the double 0.35: nothing grows.
+        let variants = sample_variants();
+        assert!(grow(5, &variants, |_| 0.35).iter().all(|c| c.is_empty()));
+        let above = f32::from_bits(0.35f32.to_bits() + 1);
+        assert!(grow(5, &variants, |_| above).iter().any(|c| !c.is_empty()));
+        // A NaN density takes the growing branch (unordered compare).
+        let nan = grow(5, &variants, |_| f32::NAN);
+        assert!(nan.iter().any(|c| !c.is_empty()));
     }
 
     #[test]

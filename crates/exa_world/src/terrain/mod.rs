@@ -429,7 +429,7 @@ impl Plants {
                     let Some(mesh) = loader.meshes.get(mesh) else {
                         continue;
                     };
-                    append_mesh(&mut v, mesh, kind != vegetation::Kind::Large);
+                    append_mesh(&mut v, mesh);
                 }
                 if v.indices.is_empty() {
                     continue;
@@ -534,7 +534,9 @@ impl Plants {
                 continue;
             }
             grown += chunk.len();
-            let baked = vegetation::bake(&self.variants, chunk, place);
+            let baked = vegetation::bake(&self.variants, chunk, place, |p| {
+                vegetation::terrain_normal(&built.normals, n, p)
+            });
             let mut mesh = Mesh::new(
                 PrimitiveTopology::TriangleList,
                 RenderAssetUsages::default(),
@@ -593,9 +595,7 @@ impl Plants {
 pub struct PlantChunk;
 
 /// Appends a Bevy mesh's positions, normals, UVs and indices to a variant.
-/// A grass or small-plant shape with no UV stream gets the original's filler
-/// `(1/128, 0)` for every vertex (the large plants keep their own).
-fn append_mesh(v: &mut vegetation::Variant, mesh: &Mesh, fill_uv: bool) {
+fn append_mesh(v: &mut vegetation::Variant, mesh: &Mesh) {
     use bevy::mesh::VertexAttributeValues as A;
     let Some(A::Float32x3(positions)) = mesh.attribute(Mesh::ATTRIBUTE_POSITION) else {
         return;
@@ -610,14 +610,9 @@ fn append_mesh(v: &mut vegetation::Variant, mesh: &Mesh, fill_uv: bool) {
     }
     match mesh.attribute(Mesh::ATTRIBUTE_UV_0) {
         Some(A::Float32x2(uv)) => v.uvs.extend_from_slice(uv),
-        _ => v.uvs.extend(std::iter::repeat_n(
-            if fill_uv {
-                [1.0 / 128.0, 0.0]
-            } else {
-                [0.0, 0.0]
-            },
-            positions.len(),
-        )),
+        _ => v
+            .uvs
+            .extend(std::iter::repeat_n([0.0, 0.0], positions.len())),
     }
     if let Some(indices) = mesh.indices() {
         v.indices.extend(indices.iter().map(|i| i as u32 + base));
@@ -1490,6 +1485,8 @@ struct BuiltTile {
     /// Displaced vertex heights (metres) and vegetation density per vertex.
     heights: Vec<f32>,
     density: Vec<f32>,
+    /// The tile's vertex normals, `n` × `n`, which large plants take.
+    normals: Vec<[f32; 3]>,
     /// Palette material indices, one per layer, ascending.
     materials: Vec<usize>,
     /// The layers' over opacities per vertex, as the splat texture holds
@@ -1608,6 +1605,7 @@ fn build_tile(
         }
     }
     let normals = grid_normals(&positions, n);
+    let ground_normals = normals.clone();
     let heights: Vec<f32> = positions.iter().map(|p| p[1]).collect();
 
     // Each 6 m block draws the original's shared block patch (serpentine
@@ -1696,6 +1694,7 @@ fn build_tile(
         blocks: built,
         heights,
         density,
+        normals: ground_normals,
         materials: used,
         splat,
         unresolved,

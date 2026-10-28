@@ -70,7 +70,9 @@ and the grid's rooms; portal clipping is next (see
   frame because its caller is not identified; `terrain::wireframe` draws each block's
   triangle edges as lines under `EXA_TERRAIN_WIRE` (the original's debug
   wireframe hook). Grass and
-  small plants take the original's upward normals, grass is drawn at 0.75
+  small plants take the original's upward normals turned with the instance,
+  large plants the terrain's blended vertex normal under them
+  (`vegetation::terrain_normal`), grass is drawn at 0.75
   size, the density mask is sampled on its
   240 × 240 texels, the two random draws of a plant's size and rotation use
   the engine's double-precision unit, and each chunk's plants are ordered
