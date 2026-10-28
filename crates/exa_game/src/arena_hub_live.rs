@@ -443,7 +443,7 @@ pub fn plan_launch_at(
             } => {
                 if tournament {
                     let event_weapon = board.selected.weapon_row;
-                    let plan = crate::arena_spawn::hire_plan(team as u8, 0, event_weapon);
+                    let plan = crate::arena_spawn::hire_plan(team as u8, team as i32, event_weapon);
                     let weapon = if plan.draw_weapon {
                         board.weapon_row(tier.max(0) as usize).map(|row| {
                             career.roll = crate::trade::step(career.roll);

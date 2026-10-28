@@ -40,8 +40,8 @@ use crate::arena_session::{
 };
 use crate::arena_spawn::{MANAGER_ROLE, generic_plan, hire_plan};
 use crate::match_layout::{
-    Fighter as SlotFighter, FreshMatch, HOSTILE, MATCH_ACT_GRACE_MS, NextRound, RaisedBody, Slot,
-    layout, opponent_place, our_place, raise_fresh_match,
+    FREE_FOR_ALL, Fighter as SlotFighter, FreshMatch, HOSTILE, MATCH_ACT_GRACE_MS, NextRound,
+    RaisedBody, Slot, layout, opponent_place, our_place, raise_fresh_match,
 };
 use crate::scene_bodies::{
     BodyBrain, SceneBodyPlan, SceneCommand, SceneFighter, beast_scene_plan, company_plan,
@@ -329,7 +329,9 @@ pub fn round_plans(
                     // the drawn variant itself is the item shown.
                     let event_weapon = i32::from(weapon.is_some());
                     // The team ids after the player's are the company ids
-                    // the forced outfit table is indexed by.
+                    // the forced outfit table is indexed by [guess: the
+                    // bracket's company table is filled from the event's
+                    // teams].
                     hire_opponent_plan(
                         hire_plan(tier as u8, team as i32, event_weapon),
                         &slot.place,
@@ -778,6 +780,11 @@ fn stand_bracket_round(
     let outfits: Vec<i32> = (0..20).collect();
     let teams = survivors.iter().filter(|&&id| id > 0).count()
         / usize::try_from(bracket.team_size.max(1)).unwrap_or(1);
+    // The original's role flag follows the number of *groups* in the round,
+    // not the number of surviving teams: hostile below three groups, else a
+    // free-for-all.
+    let groups = teams / usize::try_from(bracket.sides.max(1)).unwrap_or(1);
+    let role = if groups < 3 { HOSTILE } else { FREE_FOR_ALL };
     let fight = FreshMatch {
         slots: &survivors,
         per_team: bracket.team_size,
@@ -835,10 +842,7 @@ fn stand_bracket_round(
                 commands.write(SceneCommand::Spawn(Box::new(body)));
             }
             RaisedBody::Opponent {
-                plan,
-                role,
-                act_at_ms,
-                ..
+                plan, act_at_ms, ..
             } => {
                 let mut body = match plan {
                     crate::match_layout::OpponentPlan::Generic(plan) => {
@@ -1174,6 +1178,16 @@ mod tests {
         assert_eq!(plans[0].weapon, Some(0x1234));
         assert_eq!(plans[0].team, 6);
         assert_eq!(plans[0].act_at_ms, 3_000);
+        // The team's company bytes are forced into the hire profile, and
+        // the event's weapon sets the profile's armed flag.
+        let BodyLook::Generated(fighter) = plans[0].look else {
+            panic!("a tournament side takes a generated record");
+        };
+        let crate::arena_records::OutfitSource::Profile(profile) = fighter.outfit else {
+            panic!("a hire side takes the profile pass");
+        };
+        assert_eq!(profile.flags(), 0x0f);
+        assert_eq!(&profile.0[5..8], &[96, 227, 0]);
     }
 
     #[test]
@@ -1437,6 +1451,9 @@ mod tests {
                 .all(|plan| matches!(plan.look, BodyLook::Generated(_)))
         );
         assert!(spawned.iter().any(|plan| plan.team != 1));
+        // Four groups fight this round, so every opponent is a free-for-all
+        // side (the original's role flag), not a hostile one.
+        assert!(spawned.iter().all(|plan| plan.roles == vec![FREE_FOR_ALL]));
     }
 
     #[test]
