@@ -606,23 +606,37 @@ fn a_soft_stop_measures_the_goal_in_three_dimensions() {
 #[test]
 fn a_step_target_is_clamped_and_taken_past_400_cm2() {
     let mut s = Steering::default();
+    let keep = |at: Vec3| at;
+    let taken = |r: (Vec3, bool)| r.1.then_some(r.0);
     let wall =
         |near: f32| move |from: Vec3, to: Vec3| (from + (to - from).normalize() * near, true);
     let target = Vec3::X * 0.8;
-    assert_eq!(s.step_target(Vec3::ZERO, 0.0, target, &wall(0.2)), None);
-    let t = s.step_target(Vec3::ZERO, 0.0, target, &wall(0.25)).unwrap();
+    assert_eq!(
+        taken(s.step_target(Vec3::ZERO, 0.0, target, &wall(0.2), &keep)),
+        None
+    );
+    let t = taken(s.step_target(Vec3::ZERO, 0.0, target, &wall(0.25), &keep)).unwrap();
     assert!((t - Vec3::X * 0.25).length() < 1e-6);
-    assert_eq!(s.step_target(Vec3::ZERO, 0.0, target, &open), Some(target));
+    assert_eq!(
+        taken(s.step_target(Vec3::ZERO, 0.0, target, &open, &keep)),
+        Some(target)
+    );
     assert_eq!(s.line.unwrap().asked, Asked::Step);
     let raised = |_: Vec3, _: Vec3| (Vec3::new(0.15, 0.15, 0.0), true);
     assert_eq!(
-        s.step_target(Vec3::ZERO, 0.0, target, &raised),
+        taken(s.step_target(Vec3::ZERO, 0.0, target, &raised, &keep)),
         Some(Vec3::new(0.15, 0.15, 0.0))
     );
     let flat = |_: Vec3, _: Vec3| (Vec3::new(0.15, 0.0, 0.0), true);
-    assert_eq!(s.step_target(Vec3::ZERO, 0.0, target, &flat), None);
+    assert_eq!(
+        taken(s.step_target(Vec3::ZERO, 0.0, target, &flat, &keep)),
+        None
+    );
     let unordered = |_: Vec3, _: Vec3| (Vec3::new(1.0, f32::NAN, 0.0), false);
-    assert_eq!(s.step_target(Vec3::ZERO, 0.0, target, &unordered), None);
+    assert_eq!(
+        taken(s.step_target(Vec3::ZERO, 0.0, target, &unordered, &keep)),
+        None
+    );
     // The line walk starts at the chest's x/z on the ground, and the 400
     // cm² gate is measured from the chest.
     let tells = std::cell::RefCell::new(Vec::new());
@@ -632,7 +646,7 @@ fn a_step_target_is_clamped_and_taken_past_400_cm2() {
     };
     let chest = Vec3::new(0.0, 1.5, 0.0);
     assert_eq!(
-        s.step_target(chest, 0.0, chest + Vec3::X * 0.8, &record),
+        taken(s.step_target(chest, 0.0, chest + Vec3::X * 0.8, &record, &keep)),
         Some(chest + Vec3::X * 0.8)
     );
     assert_eq!(*tells.borrow(), vec![(Vec3::ZERO, chest + Vec3::X * 0.8)]);
@@ -711,11 +725,11 @@ fn a_tap_keeps_the_movement_word_for_a_step() {
     w.tick(1000, fwd, Vec2::ZERO, 0.0);
     w.tick(1400, fwd, Vec2::ZERO, 0.0);
     w.tick(1500, none, Vec2::ZERO, 0.0);
-    assert!(!w.target_expired);
+    assert!(!w.queue_expired);
     w.tick(1600, none, Vec2::ZERO, 0.0);
-    assert!(!w.target_expired);
+    assert!(!w.queue_expired);
     w.tick(1601, none, Vec2::ZERO, 0.0);
-    assert!(w.target_expired);
+    assert!(w.queue_expired);
 }
 
 /// The key word follows the reader's order: A is left (2), D right (8),

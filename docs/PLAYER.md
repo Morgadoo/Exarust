@@ -22,16 +22,10 @@ decides from it each tick (below). Outside combat:
   second of the game clock has passed since **any** turn key (a quarter
   turn, or A or D steering a walk); A and D together cancel but count. An
   object held by the left button blocks it (The hand, below).
-- **A tap** under 200 ms keeps its movement word until 200 ms after the
-  press, so a quick tap still takes a step; a word held longer clears as
-  soon as it is released. Opposing keys cancel in the word (A with D, W
-  with S). A word that stays the same past 200 ms while the body's crouch
-  is under 0.1 is flagged a tap (the goal's longer stride, a tested rule
-  with no caller); the movement target is let go once the word has been
-  zero 200 ms past
-  its last nonzero tick. The pad's analog stick is its own word once its
-  squared length is over 0.01 (in double precision; a NaN reads the keys)
-  (`steering::MoveWord`).
+- **Keys as they are.** Exploration reads W, A, S and D as they are held;
+  the movement word's 200 ms persistence belongs to the combat footwork
+  (Combat mode, below). A quick tap still takes a step because the walk's
+  release waits for a double-support key segment.
 - **Releasing W** does not stop at once: the request holds until the
   playing walk reaches key segment 0 or 4 (its keys run every 10 frames
   from 10 to 80; segment 0 is the wrap before key 10, segment 4 the one
@@ -816,33 +810,59 @@ The point under the cursor is the navigation unit's pick: a screen ray, then the
 
 **Tab** toggles it, and every practice or arena fight starts with it on, as
 the original turns it on at each fight start (with `--opponent`, once the
-level shows; not in the arena hub). W, S, A and D step along and across
-the cursor's direction, and keys held longer than 200 ms walk on.
-A fresh press aims one step reach. The long step is a latch: once the
-same keys have been held strictly over 200 ms while the crouch promoted
-to double is below 0.1, the target becomes (1.5 − 0.3 × encumbrance) step
-reaches, one double product narrowed once (120 cm unencumbered, 97.2 cm
-at encumbrance 0.5 on a 72 cm reach). The float 0.1 is already above that
-double, so a crouch of 0.1 keeps the short reach, and a crouch raised
-after the latch is set does not clear it; only a key change or release
-does. Past a crouch of a half any step is 0.7 of the reach, latch or
-not, the product worked in double precision and narrowed before the legs'
-extension; a NaN crouch fails the ordered compare and keeps the mode's
-step. The legs' extension scales both
-lengths, so a half extension halves
-the tap and the held step, and √scale scales the displacement once more.
-A side key weighs 0.8 of the facing, and the target is the chest plus the
-raw key sum scaled by (fd4·√scale)/|v| in centimetres, so a diagonal aims
-eight tenths as far sideways as forward and a pure side step stays a full
-step. The line walk starts at the chest's x/z on the ground, and the step
-is taken only when the clamped target's three-dimensional squared
-distance from the chest is over 400 cm².
+level shows; not in the arena hub).
 
-The original's footwork steps the feet and never changes the clip; Exarust's
-interim one plays "Combat Walk" while a key is held and gives back the
-clip it replaced (the guard stays the guard) when they are released; its
-capsule moves meanwhile, and the body does not locomote (the original's
-footwork is steps). A walk or run under way when Tab turns combat mode on
+**Footwork** is the original's step machine (`exa_game::footwork`):
+
+- **The movement word.** W, S, A and D form a word along the cursor's
+  direction (A is 2, D 8, W 1, S 4; A with D and W with S cancel). A word
+  pressed for less than 200 ms is kept until 200 ms after the press, so a
+  tap still steps; a word held longer clears on release. A word that stays
+  the same strictly over 200 ms while the crouch, widened to double, is
+  under 0.1 is flagged a **tap** (the float 0.1 is above that double, so a
+  crouch of 0.1 is no tap). The pad reaches the footwork as keys.
+- **The gate.** No step is laid while the condition word has any of
+  `0x82C1` (walking, the shocked bits, down, the kick), the energy is
+  under 0.7, a swing is under way, or the word is zero.
+- **Starting a step.** With no step under way the goal is laid from the
+  word: the chest plus the key sum (summed W, A, D, S; a side key weighs
+  0.8 of the facing, its height dropped) scaled by
+  `(stride·extension·√scale)/|dir|` cm, where the stride is the step reach
+  or, for a tap, `(1.5 − 0.3·encumbrance)` reaches (one double product
+  narrowed once: 120 cm unencumbered, 97.2 cm at encumbrance 0.5 on a
+  72 cm reach). The line walk from the chest's x/z on the ground clamps
+  it; it is taken only when over 400 cm² from the chest in three
+  dimensions, and is then moved onto the grid's nearest walkable point
+  across the ground. The deep crouch's 0.7 stride is not the goal's: the
+  goal routine lays its own stride.
+- **Under way.** A step is under way while it has not landed, or its
+  target is still more than 20·scale cm from the chest across the ground.
+  Within 300 ms of its start, a word not yet a tap **queues** the raw word
+  when it differs from the step's own word (the pad's analog word queues
+  even when the same), and a tap **re-lays** the step at the long stride
+  once. From 300 ms on any held raw word queues. A queued step stores the
+  raw word and its full step vector (the side at full weight, scaled by
+  `reach·√scale/|dir|`).
+- **Landing.** Exarust's interim feet move the capsule toward the target
+  at the walking speed and land the step within 20·scale cm of it (or
+  after a second, Exarust's own, so a wall does not hold it). A landing
+  with a queue takes it by the body's queue rule
+  (`exa_physics::body::queued_step`): the target becomes the chest plus
+  the queued vector, clamped by the line walk; the next tick the word
+  takes the queued word back, its tap and clocks restart. The queue
+  clears once the word has been zero for over 200 ms. A step already
+  started finishes after the keys are let go, so a held key walks on as a
+  chain of steps.
+- **The mode word.** Each combat tick the behaviour's ladder sets its mode:
+  down or dazed (energy under 0.85; a NaN reads as enough) is idle;
+  switching held items or casting is idle; the right button walks to the
+  cursor (`player_behaviour::combat_mode`); the left button's press is the
+  attack mode. The right button's walk only runs in the walk mode, so a
+  dazed player no longer walks to the cursor.
+
+Exarust's footwork plays "Combat Walk" while a step is under way and gives
+back the clip it replaced (the guard stays the guard) once it lands.
+A walk or run under way when Tab turns combat mode on
 stops softly, as the original's combat branch stops it, and ends in the
 stance once the body stands. While its condition
 word is helpless (down, getting up, collapsing, dead) the player is not

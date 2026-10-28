@@ -8,11 +8,9 @@
 //!   S asks to move backwards (braking first, and turning the brake into a
 //!   backpedal, when faster than 1 cm a tick). Let go while the body walks,
 //!   the request holds until the playing walk's key segment is 0 or 4 (its
-//!   two double-support keys), so the body finishes its stride. A key
-//!   pressed for under 200 ms keeps its movement word until 200 ms after
-//!   the press (`MoveWord`), so a tap still takes a step; a held key stops
-//!   at once. Opposing keys cancel in the word (A with D, W with S). The
-//!   pad's analog stick is its own word.
+//!   two double-support keys), so the body finishes its stride. The keys
+//!   are read as they are: the movement word's 200 ms persistence
+//!   (`MoveWord`) is the combat footwork's (`crate::footwork`).
 //! - **The cursor.** Its point on the plane 80 cm over the ground gives a
 //!   direction once it is 50 cm or more away, which a second-order yaw
 //!   follower smooths.
@@ -29,13 +27,11 @@
 //!   8·v + 20 cm ahead in three dimensions.
 //! - **The spawn.** On its third behaviour tick (unless down) the
 //!   character is moved onto the nearest walkable point of the grid.
-//! - **Footwork.** In combat mode a step's target is the chest plus the
-//!   raw key sum scaled by (fd4·√scale)/|v| in centimetres (a long step
-//!   once the same keys have been held strictly over 200 ms while the
-//!   crouch widened is below 0.1, both scaled by the legs' extension),
-//!   clamped by the line walk from the chest's x/z at the ground. A side
-//!   key weighs 0.8 of the facing. The step is taken only when the clamped
-//!   target is over 400 cm² from the chest, in three dimensions.
+//! - **Footwork.** In combat mode the movement word lays discrete steps
+//!   toward a movement goal and queues the next one while a step is under
+//!   way (`crate::footwork`); the goal's direction, stride and 400 cm²
+//!   test are here ([`key_goal_direction`], [`goal_stride`],
+//!   [`Steering::step_target`]).
 
 use bevy::prelude::*;
 use exa_anim::{Animator, Motions};
@@ -113,7 +109,7 @@ pub(crate) struct Keys {
     pub(crate) mouse: bool,
 }
 
-/// The exploration movement word's bits, as the key reader builds them:
+/// The movement word's bits, as the key reader builds them:
 /// forward (W), left (A), back (S) and right (D), and the gamepad's analog
 /// word. Opposing keys cancel: A with D, W with S.
 pub(crate) const MOVE_FORWARD: u32 = 1;
@@ -144,10 +140,7 @@ pub(crate) const GOAL_RELEASE2: f32 = 400.0;
 /// word's key sum with the side at [`GOAL_SIDE`], its height dropped (the
 /// goal zeroes it before taking the length). The analog word is its own
 /// direction and does not come through here.
-///
-/// Kept as a tested rule: Exarust's exploration request walks by the body's
-/// look-ahead, not by this goal, so nothing calls it yet.
-#[allow(dead_code)]
+/// The combat footwork's goal reads it (`crate::footwork`).
 pub(crate) fn key_goal_direction(facing: Vec3, word: u32) -> Vec3 {
     key_sum(facing, word, GOAL_SIDE).with_y(0.0)
 }
@@ -156,7 +149,6 @@ pub(crate) fn key_goal_direction(facing: Vec3, word: u32) -> Vec3 {
 /// negation, left and right the side vector `(facing.z, 0, −facing.x)`
 /// (the cross of up and the facing) times `side_share`, added in the
 /// original's bit order (W, A, D, S); no bit gives zero.
-#[allow(dead_code)]
 fn key_sum(facing: Vec3, word: u32, side_share: f32) -> Vec3 {
     let side = Vec3::new(facing.z, 0.0, -facing.x) * side_share;
     let mut dir = if word & MOVE_FORWARD != 0 {
@@ -181,11 +173,9 @@ fn key_sum(facing: Vec3, word: u32, side_share: f32) -> Vec3 {
 /// `(1.5 − 0.3·encumbrance)` times it (in double precision, narrowed once),
 /// then times the legs' `extension`, then times the clock factor, in the
 /// original's order.
-///
-/// Kept as a tested rule with the same missing caller as
-/// [`key_goal_direction`]. Not modelled: a lone forward word with a target
-/// lets the target's own approach rule bend the goal.
-#[allow(dead_code)]
+/// The combat footwork's goal reads it (`crate::footwork`). Not modelled:
+/// a lone forward word with a target lets the target's own approach rule
+/// bend the goal.
 pub(crate) fn goal_stride(
     step_cm: f32,
     extension: f32,
@@ -206,10 +196,7 @@ pub(crate) fn goal_stride(
 /// D the full side vector (unlike the goal's 0.8 share), the analog word its
 /// own stored direction; the height is dropped from either, and a zero
 /// direction divides by zero as the original does.
-///
-/// Kept as a tested rule: the running request walks by the look-ahead, so
-/// nothing calls it yet.
-#[allow(dead_code)]
+/// The combat footwork queues its next step along it (`crate::footwork`).
 pub(crate) fn key_step(facing: Vec3, word: u32, analog: Vec3, step_cm: f32, factor: f32) -> Vec3 {
     let dir = if word == MOVE_ANALOG {
         analog
@@ -234,7 +221,7 @@ pub(crate) const ANALOG_DEAD_ZONE: f64 = 0.01;
 /// An analog tap needs the stick's squared length over this (double).
 pub(crate) const ANALOG_TAP: f64 = 0.9;
 
-/// The exploration movement word's persistence, as the behaviour's key
+/// The combat footwork's movement word's persistence, as the behaviour's key
 /// state machine keeps it: the word the movement request reads (`held`),
 /// the tap flag and three clocks (when `held` was set, when the raw word
 /// last changed or stayed zero, and the last tick it was nonzero). A word
@@ -257,9 +244,16 @@ pub(crate) struct MoveWord {
     /// The pad's analog stick last read as the analog word.
     pub(crate) analog: Vec2,
     /// Set on the tick the word has been zero for over [`TAP_MS`] since its
-    /// last nonzero tick: the original lets go of the body's movement
-    /// target then (that target is not modelled; the flag reports it).
-    pub(crate) target_expired: bool,
+    /// last nonzero tick: the original clears the body's step queue then
+    /// (`crate::footwork::StepRecord::queue`).
+    pub(crate) queue_expired: bool,
+    /// The raw word read this tick (before the persistence).
+    pub(crate) raw: u32,
+    /// The word of the step queued on the body, which the word takes back
+    /// once the body took that step.
+    pub(crate) queued_word: u32,
+    /// The word the last movement goal was laid from.
+    pub(crate) last_word: u32,
 }
 
 impl MoveWord {
@@ -299,7 +293,8 @@ impl MoveWord {
         } else {
             Self::of_keys(keys)
         };
-        self.target_expired = false;
+        self.raw = word;
+        self.queue_expired = false;
         if word != self.held {
             self.tap = false;
             self.change_ms = now_ms;
@@ -322,13 +317,29 @@ impl MoveWord {
             self.tap = false;
             self.change_ms = now_ms;
             if self.busy_ms + TAP_MS < now_ms {
-                self.target_expired = true;
+                self.queue_expired = true;
             }
         }
         self.held
     }
 
+    /// Before the tick, the body's step queue: once the body took the
+    /// queued step (`queue` below zero) the queue clears, the word takes
+    /// the queued word back, the tap flag clears and both of the tick's
+    /// change clocks restart at `now_ms`.
+    pub(crate) fn take_queue(&mut self, now_ms: u64, queue: &mut i32) {
+        if *queue < 0 {
+            *queue = 0;
+            self.held = self.queued_word;
+            self.queued_word = 0;
+            self.tap = false;
+            self.change_ms = now_ms;
+            self.busy_ms = now_ms;
+        }
+    }
+
     /// The word as the request's four keys `[forward, back, left, right]`.
+    #[cfg(test)]
     pub(crate) fn keys(word: u32) -> [bool; 4] {
         [
             word & MOVE_FORWARD != 0,
@@ -793,23 +804,33 @@ impl Steering {
         }
     }
 
-    /// A footwork step's target, as the original's: `target` (m) is the
-    /// chest plus the scaled key vector, the line walk starts from the
-    /// chest's x/z at the ground's height, and the step is taken only when
-    /// the clamped target's squared distance from the chest, in centimetres
-    /// and three dimensions, is over 400. An unordered distance is none.
+    /// A footwork step's target, as the original's goal routine writes it:
+    /// `target` (m) is the chest plus the scaled word direction, the line
+    /// walk starts from the chest's x/z at the ground's height and clamps
+    /// it, and the step is taken only when the clamped target's squared
+    /// distance from the chest, in centimetres and three dimensions, is
+    /// over 400; a taken target is then moved onto the grid's `nearest`
+    /// walkable point across the ground (its height stays the clamped
+    /// one's: a guess, the grid's snap writes the whole point). Returns the
+    /// target and whether it was taken (an unordered distance is not).
     pub(crate) fn step_target(
         &mut self,
         chest: Vec3,
         ground: f32,
         target: Vec3,
         line: LineWalk,
-    ) -> Option<Vec3> {
+        nearest: &dyn Fn(Vec3) -> Vec3,
+    ) -> (Vec3, bool) {
         let from = Vec3::new(chest.x, ground, chest.z);
         let asked = ask(line, Asked::Step, from, target);
         self.line = Some(asked);
         let centimetres = (asked.end - chest) * CM;
-        goal_released(centimetres).then_some(asked.end)
+        if goal_released(centimetres) {
+            let snapped = nearest(asked.end);
+            (Vec3::new(snapped.x, asked.end.y, snapped.z), true)
+        } else {
+            (asked.end, false)
+        }
     }
 }
 

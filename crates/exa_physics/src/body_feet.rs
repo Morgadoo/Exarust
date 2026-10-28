@@ -909,8 +909,8 @@ pub struct QueuedStep {
 /// the facing (the dot summed z + (y + x), strictly above 0). The original
 /// clamps the target through its pathfinder; the caller does. The
 /// countdown becomes −2 before the first landing (`landings < 1`) and −1
-/// after it. This is a tested rule with no caller yet: Exarust's footwork
-/// does not queue combat steps.
+/// after it. The player's combat footwork (`exa_game::footwork`) takes its
+/// queue through it when its interim step lands.
 pub fn queued_step(
     chest: Vec3,
     target: Vec3,
