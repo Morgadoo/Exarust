@@ -563,7 +563,7 @@ pub fn spawn_scene_body(
                 record.hair_colour[1],
                 record.hair_colour[2],
             ],
-            feral: record.feral,
+            feral: exa_character::look::build_feral(&record),
             light_variant: record.profession_rest & 0x1_0000 != 0,
             head_word: look.worn.iter().fold(0, |word, worn| word | worn.head_word),
         },

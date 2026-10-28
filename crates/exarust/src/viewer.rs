@@ -2229,7 +2229,7 @@ fn spawn_placed_characters(
                     c.record.hair_colour[1],
                     c.record.hair_colour[2],
                 ],
-                feral: c.record.feral,
+                feral: exa_character::look::build_feral(&c.record),
                 light_variant: c.record.profession_rest & 0x1_0000 != 0,
                 head_word: c.worn.iter().fold(0, |w, g| w | g.head_word),
             },

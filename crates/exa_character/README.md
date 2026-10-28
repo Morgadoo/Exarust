@@ -117,7 +117,9 @@ physique values and the body morphs they select remain the body's concern
   set (men's or women's; both sexes take the men's extra normal map), the
   six beards and their `bearda0N d/n` maps, the normal-map layers (weight
   `i` drives physique map `i + 1`, over 0.01 in double, none without a
-  morph controller), the darkening and the two random skin-map offsets
+  morph controller), the darkening (the record's feral level and age kept
+  within 0…1 as the build's clamp leaves them) and the two random skin-map
+  offsets
   drawn from the record's look seed (`search_seed`; a zero word is
   replaced). The hair rules read the worn set's head coverage union: bit 0
   shows the style's `?` roots, bit 1 grows no hair, and the look rebuild

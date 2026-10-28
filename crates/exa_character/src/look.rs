@@ -224,8 +224,21 @@ pub fn normal_layers(
 /// darkens with age (look bit 8) and the character is feral or aged. The
 /// skin shader darkens the colour by it.
 pub fn skin_darkening(record: &CharacterRecord, look: u32) -> Option<f32> {
-    (look & LOOK_AGE_DARKENS != 0 && (record.feral > 0.0 || record.age > 0.0))
-        .then_some(record.feral)
+    let feral = build_feral(record);
+    (look & LOOK_AGE_DARKENS != 0 && (feral > 0.0 || build_age(record) > 0.0)).then_some(feral)
+}
+
+/// A record's feral level as the builder leaves it: inside 0…1 after the
+/// build's clamp (a value below 0 is 0, above 1 is 1; a NaN stays, as the
+/// original's ordered compares leave it).
+pub fn build_feral(record: &CharacterRecord) -> f32 {
+    record.feral.clamp(0.0, 1.0)
+}
+
+/// A record's age as the builder leaves it: inside 0…1 (see
+/// [`build_feral`]).
+pub fn build_age(record: &CharacterRecord) -> f32 {
+    record.age.clamp(0.0, 1.0)
 }
 
 /// The hair entry a style picks: styles count from 1 in the record, entry 0
@@ -494,6 +507,18 @@ mod tests {
         r.feral = 0.0;
         r.age = 0.3;
         assert_eq!(skin_darkening(&r, LOOK_AGE_DARKENS), Some(0.0));
+        // The build clamps the record's feral level and age to 0…1.
+        r.feral = 1.5;
+        assert_eq!(skin_darkening(&r, LOOK_AGE_DARKENS), Some(1.0));
+        r.feral = -0.5;
+        assert_eq!(build_feral(&r), 0.0);
+        r.age = -0.5;
+        assert_eq!(build_age(&r), 0.0);
+        assert_eq!(skin_darkening(&r, LOOK_AGE_DARKENS), None);
+        r.age = 2.0;
+        assert_eq!(build_age(&r), 1.0);
+        r.feral = f32::NAN;
+        assert!(build_feral(&r).is_nan());
     }
 
     #[test]
