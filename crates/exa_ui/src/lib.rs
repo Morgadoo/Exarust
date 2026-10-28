@@ -129,8 +129,9 @@ pub use drop_down::{
 };
 pub use emblem_form::{
     BACKGROUND_MAX, BACKGROUND_STEM, COLOUR_THREE_TABLE, COLOUR_UNIFORMS, DESIGN_MAX, DESIGN_STEM,
-    EMBLEM_SHADER, EmblemDraw, EmblemEditor, EmblemRandom, EmblemRecord, MIRROR_UNIFORM,
-    PictureSelection, draw_order as emblem_draw_order, picture, preview_quad, select_background,
+    EMBLEM_SHADER, EmblemDraw, EmblemEditor, EmblemPreview, EmblemRandom, EmblemRecord,
+    MIRROR_UNIFORM, PictureSelection, draw_order as emblem_draw_order, emblem_sample, picture,
+    preview_colours, preview_image, preview_quad, preview_textures, select_background,
     select_design,
 };
 pub use fade::DeathFade;

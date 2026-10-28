@@ -417,6 +417,115 @@ pub fn preview_quad(form_width: i32, unit: i32) -> [i32; 4] {
     [left, top, left + size, top + size]
 }
 
+/// The emitter shader's `mix`: the usual GLSL lowering
+/// `x + (y − x)·a` (a guess: the shipped shader's compiled form is not in
+/// the pack, and GPUs may lower `mix` differently).
+fn mix(x: f32, y: f32, a: f32) -> f32 {
+    x + (y - x) * a
+}
+
+/// One fragment of the emblem shader: the four layers, the four colours,
+/// the mirror on each axis and the alpha, at texture coordinates `(u, v)`.
+/// `layers` are `Tex0`…`Tex3` (the background, the design, `emblemtexbs`
+/// and `emblemtexra`), sampled with the GUI's repeat/nearest sampler. The
+/// body is the shader's own, in order; the result is straight RGBA.
+pub fn emblem_sample(
+    layers: [&crate::gui_draw::GuiTexture; 4],
+    colours: [[f32; 3]; 4],
+    mirror: [f32; 2],
+    alpha: f32,
+    u: f32,
+    v: f32,
+) -> [f32; 4] {
+    let red = |texel: [u8; 4]| f32::from(texel[0]) / 255.0;
+    let t0 = [(u - 0.5) * mirror[0] + 0.5, v];
+    let mut a = red(layers[0].sample(t0[0], t0[1]));
+    let mut c1 = mix(colours[0][0], colours[1][0], a);
+    let mut c2 = mix(colours[0][1], colours[1][1], a);
+    let mut c3 = mix(colours[0][2], colours[1][2], a);
+    let t1 = [(((u * 2.0 - 0.5) - 0.5) * mirror[1]) + 0.5, v * 2.0 - 0.5];
+    let design = layers[1].sample(t1[0], t1[1]);
+    let c = red(layers[2].sample(u, v));
+    c1 *= (c + 2.5) * 0.333;
+    c2 *= (c + 2.5) * 0.333;
+    c3 *= (c + 2.5) * 0.333;
+    let third = (f32::from(design[3]) / 255.0 * 3.0 - 2.0).max(0.0);
+    c1 = mix(c1, colours[2][0] * (c + 0.5), third);
+    c2 = mix(c2, colours[2][1] * (c + 0.5), third);
+    c3 = mix(c3, colours[2][2] * (c + 0.5), third);
+    a = f32::from(design[3]) / 255.0 * (1.0 - red(design));
+    a = a * a * a * (a * (6.0 * a - 15.0) + 10.0);
+    c1 = mix(c1, colours[3][0] * (c + 0.5), a);
+    c2 = mix(c2, colours[3][1] * (c + 0.5), a);
+    c3 = mix(c3, colours[3][2] * (c + 0.5), a);
+    let t = [(0.5 - u).abs() * 2.0, (0.5 - v).abs() * 2.0];
+    let g = (t[0] * t[0] + t[1] * t[1]).min(1.0);
+    a = ((1.0 - g) * 25.0).min(1.0);
+    let mut b = ((0.955 - g) * 25.0).clamp(0.0, 1.0);
+    let d = c * 0.75 + 0.25;
+    b = ((a.max(0.0) - b) * d * 2.5).min(1.0);
+    let col4 = [0.5 * 2.0, 0.48 * 2.0, 0.44 * 2.0];
+    c1 = mix(c1, col4[0], b);
+    c2 = mix(c2, col4[1], b);
+    c3 = mix(c3, col4[2], b);
+    let f = [c1 * 0.8 + 0.1, c2 * 0.8 + 0.1, c3 * 0.8 + 0.1];
+    let paper = layers[3].sample(u, v);
+    let bt = [
+        f32::from(paper[0]) / 255.0 * 0.6 + 0.2,
+        f32::from(paper[1]) / 255.0 * 0.6 + 0.2,
+        f32::from(paper[2]) / 255.0 * 0.6 + 0.2,
+    ];
+    let burn = |channel: usize| {
+        if f[channel] > 0.5 {
+            1.0 - (1.0 - bt[channel]) * (1.0 - f[channel]) * 2.0
+        } else {
+            2.0 * f[channel] * bt[channel]
+        }
+    };
+    c1 = burn(0);
+    c2 = burn(1);
+    c3 = burn(2);
+    b = (b + ((0.95 - g) * 10.0).max(0.0)).min(1.0);
+    b = b * 0.5 + 0.5;
+    c1 *= b;
+    c2 *= b;
+    c3 *= b;
+    c1 *= a;
+    c2 *= a;
+    c3 *= a;
+    b = (1.0 - g.sqrt()) * 0.6 + 0.4;
+    c1 *= b;
+    c2 *= b;
+    c3 *= b;
+    [c1, c2, c3, (a * c * 5.0).min(1.0) * alpha]
+}
+
+/// Renders the preview through [`emblem_sample`] at one texel per pixel on
+/// a `size`-square canvas, rows top-down.
+pub fn preview_image(
+    preview: &EmblemPreview,
+    layers: [&crate::gui_draw::GuiTexture; 4],
+    size: i32,
+) -> Option<crate::gui_draw::GuiTexture> {
+    let size = size.clamp(1, 4096) as u32;
+    let mut pixels = Vec::with_capacity((size * size) as usize);
+    for y in 0..size {
+        let v = 1.0 - (y as f32 + 0.5) / size as f32;
+        for x in 0..size {
+            let u = (x as f32 + 0.5) / size as f32;
+            let [r, g, b, a] =
+                emblem_sample(layers, preview.colours, preview.mirror, preview.alpha, u, v);
+            let byte = |value: f32| (value.clamp(0.0, 1.0) * 255.0).round_ties_even() as u8;
+            pixels.push([byte(r), byte(g), byte(b), byte(a)]);
+        }
+    }
+    Some(crate::gui_draw::GuiTexture {
+        width: size,
+        height: size,
+        pixels,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -575,6 +684,99 @@ mod tests {
         );
         editor.set_renderer_colours([7, 8, 9, 10]);
         assert_eq!(editor.record().colours, [7, 8, 9, 10]);
+    }
+
+    fn layers_of(red: u8, green: u8, blue: u8, alpha: u8) -> crate::gui_draw::GuiTexture {
+        crate::gui_draw::GuiTexture::solid([red, green, blue, alpha])
+    }
+
+    #[test]
+    fn the_emblem_shader_body_is_pinned_at_the_centre() {
+        // Four white texels, black colours, no mirror: the paper burn
+        // leaves 2 · 0.1 · 0.8 and the coverage is 1.
+        let white = layers_of(255, 255, 255, 255);
+        let layers = [&white, &white, &white, &white];
+        let out = emblem_sample(layers, [[0.0; 3]; 4], [1.0, 1.0], 1.0, 0.5, 0.5);
+        assert!((out[0] - 0.16).abs() < 1e-6, "{out:?}");
+        assert!((out[1] - 0.16).abs() < 1e-6);
+        assert!((out[2] - 0.16).abs() < 1e-6);
+        assert!((out[3] - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_emblem_shader_mirrors_the_background_and_the_design() {
+        let background = crate::gui_draw::GuiTexture {
+            width: 2,
+            height: 1,
+            pixels: vec![[0, 0, 0, 255], [255, 0, 0, 255]],
+        };
+        let design = layers_of(0, 0, 0, 0);
+        let bs = layers_of(0, 0, 0, 0);
+        let ra = layers_of(0, 0, 0, 0);
+        let layers = [&background, &design, &bs, &ra];
+        // With no mirror, u = 0.25 samples the first (black) texel; with
+        // the x mirror it samples the second (red) one.
+        let plain = emblem_sample(
+            layers,
+            [[1.0; 3], [0.0; 3], [0.0; 3], [0.0; 3]],
+            [1.0, 1.0],
+            0.0,
+            0.25,
+            0.5,
+        );
+        let mirrored = emblem_sample(
+            layers,
+            [[1.0; 3], [0.0; 3], [0.0; 3], [0.0; 3]],
+            [-1.0, 1.0],
+            0.0,
+            0.25,
+            0.5,
+        );
+        // A transparent design makes the alpha zero whichever way round.
+        assert_eq!(plain[3], 0.0);
+        assert_eq!(mirrored[3], 0.0);
+        // The background's mix is visible in the colour.
+        assert_ne!(plain[0].to_bits(), mirrored[0].to_bits());
+        let reversed = crate::gui_draw::GuiTexture {
+            width: 2,
+            height: 1,
+            pixels: vec![[255, 0, 0, 255], [0, 0, 0, 255]],
+        };
+        let layers = [&reversed, &design, &bs, &ra];
+        let swapped = emblem_sample(
+            layers,
+            [[1.0; 3], [0.0; 3], [0.0; 3], [0.0; 3]],
+            [-1.0, 1.0],
+            0.0,
+            0.25,
+            0.5,
+        );
+        assert_eq!(plain[0].to_bits(), swapped[0].to_bits());
+    }
+
+    #[test]
+    fn a_transparent_design_draws_nothing_and_the_preview_has_its_size() {
+        let white = layers_of(255, 255, 255, 255);
+        let clear = layers_of(255, 255, 255, 0);
+        let layers = [&white, &clear, &white, &white];
+        // The vignette, not the design, sets the fragment's alpha: full at
+        // the centre, zero at the corner where the squared distance is 1.
+        let out = emblem_sample(layers, [[1.0; 3]; 4], [1.0, 1.0], 1.0, 0.5, 0.5);
+        assert_eq!(out[3], 1.0);
+        let out = emblem_sample(layers, [[1.0; 3]; 4], [1.0, 1.0], 1.0, 0.0, 0.0);
+        assert_eq!(out[3], 0.0);
+        let preview = EmblemPreview {
+            textures: preview_textures(&EmblemRecord::default()),
+            colours: [[0.5; 3]; 4],
+            mirror: [1.0, 1.0],
+            alpha: 1.0,
+        };
+        let opaque = layers_of(255, 255, 255, 255);
+        let image = preview_image(&preview, [&opaque, &opaque, &opaque, &opaque], 8).unwrap();
+        assert_eq!((image.width, image.height), (8, 8));
+        assert!(image.pixels.iter().any(|pixel| pixel[3] != 0));
+        // The preview's quad is the caller's rect.
+        assert_eq!(preview_quad(FORM_WIDTH, 4), [180, 160, 436, 416]);
     }
 
     #[test]
