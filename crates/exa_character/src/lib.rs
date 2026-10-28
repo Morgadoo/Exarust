@@ -68,6 +68,7 @@ impl Plugin for CharacterPlugin {
         app.add_plugins((blood::BloodPlugin, spray::SprayPlugin))
             .init_resource::<Painting>()
             .init_resource::<Fitting>()
+            .init_resource::<PendingSkins>()
             .add_systems(
                 Update,
                 (
@@ -78,6 +79,7 @@ impl Plugin for CharacterPlugin {
                     .run_if(not(resource_exists::<UnderwearItems>)),
                 keep_underwear.run_if(resource_exists::<UnderwearItems>),
                 equip_outfits,
+                finish_skin_composites.run_if(resource_exists::<Game>),
                 held::choose_held_movesets,
             )
                 .chain()
@@ -363,8 +365,9 @@ fn apply_skin_looks(
         let Some(root) = parents.iter_ancestors(part).find(|&a| look_of.contains(a)) else {
             continue;
         };
-        // The merged skin run takes its composited material in the merge.
-        if merged.contains(root) && !dressed.contains(root) {
+        // The merged skin run takes its material in the merge (and its
+        // composite when the generation finishes).
+        if merged.contains(root) {
             continue;
         }
         let Ok((look, job)) = look_of.get(root) else {
@@ -418,6 +421,67 @@ struct Painting(HashMap<(String, Appearance), Task<PaintedSet>>);
 /// a few hundred milliseconds.
 #[derive(Resource, Default)]
 struct Fitting(HashMap<String, Task<model::BuiltModel>>);
+
+/// Skin composites being generated off the main thread, by
+/// [`exa_assets::SkinCompositeJob::key`], with the merged skin runs drawing
+/// the race maps until each is ready.
+#[derive(Resource, Default)]
+struct PendingSkins(HashMap<String, PendingSkin>);
+
+struct PendingSkin {
+    job: exa_assets::SkinCompositeJob,
+    task: Task<exa_assets::human_skin::SkinImages>,
+    /// Each waiting skin run and the placeholder material it was given.
+    waiting: Vec<(Entity, Handle<exa_render::material::ExaMaterial>)>,
+}
+
+/// Uploads each finished skin composite and gives it to the skin runs that
+/// wait for it. A run whose material changed meanwhile (a look change)
+/// keeps its own.
+#[allow(clippy::too_many_arguments)]
+fn finish_skin_composites(
+    game: Res<Game>,
+    mut pending: ResMut<PendingSkins>,
+    mut cache: ResMut<ModelCache>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<exa_render::material::ExaMaterial>>,
+    mut images: ResMut<Assets<Image>>,
+    support: Option<Res<CompressedImageFormatSupport>>,
+    mut parts: Query<&mut MeshMaterial3d<exa_render::material::ExaMaterial>>,
+) {
+    if pending.0.is_empty() {
+        return;
+    }
+    let finished: Vec<(String, exa_assets::human_skin::SkinImages)> = pending
+        .0
+        .iter_mut()
+        .filter_map(|(key, job)| Some((key.clone(), block_on(poll_once(&mut job.task))?)))
+        .collect();
+    if finished.is_empty() {
+        return;
+    }
+    let mut loader = ModelLoader {
+        game: &game.0,
+        cache: &mut cache,
+        meshes: &mut meshes,
+        materials: &mut materials,
+        images: &mut images,
+        bc_supported: model::bc_supported(support.as_deref()),
+    };
+    for (key, generated) in finished {
+        let Some(job) = pending.0.remove(&key) else {
+            continue;
+        };
+        let handle = loader.finish_composited_skin(&job.job, generated);
+        for (entity, placeholder) in job.waiting {
+            if let Ok(mut bound) = parts.get_mut(entity)
+                && bound.0 == placeholder
+            {
+                bound.0 = handle.clone();
+            }
+        }
+    }
+}
 
 /// What the object database says about a model: the appearance, hidden
 /// body slots and armour of the first item worn as it, and the weapon
@@ -816,6 +880,7 @@ fn spawn_merged_character(
     meshes_of: &Query<(), Or<(With<Mesh3d>, With<exa_assets::SkinnedPart>)>>,
     skin_look: Option<&exa_assets::SkinLook>,
     skin_job: Option<&exa_assets::SkinCompositeJob>,
+    pending: &mut PendingSkins,
 ) -> bool {
     // The generator plans a garment from its item's occupancy and coverage
     // words; a model no item is worn as cannot be planned.
@@ -849,21 +914,46 @@ fn spawn_merged_character(
         return false;
     }
     // The skin run takes the character's composited skin when it is ready,
-    // else the race maps plus tone.
+    // else the race maps plus tone until its generation (started here, off
+    // the main thread) finishes.
+    let mut awaiting = None;
     let skin = match (skin_look, skin_job) {
         (Some(look), Some(job)) => {
-            let composite = loader.composited_skin(job);
-            if composite.is_none() {
-                warn!(
-                    "{}: skin composite maps unavailable; drawing the race maps",
-                    look.entry()
-                );
+            let race = |loader: &mut ModelLoader| {
+                loader.skin_material_of(&look.entry(), look.tone, look.female)
+            };
+            match loader.cached_composite(job) {
+                Some(Some(handle)) => Some(handle),
+                Some(None) => Some(race(loader)),
+                None => {
+                    let key = job.key();
+                    if !pending.0.contains_key(&key) {
+                        match loader.skin_compose_inputs(job) {
+                            Some(inputs) => {
+                                let task = AsyncComputeTaskPool::get()
+                                    .spawn(async move { inputs.generate() });
+                                pending.0.insert(
+                                    key.clone(),
+                                    PendingSkin {
+                                        job: job.clone(),
+                                        task,
+                                        waiting: Vec::new(),
+                                    },
+                                );
+                            }
+                            None => warn!(
+                                "{}: skin composite maps unavailable; drawing the race maps",
+                                look.entry()
+                            ),
+                        }
+                    }
+                    let placeholder = race(loader);
+                    if pending.0.contains_key(&key) {
+                        awaiting = Some((key, placeholder.clone()));
+                    }
+                    Some(placeholder)
+                }
             }
-            Some(
-                composite.unwrap_or_else(|| {
-                    loader.skin_material_of(&look.entry(), look.tone, look.female)
-                }),
-            )
         }
         (Some(look), None) => Some(loader.skin_material_of(&look.entry(), look.tone, look.female)),
         _ => None,
@@ -975,6 +1065,11 @@ fn spawn_merged_character(
             .id();
         if is_skin {
             commands.entity(entity).insert(exa_assets::RaceSkinPart);
+            if let Some((key, placeholder)) = &awaiting
+                && let Some(job) = pending.0.get_mut(key)
+            {
+                job.waiting.push((entity, placeholder.clone()));
+            }
         }
         commands.entity(entity).insert(exa_assets::SkinnedPart {
             bone: 0,
@@ -1012,7 +1107,7 @@ fn equip_outfits(
     game: Option<Res<Game>>,
     mut infos: Local<Option<HashMap<String, ItemInfo>>>,
     mut painting: ResMut<Painting>,
-    mut fitting: ResMut<Fitting>,
+    (mut fitting, mut pending): (ResMut<Fitting>, ResMut<PendingSkins>),
     meshes_of: Query<(), Or<(With<Mesh3d>, With<exa_assets::SkinnedPart>)>>,
     mut bodies: Query<
         (
@@ -1154,6 +1249,7 @@ fn equip_outfits(
                 &meshes_of,
                 skin_look,
                 skin_job,
+                &mut pending,
             ))
         });
         if !merged.unwrap_or(false) {

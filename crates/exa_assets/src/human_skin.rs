@@ -40,6 +40,7 @@ use crate::model::{ModelLoader, is_body_model, painted_image};
 use crate::paint::{Encoding, Texels};
 use crate::skin_composite::{self, Beard, SkinCompositeJob};
 use crate::texture::ColorSpace;
+use std::sync::Arc;
 
 /// The body model's skin material, which the built-in skin replaces.
 pub const RACE_SKIN: &str = "skinhuman";
@@ -318,6 +319,61 @@ pub fn skin_params_of(kind: SkinKind, tone: [f32; 3]) -> ExaParams {
     }
 }
 
+/// A composite job's decoded race, layer and beard maps: everything the
+/// generation reads, owned, so it can run off the main thread
+/// ([`SkinComposeInputs::generate`]).
+pub struct SkinComposeInputs {
+    side: usize,
+    tone: [f32; 3],
+    colour: Arc<Texels>,
+    gloss: Arc<Texels>,
+    normal: Arc<Texels>,
+    layers: Vec<(f32, Arc<Texels>)>,
+    beard: Option<(Arc<Texels>, Arc<Texels>, [f32; 3])>,
+}
+
+/// A composite's three generated maps as images: the colour target as sRGB
+/// (the original renders into an sRGB target with sRGB encoding off, so
+/// drawing decodes it once), the surface and normal targets as linear data.
+pub struct SkinImages {
+    pub colour: Image,
+    pub surface: Image,
+    pub normal: Image,
+}
+
+impl SkinComposeInputs {
+    /// Runs the job's programs ([`skin_composite::compose`]) and builds the
+    /// three images with their mip chains. Pure: safe on a task thread.
+    pub fn generate(&self) -> SkinImages {
+        let layers: Vec<(f32, &Texels)> = self
+            .layers
+            .iter()
+            .map(|(amount, texels)| (*amount, texels.as_ref()))
+            .collect();
+        let beard = self.beard.as_ref().map(|(colour, normal, tint)| Beard {
+            colour: colour.as_ref(),
+            normal: normal.as_ref(),
+            tint: *tint,
+        });
+        let generated = skin_composite::compose(
+            self.side,
+            self.side,
+            self.tone,
+            &self.colour,
+            &self.gloss,
+            &self.normal,
+            &layers,
+            beard.as_ref(),
+        );
+        let (w, h) = (generated.width as u32, generated.height as u32);
+        SkinImages {
+            colour: painted_image(w, h, generated.colour, Encoding::Srgb),
+            surface: painted_image(w, h, generated.surface, Encoding::Linear),
+            normal: painted_image(w, h, generated.normal, Encoding::Linear),
+        }
+    }
+}
+
 impl ModelLoader<'_> {
     /// The composited skin material of `job`, generated on the CPU once per
     /// look ([`SkinCompositeJob::key`]) and cached: the original's texture
@@ -325,64 +381,72 @@ impl ModelLoader<'_> {
     /// race's, the tone and the beard.
     ///
     /// A job whose race maps cannot be decoded gives `None`; the caller
-    /// keeps the race maps plus tint ([`skin_material_of`]).
+    /// keeps the race maps plus tint ([`skin_material_of`]). The running
+    /// game's dressing pass generates off the main thread instead
+    /// ([`Self::skin_compose_inputs`], [`Self::finish_composited_skin`]).
     pub fn composited_skin(&mut self, job: &SkinCompositeJob) -> Option<Handle<ExaMaterial>> {
-        let key = job.key();
-        if let Some(cached) = self.cache.skin_composites.get(&key) {
-            return cached.clone();
+        if let Some(cached) = self.cached_composite(job) {
+            return cached;
         }
-        let made = self.compose_skin(job);
-        self.cache.skin_composites.insert(key, made.clone());
-        made
+        match self.skin_compose_inputs(job) {
+            Some(inputs) => Some(self.finish_composited_skin(job, inputs.generate())),
+            None => None,
+        }
     }
 
-    /// Runs one composite job and uploads its three maps: the colour target
-    /// as sRGB (the original renders into an sRGB target with sRGB encoding
-    /// off, so drawing decodes it once), the surface and normal targets as
-    /// linear data.
-    fn compose_skin(&mut self, job: &SkinCompositeJob) -> Option<Handle<ExaMaterial>> {
+    /// The cached composite of `job`: `Some(None)` when its maps were found
+    /// not to decode, `None` when it has not been generated yet.
+    pub fn cached_composite(&self, job: &SkinCompositeJob) -> Option<Option<Handle<ExaMaterial>>> {
+        self.cache.skin_composites.get(&job.key()).cloned()
+    }
+
+    /// Decodes the maps `job` reads (cached per name). `None`, remembered
+    /// in the composite cache, when the race's colour, gloss or base normal
+    /// map does not decode; a layer or beard map that does not decode is
+    /// left out, as the callback binds only maps that ship.
+    pub fn skin_compose_inputs(&mut self, job: &SkinCompositeJob) -> Option<SkinComposeInputs> {
+        let inputs = self.decode_skin_inputs(job);
+        if inputs.is_none() {
+            self.cache.skin_composites.insert(job.key(), None);
+        }
+        inputs
+    }
+
+    fn decode_skin_inputs(&mut self, job: &SkinCompositeJob) -> Option<SkinComposeInputs> {
         let colour = self.texels(job.colour.as_deref()?)?;
         let gloss = self.texels(job.gloss.as_deref()?)?;
         let normal = self.texels(job.base_normal.as_deref()?)?;
         let mut layers = Vec::with_capacity(job.layers.len());
         for (amount, name) in &job.layers {
-            // The callback binds a layer only where its map ships; the job
-            // builder already drops the others.
-            let Some(texels) = self.texels(name) else {
-                continue;
-            };
-            layers.push((*amount, texels));
+            if let Some(texels) = self.texels(name) {
+                layers.push((*amount, texels));
+            }
         }
-        let beard_texels = job.beard.as_ref().and_then(|beard| {
+        let beard = job.beard.as_ref().and_then(|beard| {
             let colour = self.texels(&beard.colour)?;
             let normal = self.texels(&beard.normal)?;
-            Some((colour, normal))
+            Some((colour, normal, beard.tint))
         });
-        let beard =
-            job.beard
-                .as_ref()
-                .zip(beard_texels.as_ref())
-                .map(|(beard, (colour, normal))| Beard {
-                    colour: colour.as_ref(),
-                    normal: normal.as_ref(),
-                    tint: beard.tint,
-                });
-        let layer_refs: Vec<(f32, &Texels)> = layers
-            .iter()
-            .map(|(amount, texels)| (*amount, texels.as_ref()))
-            .collect();
-        let generated = skin_composite::compose(
-            job.side as usize,
-            job.side as usize,
-            tone_colour(job.tone),
-            &colour,
-            &gloss,
-            &normal,
-            &layer_refs,
-            beard.as_ref(),
-        );
+        Some(SkinComposeInputs {
+            side: job.side as usize,
+            tone: tone_colour(job.tone),
+            colour,
+            gloss,
+            normal,
+            layers,
+            beard,
+        })
+    }
+
+    /// Uploads a generated composite of `job` as its skin material and
+    /// caches it: the built-in skin's subsurface and packed-specular flags,
+    /// a white diffuse (the maps carry the tone) and the three maps.
+    pub fn finish_composited_skin(
+        &mut self,
+        job: &SkinCompositeJob,
+        images: SkinImages,
+    ) -> Handle<ExaMaterial> {
         let kind = SkinKind::of_stem(&job.stem);
-        let (w, h) = (generated.width as u32, generated.height as u32);
         let mut mat = ExaMaterial {
             params: skin_params_of(kind, [1.0; 3]),
             environment: self.environment_map(),
@@ -393,26 +457,18 @@ impl ModelLoader<'_> {
         mat.params.diffuse = Vec4::ONE;
         mat.params.flags &= !flags::TINT_AS_SRGB;
         mat.params.texture_bias = self.cache.textures.settings().lod_bias();
-        mat.diffuse_map =
-            Some(
-                self.images
-                    .add(painted_image(w, h, generated.colour, Encoding::Srgb)),
-            );
-        mat.specular_map =
-            Some(
-                self.images
-                    .add(painted_image(w, h, generated.surface, Encoding::Linear)),
-            );
-        mat.normal_map =
-            Some(
-                self.images
-                    .add(painted_image(w, h, generated.normal, Encoding::Linear)),
-            );
+        mat.diffuse_map = Some(self.images.add(images.colour));
+        mat.specular_map = Some(self.images.add(images.surface));
+        mat.normal_map = Some(self.images.add(images.normal));
         if kind.shows_blood() {
             let spatter = self.spatter();
             mat = mat.with_blood(BloodProgram::Skin, spatter);
         }
-        Some(self.materials.add(mat.with_map_flags()))
+        let handle = self.materials.add(mat.with_map_flags());
+        self.cache
+            .skin_composites
+            .insert(job.key(), Some(handle.clone()));
+        handle
     }
 }
 
