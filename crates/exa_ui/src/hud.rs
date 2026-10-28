@@ -312,73 +312,11 @@ pub fn paint(
     window_height: u32,
 ) -> Canvas {
     let mut canvas = layout.canvas(window_height);
+    if bars_fade > INVISIBLE {
+        paint_bars(&mut canvas, hud, layout, bars_fade, texture, window_height);
+    }
     let h = window_height as i32;
     let g = layout.gui;
-    if bars_fade > INVISIBLE {
-        let fade = bars_fade;
-        let line = (FRAME_ALPHA * fade).round_ties_even() / 255.0;
-        let (health, focus) = (
-            layout.bar_rect(layout.health_x),
-            layout.bar_rect(layout.focus_x),
-        );
-        frame(&mut canvas, health, line, texture, h);
-        frame(&mut canvas, focus, line, texture, h);
-        let shadow = (SHADOW_ALPHA * fade).round_ties_even() / 255.0;
-        drop_shadow(&mut canvas, health, 2 * g, shadow);
-        drop_shadow(&mut canvas, focus, 2 * g, shadow);
-        let fill = fade * fade;
-        let inner = (INNER_SHADOW_ALPHA * fade).round_ties_even() / 255.0;
-        let share = |v: f32| if hud.max > 0.0 { v / hud.max } else { 0.0 };
-        let red = if hud.red <= RED_FLOOR {
-            0.0
-        } else {
-            share(hud.red)
-        };
-        let bar = Bar {
-            x: layout.health_x,
-            y: layout.y,
-            width: layout.width,
-            height: layout.height,
-        };
-        bar.fill(
-            &mut canvas,
-            share(hud.yellow).max(0.0),
-            red,
-            [&YELLOW, &BROWN, &RED],
-            false,
-            fill,
-        );
-        inner_shadow(
-            &mut canvas,
-            bar.x,
-            bar.y + 1,
-            bar.width,
-            bar.height,
-            g,
-            inner,
-        );
-        let bar = Bar {
-            x: layout.focus_x,
-            ..bar
-        };
-        bar.fill(
-            &mut canvas,
-            hud.focus,
-            hud.focus_cap,
-            [&BLUE, &SPENT, &RESERVED],
-            true,
-            fill,
-        );
-        inner_shadow(
-            &mut canvas,
-            bar.x,
-            bar.y + 1,
-            bar.width,
-            bar.height,
-            g,
-            inner,
-        );
-    }
     if gauge_fade > INVISIBLE {
         let fade = gauge_fade;
         let bar = Bar {
@@ -409,6 +347,68 @@ pub fn paint(
         frame(&mut canvas, layout.gauge_rect(), line, texture, h);
     }
     canvas
+}
+
+/// Paints the two health and focus bars of `layout` at the fade onto
+/// `canvas`, in the original's order: both frames, both drop shadows, the
+/// health bar, the focus bar. The character view's preview bars use the
+/// same painter.
+pub fn paint_bars(
+    canvas: &mut Canvas,
+    hud: &HudBars,
+    layout: &Layout,
+    fade: f32,
+    texture: &FrameTexture,
+    window_height: u32,
+) {
+    let h = window_height as i32;
+    let g = layout.gui;
+    let line = (FRAME_ALPHA * fade).round_ties_even() / 255.0;
+    let (health, focus) = (
+        layout.bar_rect(layout.health_x),
+        layout.bar_rect(layout.focus_x),
+    );
+    frame(canvas, health, line, texture, h);
+    frame(canvas, focus, line, texture, h);
+    let shadow = (SHADOW_ALPHA * fade).round_ties_even() / 255.0;
+    drop_shadow(canvas, health, 2 * g, shadow);
+    drop_shadow(canvas, focus, 2 * g, shadow);
+    let fill = fade * fade;
+    let inner = (INNER_SHADOW_ALPHA * fade).round_ties_even() / 255.0;
+    let share = |v: f32| if hud.max > 0.0 { v / hud.max } else { 0.0 };
+    let red = if hud.red <= RED_FLOOR {
+        0.0
+    } else {
+        share(hud.red)
+    };
+    let bar = Bar {
+        x: layout.health_x,
+        y: layout.y,
+        width: layout.width,
+        height: layout.height,
+    };
+    bar.fill(
+        canvas,
+        share(hud.yellow).max(0.0),
+        red,
+        [&YELLOW, &BROWN, &RED],
+        false,
+        fill,
+    );
+    inner_shadow(canvas, bar.x, bar.y + 1, bar.width, bar.height, g, inner);
+    let bar = Bar {
+        x: layout.focus_x,
+        ..bar
+    };
+    bar.fill(
+        canvas,
+        hud.focus,
+        hud.focus_cap,
+        [&BLUE, &SPENT, &RESERVED],
+        true,
+        fill,
+    );
+    inner_shadow(canvas, bar.x, bar.y + 1, bar.width, bar.height, g, inner);
 }
 
 /// A bar's fill area: rows y + 2 .. y + height, columns x .. x + width.

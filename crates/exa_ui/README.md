@@ -289,7 +289,10 @@ release on the figure (a scheduled take-out of a hand on both characters,
 the shown item taken off, the dragged item taken off with the other pack
 charged its bulk, and the locked or cancelled drag charging its stored
 cost), the shown item, the drag start, the owner and player-pack lookups
-and the insight check. The panel itself is not built yet.
+and the insight check. The two preview bars at the doll panel's bottom are
+painted with the HUD's bar painter (`game_gui::paint_preview_bars`), the
+health bar from the record's two shares and the focus bar full. The panel
+itself is not built yet.
 
 ## Arena match board
 

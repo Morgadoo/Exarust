@@ -2212,6 +2212,12 @@ the player's pack is that view's; the insight check looks for technique 8
 in the skill block the view reads and blocks on the right half of the
 figure.
 
+The two preview bars at the bottom of the doll are the HUD's own bars at
+the doll panel's size: the health bar's yellow and healable shares come
+from the character record's two 16-bit words (each × 1/65535), the focus
+bar is drawn full, and both are painted by the HUD's painter onto a canvas
+covering their frames and drop shadows (`exa_ui::game_gui::paint_preview_bars`).
+
 ## Settings options
 
 Behind the Settings page is the hardware configuration unit: the graphics,

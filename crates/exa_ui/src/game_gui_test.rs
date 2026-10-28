@@ -707,3 +707,46 @@ fn a_right_release_closes_the_inventory_and_loot() {
     assert!(!right_release_closes(GameScreen::Journal));
     assert!(!right_release_closes(GameScreen::TechniqueSelector));
 }
+
+#[test]
+fn the_preview_bars_are_painted_at_the_dolls_bottom() {
+    // 800 × 600 at unit 4: the health bar starts at 400 − 200 = 200, 600 −
+    // 20 = 580, 192 wide; the focus bar is 208 further right.
+    let layout = preview_bar_layout(800, 600, 4);
+    assert_eq!(
+        (
+            layout.health_x,
+            layout.focus_x,
+            layout.y,
+            layout.width,
+            layout.height
+        ),
+        (200, 408, 580, 192, 12)
+    );
+    let texture = crate::hud::FrameTexture::flat();
+    // The two shares are the bar's yellow and its healable total: yellow to
+    // 200 + 96, brown to 200 + 144, lasting damage red beyond.
+    let canvas = paint_preview_bars((0.5, 0.75), 1.0, 4, (800, 600), &texture);
+    let row = 590;
+    let yellow = canvas.get(250, row).unwrap();
+    let brown = canvas.get(320, row).unwrap();
+    let red = canvas.get(370, row).unwrap();
+    assert!(
+        yellow[3] > 0.9 && brown[3] > 0.7 && red[3] > 0.8,
+        "{yellow:?} {brown:?} {red:?}"
+    );
+    // Yellow is the warm one, red the darkest.
+    assert!(yellow[1] > yellow[2], "{yellow:?}");
+    assert!(red[0] > red[1], "{red:?}");
+    // The focus bar is drawn full.
+    let focus = canvas.get(450, row).unwrap();
+    assert!(focus[3] > 0.9 && focus[2] > focus[0], "{focus:?}");
+    // An empty record leaves the health bar all lasting damage (red).
+    let canvas = paint_preview_bars((0.0, 0.0), 1.0, 4, (800, 600), &texture);
+    let empty = canvas.get(250, row).unwrap();
+    assert!(empty[3] > 0.8, "{empty:?}");
+    assert!(empty[0] > empty[1], "{empty:?}");
+    // A zero fade paints nothing at all.
+    let canvas = paint_preview_bars((1.0, 1.0), 0.0, 4, (800, 600), &texture);
+    assert!(canvas.pixels.iter().all(|p| p[3] == 0.0));
+}
