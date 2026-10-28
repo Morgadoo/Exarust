@@ -79,6 +79,7 @@ pub(crate) fn take_bearing(
     bearing.full_stance =
         state == Condition::DORMANT || flags.map_or(0, |f| f.0) == StateFlags::SHOCK_STAGGER;
     bearing.shock_stagger = flags.is_some_and(|f| f.has(StateFlags::SHOCK_STAGGER));
+    bearing.splay = flags.is_some_and(|f| f.has(StateFlags::SPLAY));
     bearing.shield = attacker.is_some_and(|a| a.stance_class == attack::STANCE_SHIELD);
     bearing.progress = motions
         .clip(anim, &anim.action)

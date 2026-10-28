@@ -40,7 +40,7 @@ use exa_combat::swing::{Swing, SwingState};
 use exa_combat::{Condition, Fighter};
 use exa_formats::rsq::Clip;
 use exa_physics::body::locomotion::{
-    Locomotion, Locomotor, flags, forward, head_look, twist_spine,
+    Locomotion, Locomotor, Stop, flags, forward, head_look, twist_spine,
 };
 use exa_physics::body::{
     FemurPosture, Ragdoll, TickedCharacter, femur_posture_turn, foot_pitch_target, hunch_applies,
@@ -131,6 +131,21 @@ pub(crate) fn sample_clip(
             &nodes,
         )
     });
+    // A clip that replaced Walk or Run asks the body tick for the trailing
+    // foot, which it plants after this tick's sample; the request lapses
+    // 500 ms on and tells the behaviour its step is over.
+    if let Some((_, l)) = locomotion.as_mut() {
+        l.step_done_notice = false;
+        // A start this tick came before the movement decision in the
+        // original's order, whose move branch drops the request.
+        if anim.take_left_locomotion() && l.stop != Stop::Moving {
+            l.plant_request = 2;
+            l.plant_deadline = l.now.saturating_add(PLANT_WINDOW_MS);
+        }
+        let (request, told) = plant_request_after(l.plant_request, l.plant_deadline, l.now);
+        l.plant_request = request;
+        l.step_done_notice = told;
+    }
     // A clip played once that ended into its stance this tick: a get-up
     // is over (the condition's clip-end writer).
     if once
@@ -154,15 +169,17 @@ pub(crate) fn sample_clip(
     let mut look = locomotion
         .as_mut()
         .and_then(|(req, l)| look_of(&body, req, l, looks));
-    // The thighs are posed only in the combat behaviour's conditions (the
-    // splay flag has no known writer).
-    let posture = if matches!(state, Condition::ATTACKING | Condition::COMBAT_IDLE) {
-        FemurPosture::Combat {
-            height: fighter.map_or(0.0, |f| f.stats.height),
-        }
-    } else {
-        FemurPosture::Level
-    };
+    // The body tick poses the thighs every tick: the combat turn while its
+    // behaviour is in combat and it is on its feet and not walking, else
+    // the clip's turns unless its state word asks for the splay.
+    let in_combat = body.drive.as_ref().is_some_and(|d| d.bearing.in_combat);
+    let splay = body.drive.as_ref().is_some_and(|d| d.bearing.splay);
+    let posture = thigh_posture(
+        in_combat,
+        state,
+        splay,
+        fighter.map_or(0.0, |f| f.stats.height),
+    );
     let posed = sample_parts(
         &mut anim,
         clip,
@@ -203,6 +220,41 @@ pub(crate) fn sample_clip(
 
 /// The clips below this action index let the head look.
 const LOOKING_CLIPS: usize = 0x2C;
+
+/// An unplanted trailing-foot request lapses after this many milliseconds.
+const PLANT_WINDOW_MS: u64 = 500;
+
+/// The trailing-foot request one tick on: a live request (2 before its
+/// plant, 1 after) stays until the deadline; strictly past it the request
+/// clears and the behaviour is told. Returns the request and whether to
+/// tell the behaviour.
+pub(crate) fn plant_request_after(request: i32, deadline: u64, now: u64) -> (i32, bool) {
+    if request > 0 && now > deadline {
+        (0, true)
+    } else {
+        (request, false)
+    }
+}
+
+/// The thigh posture the body tick asks of the sampler: the combat turn
+/// (1 − height)·−1.5° while its behaviour is in combat and its condition
+/// is neither off its feet (bit 0x200) nor walking, else the splay's 5°
+/// while the state word's splay bit is set, else the clip's own turns.
+pub(crate) fn thigh_posture(
+    in_combat: bool,
+    state: Condition,
+    splay: bool,
+    height: f32,
+) -> FemurPosture {
+    let standing = !state.off_feet() && state != Condition::WALKING;
+    if in_combat && standing {
+        FemurPosture::Combat { height }
+    } else if splay {
+        FemurPosture::Splayed
+    } else {
+        FemurPosture::Level
+    }
+}
 
 /// What the head look reads this tick: its direction in the character
 /// frame (last tick's), its weight and the look yaw it follows.
@@ -666,6 +718,52 @@ mod tests {
         );
         body.drive.as_mut().unwrap().hunch = 0.0;
         assert_eq!(pitch_thorax(pose, &body, 1.0).rotations[7], Quat::IDENTITY);
+    }
+
+    /// The thigh posture the body tick asks for: the combat turn at the
+    /// record's height while the behaviour is in combat and the body stands
+    /// (not walking, not off its feet), the splay or the clip's own turns
+    /// otherwise; a body attacking out of combat keeps the clip.
+    #[test]
+    fn the_thigh_posture_follows_the_behaviours_combat_flag() {
+        let idle = Condition::COMBAT_IDLE;
+        assert_eq!(
+            thigh_posture(true, idle, false, 0.5),
+            FemurPosture::Combat { height: 0.5 }
+        );
+        assert_eq!(
+            thigh_posture(true, Condition::ATTACKING, true, 0.5),
+            FemurPosture::Combat { height: 0.5 }
+        );
+        assert_eq!(
+            thigh_posture(true, Condition::WALKING, false, 0.5),
+            FemurPosture::Level
+        );
+        assert_eq!(
+            thigh_posture(true, Condition::GETTING_UP, true, 0.5),
+            FemurPosture::Splayed
+        );
+        assert_eq!(
+            thigh_posture(true, Condition::DOWN, false, 0.5),
+            FemurPosture::Level
+        );
+        assert_eq!(thigh_posture(false, idle, true, 0.5), FemurPosture::Splayed);
+        assert_eq!(
+            thigh_posture(false, Condition::ATTACKING, false, 0.5),
+            FemurPosture::Level
+        );
+    }
+
+    /// A trailing-foot request stays at its deadline and lapses strictly
+    /// after it, telling the behaviour; an already planted request (1) and
+    /// no request are unchanged.
+    #[test]
+    fn an_unplanted_trailing_foot_lapses_after_500_ms() {
+        assert_eq!(plant_request_after(2, 1500, 1500), (2, false));
+        assert_eq!(plant_request_after(1, 1500, 1500), (1, false));
+        assert_eq!(plant_request_after(2, 1500, 1501), (0, true));
+        assert_eq!(plant_request_after(1, 1500, 1501), (0, true));
+        assert_eq!(plant_request_after(0, 1500, 1501), (0, false));
     }
 
     /// A shin pointing straight up pitches its foot 0.01 rad on the first

@@ -475,7 +475,9 @@ pub(super) fn score_reference(
         _ => chest,
     };
     at += fast * SCORE_LEAD;
-    at + forward.with_y(0.0).normalize_or(Vec3::Z) * (SCORE_CROUCH * crouch / CM)
+    // The original adds the crouch along the frame's facing as stored; it
+    // does not normalise it again.
+    at + forward.with_y(0.0) * (SCORE_CROUCH * crouch / CM)
 }
 
 /// The stance score of feet at `a` and `b` (cm) against `reference` (cm).

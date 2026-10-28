@@ -11,7 +11,9 @@ use bevy::math::Affine3A;
 use bevy::prelude::*;
 use exa_anim::BodyPart;
 use exa_physics::CharacterBody;
-use exa_physics::body::{Ragdoll, TickedCharacter, world_with};
+use exa_physics::body::Ragdoll;
+use exa_physics::body::locomotion::Locomotor;
+use exa_physics::body::{TickedCharacter, world_with};
 
 use super::sampler::SampledPose;
 
@@ -21,6 +23,7 @@ pub(crate) fn aim_body(
     ticked: Res<TickedCharacter>,
     mut sampled: ResMut<SampledPose>,
     mut bodies: Query<&mut Ragdoll>,
+    mut locomotors: Query<&mut Locomotor>,
     parents: Query<&ChildOf>,
     nodes: Query<(&Transform, Option<&BodyPart>)>,
     mut controllers: Query<&mut CharacterBody>,
@@ -42,6 +45,14 @@ pub(crate) fn aim_body(
             body.aim(root_world, targets);
         }
         None => body.hold(root_world),
+    }
+    // A start that replaced Walk or Run plants the trailing foot after this
+    // tick's sample; the request stays at 1 until its 500 ms deadline.
+    if let Ok(mut l) = locomotors.get_mut(root)
+        && l.plant_request > 1
+    {
+        body.plant_trailing_foot();
+        l.plant_request = 1;
     }
     let anchor = body.drive.as_ref().and_then(|d| d.anchor());
     if let (Some(c), Some(anchor)) = (ticked.character, anchor)

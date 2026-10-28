@@ -21,6 +21,7 @@
 use std::collections::HashMap;
 
 use bevy::math::Affine3A;
+use bevy::math::Mat4;
 use bevy::prelude::*;
 use exa_anim::{
     ATTACKS, AnimSystems, Animator, BodyPart, ClipPose, Motions, Stature, TickedClips,
@@ -32,6 +33,7 @@ use exa_combat::condition::{Branch, WEAK_BELOW, action};
 use exa_combat::swing::{Swing, pace_swings};
 use exa_formats::rsq::{BoneBody, Clip};
 use exa_physics::CharacterBody;
+use exa_physics::Physics;
 use exa_physics::body::locomotion::{LegMode, Locomotion, Locomotor};
 use exa_physics::body::{
     Bearing, BodyStats, Drive, FootState, GoLimp, PartSetup, Physical, PlacedCorpse, RaceMuscles,
@@ -80,6 +82,8 @@ fn build_bodies(
     globals: Query<&GlobalTransform>,
     skinned: Query<&SkinnedPart>,
     meshes: Res<Assets<Mesh>>,
+    physics: Option<Res<Physics>>,
+    characters: Query<(), With<CharacterBody>>,
 ) {
     let Some(motions) = motions else { return };
     for (root, mut physical, mut limp, mut placed) in &mut requests {
@@ -156,19 +160,33 @@ fn build_bodies(
                 .with_stats(stats)
                 .with_rest_turns(&rest_turns);
             // The original places a character by sampling its first clip
-            // and putting the parts where that pose puts them (its
-            // placement routine). The body is built from the model's posed
-            // parts, which are the same clip; sampling it again from the
-            // clip's clock keeps the pose independent of what the frame
-            // sampler last left on the nodes. The placement's leg snap
-            // (`Ragdoll::snap_placement`) that follows in the original is
-            // not run: without its frame height applied to the controller
-            // it left the standing player 4.5 cm lower (105 cm against 110
-            // cm over 2 000 ticks on the RTX 3090 check).
-            let frame = globals.get(root).map_or(Affine3A::IDENTITY, |g| g.affine());
+            // and putting the parts where that pose puts them, then probes
+            // the ground under its feet and moves the placement to the
+            // height it finds, and samples the snapped pose (its placement
+            // routine). The body is built from the model's posed parts,
+            // which are the same clip; sampling it again from the clip's
+            // clock keeps the pose independent of what the frame sampler
+            // last left on the nodes.
+            let mut frame = globals.get(root).map_or(Affine3A::IDENTITY, |g| g.affine());
             spawn_pose(
                 root, frame, &mut body, &found, &motions, &animators, &parents, &nodes,
             );
+            if let Some(physics) = physics.as_deref()
+                && body.snap_placement(&physics.0, frame).is_some()
+            {
+                let feet = body.placement_feet();
+                if feet.is_finite() && feet != frame.translation.y {
+                    let delta = feet - frame.translation.y;
+                    frame.translation.y = feet;
+                    // The snap's frame height is the pelvis's; the model
+                    // root and the controller's feet take the ground it
+                    // leaves under them.
+                    shift_placement(root, delta, &parents, &characters, &globals, &mut commands);
+                    spawn_pose(
+                        root, frame, &mut body, &found, &motions, &animators, &parents, &nodes,
+                    );
+                }
+            }
             body.place_foot_pitches()
         };
         let mut entity = commands.entity(root);
@@ -213,6 +231,42 @@ fn spawn_pose(
         .map(|&(entity, _, _)| frame * clip_pose(entity, root, &pose, parents, nodes))
         .collect();
     body.place_at(&worlds);
+}
+
+/// Moves the character (its controller's node, or the model root when it
+/// has none) by `delta` along the world's vertical, as the placement's
+/// frame height moves it. A controller treats a transform moved elsewhere
+/// as a teleport and adopts it on its next step.
+fn shift_placement(
+    root: Entity,
+    delta: f32,
+    parents: &Query<&ChildOf>,
+    characters: &Query<(), With<CharacterBody>>,
+    globals: &Query<&GlobalTransform>,
+    commands: &mut Commands,
+) {
+    let mut target = root;
+    let mut at = Some(root);
+    while let Some(e) = at {
+        if characters.get(e).is_ok() {
+            target = e;
+            break;
+        }
+        at = parents.get(e).ok().map(ChildOf::parent);
+    }
+    let Ok(global) = globals.get(target) else {
+        return;
+    };
+    let mut world = global.affine();
+    world.translation.y += delta;
+    let local = parents
+        .get(target)
+        .ok()
+        .and_then(|p| globals.get(p.parent()).ok())
+        .map_or(world, |p| p.affine().inverse() * world);
+    commands
+        .entity(target)
+        .insert(Transform::from_matrix(Mat4::from(local)));
 }
 
 /// What building a part's body needs: its links to its parent as the

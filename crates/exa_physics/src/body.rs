@@ -2878,6 +2878,13 @@ impl Ragdoll {
             p.shown = (p.settled, p.settled);
             p.drawn_particles = (p.positions, p.positions);
         }
+        // A placed character's targets are the pose it was placed in, which
+        // its placement leg snap reads.
+        if let Some(drive) = self.drive.as_mut() {
+            drive.targets.clear();
+            drive.targets.extend_from_slice(worlds);
+            drive.refresh_turns();
+        }
     }
 
     /// Knocks the body out: it wakes at 256

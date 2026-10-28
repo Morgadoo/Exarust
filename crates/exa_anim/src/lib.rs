@@ -253,6 +253,9 @@ pub struct Animator {
     /// How far the last sample pulled the bones toward the pose the body
     /// holds, 0..=1.
     pub held: f32,
+    /// The clip just started replaced Walk or Run, which the body's tick
+    /// reads once to plant the trailing foot.
+    left_locomotion: bool,
 }
 
 impl Animator {
@@ -278,6 +281,7 @@ impl Animator {
             pending: None,
             pose: None,
             held: 0.0,
+            left_locomotion: false,
         }
     }
 
