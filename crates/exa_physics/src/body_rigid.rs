@@ -165,6 +165,7 @@ impl Part {
             state_word: 0,
             flags2: 0,
             sound_ready_ms: 0,
+            last_impact: 0.0,
             reacts: true,
             level_hits: 0,
             level_point: Vec3::ZERO,

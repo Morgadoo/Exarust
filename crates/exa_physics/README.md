@@ -322,7 +322,8 @@ original's weight (`body::Drive::hold_weight`), which the character tick
 hands to the sampler; the race's clip rates (`body::RaceMuscles`) set its
 clip clock.
 An ordinary rigid body's collision sound is the original's slot 38 base
-rule (`part::base_impact_sound`): above 0.5 and either past its clock or
+rule (`part::base_impact_sound`, read by a striking item's non-striker
+contact): above 0.5 and either past its clock or
 over twice the last strength, the volume `1.5·min(0.01·S, 1)` (times
 `8·mobility + 0.2` under 0.1), the pitch `(0.02·mobility + 0.9)·(0.6·v +
 0.7)` (or `7·mobility + 0.3` under 0.1) and the clock `now + 220 −

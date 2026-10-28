@@ -709,14 +709,25 @@ pub fn held_item_bodies(
             continue;
         };
         let b = &rigid_body.body;
+        // The original registers a body whose immediate parent is a body,
+        // and a top body with no body above it. A body under a plain node
+        // under another body is in no tree.
         let mut parent = n.parent;
         let mut nearest = None;
+        let mut hidden = false;
         while let Some(at) = parent {
             if let Some(&k) = index.get(&at) {
-                nearest = Some(k);
+                if n.parent == Some(at) {
+                    nearest = Some(k);
+                } else {
+                    hidden = true;
+                }
                 break;
             }
             parent = model.nodes.get(at).and_then(|n| n.parent);
+        }
+        if hidden {
+            continue;
         }
         parts.push(RigidPart {
             entity: entity(node),

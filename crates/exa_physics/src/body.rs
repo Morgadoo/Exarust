@@ -335,6 +335,9 @@ pub struct Part {
     /// When this part may play its impact sound again, on the 32-bit game
     /// clock. A blow on it stamps [`crate::part::part_sound_ready`].
     pub sound_ready_ms: u32,
+    /// The strength times two of the last collision sound the part played;
+    /// while its clock still holds, a weaker impact stays silent.
+    pub last_impact: f32,
     /// Whether the part takes the level's impact call (the original's class
     /// bit 0x40000, set at add-to-world on every part but a foot and its
     /// children; a rigid body has it when its material has a collision
@@ -532,6 +535,7 @@ impl Part {
             state_word: 0,
             flags2: 0,
             sound_ready_ms: 0,
+            last_impact: 0.0,
             reacts: true,
             level_hits: 0,
             level_point: Vec3::ZERO,

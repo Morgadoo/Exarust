@@ -149,8 +149,10 @@ kind when the other side is itself striking; the message carries it.
 A hard overhead by a big attacker past 0.6 of its clip, over impact 60,
 emits a `CameraHit`; the game's chase camera measures it against the eye
 (under 18 m) and takes the original's `(2000 − distance)·0.001` vertical
-kick with its random offset. The base collision sound of a non-striking
-item is the parts' tested rule (`part::base_impact_sound`).
+kick with its random offset. A non-striking item's contact takes the base
+collision sound (`part::base_impact_sound`) on the item's own clock and
+last-strength threshold, with its weapon hit set standing in for the
+material's sound.
 
 ## Fighters and their condition
 

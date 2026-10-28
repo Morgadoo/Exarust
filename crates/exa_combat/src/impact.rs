@@ -40,8 +40,8 @@ use bevy::prelude::*;
 use exa_physics::body::{BodySystems, BodyTicks, GoLimp, Pairs, Ragdoll, Shove, SolverStages};
 use exa_physics::body::{Fallen, daze_energy};
 use exa_physics::part::{
-    Contact, ContactKind, HardImpact, PartState, classify, hard_impact, limb_impact_damage,
-    limb_impact_sound, stamp_sound_cooldown, weapon_impact_sound,
+    Contact, ContactKind, HardImpact, PartState, base_impact_sound, classify, hard_impact,
+    limb_impact_damage, limb_impact_sound, stamp_sound_cooldown, weapon_impact_sound,
 };
 
 use crate::attack::AttackMotion;
@@ -504,6 +504,44 @@ pub fn strike_limbs(
                 .first()
                 .is_some_and(|p| p.state.has(PartState::STRIKING));
             if !striking {
+                // A non-striking item takes the plain body's collision
+                // sound. Its material set is not modelled, so the
+                // weapon's hit set stands in. [guess]
+                let Some(part) = item.parts.first() else {
+                    continue;
+                };
+                if !part.reacts {
+                    continue;
+                }
+                let (mobility, ready, last, point) = (
+                    part.pairing.mobility,
+                    part.sound_ready_ms,
+                    part.last_impact,
+                    part.transform().translation,
+                );
+                let spread = roll.below(100);
+                let Some(sound) = base_impact_sound(*impact, mobility, ready, last, now, spread)
+                else {
+                    continue;
+                };
+                let cooldown = sound.cooldown_ms.wrapping_add(spread);
+                if let Some(part) = item.parts.first_mut() {
+                    part.sound_ready_ms = now.wrapping_add(cooldown);
+                    part.last_impact = sound.threshold;
+                }
+                weapon.sounds.write(WeaponSounded {
+                    target,
+                    point: point.into(),
+                    volume: sound.volume,
+                    pitch: sound.pitch,
+                    set: weapon
+                        .blades
+                        .get(target)
+                        .ok()
+                        .and_then(|b| b.record.hit_sound_name())
+                        .map(str::to_owned),
+                    kind: None,
+                });
                 continue;
             }
             let Some(owner_key) = item.held_by else {
