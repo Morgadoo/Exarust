@@ -29,8 +29,8 @@ use exa_formats::roles::{
 
 use crate::builtins::ZoneMarker;
 
-/// A memory block: the words of one dialogue's nodes; `None` before any
-/// were stored.
+/// A memory block: the count word of one dialogue's nodes and one word per
+/// node; `None` before any were stored.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Memory {
     pub key: u32,

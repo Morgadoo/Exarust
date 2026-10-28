@@ -225,12 +225,23 @@ fn memory_loads_shifted_when_counts_differ() {
         key: 19,
     };
     assert_eq!(topics::load(&c, at, 3), (None, false));
-    topics::store(&mut c, at, &[7, 8, 9]);
-    assert_eq!(topics::load(&c, at, 3), (Some(vec![7, 8, 9]), true));
-    // The stored count (3) lands in node 0 and only as many words as the
+    topics::store(&mut c, at, &[3, 7, 8, 9]);
+    // Slot 0 is the count, node 1 is slot 1.
+    assert_eq!(topics::load(&c, at, 3), (Some(vec![3, 7, 8, 9]), true));
+    // The stored count (3) lands in slot 1 and only as many words as the
     // block holds are copied: the last stored word is dropped.
-    assert_eq!(topics::load(&c, at, 5), (Some(vec![3, 7, 8, 0, 0]), true));
-    assert_eq!(topics::load(&c, at, 2), (Some(vec![3, 7]), true));
+    assert_eq!(
+        topics::load(&c, at, 5),
+        (Some(vec![5, 3, 7, 8, 0, 0]), true)
+    );
+    assert_eq!(topics::load(&c, at, 2), (Some(vec![2, 3, 7]), true));
+    // A fresh conversation's buffer: the count word, then one zero a node.
+    assert_eq!(topics::fresh(3), [3, 0, 0, 0]);
+    // Opening from a block copies the stored nodes into slots 1.., no shift.
+    let block = topics::block(&c, 2, 7, 19).cloned();
+    assert_eq!(topics::from_block(block.as_ref(), 3), [3, 7, 8, 9]);
+    assert_eq!(topics::from_block(block.as_ref(), 2), [2, 7, 8]);
+    assert_eq!(topics::from_block(None, 2), [2, 0, 0]);
     let other = MemoryKey { key: 20, ..at };
     assert_eq!(topics::load(&c, other, 3), (None, true));
     assert_eq!(topics::world_time(100, 5500, 1000), 104);
@@ -466,7 +477,7 @@ fn an_ai_greets_and_the_topic_is_remembered() {
     // when the conversation ended (1005).
     let words =
         topics::block(cast.get(GUARD).unwrap(), TRAVELLER, 1, 100).and_then(|m| m.words.clone());
-    assert_eq!(words, Some(vec![1005]));
+    assert_eq!(words, Some(vec![1, 1005]));
     let mut s = scene(&db, None, &mut cast, 6000);
     assert!(!e.greet(&mut s, GUARD, TRAVELLER), "inside the cooldown");
     let mut s = scene(&db, None, &mut cast, 604_000);
@@ -632,6 +643,27 @@ fn turning_away_ends_the_narrator() {
     assert_eq!(e.active.len(), 1);
 }
 
+/// The calm filters: a greeting takes calm class 0 only; a start or reply
+/// takes class 0 as well and a higher class while the stored arousal is at
+/// or under its threshold (an unordered arousal counts as calm).
+#[test]
+fn the_calm_filters_read_the_class_and_arousal() {
+    let plain = node(NODE_ENTRY, "Plain", &[], vec![]).unwrap();
+    assert!(dialogue::calm_any(&plain));
+    assert!(dialogue::calm_enough(&plain, 1e9));
+    assert!(!dialogue::calm_any(
+        &node(NODE_ENTRY | 0x10, "One", &[], vec![]).unwrap()
+    ));
+    let class1 = node(NODE_ENTRY | 0x10, "One", &[], vec![]).unwrap();
+    assert!(dialogue::calm_enough(&class1, 10.0));
+    assert!(!dialogue::calm_enough(&class1, 10.5));
+    // An unordered arousal passes.
+    assert!(dialogue::calm_enough(&class1, f32::NAN));
+    let class4 = node(NODE_ENTRY | 0x40, "Four", &[], vec![]).unwrap();
+    assert!(dialogue::calm_enough(&class4, 200.0));
+    assert!(!dialogue::calm_enough(&class4, 200.5));
+}
+
 /// Every line of a branch is a candidate: the random draw can reach the
 /// eighth line (the original's per-speaker list grows without a limit).
 #[test]
@@ -714,7 +746,7 @@ fn a_relation_topic_is_activated() {
     dialogue::activate_with(&mut s, GUARD, PLAYER, name("parting"), 40, 0, 1);
     let words =
         topics::block(cast.get(GUARD).unwrap(), PLAYER, 40, 0).and_then(|m| m.words.clone());
-    assert_eq!(words, Some(vec![0, ACTIVATED | 1000]));
+    assert_eq!(words, Some(vec![2, 0, ACTIVATED | 1000]));
 }
 
 #[test]
@@ -776,7 +808,7 @@ fn ending_everything_records_and_releases() {
     assert!(e.conversations.iter().all(Option::is_none));
     let words =
         topics::block(cast.get(GUARD).unwrap(), TRAVELLER, 1, 100).and_then(|m| m.words.clone());
-    assert_eq!(words, Some(vec![1000]));
+    assert_eq!(words, Some(vec![1, 1000]));
 }
 
 #[test]
@@ -811,7 +843,7 @@ fn a_witnessed_event_activates_the_contacts_topic() {
     dialogue::witness_event(&mut s, PLAYER, 19, 7, 1, name("XAU_Memory"));
     let words =
         topics::block(cast.get(GUARD).unwrap(), PLAYER, 7, 19).and_then(|m| m.words.clone());
-    assert_eq!(words, Some(vec![ACTIVATED | 1000]));
+    assert_eq!(words, Some(vec![1, ACTIVATED | 1000]));
 }
 
 /// A broadcast reaches a witness through the relation role it holds
@@ -839,7 +871,7 @@ fn a_broadcast_reaches_a_witness_through_its_relation_role() {
     dialogue::broadcast(&mut s, PLAYER, name("DamageTaken"), |_, _| true);
     let words =
         topics::block(cast.get(GUARD).unwrap(), PLAYER, 30, 31).and_then(|m| m.words.clone());
-    assert_eq!(words, Some(vec![ACTIVATED | 1000]));
+    assert_eq!(words, Some(vec![1, ACTIVATED | 1000]));
 }
 
 /// The mood mask and mood code reproduce the original's ordered compares:
@@ -987,7 +1019,7 @@ fn near_activation_checks_the_contact_and_files_the_word() {
         dialogue::activate_near(&mut s, PLAYER, 5, 9, 1, name("Rumour"));
     }
     let words = topics::block(cast.get(PLAYER).unwrap(), GUARD, 9, 5).and_then(|m| m.words.clone());
-    assert_eq!(words, Some(vec![ACTIVATED | 1000]));
+    assert_eq!(words, Some(vec![1, ACTIVATED | 1000]));
     // Without a target the contact's roles pick the dialogue and the word
     // is filed under entry 0, key role.
     let gossip = node(0x100, "Gossip", &[], vec![]);
@@ -1005,7 +1037,7 @@ fn near_activation_checks_the_contact_and_files_the_word() {
     let mut s = scene(&db, None, &mut cast, 0);
     dialogue::activate_near(&mut s, PLAYER, 5, 0, 1, name("Gossip"));
     let words = topics::block(cast.get(PLAYER).unwrap(), GUARD, 0, 5).and_then(|m| m.words.clone());
-    assert_eq!(words, Some(vec![ACTIVATED | 1000]));
+    assert_eq!(words, Some(vec![1, ACTIVATED | 1000]));
 }
 
 /// A topic event that stores a word checks the actor's roles against the
