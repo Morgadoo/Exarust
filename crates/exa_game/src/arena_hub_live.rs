@@ -342,13 +342,11 @@ pub fn plan_launch_at(
     if career.matches_today >= crate::arena_match::MATCHES_PER_DAY {
         return None;
     }
-    // The match start takes the event's entry fee from the purse and adds
-    // it to the day's spending; a short purse refuses the match.
+    // The match start takes the event's entry fee from the purse (a short
+    // purse stops at 0; nothing refuses the match) and adds the whole fee
+    // to the day's spending.
     let fee = board.selected.fee;
-    if career.company.copper < fee {
-        return None;
-    }
-    career.company.copper -= fee;
+    career.company.copper = career.company.copper.saturating_sub(fee);
     career.company.spent = career.company.spent.saturating_add(fee);
     let template = board.match_id() as i32;
     let start = crate::arena_match::start_match(&mut career.picks, template, counter, alternative);
@@ -508,10 +506,13 @@ fn hub_clicks(
                                 let alternative =
                                     flow.as_deref().is_some_and(|flow| flow.alternative_music);
                                 let board = windows.board.clone();
-                                // The first Begin that enters the manager
-                                // shows the tip and waits for a second press.
-                                let manager_entered =
-                                    board.as_ref().is_some_and(|board| board.team.contains(&0));
+                                // The first board Begin that enters the
+                                // manager shows the tip and waits for a
+                                // second press; a tournament never warns.
+                                let manager_entered = board.as_ref().is_some_and(|board| {
+                                    board.tab != exa_ui::match_board::BoardTab::Tournament
+                                        && board.team.contains(&0)
+                                });
                                 if crate::arena_match::warn_manager(
                                     &mut career.warn_manager,
                                     manager_entered,
@@ -1104,16 +1105,13 @@ mod tests {
     }
 
     #[test]
-    fn a_short_purse_refuses_the_match_and_keeps_the_coins() {
+    fn a_short_purse_pays_down_to_nothing_and_still_starts() {
         let mut career = crate::hub_windows::ArenaCareer::default();
         career.company.copper = 2;
         let board = career.board();
-        assert_eq!(
-            plan_launch_at(&mut career, &board, false, 0x1234_5678),
-            None
-        );
-        assert_eq!(career.company.copper, 2);
-        assert_eq!(career.company.spent, 0);
+        assert!(plan_launch_at(&mut career, &board, false, 0x1234_5678).is_some());
+        assert_eq!(career.company.copper, 0);
+        assert_eq!(career.company.spent, 3);
     }
 
     #[test]

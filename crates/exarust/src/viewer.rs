@@ -1428,11 +1428,18 @@ fn launch_arena_match(
             "arena match launch: {} (template {}) at {}",
             map.name, launch.template, launch.track.name
         );
+        // One entry per generated opponent, in layout order (the order
+        // play mode spawns its foes in); 0 keeps the default weapon.
         let weapons: Vec<String> = launch
             .fighters
             .iter()
-            .filter_map(|fighter| fighter.weapon)
-            .map(|weapon| weapon.to_string())
+            .filter(|fighter| {
+                matches!(
+                    fighter.body,
+                    exa_game::arena_hub_live::LaunchedBody::Opponent(_)
+                )
+            })
+            .map(|fighter| fighter.weapon.unwrap_or(0).to_string())
             .collect();
         let extra = vec![
             "--arena-match".to_string(),
