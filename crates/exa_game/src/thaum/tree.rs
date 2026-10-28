@@ -285,6 +285,17 @@ pub struct WheelView {
     pub alpha: f32,
 }
 
+/// The domain wheel's texture: the `domainwheel.rfi` sheet is kept 128
+/// pixels a side (eight four-pixel units) with Kaiser mipmaps, and created
+/// with the engine's flags `0x133` (the shared texture flag word `0x33` and
+/// `0x100`). The child shows it across its 280-pixel square.
+pub const WHEEL_TEXTURE_SIZE: u32 = 128;
+/// The creation flags of the wheel's texture.
+pub const WHEEL_TEXTURE_FLAGS: u32 = 0x133;
+/// The value the load writes to the wheel's shared scale word: 32, eight
+/// four-pixel units.
+pub const WHEEL_TEXTURE_SCALE: i32 = 32;
+
 /// The character's power record: what the tree reads and writes.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PowerRecord {
@@ -709,6 +720,11 @@ pub struct TreeScreen {
     /// The tree font atlas's pixel size, set by the running screen when it
     /// loads the atlas; zero emits no glyph quads.
     pub font_size: (u16, u16),
+    /// Each domain icon sheet's cells per side (its 512-pixel cells), or 0
+    /// when the sheet is not installed. The running screen fills it from
+    /// the loaded sheets; the shipped default assumes every domain's sheet
+    /// is installed.
+    pub domain_cells: [u32; 7],
     /// The view is dragged, so places are not rounded.
     pub free_view: bool,
     /// The stamp the free view ends.
@@ -813,6 +829,11 @@ pub struct TreeScreen {
     pub hint_alpha: u8,
     /// The form's caption value, the engine's lowest float.
     pub caption: f32,
+    /// The form's client origin in the parent, whole pixels.
+    pub form_origin: [i32; 2],
+    /// The form's client size, whole pixels: the constructor's 1000 by 700
+    /// until the caller gives its window.
+    pub form_size: [i32; 2],
 }
 
 /// The original's zoom levels' thresholds and gains.
@@ -899,17 +920,18 @@ impl TreeScreen {
             placed: vec![[0.0; 2]; count],
             pan: Spring2::default(),
             shown_pan: [0.0; 2],
-            charge: 0.0,
+            charge: -4.0,
             zoom: ZoomSpring {
-                value: 1.0,
-                target: 1.0,
-                previous: 1.0,
+                value: 0.5,
+                target: 0.5,
+                previous: 0.5,
             },
-            shown_zoom: 1.0,
+            shown_zoom: 0.5,
             ease_share: 1.0,
             scale_centre: [0.0; 2],
-            zoom_fixed: 256.0,
+            zoom_fixed: 128.0,
             font_size: (0, 0),
+            domain_cells: [0, 4, 4, 4, 1, 1, 1],
             free_view: false,
             free_view_stamp: 0,
             factor: 1.0,
@@ -959,6 +981,8 @@ impl TreeScreen {
             text_alpha: 0xa0,
             hint_alpha: 0x80,
             caption: f32::from_bits(0xff00_0000),
+            form_origin: [0, 0],
+            form_size: [1000, 700],
         }
     }
 
@@ -984,6 +1008,7 @@ impl TreeScreen {
         // pixels square, and has the domain the tree opened as its choice;
         // the record's wheel shares are written into it below.
         screen.wheel_child = DomainWheel::new(10.0, height - 290.0, domain);
+        screen.form_size = [width as i32, height as i32];
         match (mode, record) {
             (TreeMode::Test, _) => screen.marks.fill(SHOWN | LEARNED),
             (_, Some(record)) => {
@@ -998,9 +1023,6 @@ impl TreeScreen {
                 screen.focus_total = 48.0;
                 screen.available = 48.0;
                 screen.wheel.total = 48.0;
-                // With no record the original writes 48 into the wheel's
-                // eased value, not a share.
-                screen.wheel_child.state.fade = 48.0;
             }
         }
         // The level comes from the whole-pixel height over 2300, worked out
@@ -1076,9 +1098,6 @@ impl TreeScreen {
             wheel.total = 0.0;
         }
         self.wheel = wheel;
-        // The shares are the wheel child's values: the first is its eased
-        // value.
-        self.wheel_child.state.fade = self.wheel.total;
     }
 
     fn record_focus(&self, pairs: &[KnownPower]) -> f32 {
@@ -2217,14 +2236,19 @@ impl TreeScreen {
     /// The draw inputs of the tree at `now`: placed nodes, the curves of
     /// their links, the bar's slot alphas and the hover and mark fades.
     pub fn view(
-        &self,
+        &mut self,
         bar: &PowerBar,
         width: f32,
         height: f32,
         scale: f32,
+        font: exa_ui::gui_font::GuiFont,
         now: u32,
     ) -> exa_ui::tree_draw::TreeView {
         use exa_ui::tree_draw as draw;
+        // The draw head clears the refusal flag after it has coloured the
+        // flash or the frame with it.
+        let denied = self.denied;
+        self.denied = false;
         // The draw scales every placed node about the first node's placed
         // point, as the draw head took it, by the opening ease (one when no
         // fade runs).
@@ -2311,7 +2335,9 @@ impl TreeScreen {
             width,
             height,
             scale,
+            font,
             font_size: self.font_size,
+            domain_cells: self.domain_cells,
             window: self.window_alpha,
             content: self.content_alpha,
             bar_alpha: self.bar_alpha,
@@ -2333,7 +2359,7 @@ impl TreeScreen {
             labels: self.labels,
             flash: self.flash,
             flash_until: self.flash_until,
-            denied: self.denied,
+            denied,
             learn_until: self.learn_until,
             retired_new: i32::try_from(self.retired_new).unwrap_or(0),
             accent: [255, 250, 230, 100],
@@ -2530,20 +2556,23 @@ impl TreeScreen {
     /// A click on the domain wheel child at the window point `x`,`y`: the
     /// wheel's own hover and confirm (the click carries the confirm
     /// modifier; the domain must be known and differ from the current
-    /// choice). A confirmed choice starts the tree's domain switch to it.
-    /// Returns whether the click fell on one of the wheel's icons.
-    pub fn wheel_click(&mut self, x: f32, y: f32, now: u32) -> bool {
+    /// choice). A confirmed choice starts the tree's domain switch to it
+    /// and names the sound it plays; the wheel's own sound name is outside
+    /// this pack, so the tree's show sound is used (0.25, pitch one, the
+    /// volume and pitch the wheel's confirm asks for: a labelled guess).
+    pub fn wheel_click(&mut self, x: f32, y: f32, now: u32) -> Option<TreeSound> {
         let hit = self.wheel_child.domain_at(x, y);
         let wheel = &mut self.wheel_child.state;
         wheel.hover(i32::from(hit), now);
         if hit == 0 {
-            return false;
+            return None;
         }
         let modifier = crate::effects::wheel::CONFIRM_MODIFIER;
         if wheel.confirm(modifier, &self.known_domains, now, now) {
             self.choose_domain(hit, now);
+            return Some(SHOW_SOUND);
         }
-        true
+        None
     }
 
     /// Loads the bar from the record and starts its 900 ms opening, as
@@ -3216,6 +3245,7 @@ mod tests {
     #[test]
     fn the_charge_clamps_at_its_ends() {
         let mut tree = TreeScreen::empty(DOMAIN_MIND, TreeMode::Play);
+        tree.charge = 0.0;
         tree.zoom = ZoomSpring {
             value: 0.5,
             target: 1.0,
@@ -3297,15 +3327,29 @@ mod tests {
         assert_eq!(screen.text_alpha, 0xa0);
         assert_eq!(screen.hint_alpha, 0x80);
         assert_eq!(screen.caption.to_bits(), 0xff00_0000);
-        // The wheel is 280 square at (10, height − 290), has the opened
-        // domain as its choice and starts with its eased value at 48 on a
-        // tree with no record.
+        // The constructor's own defaults before a window gives its size:
+        // 1000 by 700, the zoom at one half, the charge at −4.
+        let fresh = TreeScreen::empty(DOMAIN_MIND, TreeMode::Play);
+        assert_eq!(fresh.form_size, [1000, 700]);
+        assert_eq!(fresh.form_origin, [0, 0]);
+        assert_eq!(fresh.charge, -4.0);
+        assert_eq!((fresh.zoom.value, fresh.shown_zoom), (0.5, 0.5));
+        assert_eq!(fresh.zoom_fixed, 128.0);
+        assert_eq!(screen.form_size, [1000, 700]);
+        // The wheel's texture is 128 pixels a side with the engine's flags.
+        assert_eq!(WHEEL_TEXTURE_SIZE, 128);
+        assert_eq!(WHEEL_TEXTURE_FLAGS, 0x133);
+        assert_eq!(WHEEL_TEXTURE_SCALE, 32);
+        // The wheel is 280 square at (10, height − 290) and has the opened
+        // domain as its choice. A tree with no record gives it 48 focus
+        // points to share; its own open ease keeps its constructor value.
         let wheel = &screen.wheel_child;
         assert_eq!((wheel.left, wheel.top), (10.0, 410.0));
         assert_eq!(wheel.size, 280.0);
         assert_eq!(wheel.state.chosen, i32::from(DOMAIN_MIND));
         assert_eq!(wheel.state.shown, 1.0);
-        assert_eq!(wheel.state.fade, 48.0);
+        assert_eq!(wheel.state.fade, 0.5);
+        assert_eq!(screen.wheel.total, 48.0);
         // The wheel's own hit test about the child's centre (140, 140):
         // icon 1 at (140, 64) and icon 4 at (140, 216); the centre is no
         // icon.
@@ -3316,22 +3360,35 @@ mod tests {
     }
 
     #[test]
+    fn the_draw_clears_the_refusal_flag() {
+        let mut tree = TreeScreen::load(DOMAIN_MIND, TreeMode::Play, None, None, 1000.0, 700.0);
+        tree.denied = true;
+        let bar = PowerBar::default();
+        let view = tree.view(&bar, 1000.0, 700.0, 4.0, exa_ui::gui_font::RAYFORM_08, 0);
+        assert!(view.denied, "this frame still shows the refusal");
+        assert!(!tree.denied, "and the next one does not");
+        let view = tree.view(&bar, 1000.0, 700.0, 4.0, exa_ui::gui_font::RAYFORM_08, 0);
+        assert!(!view.denied);
+    }
+
+    #[test]
     fn a_wheel_click_switches_only_to_a_known_other_domain() {
         let mut tree = TreeScreen::load(DOMAIN_MIND, TreeMode::Play, None, None, 1000.0, 700.0);
         // An unknown domain is refused.
-        assert!(tree.wheel_click(150.0, 626.0, 1000));
+        assert!(tree.wheel_click(150.0, 626.0, 1000).is_none());
         assert_eq!(tree.domain_flags, 0);
         tree.known_domains = [true; 6];
         // The current choice is refused too.
-        assert!(tree.wheel_click(150.0, 474.0, 1000));
+        assert!(tree.wheel_click(150.0, 474.0, 1000).is_none());
         assert_eq!(tree.domain_flags, 0);
-        // A known other domain is chosen and its switch starts.
-        assert!(tree.wheel_click(150.0, 626.0, 1000));
+        // A known other domain is chosen, its switch starts and the show
+        // sound plays.
+        assert_eq!(tree.wheel_click(150.0, 626.0, 1000), Some(SHOW_SOUND));
         assert_eq!(tree.wheel_child.state.chosen, i32::from(DOMAIN_ENERGY));
         assert_eq!(tree.pending_domain, DOMAIN_ENERGY);
         assert_eq!(tree.domain_flags, DOMAIN_OUT);
         // Off the icons the click is not the wheel's.
-        assert!(!tree.wheel_click(150.0, 550.0, 2000));
+        assert!(tree.wheel_click(150.0, 550.0, 2000).is_none());
     }
 
     #[test]
@@ -4259,6 +4316,7 @@ mod tests {
         let mut screen =
             TreeScreen::from_nodes(DOMAIN_MIND, TreeMode::Play, vec![node(0x101, vec![])]);
         screen.zoom.value = 1.0;
+        screen.shown_zoom = 1.0;
         screen.zoom_fixed = 256.0;
         screen.placed[0] = [0.0, 0.0];
         assert!(screen.drag_link_points().is_none());

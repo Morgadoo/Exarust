@@ -407,8 +407,12 @@ programs and the spline renderer's procedural ribbon, the empty slot, icon,
 frame, glow, flame, link glow and new/picked rings, the bar's icons, marks,
 flames, glows and empty slots with its opening and closing animation, the
 creation prompt and the tooltip's caption and wrapped description (with the
-GUI font's glyph quads on its atlas), the label mode and the dragged power's
-preview. The link ribbon follows the spline renderer: the two vertices a
+interface level's main font: its advances, glyph quad and line step, sampled
+from the level's atlas when installed or the base font's atlas scaled to the
+quad), the label mode and the dragged power's preview. A prompt button's
+caption sits one unit right of its panel's centre and, focused, wears the
+skin's one-pixel outline; a label box is centred by the text's width. A
+domain whose icon sheet is not installed draws no icons. The link ribbon follows the spline renderer: the two vertices a
 sample, the start and end handles one tangent step beyond, the row and side
 coordinates, the join term and the source-to-end dim alpha. The ring passes
 sample the flamelets sheet and the glows, flames and preview sample the frame

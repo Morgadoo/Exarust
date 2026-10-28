@@ -754,9 +754,16 @@ pub struct TreeView {
     pub height: f32,
     /// The GUI unit: the bar's slots are 17 units apart and 13 across.
     pub scale: f32,
+    /// The drawing font: the GUI level's main font, sampling the base
+    /// atlas when the install does not ship the level's own.
+    pub font: crate::gui_font::GuiFont,
     /// The tree font atlas's pixel size, when the screen loaded it; zero
     /// emits no glyph quads (the texts stay as runs for measurement only).
     pub font_size: (u16, u16),
+    /// Each domain icon sheet's cell count per side (its 512-pixel cells),
+    /// or 0 when the sheet is not installed: the original skips the icons
+    /// of an unbound sheet.
+    pub domain_cells: [u32; 7],
     /// The opening or closing window's alpha, 0 to 1: the backdrop's and
     /// the form's own.
     pub window: f32,
@@ -1114,6 +1121,14 @@ fn icon_fade(flags: u32) -> [f32; 4] {
 /// Every shown node's icon.
 fn icons(out: &mut TreeDraw, view: &TreeView) {
     let alpha = f32::from(alpha_byte(view.content)) / 255.0;
+    let cells = view
+        .domain_cells
+        .get(usize::from(view.domain))
+        .copied()
+        .unwrap_or(0);
+    if cells == 0 {
+        return;
+    }
     for node in &view.nodes {
         if node.flags & mark::SHOWN == 0 {
             continue;
@@ -1126,14 +1141,7 @@ fn icons(out: &mut TreeDraw, view: &TreeView) {
         let mut batch = Batch::new(Program::Icon, Texture::Domain(view.domain));
         batch.uniforms.par1 = icon_fade(node.flags);
         if icon(
-            &mut batch,
-            node.power,
-            node.x,
-            node.y,
-            size,
-            icon_columns(view.domain),
-            icon_rows(view.domain),
-            alpha,
+            &mut batch, node.power, node.x, node.y, size, cells, cells, alpha,
         ) {
             out.submit(batch);
         }
@@ -1446,8 +1454,14 @@ fn bar_icons(out: &mut TreeDraw, view: &TreeView, pose: &BarPose) {
                     (index - first) as f32 * pose.pitch + base,
                     pose.top,
                     pose.size,
-                    icon_columns(domain),
-                    icon_rows(domain),
+                    view.domain_cells
+                        .get(usize::from(domain))
+                        .copied()
+                        .unwrap_or(0),
+                    view.domain_cells
+                        .get(usize::from(domain))
+                        .copied()
+                        .unwrap_or(0),
                     f32::from(alpha_byte(fade)) / 255.0,
                 ) {
                     out.submit(batch);
@@ -1572,40 +1586,39 @@ fn bar_empties(out: &mut TreeDraw, view: &TreeView, pose: &BarPose) {
     }
 }
 
-/// The tree's text font: the GUI's main font at the screen's fixed unit of
-/// four pixels (the original's tree layout constant). Its advances measure
-/// the tooltip and prompt texts step for step; the running screen draws the
-/// glyphs with the running font, whose shapes differ.
+/// The default tree font: the GUI main font of the level whose unit is four
+/// pixels. The running screen picks the level's font from the interface
+/// scale and keeps these metrics when the level's atlas is not installed.
 pub const TREE_FONT: &crate::gui_font::GuiFont = &crate::gui_font::RAYFORM_08;
 
-/// The tree's layout unit in pixels, before the window's scale multiplies
-/// it.
-pub const TREE_UNIT: f32 = 4.0;
-
-/// A text's width in pixels at the GUI unit `unit`: the GUI font's
-/// advances, which are pixels at four pixels to the unit, scaled.
-pub fn text_width(text: &[u8], unit: f32) -> f32 {
-    TREE_FONT.text_width(text) as f32 * unit / TREE_UNIT
+/// A text's width in pixels with `font`: the GUI font's advances.
+pub fn text_width(text: &[u8], font: &crate::gui_font::GuiFont) -> f32 {
+    font.text_width(text) as f32
 }
 
-/// The number of lines a text wraps to at `width` tree units (the
-/// original's line count with the GUI font).
-pub fn text_lines(text: &[u8], width: f32) -> u32 {
-    crate::text_layout::line_count(text, (width * TREE_UNIT) as i32, TREE_FONT).max(1) as u32
+/// The number of lines a text wraps to at `width` GUI units, with the
+/// original's line count.
+pub fn text_lines(text: &[u8], width: f32, unit: f32, font: &crate::gui_font::GuiFont) -> u32 {
+    crate::text_layout::line_count(text, (width * unit) as i32, font).max(1) as u32
 }
 
-/// The lines a text wraps to at `width` tree units, broken as the GUI's
-/// line scan breaks them (a carriage return, after the last space that
-/// fits, or after the byte that overflows a line with no space). The
-/// break's own carriage return or space and a following line feed are
-/// left out of the lines.
-pub fn text_split(text: &[u8], width: f32) -> Vec<String> {
-    let width = (width * TREE_UNIT) as i32;
+/// The lines a text wraps to at `width` GUI units, broken as the GUI's line
+/// scan breaks them (a carriage return, after the last space that fits, or
+/// after the byte that overflows a line with no space). The break's own
+/// carriage return or space and a following line feed are left out of the
+/// lines.
+pub fn text_split(
+    text: &[u8],
+    width: f32,
+    unit: f32,
+    font: &crate::gui_font::GuiFont,
+) -> Vec<String> {
+    let width = (width * unit) as i32;
     let len = text.len() as i32;
     let mut lines = Vec::new();
     let mut start = 1;
     while start <= len {
-        let next = crate::text_layout::scan_line(text, start, width, TREE_FONT, false, &mut |_| {})
+        let next = crate::text_layout::scan_line(text, start, width, font, false, &mut |_| {})
             .next
             .max(start + 1);
         let mut end = (next - 1).min(len) as usize;
@@ -1626,9 +1639,9 @@ pub fn text_split(text: &[u8], width: f32) -> Vec<String> {
     lines
 }
 
-/// The line step in pixels at the GUI unit `unit`.
-pub fn text_step(unit: f32) -> f32 {
-    TREE_FONT.line_height as f32 * unit / TREE_UNIT
+/// The line step in pixels: the font's own line height.
+pub fn text_step(font: &crate::gui_font::GuiFont) -> f32 {
+    font.line_height as f32
 }
 
 /// Appends one line's glyph quads, at the pixel `x` and baseline `y`, with
@@ -1637,11 +1650,11 @@ pub fn text_step(unit: f32) -> f32 {
 /// pack.
 fn text_line(out: &mut TreeDraw, view: &TreeView, text: &[u8], x: f32, y: f32, ink: [f32; 4]) {
     let (tw, th) = view.font_size;
-    let Some((du, dv)) = crate::gui_text::font_uv(TREE_FONT, (tw, th)) else {
+    let Some((du, dv)) = crate::gui_text::font_uv(&view.font, (tw, th)) else {
         return;
     };
-    let quads = crate::gui_text::draw_line(TREE_FONT, text, cvt_i32(x), cvt_i32(y));
-    push_glyphs(out, &quads, ink, (du, dv));
+    let quads = crate::gui_text::draw_line(&view.font, text, cvt_i32(x), cvt_i32(y));
+    push_glyphs(out, &view.font, &quads, ink, (du, dv));
 }
 
 /// Appends a wrapped block's glyph quads on the GUI font's atlas.
@@ -1657,11 +1670,11 @@ fn text_block(
     ink: [f32; 4],
 ) {
     let (tw, th) = view.font_size;
-    let Some((du, dv)) = crate::gui_text::font_uv(TREE_FONT, (tw, th)) else {
+    let Some((du, dv)) = crate::gui_text::font_uv(&view.font, (tw, th)) else {
         return;
     };
-    let draw = crate::gui_text::draw_wrapped_at(TREE_FONT, text, x, y, width, height, 0, true);
-    push_glyphs(out, &draw.quads, ink, (du, dv));
+    let draw = crate::gui_text::draw_wrapped_at(&view.font, text, x, y, width, height, 0, true);
+    push_glyphs(out, &view.font, &draw.quads, ink, (du, dv));
 }
 
 /// One font layer's quads, with the skin's textured program and the font's
@@ -1669,6 +1682,7 @@ fn text_block(
 /// right, top right; the atlas cell's far row is the top.
 fn push_glyphs(
     out: &mut TreeDraw,
+    font: &crate::gui_font::GuiFont,
     quads: &[crate::gui_text::TextQuad],
     ink: [f32; 4],
     (du, dv): (f32, f32),
@@ -1676,7 +1690,7 @@ fn push_glyphs(
     if quads.is_empty() {
         return;
     }
-    let mut batch = Batch::new(Program::SkinText, Texture::Font(TREE_FONT.texture));
+    let mut batch = Batch::new(Program::SkinText, Texture::Font(font.texture));
     batch.uniforms.par0 = [1.0, 1.0, 0.0, 0.0];
     for quad in quads {
         let [x, top, w, h] = quad.rect;
@@ -1689,6 +1703,25 @@ fn push_glyphs(
         ]);
     }
     out.submit(batch);
+}
+
+/// One line of text drawn as the skin highlights a control's caption: the
+/// run at `x`,`y` over four copies one pixel above, below, left and right.
+/// The two inks (the caption's and the outline's) are the GUI skin's, which
+/// this pack does not carry: the brighter outline is a labelled guess.
+fn selected_text_line(
+    out: &mut TreeDraw,
+    view: &TreeView,
+    text: &[u8],
+    x: f32,
+    y: f32,
+    ink: [f32; 4],
+    outline: [f32; 4],
+) {
+    for offset in [[-1.0, 0.0], [1.0, 0.0], [0.0, -1.0], [0.0, 1.0]] {
+        text_line(out, view, text, x + offset[0], y + offset[1], outline);
+    }
+    text_line(out, view, text, x, y, ink);
 }
 
 /// One panel of the tooltip, in pixels.
@@ -1916,7 +1949,7 @@ pub fn labels_draw(view: &TreeView, names: &[(String, f32)]) -> TreeDraw {
         let drop = f64::from(view.icon_size) * if framed { 0.32 } else { 0.54 };
         let base = drop + f64::from(node.y);
         let panel = width - unit * 2.0;
-        let x = cvt_i32(node.x - (panel as u32 >> 1) as f32) as f32;
+        let x = cvt_i32(node.x - ((*width as u32 >> 1) as f32)) as f32;
         let y = cvt_i32((f64::from(unit) + base) as f32) as f32;
         let mut batch = Batch::new(Program::Mods, Texture::None);
         let ink = [0.55, 0.56, 0.58, 128.0 / 255.0];
@@ -2010,9 +2043,11 @@ pub fn prompt_draw(
     );
     out.submit(panel);
     let button_y = (height - (unit * 7.0) as i32) as f32 + unit * 3.0;
-    let back_x = unit * 7.0 + ((unit * 28.0 - back_width) as i32 >> 1) as f32;
+    // A button's text sits one unit right of the panel's centre: the
+    // original adds the unit after the centring, not before it.
+    let back_x = unit * 8.0 + ((unit * 28.0 - back_width) as i32 >> 1) as f32;
     let begin_x =
-        (width - (unit * 37.0) as i32) as f32 + ((unit * 28.0 - begin_width) as i32 >> 1) as f32;
+        (width - (unit * 36.0) as i32) as f32 + ((unit * 28.0 - begin_width) as i32 >> 1) as f32;
     out.texts.push(TextRun {
         x: title_x + unit,
         y: title_y + unit * 3.0,
@@ -2049,22 +2084,26 @@ pub fn prompt_draw(
         title_y + unit * 3.0,
         [1.0, 1.0, 1.0, 1.0],
     );
-    text_line(
-        &mut out,
-        view,
-        back.as_bytes(),
-        back_x,
-        button_y,
-        button(focused == 0x100_0000),
-    );
-    text_line(
-        &mut out,
-        view,
-        begin.as_bytes(),
-        begin_x,
-        button_y,
-        button(focused == 0x200_0000),
-    );
+    // A focused button's caption is the skin's selected text: the run with
+    // a one-pixel outline. The outline's ink is a labelled guess (the GUI
+    // skin's colours are outside this pack).
+    let button_text = |out: &mut TreeDraw, text: &[u8], x: f32, focused: bool| {
+        if focused {
+            selected_text_line(
+                out,
+                view,
+                text,
+                x,
+                button_y,
+                [1.0, 1.0, 1.0, 1.0],
+                [1.0, 0.95, 0.8, 1.0],
+            );
+        } else {
+            text_line(out, view, text, x, button_y, [1.0, 1.0, 1.0, 1.0]);
+        }
+    };
+    button_text(&mut out, back.as_bytes(), back_x, focused == 0x100_0000);
+    button_text(&mut out, begin.as_bytes(), begin_x, focused == 0x200_0000);
     out
 }
 
@@ -2089,20 +2128,19 @@ pub fn wheel_picture(x: f32, y: f32, size: f32, alpha: f32) -> TreeDraw {
 /// The dragged power's preview at the pointer: its icon at 13 units, and
 /// its glow at 6 units by 2.5, the glow dimmed to a third unless the power
 /// is picked.
-pub fn preview_draw(power: u32, flags: u32, x: f32, y: f32, unit: f32, domain: u8) -> TreeDraw {
+pub fn preview_draw(
+    power: u32,
+    flags: u32,
+    x: f32,
+    y: f32,
+    unit: f32,
+    domain: u8,
+    cells: u32,
+) -> TreeDraw {
     let mut out = TreeDraw::default();
     let mut batch = Batch::new(Program::Icon, Texture::Domain(domain));
     batch.uniforms.par1 = [1.0, 1.0, 0.5, 0.0];
-    if icon(
-        &mut batch,
-        power,
-        x,
-        y,
-        unit * 13.0,
-        icon_columns(domain),
-        icon_rows(domain),
-        1.0,
-    ) {
+    if icon(&mut batch, power, x, y, unit * 13.0, cells, cells, 1.0) {
         batch.vertices.iter_mut().for_each(|vertex| {
             vertex.colour = [1.0, 1.0, 1.0, 1.0];
         });
@@ -2185,7 +2223,9 @@ mod tests {
             width: 1000.0,
             height: 700.0,
             scale: 4.0,
+            font: crate::gui_font::RAYFORM_08,
             font_size: (0, 0),
+            domain_cells: [0, 4, 4, 4, 1, 1, 1],
             window: 1.0,
             content: 1.0,
             bar_alpha: 1.0,
@@ -3058,22 +3098,42 @@ mod tests {
     }
 
     #[test]
+    fn a_missing_icon_sheet_draws_no_icons() {
+        let mut view = view();
+        view.nodes = vec![node(0x101, 100.0, mark::SHOWN)];
+        view.domain_cells[1] = 0;
+        assert!(count(&tree_draw(&view), Program::Icon) == 0);
+        view.domain_cells[1] = 4;
+        assert!(count(&tree_draw(&view), Program::Icon) > 0);
+    }
+
+    #[test]
     fn the_tree_text_uses_the_gui_fonts_advances() {
-        // Rayform08's advances: B 8, l 4, a 7, s 6, t 5 = 30 pixels at four
-        // pixels to the unit; its line height is 16 pixels.
-        assert_eq!(text_width(b"Blast", 4.0), 30.0);
-        assert_eq!(text_width(b"Blast", 8.0), 60.0);
-        assert_eq!(text_width(b"", 4.0), 0.0);
-        assert_eq!(text_step(4.0), 16.0);
-        assert_eq!(text_lines(b"one two three", 59.0), 1);
+        // Rayform08's advances: B 8, l 4, a 7, s 6, t 5 = 30 pixels; its
+        // line height is 16 pixels. The widths are pixels, not units: the
+        // font itself is the level's.
+        let font = &crate::gui_font::RAYFORM_08;
+        assert_eq!(text_width(b"Blast", font), 30.0);
+        assert_eq!(text_width(b"", font), 0.0);
+        assert_eq!(text_step(font), 16.0);
+        let large = &crate::gui_font::RAYFORM_10;
+        assert_eq!(text_width(b"Blast", large), 38.0);
+        assert_eq!(text_step(large), 20.0);
+        assert_eq!(text_lines(b"one two three", 59.0, 4.0, font), 1);
         // At one unit the 4-pixel width fits no 7-pixel glyph: every byte
         // overflows onto a line of its own.
-        assert_eq!(text_lines(&[b'a'; 4], 1.0), 4);
-        assert_eq!(text_split(&[b'a'; 4], 1.0), vec!["a", "a", "a", "a"]);
+        assert_eq!(text_lines(&[b'a'; 4], 1.0, 1.0, font), 4);
+        assert_eq!(
+            text_split(&[b'a'; 4], 1.0, 1.0, font),
+            vec!["a", "a", "a", "a"]
+        );
         // A break at a space or a carriage return and line feed drops them.
-        assert_eq!(text_split(b"aaaa aaaa", 10.0), vec!["aaaa", "aaaa"]);
-        assert_eq!(text_split(b"ab\r\ncd", 59.0), vec!["ab", "cd"]);
-        assert_eq!(text_split(b"", 59.0), vec![""]);
+        assert_eq!(
+            text_split(b"aaaa aaaa", 10.0, 4.0, font),
+            vec!["aaaa", "aaaa"]
+        );
+        assert_eq!(text_split(b"ab\r\ncd", 59.0, 4.0, font), vec!["ab", "cd"]);
+        assert_eq!(text_split(b"", 59.0, 4.0, font), vec![""]);
     }
 
     #[test]
@@ -3147,11 +3207,11 @@ mod tests {
         assert_eq!(draw.batches[0].vertices[0].y, 87.0 + 8.0);
         assert_eq!(draw.texts[0].x, 454.0);
         assert_eq!(draw.texts[0].y, 99.0);
-        // BACK: 28 units inside the first button, centred.
-        assert_eq!(draw.texts[1].x, 28.0 + 36.0);
+        // BACK: the button's centre plus a unit (8 units + 28 − 40 / 2).
+        assert_eq!(draw.texts[1].x, 32.0 + 36.0);
         assert_eq!(draw.texts[1].y, 672.0 + 12.0);
-        // BEGIN: 28 units inside the right button, centred.
-        assert_eq!(draw.texts[2].x, 852.0 + 31.0);
+        // BEGIN: the right button's centre plus a unit.
+        assert_eq!(draw.texts[2].x, 856.0 + 31.0);
         assert_eq!(draw.texts[2].colour, [1.0, 0.95, 0.8, 1.0]);
     }
 
@@ -3165,22 +3225,22 @@ mod tests {
         assert_eq!(draw.batches.len(), 1);
         assert_eq!(draw.batches[0].vertices.len(), 12);
         assert_eq!(draw.texts.len(), 2);
-        // The box is the width less two units (32), at ROUND(100 − 16)
-        // across and ROUND(4 + 140.5) = 144 (to even) down.
-        assert_eq!(draw.batches[0].vertices[0].x, 84.0);
-        assert_eq!(draw.batches[0].vertices[2].x, 116.0);
+        // The box is the width less two units (32), centred by the text's
+        // own width at ROUND(100 − 20), and ROUND(4 + 140.5) = 144 down.
+        assert_eq!(draw.batches[0].vertices[0].x, 80.0);
+        assert_eq!(draw.batches[0].vertices[2].x, 112.0);
         assert_eq!(draw.batches[0].vertices[2].y, 144.0);
         // The text: a unit right of ROUND(100 − (40 + 8)/2), at
         // ROUND(16 + 140.5) = 156, its baseline 1.6 units lower.
         assert_eq!(draw.texts[0].x, 80.0);
         assert_eq!(draw.texts[0].y, 156.0 + 6.4);
-        // The second box: 16 wide at ROUND(200 − 8).
-        assert_eq!(draw.batches[0].vertices[6].x, 192.0);
+        // The second box: 16 wide at ROUND(200 − 12).
+        assert_eq!(draw.batches[0].vertices[6].x, 188.0);
     }
 
     #[test]
     fn the_dragged_power_is_thirteen_units_across() {
-        let draw = preview_draw(0x101, mark::PICKED, 100.0, 50.0, 4.0, 1);
+        let draw = preview_draw(0x101, mark::PICKED, 100.0, 50.0, 4.0, 1, 4);
         assert_eq!(draw.batches.len(), 2);
         let icon_batch = &draw.batches[0];
         assert_eq!(icon_batch.program, Program::Icon);
@@ -3188,7 +3248,7 @@ mod tests {
         let glow_batch = &draw.batches[1];
         assert_eq!(glow_batch.program, Program::Frame);
         // Unpicked: the glow's colour is a third of the domain's.
-        let unpicked = preview_draw(0x101, 0, 100.0, 50.0, 4.0, 1);
+        let unpicked = preview_draw(0x101, 0, 100.0, 50.0, 4.0, 1, 4);
         assert_ne!(
             unpicked.batches[1].vertices[0].colour,
             glow_batch.vertices[0].colour

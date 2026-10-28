@@ -10,16 +10,17 @@
 //! the open screen is drawn, at most 33 ms apart; the in-game bar draws a
 //! strip `scale × 20` high.
 //!
-//! The tooltip is the shown choice's name caption (at once) and its wrapped
-//! description box (after 600 ms), laid out at the original's places with
-//! the widths and line step of the GUI main font at the tree's unit; while
-//! a power is dragged every node wears its name instead. Not modelled: the
-//! link programs' ribbon texture (the draw treats it as white, so links
-//! lack the spline's texture), the GUI
-//! skin's own text metrics and button highlight, and the base form's key
-//! handlers. The bar's own keys (pick, step, use) belong to the hotkey
-//! handler and the cast plugin ([`crate::thaum::cast`]), which keeps the
-//! caster's record and this screen's in step.
+//! The text is the GUI skin's own: the interface level's main font gives
+//! the advances, glyph quad and line step, and its glyphs sample the level's
+//! atlas when the install ships it, else the base font's atlas scaled to
+//! that quad (only `fontbase24r` ships). The tooltip is the shown choice's
+//! name caption (at once) and its wrapped description box (after 600 ms),
+//! laid out at the original's places; while a power is dragged every node
+//! wears its name instead. Not modelled: the link programs' ribbon texture
+//! (the draw treats it as white, so links lack the spline's texture) and the
+//! base form's key handlers. The bar's own keys (pick, step, use) belong to
+//! the hotkey handler and the cast plugin ([`crate::thaum::cast`]), which
+//! keeps the caster's record and this screen's in step.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -34,6 +35,7 @@ use exa_audio::{AudioEnvironment, SoundBank};
 use exa_formats::rfi::Rfi;
 use exa_ui::font::{BASE_FONT, GameFont};
 use exa_ui::gui_core::{FormHost, FormId, GuiRect, GuiTask};
+use exa_ui::gui_font::{FONTBASE_24, GuiFont, font_with_fallback, gui_level, level_for_unit};
 use exa_ui::tree_draw::{self, Batch, Program, TextRun, Texture, TreeDraw, TreeVertex};
 
 use crate::bindings::{Action, Bindings};
@@ -55,6 +57,8 @@ pub struct PowerScreen {
     pub texts: Vec<Vec<u8>>,
     pub domain_files: [Option<Vec<u8>>; 7],
     pub sheets: TreeSheets,
+    /// The GUI font atlas the tree's text samples and its texture name.
+    pub font_atlas: Option<(&'static str, (u16, u16))>,
     pub font: Option<GameFont>,
     /// The sound the tree's last action names, for the audio path: showing
     /// it plays `ThaumShow02`; a hidden screen is silent. The running game
@@ -93,6 +97,7 @@ impl Default for PowerScreen {
             texts: Vec::new(),
             domain_files: [None, None, None, None, None, None, None],
             sheets: TreeSheets::default(),
+            font_atlas: None,
             font: None,
             sound: None,
             dirty: true,
@@ -170,7 +175,12 @@ fn setup_router(mut commands: Commands) {
     commands.insert_resource(PowerRouter { task, form, state });
 }
 
-fn load_screen(mut commands: Commands, game: Option<Res<Game>>, mut screen: ResMut<PowerScreen>) {
+fn load_screen(
+    mut commands: Commands,
+    game: Option<Res<Game>>,
+    gui: Option<Res<exa_ui::GuiScale>>,
+    mut screen: ResMut<PowerScreen>,
+) {
     if let Some(game) = game.as_deref() {
         const FILES: [&str; 7] = [
             "",
@@ -187,12 +197,11 @@ fn load_screen(mut commands: Commands, game: Option<Res<Game>>, mut screen: ResM
             }
         }
         screen.sheets = game.load_tree_sheets();
-        screen.tree.font_size = screen
-            .sheets
-            .font
-            .as_ref()
-            .map(|image| (image.width as u16, image.height as u16))
-            .unwrap_or((0, 0));
+        load_tree_font(
+            game,
+            gui.as_deref().map(|gui| gui.scale as i32),
+            &mut screen,
+        );
         if let Some(bytes) = game.0.texture(BASE_FONT)
             && let Ok(rfi) = Rfi::parse(bytes)
         {
@@ -207,15 +216,71 @@ fn load_screen(mut commands: Commands, game: Option<Res<Game>>, mut screen: ResM
             1000.0,
             700.0,
         );
-        screen.tree.font_size = screen
-            .sheets
-            .font
-            .as_ref()
-            .map(|image| (image.width as u16, image.height as u16))
-            .unwrap_or((0, 0));
+        screen.tree.font_size = font_size_of(&screen);
+        screen.tree.domain_cells = domain_cells(&screen.sheets);
         screen.texts = Vec::new();
     }
     commands.insert_resource(AssetsLoaded);
+}
+
+/// Loads the tree's text atlas: the interface level's main font when the
+/// install ships it, else the base font's atlas that the packs carry. The
+/// level's metrics stay either way (see [`font_with_fallback`]).
+fn load_tree_font(game: &Game, unit: Option<i32>, screen: &mut PowerScreen) {
+    let level = gui_level(level_for_unit(unit.unwrap_or(4))).main;
+    let loaded = game
+        .load_rgba(level.texture)
+        .ok()
+        .map(|image| (image, level.texture))
+        .or_else(|| {
+            game.load_rgba(FONTBASE_24.texture)
+                .ok()
+                .map(|image| (image, FONTBASE_24.texture))
+        });
+    if let Some((image, name)) = loaded {
+        let size = (image.width as u16, image.height as u16);
+        screen.sheets.font = Some(image);
+        screen.font_atlas = Some((name, size));
+    } else {
+        screen.sheets.font = None;
+        screen.font_atlas = None;
+    }
+}
+
+/// The tree's font at the interface unit `unit` and the atlas size its
+/// glyph quads sample, from the loaded atlas.
+pub fn tree_font(unit: i32, atlas: Option<(&'static str, (u16, u16))>) -> (GuiFont, (u16, u16)) {
+    let level = gui_level(level_for_unit(unit)).main;
+    let level_size = atlas
+        .filter(|(name, _)| *name == level.texture)
+        .map(|(_, size)| size);
+    let base_size = atlas
+        .filter(|(name, _)| *name != level.texture)
+        .map(|(_, size)| size);
+    let (font, size) = font_with_fallback(level, level_size, base_size);
+    (font, size.unwrap_or((0, 0)))
+}
+
+/// Each installed domain sheet's cells per side: its width over the
+/// original's 512-pixel cell. A missing sheet stays zero, so its icons are
+/// not drawn (the shipped sheets are 2048 or 512 pixels square).
+pub fn domain_cells(sheets: &TreeSheets) -> [u32; 7] {
+    let mut cells = [0u32; 7];
+    for (index, sheet) in sheets.domains.iter().enumerate().skip(1) {
+        if let Some(sheet) = sheet {
+            cells[index] = sheet.width >> 9;
+        }
+    }
+    cells
+}
+
+fn font_size_of(screen: &PowerScreen) -> (u16, u16) {
+    screen
+        .sheets
+        .font
+        .as_ref()
+        .map(|image| (image.width as u16, image.height as u16))
+        .unwrap_or((0, 0))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -393,7 +458,9 @@ fn pointer(
     if !hidden && drag.is_none() && tree.wheel_child.domain_at(x, y) > 0 {
         if buttons.just_released(MouseButton::Left) {
             *press_origin = None;
-            tree.wheel_click(x, y, now);
+            if let Some(played) = tree.wheel_click(x, y, now) {
+                *sound = Some(played);
+            }
             *dirty = true;
             return;
         }
@@ -529,6 +596,7 @@ struct CanvasState {
 fn draw(
     time: Res<Time>,
     mut screen: ResMut<PowerScreen>,
+    gui: Option<Res<exa_ui::GuiScale>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     mut images: ResMut<Assets<Image>>,
     mut canvas: Query<
@@ -614,7 +682,13 @@ fn draw(
     if !screen.dirty && now.saturating_sub(screen.last_draw) < REDRAW_MS {
         return;
     }
-    let scale = window.scale_factor() * 4.0;
+    // The interface unit is the original's GUI scale, picked from the
+    // window's physical height; the tree's layout and its font level both
+    // come from it.
+    let scale = gui.as_deref().map_or(4, |gui| gui.scale) as f32;
+    let (font, font_size) = tree_font(scale as i32, screen.font_atlas);
+    screen.tree.font_size = font_size;
+    screen.tree.domain_cells = domain_cells(&screen.sheets);
     let tree_open = screen.open;
     let PowerScreen {
         tree,
@@ -629,7 +703,7 @@ fn draw(
         (scale * BAR_UNITS) as u32
     };
     tree.labels = drag.is_some();
-    let view = tree.view(bar, width as f32, height as f32, scale, now as u32);
+    let view = tree.view(bar, width as f32, height as f32, scale, font, now as u32);
     let draw = if tree_open {
         // The tree pass already ends with the bar.
         let mut draw = tree_draw::tree_draw(&view);
@@ -645,11 +719,11 @@ fn draw(
             let prompt = tree_draw::prompt_draw(
                 &view,
                 TITLE,
-                tree_draw::text_width(TITLE.as_bytes(), scale),
+                tree_draw::text_width(TITLE.as_bytes(), &font),
                 "BACK",
-                tree_draw::text_width(b"BACK", scale),
+                tree_draw::text_width(b"BACK", &font),
                 "BEGIN",
-                tree_draw::text_width(b"BEGIN", scale),
+                tree_draw::text_width(b"BEGIN", &font),
                 tree.focus,
             );
             draw.batches.extend(prompt.batches);
@@ -657,13 +731,13 @@ fn draw(
         }
         if !view.labels && view.hovered > 0 && (view.hovered as usize) <= tree.nodes.len() {
             let (name, description) = tree.node_text(view.hovered as usize - 1, texts);
-            let lines = tree_draw::text_split(description, tree_draw::TIP_TEXT_WIDTH);
+            let lines = tree_draw::text_split(description, tree_draw::TIP_TEXT_WIDTH, scale, &font);
             let tooltip = tree_draw::tooltip_draw(
                 &view,
                 &lines,
                 &String::from_utf8_lossy(name),
-                tree_draw::text_step(scale),
-                tree_draw::text_width(name, scale),
+                tree_draw::text_step(&font),
+                tree_draw::text_width(name, &font),
             );
             draw.batches.extend(tooltip.batches);
             draw.texts.extend(tooltip.texts);
@@ -690,7 +764,7 @@ fn draw(
                 };
                 names.push((
                     String::from_utf8_lossy(text).into_owned(),
-                    tree_draw::text_width(text, scale),
+                    tree_draw::text_width(text, &font),
                 ));
             }
             let labels = tree_draw::labels_draw(&view, &names);
@@ -706,6 +780,10 @@ fn draw(
                     dragged.at[1],
                     scale,
                     tree_draw::power_domain(dragged.power),
+                    tree.domain_cells
+                        .get(usize::from(tree_draw::power_domain(dragged.power)))
+                        .copied()
+                        .unwrap_or(0),
                 )
                 .batches,
             );
@@ -869,13 +947,7 @@ fn texture_of(texture: Texture, sheets: &TreeSheets) -> Option<&RgbaImage> {
         Texture::Mods => sheets.mods.as_ref(),
         Texture::Flamelets => sheets.flamelets.as_ref(),
         Texture::Wheel => sheets.wheel.as_ref(),
-        Texture::Font(name) => {
-            if name == tree_draw::TREE_FONT.texture {
-                sheets.font.as_ref()
-            } else {
-                None
-            }
-        }
+        Texture::Font(_) => sheets.font.as_ref(),
     }
 }
 
@@ -1266,6 +1338,49 @@ mod tests {
         for _ in 0..3 {
             app.update();
         }
+    }
+
+    #[test]
+    fn the_tree_font_follows_the_interface_unit() {
+        // Unit four is level one: Rayform08's metrics over the base atlas.
+        let (font, size) = tree_font(4, Some(("fontbase24r", (1024, 1024))));
+        assert_eq!((font.texture, font.glyph), ("fontbase24r", (11, 16)));
+        assert_eq!(size, (313, 341));
+        // Unit five is level two: Rayform10's metrics, a fifth larger.
+        let (font, size) = tree_font(5, Some(("fontbase24r", (1024, 1024))));
+        assert_eq!(font.glyph, (15, 20));
+        assert_eq!(size, (427, 427));
+        // No atlas emits no glyphs; the base font's runs still draw.
+        assert_eq!(tree_font(4, None).1, (0, 0));
+        let sheets = TreeSheets {
+            font: Some(RgbaImage {
+                width: 1,
+                height: 1,
+                pixels: vec![0; 4],
+            }),
+            ..TreeSheets::default()
+        };
+        assert_eq!(
+            texture_of(Texture::Font("fontbase24r"), &sheets).map(|i| i.width),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn a_domain_sheet_gives_its_cell_count() {
+        let sheet = |width| RgbaImage {
+            width,
+            height: width,
+            pixels: Vec::new(),
+        };
+        let mut sheets = TreeSheets::default();
+        // The two sizes the packs carry: four 512-pixel cells or one.
+        sheets.domains[1] = Some(sheet(2048));
+        sheets.domains[4] = Some(sheet(512));
+        assert_eq!(domain_cells(&sheets), [0, 4, 0, 0, 1, 0, 0]);
+        // A sheet smaller than one cell gives no icons.
+        sheets.domains[2] = Some(sheet(256));
+        assert_eq!(domain_cells(&sheets)[2], 0);
     }
 
     #[test]
