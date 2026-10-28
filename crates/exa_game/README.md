@@ -197,9 +197,25 @@ save's world character and object databases into their world tiers
 has the transition's ordered flow: the teardown and flush, the destination
 read (save section or archive), the import, the spawn matrix choice, the
 story respawn, the grid arrays, the followers and the post-load pass, with
-a missing destination aborting and a failed archive import disabling saves (a section read from the save always lands). These
-are tested rules; no running game calls them yet because the level loader
-keeps its own scene model.
+a missing destination aborting and a failed archive import disabling saves (a section read from the save always lands). The
+running game now runs that flow around every in-process level change: the
+viewer stores `level_transition::LiveTransition` (the archive copy, the
+portal or default matrix, the abort for a level the pack lacks, and the
+save-disable flag a save passes to `WorldExport::save_world`). The import
+and spawn steps themselves still go through `exa_world`'s own loader.
+The save's writers have the pieces the original exports: the world
+databases (`slots::export_world_databases`: the character database
+flushed and saved, the object world tier and its string library, each
+only when it holds a record) and the player's placement
+(`session::export_player_placement`: the body under the first saved
+record in save mode, the record flush skipped while a respawn is pending;
+`Session::placement` writes it first after the header). The arena's load
+regenerates its lists (`arena_ids::regenerate_lists`: each employee's own
+list, emptied for class 4, and the manager's take their loadout items by
+the unique append, lose their special duplicates and are shelved with the
+saved-item flag; every arsenal box is then deduplicated). No live save is
+written yet: the running game has no live databases or export character to
+hand to these writers.
 
 Character creation (`create`): the record's gear (four hand items, its
 worn list and its carried list), the mode filters (story background 0 keeps
