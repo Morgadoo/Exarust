@@ -136,11 +136,12 @@ impl Contact {
 }
 
 /// The item a character is busy with, as `ContextObj` reads it: the item's
-/// type word (`0x4000` weapons) and its object database name.
+/// type word (`0x4000` weapons) and its object database name (`None` when
+/// the database has no name for it).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContextItem {
     pub kind: u32,
-    pub name: String,
+    pub name: Option<String>,
 }
 
 /// One character.

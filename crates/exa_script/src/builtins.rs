@@ -305,16 +305,16 @@ pub fn global(name: &[u8]) -> Option<Global> {
 }
 
 /// The name `ContextObj` gives an item: a weapon (`kind & 0x7000` equal to
-/// `0x4000`) is "a " plus its object database name (empty when the name is
-/// empty); anything else, or no item, is "nothing".
+/// `0x4000`) whose object database name is found is "a " plus that name
+/// with `A`–`Z` lowered (only ASCII capitals change); a weapon without a
+/// name, anything else, or no item is "nothing".
 pub fn context_object(item: Option<&crate::cast::ContextItem>) -> String {
     match item {
-        Some(item) if item.kind & 0x7000 == 0x4000 => {
-            if item.name.is_empty() {
-                String::new()
-            } else {
-                format!("a {}", item.name)
-            }
+        Some(crate::cast::ContextItem {
+            kind,
+            name: Some(name),
+        }) if kind & 0x7000 == 0x4000 => {
+            format!("a {}", name.to_ascii_lowercase())
         }
         _ => "nothing".to_string(),
     }

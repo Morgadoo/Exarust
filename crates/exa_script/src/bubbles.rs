@@ -107,8 +107,9 @@ pub fn project(camera: &Camera, view: &View, point: [f32; 3]) -> [f32; 2] {
     let h = view.height as f32;
     if cam[2] >= 0.0 || cam[2].is_nan() {
         // At or behind the plane (an unordered depth included): the edges.
-        let x = if cam[0] >= 0.0 { w } else { 0.0 };
-        let y = if cam[1] >= 0.0 { h } else { 0.0 };
+        // Only an ordered negative component picks the low edge.
+        let x = if cam[0] < 0.0 { 0.0 } else { w };
+        let y = if cam[1] < 0.0 { 0.0 } else { h };
         return [x, h - y];
     }
     let z = -cam[2];
@@ -119,10 +120,12 @@ pub fn project(camera: &Camera, view: &View, point: [f32; 3]) -> [f32; 2] {
 
 /// The original's `round` to an integer: nearest, ties to even (CVTSS2SI).
 fn round_to_int(value: f32) -> i64 {
-    if value.is_finite() {
-        value.round_ties_even() as i64
+    let rounded = value.round_ties_even();
+    // 2^63 is the first value out of range; unordered and out-of-range
+    // values give the integer indefinite.
+    if rounded.is_finite() && rounded >= -9.223_372e18 && rounded < 9.223_372e18 {
+        rounded as i64
     } else {
-        // Out of range: the instruction leaves the integer indefinite.
         i64::MIN
     }
 }
@@ -304,14 +307,17 @@ impl Bubbles {
     pub fn place_bubble(bubble: &mut Bubble, view: &View, head: Option<[f32; 3]>) {
         if bubble.speaker == Speaker::Narrator {
             bubble.x = (view.width - bubble.width) / 2;
-            bubble.y =
-                view.glyph_height + round_to_int(view.height as f32 * 0.75) as i32 - bubble.height;
+            bubble.y = view.glyph_height.wrapping_add(
+                (round_to_int(view.height as f32 * 0.75) as i32).wrapping_sub(bubble.height),
+            );
         } else if let Some(head) = head {
             let lifted = [head[0], head[1] + HEAD_LIFT, head[2]];
             if let Some(camera) = view.camera {
                 let projected = project(&camera, view, lifted);
                 bubble.x = round_to_int(projected[0] - (bubble.width / 2) as f32) as i32;
-                bubble.y = view.glyph_height + round_to_int(projected[1]) as i32 - bubble.height;
+                bubble.y = view
+                    .glyph_height
+                    .wrapping_add((round_to_int(projected[1]) as i32).wrapping_sub(bubble.height));
             }
         }
         // The margins: below the top/left edge is pulled in, past the
@@ -321,14 +327,14 @@ impl Bubbles {
         } else if i64::from(view.height) - i64::from(MARGIN)
             < i64::from(bubble.height) + i64::from(bubble.y)
         {
-            bubble.y = (view.height - bubble.height) - MARGIN;
+            bubble.y = view.height.wrapping_sub(bubble.height).wrapping_sub(MARGIN);
         }
         if bubble.x < MARGIN {
             bubble.x = MARGIN;
         } else if i64::from(view.width) - i64::from(MARGIN)
             < i64::from(bubble.width) + i64::from(bubble.x)
         {
-            bubble.x = (view.width - bubble.width) - MARGIN;
+            bubble.x = view.width.wrapping_sub(bubble.width).wrapping_sub(MARGIN);
         }
     }
 

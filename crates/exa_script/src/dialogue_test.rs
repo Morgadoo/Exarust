@@ -359,10 +359,11 @@ fn a_bubble_is_measured_placed_and_projected() {
     // gives the right edge, y < 0 the top (which the flip returns as 0).
     let p = bubbles::project(&camera, &view, [0.0, -120.0, 10.0]);
     assert_eq!(p, [800.0, 600.0]);
-    // An unordered component counts as positive; an unordered depth is
-    // treated as behind, so a NaN y also lands at the bottom edge.
+    // An unordered depth is treated as behind and an unordered component
+    // fails the ordered "below zero" test: x takes the right edge and y the
+    // bottom, which the flip returns as 0.
     let p = bubbles::project(&camera, &view, [f32::NAN, f32::NAN, f32::NAN]);
-    assert_eq!(p, [0.0, 600.0]);
+    assert_eq!(p, [800.0, 0.0]);
 
     // A character bubble at the screen centre: (300, 16 + 300 − 18).
     let mut c = b.list[0].clone();
@@ -627,20 +628,27 @@ fn the_narrator_offers_replies() {
 #[test]
 fn context_obj_names_the_item_in_hand() {
     assert_eq!(builtins::context_object(None), "nothing");
+    // The name is lowered (ASCII capitals only) behind "a ".
     let sword = ContextItem {
         kind: 0x4000,
-        name: "Short Sword".into(),
+        name: Some("Short Sword".into()),
     };
-    assert_eq!(builtins::context_object(Some(&sword)), "a Short Sword");
-    // The type's low bits decide; a name the database lacks is empty.
+    assert_eq!(builtins::context_object(Some(&sword)), "a short sword");
+    // The type's masked bits decide; an empty name still gets the article,
+    // a missing one is "nothing".
     let masked = ContextItem {
         kind: 0x4200,
-        name: String::new(),
+        name: Some(String::new()),
     };
-    assert_eq!(builtins::context_object(Some(&masked)), "");
+    assert_eq!(builtins::context_object(Some(&masked)), "a ");
+    let unnamed = ContextItem {
+        kind: 0x4000,
+        name: None,
+    };
+    assert_eq!(builtins::context_object(Some(&unnamed)), "nothing");
     let other = ContextItem {
         kind: 0x1000,
-        name: "Cap".into(),
+        name: Some("Cap".into()),
     };
     assert_eq!(builtins::context_object(Some(&other)), "nothing");
 }

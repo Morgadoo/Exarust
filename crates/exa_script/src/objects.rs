@@ -166,9 +166,10 @@ impl Objects {
     }
 
     /// One frame of the glow tasks: each writes its level into the targets
-    /// and ends once its time is up. The finished task is dropped from the
-    /// list, as the task frees itself. `lookup` answers an object's type
-    /// word and its children.
+    /// and ends once its time is up. On that last frame the task still
+    /// writes a level of 0, then is dropped from the list, as the task
+    /// frees itself. `lookup` answers an object's type word and its
+    /// children.
     pub fn tick_pulses(
         &mut self,
         now: u32,
@@ -176,12 +177,15 @@ impl Objects {
     ) -> Vec<GlowWrite> {
         let mut writes = Vec::new();
         self.pulses.retain(|p| {
-            let Some(level) = pulse(now.wrapping_sub(p.start), p.fade, p.hold) else {
-                return false;
-            };
+            let level = pulse(now.wrapping_sub(p.start), p.fade, p.hold);
             let (kind, children) = lookup(p.object);
-            writes.extend(pulse_object_kind(p.object, kind, &children, level));
-            true
+            writes.extend(pulse_object_kind(
+                p.object,
+                kind,
+                &children,
+                level.unwrap_or(0.0),
+            ));
+            level.is_some()
         });
         writes
     }
@@ -659,10 +663,20 @@ mod tests {
                 },
             ]
         );
-        // At 2.4 s the level is 0, one ms later the task is gone.
+        // At 2.4 s the level is 0; one ms later the task writes 0 a last
+        // time and is gone.
         assert_eq!(o.tick_pulses(7400, |_| (0x09, children.clone())).len(), 3);
-        assert!(o.tick_pulses(7401, |_| (0x09, children.clone())).is_empty());
+        let last = o.tick_pulses(7401, |_| (0x09, children.clone()));
+        assert_eq!(
+            last[0],
+            GlowWrite::Mesh {
+                object: 7,
+                level: 0.0
+            }
+        );
+        assert_eq!(last.len(), 3);
         assert!(o.pulses.is_empty());
+        assert!(o.tick_pulses(7402, |_| (0x09, children.clone())).is_empty());
         o.schedule_pulse(1, 1200, 0, 0);
         o.cancel_pulses();
         assert!(o.pulses.is_empty());
