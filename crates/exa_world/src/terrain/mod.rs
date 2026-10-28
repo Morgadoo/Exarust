@@ -1077,7 +1077,6 @@ impl TerrainBuild {
                 }
             };
             self.built = Some(built);
-            self.stream.tiles[self.next].mark_built(false);
             // The worker goes straight on to the next tile while this one's
             // textures load and it spawns.
             if AsyncComputeTaskPool::try_get().is_some()
@@ -1289,6 +1288,11 @@ impl TerrainBuild {
             );
         }
         self.grounds[slot] = Some(ground);
+        // The tile counts as built (ready for the frame hook's insert) only
+        // once its entity exists: the worker's geometry can finish steps
+        // before its textures load and it spawns, and an insert handled in
+        // between would find no entity to show and leave the tile hidden.
+        self.stream.tiles[slot].mark_built(false);
         self.stats.tiles += 1;
         self.built = None;
         self.next += 1;
@@ -2439,6 +2443,15 @@ mod build_tests {
         assert_eq!(live.tiles().len(), 20);
         assert!(!live.blocks().is_empty());
         assert!(live.blocks().iter().all(|block| block.tile < 20));
+        // The frame hook's inserts showed every spawned tile: none is left
+        // hidden by an insert handled before its entity existed.
+        for tile in live.tiles().iter().flatten() {
+            assert_eq!(
+                world.get::<Visibility>(tile.entity),
+                Some(&Visibility::Visible),
+                "a terrain tile stayed hidden"
+            );
+        }
         let visible = vec![true; live.blocks().len()];
         let distances = vec![None; live.blocks().len()];
         let tick = live.tick(Vec2::ZERO, &visible, &distances);
