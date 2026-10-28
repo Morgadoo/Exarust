@@ -97,11 +97,18 @@ pub fn bind_pack(
     catalogue: Option<&ItemCatalogue>,
 ) -> usize {
     let children = pack_children(possessions);
-    let half = icons.icon_half();
+    // Reserve every icon before the load, so the half-extent lookup can
+    // borrow the cache while the resolver hands out the slots. A reserved
+    // slot has the panel icon's halves; a rendered one keeps its own.
+    let mut slots = children
+        .iter()
+        .map(|child| icons.reserve(child.id).0)
+        .collect::<Vec<_>>()
+        .into_iter();
     container.load_list(
         &children,
-        |id, _| Some((icons.reserve(id).0, item_bulk(id, catalogue))),
-        |_| Some(half),
+        |id, _| Some((slots.next().unwrap_or(0), item_bulk(id, catalogue))),
+        |slot| icons.half(slot),
     )
 }
 

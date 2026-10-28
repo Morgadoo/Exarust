@@ -185,6 +185,19 @@ fn body_entity(bodies: &mut Query<(Entity, &mut Possessions)>, index: i32) -> Op
         .map(|(entity, _)| entity)
 }
 
+/// Whether the panel's owner still has its [`Possessions`]: the player body
+/// for the player's pack, the loot body for a body's panel.
+fn owner_present(
+    bodies: &mut Query<(Entity, &mut Possessions)>,
+    player: Option<Entity>,
+    panel: Panel,
+) -> bool {
+    match panel.body() {
+        None => player.is_some(),
+        Some(index) => body_entity(bodies, index).is_some(),
+    }
+}
+
 /// Starts a drag on the entry under the pointer.
 fn press(
     buttons: Res<ButtonInput<MouseButton>>,
@@ -390,6 +403,15 @@ fn release(
         *drag = PanelDrag::default();
         return;
     };
+    if !owner_present(&mut bodies, player, source)
+        || !owner_present(&mut bodies, player, destination)
+    {
+        if let Some(container) = container_mut(&mut screens, source) {
+            container.finish_drag(destination.number(), true, true, 0, drag.bulk);
+        }
+        *drag = PanelDrag::default();
+        return;
+    }
     let unit = container(&screens, destination).map_or(4, |container| container.unit);
     let vscale = container(&screens, destination).map_or(1.0, |container| container.vscale);
     if let Some((destination, id, _flags, cell)) = drop_on_panel(

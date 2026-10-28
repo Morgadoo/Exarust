@@ -64,10 +64,11 @@ impl PanelIcons {
     /// atlas cell (`-1`, which the draw skips). The panel's entry and its
     /// drag payload stay whole until the renderer fills the slot. [guess]
     pub fn reserve(&mut self, id: u32) -> (usize, (i32, i32)) {
-        let (half_width, half_height) = self.icon_half();
         if let Some(at) = self.entries_slot(id) {
-            return (at + 1, (half_width, half_height));
+            let entry = &self.cache.entries[at];
+            return (at + 1, (entry.half_width, entry.half_height));
         }
+        let (half_width, half_height) = self.icon_half();
         self.cache.entries.push(exa_items::icon_cache::Entry {
             id,
             cell: -1,
@@ -79,13 +80,13 @@ impl PanelIcons {
         (self.cache.entries.len(), (half_width, half_height))
     }
 
-    /// A reserved slot for `id`, when the cache already holds one. A slot
-    /// the renderer made has a real cell and is used as it is.
+    /// A slot for `id`, when the cache already holds one. A slot the
+    /// renderer made has a real cell and is used as it is.
     fn entries_slot(&self, id: u32) -> Option<usize> {
         self.cache
             .entries
             .iter()
-            .position(|entry| entry.id == id && entry.cell < 0)
+            .position(|entry| entry.id == id && (id != 0 || entry.cell < 0))
     }
 
     /// The panel icon's half extents: the icon manager adds the GUI unit to
