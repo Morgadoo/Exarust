@@ -677,31 +677,40 @@ fn weapon_mass_of(
 
 /// A held item's rigid bodies: every model node that stores one, its parent
 /// the nearest rigid ancestor, each with the node's box as its mesh bound.
-/// A model without a stored rigid node (an assembled factory weapon) gets
-/// one body over its meshes, fitted by the original's factory-weapon shape
-/// builder. `nodes` is each model node's entity, in the model's order; the
-/// root entity is used when a factory body has no node to move.
+/// `nodes` is each model node's entity, in the model's order. The model's
+/// first node, a top node, is moved through `root` itself, which carries the
+/// item's grip, blade and light (its node entity sits under `root` with no
+/// offset). A model without a stored rigid node (an assembled factory
+/// weapon) gets none here: its fitted body ([`assembled_item_body`]) is
+/// not in the game yet.
 pub fn held_item_bodies(
     model: &model::Model,
     root: bevy::prelude::Entity,
     nodes: &[bevy::prelude::Entity],
-    meshes: &Assets<Mesh>,
 ) -> Vec<exa_physics::body::RigidPart> {
     use exa_physics::body::{RigidLink, RigidPart};
     let rigid: Vec<usize> = (0..model.nodes.len())
         .filter(|&i| model.nodes[i].rigid.is_some())
         .collect();
-    if rigid.is_empty() {
-        return assembled_item_body(model, root, meshes)
-            .into_iter()
-            .collect();
-    }
+    // The first node, when it is a top node, sits at `root` with no offset
+    // (the callers spawn it so).
+    let first_top = model
+        .nodes
+        .first()
+        .is_some_and(|n| n.parent.is_none())
+        .then_some(0);
     let index: HashMap<usize, usize> = rigid
         .iter()
         .enumerate()
         .map(|(k, &node)| (node, k))
         .collect();
-    let entity = |i: usize| nodes.get(i).copied().unwrap_or(root);
+    let entity = |i: usize| {
+        if Some(i) == first_top {
+            root
+        } else {
+            nodes.get(i).copied().unwrap_or(root)
+        }
+    };
     let mut parts = Vec::with_capacity(rigid.len());
     for &node in &rigid {
         let n = &model.nodes[node];
@@ -766,25 +775,14 @@ pub fn held_item_bodies(
     parts
 }
 
-/// A held item's one rigid body, its root node's stored one, or the
-/// assembled factory body over its meshes. `None` when neither yields a
-/// solid body.
-pub fn held_item_body(
-    model: &model::Model,
-    entity: bevy::prelude::Entity,
-    meshes: &Assets<Mesh>,
-) -> Option<exa_physics::body::RigidPart> {
-    held_item_bodies(model, entity, &[entity], meshes)
-        .into_iter()
-        .next()
-}
-
 /// The body of an assembled factory weapon: the original merges its parts
 /// into one mesh and fits it with the weapon builder. The triangles are
 /// brought into the weapon's frame and to centimetres; the box is their
 /// union. `None` when there is no mesh or the fit gives no solid
-/// tetrahedron.
-fn assembled_item_body(
+/// tetrahedron. Not called by the game yet: the fitted shape has not been
+/// checked against a shipped factory weapon, so those stay bone-attached.
+/// [guess: the original may fit the merged mesh from component boxes]
+pub fn assembled_item_body(
     model: &model::Model,
     entity: bevy::prelude::Entity,
     meshes: &Assets<Mesh>,
@@ -1600,7 +1598,7 @@ fn equip_outfits(
                 .and_then(|r| r.parts.first())
                 .map(|p| p.entity)
             {
-                let parts = held_item_bodies(&weapon, holder, &node_entities, loader.meshes);
+                let parts = held_item_bodies(&weapon, holder, &node_entities);
                 if !parts.is_empty() {
                     commands.entity(holder).insert((
                         exa_physics::prop::PendingProp(parts),
@@ -1622,7 +1620,12 @@ fn equip_outfits(
                             size: grip_size,
                             second_hand_factor: record.second_hand,
                             flip: false,
-                            soft_weld: false,
+                            // The auto-parry flag: off in the heavy-claws
+                            // state. Race flag bit 0 and the character
+                            // classes that also clear it are not carried
+                            // yet. [partial]
+                            soft_weld: !weapon_record::unarmed(race.index, race.weapons.claws)
+                                .heavy_claws,
                             shield: false,
                             holder_key: key,
                             hands: [
@@ -2147,8 +2150,7 @@ mod tests {
             Entity::from_raw_u32(1).unwrap(),
             Entity::from_raw_u32(2).unwrap(),
         );
-        let meshes = Assets::<Mesh>::default();
-        let parts = held_item_bodies(&model, root, &[root, child], &meshes);
+        let parts = held_item_bodies(&model, root, &[Entity::from_raw_u32(3).unwrap(), child]);
         assert_eq!(parts.len(), 2);
         assert_eq!(parts[0].entity, root);
         assert_eq!(parts[0].parent, None);
@@ -2207,7 +2209,7 @@ mod tests {
         )];
         let model = model::Model { nodes: vec![node] };
         let root = Entity::from_raw_u32(1).unwrap();
-        let part = held_item_body(&model, root, &meshes).expect("a fitted body");
+        let part = assembled_item_body(&model, root, &meshes).expect("a fitted body");
         assert_eq!(part.entity, root);
         assert!(part.is_solid());
         assert!(part.mobility > 0.0 && part.mobility.is_finite());

@@ -197,7 +197,7 @@ fn light_torches(
             .map(|p| p.entity)
             && !model.nodes.is_empty()
         {
-            let parts = exa_character::held_item_bodies(&model, root, &nodes, loader.meshes);
+            let parts = exa_character::held_item_bodies(&model, root, &nodes);
             if parts.is_empty() {
                 continue;
             }
