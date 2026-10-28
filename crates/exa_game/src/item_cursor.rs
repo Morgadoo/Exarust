@@ -4,30 +4,44 @@
 //!
 //! **The lift.** Without Ctrl the left press on a prop the hand can move
 //! lifts it: the item leaves the world's hands and rides the cursor, held by
-//! a grab of strength 1 with 0.003 m of slack, while the item GUI shows its
-//! icon (`window`). Its frame at the lift is saved. The item cursor's own
-//! frame turns with the mouse: the mouse or the pad's look moves a two-axis
-//! offset, and the offset turns the item around the camera's right axis and
-//! the world's up axis. The turn starts at 0.25 of the unit speed, and once
-//! the cursor has been turning for more than 300 ms it ramps to 1.0; 500 ms
-//! without a call drops it back to the base speed. The unit speed is the
-//! camera's own sensitivity times 0.0025. A stick that is under 0.1 long
-//! (double precision) is read as the four turn keys (W/S across, A/D up and
-//! down).
+//! the item cursor (Exarust holds it with a plain grab of strength 1, its
+//! stand-in for the original moving the node itself), while the item GUI
+//! shows its icon (`window`). Its rest points at the lift are saved. The
+//! item cursor's own frame turns with the movement inputs, which the lift
+//! leaves to it: the pad's raw move stick, or the move keys when the stick's
+//! squared length is not over 0.1 (double precision; a NaN uses the keys).
+//! The stick's forward part turns the item about the camera's axis and its
+//! sideways part about the world's up axis; Forward/Back give ± the speed
+//! about the camera's axis (Forward winning when both are held), Left/Right
+//! ± the speed about the up axis (Left winning). The mouse does not turn
+//! the item. The turn starts at 0.25 of the unit speed, and once the cursor
+//! has been turning for more than 300 ms it ramps to 1.0; 500 ms without a
+//! call drops it back to the base speed. The unit speed is the scene's last
+//! frame time in milliseconds times 0.0025 rad, multiplied in double
+//! precision, so the turn is about 0.6 rad/s at the base speed and 2.5 rad/s
+//! at the fast one.
 //!
 //! **Where it may go.** Each frame the cursor's ray is picked against the
-//! level; a hit closer than the placement limit (100000 cm away, which no
-//! pick reaches) places the item there. With no hit the item goes where the
-//! ray crosses the plane 100000 cm ahead; a ray that climbs (its height
-//! component over −1.19209e−7) refuses the placement. The item's box, its
-//! rest points and half extents in its turned saved frame, must stay at
-//! most 280 cm high and at least −1000 cm low (`hand::box_ok_local`).
+//! level; a hit whose height is not under the placement limit (−100000 cm,
+//! which no level reaches) places the item there. Otherwise the item goes
+//! where the ray crosses that height; a ray that climbs (its height
+//! component over −1.19209e−7) refuses the placement. The item is put there
+//! whether or not its box fits: the box test (its rest points and half
+//! extents in its turned saved frame at most 280 cm high and at least
+//! −1000 cm low, `hand::box_ok_local`) only decides the routine's answer.
+//! The original then slides the item along the ray from 600 cm back to its
+//! first contact (at most 1000 cm on, [`drag_hit`]); Exarust has no mesh
+//! sweep and pulls the grab to the picked point, and a cursor that picks
+//! nothing keeps the last point (its pick has no navigation mesh behind
+//! every pixel).
 //!
-//! **The release.** An item dropped while the player walks is cancelled
-//! (put back). Over a GUI item slot the GUI takes it back. With the "give
-//! back" hover bit the item stays where it is (the hold flag clears); any
-//! other release puts it back at the saved frame, as the original's
-//! deferred restore does. The GUI drop spawn path takes an inventory entry
+//! **The release.** A plain release leaves the item where the cursor put
+//! it: the original's release hands the saved rest points to the deferred
+//! restore only to move the body out of its old sector, and the body keeps
+//! its current points. A release over a GUI item slot is the GUI's. A lift
+//! cancelled by the movement request goes to the GUI when it is over a
+//! slot, stays where it is with the world hover bit, and is otherwise put
+//! back at the saved rest points. The GUI drop spawn path takes an inventory entry
 //! whose object has a body, puts it into the scene, and starts the lift on
 //! it; an object with no body is the original's content error and is not
 //! put into the scene.
@@ -59,21 +73,20 @@ pub const RAMP_RATE: f64 = 0.003_333_333_333_333_333_5;
 pub const RAMP_SHARE: f64 = 0.75;
 /// A cursor left alone this long drops back to the base speed, ms.
 pub const IDLE_MS: u64 = 500;
-/// The unit turn speed is the camera's sensitivity times this.
-pub const TURN_SENSITIVITY: f32 = 0.0025;
-/// A look stick shorter than this is read as the turn keys (double).
+/// The unit turn speed is the frame time (ms) times this (double, rad).
+pub const TURN_PER_MS: f64 = 0.0025;
+/// A move stick whose squared length is not over this is read as the turn
+/// keys (double).
 pub const STICK_DEAD_ZONE: f64 = 0.1;
 /// A turn under this is no turn (the engine's float epsilon).
 pub const TURN_EPSILON: f32 = 1.192_09e-7;
-/// The placement's far limit: the fallback point is where the ray crosses
-/// this height (cm).
+/// The placement's height limit (cm): a hit under it, or no hit, falls
+/// back to where the ray crosses this height.
 pub const PLACEMENT_LIMIT_CM: f32 = -100_000.0;
-/// The drag's reach (cm): a hit at or beyond it is left, as the original's
-/// drag target search does.
+/// The placement sweep's reach (cm): the original's nearest-contact search
+/// starts from it and keeps only nearer contacts.
 pub const DRAG_REACH_CM: f32 = 1000.0;
-/// The grab's slack (m), the original's link slack.
-pub const LIFT_SLACK: f32 = 0.003;
-/// The lift's grab strength.
+/// The lift's grab strength (Exarust's stand-in hold).
 pub const LIFT_STRENGTH: f32 = 1.0;
 /// The hover word's bits: over a GUI item slot, over the world, and the
 /// "give back" word that leaves the item where it is.
@@ -86,7 +99,7 @@ pub const HOVER_GIVE_BACK: u32 = 0x30;
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct TurnRamp {
     /// The previous call's game clock (ms).
-    pub frame_ms: u64,
+    pub last_ms: u64,
     /// When the turn's ramp started, ms.
     pub ramp_ms: u64,
     pub turning: bool,
@@ -99,10 +112,10 @@ impl TurnRamp {
     /// the sum narrowed once. A call more than [`IDLE_MS`] after the last
     /// starts from not turning.
     pub fn factor(&mut self, now_ms: u64) -> f32 {
-        if self.frame_ms.saturating_add(IDLE_MS) < now_ms {
+        if self.last_ms.saturating_add(IDLE_MS) < now_ms {
             self.turning = false;
         }
-        self.frame_ms = now_ms;
+        self.last_ms = now_ms;
         if !self.turning {
             BASE_TURN
         } else if self.ramp_ms.saturating_add(RAMP_MS) < now_ms {
@@ -113,27 +126,45 @@ impl TurnRamp {
         }
     }
 
-    /// One frame's turn: the speed factor times the camera's sensitivity
-    /// times [`TURN_SENSITIVITY`], and the two-axis offset it moves,
-    /// `offset`. A look under the dead zone (its length in double) is read
-    /// as the turn keys across (W, S) and up and down (A, D), each ± the
-    /// speed. Returns the added offset and whether any axis moved by more
-    /// than [`TURN_EPSILON`]; the ramp starts on the first turning frame.
+    /// One frame's turn: the speed factor times the frame time `frame_ms`
+    /// (ms) times [`TURN_PER_MS`] (in double, narrowed once), and the
+    /// two-axis offset it moves. `stick` is the pad's raw move stick: when
+    /// its squared length (single, compared in double) is over
+    /// [`STICK_DEAD_ZONE`] the offset's first part is its forward part times
+    /// the speed and the second its sideways part; otherwise (a NaN too)
+    /// `keys` = [forward, back, left, right] give +speed (forward, else
+    /// −speed for back) on the first part and +speed (left, else −speed for
+    /// right) on the second. Returns the offset and whether either part is
+    /// over [`TURN_EPSILON`] in size; the ramp starts on the first turning
+    /// frame.
     pub fn frame(
         &mut self,
         now_ms: u64,
-        camera_sensitivity: f32,
-        look: Vec2f,
+        frame_ms: f32,
+        stick: Vec2f,
         keys: [bool; 4],
     ) -> (Vec2f, bool) {
-        let speed = self.factor(now_ms) * camera_sensitivity * TURN_SENSITIVITY;
-        let length = f64::from((look.x * look.x + look.y * look.y).sqrt());
-        let delta = if length <= STICK_DEAD_ZONE {
-            let across = (keys[0] as i32 - keys[1] as i32) as f32;
-            let up = (keys[2] as i32 - keys[3] as i32) as f32;
-            Vec2f::new(across * speed, up * speed)
+        let factor = self.factor(now_ms);
+        let speed = (f64::from(factor) * (f64::from(frame_ms) * TURN_PER_MS)) as f32;
+        let squared = f64::from(stick.x * stick.x + stick.y * stick.y);
+        let delta = if squared > STICK_DEAD_ZONE {
+            Vec2f::new(stick.y * speed, stick.x * speed)
         } else {
-            look * speed
+            let across = if keys[0] {
+                speed
+            } else if keys[1] {
+                -speed
+            } else {
+                0.0
+            };
+            let up = if keys[2] {
+                speed
+            } else if keys[3] {
+                -speed
+            } else {
+                0.0
+            };
+            Vec2f::new(across, up)
         };
         let turned = delta.x.abs() > TURN_EPSILON || delta.y.abs() > TURN_EPSILON;
         if turned {
@@ -168,9 +199,10 @@ pub fn turned_rotation(saved: Mat3, right: Vec3, offset: Vec2f) -> Mat3 {
     saved * turn_delta(right, offset)
 }
 
-/// The nearest hit under [`DRAG_REACH_CM`], in cm; a hit at or past the
-/// reach is left, and no hit gives none. A NaN hit is left too (the
-/// original's ordered "under" fails).
+/// The placement sweep's nearest contact under [`DRAG_REACH_CM`], in cm: a
+/// contact replaces the best so far only when it is nearer (the original's
+/// ordered compare, so a NaN never replaces it); no contact under the reach
+/// gives none (the original then keeps the reach itself).
 pub fn drag_hit(hits: impl IntoIterator<Item = f32>) -> Option<f32> {
     hits.into_iter()
         .filter(|d| *d < DRAG_REACH_CM)
@@ -179,14 +211,15 @@ pub fn drag_hit(hits: impl IntoIterator<Item = f32>) -> Option<f32> {
         })
 }
 
-/// Where the cursor's ray puts the item (m): the hit when it is at least
-/// `limit` away (the original's `hit distance < limit` test), else the
-/// point where the ray crosses the height `limit`. A ray climbing more than
-/// the float epsilon (its height part over −[`TURN_EPSILON`]) gives no
-/// point. A comparison with a NaN passes as a hit.
+/// Where the cursor's ray puts the item (m): the hit `at` when its height
+/// (`height_cm`, the hit point's height in cm) is not under `limit` (cm;
+/// the original's `height < limit` test, so a NaN height keeps the hit),
+/// else the point where the ray crosses the height `limit`. A ray climbing
+/// more than the float epsilon (its height part over −[`TURN_EPSILON`])
+/// gives no point.
 pub fn place_point(origin: Vec3, dir: Vec3, hit: Option<(Vec3, f32)>, limit: f32) -> Option<Vec3> {
     match hit {
-        Some((at, distance)) if distance.is_nan() || distance >= limit => Some(at),
+        Some((at, height_cm)) if height_cm.is_nan() || height_cm >= limit => Some(at),
         _ => {
             if dir.y > -TURN_EPSILON {
                 return None;
@@ -199,13 +232,13 @@ pub fn place_point(origin: Vec3, dir: Vec3, hit: Option<(Vec3, f32)>, limit: f32
 }
 
 /// The item's placed frame at `at` (m): the cursor's turned `rotation`,
-/// positioned at `at`. Returns `None` when the box at that frame does not
-/// fit (`hand::box_ok_local`), as the original clears its grab and refuses
-/// the spot.
-pub fn place_frame(rotation: Mat3, at: Vec3, centre: Vec3, half: Vec3) -> Option<Frame> {
+/// positioned at `at`, and whether its box fits there
+/// (`hand::box_ok_local`). The original places the item either way; the
+/// box only decides the placement routine's answer.
+pub fn place_frame(rotation: Mat3, at: Vec3, centre: Vec3, half: Vec3) -> (Frame, bool) {
     let frame = Frame::new(at, rotation);
     let affine = Affine3A::from_mat3_translation(rotation, at);
-    hand::box_ok_local(centre, half, affine).then_some(frame)
+    (frame, hand::box_ok_local(centre, half, affine))
 }
 
 /// The box of a part's rest points: its centre and half extents in the
@@ -231,22 +264,19 @@ pub enum Release {
     ToGui,
 }
 
-/// The release's outcome, in the original's order: a cancelled (walking)
-/// lift goes back to a GUI slot when it is over one and is put back
-/// otherwise; a release over a GUI slot is the GUI's; a release with the
-/// give-back hover bit leaves the item where it is; any other release puts
-/// it back.
-pub fn release(walking: bool, hover: u32) -> Release {
-    if walking {
-        return if hover & HOVER_GUI != 0 {
-            Release::ToGui
-        } else {
-            Release::PutBack
-        };
-    }
+/// The release's outcome. A lift the movement request cancelled goes, in
+/// the original's order, to the GUI slot it is over, stays where it is with
+/// the world hover bit (the give-back word also ends the hold), and is
+/// otherwise put back at its saved rest points. A plain release is the
+/// GUI's over a slot and otherwise leaves the item where the cursor put it:
+/// the original's release passes the saved rest points to the deferred
+/// restore only to take the body out of its old sector, and the body keeps
+/// its current points. [The GUI slot's acceptance test of the cancelled
+/// path is not modelled: a slot always takes it.]
+pub fn release(cancelled: bool, hover: u32) -> Release {
     if hover & HOVER_GUI != 0 {
         Release::ToGui
-    } else if hover & HOVER_WORLD != 0 {
+    } else if !cancelled || hover & HOVER_WORLD != 0 {
         Release::Drop
     } else {
         Release::PutBack
@@ -385,11 +415,11 @@ impl ItemCursor {
         self.turn = TurnRamp::default();
     }
 
-    /// Ends the lift: the outcome for the hover and whether the player is
-    /// walking, and the item that was held.
-    pub fn end(&mut self, walking: bool) -> Option<(Release, HeldItem)> {
+    /// Ends the lift: the outcome for the hover and whether the movement
+    /// request cancelled it, and the item that was held.
+    pub fn end(&mut self, cancelled: bool) -> Option<(Release, HeldItem)> {
         let held = self.held.take()?;
-        let outcome = release(walking, self.hover);
+        let outcome = release(cancelled, self.hover);
         self.offset = Vec2f::ZERO;
         self.hover = 0;
         Some((outcome, held))
@@ -410,28 +440,17 @@ impl ItemCursor {
     pub fn turn_frame(
         &mut self,
         now_ms: u64,
-        camera_sensitivity: f32,
-        look: Vec2f,
+        frame_ms: f32,
+        stick: Vec2f,
         keys: [bool; 4],
         right: Vec3,
     ) -> bool {
-        let (delta, turned) = self.turn.frame(now_ms, camera_sensitivity, look, keys);
+        let (delta, turned) = self.turn.frame(now_ms, frame_ms, stick, keys);
         if turned {
             self.offset += delta;
             self.rotation *= turn_delta(right, delta);
         }
         turned
-    }
-}
-
-/// Rotates every part's world frame about `centre` by `rotation`, as the
-/// held item cursor's turn writes its node frame.
-pub fn turn_parts(worlds: &mut [Affine3A], centre: Vec3, rotation: Mat3) {
-    let around = Affine3A::from_translation(centre)
-        * Affine3A::from_mat3(rotation)
-        * Affine3A::from_translation(-centre);
-    for world in worlds {
-        *world = around * *world;
     }
 }
 
@@ -441,12 +460,12 @@ mod tests {
 
     /// The turn starts at 0.25, ramps linearly to 1.0 over 300 ms (the
     /// elapsed time in double), and a 500 ms gap resets it; the unit speed
-    /// is the camera's sensitivity times 0.0025.
+    /// is the frame time (ms) times 0.0025.
     #[test]
     fn the_turn_ramps_and_resets() {
         let mut ramp = TurnRamp::default();
         // Frame 1: not turning yet, so the base factor, which starts the
-        // ramp. Sensitivity 100 makes the unit 0.25, so 0.25·0.25.
+        // ramp. A 100 ms frame makes the unit 0.25, so 0.25·0.25.
         assert_eq!(
             ramp.frame(1000, 100.0, Vec2f::ZERO, [true, false, false, false]),
             (Vec2f::new(0.0625, 0.0), true)
@@ -470,37 +489,50 @@ mod tests {
         ramp.frame(301, 100.0, Vec2f::ZERO, [true, false, false, false]);
         assert!(ramp.turning);
         let (d, _) = ramp.frame(802, 100.0, Vec2f::new(1.0, 0.0), [false; 4]);
-        // The gap resets turning, so the base factor applies to the look.
-        assert!((d.x - 1.0 * 100.0 * 0.0025 * 0.25).abs() < 1e-6, "{d}");
+        // The gap resets turning, so the base factor applies to the stick,
+        // whose sideways part turns about the up axis.
+        assert!((d.y - 1.0 * 100.0 * 0.0025 * 0.25).abs() < 1e-6, "{d}");
+        assert_eq!(d.x, 0.0);
         assert!(ramp.turning);
     }
 
-    /// A look stick longer than 0.1 is scaled by the turn speed; its length
-    /// is taken in single then compared with the double 0.1, so a single
-    /// 0.1 already uses the stick; a NaN look uses the stick branch.
+    /// The move stick is read when its squared length is over the double
+    /// 0.1, its forward part on the first axis and its sideways part on the
+    /// second; under that (or NaN) the keys are read, Forward over Back and
+    /// Left over Right.
     #[test]
     fn the_stick_is_read_past_the_dead_zone() {
         let mut ramp = TurnRamp::default();
-        let (d, turned) = ramp.frame(0, 100.0, Vec2f::new(1.0, 0.0), [true, true, true, true]);
-        assert!(turned && (d.x - 0.0625).abs() < 1e-6, "{d}");
+        // A full forward stick: 0.25 (base) · 100 · 0.0025 = 0.0625 on the
+        // camera axis; the keys are ignored.
+        let (d, turned) = ramp.frame(0, 100.0, Vec2f::new(0.0, 1.0), [false, true, false, true]);
+        assert!(turned, "{d}");
+        assert_eq!(d, Vec2f::new(0.0625, 0.0));
+        // A stick 0.3 long has the squared length 0.09: inside the dead
+        // zone, so with no key held it does not turn.
         let mut ramp = TurnRamp::default();
-        // A 0.09-long look is inside the dead zone: no key is held, so it
-        // does not turn.
-        let (d, _) = ramp.frame(
+        let (d, turned) = ramp.frame(0, 100.0, Vec2f::new(0.3, 0.0), [false; 4]);
+        assert!(!turned);
+        assert_eq!(d, Vec2f::ZERO);
+        // 0.33² = 0.1089 is over 0.1: the stick turns about the up axis.
+        let mut ramp = TurnRamp::default();
+        let (d, _) = ramp.frame(0, 100.0, Vec2f::new(0.33, 0.0), [false; 4]);
+        assert!((d.y - 0.33 * 0.0625).abs() < 1e-7, "{d}");
+        // A NaN stick reads the keys: Forward and Back held give +speed,
+        // Right alone gives −speed.
+        let mut ramp = TurnRamp::default();
+        let (d, turned) = ramp.frame(
             0,
             100.0,
-            Vec2f::new(0.09, 0.0),
-            [false, false, false, false],
+            Vec2f::new(f32::NAN, 0.0),
+            [true, true, false, true],
         );
-        assert_eq!(d, Vec2f::ZERO);
-        // The single 0.1 is just over the double 0.1: it takes the stick
-        // branch.
+        assert!(turned);
+        assert_eq!(d, Vec2f::new(0.0625, -0.0625));
+        // Left wins over Right.
         let mut ramp = TurnRamp::default();
-        let (d, _) = ramp.frame(0, 100.0, Vec2f::new(0.1, 0.0), [false, false, false, false]);
-        assert!((d.x - 0.1 * 0.25 * 0.25).abs() < 1e-7, "{d}");
-        let mut ramp = TurnRamp::default();
-        let (_, turned) = ramp.frame(0, 100.0, Vec2f::new(f32::NAN, 0.0), [false; 4]);
-        assert!(!turned);
+        let (d, _) = ramp.frame(0, 100.0, Vec2f::ZERO, [false, false, true, true]);
+        assert_eq!(d, Vec2f::new(0.0, 0.0625));
     }
 
     /// The turn is composed across the camera's right axis then up the
@@ -535,8 +567,9 @@ mod tests {
         let down = Vec3::NEG_Y;
         let at = Vec3::new(0.5, 0.0, 0.5);
         assert_eq!(place_point(o, down, Some((at, 2.0)), -5.0), Some(at));
-        // A hit nearer than the limit falls back to the plane at the limit
-        // (5 cm, 0.05 m), which the descending ray meets behind the origin.
+        // A hit 2 cm high is under a 5 cm limit: the point falls back to
+        // the plane at the limit (0.05 m), which the descending ray meets
+        // above the hit.
         let back = place_point(o, down, Some((at, 2.0)), 5.0).unwrap();
         assert!((back.y - 0.05).abs() < 1e-6, "{back}");
         // The lift's own limit is 1000 m below: a hit is always taken, and
@@ -550,20 +583,22 @@ mod tests {
         );
         assert_eq!(place_point(o, Vec3::Y, None, PLACEMENT_LIMIT_CM), None);
         assert_eq!(place_point(o, Vec3::X, None, PLACEMENT_LIMIT_CM), None);
-        // A NaN hit passes the "not nearer" test.
+        // A NaN height is not "under" the limit: the hit is kept.
         assert_eq!(place_point(o, down, Some((at, f32::NAN)), 0.0), Some(at));
-        // A NaN distance is a hit too.
         assert_eq!(place_point(o, down, Some((at, f32::NAN)), 5.0), Some(at));
     }
 
-    /// The placement frame is refused when the item's box leaves 280 cm up
-    /// or −1000 cm down in the turned frame.
+    /// The placement frame is placed either way; its answer says whether
+    /// the item's box stays within 280 cm up and −1000 cm down in the
+    /// turned frame.
     #[test]
     fn the_placement_frame_refuses_a_bad_box() {
         let centre = Vec3::ZERO;
         let half = Vec3::new(0.1, 0.1, 0.1);
-        assert!(place_frame(Mat3::IDENTITY, Vec3::new(0.0, 1.0, 0.0), centre, half).is_some());
-        assert!(place_frame(Mat3::IDENTITY, Vec3::new(0.0, 3.0, 0.0), centre, half).is_none());
+        assert!(place_frame(Mat3::IDENTITY, Vec3::new(0.0, 1.0, 0.0), centre, half).1);
+        assert!(!place_frame(Mat3::IDENTITY, Vec3::new(0.0, 3.0, 0.0), centre, half).1);
+        let (frame, _) = place_frame(Mat3::IDENTITY, Vec3::new(0.0, 3.0, 0.0), centre, half);
+        assert_eq!(frame.position, Vec3::new(0.0, 3.0, 0.0));
         // Turned a quarter about X, a long box that fitted upright no
         // longer does: its 3 m half length lies across and its top leaves
         // the 280 cm limit.
@@ -573,7 +608,7 @@ mod tests {
             Vec3::X,
             Vec2f::new(std::f32::consts::FRAC_PI_2, 0.0),
         );
-        assert!(place_frame(turned, Vec3::new(0.0, 1.0, 0.0), centre, long).is_none());
+        assert!(!place_frame(turned, Vec3::new(0.0, 1.0, 0.0), centre, long).1);
     }
 
     /// The GUI drag claim: only an item or object payload with no dialogue,
@@ -629,7 +664,7 @@ mod tests {
         });
         assert!(cursor.held.is_some());
         assert_eq!(cursor.rotation, Mat3::IDENTITY);
-        assert!(cursor.turn_frame(0, 100.0, Vec2f::new(1.0, 0.0), [false; 4], Vec3::X));
+        assert!(cursor.turn_frame(0, 100.0, Vec2f::new(0.0, 1.0), [false; 4], Vec3::X));
         assert!((cursor.offset.x - 0.0625).abs() < 1e-6);
         assert!((cursor.rotation * Vec3::Y - Vec3::Y).length() > 0.01);
         cursor.hover = HOVER_GUI;
@@ -666,18 +701,19 @@ mod tests {
         assert_eq!(h, Vec3::new(1.0, 1.0, 2.0));
     }
 
-    /// The release: a cancelled lift goes to the GUI or back; a GUI slot
-    /// takes it; the give-back hover leaves it; anything else puts it back.
+    /// The release: a plain release leaves the item where it is unless a
+    /// GUI slot takes it; a cancelled lift goes to the slot, stays with the
+    /// world hover bit, and is otherwise put back.
     #[test]
     fn the_release_order() {
+        assert_eq!(release(false, 0), Release::Drop);
+        assert_eq!(release(false, HOVER_WORLD), Release::Drop);
+        assert_eq!(release(false, HOVER_GUI), Release::ToGui);
         assert_eq!(release(true, 0), Release::PutBack);
         assert_eq!(release(true, HOVER_GUI), Release::ToGui);
-        assert_eq!(release(true, HOVER_GIVE_BACK), Release::PutBack);
-        assert_eq!(release(false, 0), Release::PutBack);
-        assert_eq!(release(false, HOVER_GUI), Release::ToGui);
-        assert_eq!(release(false, HOVER_GUI | HOVER_WORLD), Release::ToGui);
-        assert_eq!(release(false, HOVER_WORLD), Release::Drop);
-        assert_eq!(release(false, HOVER_GIVE_BACK), Release::Drop);
+        assert_eq!(release(true, HOVER_GUI | HOVER_WORLD), Release::ToGui);
+        assert_eq!(release(true, HOVER_WORLD), Release::Drop);
+        assert_eq!(release(true, HOVER_GIVE_BACK), Release::Drop);
     }
 
     /// The GUI drop: a drag out of an inventory with a body spawns; none of

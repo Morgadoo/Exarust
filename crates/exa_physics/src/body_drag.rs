@@ -6,8 +6,7 @@
 //! point in the part's frame where the grab took it. In each pass of a limp
 //! body's iterations that the grab runs in, after the part's own links, the
 //! gap to the anchor is taken across the ground only (in cm, its height
-//! zeroed). Under 1.19209e-7 cm² it does nothing, and a link with a slack
-//! does nothing while its 3-D gap is within that slack. Otherwise the pull is
+//! zeroed). Under 1.19209e-7 cm² it does nothing. Otherwise the pull is
 //! twice the strength times the gap, the gap counted at most 3·√mobility cm
 //! and never more than 5 cm. When the point's motion since the tick began heads
 //! toward the anchor (its share along the gap's direction is over
@@ -49,9 +48,6 @@ pub struct Grab {
     /// The grab runs in the tick's passes up to this one (from 0), or in
     /// every pass.
     pub last_pass: Option<u32>,
-    /// The 3-D gap (m) the point may drift from the anchor before the link
-    /// pulls, as the original's slack. Zero for the hand's own drag.
-    pub slack: f32,
 }
 
 impl Ragdoll {
@@ -60,19 +56,6 @@ impl Ragdoll {
     /// `last_pass`. The grab is the body's last. Returns whether the part
     /// exists.
     pub fn grab(&mut self, part: usize, at: Vec3, strength: f32, last_pass: Option<u32>) -> bool {
-        self.grab_with_slack(part, at, strength, last_pass, 0.0)
-    }
-
-    /// Takes hold as [`Ragdoll::grab`] does, with `slack` (m): the point
-    /// drifts that far from the anchor before the link pulls.
-    pub fn grab_with_slack(
-        &mut self,
-        part: usize,
-        at: Vec3,
-        strength: f32,
-        last_pass: Option<u32>,
-        slack: f32,
-    ) -> bool {
         let Some(p) = self.parts.get(part) else {
             return false;
         };
@@ -84,7 +67,6 @@ impl Ragdoll {
             anchor: at,
             strength,
             last_pass,
-            slack,
         });
         true
     }
@@ -143,13 +125,9 @@ impl Ragdoll {
             let part = &mut self.parts[i];
             let now = part.point(&g.on_part);
             let moved = (now - part.point_at_start(&g.on_part)) * CM;
-            if let Some(pull) = drag_pull(
-                (g.anchor - now) * CM,
-                moved,
-                part.inverse_mass,
-                g.strength,
-                g.slack * CM,
-            ) {
+            if let Some(pull) =
+                drag_pull((g.anchor - now) * CM, moved, part.inverse_mass, g.strength)
+            {
                 part.push(&g.on_part, pull / CM);
             }
         }
@@ -160,10 +138,7 @@ impl Ragdoll {
 /// point) from its anchor, whose point moved `moved` (cm) since the tick
 /// began, on a part of `mobility`, with `strength`; `None` when the gap
 /// across the ground is under the epsilon.
-pub fn drag_pull(gap: Vec3, moved: Vec3, mobility: f32, strength: f32, slack: f32) -> Option<Vec3> {
-    if gap.length() <= slack {
-        return None;
-    }
+pub fn drag_pull(gap: Vec3, moved: Vec3, mobility: f32, strength: f32) -> Option<Vec3> {
     let mut d = Vec3::new(gap.x, 0.0, gap.z);
     let len2 = d.x * d.x + d.y * d.y + d.z * d.z;
     if len2 < EPSILON {
@@ -201,33 +176,21 @@ mod tests {
     #[test]
     fn the_pull_is_twice_the_strength_within_the_cap() {
         // Mobility 1: the cap is 3 cm. A 2 cm gap at strength 1 pulls 4 cm.
-        let p = drag_pull(Vec3::new(2.0, 9.0, 0.0), Vec3::ZERO, 1.0, 1.0, 0.0).unwrap();
+        let p = drag_pull(Vec3::new(2.0, 9.0, 0.0), Vec3::ZERO, 1.0, 1.0).unwrap();
         assert!(close(p, Vec3::new(4.0, 0.0, 0.0)), "{p}");
         // 10 cm away: 3/10 of it, twice: 6 cm.
-        let p = drag_pull(Vec3::new(0.0, 0.0, 10.0), Vec3::ZERO, 1.0, 1.0, 0.0).unwrap();
+        let p = drag_pull(Vec3::new(0.0, 0.0, 10.0), Vec3::ZERO, 1.0, 1.0).unwrap();
         assert!(close(p, Vec3::new(0.0, 0.0, 6.0)), "{p}");
         // Mobility 4 would cap at 6 cm: never over 5. Strength 0.5: 5 cm.
-        let p = drag_pull(Vec3::new(10.0, 0.0, 0.0), Vec3::ZERO, 4.0, 0.5, 0.0).unwrap();
+        let p = drag_pull(Vec3::new(10.0, 0.0, 0.0), Vec3::ZERO, 4.0, 0.5).unwrap();
         assert!(close(p, Vec3::new(5.0, 0.0, 0.0)), "{p}");
         // Mobility 0.08 caps at 3·√0.08 = 0.8485 cm.
-        let p = drag_pull(Vec3::new(10.0, 0.0, 0.0), Vec3::ZERO, 0.08, 1.0, 0.0).unwrap();
+        let p = drag_pull(Vec3::new(10.0, 0.0, 0.0), Vec3::ZERO, 0.08, 1.0).unwrap();
         assert!((p.x - 2.0 * 3.0 * 0.08f32.sqrt()).abs() < 1e-5, "{p}");
         // A gap straight up, or under the epsilon, pulls nothing.
-        assert_eq!(drag_pull(Vec3::Y * 50.0, Vec3::ZERO, 1.0, 1.0, 0.0), None);
-        assert_eq!(drag_pull(Vec3::X * 3e-4, Vec3::ZERO, 1.0, 1.0, 0.0), None);
-        assert!(drag_pull(Vec3::X * 4e-4, Vec3::ZERO, 1.0, 1.0, 0.0).is_some());
-        // A link with 0.3 cm of slack does nothing within 3 mm of the
-        // anchor, even across the ground, and pulls past it.
-        assert_eq!(
-            drag_pull(Vec3::new(0.2, 0.0, 0.0), Vec3::ZERO, 1.0, 1.0, 0.3),
-            None
-        );
-        assert!(drag_pull(Vec3::new(0.4, 0.0, 0.0), Vec3::ZERO, 1.0, 1.0, 0.3).is_some());
-        // The slack is 3-D: 0.25 cm up is also inside it.
-        assert_eq!(
-            drag_pull(Vec3::new(0.0, 0.25, 0.0), Vec3::ZERO, 1.0, 1.0, 0.3),
-            None
-        );
+        assert_eq!(drag_pull(Vec3::Y * 50.0, Vec3::ZERO, 1.0, 1.0), None);
+        assert_eq!(drag_pull(Vec3::X * 3e-4, Vec3::ZERO, 1.0, 1.0), None);
+        assert!(drag_pull(Vec3::X * 4e-4, Vec3::ZERO, 1.0, 1.0).is_some());
     }
 
     /// Motion already heading toward the anchor is taken off the pull; motion
@@ -239,7 +202,6 @@ mod tests {
             Vec3::new(1.5, 2.0, 0.5),
             1.0,
             1.0,
-            0.0,
         )
         .unwrap();
         assert!(close(p, Vec3::new(4.5, 0.0, 0.0)), "{p}");
@@ -248,7 +210,6 @@ mod tests {
             Vec3::new(-1.5, 0.0, 0.0),
             1.0,
             1.0,
-            0.0,
         )
         .unwrap();
         assert!(close(p, Vec3::new(6.0, 0.0, 0.0)), "{p}");

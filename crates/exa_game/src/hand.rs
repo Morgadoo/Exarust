@@ -62,7 +62,6 @@
 //! per-frame request's reach and the controls' frame, read in the
 //! instructions (`context/re/player-control-hand.md`).
 
-use bevy::input::mouse::AccumulatedMouseMotion;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 use exa_combat::Condition;
@@ -109,9 +108,6 @@ const EARLY_FROM_MS: i64 = 200;
 const EARLY_STEP_MS: i64 = 20;
 /// A click turns the player toward a cursor farther than this (cm).
 const TURN_BEYOND_CM: f32 = 70.0;
-/// The scene's sensitivity scalar in the item cursor's turn (the original
-/// reads one from the scene; Exarust has none, so it passes 1 [guess]).
-const ITEM_TURN_SENSITIVITY: f32 = 1.0;
 
 /// What the left button holds.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -1093,8 +1089,9 @@ fn press_hand(
                 }
                 return;
             }
-            // The lift rides the item cursor: a grab with the item cursor's
-            // slack, and the frames the release may put the item back to.
+            // The lift rides the item cursor (Exarust holds it with a plain
+            // grab), and saves the frames a cancelled release puts it back
+            // to.
             let Some(Picked {
                 at,
                 hit: Hit::Prop { body, part },
@@ -1105,13 +1102,7 @@ fn press_hand(
             let Ok((_, mut ragdoll, ..)) = bodies.get_mut(body) else {
                 return;
             };
-            if !ragdoll.grab_with_slack(
-                part,
-                at,
-                item_cursor::LIFT_STRENGTH,
-                None,
-                item_cursor::LIFT_SLACK,
-            ) {
+            if !ragdoll.grab(part, at, item_cursor::LIFT_STRENGTH, None) {
                 return;
             }
             let saved: Vec<bevy::math::Affine3A> =
@@ -1199,10 +1190,11 @@ fn hold_hand(
     mut requests: Query<&mut Locomotion, With<PlayerBody>>,
     mut bodies: Query<OtherBodies, Without<PlayerBody>>,
     mut screens: Option<ResMut<Messages<ScreenRequest>>>,
-    (time, mut show_bars, motion): (
+    (time, mut show_bars, pad, pad_status): (
         Option<Res<Time<Virtual>>>,
         Option<ResMut<HudShowUntil>>,
-        Res<AccumulatedMouseMotion>,
+        Option<Res<crate::gamepad::PlayPad>>,
+        Option<Res<crate::gamepad::PadStatus>>,
     ),
     mut clicks: MessageWriter<WorldClick>,
 ) {
@@ -1326,39 +1318,49 @@ fn hold_hand(
                 {
                     pb.hold_object(false);
                 }
-                let walking = hand.out_of_reach;
-                if let Some((outcome, held)) = items.end(walking)
+                // The movement request's suppression cancels the lift.
+                let cancelled = hand.out_of_reach;
+                if let Some((outcome, held)) = items.end(cancelled)
                     && let Ok((_, mut ragdoll, ..)) = bodies.get_mut(held.body)
                 {
                     ragdoll.release_grab();
+                    // A plain release leaves the item where the cursor put
+                    // it; a cancelled one (and the GUI's, which Exarust has
+                    // no slot for) puts it back.
                     if outcome != Release::Drop {
                         ragdoll.place_at(&held.saved);
                     }
                     ragdoll.wake();
                 }
             } else {
-                // The mouse turns the item: the base speed, ramped after
-                // 300 ms of turning, 500 ms of quiet dropping it back.
+                // The movement inputs turn the item (the lift keeps the
+                // movement request): the pad's raw move stick, or the move
+                // keys under its dead zone. The base speed ramps after
+                // 300 ms of turning; 500 ms of quiet drops it back.
                 let now = time
                     .as_deref()
                     .map_or(0, |t| t.elapsed().as_millis() as u64);
-                let look = Vec2::new(motion.delta.x, motion.delta.y);
+                let frame_ms = time.as_deref().map_or(0.0, |t| t.delta_secs() * 1000.0);
+                let stick = if pad_status.as_ref().is_some_and(|s| s.active()) {
+                    pad.as_ref().map_or(Vec2::ZERO, |p| p.frame().move_raw)
+                } else {
+                    Vec2::ZERO
+                };
                 let keys_held = [
-                    keys.pressed(KeyCode::KeyW),
-                    keys.pressed(KeyCode::KeyS),
-                    keys.pressed(KeyCode::KeyA),
-                    keys.pressed(KeyCode::KeyD),
+                    bindings.pressed(&keys, Action::Forward),
+                    bindings.pressed(&keys, Action::Back),
+                    bindings.pressed(&keys, Action::Left),
+                    bindings.pressed(&keys, Action::Right),
                 ];
-                let (delta, turned) = items
-                    .turn
-                    .frame(now, ITEM_TURN_SENSITIVITY, look, keys_held);
-                if turned {
-                    items.offset += delta;
-                }
                 let right = cameras
                     .single()
                     .map(|(_, eye)| eye.right().as_vec3())
                     .unwrap_or(Vec3::X);
+                let (delta, turned) = items.turn.frame(now, frame_ms, stick, keys_held);
+                if turned {
+                    items.offset += delta;
+                    items.rotation *= item_cursor::turn_delta(right, delta);
+                }
                 let Some(held) = items.held.as_ref() else {
                     hand.holding = Holding::Nothing;
                     return;
@@ -1366,48 +1368,52 @@ fn hold_hand(
                 let (body, part, box_centre, box_half) =
                     (held.body, held.part, held.centre, held.half);
                 if turned && let Ok((_, mut ragdoll, ..)) = bodies.get_mut(body) {
-                    let rotation = bevy::math::Mat3::from_axis_angle(right, delta.x)
-                        * bevy::math::Mat3::from_axis_angle(Vec3::Y, delta.y);
                     let centre = ragdoll
                         .parts
                         .get(part)
                         .map(|p| Vec3::from(p.transform().translation))
                         .unwrap_or(Vec3::ZERO);
-                    ragdoll.turn_about(centre, rotation);
+                    ragdoll.turn_about(centre, item_cursor::turn_delta(right, delta));
                 }
-                // The cursor's ray places the item; a box that does not
-                // fit keeps the last good point.
-                let own = player.and_then(|(_, child)| {
-                    player_bodies
-                        .get(child)
-                        .ok()
-                        .and_then(|(_, own, condition, _)| {
-                            own.map(|r| (child, r, condition.copied().unwrap_or_default()))
-                        })
-                });
+                // The cursor's ray places the item against the level, the
+                // held item itself left out of the pick (as the original
+                // flags its node while it picks). The item goes there
+                // whether or not its box fits. A cursor over nothing keeps
+                // the last point [Exarust: no navigation mesh behind every
+                // pixel, and no sweep to the first contact].
                 let ray = cursor_ray(&scripted, &windows, &cameras);
-                let picked = pick_with(ray, &physics, &stand_ins, &bodies, own);
-                // The drag's reach is 1000 cm: a farther (or no) hit keeps
-                // the last point that fitted.
-                if let Some(ray) = ray
-                    && let Some(distance) =
-                        item_cursor::drag_hit(picked.map(|p| (p.at - ray.origin).length() * CM))
-                    && let Some(point) = item_cursor::place_point(
-                        ray.origin,
-                        *ray.direction,
-                        picked.map(|p| (p.at, distance / CM)),
-                        item_cursor::PLACEMENT_LIMIT_CM,
-                    )
-                    && let Some(frame) =
-                        item_cursor::place_frame(items.rotation, point, box_centre, box_half)
-                {
-                    if let Some(held) = items.held.as_mut() {
-                        held.shown = frame;
-                        held.target = point;
-                    }
-                    if let Ok((_, mut ragdoll, ..)) = bodies.get_mut(body) {
-                        ragdoll.pull_grab_to(point);
-                        ragdoll.wake_to(DRAG_WAKE);
+                if let Some(ray) = ray {
+                    let (origin, dir) = (ray.origin, *ray.direction);
+                    let hit = sources
+                        .physics
+                        .fixed_pick_except(origin, dir, PICK_RANGE, &|h| {
+                            sources
+                                .stand_ins
+                                .owner_of(h)
+                                .is_some_and(|(owner, _)| owner == body)
+                        })
+                        .map(|(_, t)| {
+                            let at = origin + dir * t;
+                            (at, at.y * CM)
+                        });
+                    if hit.is_some()
+                        && let Some(point) = item_cursor::place_point(
+                            origin,
+                            dir,
+                            hit,
+                            item_cursor::PLACEMENT_LIMIT_CM,
+                        )
+                    {
+                        let (frame, _fits) =
+                            item_cursor::place_frame(items.rotation, point, box_centre, box_half);
+                        if let Some(held) = items.held.as_mut() {
+                            held.shown = frame;
+                            held.target = point;
+                        }
+                        if let Ok((_, mut ragdoll, ..)) = bodies.get_mut(body) {
+                            ragdoll.pull_grab_to(point);
+                            ragdoll.wake_to(DRAG_WAKE);
+                        }
                     }
                 }
             }
@@ -2073,7 +2079,6 @@ mod tests {
             .insert_resource(Physics::default())
             .init_resource::<Hand>()
             .init_resource::<ItemCursor>()
-            .init_resource::<AccumulatedMouseMotion>()
             .add_message::<WorldClick>()
             .add_systems(Update, (press_hand, hold_hand, reach_hand).chain());
         app.world_mut()

@@ -463,16 +463,15 @@ the living character's talk condition is `exa_ai::roles`'s. The controls' scene-
 scene nodes): the active and hold words, the grab switch and its release,
 the body-bearing subtrees, the frame refresh and orthonormalisation and the
 placement frame's bits. The item cursor (`item_cursor`) is live: a lift
-without Ctrl grabs the prop (strength 1, 0.003 m of slack) and rides it on
-the cursor; the mouse turns it by `0.25·sensitivity·0.0025` rad a frame,
+without Ctrl grabs the prop (strength 1, Exarust's stand-in) and rides it
+on the cursor; the movement inputs (the pad's raw move stick past a squared
+0.1, else the move keys) turn it by `0.25·frame ms·0.0025` rad a frame,
 ramping to `1.0` after 300 ms of turning and falling back after 500 ms of
-quiet, keys W/S/A/D standing in for a stick under 0.1; each frame the
-cursor's ray places it at the nearest hit under the drag's 1000 cm reach
-where its rest-point box stays within 280 cm up and −1000 cm down (the
-spawn's first placement takes any hit; a miss lands 1000 m along the ray,
-a climbing ray refuses),
-and the release puts it back at the frames the lift saved, leaves it on the
-give-back hover, or lets the GUI take it. The GUI drop's branch (an entry,
+quiet; each frame the cursor's ray, the held item left out, places it at
+the level hit (a miss keeps the last point), its rest-point box test
+(280 cm up, −1000 cm down) only answering; a plain release leaves it there,
+and a cancelled one goes to the GUI slot, stays on the world hover, or is
+put back at the frames the lift saved. The GUI drop's branch (an entry,
 from a GUI, with a body) and its next-frame queue, and the put-down's
 scripts within 5 cm² (`player_controls::nearby_scripts`), are tested rules.
 The right press's use start, its target class, the GUI use and the used

@@ -654,9 +654,10 @@ there:
   locomote: the object's hold begins (the standing quarter turns wait), and
   with **Ctrl** held it is dragged: a grab on the part the pick hit, at the
   hit point, strength 1, in the first two of the tick's 20 passes. Without
-  Ctrl it is lifted onto the **item cursor** (`item_cursor`): a grab with
-  0.003 m of slack, the part's frames saved, and the item riding the
-  cursor until the release (below). While the player's kinesis waits for its
+  Ctrl it is lifted onto the **item cursor** (`item_cursor`): the part's
+  frames saved and the item riding the cursor until the release (below);
+  Exarust holds it with a plain grab of strength 1 where the original moves
+  the node itself. While the player's kinesis waits for its
   pick, the lift hands the prop to the kinesis instead
   (`docs/THAUMATURGY.md`, Force), and the kinesis's pick callback answers
   the reach in place of the measure: a point the kinesis can take is in
@@ -679,31 +680,37 @@ until the next lift is released (kept as the original has it).
 
 ### The item cursor
 
-A lift without Ctrl holds the item on the cursor. The mouse turns it: a
-two-axis offset (W/S across, A/D up and down when a look stick is under
-0.1 long, the mouse or the pad's look otherwise) turns the held frame about
-the camera's right axis and then the world's up axis, a piece every frame.
-The turn's speed is `0.25·s·0.0025` rad a frame at first, ramps to
-`1.0·s·0.0025` once the cursor has been turning for more than 300 ms
+A lift without Ctrl holds the item on the cursor. The movement inputs,
+which the lift leaves alone, turn it, not the mouse: the pad's raw move
+stick when its squared length is over 0.1 (double; a NaN reads the keys),
+its forward part about the camera's axis and its sideways part about the
+world's up axis; otherwise Forward (else Back) gives ± the speed about the
+camera's axis and Left (else Right) ± the speed about the up axis. The
+pieces turn the held frame every frame. The speed is `0.25·ms·0.0025` rad a
+frame at first (ms: the last frame's time), ramps to `1.0·ms·0.0025` once
+the cursor has been turning for more than 300 ms
 `(0.25 + (now − ramp)·0.003333…·0.75)` in between, and a frame 500 ms after
-the last starts from `0.25` again; s is the scene's sensitivity scalar
-(Exarust passes 1, a guess). The offset under 1.19209e−7 is no turn.
+the last starts from `0.25` again; the product is taken in double. A piece
+under 1.19209e−7 is no turn.
 
-Each frame the cursor's ray is picked against the level and the item goes
-to the nearest hit under the drag's 1000 cm reach; a farther hit (or none)
-keeps the last point that fitted. The lift's first placement (the spawn)
-instead takes any hit (its limit, 100000 cm, is beyond every one); with no
-hit it goes where the ray crosses that plane, 1000 m along, unless the ray
-climbs (its height part over −1.19209e−7) and the placement is refused. The item's box (its rest points' centre and half extents in its
-saved frame, turned as above) must stay at most 280 cm high and at least
-−1000 cm low; a box that does not fit keeps the last point that did.
+Each frame the cursor's ray is picked against the level, the held item left
+out. A hit whose height is not under the limit (−100000 cm) places the item
+there; otherwise it goes where the ray crosses that height, unless the ray
+climbs (its height part over −1.19209e−7) and the placement is refused. The
+item goes there whether or not its box (its rest points' centre and half
+extents in its saved frame, turned as above) stays within 280 cm up and
+−1000 cm down: the box only decides the routine's answer. The original then
+slides the item from 600 cm back along the ray to its first contact (at
+most 1000 cm on); Exarust pulls its grab to the picked point, and a cursor
+over nothing keeps the last point.
 
-On the release the item goes back to the frames the lift saved — the
-original's lift is for turning an item in place, not for moving it far —
-unless the cursor is over a GUI item slot (the GUI takes it) or carries the
-give-back hover (it stays where it is); a release while the player walks or
-the point is out of reach is a cancel. The turn, placement, release and
-drop rules are `item_cursor::{TurnRamp, placed, release, drop, DropTask}`.
+A plain release leaves the item where the cursor put it: the release hands
+the saved rest points to the deferred restore only to take the body out of
+its old sector. A release over a GUI item slot is the GUI's. A lift the
+movement request cancels (the point out of reach) goes to the slot it is
+over, stays with the world hover bit, and is otherwise put back at the
+saved rest points. The turn, placement, release and drop rules are
+`item_cursor::{TurnRamp, place_point, place_frame, release, drop, DropTask}`.
 An item put down runs the scripts of the scene objects within 5 cm² of the
 point (`player_controls::nearby_scripts`), which have no placed nodes in
 Exarust yet. The GUI drop takes an inventory entry whose object has a body,
