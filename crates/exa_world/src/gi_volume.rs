@@ -14,7 +14,7 @@
 
 use std::sync::Arc;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use bevy::camera::primitives::Frustum;
 use bevy::camera::visibility::VisibilitySystems;
@@ -34,6 +34,7 @@ impl Plugin for GiVolumePlugin {
         app.init_resource::<GiSettings>()
             .init_resource::<GiState>()
             .init_resource::<GiSectorLights>()
+            .init_resource::<GiBuiltBlocks>()
             .add_systems(
                 PostUpdate,
                 (collect_source, follow_camera, publish_sector_lights)
@@ -49,6 +50,16 @@ impl Plugin for GiVolumePlugin {
 /// The GI sample points of a mesh node, in its space (metres).
 #[derive(Component, Clone)]
 pub struct GiPoints(pub Arc<Vec<Vec3>>);
+
+/// A GI mesh the original counts as thin: its sample points weigh a quarter
+/// (the node's first child carries the thin byte).
+#[derive(Component, Clone, Copy, Debug, Default)]
+pub struct GiThinMesh;
+
+/// A GI mesh with the original's centred vertical variant: its points gain
+/// half a voxel in height, and they leave the column's lowest slice alone.
+#[derive(Component, Clone, Copy, Debug, Default)]
+pub struct GiCentredMesh;
 
 /// A tile-grid floor mesh: with the other floor meshes of its grid cell it
 /// makes the cell's floor, whose upward faces become a solid layer of
@@ -91,6 +102,8 @@ pub struct GiGrid {
     pub height: u32,
     /// Plane A per cell, row-major.
     pub edges: Arc<Vec<u32>>,
+    /// A level without its own grid: the original's synthetic 8 × 8 grid.
+    pub synthetic: bool,
 }
 
 impl GiGrid {
@@ -100,6 +113,7 @@ impl GiGrid {
             width: 8,
             height: 8,
             edges: Arc::new(vec![OPEN; 8 * 8]),
+            synthetic: true,
         }
     }
 
@@ -118,6 +132,231 @@ impl GiGrid {
 
 /// Plane A's bit for a built cell.
 const OPEN: u32 = 0x8_0000;
+
+/// The manager's blocks: up to eight 6 m sectors on a side, over the level
+/// grid's built cells. The manager makes the list once per level and never
+/// rebuilds it; the camera only picks which block it draws.
+#[derive(Clone, Debug, Default)]
+pub struct GiBlockLayout {
+    /// The blocks with built cells, in creation order (X fastest).
+    pub blocks: Vec<GiBlockSpec>,
+    /// Blocks across and down.
+    pub columns: i32,
+    pub rows: i32,
+    /// The level grid's size (X, Z), cells.
+    pub grid: (u32, u32),
+    /// The first block's world edge, cm.
+    pub cells_origin_cm: Vec2,
+}
+
+/// One of the manager's blocks.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GiBlockSpec {
+    /// Its first 6 m cell in the level grid.
+    pub sector: IVec2,
+    /// Its block-grid slot, X fastest.
+    pub slot: usize,
+    /// The lowest corner of its voxels, metres.
+    pub origin: Vec3,
+    /// Its centre (X and Z used), metres.
+    pub centre: Vec3,
+    /// Voxels along Y.
+    pub depth: usize,
+}
+
+impl GiBlockLayout {
+    /// The blocks over `grid`'s built cells, as the original lays them out:
+    /// from the bounding box of the built cells, rounded up to whole blocks
+    /// of eight cells and slid back inside the grid. A level without its
+    /// own grid gets the original's single block at cells (3, 3).
+    pub fn new(grid: &GiGrid, top: f32, bottom: f32) -> Self {
+        let (depth, below) = level_height(top, bottom, (VOXEL * CM_PER_M) as i32);
+        let (w, h) = (grid.width as i32, grid.height as i32);
+        let (columns, rows, first) = if grid.synthetic {
+            (1, 1, IVec2::new(3, 3))
+        } else {
+            let (x0, z0, x1, z1) = built_bounds(grid);
+            let mut columns = ((x1 - x0 + 1) + 7) / 8;
+            let mut rows = ((z1 - z0 + 1) + 7) / 8;
+            let mut first = IVec2::new(x0, z0);
+            if w < first.x + columns * 8 {
+                first.x -= first.x + columns * 8 - w;
+            }
+            if h < first.y + rows * 8 {
+                first.y -= first.y + rows * 8 - h;
+            }
+            columns = columns.max(1);
+            rows = rows.max(1);
+            (columns, rows, first)
+        };
+        let mut blocks = Vec::new();
+        for z in 0..rows {
+            for x in 0..columns {
+                let sector = first + IVec2::new(x * 8, z * 8);
+                if !block_has_cells(grid, sector) {
+                    continue;
+                }
+                let slot = (x + z * columns) as usize;
+                let centre = block_centre(sector, grid.width, grid.height) / CM_PER_M;
+                blocks.push(GiBlockSpec {
+                    sector,
+                    slot,
+                    origin: block_origin(sector, grid.width, grid.height, VOXEL, below),
+                    centre: Vec3::new(centre.x, 0.0, centre.y),
+                    depth,
+                });
+            }
+        }
+        Self {
+            blocks,
+            columns,
+            rows,
+            grid: (grid.width, grid.height),
+            // The grid's half size in float here (unlike the blocks' own
+            // integer halves), so an odd grid's edge sits half a cell off.
+            cells_origin_cm: Vec2::new(
+                (first.x as f32 - w as f32 * 0.5) * 600.0,
+                (first.y as f32 - h as f32 * 0.5) * 600.0,
+            ),
+        }
+    }
+
+    /// The block a world point (metres) falls in, as the original's
+    /// per-object lookup floors the offset times 1/4800 cm into the block
+    /// grid. `None` when that block has no geometry.
+    pub fn block_at(&self, at: Vec3) -> Option<usize> {
+        let offset = at.xz() * CM_PER_M - self.cells_origin_cm;
+        let index = IVec2::new(
+            (offset.x * BLOCK_INV_CM).floor() as i32,
+            (offset.y * BLOCK_INV_CM).floor() as i32,
+        );
+        if index.x < 0 || index.y < 0 || index.x >= self.columns || index.y >= self.rows {
+            return None;
+        }
+        let slot = (index.x + index.y * self.columns) as usize;
+        self.blocks.iter().position(|b| b.slot == slot)
+    }
+
+    /// The nearest block to a world point (metres), ties in creation order.
+    /// The distance ignores height and measures from the block's 24 m half
+    /// extent, as the original's sort does.
+    pub fn nearest(&self, at: Vec3) -> Option<usize> {
+        let p = at.xz() * CM_PER_M;
+        self.blocks
+            .iter()
+            .enumerate()
+            .map(|(i, b)| {
+                let centre = block_centre(b.sector, self.grid.0, self.grid.1);
+                let dx = (p.x - centre.x).abs() - 2400.0;
+                let dz = (p.y - centre.y).abs() - 2400.0;
+                (i, dx.max(0.0).powi(2) + dz.max(0.0).powi(2))
+            })
+            .min_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)))
+            .map(|(i, _)| i)
+    }
+}
+
+/// The manager's per-object texture position (`VXGIPos`) for a world point
+/// in a block, as the original computes it: two axis positions relative to
+/// the block's centre plus half a texture, and the height from the volume's
+/// bottom divided by the block's **width** (the surface shader pairs it with
+/// a scale of the same units). Texture axes are X, Z depth, Y height.
+pub fn gi_position(block: &GiBlockSpec, at: Vec3) -> Vec3 {
+    let width = SIDE as f32 * VOXEL;
+    Vec3::new(
+        (at.x - block.centre.x) / width + 0.5,
+        (at.z - block.centre.z) / width + 0.5,
+        (at.y - block.origin.y) / width,
+    )
+}
+
+/// One over a block's 48 m width, in centimetres, as the original's f32.
+const BLOCK_INV_CM: f32 = 1.0 / 4800.0;
+
+/// The bounding box of the grid's built cells, as the original finds it:
+/// the border cells are skipped, and the first row and column come from the
+/// first built cell. Each later row moves the left edge to its first built
+/// cell left of it, or else checks the current span (both ends included);
+/// either reaches the bottom edge to that row, as does any built cell right
+/// of the span, which also moves the right edge. An empty grid gives the
+/// original's (-4, -4) to (3, 3).
+#[allow(clippy::mut_range_bound)]
+pub fn built_bounds(grid: &GiGrid) -> (i32, i32, i32, i32) {
+    let (w, h) = (grid.width as i32, grid.height as i32);
+    let mut found = None;
+    'scan: for z in 1..=h - 2 {
+        for x in 1..=w - 2 {
+            if grid.open(i64::from(x), i64::from(z)) {
+                found = Some((x, z));
+                break 'scan;
+            }
+        }
+    }
+    let Some((mut x0, z0)) = found else {
+        return (-4, -4, 3, 3);
+    };
+    let mut x1 = x0;
+    let mut z1 = z0;
+    for z in z0..=h - 2 {
+        let mut extended = false;
+        for x in 1..x0 {
+            if grid.open(i64::from(x), i64::from(z)) {
+                x0 = x;
+                z1 = z;
+                extended = true;
+                break;
+            }
+        }
+        if !extended && (x0..=x1).any(|x| grid.open(i64::from(x), i64::from(z))) {
+            z1 = z;
+        }
+        for x in x1 + 1..=w - 2 {
+            if grid.open(i64::from(x), i64::from(z)) {
+                x1 = x;
+                z1 = z;
+            }
+        }
+    }
+    (x0, z0, x1, z1)
+}
+
+/// The block height and vertical offset the original's level record picks:
+/// 64 slices, or 128 when the level spans more than 12.8 m.
+fn level_height(top: f32, bottom: f32, voxel_cm: i32) -> (usize, i32) {
+    let top_cm = (top * CM_PER_M).round() as i32;
+    let bottom_cm = (bottom * CM_PER_M).round() as i32;
+    let depth = if (top_cm - bottom_cm) / voxel_cm > 64 {
+        128
+    } else {
+        64
+    };
+    (depth, (depth as i32 * voxel_cm - top_cm) / voxel_cm)
+}
+
+/// Whether any cell of an eight-by-eight block is built.
+fn block_has_cells(grid: &GiGrid, sector: IVec2) -> bool {
+    (0..8).any(|z| (0..8).any(|x| grid.open(i64::from(sector.x + x), i64::from(sector.y + z))))
+}
+
+/// The lowest corner of a block starting at `sector`, metres: the original
+/// counts whole 6 m cells from the grid's middle cell (its size halved,
+/// rounded down), eight voxels of margin, and the level's vertical offset.
+fn block_origin(sector: IVec2, width: u32, height: u32, voxel: f32, below: i32) -> Vec3 {
+    let cells_per_world = (600.0 / (voxel * CM_PER_M)) as i32;
+    Vec3::new(
+        ((sector.x - (width as i32) / 2) * cells_per_world - MARGIN as i32) as f32 * voxel,
+        -(below as f32) * voxel,
+        ((sector.y - (height as i32) / 2) * cells_per_world - MARGIN as i32) as f32 * voxel,
+    )
+}
+
+/// A block's centre (X, Z) in world centimetres.
+fn block_centre(sector: IVec2, width: u32, height: u32) -> Vec2 {
+    Vec2::new(
+        (sector.x - (width as i32) / 2 + 4) as f32 * 600.0,
+        (sector.y - (height as i32) / 2 + 4) as f32 * 600.0,
+    )
+}
 
 /// Whether levels get the voxel GI, and how many propagation steps run at
 /// once when one is built (light otherwise builds up one step per frame).
@@ -181,7 +420,8 @@ enum SourceInputs {
 
 struct GiInputs {
     meshes: usize,
-    points: Vec<Vec3>,
+    /// Every mesh's world points, with its thin and centred flags.
+    points: Vec<(Vec3, bool, bool)>,
     /// The grid cells' floor points, world space.
     floor_points: Vec<Vec3>,
     terrain: Vec<[Vec3; 3]>,
@@ -253,37 +493,54 @@ struct MeshCopy {
     at: bevy::math::Affine3A,
 }
 
-/// The block now built: the sector-aligned origin it was built at.
+/// The block now active: its index in the layout ([`usize::MAX`] for the
+/// fallback block of an empty grid).
 #[derive(Resource)]
 struct GiBlock {
-    origin: Vec3,
+    index: usize,
 }
+
+/// The manager's static block layout for the level.
+#[derive(Resource, Clone, Default)]
+pub struct GiBlocks(pub Arc<GiBlockLayout>);
 
 /// The block being built off the main thread; at most one at a time.
 #[derive(Resource)]
-struct GiBuild(Task<BuiltBlock>);
+struct GiBuild(Task<(usize, Arc<BuiltBlock>)>);
+
+/// Finished blocks, kept for a while so a camera that walks back into one
+/// reuses its occupancy instead of rebuilding it.
+#[derive(Resource, Default)]
+struct GiBuiltBlocks(HashMap<usize, Arc<BuiltBlock>>);
 
 /// A finished block and what its build counted.
 struct BuiltBlock {
-    occupancy: Occupancy,
-    floors: Vec<u8>,
+    origin: Vec3,
+    depth: usize,
+    sector: IVec2,
+    cells: Arc<Vec<u8>>,
+    floors: Arc<Vec<u8>>,
     terrain_columns: usize,
     floor_points: usize,
 }
 
-/// How far ahead of the camera the block is centred (metres), as the
-/// original keeps its blocks around a point 20 m in front of the camera.
+/// How far ahead of the camera the manager's focus sits (metres): the sector
+/// marks and the block distance sort measure from it.
 const FOCUS_AHEAD: f32 = 20.0;
-/// The block is rebuilt once its centre would move by more than this many
-/// sectors.
-const REBUILD_SECTORS: f32 = 2.0;
+/// Finished blocks kept for reuse.
+const BLOCKS_KEPT: usize = 3;
 
 #[allow(clippy::too_many_arguments)]
 fn collect_source(
     mut commands: Commands,
     pending: Option<Res<PendingGi>>,
     settings: Res<GiSettings>,
-    points: Query<(&GiPoints, &GlobalTransform)>,
+    points: Query<(
+        &GiPoints,
+        &GlobalTransform,
+        Has<GiThinMesh>,
+        Has<GiCentredMesh>,
+    )>,
     floors: Query<(&Mesh3d, &GlobalTransform, &GiFloor)>,
     terrain: Query<(&Mesh3d, &GlobalTransform), With<GiTerrain>>,
     meshes: Res<Assets<Mesh>>,
@@ -299,6 +556,7 @@ fn collect_source(
     }
     commands.remove_resource::<PendingGi>();
     commands.remove_resource::<GiBlock>();
+    commands.insert_resource(GiBuiltBlocks::default());
     // A build for the previous level is dropped, which cancels it.
     commands.remove_resource::<GiBuild>();
     commands.remove_resource::<exa_render::gi::GiTextures>();
@@ -306,14 +564,26 @@ fn collect_source(
     if !settings.enabled {
         commands.remove_resource::<GiVolume>();
         commands.remove_resource::<GiSource>();
+        commands.remove_resource::<GiBlocks>();
         *state = GiState::Off;
         return;
     }
     *state = GiState::Building;
+    // The manager lays its blocks out once, from the level's grid and
+    // height; the camera only picks which one it draws.
+    let layout = GiBlockLayout::new(&pending.grid, pending.top, pending.bottom);
+    info!(
+        "GI blocks: {} over {} x {} cells, first at {} cm",
+        layout.blocks.len(),
+        layout.columns,
+        layout.rows,
+        layout.cells_origin_cm
+    );
+    commands.insert_resource(GiBlocks(Arc::new(layout)));
     // Only shared or copied here; the world-space work runs elsewhere.
     let points: Vec<_> = points
         .iter()
-        .map(|(gi, at)| (gi.0.clone(), at.affine()))
+        .map(|(gi, at, thin, centred)| (gi.0.clone(), at.affine(), thin, centred))
         .collect();
     let floors: Vec<(MeshCopy, GiFloor)> = floors
         .iter()
@@ -322,8 +592,8 @@ fn collect_source(
     let ground = mesh_copies(terrain.iter(), &meshes);
     let task = AsyncComputeTaskPool::get().spawn(async move {
         let mut world = Vec::new();
-        for (gi, m) in &points {
-            world.extend(gi.iter().map(|&p| m.transform_point3(p)));
+        for (gi, m, thin, centred) in &points {
+            world.extend(gi.iter().map(|&p| (m.transform_point3(p), *thin, *centred)));
         }
         GiInputs {
             meshes: points.len(),
@@ -398,6 +668,8 @@ fn follow_camera(
     mut commands: Commands,
     source: Option<ResMut<GiSource>>,
     block: Option<Res<GiBlock>>,
+    blocks: Option<Res<GiBlocks>>,
+    mut built_blocks: ResMut<GiBuiltBlocks>,
     build: Option<ResMut<GiBuild>>,
     refocus: Option<Res<GiRefocus>>,
     mut state: ResMut<GiState>,
@@ -423,60 +695,96 @@ fn follow_camera(
     };
     let inputs = inputs.clone();
     let level = source.level.clone();
-    let mut origin = block.as_ref().map(|b| b.origin);
+    let cache = &mut *built_blocks;
+    let was_building = build.is_some();
     if let Some(mut build) = build {
-        let Some(built) = block_on(poll_once(&mut build.0)) else {
+        let Some((index, built)) = block_on(poll_once(&mut build.0)) else {
             return;
         };
         commands.remove_resource::<GiBuild>();
-        let occupancy = built.occupancy;
         info!(
             "GI block: {} terrain columns, {} floor voxels, origin {:.2}, {} slices",
-            built.terrain_columns, built.floor_points, occupancy.origin, occupancy.depth
+            built.terrain_columns, built.floor_points, built.origin, built.depth
         );
-        origin = Some(occupancy.origin);
-        commands.insert_resource(GiBlock {
-            origin: occupancy.origin,
-        });
-        commands.insert_resource(GiVolume {
-            origin: occupancy.origin,
-            size: UVec3::new(SIDE as u32, SIDE as u32, occupancy.depth as u32),
-            voxel: VOXEL,
-            floors: Arc::new(built.floors),
-            cells: Arc::new(occupancy.cells),
-            base_ambient: Vec3::from(level.base_ambient) * BASE_AMBIENT,
-            sector: occupancy.sector,
-            warm_up: settings.warm_up,
-        });
+        if index != usize::MAX {
+            cache.0.insert(index, built.clone());
+            while cache.0.len() > BLOCKS_KEPT {
+                if let Some(&oldest) = cache
+                    .0
+                    .keys()
+                    .find(|&&k| k != index && Some(k) != block.as_ref().map(|b| b.index))
+                {
+                    cache.0.remove(&oldest);
+                } else {
+                    break;
+                }
+            }
+        }
+        commands.insert_resource(GiBlock { index });
+        commands.insert_resource(volume_of(&built, &level, &settings));
         *state = GiState::Built;
     }
+    let Some(blocks) = blocks else { return };
     let Some(camera) = cameras.iter().next() else {
         return;
     };
-    let focus = camera.translation() + camera.forward().as_vec3() * FOCUS_AHEAD;
-    let (wanted, _, _) = Occupancy::placement(
-        focus,
-        level.top,
-        level.bottom,
-        (level.grid.width, level.grid.height),
-    );
-    if refocus.is_some() {
+    let at = camera.translation();
+    let focus = at + camera.forward().as_vec3() * FOCUS_AHEAD;
+    // The camera's own block when it has geometry; otherwise the block the
+    // original's residency sort ranks first, nearest the point 20 m ahead.
+    let wanted = blocks.0.block_at(at).or_else(|| blocks.0.nearest(focus));
+    let refocusing = refocus.is_some();
+    if refocusing {
         commands.remove_resource::<GiRefocus>();
     }
-    if let Some(origin) = origin {
-        let moved = (wanted - origin).xz().abs().max_element();
-        let allowed = if refocus.is_some() {
-            0.0
-        } else {
-            REBUILD_SECTORS * SECTOR_M
-        };
-        if moved <= allowed {
+    let active = block.as_ref().map(|b| b.index);
+    if !refocusing && wanted.is_some() && wanted == active {
+        return;
+    }
+    // A newer focus waits for the build in flight.
+    if was_building {
+        return;
+    }
+    if let Some(index) = wanted {
+        if refocusing {
+            cache.0.remove(&index);
+        }
+        let cached = cache.0.get(&index).cloned();
+        if let Some(built) = cached {
+            commands.insert_resource(GiBlock { index });
+            commands.insert_resource(volume_of(&built, &level, &settings));
+            *state = GiState::Built;
             return;
         }
+        let spec = blocks.0.blocks[index];
+        let task = AsyncComputeTaskPool::get()
+            .spawn(async move { build_block(Some(spec), at, level, &inputs) });
+        commands.insert_resource(GiBuild(task));
+        *state = GiState::Building;
+        return;
     }
-    let task = AsyncComputeTaskPool::get().spawn(async move { build_block(focus, level, &inputs) });
+    // A grid with no built cells: the old focus-centred block stands in.
+    if active == Some(usize::MAX) && !refocusing {
+        return;
+    }
+    let task =
+        AsyncComputeTaskPool::get().spawn(async move { build_block(None, focus, level, &inputs) });
     commands.insert_resource(GiBuild(task));
     *state = GiState::Building;
+}
+
+/// The renderer's volume for a built block.
+fn volume_of(block: &BuiltBlock, level: &PendingGi, settings: &GiSettings) -> GiVolume {
+    GiVolume {
+        origin: block.origin,
+        size: UVec3::new(SIDE as u32, SIDE as u32, block.depth as u32),
+        voxel: VOXEL,
+        floors: block.floors.clone(),
+        cells: block.cells.clone(),
+        base_ambient: Vec3::from(level.base_ambient) * BASE_AMBIENT,
+        sector: block.sector,
+        warm_up: settings.warm_up,
+    }
 }
 
 /// Marks the block's sectors the camera needs and lists each sector's 6 m
@@ -670,20 +978,29 @@ fn sector_marks(
 
 /// Builds the block centred on `focus`: terrain first, then the meshes'
 /// points, then the floors, as the original builds a block.
-fn build_block(focus: Vec3, level: PendingGi, inputs: &GiInputs) -> BuiltBlock {
-    let mut occupancy = Occupancy::new(
-        focus,
-        level.top,
-        level.bottom,
-        (level.grid.width, level.grid.height),
-    );
+fn build_block(
+    spec: Option<GiBlockSpec>,
+    focus: Vec3,
+    level: PendingGi,
+    inputs: &GiInputs,
+) -> (usize, Arc<BuiltBlock>) {
+    let mut occupancy = match spec {
+        Some(spec) => Occupancy::new_at(spec.origin, spec.depth, spec.sector),
+        None => Occupancy::new(
+            focus,
+            level.top,
+            level.bottom,
+            (level.grid.width, level.grid.height),
+        ),
+    };
+    let index = spec.map_or(usize::MAX, |s| s.slot);
     let mut ground = TerrainColumns::new(&occupancy);
     for &t in &inputs.terrain {
         ground.add(t);
     }
     let terrain_columns = ground.apply(&mut occupancy);
-    for &p in &inputs.points {
-        occupancy.splat(p);
+    for &(p, thin, centred) in &inputs.points {
+        occupancy.splat_styled(p, 1.0, thin, centred);
     }
     for &p in &inputs.floor_points {
         occupancy.splat(p);
@@ -696,12 +1013,16 @@ fn build_block(focus: Vec3, level: PendingGi, inputs: &GiInputs) -> BuiltBlock {
         floors_path.push(".floors");
         let _ = std::fs::write(floors_path, &floors);
     }
-    BuiltBlock {
-        occupancy,
-        floors,
+    let built = BuiltBlock {
+        origin: occupancy.origin,
+        depth: occupancy.depth,
+        sector: occupancy.sector,
+        cells: Arc::new(occupancy.cells),
+        floors: Arc::new(floors),
         terrain_columns,
         floor_points,
-    }
+    };
+    (index, Arc::new(built))
 }
 
 /// Voxel edge, metres.
@@ -716,7 +1037,6 @@ const LID: [u8; 2] = [26, 5];
 const MARGIN: usize = 8;
 const SECTOR: usize = 30;
 const SECTORS: usize = 8;
-const SECTOR_M: f32 = SECTOR as f32 * VOXEL;
 /// Occupancy of a voxel below the terrain surface.
 const TERRAIN_SOLID: u8 = 20;
 /// The floor generator's parameter, in centimetres: the original's 20.
@@ -829,6 +1149,12 @@ impl Occupancy {
     /// and `grid` is the level's sector grid size (X, Z).
     pub fn new(centre: Vec3, top: f32, bottom: f32, grid: (u32, u32)) -> Self {
         let (origin, depth, sector) = Self::placement(centre, top, bottom, grid);
+        Self::new_at(origin, depth, sector)
+    }
+
+    /// An empty block at a laid-out origin, height and first sector
+    /// ([`GiBlockLayout`]).
+    pub fn new_at(origin: Vec3, depth: usize, sector: IVec2) -> Self {
         let mut cells = vec![0u8; SIDE * SIDE * depth];
         for (slice, &v) in LID.iter().enumerate() {
             let y = depth - 1 - slice;
@@ -899,7 +1225,20 @@ impl Occupancy {
     /// cells, each share rounded on its own. Points too close to the
     /// block's sides or in its top slice are dropped.
     pub fn splat(&mut self, p: Vec3) {
-        let g = (p - self.origin) / VOXEL - Vec3::splat(0.5);
+        self.splat_styled(p, 1.0, false, false);
+    }
+
+    /// Splats a sample point with the original's thin-mesh and centred
+    /// variants: a thin mesh (a cloth or a sheet) weighs a quarter, and a
+    /// centred one adds half a voxel to its height (after the half-voxel
+    /// shift every point gets) and leaves the column's lowest slice alone;
+    /// both keep the same bounds test. `weight` is 1 for
+    /// a normal point (the original's 20) and −1 to take an old position back
+    /// out.
+    pub fn splat_styled(&mut self, p: Vec3, weight: f32, thin: bool, centred: bool) {
+        let weight = weight * POINT_WEIGHT * if thin { 0.25 } else { 1.0 };
+        let g = (p - self.origin) / VOXEL - Vec3::splat(0.5)
+            + if centred { Vec3::Y * 0.5 } else { Vec3::ZERO };
         let base = g.trunc();
         let f = g - base;
         let (x, y, z) = (base.x as i64, base.y as i64, base.z as i64);
@@ -912,18 +1251,71 @@ impl Occupancy {
         // is (1 − fx)(1 − fz) (or fx, fz) times it, as the original forms
         // the two products.
         for (dy, wy) in [(0, 1.0 - f.y), (1, f.y)] {
-            let layer = wy * POINT_WEIGHT;
+            let layer = wy * weight;
             for (dz, wz) in [(0, 1.0 - f.z), (1, f.z)] {
                 for (dx, wx) in [(0, 1.0 - f.x), (1, f.x)] {
                     self.add(x + dx, y + dy, z + dz, (wx * wz) * layer);
                 }
             }
         }
-        let column = &mut self.lowest[x + z * SIDE];
-        *column = (*column).min(y as u8);
+        if !centred {
+            let column = &mut self.lowest[x + z * SIDE];
+            *column = (*column).min(y as u8);
+        }
     }
 
-    /// The lowest slice light propagates in, per column: the lowest occupied
+    /// The region of the volume a point set touches, for a sub-upload: the
+    /// original grows the box by 1.5 voxels on each side in world voxels
+    /// (CVTSS2SI, rounding ties to even), takes the block's first voxel off,
+    /// clamps it to the block, and leaves `None` when it is empty. The
+    /// original boxes the object's oriented bounds (old and new); this takes
+    /// the extent of the points it is given. [adaptation: point extent]
+    pub fn region_of(&self, points: impl IntoIterator<Item = Vec3>) -> Option<VoxelRegion> {
+        let mut lo = Vec3::splat(f32::INFINITY);
+        let mut hi = Vec3::splat(f32::NEG_INFINITY);
+        for p in points {
+            lo = lo.min(p);
+            hi = hi.max(p);
+        }
+        if !lo.is_finite() || !hi.is_finite() {
+            return None;
+        }
+        let inv = Vec3::splat(1.0 / VOXEL);
+        let first = (self.origin * inv).round();
+        let lo = (lo * inv - Vec3::splat(1.5)).map(f32::round_ties_even) - first;
+        let hi = (hi * inv + Vec3::splat(1.5)).map(f32::round_ties_even) - first;
+        // Texture axes: X, then Z, then height.
+        let dims = UVec3::new(SIDE as u32, SIDE as u32, self.depth as u32);
+        let lo = Vec3::new(lo.x.max(0.0), lo.z.max(0.0), lo.y.max(0.0));
+        let hi = Vec3::new(hi.x.max(0.0), hi.z.max(0.0), hi.y.max(0.0));
+        let lo = lo.min(dims.as_vec3());
+        let hi = hi.min(dims.as_vec3());
+        let lo = UVec3::new(lo.x as u32, lo.y as u32, lo.z as u32);
+        let hi = UVec3::new(hi.x as u32, hi.y as u32, hi.z as u32);
+        (lo.x < hi.x && lo.y < hi.y && lo.z < hi.z).then_some(VoxelRegion { lo, hi })
+    }
+
+    /// Takes an object's old point set out of the grid and puts its new one
+    /// in, as the original's dynamic update does with weights ∓20, and
+    /// returns the region both touch. The mesh's flags choose the thin and
+    /// centred variants.
+    pub fn update_dynamic(
+        &mut self,
+        old: &[Vec3],
+        new: &[Vec3],
+        thin: bool,
+        centred: bool,
+    ) -> Option<VoxelRegion> {
+        let region = self.region_of(old.iter().chain(new).copied())?;
+        for &p in old {
+            self.splat_styled(p, -1.0, thin, centred);
+        }
+        for &p in new {
+            self.splat_styled(p, 1.0, thin, centred);
+        }
+        Some(region)
+    }
+
     /// slice of its 6 m sector (30 × 30 columns inside the 8-voxel margin),
     /// or 255 where the sector holds nothing (or in the margin).
     pub fn floors(&self) -> Vec<u8> {
@@ -954,6 +1346,41 @@ impl Occupancy {
     }
 }
 
+/// A half-open voxel region in texture axes (X, then Z, then height).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VoxelRegion {
+    pub lo: UVec3,
+    pub hi: UVec3,
+}
+
+impl VoxelRegion {
+    /// Whether the region holds no voxel.
+    pub fn is_empty(&self) -> bool {
+        self.lo.x >= self.hi.x || self.lo.y >= self.hi.y || self.lo.z >= self.hi.z
+    }
+}
+
+/// The bytes of `cells` inside `region`, X fastest, then Z, then height, as
+/// the original's sub-upload reads them. `None` for an empty or out-of-range
+/// region.
+pub fn sub_upload(cells: &[u8], dims: UVec3, region: VoxelRegion) -> Option<Vec<u8>> {
+    let lo = region.lo.min(dims);
+    let hi = region.hi.min(dims);
+    if lo.x >= hi.x || lo.y >= hi.y || lo.z >= hi.z {
+        return None;
+    }
+    let mut out = Vec::with_capacity(((hi.x - lo.x) * (hi.y - lo.y) * (hi.z - lo.z)) as usize);
+    for y in lo.z..hi.z {
+        for z in lo.y..hi.y {
+            let row = (z * dims.x + y * dims.x * dims.y) as usize;
+            let start = row + lo.x as usize;
+            let end = row + hi.x as usize;
+            out.extend_from_slice(cells.get(start..end)?);
+        }
+    }
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -976,11 +1403,12 @@ mod tests {
             width: size,
             height: size,
             edges: Arc::new(vec![OPEN; (size * size) as usize]),
+            synthetic: false,
         }
     }
 
     #[test]
-    fn blocks_are_built_off_the_main_thread_around_the_camera() {
+    fn blocks_are_built_off_the_main_thread_where_the_camera_stands() {
         let mut app = App::new();
         app.add_plugins((TaskPoolPlugin::default(), GiVolumePlugin))
             .init_resource::<Assets<Mesh>>();
@@ -1000,36 +1428,130 @@ mod tests {
         assert_eq!(*app.world().resource::<GiState>(), GiState::Building);
         update_until(&mut app, |w| w.contains_resource::<GiVolume>());
         assert_eq!(*app.world().resource::<GiState>(), GiState::Built);
-        // Around the point ahead of the camera (it looks along −Z).
-        let ahead = Vec3::NEG_Z * FOCUS_AHEAD;
-        let (origin, depth, _) = Occupancy::placement(ahead, 6.0, 0.0, (32, 32));
+        // The camera at the origin is in block (2, 2) of the 4 × 4 blocks:
+        // its first sector is (16, 16), so its corner is 1.6 m short of the
+        // world origin on each side.
+        let layout = GiBlockLayout::new(&level.grid, level.top, level.bottom);
+        let slot = 2 + 2 * layout.columns as usize;
+        let which = layout.blocks.iter().position(|b| b.slot == slot).unwrap();
+        let spec = layout.blocks[which];
+        assert_eq!(spec.sector, IVec2::new(16, 16));
         let volume = app.world().resource::<GiVolume>();
-        assert_eq!(volume.origin, origin);
+        assert_eq!(volume.origin, spec.origin);
+        assert_eq!(volume.sector, spec.sector);
         assert_eq!(
             volume.size,
-            UVec3::new(SIDE as u32, SIDE as u32, depth as u32)
+            UVec3::new(SIDE as u32, SIDE as u32, spec.depth as u32)
         );
-        // A small move keeps the block; a far one rebuilds it.
+        // A move inside the block keeps it; a far one moves to the next.
         *app.world_mut().get_mut::<GlobalTransform>(camera).unwrap() =
             GlobalTransform::from_xyz(5.0, 0.0, 0.0);
         app.update();
         assert_eq!(*app.world().resource::<GiState>(), GiState::Built);
         *app.world_mut().get_mut::<GlobalTransform>(camera).unwrap() =
-            GlobalTransform::from_xyz(40.0, 0.0, 0.0);
+            GlobalTransform::from_xyz(60.0, 0.0, 0.0);
         app.update();
         assert_eq!(*app.world().resource::<GiState>(), GiState::Building);
         update_until(&mut app, |w| *w.resource::<GiState>() == GiState::Built);
-        let (moved, _, _) =
-            Occupancy::placement(Vec3::new(40.0, 0.0, 0.0) + ahead, 6.0, 0.0, (32, 32));
-        assert_eq!(app.world().resource::<GiVolume>().origin, moved);
-        // A refocus rebuilds even for a small move.
+        let far = layout.block_at(Vec3::new(60.0, 0.0, 0.0)).unwrap();
+        assert_eq!(
+            app.world().resource::<GiVolume>().origin,
+            layout.blocks[far].origin
+        );
+        // Walking back into the first block reuses its cached occupancy.
         *app.world_mut().get_mut::<GlobalTransform>(camera).unwrap() =
-            GlobalTransform::from_xyz(46.0, 0.0, 0.0);
+            GlobalTransform::from_xyz(0.0, 0.0, 0.0);
+        app.update();
+        assert_eq!(*app.world().resource::<GiState>(), GiState::Built);
+        assert_eq!(app.world().resource::<GiVolume>().origin, spec.origin);
+        // A refocus rebuilds even when the block is already active.
         app.insert_resource(GiRefocus);
         app.update();
         assert_eq!(*app.world().resource::<GiState>(), GiState::Building);
         update_until(&mut app, |w| *w.resource::<GiState>() == GiState::Built);
         assert!(!app.world().contains_resource::<GiRefocus>());
+    }
+
+    #[test]
+    fn blocks_cover_the_built_cells_in_eight_cell_steps() {
+        // A 32 × 32 grid, all built inside the border: bounds (1, 1)–(30,
+        // 30), four blocks a side, slid back to cell 0.
+        let grid = open_grid(32);
+        assert_eq!(built_bounds(&grid), (1, 1, 30, 30));
+        let layout = GiBlockLayout::new(&grid, 6.0, 0.0);
+        assert_eq!((layout.columns, layout.rows), (4, 4));
+        assert_eq!(layout.cells_origin_cm, Vec2::splat(-9600.0));
+        assert_eq!(layout.blocks.len(), 16);
+        assert_eq!(layout.blocks[0].sector, IVec2::ZERO);
+        assert_eq!(layout.blocks[0].origin, Vec3::new(-97.6, -6.8, -97.6));
+        assert_eq!(layout.block_at(Vec3::ZERO), Some(10));
+        assert_eq!(layout.block_at(Vec3::new(-30.0, 0.0, -30.0)), Some(5));
+        assert_eq!(layout.block_at(Vec3::new(60.0, 0.0, 0.0)), Some(11));
+        // 30 m in is 2.625 blocks from the edge: the floor keeps block 2.
+        assert_eq!(layout.block_at(Vec3::new(30.0, 0.0, 0.0)), Some(10));
+        // An odd grid's edge counts from its half size in float.
+        let odd = GiBlockLayout::new(&open_grid(17), 6.0, 0.0);
+        assert_eq!(odd.cells_origin_cm.x, (1.0 - 8.5) * 600.0);
+        // An empty grid has the original's (-4, -4)–(3, 3) bounds.
+        let empty = GiGrid {
+            width: 16,
+            height: 16,
+            edges: Arc::new(vec![0; 16 * 16]),
+            synthetic: false,
+        };
+        assert_eq!(built_bounds(&empty), (-4, -4, 3, 3));
+        // A level without a grid gets one block at cell (3, 3).
+        let synthetic = GiGrid::synthetic();
+        let layout = GiBlockLayout::new(&synthetic, 6.0, 0.0);
+        assert_eq!(layout.blocks.len(), 1);
+        assert_eq!(layout.blocks[0].sector, IVec2::new(3, 3));
+        assert_eq!(layout.blocks[0].origin, Vec3::new(-7.6, -6.8, -7.6));
+        assert_eq!(layout.cells_origin_cm, Vec2::splat(-600.0));
+    }
+
+    #[test]
+    fn the_built_bounds_grow_to_the_last_cell_in_a_row() {
+        // Cells (1, 1), (5, 1) and (2, 3): x spans 1–5; row 3's leftward
+        // extension moves x0 but the row lies in the old span, so z1 is 3.
+        let mut edges = vec![0; 8 * 8];
+        for (x, z) in [(1, 1), (5, 1), (2, 3)] {
+            edges[x + z * 8] = OPEN;
+        }
+        let grid = GiGrid {
+            width: 8,
+            height: 8,
+            edges: Arc::new(edges),
+            synthetic: false,
+        };
+        assert_eq!(built_bounds(&grid), (1, 1, 5, 3));
+        // A single built cell bounds itself.
+        let mut edges = vec![0; 8 * 8];
+        edges[9] = OPEN;
+        let grid = GiGrid {
+            width: 8,
+            height: 8,
+            edges: Arc::new(edges),
+            synthetic: false,
+        };
+        assert_eq!(built_bounds(&grid), (1, 1, 1, 1));
+        // The span's right end counts: cells (1, 1) and (1, 4) reach row 4.
+        // A leftward extension reaches its row too: (3, 1) then (1, 5).
+        for (cells, bounds) in [
+            ([(1, 1), (1, 4)], (1, 1, 1, 4)),
+            ([(3, 1), (1, 5)], (1, 1, 3, 5)),
+        ] {
+            let mut edges = vec![0; 8 * 8];
+            for (x, z) in cells {
+                edges[x + z * 8] = OPEN;
+            }
+            let grid = GiGrid {
+                width: 8,
+                height: 8,
+                edges: Arc::new(edges),
+                synthetic: false,
+            };
+            assert_eq!(built_bounds(&grid), bounds);
+        }
     }
 
     #[test]
@@ -1214,6 +1736,91 @@ mod tests {
     }
 
     #[test]
+    fn a_thin_point_weighs_a_quarter_and_a_centred_one_straddles_slices() {
+        let mut o = Occupancy::new(Vec3::ZERO, 6.0, 0.0, (8, 8));
+        let p = o.origin + Vec3::new(100.5, 10.5, 100.5) * VOXEL;
+        o.splat_styled(p, 1.0, true, false);
+        assert_eq!(o.at(p), Some(5));
+        // The centred variant adds half a voxel in height and leaves the
+        // column's floor where it was.
+        let mut o = Occupancy::new(Vec3::ZERO, 6.0, 0.0, (8, 8));
+        o.splat_styled(p, 1.0, false, true);
+        let base = o.origin + Vec3::new(100.5, 10.5, 100.5) * VOXEL;
+        // Height 10 + 0.5 splits evenly between slices 10 and 11; the
+        // horizontal neighbours and the slice below stay empty.
+        assert_eq!(o.at(base), Some(10));
+        assert_eq!(o.at(base + Vec3::Y * VOXEL), Some(10));
+        assert_eq!(o.at(base - Vec3::Y * VOXEL), Some(0));
+        assert_eq!(o.at(base + Vec3::Z * VOXEL), Some(0));
+        assert_eq!(o.lowest[100 + 100 * SIDE], 255);
+    }
+
+    #[test]
+    fn a_dynamic_update_takes_the_old_points_out_and_puts_the_new_ones_in() {
+        let mut o = Occupancy::new_at(Vec3::ZERO, 64, IVec2::ZERO);
+        let old = Vec3::new(100.5, 10.5, 100.5) * VOXEL;
+        o.splat(old);
+        let new = old + Vec3::X * VOXEL;
+        let region = o.update_dynamic(&[old], &[new], false, false).unwrap();
+        assert_eq!(o.at(old), Some(0));
+        assert_eq!(o.at(new), Some(20));
+        assert_eq!(region.lo, UVec3::new(99, 99, 9));
+        assert_eq!(region.hi, UVec3::new(103, 102, 12));
+    }
+
+    #[test]
+    fn a_dirty_region_grows_by_one_and_a_half_voxels() {
+        let o = Occupancy::new_at(Vec3::ZERO, 64, IVec2::ZERO);
+        let region = o
+            .region_of([Vec3::new(100.5, 10.5, 100.5) * VOXEL])
+            .unwrap();
+        assert_eq!(region.lo, UVec3::new(99, 99, 9));
+        assert_eq!(region.hi, UVec3::new(102, 102, 12));
+        assert!(o.region_of([]).is_none());
+        // 4 voxels in: 4 − 1.5 = 2.5 rounds to the even 2, 4 + 1.5 to 6.
+        let region = o.region_of([Vec3::splat(4.0 * VOXEL)]).unwrap();
+        assert_eq!(region.lo, UVec3::splat(2));
+        assert_eq!(region.hi, UVec3::splat(6));
+    }
+
+    #[test]
+    fn a_sub_upload_reads_x_then_z_then_height() {
+        let dims = UVec3::new(2, 2, 2);
+        let mut cells = Vec::new();
+        for y in 0..2 {
+            for z in 0..2 {
+                for x in 0..2 {
+                    cells.push((x + z * 2 + y * 4) as u8);
+                }
+            }
+        }
+        let region = VoxelRegion {
+            lo: UVec3::ZERO,
+            hi: dims,
+        };
+        assert_eq!(sub_upload(&cells, dims, region).unwrap(), cells);
+        let region = VoxelRegion {
+            lo: UVec3::new(1, 0, 1),
+            hi: UVec3::new(2, 2, 2),
+        };
+        assert_eq!(sub_upload(&cells, dims, region).unwrap(), vec![5, 7]);
+    }
+
+    #[test]
+    fn a_blocks_gi_position_is_relative_to_its_centre() {
+        let grid = open_grid(32);
+        let layout = GiBlockLayout::new(&grid, 6.0, 0.0);
+        let block = layout.blocks[layout.block_at(Vec3::ZERO).unwrap()];
+        let p = gi_position(&block, block.centre);
+        assert_eq!((p.x, p.y), (0.5, 0.5));
+        assert!((p.z - (block.centre.y - block.origin.y) / 51.2).abs() < 1e-6);
+        // The world origin lies half a block before the block's centre in
+        // each direction.
+        let origin = gi_position(&block, Vec3::ZERO);
+        assert!((origin.x - (0.5 - 24.0 / 51.2)).abs() < 1e-6);
+    }
+
+    #[test]
     fn edge_points_are_dropped_and_sectors_get_floors() {
         let mut o = Occupancy::new(Vec3::ZERO, 6.0, 0.0, (8, 8));
         let edge = o.origin + Vec3::new(0.5, 10.5, 100.5) * VOXEL;
@@ -1294,6 +1901,7 @@ mod tests {
             width: 16,
             height: 12,
             edges: Arc::new(vec![OPEN; 16 * 12]),
+            synthetic: false,
         };
         let block = IVec2::new(4, 2);
         // Only cell (10, 6), centred at (1500, ·, 300) cm, is in view.
@@ -1390,6 +1998,7 @@ mod tests {
             width: 17,
             height: 17,
             edges: Arc::new(vec![OPEN; 17 * 17]),
+            synthetic: false,
         };
         assert_eq!(focus_cell(&odd, Vec3::ZERO), IVec2::new(8, 8));
     }

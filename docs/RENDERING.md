@@ -1091,22 +1091,32 @@ in world space there too):
 - Sectors fall on the level grid's 6 m cells: cell i is centred at
   ((i + 0.5) − ⌊size/2⌋) × 6 m, the size halved and rounded down as the
   original's integer division does (an odd grid's cells sit 3 m off a
-  multiple of 6 m). The block's first cell is eight sectors centred on the
-  focus point's cell (⌊x cm / 600⌋ + ⌊size/2⌋), slid inside the level's grid
-  as the original's blocks are; its top is the level record's highest point
-  (`0x98`), truncated to whole voxels. A level without a sector grid gets
-  the original's synthetic 8 × 8 grid of open cells, whose one block sits at
-  the world origin.
+  multiple of 6 m). The manager lays its blocks out **once per level**, as
+  the original does: the bounding box of the level grid's built cells
+  (plane A's `0x80000`, the border skipped; a later row reaches the bottom
+  edge when it moves the left edge, has a built cell inside the current
+  span, both ends included, or one right of it), rounded up to whole blocks
+  of eight cells a side and slid back inside the grid; every eight-by-eight
+  block with a built cell becomes a block. A level without a sector grid
+  gets the original's synthetic 8 × 8 grid and its one block at cells
+  (3, 3). The block's top is the level record's highest point (`0x98`),
+  truncated to whole voxels.
 - The original keeps up to nine blocks resident around a point 20 m in
-  front of the camera. Exarust keeps one block, and rebuilds it (with a new
-  warm-up) when the point's block moves more than two sectors. One build
-  runs at a time; a newer focus waits for it. The level's points and floor
-  triangles are collected once in world space. The block already on screen
-  stays bound while the rebuilt one warms behind it, so a move never reveals
-  a cold block's black patches or propagation halo; the warm block replaces
-  it in one step. A level change drops both blocks. When a load ends, the
-  block is rebuilt around the camera's starting view if it is not already
-  there.
+  front of the camera; Exarust keeps one and picks the block the camera's
+  own cell falls in (the original's per-object lookup floors the offset
+  from the block grid's edge, counted from the level grid's half size in
+  float, over 48 m), or, when that one has no geometry, the block nearest
+  the focus 20 m ahead measured from its 24 m half extent, as the
+  residency sort ranks them. Finished block occupancies are kept for the last
+  three blocks and reused when the camera walks back. One build runs at a
+  time; a newer pick waits for it. The block already on screen stays bound
+  while a newly built one warms behind it, so a move never reveals a cold
+  block's black patches or propagation halo; the warm block replaces it in
+  one step. A level change drops both blocks. When a load ends, the block
+  is rebuilt around the camera's starting view if it is not already there.
+  Nine resident light textures, their per-object `VXGIPos` selection and
+  the neighbour margin blits are not wired (`margin_blit` keeps their
+  columns and UV offsets).
 - The top slice holds 26 and the slice below 5, a soft lid.
 - Terrain comes first: in each interior column (not the margins), voxels
   below the terrain surface hold 20, and the surface voxel its covered
@@ -1115,7 +1125,9 @@ in world space there too):
   word, a count, then object-space points in cm) are transformed to the
   world and splatted:
   - trilinearly with weight 20, each cell's share rounded on its own, the
-    sum saturating at 255;
+    sum saturating at 255; a mesh marked thin (`GiThinMesh`) weighs a
+    quarter, and a centred one (`GiCentredMesh`) adds half a voxel in height
+    and leaves its column's lowest slice alone;
   - points within a voxel of the block's sides, or in its top slice, are
     dropped;
   - the spacing word is unused. Wall pieces store 100, and their points
@@ -1186,20 +1198,42 @@ without a sector grid draws all 64 sectors as one group from slice 0 (the
 original does not set that group's floor; it is 0 until a grid level has
 run [inf]), whatever the marks.
 
-For each updated voxel, with occ normalised:
+For each updated voxel, with occ normalised. The light texture is read at
+the slice boundary, as the original's layered quads do (linear filtering
+averages the two neighbouring slices), and the shading maths uses the
+volume's height divided by its width, as the original's `ZTrn` does:
 - open = max(1 − 13·occ, 0);
 - for the eight diagonal neighbours n at ±1.33 voxels:
   - a = open(n);
   - P = light(n) · a² (· a with a sun);
   - sum += mix(old, P, a);
-- open fades out over the lowest slices: · (1 − 2^(−16·r));
+- open fades out over the lowest slices: · (1 − 2^(−16·r)), r the slice
+  over the block's slice count;
 - k = min(8·Σa, 1) · (0.3·open + 0.699);
 - light = sum·k/8 + base·open + Σ lights;
 - base = level record `0x30` (as stored) × 0.001, per channel;
-- each light adds lin(colour)·intensity·multiplier·0.15·0.01 · (1 − d/R)⁴
-  · open · shaping;
+- each point light adds
+  lin(colour)·intensity·multiplier·(1 − dim)²·0.15·0.01 · (1 − d/R)⁴ ·
+  open · cube shadow · shaping. The cube lookup is the cached shadow pool's
+  linear depth compared against d/R + 0.01 along (the point − the light)
+  (the original scales d/R by the light's shadow bias + 0.94 here, which
+  Exarust leaves out [gap]);
+- the sun joins each drawn sector's group first and adds
+  lin(colour)·intensity·3·0.3·0.01 · visibility · open (the manager's sun
+  factor 3, then three times the 0.1 injection share; it is left out when
+  the scaled colour's third component is at most 1.19e−7), visibility from the
+  same fitted sun map Bevy renders: under a sky its first comparison alone,
+  otherwise max(first comparison − the comparison 0.01 deeper, 0) (on
+  Bevy's reverse-Z map, ndc.z − 0.01; the 0.01 is the original's depth
+  units, kept as is [guess]). The
+  original keeps a separate 1024² map for this; Exarust reads Bevy's fitted
+  map (4096² at the top shadow detail) [adaptation], and without one the
+  sun is unshadowed;
+- a light's shading is (2^((ly + (1 − ly)·y)·z) − 1)/(2^z − 1), ly the
+  light's vertical direction; unshaped lights carry (1, 1, 1);
 - the lights injected are the sector's own: each sector's 6 m cell lists the
-  lights whose flood windows reached it (up to 12). A spot-shaped light is
+  lights whose flood windows reached it (up to 12), with the sun ahead of
+  them when it is up (it counts towards the twelve). A spot-shaped light is
   dropped from a sector when it no longer carries down to the middle of the
   sector's floor slice: its horizontal offsets from the cell's centre count
   as zero within 300 cm (or when not a number) and are pulled 300 cm in
@@ -1221,6 +1255,33 @@ For each updated voxel, with occ normalised:
   stored radius: the injection reads the record's radius whatever the flag.
   A level without a wall grid draws the scene's lights (the first twelve by
   id [guess: the original's list order]) in its one group.
+
+**Manager rules kept as tested functions or partial wiring**
+(`exa_render::gi`, `exa_world::gi_volume`):
+- the three block presets: 5 cm voxels give 32 × 32 × 64, 20 cm 256 × 256 ×
+  64 (128 above 12.8 m), and any other value 128 × 128 × 16 at 40 cm.
+  Exarust ships the 20 cm preset only (`preset`);
+- the eight corner offsets (1.33 voxels, X fastest, then Z, then height,
+  w = 1/8) and the shared quad index buffer (`corner_offsets`,
+  `quad_indices`);
+- the emissive shape list: registration appends, unregistration swaps the
+  last entry over each match, and the draw box rounds the centre to
+  voxels (ties to even) and the half extents up, clips the columns to
+  voxels 8 and 248 and draws from centre − half height for 2·half + 1
+  slices, only for a centre above slice 1 (`GiShapes`, `shape_draw`). No gameplay shape registers yet, and the subclasses' own
+  injection programs are outside this component (dome, cuboid, bubble,
+  telebubble, gradient line, multi-point);
+- a moving GI mesh takes its old points out (weight −20) and its new ones
+  in (+20) over a box padded 1.5 voxels each side, rounded ties to even in
+  world voxels (`Occupancy::update_dynamic`; the original pads the
+  object's oriented bounds, Exarust the points' extent [adaptation]); no GI mesh moves in Exarust's levels yet (doors and
+  mechanisms are static), and a full block upload stands in for the
+  original's sub-upload (the region and its bytes are `VoxelRegion`,
+  `sub_upload`);
+- a neighbour block's margin copy: one margin column or row, the interior
+  on the other axis, UV offset ∓240/256, every slice but the top
+  (`margin_blit`). With one resident block no neighbour exists to copy
+  from.
 
 **Voxel lights** (`0x3D0C` nodes: glowing items and a few level nodes)
 add straight into the volume, after the propagation, every step and in
