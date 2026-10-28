@@ -151,8 +151,10 @@ translucent or refracting mode keeps its emissive unexposed. `MatDsp` and
 exist; the texel counts, displacement step and bias are widened to double,
 scaled and narrowed, while the tap offset `1 + 0.125·PassIdx` stays in
 single precision. A liquid record binds a refraction background: the
-built-in `BkgRfr01` up to an opacity of 0.85 and `BkgRfr02` above it (a NaN
-takes the low branch), or the scene's own low and high refraction textures.
+built-in `BkgRfr01` up to an opacity of 0.85 and `BkgRfr02` above it (the
+compare widens the opacity to double; a NaN takes the low branch), or, when
+the scene asks for its own refraction, that texture's low and high fields; a
+program with local reflections binds the scene texture's low field.
 
 **Draw state.** A draw rebuilds its object word from the frame's word plus a
 vertex-colour stream and an animated node's vertex-delta stream. It gathers

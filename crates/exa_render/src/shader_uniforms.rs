@@ -679,32 +679,40 @@ pub struct SceneRefraction {
 /// The texture the material writer binds to the screen-copy unit when it
 /// updates a material.
 ///
-/// Only a record in the liquid mode (the material word's `0x300` bits equal
-/// `0x200`) binds a refraction background: without the scene's own
-/// refraction texture it loads the built-in `BkgRfr01` for an opacity up to
-/// 0.85 (a NaN takes this branch) and `BkgRfr02` above it; with one, the
-/// scene's low and high fields. Any other record binds the scene's low field
-/// when it has an opacity map and the scene has the texture.
+/// A record in the liquid mode (the material word's `0x300` bits equal
+/// `0x200`) binds a refraction background. When the scene asks for its own
+/// refraction (`scene_refraction`), it binds the scene texture's high field
+/// for an opacity above 0.85 and the low field otherwise, or nothing when the
+/// scene has no such texture; when the scene does not ask, it loads the
+/// built-in `BkgRfr02` above 0.85 and `BkgRfr01` otherwise. The opacity is
+/// widened to double before the compare, so a stored `0.85` (0.8500000238)
+/// is above the bound, and a NaN takes the low branch. Any other program with
+/// local reflections (the shader word's `0x400000`, scene bits included)
+/// binds the scene texture's low field when there is one.
 pub fn refraction_map(
     material_word: u32,
+    shader_word: u32,
     opacity: f32,
+    scene_refraction: bool,
     scene: Option<SceneRefraction>,
 ) -> Option<RefractionMap> {
+    let clear = f64::from(opacity) > 0.85;
     if material_word & 0x300 == 0x200 {
-        if scene.is_some() {
-            return Some(if opacity > 0.85 {
+        if scene_refraction {
+            scene?;
+            return Some(if clear {
                 RefractionMap::SceneHigh
             } else {
                 RefractionMap::SceneLow
             });
         }
-        return Some(if opacity > 0.85 {
+        return Some(if clear {
             RefractionMap::BkgRfr02
         } else {
             RefractionMap::BkgRfr01
         });
     }
-    if material_word & 0x40_0000 != 0 && scene.is_some() {
+    if shader_word & crate::shader_program::shader::LOCAL_REFLECTION != 0 && scene.is_some() {
         return Some(RefractionMap::SceneLow);
     }
     None
@@ -1322,43 +1330,51 @@ mod tests {
     #[test]
     fn refraction_picks_the_background_or_the_scenes_own_texture() {
         let scene = SceneRefraction { low: 11, high: 12 };
-        // The liquid mode with no scene texture loads the built-in pair; a
-        // NaN opacity takes the low branch, as the original's compare does.
+        let lr = crate::shader_program::shader::LOCAL_REFLECTION;
+        // The liquid mode without the scene's own refraction loads the
+        // built-in pair, whether or not the scene has the texture; a NaN
+        // opacity takes the low branch.
         assert_eq!(
-            refraction_map(0x200, 0.5, None),
+            refraction_map(0x200, 0, 0.5, false, Some(scene)),
             Some(RefractionMap::BkgRfr01)
         );
+        // The compare is in double: a stored 0.85 is 0.8500000238 > 0.85.
         assert_eq!(
-            refraction_map(0x200, 0.85, None),
-            Some(RefractionMap::BkgRfr01)
-        );
-        assert_eq!(
-            refraction_map(0x200, 0.8501, None),
+            refraction_map(0x200, 0, 0.85, false, None),
             Some(RefractionMap::BkgRfr02)
         );
         assert_eq!(
-            refraction_map(0x200, f32::NAN, None),
+            refraction_map(0x200, 0, 0.849_999_9, false, None),
             Some(RefractionMap::BkgRfr01)
         );
-        // With the scene's own refraction texture both fields are used.
         assert_eq!(
-            refraction_map(0x200, 0.4, Some(scene)),
+            refraction_map(0x200, 0, f32::NAN, false, None),
+            Some(RefractionMap::BkgRfr01)
+        );
+        // With the scene's own refraction both fields are used, and nothing
+        // is bound when the scene has no texture.
+        assert_eq!(
+            refraction_map(0x200, 0, 0.4, true, Some(scene)),
             Some(RefractionMap::SceneLow)
         );
         assert_eq!(
-            refraction_map(0x200, 0.9, Some(scene)),
+            refraction_map(0x200, 0, 0.9, true, Some(scene)),
             Some(RefractionMap::SceneHigh)
         );
-        // Any other record takes the scene's low field only with an opacity
-        // map, and nothing without the scene texture.
+        assert_eq!(refraction_map(0x200, 0, 0.9, true, None), None);
+        // Any other record takes the scene's low field only with local
+        // reflections in its shader word, and nothing without the texture.
         assert_eq!(
-            refraction_map(0x7 | 0x40_0000, 1.0, Some(scene)),
+            refraction_map(0x7, lr, 1.0, false, Some(scene)),
             Some(RefractionMap::SceneLow)
         );
-        assert_eq!(refraction_map(0x7, 1.0, Some(scene)), None);
-        assert_eq!(refraction_map(0x7 | 0x40_0000, 1.0, None), None);
+        assert_eq!(
+            refraction_map(0x7 | 0x40_0000, 0, 1.0, true, Some(scene)),
+            None
+        );
+        assert_eq!(refraction_map(0x7, lr, 1.0, true, None), None);
         // The translucent bit 0x100 is not the refracting mode.
-        assert_eq!(refraction_map(0x100, 0.5, None), None);
+        assert_eq!(refraction_map(0x100, 0, 0.5, false, None), None);
     }
 
     #[test]

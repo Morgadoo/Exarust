@@ -327,10 +327,14 @@ light in the environment word (unlit rows have an empty one).
 | 96 | `DspSdw` | `(0x5C·0.004, 1 + 0.125·PassIdx, 0x60·0.05, 0)` |
 
 A record in the liquid mode (`0x300` = `0x200`) also binds a refraction
-background to the screen-copy unit: without the scene's own refraction
-texture it loads the built-in `BkgRfr01` for an opacity up to 0.85 (a NaN
-takes this branch) and `BkgRfr02` above it; with one, the scene's low and high fields. Any other record binds the scene's low
-field when it has an opacity map and the scene has the texture.
+background to the screen-copy unit. When the scene does not ask for its own
+refraction it loads the built-in `BkgRfr02` for an opacity above 0.85 and
+`BkgRfr01` otherwise (the opacity is widened to double first, so a stored
+0.85 is above the bound; a NaN takes the low branch); when it asks, it binds
+the scene refraction texture's high or low field by the same test, or
+nothing when the scene has no such texture. Any other program whose shader
+word (scene bits included) has local reflections (`0x400000`) binds the
+scene texture's low field when there is one.
 
 ### Lights
 
