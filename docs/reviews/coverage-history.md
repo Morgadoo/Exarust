@@ -101,3 +101,4 @@ while the map was being built, so treat the row as a best-effort snapshot.
 | 2026-10-23 | 5abfa243 | clean | 60.4% | 4.9% | 54.9% | 45.4% | PR #2 review: body tick, combat, casting, live effects, arena |
 | 2026-10-27 | e6b0a3c2 | clean | 60.4% | 4.9% | 54.9% | 45.4% | wire-ai-brain: the NPC brain runs in the game |
 | 2026-10-28 | f193f835 | dirty | 62.0% | 4.9% | 56.1% | 45.4% | round 19: thirteen reviewed lanes |
+| 2026-10-28 | 692e05af | clean | 63.7% | 4.9% | 57.4% | 45.4% | round 20: thirteen reviewed lanes |
