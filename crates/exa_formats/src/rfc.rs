@@ -1830,7 +1830,9 @@ impl Face {
                     return [a[0] + w[0], a[1] + w[1], a[2] + w[2]];
                 }
             } else if d2w <= e2_sq {
-                let v = (d2w * reciprocal(e2_sq)).max(0.0);
+                // The original's `<= 0` clamp keeps a NaN, unlike `max`.
+                let v = d2w * reciprocal(e2_sq);
+                let v = if v <= 0.0 { 0.0 } else { v };
                 return [a[0] + e2[0] * v, a[1] + e2[1] * v, a[2] + e2[2] * v];
             }
         } else {
@@ -2152,7 +2154,8 @@ fn smooth_normals(
     face_flags: Option<&[u32]>,
 ) -> Vec<[f32; 3]> {
     let key_count = keys.iter().copied().max().map_or(0, |m| m as usize + 1);
-    let (counts, ring, element_count) = element_rings(indices, elements);
+    let (counts, ring, element_count) = element_rings(indices, elements, keys);
+    let face_normals = face_normals(positions, indices);
     // Per key: the sum over unflagged faces, the sum over flagged faces,
     // and whether an unflagged face was seen.
     let mut acc = vec![[0.0f32; 3]; key_count];
@@ -2175,8 +2178,7 @@ fn smooth_normals(
             if corners.iter().any(|&i| i >= positions.len()) {
                 continue;
             }
-            let [a, b, c] = corners.map(|i| positions[i]);
-            let normal = face_normal(a, b, c);
+            let normal = face_normals[face];
             let flagged = face_flags
                 .and_then(|flags| flags.get(face))
                 .is_some_and(|&flags| flags & FACE_NORMAL_FALLBACK != 0);
@@ -2217,9 +2219,18 @@ fn smooth_normals(
 
 /// The corners of every position element, in the original's incidence
 /// order: faces are visited last first and each face's corners last first,
-/// so an element's list starts with its last corner. Returns the prefix
-/// bounds, the corner list and the element count.
-fn element_rings(indices: &[u32], elements: &[u32]) -> (Vec<u32>, Vec<(u32, u8)>, usize) {
+/// so an element's list starts with its last corner. Each element's list is
+/// then split into smoothing-key runs the way the original does it in
+/// place: the first remaining corner opens a run and every later corner
+/// with the same key is swapped into the run's next slot. The swap is not
+/// stable, so a second key's corners can come out reordered, which sets
+/// the float order of the normal sums. Returns the prefix bounds, the
+/// corner list and the element count.
+fn element_rings(
+    indices: &[u32],
+    elements: &[u32],
+    keys: &[u32],
+) -> (Vec<u32>, Vec<(u32, u8)>, usize) {
     let element_count = elements
         .iter()
         .copied()
@@ -2248,7 +2259,45 @@ fn element_rings(indices: &[u32], elements: &[u32]) -> (Vec<u32>, Vec<(u32, u8)>
             fill[e as usize] += 1;
         }
     }
+    let key_of = |(face, corner): (u32, u8)| {
+        indices
+            .get(face as usize * 3 + corner as usize)
+            .and_then(|&v| keys.get(v as usize))
+            .copied()
+    };
+    for e in 0..element_count {
+        let end = counts[e + 1] as usize;
+        let mut start = counts[e] as usize;
+        while start < end {
+            let key = key_of(ring[start]);
+            start += 1;
+            // The scan starts after the run's opening corner and keeps
+            // going to the element's end while the run's slot advances.
+            let mut slot = start;
+            for i in start..end {
+                if key_of(ring[i]) == key {
+                    ring.swap(i, slot);
+                    slot += 1;
+                }
+            }
+            start = slot;
+        }
+    }
     (counts, ring, element_count)
+}
+
+/// Every triangle's unit normal, once per face (a triangle naming a
+/// missing vertex gets a zero normal and is skipped by its callers).
+fn face_normals(positions: &[[f32; 3]], indices: &[u32]) -> Vec<[f32; 3]> {
+    indices
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .map(|t| match t.map(|i| positions.get(i as usize).copied()) {
+            [Some(a), Some(b), Some(c)] => face_normal(a, b, c),
+            _ => [0.0; 3],
+        })
+        .collect()
 }
 
 /// The cloth pass's normal builder: each smoothing group's normal is the
@@ -2262,7 +2311,8 @@ fn flat_face_normals(
     elements: &[u32],
 ) -> Vec<[f32; 3]> {
     let key_count = keys.iter().copied().max().map_or(0, |m| m as usize + 1);
-    let (counts, ring, element_count) = element_rings(indices, elements);
+    let (counts, ring, element_count) = element_rings(indices, elements, keys);
+    let face_normals = face_normals(positions, indices);
     let mut acc = vec![[0.0f32; 3]; key_count];
     for e in 0..element_count {
         for &(face, corner) in &ring[counts[e] as usize..counts[e + 1] as usize] {
@@ -2273,8 +2323,7 @@ fn flat_face_normals(
             if corners.iter().any(|&i| i >= positions.len()) {
                 continue;
             }
-            let [a, b, c] = corners.map(|i| positions[i]);
-            let normal = face_normal(a, b, c);
+            let normal = face_normals[face as usize];
             let key = keys.get(corners[corner as usize]).copied().unwrap_or(0) as usize;
             if key < key_count {
                 for axis in 0..3 {
@@ -3379,6 +3428,32 @@ mod tests {
         // Without flags both faces count at vertex 0.
         let plain = smooth_normals(&positions, &indices, &keys, &elements, None);
         assert!(plain[0][1] > 0.5 && plain[0][2] > 0.5, "{plain:?}");
+    }
+
+    /// An element's corners are listed last face first, then split into
+    /// smoothing-key runs by the original's in-place swap: with keys
+    /// A B A B A down the list, the A run keeps its order and the B run
+    /// comes out reversed.
+    #[test]
+    fn element_rings_split_runs_by_the_swap_partition() {
+        // Five faces; corner 0 of face f is vertex f, all one element.
+        let mut indices = Vec::new();
+        for f in 0..5u32 {
+            indices.extend_from_slice(&[f, 5 + 2 * f, 6 + 2 * f]);
+        }
+        let mut elements = vec![0u32; 5];
+        elements.extend(1..=10);
+        let mut keys: Vec<u32> = (0..5).map(|f| f % 2).collect();
+        keys.extend(2..=11);
+        let (counts, ring, _) = element_rings(&indices, &elements, &keys);
+        let first: Vec<u32> = ring[counts[0] as usize..counts[1] as usize]
+            .iter()
+            .map(|&(face, corner)| {
+                assert_eq!(corner, 0);
+                face
+            })
+            .collect();
+        assert_eq!(first, [4, 2, 0, 1, 3]);
     }
 
     /// The cloth pass's normals are the unweighted average of each group's

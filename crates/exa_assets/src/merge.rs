@@ -533,15 +533,48 @@ fn malformed(message: impl Into<String>) -> MeshError {
     MeshError::Malformed(message.into())
 }
 
-/// The frame that takes a point of `src` into `dst`'s space: `dst⁻¹ · src`.
+/// The frame that takes a point of `src` into `dst`'s space: `dst⁻¹ · src`,
+/// in the original's float order. The inverse is the rigid one (the
+/// transposed turn and the turned, negated origin, summed first two terms
+/// first); each row of `src` is then multiplied through it, the origin row
+/// adding the inverse's origin to its third term before the final sum.
 fn relative_frame(dst: &Frame, src: &Frame) -> Frame {
-    let sub = |a: [f32; 3], b: [f32; 3]| [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
-    [
-        unturn(dst, src[0]),
-        unturn(dst, src[1]),
-        unturn(dst, src[2]),
-        unturn(dst, sub(src[3], dst[3])),
-    ]
+    let [r0, r1, r2, t] = *dst;
+    let inverse_turn = [
+        [r0[0], r1[0], r2[0]],
+        [r0[1], r1[1], r2[1]],
+        [r0[2], r1[2], r2[2]],
+    ];
+    let lane = |row: [f32; 3], k: usize| {
+        [
+            row[0] * inverse_turn[0][k],
+            row[1] * inverse_turn[1][k],
+            row[2] * inverse_turn[2][k],
+        ]
+    };
+    let inverse_origin: [f32; 3] = std::array::from_fn(|k| {
+        let [a, b, c] = lane([-t[0], -t[1], -t[2]], k);
+        (a + b) + c
+    });
+    let turn_row = |row: [f32; 3]| -> [f32; 3] {
+        std::array::from_fn(|k| {
+            let [a, b, c] = lane(row, k);
+            (a + b) + c
+        })
+    };
+    let origin: [f32; 3] = std::array::from_fn(|k| {
+        let [a, b, c] = lane(src[3], k);
+        (a + b) + (c + inverse_origin[k])
+    });
+    [turn_row(src[0]), turn_row(src[1]), turn_row(src[2]), origin]
+}
+
+/// A point placed by `frame` in the original's float order: the first two
+/// turned terms are summed, the third is added to the origin, then the two
+/// halves are summed.
+fn place_point(frame: &Frame, p: [f32; 3]) -> [f32; 3] {
+    let [r0, r1, r2, t] = *frame;
+    std::array::from_fn(|k| (p[0] * r0[k] + p[1] * r1[k]) + (p[2] * r2[k] + t[k]))
 }
 
 /// The number of elements of the destination's stream with `format`.
@@ -707,6 +740,11 @@ pub fn merge_editable(
     // The streams: matched by their whole format word, else appended.
     let relative = relative_frame(&dst_frame, &src_frame);
     for stream in &src.streams {
+        // The original skips the normal stream (low key 2): normals are
+        // rebuilt after the assembly.
+        if stream.format & KEY_MASK == KEY_SMOOTHING {
+            continue;
+        }
         let d = match dst.streams.iter().position(|s| s.format == stream.format) {
             Some(d) => d,
             None => {
@@ -736,7 +774,7 @@ pub fn merge_editable(
                 dst.resize(at + src.len(), [0.0; 3]);
                 for (i, p) in src.iter().enumerate() {
                     dst[at + i] = if stream.format & KEY_MASK == 1 {
-                        place(&relative, *p)
+                        place_point(&relative, *p)
                     } else {
                         *p
                     };
@@ -1298,8 +1336,8 @@ mod tests {
     }
 
     /// A source part is placed from its frame into the destination's: only
-    /// the position stream turns and shifts (the original transforms no
-    /// other stream).
+    /// the position stream turns and shifts, and the normal stream is not
+    /// merged at all.
     #[test]
     fn a_part_is_placed_into_the_destinations_frame() {
         let mut dst = square("a");
@@ -1328,17 +1366,9 @@ mod tests {
         assert_eq!(points[5], [0.0, 0.0, 0.0]);
         // Its (1, 0, −1) is (1, 0, 0) in the destination's turned space.
         assert_eq!(points[6], [1.0, 0.0, 0.0]);
-        // A normals stream is copied untransformed: the original places
-        // only the position stream.
-        let normals = dst
-            .streams
-            .iter()
-            .find_map(|s| match &s.data {
-                StreamData::Vec3(v) if s.format == 0x01F3_0002 => Some(v),
-                _ => None,
-            })
-            .unwrap();
-        assert_eq!(normals[4], [0.0, 1.0, 0.0]);
+        // The normal stream (low key 2) is not merged: the original skips
+        // it and rebuilds normals after the assembly.
+        assert!(!dst.streams.iter().any(|s| s.format == 0x01F3_0002));
     }
 
     /// A colour stream the destination lacks is filled with opaque white
