@@ -227,7 +227,7 @@ impl Fade {
             self.opacity = if self.end < now {
                 1.0
             } else {
-                1.0 - (self.end - now) as f32 / RISE_MS
+                1.0 - (self.end - now) as f32 * 0.002
             };
         } else {
             if self.rising {
@@ -243,7 +243,7 @@ impl Fade {
             } else if now < self.end - FALL_MS as i64 {
                 1.0
             } else {
-                (self.end - now) as f32 / FALL_MS
+                (self.end - now) as f32 * 0.0005
             };
         }
         self.opacity

@@ -285,9 +285,10 @@ pub fn selected_nudge(unit: i32) -> i32 {
     unit / 3
 }
 
-/// The form class's shared ease `(3 − 2t)t²`, in the instructions' order.
+/// The form class's shared ease `(3 − 2t)t²`, in the instructions' order:
+/// the first product is taken, then the second.
 pub fn ease(t: f32) -> f32 {
-    (3.0 - 2.0 * t) * (t * t)
+    (3.0 - 2.0 * t) * t * t
 }
 
 /// `CVTSS2SI` into a 64-bit register, keeping the low 32 bits: rounds to

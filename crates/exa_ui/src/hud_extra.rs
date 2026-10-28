@@ -490,7 +490,7 @@ mod tests {
         };
         let game = exa_assets::GameData::open(&dir).unwrap();
         let rfi = Rfi::parse(game.texture(COMPASS).unwrap()).unwrap();
-        assert_eq!(rfi.header.width, rfi.header.height);
+        assert_eq!((rfi.header.width, rfi.header.height), (256, 256));
         let tex = CompassTexture::from_rfi(&rfi).unwrap();
         let inked = tex
             .rgba
