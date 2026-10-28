@@ -233,8 +233,7 @@ newer save still loads); a lower one makes the slot legacy. It reads the
 camera target and zoom into scratch and does not restore them, and it
 skips the reserved word. The flag byte at bits 16–23 is the "started" byte
 (the writer always sets it to 1). When the start background is 0 and the
-player record's word at its own offset 0x180 is 0, the reader sets that
-word to `0x510000`. Before the chunks it resets the journal to one "New
+player record's own flag word is 0, the reader sets that word to `0x510000`. Before the chunks it resets the journal to one "New
 Entry" page, the global experience to the default worth (zero), the memory
 flags and the transition state to zero, so an absent chunk means the
 default. Exarust exposes those defaults through `journal_or_default`,
