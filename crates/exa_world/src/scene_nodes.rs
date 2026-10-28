@@ -1566,7 +1566,11 @@ impl Scene {
         let mut removed = vec![false; old_aliases.len()];
         let mut removed_any = false;
         for (i, alias) in old_aliases.iter().enumerate() {
-            if self.nodes[alias.light].sector != Some(sector) {
+            let owned = self
+                .nodes
+                .get(alias.light)
+                .is_some_and(|node| node.sector == Some(sector));
+            if !owned {
                 removed[i] = true;
                 removed_any = true;
             }
