@@ -1368,7 +1368,7 @@ impl ModelLoader<'_> {
             .is_some_and(|record| record.pending);
         if created || (placeholder && !streaming) {
             let settings = *self.cache.textures.settings();
-            let Some(bytes) = self.game.texture(key.name.as_str()) else {
+            let Some((pack, entry, bytes)) = self.game.texture_in(key.name.as_str()) else {
                 self.warn_once(format!("texture {name:?} not found"));
                 return None;
             };
@@ -1400,11 +1400,12 @@ impl ModelLoader<'_> {
                 self.cache.textures.set_pending(&key, true);
                 self.cache
                     .textures
-                    .queue(crate::stream::TextureRequest::new(
+                    .queue(crate::stream::TextureRequest::from_entry(
                         key.name.as_str(),
                         space,
                         flags,
-                        key.name.as_str(),
+                        pack,
+                        entry,
                     ));
                 return Some((handle, alpha));
             }

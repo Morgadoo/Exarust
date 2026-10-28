@@ -274,7 +274,10 @@ threads: a ring with a head, a tail, one kept-free slot and growth; requests
 in order; a promotion that moves one request to the front and lets the last
 fill its place (the original's "Priority item"); removal; and an upload pass
 that takes only what was ready and honours a budget. `TextureStream` is the
-texture loader's queue: `request` (a duplicate of a queued name is refused),
+texture loader's queue: `request` (a duplicate of a queued name is refused).
+A request made through the manager also keeps the pack and exact entry the
+image was found in (`TextureRequest::from_entry`, the original's provider and
+image indices), so a later decode cannot drift to another pack;
 `promote` (which finds a request queued or held by the loader, decoding it
 or waiting with it for the upload pass; one already in the upload list or
 uploaded is no longer found, as the loader clears its status bits when it

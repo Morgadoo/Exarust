@@ -225,9 +225,15 @@ fn run_texture_loader(
             (Some(game), Some(pool)) => {
                 let data = game.0.clone();
                 let source = request.source.clone();
+                let pack = request.pack;
                 let (space, flags) = (request.space, request.flags);
                 let task = pool.spawn(async move {
-                    let bytes = data.texture(&source)?;
+                    // The load keeps the pack its record was found in, as the
+                    // original keeps the provider index.
+                    let bytes = match pack {
+                        Some(kind) => data.pack(kind).and_then(|p| p.get(&source)),
+                        None => data.texture(&source),
+                    }?;
                     texture::decode_entry(&source, bytes, space, flags, &settings, bc)
                 });
                 loader.decoding.push_back((request, task));
@@ -235,7 +241,11 @@ fn run_texture_loader(
             // No installation (a tool or a test without the game) or no pool:
             // the request fails and uploads the original's placeholder.
             (Some(game), None) => {
-                let decoded = game.0.texture(&request.source).and_then(|b| {
+                let bytes = match request.pack {
+                    Some(kind) => game.0.pack(kind).and_then(|p| p.get(&request.source)),
+                    None => game.0.texture(&request.source),
+                };
+                let decoded = bytes.and_then(|b| {
                     texture::decode_entry(
                         &request.source,
                         b,
