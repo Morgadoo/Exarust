@@ -3064,6 +3064,16 @@ pub struct SexChange {
     pub label: CreationLabel,
     /// The prefix the voice names are built from (see [`voice_prefix`]).
     pub voice_prefix: String,
+    /// The look panel was refreshed.
+    pub look_refreshed: bool,
+    /// Both voice selections were reset to zero (and previewed).
+    pub voice_reset: bool,
+    /// Previews were muted while the two selections were made.
+    pub muted: bool,
+    /// The audio device was opened first.
+    pub audio_opened: bool,
+    /// The change callback ran.
+    pub callback: bool,
 }
 
 /// Applies the sex radio choice: 2 is female.
@@ -3078,7 +3088,28 @@ pub fn change_sex(word: i32, radio: i32) -> SexChange {
         word,
         label,
         voice_prefix: voice_prefix(label),
+        look_refreshed: false,
+        voice_reset: false,
+        muted: false,
+        audio_opened: false,
+        callback: false,
     }
+}
+
+/// Applies the sex radio only when it was checked, and reports the full
+/// refresh: the look panel when it exists, the audio device opened, both
+/// voice selections previewed under the mute flag, and the callback.
+pub fn sex_radio(word: i32, radio: i32, checked: bool, panel: bool) -> Option<SexChange> {
+    if !checked {
+        return None;
+    }
+    let mut change = change_sex(word, radio);
+    change.look_refreshed = panel;
+    change.voice_reset = true;
+    change.muted = true;
+    change.audio_opened = true;
+    change.callback = true;
+    Some(change)
 }
 
 /// A starting kit table. The original keeps seven: five offered only as
@@ -4064,11 +4095,21 @@ pub fn close_creator_power_tree() -> CreatorTreeClosed {
 /// The close callback does not close the tree itself: it asks the game to
 /// close it on the next frame with no arguments, so the commit the close
 /// raised can run first.
-pub const REOPEN_TREE_DEFERRED: bool = true;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TreeReopen {
+    pub deferred: bool,
+    pub closes_tree: bool,
+    /// The deferred call's first argument.
+    pub arg: i32,
+}
 
 /// Schedules the power tree's close after a commit from the creator.
-pub fn reopen_creator_power_tree() -> bool {
-    REOPEN_TREE_DEFERRED
+pub fn reopen_creator_power_tree() -> TreeReopen {
+    TreeReopen {
+        deferred: true,
+        closes_tree: true,
+        arg: 0,
+    }
 }
 
 /// What the name warning's callback does.
@@ -6395,6 +6436,17 @@ mod tests {
         assert_eq!(ham.word, 0x201);
         assert_eq!(ham.label, CreationLabel::Ham);
         assert_eq!(ham.voice_prefix, "VHAM");
+
+        assert_eq!(sex_radio(0, 2, false, true), None);
+        let checked = sex_radio(0x200, 1, true, true).unwrap();
+        assert_eq!(checked.word, 0x200);
+        assert_eq!(checked.voice_prefix, "VHAM");
+        assert!(checked.look_refreshed);
+        assert!(checked.voice_reset && checked.muted && checked.audio_opened);
+        assert!(checked.callback);
+        let without_panel = sex_radio(0, 2, true, false).unwrap();
+        assert!(!without_panel.look_refreshed);
+        assert!(without_panel.voice_reset);
     }
 
     #[test]
@@ -7067,7 +7119,14 @@ mod tests {
                 input_cleared: true
             }
         );
-        assert!(reopen_creator_power_tree());
+        assert_eq!(
+            reopen_creator_power_tree(),
+            TreeReopen {
+                deferred: true,
+                closes_tree: true,
+                arg: 0
+            }
+        );
         assert_eq!(
             close_name_warning(false),
             NameWarningClose {
