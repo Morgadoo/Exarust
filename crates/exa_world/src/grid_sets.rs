@@ -5,10 +5,12 @@
 //! whole session. A level's grid lists the set names its cells use; the
 //! builder looks each up in the catalog, registering it on first use, and a
 //! grid cell then only stores an index. Before a grid is built every set
-//! still unloaded is loaded once; a floor set named exactly `Terrain` is
-//! never loaded (the terrain is the ground of those cells), it is only
-//! marked. The loaded models themselves are cached by the model loader, so
-//! this catalog holds only the names and their state.
+//! still unloaded is loaded once; in that pass a floor set named exactly
+//! `Terrain` is not loaded (the terrain is the ground of those cells), it is
+//! only marked. (The original's floor registration also loads a new floor
+//! set at once; Exarust's builder never loads a `Terrain` set, see
+//! `docs/formats/RFC.md`.) The loaded models themselves are cached by the
+//! model loader, so this catalog holds only the names and their state.
 //!
 //! Rules and data layout: `docs/formats/RFC.md` (Grid building).
 

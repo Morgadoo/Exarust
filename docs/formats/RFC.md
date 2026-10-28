@@ -809,9 +809,17 @@ Exarust match the original look).
   session. A level's grid lists the set names its cells index; each name is
   looked up in its catalog and registered on first use (the whole name
   compared, as the engine's 16-byte name is), so two cells or two levels
-  naming the same set share one loaded set. Before the cells are built every
-  set still unloaded is loaded once; the `Terrain` floor set is instead
-  marked with flags `0x7E01` (the loaded bit and no floor pieces). The
+  naming the same set share one loaded set. Registering a wall set only
+  records it; registering a new floor set also loads it at once (the load
+  sets the loaded bit before reading the set's pieces). Before the cells
+  are built a pass loads every set still unloaded, wall sets then floor
+  sets; there a floor set named `Terrain` is marked with flags `0x7E01`
+  (the loaded bit with six more) instead of loaded. A floor set
+  registered by the grid reader is therefore already loaded when that pass
+  runs, so the `Terrain` marking applies only to an entry whose loaded bit
+  is clear [open: Exarust never loads or places a `Terrain` floor set, as
+  above; whether the original's first registration of one loads its
+  `GEFS_UWA01` fallback has not been compared in a running game]. The
   editor's set getters return a catalog entry by its index.
 - A node or character is sorted into the room of the cell it stands in,
   `floor(x / 600) + w/2` (the conversion's rounding mode is set towards
