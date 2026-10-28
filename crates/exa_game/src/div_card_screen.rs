@@ -142,8 +142,9 @@ fn paint_reading(
     let Some(frame) = screen.paint(clock.now_ms, textures) else {
         return;
     };
+    // Pushed beside the other screens' frames; the renderer takes and
+    // clears the list each frame.
     if let Some(frames) = frames.as_mut() {
-        frames.clear();
         frames.push(frame);
     }
 }

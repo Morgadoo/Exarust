@@ -504,10 +504,15 @@ pub fn mouse(mask: u16) -> Option<i32> {
     if mask & 2 != 0 { Some(3) } else { None }
 }
 
+/// The vertex shader's colour scale (`vCol * 0.003921568`).
+const VERTEX_COLOUR_SCALE: f32 = 0.003_921_568;
+
 /// One fragment of the card shader: the sheet's colour at `(u, v)` scaled
-/// by `0.2 + |par0.z|·0.8`, the vertex colour, and the coverage at the
-/// mask coordinates `(u2, v2)` (the sheet's green channel). `colour` is
-/// the vertex colour (the strip's ink), already divided by 255.
+/// by `0.2 + |par0.z|·0.8`, times the vertex colour, and the coverage at the
+/// mask coordinates `(u2, v2)` (the sheet's green channel) times the
+/// vertex alpha squared. `colour` is the vertex colour as the fragment
+/// stage gets it (already scaled by the vertex shader). The products keep
+/// the shader's order: `c = tex · gain`, then `vrCol.rgb · c`.
 pub fn card_sample(
     sheet: &crate::gui_draw::GuiTexture,
     u: f32,
@@ -519,26 +524,39 @@ pub fn card_sample(
 ) -> [f32; 4] {
     let texel = sheet.sample(u, v);
     let gain = 0.2 + par_z.abs() * 0.8;
-    let rgb = [
-        colour[0] * (f32::from(texel[0]) / 255.0) * gain,
-        colour[1] * (f32::from(texel[1]) / 255.0) * gain,
-        colour[2] * (f32::from(texel[2]) / 255.0) * gain,
+    let c = [
+        f32::from(texel[0]) / 255.0 * gain,
+        f32::from(texel[1]) / 255.0 * gain,
+        f32::from(texel[2]) / 255.0 * gain,
     ];
     let coverage = f32::from(sheet.sample(u2, v2)[1]) / 255.0;
-    [rgb[0], rgb[1], rgb[2], colour[3] * colour[3] * coverage]
+    [
+        colour[0] * c[0],
+        colour[1] * c[1],
+        colour[2] * c[2],
+        colour[3] * colour[3] * coverage,
+    ]
+}
+
+/// A vertex colour in bytes as the card shader's fragment stage sees it.
+fn vertex_colour(colour: [u8; 4]) -> [f32; 4] {
+    colour.map(|channel| f32::from(channel) * VERTEX_COLOUR_SCALE)
 }
 
 /// Renders one card face through [`card_sample`]: `width` × `height`
 /// pixels over the card's sheet cell, mask coordinates across the sheet's
-/// first column. `colour` is the vertex colour in 0…255 (the paint binds
-/// white at 255).
+/// first column. `colour` is the vertex colour in bytes (the paint binds
+/// white at 255) and `par_z` the light's z after the card's turn (1 for an
+/// upright card).
 pub fn face_image(
     sheet: &crate::gui_draw::GuiTexture,
     card: u32,
     width: u32,
     height: u32,
-    colour: [f32; 4],
+    colour: [u8; 4],
+    par_z: f32,
 ) -> Option<crate::gui_draw::GuiTexture> {
+    let colour = vertex_colour(colour);
     let cell = card as i64 + i64::from(FIRST_CELL);
     let row = cell / 6;
     let column = cell % 6;
@@ -554,7 +572,7 @@ pub fn face_image(
         for x in 0..width {
             let u = u0 + (x as f32 + 0.5) / width as f32 * (u1 - u0);
             let u2 = MASK[0][0] + (x as f32 + 0.5) / width as f32 * (MASK[3][0] - MASK[0][0]);
-            let [r, g, b, a] = card_sample(sheet, u, v, u2, v2, colour, 1.0);
+            let [r, g, b, a] = card_sample(sheet, u, v, u2, v2, colour, par_z);
             let byte = |value: f32| (value.clamp(0.0, 1.0) * 255.0).round_ties_even() as u8;
             pixels.push([byte(r), byte(g), byte(b), byte(a)]);
         }
@@ -572,8 +590,10 @@ pub fn back_image(
     sheet: &crate::gui_draw::GuiTexture,
     width: u32,
     height: u32,
-    colour: [f32; 4],
+    colour: [u8; 4],
+    par_z: f32,
 ) -> Option<crate::gui_draw::GuiTexture> {
+    let colour = vertex_colour(colour);
     let (left, right) = (f32::from_bits(0x3e2a_aaab), f32::from_bits(0x3eaa_aaab));
     let (width, height) = (width.max(1), height.max(1));
     let mut pixels = Vec::with_capacity((width * height) as usize);
@@ -583,7 +603,7 @@ pub fn back_image(
         for x in 0..width {
             let u = left + (x as f32 + 0.5) / width as f32 * (right - left);
             let u2 = MASK[0][0] + (x as f32 + 0.5) / width as f32 * (MASK[3][0] - MASK[0][0]);
-            let [r, g, b, a] = card_sample(sheet, u, v, u2, v2, colour, 1.0);
+            let [r, g, b, a] = card_sample(sheet, u, v, u2, v2, colour, par_z);
             let byte = |value: f32| (value.clamp(0.0, 1.0) * 255.0).round_ties_even() as u8;
             pixels.push([byte(r), byte(g), byte(b), byte(a)]);
         }
@@ -595,23 +615,16 @@ pub fn back_image(
     })
 }
 
-/// The rotation a turn's axis and angle give, in the engine's column-major
-/// three-by-three layout.
+/// The rotation a turn's axis and angle give, in the engine's layout (the
+/// engine's own axis-angle matrix, column by column).
 pub fn rotation(axis: [f32; 3], angle: f32) -> Rotation {
-    let (s, c) = crate::engine_math::sin_cos(angle);
-    let t = 1.0 - c;
-    let [x, y, z] = axis;
-    [
-        c + x * x * t,
-        y * x * t + z * s,
-        z * x * t - y * s,
-        x * y * t - z * s,
-        c + y * y * t,
-        z * y * t + x * s,
-        x * z * t + y * s,
-        y * z * t - x * s,
-        c + z * z * t,
-    ]
+    crate::engine_math::axis_angle_to_mat3(bevy::math::Vec3::from(axis), angle).to_cols_array()
+}
+
+/// The `par0` uniform's z: the light (0, 0, 1) through the card's turn,
+/// which is the turn's last diagonal term; the light itself when upright.
+fn light_z(turn: Option<&Rotation>) -> f32 {
+    turn.map_or(LIGHT[2], |m| 0.0 * m[6] + 0.0 * m[7] + LIGHT[2] * m[8])
 }
 
 /// A textured quad layer from an image and its four corners with their
@@ -671,9 +684,11 @@ fn cell_uvs(quad: &[CardVertex; 4]) -> [[f32; 2]; 4] {
 
 /// One paint's draw-path frame: the darkening, then each card's shadow
 /// (black triangles fading at the band) and its back or face. A card that
-/// is not turning draws upright at its place; a turning one is projected
-/// through [`rotation`]. Cards are rendered at 120 × 200 pixels, their
-/// unscaled unit-6 sizes.
+/// is not turning draws upright at its place; a turning one draws its
+/// shadow, back and face through [`rotation`], the shader's light dimmed by
+/// the turn (`par0.z`). A held card's face is drawn with the half width
+/// negated. Cards are rendered at 120 × 200 pixels, their unscaled unit-6
+/// sizes.
 #[allow(clippy::too_many_arguments)]
 pub fn frame(
     draws: &[CardDraw],
@@ -710,27 +725,18 @@ pub fn frame(
                 turn_now = None;
             }
             CardDraw::Turn { axis, angle, .. } => {
-                turn_now = Some(rotation(axis, angle));
+                // The turn draws its shadow under the turned matrix.
+                let m = rotation(axis, angle);
+                turn_now = Some(m);
+                frame.push(shadow_layer(unit, &m, place));
             }
             CardDraw::Shadow { .. } => {
-                let outline = shadow_outline(unit);
                 let m = turn_now.unwrap_or(IDENTITY);
-                let mesh = shadow_mesh(&outline, &m, unit);
-                let mut batch = crate::skin::SkinBatch::new();
-                batch.select(1, 0, false);
-                batch.begin();
-                for vertex in &mesh {
-                    batch.set_ink([0, 0, 0, vertex.alpha]);
-                    batch.vertex(place.0 + vertex.at[0], place.1 + vertex.at[1]);
-                }
-                batch.end_triangles();
-                frame.push(crate::gui_draw::GuiLayer::new(
-                    batch,
-                    crate::gui_draw::LayerTexture::None,
-                ));
+                frame.push(shadow_layer(unit, &m, place));
             }
             CardDraw::Back { .. } => {
-                if let Some(image) = back_image(sheet, image_w, image_h, [1.0; 4]) {
+                let par_z = light_z(turn_now.as_ref());
+                if let Some(image) = back_image(sheet, image_w, image_h, [255; 4], par_z) {
                     let quad = back_quad(half_w, half_h);
                     frame.push(quad_layer(
                         image,
@@ -739,9 +745,11 @@ pub fn frame(
                     ));
                 }
             }
-            CardDraw::Face { card, .. } => {
-                if let Some(image) = face_image(sheet, card, image_w, image_h, [1.0; 4]) {
-                    let quad = face_quad(card, half_w, half_h);
+            CardDraw::Face { card, mirrored, .. } => {
+                let par_z = light_z(turn_now.as_ref());
+                if let Some(image) = face_image(sheet, card, image_w, image_h, [255; 4], par_z) {
+                    let x = if mirrored { -half_w } else { half_w };
+                    let quad = face_quad(card, x, half_h);
                     frame.push(quad_layer(
                         image,
                         project(&quad, place, turn_now.as_ref()),
@@ -752,6 +760,20 @@ pub fn frame(
         }
     }
     frame
+}
+
+/// A card's shadow under `m` at `place`, as a black triangle layer.
+fn shadow_layer(unit: i32, m: &Rotation, place: (f32, f32)) -> crate::gui_draw::GuiLayer {
+    let mesh = shadow_mesh(&shadow_outline(unit), m, unit);
+    let mut batch = crate::skin::SkinBatch::new();
+    batch.select(1, 0, false);
+    batch.begin();
+    for vertex in &mesh {
+        batch.set_ink([0, 0, 0, vertex.alpha]);
+        batch.vertex(place.0 + vertex.at[0], place.1 + vertex.at[1]);
+    }
+    batch.end_triangles();
+    crate::gui_draw::GuiLayer::new(batch, crate::gui_draw::LayerTexture::None)
 }
 
 /// A card quad's corners at `place`, turned by `m` (identity when upright).
@@ -948,7 +970,8 @@ mod tests {
         assert!((out[1] - 64.0 / 255.0).abs() < 1e-6);
         assert!((out[2] - 32.0 / 255.0).abs() < 1e-6);
         assert!((out[3] - 64.0 / 255.0).abs() < 1e-6);
-        // par0.z = 0 halves the gain; a half vertex alpha quarters it.
+        // par0.z = 0 leaves a fifth of the gain; a half vertex alpha
+        // quarters the coverage.
         let dim = card_sample(&sheet, 0.5, 0.5, 0.1, 0.9, [1.0, 1.0, 1.0, 0.5], 0.0);
         assert!((dim[0] - 128.0 / 255.0 * 0.2).abs() < 1e-6);
         assert!((dim[3] - 0.25 * 64.0 / 255.0).abs() < 1e-6);
@@ -957,16 +980,30 @@ mod tests {
     #[test]
     fn a_face_and_back_render_their_sheet_cells() {
         let sheet = crate::gui_draw::GuiTexture::solid([200, 100, 50, 255]);
-        let face = face_image(&sheet, 4, 12, 20, [1.0; 4]).unwrap();
+        let face = face_image(&sheet, 4, 12, 20, [255; 4], 1.0).unwrap();
         assert_eq!((face.width, face.height), (12, 20));
         assert!(face.pixels.iter().any(|pixel| pixel[3] != 0));
-        let back = back_image(&sheet, 6, 10, [1.0; 4]).unwrap();
+        let back = back_image(&sheet, 6, 10, [255; 4], 1.0).unwrap();
         assert_eq!((back.width, back.height), (6, 10));
+        // White at 255 is 0.99999984 after the vertex scale: 200 · 0.99999984
+        // still rounds to 200; a turned-edge-on card keeps a fifth of it.
+        // The alpha is the sheet's green (100) at the mask.
+        assert_eq!(back.pixels[0], [200, 100, 50, 100]);
+        let dim = back_image(&sheet, 1, 1, [255; 4], 0.0).unwrap();
+        assert_eq!(dim.pixels[0], [40, 20, 10, 100]);
     }
 
     #[test]
     fn a_turns_rotation_is_the_engine_column_major_form() {
         assert_eq!(rotation([0.0, 1.0, 0.0], 0.0), IDENTITY);
+        // A quarter turn about z: the engine's second term is
+        // `x·y·(1 − c) − z·s`, so m1 = −1 and m3 = +1 (a point on x goes
+        // to −y in the paint's `x·m1` row).
+        let q = rotation([0.0, 0.0, 1.0], std::f32::consts::FRAC_PI_2);
+        assert!((q[1] + 1.0).abs() < 1e-5, "{q:?}");
+        assert!((q[3] - 1.0).abs() < 1e-5, "{q:?}");
+        assert_eq!(light_z(Some(&q)), q[8]);
+        assert_eq!(light_z(None), 1.0);
         let m = rotation([0.0, 1.0, 0.0], std::f32::consts::PI);
         // A half turn about y: x negates, y stays.
         let p = rotate(&m, [1.0, 0.0]);
@@ -994,6 +1031,50 @@ mod tests {
         assert!(frame.layers[1].batch.vertices.len() > 18);
         assert_eq!(frame.layers[1].batch.primitives.len(), 1);
         assert_eq!(frame.layers[2].batch.primitives.len(), 1);
+    }
+
+    #[test]
+    fn a_turn_draws_its_shadow_and_a_held_face_is_mirrored() {
+        let sheet = crate::gui_draw::GuiTexture::solid([200, 100, 50, 255]);
+        let place = CardDraw::Place {
+            index: 0,
+            x: 100.0,
+            y: 200.0,
+        };
+        let turning = [
+            place,
+            CardDraw::Turn {
+                index: 0,
+                axis: [0.0, 1.0, 0.0],
+                angle: 0.5,
+            },
+            CardDraw::Back { index: 0 },
+            CardDraw::Face {
+                index: 0,
+                card: 0,
+                mirrored: false,
+            },
+        ];
+        let frame_turning = frame(&turning, &sheet, 6, 600, 400);
+        // Shadow, back, face.
+        assert_eq!(frame_turning.layers.len(), 3);
+        assert!(frame_turning.layers[0].batch.vertices.len() > 18);
+        let held = |mirrored| {
+            let draws = [
+                place,
+                CardDraw::Face {
+                    index: 0,
+                    card: 0,
+                    mirrored,
+                },
+            ];
+            let frame = frame(&draws, &sheet, 6, 600, 400);
+            frame.layers[0].batch.vertices[0].x
+        };
+        let (half_w, _) = card_size(6);
+        // The face's first corner sits at +x, or at −x when mirrored.
+        assert_eq!(held(false), 100.0 + half_w);
+        assert_eq!(held(true), 100.0 - half_w);
     }
 
     #[test]
