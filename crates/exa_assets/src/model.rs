@@ -2614,7 +2614,12 @@ pub fn run_mesh(merged: &crate::merge::Merged, run: &crate::merge::SubObject) ->
     }
     let count = last - first;
     let positions = source.positions[first..last].to_vec();
-    let normals = source.normals[first..last].to_vec();
+    let normals = source.normals.get(first..last)?.to_vec();
+    // The splitter's tangents, from the run's own triangles as each drawn
+    // group's are (`group_mesh`): without them no normal map shades.
+    let uvs = source.uvs.as_ref().and_then(|uvs| uvs.get(first..last));
+    let tangents =
+        uvs.and_then(|uvs| crate::tangents::split_tangents(&positions, &normals, uvs, &indices));
     let max = count as u32;
     let indices = if max < 0x1_0000 {
         Indices::U16(indices.iter().map(|&i| i as u16).collect())
@@ -2628,22 +2633,25 @@ pub fn run_mesh(merged: &crate::merge::Merged, run: &crate::merge::SubObject) ->
     .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
     .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
     .with_inserted_indices(indices);
-    if let Some(uvs) = &source.uvs {
-        mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs[first..last].to_vec());
+    if let Some(uvs) = uvs {
+        mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs.to_vec());
     }
-    if let Some(colours) = &source.colors {
-        let bytes: Vec<[u8; 4]> = colours[first..last].to_vec();
+    if let Some(tangents) = tangents {
+        mesh.insert_attribute(Mesh::ATTRIBUTE_TANGENT, tangents);
+    }
+    if let Some(colours) = source.colors.as_ref().and_then(|c| c.get(first..last)) {
+        let bytes: Vec<[u8; 4]> = colours.to_vec();
         mesh.insert_attribute(
             Mesh::ATTRIBUTE_COLOR,
             bevy::mesh::VertexAttributeValues::Unorm8x4(bytes),
         );
     }
-    if let Some(skin) = &source.skin {
-        let joints: Vec<[u16; 4]> = skin[first..last]
+    if let Some(skin) = source.skin.as_ref().and_then(|s| s.get(first..last)) {
+        let joints: Vec<[u16; 4]> = skin
             .iter()
             .map(|w| w.bones.map(|b| b.min(u32::from(u16::MAX)) as u16))
             .collect();
-        let weights: Vec<[f32; 4]> = skin[first..last].iter().map(|w| w.weights).collect();
+        let weights: Vec<[f32; 4]> = skin.iter().map(|w| w.weights).collect();
         mesh.insert_attribute(
             Mesh::ATTRIBUTE_JOINT_INDEX,
             bevy::mesh::VertexAttributeValues::Uint16x4(joints),
@@ -3830,6 +3838,8 @@ mod tests {
         for (run, expected) in merged.merged.subobjects.iter().zip([0.0f32, 10.0]) {
             let mesh = run_mesh(&merged.merged, run).expect("a run");
             assert_eq!(mesh.count_vertices(), 3);
+            // The run keeps the splitter's tangents, so its normal map shades.
+            assert!(mesh.attribute(Mesh::ATTRIBUTE_TANGENT).is_some());
             let positions = mesh.attribute(Mesh::ATTRIBUTE_POSITION).unwrap();
             assert_eq!(positions.as_float3().unwrap()[0], [expected, 0.0, 0.0]);
             assert_eq!(

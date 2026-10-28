@@ -150,10 +150,6 @@ pub struct SkinCompositeJob {
     pub stem: String,
     /// The record's two tone words.
     pub tone: [u16; 2],
-    /// The look seed the two map offsets came from.
-    pub seed: u32,
-    /// The two skin-map offsets drawn from the seed, in −0.5…0.5.
-    pub uv_offset: [f32; 2],
     /// The race's colour map, loaded as data.
     pub colour: Option<String>,
     /// The race's gloss map.
@@ -180,18 +176,18 @@ pub struct SkinBeard {
 }
 
 impl SkinCompositeJob {
-    /// The cache key of the generated maps: every value the composite reads.
-    /// The look seed alone does not determine the maps (two records of one
-    /// race with different tones or beards differ), so the key carries the
-    /// stem, tone, sex and side too.
+    /// The cache key of the generated maps: every value the composite reads
+    /// (stem, tone, side, the race maps, layers and beard). The look seed is
+    /// not one of them: its two offsets move only the decomposition pass's
+    /// `skindecomp` fetch (`crate::decomp`), which the living skin does not
+    /// draw, so two records that differ only in seed share their maps.
     pub fn key(&self) -> String {
         let mut key = format!(
-            "{}:{:04x}{:04x}:{}:{:08x}:{}",
+            "{}:{:04x}{:04x}:{}:{}",
             self.stem.to_ascii_lowercase(),
             self.tone[0],
             self.tone[1],
             self.side,
-            self.seed,
             self.colour.as_deref().unwrap_or("")
         );
         key.push_str(self.gloss.as_deref().unwrap_or(""));
@@ -288,36 +284,6 @@ pub fn compose(
     layers: &[(f32, &Texels)],
     beard: Option<&Beard<'_>>,
 ) -> CompositedSkin {
-    compose_with_offsets(
-        width,
-        height,
-        tone,
-        colour,
-        gloss,
-        normal,
-        layers,
-        beard,
-        [0.0, 0.0],
-    )
-}
-
-/// [`compose`] with the job's two map offsets: the race's colour, gloss and
-/// normal maps are read at `u + offset.x` and `v + offset.y`, wrapping, as
-/// the original's `UVOfs` uniform moves the overlay quad's texture reads.
-/// The beard map is read over its own corner without the offset (its
-/// overlay program has none).
-#[allow(clippy::too_many_arguments)]
-pub fn compose_with_offsets(
-    width: usize,
-    height: usize,
-    tone: [f32; 3],
-    colour: &Texels,
-    gloss: &Texels,
-    normal: &Texels,
-    layers: &[(f32, &Texels)],
-    beard: Option<&Beard<'_>>,
-    offset: [f32; 2],
-) -> CompositedSkin {
     let (w, h) = (width.max(1), height.max(1));
     let mut colour_out = vec![0u8; w * h * 4];
     let mut surface_out = vec![0u8; w * h * 4];
@@ -331,7 +297,6 @@ pub fn compose_with_offsets(
         normal,
         layers: bound_normal_layers(layers),
         beard,
-        offset,
     };
     // The whole map is generated before the character is drawn; its rows are
     // independent, so they are split over the machine's threads. The band
@@ -393,11 +358,10 @@ struct SkinInputs<'a> {
     /// The normal layers the callback binds (amounts above zero).
     layers: Vec<(f32, &'a Texels)>,
     beard: Option<&'a Beard<'a>>,
-    offset: [f32; 2],
 }
 
 /// Generates rows `first..last` of the three maps into the row slices,
-/// whose first row is `first`. The program is [`compose_with_offsets`]'s
+/// whose first row is `first`. The program is [`compose`]'s
 /// per-texel work.
 fn render_rows(
     inputs: &SkinInputs<'_>,
@@ -413,17 +377,16 @@ fn render_rows(
         for x in 0..w {
             let u = (x as f32 + 0.5) / w as f32;
             let v = (y as f32 + 0.5) / h as f32;
-            let (su, sv) = (u + inputs.offset[0], v + inputs.offset[1]);
-            let source = sample(inputs.colour, su, sv);
+            let source = sample(inputs.colour, u, v);
             let mut rgb = colour_texel([source[0], source[1], source[2]], inputs.tone);
-            let gloss = sample(inputs.gloss, su, sv);
+            let gloss = sample(inputs.gloss, u, v);
             let mut surf = specular_texel(gloss[0]);
-            let base = sample(inputs.normal, su, sv);
+            let base = sample(inputs.normal, u, v);
             let layer_samples: Vec<(f32, [f32; 2])> = inputs
                 .layers
                 .iter()
                 .map(|&(amount, tex)| {
-                    let s = sample(tex, su, sv);
+                    let s = sample(tex, u, v);
                     (amount, [s[0], s[1]])
                 })
                 .collect();
@@ -556,54 +519,14 @@ mod tests {
         assert_eq!(bound_normal_layers(&six).len(), 5);
     }
 
-    /// The job's two seed offsets move the race-map sample: a map black on
-    /// its left half and white on its right half reads black at the middle
-    /// without an offset and white half a map to the right, wrapping.
-    #[test]
-    fn the_job_offsets_move_the_race_map_sample() {
-        let mut rgba = Vec::new();
-        for _y in 0..4 {
-            for x in 0..4 {
-                let v = if x < 2 { 0 } else { 255 };
-                rgba.extend_from_slice(&[v, v, v, 255]);
-            }
-        }
-        let colour = Texels {
-            width: 4,
-            height: 4,
-            rgba,
-        };
-        let flat = tex(4, 4, [128, 128, 128, 255]);
-        let plain =
-            compose_with_offsets(1, 1, [1.0; 3], &colour, &flat, &flat, &[], None, [0.0, 0.0]);
-        let moved = compose_with_offsets(
-            1,
-            1,
-            [1.0; 3],
-            &colour,
-            &flat,
-            &flat,
-            &[],
-            None,
-            [0.25, 0.0],
-        );
-        // The middle texel's sample straddles the halves: 0.25 across is
-        // the first white column.
-        assert!(plain.colour[0] < moved.colour[0]);
-        assert_eq!(moved.colour[0], 255);
-        assert_eq!(plain.colour[0], 128);
-    }
-
     /// The cache key carries every value the maps read: two jobs of one race
-    /// with different seeds or tones are different keys, and an equal job
-    /// repeats its key.
+    /// with different tones, sides, layers or beards are different keys, and
+    /// an equal job repeats its key.
     #[test]
     fn the_composite_key_covers_the_look() {
         let job = SkinCompositeJob {
             stem: "human".into(),
             tone: [0x8000, 0x8000],
-            seed: 1,
-            uv_offset: [0.0, 0.0],
             colour: Some("humandifm".into()),
             gloss: Some("humanspcm".into()),
             base_normal: Some("humannrmm0".into()),
@@ -613,9 +536,6 @@ mod tests {
         };
         assert_eq!(job.key(), job.clone().key());
         let mut other = job.clone();
-        other.seed = 2;
-        assert_ne!(job.key(), other.key());
-        other = job.clone();
         other.tone = [0x8000, 0x8001];
         assert_ne!(job.key(), other.key());
         other = job.clone();

@@ -713,9 +713,9 @@ layers and stops at the first amount not above zero. The callback fills the
 colour target, then the normal target, then the surface target, each with
 its beard overlay and then the apparel layers. `compose` runs them per
 texel and stores the original's sRGB colour target and linear surface and
-normal targets; `compose_with_offsets` also bakes the record's two seed
-offsets into the race-map samples, and rows are split over up to eight
-threads (same texels, same result).
+normal targets, its rows split over up to eight threads (same texels, same
+result). The `chargen_*` programs bind no `UVOfs`: the record's two seed
+offsets shift only the decomposition pass's `skindecomp` fetch.
 
 The running skin is the composite, not the race maps plus tint.
 `SkinJob::composite_job` describes the job
@@ -728,7 +728,7 @@ linear images with a mip chain. The material keeps the built-in skin's
 subsurface scatter and packed-specular flags, sets its diffuse to white
 (the maps carry the tone) and takes the three maps. The composite is built
 once per distinct look and cached by the job's key: body stem, tone, side,
-look seed, beard and normal layers. On this machine it costs 14 ms at
+beard and normal layers (the seed does not change the maps). On this machine it costs 14 ms at
 512² and 124 ms at 1024² with the eight-thread split, about 0.3 s for
 `exanima01`'s characters at 512. A body whose race map or base normal does
 not decode keeps the race maps plus tone. Not yet: the feral darkening

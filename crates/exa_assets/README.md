@@ -97,14 +97,14 @@ Skin composite (`skin_composite`): the original's generated skin maps.
 beard's three overlay programs are `beard_colour` (squared alpha, mip-3
 alpha, the 0.1 mix and the 1.5 alpha), `beard_normal` and
 `beard_specular` (`a³·0.4`). `compose` runs the whole job per texel into
-the sRGB colour target and linear surface and normal targets;
-`compose_with_offsets` also bakes the job's two seed offsets into the
-race-map samples, and the rows are split over the machine's threads (up to
-eight), so the result is the same on every machine. `SkinCompositeJob` is
+the sRGB colour target and linear surface and normal targets, its rows
+split over the machine's threads (up to eight; the same texels on every
+machine). The race maps are read unshifted: the look seed's two offsets
+(`UVOfs`) belong to the decomposition programs only (`decomp`). `SkinCompositeJob` is
 the job as data: `ModelLoader::composited_skin` decodes the race, layer and
 beard maps on the CPU, composes and uploads the three maps as an
 `ExaMaterial` (white diffuse, packed surface, normal, subsurface, blood),
-cached by the job's key (stem, tone, side, look seed, beard and layers).
+cached by the job's key (stem, tone, side, beard and layers).
 The running game feeds it to each character's merged skin run; a job whose
 textures do not decode falls back to the race maps plus tone in
 `human_skin`.

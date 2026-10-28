@@ -214,11 +214,11 @@ tested rules of their own.
   `ModelLoader::composited_skin` evaluates `chargen_d`/`_s`/`_n` and the
   beard overlays per texel (`exa_assets::skin_composite`) and uploads the
   sRGB colour, linear surface and linear normal maps, caching the material
-  by the job's key (stem, tone, side, look seed, beard and layers). The
+  by the job's key (stem, tone, side, beard and layers). The
   maps are generated after the merge, once per distinct look: 14 ms at
   512² and 124 ms at 1024² on this machine's 8 threads (about 0.3 s for
-  `exanima01`'s characters at 512). The two seed offsets are baked into
-  the race-map samples. The darkening (the feral level) is not applied by
+  `exanima01`'s characters at 512). The race maps are read unshifted (the
+  seed's offsets move only the decomposition pass). The darkening (the feral level) is not applied by
   the shader yet; a body whose race texture set does not decode keeps the
   race maps plus tone.
 - `rebuild` keeps the look rebuild's own steps (job reset and first

@@ -219,7 +219,7 @@ impl SkinJob {
     }
 
     /// The job as the loader's CPU composite takes it: the race's colour,
-    /// gloss and base normal maps, the tone and its seed's offsets, the
+    /// gloss and base normal maps, the tone, the
     /// beard and its tint, and the normal layers. `None` without a race
     /// skin set (the body then keeps its own skin material).
     pub fn composite_job(&self) -> Option<exa_assets::SkinCompositeJob> {
@@ -229,8 +229,6 @@ impl SkinJob {
         Some(exa_assets::SkinCompositeJob {
             stem: self.stem.clone(),
             tone: self.tone,
-            seed: self.seed,
-            uv_offset: self.uv_offset,
             colour: Some(colour),
             gloss: Some(gloss),
             base_normal: Some(base_normal),

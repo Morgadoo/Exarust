@@ -371,7 +371,7 @@ impl ModelLoader<'_> {
             .iter()
             .map(|(amount, texels)| (*amount, texels.as_ref()))
             .collect();
-        let generated = skin_composite::compose_with_offsets(
+        let generated = skin_composite::compose(
             job.side as usize,
             job.side as usize,
             tone_colour(job.tone),
@@ -380,7 +380,6 @@ impl ModelLoader<'_> {
             &normal,
             &layer_refs,
             beard.as_ref(),
-            job.uv_offset,
         );
         let kind = SkinKind::of_stem(&job.stem);
         let (w, h) = (generated.width as u32, generated.height as u32);

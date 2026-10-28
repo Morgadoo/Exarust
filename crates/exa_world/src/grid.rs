@@ -1356,6 +1356,8 @@ mod tests {
             is_skin: false,
             placeholder: false,
             cloth: false,
+            mesh: true,
+            render_flags: 0,
         }
     }
 
