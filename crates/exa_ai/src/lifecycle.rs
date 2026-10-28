@@ -256,7 +256,7 @@ pub fn plan_next_cell(
     current: i32,
     previous: i32,
     exits: &[ExitCell],
-    excluded: u32,
+    excluded: &mut u32,
     words: &mut [u32],
     roll: &mut u32,
 ) -> Option<(ExitCell, i32)> {
@@ -282,27 +282,28 @@ pub fn plan_next_cell(
         .filter(|(_, e)| !blocked(e))
         .map(|(i, _)| i)
         .collect();
-    let chosen =
-        if fresh.iter().all(|&i| excluded & (1 << i) != 0) && at(words, current) & EXHAUSTED == 0 {
+    let chosen = if fresh.iter().all(|&i| *excluded & (1 << i) != 0)
+        && at(words, current) & EXHAUSTED == 0
+    {
+        if fresh.is_empty() {
+            mark(words, current, EXHAUSTED);
+        }
+        exits.iter().position(|e| e.cell == previous)
+    } else {
+        let unvisited: Vec<usize> = fresh
+            .iter()
+            .copied()
+            .filter(|&i| *excluded & (1 << i) == 0 && at(words, exits[i].cell) & VISITED == 0)
+            .collect();
+        if unvisited.is_empty() {
             if fresh.is_empty() {
-                mark(words, current, EXHAUSTED);
+                return None;
             }
-            exits.iter().position(|e| e.cell == previous)
+            Some(fresh[draw(roll, fresh.len())])
         } else {
-            let unvisited: Vec<usize> = fresh
-                .iter()
-                .copied()
-                .filter(|&i| excluded & (1 << i) == 0 && at(words, exits[i].cell) & VISITED == 0)
-                .collect();
-            if unvisited.is_empty() {
-                if fresh.is_empty() {
-                    return None;
-                }
-                Some(fresh[draw(roll, fresh.len())])
-            } else {
-                Some(unvisited[draw(roll, unvisited.len())])
-            }
-        };
+            Some(unvisited[draw(roll, unvisited.len())])
+        }
+    };
     let chosen = chosen?;
     let exit = exits[chosen];
     Some((exit, exit.cell))
@@ -393,14 +394,16 @@ pub enum Drive {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DriveInput {
     pub now_ms: u32,
+    /// The exit the walk set out for (its index in the room's list).
+    pub exit_index: u32,
     /// The plan was started.
     pub planned: bool,
     /// The walk routine still walks.
     pub walking: bool,
     /// The body is within 250 cm of the exit's midpoint.
     pub near_exit: bool,
-    /// The exit's object was used.
-    pub used: bool,
+    /// The use check is done (the object was used, or is out of reach).
+    pub use_done: bool,
     /// A usable object was found in the room.
     pub found: bool,
     /// The body reached the room it set out for.
@@ -413,10 +416,11 @@ impl Default for DriveInput {
     fn default() -> Self {
         Self {
             now_ms: 0,
+            exit_index: 0,
             planned: false,
             walking: false,
             near_exit: false,
-            used: false,
+            use_done: false,
             found: false,
             same_cell: false,
             path_length_cm: 0.0,
@@ -462,17 +466,17 @@ pub fn drive(state: &mut Explore, input: &DriveInput, roll: &mut u32) -> Drive {
                 Drive::NearExit
             } else {
                 state.step = 2;
-                state.excluded |= 1 << (state.target_cell & 31);
+                state.excluded |= 1 << (input.exit_index & 31);
                 Drive::NearExit
             }
         }
         4 => {
-            if input.used {
+            if input.use_done {
                 state.step = 5;
             } else if state.until_ms.wrapping_add(10_000) < input.now_ms {
+                state.excluded |= 1 << (input.exit_index & 31);
                 state.target_cell = -1;
                 state.step = 2;
-                state.excluded |= 1 << (state.target_cell & 31);
             }
             Drive::UseObject
         }
@@ -483,23 +487,24 @@ pub fn drive(state: &mut Explore, input: &DriveInput, roll: &mut u32) -> Drive {
             Drive::Plan { forced: true }
         }
         6 => {
-            if input.same_cell && input.found {
-                return Drive::FindObject;
-            }
-            let action = if state.step == 6 && !input.walking {
-                Drive::Walk
-            } else {
-                Drive::Plan { forced: false }
-            };
-            if input.planned {
-                state.step = 3;
+            if input.same_cell {
+                if input.found {
+                    return Drive::FindObject;
+                }
+                if input.planned {
+                    state.step = 3;
+                    state.until_ms = input
+                        .now_ms
+                        .wrapping_add((input.path_length_cm * 20.0).round_ties_even() as u32)
+                        .wrapping_add(2000);
+                    return Drive::Plan { forced: false };
+                }
             }
             if !input.walking {
                 state.step = 2;
-                let step = go_to_wait(roll, input.now_ms);
-                state.until_ms = step;
+                state.until_ms = go_to_wait(roll, input.now_ms);
             }
-            action
+            Drive::Walk
         }
         _ => {
             state.step = 1;
@@ -714,30 +719,30 @@ mod tests {
         let mut words = vec![0u32; 10];
         let mut roll = 0u32;
         // Roll 1: 1·2 >> 32 = 0, so the first unvisited exit is drawn.
-        let (exit, cell) = plan_next_cell(4, 3, &exits, 0, &mut words, &mut roll).unwrap();
+        let (exit, cell) = plan_next_cell(4, 3, &exits, &mut 0, &mut words, &mut roll).unwrap();
         assert_eq!((exit.cell, cell), (5, 5));
         assert_eq!(words[4] & VISITED, VISITED);
         // Mark cell 5 visited: only 6 is fresh.
         words[5] |= VISITED;
-        let (exit, cell) = plan_next_cell(4, 3, &exits, 0, &mut words, &mut roll).unwrap();
+        let (exit, cell) = plan_next_cell(4, 3, &exits, &mut 0, &mut words, &mut roll).unwrap();
         assert_eq!((exit.cell, cell), (6, 6));
         // Both visited and not exhausted: an exit is still drawn.
         words[6] |= VISITED;
-        let (exit, _) = plan_next_cell(4, 3, &exits, 0, &mut words, &mut roll).unwrap();
+        let (exit, _) = plan_next_cell(4, 3, &exits, &mut 0, &mut words, &mut roll).unwrap();
         assert!(exit.cell == 5 || exit.cell == 6);
         // Both exhausted: the walk goes back through the exit to the
         // previous cell and the current cell is marked exhausted.
         words[5] |= EXHAUSTED;
         words[6] |= EXHAUSTED;
-        let (exit, cell) = plan_next_cell(4, 3, &exits, 0, &mut words, &mut roll).unwrap();
+        let (exit, cell) = plan_next_cell(4, 3, &exits, &mut 0, &mut words, &mut roll).unwrap();
         assert_eq!((exit.cell, cell), (3, 3));
         assert_eq!(words[4] & EXHAUSTED, EXHAUSTED);
         // No exits: nothing.
-        assert!(plan_next_cell(4, 3, &[], 0, &mut words, &mut roll).is_none());
+        assert!(plan_next_cell(4, 3, &[], &mut 0, &mut words, &mut roll).is_none());
         // An avoided exit is not drawn while another is fresh.
         let mut words = vec![0u32; 10];
         let mut roll = 0u32;
-        let (exit, _) = plan_next_cell(4, 3, &exits, 1, &mut words, &mut roll).unwrap();
+        let (exit, _) = plan_next_cell(4, 3, &exits, &mut 1, &mut words, &mut roll).unwrap();
         assert_eq!(exit.cell, 6);
     }
 
@@ -801,10 +806,11 @@ mod tests {
         let mut roll = 0u32;
         let at = |now, planned, walking, near, used, found, same, length| DriveInput {
             now_ms: now,
+            exit_index: 2,
             planned,
             walking,
             near_exit: near,
-            used,
+            use_done: used,
             found,
             same_cell: same,
             path_length_cm: length,
@@ -864,7 +870,7 @@ mod tests {
             Drive::NearExit
         );
         assert_eq!(state.step, 2);
-        assert_ne!(state.excluded, 0);
+        assert_eq!(state.excluded, 4);
         // Plan, arrive, use, and plan home.
         state.step = 3;
         state.until_ms = 0;

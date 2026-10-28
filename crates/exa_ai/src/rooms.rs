@@ -103,7 +103,9 @@ impl RoomCells {
             return false;
         }
         self.unlink(entity, at);
-        at.previous = at.cell;
+        if 0 <= at.cell {
+            at.previous = at.cell;
+        }
         at.cell = cell;
         if let Some(list) = self.list(cell) {
             list.insert(0, entity);
@@ -115,7 +117,9 @@ impl RoomCells {
     /// previous cell.
     pub fn remove(&mut self, entity: Entity, at: &mut RoomCell) {
         self.unlink(entity, at);
-        at.previous = at.cell;
+        if 0 <= at.cell {
+            at.previous = at.cell;
+        }
         at.cell = OFF_GRID;
     }
 
@@ -241,9 +245,10 @@ mod tests {
         assert!(cells.move_to(a, Vec3::new(10_000.0, 0.0, 0.0), &mut at));
         assert_eq!(at.cell, OFF_GRID);
         assert!(cells.occupants(old).is_empty());
-        // Back on the grid links again and remembers the off-grid cell.
+        // Back on the grid links again; the previous cell stays the last
+        // on-grid one (the off-grid move does not write it).
         assert!(cells.move_to(a, Vec3::ZERO, &mut at));
-        assert_eq!(at.previous, OFF_GRID);
+        assert_eq!(at.previous, old);
         assert_eq!(cells.nearby(&at), vec![a]);
     }
 }
