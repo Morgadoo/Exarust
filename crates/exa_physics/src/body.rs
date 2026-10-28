@@ -71,6 +71,9 @@ mod pins;
 pub mod stages;
 #[path = "body_steps.rs"]
 mod steps;
+#[path = "body_timers.rs"]
+pub mod timers;
+pub use timers::BodyTimers;
 
 pub use stages::{
     BodyPostStep, BodyPreStep, CharacterStage, CharacterTick, SolverStage, SolverStages,
@@ -1534,6 +1537,8 @@ pub struct Drive {
     /// The clip rate the posture block last wrote. A weak tick, and a walk
     /// or a run, leave it; the clock reads it. It starts at the human base.
     pub posture_rate: f32,
+    /// The body tick's size adapters, look rate and countdowns.
+    pub timers: BodyTimers,
     /// A dormant statue or golem. Its limbs keep [`DORMANT_KEEP`] of the
     /// living retention, its sleep countdown runs, and its standing lift
     /// lead is 20 cm.
@@ -1669,6 +1674,7 @@ impl Default for Drive {
             posture_wait: 0,
             steps: steps::Steps::default(),
             posture_rate: RaceMuscles::HUMAN.clip_rate,
+            timers: BodyTimers::default(),
             dormant: false,
             attack_arms: None,
             arm_drive: (0.0, 0.0),
@@ -2551,6 +2557,24 @@ impl Ragdoll {
                 *flags &= !HELD_STATIC_ONLY;
             }
         }
+    }
+
+    /// One tick of the body tick's size adapters, look rate and
+    /// countdowns, from what the character tick just measured.
+    pub fn tick_timers(&mut self) {
+        let Some(d) = self.drive.as_mut() else {
+            return;
+        };
+        let input = timers::TimerInput {
+            scale: d.stats.scale,
+            tone: d.tone,
+            energy: d.energy,
+            moving: d.bearing.moving,
+            off_feet: d.bearing.off_feet,
+            getting_up: d.bearing.getting_up,
+            progress: d.bearing.progress,
+        };
+        d.timers.tick(&input);
     }
 
     /// Tells a living body what its character does this tick (before it is

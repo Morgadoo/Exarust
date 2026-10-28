@@ -88,4 +88,6 @@ pub(crate) fn take_bearing(
         drive.dormant = state == Condition::DORMANT;
     }
     body.set_bearing(bearing);
+    // The body tick's timers, from what the bearing just measured.
+    body.tick_timers();
 }
