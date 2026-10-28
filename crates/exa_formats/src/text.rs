@@ -1,7 +1,6 @@
 //! The engine's text and number helpers: decimal, hexadecimal and float
 //! formatting, parsers for the same, the fixed 16-byte name type and its
-//! helpers, the byte and string compares, UTF-8/Latin-1 conversion, hex
-//! colours, the a/an vowel test and title-casing.
+//! helpers, the byte and string compares, hex colours, the a/an vowel test and title-casing.
 //!
 //! The formatting rules are the original's, not Rust's: integers are built
 //! from the least significant digit and prepended; the two-digit formatter
@@ -97,9 +96,10 @@ pub fn trunc_to_i32(value: f32) -> i32 {
 }
 
 /// The fractional part of a float: `x` less its truncation to a 32-bit
-/// integer. Out-of-range values are changed by the wrapping conversion,
-/// as the original's are.
-fn fraction(value: f32) -> f32 {
+/// integer (`CVTTSS2SI` then `CVTSI2SS`), so the sign follows `x`. NaN and
+/// out-of-range values convert to the integer indefinite, which is
+/// subtracted as −2 147 483 648, as the original's are.
+pub fn fraction(value: f32) -> f32 {
     value - trunc_to_i32(value) as f32
 }
 
@@ -654,9 +654,7 @@ impl Name16 {
 
     /// Sixteen stored bytes copied with their ASCII letters lowered.
     pub fn lowered(bytes: &[u8; NAME_LEN]) -> Self {
-        let mut name = *bytes;
-        name.iter_mut().for_each(|byte| *byte = lower_ascii(*byte));
-        Self(name)
+        Self(crate::rfc_write::lowercase_name(bytes))
     }
 
     /// Lowers the name's ASCII letters in place.
@@ -753,11 +751,16 @@ impl Name16 {
     }
 }
 
-/// Lowers the ASCII letters of a byte string in place; every other byte is
-/// left alone. The original's copy-on-write ANSI-string lowering writes
-/// the same bytes back.
+/// The original's in-place ANSI-string lowering: ASCII capitals become
+/// lower case in every byte but the last. Its loop counts from zero to the
+/// length less one while indexing the one-based string, so it visits the
+/// byte before the text (the length word's top byte, always zero) and never
+/// reaches the final character; that quirk is kept.
 pub fn lowercase_bytes(text: &mut [u8]) {
-    text.iter_mut().for_each(|byte| *byte = lower_ascii(*byte));
+    let visited = text.len().saturating_sub(1);
+    text[..visited]
+        .iter_mut()
+        .for_each(|byte| *byte = lower_ascii(*byte));
 }
 
 /// `A`..`Z` moved to lower case; every other byte unchanged.
@@ -832,10 +835,18 @@ pub fn compare_ansi(a: &[u8], b: &[u8]) -> i64 {
     }
 }
 
-/// [`compare_ansi`] with ASCII letters raised on both sides.
+/// [`compare_ansi`] with ASCII letters raised on both sides: the first
+/// raised pair that differs, and when the common length matches, the
+/// difference of the two lengths as 32-bit words (the original subtracts
+/// the low halves of the length words).
 pub fn compare_ansi_case_insensitive(a: &[u8], b: &[u8]) -> i32 {
     let common = a.len().min(b.len());
-    compare_bytes_case_insensitive(&a[..common], &b[..common])
+    let difference = compare_bytes_case_insensitive(&a[..common], &b[..common]);
+    if difference != 0 {
+        difference
+    } else {
+        (a.len() as i32).wrapping_sub(b.len() as i32)
+    }
 }
 
 /// The original's zero-string compare of two byte strings: when their
@@ -887,108 +898,6 @@ pub fn splice(buffer: &[u8], from: usize, remove: usize, insert: &[u8]) -> Vec<u
 /// 32 bits, byte-reversed.
 pub fn reversed_counter_seed(counter: u64) -> u32 {
     (counter as u32).swap_bytes()
-}
-
-/// The bytes a UTF-8 string needs in Latin-1 when only ASCII and the
-/// two-byte `C2`/`C3` sequences convert: every ASCII byte counts one, a
-/// leading `C2` or `C3` counts one for the pair, and three- and four-byte
-/// sequences (and other two-byte leads) count nothing.
-pub fn utf8_to_latin1_len(bytes: &[u8]) -> usize {
-    let mut count = 0;
-    let mut at = 0;
-    while at < bytes.len() {
-        let lead = bytes[at];
-        if lead < 0x80 {
-            count += 1;
-            at += 1;
-        } else if lead < 0xE0 {
-            if lead == 0xC2 || lead == 0xC3 {
-                count += 1;
-            }
-            at += 2;
-        } else if lead < 0xF0 {
-            at += 3;
-        } else {
-            at += 4;
-        }
-    }
-    count
-}
-
-/// Writes the Latin-1 form of a UTF-8 string into `out` and returns how many
-/// bytes it wrote: ASCII copied, `C2 xx` copied as `xx`, `C3 xx` as
-/// `xx + 0x40`, every other sequence dropped. A sequence cut off by the
-/// end reads its missing continuation as zero, which is the string's
-/// terminator in the original.
-pub fn utf8_to_latin1(bytes: &[u8], out: &mut [u8]) -> usize {
-    let mut written = 0;
-    let mut at = 0;
-    while at < bytes.len() {
-        let lead = bytes[at];
-        if lead < 0x80 {
-            if written < out.len() {
-                out[written] = lead;
-            }
-            written += 1;
-            at += 1;
-        } else if lead < 0xE0 {
-            let second = bytes.get(at + 1).copied().unwrap_or(0);
-            if lead == 0xC3 {
-                if written < out.len() {
-                    out[written] = second.wrapping_add(0x40);
-                }
-                written += 1;
-            } else if lead == 0xC2 {
-                if written < out.len() {
-                    out[written] = second;
-                }
-                written += 1;
-            }
-            at += 2;
-        } else if lead < 0xF0 {
-            at += 3;
-        } else {
-            at += 4;
-        }
-    }
-    written
-}
-
-/// The bytes a Latin-1 string needs in UTF-8: one for ASCII, two otherwise.
-pub fn latin1_to_utf8_len(bytes: &[u8]) -> usize {
-    bytes
-        .iter()
-        .map(|&byte| if byte < 0x80 { 1 } else { 2 })
-        .sum()
-}
-
-/// Writes the UTF-8 form of a Latin-1 string into `out` and returns how many
-/// bytes it wrote: ASCII copied, `80`..`BF` as `C2 xx`, everything else as
-/// `C3 (xx − 0x40)`.
-pub fn latin1_to_utf8(bytes: &[u8], out: &mut [u8]) -> usize {
-    let mut written = 0;
-    for &byte in bytes {
-        if byte < 0x80 {
-            if written < out.len() {
-                out[written] = byte;
-            }
-            written += 1;
-        } else {
-            let (lead, second) = if byte < 0xC0 {
-                (0xC2, byte)
-            } else {
-                (0xC3, byte.wrapping_sub(0x40))
-            };
-            if written < out.len() {
-                out[written] = lead;
-            }
-            if written + 1 < out.len() {
-                out[written + 1] = second;
-            }
-            written += 2;
-        }
-    }
-    written
 }
 
 #[cfg(test)]
@@ -1239,10 +1148,15 @@ mod tests {
         let mut name = Name16::from_raw(*b"AbCdEfGhIjKlMnOp");
         name.lowercase();
         assert_eq!(name.as_bytes(), b"abcdefghijklmnop");
-        // The ANSI-string path lowers in place and leaves high bytes.
+        // The ANSI-string path lowers in place, leaves high bytes and,
+        // like the original's loop, never reaches the last byte.
         let mut text = *b"AbC\xE9 Z";
         lowercase_bytes(&mut text);
-        assert_eq!(text, *b"abc\xE9 z");
+        assert_eq!(text, *b"abc\xE9 Z");
+        let mut one = *b"A";
+        lowercase_bytes(&mut one);
+        assert_eq!(one, *b"A");
+        lowercase_bytes(&mut []);
     }
 
     #[test]
@@ -1361,6 +1275,9 @@ mod tests {
         assert_eq!(compare_ansi(b"abc", b"abc"), 0);
         assert_eq!(compare_ansi_case_insensitive(b"AbC", b"aBc"), 0);
         assert_eq!(compare_ansi_case_insensitive(b"abc", b"abd"), -1);
+        // An equal common part answers the length difference.
+        assert_eq!(compare_ansi_case_insensitive(b"ABC", b"ab"), 1);
+        assert_eq!(compare_ansi_case_insensitive(b"a", b"Abcd"), -3);
     }
 
     #[test]
@@ -1385,50 +1302,20 @@ mod tests {
     }
 
     #[test]
+    fn fraction_truncates_toward_zero() {
+        assert_eq!(fraction(2.75), 0.75);
+        assert_eq!(fraction(-2.75), -0.75);
+        assert_eq!(fraction(5.0), 0.0);
+        assert_eq!(fraction(-0.0).to_bits(), (-0.0f32).to_bits());
+        // Out of the 32-bit range the conversion is the indefinite integer.
+        assert_eq!(fraction(3.0e9), 3.0e9 - (-2_147_483_648.0));
+        assert!(fraction(f32::NAN).is_nan());
+    }
+
+    #[test]
     fn the_counter_seed_is_byte_reversed() {
         assert_eq!(reversed_counter_seed(0xAABB_CCDD), 0xDDCC_BBAA);
         assert_eq!(reversed_counter_seed(0x0000_0001), 0x0100_0000);
         assert_eq!(reversed_counter_seed(0x1_2345_6789), 0x8967_4523);
-    }
-
-    #[test]
-    fn utf8_latin1_conversions_keep_ascii_and_c2_c3() {
-        assert_eq!(utf8_to_latin1_len(b"abc"), 3);
-        assert_eq!(utf8_to_latin1_len(b"caf\xC3\xA9"), 4);
-        assert_eq!(utf8_to_latin1_len(b"\xC2\xA9"), 1);
-        // A three-byte and a four-byte sequence, and a two-byte lead that
-        // is not C2/C3, convert to nothing.
-        assert_eq!(utf8_to_latin1_len(b"\xE2\x82\xAC"), 0);
-        assert_eq!(utf8_to_latin1_len(b"\xF0\x9F\x98\x80"), 0);
-        assert_eq!(utf8_to_latin1_len(b"\xC4\x80"), 0);
-
-        let mut out = [0u8; 8];
-        assert_eq!(utf8_to_latin1(b"caf\xC3\xA9", &mut out), 4);
-        assert_eq!(&out[..4], b"caf\xE9");
-        assert_eq!(utf8_to_latin1(b"\xC3\xA9", &mut out), 1);
-        assert_eq!(out[0], 0xE9);
-        assert_eq!(utf8_to_latin1(b"\xC2\xA9", &mut out), 1);
-        assert_eq!(out[0], 0xA9);
-        assert_eq!(utf8_to_latin1(b"a\xE2\x82\xACb", &mut out), 2);
-        assert_eq!(&out[..2], b"ab");
-        // A lead cut off by the end reads the terminator.
-        assert_eq!(utf8_to_latin1(b"\xC3", &mut out), 1);
-        assert_eq!(out[0], 0x40);
-
-        // "caf" is three bytes and the Latin-1 é needs two.
-        assert_eq!(latin1_to_utf8_len(b"caf\xE9"), 5);
-        assert_eq!(latin1_to_utf8(b"a\xE9\xA9", &mut out), 5);
-        assert_eq!(&out[..5], b"a\xC3\xA9\xC2\xA9");
-        assert_eq!(latin1_to_utf8_len(b"\x7F"), 1);
-        assert_eq!(latin1_to_utf8(b"\xFF", &mut out), 2);
-        assert_eq!(&out[..2], b"\xC3\xBF");
-
-        // Round trip.
-        let latin1 = b"caf\xE9 \xA9";
-        let mut utf8 = [0u8; 16];
-        let n = latin1_to_utf8(latin1, &mut utf8);
-        let mut back = [0u8; 16];
-        assert_eq!(utf8_to_latin1(&utf8[..n], &mut back), latin1.len());
-        assert_eq!(&back[..latin1.len()], latin1);
     }
 }
