@@ -781,6 +781,46 @@ pub const ITEM_MARKER: u32 = 0x8000_0000;
 /// The high-bit pair the arena's dedupe pass treats as special.
 pub const ENTRY_SPECIAL: u32 = 0xC000_0000;
 
+/// What the old arena load's record repair kept.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RecordRepair {
+    /// The worn items left.
+    pub worn: usize,
+    /// Each loadout's worn items left, in loadout order.
+    pub loadout_worn: Vec<usize>,
+    /// The carried items left.
+    pub inventory: usize,
+    /// The record must be re-derived next (the character unit's pass that
+    /// rebuilds what the record derives from its items; its exact effect is
+    /// that unit's) [guess at the pass's effect].
+    pub rederive: bool,
+}
+
+/// The old arena save's repair of the player's record, in the original's
+/// order: the worn list keeps only entries whose id has the top bit clear,
+/// then each loadout's worn list does (the eight-byte compaction), then the
+/// carried inventory does (the twelve-byte compaction), and only then is
+/// the record re-derived. The hands are not touched. The hub stash is
+/// compacted by the load's separate pass afterwards, not here.
+pub fn repair_converted_record(record: &mut crate::characters::CharacterRecord) -> RecordRepair {
+    record.worn.retain(|item| item.id & ITEM_MARKER == 0);
+    let loadout_worn = record
+        .loadouts
+        .iter_mut()
+        .map(|loadout| {
+            loadout.worn.retain(|item| item.id & ITEM_MARKER == 0);
+            loadout.worn.len()
+        })
+        .collect();
+    record.inventory.retain(|item| item.item & ITEM_MARKER == 0);
+    RecordRepair {
+        worn: record.worn.len(),
+        loadout_worn,
+        inventory: record.inventory.len(),
+        rederive: true,
+    }
+}
+
 /// Keeps only plain entries of an eight-byte item list: the arena's load
 /// compaction drops every entry whose first word has the top bit set and
 /// closes the gaps in place.
@@ -822,16 +862,17 @@ pub fn remove_duplicate_item_ids(records: &mut Vec<[u8; 12]>) {
     }
 }
 
-/// A list of eight-byte item entries and a list of twelve-byte records as
-/// the arena's record repair sees them. The save unit compacts one
-/// eight-byte list, then every employee's eight-byte list, then the
-/// twelve-byte list, in that order.
+/// Eight-byte item lists and one twelve-byte record list in raw form, as
+/// the record repair walks them: one eight-byte list (the worn items), then
+/// each further eight-byte list (the loadouts' worn items), then the
+/// twelve-byte list (the carried items). [`repair_converted_record`] is the
+/// same pass over a decoded record.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ArenaLists {
-    /// The eight-byte lists in the order the repair walks them: the stash
-    /// list first, then one per employee.
+    /// The eight-byte lists in the order the repair walks them: the worn
+    /// list first, then one per loadout.
     pub lists8: Vec<Vec<[u8; 8]>>,
-    /// The twelve-byte record list.
+    /// The twelve-byte list (the carried items).
     pub records12: Vec<[u8; 12]>,
 }
 
@@ -1123,6 +1164,53 @@ mod tests {
         let mut records = vec![record(1), record(0x8000_0002), record(3)];
         retain_plain_records(&mut records);
         assert_eq!(records, vec![record(1), record(3)]);
+    }
+
+    #[test]
+    fn a_converted_records_lists_compact_before_its_rederive() {
+        use crate::characters::{Carried, CharacterRecord, ItemRef, Loadout};
+        let mut record = CharacterRecord::new();
+        record.hands[0] = ItemRef::new(0x8000_0009, 0);
+        record.worn = vec![
+            ItemRef::new(1, 0),
+            ItemRef::new(0x8000_0002, 0),
+            ItemRef::new(3, 0),
+        ];
+        let first = Loadout {
+            worn: vec![ItemRef::new(1, 0), ItemRef::new(0xc000_0002, 0)],
+            ..Loadout::default()
+        };
+        let second = Loadout {
+            worn: vec![
+                ItemRef::new(0x8000_0003, 0),
+                ItemRef::new(4, 0),
+                ItemRef::new(0x8000_0005, 0),
+            ],
+            ..Loadout::default()
+        };
+        record.loadouts = vec![first, second];
+        let carried = |item| Carried {
+            item,
+            flags: 0,
+            extra: 0,
+        };
+        record.inventory = vec![carried(0x8000_0001), carried(6)];
+        let repair = repair_converted_record(&mut record);
+        assert_eq!(record.worn, vec![ItemRef::new(1, 0), ItemRef::new(3, 0)]);
+        assert_eq!(record.loadouts[0].worn, vec![ItemRef::new(1, 0)]);
+        assert_eq!(record.loadouts[1].worn, vec![ItemRef::new(4, 0)]);
+        assert_eq!(record.inventory, vec![carried(6)]);
+        // The hands are left alone.
+        assert_eq!(record.hands[0].id, 0x8000_0009);
+        assert_eq!(
+            repair,
+            RecordRepair {
+                worn: 2,
+                loadout_worn: vec![1, 1],
+                inventory: 1,
+                rederive: true,
+            }
+        );
     }
 
     #[test]

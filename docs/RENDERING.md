@@ -1648,8 +1648,12 @@ everything else by its record), the first four outdoor arenas allow the
 night, and `level_lighting_preset` runs the preset before deriving the
 `Lighting`. The indoor preset leaves an indoor level's picture as it was
 (those levels had neither sun nor fog); an outdoor arena now draws its day
-and weather per launch, as the original does. The renderer's view reset and
-the audio environment switch the preset also performs are the caller's.
+and weather per launch, as the original does. The renderer's view also takes
+the preset's sky/sun value: zero on a day, and on a night `0.5·(cloudiness
+− 2) + (the previous time of day − 0.7)` in the original's mixed precision
+when the caller's view flag is set (the arena's set-up always sets it).
+The renderer's view reset and the audio environment switch the preset also
+performs are the caller's.
 
 **Grid levels.** A tile-grid level built the original's older way forces a
 black background and 0.5 grey fog, and, unless the level has terrain, an

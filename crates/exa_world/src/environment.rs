@@ -219,6 +219,7 @@ pub fn level_lighting_preset(
         (LevelPreset::Outdoor { night_allowed }, Some(input)) => {
             let mut engine = crate::scene_env::WeatherRng::new(input.engine_seed);
             env.apply_outdoor_preset(
+                true,
                 night_allowed,
                 input.seed,
                 clock_seed,
@@ -502,12 +503,12 @@ mod tests {
         // The first six-way roll of seed 1 is zero: a night when allowed.
         let mut night = SceneEnvironment::new(SKY_QUALITY);
         let mut engine = WeatherRng::new(7);
-        let drawn = night.apply_outdoor_preset(true, 1, || 9, 0, &mut engine);
+        let drawn = night.apply_outdoor_preset(true, true, 1, || 9, 0, &mut engine);
         assert!((drawn.time_of_day - 0.966_651_6).abs() < 1e-5, "{drawn:?}");
         // Without the night flag the same seed draws a day.
         let mut day = SceneEnvironment::new(SKY_QUALITY);
         let mut engine = WeatherRng::new(7);
-        let drawn = day.apply_outdoor_preset(false, 1, || 9, 0, &mut engine);
+        let drawn = day.apply_outdoor_preset(true, false, 1, || 9, 0, &mut engine);
         assert!((drawn.time_of_day - 0.320_827_16).abs() < 1e-5, "{drawn:?}");
         assert!((drawn.cloudiness - 1.202_580_9).abs() < 1e-5);
         assert!((drawn.fog_distance - 0.536_592_7).abs() < 1e-6);

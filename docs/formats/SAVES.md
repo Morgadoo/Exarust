@@ -233,8 +233,7 @@ newer save still loads); a lower one makes the slot legacy. It reads the
 camera target and zoom into scratch and does not restore them, and it
 skips the reserved word. The flag byte at bits 16–23 is the "started" byte
 (the writer always sets it to 1). When the start background is 0 and the
-player record's word at its own offset 0x180 is 0, the reader sets that
-word to `0x510000`. Before the chunks it resets the journal to one "New
+player record's own flag word is 0, the reader sets that word to `0x510000`. Before the chunks it resets the journal to one "New
 Entry" page, the global experience to the default worth (zero), the memory
 flags and the transition state to zero, so an absent chunk means the
 default. Exarust exposes those defaults through `journal_or_default`,
@@ -297,9 +296,13 @@ zero: the slot is neither listed nor loaded.
   original keeps the empty lists in memory only). It carries the pure
   compaction passes (`arena_save::retain_plain_items`,
   `arena_save::retain_plain_records`, `remove_duplicate_item_ids` and the
-  record-repair order in `ArenaLists::compact`); regeneration, the
-  character-record repair and the object-database id passes are not
-  modelled.
+  record-repair order in `ArenaLists::compact`) and the player record's
+  repair (`arena_save::repair_converted_record`: the worn list, each
+  loadout's worn list, then the carried items, before the record's
+  re-derive; the stash is compacted afterwards by its own pass). The
+  repair is a tested function: Exarust's load does not decode and
+  re-encode the world character database to apply it. Regeneration and
+  the object-database id passes are not modelled.
 * Story start compatibility (the character creator, while the started byte
   is 0): a save with an `exanima06` section is refused; with an
   `exanima04` section it is refused unless its `#worldobjdb`'s **third
@@ -415,28 +418,128 @@ only.
   Re-attaching one frees its UID manager, re-creates its player controls,
   clears its carry word, stores 1 as its body controller and raises a minimum distance under 5 cm to 5 (a NaN is
   kept, as the unordered compare does not branch).
-* **Menu.** The menu background is the shipped `menuscene.rfc` with the
-  1.8 fog preset, the scene editor at mode 0, the view at (0, 500, 700)
-  and its target at (0, 0, −200); a 60 is written into the camera (most
-  likely its field of view).
-* **Terrain.** A saved level's terrain file is the locale with its
-  extension replaced by `.rft` (the loader looks it up in the archive and
-  imports it when it exists).
-* **Scene content.** A scene node is classified from its object record:
-  kind pair `0x1100`/`0x1200` goes to the first list, `0x2200` to the
-  second, and independently a `0x10000` property whose first byte is 2
-  adds it to the third (one node can join two lists). A record the
-  object database does not know falls back to a name starting with `[`,
-  which joins the second list.
-* **Load reset.** Before a load the save unit clears the old-settings flag,
-  leaves the default twelve-byte settings tag (a zero, `1 100 000.0`, a
-  zero), clears the settings chunk's saved word and the scene's sun height,
-  and allocates the grid environment's arrays (a zero word per grid cell,
-  update flag 1 and mode 0).
-* **Landing.** The landing plan puts the player at the saved planar
-  position and the lifted floor height, then places the followers around
-  them from the offset table in order (positions before each follower's
-  own floor probe).
+### Loading a level
+
+Three entry points open a level; all store the current locale's sixteen-byte
+name on the scene once the import succeeds.
+
+* **Save load.** When the load asks for it and the save has a section named
+  by the bare locale, that section is imported, with the save's own local
+  database as the importer's context; otherwise the archive's
+  `<locale>.rfc` (the locale with its extension replaced) is read. A file
+  that cannot be found returns without importing. The previous level id is
+  stored as 0, the portal node as −1 (none) and the current level id comes
+  from `locales.rdb`.
+* **Named level** (`exanima01`, `arena`, `arenae`, `arenahub`): the archive
+  is opened first; then the save manager is ensured, the local character
+  database is cleared, the GUI is reset and the load's globals are reset
+  (the settings flag, tag and saved word, and the scene's sun height).
+  This path first clears the save-disable flag. After a successful import
+  the scene environment's word that the outdoor preset sets to 1 (and the
+  indoor preset to 0) is cleared; it is not the sun mode, which goes
+  through its own setter.
+* **Arena level**: the archive only; no GUI or settings reset. Only the item
+  GUI's panel reset runs first (the save load runs the same reset first).
+* All three clear the portal node (a null pointer: the level's own start),
+  store −1 in the engine's portal id word and reset the saved spawn matrix
+  to its default.
+
+**Import order.** Reserve the kd-tree build; import the chunk tree; free the
+section stream; release the reservation; when at least one node came back:
+begin the scene-content pass, prepare the kd-tree and texture passes,
+classify the nodes into the scene's lists (see above), fix the node count,
+reset the renderer's GI manager when it has one, load the terrain (below; a
+terrain entry found and read counts as loaded), tell the arena task
+when the terrain is missing, run the tree and texture passes again, add the
+nodes to the scene, rebuild the sector and bounds passes, run the final node
+pass, update the grid environments when the scene has a grid, and report
+the scene ready. A malformed section imports nothing and still frees its
+stream; a section with no nodes does the same. A section imported from the
+save also reads the level's settings chunk (the tag with its version float
+and the two words) as it goes; the archive's own level has none.
+
+**Game scene.** The scene is created with its flag word `0x10000`, 115 sound
+slots [guess at the field's meaning], node-manager flags 1 and 1, the scene
+environment's sun mode 1 (off, through the presets' own setter) and fog
+distance `0x3F333333` (0.7), the view's own
+byte set and its setter called with 1, and the renderer's option word 3;
+the object manager, audio environment, editor, GI manager, blood, AI hooks
+and the save unit's scene-content classifier are created on the way. The
+indoor preset (which sets the sun) is applied by the caller just after.
+
+**GUI reset.** Every load, combatant preparation and the menu scene runs
+the same reset: the GUI's task list, the tips/hover state (with argument
+1), the shared game functions, the item GUI, then a global word cleared.
+
+**Player spawn.** The player's body comes from the default generator (the
+character record) or, when a custom generator is installed, from repeated
+calls with a zero sleep until it answers. The attached nodes' part pass
+runs, the root node gains `0x1000`, the player behaviour, inventory and
+controls are attached, and the node is added to the scene before the
+generator's finishing pass. The player node's own part controller is put in
+mode 8, the node is made visible, two body words are cleared and the node is
+registered.
+
+**Menu.** The menu background is the shipped `menuscene.rfc` with the
+1.8 fog preset (the indoor preset variant), the scene editor at mode 0, the
+view at (0, 500, 700) and its target at (0, 0, −200); a 60 is written into
+the camera (most likely its field of view). The arena task is reset when it
+exists, the portal word goes to −1, the GUI and the dialogue engine are
+reset, the open form is closed and the game scene becomes the current
+scene, and the import uses the file's own name for its terrain probe
+(`menuscene.rft`). A word of the scene's grid goes to 0, the editor to mode 0 and the
+camera's matrices are updated last.
+
+**Terrain.** A saved level's terrain file is the locale with its
+extension replaced by `.rft` (the loader looks it up in the archive and
+imports it when it exists).
+
+**Scene content.** A scene node is classified from its object record:
+kind pair `0x1100`/`0x1200` goes to the first list, `0x2200` to the
+second, and independently a `0x10000` property whose first byte is 2
+adds it to the third (one node can join two lists). A record the
+object database does not know falls back to a name starting with `[`,
+which joins the second list.
+
+**Load reset.** Before a load the save unit clears the old-settings flag,
+leaves the default twelve-byte settings tag (a zero, `1 100 000.0`, a
+zero), clears the settings chunk's saved word and the scene's sun height,
+and allocates the grid environment's arrays (a zero word per grid cell,
+update flag 1 and mode 0).
+
+**Landing.** The landing plan puts the player at the saved planar
+position and the lifted floor height, then places the followers around
+them from the offset table in order (positions before each follower's
+own floor probe).
+
+**World databases.** The load imports the save's `#worldchrdb` first chunk
+into the world character database (a missing section clears the live one)
+and the `#worldobjdb` first chunk into the object database's world tier,
+with its second chunk as the string library the records read their text
+through (a missing section clears the live object database). Exarust
+exposes both as `Slots`' `world_characters`/`world_objects`
+(`exa_game::slots`) and on a `LoadedSave`.
+
+**Flow.** A transition closes the open forms, reserves the kd trees, waits
+13 ms, resets the audio environment and the GUI, begins the object
+database's save pass, puts the player's body part controller in mode 8,
+flushes the player and collects the travelling characters, ends the object
+pass, sets up each travelling character's node, activates the player's
+node, restores the GUI's audio state and resets the scene content, leaves
+the arena task, looks up the destination's locale and level ids, clears the
+portal node, stores the **previous** level's id in the portal word (the
+other entry points store −1 there), resets the load's globals, opens the save, reads the
+destination's section from the save or the archive, imports it, stores the
+name, chooses the spawn matrix (the portal node's when one is named, else
+the identity), spawns the player, stores its transform, re-derives a
+story-mode-2 character and clears the word to 1, sets up the grid arrays
+when the flag is set, spawns the followers on the stored offsets,
+runs the follower re-attach pass (always, even with no followers) and the
+game functions' post-load pass. A destination that is neither in the save
+nor the archive aborts before the import and leaves saves enabled; an
+archive destination that reads but does not import disables saving, while
+a section read from the save counts as imported whatever its import
+returned and the landing goes on.
 
 ## The game clock
 
@@ -462,6 +565,26 @@ combatants are prepared by rebuilding their kit from the object database
 (the prep helpers), and the mode's saved state is the arena's. A practice
 fight started from the arena therefore writes `ArenaNNN.rsg`.
 
+A fighter's saved kit names its items through the character's **own**
+database (an id whose top two bits are `10`). The preparation pass resolves
+the first hand pair, the second pair, the worn items and then the carried
+items; a carried item that names a hand's saved id takes that hand's
+resolved id instead of being resolved itself, and the original stores the
+*second* pair's replacements from the *first* pair (a dead value that still
+decides that lookup). The equip pass then instantiates every own id into the
+running scene in the same order, writes the first pair's new ids into the
+attached scene nodes and the character's hand node that still hold the old
+ones, gives carried items the running hand id when they name one (first pair
+first), frees the temporary database and refreshes the item GUI.
+
+The combatant scene is prepared in this order: the open form is closed,
+the game scene becomes the current scene, the GUI state helper the
+transition also calls runs, the portal word goes to −1, the kd trees are reserved, the GUI and
+the content helpers reset, then the archive's `<locale>.rfc` is opened
+and imported with the saved locale for its terrain probe. A successful
+import lets the arena task run its post-load hook when its flag bit 0 is
+clear.
+
 ## Exarust mapping
 
 [`exa_formats::save_package`](../../crates/exa_formats/src/save_package.rs)
@@ -486,6 +609,14 @@ forced transition locale), the character screen's load
 (`load_character_screen`), save (`save_full` in the writer's section
 order), checked save, checkpoint (`checkpoint_full`), death, delete,
 legacy removal and transition save (`transition_save_full`).
+[`exa_game::save_scene`](../../crates/exa_game/src/save_scene.rs) holds the
+three scene-load entry points (`scene_load_plan` and `load_level`), the
+import order, the game scene's constants, the menu scene's load, the GUI
+reset and the player's node set-up and spawn;
+[`exa_game::save_kit`](../../crates/exa_game/src/save_kit.rs) the practice
+and arena fighters' two kit passes and their scene preparation, and
+[`exa_game::level_transition`](../../crates/exa_game/src/level_transition.rs)
+the transition's ordered flow over those pieces.
 `create_empty` is the original's new-slot path (an empty package);
 `create` also writes a session into it.
 

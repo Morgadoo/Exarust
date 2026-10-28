@@ -106,35 +106,43 @@ pub struct SceneMotile<'a> {
     pub flags: u32,
 }
 
-/// One character the migration pass met.
+/// One character the migration pass takes along.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Migration {
     pub address: usize,
-    /// A repeated address is logged as "Duplicate simulation motile: <name>"
-    /// under the "Migration" tag and is not added to the list (nor flushed)
-    /// again; callers skip the entries marked here.
-    pub duplicate: bool,
+}
+
+/// The migration pass's result: the characters that travel, and the
+/// repeated addresses it reported without adding them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MigrationList {
+    pub travelling: Vec<Migration>,
+    /// Each repeated address, in the order met. The original logs
+    /// "Duplicate simulation motile: <name>" under the "Migration" tag and
+    /// does **not** append the repeat, so it is neither flushed again nor
+    /// placed on the destination.
+    pub duplicates: Vec<usize>,
 }
 
 /// Builds the migration list: every character whose controller is 4 and
 /// whose flags do not carry 0x800, in scene order, each address once. A
-/// repeated address is reported as a duplicate and skipped.
-pub fn migrations(motiles: &[SceneMotile<'_>]) -> Vec<Migration> {
-    let mut out: Vec<Migration> = Vec::new();
+/// repeated address is reported as a duplicate and left out of the list.
+pub fn migrations(motiles: &[SceneMotile<'_>]) -> MigrationList {
+    let mut out = MigrationList::default();
     for motile in motiles {
         if motile.controller != 4 || motile.flags & 0x800 != 0 {
             continue;
         }
-        if out.iter().any(|seen| seen.address == motile.address) {
-            out.push(Migration {
-                address: motile.address,
-                duplicate: true,
-            });
+        if out
+            .travelling
+            .iter()
+            .any(|seen| seen.address == motile.address)
+        {
+            out.duplicates.push(motile.address);
             continue;
         }
-        out.push(Migration {
+        out.travelling.push(Migration {
             address: motile.address,
-            duplicate: false,
         });
     }
     out
@@ -284,7 +292,7 @@ pub fn grid_environment_setup(cells: usize) -> GridEnvironmentSetup {
 pub struct SceneFlush {
     pub object_db_begun: bool,
     pub player_flushed: bool,
-    pub migrations: Vec<Migration>,
+    pub migrations: MigrationList,
     pub object_db_ended: bool,
 }
 
@@ -430,23 +438,14 @@ mod tests {
             },
         ];
         let list = migrations(&motiles);
+        // Only Ann and Dan travel; the repeat of Ann is reported as a
+        // duplicate and never joins the list (the original logs it and
+        // skips the append).
         assert_eq!(
-            list,
-            vec![
-                Migration {
-                    address: 0x10,
-                    duplicate: false
-                },
-                Migration {
-                    address: 0x10,
-                    duplicate: true
-                },
-                Migration {
-                    address: 0x40,
-                    duplicate: false
-                },
-            ]
+            list.travelling,
+            vec![Migration { address: 0x10 }, Migration { address: 0x40 },]
         );
+        assert_eq!(list.duplicates, vec![0x10]);
     }
 
     #[test]
@@ -481,8 +480,8 @@ mod tests {
         }];
         let flush = flush_scene(&motiles);
         assert!(flush.object_db_begun && flush.player_flushed && flush.object_db_ended);
-        assert_eq!(flush.migrations.len(), 1);
-        assert!(!flush.migrations[0].duplicate);
+        assert_eq!(flush.migrations.travelling.len(), 1);
+        assert!(flush.migrations.duplicates.is_empty());
     }
 
     #[test]
