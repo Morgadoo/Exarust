@@ -62,6 +62,7 @@ pub mod menu_screen;
 pub mod menu_text;
 pub mod mind;
 pub mod nav_camera;
+pub mod nav_drag;
 pub mod nav_pick;
 pub mod pair_trace;
 pub mod path_probe;

@@ -754,6 +754,117 @@ pub fn kick_offset(
     offset
 }
 
+/// The counts of the original's jittered offset table, group by group: discs
+/// of 1, 2, 3, 4, 8, 15, 24 and 66 points, 123 in all.
+pub const DISC_GROUP_COUNTS: [usize; 8] = [1, 2, 3, 4, 8, 15, 24, 66];
+/// The points in the jittered offset table.
+pub const DISC_POINTS: usize = 123;
+/// The table's largest radius (its scale is `(draw + 1) · 0.02`).
+pub const DISC_SCALE: f64 = 0.02;
+
+/// The original's table of jittered unit offsets, as the unit fills it at
+/// start-up: eight groups of a one, two, three, four, eight, fifteen,
+/// twenty-four and sixty-six points around a circle, each at
+/// `i · 2π / count` with `(sin, cos)` of the engine's fast pair, scaled by
+/// `(draw + 1) · 0.02` in double precision and given a z of one. The draw
+/// stream is the caller's: the original's is the process-wide generator at
+/// the moment of the fill, which a replay cannot reproduce without the
+/// earlier draws. [guess: the first angle is zero and the order is the
+/// original's groups in table order]
+pub fn disc_offsets(draw: &mut impl FnMut() -> f64) -> Vec<Vec3> {
+    let mut offsets = Vec::with_capacity(DISC_POINTS);
+    for count in DISC_GROUP_COUNTS {
+        for i in 0..count {
+            let angle = (i as f32 * std::f32::consts::TAU) / count as f32;
+            let (sin, cos) = sin_cos(angle);
+            let scale = ((draw() + 1.0) * DISC_SCALE) as f32;
+            offsets.push(Vec3::new(sin * scale, cos * scale, 1.0));
+        }
+    }
+    offsets
+}
+
+/// Moves both of a camera's stored points (the looked-at point and the eye)
+/// by `by`, as the unit's translate routine does. Returns the moved pair.
+pub fn translate_points(points: (Vec3, Vec3), by: Vec3) -> (Vec3, Vec3) {
+    (points.0 + by, points.1 + by)
+}
+
+/// A camera controller's attachment to its viewport. The original detaches
+/// its controller while the editor's own drag handlers run: the camera node
+/// drops its back-pointer to the controller, the editor's press and move
+/// callbacks are installed, and the viewport's saved zoom handler is put
+/// back on attach. Exarust has no viewport callbacks, so the two observable
+/// flags are kept here and the handler swap is the caller's.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Attachment {
+    /// The editor's handlers are installed (`detached`).
+    pub editing: bool,
+    /// The camera node points back at this controller.
+    pub bound: bool,
+}
+
+impl Attachment {
+    /// Sets the attachment to `detached` and returns whether it changed.
+    /// Detaching installs the editor's handlers and unbinds the node;
+    /// attaching binds it again. Setting the state it already has does
+    /// nothing, as the original's byte compare does.
+    pub fn set_detached(&mut self, detached: bool) -> bool {
+        if self.editing == detached {
+            return false;
+        }
+        self.editing = detached;
+        self.bound = !detached;
+        true
+    }
+}
+
+/// One node the preset's editor scan reads: the class byte and marker at
+/// the node's two flags, its world position and its box's half extents.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EditorNode {
+    /// The node's class byte (`0xA9` is the editor's target).
+    pub class: u8,
+    /// The node's second class byte (`0xAE` raises the preset's extra flag).
+    pub marker: u8,
+    pub position: Vec3,
+    pub half_extents: Vec3,
+}
+
+/// The editor preset's target box: the centre and half extents it scans the
+/// scene for, and the raised flag.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TargetBox {
+    pub centre: Vec3,
+    pub half_extents: Vec3,
+    pub raised: bool,
+}
+
+/// The editor preset's scan (the preset flag `0x400000`): start from the
+/// view's `fallback` centre with an 800 by 0 by 1000 box and no raised flag;
+/// every node of class `0xA9` whose class word's low twelve bits are one
+/// replaces the box with its position and its x and z half extents (the y
+/// extent is zero), and a marker of `0xAE` raises the flag. The last such
+/// node in the scene order wins. The class word's low bits are the caller's
+/// [`EditorNode::class`] check here.
+pub fn scan_target(nodes: &[EditorNode], fallback: Vec3) -> TargetBox {
+    let mut target = TargetBox {
+        centre: fallback,
+        half_extents: Vec3::new(800.0, 0.0, 1000.0),
+        raised: false,
+    };
+    for node in nodes {
+        if node.class == 0xA9 && node.marker == 0xAE {
+            target.raised = true;
+        }
+        if node.class == 0xA9 {
+            target.centre = node.position;
+            target.half_extents = Vec3::new(node.half_extents.x, 0.0, node.half_extents.z);
+        }
+    }
+    target
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1227,5 +1338,82 @@ mod tests {
         let basis = normalize(Vec3::new(-1.0, 1.0, 0.0));
         assert_eq!(offset, basis * (3.0 / basis.length_squared().sqrt()));
         assert!(draws.next().is_none());
+    }
+
+    #[test]
+    fn the_jittered_table_rings_its_points_at_two_to_four_centimetres() {
+        let offsets = disc_offsets(&mut || 0.0);
+        assert_eq!(offsets.len(), DISC_POINTS);
+        // The first ring's only point is 2 cm up +Z with the table's unit
+        // height, and every point has that height.
+        assert!((offsets[0] - Vec3::new(0.0, 0.02, 1.0)).length() < 1e-6);
+        assert!(offsets.iter().all(|p| p.z == 1.0));
+        // The second ring's points are opposite: 2 cm up and 2 cm down.
+        assert!((offsets[1] - Vec3::new(0.0, 0.02, 1.0)).length() < 1e-6);
+        assert!((offsets[2] - Vec3::new(0.0, -0.02, 1.0)).length() < 1e-6);
+        // The draws scale the ring: a draw of 1 makes the radius 4 cm.
+        let offsets = disc_offsets(&mut || 1.0);
+        assert!((offsets[0] - Vec3::new(0.0, 0.04, 1.0)).length() < 1e-6);
+        // A draw of −1 is the zero radius (the original never draws it).
+        assert_eq!(disc_offsets(&mut || -1.0)[0], Vec3::new(0.0, 0.0, 1.0));
+    }
+
+    #[test]
+    fn both_stored_points_move_together() {
+        let points = (Vec3::new(1.0, 2.0, 3.0), Vec3::new(4.0, 5.0, 6.0));
+        let moved = translate_points(points, Vec3::new(0.5, -1.0, 2.0));
+        assert_eq!(moved.0, Vec3::new(1.5, 1.0, 5.0));
+        assert_eq!(moved.1, Vec3::new(4.5, 4.0, 8.0));
+    }
+
+    #[test]
+    fn a_detach_swaps_the_handlers_once() {
+        let mut attachment = Attachment::default();
+        assert!(attachment.set_detached(true));
+        assert!(attachment.editing && !attachment.bound);
+        // Setting the state it already has changes nothing.
+        assert!(!attachment.set_detached(true));
+        assert!(attachment.editing && !attachment.bound);
+        assert!(attachment.set_detached(false));
+        assert!(!attachment.editing && attachment.bound);
+        assert!(!attachment.set_detached(false));
+    }
+
+    #[test]
+    fn the_editor_preset_scans_for_its_target_box() {
+        let view = Vec3::new(1.0, 2.0, 3.0);
+        let empty = scan_target(&[], view);
+        assert_eq!(empty.centre, view);
+        assert_eq!(empty.half_extents, Vec3::new(800.0, 0.0, 1000.0));
+        assert!(!empty.raised);
+        let nodes = [
+            EditorNode {
+                class: 0xA9,
+                marker: 0,
+                position: Vec3::new(10.0, 20.0, 30.0),
+                half_extents: Vec3::new(5.0, 6.0, 7.0),
+            },
+            EditorNode {
+                class: 0xA8,
+                marker: 0xAE,
+                position: Vec3::ZERO,
+                half_extents: Vec3::ZERO,
+            },
+            EditorNode {
+                class: 0xA9,
+                marker: 0xAE,
+                position: Vec3::new(40.0, 50.0, 60.0),
+                half_extents: Vec3::new(8.0, 9.0, 10.0),
+            },
+        ];
+        let target = scan_target(&nodes, view);
+        // The last 0xA9 wins, with a zero height; the 0xAE marks it raised.
+        assert_eq!(target.centre, Vec3::new(40.0, 50.0, 60.0));
+        assert_eq!(target.half_extents, Vec3::new(8.0, 0.0, 10.0));
+        assert!(target.raised);
+        // The marker alone does not raise the flag; it rides on the class.
+        let target = scan_target(&nodes[..2], view);
+        assert_eq!(target.centre, Vec3::new(10.0, 20.0, 30.0));
+        assert!(!target.raised);
     }
 }
