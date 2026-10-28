@@ -465,7 +465,9 @@ pub struct Body {
     pub grip: f32,
     /// Awareness above 0.7 to act [guess: name].
     pub awareness: f32,
-    /// The blocking state word, 0 when free to act [guess: name].
+    /// The body's trailing-foot request (2 when a clip replaced Walk or
+    /// Run, 1 once planted, until its 500 ms deadline): 0 when free to
+    /// act.
     pub blocking: i32,
 }
 
@@ -1731,8 +1733,8 @@ fn let_go(me: &Body, blow: &mut Blow) {
 }
 
 /// Whether the body may act: no blocking condition bit, a grip of at least
-/// 0.7, an awareness above 0.7 (a double compare) and no blocking state.
-/// A NaN grip or awareness fails its compare.
+/// 0.7, an awareness above 0.7 (a double compare) and no trailing-foot
+/// request pending. A NaN grip or awareness fails its compare.
 pub fn can_act(me: &Body) -> bool {
     me.condition & exa_physics::motile::ACTION_BLOCK == 0
         && 0.7 <= me.grip

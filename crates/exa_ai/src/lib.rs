@@ -457,6 +457,7 @@ fn duellist(
             Option<&mut DuelPowers>,
             Option<&presence::Presence>,
             Option<&exa_combat::AttackHook>,
+            Option<&exa_physics::body::locomotion::Locomotor>,
         ),
     )>,
     mut roots: Query<(&mut CharacterBody, &GlobalTransform)>,
@@ -484,7 +485,7 @@ fn duellist(
         gt,
         ragdoll,
         fighter,
-        (mut powers, presence, attack_hook),
+        (mut powers, presence, attack_hook, locomotor),
     ) in &mut npcs
     {
         let Ok((mut body, root_gt)) = roots.get_mut(parent.parent()) else {
@@ -833,6 +834,10 @@ fn duellist(
                 stance_blend: primary_blend,
                 health: fighter.health.yellow,
                 can_attack: ready && !ai.holds_ground,
+                // The trailing-foot request a clip leaving Walk or Run
+                // raised holds the gate shut until its plant's 500 ms
+                // deadline passes.
+                blocking: locomotor.map_or(0, |l| l.plant_request),
                 ..combat::Body::default()
             };
             me.can_step = combat::can_act(&me) && !ai.holds_ground;
