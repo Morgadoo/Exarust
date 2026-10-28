@@ -966,7 +966,11 @@ hands; the arena keeps the first two hands only when its preset kit offers
 them and keeps braies only; modes whose 2 bit is set clear the fist
 placeholder (31) from the first two hands. Each of those three filters
 empties the carried list; a named story background and the other modes
-are left as they are. The skills are six slots of a `u16` points word and
+are left as they are. After the filter every record but a recruited or
+continued one gets the underwear pass: a record whose profession word has
+no race band (bits 8 through 15) and whose worn items' database records
+none carries flag `0x2` has the braies (item 8, no flags) appended. The
+skills are six slots of a `u16` points word and
 six technique bytes; the free creator writes Close Combat, Armour and
 Shields to 25000 points and their first five techniques, leaving the other
 slots and each sixth technique. Each story background keeps its preset in
@@ -976,8 +980,9 @@ loaded preset loses its race byte, known powers and power slots; the
 unknown background then gets two known powers (`0x101`, `0x201`), its
 first two slots (`0x100101`, `0x201`), the power word `0x510000` and 4.0
 beside the slots, and a record with known powers opens the power tree when
-it is committed. Evidence: REA on the character screen's unit routines
-and the record layout above.
+it is committed. Entering the creator writes four `0xffff` halves into the
+record: yellow, red, focus and the save seed. Evidence: REA on the
+character screen's unit routines and the record layout above.
 
 **Arena chunks** (`exa_formats::arena_save`): status **specified from the
 retail writers and loaders, checked on synthetic bytes** (no shipped file

@@ -2111,28 +2111,53 @@ pub struct FreeCreatePlan {
     pub reset_skills: bool,
     /// A loaded preset's gear is cleared so the player picks a kit.
     pub reset_gear: bool,
+    /// A loaded preset loses its race byte and its known powers.
+    pub clear_race_and_powers: bool,
+    /// No record was found and a new one is made and marked.
+    pub marks_new_character: bool,
 }
 
 /// Plans the free creator's record for the game mode.
-pub fn plan_free_create(game_mode: i32, record_present: bool) -> FreeCreatePlan {
-    if game_mode == 4 {
-        return FreeCreatePlan {
-            source: FreeCreateSource::Preset(PresetKeys {
-                root: PRESET_KEY_BASE,
-                character: PRESET_CHARACTER_KEY,
-            }),
-            reset_skills: false,
-            reset_gear: true,
-        };
-    }
-    if game_mode == 8 {
-        return FreeCreatePlan {
-            source: FreeCreateSource::Preset(PresetKeys {
-                root: PRESET_KEY_BASE - 1,
-                character: PRESET_CHARACTER_KEY,
-            }),
-            reset_skills: false,
-            reset_gear: true,
+///
+/// Story and arena read their preset (the unknown background's key for
+/// story, the career's for arena). A loaded preset has its gear reset and
+/// loses its race byte and powers; a missing one leaves no record, so a
+/// new, marked one is made with no starting kit or skills. Every other
+/// mode keeps the record it had (or makes a new, marked one) and always
+/// writes the three starting skill slots.
+pub fn plan_free_create(
+    game_mode: i32,
+    record_present: bool,
+    preset_loaded: bool,
+) -> FreeCreatePlan {
+    let keys = match game_mode {
+        4 => Some(PresetKeys {
+            root: PRESET_KEY_BASE,
+            character: PRESET_CHARACTER_KEY,
+        }),
+        8 => Some(PresetKeys {
+            root: PRESET_KEY_BASE - 1,
+            character: PRESET_CHARACTER_KEY,
+        }),
+        _ => None,
+    };
+    if let Some(keys) = keys {
+        return if preset_loaded {
+            FreeCreatePlan {
+                source: FreeCreateSource::Preset(keys),
+                reset_skills: false,
+                reset_gear: true,
+                clear_race_and_powers: true,
+                marks_new_character: false,
+            }
+        } else {
+            FreeCreatePlan {
+                source: FreeCreateSource::NewDefault,
+                reset_skills: false,
+                reset_gear: false,
+                clear_race_and_powers: false,
+                marks_new_character: true,
+            }
         };
     }
     FreeCreatePlan {
@@ -2143,6 +2168,8 @@ pub fn plan_free_create(game_mode: i32, record_present: bool) -> FreeCreatePlan 
         },
         reset_skills: true,
         reset_gear: false,
+        clear_race_and_powers: false,
+        marks_new_character: !record_present,
     }
 }
 
@@ -2226,6 +2253,20 @@ impl CreationEntryError {
             Self::SaveManagerMissing => exa_ui::creation::SAVE_MANAGER_MISSING,
         }
     }
+
+    /// The message box's title.
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::SaveManagerMissing => exa_ui::creation::CHARACTER_SCREEN,
+        }
+    }
+
+    /// The message box's code.
+    pub fn code(self) -> i32 {
+        match self {
+            Self::SaveManagerMissing => 4,
+        }
+    }
 }
 
 /// Where the creator's record comes from.
@@ -2274,7 +2315,8 @@ pub struct EntryPlan {
 /// filters it. Other modes keep the record they had, or run the free
 /// creator; when that finds no record (story or arena with no saved
 /// preset, `preset_loaded` false) a new default record is made and not
-/// filtered. Every record but a continued one is set to full health.
+/// filtered. Every record but a continued one is set to full health and
+/// then gets the underwear pass.
 pub fn plan_creation_entry(
     screen_mode: i32,
     game_mode: i32,
@@ -2320,7 +2362,8 @@ pub fn plan_creation_entry(
         full_health: true,
         clear_experience: mode == CreationScreenMode::Story,
         ensure_underwear: mode != CreationScreenMode::Recruit,
-        marks_new_character: source == EntrySource::NewDefault,
+        marks_new_character: source == EntrySource::NewDefault
+            || (mode == CreationScreenMode::Story && background == 0 && !preset_loaded),
         background,
     })
 }
@@ -2567,23 +2610,71 @@ pub enum PageDestination {
     Menu,
 }
 
+/// A panel the page switch hides on its way back to the appearance page.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HiddenPanel {
+    Weapons,
+    Skills,
+    VersusEquipment,
+}
+
 /// The result of the equipment page's tab.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PageSwitch {
     pub page: CreationScreenPage,
     pub destination: PageDestination,
     pub header: Option<PageHeader>,
+    /// The equipment page's first hidden panel, in the original's order:
+    /// weapons, then skills, then the versus equipment form.
+    pub hidden_first: Option<HiddenPanel>,
+    /// The skills panel's slide argument, `0x2d` when it was the panel
+    /// hidden.
+    pub skills_slide: Option<i32>,
+    /// Two further panels hidden on the way back [guess: their owners are
+    /// not established; the original writes both unconditionally].
+    pub hidden_secondary: [bool; 2],
+    /// The two tab state words cleared for a non-continued character.
+    pub tab_flags_cleared: bool,
+    /// The creator form was shown again with its page state cleared.
+    pub form_shown: bool,
+    /// The NEXT button's form was found and its disabled bit cleared.
+    pub next_enabled: bool,
 }
 
 /// Switches from the equipment page back to the appearance page, or leaves
 /// the creator from the appearance page: a recruit returns to the arena,
 /// anyone else to the menu.
-pub fn switch_creation_page(page: CreationScreenPage, screen_mode: i32) -> PageSwitch {
+///
+/// On the way back the first built equipment panel is hidden (weapons, then
+/// skills with its `0x2d` slide, then the versus equipment form), then the
+/// two secondary forms; a non-continued character clears two tab state
+/// words. The form is shown with page state 0, the tabs read NAME and HAIR,
+/// the NEXT button is enabled and the appearance editor is stored.
+pub fn switch_creation_page(
+    page: CreationScreenPage,
+    screen_mode: i32,
+    panels: EquipmentPanels,
+) -> PageSwitch {
     if page == CreationScreenPage::Equipment {
+        let hidden_first = if panels.weapons {
+            Some(HiddenPanel::Weapons)
+        } else if panels.skills {
+            Some(HiddenPanel::Skills)
+        } else if panels.versus_script {
+            Some(HiddenPanel::VersusEquipment)
+        } else {
+            None
+        };
         PageSwitch {
             page: CreationScreenPage::Appearance,
             destination: PageDestination::Appearance,
             header: Some(appearance_page_header()),
+            hidden_first,
+            skills_slide: panels.skills.then_some(0x2d),
+            hidden_secondary: [panels.versus_script, panels.apparel],
+            tab_flags_cleared: screen_mode != 12,
+            form_shown: true,
+            next_enabled: true,
         }
     } else {
         PageSwitch {
@@ -2594,6 +2685,12 @@ pub fn switch_creation_page(page: CreationScreenPage, screen_mode: i32) -> PageS
                 PageDestination::Menu
             },
             header: None,
+            hidden_first: None,
+            skills_slide: None,
+            hidden_secondary: [false; 2],
+            tab_flags_cleared: false,
+            form_shown: false,
+            next_enabled: false,
         }
     }
 }
@@ -2616,6 +2713,8 @@ pub struct ArenaCommit {
     pub global: i32,
     /// The form's continue kind, carried as it was.
     pub kind: i32,
+    /// The arena's start is scheduled.
+    pub transition: bool,
 }
 
 /// Prepares an arena character's commit: its six skills are copied, the
@@ -2631,6 +2730,7 @@ pub fn commit_arena(
         skills,
         global: arena_global_experience(worth_left, spent_before, committed_worth),
         kind,
+        transition: true,
     }
 }
 
@@ -2693,6 +2793,8 @@ pub struct SaveSelection {
     pub availability: SaveAvailability,
     /// The mask offered another kind than the chosen one.
     pub adjusted: bool,
+    /// The screenshot/view refit runs through a deferred callback.
+    pub deferred: bool,
 }
 
 /// Selects a save slot with its kind, adjusting the kind to what the slot
@@ -2711,6 +2813,7 @@ pub fn select_save(index: i32, kind: SaveKind, availability: SaveAvailability) -
             kind,
             availability,
             adjusted,
+            deferred: false,
         };
     }
     if kind == SaveKind::Save && !availability.has(SaveKind::Save) {
@@ -2725,6 +2828,7 @@ pub fn select_save(index: i32, kind: SaveKind, availability: SaveAvailability) -
         kind,
         availability,
         adjusted,
+        deferred: true,
     }
 }
 
@@ -3537,6 +3641,38 @@ pub fn preview_frame(parent: (i32, i32)) -> PreviewFrame {
     }
 }
 
+/// The equipment page's three panels and its preview, in the parent form's
+/// units.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CreationFormLayout {
+    pub preview: PreviewFrame,
+    pub apparel: PanelPlace,
+    pub weapons: PanelPlace,
+    pub skills: PanelPlace,
+}
+
+/// Lays out the equipment page over the creator form.
+///
+/// The preview takes the frame's top left; the apparel panel sits at 4, 24
+/// and the weapons panel against the right edge less 176 (both 172 wide and
+/// 620 or 568 tall); the skills panel is 216 wide and 516 or 660 tall, 12
+/// in from the right. `tall` is the window aspect flag the panels read; the
+/// skills height follows the screen mode (recruiting 0x204, otherwise
+/// 0x294). The two side panels share their order with the original's
+/// constructors; nothing clamps a parent narrower than the panels.
+pub fn creation_form_layout(
+    parent: (i32, i32),
+    screen_mode: i32,
+    tall: bool,
+) -> CreationFormLayout {
+    CreationFormLayout {
+        preview: preview_frame(parent),
+        apparel: apparel_panel_place(tall),
+        weapons: weapon_panel_place(parent.0, tall),
+        skills: skill_panel_place(parent.0, screen_mode),
+    }
+}
+
 /// What the creation form builds in a form mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CreationLayout {
@@ -4296,6 +4432,36 @@ pub fn open_creator_form(
         continue_kind: opening.show_continue.then_some(opening.continue_kind),
         reset_dialog: opening.reset_to_portal,
         input_actions: 3,
+    }
+}
+
+/// What showing the creator form for a record did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CreatorShow {
+    /// The form was made because none existed.
+    pub created: bool,
+    /// The preview viewport was stored as the screen's view.
+    pub viewport: bool,
+    /// The view's word stored beside the viewport (0x1002).
+    pub view_word: i32,
+    /// The record was stored.
+    pub record: bool,
+    /// The caller's show hook ran.
+    pub hook: bool,
+}
+
+/// Shows the creator on a record.
+///
+/// The form is made on first use, the viewport taken from its view and the
+/// record stored. The screen's word beside the view is set to `0x1002`,
+/// and a caller hook, when installed, is given the record.
+pub fn show_creator_here(existing: bool, hook: bool) -> CreatorShow {
+    CreatorShow {
+        created: !existing,
+        viewport: true,
+        view_word: 0x1002,
+        record: true,
+        hook,
     }
 }
 
@@ -5634,7 +5800,7 @@ mod tests {
 
     #[test]
     fn the_free_create_plan_picks_a_preset_or_default() {
-        let story = plan_free_create(4, true);
+        let story = plan_free_create(4, true, true);
         assert_eq!(
             story.source,
             FreeCreateSource::Preset(PresetKeys {
@@ -5644,23 +5810,33 @@ mod tests {
         );
         assert!(!story.reset_skills);
         assert!(story.reset_gear);
+        assert!(story.clear_race_and_powers);
+        assert!(!story.marks_new_character);
 
         assert_eq!(
-            plan_free_create(8, false).source,
+            plan_free_create(8, false, true).source,
             FreeCreateSource::Preset(PresetKeys {
                 root: 0x6431_bc01,
                 character: 0x6431_cc01
             })
         );
 
-        let kept = plan_free_create(0, true);
+        // No preset leaves no record: the screen makes a plain marked one.
+        let missing = plan_free_create(8, false, false);
+        assert_eq!(missing.source, FreeCreateSource::NewDefault);
+        assert!(missing.marks_new_character);
+        assert!(!missing.reset_skills && !missing.reset_gear);
+
+        let kept = plan_free_create(0, true, false);
         assert_eq!(kept.source, FreeCreateSource::KeepRecord);
         assert!(kept.reset_skills);
         assert!(!kept.reset_gear);
+        assert!(!kept.marks_new_character);
 
-        let fresh = plan_free_create(0x1010, false);
+        let fresh = plan_free_create(0x1010, false, false);
         assert_eq!(fresh.source, FreeCreateSource::NewDefault);
         assert!(fresh.reset_skills);
+        assert!(fresh.marks_new_character);
     }
 
     #[test]
@@ -5898,19 +6074,46 @@ mod tests {
 
     #[test]
     fn the_page_switch_goes_back_or_commits() {
-        let back = switch_creation_page(CreationScreenPage::Equipment, 10);
+        let back = switch_creation_page(
+            CreationScreenPage::Equipment,
+            10,
+            equipment_panels(8, false),
+        );
         assert_eq!(back.page, CreationScreenPage::Appearance);
         assert_eq!(back.destination, PageDestination::Appearance);
         let header = back.header.unwrap();
         assert_eq!(header.first, "NAME");
         assert_eq!(header.second, "HAIR");
         assert_eq!(header.final_button, "NEXT");
+        // The arena shows apparel and skills, so the skills panel hides and
+        // slides; the apparel panel is hidden twice as a secondary form.
+        assert_eq!(back.hidden_first, Some(HiddenPanel::Skills));
+        assert_eq!(back.skills_slide, Some(0x2d));
+        assert_eq!(back.hidden_secondary, [false, true]);
+        assert!(back.form_shown && back.next_enabled);
+        assert!(back.tab_flags_cleared);
 
-        let arena = switch_creation_page(CreationScreenPage::Appearance, 10);
+        let continued = switch_creation_page(
+            CreationScreenPage::Equipment,
+            12,
+            equipment_panels(8, false),
+        );
+        assert!(!continued.tab_flags_cleared);
+
+        let arena = switch_creation_page(
+            CreationScreenPage::Appearance,
+            10,
+            EquipmentPanels::default(),
+        );
         assert_eq!(arena.destination, PageDestination::Arena);
         assert!(arena.header.is_none());
+        assert_eq!(arena.hidden_first, None);
 
-        let other = switch_creation_page(CreationScreenPage::Appearance, 4);
+        let other = switch_creation_page(
+            CreationScreenPage::Appearance,
+            4,
+            EquipmentPanels::default(),
+        );
         assert_eq!(other.destination, PageDestination::Menu);
     }
 
@@ -5943,6 +6146,7 @@ mod tests {
         assert_eq!(commit.global, 42000);
         assert_eq!(commit.skills[0].points, 25000);
         assert_eq!(commit.kind, 2);
+        assert!(commit.transition);
     }
 
     #[test]
@@ -5974,6 +6178,8 @@ mod tests {
             SaveKind::Save
         );
         assert!(!select_save(3, SaveKind::Save, both).adjusted);
+        assert!(select_save(3, SaveKind::Save, both).deferred);
+        assert!(!select_save(3, SaveKind::Save, SaveAvailability(0)).deferred);
 
         assert_eq!(previous_save(0), None);
         assert_eq!(previous_save(1), Some(0));
@@ -6544,6 +6750,54 @@ mod tests {
         assert_eq!(preview_frame((300, 20)).height, -8);
     }
 
+    /// The equipment page's panels share the preview's parent and keep the
+    /// original's fixed widths and the aspect-dependent heights.
+    #[test]
+    fn the_creation_form_lays_out_its_panels() {
+        let layout = creation_form_layout((1024, 768), 10, true);
+        assert_eq!(
+            layout.preview,
+            PreviewFrame {
+                x: 180,
+                y: 24,
+                width: 664,
+                height: 740
+            }
+        );
+        assert_eq!(
+            layout.apparel,
+            PanelPlace {
+                x: 4,
+                y: 24,
+                w: 172,
+                h: 620
+            }
+        );
+        assert_eq!(
+            layout.weapons,
+            PanelPlace {
+                x: 1024 - 176,
+                y: 24,
+                w: 172,
+                h: 620
+            }
+        );
+        assert_eq!(
+            layout.skills,
+            PanelPlace {
+                x: 1024 - 216 - 12,
+                y: 24,
+                w: 216,
+                h: 516
+            }
+        );
+
+        let short = creation_form_layout((800, 600), 0, false);
+        assert_eq!(short.apparel.h, 568);
+        assert_eq!(short.weapons.h, 568);
+        assert_eq!(short.skills.h, 660);
+    }
+
     /// Mode 12 takes the ten-element table without editors; the others
     /// seven elements and the editors.
     #[test]
@@ -6921,6 +7175,25 @@ mod tests {
         assert!(missing.reused);
         assert!(!missing.loaded);
         assert_eq!(missing.levels, 0);
+    }
+
+    #[test]
+    fn showing_the_creator_makes_the_form_once() {
+        let first = show_creator_here(false, true);
+        assert_eq!(
+            first,
+            CreatorShow {
+                created: true,
+                viewport: true,
+                view_word: 0x1002,
+                record: true,
+                hook: true
+            }
+        );
+        let again = show_creator_here(true, false);
+        assert!(!again.created);
+        assert!(!again.hook);
+        assert!(again.viewport && again.record);
     }
 
     #[test]
