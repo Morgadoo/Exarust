@@ -33,11 +33,11 @@ pub enum SlotKind {
     /// the radius and the scene's light scale.
     #[default]
     Plain,
-    /// A sun-like light (`R+0x288 == 2`): `softness · 0.5 · 0.005` radius and
-    /// a depth scale the light record itself supplies.
+    /// A sun-like light (kind 2): `softness · 0.5 · 0.005` radius and a
+    /// depth scale the light's shadow map supplies.
     Sun,
-    /// A shaped light (`R+0x288 == 3`): its radius is refreshed even when it
-    /// keeps its slot.
+    /// A shaped light (kind 3): its radius is refreshed even when it keeps
+    /// its slot.
     Shaped,
 }
 
@@ -54,13 +54,22 @@ pub struct LinkedLight {
     /// sorts after the others.
     pub shadow_bits: u32,
     pub kind: SlotKind,
+    /// The light's position as the slot takes it (the first `vec4`'s
+    /// `xyz`). The runtime light keeps one vector per kind and the fill reads
+    /// the one its kind indexes.
+    pub position: [f32; 3],
     /// The record's direct colour: its linear sRGB colour times its current
     /// intensity.
     pub direct: [f32; 3],
     /// `0.8/radius` when the light has range, else 0.
     pub attenuation: f32,
-    /// The record's shadow softness.
+    /// The record's shadow softness (the filter radius's term).
     pub softness: f32,
+    /// The term the depth scale adds to 0.97. The engine reads it from the
+    /// light record, a different field from the copied softness the filter
+    /// radius uses; the light-record notes take both for the softness
+    /// [field meaning unconfirmed].
+    pub depth_bias: f32,
     /// The vertical shaping `(y, z, w)` when the node's flags say `0x200`,
     /// else `(1, 1, 1)`.
     pub shaping: [f32; 3],
@@ -68,7 +77,7 @@ pub struct LinkedLight {
     pub far: f32,
     /// The sun-like light's own depth scale.
     pub depth_scale: f32,
-    /// The light record's dimmer (`0x234`).
+    /// The light record's dimmer.
     pub dimmer: f32,
 }
 
@@ -79,9 +88,11 @@ impl Default for LinkedLight {
             id: 1,
             shadow_bits: 0x100,
             kind: SlotKind::Plain,
+            position: [0.0; 3],
             direct: [1.0, 1.0, 1.0],
             attenuation: 0.0,
             softness: 0.0,
+            depth_bias: 0.0,
             shaping: [1.0, 1.0, 1.0],
             far: 100.0,
             depth_scale: 1.0,
@@ -118,18 +129,21 @@ impl LinkedLight {
 pub struct SlotScene {
     /// The shadow taps this sub-frame takes (`SdwSmps`), at least 1.
     pub shadow_samples: u32,
-    /// The exposure (`state` +0x5b4, 1 in play).
+    /// The drawing state's exposure (1 in play).
     pub exposure: f32,
-    /// The scene's light scale, the object's `+0x228`; a change refreshes
-    /// every slot's depth scale.
+    /// The object's light scale; a change refreshes every slot's depth
+    /// scale.
     pub scale: f32,
-    /// The quality scale (`0x1002ae820`, 1 in play).
+    /// The engine's global quality scale (1 in play).
     pub quality_scale: f32,
     /// The shader word's `FastLgt` bit: the filter radius uses 0.003.
     pub fast_light: bool,
     /// `ShadeQual`'s scene part: the environment word without the light
-    /// slots (`state +0x20 & 0xFF`).
+    /// slots (its low byte is kept).
     pub base_environment: u32,
+    /// The view's light cap: the gather takes at most this many links, and
+    /// never more than six. Zero or less gathers none.
+    pub light_limit: i32,
 }
 
 impl Default for SlotScene {
@@ -141,6 +155,7 @@ impl Default for SlotScene {
             quality_scale: 1.0,
             fast_light: false,
             base_environment: 0,
+            light_limit: MAX_LIGHTS as i32,
         }
     }
 }
@@ -217,15 +232,14 @@ impl DrawLightSlots {
 
     /// Empty every slot, as the engine's per-frame reset does: the
     /// environment word loses its twelve light bits and the gathered count
-    /// goes to zero. The recorded uniforms are left as they were.
+    /// goes to zero. The recorded uniforms and depth-scale stamps are left
+    /// as they were (a light new to a slot rewrites them all).
     pub fn clear(&mut self) {
         self.environment = self.scene.base_environment & 0xFF;
         for i in 0..MAX_LIGHTS {
             if let Some(id) = self.ids[i].take() {
                 self.set_index(id, -1);
             }
-            self.uniforms[i] = EMPTY_UNIFORM;
-            self.scales[i] = f32::NAN;
         }
         self.count = 0;
     }
@@ -238,12 +252,14 @@ impl DrawLightSlots {
     }
 
     /// The position's `w` of a light: the sun's own value, else `(0.97 +
-    /// softness)/(far · scene scale)` in single precision.
+    /// depth bias)/(far · scene scale)` in single precision, the product
+    /// formed first.
     fn depth_scale(&self, light: &LinkedLight) -> f32 {
         match light.kind {
             SlotKind::Sun => light.depth_scale,
             SlotKind::Plain | SlotKind::Shaped => {
-                (0.97 + light.softness) / (light.far * self.scene.scale)
+                let range = light.far * self.scene.scale;
+                (0.97 + light.depth_bias) / range
             }
         }
     }
@@ -252,7 +268,7 @@ impl DrawLightSlots {
     /// lights uploaded.
     pub fn fill(&mut self, lights: &[LinkedLight]) -> usize {
         let mut gathered: Vec<&LinkedLight> = Vec::new();
-        let limit = lights.len().min(MAX_LIGHTS);
+        let limit = self.scene.light_limit.clamp(0, MAX_LIGHTS as i32) as usize;
         for light in lights.iter().take(limit) {
             if light.id == 0 {
                 break;
@@ -343,6 +359,7 @@ impl DrawLightSlots {
                     light.direct[2] * normalise * dim,
                     light.attenuation,
                 ];
+                self.uniforms[slot].position[..3].copy_from_slice(&light.position);
                 self.uniforms[slot].position[3] = self.depth_scale(light);
                 self.uniforms[slot].shape[0] = if light.kind == SlotKind::Sun {
                     ((light.softness * 0.5) as f64 * 0.005) as f32
@@ -385,6 +402,7 @@ mod tests {
             id: 7,
             shadow_bits: 0x200,
             kind: SlotKind::Plain,
+            position: [120.0, 340.0, -56.0],
             direct: [
                 linear(0.808) * 60.0,
                 linear(0.808) * 60.0,
@@ -392,6 +410,7 @@ mod tests {
             ],
             attenuation: 0.8 / 630.0,
             softness: 0.5,
+            depth_bias: 0.5,
             shaping: vertical_shaping(0.0, 15.0),
             far: 630.0,
             depth_scale: 1.0,
@@ -409,6 +428,7 @@ mod tests {
         // The light-record notes' 37.05·2/π ≈ 23.59.
         assert!((u.colour[0] - 23.586).abs() < 0.01);
         close(u.colour[3], 0.8 / 630.0);
+        assert_eq!(u.position[..3], [120.0, 340.0, -56.0]);
         close(u.position[3], 1.47 / 630.0);
         close(u.shape[0], 0.0075);
         assert_eq!(u.shape[1..4], vertical_shaping(0.0, 15.0));
@@ -579,6 +599,34 @@ mod tests {
     }
 
     #[test]
+    fn the_depth_scale_and_the_filter_radius_read_their_own_terms() {
+        // The radius takes the copied softness, the depth scale its own
+        // record term.
+        let light = LinkedLight {
+            softness: 1.0,
+            depth_bias: 0.03,
+            far: 100.0,
+            ..ceiling_light()
+        };
+        let mut slots = DrawLightSlots::new(SlotScene::default());
+        slots.fill(&[light]);
+        close(slots.uniforms[0].shape[0], 2.0 * 0.005);
+        assert_eq!(slots.uniforms[0].position[3], 1.0f32 / 100.0);
+    }
+
+    #[test]
+    fn the_views_light_cap_limits_the_gather() {
+        let lights: Vec<_> = (1..=8).map(|i| light(i, false)).collect();
+        for (cap, expected) in [(0, 0), (-3, 0), (2, 2), (6, 6), (9, 6)] {
+            let mut slots = DrawLightSlots::new(SlotScene {
+                light_limit: cap,
+                ..SlotScene::default()
+            });
+            assert_eq!(slots.fill(&lights), expected, "cap {cap}");
+        }
+    }
+
+    #[test]
     fn clearing_releases_every_slot_and_keeps_the_scene_word() {
         let mut slots = DrawLightSlots::new(SlotScene {
             base_environment: 0x15,
@@ -586,7 +634,10 @@ mod tests {
         });
         slots.fill(&[light(1, false), light(2, true)]);
         assert_eq!(slots.environment & !0xFF, 0x200 | (0x100 << 2));
+        let uniforms = slots.uniforms;
         slots.clear();
+        // The reset only empties the slots; the uniforms stay as written.
+        assert_eq!(slots.uniforms, uniforms);
         assert_eq!(slots.environment, 0x15);
         assert_eq!(slots.count, 0);
         assert_eq!(slots.ids, [None; MAX_LIGHTS]);
