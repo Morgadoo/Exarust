@@ -21,9 +21,14 @@
 //! triangle edges and bend links) and its step; the pin rule is a labelled
 //! guess. The draw's two passes are [`crate::cloth_draw`]'s.
 
+use bevy::math::Affine3A;
 use bevy::prelude::*;
 
+use exa_physics::Physics;
+use exa_physics::body::Ragdoll;
 use exa_physics::cloth::{self, Cloth};
+use exa_physics::contact::Level;
+use exa_physics::sector::{self, ObjectBodyPart, ObjectBounds, ObjectContacts};
 
 /// Marks a mesh part whose RFC node carries the cloth marker.
 #[derive(Component, Debug, Clone, Copy, Default)]
@@ -44,6 +49,56 @@ pub struct ClothInstance {
     pub cloth: Cloth,
     /// The mesh whose vertices the cloth drives.
     pub mesh: Handle<Mesh>,
+}
+
+/// The sector's live simulated-object list: every cloth of the level in the
+/// original's 600 cm object grid, in a stable entity order (the order the
+/// original's object list keeps, oldest first). A cloth migrates to its
+/// new cell after each tick.
+#[derive(Resource, Debug)]
+pub struct ClothObjects {
+    /// The cloths, oldest entity first.
+    pub order: Vec<Entity>,
+    /// Their cells.
+    pub grid: sector::ObjectGrid,
+}
+
+impl Default for ClothObjects {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ClothObjects {
+    /// Columns of the object grid: wide enough for a level's cells.
+    pub const COLUMNS: i32 = 4096;
+    /// Rows of the object grid.
+    pub const ROWS: i32 = 4096;
+    /// The grid's origin cell, centred on the world origin.
+    pub const ORIGIN: (i32, i32) = (-2048, -2048);
+
+    /// An empty list.
+    pub fn new() -> Self {
+        Self {
+            order: Vec::new(),
+            grid: sector::ObjectGrid::new(Self::COLUMNS, Self::ROWS, Self::ORIGIN),
+        }
+    }
+}
+
+/// A cloth's world bound in centimetres, from its particles' local bounds
+/// and its node's transform: the centre and the sphere around the box.
+fn cloth_bound(cloth: &Cloth, at: &GlobalTransform) -> (ObjectBounds, Affine3A) {
+    let (centre, half) = cloth::bounds(&cloth.particles);
+    let scale = at.scale().abs().max_element();
+    let world = at.transform_point(centre * 0.01);
+    (
+        ObjectBounds {
+            centre: world * 100.0,
+            radius: half.length() * scale * 100.0,
+        },
+        at.affine().inverse(),
+    )
 }
 
 /// One vertex's pin index and weight from its skin weights: a vertex with a
@@ -129,13 +184,108 @@ fn build_cloth_nodes(
     }
 }
 
-fn step_cloths(mut instances: Query<&mut ClothInstance>, mut meshes: ResMut<Assets<Mesh>>) {
+#[allow(clippy::too_many_arguments)]
+fn step_cloths(
+    mut instances: Query<(Entity, &mut ClothInstance, &GlobalTransform)>,
+    bodies: Query<&Ragdoll>,
+    parents: Query<&ChildOf>,
+    physics: Option<Res<Physics>>,
+    statics: Option<Res<exa_physics::StaticColliders>>,
+    mut objects: ResMut<ClothObjects>,
+    mut meshes: ResMut<Assets<Mesh>>,
+) {
     let gravity = cloth::gravity_cm(1.0);
-    for mut instance in &mut instances {
+    // The object list's stable order: the entity id, oldest first. A new or
+    // removed cloth rebuilds the grid; otherwise each object migrates after
+    // its tick, as the original's list does.
+    let mut order: Vec<Entity> = instances.iter().map(|(entity, ..)| entity).collect();
+    order.sort_unstable();
+    let rebuilt = objects.order != order;
+    if rebuilt {
+        objects.order = order.clone();
+        objects.grid = sector::ObjectGrid::new(
+            ClothObjects::COLUMNS,
+            ClothObjects::ROWS,
+            ClothObjects::ORIGIN,
+        );
+    }
+    let order = objects.order.clone();
+    for (id, &entity) in order.iter().enumerate() {
+        let Ok((_, mut instance, at)) = instances.get_mut(entity) else {
+            continue;
+        };
+        let (object, to_object) = cloth_bound(&instance.cloth, at);
+        if rebuilt {
+            objects.grid.insert(object.centre);
+        } else {
+            objects.grid.migrate(id, object.centre);
+        }
+        // A cloth's own character does not push it [guess: the sector's
+        // body stage makes no such test; the cloth's own body-contact call,
+        // not in this pack, is taken to skip the parts above its node].
+        let mut own = Vec::new();
+        let mut above = entity;
+        while let Ok(parent) = parents.get(above) {
+            above = parent.parent();
+            own.push(above);
+            if own.len() > 64 {
+                break;
+            }
+        }
+        // Objects against bodies: every part of every body (asleep too)
+        // passing the sector's pre-test ([`sector::object_body_meet`]).
+        let mut parts = Vec::new();
+        for body in &bodies {
+            for part in &body.parts {
+                if part.pairing.out || part.spheres.is_empty() || own.contains(&part.entity) {
+                    continue;
+                }
+                let (centre, radius) = part.sphere_bound();
+                parts.push(ObjectBodyPart {
+                    now: part.transform(),
+                    previous: part.settled_transform(),
+                    spheres: &part.spheres,
+                    centre,
+                    radius,
+                    mesh: &part.pairing.mesh,
+                    friction: part.friction,
+                });
+            }
+        }
+        let mut contacts = ObjectContacts::default();
+        if let (Some(physics), Some(statics)) = (&physics, &statics) {
+            contacts.gather_bodies(&to_object, object, parts);
+            // Objects against the level: the static grid's records around
+            // the object's cell that pass its pre-test, their triangles
+            // within the object's bound box.
+            let centre_m = object.centre * 0.01;
+            let radius_m = object.radius * 0.01;
+            let (lo, hi) = (
+                centre_m - Vec3::splat(radius_m),
+                centre_m + Vec3::splat(radius_m),
+            );
+            let mut near = Vec::new();
+            statics.near_object(object.centre, object.radius, &mut near);
+            let mut triangles = Vec::new();
+            for id in near {
+                let Some(record) = statics.grid().get(id) else {
+                    continue;
+                };
+                triangles.clear();
+                physics.0.triangles(record.piece, lo, hi, &mut triangles);
+                contacts.gather_level(&to_object, triangles.iter().copied());
+            }
+        }
+        instance.cloth.spheres = std::mem::take(&mut contacts.spheres);
+        instance.cloth.swept = std::mem::take(&mut contacts.swept);
+        instance.cloth.level = std::mem::take(&mut contacts.level);
         if instance.cloth.sleep <= 0 {
             continue;
         }
         cloth::step(&mut instance.cloth, gravity);
+        // The object list's re-bucket after its step, as the original's.
+        let (after, _) = cloth_bound(&instance.cloth, at);
+        objects.grid.migrate(id, after.centre);
         let Some(mut mesh) = meshes.get_mut(&instance.mesh) else {
             continue;
         };
@@ -161,8 +311,14 @@ pub struct ClothPlugin;
 
 impl Plugin for ClothPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, build_cloth_nodes)
-            .add_systems(FixedUpdate, step_cloths);
+        app.init_resource::<ClothObjects>()
+            .add_systems(Update, build_cloth_nodes)
+            // The sector runs its simulated objects after the bodies' tick
+            // (the original's object step and contacts are inside it).
+            .add_systems(
+                FixedUpdate,
+                step_cloths.after(exa_physics::body::BodyPostStep),
+            );
     }
 }
 
@@ -208,5 +364,79 @@ mod tests {
                 .abs_diff_eq(Vec3::new(0.0, 100.0, 0.0), 1e-4)
         );
         assert!(cloth.pins.iter().all(|p| p.weight == LOOSE_PIN));
+    }
+
+    /// A free cloth falls through the air and comes to rest on the level's
+    /// triangle: the sector's static grid finds the floor, the object's
+    /// level contacts are in its own centimetres, and the object list knows
+    /// the cloth's cell.
+    #[test]
+    fn a_free_cloth_lands_on_the_static_grids_level() {
+        use exa_physics::Physics;
+        use exa_physics::StaticColliders;
+        use rapier3d::prelude::ColliderBuilder;
+
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, ClothPlugin))
+            .init_resource::<Assets<Mesh>>()
+            .insert_resource(Physics::default())
+            .insert_resource(StaticColliders::default());
+        // A floor quad at y = 0.5 m, in the world and in the sector's grid.
+        let vertices = vec![
+            Vec3::new(-2.0, 0.5, -2.0),
+            Vec3::new(2.0, 0.5, -2.0),
+            Vec3::new(2.0, 0.5, 2.0),
+            Vec3::new(-2.0, 0.5, 2.0),
+        ];
+        let indices = vec![[0u32, 2, 1], [0, 3, 2]];
+        let collider = ColliderBuilder::trimesh(vertices, indices).unwrap().build();
+        let handle = app
+            .world_mut()
+            .resource_mut::<Physics>()
+            .0
+            .insert_collider(collider, None);
+        app.world_mut()
+            .resource_mut::<StaticColliders>()
+            .insert_aabb(
+                handle.into_raw_parts().0,
+                Vec3::new(-2.0, 0.5, -2.0),
+                Vec3::new(2.0, 0.5, 2.0),
+                0,
+                exa_physics::sector::MASK_SMALL,
+            );
+        let mesh = app
+            .world_mut()
+            .resource_mut::<Assets<Mesh>>()
+            .add(Mesh::new(
+                bevy::mesh::PrimitiveTopology::TriangleList,
+                bevy::asset::RenderAssetUsages::default(),
+            ));
+        let corners = [
+            Vec3::new(0.0, 2.0, 0.0),
+            Vec3::new(1.0, 2.0, 0.0),
+            Vec3::new(1.0, 1.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+        ];
+        let cloth = cloth_of(&corners, &[[0, 1, 2], [0, 2, 3]], &[]);
+        let entity = app
+            .world_mut()
+            .spawn((ClothInstance { cloth, mesh }, GlobalTransform::default()))
+            .id();
+        for _ in 0..150 {
+            app.world_mut().run_schedule(FixedUpdate);
+        }
+        let instance = app.world().entity(entity).get::<ClothInstance>().unwrap();
+        assert!(!instance.cloth.level.is_empty());
+        let low = instance
+            .cloth
+            .vertices()
+            .iter()
+            .map(|p| p.y)
+            .fold(f32::MAX, f32::min)
+            * 0.01;
+        assert!(low > 0.5, "the cloth fell through the level: {low} m");
+        let objects = app.world().resource::<ClothObjects>();
+        assert_eq!(objects.order, [entity]);
+        assert_eq!(objects.grid.objects().len(), 1);
     }
 }

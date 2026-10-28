@@ -484,8 +484,18 @@ fn a_feet_mask_skips_a_thin_collider() {
         }
         b.parts[0].transform().translation.y
     };
-    // The foot's mask 4 shares bit 4 with the thin collider: no contact,
-    // so it falls through. The ordinary part's mask 0 meets it and rests.
-    assert!(run(true) < 0.0, "the foot met a thin collider");
+    // A limp body's foot carries no mask (the original clears it on
+    // collapse and death), so it rests on the thin collider like any part.
+    assert!(run(true) > 0.05, "a limp foot fell through a thin collider");
     assert!(run(false) > 0.05, "the ordinary part fell through");
+    // A living body's foot carries mask 4, which shares bit 4 with the thin
+    // collider: the detection skips it.
+    let mut b = ball(Vec3::new(0.0, 1.0, 0.0));
+    b.parts[0].pairing.out = true;
+    assert_eq!(b.level_mask(0), 0);
+    b.drive = Some(Drive::default());
+    assert_eq!(b.level_mask(0), crate::sector::MASK_THIN);
+    assert!(!crate::sector::level_meets(b.level_mask(0), level.1));
+    b.parts[0].pairing.out = false;
+    assert_eq!(b.level_mask(0), 0);
 }

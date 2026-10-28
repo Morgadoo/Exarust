@@ -35,9 +35,8 @@ pub trait Level {
 
     /// The original's level mask of a piece (collider): 1, or 1|4 for a
     /// flagged or thin horizontal mesh. A body whose own mask shares a bit
-    /// skips the piece. Exarust's colliders do not carry their masks yet
-    /// (the level loader does not hand them over), so every piece is the
-    /// plain 1; a test or a future loader can override it.
+    /// skips the piece. The plain 1 by default; the running game's level
+    /// answers each collider's stored mask ([`crate::StaticColliders`]).
     fn mask(&self, _piece: u32) -> u32 {
         crate::sector::MASK_SMALL
     }

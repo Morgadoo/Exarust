@@ -127,9 +127,11 @@ cell per small collider, the footprint plus a one-cell margin with the
 wide bit for a larger one, a scan of the own cell then the eight
 neighbours, shared-mask and own-parent skips) and its simulated-object
 list and grid (`sector::ObjectGrid`: the object overflow guard that also
-takes the first cell of the second row, migration and removal) are live
-data structures; rapier still owns the level's broad phase, so the level
-detection walks its own pieces. Each part's world pose (`sector::body_pose`: the
+takes the first cell of the second row, migration and removal) are live:
+`StaticColliders` fills the grid from every level collider as the static
+builder inserts it (its world box in the original's centimetres, its
+piece and its level mask), and the level's cloth stands in the object
+list, migrating after its tick. Each part's world pose (`sector::body_pose`: the
 matrix from its particles and rest basis, the world box and sphere of its
 bounds, the cell of the mesh box's centre) is what the pair stage buckets
 and meets by. A body whose cell index overflows goes back to its
@@ -148,10 +150,17 @@ buckets parts by their mesh box's world centre and first asks that the
 awake part's sphere touch the other's mesh sphere; a small sector's
 all-pairs walk
 (`body::Pairs::all_pairs`) adds the original's two point-to-mesh-box
-tests. A part's mask (`Level::mask`, default 1) is tested against its
-body mask before any triangle is queried; Exarust's colliders do not carry
-their stored masks yet, so every piece answers 1. Not wired: the overflow
-guard's reset in the game and a scene source of collider masks.
+tests. A part's mask (`Level::mask`) is tested against its body mask
+before any triangle is queried; the body solver hands the detection the
+level with the static grid's stored masks (`body::MaskedLevel`), so a thin
+horizontal plate (local half height under 1 cm, world up over 0.99) is
+mask 1|4 and a living foot's mask-4 part never meets it (`Ragdoll::level_mask`:
+only a body with muscles carries the foot's 4, as the original clears it on
+collapse and death, so a corpse's feet meet thin plates); a piece with no
+record answers 1. The original's flagged-mask bit has no traced node
+source, so it is never set [guess]. Not wired: the overflow guard's reset
+in the game (Exarust's grid is sparse and may hold any cell, so no body
+leaves a bounded row).
 A pair with exactly one placed body (state bit 0x1000, which the original
 keeps only while the settling countdown runs, so `Ragdoll::placed` is
 `settling() > 0`) is one-sided: the placed side takes the whole correction
@@ -166,7 +175,23 @@ it never strikes.
 The impact path reads the parts' smoothed velocity (a tenth of the way to
 each tick's displacement), which the
 pair's touch carries as its travel alongside the mean contact point and
-the summed push for the hit event.
+the summed push; a pair that takes the hit event exposes the original's
+handler payload as `body::pairs::HitEvent` (the other side, the mean
+point, the fastest travel and the summed push).
+The sector's simulated-object stages (`sector::ObjectContacts`) hand a
+cloth the parts passing `sector::object_body_meet` (the bound spheres
+must not be apart, then the object's centre within its radius of the
+part's mesh box, the original's point-to-box distance; a NaN passes both),
+each collision sphere in the object's own centimetres, swept when the part
+moved over the pair stage's 0.1 cm² [guess], and the level's triangles of
+the static records `StaticGrid::near_object` takes (the nine cells around
+the object's cell, the same two tests against each record's world box,
+where the original uses the mesh's oriented box). Skipping the cloth's
+own character is a guess (the sector makes no such test). The
+object/object stage is `sector::object_pairs` (every ordered pair of the
+list, never an object with itself, no bound test in the sector); the
+cloth's own contact law for another object is outside this component and
+nothing consumes the pairs yet.
 A part's level contacts also make an impact record (`body::LevelImpact`):
 the mean point of its accepted hits, the fastest smoothed velocity against
 their summed pushes, and the original's gates (travel square over 0.1 cm²,

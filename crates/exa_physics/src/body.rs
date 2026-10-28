@@ -798,6 +798,23 @@ impl Part {
         let centre: Vec3 = self.positions.iter().copied().sum::<Vec3>() * 0.25;
         Affine3A::from_mat3_translation(r, centre - r * rest_centre)
     }
+
+    /// The part's transform where the last tick left it: where a swept contact
+    /// of a simulated object starts.
+    pub fn settled_transform(&self) -> Affine3A {
+        self.settled
+    }
+
+    /// The world centre and radius of the sphere around the part's collision
+    /// spheres, as a simulated object's body pre-test reads it: the bound
+    /// travelled by the part's transform now.
+    pub fn sphere_bound(&self) -> (Vec3, f32) {
+        (
+            self.transform()
+                .transform_point3(self.pairing.sphere.centre),
+            self.pairing.sphere.radius,
+        )
+    }
 }
 
 /// On a living body model root off its balance: from the tick its posture
@@ -3813,6 +3830,18 @@ impl Ragdoll {
     /// Tests every sphere against the level: swept from where the last tick
     /// left it when it moved far enough, else where it is. Each part's hits
     /// this tick make up to one level impact ([`LevelImpact`]).
+    /// A part's body mask for the level detection
+    /// ([`crate::sector::body_mask`]): 1 on a part kept off the level, 4 on
+    /// a living character's foot. Only a living body's feet carry the 4:
+    /// the original clears it when the body collapses or dies, so a limp
+    /// body's feet meet thin plates again.
+    pub fn level_mask(&self, part: usize) -> u32 {
+        let Some(p) = self.parts.get(part) else {
+            return 0;
+        };
+        crate::sector::body_mask(p.no_level, self.drive.is_some() && p.pairing.out)
+    }
+
     fn detect<L: Level + ?Sized>(&mut self, level: &L) {
         let mut pieces = std::mem::take(&mut self.pieces);
         let mut triangles = std::mem::take(&mut self.triangles);
@@ -3825,7 +3854,8 @@ impl Ragdoll {
             p.level_travel = Vec3::ZERO;
             p.level_travel2 = 0.0;
         }
-        for p in &mut self.parts {
+        let masks: Vec<u32> = (0..self.parts.len()).map(|k| self.level_mask(k)).collect();
+        for (k, p) in self.parts.iter_mut().enumerate() {
             if p.no_level {
                 continue;
             }
@@ -3843,8 +3873,8 @@ impl Ragdoll {
             // A rigid body's stand-ins are the character capsules': bodies
             // meet the rigid body itself through their pairs. A piece whose
             // level mask shares a bit with the part's body mask is skipped
-            // (a foot ignores thin plates and flagged meshes).
-            let own_mask = crate::sector::body_mask(p.no_level, p.pairing.out);
+            // (a living foot ignores thin plates and flagged meshes).
+            let own_mask = masks[k];
             pieces.retain(|&piece| {
                 !level.movable(piece) && crate::sector::level_meets(own_mask, level.mask(piece))
             });
@@ -4143,6 +4173,36 @@ fn begin_frame(
     }
 }
 
+/// The level as body detection reads it: the physics world's pieces, their
+/// masks from [`crate::StaticColliders`] when it is loaded.
+struct MaskedLevel<'a> {
+    world: &'a rapier3d::prelude::PhysicsWorld,
+    masks: Option<&'a crate::StaticColliders>,
+}
+
+impl Level for MaskedLevel<'_> {
+    fn pieces(&self, lo: Vec3, hi: Vec3, out: &mut Vec<u32>) {
+        self.world.pieces(lo, hi, out);
+    }
+
+    fn triangles(&self, piece: u32, lo: Vec3, hi: Vec3, out: &mut Vec<[Vec3; 3]>) {
+        self.world.triangles(piece, lo, hi, out);
+    }
+
+    fn mask(&self, piece: u32) -> u32 {
+        self.masks
+            .map_or(crate::sector::MASK_SMALL, |m| m.mask(piece))
+    }
+
+    fn movable(&self, piece: u32) -> bool {
+        self.world.movable(piece)
+    }
+
+    fn floor_piece(&self, piece: u32) -> bool {
+        self.world.floor_piece(piece)
+    }
+}
+
 /// The solver's tick over every body (the character ticks ran before it):
 /// the queued blows, then one tick of the world's solver over the awake
 /// bodies, with the solver stages, which see the sleeping bodies too (a
@@ -4150,6 +4210,7 @@ fn begin_frame(
 /// woke it.
 pub fn step_bodies(
     physics: Res<Physics>,
+    statics: Option<Res<crate::StaticColliders>>,
     mut queue: ResMut<ShoveQueue>,
     mut dealt: ResMut<DealtShoves>,
     mut clock: ResMut<BodyTicks>,
@@ -4188,7 +4249,14 @@ pub fn step_bodies(
             .iter_mut()
             .map(|b| b.bypass_change_detection())
             .collect();
-        solve_among(&mut awake, &mut sleeping, &physics.0, stages.all());
+        // The level as body detection reads it: the world's pieces with the
+        // static colliders' stored masks (a thin plate's 4 keeps a foot's
+        // mask-4 part off it).
+        let level = MaskedLevel {
+            world: &physics.0,
+            masks: statics.as_deref(),
+        };
+        solve_among(&mut awake, &mut sleeping, &level, stages.all());
     }
     for body in &mut sleeping {
         if body.sleep == Sleep::Awake {

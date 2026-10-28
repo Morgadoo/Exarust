@@ -1008,6 +1008,12 @@ fn a_striker_pair_takes_the_hit_event_and_no_impact() {
         if let Some(t) = the_pairs(&stages).touches().first() {
             assert!(t.met && t.hits > 0, "{t:?}");
             assert!(t.hit_event, "{t:?}");
+            let event = the_pairs(&stages).hit_events().next().unwrap();
+            assert_eq!(event.a, t.a);
+            assert_eq!(event.b, t.b);
+            assert_eq!(event.point, t.point);
+            assert_eq!(event.travel, t.travel);
+            assert_eq!(event.push, t.push);
             assert_eq!(the_pairs(&stages).hit_events().count(), 1);
             assert_eq!(t.struck, [None, None]);
             assert_eq!(t.impact(), None);

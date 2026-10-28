@@ -822,7 +822,26 @@ pub struct StaticBody {
     /// The scene node the collider belongs to (a body skips its own
     /// parent node's colliders).
     pub node: u32,
+    /// The level piece the collider answers triangle queries by (the
+    /// collider's index in the physics world); 0 for a record that stands
+    /// for no piece.
+    pub piece: u32,
 }
+
+/// The nine cells a sector scans around a body's or object's own cell: the
+/// own cell first, then the eight around it, rows top to bottom and x left
+/// to right (the original's neighbour offset table).
+pub const NEAR_OFFSETS: [(i32, i32); 9] = [
+    (0, 0),
+    (-1, -1),
+    (0, -1),
+    (1, -1),
+    (-1, 0),
+    (1, 0),
+    (-1, 1),
+    (0, 1),
+    (1, 1),
+];
 
 /// The original's static collider grid: one 600 cm cell per collider whose
 /// box stays in its centre's cell, every cell of the footprint plus a
@@ -866,6 +885,12 @@ impl StaticGrid {
         self.bodies.get(id)
     }
 
+    /// Removes every record, keeping the cells' storage.
+    pub fn clear(&mut self) {
+        self.bodies.clear();
+        self.cells.clear();
+    }
+
     /// Inserts a collider as the original's static registration does and
     /// returns its id. A box that stays in its centre's cell goes there
     /// alone; a wider one takes the wide bit and every cell of the span with
@@ -891,6 +916,35 @@ impl StaticGrid {
         id
     }
 
+    /// The colliders a simulated object with bound sphere `centre_cm`,
+    /// `radius_cm` takes in its static stage, as the original scans its
+    /// static grid for one: the records of the object's own cell and the
+    /// eight around it ([`NEAR_OFFSETS`]), each kept when the record's
+    /// bound sphere and the object's are not apart and the object's centre
+    /// lies within its radius of the record's box (the compare skips only
+    /// on `r² <= d²`, so a NaN passes). Each record is listed once; the
+    /// original walks each cell's list and would hand a wide collider once
+    /// per cell it is in. The record's box is its world-aligned box, where
+    /// the original measures against the mesh's oriented box [guess: Exarust
+    /// records only the world box of a level collider].
+    pub fn near_object(&self, centre_cm: Vec3, radius_cm: f32, out: &mut Vec<usize>) {
+        let mut cells = Vec::new();
+        self.near_offsets(cell_of(centre_cm, self.origin), &mut cells);
+        for id in cells {
+            let Some(body) = self.bodies.get(id) else {
+                continue;
+            };
+            let bound = Bounds::of_box(body.centre_cm, body.half_cm);
+            if intersect::spheres_separated(centre_cm, radius_cm, bound.centre, bound.radius) {
+                continue;
+            }
+            let d2 = mesh_box_distance2(centre_cm, &bound, &Affine3A::IDENTITY);
+            if !(radius_cm * radius_cm <= d2) {
+                out.push(id);
+            }
+        }
+    }
+
     /// The colliders a body in `cell` meets: its own cell first, then the
     /// eight neighbours (rows top to bottom, x left to right, as the
     /// original's offset table is laid out), skipping shared masks and the
@@ -899,18 +953,7 @@ impl StaticGrid {
     /// appended twice.
     pub fn near(&self, cell: (i32, i32), body_mask: u32, own_node: u32, out: &mut Vec<usize>) {
         let mut reject = body_mask;
-        let offsets = [
-            (0, 0),
-            (-1, -1),
-            (0, -1),
-            (1, -1),
-            (-1, 0),
-            (1, 0),
-            (-1, 1),
-            (0, 1),
-            (1, 1),
-        ];
-        for (k, (dx, dz)) in offsets.into_iter().enumerate() {
+        for (k, (dx, dz)) in NEAR_OFFSETS.into_iter().enumerate() {
             let at = (cell.0.wrapping_add(dx), cell.1.wrapping_add(dz));
             for &id in self.cells.get(at) {
                 let Some(body) = self.bodies.get(id) else {
@@ -934,6 +977,20 @@ impl StaticGrid {
     /// The cells the grid has records in (for tests and tools).
     pub fn cells(&self) -> &CellGrid {
         &self.cells
+    }
+
+    /// The colliders in the nine cells around `cell`, own cell first, each
+    /// once (the original's simulated-object scan of its static grid). Wide
+    /// colliders appear once, from the first cell they are found in.
+    pub fn near_offsets(&self, cell: (i32, i32), out: &mut Vec<usize>) {
+        for (dx, dz) in NEAR_OFFSETS {
+            let at = (cell.0.wrapping_add(dx), cell.1.wrapping_add(dz));
+            for &id in self.cells.get(at) {
+                if !out.contains(&id) {
+                    out.push(id);
+                }
+            }
+        }
     }
 }
 
@@ -1058,6 +1115,195 @@ impl ObjectGrid {
     /// The objects bucketed in `cell`.
     pub fn at(&self, cell: (i32, i32)) -> &[usize] {
         self.cells.get(cell)
+    }
+
+    /// The objects in the nine cells around `cell`, own cell first, each
+    /// once: the simulated-object stage's broad phase.
+    pub fn near_ids(&self, cell: (i32, i32)) -> Vec<usize> {
+        let mut out = Vec::new();
+        for (dx, dz) in NEAR_OFFSETS {
+            let at = (cell.0.wrapping_add(dx), cell.1.wrapping_add(dz));
+            for &id in self.cells.get(at) {
+                if !out.contains(&id) {
+                    out.push(id);
+                }
+            }
+        }
+        out
+    }
+
+    /// The cell index an object id is bucketed in.
+    pub fn index_of_id(&self, id: usize) -> Option<i32> {
+        self.objects.get(id).map(|o| o.cell)
+    }
+
+    /// The (x, z) cell an object id is bucketed in.
+    pub fn cell_of_id(&self, id: usize) -> Option<(i32, i32)> {
+        self.index_of_id(id)
+            .map(|index| cell_of_index(index, self.columns))
+    }
+}
+
+/// The sphere around a simulated object's mesh bounds, in world centimetres:
+/// the original's object bound (centre and radius) that the body-contact
+/// stage tests.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ObjectBounds {
+    /// The bound's centre (cm, world).
+    pub centre: Vec3,
+    /// Its radius (cm).
+    pub radius: f32,
+}
+
+/// The original's simulated-object/body pre-test: the body's bound sphere
+/// and the object's must not be apart (the processor's sign of
+/// `(r + r')² − d²`, so a NaN passes), and the object's centre must then lie
+/// within its own radius of the body's mesh box (`box_distance2`, the
+/// squared distance of the object's centre outside that box, cm², as
+/// [`mesh_box_distance2`] gives it). The second compare skips only when
+/// `r² <= d²`, so a NaN distance passes too. A body that passes is handed to
+/// the object's body-contact call.
+pub fn object_body_meet(
+    object: ObjectBounds,
+    body_centre: Vec3,
+    body_radius: f32,
+    box_distance2: f32,
+) -> bool {
+    if intersect::spheres_separated(body_centre, body_radius, object.centre, object.radius) {
+        return false;
+    }
+    !(object.radius * object.radius <= box_distance2)
+}
+
+/// The original's simulated-object/object stage: every ordered pair of
+/// objects in list order, the first taking the stage (`takes`: its stage
+/// flag set and not asleep or disabled) and the second offered to it
+/// (`offered`: not asleep or disabled), never an object with itself. The
+/// sector makes no bound test here: the object's own call does.
+pub fn object_pairs(takes: &[bool], offered: &[bool]) -> Vec<(usize, usize)> {
+    let mut pairs = Vec::new();
+    for (a, &take) in takes.iter().enumerate() {
+        if !take {
+            continue;
+        }
+        for (b, &offer) in offered.iter().enumerate() {
+            if offer && b != a {
+                pairs.push((a, b));
+            }
+        }
+    }
+    pairs
+}
+
+/// One rigid-body part as a simulated object's body-contact stage sees it:
+/// where the tick has it and where the last tick left it, its collision
+/// spheres (metres, in the part's space), the world sphere around them and
+/// the part's level friction.
+#[derive(Debug, Clone, Copy)]
+pub struct ObjectBodyPart<'a> {
+    /// The part's transform now.
+    pub now: Affine3A,
+    /// The part's transform where the last tick left it.
+    pub previous: Affine3A,
+    /// The part's collision spheres (metres, in its space).
+    pub spheres: &'a [(Vec3, f32)],
+    /// The world centre of the sphere around those spheres (m).
+    pub centre: Vec3,
+    /// Its world radius (m).
+    pub radius: f32,
+    /// The part's mesh box, in its space (m): the box the object's centre
+    /// is measured against.
+    pub mesh: &'a Bounds,
+    /// The part's level friction.
+    pub friction: f32,
+}
+
+/// The contacts a simulated object takes from the sector's body and static
+/// stages, in the object's own space and centimetres, as the cloth step
+/// reads them: body spheres to stay outside, body spheres swept over the
+/// tick, and the level's triangles.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ObjectContacts {
+    pub spheres: Vec<crate::cloth::BodySphere>,
+    pub swept: Vec<crate::cloth::SweptSphere>,
+    pub level: Vec<crate::cloth::LevelTri>,
+}
+
+impl ObjectContacts {
+    /// Removes every contact, keeping the lists' storage.
+    pub fn clear(&mut self) {
+        self.spheres.clear();
+        self.swept.clear();
+        self.level.clear();
+    }
+
+    /// The object's body-contact stage: every part passing
+    /// [`object_body_meet`] (its bound sphere meets the object's, and the
+    /// object's centre lies within its radius of the part's mesh box) hands each of its collision spheres to the object, in
+    /// the object's space and centimetres. A sphere the part moved by more
+    /// than the pair stage's 0.1 cm² over the tick is swept from where the
+    /// last tick left it instead [guess: the cloth subclass's own sweep gate
+    /// is not in this pack; the sector's threshold is used].
+    pub fn gather_bodies<'a>(
+        &mut self,
+        to_object: &Affine3A,
+        object: ObjectBounds,
+        parts: impl IntoIterator<Item = ObjectBodyPart<'a>>,
+    ) {
+        for part in parts {
+            // The cheap sphere test first: the box distance inverts the
+            // part's matrix (the result is the same as the full test).
+            let (centre, radius) = (part.centre * 100.0, part.radius * 100.0);
+            if intersect::spheres_separated(centre, radius, object.centre, object.radius) {
+                continue;
+            }
+            let box_distance2 =
+                mesh_box_distance2(object.centre * 0.01, part.mesh, &part.now) * 1.0e4;
+            if !object_body_meet(
+                object,
+                part.centre * 100.0,
+                part.radius * 100.0,
+                box_distance2,
+            ) {
+                continue;
+            }
+            for &(centre, radius) in part.spheres {
+                let now = to_object.transform_point3(part.now.transform_point3(centre)) * 100.0;
+                let previous =
+                    to_object.transform_point3(part.previous.transform_point3(centre)) * 100.0;
+                let radius = radius * 100.0;
+                if (now - previous).length_squared() > crate::body::pairs::SWEEP_TRAVEL2 {
+                    self.swept.push(crate::cloth::SweptSphere {
+                        from: previous,
+                        to: now,
+                        radius,
+                        friction: part.friction,
+                    });
+                } else {
+                    self.spheres.push(crate::cloth::BodySphere {
+                        center: now,
+                        radius,
+                        friction: part.friction,
+                    });
+                }
+            }
+        }
+    }
+
+    /// The object's static stage: every level triangle handed over (world,
+    /// metres) in the object's space and centimetres.
+    pub fn gather_level(
+        &mut self,
+        to_object: &Affine3A,
+        triangles: impl IntoIterator<Item = [Vec3; 3]>,
+    ) {
+        for t in triangles {
+            self.level.push(crate::cloth::LevelTri {
+                a: to_object.transform_point3(t[0]) * 100.0,
+                b: to_object.transform_point3(t[1]) * 100.0,
+                c: to_object.transform_point3(t[2]) * 100.0,
+            });
+        }
     }
 }
 
