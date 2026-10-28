@@ -377,7 +377,13 @@ fn strike_level(blast: &mut Blast, physics: &Physics) -> usize {
             continue;
         }
         let chunk = &blast.chunks[index];
-        let reach = contact_reach(chunk, 2.0, blast.setup.margin, STATIC_EXTRA);
+        // The sampled walk reaches `reach·2 + margin`; the face walk ten more.
+        let extra = if blast.setup.piercing {
+            0.0
+        } else {
+            STATIC_EXTRA
+        };
+        let reach = contact_reach(chunk, 2.0, blast.setup.margin, extra);
         let motion = chunk.at - chunk.previous;
         let squared = (motion.x * motion.x + motion.y * motion.y) + motion.z * motion.z;
         if !(crate::effects::blast::EPSILON < squared) {

@@ -1161,9 +1161,9 @@ impl Blast {
     }
 
     /// The spine in the camera's space, bent across the view plane by ten
-    /// passes. Each pass moves the first point by its difference to the
-    /// second scaled by `(f/(x² + y² + f) − 0.5)·0.5`, where `f` is the
-    /// tenth of the squared width difference; the first half's points then
+    /// passes. Each pass moves the first point by its difference from the
+    /// second (`p₀ − p₁`, depth dropped) scaled by `(f/(x² + y² + f) −
+    /// 0.5)·0.5`, where `f = ((w₀ − w₁)·100·scale)²`; the first half's points then
     /// move apart and the second half's together by the matching factor
     /// times 0.05 (the subtraction in single precision, the 0.05 in
     /// double).
@@ -1176,7 +1176,7 @@ impl Blast {
     ) -> [Vec3; RIBBON_SAMPLES] {
         let mut points = spine.map(|point| camera.inverse_point(point));
         for _ in 0..FACE_PASSES {
-            let mut delta = points[1] - points[0];
+            let mut delta = points[0] - points[1];
             delta.z = 0.0;
             let square = {
                 let f = (widths[0] - widths[1]) * FACE_WIDTH_SCALE * width_scale;
@@ -1192,7 +1192,7 @@ impl Blast {
                     f * f
                 };
                 let factor =
-                    (f64::from(square / ((delta.x * delta.x + delta.y * delta.y) + square)) - 0.5)
+                    f64::from(square / ((delta.x * delta.x + delta.y * delta.y) + square) - 0.5)
                         * 0.05;
                 let factor = factor as f32;
                 points[i - 1] += delta * factor;
@@ -1206,7 +1206,7 @@ impl Blast {
                     f * f
                 };
                 let factor =
-                    (f64::from(square / ((delta.x * delta.x + delta.y * delta.y) + square)) - 0.5)
+                    f64::from(square / ((delta.x * delta.x + delta.y * delta.y) + square) - 0.5)
                         * 0.05;
                 let factor = factor as f32;
                 points[i] += delta * factor;
