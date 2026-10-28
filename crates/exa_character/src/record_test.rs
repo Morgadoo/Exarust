@@ -15,6 +15,7 @@ fn item(id: u32, occupancy: u64) -> Item {
     Item {
         id,
         name: format!("item {id}"),
+        parent: 0,
         model: String::new(),
         model_flags: 0,
         worn_model: format!("worn{id}"),

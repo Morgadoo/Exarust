@@ -86,6 +86,7 @@ use crate::player::{ChaseCamera, Player, PlayerBody, window_ray};
 use crate::player_controls::{self, CharacterInteraction, ClickOutcome, ClickTarget};
 use crate::thaum::kinesis_live::{KinesisPickHook, KinesisPicked};
 use exa_ui::hud::HudShowUntil;
+use exa_world::markers::{PlacedTemplate, PlacementMarkerNode};
 
 /// Centimetres per metre: the original's rules are in cm.
 const CM: f32 = 100.0;
@@ -944,7 +945,13 @@ impl Plugin for HandPlugin {
             .add_message::<WorldClick>()
             .add_systems(
                 Update,
-                (press_hand, take_cloth, hold_hand, reach_hand)
+                (
+                    press_hand,
+                    take_cloth,
+                    gather_markers,
+                    hold_hand,
+                    reach_hand,
+                )
                     .chain()
                     .in_set(HandSystems)
                     .after(crate::player::chase_camera)
@@ -984,6 +991,74 @@ type OtherBodies = (
     Option<&'static Condition>,
     Has<PropBody>,
 );
+
+/// What a body's nodes say of the placed object they belong to: its id,
+/// its template and the node above.
+type ObjectIds = (
+    Option<&'static exa_world::PlacedItem>,
+    Option<&'static PlacedTemplate>,
+    Option<&'static ChildOf>,
+);
+
+/// The object id and template of the placed object a body belongs to: the
+/// first placed object at or above the body's node (the original's lift
+/// stores the held node's id word, and the cursor asks the database for its
+/// template, the record header's parent word). Zero for both when no
+/// placed object is over it; the template is the id itself when the
+/// object carries none, as the original's lookup returns the id it cannot
+/// resolve.
+fn object_ids(body: Entity, objects: &Query<ObjectIds>) -> (u32, u32) {
+    let mut at = Some(body);
+    while let Some(entity) = at {
+        let Ok((placed, template, parent)) = objects.get(entity) else {
+            break;
+        };
+        if let Some(placed) = placed {
+            let template = template.map_or(placed.tagged_id, |t| t.0);
+            return (placed.tagged_id, template);
+        }
+        at = parent.map(ChildOf::parent);
+    }
+    (0, 0)
+}
+
+/// The level's placement markers while the item cursor holds something:
+/// every registered marker node, in the order the scene query walks them,
+/// with its bounding sphere and frame in the world. The list is emptied
+/// once nothing is held, so the walk costs nothing outside a lift.
+fn gather_markers(
+    mut items: ResMut<ItemCursor>,
+    markers: Query<(
+        &PlacementMarkerNode,
+        &exa_world::PartBounds,
+        &GlobalTransform,
+    )>,
+) {
+    if items.held.is_none() {
+        if !items.markers.is_empty() {
+            items.markers.clear();
+        }
+        return;
+    }
+    items.markers.clear();
+    for (marker, bounds, transform) in &markers {
+        let world = transform.affine();
+        items.markers.push(item_cursor::PlacementMarker {
+            name: marker.name,
+            link: marker.link,
+            centre: world.transform_point3(bounds.centre),
+            radius: bounds.radius,
+            frame: Frame::new(
+                Vec3::from(world.translation),
+                bevy::math::Mat3::from_cols(
+                    Vec3::from(world.x_axis),
+                    Vec3::from(world.y_axis),
+                    Vec3::from(world.z_axis),
+                ),
+            ),
+        });
+    }
+}
 
 /// The cursor's ray, from the chase camera through the pointer.
 fn cursor_ray(
@@ -1098,7 +1173,10 @@ fn press_hand(
     mut bodies: Query<OtherBodies, Without<PlayerBody>>,
     kinesis: Option<Res<KinesisPickHook>>,
     mut kinesis_picks: Option<ResMut<Messages<KinesisPicked>>>,
-    over_gui: Option<Res<crate::panel_live::PointerOverGui>>,
+    (over_gui, objects): (
+        Option<Res<crate::panel_live::PointerOverGui>>,
+        Query<ObjectIds>,
+    ),
 ) {
     let kinesis = kinesis.and_then(|k| k.0);
     let now = real.elapsed().as_millis() as i64;
@@ -1233,6 +1311,11 @@ fn press_hand(
             let Ok((_, mut ragdoll, ..)) = bodies.get_mut(body) else {
                 return;
             };
+            // A frozen object (one a lock marker holds) is thawed by the
+            // press that takes it.
+            if ragdoll.frozen() {
+                ragdoll.freeze(false);
+            }
             if !ragdoll.grab(part, at, item_cursor::LIFT_STRENGTH, None) {
                 return;
             }
@@ -1259,6 +1342,7 @@ fn press_hand(
                 ),
             );
             pb.hold_object(true);
+            let held_ids = object_ids(body, &objects);
             items.begin(HeldItem {
                 body,
                 part,
@@ -1268,10 +1352,10 @@ fn press_hand(
                 centre,
                 half,
                 target: at,
-                // Exarust's picked props carry no database id, so a level
-                // placement marker is never named for one yet.
-                item: 0,
-                model: 0,
+                // The lift keeps the object's id and its template, which a
+                // placement marker's name is compared with.
+                item: held_ids.0,
+                model: held_ids.1,
             });
             hand.holding = Holding::Lift;
         }
@@ -1501,21 +1585,8 @@ fn hold_hand(
                 {
                     pb.hold_object(false);
                 }
-                // The movement request's suppression cancels the lift.
-                let cancelled = hand.out_of_reach;
-                if let Some((outcome, held)) = items.end(cancelled)
-                    && let Ok((_, mut ragdoll, ..)) = bodies.get_mut(held.body)
-                {
-                    ragdoll.release_grab();
-                    // A plain release leaves the item where the cursor put
-                    // it; a cancelled one is put back at the frames the
-                    // lift saved (the live hand leaves the hover word at
-                    // zero: it has no level placement markers).
-                    if outcome != Release::Drop {
-                        ragdoll.place_at(&held.saved);
-                    }
-                    ragdoll.wake();
-                }
+                // The lift's own out-of-reach answer cancels it.
+                end_lift(&mut items, &mut bodies, hand.out_of_reach);
             } else {
                 // The movement inputs turn the item (the lift keeps the
                 // movement request): the pad's raw move stick, or the move
@@ -1630,33 +1701,88 @@ fn hold_hand(
                         let distance = item_cursor::placement_distance(t * CM, contact);
                         item_cursor::placement_point(origin, dir, distance)
                     });
-                    // A level placement marker named for the item snaps it
-                    // onto the marker's frame: the ray's segment runs to the
-                    // picked point, or 10 000 cm without one. Exarust's level
-                    // loader does not register those nodes yet, so the list
-                    // is empty [and the item's fit there is not tested].
+                    // A placement marker named for the item (its id or its
+                    // template) snaps it onto the marker's frame: the ray's
+                    // segment runs to the picked point, or 10 000 cm
+                    // without one. The held node takes the marker's frame
+                    // whole, as the original copies the marker's matrix
+                    // into it [the original's space-free test of the item's
+                    // spheres against the other bodies at that frame is not
+                    // run: Exarust has no body overlap query there].
                     let length = hit.map_or(item_cursor::MARKER_RAY_CM / CM, |(_, t)| t);
                     let snapped = items.snap(origin, dir, length, |_| true);
-                    if let Some(snap) = snapped {
-                        if let Some(held) = items.held.as_mut() {
-                            held.shown = snap.frame;
-                            held.target = snap.frame.position;
+                    // Each placement holds only within reach of the hip
+                    // (and a free one only when its box fitted): the
+                    // item's new place is measured as the walk-to point.
+                    // A frame that does not hold puts the item back at the
+                    // last placement that did, keeps the hover word, and
+                    // counts as out of reach (the cursor a cross; a release
+                    // then is a cancelled one).
+                    let hip = player.and_then(|(feet, child)| {
+                        player_bodies
+                            .get(child)
+                            .ok()
+                            .map(|(_, own, ..)| hip_of(feet, own))
+                    });
+                    let in_reach = |at: Vec3| {
+                        hip.is_some_and(|hip| {
+                            pick::walk_within_reach(at * CM, hip * CM, pick::Region::None)
+                        })
+                    };
+                    let held_frame = match (snapped, point) {
+                        (Some(snap), _) => {
+                            item_cursor::lift_frame(snap.hover, true, in_reach(snap.frame.position))
+                                .map(|word| (word, snap.frame, None))
                         }
-                        items.hover = snap.hover;
-                        if let Ok((_, mut ragdoll, ..)) = bodies.get_mut(body) {
-                            ragdoll.pull_grab_to(snap.frame.position);
-                            ragdoll.wake_to(DRAG_WAKE);
+                        (None, Some(point)) => {
+                            let (frame, fits) = item_cursor::place_frame(
+                                items.rotation,
+                                point,
+                                box_centre,
+                                box_half,
+                            );
+                            let centre = frame.position + frame.rotation * box_centre;
+                            item_cursor::lift_frame(item_cursor::HOVER_FREE, fits, in_reach(centre))
+                                .map(|word| (word, frame, Some(point)))
                         }
-                    } else if let Some(point) = point {
-                        let (frame, _fits) =
-                            item_cursor::place_frame(items.rotation, point, box_centre, box_half);
-                        if let Some(held) = items.held.as_mut() {
-                            held.shown = frame;
-                            held.target = point;
+                        (None, None) => None,
+                    };
+                    hand.out_of_reach = held_frame.is_none();
+                    match held_frame {
+                        Some((word, frame, free)) => {
+                            items.hover = word;
+                            if let Some(held) = items.held.as_mut() {
+                                held.shown = frame;
+                                held.target = free.unwrap_or(frame.position);
+                            }
+                            if let Ok((_, mut ragdoll, ..)) = bodies.get_mut(body) {
+                                match free {
+                                    Some(point) => {
+                                        ragdoll.pull_grab_to(point);
+                                        ragdoll.wake_to(DRAG_WAKE);
+                                    }
+                                    // A marker's frame is copied into the
+                                    // held node whole.
+                                    None => {
+                                        let worlds = item_cursor::snapped_parts(
+                                            &ragdoll
+                                                .parts
+                                                .iter()
+                                                .map(|p| p.transform())
+                                                .collect::<Vec<_>>(),
+                                            part,
+                                            frame,
+                                        );
+                                        ragdoll.place_at(&worlds);
+                                        ragdoll.hold_grab_still();
+                                    }
+                                }
+                            }
                         }
-                        if let Ok((_, mut ragdoll, ..)) = bodies.get_mut(body) {
-                            ragdoll.pull_grab_to(point);
-                            ragdoll.wake_to(DRAG_WAKE);
+                        None => {
+                            if let Ok((_, mut ragdoll, ..)) = bodies.get_mut(body) {
+                                ragdoll.pull_grab_to(held_target);
+                            }
                         }
                     }
                 }
@@ -1700,6 +1826,35 @@ fn hold_hand(
     }
 }
 
+/// Ends the item cursor's lift, as the lift's release handler does: in
+/// reach (`cancelled` false) the item is put down where it is; a cancelled
+/// lift goes by [`item_cursor::release`]: placed again at its last fitting
+/// point, left on its marker (frozen there for a lock marker) or put back
+/// at the frames the lift saved. The body is woken unless frozen.
+fn end_lift(
+    items: &mut ItemCursor,
+    bodies: &mut Query<OtherBodies, Without<PlayerBody>>,
+    cancelled: bool,
+) {
+    // The last fitting placement is where the item already rests: a frame
+    // that does not hold puts it back there, so it still fits.
+    let Some((outcome, held)) = items.end(cancelled, true) else {
+        return;
+    };
+    let Ok((_, mut ragdoll, ..)) = bodies.get_mut(held.body) else {
+        return;
+    };
+    ragdoll.release_grab();
+    match outcome {
+        Release::Drop | Release::LastFit | Release::OnMarker => ragdoll.wake(),
+        Release::Lock => ragdoll.freeze(true),
+        Release::PutBack => {
+            ragdoll.place_at(&held.saved);
+            ragdoll.wake();
+        }
+    }
+}
+
 /// The reach of the point under the cursor, as the frame's request finds
 /// it.
 #[allow(clippy::too_many_arguments)]
@@ -1711,7 +1866,7 @@ fn reach_hand(
     sources: PickSources,
     windows: Query<&Window, With<PrimaryWindow>>,
     cameras: Query<(&Camera, &GlobalTransform), With<ChaseCamera>>,
-    mut hand: ResMut<Hand>,
+    (mut hand, mut items): (ResMut<Hand>, ResMut<ItemCursor>),
     players: Query<(&GlobalTransform, &Children), With<Player>>,
     player_bodies: Query<PlayerParts, Without<PropBody>>,
     mut bodies: Query<OtherBodies, Without<PlayerBody>>,
@@ -1729,6 +1884,11 @@ fn reach_hand(
             && let Ok((_, mut r, ..)) = bodies.get_mut(body)
         {
             r.release_grab();
+        }
+        // The forced release runs the lift's handler with the point out of
+        // reach, so the lift ends as a cancelled one.
+        if hand.holding == Holding::Lift {
+            end_lift(&mut items, &mut bodies, true);
         }
         hand.holding = Holding::Nothing;
         hand.out_of_reach = true;

@@ -19,6 +19,7 @@ pub mod grid_sets;
 pub mod level_lifecycle;
 pub mod light_flood;
 pub mod light_source;
+pub mod markers;
 pub mod mechanisms;
 pub mod nav;
 pub mod node_parts;
@@ -470,6 +471,7 @@ fn spawn_placed_object(
             Name::new(item.name.clone()),
             room_view::PendingRoom::default(),
             PlacedItem::of(item, object),
+            markers::PlacedTemplate(item.parent),
             ChildOf(parent),
         ));
         return Some(PlacedSpawn::Placed {
@@ -526,6 +528,7 @@ fn spawn_placed_object(
         Name::new(item.name.clone()),
         room_view::PendingRoom::default(),
         PlacedItem::of(item, object),
+        markers::PlacedTemplate(item.parent),
         ChildOf(parent),
     ));
     // Its door and operative records, for the signals and mechanisms.
@@ -800,6 +803,12 @@ pub fn spawn_model_nodes(
                 },
             ))
             .id();
+        // A model's node has no object record, so a `[` name puts it in
+        // the item cursor's placement markers, as the original's sector
+        // attach does.
+        if let Some(marker) = markers::model_node_marker(&node.name) {
+            commands.entity(e).insert(marker);
+        }
         let mut parts = Vec::with_capacity(node.parts.len());
         if !node.placeholder {
             for (mesh, material) in &node.parts {
@@ -2070,6 +2079,7 @@ mod tests {
         Item {
             id,
             name: worn.into(),
+            parent: 0,
             model: model.into(),
             model_flags: 0,
             worn_model: worn.into(),

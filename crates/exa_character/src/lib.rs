@@ -1721,6 +1721,7 @@ mod tests {
         Item {
             id,
             name: worn.into(),
+            parent: 0,
             model: model.into(),
             model_flags: 0,
             worn_model: worn.into(),

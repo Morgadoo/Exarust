@@ -80,6 +80,11 @@ const LAYER_LEN: usize = 12;
 pub struct Item {
     pub id: u32,
     pub name: String,
+    /// The word at payload offset `0x1C` (the header's parent word): the
+    /// template an instance was made from, which the original's template
+    /// helper returns for the object ([`ObjectDb::template_of`]); 0 when the
+    /// payload is shorter.
+    pub parent: u32,
     /// The model the item shows on the ground or as an icon (an entry of
     /// `Objects.rpk` or `Objlib.rpk`, or `@` and a factory name); may be
     /// empty, as for the underwear.
@@ -701,6 +706,10 @@ impl Item {
         let mut item = Item {
             id,
             name: String::new(),
+            // Read straight from the payload, as the template helper does.
+            parent: payload
+                .get(0x1C..0x20)
+                .map_or(0, |w| u32::from_le_bytes(w.try_into().expect("4 bytes"))),
             model: String::new(),
             model_flags: 0,
             worn_model: String::new(),
