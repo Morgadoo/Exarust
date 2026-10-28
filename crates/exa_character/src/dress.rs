@@ -268,6 +268,19 @@ pub fn assemble(body_model: &Model, garments: &[WornModel<'_>]) -> Option<Assemb
     let mut garment_bases = Vec::with_capacity(garments.len());
     for garment in garments {
         let base = body.nodes.len();
+        garment_bases.push(base);
+        if garment.model.nodes.is_empty() {
+            // An empty model merges nothing; the entry keeps the caller's
+            // garment indices aligned.
+            worn.push(WornGarment {
+                roots: Vec::new(),
+                occupancy: garment.occupancy,
+                coverage: garment.coverage,
+                slots: 0,
+                material: garment.material,
+            });
+            continue;
+        }
         let garment_frames = model_frames(garment.model);
         for (node, frame) in garment.model.nodes.iter().zip(&garment_frames) {
             let mut n = node_of(node, *frame);
@@ -275,7 +288,6 @@ pub fn assemble(body_model: &Model, garments: &[WornModel<'_>]) -> Option<Assemb
             body.nodes.push(n);
         }
         body.refresh_links();
-        garment_bases.push(base);
         // The item's model hangs under the character's root node, so its
         // tree's own root takes the body root's frame.
         body.nodes[base].world = body.nodes[root].world;
