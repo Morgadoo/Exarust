@@ -1608,16 +1608,20 @@ further colour are linearised after the blend when colours are managed in
 linear light (the others are linearised once when the table is set up).
 The track is the executable's constant table, six records keyed 0.38,
 0.44, 0.47, 0.54, 0.62 and 0.70 that the environment unit sets up at
-start-up. In linear light the pass linearises every colour of a record (a,
-b, the sun, the fill, the two sky colours, i, j, k, l, m, n and o when its
-first channel is positive) and scales the two sky colours, i, j and the sky
-tint by 0.75; a record whose o is black then takes o a quarter of the way
-from its away sky colour to j. Every scene starts with that track
+start-up. The pass has an optional step that linearises every colour of a
+record (a, b, the sun, the fill, the two sky colours, i, j, k, l, m, n and o
+when its first channel is positive) and scales the two sky colours, i, j and
+k's colour by 0.75; that step hangs on a flag of its own that nothing in the
+executable sets, so the shipped game keeps the table in sRGB and instead
+linearises the frame's horizon colour (below). The pass always gives a
+record whose o is black an o a quarter of the way from its away sky colour
+to j (no shipped record needs it). Every scene starts with that track
 (`EnvironmentTrack::day` in `exa_world::scene_env`), so the sun placement
 takes the record's sun, fill and fog colours: the outdoor fog is the
-record's (0.0236 red at the default time, 0.375 of the linearised fog
-colour) rather than a stand-in haze, and the `_Sunlight` colour is the
-record's sun colour.
+record's (0.0236 red at the default time, 0.375 of the fog colour
+linearised by the blend) rather than a stand-in haze, and the `_Sunlight`
+colour is the record's sun colour as stored (0.33 red at the default
+time).
 
 **Clouds.** A cloudiness above the clear 1.5, by a factor
 (cloudiness − 1.5)·0.4 clamped to 0.9 (a NaN counts as clear), desaturates
@@ -1649,10 +1653,11 @@ the colour between the record's two sky colours, weighted
 fog colour and 2, is the horizon colour; without a sky the fog colour is.
 A lightning flash clears to half the horizon colour. Exarust draws Bevy's
 atmosphere instead (see below) and keeps the gradient for the record. The
-frame also publishes the values the renderer's globals take: the far clip
-from the sun's height (−100000 up to 0.4, −25 above it, both compared in
-double precision), the weather wind (the current rain × 0.3) and the tint
-(the tint colour × its strength).
+frame also publishes the values the renderer's globals take: a scene value
+from the sun's height (−100000 up to 0.4, −25 above it, compared in double
+precision; probably a shadow or clip distance, its reader is not ported),
+the weather wind (the current rain × 0.3) and the tint (the tint colour ×
+its fourth slot, the strength).
 
 **Ambient.** The plug-in's ambient is the level's main ambient through the
 sRGB transfer, scaled by the environment cube at 8 indoors and 3 outdoors

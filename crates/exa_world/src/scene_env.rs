@@ -452,8 +452,15 @@ const DAY_RECORDS: [EnvRecord; 6] = [
     },
 ];
 
-/// The start-up pass's scale on the sky's away and towards colours, the two
-/// sky colour records and the sky cube's tint.
+/// Whether the start-up pass linearises the built-in track. The original
+/// reads a zero-initialised flag here that nothing writes, so the shipped
+/// game keeps the track's colours in sRGB (the post-blend linearisation of
+/// fill, fog and `p` still runs in linear light), and the frame linearises
+/// the horizon because the flag is clear.
+pub const TRACK_LINEARISED_AT_STARTUP: bool = false;
+
+/// The start-up pass's scale on the sky's away and towards colours, i, j and
+/// k's colour.
 const DAY_SKY_SCALE: f32 = 0.75;
 /// The share of the way from the sky's away colour to its `j` colour at
 /// which a record without its own `o` colour takes it.
@@ -521,15 +528,22 @@ pub struct EnvironmentTrack {
 }
 
 impl EnvironmentTrack {
-    /// The engine's built-in track after its start-up pass. In linear light
-    /// the pass linearises the track's colours (a, b, the sun, the fill, the
-    /// sky's away and towards colours, i, j, k, l, m, n and, when its first
-    /// channel is positive, o) and scales the five sky colours and the sky
-    /// cube's tint by 0.75. A record whose `o` is black then takes its `o`
-    /// colour a quarter of the way from the sky's away colour to `j`.
-    pub fn day(linear: bool) -> Self {
+    /// The engine's built-in track after its start-up pass. With
+    /// `linearise` the pass linearises the track's colours (a, b, the sun,
+    /// the fill, the sky's away and towards colours, i, j, k, l, m, n and,
+    /// when its first channel is positive, o) and scales the sky's away and
+    /// towards colours, i, j and k's colour by 0.75. A record whose `o` is
+    /// black then takes its `o` colour a quarter of the way from the sky's
+    /// away colour to `j`, with or without the linearising step.
+    ///
+    /// The original gates the linearising step on a flag of its own, not on
+    /// the linear-light setting, and nothing in the image sets that flag:
+    /// the shipped game keeps the track in sRGB
+    /// ([`TRACK_LINEARISED_AT_STARTUP`]) and linearises the frame's horizon
+    /// instead.
+    pub fn day(linearise: bool) -> Self {
         let mut records = DAY_RECORDS;
-        day_startup(&mut records, linear);
+        day_startup(&mut records, linearise);
         Self { records }
     }
 
@@ -944,15 +958,17 @@ pub struct Frame {
     pub sky_colour: [f32; 3],
     /// Whether a lightning flash is on.
     pub flash: bool,
-    /// The scene's far clip the frame sets from the sun's height: −100000
-    /// while the body is at or below 0.4, −25 above it (centimetres, as the
-    /// original stores the negative near plane).
+    /// The scene value the frame sets from the sun's height: −100000 while
+    /// the body is at or below 0.4, −25 above it (the comparison in double
+    /// precision). Guess: a shadow or clip distance in centimetres; the
+    /// scene field's reader is outside this model and the sun height's
+    /// identity is inferred from the load reset.
     pub shadow_far: f32,
     /// The rain-driven wind strength the frame publishes (the current rain
     /// times 0.3).
     pub wind: f32,
     /// The tint the renderer is given: the tint colour times the tint
-    /// strength.
+    /// strength (the tint's fourth slot).
     pub tint: [f32; 3],
 }
 
@@ -1019,11 +1035,9 @@ pub struct SceneEnvironment {
     /// colour times the strength and the strength's root), linear when
     /// colours are managed in linear light.
     pub global_light: [f32; 4],
-    /// The global tint, sRGB RGBA.
+    /// The global tint, sRGB, and its strength in the fourth slot: the
+    /// renderer receives the colour times the strength.
     pub tint: [f32; 4],
-    /// The global tint's strength. The renderer receives the tint colour
-    /// times it.
-    pub tint_strength: f32,
     /// The fill light's colour, sRGB.
     pub fill: [f32; 3],
     /// The clear colour the level asks for, sRGB RGBA.
@@ -1099,12 +1113,11 @@ impl SceneEnvironment {
                 [rgb[0], rgb[1], rgb[2], DEFAULT_GLOBAL_LIGHT[3]]
             },
             tint: [1.0; 4],
-            tint_strength: 1.0,
             fill: DEFAULT_FILL,
             background: DEFAULT_BACKGROUND,
             record_fog: [0.0; 3],
             current: EnvRecord::default(),
-            track: Some(EnvironmentTrack::day(true)),
+            track: Some(EnvironmentTrack::day(TRACK_LINEARISED_AT_STARTUP)),
             sun_towards: [0.0, 1.0, 0.0],
             sky_map_resolution,
             sun_dim: 0.0,
@@ -1717,7 +1730,10 @@ impl SceneEnvironment {
             let c = lerp3(self.current.sky_away, self.current.sky_towards, weight);
             let f = self.fog.sky_colour;
             horizon = [c[0] * f[0] * 2.0, c[1] * f[1] * 2.0, c[2] * f[2] * 2.0];
-            if self.linear {
+            // The original linearises the horizon when the track was not
+            // linearised at start-up (its own flag, not the linear-light
+            // setting).
+            if !TRACK_LINEARISED_AT_STARTUP {
                 horizon = linearise(horizon);
             }
         } else if self.fog.enabled {
@@ -1760,9 +1776,9 @@ impl SceneEnvironment {
             },
             wind: (self.weather.rain as f64 * 0.3) as f32,
             tint: [
-                self.tint[0] * self.tint_strength,
-                self.tint[1] * self.tint_strength,
-                self.tint[2] * self.tint_strength,
+                self.tint[0] * self.tint[3],
+                self.tint[1] * self.tint[3],
+                self.tint[2] * self.tint[3],
             ],
         };
         self.frame
@@ -2532,9 +2548,11 @@ mod tests {
         // The raw third record's fill and fog colours.
         assert_eq!(raw.records[2].fill, [0.168, 0.2004, 0.272]);
         assert_eq!(raw.records[2].fog, [0.126, 0.1503, 0.204]);
-        // The track the scene starts with is the linear-light one.
+        // The scene starts with the track as stored: the shipped game never
+        // runs the linearising step.
         let scene = SceneEnvironment::new(5);
-        let linear = scene.track.unwrap();
+        assert_eq!(scene.track, Some(raw));
+        let linear = EnvironmentTrack::day(true);
         // The sun's colour through the sRGB curve, then the sky colours by
         // the start-up pass's 0.75.
         let sun = linear.records[2].sun[0];
@@ -2545,6 +2563,8 @@ mod tests {
         // `o` is positive, so it is linearised and scaled too.
         let o = linear.records[2].o[0];
         assert!((o - 0.018_386_26).abs() < 1e-6, "{o}");
+        // k's colour is scaled, its fourth slot (6) is not.
+        assert_eq!(linear.records[2].k[3], 6.0);
         // No shipped record lacks `o`; the fill rule still holds on a
         // synthetic one.
         let mut loose = DAY_RECORDS;
@@ -2573,11 +2593,10 @@ mod tests {
         );
         assert_eq!(env.fill, env.current.fill);
         assert_eq!(env.sky_sun_colour, env.current.sun);
-        // The sun colour at 0.4978, worked from the raw table: record 3's
-        // 0.8 sRGB → 0.603827 linear by the startup pass, blended towards
-        // record 4's 0.823529.
+        // The sun colour at 0.4978, from the table as stored: the third
+        // record's 0.02 blended a share of 0.3965 towards the fourth's 0.8.
         assert!(
-            (env.sky_sun_colour[0] - 0.240_332).abs() < 2e-4,
+            (env.sky_sun_colour[0] - 0.329_25).abs() < 5e-4,
             "{:?}",
             env.sky_sun_colour
         );
@@ -2598,8 +2617,7 @@ mod tests {
         env.weather.rain = 0.5;
         assert_eq!(env.apply_frame([0.0, 0.0, 1.0]).wind, 0.15);
         // The tint the renderer receives is the colour times its strength.
-        env.tint = [0.5, 0.25, 0.75, 1.0];
-        env.tint_strength = 2.0;
+        env.tint = [0.5, 0.25, 0.75, 2.0];
         assert_eq!(env.apply_frame([0.0, 0.0, 1.0]).tint, [1.0, 0.5, 1.5]);
         // The light node's constants.
         assert_eq!(SUN_LIGHT_FLAGS, 0x2000_1000);

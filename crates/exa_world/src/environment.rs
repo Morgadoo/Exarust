@@ -269,13 +269,16 @@ pub fn level_lighting_preset(
     let frame = env.apply_frame([0.0, 0.0, 1.0]);
     let sun = lit.then(|| Sun {
         towards: Vec3::from_array(placed.towards).normalize(),
-        // Under a sky the original takes the day record's sun colour; until
-        // Exarust has the record track, the level's own colour stands in.
-        colour: linear(if sky && env.track.is_some() {
-            env.sky_sun_colour
+        // Under a sky the original copies the day record's sun colour onto
+        // the light as it is: the track is not linearised at start-up and
+        // the blend leaves the sun colour alone, so the stored numbers are
+        // used as the light's colour. Without a sky the level's own sRGB
+        // colour is linearised.
+        colour: if sky && env.track.is_some() {
+            Vec3::from_array(env.sky_sun_colour)
         } else {
-            env.sun_colour
-        }),
+            linear(env.sun_colour)
+        },
         illuminance: (if sky {
             SUN_INTENSITY_WITH_SKY
         } else {
@@ -579,6 +582,10 @@ mod tests {
             "{}",
             fog.colour.x
         );
+        // The sun light takes the record's sun colour as stored: the third
+        // record's 0.02 red a share of 0.3965 towards the fourth's 0.8.
+        let sun = outdoor.sun.unwrap();
+        assert!((sun.colour.x - 0.329_25).abs() < 5e-4, "{}", sun.colour.x);
         // The `_Sunlight` node's 3 m reach travels with the sun.
         assert_eq!(outdoor.sun.unwrap().range, 3.0);
     }
