@@ -13,6 +13,7 @@ pub mod chunk;
 pub mod colour;
 pub mod containers;
 pub mod data_stream;
+pub mod desc_phrases;
 pub mod encumbrance;
 pub mod environment;
 pub mod factory;
