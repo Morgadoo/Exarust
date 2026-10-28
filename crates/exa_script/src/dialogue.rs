@@ -1727,6 +1727,7 @@ impl Engine {
                     let due = self
                         .bubbles
                         .say(speaker, listener, &text, scene.now, scene.player);
+                    self.deliver_heard(scene.cast);
                     if let Speaker::Character(c) = speaker {
                         self.set_current(c, Some(id));
                     }
@@ -2199,6 +2200,7 @@ impl Engine {
                 scene.now,
                 scene.player,
             );
+            self.deliver_heard(scene.cast);
         }
         self.panel.chosen = n + 1;
         let conv = if choice.topic < 1 {
@@ -2391,6 +2393,16 @@ impl Engine {
     /// flag; a topic pick clears it when the narrator starts again.)
     pub fn end_narration(&mut self) {
         self.narrator_done = true;
+    }
+
+    /// Apply the hearing stimuli the bubbles raised since the last call:
+    /// each side's contact of the other takes the amount.
+    fn deliver_heard(&mut self, cast: &mut Cast) {
+        for h in self.bubbles.heard.drain(..) {
+            if let Some(c) = cast.get_mut(h.listener) {
+                c.hear_from(h.speaker, h.amount);
+            }
+        }
     }
 
     /// Whether `who` is in a live conversation.

@@ -77,6 +77,17 @@ impl Relation {
     }
 }
 
+/// What a contact remembers of the other's voice: the loudest recent
+/// stimulus and the offset its decay starts from (the original's two
+/// floats beside the contact's AI pointer).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Hearing {
+    /// The loudest stimulus, already scaled by a quarter.
+    pub level: f32,
+    /// How far the level has faded before the next stimulus.
+    pub decay: f32,
+}
+
 /// An AI contact as scripts and dialogues see it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Contact {
@@ -92,6 +103,8 @@ pub struct Contact {
     /// up to 10, nothing beyond. Its meaning in the AI is not determined
     /// (a guess: how far the contact is, in metres).
     pub range: f32,
+    /// What the contact heard of the other recently.
+    pub hearing: Hearing,
 }
 
 impl Contact {
@@ -102,6 +115,24 @@ impl Contact {
             attitude: 0.0,
             state: 0,
             range: 0.0,
+            hearing: Hearing::default(),
+        }
+    }
+
+    /// One heard stimulus from `other`: the amount a quarter, kept as the
+    /// loudest level; a stimulus no louder than the level moves the decay
+    /// floor up to `level − amount`, a louder one takes the level and
+    /// clears the decay. An unordered amount takes the level (the
+    /// original's ordered compares).
+    pub fn hear(&mut self, amount: f32) {
+        let amount = amount * 0.25;
+        if amount <= self.hearing.level {
+            if self.hearing.level - self.hearing.decay < amount {
+                self.hearing.decay = self.hearing.level - amount;
+            }
+        } else {
+            self.hearing.level = amount;
+            self.hearing.decay = 0.0;
         }
     }
 }
@@ -170,6 +201,14 @@ impl Character {
 
     pub fn contact(&self, other: u32) -> Option<&Contact> {
         self.contacts.iter().find(|c| c.other == other)
+    }
+
+    /// Hear `other` say something: the contact of the speaker takes the
+    /// stimulus (no contact, no hearing).
+    pub fn hear_from(&mut self, other: u32, amount: f32) {
+        if let Some(c) = self.contacts.iter_mut().find(|c| c.other == other) {
+            c.hear(amount);
+        }
     }
 
     /// The role list as the original stores it: per entry a u32 id, the

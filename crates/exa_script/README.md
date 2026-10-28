@@ -14,7 +14,7 @@ bubbles, scripted objects, and the story/journal state.
 | `builtins` | the `Actor` and `Role` classes and the globals, and the `Host` trait they act through |
 | `cast` | characters as scripts see them: the shared role list (`exa_formats::roles::HeldRole`, inherit and reference counts), relation records with relation roles and memory blocks, AI contacts |
 | `topics` | topic memory words: cooldowns, activation counts and windows, the memory load/store (with the original's shifted load) |
-| `bubbles` | speech bubbles: durations, the queue per speaker, CR splits, fades, the hearing stimulus, the width/height measure, the frame's fade step and the placement (narrator centre, projected head, margins, the camera projection) |
+| `bubbles` | speech bubbles: durations, the queue per speaker, CR splits, fades, the hearing stimulus and the contact hearing it leaves, the width/height measure, the frame's fade step and the placement (narrator centre, projected head, margins, the camera projection) |
 | `dialogue` | the conversation engine: the role-by-role search, conversations, entry-node starts and calm filters, the node evaluator (both player slots, the original's mood tests), branches and links, ending, event nodes, topic offers, the reply panel's list and pick, the narrator, witnessed and broadcast events, `StartDialogue` and the scripted-object script entry |
 | `objects` | using a scripted world object (its script actor slot, role and sound), the glow pulse tasks and their mesh/light writes, the raise-dead revelation, the crystal collect pass, the drain sources and kinds and the container/record/inventory walks |
 | `story` | campaign order, the journal page |

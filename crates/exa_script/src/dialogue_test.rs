@@ -447,10 +447,39 @@ fn an_ai_greets_and_the_topic_is_remembered() {
     let mut cast = Cast {
         characters: vec![person(GUARD, &[100], &db), person(TRAVELLER, &[1], &db)],
     };
+    cast.get_mut(GUARD)
+        .unwrap()
+        .contacts
+        .push(Contact::new(TRAVELLER));
+    cast.get_mut(TRAVELLER)
+        .unwrap()
+        .contacts
+        .push(Contact::new(GUARD));
     let mut e = Engine::default();
     let mut s = scene(&db, None, &mut cast, 0);
     assert!(e.greet(&mut s, GUARD, TRAVELLER));
     assert_eq!(e.bubbles.list[0].text, b"Halt.");
+    // "Halt." is 5 bytes: (5/2 + 20) × 0.25 = 5.5 in both directions.
+    assert_eq!(
+        s.cast
+            .get(GUARD)
+            .unwrap()
+            .contact(TRAVELLER)
+            .unwrap()
+            .hearing
+            .level,
+        5.5
+    );
+    assert_eq!(
+        s.cast
+            .get(TRAVELLER)
+            .unwrap()
+            .contact(GUARD)
+            .unwrap()
+            .hearing
+            .level,
+        5.5
+    );
     assert_eq!(e.bubbles.list[0].speaker, Speaker::Character(GUARD));
     let id = e.active[0];
     assert_eq!(e.conversations[id].as_ref().unwrap().next_at, 625);
@@ -459,6 +488,17 @@ fn an_ai_greets_and_the_topic_is_remembered() {
     let mut s = scene(&db, None, &mut cast, 626);
     e.update(&mut s);
     assert_eq!(e.bubbles.list[1].text, b"I mean no harm.");
+    // The answer is 15 bytes: (7 + 20) × 0.25 = 6.75, louder than 5.5.
+    assert_eq!(
+        s.cast
+            .get(GUARD)
+            .unwrap()
+            .contact(TRAVELLER)
+            .unwrap()
+            .hearing
+            .level,
+        6.75
+    );
     assert_eq!(e.conversations[id].as_ref().unwrap().next_at, 626 + 875);
     let mut s = scene(&db, None, &mut cast, 1502);
     e.update(&mut s);
@@ -641,6 +681,38 @@ fn turning_away_ends_the_narrator() {
     e.update(&mut s);
     assert!(!e.narrator_done);
     assert_eq!(e.active.len(), 1);
+}
+
+/// A contact keeps the loudest stimulus and the decay floor the original's
+/// hearing routine writes: a no-louder sound only raises the floor; a
+/// louder one resets it. An unordered amount takes the level.
+#[test]
+fn hearing_keeps_the_loudest_and_the_floor() {
+    let mut c = Contact::new(2);
+    c.hear(22.0);
+    assert_eq!((c.hearing.level, c.hearing.decay), (5.5, 0.0));
+    // A quieter sound never lowers the peak: at a zero floor the whole
+    // level is still audible, so 2.5 changes nothing.
+    c.hear(10.0);
+    assert_eq!((c.hearing.level, c.hearing.decay), (5.5, 0.0));
+    // The AI's decay raises the floor over time; a sound louder than the
+    // decayed level (5.5 − 4 = 1.5) is heard by raising it to 2.5, which
+    // sets the floor to 5.5 − 2.5 = 3.
+    c.hearing.decay = 4.0;
+    c.hear(10.0);
+    assert_eq!((c.hearing.level, c.hearing.decay), (5.5, 3.0));
+    // A sound between the decayed level (2.5) and the peak raises it to 3.
+    c.hearing.decay = 4.0;
+    c.hear(12.0);
+    assert_eq!((c.hearing.level, c.hearing.decay), (5.5, 2.5));
+    // A louder one takes the level and clears the floor.
+    c.hear(30.0);
+    assert_eq!((c.hearing.level, c.hearing.decay), (7.5, 0.0));
+    // An unordered amount is louder than any ordered compare: the level
+    // becomes unordered and the floor 0.
+    c.hear(f32::NAN);
+    assert!(c.hearing.level.is_nan());
+    assert_eq!(c.hearing.decay, 0.0);
 }
 
 /// The calm filters: a greeting takes calm class 0 only; a start or reply
@@ -881,23 +953,11 @@ fn the_mood_mask_and_code_test_exactly() {
     use crate::dialogue::{mood, mood_code};
     let mut cast = Cast::default();
     let mut c = Character::new(1, "A");
-    c.contacts.push(Contact {
-        other: 2,
-        concern: 0.0,
-        attitude: 0.0,
-        state: 0,
-        range: 0.0,
-    });
+    c.contacts.push(Contact::new(2));
     cast.characters.push(c);
     let set = |cast: &mut Cast, f: &dyn Fn(&mut Contact)| {
         let c = cast.get_mut(1).unwrap();
-        c.contacts[0] = Contact {
-            other: 2,
-            concern: 0.0,
-            attitude: 0.0,
-            state: 0,
-            range: 0.0,
-        };
+        c.contacts[0] = Contact::new(2);
         f(&mut c.contacts[0]);
     };
 
