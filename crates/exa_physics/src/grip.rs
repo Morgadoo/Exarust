@@ -281,6 +281,29 @@ pub fn empty_hand_words(base_mass: f32) -> (f32, f32) {
     (base_mass * HAND_LINK_SHARE, base_mass * 1.0)
 }
 
+/// An unarmed hand's mobility as a share of its base: a half, a quarter for
+/// a race with heavy claws (its hands weigh 2 or 4 times their part, as
+/// [`exa_formats::weapon_record::Equipped::hand_mass`] says).
+pub const UNARMED_HAND_SHARE: f32 = 0.5;
+/// The same for heavy claws.
+pub const HEAVY_CLAW_HAND_SHARE: f32 = 0.25;
+
+/// The mobility word the equip pass gives each empty hand when the
+/// character holds no weapon (its class has no hands bits): the hand's base
+/// times [`UNARMED_HAND_SHARE`], or [`HEAVY_CLAW_HAND_SHARE`] with heavy
+/// claws. It overwrites the mass word [`empty_hand_words`] restored; the
+/// link mobility word keeps its 0.175 share. Single-precision products, as
+/// the original. Exarust's hand parts have no separate mobility word yet,
+/// so no body reads it.
+pub fn unarmed_hand_mobility(base_mass: f32, heavy_claws: bool) -> f32 {
+    base_mass
+        * if heavy_claws {
+            HEAVY_CLAW_HAND_SHARE
+        } else {
+            UNARMED_HAND_SHARE
+        }
+}
+
 /// The distance (m) between a link's two points now.
 fn link_distance(link: &GripLink, item: &Ragdoll, hand: &Ragdoll) -> Option<f32> {
     let a = item.point_at(link.item, &link.on_item)?;
@@ -1560,5 +1583,10 @@ mod empty_hand_tests {
         assert_eq!(empty_hand_words(2.0), (0.35, 2.0));
         assert_eq!(empty_hand_words(1.0), (0.175, 1.0));
         assert_eq!(empty_hand_words(0.0), (0.0, 0.0));
+        // Unarmed, the equip pass halves the mass word (a quarter with
+        // heavy claws).
+        assert_eq!(unarmed_hand_mobility(2.0, false), 1.0);
+        assert_eq!(unarmed_hand_mobility(2.0, true), 0.5);
+        assert_eq!(unarmed_hand_mobility(0.35, false), 0.175);
     }
 }
