@@ -301,6 +301,10 @@ pub fn layer_level(occupancy: &[u64]) -> u8 {
         .unwrap_or(0)
 }
 
+/// The entries the original's slot-walk stack holds before it logs an
+/// overflow.
+const STACK_ENTRIES: usize = 31;
+
 /// The per-slot body masks the builder tests a slot's chosen node against:
 /// a node is kept (and a body part merged) when its slot's mask meets the
 /// visible mask. Each holds the slot's own bit; the pelvis, belly, chest,
@@ -505,15 +509,16 @@ impl<'a> Assembler<'a> {
                         self.groups.push(group);
                     }
                 } else {
-                    // The original's private stack holds at most 31 entries:
-                    // pushing the 32nd raises "Body part stack overflow",
-                    // which ends the slot's assembly. Nothing is kept then.
-                    if stack.len() + n.children.len() > 31 {
-                        self.groups.clear();
-                        self.best = -0x1000;
-                        return false;
-                    }
                     push_children(&mut stack, n);
+                    // The original's stack is a fixed 32-slot buffer: a push
+                    // that brings it past 31 entries logs "Body part stack
+                    // overflow" through the engine's message hook (level 4,
+                    // logged and queued on screen, nothing raised) and the
+                    // walk carries on. The stack here grows instead of
+                    // overrunning, so the walk continues the same way.
+                    if stack.len() > STACK_ENTRIES {
+                        bevy::log::warn!("body part stack overflow");
+                    }
                 }
             }
         }
@@ -884,11 +889,10 @@ mod tests {
         }
     }
 
-    /// The fallback looks under nodes of the parent slot whose layer is the
-    /// wanted one; the first parent-slot node of another layer ends that
-    /// tree's walk.
+    /// The original logs past 31 stack entries and carries on: a body with
+    /// forty children under one node still assembles its slot.
     #[test]
-    fn the_stack_stops_at_thirty_one_entries() {
+    fn the_stack_walk_goes_on_past_thirty_one_entries() {
         use crate::runtime::Body;
         let mut pass = GarmentPass {
             visible: !0,
@@ -914,12 +918,14 @@ mod tests {
             a.chosen[9].map(|i| body.nodes[i].name.clone()).as_deref(),
             Some("0900Chest")
         );
-        // Forty do not: the 32nd push ends the assembly with nothing kept.
+        // Forty overflow the original's buffer; the walk still finds it.
         let body = wide(40);
         let mut a = Assembler::new(&body, &roots, &pass);
-        assert!(!a.assemble_slot(9));
-        assert!(a.groups.is_empty());
-        assert_eq!(a.chosen[9], None);
+        assert!(a.assemble_slot(9));
+        assert_eq!(
+            a.chosen[9].map(|i| body.nodes[i].name.clone()).as_deref(),
+            Some("0900Chest")
+        );
     }
 
     /// The fallback looks under nodes of the parent slot whose layer is the

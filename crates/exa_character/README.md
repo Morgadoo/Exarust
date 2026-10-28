@@ -104,9 +104,9 @@ physique values and the body morphs they select remain the body's concern
   bits are scored against and the garment's visible mask), the slot
   assembler (best groups per slot, child slots pruned under the group's
   parent-slot node, the same-bits fallback, the first group chosen where
-  the slot's select mask meets the visible mask; its node stack keeps at
-  most 31 entries, as the original's does, and a deeper tree ends that
-  slot's assembly with nothing kept), the cull bits and the
+  the slot's select mask meets the visible mask; past 31 node-stack
+  entries it logs the original's "Body part stack overflow" warning and
+  walks on), the cull bits and the
   body mask (the union's innermost byte, which agrees with
   `Item::hidden_slots`). The dressed-mesh pass drives them: the running
   game plans each character from its items, so the mask decides which body
