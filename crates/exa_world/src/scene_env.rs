@@ -5,9 +5,11 @@
 //! app; [`crate::environment`] applies them to a scene.
 //!
 //! Evidence: the plug-in's constructor, its setters, the sun placement, the
-//! record pick-and-blend, the sky dimming and the per-frame apply (reverse
-//! engineered). The record track's data, the sky shader and the sound
-//! effects are not decoded; the parts that would need them are marked.
+//! built-in six-record daylight track and its start-up pass, the record
+//! pick-and-blend, the sky dimming and the per-frame apply (reverse
+//! engineered). The sky shader, the environment cube's masked tint upload and
+//! the sound effects are not decoded; the parts that would need them are
+//! marked.
 
 use exa_formats::environment::{Environment, SunMode};
 
@@ -1030,7 +1032,8 @@ pub struct SceneEnvironment {
     pub record_fog: [f32; 3],
     /// The record the daylight picked, blended and dimmed.
     pub current: EnvRecord,
-    /// The time-of-day track, when the level has one.
+    /// The time-of-day track. Every scene starts with the engine's built-in
+    /// six-record track ([`EnvironmentTrack::day`]).
     pub track: Option<EnvironmentTrack>,
     /// Unit vector towards the last placed sun or moon.
     pub sun_towards: [f32; 3],
