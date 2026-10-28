@@ -104,8 +104,11 @@ machine). The race maps are read unshifted: the look seed's two offsets
 the job as data: `ModelLoader::composited_skin` decodes the race, layer and
 beard maps on the CPU, composes and uploads the three maps as an
 `ExaMaterial` (white diffuse, packed surface, normal, subsurface, blood),
-cached by the job's key (stem, tone, side, beard and layers).
-The running game feeds it to each character's merged skin run; a job whose
+cached by the job's key (stem, tone, side, beard and layers);
+`skin_compose_inputs`, `SkinComposeInputs::generate` (pure, for a task
+thread) and `finish_composited_skin` split it for the async dressing pass.
+`run_mesh` rebuilds each run's tangents with the splitter, as every drawn
+group's are. The running game feeds it to each character's merged skin run; a job whose
 textures do not decode falls back to the race maps plus tone in
 `human_skin`.
 

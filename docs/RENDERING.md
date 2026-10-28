@@ -728,9 +728,11 @@ linear images with a mip chain. The material keeps the built-in skin's
 subsurface scatter and packed-specular flags, sets its diffuse to white
 (the maps carry the tone) and takes the three maps. The composite is built
 once per distinct look and cached by the job's key: body stem, tone, side,
-beard and normal layers (the seed does not change the maps). On this machine it costs 14 ms at
-512² and 124 ms at 1024² with the eight-thread split, about 0.3 s for
-`exanima01`'s characters at 512. A body whose race map or base normal does
+beard and normal layers (the seed does not change the maps). The dressing
+pass generates it on the async compute pool and the merged skin run draws
+the race maps until it is uploaded; it costs 14 ms at 512² and 124 ms at
+1024² with the eight-thread split, so `exanima01`'s dressing stage stays
+as long as the per-node draw's. A body whose race map or base normal does
 not decode keeps the race maps plus tone. Not yet: the feral darkening
 (the job keeps it as data; the shader does not apply it), the player's tone
 (it is in the save, which is not shipped), the decomposition dirt layer in

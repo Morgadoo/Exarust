@@ -215,9 +215,10 @@ tested rules of their own.
   beard overlays per texel (`exa_assets::skin_composite`) and uploads the
   sRGB colour, linear surface and linear normal maps, caching the material
   by the job's key (stem, tone, side, beard and layers). The
-  maps are generated after the merge, once per distinct look: 14 ms at
-  512² and 124 ms at 1024² on this machine's 8 threads (about 0.3 s for
-  `exanima01`'s characters at 512). The race maps are read unshifted (the
+  maps are generated once per distinct look on the async compute pool
+  (`PendingSkins`; the skin run draws the race maps until they are
+  uploaded): 14 ms at 512² and 124 ms at 1024² on 8 threads, so a level's
+  dressing stage takes no longer than the per-node draw's. The race maps are read unshifted (the
   seed's offsets move only the decomposition pass). The darkening (the feral level) is not applied by
   the shader yet; a body whose race texture set does not decode keeps the
   race maps plus tone.
