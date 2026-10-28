@@ -23,8 +23,10 @@
 //! level change) is never taken here.
 
 use bevy::prelude::*;
+use exa_ui::gui_draw::{GuiFrames, GuiTextures};
 use exa_ui::selection::{
-    self, BUBBLE_LIFT_CM, Click, DestinationScreen, Journey, MARK_FLAG, TravelStep,
+    self, BUBBLE_LIFT_CM, Click, DestinationScreen, Journey, MARK_FLAG, SelectionPalette,
+    TravelStep,
 };
 use exa_world::{PlacedItem, TeleportDevice};
 
@@ -133,8 +135,9 @@ fn open_screen(
         }
         let rows = message.screen.rows();
         state.open = Some(OpenScreen {
-            screen: DestinationScreen::open(
+            screen: DestinationScreen::open_with_markers(
                 message.screen.destinations.to_vec(),
+                Vec::new(),
                 rows,
                 message.adapter,
                 clock.now_ms,
@@ -181,12 +184,11 @@ fn screen_input(
         }
         match open.screen.click(input.buttons) {
             Click::Dismiss => open.screen.close(now),
-            Click::Travel { level } => {
+            Click::Travel { level, marker } => {
                 let crystal = items
                     .get(open.item)
                     .ok()
                     .map(|item| (item.id, item.condition));
-                let marker = 0;
                 let journey = selection::journey(crystal, level, marker, now);
                 let at = devices
                     .get(open.device)
@@ -227,9 +229,16 @@ fn screen_input(
     }
 }
 
-/// Steps the screen's reveal, close and wobble as its paint does, and
-/// drops it once the close tail is over.
-fn paint_screen(clock: Res<EffectClock>, mut state: ResMut<PortalScreenState>) {
+/// Steps the screen's reveal, close and wobble as its paint does, drops it
+/// once the close tail is over, and submits the screen through the draw
+/// path: the backdrop and every row's symbol, the symbol atlas sampled by
+/// the symbol shader's own body ([`selection::symbol_image`]).
+fn paint_screen(
+    clock: Res<EffectClock>,
+    mut state: ResMut<PortalScreenState>,
+    textures: Option<Res<GuiTextures>>,
+    mut frames: Option<ResMut<GuiFrames>>,
+) {
     let Some(open) = state.open.as_mut() else {
         return;
     };
@@ -238,9 +247,32 @@ fn paint_screen(clock: Res<EffectClock>, mut state: ResMut<PortalScreenState>) {
     let painted = open
         .screen
         .paint(clock.now_ms, width, height, unit, || random.unit() as f32);
-    if painted.is_none() {
+    let Some(draws) = painted else {
         state.open = None;
+        return;
+    };
+    if width <= 0 || height <= 0 {
+        return;
     }
+    let Some(frames) = frames.as_mut() else {
+        return;
+    };
+    let empty = GuiTextures::default();
+    let textures = textures.as_deref().unwrap_or(&empty);
+    let Some(atlas) = textures.get(selection::SCREEN_ATLAS) else {
+        return;
+    };
+    let palette = exa_ui::line_skin::line_palette();
+    // The skin's bytes become floats by one multiply with 1/255 in single
+    // precision, as the engine's colour conversion does.
+    let unit_colour =
+        |bytes: [u8; 4]| bytes.map(|byte| f32::from(byte) * f32::from_bits(0x3b80_8081));
+    let palette = SelectionPalette {
+        symbol_base: unit_colour(palette.text[6]),
+        symbol_add: unit_colour(palette.highlight[9]),
+        backdrop: palette.form[3],
+    };
+    frames.push(selection::frame(&draws, atlas, &palette, width, height));
 }
 
 /// Steps every journey: its bubble first, then the journey's own tick.

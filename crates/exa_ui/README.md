@@ -4,7 +4,11 @@ User interface: main menu, character creation, inventory, arena management, HUD,
 
 **Phase:** Phase 4–7 (see [`docs/PLAN.md`](../../docs/PLAN.md)). Status: started.
 
-So far ([`docs/UI.md`](../../docs/UI.md)): the game's bitmap font
+So far ([`docs/UI.md`](../../docs/UI.md)): the destination screen's symbol
+shader and the company emblem's four-layer shader run per fragment into
+images the draw path shows, the divination cards' sheet cells and shadow
+mesh draw the same way, and the arena loadout's 27 control records are
+decoded (`loadout::CONTROLS`); the game's bitmap font
 (`font`), the interface scale from the window's height (`scale`), the
 frame-rate readout (`fps`), the loading screen (`loading`, whose camera
 draws the whole interface over the game's view, premultiplied), the

@@ -118,9 +118,10 @@ pub use cursor::{
     pointer_visibility,
 };
 pub use div_card::{
-    CARDS, CardDraw, CardVertex, Reading, SHEET, SOUND, ShadowVertex, back_quad, card_place,
-    card_size, clock_step, deal_cards, draw_order as div_draw_order, ease, face_quad, fade_alpha,
-    mouse as div_mouse, shadow_mesh, shadow_outline, turn, turn_share,
+    CARDS, CardDraw, CardVertex, Reading, SHEET, SOUND, ShadowVertex, back_image, back_quad,
+    card_place, card_sample, card_size, clock_step, deal_cards, draw_order as div_draw_order, ease,
+    face_image, face_quad, fade_alpha, frame as div_frame, mouse as div_mouse, rotation,
+    shadow_mesh, shadow_outline, turn, turn_share,
 };
 pub use drop_down::{
     DropCommand, DropDownList, DropDownOwner, DropLayout, DropPress, DropRelease, LIST_ATTRIBUTES,
@@ -129,8 +130,9 @@ pub use drop_down::{
 };
 pub use emblem_form::{
     BACKGROUND_MAX, BACKGROUND_STEM, COLOUR_THREE_TABLE, COLOUR_UNIFORMS, DESIGN_MAX, DESIGN_STEM,
-    EMBLEM_SHADER, EmblemDraw, EmblemEditor, EmblemRandom, EmblemRecord, MIRROR_UNIFORM,
-    PictureSelection, draw_order as emblem_draw_order, picture, preview_quad, select_background,
+    EMBLEM_SHADER, EmblemDraw, EmblemEditor, EmblemPreview, EmblemRandom, EmblemRecord,
+    MIRROR_UNIFORM, PictureSelection, draw_order as emblem_draw_order, emblem_sample, picture,
+    preview_colours, preview_image, preview_quad, preview_textures, select_background,
     select_design,
 };
 pub use fade::DeathFade;
@@ -180,9 +182,10 @@ pub use line_skin::{
 };
 pub use loading::LoadingStatus;
 pub use loadout::{
-    DropResult, DropSource, EquipFacts, EquipKind, FORM_HEIGHT, FORM_OPACITY, FORM_WIDTH,
-    HeldWeapon, LoadoutEditor, LoadoutItem, LoadoutLayout, LoadoutMode, LoadoutSave, OFFHAND_FLAG,
-    Slot, apply_drop, can_equip, copies, encumbrance, item_cost, layout as loadout_layout,
+    CONTROLS as LOADOUT_CONTROLS, DropResult, DropSource, EquipFacts, EquipKind, FORM_HEIGHT,
+    FORM_OPACITY, FORM_WIDTH, FormControl, HeldWeapon, LoadoutEditor, LoadoutItem, LoadoutLayout,
+    LoadoutMode, LoadoutSave, OFFHAND_FLAG, Slot, apply_drop, can_equip,
+    controls as loadout_controls, copies, encumbrance, item_cost, layout as loadout_layout,
     may_equip, opacity as loadout_opacity, points_used, save_on_close, unequip,
 };
 pub use match_board::{

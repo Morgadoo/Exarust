@@ -241,9 +241,74 @@ pub fn apply_klean(name: &str, editor: &mut exa_ui::EmblemEditor) -> bool {
     true
 }
 
+/// The editor's preview as a draw-path layer: a quad over
+/// [`exa_ui::preview_quad`], filled by the emblem shader's own body
+/// ([`exa_ui::emblem_sample`]) at the quad's size. The four pictures are
+/// looked up by the record's names and the two shared layers. `None` when
+/// any layer is not loaded.
+pub fn preview_layer(
+    editor: &exa_ui::EmblemEditor,
+    textures: &exa_ui::gui_draw::GuiTextures,
+    unit: i32,
+) -> Option<exa_ui::gui_draw::GuiLayer> {
+    let preview = editor.preview(|index| {
+        // The palette table is outside the pack; the index is used as a
+        // grey ramp until the palette file is read [guess].
+        [index, index, index]
+    });
+    let names = &preview.textures;
+    let layers = [
+        textures.get(&names[0])?,
+        textures.get(&names[1])?,
+        textures.get(&names[2])?,
+        textures.get(&names[3])?,
+    ];
+    let rect = exa_ui::preview_quad(exa_ui::emblem_form::FORM_WIDTH, unit);
+    let size = rect[2] - rect[0];
+    let image = exa_ui::preview_image(&preview, layers, size)?;
+    let mut batch = exa_ui::skin::SkinBatch::new();
+    batch.select(2, 0, true);
+    batch.blend = exa_ui::gui_draw::BLEND_ALPHA;
+    batch.tex_col = Some(1.0);
+    batch.set_ink([255; 4]);
+    batch.begin();
+    batch.set_uv(0.0, 1.0);
+    batch.vertex(rect[0] as f32, rect[1] as f32);
+    batch.set_uv(0.0, 0.0);
+    batch.vertex(rect[0] as f32, rect[3] as f32);
+    batch.set_uv(1.0, 0.0);
+    batch.vertex(rect[2] as f32, rect[3] as f32);
+    batch.set_uv(1.0, 1.0);
+    batch.vertex(rect[2] as f32, rect[1] as f32);
+    batch.end_quads();
+    Some(exa_ui::gui_draw::GuiLayer::new(
+        batch,
+        exa_ui::gui_draw::LayerTexture::Owned(image),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_preview_draws_the_emblem_shader_into_a_layer() {
+        let editor = exa_ui::EmblemEditor::new();
+        let mut textures = exa_ui::gui_draw::GuiTextures::default();
+        let solid = exa_ui::gui_draw::GuiTexture::solid([255, 255, 255, 255]);
+        for name in exa_ui::preview_textures(&editor.record()) {
+            textures.textures.insert(name, solid.clone());
+        }
+        let layer = preview_layer(&editor, &textures, 4).unwrap();
+        assert_eq!(layer.batch.primitives.len(), 1);
+        let exa_ui::gui_draw::LayerTexture::Owned(image) = &layer.texture else {
+            panic!("the preview carries its rendered image");
+        };
+        assert_eq!(image.width, 256);
+        // Missing pictures draw nothing.
+        let empty = exa_ui::gui_draw::GuiTextures::default();
+        assert!(preview_layer(&editor, &empty, 4).is_none());
+    }
 
     #[test]
     fn the_company_emblem_round_trips_through_the_editor() {
