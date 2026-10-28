@@ -832,12 +832,23 @@ fn shader(game: &GameData, request: &ShaderRequest) -> Result<()> {
         return Ok(());
     }
     if request.warmup {
-        for key in warmup_keys(
+        use exa_render::shader_cache::{ProgramCache, ProgramWords};
+        let keys = warmup_keys(
             request.quality,
             request.shadow_quality,
             request.supersample,
             request.vxgi_spec,
-        ) {
+        );
+        let mut cache = ProgramCache::new();
+        let mut built = 0u32;
+        let stats = cache.warm(
+            &keys.iter().map(|key| key.key.clone()).collect::<Vec<_>>(),
+            |_: &ProgramWords| {
+                built += 1;
+                built
+            },
+        );
+        for key in &keys {
             let program = program_for_shader_word(key.key.flags.shader);
             println!(
                 "row {:2} lights {} mat {:#010x} shd {:#010x} obj {:#010x} env {:#010x} {}_f",
@@ -850,6 +861,10 @@ fn shader(game: &GameData, request: &ShaderRequest) -> Result<()> {
                 program.set(),
             );
         }
+        println!(
+            "warm-up: {} keys intern {} buckets, {} programs built, {} reused",
+            stats.interned, stats.buckets, stats.compiled, stats.reused
+        );
         return Ok(());
     }
 

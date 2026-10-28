@@ -338,6 +338,9 @@ pub struct MaterialInputs {
     pub refraction: f32,
     /// The supersampling pass, which offsets the displacement taps.
     pub subpass: u32,
+    /// The shader word's `DispSdw`: the displacement taps and their scale
+    /// are written only when the program has displacement shadows.
+    pub displacement_shadows: bool,
 }
 
 impl Default for MaterialInputs {
@@ -351,6 +354,7 @@ impl Default for MaterialInputs {
             height_texels: None,
             refraction: 0.0,
             subpass: 0,
+            displacement_shadows: false,
         }
     }
 }
@@ -472,20 +476,38 @@ impl MaterialUniforms {
             ]
         };
 
-        let blood = crate::shader_program::dirt_mode(material) == 4;
-        let mat_drt = if blood {
-            [0.45, 0.03, 0.02, 0.5]
-        } else {
-            [0.0, 0.0, 0.0, 2.0 - material.dirt_amount]
-        };
-
-        let drt_uvs = match inputs.diffuse_texture {
-            Some((w, h)) if w != 0 && h != 0 && w >= h => [w as f32 / h as f32, 1.0],
-            Some((w, h)) if w != 0 && h != 0 => [1.0, h as f32 / w as f32],
-            _ => [1.0, 1.0],
+        // The dirt block. Only a dirt mode writes it: mode 4 (blood) copies
+        // the diffuse texture's tint into `MatDrt` and leaves `DrtUVs`; any
+        // other mode stores `2 − the texture's dirt strength` in `MatDrt.w`
+        // and the diffuse map's aspect in `DrtUVs`. The engine's block lives
+        // on the drawing state, so a field it skips keeps the previous draw's
+        // value; Exarust writes zero there. The engine reads the strength and
+        // the tint from the diffuse texture's record; the record reader here
+        // carries the strength on the material and has no tint, so a blood
+        // material uses the shipped speckle's tint [guess].
+        let dirt = crate::shader_program::dirt_mode(material);
+        let (mat_drt, drt_uvs) = match dirt {
+            0 => ([0.0; 4], [0.0, 0.0]),
+            4 => ([0.45, 0.03, 0.02, 0.5], [0.0, 0.0]),
+            _ => (
+                [0.0, 0.0, 0.0, 2.0 - material.dirt_amount],
+                match inputs.diffuse_texture {
+                    // The stored width over height in double, narrowed; a
+                    // ratio below one (not NaN) turns into `(1, 1/ratio)`.
+                    Some((w, h)) => {
+                        let aspect = (f64::from(w) / f64::from(h)) as f32;
+                        if 1.0 > aspect {
+                            [1.0, 1.0 / aspect]
+                        } else {
+                            [aspect, 1.0]
+                        }
+                    }
+                    None => [1.0, 1.0],
+                },
+            ),
         };
         let mat_dsp = match inputs.height_texels {
-            Some((x, y)) => [f32::from(x) * 3e-5, f32::from(y) * 3e-5],
+            Some((x, y)) => [(f64::from(x) * 3e-5) as f32, (f64::from(y) * 3e-5) as f32],
             None => [0.0, 0.0],
         };
 
@@ -499,12 +521,16 @@ impl MaterialUniforms {
             term.abs(),
             inputs.refraction,
         ];
-        let dsp_sdw = [
-            material.displacement_step * 0.004,
-            1.0 + 0.125 * inputs.subpass as f32,
-            material.displacement_bias * 0.05,
-            0.0,
-        ];
+        let dsp_sdw = if inputs.displacement_shadows {
+            [
+                (f64::from(material.displacement_step) * 0.004) as f32,
+                1.0 + 0.125 * inputs.subpass as f32,
+                (f64::from(material.displacement_bias) * 0.05) as f32,
+                0.0,
+            ]
+        } else {
+            [0.0; 4]
+        };
 
         Self {
             mat_dif,
@@ -556,6 +582,14 @@ pub fn parallax_texels(amount: f32, width: u32, height: u32) -> (u16, u16) {
     (x, y)
 }
 
+/// Whether a height layer still displaces. The engine drops the height
+/// map's material bit (`0x800000`) and the shader's displacement bit
+/// (`0x100`) for a one-texel-tall map, and stores the texel scales as zero;
+/// any other height keeps them. The stored height is 16 bits.
+pub fn height_layer_enabled(height: u32) -> bool {
+    (height & 0xFFFF) != 1
+}
+
 /// A spot light's vertical shaping terms from its two stored values `q` and
 /// `p`: `y = ½·sin(qπ/2)` (`3 − 3/cos(qπ/2)` for a negative `q`), `z = p + 1`
 /// and `w = 1/(2^z − 1)`.
@@ -578,6 +612,17 @@ pub struct LightUniform {
     pub position: [f32; 4],
     pub colour: [f32; 4],
     pub shape: [f32; 4],
+}
+
+impl Default for LightUniform {
+    /// A slot that has never been filled.
+    fn default() -> Self {
+        Self {
+            position: [0.0; 4],
+            colour: [0.0; 4],
+            shape: [0.0; 4],
+        }
+    }
 }
 
 /// A light's inputs.
@@ -821,13 +866,101 @@ mod tests {
         close(u.mat_spc[3], 0.9);
         // No emissive layer: the colour stays as stored (zero here).
         close(u.mat_emi[3], 1.0);
-        // No dirt mode and no dirt layer: MatDrt.w = 2 − 0x30.
-        close(u.mat_drt[3], 2.0);
+        // No dirt mode: the writer skips the dirt block (zero here).
+        assert_eq!(u.mat_drt, [0.0; 4]);
         close(u.mat_dsp[0], 0.0);
-        assert_eq!(u.drt_uvs, [1.0, 1.0]);
+        assert_eq!(u.drt_uvs, [0.0, 0.0]);
+        // No displacement shadows: the tap block stays zero too.
+        assert_eq!(u.dsp_sdw, [0.0; 4]);
         // No fall-off: the packed sign, exponent, amount and refraction.
         assert_eq!(u.opc_fll, [0.0, 0.0, -0.0, 0.0]);
         assert_eq!(u.to_bytes().len(), 112);
+    }
+
+    #[test]
+    fn the_dirt_block_follows_the_dirt_mode() {
+        // Modes 1–3 store the strength and the diffuse map's aspect.
+        for extra in [0x0u32, 0x1000, 0x2000] {
+            let mut m = material();
+            m.extra = extra;
+            m.layers.push(exa_formats::material::TextureLayer {
+                slot: TextureSlot::Dirt,
+                texture: "dirt".into(),
+                parameter: 0,
+                amount: 0.0,
+            });
+            m.dirt_amount = 0.25;
+            let inputs = MaterialInputs {
+                diffuse_texture: Some((512, 256)),
+                ..MaterialInputs::default()
+            };
+            let u = MaterialUniforms::from_material(&m, &inputs);
+            assert_eq!(u.mat_drt, [0.0, 0.0, 0.0, 1.75]);
+            assert_eq!(u.drt_uvs, [2.0, 1.0]);
+            let inputs = MaterialInputs {
+                diffuse_texture: Some((256, 512)),
+                ..MaterialInputs::default()
+            };
+            let u = MaterialUniforms::from_material(&m, &inputs);
+            assert_eq!(u.drt_uvs, [1.0, 2.0]);
+            // A zero-width map's ratio 0 still takes the `1/ratio` branch;
+            // the NaN of an empty map fails `1 > ratio` and is kept.
+            let inputs = MaterialInputs {
+                diffuse_texture: Some((0, 4)),
+                ..MaterialInputs::default()
+            };
+            let u = MaterialUniforms::from_material(&m, &inputs);
+            assert_eq!(u.drt_uvs, [1.0, f32::INFINITY]);
+            let inputs = MaterialInputs {
+                diffuse_texture: Some((0, 0)),
+                ..MaterialInputs::default()
+            };
+            let u = MaterialUniforms::from_material(&m, &inputs);
+            assert!(u.drt_uvs[0].is_nan());
+            assert_eq!(u.drt_uvs[1], 1.0);
+        }
+        // Blood (mode 4) takes the speckle's tint and does not write the uv
+        // block (zero here).
+        let mut m = material();
+        m.extra = 0x4000;
+        m.dirt_amount = 0.25;
+        let u = MaterialUniforms::from_material(
+            &m,
+            &MaterialInputs {
+                diffuse_texture: Some((512, 256)),
+                ..MaterialInputs::default()
+            },
+        );
+        assert_eq!(u.mat_drt, [0.45, 0.03, 0.02, 0.5]);
+        assert_eq!(u.drt_uvs, [0.0, 0.0]);
+        // A mode the factory does not name writes nothing.
+        let mut m = material();
+        m.extra = 0x3000;
+        m.dirt_amount = 0.5;
+        let u = MaterialUniforms::from_material(&m, &MaterialInputs::default());
+        assert_eq!(u.mat_drt, [0.0; 4]);
+    }
+
+    #[test]
+    fn displacement_and_parallax_values_use_the_writers_precision() {
+        let mut m = material();
+        m.displacement_step = 0.7;
+        m.displacement_bias = 0.3;
+        let inputs = MaterialInputs {
+            displacement_shadows: true,
+            subpass: 3,
+            height_texels: Some((100, 250)),
+            ..MaterialInputs::default()
+        };
+        let u = MaterialUniforms::from_material(&m, &inputs);
+        assert_eq!(u.dsp_sdw[0], (f64::from(0.7f32) * 0.004) as f32);
+        assert_eq!(u.dsp_sdw[1], 1.375);
+        assert_eq!(u.dsp_sdw[2], (f64::from(0.3f32) * 0.05) as f32);
+        // The texel counts are widened to double, scaled and narrowed.
+        assert_eq!(
+            u.mat_dsp,
+            [(100.0f64 * 3e-5) as f32, (250.0f64 * 3e-5) as f32]
+        );
     }
 
     #[test]
@@ -880,6 +1013,10 @@ mod tests {
         assert_eq!(parallax_texels(0.25, 1536, 1536), (16, 16));
         // 0.31·50 = 15.5 → 16: rounding, not flooring.
         assert_eq!(parallax_texels(0.31, 1024, 1024).1, 32);
+        // A one-texel-tall height map turns the whole height layer off.
+        assert!(!height_layer_enabled(1));
+        assert!(height_layer_enabled(0));
+        assert!(height_layer_enabled(2));
     }
 
     #[test]

@@ -584,6 +584,41 @@ pub struct GeometryOptions {
     pub vertex_delta: bool,
 }
 
+/// The node flags' animated/deformed bit (`0x8000`): such an object uploads
+/// a vertex-delta stream, and the engine switches its cull state.
+pub const NODE_VERTEX_DELTA: u32 = 0x8000;
+
+impl GeometryOptions {
+    /// The streams a draw adds to the object word, from the renderer's
+    /// colour-stream switch and the node's flags.
+    pub fn of_draw(vertex_colors: bool, node_flags: u32) -> Self {
+        Self {
+            vertex_colors,
+            vertex_delta: node_flags & NODE_VERTEX_DELTA != 0,
+        }
+    }
+}
+
+/// The object word of a draw: the frame part ([`base_object`]) plus the
+/// streams the geometry has.
+pub fn object_word(samples: u32, supersample: u32, geometry: GeometryOptions) -> u32 {
+    let mut word = base_object(samples, supersample);
+    if geometry.vertex_colors {
+        word |= object::VERTEX_COLOR;
+    }
+    if geometry.vertex_delta {
+        word |= object::VERTEX_DELTA;
+    }
+    word
+}
+
+/// Whether a draw gathers lights: an object with a light list whose
+/// material word has the diffuse or specular bit. An object without a list,
+/// or an unlit/emissive-only material, keeps its slots cleared.
+pub fn draw_needs_lights(material_word: u32, has_light_list: bool) -> bool {
+    has_light_list && material_word & 6 != 0
+}
+
 /// The program keys a material compiles to in one scene: one per light
 /// count, 0 through 6, for lit materials, one for unlit ones (no light is
 /// gathered for them). Every light is a point light; [`ProgramKey::set_light`]
@@ -597,13 +632,7 @@ pub fn program_keys(
         return Vec::new();
     };
     let samples = shadow_samples(scene.shadow_quality, scene.supersample);
-    let mut object = base_object(samples, scene.supersample);
-    if geometry.vertex_colors {
-        object |= object::VERTEX_COLOR;
-    }
-    if geometry.vertex_delta {
-        object |= object::VERTEX_DELTA;
-    }
+    let object = object_word(samples, scene.supersample, geometry);
     let mut environment = scene.environment();
     if shd & shader::FAST_LIGHT != 0 {
         environment &= !environment::VOXEL_GI_SPECULAR;
@@ -839,6 +868,29 @@ pub fn warmup_applies(row: &WarmupRow, quality: u32) -> bool {
     quality > 4
         || (row.shader & shader::DISPLACEMENT_SHADOW == 0
             && (quality > 3 || row.material & 0x80_0000 == 0))
+}
+
+/// One step of the engine's warm-up walk.
+///
+/// Steps 0–28 compile one table row each; step 29 hands control to the
+/// completion callback and any later step does nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WarmupStep {
+    /// Compile the row at this index (`0..29`).
+    Row(usize),
+    /// The table is done: the completion callback runs.
+    Complete,
+    /// Past the table: nothing happens.
+    OutOfRange,
+}
+
+/// The row the warm-up's step `index` compiles, or the completion step.
+pub fn warmup_step(index: u32) -> WarmupStep {
+    match index as usize {
+        i if i < WARMUP.len() => WarmupStep::Row(i),
+        i if i == WARMUP.len() => WarmupStep::Complete,
+        _ => WarmupStep::OutOfRange,
+    }
 }
 
 /// A key in the warm-up table: the row, its light count and the resulting
@@ -1147,6 +1199,25 @@ mod tests {
     }
 
     #[test]
+    fn the_draws_object_word_takes_the_stream_flags() {
+        // Vertex colours come from the renderer's colour switch, vertex
+        // deltas from the node's animated bit.
+        let geometry = GeometryOptions::of_draw(true, 0x8000);
+        assert_eq!(
+            object_word(2, 3, geometry),
+            (1 << 24) | object::QUAD_RENDER | object::VERTEX_COLOR | object::VERTEX_DELTA
+        );
+        let plain = GeometryOptions::of_draw(false, 0);
+        assert_eq!(object_word(1, 0, plain), 0);
+        // Only a list-carrying, lit object gathers lights; an emissive-only
+        // record does not.
+        assert!(draw_needs_lights(0x7, true));
+        assert!(draw_needs_lights(0x2, true));
+        assert!(!draw_needs_lights(0x8, true));
+        assert!(!draw_needs_lights(0x7, false));
+    }
+
+    #[test]
     fn program_keys_cover_zero_through_six_lights() {
         let m = with(
             material(1, 0x2 | 0x4 | 0x20000, 0x100, 0),
@@ -1204,6 +1275,15 @@ mod tests {
             keys[0].flags.environment & environment::VOXEL_GI_SPECULAR,
             environment::VOXEL_GI_SPECULAR
         );
+    }
+
+    #[test]
+    fn the_warm_up_walk_has_a_completion_step() {
+        assert_eq!(warmup_step(0), WarmupStep::Row(0));
+        assert_eq!(warmup_step(28), WarmupStep::Row(28));
+        assert_eq!(warmup_step(29), WarmupStep::Complete);
+        assert_eq!(warmup_step(30), WarmupStep::OutOfRange);
+        assert_eq!(warmup_step(u32::MAX), WarmupStep::OutOfRange);
     }
 
     #[test]
