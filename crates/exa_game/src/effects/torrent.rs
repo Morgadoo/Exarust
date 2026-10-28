@@ -872,9 +872,10 @@ impl Torrent {
                 normals[i] = normalize(lerp(stream.normals[1], stream.normals[2], t));
             }
             stream.normals[3] = normals[count - 2];
+            let mut strip = RibbonMesh::default();
             let mut along = 0.0f32;
-            for i in 0..count - 1 {
-                mesh.push_torrent_quad(
+            for i in 0..count - 2 {
+                strip.push_torrent_quad(
                     points[i],
                     normals[i],
                     widths[i].age,
@@ -887,7 +888,17 @@ impl Torrent {
                 let squared = (delta.x * delta.x + delta.y * delta.y) + delta.z * delta.z;
                 along = (f64::from(along) + f64::from(squared) * step) as f32;
             }
+            let base = if mesh.positions.is_empty() {
+                0
+            } else {
+                mesh.vertex_count() as i32 - 2
+            };
+            if !mesh.positions.is_empty() {
+                mesh.drop_triangles(2);
+            }
+            mesh.append(&strip, base, |point| point);
         }
+        mesh.drop_triangles(2);
         mesh
     }
 }
@@ -1199,10 +1210,11 @@ mod tests {
         }
         let frame = t.frame(1.0);
         let mesh = t.ribbon(&frame, Vec3::new(1000.0, 1000.0, 0.0));
-        // Three samples make a four-point spine and three quads a stream,
-        // each emitter call adding two vertices.
-        assert_eq!(mesh.positions.len(), 16 * 6);
-        assert_eq!(mesh.indices.len(), 16 * 3 * 6);
+        // Three samples make a four-point spine and two emitter calls a
+        // stream; the streams chain onto the previous stream's last pair
+        // and the final closing pair is dropped.
+        assert_eq!(mesh.positions.len(), 16 * 4);
+        assert_eq!(mesh.indices.len(), 96);
         let (colour, _) = &frame.streams[0];
         assert_eq!(mesh.colours[0], *colour);
         assert_eq!(mesh.uvs[0][0], 0.0);

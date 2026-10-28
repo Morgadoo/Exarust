@@ -1291,6 +1291,9 @@ impl Blast {
             }
             mesh.append(&strip, base, |point| camera.point(point));
         }
+        // The last closing call's two triangles point past the written
+        // vertices (the original's buffer is over-allocated there).
+        mesh.drop_triangles(2);
         mesh
     }
 }
@@ -1649,9 +1652,10 @@ mod tests {
         let mut b = trailing_blast();
         b.lives.iter_mut().skip(1).for_each(|life| life.ticks = 0);
         let mesh = b.ribbon(0.0, &super::super::Frame::IDENTITY);
-        // Eight emitter calls: sixteen vertices and forty-eight indices.
+        // Eight emitter calls: sixteen vertices and forty-eight indices,
+        // less the closing pair's two dangling triangles.
         assert_eq!(mesh.positions.len(), 16);
-        assert_eq!(mesh.indices.len(), 48);
+        assert_eq!(mesh.indices.len(), 42);
         assert_eq!(mesh.positions.len(), mesh.uvs.len());
         assert_eq!(mesh.positions.len(), mesh.uvs2.len());
         assert_eq!(mesh.positions.len(), mesh.colours.len());
@@ -1678,9 +1682,10 @@ mod tests {
         let mesh = b.ribbon(0.0, &super::super::Frame::IDENTITY);
         assert_eq!(mesh.positions.len(), 32);
         // The first strip's forty-eight indices lose its closing two
-        // triangles, then the second strip's forty-eight follow. Its first
-        // triangle begins at the pair the first strip ended on.
-        assert_eq!(mesh.indices.len(), 90);
+        // triangles, then the second strip's forty-eight follow and the
+        // last closing pair is dropped. Its first triangle begins at the
+        // pair the first strip ended on.
+        assert_eq!(mesh.indices.len(), 84);
         assert_eq!(&mesh.indices[42..48], &[14, 15, 16, 16, 15, 17]);
         let mut dead = trailing_blast();
         dead.lives.iter_mut().for_each(|life| life.ticks = 0);
