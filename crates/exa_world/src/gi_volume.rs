@@ -212,22 +212,23 @@ impl GiBlockLayout {
             columns,
             rows,
             grid: (grid.width, grid.height),
+            // The grid's half size in float here (unlike the blocks' own
+            // integer halves), so an odd grid's edge sits half a cell off.
             cells_origin_cm: Vec2::new(
-                (first.x - w / 2) as f32 * 600.0,
-                (first.y - h / 2) as f32 * 600.0,
+                (first.x as f32 - w as f32 * 0.5) * 600.0,
+                (first.y as f32 - h as f32 * 0.5) * 600.0,
             ),
         }
     }
 
     /// The block a world point (metres) falls in, as the original's
-    /// per-object lookup rounds the offset into the block grid. `None` when
-    /// that block has no geometry.
+    /// per-object lookup floors the offset times 1/4800 cm into the block
+    /// grid. `None` when that block has no geometry.
     pub fn block_at(&self, at: Vec3) -> Option<usize> {
-        let block = Vec2::splat(4800.0);
         let offset = at.xz() * CM_PER_M - self.cells_origin_cm;
         let index = IVec2::new(
-            (offset.x / block.x).round_ties_even() as i32,
-            (offset.y / block.y).round_ties_even() as i32,
+            (offset.x * BLOCK_INV_CM).floor() as i32,
+            (offset.y * BLOCK_INV_CM).floor() as i32,
         );
         if index.x < 0 || index.y < 0 || index.x >= self.columns || index.y >= self.rows {
             return None;
@@ -268,6 +269,9 @@ pub fn gi_position(block: &GiBlockSpec, at: Vec3) -> Vec3 {
         (at.y - block.origin.y) / width,
     )
 }
+
+/// One over a block's 48 m width, in centimetres, as the original's f32.
+const BLOCK_INV_CM: f32 = 1.0 / 4800.0;
 
 /// The bounding box of the grid's built cells, as the original finds it:
 /// the border cells are skipped, and the first row and column come from the
@@ -518,7 +522,8 @@ struct BuiltBlock {
     floor_points: usize,
 }
 
-/// How far ahead of the camera the sector marks' focus sits (metres).
+/// How far ahead of the camera the manager's focus sits (metres): the sector
+/// marks and the block distance sort measure from it.
 const FOCUS_AHEAD: f32 = 20.0;
 /// Finished blocks kept for reuse.
 const BLOCKS_KEPT: usize = 3;
@@ -722,7 +727,10 @@ fn follow_camera(
         return;
     };
     let at = camera.translation();
-    let wanted = blocks.0.block_at(at).or_else(|| blocks.0.nearest(at));
+    let focus = at + camera.forward().as_vec3() * FOCUS_AHEAD;
+    // The camera's own block when it has geometry; otherwise the block the
+    // original's residency sort ranks first, nearest the point 20 m ahead.
+    let wanted = blocks.0.block_at(at).or_else(|| blocks.0.nearest(focus));
     let refocusing = refocus.is_some();
     if refocusing {
         commands.remove_resource::<GiRefocus>();
@@ -757,7 +765,6 @@ fn follow_camera(
     if active == Some(usize::MAX) && !refocusing {
         return;
     }
-    let focus = at + camera.forward().as_vec3() * FOCUS_AHEAD;
     let task =
         AsyncComputeTaskPool::get().spawn(async move { build_block(None, focus, level, &inputs) });
     commands.insert_resource(GiBuild(task));
@@ -1221,14 +1228,15 @@ impl Occupancy {
 
     /// Splats a sample point with the original's thin-mesh and centred
     /// variants: a thin mesh (a cloth or a sheet) weighs a quarter, and a
-    /// centred one adds half a voxel to its height, leaves the column's
-    /// lowest slice alone, and does not test the top slice. `weight` is 1 for
+    /// centred one adds half a voxel to its height (after the half-voxel
+    /// shift every point gets) and leaves the column's lowest slice alone;
+    /// both keep the same bounds test. `weight` is 1 for
     /// a normal point (the original's 20) and −1 to take an old position back
     /// out.
     pub fn splat_styled(&mut self, p: Vec3, weight: f32, thin: bool, centred: bool) {
         let weight = weight * POINT_WEIGHT * if thin { 0.25 } else { 1.0 };
         let g = (p - self.origin) / VOXEL - Vec3::splat(0.5)
-            + if centred { Vec3::Z * 0.5 } else { Vec3::ZERO };
+            + if centred { Vec3::Y * 0.5 } else { Vec3::ZERO };
         let base = g.trunc();
         let f = g - base;
         let (x, y, z) = (base.x as i64, base.y as i64, base.z as i64);
@@ -1255,8 +1263,11 @@ impl Occupancy {
     }
 
     /// The region of the volume a point set touches, for a sub-upload: the
-    /// original grows the box by 1.5 voxels on each side (rounded ties to
-    /// even), clamps it to the block, and leaves `None` when it is empty.
+    /// original grows the box by 1.5 voxels on each side in world voxels
+    /// (CVTSS2SI, rounding ties to even), takes the block's first voxel off,
+    /// clamps it to the block, and leaves `None` when it is empty. The
+    /// original boxes the object's oriented bounds (old and new); this takes
+    /// the extent of the points it is given. [adaptation: point extent]
     pub fn region_of(&self, points: impl IntoIterator<Item = Vec3>) -> Option<VoxelRegion> {
         let mut lo = Vec3::splat(f32::INFINITY);
         let mut hi = Vec3::splat(f32::NEG_INFINITY);
@@ -1268,8 +1279,9 @@ impl Occupancy {
             return None;
         }
         let inv = Vec3::splat(1.0 / VOXEL);
-        let lo = ((lo - self.origin) * inv - Vec3::splat(1.5)).round();
-        let hi = ((hi - self.origin) * inv + Vec3::splat(1.5)).round();
+        let first = (self.origin * inv).round();
+        let lo = (lo * inv - Vec3::splat(1.5)).map(f32::round_ties_even) - first;
+        let hi = (hi * inv + Vec3::splat(1.5)).map(f32::round_ties_even) - first;
         // Texture axes: X, then Z, then height.
         let dims = UVec3::new(SIDE as u32, SIDE as u32, self.depth as u32);
         let lo = Vec3::new(lo.x.max(0.0), lo.z.max(0.0), lo.y.max(0.0));
@@ -1473,6 +1485,11 @@ mod tests {
         assert_eq!(layout.block_at(Vec3::ZERO), Some(10));
         assert_eq!(layout.block_at(Vec3::new(-30.0, 0.0, -30.0)), Some(5));
         assert_eq!(layout.block_at(Vec3::new(60.0, 0.0, 0.0)), Some(11));
+        // 30 m in is 2.625 blocks from the edge: the floor keeps block 2.
+        assert_eq!(layout.block_at(Vec3::new(30.0, 0.0, 0.0)), Some(10));
+        // An odd grid's edge counts from its half size in float.
+        let odd = GiBlockLayout::new(&open_grid(17), 6.0, 0.0);
+        assert_eq!(odd.cells_origin_cm.x, (1.0 - 8.5) * 600.0);
         // An empty grid has the original's (-4, -4)–(3, 3) bounds.
         let empty = GiGrid {
             width: 16,
@@ -1710,8 +1727,12 @@ mod tests {
         let mut o = Occupancy::new(Vec3::ZERO, 6.0, 0.0, (8, 8));
         o.splat_styled(p, 1.0, false, true);
         let base = o.origin + Vec3::new(100.5, 10.5, 100.5) * VOXEL;
-        assert_eq!(o.at(base - Vec3::Z * 0.1), Some(10));
-        assert_eq!(o.at(base + Vec3::Z * 0.1), Some(10));
+        // Height 10 + 0.5 splits evenly between slices 10 and 11; the
+        // horizontal neighbours and the slice below stay empty.
+        assert_eq!(o.at(base), Some(10));
+        assert_eq!(o.at(base + Vec3::Y * VOXEL), Some(10));
+        assert_eq!(o.at(base - Vec3::Y * VOXEL), Some(0));
+        assert_eq!(o.at(base + Vec3::Z * VOXEL), Some(0));
         assert_eq!(o.lowest[100 + 100 * SIDE], 255);
     }
 
@@ -1737,6 +1758,10 @@ mod tests {
         assert_eq!(region.lo, UVec3::new(99, 99, 9));
         assert_eq!(region.hi, UVec3::new(102, 102, 12));
         assert!(o.region_of([]).is_none());
+        // 4 voxels in: 4 − 1.5 = 2.5 rounds to the even 2, 4 + 1.5 to 6.
+        let region = o.region_of([Vec3::splat(4.0 * VOXEL)]).unwrap();
+        assert_eq!(region.lo, UVec3::splat(2));
+        assert_eq!(region.hi, UVec3::splat(6));
     }
 
     #[test]
