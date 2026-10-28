@@ -960,7 +960,8 @@ ticks.
   a trailing-foot request (2); the body tick plants the trailing foot on
   its next tick after the sample (the request becomes 1), and an
   unplanted request is dropped 500 ms on, telling the behaviour its step
-  is over (`Animator::take_left_locomotion`, `Locomotor::plant_request`). A queued combat step (`body::queued_step`,
+  is over; the movement decision's move branch drops it, and a start made
+  while the body moves leaves none (`Animator::take_left_locomotion`, `Locomotor::plant_request`). A queued combat step (`body::queued_step`,
   tested, no caller) is taken when its direction is less than cos 0.7 off
   the line from the chest to the step target or the target is within
   40 × scale cm: it aims at the chest plus the queued vector, tells the AI
@@ -1888,7 +1889,7 @@ not landed is the identity and says which:
 | 1 | the keys blended: each turn slerped from the source (a key, or the start's capture) to the target key, the root lerped | `Animator::blend_keys` |
 | 2 | the gait overlay: a moving body's walk slerped toward its run at the same keys by 0.7 × the run blend (the run blend with the sprint latch) | `exa_anim::overlay_toward`, fed by the Run clip and its weight |
 | 3 | the hold toward the held pose by its weight, then normalised; the result kept as the targets | `exa_anim::hold_toward`, `Animator::keep` |
-| 4 | the femur posture: the thighs turned ±5° while the state word's splay bit is set, or (1 − the record's height)·−1.5° while the behaviour is in combat; the clip's turns otherwise | `femur_posture_turn`, chosen by `sampler::thigh_posture` from `Bearing::in_combat` and `Bearing::splay` |
+| 4 | the femur posture: the thighs turned ±5° while the state word's splay bit is set, or (1 − the record's height)·−1.5° while the behaviour is in combat and the condition is neither walking nor off its feet; the clip's turns otherwise | `femur_posture_turn`, chosen by `sampler::thigh_posture` from `Bearing::in_combat` and `Bearing::splay` |
 | 5 | the clip chain: each part placed by its rest translation and its posed turn under its parent's placement; the foot contacts read it | `clip_chain` |
 | 6 | the IK chain: each IK part's turn times its leg IK corrections, the chain recomposed; the targets and the pins read it | the standing IK (`body_bend::standing_leg`) and the locomotion IK (`locomoting_leg`), their knee, hip and thigh turns folded into the clip chain, and the foot pitch from the height the IK wrote |
 | 7 | the torso twist ([below](#torso-twist)): the midline chain's turns (the lumbar half) toward the look | `spine`, `exa_physics::body::locomotion::twist_spine` |

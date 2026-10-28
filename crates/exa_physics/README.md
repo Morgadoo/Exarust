@@ -262,7 +262,8 @@ one yet, since Exarust's interim combat footwork is a capsule velocity,
 not the original's step vector. A clip that replaces Walk or Run asks for
 the trailing foot (`Animator::take_left_locomotion`,
 `Locomotor::plant_request`): the character tick plants it after that
-tick's sample and keeps the request for 500 ms, then drops it and leaves
+tick's sample and keeps the request for 500 ms (the movement decision's
+move branch drops it), then drops it and leaves
 `Locomotor::step_done_notice` for the behaviour. A force release ends the running step and
 stops the clip rate (`Ragdoll::force_release`, the feet's re-anchor waits
 for the next tick). The chest's fast velocity over its slow one, less a
@@ -783,7 +784,7 @@ push at a world point with the original's weighting (`push_fraction`, the
 countdown;
 `femur_posture_turn` is the thigh posture's alternating 5° (the state
 word's splay bit, which no shipped code writes) or (1 − height)·−1.5°
-(the behaviour's in-combat flag), applied by the sampler to the clip's
+(the behaviour's in-combat flag, on its feet and not walking), applied by the sampler to the clip's
 thigh turns; and `MOTILE_ENVIRONMENT` is the class init's unused
 0.2556/0.15/0.03 environment. `full_tone`/`clear_foot_state` are the
 original's resets.

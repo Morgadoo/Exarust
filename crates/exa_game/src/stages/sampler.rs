@@ -40,7 +40,7 @@ use exa_combat::swing::{Swing, SwingState};
 use exa_combat::{Condition, Fighter};
 use exa_formats::rsq::Clip;
 use exa_physics::body::locomotion::{
-    Locomotion, Locomotor, flags, forward, head_look, twist_spine,
+    Locomotion, Locomotor, Stop, flags, forward, head_look, twist_spine,
 };
 use exa_physics::body::{
     FemurPosture, Ragdoll, TickedCharacter, femur_posture_turn, foot_pitch_target, hunch_applies,
@@ -136,14 +136,17 @@ pub(crate) fn sample_clip(
     // 500 ms on and tells the behaviour its step is over.
     if let Some((_, l)) = locomotion.as_mut() {
         l.step_done_notice = false;
-        if anim.take_left_locomotion() {
+        // A start this tick came before the movement decision in the
+        // original's order, whose move branch drops the request.
+        if anim.take_left_locomotion() && l.stop != Stop::Moving {
             l.plant_request = 2;
             l.plant_deadline = l.now.saturating_add(PLANT_WINDOW_MS);
         }
         let (request, told) = plant_request_after(l.plant_request, l.plant_deadline, l.now);
         l.plant_request = request;
         l.step_done_notice = told;
-    } // A clip played once that ended into its stance this tick: a get-up
+    }
+    // A clip played once that ended into its stance this tick: a get-up
     // is over (the condition's clip-end writer).
     if once
         && anim.looping
@@ -166,13 +169,17 @@ pub(crate) fn sample_clip(
     let mut look = locomotion
         .as_mut()
         .and_then(|(req, l)| look_of(&body, req, l, looks));
-    // The body tick poses the thighs by whether its behaviour is in combat,
-    // not by its condition: every tick it calls the posture with that flag,
-    // and a body out of combat holds the clip's turns unless its state
-    // word asks for the splay.
+    // The body tick poses the thighs every tick: the combat turn while its
+    // behaviour is in combat and it is on its feet and not walking, else
+    // the clip's turns unless its state word asks for the splay.
     let in_combat = body.drive.as_ref().is_some_and(|d| d.bearing.in_combat);
     let splay = body.drive.as_ref().is_some_and(|d| d.bearing.splay);
-    let posture = thigh_posture(in_combat, splay, fighter.map_or(0.0, |f| f.stats.height));
+    let posture = thigh_posture(
+        in_combat,
+        state,
+        splay,
+        fighter.map_or(0.0, |f| f.stats.height),
+    );
     let posed = sample_parts(
         &mut anim,
         clip,
@@ -230,10 +237,17 @@ pub(crate) fn plant_request_after(request: i32, deadline: u64, now: u64) -> (i32
 }
 
 /// The thigh posture the body tick asks of the sampler: the combat turn
-/// (1 − height)·−1.5° while its behaviour is in combat, else the splay's
-/// 5° while the state word's splay bit is set, else the clip's own turns.
-pub(crate) fn thigh_posture(in_combat: bool, splay: bool, height: f32) -> FemurPosture {
-    if in_combat {
+/// (1 − height)·−1.5° while its behaviour is in combat and its condition
+/// is neither off its feet (bit 0x200) nor walking, else the splay's 5°
+/// while the state word's splay bit is set, else the clip's own turns.
+pub(crate) fn thigh_posture(
+    in_combat: bool,
+    state: Condition,
+    splay: bool,
+    height: f32,
+) -> FemurPosture {
+    let standing = !state.off_feet() && state != Condition::WALKING;
+    if in_combat && standing {
         FemurPosture::Combat { height }
     } else if splay {
         FemurPosture::Splayed
@@ -707,20 +721,37 @@ mod tests {
     }
 
     /// The thigh posture the body tick asks for: the combat turn at the
-    /// record's height while the behaviour is in combat, the clip's own
-    /// turns otherwise; a body attacking out of combat keeps the clip.
+    /// record's height while the behaviour is in combat and the body stands
+    /// (not walking, not off its feet), the splay or the clip's own turns
+    /// otherwise; a body attacking out of combat keeps the clip.
     #[test]
     fn the_thigh_posture_follows_the_behaviours_combat_flag() {
+        let idle = Condition::COMBAT_IDLE;
         assert_eq!(
-            thigh_posture(true, false, 0.5),
+            thigh_posture(true, idle, false, 0.5),
             FemurPosture::Combat { height: 0.5 }
         );
         assert_eq!(
-            thigh_posture(true, true, 0.5),
+            thigh_posture(true, Condition::ATTACKING, true, 0.5),
             FemurPosture::Combat { height: 0.5 }
         );
-        assert_eq!(thigh_posture(false, true, 0.5), FemurPosture::Splayed);
-        assert_eq!(thigh_posture(false, false, 0.5), FemurPosture::Level);
+        assert_eq!(
+            thigh_posture(true, Condition::WALKING, false, 0.5),
+            FemurPosture::Level
+        );
+        assert_eq!(
+            thigh_posture(true, Condition::GETTING_UP, true, 0.5),
+            FemurPosture::Splayed
+        );
+        assert_eq!(
+            thigh_posture(true, Condition::DOWN, false, 0.5),
+            FemurPosture::Level
+        );
+        assert_eq!(thigh_posture(false, idle, true, 0.5), FemurPosture::Splayed);
+        assert_eq!(
+            thigh_posture(false, Condition::ATTACKING, false, 0.5),
+            FemurPosture::Level
+        );
     }
 
     /// A trailing-foot request stays at its deadline and lapses strictly

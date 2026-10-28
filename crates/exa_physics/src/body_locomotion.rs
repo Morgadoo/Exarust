@@ -512,7 +512,8 @@ pub struct Decided {
 /// gates ([`Stop`]), which on refusal clear the amount, the flags and the
 /// speed; a brake below 1 cm a tick stops the body, or turns into a
 /// backpedal with the turn-about bit. Then the move branch (moving, and
-/// the amount over 625 cm² or the speed over 0.5 cm a tick): amount 1; or
+/// the amount over 625 cm² or the speed over 0.5 cm a tick): amount 1 and
+/// no trailing-foot request; or
 /// the stop branch: amount 0, moving cleared, the stop distance back to
 /// the walk's.
 pub fn decide(req: &mut Locomotion, body: &mut Locomotor, at: &Footing) -> Decided {
@@ -566,6 +567,8 @@ pub fn decide(req: &mut Locomotion, body: &mut Locomotor, at: &Footing) -> Decid
     if req.moving && (body.amount > STOP_WITHIN || body.speed > STOP_SPEED) {
         body.amount = 1.0;
         body.stop = Stop::Moving;
+        // A moving body drops any trailing-foot request.
+        body.plant_request = 0;
     } else {
         body.amount = 0.0;
         body.stop = match gate {

@@ -528,3 +528,20 @@ fn the_turn_wraps_against_the_double_pi() {
     turn(&mut body, -2.0, 0.041_592_8, 1.0, false);
     assert!(body.yaw < 0.0, "{}", body.yaw);
 }
+
+/// The move branch drops a trailing-foot request; the stop branch keeps it
+/// for its 500 ms lapse.
+#[test]
+fn moving_drops_the_trailing_foot_request() {
+    let (mut req, mut body) = walker(false, Vec3::new(0.0, 0.0, 1.0));
+    body.plant_request = 1;
+    decide(&mut req, &mut body, &Footing::steady(Vec3::ZERO, 2.0));
+    assert_eq!(body.stop, Stop::Moving);
+    assert_eq!(body.plant_request, 0);
+    let (mut req, mut body) = walker(false, Vec3::new(0.0, 0.0, 1.0));
+    req.moving = false;
+    body.plant_request = 2;
+    decide(&mut req, &mut body, &Footing::steady(Vec3::ZERO, 0.0));
+    assert_eq!(body.stop, Stop::Standing);
+    assert_eq!(body.plant_request, 2);
+}
