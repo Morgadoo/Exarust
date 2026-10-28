@@ -19,6 +19,7 @@ parameters are in. EFX is not applied by the backend (see [Gaps](#gaps)).
 | `hits`, `footsteps` | the game's first two users of the mixer; the footsteps read the body's gait plants (`exa_physics::body::Footstep`) with the original's gain and pitch, and keep a speed timer for bodies without a ragdoll |
 | `sounds` | the body's named sets: `SwingHA`, `StmHeal01`, the hit classes (`BdyCol`, `SkelHit`, `HitGlm`, cloth, leather, mail, plate) and the foley loops (`FoleyPlH`, `Golem_Foley`) |
 | `loops` | the looping sources a character keeps: one per held item and its body's voice and foley pair |
+| `bodies` | the plain rigid bodies' collision one-shots and scrape loops (`exa_physics::prop::BodySounds`) |
 | `playback` | one Bevy audio entity per real source slot, driven by the mixer's commands; the listener anchor |
 
 ## Rules recovered from the original
@@ -136,6 +137,23 @@ parameters are in. EFX is not applied by the backend (see [Gaps](#gaps)).
   class's volume factor; a golem body plays `FoleyPlH` at 2, or
   `Golem_Foley` at 6 (1 for race 0x1200).
 
+### Rigid bodies (`bodies`)
+
+- Each body tick (fixed step, after the solver), a prop's pair impacts
+  (`Touch::struck`, sphere side then touched side, in pair order) and then
+  its level impacts go through the plain body's collision call
+  (`exa_physics::body::impact_sound`) with the part's material set
+  (`<prefix>col`, e.g. `wdlcol`, `mtlcol`, numbered 01 on). A sound is a
+  one-shot at the part's mesh centre in the world (the original's body
+  centre). A part whose set has no shipped variant is silent. Held items
+  and characters are left to `exa_combat`.
+- Each scrape source drives one attached loop: over the speed floor a loop
+  that is not playing starts at volume and pitch 1, then takes the event's
+  volume, pitch and point; under the floor a playing loop gets the stop
+  bit. A body that leaves the world frees its loops.
+- [inf] The cooldown draw comes from this system's own engine-style
+  generator, not one shared with every other random draw.
+
 ### Music (`music`)
 
 - Two tracks: A is playing, B is incoming or the overlay. All fades last
@@ -250,7 +268,7 @@ parameters are in. EFX is not applied by the backend (see [Gaps](#gaps)).
 
 ## Tests
 
-`bank`, `environment`, `music`, `ambience`, `reverb`, `hits` and `playback`
+`bank`, `environment`, `music`, `ambience`, `reverb`, `hits`, `bodies` and `playback`
 each pin their rules to synthetic numbers: generator words, variant picks,
 WAV layouts and walk steps, durations, frame-rounded lengths, audibility
 ranks, the distance slope, sorting, bus products and focus steps, source

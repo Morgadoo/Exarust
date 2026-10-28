@@ -94,6 +94,20 @@ pub struct BodyScrape {
 #[derive(Component, Debug, Clone, Default)]
 pub struct PendingScrapes(pub Vec<BodyScrape>);
 
+/// On a rigid body's root node: the names of the sound sets its parts and
+/// sources play, which the audio side resolves (the original resolves them
+/// when the body is set up and registered).
+///
+/// `impact` holds each part's collision sound set (its node's first mesh
+/// material's, [`crate::body::impact_sound`]), none for a part without a
+/// material; `scrapes` the sound of each scrape source, in the order the
+/// sources were added ([`crate::body::Ragdoll::scrapes`]).
+#[derive(Component, Debug, Clone, Default, PartialEq, Eq)]
+pub struct BodySounds {
+    pub impact: Vec<Option<String>>,
+    pub scrapes: Vec<String>,
+}
+
 /// The stand-in colliders of each prop body (by its root node) and the
 /// part each follows.
 #[derive(Resource, Debug, Default)]

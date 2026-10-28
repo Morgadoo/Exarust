@@ -326,6 +326,10 @@ impl Ragdoll {
             sleep: Sleep::Deep,
             simulated: false,
             fell_out: false,
+            frozen: false,
+            // The constructor's 2, and one more for each articulated child
+            // registration joins to the tree.
+            link_iterations: 2 + setup.iter().filter(|s| s.parent.is_some()).count() as i32,
             grabs: Vec::new(),
             pieces: Vec::new(),
             triangles: Vec::new(),

@@ -1,5 +1,5 @@
 use super::super::tests::floor_quad;
-use super::super::{CM, PartSetup, SolverStage, limp_retention};
+use super::super::{CM, LIVING_LINK_ITERATIONS, PartSetup, SolverStage, limp_retention};
 use super::*;
 use crate::contact::Level;
 
@@ -958,4 +958,35 @@ fn a_held_items_window_is_not_its_chain() {
     assert!(!body.parts[0].state.has(PartState::STRIKE_CHAIN));
     body.set_striking_window(0, false);
     assert!(!body.parts[0].state.has(PartState::STRIKING));
+}
+
+/// The root's link-iteration count: 2 for a plain body and one more per
+/// articulated child, 20 for a body built as a character's, 10 once it
+/// dies; the mark is `count ≤ pass`, and the whole-count iteration runs
+/// that many link passes from pass 0.
+#[test]
+fn a_roots_link_iteration_count_follows_the_original() {
+    let lone = Ragdoll::rigid(&[crate_at(Vec3::ZERO)]);
+    assert_eq!(lone.link_iterations(), 2);
+    let child = RigidPart {
+        parent: Some(0),
+        ..crate_at(Vec3::new(0.3, 0.0, 0.0))
+    };
+    let grandchild = RigidPart {
+        parent: Some(1),
+        ..crate_at(Vec3::new(0.6, 0.0, 0.0))
+    };
+    let mut tree = Ragdoll::rigid(&[crate_at(Vec3::ZERO), child, grandchild]);
+    assert_eq!(tree.link_iterations(), 4);
+    assert!(!tree.iterations_reached(3));
+    assert!(tree.iterations_reached(4));
+    tree.iterate_links();
+    assert_eq!(tree.pass, 4);
+    tree.set_link_iterations(0);
+    tree.iterate_links();
+    assert_eq!(tree.pass, 0);
+    let mut limb = Ragdoll::new(&[limb_at(Vec3::ZERO)]);
+    assert_eq!(limb.link_iterations(), LIVING_LINK_ITERATIONS);
+    limb.go_limp();
+    assert_eq!(limb.link_iterations(), 10);
 }

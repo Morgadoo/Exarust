@@ -15,38 +15,16 @@
 //! the one before, its squared move smoothed into a speed, and the source plays while the speed is over 0.02, its volume and
 //! pitch following the speed. The original keeps these sources on the body
 //! (one per stored sound slot) and starts them when the body joins the
-//! world; Exarust's audio crate has no body hookup yet, so the events are
-//! returned to a caller that can play them.
+//! world; the events are returned to the audio side, which plays the
+//! impacts as one-shots and the scrapes as attached loops.
 
 use bevy::math::Vec3;
 
+use super::Part;
+use crate::part::base_impact_sound;
+
 /// The engine's generator step: `s = s · 0x08088405 + 1`.
 const GENERATOR_STEP: u32 = 0x0808_8405;
-
-/// A plain body part's impact-sound state.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ImpactState {
-    /// Whether the part has a collision sound at all.
-    pub sounded: bool,
-    /// The game clock (ms) after which the next impact may sound.
-    pub cooldown_ms: u32,
-    /// Twice the last impact's strength: a louder impact sounds before the
-    /// cooldown passes.
-    pub threshold: f32,
-}
-
-impl ImpactState {
-    /// Fresh state. A part with a collision sound starts ready; one with
-    /// `sounded: false` silences itself on its first impact and stays
-    /// silent.
-    pub fn new(sounded: bool) -> Self {
-        Self {
-            sounded,
-            cooldown_ms: if sounded { 0 } else { u32::MAX },
-            threshold: 0.0,
-        }
-    }
-}
 
 /// One impact sound to play.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -59,67 +37,45 @@ pub struct ImpactEvent {
     pub cooldown_ms: u32,
 }
 
-/// A plain body's impact sound, as its collision callback decides it.
+/// A plain body part's impact sound, as its collision callback decides it,
+/// with the part's own sound clock and last threshold
+/// ([`Part::sound_ready_ms`], [`Part::last_impact`]).
 ///
-/// `strength` is the contact's impact strength, `mobility` the part's own
-/// mobility, `now_ms` the game clock, and `roll` the engine's generator
-/// state, advanced only when a sound plays. A strength of 0.5 or less is
-/// silent; a later impact sounds when the clock has passed the cooldown, or
-/// when it is strictly above the stored threshold. A part without a sound
-/// material takes the silent branch and parks its cooldown at the all-ones
-/// word.
-///
-/// The volume is `min(strength · 0.01, 1) · 1.5`; a mobility of at least
-/// 0.1 (or NaN, which the unordered compare sends the same way) scales the
-/// pitch by `mobility · 0.02 + 0.9`, and a lighter one scales both by
-/// `mobility · 10`: the volume by `0.8·mobility·10 + 0.2` and the pitch by
-/// `0.7·mobility·10 + 0.3`. The products with the pitch base
-/// `min(strength · 0.01, 1) · 0.6 + 0.7` are taken in double precision and
-/// narrowed once, as the original does. The cooldown is
-/// `now + 220 − round(base · 170) + draw`, the draw 0 to 99 from the
-/// generator and the rounding half to even.
+/// `strength` is the contact's impact strength, `sounded` whether the part
+/// has a collision sound, `now_ms` the game clock, and `roll` the engine's
+/// generator state, advanced only when a sound plays. The gate and the
+/// volume and pitch are [`base_impact_sound`]'s (the part's contact
+/// mobility). A part without a sound that passes the gate parks its clock
+/// at the all-ones word and stays silent, as the original does. A sound
+/// stores twice the strength as the threshold and sets the clock to
+/// `now + 220 − round(170·v) + draw`, the draw `(s·100) >> 32` of the
+/// stepped generator (0 to 99), taken after the sound plays.
 pub fn impact_sound(
-    state: &mut ImpactState,
+    part: &mut Part,
+    sounded: bool,
     strength: f32,
-    mobility: f32,
     now_ms: u32,
     roll: &mut u32,
 ) -> Option<ImpactEvent> {
-    if !matches!(
-        strength.partial_cmp(&0.5),
-        Some(std::cmp::Ordering::Greater)
-    ) {
+    let sound = base_impact_sound(
+        strength,
+        part.pairing.mobility,
+        part.sound_ready_ms,
+        part.last_impact,
+        now_ms,
+    )?;
+    if !sounded {
+        part.sound_ready_ms = u32::MAX;
         return None;
     }
-    if state.cooldown_ms >= now_ms && !(state.threshold <= strength && strength != state.threshold)
-    {
-        return None;
-    }
-    if !state.sounded {
-        state.cooldown_ms = u32::MAX;
-        return None;
-    }
-    let base = minimum((f64::from(strength) * 0.01) as f32, 1.0);
-    let pitch_base = (f64::from(base) * 0.6 + 0.7) as f32;
-    let mut volume = base * 1.5;
-    let pitch = if f64::from(mobility) >= 0.1 || mobility.is_nan() {
-        ((f64::from(mobility) * 0.02 + 0.9) * f64::from(pitch_base)) as f32
-    } else {
-        let scaled = f64::from(mobility * 10.0);
-        volume = ((scaled * 0.8 + 0.2) * f64::from(volume)) as f32;
-        ((scaled * 0.7 + 0.3) * f64::from(pitch_base)) as f32
-    };
-    state.threshold = strength * 2.0;
+    part.last_impact = sound.threshold;
     *roll = roll.wrapping_mul(GENERATOR_STEP).wrapping_add(1);
     let draw = ((u64::from(*roll) * 100) >> 32) as u32;
-    let cooldown_ms = now_ms
-        .wrapping_add(220)
-        .wrapping_sub((base * 170.0).round_ties_even() as u32)
-        .wrapping_add(draw);
-    state.cooldown_ms = cooldown_ms;
+    let cooldown_ms = now_ms.wrapping_add(sound.cooldown_ms).wrapping_add(draw);
+    part.sound_ready_ms = cooldown_ms;
     Some(ImpactEvent {
-        volume,
-        pitch,
+        volume: sound.volume,
+        pitch: sound.pitch,
         cooldown_ms,
     })
 }
@@ -228,12 +184,6 @@ impl ScrapeSource {
             }
         }
     }
-}
-
-/// The processor's `MINSS`: `a` when it is the smaller, else `b` (so `b`
-/// on NaN).
-fn minimum(a: f32, b: f32) -> f32 {
-    if a < b { a } else { b }
 }
 
 #[cfg(test)]

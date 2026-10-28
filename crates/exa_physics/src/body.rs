@@ -45,7 +45,7 @@ use crate::part::PartState;
 
 #[path = "body_sound.rs"]
 mod sound;
-pub use sound::{ImpactEvent, ImpactState, ScrapeEvent, ScrapeSource, impact_sound};
+pub use sound::{ImpactEvent, ScrapeEvent, ScrapeSource, impact_sound};
 #[path = "body_muscle.rs"]
 mod muscle;
 pub use muscle::{AttackArmTune, Bearing, BodyStats, RaceMuscles, attack_arms};
@@ -117,6 +117,11 @@ pub const RETENTION_SPEEDS: [f32; 2] = [40.0, 20.0];
 /// u² standing, and 0.5·u + 0.5 while walking or off its feet. A human's r
 /// of 1 makes both 1 at any balance.
 pub(crate) const LINK_ITERATIONS: usize = 20;
+/// A living character root's link-iteration count: the original's
+/// `round(1660 / 83)`.
+pub const LIVING_LINK_ITERATIONS: i32 = 20;
+/// A character root's count once it dies in play.
+pub const DEAD_LINK_ITERATIONS: i32 = 10;
 pub(crate) const FRICTION_PASSES: usize = 8;
 /// A held item body's motion flag: a walk's start clears it.
 pub const HELD_MOTION_FLAG: u32 = 0x10000;
@@ -1477,6 +1482,12 @@ pub struct Ragdoll {
     /// Its root part fell below [`FALL_OUT_HEIGHT`], where the original
     /// removes a body's node.
     fell_out: bool,
+    /// Frozen (the original's state bit 0x40): the step holds every part
+    /// at its previous particles instead of integrating it
+    /// ([`Ragdoll::freeze`]).
+    frozen: bool,
+    /// The root's link-iteration count ([`Ragdoll::link_iterations`]).
+    link_iterations: i32,
     /// The hand's grabs on its parts ([`Ragdoll::grab`]).
     grabs: Vec<Grab>,
     /// Scratch lists for the level detection, kept across ticks so a tick
@@ -2236,6 +2247,8 @@ impl Ragdoll {
             sleep: Sleep::Awake,
             simulated: false,
             fell_out: false,
+            frozen: false,
+            link_iterations: LIVING_LINK_ITERATIONS,
             grabs: Vec::new(),
             pieces: Vec::new(),
             triangles: Vec::new(),
@@ -2724,6 +2737,43 @@ impl Ragdoll {
     pub fn go_limp(&mut self) {
         self.wake();
         self.become_limp();
+        // Death in play lowers the root's link-iteration count to 10.
+        self.link_iterations = DEAD_LINK_ITERATIONS;
+    }
+
+    /// The root's link-iteration count, the original's per-root word: 2 for
+    /// a plain body plus one per articulated child, 20 for a living
+    /// character (`round(1660/83)`), 10 once it dies in play. The original's
+    /// sector solve runs its 20 iterations over every root whatever the
+    /// count and only marks the root once the iteration index reaches it
+    /// ([`Ragdoll::iterations_reached`]), a mark nothing reads; so does
+    /// Exarust. [inf] The dormant statue's 5 is not set: Exarust's dormant
+    /// bodies keep 20, which changes nothing that is read.
+    pub fn link_iterations(&self) -> i32 {
+        self.link_iterations
+    }
+
+    /// Sets the root's link-iteration count.
+    pub fn set_link_iterations(&mut self, count: i32) {
+        self.link_iterations = count;
+    }
+
+    /// Whether iteration `pass` (counted from 1) has reached the root's
+    /// count: the original's mark after each pass, `count ≤ pass`.
+    pub fn iterations_reached(&self, pass: i32) -> bool {
+        self.link_iterations <= pass
+    }
+
+    /// Runs the link pass as many times as the root's count: the original's
+    /// whole-count iteration (a count of 0 or less runs none). No caller of
+    /// it is known in the original's tick, which runs single passes; it is
+    /// kept for a body solved on its own.
+    pub fn iterate_links(&mut self) {
+        // The passes are numbered from 0, as the original hands them on.
+        self.pass = 0;
+        for _ in 0..self.link_iterations.max(0) {
+            self.iterate();
+        }
     }
 
     /// The limp state itself: no muscles, the legs' limits at full
@@ -2809,6 +2859,24 @@ impl Ragdoll {
     /// Ticks still to run with gravity but no inertia.
     pub fn settling(&self) -> i32 {
         self.settle
+    }
+
+    /// Freezes or thaws the body (the original's state bit 0x40). A frozen
+    /// body's step does not integrate: each part's current particles are
+    /// set to its previous ones (the original copies its oldest particle
+    /// set into both newer ones; Exarust keeps two), so it holds still
+    /// with no velocity, no gravity and no sleep band, and its countdown
+    /// loses one tick, floored at 1, as the original's root takes one tick
+    /// off its tree. The original sets the bit on a body whose node carries
+    /// the walkable-platform flag (no shipped body does) and on an item the
+    /// cursor holds in place; neither path exists in Exarust yet.
+    pub fn freeze(&mut self, frozen: bool) {
+        self.frozen = frozen;
+    }
+
+    /// Whether the body is frozen ([`Ragdoll::freeze`]).
+    pub fn frozen(&self) -> bool {
+        self.frozen
     }
 
     /// Whether the body is placed (the original's state bit 0x1000): the
@@ -3391,6 +3459,17 @@ impl Ragdoll {
         if self.placed() {
             self.clear_placed_offsets();
         }
+        if self.frozen {
+            // The original's frozen branch: the particles are put back where
+            // the last tick left them, and the tree loses one tick of its
+            // countdown (floored at 1); nothing else of the step runs.
+            for p in &mut self.parts {
+                p.start = p.previous;
+                p.positions = p.previous;
+            }
+            self.countdown = (self.countdown - 1).max(SLEEP_COUNT);
+            return;
+        }
         self.tick_countdown();
         if let Some(drive) = self.drive.as_mut() {
             drive.pin_gain = recover_pins(drive.pin_gain, drive.bearing.collapsing);
@@ -3483,8 +3562,9 @@ impl Ragdoll {
         if self.countdown <= SLEEP_COUNT {
             self.countdown = 0;
             self.sleep = Sleep::Asleep;
-            // Sleep clears the placed body's contact offset array, and the
-            // original's post-step empties its motion and smoothed buffers.
+            // The original's post-step empties its three displacement
+            // records: the motion, the placed body's contact offsets and
+            // the smoothed motion.
             self.clear_placed_offsets();
             for p in &mut self.parts {
                 p.moved = [Vec3::ZERO; 4];

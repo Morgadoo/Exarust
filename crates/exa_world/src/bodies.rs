@@ -16,7 +16,7 @@ use bevy::prelude::*;
 use exa_assets::{Model, NodeRigidBody};
 use exa_formats::rigid_body::RigidBody;
 use exa_physics::body::{RigidLink, RigidPart};
-use exa_physics::prop::{BodyNode, BodyScrape, PendingProp, PendingScrapes};
+use exa_physics::prop::{BodyNode, BodyScrape, BodySounds, PendingProp, PendingScrapes};
 use exa_physics::sector::Bounds;
 
 /// What a body tree (a top body and its body children) is to the solver.
@@ -232,6 +232,7 @@ pub fn register_bodies(
     let (counts, trees) = plan(&shape, placement);
     for tree in trees {
         let mut scrapes = Vec::new();
+        let mut sounds = BodySounds::default();
         let mut part_index = 0;
         let parts: Vec<RigidPart> = tree
             .nodes
@@ -261,6 +262,7 @@ pub fn register_bodies(
                     // environment cannot find; with no audio lookup here,
                     // only an unnamed slot is dropped.
                     if !sound.sound.is_empty() {
+                        sounds.scrapes.push(sound.sound.clone());
                         scrapes.push(BodyScrape {
                             part: part_index,
                             point: Vec3::from(sound.point),
@@ -269,6 +271,7 @@ pub fn register_bodies(
                         });
                     }
                 }
+                sounds.impact.push(rigid.collision_sound.clone());
                 part_index += 1;
                 Some(part)
             })
@@ -279,6 +282,9 @@ pub fn register_bodies(
         if !scrapes.is_empty() {
             commands.entity(root).insert(PendingScrapes(scrapes));
         }
+        // The names the audio side resolves: each part's collision sound
+        // and each scrape source's sound.
+        commands.entity(root).insert(sounds);
         for (k, part) in parts.iter().enumerate() {
             commands.entity(part.entity).insert(BodyNode {
                 body: root,
