@@ -9,6 +9,7 @@
 use crate::fast_math::fast_pow;
 use exa_formats::objdb::Armour;
 use exa_formats::races::Natural;
+use exa_formats::weapon_record::ShieldRecord;
 #[cfg(test)]
 use exa_formats::weapon_stats::{StatBytes, at};
 
@@ -227,6 +228,10 @@ pub enum Guard {
 /// A shield held up: its factors and its arm's stamina.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct ShieldGuard {
+    /// Parry effectiveness: 0.5 + 1.5·(1 − weight)², half the weight with
+    /// the Mobility technique. The equip writes it on the holder; the
+    /// running parry does not read it yet.
+    pub parry: f32,
     /// The share of a tired block's blow that reaches yellow: 1 − block/2.
     pub leak: f32,
     /// What a blow costs the arm per unit of impact: the leak, × 2/3 with
@@ -241,6 +246,25 @@ pub struct ShieldGuard {
     pub blocked_at: u32,
     /// The holder parries with the shield.
     pub parrying: bool,
+}
+
+/// The guard a shield gives the holder it is equipped on: the shield's
+/// factors ([`ShieldRecord::factors`]) with the holder's Mobility and
+/// Endure shield techniques, and a full arm. The original's equip routine
+/// writes the parry factor, the leak and the cost from the shield's record
+/// and reserves its block clock; the arm starts full, which
+/// [`crate::regen::ShieldStamina::STAMP_FULL`] records.
+pub fn shield_guard(record: &ShieldRecord, mobility: bool, endure: bool) -> ShieldGuard {
+    let factors = record.factors(mobility, endure);
+    ShieldGuard {
+        parry: factors.parry,
+        leak: factors.leak,
+        cost: factors.stamina_cost,
+        stamina: 1.0,
+        rate: 0.0,
+        blocked_at: crate::regen::ShieldStamina::STAMP_FULL,
+        parrying: false,
+    }
 }
 
 /// What the shield's holder brings to a blow on its shield besides the
@@ -1607,11 +1631,39 @@ mod tests {
     /// a shield parry 0.4·I and sags the stance, Synchrony while countering
     /// at 0.15 of its clock pays (0.3·0.5 + 0.3)·I, Persist halves the
     /// clock for the stall factor, a potion halves the leak.
+    /// A freshly equipped shield takes the record's parry factor, leak and
+    /// cost with the holder's techniques, and a full arm whose block clock
+    /// is reserved at the full stamp.
+    #[test]
+    fn an_equipped_shield_gives_its_factors_and_a_full_arm() {
+        let record = ShieldRecord {
+            weight: 0.5,
+            block: 0.58,
+            bulk: 0.6,
+        };
+        let leak = 1.0 - 0.58f32 * 0.5;
+        let plain = shield_guard(&record, false, false);
+        assert_eq!(plain.parry, 0.875);
+        assert_eq!(plain.leak, leak);
+        assert_eq!(plain.cost, leak);
+        assert_eq!(plain.stamina, 1.0);
+        assert_eq!(plain.rate, 0.0);
+        assert_eq!(plain.blocked_at, crate::regen::ShieldStamina::STAMP_FULL);
+        assert!(!plain.parrying);
+        // Mobility halves the weight's parry penalty; Endure takes two
+        // thirds of the cost.
+        let skilled = shield_guard(&record, true, true);
+        assert_eq!(skilled.parry, 0.75 * 0.75 * 1.5 + 0.5);
+        assert_eq!(skilled.cost, leak * 0.666_666_7);
+        assert_eq!(skilled.leak, leak);
+    }
+
     #[test]
     fn a_shield_takes_the_blow_on_its_arm() {
         let impact = f32::from_bits(0x3f2c_b6f5);
         let leak = 1.0 - 0.5 * 0.58;
         let shield = |stamina, parrying| ShieldGuard {
+            parry: 1.0,
             leak,
             cost: leak,
             stamina,
