@@ -875,7 +875,7 @@ segments at −15, −5 cm), and the `thmnrg_chrga` and `thmnrg_shock` sounds
 switch (practice, story, arena, scripted modes), the session starters
 (story from a background with its roles, record words, pose, light and
 Derrin, practice from the ladder with its role, the story and arena
-continues, the arena hub), the transition screen's 100 ms actions, the
+continues, the arena hub), the transition screen's actions at black, the
 per-frame dialogue and session hook (with the wake-up's whole animator
 write: flags, blend, move and turn factors and the clip clock), the story's
 wake-up, knockout and revival, death and the end-of-session menu, level
@@ -893,6 +893,12 @@ game-view, controls, health and music ones, and turns `LoadLevel` and
 `TeardownWorld` into `exa_world::level_lifecycle` requests. The viewer loads
 the destination through the same staged `LevelLoad` as a start-up load, and
 `PlacePlayer` is carried across it in `level_change::PlayerPlacement`.
+The transition screen runs live (`run_transition`, `transition_screen`):
+`exa_ui::transition`'s state machine on the real clock, the action at
+black, the level exit's long hold from its fade bit, each caller's music
+fade (the track's gain, its stop at black and the screen's audio fade), the
+world fade reset, a black hold while a level change it asked for loads, and
+its alpha drawn as a black form over the game.
 `BootToMenu` keeps the launcher from covering the level or the splash with
 the boot title; the splash path shows it at the hand-over. F1 opens the
 in-game page while a session runs. The camera shots (offsets added to the framed point)

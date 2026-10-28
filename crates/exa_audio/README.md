@@ -155,6 +155,12 @@ parameters are in. EFX is not applied by the backend (see [Gaps](#gaps)).
   − t)·3000)`, in single precision), so the gains continue without a jump.
 - The Music setting acts only when A's volume is above 0.01: off stops A, on
   plays the remembered name again at the remembered volume.
+- The transition screen reads and writes A's voice gain (`music_gain`,
+  `set_music_gain`) to fade the music out with the screen, then stops A and
+  forgets its name at black. The story's level-entry check
+  (`story_music_changes`) compares the destination's track with the playing
+  one on 15 characters; `story_music_changes_for_key` makes the same check
+  against Exarust's lowercase track key (`music_name`).
 - Observed quirks kept: the promoted track's volume is not written into A's
   nominal volume (the original writes it to a global nothing reads); B's
   buffer is neither released nor forgotten when an overlay ends; stopping A

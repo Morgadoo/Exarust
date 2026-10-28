@@ -804,12 +804,37 @@ calling the rest of the game, so the order is testable.
   the camera 600, 600, 1300 cm off the player. The cursor warps to the client
   centre plus (120, −200) (or (−200, 0) for the story) × height/1140.
 - **Transitions.** Everything that changes the world runs behind the
-  transition screen, 100 ms later: the quit to the title, the story respawn
-  at `exanima05`'s portal (15 cm up, the camera left alone, the save written
-  first), the revival (also saving first), a level load at the exit's spawn
-  point. The phase before the transition is kept.
-- **The frame.** While no menu covers the game and no transition runs, each
-  frame ticks the dialogue engine and then the mode's hook. The story hook
+  transition screen, as the screen's action when it reaches black: the quit
+  to the title, the story respawn at `exanima05`'s portal (15 cm up, the
+  camera left alone, the save written first), the revival (also saving
+  first), a level load at the exit's spawn point, the next practice fight,
+  practice's RESTART and the class cancel (its scripted end hook included).
+  The open puts the action on the screen and adds the screen's run to the
+  GUI task list at priority 100 (not a 100 ms delay). The phase before the
+  transition is kept and the phase word becomes 0.
+- **The transition screen.** It runs every frame on the real clock,
+  whatever covers the game. The fade to black takes 600 ms (alpha
+  `round_even(t·255)`, black only once `t > 1`); the level exit's fade bit
+  sets its long hold first (2000 ms fade, 1000 ms hold), which the open
+  leaves alone. Each caller passes a music-fade argument: on for the story
+  quit, the respawn, RESTART, the end menu's exits and the next fight into
+  the last (boss) fight, off for the revival, the named-locale exit and the
+  class cancel, and for the level exit on when the destination's entry
+  music (the story's level music check, first 15 characters) differs from
+  the playing track. With it the main track's gain falls as
+  `(1 − t)·gain`, and at black the track stops and forgets its name and the
+  screen's audio fade drops to 0, rising back as `1 − t` with the fade in
+  and set to 1 when the screen closes. At black the world audio fade is
+  reset to 1 on every path. After the action the screen holds two frames
+  and 500 ms, then fades back in over 600 ms and closes. An action that
+  changes the level keeps the screen black until the change is done (its
+  teardown and loading screen; at most 30 frames when none shows up), as
+  the original's action loads the level before it returns to the screen.
+  Its alpha draws as a black form over the game, the HUD and the forms.
+- **The frame.** While no menu covers the game and the phase word is not
+  the transition's (0), each frame ticks the dialogue engine and then the
+  mode's hook (ended and won sessions have no hook, so only the dialogue
+  ticks). The story hook
   checks the three wake-up flags, runs discovery once a second and handles a
   fallen player (dead with at least 0.01 health: knocked out for five
   seconds, then revived; otherwise dead). The get-up writes the animator's
@@ -883,8 +908,7 @@ calling the rest of the game, so the order is testable.
   The launcher sets `BootToMenu(false)`, so the boot builds the flow's title
   state without covering the level or the splash; the splash path shows the
   title at its hand-over.
-  The world, save, camera, character and transition-screen steps are left
-  to the host; a level load's request (a practice start on a fresh title,
+  The world, save, camera and character steps are left to the host; a level load's request (a practice start on a fresh title,
   the next fight, a teleporter, the story respawn) becomes an in-process
   level change (`exa_world::level_lifecycle`), and the player is placed
   across it. Its app-owned first steps (the menu form hides, the end menu
