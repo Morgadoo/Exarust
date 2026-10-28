@@ -78,7 +78,6 @@ fn build_bodies(
     nodes: Query<(&Transform, Option<&BodyPart>)>,
     animators: Query<(&Animator, Option<&Stature>)>,
     globals: Query<&GlobalTransform>,
-    physics: Option<Res<exa_physics::Physics>>,
     skinned: Query<&SkinnedPart>,
     meshes: Res<Assets<Mesh>>,
 ) {
@@ -156,19 +155,20 @@ fn build_bodies(
                 .with_race(race)
                 .with_stats(stats)
                 .with_rest_turns(&rest_turns);
-            // The original places a character by sampling its first clip,
-            // putting the parts where that pose puts them, and only then
-            // snapping the feet to the ground (its placement routine). The
-            // body is built from the model's posed parts, which are the same
-            // clip; sampling it again from the clip's clock keeps the pose
-            // independent of what the frame sampler last left on the nodes.
+            // The original places a character by sampling its first clip
+            // and putting the parts where that pose puts them (its
+            // placement routine). The body is built from the model's posed
+            // parts, which are the same clip; sampling it again from the
+            // clip's clock keeps the pose independent of what the frame
+            // sampler last left on the nodes. The placement's leg snap
+            // (`Ragdoll::snap_placement`) that follows in the original is
+            // not run: without its frame height applied to the controller
+            // it left the standing player 4.5 cm lower (105 cm against 110
+            // cm over 2 000 ticks on the RTX 3090 check).
             let frame = globals.get(root).map_or(Affine3A::IDENTITY, |g| g.affine());
             spawn_pose(
                 root, frame, &mut body, &found, &motions, &animators, &parents, &nodes,
             );
-            if let Some(physics) = &physics {
-                body.snap_placement(&physics.0, frame);
-            }
             body.place_foot_pitches()
         };
         let mut entity = commands.entity(root);
