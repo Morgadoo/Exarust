@@ -230,6 +230,18 @@ muscles-off sampler's rules are tested (`body_limp.rs`): key-flag plants,
 the 0.05/0.95 height ease and a snap of the particles to the animated
 pose; nothing samples with them yet, since a limp body keeps its physical
 pose.
+The plain body's own collision sound and its scrape sources are in
+`body::sound` (`src/body_sound.rs`): an impact over 0.5 sounds after the
+cooldown or when it is strictly louder than twice the last one, at volume
+`min(impact/100, 1)·1.5`, pitched by the part's mobility (a light part
+below 0.1 scales its volume too), with a 220 ms cooldown less a rounded
+share of the volume plus a 0–99 ms draw from the engine's generator. A
+scrape source follows a point on the body: a move over 0.01 cm smooths to
+`(√d·2 + d)·0.05`, at most one, the speed is a fifth of the way to it,
+and a speed over 0.02 plays at `speed·volume` and `pitch·(0.1·speed + 0.9)`.
+The sources are stepped at the start of the post-step, before the body's
+matrices, and their events are left for `exa_audio`; that crate has no body
+hookup, so nothing adds a source in the running game yet.
 Each character tick measures a living body's balance at its chest against
 its ankles and asks the level for the ground under each foot
 (`contact::Level::height_below`, the original's Height Query), which give

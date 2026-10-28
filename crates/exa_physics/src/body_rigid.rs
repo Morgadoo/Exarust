@@ -330,6 +330,8 @@ impl Ragdoll {
             held_count: 0,
             held_by: None,
             level_impacts: Vec::new(),
+            scrapes: Vec::new(),
+            scrape_events: Vec::new(),
         }
     }
 }
