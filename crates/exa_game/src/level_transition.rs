@@ -401,6 +401,52 @@ pub fn transition_flow(
     flow
 }
 
+/// The transition flow of the running game's last in-process level change,
+/// kept for the save path and for inspection. The host fills it when it
+/// starts the destination's load ([`live_transition`]); a save made while
+/// [`LiveTransition::saves_disabled`] is set is refused, as the original's
+/// save-disable flag refuses it.
+#[derive(Resource, Debug, Clone, PartialEq, Eq)]
+pub struct LiveTransition {
+    /// The destination's level name.
+    pub level: String,
+    /// The spawn point the change named; non-zero chooses the portal's
+    /// matrix.
+    pub spawn: u32,
+    pub flow: TransitionFlow,
+}
+
+impl LiveTransition {
+    /// Whether the change left saving disabled (an archive destination
+    /// that did not import).
+    pub fn saves_disabled(&self) -> bool {
+        self.flow.saves_disabled
+    }
+}
+
+/// The flow of an in-process level change as the running game has it: no
+/// save package is open (the destination comes from the archive), the
+/// archive's `<locale>.rfc` was or was not found, a found level imports
+/// (Exarust's loader builds what it finds), a non-zero spawn names a
+/// portal, and no follower travels or respawn is pending yet. A missing
+/// destination gives the original's abort: nothing after the locale lookup
+/// runs.
+pub fn live_transition(level: &str, spawn: u32, archive_found: bool) -> LiveTransition {
+    LiveTransition {
+        level: level.to_string(),
+        spawn,
+        flow: transition_flow(
+            false,
+            archive_found,
+            archive_found,
+            spawn != 0,
+            false,
+            false,
+            0,
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -717,5 +763,26 @@ mod tests {
         assert_eq!(plan.followers.len(), 1);
         assert!((plan.followers[0][1] - 138.18).abs() < 1e-4);
         assert_eq!(plan.resets[0].min_distance, 5.0);
+    }
+
+    #[test]
+    fn a_live_change_reads_the_archive_and_aborts_when_the_level_is_missing() {
+        let found = live_transition("exanima02", 3, true);
+        assert!(!found.flow.aborted && !found.saves_disabled());
+        assert!(!found.flow.from_save);
+        assert_eq!(found.flow.matrix, SpawnMatrix::Portal);
+        let steps = &found.flow.steps;
+        let at = |step| steps.iter().position(|s| *s == step).unwrap();
+        assert!(at(TransitionStep::ReadArchiveSection) < at(TransitionStep::ImportLevel));
+        assert!(!steps.contains(&TransitionStep::ReadSaveSection));
+        assert!(!steps.contains(&TransitionStep::SpawnFollowers));
+        assert_eq!(steps.last(), Some(&TransitionStep::PostLoad));
+        assert_eq!(
+            live_transition("exanima01", 0, true).flow.matrix,
+            SpawnMatrix::Default
+        );
+        let missing = live_transition("nowhere", 0, false);
+        assert!(missing.flow.aborted && !missing.saves_disabled());
+        assert_eq!(missing.flow.steps.last(), Some(&TransitionStep::OpenSave));
     }
 }
