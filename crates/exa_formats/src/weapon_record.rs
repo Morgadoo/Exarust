@@ -502,60 +502,6 @@ impl WeaponRecord {
     pub fn reach_metres(&self) -> f32 {
         self.reach / CM_PER_M
     }
-
-    /// The grip pose the weapon's damage spread asks of the hand: 1 (a
-    /// point-heavy weapon) to 9, from `round(thrust/(slash + crush +
-    /// pierce)·5) + 1` in single precision, rounding half to even; a zero
-    /// spread asks 10. A pose below 1 rises to 1 only for a weapon with no
-    /// child parts (the original's `child count < 0`), and a pose of 10 or
-    /// more is cut to 9. A NaN spread converts to the indefinite integer's
-    /// low word, which leaves a pose of 1.
-    pub fn hand_pose(&self, has_children: bool) -> i32 {
-        let sum = self.slash + self.crush + self.pierce;
-        if sum == 0.0 {
-            return 10;
-        }
-        let pose = crate::pixel::round_f32(self.thrust / sum * 5.0) as i32 + 1;
-        if pose >= 10 {
-            9
-        } else if pose < 1 && !has_children {
-            1
-        } else {
-            pose
-        }
-    }
-
-    /// The equip refresh of one record (run after every equip change): the
-    /// race's stance blend scales W19 (rounded half to even) and its
-    /// swing-turn factor W27; a body in the weightless states (0x600,
-    /// 0x700) holds at full arm stiffness and one in the 0x500 state
-    /// halves its swing turn. The state word is the character's record
-    /// state (`word & 0xFF00`).
-    pub fn refresh(&mut self, race_blend: f32, race_turn: f32, state_word: u32) {
-        self.blend = crate::pixel::round_f32(self.blend as f32 * race_blend) as i32;
-        self.swing_turn *= race_turn;
-        match state_word & 0xFF00 {
-            0x600 | 0x700 => self.arm_stiffness = 1.0,
-            0x500 => self.swing_turn *= 0.5,
-            _ => {}
-        }
-    }
-}
-
-/// The reach a character's held items give it after an equip refresh (cm):
-/// the longest held record's W23, taken with an ordered `>` so a NaN record
-/// never wins, or the race's unarmed reach when nothing is held. The
-/// original keeps it in its reach field for the AI's threat range, and this
-/// pass overwrites the transient `held_reach` the attach pass computes
-/// (`exa_combat::grip::held_reach`).
-pub fn max_reach<'a>(records: impl IntoIterator<Item = &'a WeaponRecord>, unarmed: f32) -> f32 {
-    let mut reach = unarmed;
-    for record in records {
-        if record.reach > reach {
-            reach = record.reach;
-        }
-    }
-    reach
 }
 
 /// The weapon fields of a character's race record.
@@ -912,70 +858,6 @@ mod tests {
             &Holder::AVERAGE,
         );
         assert_eq!(w.code, 3);
-    }
-
-    #[test]
-    fn the_hand_pose_follows_the_damage_spread() {
-        let mut w = sword_a();
-        // slash 72 → 0.5·0.72^0.7 ≈ 0.3982; thrust 54 → 0.3242. Pose =
-        // round(0.3242/0.3982·5) + 1 = round(4.071) + 1 = 5.
-        assert_eq!(w.hand_pose(true), 5);
-        assert_eq!(w.hand_pose(false), 5);
-        // No spread at all asks for the widest pose.
-        w.slash = 0.0;
-        w.crush = 0.0;
-        w.pierce = 0.0;
-        assert_eq!(w.hand_pose(true), 10);
-        // A point-only weapon: thrust/(slash+crush+pierce)·5 overflows the
-        // 9, and a NaN spread converts to the indefinite low word: pose 1.
-        w.pierce = 0.001;
-        assert_eq!(w.hand_pose(true), 9);
-        w.pierce = f32::NAN;
-        assert_eq!(w.hand_pose(true), 1);
-        // A zero spread converts to pose 1 (round 0 + 1), with or without
-        // child parts.
-        w.slash = 10.0;
-        w.crush = 0.0;
-        w.pierce = 0.0;
-        w.thrust = 0.0;
-        assert_eq!(w.hand_pose(false), 1);
-        assert_eq!(w.hand_pose(true), 1);
-    }
-
-    #[test]
-    fn the_equip_refresh_scales_the_race_and_holds_the_state() {
-        let mut w = sword_a();
-        let (blend, turn, stiffness) = (w.blend, w.swing_turn, w.arm_stiffness);
-        // The race's blend rounds the integer half to even, the turn scales.
-        w.refresh(1.5, 2.0, 0);
-        assert_eq!(w.blend, crate::pixel::round_f32(blend as f32 * 1.5) as i32);
-        assert_eq!(w.swing_turn, turn * 2.0);
-        assert_eq!(w.arm_stiffness, stiffness);
-        // A weightless state holds at full arm stiffness.
-        w.refresh(1.0, 1.0, 0x600);
-        assert_eq!(w.arm_stiffness, 1.0);
-        // The 0x500 state halves the swing turn, once per refresh.
-        let before = w.swing_turn;
-        w.refresh(1.0, 1.0, 0x5FF);
-        assert_eq!(w.swing_turn, before * 0.5);
-        // A NaN blend converts to the indefinite low word, zero.
-        w.refresh(f32::NAN, 1.0, 0);
-        assert_eq!(w.blend, 0);
-    }
-
-    #[test]
-    fn the_refreshed_reach_is_the_longest_record() {
-        let sword = sword_a();
-        let mut long = sword;
-        long.reach = 130.0;
-        // Unarmed: the race's reach.
-        assert_eq!(max_reach(std::iter::empty(), 50.0), 50.0);
-        assert_eq!(max_reach([&sword], 50.0), sword.reach);
-        assert_eq!(max_reach([&sword, &long], 50.0), 130.0);
-        // An ordered compare: a NaN record never wins.
-        let mut nan = sword;
-        nan.reach = f32::NAN;
-        assert_eq!(max_reach([&sword, &nan], 50.0), sword.reach);
     }
 
     #[test]

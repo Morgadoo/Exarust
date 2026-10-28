@@ -1546,7 +1546,7 @@ fn equip_outfits(
                 hands.main = Some(held::HeldItem::weapon(item.flags));
             }
             let top = || weapon_length(&weapon, loader.meshes) * CM_PER_M;
-            let mut record = held_record(
+            let record = held_record(
                 loader.game,
                 &held.model,
                 top,
@@ -1555,10 +1555,6 @@ fn equip_outfits(
                 &holder,
                 &race,
             );
-            // The equip refresh: the race's stance blend and swing-turn
-            // factor scale the record's (the record state word the
-            // weightless states read is not carried yet).
-            record.refresh(race.weapons.blend, race.weapons.swing_turn, 0);
             // The holding pass hands the weapon's table mass to its part
             // tree's redistribution; the result waits for the body solver.
             let mass = record

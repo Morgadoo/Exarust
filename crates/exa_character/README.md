@@ -306,9 +306,8 @@ tested rules of their own.
   (started by a `FlipWeaponRequest` for the character's entity, refused
   while the character switches or the weapon section has no flipped-side
   kind byte) and rebuilds its `Blade` record from the flipped weapon
-  section. It also applies the weld changes of a condition: a dead holder
-  stiffens the soft weld, and a collapsing one in the record state 0x800
-  loosens it to 10 cm; a collapsing holder lets its weapons and torch go
+  section. It also applies death's weld change (a dead holder stiffens the
+  soft weld, so the corpse keeps its weapon); a collapsing holder lets its weapons and torch go
   (`GripRelease`: the grip stage frees them) while the shield stays on the
   arm.
 - The off hand's item is attached by `offhand` after the dresser: a shield

@@ -887,17 +887,6 @@ impl GripLinks {
         true
     }
 
-    /// The collapse routine's change to a held item's soft weld: its slack
-    /// becomes `slack` (metres) while the collapsing body's record state
-    /// asks for it. Returns whether a weld was changed.
-    pub fn set_soft_slack(&mut self, slack: f32) -> bool {
-        let Some(soft) = self.world_soft.filter(|&i| i < self.links.len()) else {
-            return false;
-        };
-        self.links[soft].slack = slack;
-        true
-    }
-
     /// Starts a flip if the item has a flip link and its section defines a
     /// flip side (the original's flip command refuses a weapon whose
     /// flipped-side kind byte is zero). The original's caller sets its
@@ -972,14 +961,6 @@ impl GripLinks {
             false
         }
     }
-}
-
-/// The record state word a collapsing body asks the soft weld's slack for:
-/// the collapse routine gives every held item's soft weld a 10 cm slack
-/// while the collapsed body's state word has the 0x800 class (`0x800` up to
-/// the low two nibbles). Returns whether `state_word` asks for it.
-pub fn collapse_weld_state(state_word: u32) -> bool {
-    state_word & 0xff00 == 0x800
 }
 
 /// The grip mode a clip's change asks for: a knocked-down body
@@ -1499,20 +1480,15 @@ mod tests {
     }
 
     #[test]
-    fn a_collapse_loosens_the_weld_and_a_death_stiffens_it() {
+    fn a_death_stiffens_only_a_soft_weld() {
         let item = body_at(Vec3::ZERO);
         let hand = body_at(Vec3::ZERO);
         let mut shield =
             shield_links(&item, &hand, bindings(), 1, Affine3A::IDENTITY, Vec3::ZERO).unwrap();
-        assert!(shield.set_soft_slack(0.1));
         let soft = shield.world_soft.unwrap();
-        assert_eq!(shield.links[soft].slack, 0.1);
-        // The state word's class 0x800 asks for it, another class does not.
-        assert!(collapse_weld_state(0x800));
-        assert!(collapse_weld_state(0x8FF));
-        assert!(!collapse_weld_state(0x600));
-        assert!(!collapse_weld_state(0x700));
-        // A group with no soft weld has nothing to loosen.
+        assert!(shield.weld_on_death());
+        assert_eq!(shield.links[soft].strength, 1.0);
+        // A group with no soft weld has nothing to stiffen.
         let mut weapon = build(
             &item,
             &hand,
@@ -1525,7 +1501,6 @@ mod tests {
             1.0,
         )
         .unwrap();
-        assert!(!weapon.set_soft_slack(0.1));
         assert!(!weapon.weld_on_death());
     }
 

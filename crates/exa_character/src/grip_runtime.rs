@@ -110,12 +110,12 @@ pub fn flip_requests(
     }
 }
 
-/// The weld changes a condition asks of every held item: a dead holder
-/// stiffens its soft (parry) world weld to 1 (the original's death routine
-/// keeps the weapon in the corpse's hand); a collapsing holder of record
-/// state 0x800 loosens it to a 10 cm slack. Exarust does not carry the
-/// record state word the collapse branch reads, so it passes 0 and only
-/// the death branch acts.
+/// The weld change death asks of every held item: a dead holder stiffens
+/// its soft (parry) world weld to 1 (the original's death routine keeps the
+/// weapon in the corpse's hand). The collapse routine's 10 cm slack for a
+/// gobbler (race state word 0x800) is written to the link the held item's
+/// parent part keeps at the weld's index, not to the item's own weld, and
+/// is not reproduced.
 pub fn weld_states(
     mut held: Query<&mut HeldGrip>,
     bodies: Query<(Entity, &Ragdoll)>,
@@ -137,11 +137,8 @@ pub fn weld_states(
         let Some(links) = grip.links.as_mut() else {
             continue;
         };
-        if condition.is_dead() && links.weld_on_death() {
-            continue;
-        }
-        if condition.has(Condition::COLLAPSING.0) && exa_physics::grip::collapse_weld_state(0) {
-            links.set_soft_slack(0.1);
+        if condition.is_dead() {
+            links.weld_on_death();
         }
     }
 }
@@ -302,8 +299,7 @@ mod tests {
     }
 
     /// A dead holder keeps the item and stiffens its soft weld; a collapse
-    /// leaves it alone because Exarust does not carry the record state
-    /// word the loosen branch reads.
+    /// leaves the weld alone.
     #[test]
     fn a_dead_holder_stiffens_the_soft_weld() {
         let mut app = App::new();
@@ -341,7 +337,7 @@ mod tests {
             holder_key: key,
             hands: [Some(Entity::from_raw_u32(2).unwrap()); 2],
             arms: [None, None],
-            links: Some(shield.clone()),
+            links: Some(shield),
             released: false,
         };
         app.world_mut().entity_mut(owner).insert(holder_body);
@@ -366,28 +362,12 @@ mod tests {
             app.world().get::<HeldGrip>(item_e).is_some(),
             "the corpse keeps the item"
         );
-        let base = app.world().get::<HeldGrip>(item_e).unwrap().clone();
-        // A collapsing body leaves the weld alone: its record state word is
-        // not carried.
-        let mut app = App::new();
-        app.add_systems(Update, weld_states);
-        let owner = app.world_mut().spawn(Condition::COLLAPSING).id();
-        let holder_body = holder(owner, Vec3::ZERO);
-        let key = holder_body.parts[0].entity;
-        let mut shield2 = shield.clone();
-        shield2.set_soft_slack(0.0);
-        let grip = HeldGrip {
-            links: Some(shield2),
-            holder_key: key,
-            ..base
-        };
-        let item2 = app.world_mut().spawn_empty().id();
-        let body2 = item(body_root(), Vec3::new(0.2, 0.0, 0.0));
-        app.world_mut().entity_mut(owner).insert(holder_body);
-        app.world_mut().entity_mut(item2).insert((body2, grip));
+        // A collapsing body leaves the weld alone.
+        app.world_mut()
+            .entity_mut(owner)
+            .insert(Condition::COLLAPSING);
         app.update();
-        let links = app.world().get::<HeldGrip>(item2).unwrap();
-        assert_eq!(links.links.as_ref().unwrap().links[soft].slack, 0.0);
+        assert_eq!(strength(&app), 1.0);
     }
 
     /// The root entity the item body is built on.

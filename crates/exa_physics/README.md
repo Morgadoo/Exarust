@@ -390,10 +390,7 @@ are double compares, as the original's). A flip command is refused while
 the character switches and for a section with no flipped-side kind byte
 (`GripLinks::begin_flip`), as the original's command does. The death
 routine stiffens each soft world weld to strength 1 (`weld_on_death`,
-called for a dead holder: a corpse keeps its weapon), and the collapse of
-a body in the record state 0x800 gives it a 10 cm slack
-(`set_soft_slack`, `collapse_weld_state`; the state word is not carried
-yet). `GripLink` is plain data
+called for a dead holder: a corpse keeps its weapon). `GripLink` is plain data
 with the law documented: a correction is shared by the item's and the
 hand's particle weights and mobilities; a world link moves only the item.
 `grip_solve` runs the records as a cross-body solver stage: a held item is
