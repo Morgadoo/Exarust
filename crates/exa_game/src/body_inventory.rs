@@ -49,6 +49,7 @@ pub fn pack_children(possessions: &Possessions) -> Vec<ListChild> {
     possessions
         .carried
         .iter()
+        .filter(|carried| carried.id != 0)
         .map(|carried| ListChild {
             id: carried.id,
             flags: carried.flags,
@@ -65,6 +66,7 @@ pub fn equipment_items(possessions: &Possessions) -> Vec<(u32, u32)> {
     possessions
         .worn
         .iter()
+        .filter(|worn| worn.id != 0)
         .map(|worn| (worn.id, worn.flags))
         .chain(
             possessions
@@ -132,8 +134,8 @@ pub fn bind_equipment(
         container.icon_size,
         &mut state,
     );
-    container.used = 0;
-    container.loaded = true;
+    // The equipment list is not a saved container: the original's load
+    // leaves its loaded flag and used bulk alone.
     container.entries.len()
 }
 
@@ -496,14 +498,19 @@ mod tests {
             );
             assert!(screens.bind_loot(character, pack_panel, equipment_panel));
             let window = screens.loot_window(character).unwrap();
+            let stored_items: Vec<_> = record
+                .inventory
+                .iter()
+                .filter(|carried| carried.item != 0)
+                .collect();
             assert_eq!(
                 window.pack.entries.len(),
-                record.inventory.len(),
+                stored_items.len(),
                 "{} carries {} items",
                 record.name,
-                record.inventory.len()
+                stored_items.len()
             );
-            for (entry, stored) in window.pack.entries.iter().zip(&record.inventory) {
+            for (entry, stored) in window.pack.entries.iter().zip(stored_items) {
                 assert_eq!(entry.id, stored.item);
                 assert_eq!(entry.flags, stored.flags);
             }
