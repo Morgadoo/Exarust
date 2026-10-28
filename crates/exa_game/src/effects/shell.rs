@@ -313,6 +313,208 @@ pub fn tick_shells(
     }
 }
 
+/// The segment flag for the draw side above one half.
+pub const FIRST_SIDE: u32 = 0x200;
+/// The segment flag for the draw side at one half or below.
+pub const SECOND_SIDE: u32 = 0x400;
+/// A shell node whose visibility word carries this bit is dead and leaves
+/// the pass's list.
+pub const DEAD_VISIBILITY: u32 = 0x8000_0000;
+/// A node with this render bit has sub-objects.
+pub const SUBOBJECTS: u32 = 0x0100_0000;
+/// The thick pass's visibility bit.
+pub const THICK_PASS: u32 = 0x8000;
+/// A sub-object the first pass skips.
+pub const SKIP_PART: u32 = 0x0008_0040;
+/// A sub-object the second pass skips.
+pub const SKIP_SUBPART: u32 = 0x0008_0000;
+/// The texture stage the second pass switches a 0x100 stage to.
+pub const FADE_STAGE: u16 = 0x0203;
+/// The stage the switch replaces.
+pub const PLAIN_STAGE: u16 = 0x0100;
+
+/// One sub-object of a shell node as the render pass sees it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ShellPart {
+    pub flags: u32,
+    /// The sub-object has a mesh.
+    pub mesh: bool,
+    /// Its fade (the node's +0x20 word while the second pass draws).
+    pub fade: f32,
+    /// Its texture stage.
+    pub texture_stage: u16,
+}
+
+/// One node of a displacement shell as the render pass sees it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShellPassNode {
+    /// The visibility word; [`DEAD_VISIBILITY`] takes the node out.
+    pub visibility: u32,
+    /// The render flags; [`SUBOBJECTS`] says the node has sub-objects.
+    pub render_flags: u32,
+    /// The node's fade value (+0x238).
+    pub fade: f32,
+    /// The node's second fade value (+0x234).
+    pub fade2: f32,
+    /// The node's sub-objects.
+    pub parts: Vec<ShellPart>,
+}
+
+impl ShellPassNode {
+    /// A node with the given sub-objects.
+    pub fn with_parts(parts: Vec<ShellPart>) -> Self {
+        Self {
+            visibility: 0,
+            render_flags: if parts.is_empty() { 0 } else { SUBOBJECTS },
+            fade: 0.0,
+            fade2: 0.0,
+            parts,
+        }
+    }
+
+    /// Whether the node takes the thick pass.
+    pub fn thick(&self) -> bool {
+        self.visibility & THICK_PASS != 0
+    }
+}
+
+/// One sub-object of the first pass's draw list.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ShellPartDraw {
+    pub node: usize,
+    pub part: usize,
+    pub thick: bool,
+}
+
+/// One sub-object of the second pass's draw list.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ShellFadeDraw {
+    pub node: usize,
+    pub part: usize,
+    pub fade: f32,
+    /// The stage the draw switches to.
+    pub stage: u16,
+}
+
+/// The pass list's error: a shell whose own node has no sub-object.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShellPassError {
+    NullSubObject,
+}
+
+/// Takes the dead nodes (visibility [`DEAD_VISIBILITY`]) out of the list,
+/// closing the gap in order; returns how many went.
+pub fn prune_dead(nodes: &mut Vec<ShellPassNode>) -> usize {
+    let mut index = 0;
+    let mut removed = 0;
+    while index < nodes.len() {
+        if nodes[index].visibility & DEAD_VISIBILITY != 0 {
+            nodes.remove(index);
+            removed += 1;
+        } else {
+            index += 1;
+        }
+    }
+    removed
+}
+
+/// Whether the first side of the draw window runs: a segment carrying a
+/// draw bit and a shown value above one half.
+pub fn first_side(segment_flags: u32, shown: f32) -> bool {
+    segment_flags & (FIRST_SIDE | SECOND_SIDE) != 0 && shown > 0.5
+}
+
+/// Whether the second side runs: a segment carrying a draw bit and a shown
+/// value at one half or below.
+pub fn second_side(segment_flags: u32, shown: f32) -> bool {
+    segment_flags & (FIRST_SIDE | SECOND_SIDE) != 0 && shown <= 0.5
+}
+
+/// The first pass's draws: every node with sub-objects, each of its parts
+/// whose flags lack [`SKIP_PART`], thick when the node's visibility carries
+/// [`THICK_PASS`]. The pass sets no fades.
+pub fn first_draws(nodes: &[ShellPassNode]) -> Vec<ShellPartDraw> {
+    let mut draws = Vec::new();
+    for (node_index, node) in nodes.iter().enumerate() {
+        if node.render_flags & SUBOBJECTS == 0 {
+            continue;
+        }
+        for (part_index, part) in node.parts.iter().enumerate() {
+            if part.flags & SKIP_PART == 0 {
+                draws.push(ShellPartDraw {
+                    node: node_index,
+                    part: part_index,
+                    thick: node.thick(),
+                });
+            }
+        }
+    }
+    draws
+}
+
+/// The second pass: every node's two fade words and every skin's fade
+/// become one less the shown value; each drawn sub-object's fade becomes
+/// the shown value and its plain stage is switched to [`FADE_STAGE`]. The
+/// stage is put back after the draw, as the original restores it.
+pub fn prepare_second(
+    nodes: &mut [ShellPassNode],
+    skins: &mut [f32],
+    shown: f32,
+) -> Vec<ShellFadeDraw> {
+    for skin in skins.iter_mut() {
+        *skin = 1.0 - shown;
+    }
+    let mut draws = Vec::new();
+    for (node_index, node) in nodes.iter_mut().enumerate() {
+        node.fade = 1.0 - shown;
+        node.fade2 = 1.0 - shown;
+        if node.render_flags & SUBOBJECTS == 0 {
+            continue;
+        }
+        for (part_index, part) in node.parts.iter_mut().enumerate() {
+            if part.flags & SKIP_SUBPART != 0 || !part.mesh {
+                continue;
+            }
+            part.fade = shown;
+            // The original switches a plain stage for the draw and restores
+            // it afterwards, so the node keeps its own stage.
+            let stage = if part.texture_stage == PLAIN_STAGE {
+                FADE_STAGE
+            } else {
+                part.texture_stage
+            };
+            draws.push(ShellFadeDraw {
+                node: node_index,
+                part: part_index,
+                fade: shown,
+                stage,
+            });
+        }
+    }
+    draws
+}
+
+/// The shell's own node in the second pass: its fade becomes one less the
+/// shown value and its first sub-object is drawn. A node without
+/// sub-objects is the original's "Displacement Shell null sub-object."
+/// error; a node whose sub-object has no mesh draws nothing. Answers the
+/// fade and whether the pass also takes the plain draw entry point (the
+/// global pass count is zero).
+pub fn own_node_draw(
+    has_subobjects: bool,
+    has_mesh: bool,
+    shown: f32,
+    passes: i32,
+) -> Result<Option<(f32, bool)>, ShellPassError> {
+    if !has_subobjects {
+        return Err(ShellPassError::NullSubObject);
+    }
+    if !has_mesh {
+        return Ok(None);
+    }
+    Ok(Some((1.0 - shown, passes == 0)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -501,5 +703,113 @@ mod tests {
         };
         let copied = copy_indices(&[span, plain], &[1, 0, 2], &[9, 8, 7]).unwrap();
         assert_eq!(copied, vec![8, 9, 7]);
+    }
+    #[test]
+    fn dead_nodes_leave_the_shell_pass_in_order() {
+        let mut nodes = vec![
+            ShellPassNode::with_parts(vec![]),
+            ShellPassNode {
+                visibility: DEAD_VISIBILITY,
+                ..ShellPassNode::with_parts(vec![])
+            },
+            ShellPassNode::with_parts(vec![]),
+        ];
+        assert_eq!(prune_dead(&mut nodes), 1);
+        assert_eq!(nodes.len(), 2);
+        assert_eq!(nodes[1].visibility, 0);
+        let mut already = vec![ShellPassNode::with_parts(vec![])];
+        assert_eq!(prune_dead(&mut already), 0);
+    }
+
+    #[test]
+    fn the_two_sides_split_at_one_half() {
+        assert!(first_side(FIRST_SIDE, 0.5001));
+        assert!(!first_side(FIRST_SIDE, 0.5));
+        assert!(second_side(SECOND_SIDE, 0.5));
+        assert!(!second_side(SECOND_SIDE, 0.5001));
+        assert!(!first_side(0x1000, 1.0));
+        assert!(!second_side(0x800, 0.0));
+    }
+
+    #[test]
+    fn the_first_pass_picks_thick_and_skips_marked_parts() {
+        let mut node = ShellPassNode::with_parts(vec![
+            ShellPart {
+                flags: 0,
+                mesh: true,
+                fade: 0.0,
+                texture_stage: PLAIN_STAGE,
+            },
+            ShellPart {
+                flags: SKIP_PART,
+                mesh: true,
+                fade: 0.0,
+                texture_stage: PLAIN_STAGE,
+            },
+        ]);
+        node.visibility = THICK_PASS;
+        let nodes = vec![node, ShellPassNode::with_parts(vec![])];
+        assert_eq!(
+            first_draws(&nodes),
+            vec![ShellPartDraw {
+                node: 0,
+                part: 0,
+                thick: true
+            }]
+        );
+        let mut thin = nodes;
+        thin[0].visibility = 0;
+        assert!(!first_draws(&thin)[0].thick);
+    }
+
+    #[test]
+    fn the_second_pass_fades_and_switches_the_stage() {
+        let mut nodes = vec![ShellPassNode::with_parts(vec![
+            ShellPart {
+                flags: 0,
+                mesh: true,
+                fade: 0.0,
+                texture_stage: PLAIN_STAGE,
+            },
+            ShellPart {
+                flags: SKIP_SUBPART,
+                mesh: true,
+                fade: 0.0,
+                texture_stage: PLAIN_STAGE,
+            },
+            ShellPart {
+                flags: 0,
+                mesh: false,
+                fade: 0.0,
+                texture_stage: PLAIN_STAGE,
+            },
+        ])];
+        let mut skins = [1.0];
+        let draws = prepare_second(&mut nodes, &mut skins, 0.25);
+        assert_eq!(nodes[0].fade, 0.75);
+        assert_eq!(nodes[0].fade2, 0.75);
+        assert_eq!(skins[0], 0.75);
+        assert_eq!(nodes[0].parts[0].fade, 0.25);
+        assert_eq!(nodes[0].parts[0].texture_stage, PLAIN_STAGE);
+        assert_eq!(
+            draws,
+            vec![ShellFadeDraw {
+                node: 0,
+                part: 0,
+                fade: 0.25,
+                stage: FADE_STAGE
+            }]
+        );
+    }
+
+    #[test]
+    fn the_shell_own_node_needs_a_sub_object() {
+        assert_eq!(
+            own_node_draw(false, true, 0.5, 0),
+            Err(ShellPassError::NullSubObject)
+        );
+        assert_eq!(own_node_draw(true, false, 0.5, 0), Ok(None));
+        assert_eq!(own_node_draw(true, true, 0.5, 0), Ok(Some((0.5, true))));
+        assert_eq!(own_node_draw(true, true, 0.5, 2), Ok(Some((0.5, false))));
     }
 }
