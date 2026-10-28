@@ -73,20 +73,18 @@ const SHORT_BLEND_FROM: usize = 0x1F;
 const SHORT_BLEND: u32 = 20;
 const LONG_BLEND_FROM: usize = 0x21;
 const LONG_BLEND: u32 = 60;
-/// The bones whose plain capture keeps their last target: the pelvis and
-/// the legs (the original's bone index up to 7); the upper body's take
-/// their physical turn.
+/// The bones whose plain capture (and hold pose) keeps their last target:
+/// the pelvis and the legs, skin bones 1 to 7; the upper body's take their
+/// physical turn. The capture tests the 1-based skin bone (at most 7) and
+/// the hold the 0-based pose slot (at most 6): the same seven bones.
 const LOWER_BODY: RangeInclusive<usize> = 1..=7;
-/// The bones whose hold pose keeps their last target: one fewer than the
-/// capture, the original's index up to 6.
-const HOLD_LOWER: RangeInclusive<usize> = 1..=6;
 /// Times and weights at or under this (the original's 1.19e-7) count as
 /// none.
 const EPSILON: f32 = 1.192_09e-7;
 /// The smooth ease is f²(3 − 2f); the fast one 1 + 0.11f − 1/(1 + 8f).
 const SMOOTH_A: f32 = 3.0;
 const SMOOTH_B: f32 = 2.0;
-const FAST_SLOPE: f32 = 0.11;
+const FAST_SLOPE: f64 = 0.11;
 const FAST_RISE: f32 = 8.0;
 
 /// How a clip's blend from its capture eases.
@@ -107,12 +105,13 @@ impl Ease {
     pub fn apply(self, f: f32) -> f32 {
         match self {
             Ease::Linear => f,
-            Ease::Smooth => (SMOOTH_A - SMOOTH_B * f) * f * f,
+            // The square is taken first, then scaled by 3 − 2f.
+            Ease::Smooth => (SMOOTH_A - SMOOTH_B * f) * (f * f),
             Ease::Fast => {
-                // The first sum is double, the reciprocal single, as the
-                // original's two ease routines compute it.
-                let recip = 1.0 / (1.0 + FAST_RISE * f);
-                ((f64::from(f) * f64::from(FAST_SLOPE) + 1.0) - f64::from(recip)) as f32
+                // The slope term and its sum are double (the double 0.11),
+                // the reciprocal single, as the original's ease computes it.
+                let recip = 1.0 / (f * FAST_RISE + 1.0);
+                ((f64::from(f) * FAST_SLOPE + 1.0) - f64::from(recip)) as f32
             }
         }
     }
@@ -248,7 +247,7 @@ impl Animator {
                 .iter()
                 .enumerate()
                 .map(|(i, &r)| match physical.get(i) {
-                    Some(Some(q)) if !HOLD_LOWER.contains(&(i + 1)) => *q,
+                    Some(Some(q)) if !LOWER_BODY.contains(&(i + 1)) => *q,
                     _ => r,
                 })
                 .collect(),
@@ -568,7 +567,7 @@ pub fn ragdoll_bracket(clip: &Clip, time: f32, looping: bool, blend: f32) -> Opt
     })
 }
 
-/// The held pose a shock stagger starts from (`+0xb88`): bones up to the
+/// The held pose a shock stagger starts from: bones up to the
 /// pelvis and legs (1 to 7) keep the captured pose unless the body is down
 /// (its condition has the off-feet bit); every other bone takes a random
 /// turn of a random axis, each component drawn from 0..1 less 0.5 and
@@ -597,11 +596,12 @@ pub fn shock_hold(
                     Quat::IDENTITY
                 };
                 let base = defence_first.get(i).copied().unwrap_or(Quat::IDENTITY);
+                // The engine's component lerp: base + (turn − base) · 0.5.
                 Quat::from_xyzw(
-                    (base.x + q.x) * 0.5,
-                    (base.y + q.y) * 0.5,
-                    (base.z + q.z) * 0.5,
-                    (base.w + q.w) * 0.5,
+                    base.x + (q.x - base.x) * 0.5,
+                    base.y + (q.y - base.y) * 0.5,
+                    base.z + (q.z - base.z) * 0.5,
+                    base.w + (q.w - base.w) * 0.5,
                 )
                 .normalize()
             }

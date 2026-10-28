@@ -686,10 +686,11 @@ fn the_limp_sampler_brackets_at_the_raw_clock() {
     assert_eq!(pose.rotations.len(), BONES);
 }
 
-/// The hold pose keeps the last targets of bones 1 to 6 and takes the
-/// physical turn from bone 7, one bone fewer than the plain capture.
+/// The hold pose keeps the last targets of skin bones 1 to 7 (its pose
+/// slots 0 to 6) and takes the physical turn from bone 8, the same bones as
+/// the plain capture.
 #[test]
-fn the_hold_stops_one_bone_before_the_capture() {
+fn the_hold_keeps_the_same_bones_as_the_capture() {
     let mut anim = Animator::new("Default", "Idle");
     let mut pose = ClipPose {
         rotations: vec![Quat::IDENTITY; BONES],
@@ -702,9 +703,10 @@ fn the_hold_stops_one_bone_before_the_capture() {
         .map(|i| Some(Quat::from_rotation_x(0.1 * (i + 1) as f32)))
         .collect();
     let held = anim.hold_pose(&physical).unwrap();
-    // Bone 6 (index 5) keeps its target; bone 7 (index 6) is physical.
+    // Bone 7 (index 6) keeps its target; bone 8 (index 7) is physical.
     assert_eq!(held[5], pose.rotations[5]);
-    assert_eq!(held[6], physical[6].unwrap());
+    assert_eq!(held[6], pose.rotations[6]);
+    assert_eq!(held[7], physical[7].unwrap());
 }
 
 /// The shock hold copies the captured pose for bones 1 to 7 unless the body
