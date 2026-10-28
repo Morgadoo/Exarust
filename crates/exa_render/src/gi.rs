@@ -46,6 +46,7 @@ impl Plugin for GiPlugin {
         let report = WarmUpReport(warm_up.report.clone());
         app.init_resource::<GiLights>()
             .init_resource::<GiSectorLights>()
+            .init_resource::<GiShapes>()
             .insert_resource(warm_up)
             .add_plugins((
                 ExtractResourcePlugin::<GiTextures>::default(),
@@ -730,6 +731,209 @@ const VOXEL_LIGHT_SHARE: f32 = 0.1;
 const VOXEL_LIGHT_REACH: i32 = 3;
 /// Columns at each side of a block a voxel light never reaches.
 const VOXEL_LIGHT_MARGIN: i32 = 8;
+
+/// The manager's block presets: the voxel size picks the volume's size and
+/// the level's height its slice count.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GiPreset {
+    /// Voxels across (X and Z).
+    pub width: u32,
+    pub height: u32,
+    /// Slices.
+    pub depth: u32,
+    /// Voxel edge, centimetres.
+    pub voxel_cm: u32,
+}
+
+/// The original's preset for a voxel edge: 5 cm gives 32 × 32 × 64, 20 cm
+/// gives 256 × 256 × 64 (128 when the level is more than 12.8 m tall), and
+/// every other value 128 × 128 × 16 at 40 cm. The preset and the level's
+/// height are in whole centimetres, divided as integers.
+pub fn preset(voxel_cm: i32, level_span_cm: i32) -> GiPreset {
+    match voxel_cm {
+        5 => GiPreset {
+            width: 32,
+            height: 32,
+            depth: 64,
+            voxel_cm: 5,
+        },
+        20 => GiPreset {
+            width: 256,
+            height: 256,
+            depth: if level_span_cm / 20 > 64 { 128 } else { 64 },
+            voxel_cm: 20,
+        },
+        _ => GiPreset {
+            width: 128,
+            height: 128,
+            depth: 16,
+            voxel_cm: 40,
+        },
+    }
+}
+
+/// The eight diagonal corner offsets the propagation samples, in texture
+/// units, with `w` = 1/8. The original's order is X fastest, then Z, then Y,
+/// with the zero corner left out.
+pub fn corner_offsets(size: UVec3) -> [[f32; 4]; 8] {
+    let step = Vec3::new(
+        1.33 / size.x.max(1) as f32,
+        1.33 / size.y.max(1) as f32,
+        1.33 / size.z.max(1) as f32,
+    );
+    let mut out = [[0.0; 4]; 8];
+    let mut i = 0;
+    for z in [-1.0f32, 1.0] {
+        for y in [-1.0f32, 1.0] {
+            for x in [-1.0f32, 1.0] {
+                out[i] = [x * step.x, y * step.y, z * step.z, 1.0 / 8.0];
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
+/// The quad index buffer the original's draws share: 4·i, 4·i+1, 4·i+2,
+/// then 4·i, 4·i+2, 4·i+3.
+pub fn quad_indices(quads: usize) -> Vec<u16> {
+    let mut out = Vec::with_capacity(quads * 6);
+    for q in 0..quads {
+        let b = (q * 4) as u16;
+        out.extend_from_slice(&[b, b + 1, b + 2, b, b + 2, b + 3]);
+    }
+    out
+}
+
+/// The TGIEmissive shapes registered with the manager, in registration
+/// order. The original appends a shape's pointer (and stores the manager in
+/// the shape), and unregisters by swapping the last list entry over the
+/// found one; a shape listed twice has both entries removed.
+#[derive(Resource, Default, Clone, Debug)]
+pub struct GiShapes(Vec<Entity>);
+
+impl GiShapes {
+    /// Registers a shape at the end.
+    pub fn register(&mut self, shape: Entity) {
+        self.0.push(shape);
+    }
+
+    /// Unregisters a shape: every entry equal to it is replaced by the last
+    /// list entry and the list shortens, as the original's walk does.
+    pub fn unregister(&mut self, shape: Entity) {
+        let old = self.0.len();
+        let mut list = self.0.clone();
+        let mut count = old;
+        for i in 0..old {
+            if list[i] == shape {
+                count -= 1;
+                list[i] = list[count];
+            }
+        }
+        list.truncate(count);
+        self.0 = list;
+    }
+
+    /// The registered shapes, in list order.
+    pub fn shapes(&self) -> &[Entity] {
+        &self.0
+    }
+}
+
+/// A registered shape's volume for the manager's box: its world position
+/// and half extents (metres), in world X, Y, Z.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ShapeVolume {
+    pub position: Vec3,
+    pub half: Vec3,
+}
+
+/// The layers and column range the manager draws a shape over, in voxels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ShapeDraw {
+    /// First and one-past-last column (texture X, then Z).
+    pub lo: UVec2,
+    pub hi: UVec2,
+    /// First slice and how many.
+    pub first: i32,
+    pub count: i32,
+}
+
+/// The region the manager draws a shape's injection over, as its shape loop
+/// computes it: the centre and half extents in voxels (rounded ties to
+/// even), the columns clipped to the block's 8-voxel margins, and the
+/// slices from the centre less its vertical half extent, one more than twice
+/// it. Shapes whose centre is at or below the bottom, or whose clipped box
+/// is empty, draw nothing.
+pub fn shape_draw(volume: ShapeVolume, origin: Vec3, voxel: f32, dims: UVec3) -> Option<ShapeDraw> {
+    let p = (volume.position - origin) / voxel;
+    let centre = Vec3::new(
+        p.x.round_ties_even(),
+        p.z.round_ties_even(),
+        p.y.round_ties_even(),
+    );
+    let half = Vec3::new(
+        (volume.half.x / voxel).round_ties_even(),
+        (volume.half.z / voxel).round_ties_even(),
+        (volume.half.y / voxel).round_ties_even(),
+    );
+    let margin = VOXEL_LIGHT_MARGIN as f32;
+    let lo = UVec2::new(
+        ((centre.x - half.x).max(margin)) as u32,
+        ((centre.y - half.y).max(margin)) as u32,
+    );
+    let hi = UVec2::new(
+        ((centre.x + half.x).min(dims.x as f32 - margin)) as u32,
+        ((centre.y + half.y).min(dims.y as f32 - margin)) as u32,
+    );
+    let first = centre.z as i32 - half.z as i32;
+    let count = half.z as i32 * 2 + 1;
+    (lo.x < hi.x && lo.y < hi.y && centre.z > 0.0).then_some(ShapeDraw {
+        lo,
+        hi,
+        first,
+        count,
+    })
+}
+
+/// One margin copy between a block and a neighbour: the destination columns
+/// and the offset added to them to read the neighbour's light texture. The
+/// manager copies every slice but the top one.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MarginBlit {
+    /// Destination columns (texture X, then Z), half open.
+    pub lo: UVec2,
+    pub hi: UVec2,
+    /// Added to the destination's texture coordinates to read the source.
+    pub offset: Vec2,
+    /// Slices to copy.
+    pub slices: u32,
+}
+
+/// The margin copy from block `(dx, dz)`'s neighbour (each −1, 0 or 1, not
+/// both 0): a one-sector margin column or row on that side, the interior on
+/// the other axis, and the original's UV offset of ∓240/256. A diagonal
+/// neighbour fills both margins.
+pub fn margin_blit(dims: UVec3, dx: i32, dz: i32) -> Option<MarginBlit> {
+    if dx == 0 && dz == 0 {
+        return None;
+    }
+    let m = 8u32;
+    let columns = |d: i32, size: u32| match d.signum() {
+        -1 => 0..m,
+        1 => size - m..size,
+        _ => m..size - m,
+    };
+    let xs = columns(dx, dims.x);
+    let zs = columns(dz, dims.y);
+    let fraction = (dims.x as f32 - 16.0) / dims.x as f32;
+    Some(MarginBlit {
+        lo: UVec2::new(xs.start, zs.start),
+        hi: UVec2::new(xs.end, zs.end),
+        offset: Vec2::new(-dx as f32 * fraction, -dz as f32 * fraction),
+        slices: dims.z.saturating_sub(1),
+    })
+}
 
 /// The voxels a voxel light at `at` (in voxels from the block's corner,
 /// texture axes X, Z, Y) adds to, as the original draws it: 6 × 6 columns
@@ -1712,6 +1916,125 @@ mod tests {
             }
         }
         assert!(Glow.injects());
+    }
+
+    #[test]
+    fn the_presets_follow_the_voxel_size_and_level_height() {
+        assert_eq!(
+            preset(5, 100),
+            GiPreset {
+                width: 32,
+                height: 32,
+                depth: 64,
+                voxel_cm: 5
+            }
+        );
+        assert_eq!(preset(20, 1280).depth, 64);
+        assert_eq!(preset(20, 1300).depth, 128);
+        assert_eq!(preset(40, 100).voxel_cm, 40);
+        assert_eq!(preset(40, 100).width, 128);
+        assert_eq!(preset(40, 100).depth, 16);
+    }
+
+    #[test]
+    fn the_corner_offsets_run_x_then_z_then_height() {
+        let offsets = corner_offsets(UVec3::new(256, 256, 64));
+        let step = Vec3::new(1.33 / 256.0, 1.33 / 256.0, 1.33 / 64.0);
+        assert_eq!(offsets[0], [-step.x, -step.y, -step.z, 0.125]);
+        assert_eq!(offsets[1], [step.x, -step.y, -step.z, 0.125]);
+        assert_eq!(offsets[2], [-step.x, step.y, -step.z, 0.125]);
+        assert_eq!(offsets[4], [-step.x, -step.y, step.z, 0.125]);
+        assert_eq!(offsets[7], [step.x, step.y, step.z, 0.125]);
+    }
+
+    #[test]
+    fn the_shared_quad_indices_are_two_triangles_each() {
+        assert_eq!(quad_indices(2), vec![0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7]);
+    }
+
+    #[test]
+    fn shapes_register_at_the_end_and_leave_by_swap_removal() {
+        let mut world = World::new();
+        let a = world.spawn_empty().id();
+        let b = world.spawn_empty().id();
+        let c = world.spawn_empty().id();
+        let mut shapes = GiShapes::default();
+        for e in [a, b, c] {
+            shapes.register(e);
+        }
+        assert_eq!(shapes.shapes(), &[a, b, c]);
+        shapes.unregister(b);
+        assert_eq!(shapes.shapes(), &[a, c]);
+        // A duplicate's both entries go.
+        shapes.register(c);
+        shapes.unregister(c);
+        assert_eq!(shapes.shapes(), &[a]);
+        shapes.unregister(a);
+        assert!(shapes.shapes().is_empty());
+    }
+
+    #[test]
+    fn a_shapes_box_is_rounded_and_margin_clipped() {
+        let dims = UVec3::new(256, 256, 64);
+        let draw = shape_draw(
+            ShapeVolume {
+                position: Vec3::new(10.0, 2.0, 6.0),
+                half: Vec3::splat(1.0),
+            },
+            Vec3::ZERO,
+            0.2,
+            dims,
+        )
+        .unwrap();
+        assert_eq!((draw.lo, draw.hi), (UVec2::new(45, 25), UVec2::new(55, 35)));
+        assert_eq!((draw.first, draw.count), (5, 11));
+        // A wide shape is clipped to the 8-voxel margins.
+        let draw = shape_draw(
+            ShapeVolume {
+                position: Vec3::new(0.0, 2.0, 0.0),
+                half: Vec3::splat(4.0),
+            },
+            Vec3::ZERO,
+            0.2,
+            dims,
+        )
+        .unwrap();
+        assert_eq!((draw.lo, draw.hi), (UVec2::new(8, 8), UVec2::new(20, 20)));
+        // The bottom slice (or below) draws nothing.
+        assert!(
+            shape_draw(
+                ShapeVolume {
+                    position: Vec3::new(10.0, -1.0, 6.0),
+                    half: Vec3::splat(1.0),
+                },
+                Vec3::ZERO,
+                0.2,
+                dims,
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn the_manager_copies_a_neighbours_margins() {
+        let dims = UVec3::new(256, 256, 64);
+        assert!(margin_blit(dims, 0, 0).is_none());
+        let left = margin_blit(dims, -1, 0).unwrap();
+        assert_eq!((left.lo, left.hi), (UVec2::new(0, 8), UVec2::new(8, 248)));
+        assert_eq!(left.offset, Vec2::new(0.9375, 0.0));
+        assert_eq!(left.slices, 63);
+        let right = margin_blit(dims, 1, 0).unwrap();
+        assert_eq!(
+            (right.lo, right.hi),
+            (UVec2::new(248, 8), UVec2::new(256, 248))
+        );
+        assert_eq!(right.offset, Vec2::new(-0.9375, 0.0));
+        let corner = margin_blit(dims, 1, 1).unwrap();
+        assert_eq!(
+            (corner.lo, corner.hi),
+            (UVec2::new(248, 248), UVec2::new(256, 256))
+        );
+        assert_eq!(corner.offset, Vec2::splat(-0.9375));
     }
 
     #[test]

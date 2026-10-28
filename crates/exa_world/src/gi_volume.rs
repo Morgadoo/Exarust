@@ -148,6 +148,8 @@ pub struct GiBlockSpec {
     pub slot: usize,
     /// The lowest corner of its voxels, metres.
     pub origin: Vec3,
+    /// Its centre (X and Z used), metres.
+    pub centre: Vec3,
     /// Voxels along Y.
     pub depth: usize,
 }
@@ -185,10 +187,12 @@ impl GiBlockLayout {
                     continue;
                 }
                 let slot = (x + z * columns) as usize;
+                let centre = block_centre(sector, grid.width, grid.height) / CM_PER_M;
                 blocks.push(GiBlockSpec {
                     sector,
                     slot,
                     origin: block_origin(sector, grid.width, grid.height, VOXEL, below),
+                    centre: Vec3::new(centre.x, 0.0, centre.y),
                     depth,
                 });
             }
@@ -239,6 +243,20 @@ impl GiBlockLayout {
             .min_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)))
             .map(|(i, _)| i)
     }
+}
+
+/// The manager's per-object texture position (`VXGIPos`) for a world point
+/// in a block, as the original computes it: two axis positions relative to
+/// the block's centre plus half a texture, and the height from the volume's
+/// bottom divided by the block's **width** (the surface shader pairs it with
+/// a scale of the same units). Texture axes are X, Z depth, Y height.
+pub fn gi_position(block: &GiBlockSpec, at: Vec3) -> Vec3 {
+    let width = SIDE as f32 * VOXEL;
+    Vec3::new(
+        (at.x - block.centre.x) / width + 0.5,
+        (at.z - block.centre.z) / width + 0.5,
+        (at.y - block.origin.y) / width,
+    )
 }
 
 /// The bounding box of the grid's built cells, as the original finds it:
@@ -1182,7 +1200,19 @@ impl Occupancy {
     /// cells, each share rounded on its own. Points too close to the
     /// block's sides or in its top slice are dropped.
     pub fn splat(&mut self, p: Vec3) {
-        let g = (p - self.origin) / VOXEL - Vec3::splat(0.5);
+        self.splat_styled(p, 1.0, false, false);
+    }
+
+    /// Splats a sample point with the original's thin-mesh and centred
+    /// variants: a thin mesh (a cloth or a sheet) weighs a quarter, and a
+    /// centred one adds half a voxel to its height, leaves the column's
+    /// lowest slice alone, and does not test the top slice. `weight` is 1 for
+    /// a normal point (the original's 20) and −1 to take an old position back
+    /// out.
+    pub fn splat_styled(&mut self, p: Vec3, weight: f32, thin: bool, centred: bool) {
+        let weight = weight * POINT_WEIGHT * if thin { 0.25 } else { 1.0 };
+        let g = (p - self.origin) / VOXEL - Vec3::splat(0.5)
+            + if centred { Vec3::Z * 0.5 } else { Vec3::ZERO };
         let base = g.trunc();
         let f = g - base;
         let (x, y, z) = (base.x as i64, base.y as i64, base.z as i64);
@@ -1195,18 +1225,67 @@ impl Occupancy {
         // is (1 − fx)(1 − fz) (or fx, fz) times it, as the original forms
         // the two products.
         for (dy, wy) in [(0, 1.0 - f.y), (1, f.y)] {
-            let layer = wy * POINT_WEIGHT;
+            let layer = wy * weight;
             for (dz, wz) in [(0, 1.0 - f.z), (1, f.z)] {
                 for (dx, wx) in [(0, 1.0 - f.x), (1, f.x)] {
                     self.add(x + dx, y + dy, z + dz, (wx * wz) * layer);
                 }
             }
         }
-        let column = &mut self.lowest[x + z * SIDE];
-        *column = (*column).min(y as u8);
+        if !centred {
+            let column = &mut self.lowest[x + z * SIDE];
+            *column = (*column).min(y as u8);
+        }
     }
 
-    /// The lowest slice light propagates in, per column: the lowest occupied
+    /// The region of the volume a point set touches, for a sub-upload: the
+    /// original grows the box by 1.5 voxels on each side (rounded ties to
+    /// even), clamps it to the block, and leaves `None` when it is empty.
+    pub fn region_of(&self, points: impl IntoIterator<Item = Vec3>) -> Option<VoxelRegion> {
+        let mut lo = Vec3::splat(f32::INFINITY);
+        let mut hi = Vec3::splat(f32::NEG_INFINITY);
+        for p in points {
+            lo = lo.min(p);
+            hi = hi.max(p);
+        }
+        if !lo.is_finite() || !hi.is_finite() {
+            return None;
+        }
+        let inv = Vec3::splat(1.0 / VOXEL);
+        let lo = ((lo - self.origin) * inv - Vec3::splat(1.5)).round();
+        let hi = ((hi - self.origin) * inv + Vec3::splat(1.5)).round();
+        // Texture axes: X, then Z, then height.
+        let dims = UVec3::new(SIDE as u32, SIDE as u32, self.depth as u32);
+        let lo = Vec3::new(lo.x.max(0.0), lo.z.max(0.0), lo.y.max(0.0));
+        let hi = Vec3::new(hi.x.max(0.0), hi.z.max(0.0), hi.y.max(0.0));
+        let lo = lo.min(dims.as_vec3());
+        let hi = hi.min(dims.as_vec3());
+        let lo = UVec3::new(lo.x as u32, lo.y as u32, lo.z as u32);
+        let hi = UVec3::new(hi.x as u32, hi.y as u32, hi.z as u32);
+        (lo.x < hi.x && lo.y < hi.y && lo.z < hi.z).then_some(VoxelRegion { lo, hi })
+    }
+
+    /// Takes an object's old point set out of the grid and puts its new one
+    /// in, as the original's dynamic update does with weights ∓20, and
+    /// returns the region both touch. The mesh's flags choose the thin and
+    /// centred variants.
+    pub fn update_dynamic(
+        &mut self,
+        old: &[Vec3],
+        new: &[Vec3],
+        thin: bool,
+        centred: bool,
+    ) -> Option<VoxelRegion> {
+        let region = self.region_of(old.iter().chain(new).copied())?;
+        for &p in old {
+            self.splat_styled(p, -1.0, thin, centred);
+        }
+        for &p in new {
+            self.splat_styled(p, 1.0, thin, centred);
+        }
+        Some(region)
+    }
+
     /// slice of its 6 m sector (30 × 30 columns inside the 8-voxel margin),
     /// or 255 where the sector holds nothing (or in the margin).
     pub fn floors(&self) -> Vec<u8> {
@@ -1235,6 +1314,41 @@ impl Occupancy {
         let (x, y, z) = (g.x as usize, g.y as usize, g.z as usize);
         (x < SIDE && z < SIDE && y < self.depth).then(|| self.cells[x + z * SIDE + y * SIDE * SIDE])
     }
+}
+
+/// A half-open voxel region in texture axes (X, then Z, then height).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VoxelRegion {
+    pub lo: UVec3,
+    pub hi: UVec3,
+}
+
+impl VoxelRegion {
+    /// Whether the region holds no voxel.
+    pub fn is_empty(&self) -> bool {
+        self.lo.x >= self.hi.x || self.lo.y >= self.hi.y || self.lo.z >= self.hi.z
+    }
+}
+
+/// The bytes of `cells` inside `region`, X fastest, then Z, then height, as
+/// the original's sub-upload reads them. `None` for an empty or out-of-range
+/// region.
+pub fn sub_upload(cells: &[u8], dims: UVec3, region: VoxelRegion) -> Option<Vec<u8>> {
+    let lo = region.lo.min(dims);
+    let hi = region.hi.min(dims);
+    if lo.x >= hi.x || lo.y >= hi.y || lo.z >= hi.z {
+        return None;
+    }
+    let mut out = Vec::with_capacity(((hi.x - lo.x) * (hi.y - lo.y) * (hi.z - lo.z)) as usize);
+    for y in lo.z..hi.z {
+        for z in lo.y..hi.y {
+            let row = (z * dims.x + y * dims.x * dims.y) as usize;
+            let start = row + lo.x as usize;
+            let end = row + hi.x as usize;
+            out.extend_from_slice(cells.get(start..end)?);
+        }
+    }
+    Some(out)
 }
 
 #[cfg(test)]
@@ -1567,6 +1681,83 @@ mod tests {
         // Each half alone would lose the blocks across the split.
         let alone = floor_cells(&meshes[..1]);
         assert_eq!(alone[0].points().len(), 15 * 30);
+    }
+
+    #[test]
+    fn a_thin_point_weighs_a_quarter_and_a_centred_one_straddles_slices() {
+        let mut o = Occupancy::new(Vec3::ZERO, 6.0, 0.0, (8, 8));
+        let p = o.origin + Vec3::new(100.5, 10.5, 100.5) * VOXEL;
+        o.splat_styled(p, 1.0, true, false);
+        assert_eq!(o.at(p), Some(5));
+        // The centred variant adds half a voxel in height and leaves the
+        // column's floor where it was.
+        let mut o = Occupancy::new(Vec3::ZERO, 6.0, 0.0, (8, 8));
+        o.splat_styled(p, 1.0, false, true);
+        let base = o.origin + Vec3::new(100.5, 10.5, 100.5) * VOXEL;
+        assert_eq!(o.at(base - Vec3::Z * 0.1), Some(10));
+        assert_eq!(o.at(base + Vec3::Z * 0.1), Some(10));
+        assert_eq!(o.lowest[100 + 100 * SIDE], 255);
+    }
+
+    #[test]
+    fn a_dynamic_update_takes_the_old_points_out_and_puts_the_new_ones_in() {
+        let mut o = Occupancy::new_at(Vec3::ZERO, 64, IVec2::ZERO);
+        let old = Vec3::new(100.5, 10.5, 100.5) * VOXEL;
+        o.splat(old);
+        let new = old + Vec3::X * VOXEL;
+        let region = o.update_dynamic(&[old], &[new], false, false).unwrap();
+        assert_eq!(o.at(old), Some(0));
+        assert_eq!(o.at(new), Some(20));
+        assert_eq!(region.lo, UVec3::new(99, 99, 9));
+        assert_eq!(region.hi, UVec3::new(103, 102, 12));
+    }
+
+    #[test]
+    fn a_dirty_region_grows_by_one_and_a_half_voxels() {
+        let o = Occupancy::new_at(Vec3::ZERO, 64, IVec2::ZERO);
+        let region = o
+            .region_of([Vec3::new(100.5, 10.5, 100.5) * VOXEL])
+            .unwrap();
+        assert_eq!(region.lo, UVec3::new(99, 99, 9));
+        assert_eq!(region.hi, UVec3::new(102, 102, 12));
+        assert!(o.region_of([]).is_none());
+    }
+
+    #[test]
+    fn a_sub_upload_reads_x_then_z_then_height() {
+        let dims = UVec3::new(2, 2, 2);
+        let mut cells = Vec::new();
+        for y in 0..2 {
+            for z in 0..2 {
+                for x in 0..2 {
+                    cells.push((x + z * 2 + y * 4) as u8);
+                }
+            }
+        }
+        let region = VoxelRegion {
+            lo: UVec3::ZERO,
+            hi: dims,
+        };
+        assert_eq!(sub_upload(&cells, dims, region).unwrap(), cells);
+        let region = VoxelRegion {
+            lo: UVec3::new(1, 0, 1),
+            hi: UVec3::new(2, 2, 2),
+        };
+        assert_eq!(sub_upload(&cells, dims, region).unwrap(), vec![5, 7]);
+    }
+
+    #[test]
+    fn a_blocks_gi_position_is_relative_to_its_centre() {
+        let grid = open_grid(32);
+        let layout = GiBlockLayout::new(&grid, 6.0, 0.0);
+        let block = layout.blocks[layout.block_at(Vec3::ZERO).unwrap()];
+        let p = gi_position(&block, block.centre);
+        assert_eq!((p.x, p.y), (0.5, 0.5));
+        assert!((p.z - (block.centre.y - block.origin.y) / 51.2).abs() < 1e-6);
+        // The world origin lies half a block before the block's centre in
+        // each direction.
+        let origin = gi_position(&block, Vec3::ZERO);
+        assert!((origin.x - (0.5 - 24.0 / 51.2)).abs() < 1e-6);
     }
 
     #[test]
