@@ -482,6 +482,17 @@ pub fn supersample_factor(setting: u32) -> u32 {
     }
 }
 
+/// The sub-frames a super-sampling setting draws: one with super-sampling
+/// off, two at setting 1 and four from setting 2 up (the engine stores the
+/// pass count less one: 0, 1 or 3).
+pub fn supersample_passes(setting: u32) -> u32 {
+    match setting {
+        0 => 1,
+        1 => 2,
+        _ => 4,
+    }
+}
+
 /// The shadow taps one sub-frame takes, `SdwSmps`.
 ///
 /// The shadow quality gives `2^(quality − 1)` taps over a frame, at most
@@ -680,11 +691,11 @@ pub fn object_word(samples: u32, supersample: u32, geometry: GeometryOptions) ->
 pub const HALF_PASSES: u32 = 0x4000_0000;
 
 /// The sub-frames a draw renders: the scene's super-sampling pass count,
-/// halved for a frame word with [`HALF_PASSES`] while the sun shadow mode is
-/// 3, and never below zero.
+/// halved (rounded up, so a single pass stays one) for a frame word with
+/// [`HALF_PASSES`] while the sun shadow mode is 3.
 pub fn draw_passes(passes: u32, frame_word: u32, sun_shadow_mode: u32) -> u32 {
     if frame_word & HALF_PASSES != 0 && sun_shadow_mode == 3 {
-        passes / 2
+        passes.div_ceil(2)
     } else {
         passes
     }
@@ -1460,11 +1471,28 @@ mod tests {
     }
 
     #[test]
+    fn a_supersampling_setting_picks_one_two_or_four_subframes() {
+        assert_eq!(supersample_passes(0), 1);
+        assert_eq!(supersample_passes(1), 2);
+        assert_eq!(supersample_passes(2), 4);
+        assert_eq!(supersample_passes(3), 4);
+        assert_eq!(supersample_passes(5), 4);
+        // The sample factor used by the displacement taps and the time term
+        // is a different table.
+        assert_eq!(supersample_factor(2), 3);
+        assert_eq!(supersample_factor(5), 15);
+    }
+
+    #[test]
     fn a_half_pass_object_draws_half_the_passes_in_sun_mode_three() {
         assert_eq!(draw_passes(4, HALF_PASSES, 3), 2);
         assert_eq!(draw_passes(4, HALF_PASSES, 2), 4);
         assert_eq!(draw_passes(4, 0, 3), 4);
-        assert_eq!(draw_passes(1, HALF_PASSES, 3), 0);
+        // The engine halves the last sub-frame's index, so an odd count
+        // rounds up: one pass stays one, three become two.
+        assert_eq!(draw_passes(1, HALF_PASSES, 3), 1);
+        assert_eq!(draw_passes(3, HALF_PASSES, 3), 2);
+        assert_eq!(draw_passes(2, HALF_PASSES, 3), 1);
         assert_eq!(draw_passes(0, 0, 0), 0);
     }
 }

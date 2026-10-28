@@ -184,7 +184,10 @@ a height map), the `Global` block (unless shader-word bit 31), `EnvMap`
 (`Shadow0` is a `sampler2DShadow`, with `in vec3 vrSdw`, when the first
 slot is directional, a cube otherwise; later lights always cubes),
 `FrmBuf` for specular materials, `int PassIdx` for quad rendering, and
-`uniform vec3 SdwSmp[4·SdwSmps]` (or `SdwSmps`) for lit materials.
+`uniform vec3 SdwSmp[4·SdwSmps]` (or `SdwSmps`) for lit materials. A
+geometry-stage compile expands no interface. A surface's fragment entry is
+`<set>_f`, and the builder only appends `_f` while the set name is shorter
+than 15 characters.
 
 Every declaration ends `;\r\n` (an indexed one carries its index, one or
 two digits, first), and the `Global` block itself ends `};\r\n` (252 bytes,
@@ -296,17 +299,17 @@ light in the environment word (unlit rows have an empty one).
 
 | offset | field | value |
 |---|---|---|
-| 0 | `ViewPos` | camera eye (cm), `w` = the frame's time delta |
+| 0 | `ViewPos` | camera eye (cm), `w` = the frame's clock × exposure |
 | 16 | `ViewSiz` | viewport width, height (one less when multisampled) |
 | 24 | `ViewPrj` | `tan(fov/2)·500`, `aspect·tan(fov/2)·500` |
 | 32 | `CamMat` | camera view-projection, column-major |
 | 96 | `SdwMat` | the sun's world-to-shadow matrix |
 | 160 | `VXGIScl` | `1/(W·20)`, `1/(H·20)`, `1/(D·20)`, `1/SdwSmps` (texels across X, Z, up) |
 | 176 | `Ambient` | linear level ambient × exposure × 15, `w` = 8 indoors or 3 outdoors |
-| 192 | `TimeDlt` | `(Δt, −Δt)` |
+| 192 | `TimeDlt` | `(clock·exposure, −exposure/factor)`, the factor the super-sampling setting's 1–15 |
 | 200 | `ViewRcp` | `1/width`, `1/height` |
 | 208 | `FogColr` | linear fog colour, `w` = `1/fog distance` |
-| 224 | `FogPos` | the fog plane's position (rule not decoded) [guess] |
+| 224 | `FogPos` | the midpoint of the camera's eye and the sun camera's eye (`eye + (sun − eye)·0.5`); `w` is not written |
 | 240 | `BufrPos` | the frame-copy offset for refraction |
 | 248 | `Wetness` | the environment's wetness |
 
@@ -316,12 +319,19 @@ light in the environment word (unlit rows have an empty one).
 |---|---|---|
 | 0 | `MatDif` | linear diffuse (×1.5 before linearising for type 0) × opacity if the blend source is ONE and the record is not in refraction mode (`0x300` = `0x200` in the plug-in-masked word), × `(1 − sss)`; rgb is zero on an unlit record; `w` = the stored opacity minus the fall-off's `(f+1)f` whenever the fall-off exceeds 0.01 (the factory's test for blended states compares a four-bit field with `0x100` and never holds) |
 | 16 | `MatSpc` | linear specular × specular level, zero without the specular bit, ×3 when the shader word's bit 0 is set (classes 1, 3, 5, 7) and the material word has a specular map; `w` = glossiness (raised to 0.01 only for type 0) |
-| 32 | `MatEmi` | linear emissive × exposure (×2 when the plug-in-masked word keeps `MatEmi` `0x8`, the lit/specular bits and the emissive-layer bit `0x80000`); the skin path uses the diffuse × sss, `w` = the secondary colour's `w` + 1 |
-| 48 | `MatDrt` | mode 4 `(0.45, 0.03, 0.02, 0.5)`; else `w = 2 − 0x30` |
+| 32 | `MatEmi` | linear emissive × exposure (×2 when the plug-in-masked word keeps `MatEmi` `0x8`, the lit/specular bits and the emissive-layer bit `0x80000`); a record whose material word has the translucent or refracting mode bits (`0x300`) is not scaled by the exposure; the skin path uses the diffuse × sss, `w` = the secondary colour's `w` + 1 |
+| 48 | `MatDrt` | mode 4 the material record's dirt tint (`+0x248` of the runtime record: a spawned weapon writes `(1.0, 0.06, 0.04, 0.3)`, the hair record `(0.45, 0.03, 0.02)`); else `w = 2 − the record's dirt strength` |
 | 64 | `MatDsp` | parallax texel counts × 3·10⁻⁵ |
 | 72 | `DrtUVs` | the diffuse map's aspect |
 | 80 | `OpcFll` | `(sign, 1.8·exponent, (f+1)·amount, refraction)`, both negated with extra flag `0x100` |
-| 96 | `DspSdw` | `(0x5C·0.004, 1 + 0.125·subpass, 0x60·0.05, 0)` |
+| 96 | `DspSdw` | `(0x5C·0.004, 1 + 0.125·PassIdx, 0x60·0.05, 0)` |
+
+A record in the liquid mode (`0x300` = `0x200`) also binds a refraction
+background to the screen-copy unit: without the scene's own refraction
+texture it loads the built-in `BkgRfr01` for an opacity up to 0.85 (a NaN
+takes this branch) and `BkgRfr02` above it; with one, the scene's low
+(`+0x6C`) and high (`+0x64`) fields. Any other record binds the scene's low
+field when it has an opacity map and the scene has the texture.
 
 ### Lights
 
@@ -355,16 +365,30 @@ checked through these rules, not against a dump. Open:
   always false. The procedural texture code swaps in its own variable and
   object tables (`Layers`, `Layer[i].Masked`). `exa_render::texture_program`
   expands each of the 61 texture entries (as its own fragment program, with
-  the surface fragment interface and the `MPrj` matrix); Exarust bakes the
-  textures on the CPU, so no entry is drawn.
+  the surface fragment interface), pairs it with the built-in vertex shader
+  the draw state's stream word selects, binds the attributes by name
+  (`vPos` 0, `vTex` 1, `vNrm` 2, `vCol` 3, `vTx2` 4, `vTng` 6, `vDlt` 7)
+  and uploads the `MPrj` matrix; Exarust bakes the textures on the CPU, so
+  no entry is drawn.
 - The loader passes the feature bits through a factory method before the
   plug-in mask; it is taken as the identity [guess].
 - The factory's quality field is taken as the shading-quality setting and
   its extra shader bits as zero [guess].
 - A record type past the five built-in plug-ins is taken as type 0 [guess:
   no shipped record has one].
-- `FogPos`, the light depth-scale denominator and the `0.125` term of
-  `DspSdw.y` are not fully decoded [guess].
+- `FogPos` was read from the builder: it lerps the camera's eye and the sun
+  camera's eye at 0.5 with the engine's `a + (b − a)·t` helper, in single
+  precision. The light depth-scale denominator is the light's far radius
+  times the scene's light scale, and `DspSdw.y` adds `0.125·PassIdx` to 1,
+  both from the writer's own instructions.
+- The material record's dirt tint (`+0x248`) is a field of the runtime
+  material, not of the 184-byte library block; Exarust's record reader has
+  no value for it and the uniform writer takes the caller's tint (zero for
+  a record on which nothing wrote one).
+- The height layer's parallax pass reads the height texture: a map one
+  texel tall clears the material word's `0x800000` and the shader word's
+  `0x100`, and only the height takes part in that test (a one-texel width
+  still displaces).
 - `OpcFll`/`DspSdw` are written at half precision by the engine; the parser
   keeps `f32` values.
 - During the warm-up the light slots keep whatever the last draw left in

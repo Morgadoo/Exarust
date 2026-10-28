@@ -144,8 +144,6 @@ pub const LIGHT_ARRAY_BYTES: usize = LIGHT_BYTES * crate::shader_program::MAX_LI
 pub struct ViewInputs {
     /// The camera's eye, world cm.
     pub eye: [f32; 3],
-    /// The frame's clock, written into `ViewPos.w` after the exposure.
-    pub frame_delta: f32,
     /// The window's width and height, texels.
     pub viewport: [u32; 2],
     /// Multisampled/supersampled views write one less than the viewport size.
@@ -170,7 +168,8 @@ pub struct ViewInputs {
     pub ambient_w: f32,
     /// The exposure (1 in play).
     pub exposure: f32,
-    /// The frame time, written to `TimeDlt`.
+    /// The frame's clock: `ViewPos.w` and `TimeDlt.x` are this value after
+    /// the exposure.
     pub time_delta: f32,
     /// The fog colour, linear.
     pub fog_colour: [f32; 3],
@@ -192,7 +191,6 @@ impl Default for ViewInputs {
     fn default() -> Self {
         Self {
             eye: [0.0; 3],
-            frame_delta: 0.0,
             viewport: [1920, 1080],
             multisampled: false,
             fov_y: 60f32.to_radians(),
@@ -279,7 +277,7 @@ impl GlobalUniforms {
                 view.eye[0],
                 view.eye[1],
                 view.eye[2],
-                view.frame_delta * view.exposure,
+                view.time_delta * view.exposure,
             ],
             view_size: size,
             // `ViewPrj` is the projection's half extents at 500 cm [inf].
@@ -935,7 +933,6 @@ mod tests {
     fn global_values_follow_the_builder() {
         let view = ViewInputs {
             eye: [100.0, 200.0, -300.0],
-            frame_delta: 0.012,
             viewport: [1600, 900],
             multisampled: true,
             shadow_samples: 2,
@@ -951,7 +948,8 @@ mod tests {
             ..ViewInputs::default()
         };
         let u = GlobalUniforms::from_view(&view);
-        assert_eq!(u.view_pos, [100.0, 200.0, -300.0, 0.012]);
+        // `ViewPos.w` and `TimeDlt.x` are the same frame clock.
+        assert_eq!(u.view_pos, [100.0, 200.0, -300.0, 0.5]);
         assert_eq!(u.view_size, [1599.0, 899.0]);
         assert_eq!(u.voxel_gi_scale[0], 1.0 / (256.0 * 20.0));
         assert_eq!(u.voxel_gi_scale[1], 1.0 / (256.0 * 20.0));
@@ -976,7 +974,6 @@ mod tests {
     fn the_global_time_pairs_follow_the_exposure_and_supersampling() {
         let view = ViewInputs {
             eye: [1.0, 2.0, 3.0],
-            frame_delta: 0.25,
             time_delta: 0.25,
             exposure: 2.0,
             supersample_factor: 8,

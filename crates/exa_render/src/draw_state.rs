@@ -182,8 +182,7 @@ pub struct DrawPlan {
     /// The `VXGIPos` uniform is uploaded (the environment has the GI
     /// volume).
     pub gi_position: bool,
-    /// The sub-frames to render; the plain path has one. Empty when the
-    /// passes halve to zero.
+    /// The sub-frames to render; the plain path has one.
     pub subframes: Vec<Subframe>,
     /// The taps the plain path uploads once, at its current frame's index.
     pub plain_taps: Option<ShadowSampleUpload>,
@@ -637,11 +636,12 @@ mod tests {
         scene.sun_shadow_mode = 2;
         let plan = state.prepare(&object, &scene, DrawPath::Supersampled);
         assert_eq!(plan.subframes.len(), 4);
-        // One pass halves to none: the draw renders nothing.
+        // A single pass stays one: the engine halves the last index, not
+        // the count.
         scene.passes = 1;
         scene.sun_shadow_mode = 3;
         let plan = state.prepare(&object, &scene, DrawPath::Supersampled);
-        assert!(plan.subframes.is_empty());
+        assert_eq!(plan.subframes.len(), 1);
     }
 
     #[test]

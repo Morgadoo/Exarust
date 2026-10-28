@@ -133,24 +133,50 @@ counts (`exa-tool shader --warmup`).
 
 **Uniforms.** `Global` is 252 bytes, `Material` 112 bytes and each light
 three `vec4`s; the fields and their values are in `docs/formats/FLB.md`.
-The material writer's dirt block is written only by a dirt mode: modes 1–3
-store `2 − strength` in `MatDrt.w` and the diffuse texture's aspect in
-`DrtUVs`, blood (4) copies the diffuse texture's tint and skips `DrtUVs`, and a
-material with no dirt mode writes neither. The block belongs to the drawing
+`ViewPos.w` and `TimeDlt.x` are the same frame clock after the exposure;
+`TimeDlt.y` is minus the exposure over the super-sampling factor. `FogPos`
+is the midpoint of the camera's eye and the sun camera's eye, built as
+`a + (b − a)·0.5`. The material writer's dirt block is written only by a
+dirt mode: modes 1–3 store `2 − strength` in `MatDrt.w` and the diffuse
+texture's aspect in `DrtUVs`, blood (4) copies the material record's dirt
+tint and skips `DrtUVs`, and a material with no dirt mode writes neither.
+A spawned weapon's record tint is `(1.0, 0.06, 0.04, 0.3)`, the hair
+record's `(0.45, 0.03, 0.02)`; Exarust's record reader carries no tint, so
+the uniform writer takes the caller's. The block belongs to the drawing
 state, so a skipped field keeps the previous draw's value; Exarust writes
-zero there. `MatDsp` and `DspSdw` are written only when the height
-map and displacement shadows exist; the texel counts and the displacement
-step and bias are widened to double, scaled and narrowed, while the tap
-offset `1 + 0.125·PassIdx` stays in single precision. The dirt strength
-and tint come from the diffuse texture's record; the
-record reader carries the strength on the material and no tint, so blood
-uses the shipped speckle's colour `(0.45, 0.03, 0.02, 0.5)` [guess].
+zero there. An unlit record's `MatDif.rgb` is zero. A record in the
+translucent or refracting mode keeps its emissive unexposed. `MatDsp` and
+`DspSdw` are written only when the height map and displacement shadows
+exist; the texel counts, displacement step and bias are widened to double,
+scaled and narrowed, while the tap offset `1 + 0.125·PassIdx` stays in
+single precision. A liquid record binds a refraction background: the
+built-in `BkgRfr01` up to an opacity of 0.85 and `BkgRfr02` above it (a NaN
+takes the low branch), or the scene's own low and high refraction textures.
+
+**Draw state.** A draw rebuilds its object word from the frame's word plus a
+vertex-colour stream and an animated node's vertex-delta stream. It gathers
+lights only when the object has a list and the material has the diffuse or
+specular bit; otherwise it clears the six slots. Its program is keyed on
+that object and environment pair. The material block is rewritten when the
+frame's fade bit is set and `1 − fade` differs from the stored diffuse
+alpha by more than `0x33FFFFD7` (an unordered compare does not rewrite),
+and when the geometry asks for a per-draw emissive scale (the scene's or
+the object's, by the frame word's `0x20000`). The liquid level is uploaded
+for the refracting bit and the GI corner for the environment's GI bit. A
+surface draws the scene's super-sampling sub-frames (halved under sun mode
+3 for the object's `0x40000000` frame bit), each with its own `SdwSmp`
+window and, for an animated node, its own clock; the terrain and grass path
+draws once, uploading its taps once and setting no sub-frame clock. Effect
+draws take their parent's world matrix when they have none of their own
+and the material word lacks `0x20`. `exa_render::draw_state` holds these
+rules; Bevy owns the real draws.
 
 **Program cache.** A draw interns its material and shader word pair (one
 64-bit key) as a cache bucket, then asks the bucket for its object and
 environment word pair (another 64-bit key); a new pair is
 compiled from `shading_v` plus `<set>_f` and stored even when the build
-fails (the draw then skips that program and does not retry). The pair is
+fails (the draw then skips that program and does not retry). The fragment
+entry is only built for a set name shorter than 15 characters. The pair is
 the key, so the light count (in the environment word's two bits per slot)
 and the light kinds are part of it. Rebuilding the libraries frees every
 program and empties the buckets. The warm-up walks its 29 rows and each
@@ -177,9 +203,14 @@ bindings.
 
 **Texture programs.** `textures.flb`'s entries build on their own, as one
 fragment shader (no `shading_v`) linked with one of the engine's six
-built-in vertex shaders, and get the fixed `MPrj` matrix
-`(2x − 1, 2y − 1, −0.001, 1)` for a texture coordinate in [0, 1].
-`exa_render::texture_program` holds that rule; Exarust bakes the
+built-in vertex shaders (`vPos`; `vPos`+`vTex`; `vPos`+`vCol`;
+`vPos`+`vCol`+`vTex`; `vPos`+`vTex`+`vTx2`; and all four), picked by the
+draw state's stream word (`0x20` the second texture coordinate, `0x4` the
+colour, `0x10` the first), and get the fixed `MPrj` matrix
+`(2x − 1, 2y − 1, −0.001, 1)` for a texture coordinate in [0, 1]. The
+linker binds `vPos` to 0, `vTex` to 1, `vNrm` to 2, `vCol` to 3, `vTx2` to
+4, `vTng` to 6 and `vDlt` to 7 when the stream word has them.
+`exa_render::texture_program` holds those rules; Exarust bakes the
 procedural textures on the CPU instead (`exa_assets`).
 
 **Light slots.** Each draw has six light slots. It gathers up to six of the
@@ -191,7 +222,8 @@ after; a light keeps its slot from the previous frame where it can and the
 rest fill the first empty slot of their group. A light new to its slot
 writes all three `vec4`s: the position is the light's vector for its kind,
 the colour is its record's linear colour times
-its intensity, `2/π`, `1/SdwSmps`, `1 − dimmer` and the exposure; `w` is
+its intensity, `2/π`, `1/SdwSmps`, `1 − dimmer` and the exposure, all in
+single precision in that order; `w` is
 `0.8/radius`; the shape is `(softness + 1)·quality·0.005` (`0.003` under
 `FastLgt`, and `softness·0.5·0.005` for a sun-like light) and the vertical
 shaping `(y, z, w)` when the node's shadow bits are exactly `0x200`, else

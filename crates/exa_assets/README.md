@@ -174,6 +174,14 @@ and a shaded material word (`0x100807`), and a type-2 record keeps only the
 colour/opacity slot. Refracting records cast shadows, and a record whose
 destination nibble is ONE never does.
 
+A height layer is switched off by its texture: a map one texel tall clears
+the material word's `0x800000` and the shader word's displacement bit, and
+stores zero parallax counts; a taller map keeps the layer and gets its
+texel counts. Only the height takes part in the test, so a one-texel-wide
+map still displaces. The parallax counts, the displacement step and the
+bias are widened to double, scaled and narrowed, as the writer's
+instructions order them.
+
 ## Textures
 
 `texture` turns a `.rfi` into a Bevy image with the original's texture
