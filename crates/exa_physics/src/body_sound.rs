@@ -26,8 +26,9 @@ const GENERATOR_STEP: u32 = 0x0808_8405;
 /// A plain body part's impact-sound state.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ImpactState {
-    /// The game clock (ms) after which the next impact may sound. The
-    /// all-ones word means the part has no collision sound.
+    /// Whether the part has a collision sound at all.
+    pub sounded: bool,
+    /// The game clock (ms) after which the next impact may sound.
     pub cooldown_ms: u32,
     /// Twice the last impact's strength: a louder impact sounds before the
     /// cooldown passes.
@@ -40,6 +41,7 @@ impl ImpactState {
     /// silent.
     pub fn new(sounded: bool) -> Self {
         Self {
+            sounded,
             cooldown_ms: if sounded { 0 } else { u32::MAX },
             threshold: 0.0,
         }
@@ -93,7 +95,8 @@ pub fn impact_sound(
     {
         return None;
     }
-    if state.cooldown_ms == u32::MAX {
+    if !state.sounded {
+        state.cooldown_ms = u32::MAX;
         return None;
     }
     let base = minimum((f64::from(strength) * 0.01) as f32, 1.0);
