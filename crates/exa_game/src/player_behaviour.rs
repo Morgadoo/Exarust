@@ -467,8 +467,8 @@ pub fn closest_to_cursor(
 
 /// The attack timing after a swing's tick: its wind-up step, the game clock
 /// (ms) of the next attack and of the recovery. `energy` is the fighter's
-/// raw energy, `rate` its primary weapon's recoil (W17; the original
-/// divides by the weapon record's +0x44), `swing_frames` its swing's
+/// raw energy, `rate` its primary weapon's recoil (W17, the record field
+/// the original divides by), `swing_frames` its swing's
 /// expected length, `balance` its balance, `mode` its attack motion's
 /// number (5 to 12 being a swing's) and `no_recovery` the flag that skips
 /// the recovery's quadratic.

@@ -415,8 +415,9 @@ death fade's start, death and removal from the world; dead bodies below
 the world cursor's shape from the player's condition word (`cursor`), the
 hand (`hand`: the left press named by `pick`, the drag of props with Ctrl
 and of corpses through the solver's grab, the lift of a prop onto the item
-cursor, the door and wheel drags' record and the door's 2000 ms grab, a
-cloth vertex's grab and its per-frame target, the reach under the cursor and
+cursor, the door and wheel drags' record until the release, a cloth
+vertex's grab and its per-frame target (the pick near the vertex, else the
+plane through the press point facing the camera), the reach under the cursor and
 the refusal that keeps the movement request; `docs/PLAYER.md`, The hand),
 the item cursor (`item_cursor`: the lift's turn ramp and rotation, the
 cursor's per-sphere placement sweep and box refusal, its level placement
@@ -454,20 +455,23 @@ tick, a stretched link, the first blood jet, the player's first landed
 blow or the first collapse).
 
 The player behaviour's own rules (`player_behaviour`) are the aim point's
-soft height lock on the nearest of a target's three bones (its projected
-fraction and the 80 cm pixel radius at the bone's depth) and its raised
+soft height lock toward the nearest of a target's bones (the reference
+point moved toward that bone by its projected fraction, a NaN fraction
+staying NaN, and the 80 cm pixel radius at the reference point's depth)
+and its raised
 surface, the gamepad aim's `250·|aim| + 50` cm point and its
 `(0.4·AimSpeed + 0.1)²` ease, the 12 m contact list and its 12-entry
 eviction, the strongest engaged enemy (the enemy's own contact score for
 the player over 2), the auto-target (the visible opponent within 500 cm
 maximising `(500 − d)(cos + 0.5)` from a best of zero), the look snap
-beyond 30° and the pin-cursor aim step of 0.1π a tick, the character
-nearest the cursor on screen, and the attack timing. The gamepad's aim runs through the eased world cursor each
-behaviour tick (`player::AimCursor`, read by `player_combat`), and an
-attack records the timing when it starts (the strength's drain, the
-expected end and the recovery, from the primary's recoil); a new attack
-waits for the recovery clock unless the swing is released. The other rules
-have no caller yet: the stance keeps no target entity to lock the aim onto. The right button walks to the cursor in combat mode too
+strictly beyond 30° (the gap wrapped in double precision), the camera's
+follow step (kept within 0.1π of the body's yaw, on the camera's side),
+the character nearest the cursor on screen, and the attack timing. The
+gamepad's aim runs through the eased world cursor each behaviour tick
+(`player::AimCursor`, read by `player_combat`). The other rules have no
+caller yet: the stance keeps no target entity to lock the aim onto, and
+the running swing keeps its own stall and Feint renewal clocks
+(`exa_combat::swing`). The right button walks to the cursor in combat mode too
 (`steering::Steering::combat_walk`), the chevrons showing while it is
 held.
 
@@ -478,10 +482,10 @@ a character's talk condition, the player's inventory), the item-use values
 (a pour's warmth and marks, the cleaning and repair kits' targets, their
 sounds), the usable-section reader (the operative class, kind, flags,
 value, target and name, the copy's wear and dirt bytes and the model's
-material byte) with the world use's consume (2100 ms on its deferred list,
-which shifts done entries down), inventory take, take-in-hand (state 0x100,
-hand word 0x40) and push (256 ticks) branches and the deferred drop's spawn
-run (free, content error, or place at the lift's −100000 cm limit), the
+material byte), the deferred interaction list the double click's
+consumable joins 2100 ms on (done entries shift the rest down, keeping the
+order), the deferred drop's spawn run (free, content error, or place at
+the lift's −100000 cm limit), the
 timed list that writes only while it lowers a section or arrives; the reach's navigation region and walk-to point; the movement
 request's drag modes, the controls' gates, the key permissions and the power
 bar's 500 ms hold. A click on the player's own body shows the HUD bars for
@@ -500,13 +504,16 @@ on the cursor; the movement inputs (the pad's raw move stick past a squared
 ramping to `1.0` after 300 ms of turning and falling back after 500 ms of
 quiet; each frame the cursor's ray, the held item left out, places it at
 the level hit (a miss keeps the last point), then slides it along the ray
-from 600 cm before that point to the nearest contact of every collision
-sphere of every part (a sweep starting inside the level is no contact),
+from 600 cm before that point (never behind the eye) to the nearest
+contact of every collision sphere of every part, each carried with the
+placed grab point (a sweep starting inside the level is no contact),
 its rest-point box test (280 cm up, −1000 cm down) only answering; a plain
 release leaves it there, and a cancelled one is put back at the frames the
 lift saved (the live hover word stays zero, as the level loader registers
-no markers). The hover word's rule (a level placement marker whose radius
-the ray meets and where the item fits gives 0x10, or 0x30 when its link
+no markers and props carry no object id). The hover word's rule (a level
+placement marker whose eight hexadecimal name characters give the item's
+object or model id, whose sphere the cursor's segment meets, and where the
+item fits gives 0x10, or 0x30 when its link
 byte reads `L`; else a free placement gives 1) is tested
 (`item_cursor::{hover_word, snap_to_marker}`), as are the
 GUI drop's branch (an entry, from a GUI, with a body), its spawned record

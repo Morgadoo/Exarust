@@ -215,8 +215,10 @@ impl TimedList {
 }
 
 /// An entry in the controls' deferred interaction list: the game clock
-/// (ms) at which it runs and the object it acts on. The world use's
-/// consumable (class 0, kind 1) adds one due 2100 ms on.
+/// (ms) at which it runs and the target word it hands to the level's
+/// trigger. The double click's consumable (usable kind 0, subtype 1, see
+/// [`interact_object`]) adds one due 2100 ms on with its section's target
+/// word.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PendingUse {
     pub due_ms: u32,
@@ -239,8 +241,11 @@ impl UseQueue {
         self.entries.len() - 1
     }
 
-    /// One frame at `now_ms`: the entries whose time is not after `now` run,
-    /// in order, the list shifting down over each. Returns them in order.
+    /// One frame at `now_ms` (the per-frame update, while the controls are
+    /// not paused and a player exists): the entries whose time is not after
+    /// `now` run, in order, the list shifting down over each. Returns them
+    /// in order. [No caller yet: the double click's consumable is not
+    /// wired.]
     pub fn tick(&mut self, now_ms: u32) -> Vec<PendingUse> {
         let mut done = Vec::new();
         let mut i = 0;
@@ -929,66 +934,6 @@ pub fn item_use_fields(
     })
 }
 
-/// What using a world item does, in the use dispatcher's order.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WorldUse {
-    Nothing,
-    /// Class 0, kind 1: consumed after [`CONSUME_MS`], the timed entry
-    /// carrying the section's target word.
-    Consume {
-        due_ms: u32,
-        target: u32,
-    },
-    /// Class 0, another kind: the item is taken into the inventory.
-    TakeItem,
-    /// Class 1: the item is taken in hand (the item cursor's drag, state
-    /// [`TAKE_STATE`]) and the player's hand word is [`TAKE_PLAYER_WORD`].
-    TakeInHand {
-        state: u32,
-        player_word: u32,
-    },
-    /// Class 5, its second-target bit clear: the push surface is pressed
-    /// and its body woken for [`PUSH_WAKE`] ticks.
-    Push {
-        wake: u32,
-    },
-}
-
-/// The state word a taken item sets on the controls.
-pub const TAKE_STATE: u32 = 0x100;
-/// The player's hand word a taken item sets.
-pub const TAKE_PLAYER_WORD: u32 = 0x40;
-/// The ticks a pressed push surface's body is woken for.
-pub const PUSH_WAKE: u32 = 256;
-/// The push surface's flags bit that refuses the use (its second target).
-pub const PUSH_NO_USE: u16 = 4;
-
-/// The use of a world item, in the original's order: an operative section
-/// is required; a used item (its mark word's 0xff0000 bits set) does
-/// nothing for classes 0 and 1; class 0 is a consumable of kind 1 or an
-/// item taken into the inventory; class 1 is taken in hand; class 5 with
-/// its flags bit 2 clear is pushed. Other classes do nothing.
-pub fn world_use(fields: &ItemUseFields, marked: bool, now_ms: u32) -> WorldUse {
-    match fields.class {
-        0 if !marked => {
-            if fields.kind == 1 {
-                WorldUse::Consume {
-                    due_ms: now_ms.wrapping_add(CONSUME_MS),
-                    target: fields.target,
-                }
-            } else {
-                WorldUse::TakeItem
-            }
-        }
-        1 if !marked => WorldUse::TakeInHand {
-            state: TAKE_STATE,
-            player_word: TAKE_PLAYER_WORD,
-        },
-        5 if fields.flags & PUSH_NO_USE == 0 => WorldUse::Push { wake: PUSH_WAKE },
-        _ => WorldUse::Nothing,
-    }
-}
-
 /// What the deferred GUI drop's spawn task does when it runs.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SpawnRun {
@@ -1005,14 +950,15 @@ pub enum SpawnRun {
     Placed { condition: u32, place_limit_cm: f32 },
 }
 
-/// The deferred drop task's run: a node is required, the controls must
-/// hold bit 0x1000, and the node's body must have physics. A placed node
-/// takes the drag's condition word and the lift's −100000 cm placement
-/// limit.
-pub fn run_spawn(queued: bool, suppressed: bool, has_body: bool, condition: u32) -> SpawnRun {
+/// The deferred drop task's run: a node is required, the controls' state
+/// word must hold bit 0x1000 (`armed`), and the node's body must have
+/// physics. A placed node takes the drag's condition word and the lift's
+/// −100000 cm placement limit. [The content error also resets the state
+/// word to 0x1000 and forgets the node.]
+pub fn run_spawn(queued: bool, armed: bool, has_body: bool, condition: u32) -> SpawnRun {
     if !queued {
         SpawnRun::Nothing
-    } else if !suppressed {
+    } else if !armed {
         SpawnRun::Dropped
     } else if !has_body {
         SpawnRun::ContentError
@@ -2230,56 +2176,6 @@ mod tests {
         assert_eq!((fields.wear, fields.dirt), (None, None));
         // No operative section: the use cursor has nothing to read.
         assert!(item_use_fields(&item_with(None, "", 25), None).is_none());
-    }
-
-    /// A world item's use: class 0 kind 1 is consumed after 2100 ms with
-    /// its target word, class 0 another kind is taken into the inventory,
-    /// class 1 is taken in hand (state 0x100, hand word 0x40), class 5
-    /// with bit 2 clear is pushed (256 ticks), and a marked item is inert.
-    #[test]
-    fn a_world_item_is_used_taken_or_pushed() {
-        let at = |class, kind, flags| ItemUseFields {
-            class,
-            kind,
-            flags,
-            value: 0,
-            target: 0x99,
-            name: String::new(),
-            wear: None,
-            dirt: None,
-            material: None,
-        };
-        assert_eq!(
-            world_use(&at(0, 1, 0), false, 1000),
-            WorldUse::Consume {
-                due_ms: 3100,
-                target: 0x99
-            }
-        );
-        assert_eq!(world_use(&at(0, 4, 0), false, 0), WorldUse::TakeItem);
-        assert_eq!(
-            world_use(&at(1, 0, 0), false, 0),
-            WorldUse::TakeInHand {
-                state: 0x100,
-                player_word: 0x40
-            }
-        );
-        assert_eq!(
-            world_use(&at(5, 0, 0), false, 0),
-            WorldUse::Push { wake: 256 }
-        );
-        assert_eq!(world_use(&at(5, 0, 4), false, 0), WorldUse::Nothing);
-        // The mark word's 0xff0000 bits make classes 0 and 1 inert.
-        assert_eq!(world_use(&at(0, 1, 0), true, 0), WorldUse::Nothing);
-        assert_eq!(world_use(&at(1, 0, 0), true, 0), WorldUse::Nothing);
-        // The push does not read the mark.
-        assert_eq!(
-            world_use(&at(5, 0, 0), true, 0),
-            WorldUse::Push { wake: 256 }
-        );
-        // Other classes do nothing.
-        assert_eq!(world_use(&at(2, 15, 0), false, 0), WorldUse::Nothing);
-        assert_eq!(world_use(&at(9, 0, 0), false, 0), WorldUse::Nothing);
     }
 
     /// The deferred drop task: no queued node does nothing; the controls
