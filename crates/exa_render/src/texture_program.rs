@@ -1,9 +1,11 @@
 //! The procedural-texture programs of `textures.flb`: a named fragment
 //! shader and the fixed projection matrix `MPrj` the engine gives it.
 //!
-//! The texture path builds a program from one library entry alone (not the
-//! surfaces' shared `shading_v`), compiles it as a fragment shader, looks up
-//! `MPrj` and uploads a constant matrix, then draws the generated texture
+//! The texture path compiles one library entry as a fragment shader (not
+//! the surfaces' `shading_v` plus `<set>_f` pair), links it with one of the
+//! engine's six built-in vertex shaders (picked by the caller's stream bits;
+//! those are not library text and are not reproduced here), looks up `MPrj`
+//! and uploads a constant matrix, then draws the generated texture
 //! into a render target. The entry sees the same template language and the
 //! surface builder's `{$Interface}` callback, so it expands like a surface
 //! fragment program. `MPrj` maps a texture coordinate pair in [0, 1] to the
@@ -17,7 +19,7 @@
 use crate::shader_template::{Includes, InterfaceMode, TemplateContext, TemplateError};
 
 /// The `MPrj` constant, in the engine's column order: the four columns of
-/// the matrix `glUniformMatrix4fv` uploads without transpiring.
+/// the matrix `glUniformMatrix4fv` uploads without transposing.
 pub const MPRJ: [[f32; 4]; 4] = [
     [2.0, 0.0, 0.0, 0.0],
     [0.0, 2.0, 0.0, 0.0],

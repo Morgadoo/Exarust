@@ -135,26 +135,28 @@ counts (`exa-tool shader --warmup`).
 three `vec4`s; the fields and their values are in `docs/formats/FLB.md`.
 The material writer's dirt block is written only by a dirt mode: modes 1–3
 store `2 − strength` in `MatDrt.w` and the diffuse texture's aspect in
-`DrtUVs`, blood (4) copies the speckle's tint `(0.45, 0.03, 0.02, 0.5)` and
-leaves `DrtUVs` at the zeroed buffer's value, and a material with no dirt
-mode writes neither. `MatDsp` and `DspSdw` are written only when the height
+`DrtUVs`, blood (4) copies the diffuse texture's tint and skips `DrtUVs`, and a
+material with no dirt mode writes neither. The block belongs to the drawing
+state, so a skipped field keeps the previous draw's value; Exarust writes
+zero there. `MatDsp` and `DspSdw` are written only when the height
 map and displacement shadows exist; the texel counts and the displacement
 step and bias are widened to double, scaled and narrowed, while the tap
 offset `1 + 0.125·PassIdx` stays in single precision. The dirt strength
-and tint come from the diffuse texture's record (`+0x1d4`, `+0x248`); the
+and tint come from the diffuse texture's record; the
 record reader carries the strength on the material and no tint, so blood
-uses the shipped speckle's colour [guess].
+uses the shipped speckle's colour `(0.45, 0.03, 0.02, 0.5)` [guess].
 
-**Program cache.** A draw interns its material word as a cache bucket, then
-asks the bucket for its object and environment word pair; a new pair is
+**Program cache.** A draw interns its material and shader word pair (one
+64-bit key) as a cache bucket, then asks the bucket for its object and
+environment word pair (another 64-bit key); a new pair is
 compiled from `shading_v` plus `<set>_f` and stored even when the build
 fails (the draw then skips that program and does not retry). The pair is
 the key, so the light count (in the environment word's two bits per slot)
 and the light kinds are part of it. Rebuilding the libraries frees every
 program and empties the buckets. The warm-up walks its 29 rows and each
-lit row's seven light counts through the same cache; rows that repeat a
-material word with the same object and environment words reuse the first
-row's program. `exa_render::shader_cache` holds the rules, and
+lit row's seven light counts through the same cache; a row that repeats
+an earlier row's material word under another shader word gets its own
+bucket and programs. `exa_render::shader_cache` holds the rules, and
 `exa-tool shader --warmup` prints the table and the resulting cache.
 
 **Bindings.** `Global` sits on uniform block 0 and `Material` on block 1.
@@ -174,24 +176,29 @@ taps, and a program with no tap uploads one entry (four in quadrant mode).
 bindings.
 
 **Texture programs.** `textures.flb`'s entries build on their own, as one
-fragment shader (no `shading_v`), and get the fixed `MPrj` matrix
+fragment shader (no `shading_v`) linked with one of the engine's six
+built-in vertex shaders, and get the fixed `MPrj` matrix
 `(2x − 1, 2y − 1, −0.001, 1)` for a texture coordinate in [0, 1].
 `exa_render::texture_program` holds that rule; Exarust bakes the
 procedural textures on the CPU instead (`exa_assets`).
 
 **Light slots.** Each draw has six light slots. It gathers up to six of the
-object's linked lights in list order, stopping at a link with no id or a
+object's linked lights (fewer when the view's light cap is lower) in list
+order, stopping at a link with no id or a
 weight below 0.004 (a NaN weight passes), and orders them with the lights
 whose node shadow bits (`0x300`) are clear first and the shadowed ones
 after; a light keeps its slot from the previous frame where it can and the
 rest fill the first empty slot of their group. A light new to its slot
-writes all three `vec4`s: the colour is its record's linear colour times
+writes all three `vec4`s: the position is the light's vector for its kind,
+the colour is its record's linear colour times
 its intensity, `2/π`, `1/SdwSmps`, `1 − dimmer` and the exposure; `w` is
 `0.8/radius`; the shape is `(softness + 1)·quality·0.005` (`0.003` under
 `FastLgt`, and `softness·0.5·0.005` for a sun-like light) and the vertical
 shaping `(y, z, w)` when the node's shadow bits are exactly `0x200`, else
-`(1, 1, 1)`; the position's `w` is `(0.97 + softness)/(radius · scene
-light scale)`, or the sun's own depth scale. A light that stays in its slot
+`(1, 1, 1)`; the position's `w` is `(0.97 + E)/(radius · scene
+light scale)`, where `E` is a light-record field distinct from the copied
+softness the radius uses [its meaning unconfirmed], or the sun's own depth
+scale. A light that stays in its slot
 only has a shaped light's radius refreshed (which does not mark the light
 records stale) and, when the scene's light scale changes, its depth scale.
 The environment word carries `0x200` for a light with no shadow bits and

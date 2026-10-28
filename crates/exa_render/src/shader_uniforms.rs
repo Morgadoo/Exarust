@@ -477,35 +477,35 @@ impl MaterialUniforms {
         };
 
         // The dirt block. Only a dirt mode writes it: mode 4 (blood) copies
-        // the diffuse texture's tint, modes 1–3 leave the tint black and
-        // store `2 − the texture's dirt strength` in `w`; a material with no
-        // dirt mode leaves the zeroed buffer alone. The engine reads the
-        // strength and the tint from the diffuse texture's record
-        // (`+0x1d4`, `+0x248`); the record reader here carries the strength
-        // on the material and has no tint, so a blood material uses the
-        // shipped speckle's tint [guess].
+        // the diffuse texture's tint into `MatDrt` and leaves `DrtUVs`; any
+        // other mode stores `2 − the texture's dirt strength` in `MatDrt.w`
+        // and the diffuse map's aspect in `DrtUVs`. The engine's block lives
+        // on the drawing state, so a field it skips keeps the previous draw's
+        // value; Exarust writes zero there. The engine reads the strength and
+        // the tint from the diffuse texture's record; the record reader here
+        // carries the strength on the material and has no tint, so a blood
+        // material uses the shipped speckle's tint [guess].
         let dirt = crate::shader_program::dirt_mode(material);
-        let (mat_drt, dirt_uvs) = match dirt {
+        let (mat_drt, drt_uvs) = match dirt {
+            0 => ([0.0; 4], [0.0, 0.0]),
             4 => ([0.45, 0.03, 0.02, 0.5], [0.0, 0.0]),
-            1..=3 => (
+            _ => (
                 [0.0, 0.0, 0.0, 2.0 - material.dirt_amount],
                 match inputs.diffuse_texture {
-                    Some((w, h)) if w != 0 && h != 0 => {
+                    // The stored width over height in double, narrowed; a
+                    // ratio below one (not NaN) turns into `(1, 1/ratio)`.
+                    Some((w, h)) => {
                         let aspect = (f64::from(w) / f64::from(h)) as f32;
-                        if aspect >= 1.0 {
-                            [aspect, 1.0]
-                        } else {
+                        if 1.0 > aspect {
                             [1.0, 1.0 / aspect]
+                        } else {
+                            [aspect, 1.0]
                         }
                     }
-                    _ => [1.0, 1.0],
+                    None => [1.0, 1.0],
                 },
             ),
-            _ => ([0.0; 4], [0.0, 0.0]),
         };
-        // The aspect uses the texture's stored width and height in double
-        // precision before narrowing.
-        let drt_uvs = dirt_uvs;
         let mat_dsp = match inputs.height_texels {
             Some((x, y)) => [(f64::from(x) * 3e-5) as f32, (f64::from(y) * 3e-5) as f32],
             None => [0.0, 0.0],
@@ -866,7 +866,7 @@ mod tests {
         close(u.mat_spc[3], 0.9);
         // No emissive layer: the colour stays as stored (zero here).
         close(u.mat_emi[3], 1.0);
-        // No dirt mode: the writer leaves the zeroed dirt block alone.
+        // No dirt mode: the writer skips the dirt block (zero here).
         assert_eq!(u.mat_drt, [0.0; 4]);
         close(u.mat_dsp[0], 0.0);
         assert_eq!(u.drt_uvs, [0.0, 0.0]);
@@ -903,9 +903,24 @@ mod tests {
             };
             let u = MaterialUniforms::from_material(&m, &inputs);
             assert_eq!(u.drt_uvs, [1.0, 2.0]);
+            // A zero-width map's ratio 0 still takes the `1/ratio` branch;
+            // the NaN of an empty map fails `1 > ratio` and is kept.
+            let inputs = MaterialInputs {
+                diffuse_texture: Some((0, 4)),
+                ..MaterialInputs::default()
+            };
+            let u = MaterialUniforms::from_material(&m, &inputs);
+            assert_eq!(u.drt_uvs, [1.0, f32::INFINITY]);
+            let inputs = MaterialInputs {
+                diffuse_texture: Some((0, 0)),
+                ..MaterialInputs::default()
+            };
+            let u = MaterialUniforms::from_material(&m, &inputs);
+            assert!(u.drt_uvs[0].is_nan());
+            assert_eq!(u.drt_uvs[1], 1.0);
         }
-        // Blood (mode 4) takes the speckle's tint and leaves the uv block
-        // as the zeroed buffer has it.
+        // Blood (mode 4) takes the speckle's tint and does not write the uv
+        // block (zero here).
         let mut m = material();
         m.extra = 0x4000;
         m.dirt_amount = 0.25;
