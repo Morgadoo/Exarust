@@ -182,12 +182,27 @@ The sector's simulated-object stages (`sector::ObjectContacts`) hand a
 cloth the parts passing `sector::object_body_meet` (the bound spheres
 must not be apart, then the object's centre within its radius of the
 part's mesh box, the original's point-to-box distance; a NaN passes both),
-each collision sphere in the object's own centimetres, swept when the part
-moved over the pair stage's 0.1 cm² [guess], and the level's triangles of
-the static records `StaticGrid::near_object` takes (the nine cells around
-the object's cell, the same two tests against each record's world box,
-where the original uses the mesh's oriented box). Skipping the cloth's
-own character is a guess (the sector makes no such test). The
+each collision sphere in the object's own centimetres, padded by the
+cloth's 2 cm and kept only when it reaches the box about the cloth's
+particles, swept when it moved over 0.01 cm² (compared in double, the
+cloth's own gate), and the level's triangles of the static records
+`StaticGrid::near_object` takes (the nine cells around the object's cell,
+the same two tests against each record's world box, where the original
+uses the mesh's oriented box), each record one `cloth_level::LevelPiece`.
+A sleeping object takes only awake bodies (`sector::object_takes_body`).
+Skipping the cloth's own character is a guess (the sector makes no such
+test); skipping the static meshes of the cloth's own scene node is the
+original's.
+The cloth's level contact (`cloth_level`) runs after its step, mesh by
+mesh: each particle that moved over 0.1 cm² sweeps a 2 cm sphere through
+the mesh, any other is a 2 cm sphere where it is, tested against the
+piece's box and then every triangle in order with the mesh's own sphere
+and sweep queries (front faces only, pushed out to 2 cm); a pushed
+particle's travel is then shortened by 0.1 cm, or cancelled when shorter.
+A level push (or a level plane's) never wakes a cloth; a body's does. The
+cloth's countdown reads the squared length of its particles' summed
+velocity (not the tick's step, which carries gravity), so a cloth held at
+rest falls asleep. The
 object/object stage is `sector::object_pairs` (every ordered pair of the
 list, never an object with itself, no bound test in the sector); the
 cloth's own contact law for another object is outside this component and

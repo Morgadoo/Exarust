@@ -6,6 +6,7 @@
 
 pub mod body;
 pub mod cloth;
+pub mod cloth_level;
 pub mod contact;
 pub mod controller;
 pub mod door;
