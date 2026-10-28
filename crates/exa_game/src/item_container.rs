@@ -1223,7 +1223,7 @@ pub fn bulk_of(
 }
 
 /// The equipment panel of a body being looted: each worn item, then each
-/// item of the set in the hands, whose icon the cache gives (`icon` returns
+/// shield in the set in the hands (the caller filters), whose icon the cache gives (`icon` returns
 /// its slot and half extents; an item without one is left out and draws no
 /// random numbers) is placed at a random spot in the middle half of the
 /// panel

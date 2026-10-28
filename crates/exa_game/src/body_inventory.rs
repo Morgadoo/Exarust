@@ -7,9 +7,12 @@
 //! and this module turns it into the two panels of the original's "Body"
 //! window: the pack loads the carried list as a character list (its own
 //! positions, in sixteenths of a GUI unit, [`Container::load_list`]) and the
-//! equipment panel loads the worn items and the two items of the set in the
-//! hands with the worn/scatter pass ([`exa_game::item_container::worn_layout`],
-//! seeded with the panel's own [`DOLL_SEED`]).
+//! equipment panel loads the worn items and the shields of the set in the
+//! hands with the worn/scatter pass ([`exa_game::item_container::worn_layout`]).
+//! The original's scatter draws from the engine's shared generator, which
+//! Exarust does not keep; the panel starts a generator from the run-time
+//! library seed the original stores there ([`DOLL_SEED`]), so a body's layout
+//! is the same every time it opens. [stand-in]
 //!
 //! Taking an item moves it between the two sides' [`Possessions`]: a worn
 //! item leaves the worn list, a hand item clears its hand slot and the held
@@ -38,7 +41,7 @@ use crate::item_panel_draw::PanelIcons;
 pub enum PanelKind {
     /// The carried list (the pack panel).
     Pack,
-    /// The worn items and the two items of the set in the hands (the
+    /// The worn items and the shields of the set in the hands (the
     /// equipment panel).
     Equipment,
 }
@@ -60,9 +63,14 @@ pub fn pack_children(possessions: &Possessions) -> Vec<ListChild> {
 }
 
 /// What the equipment panel lists, in the original's order: every worn item
-/// in wearing order, then the two hand slots of the set in the hands. Empty
-/// hand slots are left out; a worn item keeps the flags its record stores.
-pub fn equipment_items(possessions: &Possessions) -> Vec<(u32, u32)> {
+/// in wearing order, then each of the two hand slots of the set in the hands
+/// that holds a shield (`is_shield`: the item has a shield section). Empty
+/// hand slots and held weapons are left out; a worn item keeps the flags its
+/// record stores.
+pub fn equipment_items(
+    possessions: &Possessions,
+    is_shield: impl Fn(u32) -> bool,
+) -> Vec<(u32, u32)> {
     possessions
         .worn
         .iter()
@@ -72,7 +80,7 @@ pub fn equipment_items(possessions: &Possessions) -> Vec<(u32, u32)> {
             possessions
                 .out
                 .iter()
-                .filter(|hand| hand.id != 0)
+                .filter(|hand| hand.id != 0 && is_shield(hand.id))
                 .map(|hand| (hand.id, hand.flags)),
         )
         .collect()
@@ -86,6 +94,15 @@ fn item_bulk(id: u32, catalogue: Option<&ItemCatalogue>) -> i32 {
     catalogue
         .and_then(|catalogue| catalogue.bulk(id))
         .map_or(0, i32::from)
+}
+
+/// Whether the game's item `id` has a shield section. A level-local id has
+/// no catalogue record (the original promotes it when the level loads), so
+/// it does not count. [deviation]
+pub fn is_shield(id: u32, catalogue: Option<&ItemCatalogue>) -> bool {
+    catalogue
+        .and_then(|catalogue| catalogue.kind(id))
+        .is_some_and(|kind| kind.shield)
 }
 
 /// Fills a pack panel from a character's carried list. The item resolver
@@ -115,7 +132,7 @@ pub fn bind_pack(
 }
 
 /// Fills a body's equipment panel with the worn/scatter pass: every worn
-/// item and every item in a hand, placed at the panel's random spot and
+/// item and every shield in a hand, placed at the panel's random spot and
 /// pushed apart over the original's four rounds. `client` is the panel's
 /// client area and `icon_size` its icon's side, as the painter draws it.
 /// Returns the number of entries loaded.
@@ -123,9 +140,10 @@ pub fn bind_equipment(
     container: &mut Container,
     possessions: &Possessions,
     icons: &mut PanelIcons,
+    catalogue: Option<&ItemCatalogue>,
     client: (i32, i32),
 ) -> usize {
-    let items = equipment_items(possessions);
+    let items = equipment_items(possessions, |id| is_shield(id, catalogue));
     let mut state = DOLL_SEED;
     container.entries = worn_layout(
         &items,
@@ -214,10 +232,11 @@ pub fn transfer(
 /// item id and the half extents a square icon's.
 pub fn equipment_layout(
     possessions: &Possessions,
+    is_shield: impl Fn(u32) -> bool,
     client: (i32, i32),
     icon_size: i32,
 ) -> Vec<Entry> {
-    let items = equipment_items(possessions);
+    let items = equipment_items(possessions, is_shield);
     let mut state = DOLL_SEED;
     worn_layout(
         &items,
@@ -326,8 +345,13 @@ mod tests {
         // Worn first, then only the hand slots with an item: the stowed set
         // is not on the body's doll.
         assert_eq!(
-            equipment_items(&p),
+            equipment_items(&p, |_| true),
             vec![(0xa0, 0), (0xa1, 4), (0x11, 0), (0x12, LIT)]
+        );
+        // A held weapon (no shield section) is not on it either.
+        assert_eq!(
+            equipment_items(&p, |id| id == 0x12),
+            vec![(0xa0, 0), (0xa1, 4), (0x12, LIT)]
         );
         assert_eq!(worn_item(&p, 0xa1).unwrap().flags, 4);
     }
@@ -349,9 +373,9 @@ mod tests {
     #[test]
     fn the_equipment_panel_lists_worn_and_held_items_with_their_flags() {
         let p = Possessions::of_record(&record());
-        let entries = equipment_layout(&p, (228, 252), 160);
+        let entries = equipment_layout(&p, |_| true, (228, 252), 160);
         let items: Vec<(u32, u32)> = entries.iter().map(|e| (e.id, e.flags)).collect();
-        assert_eq!(items, equipment_items(&p));
+        assert_eq!(items, equipment_items(&p, |_| true));
         // Every centre stays inside the panel.
         for entry in &entries {
             let (cx, cy) = (entry.cell.x + 80, entry.cell.y + 80);
@@ -364,7 +388,10 @@ mod tests {
     fn taking_off_the_equipment_removes_the_worn_item_or_the_hand() {
         let mut p = Possessions::of_record(&record());
         assert_eq!(take(&mut p, PanelKind::Equipment, 0xa1), Some(4));
-        assert_eq!(equipment_items(&p), vec![(0xa0, 0), (0x11, 0), (0x12, LIT)]);
+        assert_eq!(
+            equipment_items(&p, |_| true),
+            vec![(0xa0, 0), (0x11, 0), (0x12, LIT)]
+        );
         assert_eq!(take(&mut p, PanelKind::Equipment, 0xa1), None);
         // The off hand goes first and its held carried copy with it.
         p.carried.push(Carried {
@@ -487,7 +514,13 @@ mod tests {
             let mut pack_panel = Container::form(4);
             bind_pack(&mut pack_panel, &possessions, &mut icons, None);
             let mut equipment_panel = Container::form(4);
-            bind_equipment(&mut equipment_panel, &possessions, &mut icons, (228, 252));
+            bind_equipment(
+                &mut equipment_panel,
+                &possessions,
+                &mut icons,
+                None,
+                (228, 252),
+            );
             // The bound panels are the corpse's loot window's own.
             let mut screens = crate::gui_screens::GameScreens::default();
             screens.task.screen = (1600, 900);
@@ -516,7 +549,7 @@ mod tests {
             }
             assert_eq!(
                 window.worn.entries.len(),
-                equipment_items(&possessions).len()
+                equipment_items(&possessions, |_| false).len()
             );
             checked += 1;
         }

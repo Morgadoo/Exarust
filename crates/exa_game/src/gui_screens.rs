@@ -644,7 +644,6 @@ fn open_requested_screens(
     players: Query<Entity, With<crate::player::Player>>,
     player_bodies: Query<Entity, With<crate::player::PlayerBody>>,
     possessions: Query<(Entity, &exa_items::possession::Possessions)>,
-    conditions: Query<&exa_combat::Condition>,
     catalogue: Option<Res<exa_items::catalogue::ItemCatalogue>>,
     mut icons: Option<ResMut<PanelIcons>>,
     menu: Option<Res<MenuScreen>>,
@@ -688,11 +687,11 @@ fn open_requested_screens(
                         .find(|(entity, _)| entity.index().index() as i32 == target)
                         .map(|(entity, _)| entity);
                     // The window's show rule reads the body's record flag
-                    // word; Exarust's condition word is the one with the
-                    // getting-up bits it tests.
+                    // word: the profession word (byte 1 the race; race 3
+                    // refuses), which the body's possessions keep.
                     let flags = entity
-                        .and_then(|entity| conditions.get(entity).ok())
-                        .map_or(request.flags, |condition| condition.0);
+                        .and_then(|entity| possessions.get(entity).ok())
+                        .map_or(request.flags, |(_, body)| body.flags);
                     let action = screens.open_loot(target, flags, 4);
                     if action == ScreenAction::Opened
                         && let Some(entity) = entity
@@ -718,6 +717,7 @@ fn open_requested_screens(
                             &mut worn,
                             body,
                             icons,
+                            catalogue.as_deref(),
                             (client.width(), client.height()),
                         );
                         screens.bind_loot(target, pack, worn);
@@ -778,9 +778,9 @@ fn close_on_right_release(
 
 /// Closes the loot windows the original's deferred close takes: a window
 /// whose body's state word has `0x80000`, or whose condition is no longer
-/// the dead mode `0xa00`. Exarust's condition word is the state word the
-/// rule can read, so the mark half is never set; a window whose body is no
-/// longer in the world is left alone.
+/// the dead mode `0xa00`. Exarust keeps no copy of the body's state word, so
+/// the mark half reads 0 [not modelled]; a window whose body is no longer in
+/// the world is left alone.
 fn close_changed_loot_windows(
     bodies: Query<(Entity, &exa_combat::Condition)>,
     mut screens: ResMut<GameScreens>,
@@ -795,7 +795,7 @@ fn close_changed_loot_windows(
             bodies
                 .iter()
                 .find(|(entity, _)| entity.index().index() as i32 == window.character)
-                .map(|(_, condition)| (window.character, condition.0, condition.0))
+                .map(|(_, condition)| (window.character, 0, condition.0))
         })
         .collect();
     for character in screens.loot_windows_to_close(&live) {
@@ -1365,6 +1365,7 @@ mod tests {
                 flags: 0,
                 extra: 0,
             }],
+            race: 1,
             ..exa_formats::characters::CharacterRecord::default()
         };
         let entity = app
@@ -1375,8 +1376,8 @@ mod tests {
             ))
             .id();
         let target = entity.index().index() as i32;
-        // The request's flags are stale; the body's condition word is what
-        // the show rule reads.
+        // The request's flags are stale; the body's record flag word (its
+        // profession word, race 1 here) is what the show rule reads.
         app.world_mut().write_message(ScreenRequest {
             screen: GameScreen::Loot,
             player_ready: true,
@@ -1387,13 +1388,50 @@ mod tests {
         app.update();
         let screens = app.world().resource::<GameScreens>();
         let window = screens.loot_window(target).unwrap();
-        assert_eq!(window.flags, exa_combat::Condition::DEAD.0);
+        assert_eq!(window.flags, 0x100);
         assert_eq!(window.pack.entries.len(), 1);
         assert_eq!(window.pack.entries[0].id, 0x30);
-        // Worn first, then the two filled hand slots.
+        // Worn first, then only the shields in the hands: with no item
+        // catalogue nothing in a hand is known to be a shield.
         let ids: Vec<u32> = window.worn.entries.iter().map(|e| e.id).collect();
-        assert_eq!(ids.len(), 3);
-        assert!(ids.contains(&0xa0) && ids.contains(&0x11) && ids.contains(&0x12));
+        assert_eq!(ids, vec![0xa0]);
+    }
+
+    #[test]
+    fn a_body_of_race_three_refuses_the_loot_window() {
+        let mut app = App::new();
+        app.init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<GameScreens>()
+            .init_resource::<PanelIcons>()
+            .add_message::<ScreenRequest>()
+            .add_systems(Update, open_requested_screens);
+        let record = exa_formats::characters::CharacterRecord {
+            race: 3,
+            ..exa_formats::characters::CharacterRecord::default()
+        };
+        let entity = app
+            .world_mut()
+            .spawn((
+                exa_items::possession::Possessions::of_record(&record),
+                exa_combat::Condition::DEAD,
+            ))
+            .id();
+        let target = entity.index().index() as i32;
+        app.world_mut().write_message(ScreenRequest {
+            screen: GameScreen::Loot,
+            player_ready: true,
+            player_alive: true,
+            target: Some(target),
+            flags: 0,
+        });
+        app.update();
+        // 0x300 & 0xff00 == 0x300: the show rule refuses.
+        assert!(
+            app.world()
+                .resource::<GameScreens>()
+                .loot_window(target)
+                .is_none()
+        );
     }
 
     #[test]

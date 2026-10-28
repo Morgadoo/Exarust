@@ -38,7 +38,7 @@ plans, drag permissions, drop-back rules and position memory; the arsenal
 close order, key, scroll and release handling, drag hooks and drop rules.
 `exa_game::body_inventory` drives the loot window's two panels from a
 character's `Possessions` (the carried list through
-`Container::load_list`, the worn items and the set in the hands through
+`Container::load_list`, the worn items and the shields in the hands through
 `worn_layout` with `DOLL_SEED`), and `exa_game::panel_live` runs the drag
 between open panels; the icon atlas is still empty until the off-screen
 item renderer fills it. Drawing the other windows and the character view

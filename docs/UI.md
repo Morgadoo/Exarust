@@ -1199,10 +1199,11 @@ equipment panel above it ending four units before the pack, each drawing
 its entries' icons when the icon cache holds them. The window joins the
 open-container registry under the body's tagged id, binds a body's pack and
 worn items through `bind_loot`, and leaves the registry when it closes.
-The window's flag word is the body's condition word (the world path reads
-it when it sends the request); `exa_game::body_inventory` fills the pack
+The window's flag word is the body's record profession word (race byte 3
+refuses), read from its `Possessions` when the window opens; `exa_game::body_inventory` fills the pack
 from the body's carried list at its saved places and the equipment panel
-from the worn items and the set in the hands with the worn/scatter pass,
+from the worn items and the shields in the hands (the original's hand loop
+lists an item only when it has a shield section) with the worn/scatter pass,
 and the player's inventory pack from its own carried list. `panel_live`
 runs the left drag between open panels with the item panel's press, accept,
 drop and drag-end rules; a drop on another pack moves the possession

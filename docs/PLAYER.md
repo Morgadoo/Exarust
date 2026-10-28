@@ -1194,7 +1194,7 @@ item id and a flags word (`0x0100_0000` flipped, `0x0200_0000` the light
 burns), the worn items as the record's id-and-flags pairs, and the carried
 list, in which an item in a hand stays listed with its held bit `0x100`
 set. A dead body's loot window shows the same list (the pack at its saved
-places) and the worn items plus the set in the hands on its equipment
+places) and the worn items plus the shields in the hands on its equipment
 panel; a drag between that window and the player's inventory moves the
 possession entries (`exa_game::body_inventory`, `exa_game::panel_live`). Established by REA on the
 character body's possession routines; addresses are in the research notes.

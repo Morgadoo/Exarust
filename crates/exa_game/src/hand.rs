@@ -1289,20 +1289,15 @@ fn hold_hand(
                             && let Some(Hit::Character { body, .. }) = picked.map(|p| p.hit)
                             && let Some(messages) = screens.as_deref_mut()
                         {
-                            // The body's record flag word, as the original
-                            // reads it for the show rule: the condition word
-                            // carries the getting-up values it tests.
-                            let flags = bodies
-                                .get(body)
-                                .ok()
-                                .and_then(|(_, _, condition, _)| condition.copied())
-                                .map_or(0, |condition| condition.0);
                             messages.write(ScreenRequest {
                                 screen: exa_ui::game_gui::GameScreen::Loot,
                                 player_ready: !condition.dying(),
                                 player_alive: !condition.is_dead(),
                                 target: Some(body.index().index() as i32),
-                                flags,
+                                // The screen opener reads the body's record
+                                // flag word from its possessions; 0 passes
+                                // the show rule when it has none.
+                                flags: 0,
                             });
                         }
                     }
