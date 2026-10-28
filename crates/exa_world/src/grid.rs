@@ -1158,6 +1158,7 @@ mod tests {
             transform: Transform::IDENTITY,
             parts: vec![(mesh, Handle::default())],
             part_materials: vec!["_black".into()],
+            collision: Vec::new(),
             skin_bone: None,
             light: None,
             voxel_light: None,

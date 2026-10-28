@@ -511,26 +511,30 @@ fn hub_clicks(
             }
             continue;
         }
-        let action = match click.hit {
-            crate::hand::Hit::Prop { body, .. } => {
-                let name = names.get(body).ok().map(|name| hub_name(name.as_str()));
-                // The original reads a float of the clicked node as the
-                // side; which field it is is not traced, so the global x is
-                // a guess (the sign is what the hook compares).
-                let side = transforms
-                    .get(body)
-                    .map(|transform| transform.translation().x)
-                    .unwrap_or(0.0);
-                match name.as_ref() {
-                    Some(name) => hub_click(
-                        hub.busy,
-                        mode,
-                        confirming(&windows),
-                        HubTarget::Object { name, side },
-                    ),
-                    None => HubAction::Nothing,
-                }
+        // A static object's mesh names the scene node the original's pick
+        // returns; the name is on that node, not on the prop model's root.
+        let object = |node: Entity, names: &Query<&Name>, transforms: &Query<&GlobalTransform>| {
+            let name = names.get(node).ok().map(|name| hub_name(name.as_str()));
+            // The original reads a float of the clicked node as the side;
+            // which field it is is not traced, so the global x is a guess
+            // (the sign is what the hook compares).
+            let side = transforms
+                .get(node)
+                .map(|transform| transform.translation().x)
+                .unwrap_or(0.0);
+            match name {
+                Some(name) => hub_click(
+                    hub.busy,
+                    mode,
+                    confirming(&windows),
+                    HubTarget::Object { name: &name, side },
+                ),
+                None => HubAction::Nothing,
             }
+        };
+        let action = match click.hit {
+            crate::hand::Hit::SceneNode { node } => object(node, &names, &transforms),
+            crate::hand::Hit::Prop { body, .. } => object(body, &names, &transforms),
             crate::hand::Hit::Character { body, .. } => match characters.get(body) {
                 Ok((condition, data)) => hub_click(
                     hub.busy,
@@ -786,10 +790,8 @@ mod tests {
                 .world_mut()
                 .spawn((Name::new("\u{aa}ArenaShop"), GlobalTransform::default()))
                 .id();
-            app.world_mut().write_message(WorldClick::picked(Hit::Prop {
-                body: shop,
-                part: 0,
-            }));
+            app.world_mut()
+                .write_message(WorldClick::picked(Hit::SceneNode { node: shop }));
             app.update();
             assert_eq!(
                 app.world().resource::<LastHubClick>().action,
@@ -808,10 +810,8 @@ mod tests {
                     GlobalTransform::from_xyz(side, 0.0, 0.0),
                 ))
                 .id();
-            app.world_mut().write_message(WorldClick::picked(Hit::Prop {
-                body: machine,
-                part: 0,
-            }));
+            app.world_mut()
+                .write_message(WorldClick::picked(Hit::SceneNode { node: machine }));
             // The shop is still open (it is the confirming form), so close it.
             app.world_mut().resource_mut::<HubWindows>().close();
             app.update();
@@ -825,10 +825,8 @@ mod tests {
             // The board and Manage Company both make the hub busy.
             assert!(app.world().resource::<ArenaHub>().busy);
             // A press outside the modal form closes it and clears the flag.
-            app.world_mut().write_message(WorldClick::picked(Hit::Prop {
-                body: machine,
-                part: 0,
-            }));
+            app.world_mut()
+                .write_message(WorldClick::picked(Hit::SceneNode { node: machine }));
             app.update();
             assert!(
                 app.world()
@@ -865,10 +863,8 @@ mod tests {
             ),
             HubAction::Nothing
         );
-        app.world_mut().write_message(WorldClick::picked(Hit::Prop {
-            body: shop,
-            part: 0,
-        }));
+        app.world_mut()
+            .write_message(WorldClick::picked(Hit::SceneNode { node: shop }));
         app.update();
         assert_eq!(
             app.world().resource::<LastHubClick>().action,
@@ -909,10 +905,7 @@ mod tests {
             .spawn((Name::new("\u{aa}ArenaShop"), GlobalTransform::default()))
             .id();
         app.world_mut().write_message(WorldClick {
-            hit: Hit::Prop {
-                body: shop,
-                part: 0,
-            },
+            hit: Hit::SceneNode { node: shop },
             pointer: IVec2::new(
                 (bounds.left + bounds.right) / 2,
                 (bounds.top + bounds.bottom) / 2,

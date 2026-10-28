@@ -685,8 +685,13 @@ bottom back.
 The pick looks 40 m along the cursor's ray: at the level and the props'
 meshes (their stand-ins), and at the characters' collision spheres (the
 original tests every object's meshes, through spheres padded by 5 cm for
-interactive objects); the nearest hit wins. The hip is the player's pelvis
-(the original's reference point the swing whoosh also plays at).
+interactive objects); the nearest hit wins. A static mesh under a named
+scene node comes back as that node (`Hit::SceneNode`), whose stored name a
+click hook compares as the original's scene pick does; generated geometry
+and every unnamed collider stay `Hit::Level`. The hub's shop sign is
+collision-only `_null` geometry, so it is built as a hidden collider. The
+hip is the player's pelvis (the original's reference point the swing whoosh
+also plays at).
 
 The point under the cursor is the navigation unit's pick: a screen ray, then the scene's nodes in order, each tested by its class (`0x89`, and `0x4000000` skips it), its layer against the view's, the segment against its bounding sphere and then its box, and each mesh asked for its nearest face within the best distance so far, which then shortens the segment. With no hit the pick records where the ray meets the ground plane. Exarust's `exa_game::nav_pick` does that walk; the physics world answers as the mesh callback because Exarust keeps no CPU triangles. The kinesis variant also needs the node's `0x200000` option bit, looks 40 m, grows each sphere by the caller's height and asks the mesh from where the ray crosses that sphere's top.
 

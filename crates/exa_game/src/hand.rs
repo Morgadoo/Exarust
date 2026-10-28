@@ -53,7 +53,10 @@
 //!
 //! The pick looks 40 m along the cursor's ray at the level (prop stand-ins
 //! included) and the characters' collision spheres (the original tests each
-//! object's meshes), the nearest hit first.
+//! object's meshes), the nearest hit first. A static mesh under a named scene
+//! node is that node ([`Hit::SceneNode`]), whose name a click hook can
+//! compare, as the original's scene pick returns the node; generated level
+//! geometry and every other collider stay [`Hit::Level`].
 //!
 //! Evidence: the original's left-press, drag and release handlers, the
 //! per-frame request's reach and the controls' frame, read in the
@@ -62,6 +65,7 @@
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 use exa_combat::Condition;
+use exa_physics::ColliderNodes;
 use exa_physics::Physics;
 use exa_physics::body::locomotion::{Locomotion, Locomotor};
 use exa_physics::body::{Ragdoll, WAKE_COUNT};
@@ -659,8 +663,13 @@ pub fn measures_reach(combat: bool, ctrl: bool, holding: bool, walking: bool) ->
 /// What the pick hit.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Hit {
-    /// The level (a mesh with no body).
+    /// Plain level geometry (a mesh with no body and no scene node): a wall,
+    /// a floor, the terrain.
     Level,
+    /// A named scene node: static scenery whose mesh was built under it. The
+    /// original's pick returns the node itself; its name is compared by the
+    /// click hooks.
+    SceneNode { node: Entity },
     /// A prop's part, through its stand-in.
     Prop { body: Entity, part: usize },
     /// A character's part, through its collision spheres.
@@ -756,15 +765,20 @@ fn pick_along<'a>(
     ray: Ray3d,
     physics: &Physics,
     stand_ins: &StandIns,
+    collider_nodes: &ColliderNodes,
     characters: impl Iterator<Item = (Entity, &'a Ragdoll, Condition)>,
 ) -> Option<Picked> {
     let (origin, dir) = (ray.origin, *ray.direction);
     let fixed = physics
         .fixed_pick(origin, dir, PICK_RANGE)
         .map(|(handle, t)| {
-            let hit = stand_ins
-                .owner_of(handle)
-                .map_or(Hit::Level, |(body, part)| Hit::Prop { body, part });
+            let hit = if let Some((body, part)) = stand_ins.owner_of(handle) {
+                Hit::Prop { body, part }
+            } else if let Some(node) = collider_nodes.node_of(handle) {
+                Hit::SceneNode { node }
+            } else {
+                Hit::Level
+            };
             (t, hit)
         });
     let reach = fixed.map_or(PICK_RANGE, |f| f.0);
@@ -784,7 +798,9 @@ fn pick_along<'a>(
 /// part's mobility (the object's own body).
 fn name_of(hit: Hit, top_mobility: impl Fn(Entity) -> Option<f32>) -> Pick {
     let target = match hit {
-        Hit::Level => Target::default(),
+        // Static scenery carries no object body, so the hand takes nothing
+        // from it; the click hook still reads the node's name.
+        Hit::Level | Hit::SceneNode { .. } => Target::default(),
         Hit::Character { dead, .. } => Target {
             body: Some(Body::Character { dead }),
             ..Target::default()
@@ -836,6 +852,15 @@ type PlayerParts = (
     Option<&'static Locomotor>,
 );
 
+/// What the pick reads of the world beyond the characters: the colliders,
+/// the props' stand-ins and the scene nodes some static colliders came from.
+#[derive(bevy::ecs::system::SystemParam)]
+struct PickSources<'w> {
+    physics: Res<'w, Physics>,
+    stand_ins: Res<'w, StandIns>,
+    collider_nodes: Res<'w, ColliderNodes>,
+}
+
 /// Every body but the player's: its condition when it is a character's,
 /// and whether it is a prop's.
 type OtherBodies = (
@@ -863,6 +888,7 @@ fn pick_with(
     ray: Option<Ray3d>,
     physics: &Physics,
     stand_ins: &StandIns,
+    collider_nodes: &ColliderNodes,
     bodies: &Query<OtherBodies, Without<PlayerBody>>,
     player: Option<(Entity, &Ragdoll, Condition)>,
 ) -> Option<Picked> {
@@ -870,7 +896,13 @@ fn pick_with(
         (Some(c), false) => Some((e, r, *c)),
         _ => None,
     });
-    pick_along(ray?, physics, stand_ins, others.chain(player))
+    pick_along(
+        ray?,
+        physics,
+        stand_ins,
+        collider_nodes,
+        others.chain(player),
+    )
 }
 
 /// The player's body entity (the child of the player's root carrying its
@@ -895,8 +927,7 @@ fn press_hand(
     buttons: Res<ButtonInput<MouseButton>>,
     bindings: Res<Bindings>,
     scripted: Res<ScriptedPointer>,
-    physics: Res<Physics>,
-    stand_ins: Res<StandIns>,
+    sources: PickSources,
     windows: Query<&Window, With<PrimaryWindow>>,
     cameras: Query<(&Camera, &GlobalTransform), With<ChaseCamera>>,
     mut hand: ResMut<Hand>,
@@ -960,8 +991,9 @@ fn press_hand(
     let condition = condition.copied().unwrap_or_default();
     let picked = pick_with(
         ray,
-        &physics,
-        &stand_ins,
+        &sources.physics,
+        &sources.stand_ins,
+        &sources.collider_nodes,
         &bodies,
         own.map(|r| (child, r, condition)),
     );
@@ -1023,7 +1055,7 @@ fn press_hand(
             let (body, part, character) = match p.hit {
                 Hit::Prop { body, part } => (body, part, false),
                 Hit::Character { body, part, .. } => (body, part, true),
-                Hit::Level => return,
+                Hit::Level | Hit::SceneNode { .. } => return,
             };
             if holds {
                 pb.hold_object(true);
@@ -1054,8 +1086,7 @@ fn hold_hand(
     keys: Res<ButtonInput<KeyCode>>,
     buttons: Res<ButtonInput<MouseButton>>,
     bindings: Res<Bindings>,
-    physics: Res<Physics>,
-    stand_ins: Res<StandIns>,
+    sources: PickSources,
     scripted: Res<ScriptedPointer>,
     windows: Query<&Window, With<PrimaryWindow>>,
     cameras: Query<(&Camera, &GlobalTransform), With<ChaseCamera>>,
@@ -1090,8 +1121,9 @@ fn hold_hand(
                 .and_then(|(window, (camera, eye))| window_ray(camera, eye, window, left.at));
             let picked = pick_with(
                 ray,
-                &physics,
-                &stand_ins,
+                &sources.physics,
+                &sources.stand_ins,
+                &sources.collider_nodes,
                 &bodies,
                 own.map(|r| (child, r, condition)),
             );
@@ -1118,7 +1150,7 @@ fn hold_hand(
                     Hit::Character { dead, .. } if dead => Some(ClickTarget::DeadCharacter),
                     Hit::Character { .. } => Some(ClickTarget::LivingCharacter),
                     Hit::Prop { .. } => Some(ClickTarget::plain()),
-                    Hit::Level => None,
+                    Hit::Level | Hit::SceneNode { .. } => None,
                 });
                 if let Some(target) = target {
                     if !combat {
@@ -1219,8 +1251,7 @@ fn reach_hand(
     buttons: Res<ButtonInput<MouseButton>>,
     bindings: Res<Bindings>,
     scripted: Res<ScriptedPointer>,
-    physics: Res<Physics>,
-    stand_ins: Res<StandIns>,
+    sources: PickSources,
     windows: Query<&Window, With<PrimaryWindow>>,
     cameras: Query<(&Camera, &GlobalTransform), With<ChaseCamera>>,
     mut hand: ResMut<Hand>,
@@ -1261,8 +1292,9 @@ fn reach_hand(
             let ray = cursor_ray(&scripted, &windows, &cameras);
             pick_with(
                 ray,
-                &physics,
-                &stand_ins,
+                &sources.physics,
+                &sources.stand_ins,
+                &sources.collider_nodes,
                 &bodies,
                 own.map(|r| (child, r, condition)),
             )
@@ -1517,8 +1549,16 @@ mod tests {
         let ray = Ray3d::new(Vec3::ZERO, Dir3::Z);
         let physics = Physics::default();
         let stand_ins = StandIns::default();
+        let collider_nodes = ColliderNodes::default();
         let bodies = [(far, &b, Condition::NORMAL), (near, &a, Condition::DEAD)];
-        let picked = pick_along(ray, &physics, &stand_ins, bodies.into_iter()).unwrap();
+        let picked = pick_along(
+            ray,
+            &physics,
+            &stand_ins,
+            &collider_nodes,
+            bodies.into_iter(),
+        )
+        .unwrap();
         assert!((picked.at.z - 2.8).abs() < 1e-4, "{}", picked.at);
         assert_eq!(
             picked.hit,
@@ -1532,7 +1572,13 @@ mod tests {
         let aside = Ray3d::new(Vec3::X, Dir3::Z);
         let bodies = [(near, &a, Condition::DEAD)];
         assert_eq!(
-            pick_along(aside, &physics, &stand_ins, bodies.into_iter()),
+            pick_along(
+                aside,
+                &physics,
+                &stand_ins,
+                &collider_nodes,
+                bodies.into_iter()
+            ),
             None
         );
         // A prop's name reads its top part's mobility.
@@ -1543,6 +1589,188 @@ mod tests {
         assert_eq!(name_of(prop, |_| Some(0.5)), Pick::Loose);
         assert_eq!(name_of(prop, |_| Some(0.05)), Pick::Nothing);
         assert_eq!(name_of(Hit::Level, |_| None), Pick::Nothing);
+        assert_eq!(
+            name_of(Hit::SceneNode { node: near }, |_| None),
+            Pick::Nothing
+        );
+    }
+
+    /// A ray aimed at one of the installed hub's named scenery meshes finds
+    /// that scene node, not the level: the shop's and the notice board's
+    /// names are the two the hub's click hook compares. The level is loaded
+    /// from `EXANIMA_DIR`; the check is skipped without it.
+    #[test]
+    fn arenahub_scenery_nodes_resolve_under_a_ray() {
+        use bevy::ecs::world::CommandQueue;
+
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let Ok(game) = exa_assets::GameData::open(&dir) else {
+            return;
+        };
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            bevy::transform::TransformPlugin,
+            exa_physics::PhysicsPlugin,
+        ))
+        .init_resource::<Assets<Mesh>>()
+        .init_resource::<Assets<exa_render::material::ExaMaterial>>()
+        .init_resource::<Assets<Image>>()
+        .insert_resource(exa_assets::ModelCache::default())
+        .insert_resource(exa_assets::Game(std::sync::Arc::new(game)));
+        // Spawn the level's own model, props and placed objects.
+        let game = app.world().resource::<exa_assets::Game>().0.clone();
+        let mut cache = app
+            .world_mut()
+            .remove_resource::<exa_assets::ModelCache>()
+            .unwrap();
+        let mut meshes = app.world_mut().remove_resource::<Assets<Mesh>>().unwrap();
+        let mut materials = app
+            .world_mut()
+            .remove_resource::<Assets<exa_render::material::ExaMaterial>>()
+            .unwrap();
+        let mut images = app.world_mut().remove_resource::<Assets<Image>>().unwrap();
+        let mut queue = CommandQueue::default();
+        let root = {
+            let mut loader = exa_assets::ModelLoader {
+                game: &game,
+                cache: &mut cache,
+                meshes: &mut meshes,
+                materials: &mut materials,
+                images: &mut images,
+                bc_supported: false,
+            };
+            let mut commands = Commands::new(&mut queue, app.world());
+            exa_world::spawn_level(&mut commands, &mut loader, "arenahub").map(|(root, _)| root)
+        };
+        queue.apply(app.world_mut());
+        app.world_mut().insert_resource(cache);
+        app.world_mut().insert_resource(meshes);
+        app.world_mut().insert_resource(materials);
+        app.world_mut().insert_resource(images);
+        let Some(root) = root else {
+            return;
+        };
+        // The two names the hub compares, on the node the pick returns.
+        let mut names = app.world_mut().query::<(Entity, &Name)>();
+        let targets: Vec<(Entity, String)> = names
+            .iter(app.world())
+            .map(|(entity, name)| (entity, name.to_string()))
+            .collect();
+        let find = |wanted: &str| {
+            targets
+                .iter()
+                .find(|(_, name)| name == wanted)
+                .map(|(entity, _)| *entity)
+        };
+        let (Some(shop), Some(machine)) = (find("\u{aa}ArenaShop"), find("\u{aa}ArenaMach")) else {
+            panic!("the hub's shop and notice board are missing");
+        };
+        // Build collision for just the two objects, not the whole hub.
+        let mut tops = Vec::new();
+        for node in [shop, machine] {
+            let mut top = node;
+            while let Some(child) = app.world().get::<ChildOf>(top) {
+                let parent = child.parent();
+                if parent == root {
+                    break;
+                }
+                top = parent;
+            }
+            app.world_mut()
+                .entity_mut(top)
+                .insert(exa_physics::StaticGeometry);
+            tops.push(top);
+        }
+        for _ in 0..20_000 {
+            let building = tops.iter().any(|&top| {
+                app.world()
+                    .entity(top)
+                    .contains::<exa_physics::StaticGeometry>()
+            });
+            if !building {
+                break;
+            }
+            app.update();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+
+        app.world_mut().resource_mut::<Physics>().0.step();
+        // Aim at each node's own first usable triangle from just off it.
+        let rays = [
+            (shop, triangle_ray(app.world_mut(), shop)),
+            (machine, triangle_ray(app.world_mut(), machine)),
+        ];
+        let physics = app.world().resource::<Physics>();
+        let collider_nodes = app.world().resource::<ColliderNodes>();
+        let stand_ins = StandIns::default();
+        for (node, ray) in rays {
+            let ray = ray.expect("the node has a mesh triangle");
+            let (handle, _) = physics
+                .fixed_pick(ray.origin, *ray.direction, PICK_RANGE)
+                .expect("the ray meets the node");
+            assert_eq!(collider_nodes.node_of(handle), Some(node));
+            let picked = pick_along(ray, physics, &stand_ins, collider_nodes, std::iter::empty())
+                .expect("the pick finds the node");
+            assert_eq!(picked.hit, Hit::SceneNode { node });
+        }
+    }
+
+    /// A ray from just off the node's first non-degenerate mesh triangle
+    /// toward it, in world space.
+    fn triangle_ray(world: &mut World, node: Entity) -> Option<Ray3d> {
+        let shapes: Vec<(Handle<Mesh>, GlobalTransform, Entity)> = {
+            let mut shapes = world.query::<(&Mesh3d, &GlobalTransform, &ChildOf)>();
+            shapes
+                .iter(world)
+                .map(|(mesh, at, child)| (mesh.0.clone(), *at, child.parent()))
+                .collect()
+        };
+        let meshes = world.resource::<Assets<Mesh>>();
+        let mut found = None;
+        for (mesh, at, mut under) in shapes {
+            let mut below = under == node;
+            while let Some(parent) = world.get::<ChildOf>(under) {
+                under = parent.parent();
+                if under == node {
+                    below = true;
+                    break;
+                }
+            }
+            if !below {
+                continue;
+            }
+            let Some(mesh) = meshes.get(&mesh) else {
+                continue;
+            };
+            let Some(positions) = mesh
+                .attribute(Mesh::ATTRIBUTE_POSITION)
+                .and_then(|a| a.as_float3())
+            else {
+                continue;
+            };
+            let Some(indices) = mesh.indices() else {
+                continue;
+            };
+            for triangle in indices.iter().collect::<Vec<_>>().chunks(3) {
+                let [a, b, c] =
+                    [0, 1, 2].map(|k| at.transform_point(Vec3::from(positions[triangle[k]])));
+                let cross = (b - a).cross(c - a);
+                if cross.length_squared() < 1e-12 {
+                    continue;
+                }
+                let normal = cross.normalize();
+                let centre = (a + b + c) / 3.0;
+                found = Some(Ray3d::new(centre + normal * 0.05, Dir3::new(-normal).ok()?));
+                break;
+            }
+            if found.is_some() {
+                break;
+            }
+        }
+        found
     }
 
     /// The hand's systems run together in one frame (their queries do not
@@ -1556,6 +1784,7 @@ mod tests {
             .init_resource::<Bindings>()
             .init_resource::<ScriptedPointer>()
             .init_resource::<StandIns>()
+            .init_resource::<ColliderNodes>()
             .insert_resource(Physics::default())
             .init_resource::<Hand>()
             .add_message::<WorldClick>()

@@ -32,6 +32,8 @@ pub mod volume;
 pub mod voxel;
 pub mod weapon_mass;
 
+use std::collections::HashMap;
+
 use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on, poll_once};
 use rapier3d::control::{CharacterAutostep, CharacterLength, KinematicCharacterController};
@@ -55,6 +57,7 @@ impl Plugin for PhysicsPlugin {
         app.insert_resource(Physics(world))
             .init_resource::<PendingKinematics>()
             .init_resource::<StaticBuild>()
+            .init_resource::<ColliderNodes>()
             .insert_resource(Time::<Fixed>::from_hz(STEP_HZ))
             .add_systems(Startup, limit_backlog)
             .add_systems(
@@ -166,6 +169,43 @@ pub struct StaticGeometry;
 #[derive(Component)]
 pub struct NoStaticCollider;
 
+/// A named scene node whose colliders the pick can name: a static mesh under
+/// it maps back to it in [`ColliderNodes`], and a ray that meets that mesh
+/// returns the node rather than the plain level. Level builders put it on the
+/// nodes they spawn from a model; generated geometry (walls, floors, terrain)
+/// carries none and stays the level.
+#[derive(Component)]
+pub struct StaticNode;
+
+/// Which scene node built each static collider, by collider handle. One entry
+/// per collider that came from a [`StaticNode`]'s subtree; a collider of a
+/// rigid body is a prop's stand-in instead and has no entry. The name is not
+/// copied: the node entity's `Name` holds it.
+#[derive(Resource, Debug, Default)]
+pub struct ColliderNodes(HashMap<ColliderHandle, Entity>);
+
+impl ColliderNodes {
+    /// The scene node the collider was built from, if it has one.
+    pub fn node_of(&self, collider: ColliderHandle) -> Option<Entity> {
+        self.0.get(&collider).copied()
+    }
+
+    /// Records a collider as built from `node`.
+    pub fn insert(&mut self, collider: ColliderHandle, node: Entity) {
+        self.0.insert(collider, node);
+    }
+
+    /// How many colliders have a scene node.
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Whether no collider has a scene node.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
 /// The static colliders being built. A level's meshes are copied a batch at
 /// a time, within [`STATIC_BUILD_BUDGET`] per frame, and built into
 /// triangle-mesh colliders on the async compute pool: one large mesh (a
@@ -187,9 +227,9 @@ struct RootBuild {
     tasks: Vec<(usize, Task<Vec<BuiltCollider>>)>,
 }
 
-/// A built collider and, for a rigid body's stand-in, the body's root node
-/// and the part it follows.
-type BuiltCollider = (Collider, Option<(Entity, usize)>);
+/// A built collider, for a rigid body's stand-in the body's root node and
+/// the part it follows, and the scene node whose subtree the mesh was under.
+type BuiltCollider = (Collider, Option<(Entity, usize)>, Option<Entity>);
 
 impl StaticBuild {
     /// The share of the meshes queued since the last idle moment that are
@@ -354,10 +394,12 @@ fn build_static_colliders(
     mut physics: ResMut<Physics>,
     mut build: ResMut<StaticBuild>,
     mut stand_ins: ResMut<prop::StandIns>,
+    mut collider_nodes: ResMut<ColliderNodes>,
     roots: Query<Entity, With<StaticGeometry>>,
     children: Query<&Children>,
     parents: Query<&ChildOf>,
     body_nodes: Query<&prop::BodyNode>,
+    static_nodes: Query<(), With<StaticNode>>,
     shapes: Query<(&Mesh3d, &GlobalTransform)>,
     no_collider: Query<(), With<NoStaticCollider>>,
     meshes: Res<Assets<Mesh>>,
@@ -386,13 +428,15 @@ fn build_static_colliders(
             let Some(colliders) = block_on(poll_once(task)) else {
                 return true;
             };
-            for (mut collider, owner) in colliders {
+            for (mut collider, owner, node) in colliders {
                 if owner.is_some() {
                     collider.user_data = prop::STAND_IN;
                 }
                 let handle = physics.0.insert_collider(collider, None);
                 if let Some((body, part)) = owner {
                     stand_ins.0.entry(body).or_default().push((handle, part));
+                } else if let Some(node) = node {
+                    collider_nodes.insert(handle, node);
                 }
             }
             build.built += *count;
@@ -420,6 +464,7 @@ fn build_static_colliders(
                         meshes.get(&mesh.0).and_then(|m| MeshCopy::of(m, global))
                 {
                     copy.owner = moved_by(e, root.root, &parents, &body_nodes);
+                    copy.node = scene_node_of(e, root.root, &parents, &static_nodes);
                     triangles += copy.indices.len() / 3;
                     batch.push(copy);
                 }
@@ -430,7 +475,8 @@ fn build_static_colliders(
                     .into_iter()
                     .filter_map(|copy| {
                         let owner = copy.owner;
-                        copy.collider().map(|c| (c, owner))
+                        let node = copy.node;
+                        copy.collider().map(|c| (c, owner, node))
                     })
                     .collect()
             });
@@ -472,14 +518,33 @@ fn moved_by(
     None
 }
 
+/// The nearest scene node over the mesh `e` ([`StaticNode`]), up to the
+/// static root: the node whose name a pick of the mesh returns.
+fn scene_node_of(
+    e: Entity,
+    root: Entity,
+    parents: &Query<&ChildOf>,
+    static_nodes: &Query<(), With<StaticNode>>,
+) -> Option<Entity> {
+    let mut node = Some(e);
+    while let Some(n) = node.filter(|&n| n != root) {
+        if static_nodes.contains(n) {
+            return Some(n);
+        }
+        node = parents.get(n).ok().map(ChildOf::parent);
+    }
+    None
+}
+
 /// A mesh's positions and triangles with its world transform, owned so a
-/// collider can be built from it on another thread, and the rigid body
-/// that moves it, if any.
+/// collider can be built from it on another thread, the rigid body that
+/// moves it, if any, and the scene node whose name a pick returns.
 struct MeshCopy {
     positions: Vec<[f32; 3]>,
     indices: Vec<u32>,
     transform: Mat4,
     owner: Option<(Entity, usize)>,
+    node: Option<Entity>,
 }
 
 impl MeshCopy {
@@ -491,6 +556,7 @@ impl MeshCopy {
             indices,
             transform: global.to_matrix(),
             owner: None,
+            node: None,
         })
     }
 
@@ -698,6 +764,7 @@ mod tests {
             .insert_resource(Physics(PhysicsWorld::new()))
             .init_resource::<StaticBuild>()
             .init_resource::<prop::StandIns>()
+            .init_resource::<ColliderNodes>()
             .init_resource::<Assets<Mesh>>()
             .add_systems(Update, build_static_colliders);
         let mesh = app
@@ -822,6 +889,7 @@ mod tests {
             .insert_resource(Physics(PhysicsWorld::new()))
             .init_resource::<StaticBuild>()
             .init_resource::<prop::StandIns>()
+            .init_resource::<ColliderNodes>()
             .init_resource::<Assets<Mesh>>()
             .add_systems(Update, build_static_colliders);
         let mesh = app
@@ -867,6 +935,67 @@ mod tests {
             .filter(|(h, _)| !world.movable(h.into_raw_parts().0))
             .count();
         assert_eq!(static_count, 1);
+    }
+
+    /// A mesh under a `StaticNode` maps its collider back to that node; a
+    /// mesh of generated level geometry maps to no node and stays the level.
+    #[test]
+    fn a_static_collider_remembers_its_scene_node() {
+        let mut app = App::new();
+        app.add_plugins(TaskPoolPlugin::default())
+            .insert_resource(Physics(PhysicsWorld::new()))
+            .init_resource::<StaticBuild>()
+            .init_resource::<prop::StandIns>()
+            .init_resource::<ColliderNodes>()
+            .init_resource::<Assets<Mesh>>()
+            .add_systems(Update, build_static_colliders);
+        let mesh = app
+            .world_mut()
+            .resource_mut::<Assets<Mesh>>()
+            .add(bevy::prelude::Cuboid::new(1.0, 1.0, 1.0).mesh().build());
+        let root = app
+            .world_mut()
+            .spawn((StaticGeometry, Transform::default()))
+            .id();
+        let node = app
+            .world_mut()
+            .spawn((
+                StaticNode,
+                Name::new("\u{aa}ArenaShop"),
+                Transform::default(),
+                ChildOf(root),
+            ))
+            .id();
+        app.world_mut().spawn((
+            Mesh3d(mesh.clone()),
+            GlobalTransform::from_xyz(0.0, 1.0, 0.0),
+            ChildOf(node),
+        ));
+        app.world_mut().spawn((
+            Mesh3d(mesh),
+            GlobalTransform::from_xyz(0.0, 0.0, 2.0),
+            ChildOf(root),
+        ));
+        for _ in 0..2000 {
+            if !app.world().entity(root).contains::<StaticGeometry>() {
+                break;
+            }
+            app.update();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        app.world_mut().resource_mut::<Physics>().0.step();
+        let nodes = app.world().resource::<ColliderNodes>();
+        assert_eq!(nodes.len(), 1);
+        let physics = app.world().resource::<Physics>();
+        let at = Vec3::new(0.0, 1.0, 0.0);
+        let (handle, _) = physics
+            .fixed_pick(at + Vec3::Y, Vec3::NEG_Y, 2.0)
+            .expect("the node's mesh");
+        assert_eq!(nodes.node_of(handle), Some(node));
+        let (plain, _) = physics
+            .fixed_pick(Vec3::new(0.0, 1.0, 2.0), Vec3::NEG_Y, 2.0)
+            .expect("the plain mesh");
+        assert_eq!(nodes.node_of(plain), None);
     }
 
     #[test]

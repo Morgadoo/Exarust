@@ -100,7 +100,10 @@ past the array.
 
 Model nodes carry their rigid body with the physical divisor of their first
 mesh part's material (`ModelNode::rigid`, `NodeRigidBody::mobility`), what
-the solver registers a prop with.
+the solver registers a prop with. A node's `_null` groups are collision-only
+geometry the original never draws (the hub's shop sign): they are built
+into `ModelNode::collision` meshes, spawned hidden and collided with, and do
+not appear among the node's drawn parts.
 
 Object libraries: `ModelLoader::object_pack` searches the project's object
 libraries in their order and `object_model` loads the first match, as the
