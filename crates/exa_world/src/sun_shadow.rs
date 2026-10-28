@@ -214,6 +214,8 @@ fn camera_volume(transform: &GlobalTransform, projection: &Projection) -> Convex
 /// (the shipped levels have one directional light). [guess: layer index]
 fn publish_gi_sun_shadow(
     mut commands: Commands,
+    current: Option<ResMut<GiSunShadow>>,
+    gi: Option<Res<exa_render::gi::GiTextures>>,
     suns: Query<&Cascades, With<DirectionalLight>>,
     cameras: Query<(
         Entity,
@@ -221,6 +223,10 @@ fn publish_gi_sun_shadow(
         Option<&exa_render::supersample::DisplayCamera>,
     )>,
 ) {
+    // Nothing reads it without a GI volume (`--no-gi` runs skip it).
+    if gi.is_none() {
+        return;
+    }
     let Some(view) = cameras
         .iter()
         .find(|(_, camera, display)| camera.is_active && display.is_none())
@@ -232,13 +238,20 @@ fn publish_gi_sun_shadow(
         .iter()
         .filter_map(|cascades| cascades.cascades.get(&view))
         .find_map(|list| list.first());
-    commands.insert_resource(match cascade {
+    let value = match cascade {
         Some(cascade) => GiSunShadow {
             clip_from_world: cascade.clip_from_world,
             enabled: true,
         },
         None => GiSunShadow::default(),
-    });
+    };
+    // Written only when it changes, so a still camera leaves it untouched.
+    match current {
+        Some(mut current) => {
+            current.set_if_neq(value);
+        }
+        None => commands.insert_resource(value),
+    }
 }
 
 #[cfg(test)]
