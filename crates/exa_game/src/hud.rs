@@ -121,15 +121,15 @@ fn pick_hud(
     }
 }
 
-/// The compass's visibility and heading: the player's own pack carrying a
+/// The compass's visibility and turn: the player's own pack carrying a
 /// usable item of the compass's kind (4, 11) shows it, and the chase
-/// camera's shown heading turns it. The HUD's fade is the only thing that
-/// hides it otherwise.
+/// camera's backward axis (the third row of its frame, as the original
+/// reads it) turns it. The interface fade is not modelled (0).
 fn pick_compass(
     players: Query<&Children, With<Player>>,
     bodies: Query<&Possessions>,
     catalogue: Option<Res<ItemCatalogue>>,
-    cameras: Query<&ChaseCamera>,
+    cameras: Query<&Transform, With<ChaseCamera>>,
     hud: Res<HudBars>,
     mut compass: ResMut<CompassView>,
 ) {
@@ -141,10 +141,13 @@ fn pick_compass(
                 .any(|possessions| carries_compass(possessions, |id| catalogue.usable(id)))
         })
     });
-    let heading = cameras.iter().next().map_or(0.0, ChaseCamera::shown_yaw);
+    let back = cameras
+        .iter()
+        .next()
+        .map_or([0.0, 1.0], |t| [t.back().x, t.back().z]);
     let next = CompassView {
         visible: hud.active && carried,
-        heading,
+        back,
         fade: 0.0,
     };
     if *compass != next {

@@ -1242,12 +1242,14 @@ drawing:
   the state and starts a running heartbeat's fade. The compass
   is a 12-unit diamond two units plus its half from the left and bottom at
   `round((1 − fade) · 192)`; `exa_ui::hud_extra` paints it as one square
-  turned clockwise by the camera's shown heading, its corners taking the
-  texture coordinates `(1,1)`, `(0,1)`, `(0,0)` and `(1,0)` (the picture is
-  mirrored across its vertical axis) and bilinear-filtered. The same module
-  paints the curtain as a black page at the fall's share of 255, remapped
-  to Bevy's linear blend. The status marker's glow and icon are not painted
-  yet. The heartbeat's fade-out lowers its sound to
+  in a frame built from the camera's backward axis laid flat (x negated,
+  normalised with the approximate reciprocal root) and its cross product
+  with up, the frame's origin 3 px against that axis. The corners
+  `(∓e, ∓e)` take the texture coordinates `(1,1)`, `(0,1)`, `(0,0)` and
+  `(1,0)`; the frame reflects them, so the picture shows upright and
+  unmirrored, turned clockwise by the camera's yaw, bilinear-filtered. The
+  curtain is the black layer of `exa_ui::fade` (the death fade). The
+  status marker's glow and icon are not painted yet. The heartbeat's fade-out lowers its sound to
   `0.3 · (1 − elapsed / 1000)` and stops it; the border keeps its pulse.
   The menu cursor is `round(setting · height / 1080 · 32)`, at most 128,
   with a 0.176/0.08 hotspot (`setting` is the CursorSize setting, 1 in the

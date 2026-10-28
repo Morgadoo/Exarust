@@ -174,7 +174,8 @@ pub use help_system::{
 };
 pub use hud::{DrawHud, HudBars};
 pub use hud_extra::{
-    COMPASS, CompassTexture, CompassView, CurtainView, compass_corners, compass_uv,
+    COMPASS, CompassTexture, CompassView, compass_axis, compass_corners, compass_origin,
+    compass_point, compass_uv,
 };
 pub use line_skin::{
     LINE_SCHEME, LINE_STRIP_CAP, LineIcon, LineIconAlpha, LineIconInk, LineMetrics, LineScroll,

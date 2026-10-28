@@ -1,16 +1,23 @@
-//! The in-game HUD's extra layers: the compass and the level curtain.
+//! The in-game HUD's compass.
 //!
-//! The compass is the game unit's `compass` texture drawn as one rotated
-//! square at the view's bottom left, its four corners turned by the
-//! camera's heading and its texture coordinates mirrored across the
-//! vertical axis, all four vertices taking the interface's fade as an
-//! opacity of `round((1 − fade) · 192)` of 255. The level curtain is the
-//! black page drawn over the whole view while a level ends, its opacity the
-//! fall's share of 255.
+//! The compass is the game unit's `compass` texture drawn as one turned
+//! square at the view's bottom left. The original builds a frame from the
+//! camera's backward axis (the third row of the camera's frame) laid flat,
+//! its x negated and its y zeroed, then normalised: that axis `d` and its
+//! cross product with up give the square's two axes, and the frame's
+//! origin is the compass's centre moved three pixels against `d`. The
+//! square's corners `(∓e, ∓e)` with texture coordinates `(1,1)`, `(0,1)`,
+//! `(0,0)`, `(1,0)` go through that frame, which reflects them, so the
+//! picture shows upright and unmirrored, turned clockwise on screen by the
+//! camera's yaw. All four vertices take the interface's fade as an opacity
+//! of `round((1 − fade) · 192)` of 255.
 //!
-//! The game sets [`CompassView`] and [`CurtainView`] before [`DrawHud`];
-//! this module paints them under the bars, as the original's draw order
-//! says. The status marker and the skill-ready alert are [`crate::game_gui`]
+//! The level curtain the same draw order names is the black layer of
+//! [`crate::fade`] (three seconds to full, between the heartbeat and the
+//! bars), already driven by the game.
+//!
+//! The game sets [`CompassView`] before [`DrawHud`]; this module paints it
+//! under the bars, as the original's draw order says. The status marker and the skill-ready alert are [`crate::game_gui`]
 //! rules but are not painted here: their icons are skin frames whose atlas
 //! the evidence does not name.
 //!
@@ -26,7 +33,7 @@ use exa_assets::Game;
 use exa_formats::rfi::Rfi;
 
 use crate::LoadingStatus;
-use crate::blend::{Canvas, linear_opacity};
+use crate::blend::Canvas;
 use crate::game_gui::{compass_alpha, compass_centre, compass_extent};
 use crate::hud::DrawHud;
 use crate::scale::GuiScale;
@@ -97,22 +104,57 @@ impl CompassTexture {
     }
 }
 
-/// The compass quad's four corners (screen pixels, y down) at a GUI unit, a
-/// view height and a heading: the square of half extent [`compass_extent`]
-/// around [`compass_centre`], turned clockwise by the heading (the
-/// instruction negates the camera's angle before building the matrix).
-pub fn compass_corners(unit: i32, view_height: i32, heading: f32) -> [[f32; 2]; 4] {
+/// The compass's turning axis `d` from the camera's backward axis laid
+/// flat (its x and z): `(−x, 0, z)` scaled by the processor's approximate
+/// reciprocal square root of its squared length (summed `(x² + z²) + 0`),
+/// zero for a zero axis, as the engine's normalise does.
+pub fn compass_axis(back: [f32; 2]) -> [f32; 2] {
+    let (x, z) = (-back[0], back[1]);
+    let length = (x * x + z * z) + 0.0;
+    let scale = if length == 0.0 {
+        0.0
+    } else {
+        exa_physics::engine_math::reciprocal_sqrt(length)
+    };
+    [x * scale, z * scale]
+}
+
+/// The compass frame's origin (screen pixels, y down): [`compass_centre`]
+/// plus the axis times −3, as the instruction moves the frame's last row.
+pub fn compass_origin(unit: i32, view_height: i32, axis: [f32; 2]) -> [f32; 2] {
     let (cx, cy) = compass_centre(unit, view_height);
+    [cx + axis[0] * -3.0, cy + axis[1] * -3.0]
+}
+
+/// A point of the quad's local frame `(x, z)` on screen: the frame's first
+/// row is `d × up = (−d_z, 0, d_x)`, its third `d`, so the screen point is
+/// `x·(−d_z) + z·d_x + origin_x` across and `x·d_x + z·d_z + origin_y`
+/// down, summed as the engine's point transform does.
+pub fn compass_point(local: [f32; 2], axis: [f32; 2], origin: [f32; 2]) -> [f32; 2] {
+    let [x, z] = local;
+    let [dx, dz] = axis;
+    [
+        (x * -dz + 0.0) + (z * dx + origin[0]),
+        (x * dx + 0.0) + (z * dz + origin[1]),
+    ]
+}
+
+/// The compass quad's four corners (screen pixels, y down) at a GUI unit, a
+/// view height and the camera's flat backward axis `back` (x, z): the
+/// local corners `(−e,−e)`, `(e,−e)`, `(e,e)`, `(−e,e)` through the frame
+/// of [`compass_axis`] and [`compass_origin`].
+pub fn compass_corners(unit: i32, view_height: i32, back: [f32; 2]) -> [[f32; 2]; 4] {
+    let axis = compass_axis(back);
+    let origin = compass_origin(unit, view_height, axis);
     let e = compass_extent(unit);
-    let (sin, cos) = (-heading).sin_cos();
-    [[-e, -e], [e, -e], [e, e], [-e, e]]
-        .map(|[x, y]| [cx + x * cos - y * sin, cy + x * sin + y * cos])
+    [[-e, -e], [e, -e], [e, e], [-e, e]].map(|local| compass_point(local, axis, origin))
 }
 
 /// The compass's texture coordinate for a point in the quad's local frame
-/// (screen pixels from the compass's centre, before the turn): the corners
-/// `(−e,−e)`, `(e,−e)`, `(e,e)`, `(−e,e)` take `(1,1)`, `(0,1)`, `(0,0)`,
-/// `(1,0)`, so the picture is mirrored across the vertical axis.
+/// (before the frame turns and reflects it): the corners `(−e,−e)`,
+/// `(e,−e)`, `(e,e)`, `(−e,e)` take `(1,1)`, `(0,1)`, `(0,0)`, `(1,0)`.
+/// The frame's reflection undoes the mirror, so on screen u runs left to
+/// right and v bottom to top.
 pub fn compass_uv(local: [f32; 2], extent: f32) -> (f32, f32) {
     (
         0.5 - local[0] / (2.0 * extent),
@@ -120,24 +162,27 @@ pub fn compass_uv(local: [f32; 2], extent: f32) -> (f32, f32) {
     )
 }
 
-/// Paints the compass for a view and a heading at the interface fade. The
-/// canvas is the square around the compass; pixels whose centres fall in
-/// the turned square take the texture's colour and its coverage times the
-/// fade's opacity. No canvas is painted for a fully transparent fade.
+/// Paints the compass for a view and the camera's flat backward axis at
+/// the interface fade. The canvas is the box around the turned square;
+/// pixels whose centres fall in the square take the texture's colour and
+/// its coverage times the fade's opacity. No canvas is painted for a fully
+/// transparent fade. (The original rasterises the quad on the GPU; the
+/// canvas is Exarust's way to draw it.)
 pub fn paint_compass(
     texture: &CompassTexture,
     unit: i32,
     view_height: i32,
-    heading: f32,
+    back: [f32; 2],
     fade: f32,
 ) -> Canvas {
-    let (cx, cy) = compass_centre(unit, view_height);
+    let axis = compass_axis(back);
+    let [cx, cy] = compass_origin(unit, view_height, axis);
     let e = compass_extent(unit);
-    let (sin, cos) = heading.sin_cos();
+    let [dx, dz] = axis;
     let alpha = f32::from(compass_alpha(fade)) / 255.0;
     // The turned square's axis-aligned box, which is wider than the square
     // by up to √2 at a diagonal heading.
-    let half = e * (sin.abs() + cos.abs());
+    let half = e * (dx.abs() + dz.abs());
     let left = (cx - half).floor() as i32;
     let top = (cy - half).floor() as i32;
     let right = (cx + half).ceil() as i32;
@@ -153,10 +198,11 @@ pub fn paint_compass(
     }
     for y in top..bottom {
         for x in left..right {
-            let dx = x as f32 + 0.5 - cx;
-            let dy = y as f32 + 0.5 - cy;
-            // The inverse of the clockwise turn.
-            let local = [dx * cos - dy * sin, dx * sin + dy * cos];
+            let x_off = x as f32 + 0.5 - cx;
+            let y_off = y as f32 + 0.5 - cy;
+            // The frame's matrix [[−d_z, d_x], [d_x, d_z]] is symmetric
+            // and orthogonal: its own inverse.
+            let local = [x_off * -dz + y_off * dx, x_off * dx + y_off * dz];
             if local[0].abs() > e || local[1].abs() > e {
                 continue;
             }
@@ -168,41 +214,31 @@ pub fn paint_compass(
     canvas
 }
 
-/// The curtain's opacity node colour for a fall's share 0–1: black at the
-/// share, remapped so Bevy's linear blend darkens as the original's gamma
-/// blend does.
-pub fn curtain_colour(fall: f32) -> Color {
-    // A NaN share draws nothing, as the original's CVTSS2SI of a NaN gives
-    // an indefinite integer whose low byte is 0.
-    let alpha = if fall.is_nan() {
-        0.0
-    } else {
-        fall.clamp(0.0, 1.0)
-    };
-    Color::srgba(0.0, 0.0, 0.0, linear_opacity([0.0; 3], alpha))
-}
-
 /// The compass as the game sets it each frame.
-#[derive(Resource, Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Resource, Clone, Copy, Debug, PartialEq)]
 pub struct CompassView {
     /// The view has a player and the player carries a compass.
     pub visible: bool,
-    /// The camera's heading (rad).
-    pub heading: f32,
+    /// The camera's backward axis (the third row of its frame), its x and
+    /// z: what the compass turns by.
+    pub back: [f32; 2],
     /// The interface's fade, 0 shown and 1 hidden.
     pub fade: f32,
 }
 
-/// The level curtain as the game sets it each frame: the fall's share of
-/// 255 for the black page, 0 when no curtain is down.
-#[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct CurtainView(pub u8);
+impl Default for CompassView {
+    /// Hidden, with a camera looking down −z.
+    fn default() -> Self {
+        Self {
+            visible: false,
+            back: [0.0, 1.0],
+            fade: 0.0,
+        }
+    }
+}
 
 #[derive(Component)]
 struct CompassNode;
-
-#[derive(Component)]
-struct CurtainNode;
 
 #[derive(Resource)]
 struct CompassImage(Option<CompassTexture>);
@@ -210,7 +246,7 @@ struct CompassImage(Option<CompassTexture>);
 /// The compass image and what it was painted for.
 #[derive(Resource, Default)]
 struct CompassState {
-    painted: Option<(u32, u32, i32, u32, u8)>,
+    painted: Option<(u32, u32, i32, u32, u32, u8)>,
     image: Option<Handle<Image>>,
     origin: IVec2,
     size: UVec2,
@@ -218,16 +254,14 @@ struct CompassState {
 
 pub(crate) fn plugin(app: &mut App) {
     app.init_resource::<CompassView>()
-        .init_resource::<CurtainView>()
         .init_resource::<CompassState>()
         .add_systems(Startup, spawn)
-        .add_systems(Update, (draw_compass, draw_curtain).in_set(DrawHud));
+        .add_systems(Update, draw_compass.in_set(DrawHud));
 }
 
-/// The compass sits over the heartbeat border and under the bars; the
-/// curtain over both, still under the bars as the original's order has it.
-const COMPASS_Z: i32 = 891;
-const CURTAIN_Z: i32 = 892;
+/// The compass sits over the heartbeat border and the curtain and under the
+/// bars, as the original's order has it.
+const COMPASS_Z: i32 = 896;
 
 fn spawn(mut commands: Commands, game: Option<Res<Game>>) {
     let texture = game.as_ref().and_then(|g| {
@@ -248,21 +282,6 @@ fn spawn(mut commands: Commands, game: Option<Res<Game>>) {
         },
         ImageNode::default(),
         GlobalZIndex(COMPASS_Z),
-        Visibility::Hidden,
-    ));
-    commands.spawn((
-        Name::new("LevelCurtain"),
-        CurtainNode,
-        Node {
-            position_type: PositionType::Absolute,
-            left: px(0.0),
-            top: px(0.0),
-            width: percent(100.0),
-            height: percent(100.0),
-            ..default()
-        },
-        BackgroundColor(Color::NONE),
-        GlobalZIndex(CURTAIN_Z),
         Visibility::Hidden,
     ));
 }
@@ -302,7 +321,8 @@ fn draw_compass(
         size.x,
         size.y,
         gui.scale as i32,
-        compass.heading.to_bits(),
+        compass.back[0].to_bits(),
+        compass.back[1].to_bits(),
         alpha,
     );
     if state.painted != Some(key) {
@@ -310,7 +330,7 @@ fn draw_compass(
             texture,
             gui.scale as i32,
             size.y as i32,
-            compass.heading,
+            compass.back,
             compass.fade,
         );
         let mut image = Image::new(
@@ -351,52 +371,55 @@ fn draw_compass(
     }
 }
 
-fn draw_curtain(
-    curtain: Res<CurtainView>,
-    loading: Option<Res<LoadingStatus>>,
-    mut nodes: Query<(&mut BackgroundColor, &mut Visibility), With<CurtainNode>>,
-) {
-    let Ok((mut colour, mut visibility)) = nodes.single_mut() else {
-        return;
-    };
-    if curtain.0 == 0 || loading.is_some() {
-        if *visibility != Visibility::Hidden {
-            *visibility = Visibility::Hidden;
-        }
-        return;
-    }
-    colour.0 = curtain_colour(f32::from(curtain.0) / 255.0);
-    if *visibility != Visibility::Inherited {
-        *visibility = Visibility::Inherited;
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_compass_quad_sits_at_the_bottom_left_turned_by_the_heading() {
-        // Unit 4 in a 900-pixel view: centre (56, 844), half extent 48.
-        assert_eq!(
-            compass_corners(4, 900, 0.0),
-            [[8.0, 796.0], [104.0, 796.0], [104.0, 892.0], [8.0, 892.0]]
+    fn near(got: [f32; 2], want: [f32; 2]) {
+        assert!(
+            (got[0] - want[0]).abs() < 0.05 && (got[1] - want[1]).abs() < 0.05,
+            "{got:?} vs {want:?}"
         );
-        // A quarter turn clockwise (the heading's sign is negated): the
-        // up-left corner lands at the bottom-left of the centre.
-        let turned = compass_corners(4, 900, std::f32::consts::FRAC_PI_2);
-        let want = [[8.0, 892.0], [8.0, 796.0], [104.0, 796.0], [104.0, 892.0]];
-        for (got, want) in turned.iter().zip(want) {
-            assert!((got[0] - want[0]).abs() < 1e-3, "{got:?}");
-            assert!((got[1] - want[1]).abs() < 1e-3, "{got:?}");
-        }
     }
 
-    /// The corners' texture coordinates are mirrored across the vertical
-    /// axis: the left corners take u 1, the right ones u 0; the top v 1 and
-    /// the bottom v 0.
     #[test]
-    fn the_compass_texture_is_mirrored() {
+    fn the_compass_axis_is_the_flat_backward_axis_with_x_negated() {
+        // The processor's reciprocal root of 1 is a little under 1.
+        let k = exa_physics::engine_math::reciprocal_sqrt(1.0);
+        assert_eq!(compass_axis([0.0, 1.0]), [-0.0, k]);
+        assert_eq!(compass_axis([1.0, 0.0]), [-k, 0.0]);
+        // A pitched camera's shorter flat axis still comes out unit long.
+        let [x, z] = compass_axis([0.3, 0.4]);
+        assert!(((x * x + z * z).sqrt() - 1.0).abs() < 2e-3);
+        assert!(x < 0.0 && z > 0.0);
+        // A camera looking straight down: no axis, the square collapses.
+        assert_eq!(compass_axis([0.0, 0.0]), [0.0, 0.0]);
+    }
+
+    #[test]
+    fn the_compass_quad_sits_at_the_bottom_left_turned_by_the_camera() {
+        // Unit 4 in a 900-pixel view: centre (56, 844), half extent 48,
+        // the frame's origin three pixels against the axis.
+        let corners = compass_corners(4, 900, [0.0, 1.0]);
+        // Looking down −z: the local corner (−e, −e) (texture (1, 1)) is
+        // the screen's top right, so the picture is upright, unmirrored.
+        near(corners[0], [104.0, 793.0]);
+        near(corners[1], [8.0, 793.0]);
+        near(corners[2], [8.0, 889.0]);
+        near(corners[3], [104.0, 889.0]);
+        // A quarter turn of the camera's yaw (backward +x): the picture
+        // turns a quarter clockwise; the origin moves 3 px right.
+        let corners = compass_corners(4, 900, [1.0, 0.0]);
+        near(corners[0], [107.0, 892.0]);
+        near(corners[1], [107.0, 796.0]);
+        near(corners[2], [11.0, 796.0]);
+        near(corners[3], [11.0, 892.0]);
+    }
+
+    /// The corners' texture coordinates in the quad's own frame, which the
+    /// camera frame reflects on screen.
+    #[test]
+    fn the_compass_texture_coordinates_by_corner() {
         assert_eq!(compass_uv([-48.0, -48.0], 48.0), (1.0, 1.0));
         assert_eq!(compass_uv([48.0, -48.0], 48.0), (0.0, 1.0));
         assert_eq!(compass_uv([48.0, 48.0], 48.0), (0.0, 0.0));
@@ -442,59 +465,47 @@ mod tests {
 
     #[test]
     fn the_compass_is_painted_at_its_place_and_fade() {
-        // Unit 4: the compass centre is (56, 844), its square 96 wide.
-        let c = paint_compass(&texture(), 4, 900, 0.0, 0.0);
-        assert_eq!((c.x, c.y, c.width, c.height), (8, 796, 96, 96));
-        // The centre: the middle of the texture (half of each corner).
-        let mid = c.get(56, 844).unwrap();
-        assert!((mid[0] - 0.5).abs() < 0.02, "{mid:?}");
-        assert!((mid[1] - 0.5).abs() < 0.02, "{mid:?}");
+        // Unit 4: the frame's origin is (56, ≈841), the square 96 wide.
+        let c = paint_compass(&texture(), 4, 900, [0.0, 1.0], 0.0);
+        assert_eq!((c.x, c.y, c.width, c.height), (8, 793, 96, 96));
+        // Upright and unmirrored: blue top left, white top right, red
+        // bottom left, green bottom right.
+        let at = |x, y| c.get(x, y).unwrap();
+        assert_eq!(&at(9, 794)[..3], &[0.0, 0.0, 1.0]);
+        assert_eq!(&at(102, 794)[..3], &[1.0, 1.0, 1.0]);
+        assert_eq!(&at(9, 887)[..3], &[1.0, 0.0, 0.0]);
+        assert_eq!(&at(102, 887)[..3], &[0.0, 1.0, 0.0]);
+        // The fade's 192 of 255 over an opaque texture.
+        assert!((at(56, 841)[3] - 192.0 / 255.0).abs() < 0.01);
         // The fade 1 draws nothing.
-        let none = paint_compass(&texture(), 4, 900, 0.0, 1.0);
+        let none = paint_compass(&texture(), 4, 900, [0.0, 1.0], 1.0);
         assert!(none.pixels.iter().all(|p| p[3] == 0.0));
-        // Half faded: 96 of 255 over an opaque texture.
-        let half = paint_compass(&texture(), 4, 900, 0.0, 0.5);
-        let p = half.get(56, 844).unwrap();
-        assert!((p[3] - 96.0 / 255.0).abs() < 0.03, "{p:?}");
-        // Outside the square nothing is drawn.
-        assert_eq!(c.get(7, 844), None);
-        assert_eq!(c.get(56, 892), None);
+        // Half faded: 96 of 255.
+        let half = paint_compass(&texture(), 4, 900, [0.0, 1.0], 0.5);
+        assert!((half.get(56, 841).unwrap()[3] - 96.0 / 255.0).abs() < 0.01);
+        // Outside the canvas nothing is drawn.
+        assert_eq!(c.get(7, 841), None);
+        assert_eq!(c.get(56, 889), None);
     }
 
     #[test]
     fn the_compass_turn_moves_the_picture() {
-        // Turned a quarter clockwise, the top-left corner of the picture
-        // lands at the square's top-right: the texture's red is there.
-        let c = paint_compass(&texture(), 4, 900, std::f32::consts::FRAC_PI_2, 0.0);
-        let top_right = c.get(100, 800).unwrap();
-        // The turned picture's corners: red is the local up-left corner,
-        // now at the screen's up-right; sample near it.
-        assert!(top_right[0] > 0.5 || top_right[1] > 0.5, "{top_right:?}");
-        // The centre still averages the same four texels, at the fade's
-        // 192 of 255.
-        let mid = c.get(56, 844).unwrap();
-        assert!((mid[3] - 192.0 / 255.0).abs() < 0.02, "{mid:?}");
+        // A quarter turn of the yaw: the picture's top left (blue) is at
+        // the screen's top right, its top right (white) at the bottom right.
+        let c = paint_compass(&texture(), 4, 900, [1.0, 0.0], 0.0);
+        assert_eq!((c.x, c.y, c.width, c.height), (11, 796, 96, 96));
+        let at = |x, y| c.get(x, y).unwrap();
+        assert_eq!(&at(105, 797)[..3], &[0.0, 0.0, 1.0]);
+        assert_eq!(&at(105, 890)[..3], &[1.0, 1.0, 1.0]);
+        assert_eq!(&at(12, 797)[..3], &[1.0, 0.0, 0.0]);
         // At a diagonal heading the turned square reaches √2 times as far:
         // its corner is painted, not clipped.
-        let c = paint_compass(&texture(), 4, 900, std::f32::consts::FRAC_PI_4, 0.0);
-        assert_eq!((c.x, c.y, c.width, c.height), (-12, 776, 136, 136));
-        let corner = c.get(56, 777).unwrap();
+        let d = std::f32::consts::FRAC_1_SQRT_2;
+        let c = paint_compass(&texture(), 4, 900, [d, d], 0.0);
+        assert_eq!(c.width, 137);
+        let top = c.y;
+        let corner = c.get(c.x + 68, top + 1).unwrap();
         assert!(corner[3] > 0.0, "{corner:?}");
-    }
-
-    #[test]
-    fn the_curtain_darkens_by_its_share() {
-        assert_eq!(curtain_colour(0.0).alpha(), 0.0);
-        let full = curtain_colour(1.0);
-        assert_eq!(full.alpha(), 1.0);
-        let half = curtain_colour(0.5).alpha();
-        // Black at half opacity in gamma space: Bevy's linear blend needs
-        // a higher opacity (about 0.67) to darken the floor as much.
-        assert!((half - 0.67).abs() < 0.01, "{half}");
-        // A share past either end clamps.
-        assert_eq!(curtain_colour(-1.0).alpha(), 0.0);
-        assert_eq!(curtain_colour(2.0).alpha(), 1.0);
-        assert_eq!(curtain_colour(f32::NAN).alpha(), 0.0);
     }
 
     /// The installed compass texture is square and has painted texels

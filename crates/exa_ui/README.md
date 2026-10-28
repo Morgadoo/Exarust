@@ -14,8 +14,8 @@ in-game world cursor from `cursors.rfi` (`cursor`; the game crate picks
 its shape), the health and focus bars with their fade and the stamina gauge
 (`hud`, framed with `guitex.rfi`; `HudShowUntil` holds the bars shown, as
 a click on the player's own body does for 5000 ms), the compass's turned
-square from `compass.rfi` and the level curtain's black page (`hud_extra`;
-the game crate sets both), the low-health heartbeat's border
+square from `compass.rfi` (`hud_extra`; the game crate shows it while the
+player carries a compass and passes the camera's backward axis), the low-health heartbeat's border
 (`heartbeat`; the game crate starts it), the fade to black of the
 player's fall to death (`fade`, `DeathFade`: 3 s of game time, under the
 bars; the game crate starts it), and gamma-space compositing for images
