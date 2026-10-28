@@ -320,20 +320,22 @@ pub fn bake(variants: &[Variant], growths: &[Growth], place: impl Fn(Vec2) -> Ve
         let Some(v) = variants.get(g.variant) else {
             continue;
         };
-        // The original's instance matrix turns the shape by the stored
-        // angle less a quarter turn (its x row is `sin, 0, −cos`).
-        let (sin, cos) = sin_cos(g.angle - std::f32::consts::FRAC_PI_2);
+        // The original's instance matrix has the x row `sin, 0, −cos` and
+        // the z row `cos, 0, sin`: a rotation by the stored angle less a
+        // quarter turn, evaluated as those rows rather than as a subtraction
+        // before the engine's sine and cosine.
+        let (sin, cos) = sin_cos(g.angle);
         let at = place(g.at);
         let base = out.positions.len() as u32;
         out.positions.extend(
             v.positions.iter().map(|p| {
-                Vec3::new(cos * p.x + sin * p.z, p.y, -sin * p.x + cos * p.z) * g.scale + at
+                Vec3::new(sin * p.x - cos * p.z, p.y, cos * p.x + sin * p.z) * g.scale + at
             }),
         );
         out.normals.extend(
             v.normals
                 .iter()
-                .map(|n| Vec3::new(cos * n.x + sin * n.z, n.y, -sin * n.x + cos * n.z)),
+                .map(|n| Vec3::new(sin * n.x - cos * n.z, n.y, cos * n.x + sin * n.z)),
         );
         out.uvs.extend_from_slice(&v.uvs);
         out.indices.extend(v.indices.iter().map(|i| i + base));
@@ -489,6 +491,32 @@ mod tests {
         assert!(!plant_normal_mapping(3, true));
         assert!(plant_normal_mapping(4, true));
         assert!(!plant_normal_mapping(4, false));
+    }
+
+    #[test]
+    fn a_zero_angle_turns_the_shape_a_quarter_turn() {
+        // The instance matrix's x row is `sin, 0, −cos` and its z row
+        // `cos, 0, sin`; at angle 0 a +X vertex lands on +Z.
+        let mut variant = Variant {
+            positions: vec![Vec3::X],
+            normals: vec![Vec3::X],
+            uvs: vec![[0.0; 2]],
+            indices: vec![0],
+            kind: Kind::Large,
+            height: 0.0,
+        };
+        let growth = Growth {
+            variant: 0,
+            at: Vec2::ZERO,
+            scale: 1.0,
+            angle: 0.0,
+        };
+        let baked = bake(&[variant.clone()], &[growth], |_| Vec3::ZERO);
+        assert_eq!(baked.positions[0], Vec3::Z);
+        assert_eq!(baked.normals[0], Vec3::Z);
+        variant.kind = Kind::Grass;
+        let baked = bake(&[variant], &[growth], |_| Vec3::ZERO);
+        assert_eq!(baked.positions[0], Vec3::Z);
     }
 
     #[test]
