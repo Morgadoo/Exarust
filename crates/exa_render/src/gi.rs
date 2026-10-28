@@ -699,7 +699,7 @@ struct GiParams {
     /// The base ambient every open voxel gains per step, per channel.
     base: Vec4,
     /// The sun's fitted shadow matrix (world metres to clip space).
-    sun_matrix: [[f32; 4]; 4],
+    sun_matrix: Mat4,
     /// x: the shadow map may be sampled, y: the level has a sky.
     sun_flags: UVec4,
     /// The groups of sectors drawn this frame.
@@ -1682,7 +1682,7 @@ fn prepare_bind_group(
         origin: textures.origin.extend(0.0),
         extent: textures.extent.extend(0.0),
         base: textures.base_ambient.extend(0.0),
-        sun_matrix: sun_shadow.clip_from_world.to_cols_array_2d(),
+        sun_matrix: sun_shadow.clip_from_world,
         sun_flags: UVec4::new(
             shaded as u32,
             sun_sky.as_deref().is_some_and(|s| s.0) as u32,
@@ -1820,6 +1820,15 @@ fn propagate(
 
 #[cfg(test)]
 mod tests {
+    /// The GI parameters must be laid out as a uniform buffer allows: an
+    /// array of 4-byte values (a matrix written as `[[f32; 4]; 4]`) has a
+    /// stride of 4 and panics at the first upload.
+    #[test]
+    fn the_gi_parameters_are_a_valid_uniform() {
+        use bevy::render::render_resource::ShaderType;
+        GiParams::assert_uniform_compat();
+    }
+
     use super::*;
 
     const BLOCK: UVec3 = UVec3::new(256, 256, 64);
