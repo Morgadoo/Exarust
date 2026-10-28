@@ -410,7 +410,9 @@ pub fn creator(kind: EffectKind, input: &CreatorInput) -> SceneNodeSpec {
             ..SceneNodeSpec::default()
         },
         EffectKind::LongDoor => SceneNodeSpec {
-            position: input.point.unwrap_or(input.body),
+            // The long door's node is the vanish effect's, on the caster's
+            // body; the destination is stored on the power, not here.
+            position: input.body,
             ..SceneNodeSpec::default()
         },
         EffectKind::Constant => SceneNodeSpec {
@@ -420,7 +422,9 @@ pub fn creator(kind: EffectKind, input: &CreatorInput) -> SceneNodeSpec {
             ..material(MaterialKind::Shell, input.body, Quat::IDENTITY)
         },
         EffectKind::Summon => SceneNodeSpec {
-            position: input.point.unwrap_or(input.body),
+            // The summoning's creator adds no node; the class's vanish
+            // effect sits on the caster's body.
+            position: input.body,
             ..SceneNodeSpec::default()
         },
         EffectKind::Tendril => SceneNodeSpec {
