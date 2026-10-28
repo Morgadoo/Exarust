@@ -42,6 +42,7 @@ pub mod hear;
 pub mod idle;
 pub mod lookup;
 pub mod manager;
+pub mod motion;
 pub mod order;
 pub mod path;
 pub mod personality;

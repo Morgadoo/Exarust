@@ -41,6 +41,7 @@ use crate::combat;
 use crate::combatant::{self, Attitude, Combatant, Contact, Observed, Observer};
 use crate::contacts::{self, ContactRecord, Integration, PassReport};
 use crate::idle::Routine;
+use crate::motion::{self, Gaze, Turning};
 use crate::personality::{self, Personality};
 use crate::roles::{self, Partner, Relations, Roles};
 use crate::search::Search;
@@ -101,6 +102,10 @@ pub struct Npc {
     /// [guess: the original reads a generator on the behaviour; Exarust
     /// keeps its state here].
     pub roll: u32,
+    /// Its look and head offset.
+    pub gaze: Gaze,
+    /// Its heading, look and the sway it turns by out of combat.
+    pub turn: Turning,
 }
 
 impl Npc {
@@ -117,6 +122,8 @@ impl Npc {
             cursor: 0,
             morale: combat::MoraleDrift::default(),
             roll: 0,
+            gaze: Gaze::default(),
+            turn: Turning::default(),
         }
     }
 
@@ -601,11 +608,25 @@ pub fn ai_tick(
         &Fighter,
         &Condition,
         Option<&Name>,
+        Option<&mut Transform>,
+        Option<&crate::presence::Presence>,
     )>,
 ) {
     let now = ticks.as_ref().map_or(0, |t| t.millis() as u32);
     let player = players.iter().next().map(|(entity, _)| entity);
-    for (_entity, mut npc, mut combatant, duellist, mind, gt, fighter, condition, name) in &mut npcs
+    for (
+        _entity,
+        mut npc,
+        mut combatant,
+        mut duellist,
+        mind,
+        gt,
+        fighter,
+        condition,
+        name,
+        transform,
+        presence,
+    ) in &mut npcs
     {
         let talking = name.map_or("character", |n| n.as_str());
         let target = duellist.as_deref().map(|d| d.target).or(player);
@@ -679,7 +700,7 @@ pub fn ai_tick(
             now,
             &mut roll,
         );
-        npc.roll = roll;
+        let seen_or_heard = npc.pass.attention.is_some();
         // The original keeps one contact list: the combat state, the
         // perception's threat estimate and the target pass read the same
         // hostility and concern. Exarust keeps the integration's on the
@@ -702,7 +723,7 @@ pub fn ai_tick(
         // own target, so an entry against another character does not
         // start it [guess: the original turns its body to whichever
         // character the pass picked].
-        if let Some(mut duellist) = duellist {
+        if let Some(duellist) = duellist.as_deref_mut() {
             if let Some(level) = npc.pass.enter {
                 if !duellist.engaged && npc.pass.target == target_id {
                     duellist.engage();
@@ -717,6 +738,31 @@ pub fn ai_tick(
                 info!("{talking}: the target pass leaves combat");
             }
         }
+        // Out of combat the AI sways its look about its heading and the
+        // body turns to that heading. Exarust turns the model directly: the
+        // original lets the body's locomotion turn it, and the running game
+        // ticks no locomotion request for an NPC.
+        let waiting = duellist
+            .as_deref()
+            .is_none_or(|d| !d.engaged && !d.fighting());
+        if waiting
+            && presence.is_none_or(|p| p.moves())
+            && let Some(mut transform) = transform
+        {
+            let facing = motion::yaw_of(transform.rotation * Vec3::Z);
+            if seen_or_heard {
+                npc.turn.look = motion::yaw_of(target_cm - observer_cm);
+            }
+            motion::turn_towards(
+                &mut npc.turn,
+                facing,
+                fighter.stats.encumbrance,
+                now,
+                &mut roll,
+            );
+            transform.rotation = Quat::from_rotation_y(npc.turn.heading);
+        }
+        npc.roll = roll;
     }
 }
 
@@ -1166,6 +1212,42 @@ mod tests {
             ))
             .id();
         (app, player, npc)
+    }
+
+    /// An idle brain turns its model toward its look yaw: the out-of-combat
+    /// sway routine's heading, while it is not fighting.
+    #[test]
+    fn an_idle_brain_turns_its_model_to_its_look() {
+        let mut app = App::new();
+        app.add_systems(Update, ai_tick);
+        let player = app
+            .world_mut()
+            .spawn((
+                GlobalTransform::from_translation(Vec3::new(2.0, 0.0, 0.0)),
+                RatedPlayer,
+            ))
+            .id();
+        let mut brain = Npc::new([0.0; 4]);
+        brain.turn.look = std::f32::consts::FRAC_PI_2;
+        brain.turn.sway_at_ms = u32::MAX;
+        let npc = app
+            .world_mut()
+            .spawn((
+                brain,
+                Combatant::default(),
+                crate::Duellist::new(player),
+                GlobalTransform::IDENTITY,
+                Fighter::default(),
+                Condition::NORMAL,
+                Transform::default(),
+            ))
+            .id();
+        app.update();
+        let t = app.world().get::<Transform>(npc).unwrap();
+        assert!(
+            (t.rotation.to_euler(bevy::math::EulerRot::YXZ).0 - std::f32::consts::FRAC_PI_2).abs()
+                < 1e-5
+        );
     }
 
     /// A visible player fills the brain's contact with the perception's
