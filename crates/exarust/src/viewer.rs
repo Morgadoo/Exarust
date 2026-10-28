@@ -390,6 +390,12 @@ fn apply_level_change(
     commands.remove_resource::<PendingDressing>();
     commands.remove_resource::<PendingLighting>();
     commands.remove_resource::<exa_ui::LoadingStatus>();
+    // The old level's music, ambience and reverb end with its world. The new
+    // level sets its own when it is in.
+    commands.insert_resource(exa_audio::LevelMusic(String::new()));
+    commands.insert_resource(exa_audio::LevelAmbience(None));
+    commands.remove_resource::<exa_audio::LevelMusicStart>();
+    commands.remove_resource::<exa_audio::LevelReverb>();
     let Some(level) = level else {
         debug!("level change: the world was torn down");
         cache.clear();
