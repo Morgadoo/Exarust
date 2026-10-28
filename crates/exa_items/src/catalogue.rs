@@ -11,7 +11,7 @@ use bevy::prelude::*;
 use exa_assets::{Game, PackKind};
 use exa_formats::characters::ID_MASK;
 use exa_formats::containers::{CONTAINER, Container, LIGHT, USABLE, coins_of, section};
-use exa_formats::objdb::Burden;
+use exa_formats::objdb::{Burden, INHERIT};
 use exa_formats::objstrings::Library;
 use exa_formats::rdb::Database;
 use exa_formats::weapon_record::ShieldRecord;
@@ -23,6 +23,8 @@ const SHIELD: u32 = 0x8000;
 const MODEL: u32 = 0x0010_0000;
 /// The map record section that keeps a map out of the stats cards.
 const MAP: u32 = 0x8000_0b03;
+/// A weapon or shield section flag that keeps the item off its stats page.
+const WITHHELD: u32 = 0x0100_0000;
 /// The bulk byte from the model section's body: the section's `+0x24` less
 /// its eight-byte header (`exa_formats::objdb` reads the same one).
 const MODEL_BULK: usize = 0x1C;
@@ -68,9 +70,17 @@ pub struct ItemCatalogue {
 /// What one item's description card and weight rules read.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct CardFacts {
-    /// The display name from the model section's string id. Falls back to
-    /// the record's own 16-byte name when no string library is loaded.
+    /// The display name from the model section's string id. Without a
+    /// string library it is the record's own 16-byte name (an Exarust
+    /// fallback; the original always has its library).
     pub name: String,
+    /// Whether the name resolved: the card builder shows no card when the
+    /// string resolver fails (a model section whose name id is 0, or an
+    /// inherited id whose parent has none).
+    pub titled: bool,
+    /// The model's 16-byte name starts with `@` (a factory model): the
+    /// weapon card adds its generated sentence only then.
+    pub factory: bool,
     /// The description from the model section's string id.
     pub description: String,
     /// The model section's string id: a card is refused while it is zero.
@@ -80,8 +90,11 @@ pub struct CardFacts {
     /// The item's value in copper, expanded from the compact word (the
     /// model section's `+0x26`, body `+0x1e`).
     pub coins: u32,
-    /// The condition the title tint reads: a weapon's quality byte, an
-    /// apparel copy's appearance quality, else 0.
+    /// The condition the title tint reads, from the section of the page
+    /// the card shows: a weapon's quality byte, an apparel body's
+    /// appearance quality, else 0. The rank word ([`Self::skill`]) and the
+    /// socket flag ([`Self::sockets`]) come from the same section (the
+    /// shield page's rank is its section's `+0x08`).
     pub condition: u8,
     pub container: bool,
     pub map: bool,
@@ -132,6 +145,8 @@ impl ItemCatalogue {
                 },
             );
         }
+        let payloads: HashMap<u32, &[u8]> =
+            db.records.iter().map(|r| (r.id, db.payload(r))).collect();
         for r in &db.records {
             let payload = db.payload(r);
             let weapon = section(payload, WEAPON)
@@ -157,7 +172,7 @@ impl ItemCatalogue {
             if let Some(usable) = usable_of(payload) {
                 out.usable.insert(r.id, usable);
             }
-            let facts = card_facts(payload, strings);
+            let facts = card_facts(payload, strings, |id| payloads.get(&id).copied());
             if let Some(burden) = facts.burden {
                 out.burdens.insert(r.id, burden);
             }
@@ -263,9 +278,47 @@ fn byte(body: &[u8], at: usize) -> u8 {
     body.get(at).copied().unwrap_or(0)
 }
 
+/// The record's display string named at `field` of its model section, by
+/// the original's string resolver over the base tier: 0 resolves to
+/// nothing; the inherit id (`0x80000000` exactly) reads the same field of
+/// the record the payload's parent word names (`+0x1C`) and looks it up in
+/// the shared library, one level only; another id with bit 31 set is the
+/// tier's own library, which for the base tier is the shared one, at the
+/// low 30 bits; any other id is the shared library's as it is. Once an id
+/// is chosen the resolver succeeds even for an empty slot.
+fn resolve_text<'a>(
+    payload: &[u8],
+    field: usize,
+    strings: &Library,
+    find: impl Fn(u32) -> Option<&'a [u8]>,
+) -> Option<String> {
+    let field_of = |payload: &[u8]| section(payload, MODEL).map_or(0, |m| word(m, field));
+    let raw = field_of(payload);
+    let text = if raw == 0 {
+        return None;
+    } else if raw == INHERIT {
+        let parent = find(word(payload, 0x1C))?;
+        let raw = field_of(parent);
+        if raw == 0 {
+            return None;
+        }
+        strings.get(raw)
+    } else if raw & INHERIT == 0 {
+        strings.get(raw)
+    } else {
+        strings.get(raw & ID_MASK)
+    };
+    Some(text.unwrap_or_default())
+}
+
 /// The card facts of a record payload. The offsets are the section bodies'
 /// (the card builders read header-relative words, eight bytes earlier).
-fn card_facts(payload: &[u8], strings: Option<&Library>) -> CardFacts {
+/// `find` gives a base record's payload by id, for inherited strings.
+fn card_facts<'a>(
+    payload: &[u8],
+    strings: Option<&Library>,
+    find: impl Fn(u32) -> Option<&'a [u8]>,
+) -> CardFacts {
     let mut facts = CardFacts::default();
     let model = section(payload, MODEL);
     let body = section(payload, BODY);
@@ -277,30 +330,27 @@ fn card_facts(payload: &[u8], strings: Option<&Library>) -> CardFacts {
     if let Some(model) = model {
         facts.name_id = word(model, NAME_ID);
         facts.model_flags = word(model, 0x10);
+        facts.factory = model.first() == Some(&b'@');
         facts.coins = model.get(COINS..COINS + 2).map_or(0, |w| {
             coins_of(u16::from_le_bytes(w.try_into().expect("2 bytes")))
         });
-        let description_id = word(model, DESCRIPTION_ID);
         if let Some(strings) = strings {
-            // A string id with bit 31 set names the record's own tier
-            // library; the base catalogue's shared library holds the same
-            // slot numbers for the base tier.
-            let text = |id: u32| strings.get(id & ID_MASK).unwrap_or_default();
-            facts.name = text(facts.name_id);
-            facts.description = text(description_id);
-        }
-        if facts.name.is_empty() {
-            // The record's own 16-byte name, as the item parser reads it.
+            let name = resolve_text(payload, NAME_ID, strings, &find);
+            facts.titled = name.is_some();
+            facts.name = name.unwrap_or_default();
+            facts.description =
+                resolve_text(payload, DESCRIPTION_ID, strings, &find).unwrap_or_default();
+        } else {
+            // No library loaded: the record's own 16-byte name, as the item
+            // parser reads it. [Exarust fallback]
             let raw = &model[..model.len().min(16)];
             let end = raw.iter().position(|&c| c == 0).unwrap_or(raw.len());
             facts.name = raw[..end].iter().map(|&c| c as char).collect();
+            facts.titled = true;
         }
     }
     if let Some(body) = body {
         facts.armour = byte(body, 0x1A8);
-        facts.condition = byte(body, 0x1B0);
-        facts.skill = byte(body, 0x1AB);
-        facts.sockets = byte(body, 0x218) & 0x80 != 0;
         facts.burden = Some(Burden::parse(body));
         if facts.armour != 0 {
             facts.apparel = Some(ApparelStats {
@@ -314,9 +364,6 @@ fn card_facts(payload: &[u8], strings: Option<&Library>) -> CardFacts {
         }
     }
     if let Some(weapon) = weapon_section {
-        facts.condition = byte(weapon, 0x0C);
-        facts.skill = byte(weapon, 0x42);
-        facts.sockets = byte(weapon, 0x48) & 0x80 != 0;
         facts.material = byte(weapon, 0x3A) != 0;
         facts.weapon = Some(WeaponStats {
             flags: word(weapon, 0),
@@ -337,6 +384,21 @@ fn card_facts(payload: &[u8], strings: Option<&Library>) -> CardFacts {
             encumbrance: byte(shield, 6),
         });
         facts.shield_record = ShieldRecord::from_section(shield);
+    }
+    // The tint, rank and socket bytes are read by the builder of the page
+    // the card shows, in the card builder's order: a weapon section that is
+    // not withheld, else an apparel body of armour type 1 to 6, else a
+    // shield section that is not withheld.
+    if let Some(weapon) = weapon_section.filter(|w| word(w, 0) & WITHHELD == 0) {
+        facts.condition = byte(weapon, 0x0C);
+        facts.skill = byte(weapon, 0x42);
+        facts.sockets = byte(weapon, 0x48) & 0x80 != 0;
+    } else if let Some(body) = body.filter(|b| (1..7).contains(&byte(b, 0x1A8))) {
+        facts.condition = byte(body, 0x1B0);
+        facts.skill = byte(body, 0x1AB);
+        facts.sockets = byte(body, 0x218) & 0x80 != 0;
+    } else if let Some(shield) = shield_section.filter(|s| word(s, 0) & WITHHELD == 0) {
+        facts.skill = byte(shield, 0x08);
     }
     facts
 }
@@ -572,6 +634,99 @@ mod tests {
         assert_eq!((w.flags, w.weight, w.balance), (0x10, 40, 60));
         assert_eq!((w.grip, w.thrust), (130, 70));
         assert_eq!((w.slash, w.crush, w.pierce), (80, 20, 30));
+    }
+
+    /// An object database of `(id, payload)` records.
+    fn database_bytes(records: &[(u32, Vec<u8>)]) -> Vec<u8> {
+        let mut file = Vec::new();
+        file.extend_from_slice(&exa_formats::objdb::MAGIC.to_le_bytes());
+        file.extend_from_slice(&(records.len() as u32 * 16).to_le_bytes());
+        let mut offset = 0u32;
+        for (id, payload) in records {
+            file.extend_from_slice(&id.to_le_bytes());
+            file.extend_from_slice(&0u32.to_le_bytes());
+            file.extend_from_slice(&offset.to_le_bytes());
+            file.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+            offset += payload.len() as u32;
+        }
+        for (_, payload) in records {
+            file.extend_from_slice(payload);
+        }
+        file
+    }
+
+    /// A record's header section (the first, so its parent word is the
+    /// payload's `+0x1C`) naming `parent`.
+    fn header(parent: u32) -> Vec<u8> {
+        let mut body = vec![0u8; 0x18];
+        body[0x14..0x18].copy_from_slice(&parent.to_le_bytes());
+        section_bytes(0x1000_0000, &body)
+    }
+
+    /// A model section body with a name, flags and the two string ids.
+    fn model_body(name: &[u8], name_id: u32, description_id: u32) -> Vec<u8> {
+        let mut model = vec![0u8; 0x20];
+        model[..name.len()].copy_from_slice(name);
+        model[0x14..0x18].copy_from_slice(&name_id.to_le_bytes());
+        model[0x18..0x1c].copy_from_slice(&description_id.to_le_bytes());
+        model
+    }
+
+    #[test]
+    fn the_card_strings_follow_the_resolver_and_the_page_picks_its_bytes() {
+        let mut library = Library::default();
+        let name = library.alloc();
+        assert!(library.set(name, b"Mail Coat"));
+        let description = library.alloc();
+        assert!(library.set(description, b"Rings of iron."));
+
+        // Record 1 names its strings; record 2 inherits both through its
+        // parent word (payload +0x1C), and record 3 inherits from a
+        // parent that is missing, so its name does not resolve.
+        let mut first = header(0);
+        first.extend(section_bytes(
+            MODEL,
+            &model_body(b"Coat", name, description),
+        ));
+        let mut second = header(1);
+        second.extend(section_bytes(
+            MODEL,
+            &model_body(b"@coat", INHERIT, INHERIT),
+        ));
+        // Record 2 also has a withheld weapon section and an apparel body
+        // of armour type 3: the apparel page's bytes are read.
+        let mut weapon = vec![0u8; 0x50];
+        weapon[0..4].copy_from_slice(&WITHHELD.to_le_bytes());
+        weapon[0x0c] = 9;
+        weapon[0x42] = 9;
+        weapon[0x48] = 0x80;
+        second.extend(section_bytes(WEAPON, &weapon));
+        let mut body = vec![0u8; 0x220];
+        body[0x1a8] = 3;
+        body[0x1b0] = 77;
+        body[0x1ab] = 0x21;
+        second.extend(section_bytes(BODY, &body));
+        let mut third = header(99);
+        third.extend(section_bytes(MODEL, &model_body(b"Odd", INHERIT, 0)));
+
+        let file = database_bytes(&[(1, first), (2, second), (3, third)]);
+        let db = Database::parse(&file).unwrap();
+        let cat = ItemCatalogue::of_database_with_strings(&db, Some(&library));
+        let facts = cat.card_facts(2).unwrap();
+        assert_eq!(facts.name, "Mail Coat");
+        assert_eq!(facts.description, "Rings of iron.");
+        assert!(facts.titled && facts.factory);
+        assert_eq!((facts.condition, facts.skill), (77, 0x21));
+        assert!(!facts.sockets);
+        let facts = cat.card_facts(3).unwrap();
+        assert!(!facts.titled);
+        assert_eq!(facts.description, "");
+        assert!(!cat.card_facts(1).unwrap().factory);
+        // Without a library the record's own name stands in.
+        let cat = ItemCatalogue::of_database(&db);
+        let facts = cat.card_facts(3).unwrap();
+        assert!(facts.titled);
+        assert_eq!(facts.name, "Odd");
     }
 
     #[test]
