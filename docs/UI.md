@@ -590,8 +590,9 @@ character preview, and the windows' own close controls.
 
 ## The running arena match
 
-A board pick hands the career and the match's setup to a restarted process
-(`arena_handoff`) that loads the drawn arena. `arena_live` stands the round's
+A board pick keeps the career in its resource and the match's setup in
+process and changes the level to the drawn arena in place
+(`exa_world::level_lifecycle`). `arena_live` stands the round's
 bodies: the play start's player, the company's other entrants, and each
 opponent built from its own generated record — the random NPC pass and the
 arena outfit tables from the object database — through the merged character
@@ -610,8 +611,8 @@ manager goes to the main menu, a next round stands the winner and the
 reserve or a fresh opponent after 13 ms, a tournament's next round resolves
 its bracket first (the won group keeps team one, every other group draws a
 winner with the arena's roll) and stands every surviving side on the ring,
-and the match's end settles the result and hands the career back to the
-hub's process with the 300 cm, half turn, `0x100` placement. Escape opens the
+and the match's end settles the result into the running career and changes
+the level back to the hub with the 300 cm, half turn, `0x100` placement. Escape opens the
 arena pause page (`CONTINUE`, `SETTINGS`, `FORFEIT`, or `EXIT` once the
 session was won or ended); its FORFEIT settles the match as forfeited and
 returns to the hub, and a dead manager's forfeit is ignored. The score

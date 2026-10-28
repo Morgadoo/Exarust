@@ -35,8 +35,8 @@ use crate::arena;
 use crate::arena_match::{ArenaMatch, CompanyRecords, Finish, MatchState, any_entry};
 use crate::arena_outfit::Lcg;
 use crate::arena_session::{
-    BracketState, EndAction, ReturnFighter, RoundFight, Screen,
-    bracket_for_template, bracket_next_fight, regenerate_round, settle_return,
+    BracketState, EndAction, ReturnFighter, RoundFight, Screen, bracket_for_template,
+    bracket_next_fight, regenerate_round, settle_return,
 };
 use crate::arena_spawn::{MANAGER_ROLE, generic_plan, hire_plan};
 use crate::match_layout::{

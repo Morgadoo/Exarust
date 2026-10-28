@@ -593,7 +593,7 @@ and exposes the Continue and forfeit branches (`end_action`, `forfeit`);
 on screen 3, `EXIT;` on screen 2), takes Enter and pointer input from it,
 resolves a tournament's bracket on Continue, opens the arena pause page on
 Escape, and settles its FORFEIT row as a return to the hub. The event weapon
-row's variants travel in the hand-off so later bracket fights draw their
+row's variants travel with the in-process launch so later bracket fights draw their
 weapons from the same row. `arena_hub_live` runs
 `arena_hub`'s rules from the game. When a play level
 named `arenahub` is in (or an arena session enters it), it calls `enter_hub`
