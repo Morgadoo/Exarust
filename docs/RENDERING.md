@@ -1951,7 +1951,22 @@ undrawn whatever the player should not see (`exa_world::rooms`,
   compares the light with the centre). Both index cells as row × width +
   column checked only against the cell count. Exarust reproduces both
   (`Rooms::light_reach`, `Rooms::light_spill`); every door still counts as
-  open because placed doors are not mechanisms yet.
+  open because placed doors are not mechanisms yet. The control-side query
+  (`Rooms::door_reach`) is looser: it reads both cells without the room
+  checks, so the same room, or two points both in no room, always reach;
+  otherwise the first link of the first point's room into the second
+  point's cell decides through its door's own flag (another flag than the
+  light query's), with no distance test. The room manager's active-room
+  flag (`RoomTracker::is_active`) is the low bit of a room's working state:
+  set once the room has faded in (and while it is wanted again mid
+  fade-out), clear while it fades in or out.
+- **Lights in rooms.** The original gives each room's sector its own list of
+  light aliases (the lights of its cells). After the rooms exist it visits
+  them in order, and a room that owns at least one light copies its whole
+  list (received lights included) into each room its portals lead into,
+  skipping lights already there (`RoomLights`). Exarust models those
+  lists, but its renderer keeps lights global, as the drawing rules ask, so
+  nothing reads them yet.
 - **Shells.** Every placed piece's `[…` children (boxes from the floor to
   2.7 m behind the facade: most reach the cell edge, as `gews_swa01`'s
   fill the 55 cm behind its 20 cm facades, but the plain walls and inner
@@ -1962,7 +1977,16 @@ undrawn whatever the player should not see (`exa_world::rooms`,
   colour writes off, so what lies under them keeps the black clear colour.
   Exarust draws them as opaque, unlit pure black: the same image over a
   black clear, without depending on draw order. They cast no shadows,
-  receive no light, fill no GI and have no collision.
+  receive no light, fill no GI and have no collision. [missing] The original
+  also draws a light's own room's lid into that light's omni shadow faces,
+  so a ceiling blocks the light; Exarust's lids cast nothing, so point-light
+  shadows do not include ceilings. The manager's ray queries against the active rooms' occluders or lids are
+  modelled (`grid::ray_blocks`, `grid::segment_blocks`): the active rooms in
+  order, a room with no shell answering no at once, and each shell through
+  the engine's one-sided mesh ray test (front faces only, determinant at
+  least the f32 epsilon, barycentrics checked before the division,
+  0 < t < limit). Their callers, picking under the cursor and a segment
+  test, are not ported.
 - **What each state draws.** Hidden: nothing of the room (its meshes are
   hidden; its lights, GI emitters, shadow links and colliders stay).
   Adjacent: the room with its occluder and its lid, so from above it is a

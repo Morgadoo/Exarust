@@ -13,6 +13,7 @@ pub mod fire;
 pub mod flame;
 pub mod gi_volume;
 pub mod grid;
+pub mod grid_sets;
 pub mod light_flood;
 pub mod light_source;
 pub mod mechanisms;

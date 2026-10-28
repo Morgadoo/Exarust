@@ -19,6 +19,7 @@ use bevy::prelude::*;
 use exa_assets::{Model, ModelLoader, PackKind, transform_from_rows};
 use exa_formats::level::LevelGrid;
 
+use crate::grid_sets::{SetCatalog, SetKind};
 use crate::room_view::{InRoom, RoomShell, ShellKind};
 use crate::rooms::{CELL_OPEN, CELL_TERRAIN, Rooms, rotate_edge_word};
 
@@ -39,7 +40,7 @@ const SPECIAL_MASKS: [u32; 10] = [
     0x0077_0FFF,
 ];
 const SPECIAL_HAS_FLOOR: [bool; 10] = [
-    false, false, false, false, true, true, true, true, false, false,
+    false, false, false, false, false, true, true, true, true, false,
 ];
 
 const CELL_CM: f32 = 600.0;
@@ -353,8 +354,13 @@ pub struct GridBuild {
     /// Per room, the occluder and lid strips gathered so far.
     shells: Vec<ShellStrips>,
     shells_spawned: bool,
-    walls: Vec<Option<WallSet>>,
-    floors: Vec<Option<FloorSet>>,
+    walls: Vec<Option<Arc<WallSet>>>,
+    floors: Vec<Option<Arc<FloorSet>>>,
+    /// The level's set names and their load state, and the sets already
+    /// indexed, so a name two cells share is indexed once.
+    catalog: SetCatalog,
+    walls_by_set: HashMap<usize, Option<Arc<WallSet>>>,
+    floors_by_set: HashMap<usize, Option<Arc<FloorSet>>>,
     /// The next row of cells (starting inside the border).
     row: i64,
     stats: GridStats,
@@ -374,6 +380,9 @@ impl GridBuild {
             shells_spawned: false,
             walls: Vec::new(),
             floors: Vec::new(),
+            catalog: SetCatalog::new(),
+            walls_by_set: HashMap::new(),
+            floors_by_set: HashMap::new(),
             row: 1,
             stats: GridStats::default(),
             uvs: HashMap::new(),
@@ -423,24 +432,44 @@ impl GridBuild {
             )
         };
         while self.walls.len() < grid.wall_sets.len() {
-            let Some(model) = load(loader, &grid.wall_sets[self.walls.len()], "GEWS_UWA01") else {
+            let index = self.walls.len();
+            let name = grid.wall_sets[index].clone();
+            let set = self.catalog.register_wall(&name);
+            if let Some(cached) = self.walls_by_set.get(&set) {
+                self.walls.push(cached.clone());
+                continue;
+            }
+            let Some(model) = load(loader, &name, "GEWS_UWA01") else {
                 return false;
             };
-            self.walls.push(model.map(index_wall_set));
+            let indexed = model.map(|m| Arc::new(index_wall_set(m)));
+            self.catalog.mark_loaded(SetKind::Wall, set);
+            self.walls_by_set.insert(set, indexed.clone());
+            self.walls.push(indexed);
             if started.elapsed() >= budget {
                 return false;
             }
         }
         while self.floors.len() < grid.floor_sets.len() {
-            if is_terrain_floor_set(&grid.floor_sets[self.floors.len()]) {
+            let index = self.floors.len();
+            let name = grid.floor_sets[index].clone();
+            let set = self.catalog.register_floor(&name);
+            if is_terrain_floor_set(&name) {
+                self.catalog.mark_terrain(set);
                 self.floors.push(None);
                 continue;
             }
-            let Some(model) = load(loader, &grid.floor_sets[self.floors.len()], "GEFS_UWA01")
-            else {
+            if let Some(cached) = self.floors_by_set.get(&set) {
+                self.floors.push(cached.clone());
+                continue;
+            }
+            let Some(model) = load(loader, &name, "GEFS_UWA01") else {
                 return false;
             };
-            self.floors.push(model.map(index_floor_set));
+            let indexed = model.map(|m| Arc::new(index_floor_set(m)));
+            self.catalog.mark_loaded(SetKind::Floor, set);
+            self.floors_by_set.insert(set, indexed.clone());
+            self.floors.push(indexed);
             if started.elapsed() >= budget {
                 return false;
             }
@@ -559,6 +588,117 @@ impl Strip {
         mesh.insert_indices(bevy::mesh::Indices::U32(self.indices.clone()));
         Some(mesh)
     }
+
+    /// Whether a ray from `origin` along `dir` (world space) meets one of
+    /// the strip's triangles at a distance `t` (in lengths of `dir`) with
+    /// `0 < t < max_t`, as the engine's mesh ray test answers it. The test
+    /// is one-sided: only a triangle whose front (counter-clockwise, its
+    /// normal `(p1 − p0) × (p2 − p0)` against `dir`) faces the ray counts,
+    /// and a determinant below [`RAY_EPSILON`] is a miss.
+    pub fn ray_hits(&self, origin: Vec3, dir: Vec3, max_t: f32) -> bool {
+        self.indices.as_chunks::<3>().0.iter().any(|tri| {
+            let (Some(&p0), Some(&p1), Some(&p2)) = (
+                self.positions.get(tri[0] as usize),
+                self.positions.get(tri[1] as usize),
+                self.positions.get(tri[2] as usize),
+            ) else {
+                return false;
+            };
+            ray_triangle(
+                origin,
+                dir,
+                max_t,
+                [
+                    Vec3::from_array(p0),
+                    Vec3::from_array(p1),
+                    Vec3::from_array(p2),
+                ],
+            )
+        })
+    }
+}
+
+/// The room manager's ray query: whether a ray from `origin` along `dir`
+/// (world space) meets, before `max_t` lengths of `dir`, the occluder
+/// (`lid` false) or the lid (`lid` true) of one of the rooms that are
+/// active (`active`, the tracker's [`crate::rooms::RoomTracker::is_active`]
+/// in the game). Rooms are visited in
+/// order; an active room with no such shell ends the query with "no", as
+/// the original returns at once on a missing shell. Its callers pick under
+/// the cursor and test a segment ([`segment_blocks`]); Exarust has neither
+/// yet.
+pub fn ray_blocks(
+    shells: &[ShellStrips],
+    active: impl Fn(u16) -> bool,
+    origin: Vec3,
+    dir: Vec3,
+    max_t: f32,
+    lid: bool,
+) -> bool {
+    for (room, shell) in shells.iter().enumerate() {
+        if !active(room as u16) {
+            continue;
+        }
+        let strip = if lid { &shell.lid } else { &shell.occluder };
+        if strip.positions.is_empty() {
+            return false;
+        }
+        if strip.ray_hits(origin, dir, max_t) {
+            return true;
+        }
+    }
+    false
+}
+
+/// The ray query for the segment from `a` to `b`, as the original's segment
+/// caller asks it: the direction is the segment scaled by the reciprocal of
+/// its length, the limit that length.
+pub fn segment_blocks(
+    shells: &[ShellStrips],
+    active: impl Fn(u16) -> bool,
+    a: Vec3,
+    b: Vec3,
+    lid: bool,
+) -> bool {
+    let d = b - a;
+    let length = d.length();
+    ray_blocks(shells, active, a, d * (1.0 / length), length, lid)
+}
+
+/// The smallest determinant the engine's mesh ray test accepts (the single
+/// precision machine epsilon, as stored: `0x33FF_FFD7`).
+const RAY_EPSILON: f32 = f32::from_bits(0x33ff_ffd7);
+
+/// Three-component dot product summed as the engine does: `(x + y) + z`.
+fn dot3(a: Vec3, b: Vec3) -> f32 {
+    (a.x * b.x + a.y * b.y) + a.z * b.z
+}
+
+/// The engine's one-sided ray–triangle test (Möller–Trumbore with the
+/// barycentric bounds checked before the division): `det ≥ ε`,
+/// `0 ≤ u ≤ det`, `v ≥ 0`, `u + v ≤ det`, and the distance
+/// `t = (e2 · q) / det` with `0 < t < max_t`. A NaN passes the bounds before
+/// the division, as the unordered compares do, and fails on `t`.
+fn ray_triangle(origin: Vec3, dir: Vec3, max_t: f32, [p0, p1, p2]: [Vec3; 3]) -> bool {
+    let e1 = p1 - p0;
+    let e2 = p2 - p0;
+    let h = dir.cross(e2);
+    let det = dot3(h, e1);
+    if det < RAY_EPSILON {
+        return false;
+    }
+    let s = origin - p0;
+    let u = dot3(s, h);
+    if u < 0.0 || det < u {
+        return false;
+    }
+    let q = s.cross(e1);
+    let v = dot3(dir, q);
+    if v < 0.0 || det < u + v {
+        return false;
+    }
+    let t = dot3(e2, q) / det;
+    t > 0.0 && t < max_t
 }
 
 /// Spawns each room's occluder, lid and lid overlay (hidden until the room
@@ -712,6 +852,47 @@ fn nth_special(
     chosen
 }
 
+/// A cell's special tile, as plane C encodes it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SpecialTile {
+    /// The tile type, 1-based (bits 16–20).
+    kind: u32,
+    /// Its rotation, quarter turns (bits 21–22).
+    rotation: u32,
+    /// Which matching trim piece to place (bits 23–27).
+    nth: u32,
+    /// The mask of regular edges and corners the tile suppresses, already
+    /// turned by `rotation`.
+    mask: u32,
+    /// Whether the cell keeps its centre floor.
+    floor: bool,
+}
+
+/// Reads a cell's special tile from plane C. `None` when the cell is not a
+/// special tile (type 0). A type past the ten-entry table keeps no mask and
+/// its floor; no shipped level uses one, and the original would read past
+/// the table.
+fn special_tile(c: u32) -> Option<SpecialTile> {
+    let kind = (c >> 16) & 0x1F;
+    if kind == 0 {
+        return None;
+    }
+    let rotation = (c >> 21) & 3;
+    let index = kind as usize - 1;
+    let (mask, floor) = match (SPECIAL_MASKS.get(index), SPECIAL_HAS_FLOOR.get(index)) {
+        // The start-up pass turns all ten entries into their rotations.
+        (Some(&mask), Some(&floor)) => (rotate_edge_word(mask, rotation as u8), floor),
+        _ => (0, true),
+    };
+    Some(SpecialTile {
+        kind,
+        rotation,
+        nth: (c >> 23) & 0x1F,
+        mask,
+        floor,
+    })
+}
+
 /// Builds the cell at (`x`, `y`): its pieces, and its room's shell strips.
 /// An open cell without a wall set but with the terrain flag is a ceiling
 /// cap: it adds ceiling strips from the first wall set to its room's lid
@@ -721,8 +902,8 @@ fn spawn_cell(
     grid: &LevelGrid,
     x: i64,
     y: i64,
-    walls: &[Option<WallSet>],
-    floors: &[Option<FloorSet>],
+    walls: &[Option<Arc<WallSet>>],
+    floors: &[Option<Arc<FloorSet>>],
 ) {
     let w = grid.width as i64;
     let h = grid.height as i64;
@@ -762,20 +943,22 @@ fn spawn_cell(
         floor_set: fs.map(|f| f.model.clone()),
     };
 
-    let special = (c >> 16) & 0x1F;
+    let special = special_tile(c);
     let mut mask = 0;
     let mut floor_middle = true;
-    if special != 0 && (special as usize) <= SPECIAL_MASKS.len() {
-        let rotation = (c >> 21) & 3;
-        let nth = (c >> 23) & 0x1F;
-        mask = rotate_edge_word(SPECIAL_MASKS[special as usize - 1], rotation as u8);
-        floor_middle = SPECIAL_HAS_FLOOR[special as usize - 1];
+    if let Some(special) = special {
+        mask = special.mask;
+        floor_middle = special.floor;
         // The cell asks for the nth piece of its type. Past the last one the
         // original places the last again; with none of the type, the first.
-        if let Some(i) = nth_special(&ws.trims, special, nth) {
+        if let Some(i) = nth_special(&ws.trims, special.kind, special.nth) {
             let (p, alt, _) = &ws.trims[i];
-            let node = if rotation >= 2 { alt.or(*p) } else { *p };
-            placer.place(&ws.model, node, rotation);
+            let node = if special.rotation >= 2 {
+                alt.or(*p)
+            } else {
+                *p
+            };
+            placer.place(&ws.model, node, special.rotation);
         }
     }
     if floor_middle {
@@ -1211,7 +1394,7 @@ mod tests {
     /// `a` and `c`: its shell strips and the meshes spawned.
     fn build_cell(a: u32, c: u32) -> (ShellStrips, usize, usize) {
         let mut meshes = Assets::<Mesh>::default();
-        let walls = vec![Some(wall_set(&mut meshes))];
+        let walls = vec![Some(Arc::new(wall_set(&mut meshes)))];
         let mut grid = LevelGrid {
             wall_sets: vec!["GEWS_TEST".into()],
             floor_sets: Vec::new(),
@@ -1351,6 +1534,117 @@ mod tests {
         // `+RBA02` under the wall is the wall's strip, not the back slot.
         assert_eq!(set.ceiling.primary(SLOT_BACK), Some(4));
         assert_eq!(set.ceiling.primary(SLOT_MIDDLE), Some(3));
+    }
+
+    #[test]
+    fn special_types_six_to_nine_keep_their_centre_floor() {
+        // The shipped table: types 1–5 and 10 suppress the centre floor,
+        // types 6–9 keep it.
+        for kind in 1..=10u32 {
+            let tile = special_tile(kind << 16).unwrap();
+            assert_eq!(tile.kind, kind);
+            assert_eq!(tile.floor, (6..=9).contains(&kind), "type {kind}");
+        }
+        // The masks of the first, sixth and tenth entries, unrotated.
+        assert_eq!(special_tile(1 << 16).unwrap().mask, 0x7777_FFFF);
+        assert_eq!(special_tile(6 << 16).unwrap().mask, 0x7007_000F);
+        assert_eq!(special_tile(10 << 16).unwrap().mask, 0x0077_0FFF);
+        // Rotation turns the mask and the piece choice reads its own bits.
+        let turned = special_tile((2 << 16) | (1 << 21) | (3 << 23)).unwrap();
+        assert_eq!(turned.mask, 0x0707_FFFF);
+        assert_eq!((turned.rotation, turned.nth), (1, 3));
+        // No special tile; a type past the table keeps no mask and a floor.
+        assert_eq!(special_tile(0), None);
+        let unknown = special_tile(12 << 16).unwrap();
+        assert_eq!((unknown.mask, unknown.floor), (0, true));
+        // The start-up pass turns all ten types, the tenth included.
+        assert_eq!(
+            special_tile((10 << 16) | (1 << 21)).unwrap().mask,
+            rotate_edge_word(0x0077_0FFF, 1)
+        );
+        assert_ne!(special_tile((10 << 16) | (1 << 21)).unwrap().mask, 0);
+    }
+
+    #[test]
+    fn a_ray_meets_only_the_front_of_a_triangle() {
+        // A quad at y = 0 whose triangles face up: (p1 − p0) × (p2 − p0) is
+        // (0, 0, 2) × (2, 0, 2) = (0, 4, 0) for the first, +Y for both.
+        let strip = Strip {
+            positions: vec![
+                [-1.0, 0.0, -1.0],
+                [-1.0, 0.0, 1.0],
+                [1.0, 0.0, 1.0],
+                [1.0, 0.0, -1.0],
+            ],
+            indices: vec![0, 1, 2, 0, 2, 3],
+        };
+        let down = Vec3::NEG_Y;
+        let above = |x: f32, z: f32| Vec3::new(x, 1.0, z);
+        // Straight down from 1 m: t = 1, inside a limit of 2.
+        assert!(strip.ray_hits(above(0.0, 0.0), down, 2.0));
+        // Each half is covered: (0.5, 0.9) lies in the first triangle,
+        // (0.9, −0.9) in the second.
+        assert!(strip.ray_hits(above(0.5, 0.9), down, 2.0));
+        assert!(strip.ray_hits(above(0.9, -0.9), down, 2.0));
+        // The limit is strict: a ray that ends on the quad misses it, and
+        // so does one that starts on it (t = 0).
+        assert!(!strip.ray_hits(above(0.0, 0.0), down, 1.0));
+        assert!(strip.ray_hits(above(0.0, 0.0), down, 1.0001));
+        assert!(!strip.ray_hits(Vec3::ZERO, down, 2.0));
+        // Beside the quad, and parallel to it.
+        assert!(!strip.ray_hits(above(1.5, 0.0), down, 2.0));
+        assert!(!strip.ray_hits(Vec3::new(-2.0, 0.0, 0.0), Vec3::X, 4.0));
+        // From below the quad faces away: one-sided, so no hit.
+        assert!(!strip.ray_hits(Vec3::new(0.0, -1.0, 0.0), Vec3::Y, 2.0));
+        // A direction twice as long halves t.
+        assert!(strip.ray_hits(above(0.0, 0.0), down * 2.0, 0.6));
+        assert!(!strip.ray_hits(above(0.0, 0.0), down * 2.0, 0.5));
+    }
+
+    #[test]
+    fn only_active_rooms_block_a_segment_and_a_missing_shell_ends_the_walk() {
+        fn quad_at(x: f32) -> Strip {
+            Strip {
+                positions: vec![
+                    [x - 1.0, 0.0, -1.0],
+                    [x - 1.0, 0.0, 1.0],
+                    [x + 1.0, 0.0, 1.0],
+                    [x + 1.0, 0.0, -1.0],
+                ],
+                indices: vec![0, 1, 2, 0, 2, 3],
+            }
+        }
+        let mut shells = vec![ShellStrips::default(); 3];
+        shells[0].occluder = quad_at(0.0);
+        shells[2].occluder = quad_at(20.0);
+        let all = |_| true;
+        // Downward segments through each quad, 2 m long.
+        let seg = |x: f32| (Vec3::new(x, 1.0, 0.0), Vec3::new(x, -1.0, 0.0));
+        let (a, b) = seg(0.0);
+        // Room 0's occluder is crossed before the walk reaches room 1's
+        // empty one.
+        assert!(segment_blocks(&shells, all, a, b, false));
+        // Upward the same segment meets the quad's back: no.
+        assert!(!segment_blocks(&shells, all, b, a, false));
+        // A miss at room 0 runs into room 1's missing occluder, which
+        // answers "no" at once, so room 2 is never reached.
+        let (a, b) = seg(20.0);
+        assert!(!segment_blocks(&shells, all, a, b, false));
+        // With room 1 inactive, or with an occluder there, the walk reaches
+        // room 2.
+        assert!(segment_blocks(&shells, |r| r != 1, a, b, false));
+        shells[1].occluder = quad_at(10.0);
+        assert!(segment_blocks(&shells, all, a, b, false));
+        // The ray form with the same numbers: origin, unit direction, length.
+        assert!(ray_blocks(&shells, all, a, Vec3::NEG_Y, 2.0, false));
+        assert!(!ray_blocks(&shells, all, a, Vec3::NEG_Y, 1.0, false));
+        // A lid query does not see occluders; room 0 has no lid yet.
+        let (a, b) = seg(0.0);
+        assert!(!segment_blocks(&shells, all, a, b, true));
+        shells[0].lid = quad_at(0.0);
+        assert!(segment_blocks(&shells, all, a, b, true));
+        // No active room, nothing blocks.
+        assert!(!segment_blocks(&shells, |_| false, a, b, false));
     }
 
     #[test]

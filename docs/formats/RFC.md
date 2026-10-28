@@ -797,7 +797,7 @@ Exarust match the original look).
   1–4 → corner piece, floor slot 4, ceiling slot 3.
 - Special tiles: a mask per type removes the regular pieces they cover:
   `7777FFFF`, `7070FFFF`, `7077FFFF`, `7777FFFF`, `7777FFFF`, `7007000F`
-  (types 6–9), `00770FFF`; types 5–8 keep the centre floor. The table holds
+  (types 6–9), `00770FFF`; types 6–9 keep the centre floor. The table holds
   the masks for side 0; at start-up the game turns each into rotations 1–3
   (each edge nibble and corner triple moves one side; the `0x8888` flag
   bits stay), and a cell reads the one for its rotation. The cell places
@@ -805,6 +805,22 @@ Exarust match the original look).
   and with no piece of the type at all the wall set's first special piece.
 - A floor set named exactly `Terrain` (a whole-name comparison) is never
   loaded and brings no pieces: the terrain is the ground there.
+- The builder keeps one catalog of wall sets and one of floor sets for the
+  session. A level's grid lists the set names its cells index; each name is
+  looked up in its catalog and registered on first use (the whole name
+  compared, as the engine's 16-byte name is), so two cells or two levels
+  naming the same set share one loaded set. Registering a wall set only
+  records it; registering a new floor set also loads it at once (the load
+  sets the loaded bit before reading the set's pieces). Before the cells
+  are built a pass loads every set still unloaded, wall sets then floor
+  sets; there a floor set named `Terrain` is marked with flags `0x7E01`
+  (the loaded bit with six more) instead of loaded. A floor set
+  registered by the grid reader is therefore already loaded when that pass
+  runs, so the `Terrain` marking applies only to an entry whose loaded bit
+  is clear [open: Exarust never loads or places a `Terrain` floor set, as
+  above; whether the original's first registration of one loads its
+  `GEFS_UWA01` fallback has not been compared in a running game]. The
+  editor's set getters return a catalog entry by its index.
 - A node or character is sorted into the room of the cell it stands in,
   `floor(x / 600) + w/2` (the conversion's rounding mode is set towards
   −∞), clamped to the grid for nodes.
