@@ -669,37 +669,195 @@ fn weapon_mass_of(
     WeaponMass::new(parts, total, size)
 }
 
-/// A held item's rigid body: its root node's stored rigid body, with the
-/// node's box as the part's mesh bound. `None` when the model has no rigid
-/// root (an assembled factory weapon, whose body shape is not built yet).
+/// A held item's rigid bodies: every model node that stores one, its parent
+/// the nearest rigid ancestor, each with the node's box as its mesh bound.
+/// A model without a stored rigid node (an assembled factory weapon) gets
+/// one body over its meshes, fitted by the original's factory-weapon shape
+/// builder. `nodes` is each model node's entity, in the model's order; the
+/// root entity is used when a factory body has no node to move.
+pub fn held_item_bodies(
+    model: &model::Model,
+    root: bevy::prelude::Entity,
+    nodes: &[bevy::prelude::Entity],
+    meshes: &Assets<Mesh>,
+) -> Vec<exa_physics::body::RigidPart> {
+    use exa_physics::body::{RigidLink, RigidPart};
+    let rigid: Vec<usize> = (0..model.nodes.len())
+        .filter(|&i| model.nodes[i].rigid.is_some())
+        .collect();
+    if rigid.is_empty() {
+        return assembled_item_body(model, root, meshes)
+            .into_iter()
+            .collect();
+    }
+    let index: HashMap<usize, usize> = rigid
+        .iter()
+        .enumerate()
+        .map(|(k, &node)| (node, k))
+        .collect();
+    let entity = |i: usize| nodes.get(i).copied().unwrap_or(root);
+    let mut parts = Vec::with_capacity(rigid.len());
+    for &node in &rigid {
+        let n = &model.nodes[node];
+        let Some(rigid_body) = n.rigid.as_ref() else {
+            continue;
+        };
+        let b = &rigid_body.body;
+        let mut parent = n.parent;
+        let mut nearest = None;
+        while let Some(at) = parent {
+            if let Some(&k) = index.get(&at) {
+                nearest = Some(k);
+                break;
+            }
+            parent = model.nodes.get(at).and_then(|n| n.parent);
+        }
+        parts.push(RigidPart {
+            entity: entity(node),
+            parent: nearest,
+            world: bevy::math::Affine3A::IDENTITY,
+            rest: b.rest.map(Vec3::from),
+            point_masses: b.point_masses,
+            mobility: rigid_body.mobility(),
+            parent_world: bevy::math::Affine3A::IDENTITY,
+            spheres: b
+                .spheres
+                .iter()
+                .map(|s| (Vec3::from(s.centre), s.radius))
+                .collect(),
+            origin: n.transform.translation,
+            links: b
+                .links
+                .iter()
+                .map(|l| RigidLink {
+                    on_body: Vec3::from(l.on_body),
+                    on_parent: Vec3::from(l.on_parent),
+                    slack: l.slack,
+                    strength: l.strength,
+                    smoothing: l.smoothing,
+                    flags: l.flags,
+                    axis: l.axis.map(Vec3::from).unwrap_or(Vec3::ZERO),
+                })
+                .collect(),
+            mesh: Some(exa_physics::sector::Bounds {
+                centre: n.bounds.0,
+                half: n.half_extents,
+                radius: n.bounds.1,
+            }),
+        });
+    }
+    parts
+}
+
+/// A held item's one rigid body, its root node's stored one, or the
+/// assembled factory body over its meshes. `None` when neither yields a
+/// solid body.
 pub fn held_item_body(
     model: &model::Model,
     entity: bevy::prelude::Entity,
+    meshes: &Assets<Mesh>,
 ) -> Option<exa_physics::body::RigidPart> {
-    let node = model.nodes.first()?;
-    let rigid = node.rigid.as_ref()?;
-    let b = &rigid.body;
-    Some(exa_physics::body::RigidPart {
+    held_item_bodies(model, entity, &[entity], meshes)
+        .into_iter()
+        .next()
+}
+
+/// The body of an assembled factory weapon: the original merges its parts
+/// into one mesh and fits it with the weapon builder. The triangles are
+/// brought into the weapon's frame and to centimetres; the box is their
+/// union. `None` when there is no mesh or the fit gives no solid
+/// tetrahedron.
+fn assembled_item_body(
+    model: &model::Model,
+    entity: bevy::prelude::Entity,
+    meshes: &Assets<Mesh>,
+) -> Option<exa_physics::body::RigidPart> {
+    let mut triangles = Vec::new();
+    for (i, node) in model.nodes.iter().enumerate() {
+        let placement = blood::placement(model, i).to_matrix();
+        for (handle, _) in &node.parts {
+            let Some(mesh) = meshes.get(handle) else {
+                continue;
+            };
+            let Some(positions) = mesh
+                .attribute(Mesh::ATTRIBUTE_POSITION)
+                .and_then(|a| a.as_float3())
+            else {
+                continue;
+            };
+            let point = |i: usize| placement.transform_point3(Vec3::from(positions[i])) * CM_PER_M;
+            let push = |a: usize, b: usize, c: usize, out: &mut Vec<[Vec3; 3]>| {
+                out.push([point(a), point(b), point(c)]);
+            };
+            match mesh.indices() {
+                Some(bevy::mesh::Indices::U32(ix)) => {
+                    for c in ix.as_chunks::<3>().0 {
+                        push(c[0] as usize, c[1] as usize, c[2] as usize, &mut triangles);
+                    }
+                }
+                Some(bevy::mesh::Indices::U16(ix)) => {
+                    for c in ix.as_chunks::<3>().0 {
+                        push(c[0] as usize, c[1] as usize, c[2] as usize, &mut triangles);
+                    }
+                }
+                None => {
+                    for c in (0..positions.len()).step_by(3) {
+                        if c + 2 < positions.len() {
+                            push(c, c + 1, c + 2, &mut triangles);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if triangles.is_empty() {
+        return None;
+    }
+    let (mut lo, mut hi) = (Vec3::MAX, Vec3::MIN);
+    for t in &triangles {
+        for p in t {
+            lo = lo.min(*p);
+            hi = hi.max(*p);
+        }
+    }
+    let centre = (lo + hi) * 0.5;
+    let half = (hi - lo) * 0.5;
+    let node = exa_physics::shape::NodeShape::new(centre, half, Vec3::ZERO);
+    let mesh = exa_physics::volume::Mesh::with_bounds(
+        &triangles,
+        exa_physics::voxel::Bounds {
+            centre,
+            half_extents: half,
+        },
+    );
+    let shape = exa_physics::shape::build_weapon(
+        &mesh,
+        &node,
+        exa_physics::shape::BuilderFlags::default(),
+        &exa_physics::shape::WeaponFit::SHIPPED,
+    );
+    let part = exa_physics::body::RigidPart {
         entity,
         parent: None,
         world: bevy::math::Affine3A::IDENTITY,
-        rest: b.rest.map(Vec3::from),
-        point_masses: b.point_masses,
+        rest: shape.rest.map(|p| p / CM_PER_M),
+        point_masses: shape.point_masses,
+        mobility: shape.mobility,
         parent_world: bevy::math::Affine3A::IDENTITY,
-        mobility: rigid.mobility(),
-        spheres: b
+        spheres: shape
             .spheres
             .iter()
-            .map(|s| (Vec3::from(s.centre), s.radius))
+            .map(|s| (s.centre / CM_PER_M, s.radius / CM_PER_M))
             .collect(),
-        origin: node.transform.translation,
+        origin: Vec3::ZERO,
         links: Vec::new(),
         mesh: Some(exa_physics::sector::Bounds {
-            centre: node.bounds.0,
-            half: node.half_extents,
-            radius: node.bounds.1,
+            centre: centre / CM_PER_M,
+            half: half / CM_PER_M,
+            radius: half.length() / CM_PER_M,
         }),
-    })
+    };
+    part.is_solid().then_some(part)
 }
 
 /// The bones the original's grip links attach to: the forearms, right then
@@ -1394,60 +1552,65 @@ fn equip_outfits(
                     exa_combat::wounds::BladeBlood::default(),
                 ))
                 .id();
-            // The item's own body, when its model carries a rigid root, and
-            // the grip links that tie it to the hand. A factory weapon's
-            // assembled model has no stored rigid node yet; it stays
-            // bone-attached.
-            if let Some(key) = ragdolls
-                .get(body)
-                .ok()
-                .and_then(|r| r.parts.first())
-                .map(|p| p.entity)
-                && let Some(part) = held_item_body(&weapon, holder)
-            {
-                commands.entity(holder).insert((
-                    exa_physics::prop::PendingProp(vec![part]),
-                    exa_combat::impact::ImpactBook::default(),
-                    exa_physics::grip::HeldGrip {
-                        spec: grip.spec(),
-                        scale: grip_scale,
-                        size: grip_size,
-                        second_hand_factor: record.second_hand,
-                        flip: false,
-                        soft_weld: false,
-                        holder_key: key,
-                        hands: [
-                            by_bone.get(&RIGHT_HAND).copied(),
-                            by_bone.get(&LEFT_HAND).copied(),
-                        ],
-                        arms: [
-                            by_bone.get(&FOREARM_BONES[0]).copied(),
-                            by_bone.get(&FOREARM_BONES[1]).copied(),
-                        ],
-                        links: None,
-                        released: false,
-                    },
-                ));
-            }
-            if let Some(mass) = mass {
-                commands.entity(holder).insert(mass);
-            }
-            // Plain models drop their root node's placement; assembled
-            // weapons keep each component's.
+            // One entity per model node (the rigid nodes' bodies move
+            // these), with the node's meshes under it.
+            let mut node_entities = Vec::with_capacity(weapon.nodes.len());
             let mut spawned = HashMap::new();
             for (i, node) in weapon.nodes.iter().enumerate() {
                 let transform = blood::placement(&weapon, i);
+                let node_entity = commands
+                    .spawn((transform, Visibility::default(), ChildOf(holder)))
+                    .id();
+                node_entities.push(node_entity);
                 for (k, (mesh, material)) in node.parts.iter().enumerate() {
                     let part = commands
                         .spawn((
                             Mesh3d(mesh.clone()),
                             MeshMaterial3d(material.clone()),
-                            transform,
-                            ChildOf(holder),
+                            Transform::IDENTITY,
+                            ChildOf(node_entity),
                         ))
                         .id();
                     spawned.insert((i, k), part);
                 }
+            }
+            // The item's own bodies (every rigid node, or the assembled
+            // factory body) and the grip links that tie them to the hand.
+            if let Some(key) = ragdolls
+                .get(body)
+                .ok()
+                .and_then(|r| r.parts.first())
+                .map(|p| p.entity)
+            {
+                let parts = held_item_bodies(&weapon, holder, &node_entities, loader.meshes);
+                if !parts.is_empty() {
+                    commands.entity(holder).insert((
+                        exa_physics::prop::PendingProp(parts),
+                        exa_combat::impact::ImpactBook::default(),
+                        exa_physics::grip::HeldGrip {
+                            spec: grip.spec(),
+                            scale: grip_scale,
+                            size: grip_size,
+                            second_hand_factor: record.second_hand,
+                            flip: false,
+                            soft_weld: false,
+                            holder_key: key,
+                            hands: [
+                                by_bone.get(&RIGHT_HAND).copied(),
+                                by_bone.get(&LEFT_HAND).copied(),
+                            ],
+                            arms: [
+                                by_bone.get(&FOREARM_BONES[0]).copied(),
+                                by_bone.get(&FOREARM_BONES[1]).copied(),
+                            ],
+                            links: None,
+                            released: false,
+                        },
+                    ));
+                }
+            }
+            if let Some(mass) = mass {
+                commands.entity(holder).insert(mass);
             }
             // The meshes its blood will stain.
             if let Some(stain) = blood::WeaponStain::of(&weapon, loader.meshes, &spawned) {
@@ -1895,5 +2058,130 @@ mod tests {
             let held = weaponry.grip_holder(1.5);
             assert_eq!((held.size, held.race), (1.5, weaponry.index));
         }
+    }
+    fn rigid_node(name: &str, parent: Option<usize>, at: Vec3) -> model::ModelNode {
+        use exa_formats::rigid_body::RigidBody;
+        model::ModelNode {
+            name: name.into(),
+            parent,
+            transform: Transform::from_translation(at),
+            parts: Vec::new(),
+            part_materials: Vec::new(),
+            collision: Vec::new(),
+            skin_bone: None,
+            light: None,
+            voxel_light: None,
+            fire: None,
+            portal: None,
+            bounds: (Vec3::ZERO, 0.1),
+            half_extents: Vec3::splat(0.1),
+            gi_points: Default::default(),
+            rigid: Some(model::NodeRigidBody {
+                body: std::sync::Arc::new(RigidBody {
+                    class: 0x1000_0000,
+                    mobility: 2.0,
+                    rest: [
+                        [-0.1, 0.0, -0.1],
+                        [0.1, 0.0, -0.1],
+                        [0.0, 0.0, 0.1],
+                        [0.0, 0.2, 0.0],
+                    ],
+                    point_masses: [4.0; 4],
+                    spheres: Vec::new(),
+                    links: Vec::new(),
+                    sounds: Vec::new(),
+                }),
+                mobility_divisor: 2.0,
+            }),
+            tracks: Vec::new(),
+            shadow_bias: 0,
+            is_skin: false,
+            placeholder: false,
+            cloth: false,
+            mesh: false,
+            render_flags: 0,
+        }
+    }
+
+    /// A model with a rigid root and a rigid child becomes two parts, the
+    /// child joined to the root and moved by its own node entity.
+    #[test]
+    fn a_multi_node_held_item_gets_every_rigid_part() {
+        let model = model::Model {
+            nodes: vec![
+                rigid_node("haft", None, Vec3::ZERO),
+                rigid_node("head", Some(0), Vec3::new(0.0, 0.4, 0.0)),
+            ],
+        };
+        let (root, child) = (
+            Entity::from_raw_u32(1).unwrap(),
+            Entity::from_raw_u32(2).unwrap(),
+        );
+        let meshes = Assets::<Mesh>::default();
+        let parts = held_item_bodies(&model, root, &[root, child], &meshes);
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0].entity, root);
+        assert_eq!(parts[0].parent, None);
+        assert_eq!(parts[1].entity, child);
+        assert_eq!(parts[1].parent, Some(0));
+        assert_eq!(parts[1].origin, Vec3::new(0.0, 0.4, 0.0));
+        // The stored mobility is divided by the node's material divisor.
+        assert_eq!(parts[0].mobility, 1.0);
+        assert!(parts.iter().all(|p| p.is_solid()));
+    }
+
+    /// A factory weapon's assembled model has no rigid node; its meshes
+    /// give one body, fitted by the weapon builder.
+    #[test]
+    fn an_assembled_weapon_gets_one_fitted_body() {
+        let mut geometry = Mesh::new(
+            bevy::mesh::PrimitiveTopology::TriangleList,
+            bevy::asset::RenderAssetUsages::default(),
+        );
+        let h = 0.5;
+        let corners = [
+            [-h, -h, -h],
+            [h, -h, -h],
+            [h, h, -h],
+            [-h, h, -h],
+            [-h, -h, h],
+            [h, -h, h],
+            [h, h, h],
+            [-h, h, h],
+        ];
+        let faces = [
+            [0, 2, 1],
+            [0, 3, 2],
+            [4, 5, 6],
+            [4, 6, 7],
+            [0, 1, 5],
+            [0, 5, 4],
+            [1, 2, 6],
+            [1, 6, 5],
+            [2, 3, 7],
+            [2, 7, 6],
+            [3, 0, 4],
+            [3, 4, 7],
+        ];
+        geometry.insert_attribute(Mesh::ATTRIBUTE_POSITION, corners.to_vec());
+        geometry.insert_indices(bevy::mesh::Indices::U32(
+            faces.iter().flatten().copied().collect(),
+        ));
+        let mut meshes = Assets::<Mesh>::default();
+        let handle = meshes.add(geometry);
+        let mut node = rigid_node("blade", None, Vec3::ZERO);
+        node.rigid = None;
+        node.parts = vec![(
+            handle,
+            Handle::<exa_render::material::ExaMaterial>::default(),
+        )];
+        let model = model::Model { nodes: vec![node] };
+        let root = Entity::from_raw_u32(1).unwrap();
+        let part = held_item_body(&model, root, &meshes).expect("a fitted body");
+        assert_eq!(part.entity, root);
+        assert!(part.is_solid());
+        assert!(part.mobility > 0.0 && part.mobility.is_finite());
+        assert!((part.rest[0] - Vec3::ZERO).length() < 2.0);
+        assert_eq!(part.origin, Vec3::ZERO);
     }
 }

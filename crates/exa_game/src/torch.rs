@@ -184,7 +184,7 @@ fn light_torches(
         );
         let grip = hand.grip().placement(&held_by, false);
         let model = torch.clone();
-        let root = exa_world::spawn_model(&mut commands, &torch, Some(grip));
+        let (root, nodes) = exa_world::spawn_model_nodes(&mut commands, &torch, Some(grip));
         commands
             .entity(root)
             .insert((TorchRoot, exa_world::flame::CarriedFire, ChildOf(holder)));
@@ -195,10 +195,14 @@ fn light_torches(
             .ok()
             .and_then(|r| r.parts.first())
             .map(|p| p.entity)
-            && let Some(part) = exa_character::held_item_body(&model, root)
+            && !model.nodes.is_empty()
         {
+            let parts = exa_character::held_item_bodies(&model, root, &nodes, loader.meshes);
+            if parts.is_empty() {
+                continue;
+            }
             commands.entity(root).insert((
-                exa_physics::prop::PendingProp(vec![part]),
+                exa_physics::prop::PendingProp(parts),
                 exa_combat::impact::ImpactBook::default(),
                 exa_physics::grip::HeldGrip {
                     spec: hand.grip().spec(),
