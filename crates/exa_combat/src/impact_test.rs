@@ -117,8 +117,9 @@ fn a_thrown_ball_hurts_the_limb_it_strikes() {
     assert_eq!((hit.bone, hit.other), (1, other));
     // The tick's upkeep follows the impact.
     assert_eq!(book.taken, (f64::from(hit.amount) - 0.01) as f32);
-    // Struck once: the counter rose by 2 and fell by 1.
-    assert_eq!(book.count_of(0), 1);
+    // Struck once: the counter rose by 2; the part step takes one off only
+    // before the next tick's contacts.
+    assert_eq!(book.count_of(0), 2);
     assert!(lost > 0.0, "{lost}");
     assert!(clock > 0, "{clock}");
     assert_eq!(run(0.5), None);

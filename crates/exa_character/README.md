@@ -186,6 +186,13 @@ These are tested rules the running game does not drive yet.
   fighter) and its race (`RaceWeaponry`: the race index and `races.rdb`
   weapon fields and held offset, the human's by default). See
   [`docs/formats/OTHER.md`](../../docs/formats/OTHER.md) (Weapon record).
+- At the same equip the weapon's model rigid nodes are turned into a part
+  tree, each taking `1 / mobility` as its mass and its nearest rigid
+  ancestor as its parent, and the original's two-pass redistribution
+  (`exa_physics::weapon_mass::WeaponMass`) scales them with the record's
+  table mass, the root's mass word then divided by the holder's size. The
+  distributed parts stay on the weapon holder as a `WeaponMass` component
+  for the body solver, which does not read it yet.
 - A wielded weapon sits under the hand its grip names
   (`exa_combat::grip`, by its weapon class as the first held item: a
   polearm in the left hand), placed for the character's size and race

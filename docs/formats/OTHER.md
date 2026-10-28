@@ -1339,7 +1339,7 @@ weapon is flipped):
 | W10 impact | (1 − b)·0.6 + 0.4w + 0.1 (0.4w + 0.1 above balance 100) + (byte `0x32` − 127)/100 |
 | W11..W14 | slash, crush, pierce, thrust: 0.5·(x/100)^0.7, 0 for a 0 byte (double precision) |
 | W16 handling | 0.8 − ((1 − u/2)·w + 1 − b)/8; the body turns at it × B·(1 − 0.25·progress)·P while attacking ([PLAYER.md](../PLAYER.md), Combat mode) |
-| W21 length | armed: the box top (centre.y + half extent.y) of the weapon's node plus that of every rigid node down its first-child chain; unarmed: across the hand, \|centre.x\| + half extent.x |
+| W21 length | armed: the box top (centre.y + half extent.y) of the weapon's node plus that of every rigid node down its first-child chain, stopping at the first node that is not rigid; unarmed: across the hand, \|centre.x\| + half extent.x |
 | W22 sweet spot | armed: whole parts while the next one down the chain is rigid, then (W4 + 0.6·(W5 − W4)) of the part it stopped at; unarmed: W21 |
 | W23 (unarmed) | the end byte as a number (80 for the fists); unused for reach |
 | W24 second hand | (byte `0x40` − 128)·0.00156 + 1: where the second hand holds a haft (a two-hander's −30·W24 cm, a polearm's −40·W24) |
@@ -1394,7 +1394,15 @@ W17 0.67, W18 0.275, W19 8.
 | demon (`0x4000000`) | 0.50 – 1.20 | 0.75 – 1.50 | 0.75 – 1.50 |
 
 The part tree redistributes in two passes, parent before children
-(`exa_physics::weapon_mass`). A saved mass of zero is replaced by the
+(`exa_physics::weapon_mass`). The holding pass hands it the weapon's table
+mass; Exarust runs it when a weapon is equipped, over the rigid nodes of its
+model (`exa_character::weapon_mass_of`, kept as `WeaponMass` for the body
+solver). Each node's initial mass is the reciprocal of the mobility the body
+solver gives it; the original's word is the shape builder's (a guess, as
+Exarust's held weapons are not bodies yet). After the two passes the
+holding pass divides the root part's mass word (the weapon part's own) by
+the holder's size; its inverse word keeps the distributed value. A saved
+mass of zero is replaced by the
 live mass and then left alone. The live mass becomes 1.25 times that
 saved mass and the inverse word becomes its reciprocal; the walk counts
 the parts and sums those reciprocals. The second pass writes both words

@@ -243,6 +243,12 @@ pub fn strike_limbs(
 ) {
     let now = ticks.as_ref().map_or(0, |t| t.millis()) as u32;
     let story = story.is_some_and(|s| s.0);
+    // The part step takes one off each recent-impact counter before this
+    // tick's contacts, so a count a blow adds now stays whole until the
+    // next tick.
+    for (_, _, mut book, ..) in &mut fighters {
+        book.settle_counts();
+    }
     let touches = stages
         .as_deref()
         .and_then(|s| s.get::<Pairs>())
@@ -421,7 +427,6 @@ pub fn strike_limbs(
         if let Some(root) = body.parts.iter().find(|p| p.parent.is_none()) {
             book.sink(root.transform().translation.y * 100.0);
         }
-        book.settle_counts();
         if *condition != Condition::DEAD {
             book.recover();
         }
