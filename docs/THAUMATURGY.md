@@ -539,12 +539,19 @@ slot; a start stores the bar back with the chosen bit moved to the slot,
 closes the bar, flashes the slot (from where its state stood, back-dated by
 the elapsed share) and stores the last instant power; a refusal plays the
 failure sound. The running game does not play that sound or retry the
-queued slot yet. The running-power budget is the highest Concentration
+queued slot yet. Opening the bar loads it and runs a 900 ms rise (the
+height and size rise as the smooth step `(3 − 2x)·x²` over the first 400,
+the pitch as the smooth step of the tree's ease over 900);
+closing runs 900 ms, the marked slots falling as `1 − f⁴` and the rest as
+`1 − 1.5f`, then clears the slots' flash and picked bits. The bar's slots
+step their own flashes (200 ms to lit, then a fade over their duration). The running-power budget is the highest Concentration
 technique of 2 to 4, one less without the focus item; powers past it are
 told to end. The grant routine (`grant_power`) adds a power to a record
 that holds Insight's seventh technique when its node's first link names a
 learnt prerequisite, over the first matching pair or appended, with flags
-`0x9fff`; nothing calls it from the running game.
+`0x9fff`; the caster's `PowerCaster::grant` is its caller, with no script
+or game function offering a power yet. Its domain tree is the
+ordinary tree file (`read_power_tree`).
 
 ## Electric arcs
 

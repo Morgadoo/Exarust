@@ -10,13 +10,16 @@
 //! the open screen is drawn, at most 33 ms apart; the in-game bar draws a
 //! strip `scale × 20` high.
 //!
-//! Not modelled: the link programs' ribbon texture (the draw treats it as
-//! white, so links lack the spline's texture), the bar's form flags and
-//! open/close animation, the show and hide fades, the tooltip and prompt
-//! layout of the original, and the base form's key handlers. The bar's own
-//! keys (pick, step, use) belong to the hotkey handler and the cast plugin
-//! ([`crate::thaum::cast`]), which keeps the caster's record and this
-//! screen's in step.
+//! The tooltip is the shown choice's name caption (at once) and its wrapped
+//! description box (after 600 ms), laid out at the original's places with
+//! the widths and line step of the GUI main font at the tree's unit; while
+//! a power is dragged every node wears its name instead. Not modelled: the
+//! link programs' ribbon texture (the draw treats it as white, so links
+//! lack the spline's texture), the GUI
+//! skin's own text metrics and button highlight, and the base form's key
+//! handlers. The bar's own keys (pick, step, use) belong to the hotkey
+//! handler and the cast plugin ([`crate::thaum::cast`]), which keeps the
+//! caster's record and this screen's in step.
 
 use std::sync::{Arc, Mutex};
 
@@ -31,7 +34,7 @@ use exa_ui::gui_core::{FormHost, FormId, GuiRect, GuiTask};
 use exa_ui::tree_draw::{self, Batch, Program, TextRun, Texture, TreeDraw, TreeVertex};
 
 use crate::bindings::{Action, Bindings};
-use crate::thaum::tree::{PowerBar, PowerRecord, TreeMode, TreeScreen};
+use crate::thaum::tree::{BAR_CLOSING, PowerBar, PowerRecord, TreeMode, TreeScreen, TreeSound};
 
 /// The time between redraws while the screen animates.
 const REDRAW_MS: u128 = 33;
@@ -50,6 +53,10 @@ pub struct PowerScreen {
     pub domain_files: [Option<Vec<u8>>; 7],
     pub sheets: TreeSheets,
     pub font: Option<GameFont>,
+    /// The sound the tree's last action names, for the audio path: showing
+    /// it plays `ThaumShow02`; a hidden screen is silent. The running game
+    /// has no UI-sound playback yet.
+    pub sound: Option<TreeSound>,
     /// A redraw is needed.
     pub dirty: bool,
     /// The last draw, in the frame clock's milliseconds.
@@ -84,6 +91,7 @@ impl Default for PowerScreen {
             domain_files: [None, None, None, None, None, None, None],
             sheets: TreeSheets::default(),
             font: None,
+            sound: None,
             dirty: true,
             last_draw: 0,
             drag: None,
@@ -200,6 +208,7 @@ fn hotkeys(
     keys: Res<ButtonInput<KeyCode>>,
     bindings: Option<Res<Bindings>>,
     windows: Query<&Window, With<PrimaryWindow>>,
+    time: Res<Time>,
     mut screen: ResMut<PowerScreen>,
 ) {
     let Some(bindings) = bindings else {
@@ -210,6 +219,7 @@ fn hotkeys(
     };
     let width = window.physical_width() as f32;
     let height = window.physical_height() as f32;
+    let now = time.elapsed().as_millis() as u32;
     let PowerScreen {
         open,
         bar_open,
@@ -219,6 +229,7 @@ fn hotkeys(
         texts,
         domain_files,
         dirty,
+        sound,
         ..
     } = &mut *screen;
     if bindings
@@ -226,9 +237,11 @@ fn hotkeys(
         .is_some_and(|key| keys.just_pressed(key))
     {
         if *open {
+            // Closing stores the bar and the domain, then fades out over
+            // 256 ms; the draw turns the screen off at the fade's end.
             tree.leave(bar, record);
-            *open = false;
-            *bar_open = false;
+            tree.hide(now);
+            tree.close_bar(now);
         } else {
             let domain = tree.domain;
             let file = domain_files.get(usize::from(domain)).cloned().flatten();
@@ -248,7 +261,8 @@ fn hotkeys(
             *open = true;
             *bar_open = true;
             tree.bar_open = true;
-            bar.load(record);
+            *sound = tree.show(now).sound;
+            tree.open_bar_if_closed(bar, record, now);
         }
         *dirty = true;
         return;
@@ -258,9 +272,11 @@ fn hotkeys(
     if keys.just_pressed(KeyCode::Escape) {
         if *open {
             tree.leave(bar, record);
-            *open = false;
+            tree.hide(now);
+            tree.close_bar(now);
+        } else {
+            *bar_open = false;
         }
-        *bar_open = false;
         *dirty = true;
     }
 }
@@ -315,7 +331,7 @@ fn pointer(
         press_origin,
         ..
     } = &mut *screen;
-    let hidden = !*open;
+    let hidden = !*open || tree.closing();
     let hover = tree.hover(x, y, width, height, hidden);
     if hover != tree.focus {
         tree.set_focus(hover, now);
@@ -453,15 +469,46 @@ fn draw(
     if width == 0 || height == 0 {
         return;
     }
-    if !screen.open && !screen.bar_open {
+    let animating = screen.tree.bar_flags != 0;
+    if !screen.open && !screen.bar_open && !animating {
         for (_, _, mut visibility, _) in &mut canvas {
             *visibility = Visibility::Hidden;
         }
         return;
     }
     let now = time.elapsed().as_millis();
-    if (screen.open || screen.bar_open) && screen.tree.settle() {
-        screen.dirty = true;
+    if screen.open || screen.bar_open || animating {
+        let now_at = now as u32;
+        // The bare bar (the tree closed) starts its rise when it is turned
+        // on and falls when it is turned off.
+        if !screen.open {
+            if screen.bar_open && screen.tree.bar_flags == 0 {
+                let PowerScreen {
+                    tree, bar, record, ..
+                } = &mut *screen;
+                tree.open_bar(bar, record, now_at);
+            } else if !screen.bar_open && screen.tree.bar_flags & BAR_CLOSING == 0 {
+                screen.tree.close_bar(now_at);
+            }
+        }
+        screen.tree.advance(now_at);
+        screen.tree.present_window(now_at);
+        let PowerScreen { tree, bar, .. } = &mut *screen;
+        tree.step_bar(bar, now_at);
+        if screen.tree.faded_out {
+            // The form and its bar child hide together; the bar's own
+            // closing animation is for the bar on its own.
+            screen.open = false;
+            screen.bar_open = false;
+            screen.tree.bar_flags = 0;
+            screen.dirty = true;
+        }
+    }
+    if !screen.open && !screen.bar_open && screen.tree.bar_flags == 0 {
+        for (_, _, mut visibility, _) in &mut canvas {
+            *visibility = Visibility::Hidden;
+        }
+        return;
     }
     if !screen.dirty && now.saturating_sub(screen.last_draw) < REDRAW_MS {
         return;
@@ -480,17 +527,46 @@ fn draw(
     } else {
         (scale * BAR_UNITS) as u32
     };
+    tree.labels = drag.is_some();
     let view = tree.view(bar, width as f32, height as f32, scale, now as u32);
     let draw = if tree_open {
         // The tree pass already ends with the bar.
         let mut draw = tree_draw::tree_draw(&view);
-        // The tooltip: the hovered node's name and wrapped description.
-        if tree.node_under > 0 && (tree.node_under as usize) <= tree.nodes.len() {
-            let (name, description) = tree.node_text(tree.node_under as usize - 1, texts);
-            let wrapped = wrap_text(description, 59);
-            let tooltip = tree_draw::tooltip_draw(&view, &String::from_utf8_lossy(name), &wrapped);
+        // The tooltip: the shown choice's name caption and its wrapped
+        // description box, measured with the GUI font's advances (the
+        // glyphs are the running font's).
+        if !view.labels && view.hovered > 0 && (view.hovered as usize) <= tree.nodes.len() {
+            let (name, description) = tree.node_text(view.hovered as usize - 1, texts);
+            let lines = tree_draw::text_split(description, tree_draw::TIP_TEXT_WIDTH);
+            let tooltip = tree_draw::tooltip_draw(
+                &view,
+                &lines,
+                &String::from_utf8_lossy(name),
+                tree_draw::text_step(scale),
+                tree_draw::text_width(name, scale),
+            );
             draw.batches.extend(tooltip.batches);
             draw.texts.extend(tooltip.texts);
+        }
+        if view.labels {
+            let mut names = Vec::with_capacity(tree.nodes.len());
+            for node in &tree.nodes {
+                let text = if node.name_text == 0 {
+                    &[][..]
+                } else {
+                    texts
+                        .get(node.name_text as usize)
+                        .map(Vec::as_slice)
+                        .unwrap_or_default()
+                };
+                names.push((
+                    String::from_utf8_lossy(text).into_owned(),
+                    tree_draw::text_width(text, scale),
+                ));
+            }
+            let labels = tree_draw::labels_draw(&view, &names);
+            draw.batches.extend(labels.batches);
+            draw.texts.extend(labels.texts);
         }
         if let Some(dragged) = drag.clone() {
             draw.batches.extend(
@@ -499,7 +575,7 @@ fn draw(
                     dragged.flags,
                     dragged.at[0],
                     dragged.at[1],
-                    scale * 6.0,
+                    scale,
                     tree.domain,
                 )
                 .batches,

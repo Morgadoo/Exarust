@@ -1203,6 +1203,47 @@ fn a_chest_aim_reads_the_chest_part_or_the_place() {
     assert_eq!(chest_from(None, None), None);
 }
 
+/// The grant routine's caller: a caster holding the seventh Insight
+/// technique gains the power its node's prerequisite opens.
+#[test]
+fn a_caster_grant_adds_the_power_and_its_known_entry() {
+    use exa_formats::power_tree::PowerNode;
+    let node = |power: u32, link: u32| {
+        let mut links = Vec::new();
+        if link != 0 {
+            let mut bytes = [0u8; 16];
+            bytes[8..12].copy_from_slice(&link.to_le_bytes());
+            links.push(bytes);
+        }
+        PowerNode {
+            power,
+            name_text: 0,
+            description_text: 0,
+            x: 0.0,
+            y: 0.0,
+            links,
+        }
+    };
+    let nodes = [node(0x101, 0), node(0x102, 1)];
+    let mut insight = exa_formats::characters::Skill {
+        points: 35_000,
+        ..exa_formats::characters::Skill::default()
+    };
+    insight.techniques[1] = crate::thaum::tree::GRANT_TECHNIQUE;
+    let mut caster = PowerCaster::new(&[0x101]);
+    assert!(caster.grant(&nodes, &insight, 0x102));
+    assert_eq!(
+        caster.known.iter().find(|known| known.id == 0x102),
+        Some(&crate::thaum::power::KnownPower {
+            id: 0x102,
+            word: crate::thaum::tree::GRANTED_FLAGS
+        })
+    );
+    // Without the technique nothing changes.
+    insight.techniques[1] = 0;
+    assert!(!caster.grant(&nodes, &insight, 0x102));
+}
+
 /// A live effect's cast end returns its caster to the stance in the same
 /// tick, before a later attack could start and be cut by it.
 #[test]

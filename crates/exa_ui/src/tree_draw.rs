@@ -38,14 +38,18 @@
 //! - [`bar_draw`]: the ten-slot bar: its icons grouped by domain, frame
 //!   marks, glows and chosen-slot flame, and the empty slots, with the
 //!   opening and closing animation.
-//! - [`prompt_draw`], [`tooltip_draw`] and [`preview_draw`]: the creation
-//!   prompt, the tooltip and the dragged power's preview. These are
-//!   approximations of the original's layout, not ports of it.
+//! - [`prompt_draw`], [`tooltip_layout`], [`tooltip_draw`], [`labels_draw`]
+//!   and [`preview_draw`]: the creation prompt's three panels and texts,
+//!   the shown choice's tooltip (its name caption at once and its 60-unit
+//!   description box after 600 ms), every node's name in the form's label mode, and
+//!   the dragged power's 13-unit icon and 6 × 2.5 glow.
 //!
-//! Not modelled: the link ribbons are an approximation (the original builds
-//! them with its spline renderer), the link program's texture is not
-//! identified, and the opening and closing fade of the whole window is a
-//! caller's `window` number.
+//! The window's two fades are the caller's numbers: the backdrop's
+//! [`TreeView::window`], the content's [`TreeView::content`] and the bar
+//! child's [`TreeView::bar_alpha`]. The texts' widths and line steps are
+//! the GUI main font's ([`TREE_FONT`]); their glyphs are the running
+//! font's. Not modelled: the link ribbons' spline texture (they read as
+//! white) and the skin's button highlight.
 //!
 //! Evidence: the immediate-draw routines and the screen and bar draws of
 //! TThaumTree, the six fragment programs, and the icon and frame sheet
@@ -231,6 +235,14 @@ impl TreeDraw {
 pub fn ease(x: f32) -> f32 {
     let rise = 1.0 / (x * 8.0 + 1.0);
     (f64::from(x) * 0.111 + 1.0 - f64::from(rise)) as f32
+}
+
+/// The GUI's smooth step on a share `x`: `(3 − 2x)·x²` in single
+/// precision, unclamped. The tree's learn and flash fades and the bar's
+/// rise, pitch and fall take it.
+pub fn smoothstep(x: f32) -> f32 {
+    let square = x * x;
+    (3.0 - 2.0 * x) * square
 }
 
 /// `CVTSS2SI`: rounds half to even; the "integer indefinite" for NaN and
@@ -644,6 +656,9 @@ pub enum BarPhase {
     /// Closing: 900 ms, the slots fading out over the first 600; after that
     /// nothing is drawn.
     Closing { elapsed: u32 },
+    /// Closing while the opening still runs: the opening's rise and pitch,
+    /// then the closing's fades and shrink on top, each from its own stamp.
+    OpeningClosing { opening: u32, closing: u32 },
 }
 
 /// The domains' colours from the tree's palette (RGBA bytes); index 0 is
@@ -685,8 +700,14 @@ pub struct TreeView {
     pub height: f32,
     /// The GUI unit: the bar's slots are 17 units apart and 13 across.
     pub scale: f32,
-    /// The opening or closing window's alpha, 0 to 1.
+    /// The opening or closing window's alpha, 0 to 1: the backdrop's and
+    /// the form's own.
     pub window: f32,
+    /// The tree's content fade, 0 to 1: the links, icons, marks, rings and
+    /// glows. It follows `window` and is cut by the domain switch.
+    pub content: f32,
+    /// The bar child's fade under the tree, 0 to 1.
+    pub bar_alpha: f32,
     pub zoom: f32,
     /// The zoom in 8.8 fixed point, rounded to even: the icon size.
     pub icon_size: f32,
@@ -694,9 +715,17 @@ pub struct TreeView {
     pub nodes: Vec<NodeView>,
     pub links: Vec<LinkView>,
     pub bar: [SlotView; 10],
-    pub bar_phase: BarPhase,
-    /// The node under the pointer, one-based, or 0 (the tooltip's node).
+    /// The bar's animation, or none while it is not shown.
+    pub bar_phase: Option<BarPhase>,
+    /// The node the tooltip names, one-based, or 0: the choice the focus
+    /// last showed.
     pub hovered: i32,
+    /// When the shown choice was made: the tooltip's age stamp.
+    pub choice_stamp: u32,
+    /// The focus still names a node.
+    pub still_hovering: bool,
+    /// Every shown node wears its name (the form's label mode).
+    pub labels: bool,
     /// The node whose flash runs, zero-based, or -1.
     pub flash: i32,
     /// When the flash ends.
@@ -957,7 +986,7 @@ fn background(out: &mut TreeDraw, view: &TreeView) {
 /// The links: bright when the source has any mark, otherwise dim when the
 /// destination has one, and not at all when neither does.
 fn links(out: &mut TreeDraw, view: &TreeView) {
-    let colour = link_ink(low_byte(view.window * 200.0));
+    let colour = link_ink(low_byte(view.content * 200.0));
     let half_width = view.zoom * 10.0;
     for entry in &view.links {
         let program = if entry.source_mark != 0 {
@@ -987,7 +1016,7 @@ fn icon_fade(flags: u32) -> [f32; 4] {
 
 /// Every shown node's icon.
 fn icons(out: &mut TreeDraw, view: &TreeView) {
-    let alpha = f32::from(alpha_byte(view.window)) / 255.0;
+    let alpha = f32::from(alpha_byte(view.content)) / 255.0;
     for node in &view.nodes {
         if node.flags & mark::SHOWN == 0 {
             continue;
@@ -1027,9 +1056,9 @@ fn marks(out: &mut TreeDraw, view: &TreeView) {
         let mut batch = Batch::new(Program::Mods, Texture::Mods);
         if (!learned || view.mode == ScreenMode::Test) && technique != 0 {
             let alpha = if view.mode == ScreenMode::Test {
-                low_byte(view.window * 160.0)
+                low_byte(view.content * 160.0)
             } else {
-                low_byte(view.window * 112.0)
+                low_byte(view.content * 112.0)
             };
             let size = if framed(node.power) {
                 view.icon_size * 0.5
@@ -1051,7 +1080,7 @@ fn marks(out: &mut TreeDraw, view: &TreeView) {
                 node.x,
                 node.y,
                 view.icon_size * 0.5,
-                link_ink(low_byte(view.window * 180.0)),
+                link_ink(low_byte(view.content * 180.0)),
             );
         }
         out.submit(batch);
@@ -1086,7 +1115,7 @@ fn node_ring(
 /// while the one it replaced fades out. Returns the last fade and the
 /// retired node (one-based) as the glow pass needs them.
 fn new_rings(out: &mut TreeDraw, view: &TreeView) -> (f32, i32) {
-    let colour = link_ink(alpha_byte(view.window));
+    let colour = link_ink(alpha_byte(view.content));
     let mut fade = 0.0;
     let mut retired = view.retired_new;
     for node in &view.nodes {
@@ -1094,7 +1123,7 @@ fn new_rings(out: &mut TreeDraw, view: &TreeView) -> (f32, i32) {
             continue;
         }
         if view.learn_until > view.now {
-            fade = ease((remaining(view.learn_until, view.now) * NEW_RATE) as f32);
+            fade = smoothstep((remaining(view.learn_until, view.now) * NEW_RATE) as f32);
         } else {
             fade = 0.0;
             retired = 0;
@@ -1116,7 +1145,7 @@ fn new_rings(out: &mut TreeDraw, view: &TreeView) -> (f32, i32) {
 /// that is not picked gets the fading-out ring of what it was.
 fn picked_rings(out: &mut TreeDraw, view: &TreeView) {
     let [red, green, blue] = ring_colour(view.domain);
-    let colour = ink([red, green, blue, alpha_byte(view.window)]);
+    let colour = ink([red, green, blue, alpha_byte(view.content)]);
     let flashing = usize::try_from(view.flash).ok();
     for (index, node) in view.nodes.iter().enumerate() {
         if node.flags & mark::PICKED == 0 {
@@ -1124,7 +1153,7 @@ fn picked_rings(out: &mut TreeDraw, view: &TreeView) {
         }
         let mut fade = 0.0;
         if flashing == Some(index) && view.flash_until > view.now {
-            fade = ease((remaining(view.flash_until, view.now) * FLASH_RATE) as f32);
+            fade = smoothstep((remaining(view.flash_until, view.now) * FLASH_RATE) as f32);
         }
         if view.denied {
             fade = 0.5 - (0.5 - fade).abs();
@@ -1138,7 +1167,7 @@ fn picked_rings(out: &mut TreeDraw, view: &TreeView) {
     if node.flags & mark::PICKED != 0 || view.flash_until <= view.now {
         return;
     }
-    let mut fade = 1.0 - ease((remaining(view.flash_until, view.now) * FLASH_RATE) as f32);
+    let mut fade = 1.0 - smoothstep((remaining(view.flash_until, view.now) * FLASH_RATE) as f32);
     if view.denied {
         fade = (0.5 - fade).abs();
     }
@@ -1158,7 +1187,7 @@ fn glows(out: &mut TreeDraw, view: &TreeView, new_ease: f32, retired: i32) {
         let mut bytes = domain_colour(view.domain);
         let picked = node.flags & mark::PICKED != 0;
         if flashing == Some(index) {
-            let mut fade = ease((remaining(view.flash_until, view.now) * FLASH_RATE) as f32);
+            let mut fade = smoothstep((remaining(view.flash_until, view.now) * FLASH_RATE) as f32);
             if view.denied {
                 fade = 1.0 - 2.0 * (0.5 - fade).abs();
             }
@@ -1171,7 +1200,7 @@ fn glows(out: &mut TreeDraw, view: &TreeView, new_ease: f32, retired: i32) {
                 *lane /= 3;
             }
         }
-        let window = 255.0 * view.window;
+        let window = 255.0 * view.content;
         bytes[3] = if node.flags & mark::LEARNED != 0 {
             low_byte(window)
         } else if node.flags & mark::NEW != 0 {
@@ -1179,7 +1208,7 @@ fn glows(out: &mut TreeDraw, view: &TreeView, new_ease: f32, retired: i32) {
         } else if usize::try_from(retired - 1).ok() == Some(index) {
             cvt_i32_f64((f64::from(new_ease) * 0.3 + 0.7) * f64::from(window)) as u8
         } else {
-            low_byte(178.0 * view.window)
+            low_byte(178.0 * view.content)
         };
         let (size, outer) = if framed(node.power) {
             (times(view.icon_size, 0.24), times(view.icon_size, 0.1))
@@ -1236,39 +1265,45 @@ fn bar_pose(view: &TreeView) -> Option<BarPose> {
         a11: 1.0,
         a12: 1.0,
     };
-    match view.bar_phase {
-        BarPhase::Steady => {}
-        BarPhase::Opening { elapsed } => {
-            if elapsed < 900 {
-                let elapsed = f64::from(elapsed);
-                if elapsed < 400.0 {
-                    let rise = ease((elapsed * 0.0025) as f32);
-                    pose.top *= rise;
-                    pose.size *= rise;
-                    pose.a11 = rise;
-                    pose.a12 = rise;
-                }
-                pose.pitch *= ease(ease((elapsed * 0.001_111_111_111_111_111_1) as f32));
-            }
+    let (opening, closing) = match view.bar_phase? {
+        BarPhase::Steady => (None, None),
+        BarPhase::Opening { elapsed } => (Some(elapsed), None),
+        BarPhase::Closing { elapsed } => (None, Some(elapsed)),
+        BarPhase::OpeningClosing { opening, closing } => (Some(opening), Some(closing)),
+    };
+    if let Some(elapsed) = opening.filter(|elapsed| *elapsed < 900) {
+        let elapsed = f64::from(elapsed);
+        if elapsed < 400.0 {
+            let rise = smoothstep((elapsed * 0.0025) as f32);
+            pose.top *= rise;
+            pose.size *= rise;
+            pose.a11 = rise;
+            pose.a12 = rise;
         }
-        BarPhase::Closing { elapsed } => {
-            if elapsed >= 900 {
-                return None;
-            }
-            let elapsed = f64::from(elapsed);
-            if elapsed >= 600.0 {
-                pose.a11 = 0.0;
-                pose.a12 = 0.0;
-            } else {
-                let fall = ease((elapsed * 0.001_666_666_666_666_666_8) as f32);
-                let square = fall * fall;
-                pose.a11 *= 1.0 - square * square;
-                pose.a12 *= (1.0 - 1.5 * fall).max(0.0);
-            }
-            let shrink = elapsed * 0.001_111_111_111_111_111_1;
-            pose.size *= (1.0 - shrink * shrink) as f32;
-        }
+        pose.pitch *= smoothstep(ease((elapsed * 0.001_111_111_111_111_111_1) as f32));
     }
+    if let Some(elapsed) = closing {
+        if elapsed >= 900 {
+            return None;
+        }
+        let elapsed = f64::from(elapsed);
+        if elapsed >= 600.0 {
+            pose.a11 = 0.0;
+            pose.a12 = 0.0;
+        } else {
+            // Both fades start from the opening's (equal) alpha.
+            let fall = smoothstep((elapsed * 0.001_666_666_666_666_666_8) as f32);
+            let square = fall * fall;
+            pose.a11 *= 1.0 - square * square;
+            pose.a12 *= (1.0 - 1.5 * fall).max(0.0);
+        }
+        let shrink = elapsed * 0.001_111_111_111_111_111_1;
+        pose.size *= (1.0 - shrink * shrink) as f32;
+    }
+    // The bar is a child form under the tree: its own fade multiplies the
+    // slots' two alphas.
+    pose.a11 *= view.bar_alpha;
+    pose.a12 *= view.bar_alpha;
     Some(pose)
 }
 
@@ -1378,7 +1413,8 @@ fn bar_glows(out: &mut TreeDraw, view: &TreeView, pose: &BarPose) {
         let mut bytes = domain_colour(power_domain(slot.word));
         match flashing {
             Some(node) if node.power & 0x0e0f_ffff == slot.word & 0x0e0f_ffff => {
-                let mut fade = ease((remaining(view.flash_until, view.now) * FLASH_RATE) as f32);
+                let mut fade =
+                    smoothstep((remaining(view.flash_until, view.now) * FLASH_RATE) as f32);
                 if view.denied {
                     fade = 1.0 - 2.0 * (0.5 - fade).abs();
                 }
@@ -1439,168 +1475,433 @@ fn bar_empties(out: &mut TreeDraw, view: &TreeView, pose: &BarPose) {
     }
 }
 
-/// The creation prompt's three panels and its texts. An approximation of
-/// the original's layout.
+/// The tree's text font: the GUI's main font at the screen's fixed unit of
+/// four pixels (the original's tree layout constant). Its advances measure
+/// the tooltip and prompt texts step for step; the running screen draws the
+/// glyphs with the running font, whose shapes differ.
+pub const TREE_FONT: &crate::gui_font::GuiFont = &crate::gui_font::RAYFORM_08;
+
+/// The tree's layout unit in pixels, before the window's scale multiplies
+/// it.
+pub const TREE_UNIT: f32 = 4.0;
+
+/// A text's width in pixels at the GUI unit `unit`: the GUI font's
+/// advances, which are pixels at four pixels to the unit, scaled.
+pub fn text_width(text: &[u8], unit: f32) -> f32 {
+    TREE_FONT.text_width(text) as f32 * unit / TREE_UNIT
+}
+
+/// The number of lines a text wraps to at `width` tree units (the
+/// original's line count with the GUI font).
+pub fn text_lines(text: &[u8], width: f32) -> u32 {
+    crate::text_layout::line_count(text, (width * TREE_UNIT) as i32, TREE_FONT).max(1) as u32
+}
+
+/// The lines a text wraps to at `width` tree units, broken as the GUI's
+/// line scan breaks them (a carriage return, after the last space that
+/// fits, or after the byte that overflows a line with no space). The
+/// break's own carriage return or space and a following line feed are
+/// left out of the lines.
+pub fn text_split(text: &[u8], width: f32) -> Vec<String> {
+    let width = (width * TREE_UNIT) as i32;
+    let len = text.len() as i32;
+    let mut lines = Vec::new();
+    let mut start = 1;
+    while start <= len {
+        let next = crate::text_layout::scan_line(text, start, width, TREE_FONT, false, &mut |_| {})
+            .next
+            .max(start + 1);
+        let mut end = (next - 1).min(len) as usize;
+        let from = (start - 1) as usize;
+        while end > from && matches!(text[end - 1], b' ' | b'\r') {
+            end -= 1;
+        }
+        lines.push(String::from_utf8_lossy(&text[from..end]).into_owned());
+        start = if next <= len && text[(next - 1) as usize] == b'\n' {
+            next + 1
+        } else {
+            next
+        };
+    }
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
+}
+
+/// The line step in pixels at the GUI unit `unit`.
+pub fn text_step(unit: f32) -> f32 {
+    TREE_FONT.line_height as f32 * unit / TREE_UNIT
+}
+
+/// One panel of the tooltip, in pixels.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TipPanel {
+    /// The panel: x, y, width, height.
+    pub panel: [f32; 4],
+    /// The text's top-left.
+    pub text: [f32; 2],
+    /// The panel's and the text's alpha, 0 to 1.
+    pub alpha: f32,
+}
+
+/// The shown choice's tooltip: the node's name caption at once, and its
+/// wrapped description box once the choice is 601 ms old.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TooltipLayout {
+    /// The name caption under the node.
+    pub name: Option<TipPanel>,
+    /// The description box, 60 units wide.
+    pub description: Option<TipPanel>,
+    /// The wrapped description's line step.
+    pub line_step: f32,
+}
+
+/// The time before the description box appears, in milliseconds.
+pub const TIP_DELAY: u32 = 600;
+/// The description box's width, in GUI units.
+pub const TIP_WIDTH: f32 = 60.0;
+/// The wrapped description's width, in GUI units.
+pub const TIP_TEXT_WIDTH: f32 = 59.0;
+
+/// The 160/255 alpha the tooltip fades to.
+const TIP_ALPHA: u8 = 160;
+
+/// A tooltip fade's alpha byte: `ROUND(elapsed·160·rate)` while the focus
+/// holds, `160 − that` once it left.
+fn tip_fade(elapsed: i32, rate: f64, holding: bool) -> u8 {
+    let rise = (cvt_i32_f64(f64::from(elapsed) * 160.0 * rate) & 0xff) as u8;
+    if holding {
+        rise
+    } else {
+        TIP_ALPHA.wrapping_sub(rise)
+    }
+}
+
+/// The shown choice's tooltip as the original lays it out (not in label
+/// mode). `age` is the 32-bit difference between now and the choice stamp.
+///
+/// - The name caption is the name's measured width less two units, a unit
+///   right of `ROUND(x − ⌊width/2⌋)` and a unit under `ROUND(base)`, where
+///   `base = y + 0.54 · fixed zoom` (0.32 for a framed power) taken in
+///   double and rounded to single; its text is at `x − ⌊width/2⌋`, four
+///   units under `base`. It fades in to 160/255 over 200 ms, and out over
+///   200 ms once the focus left (after which the choice is cleared: the
+///   caller's [`TreeView::still_hovering`] and stamp).
+/// - The description box appears at an age of 601 ms: `60 × (lines · step)`
+///   (its panel a unit shorter than the text's `lines · step + unit`) at
+///   `ROUND(x − 31 units) + unit` across and `8 units + ROUND(base)` down,
+///   or, when that would leave the window, at `ROUND(base − 1.08 · fixed
+///   zoom)` (0.64 framed) less its height. It fades in to 160/255 over
+///   300 ms from the 600 ms mark (out again once the focus left) and holds
+///   at 160/255 after 900 ms.
+///
+/// The widths and the line step come from the GUI's main font at the
+/// tree's unit ([`text_width`], [`text_lines`], [`text_step`]); the glyphs
+/// themselves are drawn with the running font.
+pub fn tooltip_layout(
+    view: &TreeView,
+    description_lines: u32,
+    line_step: f32,
+    name_width: f32,
+) -> Option<TooltipLayout> {
+    let node = usize::try_from(view.hovered - 1)
+        .ok()
+        .and_then(|index| view.nodes.get(index))?;
+    let age = view.now.wrapping_sub(view.choice_stamp) as i32;
+    let unit = view.scale;
+    let framed = node.power & 0x0f00_0000 != 0;
+    let drop = f64::from(view.icon_size) * if framed { 0.32 } else { 0.54 };
+    let base = (drop + f64::from(node.y)) as f32;
+    let holding = view.still_hovering;
+    let description = (age > TIP_DELAY as i32 && description_lines > 0).then(|| {
+        let height = description_lines as f32 * line_step + unit;
+        let x = cvt_i32(node.x - unit * 31.0) as f32 + unit;
+        let mut y = unit * 8.0 + cvt_i32(base) as f32;
+        if view.height - height < y {
+            let lift = f64::from(view.icon_size) * if framed { 0.64 } else { 1.08 };
+            y = cvt_i32_f64(f64::from(base) - lift) as f32 - height;
+        }
+        let alpha = if age < 901 {
+            tip_fade(age - 600, 0.003_333_333_333_333_333_5, holding)
+        } else {
+            TIP_ALPHA
+        };
+        TipPanel {
+            panel: [x, y, unit * TIP_WIDTH, height - unit],
+            text: [x, y],
+            alpha: f32::from(alpha) / 255.0,
+        }
+    });
+    let name = if age < 200 {
+        Some(tip_fade(age, 0.005, holding))
+    } else if holding {
+        Some(TIP_ALPHA)
+    } else {
+        None
+    }
+    .map(|alpha| {
+        let x = node.x - (name_width as u32 >> 1) as f32;
+        TipPanel {
+            panel: [
+                unit + cvt_i32(x) as f32,
+                unit + cvt_i32(base) as f32,
+                name_width - unit * 2.0,
+                unit * 2.0,
+            ],
+            text: [x, unit * 4.0 + base],
+            alpha: f32::from(alpha) / 255.0,
+        }
+    });
+    Some(TooltipLayout {
+        name,
+        description,
+        line_step,
+    })
+}
+
+/// The shown choice's tooltip: the name caption and the wrapped
+/// description box.
+pub fn tooltip_draw(
+    view: &TreeView,
+    description: &[String],
+    name: &str,
+    line_step: f32,
+    name_width: f32,
+) -> TreeDraw {
+    let mut out = TreeDraw::default();
+    let lines = if description.iter().all(String::is_empty) {
+        0
+    } else {
+        description.len() as u32
+    };
+    let Some(layout) = tooltip_layout(view, lines, line_step, name_width) else {
+        return out;
+    };
+    let boxed = |out: &mut TreeDraw, rect: [f32; 4], alpha: f32| {
+        let mut batch = Batch::new(Program::Mods, Texture::None);
+        let ink = [0.55, 0.56, 0.58, alpha];
+        let [x, y, w, h] = rect;
+        batch.quad([
+            TreeVertex::new(x, y + h, 0.0, 0.0).with_colour(ink),
+            TreeVertex::new(x + w, y + h, 0.0, 0.0).with_colour(ink),
+            TreeVertex::new(x + w, y, 0.0, 0.0).with_colour(ink),
+            TreeVertex::new(x, y, 0.0, 0.0).with_colour(ink),
+        ]);
+        out.submit(batch);
+    };
+    if let Some(tip) = layout.description {
+        boxed(&mut out, tip.panel, tip.alpha);
+        // The wrapped description: one run a line, a baseline four fifths
+        // down the step (the skin's own text draw is outside the pack).
+        for (line, text) in description.iter().enumerate() {
+            out.texts.push(TextRun {
+                x: tip.text[0],
+                y: tip.text[1] + layout.line_step * (line as f32 + 0.8),
+                size: layout.line_step,
+                colour: [1.0, 1.0, 1.0, tip.alpha],
+                text: text.clone(),
+            });
+        }
+    }
+    if let Some(tip) = layout.name {
+        boxed(&mut out, tip.panel, tip.alpha);
+        out.texts.push(TextRun {
+            x: tip.text[0],
+            y: tip.text[1] + view.scale * 1.6,
+            size: view.scale * 2.0,
+            colour: [0.9, 0.9, 0.9, tip.alpha],
+            text: name.to_string(),
+        });
+    }
+    out
+}
+
+/// Every node's name, as the original's label mode draws it: a 128-alpha
+/// box of the measured width less two units at `ROUND(x − ⌊box/2⌋)`
+/// across and `ROUND(base + unit)` down, and the name a unit right of
+/// `ROUND(x − ⌊(width + 2 units)/2⌋)` at `ROUND(base + 4 units)`, where
+/// `base = y + 0.54 · fixed zoom` (0.32 framed), all in double rounded to
+/// single. `names[i]` is node `i`'s name and measured width in pixels; a
+/// node without a name (an empty entry) is skipped.
+pub fn labels_draw(view: &TreeView, names: &[(String, f32)]) -> TreeDraw {
+    let mut out = TreeDraw::default();
+    let unit = view.scale;
+    for (index, node) in view.nodes.iter().enumerate() {
+        let Some((text, width)) = names.get(index) else {
+            continue;
+        };
+        if text.is_empty() {
+            continue;
+        }
+        let framed = node.power & 0x0f00_0000 != 0;
+        let drop = f64::from(view.icon_size) * if framed { 0.32 } else { 0.54 };
+        let base = drop + f64::from(node.y);
+        let panel = width - unit * 2.0;
+        let x = cvt_i32(node.x - (panel as u32 >> 1) as f32) as f32;
+        let y = cvt_i32((f64::from(unit) + base) as f32) as f32;
+        let mut batch = Batch::new(Program::Mods, Texture::None);
+        let ink = [0.55, 0.56, 0.58, 128.0 / 255.0];
+        batch.quad([
+            TreeVertex::new(x, y + unit * 2.0, 0.0, 0.0).with_colour(ink),
+            TreeVertex::new(x + panel, y + unit * 2.0, 0.0, 0.0).with_colour(ink),
+            TreeVertex::new(x + panel, y, 0.0, 0.0).with_colour(ink),
+            TreeVertex::new(x, y, 0.0, 0.0).with_colour(ink),
+        ]);
+        out.submit(batch);
+        let text_x = unit + cvt_i32(node.x - ((width + unit * 2.0) as u32 >> 1) as f32) as f32;
+        let text_y = cvt_i32((f64::from(unit * 4.0) + base) as f32) as f32;
+        out.texts.push(TextRun {
+            x: text_x,
+            // A baseline four fifths down the text's two units.
+            y: text_y + unit * 1.6,
+            size: unit * 2.0,
+            // The skin colour's alpha is outside the pack: 160, a labelled
+            // guess.
+            colour: [1.0, 1.0, 1.0, 160.0 / 255.0],
+            text: text.clone(),
+        });
+    }
+    out
+}
+
+/// The creation prompt's three panels and its texts. The panels are the
+/// title's measured width plus two units at an eighth of the height, and
+/// the two 30 × 2 buttons at seven units from the bottom; their texts sit a
+/// unit in and three units down. A focused button is drawn brighter (the
+/// skin's highlight call is outside the pack: a labelled guess).
+#[allow(clippy::too_many_arguments)]
 pub fn prompt_draw(
     view: &TreeView,
     title: &str,
     title_width: f32,
     back: &str,
+    back_width: f32,
     begin: &str,
+    begin_width: f32,
+    focused: i32,
 ) -> TreeDraw {
     let mut out = TreeDraw::default();
-    let panel = out.batch(Program::Mods, Texture::None);
-    let ink = [0.55, 0.56, 0.58, 0.86];
-    let panel_quad = |batch: &mut Batch, x: f32, y: f32, w: f32, h: f32| {
-        let corners = [
+    let unit = view.scale;
+    let width = view.width as i32;
+    let height = view.height as i32;
+    let title_x = (width >> 1) as f32 - (title_width as i32 >> 1) as f32;
+    let title_y = (height >> 3) as f32;
+    let mut panel = Batch::new(Program::Mods, Texture::None);
+    let quad = |batch: &mut Batch, x: f32, y: f32, w: f32, h: f32, alpha: f32| {
+        let ink = [0.55, 0.56, 0.58, alpha];
+        batch.quad([
             TreeVertex::new(x, y + h, 0.0, 0.0).with_colour(ink),
             TreeVertex::new(x + w, y + h, 0.0, 0.0).with_colour(ink),
             TreeVertex::new(x + w, y, 0.0, 0.0).with_colour(ink),
             TreeVertex::new(x, y, 0.0, 0.0).with_colour(ink),
-        ];
-        batch.quad(corners);
+        ]);
     };
-    let unit = view.scale;
-    let title_x = view.width * 0.5 - title_width * 0.5;
-    panel_quad(
-        &mut out.batches[panel],
+    // The title's panel is 140 alpha, the buttons' 160.
+    quad(
+        &mut panel,
         title_x,
-        view.height / 8.0,
-        title_width + view.scale * 2.0,
-        view.scale * 2.0,
+        title_y,
+        title_width + unit * 2.0,
+        unit * 2.0,
+        140.0 / 255.0,
     );
-    panel_quad(
-        &mut out.batches[panel],
-        view.scale * 6.0,
-        view.height - view.scale * 7.0,
-        view.scale * 30.0,
-        view.scale * 2.0,
+    quad(
+        &mut panel,
+        unit * 6.0,
+        (height - (unit * 7.0) as i32) as f32,
+        unit * 30.0,
+        unit * 2.0,
+        160.0 / 255.0,
     );
-    panel_quad(
-        &mut out.batches[panel],
-        view.width - view.scale * 36.0,
-        view.height - view.scale * 7.0,
-        view.scale * 30.0,
-        view.scale * 2.0,
+    quad(
+        &mut panel,
+        (width - (unit * 36.0) as i32) as f32,
+        (height - (unit * 7.0) as i32) as f32,
+        unit * 30.0,
+        unit * 2.0,
+        160.0 / 255.0,
     );
+    out.submit(panel);
+    let button_y = (height - (unit * 7.0) as i32) as f32 + unit * 3.0;
+    let back_x = unit * 7.0 + ((unit * 28.0 - back_width) as i32 >> 1) as f32;
+    let begin_x =
+        (width - (unit * 37.0) as i32) as f32 + ((unit * 28.0 - begin_width) as i32 >> 1) as f32;
     out.texts.push(TextRun {
-        x: title_x + view.scale,
-        y: view.height / 8.0 + view.scale * 3.0,
-        size: unit * 4.0,
+        x: title_x + unit,
+        y: title_y + unit * 3.0,
+        size: unit * 2.0,
         colour: [1.0, 1.0, 1.0, 1.0],
         text: title.to_string(),
     });
+    let button = |focused: bool| {
+        if focused {
+            [1.0, 0.95, 0.8, 1.0]
+        } else {
+            [1.0, 1.0, 1.0, 1.0]
+        }
+    };
     out.texts.push(TextRun {
-        x: view.scale * 7.0,
-        y: view.height - view.scale * 4.0,
-        size: unit * 4.0,
-        colour: [1.0, 1.0, 1.0, 1.0],
+        x: back_x,
+        y: button_y,
+        size: unit * 2.0,
+        colour: button(focused == 0x100_0000),
         text: back.to_string(),
     });
     out.texts.push(TextRun {
-        x: view.width - view.scale * 35.0,
-        y: view.height - view.scale * 4.0,
-        size: unit * 4.0,
-        colour: [1.0, 1.0, 1.0, 1.0],
+        x: begin_x,
+        y: button_y,
+        size: unit * 2.0,
+        colour: button(focused == 0x200_0000),
         text: begin.to_string(),
     });
     out
 }
 
-/// The tooltip: the hovered node's name and description lines. An
-/// approximation of the original's layout.
-pub fn tooltip_draw(view: &TreeView, name: &str, lines: &[String]) -> TreeDraw {
-    let mut out = TreeDraw::default();
-    let Some(node) = usize::try_from(view.hovered - 1)
-        .ok()
-        .and_then(|index| view.nodes.get(index))
-    else {
-        return out;
-    };
-    let panel = out.batch(Program::Mods, Texture::None);
-    let ink = [0.55, 0.56, 0.58, 0.86];
-    // Below the node, half a zoom step down (0.32 for a framed node).
-    let down = if node.power & 0x0f00_0000 == 0 {
-        view.zoom * 0.54
-    } else {
-        view.zoom * 0.32
-    };
-    let width = view.scale * 60.0;
-    let height = lines.len() as f32 * view.scale * 2.0 + view.scale;
-    let x = node.x - view.scale * 31.0 + view.scale;
-    let y = view.scale * 8.0 + node.y + down;
-    let corners = [
-        TreeVertex::new(x, y + height, 0.0, 0.0).with_colour(ink),
-        TreeVertex::new(x + width, y + height, 0.0, 0.0).with_colour(ink),
-        TreeVertex::new(x + width, y, 0.0, 0.0).with_colour(ink),
-        TreeVertex::new(x, y, 0.0, 0.0).with_colour(ink),
-    ];
-    out.batches[panel].quad(corners);
-    for (index, line) in lines.iter().enumerate() {
-        out.texts.push(TextRun {
-            x: x + view.scale,
-            y: y + view.scale * (1.0 + index as f32 * 2.0),
-            size: view.scale * 2.0,
-            colour: [0.9, 0.9, 0.9, 1.0],
-            text: line.clone(),
-        });
-    }
-    let name_w = name.len() as f32 * view.scale;
-    out.texts.push(TextRun {
-        x: node.x - name_w * 0.5,
-        y: node.y + down + view.scale * 4.0,
-        size: view.scale * 2.0,
-        colour: [1.0, 1.0, 1.0, 1.0],
-        text: name.to_string(),
-    });
-    out
-}
-
-/// The dragged power's preview: its icon, and its frame when it has one.
-/// An approximation of the original's drag image.
-pub fn preview_draw(power: u32, flags: u32, x: f32, y: f32, size: f32, domain: u8) -> TreeDraw {
+/// The dragged power's preview at the pointer: its icon at 13 units, and
+/// its glow at 6 units by 2.5, the glow dimmed to a third unless the power
+/// is picked.
+pub fn preview_draw(power: u32, flags: u32, x: f32, y: f32, unit: f32, domain: u8) -> TreeDraw {
     let mut out = TreeDraw::default();
     let mut batch = Batch::new(Program::Icon, Texture::Domain(domain));
     batch.uniforms.par1 = [1.0, 1.0, 0.5, 0.0];
-    let colour = if flags & mark::PICKED != 0 {
-        [1.0, 1.0, 1.0, 1.0]
-    } else {
-        [0.33, 0.33, 0.33, 1.0]
-    };
     if icon(
         &mut batch,
         power,
         x,
         y,
-        size * 13.0 / 12.0,
+        unit * 13.0,
         icon_columns(domain),
         icon_rows(domain),
-        colour[3],
+        1.0,
     ) {
         batch.vertices.iter_mut().for_each(|vertex| {
-            vertex.colour = colour;
+            vertex.colour = [1.0, 1.0, 1.0, 1.0];
         });
-        out.batches.push(batch);
+        out.submit(batch);
     }
-    let frame_slot = ((power & 0x0f00_0000) >> 24) as i32;
-    if frame_slot > 0 {
-        let mut frame_batch = Batch::new(Program::Mods, Texture::Mods);
-        frame(
-            &mut frame_batch,
-            frame_slot,
-            x,
-            y,
-            size * 6.0,
-            [1.0, 1.0, 1.0, 1.0],
-        );
-        out.batches.push(frame_batch);
+    let mut glow_batch = Batch::new(Program::Frame, Texture::Flamelets);
+    glow_batch.uniforms.frame_col = accent_frame([255, 250, 230, 100]);
+    let mut colour = domain_colour(domain);
+    if flags & mark::PICKED == 0 {
+        for lane in colour.iter_mut().take(3) {
+            *lane /= 3;
+        }
     }
+    colour[3] = 255;
+    glow(
+        &mut glow_batch,
+        x,
+        y,
+        unit * 6.0,
+        unit * 2.5,
+        (power & 0x3_0000) >> 16,
+        ink(colour),
+    );
+    out.submit(glow_batch);
     out
 }
 
-/// Fills a [`SkinBatch`] with the draw's vertices and one primitive per
-/// batch, as the skin's immediate path would submit them: textured batches
-/// through the textured program, the ring through the solid one, quads.
 pub fn to_skin_batch(draw: &TreeDraw) -> SkinBatch {
     let mut batch = SkinBatch::default();
     for entry in &draw.batches {
@@ -1657,14 +1958,19 @@ mod tests {
             height: 700.0,
             scale: 4.0,
             window: 1.0,
+            content: 1.0,
+            bar_alpha: 1.0,
             zoom: 0.293,
             icon_size: 75.0,
             mode: ScreenMode::Play,
             nodes: Vec::new(),
             links: Vec::new(),
             bar: [SlotView::default(); 10],
-            bar_phase: BarPhase::Steady,
+            bar_phase: Some(BarPhase::Steady),
             hovered: 0,
+            choice_stamp: 0,
+            still_hovering: false,
+            labels: false,
             flash: -1,
             flash_until: 0,
             denied: false,
@@ -1722,6 +2028,17 @@ mod tests {
         assert!(close(ease(1.0), 0.999_889));
         // 1 + 0.0555 - 1/5
         assert!(close(ease(0.5), 0.855_5));
+    }
+
+    #[test]
+    fn the_smooth_step_is_three_less_twice_x_times_x_squared() {
+        assert_eq!(smoothstep(0.0), 0.0);
+        assert_eq!(smoothstep(0.5), 0.5);
+        // (3 − 0.5)·0.0625
+        assert_eq!(smoothstep(0.25), 0.156_25);
+        assert_eq!(smoothstep(1.0), 1.0);
+        // Not clamped: past one it falls again.
+        assert_eq!(smoothstep(2.0), -4.0);
     }
 
     #[test]
@@ -2038,10 +2355,10 @@ mod tests {
         assert!(close(glow.uniforms.frame_col[0], 0.4));
         assert!(close(glow.uniforms.frame_col[3], 100.0 / 255.0));
         // A flash on the first node scales its colour by 0.333 + 0.667
-        // ease(share), the share being the time left over 300 ms.
+        // smoothstep(share), the share being the time left over 300 ms.
         view.flash = 0;
         view.flash_until = 1150;
-        let share = ease(0.5);
+        let share = smoothstep(0.5);
         let scale = (f64::from(share) * 0.667 + 0.333) as f32;
         let want = scale_rgb([90, 50, 20, 255], scale);
         let draw = tree_draw(&view);
@@ -2056,7 +2373,8 @@ mod tests {
             node(0x102, 200.0, mark::SHOWN | mark::NEW),
         ];
         view.retired_new = 1;
-        view.learn_until = 1100;
+        // 50 ms left: the smooth step of 0.25, 0.15625.
+        view.learn_until = 1050;
         let draw = tree_draw(&view);
         let rings: Vec<_> = draw
             .batches
@@ -2065,7 +2383,8 @@ mod tests {
             .collect();
         // The retired node's ring, then the new node's.
         assert_eq!(rings.len(), 2);
-        let fade = ease(0.5);
+        let fade = smoothstep(0.25);
+        assert_eq!(fade, 0.156_25);
         assert!(close(rings[0].uniforms.par0[3], 1.0 - fade));
         assert!(close(rings[1].uniforms.par0[3], fade));
         // A plain node's ring: 0.599 of the zoom, 0.3 outer.
@@ -2116,20 +2435,20 @@ mod tests {
         view.flash = 0;
         view.flash_until = 1150;
         let flashed = rings(&view);
-        assert!(close(flashed[0].uniforms.par0[3], ease(0.5)));
+        assert!(close(flashed[0].uniforms.par0[3], smoothstep(0.5)));
         // A refusal dips it: 0.5 - |0.5 - fade|.
         view.denied = true;
         let denied = rings(&view);
         assert!(close(
             denied[0].uniforms.par0[3],
-            0.5 - (0.5 - ease(0.5)).abs()
+            0.5 - (0.5 - smoothstep(0.5)).abs()
         ));
         // A flash on an unpicked node adds the fading-out ring.
         view.denied = false;
         view.flash = 1;
         let extra = rings(&view);
         assert_eq!(extra.len(), 2);
-        assert!(close(extra[1].uniforms.par0[3], 1.0 - ease(0.5)));
+        assert!(close(extra[1].uniforms.par0[3], 1.0 - smoothstep(0.5)));
         // An expired flash adds nothing.
         view.flash_until = 900;
         assert_eq!(rings(&view).len(), 1);
@@ -2286,7 +2605,7 @@ mod tests {
             .iter()
             .find(|b| b.program == Program::Frame)
             .unwrap();
-        let scale = (f64::from(ease(0.5)) * 0.667 + 0.333) as f32;
+        let scale = (f64::from(smoothstep(0.5)) * 0.667 + 0.333) as f32;
         assert_eq!(
             glow.vertices[0].colour,
             ink(scale_rgb([90, 50, 20, 255], scale))
@@ -2298,33 +2617,50 @@ mod tests {
         let mut view = view();
         view.bar[0].word = 0x101;
         view.bar[0].state = state::LIT;
-        view.bar_phase = BarPhase::Opening { elapsed: 200 };
+        view.bar_phase = Some(BarPhase::Opening { elapsed: 200 });
         let pose = bar_pose(&view).unwrap();
-        let rise = ease(0.5);
+        let rise = smoothstep(0.5);
         assert!(close(pose.a12, rise));
         assert!(close(pose.size, 52.0 * rise));
         assert!(close(pose.top, 32.0 * rise));
-        assert!(close(pose.pitch, 68.0 * ease(ease(200.0 / 900.0))));
+        assert!(close(pose.pitch, 68.0 * smoothstep(ease(200.0 / 900.0))));
         // After 400 ms only the pitch is still opening.
-        view.bar_phase = BarPhase::Opening { elapsed: 500 };
+        view.bar_phase = Some(BarPhase::Opening { elapsed: 500 });
         let pose = bar_pose(&view).unwrap();
         assert_eq!((pose.a11, pose.a12, pose.size), (1.0, 1.0, 52.0));
         assert!(pose.pitch < 68.0);
-        view.bar_phase = BarPhase::Opening { elapsed: 900 };
+        view.bar_phase = Some(BarPhase::Opening { elapsed: 900 });
         assert_eq!(bar_pose(&view).unwrap().pitch, 68.0);
         // Closing: fades first, then invisible, then gone.
-        view.bar_phase = BarPhase::Closing { elapsed: 300 };
+        view.bar_phase = Some(BarPhase::Closing { elapsed: 300 });
         let pose = bar_pose(&view).unwrap();
-        let fall = ease(0.5);
+        let fall = smoothstep(0.5);
         assert!(close(pose.a11, 1.0 - fall.powi(4)));
         assert!(close(pose.a12, (1.0 - 1.5 * fall).max(0.0)));
         assert!(close(pose.size, 52.0 * (1.0 - (300.0f32 / 900.0).powi(2))));
-        view.bar_phase = BarPhase::Closing { elapsed: 700 };
+        view.bar_phase = Some(BarPhase::Closing { elapsed: 700 });
         let pose = bar_pose(&view).unwrap();
         assert_eq!((pose.a11, pose.a12), (0.0, 0.0));
-        view.bar_phase = BarPhase::Closing { elapsed: 900 };
+        view.bar_phase = Some(BarPhase::Closing { elapsed: 900 });
         assert!(bar_pose(&view).is_none());
         assert!(bar_draw(&view).batches.is_empty());
+        // Closing 150 ms into a 300 ms old opening: the rise (smooth step of
+        // 0.75, 0.84375) is cut by the fall (smooth step of 0.25, 0.15625).
+        view.bar_phase = Some(BarPhase::OpeningClosing {
+            opening: 300,
+            closing: 150,
+        });
+        let pose = bar_pose(&view).unwrap();
+        let rise = 0.843_75f32;
+        let fall = 0.156_25f32;
+        assert!(close(pose.a12, rise * (1.0 - 1.5 * fall)));
+        assert!(close(pose.a11, rise * (1.0 - fall.powi(4))));
+        let shrink = 150.0f64 / 900.0;
+        assert!(close(
+            pose.size,
+            52.0 * rise * (1.0 - shrink * shrink) as f32
+        ));
+        assert!(close(pose.pitch, 68.0 * smoothstep(ease(300.0 / 900.0))));
     }
 
     #[test]
@@ -2335,7 +2671,7 @@ mod tests {
             state: state::LIT | state::MARK,
             ..SlotView::default()
         };
-        view.bar_phase = BarPhase::Closing { elapsed: 300 };
+        view.bar_phase = Some(BarPhase::Closing { elapsed: 300 });
         let pose = bar_pose(&view).unwrap();
         let draw = bar_draw(&view);
         let icon = draw
@@ -2403,43 +2739,186 @@ mod tests {
     }
 
     #[test]
-    fn a_preview_is_dim_until_picked() {
-        let draw = preview_draw(0x7102_0106, 0, 10.0, 20.0, 12.0, 1);
-        let icon = draw
-            .batches
-            .iter()
-            .find(|b| b.program == Program::Icon)
-            .unwrap();
-        assert_eq!(icon.vertices[0].colour, [0.33, 0.33, 0.33, 1.0]);
-        let picked = preview_draw(0x7102_0106, 0x4000, 10.0, 20.0, 12.0, 1);
-        let icon = picked
-            .batches
-            .iter()
-            .find(|b| b.program == Program::Icon)
-            .unwrap();
-        assert_eq!(icon.vertices[0].colour, [1.0; 4]);
+    fn the_tooltip_names_at_once_and_describes_after_six_hundred_milliseconds() {
+        let mut view = view();
+        view.nodes = vec![node(0x101, 100.0, mark::SHOWN)];
+        view.choice_stamp = 400;
+        view.hovered = 1;
+        view.still_hovering = true;
+        // A hundred milliseconds in: the name caption is half faded in
+        // (100·160·0.005 = 80) and the description box not there yet.
+        view.now = 500;
+        let early = tooltip_layout(&view, 1, 8.0, 120.0).expect("the caption draws");
+        assert_eq!(early.name.unwrap().alpha, 80.0 / 255.0);
+        assert!(early.description.is_none());
+        // The age is 600 at now = 1000: one short of the strict 601.
+        view.now = 1000;
         assert!(
-            picked
-                .batches
-                .iter()
-                .any(|b| b.program == Program::Mods && !b.vertices.is_empty())
+            tooltip_layout(&view, 1, 8.0, 120.0)
+                .unwrap()
+                .description
+                .is_none()
+        );
+        view.now = 1001;
+        let layout = tooltip_layout(&view, 1, 8.0, 120.0).expect("the tooltip appears");
+        let description = layout.description.expect("the box appears");
+        // The box is 60 units wide and a line high; its left is a unit in
+        // from ROUND(100 − 31 units) and its top eight units under
+        // ROUND(100 + 0.54·75) = ROUND(140.5), to even 140.
+        assert_eq!(description.panel, [-20.0, 172.0, 240.0, 8.0]);
+        assert_eq!(description.text, [-20.0, 172.0]);
+        // (601 − 600)·160/300 rounds to 1.
+        assert_eq!(description.alpha, 1.0 / 255.0);
+        // The caption is centred on the node with a unit's inset and its
+        // width floor-halved; its text sits four units under 140.5.
+        let name = layout.name.expect("the caption holds");
+        assert_eq!(name.alpha, 160.0 / 255.0);
+        assert_eq!(name.panel, [44.0, 144.0, 112.0, 8.0]);
+        assert_eq!(name.text, [40.0, 156.5]);
+        // The focus leaves: the box fades out from the 600 ms mark (800 ms
+        // in: 200·160/300 rounds to 107, so 53 remains) and the caption,
+        // past its 200 ms, is gone.
+        view.still_hovering = false;
+        view.now = 1200;
+        let fade = tooltip_layout(&view, 1, 8.0, 120.0).expect("the fade still draws");
+        assert_eq!(fade.description.unwrap().alpha, 53.0 / 255.0);
+        assert!(fade.name.is_none());
+        // Past 900 ms the box holds at 160 (the draw clears the choice).
+        view.now = 1301;
+        let held = tooltip_layout(&view, 1, 8.0, 120.0).unwrap();
+        assert_eq!(held.description.unwrap().alpha, 160.0 / 255.0);
+        // A caption whose focus left 50 ms after the choice fades out:
+        // 160 − 50·160·0.005.
+        view.now = 450;
+        let leaving = tooltip_layout(&view, 1, 8.0, 120.0).unwrap();
+        assert_eq!(leaving.name.unwrap().alpha, 120.0 / 255.0);
+        // A box that would leave the window goes above the node:
+        // ROUND(730.5 − 1.08·75) = ROUND(649.5) = 650, less its 12.
+        view.still_hovering = true;
+        view.now = 2000;
+        view.nodes[0].y = 690.0;
+        let above = tooltip_layout(&view, 1, 8.0, 120.0).expect("above the node");
+        assert_eq!(above.description.unwrap().panel[1], 638.0);
+        // No description text, no box.
+        assert!(
+            tooltip_layout(&view, 0, 8.0, 120.0)
+                .unwrap()
+                .description
+                .is_none()
+        );
+        view.hovered = 2;
+        assert!(tooltip_layout(&view, 1, 8.0, 120.0).is_none());
+    }
+
+    #[test]
+    fn the_tree_text_uses_the_gui_fonts_advances() {
+        // Rayform08's advances: B 8, l 4, a 7, s 6, t 5 = 30 pixels at four
+        // pixels to the unit; its line height is 16 pixels.
+        assert_eq!(text_width(b"Blast", 4.0), 30.0);
+        assert_eq!(text_width(b"Blast", 8.0), 60.0);
+        assert_eq!(text_width(b"", 4.0), 0.0);
+        assert_eq!(text_step(4.0), 16.0);
+        assert_eq!(text_lines(b"one two three", 59.0), 1);
+        // At one unit the 4-pixel width fits no 7-pixel glyph: every byte
+        // overflows onto a line of its own.
+        assert_eq!(text_lines(&[b'a'; 4], 1.0), 4);
+        assert_eq!(text_split(&[b'a'; 4], 1.0), vec!["a", "a", "a", "a"]);
+        // A break at a space or a carriage return and line feed drops them.
+        assert_eq!(text_split(b"aaaa aaaa", 10.0), vec!["aaaa", "aaaa"]);
+        assert_eq!(text_split(b"ab\r\ncd", 59.0), vec!["ab", "cd"]);
+        assert_eq!(text_split(b"", 59.0), vec![""]);
+    }
+
+    #[test]
+    fn a_wrapped_tooltip_description_keeps_every_line() {
+        let mut view = view();
+        view.nodes = vec![node(0x101, 100.0, mark::SHOWN)];
+        view.hovered = 1;
+        view.choice_stamp = 0;
+        view.now = 1000;
+        view.still_hovering = true;
+        let draw = tooltip_draw(
+            &view,
+            &["Hurls a".to_string(), "bolt".to_string()],
+            "Blast",
+            8.0,
+            60.0,
+        );
+        // The two panels are one batch (the submit joins equal ones).
+        assert_eq!(draw.batches.len(), 1);
+        assert_eq!(draw.batches[0].vertices.len(), 12);
+        assert_eq!(draw.texts.len(), 3);
+        assert_eq!(draw.texts[1].text, "bolt");
+        assert_eq!(draw.texts[2].text, "Blast");
+        // The box grows a line: 2 × 8 + 4 − 4 = 16.
+        assert_eq!(
+            draw.batches[0].vertices[0].y - draw.batches[0].vertices[2].y,
+            16.0
         );
     }
 
     #[test]
-    fn the_tooltip_needs_a_hovered_node() {
+    fn the_prompt_places_its_three_panels_and_texts() {
         let mut view = view();
-        view.nodes = vec![node(0x101, 100.0, mark::SHOWN)];
-        assert!(
-            tooltip_draw(&view, "Name", &["line".to_string()])
-                .batches
-                .is_empty()
+        view.mode = ScreenMode::Create;
+        view.width = 1000.0;
+        view.height = 700.0;
+        let draw = prompt_draw(
+            &view, "Choose", 100.0, "BACK", 40.0, "BEGIN", 50.0, 0x200_0000,
         );
-        view.hovered = 1;
-        let draw = tooltip_draw(&view, "Name", &["line".to_string()]);
         assert_eq!(draw.batches.len(), 1);
+        assert_eq!(draw.batches[0].vertices.len(), 6 * 3);
+        // Integer halving: 500 − 50 = 450; the height's eighth is 87.
+        // The title's panel is at an eighth of the height, 87, plus its two
+        // units; the first vertex is its bottom edge.
+        assert_eq!(draw.batches[0].vertices[0].y, 87.0 + 8.0);
+        assert_eq!(draw.texts[0].x, 454.0);
+        assert_eq!(draw.texts[0].y, 99.0);
+        // BACK: 28 units inside the first button, centred.
+        assert_eq!(draw.texts[1].x, 28.0 + 36.0);
+        assert_eq!(draw.texts[1].y, 672.0 + 12.0);
+        // BEGIN: 28 units inside the right button, centred.
+        assert_eq!(draw.texts[2].x, 852.0 + 31.0);
+        assert_eq!(draw.texts[2].colour, [1.0, 0.95, 0.8, 1.0]);
+    }
+
+    #[test]
+    fn every_node_wears_its_name_in_label_mode() {
+        let mut view = view();
+        view.nodes = vec![node(0x101, 100.0, mark::SHOWN), node(0x102, 200.0, 0)];
+        let names = vec![("Blast".to_string(), 40.0), ("Bolt".to_string(), 24.0)];
+        let draw = labels_draw(&view, &names);
+        // Both boxes are one batch (the submit joins equal ones).
+        assert_eq!(draw.batches.len(), 1);
+        assert_eq!(draw.batches[0].vertices.len(), 12);
         assert_eq!(draw.texts.len(), 2);
-        view.hovered = 2;
-        assert!(tooltip_draw(&view, "Name", &[]).texts.is_empty());
+        // The box is the width less two units (32), at ROUND(100 − 16)
+        // across and ROUND(4 + 140.5) = 144 (to even) down.
+        assert_eq!(draw.batches[0].vertices[0].x, 84.0);
+        assert_eq!(draw.batches[0].vertices[2].x, 116.0);
+        assert_eq!(draw.batches[0].vertices[2].y, 144.0);
+        // The text: a unit right of ROUND(100 − (40 + 8)/2), at
+        // ROUND(16 + 140.5) = 156, its baseline 1.6 units lower.
+        assert_eq!(draw.texts[0].x, 80.0);
+        assert_eq!(draw.texts[0].y, 156.0 + 6.4);
+        // The second box: 16 wide at ROUND(200 − 8).
+        assert_eq!(draw.batches[0].vertices[6].x, 192.0);
+    }
+
+    #[test]
+    fn the_dragged_power_is_thirteen_units_across() {
+        let draw = preview_draw(0x101, mark::PICKED, 100.0, 50.0, 4.0, 1);
+        assert_eq!(draw.batches.len(), 2);
+        let icon_batch = &draw.batches[0];
+        assert_eq!(icon_batch.program, Program::Icon);
+        assert_eq!(icon_batch.vertices[0].x, 100.0 - 26.0);
+        let glow_batch = &draw.batches[1];
+        assert_eq!(glow_batch.program, Program::Frame);
+        // Unpicked: the glow's colour is a third of the domain's.
+        let unpicked = preview_draw(0x101, 0, 100.0, 50.0, 4.0, 1);
+        assert_ne!(
+            unpicked.batches[1].vertices[0].colour,
+            glow_batch.vertices[0].colour
+        );
     }
 }

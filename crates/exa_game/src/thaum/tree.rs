@@ -58,9 +58,28 @@
 //!   placed nodes, their link curves, the marks, the flash and learn
 //!   timers and the bar's slots; the tree pass and the bar are laid out
 //!   there. A slot whose power matches a picked node is given the
-//!   persistent-pick bit in the view. The show and hide window fades, the
-//!   bar's opening and closing animation and the link ribbon's spline are
-//!   not modelled: the view is always fully shown and the bar steady.
+//!   persistent-pick bit in the view. The link ribbon's spline texture is
+//!   not modelled (the ribbon reads as white).
+//! - **The view's clock** ([`TreeScreen::advance`]): the springs step in the
+//!   draw's 17 ms frames and the pan is shown between the step before the
+//!   last and the last by the frame's place in a step; a stretched link is
+//!   the drag's own cubic (0.508 or 0.29 of the fixed zoom, a 400 cap on
+//!   the tangents).
+//! - **The form's windows** ([`TreeScreen::present_window`]): showing the
+//!   tree raises a 1000 ms fade: with `r = 1 − (1 − left·0.001)` the share
+//!   still to run, the alpha is `min(2·(1 − r²), 1)` (0 at the opening, 1
+//!   from halfway) and `1 − r²` fades the bar child; hiding cuts both over 256 ms from the closing stamp.
+//!   The backdrop takes the first alpha and the content the second; a
+//!   domain switch cuts the content out over 256 ms, swaps the domain at
+//!   the stamp and fades the new tree in over 1000 ms ([`fade_domain`]
+//!   starts it; the wheel that calls it is outside the pack).
+//! - **The bar's animation** ([`TreeScreen::open_bar`], [`close_bar`] and
+//!   [`step_bar`]): opening loads the bar, clears each slot's flash and
+//!   picked bits and runs a 900 ms rise whose height and size are a smooth
+//!   step `(3 − 2x)·x²` of the elapsed share over 400 ms (the pitch the
+//!   smooth step of the tree's ease over 900 ms); closing runs 900 ms, the
+//!   marked slots falling as `1 − f⁴` and the rest as `1 − 1.5f`, then
+//!   clears the animation and the slots' flash and picked bits.
 //! - **The slot budget** ([`limit_running_powers`]): the highest Concentration
 //!   technique of 2 to 4 among the skill's levels, one less without the
 //!   focus item, is how many running powers a body may keep; the rest are
@@ -68,7 +87,8 @@
 //!
 //! - **Granting** ([`grant_power`]): the game's grant routine adds a power
 //!   to a record that holds Insight's seventh technique when its node's
-//!   prerequisite is learnt. Nothing calls it from the running game yet.
+//!   prerequisite is learnt. The caster's [`PowerCaster::grant`](super::cast::PowerCaster::grant)
+//!   calls it; nothing in the running game offers a power yet.
 //!
 //! Evidence: the tree reader, the open, store, mark, focus, click, drag,
 //! key and bar routines, the bar's layout and its state timings, and the
@@ -657,6 +677,42 @@ pub struct TreeScreen {
     pub hovered: i32,
     /// The quick bar overlay is open.
     pub bar_open: bool,
+    /// Every shown node wears its name (the form's label mode, set while a
+    /// power is dragged).
+    pub labels: bool,
+    /// The form's fade flags: bit 0 opening, bit 1 closing.
+    pub fade_flags: u8,
+    /// The stamp the opening fade ends.
+    pub open_at: u32,
+    /// The stamp the closing fade ends.
+    pub close_at: u32,
+    /// The closing fade has run out: the screen is no longer drawn.
+    pub faded_out: bool,
+    /// The domain switch's fade flags: bit 0 the new tree fades in, bit 1
+    /// the old tree fades out.
+    pub domain_flags: u8,
+    /// The stamp of the domain switch's fade.
+    pub domain_at: u32,
+    /// The record and domain files are waiting for the switch's fade to run
+    /// out; the caller performs it.
+    pub switch_due: bool,
+    /// The window's fade this frame (the backdrop's alpha).
+    pub window_alpha: f32,
+    /// The tree content's fade this frame.
+    pub content_alpha: f32,
+    /// The bar child's fade this frame.
+    pub bar_alpha: f32,
+    /// The bar's animation flags: bit 1 closing, bit 2 opening.
+    pub bar_flags: u8,
+    /// The stamp the bar's opening began.
+    pub bar_open_at: u32,
+    /// The stamp the bar's closing began.
+    pub bar_close_at: u32,
+    /// The bar's animation this frame.
+    pub bar_phase_now: Option<exa_ui::tree_draw::BarPhase>,
+    /// The simulated time the view's springs have reached: the draw
+    /// advances it in 17 ms steps.
+    pub step_at: u32,
 }
 
 /// The original's zoom levels' thresholds and gains.
@@ -771,6 +827,22 @@ impl TreeScreen {
             link_turn: 0.0,
             hovered: 0,
             bar_open: false,
+            labels: false,
+            fade_flags: 0,
+            open_at: 0,
+            close_at: 0,
+            faded_out: false,
+            domain_flags: 0,
+            domain_at: 0,
+            switch_due: false,
+            window_alpha: 1.0,
+            content_alpha: 1.0,
+            bar_alpha: 1.0,
+            bar_flags: 0,
+            bar_open_at: 0,
+            bar_close_at: 0,
+            bar_phase_now: Some(exa_ui::tree_draw::BarPhase::Steady),
+            step_at: 0,
         }
     }
 
@@ -972,12 +1044,43 @@ impl TreeScreen {
         self.step_charge(steps * 10.0, now);
     }
 
-    /// Eases the pan and the zoom. Returns whether anything moved.
-    pub fn settle(&mut self) -> bool {
+    /// The view's step, in milliseconds (the original's 0x11).
+    pub const STEP_MS: u32 = 17;
+
+    /// Advances the pan and zoom springs to `now` in 17 ms steps, then
+    /// shows the pan blended from the step before the last to the last by
+    /// the frame's place inside a step, as the draw does. The first call or
+    /// an opening sets the step clock.
+    pub fn advance(&mut self, now: u32) {
+        if self.step_at == 0 {
+            self.step_at = now;
+        }
+        while self.step_at < now {
+            self.step_at = self.step_at.wrapping_add(Self::STEP_MS);
+            if !self.step_springs() {
+                self.step_at = now;
+                break;
+            }
+        }
+        // The blend is taken in double: one less the overshoot over 17.
+        let overshoot = (u64::from(self.step_at) as i64 - u64::from(now) as i64) as f64;
+        self.present((1.0 - overshoot * 0.058_823_529_411_764_705) as f32);
+    }
+
+    /// One step of the pan and zoom springs. Returns whether anything
+    /// moved.
+    fn step_springs(&mut self) -> bool {
         let moved_pan = step_pan(&mut self.pan);
         let moved_zoom = step_zoom(&mut self.zoom);
-        self.present(1.0);
         moved_pan || moved_zoom
+    }
+
+    /// Eases the pan and the zoom and shows the result. Returns whether
+    /// anything moved.
+    pub fn settle(&mut self) -> bool {
+        let moved = self.step_springs();
+        self.present(1.0);
+        moved
     }
 
     /// Reads a focus id: a plain node selects, and a bar slot or a special
@@ -1257,6 +1360,60 @@ impl TreeScreen {
         }
     }
 
+    /// The curve of the link being dragged out of the focused node, as the
+    /// original draws it while the drag is live: a 30-sample cubic from the
+    /// placed node's edge to the pointer, its start along the drag's turn by
+    /// `(0.508 − zoom·0.003)·zoom_fixed` (0.29 when the power is framed),
+    /// and both tangents scaled by the distance, held to 400, times the
+    /// zoom. The tangent convention (the far one pointing back at the node)
+    /// is inferred from the engine's vector calls: a labelled guess. Like
+    /// the tree's own links, the spline's two end handles (a fifteenth of
+    /// each tangent beyond the ends, for the ribbon's end directions) are
+    /// not points of the curve and are not kept.
+    pub fn drag_link_points(&self) -> Option<Vec<[f32; 2]>> {
+        if !matches!(self.drag, DragState::LinkHover | DragState::Link) {
+            return None;
+        }
+        let index = self.node_under.checked_sub(1)? as usize;
+        let node = self.nodes.get(index)?;
+        let at = *self.placed.get(index)?;
+        let (sine, cosine) = (self.link_turn * std::f32::consts::TAU).sin_cos();
+        let base = if node.power & word::FRAME == 0 {
+            0.508
+        } else {
+            0.29
+        };
+        let reach =
+            ((base - f64::from(self.zoom.value) * 0.003) * f64::from(self.zoom_fixed)) as f32;
+        let start = [at[0] + sine * reach, at[1] + cosine * reach];
+        let pointer = self.pointer;
+        let delta = [pointer[0] - start[0], pointer[1] - start[1]];
+        let length = (delta[0] * delta[0] + delta[1] * delta[1]).sqrt();
+        let capped = if length >= 400.0 { 400.0 } else { length };
+        let unit = if length == 0.0 {
+            [0.0, 0.0]
+        } else {
+            [delta[0] / length, delta[1] / length]
+        };
+        let out = [
+            sine * capped * self.zoom.value,
+            cosine * capped * self.zoom.value,
+        ];
+        let in_ = [
+            -unit[0] * capped * self.zoom.value,
+            -unit[1] * capped * self.zoom.value,
+        ];
+        let mut points = Vec::with_capacity(31);
+        points.push(start);
+        for step in 1..=30 {
+            let t = step as f32 / 30.0;
+            points.push(exa_formats::power_tree::cubic_point(
+                start, pointer, out, in_, t,
+            ));
+        }
+        Some(points)
+    }
+
     /// Ends a drag: a link dropped on a node is added to the focused node.
     /// Returns the released pointer and whether a link was added.
     pub fn release_drag(&mut self, x: f32, y: f32) -> bool {
@@ -1522,11 +1679,12 @@ impl TreeScreen {
 
     /// Opens or closes the quick bar: opening loads it from the record and
     /// re-marks the nodes; closing stores it. Returns whether it is open.
-    pub fn toggle_bar(&mut self, bar: &mut PowerBar, record: &mut PowerRecord) -> bool {
+    pub fn toggle_bar(&mut self, bar: &mut PowerBar, record: &mut PowerRecord, now: u32) -> bool {
         if self.bar_open {
             bar.store(record, false);
+            self.close_bar(now);
         } else {
-            bar.load(record);
+            self.open_bar(bar, record, now);
             self.apply_bar_marks(bar);
         }
         self.bar_open = !self.bar_open;
@@ -1833,6 +1991,15 @@ impl TreeScreen {
                 });
             }
         }
+        // The link a drag has out of a node is drawn as it is stretched.
+        if let Some(points) = self.drag_link_points() {
+            let index = self.node_under as usize - 1;
+            links.push(draw::LinkView {
+                points,
+                source_mark: self.marks.get(index).copied().unwrap_or(0),
+                dest_mark: 0,
+            });
+        }
         let picked: Vec<u32> = self
             .nodes
             .iter()
@@ -1857,7 +2024,9 @@ impl TreeScreen {
             width,
             height,
             scale,
-            window: 1.0,
+            window: self.window_alpha,
+            content: self.content_alpha,
+            bar_alpha: self.bar_alpha,
             zoom: self.zoom.value,
             icon_size: self.zoom_fixed,
             mode: match self.mode {
@@ -1869,8 +2038,11 @@ impl TreeScreen {
             nodes,
             links,
             bar: slots,
-            bar_phase: draw::BarPhase::Steady,
-            hovered: self.node_under,
+            bar_phase: self.bar_phase_now,
+            hovered: self.shown_choice,
+            choice_stamp: self.choice_stamp,
+            still_hovering: self.last_choice != 0,
+            labels: self.labels,
             flash: self.flash,
             flash_until: self.flash_until,
             denied: self.denied,
@@ -1883,25 +2055,237 @@ impl TreeScreen {
     }
 }
 
-/// What showing the screen sets.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// What showing or hiding the screen sets.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ShowState {
-    /// The form flags' new value.
+    /// The form fade flags' new value: bit 0 opening, bit 1 closing.
     pub flags: u8,
-    /// The bar's hide stamp.
-    pub hide_at: u32,
-    /// The remembered domain.
+    /// The fade's end stamp.
+    pub stamp: u32,
+    /// The remembered domain (the hide path keeps it; the open path reads
+    /// it).
     pub remembered: u8,
+    /// The sound the open path plays; a hide is silent.
+    pub sound: Option<TreeSound>,
+}
+
+/// The form's opening fade, in milliseconds.
+pub const OPEN_MS: u32 = 1000;
+/// The form's closing fade, in milliseconds.
+pub const CLOSE_MS: u32 = 256;
+/// The bar's opening or closing animation, in milliseconds.
+pub const BAR_ANIM_MS: u32 = 900;
+/// The form's open-fade flag.
+pub const FADING_IN: u8 = 1;
+/// The form's close-fade flag.
+pub const FADING_OUT: u8 = 2;
+/// The domain switch's fade-in flag.
+pub const DOMAIN_IN: u8 = 1;
+/// The domain switch's fade-out flag.
+pub const DOMAIN_OUT: u8 = 2;
+/// The bar's closing flag.
+pub const BAR_CLOSING: u8 = 1;
+/// The bar's opening flag.
+pub const BAR_OPENING: u8 = 2;
+/// The bar is steady after its opening animation.
+pub const BAR_STEADY: u8 = 4;
+
+/// The original's opening fade, with `left` the milliseconds to the stamp:
+/// `shown = 1 − (1 − left·0.001)` (the inner difference in double, rounded
+/// to single, then taken from one in single), `second = 1 − shown²`, and
+/// the window `2·second` held to one. It rises from 0 at the opening to 1
+/// at the stamp. The clock subtraction is over the two zero-extended 32-bit
+/// stamps.
+fn open_fade(stamp: u32, now: u32) -> (f32, f32) {
+    let left = (u64::from(stamp) as i64 - u64::from(now) as i64) as f64;
+    let shown = 1.0 - (1.0 - left * 0.001) as f32;
+    let second = 1.0 - shown * shown;
+    let mut window = second * 2.0;
+    // `COMISS`/`JBE`: an unordered or not-greater value is left alone.
+    if window > 1.0 {
+        window = 1.0;
+    }
+    (window, second)
 }
 
 impl TreeScreen {
-    /// Showing the tree flags it shown and stamps the bar's 256 ms hide.
-    pub fn show(&self, now: u32) -> ShowState {
+    /// Showing the tree starts its 1000 ms opening fade and remembers the
+    /// domain for the next opening.
+    pub fn show(&mut self, now: u32) -> ShowState {
+        self.fade_flags |= FADING_IN;
+        self.open_at = now.wrapping_add(OPEN_MS);
+        self.faded_out = false;
+        self.step_at = now;
         ShowState {
-            flags: 2,
-            hide_at: now.wrapping_add(0x100),
+            flags: self.fade_flags,
+            stamp: self.open_at,
             remembered: self.domain,
+            sound: Some(SHOW_SOUND),
         }
+    }
+
+    /// Whether the closing fade is running: the screen takes no pointer
+    /// input any more.
+    pub fn closing(&self) -> bool {
+        self.fade_flags & FADING_OUT != 0
+    }
+
+    /// Hiding the tree starts its 256 ms closing fade; the screen keeps
+    /// drawing, thinner each frame, until the fade runs out.
+    pub fn hide(&mut self, now: u32) -> ShowState {
+        self.fade_flags |= FADING_OUT;
+        self.close_at = now.wrapping_add(CLOSE_MS);
+        ShowState {
+            flags: self.fade_flags,
+            stamp: self.close_at,
+            remembered: self.domain,
+            sound: None,
+        }
+    }
+
+    /// Computes this frame's three fades and the domain switch, as the
+    /// draw's head does. The closing fade clears its flag and marks the
+    /// screen faded out once its stamp is reached; the opening fade clears
+    /// its flag at the same point.
+    pub fn present_window(&mut self, now: u32) {
+        let mut window = 1.0;
+        let mut second = 1.0;
+        self.faded_out = false;
+        self.switch_due = false;
+        if self.fade_flags & FADING_IN != 0 {
+            if now < self.open_at {
+                let (raised, inner) = open_fade(self.open_at, now);
+                window = raised;
+                second = inner;
+            } else {
+                self.fade_flags &= !FADING_IN;
+            }
+        }
+        if self.fade_flags & FADING_OUT != 0 {
+            if self.close_at <= now {
+                self.fade_flags &= !FADING_OUT;
+                self.window_alpha = 0.0;
+                self.content_alpha = 0.0;
+                self.bar_alpha = 0.0;
+                self.faded_out = true;
+                return;
+            }
+            let left = (u64::from(self.close_at) as i64 - u64::from(now) as i64) as f32;
+            window = left * window / 256.0;
+        }
+        // The bar child's own fade is read before the domain switch reuses
+        // the second value.
+        let bar_second = second;
+        let mut content = window;
+        if self.domain_flags & DOMAIN_IN != 0 {
+            if now < self.domain_at {
+                let (raised, _) = open_fade(self.domain_at, now);
+                content = raised;
+            } else {
+                self.domain_flags &= !DOMAIN_IN;
+            }
+        }
+        if self.domain_flags & DOMAIN_OUT != 0 {
+            if now < self.domain_at {
+                let left = (u64::from(self.domain_at) as i64 - u64::from(now) as i64) as f32;
+                content = left * content / 256.0;
+            } else {
+                // The old tree has faded out: switch the domain and start
+                // the new tree's fade-in. The caller performs the switch.
+                self.domain_flags = DOMAIN_IN;
+                self.domain_at = now.wrapping_add(OPEN_MS);
+                self.switch_due = true;
+                content = 0.0;
+            }
+        }
+        self.window_alpha = window;
+        self.content_alpha = content;
+        self.bar_alpha = if self.fade_flags & FADING_OUT != 0 {
+            window * bar_second
+        } else {
+            bar_second
+        };
+    }
+
+    /// Starts the domain switch's 256 ms fade-out. The wheel that turns the
+    /// domain is outside this module; its click calls this.
+    pub fn fade_domain(&mut self, now: u32) {
+        self.domain_flags = DOMAIN_OUT;
+        self.domain_at = now.wrapping_add(CLOSE_MS);
+    }
+
+    /// Loads the bar from the record and starts its 900 ms opening, as
+    /// turning it on does.
+    pub fn open_bar(&mut self, bar: &mut PowerBar, record: &PowerRecord, now: u32) {
+        bar.load(record);
+        self.bar_flags = BAR_OPENING;
+        self.bar_open_at = now;
+        for slot in &mut bar.slots {
+            slot.state &= 0xffff_fff6;
+        }
+    }
+
+    /// Loads the bar and starts its opening only when no animation runs, as
+    /// opening the tree does.
+    pub fn open_bar_if_closed(&mut self, bar: &mut PowerBar, record: &PowerRecord, now: u32) {
+        if self.bar_flags & (BAR_OPENING | BAR_CLOSING) == 0 {
+            self.open_bar(bar, record, now);
+        }
+    }
+
+    /// Starts the bar's 900 ms closing animation, keeping an opening that
+    /// is still running flagged (both run together, each from its stamp).
+    pub fn close_bar(&mut self, now: u32) {
+        self.bar_flags = (self.bar_flags & BAR_OPENING) | BAR_CLOSING;
+        self.bar_close_at = now;
+    }
+
+    /// Steps the bar's slots and reads its animation for `now`, as the bar
+    /// draw's head does: an opening past 900 ms becomes steady (or leaves
+    /// only the closing), and a closing runs from its own stamp, at the
+    /// same time as an opening that is still running. The bar closing to
+    /// its end clears the slots' flash and picked bits and answers `None`.
+    /// The stamps are compared unsigned in 64 bits, as the original does.
+    pub fn step_bar(
+        &mut self,
+        bar: &mut PowerBar,
+        now: u32,
+    ) -> Option<exa_ui::tree_draw::BarPhase> {
+        use exa_ui::tree_draw::BarPhase;
+        for slot in &mut bar.slots {
+            slot.step(now);
+        }
+        let clock = u64::from(now);
+        let mut opening = None;
+        if self.bar_flags & BAR_OPENING != 0 {
+            if clock < u64::from(self.bar_open_at) + u64::from(BAR_ANIM_MS) {
+                opening = Some(now.wrapping_sub(self.bar_open_at));
+            } else if self.bar_flags & BAR_CLOSING == 0 {
+                self.bar_flags = BAR_STEADY;
+            } else {
+                self.bar_flags = BAR_CLOSING;
+            }
+        }
+        let mut closing = None;
+        if self.bar_flags & BAR_CLOSING != 0 {
+            if u64::from(self.bar_close_at) + u64::from(BAR_ANIM_MS) <= clock {
+                self.bar_flags = 0;
+                for slot in &mut bar.slots {
+                    slot.state &= 0xffff_fff6;
+                }
+                self.bar_phase_now = None;
+                return None;
+            }
+            closing = Some(now.wrapping_sub(self.bar_close_at));
+        }
+        let phase = match (opening, closing) {
+            (None, None) => BarPhase::Steady,
+            (Some(elapsed), None) => BarPhase::Opening { elapsed },
+            (None, Some(elapsed)) => BarPhase::Closing { elapsed },
+            (Some(opening), Some(closing)) => BarPhase::OpeningClosing { opening, closing },
+        };
+        self.bar_phase_now = Some(phase);
+        Some(phase)
     }
 
     /// Changes the domain: the current one is stored back into the record
@@ -2531,6 +2915,36 @@ mod tests {
         };
         assert!(!step_pan(&mut lost));
         assert!(lost.position[0].is_nan());
+    }
+
+    #[test]
+    fn the_view_advances_in_seventeen_millisecond_steps() {
+        let mut screen = TreeScreen::empty(DOMAIN_MIND, TreeMode::Play);
+        screen.show(1000);
+        screen.pan.position = [0.0, 0.0];
+        screen.pan.previous = [0.0, 0.0];
+        screen.pan.goal = [10.0, 0.0];
+        // A step lands the pan at 0.98 and the frame at the step's end
+        // shows it whole: the overshoot is exactly one step.
+        screen.advance(1000 + 17);
+        assert_eq!(screen.step_at, 1017);
+        assert!((screen.pan.position[0] - 0.98).abs() < 1e-6);
+        assert!((screen.shown_pan[0] - 0.98).abs() < 1e-6);
+        // Twelve milliseconds into the next step the frame shows 5/17 of
+        // the way from the previous point to the new one.
+        screen.advance(1000 + 17 + 5);
+        assert_eq!(screen.step_at, 1000 + 34);
+        let alpha = (1.0 - 12.0 * 0.058_823_529_411_764_705_f64) as f32;
+        let expected =
+            screen.pan.previous[0] + (screen.pan.position[0] - screen.pan.previous[0]) * alpha;
+        assert_eq!(screen.pan.previous[0], 0.98);
+        assert!((screen.shown_pan[0] - expected).abs() < 1e-5);
+        // When the springs come to rest the clock snaps to the frame.
+        screen.pan.position = screen.pan.goal;
+        screen.pan.previous = screen.pan.goal;
+        screen.advance(10_000);
+        assert_eq!(screen.step_at, 10_000);
+        assert_eq!(screen.shown_pan[0], 10.0);
     }
 
     #[test]
@@ -3363,6 +3777,41 @@ mod tests {
     }
 
     #[test]
+    fn a_stretched_link_runs_from_the_node_to_the_pointer() {
+        let mut screen =
+            TreeScreen::from_nodes(DOMAIN_MIND, TreeMode::Play, vec![node(0x101, vec![])]);
+        screen.zoom.value = 1.0;
+        screen.zoom_fixed = 256.0;
+        screen.placed[0] = [0.0, 0.0];
+        assert!(screen.drag_link_points().is_none());
+        screen.drag = DragState::LinkHover;
+        screen.node_under = 1;
+        screen.link_turn = 0.0;
+        screen.pointer = [0.0, 100.0];
+        let points = screen.drag_link_points().expect("the drag draws");
+        assert_eq!(points.len(), 31);
+        // The start is 0.508 − 0.003 of the zoom, times 256, straight up
+        // from the placed node.
+        assert!((points[0][1] - 129.28).abs() < 1e-4);
+        assert_eq!(points[0][0], 0.0);
+        // The cubic reaches the pointer at its thirtieth sample.
+        assert!((points[30][1] - 100.0).abs() < 1e-3);
+        // The tangents' reach is held to 400: halfway to a pointer ten
+        // thousand away the curve is at the ends' mean plus an eighth of
+        // each tangent, (129.28 + 10000)/2 + 50 + 50.
+        screen.pointer = [0.0, 10_000.0];
+        let far = screen.drag_link_points().expect("the drag draws");
+        assert!((far[15][1] - 5_164.64).abs() < 1e-2);
+        // A framed power starts nearer its centre: 0.29 − 0.003 over 256.
+        screen.nodes[0].power = 0x0100_0101;
+        screen.pointer = [0.0, 100.0];
+        let framed = screen.drag_link_points().expect("the drag draws");
+        assert!((framed[0][1] - 73.472).abs() < 1e-4);
+        screen.drag = DragState::Idle;
+        assert!(screen.drag_link_points().is_none());
+    }
+
+    #[test]
     fn a_dragged_link_is_added_to_the_node_and_its_curve() {
         let mut screen = TreeScreen::from_nodes(
             DOMAIN_MIND,
@@ -3617,10 +4066,10 @@ mod tests {
             flags: LEARNED | PICKED,
         }];
         let mut bar = PowerBar::default();
-        assert!(screen.toggle_bar(&mut bar, &mut record));
+        assert!(screen.toggle_bar(&mut bar, &mut record, 10));
         assert_eq!(bar.slots[0].word, 0x100101);
         assert_eq!(screen.marks[0], SHOWN | LEARNED | PICKED);
-        assert!(!screen.toggle_bar(&mut bar, &mut record));
+        assert!(!screen.toggle_bar(&mut bar, &mut record, 20));
         assert_eq!(record.slots[0], 0x100101);
         screen.leave(&mut bar, &mut record);
         assert!(!screen.bar_open);
@@ -3753,16 +4202,135 @@ mod tests {
     }
 
     #[test]
-    fn showing_stamps_the_bar_and_the_domain_switches() {
+    fn the_window_fades_in_and_out_by_its_stamps() {
+        let mut tree = TreeScreen::empty(DOMAIN_MIND, TreeMode::Play);
+        tree.show(1000);
+        // Halfway through the opening fade: the inner value is 0.5, so the
+        // window is 1 − 0.25 doubled and held at one, and its inner value
+        // is 0.75.
+        tree.present_window(1500);
+        assert_eq!(tree.window_alpha, 1.0);
+        assert_eq!(tree.content_alpha, 1.0);
+        assert_eq!(tree.bar_alpha, 0.75);
+        // A millisecond after the opening the fade has barely begun: 999 ms
+        // are left, the shown share is 1 − 0.001 = 0.999, its square's
+        // complement 0.001998961, and the window that doubled, 0.003997922.
+        tree.present_window(1001);
+        assert!((tree.window_alpha - 0.003_997_922).abs() < 1e-9);
+        assert!((tree.content_alpha - 0.003_997_922).abs() < 1e-9);
+        assert!((tree.bar_alpha - 0.001_998_961).abs() < 1e-9);
+        // A millisecond before the stamp it is nearly whole: the bar's fade
+        // is 0.999999 and the window is held at one.
+        tree.present_window(1999);
+        assert_eq!(tree.window_alpha, 1.0);
+        assert!((tree.bar_alpha - 0.999_999).abs() < 1e-6);
+        // At the stamp the flag clears and the window is whole.
+        tree.present_window(2000);
+        assert_eq!(tree.fade_flags, 0);
+        assert_eq!(tree.window_alpha, 1.0);
+        assert!(!tree.faded_out);
+        // The closing fade halves the content a 128 ms from its end.
+        tree.hide(3000);
+        tree.present_window(3128);
+        assert_eq!(tree.window_alpha, 0.5);
+        assert_eq!(tree.content_alpha, 0.5);
+        assert_eq!(tree.bar_alpha, 0.5);
+        tree.present_window(3256);
+        assert_eq!(tree.fade_flags, 0);
+        assert!(tree.faded_out);
+        assert_eq!(tree.window_alpha, 0.0);
+    }
+
+    #[test]
+    fn a_domain_switch_fades_out_then_in() {
+        let mut tree = TreeScreen::empty(DOMAIN_MIND, TreeMode::Play);
+        tree.fade_domain(1000);
+        assert_eq!((tree.domain_flags, tree.domain_at), (DOMAIN_OUT, 1256));
+        tree.present_window(1128);
+        assert_eq!(tree.content_alpha, 0.5);
+        // The stamp switches the domain: the caller's flag rises and the
+        // new tree fades in over the next second.
+        tree.present_window(1256);
+        assert!(tree.switch_due);
+        assert_eq!((tree.domain_flags, tree.domain_at), (DOMAIN_IN, 2256));
+        assert_eq!(tree.content_alpha, 0.0);
+        tree.present_window(1756);
+        assert!(!tree.switch_due);
+        assert_eq!(tree.content_alpha, 1.0);
+        // The window itself never faded.
+        assert_eq!(tree.window_alpha, 1.0);
+    }
+
+    #[test]
+    fn the_bar_opens_and_closes_over_nine_hundred_milliseconds() {
+        use exa_ui::tree_draw::BarPhase;
+        let mut tree = TreeScreen::empty(DOMAIN_MIND, TreeMode::Play);
+        let mut bar = PowerBar::default();
+        bar.slots[0].state = bar_state::FLASH | bar_state::MARK;
+        let record = PowerRecord::starter();
+        tree.open_bar(&mut bar, &record, 1000);
+        // Opening clears the slot's flash and picked bits; the loaded
+        // record's picked pair puts the picked bit back.
+        assert_eq!(bar.slots[0].state, bar_state::PICKED);
+        assert_eq!(
+            tree.step_bar(&mut bar, 1049),
+            Some(BarPhase::Opening { elapsed: 49 })
+        );
+        assert_eq!(
+            tree.step_bar(&mut bar, 1899),
+            Some(BarPhase::Opening { elapsed: 899 })
+        );
+        assert_eq!(tree.step_bar(&mut bar, 1900), Some(BarPhase::Steady));
+        assert_eq!(tree.bar_flags, BAR_STEADY);
+        // A closing bar runs its own 900 ms and leaves the slots' flash,
+        // lit, fade and picked bits alone.
+        bar.slots[1].state = bar_state::LIT;
+        tree.close_bar(2000);
+        assert_eq!(tree.bar_flags, BAR_CLOSING);
+        assert_eq!(
+            tree.step_bar(&mut bar, 2100),
+            Some(BarPhase::Closing { elapsed: 100 })
+        );
+        assert_eq!(
+            tree.step_bar(&mut bar, 2899),
+            Some(BarPhase::Closing { elapsed: 899 })
+        );
+        assert_eq!(tree.step_bar(&mut bar, 2900), None);
+        assert_eq!(tree.bar_flags, 0);
+        assert_eq!(bar.slots[1].state, bar_state::LIT);
+        // Closing while opening: both run, each from its own stamp, and the
+        // opening's end leaves the closing alone.
+        tree.open_bar(&mut bar, &record, 3000);
+        tree.close_bar(3200);
+        assert_eq!(tree.bar_flags, BAR_OPENING | BAR_CLOSING);
+        assert_eq!(
+            tree.step_bar(&mut bar, 3500),
+            Some(BarPhase::OpeningClosing {
+                opening: 500,
+                closing: 300
+            })
+        );
+        assert_eq!(
+            tree.step_bar(&mut bar, 3900),
+            Some(BarPhase::Closing { elapsed: 700 })
+        );
+        assert_eq!(tree.bar_flags, BAR_CLOSING);
+    }
+
+    #[test]
+    fn showing_stamps_the_open_fade_and_the_domain_switches() {
         let mut tree = TreeScreen::empty(DOMAIN_FORCE, TreeMode::Play);
         assert_eq!(
             tree.show(1000),
             ShowState {
-                flags: 2,
-                hide_at: 1256,
-                remembered: DOMAIN_FORCE
+                flags: FADING_IN,
+                stamp: 2000,
+                remembered: DOMAIN_FORCE,
+                sound: Some(SHOW_SOUND)
             }
         );
+        assert_eq!(tree.hide(3000).stamp, 3256);
+        assert_eq!(tree.fade_flags, FADING_IN | FADING_OUT);
         let mut record = PowerRecord::starter();
         let old = tree.switch_domain(DOMAIN_MIND, &mut record, None, 1000.0, 700.0);
         assert_eq!(old, DOMAIN_FORCE);
