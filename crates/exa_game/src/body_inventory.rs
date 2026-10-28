@@ -484,20 +484,33 @@ mod tests {
             let mut icons = PanelIcons::default();
             let mut pack_panel = Container::form(4);
             bind_pack(&mut pack_panel, &possessions, &mut icons, None);
+            let mut equipment_panel = Container::form(4);
+            bind_equipment(&mut equipment_panel, &possessions, &mut icons, (228, 252));
+            // The bound panels are the corpse's loot window's own.
+            let mut screens = crate::gui_screens::GameScreens::default();
+            screens.task.screen = (1600, 900);
+            let character = checked + 1;
             assert_eq!(
-                pack_panel.entries.len(),
+                screens.open_loot(character, 0, 4),
+                exa_ui::game_gui::ScreenAction::Opened
+            );
+            assert!(screens.bind_loot(character, pack_panel, equipment_panel));
+            let window = screens.loot_window(character).unwrap();
+            assert_eq!(
+                window.pack.entries.len(),
                 record.inventory.len(),
                 "{} carries {} items",
                 record.name,
                 record.inventory.len()
             );
-            for (entry, stored) in pack_panel.entries.iter().zip(&record.inventory) {
+            for (entry, stored) in window.pack.entries.iter().zip(&record.inventory) {
                 assert_eq!(entry.id, stored.item);
                 assert_eq!(entry.flags, stored.flags);
             }
-            let mut equipment_panel = Container::form(4);
-            let count = bind_equipment(&mut equipment_panel, &possessions, &mut icons, (228, 252));
-            assert_eq!(count, equipment_items(&possessions).len());
+            assert_eq!(
+                window.worn.entries.len(),
+                equipment_items(&possessions).len()
+            );
             checked += 1;
         }
         assert!(checked > 0, "exanima01 has no dead body with items");
