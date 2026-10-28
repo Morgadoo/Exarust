@@ -54,13 +54,14 @@ impl Frame {
         Self { position, rotation }
     }
 
-    /// The rotation made orthonormal in the original's order: the first
-    /// axis is normalised, the second loses its share along the first and
-    /// is normalised, and the third is their cross product.
+    /// The rotation made orthonormal in the original's order: the second
+    /// axis is normalised first, the first loses its share along it and is
+    /// normalised, and the third is the first crossed with the second,
+    /// normalised.
     pub fn orthonormalized(self) -> Self {
-        let x = self.rotation.x_axis.normalize_or_zero();
-        let y = (self.rotation.y_axis - x * self.rotation.y_axis.dot(x)).normalize_or_zero();
-        let z = x.cross(y);
+        let y = self.rotation.y_axis.normalize_or_zero();
+        let x = (self.rotation.x_axis - y * self.rotation.x_axis.dot(y)).normalize_or_zero();
+        let z = x.cross(y).normalize_or_zero();
         Self {
             position: self.position,
             rotation: Mat3::from_cols(x, y, z),
@@ -386,6 +387,9 @@ mod tests {
         assert!((f.rotation.z_axis.length() - 1.0).abs() < 1e-5);
         assert!(f.rotation.x_axis.dot(f.rotation.y_axis).abs() < 1e-5);
         assert!((f.rotation.x_axis.cross(f.rotation.y_axis) - f.rotation.z_axis).length() < 1e-5);
+        // The second axis keeps its direction; the first is bent to it.
+        assert!((f.rotation.y_axis - Vec3::new(0.5, 3.0, 0.0).normalize()).length() < 1e-6);
+        assert!(f.rotation.x_axis.dot(Vec3::new(0.5, 3.0, 0.0)).abs() < 1e-5);
         // A frame with a zero axis stays finite.
         let flat = Mat3::from_cols(Vec3::ZERO, Vec3::ZERO, Vec3::ZERO);
         let f = Frame::new(Vec3::ZERO, flat).orthonormalized();
