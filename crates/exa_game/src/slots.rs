@@ -58,6 +58,67 @@ pub fn world_objects(package: &PackageImage) -> Option<exa_formats::objdb::Objec
     Some(db)
 }
 
+/// The two world databases as a save exports them, ready for
+/// [`SaveWorld`]: the character database's save form and the object
+/// database's world tier with its string library. A database with no
+/// record exports nothing, and its section is not written.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WorldExport {
+    /// The world character database: flushed, then saved (magic, table and
+    /// payload), the payload of the `#worldchrdb` section's one chunk.
+    pub characters: Option<Vec<u8>>,
+    /// The world object tier and the string library, the payloads of the
+    /// `#worldobjdb` section's two chunks.
+    pub objects: Option<(Vec<u8>, Vec<u8>)>,
+}
+
+impl WorldExport {
+    /// The sections a save writes from this export, with the current level
+    /// and the save-disable flag.
+    pub fn save_world<'a>(
+        &'a self,
+        level: Option<(&'a str, &'a [u8])>,
+        disabled: bool,
+    ) -> SaveWorld<'a> {
+        SaveWorld {
+            world_characters: self.characters.as_deref(),
+            world_objects: self
+                .objects
+                .as_ref()
+                .map(|(objects, strings)| (objects.as_slice(), strings.as_slice())),
+            level,
+            disabled,
+        }
+    }
+}
+
+/// Exports the world databases as the save does before writing its
+/// sections: the character database only when it holds a record (it is
+/// flushed first, so every live character's current record is written,
+/// then saved in its `0xDBACCD00` form), the object database only when its
+/// world tier holds a record (the tier's writer, then the string library's
+/// writer, the same library [`world_objects`] imports the second chunk
+/// into). The scene's characters are flushed into the character database
+/// by the caller first ([`crate::arena_ids::flush_scene_character`]), as
+/// the original walks the scene's character list before the export.
+pub fn export_world_databases(
+    characters: &mut exa_formats::character_db::CharacterDb,
+    objects: &exa_formats::objdb::ObjectDb,
+) -> exa_formats::Result<WorldExport> {
+    let characters = if characters.is_empty() {
+        None
+    } else {
+        characters.flush()?;
+        Some(characters.save())
+    };
+    let objects =
+        (!objects.world.is_empty()).then(|| (objects.world.write(), objects.strings.write()));
+    Ok(WorldExport {
+        characters,
+        objects,
+    })
+}
+
 /// The settings store file the slot order lives in, in the user folder.
 pub const STORE_FILE: &str = "Exanima.set";
 
@@ -1890,5 +1951,50 @@ mod tests {
         assert_eq!(slots.numbers().unwrap(), vec![first]);
         assert_eq!(slots.delete_index(5).unwrap(), None);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn exported_world_databases_import_back_and_empty_ones_write_nothing() {
+        use exa_formats::character_db::{CharacterDb, WORLD_TAG};
+        use exa_formats::characters::CharacterRecord;
+        use exa_formats::objdb::{ObjectDb, Store};
+        let dir = folder("world-export");
+        let slots = Slots::story(&dir);
+        let mut characters = CharacterDb::new(WORLD_TAG);
+        let mut objects = ObjectDb::default();
+        let empty = export_world_databases(&mut characters, &objects).unwrap();
+        assert_eq!(empty, WorldExport::default());
+        let mut record = CharacterRecord::new();
+        record.name = "Tobb".into();
+        characters.add(3, record);
+        objects.world = Store::from_records([(0x4000_0002, 0, &[1u8, 2, 3, 4][..])]);
+        let text = objects.strings.add(b"rusty key");
+        let export = export_world_databases(&mut characters, &objects).unwrap();
+        let saved = export.characters.as_deref().unwrap();
+        assert_eq!(&saved[0..4], &0xDBAC_CD00u32.to_le_bytes());
+        // One record and the sentinel: a table of 32 bytes.
+        assert_eq!(&saved[4..8], &32u32.to_le_bytes());
+        assert!(
+            slots
+                .save_full(1, &Session::story(), &export.save_world(None, false))
+                .unwrap()
+        );
+        let package = Slots::open(&slots.file(1, SlotKind::Save)).unwrap();
+        let mut back = world_characters(&package).unwrap();
+        assert_eq!(back.get(3).unwrap().record().name, "Tobb");
+        let objects_back = world_objects(&package).unwrap();
+        assert_eq!(objects_back.world.write(), objects.world.write());
+        assert_eq!(objects_back.strings.get(text).as_deref(), Some("rusty key"));
+        // A disabled save writes nothing at all.
+        let dir2 = folder("world-export-disabled");
+        let slots2 = Slots::story(&dir2);
+        assert!(
+            !slots2
+                .save_full(1, &Session::story(), &export.save_world(None, true))
+                .unwrap()
+        );
+        assert!(!slots2.file(1, SlotKind::Save).exists());
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&dir2);
     }
 }
