@@ -844,6 +844,90 @@ impl Counter {
     }
 }
 
+/// One rectangle of a counter's draw: its place and size.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CounterRect {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+}
+
+/// The two passes over a counter's segments: the backs and the inner
+/// outlines of the unfilled part (the back pass), and the filled parts
+/// (the front pass).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CounterLayout {
+    /// One back per segment, from one pixel in, `block − 1` wide, the
+    /// control's full height.
+    pub backs: Vec<CounterRect>,
+    /// One outline per segment that has a filled part, from three pixels
+    /// in over the fill less two, the fill rows inset two.
+    pub outlines: Vec<CounterRect>,
+    /// The filled parts from two pixels in, the rows one pixel in.
+    pub fills: Vec<CounterRect>,
+}
+
+impl Counter {
+    /// The counter's rectangles for a control at `(x, y)` of `width` ×
+    /// `height`: `block = round(width / (segments + 1) − 1)`; segment `i`
+    /// starts `i` pixels right of the previous one (the backs overlap), and
+    /// each segment's steps `block + 1` apart. A segment whose share
+    /// `(segments + 1)·value − i` is at or below zero ends the fills (a NaN
+    /// does not); a share above one fills `block − 3`, others
+    /// `round((block − 3)·share)`. A fill of three pixels or less has no
+    /// outline.
+    pub fn layout(&self, x: i32, y: i32, width: i32, height: i32) -> CounterLayout {
+        let block = self.block(width);
+        let inner = block - 3;
+        let mut backs = Vec::new();
+        for i in 0..=self.segments.max(-1) {
+            backs.push(CounterRect {
+                x: x + 1 + i,
+                y,
+                width: block - 1,
+                height,
+            });
+        }
+        let mut outlines = Vec::new();
+        let mut fills = Vec::new();
+        let mut at = x + 2;
+        for i in 0..=self.segments {
+            let share = (self.segments + 1) as f32 * self.value - i as f32;
+            if share <= 0.0 {
+                break;
+            }
+            let fill = if share > 1.0 {
+                inner
+            } else {
+                cvtss2si(inner as f32 * share)
+            };
+            if fill > 2 {
+                outlines.push(CounterRect {
+                    x: at + 1,
+                    y: y + 2,
+                    width: fill - 2,
+                    height: height - 4,
+                });
+            }
+            if fill > 0 {
+                fills.push(CounterRect {
+                    x: at,
+                    y: y + 1,
+                    width: fill,
+                    height: height - 2,
+                });
+            }
+            at += inner + 4;
+        }
+        CounterLayout {
+            backs,
+            outlines,
+            fills,
+        }
+    }
+}
+
 /// The bar control (class 0xac4, 28 × 16) draws the HUD's two-share bar
 /// two pixels in and one down, four narrower.
 pub fn bar_control_place(x: i32, y: i32, width: i32) -> (i32, i32, i32) {

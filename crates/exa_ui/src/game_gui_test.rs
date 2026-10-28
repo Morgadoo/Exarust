@@ -245,6 +245,37 @@ fn the_counter() {
         segments: 0,
     };
     assert_eq!(w(&one.fills(0, 100)), vec![(2, 96)]);
+    // The full layout: backs over each segment, the filled parts, and the
+    // outline of every filled part wider than two pixels.
+    let mut counter = Counter {
+        segments: 3,
+        ..Counter::default()
+    };
+    counter.set(0.5);
+    let rects = |v: &[CounterRect]| {
+        v.iter()
+            .map(|r| (r.x, r.y, r.width, r.height))
+            .collect::<Vec<_>>()
+    };
+    let l = counter.layout(10, 20, 100, 16);
+    assert_eq!(
+        rects(&l.backs),
+        vec![
+            (11, 20, 23, 16),
+            (12, 20, 23, 16),
+            (13, 20, 23, 16),
+            (14, 20, 23, 16)
+        ]
+    );
+    assert_eq!(rects(&l.fills), vec![(12, 21, 21, 14), (37, 21, 21, 14)]);
+    assert_eq!(rects(&l.outlines), vec![(13, 22, 19, 12), (38, 22, 19, 12)]);
+    counter.set(0.6);
+    let l = counter.layout(10, 20, 100, 16);
+    assert_eq!(
+        rects(&l.fills),
+        vec![(12, 21, 21, 14), (37, 21, 21, 14), (62, 21, 8, 14)]
+    );
+    assert_eq!(rects(&l.outlines).last(), Some(&(63, 22, 6, 12)));
     assert_eq!(bar_control_place(10, 20, 28), (12, 21, 24));
     assert_eq!(HUD_CONTROLS[0], (0xac3, 40, 40));
 }

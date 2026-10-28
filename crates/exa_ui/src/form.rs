@@ -194,24 +194,37 @@ pub struct ScrollMetrics {
 }
 
 /// The horizontal scrollbar for a form of `width` pixels, `content_w`
-/// content, the given border and rail at scroll fraction `f`: the step is
-/// `10 / overflow` (0 without one), the thumb `round(track · client /
-/// content)` (ties to even) clamped to 9 and the track, placed at
-/// `border + rail + round((track − thumb) · f)`.
-pub fn scroll_metrics(width: i32, content_w: i32, border: i32, rail: i32, f: f32) -> ScrollMetrics {
-    let cw = width - 2 * border;
-    let overflow = content_w - width;
-    let step = if overflow > 0 {
-        (10.0 / overflow as f64) as f32
-    } else {
+/// content, the given border, vertical scrollbar inset and rail at scroll
+/// fraction `f`: the step is `10 / (content − client right − border)` (0
+/// without room to scroll), the thumb `round(track · client / content)`
+/// (ties to even), `2·unit + 1` when not above `2·unit`, at most the
+/// track, and placed at `border + rail + round((track − thumb) · f)`.
+#[allow(clippy::too_many_arguments)]
+pub fn scroll_metrics(
+    width: i32,
+    content_w: i32,
+    border: i32,
+    scroll_inset: i32,
+    rail: i32,
+    unit: i32,
+    f: f32,
+) -> ScrollMetrics {
+    let right = width - border - scroll_inset;
+    let cw = right - border;
+    let over = content_w - right;
+    let step = if over <= border {
         0.0
+    } else {
+        (10.0 / f64::from(over - border)) as f32
     };
     let track = cw - 2 * rail;
-    let mut thumb = cvtsd2si(track as f64 * (cw as f64 / content_w as f64));
-    if thumb < FormMetrics::MIN_THUMB {
-        thumb = FormMetrics::MIN_THUMB;
-    } else if track < thumb {
-        thumb = track;
+    let mut thumb = cvtsd2si(f64::from(track) * (f64::from(cw) / f64::from(content_w)));
+    if unit * 2 < thumb {
+        if track < thumb {
+            thumb = track;
+        }
+    } else {
+        thumb = unit * 2 + 1;
     }
     let x = border + rail + cvtss2si((track - thumb) as f32 * f);
     ScrollMetrics {
@@ -236,6 +249,7 @@ pub fn set_scroll_x(
     width: i32,
     content_w: i32,
     border: i32,
+    scroll_inset: i32,
     rail: i32,
     thumb: i32,
 ) -> (f32, i32) {
@@ -247,7 +261,7 @@ pub fn set_scroll_x(
             placed = stored;
         }
     }
-    let cw = width - 2 * border;
+    let cw = (width - border - scroll_inset) - border;
     if content_w <= cw {
         stored = 0.0;
     }
@@ -591,6 +605,247 @@ pub fn show_place(
         y
     };
     (x, y)
+}
+
+/// The skin measures a form reads when it sets its controls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ControlSkin {
+    /// The left/right frame's stretch (the skin's `+0x1c`).
+    pub span_x: i32,
+    /// The top/bottom frame's stretch (the skin's `+0x20`).
+    pub span_y: i32,
+    /// The title's height (the skin's `+0x24`).
+    pub title: i32,
+    /// The scrollbars' inset (the skin's `+0x28`).
+    pub scroll: i32,
+}
+
+/// A form's client spans after its controls are set or it is restored from
+/// a maximise: the width (kept at a minimum so the frame fits), the width
+/// remembered as that minimum, the client's right and bottom edges and the
+/// title's height.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SpanMetrics {
+    pub width: i32,
+    /// The remembered minimum width; the original keeps the first width
+    /// that fits and restores it on later calls.
+    pub saved_width: i32,
+    pub span_x: i32,
+    pub span_y: i32,
+    pub right: i32,
+    pub bottom: i32,
+    pub title: i32,
+    /// The horizontal scrollbar's metrics are recomputed (attribute 0x100)
+    /// and the vertical's (0x200).
+    pub horizontal_scroll: bool,
+    pub vertical_scroll: bool,
+}
+
+/// The client spans of a form whose controls are set: the frame's stretches
+/// from the style word (0x30 across, 0xc0 down) set a smallest width, kept
+/// in `saved_width` once the form first fits; the client's right edge is
+/// the width less the border and, with a vertical scrollbar (attribute
+/// 0x200), the skin's scroll inset; the title's height is the skin's plus
+/// either two border metrics (attribute bits 0x20 without 0x800000) or the
+/// frame's top stretch, or the border without a title (attribute 1); the
+/// bottom edge is the height less the border and, with a horizontal
+/// scrollbar (0x100), the scroll inset. The original recomputes the
+/// horizontal scrollbar before it writes the new bottom edge, so a caller
+/// wanting that order passes the previous bottom to the first metric.
+pub fn control_spans(
+    width: i32,
+    height: i32,
+    border: i32,
+    style: u32,
+    attributes: u32,
+    saved_width: i32,
+    skin: ControlSkin,
+) -> SpanMetrics {
+    let span_x = if style & 0x30 != 0 { skin.span_x } else { 0 };
+    let span_y = if style & 0xc0 != 0 { skin.span_y } else { 0 };
+    let (width, saved_width) = if i64::from(width) < i64::from(span_x) + i64::from(span_y) {
+        (span_x + span_y, saved_width)
+    } else if saved_width == 0 {
+        (width, width)
+    } else {
+        (saved_width, saved_width)
+    };
+    let right = if attributes & attribute::VSCROLL != 0 {
+        (width - border) - skin.scroll
+    } else {
+        width - border
+    };
+    let title = if attributes & attribute::TITLE != 0 {
+        skin.title
+            + if attributes & 0x80_0030 == 0x20 {
+                2
+            } else {
+                span_y
+            }
+    } else {
+        border
+    };
+    let bottom = if attributes & attribute::HSCROLL != 0 {
+        (height - border) - skin.scroll
+    } else {
+        height - border
+    };
+    SpanMetrics {
+        width,
+        saved_width,
+        span_x,
+        span_y,
+        right,
+        bottom,
+        title,
+        horizontal_scroll: attributes & attribute::HSCROLL != 0,
+        vertical_scroll: attributes & attribute::VSCROLL != 0,
+    }
+}
+
+/// What setting a form's controls does with the table it was given.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ControlTable {
+    /// An empty table (a negative count).
+    Empty,
+    /// The table is copied; the form owns the copy.
+    Copy,
+    /// The table is adopted as it is; the form does not own it.
+    Adopt,
+}
+
+/// What setting a form's controls does, in the original's order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SetControlsPlan {
+    /// The old owned table is freed first.
+    pub free_old: bool,
+    /// The hovered control (slot 47) is cleared.
+    pub clear_hover: bool,
+    pub table: ControlTable,
+    /// The record count after the call (the original stores -1 first).
+    pub count: i32,
+    /// The style is applied again (state 0x2000).
+    pub restyle: bool,
+    /// The client spans are recomputed (state 0x1000, not placed): the
+    /// form's own client from its skin's frame stretches.
+    pub spans: bool,
+    /// The client area metrics are recomputed instead (state 0x1000 and
+    /// 0x4000): the title, scrollbar insets and border.
+    pub metrics: bool,
+    /// Each record's owner pointer is set to the form.
+    pub assign_owner: bool,
+    /// The control set-up pass runs over the table.
+    pub setup: bool,
+    /// The records are rescaled to the GUI unit (state 0x4000).
+    pub rescale: bool,
+}
+
+/// The form state that decides what [`set_controls`] does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SetControlsInput {
+    /// The form owns its old table and has one.
+    pub owns_old: bool,
+    pub old_count: i32,
+    /// The hovered control (0 none).
+    pub hover: i32,
+    pub adopt: bool,
+    pub new_count: i32,
+    pub state: u32,
+}
+
+/// Setting the control table: the old owned table is freed, the hover is
+/// cleared, a negative count leaves no table, else the table is copied
+/// (owned) or adopted; a restyle and a client-span or client-area pass
+/// follow by the state word; every record's owner becomes the form, the
+/// set-up pass runs, and a placed form rescales its records to the GUI
+/// unit.
+pub fn set_controls(input: SetControlsInput) -> SetControlsPlan {
+    let table = if input.new_count < 0 {
+        ControlTable::Empty
+    } else if input.adopt {
+        ControlTable::Adopt
+    } else {
+        ControlTable::Copy
+    };
+    SetControlsPlan {
+        free_old: input.owns_old && input.old_count >= 0,
+        clear_hover: input.hover != 0,
+        table,
+        count: if input.new_count < 0 {
+            -1
+        } else {
+            input.new_count
+        },
+        restyle: input.state & state::RESTYLE != 0,
+        spans: input.state & state::LAYOUT != 0 && input.state & state::PLACED == 0,
+        metrics: input.state & state::LAYOUT != 0 && input.state & state::PLACED != 0,
+        assign_owner: input.new_count > 0,
+        setup: true,
+        rescale: input.state & state::PLACED != 0,
+    }
+}
+
+/// One control drawing pass: the records to draw (index and message) and
+/// the blend word the pass is drawn with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ControlPass {
+    /// The GUI blend word set before the pass (the original sets 0x10 for
+    /// the back pass and 2 for the front one).
+    pub blend: u32,
+    /// The records drawn, in their stored order, with the message: 1 for
+    /// the back pass and 2 for the front one.
+    pub draws: Vec<(usize, u32)>,
+}
+
+/// The two control passes: the back pass over every drawn record, then the
+/// front pass over the same records in the same order. A record whose state
+/// has both 0x100 and 0x10 (hidden and disabled) is skipped by both.
+pub fn control_passes(states: &[u32]) -> [ControlPass; 2] {
+    let drawn = drawn_records(states);
+    [
+        ControlPass {
+            blend: 0x10,
+            draws: drawn.iter().map(|&i| (i, 1)).collect(),
+        },
+        ControlPass {
+            blend: 2,
+            draws: drawn.iter().map(|&i| (i, 2)).collect(),
+        },
+    ]
+}
+
+/// What drawing a form does with its fade.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FormDraw {
+    /// The form and its controls are drawn.
+    pub paint: bool,
+    /// The alpha the fade step sets for the draw (mode 0), if any.
+    pub alpha: Option<f32>,
+    /// The GUI alpha is set back to 1 after the draw (a fading form in
+    /// mode 0).
+    pub reset_alpha: bool,
+}
+
+/// The draw plan of a form at `now`: no fade draws as it is; a fade that
+/// has not ended draws at the alpha its mode sets (mode 0 only); a hide
+/// that has ended draws nothing, a show that has ended draws at full
+/// alpha, and a form that was fading in mode 0 has its alpha reset after
+/// the draw.
+pub fn form_draw(fade: &mut FormFade, now: u32) -> FormDraw {
+    let was_fading = fade.state != 0;
+    let reset = was_fading && fade.mode == 0;
+    match fade.step(now) {
+        FadeStep::Close => FormDraw {
+            paint: false,
+            alpha: None,
+            reset_alpha: false,
+        },
+        FadeStep::Draw(alpha) => FormDraw {
+            paint: true,
+            alpha,
+            reset_alpha: reset,
+        },
+    }
 }
 
 /// What showing a form does, in order.
