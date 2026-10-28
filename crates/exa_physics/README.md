@@ -131,9 +131,10 @@ Registration's impact sound scale (`sector::impact_scale`, `v = min(2m, 1)
 + 1`) is the original's. The level detection's masks are the original's
 (`sector::static_mask`, `body_mask`, `level_meets`): a collider is 1 and
 gains 4 when flagged or thin and horizontal; a hung body is 1 and a living
-foot 4; a pair is skipped when the masks share a bit. The pair stage buckets parts by their mesh box's
-world centre and first asks that the awake part's sphere touch the
-other's mesh sphere; a small sector's all-pairs walk
+foot 4; a pair is skipped when the masks share a bit. The pair stage
+buckets parts by their mesh box's world centre and first asks that the
+awake part's sphere touch the other's mesh sphere; a small sector's
+all-pairs walk
 (`body::Pairs::all_pairs`) adds the original's two point-to-mesh-box
 tests. A part's mask (`Level::mask`, default 1) is tested against its
 body mask before any triangle is queried; Exarust's colliders do not carry
@@ -146,8 +147,10 @@ over its non-negative weights and records the opposite push in its offset
 array (`Part::placed_offset`, read by `Ragdoll::placed_offsets`), which
 its node controller would read; the other side does not move. The
 integration clears that array while the body is placed and sleep clears
-it too, as the original's `+0x1b0` is (`Ragdoll::clear_placed_offsets`). Its detection runs the static (unswept) sphere
-query only and records contacts without impact hits, so it never strikes.
+it too, as the original's contact offset array is
+(`Ragdoll::clear_placed_offsets`). Its detection runs the static
+(unswept) sphere query only and records contacts without impact hits, so
+it never strikes.
 The impact path reads the parts' smoothed velocity (a tenth of the way to
 each tick's displacement), which the
 pair's touch carries as its travel alongside the mean contact point and

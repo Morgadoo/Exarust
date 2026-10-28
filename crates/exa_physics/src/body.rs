@@ -3044,7 +3044,7 @@ impl Ragdoll {
     }
 
     /// The pushes a placed body's contacts this tick wanted to move part
-    /// `part` by (m, on its four particles), the original's `+0x1b0` array:
+    /// `part` by (m, on its four particles), the original's contact offset array:
     /// each force added here was applied to the particles with the opposite
     /// sign, so the array is a record for the node controller, not a
     /// displacement. The original clears it in the integration while the

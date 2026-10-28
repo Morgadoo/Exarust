@@ -1171,7 +1171,7 @@ fn a_fast_sphere_is_caught_by_the_swept_mesh_query() {
 
 /// The contact offset array a placed body's hits record is readable by its
 /// owner and cleared by the integration while the body is placed, as the
-/// original's `+0x1b0` is.
+/// original's contact offset array is.
 #[test]
 fn a_placed_bodys_contact_offsets_are_read_and_cleared() {
     let mut a = ball(1, 11, Vec3::ZERO, 0.1);
