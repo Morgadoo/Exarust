@@ -239,8 +239,9 @@ tested rules of their own.
   and its own seed (`retexture_layer`). `preview` and `retexture_only` are
   the two public wrappers.
 - `spawn` plans the spawns the levels and arena call: a placed character's
-  motion (the saved attack motions 5–12 written back as stance 3, else the
-  saved motion, else 0x13, or 0x19 for a profession word with `0x1000`),
+  motion (the saved attack motions 5–12 written back as stance 3 and a zero
+  phase, else the saved motion, else 0x13, or 0x19 for a profession word
+  with `0x1000`),
   its lying flags (`0x1000`) and ground height (placement + standing −
   8 cm, or standing − 5 while lying; a saved pose places the body itself),
   the player's spawn (mode 1 stance 3 with its stance byte, mode 2 lying,
@@ -255,7 +256,10 @@ tested rules of their own.
   hand 1's torch, else its second weapon); a weapon's hand flag lights it
   and the last weapon's sets the character's flipped grip
   (`holds_flipped`; the dresser's `HeldFlipped` builds the grip at that
-  end of the flip). The viewer still stands living placed characters on the ground and does
+  end of the flip). The appearance editor's hair refresh (`hair_rebuild`)
+  always removes a body's hair and grows the style again only for a race
+  with hair whose head word lacks bit 1; the scene attach and registration
+  are the caller's. The viewer still stands living placed characters on the ground and does
   not set the motion, so those are plans; it places a level's dead from
   their saved pose: muscles off, every part on its saved world frame, the
   character frame at the restored root's origin, and the bodies registered

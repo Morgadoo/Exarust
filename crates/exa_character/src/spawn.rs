@@ -342,6 +342,9 @@ pub struct PlacedSpawn {
     /// The placement's saved attack motion was reset: the caller writes the
     /// new motion back into the placement.
     pub reset_saved_motion: bool,
+    /// The pair the caller writes back into the placement then (the
+    /// placement's two saved words): the Defence stance and a zero phase.
+    pub saved_motion_write: Option<(i32, f32)>,
     pub lying: bool,
     /// The condition-flags word (`0x1000` when lying, else 0).
     pub flags: u32,
@@ -372,6 +375,7 @@ pub fn placed_spawn(
     PlacedSpawn {
         motion,
         reset_saved_motion: reset,
+        saved_motion_write: reset.then_some((3, 0.0)),
         lying,
         flags: if lying { LYING_FLAGS } else { 0 },
         pose,
@@ -751,6 +755,7 @@ mod tests {
         let spawn = placed_spawn(&record, None, false, PoseSource::Ground, 2.0, 101.5);
         assert_eq!(spawn.motion, 0x13);
         assert!(!spawn.reset_saved_motion);
+        assert_eq!(spawn.saved_motion_write, None);
         assert!(!spawn.lying);
         assert_eq!(spawn.flags, 0);
         assert_eq!(spawn.root_y, 95.5);
@@ -759,6 +764,8 @@ mod tests {
         let attack = placed_spawn(&record, Some(7), false, PoseSource::Tree, 2.0, 101.5);
         assert_eq!(attack.motion, 3);
         assert!(attack.reset_saved_motion);
+        // The reset writes the Defence stance and a zero phase back.
+        assert_eq!(attack.saved_motion_write, Some((3, 0.0)));
         assert_eq!(attack.pose, PoseSource::Tree);
         let lying = placed_spawn(&record, Some(3), true, PoseSource::Flat, 2.0, 101.5);
         assert_eq!((lying.motion, lying.flags), (3, 0x1000));

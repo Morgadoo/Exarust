@@ -355,6 +355,34 @@ pub fn hair_roots<'a>(
         .collect()
 }
 
+/// What the appearance editor's hair refresh does to a built body: it
+/// always removes the old hair, and grows the style again only when the body
+/// grows hair (the race's look bit `0x10` set and the head word's bit 1
+/// clear, [`crate::look::grows_hair`]). The new roots hang under the body's
+/// head-cover node and are registered with the scene; those calls are the
+/// caller's.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HairRebuild<'a> {
+    /// The old hair is removed and nothing new grows.
+    pub remove_only: bool,
+    /// The roots grown, in the style's order (`?` roots under a covered
+    /// head, the rest otherwise). Empty when nothing grows.
+    pub roots: Vec<&'a str>,
+}
+
+/// The hair refresh's decision ([`HairRebuild`]) over a style's root names.
+pub fn hair_rebuild<'a>(
+    roots: impl Iterator<Item = &'a str>,
+    look: u32,
+    head_word: u64,
+) -> HairRebuild<'a> {
+    let grows = crate::look::grows_hair(look, head_word);
+    HairRebuild {
+        remove_only: !grows,
+        roots: hair_roots(roots, look, head_word),
+    }
+}
+
 /// Waits while the render thread still owns the old texture
 ///. The original sleeps a millisecond and checks the node's
 /// busy flag; a single-threaded caller waits cooperatively.
@@ -657,6 +685,16 @@ mod tests {
         assert_eq!(hair_roots(roots.iter().copied(), 0x1BF, 1), ["?HULA01_"]);
         assert!(hair_roots(roots.iter().copied(), 0x1BF, 2).is_empty());
         assert!(hair_roots(roots.iter().copied(), 0x1AF, 0).is_empty());
+        // The refresh removes and does not grow on a race without hair or a
+        // head word with bit 1; otherwise it removes and grows the style.
+        let remove = hair_rebuild(roots.iter().copied(), 0x1AF, 0);
+        assert!(remove.remove_only && remove.roots.is_empty());
+        let remove = hair_rebuild(roots.iter().copied(), 0x1BF, 2);
+        assert!(remove.remove_only && remove.roots.is_empty());
+        let grow = hair_rebuild(roots.iter().copied(), 0x1BF, 0);
+        assert!(!grow.remove_only && grow.roots == ["HULA01 o"]);
+        let covered = hair_rebuild(roots.iter().copied(), 0x1BF, 1);
+        assert!(!covered.remove_only && covered.roots == ["?HULA01_"]);
     }
 
     #[test]
