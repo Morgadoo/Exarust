@@ -630,6 +630,12 @@ pub struct OutdoorPreset {
     pub wind: f32,
     /// The rain target; zero when it does not rain.
     pub rain: f32,
+    /// The value the preset writes into the view's sky/sun field (the
+    /// field's identity is inferred) [guess]. Zero on a day; on a night it
+    /// is `0.5·(cloudiness − 2) + (the previous time of day − 0.7)`, in the
+    /// original's mixed precision, and zero when the caller passes the view
+    /// flag clear.
+    pub view_sun: f32,
 }
 
 /// The scene environment.
@@ -880,6 +886,7 @@ impl SceneEnvironment {
     /// call and the audio environment switch are the caller's.
     pub fn apply_outdoor_preset(
         &mut self,
+        view_sun: bool,
         night_allowed: bool,
         seed: u32,
         fresh_seed: impl FnOnce() -> u32,
@@ -894,8 +901,16 @@ impl SceneEnvironment {
         self.set_sun_mode(SunMode::On, 0, 0);
         self.set_sky(true);
         let night = night_allowed && rng.below(6) < 1;
+        // The view's sky/sun value reads the weather as it stands *before*
+        // this preset's rain or cloud pass changes it.
+        let mut drawn_view_sun = 0.0f32;
         let time_of_day = if night {
-            (rng.unit() as f64 * 0.24 + 0.76) as f32
+            let time = (rng.unit() as f64 * 0.24 + 0.76) as f32;
+            if view_sun {
+                let cloud = (self.cloudiness - 2.0) * 0.5;
+                drawn_view_sun = (f64::from(cloud) + (f64::from(self.time_of_day) - 0.7)) as f32;
+            }
+            time
         } else {
             let eased = exa_formats::save_chunk::ease_save_curve(rng.unit());
             (eased as f64 * 0.42 + 0.32) as f32
@@ -947,6 +962,7 @@ impl SceneEnvironment {
             fog_distance: self.fog.distance,
             wind: self.wind,
             rain,
+            view_sun: drawn_view_sun,
         }
     }
 
@@ -1543,7 +1559,7 @@ mod tests {
     fn the_outdoor_preset_draws_a_dry_day_in_the_original_order() {
         let mut env = SceneEnvironment::new(5);
         let mut engine = WeatherRng::new(99);
-        let drawn = env.apply_outdoor_preset(false, 7, || unreachable!(), 0, &mut engine);
+        let drawn = env.apply_outdoor_preset(true, false, 7, || unreachable!(), 0, &mut engine);
         assert!(env.sky && env.sun_light);
         assert_eq!(env.sun_mode, SunMode::On);
         assert_eq!(env.far_plane, 100_000.0);
@@ -1555,6 +1571,7 @@ mod tests {
         assert_eq!(drawn.fog_distance, 0.507_633_15);
         assert_eq!(drawn.wind, 0.532_026_65);
         assert_eq!(drawn.rain, 0.0);
+        assert_eq!(drawn.view_sun, 0.0);
         assert_eq!(env.weather.rain, 0.0);
         assert_eq!(env.wind, drawn.wind);
         assert_eq!(env.time_of_day, drawn.time_of_day);
@@ -1566,20 +1583,32 @@ mod tests {
     fn the_outdoor_preset_rains_on_a_night_roll() {
         let mut env = SceneEnvironment::new(5);
         let mut engine = WeatherRng::new(99);
-        let drawn = env.apply_outdoor_preset(true, 1, || unreachable!(), 0, &mut engine);
+        let drawn = env.apply_outdoor_preset(true, true, 1, || unreachable!(), 0, &mut engine);
         assert_eq!(drawn.time_of_day, 0.966_651_6);
         assert_eq!(drawn.rain, 0.345_629_13);
         assert_eq!(env.weather.rain, 0.335_629_14);
         assert_eq!(drawn.fog_distance, 0.366_267_3);
         assert_eq!(drawn.cloudiness, 2.130_361_6);
         assert_eq!(drawn.wind, 0.348_538_64);
+        // The view's value reads the weather before this preset changes
+        // it: 0.5·(1.5 − 2) + (0.7516 − 0.7), in the original's mixed
+        // precision.
+        assert_eq!(drawn.view_sun, -0.198_399_98);
+    }
+
+    #[test]
+    fn the_view_value_is_zero_without_the_view_flag() {
+        let mut env = SceneEnvironment::new(5);
+        let mut engine = WeatherRng::new(99);
+        let drawn = env.apply_outdoor_preset(false, true, 1, || unreachable!(), 0, &mut engine);
+        assert_eq!(drawn.view_sun, 0.0);
     }
 
     #[test]
     fn the_outdoor_preset_shapes_the_fog_from_the_raised_rain_target() {
         let mut env = SceneEnvironment::new(5);
         let mut engine = WeatherRng::new(99);
-        let drawn = env.apply_outdoor_preset(true, 0x2a, || unreachable!(), 0, &mut engine);
+        let drawn = env.apply_outdoor_preset(true, true, 0x2a, || unreachable!(), 0, &mut engine);
         // A drawn target under 0.3 is raised to 0.3 before the fog reads it.
         assert_eq!(drawn.rain, 0.3);
         assert_eq!(env.weather.rain, 0.290_000_02);
@@ -1591,7 +1620,7 @@ mod tests {
     fn the_outdoor_preset_draws_thunder_from_the_engine_stream() {
         let mut env = SceneEnvironment::new(5);
         let mut engine = WeatherRng::new(99);
-        let drawn = env.apply_outdoor_preset(false, 6, || unreachable!(), 1_000, &mut engine);
+        let drawn = env.apply_outdoor_preset(true, false, 6, || unreachable!(), 1_000, &mut engine);
         assert_eq!(drawn.rain, 0.919_219_14);
         assert!(env.weather.raining);
         let mut expected = WeatherRng::new(99);
@@ -1609,7 +1638,7 @@ mod tests {
     fn the_outdoor_preset_replaces_a_zero_seed() {
         let mut env = SceneEnvironment::new(5);
         let mut engine = WeatherRng::new(99);
-        let drawn = env.apply_outdoor_preset(false, 0, || 7, 0, &mut engine);
+        let drawn = env.apply_outdoor_preset(true, false, 0, || 7, 0, &mut engine);
         assert_eq!(drawn.time_of_day, 0.360_530_3);
     }
 
