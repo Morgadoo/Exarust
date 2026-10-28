@@ -684,7 +684,8 @@ fn combat_walks_to_the_cursor() {
 /// A key pressed for under 200 ms keeps the movement word until 200 ms
 /// after the press (strictly over), so a tap moves for a step; a key held
 /// longer clears the word as soon as it is released. The movement target
-/// stays 200 ms after the last nonzero tick.
+/// is let go once the word has been zero for over 200 ms since its last
+/// nonzero tick.
 #[test]
 fn a_tap_keeps_the_movement_word_for_a_step() {
     let mut w = MoveWord::default();
@@ -704,21 +705,42 @@ fn a_tap_keeps_the_movement_word_for_a_step() {
     w.tick(1000, fwd, Vec2::ZERO, 0.0);
     w.tick(1500, fwd, Vec2::ZERO, 0.0);
     assert_eq!(w.tick(1510, none, Vec2::ZERO, 0.0), 0);
-    // The target keeps until 200 ms after the last nonzero tick.
+    // The target goes 200 ms after the last nonzero tick (the release
+    // tick itself changes the word and does not count).
     let mut w = MoveWord::default();
     w.tick(1000, fwd, Vec2::ZERO, 0.0);
     w.tick(1400, fwd, Vec2::ZERO, 0.0);
     w.tick(1500, none, Vec2::ZERO, 0.0);
-    assert!(w.keep);
+    assert!(!w.target_expired);
     w.tick(1600, none, Vec2::ZERO, 0.0);
-    assert!(w.keep);
+    assert!(!w.target_expired);
     w.tick(1601, none, Vec2::ZERO, 0.0);
-    assert!(!w.keep);
+    assert!(w.target_expired);
 }
 
-/// The word is a tap once it has been held over 200 ms with the body under
-/// 0.1 cm a tick; a moving body is no tap, and the pad's analog word needs
-/// the stick past its squared 0.9.
+/// The key word follows the reader's order: A is left (2), D right (8),
+/// W forward (1), S back (4); A with D and W with S cancel.
+#[test]
+fn opposing_keys_cancel_in_the_movement_word() {
+    // [forward, back, left, right]
+    assert_eq!(MoveWord::of_keys([false, false, true, false]), MOVE_LEFT);
+    assert_eq!(MoveWord::of_keys([false, false, false, true]), MOVE_RIGHT);
+    assert_eq!(MoveWord::of_keys([false, false, true, true]), 0);
+    assert_eq!(MoveWord::of_keys([true, true, false, false]), 0);
+    assert_eq!(MoveWord::of_keys([true, true, true, false]), MOVE_LEFT);
+    assert_eq!(
+        MoveWord::of_keys([false, true, false, true]),
+        MOVE_BACK | MOVE_RIGHT
+    );
+    assert_eq!(
+        (MOVE_FORWARD, MOVE_LEFT, MOVE_BACK, MOVE_RIGHT),
+        (1, 2, 4, 8)
+    );
+}
+
+/// The word is a tap once it has stayed the same over 200 ms with the
+/// body's crouch under 0.1; a crouching body is no tap, and the pad's
+/// analog word needs the stick past its squared 0.9.
 #[test]
 fn a_held_word_counts_as_a_tap() {
     let mut w = MoveWord::default();
@@ -729,8 +751,8 @@ fn a_held_word_counts_as_a_tap() {
     w.tick(1201, fwd, Vec2::ZERO, 0.0);
     assert!(w.tap);
     let mut w = MoveWord::default();
-    w.tick(1000, fwd, Vec2::ZERO, 0.5);
-    w.tick(1300, fwd, Vec2::ZERO, 0.5);
+    w.tick(1000, fwd, Vec2::ZERO, 1.0);
+    w.tick(1300, fwd, Vec2::ZERO, 1.0);
     assert!(!w.tap);
     // A stick at 0.5 (squared 0.25) is an analog word but not a tap; a full
     // one is.
@@ -745,18 +767,14 @@ fn a_held_word_counts_as_a_tap() {
     w.tick(1000, [false; 4], Vec2::new(1.0, 0.0), 0.0);
     w.tick(1300, [false; 4], Vec2::new(1.0, 0.0), 0.0);
     assert!(w.tap);
-    // The stick's dead zone is a squared 0.01, read as the keys. The single
-    // 0.1 squares to 0.010000001, just over the zone, so a tenth of a stick
-    // already reads the analog word; a NaN is not under the zone either.
+    // The stick's dead zone: its single squared length over the double
+    // 0.01. The single 0.1 squares to 0.010000001, just over, so a tenth of
+    // a stick already reads the analog word; a NaN fails the ordered test
+    // and reads the keys.
     let mut w = MoveWord::default();
     assert_eq!(w.tick(0, fwd, Vec2::new(0.09, 0.0), 0.0), MOVE_FORWARD);
     let mut w = MoveWord::default();
     assert_eq!(w.tick(0, fwd, Vec2::new(0.1, 0.0), 0.0), MOVE_ANALOG);
     let mut w = MoveWord::default();
-    assert_eq!(
-        w.tick(0, [false; 4], Vec2::new(0.101, 0.0), 0.0),
-        MOVE_ANALOG
-    );
-    let mut w = MoveWord::default();
-    assert_eq!(w.tick(0, fwd, Vec2::new(f32::NAN, 0.0), 0.0), MOVE_ANALOG);
+    assert_eq!(w.tick(0, fwd, Vec2::new(f32::NAN, 0.0), 0.0), MOVE_FORWARD);
 }
