@@ -87,6 +87,105 @@ pub fn show_skill_ui(relayout: bool, state: u16, clock: i32, delay: i32) -> Skil
     }
 }
 
+/// What closing the skill screen did, as its close routine does it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SkillClose {
+    /// The screen was open and is now released.
+    pub closed: bool,
+    /// Player controls were restored (the routine only does this when a
+    /// controls object was held).
+    pub controls_restored: bool,
+    /// The player body's state was reset.
+    pub body_released: bool,
+    /// The player's character was refit.
+    pub character_refit: bool,
+}
+
+/// Closes the skill screen: a nil screen returns false and does nothing;
+/// otherwise the form is released, and with the player's controls held it
+/// restores them, resets the body state and refits the character, then
+/// reports that it closed.
+pub fn close_skill_screen(open: bool, has_controls: bool) -> SkillClose {
+    if !open {
+        return SkillClose::default();
+    }
+    SkillClose {
+        closed: true,
+        controls_restored: has_controls,
+        body_released: has_controls,
+        character_refit: has_controls,
+    }
+}
+
+/// What opening (or toggling) the skill screen did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SkillOpenPlan {
+    /// The screen was already open, so the open routine only closed it.
+    pub close_existing: bool,
+    /// The unit's atlases were built.
+    pub build_resources: bool,
+    /// The reveal sound was started.
+    pub play_sound: bool,
+    /// Player controls were suspended.
+    pub restore_controls: bool,
+    /// The screen's page: 0 is the ring, a positive value a four-group page.
+    pub page: i32,
+    /// The groups on the page: six on the ring, four on a page.
+    pub groups: i32,
+    /// A page's ring radius in units (the ring keeps the constructor's).
+    pub radius: i32,
+    /// The screen's initial state byte (4 on a page: it opens already shown).
+    pub state: u8,
+    pub show: bool,
+    pub activate: bool,
+    /// The Steam action bindings were set up for the screen.
+    pub steam_bind: bool,
+}
+
+/// Opens or closes the skill screen. With it already open the routine closes
+/// it and does nothing else; otherwise it builds the unit's atlases, starts
+/// the reveal sound when the handle is ready, suspends the player's
+/// controls, builds the screen (a positive page turns it into a four-group
+/// page at a 72-unit radius in state 4, the page group and slot tables set),
+/// refreshes its ready flag and shows and activates it.
+pub fn open_skill_screen(
+    open: bool,
+    page: i32,
+    has_controls: bool,
+    sound_ready: bool,
+) -> SkillOpenPlan {
+    if open {
+        return SkillOpenPlan {
+            close_existing: true,
+            build_resources: false,
+            play_sound: false,
+            restore_controls: false,
+            page: 0,
+            groups: 0,
+            radius: 0,
+            state: 0,
+            show: false,
+            activate: false,
+            steam_bind: false,
+        };
+    }
+    let page = page.max(0);
+    let paged = page > 0;
+    SkillOpenPlan {
+        close_existing: false,
+        build_resources: true,
+        play_sound: sound_ready,
+        restore_controls: has_controls,
+        page,
+        groups: if paged { 4 } else { 6 },
+        radius: if paged { 72 } else { 0 },
+        state: if paged { 4 } else { 1 },
+        show: true,
+        activate: true,
+        steam_bind: true,
+    }
+}
+
 /// What leaving the skill screen did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct SkillLeave {
@@ -954,6 +1053,71 @@ pub fn skill_screen_fade_in(
     }
 }
 
+/// The draw's two fade values, as the draw body stores them: `alpha` is
+/// the content alpha (it also turns and spreads the ring: the node plates,
+/// spokes, icons and orbit bars multiply their offsets by it), `scale` is
+/// the opening scale (it also scales the shader alphas, the dim and the
+/// tooltips). The hide clock scales the opening scale, not the alpha.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SkillFades {
+    pub alpha: f32,
+    pub scale: f32,
+    /// The state byte after the fade's side effects.
+    pub state: u8,
+    /// The screen is hidden and the draw returns.
+    pub hidden: bool,
+}
+
+/// The screen's two fades, exactly as the draw body computes them.
+///
+/// The reveal runs for its deadline at 0.002 per unit: `t = 1 − remaining ×
+/// 0.002`, the opening scale `t(2 − t)` clamped to 1 (an unordered compare
+/// skips the clamp on a NaN), the alpha that eased again. Once over, bit 1
+/// clears. The hide, while it is running, scales the opening scale by its
+/// remaining share of 256 units; once over the state becomes hidden, on a
+/// page other than two the draw closes the screen, and both fades read
+/// zero.
+pub fn skill_screen_fades(
+    state: u8,
+    reveal_deadline: i32,
+    hide_deadline: i32,
+    clock: i32,
+    page: i32,
+) -> SkillFades {
+    let mut state = state;
+    let (mut alpha, mut scale) = if state == 4 {
+        (0.0, 0.0)
+    } else if state & 1 == 0 {
+        (1.0, 1.0)
+    } else if reveal_deadline > clock {
+        let t = (1.0 - f64::from(reveal_deadline - clock) * 0.002) as f32;
+        let eased = t * (2.0 - t);
+        // The clamp is ordered: a NaN passes unchanged.
+        let opening = if eased > 1.0 { 1.0 } else { eased };
+        (eased * (2.0 - eased), opening)
+    } else {
+        state &= !1;
+        (1.0, 1.0)
+    };
+    let mut hidden = false;
+    if state & 2 != 0 {
+        if hide_deadline > clock {
+            scale = (hide_deadline - clock) as f32 * scale / 256.0;
+        } else {
+            state = 4;
+            hidden = page != 2;
+            alpha = 0.0;
+            scale = 0.0;
+        }
+    }
+    SkillFades {
+        alpha,
+        scale,
+        state,
+        hidden,
+    }
+}
+
 /// The status line of a learning-row node the record already holds.
 pub const STATUS_CHOSEN: &str = "Already chosen.";
 /// The status line of a learning-row node whose prerequisites are missing.
@@ -964,6 +1128,25 @@ pub const STATUS_UNAVAILABLE: &str = "Unavailable.";
 pub const FORGET_TITLE: &str = "Forget Technique";
 /// The forget dialog's question.
 pub const FORGET_QUESTION: &str = "Forget all knowledge of this technique?";
+
+/// The six skill groups' names, by 0-based group.
+pub const SKILL_GROUP_NAMES: [&str; SKILLS] = SKILL_NAMES;
+
+/// The name of the technique a learning-row slot offers: `slot` is the
+/// 1-based technique id (the row's icon slot), and `code` the group's node
+/// code. An id outside the group's names reads as the empty string.
+pub fn technique_name_for(code: i32, slot: u8) -> String {
+    let group = ((code >> 8) & 0xff) as usize;
+    if group == 0 {
+        return String::new();
+    }
+    TECHNIQUE_NAMES
+        .get(group - 1)
+        .and_then(|names| names.get(usize::from(slot).wrapping_sub(1)))
+        .copied()
+        .unwrap_or("")
+        .to_string()
+}
 
 /// The record's skill block as the screen addresses it: each skill is its
 /// points (two bytes, little-endian) then its six technique bytes, eight
@@ -1433,28 +1616,24 @@ impl SkillScreen {
         }
     }
 
-    /// The draw's two fades: the reveal scale (it also spreads and turns
-    /// the ring) and the alpha, after the reveal and hide clocks. The hide
-    /// scales the alpha by its remaining part of 256 ms and, once over,
-    /// hides the screen. Updates the state bits as the draw does.
+    /// The draw's two fades: the content alpha (it also spreads and turns
+    /// the ring) and the opening scale, after the reveal and hide clocks.
+    /// The hide scales the opening scale by its remaining part of 256 ms and,
+    /// once over, hides the screen (closing it on a page other than two).
+    /// Updates the state bits as the draw does.
     pub fn fade(&mut self, clock: i32) -> (f32, f32) {
-        let reveal = skill_screen_fade(self.state, self.reveal_deadline, clock);
-        if reveal.cleared {
-            self.state &= !1;
-        }
-        let hide = skill_screen_fade_in(
+        let fades = skill_screen_fades(
             self.state,
+            self.reveal_deadline,
             self.hide_deadline,
             clock,
-            reveal.alpha,
-            256.0,
             self.page,
         );
-        self.state = hide.state;
-        if self.state == 4 {
+        self.state = fades.state;
+        if fades.hidden {
             return (0.0, 0.0);
         }
-        (reveal.sound, hide.sound)
+        (fades.alpha, fades.scale)
     }
 
     /// Starts the hide: bit 2 and a 256 ms deadline.
@@ -2200,6 +2379,30 @@ mod tests {
         );
         assert_eq!(leave_skill_ui(false, 0, 2, 0, 100), SkillLeave::default());
         assert!(leave_skill_ui(false, 0, 0, 0, 0).call_clear);
+    }
+
+    #[test]
+    fn the_screen_opens_or_closes_and_restores_controls() {
+        let opened = open_skill_screen(false, 2, true, true);
+        assert!(opened.build_resources && opened.play_sound && opened.restore_controls);
+        assert_eq!(
+            (opened.page, opened.groups, opened.radius, opened.state),
+            (2, 4, 72, 4)
+        );
+        assert!(opened.show && opened.activate && opened.steam_bind);
+        let ring = open_skill_screen(false, 0, false, false);
+        assert_eq!((ring.groups, ring.radius, ring.state), (6, 0, 1));
+        assert!(!ring.play_sound && !ring.restore_controls);
+        let toggle = open_skill_screen(true, 2, true, true);
+        assert!(toggle.close_existing);
+        assert!(!toggle.build_resources && !toggle.show);
+
+        let nil = close_skill_screen(false, true);
+        assert_eq!(nil, SkillClose::default());
+        let closed = close_skill_screen(true, true);
+        assert!(closed.closed && closed.controls_restored && closed.body_released);
+        let bare = close_skill_screen(true, false);
+        assert!(bare.closed && !bare.controls_restored);
     }
 
     #[test]

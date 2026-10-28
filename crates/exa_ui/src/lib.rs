@@ -74,6 +74,7 @@ pub mod scale;
 pub mod selection;
 pub mod settings;
 pub mod skill;
+pub mod skill_draw;
 pub mod skill_gui;
 pub mod skin;
 pub mod speech;
@@ -227,23 +228,31 @@ pub use selection::{
 pub use skill::{
     ExperienceRates, ForgetDialogPlace, GROUP_SLOTS, NODE_LEARNT, NODE_LOCKED, NODE_OPEN,
     NODE_PRESENT, NODES_PER_GROUP, PAGE_GROUPS, PAGE_SLOTS, PREVIEW_SKILL, REQUIREMENT_ABSENT,
-    REQUIREMENT_CHOSEN, REQUIREMENT_MET, REQUIREMENT_MISSING, RING_GROUPS, SkillBar, SkillBounds,
-    SkillGroupIcon, SkillHit, SkillHover, SkillHoverInput, SkillIconQuad, SkillInputInput,
-    SkillInputOutput, SkillKeyInput, SkillKeyOutput, SkillLearningRow, SkillLeave, SkillLink,
-    SkillLinkInput, SkillNodeTip, SkillOrbitBar, SkillPointInput, SkillPopupFade, SkillRing,
-    SkillRowIcon, SkillScreen, SkillShow, SkillTipBox, clamp_tooltip, forget_dialog_place,
-    handle_skill_input, hit_skill_point, learning_row, leave_skill_ui, pentagon_offset,
-    pick_skill_satellite, ring_group_tooltip, ring_node_title, ring_node_tooltip,
+    REQUIREMENT_CHOSEN, REQUIREMENT_MET, REQUIREMENT_MISSING, RING_GROUPS, SKILL_GROUP_NAMES,
+    SkillBar, SkillBounds, SkillClose, SkillFades, SkillGroupIcon, SkillHit, SkillHover,
+    SkillHoverInput, SkillIconQuad, SkillInputInput, SkillInputOutput, SkillKeyInput,
+    SkillKeyOutput, SkillLearningRow, SkillLeave, SkillLink, SkillLinkInput, SkillNodeTip,
+    SkillOpenPlan, SkillOrbitBar, SkillPointInput, SkillPopupFade, SkillRing, SkillRowIcon,
+    SkillScreen, SkillShow, SkillTipBox, clamp_tooltip, close_skill_screen, forget_dialog_place,
+    handle_skill_input, hit_skill_point, learning_row, leave_skill_ui, open_skill_screen,
+    pentagon_offset, pick_skill_satellite, ring_group_tooltip, ring_node_title, ring_node_tooltip,
     selection_tip_slide, show_skill_ui, skill_group_icons, skill_hover, skill_icon_quad,
     skill_node_hit, skill_node_spokes, skill_node_state, skill_orbit_bars, skill_popup_fade,
-    skill_position, skill_requirements, skill_ring_position, skill_satellite, skill_screen_key,
-    spend_skill_experience, unlearn_skill_level,
+    skill_position, skill_requirements, skill_ring_position, skill_satellite, skill_screen_fades,
+    skill_screen_key, spend_skill_experience, technique_name_for, unlearn_skill_level,
+};
+pub use skill_draw::{
+    ROW_SLOTS, SLOT_FREE, SkillBatch, SkillDraw, SkillDrawInput, SkillLabel, SkillNodePlace,
+    SkillProgram, SkillTexture, SkillTip, SkillVertex, atlas_quad as skill_atlas_quad,
+    node_places as skill_node_places, page_groups as skill_page_groups, skill_draw,
 };
 pub use skill_gui::{
-    FIRST_ICON, ICON_CELL, ICON_FORMAT, ICON_SETS, ICON_UNITS, SINGLE_CELL, SINGLE_FORMAT,
-    SINGLE_ICON_ATLAS, SINGLE_ICON_UNITS, SINGLE_ICONS, SKILL_GUI, SKILL_GUI_FLAGS,
-    SKILL_GUI_UNITS, SKILL_ICON_ATLAS, SkillIconHandles, SkillIcons, SkillResources,
-    build_group_icons, build_single_icons, group_cells, icon_sharpened,
+    BAR_SHADER, COLOUR, FIRST_ICON, ICON_CELL, ICON_FORMAT, ICON_SETS, ICON_UNITS, M_PRJ,
+    M_PRJ_VALUE, PROG, RING_SHADER, SINGLE_CELL, SINGLE_FORMAT, SINGLE_ICON_ATLAS,
+    SINGLE_ICON_UNITS, SINGLE_ICONS, SKILL_GUI, SKILL_GUI_FLAGS, SKILL_GUI_UNITS, SKILL_ICON_ATLAS,
+    SKILL_SHOW_FLAGS, SKILL_SHOW_GAIN, SKILL_SHOW_PITCH, SKILL_SHOW_SOUND, SkillIconHandles,
+    SkillIcons, SkillPrograms, SkillResources, SkillShaderProgram, TEX, build_group_icons,
+    build_single_icons, group_cells, icon_sharpened, skill_programs,
 };
 pub use skin::{
     BEVEL_INK, BackdropCorner, BaseSkin, BevelArm, BevelBox, BevelInk, BevelPlace, CappedSpan,

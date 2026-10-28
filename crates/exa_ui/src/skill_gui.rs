@@ -63,6 +63,77 @@ pub const SKILL_GUI_UNITS: (i32, i32) = (44, 20);
 /// (0x33) with 0x100.
 pub const SKILL_GUI_FLAGS: u32 = 0x33 | 0x100;
 
+/// The rounded ring program's fragment source: the radial alpha from the
+/// vertex texture coordinates, squared, with the shader's `Colour`.
+pub const RING_SHADER: &str = "in vec2 vrTex;\r\nout vec4 FragColor;\r\nuniform vec4 Colour;\r\nvoid main() {\r\nvec2 s = abs(0.5 - vrTex);\r\nfloat a = max(1.0 - dot(s, s) * 4.0, 0.0);\r\na = min(a * 4.0, 1.0);\r\na = a * a;\r\nFragColor.rgb = Colour.rgb;FragColor.a = Colour.a * a;}";
+
+/// The orbit bars' fragment source: a stroked arc whose cut is `Prog ×
+/// 8.3` across the square, multiplied by the texture's alpha.
+pub const BAR_SHADER: &str = "in vec2 vrTex;\r\nout vec4 FragColor;\r\nuniform vec4 Colour;\r\nuniform float Prog;\r\nuniform sampler2D Tex;\r\nvoid main() {\r\nfloat a = abs(vrTex.x * 2.0 - 0.5);\r\na = a * 16.0;\r\na = min(Prog * 8.3 - a, 1.0);\r\na = a * texture(Tex, vrTex).a;\r\nFragColor.rgb = Colour.rgb;FragColor.a = Colour.a * a;}";
+
+/// The projection uniform both skill programs share.
+pub const M_PRJ: &str = "MPrj";
+/// The colour uniform both skill programs share.
+pub const COLOUR: &str = "Colour";
+/// The bar program's texture sampler.
+pub const TEX: &str = "Tex";
+/// The bar program's progress uniform.
+pub const PROG: &str = "Prog";
+/// The value `MPrj` is set to: 2, 0, 0, 0.
+pub const M_PRJ_VALUE: [f32; 4] = [2.0, 0.0, 0.0, 0.0];
+/// The reveal sound the screen's setup loads.
+pub const SKILL_SHOW_SOUND: &str = "SkillShow_01";
+/// The reveal sound's play arguments: the environment handle, the sound,
+/// a zero position record, 0.03, 1.0 and the flags word 0x4060 (the last
+/// three are guesses at the sound call's gain, pitch and flags).
+pub const SKILL_SHOW_GAIN: f32 = 0.03;
+pub const SKILL_SHOW_PITCH: f32 = 1.0;
+pub const SKILL_SHOW_FLAGS: u32 = 0x4060;
+
+/// One of the screen's two shader programs and the uniforms it looks up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SkillShaderProgram {
+    pub source: &'static str,
+    pub projection: &'static str,
+    pub colour: &'static str,
+    /// The texture sampler, when the program has one.
+    pub texture: Option<&'static str>,
+    /// The progress uniform, when the program has one.
+    pub progress: Option<&'static str>,
+}
+
+/// The setup routine's two programs and the reveal sound.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SkillPrograms {
+    pub ring: SkillShaderProgram,
+    pub bar: SkillShaderProgram,
+    pub sound: &'static str,
+}
+
+/// The skill screen's one-time program setup as [`crate::skill_gui`] runs
+/// it: the rounded ring program with `MPrj` = (2, 0, 0, 0) and `Colour`,
+/// then the bar program with the same projection, its `Tex` set to unit 0,
+/// `Colour` and `Prog`, then the reveal sound handle.
+pub fn skill_programs() -> SkillPrograms {
+    SkillPrograms {
+        ring: SkillShaderProgram {
+            source: RING_SHADER,
+            projection: M_PRJ,
+            colour: COLOUR,
+            texture: None,
+            progress: None,
+        },
+        bar: SkillShaderProgram {
+            source: BAR_SHADER,
+            projection: M_PRJ,
+            colour: COLOUR,
+            texture: Some(TEX),
+            progress: Some(PROG),
+        },
+        sound: SKILL_SHOW_SOUND,
+    }
+}
+
 /// Whether the skill-icon atlas sharpens its resized icons: its icon side
 /// (8 units) is below the 96-pixel cell.
 pub fn icon_sharpened(unit: i32) -> bool {
@@ -258,5 +329,22 @@ mod tests {
         // 8 units of 11 pixels are below the 96-pixel cell; of 12 they are not.
         assert!(icon_sharpened(11));
         assert!(!icon_sharpened(12));
+    }
+
+    #[test]
+    fn the_program_setup_binds_the_two_sources_and_the_sound() {
+        let programs = skill_programs();
+        assert!(programs.ring.source.contains("dot(s, s) * 4.0"));
+        assert!(programs.ring.source.ends_with("Colour.a * a;}"));
+        assert!(programs.bar.source.contains("Prog * 8.3 - a"));
+        assert_eq!(programs.ring.projection, "MPrj");
+        assert_eq!(programs.ring.colour, "Colour");
+        assert_eq!(programs.ring.texture, None);
+        assert_eq!(programs.bar.texture, Some("Tex"));
+        assert_eq!(programs.bar.progress, Some("Prog"));
+        assert_eq!(M_PRJ_VALUE, [2.0, 0.0, 0.0, 0.0]);
+        assert_eq!(programs.sound, "SkillShow_01");
+        assert_eq!(SKILL_SHOW_GAIN, 0.03);
+        assert_eq!(SKILL_SHOW_FLAGS, 0x4060);
     }
 }
