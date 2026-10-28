@@ -553,3 +553,79 @@ fn a_selector_technique_byte_nine_writes_no_row() {
     assert_eq!(rows[7], 0x10);
     assert_eq!(&rows[..7], &[0; 7]);
 }
+
+#[test]
+fn the_power_slot_draw() {
+    let slot = PowerSlot {
+        icon: 5,
+        kind: 0,
+        state: 0,
+        ..PowerSlot::default()
+    };
+    let draw = slot.draw(10, 20, 40, 40, 2);
+    // The frame is inset by the border; a 32-pixel icon is centred four in.
+    assert_eq!(draw.frame, (12, 22, 36, 36));
+    assert_eq!(draw.icon, (14, 24));
+    assert_eq!(draw.tint, SlotTint::Default);
+    assert!(!draw.empty && !draw.extra_frame);
+    // The marked state draws the extra frame; the selected one wins the ink.
+    let marked = PowerSlot {
+        state: 0x40,
+        ..slot
+    };
+    assert!(marked.draw(10, 20, 40, 40, 2).extra_frame);
+    assert_eq!(marked.draw(10, 20, 40, 40, 2).tint, SlotTint::Marked);
+    assert_eq!(
+        PowerSlot {
+            state: 0x10,
+            ..slot
+        }
+        .draw(10, 20, 40, 40, 2)
+        .tint,
+        SlotTint::Selected
+    );
+    assert_eq!(
+        PowerSlot { kind: 2, ..slot }.draw(10, 20, 40, 40, 2).tint,
+        SlotTint::KindTwo
+    );
+    assert_eq!(
+        PowerSlot {
+            state: 0x1_0000,
+            ..slot
+        }
+        .draw(10, 20, 40, 40, 2)
+        .tint,
+        SlotTint::Hover
+    );
+    // An empty slot draws its shadow and no icon.
+    let empty = PowerSlot { icon: 0, ..slot };
+    let draw = empty.draw(10, 20, 40, 40, 2);
+    assert!(draw.empty);
+    assert_eq!(draw.icon, (14, 24));
+}
+
+#[test]
+fn the_preview_build_destroy_and_bars() {
+    assert!(preview_built(true));
+    assert!(!preview_built(false));
+    assert!(preview_destroyed(true));
+    assert!(!preview_destroyed(false));
+    // The preview bars use the HUD bars' places: at the retail window
+    // (1600 x 1014, unit 5) the health bar is at 550, 989 and the focus bar
+    // at 810; the fills start two rows down.
+    let [health, focus] = preview_bar_rects(1600, 1014, 5);
+    assert_eq!(health, (550, 989, 240, 16));
+    assert_eq!(focus, (810, 989, 240, 16));
+}
+
+#[test]
+fn the_hud_reset_takes_a_hold_only_from_a_fallen_curtain() {
+    let mut curtain = LevelCurtain { state: 2, start: 0 };
+    let mut holds = 3;
+    assert_eq!(curtain.reset_with_hold(&mut holds, true), (true, true));
+    assert_eq!(holds, 2);
+    assert_eq!(curtain.state, 0);
+    curtain.state = 1;
+    assert_eq!(curtain.reset_with_hold(&mut holds, false), (false, false));
+    assert_eq!(holds, 2);
+}

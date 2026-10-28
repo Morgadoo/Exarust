@@ -339,6 +339,37 @@ pub fn preview_plan(opening: bool) -> PreviewPlan {
     }
 }
 
+/// The build the bind's callback makes when the character's model exists:
+/// the model is kept and the view is asked for its camera distance from
+/// the character's height (the inventory helper `camera_distance`). It
+/// answers false when there is no model to keep.
+pub fn preview_built(has_model: bool) -> bool {
+    has_model
+}
+
+/// The destroy releases the preview's scene node and forgets it only when
+/// there was one.
+pub fn preview_destroyed(has_node: bool) -> bool {
+    has_node
+}
+
+/// The preview bars' two rectangles at the bottom of the character view:
+/// the health bar 50 units left of the half width and 5 above the bottom,
+/// the focus bar 52 units further right, each 48 units wide and 4 units
+/// tall (the HUD bars' own frame is drawn 2 units out).
+pub fn preview_bar_rects(
+    window_width: u32,
+    window_height: i32,
+    unit: i32,
+) -> [(i32, i32, i32, i32); 2] {
+    let x0 = (window_width >> 1) as i32 - 50 * unit;
+    let y = window_height - 5 * unit;
+    [
+        (x0, y, 48 * unit, 4 * unit - 4),
+        (x0 + 52 * unit, y, 48 * unit, 4 * unit - 4),
+    ]
+}
+
 /// The player controls' GUI flag the journal passes: 0 when it opens, 1
 /// from its close callback.
 pub fn journal_controls_flag(opening: bool) -> u8 {
@@ -502,6 +533,77 @@ pub struct SlotAnswer {
 
 /// The slot's size at the GUI unit.
 pub const POWER_SLOT_SIZE: (i32, i32) = (40, 40);
+/// The icon's size inside a slot, and the empty slot's shadow icon.
+pub const POWER_ICON: i32 = 32;
+pub const POWER_EMPTY_ICON: i32 = 16;
+/// The empty slot's icon colour byte.
+pub const POWER_EMPTY_ALPHA: u8 = 0x40;
+
+/// The ink a drawn slot's icon takes, from the slot's state and kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlotTint {
+    /// The pointer is over the slot (state bit 0x10000).
+    Hover,
+    /// The slot is marked (state bit 0x10).
+    Selected,
+    /// The slot's style bit 0x40.
+    Marked,
+    /// A kind-2 slot without a mark.
+    KindTwo,
+    Default,
+}
+
+/// What a slot draws: its frame (inset by the border), the icon's centred
+/// place, its ink and whether an empty slot's shadow and its kind icon are
+/// drawn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SlotDraw {
+    pub frame: (i32, i32, i32, i32),
+    pub icon: (i32, i32),
+    pub tint: SlotTint,
+    /// The slot has no icon handle: its shadow is drawn and the kind icon
+    /// (when the kind is past 2) shows instead.
+    pub empty: bool,
+    /// A frame is drawn again over the icon (the hovered slot).
+    pub extra_frame: bool,
+}
+
+impl PowerSlot {
+    /// The slot's draw: the frame at the rect inset by `border`, the icon
+    /// centred at [`POWER_ICON`], the hover extra frame, and the ink by
+    /// state bit 0x10, style bit 0x40, kind 2 or the default. An empty slot
+    /// (no icon) draws its shadow and, when its kind is past 2, the kind's
+    /// icon at the centre unless the pointer is over it.
+    pub fn draw(&self, x: i32, y: i32, width: i32, height: i32, border: i32) -> SlotDraw {
+        let frame = (
+            x + border,
+            y + border,
+            width - border * 2,
+            height - border * 2,
+        );
+        let icon = (x + (width - POWER_ICON) / 2, y + (height - POWER_ICON) / 2);
+        let hover = self.state & 0xf_0000 == 0x1_0000;
+        let empty = self.icon < 1;
+        let tint = if hover {
+            SlotTint::Hover
+        } else if self.state & 0x10 != 0 {
+            SlotTint::Selected
+        } else if self.state & 0x40 != 0 {
+            SlotTint::Marked
+        } else if self.kind == 2 {
+            SlotTint::KindTwo
+        } else {
+            SlotTint::Default
+        };
+        SlotDraw {
+            frame,
+            icon,
+            tint,
+            empty,
+            extra_frame: !empty && self.state & 0x40 != 0,
+        }
+    }
+}
 
 impl PowerSlot {
     /// The slot's message rule: 0x20 (hint) answers 3, or 0x103 for a
@@ -765,6 +867,19 @@ impl LevelCurtain {
         let released = self.state == 2;
         self.state = 0;
         released
+    }
+
+    /// The HUD reset: a fallen curtain (state 2) takes one off the GUI's
+    /// hold count, the state clears, and a running heartbeat starts its
+    /// fade. The hold count only falls for a fallen curtain, as the
+    /// original's check runs before the state clears.
+    pub fn reset_with_hold(&mut self, holds: &mut i32, heartbeat: bool) -> (bool, bool) {
+        let released = self.state == 2;
+        if released {
+            *holds -= 1;
+        }
+        self.state = 0;
+        (released, heartbeat)
     }
 }
 
