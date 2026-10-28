@@ -617,6 +617,35 @@ impl Strip {
     }
 }
 
+/// The room manager's segment query: whether the segment from `a` to `b`
+/// (metres, world space) crosses the occluder (`lid` false) or the lid
+/// (`lid` true) of one of the rooms that are active. Rooms are visited in
+/// order; a room that is active but has no such shell leaves the query
+/// unanswered, as the original returns "no" as soon as it meets a null
+/// shell pointer. The caller in the original is the force powers' reach
+/// test, which Exarust has no caller for yet.
+pub fn segment_blocks(
+    shells: &[ShellStrips],
+    tracker: &crate::rooms::RoomTracker,
+    a: Vec3,
+    b: Vec3,
+    lid: bool,
+) -> bool {
+    for (room, shell) in shells.iter().enumerate() {
+        if !tracker.is_active(room as u16) {
+            continue;
+        }
+        let strip = if lid { &shell.lid } else { &shell.occluder };
+        if strip.positions.is_empty() {
+            return false;
+        }
+        if strip.segment_hits(a, b) {
+            return true;
+        }
+    }
+    false
+}
+
 /// The determinant below which a segment runs parallel to a triangle
 /// ([guess]: the original's constant is not in the pack).
 const SEGMENT_EPSILON: f32 = 1e-8;
@@ -1273,6 +1302,7 @@ fn spawn_node(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rooms::RoomTracker;
     use bevy::ecs::world::CommandQueue;
 
     /// A horizontal quad over x0..x1, z0..z1 at height y, facing up.
@@ -1546,6 +1576,46 @@ mod tests {
         assert!(!strip.segment_hits(Vec3::new(-1.0, 0.0, 0.0), Vec3::new(1.0, 0.0, 0.0)));
         // A closed (three-point) strip crosses both ways.
         assert!(strip.segment_hits(Vec3::new(0.0, -1.0, 0.0), Vec3::new(0.0, 1.0, 0.0)));
+    }
+
+    #[test]
+    fn only_active_rooms_block_a_segment_and_a_null_shell_stops_the_walk() {
+        fn quad_at(x: f32) -> Strip {
+            Strip {
+                positions: vec![
+                    [x - 1.0, 0.0, -1.0],
+                    [x - 1.0, 0.0, 1.0],
+                    [x + 1.0, 0.0, 1.0],
+                    [x + 1.0, 0.0, -1.0],
+                ],
+                indices: vec![0, 1, 2, 0, 2, 3],
+            }
+        }
+        let mut shells = vec![ShellStrips::default(); 3];
+        shells[0].occluder = quad_at(0.0);
+        shells[2].occluder = quad_at(20.0);
+        let mut all = RoomTracker::new(3);
+        all.show_all();
+        let seg = |x: f32| (Vec3::new(x, 1.0, 0.0), Vec3::new(x, -1.0, 0.0));
+        let (a, b) = seg(0.0);
+        // Room 0's occluder is crossed before the walk reaches room 1's
+        // empty one.
+        assert!(segment_blocks(&shells, &all, a, b, false));
+        // A miss at room 0 runs into room 1's missing occluder, which
+        // answers "no" at once, so room 2 is never reached.
+        let (a, b) = seg(20.0);
+        assert!(!segment_blocks(&shells, &all, a, b, false));
+        // With an occluder in room 1 the walk reaches room 2.
+        shells[1].occluder = quad_at(10.0);
+        assert!(segment_blocks(&shells, &all, a, b, false));
+        // A lid query does not see occluders; room 0 has no lid yet.
+        let (a, b) = seg(0.0);
+        assert!(!segment_blocks(&shells, &all, a, b, true));
+        shells[0].lid = quad_at(0.0);
+        assert!(segment_blocks(&shells, &all, a, b, true));
+        // No active room, nothing blocks.
+        let hidden = RoomTracker::new(3);
+        assert!(!segment_blocks(&shells, &hidden, a, b, false));
     }
 
     #[test]

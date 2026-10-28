@@ -1975,8 +1975,10 @@ undrawn whatever the player should not see (`exa_world::rooms`,
   also draws a light's own room's lid into that light's omni shadow faces,
   so a ceiling blocks the light; Exarust's lids cast nothing, so point-light
   shadows do not include ceilings. The manager's segment query against a
-  room's occluder or lid (`Strip::segment_hits`) is modelled for the force
-  powers' line test, which Exarust has no caller for yet.
+  room's occluder or lid is modelled for the force powers' line test
+  (`grid::segment_blocks`: the active rooms in order, each strip's two-sided
+  segment–triangle test, and a room with no shell answering no at once),
+  which Exarust has no caller for yet.
 - **What each state draws.** Hidden: nothing of the room (its meshes are
   hidden; its lights, GI emitters, shadow links and colliders stay).
   Adjacent: the room with its occluder and its lid, so from above it is a
