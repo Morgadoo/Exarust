@@ -1803,8 +1803,9 @@ that atlas yet, and the other windows wait for their forms.
   `HisHers`, giving he/she, him/her, his/her or his/hers by the owner's
   sex bit; the description box sits `0xb4` pixels below the page's top,
   4 pixels in, the page's width less twice the border and 8, and is first
-  `0xa0` tall. Refreshing an open card rewrites the strike rows (slash,
-  crush and pierce at their control ids with a zero-byte row left out),
+  `0xa0` tall. Refreshing an open card rewrites the strike rows (each
+  non-zero slash, crush and pierce byte into the next bar from 0xd03, the
+  builder's 5-or-less rule not applied),
   thrust (0x106) and the value (0xa01); the apparel refresh also rewrites
   weight (0x101), impact (0x102), the strike rows (0xd03–0xd05) and
   encumbrance (0x107, 8 at a byte of 0xa1 or above).
@@ -1813,20 +1814,27 @@ that atlas yet, and the other windows wait for their forms.
   controls 0x101–0x103 for weight, handling and balance, the shown strike
   rows continue 0xd03 upwards and thrust is 0x106; the material, socket,
   rank, points and value rows add 0x14, 0x18, 0x14, 0x14 and 0x18 to the
-  page's height. The apparel page's impact row is 0x102 and its
-  encumbrance 0x107; the shield page shows 1, 0.05·byte and 8 (fixed) or
-  the bytes' 0.01/0.05/0.05. The title's tint runs between the palette's
-  low, middle and high words by the condition byte, over the low-to-middle
-  pair below 0x80 and the middle-to-high pair above, with factors
-  1/127 and 1/128 in opposite orders for weapons and apparel (a model
-  whose flags carry bit 2 maps the whole byte). A request is delayed
+  page's height (the material only when more than two striking rows,
+  thrust included, show). A weapon's points row shows while the skill's
+  low five bits are set and reads them less one (not below 0) when the
+  item flags' `0x30` bits are `0x10`. The value row has its own gate. The
+  apparel page's impact row is 0x102 and its encumbrance 0x107; the
+  shield page shows 1, 0.05·byte and 8 (fixed, with no rank, points or
+  value rows) or the bytes' 0.01/0.05/0.05. While the rank gate is off,
+  the weapon and apparel pages tint the title between the palette's low,
+  middle and high words by the condition byte, over the low-to-middle
+  pair below 0x80 and the middle-to-high pair above, with factors 1/127
+  and 1/128 in opposite orders for weapons and apparel (a model whose
+  flags carry bit 2 maps the whole byte), each a double product; the
+  blend rounds each channel half to even. A request is delayed
   200 ms; a close cancels a pending request, otherwise an open card fades
   over 0x100 ms, and a request while one is pending drops it. A double
   click's use class 0 opens a container (and does nothing for anything
-  else), class 1 does nothing, and a class above 1 runs the game's use
-  hook; `panel_event` composes that with the right click's card (delayed
-  by 200 ms for classes 0–2, running the use for 2) and the drag and use
-  bits. An already-open popup is refocused; a new one is sized from its
+  else), class 1 closes the card, and a class above 1 closes it and runs
+  the game's use hook; `panel_event` checks the drag bit first, then the
+  double click, then the right click's card, which reads the use
+  section's kind (delayed by 200 ms for kinds 0–2, running the use for 2,
+  at once for a higher kind or no section). An already-open popup is refocused; a new one is sized from its
   record (`2·border + cells·unit`) with its inner panel six units plus the
   icon down. The five special controls register after the shipped ones:
   rating dots (0, 24), slider (72, 24), coin value (128, 24), crystal
@@ -1860,9 +1868,11 @@ that atlas yet, and the other windows wait for their forms.
   and the crystals at (0, 128), (64, 128), (0, 64), (0, 0), (64, 0) and
   (64, 64). The coins draw into a `4·unit` manager in the colour format,
   the grip sides into an `8·unit` one in the single-channel format and the
-  crystals into a 22-pixel one; all blend 0x203.
+  crystals into one of the interface's large-icon cell (22 before a GUI
+  level is chosen; Exarust keeps 22); all blend 0x203.
 - **Panel drawing** (`exa_game::item_panel_draw`): every visible entry is
-  drawn at its stored cell from the manager's atlas through the item
+  drawn at its stored cell (inside the pack panel's client area, clipped
+  to it) from the manager's atlas through the item
   panel's own program, tinted by its highlight masks (green, yellow at
   half alpha, both green at half alpha, else black). The program
   (`exa_ui::skin::SkinMode::HltCol`) sums a ring of eight neighbouring

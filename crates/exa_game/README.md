@@ -472,8 +472,9 @@ cell in the item panel's highlight program with its flags' tint, and the
 inventory screen submits the layer over its pack panel. No item renderer
 fills the atlas yet, so the panel is empty in the running game. The card
 window (`CardWindow`) keeps the 200 ms request, its toggle and its 0x100 ms
-close fade; a double click classifies a container's open, a non-use and a
-use; a popup's inner panel and top are `open_container`'s. The inventory
+close fade on top of the card timer; a double click classifies a
+container's open, a card close and a use; a popup's inner panel and top
+are `open_container`'s. The inventory
 screen still has no bound item list.
 
 The gamepad (`gamepad`) reproduces the original's Steam Input action sets on

@@ -869,15 +869,13 @@ pub fn panel_event(
         };
     }
     if button & 0x2000 != 0 {
-        if hit.is_none() || card_pending {
-            return PanelEvent::None;
-        }
-        return match card_kind {
-            Some(kind) if kind <= 2 => PanelEvent::ShowCard {
+        return match card_action(hit.is_some(), card_pending, card_kind) {
+            CardAction::None => PanelEvent::None,
+            CardAction::Delayed { run_use } => PanelEvent::ShowCard {
                 delayed: true,
-                run_use: kind == 2,
+                run_use,
             },
-            _ => PanelEvent::ShowCard {
+            CardAction::Immediate => PanelEvent::ShowCard {
                 delayed: false,
                 run_use: false,
             },

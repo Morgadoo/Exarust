@@ -2017,11 +2017,17 @@ above a target at the origin and the framing distance is 20 (close), 30
 (apparel) or 70. The extents are projected from the mesh's vertices (model
 flags `0x89` masked to `0x89`) or from its box's eight corners, each axis's
 minimum and maximum updated in the machine's ordered compare (an unordered
-value moves neither), then the span plus 0.0001 taken in double. The span is
-scaled by `icon · view scale / √(distance²) · 0.5`, given in single
-precision in that order. The full image is post-processed and filtered down
-to the icon size (2× to 1×), then the highlight halo runs; a model's own
-flags decide the highlighted halo (`0x01000000`).
+value moves neither), the span taken in single precision and widened by
+0.0001 in double. The projection is the engine's packed transform, which
+adds the x and y terms and the z and translation terms in pairs. The span
+is scaled by `icon · view scale / √(distance²) · 0.5`, given in single
+precision in that order. The post process always runs; while the alpha
+global is set (the default) a screen-quad pass draws the full render into
+the icon and nothing else follows, otherwise the full image is filtered
+down to the icon size (2× to 1×) and the halo runs, highlighted for the
+variant's `0x01000000` bit. The scene's depth bounds read the camera axis
+(the node matrix's second row), start both ends at the first kept node's
+stored depth and give the box a radius over its whole half-extent vector.
 
 **Resize and stream.** A UI-scale change resizes both renderbuffers and
 both images to twice the new icon and the icon (the scale hook then renders

@@ -119,7 +119,7 @@ impl Painted {
     }
 }
 
-fn offset_batch(batch: &mut SkinBatch, x: i32, y: i32) {
+pub(crate) fn offset_batch(batch: &mut SkinBatch, x: i32, y: i32) {
     for vertex in &mut batch.vertices {
         vertex.x += x as f32;
         vertex.y += y as f32;
