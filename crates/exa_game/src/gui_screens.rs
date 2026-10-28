@@ -1257,6 +1257,39 @@ mod tests {
     }
 
     #[test]
+    fn closing_a_panel_queues_its_icon_handles() {
+        let mut screens = GameScreens::default();
+        screens.task.screen = (1600, 900);
+        screens.open_inventory(true, true, 4);
+        screens.pack.entries = vec![
+            crate::item_container::Entry {
+                icon: 3,
+                ..Default::default()
+            },
+            crate::item_container::Entry {
+                icon: 7,
+                ..Default::default()
+            },
+        ];
+        assert!(screens.close(GameScreen::Inventory));
+        assert_eq!(screens.released_icons, vec![3, 7]);
+        // The destroyed panel keeps no entries.
+        assert!(screens.pack.entries.is_empty());
+        // A loot window queues both of its panels' handles.
+        screens.open_loot(7, 0, 4);
+        screens.loot[0].pack.entries = vec![crate::item_container::Entry {
+            icon: 4,
+            ..Default::default()
+        }];
+        screens.loot[0].worn.entries = vec![crate::item_container::Entry {
+            icon: 5,
+            ..Default::default()
+        }];
+        assert!(screens.close(GameScreen::Loot));
+        assert_eq!(screens.released_icons, vec![3, 7, 4, 5]);
+    }
+
+    #[test]
     fn an_inactive_screen_is_focused_not_closed() {
         let mut screens = GameScreens::default();
         screens.open_inventory(true, true, 4);
