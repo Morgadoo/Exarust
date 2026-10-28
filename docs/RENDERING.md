@@ -324,6 +324,13 @@ orderings, pinned by tests):
 9. the environment's weather effects, the closing hook list, then depth
    writes back on.
 
+A render-state record is 156 bytes; the material's opacity sits at offset
+`0x20`, the blend word at `0x46` (its bits 4–7 are the layer) and the
+material program key at `0x94` (`passes::{RENDER_STATE_BYTES,
+RENDER_STATE_OPACITY, RENDER_STATE_BLEND_WORD, RENDER_STATE_KEY,
+blend_layer}`). Both list sorts copy whole records and keep one spare
+record as a sentinel.
+
 The opaque list is grouped by material program key: the first state stays
 first, each next slot takes the first unused state with the current key,
 and when none is left it takes the last unused state and moves to its key.

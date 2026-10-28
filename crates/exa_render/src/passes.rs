@@ -108,10 +108,30 @@ impl Pass {
     }
 }
 
+/// Bytes in one render-state record: the lists copy whole records when
+/// they sort, and the original's allocation reserves one extra record as a
+/// sentinel.
+pub const RENDER_STATE_BYTES: usize = 0x9C;
+/// The blend word's offset in a render-state record; its bits 4–7 are the
+/// blend layer.
+pub const RENDER_STATE_BLEND_WORD: usize = 0x46;
+/// The material opacity's offset in a render-state record.
+pub const RENDER_STATE_OPACITY: usize = 0x20;
+/// The material program key's offset in a render-state record.
+pub const RENDER_STATE_KEY: usize = 0x94;
+
+/// The blend layer a render state's blend word names: bits 4–7, 0–15. The
+/// sorting routines read exactly these four bits; the low four bits are
+/// destination blend factors and play no part in the order.
+pub fn blend_layer(blend_word: u16) -> u8 {
+    ((blend_word & 0xF0) >> 4) as u8
+}
+
 /// One render-state list record.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RenderEntry {
-    /// The material program key (a short in the original's state record).
+    /// The material program key (the short at [`RENDER_STATE_KEY`] in the
+    /// original's state record).
     pub key: i16,
     /// The blend layer, the blend word's bits 4–7 (0–15; higher bits are
     /// ignored).
@@ -361,14 +381,30 @@ mod tests {
         ];
         let order: Vec<u32> = sort_blended(&entries).iter().map(|e| e.material).collect();
         assert_eq!(order, [3, 4, 2, 1]);
-        // Only the layer's four bits count.
+        // The layer field is already the extracted four bits; the highest
+        // nibble sorts last.
         let entries = [
-            entry(0x12, 0.5, 1),
+            entry(0x0F, 0.5, 1),
             entry(0x01, 0.5, 2),
             entry(0x00, 0.5, 3),
         ];
         let order: Vec<u32> = sort_blended(&entries).iter().map(|e| e.material).collect();
         assert_eq!(order, [3, 2, 1]);
+    }
+
+    #[test]
+    fn the_blend_layer_is_bits_four_to_seven() {
+        assert_eq!(blend_layer(0x0000), 0);
+        assert_eq!(blend_layer(0x0010), 1);
+        assert_eq!(blend_layer(0x0212), 1);
+        assert_eq!(blend_layer(0x0073), 7);
+        assert_eq!(blend_layer(0x00F0), 15);
+        assert_eq!(blend_layer(0xFFFF), 15);
+        // The record offsets are the ones the sort and the draw walk read.
+        assert_eq!(RENDER_STATE_OPACITY, 0x20);
+        assert_eq!(RENDER_STATE_BLEND_WORD, 0x46);
+        assert_eq!(RENDER_STATE_KEY, 0x94);
+        assert_eq!(RENDER_STATE_BYTES, 156);
     }
 
     #[test]

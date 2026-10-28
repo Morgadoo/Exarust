@@ -19,7 +19,7 @@
 // negated compares say which.
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
 
-use bevy::math::{Mat3A, Mat4, Quat, Vec3, Vec3A, Vec4};
+use bevy::math::{Mat3A, Mat4, Quat, Vec2, Vec3, Vec3A, Vec4};
 
 /// The squared length at or below which an axis has no direction (single
 /// precision).
@@ -319,6 +319,68 @@ pub fn asin(x: f32) -> f32 {
 /// The arc cosine under its usual engine name.
 pub fn acos(x: f32) -> f32 {
     acos_approx(x)
+}
+
+/// The dot product of two 2D vectors: `x·x + y·y`, summed in that order.
+pub fn dot2(a: Vec2, b: Vec2) -> f32 {
+    a.x * b.x + a.y * b.y
+}
+
+/// The squared length of a 2D vector.
+pub fn length_squared2(v: Vec2) -> f32 {
+    v.x * v.x + v.y * v.y
+}
+
+/// The length of a 2D vector, the square root of [`length_squared2`].
+pub fn length2(v: Vec2) -> f32 {
+    length_squared2(v).sqrt()
+}
+
+/// The length of a 3D vector: `((x² + z²) + y²).sqrt()`, the original's
+/// association (x and z first, y last), which can differ from the usual
+/// (x, y, z) order in the last bit.
+pub fn length3(v: Vec3) -> f32 {
+    ((v.x * v.x + v.z * v.z) + v.y * v.y).sqrt()
+}
+
+/// The length of a 3D vector projected onto the ground plane:
+/// `(x² + z²).sqrt()`.
+pub fn length3_ground(v: Vec3) -> f32 {
+    (v.x * v.x + v.z * v.z).sqrt()
+}
+
+/// The per-component `MINPS`: each component is the minimum, and a NaN in
+/// either operand gives the second vector's component.
+pub fn min_components(a: Vec3, b: Vec3) -> Vec3 {
+    Vec3::new(min(a.x, b.x), min(a.y, b.y), min(a.z, b.z))
+}
+
+/// The per-component `MAXPS`, with the same NaN rule as
+/// [`min_components`].
+pub fn max_components(a: Vec3, b: Vec3) -> Vec3 {
+    Vec3::new(max(a.x, b.x), max(a.y, b.y), max(a.z, b.z))
+}
+
+/// The smallest component: `min(min(x, y), z)`.
+pub fn min_component(v: Vec3) -> f32 {
+    min(min(v.x, v.y), v.z)
+}
+
+/// The largest component: `max(max(x, y), z)`.
+pub fn max_component(v: Vec3) -> f32 {
+    max(max(v.x, v.y), v.z)
+}
+
+/// The part of `v` along the unit vector `unit`: the dot (3D, x and y then
+/// z) scaled back onto `unit`.
+pub fn project_onto_unit(v: Vec3, unit: Vec3) -> Vec3 {
+    let along = v.x * unit.x + v.y * unit.y + v.z * unit.z;
+    unit * along
+}
+
+/// `v` without its part along the unit vector `unit`: `v − project(v)`.
+pub fn remove_component(v: Vec3, unit: Vec3) -> Vec3 {
+    v - project_onto_unit(v, unit)
 }
 
 /// The squared XZ length below which [`heading`] answers zero: the same
@@ -1222,6 +1284,41 @@ mod tests {
         assert_eq!(wide.x_axis.x, 0.0);
         // (0 − (−2^31)) − (2^31 − 1) = 1 over 2^32 − 1.
         assert_eq!(wide.w_axis.x, (1.0f64 / 4_294_967_295.0) as f32);
+    }
+
+    #[test]
+    fn vector_lengths_use_the_original_association() {
+        assert_eq!(dot2(Vec2::new(1.0, 2.0), Vec2::new(3.0, 4.0)), 11.0);
+        assert_eq!(length_squared2(Vec2::new(3.0, 4.0)), 25.0);
+        assert_eq!(length2(Vec2::new(3.0, 4.0)), 5.0);
+        // A 3-4-12 triangle: x and z first, then y.
+        assert_eq!(length3(Vec3::new(3.0, 12.0, 4.0)), 13.0);
+        assert_eq!(length3_ground(Vec3::new(3.0, 100.0, 4.0)), 5.0);
+        // The written expression, not a tied compile-time fold.
+        let v = Vec3::new(0.3, 0.7, 0.1);
+        assert_eq!(length3(v), ((v.x * v.x + v.z * v.z) + v.y * v.y).sqrt());
+        // A NaN operand gives the second vector's component (MINPS/MAXPS).
+        let nan = Vec3::new(f32::NAN, 2.0, f32::NAN);
+        let other = Vec3::new(1.0, 5.0, 3.0);
+        assert_eq!(min_components(nan, other), Vec3::new(1.0, 2.0, 3.0));
+        assert_eq!(max_components(nan, other), Vec3::new(1.0, 5.0, 3.0));
+        // The smallest/largest fold: the second operand wins a NaN pair.
+        assert_eq!(min_component(Vec3::new(f32::NAN, 5.0, 0.5)), 0.5);
+        assert_eq!(max_component(Vec3::new(f32::NAN, -5.0, -0.5)), -0.5);
+        assert_eq!(min_component(Vec3::new(2.0, -3.0, 1.0)), -3.0);
+        assert_eq!(max_component(Vec3::new(2.0, -3.0, 1.0)), 2.0);
+    }
+
+    #[test]
+    fn projection_splits_a_vector_along_a_unit() {
+        let v = Vec3::new(1.0, 2.0, 3.0);
+        assert_eq!(project_onto_unit(v, Vec3::Z), Vec3::new(0.0, 0.0, 3.0));
+        assert_eq!(remove_component(v, Vec3::Z), Vec3::new(1.0, 2.0, 0.0));
+        // Onto a unit diagonal the part is the average on each axis.
+        let diag = Vec3::splat(1.0).normalize();
+        let along = project_onto_unit(v, diag);
+        assert!((along.length() - v.dot(diag)).abs() < 1e-6);
+        assert!((remove_component(v, diag).dot(diag)).abs() < 1e-6);
     }
 
     #[test]
