@@ -662,29 +662,39 @@ mode word, a phase word and a session hook. Its methods return named steps
 (a menu page, a level load, a save, a camera shot, a cursor warp) instead of
 calling the rest of the game, so the order is testable.
 
-- **Boot.** First-run settings, the actor library, the game and item
-  interfaces, the hardware settings, the unlock words, the two save managers
-  (story signature, arena signature and data version), the arena data, the
-  transition form, the script hooks, the splash, then the title page.
+- **Boot.** First-run settings, the actor library, the game, item and skill
+  interfaces, the hardware settings, the GUI scale, the menu key task, the
+  first-run tip, the unlock words, the experience system, the two save
+  managers (story signature, arena signature and data version), the
+  transition form, the arena data, the audio, the splash, then the title
+  page. The script hooks register at the unit's initialisation, before the
+  window.
 - **Modes and phases.** The mode word is 0 (title), 2 (practice), 4 (story),
   8 (arena) or a scripted mode (versus is 0x1010). Phases: 0 transition, 1
-  title, 3 playing, 4 won, 5 ended, 8 round won, 0x10 forfeit and 0x20
-  paused. A switch clears the reconstruction state, stores the outgoing
+  title, 2 the character creator, 3 playing, 4 won, 5 ended, 8 round won,
+  0x10 forfeit, 0x20 paused (the arena's pause screen) and 0x40 the class
+  select. A switch clears the reconstruction state, stores the outgoing
   mode's player, restores the incoming one and sets the incoming hook: the
   story's for story, none for the arena, the title and a scripted mode
   (whose enter hook runs); practice keeps its hook until its start installs
   one. Story mode uses checkpoints, arena mode overrides the inventory (the
   flag words' reading is a guess).
-- **Starts.** A story starts at `exanima01` with its background's role,
-  flags, pose and wake-up motion; the unknown background and the villager
-  get a starting light (turned −48°, 110°, 88° and 8°, −150°, 50°), the
-  unknown one Derrin. The spawn turns are the engine's angle builder's rows
-  (`(cz·cy, sz, −cz·sy)`, …). Practice starts at `arena`/`arenae` with
-  `opponent01`/`opponent09`, the ladder's music (0.1 and 0.25; both
-  drum-and-bass tracks at 0.15) and the player in the ring's middle at its
-  standing height plus 5 cm; the next fight stands it at its measured stand
-  height. A continue loads the save's locale (or `exanima01`); the arena
-  continue loads `arenahub` with the hub's music.
+- **Starts.** A story starts at `exanima01` with its background's roles (7
+  and 1, then the background's own, the list cleared first), flags, pose
+  and wake-up motion; the unknown background carries item 0x10c and gets
+  the thaumaturge's power word 0x510000 and 4.0, the knight and proctor hold
+  item 0x1f in the off hand and carry it (flags 0x100).
+  The villager starts with condition and animator flags 0x600 and turn
+  0.45, the knight and proctor turn 1.0.
+  The unknown background and the villager get a starting light (turned −48°,
+  110°, 88° and 8°, −150°, 50°), the unknown one Derrin. The spawn turns are
+  the engine's angle builder's rows (`(cz·cy, sz, −cz·sy)`, …). Practice
+  starts at `arena`/`arenae` with `opponent01`/`opponent09`, role 0x10, the
+  ladder's music (0.1 and 0.25; both drum-and-bass tracks at 0.15) and the
+  player in the ring's middle at its standing height plus 5 cm; the next
+  fight stands it at its measured stand height. A continue loads the save's
+  locale (or `exanima01`); the arena continue loads `arenahub` with the
+  hub's music.
 - **Camera shots.** A point shot puts the camera at the point plus an
   offset: (700, 1180, 1100) cm for every shot of the group (practice start,
   next fight, story and arena continues), (300, 1180, 1300) for the arena
@@ -700,24 +710,51 @@ calling the rest of the game, so the order is testable.
   frame ticks the dialogue engine and then the mode's hook. The story hook
   checks the three wake-up flags, runs discovery once a second and handles a
   fallen player (dead with at least 0.01 health: knocked out for five
-  seconds, then revived; otherwise dead). The practice hook waits a second;
-  then a dead player dies, or the first dead opponent ends the round; the
-  eighth fight wins the ladder and unlocks expert.
+  seconds, then revived; otherwise dead). The get-up writes the animator's
+  held pose (flags 0x600, blend 1, move and turn 0.49) until five hundred
+  milliseconds after its start, then its clocked pose (flags 0x20, blend
+  0.4, turn 0.4, the clip's own value less 1490 ms); the revival sets the
+  wake bit and pushes the clip clock two seconds on. The practice hook waits
+  a second; then a dead player dies, or the first dead opponent ends the
+  round; the eighth fight wins the ladder and unlocks expert. F1 in a
+  session stops the dialogue and the hook behind the in-game page, as the
+  original's frame task does.
 - **Death and the end menu.** Death shows the end menu and, in the story,
   drops the save unless the player can be rebuilt (then the first death
   strips them). The end menus are EXIT; (a won story or arena), RESTART/EXIT
   (practice over), CONTINUE/EXIT (rebuilt), CONTINUE/LOBBY/EXIT (arena) and
-  NEXT FIGHT, at scales 0.9, 0.85 and 0.78. Its confirm key plays the
-  menu's click at 0.06 with a pitch of 0.8 to 1.2.
+  NEXT FIGHT, at scales 0.9, 0.85 and 0.78; the arena's refreshes the pad
+  bindings and starts with no row selected (a session's begin and continue
+  clear that flag). Its confirm key plays the menu's click at
+  0.06 with a pitch of 0.8 to 1.2. The arena's pause page reads its last row
+  EXIT once the session was won or has ended, FORFEIT before.
+- **The menus' rows.** The title's CONTINUE reads the story's save manager,
+  the start page's the arena's; each grey out only when its own manager has
+  no save. The in-game page's first row is NEW GAME in a mode whose word
+  has the value-2 bit (practice) and CONTINUE otherwise, and the pause
+  pages never grey CONTINUE out. The row origin is 0.38 (title), 0.45
+  (start, class select) or 0.39 (the in-game and pause pages).
+- **Leaving.** The story's end-menu EXIT closes the game view and the
+  dialogue, clears the story bit of a stripped player and saves without the
+  death rule (any other story saves with it), then leaves to the title
+  behind the transition. Leaving a session stops the hook and the frame
+  task, closes the dialogue, the prelude and the save package and hides the
+  end menu. Back to the title shows the menu form's title logo again, plays
+  its theme and builds the title page. A level load's
+  finish closes the end menu and the prelude and returns the session to
+  playing.
 - **Level exits.** A level the locale table names is left behind the
   transition; a player with neither dead bit loses the controls. Every exit
   saves (without the death rule); levels below 7 also keep a checkpoint when
   `CheckPoints` is on (level 6 always) and the save holds neither
-  `exanima04` nor the level.
+  `exanima04` nor the level. An exit whose fade bit is set also fades the
+  screen out and hands the player's body to the AI before the transition.
+  The locale's ambient music is the host's.
 - **The quit autosave** is the application's quit callback: in the paused
   phase the arena unit's pause callback runs; while playing, a story saves
   with the death rule, an arena saves from its in-game page or forfeits from
-  its pause page; practice writes nothing.
+  its pause page, practice writes nothing, and the save manager's package is
+  closed. It does not return to the title.
 - **The exit-trigger nudge** pushes a continued story's player out of an
   exit trigger that holds it: the squared distance to the centre within
   (radius + 50)², the squared box distance within 50 and an exit-marker
@@ -729,8 +766,9 @@ calling the rest of the game, so the order is testable.
 - **Wiring.** `FlowPlugin` boots the flow, ticks it on the 12 ms game clock,
   watches a play level's player (a sandbox practice session) and turns a
   teleporter's `TravelToLevel` into a level exit; F1 then opens the in-game
-  page with the flow's mode and phase words. The steps are logged; the
-  world, save and camera steps are not applied yet.
+  page with the flow's mode and phase words and hides the session hook while
+  the page is up. The steps are logged; the world, save and camera steps are
+  not applied yet.
 
 ### The splash screen
 
@@ -765,9 +803,13 @@ otherwise, with the flow's mode, phase and page state. The screen follows
   MANUAL, SETTINGS, EXIT. Arena: NEW CAREER, CONTINUE (greyed without an
   arena save), PRACTICE, VERSUS (only with the versus lobby), BACK.
   Practice: NOVICE, EXPERT (greyed until it is unlocked), BACK. In-game:
-  CONTINUE (NEW GAME in practice), MANUAL, SETTINGS, EXIT. The end pages:
-  CONTINUE, SETTINGS, FORFEIT (or EXIT). The row origins are 0.38, 0.42
-  with five arena rows (0.45 with four), 0.45 and 0.39 of the height.
+  NEW GAME in a mode with bit 2 (practice) and CONTINUE otherwise, then
+  MANUAL, SETTINGS, EXIT; in a session this page is the pause too. The
+  arena's own pause page is CONTINUE, SETTINGS, FORFEIT (EXIT once the
+  session was won or has ended); the story's pause page is the same shape
+  with EXIT, defined by the builder but never built by the executable. The
+  row origins are 0.38, 0.42 with five arena rows (0.45 with four), 0.45
+  and 0.39 of the height.
 - **Geometry.** The row scale is `round(H / 135) · 0.125`. The page's top is
   `round(H · origin)` and a row advances `round(70 · scale)` (single
   precision, half to even). A painted row's baseline is the top plus the
@@ -782,7 +824,11 @@ otherwise, with the flow's mode, phase and page state. The screen follows
   disabled, grey at half alpha; the selected row is drawn last in white with
   the menu's text shader, a third of a unit lower while it is pressed. A row
   with marks gets `[` or `[[` appended. With no selection no row is singled
-  out.
+  out. The menu's text shader is the game-main unit's own small program
+  (`exa_game::menu_text`): it samples the glyph, mixes a tint from the
+  glyph's red channel (`(1, 0.75, 0.4)` to white), gains it 1.1, tone-maps
+  by `rgb/(0.5 + rgb)·1.5` and multiplies the vertex colour; the rows are
+  still drawn in the base font until its quads take that program.
 - **Selection and click.** The pointer selects the row under it and Up and
   Down move the selection. A press marks the pressed row; its command runs
   on the release over it, or at once on Enter. The commands, by page:

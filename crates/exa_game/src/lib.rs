@@ -52,6 +52,7 @@ pub mod match_layout;
 pub mod menu;
 pub mod menu_pages;
 pub mod menu_screen;
+pub mod menu_text;
 pub mod mind;
 pub mod nav_camera;
 pub mod nav_pick;

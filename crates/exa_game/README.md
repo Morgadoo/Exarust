@@ -574,20 +574,25 @@ segments at −15, −5 cm), and the `thmnrg_chrga` and `thmnrg_shock` sounds
 
 `flow` is the original's game-main flow: boot into the title, the mode
 switch (practice, story, arena, scripted modes), the session starters
-(story from a background with its role, pose, light and Derrin, practice
-from the ladder, the story and arena continues, the arena hub), the
-transition screen's 100 ms actions, the per-frame dialogue and session hook,
-the story's wake-up, knockout and revival, death and the end-of-session
-menu, level exits with their save and checkpoint, the story respawn at
-`exanima05`'s portal, the application quit's autosave and the pause. The
-rules return named steps; `FlowPlugin` runs them on the 12 ms game clock,
-follows a play level's player as a sandbox practice session, and turns a
-teleporter's journey into a level exit (the steps are logged, not applied).
-F1 opens the in-game page while a session runs. The camera shots (offsets
-added to the framed point) with their cursor warps, the spawn turns (the
-engine's angle builder), the exit-trigger nudge, the practice scene filter,
-the practice and menu music, the unlock words and the save managers'
-signatures are pinned by tests. Rules: `docs/UI.md` (The game flow).
+(story from a background with its roles, record words, pose, light and
+Derrin, practice from the ladder with its role, the story and arena
+continues, the arena hub), the transition screen's 100 ms actions, the
+per-frame dialogue and session hook (with the wake-up's whole animator
+write: flags, blend, move and turn factors and the clip clock), the story's
+wake-up, knockout and revival, death and the end-of-session menu, level
+exits with their save and checkpoint, the level-load finish, the story
+end-menu exit, the story respawn at `exanima05`'s portal, the application
+quit's autosave, the menu form routines (show, hide, the help flag, the title logo),
+the return to the menu form, and the pause. The rules return named steps;
+`FlowPlugin` runs them on the 12 ms game clock, follows a play level's
+player as a sandbox practice session, turns a teleporter's journey into a
+level exit, and hides the session hook while F1's in-game page is up (the
+menu screen calls `menu_opened`/`menu_closed`). F1 opens the in-game page
+while a session runs. The camera shots (offsets added to the framed point)
+with their cursor warps, the spawn turns (the engine's angle builder), the
+exit-trigger nudge, the practice scene filter, the practice and menu music,
+the unlock words and the save managers' signatures are pinned by tests.
+Rules: `docs/UI.md` (The game flow).
 
 `splash` is the start-up splash screen: the black backdrop, the one-second
 renderer warm-up, the first logo fading in from black over 600 ms and held
@@ -606,7 +611,10 @@ and swing, the mind domain for the second and third codes, the force domain
 for the first and third, and the class word) and the background-unlock bit.
 
 The main menu screen's F1 now takes the flow's mode, phase and page state,
-and its in-game page in a session.
+and its in-game page in a session; while the page is open the flow's
+dialogue and session hook are held, as the original's frame task does. The
+menu rows' text program is `menu_text` (the unit's one shader, still to be
+bound on the draw path).
 
 ## Main menu screen
 

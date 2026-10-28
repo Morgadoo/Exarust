@@ -25,6 +25,7 @@
 //! hooks, end menu, level exit, death and revival, quit and autosave.
 
 use bevy::prelude::*;
+use exa_formats::characters::{Carried, ItemRef, NEW_ENTRY_WORD};
 use exa_formats::save_package;
 
 use crate::arena_hub;
@@ -50,6 +51,8 @@ pub const VERSUS_MODE: u32 = 0x1010;
 pub const PHASE_TRANSITION: u32 = 0;
 /// The main menu is up and no session runs.
 pub const PHASE_MENU: u32 = 1;
+/// The character creator is showing.
+pub const PHASE_CREATING: u32 = 2;
 /// A session is running.
 pub const PHASE_PLAYING: u32 = 3;
 /// The practice ladder is finished; the end menu shows.
@@ -63,6 +66,8 @@ pub const PHASE_FORFEIT: u32 = 0x10;
 /// The game is paused. The original tests this word before it autosaves on a
 /// quit; the pause screen itself is the in-game menu page.
 pub const PHASE_PAUSED: u32 = 0x20;
+/// The class select (a setup form before a practice game) is showing.
+pub const PHASE_CLASS_SELECT: u32 = 0x40;
 
 /// The condition word of a dead character.
 pub const DEAD: u32 = 0xA00;
@@ -94,6 +99,12 @@ pub const ALIVE_HEALTH: f64 = 0.01;
 /// The practice ladder's first fight number. The first partner is
 /// `opponent01` (novice) or `opponent09` (expert).
 pub const FIRST_FIGHT: i32 = 1;
+
+/// The role a practice mode's player starts with.
+pub const PRACTICE_ROLE: u32 = 0x10;
+
+/// The motion a practice start and each next fight asks the player for.
+pub const PRACTICE_MOTION: u32 = 3;
 
 /// The victory screen's menu number.
 pub const MENU_WON: u32 = 2;
@@ -192,12 +203,16 @@ impl Mode {
 pub enum Phase {
     Transition,
     Menu,
+    /// The character creator's setup form.
+    Creating,
     Playing,
     Won,
     Ended,
     RoundWon,
     Forfeit,
     Paused,
+    /// The class select's setup form.
+    ClassSelect,
     /// A word the executable does not use.
     Other(u32),
 }
@@ -208,12 +223,14 @@ impl Phase {
         match self {
             Phase::Transition => PHASE_TRANSITION,
             Phase::Menu => PHASE_MENU,
+            Phase::Creating => PHASE_CREATING,
             Phase::Playing => PHASE_PLAYING,
             Phase::Won => PHASE_WON,
             Phase::Ended => PHASE_ENDED,
             Phase::RoundWon => PHASE_ROUND_WON,
             Phase::Forfeit => PHASE_FORFEIT,
             Phase::Paused => PHASE_PAUSED,
+            Phase::ClassSelect => PHASE_CLASS_SELECT,
             Phase::Other(word) => word,
         }
     }
@@ -223,12 +240,14 @@ impl Phase {
         match word {
             PHASE_TRANSITION => Phase::Transition,
             PHASE_MENU => Phase::Menu,
+            PHASE_CREATING => Phase::Creating,
             PHASE_PLAYING => Phase::Playing,
             PHASE_WON => Phase::Won,
             PHASE_ENDED => Phase::Ended,
             PHASE_ROUND_WON => Phase::RoundWon,
             PHASE_FORFEIT => Phase::Forfeit,
             PHASE_PAUSED => Phase::Paused,
+            PHASE_CLASS_SELECT => Phase::ClassSelect,
             other => Phase::Other(other),
         }
     }
@@ -431,16 +450,39 @@ impl Background {
     }
 }
 
-/// What a new story does for its background: the role added to the player,
-/// the story flag, the spawn pose, the starting light and the companion.
+/// What a new story does for its background: the roles added to the player,
+/// the story flag word, the spawn pose, the starting light, the companion
+/// and the record writes (gear and powers) the start makes.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct StoryStart {
     pub background: Background,
     /// The role ID added to the player's roles.
     pub role: u32,
+    /// The whole role list the start gives the record, in order: the list
+    /// is cleared, the two shared roles (7 and 1) are added, then the
+    /// background's own.
+    pub roles: &'static [u32],
     /// The story flag word the record gets.
     pub flags: u32,
     pub placement: Placement,
+    /// The item put in the record's off hand: the knight's and proctor's
+    /// item 0x1f.
+    pub off_hand: Option<ItemRef>,
+    /// The entry appended to the record's carried list: the unknown
+    /// background's item 0x10c (its third word 0x0080_0020) and the knight's
+    /// and proctor's item 0x1f with flags 0x100 (the default third word).
+    pub carried: Option<Carried>,
+    /// The power word and the float beside the power slots the unknown
+    /// background writes: the thaumaturge's
+    /// [`creation_defaults`](crate::create::creation_defaults) values.
+    pub powers: Option<(u32, f32)>,
+    /// The condition word the start writes (the villager's 0x600).
+    pub condition: Option<u32>,
+    /// The animator flags the start writes (the villager's 0x600).
+    pub animator: Option<u32>,
+    /// The turn factor the start writes (the villager's 0.45, the knight's
+    /// and proctor's 1.0; the unknown background leaves it).
+    pub turn: Option<f32>,
     /// The starting light: the unknown background's and the villager's; the
     /// knight and proctor start without one.
     pub light: Option<StoryLight>,
@@ -473,6 +515,18 @@ pub const STORY_LIGHT_INTENSITY: f32 = 256.0;
 /// The companion's record flag.
 pub const COMPANION_FLAGS: u32 = 0x500;
 
+/// The two roles every new story adds before the background's own.
+pub const STORY_COMMON_ROLES: [u32; 2] = [7, 1];
+/// The item the unknown background's record carries.
+pub const STORY_UNKNOWN_ITEM: u32 = 0x10c;
+/// The third word of the unknown background's carried entry (its two
+/// half-words 0x20 and 0x80 replace the default 0x28 and 4).
+pub const STORY_UNKNOWN_ITEM_WORD: u32 = 0x0080_0020;
+/// The item the knight and proctor hold in the off hand and carry.
+pub const STORY_KNIGHT_ITEM: u32 = 0x1f;
+/// The flags of the knight's and proctor's carried entry.
+pub const STORY_KNIGHT_ITEM_FLAGS: u32 = 0x100;
+
 /// What starting a new story does, from its background and the player's
 /// height. The spawn table has three entries: the unknown background (the
 /// villager's room, with Derrin), the knight and proctor (one pose), and the
@@ -482,6 +536,7 @@ pub fn story_start(background: Background, body_height: f32) -> StoryStart {
         Background::Unknown => StoryStart {
             background,
             role: 0x0e,
+            roles: &[7, 1, 0x0e],
             flags: 0x200,
             placement: Placement {
                 rotation: yaw(150.0),
@@ -491,6 +546,19 @@ pub fn story_start(background: Background, body_height: f32) -> StoryStart {
                     STORY_POINT.z,
                 ),
             },
+            off_hand: None,
+            carried: Some(Carried {
+                item: STORY_UNKNOWN_ITEM,
+                flags: 0,
+                extra: STORY_UNKNOWN_ITEM_WORD,
+            }),
+            powers: {
+                let powers = crate::create::creation_defaults();
+                Some((powers.flags as u32, powers.value))
+            },
+            condition: None,
+            animator: None,
+            turn: None,
             light: Some(StoryLight {
                 position: Vec3::new(8045.0, 4.7, 4075.0),
                 rotation_degrees: Vec3::new(-48.0, 110.0, 88.0),
@@ -506,22 +574,43 @@ pub fn story_start(background: Background, body_height: f32) -> StoryStart {
         Background::Knight | Background::Proctor => StoryStart {
             background,
             role: 0x1b,
+            roles: &[7, 1, 0x1b],
             flags: 0,
             placement: Placement {
                 rotation: yaw(-50.0),
                 position: Vec3::new(STORY_POINT.x, 210.0, STORY_POINT.z),
             },
+            off_hand: Some(ItemRef {
+                id: STORY_KNIGHT_ITEM,
+                flags: 0,
+            }),
+            carried: Some(Carried {
+                item: STORY_KNIGHT_ITEM,
+                flags: STORY_KNIGHT_ITEM_FLAGS,
+                extra: NEW_ENTRY_WORD,
+            }),
+            powers: None,
+            condition: None,
+            animator: None,
+            turn: Some(1.0),
             light: None,
             companion: None,
         },
         Background::Villager => StoryStart {
             background,
             role: 0x18,
+            roles: &[7, 1, 0x18],
             flags: 0x600,
             placement: Placement {
                 rotation: rotation(50.0, -50.0, 2.0),
                 position: Vec3::new(STORY_POINT.x, 300.0, STORY_POINT.z),
             },
+            off_hand: None,
+            carried: None,
+            powers: None,
+            condition: Some(0x600),
+            animator: Some(0x600),
+            turn: Some(0.45),
             light: Some(StoryLight {
                 position: Vec3::new(8000.0, 500.0, 4000.0),
                 rotation_degrees: Vec3::new(8.0, -150.0, 50.0),
@@ -554,6 +643,11 @@ pub struct EndMenu {
     pub scale: f32,
     /// The pad/steam bindings are refreshed for the menu.
     pub pad_bindings: bool,
+    /// No row starts selected: a cursor that misses every row picks none
+    /// instead of the first (the arena's menu sets it as it is built; a
+    /// session's begin and continue clear it). The reading of the flag
+    /// comes from the menus' shared row hit test.
+    pub unselected: bool,
 }
 
 impl EndMenu {
@@ -573,9 +667,11 @@ const NEXT_ROWS: &[EndRow] = &["NEXT FIGHT"];
 ///
 /// Kind 4 is the reconstructed player's (CONTINUE, EXIT). Kind 2 is the
 /// practice ladder's end: a story or arena session shows the single `EXIT;`
-/// row, practice RESTART and EXIT. Kind 5 is the arena's (CONTINUE, LOBBY,
-/// EXIT). Every other kind is the next-fight page. The scales are the form's
-/// 0.9 (default), 0.85 (two rows) and 0.78 (the arena's).
+/// row, a mode with bit 2 (practice) RESTART and EXIT. Kind 5 is the
+/// arena's (CONTINUE, LOBBY, EXIT). Every other kind is the next-fight
+/// page. The scales are the form's 0.9 (default), 0.85 (two rows) and 0.78
+/// (the arena's). The arena's menu alone refreshes the pad bindings and
+/// starts with no row selected.
 pub fn end_menu(kind: u32, mode: Mode) -> EndMenu {
     match kind {
         MENU_RECONSTRUCTED => EndMenu {
@@ -583,6 +679,7 @@ pub fn end_menu(kind: u32, mode: Mode) -> EndMenu {
             rows: RECONSTRUCTED_ROWS,
             scale: 0.85,
             pad_bindings: false,
+            unselected: false,
         },
         MENU_WON => {
             if mode.practice_family() {
@@ -591,6 +688,7 @@ pub fn end_menu(kind: u32, mode: Mode) -> EndMenu {
                     rows: PRACTICE_OVER_ROWS,
                     scale: 0.85,
                     pad_bindings: false,
+                    unselected: false,
                 }
             } else {
                 EndMenu {
@@ -598,6 +696,7 @@ pub fn end_menu(kind: u32, mode: Mode) -> EndMenu {
                     rows: WON_ROWS,
                     scale: 0.9,
                     pad_bindings: false,
+                    unselected: false,
                 }
             }
         }
@@ -606,12 +705,14 @@ pub fn end_menu(kind: u32, mode: Mode) -> EndMenu {
             rows: ARENA_ROWS,
             scale: 0.78,
             pad_bindings: true,
+            unselected: true,
         },
         _ => EndMenu {
             kind,
             rows: NEXT_ROWS,
             scale: 0.9,
             pad_bindings: false,
+            unselected: false,
         },
     }
 }
@@ -678,16 +779,76 @@ pub struct Wake {
     pub start_ms: u32,
 }
 
-/// A wake-up pose write: the motion requested, the body's condition word,
-/// the delay it starts after, and the move and turn factors.
+/// A clip clock write on a waking player.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClipClock {
+    /// The animator's clock becomes the motion's stored value less this many
+    /// milliseconds.
+    MotionMinus(i32),
+    /// The clock moves on by this many milliseconds.
+    Push(i32),
+}
+
+/// A wake-up pose write: the fields of the player's animator the original
+/// writes on the frames of a get-up or a revival. A field that is `None` is
+/// not written that frame, so the previous value stays.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WakePose {
-    pub request: Option<u32>,
-    pub condition: u32,
-    pub delay_ms: i32,
-    pub turn: f32,
-    pub move_factor: f32,
+    /// The animator's flags word: 0x600 while the get-up holds its first
+    /// pose, 0x20 once the get-up's clock has started, 0x40 for the
+    /// revival's wake.
     pub flags: u32,
+    /// The flags are set with a bitwise or instead of replaced.
+    pub or_flags: bool,
+    /// The blend the clip starts with.
+    pub blend: Option<f32>,
+    /// The move factor.
+    pub move_factor: Option<f32>,
+    /// The turn factor.
+    pub turn_factor: Option<f32>,
+    /// The clip clock write.
+    pub clock: Option<ClipClock>,
+}
+
+impl WakePose {
+    /// The pose a get-up holds until its clock starts: flags 0x600, blend 1,
+    /// move and turn 0.49.
+    pub const fn hold() -> Self {
+        Self {
+            flags: 0x600,
+            or_flags: false,
+            blend: Some(1.0),
+            move_factor: Some(0.49),
+            turn_factor: Some(0.49),
+            clock: None,
+        }
+    }
+
+    /// The pose the get-up writes when its clock starts: flags 0x20, blend
+    /// 0.4, turn 0.4, and the clock at the motion's value less 1490 ms.
+    pub const fn finish() -> Self {
+        Self {
+            flags: 0x20,
+            or_flags: false,
+            blend: Some(0.4),
+            move_factor: None,
+            turn_factor: Some(0.4),
+            clock: Some(ClipClock::MotionMinus(1490)),
+        }
+    }
+
+    /// The revival's write: the wake flag set and the clip clock pushed two
+    /// seconds on.
+    pub const fn revived() -> Self {
+        Self {
+            flags: 0x40,
+            or_flags: true,
+            blend: None,
+            move_factor: None,
+            turn_factor: None,
+            clock: Some(ClipClock::Push(WAKE_DELAY_MS as i32)),
+        }
+    }
 }
 
 /// The story session's per-frame state.
@@ -740,15 +901,51 @@ pub struct Unlocks {
 
 /// The settings script's hook name the game main unit registers.
 pub const SCRIPT_HOOK: &str = "GameEvent";
+
+/// One settings-file key the game main unit registers: its name and the
+/// value kind the settings unit is told to read (`4` size, `5` integer,
+/// `3` boolean).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SettingsKey {
+    pub name: &'static str,
+    pub kind: u32,
+}
+
 /// The settings keys the game main unit registers. Their values are read by
 /// the units named next to them, not here.
-pub const SETTINGS_KEYS: [&str; 6] = [
-    "CursorSize",
-    "CursorInt",
-    "CursorCom",
-    "FirstRun",
-    "ShowGameTips",
-    "CheckPoints",
+pub const SETTINGS_KEYS: [SettingsKey; 6] = [
+    SettingsKey {
+        name: "CursorSize",
+        kind: 4,
+    },
+    SettingsKey {
+        name: "CursorInt",
+        kind: 5,
+    },
+    SettingsKey {
+        name: "CursorCom",
+        kind: 5,
+    },
+    SettingsKey {
+        name: "FirstRun",
+        kind: 3,
+    },
+    SettingsKey {
+        name: "ShowGameTips",
+        kind: 3,
+    },
+    SettingsKey {
+        name: "CheckPoints",
+        kind: 3,
+    },
+];
+
+/// The strings the unit releases at shutdown: the two menu theme names and
+/// its text shader source.
+pub const FINALISED_STRINGS: [&str; 3] = [
+    exa_ui::menu::MENU_THEME.0,
+    exa_ui::menu::MENU_THEME_DNB.0,
+    crate::menu_text::MENU_TEXT_SHADER,
 ];
 
 impl Unlocks {
@@ -767,10 +964,11 @@ impl Unlocks {
         }
     }
 
-    /// Reads the expert unlock's word: anything but zero unlocks it.
+    /// Reads the expert unlock's word: bit 0 unlocks the expert ladder (the
+    /// page's disabled-row test reads that bit).
     pub fn read_expert(&mut self, bytes: &[u8]) {
         if let Some(word) = Self::read_word(bytes) {
-            self.expert = word != 0;
+            self.expert = word & 1 != 0;
         }
     }
 
@@ -793,18 +991,28 @@ pub enum BootTask {
     Window,
     /// Open the audio device.
     Audio,
-    /// Load the actor/character template library.
+    /// Load the actor/character template library (and `actors.rpk`).
     ActorLibrary,
     /// Initialise the game layer's interface.
     GameGui,
-    /// Initialise the item interface and the skill screen.
+    /// Initialise the item interface.
     ItemGui,
+    /// Initialise the skill screen's interface.
+    SkillGui,
     /// Read the hardware settings.
     HardwareConfig,
+    /// Hand the current client's row scale to the GUI.
+    GuiScale,
+    /// Register the menu's key task.
+    MenuTask,
+    /// Apply the first-run end-page tip.
+    FirstRunTip,
     /// Apply the first-run settings.
     FirstRun,
     /// Read the unlock words.
     Settings,
+    /// Initialise the experience system.
+    Experience,
     /// Create a save manager for the mode.
     SaveManager(Mode),
     /// Initialise the arena's data.
@@ -857,15 +1065,29 @@ pub enum Step {
         /// Put the level's objects in a fresh world first.
         teardown: bool,
     },
+    /// Filter the loaded level's nodes: a container's children and the
+    /// player's own objects go (the practice scene filter).
+    PracticeFilter,
     /// Place the player.
     PlacePlayer(Placement),
-    /// Add the player's story role and flags.
+    /// Give the player its story roles (the list cleared first) and flags,
+    /// and the gear and powers only the background's start writes.
     StoryPlayer {
-        role: u32,
+        roles: &'static [u32],
         flags: u32,
+        off_hand: Option<ItemRef>,
+        carried: Option<Carried>,
+        powers: Option<(u32, f32)>,
     },
     /// Create the story's starting light.
     StoryLight(StoryLight),
+    /// Write the story start's condition word, animator flags and turn
+    /// factor (the fields each background sets; `None` leaves one).
+    StoryPose {
+        condition: Option<u32>,
+        flags: Option<u32>,
+        turn_factor: Option<f32>,
+    },
     /// Place the story's companion.
     Companion(Companion),
     /// Frame the camera.
@@ -885,17 +1107,31 @@ pub enum Step {
     },
     /// Delete the current slot's save.
     DropSave,
+    /// Close the save manager's open package.
+    CloseSave,
     /// Keep the save just written as the checkpoint.
     Checkpoint,
+    /// The screen fades out over the level change (the exit's fade bit).
+    FadeOut,
+    /// The AI takes over the player's body for the level change (the exit's
+    /// fade bit).
+    AiHandover,
     /// Leave the world: props, bodies, particles, blood and the level.
     TeardownWorld,
     /// Show the end-of-session menu.
     EndMenu(EndMenu),
     /// Hide the end-of-session menu.
     HideEndMenu,
+    /// Close the prelude's tips and popup.
+    ClosePrelude,
     /// Clear or set the menu's help flag (the form field the help screen
     /// clears when it closes).
     MenuHelp(bool),
+    /// Set or clear the end menu's no-row-selected flag
+    /// ([`EndMenu::unselected`]).
+    EndMenuUnselected(bool),
+    /// Show or hide the title logo the main-menu form draws above its rows.
+    TitleLogo(bool),
     /// The GUI's scale was re-quantised; both menus lay out again.
     GuiScale(f32),
     /// The arena's own pause-screen callback runs.
@@ -915,6 +1151,8 @@ pub enum Step {
     Controls(bool),
     /// Strip the player's gear (the reconstruction device).
     StripPlayer,
+    /// Clear the player node's story bit (the reconstruction mark).
+    ClearStoryFlag,
     /// Write the player's own record back into the save.
     PlayerData,
     /// Show or hide the game's view.
@@ -923,6 +1161,10 @@ pub enum Step {
     Wake(WakePose),
     /// The motion the player is asked to play.
     RequestAction(u32),
+    /// Add the practice mode's player role.
+    PracticePlayer {
+        role: u32,
+    },
     /// The health the practice heal writes (red, then yellow).
     Health {
         red_bits: u32,
@@ -938,6 +1180,9 @@ pub enum Step {
     Transition,
     /// Leave the application (the title's EXIT).
     Quit,
+    /// The unit's own tables are released at shutdown (the scripted-mode
+    /// hook table and the three menu strings).
+    Finalise,
 }
 
 /// The action behind the transition screen.
@@ -1268,17 +1513,20 @@ fn player_slot(mode: Mode) -> Option<usize> {
 }
 
 impl Flow {
-    /// The page state the menu table reads.
+    /// The page state the menu table reads. The two managers' saves are kept
+    /// apart: the title's CONTINUE reads the story's, the start page's the
+    /// arena's. The in-game page reads NEW GAME for a mode with bit 2
+    /// (value 2: practice), and the arena pause page's last row reads the
+    /// session's value-4 bit.
     pub fn page_state(&self) -> PageState {
         PageState {
-            has_save: match self.mode {
-                Mode::Story => self.has_save[0],
-                Mode::Arena => self.has_save[1],
-                _ => self.has_save[0] || self.has_save[1],
-            },
-            in_game: self.mode.is_game(),
+            has_save: self.has_save[0] || self.has_save[1],
+            story_save: self.has_save[0],
+            arena_save: self.has_save[1],
+            new_game: self.mode.practice_family(),
             arena: self.versus,
             expert: self.unlocks.expert,
+            session: self.phase.word(),
         }
     }
 
@@ -1302,18 +1550,23 @@ impl Flow {
         }
         self.booted = true;
         let mut steps = vec![
-            Step::Boot(BootTask::FirstRun),
+            Step::Boot(BootTask::Scripts),
             Step::Boot(BootTask::Window),
+            Step::Boot(BootTask::FirstRun),
             Step::Boot(BootTask::ActorLibrary),
             Step::Boot(BootTask::GameGui),
             Step::Boot(BootTask::ItemGui),
+            Step::Boot(BootTask::SkillGui),
             Step::Boot(BootTask::HardwareConfig),
+            Step::Boot(BootTask::GuiScale),
+            Step::Boot(BootTask::MenuTask),
+            Step::Boot(BootTask::FirstRunTip),
             Step::Boot(BootTask::Settings),
+            Step::Boot(BootTask::Experience),
             Step::Boot(BootTask::SaveManager(Mode::Story)),
             Step::Boot(BootTask::SaveManager(Mode::Arena)),
-            Step::Boot(BootTask::ArenaData),
             Step::Boot(BootTask::Transition),
-            Step::Boot(BootTask::Scripts),
+            Step::Boot(BootTask::ArenaData),
             Step::Boot(BootTask::Audio),
             Step::Boot(BootTask::Splash),
             Step::Boot(BootTask::MainMenu),
@@ -1434,21 +1687,34 @@ impl Flow {
         };
         let mut steps = vec![
             Step::SessionTask(true),
+            // The player's roles, gear and powers first (the original writes
+            // them before the level is loaded), then the level, the light,
+            // the starting motion, the place and the camera shot.
+            Step::StoryPlayer {
+                roles: start.roles,
+                flags: start.flags,
+                off_hand: start.off_hand,
+                carried: start.carried,
+                powers: start.powers,
+            },
             Step::LoadLevel {
                 locale: "exanima01",
                 spawn: 0,
                 teardown: true,
             },
-            Step::StoryPlayer {
-                role: start.role,
-                flags: start.flags,
-            },
-            Step::PlacePlayer(start.placement),
         ];
         if let Some(light) = start.light {
             steps.push(Step::StoryLight(light));
         }
         steps.push(Step::RequestAction(motion));
+        if start.condition.is_some() || start.animator.is_some() || start.turn.is_some() {
+            steps.push(Step::StoryPose {
+                condition: start.condition,
+                flags: start.animator,
+                turn_factor: start.turn,
+            });
+        }
+        steps.push(Step::PlacePlayer(start.placement));
         steps.push(Step::Camera(camera::frame_player(
             start.placement.position,
             viewport,
@@ -1510,6 +1776,12 @@ impl Flow {
                 spawn: 0,
                 teardown: true,
             },
+            Step::PracticeFilter,
+            Step::PracticePlayer {
+                role: PRACTICE_ROLE,
+            },
+            Step::Controls(true),
+            Step::RequestAction(PRACTICE_MOTION),
             Step::PlacePlayer(placement),
             Step::Camera(camera::frame_point(PRACTICE_POINT, true, false, viewport)),
             Step::Music {
@@ -1521,9 +1793,10 @@ impl Flow {
         ]
     }
 
-    /// Continues a story save: the save's locale is loaded (or the first
-    /// level when there is none), the player nudged out of any exit trigger
-    /// by the host, and the near shot framed on the player's body, fast.
+    /// Continues a story save: the menu form closes, the first wake-up's
+    /// animating flag clears, the save's locale is loaded (or the first level
+    /// when there is none), the player nudged out of any exit trigger by the
+    /// host, and the near shot framed on the player's body, fast.
     pub fn continue_story(
         &mut self,
         save_locale: Option<&'static str>,
@@ -1534,7 +1807,12 @@ impl Flow {
         self.hook = Hook::Story;
         self.phase = Phase::Playing;
         self.viewport = viewport;
+        self.menu_open = false;
+        // A continued save clears the first wake-up's animating flag; the
+        // get-up and delayed flags and the start time are left as they are.
+        self.story.wake.animating = false;
         vec![
+            Step::HideMenu,
             Step::SessionTask(true),
             Step::LoadLevel {
                 locale: save_locale.unwrap_or("exanima01"),
@@ -1590,15 +1868,16 @@ impl Flow {
         vec![Step::SessionTask(true), Step::Controls(true)]
     }
 
-    /// The pause: the in-game menu is up and the phase records it. The
-    /// original's pause word is only read by its autosave; the game clock's
-    /// pause is the frame loop's.
+    /// The arena's pause: its own form sets the paused phase (0x20) and
+    /// builds the arena pause page. The story's in-game page covers the game
+    /// without a phase of its own, as the original's frame task only hides
+    /// behind the visible menu.
     pub fn pause(&mut self) -> Vec<Step> {
         if self.phase == Phase::Playing {
             self.saved_phase = self.phase;
             self.phase = Phase::Paused;
             self.menu_open = true;
-            return vec![Step::ShowMenu(Page::InGame), Step::Controls(false)];
+            return vec![Step::ShowMenu(Page::ArenaPause), Step::Controls(false)];
         }
         Vec::new()
     }
@@ -1702,27 +1981,13 @@ impl Flow {
             }
         } else if wake.getting_up {
             if u64::from(wake.start_ms) + u64::from(GET_UP_MS) < u64::from(now) {
-                steps.push(Step::Wake(WakePose {
-                    request: None,
-                    condition: 0,
-                    delay_ms: 0,
-                    turn: 0.4,
-                    move_factor: 0.4,
-                    flags: 0x20,
-                }));
+                steps.push(Step::Wake(WakePose::finish()));
                 wake.getting_up = false;
             } else {
-                steps.push(Step::Wake(WakePose {
-                    request: None,
-                    condition: 0,
-                    delay_ms: 0,
-                    turn: 0.49,
-                    move_factor: 0.49,
-                    flags: 0x600,
-                }));
+                steps.push(Step::Wake(WakePose::hold()));
             }
         } else if wake.delayed
-            && u64::from(wake.start_ms.wrapping_sub(WAKE_LEAD_MS)) < u64::from(now)
+            && i64::from(wake.start_ms) - i64::from(WAKE_LEAD_MS) < i64::from(now)
         {
             steps.push(Step::RequestAction(0x20));
             wake.delayed = false;
@@ -1803,18 +2068,19 @@ impl Flow {
         self.practice.start_ms = now;
         self.phase = Phase::Playing;
         self.hook = Hook::Practice;
-        self.end_menu = None;
         let placement = Placement {
             rotation: PRACTICE_ROTATION,
             position: Vec3::new(PRACTICE_POINT.x, self.stand_height, PRACTICE_POINT.z),
         };
-        let mut steps = vec![
-            Step::HideEndMenu,
+        let mut steps = self.close_end_menu();
+        steps.extend([
             Step::MenuHelp(false),
+            Step::Controls(true),
             Step::Health {
                 red_bits: step.red_bits,
                 yellow_bits: step.yellow_bits,
             },
+            Step::RequestAction(PRACTICE_MOTION),
             Step::PlacePlayer(placement),
             Step::Camera(camera::frame_point(
                 PRACTICE_POINT,
@@ -1824,7 +2090,7 @@ impl Flow {
             )),
             Step::Hook(Hook::Practice),
             Step::SessionTask(true),
-        ];
+        ]);
         if step.boss {
             let music = practice_boss_music(
                 self.alternative_music,
@@ -1924,24 +2190,19 @@ impl Flow {
         steps.extend([
             Step::Controls(true),
             Step::GameGui(true),
-            Step::Wake(WakePose {
-                request: None,
-                condition: 0,
-                delay_ms: WAKE_DELAY_MS as i32,
-                turn: 0.0,
-                move_factor: 0.0,
-                flags: 0x40,
-            }),
+            Step::Wake(WakePose::revived()),
             Step::Hook(Hook::Story),
         ]);
         steps
     }
 
-    /// The story's death screen CONTINUE: the save is written (without the
-    /// death rule), the world torn down and `exanima05` loaded; the player
-    /// stands at the level's respawn portal (its pose, or the identity at the
-    /// origin when the level has none) 15 cm higher and plays the get-up
-    /// motion. The camera is not moved.
+    /// The story's death screen CONTINUE: the player node's story bit
+    /// clears, the save is written (without the death rule), the world torn
+    /// down and `exanima05` loaded (the loader's second word, 1, is not
+    /// traced and is read as the load's own flag); the player stands at the
+    /// level's respawn portal (its pose, or the identity at the origin when
+    /// the level has none) 15 cm higher and plays the get-up motion. The
+    /// reconstruction state becomes rebuildable. The camera is not moved.
     pub fn story_respawn(&mut self, now: u32) -> Vec<Step> {
         self.mode = Mode::Story;
         self.phase = Phase::Playing;
@@ -1958,6 +2219,7 @@ impl Flow {
             position: portal.position + Vec3::Y * 15.0,
         };
         vec![
+            Step::ClearStoryFlag,
             Step::Save {
                 drop_on_low_health: false,
             },
@@ -1973,6 +2235,129 @@ impl Flow {
         ]
     }
 
+    /// The world, the game view and the flow's own session state go: the
+    /// game layer's leave. The original does it only when its game object
+    /// exists.
+    pub fn leave_game_layer(&mut self) -> Vec<Step> {
+        vec![Step::TeardownWorld, Step::GameGui(false)]
+    }
+
+    /// Builds and shows the main-menu form.
+    pub fn show_menu_form(&mut self) -> Vec<Step> {
+        self.menu_open = true;
+        vec![Step::ShowMenu(self.menu_page())]
+    }
+
+    /// Hides the main-menu form.
+    pub fn hide_menu_form(&mut self) -> Vec<Step> {
+        self.menu_open = false;
+        vec![Step::HideMenu]
+    }
+
+    /// Leaves the session, shows the main-menu form and plays the menu
+    /// theme (the original's short form of the return to the title; it
+    /// builds no page).
+    pub fn leave_to_menu_form(&mut self) -> Vec<Step> {
+        let mut steps = self.leave_session();
+        self.phase = Phase::Menu;
+        self.saved_phase = Phase::Menu;
+        self.menu_open = true;
+        let theme = menu_theme(self.alternative_music);
+        steps.push(Step::ShowMenu(self.menu_page()));
+        steps.push(Step::Music {
+            name: theme.name,
+            volume: theme.volume,
+            restart: true,
+        });
+        steps
+    }
+
+    /// The story end menu's EXIT row: the game view and the dialogue close.
+    /// A player the reconstruction device stripped clears its story bit and
+    /// is saved without the death rule; any other story writes its save with
+    /// the death rule, then leaves to the title behind the transition.
+    pub fn story_exit(&mut self, now: u32) -> Vec<Step> {
+        let mut steps = vec![Step::GameGui(false), Step::Controls(false), Step::Dialogue];
+        if self.story.reconstruction == STRIPPED {
+            steps.push(Step::ClearStoryFlag);
+            steps.push(Step::Save {
+                drop_on_low_health: false,
+            });
+        } else {
+            steps.push(Step::Save {
+                drop_on_low_health: true,
+            });
+        }
+        steps.extend(self.transition(Action::QuitToMenu, now));
+        steps
+    }
+
+    /// Closes the end-of-session menu and the prelude: what the next-fight
+    /// start and the level-load finish both do before anything else.
+    pub fn close_end_menu(&mut self) -> Vec<Step> {
+        self.end_menu = None;
+        vec![Step::HideEndMenu, Step::ClosePrelude]
+    }
+
+    /// The level-load finish behind the transition: the end menu and the
+    /// prelude close and the session is playing again. (The original also
+    /// clears the pending exit words, saves the level's start state and runs
+    /// the scene's own loaded callback, which are the host's.)
+    pub fn level_loaded(&mut self) -> Vec<Step> {
+        self.phase = Phase::Playing;
+        self.close_end_menu()
+    }
+
+    /// The in-game page opened (F1): the session hook and the dialogue stop
+    /// until it closes, as the original's frame task does.
+    pub fn menu_opened(&mut self) {
+        self.menu_open = true;
+    }
+
+    /// The in-game page closed: the hook and the dialogue run again.
+    pub fn menu_closed(&mut self) {
+        self.menu_open = false;
+    }
+
+    /// The unit's finalisation: the script hook is forgotten and its tables
+    /// released. Exarust has no globals to tear down, so this is the step the
+    /// host runs at shutdown.
+    pub fn finalise(&mut self) -> Vec<Step> {
+        self.custom_hook = false;
+        vec![Step::Finalise]
+    }
+
+    /// The session begin's own work around the mode's starter: the frame
+    /// task starts, the session phase becomes playing and the end menu's
+    /// no-row-selected flag clears. The original runs all of this around the starter (the
+    /// story's new game, the practice start or the arena's data init), which
+    /// Exarust's own starters return as steps; the starter's steps come
+    /// first here.
+    pub fn begin_session(&mut self, mut starter: Vec<Step>) -> Vec<Step> {
+        self.phase = Phase::Playing;
+        self.menu_open = false;
+        self.end_menu = None;
+        starter.push(Step::SessionTask(true));
+        starter.push(Step::EndMenuUnselected(false));
+        starter
+    }
+
+    /// The session continue's own work around the mode's continue: the menu
+    /// form closes, the session phase becomes playing, the frame task starts
+    /// and the end menu's no-row-selected flag clears. The mode's continue steps (the story's or the arena hub's)
+    /// come first.
+    pub fn continue_session(&mut self, mut resumed: Vec<Step>) -> Vec<Step> {
+        self.phase = Phase::Playing;
+        if self.menu_open {
+            // The original hides the form before the mode's continue runs.
+            self.menu_open = false;
+            resumed.insert(0, Step::HideMenu);
+        }
+        resumed.push(Step::SessionTask(true));
+        resumed.push(Step::EndMenuUnselected(false));
+        resumed
+    }
+
     /// The end-of-life story CONTINUE of a save with no record: the player
     /// data is written back, then the respawn runs behind the transition.
     pub fn continue_after_death(&mut self, now: u32) -> Vec<Step> {
@@ -1986,8 +2371,9 @@ impl Flow {
     /// the mode); while playing, the game's interface closes and the session
     /// autosaves: a story always with the death rule (a dead player's save
     /// is dropped), an arena from its in-game page without it, or a forfeit
-    /// from its pause page; practice writes nothing. `page` is the main
-    /// menu's page. Nothing returns to the title: the application is closing.
+    /// from its pause page; practice writes nothing. Every playing quit then
+    /// closes the save manager's package. `page` is the main menu's page.
+    /// Nothing returns to the title: the application is closing.
     pub fn quit_session(&mut self, page: Page) -> Vec<Step> {
         let mut steps = Vec::new();
         if self.phase == Phase::Paused {
@@ -2008,20 +2394,27 @@ impl Flow {
                 },
                 _ => {}
             }
+            steps.push(Step::CloseSave);
         }
         steps
     }
 
     /// Back to the title: leave the session's world, hide the game, switch to
-    /// the menu mode, build the title page, play its theme and show it.
+    /// the menu mode, show the menu form's title logo, build the title page,
+    /// play its theme (before the page shows) and show it.
     pub fn quit_to_menu(&mut self) -> Vec<Step> {
         let mut steps = self.leave_session();
+        // The switch to the title clears the reconstruction state and its
+        // checkpoint record, as every mode switch does.
+        self.story.reconstruction = 0;
+        self.story.checkpoint = 0;
         self.mode = Mode::Menu;
         self.phase = Phase::Menu;
         self.saved_phase = Phase::Menu;
         self.hook = Hook::None;
         self.end_menu = None;
         self.menu_open = true;
+        steps.push(Step::TitleLogo(true));
         let theme = menu_theme(self.alternative_music);
         steps.push(Step::Music {
             name: theme.name,
@@ -2034,14 +2427,15 @@ impl Flow {
     }
 
     /// Leaving a session: the hook and the frame task stop, the dialogue and
-    /// interface go, the world is torn down and the player pointers are
-    /// cleared. A scripted mode's end hook is named.
+    /// interface go, the prelude closes, the world is torn down and the
+    /// player pointers are cleared. A scripted mode's end hook is named.
     pub fn leave_session(&mut self) -> Vec<Step> {
         let mut steps = vec![
             Step::Hook(Hook::None),
             Step::SessionTask(false),
             Step::GameGui(false),
             Step::Dialogue,
+            Step::ClosePrelude,
         ];
         self.hook = Hook::None;
         match self.mode {
@@ -2055,8 +2449,13 @@ impl Flow {
             }),
             _ => {}
         }
+        // After the mode's end hook: the save package closes and the end
+        // menu hides, then the world goes.
+        steps.push(Step::CloseSave);
+        steps.push(Step::HideEndMenu);
         steps.push(Step::TeardownWorld);
         self.player = [false; 3];
+        self.end_menu = None;
         steps
     }
 
@@ -2091,6 +2490,10 @@ impl Flow {
         });
         if checkpoint {
             steps.push(Step::Checkpoint);
+        }
+        if exit.flags & 1 != 0 {
+            steps.push(Step::FadeOut);
+            steps.push(Step::AiHandover);
         }
         steps.extend(self.transition(
             Action::Locale {
@@ -2141,6 +2544,23 @@ impl Flow {
     /// The class select's cancel form's final step: back to the title.
     pub fn cancel_to_menu(&mut self) -> Vec<Step> {
         self.quit_to_menu()
+    }
+
+    /// The class select's own cancel (not behind the transition): a scripted
+    /// mode's end hook runs, the selection form closes and the flow goes
+    /// straight back to the title.
+    pub fn class_cancel_direct(&mut self) -> Vec<Step> {
+        let mut steps = Vec::new();
+        if let Mode::Other(word) = self.mode
+            && word & SCRIPT_MODE_BIT != 0
+        {
+            steps.push(Step::ScriptMode {
+                mode: word,
+                hook: ScriptHook::End,
+            });
+        }
+        steps.extend(self.quit_to_menu());
+        steps
     }
 
     /// The splash's hand-over: the title page is built and shown, and the
@@ -2569,11 +2989,33 @@ mod tests {
         assert_eq!(knight.placement.position.y, 210.0);
         assert!(knight.companion.is_none());
         assert!(knight.light.is_none());
+        // The knight and proctor hold item 0x1f in the off hand and carry it
+        // with flags 0x100 and the default third word (0x28, 4); their roles
+        // are only 7, 1 and their own.
+        assert_eq!(knight.roles, &[7, 1, 0x1b]);
+        assert_eq!(knight.off_hand, Some(ItemRef { id: 0x1f, flags: 0 }));
+        assert_eq!(
+            knight.carried,
+            Some(Carried {
+                item: 0x1f,
+                flags: 0x100,
+                extra: 0x0004_0028,
+            })
+        );
+        assert_eq!(knight.powers, None);
         let proctor = story_start(Background::Proctor, 1.0);
         assert_eq!(proctor.placement, knight.placement);
+        assert_eq!(proctor.carried, knight.carried);
         let villager = story_start(Background::Villager, 1.0);
         assert_eq!(villager.role, 0x18);
         assert_eq!(villager.flags, 0x600);
+        assert_eq!(villager.condition, Some(0x600));
+        assert_eq!(villager.animator, Some(0x600));
+        assert_eq!(villager.turn, Some(0.45));
+        assert_eq!(knight.condition, None);
+        assert_eq!(knight.turn, Some(1.0));
+        assert_eq!(unknown.condition, None);
+        assert_eq!(unknown.turn, None);
         assert_eq!(villager.placement.position.y, 300.0);
         assert_ne!(villager.placement.rotation, NO_ROTATION);
         let villager_light = villager.light.unwrap();
@@ -2605,6 +3047,8 @@ mod tests {
         assert_eq!(arena.rows, &["CONTINUE", "LOBBY", "EXIT"]);
         assert_eq!(arena.scale, 0.78);
         assert!(arena.pad_bindings);
+        assert!(arena.unselected);
+        assert!(!won.unselected);
         let next = end_menu(MENU_NEXT, Mode::Practice);
         assert_eq!(next.rows, &["NEXT FIGHT"]);
         assert_eq!(next.scale, 0.9);
@@ -2707,6 +3151,8 @@ mod tests {
         })));
         assert_eq!(flow.practice.fight, 8);
         assert_eq!(flow.phase, Phase::Playing);
+        assert!(steps.contains(&Step::Controls(true)));
+        assert!(steps.contains(&Step::HideEndMenu));
         // 0.2f32 as a double plus a tenth of 0.25, rounded to single:
         // 0x3e666667.
         let healed = (f64::from(0.2f32) + 0.25 * 0.1) as f32;
@@ -2823,14 +3269,51 @@ mod tests {
         let steps = flow.story_tick(10_200, Some(alive));
         assert!(steps.iter().any(|step| matches!(
             step,
-            Step::Wake(WakePose { turn, flags: 0x600, .. }) if *turn == 0.49
+            Step::Wake(WakePose { turn_factor: Some(turn), flags: 0x600, or_flags: false, .. }) if *turn == 0.49
         )));
         let steps = flow.story_tick(10_501, Some(alive));
         assert!(steps.iter().any(|step| matches!(
             step,
-            Step::Wake(WakePose { turn, flags: 0x20, .. }) if *turn == 0.4
+            Step::Wake(WakePose { turn_factor: Some(turn), flags: 0x20, or_flags: false, .. }) if *turn == 0.4
         )));
         assert!(!flow.story.wake.getting_up);
+        // The two writes are the original's whole animator write: the held
+        // pose is flags 0x600, blend 1, move and turn 0.49; the finished one
+        // is flags 0x20, blend 0.4, turn 0.4 and the clock at the motion's
+        // value less 1490 ms.
+        assert_eq!(
+            WakePose::hold(),
+            WakePose {
+                flags: 0x600,
+                or_flags: false,
+                blend: Some(1.0),
+                move_factor: Some(0.49),
+                turn_factor: Some(0.49),
+                clock: None,
+            }
+        );
+        assert_eq!(
+            WakePose::finish(),
+            WakePose {
+                flags: 0x20,
+                or_flags: false,
+                blend: Some(0.4),
+                move_factor: None,
+                turn_factor: Some(0.4),
+                clock: Some(ClipClock::MotionMinus(1490)),
+            }
+        );
+        assert_eq!(
+            WakePose::revived(),
+            WakePose {
+                flags: 0x40,
+                or_flags: true,
+                blend: None,
+                move_factor: None,
+                turn_factor: None,
+                clock: Some(ClipClock::Push(2000)),
+            }
+        );
     }
 
     #[test]
@@ -2952,6 +3435,8 @@ mod tests {
                     drop_on_low_health: false
                 },
                 Step::Checkpoint,
+                Step::FadeOut,
+                Step::AiHandover,
                 Step::Transition,
             ]
         );
@@ -2979,6 +3464,9 @@ mod tests {
         let steps = flow.level_exit(next, held, DEAD, 2000);
         assert_eq!(steps[0], Step::GameGui(false));
         assert!(!steps.contains(&Step::Checkpoint));
+        // Without the fade bit nothing fades or hands over.
+        assert!(!steps.contains(&Step::FadeOut));
+        assert!(!steps.contains(&Step::AiHandover));
     }
 
     #[test]
@@ -3087,6 +3575,39 @@ mod tests {
         let steps = flow.boot();
         assert!(steps.contains(&Step::Boot(BootTask::Splash)));
         assert!(steps.contains(&Step::ShowMenu(Page::Title)));
+        // The boot's order: the script hooks first, then graphics and the
+        // first-run settings, the interfaces, the hardware and menu hooks,
+        // the settings and experience, the two save managers, the transition
+        // screen, the arena data, the audio, the splash and the title.
+        let order: Vec<usize> = [
+            BootTask::Scripts,
+            BootTask::Window,
+            BootTask::FirstRun,
+            BootTask::ActorLibrary,
+            BootTask::GameGui,
+            BootTask::ItemGui,
+            BootTask::SkillGui,
+            BootTask::HardwareConfig,
+            BootTask::MenuTask,
+            BootTask::Settings,
+            BootTask::Experience,
+            BootTask::SaveManager(Mode::Story),
+            BootTask::SaveManager(Mode::Arena),
+            BootTask::Transition,
+            BootTask::ArenaData,
+            BootTask::Audio,
+            BootTask::Splash,
+            BootTask::MainMenu,
+        ]
+        .into_iter()
+        .map(|task| {
+            steps
+                .iter()
+                .position(|step| *step == Step::Boot(task))
+                .unwrap()
+        })
+        .collect();
+        assert!(order.windows(2).all(|pair| pair[0] < pair[1]));
         assert_eq!(flow.mode, Mode::Menu);
         assert_eq!(flow.phase, Phase::Menu);
         assert_eq!(flow.menu_page(), Page::Title);
@@ -3107,7 +3628,7 @@ mod tests {
         assert_eq!(flow.story.reconstruction, 0);
         assert_eq!(flow.story.checkpoint, 0);
         assert!(!flow.has_save[0]);
-        assert!(flow.page_state().in_game);
+        assert!(!flow.page_state().new_game);
         // The same mode does nothing.
         assert!(flow.switch_mode(Mode::Story, 1000).is_empty());
         // A scripted mode runs its enter hook.
@@ -3133,6 +3654,12 @@ mod tests {
             position: Vec3::new(0.0, 97.0, 500.0),
         })));
         assert_eq!(flow.practice.fight, 1);
+        assert!(steps.contains(&Step::PracticeFilter));
+        assert!(steps.contains(&Step::PracticePlayer {
+            role: PRACTICE_ROLE
+        }));
+        assert!(steps.contains(&Step::RequestAction(PRACTICE_MOTION)));
+        assert!(steps.contains(&Step::Controls(true)));
         assert!(steps.contains(&Step::LoadLevel {
             locale: "arenae",
             spawn: 0,
@@ -3201,17 +3728,52 @@ mod tests {
             teardown: true
         }));
         assert!(steps.contains(&Step::StoryPlayer {
-            role: 0x0e,
-            flags: 0x200
+            roles: &[7, 1, 0x0e],
+            flags: 0x200,
+            off_hand: None,
+            carried: Some(Carried {
+                item: 0x10c,
+                flags: 0,
+                extra: 0x0080_0020,
+            }),
+            powers: Some((0x0051_0000, 4.0)),
         }));
+        assert!(
+            !steps
+                .iter()
+                .any(|step| matches!(step, Step::StoryPose { .. }))
+        );
         assert!(steps.iter().any(|step| matches!(step, Step::Companion(_))));
         assert!(steps.iter().any(|step| matches!(step, Step::StoryLight(_))));
+        // The villager gets up: the pose writes its condition, flags and
+        // turn factor and asks for motion 0x1b.
+        let mut flow = Flow::default();
+        let steps = flow.start_story(Background::Villager, 1.8, view, 500);
+        assert!(flow.story.wake.getting_up);
+        assert!(steps.contains(&Step::RequestAction(START_MOTION_VILLAGER)));
+        assert!(steps.contains(&Step::StoryPose {
+            condition: Some(0x600),
+            flags: Some(0x600),
+            turn_factor: Some(0.45),
+        }));
+        // The knight waits for a scripted motion and starts at turn 1.0.
+        let mut flow = Flow::default();
+        let steps = flow.start_story(Background::Knight, 1.8, view, 500);
+        assert!(flow.story.wake.delayed);
+        assert!(steps.contains(&Step::RequestAction(START_MOTION_WAKING)));
+        assert!(steps.contains(&Step::StoryPose {
+            condition: None,
+            flags: None,
+            turn_factor: Some(1.0),
+        }));
         let mut flow = Flow::default();
         let placement = Placement {
             rotation: NO_ROTATION,
             position: Vec3::new(1.0, 2.0, 3.0),
         };
         let steps = flow.continue_story(Some("exanima02"), placement, view);
+        assert_eq!(steps.first(), Some(&Step::HideMenu));
+        assert!(!flow.story.wake.animating);
         assert!(steps.contains(&Step::LoadLevel {
             locale: "exanima02",
             spawn: 0,
@@ -3331,11 +3893,17 @@ mod tests {
         assert_eq!(unlocks.backgrounds, 5);
         unlocks.read_expert(&[0, 0, 0, 0]);
         assert!(!unlocks.expert);
+        // Only bit 0 unlocks: the page's disabled-row test reads that bit.
+        unlocks.read_expert(&[2, 0, 0, 0]);
+        assert!(!unlocks.expert);
+        unlocks.read_expert(&[3, 0, 0, 0]);
+        assert!(unlocks.expert);
         assert_eq!(Unlocks::read_word(&[1, 2, 3, 4]), Some(0x0403_0201));
         assert_eq!(Unlocks::read_word(&[]), None);
         assert_eq!(SCRIPT_HOOK, "GameEvent");
+        let names: Vec<&str> = SETTINGS_KEYS.iter().map(|key| key.name).collect();
         assert_eq!(
-            SETTINGS_KEYS,
+            names,
             [
                 "CursorSize",
                 "CursorInt",
@@ -3382,6 +3950,32 @@ mod tests {
         assert!(steps.contains(&Step::Transition));
         let _ = flow.transition_due(600);
         assert_eq!(flow.mode, Mode::Menu);
+        // The class select's direct cancel goes back to the title at once,
+        // after the scripted mode's end hook.
+        let mut flow = Flow {
+            mode: Mode::Other(VERSUS_MODE),
+            phase: Phase::ClassSelect,
+            menu_open: true,
+            ..Default::default()
+        };
+        let steps = flow.class_cancel_direct();
+        assert!(steps.contains(&Step::ScriptMode {
+            mode: VERSUS_MODE,
+            hook: ScriptHook::End
+        }));
+        assert!(!steps.contains(&Step::Transition));
+        assert_eq!(flow.mode, Mode::Menu);
+        assert_eq!(flow.phase, Phase::Menu);
+        // Closing the end menu closes the prelude too and forgets the menu.
+        let mut flow = Flow {
+            end_menu: Some(end_menu(MENU_WON, Mode::Story)),
+            ..Default::default()
+        };
+        assert_eq!(
+            flow.close_end_menu(),
+            vec![Step::HideEndMenu, Step::ClosePrelude]
+        );
+        assert!(flow.end_menu.is_none());
         let mut flow = Flow::default();
         let steps = flow.after_splash();
         assert!(steps.contains(&Step::ShowMenu(Page::Title)));
@@ -3418,7 +4012,265 @@ mod tests {
         assert!(steps.contains(&Step::Save {
             drop_on_low_health: false
         }));
+        assert!(steps.contains(&Step::ClearStoryFlag));
         assert!(!steps.iter().any(|step| matches!(step, Step::Camera(_))));
+    }
+
+    #[test]
+    fn the_story_end_menu_exit_saves_by_the_reconstruction_state() {
+        // A stripped player clears the story mark and is saved without the
+        // death rule.
+        let mut flow = Flow {
+            mode: Mode::Story,
+            phase: Phase::Ended,
+            story: StoryState {
+                reconstruction: STRIPPED,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let steps = flow.story_exit(5000);
+        assert_eq!(
+            steps,
+            vec![
+                Step::GameGui(false),
+                Step::Controls(false),
+                Step::Dialogue,
+                Step::ClearStoryFlag,
+                Step::Save {
+                    drop_on_low_health: false
+                },
+                Step::Transition,
+            ]
+        );
+        assert_eq!(flow.phase, Phase::Transition);
+        let _ = flow.transition_due(5100);
+        assert_eq!(flow.mode, Mode::Menu);
+        // Any other story writes its save with the death rule and does not
+        // clear the mark.
+        let mut flow = Flow {
+            mode: Mode::Story,
+            phase: Phase::Ended,
+            ..Default::default()
+        };
+        let steps = flow.story_exit(100);
+        assert!(steps.contains(&Step::Save {
+            drop_on_low_health: true
+        }));
+        assert!(!steps.contains(&Step::ClearStoryFlag));
+        assert!(steps.contains(&Step::Transition));
+    }
+
+    #[test]
+    fn the_arenas_pause_page_and_resume() {
+        let mut flow = Flow {
+            mode: Mode::Arena,
+            phase: Phase::Playing,
+            ..Default::default()
+        };
+        assert_eq!(
+            flow.pause(),
+            vec![Step::ShowMenu(Page::ArenaPause), Step::Controls(false)]
+        );
+        assert_eq!(flow.phase, Phase::Paused);
+        assert!(flow.menu_open);
+        // A pause from any other phase does nothing.
+        assert!(flow.pause().is_empty());
+        assert_eq!(flow.resume(), vec![Step::HideMenu, Step::Controls(true)]);
+        assert_eq!(flow.phase, Phase::Playing);
+        assert!(!flow.menu_open);
+        assert!(flow.resume().is_empty());
+    }
+
+    #[test]
+    fn a_session_begins_and_continues_around_its_starter() {
+        let mut flow = Flow {
+            mode: Mode::Story,
+            phase: Phase::Ended,
+            end_menu: Some(end_menu(MENU_WON, Mode::Story)),
+            menu_open: true,
+            ..Default::default()
+        };
+        let steps = flow.begin_session(vec![Step::LoadLevel {
+            locale: "exanima01",
+            spawn: 0,
+            teardown: true,
+        }]);
+        assert_eq!(
+            steps,
+            vec![
+                Step::LoadLevel {
+                    locale: "exanima01",
+                    spawn: 0,
+                    teardown: true
+                },
+                Step::SessionTask(true),
+                Step::EndMenuUnselected(false),
+            ]
+        );
+        assert_eq!(flow.phase, Phase::Playing);
+        assert!(!flow.menu_open);
+        assert!(flow.end_menu.is_none());
+        // A continue closes the menu form first, then starts the task.
+        let mut flow = Flow {
+            mode: Mode::Story,
+            phase: Phase::Menu,
+            menu_open: true,
+            ..Default::default()
+        };
+        let steps = flow.continue_session(vec![Step::LoadLevel {
+            locale: "exanima02",
+            spawn: 0,
+            teardown: true,
+        }]);
+        assert_eq!(
+            steps,
+            vec![
+                Step::HideMenu,
+                Step::LoadLevel {
+                    locale: "exanima02",
+                    spawn: 0,
+                    teardown: true
+                },
+                Step::SessionTask(true),
+                Step::EndMenuUnselected(false),
+            ]
+        );
+        assert_eq!(flow.phase, Phase::Playing);
+        assert!(!flow.menu_open);
+    }
+
+    #[test]
+    fn back_to_the_title_clears_the_reconstruction_state() {
+        let mut flow = Flow {
+            mode: Mode::Story,
+            phase: Phase::Ended,
+            story: StoryState {
+                reconstruction: REBUILDABLE,
+                checkpoint: 9,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let steps = flow.quit_to_menu();
+        assert_eq!(flow.mode, Mode::Menu);
+        assert_eq!(flow.phase, Phase::Menu);
+        assert_eq!(flow.story.reconstruction, 0);
+        assert_eq!(flow.story.checkpoint, 0);
+        assert!(flow.menu_open);
+        // The title logo shows again; the help flag and the GUI scale are
+        // not touched.
+        assert!(steps.contains(&Step::TitleLogo(true)));
+        assert!(
+            !steps
+                .iter()
+                .any(|step| matches!(step, Step::MenuHelp(_) | Step::GuiScale(_)))
+        );
+        assert_eq!(
+            steps
+                .iter()
+                .filter(|step| matches!(step, Step::Music { .. }))
+                .count(),
+            1
+        );
+        assert_eq!(steps.last(), Some(&Step::SessionTask(false)));
+    }
+
+    #[test]
+    fn the_units_settings_keys_and_finalisation() {
+        let names: Vec<&str> = SETTINGS_KEYS.iter().map(|key| key.name).collect();
+        assert_eq!(
+            names,
+            [
+                "CursorSize",
+                "CursorInt",
+                "CursorCom",
+                "FirstRun",
+                "ShowGameTips",
+                "CheckPoints"
+            ]
+        );
+        let kinds: Vec<u32> = SETTINGS_KEYS.iter().map(|key| key.kind).collect();
+        assert_eq!(kinds, [4, 5, 5, 3, 3, 3]);
+        assert_eq!(SCRIPT_HOOK, "GameEvent");
+        assert_eq!(
+            FINALISED_STRINGS,
+            [
+                "MenuTheme",
+                "MenuTheme_DnB",
+                crate::menu_text::MENU_TEXT_SHADER
+            ]
+        );
+        let mut flow = Flow {
+            custom_hook: true,
+            ..Default::default()
+        };
+        assert_eq!(flow.finalise(), vec![Step::Finalise]);
+        assert!(!flow.custom_hook);
+    }
+
+    #[test]
+    fn the_level_load_finish_and_the_menu_routines() {
+        let mut flow = Flow {
+            mode: Mode::Story,
+            phase: Phase::Transition,
+            end_menu: Some(end_menu(MENU_WON, Mode::Story)),
+            menu_open: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            flow.level_loaded(),
+            vec![Step::HideEndMenu, Step::ClosePrelude]
+        );
+        assert_eq!(flow.phase, Phase::Playing);
+        assert!(flow.end_menu.is_none());
+        // F1 in a session stops the hook behind the page and starts it
+        // again on the way out.
+        flow.menu_opened();
+        assert!(flow.menu_open);
+        assert!(flow.frame(2000, None, &[]).is_empty());
+        flow.menu_closed();
+        assert!(!flow.menu_open);
+        assert_eq!(flow.frame(2000, None, &[]), vec![Step::Dialogue]);
+        flow.mode = Mode::Menu;
+        assert_eq!(flow.show_menu_form(), vec![Step::ShowMenu(Page::Title)]);
+        assert!(flow.menu_open);
+        assert_eq!(flow.hide_menu_form(), vec![Step::HideMenu]);
+        assert!(!flow.menu_open);
+        assert_eq!(
+            flow.leave_game_layer(),
+            vec![Step::TeardownWorld, Step::GameGui(false)]
+        );
+    }
+
+    #[test]
+    fn leaving_a_session_to_the_menu_form_plays_the_theme() {
+        let mut flow = Flow {
+            mode: Mode::Practice,
+            phase: Phase::Won,
+            hook: Hook::None,
+            ..Default::default()
+        };
+        let steps = flow.leave_to_menu_form();
+        assert_eq!(flow.phase, Phase::Menu);
+        assert!(flow.menu_open);
+        assert!(steps.contains(&Step::TeardownWorld));
+        assert!(steps.iter().any(|step| matches!(
+            step,
+            Step::Music {
+                name: "MenuTheme",
+                restart: true,
+                ..
+            }
+        )));
+        assert_eq!(
+            steps.last(),
+            Some(&Step::Music {
+                name: "MenuTheme",
+                volume: 0.1,
+                restart: true,
+            })
+        );
     }
 
     #[test]
@@ -3474,7 +4326,7 @@ mod tests {
             ..Default::default()
         };
         let steps = flow.quit_session(Page::InGame);
-        assert_eq!(steps, vec![Step::GameGui(false)]);
+        assert_eq!(steps, vec![Step::GameGui(false), Step::CloseSave]);
     }
 
     #[test]
