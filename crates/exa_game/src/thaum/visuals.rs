@@ -27,6 +27,7 @@ use exa_render::image_noise::NoiseField;
 
 use super::displacement::wisp_anchors;
 
+use super::effect_material::{self, MaterialKind};
 use super::force::{AURA_PARAM_SIZE, BARRIER_PARAM_SIZE, FORCE_PARAM_SIZE};
 pub use super::force::{
     FORCE_AURA_MATERIAL as AURA_MATERIAL, FORCE_BARRIER_MATERIAL as BARRIER_MATERIAL,
@@ -74,8 +75,11 @@ pub const TENDRIL_KIND: u32 = 0x15;
 pub struct SceneNodeSpec {
     /// The node's material, if it makes one.
     pub material: Option<&'static str>,
-    /// The node's flags.
+    /// The node's flags word.
     pub flags: u32,
+    /// The bits the material sets in the node's state word (the aura and
+    /// shell materials' 0x9000).
+    pub state: u32,
     /// The shared emissive program.
     pub gi: Option<&'static str>,
     /// The material's parameter block size.
@@ -91,6 +95,15 @@ pub struct SceneNodeSpec {
     /// sound), which the pitch 1.0 stands for; the barricade's `thmfrc_ss` is
     /// played at its placement at a pitch of `0.8 + 0.4 · roll` (volume 0.3).
     pub sounds: Vec<(&'static str, f32)>,
+    /// The sub-objects the material routine adds (one for the aura and the
+    /// shell, none for the others).
+    pub subobjects: usize,
+    /// The textures the material binds.
+    pub textures: Vec<&'static str>,
+    /// The node's scale.
+    pub scale: f32,
+    /// The extra marker word a creator writes (the decorative shell's 1).
+    pub marker: u32,
     /// One radio of the effect's own lifetime, when it has one.
     pub life_ms: u32,
 }
@@ -100,12 +113,17 @@ impl Default for SceneNodeSpec {
         Self {
             material: None,
             flags: EFFECT_NODE,
+            state: 0,
             gi: None,
             block: 0,
             position: Vec3::ZERO,
             rotation: Quat::IDENTITY,
             hand: false,
             sounds: Vec::new(),
+            subobjects: 0,
+            textures: Vec::new(),
+            scale: 1.0,
+            marker: 0,
             life_ms: 0,
         }
     }
@@ -142,6 +160,12 @@ pub struct CreatorInput {
     pub heading: Vec3,
     /// The caster's hand.
     pub hand: Vec3,
+    /// The caster's chest (the shell's start sound sits there).
+    pub chest: Vec3,
+    /// The caster's body orientation; the domes take it as their node's.
+    pub body_rotation: Quat,
+    /// The horizontal direction the barricade faces away along.
+    pub facing: Vec3,
     /// The effect's point, when it has one.
     pub point: Option<Vec3>,
     /// The random draw for a pitch (`0` to `1`).
@@ -149,81 +173,107 @@ pub struct CreatorInput {
 }
 
 /// Builds a creator's scene node.
+///
+/// Each kind's material is the routine the original's creator calls: the
+/// force material for the blast family, the barrier material for the domes
+/// and the barricade, the aura material for the shell (and its decorative
+/// copy), the displacement material for the tendrils and the shell material
+/// for a constant displacement. The aura and shell materials add one
+/// sub-object; the barrier and aura materials bind the noise picture. The
+/// node's orientation and place follow the creator's own writes: the domes
+/// take the caster's body orientation, the barricade the direction away
+/// from the caster, and the decorative shell is scaled three times.
 pub fn creator(kind: EffectKind, input: &CreatorInput) -> SceneNodeSpec {
-    let hand = |material, sound| SceneNodeSpec {
-        material: Some(material),
+    let material = |kind: MaterialKind, position: Vec3, rotation: Quat| {
+        let binding = kind.binding();
+        SceneNodeSpec {
+            material: Some(binding.name),
+            flags: EFFECT_NODE | binding.node_flag,
+            state: binding.state_flags,
+            block: binding.block,
+            position,
+            rotation,
+            subobjects: usize::from(binding.adds_subobject),
+            textures: if binding.noise {
+                vec![effect_material::NOISE_TEXTURE]
+            } else {
+                Vec::new()
+            },
+            ..SceneNodeSpec::default()
+        }
+    };
+    let hand = |kind: MaterialKind, sound| SceneNodeSpec {
         gi: Some(GI_PROGRAM),
-        block: FORCE_BLOCK,
-        position: input.hand,
         hand: true,
         sounds: vec![sound],
-        ..SceneNodeSpec::default()
+        ..material(kind, input.hand, input.body_rotation)
     };
     match kind {
-        EffectKind::Blast => hand(FORCE_MATERIAL, ("thmfrc_cu01", 1.0)),
+        EffectKind::Blast => hand(MaterialKind::Force, ("thmfrc_cu01", 1.0)),
         EffectKind::Bolt => SceneNodeSpec {
             sounds: vec![("thmfrc_blt", 1.0)],
-            ..hand(FORCE_MATERIAL, ("thmfrc_cu01", 1.0))
+            ..hand(MaterialKind::Force, ("thmfrc_cu01", 1.0))
         },
         EffectKind::Wave => SceneNodeSpec {
             position: input.body,
             hand: false,
             sounds: vec![("thmfrc_wav", 1.0), ("thmfrc_cu01", 1.0)],
-            ..hand(FORCE_MATERIAL, ("thmfrc_cu01", 1.0))
+            ..hand(MaterialKind::Force, ("thmfrc_cu01", 1.0))
         },
         EffectKind::Torrent => SceneNodeSpec {
             sounds: vec![("thmfrc_cu01", 1.0), ("thmfrc_trntdr", 1.0)],
-            ..hand(FORCE_MATERIAL, ("thmfrc_cu01", 1.0))
+            ..hand(MaterialKind::Force, ("thmfrc_cu01", 1.0))
         },
         EffectKind::Barrier => SceneNodeSpec {
-            material: Some(BARRIER_MATERIAL),
             gi: Some(GI_PROGRAM),
-            block: BARRIER_BLOCK,
-            position: input.body + Vec3::Y * 100.0,
-            rotation: Quat::from_rotation_arc(Vec3::Y, input.heading),
             sounds: vec![("thmfrc_bi", 1.0), ("thmfrc_bc02", 1.0)],
-            ..SceneNodeSpec::default()
+            ..material(
+                MaterialKind::Barrier,
+                input.body + Vec3::Y * 100.0,
+                input.body_rotation,
+            )
         },
         EffectKind::Bubble => SceneNodeSpec {
-            material: Some(BARRIER_MATERIAL),
             gi: Some(GI_PROGRAM),
-            block: BARRIER_BLOCK,
-            position: input.body + Vec3::Y * 100.0,
             sounds: vec![
                 ("thmfrc_bi", 1.0),
                 ("thmfrc_bc02", 1.0),
                 ("thmfrc_brf", 1.0),
             ],
-            ..SceneNodeSpec::default()
+            ..material(
+                MaterialKind::Barrier,
+                input.body + Vec3::Y * 100.0,
+                input.body_rotation,
+            )
         },
         EffectKind::Barricade => SceneNodeSpec {
-            material: Some(BARRIER_MATERIAL),
             gi: Some(GI_PROGRAM),
-            block: BARRIER_BLOCK,
             position: input.point.unwrap_or(input.body) + Vec3::Y * 110.0,
-            rotation: Quat::from_rotation_arc(Vec3::Y, input.heading),
+            rotation: Quat::from_rotation_arc(Vec3::Y, input.facing),
             sounds: vec![
                 ("thmfrc_bi", 1.0),
                 ("thmfrc_bc01", 1.0),
                 ("thmfrc_ss", 0.8 + input.roll * 0.4),
             ],
-            ..SceneNodeSpec::default()
+            ..material(
+                MaterialKind::Barrier,
+                input.point.unwrap_or(input.body) + Vec3::Y * 110.0,
+                Quat::from_rotation_arc(Vec3::Y, input.facing),
+            )
         },
         EffectKind::Shell => SceneNodeSpec {
-            material: Some(AURA_MATERIAL),
-            block: AURA_BLOCK,
             flags: EFFECT_NODE | SHELL_FLAG,
             position: input.body,
             sounds: vec![("thmfrc_ss", 0.6 + input.roll * 0.4)],
-            ..SceneNodeSpec::default()
+            ..material(MaterialKind::Aura, input.body, Quat::IDENTITY)
         },
         EffectKind::DecorativeShell => SceneNodeSpec {
-            material: Some(AURA_MATERIAL),
-            block: AURA_BLOCK,
-            flags: 0x20,
+            flags: EFFECT_NODE | SHELL_FLAG,
+            scale: DECORATIVE_SCALE,
+            marker: 1,
             position: input.body,
             sounds: Vec::new(),
-            ..SceneNodeSpec::default()
+            ..material(MaterialKind::Aura, input.body, Quat::IDENTITY)
         },
         EffectKind::Vanish => SceneNodeSpec {
             position: input.body,
@@ -232,28 +282,21 @@ pub fn creator(kind: EffectKind, input: &CreatorInput) -> SceneNodeSpec {
         },
         EffectKind::LongDoor => SceneNodeSpec {
             position: input.point.unwrap_or(input.body),
-            life_ms: 0,
             ..SceneNodeSpec::default()
         },
         EffectKind::Constant => SceneNodeSpec {
-            material: Some(SHELL_MATERIAL),
-            block: DISPLACEMENT_BLOCK,
-            flags: EFFECT_NODE,
+            flags: EFFECT_NODE | SHELL_FLAG,
             position: input.body,
             sounds: vec![("thmdsp_cns01", input.roll), ("thmdsp_phs", 1.0)],
-            ..SceneNodeSpec::default()
+            ..material(MaterialKind::Shell, input.body, Quat::IDENTITY)
         },
         EffectKind::Summon => SceneNodeSpec {
             position: input.point.unwrap_or(input.body),
-            life_ms: 0,
             ..SceneNodeSpec::default()
         },
         EffectKind::Tendril => SceneNodeSpec {
-            material: Some(TENDRIL_MATERIAL),
-            block: DISPLACEMENT_BLOCK,
-            flags: EFFECT_NODE,
             position: input.body,
-            ..SceneNodeSpec::default()
+            ..material(MaterialKind::Tendril, input.body, Quat::IDENTITY)
         },
         EffectKind::Kinesis => SceneNodeSpec {
             position: input.hand,
@@ -261,7 +304,7 @@ pub fn creator(kind: EffectKind, input: &CreatorInput) -> SceneNodeSpec {
             ..SceneNodeSpec::default()
         },
         EffectKind::Throw => SceneNodeSpec {
-            position: input.hand,
+            position: input.chest,
             sounds: vec![
                 ("thmfrc_knsst", 0.8 + input.roll * 0.4),
                 ("thmfrc_throw", 0.8 + input.roll * 0.4),
@@ -269,7 +312,7 @@ pub fn creator(kind: EffectKind, input: &CreatorInput) -> SceneNodeSpec {
             ..SceneNodeSpec::default()
         },
         EffectKind::Strikes => SceneNodeSpec {
-            position: input.body,
+            position: input.chest,
             sounds: vec![("thmfrc_ss", 0.6 + input.roll * 0.4)],
             ..SceneNodeSpec::default()
         },
@@ -344,22 +387,49 @@ pub struct ShellDraw {
     pub parts: usize,
 }
 
-/// The shell pass's selection: a node with subobjects draws its parts whose
-/// flags lack 0x80040; `visible` picks the thick pass (0x8000 set).
+/// The shell pass's first side: a node with subobjects draws its parts whose
+/// flags lack 0x80040, thick when its visible bit 0x8000 is set, as
+/// [`crate::effects::shell::first_draws`] selects them.
 pub fn shell_draws(nodes: &[ShellNodeView], shown: f32) -> Vec<ShellDraw> {
-    nodes
+    let _ = shown;
+    let pass: Vec<crate::effects::shell::ShellPassNode> = nodes
         .iter()
-        .filter(|node| node.subobjects)
-        .map(|node| {
-            let parts = node.parts[..node.part_count.min(4)]
+        .map(|node| crate::effects::shell::ShellPassNode {
+            visibility: 0,
+            flags: if node.visible {
+                crate::effects::shell::THICK_PASS
+            } else {
+                0
+            },
+            render_flags: if node.subobjects {
+                crate::effects::shell::SUBOBJECTS
+            } else {
+                0
+            },
+            fade: 0.0,
+            fade2: 0.0,
+            parts: node.parts[..node.part_count.min(4)]
                 .iter()
-                .filter(|flags| **flags & 0x0008_0040 == 0)
-                .count();
-            let _ = shown;
-            ShellDraw {
-                thick: node.visible,
-                parts,
-            }
+                .map(|flags| crate::effects::shell::ShellPart {
+                    flags: *flags,
+                    mesh: true,
+                    fade: 0.0,
+                    texture_stage: 0,
+                })
+                .collect(),
+        })
+        .collect();
+    let draws = crate::effects::shell::first_draws(&pass);
+    let mut counts = vec![0usize; pass.len()];
+    for draw in draws {
+        counts[draw.node] += 1;
+    }
+    pass.iter()
+        .enumerate()
+        .filter(|(_, node)| node.render_flags & crate::effects::shell::SUBOBJECTS != 0)
+        .map(|(index, node)| ShellDraw {
+            thick: node.thick(),
+            parts: counts[index],
         })
         .collect()
 }
@@ -482,8 +552,46 @@ pub struct EffectVisual {
     pub material: Option<&'static str>,
     pub gi: Option<&'static str>,
     pub flags: u32,
+    /// The material's state-word bits.
+    pub state: u32,
     pub block: usize,
     pub life_ms: u32,
+    /// The sub-objects the material added.
+    pub subobjects: usize,
+    /// The textures the material bound.
+    pub textures: Vec<&'static str>,
+    /// The node's scale.
+    pub scale: f32,
+    /// The creator's marker word.
+    pub marker: u32,
+}
+
+impl EffectVisual {
+    /// The material routine this node's material came from, when it has one.
+    pub fn material_kind(&self) -> Option<MaterialKind> {
+        let name = self.material?;
+        [
+            MaterialKind::Force,
+            MaterialKind::Barrier,
+            MaterialKind::Aura,
+            MaterialKind::Tendril,
+            MaterialKind::Shell,
+        ]
+        .into_iter()
+        .find(|kind| kind.name() == name)
+    }
+
+    /// The draws this node's material pass makes, as its material runs
+    /// them. A node without a material draws nothing.
+    pub fn pass_plan(
+        &self,
+        params: &super::effect_pass::PassParams,
+    ) -> Vec<super::effect_pass::PassDraw> {
+        let Some(kind) = self.material_kind() else {
+            return Vec::new();
+        };
+        super::effect_pass::plan(kind.draw(), params)
+    }
 }
 
 /// A request to add an effect node to the scene.
@@ -500,19 +608,33 @@ impl Plugin for VisualPlugin {
     }
 }
 
-fn spawn_visuals(mut commands: Commands, mut spawns: MessageReader<VisualSpawn>) {
-    for VisualSpawn(spec) in spawns.read() {
-        commands.spawn((
-            Transform::from_translation(spec.position).with_rotation(spec.rotation),
+/// Adds one effect node to the scene and returns it.
+pub fn spawn_visual(commands: &mut Commands, spec: SceneNodeSpec) -> Entity {
+    commands
+        .spawn((
+            Transform::from_translation(spec.position)
+                .with_rotation(spec.rotation)
+                .with_scale(Vec3::splat(spec.scale)),
             EffectVisual {
                 material: spec.material,
                 gi: spec.gi,
                 flags: spec.flags,
+                state: spec.state,
                 block: spec.block,
                 life_ms: spec.life_ms,
+                subobjects: spec.subobjects,
+                textures: spec.textures.clone(),
+                scale: spec.scale,
+                marker: spec.marker,
             },
             Name::new(spec.material.unwrap_or("power node").to_string()),
-        ));
+        ))
+        .id()
+}
+
+fn spawn_visuals(mut commands: Commands, mut spawns: MessageReader<VisualSpawn>) {
+    for VisualSpawn(spec) in spawns.read() {
+        spawn_visual(&mut commands, spec.clone());
     }
 }
 
@@ -526,6 +648,9 @@ mod tests {
             body: Vec3::new(10.0, 0.0, 20.0),
             heading: Vec3::Z,
             hand: Vec3::new(12.0, 50.0, 18.0),
+            chest: Vec3::new(10.0, 120.0, 20.0),
+            body_rotation: Quat::IDENTITY,
+            facing: Vec3::Z,
             point: Some(Vec3::new(100.0, 0.0, 50.0)),
             roll: 0.5,
         }
@@ -548,7 +673,7 @@ mod tests {
     fn a_blast_sits_in_the_hand_and_the_wave_on_the_body() {
         let blast = creator(EffectKind::Blast, &input());
         assert_eq!(blast.material, Some(FORCE_MATERIAL));
-        assert_eq!(blast.flags, EFFECT_NODE);
+        assert_eq!(blast.flags, EFFECT_NODE | effect_material::MATERIAL_FLAG);
         assert_eq!(blast.gi, Some(GI_PROGRAM));
         assert_eq!(blast.block, FORCE_BLOCK);
         assert_eq!(blast.position, input().hand);
@@ -585,13 +710,24 @@ mod tests {
         assert_eq!(shell.material, Some(AURA_MATERIAL));
         assert_eq!(shell.gi, None);
         assert_eq!(shell.flags, EFFECT_NODE | SHELL_FLAG);
+        assert_eq!(shell.state, effect_material::AURA_FLAGS);
         assert_eq!(shell.sounds, vec![("thmfrc_ss", 0.8)]);
+        assert_eq!(shell.subobjects, 1);
+        assert_eq!(shell.textures, vec![effect_material::NOISE_TEXTURE]);
         let decorative = creator(EffectKind::DecorativeShell, &input());
         assert_eq!(decorative.material, Some(AURA_MATERIAL));
-        assert_eq!(decorative.flags, 0x20);
+        assert_eq!(decorative.flags, EFFECT_NODE | SHELL_FLAG);
+        assert_eq!(decorative.state, 0x9000);
+        assert_eq!((decorative.scale, decorative.marker), (3.0, 1));
         assert!(decorative.sounds.is_empty());
         let constant = creator(EffectKind::Constant, &input());
         assert_eq!(constant.material, Some(SHELL_MATERIAL));
+        assert_eq!(constant.subobjects, 1);
+        assert_eq!(
+            (constant.flags, constant.state),
+            (EFFECT_NODE | SHELL_FLAG, 0x9000)
+        );
+        assert!(constant.textures.is_empty());
         assert_eq!(constant.sounds[0].0, "thmdsp_cns01");
         assert_eq!(constant.sounds[0].1, 0.5);
         assert_eq!(
@@ -737,5 +873,51 @@ mod tests {
             .fold(Vec3::ZERO, |sum, p| sum + *p)
             / 4.0;
         assert!((centre - Vec3::new(100.0, 0.0, 50.0)).length() < 1e-3);
+    }
+    #[test]
+    fn each_node_takes_its_material_and_its_pass_plan() {
+        let shell = creator(EffectKind::Shell, &input());
+        let visual = EffectVisual {
+            material: shell.material,
+            gi: shell.gi,
+            flags: shell.flags,
+            state: shell.state,
+            block: shell.block,
+            life_ms: shell.life_ms,
+            subobjects: shell.subobjects,
+            textures: shell.textures,
+            scale: shell.scale,
+            marker: shell.marker,
+        };
+        assert_eq!(visual.material_kind(), Some(MaterialKind::Aura));
+        let params = super::super::effect_pass::PassParams {
+            passes: 2,
+            frame: 0,
+            base: 0.0,
+            lod: 0.5,
+            ..super::super::effect_pass::PassParams::default()
+        };
+        let plan = visual.pass_plan(&params);
+        assert_eq!(plan.len(), 3);
+        // The aura's shader pass steps by the sub-object's level of detail.
+        assert_eq!(plan[1].depth, ((1.5 * 0.5) - 0.25));
+        let blast = creator(EffectKind::Blast, &input());
+        let visual = EffectVisual {
+            material: blast.material,
+            gi: blast.gi,
+            flags: blast.flags,
+            state: blast.state,
+            block: blast.block,
+            life_ms: blast.life_ms,
+            subobjects: blast.subobjects,
+            textures: blast.textures,
+            scale: blast.scale,
+            marker: blast.marker,
+        };
+        assert_eq!(visual.material_kind(), Some(MaterialKind::Force));
+        // The force material's terms step by the double literal 0.002.
+        let plan = visual.pass_plan(&params);
+        assert_eq!(plan[1].depth, (1.5_f64 * 0.002 - 0.001) as f32);
+        assert_eq!(creator(EffectKind::Vanish, &input()).material, None);
     }
 }

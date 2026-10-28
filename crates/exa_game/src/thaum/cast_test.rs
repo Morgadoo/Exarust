@@ -1062,6 +1062,79 @@ fn a_records_powers_make_its_caster() {
     assert_eq!(PowerCaster::of_character(&character).unwrap().body.slots, 0);
 }
 
+/// A shell's creator leaves the aura node: the aura material, one
+/// sub-object and the 0x9000 bits in the node's state word.
+#[test]
+fn a_shell_cast_adds_its_aura_node() {
+    let mut app = new_app();
+    let caster = caster(&mut app, &[SHELL]);
+    cast(&mut app, caster);
+    let mut query = app
+        .world_mut()
+        .query::<&crate::thaum::visuals::EffectVisual>();
+    let visuals: Vec<_> = query
+        .iter(app.world())
+        .map(|visual| {
+            (
+                visual.material,
+                visual.subobjects,
+                visual.state,
+                visual.textures.clone(),
+            )
+        })
+        .collect();
+    assert_eq!(visuals.len(), 1);
+    assert_eq!(visuals[0].0, Some("_ForceAura01"));
+    assert_eq!(visuals[0].1, 1);
+    assert_eq!(visuals[0].2, 0x9000);
+    assert_eq!(visuals[0].3, vec!["_ForceNoise"]);
+}
+
+/// A shell's aura outlives the power: ending the power starts its close
+/// rather than taking its node away at once.
+#[test]
+fn a_shell_aura_closes_after_its_power_ends() {
+    let mut app = new_app();
+    let caster = caster(&mut app, &[SHELL]);
+    cast(&mut app, caster);
+    app.world_mut().run_schedule(FixedUpdate);
+    app.world_mut().run_schedule(FixedUpdate);
+    let mut query = app.world_mut().query::<(Entity, &LiveShellAura)>();
+    let (entity, state) = query
+        .iter(app.world())
+        .next()
+        .map(|(entity, aura)| (entity, aura.0.state))
+        .expect("an aura");
+    assert_eq!(state, 1);
+    assert!(app.world().get::<LiveShellAura>(entity).unwrap().0.voice);
+    // A second press tells the shell to end; its aura starts closing and
+    // stays in the scene.
+    cast(&mut app, caster);
+    app.world_mut().run_schedule(FixedUpdate);
+    let aura = app
+        .world()
+        .get::<LiveShellAura>(entity)
+        .expect("still there");
+    assert!(aura.0.state >= 2 && aura.0.state < 5, "{}", aura.0.state);
+    assert!(count::<LiveShellAura>(&mut app) == 1);
+}
+
+/// A vanish's creator leaves its effect node in the scene.
+#[test]
+fn a_vanish_cast_adds_its_effect_node() {
+    let mut app = new_app();
+    let caster = caster(&mut app, &[VANISH]);
+    cast(&mut app, caster);
+    let mut query = app
+        .world_mut()
+        .query::<&crate::thaum::visuals::EffectVisual>();
+    let visuals: Vec<_> = query
+        .iter(app.world())
+        .map(|visual| visual.material)
+        .collect();
+    assert_eq!(visuals, vec![None]);
+}
+
 /// A running shell puts its damping on the caster's fighter for the hit
 /// formula, and its end takes it off.
 #[test]
@@ -1262,4 +1335,29 @@ fn a_live_cast_end_returns_to_the_stance_that_tick() {
     assert_eq!(animator.blend, casting::STANCE_BLEND as f32);
     let caster = app.world().get::<PowerCaster>(entity).expect("a caster");
     assert!(!caster.body.stance_return);
+}
+
+/// A Long Door's destination is in centimetres on the floor; the root lands
+/// in metres, as high above it as it stood above the body's lowest part.
+#[test]
+fn a_long_door_root_lands_in_metres_above_the_floor() {
+    let part = |bone, y: f32| PartSetup {
+        bone,
+        entity: Entity::PLACEHOLDER,
+        parent: None,
+        world: Affine3A::from_translation(Vec3::new(2.0, y, 3.0)),
+        centre: Vec3::ZERO,
+        half: Vec3::splat(0.1),
+        origin: Vec3::ZERO,
+        links: Vec::new(),
+        foot: None,
+        pins: Vec::new(),
+        spheres: None,
+    };
+    let doll = Ragdoll::new(&[part(1, 1.0), part(2, 0.1)]);
+    let root = super::otherwhere_root(&doll, Vec3::new(500.0, 20.0, -300.0));
+    assert!(
+        (root - Vec3::new(5.0, 1.1, -3.0)).length() < 1e-5,
+        "{root:?}"
+    );
 }

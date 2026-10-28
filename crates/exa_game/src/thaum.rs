@@ -40,6 +40,8 @@ pub mod bubble_live;
 pub mod cast;
 pub mod casting;
 pub mod displacement;
+pub mod effect_material;
+pub mod effect_pass;
 pub mod energy;
 pub mod engine;
 pub mod force;

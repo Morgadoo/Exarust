@@ -74,6 +74,8 @@ pub const PRUNE_FLAG: u32 = 0x40;
 /// The subobject mark the shell's end sets.
 pub const ENDED: u32 = 0x8;
 
+pub use super::effect_material::{AURA_FLAGS, SHARED_SHELL_FLAG as SHARED, SHELL_FLAG};
+
 /// A node of a body the displacement routines walk.
 #[derive(Debug, Clone, PartialEq)]
 pub struct VeilNode {
@@ -95,6 +97,8 @@ pub struct VeilNode {
     pub render_flags: u32,
     /// The part flags the prune pass reads ([`PRUNE_FLAG`]).
     pub part_flags: u32,
+    /// The bone kind the tendril geometry reads (0 to 18).
+    pub bone: usize,
     /// The child nodes.
     pub children: Vec<VeilNode>,
 }
@@ -110,6 +114,7 @@ impl VeilNode {
             fade: 0.0,
             render_flags: if children.is_empty() { 0 } else { SUBOBJECTS },
             part_flags: 0,
+            bone: 0,
             children,
         }
     }
@@ -128,6 +133,12 @@ impl VeilNode {
             status,
             ..Self::mesh(Vec::new())
         }
+    }
+
+    /// The node with a bone kind.
+    pub fn on_bone(mut self, bone: usize) -> Self {
+        self.bone = bone;
+        self
     }
 
     /// Whether the node takes the body's collision bits.
@@ -208,8 +219,15 @@ pub struct ShellWear {
     pub fade: f32,
     /// The node's event word.
     pub event: u32,
-    /// The shell's visibility word: it starts dead.
+    /// The shell's state word: it starts dead, with the shell material's
+    /// 0x9000 bits.
     pub visibility: u32,
+    /// The shell node's flags word: the creator's 0x20 and, for a shell
+    /// asked for as shared, 0x40000.
+    pub flags: u32,
+    /// The shell belongs to a constant displacement and is shared with a
+    /// vanish.
+    pub shared: bool,
     /// Every subobject was marked [`ENDED`].
     pub hidden: bool,
 }
@@ -220,8 +238,19 @@ impl ShellWear {
         Self {
             fade: 0.0,
             event: 0,
-            visibility: DEAD,
+            visibility: DEAD | AURA_FLAGS,
+            flags: SHELL_FLAG,
+            shared: false,
             hidden: false,
+        }
+    }
+
+    /// The shell a constant displacement starts: the same node, shared.
+    pub fn shared() -> Self {
+        Self {
+            flags: SHELL_FLAG | SHARED,
+            shared: true,
+            ..Self::new()
         }
     }
 
@@ -247,6 +276,10 @@ pub struct TendrilImage {
     pub flags: u32,
     /// The image node's visibility word: it starts dead.
     pub visibility: u32,
+    /// The first strand record the anchors fill.
+    pub first: usize,
+    /// The last strand record: the anchors' count plus the eight spare.
+    pub last: usize,
     /// Strands kept beyond its anchors.
     pub spare: usize,
     /// The image's scale: the geometry's own times the body's size factor.
@@ -255,11 +288,14 @@ pub struct TendrilImage {
 
 impl TendrilImage {
     /// An image on a body of the given size factor, over a geometry whose
-    /// own scale is `base`.
-    pub fn new(base: f32, size_factor: f32) -> Self {
+    /// own scale is `base`; `anchors` is the strands the body's bone kinds
+    /// filled.
+    pub fn new(base: f32, size_factor: f32, anchors: usize) -> Self {
         Self {
             flags: TENDRIL_FLAGS,
             visibility: DEAD,
+            first: anchors,
+            last: anchors + super::displacement::SPARE_STRANDS,
             spare: super::displacement::SPARE_STRANDS,
             scale: base * size_factor,
         }
@@ -404,12 +440,13 @@ impl ConstantVeil {
         let mut body = body;
         add_physics_bits(&mut body, DISPLACED_BIT);
         let parts = ShellParts::gather(&body);
+        let anchors = body_anchors(&body);
         let hum_start = (f64::from(hum_length) * 0.8 * f64::from(roll.unit())) as f32;
         Self {
             body,
             shell: ShellWear::new(),
             parts,
-            image: TendrilImage::new(1.0, size_factor),
+            image: TendrilImage::new(1.0, size_factor, anchors),
             phased: PhasedWeapons::default(),
             streak: PhaseStreak::default(),
             hum_start,
@@ -465,6 +502,16 @@ impl ConstantVeil {
         });
         all
     }
+}
+
+/// The strand records a body's bones fill: every bone kind contributes its
+/// anchor table's strands, walking the nodes in order.
+pub fn body_anchors(root: &VeilNode) -> usize {
+    let mut count = 0;
+    root.walk(&mut |node| {
+        count += super::displacement::wisp_anchors(node.bone).len();
+    });
+    count
 }
 
 /// A stable key for a node's path: a one-byte marker above its steps, one
@@ -748,6 +795,7 @@ mod tests {
         // The body's own root counts: it is a live mesh.
         assert_eq!(parts.meshes, vec![vec![], vec![0]]);
         assert_eq!(parts.skins, vec![vec![2]]);
+        assert_eq!(body_anchors(&body), 0);
     }
 
     #[test]
@@ -783,12 +831,16 @@ mod tests {
 
     #[test]
     fn the_tendril_image_starts_dead_and_scales_with_the_body() {
-        let image = TendrilImage::new(0.5, 1.5);
+        let image = TendrilImage::new(0.5, 1.5, 3);
         assert_eq!(image.flags, 0x2100_0000);
         assert_eq!(image.visibility, 0x8000_0000);
         assert_eq!(image.scale, 0.75);
-        assert_eq!(image.spare, 8);
-        assert_eq!(ShellWear::new().visibility, 0x8000_0000);
+        assert_eq!((image.first, image.last, image.spare), (3, 11, 8));
+        assert_eq!(ShellWear::new().visibility, 0x8000_9000);
+        assert_eq!(ShellWear::new().flags, 0x20);
+        let shared = ShellWear::shared();
+        assert_eq!(shared.flags, 0x4_0020);
+        assert!(shared.shared);
     }
 
     #[test]
@@ -905,5 +957,19 @@ mod tests {
         clear_shells(&mut nodes);
         assert_eq!(nodes[1].render & 0x1000, 0);
         assert_eq!(nodes[0].children[0].render & 0x1000, 0);
+    }
+    #[test]
+    fn the_tendril_anchors_follow_the_bones() {
+        let body = VeilNode::mesh(vec![
+            VeilNode::mesh(vec![]).on_bone(1),
+            VeilNode::mesh(vec![VeilNode::mesh(vec![]).on_bone(9)]).on_bone(2),
+            VeilNode::mesh(vec![]).on_bone(19),
+            VeilNode::mesh(vec![]).on_bone(8),
+        ]);
+        // Bone 1 has four anchors, 2 one, 9 four, 19 none and 8 none.
+        assert_eq!(body_anchors(&body), 9);
+        let image = TendrilImage::new(2.0, 0.5, body_anchors(&body));
+        assert_eq!((image.first, image.last), (9, 17));
+        assert_eq!(image.scale, 1.0);
     }
 }
