@@ -33,9 +33,11 @@ gathers the characters of that cell as its nearby list, decays its group
 alert a step every ten seconds, and out of combat sways its look about its
 heading and turns its model to it (the original lets the body's locomotion
 turn the body; the running game ticks no locomotion request for an NPC, so
-the model is turned directly). A character that re-enters the scene from
-the dormant holder heals to its lasting health, forgets every contact and
-leaves combat (`presence::reenter_on_entered`). Every frame the brain's
+the model is turned directly). The original's reset when the level is
+written out on leaving it (the body heals to its lasting health, forgets
+every contact, and a roaming AI is put down along fresh wander paths and
+leaves combat) is `presence::reenter`; Exarust writes no level on leaving,
+so nothing calls it yet. Every frame the brain's
 perception pass clears its contacts' concern targets, closeness and view
 (as the original's target pass does before it perceives), looks at every
 character within the largest perception reach and every one it already

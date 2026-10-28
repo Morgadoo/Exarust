@@ -73,10 +73,7 @@ impl Plugin for AiPlugin {
             .add_message::<exa_combat::AttackAskedHook>()
             .add_systems(
                 FixedUpdate,
-                (
-                    presence::check_presence.before(exa_physics::body::CharacterTicks),
-                    presence::reenter_on_entered.after(presence::check_presence),
-                ),
+                presence::check_presence.before(exa_physics::body::CharacterTicks),
             )
             .add_systems(
                 Update,

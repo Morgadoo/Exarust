@@ -42,8 +42,6 @@ use exa_physics::body::{OutOfScene, Ragdoll};
 use exa_combat::Fighter;
 
 use crate::Duellist;
-use crate::activity::IdleState;
-use crate::brain::Npc;
 use crate::combatant::Combatant;
 
 /// The squared activation radius (cm²) outside play: 200 m.
@@ -140,36 +138,45 @@ impl Presence {
     }
 }
 
-/// What a re-entry into the scene did.
+/// What the level-leave reset did.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Reentry {
     /// The lasting health came back to the current pool.
     pub healed: bool,
-    /// The contacts cleared.
+    /// The contacts and the target cleared.
     pub cleared: bool,
+    /// A roaming AI was reset: it left combat and was put down again.
+    pub left_combat: bool,
     /// Where the body was put, when a roaming AI was moved.
     pub moved_to: Option<Vec3>,
 }
 
 /// The span a planned wander path must beat (cm², 150 cm) before a
-/// re-entering roam walks it.
+/// resetting roam walks it.
 pub const REENTRY_SPAN_CM2: f32 = 22_500.0;
-/// The rounds of wander-and-home plans a re-entering roam makes.
+/// The rounds of wander-and-home plans a resetting roam makes.
 pub const REENTRY_ROUNDS: u32 = 2;
-/// The lasting health below which re-entry does not restore it.
+/// The lasting health a reset needs to restore the current pool from it.
 pub const HEAL_FLOOR: f32 = 0.01;
 
-/// A character re-entered the scene: the body's current health returns to
-/// its lasting pool when that is over [`HEAL_FLOOR`], every contact, target
-/// and foe is forgotten, and a roaming AI (not a statue) is put down along
-/// a freshly planned wander path, twice: a wander endpoint over
-/// [`REENTRY_SPAN_CM2`] (a point and its ground span) becomes the body's
-/// goal, then a home-side endpoint, then the wander's and the home's again.
-/// `wander` and `home` return a planned endpoint and its span, or none when
-/// the level has no room to draw one from. The body ends at the last goal,
-/// if any.
+/// The reset the original gives every AI character when the level is
+/// written out as the player leaves it, so the character is not found as
+/// it was left. A collapsed or dead body (`out`) or a dormant one
+/// (`dormant`) is left alone. Otherwise the body's current health returns
+/// to its lasting pool when that is over [`HEAL_FLOOR`], and every contact
+/// and the target are forgotten. A roaming AI that is not a statue is then
+/// put down along freshly planned wander paths, twice: a wander endpoint
+/// whose path spans over [`REENTRY_SPAN_CM2`] becomes the body's goal, and
+/// from there a home-side endpoint over the same span; the body ends at the
+/// last goal, if any, and leaves combat. `wander` and `home` return a
+/// planned endpoint and the squared ground span from the path's first point
+/// to it, or none when the level has no room to draw one from.
+///
+/// Exarust does not write levels on leaving, so nothing calls this yet.
 #[allow(clippy::too_many_arguments)]
 pub fn reenter(
+    out: bool,
+    dormant: bool,
     roaming: bool,
     statue: bool,
     health: &mut Fighter,
@@ -177,15 +184,18 @@ pub fn reenter(
     wander: &mut dyn FnMut() -> Option<(Vec3, f32)>,
     home: &mut dyn FnMut() -> Option<(Vec3, f32)>,
 ) -> Reentry {
-    let mut out = Reentry::default();
+    let mut result = Reentry::default();
+    if out || dormant {
+        return result;
+    }
     if HEAL_FLOOR < health.health.red {
         health.health.yellow = health.health.red;
-        out.healed = true;
+        result.healed = true;
     }
     contacts.reset();
-    out.cleared = true;
+    result.cleared = true;
     if !roaming || statue {
-        return out;
+        return result;
     }
     let mut goal = None;
     for _ in 0..REENTRY_ROUNDS {
@@ -200,8 +210,9 @@ pub fn reenter(
             }
         }
     }
-    out.moved_to = goal;
-    out
+    result.moved_to = goal;
+    result.left_combat = true;
+    result
 }
 
 /// Whether a body at squared distance `distance2` (cm²) from the centre is
@@ -306,44 +317,6 @@ pub fn check_presence(
             }
             entered.write(Entered(entity));
             show(&mut commands, entity, false);
-        }
-    }
-}
-
-/// Applies [`reenter`] to every character that entered the scene this tick:
-/// its current health returns to its lasting pool, its contacts, target and
-/// foe clear, and it leaves combat. A roaming AI would be put down along a
-/// fresh wander path; the running game has no room graph, so it stays where
-/// the level saved it.
-#[allow(clippy::type_complexity)]
-pub fn reenter_on_entered(
-    mut entered: MessageReader<Entered>,
-    mut characters: Query<(
-        &mut Fighter,
-        &mut Combatant,
-        Option<&Npc>,
-        Option<&mut Duellist>,
-    )>,
-) {
-    for &Entered(entity) in entered.read() {
-        let Ok((mut fighter, mut combatant, npc, duellist)) = characters.get_mut(entity) else {
-            continue;
-        };
-        let roaming = npc
-            .and_then(|n| n.state())
-            .is_some_and(|state| state == IdleState::Roam);
-        let mut none = || None;
-        let mut no_home = || None;
-        reenter(
-            roaming,
-            false,
-            &mut fighter,
-            &mut combatant,
-            &mut none,
-            &mut no_home,
-        );
-        if let Some(mut duellist) = duellist {
-            duellist.leave();
         }
     }
 }
@@ -515,11 +488,12 @@ mod tests {
         );
     }
 
-    /// Re-entry heals the current pool from the lasting one, clears the
-    /// contacts, and moves a roaming AI along its plans twice; a statue
-    /// stays where it is.
+    /// The level-leave reset heals the current pool from the lasting one,
+    /// clears the contacts, and moves a roaming AI along its plans twice,
+    /// leaving combat; a statue stays where it is and stays in combat; a
+    /// collapsed or dormant body is not touched.
     #[test]
-    fn a_reentry_heals_clears_and_moves_a_roam() {
+    fn the_level_leave_reset_heals_clears_and_moves_a_roam() {
         let mut fighter = Fighter::default();
         fighter.health.yellow = 0.2;
         fighter.health.red = 0.6;
@@ -532,7 +506,9 @@ mod tests {
             Some((Vec3::new(calls as f32 * 100.0, 0.0, 0.0), 30_000.0))
         };
         let mut home = || Some((Vec3::new(0.0, 0.0, 500.0), 10.0));
-        let out = reenter(
+        let done = reenter(
+            false,
+            false,
             true,
             false,
             &mut fighter,
@@ -541,21 +517,40 @@ mod tests {
             &mut home,
         );
         assert_eq!(fighter.health.yellow, 0.6);
-        assert!(out.healed && out.cleared);
+        assert!(done.healed && done.cleared && done.left_combat);
         assert!(contacts.contacts.is_empty());
         // Two rounds of wander, each over the span (100 cm, then 200 cm);
         // the home point is under the span, so the last wander wins.
         assert_eq!(calls, 2);
-        assert_eq!(out.moved_to, Some(Vec3::new(200.0, 0.0, 0.0)));
-        // A statue does not move; a short health pool does not heal.
+        assert_eq!(done.moved_to, Some(Vec3::new(200.0, 0.0, 0.0)));
+        // A home point over the span wins its round.
+        let mut fighter = Fighter::default();
+        let mut contacts = Combatant::default();
+        let mut wander = || Some((Vec3::new(100.0, 0.0, 0.0), 22_501.0));
+        let mut home = || Some((Vec3::new(0.0, 0.0, 500.0), 22_501.0));
+        let done = reenter(
+            false,
+            false,
+            true,
+            false,
+            &mut fighter,
+            &mut contacts,
+            &mut wander,
+            &mut home,
+        );
+        assert_eq!(done.moved_to, Some(Vec3::new(0.0, 0.0, 500.0)));
+        // A statue does not move or leave combat; a short health pool does
+        // not heal.
         let mut fighter = Fighter::default();
         fighter.health.yellow = 0.0;
-        fighter.health.red = 0.0;
+        fighter.health.red = 0.01;
         let mut contacts = Combatant::default();
         let mut never = || None;
         let mut home = || -> Option<(Vec3, f32)> { None };
-        let out = reenter(
+        let done = reenter(
             false,
+            false,
+            true,
             true,
             &mut fighter,
             &mut contacts,
@@ -563,50 +558,36 @@ mod tests {
             &mut home,
         );
         assert_eq!(
-            out,
+            done,
             Reentry {
                 healed: false,
                 cleared: true,
+                left_combat: false,
                 moved_to: None
             }
         );
-    }
-
-    /// An entering character heals to its lasting pool, forgets its
-    /// contacts and leaves combat.
-    #[test]
-    fn entering_heals_and_clears_the_combatant() {
-        let mut app = App::new();
-        app.init_resource::<ActivationArea>()
-            .add_message::<Entered>()
-            .add_systems(FixedUpdate, (check_presence, reenter_on_entered).chain());
-        let root = app.world_mut().spawn(GlobalTransform::default()).id();
-        let mut fighter = Fighter::default();
-        fighter.health.yellow = 0.1;
-        fighter.health.red = 0.8;
-        let mut combatant = Combatant::default();
-        combatant.contact_index(Entity::PLACEHOLDER);
-        combatant.in_combat = true;
-        let foe = app
-            .world_mut()
-            .spawn((
-                Duellist::new(root),
-                Condition::NORMAL,
-                Animator::new("Default", "Idle"),
-                ChildOf(root),
-                fighter,
-                combatant,
-                Presence {
-                    state: PresenceState::Dormant,
-                    hold: 0,
-                },
-            ))
-            .id();
-        app.world_mut().run_schedule(FixedUpdate);
-        let w = app.world();
-        assert_eq!(w.get::<Fighter>(foe).unwrap().health.yellow, 0.8);
-        assert!(w.get::<Combatant>(foe).unwrap().contacts.is_empty());
-        assert!(!w.get::<Duellist>(foe).unwrap().engaged);
+        assert_eq!(fighter.health.yellow, 0.0);
+        // A collapsed or dormant body keeps everything.
+        for (out, dormant) in [(true, false), (false, true)] {
+            let mut fighter = Fighter::default();
+            fighter.health.yellow = 0.2;
+            fighter.health.red = 0.6;
+            let mut contacts = Combatant::default();
+            contacts.contact_index(Entity::PLACEHOLDER);
+            let done = reenter(
+                out,
+                dormant,
+                true,
+                false,
+                &mut fighter,
+                &mut contacts,
+                &mut never,
+                &mut home,
+            );
+            assert_eq!(done, Reentry::default());
+            assert_eq!(fighter.health.yellow, 0.2);
+            assert_eq!(contacts.contacts.len(), 1);
+        }
     }
 
     #[test]
