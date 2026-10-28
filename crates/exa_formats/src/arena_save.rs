@@ -41,6 +41,8 @@
 
 use std::fmt;
 
+use crate::save_package::{Chunk, write_chunk};
+
 /// The company chunk's id.
 pub const COMPANY_CHUNK: u32 = 0xA0DC_0000;
 /// The day chunk's id.
@@ -51,6 +53,10 @@ pub const TOURNAMENT_CHUNK: u32 = 0xA060_0000;
 pub const EMPLOYEES_CHUNK: u32 = 0xA040_0000;
 /// The merchant chunk's id.
 pub const MERCHANT_CHUNK: u32 = 0xA050_0000;
+/// The shop stock chunk's id.
+pub const SHOP_STOCK_CHUNK: u32 = 0xA030_0000;
+/// The hireable candidates' chunk id.
+pub const HIREABLES_CHUNK: u32 = 0x0001_0000;
 /// One item reference in an employee's own list.
 pub const ITEM_ENTRY_LEN: usize = 12;
 /// The emblem record's size.
@@ -408,6 +414,28 @@ pub fn write_merchant(chunk: &MerchantChunk) -> Vec<u8> {
     out
 }
 
+/// Read the shop's stock chunk: a signed count and that many item ids. A
+/// negative count reads no ids.
+pub fn parse_shop_stock(bytes: &[u8]) -> Result<Vec<u32>, ArenaSaveError> {
+    let mut r = Reader { bytes, at: 0 };
+    let count = r.word()? as i32;
+    let mut ids = Vec::new();
+    for _ in 0..count.max(0) {
+        ids.push(r.word()?);
+    }
+    Ok(ids)
+}
+
+/// Write the shop's stock chunk: the count and the ids.
+pub fn write_shop_stock(ids: &[u32]) -> Vec<u8> {
+    let mut out = Vec::new();
+    put(&mut out, ids.len() as u32);
+    for &id in ids {
+        put(&mut out, id);
+    }
+    out
+}
+
 /// One hire-list candidate: the unused word the chunk writes and the
 /// candidate's encoded character.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -542,6 +570,170 @@ pub fn write_tournament(chunk: &TournamentChunk) -> Vec<u8> {
     out
 }
 
+/// The arsenal's chunk id.
+pub const ARSENAL_CHUNK: u32 = 0xA010_0000;
+/// The hub stash's chunk id.
+pub const HUB_STASH_CHUNK: u32 = 0xA020_0000;
+/// Boxes on each arsenal shelf.
+pub const BOXES: usize = 5;
+/// Shelves in the arsenal.
+pub const SHELVES: usize = 5;
+
+/// Read one item list: a signed count and that many twelve-byte entries.
+/// A negative count reads no entries.
+pub fn parse_item_list(bytes: &[u8]) -> Result<Vec<ItemEntry>, ArenaSaveError> {
+    let mut r = Reader { bytes, at: 0 };
+    let count = r.word()? as i32;
+    let mut items = Vec::new();
+    for _ in 0..count.max(0) {
+        items.push(ItemEntry::parse(r.take(ITEM_ENTRY_LEN)?));
+    }
+    Ok(items)
+}
+
+/// Write one item list: the count and the entries.
+pub fn write_item_list(items: &[ItemEntry]) -> Vec<u8> {
+    let mut out = Vec::new();
+    put(&mut out, items.len() as u32);
+    for item in items {
+        item.write(&mut out);
+    }
+    out
+}
+
+/// The arsenal: five boxes on each of five shelves (weapons, shields,
+/// armour and clothing among them, the same indices as the game's
+/// arsenal). The original's writer walks the shelves and the five boxes
+/// inside each shelf, so the wire order is `lists[shelf][box]`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArsenalChunk {
+    pub lists: [[Vec<ItemEntry>; BOXES]; SHELVES],
+}
+
+impl Default for ArsenalChunk {
+    fn default() -> Self {
+        Self {
+            lists: std::array::from_fn(|_| std::array::from_fn(|_| Vec::new())),
+        }
+    }
+}
+
+impl ArsenalChunk {
+    /// Read the 25 lists in the writer's order (shelf by shelf, its boxes
+    /// inside).
+    pub fn parse(bytes: &[u8]) -> Result<Self, ArenaSaveError> {
+        let mut r = Reader { bytes, at: 0 };
+        let mut lists: [[Vec<ItemEntry>; BOXES]; SHELVES] =
+            std::array::from_fn(|_| std::array::from_fn(|_| Vec::new()));
+        for shelf in &mut lists {
+            for list in shelf {
+                let count = r.word()? as i32;
+                for _ in 0..count.max(0) {
+                    list.push(ItemEntry::parse(r.take(ITEM_ENTRY_LEN)?));
+                }
+            }
+        }
+        Ok(Self { lists })
+    }
+
+    /// Write the 25 lists in the writer's order.
+    pub fn write(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        for shelf in &self.lists {
+            for list in shelf {
+                put(&mut out, list.len() as u32);
+                for item in list {
+                    item.write(&mut out);
+                }
+            }
+        }
+        out
+    }
+}
+
+/// The arena's own chunks a save writes after the placement and journal.
+/// The arsenal, company, day, hireables and tournament are always written;
+/// the stash and shop stock only when non-empty, the employees only while
+/// someone is employed, and the merchant unless the staff is non-empty and
+/// holds no merchant ([`merchant_chunk_written`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ArenaTables {
+    pub arsenal: ArsenalChunk,
+    pub stash: Vec<ItemEntry>,
+    pub shop_stock: Vec<u32>,
+    pub company: CompanyChunk,
+    pub day: DayChunk,
+    pub employees: EmployeesChunk,
+    pub merchant: MerchantChunk,
+    /// The hireables payload, count and candidates included.
+    pub hireables: Vec<u8>,
+    pub tournament: TournamentChunk,
+}
+
+impl ArenaTables {
+    /// Append the arena chunks in the writer's order. Each chunk is its id,
+    /// its size and its payload (`save_package::write_chunk`).
+    pub fn write(&self, out: &mut Vec<u8>) {
+        write_chunk(out, ARSENAL_CHUNK, &self.arsenal.write());
+        if !self.stash.is_empty() {
+            write_chunk(out, HUB_STASH_CHUNK, &write_item_list(&self.stash));
+        }
+        if !self.shop_stock.is_empty() {
+            write_chunk(out, SHOP_STOCK_CHUNK, &write_shop_stock(&self.shop_stock));
+        }
+        write_chunk(out, COMPANY_CHUNK, &write_company(&self.company));
+        write_chunk(out, DAY_CHUNK, &write_day(&self.day));
+        if !self.employees.employees.is_empty() {
+            write_chunk(out, EMPLOYEES_CHUNK, &write_employees(&self.employees));
+        }
+        if merchant_chunk_written(&self.employees) {
+            write_chunk(out, MERCHANT_CHUNK, &write_merchant(&self.merchant));
+        }
+        if self.hireables.is_empty() {
+            write_chunk(out, HIREABLES_CHUNK, &[0; 4]);
+        } else {
+            write_chunk(out, HIREABLES_CHUNK, &self.hireables);
+        }
+        write_chunk(out, TOURNAMENT_CHUNK, &write_tournament(&self.tournament));
+    }
+}
+
+/// The employee class (the profession word's low byte) of a merchant.
+pub const MERCHANT_CLASS: u32 = 4;
+
+/// Whether the arena writer emits the merchant chunk: the original walks
+/// the staff for a merchant and skips the chunk only when it reaches the
+/// last employee without one, so an empty staff still writes it (as the
+/// observed arena save does).
+pub fn merchant_chunk_written(employees: &EmployeesChunk) -> bool {
+    employees.employees.is_empty()
+        || employees
+            .employees
+            .iter()
+            .any(|employee| employee.class & 0xff == MERCHANT_CLASS)
+}
+
+/// Decode the arena chunks a save carries. Unknown ids are ignored; a
+/// missing always-written chunk leaves its default.
+pub fn read_tables(chunks: &[Chunk<'_>]) -> Result<ArenaTables, ArenaSaveError> {
+    let mut tables = ArenaTables::default();
+    for chunk in chunks {
+        match chunk.id {
+            ARSENAL_CHUNK => tables.arsenal = ArsenalChunk::parse(chunk.payload)?,
+            HUB_STASH_CHUNK => tables.stash = parse_item_list(chunk.payload)?,
+            SHOP_STOCK_CHUNK => tables.shop_stock = parse_shop_stock(chunk.payload)?,
+            COMPANY_CHUNK => tables.company = parse_company(chunk.payload)?,
+            DAY_CHUNK => tables.day = parse_day(chunk.payload)?,
+            EMPLOYEES_CHUNK => tables.employees = parse_employees(chunk.payload)?,
+            MERCHANT_CHUNK => tables.merchant = parse_merchant(chunk.payload, true)?,
+            HIREABLES_CHUNK => tables.hireables = chunk.payload.to_vec(),
+            TOURNAMENT_CHUNK => tables.tournament = parse_tournament(chunk.payload)?,
+            _ => {}
+        }
+    }
+    Ok(tables)
+}
+
 /// An item-list entry's top bit: such an entry is a marker, not an item.
 pub const ITEM_MARKER: u32 = 0x8000_0000;
 
@@ -586,6 +778,32 @@ pub fn remove_duplicate_item_ids(records: &mut Vec<[u8; 12]>) {
             }
         }
         index += 1;
+    }
+}
+
+/// A list of eight-byte item entries and a list of twelve-byte records as
+/// the arena's record repair sees them. The save unit compacts one
+/// eight-byte list, then every employee's eight-byte list, then the
+/// twelve-byte list, in that order.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ArenaLists {
+    /// The eight-byte lists in the order the repair walks them: the stash
+    /// list first, then one per employee.
+    pub lists8: Vec<Vec<[u8; 8]>>,
+    /// The twelve-byte record list.
+    pub records12: Vec<[u8; 12]>,
+}
+
+impl ArenaLists {
+    /// The load's record repair: every eight-byte list keeps only plain
+    /// entries, then the twelve-byte list does. The character-record fix
+    /// that follows in the original needs the character database and is
+    /// the caller's.
+    pub fn compact(&mut self) {
+        for list in &mut self.lists8 {
+            retain_plain_items(list);
+        }
+        retain_plain_records(&mut self.records12);
     }
 }
 
@@ -856,5 +1074,148 @@ mod tests {
         let mut records = vec![record(7), record(0xC000_0007)];
         remove_duplicate_item_ids(&mut records);
         assert_eq!(records, vec![record(7), record(0xC000_0007)]);
+    }
+
+    #[test]
+    fn the_record_repair_compacts_every_eight_byte_list_then_the_records() {
+        let mut lists = ArenaLists {
+            lists8: vec![
+                vec![item(1), item(0x8000_0002), item(3)],
+                vec![item(0x8000_0004), item(5)],
+            ],
+            records12: vec![record(6), record(0xC000_0007), record(8)],
+        };
+        lists.compact();
+        assert_eq!(lists.lists8[0], vec![item(1), item(3)]);
+        assert_eq!(lists.lists8[1], vec![item(5)]);
+        assert_eq!(lists.records12, vec![record(6), record(8)]);
+    }
+
+    #[test]
+    fn the_shop_stock_is_a_count_and_item_ids() {
+        let payload = write_shop_stock(&[7, 8, 9]);
+        assert_eq!(&payload[..4], &3u32.to_le_bytes());
+        assert_eq!(parse_shop_stock(&payload).unwrap(), vec![7, 8, 9]);
+        // The count is signed; a negative one is empty.
+        assert_eq!(parse_shop_stock(&(-1i32).to_le_bytes()).unwrap(), vec![]);
+        assert_eq!(parse_shop_stock(&payload[..6]), Err(ArenaSaveError::Short));
+    }
+
+    #[test]
+    fn the_arsenal_writes_shelf_by_shelf_with_its_boxes_inside() {
+        let mut arsenal = ArsenalChunk::default();
+        arsenal.lists[1][3].push(ItemEntry {
+            id: 40,
+            flags: 0x400,
+            extra: 0,
+        });
+        let payload = arsenal.write();
+        // 25 counts and one entry.
+        assert_eq!(payload.len(), 25 * 4 + 12);
+        // Shelf 1 box 3 is the ninth list: eight empty counts, then its 1.
+        assert_eq!(&payload[..32], &[0; 32]);
+        assert_eq!(&payload[32..36], &1u32.to_le_bytes());
+        assert_eq!(&payload[36..40], &40u32.to_le_bytes());
+        let back = ArsenalChunk::parse(&payload).unwrap();
+        assert_eq!(back, arsenal);
+        assert_eq!(back.lists[1][3][0].id, 40);
+        assert_eq!(
+            ArsenalChunk::parse(&payload[..100]),
+            Err(ArenaSaveError::Short)
+        );
+    }
+
+    #[test]
+    fn the_merchant_chunk_is_skipped_only_for_a_staff_without_a_merchant() {
+        let staff = |classes: &[u32]| EmployeesChunk {
+            employees: classes
+                .iter()
+                .map(|&class| EmployeeRecord {
+                    class,
+                    ..EmployeeRecord::default()
+                })
+                .collect(),
+        };
+        assert!(merchant_chunk_written(&staff(&[])));
+        assert!(!merchant_chunk_written(&staff(&[2, 8])));
+        // Only the low byte is the class.
+        assert!(merchant_chunk_written(&staff(&[2, 0x0104])));
+        let ids = |tables: &ArenaTables| {
+            let mut out = Vec::new();
+            tables.write(&mut out);
+            crate::save_package::parse_chunks(&out)
+                .unwrap()
+                .iter()
+                .map(|chunk| chunk.id)
+                .collect::<Vec<u32>>()
+        };
+        let mut tables = ArenaTables {
+            employees: staff(&[2]),
+            ..ArenaTables::default()
+        };
+        let written = ids(&tables);
+        assert!(written.contains(&EMPLOYEES_CHUNK) && !written.contains(&MERCHANT_CHUNK));
+        tables.employees = staff(&[4]);
+        assert!(ids(&tables).contains(&MERCHANT_CHUNK));
+    }
+
+    #[test]
+    fn the_arena_tables_write_in_the_writers_order_and_read_back() {
+        let mut tables = ArenaTables::default();
+        tables.stash.push(ItemEntry {
+            id: 1,
+            flags: 0,
+            extra: 0,
+        });
+        tables.shop_stock.push(2);
+        tables.hireables = 1u32.to_le_bytes().to_vec();
+        let mut out = Vec::new();
+        tables.write(&mut out);
+        let chunks = crate::save_package::parse_chunks(&out).unwrap();
+        let ids: Vec<u32> = chunks.iter().map(|chunk| chunk.id).collect();
+        // The arsenal always; the stash and shop only when non-empty; the
+        // company and day always; no employees, so the merchant is written
+        // (as in the observed save); hireables and tournament always.
+        assert_eq!(
+            ids,
+            vec![
+                ARSENAL_CHUNK,
+                HUB_STASH_CHUNK,
+                SHOP_STOCK_CHUNK,
+                COMPANY_CHUNK,
+                DAY_CHUNK,
+                MERCHANT_CHUNK,
+                HIREABLES_CHUNK,
+                TOURNAMENT_CHUNK
+            ]
+        );
+        let back = read_tables(&chunks).unwrap();
+        assert_eq!(back.arsenal, tables.arsenal);
+        assert_eq!(back.stash, tables.stash);
+        assert_eq!(back.shop_stock, vec![2]);
+        assert_eq!(back.hireables, tables.hireables);
+        assert_eq!(back.company, tables.company);
+        assert_eq!(back.merchant, tables.merchant);
+    }
+
+    #[test]
+    fn a_new_arena_table_set_writes_empty_arsenal_and_hireable_lists() {
+        let tables = ArenaTables::default();
+        let mut out = Vec::new();
+        tables.write(&mut out);
+        let chunks = crate::save_package::parse_chunks(&out).unwrap();
+        assert_eq!(
+            chunks.iter().map(|chunk| chunk.id).collect::<Vec<_>>(),
+            vec![
+                ARSENAL_CHUNK,
+                COMPANY_CHUNK,
+                DAY_CHUNK,
+                MERCHANT_CHUNK,
+                HIREABLES_CHUNK,
+                TOURNAMENT_CHUNK
+            ]
+        );
+        assert_eq!(chunks[0].payload.len(), 25 * 4);
+        assert_eq!(chunks[4].payload, vec![0; 4]);
     }
 }

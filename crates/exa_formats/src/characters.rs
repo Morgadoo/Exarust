@@ -426,6 +426,14 @@ impl CharacterRecord {
         self.profession_rest = profession & !0xFF01;
     }
 
+    /// The save load's reset of a player record: the race byte (bits 8
+    /// through 15) is cleared from the profession word, leaving sex and the
+    /// kept bits. The original then calls its mode hook with the scene and
+    /// a create flag; that hook is the caller's.
+    pub fn reset_loaded_identity(&mut self) {
+        self.set_profession(self.profession() & 0xFFFF_00FF);
+    }
+
     /// The worn item ids, without their flags.
     pub fn worn_ids(&self) -> impl Iterator<Item = u32> + '_ {
         self.worn.iter().map(|w| w.id)

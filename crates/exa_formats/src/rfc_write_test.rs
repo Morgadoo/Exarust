@@ -1168,3 +1168,35 @@ fn a_parent_past_the_node_list_is_an_error() {
             .is_err()
     );
 }
+
+#[test]
+fn a_save_level_writes_the_story_settings_chunk_after_the_scene() {
+    use crate::save_chunk::{SAVE_SETTINGS_ID, SettingsChunk, save_tag_bytes};
+
+    let scene = ExportScene::default();
+    let options = ExportOptions::default();
+    let settings = SettingsChunk {
+        tag: save_tag_bytes(false, [0xff; 12]),
+        first: 0x1122_3344,
+        saved: 0x5566_7788,
+    };
+    let bytes = export_save_level(&scene, &options, Some(settings)).unwrap();
+    // The chunk tree's sanity and version words come first.
+    assert_eq!(&bytes[..2], &SANITY.to_le_bytes());
+    assert_eq!(&bytes[2..4], &VERSION.to_le_bytes());
+    let chunks = crate::save_package::parse_chunks(&bytes[4..]).unwrap();
+    assert_eq!(chunks.len(), 1);
+    assert_eq!(chunks[0].id, SAVE_SETTINGS_ID);
+    assert_eq!(chunks[0].payload.len(), 20);
+    assert_eq!(&chunks[0].payload[..4], &[0, 0, 0, 0]);
+    assert_eq!(&chunks[0].payload[4..8], &1_100_000.0f32.to_le_bytes());
+    assert_eq!(&chunks[0].payload[12..16], &0x1122_3344u32.to_le_bytes());
+    assert_eq!(&chunks[0].payload[16..20], &0x5566_7788u32.to_le_bytes());
+    // The arena writes no settings chunk.
+    let bytes = export_save_level(&scene, &options, None).unwrap();
+    assert!(
+        crate::save_package::parse_chunks(&bytes[4..])
+            .unwrap()
+            .is_empty()
+    );
+}

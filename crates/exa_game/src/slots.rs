@@ -678,6 +678,23 @@ impl Slots {
         Ok(true)
     }
 
+    /// The `CheckpointSave` script function's save path: it does nothing
+    /// unless it was called for the player with checkpoints enabled, and
+    /// then writes a checkpoint only when the slot has none. Returns
+    /// whether one was written.
+    pub fn checkpoint_from_script(
+        &self,
+        number: u32,
+        session: &Session,
+        player: bool,
+        enabled: bool,
+    ) -> io::Result<bool> {
+        if !save_chunk::checkpoint_script_runs(player, enabled) {
+            return Ok(false);
+        }
+        self.checkpoint(number, session)
+    }
+
     /// A manual save: writes the session, then copies it over the
     /// checkpoint whether or not one exists (the original's save button
     /// refreshes the checkpoint unconditionally).
@@ -963,6 +980,38 @@ mod tests {
         let (loaded, kind) = slots.load(number, false).unwrap();
         assert_eq!(kind, SlotKind::Save);
         assert_eq!(loaded.clock, 99);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_checkpoint_script_needs_the_player_and_the_setting() {
+        let dir = folder("script");
+        let slots = Slots::story(&dir);
+        let number = slots.create(&Session::story()).unwrap();
+        // Not the player, or checkpoints off: nothing is written.
+        assert!(
+            !slots
+                .checkpoint_from_script(number, &Session::story(), false, true)
+                .unwrap()
+        );
+        assert!(!slots.has_checkpoint(number));
+        assert!(
+            !slots
+                .checkpoint_from_script(number, &Session::story(), true, false)
+                .unwrap()
+        );
+        // The player with checkpoints on writes one; a second call sees it.
+        assert!(
+            slots
+                .checkpoint_from_script(number, &Session::story(), true, true)
+                .unwrap()
+        );
+        assert!(slots.has_checkpoint(number));
+        assert!(
+            !slots
+                .checkpoint_from_script(number, &Session::story(), true, true)
+                .unwrap()
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 

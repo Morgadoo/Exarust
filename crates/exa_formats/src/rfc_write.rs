@@ -19,6 +19,7 @@
 //! Inconsistent input (a mesh node without a mesh, a stream shorter than its
 //! count, a reference past the node list) is an error, never a panic.
 
+use crate::save_chunk::{SAVE_SETTINGS_ID, SettingsChunk};
 use crate::{Error, Result};
 
 /// The first word of a chunk tree: the sanity half `0xAFCF`, then the
@@ -638,6 +639,28 @@ const LAYER_KIND_SOURCE: u32 = 0x10;
 const LAYER_KIND_RENAMED: u32 = 0x40;
 const SUFFIX_RENAMED: &[u8; 4] = b"_rfi";
 const SUFFIX_RFI: &[u8; 4] = b".rfi";
+
+/// Writes a level section for a save, with the story's settings-chunk hook:
+/// the scene's chunk tree, then the `0xECADCA01` chunk with its twelve-byte
+/// tag and two words. The arena, and a story save the gate
+/// (`save_chunk::settings_chunk_written`) rejects, pass `None`.
+pub fn export_save_level(
+    scene: &ExportScene,
+    options: &ExportOptions,
+    settings: Option<SettingsChunk>,
+) -> Result<Vec<u8>> {
+    let mut extra = |w: &mut ChunkWriter| -> Result<()> {
+        if let Some(settings) = settings {
+            w.open(SAVE_SETTINGS_ID);
+            w.bytes(&settings.tag);
+            w.u32(settings.first);
+            w.u32(settings.saved);
+            w.close()?;
+        }
+        Ok(())
+    };
+    Exporter::new().export(scene, options, Some(&mut extra))
+}
 
 /// The exporter. Texture renames build up over every export it runs, as
 /// the original's list does over a session.

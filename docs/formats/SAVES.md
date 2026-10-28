@@ -291,13 +291,15 @@ zero: the slot is neither listed nor loaded.
   puts the player's saved position back to `(0, 0, 300)`, skips the
   hireables and shop-stock chunks, regenerates the hireables when the
   mask keeps them, repairs the player record's item ids and compacts the
-  hub stash. Exarust's load does the section drop, the position and the
-  chunk removal, and writes the converted player data back so a later save
-  does not revive the skipped chunks (the original keeps the empty lists in
-  memory only). It carries the pure compaction passes
-  (`arena_save::retain_plain_items`, `retain_plain_records`,
-  `remove_duplicate_item_ids`); regeneration, the record repair and the
-  object-database id passes are not modelled.
+  hub stash. Exarust's load does the section drop, the position, the
+  chunk removal and the stash compaction, and writes the converted player
+  data back so a later save does not revive the skipped chunks (the
+  original keeps the empty lists in memory only). It carries the pure
+  compaction passes (`arena_save::retain_plain_items`,
+  `arena_save::retain_plain_records`, `remove_duplicate_item_ids` and the
+  record-repair order in `ArenaLists::compact`); regeneration, the
+  character-record repair and the object-database id passes are not
+  modelled.
 * Story start compatibility (the character creator, while the started byte
   is 0): a save with an `exanima06` section is refused; with an
   `exanima04` section it is refused unless its `#worldobjdb`'s **third
@@ -311,7 +313,12 @@ zero: the slot is neither listed nor loaded.
   RDB with magic `0xDBACCD00` (observed in both retail saves).
 * The settings chunk (`0xECADCA01`) is written into the level section by
   the story's exporter only; see the settings rules in
-  [SETTINGS.md](SETTINGS.md) and [`exa_formats::save_chunk`].
+  [SETTINGS.md](SETTINGS.md) and [`exa_formats::save_chunk`]. It is written
+  only when the read tag was old or the saved word is above zero (unsigned).
+  It holds the twelve-byte tag (the tag read from the save when it was old,
+  otherwise the current one: a zero, `1 100 000.0`, a zero) and the two
+  words the settings store carries. `rfc_write::export_save_level` appends it after
+  the scene's chunk tree.
 
 ### Chunks
 
@@ -328,8 +335,8 @@ skipped by size.
 | `0xD000C001` | story | memory-fragment flags, u32 |
 | `0xD000C003` | story | portal/respawn state, 16 bytes; state 2 forces the level to `exanima05` after loading |
 | `0x00010000` | arena | hireable characters |
-| `0xA0100000` | arena | arsenal, five categories of five item lists |
-| `0xA0200000` | arena | hub stash, one item list |
+| `0xA0100000` | arena | arsenal: 25 item lists, one per shelf and box, written shelf by shelf |
+| `0xA0200000` | arena | hub stash: one item list |
 | `0xA0300000` | arena | shop stock: `i32 n`, then `n` ids |
 | `0xA0400000` | arena | employees |
 | `0xA0500000` | arena | merchant stock and specialisation |
@@ -348,7 +355,8 @@ flags and the transition state (each when non-zero). The arena writes the
 placement, the journal (when it has entries), the arsenal (always), the
 stash and the shop stock (each when not empty), then the company record
 `0xA0DC0000`, the extra record `0xA0D10000`, the employees `0xA0400000`
-(when not empty), the merchant `0xA0500000`, the hireables `0x00010000`
+(when not empty), the merchant `0xA0500000` (skipped only when the staff
+is non-empty and holds no merchant, class 4), the hireables `0x00010000`
 and the tournament `0xA0600000`; the observed arena save holds, after the
 placement, `0xA0100000`, `0xA0300000`, `0xA0DC0000`, `0xA0D10000`,
 `0xA0500000`, `0x00010000`, `0xA0600000` (no employees yet).
@@ -361,7 +369,12 @@ merchant chunk is the stock type, the specialisation word (kept raw; it
 starts at −1), two unused words and the stock's count and ids; a loader
 that regenerates the stock reads only the header. The hireables chunk
 (`0x00010000`) is a count and, per candidate, an unused word and a
-character export.
+character export. An **item list** is a signed count and that many
+twelve-byte entries (id, flags, a third word). The arsenal is 25 such
+lists: the writer walks the five shelves and the five boxes inside each
+shelf, so the wire order is shelf 0 box 0…4, shelf 1 box 0…4, and so on
+(the shelf indices are the arsenal's: weapons 0, shields 2, armour 3,
+clothing 4). The stash is one list.
 
 A loader passes a **mask**: the reader ands each chunk id with it, ignores
 a result of `0xF` or less and dispatches the rest on the **masked** id
@@ -384,6 +397,46 @@ only.
 * When the saved transition state (`0xD000C003`) is 2, the story loader
   forces the locale to `exanima05`; the load path then places the player at
   the portal node and sets the state to 1.
+* **Placement.** The player's matrix is the saved placement; its height is
+  probed down 300 cm from 100 cm up, then lifted by `108.18 − 11.1·extent`
+  and 5 cm (13 cm for a body in its raised state). The body's feet are put
+  at the probed floor and the body is carried to the lifted point.
+* **Followers.** When the current scene character is flushed, every
+  travelling character (controller word 4, flags without 0x800) joins the
+  migration list once; a repeat is logged as `Duplicate simulation motile:
+  <name>` under `Migration` and skipped. Followers take the six stored
+  offsets `(−100,0,−100)`, `(100,0,−100)`, `(0,0,150)`, `(100,0,200)`,
+  `(0,0,0)`, `(0,0,0)`, each taken as a row vector times the spawn
+  matrix's rotation rows (the saved player matrix, else the identity),
+  added to the player's placed position, and then spawned with its own
+  floor probe and lift. The original does not bound the index (a seventh
+  follower reads past the table); Exarust stops at six. A plain scene
+  flush empties the migration list after flushing its characters.
+  Re-attaching one frees its UID manager, re-creates its player controls,
+  clears its carry word, stores 1 as its body controller and raises a minimum distance under 5 cm to 5 (a NaN is
+  kept, as the unordered compare does not branch).
+* **Menu.** The menu background is the shipped `menuscene.rfc` with the
+  1.8 fog preset, the scene editor at mode 0, the view at (0, 500, 700)
+  and its target at (0, 0, −200); a 60 is written into the camera (most
+  likely its field of view).
+* **Terrain.** A saved level's terrain file is the locale with its
+  extension replaced by `.rft` (the loader looks it up in the archive and
+  imports it when it exists).
+* **Scene content.** A scene node is classified from its object record:
+  kind pair `0x1100`/`0x1200` goes to the first list, `0x2200` to the
+  second, and independently a `0x10000` property whose first byte is 2
+  adds it to the third (one node can join two lists). A record the
+  object database does not know falls back to a name starting with `[`,
+  which joins the second list.
+* **Load reset.** Before a load the save unit clears the old-settings flag,
+  leaves the default twelve-byte settings tag (a zero, `1 100 000.0`, a
+  zero), clears the settings chunk's saved word and the scene's sun height,
+  and allocates the grid environment's arrays (a zero word per grid cell,
+  update flag 1 and mode 0).
+* **Landing.** The landing plan puts the player at the saved planar
+  position and the lifted floor height, then places the followers around
+  them from the offset table in order (positions before each follower's
+  own floor probe).
 
 ## The game clock
 

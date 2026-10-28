@@ -63,6 +63,68 @@ pub fn read_save_settings(id: u32, tag_value: f32, first: i32, second: i32) -> S
     }
 }
 
+/// The current twelve-byte settings tag: a zero, the version
+/// `1_100_000.0` and a zero.
+pub const CURRENT_SETTINGS_TAG: [u8; 12] = {
+    let version = 1_100_000.0f32.to_le_bytes();
+    [
+        0, 0, 0, 0, version[0], version[1], version[2], version[3], 0, 0, 0, 0,
+    ]
+};
+
+/// The twelve-byte tag a written settings chunk carries. The reader keeps
+/// the tag it read (the load reset puts the current one there first); a
+/// save whose read tag was old (`old`, a version under one million) writes
+/// that read tag back, any other the current tag.
+pub fn save_tag_bytes(old: bool, read_tag: [u8; 12]) -> [u8; 12] {
+    if old { read_tag } else { CURRENT_SETTINGS_TAG }
+}
+
+/// Whether the story's level exporter writes the settings chunk at all:
+/// only for an old tag or a saved word above zero (compared unsigned).
+pub fn settings_chunk_written(old: bool, saved: u32) -> bool {
+    old || saved > 0
+}
+
+/// The settings chunk's payload after its header: the tag and the two
+/// words (the settings store's word, then the saved word).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SettingsChunk {
+    pub tag: [u8; 12],
+    pub first: u32,
+    pub saved: u32,
+}
+
+/// The saved settings word a load clears.
+pub const LOAD_SETTINGS_WORD: u32 = 0;
+
+/// The twelve-byte settings tag a load leaves in place: a zero, the version
+/// `1_100_000.0` and a zero.
+pub const LOAD_SETTINGS_TAG: [f32; 3] = [0.0, 1_100_000.0, 0.0];
+
+/// What the save load resets globally. `old` is the old-tag flag (clear),
+/// `tag` the twelve-byte tag, `saved` the settings chunk's saved word and
+/// `sun_height` the scene's sun height (zero).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LoadReset {
+    pub old: bool,
+    pub tag: [f32; 3],
+    pub saved: u32,
+    pub sun_height: f32,
+}
+
+/// The globals the load resets before it opens a level: the old-tag flag
+/// clear, the default tag, a zero saved word and the scene's sun height
+/// zero.
+pub fn load_reset() -> LoadReset {
+    LoadReset {
+        old: false,
+        tag: LOAD_SETTINGS_TAG,
+        saved: LOAD_SETTINGS_WORD,
+        sun_height: 0.0,
+    }
+}
+
 /// The save game's quadratic easing curve.
 pub fn ease_save_curve(x: f32) -> f32 {
     let scaled = x * 2.0;
@@ -451,5 +513,28 @@ mod tests {
             GameClock::restore(120, 4_294_966_296).now(1_000),
             4_290_672_451
         );
+    }
+
+    #[test]
+    fn an_old_read_tag_is_written_back_and_gates_the_chunk() {
+        let mut old_tag = [0u8; 12];
+        old_tag[4..8].copy_from_slice(&900_000.0f32.to_le_bytes());
+        assert_eq!(save_tag_bytes(true, old_tag), old_tag);
+        assert_eq!(save_tag_bytes(false, old_tag), CURRENT_SETTINGS_TAG);
+        assert_eq!(&CURRENT_SETTINGS_TAG[4..8], &1_100_000.0f32.to_le_bytes());
+        assert!(settings_chunk_written(true, 0));
+        assert!(settings_chunk_written(false, 1));
+        // The word is compared unsigned: a "negative" one is above zero.
+        assert!(settings_chunk_written(false, 0xffff_ffff));
+        assert!(!settings_chunk_written(false, 0));
+    }
+
+    #[test]
+    fn the_load_resets_the_settings_tag_and_scene_height() {
+        let reset = load_reset();
+        assert!(!reset.old);
+        assert_eq!(reset.tag, [0.0, 1_100_000.0, 0.0]);
+        assert_eq!(reset.saved, 0);
+        assert_eq!(reset.sun_height, 0.0);
     }
 }

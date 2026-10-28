@@ -1083,3 +1083,19 @@ fn the_creators_reset_keeps_the_other_fields() {
         [ItemRef::new(9, 0), ItemRef::new(UNDERWEAR_ITEM, 0)]
     );
 }
+
+/// The save load clears the race byte from the profession word, keeping sex
+/// and the kept bits.
+#[test]
+fn the_load_reset_clears_only_the_race_byte() {
+    let mut r = CharacterRecord::new();
+    r.set_profession(0x8001_0301);
+    assert_eq!(
+        (r.race, r.female, r.profession_rest),
+        (3, true, 0x8001_0000)
+    );
+    r.reset_loaded_identity();
+    assert_eq!(r.race, 0);
+    assert!(r.female);
+    assert_eq!(r.profession(), 0x8001_0001);
+}
