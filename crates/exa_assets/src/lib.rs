@@ -38,7 +38,7 @@ use exa_formats::rfi::Rfi;
 pub use exa_rpk::{Archive, GameData, PackKind, locate_install};
 
 pub use model::{
-    ClothMesh, Model, ModelCache, ModelLoader, ModelNode, NodeRigidBody, TextureInfo,
+    ClothMesh, ImageInsert, Model, ModelCache, ModelLoader, ModelNode, NodeRigidBody, TextureInfo,
     transform_from_rows,
 };
 pub use morph::BodyMorph;

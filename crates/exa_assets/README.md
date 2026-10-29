@@ -350,7 +350,13 @@ material and composite bake never bind a placeholder and the decodes run on
 the loader rather than the load step; a caller that waits for the whole
 level in one call finishes a waiting record on the spot with
 `texture_finish_now` (the priority wait: the record's own word, no new
-reference). The manager's fast-load flag (`TextureCache::set_fast_load`)
+reference). `add_texture_image` adds an image the caller already has under
+a name (the manager's named-image inserts): a name already present keeps its
+live record with one more reference, and the queued insert also logs
+"Added texture already exists." under "Texture management";
+`add_texture_file` reads and decodes the named file first, adding nothing
+for a file it cannot read unless the insert asks for the grey placeholder.
+The manager's fast-load flag (`TextureCache::set_fast_load`)
 makes the material path's queued load the loader's priority item (status 3
 rather than 1, so its decode never waits for the upload pass); the shipped
 game reads the flag and never sets it, so it is off. Without a

@@ -280,7 +280,8 @@ pub struct ModelCache {
     /// Morph bodies and the shares of the morphs models take
     /// ([`crate::morph`]).
     pub(crate) morph: MorphCache,
-    warned: HashSet<String>,
+    /// The warnings already logged, each once.
+    pub(crate) warned: HashSet<String>,
 }
 
 impl ModelCache {
@@ -1541,6 +1542,71 @@ impl ModelLoader<'_> {
         self.texture_now(name, space, crate::texture::default_flags())
     }
 
+    /// Adds an image the caller already has under `name`: the manager's
+    /// named-image inserts. A name already in the manager keeps its live
+    /// record, which gains a reference; with [`ImageInsert::Queued`] the
+    /// original also logs "Added texture already exists." and drops the
+    /// image, while [`ImageInsert::Now`] returns the record silently. A new
+    /// record takes the word `flags`; Bevy's image carries no word of its
+    /// own, so the high half the queued insert would take from the image is
+    /// the caller's (labelled deviation). The queued insert puts the image
+    /// on the upload list the next upload pass drains in the same frame;
+    /// Exarust stores it at once, which is the same frame's outcome.
+    pub fn add_texture_image(
+        &mut self,
+        name: &str,
+        space: ColorSpace,
+        image: Image,
+        alpha: bool,
+        flags: u32,
+        insert: ImageInsert,
+    ) -> CachedTexture {
+        let key = TextureKey::new(name, space);
+        if !self.cache.textures.insert_new(key, flags) {
+            if insert == ImageInsert::Queued {
+                self.warn_once(format!(
+                    "{}: Added texture already exists. ({name})",
+                    crate::texture_cache::LOG_SOURCE
+                ));
+            }
+            return self
+                .cache
+                .textures
+                .get(&key)
+                .and_then(|record| record.image.clone().map(|image| (image, record.alpha)));
+        }
+        let handle = self.store_texture(key, image, alpha);
+        Some((handle, alpha))
+    }
+
+    /// Reads the image file `name` and adds it under its name
+    /// ([`ModelLoader::add_texture_image`]). A file that cannot be read
+    /// adds nothing, unless `placeholder` is set: then the original's 1×1
+    /// grey placeholder is added in its place (its queued file insert does
+    /// that; the others give nothing).
+    pub fn add_texture_file(
+        &mut self,
+        name: &str,
+        space: ColorSpace,
+        flags: u32,
+        insert: ImageInsert,
+        placeholder: bool,
+    ) -> CachedTexture {
+        let settings = *self.cache.textures.settings();
+        let decoded = self.game.texture_in(name).and_then(|(_, entry, bytes)| {
+            crate::texture::decode_entry(&entry, bytes, space, flags, &settings, self.bc_supported)
+        });
+        let (image, alpha) = match decoded {
+            Some(decoded) => decoded,
+            None if placeholder => (
+                crate::texture::placeholder_image(space, flags, &settings),
+                false,
+            ),
+            None => return None,
+        };
+        self.add_texture_image(name, space, image, alpha, flags, insert)
+    }
+
     /// Whether a texture's record still holds the loader's placeholder: its
     /// load is queued or decoding and its upload has not arrived. `false`
     /// when no record holds the name (a load that failed uploads the
@@ -1684,6 +1750,17 @@ impl ModelLoader<'_> {
             }
         }
     }
+}
+
+/// How [`ModelLoader::add_texture_image`] adds an image the caller has.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImageInsert {
+    /// Uploaded at once; a name already present returns its live record
+    /// without a word.
+    Now,
+    /// Put on the upload list; a name already present logs "Added texture
+    /// already exists." and returns its live record.
+    Queued,
 }
 
 /// A model to build: its parsed file, and for a character's variant what

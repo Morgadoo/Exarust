@@ -134,6 +134,9 @@ impl TextureRecord {
     }
 }
 
+/// The source the texture manager's messages are logged under.
+pub const LOG_SOURCE: &str = "Texture management";
+
 /// A name-keyed texture cache with the original's lookup, insert and release.
 #[derive(Default)]
 pub struct TextureCache {

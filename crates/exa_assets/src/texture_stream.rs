@@ -500,6 +500,112 @@ mod tests {
         }
     }
 
+    /// A named image the caller has is added once: a second insert keeps
+    /// the live record (one more reference); only the queued insert logs
+    /// "Added texture already exists.".
+    #[test]
+    fn an_added_image_keeps_the_live_record() {
+        let Some((mut app, data)) = streaming_app() else {
+            return;
+        };
+        let space = texture::ColorSpace::Linear;
+        let image = |width| {
+            let mut image = Image::default();
+            image.texture_descriptor.size.width = width;
+            image
+        };
+        let first = with_loader(&mut app, &data, |loader| {
+            loader.add_texture_image(
+                "painted_test",
+                space,
+                image(2),
+                true,
+                0x30,
+                crate::ImageInsert::Now,
+            )
+        })
+        .expect("a new record")
+        .0;
+        assert_eq!(width(&app, &first), 2);
+        let again = with_loader(&mut app, &data, |loader| {
+            loader.add_texture_image(
+                "painted_test",
+                space,
+                image(3),
+                false,
+                0,
+                crate::ImageInsert::Now,
+            )
+        })
+        .expect("the live record");
+        assert_eq!(again, (first.clone(), true));
+        assert_eq!(width(&app, &first), 2, "the second image is dropped");
+        let cache = app.world().resource::<ModelCache>();
+        assert!(cache.warned.is_empty());
+        let record = cache
+            .textures
+            .get(&crate::TextureKey::new("painted_test", space))
+            .unwrap();
+        assert_eq!((record.flags, record.references), (0x30, 2));
+        with_loader(&mut app, &data, |loader| {
+            loader.add_texture_image(
+                "painted_test",
+                space,
+                image(4),
+                false,
+                0,
+                crate::ImageInsert::Queued,
+            )
+        })
+        .expect("the live record");
+        let cache = app.world().resource::<ModelCache>();
+        assert!(
+            cache
+                .warned
+                .iter()
+                .any(|m| m.starts_with("Texture management: Added texture already exists."))
+        );
+    }
+
+    /// A file insert reads and decodes the named image; a missing file adds
+    /// nothing, or the grey placeholder when the insert asks for it.
+    #[test]
+    fn a_file_insert_adds_the_image_or_the_placeholder() {
+        let Some((mut app, data)) = streaming_app() else {
+            return;
+        };
+        let space = texture::ColorSpace::Srgb;
+        let flags = texture::default_flags();
+        let found = with_loader(&mut app, &data, |loader| {
+            loader.add_texture_file("spatter01", space, flags, crate::ImageInsert::Now, false)
+        })
+        .expect("the image is shipped")
+        .0;
+        assert!(width(&app, &found) > 1);
+        assert!(
+            with_loader(&mut app, &data, |loader| loader.add_texture_file(
+                "no_such_image_name",
+                space,
+                flags,
+                crate::ImageInsert::Queued,
+                false
+            ))
+            .is_none()
+        );
+        let grey = with_loader(&mut app, &data, |loader| {
+            loader.add_texture_file(
+                "no_such_image_name",
+                space,
+                flags,
+                crate::ImageInsert::Queued,
+                true,
+            )
+        })
+        .expect("the placeholder")
+        .0;
+        assert_eq!(width(&app, &grey), 1);
+    }
+
     /// The streaming path decodes a shipped image on the task pool and
     /// replaces the placeholder under the record's handle.
     #[test]
