@@ -1461,8 +1461,17 @@ pub fn arena_family() -> SaveFamily {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PlayerReading {
     pub condition: u32,
+    /// The player's animator flags word (the get-up's 0x600, the wake's
+    /// 0x20/0x40); [`WAKING`] there ends the first wake-up animation.
+    pub animator: u32,
     pub health: f32,
 }
+
+/// The animator flags the flow's wake-up steps write on the player's body.
+/// [`Step::Wake`] replaces them (or sets bits), and the story start's pose
+/// step writes them with the condition word.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WakeFlags(pub u32);
 
 /// A level exit requested by a trigger, a teleporter or a script.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2215,7 +2224,9 @@ impl Flow {
         }
         let wake = &mut self.story.wake;
         if wake.animating {
-            if player.condition & WAKING == 0 {
+            // The original reads the animator's flags word, not the body's
+            // condition: the wake-up motion sets 0x20 when it is done.
+            if player.animator & WAKING == 0 {
                 wake.animating = false;
             }
         } else if wake.getting_up {
@@ -3127,12 +3138,17 @@ fn boot(
 
 /// The game clock the flow runs on is the fixed step's (12 ms a tick); the
 /// player and the other characters' conditions come from the running world.
+#[allow(clippy::type_complexity)]
 fn tick(
     mut flow: ResMut<Flow>,
     mut queued: ResMut<FlowSteps>,
     ticks: Option<Res<exa_physics::body::BodyTicks>>,
     players: Query<
-        (Option<&exa_combat::Condition>, Option<&exa_combat::Fighter>),
+        (
+            Option<&exa_combat::Condition>,
+            Option<&exa_combat::Fighter>,
+            Option<&WakeFlags>,
+        ),
         With<crate::player::PlayerBody>,
     >,
     others: Query<&exa_combat::Condition, Without<crate::player::PlayerBody>>,
@@ -3141,8 +3157,9 @@ fn tick(
     let player = players
         .single()
         .ok()
-        .map(|(condition, fighter)| PlayerReading {
+        .map(|(condition, fighter, wake)| PlayerReading {
             condition: condition.map_or(0, |condition| condition.0),
+            animator: wake.map_or(0, |wake| wake.0),
             // A body without a fighter record is treated as unhurt.
             health: fighter.map_or(0.25, |fighter| fighter.health.red),
         });
@@ -3388,6 +3405,7 @@ fn apply_steps(
     mut view: Option<ResMut<GameView>>,
     mut session: Option<ResMut<crate::player_controls::PlaySession>>,
     mut fighters: Query<&mut exa_combat::Fighter, With<crate::player::PlayerBody>>,
+    mut wake_flags: Query<(Entity, Option<&WakeFlags>), With<crate::player::PlayerBody>>,
     mut changes: MessageWriter<exa_world::level_lifecycle::LevelChangeRequest>,
     mut forfeit: MessageWriter<ForfeitMatch>,
     mut exit: MessageWriter<AppExit>,
@@ -3487,6 +3505,23 @@ fn apply_steps(
                 for mut fighter in &mut fighters {
                     fighter.health.red = f32::from_bits(red_bits);
                     fighter.health.yellow = f32::from_bits(yellow_bits);
+                }
+            }
+            Step::Wake(pose) => {
+                for (entity, current) in &mut wake_flags {
+                    let flags = if pose.or_flags {
+                        current.copied().unwrap_or_default().0 | pose.flags
+                    } else {
+                        pose.flags
+                    };
+                    commands.entity(entity).insert(WakeFlags(flags));
+                }
+            }
+            Step::StoryPose { flags, .. } => {
+                if let Some(flags) = flags {
+                    for (entity, _) in &mut wake_flags {
+                        commands.entity(entity).insert(WakeFlags(flags));
+                    }
                 }
             }
             Step::Music {
@@ -3808,6 +3843,7 @@ mod tests {
                 2000,
                 Some(PlayerReading {
                     condition: DYING,
+                    animator: 0,
                     health: 0.1
                 }),
                 &[DEAD]
@@ -3818,6 +3854,7 @@ mod tests {
         // the playing phase, as the round check's own branch.
         let dead = Some(PlayerReading {
             condition: DEAD,
+            animator: 0,
             health: 0.0,
         });
         flow.practice.start_ms = 5000;
@@ -3899,6 +3936,7 @@ mod tests {
         };
         let dead = PlayerReading {
             condition: DEAD,
+            animator: 0,
             health: 0.1,
         };
         let steps = flow.story_tick(1000, Some(dead));
@@ -3939,11 +3977,41 @@ mod tests {
             6000,
             Some(PlayerReading {
                 condition: DEAD,
+                animator: 0,
                 health: 0.0,
             }),
         );
         assert_eq!(flow.phase, Phase::Ended);
         assert!(steps.contains(&Step::Tip(3)));
+    }
+
+    #[test]
+    fn the_wake_animation_ends_on_the_animator_flag_not_the_condition() {
+        let mut flow = Flow {
+            mode: Mode::Story,
+            phase: Phase::Playing,
+            hook: Hook::Story,
+            ..Default::default()
+        };
+        flow.story.wake.animating = true;
+        // The animator's 0x20 keeps the first animation running even with a
+        // clear condition word.
+        let animator_waking = PlayerReading {
+            condition: 0,
+            animator: WAKING,
+            health: 0.2,
+        };
+        flow.story_tick(1000, Some(animator_waking));
+        assert!(flow.story.wake.animating);
+        // Once the animator flags drop the bit the animation is done; the
+        // condition's 0x20 (the waking bit) does not keep it running.
+        let condition_waking = PlayerReading {
+            condition: WAKING,
+            animator: 0,
+            health: 0.2,
+        };
+        flow.story_tick(2000, Some(condition_waking));
+        assert!(!flow.story.wake.animating);
     }
 
     #[test]
@@ -3956,6 +4024,7 @@ mod tests {
         };
         let alive = PlayerReading {
             condition: 0,
+            animator: 0,
             health: 0.2,
         };
         let steps = flow.story_tick(100, Some(alive));
@@ -4531,6 +4600,7 @@ mod tests {
         };
         let alive = Some(PlayerReading {
             condition: 0,
+            animator: 0,
             health: 0.2,
         });
         let steps = flow.frame(1000, alive, &[]);
@@ -5507,5 +5577,43 @@ mod tests {
             .resource::<crate::level_change::PlayerPlacement>();
         assert!((at.position - Vec3::new(1.0, 2.0, 3.0)).length() < 1e-6);
         assert!((at.yaw - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
+
+        // The wake steps write the player's animator flags word: the
+        // get-up replaces it, the revival sets bits on it.
+        let player = app
+            .world_mut()
+            .spawn(crate::player::PlayerBody::new(0.0))
+            .id();
+        app.world_mut()
+            .resource_mut::<FlowSteps>()
+            .steps
+            .push(Step::Wake(WakePose::hold()));
+        app.update();
+        assert_eq!(
+            app.world().get::<WakeFlags>(player),
+            Some(&WakeFlags(0x600))
+        );
+        app.world_mut()
+            .resource_mut::<FlowSteps>()
+            .steps
+            .push(Step::Wake(WakePose::revived()));
+        app.update();
+        assert_eq!(
+            app.world().get::<WakeFlags>(player),
+            Some(&WakeFlags(0x640))
+        );
+        app.world_mut()
+            .resource_mut::<FlowSteps>()
+            .steps
+            .push(Step::StoryPose {
+                condition: None,
+                flags: Some(0x600),
+                turn_factor: None,
+            });
+        app.update();
+        assert_eq!(
+            app.world().get::<WakeFlags>(player),
+            Some(&WakeFlags(0x600))
+        );
     }
 }
