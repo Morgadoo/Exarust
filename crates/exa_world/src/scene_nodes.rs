@@ -206,6 +206,9 @@ pub struct FrameEvents {
     pub alias_updates: Vec<usize>,
     /// Nodes taken out of the scene by the removal queue.
     pub removed: Vec<usize>,
+    /// Deleted nodes whose owner was `_World`: the original logs "World
+    /// sector object deleted" with each one's name.
+    pub world_deleted: Vec<usize>,
     /// Nodes whose release is deferred to their owner (the original's free
     /// list).
     pub freed: Vec<usize>,
@@ -223,31 +226,51 @@ fn clear_parts(node: &mut SceneNode) {
     }
 }
 
+/// What a queued removal does at the frame end (the original's entry state).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RemovalKind {
+    /// The node leaves the scene for one frame: it hangs from `_World`
+    /// while queued and gets its owner back at the frame end.
+    Hide,
+    /// The subtree is deleted: it waits while it carries [`OWNED`], then
+    /// gets its owner back and is taken out, or deferred to the free list
+    /// while another owner holds it.
+    Delete,
+    /// The node is freed without the ownership wait (the node destructor's
+    /// own entry), or deferred to the free list while another owner holds
+    /// it.
+    Free,
+}
+
 /// A node waiting in the scene's removal queue.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Removal {
     pub node: usize,
-    /// Whether the entry detaches the subtree (the original's flag) or only
-    /// hides the node.
-    pub detach: bool,
-    /// The sector the node was in when it was queued.
+    pub kind: RemovalKind,
+    /// The sector the node was in when it was queued (its owner, which a
+    /// hidden or deleted node gets back at the frame end).
     pub sector: Option<usize>,
 }
 
-/// A queued scene node removal: the original's 256-entry ring.
+/// The scene's removal queue: the original's 256-entry ring that callers
+/// write into, drained at the start of every frame into the pending list
+/// the frame end works through.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RemovalQueue {
+    /// The ring, oldest first.
     entries: Vec<Removal>,
+    /// The drained entries the frame end has not finished with.
+    pending: Vec<Removal>,
 }
 
 impl RemovalQueue {
-    /// Whether the queue refuses another entry (255 entries is full: the
+    /// Whether the ring refuses another entry (255 entries is full: the
     /// original's write index must not meet its read index).
     pub fn is_full(&self) -> bool {
         self.entries.len() + 1 >= REMOVAL_QUEUE
     }
 
-    /// Queues a removal; false when the queue was full.
+    /// Queues a removal in the ring; false when it was full.
     pub fn push(&mut self, removal: Removal) -> bool {
         if self.is_full() {
             return false;
@@ -256,16 +279,23 @@ impl RemovalQueue {
         true
     }
 
+    /// Entries in the ring and the pending list together.
     pub fn len(&self) -> usize {
-        self.entries.len()
+        self.entries.len() + self.pending.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+        self.entries.is_empty() && self.pending.is_empty()
     }
 
+    /// The pending entries, then the ring's.
     pub fn iter(&self) -> impl Iterator<Item = &Removal> + '_ {
-        self.entries.iter()
+        self.pending.iter().chain(self.entries.iter())
+    }
+
+    /// The drained entries the frame end still holds, in their order.
+    pub fn pending(&self) -> &[Removal] {
+        &self.pending
     }
 }
 
@@ -443,6 +473,15 @@ fn axis_extent(rotation: Mat3, half_extents: Vec3, axis: usize) -> f32 {
     row.x * half_extents.x + row.y * half_extents.y + row.z * half_extents.z
 }
 
+/// A box's extents along the three world axes ([`axis_extent`] per axis).
+fn world_extent(rotation: Mat3, half_extents: Vec3) -> Vec3 {
+    Vec3::new(
+        axis_extent(rotation, half_extents, 0),
+        axis_extent(rotation, half_extents, 1),
+        axis_extent(rotation, half_extents, 2),
+    )
+}
+
 /// Grows running corners by a box's per-axis extent, with the original's
 /// ordered comparisons (a NaN leaves a corner alone).
 fn grow(low: &mut Vec3, high: &mut Vec3, centre: Vec3, extent: Vec3) {
@@ -563,33 +602,43 @@ pub fn sector_bounds(children: &[ChildBox], origin: Vec3) -> Option<SectorBounds
 /// The scene's bounds, as the original's scene-bounds pass writes them into
 /// the scene's own sector (`own`) from the other sectors (`rooms`):
 ///
+/// Each room comes with its rotation (the sector node's frame), which turns
+/// its half extents into world-axis extents as a mesh's are
+/// (`|r₀|·hx + |r₁|·hy + |r₂|·hz` over each row, summed in that order):
+///
 /// 1. the first box starts as `own`'s first box and grows by every room's
-///    first box about its world centre (extents capped at its radius); its
-///    world centre is its centre (the scene is not moved);
+///    first box about its world centre (those extents capped at its
+///    radius); its world centre is its centre (the scene is not moved);
 /// 2. the union corners start as `own`'s second box's centre and half
 ///    extents taken as corners (the original's arithmetic), grow by every
-///    room's second box, and give the union radius about the first centre;
+///    room's second box about its centre in the room's own space (not
+///    moved by the room's origin, as the original reads it) with its
+///    rotated extents, uncapped, and give the union radius about the first
+///    centre;
 /// 3. `own`'s second box is left as it is.
-pub fn scene_bounds(own: SectorBounds, rooms: &[SectorBounds]) -> SectorBounds {
+pub fn scene_bounds(own: SectorBounds, rooms: &[(SectorBounds, Mat3)]) -> SectorBounds {
     let mut low = own.first.min();
     let mut high = own.first.max();
-    for room in rooms {
+    for (room, rotation) in rooms {
         grow(
             &mut low,
             &mut high,
             room.world_centre,
-            clamp_to_radius(room.first.half_extents, room.first.radius),
+            clamp_to_radius(
+                world_extent(*rotation, room.first.half_extents),
+                room.first.radius,
+            ),
         );
     }
     let first = Bounds::from_min_max(low, high);
     let mut low = own.second.centre;
     let mut high = own.second.half_extents;
-    for room in rooms {
+    for (room, rotation) in rooms {
         grow(
             &mut low,
             &mut high,
             room.second.centre,
-            room.second.half_extents,
+            world_extent(*rotation, room.second.half_extents),
         );
     }
     SectorBounds {
@@ -937,11 +986,7 @@ impl SceneNode {
     pub fn child_box(&self) -> ChildBox {
         ChildBox {
             centre: self.world,
-            extent: Vec3::new(
-                axis_extent(self.world_rotation, self.half_extents, 0),
-                axis_extent(self.world_rotation, self.half_extents, 1),
-                axis_extent(self.world_rotation, self.half_extents, 2),
-            ),
+            extent: world_extent(self.world_rotation, self.half_extents),
             radius: radius_of(self.half_extents),
             split: self.flags & BOUNDS_SPLIT != 0,
         }
@@ -1029,6 +1074,12 @@ pub struct Sector {
     pub scissor: Option<ScreenRect>,
     /// The sector's translation in the world.
     pub origin: Vec3,
+    /// The sector's rotation in the world (its node's frame; its rows are
+    /// the box axes): the scene bounds turn the sector's boxes into world
+    /// extents by it and the active-sector test meets its box along it.
+    /// Exarust's rooms are unrotated, so it stays the identity unless a
+    /// caller sets it.
+    pub rotation: Mat3,
     /// The bounds of its meshes.
     pub bounds: SectorBounds,
 }
@@ -1056,6 +1107,7 @@ impl Sector {
             views: Vec::new(),
             scissor: None,
             origin: Vec3::ZERO,
+            rotation: Mat3::IDENTITY,
             bounds: SectorBounds::default(),
         }
     }
@@ -1502,7 +1554,10 @@ impl Scene {
         for sector in 0..self.sectors.len() {
             self.rebuild_sector_bounds(sector);
         }
-        let rooms: Vec<SectorBounds> = self.sectors[1..].iter().map(|s| s.bounds).collect();
+        let rooms: Vec<(SectorBounds, Mat3)> = self.sectors[1..]
+            .iter()
+            .map(|s| (s.bounds, s.rotation))
+            .collect();
         let own = self.sectors[SCENE_SECTOR].bounds;
         self.sectors[SCENE_SECTOR].bounds = scene_bounds(own, &rooms);
     }
@@ -1565,7 +1620,12 @@ impl Scene {
             } else {
                 sector.visible_portals.clear();
                 let bounds = sector.bounds;
-                let obb = Obb::axis_aligned(bounds.world_centre, bounds.first.half_extents);
+                let rotation = sector.rotation;
+                let obb = Obb::new(
+                    bounds.world_centre,
+                    bounds.first.half_extents,
+                    [rotation.x_axis, rotation.y_axis, rotation.z_axis],
+                );
                 sector.mask = 0;
                 sector.views.clear();
                 for (bit, view) in main.iter().enumerate().take(32) {
@@ -1780,11 +1840,10 @@ impl Scene {
         faces: &mut dyn FnMut(usize, usize) -> u32,
     ) -> FrameEvents {
         let mut events = FrameEvents::default();
+        self.drain_removals();
         self.classify(eye, main, project);
         for sector in 0..self.sectors.len() {
-            if self.sectors[sector].in_scene {
-                self.activate_lights(sector, &mut events);
-            }
+            self.activate_lights(sector, &mut events);
         }
         for sector in 0..self.sectors.len() {
             if self.sectors[sector].changes & MEMBERSHIP_CHANGED != 0 {
@@ -1804,40 +1863,100 @@ impl Scene {
                 events.moved_seen = true;
             }
         }
-        events.removed = self.process_removals();
+        let mut world_deleted = Vec::new();
+        events.removed = self.process_removals_into(&mut world_deleted);
+        events.world_deleted = world_deleted;
         events.freed = std::mem::take(&mut self.pending_free);
         events.materials_removed = self.flush_material_removes();
         events
     }
 
-    /// Processes the removal queue as the frame's last step does: an entry
-    /// whose subtree carries [`OWNED`] waits for the next frame; the others
-    /// are taken out of the scene. Returns the nodes removed.
-    pub fn process_removals(&mut self) -> Vec<usize> {
-        let entries: Vec<Removal> = self.removals.iter().copied().collect();
-        let mut kept = Vec::new();
-        let mut removed = Vec::new();
-        for entry in entries {
-            if entry.detach && self.owns_subtree(entry.node) {
-                kept.push(entry);
-                continue;
+    /// The frame's first step on the removal queue: every entry in the ring
+    /// moves, oldest first, to the end of the pending list, and its node
+    /// hangs from `_World` (owner `None`) until the frame end hands it back.
+    pub fn drain_removals(&mut self) {
+        let drained = std::mem::take(&mut self.removals.entries);
+        for entry in drained {
+            if let Some(n) = self.nodes.get_mut(entry.node) {
+                n.sector = None;
             }
-            if self
+            self.removals.pending.push(entry);
+        }
+    }
+
+    /// Works through the pending removals as the frame's last step does.
+    /// A finished entry is replaced by the last one, which is looked at
+    /// next, so the order is not kept:
+    ///
+    /// - [`RemovalKind::Hide`] gives the node its owner back.
+    /// - [`RemovalKind::Delete`] waits for the next frame while the subtree
+    ///   carries [`OWNED`]; otherwise the node gets its owner back (an
+    ///   owner of `_World` is the original's "World sector object deleted"
+    ///   warning, listed in `world_deleted`) and is taken out with its
+    ///   subtree, or, while another owner holds it (`refs >= 1`), marked
+    ///   [`DELETING`] and put on the free list.
+    /// - [`RemovalKind::Free`] takes the node out, or puts a held node on
+    ///   the free list.
+    ///
+    /// Returns the nodes taken out. (The node's own destructor modes are
+    /// another unit's; guess: taking the subtree out stands for the
+    /// destroy, and the deferred mode only sets [`DELETING`].)
+    pub fn process_removals(&mut self) -> Vec<usize> {
+        self.process_removals_into(&mut Vec::new())
+    }
+
+    fn process_removals_into(&mut self, world_deleted: &mut Vec<usize>) -> Vec<usize> {
+        let mut removed = Vec::new();
+        let mut at = 0;
+        while at < self.removals.pending.len() {
+            let entry = self.removals.pending[at];
+            let held = self
                 .nodes
                 .get(entry.node)
-                .is_some_and(|node| node.refs >= 1)
-            {
-                // A node another owner still holds is marked deleting and
-                // put on the free list instead of being freed now.
-                self.mark_deleting(entry.node);
-                self.pending_free.push(entry.node);
-                continue;
+                .is_some_and(|node| node.refs >= 1);
+            match entry.kind {
+                RemovalKind::Hide => {
+                    if let Some(n) = self.nodes.get_mut(entry.node) {
+                        n.sector = entry.sector;
+                    }
+                }
+                RemovalKind::Delete => {
+                    if self.owns_subtree(entry.node) {
+                        at += 1;
+                        continue;
+                    }
+                    if let Some(n) = self.nodes.get_mut(entry.node) {
+                        n.sector = entry.sector;
+                    }
+                    if entry.sector.is_none() {
+                        world_deleted.push(entry.node);
+                    }
+                    if held {
+                        self.defer_free(entry.node);
+                    } else {
+                        removed.push(entry.node);
+                        self.remove_subtree(entry.node, entry.sector);
+                    }
+                }
+                RemovalKind::Free => {
+                    if held {
+                        self.pending_free.push(entry.node);
+                    } else {
+                        removed.push(entry.node);
+                        self.remove_subtree(entry.node, entry.sector);
+                    }
+                }
             }
-            removed.push(entry.node);
-            self.remove_subtree(entry.node, entry.sector);
+            self.removals.pending.swap_remove(at);
         }
-        self.removals = RemovalQueue { entries: kept };
         removed
+    }
+
+    fn defer_free(&mut self, node: usize) {
+        if let Some(n) = self.nodes.get_mut(node) {
+            n.scene_flags |= DELETING;
+        }
+        self.pending_free.push(node);
     }
 
     /// Sets the detail level and its 0.01 scale (the original's item and
@@ -2237,25 +2356,33 @@ impl Scene {
         finished
     }
 
-    /// Queues a node for removal. The sector's change word gains the
-    /// removal bits; with `detach` false the node leaves the scene and its
-    /// visibility and moved word are cleared, otherwise the node and its
-    /// whole subtree are marked deleting, lose the scene bit and move to
-    /// the global world. A full queue keeps the marking and reports false.
+    /// Queues a node for removal: [`RemovalKind::Delete`] with `detach`,
+    /// otherwise [`RemovalKind::Hide`] ([`Scene::queue_removal_as`]).
     pub fn queue_removal(&mut self, node: usize, detach: bool) -> bool {
+        let kind = if detach {
+            RemovalKind::Delete
+        } else {
+            RemovalKind::Hide
+        };
+        self.queue_removal_as(node, kind)
+    }
+
+    /// Queues a node for removal with its present owner. The owner's
+    /// change word gains the removal bits; a [`RemovalKind::Hide`] node
+    /// leaves the scene and its visibility and moved word are cleared,
+    /// otherwise the node and its whole subtree are marked deleting, lose
+    /// the scene bit and move to the global world. A full ring keeps the
+    /// marking and reports false.
+    pub fn queue_removal_as(&mut self, node: usize, kind: RemovalKind) -> bool {
         let Some(n) = self.nodes.get(node) else {
             return false;
         };
         let sector = n.sector;
-        let queued = self.removals.push(Removal {
-            node,
-            detach,
-            sector,
-        });
+        let queued = self.removals.push(Removal { node, kind, sector });
         if let Some(s) = sector.and_then(|s| self.sectors.get_mut(s)) {
             s.changes |= REMOVAL_CHANGES;
         }
-        if detach {
+        if kind != RemovalKind::Hide {
             self.mark_deleting(node);
         } else if let Some(n) = self.nodes.get_mut(node) {
             n.scene_flags &= !IN_SCENE;
@@ -2280,11 +2407,11 @@ impl Scene {
         }
     }
 
-    /// Exarust's consumer of the removal queue (the original's own is
-    /// elsewhere): each entry and its subtree is taken out of its sector's
-    /// lists, the geometry list and its parent's slots, and marked removed
-    /// (node slots stay, so indices remain valid). Returns how many nodes
-    /// were marked.
+    /// Takes every queued entry (ring and pending) and its subtree out at
+    /// once, whatever its kind, without the frame's ownership wait or owner
+    /// hand-back (Exarust's own teardown, not the original's frame step:
+    /// that is [`Scene::process_removals`]). Returns how many nodes were
+    /// marked removed (node slots stay, so indices remain valid).
     pub fn flush_removals(&mut self) -> usize {
         let entries: Vec<Removal> = self.removals.iter().copied().collect();
         self.removals = RemovalQueue::default();
@@ -3177,7 +3304,7 @@ mod tests {
             second: Bounds::new(Vec3::new(6.0, 0.0, 0.0), Vec3::new(3.0, 1.0, 1.0)),
             union_radius: 0.0,
         };
-        let scene = scene_bounds(SectorBounds::default(), &[room]);
+        let scene = scene_bounds(SectorBounds::default(), &[(room, Mat3::IDENTITY)]);
         // The scene's own empty box seeds the corners at 0: x runs 0..9.
         assert_eq!(scene.first.centre, Vec3::new(4.5, 0.0, 0.0));
         assert_eq!(scene.first.half_extents, Vec3::new(4.5, 1.0, 1.0));
@@ -3191,7 +3318,7 @@ mod tests {
             second: Bounds::new(Vec3::new(1.0, 0.0, 0.0), Vec3::new(20.0, 0.0, 0.0)),
             ..SectorBounds::default()
         };
-        let scene = scene_bounds(own, &[room]);
+        let scene = scene_bounds(own, &[(room, Mat3::IDENTITY)]);
         assert_eq!(scene.union_radius, (15.5f32 * 15.5 + 1.0 + 1.0).sqrt());
         assert_eq!(scene.second, own.second, "the second box is not written");
     }
@@ -4432,6 +4559,7 @@ mod tests {
         scene.register(child, 0);
         scene.nodes[child].scene_flags |= OWNED;
         assert!(scene.queue_removal(root, true));
+        scene.drain_removals();
         assert!(scene.process_removals().is_empty());
         assert_eq!(scene.removals.len(), 1);
         // The ownership mark is cleared: the next frame frees the subtree.
@@ -4533,8 +4661,11 @@ mod tests {
         scene.register(node, 0);
         scene.nodes[node].refs = 1;
         assert!(scene.queue_removal(node, true));
+        scene.drain_removals();
         assert!(scene.process_removals().is_empty());
         assert_eq!(scene.pending_free, [node]);
+        // The deferred node gets its owner back.
+        assert_eq!(scene.nodes[node].sector, Some(0));
         assert_ne!(scene.nodes[node].scene_flags & DELETING, 0);
         assert!(scene.removals.is_empty());
         // The frame hands the free list out and clears it.
@@ -4567,5 +4698,157 @@ mod tests {
         let mut events = FrameEvents::default();
         scene.activate_lights(sector, &mut events);
         assert_eq!(events.alias_updates, [copy]);
+    }
+
+    #[test]
+    fn a_hidden_node_hangs_from_the_world_for_one_frame() {
+        let mut scene = Scene::new((0, 0));
+        scene.sectors.push(Sector::new("room", None));
+        scene.sectors[1].in_scene = true;
+        let node = scene.add_node(NodeKind::Mesh, None);
+        scene.register(node, 1);
+        assert!(scene.queue_removal_as(node, RemovalKind::Hide));
+        assert_eq!(scene.nodes[node].sector, Some(1));
+        scene.drain_removals();
+        assert_eq!(scene.nodes[node].sector, None);
+        assert_eq!(scene.removals.pending().len(), 1);
+        assert!(scene.process_removals().is_empty());
+        assert_eq!(scene.nodes[node].sector, Some(1));
+        assert!(!scene.nodes[node].removed);
+        assert!(scene.removals.is_empty());
+    }
+
+    #[test]
+    fn the_frame_end_takes_the_last_entry_into_a_finished_slot() {
+        let mut scene = Scene::new((0, 0));
+        let a = scene.add_node(NodeKind::Mesh, None);
+        let b = scene.add_node(NodeKind::Mesh, None);
+        let c = scene.add_node(NodeKind::Mesh, None);
+        let d = scene.add_node(NodeKind::Mesh, None);
+        for n in [a, b, c, d] {
+            scene.register(n, 0);
+        }
+        scene.nodes[b].scene_flags |= OWNED;
+        for n in [a, b, c, d] {
+            assert!(scene.queue_removal(n, true));
+        }
+        scene.drain_removals();
+        // A is done and D takes its slot and is done; C takes it next and is
+        // done; B waits.
+        assert_eq!(scene.process_removals(), [a, d, c]);
+        assert_eq!(scene.removals.pending().len(), 1);
+        assert_eq!(scene.removals.pending()[0].node, b);
+    }
+
+    #[test]
+    fn a_waiting_entry_keeps_its_place_ahead_of_newer_ones() {
+        let mut scene = Scene::new((0, 0));
+        let a = scene.add_node(NodeKind::Mesh, None);
+        let b = scene.add_node(NodeKind::Mesh, None);
+        let c = scene.add_node(NodeKind::Mesh, None);
+        for n in [a, b, c] {
+            scene.register(n, 0);
+        }
+        scene.nodes[a].scene_flags |= OWNED;
+        scene.nodes[b].scene_flags |= OWNED;
+        assert!(scene.queue_removal(a, true));
+        assert!(scene.queue_removal(b, true));
+        scene.drain_removals();
+        assert!(scene.process_removals().is_empty());
+        assert!(scene.queue_removal(c, true));
+        scene.drain_removals();
+        let order: Vec<usize> = scene.removals.pending().iter().map(|r| r.node).collect();
+        assert_eq!(order, [a, b, c]);
+        scene.nodes[a].scene_flags &= !OWNED;
+        // A goes, C takes its slot and goes, B waits.
+        assert_eq!(scene.process_removals(), [a, c]);
+    }
+
+    #[test]
+    fn a_free_entry_skips_the_ownership_wait() {
+        let mut scene = Scene::new((0, 0));
+        let node = scene.add_node(NodeKind::Mesh, None);
+        let held = scene.add_node(NodeKind::Mesh, None);
+        scene.register(node, 0);
+        scene.register(held, 0);
+        scene.nodes[node].scene_flags |= OWNED;
+        scene.nodes[held].refs = 2;
+        assert!(scene.queue_removal_as(node, RemovalKind::Free));
+        assert!(scene.queue_removal_as(held, RemovalKind::Free));
+        assert_ne!(scene.nodes[node].scene_flags & DELETING, 0);
+        let report = scene.frame(0, Vec3::ZERO, &[], &no_project);
+        assert_eq!(report.removed, [node]);
+        assert_eq!(report.freed, [held]);
+        assert!(report.world_deleted.is_empty());
+        // A freed node is not handed back to its owner.
+        assert_eq!(scene.nodes[held].sector, None);
+    }
+
+    #[test]
+    fn deleting_a_world_node_is_reported() {
+        let mut scene = Scene::new((0, 0));
+        let node = scene.add_node(NodeKind::Mesh, None);
+        assert_eq!(scene.nodes[node].sector, None);
+        assert!(scene.queue_removal(node, true));
+        let report = scene.frame(0, Vec3::ZERO, &[], &no_project);
+        assert_eq!(report.removed, [node]);
+        assert_eq!(report.world_deleted, [node]);
+    }
+
+    #[test]
+    fn the_ring_holds_255_entries_per_frame() {
+        let mut scene = Scene::new((0, 0));
+        let node = scene.add_node(NodeKind::Mesh, None);
+        for _ in 0..(REMOVAL_QUEUE - 1) {
+            assert!(scene.queue_removal(node, false));
+        }
+        assert!(!scene.queue_removal(node, false));
+        scene.drain_removals();
+        // Draining frees the ring; the pending list has no cap.
+        assert!(scene.queue_removal(node, false));
+        assert_eq!(scene.removals.len(), REMOVAL_QUEUE);
+    }
+
+    #[test]
+    fn a_rotated_room_bounds_the_scene_along_the_world_axes() {
+        let room = SectorBounds {
+            first: Bounds::new(Vec3::ZERO, Vec3::new(3.0, 1.0, 1.0)),
+            world_centre: Vec3::new(10.0, 0.0, 0.0),
+            second: Bounds::new(Vec3::ZERO, Vec3::new(3.0, 1.0, 1.0)),
+            union_radius: 0.0,
+        };
+        // A quarter turn about y, exact: the room's x extent lies along
+        // world z and its z extent along world x.
+        let quarter = Mat3::from_cols(Vec3::new(0.0, 0.0, -1.0), Vec3::Y, Vec3::X);
+        let scene = scene_bounds(SectorBounds::default(), &[(room, quarter)]);
+        // The first box: x 0…11, y −1…1, z −3…3.
+        assert_eq!(scene.first.centre, Vec3::new(5.5, 0.0, 0.0));
+        assert_eq!(scene.first.half_extents, Vec3::new(5.5, 1.0, 3.0));
+        // The union corners run (−1, −1, −3)…(1, 1, 3) about the unmoved
+        // room centre; the farther sides from x = 5.5 are −6.5, 1 and 3.
+        assert_eq!(scene.union_radius, 52.25f32.sqrt());
+        // Unrotated, the x extent stays 3: the first box runs x 0…13.
+        let flat = scene_bounds(SectorBounds::default(), &[(room, Mat3::IDENTITY)]);
+        assert_eq!(flat.first.half_extents, Vec3::new(6.5, 1.0, 1.0));
+    }
+
+    #[test]
+    fn a_rotated_active_room_meets_views_along_its_axes() {
+        let mut scene = Scene::new((0, 0));
+        scene.sectors.push(Sector::new("room", None));
+        let room = &mut scene.sectors[1];
+        room.in_scene = true;
+        room.state = SectorState::Active;
+        // A long thin room along world z once turned a quarter about y.
+        room.rotation = Mat3::from_rotation_y(std::f32::consts::FRAC_PI_2);
+        room.bounds.world_centre = Vec3::ZERO;
+        room.bounds.first = Bounds::new(Vec3::ZERO, Vec3::new(10.0, 1.0, 1.0));
+        // A view box 1 m wide at z = 8 m: met only by the turned room.
+        let view = box_view_at(Vec3::new(0.0, 0.0, 8.0), 0.5);
+        scene.classify(Vec3::ZERO, std::slice::from_ref(&view), &no_project);
+        assert_eq!(scene.sectors[1].mask, 1);
+        scene.sectors[1].rotation = Mat3::IDENTITY;
+        scene.classify(Vec3::ZERO, std::slice::from_ref(&view), &no_project);
+        assert_eq!(scene.sectors[1].mask, 0);
     }
 }
