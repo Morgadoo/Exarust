@@ -63,19 +63,26 @@ impl Plugin for TerrainCompositePlugin {
     fn build(&self, app: &mut App) {
         bevy::shader::load_shader_library!(app, "terrain_layers.wesl");
         embedded_asset!(app, "terrain_bake.wesl");
+        embedded_asset!(app, "terrain_copy.wesl");
         app.init_resource::<TerrainBakeQueue>()
-            .add_plugins(ExtractResourcePlugin::<TerrainBakeQueue>::default());
+            .add_plugins(ExtractResourcePlugin::<TerrainBakeQueue>::default())
+            .init_resource::<TerrainCopyQueue>()
+            .add_plugins(ExtractResourcePlugin::<TerrainCopyQueue>::default());
         let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
             return;
         };
         render_app
             .init_resource::<PreparedBakes>()
-            .add_systems(RenderStartup, init_bake_pipeline)
+            .init_resource::<PreparedCopies>()
+            .add_systems(RenderStartup, (init_bake_pipeline, init_copy_pipeline))
             .add_systems(
                 Render,
-                prepare_bakes.in_set(RenderSystems::PrepareBindGroups),
+                (prepare_bakes, prepare_copies).in_set(RenderSystems::PrepareBindGroups),
             )
-            .add_systems(Core3d, run_bakes.in_set(Core3dSystems::Prepass));
+            .add_systems(
+                Core3d,
+                (run_bakes, run_copies).in_set(Core3dSystems::Prepass),
+            );
     }
 }
 
@@ -689,6 +696,328 @@ fn run_bakes(
     queue.report_done(ready.ticket);
 }
 
+// ---- The set copy ----------------------------------------------------------
+
+/// One source-to-target blit of a set copy: a destination target, the source
+/// set's same target and the pipeline format it is copied into.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TerrainCopyPair {
+    pub source: Handle<Image>,
+    pub target: Handle<Image>,
+    pub format: TextureFormat,
+}
+
+/// A block's composite set copied into the low set it just took, as the
+/// original's set-copy pass blits each destination target. The copy's blits
+/// run before the frame's draws, so the block can draw from the new set in
+/// the same frame.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TerrainCopy {
+    /// The high set the block held (the source).
+    pub from: u32,
+    /// The low set it now holds (the destination).
+    pub to: u32,
+    /// The target blits, colour first.
+    pub pairs: Vec<TerrainCopyPair>,
+}
+
+impl TerrainCopy {
+    /// The copy of `source` into `target`: colour always, then normal, gloss
+    /// and displacement where both sets have the target.
+    pub fn between(from: u32, source: &HostedSet, to: u32, target: &HostedSet) -> Option<Self> {
+        let mut pairs = Vec::new();
+        let mut blit = |source: &Handle<Image>, target: &Handle<Image>, format| {
+            pairs.push(TerrainCopyPair {
+                source: source.clone(),
+                target: target.clone(),
+                format,
+            });
+        };
+        blit(&source.colour, &target.colour, COLOUR_FORMAT);
+        if let (Some(source), Some(target)) = (source.normal.as_ref(), target.normal.as_ref()) {
+            blit(source, target, NORMAL_FORMAT);
+        }
+        if let (Some(source), Some(target)) = (source.gloss.as_ref(), target.gloss.as_ref()) {
+            blit(source, target, GLOSS_FORMAT);
+        }
+        if let (Some(source), Some(target)) =
+            (source.displacement.as_ref(), target.displacement.as_ref())
+        {
+            blit(source, target, DISPLACEMENT_FORMAT);
+        }
+        Some(Self { from, to, pairs })
+    }
+
+    /// How many targets the copy writes.
+    pub fn len(&self) -> usize {
+        self.pairs.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.pairs.is_empty()
+    }
+}
+
+/// One queued set copy with its ticket.
+#[derive(Clone, Debug)]
+struct QueuedCopy {
+    ticket: u64,
+    copy: TerrainCopy,
+}
+
+/// The set copies waiting for the render world, with the same ticket
+/// discipline as [`TerrainBakeQueue`]: a copy stays queued until the render
+/// world reports it done.
+#[derive(Resource, Clone, Default, ExtractResource)]
+#[extract_app(RenderApp)]
+pub struct TerrainCopyQueue {
+    jobs: Vec<QueuedCopy>,
+    next: u64,
+    done: Arc<Mutex<Vec<u64>>>,
+}
+
+impl TerrainCopyQueue {
+    /// Queues a copy and returns its ticket.
+    pub fn push(&mut self, copy: TerrainCopy) -> u64 {
+        self.next += 1;
+        self.jobs.push(QueuedCopy {
+            ticket: self.next,
+            copy,
+        });
+        self.next
+    }
+
+    /// Drops a queued copy (the block lost the set before it ran).
+    pub fn cancel(&mut self, ticket: u64) {
+        self.jobs.retain(|job| job.ticket != ticket);
+    }
+
+    /// Drops every queued copy (a level unloads).
+    pub fn clear(&mut self) {
+        self.jobs.clear();
+    }
+
+    pub fn pending(&self, ticket: u64) -> bool {
+        self.jobs.iter().any(|job| job.ticket == ticket)
+    }
+
+    pub fn len(&self) -> usize {
+        self.jobs.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.jobs.is_empty()
+    }
+
+    /// The tickets the render world finished since the last call.
+    pub fn finished(&mut self) -> Vec<u64> {
+        let done: Vec<u64> = self
+            .done
+            .lock()
+            .map(|mut done| std::mem::take(&mut *done))
+            .unwrap_or_default();
+        if !done.is_empty() {
+            self.jobs.retain(|job| !done.contains(&job.ticket));
+        }
+        done
+    }
+
+    /// Reports a ticket done, as the render world does after the blits.
+    pub fn report_done(&self, ticket: u64) {
+        if let Ok(mut done) = self.done.lock() {
+            done.push(ticket);
+        }
+    }
+}
+
+/// The copy program's binding numbers: the source texture and its sampler.
+pub mod copy_bindings {
+    pub const SOURCE: u32 = 0;
+    pub const SAMPLER: u32 = 1;
+    /// One past the last binding.
+    pub const END: u32 = 2;
+}
+
+fn copy_layout_entries() -> Vec<BindGroupLayoutEntry> {
+    use copy_bindings::*;
+    let stages = ShaderStages::FRAGMENT;
+    vec![
+        texture_2d(TextureSampleType::Float { filterable: true }).build(SOURCE, stages),
+        sampler(SamplerBindingType::Filtering).build(SAMPLER, stages),
+    ]
+}
+
+#[derive(Resource)]
+struct CopyPipeline {
+    layout: BindGroupLayoutDescriptor,
+    /// One pipeline per target format the sets use.
+    formats: HashMap<TextureFormat, CachedRenderPipelineId>,
+}
+
+fn init_copy_pipeline(
+    mut commands: Commands,
+    assets: Res<AssetServer>,
+    fullscreen: Res<FullscreenShader>,
+    cache: Res<PipelineCache>,
+) {
+    let layout = BindGroupLayoutDescriptor::new("exa_terrain_copy", &copy_layout_entries());
+    let shader: Handle<Shader> = assets.load(
+        AssetPath::from_path_buf(embedded_path!("terrain_copy.wesl")).with_source("embedded"),
+    );
+    let vertex = fullscreen.to_vertex_state();
+    let mut formats = HashMap::new();
+    for format in [
+        COLOUR_FORMAT,
+        NORMAL_FORMAT,
+        GLOSS_FORMAT,
+        DISPLACEMENT_FORMAT,
+    ] {
+        let id = cache.queue_render_pipeline(RenderPipelineDescriptor {
+            label: Some(format!("exa_terrain_copy_{format:?}").into()),
+            layout: vec![layout.clone()],
+            vertex: vertex.clone(),
+            fragment: Some(FragmentState {
+                shader: shader.clone(),
+                entry_point: Some("copy_rgb".into()),
+                targets: vec![Some(ColorTargetState {
+                    format,
+                    blend: None,
+                    write_mask: ColorWrites::ALL,
+                })],
+                ..default()
+            }),
+            ..default()
+        });
+        formats.insert(format, id);
+    }
+    commands.insert_resource(CopyPipeline { layout, formats });
+}
+
+/// A copy whose source and every destination target is on the GPU.
+struct ReadyCopy {
+    ticket: u64,
+    /// Per blit: its bind group, the destination view and its pipeline.
+    blits: Vec<(BindGroup, TextureView, CachedRenderPipelineId)>,
+}
+
+#[derive(Resource, Default)]
+struct PreparedCopies {
+    ready: Option<ReadyCopy>,
+    /// Tickets already copied, so a queue extracted again before the main
+    /// world takes them out is not copied twice.
+    copied: HashSet<u64>,
+}
+
+/// Prepares the first queued copy whose images are all on the GPU: one set
+/// copy a frame, as the selector orders at most one set trade a frame.
+fn prepare_copies(
+    queue: Res<TerrainCopyQueue>,
+    pipeline: Option<Res<CopyPipeline>>,
+    cache: Res<PipelineCache>,
+    images: Res<RenderAssets<GpuImage>>,
+    device: Res<RenderDevice>,
+    mut prepared: ResMut<PreparedCopies>,
+) {
+    prepared.ready = None;
+    let live: HashSet<u64> = queue.jobs.iter().map(|job| job.ticket).collect();
+    prepared.copied.retain(|ticket| live.contains(ticket));
+    let Some(pipeline) = pipeline else {
+        return;
+    };
+    let layout = cache.get_bind_group_layout(&pipeline.layout);
+    for job in &queue.jobs {
+        if prepared.copied.contains(&job.ticket) {
+            continue;
+        }
+        let mut blits = Vec::with_capacity(job.copy.pairs.len());
+        let mut missing = false;
+        for pair in &job.copy.pairs {
+            let (Some(source), Some(target)) = (images.get(&pair.source), images.get(&pair.target))
+            else {
+                missing = true;
+                break;
+            };
+            let Some(&id) = pipeline.formats.get(&pair.format) else {
+                missing = true;
+                break;
+            };
+            if cache.get_render_pipeline(id).is_none() {
+                missing = true;
+                break;
+            }
+            let group = device.create_bind_group(
+                "exa_terrain_copy",
+                &layout,
+                &[
+                    BindGroupEntry {
+                        binding: copy_bindings::SOURCE,
+                        resource: BindingResource::TextureView(&source.texture_view),
+                    },
+                    BindGroupEntry {
+                        binding: copy_bindings::SAMPLER,
+                        resource: BindingResource::Sampler(&source.sampler),
+                    },
+                ],
+            );
+            blits.push((group, target.texture_view.clone(), id));
+        }
+        if missing || blits.is_empty() {
+            continue;
+        }
+        prepared.ready = Some(ReadyCopy {
+            ticket: job.ticket,
+            blits,
+        });
+        return;
+    }
+}
+
+/// Runs the prepared copy's blits once a frame, by the scene view, and reports
+/// its ticket done.
+fn run_copies(
+    view: ViewQuery<(Has<DisplayCamera>, Has<Offscreen>)>,
+    queue: Res<TerrainCopyQueue>,
+    cache: Res<PipelineCache>,
+    mut prepared: ResMut<PreparedCopies>,
+    mut ctx: RenderContext,
+) {
+    let (display, offscreen) = view.into_inner();
+    if display || offscreen {
+        return;
+    }
+    let Some(ready) = prepared.ready.take() else {
+        return;
+    };
+    for (group, target, pipeline) in &ready.blits {
+        let Some(render_pipeline) = cache.get_render_pipeline(*pipeline) else {
+            continue;
+        };
+        let mut render_pass = ctx
+            .command_encoder()
+            .begin_render_pass(&RenderPassDescriptor {
+                label: Some("terrain_copy"),
+                color_attachments: &[Some(RenderPassColorAttachment {
+                    view: target,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: Operations {
+                        load: LoadOp::Clear(default()),
+                        store: StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+        render_pass.set_pipeline(render_pipeline);
+        render_pass.set_bind_group(0, group, &[]);
+        render_pass.draw(0..3, 0..1);
+    }
+    prepared.copied.insert(ready.ticket);
+    queue.report_done(ready.ticket);
+}
+
 /// A render-target image of `side`² with the given format, sampled linearly.
 fn target_image(images: &mut Assets<Image>, side: u32, format: TextureFormat) -> Handle<Image> {
     let mut image = Image::new_uninit(
@@ -867,6 +1196,92 @@ mod tests {
             .find(|(_, ty)| ty.name.as_deref() == Some(name))
             .expect("the struct is a type");
         u64::from(layouter[handle].size)
+    }
+
+    #[test]
+    fn a_set_copy_blits_colour_and_every_shared_target() {
+        let mut host = host();
+        let mut images = Assets::<Image>::default();
+        let high = host
+            .allocate(&mut images, 0, 5, SetFeatures::default())
+            .unwrap()
+            .clone();
+        let low = host
+            .allocate(&mut images, 21, 4, SetFeatures::default())
+            .unwrap()
+            .clone();
+        let copy = TerrainCopy::between(0, &high, 21, &low).unwrap();
+        assert_eq!((copy.from, copy.to), (0, 21));
+        assert_eq!(copy.len(), 4);
+        assert_eq!(
+            copy.pairs
+                .iter()
+                .map(|pair| pair.format)
+                .collect::<Vec<_>>(),
+            [
+                COLOUR_FORMAT,
+                NORMAL_FORMAT,
+                GLOSS_FORMAT,
+                DISPLACEMENT_FORMAT
+            ]
+        );
+        // Each blit reads the source's same target and writes the
+        // destination's.
+        assert_eq!(copy.pairs[0].source, high.colour);
+        assert_eq!(copy.pairs[0].target, low.colour);
+        assert_eq!(copy.pairs[1].source, high.normal.clone().unwrap());
+        assert_eq!(copy.pairs[1].target, low.normal.clone().unwrap());
+        // A target only the destination has is not copied: the source has
+        // nothing to read.
+        let partial = host
+            .allocate(
+                &mut images,
+                3,
+                4,
+                SetFeatures {
+                    normal: false,
+                    gloss: true,
+                    displacement: true,
+                },
+            )
+            .unwrap()
+            .clone();
+        let copy = TerrainCopy::between(21, &low, 3, &partial).unwrap();
+        assert_eq!(copy.len(), 3);
+        assert_eq!(copy.pairs[1].format, GLOSS_FORMAT);
+    }
+
+    #[test]
+    fn a_copy_stays_queued_until_the_render_world_reports_it() {
+        let mut queue = TerrainCopyQueue::default();
+        let copy = TerrainCopy {
+            from: 0,
+            to: 21,
+            pairs: Vec::new(),
+        };
+        let first = queue.push(copy.clone());
+        let second = queue.push(copy);
+        assert_eq!((first, second), (1, 2));
+        assert_eq!(queue.len(), 2);
+        assert!(queue.finished().is_empty());
+        let extracted = queue.clone();
+        extracted.report_done(first);
+        assert_eq!(queue.finished(), [first]);
+        assert!(!queue.pending(first) && queue.pending(second));
+        queue.cancel(second);
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn the_copy_binds_the_source_and_its_sampler() {
+        let entries = copy_layout_entries();
+        assert_eq!(entries.len(), copy_bindings::END as usize);
+        assert_eq!(entries[0].binding, copy_bindings::SOURCE);
+        assert_eq!(entries[1].binding, copy_bindings::SAMPLER);
+        // The shader reads the source at the fullscreen uv the bake writes.
+        let source = include_str!("terrain_copy.wesl");
+        assert!(source.contains("@binding(0) var tex0: texture_2d<f32>;"));
+        assert!(source.contains("textureSample(tex0, tex0_sampler, in.uv).rgb"));
     }
 
     #[test]

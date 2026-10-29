@@ -145,8 +145,12 @@ pool. `TerrainBakeQueue` takes one block's layers and a set, and a
 render-world pass (`terrain_bake.wesl`) bakes it in the compositor's order
 (normal, colour, gloss, displacement), one block a frame, with the layer
 stacking the per-pixel draw uses (`terrain_layers.wesl`, a shader library
-both import). `exa_world::terrain::composite_draw` then draws the block
-from its set. All of it is opt-in (`EXA_TERRAIN_SETS=1`).
+both import). `TerrainCopyQueue` blits a set into another (a block traded
+from a high set to a low one) with the original's built-in copy program
+(`terrain_copy.wesl`), each destination target the two sets share, in the
+same prepass before the frame's draws. `exa_world::terrain::composite_draw`
+then draws the block from its set. All of it is opt-in
+(`EXA_TERRAIN_SETS=1`).
 Rules:
 [`docs/RENDERING.md`](../../docs/RENDERING.md) (Terrain).
 
