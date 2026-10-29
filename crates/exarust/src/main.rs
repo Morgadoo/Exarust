@@ -68,7 +68,7 @@
 //!          --pause-on-hit <n>         pause the simulation n ticks after the player's first blow lands
 //!          --pause-after-collapse <n> pause the simulation n ticks after the first killing blow starts a collapse
 //!          --press key@frame,...      press keys (Ctrl, Shift and Esc among them) or mouse buttons (LMB, RMB, MMB) at frames after
-//!                                     loading (e.g. `.@400,P@500,LMB@600`); `key@a-b` holds it from frame a to b
+//!                                     loading (e.g. `.@400,F8@500,LMB@600`); `key@a-b` holds it from frame a to b
 //!          --cursor x,y               play mode: the cursor stays at this window point (logical pixels), for unattended runs
 //!          --click frame,...          click the left mouse button at frames after loading
 //!          --level-change lvl@frame,...  play mode: change level in process at frames after the first load (loading

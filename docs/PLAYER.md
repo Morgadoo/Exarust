@@ -1716,6 +1716,6 @@ are keys too), `--click frame,...` clicks the left button,
 `--cursor x,y` holds the pointer at a window position, and in
 play mode `--camera x,y,z,yaw,pitch` puts a fixed camera there instead of
 the chase camera, for unattended pictures. The body overlay (F3), the joint
-readout and trace, and the pause (P), step (`.`) and speed (`[`, `]`) keys
+readout and trace, and the pause (F8), step (`.`) and speed (`[`, `]`) keys
 are described in [DEBUGGING.md](DEBUGGING.md). The chase camera runs on
 real time, so it keeps orbiting while the simulation is paused or slowed.

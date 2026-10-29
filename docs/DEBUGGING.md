@@ -72,7 +72,7 @@ shift+S: cshd; msm
 | `--pause-after-jet <n>` | pause at the end of the `n`th body tick after the tick that first finds a blood jet started (a bleeding blow's, or `--debug-spray`'s), to catch a jet in flight ([Wounds](#wounds)) |
 | `--pause-on-hit <n>` | pause n ticks (at least 1) after the tick in which the player's first blow lands, for a picture of a landed punch or cut; the log names the tick and the struck bone |
 | `--pause-after-collapse <n>` | pause n ticks (at least 1) after the tick in which a killing blow first starts a body's collapse (its condition `0x800`), for a picture of the collapse that long after the blow (83 ticks is 1 s; death comes on the 250th); the log names the body and the tick ([formats/RSQ.md](formats/RSQ.md), The collapse) |
-| `--press key@frame,...` | press keys or mouse buttons at frames counted from the end of the load (`.`, `[`, `]`, `Tab`, `Esc`, `Enter`, `Ctrl`, `Shift`, `F1`–`F12`, a letter, or `LMB`, `RMB`, `MMB`), e.g. `.@400,.@401,P@500`; each is released the frame after; `key@a-b` holds it from frame a and lets it go at frame b, e.g. `RMB@60-400` |
+| `--press key@frame,...` | press keys or mouse buttons at frames counted from the end of the load (`.`, `[`, `]`, `Tab`, `Esc`, `Enter`, `Ctrl`, `Shift`, `F1`–`F12`, a letter, or `LMB`, `RMB`, `MMB`), e.g. `.@400,.@401,F8@500`; each is released the frame after; `key@a-b` holds it from frame a and lets it go at frame b, e.g. `RMB@60-400` |
 | `--click frame,...` | click the left mouse button at frames counted from the end of the load (the same as `LMB@frame` in `--press`): with `--weapon` in an arena fight, which starts in combat mode, the player attacks unattended |
 | `--level-change level@frame,...` | in play mode, change level in process at frames counted from the end of the first load (loading frames do not count), e.g. `arenahub@300,arena1@600,exanima01@900`; each level logs a `level census` line (entities, level roots, players, physics bodies and colliders, meshes, images, materials) when it is in, 120 frames later and when it is left, so a run that comes back to a level shows whether the change leaks |
 | `--camera x,y,z,yaw,pitch` | in play mode, a fixed camera there instead of the chase camera (metres, degrees), for unattended shots; with `--fov` |
@@ -288,7 +288,7 @@ timeout passes; the log warns of it. Pick a tick after the load.
 | F5 | inspect the body under the cursor, or the next body when none is under it |
 | F6 | show or hide the navigation grid |
 | F7 | start every keyframe track of the level ([Keyframe tracks](#keyframe-tracks)) |
-| P | pause or resume the simulation |
+| F8 | pause or resume the simulation (the game's own keys, such as `P` for the power tree, are never simulation keys; a key bound to a game action goes to the game) |
 | `.` | step one tick (pausing first if running) |
 | `[` / `]` | slower / faster: ×0.1, ×0.25, ×0.5, ×1, ×2 |
 

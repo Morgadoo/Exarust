@@ -18,11 +18,16 @@
 
 use bevy::prelude::*;
 use exa_character::spray::BloodSprays;
+
+use crate::bindings::{Bindings, DEFAULT_KEYS, virtual_key};
 use exa_physics::body::{BodySystems, BodyTicks, Ragdoll, inspect};
 use exa_physics::prop::PropBody;
 
-/// Pauses and resumes the simulation.
-pub const PAUSE_KEY: KeyCode = KeyCode::KeyP;
+/// Pauses and resumes the simulation. It is a function key no game action
+/// is bound to: the shipped `P` opens the power tree, and a debug pause on
+/// it froze the game clock the tree's fades run on, so the opened tree
+/// stayed invisible.
+pub const PAUSE_KEY: KeyCode = KeyCode::F8;
 /// Steps one tick while paused.
 pub const STEP_KEY: KeyCode = KeyCode::Period;
 /// Slow down and speed up.
@@ -202,13 +207,26 @@ fn start_speed(
     }
 }
 
+/// Whether `key` is one of the player's bound game keys, which the
+/// simulation keys leave to the game (a rebinding onto one of them wins).
+fn bound_to_game(key: KeyCode, bindings: Option<&Bindings>) -> bool {
+    let Some(code) = virtual_key(key) else {
+        return false;
+    };
+    let keys = bindings.map_or(&DEFAULT_KEYS, Bindings::keys);
+    keys.iter().any(|&bound| bound & 0xFFFF == code)
+}
+
 fn sim_keys(
     keys: Option<Res<ButtonInput<KeyCode>>>,
+    bindings: Option<Res<Bindings>>,
     mut control: ResMut<SimControl>,
     mut time: ResMut<Time<Virtual>>,
 ) {
     let Some(keys) = keys else { return };
-    if keys.just_pressed(PAUSE_KEY) {
+    let bindings = bindings.as_deref();
+    let just_pressed = |key: KeyCode| keys.just_pressed(key) && !bound_to_game(key, bindings);
+    if just_pressed(PAUSE_KEY) {
         if time.is_paused() {
             time.unpause();
             control.reason = None;
@@ -225,14 +243,14 @@ fn sim_keys(
             }
         );
     }
-    if keys.just_pressed(STEP_KEY) {
+    if just_pressed(STEP_KEY) {
         if !time.is_paused() {
             time.pause();
         }
         control.steps += 1;
     }
     for (key, up) in [(SLOWER_KEY, false), (FASTER_KEY, true)] {
-        if keys.just_pressed(key) {
+        if just_pressed(key) {
             let speed = next_speed(time.relative_speed(), up);
             time.set_relative_speed(speed);
             info!("simulation at ×{speed}");
@@ -456,6 +474,43 @@ mod tests {
             newly_over(&mut over, limit, [(e(2), 0.011)].into_iter()),
             Some(e(2))
         );
+    }
+
+    /// No simulation key is a shipped game key: the power tree's `P` opens
+    /// the tree and leaves the game clock running, and a key the player
+    /// rebinds onto a simulation key goes to the game.
+    #[test]
+    fn the_simulation_keys_leave_the_game_keys_alone() {
+        for key in [PAUSE_KEY, STEP_KEY, SLOWER_KEY, FASTER_KEY] {
+            assert!(!bound_to_game(key, None), "{key:?}");
+            assert!(!bound_to_game(key, Some(&Bindings::default())), "{key:?}");
+        }
+        let tree = Bindings::default()
+            .key_code(crate::bindings::Action::PowerTree)
+            .expect("the tree's key");
+        assert!(bound_to_game(tree, None));
+        let mut rebound = Bindings::default();
+        rebound.set_key(crate::bindings::Action::PowerTree, 0x77);
+        assert!(bound_to_game(PAUSE_KEY, Some(&rebound)));
+
+        let mut app = app(SimControl::default());
+        app.init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<Bindings>();
+        let press = |app: &mut App, key: KeyCode| {
+            app.world_mut()
+                .resource_mut::<ButtonInput<KeyCode>>()
+                .press(key);
+            app.update();
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.release(key);
+            keys.clear();
+        };
+        press(&mut app, tree);
+        assert!(!app.world().resource::<Time<Virtual>>().is_paused());
+        press(&mut app, PAUSE_KEY);
+        assert!(app.world().resource::<Time<Virtual>>().is_paused());
+        press(&mut app, PAUSE_KEY);
+        assert!(!app.world().resource::<Time<Virtual>>().is_paused());
     }
 
     #[test]

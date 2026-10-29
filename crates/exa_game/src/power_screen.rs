@@ -1534,4 +1534,96 @@ mod tests {
         // A corner outside the triangle is transparent.
         assert_eq!(pixels[15 * 16 * 4 + 3], 0);
     }
+
+    /// The tree's key, pressed the way `--press` presses it (after the
+    /// input systems, released the frame after) in an app that also runs
+    /// the simulation keys, opens the screen: the game clock keeps running,
+    /// the opening fade completes and the canvas is shown. With the
+    /// installed packs the picture covers the window (the backdrop) and
+    /// draws the wheel at the lower left.
+    #[test]
+    fn a_scripted_tree_key_opens_and_shows_the_screen() {
+        use bevy::asset::AssetPlugin;
+        use bevy::input::InputPlugin;
+        use bevy::time::TimeUpdateStrategy;
+        use bevy::window::WindowResolution;
+        let game = exa_assets::locate_install(None)
+            .and_then(|dir| exa_assets::GameData::open(&dir).ok())
+            .map(|data| Game(Arc::new(data)));
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            AssetPlugin::default(),
+            InputPlugin,
+            exa_physics::body::BodyPlugin,
+            crate::sim_control::SimControlPlugin,
+        ))
+        .init_asset::<Image>()
+        .init_resource::<Bindings>()
+        .insert_resource(exa_physics::Physics::default())
+        .insert_resource(TimeUpdateStrategy::ManualDuration(
+            std::time::Duration::from_millis(16),
+        ));
+        if let Some(game) = game.clone() {
+            app.insert_resource(game);
+        }
+        app.world_mut().spawn((
+            Window {
+                resolution: WindowResolution::new(1280, 720),
+                ..default()
+            },
+            PrimaryWindow,
+        ));
+        app.add_plugins(PowerScreenPlugin);
+        let key = Bindings::default()
+            .key_code(Action::PowerTree)
+            .expect("the tree's key");
+        app.add_systems(
+            PreUpdate,
+            (move |mut keys: ResMut<ButtonInput<KeyCode>>, mut frame: Local<u32>| {
+                *frame += 1;
+                if *frame == 5 {
+                    keys.press(key);
+                } else if *frame == 6 {
+                    keys.release(key);
+                }
+            })
+            .after(bevy::input::InputSystems),
+        );
+        // A hundred frames after the press, as the GPU check's screenshot.
+        for _ in 0..105 {
+            app.update();
+        }
+        assert!(!app.world().resource::<Time<Virtual>>().is_paused());
+        let screen = app.world().resource::<PowerScreen>();
+        assert!(screen.open && screen.bar_open);
+        assert_eq!(screen.tree.window_alpha, 1.0);
+        assert_eq!(screen.tree.content_alpha, 1.0);
+        let mut canvases = app.world_mut().query::<(&ImageNode, &Visibility)>();
+        let shown: Vec<_> = canvases
+            .iter(app.world())
+            .map(|(image, visibility)| (image.image.clone(), *visibility))
+            .collect();
+        assert_eq!(shown.len(), 1);
+        assert_eq!(shown[0].1, Visibility::Inherited);
+        if game.is_none() {
+            return;
+        }
+        let images = app.world().resource::<Assets<Image>>();
+        let image = images.get(&shown[0].0).expect("the canvas image");
+        assert_eq!((image.width(), image.height()), (1280, 720));
+        let data = image.data.as_ref().expect("the pixels");
+        let alpha = |x: u32, y: u32| data[((y * 1280 + x) * 4 + 3) as usize];
+        let covered = data.chunks(4).filter(|p| p[3] > 8).count();
+        assert!(covered > 1280 * 720 / 2, "{covered}");
+        // The wheel's icons are lit at the lower left.
+        let lit = (440..680)
+            .flat_map(|y| (30..270).map(move |x| (x, y)))
+            .filter(|&(x, y)| {
+                let at = ((y * 1280 + x) * 4) as usize;
+                alpha(x, y) > 8 && data[at..at + 3].iter().any(|&c| c > 64)
+            })
+            .count();
+        assert!(lit > 200, "{lit}");
+    }
 }
