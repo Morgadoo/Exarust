@@ -744,6 +744,8 @@ fn an_objects_body_stage_takes_the_parts_spheres_in_its_own_frame() {
         radius: 0.3,
         mesh: &mesh,
         countdown: 256,
+        points: [Vec3::ZERO; 4],
+        previous_points: [Vec3::ZERO; 4],
     };
     let kept = |c: &ObjectContacts| -> Vec<(f32, bool)> {
         c.bodies

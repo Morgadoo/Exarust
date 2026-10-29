@@ -20,7 +20,11 @@
 //! an awake cloth whose count is under 2 to sleep. That sum over the vertex
 //! count is the mean the drag pulls toward. Rustle plays when the same
 //! sum's squared length exceeds 400. The mesh vertices are the particle
-//! positions.
+//! positions. These are the built-in record's numbers; a cloth's own record
+//! ([`crate::cloth_record`]) sets its drag, retention, gravity scale,
+//! padding, slide and passes, and its particle mode (the hair's) makes all
+//! its passes in the step and takes bodies particle by particle
+//! ([`crate::cloth_body::touch_particles`]).
 //!
 //! Evidence: the cloth step notes (retention, drag, wind, pins, edges, sleep,
 //! rustle, plane pushes), the cloth's integrate slot, its post-body push
@@ -33,19 +37,20 @@ use bevy::render::render_resource::Face;
 
 use crate::body::BODY_HZ;
 
-/// How much of the velocity a particle keeps. Fast retention times the
-/// cloth's per-second retention, taken to one tick.
+/// How much of the velocity a particle of the built-in record's cloth
+/// keeps a tick: fast retention times the per-second retention, taken to
+/// one tick ([`crate::cloth_record::ClothRecord::retention`]).
 pub fn retention() -> f32 {
-    0.98977 * 0.5_f32.powf(1.0 / BODY_HZ)
+    crate::cloth_record::ClothRecord::LEVEL.retention()
 }
 
-/// Drag toward the cloth's mean velocity.
+/// Drag toward the cloth's mean velocity (the built-in record's).
 pub const MEAN_DRAG: f32 = 0.05;
 /// Edge correction stiffness.
 pub const EDGE_STIFFNESS: f32 = 0.8774;
 /// Wind below this does not move the cloth.
 pub const WIND_FLOOR: f32 = 0.001;
-/// Collision padding, centimetres.
+/// Collision padding, centimetres (the built-in record's).
 pub const PADDING_CM: f32 = 2.0;
 /// The share of a cloth contact handed back to the body: 0.015 for a body
 /// of the cloth-colliding class, 0.01 when the cloth's own class flag is
@@ -275,6 +280,14 @@ pub struct Cloth {
     /// The hand's grab: the vertex it holds and the point it is pulled to
     /// (centimetres, the cloth's own frame).
     pub grabbed: Option<(usize, Vec3)>,
+    /// The parameter record the cloth was set up from
+    /// ([`crate::cloth_record`]): its drag, retention, gravity scale,
+    /// padding, slide, pass count and constraint mode.
+    pub record: crate::cloth_record::ClothRecord,
+    /// The bodies a particle-mode cloth takes this tick, in the sector's
+    /// order ([`crate::cloth_body::touch_particles`]); a triangle-mode cloth
+    /// takes [`Cloth::bodies`] instead.
+    pub particle_bodies: Vec<crate::cloth_body::ParticleBody>,
 }
 
 impl Cloth {
@@ -307,6 +320,8 @@ impl Cloth {
             rustle_pitch: 0.0,
             rustle_tail: 0.0,
             grabbed: None,
+            record: crate::cloth_record::ClothRecord::LEVEL,
+            particle_bodies: Vec::new(),
         }
     }
 
@@ -661,7 +676,9 @@ pub fn step(cloth: &mut Cloth, gravity: Vec3) {
     let awake = cloth.sleep > 0;
     if awake {
         let mean = cloth.mean_velocity;
-        let keep = retention();
+        let keep = cloth.record.retention();
+        let drag = cloth.record.mean_drag;
+        let gravity = cloth.record.gravity(gravity);
         let wind = cloth.wind;
         let wind_direction = cloth.wind_direction;
         let tile = cloth.tile;
@@ -672,7 +689,7 @@ pub fn step(cloth: &mut Cloth, gravity: Vec3) {
             }
             let velocity = particle.position - particle.previous;
             sum += velocity;
-            let retained = (velocity + (mean - velocity) * MEAN_DRAG) * keep;
+            let retained = (velocity + (mean - velocity) * drag) * keep;
             let mut next = particle.position + retained + gravity;
             if wind > WIND_FLOOR {
                 let sample = if let Some(tile) = tile {
@@ -698,7 +715,10 @@ pub fn step(cloth: &mut Cloth, gravity: Vec3) {
     }
     settle_rustle(cloth, sum);
     if awake {
-        apply_constraints(cloth, &[]);
+        // The triangle mode makes one pass here, the particle mode all.
+        for _ in 0..cloth.record.step_passes() {
+            apply_constraints(cloth, &[]);
+        }
     }
     // Whether the sector's object flags have the cloth awake this tick: set
     // at its start, and by a body that raises its countdown.
@@ -726,7 +746,24 @@ pub fn step(cloth: &mut Cloth, gravity: Vec3) {
     cloth.body_tests = 0;
     cloth.pushed_by.clear();
     cloth.pushes.resize(count, Vec3::ZERO);
-    if !cloth.bodies.is_empty() {
+    let particle_mode = cloth.record.particle_mode();
+    if particle_mode && !cloth.particle_bodies.is_empty() {
+        // The particle mode pushes the particles straight off each body's
+        // spheres, against the box about the particles after the step.
+        let cloth_box = bounds(&cloth.particles);
+        let bodies = std::mem::take(&mut cloth.particle_bodies);
+        for (index, body) in bodies.iter().enumerate() {
+            if crate::cloth_body::touch_particles(&mut cloth.particles, cloth_box, body) {
+                cloth.pushed_by.push(index);
+                if cloth.sleep < body.countdown {
+                    cloth.sleep = body.countdown;
+                    awake = true;
+                }
+            }
+        }
+        cloth.particle_bodies = bodies;
+    }
+    if !particle_mode && !cloth.bodies.is_empty() {
         let bounds = crate::cloth_body::triangle_bounds(cloth);
         let bodies = std::mem::take(&mut cloth.bodies);
         for (index, body) in bodies.iter().enumerate() {
@@ -750,9 +787,10 @@ pub fn step(cloth: &mut Cloth, gravity: Vec3) {
     // The awake cloth's pass after the body stage: the pushes, then the
     // remaining constraint passes holding the pushed vertices on their
     // planes.
-    if awake {
+    // (The particle mode's post-body pass returns at once.)
+    if awake && !particle_mode {
         let planes = crate::cloth_body::apply_pushes(cloth);
-        for _ in 0..crate::cloth_body::PUSH_PASSES {
+        for _ in 0..cloth.record.post_body_passes() {
             apply_constraints(cloth, &planes);
         }
     }
@@ -760,8 +798,9 @@ pub fn step(cloth: &mut Cloth, gravity: Vec3) {
     // wake the cloth.
     for index in 0..cloth.planes.len() {
         let plane = cloth.planes[index];
+        let padding = cloth.record.padding_cm;
         for particle in &mut cloth.particles {
-            push_plane(particle, plane);
+            push_plane(particle, plane, padding);
         }
     }
     // The level's meshes last, after the step, as the sector calls them.
@@ -906,16 +945,16 @@ fn settle_rustle(cloth: &mut Cloth, sum: Vec3) {
     }
 }
 
-fn push_plane(particle: &mut Particle, plane: LevelPlane) -> bool {
+fn push_plane(particle: &mut Particle, plane: LevelPlane, padding: f32) -> bool {
     let normal = plane.normal.normalize_or_zero();
     if normal == Vec3::ZERO || !plane.point.is_finite() {
         return false;
     }
     let distance = (particle.position - plane.point).dot(normal);
-    if distance >= PADDING_CM {
+    if distance >= padding {
         return false;
     }
-    particle.position += normal * (PADDING_CM - distance);
+    particle.position += normal * (padding - distance);
     true
 }
 

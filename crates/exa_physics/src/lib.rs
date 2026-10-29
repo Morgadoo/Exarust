@@ -8,6 +8,7 @@ pub mod body;
 pub mod cloth;
 pub mod cloth_body;
 pub mod cloth_level;
+pub mod cloth_record;
 pub mod contact;
 pub mod controller;
 pub mod door;

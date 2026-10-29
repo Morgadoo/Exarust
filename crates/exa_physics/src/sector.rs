@@ -1216,6 +1216,10 @@ pub struct ObjectBodyPart<'a> {
     pub mesh: &'a Bounds,
     /// Its body's sleep countdown (0 asleep).
     pub countdown: i32,
+    /// The part's four points now (world, m): its tetrahedron.
+    pub points: [Vec3; 4],
+    /// Its four points where the last tick left them (world, m).
+    pub previous_points: [Vec3; 4],
 }
 
 /// The contacts a simulated object takes from the sector's body and static
@@ -1227,6 +1231,9 @@ pub struct ObjectContacts {
     /// The bodies handed over, each with its spheres that reach the
     /// object's box.
     pub bodies: Vec<crate::cloth_body::ClothBody>,
+    /// The bodies handed to a particle-mode object
+    /// ([`ObjectContacts::gather_particle_bodies`]).
+    pub particle_bodies: Vec<crate::cloth_body::ParticleBody>,
     pub level: Vec<crate::cloth::LevelTri>,
     /// The level meshes `level` came from, in order.
     pub pieces: Vec<crate::cloth_level::LevelPiece>,
@@ -1236,6 +1243,7 @@ impl ObjectContacts {
     /// Removes every contact, keeping the lists' storage.
     pub fn clear(&mut self) {
         self.bodies.clear();
+        self.particle_bodies.clear();
         self.level.clear();
         self.pieces.clear();
     }
@@ -1311,6 +1319,60 @@ impl ObjectContacts {
             if !body.spheres.is_empty() {
                 self.bodies.push(body);
             }
+        }
+    }
+
+    /// The body-contact stage of a particle-mode object (the hair's cloth):
+    /// every part passing the same pre-test as [`Self::gather_bodies`] is
+    /// handed over whole, with its spheres where the part is now (in the
+    /// object's space and centimetres, in the part's own order, bare
+    /// radii), its tetrahedron now and a tick ago (the same space) and the
+    /// padding its spheres take: none on the object's owner (the `bool`,
+    /// the body its node's parent carries), [`PARTICLE_PADDING_CM`] on any
+    /// other. The particle mode's own box test is the contact's
+    /// ([`crate::cloth_body::touch_particles`]).
+    ///
+    /// [`PARTICLE_PADDING_CM`]: crate::cloth_body::PARTICLE_PADDING_CM
+    pub fn gather_particle_bodies<'a>(
+        &mut self,
+        to_object: &Affine3A,
+        object: ObjectBounds,
+        parts: impl IntoIterator<Item = (ObjectBodyPart<'a>, bool)>,
+    ) {
+        let in_object = |p: Vec3| (to_object.transform_point3(p) * 100.0).to_array();
+        for (index, (part, owner)) in parts.into_iter().enumerate() {
+            let (centre, radius) = (part.centre * 100.0, part.radius * 100.0);
+            if intersect::spheres_separated(centre, radius, object.centre, object.radius) {
+                continue;
+            }
+            let box_distance2 =
+                mesh_box_distance2(object.centre * 0.01, part.mesh, &part.now) * 1.0e4;
+            if !object_body_meet(object, centre, radius, box_distance2) {
+                continue;
+            }
+            let spheres = part
+                .spheres
+                .iter()
+                .map(|&(c, r)| {
+                    let now = to_object.transform_point3(part.now.transform_point3(c)) * 100.0;
+                    (now, r * 100.0)
+                })
+                .collect();
+            let mut points = [[0.0; 3]; 8];
+            for (slot, p) in part.points.iter().chain(&part.previous_points).enumerate() {
+                points[slot] = in_object(*p);
+            }
+            self.particle_bodies.push(crate::cloth_body::ParticleBody {
+                spheres,
+                padding: if owner {
+                    0.0
+                } else {
+                    crate::cloth_body::PARTICLE_PADDING_CM
+                },
+                points,
+                countdown: part.countdown,
+                part: index,
+            });
         }
     }
 

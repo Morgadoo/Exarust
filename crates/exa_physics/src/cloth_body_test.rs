@@ -321,3 +321,118 @@ fn a_cloth_resting_on_a_sleeping_body_falls_asleep() {
     let lifted = cloth.particles[1].position.y;
     assert!(lifted > 0.5, "{lifted}");
 }
+
+/// A still body whose tetrahedron did not move, and its one sphere.
+fn particle_body(centre: Vec3, radius: f32, padding: f32, shift: Vec3) -> ParticleBody {
+    let tet = [
+        Vec3::ZERO,
+        Vec3::new(10.0, 0.0, 0.0),
+        Vec3::new(0.0, 10.0, 0.0),
+        Vec3::new(0.0, 0.0, 10.0),
+    ];
+    let mut points = [[0.0; 3]; 8];
+    for (i, p) in tet.iter().enumerate() {
+        points[i] = (*p + shift).to_array();
+        points[i + 4] = p.to_array();
+    }
+    ParticleBody {
+        spheres: vec![(centre, radius)],
+        padding,
+        points,
+        countdown: 256,
+        part: 0,
+    }
+}
+
+fn moving(from: Vec3, to: Vec3) -> Particle {
+    Particle {
+        position: to,
+        previous: from,
+    }
+}
+
+/// The particle mode pushes a particle straight out to the sphere's
+/// surface: the owner's sphere takes no padding, any other body's 1 cm.
+#[test]
+fn the_particle_mode_pushes_out_to_the_padded_surface() {
+    let cloth_box = (Vec3::new(0.0, 5.0, 0.0), Vec3::splat(1.0));
+    let owner = particle_body(Vec3::ZERO, 10.0, 0.0, Vec3::ZERO);
+    let mut particles = [still(Vec3::new(0.0, 5.0, 0.0))];
+    assert!(touch_particles(&mut particles, cloth_box, &owner));
+    assert_eq!(particles[0].position, Vec3::new(0.0, 10.0, 0.0));
+    let other = particle_body(Vec3::ZERO, 10.0, PARTICLE_PADDING_CM, Vec3::ZERO);
+    let mut particles = [still(Vec3::new(0.0, 5.0, 0.0))];
+    assert!(touch_particles(&mut particles, cloth_box, &other));
+    assert!((particles[0].position - Vec3::new(0.0, 11.0, 0.0)).length() < 1e-5);
+    // Outside the padded sphere nothing moves.
+    let mut particles = [still(Vec3::new(0.0, 12.0, 0.0))];
+    assert!(!touch_particles(&mut particles, cloth_box, &other));
+    assert_eq!(particles[0].position, Vec3::new(0.0, 12.0, 0.0));
+}
+
+/// A push whose square is under 1e-4 cm² is no push.
+#[test]
+fn the_particle_mode_ignores_a_tiny_push() {
+    let body = particle_body(Vec3::ZERO, 10.0, 0.0, Vec3::ZERO);
+    let at = Vec3::new(0.0, 9.995, 0.0);
+    let mut particles = [still(at)];
+    assert!(!touch_particles(
+        &mut particles,
+        (at, Vec3::splat(1.0)),
+        &body
+    ));
+    assert_eq!(particles[0].position, at);
+}
+
+/// The travel across the push is cancelled while its square is within a
+/// tenth of the push's square, else shortened by `√(0.1·push²/travel²)`.
+#[test]
+fn the_particle_mode_sticks_or_slides_the_travel_across_the_push() {
+    let body = particle_body(Vec3::ZERO, 10.0, 0.0, Vec3::ZERO);
+    let cloth_box = (Vec3::new(0.0, 5.0, 0.0), Vec3::splat(4.0));
+    // Push (0, 5, 0), push² 25: a 1 cm travel (1 <= 2.5) is cancelled, so
+    // the particle goes back to where it was across the push.
+    let mut particles = [moving(Vec3::new(-1.0, 5.0, 0.0), Vec3::new(0.0, 5.0, 0.0))];
+    assert!(touch_particles(&mut particles, cloth_box, &body));
+    assert_eq!(particles[0].position, Vec3::new(-1.0, 10.0, 0.0));
+    // A 3 cm travel (9 > 2.5) loses √(2.5/9) of itself.
+    let mut particles = [moving(Vec3::new(-3.0, 5.0, 0.0), Vec3::new(0.0, 5.0, 0.0))];
+    assert!(touch_particles(&mut particles, cloth_box, &body));
+    let lose = -(2.5_f32 / 9.0).sqrt();
+    let push = Vec3::new(0.0, 5.0, 0.0) + Vec3::new(3.0, 0.0, 0.0) * lose;
+    assert_eq!(particles[0].position, Vec3::new(0.0, 5.0, 0.0) + push);
+    // The travel along the push does not count.
+    let mut particles = [moving(Vec3::new(0.0, 4.0, 0.0), Vec3::new(0.0, 5.0, 0.0))];
+    assert!(touch_particles(&mut particles, cloth_box, &body));
+    assert_eq!(particles[0].position, Vec3::new(0.0, 10.0, 0.0));
+}
+
+/// The body's own motion at the particle is taken off its travel: a
+/// particle carried with the body does not slide.
+#[test]
+fn the_particle_mode_measures_the_travel_against_the_body() {
+    let shift = Vec3::new(1.0, 0.0, 0.0);
+    let body = particle_body(Vec3::new(1.0, 0.0, 0.0), 10.0, 0.0, shift);
+    let v = body.velocity_at(Vec3::new(1.0, 5.0, 0.0));
+    assert!((v - shift).length() < 1e-3, "{v}");
+    let cloth_box = (Vec3::new(1.0, 5.0, 0.0), Vec3::splat(4.0));
+    let mut particles = [moving(Vec3::new(0.0, 5.0, 0.0), Vec3::new(1.0, 5.0, 0.0))];
+    assert!(touch_particles(&mut particles, cloth_box, &body));
+    let at = particles[0].position;
+    assert!((at - Vec3::new(1.0, 10.0, 0.0)).length() < 1e-3, "{at}");
+}
+
+/// A particle-mode cloth (the hair's record) takes its bodies straight onto
+/// its particles, and a pushing body wakes it with its countdown.
+#[test]
+fn a_particle_mode_cloth_is_pushed_and_woken_by_a_body() {
+    let mut cloth = Cloth::new(vec![still(Vec3::new(0.0, 5.0, 0.0))]);
+    cloth.record = crate::cloth_record::ClothRecord::HAIR;
+    cloth.sleep = 0;
+    cloth.particle_bodies = vec![particle_body(Vec3::ZERO, 10.0, 0.0, Vec3::ZERO)];
+    step(&mut cloth, gravity_cm(1.0));
+    assert_eq!(cloth.sleep, 256);
+    assert_eq!(cloth.particles[0].position, Vec3::new(0.0, 10.0, 0.0));
+    // The triangle buffer is never filled in the particle mode.
+    assert!(cloth.pushes.iter().all(|p| *p == Vec3::ZERO));
+}

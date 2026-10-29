@@ -37,7 +37,7 @@
 
 use bevy::math::Vec3;
 
-use crate::cloth::{Cloth, LevelTri, PADDING_CM};
+use crate::cloth::{Cloth, LevelTri};
 use crate::intersect;
 
 /// A particle that moved more than this (cm², squared) over the tick sweeps
@@ -218,11 +218,17 @@ pub fn sweep_push(
 /// travel takes the shortening branch, as the original's unordered compare
 /// does.
 pub fn slide(previous: Vec3, position: Vec3) -> Vec3 {
+    slide_by(previous, position, LEVEL_SLIDE_CM)
+}
+
+/// [`slide`] by a record's own slide (cm): the hair's record slides by 0,
+/// which leaves a moving particle's travel whole.
+pub fn slide_by(previous: Vec3, position: Vec3, slide_cm: f32) -> Vec3 {
     let d = position - previous;
     let d2 = dot(d, d);
-    if d2 > LEVEL_SLIDE_CM * LEVEL_SLIDE_CM || d2.is_nan() {
+    if d2 > slide_cm * slide_cm || d2.is_nan() {
         let length = d2.sqrt();
-        previous + d * ((length - LEVEL_SLIDE_CM) / length)
+        previous + d * ((length - slide_cm) / length)
     } else {
         previous
     }
@@ -356,7 +362,10 @@ pub fn touch_level(cloth: &mut Cloth) -> bool {
         &cloth.level_pieces[..]
     };
     let planes: Vec<Option<(Vec3, f32)>> = cloth.level.iter().map(face_plane).collect();
-    let radius = PADDING_CM;
+    // The record's padding and slide (the built-in record's 2 cm and
+    // 0.1 cm; the hair's none).
+    let radius = cloth.record.padding_cm;
+    let slide_cm = cloth.record.level_slide_cm;
     let mut any = false;
     let mut tests = 0;
     let mut first = 0;
@@ -417,7 +426,7 @@ pub fn touch_level(cloth: &mut Cloth) -> bool {
                 }
             }
             if hit {
-                particle.position = slide(start, end);
+                particle.position = slide_by(start, end, slide_cm);
                 any = true;
             }
         }
