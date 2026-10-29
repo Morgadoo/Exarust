@@ -1087,9 +1087,11 @@ pub struct GiProgramLayout {
     pub geometry: &'static str,
     /// The fragment entry's name.
     pub fragment: &'static str,
-    /// The sampler uniforms and their texture units, in binding order.
+    /// The sampler uniforms the manager sets and their texture units, in
+    /// the order it sets them (a sampler it never sets stays on unit 0).
     pub samplers: &'static [(&'static str, u32)],
-    /// The uniform names the manager looks up, in the order it stores them.
+    /// The other uniforms the manager looks up, in the order it looks them
+    /// up.
     pub uniforms: &'static [&'static str],
 }
 
@@ -1099,8 +1101,9 @@ pub enum GiPass {
     /// `gi_inject_v`/`gi_inject_g` with `gi_inject_f`: one slice of the
     /// propagation and direct light.
     Inject,
-    /// The same vertex and geometry with `gi_emission`: the voxel lights and
-    /// the light shapes, added after the propagation.
+    /// The same vertex and geometry with `gi_emission`: the voxel lights,
+    /// added after the propagation (the light shapes link their own
+    /// fragments through the same builder, which binds `MPrj` and `OVox`).
     Emission,
     /// The same vertex and geometry with `gi_blit_f`: one neighbour block's
     /// margin copied into this block.
@@ -1115,9 +1118,9 @@ impl GiPass {
                 vertex: "gi_inject_v",
                 geometry: "gi_inject_g",
                 fragment: "gi_inject_f",
+                // One `Shadow<i>` per light in the group (up to twelve),
+                // set before the two volumes.
                 samplers: &[
-                    ("LVox", GI_LVOX_UNIT),
-                    ("OVox", GI_OVOX_UNIT),
                     ("Shadow0", GI_SHADOW_UNIT),
                     ("Shadow1", GI_SHADOW_UNIT + 1),
                     ("Shadow2", GI_SHADOW_UNIT + 2),
@@ -1130,6 +1133,8 @@ impl GiPass {
                     ("Shadow9", GI_SHADOW_UNIT + 9),
                     ("Shadow10", GI_SHADOW_UNIT + 10),
                     ("Shadow11", GI_SHADOW_UNIT + 11),
+                    ("LVox", GI_LVOX_UNIT),
+                    ("OVox", GI_OVOX_UNIT),
                 ],
                 uniforms: &[
                     "MPrj", "First", "Light", "VSmp", "ZTrn", "LyrOfs", "BaseAmb", "WrlMat",
@@ -1140,8 +1145,8 @@ impl GiPass {
                 vertex: "gi_inject_v",
                 geometry: "gi_inject_g",
                 fragment: "gi_emission",
-                samplers: &[("LVox", GI_LVOX_UNIT), ("OVox", GI_OVOX_UNIT)],
-                uniforms: &["MPrj", "First", "SliceSz", "ZTrn", "Light"],
+                samplers: &[("OVox", GI_OVOX_UNIT)],
+                uniforms: &["MPrj", "SliceSz", "ZTrn", "First", "Light"],
             },
             Self::Blit => GiProgramLayout {
                 vertex: "gi_inject_v",
@@ -1157,22 +1162,17 @@ impl GiPass {
 /// The original's texture units in the injection and blit programs.
 pub const GI_LVOX_UNIT: u32 = 0;
 pub const GI_OVOX_UNIT: u32 = 1;
-/// The first cube-shadow sampler: light `i` binds `Shadow<i>` to unit
-/// [`GI_SHADOW_UNIT`] + `i` (so the first is unit 3, leaving unit 2 for the
-/// shader's own sampler).
-pub const GI_SHADOW_UNIT: u32 = 3;
+/// The first shadow sampler: light `i` binds `Shadow<i>` to unit
+/// [`GI_SHADOW_UNIT`] + `i`, right after `LVox` and `OVox`.
+pub const GI_SHADOW_UNIT: u32 = 2;
 
 /// The sampler uniform `Shadow<i>` uses for light `i` (0..12), and the
-/// texture unit it binds. The manager writes `Shadow0`..`ShadowN` and sets
-/// each to `3 + i`; a group with more than twelve lights never occurs.
+/// texture unit it binds. The manager patches the digits of `Shadow0` (a
+/// `1` and the last digit from ten up) and sets each to `2 + i`; a group
+/// holds at most twelve lights.
 pub fn shadow_sampler(light: usize) -> (String, u32) {
-    let mut name = String::from("Shadow0");
-    if light < 10 {
-        name.replace_range(6..7, &light.to_string());
-    } else {
-        name = format!("Shadow{light}");
-    }
-    (name, GI_SHADOW_UNIT + light as u32)
+    // The digit patch spells 0..=19 the same as decimal.
+    (format!("Shadow{light}"), GI_SHADOW_UNIT + light as u32)
 }
 
 /// One margin copy between a block and a neighbour: the destination columns
@@ -1759,8 +1759,9 @@ fn shape_reaches(source: &LightSource, cell: Vec2, floor_y: f32) -> bool {
     let dx = pull(at.x - cell.x);
     let dz = pull(at.z - cell.y);
     let dy = at.y - floor_y;
-    // The original forms (dy² + dz²) + dx², left to right.
-    let c = dy / (dy * dy + dz * dz + dx * dx).sqrt();
+    // The original sums the horizontal squares first (dz² + dx²), then adds
+    // dy² to them.
+    let c = dy / (dy * dy + (dz * dz + dx * dx)).sqrt();
     c + (1.0 - c) * source.shaping.x > SHAPE_FLOOR
 }
 
@@ -2378,21 +2379,22 @@ mod tests {
         assert_eq!(inject.uniforms[8], "SdwMat");
         assert_eq!(inject.uniforms[9], "SdwMat2");
         assert_eq!(inject.uniforms[10], "SliceSz");
-        assert_eq!(inject.samplers[0], ("LVox", 0));
-        assert_eq!(inject.samplers[1], ("OVox", 1));
-        // Light i binds Shadow<i> to unit 3 + i.
-        assert_eq!(inject.samplers[2], ("Shadow0", 3));
-        assert_eq!(inject.samplers[13], ("Shadow11", 14));
-        assert_eq!(shadow_sampler(0), ("Shadow0".into(), 3));
-        assert_eq!(shadow_sampler(9), ("Shadow9".into(), 12));
-        assert_eq!(shadow_sampler(10), ("Shadow10".into(), 13));
-        assert_eq!(shadow_sampler(11), ("Shadow11".into(), 14));
+        // Light i binds Shadow<i> to unit 2 + i, then LVox 0 and OVox 1.
+        assert_eq!(inject.samplers[0], ("Shadow0", 2));
+        assert_eq!(inject.samplers[11], ("Shadow11", 13));
+        assert_eq!(inject.samplers[12], ("LVox", 0));
+        assert_eq!(inject.samplers[13], ("OVox", 1));
+        assert_eq!(shadow_sampler(0), ("Shadow0".into(), 2));
+        assert_eq!(shadow_sampler(9), ("Shadow9".into(), 11));
+        assert_eq!(shadow_sampler(10), ("Shadow10".into(), 12));
+        assert_eq!(shadow_sampler(11), ("Shadow11".into(), 13));
         let emission = GiPass::Emission.layout();
         assert_eq!(emission.fragment, "gi_emission");
-        assert_eq!(emission.samplers, &[("LVox", 0), ("OVox", 1)]);
+        // The emission builder sets only OVox; gi_emission reads no LVox.
+        assert_eq!(emission.samplers, &[("OVox", 1)]);
         assert_eq!(
             emission.uniforms,
-            &["MPrj", "First", "SliceSz", "ZTrn", "Light"]
+            &["MPrj", "SliceSz", "ZTrn", "First", "Light"]
         );
         let blit = GiPass::Blit.layout();
         assert_eq!(blit.fragment, "gi_blit_f");

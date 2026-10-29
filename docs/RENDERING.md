@@ -1391,9 +1391,12 @@ in world space there too):
 - The top slice holds 26 and the slice below 5, a soft lid.
 - Terrain comes first: in each interior column (not the margins), voxels
   below the terrain surface hold 20, and the surface voxel its covered
-  fraction of 20. A surface at or above the top slice clamps to the lid:
-  slices 0..D−2 fill, the surface byte is not written, and the lid's 26 and 5
-  stay; a surface in slice D−2 overwrites the 5 as the original does.
+  fraction of 20. The surface height in voxels is truncated towards zero:
+  a column more than a whole voxel below slice 0 is skipped (one less than a
+  voxel below counts as slice 0, its negative fraction stored as a wrapped
+  byte). A surface at or above the top slice clamps to it: no surface byte
+  is written and slices 0..D−2 hold 20, so the lid's 5 becomes 20 and only
+  the top slice's 26 stays. The column's lowest slice is the clamped height.
 - Every mesh's stored **GI sample points** (chunk `0x3D0CEC05`: a spacing
   word, a count, then object-space points in cm) are transformed to the
   world and splatted:
@@ -1441,9 +1444,7 @@ in world space there too):
   by its y, so only rounding differs).
   A flat floor at height 0 fills the slice from −20 to 0 cm.
 - Each column remembers the lowest slice a point fell in. A sector's floor
-  is the lowest over its 30 × 30 columns less the last row and column: the
-  original scans columns 0..28 only, so geometry confined to a sector's last
-  column or row never raises it into the propagation.
+  is the lowest over all its 30 × 30 columns.
 
 **Propagation**, one step per frame. A new block first gets a warm-up,
 600 steps by default, run 16 steps a frame (all of them in one frame stalled
@@ -1573,9 +1574,10 @@ its width, at the slice's middle ((slice + 0.5)/width), as the original's
 - the manager's three linked programs and their binding tables
   (`GiPass::layout`): `gi_inject_v` + `gi_inject_g` with `gi_inject_f`
   (`Light`, `VSmp`, `ZTrn`, `LyrOfs`, `BaseAmb`, `WrlMat`, `SdwMat`,
-  `SdwMat2`, `SliceSz`, `First`, `MPrj`; `LVox` on unit 0, `OVox` on 1 and
-  light i's `Shadow<i>` on 3 + i), with `gi_emission` (the additive extras),
-  and with `gi_blit_f` (`UVOfs`, `SliceSz`); Exarust's WESL pass replaces
+  `SdwMat2`, `SliceSz`, `First`, `MPrj`; light i's `Shadow<i>` on unit
+  2 + i, `LVox` on 0 and `OVox` on 1), with `gi_emission` (the voxel lights;
+  `SliceSz`, `ZTrn`, `First`, `Light`, and only `OVox` bound, on 1), and with
+  `gi_blit_f` (`UVOfs`, `SliceSz`, `LVox` on 0); Exarust's WESL pass replaces
   them but keeps the same inputs;
 - the emissive shape list: registration appends, unregistration swaps the
   last entry over each match, and the draw box rounds the centre to
