@@ -73,12 +73,12 @@ pub struct CompositeBlock {
 }
 
 /// Whether a block's squared distance from the focus (squared centimetres)
-/// is within the composite reach. The original's compare is a single
-/// `COMISS` against the far cut-off followed by a jump on parity: an
-/// unordered distance (NaN) takes the removal branch with the values above
-/// the cut-off, so a NaN block is not selected.
+/// is within the composite reach. The original's compare against the far
+/// cut-off jumps on parity to the same keep branch as a distance at or below
+/// it; only an ordered distance above the cut-off falls through to the
+/// removal, so a NaN block is kept (at low resolution).
 pub fn within_reach(d2: f32) -> bool {
-    d2 <= super::composite::FAR_D2
+    d2 <= super::composite::FAR_D2 || d2.is_nan()
 }
 
 /// Whether a block at squared distance `d2` takes the high-resolution
@@ -92,7 +92,8 @@ pub fn high_resolution(d2: f32) -> bool {
 /// The blocks within [`FAR`] of `focus`, in the caller's order, at most
 /// [`MAX_SELECTED`]. Distances are squared centimetres, as the original
 /// compares them; a block exactly 15 m away is low resolution and a NaN
-/// distance is dropped (its compare is unordered and takes the far branch).
+/// distance is kept at low resolution (its unordered compares take the keep
+/// and the low branches).
 pub fn select_composites(
     focus: Vec2,
     centres: impl IntoIterator<Item = Vec2>,
@@ -650,13 +651,18 @@ mod tests {
                 },
             ]
         );
-        // A NaN distance is unordered against the cut-off and takes the
-        // original's removal branch: it is not kept.
+        // A NaN distance never compares above the cut-off: kept, low.
         let nan = select_composites(focus, [Vec2::new(f32::NAN, 0.0)]);
-        assert!(nan.is_empty());
-        // A NaN block takes the low branch if it is ever measured.
+        assert_eq!(
+            nan,
+            vec![CompositeBlock {
+                index: 0,
+                high: false
+            }]
+        );
         assert!(!high_resolution(f32::NAN));
-        assert!(within_reach(0.0) && !within_reach(f32::NAN));
+        assert!(within_reach(0.0) && within_reach(f32::NAN));
+        assert!(!within_reach(19_713_601.0) && within_reach(19_713_600.0));
         // The list stops at 189 entries.
         let many = select_composites(focus, std::iter::repeat_n(Vec2::ZERO, 300));
         assert_eq!(many.len(), MAX_SELECTED);

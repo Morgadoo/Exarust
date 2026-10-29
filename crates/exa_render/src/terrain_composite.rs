@@ -81,7 +81,12 @@ impl Plugin for TerrainCompositePlugin {
             )
             .add_systems(
                 Core3d,
-                (run_bakes, run_copies).in_set(Core3dSystems::Prepass),
+                // A copy reads the high set a block gives up before the
+                // block that took it bakes into it, as the original blits
+                // before it re-stacks the layers.
+                (run_copies, run_bakes)
+                    .chain()
+                    .in_set(Core3dSystems::Prepass),
             );
     }
 }
@@ -555,7 +560,7 @@ fn prepare_bakes(
     render_queue: Res<RenderQueue>,
     mut prepared: ResMut<PreparedBakes>,
 ) {
-    prepared.ready = None;
+    prepared.ready.clear();
     let live: HashSet<u64> = queue.jobs.iter().map(|job| job.ticket).collect();
     prepared.baked.retain(|ticket| live.contains(ticket));
     let Some(pipeline) = pipeline else {
@@ -902,14 +907,15 @@ struct ReadyCopy {
 
 #[derive(Resource, Default)]
 struct PreparedCopies {
-    ready: Option<ReadyCopy>,
+    ready: Vec<ReadyCopy>,
     /// Tickets already copied, so a queue extracted again before the main
     /// world takes them out is not copied twice.
     copied: HashSet<u64>,
 }
 
-/// Prepares the first queued copy whose images are all on the GPU: one set
-/// copy a frame, as the selector orders at most one set trade a frame.
+/// Prepares every queued copy whose images are all on the GPU. The block
+/// already draws from the destination set, so a copy is not held back to a
+/// later frame (each blit is one full-target triangle).
 fn prepare_copies(
     queue: Res<TerrainCopyQueue>,
     pipeline: Option<Res<CopyPipeline>>,
@@ -918,7 +924,7 @@ fn prepare_copies(
     device: Res<RenderDevice>,
     mut prepared: ResMut<PreparedCopies>,
 ) {
-    prepared.ready = None;
+    prepared.ready.clear();
     let live: HashSet<u64> = queue.jobs.iter().map(|job| job.ticket).collect();
     prepared.copied.retain(|ticket| live.contains(ticket));
     let Some(pipeline) = pipeline else {
@@ -964,16 +970,15 @@ fn prepare_copies(
         if missing || blits.is_empty() {
             continue;
         }
-        prepared.ready = Some(ReadyCopy {
+        prepared.ready.push(ReadyCopy {
             ticket: job.ticket,
             blits,
         });
-        return;
     }
 }
 
-/// Runs the prepared copy's blits once a frame, by the scene view, and reports
-/// its ticket done.
+/// Runs the prepared copies' blits once a frame, by the scene view, and
+/// reports their tickets done.
 fn run_copies(
     view: ViewQuery<(Has<DisplayCamera>, Has<Offscreen>)>,
     queue: Res<TerrainCopyQueue>,
@@ -985,37 +990,36 @@ fn run_copies(
     if display || offscreen {
         return;
     }
-    let Some(ready) = prepared.ready.take() else {
-        return;
-    };
-    for (group, target, pipeline) in &ready.blits {
-        let Some(render_pipeline) = cache.get_render_pipeline(*pipeline) else {
-            continue;
-        };
-        let mut render_pass = ctx
-            .command_encoder()
-            .begin_render_pass(&RenderPassDescriptor {
-                label: Some("terrain_copy"),
-                color_attachments: &[Some(RenderPassColorAttachment {
-                    view: target,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: Operations {
-                        load: LoadOp::Clear(default()),
-                        store: StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-        render_pass.set_pipeline(render_pipeline);
-        render_pass.set_bind_group(0, group, &[]);
-        render_pass.draw(0..3, 0..1);
+    for ready in std::mem::take(&mut prepared.ready) {
+        for (group, target, pipeline) in &ready.blits {
+            let Some(render_pipeline) = cache.get_render_pipeline(*pipeline) else {
+                continue;
+            };
+            let mut render_pass = ctx
+                .command_encoder()
+                .begin_render_pass(&RenderPassDescriptor {
+                    label: Some("terrain_copy"),
+                    color_attachments: &[Some(RenderPassColorAttachment {
+                        view: target,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: Operations {
+                            load: LoadOp::Clear(default()),
+                            store: StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+            render_pass.set_pipeline(render_pipeline);
+            render_pass.set_bind_group(0, group, &[]);
+            render_pass.draw(0..3, 0..1);
+        }
+        prepared.copied.insert(ready.ticket);
+        queue.report_done(ready.ticket);
     }
-    prepared.copied.insert(ready.ticket);
-    queue.report_done(ready.ticket);
 }
 
 /// A render-target image of `side`² with the given format, sampled linearly.

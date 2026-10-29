@@ -115,15 +115,21 @@ pub fn draw_steps(
     steps
 }
 
-/// Whether a selection's set copy can run this frame: both sets are hosted
-/// and the block's set is not still baking (a block whose high set is being
-/// written is left to the rebake, as the copy would read an unwritten set).
+/// Whether a selection's set copy can run this frame: both sets are hosted,
+/// no bake is in flight for the block and it draws from the high set it
+/// gives up (baked into that set's current colour target). A block whose high
+/// set was never baked, or is still baking, is left to the rebake: a copy
+/// would read a target nothing has written yet. `hosted` gives a set's colour
+/// target.
 pub fn copy_ready(
     copy: &BlockCopy,
-    hosted: impl Fn(u32) -> bool,
+    hosted: impl Fn(u32) -> Option<AssetId<Image>>,
     state: Option<&DrawState>,
 ) -> bool {
-    hosted(copy.from) && hosted(copy.to) && state.is_some_and(|state| state.baking.is_none())
+    let (Some(source), Some(_)) = (hosted(copy.from), hosted(copy.to)) else {
+        return false;
+    };
+    state.is_some_and(|state| state.baking.is_none() && state.drawn == Some((copy.from, source)))
 }
 
 /// Where a block's composite sits: its low world corner and side, its tile's
@@ -322,7 +328,7 @@ pub fn draw_terrain_composites(
         let index = copy.block;
         if !copy_ready(
             &copy,
-            |set| host.set(set).is_some(),
+            |set| host.set(set).map(|hosted| hosted.colour.id()),
             draws.states.get(index),
         ) {
             continue;
@@ -555,21 +561,40 @@ mod tests {
             from: 4,
             to: 21,
         };
-        let idle = DrawState::default();
+        let hosted = |set: u32| Some(image(u128::from(set)));
+        let drawing = DrawState {
+            baking: None,
+            drawn: Some((4, image(4))),
+        };
         let baking = DrawState {
             baking: Some((4, image(4), 1)),
-            drawn: None,
+            drawn: Some((4, image(4))),
         };
-        // Both sets hosted and no bake in flight.
-        assert!(copy_ready(&copy, |_| true, Some(&idle)));
-        // The source set not hosted yet.
-        assert!(!copy_ready(&copy, |set| set == 21, Some(&idle)));
+        // Both sets hosted, the block draws its baked high set.
+        assert!(copy_ready(&copy, hosted, Some(&drawing)));
+        // The source set not hosted.
+        assert!(!copy_ready(
+            &copy,
+            |set| (set == 21).then(|| image(21)),
+            Some(&drawing)
+        ));
         // The destination not hosted.
-        assert!(!copy_ready(&copy, |set| set == 4, Some(&idle)));
+        assert!(!copy_ready(
+            &copy,
+            |set| (set == 4).then(|| image(4)),
+            Some(&drawing)
+        ));
         // The high set is still being written.
-        assert!(!copy_ready(&copy, |_| true, Some(&baking)));
+        assert!(!copy_ready(&copy, hosted, Some(&baking)));
+        // The high set was never baked for this block, or was rebuilt since.
+        assert!(!copy_ready(&copy, hosted, Some(&DrawState::default())));
+        let stale = DrawState {
+            baking: None,
+            drawn: Some((4, image(99))),
+        };
+        assert!(!copy_ready(&copy, hosted, Some(&stale)));
         // No state for the block.
-        assert!(!copy_ready(&copy, |_| true, None));
+        assert!(!copy_ready(&copy, hosted, None));
     }
 
     #[test]

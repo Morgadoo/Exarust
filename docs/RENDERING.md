@@ -712,9 +712,11 @@ original shows its terrain:
   and draws a full-target quad, the original's built-in copy program
   (`terrain_copy.wesl`; `terrain::composite::copy_draws` holds the pass
   list). The selector reports each copy to `terrain::composite_draw`,
-  which queues it in `TerrainCopyQueue`; the blits run in the prepass, so
-  the block draws from the copied low set in the same frame. A block whose
-  high set is still baking is rebaked from its layers instead (a copy would
+  which queues it in `TerrainCopyQueue`; the blits run in the prepass,
+  before that frame's bake (the block that took the high set bakes into it
+  next, as in the original), so the block draws from the copied low set in
+  the same frame. A block that never drew its high set, or whose bake into
+  it is still in flight, is rebaked from its layers instead (a copy would
   read an unwritten target).
 - **Draw.** Once a block's bake has run it takes its own material, the
   tile's with the set bound and the `COMPOSITE` flag, and `terrain.wesl`

@@ -1348,9 +1348,9 @@ impl CompositeSelector {
         base
     }
 
-    /// The distance test: a block within 44.4 m is selected, a NaN distance
-    /// is not (its unordered compare takes the removal branch), and a block
-    /// within 15 m becomes high resolution (a NaN one would be low). A block
+    /// The distance test: a block within 44.4 m is selected, as is a NaN
+    /// distance (its unordered compare takes the keep branch), and a block
+    /// within 15 m becomes high resolution (a NaN one is low). A block
     /// out of reach leaves the list and hands its set back.
     fn select(&mut self, focus: Vec2) {
         let (fx, fz) = (focus.x * 100.0, focus.y * 100.0);
@@ -2526,12 +2526,12 @@ mod tests {
         let mut sel = selector(&[Vec2::new(44.4, 0.0), Vec2::new(44.41, 0.0)]);
         assert!(sel.reselect(Vec2::ZERO));
         assert_eq!(sel.selected(), [0]);
-        // A NaN distance takes the original's unordered far branch: dropped,
-        // not selected and not kept at low resolution.
+        // A NaN distance is kept, low: the unordered far compare jumps to
+        // the keep branch and the near compare to the low one.
         let mut sel = selector(&[Vec2::new(f32::NAN, 0.0)]);
-        assert!(!sel.reselect(Vec2::ZERO));
-        assert!(sel.selected().is_empty());
-        assert_eq!(sel.blocks()[0].state() & 0xf00, 0);
+        assert!(sel.reselect(Vec2::ZERO));
+        assert_eq!(sel.blocks()[0].state() & 0xf00, 0x500);
+        assert_eq!(sel.selected(), [0]);
     }
 
     #[test]
