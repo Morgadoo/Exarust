@@ -594,7 +594,21 @@ unreachable in the retail game (kept as the move handler has them).
 The power bar holds ten slots; the chosen one carries bit 20. Loading it
 from a record copies the words (clearing bits 23 and 24 and the technique
 nibble), resets each state and marks a slot picked when its pair is; a
-slot's stamp and duration are kept. A slot flashes in over 200 ms, stays
+slot's stamp and duration are kept. Before the picked marks, each power
+the body runs marks the first slot whose word matches its id (under the
+pair mask), and while the bar is loaded the body calls the same mark when a
+power ends or asks for it (the slot holding exactly its id). The mark is
+the power class's: the base rule lights a persistent power's slot and,
+once the power's state is 2 (ending), fades it with the mark over 200 ms
+from now, leaving other powers' slots alone (barricade, throw, shock,
+vanish, long door, summon, command dead, confusion, enrage); spirit form,
+control mind, the constant mind sense and mask, bubble, shell, kinesis,
+strikes, constant displacement and shock weapons always light it; the
+constant loyalty fades over 200 ms on its end and is lit before, persistent
+or not; the instant mind sense fades from its end stamp over 2000 ms once
+that stamp is past, and the instant mind mask over 5000 ms once its world
+clock is more than 10 000 ms past its start, from `now − world + start +
+10 000`. A slot flashes in over 200 ms, stays
 lit, then fades over its duration. A press selects a slot, a dropped power
 fills the slot (a drag from another slot leaves a copy there) and a drag
 that misses clears its source. The cast entry reads the record's slot (the
@@ -844,7 +858,13 @@ fade a double-precision ratio over its duration. The running screen adds
 the domain wheel's paint (below), the tooltip's caption and wrapped description, the
 creation prompt, the label mode and the dragged preview; the texts are the
 interface level's main font's glyph quads at the original's places (a
-focused prompt caption is the skin's glowing text). The installed packs do
+focused prompt caption is the skin's glowing text) in the skin's text ink,
+the line skin's seventh label ink (the tooltip replaces its alpha with the
+fade's). Behind each text sits the skin's shaded box: the rounded program
+in black at the panel's alpha (140 for the prompt's title, 160 for its
+buttons, 128 for a label, the fade for the tooltip), its quad grown by
+`unit · 4 · 4` pixels on every side with the `Scale` uniform cutting a soft
+corner; label mode draws every box before any name. The installed packs do
 not ship the Rayform atlases, so the glyphs sample the base `fontbase24r`
 atlas scaled to the level's glyph quad; with no GUI atlas at all the
 running screen falls back to the game's bitmap font for the same runs. A

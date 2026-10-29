@@ -41,7 +41,10 @@
 //! - **The power bar** ([`PowerBar`]): ten slots, the chosen one marked with
 //!   bit 20. Loading it from a record copies the slots (clearing bits 23 and
 //!   24 and the technique nibble), resets each slot's state and marks a slot
-//!   picked when its pair is; the slot's stamp and duration are kept. A
+//!   picked when its pair is; the slot's stamp and duration are kept.
+//!   Each running power first marks its slot by its class ([`SlotMark`],
+//!   [`PowerBar::load_running`]), and the caster's walk marks the slot of a
+//!   power that ends ([`PowerBar::mark_running`]). A
 //!   slot's state flashes in over 200 ms, stays lit, then fades over its
 //!   duration. A press selects a slot; storing the bar back copies the
 //!   words, and a cast store instead moves the chosen bit to the cast slot.
@@ -2829,6 +2832,100 @@ impl BarSlot {
     }
 }
 
+/// How a running power marks its bar slot, by its class.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlotMark {
+    /// The base power's rule: a persistent power lights its slot, or,
+    /// once its state is 2 (ending), fades it out with the mark over
+    /// 200 ms from now; any other power leaves the slot as it is. The
+    /// command-dead, confusion, enrage, barricade, throw, vanish, long
+    /// door, summon and shock powers keep it.
+    Base,
+    /// The slot is lit whatever the power's state: spirit form, control
+    /// mind, the constant mind sense and mask, the bubble, the shell, the
+    /// kinesis, the strikes, the constant displacement and the shock
+    /// weapons.
+    Lit,
+    /// The constant loyalty: lit, or faded out with the mark over 200 ms
+    /// once its state is 2, persistent or not.
+    FadeOnEnd,
+    /// The instant mind sense: lit until its end stamp; once the stamp is
+    /// before now (compared unsigned) the slot fades out from that stamp
+    /// over 2000 ms, without the mark.
+    Sense {
+        /// The power's end stamp.
+        end: u32,
+    },
+    /// The instant mind mask: lit until the body's world clock is more
+    /// than 10 000 ms past its start (unsigned); then the slot fades out
+    /// over 5000 ms from the moment those 10 000 ms ran out, in this
+    /// clock: `now − world + start + 10 000`, without the mark.
+    Mask {
+        /// The body's world clock.
+        world: u32,
+        /// The power's start in that clock.
+        start: u32,
+    },
+}
+
+impl SlotMark {
+    /// Writes the mark into `slot` for a power `id` in `state`.
+    pub fn apply(self, slot: &mut BarSlot, id: u32, state: i32, now: u32) {
+        let fade = |slot: &mut BarSlot, state: u32, stamp: u32, duration: u32| {
+            slot.state = state;
+            slot.stamp = stamp;
+            slot.duration = duration;
+        };
+        match self {
+            SlotMark::Base => {
+                if id & word::PERSISTENT == 0 {
+                    return;
+                }
+                if state == 2 {
+                    fade(slot, bar_state::FADE | bar_state::MARK, now, 200);
+                } else {
+                    slot.state = bar_state::LIT;
+                }
+            }
+            SlotMark::Lit => slot.state = bar_state::LIT,
+            SlotMark::FadeOnEnd => {
+                if state == 2 {
+                    fade(slot, bar_state::FADE | bar_state::MARK, now, 200);
+                } else {
+                    slot.state = bar_state::LIT;
+                }
+            }
+            SlotMark::Sense { end } => {
+                if end < now {
+                    fade(slot, bar_state::FADE, end, 2000);
+                } else {
+                    slot.state = bar_state::LIT;
+                }
+            }
+            SlotMark::Mask { world, start } => {
+                if world.wrapping_sub(start) > 10_000 {
+                    let stamp = now
+                        .wrapping_sub(world)
+                        .wrapping_add(start)
+                        .wrapping_add(10_000);
+                    fade(slot, bar_state::FADE, stamp, 5000);
+                } else {
+                    slot.state = bar_state::LIT;
+                }
+            }
+        }
+    }
+}
+
+/// A power the body runs, as the bar's marks read it: its id, its state
+/// word and its class's mark.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RunningPower {
+    pub id: u32,
+    pub state: i32,
+    pub mark: SlotMark,
+}
+
 /// The ten-slot power bar.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PowerBar {
@@ -2864,6 +2961,19 @@ impl PowerBar {
     /// whose power is a picked pair gains the picked mark. Returns the
     /// chosen slot (one-based).
     pub fn load(&mut self, record: &PowerRecord) -> usize {
+        self.load_running(record, &[], 0)
+    }
+
+    /// Loads the bar as [`PowerBar::load`] does, handing each power the
+    /// body runs the state of the first slot whose word matches its id
+    /// under [`word::MATCH`], before the picked marks are added: the slot
+    /// takes the power's [`SlotMark`] at `now`.
+    pub fn load_running(
+        &mut self,
+        record: &PowerRecord,
+        running: &[RunningPower],
+        now: u32,
+    ) -> usize {
         self.chosen = 0;
         for index in 0..10 {
             let word = record.slots[index] & BAR_LOAD_MASK;
@@ -2874,10 +2984,15 @@ impl PowerBar {
                 self.chosen = index + 1;
             }
         }
-        // The original also hands each power object the body runs the
-        // state of the first slot with its id, through the object's mark
-        // method; the active powers here carry no such method, so only the
-        // bar's own picked mark is set.
+        for power in running {
+            if let Some(slot) = self
+                .slots
+                .iter_mut()
+                .find(|slot| slot.word & word::MATCH == power.id & word::MATCH)
+            {
+                power.mark.apply(slot, power.id, power.state, now);
+            }
+        }
         for index in 0..10 {
             let word = self.slots[index].word;
             if word & word::BAR_MATCH == 0 {
@@ -3018,6 +3133,19 @@ impl PowerBar {
         target.word = (target.word & 0x70_0000) | drag.power;
         target.state = drag.flags;
         (true, Some(SLOT_SOUND))
+    }
+
+    /// The body's hook for a power that ended or asked to be marked: the
+    /// first slot whose word is the power's id, compared whole, takes the
+    /// power's [`SlotMark`] at `now`. Answers whether a slot matched.
+    pub fn mark_running(&mut self, power: &RunningPower, now: u32) -> bool {
+        match self.slots.iter_mut().find(|slot| slot.word == power.id) {
+            Some(slot) => {
+                power.mark.apply(slot, power.id, power.state, now);
+                true
+            }
+            None => false,
+        }
     }
 
     /// Steps every slot's display state.
@@ -4180,6 +4308,134 @@ mod tests {
         slot.step(2201);
         assert_eq!(slot.state, 0);
         assert_eq!(slot.alpha(2300), 0.0);
+    }
+
+    #[test]
+    fn a_running_power_marks_its_slot_by_its_class() {
+        let slot = BarSlot {
+            word: 0x2_0201,
+            state: bar_state::PICKED,
+            stamp: 5,
+            duration: 9,
+            ..BarSlot::default()
+        };
+        let marked = |mark: SlotMark, id: u32, state: i32, now: u32| {
+            let mut s = slot;
+            mark.apply(&mut s, id, state, now);
+            (s.state, s.stamp, s.duration)
+        };
+        // The base rule: a persistent power lights the slot, an ending one
+        // fades it with the mark over 200 ms from now; an instant power
+        // leaves it alone.
+        assert_eq!(marked(SlotMark::Base, 0x2_0201, 1, 700), (2, 5, 9));
+        assert_eq!(marked(SlotMark::Base, 0x2_0201, 2, 700), (0xc, 700, 200));
+        assert_eq!(
+            marked(SlotMark::Base, 0x201, 2, 700),
+            (bar_state::PICKED, 5, 9)
+        );
+        // Always lit, whatever the state.
+        assert_eq!(marked(SlotMark::Lit, 0x201, 2, 700), (2, 5, 9));
+        // The constant loyalty fades on its end, persistent or not.
+        assert_eq!(marked(SlotMark::FadeOnEnd, 0x105, 2, 700), (0xc, 700, 200));
+        assert_eq!(marked(SlotMark::FadeOnEnd, 0x105, 1, 700), (2, 5, 9));
+        // The mind sense fades from its end stamp over two seconds once
+        // that stamp is past; at the stamp it is still lit.
+        assert_eq!(
+            marked(SlotMark::Sense { end: 650 }, 0x103, 1, 700),
+            (4, 650, 2000)
+        );
+        assert_eq!(
+            marked(SlotMark::Sense { end: 700 }, 0x103, 1, 700),
+            (2, 5, 9)
+        );
+        // The mind mask: 10 001 ms of world time past its start fades it
+        // from when the ten seconds ran out, in the game clock:
+        // 700 − 20 001 + 10 000 + 10 000 = 699; exactly 10 000 is lit.
+        assert_eq!(
+            marked(
+                SlotMark::Mask {
+                    world: 20_001,
+                    start: 10_000
+                },
+                0x104,
+                1,
+                700
+            ),
+            (4, 699, 5000)
+        );
+        assert_eq!(
+            marked(
+                SlotMark::Mask {
+                    world: 20_000,
+                    start: 10_000
+                },
+                0x104,
+                1,
+                700
+            ),
+            (2, 5, 9)
+        );
+    }
+
+    #[test]
+    fn the_hook_matches_a_slot_by_its_whole_word() {
+        let mut bar = PowerBar::default();
+        bar.slots[3].word = 0x12_0203;
+        bar.slots[4].word = 0x2_0203;
+        let running = RunningPower {
+            id: 0x2_0203,
+            state: 2,
+            mark: SlotMark::Base,
+        };
+        // The chosen bit makes slot 3 differ: slot 4 takes the fade.
+        assert!(bar.mark_running(&running, 1234));
+        assert_eq!(bar.slots[3].state, 0);
+        assert_eq!(
+            (
+                bar.slots[4].state,
+                bar.slots[4].stamp,
+                bar.slots[4].duration
+            ),
+            (0xc, 1234, 200)
+        );
+        let missing = RunningPower {
+            id: 0x2_0299,
+            ..running
+        };
+        assert!(!bar.mark_running(&missing, 1234));
+    }
+
+    #[test]
+    fn loading_the_bar_marks_running_powers_before_the_picks() {
+        let mut record = PowerRecord::empty(4.0);
+        // Slot 0 holds the chosen bit and a technique nibble the masked
+        // match ignores.
+        record.slots[0] = 0x3012_0201;
+        record.slots[1] = 0x202;
+        record.pairs = vec![KnownPower {
+            power: 0x202,
+            flags: PICKED,
+        }];
+        let running = [
+            RunningPower {
+                id: 0x2_0201,
+                state: 1,
+                mark: SlotMark::Base,
+            },
+            RunningPower {
+                id: 0x202,
+                state: 1,
+                mark: SlotMark::Lit,
+            },
+        ];
+        let mut bar = PowerBar::default();
+        assert_eq!(bar.load_running(&record, &running, 50), 1);
+        assert_eq!(bar.slots[0].state, bar_state::LIT);
+        // Lit by its power, then its pair's picked bit added.
+        assert_eq!(bar.slots[1].state, bar_state::LIT | PICKED);
+        // The plain load hands nothing.
+        bar.load(&record);
+        assert_eq!(bar.slots[0].state, 0);
     }
 
     #[test]
