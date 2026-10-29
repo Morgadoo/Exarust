@@ -41,8 +41,9 @@
 //!          --opponent                 an armed duellist in play mode; practice and arena fights start in combat mode (Tab toggles it, left click attacks)
 //!          --original-spawn           living bodies spawn in the original's order (key pick, pelvis on the frame,
 //!                                     leg snap); their pelvis height is logged for 120 ticks at debug level
-//!          --opponent-shield <m|any>  the duellist carries this shield (Objects.rpk model, `any`: the first shield item)
-//!                                     on its off arm; a blade that meets it is blocked (logged "a block" at info)
+//!          --opponent-shield <m|any>  every duellist (the debug one and the arena's) carries this shield on its off
+//!                                     arm (an Objects.rpk model, e.g. "Shield R01"; `any`: the first shield item whose
+//!                                     model loads); a blade that meets it is blocked (logged "a block" at info)
 //!          --shield <m|any>           play mode: the player carries this shield on its off arm (no torch then)
 //!          --still-opponent           the duellist stands its ground: it faces the player in its stance but neither walks nor strikes
 //!          --arena-match <id>         in an arena, lay the match out as the original's template <id> does (1 duel, 2 doubles,

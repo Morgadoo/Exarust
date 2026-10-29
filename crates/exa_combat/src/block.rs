@@ -144,7 +144,26 @@ pub fn strike_held(
         }
     }
     let mut accepted: HashMap<Entity, Accepted> = HashMap::default();
+    let debug = bevy::log::tracing::enabled!(bevy::log::Level::DEBUG);
     for event in events {
+        if debug {
+            let what = |key: &Entity| match (items.get(key), owners.get(key)) {
+                (Some(h), _) if h.shield => "a held shield",
+                (Some(_), _) => "a held weapon",
+                (None, Some(_)) => "a limb",
+                _ => "a body",
+            };
+            debug!(
+                "pair hit event: {} {:?} part {} and {} {:?} part {} at {}",
+                what(&event.a.0),
+                event.a.0,
+                event.a.1,
+                what(&event.b.0),
+                event.b.0,
+                event.b.1,
+                event.point
+            );
+        }
         for (own, other) in [(event.a, event.b), (event.b, event.a)] {
             // Only a held weapon strikes here; a fist's and a limb's wounds
             // are the blade sweep's.
@@ -199,6 +218,15 @@ pub fn strike_held(
                 other_guarded: false,
             };
             let Some(classified) = classify(&contact) else {
+                debug!(
+                    "held contact refused: own {:#x}, other {:#x}, same tree {}, faces {} \
+                     (y {local_y:.3} m), swing flags {:#x}",
+                    contact.own.bits(),
+                    contact.other.bits(),
+                    contact.same_tree,
+                    contact.faces,
+                    contact.own_flags
+                );
                 continue;
             };
             let kind = match classified.kind {
