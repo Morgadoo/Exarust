@@ -38,7 +38,9 @@ pub const BLOCK_VISIBLE: u32 = 0x80;
 pub const BLOCK_OMNI_SHADOW: u32 = 0x1_0000;
 /// Block word bit: the block's shadow faces are current.
 pub const BLOCK_SHADOW_FACES: u32 = 0x2_0000;
-/// Chunk node word bit: the chunk casts into the sun's shadow map.
+/// Chunk node mask bit (the top bit of the same mask word the main draw
+/// meets with the renderer's view mask): the chunk casts into the sun's
+/// shadow map.
 pub const NODE_SUN_SHADOW: u32 = 0x8000_0000;
 /// Chunk node word bit: the chunk is left out of the main draw.
 pub const NODE_SKIP_DRAW: u32 = 0x4;
@@ -61,10 +63,11 @@ pub fn chunk_drawn(
 }
 
 /// Whether the grass hook draws a chunk into the sun's shadow map: the
-/// block is visible, the chunk has instances and its node word asks for the
-/// sun shadow.
-pub fn chunk_sun_shadow(block_words: u32, node_words: u32, instances: usize) -> bool {
-    block_words & BLOCK_VISIBLE != 0 && instances > 0 && node_words & NODE_SUN_SHADOW != 0
+/// block is visible, the chunk has instances and its node mask (the word
+/// [`chunk_drawn`] takes as `node_mask`, not the skip word) has the sun
+/// shadow bit.
+pub fn chunk_sun_shadow(block_words: u32, node_mask: u32, instances: usize) -> bool {
+    block_words & BLOCK_VISIBLE != 0 && instances > 0 && node_mask & NODE_SUN_SHADOW != 0
 }
 
 /// Whether the grass hook draws a chunk into an omni light's shadow map: the
@@ -394,7 +397,9 @@ pub fn ground(heights: &[f32], n: usize, at: Vec2) -> f32 {
 /// correction is `±0.0025·(edge·(relative × diagonal))`, added on the far
 /// branch and taken off on the near one. In the original its result is
 /// discarded by the caller, which places the instance at the uncorrected
-/// height; it is kept here as the rule the baker runs. A point outside the
+/// height (and passes a position whose height it never set, so `position.y`
+/// is whatever the previous call left); it is kept here as a tested rule
+/// that the Exarust baker does not call. A point outside the
 /// grid returns the position's own height `[guess: the original reads on]`.
 pub fn ground_with_normal(vertices: &[[f32; 3]], n: usize, at: Vec2, position: Vec3) -> f32 {
     /// The original's determinant test against 1.
@@ -779,8 +784,8 @@ mod tests {
     #[test]
     fn the_ground_correction_takes_the_near_diagonal() {
         // The same block with the point 20 cm short of the cell: the test is
-        // −2, so the near diagonal applies and the correction adds 5 cm
-        // back to the plane.
+        // −2, so the near diagonal applies and the correction takes the
+        // 5 cm off, back to the plane.
         let block = flat_block();
         let got = ground_with_normal(&block, 3, Vec2::new(0.5, 0.5), Vec3::new(20.0, 5.0, -20.0));
         assert_eq!(got, 0.0);

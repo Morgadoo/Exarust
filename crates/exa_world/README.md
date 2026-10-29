@@ -93,8 +93,8 @@ and the grid's rooms; portal clipping is next (see
   centimetres; the original discards its result after computing it), and
   the grass hooks' per-chunk tests are `chunk_drawn`, `chunk_sun_shadow` and
   `chunk_omni_shadow` (the block node and shadow words, the renderer and
-  node masks, the node's skip and sun-shadow bits and a positive instance
-  count); the baked chunks have no collider and cast shadows
+  node masks, the node mask's sun-shadow bit, the node's skip bit and a
+  positive instance count); the baked chunks have no collider and cast shadows
   only above shadow quality 4; the plant shader's normal-map variant is not
   switched by quality (one Exarust plant material). Wind is not ported.
 - `voxeliser`: the GI sample-point generator's parameters: a 40 cm lattice spacing, the 4.0 and 0.4 tuning values and one work pass.
