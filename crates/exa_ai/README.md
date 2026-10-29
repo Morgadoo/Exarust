@@ -96,6 +96,7 @@ the standard one.
 | `chase` | the chase route: the bark, the fresh-target and moved-foe (3-D) tests, the goal on the foe's ground and the route through the navigation grid, the reach test from the estimate to the route's end, the unreachable mark and its 3 s plus draw, and the leave-without-timers case |
 | `route` | the one-planner-a-frame turn (the longest waiter remembered, strictly), the route start (two points and 150 cm, or forced), the path's flat length, and the navigation grid as the router (`exa_world::nav::find_path`, not a second pathfinder) |
 | `sense`, `hear`, `fight`, `place`, `path`, `order` | contact rating, noise and alert, attack choice, combat positions, path following (the planner is `exa_world::nav::path`), steering orders |
+| `ground` | the pathfinder's answers the combat state asks in centimetres: a place's ground cost (the cost sample through the combatant's formula), the line walk's clamp and the obstacle test, each the abstract pathfinder's without a grid |
 | `golem` | the golem guardians: wake (`golem_act`, the glow material at full, the limbs' mass restored) and sleep (the hidden render bit, a twentieth of the mass, a fiftieth of each part's value), the alarm trigger's arming and wake callback, the homeward callback, the `Alarm_` box that holds the armed point, the strict plane-distance radius query over a 6 m sector, the player's post 200 cm past the box at 10 cm up, and the pose reset |
 
 **Roles and attitude.** Adding a role adds it, or marks it explicit, and
@@ -126,9 +127,17 @@ the attack drive (less half its danger times the spacing) passes 1 can be
 struck from. A strike wins by 2 (1 committed) when no friend stands in
 the way; a forward strike place gives way to where it stands; otherwise
 it steps only to a place cheaper by 1. Arithmetic keeps the original's
-order and its double-precision comparisons. The position score's ground
-cost, line walk, sight test and nav snap have defaults (no navigation
-queries in the running game). The per-place scorer's notice and band
+order and its double-precision comparisons. The duellist asks the level's
+navigation grid as the original asks its installed pathfinder (`ground`):
+each place costs the cost sample under it through the combatant's formula
+(`b·40 + ((a² + a)·120 + 1)`, 1 on open ground), each place and the long
+step's continuation are pulled back where the grid's line walk stops, and
+the chase check counts a target behind an obstacle as out of sight; the
+snap stays the abstract pathfinder's no-op, as the level's never overrides
+it. Around its combat ticks the duellist lifts its own footprint and stamps
+it again, as the original's AI tick does around its state, so it pays only
+the others' footprints. Without a grid every answer is the abstract
+pathfinder's (cost 1, no clamp, in sight). The per-place scorer's notice and band
 terms are overwritten by its close formula, so they are not kept. A stuck
 fighter runs its chase route through the navigation grid when there is
 one (`chase`, `route`; the duellists share one plan turn a frame); only

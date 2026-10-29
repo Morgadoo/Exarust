@@ -65,7 +65,10 @@
 //! done in double precision where the original widens). The position score
 //! of each contact, the ground cost, the line walk, the sight test, the
 //! chase route, the follow check and the cast choice belong to other parts
-//! and come in through [`Field`]. A heading wrap compares in double with
+//! and come in through [`Field`]; the duellist answers the ground cost, the
+//! line walk and the sight test from the level's navigation grid
+//! ([`crate::ground`]), and the snap stays the abstract pathfinder's,
+//! which leaves the point where it was. A heading wrap compares in double with
 //! the f32 full turn, as the original does. The original keeps body points
 //! relative to each body's scene node and adds the node's origin to the
 //! points it weighs and to the foe's estimate (less its own); Exarust keeps
@@ -585,7 +588,9 @@ pub trait Field {
     fn walk_line(&mut self, _from: Vec3, _to: &mut Vec3) -> bool {
         false
     }
-    /// Puts a point on the walkable ground.
+    /// Puts a point on the walkable ground. The level's pathfinder never
+    /// overrides the abstract class's snap, which leaves the point as it
+    /// was.
     fn snap(&mut self, _point: &mut Vec3) {}
     /// The line from `from` to `to` is out of sight.
     fn blocked(&mut self, _from: Vec3, _to: Vec3) -> bool {
