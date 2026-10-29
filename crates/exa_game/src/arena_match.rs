@@ -743,16 +743,12 @@ fn convert(value: f32) -> i64 {
     }
 }
 
-/// The processor's 32-bit single-to-integer conversion: ties to even, and a
-/// NaN or a value outside the signed 32-bit range becomes the indefinite
-/// integer, `i32::MIN`.
-pub(crate) fn cvtss2si32(value: f32) -> i32 {
-    let rounded = value.round_ties_even();
-    if rounded.is_nan() || rounded >= 2_147_483_648.0 || rounded < -2_147_483_648.0 {
-        i32::MIN
-    } else {
-        rounded as i32
-    }
+/// The processor's 64-bit single-to-integer conversion kept in a 32-bit
+/// register: ties to even, and the low word of the result. A NaN or a value
+/// outside the signed 64-bit range gives the 64-bit indefinite integer,
+/// whose low word is 0.
+pub(crate) fn cvtss2si_low32(value: f32) -> i32 {
+    convert(value) as i32
 }
 
 /// The share of a full bar a record's health word fills in the company

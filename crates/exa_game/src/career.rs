@@ -902,7 +902,7 @@ pub enum EnterError {
     NoFighter,
 }
 
-/// Mode that leaves the player's team out of an unwatched draw.
+/// The forfeit mode: the player's team is left out of the scene draw.
 pub const FORFEIT_DRAW: i32 = 0x10;
 
 /// One fighter an unwatched match may count.
@@ -921,19 +921,21 @@ struct SideScore {
     score: f32,
 }
 
-/// Draw the winning team of a match the player is watching.
+/// Draw the winning team of a match nobody plays out.
 ///
 /// The scene bodies are grouped in first-seen order. A dead body (mark bit
-/// `0x800`), and the player's team unless the session is forfeiting
-/// (`mode == 0x10`), is left out. A team scores `(count × 0.5 + 0.5) ×
-/// health sum`. The largest score starts at 0 and moves only when a score
-/// is greater. Each weight is the square of score over that largest, times
-/// 100, converted to the nearest even integer. The roll steps by
-/// `roll × 0x08088405 + 1` even when no team remains. The high half of that
-/// word times one more than the weight total picks the first team whose
-/// running weights reach it (an exact equal counts). This is the scene
-/// draw; the bracket's draw ([`clear_losing_bracket`]) uses one more than
-/// it as the span and needs a running weight strictly above the pick.
+/// `0x800`) is left out, and so is the player's team when the session is
+/// forfeiting (`mode == 0x10`): a company that gives up cannot be drawn
+/// the winner. A team scores `(count × 0.5 + 0.5) × health sum`. The
+/// largest score starts at 0 and moves only when a score is greater. Each
+/// weight is the square of score over that largest, times 100, converted
+/// to the nearest even integer by the 64-bit conversion and kept in 32
+/// bits. The roll steps by `roll × 0x08088405 + 1` even when no team
+/// remains. The high half of that word times one more than the weight
+/// total picks the first team whose running weights reach it (an exact
+/// equal counts); when none does the first team is kept. This is the scene
+/// draw; the bracket's draw ([`clear_losing_bracket`]) spans the total
+/// itself and needs a running weight strictly above the pick.
 pub fn draw_unwatched(
     fighters: &[SideFighter],
     player_team: i32,
@@ -943,7 +945,7 @@ pub fn draw_unwatched(
     let mut sides: Vec<SideScore> = Vec::new();
     let mut largest = 0.0f32;
     for fighter in fighters {
-        if fighter.aside || (fighter.team == player_team && mode != FORFEIT_DRAW) {
+        if fighter.aside || (fighter.team == player_team && mode == FORFEIT_DRAW) {
             continue;
         }
         let found = sides.iter().position(|side| side.team == fighter.team);
@@ -975,7 +977,7 @@ pub fn draw_unwatched(
             let ratio = side.score / largest;
             let weight = ratio * ratio * 100.0;
             side.score = weight;
-            let rounded = crate::arena_match::cvtss2si32(weight);
+            let rounded = crate::arena_match::cvtss2si_low32(weight);
             weights.push(rounded);
             total = total.wrapping_add(rounded);
         }
@@ -987,8 +989,9 @@ pub fn draw_unwatched(
 /// The scene draw's weighted pick: step the roll (even with no weights),
 /// take the high half of one more than the total times it, and walk the
 /// weights until the running sum reaches the pick. The first weight whose
-/// cumulative total is at least the pick wins. `None` when no weight
-/// reaches it.
+/// cumulative total is at least the pick wins. The walk's result starts at
+/// index 0, so a pick no running weight reaches keeps the first; `None`
+/// only when there are no weights at all.
 fn draw_weight(weights: &[i32], total: i32, roll: &mut u32) -> Option<usize> {
     *roll = roll.wrapping_mul(0x0808_8405).wrapping_add(1);
     if weights.is_empty() {
@@ -1004,7 +1007,7 @@ fn draw_weight(weights: &[i32], total: i32, roll: &mut u32) -> Option<usize> {
             return Some(index);
         }
     }
-    None
+    Some(0)
 }
 
 /// The bracket draw's weighted pick: step the roll, take the high half of
@@ -1115,7 +1118,7 @@ pub fn clear_losing_bracket(
             for team in &teams {
                 let ratio = team.score / largest;
                 let weight = ratio * ratio * 100.0;
-                let rounded = crate::arena_match::cvtss2si32(weight);
+                let rounded = crate::arena_match::cvtss2si_low32(weight);
                 weights.push(rounded);
                 total = total.wrapping_add(rounded);
             }
@@ -1944,9 +1947,9 @@ mod tests {
             },
         ];
         let mut roll = 1u32;
-        // Watching the match leaves the player's team out, so team 2's
-        // weight is the first the pick reaches.
-        assert_eq!(draw_unwatched(&sides, 1, 0, &mut roll), Some(2));
+        // Outside a forfeit every team is in: weights 16, 36 and 100, span
+        // 153, and the stepped roll picks 4, which team 1's 16 reaches.
+        assert_eq!(draw_unwatched(&sides, 1, 0, &mut roll), Some(1));
         assert_eq!(roll, 0x0808_8406);
         roll = 4;
         assert_eq!(draw_unwatched(&sides, 1, 0, &mut roll), Some(2));
@@ -1955,9 +1958,9 @@ mod tests {
         assert_eq!(draw_unwatched(&sides, 1, 0, &mut roll), Some(3));
         assert_eq!(roll, 0x6066_303d);
         roll = 1;
-        // A forfeit leaves the player's team in the draw; the first weight
-        // already reaches the pick.
-        assert_eq!(draw_unwatched(&sides, 1, FORFEIT_DRAW, &mut roll), Some(1));
+        // A forfeit leaves the player's team out: weights 36 and 100, span
+        // 137, pick 4, so team 2.
+        assert_eq!(draw_unwatched(&sides, 1, FORFEIT_DRAW, &mut roll), Some(2));
         assert_eq!(roll, 0x0808_8406);
         let aside = [
             SideFighter {
@@ -2001,6 +2004,10 @@ mod tests {
         // One weight is always at least any pick below the total.
         let mut roll = 0;
         assert_eq!(draw_weight(&[5], 5, &mut roll), Some(0));
+        // A pick no running weight reaches (negative weights) keeps the
+        // first team, as the walk's index starts at 0.
+        let mut roll = 0xa6b0_5733;
+        assert_eq!(draw_weight(&[-1, -1], 2, &mut roll), Some(0));
         assert_eq!(draw_weight(&[], 0, &mut roll), None);
         // The bracket draw uses the total itself and a strict compare: the
         // same step of 0x8000_0000 picks 1 and an equal cumulative loses.
@@ -2012,15 +2019,17 @@ mod tests {
     #[test]
     fn the_weight_rounds_like_the_processor() {
         // Ties to even.
-        assert_eq!(crate::arena_match::cvtss2si32(0.5), 0);
-        assert_eq!(crate::arena_match::cvtss2si32(1.5), 2);
-        assert_eq!(crate::arena_match::cvtss2si32(-0.5), 0);
-        // NaN and out-of-range values become the indefinite integer.
-        assert_eq!(crate::arena_match::cvtss2si32(f32::NAN), i32::MIN);
-        assert_eq!(crate::arena_match::cvtss2si32(2_147_483_648.0), i32::MIN);
-        assert_eq!(crate::arena_match::cvtss2si32(f32::INFINITY), i32::MIN);
-        assert_eq!(crate::arena_match::cvtss2si32(-3.0e9), i32::MIN);
-        assert_eq!(crate::arena_match::cvtss2si32(100.0), 100);
+        assert_eq!(crate::arena_match::cvtss2si_low32(0.5), 0);
+        assert_eq!(crate::arena_match::cvtss2si_low32(1.5), 2);
+        assert_eq!(crate::arena_match::cvtss2si_low32(-0.5), 0);
+        // The conversion is 64-bit and only the low word is kept: NaN and
+        // infinity give the 64-bit indefinite integer, whose low word is 0;
+        // 2^31 keeps its low word, the 32-bit minimum; −3e9 wraps.
+        assert_eq!(crate::arena_match::cvtss2si_low32(f32::NAN), 0);
+        assert_eq!(crate::arena_match::cvtss2si_low32(2_147_483_648.0), i32::MIN);
+        assert_eq!(crate::arena_match::cvtss2si_low32(f32::INFINITY), 0);
+        assert_eq!(crate::arena_match::cvtss2si_low32(-3.0e9), 1_294_967_296);
+        assert_eq!(crate::arena_match::cvtss2si_low32(100.0), 100);
     }
 
     #[test]
