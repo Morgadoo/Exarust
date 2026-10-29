@@ -1,0 +1,5 @@
+- [x] Restore the weapon page's precedence in the card's sentence choice
+- [x] Keep the byte-wise weapon-sentence edit; fix the splice at the string's end and the empty-word branch
+- [x] Keep the stowed ids and body refresh; clear the weapon part once per apply; restore the take-in and shield helpers
+- [x] Drop the unused sheet loader; keep the crop function and its test
+- [x] Tests, crate README
