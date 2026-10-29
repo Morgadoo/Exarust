@@ -75,6 +75,12 @@ pub struct PartBounds {
     pub half_extents: Vec3,
 }
 
+/// The loaded level's own object database (the records its characters,
+/// placed objects and containers name with local ids), replaced at each
+/// level load.
+#[derive(Resource, Debug, Clone, Default)]
+pub struct LevelLocalItems(pub Vec<Item>);
+
 /// Marks the root entity of a spawned level.
 #[derive(Component)]
 pub struct LevelRoot {
@@ -1418,6 +1424,7 @@ impl LevelLoad {
                 queue.clear();
             }
         });
+        commands.insert_resource(LevelLocalItems(scene.local_items.clone()));
         let root = commands
             .spawn((
                 LevelRoot {

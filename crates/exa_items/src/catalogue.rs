@@ -64,6 +64,10 @@ pub struct ItemCatalogue {
     cards: HashMap<u32, CardFacts>,
     /// The items' worn weight, keyed by record id.
     burdens: HashMap<u32, Burden>,
+    /// The loaded level's own records (their ids tagged with the local
+    /// tier bit): the model an icon renders and the bulk a panel counts.
+    level_models: HashMap<u32, ItemModel>,
+    level_bulk: HashMap<u32, u8>,
     /// A shield record's section bytes, for the encumbrance sum.
     shields: HashMap<u32, ShieldRecord>,
 }
@@ -208,7 +212,7 @@ impl ItemCatalogue {
     /// that is not a record of the game's database.
     pub fn bulk(&self, id: u32) -> Option<u8> {
         if id & !ID_MASK != 0 {
-            return None;
+            return self.level_bulk.get(&id).copied();
         }
         self.bulk.get(&id).copied()
     }
@@ -227,7 +231,7 @@ impl ItemCatalogue {
     /// 0 for it.
     pub fn model(&self, id: u32) -> Option<&ItemModel> {
         if id & !ID_MASK != 0 {
-            return None;
+            return self.level_models.get(&id);
         }
         self.models.get(&id)
     }
@@ -263,6 +267,62 @@ impl ItemCatalogue {
 
     pub fn is_empty(&self) -> bool {
         self.kinds.is_empty()
+    }
+
+    /// Takes the loaded level's own records (the level's local database),
+    /// replacing the previous level's: each record, under its local-tagged
+    /// id, gets the model it names, or, without a model name, its
+    /// template's (the header's parent word, a game record or another
+    /// local one), and the bulk byte of its model section, else its
+    /// template's. The original reads a local record in its own tier and
+    /// inherits through the template; a placed chest's children are such
+    /// records, so their icons render and their bulk counts. [guess: a
+    /// local instance without its own model name takes its template's]
+    pub fn set_level_items(&mut self, items: &[exa_formats::objdb::Item]) {
+        use exa_formats::objdb::LOCAL;
+        self.level_models.clear();
+        self.level_bulk.clear();
+        let by_id: HashMap<u32, &exa_formats::objdb::Item> =
+            items.iter().map(|item| (item.id & ID_MASK, item)).collect();
+        for item in items {
+            let tagged = LOCAL | (item.id & ID_MASK);
+            // Follow the template chain (bounded) to the first record
+            // naming a model.
+            let mut at = Some(item);
+            let mut model = None;
+            let mut bulk = None;
+            for _ in 0..8 {
+                let Some(record) = at else { break };
+                if bulk.is_none() && !record.model.is_empty() {
+                    bulk = Some(record.equip_lock);
+                }
+                if !record.model.is_empty() {
+                    model = Some(ItemModel {
+                        model: record.model.clone(),
+                        flags: record.model_flags,
+                        weapon: record.weapon,
+                    });
+                    break;
+                }
+                let parent = record.parent;
+                if parent == 0 {
+                    break;
+                }
+                if parent & LOCAL != 0 {
+                    at = by_id.get(&(parent & ID_MASK)).copied();
+                } else {
+                    model = self.models.get(&(parent & ID_MASK)).cloned();
+                    bulk = bulk.or_else(|| self.bulk.get(&(parent & ID_MASK)).copied());
+                    break;
+                }
+            }
+            if let Some(model) = model {
+                self.level_models.insert(tagged, model);
+            }
+            if let Some(bulk) = bulk {
+                self.level_bulk.insert(tagged, bulk);
+            }
+        }
     }
 }
 
@@ -497,6 +557,47 @@ pub fn swap_weapon_sets(
 mod tests {
     use super::*;
     use crate::possession::{HELD, Hand};
+
+    /// A level's own records take their own model or their template's,
+    /// under the local-tagged id; untagged lookups are unchanged.
+    #[test]
+    fn level_records_resolve_their_model_and_bulk() {
+        use exa_formats::objdb::{Item, LOCAL};
+        let mut catalogue = ItemCatalogue::default();
+        catalogue.models.insert(
+            40,
+            ItemModel {
+                model: "Sword".into(),
+                flags: 1,
+                weapon: None,
+            },
+        );
+        catalogue.bulk.insert(40, 12);
+        let record = |id: u32, model: &str, parent: u32, bulk: u8| Item {
+            model: model.into(),
+            parent,
+            equip_lock: bulk,
+            ..Item::parse(id, &[]).expect("an empty item")
+        };
+        catalogue.set_level_items(&[
+            record(1, "Apple", 0, 3),
+            record(2, "", 40, 0),
+            record(3, "", LOCAL | 1, 0),
+            record(4, "", 0, 0),
+        ]);
+        assert_eq!(catalogue.model(LOCAL | 1).unwrap().model, "Apple");
+        assert_eq!(catalogue.bulk(LOCAL | 1), Some(3));
+        assert_eq!(catalogue.model(LOCAL | 2).unwrap().model, "Sword");
+        assert_eq!(catalogue.model(LOCAL | 2).unwrap().flags, 1);
+        assert_eq!(catalogue.bulk(LOCAL | 2), Some(12));
+        assert_eq!(catalogue.model(LOCAL | 3).unwrap().model, "Apple");
+        assert!(catalogue.model(LOCAL | 4).is_none());
+        assert!(catalogue.model(1).is_none());
+        assert_eq!(catalogue.model(40).unwrap().model, "Sword");
+        // A new level replaces the old one's records.
+        catalogue.set_level_items(&[]);
+        assert!(catalogue.model(LOCAL | 1).is_none());
+    }
 
     #[test]
     fn a_requested_swap_trades_the_sets() {

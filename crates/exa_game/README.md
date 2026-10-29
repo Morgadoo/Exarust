@@ -963,8 +963,13 @@ size) below the popup's client top, the popup `2 · 8 + panel` wide and
 `2 · unit + panel top + 8 + panel` tall, centred across on the pointer
 (kept inside the screen's width) with its top eight units above its height
 over the pointer (at least one unit down), and the panel loads the record's
-children (positions in 1/80 unit). The popup paints the card's frame, the
-container's icon by the plain card's placement and the panel's entries;
+children (positions in 1/80 unit). The popup paints its frame with the container
+constructor's words (attributes `0x830023`, centred-title style `0x3000`),
+the container's icon by the plain card's placement and the panel's entries
+(a level's own records resolve their icon model and bulk through
+`ItemCatalogue::set_level_items`, fed from `exa_world::LevelLocalItems` by
+`register_level_items`; without it every level-local item, the chests' own
+and 128 of exanima01's 307 container children, had no icon);
 `panel_live` drags between it and the other panels (its side has no
 possession list), and a right click, Escape or the screen close shuts it:
 the panel saves its entries back into the object's container section
