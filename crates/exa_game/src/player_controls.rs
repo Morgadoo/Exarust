@@ -2135,6 +2135,9 @@ mod tests {
             volume: None,
             rank_word: 0,
             armour_type: 0,
+            has_body: false,
+            has_weapon: false,
+            has_shield: false,
         }
     }
 
