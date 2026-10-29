@@ -179,8 +179,8 @@ impl DoorBody {
     }
 
     /// The world point at `angle` (after the swing sign) on the stop's
-    /// radius about the leaf's origin.
-    fn stop_at(&self, body: &Ragdoll, angle: f32) -> Vec3 {
+    /// radius about the leaf's origin: where the drive puts the stop.
+    pub fn stop_at(&self, body: &Ragdoll, angle: f32) -> Vec3 {
         let leaf = &body.parts[0];
         let d = direction_from_yaw(angle * self.door.shape.sign) * (self.door.shape.radius / CM);
         let local = self.side * d.x + self.up * d.y + self.forward * d.z;
@@ -390,8 +390,11 @@ fn register_doors(
 }
 
 /// Steps every awake leaf, its partner's door rules taken along.
-fn step_doors(ticks: Res<BodyTicks>, mut doors: Query<(Entity, &mut DoorBody, &mut Ragdoll)>) {
-    let now = ticks.millis() as i32;
+fn step_doors(
+    ticks: Option<Res<BodyTicks>>,
+    mut doors: Query<(Entity, &mut DoorBody, &mut Ragdoll)>,
+) {
+    let now = ticks.map_or(0, |t| t.millis() as i32);
     let awake: Vec<(Entity, Option<Entity>)> = doors
         .iter()
         .filter(|(_, _, body)| !body.asleep())
