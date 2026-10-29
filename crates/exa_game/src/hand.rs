@@ -950,6 +950,7 @@ impl Plugin for HandPlugin {
         app.init_resource::<Hand>()
             .init_resource::<ItemCursor>()
             .add_message::<WorldClick>()
+            .add_message::<exa_world::nav::NavMoved>()
             .add_systems(
                 Update,
                 (
@@ -958,6 +959,7 @@ impl Plugin for HandPlugin {
                     gather_markers,
                     hold_hand,
                     reach_hand,
+                    send_let_go,
                 )
                     .chain()
                     .in_set(HandSystems)
@@ -1837,7 +1839,9 @@ fn hold_hand(
 /// reach (`cancelled` false) the item is put down where it is; a cancelled
 /// lift goes by [`item_cursor::release`]: placed again at its last fitting
 /// point, left on its marker (frozen there for a lock marker) or put back
-/// at the frames the lift saved. The body is woken unless frozen.
+/// at the frames the lift saved. The body is woken unless frozen. Every
+/// let-go queues the held node's box at the frame the lift saved for the
+/// navigation grid's refresh, as the original's let-go rings it.
 fn end_lift(
     items: &mut ItemCursor,
     bodies: &mut Query<OtherBodies, Without<PlayerBody>>,
@@ -1848,6 +1852,15 @@ fn end_lift(
     let Some((outcome, held)) = items.end(cancelled, true) else {
         return;
     };
+    // The let-go queues the held node's box, at the frame the lift saved,
+    // for the grid's refresh: the floor the item stood on is refreshed.
+    if let Some(&at) = held.saved.get(held.part) {
+        items.let_go.push(exa_world::nav::NavMoved {
+            at,
+            centre: held.centre,
+            half: held.half,
+        });
+    }
     let Ok((_, mut ragdoll, ..)) = bodies.get_mut(held.body) else {
         return;
     };
@@ -1859,6 +1872,13 @@ fn end_lift(
             ragdoll.place_at(&held.saved);
             ragdoll.wake();
         }
+    }
+}
+
+/// Hands the items let go this frame to the navigation grid's refresh.
+fn send_let_go(mut items: ResMut<ItemCursor>, mut moved: MessageWriter<exa_world::nav::NavMoved>) {
+    if !items.let_go.is_empty() {
+        moved.write_batch(items.let_go.drain(..));
     }
 }
 
