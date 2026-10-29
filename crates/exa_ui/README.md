@@ -129,8 +129,9 @@ with argument 0. A close mark of -4 still counts one, and the square
 remains. A style that is not that band, and a wide bit, count none. Every dispatch then passes the frame to one call, restores
 the saved register, sets the stack to the frame, and pops the frame. A held
 band, a wide form, and a style that is not that band each do so. The helper then releases one string slot that starts
-empty, and an empty slot is not freed. A held band, a wide form, and a
-style that is not that band each release it once. The bytes the jump skips
+empty, and an empty slot is not freed (`skin::DrawTempText`, whose
+`release` answers whether the slot held one). A held band, a wide form, and
+a style that is not that band each release it once. The bytes the jump skips
 do not run. A span bar at unit 5 from 10, 20 with span 100 and stored word 4
 draws a middle from 15, 20 to 105, 28, a left cap from 10, 20 to 15, 28, and
 a right cap from 105, 20 to 110, 28. Stored word -3 uses thickness -6.

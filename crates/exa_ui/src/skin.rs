@@ -6954,6 +6954,39 @@ pub fn draw_form_page(
     }
 }
 
+/// The temporary text a form's draw keeps while it paints its page. The
+/// original's draw record is finalised after the page, releasing the one
+/// string it holds; a record that never took a string releases nothing.
+/// Exarust's page model keeps no text, so this is the owner of that slot: a
+/// caller hands its label text in, the draw reads it, and the release frees
+/// it exactly once.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DrawTempText(Option<String>);
+
+impl DrawTempText {
+    /// An empty slot: nothing to release.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// A slot holding `text`, as the draw takes a form's label text.
+    pub fn holding(text: &str) -> Self {
+        Self(Some(text.to_string()))
+    }
+
+    /// The text the slot holds, if any.
+    pub fn text(&self) -> Option<&str> {
+        self.0.as_deref()
+    }
+
+    /// Releases the temporary string: true when the slot held one, false when
+    /// it was already empty. The original's finaliser frees an empty slot
+    /// never.
+    pub fn release(&mut self) -> bool {
+        self.0.take().is_some()
+    }
+}
+
 /// A control label's measured placement. The text width is measured in the
 /// control's font; the line height and base come from the same font.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -12637,6 +12670,21 @@ mod tests {
         assert_eq!(thumb.texture_shift, [-40.0 / 512.0, 0.0]);
         assert_eq!(batch.texture_shift, [0.0, 0.0]);
         assert_eq!(drawn.arrow_icons.len(), 2);
+    }
+
+    #[test]
+    fn a_form_draw_releases_its_temporary_string_once() {
+        // An empty slot releases nothing.
+        let mut slot = DrawTempText::new();
+        assert_eq!(slot.text(), None);
+        assert!(!slot.release());
+        assert_eq!(slot.text(), None);
+        // A held string is released on the first call and gone on the second.
+        let mut slot = DrawTempText::holding("Journal");
+        assert_eq!(slot.text(), Some("Journal"));
+        assert!(slot.release());
+        assert_eq!(slot.text(), None);
+        assert!(!slot.release());
     }
 
     fn page_place() -> FormPagePlace {
