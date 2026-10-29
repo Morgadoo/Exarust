@@ -70,6 +70,12 @@ pub const SLIDER_TRACK: [u32; 4] = [0x3e80_0000, 0x3f4c_cccd, 0x3e80_0000, 0x3f8
 /// Thumb sample.
 pub const SLIDER_THUMB: [u32; 4] = [0x3ecc_cccd, 0x3f4c_cccd, 0x3ecc_cccd, 0x3f80_0000];
 
+/// Box sample of a check box: 0.75, 0.8, 0.75, 1.
+pub const CHECK_BOX: [u32; 4] = [0x3f40_0000, 0x3f4c_cccd, 0x3f40_0000, 0x3f80_0000];
+
+/// Mark sample a lit check box draws over its box: 0.85, 0.8, 0.85, 1.
+pub const CHECK_MARK: [u32; 4] = [0x3f59_999a, 0x3f4c_cccd, 0x3f59_999a, 0x3f80_0000];
+
 /// End-cap sample on a scroll bar: 0.7, 0.1, 0.7, 0.2.
 pub const SCROLL_EDGE: [u32; 4] = [0x3f33_3333, 0x3dcc_cccd, 0x3f33_3333, 0x3e4c_cccd];
 
@@ -583,6 +589,63 @@ pub fn draw_flat_slider(unit: i32, place: SliderPlace) -> SliderDraw {
             ],
         }),
     }
+}
+
+/// The eight-float sample record the line skin binds before each of its
+/// quads: every corner's u and v, in the order the corners are drawn. The
+/// sample words a quad carries are the record's first two corners; the
+/// rest is the record's own (`None` for a sample without one here).
+pub fn sample_corners(sample: [u32; 4]) -> Option<[f32; 8]> {
+    Some(match sample {
+        SLIDER_CAP => [0.2, 0.8, 0.2, 1.0, 0.25, 1.0, 0.25, 0.8],
+        SLIDER_TRACK => [0.25, 0.8, 0.25, 1.0, 0.35, 1.0, 0.35, 0.8],
+        SLIDER_THUMB => [0.4, 0.8, 0.4, 1.0, 0.5, 1.0, 0.5, 0.8],
+        FRAME_CORNER => [0.4, 0.3, 0.4, 0.45, 0.475, 0.45, 0.475, 0.3],
+        FRAME_EDGE => [0.475, 0.3, 0.475, 0.35, 0.575, 0.35, 0.575, 0.3],
+        CHECK_BOX => [0.75, 0.8, 0.75, 1.0, 0.85, 1.0, 0.85, 0.8],
+        CHECK_MARK => [0.85, 0.8, 0.85, 1.0, 0.95, 1.0, 0.95, 0.8],
+        _ => return None,
+    })
+}
+
+/// The line skin's check box: a four-unit square at the record's place
+/// (its lower left corner first, then up, across and down), and the mark
+/// square over it while the box is lit (state bit 0x40). The front draws
+/// no tick: the line skin's first flag word is set.
+pub fn check_box_quads(unit: i32, x: i32, y: i32, state: u32) -> Vec<SliderQuad> {
+    let side = unit.wrapping_shl(2);
+    let corners = [(x, y + side), (x, y), (x + side, y), (x + side, y + side)];
+    let mut quads = vec![quad(CHECK_BOX, corners)];
+    if state & 0x40 != 0 {
+        quads.push(quad(CHECK_MARK, corners));
+    }
+    quads
+}
+
+/// Appends line-skin quads to an open textured batch in `ink`, each corner
+/// with its sample record's u and v.
+pub fn push_line_quads(batch: &mut SkinBatch, quads: &[SliderQuad], ink: SkinInk) {
+    batch.set_ink(ink);
+    for q in quads {
+        let uv = sample_corners(q.sample).unwrap_or_else(|| {
+            let s = q.sample.map(f32::from_bits);
+            [s[0], s[1], s[2], s[3], s[2], s[3], s[0], s[1]]
+        });
+        for (k, (x, y)) in q.corners.iter().enumerate() {
+            batch.set_uv(uv[k * 2], uv[k * 2 + 1]);
+            batch.vertex(*x as f32, *y as f32);
+        }
+    }
+}
+
+/// An open batch in the line skin's textured mode: program 2 with the
+/// skin atlas's `TexCol` of 0 (its texture word has no 0xc000 bit), so the
+/// atlas gives the alpha and the ink the colour.
+pub fn line_skin_batch() -> SkinBatch {
+    let mut batch = SkinBatch::new();
+    batch.select(2, 0, false);
+    batch.begin();
+    batch
 }
 
 /// A frame rectangle. `mark` is the word that keeps an idle ink.
@@ -12848,5 +12911,59 @@ mod tests {
             (glow.begin_calls, glow.end_calls, glow.blend),
             (1, 1, 0x201)
         );
+    }
+}
+
+#[cfg(test)]
+mod line_quad_tests {
+    use super::*;
+
+    #[test]
+    fn the_sample_records_continue_the_quads_words() {
+        for sample in [
+            SLIDER_CAP,
+            SLIDER_TRACK,
+            SLIDER_THUMB,
+            FRAME_CORNER,
+            FRAME_EDGE,
+            CHECK_BOX,
+            CHECK_MARK,
+        ] {
+            let corners = sample_corners(sample).unwrap();
+            assert_eq!(&corners[..4], &sample.map(f32::from_bits)[..]);
+        }
+        assert_eq!(sample_corners(SCROLL_BAR), None);
+        assert_eq!(
+            sample_corners(SLIDER_THUMB),
+            Some([0.4, 0.8, 0.4, 1.0, 0.5, 1.0, 0.5, 0.8])
+        );
+    }
+
+    #[test]
+    fn a_check_box_is_a_four_unit_square_and_its_mark_when_lit() {
+        let idle = check_box_quads(4, 10, 20, 0);
+        assert_eq!(idle.len(), 1);
+        assert_eq!(idle[0].corners, [(10, 36), (10, 20), (26, 20), (26, 36)]);
+        let lit = check_box_quads(6, 10, 20, 0x60);
+        assert_eq!(lit.len(), 2);
+        assert_eq!(lit[1].sample, CHECK_MARK);
+        assert_eq!(lit[1].corners[3], (34, 44));
+    }
+
+    #[test]
+    fn line_quads_take_their_corners_samples_in_order() {
+        let mut batch = line_skin_batch();
+        push_line_quads(&mut batch, &check_box_quads(4, 0, 0, 0), [1, 2, 3, 4]);
+        batch.end_quads();
+        assert_eq!(batch.mode, SkinMode::Textured);
+        assert_eq!(batch.tex_col, Some(0.0));
+        let primitive = &batch.primitives[0];
+        let vertices = batch.vertices_of(primitive);
+        assert!(vertices.len() >= 4);
+        assert_eq!((vertices[0].u, vertices[0].v), (0.75, 0.8));
+        assert_eq!((vertices[0].x, vertices[0].y), (0.0, 16.0));
+        assert_eq!((vertices[1].u, vertices[1].v), (0.75, 1.0));
+        assert_eq!(vertices[1].y, 0.0);
+        assert_eq!(vertices[0].ink, [1, 2, 3, 4]);
     }
 }

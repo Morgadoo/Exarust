@@ -2660,11 +2660,41 @@ anti-aliasing row set to 0 and disabled while super-sampling is on.
 Escape closes the form without Apply (Exarust's; the original's form has no
 key for it), as hiding the menu does: the live changes stay, the draft is
 dropped. While the key-read or warm-up screen is up the form takes no
-input. Not reproduced: the controller view (Steam Input), the power-tree
-help text box it shows, dragging the scrollbar's thumb (the wheel scrolls),
-the check box's tick glyph (an accent square stands in) and the exact skin
-draw of the check box (its box is the record's height square at its left,
-a guess). `--open-settings settings|controls` opens the form for scripted
+input.
+
+The menu stays drawn under the form: its click handler only remembers the
+3-D view and builds the form, and its draw has no test for an open form.
+What covers it is the form's own background: every form's draw hands its
+fade (1 when shown) to the skin as both alpha scales, so the form group
+takes alpha 170 and the control, hot-form, label and highlight groups 125
+(`line_skin::shown_palette`), and the Settings page's own client fill lies
+over the form's. The line skin draws the controls from its atlas
+(`guiskin`, textured with `TexCol` 0, so the atlas gives the alpha and the
+ink the colour), each corner with its sample record's u and v
+(`skin::sample_corners`):
+
+- **Slider**: two two-unit caps (u 0.2–0.25) and the track between them
+  (0.25–0.35), four units tall from the record's top, then the four-unit
+  thumb (0.4–0.5) at `unit + round((w − 6·unit) · value)`, all v 0.8–1. The
+  ink is the skin's disabled ink when disabled, the highlight group's
+  eighth shade while held, else its idle ink; the thumb takes the highlight
+  shade at alpha 255 while hovered.
+- **Check box**: a four-unit square (u 0.75–0.85) and, while lit, its mark
+  (0.85–0.95), in the disabled ink, the hover ink, or the on ink. The front
+  draws no tick glyph: the line skin's first flag word is set.
+- **Button**: four three-unit corners (u 0.4–0.475, v 0.3–0.45), the top
+  and bottom edges a unit thick (0.475–0.575, v 0.3–0.35) and the sides
+  when taller than four units, in the disabled ink (also a grouped or toggle
+  button that is off), the idle ink (a lone button) or the on ink; the
+  caption in the label group's third shade when disabled, its sixth when
+  off, its ninth a pixel lower when on.
+
+The three inks are the skin constructor's 255, 250, 230 with the alphas the
+line skin's fade hand-off writes, 80, 104 and 128 times the fade
+(`line_skin::line_control_inks`). Not reproduced: the controller view
+(Steam Input), the power-tree help text box it shows, dragging the
+scrollbar's thumb (the wheel scrolls), and a hovered button's caption
+routine (drawn as the off caption). `--open-settings settings|controls` opens the form for scripted
 runs ([DEBUGGING.md](DEBUGGING.md)).
 
 ### Apply, Cancel and Defaults

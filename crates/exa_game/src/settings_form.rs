@@ -25,14 +25,16 @@ use exa_ui::gui_controls::{CheckLabelInk, Control, check_label_ink, label_x, sta
 use exa_ui::gui_core::GuiRect;
 use exa_ui::gui_draw::{GuiFrames, GuiLayer, GuiTextures, LayerTexture, SKIN_TEXTURE, text_batch};
 use exa_ui::gui_font::GuiFont;
+use exa_ui::line_skin::{hover_alpha, line_control_inks, shown_palette};
 use exa_ui::modal_screens::ScreenText;
 use exa_ui::settings::{
     self, CHILD_ATTRIBUTES, CONTROLS_ATTRIBUTES, CONTROLS_STYLE, FormAction, FormEvent, FormState,
-    HIDDEN, Part, SEPARATOR_CLASS,
+    HIDDEN, HOVER_BITS, HOVERED, Part, SEPARATOR_CLASS,
 };
 use exa_ui::skin::{
-    ControlSliderPlace, FormScroll, GuiRect as SkinRect, SkinBatch, SkinInk, SkinPalette,
-    draw_accent_bar, draw_control_box, draw_control_slider, draw_style_frames, four_stop_rect,
+    FormScroll, FramePlace, GuiRect as SkinRect, SkinBatch, SkinInk, SkinPalette, SliderPlace,
+    check_box_quads, draw_flat_slider, draw_frame, draw_style_frames, four_stop_rect,
+    line_skin_batch, push_line_quads,
 };
 
 use crate::bindings::Bindings;
@@ -386,42 +388,84 @@ fn paint_control(
     }
     let rect = GuiRect::new(origin.0 + c.x, origin.1 + c.y, c.w, c.h);
     let caption = String::from_utf8_lossy(&c.text);
-    let on = c.state & state::ON != 0;
-    let lit = c.state & state::LIT != 0;
     let mut out = Painted::default();
+    let inks = line_control_inks(1.0);
+    let hovered = c.state & HOVER_BITS == HOVERED;
+    let hover_ink = {
+        let mut ink = palette.highlight[7];
+        ink[3] = hover_alpha(1.0);
+        ink
+    };
     match c.class {
         1 => {
-            out = gui_paint::paint_button(
-                rect,
-                c.style,
+            // The line skin's frame: four three-unit corners, the top and
+            // bottom edges and, when taller than four units, the sides, in
+            // the disabled, idle or on ink.
+            let draw = draw_frame(
                 unit,
-                palette,
-                text.font,
-                text.size,
-                &caption,
-                on,
-                lit && !on,
+                FramePlace {
+                    x: rect.left as i16,
+                    y: rect.top as i16,
+                    w: c.w as i16,
+                    h: c.h as i16,
+                    mode: c.style,
+                    state: c.state,
+                    mark: c.group as i16,
+                },
             );
+            let ink = match draw.ink {
+                2 => inks[1],
+                3 => inks[2],
+                _ => inks[0],
+            };
+            let mut batch = line_skin_batch();
+            push_line_quads(&mut batch, &draw.quads, ink);
+            batch.end_quads();
+            out.push(GuiLayer::new(batch, LayerTexture::Named(SKIN_TEXTURE)));
+            // The caption: the label group's third shade when disabled, its
+            // sixth when off, its ninth a pixel lower when on. A hovered
+            // button's caption goes through another text routine that was
+            // not traced; it is drawn as the off one, a pixel lower while
+            // lit (a guess).
+            if let Some(size) = text.size {
+                let (ink, down) = if c.state & state::DISABLED != 0 {
+                    (palette.text[2], 0)
+                } else if hovered {
+                    (palette.text[5], i32::from(c.state & state::LIT != 0))
+                } else if c.state & (state::ON | state::LIT) == 0 {
+                    (palette.text[5], 0)
+                } else {
+                    (palette.text[8], 1)
+                };
+                let bytes = caption.as_bytes();
+                let (x, y) =
+                    gui_paint::caption_origin(rect, c.style, text.font, bytes, palette, unit);
+                out.push(gui_paint::caption_layer(
+                    text.font,
+                    size,
+                    bytes,
+                    (x, y + down),
+                    ink,
+                ));
+            }
         }
         2 => {
-            // The box is the record's height square at its left (a guess:
-            // the check box's skin draw was not traced) and the tick, while
-            // on or lit, an accent square inside it where the tick glyph
-            // would be (the icon atlas's tick is not wired).
-            let side = rect.height();
-            let square = GuiRect::new(rect.left, rect.top, side, side);
-            let mut batch = SkinBatch::new();
-            draw_control_box(&mut batch, skin_rect(square), 0.0, c.state, palette);
-            if on || lit {
-                let inset = (side / 4).max(1);
-                let tick = GuiRect::new(
-                    square.left + inset,
-                    square.top + inset,
-                    side - inset * 2,
-                    side - inset * 2,
-                );
-                draw_accent_bar(&mut batch, skin_rect(tick), palette);
-            }
+            // The line skin's box: a four-unit square in the disabled ink,
+            // the hover ink, or the on ink, with its mark square while lit.
+            let ink = if c.state & state::DISABLED != 0 {
+                inks[0]
+            } else if hovered {
+                hover_ink
+            } else {
+                inks[2]
+            };
+            let mut batch = line_skin_batch();
+            push_line_quads(
+                &mut batch,
+                &check_box_quads(unit, rect.left, rect.top, c.state),
+                ink,
+            );
+            batch.end_quads();
             out.push(GuiLayer::new(batch, LayerTexture::Named(SKIN_TEXTURE)));
             let x = label_x(c, unit) + origin.0;
             let label = GuiRect::new(x, rect.top, (rect.right - x).max(1), rect.height());
@@ -435,22 +479,35 @@ fn paint_control(
             out.layers.extend(caption_layers.layers);
         }
         4 => {
-            let mut batch = SkinBatch::new();
-            draw_control_slider(
-                &mut batch,
-                ControlSliderPlace {
-                    rect: skin_rect(rect),
-                    inset: c.margin,
-                    thumb: c.knob,
+            // The line skin's slider: two two-unit caps and the track four
+            // units tall, in the disabled, held or idle ink, then the
+            // four-unit thumb, in the hover ink while hovered.
+            let draw = draw_flat_slider(
+                unit,
+                SliderPlace {
+                    x: rect.left as i16,
+                    y: rect.top as i16,
+                    w: c.w as i16,
+                    h: c.h as i16,
+                    mode: c.style,
                     state: c.state,
-                    style: c.style,
-                    fraction: c.value,
-                    unit,
+                    value_bits: c.value.to_bits(),
+                    lip: 0,
                 },
-                &[],
-                palette,
             );
-            out.push(GuiLayer::new(batch, LayerTexture::Named(SKIN_TEXTURE)));
+            if let Some(flat) = draw.flat {
+                let ink = match draw.ink {
+                    0 => inks[0],
+                    1 => palette.highlight[7],
+                    _ => inks[1],
+                };
+                let mut batch = line_skin_batch();
+                push_line_quads(&mut batch, &flat.quads[..3], ink);
+                let thumb = if hovered { hover_ink } else { ink };
+                push_line_quads(&mut batch, &flat.quads[3..], thumb);
+                batch.end_quads();
+                out.push(GuiLayer::new(batch, LayerTexture::Named(SKIN_TEXTURE)));
+            }
             if !caption.is_empty() {
                 let caption_layers = gui_paint::paint_label(
                     rect, c.style, unit, palette, text.font, text.size, &caption,
@@ -502,7 +559,8 @@ fn paint_control(
 /// clipped to the page's client (the Controls page scrolled, with its
 /// scrollbar).
 pub fn paint_form(form: &FormState, textures: &GuiTextures) -> Painted {
-    let palette = gui_paint::palette();
+    // A shown form hands its fade of 1 to the skin before it draws.
+    let palette = shown_palette(1.0);
     let unit = form.unit();
     let level = exa_ui::gui_font::level_for_unit(unit);
     let (font, size) =
@@ -625,7 +683,7 @@ fn draw(
     let level = exa_ui::gui_font::level_for_unit(unit);
     let (font, size) =
         crate::gui_screens::screen_font(exa_ui::gui_font::gui_level(level).main, textures);
-    let colour = text_colour(&gui_paint::palette());
+    let colour = text_colour(&shown_palette(1.0));
     if let Some(key) = &editor.screen {
         paint_modal(
             &key.paint(&font, screen, colour),
@@ -718,6 +776,16 @@ mod tests {
         // Without a font texture only skin and fill layers draw: the frame,
         // the visible buttons and rules, the page and its controls.
         assert!(painted.layers.len() > 20);
+        // The buttons and sliders draw in the line skin's textured mode
+        // with its idle ink, the checkboxes with its on ink.
+        let has_ink = |ink: [u8; 4]| {
+            painted.layers.iter().any(|l| {
+                l.batch.tex_col == Some(0.0)
+                    && l.batch.vertices.first().is_some_and(|v| v.ink == ink)
+            })
+        };
+        assert!(has_ink([255, 250, 230, 104]));
+        assert!(has_ink([255, 250, 230, 128]));
         let clipped = painted.layers.iter().filter(|l| l.clip.is_some()).count();
         assert!(clipped > 10);
         assert!(

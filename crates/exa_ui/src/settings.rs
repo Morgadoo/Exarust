@@ -65,6 +65,10 @@ pub const SCROLL_STEP: f32 = 0.25;
 pub const HIDDEN: u32 = 0x110;
 /// The form's title.
 pub const TITLE: &str = "Settings";
+/// A record's hover bits.
+pub const HOVER_BITS: u32 = 0xf_0000;
+/// The hover word a hovered record takes (it answers no bits of its own).
+pub const HOVERED: u32 = 0x1_0000;
 /// The video memory readout when the driver gives no figure.
 pub const UNKNOWN: &str = "Unknown";
 
@@ -1446,6 +1450,19 @@ impl FormState {
             );
         }
         if hit != self.hovered {
+            // The form's hover moves the hover bits (0x10000 for a record
+            // that answers no bits of its own) from the old record to the
+            // new one; the skin's thumb, box and caption read them.
+            if let Some((part, i)) = self.hovered
+                && let Some(c) = self.controls_mut(part).get_mut(i)
+            {
+                c.state &= !HOVER_BITS;
+            }
+            if let Some((part, i)) = hit
+                && let Some(c) = self.controls_mut(part).get_mut(i)
+            {
+                c.state = (c.state & !HOVER_BITS) | HOVERED;
+            }
             for (target, over) in [(self.hovered, false), (hit, true)] {
                 if let Some((part, i)) = target
                     && self.controls(part).get(i).is_some_and(|c| c.class != 4)
@@ -1770,6 +1787,19 @@ mod form_tests {
         form.set_device(Some("GPU"));
         assert_eq!(form.geometry.settings[1].text, b"GPU".to_vec());
         assert_eq!(form.geometry.settings[3].text, b"Unknown".to_vec());
+    }
+
+    #[test]
+    fn the_hovered_record_takes_the_hover_bits() {
+        let mut form = FormState::open(SCREEN, 4);
+        form.pointer(647, 116);
+        assert_eq!(form.geometry.main[1].state & HOVER_BITS, HOVERED);
+        // Moving to the volume slider moves the bits.
+        form.pointer(427 + 200, 244);
+        assert_eq!(form.geometry.main[1].state & HOVER_BITS, 0);
+        assert_eq!(form.geometry.settings[6].state & HOVER_BITS, HOVERED);
+        // A trackbar takes no hover message: its value is unchanged.
+        assert_eq!(form.geometry.settings[6].value, 0.0);
     }
 
     #[test]

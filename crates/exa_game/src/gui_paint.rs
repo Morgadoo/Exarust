@@ -318,7 +318,7 @@ pub fn paint_child(
 
 /// Where a control's caption starts: the skin's own placement from the
 /// control's style (its x from bits 0x7000, its baseline from bits 0x700).
-fn caption_origin(
+pub(crate) fn caption_origin(
     rect: GuiRect,
     style: u32,
     font: &GuiFont,
@@ -352,7 +352,7 @@ fn caption_origin(
     (draw.x, draw.y)
 }
 
-fn caption_layer(
+pub(crate) fn caption_layer(
     font: &GuiFont,
     font_texture: (u16, u16),
     text: &[u8],
