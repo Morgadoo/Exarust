@@ -126,6 +126,15 @@ f32  radius
 u32  ?
 ```
 
+Two `flags` bits ask the importer's finalise pass to hide a node's tree:
+`0x100000` hides every light node (class `flags & 0x5f == 5`) under it, and
+`0x200000` hides light and fire (`0x3DD0E002`) nodes once the level's
+darkness is above the engine's stored f32 `0.12` (strict; exactly `0.12`
+and NaN leave them shown). The hidden state is bit `2` of `flags2`. Every
+other `flags & 0x300000` value matches neither rule. Exarust keeps this as
+`Scene::apply_visibility_flags`; a whole level load has no darkness value
+to pass it yet.
+
 The box is the mesh's vertex bounds: for every one of the 103 plain weapon
 models of `Objects.rpk`, centre.y + extent.y is the highest vertex to
 0.05 cm. The original keeps centre and half extents on the node and

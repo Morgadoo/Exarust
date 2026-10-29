@@ -228,10 +228,14 @@ fn apply_hidden(
     at: usize,
     hide_lights: bool,
     darkness: f32,
+    remaining: usize,
 ) {
     let Some(node) = nodes.get_mut(at) else {
         return;
     };
+    if remaining == 0 {
+        return;
+    }
     let hides = if hide_lights {
         node.is_light_node()
     } else {
@@ -244,7 +248,7 @@ fn apply_hidden(
     }
     if let Some(kids) = children.get(at) {
         for &child in kids {
-            apply_hidden(nodes, children, child, hide_lights, darkness);
+            apply_hidden(nodes, children, child, hide_lights, darkness, remaining - 1);
         }
     }
 }
@@ -1259,7 +1263,15 @@ impl Scene {
             })
             .collect();
         for (root, hide_lights) in roots {
-            apply_hidden(&mut self.nodes, &children, root, hide_lights, darkness);
+            let depth = self.nodes.len();
+            apply_hidden(
+                &mut self.nodes,
+                &children,
+                root,
+                hide_lights,
+                darkness,
+                depth,
+            );
         }
     }
 
