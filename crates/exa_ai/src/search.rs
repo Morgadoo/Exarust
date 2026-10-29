@@ -219,6 +219,85 @@ pub enum Loot {
     Other,
 }
 
+/// Section tags of an item record the search reads (each section a `u32`
+/// tag and a `u32` size counting its eight-byte header).
+pub mod section {
+    /// The apparel body.
+    pub const APPAREL: u32 = 0x1000;
+    pub const WEAPON: u32 = 0x4000;
+    /// The operative and container parts make an item worth gathering.
+    pub const OPERATIVE: u32 = 0x1_0000;
+    pub const CONTAINER: u32 = 0x2_0000;
+    /// The model section, whose byte `0x1C` on from its body is the model
+    /// byte the wear room reads.
+    pub const MODEL: u32 = 0x10_0000;
+}
+
+/// Where the apparel and weapon values sit in their section bodies.
+mod at {
+    /// Apparel: the occupancy table (20 `u64`), the coverage (20 `u32`),
+    /// the four protection bytes and the special byte.
+    pub const OCCUPANCY: usize = 0x10;
+    pub const COVERAGE: usize = 0x150;
+    pub const PROTECTION: usize = 0x1A0;
+    pub const APPAREL_SPECIAL: usize = 0x214;
+    /// The model section's model byte.
+    pub const MODEL_MARK: usize = 0x1C;
+    /// Weapon: flags word, quality, damage, thrust, the tier byte (its low
+    /// five bits) and the special word.
+    pub const QUALITY: usize = 0x0C;
+    pub const DAMAGE: usize = 0x0D;
+    pub const THRUST: usize = 0x33;
+    pub const TIER: usize = 0x42;
+    pub const WEAPON_SPECIAL: usize = 0x44;
+}
+
+fn u32_at(body: &[u8], at: usize) -> u32 {
+    body.get(at..at + 4)
+        .map_or(0, |b| u32::from_le_bytes(b.try_into().expect("4 bytes")))
+}
+
+fn u64_at(body: &[u8], at: usize) -> u64 {
+    body.get(at..at + 8)
+        .map_or(0, |b| u64::from_le_bytes(b.try_into().expect("8 bytes")))
+}
+
+fn byte_at(body: &[u8], at: usize) -> u8 {
+    body.get(at).copied().unwrap_or(0)
+}
+
+impl Loot {
+    /// What the search reads of an item record's payload, in the order its
+    /// weighing asks: the apparel body first, then the weapon section, then
+    /// an operative or container part; `None` for an item with none of
+    /// them, which the gathering skips. Bytes past a short section read 0.
+    pub fn of_payload(payload: &[u8]) -> Option<Self> {
+        use exa_formats::containers::section as find;
+        if let Some(body) = find(payload, section::APPAREL) {
+            let mark = find(payload, section::MODEL).map_or(0, |m| byte_at(m, at::MODEL_MARK));
+            return Some(Loot::Apparel(Box::new(Apparel {
+                coverage: std::array::from_fn(|i| u32_at(body, at::COVERAGE + 4 * i)),
+                protection: std::array::from_fn(|i| byte_at(body, at::PROTECTION + i)),
+                occupancy: std::array::from_fn(|i| u64_at(body, at::OCCUPANCY + 8 * i)),
+                special: byte_at(body, at::APPAREL_SPECIAL),
+                model_mark: mark,
+            })));
+        }
+        if let Some(body) = find(payload, section::WEAPON) {
+            return Some(Loot::Weapon(Arm {
+                flags: u32_at(body, 0),
+                quality: byte_at(body, at::QUALITY),
+                damage: byte_at(body, at::DAMAGE),
+                thrust: byte_at(body, at::THRUST),
+                tier: byte_at(body, at::TIER),
+                special: u32_at(body, at::WEAPON_SPECIAL),
+            }));
+        }
+        (find(payload, section::OPERATIVE).is_some() || find(payload, section::CONTAINER).is_some())
+            .then_some(Loot::Other)
+    }
+}
+
 /// Apparel: coverage per bone (1 to 20), the four protection bytes, the
 /// occupancy table, the special byte, and a model byte the wear room reads.
 #[derive(Debug, Clone, PartialEq)]

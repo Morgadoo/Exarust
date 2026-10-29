@@ -76,6 +76,7 @@ pub mod mind;
 pub mod nav_camera;
 pub mod nav_drag;
 pub mod nav_pick;
+pub mod npc_search;
 pub mod pair_trace;
 pub mod panel_live;
 pub mod path_probe;
@@ -139,6 +140,7 @@ impl Plugin for GamePlugin {
         .add_plugins((
             body_inventory::BodyInventoryPlugin,
             panel_live::PanelLivePlugin,
+            npc_search::NpcSearchPlugin,
         ))
         .init_resource::<prelude::Tips>()
         .add_plugins((

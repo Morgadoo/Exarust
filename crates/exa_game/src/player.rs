@@ -1635,6 +1635,7 @@ fn request_attacks(
             renew_ms: state.renew_ms,
             side_started_ms: attacker.side_started_ms,
             feint: fighter.is_some_and(Fighter::feint),
+            strikers: attack::held_strikers(entity, blades.iter().map(|(b, _)| b)),
         };
         let Some(start) = attack::execute(pb.attack.request(), busy) else {
             continue;

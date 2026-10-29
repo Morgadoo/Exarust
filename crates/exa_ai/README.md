@@ -78,7 +78,7 @@ the standard one.
 | `activity` | applying roles: the init scripts run through `exa_script`'s interpreter (newest role first, with the role's own variables), the mind-control follow, the idle state per activity, the idle-activity registry (the search as 6, registered by `register_search`), and the activity base's four virtuals (reset and tick answer false, stop and restart do nothing) |
 | `entity` | the AI's perceivable things: the base's position from the linked scene object (the origin when unlinked), its abstract assessment, the zero avoidance hint and the aim point that defaults to the position, and the search's goal entity (weight 5, attraction `1 − d/1200 cm` capped at 0.99, out of reach past 12 m) |
 | `behaviour` | the character controllers' base: the body's ground point, the reset calling the body's hook then the state's, the attach clearing the body's two pending handles and remembering the scene object, and the event counts (kind 0 adds 3 to the body's behaviour count, kinds 1 and 2 add 1 to the controller's in a clinch) |
-| `search` | the companion's search: gathering over the room grid, picking, the look sweep, the forced path, arrival, kneeling, looting worn items, packs and containers, item worth, wear room, comments to the leader, re-arming, tidying, and the world edits its deeds carry out (`apply_deed`) |
+| `search` | the companion's search: gathering over the room grid, picking, the look sweep, the forced path, arrival, kneeling, looting worn items, packs and containers, item worth, wear room, comments to the leader, re-arming, tidying, the world edits its deeds carry out (`apply_deed`), and an item record read as its weighing reads it (`Loot::of_payload`: apparel body, weapon section, operative or container part) |
 | `manager` | the AI manager's frame (dormant ticks, rising undead, the 3 cm zone check), zone deeds, the group alert (raised, held ten seconds and dropped one every ten), the approach clamp, and the scene node the level's AI start-up makes once (`_Temp`, flag `0x100000`) |
 | `lookup` | a simulation's character by record id and a status effect by a masked word (first match in list order) |
 | `brain` | the components and systems that carry roles into the running game: applying roles again when the held set changes, the attitude rating and waking, the perception pass (line of sight, the ally sense and the sense a race installs), the AI tick once a body tick (morale, the group alert's ten-second decay, the contact integration, the target pass with the room graph, the room cell and nearby list, the engagement, the look chain and the out-of-combat body turn), and the flight's walk to a room's exit |
@@ -218,8 +218,9 @@ slots); encounter, corpse, dialogue and condition scripts and
 combatant's mind-power overrides and group blend (they are in `combatant`);
 the roam and patrol choose
 their wander and home points from the level's rooms (`rooms::room_exits`,
-`idle::pick_wander`) but no system walks them yet, and the search's deeds
-have no item instances, containers or corpses to act on there yet.
+`idle::pick_wander`) but no system walks them yet. The search runs in the
+running game under the follow (`exa_game::npc_search`) over the level's dead
+bodies; containers and loose items have no instances there yet.
 
 ## The combatant
 

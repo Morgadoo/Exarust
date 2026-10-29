@@ -266,6 +266,19 @@ pub struct Busy {
     pub side_started_ms: Option<u64>,
     /// It has Feint.
     pub feint: bool,
+    /// How many held items it strikes with: its weapons, or the two fists
+    /// (or claws) the empty hands' set-up holds ([`held_strikers`]). The
+    /// executor starts nothing without one.
+    pub strikers: usize,
+}
+
+/// How many held items a fighter strikes with, from the blades it wields:
+/// the original's held count, which counts the fists. The empty hands'
+/// set-up puts both hands into the held list (2), a weapon holds 1, two
+/// weapons 2; only the empty-hands reset between them (and a body without
+/// hands) leaves 0.
+pub fn held_strikers<'a>(wielder: Entity, blades: impl IntoIterator<Item = &'a Blade>) -> usize {
+    blades.into_iter().filter(|b| b.wielder == wielder).count()
 }
 
 /// What the executor starts: the attack and, for a stab or an overhead,
@@ -293,8 +306,13 @@ impl Start {
 /// since the last attack tick, then an overhead unless a stab or an
 /// overhead plays, a stab unless a stab plays, else a side attack unless a
 /// side attack plays. A stab still has to pass the facing gate
-/// ([`stab_faces`]).
+/// ([`stab_faces`]). Before any of that, a fighter that holds no striker
+/// (`strikers` 0: not even its fists) starts nothing; the original tests
+/// the held count first, as a signed count of at least 1.
 pub fn execute(request: Request, at: Busy) -> Option<Start> {
+    if at.strikers < 1 {
+        return None;
+    }
     let soon_after_side = at
         .side_started_ms
         .is_some_and(|t| at.now_ms < t + OVERHEAD_AFTER_RELEASE_MS);
@@ -569,12 +587,62 @@ mod tests {
             last_tick_ms: last,
             cooldown_ms: cooldown,
             playing,
+            strikers: 2,
             ..Busy::default()
         }
     }
 
     fn kind(start: Option<Start>) -> Option<AttackKind> {
         start.map(|s| s.kind)
+    }
+
+    /// The held count comes first: with no striker held, not even the
+    /// fists, nothing starts, neither a free side attack nor a released
+    /// swing's overhead; the two fists count as two strikers, as the
+    /// empty hands' set-up holds them, and one weapon as one.
+    #[test]
+    fn nothing_starts_without_a_held_striker() {
+        let main = Request::default();
+        let none = Busy {
+            strikers: 0,
+            ..free(1000, None, 400, None)
+        };
+        assert_eq!(execute(main, none), None);
+        let released = Busy {
+            released: true,
+            side_started_ms: Some(900),
+            ..none
+        };
+        assert_eq!(execute(main, released), None);
+        assert_eq!(
+            kind(execute(
+                main,
+                Busy {
+                    strikers: 1,
+                    ..released
+                }
+            )),
+            Some(AttackKind::Overhead)
+        );
+        let me = Entity::from_raw_u32(1).unwrap();
+        let other = Entity::from_raw_u32(2).unwrap();
+        let record = WeaponRecord::build(
+            &exa_formats::weapon_record::Section::FISTS,
+            false,
+            exa_formats::weapon_record::Lengths::hand(-8.0, 9.66),
+            &exa_formats::weapon_record::Holder::AVERAGE,
+        );
+        let fists = [
+            Blade::new(me, 0.1, record),
+            Blade::new(me, 0.1, record).in_slot(Slot::Second),
+            Blade::new(other, 0.9, record),
+        ];
+        assert_eq!(held_strikers(me, fists.iter()), 2);
+        assert_eq!(held_strikers(other, fists.iter()), 1);
+        assert_eq!(
+            held_strikers(Entity::from_raw_u32(3).unwrap(), fists.iter()),
+            0
+        );
     }
 
     /// Nothing within the cooldown since the last attack tick; at it a side
@@ -661,6 +729,7 @@ mod tests {
             renew_ms: 1500,
             side_started_ms: Some(1000),
             feint: false,
+            strikers: 1,
         };
         let main = Request::default();
         assert_eq!(
@@ -752,6 +821,7 @@ mod tests {
             renew_ms: 1400,
             side_started_ms: Some(1000),
             feint: false,
+            strikers: 1,
         };
         let main = Request::default();
         assert_eq!(kind(execute(main, released)), Some(AttackKind::Overhead));

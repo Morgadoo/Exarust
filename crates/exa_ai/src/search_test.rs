@@ -1110,3 +1110,92 @@ fn dropping_into_a_container_needs_a_small_enough_item() {
         1
     );
 }
+
+/// One record section: its tag, its size counting the header, its body.
+fn record_section(tag: u32, body: &[u8]) -> Vec<u8> {
+    let mut out = tag.to_le_bytes().to_vec();
+    out.extend((body.len() as u32 + 8).to_le_bytes());
+    out.extend(body);
+    out
+}
+
+/// An item record is read as the weighing reads it: the apparel body's
+/// occupancy, coverage, protection and special bytes and the model
+/// section's model byte; else the weapon section's flags, quality, damage,
+/// thrust, tier byte and special word; else an operative or container part
+/// makes it worth gathering; a record with none of them is not.
+#[test]
+fn an_item_record_reads_as_the_weighing_reads_it() {
+    let mut apparel = vec![0u8; 0x218];
+    apparel[0x10 + 8 * 3..0x10 + 8 * 4].copy_from_slice(&0x0102u64.to_le_bytes());
+    apparel[0x150 + 4 * 9..0x150 + 4 * 10].copy_from_slice(&75u32.to_le_bytes());
+    apparel[0x150 + 4 * 19..0x150 + 4 * 20].copy_from_slice(&120u32.to_le_bytes());
+    apparel[0x1A0..0x1A4].copy_from_slice(&[10, 20, 30, 40]);
+    apparel[0x214] = 2;
+    let mut model = vec![0u8; 0x20];
+    model[0x1C] = 51;
+    let mut payload = record_section(section::MODEL, &model);
+    payload.extend(record_section(section::APPAREL, &apparel));
+    payload.extend(record_section(section::WEAPON, &[0; 0x50]));
+    let Some(Loot::Apparel(piece)) = Loot::of_payload(&payload) else {
+        panic!("apparel first");
+    };
+    assert_eq!(piece.occupancy[3], 0x0102);
+    assert_eq!((piece.coverage[9], piece.coverage[19]), (75, 120));
+    assert_eq!(piece.protection, [10, 20, 30, 40]);
+    assert_eq!((piece.special, piece.model_mark), (2, 51));
+
+    let mut weapon = vec![0u8; 0x50];
+    weapon[..4].copy_from_slice(&0x11u32.to_le_bytes());
+    weapon[0x0C] = 200;
+    weapon[0x0D] = 5;
+    weapon[0x33] = 70;
+    weapon[0x42] = 0xE3;
+    weapon[0x44..0x48].copy_from_slice(&7u32.to_le_bytes());
+    let arm = Loot::of_payload(&record_section(section::WEAPON, &weapon));
+    let expected = Arm {
+        flags: 0x11,
+        quality: 200,
+        damage: 5,
+        thrust: 70,
+        tier: 0xE3,
+        special: 7,
+    };
+    assert_eq!(arm, Some(Loot::Weapon(expected)));
+    // Only the tier's low five bits count: 3 points.
+    assert_eq!(expected.value(), blade_value(0x11, 200, 5, 70, 3));
+
+    let short = Loot::of_payload(&record_section(section::WEAPON, &[1, 0, 0, 0]));
+    assert_eq!(
+        short,
+        Some(Loot::Weapon(Arm {
+            flags: 1,
+            quality: 0,
+            damage: 0,
+            thrust: 0,
+            tier: 0,
+            special: 0,
+        }))
+    );
+    assert_eq!(
+        Loot::of_payload(&record_section(section::CONTAINER, &[0; 24])),
+        Some(Loot::Other)
+    );
+    assert_eq!(
+        Loot::of_payload(&record_section(section::OPERATIVE, &[0; 8])),
+        Some(Loot::Other)
+    );
+    assert_eq!(
+        Loot::of_payload(&record_section(section::MODEL, &model)),
+        None
+    );
+    assert_eq!(Loot::of_payload(&[]), None);
+}
+
+/// The weapon value the item description routine gives, written out.
+fn blade_value(flags: u32, quality: u8, damage: u8, thrust: u8, points: u8) -> f32 {
+    let q = f32::from(quality) / 255.0;
+    let d = f32::from(damage) / 255.0;
+    let v = f32::from(thrust) / 140.0 + f32::from(points) * (q * q * 0.5 + 0.5) * (1.0 - d * 0.3);
+    if flags & 0x30 == 0x10 { v * 0.8 } else { v }
+}
