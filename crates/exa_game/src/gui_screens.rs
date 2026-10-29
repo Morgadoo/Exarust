@@ -1454,19 +1454,25 @@ fn debug_open_container(
 /// icon renders and its bulk counts in the panels.
 fn register_level_items(
     level: Option<Res<exa_world::LevelLocalItems>>,
+    records: Option<Res<exa_world::LevelLocalRecords>>,
     catalogue: Option<ResMut<exa_items::catalogue::ItemCatalogue>>,
     mut done: Local<bool>,
 ) {
     let (Some(level), Some(mut catalogue)) = (level, catalogue) else {
         return;
     };
-    if level.is_changed() {
+    if level.is_changed() || records.as_ref().is_some_and(|r| r.is_changed()) {
         *done = false;
     }
     if *done || catalogue.is_empty() {
         return;
     }
     catalogue.set_level_items(&level.0);
+    // The level's own records' description cards (a placed chest's).
+    if let Some(records) = records.as_deref() {
+        catalogue.set_level_cards(&records.records, records.strings.as_ref());
+        debug!("item catalogue: {} level cards", records.records.len());
+    }
     *done = true;
 }
 

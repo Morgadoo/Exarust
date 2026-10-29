@@ -354,6 +354,7 @@ fn scene(nodes: Vec<Node>) -> Scene {
         environment: None,
         characters: None,
         local_items: Vec::new(),
+        local_records: Vec::new(),
         local_strings: None,
         local_string_error: None,
         placed_objects: Vec::new(),

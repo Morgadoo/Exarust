@@ -92,6 +92,10 @@ pub struct Scene {
     /// The level's own object database (items its characters and placed
     /// objects refer to with local ids).
     pub local_items: Vec<Item>,
+    /// The level's own records as stored, `(id, payload)` in table order,
+    /// for the readers that need more of a record than [`Item`] keeps (the
+    /// description card's facts).
+    pub local_records: Vec<(u32, Vec<u8>)>,
     /// The level's own string table (sub-chunk `0xDBCD` of its local
     /// database), which the level's items name their text by. A table that
     /// does not decode is reported in [`Scene::level_errors`].
@@ -967,7 +971,15 @@ fn read_local_database(b: &[u8], version: u16, placed: bool) -> Result<LocalData
             len: b.len(),
         })?;
         match tag {
-            LOCAL_OBJECTS => db.items = crate::objdb::items(&Database::parse(body)?),
+            LOCAL_OBJECTS => {
+                let objects = Database::parse(body)?;
+                db.items = crate::objdb::items(&objects);
+                db.records = objects
+                    .records
+                    .iter()
+                    .map(|r| (r.id, objects.payload(r).to_vec()))
+                    .collect();
+            }
             LOCAL_STRINGS => match Library::parse(body) {
                 Ok(library) => db.strings = Some(library),
                 Err(e) => db.string_error = Some(e.to_string()),
@@ -985,6 +997,8 @@ fn read_local_database(b: &[u8], version: u16, placed: bool) -> Result<LocalData
 #[derive(Debug, Clone, Default)]
 pub struct LocalDatabase {
     pub items: Vec<Item>,
+    /// The records as stored, `(id, payload)` in table order.
+    pub records: Vec<(u32, Vec<u8>)>,
     pub strings: Option<Library>,
     /// Why a stored string table did not decode; the original's loader
     /// reports it and leaves the table out, and the rest of the database
@@ -1129,6 +1143,7 @@ impl Scene {
         let mut environment = None;
         let mut characters = None;
         let mut local_items = Vec::new();
+        let mut local_records = Vec::new();
         let mut local_strings = None;
         let mut local_string_error = None;
         let mut placed_objects = Vec::new();
@@ -1155,6 +1170,7 @@ impl Scene {
                 match read_local_database(chunk.b, version, true) {
                     Ok(db) => {
                         local_items = db.items;
+                        local_records = db.records;
                         local_strings = db.strings;
                         local_string_error = db.string_error;
                         placed_objects = db.placed_objects;
@@ -1190,6 +1206,7 @@ impl Scene {
             environment,
             characters,
             local_items,
+            local_records,
             local_strings,
             local_string_error,
             placed_objects,
@@ -1218,6 +1235,7 @@ impl Scene {
             if tag == LOCAL_DATABASE {
                 let LocalDatabase {
                     items,
+                    records: _,
                     strings,
                     string_error,
                     placed_objects: _,

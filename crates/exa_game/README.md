@@ -990,7 +990,9 @@ Taking a worn item off a corpse does not re-dress its mesh.
 clears its first-touch bit, runs a device's use (`player_controls::device_use`,
 its clock in `DeviceClock`) and then, by `player_controls::click`, sends a
 `item_card::WorldCard` (the card at once, or on the panel's 200 ms card
-timer; a world object's card is not closed with the last panel) or has the
+timer; a world object's card is not closed with the last panel; the card
+reads the scripted pointer of `--cursor` as well as the mouse, and logs at
+debug level where it opens, or why it has none) or has the
 narrator say the device's description through
 `exa_script::Conversations` (`narrate_text`, 1000 ms for device kind 3,
 100 ms otherwise). A point on plain level geometry is looked up among the

@@ -78,6 +78,11 @@ pub struct ItemCatalogue {
     level_tables: HashMap<u32, exa_formats::containers::RandomTable>,
     /// A shield record's section bytes, for the encumbrance sum.
     shields: HashMap<u32, ShieldRecord>,
+    /// The game's object string library, kept for the level's own cards.
+    strings: Option<Library>,
+    /// The loaded level's own records' card facts, under their local-tagged
+    /// ids.
+    level_cards: HashMap<u32, CardFacts>,
 }
 
 /// What one item's description card and weight rules read.
@@ -201,6 +206,7 @@ impl ItemCatalogue {
             }
             out.cards.insert(r.id, facts);
         }
+        out.strings = strings.cloned();
         out
     }
 
@@ -251,7 +257,7 @@ impl ItemCatalogue {
     /// The description card's facts for `id`.
     pub fn card_facts(&self, id: u32) -> Option<&CardFacts> {
         if id & !ID_MASK != 0 {
-            return None;
+            return self.level_cards.get(&id);
         }
         self.cards.get(&id)
     }
@@ -354,6 +360,67 @@ impl ItemCatalogue {
             if let Some(bulk) = bulk {
                 self.level_bulk.insert(tagged, bulk);
             }
+        }
+    }
+}
+
+impl ItemCatalogue {
+    /// Builds the loaded level's own records' card facts (replacing the
+    /// previous level's), under their local-tagged ids. The texts resolve
+    /// as the original's resolver does for the local tier: 0 is no text;
+    /// the inherit id reads the same field of the record the payload's
+    /// parent word names, in the game's library (a game parent's resolved
+    /// text stands for it [guess: equal unless that field is itself
+    /// inherited]); another id with bit 31 set is the level's own library
+    /// at the low 30 bits; any other id the game's library. Without the
+    /// game's library the records keep their own 16-byte names.
+    pub fn set_level_cards(&mut self, records: &[(u32, Vec<u8>)], local: Option<&Library>) {
+        use exa_formats::objdb::LOCAL;
+        self.level_cards.clear();
+        let by_id: HashMap<u32, &[u8]> = records
+            .iter()
+            .map(|(id, payload)| (id & ID_MASK, payload.as_slice()))
+            .collect();
+        for (id, payload) in records {
+            let mut facts = card_facts(payload, None, |_| None);
+            if facts.model
+                && let Some(shared) = self.strings.as_ref()
+            {
+                let text = |field: usize, pick: fn(&CardFacts) -> &String| {
+                    let raw = section(payload, MODEL).map_or(0, |m| word(m, field));
+                    let found = if raw == 0 {
+                        return None;
+                    } else if raw == INHERIT {
+                        let parent = word(payload, 0x1C);
+                        if parent & LOCAL != 0 {
+                            let raw = by_id
+                                .get(&(parent & ID_MASK))
+                                .and_then(|p| section(p, MODEL))
+                                .map_or(0, |m| word(m, field));
+                            if raw == 0 {
+                                return None;
+                            }
+                            shared.get(raw)
+                        } else {
+                            let facts = self.cards.get(&(parent & ID_MASK))?;
+                            if !facts.titled && pick(facts).is_empty() {
+                                return None;
+                            }
+                            Some(pick(facts).clone())
+                        }
+                    } else if raw & INHERIT != 0 {
+                        local.and_then(|l| l.get(raw & ID_MASK))
+                    } else {
+                        shared.get(raw)
+                    };
+                    Some(found.unwrap_or_default())
+                };
+                let name = text(NAME_ID, |f| &f.name);
+                facts.titled = name.is_some();
+                facts.name = name.unwrap_or_default();
+                facts.description = text(DESCRIPTION_ID, |f| &f.description).unwrap_or_default();
+            }
+            self.level_cards.insert(LOCAL | (id & ID_MASK), facts);
         }
     }
 }
@@ -866,6 +933,60 @@ mod tests {
         model[0x14..0x18].copy_from_slice(&name_id.to_le_bytes());
         model[0x18..0x1c].copy_from_slice(&description_id.to_le_bytes());
         model
+    }
+
+    /// The level's own records get cards under their local-tagged ids: a
+    /// bit-31 id reads the level's library, a plain id the game's, the
+    /// inherit id a game parent's text or a local parent's field in the
+    /// game's library; a zero id has no name.
+    #[test]
+    fn the_level_records_have_cards_by_the_local_resolver() {
+        use exa_formats::objdb::LOCAL;
+        let mut shared = Library::default();
+        let chest = shared.alloc();
+        assert!(shared.set(chest, b"Chest"));
+        let oak = shared.alloc();
+        assert!(shared.set(oak, b"Oak, iron bound."));
+        let mut game = header(0);
+        game.extend(section_bytes(MODEL, &model_body(b"Chest_A", chest, oak)));
+        let file = database_bytes(&[(5, game)]);
+        let db = Database::parse(&file).unwrap();
+        let mut cat = ItemCatalogue::of_database_with_strings(&db, Some(&shared));
+        let mut local = Library::default();
+        let drawers = local.alloc();
+        assert!(local.set(drawers, b"Chest of drawers"));
+        let mut own = header(0);
+        own.extend(section_bytes(
+            MODEL,
+            &model_body(b"Drawers", drawers | INHERIT, oak),
+        ));
+        let mut copy = header(5);
+        copy.extend(section_bytes(MODEL, &model_body(b"", INHERIT, INHERIT)));
+        let mut of_local = header(LOCAL | 0x54);
+        of_local.extend(section_bytes(MODEL, &model_body(b"", INHERIT, 0)));
+        let mut blank = header(0);
+        blank.extend(section_bytes(MODEL, &model_body(b"X", 0, 0)));
+        cat.set_level_cards(
+            &[(0x54, own), (0x55, copy), (0x56, of_local), (0x57, blank)],
+            Some(&local),
+        );
+        let facts = cat.card_facts(LOCAL | 0x54).unwrap();
+        assert_eq!(facts.name, "Chest of drawers");
+        assert_eq!(facts.description, "Oak, iron bound.");
+        assert!(facts.titled);
+        let facts = cat.card_facts(LOCAL | 0x55).unwrap();
+        assert_eq!((facts.name.as_str(), facts.titled), ("Chest", true));
+        assert_eq!(facts.description, "Oak, iron bound.");
+        // The local parent's name id has bit 31 set, but the inherit reads
+        // it in the game's library, whose slot is empty: it still resolves.
+        let facts = cat.card_facts(LOCAL | 0x56).unwrap();
+        assert!(facts.titled);
+        assert_eq!(facts.description, "");
+        assert!(!cat.card_facts(LOCAL | 0x57).unwrap().titled);
+        assert!(cat.card_facts(LOCAL | 0x58).is_none());
+        // A new level replaces them.
+        cat.set_level_cards(&[], None);
+        assert!(cat.card_facts(LOCAL | 0x54).is_none());
     }
 
     #[test]

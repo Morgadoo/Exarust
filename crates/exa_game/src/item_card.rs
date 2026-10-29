@@ -29,6 +29,7 @@ use exa_items::card::{BuiltCard, CardBuildInput, CardGates, CardItem, build_card
 use exa_items::catalogue::ItemCatalogue;
 use exa_items::desc_phrase::{PhraseBook, describe};
 use exa_items::item_gui::popup_place;
+use exa_ui::ScriptedPointer;
 use exa_ui::gui_core::GuiRect;
 use exa_ui::gui_draw::{GuiFrames, GuiLayer, GuiTextures, LayerTexture, text_batch};
 use exa_ui::gui_font::GuiFont;
@@ -229,6 +230,7 @@ fn card_unit(window: &Window, screens: &GameScreens) -> i32 {
 fn card_press(
     buttons: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window, With<PrimaryWindow>>,
+    scripted: Option<Res<ScriptedPointer>>,
     screens: Res<GameScreens>,
     mut view: ResMut<CardView>,
     time: Res<Time>,
@@ -239,7 +241,7 @@ fn card_press(
     let (Some(card), Ok(window)) = (view.shown.as_mut(), windows.single()) else {
         return;
     };
-    let Some(pointer) = window.cursor_position() else {
+    let Some(pointer) = pointer_at(window, scripted.as_deref()) else {
         return;
     };
     let pointer = pointer * window.scale_factor();
@@ -249,9 +251,22 @@ fn card_press(
     }
 }
 
+/// The pointer in the window (logical pixels): the scripted one
+/// (`--cursor`), else the mouse's while it is over the window.
+fn pointer_at(window: &Window, scripted: Option<&ScriptedPointer>) -> Option<Vec2> {
+    match scripted {
+        Some(scripted) => scripted.position(window),
+        None => window.cursor_position(),
+    }
+}
+
 /// The physical pointer and the interface unit.
-fn pointer_and_unit(window: &Window, screens: &GameScreens) -> Option<((i32, i32), i32)> {
-    let pointer = window.cursor_position()? * window.scale_factor();
+fn pointer_and_unit(
+    window: &Window,
+    scripted: Option<&ScriptedPointer>,
+    screens: &GameScreens,
+) -> Option<((i32, i32), i32)> {
+    let pointer = pointer_at(window, scripted)? * window.scale_factor();
     let unit = exa_ui::scale::gui_scale(window.physical_height(), 0) as i32;
     let unit = if unit > 0 {
         unit
@@ -282,10 +297,22 @@ fn show(
     }
     let Some((name, built)) = build_for(catalogue, phrases, &mut view.roll, item, flags, false)
     else {
+        debug!(
+            "item card: {item:#x} has no card (facts {})",
+            if catalogue.card_facts(item).is_some() {
+                "without a name"
+            } else {
+                "missing"
+            }
+        );
         return;
     };
     let (width, height) = card_size(unit);
     let at = popup_place(pointer, (width, height), screens.task.screen.0, unit);
+    debug!(
+        "item card: {item:#x} {name:?} opens at {at:?}, {width}x{height}, pointer {pointer:?}{}",
+        if world { ", a world object's" } else { "" }
+    );
     let model_flags = catalogue
         .card_facts(item)
         .map_or(0, |facts| facts.model_flags);
@@ -317,6 +344,7 @@ fn show(
 fn request_card(
     buttons: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window, With<PrimaryWindow>>,
+    scripted: Option<Res<ScriptedPointer>>,
     catalogue: Option<Res<ItemCatalogue>>,
     phrases: Option<Res<PhraseBook>>,
     mut screens: ResMut<GameScreens>,
@@ -330,7 +358,7 @@ fn request_card(
     let Ok(window) = windows.single() else {
         return;
     };
-    let Some((pointer, _unit)) = pointer_and_unit(window, &screens) else {
+    let Some((pointer, _unit)) = pointer_and_unit(window, scripted.as_deref(), &screens) else {
         return;
     };
     let now = time.elapsed().as_millis() as u32;
@@ -427,6 +455,7 @@ fn world_cards(
     mut view: ResMut<CardView>,
     mut icons: ResMut<PanelIcons>,
     windows: Query<&Window, With<PrimaryWindow>>,
+    scripted: Option<Res<ScriptedPointer>>,
     time: Res<Time>,
 ) {
     let now = time.elapsed().as_millis() as u32;
@@ -442,7 +471,7 @@ fn world_cards(
         let (Some(catalogue), Ok(window)) = (catalogue.as_deref(), windows.single()) else {
             continue;
         };
-        let Some((pointer, unit)) = pointer_and_unit(window, &screens) else {
+        let Some((pointer, unit)) = pointer_and_unit(window, scripted.as_deref(), &screens) else {
             continue;
         };
         show(
@@ -466,6 +495,7 @@ fn world_cards(
 
 /// Builds a card when its delay is due, and finishes a closed card once its
 /// fade is over.
+#[allow(clippy::too_many_arguments)]
 fn tick_card(
     catalogue: Option<Res<ItemCatalogue>>,
     phrases: Option<Res<PhraseBook>>,
@@ -473,12 +503,13 @@ fn tick_card(
     mut view: ResMut<CardView>,
     mut icons: ResMut<PanelIcons>,
     windows: Query<&Window, With<PrimaryWindow>>,
+    scripted: Option<Res<ScriptedPointer>>,
     time: Res<Time>,
 ) {
     let now = time.elapsed().as_millis() as u32;
     if let (Some(catalogue), Ok(window)) = (catalogue.as_deref(), windows.single())
         && let Some((item, flags)) = screens.card.build_due(now)
-        && let Some((pointer, unit)) = pointer_and_unit(window, &screens)
+        && let Some((pointer, unit)) = pointer_and_unit(window, scripted.as_deref(), &screens)
     {
         let world = std::mem::take(&mut view.world_pending);
         show(
@@ -513,7 +544,7 @@ fn tick_card(
     // without reversing a fade-in. Exarust tests the pointer against the
     // form each frame in place of the base form's hover tracking.
     if let (Some(card), Ok(window)) = (view.shown.as_mut(), windows.single())
-        && let Some(pointer) = window.cursor_position()
+        && let Some(pointer) = pointer_at(window, scripted.as_deref())
     {
         let pointer = pointer * window.scale_factor();
         let unit = card_unit(window, &screens);
