@@ -844,7 +844,9 @@ impl GripLinks {
     /// One relax pass after a grip change: every link enabled
     /// at least once loses slack — the main link 1 cm, the second hand
     /// `(√s + 0.02)·0.1` cm, the arm `s·0.02 + 0.15` cm and the extra
-    /// `(√s + 0.01)·0.4` cm (s in cm) — until it reaches zero, when its
+    /// `(√s + 0.01)·0.4` cm (s in cm; all but the main link's in double
+    /// precision; a negative slack's NaN root ends the link) — until it
+    /// reaches zero, when its
     /// enabled bit clears. `relaxing` stays set while any is left. Returns
     /// false for a missing main or second link (the original's invalid
     /// configuration).
@@ -855,13 +857,15 @@ impl GripLinks {
         if self.main >= self.links.len() || second >= self.links.len() {
             return false;
         }
-        let mut relaxed = false;
         let cm = 100.0;
-        fn shrink(link: &mut GripLink, amount_cm: f32, cm: f32) -> bool {
+        // The slack left (cm) from the slack s (cm): the main link's in
+        // single precision, the others' in double from the single-precision
+        // square root, narrowed once, as the original computes them.
+        fn shrink(link: &mut GripLink, cm: f32, left_of: impl Fn(f32) -> f32) -> bool {
             if !link.once_enabled() {
                 return false;
             }
-            let left = link.slack * cm - amount_cm;
+            let left = left_of(link.slack * cm);
             if left > 0.0 {
                 link.slack = left / cm;
                 true
@@ -871,29 +875,19 @@ impl GripLinks {
                 false
             }
         }
-        let main = self.main;
-        if self.links[main].once_enabled() {
-            relaxed |= shrink(&mut self.links[main], 1.0, cm);
+        let mut relaxed = shrink(&mut self.links[self.main], cm, |s| s - 1.0);
+        relaxed |= shrink(&mut self.links[second], cm, |s| {
+            (f64::from(s) - (f64::from(s.sqrt()) + 0.02) * 0.1) as f32
+        });
+        if let Some(arm) = self.arm.filter(|&i| i < self.links.len()) {
+            relaxed |= shrink(&mut self.links[arm], cm, |s| {
+                (f64::from(s) - (f64::from(s) * 0.02 + 0.15)) as f32
+            });
         }
-        let s = self.links[second].slack * cm;
-        if self.links[second].once_enabled() {
-            relaxed |= shrink(
-                &mut self.links[second],
-                (s.max(0.0).sqrt() + 0.02) * 0.1,
-                cm,
-            );
-        }
-        if let Some(arm) = self.arm {
-            let s = self.links[arm].slack * cm;
-            if self.links[arm].once_enabled() {
-                relaxed |= shrink(&mut self.links[arm], s * 0.02 + 0.15, cm);
-            }
-        }
-        if let Some(extra) = self.extra {
-            let s = self.links[extra].slack * cm;
-            if self.links[extra].once_enabled() {
-                relaxed |= shrink(&mut self.links[extra], (s.max(0.0).sqrt() + 0.01) * 0.4, cm);
-            }
+        if let Some(extra) = self.extra.filter(|&i| i < self.links.len()) {
+            relaxed |= shrink(&mut self.links[extra], cm, |s| {
+                (f64::from(s) - (f64::from(s.sqrt()) + 0.01) * 0.4) as f32
+            });
         }
         self.relaxing = relaxed;
         true
@@ -1248,6 +1242,18 @@ mod tests {
         assert!(links.relax());
         assert!(links.links[0].slack < before);
         assert_eq!(links.links[links.main].slack, main_before);
+        // 4 cm of second-hand slack loses (√4 + 0.02)·0.1 = 0.202 cm.
+        let second = links.second.unwrap();
+        links.links[second].slack = 0.04;
+        links.links[second].flags |= ENABLED;
+        assert!(links.relax());
+        let left = links.links[second].slack * 100.0;
+        assert!((left - 3.798).abs() < 1e-4, "{left}");
+        // A slack under its step ends the link and clears its bit.
+        links.links[second].slack = 0.000_01;
+        links.relax();
+        assert_eq!(links.links[second].slack, 0.0);
+        assert!(!links.links[second].once_enabled());
         // A missing second link is the original's invalid configuration.
         let mut g = grip();
         g.second_hand = None;
