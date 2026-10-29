@@ -80,8 +80,8 @@ pub mod placement;
 #[path = "body_pose_heights.rs"]
 pub mod pose_heights;
 pub use feet::{
-    FootSound, WalkRustle, anchor_rustle, release_step, release_step_clock, walk_rustle,
-    wet_release_step,
+    FootCue, FootSound, FootSounded, WalkRustle, anchor_rustle, release_step, release_step_clock,
+    rustle_clock, walk_rustle, wet_release_step,
 };
 pub use feet::{
     FootState, Footstep, FullTone, GaitStep, QueuedStep, StepEnd, WalkedStep, full_tone, gait_step,
@@ -1838,6 +1838,9 @@ pub struct Drive {
     /// 0.0002 a tick, wrapped at 1, and its value before the tick.
     travel_phase: f32,
     travel_phase_before: f32,
+    /// The foot sounds the balance's footwork found since they were last
+    /// taken ([`Ragdoll::take_foot_cues`]).
+    pub foot_cues: Vec<feet::FootCue>,
 }
 
 /// One tick of the walk's travel phase: the pelvis's squared travel this
@@ -1956,6 +1959,7 @@ impl Default for Drive {
             gait_back: false,
             travel_phase: 0.0,
             travel_phase_before: 0.0,
+            foot_cues: Vec::new(),
         }
     }
 }
@@ -2001,14 +2005,19 @@ impl Drive {
         &self.targets
     }
 
-    /// The character frame's origin (m): the character's place across the
-    /// ground, at the pelvis's height when last anchored (none before the
-    /// first aim). The character's controller follows it.
     /// The body root's place when last aimed (m).
     pub fn root_point(&self) -> Option<Vec3> {
         self.root.map(|r| Vec3::from(r.translation))
     }
 
+    /// The standing position (m): where the stance sits between steps.
+    pub fn standing_point(&self) -> Vec3 {
+        self.steps.standing
+    }
+
+    /// The character frame's origin (m): the character's place across the
+    /// ground, at the pelvis's height when last anchored (none before the
+    /// first aim). The character's controller follows it.
     pub fn anchor(&self) -> Option<Vec3> {
         self.anchor
     }
@@ -2251,6 +2260,7 @@ impl Plugin for BodyPlugin {
             .add(Pairs::default());
         app.add_message::<Shove>()
             .add_message::<Footstep>()
+            .add_message::<FootSounded>()
             .init_resource::<ShoveQueue>()
             .init_resource::<DealtShoves>()
             .init_resource::<BodyTicks>()
@@ -3931,6 +3941,15 @@ impl Ragdoll {
     /// The body's scrape sources.
     pub fn scrapes(&self) -> &[ScrapeSource] {
         &self.scrapes
+    }
+
+    /// Takes the foot sounds the balance's footwork found since the last
+    /// take (none for a body without muscles).
+    pub fn take_foot_cues(&mut self) -> Vec<FootCue> {
+        self.drive
+            .as_mut()
+            .map(|d| std::mem::take(&mut d.foot_cues))
+            .unwrap_or_default()
     }
 
     /// What the last post-step's scrape sources reported.

@@ -247,6 +247,10 @@ pub struct Leg {
     /// The length of the step this foot started (cm), which the footstep
     /// sound's loudness follows: 0.01 + 0.0139 × it up to 140 cm, else 1.
     pub step_length_cm: f32,
+    /// The state the foot sounds last compared against (the balance's
+    /// footwork copies the state here after its sound pass): a rise of the
+    /// anchored bit rustles, its fall steps ([`super::feet::foot_cues`]).
+    pub(super) sounded: FootState,
 }
 
 /// A living body's balance, kept from tick to tick.
@@ -678,6 +682,7 @@ pub(super) fn build(setup: &[PartSetup], parts: &mut [Part]) -> (Vec<Pin>, Vec<L
             knee_shown: true,
             hip_shown: true,
             step_length_cm: 0.0,
+            sounded: FootState::default(),
             pitch: 0.0,
             pitch_rate: 0.0,
         });
@@ -994,6 +999,9 @@ impl Ragdoll {
             size: drive.stats.size.max(1.0),
             still_at: drive.steps.still_at,
             still_plus: drive.steps.still_plus,
+            attacking: bearing.attacking,
+            loudness: drive.steps.loudness,
+            cues: Vec::new(),
         };
         // The feet's states, from last tick's support.
         let met: Vec<bool> = legs
@@ -1018,6 +1026,8 @@ impl Ragdoll {
         // score reads, as the trailing-foot plant does.
         drive.steps.still_at = work.still_at;
         drive.steps.still_plus = work.still_plus;
+        drive.steps.loudness = work.loudness;
+        drive.foot_cues.append(&mut work.cues);
         if drive.steps.stepping {
             let dist = cm((chest - drive.steps.target).with_y(0.0)).length();
             let toward = cm(fast.with_y(0.0))

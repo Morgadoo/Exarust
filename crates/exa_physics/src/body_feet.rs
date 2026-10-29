@@ -613,6 +613,9 @@ pub fn walk_stagger(
         size: 1.0,
         still_at: f32::NAN,
         still_plus: f32::NAN,
+        attacking: false,
+        loudness: 0.0,
+        cues: Vec::new(),
     };
     let ended = footwork(legs, ankles, &shifted, &mut work);
     let foot = legs
@@ -677,6 +680,9 @@ fn footwork(legs: &mut [Leg], ankles: &[Vec3], spots: &[Option<Vec3>], work: &mu
             still_plus: work.still_plus,
         },
     );
+    // The sound pass, after the stance pick and before the landing and the
+    // start: each foot's anchored bit against the state last compared.
+    foot_cues(legs, ankles, work);
     let Some(k) = chosen else {
         return false;
     };
@@ -699,14 +705,16 @@ fn footwork(legs: &mut [Leg], ankles: &[Vec3], spots: &[Option<Vec3>], work: &mu
         ended =
             work.episode && work.episode_ms > 200.0 && work.chest_to_target_cm <= 20.0 * work.scale;
     }
-    let mut anchor = Vec3::new(spot.x, ankles[k].y, spot.z);
-    anchor = steps::clamp_anchor(anchor, ankles[other], work.step_cm);
+    let unpulled = Vec3::new(spot.x, ankles[k].y, spot.z);
+    let anchor = steps::clamp_anchor(unpulled, ankles[other], work.step_cm);
     if !legs[k].state.has(FootState::ANCHORED) {
         legs[k].state.0 =
             legs[k].state.0 & !(FootState::REACHED | FootState::RAMP_HELD) | FootState::ANCHORED;
         legs[k].approach = 1.0;
-        // The step's length feeds its sound's loudness.
-        legs[k].step_length_cm = cm(anchor - ankles[k]).length();
+        // The step's length (to the spot, before the anchor is pulled
+        // toward the other foot) sets the body's step loudness.
+        legs[k].step_length_cm = (cm(unpulled) - cm(ankles[k])).length();
+        work.loudness = step_loudness(legs[k].step_length_cm);
         // A foot that starts moving stamps the body's earlier stand-still
         // stamp.
         work.still_at = work.now_ms;
@@ -805,6 +813,55 @@ pub(super) fn probe_blend(leg: &Leg) -> f32 {
         ((f64::from(leg.blend) + PROBE_BLEND) as f32).min(PROBE_BLEND_MAX)
     } else {
         0.0
+    }
+}
+
+/// A foot sound the balance's footwork found (its sound pass, between the
+/// stance pick and the landing), which the audio side plays through the
+/// body's clocks and the engine's generator.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FootCue {
+    /// A step started (the anchored bit rose): the clothing rustle
+    /// ([`anchor_rustle`]) from the squared distance (cm²) between the
+    /// foot's contact and its anchor, doubled while attacking.
+    StepStart {
+        leg: usize,
+        gap_sq_cm: f32,
+        attacking: bool,
+    },
+    /// A step ended (the anchored bit fell): the footstep
+    /// ([`release_step`]) at the body's step loudness, and the wet step
+    /// over water ([`wet_release_step`]) from the contact's height.
+    StepEnd {
+        leg: usize,
+        loudness: f32,
+        contact_cm: f32,
+    },
+}
+
+/// The footwork's sound pass: for each foot, a rise of its anchored bit
+/// since the state last compared cues the rustle, a fall cues the
+/// footstep; then the state is copied as the one compared next. The
+/// distance is taken between the contact and the anchor in cm.
+pub(super) fn foot_cues(legs: &mut [Leg], ankles: &[Vec3], work: &mut Work) {
+    for (leg_index, (leg, &at)) in legs.iter_mut().zip(ankles).enumerate() {
+        let now = leg.state.has(FootState::ANCHORED);
+        let was = leg.sounded.has(FootState::ANCHORED);
+        if now && !was {
+            work.cues.push(FootCue::StepStart {
+                leg: leg_index,
+                gap_sq_cm: (cm(at) - cm(leg.anchor)).length_squared(),
+                attacking: work.attacking,
+            });
+        }
+        if !now && was {
+            work.cues.push(FootCue::StepEnd {
+                leg: leg_index,
+                loudness: work.loudness,
+                contact_cm: cm(at.y),
+            });
+        }
+        leg.sounded = leg.state;
     }
 }
 
@@ -1005,6 +1062,23 @@ pub fn release_step_clock(now_ms: u32, roll: &mut u32) -> u32 {
 /// along its motion: `3·speed + 4` cm.
 pub fn step_position(character: Vec3, direction: Vec3, speed_cm: f32) -> Vec3 {
     character + direction * ((3.0 * speed_cm + 4.0) / CM)
+}
+
+/// A foot sound the balance's footwork cued ([`FootCue`]) on `body`: the
+/// rustle plays at the standing place, the footstep at the body root's
+/// place (the original's hip point).
+#[derive(Debug, Clone, Copy, Message, PartialEq)]
+pub struct FootSounded {
+    pub body: Entity,
+    pub cue: FootCue,
+    pub standing: Vec3,
+    pub hip: Vec3,
+}
+
+/// The clock a foot's rustle waits on after it played: 400 ms plus the
+/// generator's jitter, stepped once (after the play's own draws).
+pub fn rustle_clock(now_ms: u32, roll: &mut u32) -> u32 {
+    sound_clock(now_ms, RUSTLE_WAIT_MS, roll)
 }
 
 /// A walking footstep, as the body's sampler makes it: the sound's place,
