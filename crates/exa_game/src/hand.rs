@@ -23,8 +23,15 @@
 //!   release;
 //! - a corpse: dragged by the limb the pick hit, strength 0.5, in every
 //!   pass;
-//! - a door or a wheel: the drag is recorded until the release (Exarust's
-//!   doors and wheels are static level geometry, so nothing moves yet); a
+//! - a hinged door's leaf (`exa_physics::body::DoorBody`): a latched one
+//!   rattles and refuses; otherwise a link (slack 1 cm, strength 0.003, the
+//!   tick's first three passes) takes the leaf point 100 cm from the door's
+//!   origin toward the hit (at the hit's height), and each frame its anchor
+//!   is the point 100 cm from that origin toward the cursor's point on the
+//!   plane at that height, the link disabled while the hip is farther than
+//!   350 cm from the door; the release removes it;
+//! - a wheel or a sliding door: the drag is recorded until the release
+//!   (Exarust's levers and sliding doors are static level geometry); a
 //!   scene object's mesh that is a cloth takes the vertex within 10 cm of
 //!   the point [a stand-in for the mesh element the original's pick hit],
 //!   and each frame the vertex is pulled to the cursor's point on the cloth
@@ -73,7 +80,7 @@ use exa_combat::Condition;
 use exa_physics::ColliderNodes;
 use exa_physics::Physics;
 use exa_physics::body::locomotion::{Locomotion, Locomotor};
-use exa_physics::body::{Ragdoll, WAKE_COUNT};
+use exa_physics::body::{DoorBody, Ragdoll, WAKE_COUNT};
 use exa_physics::prop::{PropBody, StandIns};
 use exa_ui::ScriptedPointer;
 
@@ -135,6 +142,10 @@ pub enum Holding {
     /// lift or a refusal it leaves the movement request to the keys and the
     /// right button, as the original's door, wheel and cloth drags do.
     Mechanism(Pick),
+    /// A hinged door's leaf pulled by the hand's link
+    /// (`exa_physics::body::DoorBody`), until the release. Like a
+    /// mechanism's drag it leaves the movement request to the keys.
+    Door { body: Entity, grip: DoorGrip },
     /// A cloth's vertex under the hand: the cloth, the vertex the press
     /// took, and the drag plane the cursor pulls along when the pick leaves
     /// the vertex: its normal (the camera's view axis at the press) and its
@@ -208,7 +219,7 @@ impl Hand {
             Holding::Nothing => DragState::Idle,
             Holding::Lift => DragState::Lift,
             Holding::Drag { .. } => DragState::Physical,
-            Holding::Mechanism(Pick::Hinge) => DragState::Door,
+            Holding::Mechanism(Pick::Hinge) | Holding::Door { .. } => DragState::Door,
             Holding::Mechanism(Pick::Wheel) => DragState::Wheel,
             Holding::Mechanism(_) | Holding::Cloth { .. } => DragState::Cloth,
             Holding::Refused => DragState::Refused,
@@ -447,18 +458,29 @@ impl DragState {
 /// The distance (cm) a closed door is pulled toward the cursor, out of its
 /// own hinge-side point.
 pub const DOOR_PULL_CM: f32 = 100.0;
-/// A door's drag link flags, its pass limit and its slack.
+/// While a door is dragged, the pull is suppressed once the hip is farther
+/// than this squared distance (cm²; 350 cm) from the door's origin.
+pub const DOOR_REACH2: f32 = 122_500.0;
+/// A door's drag link: its flags (the iteration limit alone), its last
+/// pass, its slack (cm) and its strength. The press passes slack 1.0 and
+/// strength 0.003 to the engine's link-adding routine, which stores the
+/// slack squared; `exa_physics::body::door_body` holds the link.
 pub const DOOR_LINK_FLAGS: u32 = 0x4000;
 pub const DOOR_LINK_LIMIT: u32 = 2;
-pub const DOOR_LINK_SLACK: f32 = 0.003;
+pub const DOOR_LINK_SLACK_CM: f32 = 1.0;
+pub const DOOR_LINK_STRENGTH: f32 = 0.003;
 
-/// A door's drag as the press records it: where its pull started, whether
-/// the leaf slides, and whether it was latched.
+/// A door's drag as the press records it: the hinge-side origin it pulls
+/// about, the leaf point its link holds, whether the leaf slides, and
+/// whether it was latched.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DoorGrip {
-    /// The point the pull started from: the hinge-side point of a closing
-    /// door, or the hit point of a sliding one.
-    pub anchor: Vec3,
+    /// The door node's origin at the hit's height (a hinged leaf's pulls
+    /// are 100 cm from it).
+    pub origin: Vec3,
+    /// The leaf point the link holds: 100 cm from the origin toward the hit
+    /// for a hinged leaf, the hit itself for a sliding one.
+    pub point: Vec3,
     pub sliding: bool,
     /// The door was latched and rattled instead of dragging.
     pub latched: bool,
@@ -491,16 +513,17 @@ pub fn plane_pick(origin: Vec3, dir: Vec3, height: f32) -> Option<Vec3> {
     at.is_finite().then_some(at)
 }
 
-/// A door's dragged anchor (m). A closing leaf is pulled 100 cm from its
-/// hinge-side point toward the cursor's point, wherever the cursor is. A
-/// sliding leaf's point is projected onto its own sliding axis `axis`
-/// (unit, across its frame), so it only moves along the slide.
+/// A door's dragged anchor (m). A hinged leaf is pulled to the point 100
+/// cm from its origin toward the cursor's point (on the plane at the grip's
+/// height), wherever the cursor is. A sliding leaf's point is moved by the
+/// cursor's offset projected onto its own sliding axis `axis` (unit,
+/// across its frame), so it only moves along the slide.
 pub fn door_pull_anchor(grip: DoorGrip, cursor_point: Vec3, axis: Vec3) -> Vec3 {
-    let delta = cursor_point - grip.anchor;
     if grip.sliding {
-        grip.anchor + axis * delta.dot(axis)
+        grip.point + axis * (cursor_point - grip.point).dot(axis)
     } else {
-        grip.anchor + delta * (1.0 / delta.length())
+        let delta = cursor_point - grip.origin;
+        grip.origin + delta * (1.0 / delta.length())
     }
 }
 
@@ -688,15 +711,19 @@ pub fn mechanism_press(
             if !state.has_body {
                 return MechanismPress::Refused;
             }
-            // The press stores the hinge-side point 100 cm toward the hit;
-            // a sliding leaf stores the hit itself.
-            let anchor = if state.sliding {
+            // The press keeps the node's origin at the hit's height; a
+            // hinged leaf's link holds the point 100 cm from it toward the
+            // hit, a sliding leaf's the hit itself.
+            let origin = Vec3::new(node.x, hit.y, node.z);
+            let delta = hit - origin;
+            let point = if state.sliding {
                 hit
             } else {
-                node + (hit - node).normalize_or_zero()
+                origin + delta * (1.0 / delta.length())
             };
             MechanismPress::Door(DoorGrip {
-                anchor,
+                origin,
+                point,
                 sliding: state.sliding,
                 latched: state.latched,
             })
@@ -912,8 +939,20 @@ fn pick_along<'a>(
 
 /// The name of what the pick hit; `top_mobility` gives a prop body's top
 /// part's mobility (the object's own body).
-fn name_of(hit: Hit, top_mobility: impl Fn(Entity) -> Option<f32>) -> Pick {
+fn name_of(
+    hit: Hit,
+    top_mobility: impl Fn(Entity) -> Option<f32>,
+    door: impl Fn(Entity) -> Option<bool>,
+) -> Pick {
     let target = match hit {
+        // A door's leaf: its record's hinge, blocked when the door is not
+        // clickable (its flag 8).
+        Hit::Prop { body, .. } if door(body).is_some() => Target {
+            has_record: true,
+            hinge: door(body).map(|blocked| pick::Hinge { blocked }),
+            body: Some(Body::Prop),
+            ..Target::default()
+        },
         // Static scenery carries no object body, so the hand takes nothing
         // from it; the click hook still reads the node's name.
         Hit::Level | Hit::SceneNode { .. } => Target::default(),
@@ -939,6 +978,20 @@ fn hip_of(feet: Vec3, body: Option<&Ragdoll>) -> Vec3 {
         })
 }
 
+/// Lets go of every door leaf the hand no longer pulls, however its drag
+/// ended (the release, a fall, a forced release): its link is removed.
+fn let_go_of_doors(hand: Res<Hand>, mut doors: Query<(Entity, &mut DoorBody, &mut Ragdoll)>) {
+    let pulled = match hand.holding {
+        Holding::Door { body, .. } => Some(body),
+        _ => None,
+    };
+    for (e, mut glue, mut ragdoll) in &mut doors {
+        if glue.door.held && Some(e) != pulled {
+            glue.let_go(&mut ragdoll);
+        }
+    }
+}
+
 pub struct HandPlugin;
 
 /// The hand's frame: the press, the hold and the reach.
@@ -959,6 +1012,7 @@ impl Plugin for HandPlugin {
                     gather_markers,
                     hold_hand,
                     reach_hand,
+                    let_go_of_doors,
                     send_let_go,
                 )
                     .chain()
@@ -1182,9 +1236,10 @@ fn press_hand(
     mut bodies: Query<OtherBodies, Without<PlayerBody>>,
     kinesis: Option<Res<KinesisPickHook>>,
     mut kinesis_picks: Option<ResMut<Messages<KinesisPicked>>>,
-    (over_gui, objects): (
+    (over_gui, objects, mut doors): (
         Option<Res<crate::panel_live::PointerOverGui>>,
         Query<ObjectIds>,
+        Query<&mut DoorBody>,
     ),
 ) {
     let kinesis = kinesis.and_then(|k| k.0);
@@ -1253,13 +1308,22 @@ fn press_hand(
         own.map(|r| (child, r, condition)),
     );
     let named = picked.map(|p| {
-        name_of(p.hit, |body| {
-            bodies
-                .get(body)
-                .ok()
-                .and_then(|(_, r, ..)| r.parts.iter().find(|p| p.parent.is_none()))
-                .map(|p| p.inverse_mass)
-        })
+        name_of(
+            p.hit,
+            |body| {
+                bodies
+                    .get(body)
+                    .ok()
+                    .and_then(|(_, r, ..)| r.parts.iter().find(|p| p.parent.is_none()))
+                    .map(|p| p.inverse_mass)
+            },
+            |body| {
+                doors
+                    .get(body)
+                    .ok()
+                    .map(|d| d.door.record.has(exa_physics::door::NOT_CLICKABLE))
+            },
+        )
     });
     let state = PressState {
         kept_for_combat: pb.combat && !ctrl && hand.holding == Holding::Nothing,
@@ -1280,11 +1344,37 @@ fn press_hand(
     };
     match press(state, named) {
         Press::Ignored => {}
-        // A scene object's mesh can be a cloth: a vertex within reach is
-        // grabbed and its target follows the cursor. A hinge or a wheel
-        // stays a recorded drag: Exarust's doors and wheels are not bodies
-        // under the hand yet.
         Press::Mechanism(pick) => {
+            // A hinged door's leaf takes the hand's link: a latched one
+            // rattles and refuses (its sound is not played yet).
+            if pick == Pick::Hinge
+                && let Some(Picked {
+                    at,
+                    hit: Hit::Prop { body, .. },
+                }) = picked
+                && let Ok(mut glue) = doors.get_mut(body)
+                && let Ok((_, mut ragdoll, ..)) = bodies.get_mut(body)
+            {
+                let state = MechanismState {
+                    latched: glue.latched(),
+                    forcing: glue.forcing(),
+                    sliding: false,
+                    has_body: true,
+                };
+                let origin = glue.origin(&ragdoll);
+                match mechanism_press(Pick::Hinge, origin, at, state, || 0.5) {
+                    MechanismPress::Door(grip) => {
+                        glue.take_hold(&mut ragdoll, grip.point);
+                        info!(
+                            "hand: door pulled at ({:.2}, {:.2}, {:.2})",
+                            grip.point.x, grip.point.y, grip.point.z
+                        );
+                        hand.holding = Holding::Door { body, grip };
+                    }
+                    _ => hand.holding = Holding::Refused,
+                }
+                return;
+            }
             hand.holding = Holding::Mechanism(pick);
             // A scene object's mesh can be a cloth: the next system takes a
             // vertex near the point when there is one.
@@ -1412,7 +1502,7 @@ fn hold_hand(
     scripted: Res<ScriptedPointer>,
     windows: Query<&Window, With<PrimaryWindow>>,
     cameras: Query<(&Camera, &GlobalTransform), With<ChaseCamera>>,
-    (mut hand, mut items): (ResMut<Hand>, ResMut<ItemCursor>),
+    (mut hand, mut items, mut doors): (ResMut<Hand>, ResMut<ItemCursor>, Query<&mut DoorBody>),
     players: Query<(&GlobalTransform, &Children), With<Player>>,
     mut player_bodies: Query<PlayerParts, Without<PropBody>>,
     mut requests: Query<&mut Locomotion, With<PlayerBody>>,
@@ -1538,6 +1628,39 @@ fn hold_hand(
         Holding::Mechanism(_) => {
             if released {
                 hand.holding = Holding::Nothing;
+            }
+        }
+        Holding::Door { body, grip } => {
+            let (Ok(mut glue), Ok((_, mut ragdoll, ..))) =
+                (doors.get_mut(body), bodies.get_mut(body))
+            else {
+                hand.holding = Holding::Nothing;
+                return;
+            };
+            if released {
+                glue.let_go(&mut ragdoll);
+                hand.holding = Holding::Nothing;
+                return;
+            }
+            // The request suppresses the pull while the hip is farther than
+            // 350 cm from the door (the squared distance over 122 500 cm²).
+            let hip = player.and_then(|(feet, child)| {
+                player_bodies
+                    .get(child)
+                    .ok()
+                    .map(|(_, own, ..)| hip_of(feet, own))
+            });
+            let far = hip.is_some_and(|hip| {
+                ((hip - glue.origin(&ragdoll)) * CM).length_squared() > DOOR_REACH2
+            });
+            let cursor = cursor_ray(&scripted, &windows, &cameras)
+                .and_then(|ray| plane_pick(ray.origin, *ray.direction, grip.origin.y));
+            match cursor {
+                Some(point) => {
+                    let frame = door_drag_frame(grip, point, Vec3::X, far);
+                    glue.pull_to(&mut ragdoll, frame.anchor);
+                }
+                None => glue.pull_to(&mut ragdoll, None),
             }
         }
         Holding::Cloth {
@@ -1930,7 +2053,7 @@ fn reach_hand(
         return;
     }
     let in_reach = match hand.holding {
-        Holding::Drag { .. } => true,
+        Holding::Drag { .. } | Holding::Door { .. } => true,
         _ => {
             let hip = hip_of(feet, own);
             let ray = cursor_ray(&scripted, &windows, &cameras);
@@ -2290,7 +2413,7 @@ mod tests {
                 dead: true
             }
         );
-        assert_eq!(name_of(picked.hit, |_| None), Pick::Corpse);
+        assert_eq!(name_of(picked.hit, |_| None, |_| None), Pick::Corpse);
         let aside = Ray3d::new(Vec3::X, Dir3::Z);
         let bodies = [(near, &a, Condition::DEAD)];
         assert_eq!(
@@ -2308,11 +2431,14 @@ mod tests {
             body: near,
             part: 0,
         };
-        assert_eq!(name_of(prop, |_| Some(0.5)), Pick::Loose);
-        assert_eq!(name_of(prop, |_| Some(0.05)), Pick::Nothing);
-        assert_eq!(name_of(Hit::Level, |_| None), Pick::Nothing);
+        assert_eq!(name_of(prop, |_| Some(0.5), |_| None), Pick::Loose);
+        assert_eq!(name_of(prop, |_| Some(0.05), |_| None), Pick::Nothing);
+        assert_eq!(name_of(Hit::Level, |_| None, |_| None), Pick::Nothing);
+        // A door's leaf is a hinge, a door that is not clickable nothing.
+        assert_eq!(name_of(prop, |_| Some(0.05), |_| Some(false)), Pick::Hinge);
+        assert_eq!(name_of(prop, |_| Some(0.05), |_| Some(true)), Pick::Nothing);
         assert_eq!(
-            name_of(Hit::SceneNode { node: near }, |_| None),
+            name_of(Hit::SceneNode { node: near }, |_| None, |_| None),
             Pick::Nothing
         );
     }
@@ -2594,7 +2720,8 @@ mod tests {
     #[test]
     fn the_door_and_wheel_grips() {
         let grip = DoorGrip {
-            anchor: Vec3::ZERO,
+            origin: Vec3::ZERO,
+            point: Vec3::new(0.0, 0.0, 1.0),
             sliding: false,
             latched: false,
         };
@@ -2602,6 +2729,7 @@ mod tests {
         assert!((a - Vec3::new(0.0, 0.0, 1.0)).length() < 1e-5, "{a}");
         let sliding = DoorGrip {
             sliding: true,
+            point: Vec3::ZERO,
             ..grip
         };
         let a = door_pull_anchor(sliding, Vec3::new(0.3, 1.0, 2.0), Vec3::Z);
@@ -2692,7 +2820,10 @@ mod tests {
         let MechanismPress::Door(grip) = pressed else {
             panic!("{pressed:?}");
         };
-        assert!((grip.anchor - hit.normalize()).length() < 1e-5);
+        // The origin takes the hit's height; the point is 100 cm from it
+        // toward the hit, across the ground.
+        assert_eq!(grip.origin, Vec3::new(0.0, 1.0, 0.0));
+        assert!((grip.point - Vec3::new(0.0, 1.0, 1.0)).length() < 1e-5);
         assert!(!grip.sliding && !grip.latched);
         let sliding = MechanismState {
             sliding: true,
@@ -2702,7 +2833,7 @@ mod tests {
         else {
             panic!();
         };
-        assert_eq!(grip.anchor, hit);
+        assert_eq!(grip.point, hit);
         let latched = MechanismState {
             latched: true,
             ..state

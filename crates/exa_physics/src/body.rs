@@ -115,6 +115,12 @@ pub mod pairs;
 pub use pairs::{Pairing, Pairs, Touch};
 #[path = "body_drag.rs"]
 mod drag;
+#[path = "body_sphere_grid.rs"]
+pub mod sphere_grid;
+pub use sphere_grid::SphereGrid;
+#[path = "body_door.rs"]
+pub mod door_body;
+pub use door_body::{DoorBody, PendingDoor};
 #[path = "body_rigid.rs"]
 mod rigid;
 pub use drag::{Grab, drag_pull};
@@ -303,6 +309,9 @@ pub struct Part {
     /// original's mesh query). Empty for a part whose mesh was never handed
     /// over; the pair stage then falls back to the part's spheres.
     pub triangles: Option<Arc<Vec<[Vec3; 3]>>>,
+    /// The spheres bucketed for the pair stage's sphere fallback, for a
+    /// part with many of them ([`SphereGrid`]).
+    pub sphere_grid: Option<Arc<SphereGrid>>,
     /// How it meets other parts, of other bodies and of its own.
     pub pairing: Pairing,
     rest_inverse: Mat3,
@@ -555,6 +564,7 @@ impl Part {
             gravity: [1.0; 4],
             spheres,
             triangles: None,
+            sphere_grid: None,
             pairing,
             rest_inverse,
             no_level: false,

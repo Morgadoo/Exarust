@@ -107,7 +107,10 @@ mesh-box and mesh-sphere pre-tests, the one-sided per-triangle tests with
 the sphere re-read after every hit), or its spheres, pre-tested against
 their own bound, where the loader has handed no mesh over
 (`Ragdoll::set_part_triangles`; no loader does yet, so the game runs the
-sphere fallback), with an immediate
+sphere fallback; a part with 64 spheres or more, a door leaf's 1 900, has
+them bucketed in a grid, `body::SphereGrid`, so the fallback visits only the
+spheres a sphere can reach, in their stored order, with the plain loop's
+results), with an immediate
 push by mobility shares and φ; up to four points per pair are solved in
 the next tick's
 iterations before the links (0.01 cm slop, the reversed pair friction,
@@ -805,7 +808,7 @@ cm less the motion already toward the anchor), a damped spring and a plane.
 The level's mechanisms are in `door`, `lever`, `plate`, `relay`, `signal`
 and `mechanism`. Their rules follow the original's instruction listings,
 including which thresholds and products are taken in double precision,
-and are unit-tested, but no live body feeds them yet (see below). Lengths
+and are unit-tested; a hinged door's leaf runs them live (see below). Lengths
 are in the original's centimetres, as the body links store them.
 
 A door (`src/door.rs`) reads its record's flags, key and four sound
@@ -870,12 +873,24 @@ and `door`'s free rule helpers (`creak`, `pull_closed`, `slide_step`,
 leaf's summary.
 
 Wiring: a placed object keeps its door and operative records
-(`exa_world::mechanisms::MechanismRecords`), but the level loader leaves
-doors, levers and plates static (`exa_world::bodies`,
-`Placement::Mechanism`): their bodies would need their steps to drive them,
-so nothing produces the heading, handle speed, travel fraction or arm angle
-these steps read. Hung props (lamps, chains, wall rings) do register, with
-their world links.
+(`exa_world::mechanisms::MechanismRecords`). A hinged door's leaf registers
+hung (its pin and swing stop as world links, the origin pivot) with a
+`body::PendingDoor`, and `body::DoorBody` (`src/body_door.rs`) runs the
+original's door set-up on it (mobility 0.05; the door frame from the hinge
+axis and the stop's tied point in the parent node's frame; the handle 150
+cm from the hinge at the node box's centre height; the placement's stored
+word; a sibling leaf as the partner, both with pair layer bits `0x3000`)
+and, each awake tick after the solver, the door's step: the handle's
+motion smoothed by half as the creak energy, the stop's measured length as
+the knock travel, the stop's heading in the door frame as the angle, and
+the drive angle moving the stop point onto the stop's radius by its
+weights. The hand's door link (slack 1 cm, strength 0.003, the first three
+passes) is `DoorBody::take_hold`, `pull_to` and `let_go`. The door's
+sounds, its navigation passage report and the last-pusher stamp are not
+reproduced; sliding doors, levers and plates stay static
+(`exa_world::bodies`, `Placement::Mechanism`): nothing yet produces their
+travel fraction or arm angle. Hung props (lamps, chains, wall rings) also
+register, with their world links.
 
 The debug tools' measures are in `body::inspect` (`src/body_inspect.rs`):
 each joint's turn from its rest turn (stored when the body is built,

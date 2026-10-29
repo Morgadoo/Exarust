@@ -9,15 +9,14 @@
 //! object without a model (most relays and jobs) is not spawned, so its
 //! records stay in the level's database for a dispatcher to look up by id.
 //!
-//! The records are all that reaches the running game for now. A door,
-//! lever or plate is a body hung from the world by its links: the hinge
-//! pins and swing stop of a door, the axle pins and arm of a lever, the
-//! slider links of a plate. `exa_physics` has the world-link laws (hung props
-//! register with them), but nothing yet drives a door, lever or plate's
-//! steps, so these bodies stay static level geometry ([`crate::bodies::Placement`]) and
-//! nothing produces the per-tick heading, handle speed, travel fraction or
-//! arm angle the steps read. Until then no system ticks a mechanism or
-//! routes its signals.
+//! A door, lever or plate is a body hung from the world by its links: the
+//! hinge pins and swing stop of a door, the axle pins and arm of a lever,
+//! the slider links of a plate. A hinged door's leaf registers so and runs
+//! its door rules (`exa_physics::body::DoorBody`, set up from the record
+//! and the placement's word, [`crate::bodies::Placement::Door`]). Levers,
+//! plates and sliding doors stay static level geometry: nothing yet
+//! produces the travel fraction or arm angle their steps read, and no
+//! system routes signals.
 //!
 //! Evidence: the object database's door and operative sections
 //! (`docs/formats/OTHER.md`) and the records the original's door, lever

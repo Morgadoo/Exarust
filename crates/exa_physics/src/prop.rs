@@ -43,6 +43,7 @@ impl Plugin for PropPlugin {
                     .chain()
                     .after(BodySystems),
             );
+        crate::body::door_body::plugin(app);
     }
 }
 

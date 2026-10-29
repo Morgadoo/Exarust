@@ -1239,3 +1239,69 @@ fn a_placed_mesh_hit_records_an_offset_and_no_hit() {
     let offsets: Vec<Vec3> = a.placed_offsets(0).unwrap().to_vec();
     assert!(offsets.iter().any(|o| o.length() > 0.0), "{offsets:?}");
 }
+
+/// A sphere side with many spheres: a 20 × 20 sheet on a 4 cm pitch in the
+/// plane x = 0, each 3 cm across, its spheres bucketed by a grid.
+fn sheet_side(grid: bool) -> Ragdoll {
+    let mut b = ball(2, 11, Vec3::ZERO, 0.01);
+    let mut spheres = Vec::new();
+    for i in 0..20 {
+        for j in 0..20 {
+            spheres.push((
+                Vec3::new(0.0, -0.4 + i as f32 * 0.04, -0.4 + j as f32 * 0.04),
+                0.03,
+            ));
+        }
+    }
+    b.parts[0].pairing.sphere = Bounds::of_spheres(&spheres);
+    b.parts[0].sphere_grid = if grid {
+        crate::body::SphereGrid::build(&spheres).map(std::sync::Arc::new)
+    } else {
+        None
+    };
+    b.parts[0].spheres = spheres;
+    b
+}
+
+/// The grid over a dense sphere side changes nothing: a ball pushed into
+/// the sheet, still or swept, gets the same hits, points and pushes as the
+/// plain loop over every sphere, and the sheet keeps its spheres.
+#[test]
+fn the_sphere_grid_leaves_the_fallback_unchanged() {
+    for (from, to) in [
+        (Vec3::new(0.04, 0.01, 0.02), Vec3::new(0.04, 0.01, 0.02)),
+        (Vec3::new(0.3, -0.1, 0.05), Vec3::new(0.02, 0.03, -0.01)),
+    ] {
+        let run = |grid: bool| {
+            let mut a = ball(1, 11, from, 0.08);
+            let mut b = sheet_side(grid);
+            // The last tick left the ball at `from`; it is now at `to`.
+            a.parts[0].settled = a.parts[0].transform();
+            b.parts[0].settled = b.parts[0].transform();
+            let shift = to - from;
+            for p in &mut a.parts[0].positions {
+                *p += shift;
+            }
+            let (mut pair, mut touch) = fresh();
+            collide(
+                &mut a.parts[0],
+                &mut b.parts[0],
+                &mut pair,
+                &mut touch,
+                None,
+            );
+            assert_eq!(b.parts[0].spheres.len(), 400);
+            (
+                a.parts[0].positions,
+                b.parts[0].positions,
+                touch.hits,
+                pair.count,
+                pair.points,
+            )
+        };
+        let plain = run(false);
+        let fast = run(true);
+        assert!(plain.2 > 0, "the ball meets the sheet");
+        assert_eq!(plain, fast);
+    }
+}
