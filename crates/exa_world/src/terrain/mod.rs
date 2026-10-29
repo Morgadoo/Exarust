@@ -706,6 +706,14 @@ pub struct TerrainBuild {
     textures: HashMap<usize, MaterialTextures>,
     /// Surface maps being packed, by palette material.
     surfaces: HashMap<usize, Surface>,
+    /// Each palette material's diffuse and normal textures, asked for and
+    /// not yet arrived: looked up live or queued for the texture loader
+    /// ([`TerrainBuild::request_textures`]).
+    queued: HashMap<usize, QueuedTextures>,
+    /// The step's caller waits for the whole terrain in one call
+    /// ([`crate::spawn_level`]): a queued texture is finished on the spot
+    /// rather than waited for over frames.
+    blocking: bool,
     /// Bytes of textures made in this step.
     uploaded: usize,
     /// The tile being built, once its heightfield is.
@@ -745,6 +753,21 @@ pub struct TerrainBuild {
 /// are uploaded to the GPU the frame after, and a level's palette at once
 /// stalled a frame.
 const UPLOAD_BUDGET: usize = 24 << 20;
+
+/// A palette material's diffuse and normal textures while they load, and
+/// whether they came through the texture loader (whose upload pass, not the
+/// terrain step, inserts their images).
+#[derive(Default)]
+struct QueuedTextures {
+    diffuse: Option<Handle<Image>>,
+    normal: Option<Handle<Image>>,
+    streamed: bool,
+}
+
+/// The texture word the terrain's material textures are created with.
+fn terrain_texture_flags() -> u32 {
+    exa_assets::texture::default_flags()
+}
 
 /// Terrain vegetation casts shadows only above shadow quality 4, as the
 /// original's grass plug-in installs its sun-shadow hook there. The chunk
@@ -911,6 +934,8 @@ impl TerrainBuild {
             plants,
             textures: HashMap::new(),
             surfaces: HashMap::new(),
+            queued: HashMap::new(),
+            blocking: false,
             uploaded: 0,
             built: None,
             blocks,
@@ -976,6 +1001,7 @@ impl TerrainBuild {
     ) -> bool {
         let started = std::time::Instant::now();
         self.uploaded = 0;
+        self.blocking = budget == std::time::Duration::MAX;
         // The frame hook's one tile a step, as the original runs it from the
         // terrain's activation hook.
         self.frame_hook(commands);
@@ -1050,6 +1076,65 @@ impl TerrainBuild {
         for (tile, action) in actions {
             self.apply_tile_action(commands, tile, action);
         }
+    }
+
+    /// Asks for palette material `m`'s diffuse and normal textures, once:
+    /// the original's terrain texture path takes a live record as it is and
+    /// otherwise queues the load behind the 1×1 placeholder, never decoding
+    /// on the caller; a name the game does not ship gives no texture.
+    /// Exarust queues only while the texture loader runs (the manager's
+    /// streaming switch); without it, as in tools and tests, the textures
+    /// are decoded here.
+    fn request_textures(&mut self, m: usize, loader: &mut ModelLoader<'_>) {
+        if self.textures.contains_key(&m) || self.queued.contains_key(&m) {
+            return;
+        }
+        let material = &self.palette.materials[m];
+        let streamed = loader.cache.textures.streaming();
+        let mut load = |kind: TerrainTexture, space: ColorSpace| {
+            let name = material.texture(kind)?;
+            let texture = if streamed {
+                loader.texture_stream_first(name, space, terrain_texture_flags())
+            } else {
+                loader.texture_sync(name, space)
+            };
+            texture.map(|(image, _)| image)
+        };
+        let diffuse = load(TerrainTexture::Diffuse, ColorSpace::Srgb);
+        let normal = load(TerrainTexture::Normal, ColorSpace::Linear);
+        self.queued.insert(
+            m,
+            QueuedTextures {
+                diffuse,
+                normal,
+                streamed,
+            },
+        );
+    }
+
+    /// Whether material `m`'s queued textures have arrived. A blocking
+    /// caller finishes a waiting one now (the original's priority wait for
+    /// a texture it needs at once); otherwise the step waits for the
+    /// loader's upload pass in a later frame.
+    fn textures_arrived(&self, m: usize, loader: &mut ModelLoader<'_>) -> bool {
+        let material = &self.palette.materials[m];
+        let mut arrived = true;
+        for (kind, space) in [
+            (TerrainTexture::Diffuse, ColorSpace::Srgb),
+            (TerrainTexture::Normal, ColorSpace::Linear),
+        ] {
+            let Some(name) = material.texture(kind) else {
+                continue;
+            };
+            if loader.texture_waiting(name, space) {
+                if self.blocking {
+                    loader.texture_finish_now(name, space);
+                } else {
+                    arrived = false;
+                }
+            }
+        }
+        arrived
     }
 
     /// The first tile from `index` on that is built (in a grid level, one
@@ -1141,23 +1226,32 @@ impl TerrainBuild {
             self.stats.unresolved_layers += unresolved;
             self.stats.truncated_tiles += usize::from(truncated);
             self.stats.brush_limit_tiles += usize::from(brushes_exceeded > 0);
-            // Its new materials' surface maps are packed meanwhile.
+            // Its new materials' surface maps are packed meanwhile, and their
+            // textures are asked for, so the loader decodes them meanwhile.
             for m in materials {
                 if !self.textures.contains_key(&m) && !self.surfaces.contains_key(&m) {
                     let surface = Surface::start(loader.game, &self.palette.materials[m]);
                     self.surfaces.insert(m, surface);
                 }
+                self.request_textures(m, loader);
             }
             return true;
         }
-        let tile = &self.terrain.tiles[self.next];
-        let blocks = self.blocks.as_ref().map(|b| &b[self.next]);
-        let built = self.built.as_mut().expect("tile built");
-        if let Some(&m) = built
-            .materials
-            .iter()
-            .find(|m| !self.textures.contains_key(m))
-        {
+        let waiting = self.built.as_ref().and_then(|built| {
+            built
+                .materials
+                .iter()
+                .copied()
+                .find(|m| !self.textures.contains_key(m))
+        });
+        if let Some(m) = waiting {
+            self.request_textures(m, loader);
+            // The tile is spawned only once its textures have arrived, so
+            // its splat material never binds a placeholder (its bind group
+            // and the composite bake read the images once).
+            if !self.textures_arrived(m, loader) {
+                return false;
+            }
             let material = &self.palette.materials[m];
             let surface = self
                 .surfaces
@@ -1167,15 +1261,12 @@ impl TerrainBuild {
                 return false;
             };
             self.surfaces.remove(&m);
-            let diffuse = material
-                .texture(TerrainTexture::Diffuse)
-                .and_then(|name| loader.texture_sync(name, ColorSpace::Srgb))
-                .map(|(img, _)| img);
+            let QueuedTextures {
+                diffuse,
+                normal,
+                streamed,
+            } = self.queued.remove(&m).unwrap_or_default();
             let surface = Some(loader.images.add(surface));
-            let normal = material
-                .texture(TerrainTexture::Normal)
-                .and_then(|name| loader.texture_sync(name, ColorSpace::Linear))
-                .map(|(img, _)| img);
             let size = |image: &Option<Handle<Image>>| {
                 image
                     .as_ref()
@@ -1183,10 +1274,17 @@ impl TerrainBuild {
                     .and_then(|i| i.data.as_ref())
                     .map_or(0, Vec::len)
             };
-            self.uploaded += size(&diffuse) + size(&surface) + size(&normal);
+            // Streamed images were inserted by the loader's upload pass.
+            self.uploaded += size(&surface);
+            if !streamed {
+                self.uploaded += size(&diffuse) + size(&normal);
+            }
             self.textures.insert(m, (diffuse, surface, normal));
             return true;
         }
+        let tile = &self.terrain.tiles[self.next];
+        let blocks = self.blocks.as_ref().map(|b| &b[self.next]);
+        let built = self.built.as_mut().expect("tile built");
         let mut splat = TerrainSplat {
             environment: self.environment.clone(),
             layer_sampler: Some(self.layer_sampler.clone()),

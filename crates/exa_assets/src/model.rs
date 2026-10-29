@@ -1472,7 +1472,10 @@ impl ModelLoader<'_> {
         flags: u32,
     ) -> CachedTexture {
         let streaming = self.cache.textures.streaming();
-        self.texture_load(name, space, flags, streaming)
+        // The material path's queued load is the priority item under the
+        // manager's fast-load flag.
+        let fast = streaming && self.cache.textures.fast_load();
+        self.texture_load(name, space, flags, streaming, fast)
     }
 
     /// Releases a texture's reference and, when it was the last, frees its
@@ -1516,7 +1519,8 @@ impl ModelLoader<'_> {
         if let Some(existing) = self.texture_existing(name, space) {
             return Some(existing);
         }
-        self.texture_load(name, space, flags, true)
+        // This path queues with status 1 whatever the fast-load flag says.
+        self.texture_load(name, space, flags, true, false)
     }
 
     /// Loads a texture now, on the calling thread: the original's priority
@@ -1527,7 +1531,7 @@ impl ModelLoader<'_> {
     pub fn texture_now(&mut self, name: &str, space: ColorSpace, flags: u32) -> CachedTexture {
         let key = TextureKey::new(name, space);
         self.cache.textures.cancel_pending(&key);
-        self.texture_load(name, space, flags, false)
+        self.texture_load(name, space, flags, false, false)
     }
 
     /// [`ModelLoader::texture_now`] with the default texture word: for the
@@ -1537,15 +1541,56 @@ impl ModelLoader<'_> {
         self.texture_now(name, space, crate::texture::default_flags())
     }
 
+    /// Whether a texture's record still holds the loader's placeholder: its
+    /// load is queued or decoding and its upload has not arrived. `false`
+    /// when no record holds the name (a load that failed uploads the
+    /// placeholder as its image and is finished).
+    pub fn texture_waiting(&self, name: &str, space: ColorSpace) -> bool {
+        self.cache
+            .textures
+            .get(&TextureKey::new(name, space))
+            .is_some_and(|record| record.pending)
+    }
+
+    /// Finishes a record that still holds the loader's placeholder now, on
+    /// the calling thread, with the word it was created with and without
+    /// taking another reference: the original's priority wait, which
+    /// promotes the record's load and waits for it rather than creating
+    /// anything. A finished record is returned as it is; `None` when no
+    /// record holds the name.
+    pub fn texture_finish_now(&mut self, name: &str, space: ColorSpace) -> CachedTexture {
+        let key = TextureKey::new(name, space);
+        let flags = self.cache.textures.get(&key)?.flags;
+        self.cache.textures.cancel_pending(&key);
+        self.texture_fill(key, name, space, flags, (false, false), false)
+    }
+
     fn texture_load(
         &mut self,
         name: &str,
         space: ColorSpace,
         flags: u32,
         streaming: bool,
+        fast: bool,
     ) -> CachedTexture {
         let key = TextureKey::new(name, space);
         let created = self.cache.textures.acquire(key, flags).created;
+        self.texture_fill(key, name, space, flags, (streaming, fast), created)
+    }
+
+    /// Decodes or queues a record's image, after the manager's lookup.
+    /// `queue` is whether to queue it for the loader and whether the queued
+    /// load starts as the loader's priority item.
+    fn texture_fill(
+        &mut self,
+        key: TextureKey,
+        name: &str,
+        space: ColorSpace,
+        flags: u32,
+        queue: (bool, bool),
+        created: bool,
+    ) -> CachedTexture {
+        let (streaming, fast) = queue;
         // A record whose image is still the loader's placeholder is decoded
         // here when the caller wants it now (`texture_now`); with streaming
         // on, the placeholder stays and the loader replaces it.
@@ -1586,15 +1631,15 @@ impl ModelLoader<'_> {
                 let image = crate::texture::placeholder_image(space, flags, &settings);
                 let handle = self.store_texture(key, image, alpha);
                 self.cache.textures.set_pending(&key, true);
-                self.cache
-                    .textures
-                    .queue(crate::stream::TextureRequest::from_entry(
-                        key.name.as_str(),
-                        space,
-                        flags,
-                        pack,
-                        entry,
-                    ));
+                let mut request = crate::stream::TextureRequest::from_entry(
+                    key.name.as_str(),
+                    space,
+                    flags,
+                    pack,
+                    entry,
+                );
+                request.promoted = fast;
+                self.cache.textures.queue(request);
                 return Some((handle, alpha));
             }
             match rfi_to_texture(&rfi, space, self.bc_supported, flags, &settings) {

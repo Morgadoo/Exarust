@@ -39,7 +39,11 @@ and the grid's rooms; portal clipping is next (see
   four-per-plane mask packing, the Gaussian blur kernel and the
   used-material merge; the palette falls back to `default.ftb` as the original does; a tile's geometry
   and masks are built on the async compute pool (the original's terrain
-  worker), one mesh per 6 m block (`terrain::patch` is the original's
+  worker), each palette material's diffuse and normal maps come through
+  the original's terrain texture path (a live record, else a load queued
+  for the texture loader; the tile spawns once both arrived, and a
+  one-call `spawn_level` finishes them on the spot),
+  one mesh per 6 m block (`terrain::patch` is the original's
   shared serpentine triangle list), each in its block's room and with the
   original's `TerrainBlock` frame and flat 10 cm slab bounds, and in a grid
   level only the blocks its grid flags; `terrain::ground` is the

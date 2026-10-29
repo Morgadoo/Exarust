@@ -426,6 +426,80 @@ mod tests {
         );
     }
 
+    /// A record still holding its placeholder is finished on the caller by
+    /// the priority wait: the real image goes under the same handle, the
+    /// queued load is dropped and no reference is added.
+    #[test]
+    fn a_waiting_record_finishes_now_under_its_handle() {
+        let Some((mut app, data)) = streaming_app() else {
+            return;
+        };
+        let space = texture::ColorSpace::Srgb;
+        let key = crate::TextureKey::new("spatter01", space);
+        let first = with_loader(&mut app, &data, |loader| {
+            loader.texture_stream_first("spatter01", space, texture::default_flags())
+        })
+        .expect("the image is shipped")
+        .0;
+        assert!(with_loader(&mut app, &data, |loader| loader
+            .texture_waiting("spatter01", space)));
+        let now = with_loader(&mut app, &data, |loader| {
+            loader.texture_finish_now("spatter01", space)
+        })
+        .expect("the record is live")
+        .0;
+        assert_eq!(now, first);
+        assert!(width(&app, &first) > 1);
+        assert!(!with_loader(&mut app, &data, |loader| loader
+            .texture_waiting("spatter01", space)));
+        let cache = app.world().resource::<ModelCache>();
+        assert!(cache.textures.queued_loads().is_empty());
+        assert_eq!(cache.textures.get(&key).unwrap().references, 1);
+        // No record: nothing waits and nothing is finished.
+        assert!(
+            with_loader(&mut app, &data, |loader| loader
+                .texture_finish_now("no_such_image_name", space))
+            .is_none()
+        );
+    }
+
+    /// Under the manager's fast-load flag the material path queues its load
+    /// as the loader's priority item (status 3); the terrain path queues
+    /// with status 1 whatever the flag says, and the flag is off by default.
+    #[test]
+    fn the_fast_load_flag_promotes_material_loads_only() {
+        for (fast, terrain, promoted) in [
+            (false, false, false),
+            (true, false, true),
+            (true, true, false),
+        ] {
+            let Some((mut app, data)) = streaming_app() else {
+                return;
+            };
+            {
+                let mut cache = app.world_mut().resource_mut::<ModelCache>();
+                assert!(!cache.textures.fast_load());
+                cache.textures.set_fast_load(fast);
+            }
+            with_loader(&mut app, &data, |loader| {
+                let space = texture::ColorSpace::Srgb;
+                if terrain {
+                    loader.texture_stream_first("spatter01", space, texture::default_flags())
+                } else {
+                    loader.texture("spatter01", space)
+                }
+            })
+            .expect("the image is shipped");
+            let cache = app.world().resource::<ModelCache>();
+            let queued = cache.textures.queued_loads();
+            assert_eq!(queued.len(), 1);
+            assert_eq!(
+                queued[0].promoted, promoted,
+                "fast {fast} terrain {terrain}"
+            );
+        }
+    }
+
     /// The streaming path decodes a shipped image on the task pool and
     /// replaces the placeholder under the record's handle.
     #[test]

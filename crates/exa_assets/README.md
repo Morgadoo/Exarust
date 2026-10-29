@@ -328,9 +328,8 @@ only the oldest collected, so uploads keep request order. Each upload
 replaces the placeholder's image under the same handle; the plugin touches
 the materials that bound the placeholder and the cube shadow cuts rebuild
 their bind groups, so they draw the real texture from the next frame.
-Consumers whose bindings the upload cannot refresh (terrain and particle
-materials) load through `texture_sync`, and the parallax depth is read from
-the loaded size. A BC4 image is one grey channel (`TextureRecord::grey`) that
+Consumers that need the real image before they bind it (the parallax
+depth, read from the loaded size) load through `texture_sync`. A BC4 image is one grey channel (`TextureRecord::grey`) that
 the shaders repeat into colour for diffuse, emissive and unpacked specular
 maps, apparel, race skins and the skin scatter. The loader waits for
 the upload pass only when it decoded a request behind waiting uploads; the
@@ -343,8 +342,18 @@ blocks on the in-flight decodes for a caller that must have them. The
 terrain material path's two routines are `texture_existing` (the manager
 lookup that takes a reference and creates nothing) and `texture_stream_first`
 (a live record first, else the placeholder and a queued load whatever the
-general streaming switch says); terrain's own bindings cannot refresh a
-placeholder yet, so its build still uses `texture_sync`. Without a
+general streaming switch says, always with status 1; a name the game does
+not ship gives nothing). The terrain build asks for each palette material's
+diffuse and normal map this way as soon as a tile names the material and
+spawns the tile only once `texture_waiting` says both arrived, so its splat
+material and composite bake never bind a placeholder and the decodes run on
+the loader rather than the load step; a caller that waits for the whole
+level in one call finishes a waiting record on the spot with
+`texture_finish_now` (the priority wait: the record's own word, no new
+reference). The manager's fast-load flag (`TextureCache::set_fast_load`)
+makes the material path's queued load the loader's priority item (status 3
+rather than 1, so its decode never waits for the upload pass); the shipped
+game reads the flag and never sets it, so it is off. Without a
 `Game` (tools) or a task pool the plugin uploads the placeholder, and a cache
 built by hand without `set_streaming` keeps decoding synchronously.
 
