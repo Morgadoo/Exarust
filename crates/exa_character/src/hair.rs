@@ -181,15 +181,18 @@ pub fn attach_hair(
     }
 }
 
-/// Whether long hair hangs as cloth: on unless `EXA_HAIR_CLOTH=0`. A
+/// Whether long hair hangs as cloth: only with `EXA_HAIR_CLOTH=1`. A
 /// living character's hair never sleeps (a hair cloth stays awake on its
 /// head's countdown, as the original's), so its cost is bounded by what
 /// the sector offers it: only the body parts bucketed in the nine 6 m
 /// cells around it, as the original's grid sector walks them
 /// ([`exa_physics::sector::CellGrid::around`]), not every part of the
 /// level (which held exanima01 at 16 FPS before the stage culled them).
+/// Off by default: even culled, exanima01 stayed at 16 FPS on the RTX 3090
+/// with hair on (the cloth stage 3.8 ms a tick, the fixed schedule 12.5 ms
+/// a tick), so part of the hair's cost lies outside the counted stage.
 pub fn hair_cloth_on() -> bool {
-    std::env::var_os("EXA_HAIR_CLOTH").is_none_or(|v| v != "0")
+    std::env::var_os("EXA_HAIR_CLOTH").is_some_and(|v| v != "0")
 }
 
 /// The hair cloth switch as a resource, for a host or a test to set; the

@@ -1,0 +1,2 @@
+- [x] Opt-in switch
+- [x] Docs

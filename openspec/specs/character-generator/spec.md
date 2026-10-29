@@ -210,7 +210,7 @@ A spawned body wearing a mind ward SHALL be perceived as hidden by other charact
 - **THEN** its refusing bit is set and its bonus has bits 0x38D28EB4, and both clear when it is given neither
 
 ### Requirement: Hair cloth
-With the hair cloth switch on (the default; `EXA_HAIR_CLOTH=0` turns it off), the character build SHALL hang each cloth-marked node of a hair style as cloth, pinned by its faces' flags, giving each style root the hair's cloth record and leaving a marked node below a root with the built-in record. With the switch off the styles stay rigid on the head.
+With the hair cloth switch on (`EXA_HAIR_CLOTH=1`), the character build SHALL hang each cloth-marked node of a hair style as cloth, pinned by its faces' flags, giving each style root the hair's cloth record and leaving a marked node below a root with the built-in record. With the switch off (the default) the styles stay rigid on the head.
 
 #### Scenario: A long style
 - **WHEN** a character with the first long style (`hair hula01`) is built with the switch on
