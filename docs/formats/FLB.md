@@ -299,14 +299,14 @@ light in the environment word (unlit rows have an empty one).
 
 | offset | field | value |
 |---|---|---|
-| 0 | `ViewPos` | camera eye (cm), `w` = the frame's clock × exposure |
+| 0 | `ViewPos` | camera eye (cm), `w` = the sub-frame offset × the frame scale (as `TimeDlt.x`) |
 | 16 | `ViewSiz` | viewport width, height (one less when multisampled) |
 | 24 | `ViewPrj` | `tan(fov/2)·500`, `aspect·tan(fov/2)·500` |
 | 32 | `CamMat` | camera view-projection, column-major |
 | 96 | `SdwMat` | the sun's world-to-shadow matrix |
 | 160 | `VXGIScl` | `1/(W·20)`, `1/(H·20)`, `1/(D·20)`, `1/SdwSmps` (texels across X, Z, up) |
 | 176 | `Ambient` | linear level ambient × exposure × 15, `w` = 8 indoors or 3 outdoors |
-| 192 | `TimeDlt` | `(clock·exposure, −exposure/factor)`, the factor the super-sampling setting's 1–15 |
+| 192 | `TimeDlt` | `(offset·scale, −scale/factor)`: `offset` the sub-frame's time offset (0 outside super-sampling, `0.5 − (i + 0.5)/N`), `scale` the frame scale (1 up to a 1/60 s frame, else 16.666… ms over the frame's time), the factor the super-sampling setting's 1–15 |
 | 200 | `ViewRcp` | `1/width`, `1/height` |
 | 208 | `FogColr` | linear fog colour, `w` = `1/fog distance` |
 | 224 | `FogPos` | the midpoint of the camera's eye and the sun camera's eye (`eye + (sun − eye)·0.5`), `y` capped at `w`; `w` is the scene's integer height limit (340 at scene creation) |

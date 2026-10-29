@@ -39,6 +39,7 @@ pub mod sun_fit;
 pub mod supersample;
 pub mod terrain_composite;
 pub mod texture_program;
+pub mod texture_wait;
 pub mod view;
 
 use bevy::prelude::*;

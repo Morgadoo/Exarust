@@ -226,7 +226,9 @@ impl ProgramCache {
     }
 
     /// Free every program and empty the cache, as rebuilding the shader
-    /// libraries does. The reference counts and the drawing state go too.
+    /// libraries does. The reference counts go and nothing is bound any
+    /// more; the "uniforms are stale" flag is part of the drawing state, not
+    /// the cache, and is left as it was (the next bind sets it again).
     pub fn clear(&mut self, mut release: impl FnMut(u32)) {
         for bucket in &mut self.buckets {
             for entry in &mut bucket.programs {
@@ -241,7 +243,6 @@ impl ProgramCache {
         self.active_bucket = None;
         self.active_entry = None;
         self.bound = 0;
-        self.uniforms_stale = false;
     }
 
     /// The programs the cache holds.
@@ -432,7 +433,9 @@ mod tests {
         assert_eq!(cache.bound(), 0);
         assert_eq!(cache.program_count(), 0);
         assert!(cache.active_entry().is_none());
-        assert!(!cache.uniforms_stale());
+        // The stale flag belongs to the drawing state and survives the
+        // rebuild; the next bind raises it anyway.
+        assert!(cache.uniforms_stale());
     }
 
     fn material() -> Material {

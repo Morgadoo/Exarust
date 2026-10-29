@@ -107,10 +107,17 @@ fn light_skin(s: Surface, sn: vec3<f32>, blur: f32, l: vec3<f32>, colour: vec3<f
 // the light direction, turned per window pixel, over the light's filter
 // radius (`PointLight::radius`: (softness + 1)·0.005), each a hardware 2 × 2
 // comparison; a normal offset of 0.008·(1 − |N·L|)·d and a 0.5 % depth bias.
-// The GI lookup takes the same taps.
+// The GI lookup takes the same taps. The pairs are the first two lanes of
+// the engine's `SdwSmp` table (three floats a tap), at their exact values.
 const SHADOW_TAPS = array<vec2<f32>, 8>(
-    vec2(0.2725, -0.5487), vec2(-0.2880, 0.6186), vec2(0.3617, 0.1806), vec2(-0.5052, -0.2395),
-    vec2(-0.3028, -0.6664), vec2(-0.8588, 0.4718), vec2(0.3960, 0.7947), vec2(0.7731, -0.3697),
+    vec2(0.27254149317741394, -0.5486504435539246),
+    vec2(-0.28799688816070557, 0.6185606122016907),
+    vec2(0.36168748140335083, 0.18059517443180084),
+    vec2(-0.5052395462989807, -0.23951339721679688),
+    vec2(-0.3027792274951935, -0.6664453148841858),
+    vec2(-0.8587824106216431, 0.47176772356033325),
+    vec2(0.3960069417953491, 0.7947491407394409),
+    vec2(0.7731252908706665, -0.3697291910648346),
 );
 const SHADOW_DEPTH_SCALE: f32 = 0.995;
 // A node's shadow-bias level v (0–7, the mesh tag's low bits) scales a
