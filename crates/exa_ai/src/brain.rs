@@ -184,6 +184,24 @@ pub struct FleePlace<'a> {
 }
 
 impl Npc {
+    /// Forgets a character that left the scene: its contact, its nearby
+    /// entry and the pass's references to it. The original's scene tells
+    /// every AI to forget a removed character.
+    pub fn forget(&mut self, id: u64) {
+        self.contacts.retain(|contact| contact.id != id);
+        self.nearby.retain(|other| *other != id);
+        for slot in [
+            &mut self.pass.target,
+            &mut self.pass.attention,
+            &mut self.pass.encounter,
+            &mut self.pass.greet,
+        ] {
+            if *slot == Some(id) {
+                *slot = None;
+            }
+        }
+    }
+
     /// Moves the brain into level room `room` (−1 none): a cell without a
     /// room unlinks it and keeps the previous room; a new room remembers
     /// the old one only when it had one.
@@ -1177,6 +1195,30 @@ pub fn ai_tick(
 /// 1 cm a tick. A NaN speed fails the compare and stamps.
 pub fn stamps_footprint(in_combat: bool, moving: bool, speed_cm: f32) -> bool {
     !in_combat || !moving || speed_cm < 1.0
+}
+
+/// The scene's forget broadcast: when a character leaves the scene every
+/// other brain drops its contact with it and every combatant its
+/// references (the original's scene calls the AI's forget when a character
+/// is removed).
+pub fn forget_removed(
+    mut removed: RemovedComponents<Npc>,
+    mut npcs: Query<(&mut Npc, Option<&mut Combatant>)>,
+) {
+    let gone: Vec<Entity> = removed.read().collect();
+    if gone.is_empty() {
+        return;
+    }
+    for (mut npc, combatant) in &mut npcs {
+        for entity in &gone {
+            npc.forget(entity.to_bits());
+        }
+        if let Some(mut combatant) = combatant {
+            for entity in &gone {
+                combatant.forget(*entity);
+            }
+        }
+    }
 }
 
 /// Walks a fleeing brain out of its room: a brain whose target pass put it
@@ -2783,5 +2825,42 @@ mod tests {
         assert!(stamps_footprint(true, true, 0.999_999_94));
         assert!(!stamps_footprint(true, true, 1.0));
         assert!(!stamps_footprint(true, true, f32::NAN));
+    }
+
+    #[test]
+    fn a_removed_character_is_forgotten_by_every_brain() {
+        let mut app = App::new();
+        app.add_systems(Update, forget_removed);
+        let gone = app.world_mut().spawn(Npc::new([0.0; 4])).id();
+        let mut npc = Npc::new([0.0; 4]);
+        npc.contacts.push(contacts::ContactRecord {
+            id: gone.to_bits(),
+            ..Default::default()
+        });
+        npc.nearby.push(gone.to_bits());
+        npc.pass.target = Some(gone.to_bits());
+        npc.pass.attention = Some(gone.to_bits());
+        npc.pass.encounter = Some(gone.to_bits());
+        npc.pass.greet = Some(gone.to_bits());
+        let mut combatant = Combatant::default();
+        combatant.contacts.push(combatant::Contact::new(gone));
+        combatant.target = Some(gone);
+        combatant.look_target = Some(gone);
+        let keeper = app.world_mut().spawn((npc, combatant)).id();
+        app.update();
+        app.world_mut().entity_mut(gone).despawn();
+        app.update();
+        let npc = app.world().get::<Npc>(keeper).unwrap().clone();
+        let combatant = app.world().get::<Combatant>(keeper).unwrap().clone();
+        assert!(npc.contacts.is_empty());
+        assert!(npc.nearby.is_empty());
+        assert_eq!(
+            (npc.pass.target, npc.pass.attention),
+            (None, None),
+            "the pass's targets clear too"
+        );
+        assert_eq!((npc.pass.encounter, npc.pass.greet), (None, None));
+        assert!(combatant.contacts.is_empty());
+        assert_eq!((combatant.target, combatant.look_target), (None, None));
     }
 }
