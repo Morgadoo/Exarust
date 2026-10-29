@@ -3050,7 +3050,9 @@ pub fn exit_nudge(player: Vec3, trigger: ExitTrigger) -> Option<ExitNudge> {
     let axis = if clearance_z < clearance_x { 2 } else { 0 };
     let value = local[axis];
     let push = (trigger.extent[axis] - value) + EXIT_MARGIN;
-    let distance = if value > 0.0 { push } else { -push };
+    // The original takes the negative branch for a zero offset too, and an
+    // unordered (NaN) offset takes the positive branch.
+    let distance = if value <= 0.0 { -push } else { push };
     let row = Vec3::from_array(trigger.rotation[axis]);
     Some(ExitNudge {
         position: player + row * distance,
@@ -4364,6 +4366,10 @@ mod tests {
         let nudge = exit_nudge(Vec3::new(0.0, 0.0, 51.0), trigger).unwrap();
         assert_eq!(nudge.axis, 2);
         assert_eq!(nudge.distance, 74.0);
+        // A zero offset takes the negative branch: -(50 + 75).
+        let nudge = exit_nudge(Vec3::ZERO, trigger).unwrap();
+        assert_eq!((nudge.axis, nudge.distance), (2, -125.0));
+        assert_eq!(nudge.position, Vec3::new(0.0, 0.0, -125.0));
         // The squared overhang is compared with the plain 50: 7 cm out
         // (49) still counts, 8 cm out (64) does not.
         assert!(exit_nudge(Vec3::new(0.0, 0.0, 57.0), trigger).is_some());
