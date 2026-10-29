@@ -167,6 +167,8 @@ pub struct Npc {
     /// The idle head (the alert look or the attention) took this tick, so
     /// the roam's phases did not run.
     pub head_took: bool,
+    /// The attach step already snapped the AI's look to the body's facing.
+    pub snapped: bool,
 }
 
 /// Where a brain stands and the room graph its flight reads: the brain's
@@ -246,6 +248,7 @@ impl Npc {
             alert: motion::AlertLook::default(),
             walk: crate::walker::IdleWalk::default(),
             head_took: false,
+            snapped: false,
         }
     }
 
@@ -1112,12 +1115,8 @@ pub fn ai_tick(
         {
             let facing = motion::yaw_of(transform.rotation * Vec3::Z);
             // A brain that has never turned takes the body's placed facing
-            // as its look (the attach step's snap).
-            if npc.turn.heading == 0.0 && npc.turn.look == 0.0 && npc.turn.offset == 0.0 {
-                npc.turn.heading = facing;
-                npc.turn.look = facing;
-                npc.turn.offset = facing;
-            }
+            // as its look through the attach step's snap, once.
+            attach_snap(&mut npc, facing);
             // The idle states' head: the alert look-around, then the
             // attention to the attended contact; only when neither takes
             // the tick is the in-combat mark cleared and the body turned
@@ -1241,6 +1240,17 @@ pub fn ai_tick(
 /// 1 cm a tick. A NaN speed fails the compare and stamps.
 pub fn stamps_footprint(in_combat: bool, moving: bool, speed_cm: f32) -> bool {
     !in_combat || !moving || speed_cm < 1.0
+}
+
+/// The attach step's snap, once: the AI's look yaws, aim, look and
+/// look-smoothing directions and the body's own look take the body's
+/// facing. A brain that already snapped keeps its look.
+pub fn attach_snap(npc: &mut Npc, facing_yaw: f32) {
+    if npc.snapped {
+        return;
+    }
+    motion::snap_to_body(&mut npc.gaze, &mut npc.turn, facing_yaw);
+    npc.snapped = true;
 }
 
 /// The scene's forget broadcast: when a character leaves the scene every
@@ -2714,6 +2724,7 @@ mod tests {
             ))
             .id();
         let mut brain = Npc::new([0.0; 4]);
+        brain.snapped = true;
         brain.turn.look = std::f32::consts::FRAC_PI_2;
         brain.turn.sway_at_ms = u32::MAX;
         let npc = app
@@ -2924,6 +2935,23 @@ mod tests {
         assert!(stamps_footprint(true, true, 0.999_999_94));
         assert!(!stamps_footprint(true, true, 1.0));
         assert!(!stamps_footprint(true, true, f32::NAN));
+    }
+
+    #[test]
+    fn the_attach_snap_takes_the_body_facing_once() {
+        let mut npc = Npc::new([0.0; 4]);
+        attach_snap(&mut npc, 0.75);
+        assert_eq!(
+            (npc.gaze.look, npc.gaze.offset, npc.turn.look),
+            (0.75, 0.75, 0.75)
+        );
+        assert_eq!(npc.gaze.body_look, motion::dir_of(0.75));
+        assert_eq!(npc.gaze.body_smooth, motion::dir_of(0.75));
+        // A second attach (or a facing of 0) does not reset the look.
+        npc.turn.look = 2.0;
+        attach_snap(&mut npc, 0.0);
+        assert_eq!(npc.turn.look, 2.0);
+        assert_eq!(npc.gaze.body_look, motion::dir_of(0.75));
     }
 
     #[test]
