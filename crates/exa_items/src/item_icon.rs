@@ -795,6 +795,7 @@ mod tests {
                 gi_centred: false,
                 gi_thin: false,
                 rigid: None,
+                triangles: None,
                 tracks: Vec::new(),
                 shadow_bias: 0,
                 is_skin: false,
