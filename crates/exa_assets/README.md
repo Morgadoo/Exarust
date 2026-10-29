@@ -384,8 +384,18 @@ drains attachments while the caller pumps other work. Content builders are
 supplied by the caller (`ContentBuilders`), as the original's thread calls
 into the database, character and item factories. The queue and loop are
 implemented; the level-object chunk reader, the database object factory and
-the character builders remain in their own components, and Exarust's level
-loader does not drive this scheduler yet. `saved_chunks` reads the saved
+the character builders remain in their own components. Exarust's level
+loader drives the level pass: `exa_world::LevelLoad` builds its placed
+objects through `step`, one entry a pass in file order, names the player by
+the session's two words, and ends with `wait_for_level`, logging
+`missing_message` ("N missing database objects.") under `LOG_SOURCE`
+("Content management") when the count is not zero. `LevelHandoff::of` is the
+wait's choice of where the finished objects go: to the scene's grid
+environment, which sorts them into its rooms, when the scene has one and its
+room-mode word has either bit of `0x3` (every shipped scene is created with
+`0x73`), else appended to the caller's list after what it holds. The
+request rings and the streamed characters have no driver yet: the
+character spawner and the database object requests build directly. `saved_chunks` reads the saved
 sub-chunk blob a streamed character carries (the builder scans from byte 4
 for the flat pose, motion state, pose tree and AI home while the next record
 header lies inside the stored payload length, keeping the last of a repeated
