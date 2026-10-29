@@ -232,6 +232,191 @@ fn inventory_records() -> Vec<Control> {
     vec![label, unlocated, primary]
 }
 
+/// The height the inventory constructor leaves the character view short of
+/// the form's own: the view is the form's width less two borders by its
+/// height less this.
+pub const DOLL_HEIGHT_RESERVE: i32 = 0x104;
+/// The character view's border (the constructor's `2`), which a rescale
+/// keeps (a border under 4 is not scaled).
+pub const DOLL_BORDER: i32 = 2;
+
+/// The inventory's geometry at a GUI unit, form-local: the constructor's
+/// design at unit 4 (244 × 644, border 8, the character view at the
+/// client's top, the pack at its bottom and the three records laid out in
+/// the client), rescaled to the unit as showing a form does
+/// ([`exa_ui::gui_rescale::rescale_form`]): the border becomes
+/// `round(unit · 8 / 4)`, the client and the children's clients scale by
+/// `/ 4 · unit`, the children's and records' places likewise.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InventoryLayout {
+    pub unit: i32,
+    /// The form's width and height.
+    pub size: (i32, i32),
+    /// The constructor's place (8, 8), scaled with the form [guess: the
+    /// show places the form after its rescale, so an unremembered window
+    /// sits at the scaled constructor place].
+    pub place: (i32, i32),
+    /// The form's border (its client inset).
+    pub border: i32,
+    /// The character view and the item pack, form-local.
+    pub doll: GuiRect,
+    pub pack: GuiRect,
+    /// The records, form-local.
+    pub controls: Vec<Control>,
+}
+
+impl InventoryLayout {
+    /// The layout at `unit`; unit 4 is the constructor's design as is.
+    pub fn at(unit: i32) -> Self {
+        use exa_ui::gui_rescale::{FormPlace, RecordPlace, rescale_form};
+        let (width, height) = GameScreen::Inventory.size().unwrap_or((244, 644));
+        let border = gui_paint::INVENTORY_SPACING;
+        let inset = |w: i32, h: i32, b: i32| ClientRect {
+            left: b,
+            top: b,
+            right: w - b,
+            bottom: h - b,
+        };
+        let client = inset(width, height, border);
+        let mut records = inventory_records();
+        layout_records(
+            &mut records,
+            LayoutClient {
+                inner_right: client.width(),
+                border: gui_paint::BORDER,
+                bottom: client.height(),
+            },
+            LAYOUT_UNIT,
+        );
+        let doll = (0, 0, width - border * 2, height - DOLL_HEIGHT_RESERVE);
+        let pack = (
+            0,
+            client.height() - gui_paint::PACK.1,
+            gui_paint::PACK.0,
+            gui_paint::PACK.1,
+        );
+        let child = |(x, y, w, h): (i32, i32, i32, i32)| FormPlace {
+            x,
+            y,
+            w,
+            h,
+            border: DOLL_BORDER,
+            design_border: 0,
+            title: 0,
+            client: inset(w, h, DOLL_BORDER),
+            content_height: 0,
+            minimum: (0, 0),
+            anchors: 0,
+            keep_size: false,
+            title_only: false,
+            container: false,
+            children: Vec::new(),
+            records: Vec::new(),
+        };
+        let mut place = FormPlace {
+            x: INVENTORY_PLACE.0,
+            y: INVENTORY_PLACE.1,
+            w: width,
+            h: height,
+            border,
+            design_border: 0,
+            title: 0,
+            client,
+            content_height: 0,
+            minimum: (0, 0),
+            anchors: gui_paint::SCREEN_STYLE,
+            keep_size: false,
+            title_only: false,
+            container: false,
+            children: vec![child(doll), child(pack)],
+            records: records
+                .iter()
+                .map(|c| RecordPlace {
+                    x: c.x as i16,
+                    y: c.y as i16,
+                    w: c.w as i16,
+                    h: c.h as i16,
+                    style: c.style,
+                    form_bottom: false,
+                })
+                .collect(),
+        };
+        if unit != 4 && unit > 0 {
+            let mut realign = |f: &mut FormPlace| f.client = inset(f.w, f.h, f.border);
+            let screen = (1 << 20, 1 << 20);
+            rescale_form(
+                &mut place,
+                4,
+                unit,
+                screen,
+                screen,
+                6 * unit - gui_paint::BORDER,
+                &mut realign,
+            );
+            for (c, r) in records.iter_mut().zip(&place.records) {
+                c.x = i32::from(r.x);
+                c.y = i32::from(r.y);
+                c.w = i32::from(r.w);
+                c.h = i32::from(r.h);
+            }
+        }
+        let border = place.border;
+        for record in &mut records {
+            record.x += border;
+            record.y += border;
+        }
+        let child_rect = |c: &FormPlace| GuiRect::new(c.x + border, c.y + border, c.w, c.h);
+        Self {
+            unit,
+            size: (place.w, place.h),
+            place: (place.x, place.y),
+            border,
+            doll: child_rect(&place.children[0]),
+            pack: child_rect(&place.children[1]),
+            controls: records,
+        }
+    }
+
+    /// The form's client inside `bounds`.
+    pub fn client(&self, bounds: GuiRect) -> GuiRect {
+        GuiRect::new(
+            bounds.left + self.border,
+            bounds.top + self.border,
+            bounds.width() - self.border * 2,
+            bounds.height() - self.border * 2,
+        )
+    }
+
+    fn moved(rect: GuiRect, bounds: GuiRect) -> GuiRect {
+        GuiRect::new(
+            rect.left + bounds.left,
+            rect.top + bounds.top,
+            rect.width(),
+            rect.height(),
+        )
+    }
+
+    /// The character view's rectangle on the screen.
+    pub fn doll_at(&self, bounds: GuiRect) -> GuiRect {
+        Self::moved(self.doll, bounds)
+    }
+
+    /// The pack's rectangle on the screen.
+    pub fn pack_at(&self, bounds: GuiRect) -> GuiRect {
+        Self::moved(self.pack, bounds)
+    }
+
+    /// The records on the screen.
+    pub fn controls_at(&self, bounds: GuiRect) -> Vec<Control> {
+        let mut controls = self.controls.clone();
+        for control in &mut controls {
+            control.x += bounds.left;
+            control.y += bounds.top;
+        }
+        controls
+    }
+}
+
 /// The journal constructor's two records, as stored: New, and Erase placed
 /// after it by an anchor. The text box is a child form, not a record.
 fn journal_records() -> Vec<Control> {
@@ -350,6 +535,9 @@ pub struct GameScreens {
     /// The player's inventory place, kept from its last close (the
     /// original keeps one; its writer is outside this unit).
     pub inventory_place: Option<(i32, i32)>,
+    /// The GUI unit the open inventory was laid out at: its form, panels
+    /// and records follow [`InventoryLayout::at`] for it.
+    pub inventory_unit: i32,
     /// The player's character record id (Exarust uses the entity index).
     pub player: i32,
     /// The inventory's item pack, drawn through the panel's icon path.
@@ -377,6 +565,7 @@ impl Default for GameScreens {
             containers: OpenContainers::default(),
             journal_text: String::new(),
             inventory_place: None,
+            inventory_unit: 4,
             player: 0,
             pack: Container::default(),
             card: CardWindow::default(),
@@ -417,7 +606,10 @@ impl GameScreens {
 
     fn push(&mut self, kind: GameScreen, bounds: GuiRect) -> FormId {
         let root = self.task.root;
-        let controls = screen_controls(kind, bounds);
+        let controls = match kind {
+            GameScreen::Inventory => self.inventory_layout().controls_at(bounds),
+            _ => screen_controls(kind, bounds),
+        };
         let form = self.task.add(Box::new(ScreenForm {
             parent: root,
             bounds,
@@ -429,6 +621,11 @@ impl GameScreens {
         self.open.push(OpenScreen { kind, form });
         self.task.focus_set(Some(form), NO_CONTROL);
         form
+    }
+
+    /// The open inventory's layout, at the unit it was opened at.
+    pub fn inventory_layout(&self) -> InventoryLayout {
+        InventoryLayout::at(self.inventory_unit)
     }
 
     /// The player's inventory: the show rule (toggling), then a new one is
@@ -451,15 +648,23 @@ impl GameScreens {
         });
         match (action, open) {
             (ScreenAction::Opened, _) => {
-                let (width, height) = GameScreen::Inventory.size().unwrap_or((244, 644));
+                self.inventory_unit = unit.max(1);
+                let layout = self.inventory_layout();
+                let (width, height) = layout.size;
                 let (x, y) = inventory_place(
                     true,
                     self.inventory_place,
                     self.task.screen.0,
                     width,
                     unit,
-                    INVENTORY_PLACE,
+                    layout.place,
                 );
+                // The pack is built for the unit: its icons are forty units
+                // and its saved places sixteenths of one (the open binds
+                // the carried list after this).
+                self.pack.unit = self.inventory_unit;
+                self.pack.icon_size = exa_items::icon_cache::icon_size(self.inventory_unit);
+                self.pack.client = (layout.pack.width(), layout.pack.height());
                 self.containers.open(tagged_container(self.player));
                 self.push(GameScreen::Inventory, GuiRect::new(x, y, width, height));
             }
@@ -1111,12 +1316,19 @@ fn open_requested_screens(
     catalogue: Option<Res<exa_items::catalogue::ItemCatalogue>>,
     mut icons: Option<ResMut<PanelIcons>>,
     menu: Option<Res<MenuScreen>>,
+    windows: Query<&Window, With<PrimaryWindow>>,
     mut screens: ResMut<GameScreens>,
 ) {
     if menu.is_some_and(|menu| menu.open) {
         requests.clear();
         return;
     }
+    // The unit the forms are shown at, as the painter reads it.
+    let unit = windows
+        .single()
+        .ok()
+        .map(|window| exa_ui::scale::gui_scale(window.physical_height(), 0) as i32)
+        .unwrap_or(4);
     if let Some(entity) = players.iter().next() {
         screens.player = entity.index().index() as i32;
     }
@@ -1126,7 +1338,8 @@ fn open_requested_screens(
         }
         let action = match request.screen {
             GameScreen::Inventory => {
-                let action = screens.open_inventory(request.player_ready, request.player_alive, 4);
+                let action =
+                    screens.open_inventory(request.player_ready, request.player_alive, unit);
                 // The pack is the player's own carried list, as the original
                 // loads it when the inventory opens.
                 if action == ScreenAction::Opened
@@ -1335,21 +1548,11 @@ fn paint_controls(
     }
 }
 
-/// The inventory's pack panel, as its painter places it: the client's
-/// bottom, 228 × 180.
+/// The inventory's pack panel at the design unit 4, as its painter places
+/// it: the client's bottom, 228 × 180 ([`InventoryLayout::pack_at`] for
+/// another unit).
 pub fn inventory_pack_panel(bounds: GuiRect) -> GuiRect {
-    let client = GuiRect::new(
-        bounds.left + gui_paint::INVENTORY_SPACING,
-        bounds.top + gui_paint::INVENTORY_SPACING,
-        bounds.width() - gui_paint::INVENTORY_SPACING * 2,
-        bounds.height() - gui_paint::INVENTORY_SPACING * 2,
-    );
-    GuiRect::new(
-        client.left,
-        client.bottom - gui_paint::PACK.1,
-        gui_paint::PACK.0,
-        gui_paint::PACK.1,
-    )
+    InventoryLayout::at(4).pack_at(bounds)
 }
 
 /// A loot window's pack and equipment panels, as its painter places them:
@@ -1388,12 +1591,14 @@ pub fn panel_client(rect: GuiRect) -> GuiRect {
     )
 }
 
-/// The inventory's frame, the item pack's panel with its entries' icons
-/// (when the panel's icon atlas holds them) and the Encumbrance label and
-/// Primary button records. The character view and the preview bars are
-/// not drawn.
+/// The inventory's frame, its character view's panel, the item pack's panel
+/// with its entries' icons (when the panel's icon atlas holds them) and the
+/// Encumbrance label and Primary button records, laid out at the unit the
+/// window was opened at ([`InventoryLayout`]). The character view's figure
+/// and the unlocated record are not drawn.
 fn paint_inventory(
     bounds: GuiRect,
+    layout: &InventoryLayout,
     unit: i32,
     textures: &GuiTextures,
     items: &Container,
@@ -1403,9 +1608,21 @@ fn paint_inventory(
     let level = exa_ui::gui_font::level_for_unit(unit);
     let (font, size) = screen_font(exa_ui::gui_font::gui_level(level).main, textures);
     let mut frame = Frame::new(bounds, unit, INVENTORY_TITLE);
-    frame.spacing = gui_paint::INVENTORY_SPACING;
+    frame.spacing = layout.border;
     let mut painted = gui_paint::paint_frame(&frame, &palette, &font, size);
-    let pack = inventory_pack_panel(bounds);
+    // The character view is a child form: its frame is drawn with the
+    // words the constructor gives it.
+    let doll = gui_paint::paint_panel(
+        layout.doll_at(bounds),
+        unit,
+        &palette,
+        gui_paint::DOLL_ATTRIBUTES,
+        gui_paint::PACK_STYLE,
+    );
+    for layer in doll.layers {
+        painted.push(layer);
+    }
+    let pack = layout.pack_at(bounds);
     let panel = gui_paint::paint_panel(
         pack,
         unit,
@@ -1431,7 +1648,7 @@ fn paint_inventory(
         ]);
         painted.push(layer);
     }
-    let controls = screen_controls(GameScreen::Inventory, bounds);
+    let controls = layout.controls_at(bounds);
     paint_controls(&controls, unit, &palette, &font, size, &mut painted);
     painted
 }
@@ -1674,9 +1891,14 @@ pub(crate) fn draw_screens(
         };
         let bounds = form.bounds();
         let painted = match screen.kind {
-            GameScreen::Inventory => {
-                paint_inventory(bounds, unit, textures, &screens.pack, Some(&mut icons))
-            }
+            GameScreen::Inventory => paint_inventory(
+                bounds,
+                &screens.inventory_layout(),
+                unit,
+                textures,
+                &screens.pack,
+                Some(&mut icons),
+            ),
             GameScreen::Journal => paint_journal(bounds, &screens.journal, unit, textures),
             GameScreen::Loot => match screens.loot.iter().find(|w| w.form == screen.form) {
                 Some(window) => paint_loot(bounds, unit, textures, window, Some(&mut icons)),
@@ -1718,6 +1940,51 @@ mod tests {
         assert_eq!(controls[1].class, UNLOCATED_CLASS);
         assert_eq!(controls[2].class, 1);
         assert_eq!(place(&controls[2]), (4, 416, 108, 24));
+    }
+
+    /// At unit 4 the layout is the constructor's design: 244 × 644 at
+    /// (8, 8), the character view 228 × 384 at the client's top, the pack
+    /// 228 × 180 at its bottom, the records where the layout pass puts them.
+    #[test]
+    fn the_inventory_layout_at_unit_four_is_the_constructors() {
+        let layout = InventoryLayout::at(4);
+        assert_eq!(layout.size, (244, 644));
+        assert_eq!(layout.place, (8, 8));
+        assert_eq!(layout.border, 8);
+        assert_eq!(layout.doll, GuiRect::new(8, 8, 228, 384));
+        assert_eq!(layout.pack, GuiRect::new(8, 456, 228, 180));
+        let bounds = GuiRect::new(8, 8, 244, 644);
+        assert_eq!(layout.pack_at(bounds), inventory_pack_panel(bounds));
+        let design = screen_controls(GameScreen::Inventory, bounds);
+        let laid = layout.controls_at(bounds);
+        for (a, b) in design.iter().zip(&laid) {
+            assert_eq!((a.x, a.y, a.w, a.h), (b.x, b.y, b.w, b.h));
+        }
+    }
+
+    /// At unit 8 (a 1440-pixel window) the form is rescaled from the
+    /// design: the border 8 becomes 16, the 228 × 628 client 456 × 1256,
+    /// the children keep their 2-pixel borders around doubled clients
+    /// (224 × 380 → 448 × 760, 224 × 176 → 448 × 352) and the pack's top
+    /// 448 → 896. The records stay between the view and the pack.
+    #[test]
+    fn the_inventory_layout_scales_with_the_gui_unit() {
+        let layout = InventoryLayout::at(8);
+        assert_eq!(layout.size, (488, 1288));
+        assert_eq!(layout.place, (16, 16));
+        assert_eq!(layout.border, 16);
+        assert_eq!(layout.doll, GuiRect::new(16, 16, 452, 764));
+        assert_eq!(layout.pack, GuiRect::new(16, 912, 452, 356));
+        let label = &layout.controls[0];
+        let button = &layout.controls[2];
+        assert!(label.y >= layout.doll.bottom, "{label:?}");
+        assert!(button.y > label.y);
+        assert!(button.y + button.h <= layout.pack.top, "{button:?}");
+        // Unit 5 (the user's 1014-pixel retail window): border 10, client
+        // 285 × 785.
+        let layout = InventoryLayout::at(5);
+        assert_eq!(layout.size, (305, 805));
+        assert_eq!(layout.border, 10);
     }
 
     #[test]
@@ -2296,6 +2563,74 @@ mod tests {
         let first = panel[0].batch.vertices_of(&panel[0].batch.primitives[0])[0];
         assert_eq!(first.x, (clip[0] + 10) as f32);
         assert!(first.y >= clip[1] as f32);
+    }
+
+    /// Rasterises the open inventory with the installed skin and fonts at a
+    /// window's size and unit; `EXA_GUI_DUMP` names a raw RGBA file (the
+    /// width and height in its name) to look at by eye. Skipped without an
+    /// installation.
+    fn rasterise_inventory(width: u32, height: u32) -> Option<(Vec<u8>, GuiRect)> {
+        use exa_ui::gui_draw::{GuiTexture, GuiTextures};
+        let dir = exa_assets::locate_install(None)?;
+        let game = exa_assets::Game(std::sync::Arc::new(exa_assets::GameData::open(&dir).ok()?));
+        let unit = exa_ui::scale::gui_scale(height, 0) as i32;
+        let level = exa_ui::gui_font::gui_level(exa_ui::gui_font::level_for_unit(unit));
+        let mut textures = GuiTextures::default();
+        for name in [
+            exa_ui::gui_draw::SKIN_TEXTURE,
+            level.main.texture,
+            level.small.texture,
+            exa_ui::gui_font::FONTBASE_24.texture,
+        ] {
+            if let Ok(image) = game.load_rgba(name)
+                && let Some(texture) =
+                    GuiTexture::from_bottom_up(image.width, image.height, &image.pixels)
+            {
+                textures.textures.insert(name.to_string(), texture);
+            }
+        }
+        let mut screens = GameScreens::default();
+        screens.task.screen = (width as i32, height as i32);
+        screens.open_inventory(true, true, unit);
+        let form = screens.find(GameScreen::Inventory)?.form;
+        let bounds = screens.task.form(form)?.bounds();
+        let layout = screens.inventory_layout();
+        let painted = paint_inventory(bounds, &layout, unit, &textures, &screens.pack, None);
+        let mut frames = GuiFrames::default();
+        painted.submit(&mut frames);
+        let pixels = exa_ui::gui_draw::rasterise(&frames.frames, &textures, width, height);
+        if let Ok(path) = std::env::var("EXA_GUI_DUMP") {
+            let _ = std::fs::write(path, &pixels);
+        }
+        Some((pixels, bounds))
+    }
+
+    /// The inventory paints its frame and its panels over the whole window,
+    /// not only the label and button records.
+    #[test]
+    fn the_inventory_paints_a_visible_frame_and_panels() {
+        let Some((pixels, bounds)) = rasterise_inventory(2560, 1440) else {
+            return;
+        };
+        let covered = |rect: GuiRect| {
+            let mut count = 0usize;
+            let mut total = 0usize;
+            for y in rect.top.max(0)..rect.bottom.min(1440) {
+                for x in rect.left.max(0)..rect.right.min(2560) {
+                    total += 1;
+                    if pixels[(y as usize * 2560 + x as usize) * 4 + 3] > 0 {
+                        count += 1;
+                    }
+                }
+            }
+            (count, total)
+        };
+        let (count, total) = covered(bounds);
+        eprintln!("inventory {bounds:?}: {count} of {total} pixels drawn");
+        assert!(count * 2 > total, "{count} of {total}");
+        let pack = InventoryLayout::at(8).pack_at(bounds);
+        let (count, total) = covered(pack);
+        assert!(count * 2 > total, "pack {count} of {total}");
     }
 
     #[test]

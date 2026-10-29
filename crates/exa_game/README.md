@@ -933,7 +933,14 @@ hotkeys (through `hotkeys`, so their permissions apply) send a
 `ScreenRequest`, and the inventory and journal open as forms on an
 `exa_ui::gui_core::GuiTask`, so their focus follows the window manager.
 The inventory toggles when active, is activated otherwise, sits at its
-(8, 8) or remembered place and is registered as an open container; the
+(8, 8) or remembered place and is registered as an open container; it is
+laid out at the live GUI unit (`InventoryLayout`): the constructor's
+design at unit 4 (244 × 644, border 8, the character view 228 × 384 at the
+client's top, the pack 228 × 180 at its bottom, the records between them)
+rescaled by `exa_ui::gui_rescale::rescale_form`, so at unit 8 the form is
+488 × 1288 at (16, 16) and its pack and records follow (the pack's hit
+rectangle in `panel_live` too). The character view's panel frame is drawn;
+its figure is not; the
 journal keeps its session entries and stores its text on close. Escape
 closes the focused screen (Exarust's). The rules are `exa_ui::game_gui`'s.
 The screens draw through `gui_paint` and `exa_ui::gui_draw` with the words
@@ -1008,7 +1015,11 @@ and the generator starts from `FILL_SEED`. Opening a popup logs each
 child's id, flags, model, icon slot, whether its icon has rendered and its
 pixel rect at debug level. `item_icon_render` keeps one GPU icon job in
 flight at a time (`start_budget`): every job's scene and sun sit on the one
-icon layer, and two at once framed the second item on the first's model.
+icon layer, and two at once framed the second item on the first's model. An apparel item's run-time (`&`) materials are painted from the
+record's appearance block before its scene is baked, as the original's
+streamed icon paints the item first: the paint job runs on the async
+compute pool (`IconPainting`) and the icon waits for its material, so the
+chest's clothes no longer render as the unpainted shade map (white).
 `--open-container FRAME` (Exarust's debug helper) opens
 the container nearest the player that many frames after the level load ends.
 `npc_search` hosts the original's follow state and the companion's search
