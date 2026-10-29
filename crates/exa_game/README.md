@@ -979,6 +979,16 @@ icons are released. A consumable (usable kind 0, subtype 1) the double
 click uses joins the controls' deferred list (`player_controls::PendingUses`)
 with its section's target word, due 2100 ms on; `run_pending_uses` hands
 each due entry, in order, to `exa_world::mechanisms::OpenDoorsUnder`.
+When a level has loaded, `container_fill` replaces the placed containers'
+random-table children (every shipped chest's children are "DropTable"
+records) with the rows their tables give, through
+`exa_items::randomise::Fill` (292 children in exanima01; the chest of
+drawers 0x80000054 gets boots twice, a shirt, a belt and trousers): a
+picked child takes the row's item with zero flags, an empty slot id 0
+with `0x100`. Stand-ins: the row's item id is used without the
+instance copy and condition word, only placed containers are walked
+and the generator starts from `FILL_SEED`. Opening a popup logs each
+child's id, flags, model and pixel rect at debug level.
 `--open-container FRAME` (Exarust's debug helper) opens
 the container nearest the player at that frame after the player appears.
 `npc_search` hosts the original's follow state and the companion's search

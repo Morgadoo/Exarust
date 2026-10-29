@@ -35,6 +35,7 @@ fn item(id: u32, occupancy: u64) -> Item {
         rank_word: 0,
         armour_type: 0,
         container: None,
+        random_table: None,
     }
 }
 

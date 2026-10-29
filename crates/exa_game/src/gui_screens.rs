@@ -843,6 +843,7 @@ impl Plugin for GameScreensPlugin {
                 (
                     sync_screen_size,
                     register_level_items,
+                    crate::container_fill::fill_level_containers,
                     open_requested_screens,
                     debug_open_container,
                     open_requested_containers,
@@ -919,6 +920,12 @@ fn open_requested_containers(
             icon,
             icon_half,
             |id, flags| {
+                // An empty slot (id 0, the fill's `0x100`) has no item to
+                // list. [guess: the panel's resolver finds no record for id
+                // 0, as its database lookup does]
+                if id == 0 {
+                    return None;
+                }
                 let (slot, _) = icons.reserve(id, flags, catalogue);
                 let bulk = catalogue.and_then(|c| c.bulk(id)).map_or(0, i32::from);
                 Some((slot, bulk))
@@ -928,6 +935,27 @@ fn open_requested_containers(
             icons.release(icon);
         }
         debug!("GUI: container {:#x} {action:?}", request.id);
+        // Each child's id, model and pixel rect, for the smoke runs.
+        if action == ScreenAction::Opened
+            && let Some(popup) = screens.popup(request.id)
+            && let Some(form) = screens.task.form(popup.form)
+        {
+            let client = panel_client(popup.panel_rect(form.bounds()));
+            for entry in &popup.panel.entries {
+                let model = catalogue
+                    .and_then(|c| c.model(entry.id))
+                    .map(|m| m.model.as_str());
+                debug!(
+                    "GUI: container child {:#x} flags {:#x} model {model:?} at ({}, {}) {}x{} px",
+                    entry.id,
+                    entry.flags,
+                    client.left + entry.cell.x,
+                    client.top + entry.cell.y,
+                    popup.panel.icon_size,
+                    popup.panel.icon_size
+                );
+            }
+        }
     }
 }
 

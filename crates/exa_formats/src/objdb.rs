@@ -146,6 +146,9 @@ pub struct Item {
     /// stored children a chest, barrel or bag opens with. `None` without
     /// the section or when it is shorter than its stated children.
     pub container: Option<crate::containers::Container>,
+    /// The random-table section ([`RANDOM_TABLE`]): the rows a container
+    /// child naming this record draws from when the world loads.
+    pub random_table: Option<crate::containers::RandomTable>,
 }
 
 /// An object's volume section: a box the level places, and for a level
@@ -733,6 +736,7 @@ impl Item {
             rank_word: 0,
             armour_type: 0,
             container: None,
+            random_table: None,
         };
         let mut body_rank = None;
         let mut weapon_rank = None;
@@ -803,6 +807,7 @@ impl Item {
                 TORCH => item.torch = true,
                 VOLUME => item.volume = Volume::parse(body),
                 CONTAINER => item.container = crate::containers::Container::parse(body),
+                RANDOM_TABLE => item.random_table = crate::containers::RandomTable::parse(body),
                 _ => {}
             }
             pos += size;
@@ -965,6 +970,19 @@ mod tests {
         // A section shorter than its stated child keeps no container.
         let short = Item::parse(1, &section(CONTAINER, &body[..0x20])).unwrap();
         assert!(short.container.is_none());
+        // A random table's rows: two count draws at most, one row.
+        let mut table = vec![0u8; 0x10];
+        table[4] = 1;
+        table[5] = 2;
+        table[0xC..0x10].copy_from_slice(&1u32.to_le_bytes());
+        let mut row = vec![0u8; 0x10];
+        row[0..4].copy_from_slice(&0x3cfu32.to_le_bytes());
+        row[4] = 10;
+        table.extend(row);
+        let drop = Item::parse(2, &section(RANDOM_TABLE, &table)).unwrap();
+        let drop = drop.random_table.unwrap();
+        assert_eq!((drop.min, drop.max), (1, 2));
+        assert_eq!((drop.entries[0].id, drop.entries[0].weight), (0x3cf, 10));
     }
 
     /// gives the stream a pair to compare.
