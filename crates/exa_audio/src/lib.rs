@@ -53,6 +53,7 @@ impl Plugin for AudioPlugin {
             .add_message::<sounds::HealSound>()
             .add_message::<exa_combat::impact::ImpactSounded>()
             .add_message::<exa_combat::impact::WeaponSounded>()
+            .add_message::<exa_combat::swing_voice::SwingVoiceCue>()
             .add_systems(
                 Update,
                 (
@@ -60,7 +61,7 @@ impl Plugin for AudioPlugin {
                     hits::impact_sounds,
                     hits::weapon_sounds,
                     sounds::heal_sounds,
-                    sounds::swing_sounds,
+                    sounds::swing_voices,
                     footsteps::footsteps,
                     music::start_music,
                     music::apply_music_setting,

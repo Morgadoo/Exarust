@@ -119,8 +119,16 @@ parameters are in. EFX is not applied by the backend (see [Gaps](#gaps)).
 
 ### Body sounds (`sounds`, `loops`)
 
-- A fighter's strike window opening plays one `SwingHA` variant at its
-  primary weapon's swing volume and pitch (W25, W26), about its body.
+- A fighter's swing voice (`swing_voices`, from `exa_combat`'s
+  `SwingVoiceCue`): the first attack tick in the swing's region restarts the
+  voice of its first held item on a `SwingHA` variant, silent, at 0.4 × W26,
+  and rustles its clothing foley (volume × (0.02r + 0.02), pitch
+  0.4r + 0.8, then 400 ms plus a jitter under 100 before the next rustle);
+  every attack tick sets the voice's volume W25 · 0.07f and pitch
+  W26 · (0.5f + 0.4) from the tracked tip speed (f = 0.1·√speed², faded
+  past 80 % of the clip; a stab has its own curve); a tick that is not an
+  attack fades a playing voice by 0.01 and 0.0005 and stops it under
+  0.005. Fists and claws are not held items and swing silently.
 - A second wind's heal plays `StmHeal01` at 0.1 and pitch 1.
 - A blow plays the weapon's own set by its record's hit-sound class
   (`WH_SwordA`, `BdyCol` for fists, …) and the struck part's material set:

@@ -24,6 +24,7 @@ use crate::attack::{AttackMotion, Attacker, Side, Slot};
 use crate::condition::OFF_BALANCE_BELOW;
 use crate::damage::{Outcome, WeaponRecord};
 use crate::stance::Stance;
+use crate::swing_voice::{SwingVoice, SwingVoiceCue, voice_speed2};
 use crate::{Attacking, Blade, Condition, Fighter};
 
 /// The swing's rate: speed × g × 1.125 × the clip clock's base, g = 1 −
@@ -484,6 +485,7 @@ pub enum SwingEvent {
 /// the stall ends and when a released swing may be renewed, the clip rate
 /// this tick, its strikers' window and trackers.
 #[derive(Component, Clone, Copy, Debug, PartialEq)]
+#[require(SwingVoice)]
 pub struct SwingState {
     pub flags: u32,
     /// The swing strength P: 1 at every start; a stall drains it.
@@ -775,7 +777,9 @@ pub(crate) fn run_swings(
         Option<&mut Ragdoll>,
         &GlobalTransform,
         Option<&Stance>,
+        &mut SwingVoice,
     )>,
+    mut cues: MessageWriter<SwingVoiceCue>,
 ) {
     let now = ticks.millis();
     let entity = ticked.body;
@@ -790,6 +794,7 @@ pub(crate) fn run_swings(
         mut body,
         gt,
         stance,
+        mut voice,
     )) = fighters.get_mut(entity)
     else {
         return;
@@ -846,6 +851,25 @@ pub(crate) fn run_swings(
     let facing = gt.rotation() * Vec3::Z;
     let motion = attacking.motion;
     let progress = at.progress;
+    // The swing voice's start, before the trackers: the first tick in the
+    // region restarts the first held item's voice, silent, at the primary
+    // striker's swing pitch × 0.4. Fists and claws are not held items and
+    // have no voice.
+    let voice_at = gt.translation() + Vec3::Y;
+    let holds = blades
+        .iter()
+        .any(|b| b.wielder == entity && b.record.armed());
+    let start_pitch = attacker
+        .primary_record(entity, blades.iter())
+        .map_or(0.0, |r| r.swing_pitch);
+    if let Some(start) = voice.enter(state.in_region(motion, progress), holds, start_pitch) {
+        cues.write(SwingVoiceCue::Start {
+            fighter: entity,
+            at: voice_at,
+            pitch: start.pitch,
+            now_ms: now as u32,
+        });
+    }
     let t = SwingTick {
         at,
         motion,
@@ -890,6 +914,36 @@ pub(crate) fn run_swings(
                 rest.map_or("", |_| ", recoil")
             );
         }
+    }
+    // The voice's volume and pitch, the routine's last write, from the
+    // tracked speed (the second hand's for a one-hand striker's other-side
+    // attack) and the primary striker's swing volume and pitch. The
+    // character's loudness and sound gain are 1 outside the force swing's
+    // and the fades' writes, which Exarust does not have.
+    if voice.started
+        && holds
+        && let Some(record) = attacker.primary_record(entity, blades.iter())
+    {
+        let speed2 = voice_speed2(
+            [state.tracker[0].speed2, state.tracker[1].speed2],
+            attacking.weapon_class,
+            attacking.motion,
+        );
+        let (volume, pitch) = swing_sound(
+            speed2,
+            progress,
+            attacking.motion == AttackMotion::Stab,
+            record.swing_pitch,
+            record.swing_volume,
+            1.0,
+            1.0,
+        );
+        cues.write(SwingVoiceCue::Sound {
+            fighter: entity,
+            at: voice_at,
+            volume,
+            pitch,
+        });
     }
     // P is this tick's, after the stall drain. The progress is the clip's
     // as this stage read it. The motion is the one that played, so a chain

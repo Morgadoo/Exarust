@@ -92,6 +92,7 @@ impl Plugin for CombatPlugin {
             ))
             .add_message::<wounds::Bleed>()
             .add_message::<wounds::Spray>()
+            .add_message::<swing_voice::SwingVoiceCue>()
             // The attack branch of each character's tick: its attack stage,
             // after its posture stage (this tick's posture decision), before
             // its health bookkeeping and its clip's advance.
@@ -108,7 +109,20 @@ impl Plugin for CombatPlugin {
                         .in_set(CharacterStage::Attack)
                         .after(swing::run_swings)
                         .run_if(condition::ticked_lives),
+                    // The body tick's fade of the held voices on a tick
+                    // that is not an attack.
+                    swing_voice::fade_swing_voices
+                        .in_set(CharacterStage::Attack)
+                        .run_if(condition::ticked_lives),
                 ),
+            )
+            // The tangle break, in the readiness block of each living
+            // body's tick.
+            .add_systems(
+                CharacterTick,
+                strike_body::break_tangles
+                    .in_set(CharacterStage::Readiness)
+                    .run_if(condition::ticked_lives),
             )
             .add_systems(
                 CharacterTick,
