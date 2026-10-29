@@ -114,7 +114,7 @@ stays as the shorthand for hide or delete.
 ## (c) Commits
 
 - `c4bde20a` Reproduce the scene frame's removal steps and rotated sector bounds
-- (report and archived change) Archive the scene removal change and add the scenenodes3 report
+- `7b27bb71` Archive the scene removal change and add the scenenodes3 report
 
 Checks run before each commit, on the remote worker:
 
