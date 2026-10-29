@@ -866,12 +866,15 @@ pub(super) fn foot_cues(legs: &mut [Leg], ankles: &[Vec3], work: &mut Work) {
 }
 
 /// A step's loudness from its length (cm): 0.01 + 0.0139 × the length up
-/// to 140 cm, 1 beyond. The footstep sound's volume starts here.
+/// to 140 cm, 1 beyond. The product and the sum are taken in double and
+/// narrowed once, and a NaN length takes the formula (the original's
+/// unordered compare against 140 falls to it). The footstep sound's
+/// volume starts here.
 pub fn step_loudness(length_cm: f32) -> f32 {
-    if length_cm <= 140.0 {
-        length_cm * 0.0139 + 0.01
-    } else {
+    if length_cm > 140.0 {
         1.0
+    } else {
+        (f64::from(length_cm) * 0.0139 + 0.01) as f32
     }
 }
 

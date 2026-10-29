@@ -1106,6 +1106,11 @@ fn a_steps_loudness_follows_its_length() {
     assert!(close(step_loudness(140.0), 1.956, 1e-6));
     assert_eq!(step_loudness(200.0), 1.0);
     assert_eq!(step_loudness(-10.0), -0.129);
+    // Double precision: 3 cm gives 0x3d53c361 (0.0517), where single
+    // precision gives 0.051699996; 27 cm 0.3853 rather than 0.38529998.
+    assert_eq!(step_loudness(3.0).to_bits(), 0x3d53_c361);
+    assert_eq!(step_loudness(27.0).to_bits(), 0x3ec5_460b);
+    assert!(step_loudness(f32::NAN).is_nan());
 }
 
 /// A lower leg's child takes the original's second flag word bit when the
@@ -1315,6 +1320,15 @@ fn a_releasing_foot_steps_and_splashes() {
     let step = release_step(0.5, 2.0, 1.0, 1.0);
     assert!(close(step.gain, 0.025, 1e-7), "{}", step.gain);
     assert!(close(step.pitch, 0.85, 1e-6), "{}", step.pitch);
+    // The assembly's footstep: gain = sound gain (1) × loudness × footstep
+    // volume × (0.005·g + 0.02), every product in double; a 27 cm step
+    // (loudness 0.3853) of a human (volume 1) at g = p = 0.5 plays at
+    // 0x3c0e0979 (0.0086693), pitch 0x3f33ba34 (0.70206). Gains of 0.001 to
+    // 0.01 for a footwork shuffle are the original's: its walking steps,
+    // ((0.08·speed)² + 0.01)·(0.5g + 0.5), run about ten times louder.
+    let shuffle = release_step(step_loudness(27.0), 1.0, 0.5, 0.5);
+    assert_eq!(shuffle.gain.to_bits(), 0x3c0e_0979);
+    assert_eq!(shuffle.pitch.to_bits(), 0x3f33_ba34);
     assert!(wet_release_step(-50.0, 0.0, 0.5, 2.0, 0.0, 0.0).is_none());
     assert!(wet_release_step(f32::NAN, 0.0, 0.5, 2.0, 0.0, 0.0).is_none());
     // The surface value 10 over a contact at −21: share (−10 − 1 + 21)·0.05.
