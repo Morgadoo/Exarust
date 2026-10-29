@@ -668,9 +668,7 @@ pub fn xp_pool(
             damage = damage.wrapping_add(fighter.damage);
         }
     }
-    let base = crate::arena_match::cvtss2si_low32(
-        (tier as f32 * 0.25 + 1.0) * template_xp as f32,
-    );
+    let base = crate::arena_match::cvtss2si_low32((tier as f32 * 0.25 + 1.0) * template_xp as f32);
     let mut pool = crate::arena_match::cvtss2si_low32(base as f32 * missing / total_max);
     if trainer {
         pool = pool.wrapping_add(pool / 2);

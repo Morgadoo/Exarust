@@ -2026,7 +2026,10 @@ mod tests {
         // infinity give the 64-bit indefinite integer, whose low word is 0;
         // 2^31 keeps its low word, the 32-bit minimum; −3e9 wraps.
         assert_eq!(crate::arena_match::cvtss2si_low32(f32::NAN), 0);
-        assert_eq!(crate::arena_match::cvtss2si_low32(2_147_483_648.0), i32::MIN);
+        assert_eq!(
+            crate::arena_match::cvtss2si_low32(2_147_483_648.0),
+            i32::MIN
+        );
         assert_eq!(crate::arena_match::cvtss2si_low32(f32::INFINITY), 0);
         assert_eq!(crate::arena_match::cvtss2si_low32(-3.0e9), 1_294_967_296);
         assert_eq!(crate::arena_match::cvtss2si_low32(100.0), 100);
