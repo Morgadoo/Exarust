@@ -41,6 +41,10 @@ pub struct ItemModel {
     pub flags: u32,
     /// A factory weapon's seeds, when the model is assembled.
     pub weapon: Option<exa_formats::objdb::Weapon>,
+    /// The body section's appearance block: the original's icon render
+    /// paints an apparel model's run-time (`&`) materials from it, the same
+    /// paint job an equipped item takes, before it draws the icon.
+    pub appearance: Option<exa_formats::objdb::Appearance>,
 }
 
 /// Item kinds and container children of the game's object database, by
@@ -157,6 +161,7 @@ impl ItemCatalogue {
                     model: item.model,
                     flags: item.model_flags,
                     weapon: item.weapon,
+                    appearance: item.appearance,
                 },
             );
         }
@@ -305,16 +310,22 @@ impl ItemCatalogue {
             let mut at = Some(item);
             let mut model = None;
             let mut bulk = None;
+            // The nearest body section along the chain paints the icon
+            // [guess: the original's section lookup inherits through the
+            // template as its model lookup does].
+            let mut appearance = None;
             for _ in 0..8 {
                 let Some(record) = at else { break };
                 if bulk.is_none() && !record.model.is_empty() {
                     bulk = Some(record.equip_lock);
                 }
+                appearance = appearance.or(record.appearance);
                 if !record.model.is_empty() {
                     model = Some(ItemModel {
                         model: record.model.clone(),
                         flags: record.model_flags,
                         weapon: record.weapon,
+                        appearance,
                     });
                     break;
                 }
@@ -325,7 +336,14 @@ impl ItemCatalogue {
                 if parent & LOCAL != 0 {
                     at = by_id.get(&(parent & ID_MASK)).copied();
                 } else {
-                    model = self.models.get(&(parent & ID_MASK)).cloned();
+                    model = self
+                        .models
+                        .get(&(parent & ID_MASK))
+                        .cloned()
+                        .map(|mut model| {
+                            model.appearance = appearance.or(model.appearance);
+                            model
+                        });
                     bulk = bulk.or_else(|| self.bulk.get(&(parent & ID_MASK)).copied());
                     break;
                 }
@@ -600,6 +618,7 @@ mod tests {
                 model: "Sword".into(),
                 flags: 1,
                 weapon: None,
+                appearance: None,
             },
         );
         catalogue.bulk.insert(40, 12);
@@ -627,6 +646,42 @@ mod tests {
         // A new level replaces the old one's records.
         catalogue.set_level_items(&[]);
         assert!(catalogue.model(LOCAL | 1).is_none());
+    }
+
+    /// A record's body appearance rides with its model: a level instance
+    /// keeps its own block, else takes its template's.
+    #[test]
+    fn level_records_carry_the_appearance_their_icon_paints() {
+        use exa_formats::objdb::{Appearance, Item, LOCAL};
+        let shirt = Appearance {
+            quality: 200,
+            damage: 10,
+            dirt: 30,
+            layers: Default::default(),
+        };
+        let worn = Appearance {
+            damage: 120,
+            ..shirt
+        };
+        let mut catalogue = ItemCatalogue::default();
+        catalogue.models.insert(
+            50,
+            ItemModel {
+                model: "Shirt".into(),
+                flags: 0,
+                weapon: None,
+                appearance: Some(shirt),
+            },
+        );
+        let record = |id: u32, parent: u32, appearance: Option<Appearance>| Item {
+            parent,
+            appearance,
+            ..Item::parse(id, &[]).expect("an empty item")
+        };
+        catalogue.set_level_items(&[record(1, 50, None), record(2, 50, Some(worn))]);
+        assert_eq!(catalogue.model(LOCAL | 1).unwrap().appearance, Some(shirt));
+        assert_eq!(catalogue.model(LOCAL | 2).unwrap().appearance, Some(worn));
+        assert_eq!(catalogue.model(50).unwrap().appearance, Some(shirt));
     }
 
     #[test]
