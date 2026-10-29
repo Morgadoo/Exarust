@@ -1,0 +1,6 @@
+- [x] Clear the locomotion drive in the standing branch, with its test
+- [x] Golem link smoothing from the race muscles, with its test
+- [x] Pain sounds and player jolt rules (exa_combat), with tests
+- [x] Feet modes and leg order rules (exa_physics), with tests
+- [x] Routine map statuses, live column, totals and corrections; crate READMEs
+- [x] Remote tests and clippy -D warnings

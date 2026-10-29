@@ -319,6 +319,17 @@ line with no sample plays nothing and leaves the wait alone, and a line
 still on its wait is refused. The collapse asks for the groan and the
 damage routine for the pain lines; nothing plays them in the game yet.
 
+The damage routine's pain sounds (`pain`): after the damage call, the
+victim's wound sound (its own, `WndFls`, `SkelHit` or `HitGlm`) and its
+pain line, a groan above a wound of 0.3 (wound sound at 0.8 of the
+voice), else, when the wound passes the epsilon or the yellow 0.2, the
+wound sound past a wound of 0.1 and a groan over a yellow of 0.5 or a
+grunt (`pain_sounds`; a voice level under 0.01 is mute). A struck player
+feels `7Y + 7L` (a big striker's blow by its speed, an overhead's at 0.4):
+the camera jolts by its root past 1 and the pad rumbles by it
+(`struck_player_jolt`); a striking player's pad rumbles by half the yellow
+(`striking_player_rumble`). Tested, not called yet.
+
 A fall to death (`fall`) is kept on every fighter (`FallDeath`: its stage,
 the game-clock time it was lost, whether it has left the world) and
 checked by `FallDeath::check` from a `FallReading` (the chest's slow
