@@ -415,19 +415,62 @@ impl Animator {
     }
 
     /// Samples `clip` as a limp body's (muscles-off) sampler does: the
-    /// bracket at the raw clock ([`ragdoll_bracket`]), no gait overlay, no
-    /// hold, the root keeping its travel, and the pose kept as the targets.
-    /// The body still snaps its particles to the pose itself; that and the
-    /// contacts are the caller's. Exarust has no clip on a corpse yet.
-    /// While the clip still leads in on the key its capture is meant for,
-    /// the capture is the source ([`Animator::ragdoll_lead`]). Returns the
-    /// pose and the bracket it was blended on.
-    pub fn sample_ragdoll(&mut self, clip: &Clip, looping: bool) -> Option<(ClipPose, Bracket)> {
+    /// progress (the raw clock over the last key's time, unguarded), the
+    /// bracket at the raw clock ([`ragdoll_bracket`]), no hold, the root
+    /// keeping its travel, the gait overlay ([`ragdoll_overlay`]: `overlay`
+    /// is the overlay clip, when the body had one, and the run blend) and
+    /// every turn normalised, the pose kept as the targets. The body still
+    /// snaps its particles to the pose itself; that and the contacts are
+    /// the caller's. While the clip still leads in on the key its capture
+    /// is meant for, the capture is the source ([`Animator::ragdoll_lead`]).
+    ///
+    /// Before sampling it takes the queued-clip switch: with a clip queued
+    /// ([`Animator::queued`]) that is not the one playing, and a target key
+    /// other than the last sample's, it samples nothing, captures the
+    /// current targets ([`Animator::capture_targets`], noting `feet`) for
+    /// this target key and makes the queued clip the playing one; the
+    /// caller then clears every foot's contact bits. Otherwise it samples
+    /// and remembers the target key. Exarust queues no clip yet, so the
+    /// switch never fires.
+    pub fn sample_ragdoll(
+        &mut self,
+        clip: &Clip,
+        looping: bool,
+        overlay: Option<(&Clip, f32)>,
+        feet: &[(usize, bool)],
+    ) -> Option<RagdollSample> {
+        let last = clip.keys.last()?.time;
+        self.progress = self.time / last;
         let mut b = ragdoll_bracket(clip, self.time, looping, self.blend)?;
+        if let Some(queued) = self.queued.take() {
+            if queued != self.action && Some(b.dst) != self.last_target {
+                self.capture_targets(feet);
+                self.capture_key = b.dst;
+                self.leading = true;
+                self.action = queued;
+                return Some(RagdollSample::Switched);
+            }
+            self.queued = Some(queued);
+        }
+        self.last_target = Some(b.dst);
         self.ragdoll_lead(&mut b);
-        let pose = self.blend_keys(clip, &b, false);
+        let mut pose = self.blend_keys(clip, &b, false);
+        ragdoll_overlay(&mut pose, self.capture.as_ref(), overlay, &b);
         self.keep(&pose, 0.0);
-        Some((pose, b))
+        Some(RagdollSample::Pose(pose, b))
+    }
+
+    /// Captures the bones' current targets (the last sample's pose, root
+    /// included) as the capture, and notes `feet` (each foot bone's pose
+    /// slot and whether it touches) as its flags: what a sampler's switch
+    /// to a queued clip does. Without a sample yet there is nothing to
+    /// capture and the capture stays as it was. The clock and the blend are
+    /// left as they are.
+    pub fn capture_targets(&mut self, feet: &[(usize, bool)]) {
+        if let Some(pose) = self.pose.as_ref() {
+            self.capture = Some(pose.clone());
+        }
+        self.note_planted(feet);
     }
 
     /// The muscles-off sampler's lead-in: while the bracket aims at the
@@ -627,7 +670,8 @@ pub fn placement_root_from_key(muscles: bool, action: Option<usize>) -> bool {
 /// as the capture's key and makes the queued clip the playing one; the
 /// next tick blends from that capture. Otherwise it samples and the
 /// target key is remembered. Exarust starts clips at once and keeps no
-/// queued clip, so nothing calls this.
+/// queued clip, so nothing calls this; the muscles-off sampler's own
+/// switch is in [`Animator::sample_ragdoll`].
 pub fn switches_to_queued(
     queued: usize,
     playing: usize,
@@ -657,6 +701,53 @@ pub fn overlay_toward(pose: &mut ClipPose, over: &Clip, b: &Bracket, weight: f32
     }
 }
 
+/// What one muscles-off sample did ([`Animator::sample_ragdoll`]).
+#[derive(Debug, Clone, PartialEq)]
+pub enum RagdollSample {
+    /// The pose sampled and the bracket it was blended on.
+    Pose(ClipPose, Bracket),
+    /// The queued clip took over: nothing was sampled, the current targets
+    /// were captured for this tick's target key, and the caller clears
+    /// every foot's contact bits.
+    Switched,
+}
+
+/// The muscles-off sampler's gait overlay and normalisation: with an
+/// overlay clip and run blend `run`, each turn is slerped by √run toward
+/// the overlay clip's sample at the bracket's keys and share, whose source
+/// is the capture's turn (not the overlay's source key) while the bracket
+/// blends from the capture; then every turn is normalised, overlay or
+/// not. A bone the overlay clip has no key turn for is only normalised.
+pub fn ragdoll_overlay(
+    pose: &mut ClipPose,
+    capture: Option<&ClipPose>,
+    overlay: Option<(&Clip, f32)>,
+    b: &Bracket,
+) {
+    let over = overlay.and_then(|(clip, run)| {
+        let to = clip.keys.get(b.dst)?;
+        let from: Vec<Quat> = match capture {
+            Some(c) if b.from_capture => c.rotations.clone(),
+            _ => clip
+                .keys
+                .get(b.src)?
+                .rotations
+                .iter()
+                .map(|&r| to_quat(r))
+                .collect(),
+        };
+        Some((from, to, run.sqrt()))
+    });
+    for (i, q) in pose.rotations.iter_mut().enumerate() {
+        if let Some((from, to, weight)) = over.as_ref()
+            && let (Some(&a), Some(&z)) = (from.get(i), to.rotations.get(i))
+        {
+            *q = super::slerp(*q, super::slerp(a, to_quat(z), b.f), *weight);
+        }
+        *q = q.normalize();
+    }
+}
+
 /// The hold step of a sample: each bone's turn is pulled toward the held
 /// pose by the hold's weight (when it is over the original's 1.19e-7),
 /// then every turn is normalised. The components are interpolated without
@@ -683,39 +774,52 @@ pub fn hold_toward(pose: &mut ClipPose, hold: Option<(&[Quat], f32)>) -> f32 {
 }
 
 /// The bracket of a limp body's (muscles-off) sample, taken at the raw
-/// clock `time` with no blend. Up to the first key (plus the remaining
-/// blend) it blends from the last key for a looping clip, else from the
-/// first, by time over (first key + blend). Between keys it blends as the
-/// living sampler does. At or past the last key a looping clip blends
-/// from it back to the first by (time − last) / first; a clip played once
-/// blends from the key before the last to the last with a share of 1 (it
-/// holds the last key). The share is not clamped: the original's looping
-/// branch can reach past 1.
+/// clock `time` with lead-in `blend`, in the original's branch order:
+///
+/// * the clock at or under the first key plus the blend (a NaN is not):
+///   from the last key for a looping clip, else from the first, to the
+///   first, by time / first key, or by time / (first key + blend) while the
+///   blend is positive; 0 when the first key's time is at most 1.19209e-7
+///   (or NaN).
+/// * the clock at or past the last key: a looping clip from it back to
+///   the first by (time − last) / first, unclamped (a guess: the original
+///   reads a register the routine never set there, the caller's, which is
+///   taken to be the clock); one played once from the key before the last
+///   to the last with a share of 1 (it holds the last key).
+/// * otherwise (a NaN clock included): the first key k ≥ 1 with the clock
+///   at or under its time, from k − 1 by (time − T(k−1)) / (T(k) −
+///   T(k−1)), unguarded. A NaN finds none (the original's indices are then
+///   whatever its registers held); this keeps the last pair at a NaN share.
 pub fn ragdoll_bracket(clip: &Clip, time: f32, looping: bool, blend: f32) -> Option<Bracket> {
     let keys = &clip.keys;
     let n = keys.len();
     let (first, last) = (keys.first()?.time, keys.last()?.time);
-    let (src, dst, f) = if first + blend < time {
-        if time < last {
-            let k = (1..n).find(|&k| time <= keys[k].time).unwrap_or(n - 1);
-            let from = keys[k - 1].time;
-            let span = keys[k].time - from;
-            let f = if span > EPSILON {
-                (time - from) / span
+    let (src, dst, f) = if first + blend >= time {
+        let src = if looping { n - 1 } else { 0 };
+        let f = if first > EPSILON {
+            if blend > 0.0 {
+                time / (first + blend)
             } else {
-                0.0
-            };
-            (k - 1, k, f)
-        } else if looping {
+                time / first
+            }
+        } else {
+            0.0
+        };
+        (src, 0, f)
+    } else if time >= last {
+        if looping {
             (n - 1, 0, (time - last) / first)
         } else {
             (n.saturating_sub(2), n - 1, 1.0)
         }
     } else {
-        let src = if looping { n - 1 } else { 0 };
-        let span = first + blend;
-        let f = if span > EPSILON { time / span } else { 0.0 };
-        (src, 0, f)
+        match (1..n).find(|&k| time <= keys[k].time) {
+            Some(k) => {
+                let from = keys[k - 1].time;
+                (k - 1, k, (time - from) / (keys[k].time - from))
+            }
+            None => (n.saturating_sub(2), n - 1, f32::NAN),
+        }
     };
     Some(Bracket {
         src,

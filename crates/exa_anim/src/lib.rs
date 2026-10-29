@@ -24,10 +24,10 @@ use exa_formats::rsq::{BoneBody, Clip, ClipTable, MotionSet, Sequences, bone_ind
 
 mod clock;
 pub use clock::{
-    ATTACKS, Bracket, Capture, Ease, FOOTWORK, LOCOMOTION, PlacementBracket, STANDING_PACE,
-    bracket, follow_up_blend, hold_toward, in_place, overlay_toward, placement_bracket,
-    placement_root_from_key, ragdoll_bracket, rising_frames, shock_hold, standing_frames,
-    switches_to_queued,
+    ATTACKS, Bracket, Capture, Ease, FOOTWORK, LOCOMOTION, PlacementBracket, RagdollSample,
+    STANDING_PACE, bracket, follow_up_blend, hold_toward, in_place, overlay_toward,
+    placement_bracket, placement_root_from_key, ragdoll_bracket, ragdoll_overlay, rising_frames,
+    shock_hold, standing_frames, switches_to_queued,
 };
 
 /// Body ticks a second: the clock every clip counts frames by (the
@@ -259,6 +259,13 @@ pub struct Animator {
     /// How far the last sample pulled the bones toward the pose the body
     /// holds, 0..=1.
     pub held: f32,
+    /// The clip queued to take over at the muscles-off sampler's next
+    /// change of target key ([`Animator::sample_ragdoll`]). Exarust starts
+    /// clips at once, so nothing queues one yet.
+    pub queued: Option<String>,
+    /// The target key of the last muscles-off sample, which the switch to
+    /// a queued clip waits to see change. None before the first.
+    pub last_target: Option<usize>,
     /// The clip just started replaced Walk or Run, which the body's tick
     /// reads once to plant the trailing foot.
     left_locomotion: bool,
@@ -288,6 +295,8 @@ impl Animator {
             pending: None,
             pose: None,
             held: 0.0,
+            queued: None,
+            last_target: None,
             left_locomotion: false,
         }
     }

@@ -17,7 +17,9 @@ day after the character-init presets, the grip and block-stamina re-check and th
 routine's foot sounds (see Corrections), after the wiring lane (live column), and after the
 kernel lane (the damage routine's pain sounds, the feet routine's modes, the init's golem links
 and leg order, the standing body's drive), and after the sampler lane (the samplers' heights, the
-pose-only key pick, the placement arithmetic, the down body's probe, the living hunch).
+pose-only key pick, the placement arithmetic, the down body's probe, the living hunch), and after
+the muscles-off lane (that sampler's bracket, overlay, height target and queued switch, and the
+capture of the current targets).
 
 ## Totals
 
@@ -29,9 +31,10 @@ pose-only key pick, the placement arithmetic, the down body's probe, the living 
 | n.a. | 5 | 896 |
 | all | 100 | 123,719 |
 
-Weighted by the partial shares, about **95,247 of 122,823 needed bytes (78 %)** are reproduced (n.a. routines left out; counting the partial routines' shares, 74,791 of their 101,464 bytes). Counting only what the running game calls, about **80,760 bytes (66 %)**; the rest is tested but not wired.
+Weighted by the partial shares, about **96,150 of 122,823 needed bytes (78 %)** are reproduced (n.a. routines left out; counting the partial routines' shares, 75,694 of their 101,464 bytes). Counting only what the running game calls, about **80,690 bytes (66 %)**; the rest is tested but not wired.
 The wiring lane made Break Tangle (#38, 370 B), the swing voice of #34 (about 450 B) and the held-voice fade in #49 (about 100 B) live (about 80,400 B). The kernel lane then added about 1,670 B reproduced (the pain sounds and player jolt of #8, the feet modes of #50, the leg order of #73: tested only) and about 360 B live (the standing body's drive reset in #49, the golem link smoothing of #73, and the init's foot-mask union, which was live but not credited).
 The sampler lane added about 3,070 B reproduced, tested only: the pose-only sampler's key pick, root source and height tail (#76, about 890 B), the living sampler's height tail and queued-clip switch (#81, about 880 B), the down body's probe (#49, about 150 B) and the placement routines' part, anchor, pin and mean arithmetic (#62 about 715 B, #58 about 440 B). Its one live change, the living hunch moved onto the thorax's own placement (#81), corrects code that was already credited, so the live total stays.
+The muscles-off lane added about 900 B reproduced, tested only (the sampler is not scheduled): in #82 the bracket's branch order (the lead-in divides by the first key alone unless the blend is positive, no guard between the keys, a NaN clock between the keys), the progress (raw clock over the last key), the gait overlay by √run (from the capture's turn while it leads in) and the normalisation, the height target ((2·run + 2)·scale while walking, the −500 cm floor, the original's sum order) and the queued-clip switch (about 765 B); #84, the capture of the current targets, as `Animator::capture_targets` (about 140 B). Nothing live changed; #84's earlier live credit (about 70 B) was the living sampler's rebase, which is not this routine, so the live count drops to about 80,690 B (66 %).
 
 ## Largest remaining work
 
@@ -41,7 +44,7 @@ The sampler lane added about 3,070 B reproduced, tested only: the pose-only samp
 | #8 | 13,157 | 2,631 | Damage routine: impact speed, zones, armour roll, channels, daze, block/clash/parry branches, bite, follow-through, sounds, blood, knockback, kill | bite link not attached; pain sounds and player jolt ported but not wired; script hook and callbacks; struck-item sound not called |
 | #18 | 8,061 | 1,612 | Balance routine: lean, score and counter, recovery steps and episodes, footwork and stance pick, grounds, support, landing and footstep sounds | foot sounds ported but not wired; nav calls; parity unverified block by block |
 | #76 | 3,562 | 1,425 | Pose-only sampler (spawn and placement) | the per-part routing (femur posture, half twist, head on the untwisted chain, hunch on the thorax alone) and the anchors as one pass; key pick and heights ported but not called |
-| #82 | 4,499 | 1,350 | Muscles-off sampler | hold, anchors; not scheduled |
+| #82 | 4,499 | 585 | Muscles-off sampler | every part's contacts in the height (legs only); not scheduled |
 | #50 | 7,185 | 1,336 | Feet routine: friction, height probe, smoothed ground, sole floor, anchor smoothing, pelvis target, support, lift servo and leg IK calls | flat-floor and hovering modes ported but not wired; some thresholds unverified |
 | #73 | 5,423 | 1,247 | Character init: rates, masses, gains, leg sides, placement, techniques, race and class presets, sounds, voice pitch, leg reach, head set-up | leg swap ported but not called; ghoul head-part set-up; gait scale check |
 | #62 | 2,042 | 1,021 | Placement on the ground (teleport with snap) | the sequence around the arithmetic (headings, standing points, particle copy, cloth and attached bodies); not called |
@@ -133,9 +136,9 @@ The sampler lane added about 3,070 B reproduced, tested only: the pose-only samp
 | 79 | 60 | Fast ease | `exa_anim clock.rs Ease::apply` | done | - | yes |
 | 80 | 668 | Gait floors | `exa_game limp.rs gait_floor`; `stages/movement.rs measure_ground` | done | one floor a tick instead of three | yes |
 | 81 | 8,782 | Living sampler (muscles on) | `exa_game stages/sampler.rs`; `limp.rs clip_tick, run_overlay`; `exa_anim clock.rs` (and `switches_to_queued`); `exa_physics body_pose_heights.rs stand_heights, living_pelvis_target` | partial (90 %) | exertion reads 0, dead jump branch; the height tail and the queued-clip switch are not called (Exarust's carry aims the pelvis from the feet; clips start at once) | yes (heights and switch no) |
-| 82 | 4,499 | Muscles-off sampler | `exa_game limp.rs sample_limp, limp_foot`; `exa_anim clock.rs sample_ragdoll` | partial (70 %) | hold, anchors; not scheduled | no |
+| 82 | 4,499 | Muscles-off sampler | `exa_game limp.rs sample_limp, limp_height_target, limp_foot`; `exa_anim clock.rs Animator::sample_ragdoll, ragdoll_bracket, ragdoll_overlay, RagdollSample` | partial (87 %) | the height reads the legs' contact points only (the original every part's contacts); the muscles-on root branch (unreachable behind the body tick's gate); the looping past-end share reads a register the routine never sets (taken as the clock); not scheduled, and nothing queues a clip | no |
 | 83 | 553 | Full capture | `exa_anim clock.rs take_capture, capture_whole` | partial (70 %) | half lean on whole captures, femur-flag exception | yes |
-| 84 | 230 | Capture current targets at a rebase | `exa_anim clock.rs Animator::bracket` | partial (30 %) | the rebase drops the capture instead of storing targets | yes |
+| 84 | 230 | Capture the current targets (the samplers' switch to a queued clip) | `exa_anim clock.rs Animator::capture_targets` (called by `sample_ragdoll`'s switch) | partial (90 %) | the flags come from the feet only (the original's from every part with contacts); the living sampler's switch does not call it (it keeps no queued clip) | no |
 | 85 | 280 | Physical hold pose | `exa_anim clock.rs Animator::hold_pose`; `limp.rs physical_turns` | done | - | yes |
 | 86 | 380 | Daze pose | `exa_anim clock.rs shock_hold` | partial (80 %) | no caller; its capture source (#84) | no |
 | 87 | 564 | Plain capture | `exa_anim clock.rs take_capture`; `limp.rs Lean::capture`; `body_twist.rs half_lean` | done | explicit fallback to the full capture | yes |
