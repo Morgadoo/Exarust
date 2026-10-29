@@ -77,6 +77,9 @@ pub struct HandAttach {
 pub struct AttachPlan {
     pub changed: [bool; 2],
     pub attach: [Option<HandAttach>; 2],
+    /// The record's stowed set's items, which the apply reads to refresh
+    /// the body when both are empty.
+    pub targets: [u32; 2],
     /// The record's second set is out after this plan (the plan was made
     /// for the swap, so the sets trade when it is applied).
     pub swap: bool,
@@ -104,6 +107,7 @@ where
     let mut plan = AttachPlan {
         changed: [false; 2],
         attach: [None; 2],
+        targets: [stowed[0].id, stowed[1].id],
         swap: true,
     };
     for hand in 0..2 {
@@ -148,7 +152,10 @@ pub enum ApplyStep {
     Attach {
         hand: usize,
         kind: AttachKind,
+        marks: ModelAttach,
     },
+    /// The body is refreshed because neither stowed hand holds an item.
+    RefreshBody,
     /// The stance is restarted with [`STANCE_BLEND`] (skipped in the swap
     /// state).
     RestartStance,
@@ -159,11 +166,17 @@ pub enum ApplyStep {
 }
 
 /// Applies an attachment plan to the record. The changed hands' models are
-/// detached, the new ones attached, the stance restarted unless the body is
-/// in [`SWAP_STATE`], the body's flag cleared, and — for a swap plan — the
-/// out and stowed sets exchanged. Returns the steps in the original's
-/// order.
-pub fn apply(p: &mut Possessions, plan: &AttachPlan, body_state: u32) -> Vec<ApplyStep> {
+/// detached, the new ones attached with their [`ModelAttach`] marks, the
+/// body refreshed when both stowed hands are empty, the stance restarted
+/// unless the body is in [`SWAP_STATE`], the body's flag cleared, and — for
+/// a swap plan — the out and stowed sets exchanged. `class` is the body's
+/// weapon class word. Returns the steps in the original's order.
+pub fn apply(
+    p: &mut Possessions,
+    plan: &AttachPlan,
+    body_state: u32,
+    class: u32,
+) -> Vec<ApplyStep> {
     let mut steps = Vec::new();
     for hand in 0..2 {
         if plan.changed[hand] {
@@ -175,8 +188,14 @@ pub fn apply(p: &mut Possessions, plan: &AttachPlan, body_state: u32) -> Vec<App
             steps.push(ApplyStep::Attach {
                 hand,
                 kind: attach.kind,
+                marks: model_attach(attach.kind, attach.flags, class),
             });
         }
+    }
+    // With both stowed hands empty the body has nothing left to hold, and
+    // the apply refreshes it before the stance.
+    if plan.targets[0] == 0 && plan.targets[1] == 0 {
+        steps.push(ApplyStep::RefreshBody);
     }
     if body_state != SWAP_STATE {
         steps.push(ApplyStep::RestartStance);
@@ -530,27 +549,40 @@ pub fn model_marks(flags: u32) -> ModelMarks {
 }
 
 /// What taking a weapon's model into a hand does before the take-in job
-/// runs: an item flagged `0x2000000` lights its held part, and a body with
-/// no weapon class bits has its weapon part cleared first.
+/// runs: an item flagged `0x2000000` lights its held part, the model's node
+/// takes flag `0x800`, its owner word starts at `0x7fffffff`, and a body
+/// with no weapon class bits has its weapon part cleared first. A shield
+/// is built by the shield creator (the model creator's `as_shield` word)
+/// and a weapon by the weapon one.
+///
+/// The node construction itself is the character generator's; Exarust has
+/// no item scene node here, so this is the job's marks as a rule.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct WeaponAttach {
+pub struct ModelAttach {
+    pub as_shield: bool,
     pub lit: bool,
     pub clears_part: bool,
+    /// The part node's flag bit the attach sets.
+    pub node_flag: u32,
+    /// The node's owner word when it is attached.
+    pub owner_word: i32,
 }
 
-/// The weapon model's marks and the body's part reset.
-pub fn weapon_attach(flags: u32, class: u32) -> WeaponAttach {
-    WeaponAttach {
+/// The model marks of an attached hand item.
+pub fn model_attach(kind: AttachKind, flags: u32, class: u32) -> ModelAttach {
+    ModelAttach {
+        as_shield: kind == AttachKind::Shield,
         lit: flags & LIT != 0,
         clears_part: class & 0x30 == 0,
+        node_flag: 0x800,
+        owner_word: 0x7FFF_FFFF,
     }
 }
 
-/// What a shield's model does: the body's weapon part is cleared the same
-/// way, and a shield never lights.
-pub fn shield_attach(class: u32) -> bool {
-    class & 0x30 == 0
-}
+/// The part node's flag a successful attach leaves.
+pub const ATTACHED_NODE_FLAG: u32 = 0x800;
+/// The node's owner word once its model is attached to a body.
+pub const ATTACHED_OWNER_WORD: i32 = -1;
 
 /// What attaching a node's item does when the job is over: the node leaves
 /// the scene, the body is refreshed when neither out hand holds an item,
@@ -763,7 +795,8 @@ mod tests {
         })
         .unwrap();
         assert_eq!(plan.changed, [true, true]);
-        let steps = apply(&mut p, &plan, 0);
+        assert_eq!(plan.targets, [7, 8]);
+        let steps = apply(&mut p, &plan, 0, 0x10);
         assert_eq!(
             steps,
             vec![
@@ -771,11 +804,25 @@ mod tests {
                 ApplyStep::Detach(1),
                 ApplyStep::Attach {
                     hand: 0,
-                    kind: AttachKind::Weapon
+                    kind: AttachKind::Weapon,
+                    marks: ModelAttach {
+                        as_shield: false,
+                        lit: false,
+                        clears_part: false,
+                        node_flag: ATTACHED_NODE_FLAG,
+                        owner_word: 0x7FFF_FFFF,
+                    },
                 },
                 ApplyStep::Attach {
                     hand: 1,
-                    kind: AttachKind::Shield
+                    kind: AttachKind::Shield,
+                    marks: ModelAttach {
+                        as_shield: true,
+                        lit: false,
+                        clears_part: false,
+                        node_flag: ATTACHED_NODE_FLAG,
+                        owner_word: 0x7FFF_FFFF,
+                    },
                 },
                 ApplyStep::RestartStance,
                 ApplyStep::ClearAttachFlag,
@@ -784,17 +831,19 @@ mod tests {
         // A redress plan does not trade the sets.
         assert_eq!(p.out, [hand(5, 0), hand(6, 0)]);
         // A swap plan does, and its stance restart is skipped in the swap
-        // state.
+        // state. Both stowed hands empty asks the body to refresh.
         let plan = AttachPlan {
             changed: [true, false],
             attach: [None, None],
+            targets: [0, 0],
             swap: true,
         };
-        let steps = apply(&mut p, &plan, SWAP_STATE);
+        let steps = apply(&mut p, &plan, SWAP_STATE, 0);
         assert_eq!(
             steps,
             vec![
                 ApplyStep::Detach(0),
+                ApplyStep::RefreshBody,
                 ApplyStep::ClearAttachFlag,
                 ApplyStep::ExchangeSets
             ]
@@ -1154,21 +1203,32 @@ mod tests {
     #[test]
     fn the_model_attach_and_the_node_finaliser() {
         assert_eq!(
-            weapon_attach(0x0200_0000, 0x10),
-            WeaponAttach {
+            model_attach(AttachKind::Weapon, 0x0200_0000, 0x10),
+            ModelAttach {
+                as_shield: false,
                 lit: true,
-                clears_part: false
+                clears_part: false,
+                node_flag: ATTACHED_NODE_FLAG,
+                owner_word: 0x7FFF_FFFF,
             }
         );
         assert_eq!(
-            weapon_attach(0, 0x80),
-            WeaponAttach {
+            model_attach(AttachKind::Weapon, 0, 0x80),
+            ModelAttach {
+                as_shield: false,
                 lit: false,
-                clears_part: true
+                clears_part: true,
+                node_flag: ATTACHED_NODE_FLAG,
+                owner_word: 0x7FFF_FFFF,
             }
         );
-        assert!(!shield_attach(0x20));
-        assert!(shield_attach(0));
+        // A shield is built by the shield creator and lights the same way;
+        // an off-hand light is a weapon model.
+        let shield = model_attach(AttachKind::Shield, 0x0200_0000, 0x20);
+        assert!(shield.as_shield && shield.lit && !shield.clears_part);
+        assert!(!model_attach(AttachKind::Light, 0, 0x20).as_shield);
+        // A successful attach leaves the node's owner word -1.
+        assert_eq!(ATTACHED_OWNER_WORD, -1);
         let finaliser = node_final(7, true);
         assert!(finaliser.detach_node && finaliser.refresh_body && finaliser.restart);
         assert!(!node_final(0, false).refresh_body);
