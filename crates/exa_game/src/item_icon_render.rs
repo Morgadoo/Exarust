@@ -241,7 +241,7 @@ fn paint_icon_jobs(
     {
         return;
     }
-    let mut budget = ICONS_PER_FRAME;
+    let mut budget = start_budget(mode.gpu, jobs.jobs.len());
     let mut index = 0;
     while index < icons.pending.len() && budget > 0 {
         if icons.pending[index].scene.is_none() {
@@ -278,6 +278,21 @@ fn paint_icon_jobs(
             plan.screen_extents.0,
             plan.screen_extents.1,
         );
+    }
+}
+
+/// How many prepared icons a frame starts. The CPU paint takes up to
+/// [`ICONS_PER_FRAME`]; a GPU job puts its scene, camera and sun on the one
+/// icon layer, where every camera sees every scene and every sun, so only
+/// one GPU job is in flight at a time (two at once rendered the second
+/// item framed on the first one's model, lit by two suns). The light
+/// layers start right after the icon layer, so the jobs cannot take a
+/// layer each.
+pub fn start_budget(gpu: bool, in_flight: usize) -> usize {
+    match (gpu, in_flight) {
+        (false, _) => ICONS_PER_FRAME,
+        (true, 0) => 1,
+        (true, _) => 0,
     }
 }
 
@@ -490,7 +505,12 @@ fn icon_readback_complete(
             job.halo_highlight,
         );
     }
-    icons.apply_rendered(job.id, job.key, icon, job.content_width, job.content_height);
+    let applied =
+        icons.apply_rendered(job.id, job.key, icon, job.content_width, job.content_height);
+    debug!(
+        "icon: {:#x} key {:#x} rendered on the GPU, applied {applied}",
+        job.id, job.key
+    );
     for entity in [job.camera, job.light, job.root]
         .into_iter()
         .chain(job.readback)
@@ -613,6 +633,13 @@ fn linear_to_srgb(value: f32) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn one_gpu_icon_is_in_flight_at_a_time() {
+        assert_eq!(start_budget(true, 0), 1);
+        assert_eq!(start_budget(true, 1), 0);
+        assert_eq!(start_budget(false, 3), ICONS_PER_FRAME);
+    }
 
     #[test]
     fn a_readback_resolves_to_the_icon_size_bottom_up() {
