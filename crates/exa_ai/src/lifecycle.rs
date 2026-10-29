@@ -17,6 +17,10 @@
 //!   party when the character follows, frees its path, and finalises.
 //! - **Disable** ([`disabled`]): clears the AI's animation parameter and
 //!   leaves the party when the character follows.
+//! - **Idle return** ([`return_to_idle`]): the look after combat is left
+//!   ([`crate::motion::leave_look`]), then the activity's start flag clears,
+//!   the idle driver restarts at step 1, the idle state becomes the current
+//!   state and the body's in-combat mark clears.
 //! - **Investigation** ([`investigate`]): the idle states sample the
 //!   pathfinder's disturbance at the body's 600 cm cell (a key of cell x
 //!   and z). The same cell with a value within 0.02 of the last one does
@@ -32,6 +36,8 @@
 //! Evidence: the original's removal, destroy and disable slot handlers, its
 //! script object factory, its scripted action hook, its investigation and
 //! its idle driver's room choice.
+
+use crate::motion::{Gaze, Turning};
 
 /// A script object kind the role init factory can make.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -150,6 +156,22 @@ pub fn disabled(has_animation: bool, following: bool) -> Disabled {
         cleared_animation: has_animation,
         left_party: following,
     }
+}
+
+/// The idle driver's step an idle return restarts it at.
+pub const IDLE_RETURN_STEP: i32 = 1;
+
+/// Puts a brain back in its idle state (the chase that loses its foe and
+/// the activation's end call it): the AI's look, heading and eased offset
+/// take the body's look yaw ([`crate::motion::leave_look`]), the activity's
+/// start flag clears, the idle driver restarts at step 1, the idle state
+/// becomes the current state and the body's in-combat mark clears; the
+/// flags, the state and the mark are the caller's, and the step to restart
+/// at ([`IDLE_RETURN_STEP`]) is returned. Not called by the running game
+/// yet: its chase end belongs to the combat state.
+pub fn return_to_idle(gaze: &mut Gaze, turn: &mut Turning, body_look_yaw: f32) -> i32 {
+    crate::motion::leave_look(gaze, turn, body_look_yaw);
+    IDLE_RETURN_STEP
 }
 
 /// The disturbance inside the value's own fluctuation: the same cell whose
@@ -1074,5 +1096,23 @@ mod tests {
             &mut state, false, false, 0.0, 1021, &mut roll
         ));
         assert_eq!(state.step, GoTo::Plan);
+    }
+
+    /// Returning to idle takes the body's look yaw into the AI's look, its
+    /// heading and the eased offset, and restarts the driver at step 1.
+    #[test]
+    fn returning_to_idle_takes_the_body_look() {
+        let mut gaze = Gaze::at(0.2);
+        let mut turn = Turning {
+            look: 0.1,
+            heading: 0.1,
+            offset: 0.1,
+            ..Turning::default()
+        };
+        assert_eq!(return_to_idle(&mut gaze, &mut turn, 0.75), 1);
+        // The look yaw itself is left for the tick's head branch.
+        assert_eq!(gaze.look, 0.2);
+        assert_eq!(gaze.offset, 0.75);
+        assert_eq!((turn.look, turn.heading, turn.offset), (0.75, 0.75, 0.75));
     }
 }

@@ -155,6 +155,8 @@ pub struct Npc {
     pub previous_room: i32,
     /// The way out the last flight chose (cm, y 0), while it runs.
     pub flight: Option<bevy::math::Vec3>,
+    /// The route the flight follows to its way out, as the grid planned it.
+    pub flight_walk: crate::walker::IdleWalk,
     /// The velocity the flight walk last steered (m/s).
     pub flight_velocity: Vec3,
     /// The alert look-around's pans and the body's in-combat mark.
@@ -220,6 +222,7 @@ impl Npc {
             level_room: -1,
             previous_room: -1,
             flight: None,
+            flight_walk: crate::walker::IdleWalk::default(),
             flight_velocity: Vec3::ZERO,
             alert: motion::AlertLook::default(),
             walk: crate::walker::IdleWalk::default(),
@@ -1145,14 +1148,22 @@ pub fn ai_tick(
 /// It does nothing while a duellist fights or the body is out of the scene,
 /// and it puts the walk back to the idle clip when the flight ends.
 ///
-/// The original's flee state plans the path through the nav grid and walks
-/// it; Exarust steers straight to the exit with the NPC driver
-/// ([`crate::order::follow`]) and leaves the plan to the caller's grid.
+/// On a level with a navigation grid the flight plans as the original's
+/// flee state does: the way out is picked and routed on the brain's
+/// planning turn (one planner a frame, [`crate::route::plan`]), again while
+/// no route is followed or within 150 cm of the goal; a route is followed
+/// when its ends lie more than 150 cm apart, and one ending in the brain's
+/// room within 15 m of the threat remembers the exit's room
+/// ([`crate::flee::after_plan`]). The route's carrot is steered through the
+/// NPC driver ([`crate::order::follow`]); while no route is followed the
+/// body steers straight to the exit [Exarust: the original fights that
+/// tick instead]. A level without a grid keeps the straight steer.
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn flee_walk(
     ticks: Option<Res<BodyTicks>>,
     mut clock: Option<ResMut<BrainClock>>,
     level: Option<Res<exa_world::room_view::LevelRooms>>,
+    nav: Option<Res<exa_world::nav::NavGrid>>,
     mut npcs: Query<(
         Entity,
         &mut Npc,
@@ -1166,6 +1177,7 @@ pub fn flee_walk(
     )>,
     targets: Query<&GlobalTransform>,
     mut roots: Query<(&mut CharacterBody, &GlobalTransform)>,
+    mut planning: Local<(crate::route::PlanTurn, u32)>,
 ) {
     // The flight steers once a body tick, as the brain's other passes do:
     // the driver eases the heading a tenth of the gap per call. A frame
@@ -1175,7 +1187,16 @@ pub fn flee_walk(
         steer = clock.walked != ticks.0;
         clock.walked = ticks.0;
     }
-    for (_entity, mut npc, duellist, condition, gt, mut t, parent, presence, anim) in &mut npcs {
+    let now = ticks.as_ref().map_or(0, |t| t.millis() as u32);
+    // One brain plans a route a frame: the longest waiter of the last one
+    // [Exarust: the flight keeps its own turn beside the idle walk's and
+    // the duellists'].
+    let (turn, frame) = &mut *planning;
+    if steer {
+        *frame = frame.wrapping_add(1);
+        turn.next_turn();
+    }
+    for (entity, mut npc, duellist, condition, gt, mut t, parent, presence, anim) in &mut npcs {
         if !steer {
             if npc.flight.is_some()
                 && let Ok((mut body, _)) = roots.get_mut(parent.parent())
@@ -1192,6 +1213,7 @@ pub fn flee_walk(
             || npc.pass.level != 4
         {
             let was_fleeing = npc.flight.take().is_some();
+            npc.flight_walk.route.clear();
             if was_fleeing {
                 if let Ok((mut body, _)) = roots.get_mut(parent.parent()) {
                     body.desired_velocity = Vec3::ZERO;
@@ -1215,17 +1237,25 @@ pub fn flee_walk(
         let level_room = level
             .as_deref()
             .map_or(-1, |l| crate::rooms::level_room(&l.rooms, at_cm));
-        let replan = npc.flight.is_none_or(|goal| {
+        let feet_cm = feet * 100.0;
+        let near_goal = npc.flight.is_some_and(|goal| {
             let d = Vec3::new(goal.x - at_cm.x, 0.0, goal.z - at_cm.z);
             d.length_squared() < crate::flee::FLEE_RADIUS_CM * crate::flee::FLEE_RADIUS_CM
         });
-        if replan && level_room >= 0 {
+        // With a grid the original plans again whenever no route is
+        // followed; the way out is picked inside the planner's call, so only
+        // on the brain's turn.
+        let replan = npc.flight.is_none()
+            || near_goal
+            || (nav.is_some() && npc.flight_walk.route.is_empty());
+        let my_turn = nav.is_none() || (replan && turn.turn(entity.to_bits(), *frame));
+        if replan && my_turn && level_room >= 0 {
             let Some(level) = level.as_deref() else {
                 continue;
             };
             let exits = crate::rooms::room_exits(&level.rooms, &level.tracker, level_room as u16);
             let threat_room = crate::rooms::level_room(&level.rooms, threat_cm);
-            npc.flight = crate::flee::way_out(
+            let way = crate::flee::way_out(
                 level_room,
                 bevy::math::Vec2::new(at_cm.x, at_cm.z),
                 bevy::math::Vec2::new(threat_cm.x, threat_cm.z),
@@ -1233,12 +1263,60 @@ pub fn flee_walk(
                 npc.previous_room,
                 threat_room,
                 &mut npc.fled,
-            )
-            .map(|way| way.goal);
+            );
+            npc.flight_walk.route.clear();
+            if let (Some(way), Some(grid)) = (way.as_ref(), nav.as_deref()) {
+                // [Exarust: the goal is at height 0 and the router picks the
+                // grid layer by height, so it is routed at the feet's.]
+                let goal = crate::route::Goal {
+                    point: Vec3::new(way.goal.x, feet_cm.y, way.goal.z),
+                    radius_cm: way.radius_cm,
+                    motion: way.mode,
+                };
+                let mut router = crate::route::NavRouter { grid, size: 0 };
+                let planned = crate::route::plan(
+                    turn,
+                    entity.to_bits(),
+                    *frame,
+                    feet_cm,
+                    goal,
+                    false,
+                    &mut router,
+                );
+                if let Some(planned) = planned
+                    && planned.following
+                {
+                    let points = planned.route.points;
+                    if let Some(&end) = points.last() {
+                        crate::flee::after_plan(
+                            crate::rooms::level_room(&level.rooms, end),
+                            level_room,
+                            end,
+                            threat_cm,
+                            way.room,
+                            &mut npc.fled,
+                        );
+                    }
+                    // [Exarust's guard, as the idle walk's: given up after
+                    // the route's length × 20 ms + 2 s.]
+                    npc.flight_walk.give_up_ms = now
+                        .wrapping_add(
+                            (crate::route::path_length(&points) * 20.0).floor() as i32 as u32
+                        )
+                        .wrapping_add(2000);
+                    npc.flight_walk.route = points;
+                }
+            }
+            npc.flight = way.map(|way| way.goal);
         }
         match npc.flight {
             Some(goal) => {
-                let path = [feet, goal / 100.0];
+                let carrot = if npc.flight_walk.route.is_empty() {
+                    goal
+                } else {
+                    crate::walker::follow_walk(&mut npc.flight_walk, feet_cm, now).unwrap_or(goal)
+                };
+                let path = [feet, carrot / 100.0];
                 let order =
                     crate::order::follow(&path, feet, motion::yaw_of(t.rotation * Vec3::Z), 1);
                 body.desired_velocity = order.velocity;
@@ -1251,6 +1329,7 @@ pub fn flee_walk(
                 }
             }
             None => {
+                npc.flight_walk.route.clear();
                 if was_fleeing
                     && let Some(mut anim) = anim
                     && anim.action == "Run"
@@ -2164,6 +2243,117 @@ mod tests {
                 .unwrap()
                 .desired_velocity,
             Vec3::ZERO
+        );
+    }
+
+    /// On a level with a navigation grid the flight routes its way out on
+    /// its planning turn (the first try records the wait, the next frame
+    /// plans), follows the route since its ends lie more than 150 cm apart,
+    /// and runs toward the route's carrot.
+    #[test]
+    fn a_fleeing_brain_routes_its_way_out_through_the_grid() {
+        use exa_formats::level::LevelGrid;
+        use exa_world::nav::{Layer, NavCell, NavGrid};
+        use exa_world::room_view::LevelRooms;
+        use exa_world::rooms::{CELL_OPEN, Rooms};
+        use std::sync::Arc;
+
+        let mut grid = LevelGrid {
+            wall_sets: vec!["GEWS_UWA01".into()],
+            floor_sets: vec!["GEFS_UWA01".into()],
+            width: 6,
+            height: 3,
+            edges: vec![0; 18],
+            plane_b: vec![0; 18],
+            plane_c: vec![0; 18],
+        };
+        let open = |edges: &mut Vec<u32>, x: u32, y: u32, sides: [u32; 4]| {
+            edges[(y * 6 + x) as usize] =
+                CELL_OPEN | sides[0] | sides[1] << 4 | sides[2] << 8 | sides[3] << 12;
+        };
+        open(&mut grid.edges, 1, 1, [7, 7, 7, 0]);
+        open(&mut grid.edges, 2, 1, [7, 0, 7, 0xB]);
+        open(&mut grid.edges, 3, 1, [7, 0xB, 7, 0]);
+        open(&mut grid.edges, 4, 1, [7, 0, 7, 7]);
+        let rooms = Rooms::flood(&grid);
+        let mut nav = NavGrid::empty(80, 80, 0.0);
+        for z in 0..80 {
+            for x in 0..80 {
+                nav.set_cell(
+                    x,
+                    z,
+                    Layer::Lower,
+                    NavCell {
+                        floor: 100,
+                        ..NavCell::default()
+                    },
+                );
+            }
+        }
+
+        let mut app = App::new();
+        app.add_systems(Update, flee_walk);
+        app.insert_resource(LevelRooms::new(Arc::new(rooms)));
+        app.insert_resource(nav);
+        let at = Vec3::new(-9.0, 10.0, 3.0);
+        let player = app
+            .world_mut()
+            .spawn(GlobalTransform::from_translation(Vec3::new(
+                -90.0, 10.0, 3.0,
+            )))
+            .id();
+        let root = app
+            .world_mut()
+            .spawn((
+                CharacterBody::default(),
+                GlobalTransform::from_translation(at),
+            ))
+            .id();
+        let mut brain = Npc::new([0.0; 4]);
+        brain.pass.level = 4;
+        let npc = app
+            .world_mut()
+            .spawn((
+                brain,
+                crate::Duellist::new(player),
+                Condition::NORMAL,
+                GlobalTransform::from_translation(at),
+                Transform::default(),
+                ChildOf(root),
+                Animator::new("Default", "Idle"),
+            ))
+            .id();
+        // Not its turn yet: no way out is picked.
+        app.update();
+        assert_eq!(app.world().get::<Npc>(npc).unwrap().flight, None);
+        app.update();
+        {
+            let brain = app.world().get::<Npc>(npc).unwrap();
+            assert_eq!(brain.flight, Some(Vec3::new(300.0, 0.0, 300.0)));
+            let route = &brain.flight_walk.route;
+            assert!(route.len() >= 2, "{route:?}");
+            let end = *route.last().unwrap();
+            assert!(
+                (end.x - 300.0).abs() <= 50.0 && (end.z - 300.0).abs() <= 50.0,
+                "{end:?}"
+            );
+        }
+        for _ in 0..25 {
+            app.update();
+        }
+        let body = app.world().get::<CharacterBody>(root).unwrap();
+        assert!(body.desired_velocity.x > 3.0, "{:?}", body.desired_velocity);
+        assert_eq!(app.world().get::<Animator>(npc).unwrap().action, "Run");
+        // The flight over, the route is dropped.
+        app.world_mut().get_mut::<Npc>(npc).unwrap().pass.level = 0;
+        app.update();
+        assert!(
+            app.world()
+                .get::<Npc>(npc)
+                .unwrap()
+                .flight_walk
+                .route
+                .is_empty()
         );
     }
 
