@@ -328,9 +328,10 @@ tested rules of their own.
   while the character switches or the weapon section has no flipped-side
   kind byte) and rebuilds its `Blade` record from the flipped weapon
   section, and a weapon a hand flag says starts flipped is placed half a
-  turn about y and built from the flipped side at once. It also applies
-  death's weld change (a dead holder stiffens the soft weld, so the corpse
-  keeps its weapon); a collapsing holder lets its weapons and torch go
+  turn about y and built from the flipped side at once. A dead holder's
+  grip links are left as they are (the corpse keeps its weapon; death's
+  strength-1 write belongs to the lower legs' limit links); a collapsing
+  holder lets its weapons and torch go
   (`GripRelease`: the grip stage frees them) while the shield stays on the
   arm. When the switch clip passes 60% the runtime trades the two held
   weapons' blade slots, the attacker's primary and the `Hands` main and

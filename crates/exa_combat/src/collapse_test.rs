@@ -154,6 +154,9 @@ fn a_lethal_wound_starts_the_collapse() {
     let mut anim = Animator::new("Default", "Cmbt - Idle");
     let mut body = legs();
     assert_eq!(body.parts[1].pairing.layer, LIVING_SHIN_LAYER);
+    let chain = exa_physics::part::PartState::STRIKE_CHAIN;
+    body.parts[2].skips_thin = true;
+    body.parts[2].state.0 |= chain;
     assert!(start_collapse(
         &mut condition,
         &mut flags,
@@ -171,6 +174,10 @@ fn a_lethal_wound_starts_the_collapse() {
     assert!(!body.drive.as_ref().unwrap().supported);
     assert_eq!(body.parts[1].pairing.layer, 0);
     assert_eq!(body.parts[2].pairing.layer, FOOT_LAYER);
+    // The foot is off the thin-plate bit and can no longer strike.
+    assert!(!body.parts[2].skips_thin);
+    assert_eq!(body.parts[2].state.0 & chain, 0);
+    assert_eq!(body.level_mask(2), 0);
     // A second lethal wound changes nothing.
     anim.time = 12.0;
     assert!(!start_collapse(

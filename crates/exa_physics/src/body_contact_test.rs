@@ -488,14 +488,19 @@ fn a_feet_mask_skips_a_thin_collider() {
     // collapse and death), so it rests on the thin collider like any part.
     assert!(run(true) > 0.05, "a limp foot fell through a thin collider");
     assert!(run(false) > 0.05, "the ordinary part fell through");
-    // A living body's foot carries mask 4, which shares bit 4 with the thin
-    // collider: the detection skips it.
+    // A living body's foot carries mask 4 (the leg routine's write), which
+    // shares bit 4 with the thin collider: the detection skips it. Being
+    // out of pairs or driven does not give the bit by itself.
     let mut b = ball(Vec3::new(0.0, 1.0, 0.0));
     b.parts[0].pairing.out = true;
-    assert_eq!(b.level_mask(0), 0);
     b.drive = Some(Drive::default());
+    assert_eq!(b.level_mask(0), 0);
+    b.parts[0].skips_thin = true;
     assert_eq!(b.level_mask(0), crate::sector::MASK_THIN);
     assert!(!crate::sector::level_meets(b.level_mask(0), level.1));
-    b.parts[0].pairing.out = false;
-    assert_eq!(b.level_mask(0), 0);
+    b.parts[0].no_level = true;
+    assert_eq!(
+        b.level_mask(0),
+        crate::sector::MASK_SMALL | crate::sector::MASK_THIN
+    );
 }

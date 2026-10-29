@@ -274,11 +274,34 @@ pub const STIFF_WORLD: f32 = 1.0;
 /// original's `0.175`.
 pub const HAND_LINK_SHARE: f32 = 0.175;
 
-/// An empty hand's link mobility and mass words from its base mass, as the
-/// original restores them when the hands are emptied: the mobility is the
-/// base mass times 0.175 and the mass is the base mass unchanged.
+/// An empty hand's link mobility and contact mobility words from its base
+/// mass, as the original restores them when the hands are emptied: the
+/// link mobility is the base times 0.175 and the contact mobility is the
+/// base unchanged. Exarust's limb link mobility is already its inverse mass
+/// times 0.175, so only the contact word is written to a body.
 pub fn empty_hand_words(base_mass: f32) -> (f32, f32) {
     (base_mass * HAND_LINK_SHARE, base_mass * 1.0)
+}
+
+/// A hand's contact mobility after the equip refresh: an armed character's
+/// hands keep the base the emptying of the hands restored
+/// ([`empty_hand_words`]); an unarmed one's take
+/// [`unarmed_hand_mobility`]. "Armed" is the first held item's class having
+/// hands bits (`0x30`), as the original tests its class word.
+pub fn refreshed_hand_mobility(base_mass: f32, armed: bool, heavy_claws: bool) -> f32 {
+    if armed {
+        empty_hand_words(base_mass).1
+    } else {
+        unarmed_hand_mobility(base_mass, heavy_claws)
+    }
+}
+
+/// The hands' contact mobility an attack start writes for a character in
+/// the heavy-claws state: the base times [`HEAVY_CLAW_HAND_SHARE`] on both
+/// hands, armed or not (all four attack starters write it first). Without
+/// heavy claws the starters leave the hands alone (`None`).
+pub fn attack_hand_mobility(base_mass: f32, heavy_claws: bool) -> Option<f32> {
+    heavy_claws.then_some(base_mass * HEAVY_CLAW_HAND_SHARE)
 }
 
 /// An unarmed hand's mobility as a share of its base: a half, a quarter for
@@ -293,8 +316,8 @@ pub const HEAVY_CLAW_HAND_SHARE: f32 = 0.25;
 /// times [`UNARMED_HAND_SHARE`], or [`HEAVY_CLAW_HAND_SHARE`] with heavy
 /// claws. It overwrites the mass word [`empty_hand_words`] restored; the
 /// link mobility word keeps its 0.175 share. Single-precision products, as
-/// the original. Exarust's hand parts have no separate mobility word yet,
-/// so no body reads it.
+/// the original. The body's word is its hand parts' contact mobility
+/// ([`crate::body::Ragdoll::set_contact_share`]).
 pub fn unarmed_hand_mobility(base_mass: f32, heavy_claws: bool) -> f32 {
     base_mass
         * if heavy_claws {
@@ -893,18 +916,6 @@ impl GripLinks {
         true
     }
 
-    /// The death routine stiffens each held item's soft (parry) world
-    /// weld: its strength becomes 1. The original tests the weld's index
-    /// as strictly positive, so a weld at index 0 is left alone. Returns
-    /// whether a weld was stiffened.
-    pub fn weld_on_death(&mut self) -> bool {
-        let Some(soft) = self.world_soft.filter(|&i| i > 0 && i < self.links.len()) else {
-            return false;
-        };
-        self.links[soft].strength = 1.0;
-        true
-    }
-
     /// Starts a flip if the item has a flip link and its section defines a
     /// flip side (the original's flip command refuses a weapon whose
     /// flipped-side kind byte is zero). The original's caller sets its
@@ -1380,37 +1391,6 @@ mod tests {
     }
 
     #[test]
-    fn death_stiffens_the_shields_world_weld() {
-        let item = body_at(Vec3::ZERO);
-        let hand = body_at(Vec3::ZERO);
-        let mut shield =
-            shield_links(&item, &hand, bindings(), 1, Affine3A::IDENTITY, Vec3::ZERO).unwrap();
-        let soft = shield.world_soft.unwrap();
-        assert_eq!(shield.links[soft].strength, 0.05);
-        assert!(shield.weld_on_death());
-        assert_eq!(shield.links[soft].strength, 1.0);
-        // A weapon's stiff origin weld is not the shield's soft index.
-        let mut one = GripLinks {
-            links: Vec::new(),
-            main: 0,
-            second: None,
-            arm: None,
-            extra: None,
-            flip: None,
-            flip_point: Vec3::ZERO,
-            flip_progress: 0.0,
-            flipped: false,
-            flip_active: false,
-            mode: -1,
-            relaxing: false,
-            record_dirty: false,
-            world_soft: None,
-            world_hard: Some(0),
-        };
-        assert!(!one.weld_on_death());
-    }
-
-    #[test]
     fn a_shields_three_links_and_its_world_link() {
         let item = body_at(Vec3::ZERO);
         let hand = body_at(Vec3::ZERO);
@@ -1510,31 +1490,6 @@ mod tests {
     }
 
     #[test]
-    fn a_death_stiffens_only_a_soft_weld() {
-        let item = body_at(Vec3::ZERO);
-        let hand = body_at(Vec3::ZERO);
-        let mut shield =
-            shield_links(&item, &hand, bindings(), 1, Affine3A::IDENTITY, Vec3::ZERO).unwrap();
-        let soft = shield.world_soft.unwrap();
-        assert!(shield.weld_on_death());
-        assert_eq!(shield.links[soft].strength, 1.0);
-        // A group with no soft weld has nothing to stiffen.
-        let mut weapon = build(
-            &item,
-            &hand,
-            bindings(),
-            &grip(),
-            1.0,
-            1.0,
-            Affine3A::IDENTITY,
-            false,
-            1.0,
-        )
-        .unwrap();
-        assert!(!weapon.weld_on_death());
-    }
-
-    #[test]
     fn a_shields_face_points_take_the_left_hands_offset() {
         let item = body_at(Vec3::ZERO);
         let hand = body_at(Vec3::ZERO);
@@ -1594,5 +1549,24 @@ mod empty_hand_tests {
         assert_eq!(unarmed_hand_mobility(2.0, false), 1.0);
         assert_eq!(unarmed_hand_mobility(2.0, true), 0.5);
         assert_eq!(unarmed_hand_mobility(0.35, false), 0.175);
+    }
+
+    /// After the refresh an armed hand keeps its whole base (1.6667 for a
+    /// hand of inverse mass 2.5 at the limb contact scale); an unarmed one
+    /// takes half, a quarter with heavy claws. An attack start quarters
+    /// the hands only in the heavy-claws state.
+    #[test]
+    fn the_refresh_and_an_attack_write_the_hands_contact_mobility() {
+        let base = 2.5_f32 * (2.0 / 3.0);
+        assert_eq!(refreshed_hand_mobility(base, true, false), base);
+        assert_eq!(refreshed_hand_mobility(base, true, true), base);
+        assert_eq!(refreshed_hand_mobility(base, false, false), base * 0.5);
+        assert_eq!(refreshed_hand_mobility(base, false, true), base * 0.25);
+        assert_eq!(refreshed_hand_mobility(2.0, false, false), 1.0);
+        assert_eq!(refreshed_hand_mobility(2.0, false, true), 0.5);
+        assert_eq!(attack_hand_mobility(2.0, true), Some(0.5));
+        assert_eq!(attack_hand_mobility(2.0, false), None);
+        // A NaN base stays NaN (plain products, no compare).
+        assert!(refreshed_hand_mobility(f32::NAN, false, false).is_nan());
     }
 }

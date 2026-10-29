@@ -309,9 +309,9 @@ pub fn mark_held(mut held: Query<(&HeldGrip, &mut Ragdoll)>) {
 /// collapse let go of ([`GripRelease`]): the link records stop acting, the
 /// item body loses its holder and held mask, takes the dropped weapon's
 /// friction and falls free. A holder that only went limp
-/// or died keeps its item: the original welds a held item to a dead body
-/// ([`GripLinks::weld_on_death`]) instead of dropping it, and its collapse
-/// is the routine that lets the hands go.
+/// or died keeps its item, still tied by its grip links: the original's
+/// death drops nothing, and its collapse is the routine that lets the
+/// hands go.
 pub fn release_freed_grips(
     mut commands: Commands,
     mut held: Query<(Entity, &mut HeldGrip, &mut Ragdoll, Has<GripRelease>)>,

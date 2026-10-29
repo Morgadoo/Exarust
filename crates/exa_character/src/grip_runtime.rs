@@ -290,43 +290,9 @@ pub fn flip_requests(
     }
 }
 
-/// The weld change death asks of every held item: a dead holder stiffens
-/// its soft (parry) world weld to 1 (the original's death routine keeps the
-/// weapon in the corpse's hand). The collapse routine's 10 cm slack for a
-/// gobbler (race state word 0x800) is written to the link the held item's
-/// parent part keeps at the weld's index, not to the item's own weld, and
-/// is not reproduced.
-pub fn weld_states(
-    mut held: Query<&mut HeldGrip>,
-    bodies: Query<(Entity, &Ragdoll)>,
-    owners: Query<&Condition>,
-) {
-    for mut grip in &mut held {
-        if grip.released {
-            continue;
-        }
-        let Some((owner, _)) = bodies
-            .iter()
-            .find(|(_, b)| b.parts.first().is_some_and(|p| p.entity == grip.holder_key))
-        else {
-            continue;
-        };
-        let Ok(condition) = owners.get(owner) else {
-            continue;
-        };
-        let Some(links) = grip.links.as_mut() else {
-            continue;
-        };
-        if condition.is_dead() {
-            links.weld_on_death();
-        }
-    }
-}
-
 /// Marks the weapons and torches a collapsing holder lets go of: the
-/// collapse routine empties the hands, while a shield stays on the off arm
-/// (its weld stiffens at death instead). A body that is dead without a
-/// collapse keeps its items.
+/// collapse routine empties the hands, while a shield stays on the off arm.
+/// A body that is dead without a collapse keeps its items.
 pub fn release_collapsed(
     mut commands: Commands,
     held: Query<(Entity, &HeldGrip)>,
@@ -435,7 +401,6 @@ impl Plugin for GripRuntimePlugin {
             .add_systems(FixedUpdate, animate_grips.before(GripSolveSet::Sync))
             .add_systems(FixedUpdate, swap_on_switch.before(GripSolveSet::Sync))
             .add_systems(FixedUpdate, refresh_holds.before(GripSolveSet::Sync))
-            .add_systems(FixedUpdate, weld_states.before(GripSolveSet::Sync))
             .add_systems(
                 FixedUpdate,
                 release_collapsed.before(exa_physics::grip_solve::GripSolveSet::Build),
@@ -478,83 +443,6 @@ mod tests {
                 at + Vec3::X * 0.2,
             ),
         ])
-    }
-
-    /// A dead holder keeps the item and stiffens its soft weld; a collapse
-    /// leaves the weld alone.
-    #[test]
-    fn a_dead_holder_stiffens_the_soft_weld() {
-        let mut app = App::new();
-        app.add_systems(Update, weld_states);
-        let owner = app.world_mut().spawn(Condition::COMBAT_IDLE).id();
-        let item_e = app.world_mut().spawn_empty().id();
-        let holder_body = holder(owner, Vec3::ZERO);
-        let item_body = item(body_root(), Vec3::new(0.2, 0.0, 0.0));
-        let key = holder_body.parts[0].entity;
-        let bindings = exa_physics::grip::GripBindings {
-            item_part: 0,
-            hand_parts: [1, 1],
-            arm_parts: [1, 1],
-        };
-        let shield = exa_physics::grip::shield_links(
-            &item_body,
-            &holder_body,
-            bindings,
-            1,
-            Affine3A::IDENTITY,
-            Vec3::ZERO,
-        )
-        .unwrap();
-        let soft = shield.world_soft.unwrap();
-        assert_eq!(shield.links[soft].strength, 0.05);
-        let grip = HeldGrip {
-            spec: spec(),
-            scale: 1.0,
-            size: 1.0,
-            second_hand_factor: 1.0,
-            flip: false,
-            class: 0x10,
-            soft_weld: true,
-            kind: exa_physics::grip::HeldKind::Shield,
-            holder_key: key,
-            hands: [Some(Entity::from_raw_u32(2).unwrap()); 2],
-            arms: [None, None],
-            links: Some(shield),
-            released: false,
-        };
-        app.world_mut().entity_mut(owner).insert(holder_body);
-        app.world_mut().entity_mut(item_e).insert((item_body, grip));
-        app.update();
-        // Alive: untouched.
-        let strength = |app: &App| {
-            let links = app
-                .world()
-                .get::<HeldGrip>(item_e)
-                .unwrap()
-                .links
-                .as_ref()
-                .unwrap();
-            links.links[soft].strength
-        };
-        assert_eq!(strength(&app), 0.05);
-        app.world_mut().entity_mut(owner).insert(Condition::DEAD);
-        app.update();
-        assert_eq!(strength(&app), 1.0);
-        assert!(
-            app.world().get::<HeldGrip>(item_e).is_some(),
-            "the corpse keeps the item"
-        );
-        // A collapsing body leaves the weld alone.
-        app.world_mut()
-            .entity_mut(owner)
-            .insert(Condition::COLLAPSING);
-        app.update();
-        assert_eq!(strength(&app), 1.0);
-    }
-
-    /// The root entity the item body is built on.
-    fn body_root() -> Entity {
-        Entity::from_raw_u32(9).unwrap()
     }
 
     fn item(root: Entity, at: Vec3) -> Ragdoll {

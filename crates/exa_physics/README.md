@@ -581,13 +581,18 @@ from its middle; either end clears the active flag, turns the item's
 flipped state and marks its record for a rebuild (the middle and end tests
 are double compares, as the original's). A flip command is refused while
 the character switches and for a section with no flipped-side kind byte
-(`GripLinks::begin_flip`), as the original's command does. The death
-routine stiffens each soft world weld to strength 1 (`weld_on_death`,
-called for a dead holder: a corpse keeps its weapon). Emptying the hands
-restores each hand's link-mobility and mass words (`empty_hand_words`:
-0.175 × and 1 × its base), and an unarmed equip then gives the mass word
-half its base, a quarter with heavy claws (`unarmed_hand_mobility`); no
-Exarust hand part has the two words yet, so both stay tested rules. `GripLink` is plain data
+(`GripLinks::begin_flip`), as the original's command does. Death changes
+no grip link: its strength-1 write is to each lower leg's limit link
+(`Ragdoll::go_limp`), not to a held item's weld, so a corpse keeps its
+weapon by its unchanged grip links. Emptying the hands
+restores each hand's link-mobility and contact-mobility words
+(`empty_hand_words`: 0.175 × and 1 × its base); the equip refresh then
+leaves an armed character's hands at their base and gives an unarmed one's
+half, a quarter with heavy claws (`refreshed_hand_mobility`,
+`unarmed_hand_mobility`), and an attack start in the heavy-claws state
+quarters them (`attack_hand_mobility`). The body word is the hand part's
+contact mobility (`Ragdoll::contact_base`, `Ragdoll::set_contact_share`),
+written by `exa_character::body_words`. `GripLink` is plain data
 with the law documented: a correction is shared by the item's and the
 hand's particle weights and mobilities; a world link moves only the item.
 `grip_solve` runs the records as a cross-body solver stage: a held item is

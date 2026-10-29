@@ -481,6 +481,47 @@ fn anchors_follow_the_animated_joint_and_relax_while_it_holds() {
     );
 }
 
+/// The leg routine gives each lower leg's first child (the foot) the
+/// level mask's thin-plate bit, limit link or not; a collapse clears it and
+/// the collapsing tick does not give it back.
+#[test]
+fn the_leg_routine_marks_the_foot_off_thin_plates() {
+    let part = |bone, parent, y: f32, foot: Option<Vec3>| PartSetup {
+        bone,
+        entity: Entity::PLACEHOLDER,
+        parent,
+        world: Affine3A::from_translation(Vec3::new(0.0, y, 0.0)),
+        centre: Vec3::ZERO,
+        half: Vec3::new(0.06, 0.1, 0.06),
+        origin: Vec3::ZERO,
+        links: vec![],
+        foot,
+        pins: Vec::new(),
+        spheres: None,
+    };
+    let mut body = Ragdoll::new(&[
+        part(1, None, 1.0, None),
+        part(3, Some(0), 0.5, Some(Vec3::new(0.0, -0.3, 0.0))),
+        part(4, Some(1), 0.05, None),
+    ])
+    .with_drive();
+    assert!(body.parts[1].leg_limit.is_none());
+    assert!(!body.parts[2].skips_thin);
+    let pose = vec![Affine3A::IDENTITY; 3];
+    body.aim(Affine3A::IDENTITY, pose.clone());
+    assert!(body.parts[2].skips_thin);
+    assert!(!body.parts[1].skips_thin && !body.parts[0].skips_thin);
+    assert_eq!(body.level_mask(2), crate::sector::MASK_THIN);
+    body.clear_death_strikes();
+    body.set_bearing(Bearing {
+        collapsing: true,
+        ..Bearing::default()
+    });
+    body.aim(Affine3A::IDENTITY, pose);
+    assert!(!body.parts[2].skips_thin);
+    assert_eq!(body.level_mask(2), 0);
+}
+
 /// The character tick sets the legs: a thigh's factor 0.2 × 1.25 standing
 /// and 0.2 moving; a lower leg's limit link's strength moves a tenth of the
 /// way each tick from 0.2 to 0.5·S² standing (0.23 after one tick) or 0.4
