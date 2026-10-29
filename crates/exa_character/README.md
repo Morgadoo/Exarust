@@ -132,7 +132,11 @@ physique values and the body morphs they select remain the body's concern
   and opacity. Hair is a separate model and is not part of the merged
   mesh. Not done: the `HarHPC1` texture set of profession bit
   `0x10000` (the variant's maps do not ship; `look::hair_textures` names
-  both sets), hair as cloth and its smoothing.
+  both sets) and the creation scene's smoothing. Long hair hangs as cloth
+  (`hair::hang_as_cloth`): each style node with the cloth marker (the two
+  meshes of `hair hula01…05` and `hair husa02`) becomes an
+  `exa_world::cloth` cloth pinned by its face flags, the style's roots
+  with the hair's cloth record (`exa_physics::cloth_record::ClothRecord::HAIR`).
 
 ## The dressed mesh
 
