@@ -1160,6 +1160,9 @@ pub enum Step {
     CloseSave,
     /// Keep the save just written as the checkpoint.
     Checkpoint,
+    /// Stamp the level-6 checkpoint with the engine clock (the level's own
+    /// time; the save unit reads it).
+    LevelTime,
     /// The screen fades out over the level change (the exit's fade bit).
     FadeOut,
     /// The AI takes over the player's body for the level change (the exit's
@@ -2772,6 +2775,11 @@ impl Flow {
         });
         if checkpoint {
             steps.push(Step::Checkpoint);
+            // The sixth level's checkpoint also takes the engine clock: the
+            // level's own time, read back by the save.
+            if exit.level == 6 {
+                steps.push(Step::LevelTime);
+            }
         }
         if exit.flags & 1 != 0 {
             steps.push(Step::FadeOut);
@@ -4225,6 +4233,46 @@ mod tests {
         assert_eq!(level_locale(1), Some("exanima01"));
         assert_eq!(level_locale(5), Some("exanima05"));
         assert_eq!(level_locale(0), None);
+        // The sixth level's checkpoint takes the level's time; an earlier
+        // checkpoint does not.
+        let mut sixth = Flow {
+            mode: Mode::Story,
+            phase: Phase::Playing,
+            ..Default::default()
+        };
+        let steps = sixth.level_exit(
+            LevelExit {
+                level: 6,
+                spawn: 0,
+                flags: 0,
+            },
+            CheckpointRule {
+                level: 6,
+                setting: false,
+                already_saved: false,
+            },
+            0,
+            false,
+        );
+        assert!(steps.contains(&Step::Checkpoint));
+        assert!(steps.contains(&Step::LevelTime));
+        let mut third = Flow {
+            mode: Mode::Story,
+            phase: Phase::Playing,
+            ..Default::default()
+        };
+        let steps = third.level_exit(
+            LevelExit {
+                level: 3,
+                spawn: 0,
+                flags: 0,
+            },
+            rule,
+            0,
+            false,
+        );
+        assert!(steps.contains(&Step::Checkpoint));
+        assert!(!steps.contains(&Step::LevelTime));
         assert_eq!(level_locale(99), None);
         let mut flow = Flow {
             mode: Mode::Story,
