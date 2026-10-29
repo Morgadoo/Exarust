@@ -743,6 +743,18 @@ fn convert(value: f32) -> i64 {
     }
 }
 
+/// The processor's 32-bit single-to-integer conversion: ties to even, and a
+/// NaN or a value outside the signed 32-bit range becomes the indefinite
+/// integer, `i32::MIN`.
+pub(crate) fn cvtss2si32(value: f32) -> i32 {
+    let rounded = value.round_ties_even();
+    if rounded.is_nan() || rounded >= 2_147_483_648.0 || rounded < -2_147_483_648.0 {
+        i32::MIN
+    } else {
+        rounded as i32
+    }
+}
+
 /// The share of a full bar a record's health word fills in the company
 /// tables: the word times the double 1/65535, stored as single.
 pub fn health_bar(word: u16) -> f32 {

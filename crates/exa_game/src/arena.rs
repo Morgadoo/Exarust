@@ -608,31 +608,6 @@ pub fn prize_pot(template: &MatchTemplate, slot: u32) -> u32 {
     (template.xp as f32 * (1.0 + 0.25 * slot as f32)) as u32
 }
 
-/// The XP paid from a pot after the survivors' health: `pot·left/max`,
-/// truncated, plus half for a company manager.
-pub fn xp_award(pot: u32, hp_left: f32, hp_max: f32, manager: bool) -> u32 {
-    if hp_max <= 0.0 {
-        return 0;
-    }
-    let mut total = (pot as f32 * hp_left / hp_max) as u32;
-    if manager {
-        total += total / 2;
-    }
-    total
-}
-
-/// Splits a total XP award by each fighter's damage, truncating.
-pub fn xp_split(total: u32, damage: &[u32]) -> Vec<u32> {
-    let sum: u32 = damage.iter().sum();
-    if sum == 0 {
-        return vec![0; damage.len()];
-    }
-    damage
-        .iter()
-        .map(|&d| (total as u64 * d as u64 / sum as u64) as u32)
-        .collect()
-}
-
 /// Rank points: one plus one per 5000 XP in each of the six pools.
 pub fn rank_points(xp: &[u16; 6]) -> u32 {
     1 + xp.iter().map(|&x| x as u32 / XP_PER_RANK).sum::<u32>()
@@ -641,6 +616,70 @@ pub fn rank_points(xp: &[u16; 6]) -> u32 {
 /// The loadout tier: `min((rank_points − 1)/2, 5)`.
 pub fn loadout_tier(rank_points: u32) -> u32 {
     (rank_points.saturating_sub(1) / 2).min(5)
+}
+
+/// One body the match's experience pool reads.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct XpFighter {
+    /// Its record carries the match-participant flag.
+    pub company: bool,
+    /// The damage it dealt, the body's contribution counter.
+    pub damage: i32,
+    /// Its red health and maximum.
+    pub health: f32,
+    pub max: f32,
+}
+
+/// What a match's experience award came to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct XpAward {
+    /// The pool every company body's share is taken from.
+    pub pool: i32,
+    /// The company's total damage, the share denominator.
+    pub damage: i32,
+}
+
+/// The match's experience pool and damage total, before the shares are
+/// handed out.
+///
+/// The tier factor is `round(tier · 0.25 + 1)`; the base is that factor
+/// times the template's experience, rounded again. The damage share is the
+/// opponents' missing health over their total maximum — except in the Fray
+/// (template 4), where every body's damage and missing health count. The
+/// base times the share is rounded in single precision. A trainer adds
+/// half again, truncated.
+pub fn xp_pool(
+    tier: i32,
+    template_xp: i32,
+    fray: bool,
+    fighters: &[XpFighter],
+    trainer: bool,
+) -> XpAward {
+    let mut damage = 0i32;
+    let mut missing = 0.0f32;
+    let mut total_max = 0.0f32;
+    for fighter in fighters {
+        if fray || !fighter.company {
+            missing += fighter.max - fighter.health;
+            total_max += fighter.max;
+        }
+        if fray || fighter.company {
+            damage = damage.wrapping_add(fighter.damage);
+        }
+    }
+    let tier_factor = crate::arena_match::cvtss2si32(tier as f32 * 0.25 + 1.0);
+    let base = crate::arena_match::cvtss2si32(tier_factor as f32 * template_xp as f32);
+    let mut pool = crate::arena_match::cvtss2si32(base as f32 * missing / total_max);
+    if trainer {
+        pool = pool.wrapping_add(pool / 2);
+    }
+    XpAward { pool, damage }
+}
+
+/// One company body's share of the pool: `round(pool · damage / total)`,
+/// the ratio divided in single precision first.
+pub fn xp_share(pool: i32, total_damage: i32, damage: i32) -> i32 {
+    crate::arena_match::cvtss2si32(pool as f32 * (damage as f32 / total_damage as f32))
 }
 
 /// The XP one award gives: `min(total/rank_points, 5000)`.
@@ -746,13 +785,46 @@ mod tests {
     }
 
     #[test]
-    fn the_prizes_and_xp_split() {
+    fn the_match_xp_pool_and_shares() {
         let duel = template(1).unwrap();
         assert_eq!(prize_pot(duel, 3), 1750);
-        assert_eq!(xp_award(1750, 0.5, 1.0, false), 875);
-        assert_eq!(xp_award(1750, 0.5, 1.0, true), 1312);
-        assert_eq!(xp_split(100, &[1, 1]), vec![50, 50]);
-        assert_eq!(xp_split(100, &[0, 0]), vec![0, 0]);
+        let fighters = [
+            XpFighter {
+                company: true,
+                damage: 2,
+                health: 90.0,
+                max: 100.0,
+            },
+            XpFighter {
+                company: true,
+                damage: 3,
+                health: 80.0,
+                max: 100.0,
+            },
+            XpFighter {
+                company: false,
+                damage: 0,
+                health: 50.0,
+                max: 100.0,
+            },
+            XpFighter {
+                company: false,
+                damage: 0,
+                health: 20.0,
+                max: 100.0,
+            },
+        ];
+        // Tier 3: round(1.75) = 2, base 10 000, opponent missing 130 of
+        // 200, so the pool is 6 500.
+        let award = xp_pool(3, 5_000, false, &fighters, false);
+        assert_eq!((award.pool, award.damage), (6_500, 5));
+        assert_eq!(xp_share(6_500, 5, 2), 2_600);
+        assert_eq!(xp_share(6_500, 5, 3), 3_900);
+        // A trainer adds half again, truncated.
+        assert_eq!(xp_pool(3, 5_000, false, &fighters, true).pool, 9_750);
+        // The Fray counts every body's damage and missing health: 160 of
+        // 400 maximum, so 4 000.
+        assert_eq!(xp_pool(3, 5_000, true, &fighters, false).pool, 4_000);
     }
 
     #[test]

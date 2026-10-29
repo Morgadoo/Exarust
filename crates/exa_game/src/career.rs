@@ -975,24 +975,13 @@ pub fn draw_unwatched(
             let ratio = side.score / largest;
             let weight = ratio * ratio * 100.0;
             side.score = weight;
-            let rounded = round_to_i32(weight);
+            let rounded = crate::arena_match::cvtss2si32(weight);
             weights.push(rounded);
             total = total.wrapping_add(rounded);
         }
     }
     let index = draw_weight(weights.as_slice(), total, roll)?;
     Some(sides[index].team)
-}
-
-/// The processor's single-to-int conversion: ties to even, and a NaN or a
-/// value outside the signed 32-bit range becomes the 32-bit minimum.
-fn round_to_i32(value: f32) -> i32 {
-    let rounded = value.round_ties_even();
-    if rounded.is_nan() || rounded >= 2_147_483_648.0 || rounded < -2_147_483_648.0 {
-        i32::MIN
-    } else {
-        rounded as i32
-    }
 }
 
 /// The scene draw's weighted pick: step the roll (even with no weights),
@@ -1126,7 +1115,7 @@ pub fn clear_losing_bracket(
             for team in &teams {
                 let ratio = team.score / largest;
                 let weight = ratio * ratio * 100.0;
-                let rounded = round_to_i32(weight);
+                let rounded = crate::arena_match::cvtss2si32(weight);
                 weights.push(rounded);
                 total = total.wrapping_add(rounded);
             }
@@ -2023,15 +2012,15 @@ mod tests {
     #[test]
     fn the_weight_rounds_like_the_processor() {
         // Ties to even.
-        assert_eq!(round_to_i32(0.5), 0);
-        assert_eq!(round_to_i32(1.5), 2);
-        assert_eq!(round_to_i32(-0.5), 0);
+        assert_eq!(crate::arena_match::cvtss2si32(0.5), 0);
+        assert_eq!(crate::arena_match::cvtss2si32(1.5), 2);
+        assert_eq!(crate::arena_match::cvtss2si32(-0.5), 0);
         // NaN and out-of-range values become the indefinite integer.
-        assert_eq!(round_to_i32(f32::NAN), i32::MIN);
-        assert_eq!(round_to_i32(2_147_483_648.0), i32::MIN);
-        assert_eq!(round_to_i32(f32::INFINITY), i32::MIN);
-        assert_eq!(round_to_i32(-3.0e9), i32::MIN);
-        assert_eq!(round_to_i32(100.0), 100);
+        assert_eq!(crate::arena_match::cvtss2si32(f32::NAN), i32::MIN);
+        assert_eq!(crate::arena_match::cvtss2si32(2_147_483_648.0), i32::MIN);
+        assert_eq!(crate::arena_match::cvtss2si32(f32::INFINITY), i32::MIN);
+        assert_eq!(crate::arena_match::cvtss2si32(-3.0e9), i32::MIN);
+        assert_eq!(crate::arena_match::cvtss2si32(100.0), 100);
     }
 
     #[test]
