@@ -165,6 +165,15 @@ pub struct LevelInfo {
     /// was not found.
     pub placed_objects: usize,
     pub missing_objects: usize,
+    /// The content stream's count of placed objects it built nothing for
+    /// (no record, or no model), which the original reports as "N missing
+    /// database objects.".
+    pub missing_database_objects: usize,
+    /// The placed player's position, metres: the object the stream named
+    /// by the session's arrival word (an operative of its kind, or a
+    /// transition marker matching both words), whose position becomes the
+    /// focus the streamed characters are ordered by.
+    pub player_focus: Option<Vec3>,
     /// The rigid bodies of its props, placed objects and own model:
     /// registered in the solver, and left static.
     pub bodies: bodies::BodyCounts,
@@ -440,9 +449,10 @@ fn placed_object_model(
 /// What spawning a placed object came to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PlacedSpawn {
-    /// Placed, bringing this many lights, its bodies registered or left
-    /// static.
+    /// Placed as `entity`, bringing this many lights, its bodies registered
+    /// or left static.
     Placed {
+        entity: Entity,
         lights: usize,
         bodies: bodies::BodyCounts,
     },
@@ -478,6 +488,7 @@ fn spawn_placed_object(
             ChildOf(parent),
         ));
         return Some(PlacedSpawn::Placed {
+            entity: e,
             lights: 0,
             bodies: bodies::BodyCounts::default(),
         });
@@ -491,15 +502,18 @@ fn spawn_placed_object(
         // the original's 50 cm placeholder node, so its placement exists.
         // A named model that is not found has no tree, as in the original.
         if db_objects::scene_tree(item, &[]) == db_objects::SceneTree::Placeholder {
-            commands.spawn((
-                transform_from_rows(&object.transform),
-                Name::new(item.name.clone()),
-                room_view::PendingRoom::default(),
-                PlacedItem::of(item, object),
-                db_objects::PlaceholderNode::default(),
-                ChildOf(parent),
-            ));
+            let entity = commands
+                .spawn((
+                    transform_from_rows(&object.transform),
+                    Name::new(item.name.clone()),
+                    room_view::PendingRoom::default(),
+                    PlacedItem::of(item, object),
+                    db_objects::PlaceholderNode::default(),
+                    ChildOf(parent),
+                ))
+                .id();
             return Some(PlacedSpawn::Placed {
+                entity,
                 lights: 0,
                 bodies: bodies::BodyCounts::default(),
             });
@@ -563,9 +577,84 @@ fn spawn_placed_object(
     };
     bodies::mark_moving_meshes(commands, model, &nodes, geometry);
     Some(PlacedSpawn::Placed {
+        entity: e,
         lights: model.nodes.iter().filter(|n| n.light.is_some()).count(),
         bodies: bodies::register_bodies(commands, model, &nodes, placement),
     })
+}
+
+/// The content stream's level-object builder over a level's placed
+/// objects: each entry is spawned as [`spawn_placed_object`] does and
+/// reported with what the stream reads off the original's built node (its
+/// operative kind, position and transition-marker words).
+struct PlacedObjectBuilder<'a, 'w, 's, 'l> {
+    commands: &'a mut Commands<'w, 's>,
+    loader: &'a mut ModelLoader<'l>,
+    scene: &'a Scene,
+    items: &'a [Item],
+    root: Entity,
+    mechanism_bodies: bodies::MechanismBodies,
+    /// What the last entry's spawn came to.
+    spawned: Option<PlacedSpawn>,
+}
+
+impl exa_assets::content_stream::ContentBuilders for PlacedObjectBuilder<'_, '_, '_, '_> {
+    fn level_object(&mut self, index: usize) -> Option<exa_assets::content_stream::LevelNode> {
+        let object = self.scene.placed_objects.get(index)?;
+        self.spawned = spawn_placed_object(
+            self.commands,
+            self.loader,
+            self.scene,
+            self.items,
+            self.root,
+            object,
+            self.mechanism_bodies,
+        );
+        let entity = match self.spawned {
+            // The database builder found no model: the original's missing
+            // count.
+            Some(PlacedSpawn::Missing) => return None,
+            Some(PlacedSpawn::Placed { entity, .. }) => entity,
+            // Exarust spawns nothing for a record without a model (triggers,
+            // markers) or of another slot; the original builds a node for
+            // any record it finds. Guess: a record of another slot counts
+            // as built, as the builder is not seen to filter by slot.
+            None => Entity::PLACEHOLDER,
+        };
+        let items: &[Item] = if object.is_local() {
+            &self.scene.local_items
+        } else {
+            self.items
+        };
+        let id = object.id & exa_formats::rfc::PlacedObject::ID_MASK;
+        // A record the database does not hold builds nothing.
+        let item = items.iter().find(|item| item.id == id)?;
+        let t = object.transform[3];
+        Some(exa_assets::content_stream::LevelNode {
+            node: entity.to_bits(),
+            // The built node is of the operative class when its record has
+            // an operative section; its kind is the record's.
+            operative_kind: item.operative.map(|o| u32::from(o.kind)),
+            // The original's units: centimetres.
+            position: [t[0] * 100.0, t[1] * 100.0, t[2] * 100.0],
+            marker: item.volume.and_then(|v| v.marker()),
+        })
+    }
+
+    fn object(&mut self, _: &exa_assets::content_stream::ObjectRequest) -> Option<u64> {
+        None
+    }
+
+    fn character(&mut self, _: &exa_assets::content_stream::CharacterRequest) -> Option<u64> {
+        None
+    }
+
+    fn streamed_character(
+        &mut self,
+        _: &exa_assets::content_stream::StreamedCharacter,
+    ) -> Option<u64> {
+        None
+    }
 }
 
 /// `model` with the voxel lights hanging directly under its root scaled by
@@ -1242,6 +1331,20 @@ pub struct LevelLoad {
     /// Which mechanisms become bodies with their rules (hinged doors,
     /// levers and push surfaces by default).
     pub mechanism_bodies: bodies::MechanismBodies,
+    /// The session's arrival word and the id of the level it came from,
+    /// which name the placed player ([`exa_assets::content_stream`]); by
+    /// default nothing set them.
+    pub arrival: u32,
+    pub previous_level: u32,
+    /// The content stream the placed objects are built through, while the
+    /// level's list is unfinished (behind a lock only so the load can live
+    /// in a resource: the stream's job ring holds callbacks that are not
+    /// `Sync`; the load reaches it through `get_mut`, never locking).
+    stream: Option<std::sync::Mutex<exa_assets::content_stream::ContentStream>>,
+    /// The stream's count of placed objects whose record or model was not
+    /// found, and the placed player's position (metres) once built.
+    missing_database_objects: usize,
+    player_focus: Option<Vec3>,
 }
 
 impl LevelLoad {
@@ -1317,6 +1420,11 @@ impl LevelLoad {
             missing_objects: 0,
             bodies: bodies::BodyCounts::default(),
             mechanism_bodies: bodies::MechanismBodies::default(),
+            arrival: exa_assets::content_stream::NO_ARRIVAL_WORD,
+            previous_level: exa_assets::content_stream::NO_PREVIOUS_LEVEL,
+            stream: None,
+            missing_database_objects: 0,
+            player_focus: None,
         })
     }
 
@@ -1489,6 +1597,24 @@ impl LevelLoad {
                 }
             }
             Stage::PlacedObjects => {
+                // The placed objects go through the content stream's level
+                // pass: one entry a pass, in file order, the player named by
+                // the session's two words, the missing ones counted.
+                let total = self.scene.placed_objects.len();
+                let stream = self
+                    .stream
+                    .get_or_insert_with(|| {
+                        let mut stream = exa_assets::content_stream::ContentStream::new();
+                        stream.begin_level(
+                            self.root.to_bits(),
+                            total,
+                            self.arrival,
+                            self.previous_level,
+                        );
+                        std::sync::Mutex::new(stream)
+                    })
+                    .get_mut()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 while let Some(object) = self.scene.placed_objects.get(self.objects_done) {
                     if let Some(deadline) = started.checked_add(budget)
                         && let Some((kind, model)) =
@@ -1497,16 +1623,18 @@ impl LevelLoad {
                     {
                         break;
                     }
-                    match spawn_placed_object(
-                        commands,
-                        loader,
-                        &self.scene,
-                        &self.global_items,
-                        self.root,
-                        object,
-                        self.mechanism_bodies,
-                    ) {
-                        Some(PlacedSpawn::Placed { lights, bodies }) => {
+                    let mut builder = PlacedObjectBuilder {
+                        commands: &mut *commands,
+                        loader: &mut *loader,
+                        scene: &self.scene,
+                        items: &self.global_items,
+                        root: self.root,
+                        mechanism_bodies: self.mechanism_bodies,
+                        spawned: None,
+                    };
+                    stream.step(&mut builder);
+                    match builder.spawned {
+                        Some(PlacedSpawn::Placed { lights, bodies, .. }) => {
                             self.placed_objects += 1;
                             self.lights += lights;
                             self.bodies.add(bodies);
@@ -1519,7 +1647,30 @@ impl LevelLoad {
                         break;
                     }
                 }
-                if self.objects_done == self.scene.placed_objects.len() {
+                if self.objects_done == total {
+                    let mut builder = PlacedObjectBuilder {
+                        commands: &mut *commands,
+                        loader: &mut *loader,
+                        scene: &self.scene,
+                        items: &self.global_items,
+                        root: self.root,
+                        mechanism_bodies: self.mechanism_bodies,
+                        spawned: None,
+                    };
+                    // Every entry is done, so the wait builds nothing more:
+                    // it reports the missing objects and clears the list.
+                    if let Some(level) = stream.wait_for_level(&mut builder, || {}) {
+                        if let Some(message) =
+                            exa_assets::content_stream::missing_message(level.missing)
+                        {
+                            warn!("{}: {message}", exa_assets::content_stream::LOG_SOURCE);
+                        }
+                        self.missing_database_objects = level.missing;
+                    }
+                    self.player_focus = stream
+                        .player()
+                        .map(|_| Vec3::from_array(stream.focus()) / 100.0);
+                    self.stream = None;
                     self.stage = Stage::Lighting;
                 }
             }
@@ -1643,6 +1794,8 @@ impl LevelLoad {
                 characters: placed_characters(&self.scene, &self.global_items, self.locale),
                 placed_objects: self.placed_objects,
                 missing_objects: self.missing_objects,
+                missing_database_objects: self.missing_database_objects,
+                player_focus: self.player_focus,
                 bodies: self.bodies,
                 spawn: self.scene.grid.as_ref().and_then(grid::spawn_point),
                 player_markers: player_markers(&self.scene, &self.global_items),
@@ -1973,6 +2126,51 @@ mod tests {
                 assert_eq!(a, b, "{name}");
             }
         }
+    }
+
+    /// With the texture loader's streaming on, a level loaded in one call
+    /// still finishes: the terrain's queued textures are finished on the
+    /// spot rather than waited for over frames; the placed
+    /// objects come through the content stream with no player named by the
+    /// default session words (run with `--ignored` and the game installed).
+    #[test]
+    #[ignore]
+    fn a_streaming_level_loaded_in_one_call_finishes_its_terrain_textures() {
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let game = GameData::open(&dir).unwrap();
+        bevy::tasks::AsyncComputeTaskPool::get_or_init(bevy::tasks::TaskPool::default);
+        let world = World::new();
+        let mut queue = CommandQueue::default();
+        let mut cache = ModelCache::default();
+        cache.textures.set_streaming(true);
+        let mut meshes = Assets::<Mesh>::default();
+        let mut materials = Assets::<exa_render::material::ExaMaterial>::default();
+        let mut images = Assets::<Image>::default();
+        let mut loader = ModelLoader {
+            game: &game,
+            cache: &mut cache,
+            meshes: &mut meshes,
+            materials: &mut materials,
+            images: &mut images,
+            bc_supported: true,
+        };
+        let mut commands = Commands::new(&mut queue, &world);
+        let (_, info) = spawn_level(&mut commands, &mut loader, "arenao1").expect("level spawns");
+        assert!(info.terrain.is_some(), "a terrain level");
+        assert!(info.missing_database_objects >= info.missing_objects);
+        assert_eq!(info.player_focus, None);
+        // Reaching here is the check: a terrain texture left waiting for a
+        // loader that never runs would hold the one-call load forever. The
+        // props' material textures stay queued behind their placeholders.
+        assert!(
+            cache
+                .textures
+                .entries()
+                .iter()
+                .any(|record| !record.pending)
+        );
     }
 
     pub(crate) fn node(

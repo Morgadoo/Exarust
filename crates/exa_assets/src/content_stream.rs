@@ -438,6 +438,47 @@ pub struct LevelStream {
     pub missing: usize,
 }
 
+/// The source the level wait's report is logged under, at the original's
+/// message level 5.
+pub const LOG_SOURCE: &str = "Content management";
+
+/// The report the level wait logs when placed objects were missing, as the
+/// original formats it (the count in decimal, then the text); `None` for a
+/// count of zero, which logs nothing.
+pub fn missing_message(missing: usize) -> Option<String> {
+    (missing > 0).then(|| format!("{missing} missing database objects."))
+}
+
+/// The scene's room-mode bits: with either set, a scene that has a grid
+/// environment sorts the level's placed objects into its rooms.
+pub const ROOM_MODE_BITS: u32 = 0x3;
+
+/// The room-mode word every shipped scene is created with (both bits set).
+pub const SCENE_ROOM_WORD: u32 = 0x73;
+
+/// Where the level wait hands the finished objects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LevelHandoff {
+    /// To the scene's grid environment, which sorts them into its rooms;
+    /// the caller's list is left as it is.
+    Rooms,
+    /// Appended to the caller's list, after what it already holds.
+    Append,
+}
+
+impl LevelHandoff {
+    /// The level wait's choice: the grid environment when the scene has one
+    /// and its room-mode word has either bit of [`ROOM_MODE_BITS`], the
+    /// caller's list otherwise.
+    pub fn of(has_grid_environment: bool, room_word: u32) -> Self {
+        if has_grid_environment && room_word & ROOM_MODE_BITS != 0 {
+            Self::Rooms
+        } else {
+            Self::Append
+        }
+    }
+}
+
 /// What fetching a requested database object found.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Fetch {
@@ -1670,5 +1711,31 @@ mod tests {
         thread.parser().write_u32(7);
         assert_eq!(thread.chunk_stream().bytes(), &0x3D23u32.to_le_bytes());
         assert_eq!(thread.parser().bytes(), &7u32.to_le_bytes());
+    }
+
+    #[test]
+    fn the_level_wait_reports_missing_objects_in_the_original_words() {
+        assert_eq!(missing_message(0), None);
+        assert_eq!(
+            missing_message(1).as_deref(),
+            Some("1 missing database objects.")
+        );
+        assert_eq!(
+            missing_message(37).as_deref(),
+            Some("37 missing database objects.")
+        );
+        assert_eq!(LOG_SOURCE, "Content management");
+    }
+
+    #[test]
+    fn a_grid_scene_in_room_mode_takes_the_objects_into_its_rooms() {
+        assert_eq!(LevelHandoff::of(true, SCENE_ROOM_WORD), LevelHandoff::Rooms);
+        assert_eq!(LevelHandoff::of(true, 0x1), LevelHandoff::Rooms);
+        assert_eq!(LevelHandoff::of(true, 0x2), LevelHandoff::Rooms);
+        assert_eq!(LevelHandoff::of(true, 0x70), LevelHandoff::Append);
+        assert_eq!(
+            LevelHandoff::of(false, SCENE_ROOM_WORD),
+            LevelHandoff::Append
+        );
     }
 }

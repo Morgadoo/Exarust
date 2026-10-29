@@ -134,6 +134,9 @@ impl TextureRecord {
     }
 }
 
+/// The source the texture manager's messages are logged under.
+pub const LOG_SOURCE: &str = "Texture management";
+
 /// A name-keyed texture cache with the original's lookup, insert and release.
 #[derive(Default)]
 pub struct TextureCache {
@@ -143,6 +146,11 @@ pub struct TextureCache {
     /// calling thread (the original's streaming path: the record draws its
     /// placeholder until the loader thread's upload arrives).
     streaming: bool,
+    /// The manager's fast-load flag: a load the material path queues starts
+    /// as the loader's priority item (status 3 rather than 1), so its decode
+    /// never waits for the upload pass. The shipped game reads the flag and
+    /// never sets it, so it stays off; the terrain path ignores it.
+    fast_load: bool,
     /// Loads the streaming path queued, in request order, waiting for the
     /// loader to take them.
     queued: Vec<TextureRequest>,
@@ -183,6 +191,16 @@ impl TextureCache {
     /// decodes it itself.
     pub fn set_streaming(&mut self, streaming: bool) {
         self.streaming = streaming;
+    }
+
+    /// Whether a queued material load starts as the loader's priority item.
+    pub fn fast_load(&self) -> bool {
+        self.fast_load
+    }
+
+    /// Sets the fast-load flag (off in the shipped game).
+    pub fn set_fast_load(&mut self, fast_load: bool) {
+        self.fast_load = fast_load;
     }
 
     /// Queues a load for the loader thread and returns its position.
