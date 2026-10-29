@@ -21,7 +21,7 @@ axis and look-at turns (the look basis normalised with `RSQRTSS`), the
 signed XZ heading through the fast arc cosine, the
 yaw and elevation directions, the 2D, 3D and ground-plane lengths in the
 original's x-and-z-first association, the per-component and folded minimum
-and maximum with the SSE NaN rule, and the projection onto and removal
+and maximum with the SSE NaN rule, the approximate normalisation (`RSQRTSS`, zero kept), and the projection onto and removal
 along a unit vector (the dot summed x and z, then y), component-wise row scaling, Euler angles with the runtime library's
 arcsine and arctangent rules, the Gauss-Jordan 4×4 inverse (pivoting
 against the diagonal) and the OpenGL frustum, perspective (with the

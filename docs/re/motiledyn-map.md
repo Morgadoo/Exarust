@@ -24,7 +24,7 @@ the crates; shares of partial routines are estimates, not instruction-level diff
 | n.a. | 5 | 896 |
 | all | 100 | 123,719 |
 
-Weighted by the partial shares, about **88,199 of 122,823 needed bytes (72 %)** are reproduced (n.a. routines left out; counting the partial routines' shares, 67,743 of their 101,464 bytes). Counting only what the running game calls, about **77,590 bytes (63 %)**; the rest is tested but not wired.
+Weighted by the partial shares, about **88,227 of 122,823 needed bytes (72 %)** are reproduced (n.a. routines left out; counting the partial routines' shares, 67,771 of their 101,464 bytes). Counting only what the running game calls, about **77,618 bytes (63 %)**; the rest is tested but not wired.
 
 ## Largest remaining work
 
@@ -133,7 +133,7 @@ Weighted by the partial shares, about **88,199 of 122,823 needed bytes (72 %)** 
 | 86 | 380 | Daze pose | `exa_anim clock.rs shock_hold` | partial (80 %) | no caller; its capture source (#84) | no |
 | 87 | 564 | Plain capture | `exa_anim clock.rs take_capture`; `limp.rs Lean::capture`; `body_twist.rs half_lean` | done | explicit fallback to the full capture | yes |
 | 88 | 85 | Set stance | `exa_combat stance.rs set_stance` | done | - | yes |
-| 89 | 140 | Stance by energy | `exa_ai combat.rs`; `exa_combat parry.rs restart_stance` | partial (50 %) | no shared helper for recoil and clinch callers | yes |
+| 89 | 140 | Stance by energy | `exa_combat stance.rs stance_by_energy` (the AI's guard); `exa_combat parry.rs parry_stance` | partial (70 %) | recoil, failed-parry and clinch callers do not start the stance through it | yes |
 | 90 | 92 | Cast end | `exa_game thaum/casting.rs end_cast`; `exa_combat effects.rs end_cast` | done | follow clip by Exarust's rule | yes |
 | 91 | 157 | Cast start | `exa_game thaum/casting.rs start_cast`; `exa_combat effects.rs cast_start` | done | live start does not end the clinch | yes |
 | 92 | 536 | Start a clip | `exa_anim clock.rs Animator::start, take_left_locomotion` | partial (55 %) | cast hook signal, clinch clear on leaving attacks, part-flag and list resets, start notice | yes |
