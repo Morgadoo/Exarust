@@ -136,7 +136,8 @@ physique values and the body morphs they select remain the body's concern
   (`hair::hang_as_cloth`): each style node with the cloth marker (the two
   meshes of `hair hula01…05` and `hair husa02`) becomes an
   `exa_world::cloth` cloth pinned by its face flags, the style's roots
-  with the hair's cloth record (`exa_physics::cloth_record::ClothRecord::HAIR`).
+  with the hair's cloth record (`exa_physics::cloth_record::ClothRecord::HAIR`);
+  `EXA_HAIR_CLOTH=0` leaves every style rigid.
 
 ## The dressed mesh
 

@@ -96,6 +96,7 @@ pub fn attach_hair(
                 .collect()
         })
         .unwrap_or_default();
+    let cloth_on = hair_cloth_on();
     let started = std::time::Instant::now();
     for (body, hair) in &bodies {
         if started.elapsed() >= HAIR_BUDGET {
@@ -164,7 +165,7 @@ pub fn attach_hair(
                     }),
                     None => commands.entity(part).insert(Mesh3d(mesh.clone())),
                 };
-                if node.cloth {
+                if node.cloth && cloth_on {
                     hang_as_cloth(
                         &mut commands,
                         part,
@@ -177,6 +178,12 @@ pub fn attach_hair(
         }
         commands.entity(body).insert(HairAttached);
     }
+}
+
+/// Whether long hair hangs as cloth: on unless `EXA_HAIR_CLOTH=0`, which
+/// leaves every style rigid on the head (a debugging switch).
+pub fn hair_cloth_on() -> bool {
+    std::env::var_os("EXA_HAIR_CLOTH").is_none_or(|v| v != "0")
 }
 
 /// Gives a cloth-marked part of a hair style its cloth: the level's cloth

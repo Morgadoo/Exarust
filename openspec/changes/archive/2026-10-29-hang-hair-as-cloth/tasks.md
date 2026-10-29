@@ -1,0 +1,7 @@
+- [x] Read the hair attach's root loop, the cloth constructor and set-up, and both records' bytes
+- [x] Read the integrate slot, post-body pass, body-contact switch and particle routine
+- [x] Add the cloth parameter record and thread it through the step and level contact
+- [x] Add the particle-mode body contact and its gathering
+- [x] Hand a part's record to its cloth; find the owner, keep it awake, carry its particles
+- [x] Hang hair style nodes with the cloth marker as cloth, roots with the hair's record
+- [x] Tests (synthetic and real data), READMEs, DEBUGGING.md
