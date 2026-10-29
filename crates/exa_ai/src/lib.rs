@@ -920,6 +920,9 @@ fn duellist(
                 // raised holds the gate shut until its plant's 500 ms
                 // deadline passes.
                 blocking: locomotor.map_or(0, |l| l.plant_request),
+                // The body's parrying flag: while its auto-parry holds, the
+                // combat state leaves its stance motion alone.
+                parrying: fighter.parry.active,
                 ..combat::Body::default()
             };
             me.can_step = combat::can_act(&me) && !ai.holds_ground;
