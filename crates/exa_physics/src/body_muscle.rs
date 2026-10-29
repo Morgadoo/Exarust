@@ -128,6 +128,11 @@ pub struct RaceMuscles {
     /// The character is a golem: the character init gives every body link
     /// of its parts the smoothing [`GOLEM_LINK_SMOOTHING`].
     pub golem: bool,
+    /// The race hovers (the race record's hover flag, the wraith): the
+    /// character init sets the body's no-foot-probe byte from it, and the
+    /// feet routine then probes once under the pelvis instead of under
+    /// each foot ([`super::FeetMode::Hovering`]).
+    pub hovers: bool,
 }
 
 /// The smoothing of a golem's body links (the character init's 0.995 for
@@ -143,6 +148,7 @@ impl RaceMuscles {
         clip_rate: 1.0,
         gaits: GaitTable::HUMAN_ROWS,
         golem: false,
+        hovers: false,
     };
 }
 
@@ -285,9 +291,11 @@ pub struct Bearing {
     /// Its behaviour is in combat (the original's in-combat flag): its
     /// standing retention factor is u, not u².
     pub in_combat: bool,
-    /// The state word's splay bit: the thighs turn 5° about the posture
-    /// axis instead of holding the clip's turns (no shipped code writes the
-    /// bit).
+    /// The state word's flat-floor (splay) bit: the thighs turn 5° about
+    /// the posture axis instead of holding the clip's turns, and the feet
+    /// routine runs its flat-floor mode ([`super::FeetMode::FlatFloor`]).
+    /// The original's lying spawn and character viewers set it; Exarust's
+    /// spawn does not yet.
     pub splay: bool,
     /// Its condition is off its feet: down, getting up, dormant or dead
     /// (the condition's bit 0x200). Its feet are probed from their ankles

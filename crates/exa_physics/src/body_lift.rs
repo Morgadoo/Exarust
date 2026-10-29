@@ -352,9 +352,31 @@ impl Ragdoll {
             .collect();
         let pelvis = &parts[root];
         let height = cm(pelvis.transform().translation.y);
+        // The feet routine's special modes aim the pelvis at its standing
+        // height: on a flat floor 10 cm under it over the floor at 0,
+        // hovering over the hover probe's ground, and leave the extension
+        // at 1. The original's standing height is its sampler's pelvis
+        // target; Exarust's carry target over that ground stands in for it
+        // [guess: the original's hovering target is the bare standing
+        // height, sector-local, with no ground added].
+        let mode = drive.feet_mode;
+        let mode_ground = match mode {
+            feet::FeetMode::FlatFloor => Some(0.0),
+            feet::FeetMode::Hovering => Some(cm(drive.balance.under)),
+            feet::FeetMode::Walking => None,
+        };
+        let mut heights = heights;
+        if let Some(g) = mode_ground {
+            for h in &mut heights {
+                h.ground = Some(g);
+                h.lifted = false;
+            }
+        }
         // The legs' extension: the pelvis over the highest anchor, against
         // the pose's pelvis over its mean ankle.
-        if let Some(p) = pelvis_target {
+        if mode_ground.is_some() {
+            drive.balance.extension = 1.0;
+        } else if let Some(p) = pelvis_target {
             let ankles: f32 = legs
                 .iter()
                 .map(|l| drive.targets[l.shin].transform_point3(l.point).y)
@@ -374,6 +396,11 @@ impl Ragdoll {
             bearing.speed,
             cm(drive.balance.slow_velocity().y),
         );
+        let target = if mode == feet::FeetMode::FlatFloor {
+            feet::flat_floor_target(target)
+        } else {
+            target
+        };
         drive.lift_target = Some(target / CM);
         if !drive.balance.has_support() {
             return;

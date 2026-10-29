@@ -237,8 +237,11 @@ impl StateFlags {
     pub const HELD: u32 = 0x40;
     /// The shock's stagger: Rebalance each tick.
     pub const SHOCK_STAGGER: u32 = 0x100;
-    /// The thighs splay by 5° about the posture axis instead of holding
-    /// the clip's turns; no shipped code writes it.
+    /// The flat-floor bit: the thighs splay by 5° about the posture axis
+    /// instead of holding the clip's turns, and the feet routine stands
+    /// every foot on a floor at 0 without probing. The original's lying
+    /// spawn and its character viewers set it (assigned, the whole word);
+    /// nothing clears it. Exarust's spawn does not set it yet.
     pub const SPLAY: u32 = 0x1000;
     /// Blows on it are turned: the striker recoils and nothing is dealt
     /// (what sets it was not traced).

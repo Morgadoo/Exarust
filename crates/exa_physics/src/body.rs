@@ -1838,6 +1838,11 @@ pub struct Drive {
     /// 0.0002 a tick, wrapped at 1, and its value before the tick.
     travel_phase: f32,
     travel_phase_before: f32,
+    /// The mode the feet routine ran in this tick ([`FeetMode`]): the lift
+    /// and the leg IK read it.
+    feet_mode: FeetMode,
+    /// A hovering body's probe, raised after each miss.
+    hover: HoverProbe,
     /// The foot sounds the balance's footwork found since they were last
     /// taken ([`Ragdoll::take_foot_cues`]).
     pub foot_cues: Vec<feet::FootCue>,
@@ -1959,6 +1964,8 @@ impl Default for Drive {
             gait_back: false,
             travel_phase: 0.0,
             travel_phase_before: 0.0,
+            feet_mode: FeetMode::Walking,
+            hover: HoverProbe::default(),
             foot_cues: Vec::new(),
         }
     }

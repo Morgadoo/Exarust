@@ -570,7 +570,10 @@ pub fn spawn_scene_body(
             head_word: look.worn.iter().fold(0, |word, worn| word | worn.head_word),
         },
         exa_physics::body::Physical {
-            race: character_muscles(&race_body, &stats),
+            race: RaceMuscles {
+                hovers: race.is_some_and(|r| r.flags & exa_formats::races::HOVERS != 0),
+                ..character_muscles(&race_body, &stats)
+            },
             stats: body_stats(&stats),
             ..default()
         },
@@ -720,6 +723,7 @@ pub fn race_muscles(body: &RaceBody) -> RaceMuscles {
         clip_rate: body.clip_rate,
         gaits: exa_physics::race_runtime::rows_of(body),
         golem: false,
+        hovers: false,
     }
 }
 
