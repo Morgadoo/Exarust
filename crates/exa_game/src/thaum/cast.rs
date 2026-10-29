@@ -597,6 +597,9 @@ fn run_bar_commands(
                 };
                 let slot = chosen_slot(caster);
                 let Some(slot) = slot else {
+                    // A digit on the already chosen slot unpicks it (the
+                    // bar's select toggles), which leaves nothing to cast.
+                    info!("power cast: no slot chosen");
                     continue;
                 };
                 let word_value = caster.record.slots[slot];
@@ -633,7 +636,7 @@ fn run_bar_commands(
                 if let Some(queued) = entry.queued_slot {
                     debug!("cast queued on slot {queued}");
                 }
-                debug!("bar cast {asked:#x}: {result_code}");
+                info!("power cast {asked:#x} from slot {slot}: result {result_code}");
                 let place = CastPlace {
                     now,
                     ragdoll,
@@ -1342,7 +1345,7 @@ fn create_force(
                 0.0,
                 Some(entity),
             );
-            debug!("force shell: aura entity {entity:?}");
+            info!("force shell: aura entity {entity:?}");
             Some(entity)
         }
         ForceStart::Kinesis { cost } => {
