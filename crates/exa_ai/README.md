@@ -80,8 +80,8 @@ scaled by the elapsed count the brain's ticks seen carry (the contact
 field the integration counts). A character that leaves the
 scene is forgotten by every brain and combatant (its contact, nearby entry,
 targets, attention, encounter and greeting references). Entering combat
-sets the body's in-combat word and starts the combat idle stance through
-the set-stance helper (30 frames, smooth), and leaving it copies the body's
+sets the body's in-combat word (the duellist's entry then takes the Defence
+stance, motion 3, through the set-stance helper), and leaving it copies the body's
 look into the brain's look, heading and eased offset.
 
 | module | what it holds |
@@ -94,7 +94,7 @@ look into the brain's look, heading and eased offset.
 | `search` | the companion's search: gathering over the room grid, picking, the look sweep, the forced path, arrival, kneeling, looting worn items, packs and containers, item worth, wear room, comments to the leader, re-arming, tidying, the world edits its deeds carry out (`apply_deed`), and an item record read as its weighing reads it (`Loot::of_payload`: apparel body, weapon section, operative or container part) |
 | `manager` | the AI manager's frame (dormant ticks, rising undead, the 3 cm zone check), zone deeds, the group alert (raised, held ten seconds and dropped one every ten), the approach clamp, and the scene node the level's AI start-up makes once (`_Temp`, flag `0x100000`) |
 | `lookup` | a simulation's character by record id and a status effect by a masked word (first match in list order) |
-| `brain` | the components and systems that carry roles into the running game: applying roles again when the held set changes, the attitude rating and waking, the perception pass (line of sight, the ally sense and the sense a race installs, the familiarity drift written to the relations), the AI tick once a body tick (morale, the group alert's ten-second decay, the contact integration, the target pass with the room graph, the room cell and nearby list, the engagement with its in-combat word and stance, the leave's copied look, the one-time attach snap, the look chain, the out-of-combat body turn and the footprint gate), the removal forget, and the flight's walk to a room's exit |
+| `brain` | the components and systems that carry roles into the running game: applying roles again when the held set changes, the attitude rating and waking, the perception pass (line of sight, the ally sense and the sense a race installs, the familiarity drift written to the relations), the AI tick once a body tick (morale, the group alert's ten-second decay, the contact integration, the target pass with the room graph, the room cell and nearby list, the engagement with its in-combat word, the leave's copied look, the one-time attach snap, the look chain, the out-of-combat body turn and the footprint gate), the removal forget, and the flight's walk to a room's exit |
 | `presence` | the activation range (200 m, a NaN out), the 80-tick hold, the scene move's end, the entering body's reset, the level-leave reset, and the placement an entering body takes (a collapsed body keeps its stored one; others take their point and face their path goal) |
 | `idle` | roam, patrol, sentry and the wait, the wander and home-side points, follow, sleep, knock-out and waking |
 | `walker` | the idle states' head (the attention's notice score and clamped window, the 50° focus window), the roam and patrol step on the planning turn (the goal picked only on the turn, the 150 cm follow span, the forced home leg, the settle before the pause), and the walk along the followed route (100 cm flat arrival, Exarust's give-up deadline) |

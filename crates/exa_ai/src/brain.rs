@@ -822,8 +822,6 @@ pub fn ai_tick(
         Option<&Name>,
         Option<&mut Transform>,
         Option<&crate::presence::Presence>,
-        Option<&mut exa_combat::stance::Stance>,
-        Option<&mut Animator>,
     )>,
 ) {
     // One pass a tick: a second frame on the same body tick does nothing
@@ -847,8 +845,6 @@ pub fn ai_tick(
         name,
         transform,
         presence,
-        mut stance,
-        mut anim,
     ) in &mut npcs
     {
         let talking = name.map_or("character", |n| n.as_str());
@@ -1049,19 +1045,10 @@ pub fn ai_tick(
             if let Some(level) = npc.pass.enter {
                 if !duellist.engaged && npc.pass.target == target_id {
                     duellist.engage();
-                    // Entering combat sets the body's in-combat flag and
-                    // starts the combat idle stance through the set-stance
-                    // helper (30 frames, smooth), before the first combat
-                    // tick.
+                    // Entering combat sets the body's in-combat flag; its
+                    // Defence stance (the set-stance helper, 30 frames) is
+                    // the duellist's entry, later this frame.
                     combatant.in_combat = true;
-                    if let (Some(stance), Some(anim)) = (stance.as_deref_mut(), anim.as_deref_mut())
-                    {
-                        exa_combat::stance::set_stance(
-                            stance,
-                            anim,
-                            exa_combat::stance::Stance::CombatIdle,
-                        );
-                    }
                     info!(
                         "{talking}: the target pass enters combat at level {level} on tick {}",
                         ticks.as_ref().map_or(0, |t| t.0)
@@ -1070,13 +1057,17 @@ pub fn ai_tick(
             } else if npc.pass.leave && duellist.engaged {
                 duellist.leave();
                 combatant.in_combat = false;
-                // Leaving copies the body's look into the AI's look, heading
-                // and eased offset (the original's leave routine), so the
-                // head does not snap back to the fight's heading.
+                // The target pass leaves through the leave-combat routine:
+                // the AI's look and aim take the body's look yaw and the
+                // next sway is drawn 500 ms out. It zeroes the heading where
+                // the leave look copies the yaw, but the out-of-combat turn
+                // rewrites the heading and eased offset from the look every
+                // tick, so the leave look's writes stand in for it.
                 if let Some(t) = transform.as_deref() {
                     let body_look = motion::yaw_of(t.rotation * Vec3::Z);
                     let brain = &mut *npc;
                     motion::leave_look(&mut brain.gaze, &mut brain.turn, body_look);
+                    brain.turn.sway_at_ms = now.wrapping_add(500);
                 }
                 info!("{talking}: the target pass leaves combat");
             }
@@ -2032,8 +2023,6 @@ mod tests {
                     Fighter::default(),
                     Condition::NORMAL,
                     CharacterId(2),
-                    exa_combat::stance::Stance::Idle,
-                    Animator::new("Human", "Idle"),
                 ))
                 .id()
         };
@@ -2049,15 +2038,6 @@ mod tests {
         );
         assert!(w.get::<Npc>(hostile).unwrap().pass.enter.is_some());
         assert!(w.get::<Combatant>(hostile).unwrap().in_combat);
-        assert_eq!(
-            *w.get::<exa_combat::stance::Stance>(hostile).unwrap(),
-            exa_combat::stance::Stance::CombatIdle,
-            "entering starts the combat idle"
-        );
-        assert_eq!(
-            *w.get::<exa_combat::stance::Stance>(neutral).unwrap(),
-            exa_combat::stance::Stance::Idle
-        );
         // The neutral brain also weighs the fighting brain beside it, so it
         // may watch that one; it never takes the player as its target and
         // its duellist waits.
