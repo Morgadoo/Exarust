@@ -202,7 +202,6 @@ fn simulate(
                 });
             }
             emitter.tick(NodeFrame { position, rotation }, rng);
-            emitter.sound_frame(rng);
             flame.accumulator -= dt;
             steps += 1;
         }
@@ -211,10 +210,15 @@ fn simulate(
             commands.entity(entity).despawn();
             continue;
         }
+        // The light and sound walks run once a rendered frame, as the
+        // original's per-frame pass does, not once a tick.
+        let frame = {
+            let Flame { emitter, rng, .. } = &mut *flame;
+            emitter.frame(rng)
+        };
         if let Some(mut fire) = fire {
-            let (intensity, _) = flame.emitter.light.intensity();
-            fire.intensity = intensity;
-            fire.softness = flame.emitter.light.softness();
+            fire.intensity = frame.intensity;
+            fire.softness = frame.softness;
             fire.density = flame.emitter.light.density;
             fire.ticks = fire.ticks.saturating_add(steps);
         }
