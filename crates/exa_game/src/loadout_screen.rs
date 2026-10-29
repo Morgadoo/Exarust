@@ -22,7 +22,7 @@ use exa_ui::loadout::{
 use exa_ui::skin::SkinPalette;
 
 /// Open the editor for a roster member. The editor is built by the caller
-/// ([`exa_game::loadout::editor_for`]); `wide` is the interface's wide
+/// ([`crate::loadout::editor_for`]); `wide` is the interface's wide
 /// layout, which sets the form's opacity and the equipment's scale.
 #[derive(Message, Debug, Clone)]
 pub struct OpenLoadoutEditor {
