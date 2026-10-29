@@ -31,6 +31,7 @@
 use bevy::math::Affine3A;
 use bevy::prelude::*;
 
+use crate::cloth_parts::{self, PartCells};
 use exa_physics::Physics;
 use exa_physics::body::Ragdoll;
 use exa_physics::cloth::{self, Cloth};
@@ -252,8 +253,13 @@ pub struct ClothWork {
     pub level_micros: u64,
     /// The cloth's step itself (µs, summed over the cloths).
     pub step_micros: u64,
+    /// The stage's total only: the bodies the part index re-bucketed (the
+    /// changed ones) and the parts it gathered around the cloths.
+    pub rebucketed: u32,
+    pub gathered: u32,
     /// The stage's sequential parts (the stage's total only): bucketing
-    /// the body parts, then each cloth's frame, owner and object-list
+    /// the body parts (re-bucketing the changed bodies, then gathering the
+    /// parts around the cloths), then each cloth's frame, owner and object-list
     /// re-bucket, then the wall time of every cloth's contacts and step.
     pub parts_micros: u64,
     pub plan_micros: u64,
@@ -280,6 +286,8 @@ impl ClothWork {
         self.body_micros += other.body_micros;
         self.level_micros += other.level_micros;
         self.step_micros += other.step_micros;
+        self.rebucketed += other.rebucketed;
+        self.gathered += other.gathered;
         self.parts_micros += other.parts_micros;
         self.plan_micros += other.plan_micros;
         self.cloths_micros += other.cloths_micros;
@@ -306,8 +314,10 @@ impl ClothDebug {
         let s = &self.sum;
         let ms = |micros: u64, count: f64| micros as f64 / count.max(1.0) / 1000.0;
         info!(
-            "cloth stage split per tick: parts {:.2} ms, plan {:.2} ms, cloths {:.2} ms wall (CPU: bodies {:.2} ms, level {:.2} ms, step {:.2} ms); mesh write-back {:.2} ms a frame ({:.1} meshes, {:.2} ticks a frame); fixed schedule {:.2} ms a tick",
+            "cloth stage split per tick: parts {:.2} ms ({:.1} bodies re-bucketed, {:.1} parts gathered), plan {:.2} ms, cloths {:.2} ms wall (CPU: bodies {:.2} ms, level {:.2} ms, step {:.2} ms); mesh write-back {:.2} ms a frame ({:.1} meshes, {:.2} ticks a frame); fixed schedule {:.2} ms a tick",
             ms(s.parts_micros, n),
+            s.rebucketed as f64 / n,
+            s.gathered as f64 / n,
             ms(s.plan_micros, n),
             ms(s.cloths_micros, n),
             ms(s.body_micros, n),
@@ -616,7 +626,7 @@ type OfferedPart<'a> = (Entity, bool, ObjectBodyPart<'a>);
 #[allow(clippy::too_many_arguments)]
 fn step_cloths(
     mut instances: Query<(Entity, &mut ClothInstance, &GlobalTransform)>,
-    bodies: Query<&Ragdoll>,
+    bodies: Query<(Entity, Ref<Ragdoll>)>,
     parents: Query<&ChildOf>,
     scene_nodes: Query<(), With<exa_physics::StaticNode>>,
     physics: Option<Res<Physics>>,
@@ -626,6 +636,7 @@ fn step_cloths(
     mut debug: ResMut<ClothDebug>,
     names: Query<&Name>,
     mut part_cells: Local<sector::CellGrid>,
+    mut index: Local<PartCells>,
 ) {
     let on = debug.on;
     let started = on.then(std::time::Instant::now);
@@ -646,62 +657,24 @@ fn step_cloths(
             ClothObjects::ORIGIN,
         );
     }
-    // Every part of every body (asleep too) that can meet an object, with
-    // its body's sleep, built once a tick for all the cloths, and bucketed
-    // by the grid cell its mesh box's world centre falls in, as the
+    // Every part of every body (asleep too) that can meet an object, linked
+    // in the grid cell its mesh box's world centre falls in, as the
     // sector's body grid links it: an object is offered only the parts in
-    // the nine cells around its own ([`sector::CellGrid::around`]).
-    let mut all_parts: Vec<OfferedPart> = Vec::new();
-    part_cells.clear();
-    // The particle-mode cloths (hair) follow their owner: the body part
-    // their node hangs from, whose countdown keeps them awake.
-    let any_particle = instances
-        .iter()
-        .any(|(_, instance, _)| instance.cloth.record.particle_mode());
-    let mut part_countdowns: bevy::ecs::entity::EntityHashMap<i32> =
-        bevy::ecs::entity::EntityHashMap::default();
-    if any_particle {
-        for body in &bodies {
-            for part in &body.parts {
-                part_countdowns.insert(part.entity, body.countdown());
-            }
-        }
+    // the nine cells around its own ([`sector::CellGrid::around`]). The
+    // index re-buckets only the bodies changed since the last tick (a deep
+    // sleeper's parts stay where they were), and nothing while no cloth is
+    // simulated ([`PartCells`]).
+    if objects.order.is_empty() {
+        index.clear();
+    } else {
+        index.refresh(
+            bodies
+                .iter()
+                .map(|(entity, body)| (entity, body.is_changed(), body.into_inner())),
+            ClothObjects::ORIGIN,
+        );
     }
-    if live_contacts.0 {
-        for body in &bodies {
-            let asleep = body.asleep();
-            let countdown = body.countdown();
-            for part in &body.parts {
-                if part.pairing.out || part.spheres.is_empty() {
-                    continue;
-                }
-                let now = part.transform();
-                let centre = now.transform_point3(part.pairing.sphere.centre);
-                let radius = part.pairing.sphere.radius;
-                let box_centre = part.pairing.mesh.world_centre(&now) * 100.0;
-                part_cells.insert(
-                    sector::cell_of(box_centre, ClothObjects::ORIGIN),
-                    all_parts.len(),
-                );
-                all_parts.push((
-                    part.entity,
-                    asleep,
-                    ObjectBodyPart {
-                        now,
-                        previous: part.settled_transform(),
-                        spheres: &part.spheres,
-                        centre,
-                        radius,
-                        mesh: &part.pairing.mesh,
-                        countdown,
-                        points: part.positions,
-                        previous_points: part.previous,
-                    },
-                ));
-            }
-        }
-    }
-    let parts_done = on.then(std::time::Instant::now);
+    let indexed = on.then(std::time::Instant::now);
     // The sequential half, in the object list's order: each cloth's frame,
     // owner and own character, its carry into the frame, and the object
     // list's re-bucket before its step. It touches the shared object list,
@@ -741,14 +714,16 @@ fn step_cloths(
         // The cloth never sleeps below the owner's countdown, and its
         // particles keep their world motion when the owner moves its node.
         let owner = if particle_mode {
-            own.iter()
-                .copied()
-                .find(|e| part_countdowns.contains_key(e))
+            own.iter().copied().find_map(|e| {
+                let body = index.owner_of(e)?;
+                let (_, body) = bodies.get(body).ok()?;
+                Some((e, body.countdown()))
+            })
         } else {
             None
         };
-        if let Some(owner) = owner {
-            instance.cloth.owner_sleep = part_countdowns[&owner];
+        if let Some((_, countdown)) = owner {
+            instance.cloth.owner_sleep = countdown;
             if let Some(last) = last_frame
                 && last != frame
             {
@@ -777,7 +752,7 @@ fn step_cloths(
                     to_object,
                     own,
                     own_node,
-                    owner,
+                    owner: owner.map(|(e, _)| e),
                     frame,
                     moved,
                     asleep,
@@ -788,6 +763,46 @@ fn step_cloths(
     }
     objects.order = order;
     let planned = on.then(std::time::Instant::now);
+    // The tick's parts the cloths can be offered: those linked in the nine
+    // cells around some cloth, each cell's in the order a full re-bucket
+    // links them, with their bodies' sleep and contact data.
+    let mut all_parts: Vec<OfferedPart> = Vec::new();
+    part_cells.clear();
+    if live_contacts.0 && !plans.is_empty() {
+        let mut cells = Vec::new();
+        cloth_parts::cells_around(plans.values().map(|(_, plan)| plan.cell), &mut cells);
+        let mut linked = Vec::new();
+        for &cell in &cells {
+            index.sorted_in(cell, &mut linked);
+            for at in &linked {
+                let Ok((_, body)) = bodies.get(at.body) else {
+                    continue;
+                };
+                let body = body.into_inner();
+                let Some(part) = body.parts.get(at.part) else {
+                    continue;
+                };
+                let now = part.transform();
+                part_cells.insert(cell, all_parts.len());
+                all_parts.push((
+                    part.entity,
+                    body.asleep(),
+                    ObjectBodyPart {
+                        now,
+                        previous: part.settled_transform(),
+                        spheres: &part.spheres,
+                        centre: now.transform_point3(part.pairing.sphere.centre),
+                        radius: part.pairing.sphere.radius,
+                        mesh: &part.pairing.mesh,
+                        countdown: body.countdown(),
+                        points: part.positions,
+                        previous_points: part.previous,
+                    },
+                ));
+            }
+        }
+    }
+    let gathered = on.then(std::time::Instant::now);
     // Each cloth's contacts and step, every cloth at once: a cloth reads
     // only the tick's shared body parts, the static grid and the level, and
     // writes only itself, so the order they run in changes nothing.
@@ -827,15 +842,17 @@ fn step_cloths(
             debug.cloths.push(line);
         }
     }
-    if let (Some(t), Some(parts), Some(planned), Some(stepped)) =
-        (started, parts_done, planned, stepped)
+    if let (Some(t), Some(indexed), Some(planned), Some(gathered), Some(stepped)) =
+        (started, indexed, planned, gathered, stepped)
     {
         let micros = |a: std::time::Instant, b: std::time::Instant| {
             b.saturating_duration_since(a).as_micros() as u64
         };
-        total.parts_micros = micros(t, parts);
-        total.plan_micros = micros(parts, planned);
-        total.cloths_micros = micros(planned, stepped);
+        total.parts_micros = micros(t, indexed) + micros(planned, gathered);
+        total.rebucketed = index.rebucketed as u32;
+        total.gathered = all_parts.len() as u32;
+        total.plan_micros = micros(indexed, planned);
+        total.cloths_micros = micros(gathered, stepped);
         total.micros = t.elapsed().as_micros() as u64;
         debug.last_micros = total.micros;
         debug.last_parts_micros = total.parts_micros;

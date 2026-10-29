@@ -7,6 +7,7 @@ pub mod arc;
 pub mod bodies;
 pub mod cloth;
 pub mod cloth_draw;
+pub mod cloth_parts;
 pub mod db_objects;
 pub mod editor;
 pub mod environment;
