@@ -46,6 +46,11 @@ pub(crate) fn hit_sounds(
 ) {
     let Some(game) = game else { return };
     for hit in hits.read() {
+        // A clash or a block rings the weapon only on its swing's first
+        // contact, as `exa_combat` writes it ([`weapon_sounds`]).
+        if hit.struck != exa_combat::Struck::Limb {
+            continue;
+        }
         // The weapon's own hit set, by its record's class.
         let class = usize::from(hit.weapon.hit_sound);
         let weapon = if let Some(name) = hit.weapon.hit_sound_name() {
@@ -59,10 +64,8 @@ pub(crate) fn hit_sounds(
         env.play_set(&mut bank, weapon, hit.point, 1.0, 1.0, 0);
         // The struck part's material: its outer covering layer's class, or
         // the flesh default. A blow on a held shield or torch rings the
-        // item's own material separately ([`shield_sounds`]); one on a held
-        // weapon rings the weapon only.
-        if hit.struck == exa_combat::Struck::Limb
-            && let Ok(fighter) = fighters.get(hit.target)
+        // item's own material separately ([`shield_sounds`]).
+        if let Ok(fighter) = fighters.get(hit.target)
             && let Some(armour) = hit.bone.checked_sub(1).and_then(|i| fighter.armour.get(i))
             && let Some(sound) = part_hit_sound(armour, false, false)
             && let Some(set) = hit_set(sound)

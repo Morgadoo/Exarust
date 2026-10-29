@@ -86,6 +86,8 @@ impl Plugin for CombatPlugin {
             .add_message::<DamageTaken>()
             .add_message::<pain::PainSounded>()
             .add_message::<pain::BlowFelt>()
+            .add_message::<pain::ClashFelt>()
+            .add_message::<impact::WeaponSounded>()
             .add_message::<SecondWindFired>()
             .add_message::<block::ShieldRung>()
             .add_plugins((
@@ -641,9 +643,11 @@ fn react_to_hits(
         MessageWriter<pain::PainSounded>,
         MessageWriter<pain::BlowFelt>,
     ),
-    (mut winds, mut rungs): (
+    (mut winds, mut rungs, mut weapon_rings, mut clashes): (
         MessageWriter<SecondWindFired>,
         MessageWriter<block::ShieldRung>,
+        MessageWriter<impact::WeaponSounded>,
+        MessageWriter<pain::ClashFelt>,
     ),
     mut fighters: Query<(
         Entity,
@@ -1114,7 +1118,49 @@ fn react_to_hits(
                 slot: slots.get(hit.striker).map_or(Slot::First, |b| b.slot),
                 now_ms: now as i32,
             };
+            let rung_before = state.flags & swing::flags::WEAPON_RUNG != 0;
             let draw = strike_back(&mut state, &striker, hit, reaction, &mut roll);
+            // The swing's first clash or block rings the striking weapon
+            // (its haft class's set or its own sound), stamps its body's
+            // sound clock, and rumbles the player's pad when the player is
+            // either side.
+            if let (false, StrikerReaction::Clashed { blow, .. } | StrikerReaction::Blocked(blow)) =
+                (rung_before, reaction)
+            {
+                let ring = sounds::weapon_ring(
+                    hit.weapon.flags,
+                    blow.haft,
+                    hit.weapon.hit_sound_name(),
+                    blow.volume,
+                    blow.sound_share,
+                    blow.pitch,
+                );
+                if let Some((set, volume, pitch)) = ring {
+                    debug!(
+                        "{:?}'s weapon rings on its swing's first clash: {set} at {volume:.3}, \
+                         pitch {pitch:.3}",
+                        hit.attacker
+                    );
+                    weapon_rings.write(impact::WeaponSounded {
+                        target: hit.striker,
+                        point: hit.point,
+                        volume,
+                        pitch,
+                        set: Some(set.to_owned()),
+                        kind: None,
+                    });
+                }
+                if let Ok(mut weapon) = items.get_mut(hit.striker)
+                    && let Some(part) = weapon.parts.first_mut()
+                {
+                    part.sound_ready_ms = sounds::ring_clock(now as u32, blow.volume);
+                }
+                clashes.write(pain::ClashFelt {
+                    target: hit.target,
+                    attacker: hit.attacker,
+                    volume: blow.volume,
+                });
+            }
             if let (Some(spread), Struck::Shield { item }) = (draw, hit.struck) {
                 // The struck item's own material rings at the blow, once a
                 // swing.
@@ -1262,6 +1308,8 @@ mod tests {
             .add_message::<DamageTaken>()
             .add_message::<pain::PainSounded>()
             .add_message::<pain::BlowFelt>()
+            .add_message::<pain::ClashFelt>()
+            .add_message::<impact::WeaponSounded>()
             .add_message::<SecondWindFired>()
             .add_message::<crate::block::ShieldRung>()
             .add_systems(Update, react_to_hits);
@@ -1581,6 +1629,15 @@ mod tests {
             assert_eq!(striker.has(swing::flags::RECOILED), recoils);
             assert!(striker.has(swing::flags::WEAPON_RUNG));
             assert_eq!(f.parry.counter_motion.is_none(), recoils);
+            // The swing's first clash rings the sword's own set at the
+            // blow's volume and 1.2 of its pitch, once.
+            let rings = app.world().resource::<Messages<impact::WeaponSounded>>();
+            let rung: Vec<_> = rings.iter_current_update_messages().collect();
+            assert_eq!(rung.len(), 1);
+            assert_eq!(rung[0].set.as_deref(), Some("WH_SwordA"));
+            assert_eq!(rung[0].target, blade);
+            let clashes = app.world().resource::<Messages<pain::ClashFelt>>();
+            assert_eq!(clashes.iter_current_update_messages().count(), 1);
         }
     }
 
@@ -2609,6 +2666,8 @@ mod tests {
             .add_message::<DamageTaken>()
             .add_message::<pain::PainSounded>()
             .add_message::<pain::BlowFelt>()
+            .add_message::<pain::ClashFelt>()
+            .add_message::<impact::WeaponSounded>()
             .add_message::<SecondWindFired>()
             .add_message::<crate::block::ShieldRung>()
             .init_resource::<exa_physics::body::BodyTicks>()

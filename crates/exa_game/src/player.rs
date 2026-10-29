@@ -498,6 +498,7 @@ impl Plugin for PlayerPlugin {
             .init_resource::<crate::player_controls::PlaySession>()
             .add_message::<exa_combat::AttackAskedHook>()
             .add_message::<exa_combat::pain::BlowFelt>()
+            .add_message::<exa_combat::pain::ClashFelt>()
             .add_systems(
                 RunFixedMainLoop,
                 latch_attack_button.in_set(RunFixedMainLoopSystems::BeforeFixedMainLoop),
@@ -1878,6 +1879,7 @@ fn camera_hits(
 /// [`camera_hits`] takes it.
 fn feel_blows(
     mut blows: MessageReader<exa_combat::pain::BlowFelt>,
+    mut clashes: MessageReader<exa_combat::pain::ClashFelt>,
     players: Query<(), With<PlayerBody>>,
     mut rng: ResMut<CameraKickRng>,
     mut cameras: Query<&mut ChaseCamera>,
@@ -1907,6 +1909,17 @@ fn feel_blows(
                 crate::gamepad::rumble_hit(pad, rumble);
             }
             debug!("player's blow: rumble {rumble:.3}");
+        }
+    }
+    // A swing's first clash or block rumbles the pad by half the blow's
+    // volume when the player struck or was struck.
+    for clash in clashes.read() {
+        if players.contains(clash.attacker) || players.contains(clash.target) {
+            let rumble = exa_combat::pain::clash_rumble(clash.volume);
+            if let Some(pad) = pad.as_mut() {
+                crate::gamepad::rumble_hit(pad, rumble);
+            }
+            debug!("player's clash: rumble {rumble:.3}");
         }
     }
 }
@@ -3781,6 +3794,7 @@ mod tests {
         app.init_resource::<CameraKickRng>()
             .init_resource::<crate::gamepad::PlayPad>()
             .add_message::<exa_combat::pain::BlowFelt>()
+            .add_message::<exa_combat::pain::ClashFelt>()
             .add_systems(Update, feel_blows);
         let player = app.world_mut().spawn(PlayerBody::new(0.0)).id();
         let other = app.world_mut().spawn_empty().id();

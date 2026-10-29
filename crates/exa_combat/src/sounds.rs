@@ -197,6 +197,53 @@ pub enum StruckSound {
     Own,
 }
 
+/// When a ringing item's sound may play again: the 32-bit game clock
+/// `now_ms` plus 200 ms less round(`strength` · 80), rounded half to even
+/// as the original's conversion, whose NaN or out-of-range value leaves 0
+/// in the low word.
+pub fn ring_clock(now_ms: u32, strength: f32) -> u32 {
+    let scaled = strength * STRUCK_SOUND_PER_STRENGTH;
+    let rounded = if scaled.is_finite() && scaled.abs() < 9.2e18 {
+        scaled.round_ties_even() as i64 as u32
+    } else {
+        0
+    };
+    now_ms
+        .wrapping_add(STRUCK_SOUND_WAIT_MS)
+        .wrapping_sub(rounded)
+}
+
+/// The three shared sets a weapon record's haft class (its bits 16–17:
+/// 1 wood, 2 metal, 3 the third kind) names, loaded once by the original's
+/// character class.
+pub const HAFT_SETS: [&str; 3] = ["WH_HaftWoodA", "WH_HaftMA", "WH_HaftLA"];
+
+/// The striking weapon's ring on its swing's first clash or block: when
+/// the blow met the haft (`haft`) and the record word `flags` has a haft
+/// class, that class's shared set; otherwise the weapon's own sound `own`,
+/// none without one. It plays at `volume` · `share` (single) and `pitch` ·
+/// 1.2 (double).
+pub fn weapon_ring(
+    flags: u32,
+    haft: bool,
+    own: Option<&'static str>,
+    volume: f32,
+    share: f32,
+    pitch: f32,
+) -> Option<(&'static str, f32, f32)> {
+    let class = if haft {
+        (flags & STRUCK_CLASS_BITS) >> 16
+    } else {
+        0
+    };
+    let set = if class > 0 {
+        Some(HAFT_SETS[class as usize - 1])
+    } else {
+        own
+    };
+    set.map(|s| (s, volume * share, (f64::from(pitch) * STRUCK_PITCH) as f32))
+}
+
 /// A struck item's blow: when its sound may play again (the 32-bit game
 /// clock `now_ms` plus 200 ms less round(`strength` · 80), rounded half to
 /// even as the original's conversion, whose NaN or out-of-range value
@@ -213,15 +260,7 @@ pub fn struck_item_sound(
     pitch: f32,
     now_ms: u32,
 ) -> (u32, Option<(StruckSound, f32, f32)>) {
-    let scaled = strength * STRUCK_SOUND_PER_STRENGTH;
-    let rounded = if scaled.is_finite() && scaled.abs() < 9.2e18 {
-        scaled.round_ties_even() as i64 as u32
-    } else {
-        0
-    };
-    let ready = now_ms
-        .wrapping_add(STRUCK_SOUND_WAIT_MS)
-        .wrapping_sub(rounded);
+    let ready = ring_clock(now_ms, strength);
     let pitch = (f64::from(pitch) * STRUCK_PITCH) as f32;
     let class = item.record_word & STRUCK_CLASS_BITS;
     let d = point - item.origin;
@@ -346,6 +385,25 @@ mod tests {
     /// nothing. The clock waits 200 ms less round-half-even(80 · strength)
     /// (0.5 → 40, 1/32 → 2.5 → 2, 3/32 → 7.5 → 8), wrapping the
     /// 32-bit clock; the pitch is 1.2 times the blow's in double.
+    /// The swing's first clash rings the haft's class set when the haft
+    /// took the blow, else the weapon's own; its clock waits 200 ms less
+    /// 80 a unit of the volume, rounded half to even.
+    #[test]
+    fn a_clash_rings_the_haft_class_or_the_weapon() {
+        assert_eq!(
+            weapon_ring(0x2_0000, true, Some("WH_SwordA"), 0.5, 0.5, 1.0),
+            Some(("WH_HaftMA", 0.25, (1.2f64) as f32))
+        );
+        assert_eq!(
+            weapon_ring(0x2_0000, false, Some("WH_SwordA"), 0.5, 1.0, 0.75),
+            Some(("WH_SwordA", 0.5, (0.75f64 * 1.2) as f32))
+        );
+        assert_eq!(weapon_ring(0, true, None, 0.5, 1.0, 1.0), None);
+        assert_eq!(ring_clock(1_000, 0.5), 1_160);
+        assert_eq!(ring_clock(1_000, 0.00625), 1_200);
+        assert_eq!(ring_clock(1_000, f32::NAN), 1_200);
+    }
+
     #[test]
     fn a_struck_items_sound_follows_its_split() {
         let item = sword();

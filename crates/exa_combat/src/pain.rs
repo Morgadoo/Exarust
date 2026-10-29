@@ -53,6 +53,21 @@ pub struct BlowFelt {
     pub direction: Vec3,
 }
 
+/// A swing's first clash or block, which rumbles the player's pad by half
+/// the blow's volume when the player struck it or was struck.
+#[derive(Message, Debug, Clone, Copy, PartialEq)]
+pub struct ClashFelt {
+    pub target: Entity,
+    pub attacker: Entity,
+    /// The blow's hit-sound volume.
+    pub volume: f32,
+}
+
+/// A clash's rumble: half the blow's volume.
+pub fn clash_rumble(volume: f32) -> f32 {
+    volume * 0.5
+}
+
 /// The wound sound set a character's init picks from its record's race
 /// byte: none for race 0x0E, `SkelHit` for the skeleton (0x01), `WndFls`
 /// for a race without the 0x10 bit, `HitGlm` (the golems) otherwise.
