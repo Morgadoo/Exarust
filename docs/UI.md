@@ -1649,6 +1649,69 @@ next entry whose name starts with them, case-blind, the letters adding up
 within 600 ms. Left and Right move by a line of entries outside the list
 layout, Up and Down by one; F2 renames.
 
+## Dormant editor controls
+
+Three parts of the original's toolkit only serve its developer editor,
+which the retail game never opens: the popup menu, the tree view and the
+object appearance editor's handlers. Exarust reproduces them as tested
+types with no live caller; nothing in the game creates one.
+
+### Popup menus
+
+The popup menu (`exa_ui::popup_menu`) has a one-pixel border, items 6
+units tall and separators 3 units tall, two units of padding in all. Its
+width is the widest caption, with its shortcut label and 8 units between
+them, plus 16 units. Captions start 5 units in; a shortcut label ends 6
+units short of the client's right. The label is "Shift+", "Ctrl+",
+"Alt+" (in that order, for the modifiers held) and the key's system name,
+taken for the key's scan code without the extended bit, so the arrows
+read as their numeric-pad twins ("Ctrl+Num 4"). An item is hit from one
+pixel above its band to its bottom inclusive, strictly inside the
+client's left and right. Hovering an item opens its submenu at once
+(there is no delay), at the menu's right edge less a unit and level with
+the item, flipping left or up at the screen's edges; leaving the items
+closes it unless the pointer is on it, which then takes the pointer. A
+press on an enabled item with an action runs it and closes the whole
+chain; a radio item becomes the only checked radio item, a check item
+hands its action the inverse of its checked state without changing it.
+The hovered item gets a gradient fill and a frame (and a shade when
+enabled); a checked check item gets a tick; a disabled caption is
+embossed.
+
+### Tree views
+
+The tree view (`exa_ui::tree_view`) lists every node in pre-order, icons
+`(unit + 1) · 4` pixels (4 units after a rescale), rows a unit further
+apart, each level indented by an icon (half an icon when compact; four
+units for the chevrons and icons without an icon renderer). There is no
+hidden branch: a node shows all its children, and expanding a leaf asks
+the owner to add them while collapsing releases them; a leaf that has
+had children keeps a right chevron. The pointer selects the row under it
+(without the select callback); a press on the selected row toggles it, a
+press on another selects it, a press on a chevron (the four units left of
+a row's text) toggles. Left goes to a leaf's parent or collapses, Right
+expands a leaf or steps down, Up and Down step, Enter toggles, Escape
+goes to the parent form, F2 renames (the whole text selected; Enter
+keeps a changed name, Escape restores it). Steps are clamped to one
+before the row count, which has a blank row after the last node except
+in popup mode, where hover selects, a press picks and a press off the
+rows closes, and so the last node is out of the arrows' reach. A drag
+carries a node (grab half an icon less a unit, half a row); a drop from
+the tree itself is refused onto the dragged branch.
+
+### Object editor
+
+The object appearance editor's handlers (`exa_ui::object_editor`) edit
+an item's look: three levels at 255 steps (the first labelled four times
+its value with two decimals), three variation steps packed into one byte
+(labelled "Var " and " Var " with 0.0, 0.5, 1.0, 2.0, 3.0 or 4.0), and
+eight layers with an amount, two switches, a material, a variant and a
+colour shown as two hex digits. A random colour is one of cells 0 to 4 in
+palette columns 5 to 11. The palette popup puts the current colour's cell
+(columns eight cells tall, cells 3 units) under the pointer or under its
+control's bottom centre. The preset list selects the entry before the
+matching preset, as the original does.
+
 The view's select slot sets the hovered entry. Dragging over it answers
 whether it takes the drop (refused when the drag started on the view
 itself or its state turns drops off); the drop and drop-cancelled hooks
