@@ -26,7 +26,9 @@ The power tree (`thaum::tree`) is the whole screen's rules: the domain's
 tree file and its marks, the technique a new power asks for, the click that
 picks or drops a learnt power against the record's focus budget, the pan,
 zoom and spring, the domain wheel child's place, shares and fades, the
-ten-slot power bar with its load, store, cycle, drop and flash timings, the
+ten-slot power bar with its load, store, cycle, drop and flash timings and
+the running powers' slot marks by class (`SlotMark`: handed out on the
+bar's load and by the caster's walk when a power ends), the
 cast entry that dispatches by domain and the persistent-slot budget. Its
 store writes a domain's learnt and picked
 nodes back into the record, plus the form's creation fields, the opening and

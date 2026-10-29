@@ -85,8 +85,8 @@ use super::power::{
 };
 use super::torrent_live::{new_torrent, torrent_view};
 use super::tree::{
-    DOMAIN_DISPLACEMENT, DOMAIN_ENERGY, DOMAIN_FORCE, DOMAIN_MIND, PowerBar, PowerRecord, TreeMode,
-    TreeScreen, domain_of, word,
+    DOMAIN_DISPLACEMENT, DOMAIN_ENERGY, DOMAIN_FORCE, DOMAIN_MIND, PowerBar, PowerRecord,
+    RunningPower, SlotMark, TreeMode, TreeScreen, domain_of, word,
 };
 use super::visuals::{CreatorInput, EffectKind, active_object, creator, spawn_visual};
 use super::wave_live::new_wave;
@@ -149,6 +149,17 @@ pub struct ActiveEntry {
     pub throw_view: Option<super::power::force::ThrowView>,
 }
 
+impl ActiveEntry {
+    /// The entry as the bar's marks read it.
+    pub fn running(&self) -> RunningPower {
+        RunningPower {
+            id: self.id,
+            state: self.state,
+            mark: self.class.slot_mark(self.id),
+        }
+    }
+}
+
 /// The active power classes the casts create.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ActiveClass {
@@ -179,6 +190,22 @@ impl ActiveClass {
             ActiveClass::ShockWeapons(p) => Some(p.state),
             ActiveClass::Constant(p) => Some(p.state),
             ActiveClass::Vanish(_) | ActiveClass::LongDoor(_) | ActiveClass::Summon(_) => None,
+        }
+    }
+
+    /// How the class marks its bar slot: the shell, kinesis, strikes,
+    /// shock weapons, constant displacement and bubble light it whatever
+    /// their state; the barricade, throw, shock, vanish, long door and
+    /// summon keep the base power's rule.
+    fn slot_mark(&self, id: u32) -> SlotMark {
+        match self {
+            ActiveClass::Shell(_)
+            | ActiveClass::Kinesis(_)
+            | ActiveClass::Strikes(_)
+            | ActiveClass::ShockWeapons(_)
+            | ActiveClass::Constant(_) => SlotMark::Lit,
+            ActiveClass::Remote(_) if id & ID_MASK == BUBBLE & ID_MASK => SlotMark::Lit,
+            _ => SlotMark::Base,
         }
     }
 
@@ -537,7 +564,10 @@ fn run_bar_commands(
                     caster.bar.store(&mut caster.record, false);
                     caster.bar_open = false;
                 } else if !caster.known.is_empty() {
-                    caster.bar.load(&caster.record);
+                    let running: Vec<RunningPower> =
+                        caster.active.iter().map(ActiveEntry::running).collect();
+                    let now = ticks.as_deref().map_or(0, |t| t.millis() as u32);
+                    caster.bar.load_running(&caster.record, &running, now);
                     caster.bar_open = true;
                 }
             }
@@ -1859,7 +1889,9 @@ fn tick_casters(
             .and_then(|r| r.drive.as_ref())
             .map_or(1.0, |d| d.tone);
         let at = ragdoll.and_then(root_of).unwrap_or(Vec3::ZERO).to_array();
-        let PowerCaster { body, active, .. } = caster;
+        let PowerCaster {
+            body, active, bar, ..
+        } = caster;
         let was_casting = body.condition == casting::CASTING;
         // [inf: the original's controller runs before the body tick and
         // reads the buttons only while the game view has the pointer; here
@@ -2002,6 +2034,11 @@ fn tick_casters(
             }
             if let Some(state) = entry.class.state() {
                 entry.state = state;
+            }
+            // The player's bar hook: a power that ends, or that answers
+            // bit 4, marks the slot holding its id.
+            if player.is_some() && result & 6 != 0 {
+                bar.mark_running(&entry.running(), now);
             }
             if result & 2 != 0 {
                 // The cast motion ends with the power: its id and hook go.
