@@ -274,20 +274,43 @@ masked, `0x10000000` an additive group and `0x20000000` the normal pass's
 | colour | colour set | D | linear tint × 1.5·min(f9, 1), alpha f9, sharpness f2/f3 |
 | gloss | gloss set | G | f10 × 1.5·min(f9, 1), alpha f9, sharpness f2/f3 |
 | displacement | displacement set, half size | B | f20, f21, f22, 1; sharpness f4/f5 |
-| mask | mask working target | M | f12, f13, f14, 1; cover f9; sharpness f2/f3 |
-| height | height working target | H | f16, f17, f18, 1; cover f9, boosted by min(1.5·a, 1); sharpness f2/f3 |
+| mask | the tile's 240² mask viewport | M | f12, f13, f14, 1; cover f9; sharpness f2/f3 |
+| height | the tile's 244² height viewport | H | f16, f17, f18, 1; cover f9, boosted by min(1.5·a, 1); sharpness f2/f3 |
 
-The sharpness pair travels to the shaders as `(s, t/s + 1)`. The mask pass
-clears to 0 and the height pass to 0.5. The mask and height passes upload a
-32 × 32 window per block from texel `(by·256 + bx)·30` of each material's
-256² plane. The colour pass's quads cover a
-block's palette slice at the palette scale 4 and 8 blocks a side,
-`[bx, bx+1] × [−by−1, −by] · 4/8`; their mask coordinates run from
-`0.5/32` to `30.5/32` of the block's 32-texel upload, so the 30 × 30 cells
-are vertex-centred. The layer sampler multiplies the palette coordinates by
-f0 (or 1 when f0 ≤ 0). A block's lit `TexPos` is
+The sharpness pair travels to the shaders as `(s, t/s + 1)`. Every pass
+uploads each layer group's mask window from texel `(by·256 + bx)·30` of the
+material planes (block units whatever the level), `256 >> L` texels a side
+holding `240 >> L` cells, where `L` is the level of the node the pass draws.
+The composite set passes draw one block, so `L` is fixed at the block level
+3: a 32-texel window holding 30 cells, whatever the composite set's level
+(that only sizes the set's own targets). Their quads cover the block's
+palette slice at the palette scale 4 and 8 blocks a side,
+`[bx, bx+1] × [−by−1, −by] · 4/8`, on texcoord unit 0; their mask
+coordinates on unit 1 run from `0.5/32` to `0.5/32 + 30/32` of the upload,
+so the 30 × 30 cells are vertex-centred; and their vertices are the 0/1
+corners of the whole set target. The layer sampler multiplies the palette
+coordinates by f0 (or 1 when f0 ≤ 0).
+
+The mask and height passes run once per tile, over the tile's root node
+(`L` = 0: a 256-texel window holding 240 cells; read from the whole-tile
+height square and the caller's whole-tile read-back, not from a stored
+level). The mask pass clears to 0 and draws the whole palette `[0, 4] ×
+[−4, 0]` into a 240² viewport, which is read back as the tile's RGB mask
+image (30 texels a block). The height pass clears to 0.5 and draws a fixed
+4.016667 square with mask coordinates out to 241/256, its vertices reaching
+241/244 (the stored 0.987705) of a 244² viewport that is read back as one
+red channel.
+
+A block's lit `TexPos` is
 `(2^(level−1) − (bx >> (tile level − level)), 2^(level−1) − (by >> (tile level
 − level)))`, `(0.5, 0.5)` for a whole-tile block.
+
+A set copy (a block that keeps a low copy of its high set, or trades one
+set for another) attaches each destination target in turn (colour always,
+normal, gloss and displacement when their features are on), binds the
+source's same target at unit 0 and draws a full-target quad whose vertex and
+unit-0 texcoord are the same 0/1 corner. `terrain::composite::copy_draws`
+holds those passes and their sides.
 
 The selection and the frame hook decide which block is rebaked. Blocks within
 44.4 m of the look-ahead point (the camera moved 10 m along its back axis and
