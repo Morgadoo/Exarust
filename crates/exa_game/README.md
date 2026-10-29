@@ -109,8 +109,8 @@ its other sections and the chunks Exarust does not produce. `save_full`
 writes every section in the original's order (world character database,
 player data, world object database, level) and a "saving disabled" flag
 skips the save before the death check. Listing a folder opens each file as
-the original does (resetting a bad header), lists a number once with the
-**first** file deciding its fate, deletes only story slots with an older
+the original does (resetting a bad header), lists a number once (a number
+whose first file was left out is tried again with its other file), deletes only story slots with an older
 signature, shows the placed character's name from `#worldchrdb`, orders
 the rest by the `Exanima.set` key and moves a loaded slot to the front; a
 load opens the first file that exists, converts an old arena save (drops
@@ -724,6 +724,18 @@ installs the click and session hooks and places the manager by
 `arena_spawn::manager_plan` on the hub's known start. The session hook calls
 `hub_fall` every frame; an answer ends the flow's session, and a wipe reaches
 `slots::Slots::drops_after_death` when the host inserted `HubSlots`.
+`slots::SlotList` is the slot manager's cached list (count −1 until
+scanned, current slot −1, then 0 after a delete or a dropped death) with its
+new-slot, select, touch, delete, death and current-slot load and save.
+`save_live` runs the save unit in the game when the host gives a folder
+(`--save-dir`): `--save-at` saves the session (the story at the loaded
+level, or the arena company, staff, arsenal and stash as the arena tables)
+to a new slot and never writes over a file that holds bytes; `--arena-slot`
+makes the entered hub load that slot as the original's full load does
+(tables applied, the reader's list regeneration with the object records'
+classification, the world clock restored, the player record's race byte
+cleared before the import, the hub's permadeath slot set). The level
+section and the world databases are not written yet.
 
 A left click that is not a drag sends `hand::WorldClick`. A static mesh
 under a named scene node is that node (`hand::Hit::SceneNode`), the way the

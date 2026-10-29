@@ -88,6 +88,12 @@
 //!          --click frame,...          click the left mouse button at frames after loading
 //!          --object-click F[d][l],...  debug: click the placed container nearest the player at frames after
 //!                                     loading (d: the double click, l: as a hit on level geometry)
+//!          --save-dir <dir>           the folder the game saves into (a new slot only; a slot file that holds bytes is
+//!                                     never written over) and loads `--arena-slot` from
+//!          --save-at frame,...        with --save-dir: save the session to a new slot at frames after the load (the
+//!                                     story at the loaded level, or the arena company when the hub is loaded)
+//!          --arena-slot <n>           with --save-dir: the arena hub, once entered, loads ArenaNNN.rsg as the original's
+//!                                     full load does (tables, shelf regeneration, world clock, player record reset)
 //!          --level-change lvl@frame,...  play mode: change level in process at frames after the first load (loading
 //!                                     frames do not count), logging entity, physics-body and asset counts per level
 //!          --debug-wound b,r[,dx,dy,dz]  a test wound on the player's (or the character view's) body part b
@@ -306,6 +312,14 @@ pub struct Options {
     /// Play mode: in-process level changes at frames after the first load
     /// (`level@frame`), each logged with an entity, physics and asset count.
     pub level_changes: Vec<(String, u32)>,
+    /// `--save-dir`: the folder the running game saves into and loads
+    /// arena slots from.
+    pub save_dir: Option<std::path::PathBuf>,
+    /// `--save-at`: frames after the load at which a save to a new slot is
+    /// asked for.
+    pub save_at: Vec<u32>,
+    /// `--arena-slot`: the arena slot the hub loads once entered.
+    pub arena_slot: Option<u32>,
     /// Test wounds on the player's or the character view's body.
     pub debug_wounds: Vec<exa_character::blood::DebugWound>,
     /// Test blood jets from the player's or the character view's body.
@@ -772,6 +786,31 @@ fn main() -> AppExit {
                     }
                 }
             }
+            "--save-dir" => options.save_dir = args.next().map(std::path::PathBuf::from),
+            "--save-at" => {
+                let list = args.next().unwrap_or_default();
+                match list
+                    .split(',')
+                    .map(|frame| frame.trim().parse::<u32>().ok())
+                    .collect::<Option<Vec<u32>>>()
+                {
+                    Some(frames) => options.save_at = frames,
+                    None => {
+                        eprintln!("--save-at: cannot read {list:?} (frame,...)");
+                        return AppExit::from_code(2);
+                    }
+                }
+            }
+            "--arena-slot" => {
+                let text = args.next().unwrap_or_default();
+                match text.parse::<u32>() {
+                    Ok(number) if (1..=999).contains(&number) => options.arena_slot = Some(number),
+                    _ => {
+                        eprintln!("--arena-slot: cannot read {text:?} (1-999)");
+                        return AppExit::from_code(2);
+                    }
+                }
+            }
             "--level-change" => {
                 let list = args.next().unwrap_or_default();
                 match parse_level_changes(&list) {
@@ -1097,8 +1136,14 @@ fn main() -> AppExit {
     .insert_resource(exa_game::object_click::ObjectClickScript(
         options.object_clicks.clone(),
     ))
-    .insert_resource(options)
-    .add_plugins((
+    .insert_resource(exa_game::save_live::ScriptedSaves(options.save_at.clone()));
+    if let Some(dir) = &options.save_dir {
+        app.insert_resource(exa_game::save_live::SaveFolder(dir.clone()));
+        if let Some(number) = options.arena_slot {
+            app.insert_resource(exa_game::save_live::ArenaSlotLoad { number });
+        }
+    }
+    app.insert_resource(options).add_plugins((
         frame_loop::FrameLoopPlugin,
         viewer::ViewerPlugin,
         column::ColumnPlugin,

@@ -125,10 +125,14 @@ directories, and for each matching name whose number is not already listed:
    lists the slot with the player's name; zero leaves the slot out and its
    files alone.
 
-The **first file for a number decides that number's fate**, even when the
-answer is zero: the number is put in the list before the reader runs, so a
-later `.rcp` of the same number is skipped. A negative answer deletes both
-files and removes the number again.
+A number **already listed** is not looked at again, but a number whose
+first file was left out or deleted is: the scanner writes the number into
+the list's next free place before the reader runs and moves past it only
+when the reader keeps the slot, and its repeat test covers the kept places
+only (established from the instructions of the scan's repeat loop), so a
+skipped `.rsg`'s `.rcp` is still tried. A negative answer deletes both
+files; Exarust passes over a later name whose file is gone by then [guess:
+the directory walk does not return a file deleted before it reached it].
 
 The **story** reader answers negative only for a `#playerdata` whose
 signature is below `0x6F5AEA14`, and reads any higher signature, the
@@ -140,8 +144,20 @@ player's name comes from that record: the placement's reference bit 30
 selects the world character database, the low 28 bits its record id, and
 the record's name field is what the list shows
 ([`exa_game::session::player_name`](../../crates/exa_game/src/session.rs)).
-The count of found slots starts at `−1`, meaning "not scanned yet";
-Exarust rescans on every list.
+The slot manager keeps the list: the count of found slots starts at `−1`,
+meaning "not scanned yet", and the current slot at `−1`. The entry points
+that need the list (any slot? a new slot) scan only while the count is
+negative; a folder that cannot be listed leaves it negative. A new slot
+takes the lowest free number at the front, the others move down with their
+names, the front name becomes the player's when there is a player record
+(else it keeps the moved list's first name), the new number becomes
+current, the order is stored and the `.rsg` is opened. Selecting a listed
+slot makes it current; a full load moves the current slot to the front
+(storing the order) and opens it; a delete by index makes that slot current,
+deletes both files, removes it and sets the current slot to 0; a death
+deletes the current `.rsg` and, without a checkpoint, drops the slot and
+sets the current slot to 0. Exarust's `SlotList` is that cache; the
+`Slots` helpers still rescan.
 
 **Ordering.** The list keeps the slots in most-recently-used order. The
 order is stored in `Exanima.set` under a one-tag path per mode (story

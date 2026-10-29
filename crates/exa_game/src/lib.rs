@@ -97,6 +97,7 @@ pub mod prelude;
 pub mod report;
 pub mod save_kit;
 pub mod save_level;
+pub mod save_live;
 pub mod save_scene;
 pub mod scene_bodies;
 pub mod scene_editor;
@@ -191,6 +192,7 @@ impl Plugin for GamePlugin {
         ))
         .add_plugins(thaum::cast::CastPlugin)
         .add_plugins(world_clock::WorldClockPlugin)
+        .add_plugins(save_live::SaveLivePlugin)
         .add_plugins((
             flow::FlowPlugin,
             splash::SplashPlugin,
