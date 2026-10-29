@@ -315,7 +315,8 @@ holds those passes and their sides.
 The selection and the frame hook decide which block is rebaked. Blocks within
 44.4 m of the look-ahead point (the camera moved 10 m along its back axis and
 snapped to a 6 m block centre) join a list of at most 189; those within 15 m
-want the high set and the rest the low set. A NaN distance is kept as low. The
+want the high set and the rest the low set. A NaN distance is unordered
+against both cut-offs and takes the far branch, so the block is dropped. The
 list is sorted by a key: visible blank blocks (no composite yet) first (0),
 visible blocks that want work by `0xffff − (ring − priority)` (clamped to 1),
 and invisible blocks by their nearest light's rounded distance plus 0x10000.

@@ -1325,8 +1325,9 @@ impl CompositeSelector {
     }
 
     /// The distance test: a block within 44.4 m is selected, a NaN distance
-    /// kept as low; within 15 m it becomes high resolution. A block out of
-    /// reach leaves the list and hands its set back.
+    /// is not (its unordered compare takes the removal branch), and a block
+    /// within 15 m becomes high resolution (a NaN one would be low). A block
+    /// out of reach leaves the list and hands its set back.
     fn select(&mut self, focus: Vec2) {
         let (fx, fz) = (focus.x * 100.0, focus.y * 100.0);
         for index in 0..self.blocks.len() {
@@ -1334,10 +1335,7 @@ impl CompositeSelector {
             let dx = fx - centre.x * 100.0;
             let dz = fz - centre.y * 100.0;
             let d2 = dz * dz + dx * dx;
-            // Kept when the squared distance does not compare above the far
-            // cut-off; NaN is kept.
-            let kept = d2 <= FAR_D2 || d2.is_nan();
-            if kept {
+            if super::stream::within_reach(d2) {
                 if self.blocks[index].selection.is_none() {
                     if self.selected.len() >= MAX_SELECTED {
                         continue;
@@ -1345,10 +1343,8 @@ impl CompositeSelector {
                     self.blocks[index].selection = Some(self.selected.len());
                     self.selected.push(index);
                 }
-                // NaN falls into the low branch (its compare is unordered).
-                let low = d2.is_nan() || d2 >= NEAR_D2;
                 let block = &mut self.blocks[index];
-                if low {
+                if !super::stream::high_resolution(d2) {
                     block.state = (block.state & !block_flags::HIGH_RES) | block_flags::LOW_RES;
                 } else {
                     if block.state & (block_flags::LOW_RES | block_flags::HIGH_RES)
@@ -2489,11 +2485,12 @@ mod tests {
         let mut sel = selector(&[Vec2::new(44.4, 0.0), Vec2::new(44.41, 0.0)]);
         assert!(sel.reselect(Vec2::ZERO));
         assert_eq!(sel.selected(), [0]);
-        // A NaN distance is kept, low.
+        // A NaN distance takes the original's unordered far branch: dropped,
+        // not selected and not kept at low resolution.
         let mut sel = selector(&[Vec2::new(f32::NAN, 0.0)]);
-        assert!(sel.reselect(Vec2::ZERO));
-        assert_eq!(sel.blocks()[0].state() & 0xf00, 0x500);
-        assert_eq!(sel.selected(), [0]);
+        assert!(!sel.reselect(Vec2::ZERO));
+        assert!(sel.selected().is_empty());
+        assert_eq!(sel.blocks()[0].state() & 0xf00, 0);
     }
 
     #[test]

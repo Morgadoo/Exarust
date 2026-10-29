@@ -72,11 +72,27 @@ pub struct CompositeBlock {
     pub high: bool,
 }
 
+/// Whether a block's squared distance from the focus (squared centimetres)
+/// is within the composite reach. The original's compare is a single
+/// `COMISS` against the far cut-off followed by a jump on parity: an
+/// unordered distance (NaN) takes the removal branch with the values above
+/// the cut-off, so a NaN block is not selected.
+pub fn within_reach(d2: f32) -> bool {
+    d2 <= super::composite::FAR_D2
+}
+
+/// Whether a block at squared distance `d2` takes the high-resolution
+/// composite. The original compares against the near cut-off and jumps on
+/// parity to the low branch, so a NaN distance is low; a block exactly
+/// 15 m away is low too.
+pub fn high_resolution(d2: f32) -> bool {
+    !(d2.is_nan() || d2 >= super::composite::NEAR_D2)
+}
+
 /// The blocks within [`FAR`] of `focus`, in the caller's order, at most
 /// [`MAX_SELECTED`]. Distances are squared centimetres, as the original
-/// compares them; a block exactly 15 m away is low resolution. The original
-/// drops a block only when its squared distance compares above the far
-/// cut-off, so a NaN distance is kept (at low resolution).
+/// compares them; a block exactly 15 m away is low resolution and a NaN
+/// distance is dropped (its compare is unordered and takes the far branch).
 pub fn select_composites(
     focus: Vec2,
     centres: impl IntoIterator<Item = Vec2>,
@@ -88,11 +104,10 @@ pub fn select_composites(
         }
         let (dx, dz) = ((centre.x - focus.x) * 100.0, (centre.y - focus.y) * 100.0);
         let d2 = dz * dz + dx * dx;
-        // Kept unless it compares above the cut-off (NaN is kept).
-        if d2 <= super::composite::FAR_D2 || d2.is_nan() {
+        if within_reach(d2) {
             out.push(CompositeBlock {
                 index,
-                high: d2 < super::composite::NEAR_D2,
+                high: high_resolution(d2),
             });
         }
     }
@@ -635,15 +650,13 @@ mod tests {
                 },
             ]
         );
-        // A NaN distance never compares above the cut-off: kept, low.
+        // A NaN distance is unordered against the cut-off and takes the
+        // original's removal branch: it is not kept.
         let nan = select_composites(focus, [Vec2::new(f32::NAN, 0.0)]);
-        assert_eq!(
-            nan,
-            vec![CompositeBlock {
-                index: 0,
-                high: false
-            }]
-        );
+        assert!(nan.is_empty());
+        // A NaN block takes the low branch if it is ever measured.
+        assert!(!high_resolution(f32::NAN));
+        assert!(within_reach(0.0) && !within_reach(f32::NAN));
         // The list stops at 189 entries.
         let many = select_composites(focus, std::iter::repeat_n(Vec2::ZERO, 300));
         assert_eq!(many.len(), MAX_SELECTED);
