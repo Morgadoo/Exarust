@@ -251,9 +251,6 @@ pub enum TransitionStep {
     StorePreviousLevel,
     /// The settings tag, saved word and sun height reset.
     SettingsReset,
-    /// The player node's flag bits 8 through 15 are cleared and the player
-    /// hook, when installed, is prepared.
-    PlayerRecordReset,
     /// The save package is opened.
     OpenSave,
     /// The destination's section is read from the save when it has one.
@@ -377,7 +374,6 @@ pub fn transition_flow(
     } else {
         flow.steps.push(TransitionStep::ReadArchiveSection);
     }
-    flow.steps.push(TransitionStep::PlayerRecordReset);
     flow.steps.push(TransitionStep::ImportLevel);
     // The save's section is taken as imported whatever the import says;
     // only an archive import's failure stops the landing.
@@ -477,11 +473,6 @@ mod tests {
             .iter()
             .position(|step| *step == TransitionStep::ImportLevel)
             .unwrap();
-        let reset = flow
-            .steps
-            .iter()
-            .position(|step| *step == TransitionStep::PlayerRecordReset)
-            .unwrap();
         let spawn = flow
             .steps
             .iter()
@@ -497,13 +488,7 @@ mod tests {
             .iter()
             .position(|step| *step == TransitionStep::ReattachFollowers)
             .unwrap();
-        assert!(
-            save < reset
-                && reset < import
-                && import < spawn
-                && spawn < followers
-                && followers < reattach
-        );
+        assert!(save < import && import < spawn && spawn < followers && followers < reattach);
         assert_eq!(flow.steps.last(), Some(&TransitionStep::PostLoad));
         assert!(flow.steps.contains(&TransitionStep::GridEnvironments));
         assert!(!flow.steps.contains(&TransitionStep::StoryRespawn));

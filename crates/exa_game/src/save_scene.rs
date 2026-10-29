@@ -584,50 +584,6 @@ pub fn player_node_setup() -> PlayerNodeSetup {
     }
 }
 
-/// The mask the player record reset keeps: bits 8 through 15 of the player
-/// node's flag word are cleared, every other bit stays.
-pub const PLAYER_RECORD_FLAG_MASK: u32 = 0xFFFF_00FF;
-
-/// The word stored in the player record beside the game pointer when the
-/// player hook is installed.
-pub const PLAYER_HOOK_WORD: u32 = 0x1000;
-
-/// The installed player hook as the reset prepares it: the word written to
-/// the record's hook field and the game pointer put beside it. The original
-/// then calls the hook; Exarust has no game-main hook registry, so this is
-/// the tested value the host would see [the hook's effect is not modelled].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PlayerHookSetup {
-    /// The record's hook word ([`PLAYER_HOOK_WORD`]).
-    pub word: u32,
-    /// Whether the save unit's game pointer is stored with it.
-    pub game_pointer: bool,
-}
-
-/// What the player record reset leaves: the node's flag word and, when a
-/// hook was installed, the hook's arguments.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PlayerRecordReset {
-    /// The node's flags with bits 8 through 15 cleared.
-    pub flags: u32,
-    /// The hook run at the end, if one was installed.
-    pub hook: Option<PlayerHookSetup>,
-}
-
-/// The reset every load, arena arrival and game start gives the player's
-/// record: the player node's flag bits 8 through 15 are cleared, then, only
-/// when a hook is installed, the record takes the word [`PLAYER_HOOK_WORD`]
-/// and the game pointer and the hook is called.
-pub fn player_record_reset(node_flags: u32, hook_installed: bool) -> PlayerRecordReset {
-    PlayerRecordReset {
-        flags: node_flags & PLAYER_RECORD_FLAG_MASK,
-        hook: hook_installed.then_some(PlayerHookSetup {
-            word: PLAYER_HOOK_WORD,
-            game_pointer: true,
-        }),
-    }
-}
-
 /// What the player's spawn does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PlayerSpawn {
@@ -1064,20 +1020,5 @@ mod tests {
         assert!(spawn.inventory && spawn.controls && spawn.registered);
         assert!(spawn.finish);
         assert!(player_spawn(true).async_generator);
-    }
-
-    #[test]
-    fn the_player_record_reset_clears_the_second_flag_byte_and_runs_the_hook() {
-        let reset = player_record_reset(0xABCD_EF12, true);
-        // Bits 8 through 15 go; the rest stays.
-        assert_eq!(reset.flags, 0xABCD_0012);
-        let hook = reset.hook.unwrap();
-        assert_eq!(hook.word, 0x1000);
-        assert!(hook.game_pointer);
-
-        // No hook: nothing is written beside the flags.
-        let plain = player_record_reset(0x0000_FF00, false);
-        assert_eq!(plain.flags, 0);
-        assert_eq!(plain.hook, None);
     }
 }

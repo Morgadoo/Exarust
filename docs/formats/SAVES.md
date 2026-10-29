@@ -571,11 +571,8 @@ pass, sets up each travelling character's node, activates the player's
 node, restores the GUI's audio state and resets the scene content, leaves
 the arena task, looks up the destination's locale and level ids, clears the
 portal node, stores the **previous** level's id in the portal word (the
-other entry points store −1 there), resets the load's globals, opens the
-save, reads the
-destination's section from the save or the archive, clears the player
-node's flag bits 8 through 15 and prepares the installed player hook (the
-word `0x1000` and the game pointer beside it, then the call), imports it, stores the
+other entry points store −1 there), resets the load's globals, opens the save, reads the
+destination's section from the save or the archive, imports it, stores the
 name, chooses the spawn matrix (the portal node's when one is named, else
 the identity), spawns the player, stores its transform, re-derives a
 story-mode-2 character and clears the word to 1, sets up the grid arrays

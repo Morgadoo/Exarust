@@ -46,7 +46,8 @@ pub const STARTING_KIT: u32 = 0x600;
 pub struct ItemKind {
     /// Found in the database at all.
     pub known: bool,
-    /// Its apparel record's layer type, when it is apparel.
+    /// Its body's armour type byte (the arena's apparel class), when the
+    /// record has a body section and so is apparel.
     pub apparel_layer: Option<u8>,
     /// It has the weapon kind (0x4000).
     pub weapon: bool,
