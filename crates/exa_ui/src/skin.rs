@@ -4071,6 +4071,33 @@ impl SkinPalette {
     }
 }
 
+/// One shade of the palette, named by group and index (0 to 11): what a
+/// control's draw tints with. The original stores the groups back to
+/// back, twelve four-byte inks each, in the order of [`SkinPalette`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaletteInk {
+    Form(u8),
+    Control(u8),
+    FormHot(u8),
+    Text(u8),
+    Highlight(u8),
+}
+
+impl PaletteInk {
+    /// The ink this slot holds in `palette` (an index past 11 reads the
+    /// last shade).
+    pub fn ink(self, palette: &SkinPalette) -> SkinInk {
+        let (group, shade) = match self {
+            PaletteInk::Form(s) => (&palette.form, s),
+            PaletteInk::Control(s) => (&palette.control, s),
+            PaletteInk::FormHot(s) => (&palette.form_hot, s),
+            PaletteInk::Text(s) => (&palette.text, s),
+            PaletteInk::Highlight(s) => (&palette.highlight, s),
+        };
+        group[usize::from(shade).min(11)]
+    }
+}
+
 /// A scheme record: four colours with the scale and tone each expands by,
 /// the accent and the two alpha bytes.
 #[derive(Debug, Clone, Copy, PartialEq)]

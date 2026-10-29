@@ -1,0 +1,6 @@
+- [x] Popup menu: layout, labels, chain, press, release, draw, with tests
+- [x] Tree view: rows, hits, hover, press, keys, rename, scroll, drop, drag, draw, with tests
+- [x] Object editor handlers and palette placement, with tests
+- [x] No corpus check applies (no game data is read)
+- [x] Docs (docs/UI.md, exa_ui README)
+- [x] fmt, clippy -D warnings, tests

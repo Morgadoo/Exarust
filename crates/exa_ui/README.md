@@ -692,3 +692,11 @@ gradients and hue table and the confirmation dialogs. `help_screen`, `task_stack
 and cursor-action list) and the journal close in `game_gui` complete the
 unit. The draw records are plain data; no new form is painted by the
 running app yet.
+
+The developer editor's controls ([`docs/UI.md`](../../docs/UI.md), Dormant
+editor controls) are reproduced but never created, as in the retail game:
+`popup_menu` (the popup menu with its shortcut labels, submenu chain and
+popup placement), `tree_view` (the tree view with its pre-order rows,
+chevrons, rename field, drag and popup mode) and `object_editor` (the object
+appearance editor's control handlers and palette placement). `skin`'s
+`PaletteInk` names the palette shade a draw tints with.
