@@ -514,14 +514,18 @@ its node. Node flag `0x800000` would freeze a body (mobility 0); no
 shipped body carries it.
 
 Level counts (`exa_world::bodies` corpus test): `exanima01` registers
-4 713 body trees of 6 023 bodies (props, placed objects, its own model);
-122 of the trees hang from the world (1 023 bodies), 198 are doors, levers
-and plates, 492 belong to props placed static. `arenao1`: 20 register,
+4 874 body trees of 6 198 bodies (props, placed objects, its own model);
+283 of the trees hang from the world (the 109 hinged door leaves, 40 lever
+arms and 12 push surfaces among them), 37 sliding door leaves stay static,
+492 belong to props placed static. `arenao1`: 20 register,
 3 hang, 68 are static props, and its own model's tavern table is a node
 marked static (exanima01's six tables are not). Exarust registers the free
 and hung trees (a root body's stored links become world links, with an
-origin pivot unless the first is a slider) and leaves the mechanisms static
-until their steps drive their bodies.
+origin pivot unless the first is a slider; a root's slider keeps its travel
+as slack, which the slider law's fraction divides by squared) and, with
+their rules, exanima01's 109 hinged door leaves, 40 lever arms and 12 push
+surfaces; its 37 sliding door leaves stay static unless asked for
+(`exa_world::bodies::MechanismBodies`).
 
 **Links.** A root body's links hold it to its parent node (world links:
 hinges, axles, slider rails); a child body's links hold it to its parent's

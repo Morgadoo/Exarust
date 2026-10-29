@@ -43,7 +43,11 @@ impl Plugin for PropPlugin {
                     .chain()
                     .after(BodySystems),
             );
+        app.add_message::<crate::mechanism::MechanismSignal>();
         crate::body::door_body::plugin(app);
+        crate::body::lever_body::plugin(app);
+        crate::body::plate_body::plugin(app);
+        crate::body::slide_body::plugin(app);
     }
 }
 

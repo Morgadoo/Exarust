@@ -887,10 +887,40 @@ the drive angle moving the stop point onto the stop's radius by its
 weights. The hand's door link (slack 1 cm, strength 0.003, the first three
 passes) is `DoorBody::take_hold`, `pull_to` and `let_go`. The door's
 sounds, its navigation passage report and the last-pusher stamp are not
-reproduced; sliding doors, levers and plates stay static
-(`exa_world::bodies`, `Placement::Mechanism`): nothing yet produces their
-travel fraction or arm angle. Hung props (lamps, chains, wall rings) also
-register, with their world links.
+reproduced. Hung props (lamps, chains, wall rings) also register, with
+their world links.
+
+A lever's arm registers hung with a `body::PendingLever`, and
+`body::LeverBody` (`src/body_lever.rs`) runs the original's lever set-up
+(mobility 1; the mechanism environment, `Ragdoll::enter_mechanism_environment`:
+no gravity, 0.001 of a part's velocity kept a second in every band; the
+swing from the links, the last pin farther than 1 cm the axle and the last
+longer link the arm; the lever frame in the parent node's frame, its up
+row the axle turned by the node's rotation and negated, its forward row the
+arm's tied point less the node's position with its part along up taken
+off, the first detent that point's heading less α; a saved return re-armed
+from the word's bits 16 and up) and, each awake tick after the solver, the
+lever's step: the arm point's motion as the creak velocity, its heading in
+the frame as the angle, the drive moving the arm point onto the arm's
+radius at the step's angle. A detent's report writes a
+`mechanism::MechanismSignal` per target; an armed return counts down every
+tick, asleep or not, and wakes the lever when it fires. The wheel drag is
+`LeverBody::take_hold`, `turn_to` (two planes through the node, across the
+axle and across the arm; the clamp `body::lever_body::swing_clamp`) and
+`let_go`. A push surface registers with a `body::PendingPlate`, and
+`body::PlateBody` (`src/body_plate.rs`) sets its mobility (0.3 or 0.03) and
+the mechanism environment and runs `plate_step` on its slider links'
+fractions (smoothing 0.1 each tick); `PlateBody::push` is the
+interaction's and a class 5 signal's press. A sliding door's leaf
+(`body::PendingSlide`, `body::SlideBody`, `src/body_slide.rs`) runs the
+door's sliding step on its travel link's fraction, writing a command's
+fraction into the link; it registers only when asked
+(`exa_world::bodies::MechanismBodies::sliding`, `--sliding-doors`): the
+shipped leaves creep up to 2 cm in two seconds at rest along their level
+rails and the slider law rewrites a command's fraction every pass, so a
+plain open only shoves the leaf (see the module notes). The lever's creak
+and tick loop, the plate's grind and click and the sliding door's sounds
+are reported, not played.
 
 The debug tools' measures are in `body::inspect` (`src/body_inspect.rs`):
 each joint's turn from its rest turn (stored when the body is built,

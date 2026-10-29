@@ -71,6 +71,18 @@ pub struct Record {
 /// The value that toggles the doors under a node.
 pub const TOGGLE: i32 = -1;
 
+/// A signal a mechanism sends: the placed id it goes to (tag bits
+/// included, as the records name objects), the placed id it comes from,
+/// and its value (1 on, 0 off, −1 toggles a door or an inverted plate's
+/// press). A lever or push surface's report writes one per target it
+/// signals; the level routes it by the target's records ([`dispatch`]).
+#[derive(bevy::prelude::Message, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MechanismSignal {
+    pub target: u32,
+    pub source: u32,
+    pub value: i32,
+}
+
 /// A door order from a signal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DoorOrder {

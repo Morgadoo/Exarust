@@ -132,7 +132,7 @@ fn setup(
                     .id();
                 exa_world::fire::spawn_fire(&mut commands, node, 0.2);
             }
-            if begin_level(&mut commands, &mut loader, name, !options.static_doors) {
+            if begin_level(&mut commands, &mut loader, name, mechanism_bodies(&options)) {
                 // The camera is there from the start, behind the loading
                 // screen; it moves to the level's view when the load ends.
                 let camera = spawn_fly_camera(&mut commands, pose, fov, &options);
@@ -295,7 +295,7 @@ fn setup(
             commands.insert_resource(exa_world::room_view::RoomView {
                 all: options.all_rooms,
             });
-            if !begin_level(&mut commands, &mut loader, name, !options.static_doors) {
+            if !begin_level(&mut commands, &mut loader, name, mechanism_bodies(&options)) {
                 let start = PlayStart {
                     position: Vec3::ZERO,
                     yaw: 0.0,
@@ -439,7 +439,12 @@ fn apply_level_change(
         bc_supported: model::bc_supported(support.as_deref()),
     };
     info!("level change: loading {level} (spawn {spawn})");
-    let found = begin_level(&mut commands, &mut loader, &level, !options.static_doors);
+    let found = begin_level(
+        &mut commands,
+        &mut loader,
+        &level,
+        mechanism_bodies(&options),
+    );
     // The save unit's transition flow around the change: which copy the
     // destination comes from, the spawn matrix and the abort when the
     // archive lacks the level. Kept for the save path's disable flag.
@@ -461,18 +466,29 @@ fn apply_level_change(
     }
 }
 
+/// Which mechanisms a level load makes bodies with their rules, by the
+/// debug options.
+fn mechanism_bodies(options: &crate::Options) -> exa_world::bodies::MechanismBodies {
+    exa_world::bodies::MechanismBodies {
+        doors: !options.static_doors,
+        levers: !options.static_mechanisms,
+        plates: !options.static_mechanisms,
+        sliding: options.sliding_doors,
+    }
+}
+
 /// Starts loading `name` behind the loading screen; `false` when the level
 /// is not there.
 fn begin_level(
     commands: &mut Commands,
     loader: &mut ModelLoader,
     name: &str,
-    door_bodies: bool,
+    mechanism_bodies: exa_world::bodies::MechanismBodies,
 ) -> bool {
     let Some(mut load) = exa_world::LevelLoad::begin(commands, loader, name) else {
         return false;
     };
-    load.door_bodies = door_bodies;
+    load.mechanism_bodies = mechanism_bodies;
     commands.insert_resource(exa_ui::LoadingStatus {
         title: format!("Loading {name}"),
         stage: load.stage().into(),
