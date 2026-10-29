@@ -68,6 +68,10 @@ pub struct ItemCatalogue {
     /// tier bit): the model an icon renders and the bulk a panel counts.
     level_models: HashMap<u32, ItemModel>,
     level_bulk: HashMap<u32, u8>,
+    /// The random tables container children draw from, by record id (the
+    /// level's own under their local-tagged ids).
+    tables: HashMap<u32, exa_formats::containers::RandomTable>,
+    level_tables: HashMap<u32, exa_formats::containers::RandomTable>,
     /// A shield record's section bytes, for the encumbrance sum.
     shields: HashMap<u32, ShieldRecord>,
 }
@@ -141,6 +145,9 @@ impl ItemCatalogue {
     pub fn of_database_with_strings(db: &Database<'_>, strings: Option<&Library>) -> Self {
         let mut out = Self::default();
         for item in exa_formats::objdb::items(db) {
+            if let Some(table) = item.random_table.clone() {
+                out.tables.insert(item.id, table);
+            }
             if item.model.is_empty() {
                 continue;
             }
@@ -282,6 +289,13 @@ impl ItemCatalogue {
         use exa_formats::objdb::LOCAL;
         self.level_models.clear();
         self.level_bulk.clear();
+        self.level_tables = items
+            .iter()
+            .filter_map(|item| {
+                let table = item.random_table.clone()?;
+                Some((LOCAL | (item.id & ID_MASK), table))
+            })
+            .collect();
         let by_id: HashMap<u32, &exa_formats::objdb::Item> =
             items.iter().map(|item| (item.id & ID_MASK, item)).collect();
         for item in items {
@@ -492,6 +506,22 @@ fn usable_of(payload: &[u8]) -> Option<[u8; 2]> {
 /// Asks for a character's weapon sets to be swapped.
 #[derive(Component, Debug, Clone, Copy, Default)]
 pub struct SwapRequested;
+
+impl crate::randomise::TableSource for ItemCatalogue {
+    /// The random table `id` names: a game record's, or the loaded level's
+    /// own under its local-tagged id.
+    fn table(&self, id: u32) -> Option<exa_formats::containers::RandomTable> {
+        if id & !ID_MASK != 0 {
+            self.level_tables.get(&id).cloned()
+        } else {
+            self.tables.get(&id).cloned()
+        }
+    }
+
+    fn bulk(&self, id: u32) -> Option<u8> {
+        ItemCatalogue::bulk(self, id)
+    }
+}
 
 /// What the hands must take after a swap, for the code that attaches held
 /// models. Nothing reattaches them yet.

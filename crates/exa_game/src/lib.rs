@@ -25,6 +25,7 @@ pub mod body_overlay;
 pub mod career;
 pub mod char_view;
 pub mod commands;
+pub mod container_fill;
 pub mod control_nodes;
 pub mod create;
 pub mod cursor;
