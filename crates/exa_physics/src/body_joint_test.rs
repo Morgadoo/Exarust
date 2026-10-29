@@ -184,6 +184,30 @@ fn leg_limits_and_smoothing() {
     assert_eq!(body.links[shin_limit].strength, 1.0);
 }
 
+/// A collapsing gobbler's femur limit link takes 10 cm of slack; the
+/// lower leg's own limit and every other link keep theirs.
+#[test]
+fn a_gobbler_collapse_slackens_the_femur_limit() {
+    let mut body = leg_and_hand().with_drive();
+    let shin_limit = body.parts[2].leg_limit.unwrap();
+    let femur_limit = body.parts[1].leg_limit.unwrap();
+    let before: Vec<f32> = body.links.iter().map(|l| l.slack).collect();
+    body.slacken_femur_limits();
+    assert_eq!(body.links[femur_limit].slack, 0.1);
+    for (k, l) in body.links.iter().enumerate() {
+        if k != femur_limit {
+            assert_eq!(l.slack, before[k], "link {k}");
+        }
+    }
+    assert_eq!(body.links[shin_limit].slack, before[shin_limit]);
+    // A femur without a limit link is left alone.
+    let mut body = leg_and_hand();
+    body.parts[1].leg_limit = None;
+    body.slacken_femur_limits();
+    let after: Vec<f32> = body.links.iter().map(|l| l.slack).collect();
+    assert_eq!(after, before);
+}
+
 /// The original's laws. A living pivot closes d/(1 + 0.001|d|) of its gap
 /// (cm) and a living slack link takes back its excess, cut to 80 cm; a limp
 /// pivot closes strength/(1 + 0.001|d|²), a limp slack link strength times

@@ -777,6 +777,11 @@ impl Ragdoll {
                     if let Some(j) = parts[i].parent.filter(|&j| j < parts.len()) {
                         parts[j].factor = thigh;
                     }
+                    // Whatever its limit link, the leg's first child (the
+                    // foot) takes the world mask's thin-plate bit.
+                    if let Some(foot) = parts.iter().position(|p| p.parent == Some(i)) {
+                        parts[foot].skips_thin = true;
+                    }
                 }
                 Role::Arm => {
                     // A shock and a kick leave whatever the last tick wrote.

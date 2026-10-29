@@ -570,6 +570,67 @@ impl KnockOut {
     }
 }
 
+/// The state flags a knock-out leaves: the wake nibble (bits 4–7) replaced
+/// by knocked-out and waking (`0x30`), every other flag kept.
+pub fn knock_out_flags(flags: StateFlags) -> StateFlags {
+    StateFlags((flags.0 & !0xF0) | 0x30)
+}
+
+/// A knock-out: the condition becomes [`Condition::DOWN`], the flags
+/// [`knock_out_flags`], and the wake clock starts at `now_ms` plus
+/// `delay_ms` (a 32-bit sum, as the original's; the clock the original adds
+/// is the character manager's millisecond clock, taken here as the game
+/// clock). The body's side (tone, stance and pin gain) is
+/// `Ragdoll::knock_out`.
+pub fn knock_out(
+    condition: &mut Condition,
+    flags: &mut StateFlags,
+    now_ms: u32,
+    delay_ms: u32,
+) -> KnockOut {
+    *condition = Condition::DOWN;
+    *flags = knock_out_flags(*flags);
+    KnockOut::start(now_ms, delay_ms)
+}
+
+/// What a revive writes on the character besides its body.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Revival {
+    /// The knock-out it ends in (no delay).
+    pub knock: KnockOut,
+    /// Yellow health: half the red, a single-precision product.
+    pub yellow: f32,
+    /// The record's two weapon slots are empty, so the hands are set up
+    /// unarmed again (the fists or claws).
+    pub rearm: bool,
+}
+
+/// The original's revive of a dead character (Raise Dead, an undead's
+/// rise), which does nothing unless the condition is [`Condition::DEAD`]:
+/// the yellow health becomes half the red, combat mode is left, an empty
+/// pair of record weapon slots sets the unarmed hands up again, and the
+/// character is knocked out at once ([`knock_out`] with no delay). The
+/// body's side is `Ragdoll::revive`; the voice volume (scale × the race's
+/// field), the sound sources, the heading reset and the attack reach it
+/// also refreshes are their own systems' rules.
+pub fn revive(
+    condition: &mut Condition,
+    flags: &mut StateFlags,
+    red: f32,
+    weapon_slots_empty: bool,
+    now_ms: u32,
+) -> Option<Revival> {
+    if *condition != Condition::DEAD {
+        return None;
+    }
+    let knock = knock_out(condition, flags, now_ms, 0);
+    Some(Revival {
+        knock,
+        yellow: red * 0.5,
+        rearm: weapon_slots_empty,
+    })
+}
+
 /// What one wake tick writes.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Wake {

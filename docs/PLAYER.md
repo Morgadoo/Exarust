@@ -1450,8 +1450,8 @@ held items change (by the character's), both giving the same grip
   grip by the motion, and a flip request (sent by F) runs the flip
   animation and rebuilds the weapon record from its flipped side; a
   weapon whose section has no flipped-side kind byte is refused, and a
-  dead holder's soft weld stiffens while a collapse drops the weapon and
-  keeps the shield. A held
+  dead holder keeps its items on their unchanged grip links while a
+  collapse drops the weapon and keeps the shield. A held
   shield item takes the shield builder's face pivots, and the off hand's
   second weapon takes the grip table's off-hand entry; both are attached
   by `exa_character::offhand` after the main hand's weapon, and the

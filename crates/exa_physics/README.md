@@ -157,9 +157,11 @@ tests. A part's mask (`Level::mask`) is tested against its body mask
 before any triangle is queried; the body solver hands the detection the
 level with the static grid's stored masks (`body::MaskedLevel`), so a thin
 horizontal plate (local half height under 1 cm, world up over 0.99) is
-mask 1|4 and a living foot's mask-4 part never meets it (`Ragdoll::level_mask`:
-only a body with muscles carries the foot's 4, as the original clears it on
-collapse and death, so a corpse's feet meet thin plates); a piece with no
+mask 1|4 and a living foot's mask-4 part never meets it (`Ragdoll::level_mask`,
+`Part::skips_thin`: the leg routine sets the foot's 4 on each lower leg's
+first child every living tick that is not a collapse, and the collapse and
+death clear it, so a collapsing body's and a corpse's feet meet thin
+plates); a piece with no
 record answers 1. The original's flagged-mask bit has no traced node
 source, so it is never set [guess]. Not wired: the overflow guard's reset
 in the game (Exarust's grid is sparse and may hold any cell, so no body
@@ -581,13 +583,18 @@ from its middle; either end clears the active flag, turns the item's
 flipped state and marks its record for a rebuild (the middle and end tests
 are double compares, as the original's). A flip command is refused while
 the character switches and for a section with no flipped-side kind byte
-(`GripLinks::begin_flip`), as the original's command does. The death
-routine stiffens each soft world weld to strength 1 (`weld_on_death`,
-called for a dead holder: a corpse keeps its weapon). Emptying the hands
-restores each hand's link-mobility and mass words (`empty_hand_words`:
-0.175 × and 1 × its base), and an unarmed equip then gives the mass word
-half its base, a quarter with heavy claws (`unarmed_hand_mobility`); no
-Exarust hand part has the two words yet, so both stay tested rules. `GripLink` is plain data
+(`GripLinks::begin_flip`), as the original's command does. Death changes
+no grip link: its strength-1 write is to each lower leg's limit link
+(`Ragdoll::go_limp`), not to a held item's weld, so a corpse keeps its
+weapon by its unchanged grip links. Emptying the hands
+restores each hand's link-mobility and contact-mobility words
+(`empty_hand_words`: 0.175 × and 1 × its base); the equip refresh then
+leaves an armed character's hands at their base and gives an unarmed one's
+half, a quarter with heavy claws (`refreshed_hand_mobility`,
+`unarmed_hand_mobility`), and an attack start in the heavy-claws state
+quarters them (`attack_hand_mobility`). The body word is the hand part's
+contact mobility (`Ragdoll::contact_base`, `Ragdoll::set_contact_share`),
+written by `exa_character::body_words`. `GripLink` is plain data
 with the law documented: a correction is shared by the item's and the
 hand's particle weights and mobilities; a world link moves only the item.
 `grip_solve` runs the records as a cross-body solver stage: a held item is
@@ -1019,8 +1026,16 @@ class word to every part and `word | 0x30` to each first child,
 `raise_grab_layer` adds the bite-grab's 0x40 to a part, its parent and its
 children, and `raise_state_flag` walks the whole tree. Death's class
 writer is `pairs::set_leg_layers` instead (layer 0 on each lower leg, 0x30
-on its foot), and `Ragdoll::clear_death_strikes` clears the strike chain
-and level word only on those feet. `push_at` applies a
+on its foot), and `Ragdoll::clear_death_strikes` (run by the collapse's
+start and by death) clears the strike chain and the world mask word only on
+those feet. A gobbler's collapse gives each femur's limit link 10 cm of
+slack (`Ragdoll::slacken_femur_limits`). The revive of a corpse
+(`Ragdoll::revive`) marks every limb below the pelvis muscled with its
+contact base, gives the feet the thin-plate bit and the 0x30 layer (the
+lower legs keep death's 0), turns the muscles on and knocks the body out;
+it has no running caller yet (Raise Dead and the undead's rise are not
+wired). `Ragdoll::contact_base` and `set_contact_share` read and write a
+limb's contact mobility from its base (inverse mass × 2/3). `push_at` applies a
 push at a world point with the original's weighting (`push_fraction`, the
 `4·dot` test against the push's squared length). The stagger helper
 (`stagger`, `recoil`) gives a blow's stagger speed, decay, flags and

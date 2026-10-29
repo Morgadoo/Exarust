@@ -222,6 +222,8 @@ const MAX_CORRECTION: f32 = 0.8;
 /// it pulls at this strength while the body lives.
 const LEG_LIMIT_SLACK: f32 = 0.1;
 const LEG_LIMIT_STRENGTH: f32 = 0.2;
+/// A collapsing gobbler's femur limit slack (m, the original's 10 cm).
+pub const COLLAPSE_FEMUR_SLACK: f32 = 0.1;
 /// The original's drive scale K = 19200/83² (2.787): the pose drive's
 /// gains are shares of it.
 const DRIVE_SCALE: f32 = 19200.0 / (BODY_HZ * BODY_HZ);
@@ -335,6 +337,13 @@ pub struct Part {
     /// Whether the part skips level detection: a root body with world links
     /// (its static mask is 1), as the original's hung props and mechanisms.
     pub no_level: bool,
+    /// The level mask's thin-plate bit (4) on a living character's foot:
+    /// the first child of each lower leg takes it from the leg routine of
+    /// every living tick that is not a collapse, and loses it when the
+    /// body collapses or dies (the original's world mask word, whose bit 1
+    /// is [`Part::no_level`]). A foot carrying it ignores thin plates and
+    /// flagged meshes.
+    pub skips_thin: bool,
     /// Particles at the start of the tick (where the last tick left them).
     start: [Vec3; 4],
     /// Each particle's displacement over the last tick, as this tick's
@@ -584,6 +593,7 @@ impl Part {
             pairing,
             rest_inverse,
             no_level: false,
+            skips_thin: false,
             friction: if matches!(bone, 4 | 7) {
                 FOOT_FRICTION
             } else {
@@ -2792,13 +2802,13 @@ impl Ragdoll {
         }
     }
 
-    /// The death routine's lower-leg pass: for each lower leg (a part that
-    /// carries a foot contact), its first child (the foot) gets the
-    /// level-contact word 0 and loses the strike-chain bit. A part that is
-    /// not a lower leg's first child keeps the bit. The same routine sets
-    /// each leg limit link's strength to 1, which [`Ragdoll::go_limp`]
-    /// does; the lower legs' collision layer is that routine's class
-    /// writer, [`pairs::set_leg_layers`].
+    /// The collapse's and the death routine's lower-leg pass: for each
+    /// lower leg (a part that carries a foot contact), its first child (the
+    /// foot) gets the world mask word 0 (no thin-plate bit, level contacts
+    /// on) and loses the strike-chain bit. A part that is not a lower leg's
+    /// first child keeps both. The death routine also sets each leg limit
+    /// link's strength to 1, which [`Ragdoll::go_limp`] does; the lower
+    /// legs' collision layer is the class writer, [`pairs::set_leg_layers`].
     pub fn clear_death_strikes(&mut self) {
         for leg in 0..self.parts.len() {
             if self.parts[leg].foot.is_none() {
@@ -2808,7 +2818,84 @@ impl Ragdoll {
                 continue;
             };
             self.parts[child].no_level = false;
+            self.parts[child].skips_thin = false;
             self.parts[child].state.0 &= !crate::part::PartState::STRIKE_CHAIN;
+        }
+    }
+
+    /// A limb's contact mobility base: what the original keeps as the
+    /// part's mass value and restores its contact mobility from (Exarust's
+    /// limb contact mobility, its inverse mass times
+    /// [`pairs::LIMB_CONTACT_SCALE`]). `None` for a missing part.
+    pub fn contact_base(&self, part: usize) -> Option<f32> {
+        self.parts
+            .get(part)
+            .map(|p| p.inverse_mass * pairs::LIMB_CONTACT_SCALE)
+    }
+
+    /// Writes the contact mobility of the part of `bone` from its base:
+    /// `share(base)`, a single-precision product as the original's. A bone
+    /// with no part leaves the body as it is. Returns whether a part took
+    /// it.
+    pub fn set_contact_share(&mut self, bone: usize, share: impl Fn(f32) -> f32) -> bool {
+        let Some(i) = self.parts.iter().position(|p| p.bone == bone) else {
+            return false;
+        };
+        let base = self.parts[i].inverse_mass * pairs::LIMB_CONTACT_SCALE;
+        self.parts[i].pairing.mobility = share(base);
+        true
+    }
+
+    /// The body side of the original's revive (Raise Dead, an undead's
+    /// rise), which the caller runs on a dead character only: every limb
+    /// below the pelvis (the original's bone index above 0) is marked
+    /// muscled and takes its contact mobility base back (times 1); every
+    /// part wakes; each lower leg's first child (the foot) takes the
+    /// thin-plate bit and the feet's layer (0x30, the lower leg itself
+    /// keeping the layer death gave it); the muscles come back on with
+    /// `drive`; then the knock-out ([`Ragdoll::knock_out`]: tone and stance
+    /// 0, the living pin gain, awake at 256). The root's link-iteration
+    /// count and the leg limits' strengths stay as death left them. The
+    /// original also copies each limb node's turn into the part, which
+    /// Exarust's parts do not keep apart from their particles.
+    pub fn revive(&mut self, drive: Drive) {
+        for p in &mut self.parts {
+            if p.bone > 1 {
+                p.state = p.state.with(crate::part::PartState::MUSCLED);
+                p.pairing.mobility = p.inverse_mass * pairs::LIMB_CONTACT_SCALE * 1.0;
+            }
+        }
+        for leg in 0..self.parts.len() {
+            if self.parts[leg].foot.is_none() {
+                continue;
+            }
+            if let Some(foot) = self.first_child(leg) {
+                self.parts[foot].skips_thin = true;
+                self.parts[foot].pairing.layer = pairs::FOOT_LAYER;
+            }
+        }
+        self.drive = Some(drive);
+        self.knock_out();
+    }
+
+    /// The gobbler's collapse (race index 8): each lower leg's parent (the
+    /// femur) has its limit link's slack set to 10 cm, so the dying legs
+    /// fold further. A femur without a limit link is left alone; the
+    /// original tests the femur's link index as not negative.
+    pub fn slacken_femur_limits(&mut self) {
+        for leg in 0..self.parts.len() {
+            if self.parts[leg].foot.is_none() {
+                continue;
+            }
+            let Some(femur) = self.parts[leg].parent.filter(|&j| j < self.parts.len()) else {
+                continue;
+            };
+            if let Some(k) = self.parts[femur]
+                .leg_limit
+                .filter(|&k| k < self.links.len())
+            {
+                self.links[k].slack = COLLAPSE_FEMUR_SLACK;
+            }
         }
     }
 
@@ -4150,14 +4237,15 @@ impl Ragdoll {
     /// this tick make up to one level impact ([`LevelImpact`]).
     /// A part's body mask for the level detection
     /// ([`crate::sector::body_mask`]): 1 on a part kept off the level, 4 on
-    /// a living character's foot. Only a living body's feet carry the 4:
-    /// the original clears it when the body collapses or dies, so a limp
-    /// body's feet meet thin plates again.
+    /// a living character's foot ([`Part::skips_thin`]). The leg routine
+    /// sets the 4 while the body lives and does not collapse; the collapse
+    /// and death clear it ([`Ragdoll::clear_death_strikes`]), so a
+    /// collapsing or limp body's feet meet thin plates again.
     pub fn level_mask(&self, part: usize) -> u32 {
         let Some(p) = self.parts.get(part) else {
             return 0;
         };
-        crate::sector::body_mask(p.no_level, self.drive.is_some() && p.pairing.out)
+        crate::sector::body_mask(p.no_level, p.skips_thin)
     }
 
     fn detect<L: Level + ?Sized>(&mut self, level: &L) {

@@ -596,3 +596,46 @@ fn the_posture_stage_restores_the_lower_legs() {
     assert_eq!(condition(&app), Condition::WEAK);
     assert_eq!(shin(&app), 0);
 }
+
+/// A knock-out puts the condition down, replaces the wake nibble with 0x30
+/// keeping every other flag, and starts the wake clock at now plus the
+/// delay (a wrapping 32-bit sum).
+#[test]
+fn a_knock_out_writes_down_and_the_wake_nibble() {
+    let mut c = Condition::COMBAT_IDLE;
+    let mut f = StateFlags(StateFlags::POTION | StateFlags::HELD | 0x80 | 0x1);
+    let knock = knock_out(&mut c, &mut f, 1000, 250);
+    assert_eq!(c, Condition::DOWN);
+    assert_eq!(f.0, StateFlags::POTION | 0x30 | 0x1);
+    assert_eq!(knock, KnockOut::start(1000, 250));
+    assert_eq!(knock.wake_at_ms, 1250);
+    assert_eq!(knock_out_flags(StateFlags(0)).0, 0x30);
+    let mut c = Condition::NORMAL;
+    let mut f = StateFlags(0);
+    assert_eq!(knock_out(&mut c, &mut f, u32::MAX, 2).wake_at_ms, 1);
+}
+
+/// A revive only acts on a dead character: knocked out at once, yellow
+/// health half the red (0.3 → 0.15), and the unarmed set-up when the
+/// record's weapon slots are empty.
+#[test]
+fn a_revive_knocks_the_dead_out_with_half_the_red() {
+    let mut c = Condition::DEAD;
+    let mut f = StateFlags(StateFlags::DORMANT);
+    let r = revive(&mut c, &mut f, 0.3, true, 5000).unwrap();
+    assert_eq!(c, Condition::DOWN);
+    assert_eq!(f.0, 0x30);
+    assert_eq!(r.knock.wake_at_ms, 5000);
+    assert_eq!(r.yellow, 0.3_f32 * 0.5);
+    assert!(r.rearm);
+    let mut c = Condition::DEAD;
+    let mut f = StateFlags(0);
+    assert!(!revive(&mut c, &mut f, 0.3, false, 0).unwrap().rearm);
+    // Only the dead revive.
+    for living in [Condition::COLLAPSING, Condition::DOWN, Condition::NORMAL] {
+        let mut c = living;
+        let mut f = StateFlags(StateFlags::POTION);
+        assert_eq!(revive(&mut c, &mut f, 0.3, true, 0), None);
+        assert_eq!((c, f.0), (living, StateFlags::POTION));
+    }
+}

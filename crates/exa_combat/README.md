@@ -228,7 +228,14 @@ until its wake clock: down, tone and stance 0, readiness 0.4; after 1.5 s
 the tone rises 0.001 a tick (×(1 + (1 − clock)²) while getting up); after
 8 s the readiness rises 0.01 a tick to 1, when the tone and stance return,
 the wake bits clear and a dormant body announces "Awaken". A held body
-(flag 0x40) keeps its bits. The status-effect pass
+(flag 0x40) keeps its bits. The knock-out's writes (`condition::knock_out`:
+down, the wake nibble replaced by 0x30, the wake clock at now plus the
+delay) and a corpse's revive (`condition::revive`: only on a dead
+character, knocked out at once, yellow health half the red, the unarmed
+hands set up again when the record's weapon slots are empty) are tested
+rules; nothing in the running game knocks out or revives yet. A
+collapse's start also runs the lower-leg pass on its feet (strike chain
+and thin-plate bit off, `Ragdoll::clear_death_strikes`). The status-effect pass
 (`condition::update_statuses`) updates only the owner's effects on phase
 0, notices those whose update returns bit 4 and removes those returning
 bit 2 by swapping the last entry in. The reset facing

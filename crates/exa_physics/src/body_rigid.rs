@@ -144,6 +144,7 @@ impl Part {
             },
             rest_inverse,
             no_level: false,
+            skips_thin: false,
             friction: RIGID_FRICTION,
             start: positions,
             moved: [Vec3::ZERO; 4],

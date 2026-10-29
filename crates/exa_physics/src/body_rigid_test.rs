@@ -827,13 +827,99 @@ fn death_clears_only_the_lower_legs_first_children() {
         p.state.0 |= chain;
     }
     body.parts[2].no_level = true;
+    body.parts[2].skips_thin = true;
+    body.parts[4].skips_thin = true;
     body.clear_death_strikes();
     assert_eq!(body.parts[0].state.0 & chain, chain);
     assert_eq!(body.parts[1].state.0 & chain, chain);
     assert_eq!(body.parts[2].state.0 & chain, 0);
     assert!(!body.parts[2].no_level);
+    assert!(!body.parts[2].skips_thin);
     assert_eq!(body.parts[3].state.0 & chain, chain);
     assert_eq!(body.parts[4].state.0 & chain, chain);
+    assert!(body.parts[4].skips_thin);
+}
+
+/// A revive gives every limb below the pelvis its muscled mark and its
+/// contact base back, the foot the thin-plate bit and the feet's layer
+/// (the lower leg keeps death's 0), turns the muscles on and knocks the
+/// body out (tone and stance 0, pin gain 0.08, awake at 256). The root's
+/// link-iteration count stays at death's 10.
+#[test]
+fn a_revive_raises_a_corpse_knocked_out() {
+    let part = |bone, parent, foot: Option<Vec3>| PartSetup {
+        bone,
+        entity: Entity::PLACEHOLDER,
+        parent,
+        world: Affine3A::IDENTITY,
+        centre: Vec3::ZERO,
+        half: Vec3::splat(0.1),
+        origin: Vec3::ZERO,
+        links: vec![],
+        foot,
+        pins: Vec::new(),
+        spheres: None,
+    };
+    let mut body = Ragdoll::new(&[
+        part(1, None, None),
+        part(3, Some(0), Some(Vec3::new(0.0, -0.4, 0.0))),
+        part(4, Some(1), None),
+    ])
+    .with_drive();
+    body.clear_death_strikes();
+    body.go_limp();
+    assert!(body.drive.is_none());
+    assert_eq!(body.parts[1].pairing.layer, 0);
+    let muscled = crate::part::PartState::MUSCLED;
+    for p in &mut body.parts {
+        p.state.0 &= !muscled;
+        p.pairing.mobility = 9.0;
+    }
+    body.revive(crate::body::Drive::default());
+    let d = body.drive.as_ref().unwrap();
+    assert_eq!((d.tone, d.stance, d.pin_gain), (0.0, 0.0, 0.08));
+    assert_eq!(body.countdown(), 256);
+    assert_eq!(body.parts[0].state.0 & muscled, 0);
+    assert_eq!(body.parts[0].pairing.mobility, 9.0);
+    for i in [1, 2] {
+        assert_eq!(body.parts[i].state.0 & muscled, muscled);
+        assert_eq!(
+            body.parts[i].pairing.mobility,
+            body.contact_base(i).unwrap()
+        );
+    }
+    // A lower leg's (bone 3) inverse mass 1 at the 2/3 contact scale.
+    assert!((body.contact_base(1).unwrap() - 0.666_666_7).abs() < 1e-6);
+    assert!(body.parts[2].skips_thin);
+    assert_eq!(body.parts[2].pairing.layer, crate::body::pairs::FOOT_LAYER);
+    assert_eq!(body.parts[1].pairing.layer, 0);
+    assert_eq!(body.link_iterations(), 10);
+}
+
+/// The contact share writes the part of a bone from its base and leaves a
+/// body without that bone alone.
+#[test]
+fn a_contact_share_is_taken_from_the_parts_base() {
+    let mut body = Ragdoll::new(&[PartSetup {
+        bone: 17,
+        entity: Entity::PLACEHOLDER,
+        parent: None,
+        world: Affine3A::IDENTITY,
+        centre: Vec3::ZERO,
+        half: Vec3::splat(0.05),
+        origin: Vec3::ZERO,
+        links: vec![],
+        foot: None,
+        pins: Vec::new(),
+        spheres: None,
+    }]);
+    let base = body.contact_base(0).unwrap();
+    assert!((base - 1.666_666_7).abs() < 1e-6);
+    assert!(body.set_contact_share(17, |b| b * 0.5));
+    assert_eq!(body.parts[0].pairing.mobility, base * 0.5);
+    assert!(!body.set_contact_share(18, |b| b * 0.25));
+    assert_eq!(body.parts[0].pairing.mobility, base * 0.5);
+    assert_eq!(body.contact_base(3), None);
 }
 
 /// A push at a point moves the particles by its weight there, scaled by the

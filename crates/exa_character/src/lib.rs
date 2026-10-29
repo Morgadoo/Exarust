@@ -15,6 +15,7 @@
 //! Its empty hands are its fists (or claws), strikers built from its race's
 //! unarmed records; a wielded weapon strikes instead.
 
+pub mod body_words;
 pub mod factory;
 
 pub mod grip_runtime;
@@ -74,6 +75,7 @@ impl Plugin for CharacterPlugin {
             spray::SprayPlugin,
             grip_runtime::GripRuntimePlugin,
             offhand::OffHandPlugin,
+            body_words::BodyWordsPlugin,
         ))
         .init_resource::<Painting>()
         .init_resource::<Fitting>()

@@ -375,8 +375,10 @@ fn without_child(parent: Option<Vec<u64>>, id: u64) -> Option<Vec<u64>> {
 /// [`collapse_blend`] frames at `energy` (the clip start does nothing when
 /// it already plays), eased smoothly either way; its body no longer stands
 /// on its controller, and its lower legs leave the living lower legs'
-/// layer, so they meet other characters' again. Returns whether it
-/// started.
+/// layer, so they meet other characters' again; each foot (a lower leg's
+/// first child) loses its strike-chain bit and its thin-plate level bit
+/// ([`Ragdoll::clear_death_strikes`]), as the collapse routine's lower-leg
+/// pass does. Returns whether it started.
 pub fn start_collapse(
     condition: &mut Condition,
     flags: &mut StateFlags,
@@ -404,6 +406,7 @@ pub fn start_collapse(
     if let Some(body) = body {
         body.fall();
         pairs::set_leg_layers(&mut body.parts, 0);
+        body.clear_death_strikes();
     }
     true
 }
