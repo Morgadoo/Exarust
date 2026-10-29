@@ -70,6 +70,7 @@ pub fn attach_hair(
     bodies: Query<(Entity, &Hair), Without<HairAttached>>,
     children: Query<&Children>,
     parts: Query<&BodyPart>,
+    hair_cloth: Option<Res<HairCloth>>,
 ) {
     let (Some(game), Some(mut cache)) = (game, cache) else {
         return;
@@ -96,7 +97,7 @@ pub fn attach_hair(
                 .collect()
         })
         .unwrap_or_default();
-    let cloth_on = hair_cloth_on();
+    let cloth_on = hair_cloth.map_or_else(hair_cloth_on, |h| h.0);
     let started = std::time::Instant::now();
     for (body, hair) in &bodies {
         if started.elapsed() >= HAIR_BUDGET {
@@ -188,6 +189,11 @@ pub fn attach_hair(
 pub fn hair_cloth_on() -> bool {
     std::env::var_os("EXA_HAIR_CLOTH").is_some_and(|v| v != "0")
 }
+
+/// The hair cloth switch as a resource, for a host or a test to set; the
+/// attach falls back to [`hair_cloth_on`] when it is absent.
+#[derive(Resource, Debug, Clone, Copy)]
+pub struct HairCloth(pub bool);
 
 /// Gives a cloth-marked part of a hair style its cloth: the level's cloth
 /// stage builds it from the node's faces and face flags
@@ -291,6 +297,7 @@ mod tests {
             .init_resource::<ModelCache>()
             .insert_resource(Game(Arc::new(game)))
             .add_plugins(exa_world::cloth::ClothPlugin)
+            .insert_resource(HairCloth(true))
             .add_systems(Update, attach_hair);
         let body = app
             .world_mut()
