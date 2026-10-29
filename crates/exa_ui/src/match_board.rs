@@ -1585,8 +1585,10 @@ impl Board {
     /// The weapon check's mark on the reward panel. `None` leaves the mark
     /// as it is (no weapon event); otherwise the mark is set when the first
     /// fighter entered in the event's tier does not carry one of the row's
-    /// weapons, and cleared when nobody is entered. A tier or row outside
-    /// the tables counts as no match.
+    /// weapons, or when nobody is entered (the original starts from "no
+    /// match" and only clears the mark after a successful check), and
+    /// cleared when that fighter's weapon is accepted. A tier or row
+    /// outside the tables counts as no match.
     pub fn weapon_mark(&self) -> Option<bool> {
         if !self.weapon_event() {
             return None;
@@ -1596,7 +1598,7 @@ impl Board {
             .and_then(|tier| self.entries.get(tier))
             .and_then(|entry| entry.participants.first());
         let Some(first) = first else {
-            return Some(false);
+            return Some(true);
         };
         let accepted = tier
             .and_then(|tier| self.weapon_row(tier))
@@ -1681,18 +1683,22 @@ impl Board {
     }
 
     /// The show method: release the tournament reward item, recompute the
-    /// day's flags, and reopen the current tab, or switch to the tournament
-    /// tab on a tournament day with entries.
+    /// day's flags, and open the tournament tab on a tournament day with
+    /// entries, or re-open the current tab. The original clears its current
+    /// tab field before applying the tab, so the tab it leaves is never
+    /// hidden and keeps its control states: a forced tournament tab shows
+    /// over the previous tab's controls. This quirk is kept.
     pub fn show(&mut self) -> ShowState {
         self.tournament_reward = None;
         let tournament_day = self.tournament_day();
         let has_entrants = self.has_entrants();
         let forced = tournament_day && has_entrants;
-        if forced && self.tab != BoardTab::Tournament {
-            self.apply_tab(Some(self.tab), BoardTab::Tournament);
+        let target = if forced {
+            BoardTab::Tournament
         } else {
-            self.apply_tab(None, self.tab);
-        }
+            self.tab
+        };
+        self.apply_tab(None, target);
         ShowState {
             tournament_day,
             has_entrants,
@@ -3262,7 +3268,9 @@ mod tests {
         assert_eq!(board.tournament_note, "Mace");
         assert_eq!(board.lineup_height(), WEAPON_LINEUP_HEIGHT);
         assert!(!board.reward_panel_locked());
-        assert_eq!(board.weapon_mark(), Some(false));
+        // Nobody is entered: the check starts from "no match", so the
+        // reward panel carries the mark.
+        assert_eq!(board.weapon_mark(), Some(true));
         assert!(board.team.is_empty());
 
         // Anna joins and is recorded with her event value and weapon.
@@ -3500,7 +3508,7 @@ mod tests {
     }
 
     #[test]
-    fn the_show_switches_to_the_tournament_and_hides_the_old_tab() {
+    fn the_show_switches_to_the_tournament_and_keeps_the_old_tabs_controls() {
         let entrant = vec![Participant {
             slot: 1,
             value: 4,
@@ -3517,7 +3525,9 @@ mod tests {
         assert!(control::selected(board.controls[control::TAB_TOURNAMENT]));
         assert!(!control::selected(board.controls[control::TAB_MATCHES]));
         assert_eq!(board.controls[control::TAB_MATCHES], control::DISABLED);
-        assert_eq!(board.controls[control::STANDARD_FEE], control::HIDDEN);
+        // The original clears its current tab before showing the forced
+        // one, so the standard tab's controls are not hidden on the way.
+        assert_eq!(board.controls[control::STANDARD_FEE], control::SHOWN);
         assert_eq!(board.switch_tab(BoardTab::Season), None);
 
         let mut quiet = Board::new(true, 7, fighters());
@@ -3530,6 +3540,13 @@ mod tests {
         other.entries[0].participants = entrant;
         let view = other.switch_tab(BoardTab::Season);
         assert_eq!(view.map(|view| view.tab), Some(BoardTab::Tournament));
+        // A normal tab switch still hides the tab it leaves.
+        let mut leaving = board;
+        leaving.entries[0].participants.clear();
+        leaving.tab = BoardTab::Matches;
+        leaving.apply_tab(None, BoardTab::Matches);
+        assert!(leaving.switch_tab(BoardTab::Events).is_some());
+        assert_eq!(leaving.controls[control::STANDARD_FEE], control::HIDDEN);
     }
 
     #[test]
@@ -3656,12 +3673,13 @@ mod tests {
         assert_eq!(board.hit_test((i32::MAX, i32::MIN)), BoardHit::Outside);
         assert!(!board.paint().is_empty());
 
-        // Out-of-range records stay total.
+        // Out-of-range records stay total; a tier past the entries table
+        // reads as no entrants, which leaves the mark set.
         let mut board = board_for(1, i32::MIN, i32::MIN);
         board.selected.max_rank = i32::MAX;
         board.selected.weapon_row = i32::MIN;
         board.selected.flags = FLAG_WEAPON;
-        assert_eq!(board.weapon_mark(), Some(false));
+        assert_eq!(board.weapon_mark(), Some(true));
         board.entries[0].participants = vec![Participant {
             slot: usize::MAX,
             value: 0,
