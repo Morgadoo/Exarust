@@ -260,8 +260,7 @@ impl GiBlockLayout {
                 let centre = block_centre(b.sector, self.grid.0, self.grid.1);
                 let dx = (p.x - centre.x).abs() - 2400.0;
                 let dz = (p.y - centre.y).abs() - 2400.0;
-                // The original sums Z first: (dz² + dx²).
-                (i, dz.max(0.0).powi(2) + dx.max(0.0).powi(2))
+                (i, dx.max(0.0).powi(2) + dz.max(0.0).powi(2))
             })
             .min_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)))
             .map(|(i, _)| i)
@@ -1253,13 +1252,17 @@ impl TerrainColumns {
         }
     }
 
-    /// Fills terrain as the original does (whole-voxel columns): voxels below
-    /// the surface hold 20, the surface voxel its covered fraction of 20; the
-    /// margins are left alone. A surface at or above the lid clamps to the
-    /// top slice and leaves the lid there instead of overwriting it. Returns
-    /// the columns filled.
+    /// Fills terrain as the original does (whole-voxel columns): with `k`
+    /// the surface height in voxels truncated towards zero, a column below
+    /// slice 0 (`k` < 0) is skipped; below the top slice voxel `k` holds its
+    /// covered fraction of 20 (rounded to even) and slices 0..k hold 20; at
+    /// or above it `k` clamps to the top slice, no surface byte is written
+    /// and slices 0..D−1 hold 20 (so the lid's 5 in slice D−2 becomes 20 and
+    /// the top slice's 26 stays). The column's lowest slice becomes `k`. The
+    /// margins are left alone. Returns the columns filled.
     fn apply(&self, o: &mut Occupancy) -> usize {
         let mut filled = 0;
+        let top_slice = o.depth as i32 - 1;
         for z in MARGIN..SIDE - MARGIN {
             for x in MARGIN..SIDE - MARGIN {
                 let top = self.tops[x + z * SIDE];
@@ -1267,34 +1270,27 @@ impl TerrainColumns {
                     continue;
                 }
                 let g = (top - self.origin.y) / VOXEL;
-                let k = g.floor() as i64;
+                // The original truncates (towards zero), so a surface less
+                // than a voxel below slice 0 still counts as slice 0.
+                let mut k = g as i32;
                 if k < 0 {
                     continue;
                 }
-                // The original writes the surface voxel only below the top
-                // slice; at or above it the height clamps to the lid.
-                let (surface, write_surface) = if (k as usize) < o.depth - 1 {
-                    (k as usize, true)
+                if k < top_slice {
+                    // A surface in (-1, 0) voxels gives a negative byte,
+                    // which the original stores wrapped; kept as it is.
+                    let frac = g - k as f32;
+                    o.cells[x + z * SIDE + k as usize * SIDE * SIDE] =
+                        (frac * TERRAIN_SOLID as f32).round_ties_even() as i32 as u8;
                 } else {
-                    (o.depth - 1, false)
-                };
-                // Below the lid the original fills slices 0..k−1; at or
-                // above it, 0..D−2, leaving the lid untouched.
-                let fill_end = if write_surface {
-                    surface
-                } else {
-                    surface.saturating_sub(1)
-                };
-                for y in 0..fill_end {
+                    k = top_slice;
+                }
+                for y in 0..k as usize {
                     o.cells[x + z * SIDE + y * SIDE * SIDE] = TERRAIN_SOLID;
                 }
-                if write_surface {
-                    let frac = g - surface as f32;
-                    o.cells[x + z * SIDE + surface * SIDE * SIDE] =
-                        (frac * TERRAIN_SOLID as f32).round_ties_even() as u8;
-                }
-                let column = &mut o.lowest[x + z * SIDE];
-                *column = (*column).min(surface as u8);
+                // Terrain is filled first, so the original's plain store
+                // is the column's lowest slice.
+                o.lowest[x + z * SIDE] = k as u8;
                 filled += 1;
             }
         }
@@ -1490,39 +1486,23 @@ impl Occupancy {
         Some(region)
     }
 
-    /// A sector's floor for each column: the lowest slice any of its
-    /// columns' sample points fell in (255 where the sector holds nothing).
-    ///
-    /// The original scans only columns 0..28 of each 30-column sector into
-    /// one byte per level cell: the sector's last column and row never lower
-    /// its floor. Exarust keeps the floor per column (the original stores one
-    /// byte per cell), writing the same sector value over its scanned 29 × 29
-    /// columns; the manager reads the first column of each sector, and the
-    /// last row and column keep 255.
+    /// A sector's floor for each column: the lowest slice any column of its
+    /// 6 m sector (all 30 × 30 columns inside the 8-voxel margin) holds, or
+    /// 255 where the sector holds nothing (or in the margin). The original
+    /// keeps one byte per sector; Exarust repeats it over the sector's
+    /// columns.
     pub fn floors(&self) -> Vec<u8> {
         let mut sector = [[255u8; SECTORS]; SECTORS];
-        for (z, row) in sector.iter_mut().enumerate() {
-            for (x, floor) in row.iter_mut().enumerate() {
-                for within_row in 0..SECTOR - 1 {
-                    for col in 0..SECTOR - 1 {
-                        let px = MARGIN + x * SECTOR + col;
-                        let pz = MARGIN + z * SECTOR + within_row;
-                        *floor = (*floor).min(self.lowest[px + pz * SIDE]);
-                    }
-                }
+        for z in MARGIN..MARGIN + SECTORS * SECTOR {
+            for x in MARGIN..MARGIN + SECTORS * SECTOR {
+                let s = &mut sector[(z - MARGIN) / SECTOR][(x - MARGIN) / SECTOR];
+                *s = (*s).min(self.lowest[x + z * SIDE]);
             }
         }
         let mut floors = vec![255u8; SIDE * SIDE];
-        for (z, row) in sector.iter().enumerate() {
-            for (x, &floor) in row.iter().enumerate() {
-                for within_row in 0..SECTOR - 1 {
-                    for col in 0..SECTOR - 1 {
-                        floors[MARGIN
-                            + x * SECTOR
-                            + col
-                            + (MARGIN + z * SECTOR + within_row) * SIDE] = floor;
-                    }
-                }
+        for z in MARGIN..MARGIN + SECTORS * SECTOR {
+            for x in MARGIN..MARGIN + SECTORS * SECTOR {
+                floors[x + z * SIDE] = sector[(z - MARGIN) / SECTOR][(x - MARGIN) / SECTOR];
             }
         }
         floors
@@ -2048,32 +2028,57 @@ mod tests {
     }
 
     #[test]
-    fn terrain_at_or_above_the_lid_leaves_the_lid_alone() {
-        let mut o = Occupancy::new_at(Vec3::ZERO, 64, IVec2::ZERO);
-        let mut tops = vec![f32::NEG_INFINITY; SIDE * SIDE];
-        let mut fill = |top: f32, o: &mut Occupancy| {
-            tops[20 + 20 * SIDE] = top;
+    fn terrain_at_or_above_the_lid_clamps_to_the_top_slice() {
+        let column = 20 + 20 * SIDE;
+        let fill = |top: f32| {
+            let mut o = Occupancy::new_at(Vec3::ZERO, 64, IVec2::ZERO);
+            let mut tops = vec![f32::NEG_INFINITY; SIDE * SIDE];
+            tops[column] = top;
             let ground = TerrainColumns {
                 origin: Vec3::ZERO,
-                tops: tops.clone(),
+                tops,
             };
-            ground.apply(o);
+            assert_eq!(ground.apply(&mut o), 1);
+            o
         };
-        // 13.4 m is voxel 67, above the top slice: slices 0..61 fill, the
-        // lid slices 62 (5) and 63 (26) stay.
-        fill(13.4, &mut o);
-        assert_eq!(o.cells[20 + 20 * SIDE + 61 * SIDE * SIDE], 20);
-        assert_eq!(o.cells[20 + 20 * SIDE + 62 * SIDE * SIDE], 5);
-        assert_eq!(o.cells[20 + 20 * SIDE + 63 * SIDE * SIDE], 26);
-        assert_eq!(o.lowest[20 + 20 * SIDE], 63);
-        // 12.5 m is voxel 62.5: the surface byte lands in slice 62 (the
-        // lower lid, as the original overwrites it), and slice 63 stays.
+        let at = |o: &Occupancy, y: usize| o.cells[column + y * SIDE * SIDE];
+        // 13.4 m is voxel 67, above the top slice: k clamps to 63, slices
+        // 0..=62 hold 20 (the lid's 5 is overwritten), the top slice keeps
+        // its 26 and no surface byte is written.
+        let o = fill(13.4);
+        assert_eq!(at(&o, 61), 20);
+        assert_eq!(at(&o, 62), 20);
+        assert_eq!(at(&o, 63), 26);
+        assert_eq!(o.lowest[column], 63);
+        // 12.5 m is voxel 62.5: below the top slice, so slice 62 holds
+        // round(0.5 · 20) = 10 and slices 0..=61 hold 20.
+        let o = fill(12.5);
+        assert_eq!(at(&o, 61), 20);
+        assert_eq!(at(&o, 62), 10);
+        assert_eq!(at(&o, 63), 26);
+        assert_eq!(o.lowest[column], 62);
+        // 12.7 m is voxel 63.5: at the top slice, clamped, the 26 stays.
+        let o = fill(12.7);
+        assert_eq!(at(&o, 62), 20);
+        assert_eq!(at(&o, 63), 26);
+        assert_eq!(o.lowest[column], 63);
+        // 3 cm below slice 0 (−0.15 voxel) truncates to slice 0: nothing is
+        // filled under it and slice 0 takes round(−0.15 · 20) = −3, stored
+        // as the byte 253.
+        let o = fill(-0.03);
+        assert_eq!(at(&o, 0), 253);
+        assert_eq!(at(&o, 1), 0);
+        assert_eq!(o.lowest[column], 0);
+        // A whole voxel below is skipped.
         let mut o = Occupancy::new_at(Vec3::ZERO, 64, IVec2::ZERO);
-        fill(12.5, &mut o);
-        assert_eq!(o.cells[20 + 20 * SIDE + 61 * SIDE * SIDE], 20);
-        assert_eq!(o.cells[20 + 20 * SIDE + 62 * SIDE * SIDE], 10);
-        assert_eq!(o.cells[20 + 20 * SIDE + 63 * SIDE * SIDE], 26);
-        assert_eq!(o.lowest[20 + 20 * SIDE], 62);
+        let mut tops = vec![f32::NEG_INFINITY; SIDE * SIDE];
+        tops[column] = -0.25;
+        let ground = TerrainColumns {
+            origin: Vec3::ZERO,
+            tops,
+        };
+        assert_eq!(ground.apply(&mut o), 0);
+        assert_eq!(o.lowest[column], 255);
     }
 
     #[test]
@@ -2085,28 +2090,23 @@ mod tests {
         let p = o.origin + Vec3::new(20.5, 12.5, 20.5) * VOXEL;
         o.splat(p);
         let floors = o.floors();
-        // The point's sector (columns 8..38) floors at its slice. The
-        // original scans columns 0..28 of the sector, so its last column
-        // and row keep 255 rather than repeating the floor.
+        // The point's sector (columns 8..38) floors at its slice.
         assert_eq!(floors[30 + 30 * SIDE], 12);
-        assert_eq!(floors[8 + 37 * SIDE], 255);
+        assert_eq!(floors[8 + 37 * SIDE], 12);
         assert_eq!(floors[38 + 20 * SIDE], 255);
         assert_eq!(floors[2 + 20 * SIDE], 255);
     }
 
     #[test]
-    fn a_sectors_last_column_does_not_lower_its_floor() {
+    fn a_sectors_last_column_lowers_its_floor() {
         let mut o = Occupancy::new_at(Vec3::ZERO, 64, IVec2::ZERO);
-        // Voxel column 8 + 29 (the sector's last) at slice 30.
-        let p = o.origin + Vec3::new(37.5, 30.5, 8.5) * VOXEL;
+        // Voxel column 8 + 29 (the sector's last) at slice 30: the
+        // original's scan runs over all 30 columns and rows of the sector.
+        let p = o.origin + Vec3::new(37.5, 30.5, 37.5) * VOXEL;
         o.splat(p);
-        assert_eq!(o.lowest[37 + 8 * SIDE], 30);
-        // The 29 × 29 scan never sees it, as the original's loop does not.
-        assert_eq!(o.floors()[8 + 8 * SIDE], 255);
-        // The previous column is inside the scan.
-        let p = o.origin + Vec3::new(36.5, 25.5, 8.5) * VOXEL;
-        o.splat(p);
-        assert_eq!(o.floors()[8 + 8 * SIDE], 25);
+        assert_eq!(o.lowest[37 + 37 * SIDE], 30);
+        assert_eq!(o.floors()[8 + 8 * SIDE], 30);
+        assert_eq!(o.floors()[37 + 37 * SIDE], 30);
     }
 
     /// A block 64 slices high whose slice 0 sits at the world's zero.
