@@ -280,7 +280,11 @@ masked, `0x10000000` an additive group and `0x20000000` the normal pass's
 The sharpness pair travels to the shaders as `(s, t/s + 1)`. The mask pass
 clears to 0 and the height pass to 0.5. The mask and height passes upload a
 32 × 32 window per block from texel `(by·256 + bx)·30` of each material's
-256² plane. The colour pass's quads cover a
+256² plane and draw into the one shared 256² working target created at set-up
+(32 texels per block; its height quad covers the whole tile at 30/32 of the
+plane). The composite set's level sizes the set's own targets only; it does
+not change the mask window, the quads or the height pass's texcoord scale.
+The colour pass's quads cover a
 block's palette slice at the palette scale 4 and 8 blocks a side,
 `[bx, bx+1] × [−by−1, −by] · 4/8`; their mask coordinates run from
 `0.5/32` to `30.5/32` of the block's 32-texel upload, so the 30 × 30 cells
@@ -288,6 +292,12 @@ are vertex-centred. The layer sampler multiplies the palette coordinates by
 f0 (or 1 when f0 ≤ 0). A block's lit `TexPos` is
 `(2^(level−1) − (bx >> (tile level − level)), 2^(level−1) − (by >> (tile level
 − level)))`, `(0.5, 0.5)` for a whole-tile block.
+
+A set copy (a block that keeps a low copy of its high set, or trades one
+set for another) binds each destination target in turn, samples the
+source's same target through the copy program at unit 0 and draws a
+full-target quad whose position and texcoord are equal at every corner.
+`terrain::composite::copy_draws` holds those passes and their sides.
 
 The selection and the frame hook decide which block is rebaked. Blocks within
 44.4 m of the look-ahead point (the camera moved 10 m along its back axis and

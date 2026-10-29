@@ -229,6 +229,41 @@ impl CompositeDraws {
         self.tile_materials = vec![None; blocks];
         self.own = vec![None; blocks];
     }
+
+    /// Drops every block's states and materials: the terrain's release slot
+    /// after a level teardown.
+    fn release(&mut self) {
+        self.reset(0);
+    }
+}
+
+/// The terrain's release slot: once no terrain streaming resource exists (a
+/// level teardown dropped it), drop the hosted composite sets, the queued
+/// bakes and every block's draw state, as the original's release timer does
+/// after the terrain deactivates. It runs every frame and costs nothing while
+/// a level's terrain is live.
+pub fn release_terrain_caches(
+    streaming: Option<Res<TerrainStreaming>>,
+    host: Option<ResMut<TerrainCompositeHost>>,
+    queue: Option<ResMut<TerrainBakeQueue>>,
+    mut draws: ResMut<CompositeDraws>,
+) {
+    if streaming.is_some() {
+        return;
+    }
+    if let Some(mut host) = host
+        && !host.is_empty()
+    {
+        host.clear();
+    }
+    if let Some(mut queue) = queue
+        && !queue.is_empty()
+    {
+        queue.clear();
+    }
+    if !draws.states().is_empty() {
+        draws.release();
+    }
 }
 
 /// Runs the frame's composite draw steps after the selection: queues one
@@ -353,6 +388,40 @@ mod tests {
         AssetId::Uuid {
             uuid: bevy::asset::uuid::Uuid::from_u128(n),
         }
+    }
+
+    #[test]
+    fn the_release_slot_clears_the_caches_once_the_level_is_gone() {
+        use exa_render::terrain_composite::{SetFeatures, TerrainCompositeHost};
+        let mut app = App::new();
+        app.add_systems(Update, release_terrain_caches);
+        app.init_resource::<CompositeDraws>();
+        app.insert_resource(TerrainBakeQueue::default());
+        let mut host = TerrainCompositeHost::default();
+        host.set_enabled(true);
+        let mut images = Assets::<Image>::default();
+        host.allocate(&mut images, 0, 5, SetFeatures::default())
+            .unwrap();
+        assert_eq!(host.len(), 1);
+        app.insert_resource(host);
+        app.world_mut().resource_mut::<CompositeDraws>().reset(2);
+        app.update();
+        assert!(app.world().resource::<TerrainCompositeHost>().is_empty());
+        assert!(app.world().resource::<CompositeDraws>().states().is_empty());
+        // A live level keeps its caches.
+        app.insert_resource(TerrainCompositeHost::default());
+        app.world_mut().resource_mut::<CompositeDraws>().reset(2);
+        app.insert_resource(TerrainStreaming::new(
+            super::super::stream::TerrainStream::new(Vec::new()),
+            super::super::composite::CompositePools::new(
+                8192,
+                super::super::composite::CompositeFeatures::default(),
+            ),
+            Vec::new(),
+            Vec::new(),
+        ));
+        app.update();
+        assert_eq!(app.world().resource::<CompositeDraws>().states().len(), 2);
     }
 
     #[test]

@@ -707,8 +707,11 @@ original shows its terrain:
   stacked gloss, and the displacement pass the stacked parallax height,
   each clamped to its 8-bit target. The original's groups of four additive
   layers fold into one stack, as in the per-pixel draw. A set copy (a
-  block traded from a high to a low set) is baked again from the layers
-  instead of blitted; only the copy's downsampling differs.
+  block traded from a high to a low set) binds each destination target,
+  samples the source's same target and draws a full-target quad
+  (`terrain::composite::copy_draws`); Exarust's renderer bakes the block
+  again from the layers instead, the same content with only the copy's
+  downsampling differing.
 - **Draw.** Once a block's bake has run it takes its own material, the
   tile's with the set bound and the `COMPOSITE` flag, and `terrain.wesl`
   reads the set as the shipped `shadetrn` program does: the composite

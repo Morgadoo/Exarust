@@ -89,6 +89,7 @@ impl Plugin for TerrainPlugin {
                 Update,
                 (
                     live::drive_terrain_stream,
+                    composite_draw::release_terrain_caches,
                     composite_draw::draw_terrain_composites,
                 )
                     .chain(),

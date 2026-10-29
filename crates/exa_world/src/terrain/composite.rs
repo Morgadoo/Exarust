@@ -31,6 +31,10 @@ pub const TILE_LEVEL: u32 = 3;
 pub const BLOCK_CELLS: u32 = 30;
 /// The mask upload's side in texels (32, one 256-texel atlas split in eighths).
 pub const MASK_UPLOAD: u32 = 32;
+/// The shared mask/height working target's side: one 48 m tile at the block
+/// level's 32 texels a block (256²). The original creates it once, not per
+/// composite set, so every set level writes the same window.
+pub const WORK_TARGET_SIDE: u32 = 0x100;
 /// The palette scale the compositor's quads use (the original's `4`).
 pub const PALETTE_SCALE: f32 = 4.0;
 /// The distance (squared centimetres) below which a block is high resolution:
@@ -436,14 +440,11 @@ pub const HEIGHT_QUAD_SCALE: f32 = f32::from_bits(0x4080_8889);
 /// 0.98770493).
 pub const HEIGHT_QUAD_TINT: f32 = f32::from_bits(0x3f7c_da3b);
 
-/// The height pass's texcoord scale at a composite level: `(241 >> level)`
-/// over the upload's side `(256 >> level)`, i.e. 30/32 = 0.9375 at level 3
-/// and 7/8 at level 5.
-pub fn height_uv_scale(level: i32) -> f32 {
-    if !(0..=7).contains(&level) {
-        return 0.0;
-    }
-    ((0xf1u32 >> level) as f32) / ((0x100u32 >> level) as f32)
+/// The height pass's texcoord scale: the height plane's 241 rows over the
+/// working target's 256 (`241 >> 3` over `256 >> 3`), 30/32 = 0.9375. The
+/// set level does not enter it; the pass writes the shared working target.
+pub fn height_uv_scale() -> f32 {
+    ((0xf1u32 >> TILE_LEVEL) as f32) / ((0x100u32 >> TILE_LEVEL) as f32)
 }
 
 /// One vertex of a composite pass's full-screen-in-block-space quad.
@@ -468,8 +469,8 @@ pub struct PassQuad {
 /// The quad the set passes and the mask pass share: the block's palette
 /// slice as positions, its mask window as texcoords, and a 0/1 corner
 /// colour.
-pub fn block_pass_quad(level: i32, bx: u32, by: u32) -> PassQuad {
-    let quad = block_quad(level, bx, by);
+pub fn block_pass_quad(bx: u32, by: u32) -> PassQuad {
+    let quad = block_quad(bx, by);
     let corner = [
         Vec2::new(0.0, 0.0),
         Vec2::new(1.0, 0.0),
@@ -489,8 +490,8 @@ pub fn block_pass_quad(level: i32, bx: u32, by: u32) -> PassQuad {
 /// texcoords over `241 / 256` of the height target, and the original's
 /// 0.987705 corner colours. The bias the original subtracts from the tile
 /// coordinate is overwritten before the draw, so only this square is used.
-pub fn height_pass_quad(level: i32) -> PassQuad {
-    let s = height_uv_scale(level);
+pub fn height_pass_quad() -> PassQuad {
+    let s = height_uv_scale();
     let t = HEIGHT_QUAD_TINT;
     PassQuad {
         vertices: [
@@ -587,8 +588,8 @@ pub fn set_passes(
                 clear: None,
                 blend: key.add,
                 wrap_clamp: false,
-                mask: Some(MaskRegion::new(level, bx, by, count)),
-                quad: block_pass_quad(level, bx, by),
+                mask: Some(MaskRegion::new(bx, by, count)),
+                quad: block_pass_quad(bx, by),
             });
             start += count;
         }
@@ -598,7 +599,8 @@ pub fn set_passes(
 
 /// The mask pass for one group of up to four layers: cleared to 0, blended,
 /// and drawn over the block's palette slice with its mask window as
-/// texcoords. It writes the caller's working target, at the set's level.
+/// texcoords. It writes the caller's shared 256² working target, not a
+/// composite set.
 pub fn mask_pass(
     level: i32,
     bx: u32,
@@ -616,19 +618,19 @@ pub fn mask_pass(
         layers: count,
         key,
         level,
-        side: set_size(level),
+        side: WORK_TARGET_SIDE,
         target: None,
         clear: Some([0.0; 4]),
         blend: true,
         wrap_clamp: false,
         mask: None,
-        quad: block_pass_quad(level, bx, by),
+        quad: block_pass_quad(bx, by),
     }
 }
 
 /// The height pass: cleared to 0.5 in every channel, blended, clamped, and
-/// drawn over the original's fixed 4.016667 square. `layers[k]` says whether
-/// layer `k` has a height map.
+/// drawn over the original's fixed 4.016667 square into the shared 256²
+/// working target. `layers[k]` says whether layer `k` has a height map.
 pub fn height_pass(level: i32, start: usize, total: usize, layers: &[LayerFlags]) -> PassDraw {
     let count = total.saturating_sub(start).min(4);
     let group = layers.get(start..start + count).unwrap_or(&[]);
@@ -639,13 +641,13 @@ pub fn height_pass(level: i32, start: usize, total: usize, layers: &[LayerFlags]
         layers: count,
         key,
         level,
-        side: set_size(level),
+        side: WORK_TARGET_SIDE,
         target: None,
         clear: Some([HEIGHT_CLEAR; 4]),
         blend: true,
         wrap_clamp: true,
         mask: None,
-        quad: height_pass_quad(level),
+        quad: height_pass_quad(),
     }
 }
 
@@ -661,13 +663,14 @@ pub struct MaskRegion {
 }
 
 impl MaskRegion {
-    /// The region of block (`bx`, `by`) at `level` for a group of `layers`
-    /// layers.
-    pub fn new(level: i32, bx: u32, by: u32, layers: usize) -> Self {
+    /// The region of block (`bx`, `by`) for a group of `layers` layers. The
+    /// window is the block's fixed 32 × 32 texels holding its 30 cells; the
+    /// composite set's level sizes the set targets, not this upload.
+    pub fn new(bx: u32, by: u32, layers: usize) -> Self {
         Self {
             offset: mask_texel_offset(bx, by),
-            side: mask_side(level),
-            cells: mask_cells(level),
+            side: mask_side(),
+            cells: mask_cells(),
             channels: layers.clamp(1, 4) as u32,
         }
     }
@@ -730,7 +733,7 @@ impl BakePlan {
             level: record.level,
             bx,
             by,
-            mask: MaskRegion::new(record.level, bx, by, layers.len().min(4)),
+            mask: MaskRegion::new(bx, by, layers.len().min(4)),
             passes: set_passes(features, filters.base_normal, record.level, bx, by, layers),
             mipmaps: [mipmaps(filters.normal), mipmaps(filters.colour)],
         })
@@ -739,7 +742,7 @@ impl BakePlan {
 
 /// The targets a set copy writes, with the source's and the target set's
 /// sides: the original binds each target of the destination framebuffer,
-/// attaches the source's same target and draws a full-screen quad
+/// attaches the source's same target and draws a full-screen quad.
 /// A target the features disable is skipped.
 pub fn copy_targets(
     source: &CompositeSet,
@@ -749,6 +752,53 @@ pub fn copy_targets(
         .targets()
         .into_iter()
         .map(|kind| (kind, source.target_size(kind), target.target_size(kind)))
+        .collect()
+}
+
+/// One target's copy from a source set into a target set, as the original's
+/// set-copy wrapper runs it: the destination target is bound, the source's
+/// same target is sampled at unit 0 through the copy program, and a quad over
+/// the whole target is drawn. A target whose features are off is not copied.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CopyDraw {
+    pub target: CompositeTarget,
+    /// The source target's side (texels it is sampled from).
+    pub source_side: u32,
+    /// The destination target's side (its viewport).
+    pub target_side: u32,
+    pub quad: PassQuad,
+}
+
+/// The quad a set copy draws: the whole target, position and texcoord equal
+/// at each corner, with the copy program's unused 0/1 corner colours.
+pub fn copy_quad() -> PassQuad {
+    let corner = [
+        Vec2::new(0.0, 0.0),
+        Vec2::new(1.0, 0.0),
+        Vec2::new(1.0, 1.0),
+        Vec2::new(0.0, 1.0),
+    ];
+    PassQuad {
+        vertices: std::array::from_fn(|i| PassVertex {
+            position: corner[i],
+            texcoord: corner[i],
+            colour: corner[i],
+        }),
+    }
+}
+
+/// The copy passes a set copy runs, in target order (colour, normal, gloss,
+/// displacement), each at the source's and destination's sides.
+pub fn copy_draws(source: &CompositeSet, target: &CompositeSet) -> Vec<CopyDraw> {
+    let quad = copy_quad();
+    copy_targets(source, target)
+        .into_iter()
+        .map(|(target, source_side, target_side)| CopyDraw {
+            target,
+            source_side,
+            target_side,
+            quad,
+        })
         .collect()
 }
 
@@ -1584,22 +1634,15 @@ pub fn tex_pos(terrain_level: u32, level: u32, bx: u32, by: u32) -> bevy::math::
     )
 }
 
-/// The mask upload's side at a composite level: `256 >> level`.
-pub fn mask_side(level: i32) -> u32 {
-    if !(0..=8).contains(&level) {
-        0
-    } else {
-        (MASK_UPLOAD << TILE_LEVEL) >> level
-    }
+/// The mask upload's side: a block's mask window is 32 texels, whatever the
+/// composite set's level.
+pub fn mask_side() -> u32 {
+    MASK_UPLOAD
 }
 
-/// The block's cells on the mask upload at a composite level: `240 >> level`.
-pub fn mask_cells(level: i32) -> u32 {
-    if !(0..=8).contains(&level) {
-        0
-    } else {
-        (BLOCK_CELLS * BLOCK_SIDE) >> level
-    }
+/// The block's cells on the mask upload: 30 of its 32 texels.
+pub fn mask_cells() -> u32 {
+    BLOCK_CELLS
 }
 
 /// One composite pass's quad: its four vertices in the palette's tile-scaled
@@ -1610,31 +1653,31 @@ pub struct BlockQuad {
     /// them (low x and high v, high x and high v, high x and low v, low x and
     /// low v). The layer sampler multiplies these by its tiling.
     pub vertices: [Vec2; 4],
-    /// The same corners in the level's mask upload, vertex centred.
+    /// The same corners in the block's 32-texel mask upload, vertex centred.
     pub mask_uv: [Vec2; 4],
 }
 
 impl Default for BlockQuad {
     fn default() -> Self {
-        block_quad(TILE_LEVEL as i32, 0, 0)
+        block_quad(0, 0)
     }
 }
 
-/// The quad of block (`bx`, `by`) in a set at `level`, at the original's
-/// 8 blocks a side, palette scale 4 and a mask upload of `256 >> level`
-/// texels holding `240 >> level` block cells. The original's own quad
-/// builder subtracts a texel bias from the tile coordinate and then
-/// overwrites it with the tile-unit corners, so only these corners reach the
-/// draw.
-pub fn block_quad(level: i32, bx: u32, by: u32) -> BlockQuad {
+/// The quad of block (`bx`, `by`), at the original's 8 blocks a side, palette
+/// scale 4, and the block's fixed 32-texel mask upload holding 30 cells. The
+/// set level does not enter it: the original's quad builder reads the
+/// block's own level (3) for both the slice and the mask window. It subtracts
+/// a texel bias from the tile coordinate and then overwrites it with the
+/// tile-unit corners, so only these corners reach the draw.
+pub fn block_quad(bx: u32, by: u32) -> BlockQuad {
     let side = BLOCK_SIDE as f32;
     let step = PALETTE_SCALE / side;
     let x0 = bx as f32 * step;
     let x1 = (bx + 1) as f32 * step;
     let v0 = -(by as f32 * step);
     let v1 = -((by + 1) as f32 * step);
-    let upload = mask_side(level).max(1) as f32;
-    let cells = mask_cells(level);
+    let upload = mask_side() as f32;
+    let cells = mask_cells();
     let texel = 0.5 / upload;
     let span = (0.5 + cells as f32) / upload;
     BlockQuad {
@@ -1880,10 +1923,13 @@ mod tests {
         assert_eq!(passes[1].key.word(), 0x1000_0332);
         // Every pass draws the block's palette slice and mask window with a
         // 0/1 corner colour.
-        let quad = block_pass_quad(5, 3, 5);
+        let quad = block_pass_quad(3, 5);
         assert_eq!(passes[0].quad, quad);
         assert_eq!(quad.vertices[1].position, Vec2::new(2.0, -2.5));
-        assert_eq!(quad.vertices[1].texcoord, Vec2::new(7.5 / 8.0, 0.5 / 8.0));
+        assert_eq!(
+            quad.vertices[1].texcoord,
+            Vec2::new(30.5 / 32.0, 0.5 / 32.0)
+        );
         assert_eq!(quad.vertices[2].colour, Vec2::new(1.0, 1.0));
         // A disabled feature drops its program.
         let few = set_passes(
@@ -1917,23 +1963,29 @@ mod tests {
         assert_eq!(mask.clear, Some([0.0; 4]));
         assert!(mask.blend && !mask.wrap_clamp);
         assert_eq!(mask.target, None);
-        assert_eq!(mask.quad, block_pass_quad(5, 3, 5));
+        assert_eq!(mask.quad, block_pass_quad(3, 5));
         let height = height_pass(5, 0, 4, &all);
         assert_eq!(height.key.word(), 0xf4);
         assert_eq!(height.clear, Some([0.5; 4]));
         assert!(height.blend && height.wrap_clamp);
-        // The fixed 4.016667 square, 7/8 of the height target and the
+        // The fixed 4.016667 square, 30/32 of the height target and the
         // original's 0.987705 corner colours.
         let quad = height.quad;
         assert_eq!(quad.vertices[0].position, Vec2::new(0.0, 0.0));
         assert_eq!(quad.vertices[2].position, Vec2::new(4.016667, -4.016667));
-        assert_eq!(quad.vertices[2].texcoord, Vec2::new(0.875, 0.875));
+        assert_eq!(
+            quad.vertices[2].texcoord,
+            Vec2::new(30.0 / 32.0, 30.0 / 32.0)
+        );
         assert_eq!(quad.vertices[2].colour, Vec2::splat(HEIGHT_QUAD_TINT));
-        assert_eq!(height_uv_scale(3), 30.0 / 32.0);
-        assert_eq!(height_uv_scale(4), 15.0 / 16.0);
-        assert_eq!(height_uv_scale(2), 60.0 / 64.0);
-        assert_eq!(height_uv_scale(5), 7.0 / 8.0);
-        assert_eq!(height_uv_scale(8), 0.0);
+        assert_eq!(height_uv_scale(), 30.0 / 32.0);
+        // The mask and height passes write the shared 256² working target,
+        // not the set: the same windows at every composite level.
+        assert_eq!(
+            (mask.side, height.side),
+            (WORK_TARGET_SIDE, WORK_TARGET_SIDE)
+        );
+        assert_eq!((mask.side, height.side), (256, 256));
         // Tokens are pinned to the executable's floats.
         assert_eq!(HEIGHT_QUAD_SCALE.to_bits(), 0x4080_8889);
         assert_eq!(HEIGHT_QUAD_TINT.to_bits(), 0x3f7c_da3b);
@@ -1955,8 +2007,8 @@ mod tests {
             plan.mask,
             MaskRegion {
                 offset: (5 * 256 + 7) * 30,
-                side: 8,
-                cells: 7,
+                side: 32,
+                cells: 30,
                 channels: 3,
             }
         );
@@ -1974,7 +2026,8 @@ mod tests {
         )
         .expect("set 21 exists");
         assert_eq!(mip.level, 4);
-        assert_eq!((mip.mask.side, mip.mask.cells), (16, 15));
+        // A low set's mask window is the same 32 × 30 block window.
+        assert_eq!((mip.mask.side, mip.mask.cells), (32, 30));
         assert_eq!(mip.mipmaps, [true, false]);
         assert!(BakePlan::new(&pools, 64, 0, 0, &all, BakeFilters::default()).is_none());
     }
@@ -2056,7 +2109,7 @@ mod tests {
 
     #[test]
     fn a_block_quad_covers_its_palette_slice_and_mask_window() {
-        let q = block_quad(3, 0, 0);
+        let q = block_quad(0, 0);
         assert_eq!(
             q.vertices,
             [
@@ -2078,29 +2131,19 @@ mod tests {
             ]
         );
         // Block (3, 5): x 1.5..2, v −2.5..−3 (v falls with +Z).
-        let q = block_quad(3, 3, 5);
+        let q = block_quad(3, 5);
         assert_eq!(q.vertices[0], Vec2::new(1.5, -2.5));
         assert_eq!(q.vertices[1], Vec2::new(2.0, -2.5));
         assert_eq!(q.vertices[2], Vec2::new(2.0, -3.0));
         assert_eq!(q.vertices[3], Vec2::new(1.5, -3.0));
         // The whole tile is 8×8 such slices, so the UV span is 4 (the
         // palette scale).
-        assert_eq!(block_quad(3, 7, 0).vertices[1].x, 4.0);
-        // A high set's mask upload is 8 texels wide holding 7 cells; a low
-        // set's is 16 texels holding 15 cells.
-        assert_eq!((mask_side(5), mask_cells(5)), (8, 7));
-        assert_eq!((mask_side(4), mask_cells(4)), (16, 15));
-        assert_eq!((mask_side(3), mask_cells(3)), (32, 30));
-        assert_eq!(
-            block_quad(5, 0, 0).mask_uv[1],
-            Vec2::new(7.5 / 8.0, 0.5 / 8.0)
-        );
-        assert_eq!(
-            block_quad(4, 0, 0).mask_uv[1],
-            Vec2::new(15.5 / 16.0, 0.5 / 16.0)
-        );
-        assert_eq!(mask_side(9), 0);
-        assert_eq!(mask_cells(-1), 0);
+        assert_eq!(block_quad(7, 0).vertices[1].x, 4.0);
+        // The mask window is the block's own 32 texels holding its 30
+        // cells, at every composite set level (the set level sizes the
+        // targets, not the upload or the quad).
+        assert_eq!((mask_side(), mask_cells()), (32, 30));
+        assert_eq!(q.mask_uv[1], Vec2::new(30.5 / 32.0, 0.5 / 32.0));
     }
 
     #[test]
@@ -2192,6 +2235,36 @@ mod tests {
         assert_eq!(
             MIPMAP_TARGETS,
             [CompositeTarget::Colour, CompositeTarget::Normal]
+        );
+        // The copy draws a full-target quad per target, sampling the source's
+        // same target: each corner's position and texcoord agree.
+        let draws = copy_draws(&low, &high);
+        assert_eq!(draws.len(), 4);
+        assert_eq!(draws[0].target, CompositeTarget::Colour);
+        assert_eq!((draws[0].source_side, draws[0].target_side), (512, 1024));
+        assert_eq!(draws[3].target, CompositeTarget::Displacement);
+        let quad = copy_quad();
+        assert_eq!(
+            quad.vertices[0],
+            PassVertex {
+                position: Vec2::new(0.0, 0.0),
+                texcoord: Vec2::new(0.0, 0.0),
+                colour: Vec2::new(0.0, 0.0),
+            }
+        );
+        assert_eq!(quad.vertices[2].position, Vec2::splat(1.0));
+        assert_eq!(quad.vertices[2].texcoord, Vec2::splat(1.0));
+        assert_eq!(draws[0].quad, quad);
+        assert!(
+            copy_draws(
+                &low,
+                &CompositeSet {
+                    normal: false,
+                    ..high
+                }
+            )
+            .iter()
+            .all(|draw| draw.target != CompositeTarget::Normal)
         );
     }
 

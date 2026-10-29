@@ -66,7 +66,73 @@ impl TerrainExtensions {
     }
 }
 
-/// One block's shadow receiver: the tile and the block's column and row.
+/// The hooks the static terrain registers when it activates, and what its
+/// deactivation removes: the scene's frame hook, the manager's scene hook,
+/// and per renderer the lit terrain draw and the wireframe debug hook.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TerrainHooks {
+    /// The scene's per-frame hook.
+    pub frame: bool,
+    /// The manager's scene hook.
+    pub scene: bool,
+    /// Lit terrain draw hooks, one per renderer.
+    pub draws: usize,
+    /// Wireframe debug hooks, one per renderer.
+    pub wireframes: usize,
+}
+
+impl TerrainHooks {
+    /// The complete set for `renderers` renderers.
+    pub fn for_renderers(renderers: usize) -> Self {
+        Self {
+            frame: true,
+            scene: true,
+            draws: renderers,
+            wireframes: renderers,
+        }
+    }
+}
+
+/// What deactivating the static terrain did.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TerrainShutdown {
+    /// The active flag was set: the first call only.
+    pub deactivated: bool,
+    /// The hooks removed, as they were registered.
+    pub hooks: TerrainHooks,
+    /// The background worker's wait event was signalled.
+    pub worker_stopped: bool,
+    /// The composite-cache release was registered with the 100 ms timer (the
+    /// first deactivation only).
+    pub release_registered: bool,
+    /// Extensions deactivated, in reverse attach order.
+    pub extensions: usize,
+}
+
+/// The composite caches the release slot frees (`RF_Terrain_Static`'s
+/// release): the per-view program dictionary's entries, the terrain's noise
+/// texture, and the dictionary's array. The original keeps them for the whole
+/// run and frees them from a 100 ms timer after the terrain deactivates.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TerrainCaches {
+    /// Program-dictionary entries: the state words the terrain programs were
+    /// built for.
+    pub programs: Vec<u32>,
+    /// The terrain's noise texture exists.
+    pub texture: bool,
+}
+
+impl TerrainCaches {
+    /// Frees everything and reports how many program entries went with it.
+    /// The original's free runs once and leaves the cache empty.
+    pub fn release(&mut self) -> usize {
+        let freed = self.programs.len();
+        self.programs.clear();
+        self.texture = false;
+        freed
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ShadowReceiver {
     pub tile: usize,
@@ -84,6 +150,8 @@ pub struct SceneInfo {
     pub tiles: usize,
     /// The room-mode pool's two factors (two words of the manager).
     pub room_pool: (usize, usize),
+    /// Renderers the terrain registers its draw and debug hooks with.
+    pub renderers: usize,
 }
 
 /// What bringing the static terrain up produced.
@@ -102,6 +170,8 @@ pub struct TerrainSetup {
     pub room_pool: Option<usize>,
     /// The manager was activated.
     pub activated: bool,
+    /// The hooks its activation registered.
+    pub hooks: TerrainHooks,
 }
 
 /// The singleton manager a scene reuses: the original keeps one global
@@ -113,6 +183,13 @@ pub struct StaticTerrain {
     stream: bool,
     /// The scene the manager attached to, once any.
     pub scene: Option<u32>,
+    /// The terrain is active: its hooks are registered.
+    active: bool,
+    hooks: TerrainHooks,
+    /// The composite caches, freed by the release slot.
+    caches: TerrainCaches,
+    /// The release slot has been registered (it is a global, once).
+    release_registered: bool,
 }
 
 impl StaticTerrain {
@@ -129,6 +206,8 @@ impl StaticTerrain {
         }
         let stream_created = !self.stream;
         self.stream = true;
+        self.active = true;
+        self.hooks = TerrainHooks::for_renderers(scene.renderers);
         let mut receivers = Vec::new();
         let mut room_pool = None;
         if scene.room_mode {
@@ -151,12 +230,43 @@ impl StaticTerrain {
             receivers,
             room_pool,
             activated: true,
+            hooks: self.hooks,
         }
     }
 
     /// The manager's configuration once created.
     pub fn config(&self) -> Option<&ManagerConfig> {
         self.config.as_ref()
+    }
+
+    /// The composite caches, for building program-dictionary entries and
+    /// loading the noise texture.
+    pub fn caches_mut(&mut self) -> &mut TerrainCaches {
+        &mut self.caches
+    }
+
+    /// The terrain's deactivation: the first call clears the active flag,
+    /// removes the scene, frame, draw and debug hooks, stops the worker,
+    /// registers the composite-cache release with its 100 ms timer (once in
+    /// the process) and deactivates every extension. A second call does
+    /// nothing.
+    pub fn shut_down(&mut self, extensions: &mut TerrainExtensions) -> TerrainShutdown {
+        if !self.active {
+            return TerrainShutdown::default();
+        }
+        self.active = false;
+        let hooks = std::mem::take(&mut self.hooks);
+        let release_registered = !self.release_registered;
+        self.release_registered = true;
+        let count = extensions.len();
+        extensions.deactivate();
+        TerrainShutdown {
+            deactivated: true,
+            hooks,
+            worker_stopped: true,
+            release_registered,
+            extensions: count,
+        }
     }
 }
 
@@ -185,6 +295,7 @@ mod tests {
             room_mode,
             tiles,
             room_pool: (3, 5),
+            renderers: 2,
         }
     }
 
@@ -214,6 +325,16 @@ mod tests {
         assert_eq!(first.receivers[63].block, (7, 7));
         assert_eq!(first.receivers[64].tile, 1);
         assert_eq!(first.room_pool, None);
+        assert_eq!(first.hooks, TerrainHooks::for_renderers(2));
+        assert_eq!(
+            first.hooks,
+            TerrainHooks {
+                frame: true,
+                scene: true,
+                draws: 2,
+                wireframes: 2,
+            }
+        );
         assert_eq!(terrain.scene, Some(7));
         // The static record gives the manager its palette scale of 4.
         assert_eq!(terrain.config().unwrap().palette_scale, 4.0);
@@ -232,5 +353,43 @@ mod tests {
         assert!(setup.receivers.is_empty());
         assert_eq!(setup.room_pool, Some(15));
         assert!(setup.created && setup.scene_marked && setup.activated);
+    }
+
+    #[test]
+    fn deactivation_removes_the_hooks_and_registers_the_release_once() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let mut list = TerrainExtensions::new();
+        list.attach(Box::new(Recorder { log: log.clone() }));
+        let mut terrain = StaticTerrain::default();
+        let setup = terrain.bring_up(scene(1, 3, false));
+        assert_eq!(setup.hooks.draws, 2);
+        list.activate();
+        // The caches the release slot frees: two program entries and the
+        // noise texture.
+        terrain.caches_mut().programs.extend([0xff4, 0x111]);
+        terrain.caches_mut().texture = true;
+        let down = terrain.shut_down(&mut list);
+        assert!(down.deactivated && down.worker_stopped && down.release_registered);
+        assert_eq!(down.extensions, 1);
+        assert_eq!(
+            down.hooks,
+            TerrainHooks {
+                frame: true,
+                scene: true,
+                draws: 2,
+                wireframes: 2,
+            }
+        );
+        assert_eq!(*log.lock().unwrap(), ["on", "off"]);
+        let freed = terrain.caches_mut().release();
+        assert_eq!(freed, 2);
+        assert!(terrain.caches_mut().programs.is_empty());
+        assert!(!terrain.caches_mut().texture);
+        // A second shutdown is a no-op, and the release was registered only
+        // the first time.
+        let again = terrain.shut_down(&mut list);
+        assert_eq!(again, TerrainShutdown::default());
+        terrain.bring_up(scene(2, 1, false));
+        assert!(!terrain.shut_down(&mut list).release_registered);
     }
 }
