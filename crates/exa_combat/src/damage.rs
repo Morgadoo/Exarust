@@ -407,6 +407,8 @@ pub struct Outcome {
     /// bleeds above 0.05 ([`crate::wounds`]).
     pub wound: f32,
     pub yellow: f32,
+    /// The yellow damage before its 0.75: what the pain sounds read.
+    pub yellow_unweighed: f32,
     /// Share of the victim's wits taken (before the daze's cap of 0.9).
     pub daze: f32,
     /// The daze's second factor, which a struck attacker's stall takes
@@ -913,6 +915,7 @@ pub fn resolve(
         red: wound * 0.75,
         wound,
         yellow: yellow * 0.75,
+        yellow_unweighed: yellow,
         daze,
         daze_factor,
         impact: shove,

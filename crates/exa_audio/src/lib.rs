@@ -52,12 +52,14 @@ impl Plugin for AudioPlugin {
             .init_resource::<MusicSetting>()
             .add_message::<sounds::HealSound>()
             .add_message::<exa_combat::impact::ImpactSounded>()
+            .add_message::<exa_combat::pain::PainSounded>()
             .add_message::<exa_combat::impact::WeaponSounded>()
             .add_message::<exa_combat::swing_voice::SwingVoiceCue>()
             .add_systems(
                 Update,
                 (
                     hits::hit_sounds,
+                    hits::pain_sounds,
                     hits::impact_sounds,
                     hits::weapon_sounds,
                     sounds::heal_sounds,

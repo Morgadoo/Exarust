@@ -136,7 +136,12 @@ parameters are in. EFX is not applied by the backend (see [Gaps](#gaps)).
   (`foley` classes 2 cloth, 3 leather, 4 mail, 5 plate), the flesh
   (`BdyCol`) or skeleton (`SkelHit`) default, or `HitGlm`; the class rules
   are `exa_combat::sounds`. The part's sound falls silent when no layer
-  covers half. Then the pain grunt.
+  covers half. A blow no longer grunts by itself.
+- A wound's pain sounds (`exa_combat::pain::PainSounded`, after the damage
+  call on flesh only): the character's wound set (`WndFls`, `SkelHit`,
+  `HitGlm`) at the blow, and its pain voice through its voice's request
+  (the short or heavy groan set of its own voice, its waits, volume ×
+  voice volume × sound gain, pitch × voice pitch) at its place.
 - A character keeps a looping source per held item and a pair for its body
   (voice and foley), made lazily and freed on death (`LoopSources`);
   `play_loop_attached` binds a looping variant to a caller-held handle.

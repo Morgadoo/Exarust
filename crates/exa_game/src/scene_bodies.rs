@@ -987,7 +987,7 @@ fn game_items(game: &Game) -> Option<Vec<Item>> {
 }
 
 /// The game's race table.
-fn game_races(game: &Game) -> Vec<Race> {
+pub(crate) fn game_races(game: &Game) -> Vec<Race> {
     game.0
         .pack(PackKind::Resource)
         .and_then(|pack| pack.get("races.rdb"))

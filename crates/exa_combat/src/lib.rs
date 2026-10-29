@@ -83,6 +83,7 @@ impl Plugin for CombatPlugin {
             .add_message::<AttackAskedHook>()
             .add_message::<Weakened>()
             .add_message::<DamageTaken>()
+            .add_message::<pain::PainSounded>()
             .add_message::<SecondWindFired>()
             .add_plugins((
                 stance::StancePlugin,
@@ -576,7 +577,7 @@ fn react_to_hits(
     mut shoves: MessageWriter<Shove>,
     mut sprays: MessageWriter<wounds::Spray>,
     mut weakened: MessageWriter<Weakened>,
-    mut noticed: MessageWriter<DamageTaken>,
+    (mut noticed, mut pains): (MessageWriter<DamageTaken>, MessageWriter<pain::PainSounded>),
     mut winds: MessageWriter<SecondWindFired>,
     mut fighters: Query<(
         Entity,
@@ -802,6 +803,24 @@ fn react_to_hits(
             // check.
             let rules = f.stats.rules;
             let taken = f.health.take(Damage::blow(&outcome), rules, *flags, story);
+            // The wound sound and the pain voice, after the damage call: the
+            // voice only while the yellow left is 0.01 or more. Whether the
+            // character has a wound set is the player's (its voice's).
+            let sounds = pain::pain_sounds(
+                outcome.wound,
+                outcome.yellow_unweighed,
+                &pain::Sufferer {
+                    wound_sound: true,
+                    voice_level: f.health.yellow,
+                },
+            );
+            if sounds != pain::PainSounds::default() {
+                pains.write(pain::PainSounded {
+                    fighter: hit.target,
+                    point: hit.point,
+                    sounds,
+                });
+            }
             if damage::notices_damage(outcome.wound) {
                 noticed.write(DamageTaken {
                     fighter: hit.target,
@@ -1095,6 +1114,7 @@ mod tests {
             .add_message::<wounds::Spray>()
             .add_message::<Weakened>()
             .add_message::<DamageTaken>()
+            .add_message::<pain::PainSounded>()
             .add_message::<SecondWindFired>()
             .add_systems(Update, react_to_hits);
         app
@@ -1334,6 +1354,35 @@ mod tests {
             assert!(found.is_empty());
         }
         assert!(damage::notices_damage(wound), "{:08x}", wound.to_bits());
+    }
+
+    /// A blow on flesh writes its pain sounds from the outcome's wound and
+    /// unweighed yellow, the voice gated on the yellow left; a turned blow
+    /// writes none.
+    #[test]
+    fn a_wound_on_flesh_writes_its_pain_sounds() {
+        let blow = outcome(9);
+        let mut app = reactions();
+        let id = app
+            .world_mut()
+            .spawn((Fighter::default(), Animator::new("Default", "Idle")))
+            .id();
+        strike(&mut app, id, 9);
+        let messages = app.world().resource::<Messages<pain::PainSounded>>();
+        let found: Vec<_> = messages.get_cursor().read(messages).copied().collect();
+        let left = app.world().get::<Fighter>(id).unwrap().health.yellow;
+        let want = pain::pain_sounds(
+            blow.wound,
+            blow.yellow_unweighed,
+            &pain::Sufferer {
+                wound_sound: true,
+                voice_level: left,
+            },
+        );
+        assert_ne!(want, pain::PainSounds::default());
+        assert_eq!(found.len(), 1);
+        assert_eq!((found[0].fighter, found[0].sounds), (id, want));
+        assert_eq!(blow.yellow, blow.yellow_unweighed * 0.75);
     }
 
     /// A fighter whose shell holds 0.5 takes the blow with half its impact,
@@ -2196,6 +2245,7 @@ mod tests {
             .add_message::<wounds::Spray>()
             .add_message::<Weakened>()
             .add_message::<DamageTaken>()
+            .add_message::<pain::PainSounded>()
             .add_message::<SecondWindFired>()
             .init_resource::<exa_physics::body::BodyTicks>()
             .add_systems(Update, (wounds::count_down_wounds, react_to_hits).chain());

@@ -8,14 +8,17 @@
 //! after the other) and a pitch gain. The samples are not played by this
 //! crate; the rules are here as plain data so the callers share them.
 
-/// Which voice line a character makes.
+/// Which voice line a character makes, by the waits the request keeps.
+/// The names are the callers' (the pain voice's grunt and groan); the sets
+/// played are the voice's slots 1, 2 and 0 ([`CharacterVoice::set`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Line {
-    /// The grunt: slot 1, the shortest wait.
+    /// Line 1: the short groan set (`_GroanS`), a 400 ms wait.
     Grunt,
-    /// The groan: slot 2.
+    /// Line 2: the heavy groan set (`_GroanH`), a 500 ms wait.
     Groan,
-    /// The scream: slot 3, at most once 300 ms after the last line.
+    /// Line 3: the grunt set (`_GruntS`), at most once 300 ms after the
+    /// last line, leaving no wait.
     Scream,
 }
 
@@ -115,6 +118,59 @@ impl Voice {
     }
 }
 
+/// A character's voice: the four sound sets its init builds (the living
+/// voice's from the race's first template, a feral one's undead voice from
+/// the second), its two volume gains (the voice volume and the sound gain,
+/// 1 from the constructor) and pitch gain, and the clock of its lines.
+#[derive(bevy::prelude::Component, Debug, Clone, Default, PartialEq)]
+pub struct CharacterVoice {
+    pub grunt: String,
+    pub groan_short: String,
+    pub groan_heavy: String,
+    pub scream: String,
+    /// The wound sound set ([`crate::pain::wound_set`]), if any.
+    pub wound: Option<String>,
+    pub volume: f32,
+    pub gain: f32,
+    pub pitch: f32,
+    pub clock: Voice,
+}
+
+impl CharacterVoice {
+    /// The set line `line` plays: 1 the short groan, 2 the heavy groan, 3
+    /// the grunt (the voice entry's slots 1, 2 and 0); none otherwise.
+    pub fn set(&self, line: i32) -> Option<&str> {
+        match line {
+            1 => Some(&self.groan_short),
+            2 => Some(&self.groan_heavy),
+            3 => Some(&self.grunt),
+            _ => None,
+        }
+    }
+
+    /// One request of line `line` at `now_ms` with the caller's volume and
+    /// pitch, `has_sample` saying whether its set holds a sound.
+    pub fn speak(
+        &mut self,
+        line: i32,
+        has_sample: bool,
+        now_ms: u32,
+        volume: f32,
+        pitch: f32,
+    ) -> Answer {
+        self.clock.request(&Ask {
+            line,
+            has_sample,
+            now_ms,
+            volume,
+            pitch,
+            volume_gain: self.volume,
+            volume_gain2: self.gain,
+            pitch_gain: self.pitch,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -131,6 +187,30 @@ mod tests {
             volume_gain2: 1.0,
             pitch_gain: 1.0,
         }
+    }
+
+    /// Line 1 plays the short groan, 2 the heavy, 3 the grunt; the gains
+    /// apply volume first, then the sound gain.
+    #[test]
+    fn the_lines_play_their_slots() {
+        let mut voice = CharacterVoice {
+            grunt: "vhm01_GruntS".into(),
+            groan_short: "vhm01_GroanS".into(),
+            groan_heavy: "vhm01_GroanH".into(),
+            volume: 1.5,
+            gain: 1.0,
+            pitch: 0.9,
+            ..CharacterVoice::default()
+        };
+        assert_eq!(voice.set(1), Some("vhm01_GroanS"));
+        assert_eq!(voice.set(2), Some("vhm01_GroanH"));
+        assert_eq!(voice.set(3), Some("vhm01_GruntS"));
+        assert_eq!(voice.set(4), None);
+        let Answer::Played(s) = voice.speak(1, true, 100, 0.4, 1.0) else {
+            panic!("refused");
+        };
+        assert_eq!((s.volume, s.pitch, s.next_ms), (0.4 * 1.5, 0.9, 500));
+        assert_eq!(voice.speak(2, true, 499, 0.4, 1.0), Answer::Refused);
     }
 
     #[test]

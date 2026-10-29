@@ -17,7 +17,31 @@
 //! this. The wound sound is the character's own (`WndFls` for flesh,
 //! `SkelHit` for a skeleton, `HitGlm` for a golem), chosen at its init.
 
+use bevy::prelude::*;
+
 use crate::damage::EPSILON;
+
+/// A wound's pain sounds, written by the damage pass after the damage call
+/// on flesh (not on a guard, a parry or a turned blow): the wound sound at
+/// the blow `point`, the voice at the victim's standing place.
+#[derive(Message, Debug, Clone, Copy, PartialEq)]
+pub struct PainSounded {
+    pub fighter: Entity,
+    pub point: Vec3,
+    pub sounds: PainSounds,
+}
+
+/// The wound sound set a character's init picks from its record's race
+/// byte: none for race 0x0E, `SkelHit` for the skeleton (0x01), `WndFls`
+/// for a race without the 0x10 bit, `HitGlm` (the golems) otherwise.
+pub fn wound_set(race: u8) -> Option<&'static str> {
+    match race {
+        0x0E => None,
+        0x01 => Some("SkelHit"),
+        r if r & 0x10 == 0 => Some("WndFls"),
+        _ => Some("HitGlm"),
+    }
+}
 
 /// A sound or voice line's volume and pitch.
 #[derive(Debug, Clone, Copy, PartialEq)]

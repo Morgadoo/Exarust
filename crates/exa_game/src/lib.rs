@@ -24,6 +24,7 @@ pub mod body_inventory;
 pub mod body_overlay;
 pub mod career;
 pub mod char_view;
+pub mod character_voice;
 pub mod commands;
 pub mod container_fill;
 pub mod control_nodes;
@@ -150,7 +151,7 @@ impl Plugin for GamePlugin {
             limp::LimpPlugin,
             balance::BalancePlugin,
             fall::FallPlugin,
-            footprints::FootprintPlugin,
+            (footprints::FootprintPlugin, character_voice::CharacterVoicePlugin),
             (cursor::CursorPlugin, char_view::CharViewPlugin),
             (
                 hand::HandPlugin,

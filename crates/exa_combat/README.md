@@ -324,12 +324,15 @@ stops. A block restarts the rate at 0, about 6 s to full rate and 15 s
 from empty to full. The body tick that calls it is the kernel lane's
 (`TMotileDynamics`); the rule and its test live here.
 
-The character's voice lines (`voice`, the part's request): a grunt
-(`Voice::GRUNT_WAIT` 400 ms), a groan (500 ms) and a scream (300 ms after
+The character's voice lines (`voice`, the part's request): line 1
+(`Voice::GRUNT_WAIT` 400 ms), line 2 (500 ms) and line 3 (300 ms after
 the last line), each scaled by the character's volume and pitch gains; a
 line with no sample plays nothing and leaves the wait alone, and a line
-still on its wait is refused. The collapse asks for the groan and the
-damage routine for the pain lines; nothing plays them in the game yet.
+still on its wait is refused. Lines 1, 2 and 3 play the voice's short
+groan, heavy groan and grunt sets (`_GroanS`, `_GroanH`, `_GruntS`: the
+voice entry's slots 1, 2 and 0, from the assembly). Every fighter carries
+its voice (`CharacterVoice`: the sets, the wound set, the gains and the
+clock), built by `exa_game::character_voice`.
 
 The damage routine's pain sounds (`pain`): after the damage call, the
 victim's wound sound (its own, `WndFls`, `SkelHit` or `HitGlm`) and its
@@ -340,7 +343,11 @@ grunt (`pain_sounds`; a voice level under 0.01 is mute). A struck player
 feels `7Y + 7L` (a big striker's blow by its speed, an overhead's at 0.4):
 the camera jolts by its root past 1 and the pad rumbles by it
 (`struck_player_jolt`); a striking player's pad rumbles by half the yellow
-(`striking_player_rumble`). Tested, not called yet.
+(`striking_player_rumble`). The pain sounds are live: the damage pass
+writes `PainSounded` after the damage call on flesh (wound `L`, the
+unweighed yellow `Y`, the yellow left as the voice gate) and `exa_audio`
+plays them; the jolt and the rumble are tested, not called (no camera
+jolt or pad rumble reads them).
 
 A fall to death (`fall`) is kept on every fighter (`FallDeath`: its stage,
 the game-clock time it was lost, whether it has left the world) and
