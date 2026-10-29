@@ -957,7 +957,11 @@ container's icon by the plain card's placement and the panel's entries;
 possession list), and a right click, Escape or the screen close shuts it:
 the panel saves its entries back into the object's container section
 (`exa_world::ObjectSections`, the session's copy of the record) and its
-icons are released. `--open-container FRAME` (Exarust's debug helper) opens
+icons are released. A consumable (usable kind 0, subtype 1) the double
+click uses joins the controls' deferred list (`player_controls::PendingUses`)
+with its section's target word, due 2100 ms on; `run_pending_uses` hands
+each due entry, in order, to `exa_world::mechanisms::OpenDoorsUnder`.
+`--open-container FRAME` (Exarust's debug helper) opens
 the container nearest the player at that frame after the player appears.
 `npc_search` hosts the original's follow state and the companion's search
 in the running game: a level brain whose roles choose the follow follows the

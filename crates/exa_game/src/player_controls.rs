@@ -225,6 +225,10 @@ pub struct PendingUse {
     pub target: u32,
 }
 
+/// The controls' deferred interaction list as the running game keeps it.
+#[derive(bevy::prelude::Resource, Debug, Clone, Default, PartialEq)]
+pub struct PendingUses(pub UseQueue);
+
 /// The controls' deferred interaction list. The original keeps it in an
 /// array and takes a done entry out by shifting every later entry down one
 /// place, so the list keeps its order (not the timed cleaning list's
@@ -244,8 +248,8 @@ impl UseQueue {
     /// One frame at `now_ms` (the per-frame update, while the controls are
     /// not paused and a player exists): the entries whose time is not after
     /// `now` run, in order, the list shifting down over each. Returns them
-    /// in order. [No caller yet: the double click's consumable is not
-    /// wired.]
+    /// in order. Each one opens the doors under its target's node
+    /// ([`exa_world::mechanisms::OpenDoorsUnder`]).
     pub fn tick(&mut self, now_ms: u32) -> Vec<PendingUse> {
         let mut done = Vec::new();
         let mut i = 0;
