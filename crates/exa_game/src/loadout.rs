@@ -354,6 +354,36 @@ pub fn preview(
     }
 }
 
+/// The editor's item for an object database record: the rank word's top
+/// three bits are the rank it needs and its low five the points it costs
+/// (the same two fields the armour rule reads). Apparel is worn; anything
+/// else is held. The weapon family (`0x10` one-handed, `0x20`/`0x30`
+/// two-handed) is the caller's: it is the catalogue record's own field, not
+/// part of [`ItemFacts`]. An item id of zero is not an item.
+///
+/// Guess: the apparel test is the record's class byte being non-zero; the
+/// original reads the item's kind word, which the facts here do not carry.
+pub fn item_from_facts(
+    facts: &crate::arena_outfit::ItemFacts,
+    family: u32,
+    two_handed: bool,
+) -> Option<LoadoutItem> {
+    if facts.id.0 == 0 {
+        return None;
+    }
+    // The rank and the bulk as the pool rows read them.
+    let points = i32::from(facts.bulk());
+    let rank = i32::from((facts.rank_word as u8) >> 5);
+    let item = if facts.apparel_class != 0 {
+        LoadoutItem::armour(facts.id.0, family, points, rank)
+    } else if two_handed {
+        LoadoutItem::two_handed(facts.id.0, family, points, rank)
+    } else {
+        LoadoutItem::weapon(facts.id.0, family, points, rank)
+    };
+    Some(item)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -505,6 +535,29 @@ mod tests {
         assert_eq!(reload_source(3, 1), Some(ListSource::EmployeeList(0)));
         assert_eq!(reload_source(1, 0), None);
         assert_eq!(reload_source(2, 5), Some(ListSource::Record));
+    }
+
+    #[test]
+    fn item_facts_give_the_rank_and_the_points_of_a_record() {
+        use crate::arena_outfit::{ItemFacts, ItemId};
+        let facts = ItemFacts {
+            id: ItemId(77),
+            // Rank 3 in the low byte's top three bits, 9 in its low five.
+            rank_word: 0x0069,
+            ..ItemFacts::default()
+        };
+        let weapon = item_from_facts(&facts, 0x10, false).unwrap();
+        assert_eq!((weapon.id, weapon.rank, weapon.points), (77, 3, 9));
+        assert!(!weapon.worn && !weapon.two_handed);
+        assert!(item_from_facts(&facts, 0x20, true).unwrap().two_handed);
+        let worn = ItemFacts {
+            apparel_class: 4,
+            ..facts.clone()
+        };
+        let armour = item_from_facts(&worn, 0x40, false).unwrap();
+        assert!(armour.worn);
+        assert_eq!((armour.rank, armour.points), (3, 9));
+        assert!(item_from_facts(&ItemFacts::default(), 0, false).is_none());
     }
 
     #[test]

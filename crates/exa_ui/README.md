@@ -395,7 +395,16 @@ first empty slot. The arena loadout (`loadout`) reads the form's fields
 (arsenal 228 wide at (4, 180), 492 · opacity tall; the equipment 236 wide
 at the parent's right edge), the cost rule (a weapon's points less what it
 displaces from the hands) and the equip rule (held copies, the form's rank,
-the limit); its list model of the kit is Exarust's own. The divination
+the limit, counting the copies the weapon and worn containers hold; the
+arsenal's do not count). An item dragged back onto the arsenal
+(`return_to_stock`) is taken back by an arsenal entry of the form's
+category lent under the swap mask, sorted into the kit container it left
+(`sort_drop`: weapon, off-hand copy or worn), and the copies the kit still
+holds are counted for the rank's record; an off-hand copy frees the worn
+entry a hand holds. `apply_drop` is the list model's equip onto the kit
+behind the equip gate. Its paint frame lays the backdrop, the two
+containers and the preview out at the constructor's rectangles as flat
+fills, in the paint's order. Its list model of the kit is Exarust's own. The divination
 reading (`div_card`) deals three distinct cards out of twenty-two, eases
 the deal and the turns by `(3 − 2t)·t²`, turns each card half over about
 a swinging axis and draws the original's drop shadow. The emblem editor

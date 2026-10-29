@@ -831,8 +831,15 @@ The arena's per-rank kits are in (`loadout`): `Member::loadouts` holds
 six of the record's own loadouts (hands and worn items); the editor takes
 the rank's kit, that rank's point limit (`arena::point_limit`) and the
 shop's shelf as its arsenal, and its close writes the kit back in the
-arena and match modes. The session save does not store the kits or the
-emblem yet. The technique selector's bridge (`techniques`) reads a
+arena and match modes. The editor runs as a screen (`loadout_screen`):
+`OpenLoadoutEditor` shows it, a press from the arsenal drops the item into
+the kit and a press on the kit releases it, `LoadoutCloseRequest` closes it
+(the arena and match closes save the kit, a champion stores its record)
+and the paint lays the backdrop, the arsenal, the equipment and the
+preview out at the constructor's rectangles through the GUI draw path. The
+session save carries the company emblem (`arena_tables`) but not the six
+per-rank kits; they start empty on load. The technique selector's bridge
+(`techniques`) reads a
 member's six skills (`skill_xp`, `techniques`) and its `xp` as the pool
 and writes them back with the levels. The company emblem is an
 `exa_ui::EmblemRecord` on `Company`. The teleporter's destination screen

@@ -1,0 +1,4 @@
+- [x] Port the arsenal's drop handler (`return_to_stock`, `sort_drop`) with hand-worked tests
+- [x] Restore the equip gate's two-container count and the list model's `apply_drop`
+- [x] Remove the duplicate match-mode release
+- [x] Update the exa_ui README

@@ -65,6 +65,7 @@ pub mod level_change;
 pub mod level_transition;
 pub mod limp;
 pub mod loadout;
+pub mod loadout_screen;
 pub mod look_overlay;
 pub mod manage;
 pub mod manage_icons;
@@ -186,6 +187,7 @@ impl Plugin for GamePlugin {
             flow::FlowPlugin,
             splash::SplashPlugin,
             div_card_screen::DivinationPlugin,
+            loadout_screen::LoadoutScreenPlugin,
             transition_screen::TransitionScreenPlugin,
             settings_form::SettingsFormPlugin,
         ))
