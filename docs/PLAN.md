@@ -128,6 +128,8 @@ Done (change `review-the-third-streaming-pass`; streaming3 lane, reviewed): cube
 
 Done (change `convert-the-oldest-object-databases`; objdb2 lane, reviewed): the object database converts the oldest layout (old appearance parts into layers, categories and finishes into armour type and variant, a paint seed per body, the random tables' condition words with the setters applied in order), the loader runs its converter table from the matched entry down, and the class-0 use action, the experience table, the editor's look roll and the scene lookup and rewrite of placed ids are in; placed condition-scaled lights use the original's double-precision share. The review fixed the signed setter's mask, the converter dispatch (the lane ran the body converter for the wrong layout), the body's power-word source and unknown-category handling, and the random-table offsets and setter order. Remaining: migration's `@` factory regeneration, a real paint-seed generator, callers for the use action, the editor roll and the save-time id rewrite. SG_ObjectDB2 about 74% → 90%.
 
+Done (osmain3 lane, Claude, after the DeepSeek provider failed): the OS layer now shows the original's menu cursor as the window's pointer, minimises a full-screen window when it loses focus, opens the original's error and warning boxes and logs its display-mode and package-file errors. RF_OS_Functions 58% → 64%.
+
 ### Phase 2 — Static world (in progress)
 
 Done (change `add-level-viewer`): level props and grid header decoded;
@@ -1345,6 +1347,8 @@ Done (playerbeh lane, Claude): the player behaviour's tick now rebuilds its cont
 
 Done (playerctl10 lane, Claude): the world-object click runs as the original's controls do (devices used first, then a card or the narrated description), a chest picked as level geometry is found by the original's bounding search and opens, a used consumable leaves the scene with its sound, opening doors plays their lock sound, and level-local records get card facts; walk-to-interact was not built because the original has none (an out-of-reach double click does nothing). SG_PlayerControls 64% → 67%.
 
+Done (motilepart11 lane, Claude): held weapons keep their weapon bit as in the original, so clashes and weapon parries now happen live (they had been misread as blocks); a torch blocks with the bare arm; a block rings the shield's or torch's own material sound. TMotilePart 57% → 58%.
+
 ### Phase 6 — AI (started)
 
 Done (change `build-the-navigation-grid`): every level gets the original's
@@ -1936,6 +1940,10 @@ Done (change `return-items-to-the-loadout-arsenal`; forms3 lane, DeepSeek, revie
 Done (change `review-the-game-flows-start-and-respawn-rules`; gamemain4 lane, DeepSeek, reviewed): the story and practice starts record the original's start point, views and start record, the first wake-up ends on the player's animator word, the revive and story respawn follow the original's order, a NaN health takes the alive tip and the boot applies the settings store's unlock words; the review restored the exit nudge's sign test and removed a wrong controls-off step that left a respawned player without controls. SG_GameMain 57% → 58%.
 
 Done (change `review-the-arena-return-and-draws`; arena6 lane, DeepSeek, reviewed): the return to the hub writes each company body's health back into the manager's and roster's records with the original's participant ids (the manager is 0, so a manager's death now resolves as in the original), a lesson crossing a rank copies the previous rank's kit, a rival week records the champion team's company, and the match experience award is reproduced as tested functions; the review corrected the scene draw's forfeit rule, the 64-bit weight conversions and the experience rounding, and reverted the lane's square health gauge and single-precision bracket angle. XA_Arena 81% → 82%.
+
+Done (change `run-the-story-wake-and-combat-mode`; gamemain5 lane, Claude, after the DeepSeek provider failed): the game flow's combat-mode setter, the revive's order, the story respawn giving the controls back, the first wake-up ending when the body is up (the original's wake tick now runs) and the camera turning to each start's shot follow the original. SG_GameMain 58% → 60%.
+
+Done (savegames8 lane, Claude, after the DeepSeek provider failed): saves now run in the game: a story or arena session saves to a new slot and an arena slot loads back as the original's full load does (tables, list regeneration with the item classification, clock, player reset), on the original's cached slot list; the scan's repeat rule was corrected. GPU runs wrote and reloaded both kinds of slot. XA_SaveGames 67% → 70%.
 
 ### Phase 8 — Polish and release
 
