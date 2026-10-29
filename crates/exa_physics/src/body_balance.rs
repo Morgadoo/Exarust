@@ -1321,7 +1321,13 @@ impl Ragdoll {
     ///
     /// The original's frame height is (the root part's clip height less the
     /// chosen leg's thigh) plus the chosen ground, the reach and the sole:
-    /// the root over its hip, the hip over its ankle. The caller decides
+    /// the root over its hip, the hip over its ankle. The assembly writes it
+    /// into the placement frame's translation and then places each thigh at
+    /// its offset from the root part on that frame, so the height is the
+    /// root's (the pelvis's): the original's frame sits at the pelvis. The
+    /// reach is a bent leg's (the 40° triangle, shaped), so the snapped
+    /// pelvis can sit under the clip's; the lift then raises it to its
+    /// target. Its parts are logged at debug level. The caller decides
     /// whether to move the character by it; Exarust's spawn keeps the
     /// controller's own height. The original also moves each thigh to its
     /// clip place on the new frame, which Exarust's freshly built body
@@ -1390,6 +1396,19 @@ impl Ragdoll {
         // The frame's height the original writes: the root over the chosen
         // thigh, the chosen ground, the reach and the sole (cm).
         let height = (root_y - thigh_y) + grounds[chosen] + reach + sole_cm;
+        debug!(
+            "placement snap: frame {:.1} cm, root over thigh {:.1}, ground {:.1} (leg {chosen}, \
+             grounds {:.1}/{:.1}), reach {:.1} (leg length {:.1}), sole {:.1} -> {:.1}",
+            frame.translation.y * CM,
+            root_y - thigh_y,
+            grounds[chosen],
+            grounds[0],
+            grounds[1],
+            reach,
+            self.legs[chosen].length * CM,
+            sole_cm,
+            height
+        );
         let sole = self.sole;
         let Ragdoll { legs, drive, .. } = self;
         let drive = drive.as_mut()?;
