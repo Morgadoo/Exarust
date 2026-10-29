@@ -133,7 +133,7 @@ bite's link builder:
 |---|---|
 | `0f2ba02d` | Blend the props' link mobilities and follow the original's breakable grab |
 | `fda5599a` | Keep the node clock's render fraction and a body's draw fraction |
-| (this commit) | Archive the link-mobility and grab change and add the tetra7 report |
+| `cb30526f` | Archive the link-mobility and grab change and add the tetra7 report |
 
 Checks before each commit (remote worker, real output): `cargo fmt --all
 -- --check` exit 0; `cargo clippy -p exa_physics -p exa_world -p
