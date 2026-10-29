@@ -22,7 +22,7 @@ use bevy::window::PrimaryWindow;
 use exa_ui::gui_draw::{GuiFrame, GuiFrames, GuiTextures, LayerTexture, menu_batch, text_batch};
 use exa_ui::gui_font::FONTBASE_24;
 use exa_ui::gui_text::{MenuFont, menu_font_scale};
-use exa_ui::menu::menu_row_scale;
+use exa_ui::menu::{EndSessionAction, EndSessionInput, dispatch_end_session, menu_row_scale};
 use exa_ui::skin::{SkinBatch, SkinInk};
 
 use crate::flow::{Action, EndMenu, Flow, FlowSteps, Mode, Step};
@@ -60,19 +60,38 @@ pub enum EndAction {
 /// dispatch does nothing: a row past the ones it handles (the arena's third
 /// row among them) and every scripted or menu mode, whose end-menu handler
 /// is the script's own (not modelled).
+///
+/// The decision is the end-session menu's own click dispatch
+/// ([`exa_ui::menu::dispatch_end_session`]); Exarust registers no scripted
+/// mode handlers, so its handler table is empty.
 pub fn end_action(menu: &EndMenu, mode: Mode, row: usize) -> Option<EndAction> {
-    match (mode, row) {
-        (Mode::Practice, 1) if menu.kind == crate::flow::MENU_WON => Some(EndAction::Restart),
-        (Mode::Practice, 1) => Some(EndAction::NextFight),
-        (Mode::Practice, 2) => Some(EndAction::QuitToMenu),
-        (Mode::Story, 1) if menu.kind == crate::flow::MENU_RECONSTRUCTED => {
-            Some(EndAction::StoryContinue)
-        }
-        (Mode::Story, 1 | 2) => Some(EndAction::StoryExit),
-        (Mode::Arena, 1) => Some(EndAction::ArenaContinue),
-        (Mode::Arena, 2) => Some(EndAction::QuitToMenu),
-        _ => None,
+    match end_dispatch(menu, mode, row, 0)? {
+        EndSessionAction::PracticeRestart => Some(EndAction::Restart),
+        EndSessionAction::NextPracticeFight { .. } => Some(EndAction::NextFight),
+        EndSessionAction::BackToMenu => Some(EndAction::QuitToMenu),
+        EndSessionAction::StoryRespawn => Some(EndAction::StoryContinue),
+        EndSessionAction::StoryQuit => Some(EndAction::StoryExit),
+        EndSessionAction::ArenaContinue => Some(EndAction::ArenaContinue),
+        EndSessionAction::Registered { .. } => None,
     }
+}
+
+/// The end-session click for the 1-based `row` with the practice ladder at
+/// `fight`.
+pub fn end_dispatch(
+    menu: &EndMenu,
+    mode: Mode,
+    row: usize,
+    fight: i32,
+) -> Option<EndSessionAction> {
+    let input = EndSessionInput {
+        mode: mode.word(),
+        item: i32::try_from(row).unwrap_or(i32::MAX),
+        menu: i32::try_from(menu.kind).unwrap_or(-1),
+        fights: crate::practice::PRACTICE_FIGHTS,
+        fight,
+    };
+    dispatch_end_session(input, &[]).action
 }
 
 /// One painted end-menu row: its place, text and ink.
@@ -222,8 +241,10 @@ impl EndMenuScreen {
         // replaces it); the other rows that leave always fade it.
         match action {
             EndAction::NextFight => {
-                let into_last = i64::from(crate::practice::PRACTICE_FIGHTS) - 1
-                    == i64::from(flow.practice.fight);
+                let into_last = matches!(
+                    end_dispatch(&menu, flow.mode, selected + 1, flow.practice.fight),
+                    Some(EndSessionAction::NextPracticeFight { last: true })
+                );
                 flow.transition(Action::NextPracticeFight, into_last)
             }
             EndAction::StoryContinue => flow.continue_after_death(),

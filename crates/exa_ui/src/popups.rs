@@ -14,6 +14,8 @@
 //! Evidence: the three popups' constructors, close, draw and hit handlers
 //! (`docs/UI.md`, item GUI).
 
+use crate::skin::SkinBatch;
+
 /// The item card's size, tag, flags and digit.
 pub const DESC_WIDTH: i32 = 268;
 pub const DESC_HEIGHT: i32 = 260;
@@ -185,13 +187,26 @@ pub fn desc_icon_place(
     unit: i32,
     card: bool,
 ) -> (i32, i32) {
+    desc_icon_place_sized(width, height, icon_height, unit, card, ICON_SIZE)
+}
+
+/// [`desc_icon_place`] for an icon of side `icon_size` in place of the
+/// renderer's 160 (the running card scales its icon with the unit).
+pub fn desc_icon_place_sized(
+    width: i32,
+    height: i32,
+    icon_height: i32,
+    unit: i32,
+    card: bool,
+    icon_size: i32,
+) -> (i32, i32) {
     if !card {
         return (
-            (width.wrapping_sub(ICON_SIZE)) / 2,
-            (height.wrapping_sub(ICON_SIZE)) / 2 + unit * 4,
+            (width.wrapping_sub(icon_size)) / 2,
+            (height.wrapping_sub(icon_size)) / 2 + unit * 4,
         );
     }
-    let mut x = unit * 13 - ICON_SIZE / 2;
+    let mut x = unit * 13 - (icon_size >> 1);
     let y = unit;
     if unit * 11 < icon_height {
         x = x.wrapping_add(icon_height).wrapping_sub(unit * 11);
@@ -205,9 +220,15 @@ pub fn desc_rescale(height: i32, parent_height: i32, unit: i32) -> i32 {
     (f64::from(unit) * (f64::from(height) / f64::from(parent_height))).round_ties_even() as i32
 }
 
-/// The card's mouse rule, applied after the base form handler (whose answer
-/// the card returns unchanged): a left press sets the keep-open bit (`2`) in
-/// the form's flags; otherwise a right release starts the fade-out.
+/// The keep-open bit a left press sets in the card's form flags; the leave
+/// rule ([`desc_hover`]) then leaves the card up.
+pub const DESC_KEEP_OPEN: u32 = 2;
+
+/// The card's mouse rule (its press slot, which takes both a press, `0x1000`,
+/// and a click, `0x2000`), applied after the base form handler (whose answer
+/// the card returns unchanged): any left-button event sets the keep-open bit
+/// (`2`) in the form's flags; otherwise any right-button event starts the
+/// fade-out ([`PopupFade::fade_out`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DescMouse {
     pub keep_open: bool,
@@ -228,7 +249,8 @@ pub fn desc_mouse(mask: u16) -> DescMouse {
     }
 }
 
-/// The card's hit test only works once it is fully shown.
+/// The card's hit test only works once its shown flag is set (the fade-in
+/// reached its shown clock).
 pub fn desc_hits(shown: bool, base: i32) -> i32 {
     if shown { base } else { 0 }
 }
@@ -272,13 +294,17 @@ pub const CONTAINER_PANEL: u32 = 544;
 pub const CONTAINER_INSET: i32 = 0;
 pub const CONTAINER_STEP: i32 = 4;
 
-/// The container close: notify the game of the panel's record id, destroy the
-/// panel, clear its id and run the card's close. A popup whose closing byte
-/// (`0x11b`) is set leaves all of that alone and answers true.
+/// The container close: notify the game of the panel's record id, have the
+/// panel save its contents back into the container's record (releasing its
+/// icons), clear the panel's record id and run the card's close (which
+/// releases the card's icon). A popup that is already closing leaves all of
+/// that alone and answers true.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ContainerClose {
     pub notify_game: bool,
-    pub destroy_panel: bool,
+    /// The panel writes its entries back into the container record, with
+    /// the icon release flag set.
+    pub save_contents: bool,
     pub clear_id: bool,
     pub run_base: bool,
 }
@@ -287,14 +313,14 @@ pub fn container_close(closing: bool) -> ContainerClose {
     if closing {
         ContainerClose {
             notify_game: false,
-            destroy_panel: false,
+            save_contents: false,
             clear_id: false,
             run_base: false,
         }
     } else {
         ContainerClose {
             notify_game: true,
-            destroy_panel: true,
+            save_contents: true,
             clear_id: true,
             run_base: true,
         }
@@ -333,10 +359,10 @@ pub fn container_form() -> ContainerForm {
     }
 }
 
-/// The container's right-click, answered after the base card handler runs for
-/// anything but a right release. `None`: run the card's mouse rule. `Some(true)`:
-/// a release carrying `0x2000` closes the popup and answers 1. `Some(false)`:
-/// any other right release is answered 0 and ignored.
+/// The container's press slot. `None`: not a right-button event, run the
+/// card's mouse rule. `Some(true)`: a right click (`0x2000`) closes the popup
+/// and answers 1. `Some(false)`: a right press is answered 0 and ignored, so
+/// the container popup does not fade on a right press as the card does.
 pub fn container_right_click(mask: u16) -> Option<bool> {
     if mask & 2 == 0 {
         None
@@ -384,8 +410,8 @@ pub fn parchment_form() -> ParchmentForm {
     }
 }
 
-/// The parchment's mouse: a right release hides it and answers 3; any
-/// other event runs the base handler.
+/// The parchment's press slot: any right-button event (press or click)
+/// hides it and answers 3; any other event runs the base handler.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParchmentMouse {
     Hide,
@@ -404,9 +430,10 @@ pub fn parchment_mouse(mask: u16) -> ParchmentMouse {
 pub const PARCHMENT_HIT: i32 = -3;
 
 /// The texture pixel under a click: the click times six over the unit,
-/// rounded half to even.
+/// rounded half to even. The factor is divided in double precision and
+/// narrowed to single before the single-precision product.
 pub fn parchment_texel(click: (i32, i32), unit: i32) -> (i32, i32) {
-    let k = PARCHMENT_SCALE / unit as f32;
+    let k = (f64::from(PARCHMENT_SCALE) / f64::from(unit)) as f32;
     (
         (click.0 as f32 * k).round_ties_even() as i32,
         (click.1 as f32 * k).round_ties_even() as i32,
@@ -433,6 +460,51 @@ pub fn parchment_quad(x: i32, y: i32, width: i32, height: i32) -> [[f32; 4]; 4] 
         [x1, y1, 1.0, 0.0],
         [x1, y0, 1.0, 1.0],
     ]
+}
+
+/// The parchment's draw: the textured program (mode 2), its texture bound,
+/// white ink at the GUI's alpha byte (`alpha`, 255 unless a fade lowered it)
+/// and the quad of [`parchment_quad`] in its vertex order.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParchmentDraw {
+    pub batch: SkinBatch,
+    /// The GUI's alpha scales go back to 1 after the draw: the form was
+    /// fading and its fade had finished.
+    pub restore_alpha: bool,
+}
+
+/// Builds the parchment's draw. While the form is fading (`fading`), its
+/// fade step runs first (`fade_step`, which sets the GUI's alpha scales):
+/// a step that answers false draws nothing; a step whose fade end field is
+/// zero (`fade_done`) has the alpha scales reset after the draw.
+pub fn parchment_draw(
+    rect: (i32, i32, i32, i32),
+    alpha: u8,
+    fading: bool,
+    fade_step: impl FnOnce() -> bool,
+    fade_done: bool,
+) -> Option<ParchmentDraw> {
+    let mut restore_alpha = false;
+    if fading {
+        if !fade_step() {
+            return None;
+        }
+        restore_alpha = fade_done;
+    }
+    let mut batch = SkinBatch::new();
+    batch.select(2, 0, true);
+    batch.texture_binds += 1;
+    batch.set_rgba(0xff, 0xff, 0xff, alpha);
+    batch.begin();
+    for [x, y, u, v] in parchment_quad(rect.0, rect.1, rect.2, rect.3) {
+        batch.set_uv(u, v);
+        batch.vertex(x, y);
+    }
+    batch.end_quads();
+    Some(ParchmentDraw {
+        batch,
+        restore_alpha,
+    })
 }
 
 /// A text sample hits the parchment at or above [`PARCHMENT_ALPHA`].
@@ -565,6 +637,33 @@ mod tests {
     }
 
     #[test]
+    fn the_parchment_draws_one_textured_quad() {
+        let d = parchment_draw((10, 20, 30, 40), 255, false, || unreachable!(), true).unwrap();
+        assert!(!d.restore_alpha);
+        assert_eq!(d.batch.mode, crate::skin::SkinMode::Textured);
+        assert_eq!(d.batch.texture_binds, 1);
+        assert_eq!(d.batch.primitives.len(), 1);
+        let v = d.batch.vertices_of(&d.batch.primitives[0]);
+        assert_eq!(v.len(), 4);
+        assert_eq!(v[0].ink, [255, 255, 255, 255]);
+        let quad = parchment_quad(10, 20, 30, 40);
+        for (vertex, [x, y, u, w]) in v.iter().zip(quad) {
+            assert_eq!((vertex.x, vertex.y, vertex.u, vertex.v), (x, y, u, w));
+        }
+        // A fade that answers false draws nothing; a finished one restores.
+        assert!(parchment_draw((0, 0, 1, 1), 255, true, || false, true).is_none());
+        let faded = parchment_draw((0, 0, 1, 1), 128, true, || true, true).unwrap();
+        assert!(faded.restore_alpha);
+        let v = faded.batch.vertices_of(&faded.batch.primitives[0]);
+        assert_eq!(v[0].ink[3], 128);
+        assert!(
+            !parchment_draw((0, 0, 1, 1), 255, true, || true, false)
+                .unwrap()
+                .restore_alpha
+        );
+    }
+
+    #[test]
     fn the_parchment_maps_clicks_to_texels() {
         // At four pixels to the unit a click is six sixths: 1.5 texels a pixel.
         assert_eq!(parchment_texel((4, 10), 4), (6, 15));
@@ -575,7 +674,7 @@ mod tests {
     #[test]
     fn the_container_and_parchment() {
         let c = container_close(false);
-        assert!(c.notify_game && c.destroy_panel && c.clear_id && c.run_base);
+        assert!(c.notify_game && c.save_contents && c.clear_id && c.run_base);
         assert!(!container_close(true).run_base);
         assert_eq!(container_right_click(0x2002), Some(true));
         assert_eq!(container_right_click(0x0002), Some(false));

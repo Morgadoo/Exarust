@@ -232,44 +232,38 @@ pub fn skill_selector_key(
     }
 }
 
-/// A routine or form a menu hands over to, by what it does where that is
-/// established, else by its place in the menu that calls it.
+/// A form a menu hands over to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MenuStep {
-    /// The end page's continue: the next arena match when one is due,
-    /// otherwise the session's end.
-    Continue,
-    /// Back to the main menu.
-    MainMenu,
-    /// Reload the level the session stored (page 4's first action on form
-    /// page 4).
-    ReloadLevel,
-    /// End the session and go back to the main menu (page 4's other
-    /// actions).
-    EndToMainMenu,
-    /// The next practice fight, with the last-round flag (page 8 off form
-    /// page 2).
-    NextPracticeFight,
-    /// Hides the form the game keeps aside, when one is up (page 8's first
-    /// call on form page 2).
-    HideKeptForm,
-    /// Page 8's second call on form page 2 (not traced).
-    PageEightSecond,
-    /// The character screen's record preparation (page 8's third call; the
-    /// class confirmation's too).
-    PrepareCharacterRecord,
-    /// The form page 8 shows after its three calls (not traced).
-    PageEightForm,
     /// The form a confirmed class opens.
     ClassForm,
 }
 
-/// One dispatched end-session action.
+/// What a click on the end-session menu runs, by the game mode first and
+/// the clicked item second. The routines behind the transition screen take
+/// a music-fade flag.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EndSessionAction {
-    Call(MenuStep),
-    Show { form: MenuStep, flag: bool },
-    Registered(u64),
+    /// Practice's victory menu, first item: the prelude closes, the
+    /// experience system and the character screen are reset, then the
+    /// session leaves to the menu form behind the transition (music fades).
+    PracticeRestart,
+    /// Practice's next fight behind the transition; the music fades only
+    /// into the last fight (`last`), whose boss track replaces it.
+    NextPracticeFight { last: bool },
+    /// Back to the title behind the transition (music fades): practice's and
+    /// the arena's second item.
+    BackToMenu,
+    /// The story's reconstructed menu, first item: the clicked item is
+    /// cleared before the respawn runs.
+    StoryRespawn,
+    /// The story's other first items and its second item: the story ends.
+    StoryQuit,
+    /// The arena's first item: the arena unit's continue.
+    ArenaContinue,
+    /// Any other mode: the first registered mode handler whose mode word
+    /// matches, given the clicked item.
+    Registered { handler: usize, item: i32 },
 }
 
 /// The end-session menu's own constructor values, set after the main
@@ -293,81 +287,77 @@ pub fn end_session_form() -> EndSessionForm {
     }
 }
 
+/// The game mode words the end-session dispatch branches on.
+pub const END_PRACTICE: u32 = 2;
+pub const END_STORY: u32 = 4;
+pub const END_ARENA: u32 = 8;
+/// The menu numbers its first item tests: practice's victory menu and the
+/// story's reconstructed-player menu.
+pub const END_MENU_WON: i32 = 2;
+pub const END_MENU_RECONSTRUCTED: i32 = 4;
+
 /// The end-session dispatch's inputs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EndSessionInput {
-    pub page: i32,
-    pub action: i32,
-    pub form_page: i32,
-    pub final_round: bool,
-    pub handler: Option<u64>,
+    /// The game mode word.
+    pub mode: u32,
+    /// The clicked item, 1-based (0 or less: none).
+    pub item: i32,
+    /// The menu's number.
+    pub menu: i32,
+    /// The practice ladder's fight count and the current fight.
+    pub fights: i32,
+    pub fight: i32,
 }
 
-/// The dispatched actions and the cleared fields.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// The dispatched action and the cleared fields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EndSessionDispatch {
-    pub actions: Vec<EndSessionAction>,
-    pub clears_action: bool,
-    /// The item the pointer went down on is cleared.
+    pub action: Option<EndSessionAction>,
+    /// The clicked item and the item the pointer went down on are cleared
+    /// after every click, whatever ran.
+    pub clears_item: bool,
     pub clears_pressed_item: bool,
     pub result: i32,
 }
 
-/// Resolves the end-session page and action into calls or forms.
-pub fn dispatch_end_session(input: EndSessionInput) -> EndSessionDispatch {
-    let mut actions = Vec::new();
-    match input.page {
-        2 => match input.action {
-            1 => actions.push(EndSessionAction::Call(MenuStep::Continue)),
-            2 => actions.push(EndSessionAction::Show {
-                form: MenuStep::MainMenu,
-                flag: true,
+/// The end-session menu's click. Practice (2), story (4) and arena (8)
+/// branch on the clicked item; any other mode word (below 2 included, as the
+/// first compare is unsigned) runs the first registered handler whose mode
+/// word matches, `handlers` being the registered modes in order. The last
+/// practice fight is the one whose index is the fight count less one, in
+/// 64-bit arithmetic.
+pub fn dispatch_end_session(input: EndSessionInput, handlers: &[u32]) -> EndSessionDispatch {
+    let action = match input.mode {
+        END_PRACTICE => match input.item {
+            1 if input.menu == END_MENU_WON => Some(EndSessionAction::PracticeRestart),
+            1 => Some(EndSessionAction::NextPracticeFight {
+                last: i64::from(input.fights) - 1 == i64::from(input.fight),
             }),
-            _ => {}
+            2 => Some(EndSessionAction::BackToMenu),
+            _ => None,
         },
-        4 => match input.action {
-            1 => {
-                actions.push(EndSessionAction::Call(if input.form_page == 4 {
-                    MenuStep::ReloadLevel
-                } else {
-                    MenuStep::EndToMainMenu
-                }));
-            }
-            2 => actions.push(EndSessionAction::Call(MenuStep::EndToMainMenu)),
-            _ => {}
+        END_STORY => match input.item {
+            1 if input.menu == END_MENU_RECONSTRUCTED => Some(EndSessionAction::StoryRespawn),
+            1 | 2 => Some(EndSessionAction::StoryQuit),
+            _ => None,
         },
-        8 => match input.action {
-            1 => {
-                if input.form_page == 2 {
-                    actions.push(EndSessionAction::Call(MenuStep::HideKeptForm));
-                    actions.push(EndSessionAction::Call(MenuStep::PageEightSecond));
-                    actions.push(EndSessionAction::Call(MenuStep::PrepareCharacterRecord));
-                    actions.push(EndSessionAction::Show {
-                        form: MenuStep::PageEightForm,
-                        flag: true,
-                    });
-                } else {
-                    actions.push(EndSessionAction::Show {
-                        form: MenuStep::NextPracticeFight,
-                        flag: input.final_round,
-                    });
-                }
-            }
-            2 => actions.push(EndSessionAction::Show {
-                form: MenuStep::MainMenu,
-                flag: true,
+        END_ARENA => match input.item {
+            1 => Some(EndSessionAction::ArenaContinue),
+            2 => Some(EndSessionAction::BackToMenu),
+            _ => None,
+        },
+        mode => handlers
+            .iter()
+            .position(|&registered| registered == mode)
+            .map(|handler| EndSessionAction::Registered {
+                handler,
+                item: input.item,
             }),
-            _ => {}
-        },
-        _ => {
-            if let Some(handler) = input.handler {
-                actions.push(EndSessionAction::Registered(handler));
-            }
-        }
-    }
+    };
     EndSessionDispatch {
-        actions,
-        clears_action: true,
+        action,
+        clears_item: true,
         clears_pressed_item: true,
         result: 0,
     }
@@ -1648,83 +1638,61 @@ mod tests {
     }
 
     #[test]
-    fn the_end_session_dispatches_its_pages() {
-        let input = |page, action, form_page, final_round, handler| EndSessionInput {
-            page,
-            action,
-            form_page,
-            final_round,
-            handler,
+    fn the_end_session_dispatches_by_mode_then_item() {
+        let input = |mode, item, menu, fight| EndSessionInput {
+            mode,
+            item,
+            menu,
+            fights: 8,
+            fight,
         };
-
-        let resume = dispatch_end_session(input(2, 1, 0, false, None));
+        let run = |i| dispatch_end_session(i, &[3, 16, 3]).action;
+        // Practice: the victory menu restarts, any other menu fights on.
         assert_eq!(
-            resume.actions,
-            vec![EndSessionAction::Call(MenuStep::Continue)]
-        );
-        let quit = dispatch_end_session(input(2, 2, 0, false, None));
-        assert_eq!(
-            quit.actions,
-            vec![EndSessionAction::Show {
-                form: MenuStep::MainMenu,
-                flag: true
-            }]
-        );
-
-        assert_eq!(
-            dispatch_end_session(input(4, 1, 4, false, None)).actions,
-            vec![EndSessionAction::Call(MenuStep::ReloadLevel)]
+            run(input(2, 1, 2, 0)),
+            Some(EndSessionAction::PracticeRestart)
         );
         assert_eq!(
-            dispatch_end_session(input(4, 1, 3, false, None)).actions,
-            vec![EndSessionAction::Call(MenuStep::EndToMainMenu)]
+            run(input(2, 1, 3, 6)),
+            Some(EndSessionAction::NextPracticeFight { last: false })
         );
         assert_eq!(
-            dispatch_end_session(input(4, 2, 0, false, None)).actions,
-            vec![EndSessionAction::Call(MenuStep::EndToMainMenu)]
+            run(input(2, 1, 3, 7)),
+            Some(EndSessionAction::NextPracticeFight { last: true })
         );
-
+        assert_eq!(run(input(2, 2, 3, 0)), Some(EndSessionAction::BackToMenu));
+        // Story: only the reconstructed menu respawns.
+        assert_eq!(run(input(4, 1, 4, 0)), Some(EndSessionAction::StoryRespawn));
+        assert_eq!(run(input(4, 1, 2, 0)), Some(EndSessionAction::StoryQuit));
+        assert_eq!(run(input(4, 2, 4, 0)), Some(EndSessionAction::StoryQuit));
+        // Arena.
         assert_eq!(
-            dispatch_end_session(input(8, 1, 2, false, None)).actions,
-            vec![
-                EndSessionAction::Call(MenuStep::HideKeptForm),
-                EndSessionAction::Call(MenuStep::PageEightSecond),
-                EndSessionAction::Call(MenuStep::PrepareCharacterRecord),
-                EndSessionAction::Show {
-                    form: MenuStep::PageEightForm,
-                    flag: true
-                }
-            ]
+            run(input(8, 1, 5, 0)),
+            Some(EndSessionAction::ArenaContinue)
+        );
+        assert_eq!(run(input(8, 2, 5, 0)), Some(EndSessionAction::BackToMenu));
+        // Items past two, and none, do nothing in the three modes.
+        assert_eq!(run(input(8, 3, 5, 0)), None);
+        assert_eq!(run(input(2, 0, 3, 0)), None);
+        // Other modes go to the first matching handler, with the item.
+        assert_eq!(
+            run(input(3, 0, 0, 0)),
+            Some(EndSessionAction::Registered {
+                handler: 0,
+                item: 0
+            })
         );
         assert_eq!(
-            dispatch_end_session(input(8, 1, 3, true, None)).actions,
-            vec![EndSessionAction::Show {
-                form: MenuStep::NextPracticeFight,
-                flag: true
-            }]
+            run(input(16, 2, 0, 0)),
+            Some(EndSessionAction::Registered {
+                handler: 1,
+                item: 2
+            })
         );
-        assert_eq!(
-            dispatch_end_session(input(8, 1, 3, false, None)).actions,
-            vec![EndSessionAction::Show {
-                form: MenuStep::NextPracticeFight,
-                flag: false
-            }]
-        );
-
-        assert_eq!(
-            dispatch_end_session(input(3, 1, 0, false, Some(0xabc))).actions,
-            vec![EndSessionAction::Registered(0xabc)]
-        );
-        assert!(
-            dispatch_end_session(input(3, 1, 0, false, None))
-                .actions
-                .is_empty()
-        );
-
-        let done = dispatch_end_session(input(2, 1, 0, false, None));
-        assert!(done.clears_action);
-        assert!(done.clears_pressed_item);
-        assert_eq!(done.result, 0);
+        assert_eq!(run(input(1, 1, 0, 0)), None);
+        let d = dispatch_end_session(input(4, 1, 4, 0), &[]);
+        assert!(d.clears_item && d.clears_pressed_item);
+        assert_eq!(d.result, 0);
     }
 
     #[test]

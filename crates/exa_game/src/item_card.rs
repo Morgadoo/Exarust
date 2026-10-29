@@ -33,7 +33,7 @@ use exa_ui::gui_core::GuiRect;
 use exa_ui::gui_draw::{GuiFrames, GuiLayer, GuiTextures, LayerTexture, text_batch};
 use exa_ui::gui_font::GuiFont;
 use exa_ui::gui_text::draw_line;
-use exa_ui::popups::PopupFade;
+use exa_ui::popups::{DESC_KEEP_OPEN, PopupFade, desc_hits, desc_hover, desc_mouse};
 
 use crate::gui_paint::{self, Frame};
 use crate::gui_screens::GameScreens;
@@ -62,6 +62,39 @@ pub struct ShownCard {
     /// The card's top-left in physical pixels.
     pub at: (i32, i32),
     pub fade: PopupFade,
+    /// The card form's flag word; a left press over the card sets its
+    /// keep-open bit ([`DESC_KEEP_OPEN`]).
+    pub form_flags: u32,
+}
+
+impl ShownCard {
+    /// Whether the card takes the pointer at a physical point: inside its
+    /// form, once its shown flag is set (the popup's hit rule).
+    pub fn hit(&self, pointer: (i32, i32), unit: i32) -> bool {
+        let (width, height) = card_size(unit);
+        let inside =
+            GuiRect::new(self.at.0, self.at.1, width, height).contains(pointer.0, pointer.1);
+        desc_hits(self.fade.shown, i32::from(inside)) != 0
+    }
+
+    /// The card's press rule for a mouse word (button bit 1 left, 2 right):
+    /// a left press keeps the card open, a right press fades it out.
+    pub fn press(&mut self, mask: u16, now: u32) {
+        let rule = desc_mouse(mask);
+        if rule.keep_open {
+            self.form_flags |= DESC_KEEP_OPEN;
+        }
+        if rule.fade_out {
+            self.fade.fade_out(now);
+        }
+    }
+
+    /// The card's leave rule when the pointer is off it: the fade-out starts
+    /// at `now` (no reversal of a fade-in) unless the card is kept open or
+    /// already fading out.
+    pub fn leave(&mut self, now: u32) {
+        let _ = desc_hover(0, true, self.form_flags, now, &mut self.fade);
+    }
 }
 
 /// The live card's state. The request timer itself is [`GameScreens::card`]
@@ -167,6 +200,40 @@ fn card_size(unit: i32) -> (i32, i32) {
     )
 }
 
+/// The interface unit the card is sized at.
+fn card_unit(window: &Window, screens: &GameScreens) -> i32 {
+    let unit = exa_ui::scale::gui_scale(window.physical_height(), 0) as i32;
+    if unit > 0 {
+        unit
+    } else {
+        screens.pack.unit.max(1)
+    }
+}
+
+/// A left press over the shown card sets its keep-open bit.
+fn card_press(
+    buttons: Res<ButtonInput<MouseButton>>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    screens: Res<GameScreens>,
+    mut view: ResMut<CardView>,
+    time: Res<Time>,
+) {
+    if !buttons.just_pressed(MouseButton::Left) {
+        return;
+    }
+    let (Some(card), Ok(window)) = (view.shown.as_mut(), windows.single()) else {
+        return;
+    };
+    let Some(pointer) = window.cursor_position() else {
+        return;
+    };
+    let pointer = pointer * window.scale_factor();
+    let unit = card_unit(window, &screens);
+    if card.hit((pointer.x as i32, pointer.y as i32), unit) {
+        card.press(0x1001, time.elapsed().as_millis() as u32);
+    }
+}
+
 /// The physical pointer and the interface unit.
 fn pointer_and_unit(window: &Window, screens: &GameScreens) -> Option<((i32, i32), i32)> {
     let pointer = window.cursor_position()? * window.scale_factor();
@@ -221,6 +288,7 @@ fn show(
         icon,
         at,
         fade,
+        form_flags: 0,
     });
 }
 
@@ -249,6 +317,15 @@ fn request_card(
         return;
     };
     let now = time.elapsed().as_millis() as u32;
+    // The card is the topmost form: once it takes the pointer, a right press
+    // is its own (it fades out) and reaches no panel under it.
+    let card_unit = card_unit(window, &screens);
+    if let Some(card) = view.shown.as_mut()
+        && card.hit(pointer, card_unit)
+    {
+        card.press(0x1002, now);
+        return;
+    }
     let panels = open_panels(&screens);
     let hit = panel_at(&panels, IVec2::new(pointer.0, pointer.1));
     let Some((panel, local)) = hit else {
@@ -359,22 +436,19 @@ fn tick_card(
         view.close(&mut screens, &mut icons, now);
         return;
     }
-    // The card closes when the pointer leaves it, as the popup's hover
-    // handler starts its fade on the base form's leave answer.
+    // The card fades when the pointer is off it, as the popup's leave
+    // handler does on the base form's leave answer: only once the card takes
+    // the pointer (its shown flag), never while kept open, and from now
+    // without reversing a fade-in. Exarust tests the pointer against the
+    // form each frame in place of the base form's hover tracking.
     if let (Some(card), Ok(window)) = (view.shown.as_mut(), windows.single())
         && let Some(pointer) = window.cursor_position()
     {
         let pointer = pointer * window.scale_factor();
-        let unit = exa_ui::scale::gui_scale(window.physical_height(), 0) as i32;
-        let unit = if unit > 0 {
-            unit
-        } else {
-            screens.pack.unit.max(1)
-        };
-        let (width, height) = card_size(unit);
-        let rect = GuiRect::new(card.at.0, card.at.1, width, height);
-        if !rect.contains(pointer.x as i32, pointer.y as i32) {
-            card.fade.fade_out(now);
+        let unit = card_unit(window, &screens);
+        let at = (pointer.x as i32, pointer.y as i32);
+        if card.fade.shown && !card.hit(at, unit) {
+            card.leave(now);
         }
     }
     let close = view
@@ -520,18 +594,15 @@ fn draw_card(
 
     // The icon: the panel manager's rendered slot at the card's icon place.
     let icon_size = 2 * (icons.icon_half().0 - unit).max(1);
-    let mut icon_at = if stats {
-        let mut x = unit * 13 - icon_size / 2;
-        if unit * 11 < icon_size {
-            x += icon_size - unit * 11;
-        }
-        (x, unit)
-    } else {
-        (
-            (width - icon_size) / 2,
-            ((CARD_HEIGHT * unit / 4).max(CARD_HEIGHT) - icon_size) / 2 + unit * 4,
-        )
-    };
+    // The popup's two icon places; the icon's own height is its side here.
+    let mut icon_at = exa_ui::popups::desc_icon_place_sized(
+        width,
+        (CARD_HEIGHT * unit / 4).max(CARD_HEIGHT),
+        icon_size,
+        unit,
+        stats,
+        icon_size,
+    );
     icon_at.0 += rect.left;
     icon_at.1 += rect.top;
     if let Some(handle) = card.icon.checked_sub(1)
@@ -686,7 +757,7 @@ impl Plugin for ItemCardPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<CardView>().add_systems(
             Update,
-            (request_card, tick_card)
+            (card_press, request_card, tick_card)
                 .chain()
                 .before(crate::gui_screens::close_on_right_release),
         );
@@ -697,6 +768,48 @@ impl Plugin for ItemCardPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_card_keeps_open_on_a_left_press_and_fades_on_a_right_one() {
+        let mut fade = PopupFade::default();
+        fade.show(1000);
+        fade.shown_at = fade.fade_at;
+        let mut card = ShownCard {
+            item: 1,
+            flags: 0,
+            name: String::new(),
+            built: BuiltCard {
+                page: exa_items::card::CardPage::Plain,
+                value: 0,
+                title_colour: None,
+                content: None,
+                description: String::new(),
+            },
+            icon: 0,
+            at: (100, 100),
+            fade,
+            form_flags: 0,
+        };
+        // Not hit before its shown flag is set.
+        assert!(!card.hit((110, 110), 4));
+        card.fade.step(1256);
+        assert!(card.hit((110, 110), 4));
+        assert!(!card.hit((99, 110), 4));
+        // A kept-open card ignores the leave.
+        card.press(0x1001, 1300);
+        assert_eq!(card.form_flags, DESC_KEEP_OPEN);
+        card.leave(1300);
+        assert_eq!(card.fade.state, 0);
+        // A right press fades it out from now.
+        card.press(0x1002, 1400);
+        assert_eq!((card.fade.state, card.fade.fade_at), (2, 1656));
+        // The leave of a card that is not kept open starts at `now`.
+        card.form_flags = 0;
+        card.fade.state = 1;
+        card.fade.fade_at = 2256;
+        card.leave(2100);
+        assert_eq!((card.fade.state, card.fade.fade_at), (2, 2356));
+    }
 
     #[test]
     fn a_missing_record_has_no_card() {

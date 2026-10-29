@@ -224,8 +224,14 @@ clamps its low 16 bits to eight and toggles bits 0x110 on page 1. The inventory
 closes on the 0x2002 mask through its callback or the form close. The skill
 selector routes its key to the base handler while a positive selection is open
 on a page above one, or on word nine with a clear mode byte, and closes with
-0x40 otherwise. The end-session menu resolves pages 2, 4 and 8 into their calls
-and forms, otherwise calls a registered handler, and always clears its action.
+0x40 otherwise. The end-session menu's click (`dispatch_end_session`) branches on the game
+mode (practice 2, story 4, arena 8) and then the clicked item: practice's
+victory menu restarts and its other menus run the next fight (the music
+fading only into the last), the story's reconstructed menu respawns and its
+other items quit, the arena continues or returns to the title; any other
+mode runs the first registered handler for it. The click always clears the
+clicked and pressed items. `exa_game::end_menu_screen` takes its rows'
+actions from it.
 The main menu resolves its hover, returns 3 on a change, and rate-limits the
 sound to once per 200 units. Its key handler confirms a positive selection,
 forwards and backs, and moves within the limit. The inventory detaches by
@@ -640,7 +646,7 @@ by four units) and the wrapped white text at alpha 160.
 bound colour), keys and physique cross, the physique picker's
 constructor, the point's body-shape weights and the press, release and
 change steps.
-`popups` has the item card, the container popup and the parchment. `dialogs` has the colour window's
+`popups` has the item card, the container popup (its close saves the panel's contents into the container record) and the parchment (its size, alpha hit test with the factor divided in double precision, and its draw: one textured white quad at the GUI's alpha, the fade step first and the alpha scales reset after a finished fade). `dialogs` has the colour window's
 gradients and hue table and the confirmation dialogs. `help_screen`, `task_stack`,
 `game_tips`, `colour_swatch`, `view_helpers` (the viewport's super-sample
 and cursor-action list) and the journal close in `game_gui` complete the

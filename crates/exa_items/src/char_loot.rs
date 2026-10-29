@@ -5,16 +5,20 @@
 //! panels: the pack 180 tall at the bottom of the client area, and the
 //! body's equipment above it, ending four units before the pack starts.
 //! A drag off the equipment panel drops the held weapon when that is what
-//! was taken. Otherwise it takes the item off the character's record and
-//! asks the character view to remove it; when that works the character is
-//! marked, a sound plays and the character's balance may be reworked. An
-//! apparel item then has its textures and mesh rebuilt. Dropping Power
-//! Crystal AL (500) onto the body clears the mark, runs the body's
+//! was taken. Otherwise it takes the item off the character's record; when
+//! the body then takes the item as its core (it was the golem's crystal) the
+//! character is marked, a sound plays and the character's balance may be
+//! reworked. An apparel item then has its textures and mesh rebuilt. The
+//! equipment panel accepts only a core crystal the body takes
+//! (`possession::takes_core`). Dropping Power Crystal AL (500) onto the body
+//! clears the mark, runs the body's
 //! "Activate" dialogue and sets a flag byte on the character's record
 //! before the item is added.
 //!
 //! Evidence: the Body window's constructor, accept filter, drop, drag-off,
 //! bind, close and right-click routines (`context/re/item-gui-lane.md`).
+
+use crate::possession::takes_core;
 
 /// The window's title and size, and the panel sizes.
 pub const TITLE: &str = "Body";
@@ -71,20 +75,23 @@ pub enum DragOff {
     HeldWeapon,
     /// Take it off the record and ask the view to remove it.
     Removed {
-        /// The view removed it: mark the character, play the sound.
+        /// The body takes the item as its core once it is off (it was the
+        /// body's core crystal): mark the character, play the sound.
         marked: bool,
         /// Removed, and the record's state byte is clear: the character's
         /// balance is reworked.
         rebalance: bool,
         /// The item is apparel: rebuild its textures and mesh, whether or
-        /// not the view removed it.
+        /// not it was the core.
         rebuild: bool,
     },
 }
 
 /// The drag-off decision. `held_weapon` is the item id of the held weapon
-/// record (None when nothing is held); `removed` is the character view's
-/// answer; `state_byte` the record's byte the rebalance tests.
+/// record (None when nothing is held); `removed` is the core test
+/// ([`takes_core`]) run after the item left the record, true when the item
+/// was the body's core crystal; `state_byte` the record's byte the
+/// rebalance tests.
 pub fn drag_off(
     slot: i32,
     id: u32,
@@ -125,9 +132,12 @@ pub fn equip_drop(id: u32) -> EquipDrop {
     }
 }
 
-/// The accept filter: whether the character view can take the item.
-pub fn accepts(can_take: bool) -> bool {
-    can_take
+/// The equipment panel's accept filter: the body takes the dragged item as
+/// its core crystal ([`takes_core`]: a body whose race flags name the AL or
+/// A crystal, wearing none of the five crystals). Nothing else is dropped
+/// onto a body's equipment.
+pub fn accepts(race_flags: u32, id: u32, worn: &[u32]) -> bool {
+    takes_core(race_flags, id, worn)
 }
 
 /// The close: the game is told the record's id with the loot-window bit
@@ -165,6 +175,7 @@ pub fn closes_on(mask: u16) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::possession::TAKES_CORE_AL;
 
     #[test]
     fn the_panels_stack_in_the_client_area() {
@@ -225,8 +236,15 @@ mod tests {
             }
         );
         assert!(!equip_drop(499).activate && equip_drop(499).add);
-        assert!(accepts(true));
-        assert!(!accepts(false));
+        // Only a golem body without a crystal takes the AL crystal.
+        assert!(accepts(TAKES_CORE_AL, POWER_CRYSTAL_AL, &[7]));
+        assert!(!accepts(
+            TAKES_CORE_AL,
+            POWER_CRYSTAL_AL,
+            &[POWER_CRYSTAL_AL]
+        ));
+        assert!(!accepts(TAKES_CORE_AL, 7, &[]));
+        assert!(!accepts(0, POWER_CRYSTAL_AL, &[]));
     }
 
     #[test]

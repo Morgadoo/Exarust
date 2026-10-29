@@ -858,7 +858,11 @@ facts through the card's own page, value, tint, row and description rules
 sentence from the executable's phrase tables, the apparel title taking its
 variant word),
 the card holds the panel manager's icon and fades on the popup's squared
-curve, and leaving it starts the fade. Closing the inventory or a loot
+curve, and leaving it starts the fade (from the moment it leaves, without
+reversing a fade-in, and only once the card takes the pointer and is not
+kept open). The card takes the pointer only once its shown flag is set; a
+left press over it keeps it open and a right press over it fades it out,
+reaching no panel under it. Closing the inventory or a loot
 window queues its icon handles and the manager frees their references and
 atlas cells. A body whose `Possessions` changed has its `Physical` stats'
 encumbrance recomputed by `equip::refresh_encumbrance` from the worn
@@ -928,8 +932,10 @@ stand-in for the engine's shared one. The player's inventory pack is its carried
 panel's press, accept, drop and drag-end rules; a drop on another pack moves
 the possession entries, a drop on the same panel only repositions, and a
 drop on a body's equipment panel or outside every panel is refused (no
-running character view and no GUI-to-world drop yet). Taking a worn item
-off a corpse does not re-dress its mesh.
+running character view and no GUI-to-world drop yet). No drag leaves the
+player's pack while the player's body swaps its weapon sets (a swap
+requested or its hand plan pending), the inventory's drag permission.
+Taking a worn item off a corpse does not re-dress its mesh.
 `npc_search` hosts the original's follow state and the companion's search
 in the running game: a level brain whose roles choose the follow follows the
 player (past its 400 cm band a route through the navigation grid on its own
@@ -1020,8 +1026,8 @@ and session hook are held, as the original's frame task does. The page is
 painted through the GUI draw path with the menu font's sheet, and the
 selected row runs `menu_text` through `exa_ui::skin::SkinMode::MenuText`.
 `end_menu_screen` draws the end-of-session menu over the game the same way;
-its rows follow the end-session dispatch (mode, then row, then menu
-number): the next practice fight, practice's RESTART back to the menu form,
+its rows follow the end-session dispatch (`exa_ui::menu::dispatch_end_session`:
+mode, then row, then menu number): the next practice fight, practice's RESTART back to the menu form,
 the story respawn or exit, and the returns to the title behind the
 transition. The title's BEGIN starts Exarust's unknown background;
 the save character screen, creator, manual and settings form are not wired.

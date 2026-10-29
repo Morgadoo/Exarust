@@ -13,7 +13,8 @@
 //! inventory.
 //!
 //! The form has eight controls: the two scroll arrows, five template
-//! buttons between them, and the inventory toggle last.
+//! buttons between them, and the inventory toggle last; the layout lines
+//! the toggle up after the five buttons in their row.
 //!
 //! Evidence: the arsenal view's constructor, layout routine, close, key,
 //! scroll and drop handlers, and the column frame's close (`docs/UI.md`).
@@ -322,15 +323,19 @@ pub struct ArsenalControls {
     pub left_arrow: [i16; 2],
     /// Control 1, the right arrow.
     pub right_arrow: [i16; 2],
-    /// Controls 2 up to the last but one: control index and place.
+    /// Controls 2 up to the last one, as the template row places them:
+    /// control index and place.
     pub template: Vec<(usize, [i16; 2])>,
-    /// The last control, the inventory toggle.
+    /// The inventory toggle's final place (control 7).
     pub toggle: [i16; 2],
 }
 
 /// The control places for a laid-out arsenal. `last_control` is the form's
-/// last control index; the template runs from control 2 to the one before
-/// it.
+/// last control index. The layout places the toggle (control 7) at the
+/// left edge less six units first, then runs the template row from control
+/// 2 up to and including the last control, so with the form's eight
+/// controls the toggle ends in the row, after the five template buttons:
+/// its first place is overwritten.
 pub fn arsenal_controls(
     layout: &Layout,
     unit: i32,
@@ -342,19 +347,27 @@ pub fn arsenal_controls(
     let span = layout.visible * COLUMN_STEP;
     let right_x = (span - ARROW_WIDTH_UNITS) * unit + layout.frame.0;
     let row_shift = (span + FRAME_EDGE) / 2 * unit - unit * 5;
-    let template = (2..last_control)
+    let template: Vec<(usize, [i16; 2])> = (2..=last_control)
         .map(|e| {
             let x = (e as i32 - 4) * unit * TEMPLATE_STEP_UNITS + layout.frame.0 + row_shift;
             (e, [x as i16, top])
         })
         .collect();
+    let first_toggle = [(layout.left - unit * ARROW_WIDTH_UNITS) as i16, top];
+    let toggle = template
+        .iter()
+        .find(|(e, _)| *e == TOGGLE_CONTROL)
+        .map_or(first_toggle, |(_, at)| *at);
     ArsenalControls {
         left_arrow: [left_x as i16, top],
         right_arrow: [right_x as i16, top],
         template,
-        toggle: [(layout.left - unit * ARROW_WIDTH_UNITS) as i16, top],
+        toggle,
     }
 }
+
+/// The inventory toggle's control index.
+pub const TOGGLE_CONTROL: usize = 7;
 
 /// What closing the arsenal does, in the original's order: the base form
 /// closes first, then the controller is told, the columns are saved, and
@@ -513,11 +526,17 @@ mod tests {
         assert_eq!(c.left_arrow, [268, 123]);
         // (240 - 6) × 4 + 276.
         assert_eq!(c.right_arrow, [1212, 123]);
-        // The row shift is 4 × ((240 + 3) / 2) - 20 = 464; controls 2..=6
+        // The row shift is 4 × ((240 + 3) / 2) - 20 = 464; controls 2..=7
         // are 120 apart from (2 - 4) × 120 + 276 + 464 = 500.
         let xs: Vec<_> = c.template.iter().map(|t| (t.0, t.1[0])).collect();
-        assert_eq!(xs, [(2, 500), (3, 620), (4, 740), (5, 860), (6, 980)]);
-        assert_eq!(c.toggle, [32 - 24, 123]);
+        assert_eq!(
+            xs,
+            [(2, 500), (3, 620), (4, 740), (5, 860), (6, 980), (7, 1100)]
+        );
+        // The row overwrites the toggle's first place (32 - 24).
+        assert_eq!(c.toggle, [1100, 123]);
+        // A form whose last control is 6 keeps the toggle where it was put.
+        assert_eq!(arsenal_controls(&l, 4, true, 6).toggle, [32 - 24, 123]);
         // The hidden inventory moves the left arrow five units right.
         let hidden = layout(1280, 900, 1280, 590, 4, false, 3);
         let c = arsenal_controls(&hidden, 4, false, LAST_CONTROL);
