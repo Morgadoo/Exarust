@@ -874,17 +874,16 @@ pub fn preset(voxel_cm: i32, level_span_cm: i32) -> GiPreset {
 /// units, with `w` = 1/8. The original's order is X fastest, then Z, then Y,
 /// with the zero corner left out.
 pub fn corner_offsets(size: UVec3) -> [[f32; 4]; 8] {
-    let step = Vec3::new(
-        1.33 / size.x.max(1) as f32,
-        1.33 / size.y.max(1) as f32,
-        1.33 / size.z.max(1) as f32,
-    );
+    // The original works out each axis in double precision from the integer
+    // corner (-1 or 1), the double 1.33, and the integer size, then rounds
+    // once to f32; the f32 product would lose the last bit on some sizes.
+    let step = |corner: i32, n: u32| ((f64::from(corner) * 1.33) / f64::from(n.max(1))) as f32;
     let mut out = [[0.0; 4]; 8];
     let mut i = 0;
-    for z in [-1.0f32, 1.0] {
-        for y in [-1.0f32, 1.0] {
-            for x in [-1.0f32, 1.0] {
-                out[i] = [x * step.x, y * step.y, z * step.z, 1.0 / 8.0];
+    for z in [-1, 1] {
+        for y in [-1, 1] {
+            for x in [-1, 1] {
+                out[i] = [step(x, size.x), step(y, size.y), step(z, size.z), 1.0 / 8.0];
                 i += 1;
             }
         }
@@ -1073,6 +1072,107 @@ pub fn shape_uniforms(dims: UVec3) -> (f32, Vec2) {
     let w = dims.x.max(1) as f32;
     let d = dims.z.max(1) as f32;
     (1.0 / d, Vec2::new(-d / w, d / w))
+}
+
+/// One of the manager's linked programs: the vertex, geometry and fragment
+/// entries it combines, the textures and samplers it binds, and the
+/// uniforms it looks up. The original builds and caches one program per
+/// purpose; Exarust's renderer replaces them with the WESL compute pass
+/// (`gi.wesl`), so this keeps the original's binding table exact.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GiProgramLayout {
+    /// The vertex entry's name in the shader library.
+    pub vertex: &'static str,
+    /// The geometry entry's name.
+    pub geometry: &'static str,
+    /// The fragment entry's name.
+    pub fragment: &'static str,
+    /// The sampler uniforms and their texture units, in binding order.
+    pub samplers: &'static [(&'static str, u32)],
+    /// The uniform names the manager looks up, in the order it stores them.
+    pub uniforms: &'static [&'static str],
+}
+
+/// The three programs the manager links.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GiPass {
+    /// `gi_inject_v`/`gi_inject_g` with `gi_inject_f`: one slice of the
+    /// propagation and direct light.
+    Inject,
+    /// The same vertex and geometry with `gi_emission`: the voxel lights and
+    /// the light shapes, added after the propagation.
+    Emission,
+    /// The same vertex and geometry with `gi_blit_f`: one neighbour block's
+    /// margin copied into this block.
+    Blit,
+}
+
+impl GiPass {
+    /// The pass's program and binding table.
+    pub fn layout(self) -> GiProgramLayout {
+        match self {
+            Self::Inject => GiProgramLayout {
+                vertex: "gi_inject_v",
+                geometry: "gi_inject_g",
+                fragment: "gi_inject_f",
+                samplers: &[
+                    ("LVox", GI_LVOX_UNIT),
+                    ("OVox", GI_OVOX_UNIT),
+                    ("Shadow0", GI_SHADOW_UNIT),
+                    ("Shadow1", GI_SHADOW_UNIT + 1),
+                    ("Shadow2", GI_SHADOW_UNIT + 2),
+                    ("Shadow3", GI_SHADOW_UNIT + 3),
+                    ("Shadow4", GI_SHADOW_UNIT + 4),
+                    ("Shadow5", GI_SHADOW_UNIT + 5),
+                    ("Shadow6", GI_SHADOW_UNIT + 6),
+                    ("Shadow7", GI_SHADOW_UNIT + 7),
+                    ("Shadow8", GI_SHADOW_UNIT + 8),
+                    ("Shadow9", GI_SHADOW_UNIT + 9),
+                    ("Shadow10", GI_SHADOW_UNIT + 10),
+                    ("Shadow11", GI_SHADOW_UNIT + 11),
+                ],
+                uniforms: &[
+                    "MPrj", "First", "Light", "VSmp", "ZTrn", "LyrOfs", "BaseAmb", "WrlMat",
+                    "SdwMat", "SdwMat2", "SliceSz",
+                ],
+            },
+            Self::Emission => GiProgramLayout {
+                vertex: "gi_inject_v",
+                geometry: "gi_inject_g",
+                fragment: "gi_emission",
+                samplers: &[("LVox", GI_LVOX_UNIT), ("OVox", GI_OVOX_UNIT)],
+                uniforms: &["MPrj", "First", "SliceSz", "ZTrn", "Light"],
+            },
+            Self::Blit => GiProgramLayout {
+                vertex: "gi_inject_v",
+                geometry: "gi_inject_g",
+                fragment: "gi_blit_f",
+                samplers: &[("LVox", GI_LVOX_UNIT)],
+                uniforms: &["MPrj", "First", "UVOfs", "SliceSz"],
+            },
+        }
+    }
+}
+
+/// The original's texture units in the injection and blit programs.
+pub const GI_LVOX_UNIT: u32 = 0;
+pub const GI_OVOX_UNIT: u32 = 1;
+/// The first cube-shadow sampler: light `i` binds `Shadow<i>` to unit
+/// [`GI_SHADOW_UNIT`] + `i` (so the first is unit 3, leaving unit 2 for the
+/// shader's own sampler).
+pub const GI_SHADOW_UNIT: u32 = 3;
+
+/// The sampler uniform `Shadow<i>` uses for light `i` (0..12), and the
+/// texture unit it binds. The manager writes `Shadow0`..`ShadowN` and sets
+/// each to `3 + i`; a group with more than twelve lights never occurs.
+pub fn shadow_sampler(light: usize) -> (String, u32) {
+    let mut name = String::from("Shadow0");
+    if light < 10 {
+        name.replace_range(6..7, &light.to_string());
+    } else {
+        name = format!("Shadow{light}");
+    }
+    (name, GI_SHADOW_UNIT + light as u32)
 }
 
 /// One margin copy between a block and a neighbour: the destination columns
@@ -2248,6 +2348,55 @@ mod tests {
         assert_eq!(offsets[2], [-step.x, step.y, -step.z, 0.125]);
         assert_eq!(offsets[4], [-step.x, -step.y, step.z, 0.125]);
         assert_eq!(offsets[7], [step.x, step.y, step.z, 0.125]);
+        // Each axis is formed in double precision and rounded once to f32,
+        // as the original's CVTSI2SD/MULSD/DIVSD/CVTSD2SS chain does.
+        let exact = |corner: i32, n: u32| ((f64::from(corner) * 1.33) / f64::from(n)) as f32;
+        assert_eq!(offsets[7][0], exact(1, 256));
+        assert_eq!(offsets[7][2], exact(1, 64));
+        assert_eq!(offsets[0][2], exact(-1, 64));
+        // The f32 product would differ on this size, so the double path
+        // is not interchangeable with 1.33 / n as f32.
+        let f32_step = 1.33f32 / 37.0;
+        assert_ne!(exact(1, 37), f32_step);
+    }
+
+    #[test]
+    fn the_gi_programs_keep_the_originals_bindings() {
+        let inject = GiPass::Inject.layout();
+        assert_eq!(inject.vertex, "gi_inject_v");
+        assert_eq!(inject.geometry, "gi_inject_g");
+        assert_eq!(inject.fragment, "gi_inject_f");
+        assert_eq!(inject.uniforms[0], "MPrj");
+        assert_eq!(inject.uniforms[1], "First");
+        assert_eq!(inject.uniforms[2], "Light");
+        assert_eq!(inject.uniforms[3], "VSmp");
+        assert_eq!(inject.uniforms[4], "ZTrn");
+        assert_eq!(inject.uniforms[5], "LyrOfs");
+        assert_eq!(inject.uniforms[6], "BaseAmb");
+        assert_eq!(inject.uniforms[7], "WrlMat");
+        assert_eq!(inject.uniforms[8], "SdwMat");
+        assert_eq!(inject.uniforms[9], "SdwMat2");
+        assert_eq!(inject.uniforms[10], "SliceSz");
+        assert_eq!(inject.samplers[0], ("LVox", 0));
+        assert_eq!(inject.samplers[1], ("OVox", 1));
+        // Light i binds Shadow<i> to unit 3 + i.
+        assert_eq!(inject.samplers[2], ("Shadow0", 3));
+        assert_eq!(inject.samplers[13], ("Shadow11", 14));
+        assert_eq!(shadow_sampler(0), ("Shadow0".into(), 3));
+        assert_eq!(shadow_sampler(9), ("Shadow9".into(), 12));
+        assert_eq!(shadow_sampler(10), ("Shadow10".into(), 13));
+        assert_eq!(shadow_sampler(11), ("Shadow11".into(), 14));
+        let emission = GiPass::Emission.layout();
+        assert_eq!(emission.fragment, "gi_emission");
+        assert_eq!(emission.samplers, &[("LVox", 0), ("OVox", 1)]);
+        assert_eq!(
+            emission.uniforms,
+            &["MPrj", "First", "SliceSz", "ZTrn", "Light"]
+        );
+        let blit = GiPass::Blit.layout();
+        assert_eq!(blit.fragment, "gi_blit_f");
+        assert_eq!(blit.samplers, &[("LVox", 0)]);
+        assert_eq!(blit.uniforms, &["MPrj", "First", "UVOfs", "SliceSz"]);
     }
 
     #[test]

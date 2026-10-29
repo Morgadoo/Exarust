@@ -414,6 +414,9 @@ fn block_centre(sector: IVec2, width: u32, height: u32) -> Vec2 {
 pub struct GiSettings {
     pub enabled: bool,
     pub warm_up: u32,
+    /// The original's high shading quality (4 or above, its default): the
+    /// base ambient is the level record's `0x30` × 0.001, else × 0.002.
+    pub high_quality: bool,
 }
 
 impl Default for GiSettings {
@@ -421,6 +424,7 @@ impl Default for GiSettings {
         Self {
             enabled: true,
             warm_up: 600,
+            high_quality: true,
         }
     }
 }
@@ -449,8 +453,10 @@ pub enum GiState {
 pub struct GiRefocus;
 
 /// The level record's secondary ambient (`0x30`) scale for the per-step base
-/// ambient, at the original's top shading quality.
+/// ambient at shading quality 4 or above, the retail default.
 pub const BASE_AMBIENT: f32 = 0.001;
+/// The scale below that quality: the original's manager doubles it.
+pub const BASE_AMBIENT_LOW_QUALITY: f32 = 0.002;
 
 /// The level's GI inputs in world space, collected once its nodes have
 /// settled: every sample point, every floor point and every terrain
@@ -927,7 +933,12 @@ fn volume_of(block: &BuiltBlock, level: &PendingGi, settings: &GiSettings) -> Gi
         voxel: VOXEL,
         floors: block.floors.clone(),
         cells: block.cells.clone(),
-        base_ambient: Vec3::from(level.base_ambient) * BASE_AMBIENT,
+        base_ambient: Vec3::from(level.base_ambient)
+            * if settings.high_quality {
+                BASE_AMBIENT
+            } else {
+                BASE_AMBIENT_LOW_QUALITY
+            },
         sector: block.sector,
         warm_up: settings.warm_up,
         top_slice: level.top_slice,
@@ -1462,20 +1473,39 @@ impl Occupancy {
         Some(region)
     }
 
-    /// slice of its 6 m sector (30 × 30 columns inside the 8-voxel margin),
-    /// or 255 where the sector holds nothing (or in the margin).
+    /// A sector's floor for each column: the lowest slice any of its
+    /// columns' sample points fell in (255 where the sector holds nothing).
+    ///
+    /// The original scans only columns 0..28 of each 30-column sector into
+    /// one byte per level cell: the sector's last column and row never lower
+    /// its floor. Exarust keeps the floor per column (the original stores one
+    /// byte per cell), writing the same sector value over its scanned 29 × 29
+    /// columns; the manager reads the first column of each sector, and the
+    /// last row and column keep 255.
     pub fn floors(&self) -> Vec<u8> {
         let mut sector = [[255u8; SECTORS]; SECTORS];
-        for z in MARGIN..MARGIN + SECTORS * SECTOR {
-            for x in MARGIN..MARGIN + SECTORS * SECTOR {
-                let s = &mut sector[(z - MARGIN) / SECTOR][(x - MARGIN) / SECTOR];
-                *s = (*s).min(self.lowest[x + z * SIDE]);
+        for (z, row) in sector.iter_mut().enumerate() {
+            for (x, floor) in row.iter_mut().enumerate() {
+                for within_row in 0..SECTOR - 1 {
+                    for col in 0..SECTOR - 1 {
+                        let px = MARGIN + x * SECTOR + col;
+                        let pz = MARGIN + z * SECTOR + within_row;
+                        *floor = (*floor).min(self.lowest[px + pz * SIDE]);
+                    }
+                }
             }
         }
         let mut floors = vec![255u8; SIDE * SIDE];
-        for z in MARGIN..MARGIN + SECTORS * SECTOR {
-            for x in MARGIN..MARGIN + SECTORS * SECTOR {
-                floors[x + z * SIDE] = sector[(z - MARGIN) / SECTOR][(x - MARGIN) / SECTOR];
+        for (z, row) in sector.iter().enumerate() {
+            for (x, &floor) in row.iter().enumerate() {
+                for within_row in 0..SECTOR - 1 {
+                    for col in 0..SECTOR - 1 {
+                        floors[MARGIN
+                            + x * SECTOR
+                            + col
+                            + (MARGIN + z * SECTOR + within_row) * SIDE] = floor;
+                    }
+                }
             }
         }
         floors
@@ -2009,11 +2039,28 @@ mod tests {
         let p = o.origin + Vec3::new(20.5, 12.5, 20.5) * VOXEL;
         o.splat(p);
         let floors = o.floors();
-        // The point's sector (columns 8..38) floors at its slice.
+        // The point's sector (columns 8..38) floors at its slice. The
+        // original scans columns 0..28 of the sector, so its last column
+        // and row keep 255 rather than repeating the floor.
         assert_eq!(floors[30 + 30 * SIDE], 12);
-        assert_eq!(floors[8 + 37 * SIDE], 12);
+        assert_eq!(floors[8 + 37 * SIDE], 255);
         assert_eq!(floors[38 + 20 * SIDE], 255);
         assert_eq!(floors[2 + 20 * SIDE], 255);
+    }
+
+    #[test]
+    fn a_sectors_last_column_does_not_lower_its_floor() {
+        let mut o = Occupancy::new_at(Vec3::ZERO, 64, IVec2::ZERO);
+        // Voxel column 8 + 29 (the sector's last) at slice 30.
+        let p = o.origin + Vec3::new(37.5, 30.5, 8.5) * VOXEL;
+        o.splat(p);
+        assert_eq!(o.lowest[37 + 8 * SIDE], 30);
+        // The 29 × 29 scan never sees it, as the original's loop does not.
+        assert_eq!(o.floors()[8 + 8 * SIDE], 255);
+        // The previous column is inside the scan.
+        let p = o.origin + Vec3::new(36.5, 25.5, 8.5) * VOXEL;
+        o.splat(p);
+        assert_eq!(o.floors()[8 + 8 * SIDE], 25);
     }
 
     /// A block 64 slices high whose slice 0 sits at the world's zero.
