@@ -29,13 +29,11 @@ impl Plugin for ItemsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<catalogue::ItemCatalogue>()
             .init_resource::<desc_phrase::PhraseBook>()
-            .init_resource::<item_gui::SpriteBook>()
             .add_systems(
                 Update,
                 (
                     (catalogue::load_catalogue, catalogue::swap_weapon_sets).chain(),
                     desc_phrase::load_phrases,
-                    item_gui::load_sprite_sheets,
                 ),
             );
     }

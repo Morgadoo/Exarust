@@ -14,8 +14,6 @@
 //! five-pixel cross around it. Evidence: the item GUI notes
 //! (`context/re/item-gui-lane.md`).
 
-use bevy::prelude::*;
-
 use crate::possession::crystal;
 
 /// The item drag payload's type, and a scene object's.
@@ -844,7 +842,9 @@ pub struct LoadedSheet {
 /// Decode a sheet's `.rfi` and crop its cells. The original reads the
 /// sheet, makes a blank cell image of the sheet's cell side in the source's
 /// pixel format and copies each stored place into it; an image or a place
-/// that does not fit leaves the sheet out.
+/// that does not fit leaves the sheet out. Nothing draws the cells yet (the
+/// running card paints no rating dots, coins, grip buttons or sockets), so
+/// no system reads the sheets at start-up.
 pub fn load_sheet(sheet: &SpriteSheet, bytes: &[u8]) -> Option<LoadedSheet> {
     let rfi = exa_formats::rfi::Rfi::parse(bytes).ok()?;
     let width = i32::try_from(rfi.header.width).ok()?;
@@ -861,45 +861,6 @@ pub fn load_sheet(sheet: &SpriteSheet, bytes: &[u8]) -> Option<LoadedSheet> {
         height,
         cells,
     })
-}
-
-/// The four sheets once read from the resource pack: what the item cards'
-/// rating dots, coin values, grip-side buttons and crystal sockets sample.
-#[derive(Resource, Debug, Default)]
-pub struct SpriteBook {
-    pub sheets: Vec<LoadedSheet>,
-    /// The read was tried; a missing sheet is not looked for again.
-    pub tried: bool,
-}
-
-impl SpriteBook {
-    /// A loaded sheet by file name.
-    pub fn get(&self, name: &str) -> Option<&LoadedSheet> {
-        self.sheets.iter().find(|sheet| sheet.name == name)
-    }
-}
-
-/// Reads the four sheets from `Resource.rpk` once the installation is open.
-/// Missing sheets are warned about and left out, as the original's
-/// conditional reads are.
-pub fn load_sprite_sheets(game: Option<Res<exa_assets::Game>>, mut book: ResMut<SpriteBook>) {
-    if book.tried {
-        return;
-    }
-    let Some(game) = game else {
-        return;
-    };
-    book.tried = true;
-    for sheet in &SPRITE_SHEETS {
-        let Some(bytes) = game.0.texture(sheet.name) else {
-            warn!("item GUI: {} is not installed", sheet.name);
-            continue;
-        };
-        match load_sheet(sheet, bytes) {
-            Some(loaded) => book.sheets.push(loaded),
-            None => warn!("item GUI: {} does not decode", sheet.name),
-        }
-    }
 }
 
 /// The item panel's icon shader, as the original's program compiles it.
