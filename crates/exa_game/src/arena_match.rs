@@ -1097,12 +1097,14 @@ type MatchFighter<'a> = (
     &'a Condition,
     Has<PlayerBody>,
     Option<&'a crate::scene_bodies::SceneFighter>,
+    Option<&'a mut exa_combat::CombatScore>,
 );
 
 fn tick_arena_match(
     arena: Option<ResMut<ArenaMatch>>,
     clock: Option<Res<EffectClock>>,
-    fighters: Query<MatchFighter>,
+    mut career: Option<ResMut<crate::hub_windows::ArenaCareer>>,
+    mut fighters: Query<MatchFighter>,
 ) {
     let (Some(mut arena), Some(clock)) = (arena, clock) else {
         return;
@@ -1115,8 +1117,9 @@ fn tick_arena_match(
     let started = *arena.started_ms.get_or_insert(now);
     let mut entities = Vec::new();
     let mut scene = Vec::new();
+    let mut scored = Vec::new();
     let mut index = 0u8;
-    for (entity, fighter, condition, player, marker) in &fighters {
+    for (entity, fighter, condition, player, marker, score) in &fighters {
         entities.push(entity);
         // The player's body is the manager; a generated body carries the
         // side its plan stood it on.
@@ -1140,9 +1143,16 @@ fn tick_arena_match(
             name: None,
             manager: player,
         });
+        scored.push(crate::arena::XpFighter {
+            company,
+            damage: score.map_or(0, |score| score.0),
+            health: fighter.health.red,
+            max: fighter.health.max,
+        });
         index = index.wrapping_add(1);
     }
     let mut handled = arena.manager_screen.is_some();
+    let mut removed = Vec::new();
     let result = match_tick(
         &mut scene,
         &mut arena.rounds,
@@ -1151,10 +1161,33 @@ fn tick_arena_match(
         arena.physician,
         &mut arena.log,
         &mut arena.deaths,
-        |_, id| info!("arena match: company fighter {id} died"),
+        |_, id| {
+            info!("arena match: company fighter {id} died");
+            removed.push(id);
+        },
         started,
         now,
     );
+    // The round's end hands out its experience, after the falls were
+    // resolved: a fighter who died is off the books and gets nothing.
+    let round_ended = match &result {
+        MatchTick::RoundEnded(_) => true,
+        MatchTick::ManagerDown(down) => down.round.is_some(),
+        MatchTick::NotDue | MatchTick::Nothing => false,
+    };
+    if round_ended && let Some(career) = career.as_deref_mut() {
+        let ids: Vec<u8> = scene.iter().map(|fighter| fighter.id).collect();
+        let credited = award_round_xp(arena, career, &scored, &ids, &removed);
+        for (index, share) in credited {
+            if let Ok((.., Some(mut score))) = fighters.get_mut(entities[index]) {
+                score.take();
+            }
+            info!(
+                "arena match: company fighter {} earns {share} experience",
+                ids[index]
+            );
+        }
+    }
     for (index, entity) in entities.iter().enumerate() {
         if scene[index].resolved && !arena.resolved.contains(entity) {
             arena.resolved.push(*entity);
@@ -1192,10 +1225,90 @@ fn tick_arena_match(
     }
 }
 
+/// The round's experience award on the career's records: the pool from
+/// the scene's bodies ([`crate::arena::xp_pool`]) — the match's slot as the
+/// tier, its template's experience, the Fray's every-body rule and a
+/// trainer on the books — then each company body's share
+/// ([`crate::arena::xp_shares`]) granted to its record as a skill lump
+/// ([`crate::career::grant_lump`]). A body is credited when its record is
+/// found: the manager (id 0) or a roster member (`id − 1`) who did not die
+/// this tick. Returns each credited body's scene index and share; the
+/// caller clears those bodies' scores.
+pub fn award_round_xp(
+    arena: &ArenaMatch,
+    career: &mut crate::hub_windows::ArenaCareer,
+    fighters: &[crate::arena::XpFighter],
+    ids: &[u8],
+    removed: &[u8],
+) -> Vec<(usize, i32)> {
+    let trainer = career
+        .company
+        .roster
+        .iter()
+        .any(|member| member.profession == crate::career::Profession::Trainer);
+    let template_xp = u32::try_from(arena.template)
+        .ok()
+        .and_then(crate::arena::template)
+        .map_or(0, |t| t.xp);
+    let award = crate::arena::xp_pool(
+        arena.level,
+        template_xp,
+        arena.template == crate::arena::FRAY,
+        fighters,
+        trainer,
+    );
+    let roster = career.company.roster.len();
+    let shares = crate::arena::xp_shares(award, fighters, |index| {
+        let id = ids.get(index).copied().unwrap_or(u8::MAX);
+        !removed.contains(&id) && (id == 0 || usize::from(id) <= roster)
+    });
+    for &(index, share) in &shares {
+        let id = ids[index];
+        let member = if id == 0 {
+            &mut career.player
+        } else {
+            &mut career.company.roster[usize::from(id) - 1]
+        };
+        crate::career::grant_lump(member, share);
+    }
+    shares
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::player::Player;
+
+    #[test]
+    fn a_round_end_credits_the_company_by_its_score() {
+        let mut career = crate::hub_windows::ArenaCareer::default();
+        career.player.techniques[0][0] = 1;
+        career
+            .company
+            .hire("a", crate::career::Profession::Combatant)
+            .unwrap();
+        career.company.roster[0].techniques[0][0] = 1;
+        let arena = ArenaMatch::begin_match(1, [0.0; 3], 3, 0, false, Some(0));
+        let body = |company, damage, health| crate::arena::XpFighter {
+            company,
+            damage,
+            health,
+            max: 100.0,
+        };
+        // The Duel's 1 000 at slot 3 is 1 750; the opponent misses half, so
+        // the pool is 875. The manager dealt all the company's damage.
+        let fighters = [
+            body(true, 3, 70.0),
+            body(true, 0, 0.0),
+            body(false, 0, 50.0),
+        ];
+        let shares = award_round_xp(&arena, &mut career, &fighters, &[0, 1, 2], &[1]);
+        assert_eq!(shares, vec![(0, 875)]);
+        // Rank 1: the whole share goes to the trained skill.
+        assert_eq!(career.player.skill_xp[0], 875);
+        // The roster member died this tick: no record, no grant.
+        assert_eq!(career.company.roster[0].skill_xp[0], 0);
+    }
 
     #[test]
     fn the_twelve_arenas_carry_their_tables() {

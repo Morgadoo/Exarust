@@ -223,3 +223,21 @@ fn shipped_characters_take_damage_by_their_rule_bits() {
     assert_eq!(kept, [((0, true), 97), ((1, false), 128), ((2, false), 23)]);
     assert_eq!(cut, 203);
 }
+
+#[test]
+fn a_wound_scores_three_for_the_striker_and_a_parried_guard_one() {
+    let mut striker = CombatScore::default();
+    striker.credit_wound();
+    striker.credit_wound();
+    assert_eq!(striker.0, 6);
+    let mut parrier = CombatScore::default();
+    parrier.note_guard(ScoreEvent::Clashed, true);
+    parrier.note_guard(ScoreEvent::Blocked, true);
+    // Not parrying: the notice adds nothing; a wound notice on the struck
+    // body adds nothing to it either.
+    parrier.note_guard(ScoreEvent::Blocked, false);
+    parrier.note_guard(ScoreEvent::Wounded, true);
+    assert_eq!(parrier.0, 2);
+    assert_eq!(parrier.take(), 2);
+    assert_eq!(parrier.0, 0);
+}

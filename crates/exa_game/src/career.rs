@@ -800,7 +800,7 @@ fn skill_level(word: u16) -> u32 {
 /// story's skill lump (`experience::add_skill_lump`). A sum that reaches a
 /// new multiple of 5000 snaps to it.
 fn teach(student: &mut Member, trainer: &Member) {
-    let mut skills = std::array::from_fn(|index| Skill {
+    let skills: [Skill; 6] = std::array::from_fn(|index| Skill {
         points: student.skill_xp[index],
         techniques: student.techniques[index],
     });
@@ -812,14 +812,25 @@ fn teach(student: &mut Member, trainer: &Member) {
     if known == 0 || !trainer.techniques[skill][..known.min(6)].contains(&technique) {
         return;
     }
-    let before = crate::report::level_sum(&student.skill_xp);
-    experience::add_skill_lump(&mut skills, LESSON as i32);
-    student.skill_xp = skills.map(|s| s.points);
-    // The gain may cross a rank: the new rank's kit starts as the old
-    // one's, as the rank-up routine does.
-    if crate::report::level_sum(&student.skill_xp) > before {
-        copy_rank_loadout(student);
+    grant_lump(student, LESSON as i32);
+}
+
+/// A lump of skill experience on a member's record
+/// ([`experience::add_skill_lump`]): the lesson's and the match award's
+/// grant. When the trained skill reaches a new level the new rank's kit
+/// starts as the old one's ([`copy_rank_loadout`]). Returns whether the
+/// skill rose a level.
+pub fn grant_lump(member: &mut Member, amount: i32) -> bool {
+    let mut skills = std::array::from_fn(|index| Skill {
+        points: member.skill_xp[index],
+        techniques: member.techniques[index],
+    });
+    let raised = experience::add_skill_lump(&mut skills, amount);
+    member.skill_xp = skills.map(|s| s.points);
+    if raised {
+        copy_rank_loadout(member);
     }
+    raised
 }
 
 /// A rank-up copies the previous rank's kit into the new rank's slot.
@@ -1743,6 +1754,27 @@ mod tests {
         fighter.loadouts[4].word = 11;
         assert!(copy_rank_loadout(fighter));
         assert_eq!(fighter.loadouts[5].word, 11);
+    }
+
+    #[test]
+    fn a_match_share_raises_the_trained_skill_and_copies_the_kit() {
+        let mut company = Company::new("Ash");
+        company.hire("a", Profession::Combatant).unwrap();
+        let fighter = &mut company.roster[0];
+        // Level sum 1, rank 2: 3 000 over 2 is 1 500.
+        fighter.skill_xp = [5_000, 0, 0, 0, 0, 0];
+        fighter.techniques[1][0] = 9;
+        assert!(!grant_lump(fighter, 3_000));
+        assert_eq!(fighter.skill_xp[1], 1_500);
+        // A grant under the rank gives nothing.
+        assert!(!grant_lump(fighter, 1));
+        assert_eq!(fighter.skill_xp[1], 1_500);
+        // 9 000 over 2 is 4 500: the skill reaches level 1 and snaps to
+        // 5 000; the sum two copies kit 0 into kit 1.
+        fighter.loadouts[0].word = 4;
+        assert!(grant_lump(fighter, 9_000));
+        assert_eq!(fighter.skill_xp[1], 5_000);
+        assert_eq!(fighter.loadouts[1].word, 4);
     }
 
     #[test]
