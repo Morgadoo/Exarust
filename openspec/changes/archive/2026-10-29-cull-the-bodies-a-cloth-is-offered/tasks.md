@@ -1,0 +1,7 @@
+- [x] Bucket the level's body parts by their mesh box's cell once a tick and offer each cloth only the nine cells around its own (`sector::CellGrid::around`, `exa_world::cloth`)
+- [x] Fix the cloth object list's origin so objects are bucketed in their own cell
+- [x] Tests: the nine-cell walk order and the cell-edge case; a cloth offered only the near parts of a level with far ones
+- [x] Hair cloth back on by default (`EXA_HAIR_CLOTH=0` turns it off)
+- [x] Docs: crate READMEs, docs/DEBUGGING.md (no docs/formats/ page describes the runtime sector; docs/PLAN.md is updated by the round's integration)
+- [ ] Real data: `EXA_DEBUG_CLOTH=1 play exanima01 --perf-log 5` on the RTX 3090 (needs EXANIMA_DIR): `parts` well under 108 300, `bodies` about 63, the stage under 2 ms, 60 FPS
+- [x] fmt, clippy -D warnings, tests (remote)

@@ -137,7 +137,10 @@ physique values and the body morphs they select remain the body's concern
   meshes of `hair hula01…05` and `hair husa02`) becomes an
   `exa_world::cloth` cloth pinned by its face flags, the style's roots
   with the hair's cloth record (`exa_physics::cloth_record::ClothRecord::HAIR`);
-  only with `EXA_HAIR_CLOTH=1` (off by default: exanima01 fell to 16 FPS with every awake hair offered every body part of the level).
+  on by default, `EXA_HAIR_CLOTH=0` leaves the styles rigid. A living
+  character's hair never sleeps; each awake hair is offered only the body
+  parts in the nine 6 m cells around it, as the original's grid sector
+  walks them (offered every part of the level, exanima01 fell to 16 FPS).
 
 ## The dressed mesh
 
