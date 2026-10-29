@@ -1974,19 +1974,26 @@ mod tests {
     }
 
     /// A banner held firmly by its hem and hanging free against a sleeping
-    /// body's sphere settles on it and falls asleep: a sleeping body pushes
-    /// but never keeps the cloth awake, and with the hem pinned there is a
-    /// rest the pushes hold.
+    /// body's spheres settles on them and falls asleep: a sleeping body
+    /// pushes but never keeps the cloth awake, and with only the hem pinned
+    /// there is a rest the pushes hold. (Every vertex held at 0.1 toward a
+    /// rest pose these spheres cut into, the old guess, never slept: the
+    /// pins pulled the cloth back in each pass and the pushes threw it out,
+    /// with a velocity sum² near 8.)
     #[test]
     fn a_hem_pinned_banner_against_a_sleeping_sphere_sleeps() {
         let mut cloth = hanging_banner();
+        let standing = |centre: Vec3, radius: f32| crate::cloth_body::BodySweep {
+            from: centre,
+            to: centre,
+            radius: radius + PADDING_CM,
+            moving: false,
+        };
         cloth.bodies = vec![crate::cloth_body::ClothBody {
-            spheres: vec![crate::cloth_body::BodySweep {
-                from: Vec3::new(20.0, -25.0, 4.0),
-                to: Vec3::new(20.0, -25.0, 4.0),
-                radius: 8.0 + PADDING_CM,
-                moving: false,
-            }],
+            spheres: vec![
+                standing(Vec3::new(5.0, -30.0, -3.0), 9.0),
+                standing(Vec3::new(20.0, -40.0, 2.0), 12.0),
+            ],
             countdown: 0,
             part: 0,
         }];
