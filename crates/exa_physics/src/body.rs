@@ -54,7 +54,7 @@ pub use muscle::{
 
 #[path = "body_balance.rs"]
 mod balance;
-pub use balance::{Balance, Leg, reset_heading};
+pub use balance::{Balance, Leg, legs_swap, reset_heading};
 #[path = "body_bend.rs"]
 mod bend;
 #[path = "body_limp.rs"]
@@ -70,6 +70,10 @@ pub use hunch::{ease_hunch, hunch_applies, hunch_turn, step_hunch};
 mod feet;
 #[path = "body_stagger.rs"]
 pub mod stagger;
+pub use feet::{
+    FLAT_FLOOR_FOOT, FeetMode, FlatFloorLeg, HOVER_PROBE_MISS_RISE, HOVER_PROBE_RADIUS,
+    HOVER_PROBE_REACH, HOVER_PROBE_RISE, HoverProbe, feet_mode, flat_floor_leg, flat_floor_target,
+};
 pub use feet::{
     FootSound, WalkRustle, anchor_rustle, release_step, release_step_clock, walk_rustle,
     wet_release_step,

@@ -1252,10 +1252,6 @@ pub(super) fn extension(level: f32, over: f32, reach: f32) -> f32 {
     if x.is_nan() { level } else { x * level }
 }
 
-#[cfg(test)]
-#[path = "body_feet_test.rs"]
-mod tests;
-
 /// What the end of a step leaves: where the step target is (the base
 /// point moved by the step vector), and whether the AI is told (the step
 /// pointing along the body's facing).
@@ -1330,3 +1326,104 @@ pub fn full_tone(motion: i32, stance: f32) -> FullTone {
         getting_up: motion == 0x0E || motion == 0x0F,
     }
 }
+
+/// Which of its three modes the feet routine runs for a body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FeetMode {
+    /// The condition's flat-floor bit: every ground at 0, no probes.
+    FlatFloor,
+    /// A race whose feet hover (the wraith): one probe under the pelvis.
+    Hovering,
+    /// Every leg probes its own ground.
+    Walking,
+}
+
+/// The feet routine's mode: the flat-floor bit wins over the hover flag.
+pub fn feet_mode(flat_floor: bool, hovers: bool) -> FeetMode {
+    if flat_floor {
+        FeetMode::FlatFloor
+    } else if hovers {
+        FeetMode::Hovering
+    } else {
+        FeetMode::Walking
+    }
+}
+
+/// A flat-floor foot's state: touching, reached and its ramp held.
+pub const FLAT_FLOOR_FOOT: FootState =
+    FootState(FootState::TOUCHING | FootState::REACHED | FootState::RAMP_HELD);
+
+/// A flat-floor leg: its smoothed ground 0, its anchor's height the sole
+/// height plus 1 cm, its state [`FLAT_FLOOR_FOOT`]; its foot's floor and
+/// its companion are 1 (cm, relative to the foot), and its reach is its
+/// rest reach.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FlatFloorLeg {
+    pub ground: f32,
+    pub anchor_height: f32,
+    pub state: FootState,
+    pub floor: f32,
+}
+
+/// [`FlatFloorLeg`] for a body of sole height `sole` (cm).
+pub fn flat_floor_leg(sole: f32) -> FlatFloorLeg {
+    FlatFloorLeg {
+        ground: 0.0,
+        anchor_height: sole + 1.0,
+        state: FLAT_FLOOR_FOOT,
+        floor: 1.0,
+    }
+}
+
+/// On a flat floor the pelvis aims 10 cm under its standing height (cm);
+/// the body's ground is 0, it has support and its support, footing and
+/// balance factors are 1.
+pub fn flat_floor_target(standing: f32) -> f32 {
+    standing - 10.0
+}
+
+/// The hovering probe's reach down (cm) and radius (cm): one sphere cast
+/// under the pelvis.
+pub const HOVER_PROBE_REACH: f32 = 2000.0;
+pub const HOVER_PROBE_RADIUS: f32 = 20.0;
+/// How far the probe starts above the pelvis (cm), and how much higher it
+/// starts after every miss.
+pub const HOVER_PROBE_RISE: f32 = 20.0;
+pub const HOVER_PROBE_MISS_RISE: f32 = 5.0;
+
+/// A hovering body's ground probe: it starts 20 cm above the pelvis plus
+/// what its misses added, 5 cm each, until one hits.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct HoverProbe {
+    /// The extra rise after the misses so far (cm).
+    pub raise: f32,
+}
+
+impl HoverProbe {
+    /// Where the probe starts (cm): `(pelvis + 20) + raise`, single
+    /// precision in that order.
+    pub fn start(&self, pelvis_y: f32) -> f32 {
+        pelvis_y + HOVER_PROBE_RISE + self.raise
+    }
+
+    /// The probe's outcome: a hit is the body's ground (and its previous
+    /// ground) and clears the raise; a miss leaves the ground as it was
+    /// and raises the next probe 5 cm. The pelvis then aims at its
+    /// standing height; support and its factors are 1.
+    pub fn land(&mut self, hit: Option<f32>) -> Option<f32> {
+        match hit {
+            Some(y) => {
+                self.raise = 0.0;
+                Some(y)
+            }
+            None => {
+                self.raise += HOVER_PROBE_MISS_RISE;
+                None
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "body_feet_test.rs"]
+mod tests;

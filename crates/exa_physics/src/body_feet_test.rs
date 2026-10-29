@@ -1330,3 +1330,34 @@ fn a_releasing_foot_steps_and_splashes() {
     let mut roll = 0;
     assert_eq!(release_step_clock(10, &mut roll), 260);
 }
+
+/// The feet routine's modes: the flat-floor bit wins over hovering.
+#[test]
+fn the_feet_modes() {
+    assert_eq!(feet_mode(true, true), FeetMode::FlatFloor);
+    assert_eq!(feet_mode(false, true), FeetMode::Hovering);
+    assert_eq!(feet_mode(false, false), FeetMode::Walking);
+    // A flat-floor leg: ground 0, anchor sole + 1, state 0x4a, floor 1.
+    let leg = flat_floor_leg(3.5);
+    assert_eq!(leg.ground, 0.0);
+    assert_eq!(leg.anchor_height, 4.5);
+    assert_eq!(leg.state.0, 0x4a);
+    assert_eq!(leg.floor, 1.0);
+    assert_eq!(flat_floor_target(101.0), 91.0);
+}
+
+/// The hovering probe starts 20 cm over the pelvis; each miss raises the
+/// next 5 cm and keeps the ground, a hit clears the raise.
+#[test]
+fn the_hovering_probe_rises_after_a_miss() {
+    let mut probe = HoverProbe::default();
+    assert_eq!(probe.start(100.0), 120.0);
+    assert_eq!(probe.land(None), None);
+    assert_eq!(probe.land(None), None);
+    assert_eq!(probe.start(100.0), 130.0);
+    assert_eq!(probe.land(Some(-3.0)), Some(-3.0));
+    assert_eq!(probe.raise, 0.0);
+    // The start sums in single precision, the pelvis's rise first.
+    let p = HoverProbe { raise: 5.0 };
+    assert_eq!(p.start(0.1), (0.1_f32 + 20.0) + 5.0);
+}
