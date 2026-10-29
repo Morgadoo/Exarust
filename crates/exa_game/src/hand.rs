@@ -23,8 +23,15 @@
 //!   release;
 //! - a corpse: dragged by the limb the pick hit, strength 0.5, in every
 //!   pass;
-//! - a door or a wheel: the drag is recorded until the release (Exarust's
-//!   doors and wheels are static level geometry, so nothing moves yet); a
+//! - a hinged door's leaf (`exa_physics::body::DoorBody`): a latched one
+//!   rattles and refuses; otherwise a link (slack 1 cm, strength 0.003, the
+//!   tick's first three passes) takes the leaf point 100 cm from the door's
+//!   origin toward the hit (at the hit's height), and each frame its anchor
+//!   is the point 100 cm from that origin toward the cursor's point on the
+//!   plane at that height, the link disabled while the hip is farther than
+//!   350 cm from the door; the release removes it;
+//! - a wheel or a sliding door: the drag is recorded until the release
+//!   (Exarust's levers and sliding doors are static level geometry); a
 //!   scene object's mesh that is a cloth takes the vertex within 10 cm of
 //!   the point [a stand-in for the mesh element the original's pick hit],
 //!   and each frame the vertex is pulled to the cursor's point on the cloth

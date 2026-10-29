@@ -675,10 +675,11 @@ there:
 - **A corpse** is dragged by the limb the pick hit, strength 0.5, in every
   pass, with or without Ctrl.
 - A door, a wheel or a sim object (cloth) start their own drags in the
-  original. Exarust's doors, wheels and cloth are not bodies under the hand,
-  so a press only records the drag until the release; meanwhile, as in the
-  original, the keys and the right button keep the movement request and the
-  idle camera waits.
+  original. A hinged door's leaf is a body under the hand in Exarust (The
+  door, below); a wheel (a lever) and a sliding door are static level
+  geometry, so a press on one only records the drag until the release;
+  meanwhile, as in the original, the keys and the right button keep the
+  movement request and the idle camera waits.
 - **Anything else** (a person, the level, a heavy prop) is refused until the
   release: the cursor shows the cross and the frame's movement request is
   left as it was.
@@ -781,13 +782,67 @@ the cursor's ray meets the level plane at the grab's height, kept within
 body is woken to 256; out of reach the anchor stays on the grabbed point.
 Releasing the button lets go.
 
-A door or a wheel is recorded as a drag until the release: its leaf's pull
-point 100 cm from the hinge-side point toward the cursor, and a sliding
-leaf's projected onto its axis (`hand::{door_pull_anchor,
-door_drag_frame}`); Exarust's doors and wheels are static level geometry,
-so nothing moves yet. (The original's door drag also stamps the dragged
-body with the player as its last pusher for 2000 ms, which impacts read;
-that is not the hold's end.) A scene object's mesh that is a cloth takes
+### The door
+
+A door's hinged leaf is a rigid body hung from its node by its stored
+links, as the original registers it: a hinge pin, the swing stop (the link
+longer than 30 cm) and the origin pivot registration adds; it meets no
+level. The original creates a door body for it and runs the door's set-up
+when the body joins the world (`exa_physics::body::DoorBody`): the leaf's
+mobility becomes 0.05; the door frame's up row is the negated hinge axis,
+its forward row the stop's tied point in the parent node's frame (less the
+node's own position) without its part along up, its side row up × forward;
+the handle is the leaf point 150 cm from the hinge on the side away from
+the stop, at the node box's centre height; the stored word is the
+placement's word (mode, countdown and latch); a sibling node's leaf is the
+partner of a double door, and both pass through each other (pair layer
+bits `0x3000`). A leaf whose stop reads within 0.04 rad of its shut angle
+starts shut.
+
+Each tick a leaf is awake its door rules run (the door's step,
+`crates/exa_physics/README.md`): the handle's motion since the last tick, smoothed by half,
+is the creak energy; the stop's measured length is the knock's travel; the
+angle is the heading, in the door frame, of the stop point less the leaf's
+origin. A shut leaf is driven to its shut angle: the stop point is moved to
+the point at that angle on the stop's radius, spread over the particles by
+its weights, so a woken shut leaf stays shut. The original drives the leaf
+between its integration and its link passes; Exarust drives it after the
+solver's tick.
+
+A left-button drag on a leaf that is latched (and not being unlocked)
+rattles it (pitch 0.8 + 0.2·draw, then volume 0.15 + 0.1·draw) and is
+refused. Otherwise the press adds a link to the leaf from the point 100 cm
+from the door node's origin, taken at the hit's height, toward the hit:
+slack 1 cm, strength 0.003, solved in the tick's first three passes only
+(the engine's link-adding routine takes slack 1.0 and strength 0.003 and
+stores the slack squared; the press then sets the link's flags to the
+iteration limit alone and its last pass to 2), and marks the leaf held.
+Each frame the link's anchor is the point 100 cm from that origin toward
+the cursor's point on the plane at the hit's height, and the leaf is woken
+to 256; while the player's hip is farther than 350 cm from the door (a
+squared 122 500 cm²) the link's disabled bit is set instead. The plain
+slack law moves the leaf: with three passes a tick the point closes about
+0.9% of its gap a tick, a soft spring. A held shut leaf pulled short of
+its shut angle loses 4 from its pull count each tick (it gains 1, up to
+20), and below 0 it leaves the shut state with its unlatch sound: about
+seven ticks of pull. The release, a fall or any forced release removes the
+link (`hand::{mechanism_press, door_pull_anchor, door_drag_frame}`,
+`DoorBody::{take_hold, pull_to, let_go}`). `--static-doors` (an Exarust
+debug option) keeps doors static level geometry, as before.
+
+Not in Exarust: the door's sounds (its step reports them), the navigation
+passage report (the grid still treats every door as standing where the
+level saved it), sliding doors (static, their drag recorded: the cursor's
+offset projected on the slide), and the last-pusher stamp (the original's
+door drag stamps the dragged body with the player as its last pusher for
+2000 ms, which impacts read; that is not the hold's end).
+
+A wheel (a lever) takes no link in the original: its press marks the lever
+held and each frame sets the lever's target angle from the cursor's point
+in the lever's frame (`hand::{wheel_set, uses_first_wheel_grip}`); the
+lever's own step drives its arm 0.02 rad a tick toward it
+(`exa_physics::lever`). Exarust's levers
+are static level geometry, so the wheel's drag is only recorded. A scene object's mesh that is a cloth takes
 the vertex within 10 cm of the press point in the cloth's own frame (a
 stand-in: the original takes the mesh element the pick hit and its own
 radius) and sets the drag plane through the press point, its normal the

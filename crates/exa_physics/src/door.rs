@@ -48,7 +48,9 @@
 //!
 //! In the solver, the link laws push a leaf: a hand or body moving the stop
 //! changes its heading, and the slide link's fraction is what the step
-//! reads and writes. The per-tick inputs ([`Tick`]) are those link states.
+//! reads and writes. The per-tick inputs ([`Tick`]) are those link states;
+//! a hinged leaf's body measures them and applies the drive
+//! (`crate::body::door_body`).
 //!
 //! Evidence: the hinged and sliding steps, the open shove, the toggle, the
 //! close-and-lock, the signalled open and wait, the unlock, the record and

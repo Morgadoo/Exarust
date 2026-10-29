@@ -517,7 +517,10 @@ death fade's start, death and removal from the world; dead bodies below
 the world cursor's shape from the player's condition word (`cursor`), the
 hand (`hand`: the left press named by `pick`, the drag of props with Ctrl
 and of corpses through the solver's grab, the lift of a prop onto the item
-cursor, the door and wheel drags' record until the release, a cloth
+cursor, a hinged door's leaf pulled by its link (slack 1 cm, strength
+0.003, three passes; `exa_physics::body::DoorBody`) 100 cm from its origin
+toward the cursor until the release, the wheel and sliding-door drags'
+record until the release, a cloth
 vertex's grab and its per-frame target (the pick near the vertex, else the
 plane through the press point facing the camera), the reach under the cursor and
 the refusal that keeps the movement request; `docs/PLAYER.md`, The hand),
