@@ -1,4 +1,4 @@
-//! The swing's voice: the whoosh a held weapon keeps while it swings, as
+//! The swing's voice: the sound a held weapon keeps while it swings, as
 //! the original's swing routine and body tick drive it.
 //!
 //! The voice starts, silent, the first attack tick the clip is in the
@@ -13,9 +13,18 @@
 //! of volume and 0.0005 of pitch, and asks it to stop under 0.005
 //! ([`fade_voice`]).
 //!
-//! Not wired: Exarust plays one whoosh when the strike window opens
-//! (`exa_audio`); these are tested rules with the original's numbers.
+//! Wired: the swing tick ([`crate::swing::run_swings`]) keeps a fighter's
+//! [`SwingVoice`] and sends a [`SwingVoiceCue`] for each start and each
+//! attack tick's volume and pitch; [`fade_swing_voices`] sends the fade of
+//! every body tick that is not an attack. `exa_audio` keeps the voice (the
+//! first held item's) and plays the rustle. The voice exists only for a
+//! fighter holding an item: fists and claws are not held items, so an
+//! unarmed swing is silent, as in the original.
 
+use bevy::prelude::*;
+use exa_physics::body::TickedCharacter;
+
+use crate::Condition;
 use crate::attack::AttackMotion;
 
 /// The voice's start pitch: W26 × 0.4, in double.
@@ -37,8 +46,9 @@ const RUSTLE_JITTER_MS: u64 = 100;
 const ONE_HAND_STRIKES: u8 = 0x80;
 
 /// The swing voice's state on a fighter: whether it has started in the
-/// current pass through the swing's region.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// current pass through the swing's region. Every [`crate::swing::SwingState`]
+/// carries one.
+#[derive(Component, Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SwingVoice {
     pub started: bool,
 }
@@ -69,6 +79,50 @@ impl SwingVoice {
             volume: 0.0,
             pitch: (f64::from(swing_pitch) * START_PITCH) as f32,
         })
+    }
+}
+
+/// What the body ticks ask of a fighter's swing voice; `exa_audio` plays
+/// them on the voice of the fighter's first held item.
+#[derive(Message, Debug, Clone, Copy, PartialEq)]
+pub enum SwingVoiceCue {
+    /// The voice restarts on a variant of the swing set, silent, at
+    /// `pitch` ([`SwingVoice::enter`]); the same start may rustle the
+    /// clothing ([`swing_rustle`]) by the game clock `now_ms`.
+    Start {
+        fighter: Entity,
+        at: Vec3,
+        pitch: f32,
+        now_ms: u32,
+    },
+    /// An attack tick's volume and pitch ([`crate::swing::swing_sound`]),
+    /// while the voice has started in the region.
+    Sound {
+        fighter: Entity,
+        at: Vec3,
+        volume: f32,
+        pitch: f32,
+    },
+    /// A body tick that is not an attack: a playing voice fades
+    /// ([`fade_voice`]).
+    Fade { fighter: Entity },
+}
+
+/// The body tick's fade of the held voices: every tick of a living body
+/// that is not attacking (a dead body's tick returns before it) asks for
+/// the fade; the voice fades only while it plays.
+pub(crate) fn fade_swing_voices(
+    ticked: Res<TickedCharacter>,
+    fighters: Query<&Condition, With<SwingVoice>>,
+    mut cues: MessageWriter<SwingVoiceCue>,
+) {
+    let Ok(condition) = fighters.get(ticked.body) else {
+        return;
+    };
+    if *condition != Condition::ATTACKING {
+        cues.write(SwingVoiceCue::Fade {
+            fighter: ticked.body,
+        });
     }
 }
 

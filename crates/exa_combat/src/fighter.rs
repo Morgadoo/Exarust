@@ -28,7 +28,8 @@ use crate::wounds::WoundQueue;
     StateFlags,
     PostureBranch,
     FallDeath,
-    crate::impact::ImpactBook
+    crate::impact::ImpactBook,
+    crate::strike_body::TangleCount
 )]
 pub struct Fighter {
     pub health: Health,

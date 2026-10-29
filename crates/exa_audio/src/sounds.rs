@@ -1,5 +1,5 @@
-//! The named sound sets of the body and its blows: the swing whoosh, the
-//! second wind's heal, the hit-sound classes of armour and flesh, and the
+//! The named sound sets of the body and its blows: the swing voice (with
+//! its clothing rustle), the second wind's heal, the hit-sound classes of armour and flesh, and the
 //! clothing and golem foley loops.
 //!
 //! Evidence: the part's sound set names (`SwingHA`, `StmHeal01`, `HitGlm`,
@@ -13,12 +13,16 @@
 
 use bevy::prelude::*;
 
+use bevy::platform::collections::HashMap;
 use exa_assets::Game;
-use exa_combat::sounds::{FoleyKind, HitSound};
+use exa_combat::Fighter;
+use exa_combat::sounds::{FoleyKind, HitSound, foley};
+use exa_combat::swing_voice::{SwingVoiceCue, fade_voice, swing_rustle};
 
-use crate::{AudioEnvironment, SoundBank, SoundSet};
+use crate::environment::voice_flags;
+use crate::{AudioEnvironment, SoundBank, SoundSet, VoiceHandle};
 
-/// A swing's whoosh (`SwingHA`), six variants.
+/// The swing voice's set (`SwingHA`), six variants.
 pub const SWING: SoundSet<'static> = SoundSet::new("swingha", 6);
 /// The second wind's heal (`StmHeal01`), one sound.
 pub const HEAL: SoundSet<'static> = SoundSet::new("stmheal", 1);
@@ -87,40 +91,136 @@ pub(crate) fn heal_sounds(
     }
 }
 
-/// Plays a swing's whoosh when a fighter's strike window opens, at its
-/// primary weapon's swing volume and pitch (W25, W26).
+/// A fighter's swing voice as the mixer keeps it: the voice of its first
+/// held item (allocated at its first swing), the clothing rustle's handle
+/// and the foley clock (ms) the rustle waits on.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct HeldVoice {
+    voice: Option<u32>,
+    rustle: VoiceHandle,
+    foley_next_ms: u32,
+}
+
+/// Plays the swing voice's cues ([`SwingVoiceCue`]): a start restarts the
+/// fighter's held voice on a variant of `SwingHA`, silent, and rustles its
+/// clothing foley once the foley clock allows (a fighter without a foley
+/// set never rustles); an attack tick sets the voice's volume and pitch;
+/// a tick that is not an attack fades a playing voice and asks it to stop
+/// under 0.005. The voices of fighters that are gone are freed.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn swing_sounds(
+pub(crate) fn swing_voices(
     game: Option<Res<Game>>,
+    mut cues: MessageReader<SwingVoiceCue>,
+    fighters: Query<&Fighter>,
     mut bank: ResMut<SoundBank>,
     mut sources: ResMut<Assets<AudioSource>>,
     mut env: ResMut<AudioEnvironment>,
-    swings: Query<(Entity, &exa_combat::swing::SwingState, &GlobalTransform)>,
-    blades: Query<&exa_combat::Blade>,
-    mut set: Local<Option<u32>>,
-    mut open: Local<bevy::platform::collections::HashMap<Entity, bool>>,
+    mut swing_set: Local<Option<u32>>,
+    mut foley_sets: Local<HashMap<&'static str, u32>>,
+    mut held: Local<HashMap<Entity, HeldVoice>>,
 ) {
     let Some(game) = game else { return };
-    for (entity, state, gt) in &swings {
-        let now_open = state.open[0] || state.open[1];
-        let was = open.insert(entity, now_open).unwrap_or(false);
-        if !now_open || was {
-            continue;
+    for cue in cues.read() {
+        match *cue {
+            SwingVoiceCue::Start {
+                fighter,
+                at,
+                pitch,
+                now_ms,
+            } => {
+                let Ok(f) = fighters.get(fighter) else {
+                    continue;
+                };
+                let foley = foley(&f.armour, false, false, false);
+                let foley_set = foley_set(foley.kind);
+                let entry = held.entry(fighter).or_insert_with(|| HeldVoice {
+                    voice: None,
+                    rustle: env.new_handle(),
+                    foley_next_ms: if foley_set.is_some() { 0 } else { u32::MAX },
+                });
+                if entry.voice.is_none() {
+                    entry.voice = env.allocate();
+                }
+                let set = *swing_set
+                    .get_or_insert_with(|| bank.load_set(&game, &mut sources, SWING.prefix));
+                if let Some(id) = entry.voice {
+                    env.retrigger_set(&mut bank, id, set, at, 0.0, pitch);
+                }
+                let Some(foley_set) = foley_set else {
+                    continue;
+                };
+                if entry.foley_next_ms >= now_ms {
+                    continue;
+                }
+                let r_volume = bank.random_unit();
+                let r_pitch = bank.random_unit();
+                let mut roll = bank.rng().0;
+                if let Some(rustle) = swing_rustle(
+                    foley.volume,
+                    1.0,
+                    now_ms,
+                    entry.foley_next_ms,
+                    r_volume,
+                    r_pitch,
+                    &mut roll,
+                ) {
+                    bank.rng().0 = roll;
+                    entry.foley_next_ms = rustle.next_ms;
+                    let id = *foley_sets
+                        .entry(foley_set.prefix)
+                        .or_insert_with(|| bank.load_set(&game, &mut sources, foley_set.prefix));
+                    env.play_set_attached(
+                        &mut bank,
+                        id,
+                        entry.rustle,
+                        at,
+                        rustle.gain,
+                        rustle.pitch,
+                    );
+                }
+            }
+            SwingVoiceCue::Sound {
+                fighter,
+                at,
+                volume,
+                pitch,
+            } => {
+                let Some(id) = held.get(&fighter).and_then(|h| h.voice) else {
+                    continue;
+                };
+                if let Some(voice) = env.voice_mut(id) {
+                    voice.gain = volume;
+                    voice.pitch = pitch;
+                    voice.position = at;
+                }
+            }
+            SwingVoiceCue::Fade { fighter } => {
+                let Some(id) = held.get(&fighter).and_then(|h| h.voice) else {
+                    continue;
+                };
+                if let Some(voice) = env.voice_mut(id)
+                    && voice.flags & voice_flags::ACTIVE != 0
+                {
+                    let (gain, pitch, stop) = fade_voice(voice.gain, voice.pitch);
+                    voice.gain = gain;
+                    voice.pitch = pitch;
+                    if stop {
+                        voice.flags |= voice_flags::STOP;
+                    }
+                }
+            }
         }
-        let Some(blade) = blades.iter().find(|b| b.wielder == entity) else {
-            continue;
-        };
-        let set = *set.get_or_insert_with(|| bank.load_set(&game, &mut sources, SWING.prefix));
-        let position = gt.translation() + Vec3::Y;
-        env.play_set(
-            &mut bank,
-            set,
-            position,
-            blade.record.swing_volume,
-            blade.record.swing_pitch,
-            0,
-        );
     }
+    held.retain(|fighter, voice| {
+        let alive = fighters.contains(*fighter);
+        if !alive {
+            if let Some(id) = voice.voice {
+                env.free_voice(&mut bank, id);
+            }
+            env.free_handle(&mut bank, voice.rustle);
+        }
+        alive
+    });
 }
 
 #[cfg(test)]

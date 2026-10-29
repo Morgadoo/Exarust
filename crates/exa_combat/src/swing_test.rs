@@ -572,6 +572,7 @@ fn attacking(time: f32, state: SwingState) -> (App, Entity) {
     let mut app = App::new();
     app.insert_resource(BodyTicks(1000))
         .insert_resource(motions())
+        .add_message::<SwingVoiceCue>()
         .add_systems(Update, run_swings);
     let mut anim = Animator::new("Default", "Cmbt - Idle");
     anim.play_once("Attack Mid", "Cmbt - Idle");
@@ -616,6 +617,75 @@ fn the_routine_stamps_and_paces_each_attack_tick() {
         app.world().get::<Attacker>(fighter).unwrap().last_tick_ms,
         Some(12_000)
     );
+}
+
+/// The swing voice: a fighter holding a sword starts its voice silent at
+/// 0.4 × W26 on its first tick past 30 % of the clip and sets its volume
+/// and pitch from the tracker that same tick; it does not start again in
+/// the region, and before the region (or unarmed) nothing is cued.
+#[test]
+fn the_swing_voice_starts_in_the_region_and_follows_the_tracker() {
+    let cues = |app: &mut App| -> Vec<SwingVoiceCue> {
+        let mut messages = app.world_mut().resource_mut::<Messages<SwingVoiceCue>>();
+        let out: Vec<_> = messages.drain().collect();
+        out
+    };
+    let (mut app, fighter) = attacking(20.0, SwingState::default());
+    app.update();
+    assert!(cues(&mut app).is_empty(), "unarmed: no held voice");
+    let record = sword();
+    app.world_mut().spawn(Blade::new(fighter, 0.9, record));
+    app.world_mut()
+        .get_mut::<Attacker>(fighter)
+        .unwrap()
+        .primary = Some(Slot::First);
+    app.world_mut()
+        .get_mut::<Attacking>(fighter)
+        .unwrap()
+        .weapon_class = 0x10;
+    app.update();
+    assert!(cues(&mut app).is_empty(), "before the region");
+    app.world_mut().get_mut::<Animator>(fighter).unwrap().time = 50.0;
+    app.update();
+    let got = cues(&mut app);
+    assert_eq!(got.len(), 2, "{got:?}");
+    let SwingVoiceCue::Start {
+        fighter: who,
+        pitch,
+        now_ms,
+        ..
+    } = got[0]
+    else {
+        panic!("{got:?}");
+    };
+    assert_eq!(who, fighter);
+    assert_eq!(now_ms, 12_000);
+    assert_eq!(pitch, (f64::from(record.swing_pitch) * 0.4) as f32);
+    let state = *app.world().get::<SwingState>(fighter).unwrap();
+    let progress = 0.5;
+    let (volume, pitch) = swing_sound(
+        state.tracker[0].speed2,
+        progress,
+        false,
+        record.swing_pitch,
+        record.swing_volume,
+        1.0,
+        1.0,
+    );
+    assert_eq!(
+        got[1],
+        SwingVoiceCue::Sound {
+            fighter,
+            at: Vec3::Y,
+            volume,
+            pitch
+        }
+    );
+    app.update();
+    let got = cues(&mut app);
+    assert_eq!(got.len(), 1, "no second start in the region: {got:?}");
+    assert!(matches!(got[0], SwingVoiceCue::Sound { .. }));
+    assert!(app.world().get::<SwingVoice>(fighter).unwrap().started);
 }
 
 /// Off its balance (under 0.6, in double precision, so the float 0.6 is

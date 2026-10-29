@@ -8,14 +8,19 @@
 //! [`crate::weapon`]. The nudges here return the push (cm) at the striker's
 //! point; the caller applies it with its weights. They are reproduced but
 //! not wired: a plain weapon model has a body now, but the swing does not
-//! push it yet. Rules and constants: reverse engineering of
-//! the swing routine.
+//! push it yet. The tangle break is wired ([`break_tangles`], each living
+//! body tick's readiness stage). Rules and constants: reverse engineering
+//! of the swing routine and the body tick.
 
 // The original compares floats so that a NaN takes the other branch; the
 // negated compares here keep that.
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
 
 use bevy::prelude::*;
+use exa_anim::{Animator, Motions};
+use exa_physics::body::{Ragdoll, TickedCharacter};
+
+use crate::{Attacking, Condition, Fighter};
 
 /// The original's smallest length² a vector must exceed to count (just
 /// under 2⁻²³).
@@ -210,8 +215,76 @@ pub fn vertical_homing(
     }
 }
 
+/// The clip the tangle break starts (the original's motion 0x1C).
+pub const BREAK_TANGLE: &str = "Break Tangle";
+/// The human skeleton's hand bones, right then left: the hand parts the
+/// tangle break reads.
+const HAND_BONES: [usize; 2] = [17, 18];
+const CM: f32 = 100.0;
+
+/// A fighter's break-tangle counter ([`break_tangle`]).
+#[derive(Component, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TangleCount(pub i32);
+
+/// The hand parts' origins in the body's character frame (cm), right then
+/// left; none without a frame.
+pub fn hands_in_frame(body: &Ragdoll) -> Vec<Vec3> {
+    let Some(frame) = body.drive.as_ref().and_then(|d| d.frame()) else {
+        return Vec::new();
+    };
+    let to_frame = frame.inverse();
+    HAND_BONES
+        .iter()
+        .filter_map(|&bone| body.parts.iter().find(|p| p.bone == bone))
+        .map(|p| to_frame.transform_point3(Vec3::from(p.transform().translation)) * CM)
+        .collect()
+}
+
+/// The body tick's tangle break, in its readiness stage: on a living body
+/// (its muscles on) that is neither down nor dying, the counter runs over
+/// the hands ([`break_tangle`]); past 60 the Break Tangle clip starts from
+/// where the body is, with no blend beyond its first key, and returns to
+/// the stance; an attack in progress ends with it. A moveset without the
+/// clip, or a body already playing it, starts nothing (the original's clip
+/// start is a no-op for the motion already playing). The original also
+/// stamps the hand with a timer and a motion-state word no Exarust system
+/// reads.
+pub(crate) fn break_tangles(
+    mut commands: Commands,
+    ticked: Res<TickedCharacter>,
+    motions: Option<Res<Motions>>,
+    mut fighters: Query<(
+        &Fighter,
+        &Condition,
+        &mut TangleCount,
+        &Ragdoll,
+        &mut Animator,
+    )>,
+) {
+    let entity = ticked.body;
+    let Ok((fighter, condition, mut count, body, mut anim)) = fighters.get_mut(entity) else {
+        return;
+    };
+    if condition.0 & Condition::FALLEN_OR_DYING_MASK != 0 || body.drive.is_none() {
+        return;
+    }
+    let hands = hands_in_frame(body);
+    let (next, starts) = break_tangle(count.0, fighter.parry.active, &hands);
+    count.0 = next;
+    if !starts || anim.action == BREAK_TANGLE {
+        return;
+    }
+    if motions.is_none_or(|m| m.clip(&anim, BREAK_TANGLE).is_none()) {
+        return;
+    }
+    let stance = crate::stance_of(&anim);
+    anim.play_once(BREAK_TANGLE, &stance);
+    commands.entity(entity).remove::<Attacking>();
+    info!("{entity:?} breaks a tangle");
+}
+
 /// The break-tangle counter after one tick: outside a parry, it falls by
-/// one (floored at 0), then each held item's origin in the body's frame
+/// one (floored at 0), then each hand part's origin in the body's frame
 /// adds 2 while it is inside the box y −5…60, z < 0, |x| < 20; over 60
 /// the motion 0x1C starts and the counter clears. A NaN height passes the
 /// box's y test, as the original's compares do.
@@ -505,6 +578,92 @@ mod tests {
             break_tangle(0, false, &[Vec3::new(0.0, f32::NAN, -1.0)]).0,
             2
         );
+    }
+
+    fn hands(right: Vec3, left: Vec3) -> Ragdoll {
+        use bevy::math::Affine3A;
+        use exa_physics::body::PartSetup;
+        let part = |bone, parent, at: Vec3| PartSetup {
+            bone,
+            entity: Entity::from_raw_u32(bone as u32 + 1).unwrap(),
+            parent,
+            world: Affine3A::from_translation(at),
+            centre: Vec3::ZERO,
+            half: Vec3::splat(0.05),
+            origin: Vec3::ZERO,
+            links: vec![],
+            foot: None,
+            pins: Vec::new(),
+            spheres: None,
+        };
+        let mut body = Ragdoll::new(&[
+            part(1, None, Vec3::new(0.0, 1.0, 0.0)),
+            part(17, Some(0), right),
+            part(18, Some(0), left),
+        ])
+        .with_drive();
+        body.drive
+            .as_mut()
+            .unwrap()
+            .set_frame(Affine3A::from_translation(Vec3::new(0.0, 1.0, 0.0)));
+        body
+    }
+
+    /// The hands are read in the character frame, in cm: a hand 30 cm up
+    /// and 10 cm behind the frame's origin is at (0, 30, −10).
+    #[test]
+    fn the_hands_are_read_in_the_character_frame() {
+        let body = hands(Vec3::new(0.0, 1.3, -0.1), Vec3::new(0.3, 1.0, 0.2));
+        let got = hands_in_frame(&body);
+        assert_eq!(got.len(), 2);
+        assert!((got[0] - Vec3::new(0.0, 30.0, -10.0)).length() < 1e-3);
+        assert!((got[1] - Vec3::new(30.0, 0.0, 20.0)).length() < 1e-3);
+        assert!(hands_in_frame(&Ragdoll::new(&[])).is_empty());
+    }
+
+    /// A body tick with both hands behind the back adds 2 for each, less
+    /// one: 4 after the first tick, 58 after the 19th, and the 20th passes
+    /// 60 at the second hand, clearing it to start Break Tangle (here a
+    /// motion set without the clip starts nothing); a parrying fighter's
+    /// counter stands still.
+    #[test]
+    fn hands_behind_the_back_break_the_tangle() {
+        use exa_anim::Animator;
+        let mut app = App::new();
+        app.add_systems(Update, break_tangles);
+        let body = hands(Vec3::new(0.05, 1.3, -0.1), Vec3::new(-0.05, 1.3, -0.1));
+        let mut anim = Animator::new("Default", "Cmbt - Idle");
+        anim.play_once("Attack Mid", "Cmbt - Idle");
+        let fighter = app
+            .world_mut()
+            .spawn((Fighter::default(), body, anim, crate::Attacking::default()))
+            .id();
+        app.insert_resource(TickedCharacter {
+            body: fighter,
+            character: None,
+        });
+        app.update();
+        assert_eq!(app.world().get::<TangleCount>(fighter).unwrap().0, 4);
+        for _ in 1..19 {
+            app.update();
+        }
+        assert_eq!(app.world().get::<TangleCount>(fighter).unwrap().0, 58);
+        app.update();
+        assert_eq!(app.world().get::<TangleCount>(fighter).unwrap().0, 0);
+        // Without the clip in a motion set the clip is not started.
+        assert_eq!(
+            app.world().get::<Animator>(fighter).unwrap().action,
+            "Attack Mid"
+        );
+        app.update();
+        assert_eq!(app.world().get::<TangleCount>(fighter).unwrap().0, 4);
+        app.world_mut()
+            .get_mut::<Fighter>(fighter)
+            .unwrap()
+            .parry
+            .active = true;
+        app.update();
+        assert_eq!(app.world().get::<TangleCount>(fighter).unwrap().0, 4);
     }
 
     /// The clinch clear assigns the links, clears the hand bits, resets
