@@ -364,7 +364,13 @@ sends them the control classes' press, drag and release messages and turns
 their reports into `FormEvent`s (page, Defaults, Apply, Cancel, a slider's
 fraction, a checkbox, a key cell's rebinding); the super-sampling slider
 sets the anti-aliasing slider to 0 and disables it, the wheel scrolls the
-Controls page by quarter steps.
+Controls page by quarter steps. The line skin's own control draws are in
+`skin` too: each quad's eight-float sample record (`sample_corners`), the
+check box and its mark (`check_box_quads`) and the textured batch they go
+into (`line_skin_batch`, `push_line_quads`); `line_skin::shown_palette` is
+the palette a shown form draws with (alpha ramps 170 and 125) and
+`line_control_inks` the skin's disabled, idle and on inks (alpha 80, 104
+and 128 times the fade).
 Its controller-mode switch feeds the saved bindings' controller flag and the
 gamepad reader in `exa_game::gamepad`; Enable Rumble still has no visible
 effect because the original's vibration call is a stub. Steam's binding
