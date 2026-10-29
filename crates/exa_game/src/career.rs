@@ -812,8 +812,33 @@ fn teach(student: &mut Member, trainer: &Member) {
     if known == 0 || !trainer.techniques[skill][..known.min(6)].contains(&technique) {
         return;
     }
+    let before = crate::report::level_sum(&student.skill_xp);
     experience::add_skill_lump(&mut skills, LESSON as i32);
     student.skill_xp = skills.map(|s| s.points);
+    // The gain may cross a rank: the new rank's kit starts as the old
+    // one's, as the rank-up routine does.
+    if crate::report::level_sum(&student.skill_xp) > before {
+        copy_rank_loadout(student);
+    }
+}
+
+/// A rank-up copies the previous rank's kit into the new rank's slot.
+///
+/// The level sum is the six skill levels (points over 5000). The copy runs
+/// only while the sum is below 11 and even, from slot `sum/2 − 1` to
+/// `sum/2`. A sum under 2 has no previous slot; the original cannot reach
+/// that on a rank-up, and Exarust leaves the kits alone. Returns whether a
+/// kit was copied.
+pub fn copy_rank_loadout(member: &mut Member) -> bool {
+    let sum = crate::report::level_sum(&member.skill_xp);
+    if sum < 11 && sum.is_multiple_of(2) && sum >= 2 {
+        let to = (sum / 2) as usize;
+        if to < crate::loadout::RANKS {
+            member.loadouts[to] = member.loadouts[to - 1].clone();
+            return true;
+        }
+    }
+    false
 }
 
 fn rested(health: u16, physician: bool) -> u16 {
@@ -877,7 +902,7 @@ pub enum EnterError {
     NoFighter,
 }
 
-/// Mode that leaves the player's team out of an unwatched draw.
+/// The forfeit mode: the player's team is left out of the scene draw.
 pub const FORFEIT_DRAW: i32 = 0x10;
 
 /// One fighter an unwatched match may count.
@@ -896,16 +921,21 @@ struct SideScore {
     score: f32,
 }
 
-/// Draw the winning team of a match nobody is watching.
+/// Draw the winning team of a match nobody plays out.
 ///
-/// Fighters are grouped in first-seen order. A team scores
-/// `(count × 0.5 + 0.5) × strength sum`. The largest score starts at 0 and
-/// moves only when a score is greater. Each weight is the square of score
-/// over that largest, times 100, rounded to the nearest even integer. The
-/// roll steps by `roll × 0x08088405 + 1`. The high half of that word times
-/// one more than the weight total picks the first team whose running
-/// weights are not below it. No counted fighter still steps the roll and
-/// returns no team.
+/// The scene bodies are grouped in first-seen order. A dead body (mark bit
+/// `0x800`) is left out, and so is the player's team when the session is
+/// forfeiting (`mode == 0x10`): a company that gives up cannot be drawn
+/// the winner. A team scores `(count × 0.5 + 0.5) × health sum`. The
+/// largest score starts at 0 and moves only when a score is greater. Each
+/// weight is the square of score over that largest, times 100, converted
+/// to the nearest even integer by the 64-bit conversion and kept in 32
+/// bits. The roll steps by `roll × 0x08088405 + 1` even when no team
+/// remains. The high half of that word times one more than the weight
+/// total picks the first team whose running weights reach it (an exact
+/// equal counts); when none does the first team is kept. This is the scene
+/// draw; the bracket's draw ([`clear_losing_bracket`]) spans the total
+/// itself and needs a running weight strictly above the pick.
 pub fn draw_unwatched(
     fighters: &[SideFighter],
     player_team: i32,
@@ -947,29 +977,55 @@ pub fn draw_unwatched(
             let ratio = side.score / largest;
             let weight = ratio * ratio * 100.0;
             side.score = weight;
-            let rounded = weight.round_ties_even() as i32;
+            let rounded = crate::arena_match::cvtss2si_low32(weight);
             weights.push(rounded);
             total = total.wrapping_add(rounded);
         }
     }
+    let index = draw_weight(weights.as_slice(), total, roll)?;
+    Some(sides[index].team)
+}
+
+/// The scene draw's weighted pick: step the roll (even with no weights),
+/// take the high half of one more than the total times it, and walk the
+/// weights until the running sum reaches the pick. The first weight whose
+/// cumulative total is at least the pick wins. The walk's result starts at
+/// index 0, so a pick no running weight reaches keeps the first; `None`
+/// only when there are no weights at all.
+fn draw_weight(weights: &[i32], total: i32, roll: &mut u32) -> Option<usize> {
     *roll = roll.wrapping_mul(0x0808_8405).wrapping_add(1);
-    if sides.is_empty() {
+    if weights.is_empty() {
         return None;
     }
     let span = i64::from(total.wrapping_add(1));
     let product = i64::from(*roll).wrapping_mul(span);
     let pick = ((product as u64) >> 32) as i32;
     let mut reached = 0i32;
-    let mut winner = 0usize;
     for (index, weight) in weights.iter().enumerate() {
         reached = reached.wrapping_add(*weight);
-        if reached < pick {
-            continue;
+        if reached >= pick {
+            return Some(index);
         }
-        winner = index;
-        break;
     }
-    Some(sides[winner].team)
+    Some(0)
+}
+
+/// The bracket draw's weighted pick: step the roll, take the high half of
+/// the total (not one more) times it, and keep the first weight whose
+/// running sum is strictly above the pick. `None` when no weight passes.
+fn draw_weight_strict(weights: &[i32], total: i32, roll: &mut u32) -> Option<usize> {
+    *roll = roll.wrapping_mul(0x0808_8405).wrapping_add(1);
+    let span = i64::from(total);
+    let product = i64::from(*roll).wrapping_mul(span);
+    let pick = ((product as u64) >> 32) as i32;
+    let mut reached = 0i32;
+    for (index, weight) in weights.iter().enumerate() {
+        reached = reached.wrapping_add(*weight);
+        if reached > pick {
+            return Some(index);
+        }
+    }
+    None
 }
 
 /// One slot in a bracket group.
@@ -1062,24 +1118,11 @@ pub fn clear_losing_bracket(
             for team in &teams {
                 let ratio = team.score / largest;
                 let weight = ratio * ratio * 100.0;
-                let rounded = weight.round_ties_even() as i32;
+                let rounded = crate::arena_match::cvtss2si_low32(weight);
                 weights.push(rounded);
                 total = total.wrapping_add(rounded);
             }
-            *roll = roll.wrapping_mul(0x0808_8405).wrapping_add(1);
-            let product = i64::from(total).wrapping_mul(i64::from(*roll));
-            let pick = ((product as u64) >> 32) as i32;
-            let mut reached = 0i32;
-            let mut found = None;
-            for (index, weight) in weights.iter().enumerate() {
-                reached = reached.wrapping_add(*weight);
-                if reached <= pick {
-                    continue;
-                }
-                found = Some(index);
-                break;
-            }
-            found
+            draw_weight_strict(&weights, total, roll)
         };
         for (index, team) in teams.iter().enumerate() {
             if Some(index) == winner {
@@ -1235,8 +1278,7 @@ pub fn place_daily_match(
     if placed.tier < 0 {
         placed.tier = -1;
     } else if placed.flags & 2 == 0 {
-        let curved = 1.0 - unit * unit * unit * unit;
-        let scaled = f64::from(slot) * curved;
+        let scaled = f64::from(slot) * crate::arena::rank_curve(unit);
         placed.tier = scaled.round_ties_even() as i32;
     } else {
         placed.tier = placed.slot;
@@ -1683,6 +1725,27 @@ mod tests {
     }
 
     #[test]
+    fn a_rank_up_copies_the_previous_kit_into_the_new_slot() {
+        let mut company = Company::new("Ash");
+        company.hire("a", Profession::Combatant).unwrap();
+        let fighter = &mut company.roster[0];
+        fighter.skill_xp = [5_000, 5_000, 0, 0, 0, 0];
+        fighter.loadouts[0].word = 5;
+        assert!(copy_rank_loadout(fighter));
+        assert_eq!(fighter.loadouts[1].word, 5);
+        // An odd sum or a sum of eleven and over copies nothing.
+        fighter.skill_xp[2] = 5_000;
+        assert!(!copy_rank_loadout(fighter));
+        fighter.skill_xp = [10_000; 6];
+        assert!(!copy_rank_loadout(fighter));
+        // A sum of ten copies slot four into five.
+        fighter.skill_xp = [10_000, 10_000, 10_000, 10_000, 10_000, 0];
+        fighter.loadouts[4].word = 11;
+        assert!(copy_rank_loadout(fighter));
+        assert_eq!(fighter.loadouts[5].word, 11);
+    }
+
+    #[test]
     fn a_trainer_teaches_a_known_technique() {
         let mut alone = Company::new("Ash");
         alone.hire("a", Profession::Combatant).unwrap();
@@ -1708,6 +1771,21 @@ mod tests {
         other.roster[1].techniques[0][0] = 3;
         other.end_day([0; 6]);
         assert_eq!(other.roster[0].skill_xp[0], 0);
+
+        // Crossing a rank copies the previous kit into the new rank's slot.
+        let mut ranked = Company::new("Ash");
+        ranked.hire("a", Profession::Combatant).unwrap();
+        ranked.hire("coach", Profession::Trainer).unwrap();
+        // The lesson gives 1000 over one more than the six levels, 500 at
+        // this level, so 9600 reaches the next level.
+        ranked.roster[0].skill_xp[0] = 9_600;
+        ranked.roster[0].techniques[0][1] = 7;
+        ranked.roster[0].loadouts[0].word = 9;
+        ranked.roster[1].skill_xp[0] = 5_000;
+        ranked.roster[1].techniques[0][0] = 7;
+        ranked.end_day([0; 6]);
+        assert_eq!(ranked.roster[0].skill_xp[0], 10_000);
+        assert_eq!(ranked.roster[0].loadouts[1].word, 9);
 
         let mut shop = Company::new("Ash");
         shop.hire("sell", Profession::Merchant).unwrap();
@@ -1869,6 +1947,8 @@ mod tests {
             },
         ];
         let mut roll = 1u32;
+        // Outside a forfeit every team is in: weights 16, 36 and 100, span
+        // 153, and the stepped roll picks 4, which team 1's 16 reaches.
         assert_eq!(draw_unwatched(&sides, 1, 0, &mut roll), Some(1));
         assert_eq!(roll, 0x0808_8406);
         roll = 4;
@@ -1878,6 +1958,8 @@ mod tests {
         assert_eq!(draw_unwatched(&sides, 1, 0, &mut roll), Some(3));
         assert_eq!(roll, 0x6066_303d);
         roll = 1;
+        // A forfeit leaves the player's team out: weights 36 and 100, span
+        // 137, pick 4, so team 2.
         assert_eq!(draw_unwatched(&sides, 1, FORFEIT_DRAW, &mut roll), Some(2));
         assert_eq!(roll, 0x0808_8406);
         let aside = [
@@ -1907,7 +1989,50 @@ mod tests {
         assert_eq!(roll, 0x0808_8406);
         roll = 1;
         assert_eq!(draw_unwatched(&[], 1, 0, &mut roll), None);
+        // The scene draw steps the roll even when no team remains.
         assert_eq!(roll, 0x0808_8406);
+    }
+
+    #[test]
+    fn an_unwatched_draw_takes_an_exact_cumulative() {
+        // Two equal weights: total 2, span 3, and a roll whose step is
+        // exactly 0x8000_0000 picks 1. The first cumulative (1) reaches it,
+        // so the first team wins.
+        let mut roll = 0xa6b0_5733;
+        assert_eq!(draw_weight(&[1, 1], 2, &mut roll), Some(0));
+        assert_eq!(roll, 0x8000_0000);
+        // One weight is always at least any pick below the total.
+        let mut roll = 0;
+        assert_eq!(draw_weight(&[5], 5, &mut roll), Some(0));
+        // A pick no running weight reaches (negative weights) keeps the
+        // first team, as the walk's index starts at 0.
+        let mut roll = 0xa6b0_5733;
+        assert_eq!(draw_weight(&[-1, -1], 2, &mut roll), Some(0));
+        assert_eq!(draw_weight(&[], 0, &mut roll), None);
+        // The bracket draw uses the total itself and a strict compare: the
+        // same step of 0x8000_0000 picks 1 and an equal cumulative loses.
+        let mut roll = 0xa6b0_5733;
+        assert_eq!(draw_weight_strict(&[1, 1], 2, &mut roll), Some(1));
+        assert_eq!(roll, 0x8000_0000);
+    }
+
+    #[test]
+    fn the_weight_rounds_like_the_processor() {
+        // Ties to even.
+        assert_eq!(crate::arena_match::cvtss2si_low32(0.5), 0);
+        assert_eq!(crate::arena_match::cvtss2si_low32(1.5), 2);
+        assert_eq!(crate::arena_match::cvtss2si_low32(-0.5), 0);
+        // The conversion is 64-bit and only the low word is kept: NaN and
+        // infinity give the 64-bit indefinite integer, whose low word is 0;
+        // 2^31 keeps its low word, the 32-bit minimum; −3e9 wraps.
+        assert_eq!(crate::arena_match::cvtss2si_low32(f32::NAN), 0);
+        assert_eq!(
+            crate::arena_match::cvtss2si_low32(2_147_483_648.0),
+            i32::MIN
+        );
+        assert_eq!(crate::arena_match::cvtss2si_low32(f32::INFINITY), 0);
+        assert_eq!(crate::arena_match::cvtss2si_low32(-3.0e9), 1_294_967_296);
+        assert_eq!(crate::arena_match::cvtss2si_low32(100.0), 100);
     }
 
     #[test]

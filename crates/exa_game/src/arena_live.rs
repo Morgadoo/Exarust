@@ -35,7 +35,7 @@ use crate::arena;
 use crate::arena_match::{ArenaMatch, CompanyRecords, Finish, MatchState, any_entry};
 use crate::arena_session::{
     BracketState, EndAction, ReturnFighter, RoundFight, Screen, bracket_for_template,
-    bracket_next_fight, regenerate_round, settle_return,
+    bracket_next_fight, regenerate_round, settle_return, write_back_health,
 };
 use crate::arena_spawn::{MANAGER_ROLE, generic_plan, hire_plan};
 use crate::match_layout::{
@@ -323,11 +323,14 @@ pub fn round_plans(
                         .get(index.saturating_sub(1))
                         .map(|member| (member.name.as_str(), member.health))
                 });
+                // The arena index is the participant id: 0 is the manager,
+                // the first roster member is 1, as the numbering pass
+                // writes it into each record's id word.
                 plans.push(company_plan(
                     member,
                     &slot.place,
                     MANAGER_ROLE,
-                    u32::try_from(index).unwrap_or(0).wrapping_add(1),
+                    u32::try_from(index).unwrap_or(0),
                     now_ms,
                     act_grace_ms,
                 ));
@@ -777,7 +780,7 @@ fn stand_next_round(
             member,
             &ours,
             MANAGER_ROLE,
-            u32::try_from(index).unwrap_or(0).wrapping_add(1),
+            u32::try_from(index).unwrap_or(0),
             now,
             MATCH_ACT_GRACE_MS,
         );
@@ -861,7 +864,7 @@ fn stand_bracket_round(
                     member,
                     &place,
                     role,
-                    u32::try_from(fighter.index).unwrap_or(0).wrapping_add(1),
+                    u32::try_from(fighter.index).unwrap_or(0),
                     0,
                     act_at_ms,
                 );
@@ -982,8 +985,11 @@ fn settle_match(
     let mut returned: Vec<ReturnFighter> = fighters
         .iter()
         .filter(|(_, _, _, body, player)| body.company || *player)
-        .map(|(_, fighter, _, _, _)| ReturnFighter {
+        .map(|(_, fighter, _, body, player)| ReturnFighter {
             company: true,
+            // The player's body is the manager, index 0, whatever id tag
+            // its plan was spawned with.
+            id: if player { 0 } else { body.id },
             health: fighter.health.red,
             max: fighter.health.max,
             word: None,
@@ -1003,6 +1009,11 @@ fn settle_match(
         entered,
         career.matches_today,
     );
+    // The return writes each participant's health word back into its record
+    // before the hub opens; the manager's record is separate from the
+    // roster's.
+    let written = write_back_health(career, &returned);
+    debug_assert!(written <= out.healths_written);
     career.matches_today = out.matches_today;
     career.company.copper = career.company.copper.saturating_add(out.paid);
     career.company.earned = career.company.earned.saturating_add(out.paid);
@@ -1349,16 +1360,30 @@ mod tests {
         arena.screen = Some(Screen::End);
         app.insert_resource(arena);
         app.insert_resource(scene());
-        app.insert_resource(crate::hub_windows::ArenaCareer::default());
+        let mut career = crate::hub_windows::ArenaCareer::default();
+        career.company.roster.push(crate::career::Member {
+            name: "Ash".to_string(),
+            profession: crate::career::Profession::Combatant,
+            xp: 0,
+            skills: [0; 6],
+            skill_xp: [0; 6],
+            techniques: [[0; 6]; 6],
+            loadouts: Default::default(),
+            health: u16::MAX,
+            in_entry: false,
+        });
+        app.insert_resource(career);
+        let mut fighter = Fighter::default();
+        fighter.health.red = 0.125;
         let fighter = app
             .world_mut()
             .spawn((
-                Fighter::default(),
+                fighter,
                 Condition::NORMAL,
                 SceneFighter {
                     team: 1,
                     company: true,
-                    id: 2,
+                    id: 1,
                     damage: 100.0,
                     condition_health: 100.0,
                     act_at_ms: 0,
@@ -1381,6 +1406,9 @@ mod tests {
         assert_eq!(career.company.copper, 355);
         assert_eq!(career.company.won, 1);
         assert_eq!(career.matches_today, 1);
+        // The body's half-health went back into its record as the rounded
+        // word (0.125 / 0.25 · 65535).
+        assert_eq!(career.company.roster[0].health, 32_768);
     }
 
     #[test]

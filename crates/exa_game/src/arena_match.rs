@@ -743,6 +743,14 @@ fn convert(value: f32) -> i64 {
     }
 }
 
+/// The processor's 64-bit single-to-integer conversion kept in a 32-bit
+/// register: ties to even, and the low word of the result. A NaN or a value
+/// outside the signed 64-bit range gives the 64-bit indefinite integer,
+/// whose low word is 0.
+pub(crate) fn cvtss2si_low32(value: f32) -> i32 {
+    convert(value) as i32
+}
+
 /// The share of a full bar a record's health word fills in the company
 /// tables: the word times the double 1/65535, stored as single.
 pub fn health_bar(word: u16) -> f32 {

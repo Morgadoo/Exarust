@@ -440,9 +440,18 @@ pub fn lookup_name(id: u32) -> Option<&'static str> {
     template(id).map(|template| template.name)
 }
 
+/// One minus the fourth power of a rank roll's unit, as the original
+/// computes it: the unit squared, then that square times itself, not a
+/// left-to-right product of four factors (the two differ in the last bits).
+pub(crate) fn rank_curve(unit: f64) -> f64 {
+    let square = unit * unit;
+    1.0 - square * square
+}
+
 /// The rolled rank of a template at a day slot. An unranked template stays
 /// −1; a flag-2 template takes the slot; otherwise the rank is
-/// `trunc(slot·(1 − r⁴))`, biased towards the slot.
+/// `round(slot·(1 − r⁴))`, biased towards the slot, with the r⁴ computed by
+/// [`rank_curve`].
 pub fn roll_rank(template: &MatchTemplate, slot: u32, r: f64) -> i32 {
     if template.preset_rank < 0 {
         return -1;
@@ -450,7 +459,7 @@ pub fn roll_rank(template: &MatchTemplate, slot: u32, r: f64) -> i32 {
     if template.flags & 2 != 0 {
         return slot as i32;
     }
-    (slot as f64 * (1.0 - r * r * r * r)).round_ties_even() as i32
+    (slot as f64 * rank_curve(r)).round_ties_even() as i32
 }
 
 /// The rank window of a rolled match: Challenger (id 8) opens 0–5, every
@@ -599,31 +608,6 @@ pub fn prize_pot(template: &MatchTemplate, slot: u32) -> u32 {
     (template.xp as f32 * (1.0 + 0.25 * slot as f32)) as u32
 }
 
-/// The XP paid from a pot after the survivors' health: `pot·left/max`,
-/// truncated, plus half for a company manager.
-pub fn xp_award(pot: u32, hp_left: f32, hp_max: f32, manager: bool) -> u32 {
-    if hp_max <= 0.0 {
-        return 0;
-    }
-    let mut total = (pot as f32 * hp_left / hp_max) as u32;
-    if manager {
-        total += total / 2;
-    }
-    total
-}
-
-/// Splits a total XP award by each fighter's damage, truncating.
-pub fn xp_split(total: u32, damage: &[u32]) -> Vec<u32> {
-    let sum: u32 = damage.iter().sum();
-    if sum == 0 {
-        return vec![0; damage.len()];
-    }
-    damage
-        .iter()
-        .map(|&d| (total as u64 * d as u64 / sum as u64) as u32)
-        .collect()
-}
-
 /// Rank points: one plus one per 5000 XP in each of the six pools.
 pub fn rank_points(xp: &[u16; 6]) -> u32 {
     1 + xp.iter().map(|&x| x as u32 / XP_PER_RANK).sum::<u32>()
@@ -632,6 +616,71 @@ pub fn rank_points(xp: &[u16; 6]) -> u32 {
 /// The loadout tier: `min((rank_points − 1)/2, 5)`.
 pub fn loadout_tier(rank_points: u32) -> u32 {
     (rank_points.saturating_sub(1) / 2).min(5)
+}
+
+/// One body the match's experience pool reads.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct XpFighter {
+    /// Its record carries the match-participant flag.
+    pub company: bool,
+    /// The damage it dealt, the body's contribution counter.
+    pub damage: i32,
+    /// Its red health and maximum.
+    pub health: f32,
+    pub max: f32,
+}
+
+/// What a match's experience award came to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct XpAward {
+    /// The pool every company body's share is taken from.
+    pub pool: i32,
+    /// The company's total damage, the share denominator.
+    pub damage: i32,
+}
+
+/// The match's experience pool and damage total, before the shares are
+/// handed out.
+///
+/// The base is `(tier · 0.25 + 1) · template experience` in single
+/// precision, converted once (the tier factor is not rounded on its own).
+/// The damage share is the opponents' missing health over their total
+/// maximum — except in the Fray (template 4), where every body's damage
+/// and missing health count. The base times the missing health, over the
+/// maximum, is converted again. A trainer adds half again, truncated.
+/// Each conversion is the 64-bit CVTSS2SI kept in 32 bits.
+pub fn xp_pool(
+    tier: i32,
+    template_xp: u32,
+    fray: bool,
+    fighters: &[XpFighter],
+    trainer: bool,
+) -> XpAward {
+    let mut damage = 0i32;
+    let mut missing = 0.0f32;
+    let mut total_max = 0.0f32;
+    for fighter in fighters {
+        if fray || !fighter.company {
+            missing += fighter.max - fighter.health;
+            total_max += fighter.max;
+        }
+        if fray || fighter.company {
+            damage = damage.wrapping_add(fighter.damage);
+        }
+    }
+    let base = crate::arena_match::cvtss2si_low32((tier as f32 * 0.25 + 1.0) * template_xp as f32);
+    let mut pool = crate::arena_match::cvtss2si_low32(base as f32 * missing / total_max);
+    if trainer {
+        pool = pool.wrapping_add(pool / 2);
+    }
+    XpAward { pool, damage }
+}
+
+/// One company body's share of the pool: `round(pool · ratio)`, the ratio
+/// `damage / total` divided in double and narrowed to single first.
+pub fn xp_share(pool: i32, total_damage: i32, damage: i32) -> i32 {
+    let ratio = (f64::from(damage) / f64::from(total_damage)) as f32;
+    crate::arena_match::cvtss2si_low32(pool as f32 * ratio)
 }
 
 /// The XP one award gives: `min(total/rank_points, 5000)`.
@@ -737,13 +786,48 @@ mod tests {
     }
 
     #[test]
-    fn the_prizes_and_xp_split() {
+    fn the_match_xp_pool_and_shares() {
         let duel = template(1).unwrap();
         assert_eq!(prize_pot(duel, 3), 1750);
-        assert_eq!(xp_award(1750, 0.5, 1.0, false), 875);
-        assert_eq!(xp_award(1750, 0.5, 1.0, true), 1312);
-        assert_eq!(xp_split(100, &[1, 1]), vec![50, 50]);
-        assert_eq!(xp_split(100, &[0, 0]), vec![0, 0]);
+        let fighters = [
+            XpFighter {
+                company: true,
+                damage: 2,
+                health: 90.0,
+                max: 100.0,
+            },
+            XpFighter {
+                company: true,
+                damage: 3,
+                health: 80.0,
+                max: 100.0,
+            },
+            XpFighter {
+                company: false,
+                damage: 0,
+                health: 50.0,
+                max: 100.0,
+            },
+            XpFighter {
+                company: false,
+                damage: 0,
+                health: 20.0,
+                max: 100.0,
+            },
+        ];
+        // Tier 3: the factor 1.75 is not rounded on its own, so the base is
+        // 8 750; the opponents miss 130 of 200, and 5 687.5 rounds to even.
+        let award = xp_pool(3, 5_000, false, &fighters, false);
+        assert_eq!((award.pool, award.damage), (5_688, 5));
+        // The ratios are the doubles 0.4 and 0.6 narrowed: 2 275.2 and
+        // 3 412.8 round to 2 275 and 3 413.
+        assert_eq!(xp_share(5_688, 5, 2), 2_275);
+        assert_eq!(xp_share(5_688, 5, 3), 3_413);
+        // A trainer adds half again, truncated.
+        assert_eq!(xp_pool(3, 5_000, false, &fighters, true).pool, 8_532);
+        // The Fray counts every body's damage and missing health: 160 of
+        // 400 maximum, so 3 500.
+        assert_eq!(xp_pool(3, 5_000, true, &fighters, false).pool, 3_500);
     }
 
     #[test]
@@ -811,6 +895,16 @@ mod generation_tests {
         let brawl = &RANKED[5];
         assert_eq!(roll_rank(brawl, 4, 0.9), -1);
         assert_eq!(rank_window(brawl, 4, 0.9), (4, -1));
+    }
+
+    #[test]
+    fn the_rank_curve_squares_the_square() {
+        // The original multiplies the unit once (the square) and squares
+        // that; a left-to-right fourth product gives a different last bit.
+        let unit = 0.995_644_835_510_462_8;
+        let curve = rank_curve(unit);
+        assert_eq!(curve.to_bits(), 0x3f91_b8f9_68a7_0d80);
+        assert_ne!(curve.to_bits(), (1.0 - unit * unit * unit * unit).to_bits());
     }
 
     #[test]
@@ -1299,7 +1393,7 @@ pub fn roll_instance(
     } else if template.flags & 2 != 0 {
         slot as i32
     } else {
-        (slot as f64 * (1.0 - r * r * r * r)).round_ties_even() as i32
+        (slot as f64 * rank_curve(r)).round_ties_even() as i32
     };
     if template.id == 8 {
         instance.min_rank = 0;
@@ -1658,8 +1752,9 @@ pub fn resolve_tournament(
         };
     }
     if champion.1 > 2 && !tie {
-        let first = tally.first().map(|(id, _)| *id).unwrap_or(0);
-        if let Some(company) = companies.get(first.saturating_sub(2) as usize) {
+        // The week is worn by the winning team's company, not by whichever
+        // team was tallied first.
+        if let Some(company) = companies.get(champion.0.saturating_sub(2) as usize) {
             state.week_won[week as usize] = *company as u32 + 2;
         }
     }
@@ -1755,6 +1850,21 @@ mod roster_tests {
     fn a_company_win_records_its_team() {
         let mut rows = [row(1, 0); 6];
         for (row, team) in rows.iter_mut().zip([2, 2, 2, 1, 3, 4]) {
+            row.team_id = team;
+        }
+        let companies = [15, 17, 4, 1, 13, 9, 5, 14, 8, 6, 11, 2, 18, 3, 19, 10];
+        let mut state = SeasonState::default();
+        let result = resolve_tournament(&rows, 7, &companies, &mut state, |_| {});
+        assert_eq!(result.champion, None);
+        assert_eq!(state.week_won[1], 15 + 2);
+    }
+
+    #[test]
+    fn a_rival_week_wears_the_winning_teams_company() {
+        // Team 3 is tallied first; team 2 wins three events, so the week
+        // records the company of team 2 (the field's first entry).
+        let mut rows = [row(1, 0); 6];
+        for (row, team) in rows.iter_mut().zip([3, 2, 2, 2, 4, 5]) {
             row.team_id = team;
         }
         let companies = [15, 17, 4, 1, 13, 9, 5, 14, 8, 6, 11, 2, 18, 3, 19, 10];
@@ -1875,7 +1985,7 @@ mod mt_tests {
         let mut rng = Rng(1);
         let instance = roll_instance_mt(&RANKED[1], 3, &mut mt, &mut rng);
         let r = check.unit();
-        let expected = (3.0 * (1.0 - r * r * r * r)).round_ties_even() as i32;
+        let expected = (3.0 * rank_curve(r)).round_ties_even() as i32;
         assert_eq!(instance.rank, expected);
         assert_eq!(mt.next_u32(), check.next_u32());
     }
