@@ -953,7 +953,16 @@ rectangle in `panel_live` too). The loot window (`ScreenLayout::loot`: 484 ×
 876 at x 800 at unit 8, its panels 452 wide) and the journal
 (`ScreenLayout::journal`: 484 × 1028, its text box 456 × 824) are rescaled
 the same way, their 2-pixel borders kept. The character view's panel frame
-is drawn; its figure is not; the
+is drawn and `doll_view` draws the player's dressed figure inside it while
+the inventory is open: a copy of the player's body on a render layer of
+its own, drawn by an off-screen camera at the view's pose into an image
+twice the view's size, shown by a UI node under the GUI canvas (the
+inventory's painter clears the canvas over the view and the camera clears
+to the colour it had there); the figure turns toward the pointer
+(`char_view`). The inventory's second record is the rating-dots control,
+showing ten times the player's encumbrance with the dot sheet's whole and
+half dots. The view draws no preview bars (only character creation and the
+arena switch them on). The
 journal keeps its session entries and stores its text on close. Escape
 closes the focused screen (Exarust's). The rules are `exa_ui::game_gui`'s.
 The screens draw through `gui_paint` and `exa_ui::gui_draw` with the words
@@ -980,8 +989,13 @@ stand-in for the engine's shared one. The player's inventory pack is its carried
 `panel_live` runs a left-button drag between open panels with the item
 panel's press, accept, drop and drag-end rules; a drop on another pack moves
 the possession entries, a drop on the same panel only repositions, and a
-drop on a body's equipment panel or outside every panel is refused (no
-running character view and no GUI-to-world drop yet). No drag leaves the
+drop on a body's equipment panel or outside every panel is refused (a loot
+window has no running character view and there is no GUI-to-world drop
+yet). A drop on the inventory's figure is `doll_view`'s: apparel is worn
+through the equip conflict pass (displaced pieces back to the pack, the
+braies dropped, the outfit re-dressed), a weapon goes into the hands by
+the take-in plan and a shield into the off hand, the player's hands and
+held weapon following. No drag leaves the
 player's pack while the player's body swaps its weapon sets (a swap
 requested or its hand plan pending), the inventory's drag permission.
 Taking a worn item off a corpse does not re-dress its mesh.
@@ -1054,9 +1068,8 @@ come from the game's object database; level-local ids, containers and loose
 items are not searched, nothing is re-dressed and no kneel clip plays.
 `--searcher <record id>` gives a level character the Explorer role with its
 Activity variable set to the follow (its log lines start `search:`). The world's own press is held while
-the pointer is over an open screen. The character view, the preview bars,
-the journal's entry list, the controls' callbacks and the
-inventory's unlocated second record are not wired; the text keeps the level
+the pointer is over an open screen. The journal's entry list and the
+controls' callbacks are not wired; the text keeps the level
 font's metrics and samples the base font's atlas while the Rayform faces
 are not shipped. The skills key's screen and the power tree are not opened.
 

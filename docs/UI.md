@@ -1260,14 +1260,16 @@ drawing:
   the third; the scene is told the first of the character's items 431,
   500, 451, 452 or 499. Its preview bars are the HUD's layout with the
   record's two health words over 65535; their draw callback is registered
-  only when the switch changes. Binding a character to the preview writes
+  only when the switch changes, and only character creation and the arena
+  turn the switch on: the inventory's view draws no bars. Binding a character to the preview writes
   the model value 0.15 and opening the window 0.05, the scene word 0x1000
   and the draw word 0x42 on every mesh node, copies the 48-byte appearance
   block and registers the model's build callback 100 ticks ahead (the
   opening's 0.05 and 0x1000 are written only when the view has a
   character); the build always keeps the model and answers done, and an
-  open inventory showing the view refits its camera to ten times the
-  character's height; the destroy releases the node only when one exists.
+  open inventory showing the view writes ten times the body's encumbrance
+  (0 to 1, a single-precision product) into its rating-dots record (the
+  bind writes it too); the destroy releases the node only when one exists.
   The preview bars start 50 units left of the half width and 5 above the
   bottom, 48 units wide and 52 apart, framed 2 pixels out and 4 units − 2
   down; the health bar takes the view's two shares, the focus bar is full.
@@ -1370,7 +1372,8 @@ no shipped form constructor sets it, so neither screen draws a title bar.
 The inventory's 8-unit spacing and the journal's 2 frame the client; the
 control records are laid out by the two-pass layout: the inventory's
 Encumbrance label (class 5, y 0x62 in design units, at client (4, 386)),
-its unlocated class-0xac01 record and its Primary button (108 × 24 at
+its rating-dots record (class 0xac01, at client (100, 386), 12 × 28) and
+its Primary button (108 × 24 at
 (4, 416)), and the journal's New (4, 20) and Erase (120, 20), 104 × 24
 each. A button caption takes the skin's placement from its style word
 (0x3000 centres horizontally, 0x300 centres vertically). The journal's
@@ -1422,8 +1425,9 @@ drop and drag-end rules; a drop on another pack moves the possession
 entries, a drop on the same panel repositions, and a drop on the body's
 equipment panel or outside every panel is refused. The world's press is
 held while the pointer is over an open screen.
-Not wired: the character view and its preview bars, the journal's entry
-list (its geometry is not in the traced units), the 0xac01 record,
+The character view, its rating dots and its drop are `exa_game::doll_view`
+(Character view, below). Not wired: the journal's entry
+list (its geometry is not in the traced units),
 the controls' callbacks and the technique selector. Taking a worn item off
 a body does not re-dress its mesh, the GUI-to-world drop is not run, and a
 level-local item's record is not promoted into the world database, so its
@@ -2256,7 +2260,8 @@ popup and the character view still wait for their hosts.
   compact, 590 inside the arsenal), the doll above a 228 × 180 pack at the
   bottom of the client area, of capacity 400 and items up to 50; only what
   the character wears counts against the pack when it is bound. A
-  right-button release closes it. Not wired into the running game.
+  right-button release closes it. The running inventory is
+  `exa_game::gui_screens` with its view in `exa_game::doll_view`.
 - **Arsenal** (`exa_items::arsenal`): up to five 236-pixel columns laid 60
   units apart (240 pixels at unit 4), as many as fit after a 12-unit margin
   (and 61 for the inventory while shown), scrolled by two arrows. The form
@@ -2549,6 +2554,59 @@ the doll panel's size: the health bar's yellow and healable shares come
 from the character record's two 16-bit words (each × 1/65535), the focus
 bar is drawn full, and both are painted by the HUD's painter onto a canvas
 covering their frames and drop shadows (`exa_ui::game_gui::paint_preview_bars`).
+Only character creation and the arena's views switch the bars on (the
+switch registers their draw on the view); the inventory never does, so its
+view draws none.
+
+**The running inventory's view** (`exa_game::doll_view`). The inventory's
+constructor sets the view's flag that, in the background callback, skips
+the wash and draws the view's own kept still opaque; the view's two cursor
+actions are the item drag off the figure (`0x4001`) and the card
+(`0x2001`), and the inventory adds the close on a right release
+(`0x2002`): the figure is not turned or zoomed by dragging, it turns toward
+the pointer (`exa_game::char_view`). Exarust draws the player's figure
+with an off-screen camera at the view's pose (the eye 4.10 m from the
+figure's point 1 m above its feet, a 30° field of view taken as vertical)
+into an image twice the view's size each way, the view being the doll
+panel less its 2-pixel border (224 × 380 at unit 4), shown by a UI node
+under the GUI canvas. The figure is a copy of the player's body (model,
+physique, skin, hair, outfit, braies and main-hand weapon, not its torch)
+standing far below the level on a render layer of its own, its meshes
+kept out of the shadow links; its one light shines from (0.5, 0.7, 0.5) in
+the camera's space, as the view's task writes the scene's first light
+each frame (the earlier reading of that write as the figure's facing was
+wrong), at the item icon scene's 0.75 (a guess at the scene's light level).
+The inventory's painter clears the canvas over the view and the camera
+clears to the colour the canvas had there (black at 227 with the line
+skin), so the figure stands on the window's own client: what the original's
+kept still holds behind the figure is not traced, so this is a guess. The
+camera, its image and the figure exist only while the inventory is open.
+
+The inventory's second record (class 0xac01) is the item GUI's rating-dots
+control, the first of the five special controls (registered 0 × 24): its
+draw sets the label group's seventh ink, puts its dots at the record's x
+and its top plus half the record's height less the 22-pixel dot (the
+difference shifted as an unsigned 64-bit value), and draws the dot sheet's
+whole dot `round(value − 0.25)` times, three units apart (two and a half
+above 7.25), then its half dot when more than a quarter is left; its hover
+answer is `0x800000`. The inventory's callback writes ten times the shown
+body's encumbrance into it at the bind and after every apparel drop, so a
+fully encumbered body shows ten dots; Exarust reads the player fighter's
+encumbrance every frame.
+
+A drop from a pack, a loot window's pack or a container onto the view runs
+the drop above with the player as the shown character and the inventory's
+pack as the view's panel: apparel goes through the equip conflict pass
+(`exa_character::record::CharacterData::equip_conflicts`; a locked piece
+in the way refuses the drop and the drag snaps back), the displaced pieces
+go back to the pack at its centre (the braies are dropped) and the outfit
+is re-dressed; a weapon goes into the hands by the take-in plan (the off
+hand never asked for, the class word guessed from the main hand's grip) and
+a shield into the off hand, the player's hands and held weapon following
+the record. The pack is linked to the view, so its drag ends without
+losing the item's bulk; an item from another pack charges the pack its
+bulk (apparel) or is added to it marked held (a weapon or shield). The
+mind-cost checks are off for the player's own inventory.
 
 ## Settings options
 

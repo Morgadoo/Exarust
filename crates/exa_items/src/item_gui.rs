@@ -842,9 +842,9 @@ pub struct LoadedSheet {
 /// Decode a sheet's `.rfi` and crop its cells. The original reads the
 /// sheet, makes a blank cell image of the sheet's cell side in the source's
 /// pixel format and copies each stored place into it; an image or a place
-/// that does not fit leaves the sheet out. Nothing draws the cells yet (the
-/// running card paints no rating dots, coins, grip buttons or sockets), so
-/// no system reads the sheets at start-up.
+/// that does not fit leaves the sheet out. The running inventory reads the
+/// dot sheet for its encumbrance dots (`exa_game::doll_view`); the card
+/// paints no rating dots, coins, grip buttons or sockets yet.
 pub fn load_sheet(sheet: &SpriteSheet, bytes: &[u8]) -> Option<LoadedSheet> {
     let rfi = exa_formats::rfi::Rfi::parse(bytes).ok()?;
     let width = i32::try_from(rfi.header.width).ok()?;

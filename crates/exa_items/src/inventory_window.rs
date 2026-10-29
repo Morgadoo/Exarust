@@ -57,8 +57,9 @@ pub const KEEP_SLOT: i32 = 8;
 /// word set beside it.
 pub const MODEL_VALUE: f32 = 0.05;
 pub const MODEL_WORD: u32 = 0x1000;
-/// The camera distance is the model's height value times this.
-pub const CAMERA_FACTOR: f32 = 10.0;
+/// The encumbrance dots show the shown body's encumbrance (0 to 1) times
+/// this, one dot a tenth (a single-precision product).
+pub const DOTS_FACTOR: f32 = 10.0;
 
 /// Which layout the window is built in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -192,9 +193,10 @@ where
     p.worn.iter().map(|worn| bulk(worn.id)).sum()
 }
 
-/// The doll's camera distance for a model whose height value is `height`.
-pub fn camera_distance(height: f32) -> f32 {
-    height * CAMERA_FACTOR
+/// The value the inventory's rating-dots record (class 0xac01, beside the
+/// Encumbrance label) shows for a body's encumbrance: ten dots at 1.
+pub fn encumbrance_dots(encumbrance: f32) -> f32 {
+    encumbrance * DOTS_FACTOR
 }
 
 /// Removes the last entry of `id` that is marked held, the way a drop onto
@@ -358,7 +360,7 @@ pub const DEFAULT_POS: i32 = -987_654_321;
 
 /// The bind plan for a character view: the model is built, linked to the
 /// view and given its values; the pack is filled and the worn bulk added;
-/// the tabs follow the weapon set; the camera follows the model.
+/// the tabs follow the weapon set; the encumbrance dots follow the model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BindPlan {
     pub build_model: bool,
@@ -366,7 +368,7 @@ pub struct BindPlan {
     pub fill_pack: bool,
     pub add_worn_bulk: bool,
     pub tabs: (i32, i32),
-    pub camera: bool,
+    pub dots: bool,
 }
 
 pub fn bind_plan(has_view: bool, has_model: bool, second_set: bool) -> BindPlan {
@@ -376,7 +378,7 @@ pub fn bind_plan(has_view: bool, has_model: bool, second_set: bool) -> BindPlan 
         fill_pack: has_view,
         add_worn_bulk: has_view,
         tabs: tabs(second_set),
-        camera: has_view && has_model,
+        dots: has_view && has_model,
     }
 }
 
@@ -495,7 +497,8 @@ mod tests {
         assert_eq!(geometry(Layout::Embedded).doll.1, 330);
         // The pack sits at the bottom of the client area, not 260 up.
         assert_eq!(pack_y(600), 420);
-        assert_eq!(camera_distance(1.8), 18.0);
+        assert_eq!(encumbrance_dots(0.25), 2.5);
+        assert_eq!(encumbrance_dots(1.0), 10.0);
         assert_eq!(
             (
                 tab_word(Layout::Normal),
@@ -595,10 +598,10 @@ mod tests {
         assert_eq!(tabs(false), (0x60, 0));
         assert_eq!(tabs(true), (0, 0x60));
         let b = bind_plan(true, true, true);
-        assert!(b.build_model && b.link_model && b.fill_pack && b.add_worn_bulk && b.camera);
+        assert!(b.build_model && b.link_model && b.fill_pack && b.add_worn_bulk && b.dots);
         assert_eq!(b.tabs, (0, 0x60));
         let b = bind_plan(true, false, false);
-        assert!(b.fill_pack && !b.link_model && !b.camera);
+        assert!(b.fill_pack && !b.link_model && !b.dots);
         let b = bind_plan(false, false, false);
         assert!(!b.fill_pack && !b.build_model);
         assert_eq!(build_doll(true).sleep_ms, 14);
