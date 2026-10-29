@@ -852,6 +852,49 @@ pub fn gait_step(speed_cm: f32, p: f32, g: f32) -> GaitStep {
     GaitStep { gain, pitch }
 }
 
+/// The clothing rustle a walking plant makes beside its footstep, when the
+/// body has a foley set: the volume `base · ((0.5·g + 0.5)(0.02·speed +
+/// 0.01))` and the pitch `(0.2·p + 0.9)(0.2·speed + 0.7) / size`, from the
+/// foley's base volume, the speed along the heading (cm a tick), the
+/// body's size and the engine's two draws in [0, 1), the volume's first;
+/// the draw's share in single precision and the rest in double, narrowed
+/// once. The played gain is the volume times the sound gain, and the
+/// foley clock then waits 400 ms plus `(roll · 100) >> 32`, the engine's
+/// generator (`roll`) stepped once. Not wired: Exarust keeps no walking
+/// foley voice; a tested rule with the original's numbers.
+pub fn walk_rustle(
+    base: f32,
+    speed_cm: f32,
+    size: f32,
+    g: f32,
+    p: f32,
+    now_ms: u32,
+    roll: &mut u32,
+) -> WalkRustle {
+    let speed = f64::from(speed_cm);
+    let share = f64::from(g * 0.5 + 0.5);
+    let volume = (f64::from(base) * (share * (speed * 0.02 + 0.01))) as f32;
+    let pitch = ((f64::from(p) * 0.2 + 0.9) * (speed * 0.2 + 0.7) / f64::from(size)) as f32;
+    *roll = roll.wrapping_mul(0x0808_8405).wrapping_add(1);
+    let jitter = ((u64::from(*roll) * 100) >> 32) as u32;
+    WalkRustle {
+        volume,
+        pitch,
+        next_ms: now_ms.wrapping_add(400).wrapping_add(jitter),
+    }
+}
+
+/// A walking plant's clothing rustle ([`walk_rustle`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WalkRustle {
+    /// The volume the character keeps (the played gain is it times the
+    /// sound gain).
+    pub volume: f32,
+    pub pitch: f32,
+    /// The foley clock's next free time (ms).
+    pub next_ms: u32,
+}
+
 /// Where a footstep sounds from: the character's place, this far (m)
 /// along its motion: `3·speed + 4` cm.
 pub fn step_position(character: Vec3, direction: Vec3, speed_cm: f32) -> Vec3 {

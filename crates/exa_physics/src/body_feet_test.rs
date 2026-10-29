@@ -1271,3 +1271,18 @@ fn the_travel_phase_follows_the_pelvis() {
     assert!((travel_phase(0.95, &mut before, 250_000.0) - 0.05).abs() < 1e-6);
     assert!((before + 0.05).abs() < 1e-6);
 }
+
+/// A walking plant's rustle at a base of 2, 5 cm a tick, size 1 and draws
+/// 0.5: volume 2 × 0.75 × 0.11 = 0.165, pitch 1.0 × 1.7 = 1.7 (halved at
+/// size 2), and the clock waits 400 ms plus the jitter.
+#[test]
+fn a_walking_plant_rustles_the_clothing() {
+    let mut roll = 1;
+    let r = walk_rustle(2.0, 5.0, 1.0, 0.5, 0.5, 1_000, &mut roll);
+    assert!((r.volume - 0.165).abs() < 1e-6, "{}", r.volume);
+    assert!((r.pitch - 1.7).abs() < 1e-6, "{}", r.pitch);
+    assert_eq!(roll, 0x0808_8406);
+    assert_eq!(r.next_ms, 1_400 + ((u64::from(roll) * 100) >> 32) as u32);
+    let half = walk_rustle(2.0, 5.0, 2.0, 0.5, 0.5, 1_000, &mut roll);
+    assert!((half.pitch - 0.85).abs() < 1e-6);
+}
