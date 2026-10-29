@@ -15,12 +15,12 @@
 //! 3. the hold (`exa_anim::hold_toward`), the pose kept as the targets;
 //! 4. the femur posture ([`femur_posture`]; C13);
 //! 5. the clip chain ([`clip_chain`]): each part's placement from its
-//!    rest translation and posed turn under its parent's, the thorax
-//!    hunch on a pinned part's turn first ([`pitch_thorax`]);
+//!    rest translation and posed turn under its parent's;
 //! 6. the IK chain ([`ik_chain`]): each leg's stored knee, hip and thigh
 //!    turn folded into the clip chain, its clip ankle recorded first;
 //! 7. the torso twist: the spine turned toward the look ([`spine`],
-//!    `exa_physics::body::locomotion::twist_spine`);
+//!    `exa_physics::body::locomotion::twist_spine`), then the thorax
+//!    hunch on the pinned part's own placement ([`pitch_thorax`]);
 //! 8. the head look ([`head_look`]; M8) and the foot pitch
 //!    ([`foot_pitch`]: a 20 cm toe, eased 0.01 rad a tick; a placement
 //!    stores the angle and clears the rate);
@@ -320,9 +320,9 @@ const LOOK_RISE: f64 = 0.01;
 /// module's list): the bracket (which writes the progress), the keys
 /// blended, the gait overlay (`gait`, the Run clip and its weight while
 /// Walk plays), the hold, the pose kept as the targets and
-/// scaled by `stature`, the femur posture, the thorax hunch (when
-/// `feral` is over 0.1), the clip chain, the IK chain,
-/// the `twist` of the spine, the head's `look` and the foot pitch;
+/// scaled by `stature`, the femur posture, the clip chain, the IK chain,
+/// the `twist` of the spine, the thorax hunch (when `feral` is over 0.1),
+/// the head's `look` and the foot pitch;
 /// returns each part's placement and the head's parent as posed before
 /// the twist (none when the body has no head).
 #[allow(clippy::too_many_arguments)]
@@ -348,12 +348,12 @@ pub(crate) fn sample_parts(
     let held = hold_toward(&mut pose, hold);
     anim.keep(&pose, held);
     let pose = femur_posture(pose.scaled(stature), body, posture);
-    let pose = pitch_thorax(pose, body, feral);
     let chain = clip_chain(body, root, &pose, parents, nodes);
     let mut parts = chain;
     ik_chain(body, &mut parts);
     let head_parent = head_parent_before_twist(body, &parts);
     twist_spine(&mut parts, &spine(body, nodes), twist);
+    pitch_thorax(&mut parts, body, feral);
     look_with_head(&mut parts, body, look);
     Some((foot_pitch(parts, body), head_parent))
 }
@@ -396,28 +396,25 @@ fn femur_posture(mut pose: ClipPose, body: &Ragdoll, posture: FemurPosture) -> C
     pose
 }
 
-/// The thorax hunch, before the clip chain: a part that carries support
-/// pins pitches its local forward axis down by the hunch and the basis is
-/// rebuilt, when the character's feral level is over 0.1. A hunch of 0
-/// leaves the clip's turn.
-fn pitch_thorax(mut pose: ClipPose, body: &Ragdoll, feral: f32) -> ClipPose {
+/// The thorax hunch, after the twist: the part that carries the support
+/// pins has its forward axis (in the body root's space) lowered by the
+/// hunch and its basis rebuilt, when the character's feral level is over
+/// 0.1. Only that part's placement changes: the original writes the hunch
+/// into the pinned part's posed placement alone, so the head and the arms
+/// keep their poses (their anchors are measured from it). A hunch of 0
+/// leaves the placement.
+fn pitch_thorax(parts: &mut [Affine3A], body: &Ragdoll, feral: f32) {
     let Some(hunch) = body.drive.as_ref().map(|d| d.hunch) else {
-        return pose;
+        return;
     };
     if hunch == 0.0 || !hunch_applies(feral) {
-        return pose;
+        return;
     }
-    let Some(part) = body.support_pin_part() else {
-        return pose;
+    let Some(placed) = body.support_pin_part().and_then(|i| parts.get_mut(i)) else {
+        return;
     };
-    let Some(bone) = body.parts.get(part).map(|p| p.bone) else {
-        return pose;
-    };
-    let Some(turn) = bone.checked_sub(1).and_then(|i| pose.rotations.get_mut(i)) else {
-        return pose;
-    };
-    *turn = hunch_turn(*turn, hunch);
-    pose
+    let turn = Quat::from_mat3a(&placed.matrix3);
+    placed.matrix3 = Mat3A::from_quat(hunch_turn(turn, hunch));
 }
 
 /// One tick of the thorax hunch, from the bearing the posture stage left
@@ -693,8 +690,8 @@ mod tests {
     }
 
     /// The part that carries the support pins pitches its forward axis by
-    /// the hunch. A human (feral 0), a feral of 0.05, a hunch of 0, and a
-    /// part with no pins leave the clip's turn.
+    /// the hunch, alone: the others keep their placements. A human (feral
+    /// 0), a feral of 0.05 and a hunch of 0 leave the placement.
     #[test]
     fn a_pinned_part_pitches_its_forward_axis() {
         let setup = |bone: usize, pins: Vec<Vec3>| PartSetup {
@@ -712,24 +709,23 @@ mod tests {
         };
         let mut body = Ragdoll::new(&[setup(1, vec![]), setup(8, vec![Vec3::Y])]).with_drive();
         body.drive.as_mut().unwrap().hunch = 0.3;
-        let pose = ClipPose {
-            rotations: vec![Quat::IDENTITY; 8],
-            root: Vec3::ZERO,
+        let posed = vec![
+            Affine3A::from_translation(Vec3::Y),
+            Affine3A::from_translation(Vec3::new(0.0, 1.5, 0.0)),
+        ];
+        let pitch = |feral: f32, body: &Ragdoll| {
+            let mut parts = posed.clone();
+            pitch_thorax(&mut parts, body, feral);
+            parts
         };
-        let pitched = pitch_thorax(pose.clone(), &body, 1.0);
-        let forward = Mat3::from_quat(pitched.rotations[7]).z_axis;
-        assert!(forward.y < -0.25, "{forward}");
-        assert_eq!(pitched.rotations[0], Quat::IDENTITY);
-        assert_eq!(
-            pitch_thorax(pose.clone(), &body, 0.0).rotations[7],
-            Quat::IDENTITY
-        );
-        assert_eq!(
-            pitch_thorax(pose.clone(), &body, 0.05).rotations[7],
-            Quat::IDENTITY
-        );
+        let pitched = pitch(1.0, &body);
+        assert!(pitched[1].z_axis.y < -0.25, "{}", pitched[1].z_axis);
+        assert_eq!(pitched[1].translation, posed[1].translation);
+        assert_eq!(pitched[0], posed[0]);
+        assert_eq!(pitch(0.0, &body), posed);
+        assert_eq!(pitch(0.05, &body), posed);
         body.drive.as_mut().unwrap().hunch = 0.0;
-        assert_eq!(pitch_thorax(pose, &body, 1.0).rotations[7], Quat::IDENTITY);
+        assert_eq!(pitch(1.0, &body), posed);
     }
 
     /// The thigh posture the body tick asks for: the combat turn at the
