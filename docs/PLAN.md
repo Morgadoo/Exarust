@@ -237,6 +237,8 @@ Done (change `place-node-records-in-the-level-frame`; placement pass by a Claude
 
 Done (change `review-the-terrain-mask-window-and-set-copy`; terrain5 lane, DeepSeek, stalled after two commits, reviewed): the composite set passes read the block's 32-texel mask window holding 30 cells whatever the set's level; the tile's mask and height passes are modelled at the root node (256-texel window, 240 cells, height texcoord 241/256) into the caller's read-back viewports; pass vertices are named by texcoord unit, the set copy is modelled per target, and static terrain deactivation and its release are tested models; a level teardown now drops the hosted composite sets, bakes and per-block materials. The review corrected the lane's tile-pass level and invented shared target, its misread vertex fields, its invented copy colour and its reversed extension order. FLX_Terrain_Texrender2 about 66% → 68%, TStaticTerrain 70% → 71%.
 
+Done (change `blit-terrain-set-copies`; terrain6 lane, DeepSeek, stalled after three commits, reviewed): when the 21 high-resolution terrain sets run out, the block giving its high set away keeps a copy of its baked image (the selector records the copy, the renderer blits it with the original's copy program before the frame's bakes), behind EXA_TERRAIN_SETS=1; the review restored the NaN-kept-low rule the lane had broken and made the copy wait for a drawn high set. FLX_Terrain_Texrender2 68% → 70%, TStaticTerrain 71% → 72%.
+
 ### Phase 3 — Bodies: skeleton, physics, control (started)
 
 Done (change `add-apparel-painting`): object database items and the
@@ -1332,6 +1334,16 @@ Done (itemgui5 lane, Claude): apparel icons are painted from the item's appearan
 Done (motiledyn9 lane, Claude): blows now play the original's damage sounds: a wounding blow plays the victim's wound set by race (flesh, skeleton, golem), and a wound with yellow left plays the victim's own pain voice (short groan, heavy groan or grunt, with their waits), from a voice built per fighter as the original's init does; the random grunt every blow played is gone; the balance footwork's steps now rustle when they start and play the race's footstep when they land. The muscles-off sampler's gait overlay, height target and queued-clip switch and the target capture are ported from the assembly as tested functions (the sampler is not scheduled). TMotileDynamics about 78% → 79% reproduced, 66% → 67% live.
 
 Done (thaumtree7 lane, Claude, after the DeepSeek provider failed): the power tree's text panels are the skin's shaded box in its text ink and its label mode draws boxes before names as the original's two loops do; the power bar marks running powers' slots by their class's mark method (persistent powers fade over 200 ms when they end; bubble, shell, kinesis, strikes and others stay lit), loaded from the caster's running powers and updated when a power ends. TThaumTree 72% → 78%.
+
+Done (change `draw-the-inventory-character-view`; invdoll lane, Claude): the inventory's character view now shows the player's own dressed figure, turning toward the pointer, with the view's camera and light; the encumbrance record is the item GUI's rating-dots control (encumbrance x 10 as dots), and dropping apparel, a weapon or a shield on the figure equips it. The original's inventory has no preview bars (they belong to character creation and the arena). A GPU run shows the figure at 59-60 FPS.
+
+Done (motiledyn10 lane, Claude): a body off its feet now probes its ground under the pelvis each tick as the original's body tick does, and the feet run the hover mode (wraiths) and flat-floor mode (wired, not yet set) with the original's probes and skipped steps. TMotileDynamics about 79% reproduced, 67% → 68% live.
+
+Done (motilepart10 lane, Claude): held shields and weapons are struck as bodies, so a blade meeting a shield is blocked as in the original (classified from the swing's bits and the contact's side, then the damage pass spends the shield's stamina, leaks into yellow and dazes) and weapon meeting weapon resolves as a clash; `--shield` and `--opponent-shield` hang a loading shield on the player or the duellists. A GPU run blocks the duellist's blows on the player's shield. TMotilePart 56% → 57%.
+
+Done (playerbeh lane, Claude): the player behaviour's tick now rebuilds its contact list, runs the late-swing engaged check (feeding the practice lesson from the strongest engaged enemy's fighting estimate) and the practice tick as the original does each tick; a wind-up port that had misread its inputs was removed. TPlayerBehaviour 67% → 69%.
+
+Done (playerctl10 lane, Claude): the world-object click runs as the original's controls do (devices used first, then a card or the narrated description), a chest picked as level geometry is found by the original's bounding search and opens, a used consumable leaves the scene with its sound, opening doors plays their lock sound, and level-local records get card facts; walk-to-interact was not built because the original has none (an out-of-reach double click does nothing). SG_PlayerControls 64% → 67%.
 
 ### Phase 6 — AI (started)
 
