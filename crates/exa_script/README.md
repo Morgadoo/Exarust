@@ -49,6 +49,8 @@ the default instance and setter, the `Role` bind/load/commit cycle with the
 cached get-instance object and its commit-on-set byte, and the commit's
 reallocation, which keeps the original's tail placement (the entry after a
 resized one lands `stored * 4` bytes too far and the copy overruns the
-allocation; the model reports both). The game does not use it: scripts reach
-role values through `builtins::Host`, and the `Actor` setter is
-`exa_ai::activity`'s.
+allocation; the model reports both). Scripts reach role values through
+`builtins::Host`; the scene host writes a script's role values back to the
+entry the commit picks (`commit_entry`: the first entry with as many values
+as the role has variables, else the role's last entry), and the `Actor`
+setter is `exa_ai::activity`'s.

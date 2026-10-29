@@ -1317,15 +1317,6 @@ pub fn worn_layout(
     out
 }
 
-/// A map's parchment: its size is the map texture's in sixths of a unit.
-pub fn parchment_size(texture: (u16, u16), unit: i32) -> (i32, i32) {
-    let k = unit as f32 * 0.166_666_67;
-    (
-        (f32::from(texture.0) * k).round_ties_even() as i32,
-        (f32::from(texture.1) * k).round_ties_even() as i32,
-    )
-}
-
 /// The container's form flags and style word from its constructor.
 pub const FORM_FLAGS: u32 = 0x80;
 pub const STYLE: u32 = 0x0010_0010;
@@ -2086,7 +2077,8 @@ mod entry_tests {
             );
         }
         assert!(worn_layout(&[], &mut icon, (228, 228), 160, &mut state).is_empty());
-        assert_eq!(parchment_size((768, 512), 4), (512, 341));
+        // A map's parchment is sized by the parchment popup's rule.
+        assert_eq!(exa_ui::popups::parchment_size(768, 512, 4), (512, 341));
     }
 }
 

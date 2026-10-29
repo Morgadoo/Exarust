@@ -39,7 +39,8 @@ marks the character and rebuilds apparel, and Power Crystal AL (500) runs
 the body's "Activate" dialogue. The inventory (`inventory_window`) has its
 constructor geometry, the pack's place at the client bottom, bind and close
 plans, drag permissions, drop-back rules and position memory; the arsenal
-(`arsenal`) its layout (five columns, eight controls on the top row),
+(`arsenal`) its layout (five columns, eight controls on the top row, the
+template row overwriting the inventory toggle's first place),
 close order, key, scroll and release handling, drag hooks and drop rules.
 `exa_game::body_inventory` drives the loot window's two panels from a
 character's `Possessions` (the carried list through

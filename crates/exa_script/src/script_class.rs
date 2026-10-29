@@ -39,8 +39,10 @@
 //!
 //! Evidence: the class's two virtual stubs, the role object's constructor,
 //! bind, load, get-instance, setter and commit, and the actor setter.
-//! Nothing in the running game uses this module: its scripts reach role
-//! values through [`crate::builtins::Host`].
+//! The running game's scripts reach role values through
+//! [`crate::builtins::Host`]; its scene host writes them back to the entry
+//! the commit picks ([`commit_entry`]). The rebuilt blob's misplaced tail
+//! has no counterpart there, as the scene keeps each entry's values apart.
 //!
 //! [`commit`]: ScriptRole::commit
 
@@ -340,6 +342,30 @@ impl ScriptRole {
     }
 }
 
+/// The held-role entry a commit of `slots` values writes, among a
+/// character's held roles given in order as `(role id, value count)`: the
+/// first entry of `role` whose count equals `slots` (written in place), else
+/// the last entry of the role (rebuilt with `slots` values). `None` when the
+/// role is not held: the commit writes nothing. This is [`ScriptRole::commit`]'s
+/// choice for a store that keeps each entry's values on their own.
+pub fn commit_entry(
+    entries: impl IntoIterator<Item = (u32, usize)>,
+    role: u32,
+    slots: usize,
+) -> Option<usize> {
+    let mut last = None;
+    for (index, (id, count)) in entries.into_iter().enumerate() {
+        if id != role {
+            continue;
+        }
+        if count == slots {
+            return Some(index);
+        }
+        last = Some(index);
+    }
+    last
+}
+
 /// The `Role` get-instance: the object cached on the calling script object,
 /// or a new one bound to `role`, given the controller, loaded and made
 /// commit-free. `None` (nothing cached) when the role is unknown.
@@ -389,6 +415,26 @@ mod tests {
 
     fn blob(list: &[HeldRole]) -> RoleBlob {
         RoleBlob::new(held_role_bytes(list), list.len() as i32)
+    }
+
+    #[test]
+    fn a_commit_writes_the_first_matching_count_else_the_last_entry() {
+        let list = [(7, 2), (9, 3), (7, 3), (7, 1)];
+        // The first entry of the role with three values.
+        assert_eq!(commit_entry(list, 7, 3), Some(2));
+        // No entry with four values: the last entry of the role.
+        assert_eq!(commit_entry(list, 7, 4), Some(3));
+        assert_eq!(commit_entry(list, 7, 2), Some(0));
+        assert_eq!(commit_entry(list, 8, 2), None);
+        // The blob commit picks the same entries.
+        let mut b = blob(&[held(7, &[1, 2]), held(9, &[0; 3]), held(7, &[0; 3])]);
+        let mut role = ScriptRole::new();
+        role.bind(7, Some(&variables(&["a", "b", "c"])));
+        role.class.slots[0].value = 5;
+        assert_eq!(role.commit(&mut b, None), Commit::InPlace);
+        let (third, _) = b.walk();
+        assert_eq!(b.values_at(third[2]), vec![5, 0, 0]);
+        assert_eq!(b.values_at(third[0]), vec![1, 2]);
     }
 
     #[test]

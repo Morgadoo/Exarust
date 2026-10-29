@@ -556,8 +556,11 @@ impl Host for SceneHost<'_, '_> {
     }
     fn set_role_values(&mut self, actor: u32, role: u32, values: &[i32]) {
         if let Some(c) = self.character_mut(actor) {
-            if let Some(r) = c.roles.iter_mut().find(|r| r.id == role) {
-                r.values = values.iter().map(|&v| v as u32).collect();
+            // The `Role` object's commit: the first entry with as many values
+            // as the role has variables, else the last entry of the role.
+            let held = c.roles.iter().map(|r| (r.id, r.values.len()));
+            if let Some(at) = crate::script_class::commit_entry(held, role, values.len()) {
+                c.roles[at].values = values.iter().map(|&v| v as u32).collect();
             }
             c.roles_changed = true;
         }
