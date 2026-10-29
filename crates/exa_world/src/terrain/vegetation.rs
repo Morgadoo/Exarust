@@ -31,6 +31,59 @@ const MIN_DENSITY: f64 = 0.35;
 /// Grass models are shrunk by this.
 pub const GRASS_SCALE: f32 = 0.75;
 
+/// Block word bit: the block has a draw node (the grass hook draws its
+/// chunks).
+pub const BLOCK_VISIBLE: u32 = 0x80;
+/// Block word bit: the block is drawn in an omni light's shadow map.
+pub const BLOCK_OMNI_SHADOW: u32 = 0x1_0000;
+/// Block word bit: the block's shadow faces are current.
+pub const BLOCK_SHADOW_FACES: u32 = 0x2_0000;
+/// Chunk node word bit: the chunk casts into the sun's shadow map.
+pub const NODE_SUN_SHADOW: u32 = 0x8000_0000;
+/// Chunk node word bit: the chunk is left out of the main draw.
+pub const NODE_SKIP_DRAW: u32 = 0x4;
+
+/// Whether the grass hook draws a chunk: the block has a draw node, the
+/// renderer's view mask meets the chunk node's mask, the node's word has no
+/// skip bit and the chunk has instances. The original tests these in this
+/// order before binding the buffers and drawing the instances.
+pub fn chunk_drawn(
+    block_words: u32,
+    render_mask: u32,
+    node_mask: u32,
+    node_words: u32,
+    instances: usize,
+) -> bool {
+    block_words & BLOCK_VISIBLE != 0
+        && render_mask & node_mask != 0
+        && node_words & NODE_SKIP_DRAW == 0
+        && instances > 0
+}
+
+/// Whether the grass hook draws a chunk into the sun's shadow map: the
+/// block is visible, the chunk has instances and its node word asks for the
+/// sun shadow.
+pub fn chunk_sun_shadow(block_words: u32, node_words: u32, instances: usize) -> bool {
+    block_words & BLOCK_VISIBLE != 0 && instances > 0 && node_words & NODE_SUN_SHADOW != 0
+}
+
+/// Whether the grass hook draws a chunk into an omni light's shadow map: the
+/// block carries both shadow words, the chunk has instances, and the
+/// renderer's shadow mask for the light meets the chunk node's mask. The
+/// original finds the chunk's room in the renderer's room list and intersects
+/// that light's mask; Exarust passes the resulting mask in.
+pub fn chunk_omni_shadow(
+    block_words: u32,
+    light_mask: u32,
+    node_mask: u32,
+    instances: usize,
+) -> bool {
+    block_words & (BLOCK_OMNI_SHADOW | BLOCK_SHADOW_FACES)
+        == (BLOCK_OMNI_SHADOW | BLOCK_SHADOW_FACES)
+        && instances > 0
+        && light_mask & node_mask != 0
+}
+
 /// The original's 32-bit linear congruential generator.
 #[derive(Debug, Clone, Copy)]
 pub struct Lcg(pub u32);
@@ -729,6 +782,28 @@ mod tests {
         let block = flat_block();
         let got = ground_with_normal(&block, 3, Vec2::new(0.5, 0.5), Vec3::new(20.0, 5.0, -20.0));
         assert_eq!(got, 0.0);
+    }
+
+    #[test]
+    fn the_draw_and_shadow_hooks_gate_each_chunk() {
+        // Main draw: block node, view mask, no skip bit, instances.
+        assert!(chunk_drawn(BLOCK_VISIBLE, 1, 1, 0, 3));
+        assert!(!chunk_drawn(0, 1, 1, 0, 3));
+        assert!(!chunk_drawn(BLOCK_VISIBLE, 2, 1, 0, 3));
+        assert!(!chunk_drawn(BLOCK_VISIBLE, 1, 1, NODE_SKIP_DRAW, 3));
+        assert!(!chunk_drawn(BLOCK_VISIBLE, 1, 1, 0, 0));
+        // Sun shadow: visible block, instances and the node's shadow bit.
+        assert!(chunk_sun_shadow(BLOCK_VISIBLE, NODE_SUN_SHADOW, 1));
+        assert!(!chunk_sun_shadow(BLOCK_VISIBLE, 0, 1));
+        assert!(!chunk_sun_shadow(0, NODE_SUN_SHADOW, 1));
+        assert!(!chunk_sun_shadow(BLOCK_VISIBLE, NODE_SUN_SHADOW, 0));
+        // Omni shadow: both block shadow words, instances and the light's
+        // mask meeting the chunk's.
+        let both = BLOCK_OMNI_SHADOW | BLOCK_SHADOW_FACES;
+        assert!(chunk_omni_shadow(both, 4, 4, 1));
+        assert!(!chunk_omni_shadow(BLOCK_OMNI_SHADOW, 4, 4, 1));
+        assert!(!chunk_omni_shadow(BLOCK_SHADOW_FACES, 4, 4, 1));
+        assert!(!chunk_omni_shadow(both, 1, 4, 1));
     }
 
     #[test]
