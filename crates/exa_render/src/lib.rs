@@ -9,6 +9,7 @@ pub mod cube_shadows;
 pub mod draw_state;
 pub mod electricity;
 pub mod flame;
+pub mod force_effects;
 pub mod geometry;
 pub mod gi;
 pub mod glow;
@@ -71,7 +72,7 @@ impl Plugin for RenderPlugin {
             material::MaterialsPlugin,
             gi::GiPlugin,
             flame::FlamePlugin,
-            electricity::ElectricityPlugin,
+            (electricity::ElectricityPlugin, force_effects::ForceEffectsPlugin),
             spray::SprayPlugin,
             stain::StainPlugin,
             supersample::SupersamplePlugin,
