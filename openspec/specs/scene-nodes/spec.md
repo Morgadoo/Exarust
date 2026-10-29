@@ -44,13 +44,20 @@ The system SHALL bound a sector by its meshes as the original does: the running 
 - **THEN** the first box's world centre is at 105 m and the union radius is √(101² + 1 + 1) m
 
 ### Requirement: Scene bounds
-The system SHALL write the scene's bounds into its own sector: its first box starts as its own first box and grows by every other sector's first box about its world centre (extents capped at its radius); the union corners start as its own second box's centre and half extents taken as corners and grow by every other sector's second box; its second box is left unchanged.
+The system SHALL write the scene's bounds into its own sector, every other sector's boxes taken as world-axis extents by its rotation: its first box starts as its own first box and grows by every other sector's first box about its world centre (extents capped at its radius); the union corners start as its own second box's centre and half extents taken as corners and grow by every other sector's second box about its unmoved centre; its second box is left unchanged.
 
 #### Scenario: One room
 - **WHEN** a scene with empty bounds has one room whose boxes are centred at x = 6 m with extents (3, 1, 1) m
 - **THEN** the scene box is centred at x = 4.5 m with extents (4.5, 1, 1) m and the union radius is √(4.5² + 1 + 1) m
 - **WHEN** the scene's own second box is centred at x = 1 m with a 20 m x extent
 - **THEN** the union radius is √(15.5² + 1 + 1) m
+
+### Requirement: Sector rotation
+A sector's box SHALL be turned into world-axis extents by the sector's rotation, each axis summing its three absolute matrix terms times the half extents in order, for the scene bounds; the active-sector test SHALL meet the box along the same rotation.
+
+#### Scenario: A turned room
+- **WHEN** a room at x = 10 m whose boxes have half extents (3, 1, 1) m is turned a quarter about the vertical
+- **THEN** the scene box runs 0…11 m in x and −3…3 m in z, and the union radius is √52.25 m
 
 ### Requirement: Node cell
 The system SHALL give a node the 6 m grid cell of its box's centre as the original does: the centimetre coordinate times the single-precision 1/600, floored, plus half the grid's count, kept in one byte, with 0 raised to 1 and anything from count − 1 up lowered to count − 2.
