@@ -861,6 +861,7 @@ pub fn experience_for_level(level: u32) -> u32 {
     TABLE.get(level as usize).copied().unwrap_or(2000)
 }
 
+mod editor;
 mod migrate;
 mod packed;
 mod record;
@@ -870,6 +871,7 @@ mod store;
 mod tiers;
 mod upgrade;
 
+pub use editor::{LookRoll, look_roll};
 pub use migrate::{material_set, variant_scales};
 pub use packed::{
     FractionWord, Quantised, amount_add, amount_bytes, amount_compact, amount_expand, amount_sub,
