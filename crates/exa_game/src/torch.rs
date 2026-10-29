@@ -203,6 +203,7 @@ fn light_torches(
             }
             commands.entity(root).insert((
                 exa_physics::prop::PendingProp(parts),
+                exa_character::held_item_sounds(&model),
                 exa_combat::impact::ImpactBook::default(),
                 exa_physics::grip::HeldGrip {
                     spec: hand.grip().spec(),

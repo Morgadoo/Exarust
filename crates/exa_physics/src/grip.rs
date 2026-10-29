@@ -315,6 +315,17 @@ pub fn shield_words(part: &mut crate::body::Part) {
     part.link_mobility = part.pairing.mobility;
 }
 
+/// The words a weapon's attach writes on each body of its chain: the
+/// permanent weapon bit and the mark bit (`0x20001`). The weapon bit stays
+/// while the weapon is held (the strike window is the chain bit,
+/// [`crate::part::PartState::STRIKE_CHAIN`]); the drop clears both with the
+/// chain bit.
+pub fn weapon_words(part: &mut crate::body::Part) {
+    part.state = part
+        .state
+        .with(crate::part::PartState::STRIKING | crate::part::PartState::STRIKE_MARK);
+}
+
 /// An unarmed hand's mobility as a share of its base: a half, a quarter for
 /// a race with heavy claws (its hands weigh 2 or 4 times their part, as
 /// [`exa_formats::weapon_record::Equipped::hand_mass`] says).
@@ -1605,5 +1616,52 @@ mod empty_hand_tests {
         assert_eq!(part.link_mobility, 3.5);
         assert_eq!(part.pairing.mobility, 3.5);
         assert_eq!(part.state.0 & 0x20002, 0x20002);
+    }
+
+    /// A weapon's attach gives its body the permanent weapon bit and the
+    /// mark (`0x20001`) but not the held bit: a resting held weapon is a
+    /// clash, not a block, for a striker; its window (the chain bit) opens
+    /// and shuts without touching the weapon bit.
+    #[test]
+    fn a_weapon_keeps_its_weapon_bit_through_its_window() {
+        use crate::part::{ContactKind, PartState, classify};
+        let mut body = crate::body::Ragdoll::new(&[crate::body::PartSetup {
+            bone: 0,
+            entity: bevy::prelude::Entity::PLACEHOLDER,
+            parent: None,
+            world: bevy::math::Affine3A::IDENTITY,
+            centre: Vec3::ZERO,
+            half: Vec3::splat(0.2),
+            origin: Vec3::ZERO,
+            links: vec![],
+            foot: None,
+            pins: Vec::new(),
+            spheres: None,
+        }]);
+        let base = body.parts[0].state.0;
+        weapon_words(&mut body.parts[0]);
+        assert_eq!(body.parts[0].state.0, base | 0x20001);
+        assert!(!body.parts[0].state.has(PartState::HELD));
+        assert!(crate::body::pairs::hittable(body.parts[0].state));
+        body.set_strike_chain(0, true);
+        assert!(body.parts[0].state.strikes());
+        assert_eq!(body.parts[0].state.0, base | 0x30001);
+        body.set_strike_chain(0, false);
+        assert_eq!(body.parts[0].state.0, base | 0x20001);
+        let striker = PartState(PartState::STRIKE_FLAGS);
+        let contact = crate::part::Contact {
+            own: striker,
+            other: body.parts[0].state,
+            same_tree: false,
+            faces: true,
+            own_motion: 5,
+            own_flags: 0,
+            own_pending: 0,
+            other_parrying: false,
+            other_motion: -1,
+            other_is_primary: false,
+            other_guarded: false,
+        };
+        assert_eq!(classify(&contact).unwrap().kind, ContactKind::Clash);
     }
 }

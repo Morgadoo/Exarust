@@ -227,6 +227,8 @@ pub struct WeaponImpacts<'w, 's> {
     pub swings: Query<'w, 's, &'static mut SwingState>,
     pub attackers: Query<'w, 's, &'static Attacker>,
     pub blades: Query<'w, 's, &'static Blade>,
+    /// A held item's own collision sound sets, part for part.
+    pub body_sounds: Query<'w, 's, &'static exa_physics::prop::BodySounds>,
     pub motions: Option<Res<'w, Motions>>,
     pub sounds: MessageWriter<'w, WeaponSounded>,
     pub camera_hits: MessageWriter<'w, CameraHit>,
@@ -473,10 +475,11 @@ pub fn strike_limbs(
         let cooldown = sound.spread_cooldown(roll.below(CLOCK_SPREAD_MS));
         body.parts[root].sound_ready_ms = now.wrapping_add(cooldown);
     }
-    // A held item's own weapon-body impact: a weapon that is striking (its
-    // owner's window open) rings its own set and interrupts or stalls the
-    // swing by the original's weapon branch. A non-striking weapon takes
-    // the base collision path, which Exarust's rigid part sound covers.
+    // A held item's own weapon-body impact: a held weapon (its permanent
+    // weapon bit) rings its own set and, while its owner's window is open,
+    // interrupts or stalls the swing by the original's weapon branch. A
+    // held shield or torch takes the base collision path with its own
+    // material's collision sound.
     for touch in touches {
         let sides = [(touch.a, touch.b), (touch.b, touch.a)];
         for (impact, (own, other)) in touch.struck.iter().zip(sides) {
@@ -504,9 +507,10 @@ pub fn strike_limbs(
                 .first()
                 .is_some_and(|p| p.state.has(PartState::STRIKING));
             if !striking {
-                // A non-striking item takes the plain body's collision
-                // sound. Its material set is not modelled, so the
-                // weapon's hit set stands in. [guess]
+                // A held item that is not a weapon takes the plain body's
+                // collision sound with its material's set (the struck
+                // part's); an item without one falls back to a blade's hit
+                // set. [guess: the fallback]
                 let Some(part) = item.parts.first() else {
                     continue;
                 };
@@ -522,12 +526,19 @@ pub fn strike_limbs(
                 let Some(sound) = base_impact_sound(*impact, mobility, ready, last, now) else {
                     continue;
                 };
-                let set = weapon
-                    .blades
+                let own_set = weapon
+                    .body_sounds
                     .get(target)
                     .ok()
-                    .and_then(|b| b.record.hit_sound_name())
-                    .map(str::to_owned);
+                    .and_then(|s| s.impact.get(own.1).cloned().flatten());
+                let set = own_set.or_else(|| {
+                    weapon
+                        .blades
+                        .get(target)
+                        .ok()
+                        .and_then(|b| b.record.hit_sound_name())
+                        .map(str::to_owned)
+                });
                 // The original parks the clock of a body with no sound set;
                 // the stand-in set is the weapon's, whose clock the striking
                 // branch shares, so a missing set only stays silent here.
@@ -836,33 +847,39 @@ pub fn level_impacts(
     }
 }
 
-/// Sets each held item's strike flags from its owner's swing window: a
-/// weapon body becomes an active striker (its window bit, the strike-chain
-/// bit the original's window sets, 0x10000, and the walk's mark, over its
-/// chain) when its owner's striker window opens, and stops being one when
-/// the window shuts. Only the change is written, so a hard impact's clear
-/// of the chain bit holds for the rest of the window, as in the original.
-/// While it strikes, its contacts with hittable bodies take the hit event
-/// ([`crate::block::strike_held`]) instead of the impact path.
-fn sync_held_striking(mut blades: Query<(&Blade, &mut Ragdoll)>, swings: Query<&SwingState>) {
-    for (blade, mut body) in &mut blades {
+/// Opens and shuts each held weapon's strike window from its owner's swing
+/// window: the strike-chain bit (the original's 0x10000) over its chain,
+/// beside the permanent weapon bit its attach set
+/// ([`exa_physics::grip::weapon_words`]). Only the change is written, so a
+/// hard impact's clear of the chain bit holds for the rest of the window,
+/// as in the original. While it strikes, its contacts with hittable bodies
+/// take the hit event ([`crate::block::strike_held`]) instead of the impact
+/// path. `open` remembers the weapons whose window is open.
+fn sync_held_striking(
+    mut blades: Query<(Entity, &Blade, &mut Ragdoll)>,
+    swings: Query<&SwingState>,
+    mut open: Local<bevy::ecs::entity::EntityHashSet>,
+) {
+    for (entity, blade, mut body) in &mut blades {
         if body.held_by.is_none() {
+            open.remove(&entity);
             continue;
         }
-        let open = swings
+        let now_open = swings
             .get(blade.wielder)
             .is_ok_and(|s| s.open[blade.slot.index()]);
-        let striking = body
-            .parts
-            .first()
-            .is_some_and(|p| p.state.has(PartState::STRIKING));
-        if open != striking {
+        if now_open != open.contains(&entity) {
             debug!(
                 "{:?}'s weapon {} striking",
                 blade.wielder,
-                if open { "starts" } else { "stops" }
+                if now_open { "starts" } else { "stops" }
             );
-            body.set_striking(0, open);
+            body.set_strike_chain(0, now_open);
+            if now_open {
+                open.insert(entity);
+            } else {
+                open.remove(&entity);
+            }
         }
     }
 }

@@ -86,6 +86,7 @@ impl Plugin for CombatPlugin {
             .add_message::<DamageTaken>()
             .add_message::<pain::PainSounded>()
             .add_message::<SecondWindFired>()
+            .add_message::<block::ShieldRung>()
             .add_plugins((
                 stance::StancePlugin,
                 condition::ConditionPlugin,
@@ -293,7 +294,7 @@ pub struct Hit {
 
 /// What a weapon contact struck: the contact kind the original's striking
 /// part records for the damage routine (a wound on a living limb, a clash
-/// on a held weapon, a block on a held shield).
+/// on a held weapon, a block on a held shield or torch).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Struck {
     /// A living limb (kind 1): the blade sweep's contact.
@@ -301,7 +302,7 @@ pub enum Struck {
     /// A held weapon (kind 2); `primary` when it is its holder's primary
     /// striker (no counter clash then).
     Weapon { primary: bool },
-    /// A held shield (kind 3): the shield's item body.
+    /// A held shield or torch (kind 3, a block): the item's body.
     Shield { item: Entity },
 }
 
@@ -633,7 +634,10 @@ fn react_to_hits(
     mut sprays: MessageWriter<wounds::Spray>,
     mut weakened: MessageWriter<Weakened>,
     (mut noticed, mut pains): (MessageWriter<DamageTaken>, MessageWriter<pain::PainSounded>),
-    mut winds: MessageWriter<SecondWindFired>,
+    (mut winds, mut rungs): (
+        MessageWriter<SecondWindFired>,
+        MessageWriter<block::ShieldRung>,
+    ),
     mut fighters: Query<(
         Entity,
         &mut Fighter,
@@ -708,13 +712,13 @@ fn react_to_hits(
             // struck weapon takes the clash; a limb meets the fighter's own
             // guard.
             let guard = match hit.struck {
-                Struck::Shield { .. } => {
-                    let Ok(hold) = holds.get(hit.target) else {
-                        break 'struck None;
-                    };
+                Struck::Shield { item } => {
+                    // The holder's block factors: its shield's, or for a
+                    // struck torch the bare arm ([`block::guard_for`]).
+                    let hold = holds.get(hit.target).ok().copied();
                     damage::Guard::Shield(damage::ShieldGuard {
                         parrying: f.parry.active,
-                        ..hold.guard
+                        ..block::guard_for(hold.as_ref(), item)
                     })
                 }
                 Struck::Weapon { .. } => damage::Guard::Parry,
@@ -812,8 +816,10 @@ fn react_to_hits(
                         ..shield
                     };
                     match hit.struck {
-                        Struck::Shield { .. } => {
-                            if let Ok(mut hold) = holds.get_mut(hit.target) {
+                        Struck::Shield { item } => {
+                            if let Ok(mut hold) = holds.get_mut(hit.target)
+                                && hold.item == item
+                            {
                                 hold.guard = damage::ShieldGuard {
                                     parrying: hold.guard.parrying,
                                     ..spent
@@ -1082,11 +1088,23 @@ fn react_to_hits(
                 now_ms: now as i32,
             };
             let draw = strike_back(&mut state, &striker, hit, reaction, &mut roll);
-            if let (Some(spread), Struck::Shield { item }) = (draw, hit.struck)
-                && let Ok(mut shield) = items.get_mut(item)
-                && let Some(part) = shield.parts.first_mut()
-            {
-                part.sound_ready_ms = part_sound_ready(now as u32, spread);
+            if let (Some(spread), Struck::Shield { item }) = (draw, hit.struck) {
+                // The struck item's own material rings at the blow, once a
+                // swing.
+                if let StrikerReaction::Blocked(blow) = reaction {
+                    let (volume, pitch) = block::shield_ring(blow.volume, blow.pitch);
+                    rungs.write(block::ShieldRung {
+                        item,
+                        point: hit.point,
+                        volume,
+                        pitch,
+                    });
+                }
+                if let Ok(mut shield) = items.get_mut(item)
+                    && let Some(part) = shield.parts.first_mut()
+                {
+                    part.sound_ready_ms = part_sound_ready(now as u32, spread);
+                }
             }
         }
     }
@@ -1217,6 +1235,7 @@ mod tests {
             .add_message::<DamageTaken>()
             .add_message::<pain::PainSounded>()
             .add_message::<SecondWindFired>()
+            .add_message::<crate::block::ShieldRung>()
             .add_systems(Update, react_to_hits);
         app
     }
@@ -1424,6 +1443,73 @@ mod tests {
             app.world().get::<block::ShieldHold>(id).unwrap().guard,
             guard
         );
+    }
+
+    /// A blow on a held torch blocks with the bare arm: no wound, no yellow
+    /// lost, the striker recoils, and the first block of the swing rings the
+    /// torch at 1.5 times the blow's volume and 1.8 times its pitch. A
+    /// holder's shield whose item is another keeps its arm.
+    #[test]
+    fn a_torch_blocks_with_the_bare_arm_and_rings() {
+        let mut app = reactions();
+        let (attacker, blade) = swordsman(&mut app);
+        app.world_mut()
+            .get_mut::<Attacking>(attacker)
+            .unwrap()
+            .held_pending = true;
+        let torch = app.world_mut().spawn_empty().id();
+        let shield = app.world_mut().spawn_empty().id();
+        let guard = damage::ShieldGuard {
+            parry: 1.0,
+            leak: 0.5,
+            cost: 0.5,
+            stamina: 0.25,
+            rate: 0.0,
+            blocked_at: 0,
+            parrying: false,
+        };
+        let id = app
+            .world_mut()
+            .spawn((
+                Fighter::default(),
+                Animator::new("Default", "Idle"),
+                block::ShieldHold {
+                    item: shield,
+                    guard,
+                },
+            ))
+            .id();
+        let yellow = app.world().get::<Fighter>(id).unwrap().health.yellow;
+        app.world_mut().write_message(Hit {
+            attacker,
+            striker: blade,
+            struck: Struck::Shield { item: torch },
+            target: id,
+            bone: block::SHIELD_HAND_BONE,
+            point: Vec3::new(1.0, 2.0, 3.0),
+            velocity: Vec3::new(3.0, 0.0, 0.0),
+            weapon: damage::sword_a(),
+            strike: cut(),
+        });
+        app.update();
+        let f = app.world().get::<Fighter>(id).unwrap();
+        assert_eq!(f.health.red, 0.25);
+        assert_eq!(f.health.yellow, yellow);
+        assert_eq!(
+            app.world().get::<block::ShieldHold>(id).unwrap().guard,
+            guard
+        );
+        let striker = app.world().get::<SwingState>(attacker).unwrap();
+        assert!(striker.has(swing::flags::RECOILED | swing::flags::SHIELD_RUNG));
+        let rungs: Vec<block::ShieldRung> = app
+            .world_mut()
+            .resource_mut::<Messages<block::ShieldRung>>()
+            .drain()
+            .collect();
+        assert_eq!(rungs.len(), 1);
+        assert_eq!(rungs[0].item, torch);
+        assert_eq!(rungs[0].point, Vec3::new(1.0, 2.0, 3.0));
+        assert!(rungs[0].volume > 0.0 && rungs[0].pitch > 0.0);
     }
 
     /// A clash on a held weapon takes the clash branch whatever the
@@ -2495,6 +2581,7 @@ mod tests {
             .add_message::<DamageTaken>()
             .add_message::<pain::PainSounded>()
             .add_message::<SecondWindFired>()
+            .add_message::<crate::block::ShieldRung>()
             .init_resource::<exa_physics::body::BodyTicks>()
             .add_systems(Update, (wounds::count_down_wounds, react_to_hits).chain());
         app.update();

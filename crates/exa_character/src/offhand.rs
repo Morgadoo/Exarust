@@ -197,9 +197,11 @@ fn attach_off_hands(
             links: None,
             released: false,
         };
-        commands
-            .entity(root)
-            .insert((exa_physics::prop::PendingProp(item_bodies), grip));
+        commands.entity(root).insert((
+            exa_physics::prop::PendingProp(item_bodies),
+            crate::held_item_sounds(&weapon),
+            grip,
+        ));
         if ragdoll.is_none() {
             commands.entity(root).insert(PendingGrip { holder: body });
         }

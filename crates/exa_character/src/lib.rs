@@ -698,52 +698,24 @@ fn weapon_mass_of(
     WeaponMass::new(parts, total, size)
 }
 
-/// A held item's rigid bodies: every model node that stores one, its parent
-/// the nearest rigid ancestor, each with the node's box as its mesh bound.
-/// `nodes` is each model node's entity, in the model's order. The model's
-/// first node, a top node, is moved through `root` itself, which carries the
-/// item's grip, blade and light (its node entity sits under `root` with no
-/// offset). A model without a stored rigid node (an assembled factory
-/// weapon) gets none here: its fitted body ([`assembled_item_body`]) is
-/// not in the game yet.
-pub fn held_item_bodies(
-    model: &model::Model,
-    root: bevy::prelude::Entity,
-    nodes: &[bevy::prelude::Entity],
-) -> Vec<exa_physics::body::RigidPart> {
-    use exa_physics::body::{RigidLink, RigidPart};
+/// The rigid nodes of a held item's model that the original registers, in
+/// the model's order, each with its parent part: the index among the
+/// model's rigid nodes of its immediate parent when that parent is a rigid
+/// node. A body whose immediate parent is a body, or a top body with no
+/// body above it, registers; a body under a plain node under another body
+/// is in no tree.
+fn held_rigid_nodes(model: &model::Model) -> Vec<(usize, Option<usize>)> {
     let rigid: Vec<usize> = (0..model.nodes.len())
         .filter(|&i| model.nodes[i].rigid.is_some())
         .collect();
-    // The first node, when it is a top node, sits at `root` with no offset
-    // (the callers spawn it so).
-    let first_top = model
-        .nodes
-        .first()
-        .is_some_and(|n| n.parent.is_none())
-        .then_some(0);
     let index: HashMap<usize, usize> = rigid
         .iter()
         .enumerate()
         .map(|(k, &node)| (node, k))
         .collect();
-    let entity = |i: usize| {
-        if Some(i) == first_top {
-            root
-        } else {
-            nodes.get(i).copied().unwrap_or(root)
-        }
-    };
-    let mut parts = Vec::with_capacity(rigid.len());
+    let mut out = Vec::with_capacity(rigid.len());
     for &node in &rigid {
         let n = &model.nodes[node];
-        let Some(rigid_body) = n.rigid.as_ref() else {
-            continue;
-        };
-        let b = &rigid_body.body;
-        // The original registers a body whose immediate parent is a body,
-        // and a top body with no body above it. A body under a plain node
-        // under another body is in no tree.
         let mut parent = n.parent;
         let mut nearest = None;
         let mut hidden = false;
@@ -758,9 +730,70 @@ pub fn held_item_bodies(
             }
             parent = model.nodes.get(at).and_then(|n| n.parent);
         }
-        if hidden {
-            continue;
+        if !hidden {
+            out.push((node, nearest));
         }
+    }
+    out
+}
+
+/// The sound names of a held item's bodies, part for part as
+/// [`held_item_bodies`] builds them: each part's collision sound set (its
+/// node's first mesh material's), which the original resolves into the
+/// body's impact sound when it registers. A blow that strikes a shield or a
+/// torch rings it ([`exa_combat::block::ShieldRung`]); a held item has no
+/// scrape sources.
+pub fn held_item_sounds(model: &model::Model) -> exa_physics::prop::BodySounds {
+    exa_physics::prop::BodySounds {
+        impact: held_rigid_nodes(model)
+            .into_iter()
+            .map(|(node, _)| {
+                model.nodes[node]
+                    .rigid
+                    .as_ref()
+                    .and_then(|r| r.collision_sound.clone())
+            })
+            .collect(),
+        scrapes: Vec::new(),
+    }
+}
+
+/// A held item's rigid bodies: every model node that stores one, its parent
+/// the nearest rigid ancestor, each with the node's box as its mesh bound.
+/// `nodes` is each model node's entity, in the model's order. The model's
+/// first node, a top node, is moved through `root` itself, which carries the
+/// item's grip, blade and light (its node entity sits under `root` with no
+/// offset). A model without a stored rigid node (an assembled factory
+/// weapon) gets none here: its fitted body ([`assembled_item_body`]) is
+/// not in the game yet.
+pub fn held_item_bodies(
+    model: &model::Model,
+    root: bevy::prelude::Entity,
+    nodes: &[bevy::prelude::Entity],
+) -> Vec<exa_physics::body::RigidPart> {
+    use exa_physics::body::{RigidLink, RigidPart};
+    // The first node, when it is a top node, sits at `root` with no offset
+    // (the callers spawn it so).
+    let first_top = model
+        .nodes
+        .first()
+        .is_some_and(|n| n.parent.is_none())
+        .then_some(0);
+    let entity = |i: usize| {
+        if Some(i) == first_top {
+            root
+        } else {
+            nodes.get(i).copied().unwrap_or(root)
+        }
+    };
+    let registered = held_rigid_nodes(model);
+    let mut parts = Vec::with_capacity(registered.len());
+    for (node, nearest) in registered {
+        let n = &model.nodes[node];
+        let Some(rigid_body) = n.rigid.as_ref() else {
+            continue;
+        };
+        let b = &rigid_body.body;
         parts.push(RigidPart {
             entity: entity(node),
             parent: nearest,
@@ -1642,6 +1675,7 @@ fn equip_outfits(
                 if !parts.is_empty() {
                     commands.entity(holder).insert((
                         exa_physics::prop::PendingProp(parts),
+                        held_item_sounds(&weapon),
                         exa_combat::impact::ImpactBook::default(),
                         grip_runtime::HeldRecord {
                             section: Section {

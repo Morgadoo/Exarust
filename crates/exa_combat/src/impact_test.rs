@@ -114,7 +114,8 @@ fn a_thrown_ball_hurts_the_limb_it_strikes() {
             .add_message::<WeaponSounded>()
             .add_message::<CameraHit>()
             .add_message::<Weakened>()
-            .add_message::<SecondWindFired>();
+            .add_message::<SecondWindFired>()
+            .add_message::<crate::block::ShieldRung>();
         let target = app
             .world_mut()
             .spawn((Fighter::default(), ball(1, 1, Vec3::new(0.0, 5.0, 0.0))))
@@ -171,7 +172,8 @@ fn a_struck_weapon_body_rings_and_records_its_strength() {
         .add_message::<WeaponSounded>()
         .add_message::<CameraHit>()
         .add_message::<Weakened>()
-        .add_message::<SecondWindFired>();
+        .add_message::<SecondWindFired>()
+        .add_message::<crate::block::ShieldRung>();
     let owner = app
         .world_mut()
         .spawn((
@@ -237,7 +239,8 @@ fn an_overhead_strikers_hard_impact_sounds_and_is_dropped() {
         .add_message::<WeaponSounded>()
         .add_message::<CameraHit>()
         .add_message::<Weakened>()
-        .add_message::<SecondWindFired>();
+        .add_message::<SecondWindFired>()
+        .add_message::<crate::block::ShieldRung>();
     let mut pelvis = ball(1, 1, Vec3::new(0.0, 5.0, 0.0));
     pelvis.parts[0].state = pelvis.parts[0].state.with(PartState::STRIKING);
     let target = app
@@ -344,6 +347,7 @@ fn a_limb_hitting_the_level_sounds_and_hurts() {
         .add_message::<ImpactSounded>()
         .add_message::<Weakened>()
         .add_message::<SecondWindFired>()
+        .add_message::<crate::block::ShieldRung>()
         .add_message::<Shove>();
     let target = app
         .world_mut()

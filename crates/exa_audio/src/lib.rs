@@ -60,6 +60,7 @@ impl Plugin for AudioPlugin {
             .add_message::<exa_combat::pain::PainSounded>()
             .add_message::<exa_physics::body::FootSounded>()
             .add_message::<exa_combat::impact::WeaponSounded>()
+            .add_message::<exa_combat::block::ShieldRung>()
             .add_message::<exa_combat::swing_voice::SwingVoiceCue>()
             .add_systems(
                 Update,
@@ -68,6 +69,7 @@ impl Plugin for AudioPlugin {
                     hits::pain_sounds,
                     hits::impact_sounds,
                     hits::weapon_sounds,
+                    hits::shield_sounds,
                     sounds::heal_sounds,
                     sounds::named_sounds,
                     sounds::swing_voices,
