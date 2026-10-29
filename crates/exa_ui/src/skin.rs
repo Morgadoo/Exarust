@@ -6017,6 +6017,8 @@ pub struct SkinScrollBar {
     pub stripe: bool,
 }
 
+/// A scroll bar control's place: its rectangle, inset, state and style words,
+/// the fraction its thumb sits at and the GUI unit.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ControlScrollPlace {
     pub rect: GuiRect,
@@ -6027,6 +6029,9 @@ pub struct ControlScrollPlace {
     pub unit: i32,
 }
 
+/// Draws a scroll bar: the control's own style frames on its frame rect, the
+/// accent-gradient trough and the raised box thumb, or a striped fill with the
+/// unit-wide bar.
 pub fn draw_control_scrollbar(
     batch: &mut SkinBatch,
     place: ControlScrollPlace,
@@ -6041,8 +6046,15 @@ pub fn draw_control_scrollbar(
     let inset = place.inset as f32;
     if mode == 0 {
         // The original moves the control down a pixel and shortens it by
-        // two while it draws, so the trough runs from y + 2 to y + h − 2 and
-        // the thumb from y + 3 to y + h − 3.
+        // two while it draws, so its style frames run on the moved rect and
+        // the trough from y + 2 to y + h − 2, the thumb from y + 3 to
+        // y + h − 3.
+        let frame = GuiRect {
+            x0: rect.x0,
+            y0: rect.y0 + 1.0,
+            x1: rect.x1,
+            y1: rect.y1 - 1.0,
+        };
         let bar = ((unit * 4) | 1) as f32;
         let trough = GuiRect {
             x0: rect.x0 + 1.0,
@@ -6056,10 +6068,10 @@ pub fn draw_control_scrollbar(
             x1: rect.x1 - 2.0,
             y1: rect.y1 - 3.0,
         };
-        // The subclass' box slot is not in this component; the base skin's
-        // raised box is its equivalent (guess).
-        draw_button_box(batch, trough, false, false, palette);
-        draw_frame_control(
+        // The trough is the accent gradient and the thumb the raised box.
+        draw_style_frames(batch, frame, place.style, palette);
+        draw_accent_bar(batch, trough, palette);
+        draw_button_box(
             batch,
             thumb,
             (state & 0x40) == 0x40,
@@ -6672,7 +6684,8 @@ pub fn draw_form_background(
         let mut last = None;
         for code in [-9, -10] {
             if let Some(rect) = background_rect(&place, unit, code) {
-                draw_frame_control(batch, corner_rect(rect), pressed(code), false, palette);
+                // The trough is the raised box the skin's own slot answers.
+                draw_button_box(batch, corner_rect(rect), pressed(code), false, palette);
                 drawn.scroll_frames.push(rect);
                 last = Some(rect);
             }
@@ -6703,7 +6716,7 @@ pub fn draw_form_background(
         let mut last = None;
         for code in [-13, -14] {
             if let Some(rect) = background_rect(&place, unit, code) {
-                draw_frame_control(batch, corner_rect(rect), pressed(code), false, palette);
+                draw_button_box(batch, corner_rect(rect), pressed(code), false, palette);
                 drawn.scroll_frames.push(rect);
                 last = Some(rect);
             }
@@ -6716,7 +6729,7 @@ pub fn draw_form_background(
                 rect[3],
             ];
             batch.add_texture_shift(-(scroll.position as f32), 0.0);
-            draw_frame_control(batch, corner_rect(thumb), false, false, palette);
+            draw_button_box(batch, corner_rect(thumb), false, false, palette);
             batch.add_texture_shift(scroll.position as f32, 0.0);
             drawn.scroll_bars.push(thumb);
         }
@@ -12114,6 +12127,43 @@ mod tests {
             drawn.box_rect.expect("a box"),
             GuiRect::corners(1.0, 2.0, 99.0, 22.0)
         );
+        // The accent trough, then the idle raised box's inner gradient from
+        // the control group's third shade up to its seventh.
+        assert_eq!(batch.primitives.len(), 4);
+        let trough = batch.vertices_of(&batch.primitives[0]);
+        assert_eq!(trough[0].ink, [9, 9, 9, 255]);
+        assert_eq!(trough[7].ink, [9, 9, 9, 255]);
+        let face = batch.vertices_of(&batch.primitives[1]);
+        assert_eq!(face[0].ink, [30, 6, 0, 60]);
+    }
+
+    #[test]
+    fn a_styled_scrollbar_draws_its_style_frames_on_the_moved_rect() {
+        let mut batch = SkinBatch::new();
+        let palette = palette_for_faces();
+        let drawn = draw_control_scrollbar(
+            &mut batch,
+            ControlScrollPlace {
+                rect: GuiRect::corners(0.0, 0.0, 100.0, 24.0),
+                inset: 4,
+                state: 0,
+                style: 0x10,
+                fraction: 0.5,
+                unit: 4,
+            },
+            &[],
+            &palette,
+        );
+        assert_eq!(drawn.step, 5);
+        // The control's style field selects the inner double frame, drawn on
+        // the rect moved a pixel down and two shorter, in the hot-form
+        // group's first and eighth shades.
+        assert_eq!(batch.primitives.len(), 5);
+        let frames = batch.vertices_of(&batch.primitives[0]);
+        assert_eq!((frames[0].x, frames[0].y), (99.0, 1.5));
+        assert_eq!(frames[0].ink, [20, 0, 0, 50]);
+        assert_eq!((frames[8].x, frames[8].y), (98.0, 2.5));
+        assert_eq!(frames[8].ink, [20, 7, 0, 50]);
     }
 
     #[test]
@@ -12553,8 +12603,9 @@ mod tests {
             vec![[180, 24, 195, 39], [180, 80, 195, 95]]
         );
         assert_eq!(drawn.scroll_bars, vec![[180, 30, 195, 50]]);
-        // Frame, shadow, two frame slots (the pressed one in the control
-        // group's shades 4 and 1), then the bar's gradient boxes.
+        // Frame, shadow, the two raised boxes (the pressed one's gradient
+        // runs from the control group's fifth shade up to its second), then
+        // the bar's gradient boxes.
         let pressed = batch.vertices_of(&batch.primitives[5]);
         assert_eq!(pressed[0].ink, [30, 1, 0, 60]);
         assert_eq!(batch.texture_shift, [0.0, 0.0]);

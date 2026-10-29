@@ -1772,8 +1772,9 @@ leaves behind.
   button up. A slider draws a faded track (the hot group's shades 4 and 0
   at 0.6 alpha) and a framed thumb moved by the value, or a striped fill
   and the unit-wide bar at the value; a scroll bar, drawn a pixel lower and
-  two shorter, draws a box with a thumb `4·unit + 1` wide (the track
-  points back at the same rectangle) or the striped fill. The shell adds
+  two shorter, draws its style frames on the moved rectangle, an accent
+  gradient for the trough and a raised box `4·unit + 1` wide for the thumb
+  (the track points back at the same rectangle), or the striped fill. The shell adds
   the frame, an optional drop shadow at `-unit/2` and the sunken face; the
   fill is the control's own colour, forced opaque.
 - **Form chrome and background.** A form keeps a state word (bit 1 a
@@ -1793,10 +1794,10 @@ leaves behind.
   from y 2 to 24 with an optional two-line band below it and the close,
   small and large marks (their rectangles from the form's control-code
   switch, pressed under the button or hovered), then the vertical and
-  horizontal scrollbar frames, their shadows, the arrow frame slots
-  (pressed when held), the thumbs (the vertical one as a gradient bar, the
-  horizontal one as a frame slot, each with the texture shifted by the
-  thumb's place), the arrow icons half a unit less one in, the mark icons
+  horizontal scrollbar frames, their shadows, the raised box troughs over
+  the arrows (pressed when held), the thumbs (the vertical one as a
+  gradient bar, the horizontal one as a raised box, each with the texture
+  shifted by the thumb's place), the arrow icons half a unit less one in, the mark icons
   and last the title's two text blocks: the form's second shade one pixel
   left and above, the label's seventh at the place, at y `(margin + line
   height + 25) / 2`. Their width drops by 17 for the close mark, 20 for
