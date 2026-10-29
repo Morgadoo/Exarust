@@ -87,7 +87,7 @@ the standard one.
 | `walker` | the idle states' head (the attention's notice score and clamped window, the 50° focus window), the roam and patrol step on the planning turn (the goal picked only on the turn, the 150 cm follow span, the forced home leg, the settle before the pause), and the walk along the followed route (100 cm flat arrival, Exarust's give-up deadline) |
 | `motion` | the AI's look and body motion: the head look toward a point (a quarter turn, 0.02 easing), the whole-look smoothing (`(0.0062831854·gap + sway)·0.7`, a 30° write threshold), the idle look (0.1 of the gap, 1 % pitch), the out-of-combat look chain (the body look toward the head offset, the 0.4/0.64 smoothing and the gait helper's 30° write, with the stepping, live-target and combat cases), the step/combat walk (the 0.7/0.007 facing threshold, the 150 cm goal hold, the run and sprint flags), the walk stop (8·crouch + 20), the steer line (120 cm, 3600 cm²), the way share, the body in the way (each body shifted 20 cm along the walk direction, skipping the remembered and carried bodies), the alert pan (both draws every tick, one in 300 and 75, the body turned by the sway with a foe), the out-of-combat sway, and the aim, settle and snap |
 | `rooms` | the 600 cm room cell grid (the floored, half-offset flat index, the per-cell occupant lists, the old-cell memory and the cell's nearby characters) and the level's side of it: the cell-to-room table, a room's exits at the cell centres behind its door links with shut doors from the room tracker, a room's reference point, and the sight test (the room reach test) |
-| `lifecycle` | the script-object factory, the scripted action hook, the removal/destroy/disable hooks, the investigation of a disturbance, the idle driver's state machine (turn, plan a room, walk, test the exit, use the object, plan home, search the room) with its exit/use/object checks and room walk (every unvisited exit weighed, the previous cell included; going back clears the avoided exits; the first avoided exit sets its marker), the go-to-object state, and the object goal |
+| `lifecycle` | the script-object factory, the scripted action hook, the removal/destroy/disable hooks, the idle return, the investigation of a disturbance, the idle driver's state machine (turn, plan a room, walk, test the exit, use the object, plan home, search the room) with its exit/use/object checks and room walk (every unvisited exit weighed, the previous cell included; going back clears the avoided exits; the first avoided exit sets its marker), the go-to-object state, and the object goal |
 | `combatant` | the behaviour base: contacts, perception, the ally-class races' sense (the 3 concern floor, attitude 100 for a fellow AI, the 1200/1800 cm range, the threat to an ally weighed by the observed state, 0.3 of it as the concern target, the observed body's in-combat mark weighing 0.25 over 0.1; run by the perception pass for every AI race outside class `0x12xx`), the attitude and trust overrides, concern, references, the queued step, the nav footprint |
 | `combat` | the combat state: the follow check, practice, the foe estimate, the weapon draw and the lunge, the chase count and eagerness, the footwork drives, the seventeen-place search, the attack decision with the friend test and the keep-off, the step, the guard, the fierce stance and the body turn |
 | `contacts` | the contact classifier (the stress flight, the engagement threshold, the concern flight, the watch and the notice score), the twelve-contact list, the per-tick contact integration (the hostility drift from the perceived attitude, the concern rising toward its target, the noticed level following the sighting, the attention, the bad-route marks, the aggregates and the readiness), the target pass (the scripted focus, the visible and nearby lists, the sleeper's waking, the clean-up, the alarm mean, the encounter and the greeting, the round-robin dialogue refresh), the nearby list (sixteen nearest seen within 30 m, by squared distance) |
@@ -171,7 +171,13 @@ replaces the lightest. The classification asks the level's room graph with
 the contact as the threat (`rooms::level_room`, `rooms::room_exits`, the
 door links' cells as exit points), as the original's way-out query does,
 and `brain::flee_walk` runs a fleeing brain to that exit at the jog speed,
-putting the idle clip back when the flight ends.
+putting the idle clip back when the flight ends. On a level with a
+navigation grid the way out is picked and routed on the brain's planning
+turn (`route::plan`, one planner a frame), again while no route is followed
+or within 150 cm of the goal; a route whose ends lie more than 150 cm apart
+is followed toward its carrot, and one ending in the brain's room within
+15 m of the threat remembers the exit's room. Without a followed route the
+body steers straight to the exit (the original fights that tick).
 
 `brain::Npc::run_pass` drifts the morale, integrates a brain's contacts and
 runs the target pass over every character seen this tick, and reports
@@ -189,9 +195,9 @@ target, so an entry against another character does not start it. A
 duellist without a brain, the practice opponent, is started by the fight's
 setup as before. The brain's passes run once a body tick, the perception
 filters by the room reach test, and the flight reads the level's room
-graph (it steers straight to the exit, without a nav route). Not yet: the one-planner-a-tick turn (`route::PlanTurn`) gates
-only the path planner, and an NPC's idle walk to its room exits has no
-driver yet (only the flight walks).
+graph and routes through the navigation grid. The one-planner-a-frame
+turn (`route::PlanTurn`) is kept per system: the duellists' chase, the idle
+walk and the flight each keep their own.
 
 The golem guardians' rules are plain functions with tests; no level has a
 golem entity or an alarm zone yet.
