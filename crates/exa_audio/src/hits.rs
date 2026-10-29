@@ -1,4 +1,5 @@
-//! Sounds of hits: a weapon impact and a pain grunt at the contact point,
+//! Sounds of hits: a weapon impact at the contact point, a wound's pain
+//! sounds (the wound set and the pain voice),
 //! and a body's impact on a limb: the struck bone's hit sound, or the
 //! character's foley when its root is crowded
 //! ([`exa_combat::impact::ImpactSounded`]).
@@ -14,7 +15,10 @@ use exa_assets::Game;
 use exa_combat::Fighter;
 use exa_combat::Hit;
 use exa_combat::impact::ImpactSounded;
+use exa_combat::pain::PainSounded;
 use exa_combat::sounds::{foley, part_hit_sound};
+use exa_combat::voice::{Answer, CharacterVoice};
+use exa_physics::body::BodyTicks;
 
 use crate::environment::AudioEnvironment;
 use crate::sounds::{foley_set, hit_set};
@@ -22,8 +26,10 @@ use crate::{SoundBank, SoundSet};
 
 /// Sword impacts, the fallback when a weapon names no set.
 pub(crate) const SWORD_IMPACTS: SoundSet<'static> = SoundSet::new("wh_sworda", 6);
-/// Human voices, each with its grunts.
+/// Human voices, each with its grunts (the installed-sets check).
+#[cfg(test)]
 pub(crate) const VOICES: SoundSet<'static> = SoundSet::new("vhm", 9);
+#[cfg(test)]
 pub(crate) const GRUNTS: usize = 6;
 
 #[allow(clippy::too_many_arguments)]
@@ -37,7 +43,6 @@ pub(crate) fn hit_sounds(
     mut impacts: Local<Option<u32>>,
     mut weapon_sets: Local<[Option<u32>; 9]>,
     mut part_sets: Local<[Option<u32>; 7]>,
-    mut grunt_sets: Local<[Option<u32>; VOICES.count]>,
 ) {
     let Some(game) = game else { return };
     for hit in hits.read() {
@@ -64,18 +69,65 @@ pub(crate) fn hit_sounds(
                 .get_or_insert_with(|| bank.load_set(&game, &mut sources, set.prefix));
             env.play_set(&mut bank, id, hit.point, 1.0, 1.0, 0);
         }
-        let voice = bank.pick(VOICES.count);
-        let grunt = match grunt_sets[voice] {
-            Some(set) => set,
-            None => {
-                let base = format!("{}_grunts", VOICES.name(voice));
-                let grunt_set = SoundSet::new(&base, GRUNTS);
-                let set = bank.load_set(&game, &mut sources, grunt_set.prefix);
-                grunt_sets[voice] = Some(set);
-                set
-            }
+    }
+}
+
+/// Plays a wound's pain sounds ([`exa_combat::pain::PainSounded`]): the
+/// character's wound set at the blow, and its pain voice through its
+/// voice's request ([`CharacterVoice::speak`]: the line's set, its waits
+/// and the character's gains) at its place. A fighter without a voice
+/// makes neither; a set the pack lacks plays nothing and leaves the wait.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn pain_sounds(
+    game: Option<Res<Game>>,
+    mut pains: MessageReader<PainSounded>,
+    mut voices: Query<(&mut CharacterVoice, &GlobalTransform)>,
+    ticks: Option<Res<BodyTicks>>,
+    mut bank: ResMut<SoundBank>,
+    mut sources: ResMut<Assets<AudioSource>>,
+    mut env: ResMut<AudioEnvironment>,
+    mut sets: Local<bevy::platform::collections::HashMap<String, u32>>,
+) {
+    let Some(game) = game else { return };
+    let now = ticks.as_ref().map_or(0, |t| t.millis()) as u32;
+    for pain in pains.read() {
+        let Ok((mut voice, at)) = voices.get_mut(pain.fighter) else {
+            continue;
         };
-        env.play_set(&mut bank, grunt, hit.point, 0.8, 1.0, 0);
+        let mut set_of = |name: &str, bank: &mut SoundBank| {
+            *sets
+                .entry(name.to_string())
+                .or_insert_with(|| bank.load_set(&game, &mut sources, name))
+        };
+        if let (Some(loud), Some(name)) = (pain.sounds.wound, voice.wound.clone()) {
+            let id = set_of(&name, &mut bank);
+            if id != SoundBank::EMPTY_SET {
+                env.play_set(&mut bank, id, pain.point, loud.volume, loud.pitch, 0);
+            }
+        }
+        let Some((line, loud)) = pain.sounds.voice else {
+            continue;
+        };
+        let Some(name) = voice.set(line).map(str::to_string) else {
+            continue;
+        };
+        let id = set_of(&name, &mut bank);
+        if let Answer::Played(spoken) = voice.speak(
+            line,
+            id != SoundBank::EMPTY_SET,
+            now,
+            loud.volume,
+            loud.pitch,
+        ) {
+            env.play_set(
+                &mut bank,
+                id,
+                at.translation(),
+                spoken.volume,
+                spoken.pitch,
+                0,
+            );
+        }
     }
 }
 
