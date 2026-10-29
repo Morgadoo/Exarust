@@ -23,6 +23,8 @@ chain.
 - The breakable grab follows the original's order, centimetres, shares and
   NaN compares; after a break every breakable grab to that part is dropped
   with its grab layer bits.
+- The node-clock render fraction and a body's draw fraction are tested
+  functions; drawing keeps Bevy's fixed-step overstep.
 
 ## Evidence
 
@@ -35,4 +37,4 @@ the bite's link builder and the share routine.
 
 A disabled body state (no Exarust body is disabled, so the struck-body
 disable is a parameter), wiring bites into the live combat path, clone
-sharing and the node-clock draw fraction.
+sharing, and calling the node-clock fraction from drawing.

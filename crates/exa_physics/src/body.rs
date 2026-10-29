@@ -1262,6 +1262,45 @@ impl Link {
     }
 }
 
+/// Where a node clock stands within its tick, as the original's render
+/// fraction reads it: `now_ms` and `stamp_ms` are the clock's two
+/// millisecond words, `period_ms` its tick length, and `offset` (times the
+/// clock's `scale`) a sub-millisecond part. When `now_ms` has reached the
+/// stamp the fraction is 1 − ((now − stamp) − offset·scale)/period, held at
+/// −2 from below (ordered, so NaN passes); a stamp up to a period ahead
+/// gives ((stamp − now) + offset·scale)/period + 1, further ahead
+/// offset·scale/period + 2. The differences are taken in 64 bits and
+/// rounded to single precision as the original converts them. Exarust's
+/// own drawing reads Bevy's fixed-step overstep instead, the same fraction
+/// of its fixed tick; this has no caller yet.
+pub fn clock_fraction(now_ms: u32, stamp_ms: u32, period_ms: u32, offset: f32, scale: f32) -> f32 {
+    let p = offset * scale;
+    let period = period_ms as f32;
+    if now_ms >= stamp_ms {
+        let f = 1.0 - ((u64::from(now_ms - stamp_ms) as f32) - p) / period;
+        return if f < -2.0 { -2.0 } else { f };
+    }
+    let ahead = u64::from(stamp_ms - now_ms);
+    if ahead > u64::from(period_ms) {
+        p / period + 2.0
+    } else {
+        ((ahead as f32) + p) / period + 1.0
+    }
+}
+
+/// A body's render fraction from its node clock's tick count `clock_ticks`,
+/// the body's own tick stamp `body_ticks` and the clock's
+/// [`clock_fraction`]: the tick difference (in 64 bits, rounded to single)
+/// plus the fraction. A body whose state carries the asleep or the state-4
+/// bit (`resting`) draws at 0; the original then also leaves its scene
+/// node alone.
+pub fn body_draw_fraction(clock_ticks: i32, body_ticks: i32, fraction: f32, resting: bool) -> f32 {
+    if resting {
+        return 0.0;
+    }
+    ((i64::from(clock_ticks) - i64::from(body_ticks)) as f32) + fraction
+}
+
 /// The shares a soft weld's correction takes on the part and its parent,
 /// from their link mobilities `m` and `m_parent` as they stand when the
 /// link runs ([`Part::link_mobility`]): each mobility times a tenth over

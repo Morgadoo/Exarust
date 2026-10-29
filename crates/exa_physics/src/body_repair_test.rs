@@ -441,3 +441,42 @@ fn the_edge_restore_moves_both_ends_half_way() {
     }
     assert!(after < was, "{after} vs {was}");
 }
+
+#[test]
+fn a_clock_at_or_past_its_stamp_counts_down_from_one() {
+    // 5 ms past the stamp with 2·0.5 ms of offset over a 12 ms tick:
+    // 1 − (5 − 1)/12.
+    let f = crate::body::clock_fraction(105, 100, 12, 2.0, 0.5);
+    assert_eq!(f, 1.0 - (5.0_f32 - 1.0) / 12.0);
+    assert_eq!(crate::body::clock_fraction(100, 100, 12, 0.0, 1.0), 1.0);
+    // Far behind it is held at −2; a NaN offset passes the ordered clamp.
+    assert_eq!(crate::body::clock_fraction(200, 100, 12, 0.0, 1.0), -2.0);
+    assert!(crate::body::clock_fraction(200, 100, 12, f32::NAN, 1.0).is_nan());
+}
+
+#[test]
+fn a_clock_before_its_stamp_counts_up_from_one_then_two() {
+    // 3 ms ahead, within a 12 ms tick: (3 + 1)/12 + 1.
+    let f = crate::body::clock_fraction(97, 100, 12, 2.0, 0.5);
+    assert_eq!(f, (3.0_f32 + 1.0) / 12.0 + 1.0);
+    // Exactly a tick ahead still counts the difference.
+    assert_eq!(
+        crate::body::clock_fraction(88, 100, 12, 0.0, 1.0),
+        12.0 / 12.0 + 1.0
+    );
+    // Further ahead only the offset counts, past 2.
+    assert_eq!(
+        crate::body::clock_fraction(10, 100, 12, 3.0, 1.0),
+        3.0_f32 / 12.0 + 2.0
+    );
+    // A clock that wrapped back under its stamp: the unsigned compare
+    // sees the stamp far ahead.
+    assert_eq!(crate::body::clock_fraction(1, u32::MAX, 12, 0.0, 1.0), 2.0);
+}
+
+#[test]
+fn a_bodys_draw_fraction_adds_its_lag_in_ticks() {
+    assert_eq!(crate::body::body_draw_fraction(10, 8, 0.25, false), 2.25);
+    assert_eq!(crate::body::body_draw_fraction(8, 10, 0.25, false), -1.75);
+    assert_eq!(crate::body::body_draw_fraction(10, 8, 0.25, true), 0.0);
+}

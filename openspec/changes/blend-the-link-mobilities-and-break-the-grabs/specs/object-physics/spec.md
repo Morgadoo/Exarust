@@ -41,3 +41,10 @@ After a break, every breakable grab to that part SHALL be dropped in order, and 
 #### Scenario: A spent grab
 - **WHEN** a grab of strain 1 breaks while another breakable grab and a plain link hold the same part
 - **THEN** both breakable grabs are dropped, the plain link stays and the grab layer bits are cleared
+
+### Requirement: Node-clock render fraction
+The node-clock fraction SHALL be 1 − ((now − stamp) − offset·scale)/period, held at −2 from below, when the clock has reached its stamp; ((stamp − now) + offset·scale)/period + 1 when the stamp is at most a period ahead; and offset·scale/period + 2 further ahead. A body's render fraction SHALL be its clock's tick count less its own tick stamp plus that fraction, or 0 while it rests.
+
+#### Scenario: A clock past its stamp
+- **WHEN** the clock is 5 ms past its stamp with an offset of 1 ms over a 12 ms tick
+- **THEN** the fraction is 1 − 4/12

@@ -806,7 +806,12 @@ stand-ins moved with them (`prop::StandIns`; `contact::Level::movable`) for
 the character capsules, which bodies skip: a prop body meets the level, and
 characters' parts, corpses and other props through the pairs, by its
 mobility and the group masks of its tree (`Part::rigid`'s pairing,
-`pairs::mask_groups`); a body below −50 m is removed. Only awake bodies are redrawn between ticks.
+`pairs::mask_groups`); a body below −50 m is removed. Only awake bodies are redrawn between ticks,
+at Bevy's fixed-step overstep fraction; the original's node-clock fraction
+(`body::clock_fraction`: 1 − (past − offset)/period held at −2, or
+(ahead + offset)/period + 1 within a tick, else offset/period + 2) and a
+body's tick lag added to it (`body::body_draw_fraction`, 0 at rest) are
+tested functions with no caller.
 The hand's grab (`body::Grab`, `Ragdoll::grab`) is the original's horizontal
 drag link: a limp part's point pulled across the ground toward a world
 anchor in the passes it runs in, twice the strength times the gap counted at
