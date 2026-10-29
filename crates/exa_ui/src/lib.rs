@@ -34,6 +34,7 @@ pub mod colour_swatch;
 pub mod compact_skill;
 pub mod controls;
 pub mod creation;
+pub mod creation_forms;
 pub mod cursor;
 pub mod dialogs;
 pub mod dialogue_choices;

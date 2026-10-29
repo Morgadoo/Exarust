@@ -312,6 +312,7 @@ fn setup(
                     &start,
                     &options,
                     None,
+                    None,
                 );
             }
             return;
@@ -947,7 +948,10 @@ fn finish_collision(
         ),
     >,
     mut time: ResMut<Time<Virtual>>,
-    hold: Option<Res<LevelChangeHold>>,
+    (hold, created): (
+        Option<Res<LevelChangeHold>>,
+        Option<Res<exa_game::creator_screen::CreatedCharacter>>,
+    ),
 ) {
     if building.contains(pending.root) {
         if pending.since.elapsed() < STAGE_TIMEOUT {
@@ -990,6 +994,7 @@ fn finish_collision(
         &pending.start,
         &options,
         existing,
+        created.as_ref().and_then(|c| c.0.as_ref()),
     );
 }
 
@@ -997,7 +1002,9 @@ fn finish_collision(
 /// characters; the loading screen then waits for them to be dressed. On a
 /// level change `existing` is the player root that survived the teardown:
 /// its body, record and possessions stay, only the level's own characters
-/// are new.
+/// are new. `created` is the record the character creator committed, which
+/// a new player's body, skin, hair and name come from.
+#[allow(clippy::too_many_arguments)]
 fn spawn_players(
     commands: &mut Commands,
     loader: &mut ModelLoader,
@@ -1006,6 +1013,7 @@ fn spawn_players(
     start: &PlayStart,
     options: &Options,
     existing: Option<Entity>,
+    created: Option<&CharacterRecord>,
 ) {
     let (position, yaw) = (start.position, start.yaw);
     let races = game
@@ -1080,10 +1088,11 @@ fn spawn_players(
             ))
             .id()
     });
-    // The player has no record of its own: its body is as the model stores
-    // it, or morphed by `--physique`.
+    // The player's body: morphed by `--physique`, else by the record the
+    // character creator committed, else as the model stores it.
     let morph = options
         .physique
+        .or_else(|| created.map(Physique::of_record))
         .map(|p| exa_assets::BodyMorph::of_model(model::BODY_MODEL, p));
     let player_body = existing
         .is_none()
@@ -1095,13 +1104,20 @@ fn spawn_players(
         .then(|| loader.model(PackKind::Resource, model::BODY_MODEL))
         .flatten();
     if let (Some(player_body), Some(body)) = (player_body, duellist_body) {
-        // The player has no record: a human of the middle tone, its feral
-        // level and physique the command line's.
-        let player_record = CharacterRecord {
-            skin: exa_assets::human_skin::MIDDLE_TONE,
-            search_seed: 1,
-            feral: options.feral.unwrap_or(0.0),
-            ..CharacterRecord::default()
+        // The creator's record when one was committed; otherwise a human
+        // of the middle tone. The feral level is the command line's.
+        let player_record = match created {
+            Some(record) => CharacterRecord {
+                search_seed: 1,
+                feral: options.feral.unwrap_or(record.feral),
+                ..record.clone()
+            },
+            None => CharacterRecord {
+                skin: exa_assets::human_skin::MIDDLE_TONE,
+                search_seed: 1,
+                feral: options.feral.unwrap_or(0.0),
+                ..CharacterRecord::default()
+            },
         };
         let player_physique = morph.as_ref().map_or(Physique::NEUTRAL, |m| m.physique);
         let (player_look, player_composite) = character_skin(
@@ -1126,6 +1142,19 @@ fn spawn_players(
         ));
         if let Some(job) = player_composite {
             commands.entity(model).insert(job);
+        }
+        if let Some(record) = created {
+            info!(
+                "player: the created character {:?} (physique {:?}, skin {:?}, hair {})",
+                record.name, record.physique, record.skin, record.hair_style
+            );
+            commands.entity(model).insert((
+                Name::new(record.name.clone()),
+                exa_game::creator_view::hair_of(
+                    &player_record,
+                    exa_formats::races::of_character(&races, exa_character::HUMAN),
+                ),
+            ));
         }
         if !options.powers.is_empty() {
             info!("player knows powers: {:x?}", options.powers);

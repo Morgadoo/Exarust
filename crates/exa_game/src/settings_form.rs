@@ -366,14 +366,14 @@ fn rule_inks(palette: &SkinPalette, style: u32) -> [SkinInk; 4] {
 }
 
 /// The font a control's text uses and the texture size its quads sample.
-struct Text<'a> {
-    font: &'a GuiFont,
-    size: Option<(u16, u16)>,
+pub(crate) struct Text<'a> {
+    pub(crate) font: &'a GuiFont,
+    pub(crate) size: Option<(u16, u16)>,
 }
 
 /// Paints one record at `origin`, clipped to `clip`; a hidden record
 /// (0x110) is not drawn.
-fn paint_control(
+pub(crate) fn paint_control(
     c: &Control,
     origin: (i32, i32),
     unit: i32,

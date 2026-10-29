@@ -576,13 +576,18 @@ fn move_item(
 #[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PointerOverGui(pub bool);
 
-/// Sets [`PointerOverGui`] from the pointer and the open forms every frame.
+/// Sets [`PointerOverGui`] from the pointer and the open forms every frame;
+/// the character creator and its background picker fill the window.
 fn track_pointer(
     screens: Res<GameScreens>,
     windows: Query<&Window, With<PrimaryWindow>>,
     mut over: ResMut<PointerOverGui>,
+    creator: Option<Res<crate::creator_screen::CreatorScreen>>,
 ) {
-    over.0 = false;
+    over.0 = creator.is_some_and(|c| c.is_open());
+    if over.0 {
+        return;
+    }
     let Ok(window) = windows.single() else {
         return;
     };

@@ -1212,9 +1212,10 @@ selected row runs `menu_text` through `exa_ui::skin::SkinMode::MenuText`.
 its rows follow the end-session dispatch (`exa_ui::menu::dispatch_end_session`:
 mode, then row, then menu number): the next practice fight, practice's RESTART back to the menu form,
 the story respawn or exit, and the returns to the title behind the
-transition. The title's BEGIN starts Exarust's unknown background;
-the save character screen, creator and manual are not wired; SETTINGS
-opens the Settings form (`settings_form`).
+transition. The title's BEGIN opens the story's background picker and
+the creator (`creator_screen`), as do the practice rows, NEW CAREER and
+VERSUS; the saves' character screen (CONTINUE) and the manual are not
+wired; SETTINGS opens the Settings form (`settings_form`).
 
 ## Main menu screen
 
@@ -1307,9 +1308,31 @@ routines that were read from the original.
   scene (`preview_view`, `PREVIEW_*`), the ten-element table's words by
   game mode, the editors' places, the close (smoothing off, apparel
   refresh, child close, edit close), the drop record's release, the shared
-  change callback's steps and the mode-container drop. None of the
-  creation forms runs in the game yet: the menu's character screen is not
-  wired.
+  change callback's steps and the mode-container drop.
+- `creator_screen` runs the creator in the game: the menu's BEGIN opens
+  the background picker (`TClassSelect`'s cards from `startcharsxa.rfi`,
+  the chosen name and description), its confirm the creator for that
+  background; the practice rows, the in-game NEW GAME, NEW CAREER and
+  VERSUS open the free creator in their game modes. The form fills the
+  window and lays out the original's three record tables
+  (`exa_ui::creation_forms`) at unit 4, scaled to the live unit; the body
+  and hair editors, their pickers (physique cross and marker, the tone
+  field, the hair field and its shade, the attached gloss trackbar) and
+  the hair style list are painted with the shown palette and the line
+  skin, and their answers run the `create` callbacks into the record.
+  NEXT asks for a name and shows the equipment page (its panels drawn
+  empty), whose BEGIN or CREATE commits the record
+  (`write_created_record`): it is kept as `CreatedCharacter`, the old
+  player is dropped and the story or practice starts through the flow,
+  the level's player taking the record's physique, skin, hair and name.
+  BACK goes back a page or to the title. `--open-creator <mode>` opens it
+  once loaded. The arena career, versus lobby and recruit commits, the
+  power tree, voice previews and the kit lists are not wired.
+- `creator_view` is the creator's preview: an off-screen camera at the
+  preview's eye over `sgccflr01.rfc` with its own lights and the figure
+  built from the creator's record (body morphed by its physique, skin,
+  hair, underwear), rebuilt when the record changes, shown under the GUI
+  canvas in the viewport.
 
 ## Scene bodies and the live arena round
 

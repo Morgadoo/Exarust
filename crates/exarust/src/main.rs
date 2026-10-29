@@ -67,6 +67,8 @@
 //!          --sliding-doors            debug: sliding doors (portcullises) become bodies too; their lift is not reproduced
 //!          --debug-gui-form           open one empty GUI form through the draw skin's path
 //!          --open-settings <page>     once loaded, open the menu and the Settings form on its settings or controls page
+//!          --open-creator <mode>      once loaded, open the character creator: story (the background picker),
+//!                                     story:N (background N), practice, expert, arena, recruit or versus
 //!          --open-container FRAME     open the container nearest the player in its popup that many frames after the load
 //!          --debug-path x,y,z         play mode: plan a path from the player's feet to this point (metres) and draw it,
 //!                                     again whenever the player has moved a metre
@@ -273,6 +275,9 @@ pub struct Options {
     /// Open the menu and the Settings form on this page (0 Settings, 1
     /// Controls) once loaded.
     pub open_settings: Option<u8>,
+    /// Open the character creator in this mode once loaded
+    /// (`--open-creator`).
+    pub open_creator: Option<String>,
     /// Play mode: open the placed container nearest the player in its
     /// popup this many frames after the load (`--open-container`).
     pub open_container: Option<u32>,
@@ -674,6 +679,16 @@ fn main() -> AppExit {
                         return AppExit::from_code(2);
                     }
                 };
+            }
+            "--open-creator" => {
+                let word = args.next().unwrap_or_default();
+                if exa_game::creator_screen::CreatorEntry::parse(&word).is_none() {
+                    eprintln!(
+                        "--open-creator: story, story:N, practice, expert, arena, recruit or versus, not {word:?}"
+                    );
+                    return AppExit::from_code(2);
+                }
+                options.open_creator = Some(word);
             }
             "--open-container" => options.open_container = args.next().and_then(|v| v.parse().ok()),
             "--perf-log" => options.perf_log = args.next().and_then(|v| v.parse().ok()),
@@ -1111,6 +1126,10 @@ fn main() -> AppExit {
     })
     .insert_resource(exa_game::settings_form::OpenSettingsOnLoad {
         page: options.open_settings,
+        done: false,
+    })
+    .insert_resource(exa_game::creator_screen::OpenCreatorOnLoad {
+        word: options.open_creator.clone(),
         done: false,
     })
     .insert_resource(exa_game::gui_screens::DebugOpenContainer(

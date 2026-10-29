@@ -325,11 +325,14 @@ fn toggle(
     mut menu: ResMut<MenuScreen>,
     end: Option<Res<crate::end_menu_screen::EndMenuScreen>>,
     mut flow: Option<ResMut<Flow>>,
+    creator: Option<Res<crate::creator_screen::CreatorScreen>>,
 ) {
     if !keys.just_pressed(KeyCode::F1) {
         return;
     }
-    if end.is_some_and(|end| end.open) {
+    // The end menu and the character creator's setup forms keep the menu
+    // closed.
+    if end.is_some_and(|end| end.open) || creator.is_some_and(|c| c.is_open()) {
         return;
     }
     if menu.open {

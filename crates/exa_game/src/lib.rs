@@ -29,6 +29,8 @@ pub mod commands;
 pub mod container_fill;
 pub mod control_nodes;
 pub mod create;
+pub mod creator_screen;
+pub mod creator_view;
 pub mod cursor;
 pub mod destination;
 pub mod div_card_screen;
@@ -200,6 +202,8 @@ impl Plugin for GamePlugin {
             loadout_screen::LoadoutScreenPlugin,
             transition_screen::TransitionScreenPlugin,
             settings_form::SettingsFormPlugin,
+            creator_screen::CreatorScreenPlugin,
+            creator_view::CreatorViewPlugin,
         ))
         // Debug tools: idle unless their flags or keys turn them on.
         .add_plugins((

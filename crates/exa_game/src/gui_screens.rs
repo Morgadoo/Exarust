@@ -1910,7 +1910,7 @@ fn canvas_colour_at(
 
 /// A layer that clears the canvas over `rect` (blending off, a transparent
 /// ink), so what is under the canvas shows there.
-fn clear_layer(rect: GuiRect) -> exa_ui::gui_draw::GuiLayer {
+pub(crate) fn clear_layer(rect: GuiRect) -> exa_ui::gui_draw::GuiLayer {
     let mut batch = SkinBatch::new();
     batch.select(1, 0, false);
     batch.blend = exa_ui::gui_draw::BLEND_REPLACE;

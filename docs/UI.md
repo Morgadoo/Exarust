@@ -698,8 +698,23 @@ The original's own forms and controls that Exarust rebuilds, with the
   delete dialogs. The rules (gear
   filter, underwear pass, starting skills, experience budget, kit tables,
   page flow, save choice) are plain functions in the game crate with tests
-  pinned to concrete numbers. The form itself, its model preview, sound
-  playback and the painted power tree are not drawn yet.
+  pinned to concrete numbers. The form runs in the game
+  (`exa_game::creator_screen`, `exa_game::creator_view`): its seven
+  records (the centred CREATE CHARACTER title, NAME and its 16-byte text
+  field, HAIR, BACK at the bottom left and NEXT at the bottom right, both
+  164 × 28, and the hidden Recruitment: label), the body editor's twelve
+  (Male and Female in radio group 1, PHYSIQUE, the Height and Age
+  trackbars, SKIN TONE, VOICE at row 127 (113 compact), the voice's
+  previous, next and play image buttons around its letter, Pitch) and the
+  hair editor's seven (Straight and Wavy in group 2, the picker's gloss
+  trackbar at 0.25, Facial hair with its two buttons around the variant
+  letter), read from the constructors' 0x68-byte record arrays
+  (`exa_ui::creation_forms`). Height writes `(0.5 − v) · 2`, Age its
+  value, Pitch `v · 0.17 + 0.9`; the play button is throttled to 300
+  clock units. The preview's 3D view draws `sgccflr01.rfc` and the
+  record's body. The background picker draws the four cards and the
+  chosen background's name and description. Sound playback, the power
+  tree, the kit lists and the skills panel are not drawn yet.
 - **Technique selector** (`exa_ui::technique_selector`,
   `exa_game::techniques`): one skill's eight techniques, 332 × 112
   pixels, editing the record's six skills (an experience word and five
@@ -1054,8 +1069,11 @@ running game has: the resume, a practice start or restart, the story start
 (Exarust's unknown background), the story end-menu exit and the leave to
 the title, and it applies the flow's menu, end-menu, title-logo, interface,
 controls, health and music steps, and a level load or teardown becomes an
-in-process level change. The character screen, the creator, the manual, the
-settings form and the live save and export steps are not wired.
+in-process level change. The creator's rows (BEGIN through the
+background picker, the practice rows, NEW CAREER, VERSUS) open the
+creator, whose commit starts the story or practice session; the saves'
+character screen (CONTINUE), the manual and the live save and export
+steps are not wired.
 
 ### The window manager
 
