@@ -1077,3 +1077,19 @@ fn a_roots_link_iteration_count_follows_the_original() {
     limb.go_limp();
     assert_eq!(limb.link_iterations(), 10);
 }
+
+#[test]
+fn a_rigid_parts_node_triangles_reach_the_solver() {
+    let triangle = [
+        Vec3::new(0.0, 0.0, 0.0),
+        Vec3::new(0.2, 0.0, 0.0),
+        Vec3::new(0.0, 0.2, 0.0),
+    ];
+    let mut part = crate_at(Vec3::ZERO);
+    let bare = Ragdoll::rigid(&[part.clone()]);
+    assert_eq!(bare.part_triangles(0), None);
+    part.triangles = Some(std::sync::Arc::new(vec![triangle]));
+    let body = Ragdoll::rigid(&[part]);
+    assert_eq!(body.part_triangles(0), Some(&[triangle][..]));
+    assert_eq!(body.part_triangles(1), None);
+}
