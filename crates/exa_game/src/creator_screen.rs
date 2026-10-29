@@ -59,6 +59,7 @@ use exa_ui::gui_draw::{GuiFrames, GuiLayer, GuiTexture, GuiTextures, LayerTextur
 use exa_ui::gui_font::GuiFont;
 use exa_ui::gui_text::draw_line;
 use exa_ui::line_skin::shown_palette;
+use exa_ui::menu::MenuShow;
 use exa_ui::picker_fields::{Picker, physique_cross};
 use exa_ui::pickers::{FieldVertex, HairColPicker, PickPoint, TonePicker};
 use exa_ui::skin::{SkinBatch, SkinPalette};
@@ -1377,9 +1378,10 @@ fn open_screens(
         menu.close();
     }
     if let Some(steps) = steps.as_mut() {
-        // The menu hides and the player's controls are let go while a setup
-        // form is up.
+        // The menu's show: the menu hides and the world is torn down; the
+        // player's controls are let go while a setup form is up.
         steps.steps.push(crate::flow::Step::HideMenu);
+        steps.steps.push(crate::flow::Step::TeardownWorld);
         steps.steps.push(crate::flow::Step::Controls(false));
     }
     if let Some(textures) = textures.as_mut() {
@@ -1394,7 +1396,7 @@ fn open_screens(
             available,
         });
         if let Some(flow) = flow.as_mut() {
-            flow.phase = Phase::ClassSelect;
+            flow.phase = Phase::from_word(MenuShow::ClassSelect.state());
             flow.menu_open = false;
         }
     }
@@ -1425,7 +1427,12 @@ fn open_screens(
             hair_styles(game.as_deref()),
         ));
         if let Some(flow) = flow.as_mut() {
-            flow.phase = Phase::Creating;
+            // The show leaves the creator's session state and copies the
+            // game mode into the creator's.
+            flow.phase = Phase::from_word(MenuShow::Creator.state());
+            if MenuShow::Creator.copies_game_mode() {
+                flow.mode = crate::flow::Mode::from_word(entry.game_mode as u32);
+            }
             flow.menu_open = false;
         }
     }

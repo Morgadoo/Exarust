@@ -1,0 +1,6 @@
+- [x] The three record tables and their layout (exa_ui::creation_forms)
+- [x] The live creator and background picker: open from the menu, input, paint, commit (exa_game::creator_screen)
+- [x] The preview's 3D view over the creation floor (exa_game::creator_view)
+- [x] The player's spawn takes the committed record (exarust)
+- [x] `--open-creator` and docs/DEBUGGING.md, docs/UI.md, crate READMEs
+- [x] fmt, clippy -D warnings, tests
