@@ -19,8 +19,8 @@ use crate::part::PartState;
 use crate::sector::Bounds;
 
 use super::{
-    LIMP_PIVOT_SLACK, Link, Pairing, Part, Ragdoll, Sleep, WorldLink, pairs, setup_smoothing,
-    tree_orders, world_link,
+    LIMP_PIVOT_SLACK, Link, Pairing, Part, Ragdoll, Sleep, SphereGrid, WorldLink, pairs,
+    setup_smoothing, tree_orders, world_link,
 };
 
 /// The gravity shares a built or stored body's point masses give, as the
@@ -132,6 +132,7 @@ impl Part {
             gravity: gravity_shares(s.point_masses),
             spheres: s.spheres.clone(),
             triangles: None,
+            sphere_grid: SphereGrid::build(&s.spheres).map(std::sync::Arc::new),
             pairing: {
                 let mut pairing = Pairing::new(&rest, &rest_inverse, &s.spheres, s.mobility);
                 if let Some(mesh) = s.mesh {

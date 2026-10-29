@@ -1020,12 +1020,18 @@ fn collide(pa: &mut Part, pb: &mut Part, pair: &mut Pair, touch: &mut Touch, pla
         pb.pairing.sphere
     };
     let (mesh_centre, mesh_half, mesh_radius) = (bound.centre, bound.half, bound.radius);
-    // The fallback's sphere list is copied only when the mesh is absent.
+    // The fallback's sphere list is taken out of B only when the mesh is
+    // absent (and put back at the end), with its grid when it has one.
     let spheres = if triangles.is_none() {
-        pb.spheres.clone()
+        std::mem::take(&mut pb.spheres)
     } else {
         Vec::new()
     };
+    let grid = triangles
+        .is_none()
+        .then(|| pb.sphere_grid.clone())
+        .flatten();
+    let mut near: Vec<u32> = Vec::new();
     for i in 0..pa.spheres.len() {
         let (c, r) = pa.spheres[i];
         let start = previous.transform_point3(c);
@@ -1077,27 +1083,69 @@ fn collide(pa: &mut Part, pb: &mut Part, pair: &mut Pair, touch: &mut Touch, pla
             }
             continue;
         }
-        // The sphere fallback: B's stored spheres where the mesh would be.
-        for &(cb, rb) in &spheres {
-            let hit = if swept {
-                swept_on_sphere(start, end, r, cb, rb)
+        // The sphere fallback: B's stored spheres where the mesh would be,
+        // in their order. With a grid only the spheres that can touch are
+        // visited (still in order), and after a push that moved the sphere
+        // the rest are looked up again from where it now is.
+        let mut from = 0usize;
+        loop {
+            let (lo, hi) = if swept {
+                (
+                    start.min(end) - Vec3::splat(r),
+                    start.max(end) + Vec3::splat(r),
+                )
             } else {
-                sphere_on_sphere(end, r, cb, rb)
+                (end - Vec3::splat(r), end + Vec3::splat(r))
             };
-            let Some((q, delta)) = hit else {
-                continue;
+            let listed = grid
+                .as_ref()
+                .is_some_and(|g| g.candidates(lo, hi, &mut near));
+            let mut moved_at = None;
+            let test = |j: usize,
+                            pa: &mut Part,
+                            pb: &mut Part,
+                            pair: &mut Pair,
+                            touch: &mut Touch,
+                            end: Vec3| {
+                let (cb, rb) = spheres[j];
+                let hit = if swept {
+                    swept_on_sphere(start, end, r, cb, rb)
+                } else {
+                    sphere_on_sphere(end, r, cb, rb)
+                };
+                let (q, delta) = hit?;
+                Some(match placed {
+                    Some(a_placed) => {
+                        on_placed_hit(pa, pb, a_placed, &b_now, c, q, delta, pair, touch)
+                    }
+                    None => on_hit(pa, pb, &b_now, c, q, delta, pair, touch),
+                })
             };
-            let took = match placed {
-                Some(a_placed) => on_placed_hit(pa, pb, a_placed, &b_now, c, q, delta, pair, touch),
-                None => on_hit(pa, pb, &b_now, c, q, delta, pair, touch),
-            };
-            if took {
-                // Later spheres see where the push left both parts.
-                a_now = pa.transform();
-                b_now = pb.transform();
-                end = (b_now.inverse() * a_now).transform_point3(c);
+            if listed {
+                for &j in near.iter().filter(|&&j| j as usize >= from) {
+                    if test(j as usize, pa, pb, pair, touch, end) == Some(true) {
+                        moved_at = Some(j as usize);
+                        break;
+                    }
+                }
+            } else {
+                for j in from..spheres.len() {
+                    if test(j, pa, pb, pair, touch, end) == Some(true) {
+                        moved_at = Some(j);
+                        break;
+                    }
+                }
             }
+            let Some(j) = moved_at else { break };
+            // Later spheres see where the push left both parts.
+            a_now = pa.transform();
+            b_now = pb.transform();
+            end = (b_now.inverse() * a_now).transform_point3(c);
+            from = j + 1;
         }
+    }
+    if triangles.is_none() {
+        pb.spheres = spheres;
     }
 }
 
