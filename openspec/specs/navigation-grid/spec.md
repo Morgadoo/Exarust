@@ -30,6 +30,7 @@ The system SHALL fill a column from voxel 0 to the terrain's height at the cell 
 - **WHEN** vertex 8 of a terrain row is a hole
 - **THEN** a cell centre between vertices 7 and 8 still has ground and one between 8 and 9 has none
 
+
 ### Requirement: Generated floor points
 The system SHALL generate tile-grid floors' points as the original does: the highest upward face over each 10 cm column marks the 10 cm cell whose top is the nearest 10 cm boundary to it, and every 20 cm cube on the world's 20 cm lattice whose four columns all mark it gets a point at its centre.
 
@@ -68,7 +69,7 @@ The system SHALL build the grid when a level finishes loading, from what is unde
 
 #### Scenario: Shipped levels
 - **WHEN** the grids of arena, arenao1 and exanima01 are built from the installation
-- **THEN** arena has 1935 floor cells, arenao1 14677 lower and 3657 upper, exanima01 219292 lower and 792 upper, and exanima01's start reaches its stair room's foot a metre lower
+- **THEN** arena has 1956 lower and 10 upper floor cells, arenao1 14677 lower and 3678 upper, exanima01 220850 lower and 2279 upper; exanima01's start reaches 46113 cells, its closed doors keeping it from the stair room, and on the floors as built it reaches 195049 cells including the stair room's foot a metre lower
 
 ### Requirement: Terrain blocks in the grid
 The system SHALL fill the grid's terrain a 6 m block at a time over the blocks the level's terrain builds: in a level with a tile grid only those whose grid cell carries the terrain flag, otherwise every block of every tile. A block's 20 × 20 cells SHALL take the ground's height where a whole-tile fill takes it, and an absent block SHALL leave its cells without terrain.
@@ -313,3 +314,21 @@ The system SHALL answer pathfinder queries through the level's grid once it is b
 #### Scenario: Level without a grid
 - **WHEN** a level has no navigation grid
 - **THEN** the look-ahead is never blocked and a snap leaves the point as it was
+
+### Requirement: Meshes with bodies in the stamp
+A mesh whose node carries a rigid body SHALL mark no voxel unless its node is level geometry (a prop placed static, or the root of a placed object with the static bits).
+
+#### Scenario: A loose sack
+- **WHEN** a sack placed loose stands on a corridor floor
+- **THEN** its points mark no voxel, and the same sack placed static marks its voxels
+
+### Requirement: Moving props raise floors
+Once the layers are written and before the cost passes, every mesh with GI points whose node carries a rigid body SHALL raise the floors under it, level geometry or not: each point, in world space, rounded to its cell and voxel as the mover refresh rounds a sample, inside cells 1 to W − 3 and D − 3 and voxels 0 to 254, raises its cell's current floors one point after another by the refresh's rule. The floors as built SHALL stay.
+
+#### Scenario: A closed door
+- **WHEN** a door leaf's points stand one voxel apart up its doorway, lowest first
+- **THEN** the doorway's lower floor rises to the leaf's top and its floor as built stays
+
+#### Scenario: A point high over the floor
+- **WHEN** a point lies fifteen voxels or more over a cell's lower floor
+- **THEN** it raises the cell's upper floor when that is missing

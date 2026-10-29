@@ -55,11 +55,15 @@ The system SHALL decode the object-database objects a level places and spawn eac
 - **THEN** the level's placed objects appear, and none of their models are missing
 
 ### Requirement: Placement transform records
-The system SHALL apply a placed prop's or object's transform records before it spawns and registers its bodies: each replaces its node's local transform and applies its nested records to that node's children. A record SHALL find its node from the node it applies to (the object's root at the top level): that node for an empty name, else its first direct child whose name matches exactly; a record whose node is missing SHALL be skipped with its nested records.
+The system SHALL apply a placed prop's or object's transform records before its bodies register: each is its node's frame in the level, taken into the node's local transform from its parent's frame at the placement, then its nested records apply to that node's children. A record SHALL find its node from the one it applies to (the root at the top level): that node for an empty name, else its first direct child of exactly that name, and is skipped with its nested ones when that node is missing.
 
 #### Scenario: First story level
 - **WHEN** `exanima01.rfc`'s props are read against their objects
 - **THEN** every record finds its node and some transform records carry nested ones
+
+#### Scenario: A wall ring
+- **WHEN** a wall ring placed turned half round has a record putting the ring 10 cm along the model's z from the placement
+- **THEN** the ring's local transform is 10 cm along z and its frame in the level is the record's
 
 ### Requirement: Placement position records
 The system SHALL apply a placement's position record to a mesh node when its count is the node's position-stream count, rebuilding the object's model with the new elements and normals recomputed from them.
