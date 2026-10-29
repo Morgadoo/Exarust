@@ -2503,7 +2503,7 @@ impl Flow {
             delayed: false,
             start_ms: now.wrapping_add(WAKE_DELAY_MS),
         };
-        let mut steps = Vec::new();
+        let mut steps = vec![Step::ClosePrelude];
         if self.mode.is_game() {
             steps.push(Step::Save {
                 drop_on_low_health: false,
@@ -4038,9 +4038,10 @@ mod tests {
                 .any(|step| matches!(step, Step::Wake(WakePose { flags: 0x40, .. })))
         );
         assert_eq!(flow.story.wake.start_ms, 8101);
-        // The revival saves the story first.
+        // The revival closes the prelude, then saves the story.
+        assert_eq!(steps.first(), Some(&Step::ClosePrelude));
         assert_eq!(
-            steps.first(),
+            steps.get(1),
             Some(&Step::Save {
                 drop_on_low_health: false
             })
@@ -4181,6 +4182,31 @@ mod tests {
                 clock: Some(ClipClock::Push(2000)),
             }
         );
+    }
+
+    #[test]
+    fn the_revive_closes_the_prelude_and_wakes_the_player() {
+        let mut flow = Flow {
+            mode: Mode::Story,
+            phase: Phase::Ended,
+            hook: Hook::Knockout,
+            ..Default::default()
+        };
+        let steps = flow.revive(4000);
+        assert!(steps.contains(&Step::ClosePrelude));
+        assert!(steps.contains(&Step::Save {
+            drop_on_low_health: false
+        }));
+        assert!(steps.contains(&Step::Controls(true)));
+        assert!(steps.contains(&Step::GameGui(true)));
+        assert!(steps.contains(&Step::Wake(WakePose::revived())));
+        assert!(steps.contains(&Step::Hook(Hook::Story)));
+        assert_eq!(flow.phase, Phase::Playing);
+        // The wake-up animation is watched from two seconds on.
+        assert!(flow.story.wake.animating);
+        assert!(!flow.story.wake.getting_up);
+        assert!(!flow.story.wake.delayed);
+        assert_eq!(flow.story.wake.start_ms, 6000);
     }
 
     #[test]
