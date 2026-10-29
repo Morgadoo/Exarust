@@ -70,6 +70,11 @@ use crate::panel_live::Panel;
 /// layers the lights' shadow links hand out (one a light from 3), so no
 /// scene camera and no other off-screen scene sees it. Exarust's choice.
 pub const DOLL_LAYER: usize = 4096;
+/// The view's render layers. Bevy's `const` constructor only takes the
+/// layers of its inline block (under 64), so the set is built at run time.
+pub fn doll_layers() -> RenderLayers {
+    RenderLayers::from_layers(&[DOLL_LAYER])
+}
 /// Where the figure stands, metres: far below any level, so nothing of the
 /// world is near it.
 pub const DOLL_ORIGIN: Vec3 = Vec3::new(0.0, -1000.0, 0.0);
@@ -339,7 +344,7 @@ fn spawn_scene(
     image.texture_descriptor.usage =
         TextureUsages::TEXTURE_BINDING | TextureUsages::RENDER_ATTACHMENT;
     let image = images.add(image);
-    let layer = RenderLayers::layer(DOLL_LAYER);
+    let layer = doll_layers();
     let camera_at = camera_transform();
     let [r, g, b, a] = backdrop;
     let camera = commands
@@ -597,7 +602,7 @@ fn tag_doll_parts(
     let Some(figure) = doll.scene.as_ref().and_then(|scene| scene.figure) else {
         return;
     };
-    let layer = RenderLayers::layer(DOLL_LAYER);
+    let layer = doll_layers();
     for entity in std::iter::once(figure).chain(children.iter_descendants(figure)) {
         if meshes.contains(entity) {
             commands.entity(entity).insert((
