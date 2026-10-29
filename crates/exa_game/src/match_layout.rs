@@ -821,13 +821,14 @@ pub fn stand_rematch(
 }
 
 /// Spread and start angle of one side, the same split [`bracket_layout`]
-/// uses: the spread is `f32((n − 1)/(n + 1) · 2)`, the start is computed in
-/// double as `g/G · 6 − f64(f32(spread · 0.5))` and narrowed once, then the
-/// spread is divided in single precision.
+/// uses. The spread ratio is the only double arithmetic: `f32((n − 1) /
+/// (n + 1) · 2)`, computed in double and narrowed. The start is all single
+/// precision — `g/G · 6 − spread · 0.5` — and the spread is then divided in
+/// single for more than one member.
 fn side_spread(side: usize, sides: usize, members: usize) -> (f32, f32) {
     let count = members as i64;
-    let mut spread = ((count - 1) as f64 / (count + 1) as f64 * 2.0) as f32;
-    let start = (side as f64 / sides as f64 * 6.0 - f64::from(spread * 0.5)) as f32;
+    let mut spread = (((count - 1) as f64 / (count + 1) as f64) * 2.0) as f32;
+    let start = (side as f32 / sides as f32) * 6.0 - spread * 0.5;
     if count > 1 {
         spread /= (count - 1) as f32;
     }
@@ -1340,16 +1341,16 @@ mod tests {
         );
     }
 
-    /// The start angle is `g/G · 6` in double less the f32 half spread
-    /// widened, narrowed once: team 1 of 5 with 3 members starts at the
-    /// f32 of 0.7, which the all-f32 product would miss.
+    /// The spread ratio is double and narrowed, but the start is all
+    /// single: team 1 of 5 with 3 members starts at
+    /// `(1/5 · 6) − 1 · 0.5` in f32, which is the `f32` just over 0.7.
     #[test]
-    fn a_side_starts_at_the_double_angle_narrowed_once() {
+    fn a_side_start_is_all_single_precision() {
         let (spread, start) = side_spread(1, 5, 3);
         assert_eq!(spread, 0.5);
-        assert_eq!(start.to_bits(), 0.7f32.to_bits());
+        assert_eq!(start.to_bits(), 0x3f33_3334);
         let (_, one) = side_spread(1, 5, 1);
-        assert_eq!(one.to_bits(), 1.2f32.to_bits());
+        assert_eq!(one.to_bits(), 0x3f99_999a);
     }
 
     /// The AI clocks add with the 32-bit clock's wrap, not at the maximum.
