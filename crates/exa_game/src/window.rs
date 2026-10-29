@@ -209,6 +209,35 @@ pub fn fullscreen_mode(
         })
 }
 
+/// The title and text the original reports (level 4, the on-screen
+/// overlay and the log file) when the display refuses the full-screen
+/// window's mode; the desktop's size is kept.
+pub const DISPLAY_MODE_REFUSED: (&str, &str) = ("Error", "Display mode not supported.");
+
+/// Whether [`fullscreen_mode`] falls back to the desktop's size because the
+/// display does not list the settings' size: the case the original reports
+/// with [`DISPLAY_MODE_REFUSED`]. Exarust takes a mode the display does not
+/// list as refused, where the original asks the driver.
+pub fn display_mode_refused(
+    screen_size: (i32, i32),
+    desktop: Option<UVec2>,
+    modes: &[VideoMode],
+) -> bool {
+    let Some(desktop) = desktop else {
+        return false;
+    };
+    let (width, height) = screen_size;
+    let differs = (width != 0 && width as i64 != i64::from(desktop.x))
+        || (height != 0 && height as i64 != i64::from(desktop.y));
+    if !differs {
+        return false;
+    }
+    !matches!(
+        fullscreen_mode(screen_size, Some(desktop), modes),
+        WindowMode::Fullscreen(..)
+    )
+}
+
 /// Where a framed window goes inside a work area.
 ///
 /// `outer` is the window's size with its borders and caption (the original
@@ -446,6 +475,19 @@ impl PointerClip {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_size_the_display_does_not_list_is_reported() {
+        let desktop = Some(UVec2::new(1920, 1080));
+        let modes = [video(1280, 720, 60), video(1920, 1080, 60)];
+        assert!(!display_mode_refused((0, 0), desktop, &modes));
+        assert!(!display_mode_refused((1920, 1080), desktop, &modes));
+        assert!(!display_mode_refused((1280, 720), desktop, &modes));
+        assert!(display_mode_refused((1024, 768), desktop, &modes));
+        assert!(display_mode_refused((-5, 768), desktop, &modes));
+        assert!(!display_mode_refused((1024, 768), None, &modes));
+        assert_eq!(DISPLAY_MODE_REFUSED.1, "Display mode not supported.");
+    }
 
     #[test]
     fn a_full_screen_window_minimises_when_deactivated() {

@@ -366,6 +366,33 @@ pub const OS_ERROR_LEVEL: i32 = 5;
 /// The longest system text the report holds, in bytes.
 pub const OS_ERROR_TEXT_MAX: usize = 256;
 
+/// The title and text the save writer reports (level 4) when it cannot
+/// open or create a package file, before the operating-system report.
+pub const PACKAGE_CREATE_FAILED: (&str, &str) = ("IO Error", "Failed to create package file.");
+
+/// The system's text for an I/O error: its description without the
+/// trailing `" (os error N)"` the standard library adds.
+pub fn system_error_text(error: &std::io::Error) -> String {
+    let text = error.to_string();
+    match text.rfind(" (os error ") {
+        Some(at) if text.ends_with(')') => text[..at].to_string(),
+        _ => text,
+    }
+}
+
+/// The two log lines of a package file the save writer cannot create, as
+/// the original logs them: [`PACKAGE_CREATE_FAILED`], then the forced
+/// operating-system report ([`os_error_report`]), each as an overlay line.
+pub fn package_create_failure(error: &std::io::Error) -> Vec<String> {
+    let (title, text) = PACKAGE_CREATE_FAILED;
+    let mut lines = vec![overlay_text(title, text)];
+    let code = error.raw_os_error().unwrap_or(0);
+    if let Some((_, system)) = os_error_report(code, true, &system_error_text(error)) {
+        lines.push(overlay_text(OS_ERROR_TITLE, &system));
+    }
+    lines
+}
+
 /// The original's report of the last operating-system error: nothing when
 /// there is no error code and the caller does not force it, else a level-5
 /// message titled [`OS_ERROR_TITLE`] carrying the system's text for the
@@ -885,6 +912,21 @@ mod tests {
         assert_eq!(LogPresentation::for_level(6), LogPresentation::MessageBox);
         assert!(MINIMUM_REQUIREMENTS_TEXT.starts_with("This system does not meet"));
         assert!(MINIMUM_REQUIREMENTS_TEXT.contains("requirements to run Exanima."));
+    }
+
+    #[test]
+    fn a_package_file_that_cannot_be_created_logs_two_lines() {
+        let error = std::io::Error::from_raw_os_error(13);
+        let lines = package_create_failure(&error);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0], "IO Error : Failed to create package file.");
+        assert!(lines[1].starts_with("Windows Error : "));
+        assert!(!lines[1].contains("os error"));
+        let custom = std::io::Error::other("disk full");
+        assert_eq!(
+            package_create_failure(&custom)[1],
+            "Windows Error : disk full"
+        );
     }
 
     #[test]

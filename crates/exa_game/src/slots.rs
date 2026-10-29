@@ -325,14 +325,21 @@ impl Slots {
         let bytes = match fs::read(path) {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                fs::OpenOptions::new()
+                if let Err(error) = fs::OpenOptions::new()
                     .write(true)
                     .create(true)
                     .truncate(false)
-                    .open(path)?;
+                    .open(path)
+                {
+                    report_create_failure(&error);
+                    return Err(error);
+                }
                 Vec::new()
             }
-            Err(error) => return Err(error),
+            Err(error) => {
+                report_create_failure(&error);
+                return Err(error);
+            }
         };
         Ok(PackageImage::open(&bytes))
     }
@@ -969,6 +976,14 @@ impl Slots {
             }
         }
         Ok(removed)
+    }
+}
+
+/// Logs a package file the writer cannot open or create, as the original
+/// does (`frame::package_create_failure`).
+fn report_create_failure(error: &io::Error) {
+    for line in crate::frame::package_create_failure(error) {
+        bevy::log::warn!("{line}");
     }
 }
 

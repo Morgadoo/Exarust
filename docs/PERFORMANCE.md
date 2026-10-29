@@ -86,6 +86,14 @@ event-driven winit loop.
   shows it when Bevy's renderer finds no usable adapter, through `zenity`
   or `kdialog`, else on standard error (always on standard error in an
   unattended run).
+- **Reported failures.** A full-screen size the display refuses is logged
+  as "Error : Display mode not supported." (level 4) and the desktop's size
+  is kept; Exarust logs it when the settings' `ScreenWidth`/`ScreenHeight`
+  differ from the desktop's and the display does not list that size. A
+  save package file that cannot be opened or created logs "IO Error :
+  Failed to create package file." and then the operating system's text
+  for the error as "Windows Error : …" (level 5, always reported);
+  Exarust logs both lines as warnings (`exa_game::slots`).
 - **Pointer warps and drags.** When the game moves the pointer itself it
   holds the position it reads at the target for the next four pointer
   moves, putting the pointer back when a move lands 41 pixels or more away
