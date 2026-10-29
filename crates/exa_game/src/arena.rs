@@ -1677,8 +1677,9 @@ pub fn resolve_tournament(
         };
     }
     if champion.1 > 2 && !tie {
-        let first = tally.first().map(|(id, _)| *id).unwrap_or(0);
-        if let Some(company) = companies.get(first.saturating_sub(2) as usize) {
+        // The week is worn by the winning team's company, not by whichever
+        // team was tallied first.
+        if let Some(company) = companies.get(champion.0.saturating_sub(2) as usize) {
             state.week_won[week as usize] = *company as u32 + 2;
         }
     }
@@ -1774,6 +1775,21 @@ mod roster_tests {
     fn a_company_win_records_its_team() {
         let mut rows = [row(1, 0); 6];
         for (row, team) in rows.iter_mut().zip([2, 2, 2, 1, 3, 4]) {
+            row.team_id = team;
+        }
+        let companies = [15, 17, 4, 1, 13, 9, 5, 14, 8, 6, 11, 2, 18, 3, 19, 10];
+        let mut state = SeasonState::default();
+        let result = resolve_tournament(&rows, 7, &companies, &mut state, |_| {});
+        assert_eq!(result.champion, None);
+        assert_eq!(state.week_won[1], 15 + 2);
+    }
+
+    #[test]
+    fn a_rival_week_wears_the_winning_teams_company() {
+        // Team 3 is tallied first; team 2 wins three events, so the week
+        // records the company of team 2 (the field's first entry).
+        let mut rows = [row(1, 0); 6];
+        for (row, team) in rows.iter_mut().zip([3, 2, 2, 2, 4, 5]) {
             row.team_id = team;
         }
         let companies = [15, 17, 4, 1, 13, 9, 5, 14, 8, 6, 11, 2, 18, 3, 19, 10];
