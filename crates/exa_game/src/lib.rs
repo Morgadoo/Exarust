@@ -32,6 +32,7 @@ pub mod create;
 pub mod cursor;
 pub mod destination;
 pub mod div_card_screen;
+pub mod doll_view;
 pub mod drag;
 pub mod effects;
 pub mod emblem;
@@ -153,7 +154,11 @@ impl Plugin for GamePlugin {
             balance::BalancePlugin,
             fall::FallPlugin,
             (footprints::FootprintPlugin, character_voice::CharacterVoicePlugin),
-            (cursor::CursorPlugin, char_view::CharViewPlugin),
+            (
+                cursor::CursorPlugin,
+                char_view::CharViewPlugin,
+                doll_view::DollViewPlugin,
+            ),
             (
                 hand::HandPlugin,
                 idle_orbit::IdleOrbitPlugin,

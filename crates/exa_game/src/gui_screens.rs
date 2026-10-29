@@ -197,9 +197,11 @@ pub fn store_record(section: &mut exa_formats::containers::Container, record: &C
         .collect();
 }
 
-/// The class of the inventory's second record, whose draw and behaviour are
-/// not located; it is kept for its place in the record order.
-pub const UNLOCATED_CLASS: u16 = 0xac01;
+/// The class of the inventory's second record: the item GUI's rating-dots
+/// control (the first of the five it registers, sized 0 × 24), which the
+/// inventory fills with ten times the shown body's encumbrance
+/// ([`crate::doll_view`]).
+pub const RATING_DOTS_CLASS: u16 = 0xac01;
 
 /// The unit the layout pass is given (it reads it only for a first record's
 /// unit anchor and for trackbars, which these screens have none of).
@@ -220,16 +222,16 @@ fn button_record(x: i32, y: i32, w: i32, text: &str) -> Control {
 }
 
 /// The inventory constructor's three records, as stored: the Encumbrance
-/// label, the unlocated control beside it and the Primary button.
+/// label, the rating dots beside it and the Primary button.
 fn inventory_records() -> Vec<Control> {
     let mut label = Control::new(5, 4, INVENTORY_LABEL_ROW, 12, 28);
     label.style = 0;
     label.text = b"Encumbrance:".to_vec();
-    let unlocated = Control::new(UNLOCATED_CLASS, 100, -0x8000, 12, 28);
+    let dots = Control::new(RATING_DOTS_CLASS, 100, -0x8000, 12, 28);
     // The button's x is stored as a plain 4 and its y as an anchor of eight
     // rows below the record above.
     let primary = button_record(4, -0x7ff8, 108, "Primary");
-    vec![label, unlocated, primary]
+    vec![label, dots, primary]
 }
 
 /// The height the inventory constructor leaves the character view short of
@@ -857,6 +859,9 @@ impl GameScreens {
                 self.pack.unit = self.inventory_unit;
                 self.pack.icon_size = exa_items::icon_cache::icon_size(self.inventory_unit);
                 self.pack.client = (layout.pack.width(), layout.pack.height());
+                // The pack's linked panel is the character view: a drag
+                // onto the figure leaves the pack without losing its bulk.
+                self.pack.linked = Some(crate::doll_view::DOLL_PANEL);
                 self.containers.open(tagged_container(self.player));
                 self.push(GameScreen::Inventory, GuiRect::new(x, y, width, height));
             }
@@ -1789,10 +1794,12 @@ pub fn panel_client(rect: GuiRect) -> GuiRect {
 }
 
 /// The inventory's frame, its character view's panel, the item pack's panel
-/// with its entries' icons (when the panel's icon atlas holds them) and the
-/// Encumbrance label and Primary button records, laid out at the unit the
-/// window was opened at ([`InventoryLayout`]). The character view's figure
-/// and the unlocated record are not drawn.
+/// with its entries' icons (when the panel's icon atlas holds them), the
+/// Encumbrance label, its rating dots and the Primary button record, laid
+/// out at the unit the window was opened at ([`InventoryLayout`]). When the
+/// view draws its figure, the canvas is cleared over the view so the
+/// figure's node shows through, and the colour the canvas had at the
+/// view's centre comes back as the backdrop the view's camera clears to.
 fn paint_inventory(
     bounds: GuiRect,
     layout: &InventoryLayout,
@@ -1800,7 +1807,8 @@ fn paint_inventory(
     textures: &GuiTextures,
     items: &Container,
     icons: Option<&mut PanelIcons>,
-) -> gui_paint::Painted {
+    doll: Option<&crate::doll_view::DollPaint>,
+) -> (gui_paint::Painted, Option<[u8; 4]>) {
     let palette = gui_paint::palette();
     let level = exa_ui::gui_font::level_for_unit(unit);
     let (font, size) = screen_font(exa_ui::gui_font::gui_level(level).main, textures);
@@ -1809,16 +1817,23 @@ fn paint_inventory(
     let mut painted = gui_paint::paint_frame(&frame, &palette, &font, size);
     // The character view is a child form: its frame is drawn with the
     // words the constructor gives it.
-    let doll = gui_paint::paint_panel(
+    let doll_panel = gui_paint::paint_panel(
         layout.doll_at(bounds),
         unit,
         &palette,
         gui_paint::DOLL_ATTRIBUTES,
         gui_paint::PACK_STYLE,
     );
-    for layer in doll.layers {
+    for layer in doll_panel.layers {
         painted.push(layer);
     }
+    let view = crate::doll_view::view_rect(layout.doll_at(bounds), DOLL_BORDER);
+    let backdrop = doll.filter(|doll| doll.punch).map(|_| {
+        let centre = ((view.left + view.right) / 2, (view.top + view.bottom) / 2);
+        let backdrop = canvas_colour_at(&painted.layers, textures, centre);
+        painted.push(clear_layer(view));
+        backdrop
+    });
     let pack = layout.pack_at(bounds);
     let panel = gui_paint::paint_panel(
         pack,
@@ -1847,7 +1862,60 @@ fn paint_inventory(
     }
     let controls = layout.controls_at(bounds);
     paint_controls(&controls, unit, &palette, &font, size, &mut painted);
-    painted
+    // The rating dots draw in the label group's seventh ink.
+    if let Some(doll) = doll
+        && let (Some(value), Some(sheet)) = (doll.dots, doll.sheet)
+        && let Some(record) = controls
+            .iter()
+            .find(|control| control.class == RATING_DOTS_CLASS)
+        && let Some(layer) = crate::doll_view::rating_dots_layer(
+            sheet,
+            value,
+            (record.x, record.y, record.h),
+            unit,
+            palette.text[7],
+        )
+    {
+        painted.push(layer);
+    }
+    (painted, backdrop)
+}
+
+/// The colour the layers leave at one window pixel, straight alpha: the
+/// layers rasterised into a one-pixel canvas moved onto that pixel.
+fn canvas_colour_at(
+    layers: &[exa_ui::gui_draw::GuiLayer],
+    textures: &GuiTextures,
+    at: (i32, i32),
+) -> [u8; 4] {
+    let mut frame = exa_ui::gui_draw::GuiFrame::new();
+    for layer in layers {
+        let mut layer = layer.clone();
+        gui_paint::offset_batch(&mut layer.batch, -at.0, -at.1);
+        if let Some(clip) = &mut layer.clip {
+            clip[0] -= at.0;
+            clip[1] -= at.1;
+        }
+        frame.push(layer);
+    }
+    let pixel = exa_ui::gui_draw::rasterise(&[frame], textures, 1, 1);
+    [pixel[0], pixel[1], pixel[2], pixel[3]]
+}
+
+/// A layer that clears the canvas over `rect` (blending off, a transparent
+/// ink), so what is under the canvas shows there.
+fn clear_layer(rect: GuiRect) -> exa_ui::gui_draw::GuiLayer {
+    let mut batch = SkinBatch::new();
+    batch.select(1, 0, false);
+    batch.blend = exa_ui::gui_draw::BLEND_REPLACE;
+    batch.set_ink([0, 0, 0, 0]);
+    batch.begin();
+    batch.vertex(rect.left as f32, rect.top as f32);
+    batch.vertex(rect.left as f32, rect.bottom as f32);
+    batch.vertex(rect.right as f32, rect.bottom as f32);
+    batch.vertex(rect.right as f32, rect.top as f32);
+    batch.end_quads();
+    exa_ui::gui_draw::GuiLayer::new(batch, exa_ui::gui_draw::LayerTexture::None)
 }
 
 /// The journal's frame, its New and Erase button records and the selected
@@ -2066,6 +2134,7 @@ fn paint_container_popup(
 }
 
 /// Draws the open screens and the debug form into the GUI's queue.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_screens(
     screens: Res<GameScreens>,
     mut icons: ResMut<PanelIcons>,
@@ -2074,6 +2143,7 @@ pub(crate) fn draw_screens(
     textures: Option<Res<GuiTextures>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     mut frames: ResMut<GuiFrames>,
+    mut doll: Option<ResMut<crate::doll_view::InventoryDoll>>,
 ) {
     frames.clear();
     if menu.is_some_and(|menu| menu.open) {
@@ -2092,14 +2162,28 @@ pub(crate) fn draw_screens(
         };
         let bounds = form.bounds();
         let painted = match screen.kind {
-            GameScreen::Inventory => paint_inventory(
-                bounds,
-                &screens.inventory_layout(),
-                unit,
-                textures,
-                &screens.pack,
-                Some(&mut icons),
-            ),
+            GameScreen::Inventory => {
+                let paint = doll.as_deref().map(|doll| crate::doll_view::DollPaint {
+                    punch: doll.scene.is_some(),
+                    dots: doll.dots,
+                    sheet: doll.sheet.as_ref(),
+                });
+                let (painted, backdrop) = paint_inventory(
+                    bounds,
+                    &screens.inventory_layout(),
+                    unit,
+                    textures,
+                    &screens.pack,
+                    Some(&mut icons),
+                    paint.as_ref(),
+                );
+                if let (Some(backdrop), Some(doll)) = (backdrop, doll.as_deref_mut())
+                    && doll.backdrop != backdrop
+                {
+                    doll.backdrop = backdrop;
+                }
+                painted
+            }
             GameScreen::Journal => paint_journal(
                 bounds,
                 &screens.journal,
@@ -2144,7 +2228,14 @@ mod tests {
         let place = |c: &Control| (c.x - left, c.y - top, c.w, c.h);
         assert_eq!(controls[0].class, 5);
         assert_eq!((place(&controls[0]).0, place(&controls[0]).1), (4, 386));
-        assert_eq!(controls[1].class, UNLOCATED_CLASS);
+        assert_eq!(controls[1].class, RATING_DOTS_CLASS);
+        // The rating dots sit on the label's row, 100 in, 12 × 28: their
+        // 22-pixel dots draw 3 below its top.
+        assert_eq!(place(&controls[1]), (100, 386, 12, 28));
+        assert_eq!(
+            crate::doll_view::dot_top(controls[1].y, controls[1].h, 22) - top,
+            389
+        );
         assert_eq!(controls[2].class, 1);
         assert_eq!(place(&controls[2]), (4, 416, 108, 24));
     }
@@ -2850,7 +2941,8 @@ mod tests {
         let form = screens.find(GameScreen::Inventory)?.form;
         let bounds = screens.task.form(form)?.bounds();
         let layout = screens.inventory_layout();
-        let painted = paint_inventory(bounds, &layout, unit, &textures, &screens.pack, None);
+        let (painted, _) =
+            paint_inventory(bounds, &layout, unit, &textures, &screens.pack, None, None);
         let mut frames = GuiFrames::default();
         painted.submit(&mut frames);
         let pixels = exa_ui::gui_draw::rasterise(&frames.frames, &textures, width, height);
@@ -2858,6 +2950,44 @@ mod tests {
             let _ = std::fs::write(path, &pixels);
         }
         Some((pixels, bounds))
+    }
+
+    /// With the view drawing its figure, the canvas is cleared over the
+    /// view (224 × 380 inside the doll panel's 2-pixel border) and the
+    /// colour it had there comes back as the camera's backdrop; the rating
+    /// dots add one layer of their quads.
+    #[test]
+    fn the_inventory_clears_the_view_and_returns_its_backdrop() {
+        let bounds = GuiRect::new(8, 8, 244, 644);
+        let layout = InventoryLayout::at(4);
+        let textures = GuiTextures::default();
+        let cell = vec![255u8; 64 * 64 * 4];
+        let sheet = crate::doll_view::DotSheet::of_cells(&[cell.clone(), cell], 64).unwrap();
+        let paint = crate::doll_view::DollPaint {
+            punch: true,
+            dots: Some(2.5),
+            sheet: Some(&sheet),
+        };
+        let pack = Container::default();
+        let (plain, none) = paint_inventory(bounds, &layout, 4, &textures, &pack, None, None);
+        assert_eq!(none, None);
+        let (painted, backdrop) =
+            paint_inventory(bounds, &layout, 4, &textures, &pack, None, Some(&paint));
+        // The clearing layer and the dots' layer.
+        assert_eq!(painted.layers.len(), plain.layers.len() + 2);
+        let view = crate::doll_view::view_rect(layout.doll_at(bounds), DOLL_BORDER);
+        assert_eq!(
+            (view.left, view.top, view.width(), view.height()),
+            (18, 18, 224, 380)
+        );
+        let centre = ((view.left + view.right) / 2, (view.top + view.bottom) / 2);
+        assert_eq!(
+            canvas_colour_at(&plain.layers, &textures, centre),
+            backdrop.unwrap()
+        );
+        // The form's and the doll panel's translucent black fills.
+        assert_eq!(backdrop, Some([0, 0, 0, 227]));
+        assert_eq!(canvas_colour_at(&painted.layers, &textures, centre), [0; 4]);
     }
 
     /// The inventory paints its frame and its panels over the whole window,

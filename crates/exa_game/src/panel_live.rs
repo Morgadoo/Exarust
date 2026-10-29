@@ -9,7 +9,8 @@
 //! only repositions the entry, as the original does. A drop on the body's
 //! equipment panel is refused here: the original asks the body's character
 //! view whether it can take the item and equips it through that view, and
-//! Exarust has no running character view.
+//! a loot window has no running character view. A drop on the inventory's
+//! character view is handed to the view's drop ([`crate::doll_view`]).
 //!
 //! The inventory installs a drag permission on its pack
 //! ([`exa_items::inventory_window::permission`]): nothing leaves the
@@ -21,9 +22,8 @@
 //! panel. Exarust's GUI-to-world drop is not wired, so a release outside
 //! every panel cancels the drag and the entry stays where it was.
 //!
-//! The right click's card, the double click's use and container opening,
-//! and the character view behind a drop are not wired (the card and the
-//! forms have no drawn host yet).
+//! The right click's card, the double click's use and container opening
+//! are not wired here.
 
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
@@ -153,7 +153,7 @@ pub(crate) fn container(screens: &GameScreens, panel: Panel) -> Option<&Containe
     }
 }
 
-fn container_mut(screens: &mut GameScreens, panel: Panel) -> Option<&mut Container> {
+pub(crate) fn container_mut(screens: &mut GameScreens, panel: Panel) -> Option<&mut Container> {
     match panel {
         Panel::PlayerPack => Some(&mut screens.pack),
         Panel::BodyPack(body) => screens
@@ -438,6 +438,7 @@ fn release(
     catalogue: Option<Res<ItemCatalogue>>,
     mut bodies: Query<(Entity, &mut Possessions)>,
     player_bodies: Query<Entity, With<crate::player::PlayerBody>>,
+    mut dropped: MessageWriter<crate::doll_view::DollDrop>,
 ) {
     if !buttons.just_released(MouseButton::Left) || drag.source.is_none() {
         return;
@@ -450,6 +451,22 @@ fn release(
     let at = window
         .cursor_position()
         .map(|pointer| (pointer * window.scale_factor()).as_ivec2());
+    // A release over the inventory's character view hands the drag to the
+    // view's drop (`crate::doll_view`), which ends the source's drag.
+    if let (Some(at), Some(view)) = (at, crate::doll_view::open_view(&screens))
+        && view.contains(at.x, at.y)
+        && !matches!(source, Panel::BodyEquipment(_))
+    {
+        dropped.write(crate::doll_view::DollDrop {
+            source,
+            id: drag.id,
+            flags: drag.flags,
+            icon: drag.icon,
+            bulk: drag.bulk,
+        });
+        *drag = PanelDrag::default();
+        return;
+    }
     let panels = open_panels(&screens);
     let hit = at.and_then(|at| panel_at(&panels, at));
     let Some((destination, local)) = hit else {
@@ -588,6 +605,7 @@ impl Plugin for PanelLivePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<PanelDrag>()
             .init_resource::<PointerOverGui>()
+            .add_message::<crate::doll_view::DollDrop>()
             .add_systems(Update, track_pointer.before(crate::hand::HandSystems))
             .add_systems(Update, (press, release).chain().after(track_pointer));
     }

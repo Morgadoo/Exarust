@@ -422,23 +422,23 @@ pub fn preview_plan(opening: bool) -> PreviewPlan {
 /// [`PREVIEW_BUILD_DELAY`]) does each time it runs: it always takes the
 /// character's skinned model and answers 1 (done). When an open inventory
 /// shows this character view and the view still holds its character, the
-/// inventory refits its doll camera to ten times the character's height
-/// (`exa_items::inventory_window::camera_distance`).
+/// inventory writes ten times the body's encumbrance into its rating-dots
+/// record (`exa_items::inventory_window::encumbrance_dots`).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PreviewBuild {
     /// The callback's answer: always done.
     pub done: bool,
-    /// The doll camera's new distance, when an inventory refits it.
-    pub camera: Option<f32>,
+    /// The inventory's encumbrance dots, when an inventory refreshes them.
+    pub dots: Option<f32>,
 }
 
-/// The bind's build callback: see [`PreviewBuild`]. `character_height` is
-/// none when the view holds no character.
-pub fn preview_built(inventory_shows_view: bool, character_height: Option<f32>) -> PreviewBuild {
+/// The bind's build callback: see [`PreviewBuild`]. `encumbrance` is none
+/// when the view holds no character.
+pub fn preview_built(inventory_shows_view: bool, encumbrance: Option<f32>) -> PreviewBuild {
     PreviewBuild {
         done: true,
-        camera: if inventory_shows_view {
-            character_height.map(|height| height * 10.0)
+        dots: if inventory_shows_view {
+            encumbrance.map(|value| value * 10.0)
         } else {
             None
         },

@@ -1,0 +1,5 @@
+- [x] Off-screen character view of the player's figure under the GUI canvas (exa_game::doll_view)
+- [x] Rating-dots record with the dot sheet; the encumbrance callback's names corrected (exa_items, exa_ui)
+- [x] Drop on the figure: apparel, weapon, shield
+- [x] Tests: view rectangle, dot placement, camera pose, take-in plan, backdrop and clearing
+- [x] docs/UI.md and READMEs

@@ -509,7 +509,8 @@ HUD draw order, and the save and close scopes. The loot window is "Body",
 244 × 440 at x 400 with an unset y, refused for a flag word whose second
 byte is 3 and matched to its body. The inventory's preview writes its model
 values 0.15 and 0.05, the scene and draw words, the appearance copy and the
-build delay, its build callback's camera refit (ten times the height),
+build delay, its build callback's encumbrance dots (ten times the body's
+encumbrance, written into the inventory's rating-dots record),
 and its preview bars' fills and frames. The
 bars and their frames are `hud`'s; their show test (`bars_shown`: a
 changed or NaN health, a dropped focus, the power bar, combat mode or the

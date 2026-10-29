@@ -737,21 +737,21 @@ fn the_power_slot_draw() {
 
 #[test]
 fn the_preview_build_destroy_and_bars() {
-    // The build always answers done; an inventory showing the view refits
-    // its camera to ten times the character's height.
+    // The build always answers done; an inventory showing the view writes
+    // ten times the body's encumbrance into its rating dots.
     assert_eq!(
-        preview_built(true, Some(1.7)),
+        preview_built(true, Some(0.5)),
         PreviewBuild {
             done: true,
-            camera: Some(17.0)
+            dots: Some(5.0)
         }
     );
-    assert_eq!(preview_built(true, None).camera, None);
+    assert_eq!(preview_built(true, None).dots, None);
     assert_eq!(
-        preview_built(false, Some(1.7)),
+        preview_built(false, Some(0.5)),
         PreviewBuild {
             done: true,
-            camera: None
+            dots: None
         }
     );
     assert!(preview_destroyed(true));
