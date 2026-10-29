@@ -2,10 +2,11 @@
 //! draw skin's own emitters.
 //!
 //! The forms' words and geometry are the original's: the line skin's
-//! palette ([`exa_ui::line_skin::line_palette`]), the default background
+//! palette as a shown form's fade scales it ([`palette`],
+//! [`exa_ui::line_skin::shown_palette`]), the default background
 //! ([`exa_ui::skin::draw_form_background`]) with its title placement from
-//! [`exa_ui::skin::dispatch_form`], the button face
-//! ([`exa_ui::skin::draw_button_face`]) and the text quads of
+//! [`exa_ui::skin::dispatch_form`], the line skin's button frame from its
+//! atlas ([`paint_line_button`]) and the text quads of
 //! [`exa_ui::gui_text`] and [`exa_ui::text_box::TextBox::draw`]. The text
 //! and icon quads are separate layers sampling the font's atlas through
 //! [`exa_ui::gui_draw::text_batch`].
@@ -23,11 +24,13 @@ use exa_ui::gui_core::GuiRect;
 use exa_ui::gui_draw::{GuiFrames, GuiLayer, GuiTextures, LayerTexture, SKIN_TEXTURE, text_batch};
 use exa_ui::gui_font::GuiFont;
 use exa_ui::gui_text::draw_line;
-use exa_ui::line_skin::{LINE_SCHEME, line_palette};
+use exa_ui::line_skin::{LINE_SCHEME, line_control_inks, shown_palette};
+use exa_ui::settings::{HOVER_BITS, HOVERED};
 use exa_ui::skin::{
-    ControlLabelPlace, DispatchPlace, FormBackgroundPlace, FormChromePlace, GuiRect as SkinRect,
-    LabelVariant, SkinBatch, SkinPalette, dispatch_form, draw_button_face, draw_control_label,
-    draw_form_background, draw_form_chrome, form_rect,
+    ControlLabelPlace, DispatchPlace, FormBackgroundPlace, FormChromePlace, FramePlace,
+    GuiRect as SkinRect, LabelVariant, SkinBatch, SkinPalette, dispatch_form, draw_control_label,
+    draw_form_background, draw_form_chrome, draw_frame, form_rect, line_skin_batch,
+    push_line_quads,
 };
 
 /// The base form constructor's attribute word: a close mark, a client fill
@@ -366,8 +369,10 @@ pub(crate) fn caption_layer(
     )
 }
 
-/// Paints a button record: the skin's face and its caption, placed from
-/// the record's style word.
+/// Paints a button record as the line skin draws it: the frame from the
+/// skin's atlas ([`paint_line_button`]) and its caption. `pressed` stands
+/// for the record's on and lit state bits and `hot` for its hover bits; the
+/// record has no radio group. The form is shown, so its fade is 1.
 #[allow(clippy::too_many_arguments)]
 pub fn paint_button(
     rect: GuiRect,
@@ -380,25 +385,96 @@ pub fn paint_button(
     pressed: bool,
     hot: bool,
 ) -> Painted {
-    let mut batch = SkinBatch::new();
-    draw_button_face(
-        &mut batch,
-        SkinRect::sized(
-            rect.left as f32,
-            rect.top as f32,
-            rect.width() as f32,
-            rect.height() as f32,
-        ),
-        pressed,
-        hot,
+    let mut state = 0;
+    if pressed {
+        state |= exa_ui::gui_controls::state::ON | exa_ui::gui_controls::state::LIT;
+    }
+    if hot {
+        state |= HOVERED;
+    }
+    paint_line_button(
+        rect,
+        ButtonWords {
+            style,
+            state,
+            group: 0,
+        },
+        unit,
         palette,
+        1.0,
+        font,
+        font_texture,
+        label,
+    )
+}
+
+/// The record words the line skin's button reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ButtonWords {
+    pub style: u32,
+    pub state: u32,
+    /// The radio group (0: a lone button).
+    pub group: i32,
+}
+
+/// The line skin's button at `fade`: four three-unit corners, the top and
+/// bottom edges and, when taller than four units, the sides
+/// ([`exa_ui::skin::draw_frame`]), in the disabled ink (also a grouped or
+/// toggle button that is off), the idle ink (a lone button) or the on ink
+/// ([`line_control_inks`]); then the caption in the label group's third
+/// shade when disabled, its sixth when off, its ninth a pixel lower when
+/// on. A hovered button's caption goes through another text routine that
+/// was not traced; it is drawn as the off one, a pixel lower while lit (a
+/// guess).
+#[allow(clippy::too_many_arguments)]
+pub fn paint_line_button(
+    rect: GuiRect,
+    words: ButtonWords,
+    unit: i32,
+    palette: &SkinPalette,
+    fade: f32,
+    font: &GuiFont,
+    font_texture: Option<(u16, u16)>,
+    label: &str,
+) -> Painted {
+    use exa_ui::gui_controls::state;
+    let inks = line_control_inks(fade);
+    let draw = draw_frame(
+        unit,
+        FramePlace {
+            x: rect.left as i16,
+            y: rect.top as i16,
+            w: rect.width() as i16,
+            h: rect.height() as i16,
+            mode: words.style,
+            state: words.state,
+            mark: words.group as i16,
+        },
     );
+    let ink = match draw.ink {
+        2 => inks[1],
+        3 => inks[2],
+        _ => inks[0],
+    };
+    let mut batch = line_skin_batch();
+    push_line_quads(&mut batch, &draw.quads, ink);
+    batch.end_quads();
     let mut painted = Painted::default();
     painted.push(GuiLayer::new(batch, LayerTexture::Named(SKIN_TEXTURE)));
     if let Some(texture) = font_texture {
+        let hovered = words.state & HOVER_BITS == HOVERED;
+        let (ink, down) = if words.state & state::DISABLED != 0 {
+            (palette.text[2], 0)
+        } else if hovered {
+            (palette.text[5], i32::from(words.state & state::LIT != 0))
+        } else if words.state & (state::ON | state::LIT) == 0 {
+            (palette.text[5], 0)
+        } else {
+            (palette.text[8], 1)
+        };
         let text = label.as_bytes();
-        let origin = caption_origin(rect, style, font, text, palette, unit);
-        painted.push(caption_layer(font, texture, text, origin, palette.text[6]));
+        let (x, y) = caption_origin(rect, words.style, font, text, palette, unit);
+        painted.push(caption_layer(font, texture, text, (x, y + down), ink));
     }
     painted
 }
@@ -446,7 +522,7 @@ pub fn paint_label_ink(
 
 /// The frame and title of a form, as the debug flag opens it.
 pub fn paint_debug_form(rect: GuiRect, unit: i32, textures: &GuiTextures) -> Painted {
-    let palette = line_palette();
+    let palette = palette();
     let level = exa_ui::gui_font::level_for_unit(unit);
     let (font, font_texture) =
         crate::gui_screens::screen_font(exa_ui::gui_font::gui_level(level).main, textures);
@@ -456,9 +532,22 @@ pub fn paint_debug_form(rect: GuiRect, unit: i32, textures: &GuiTextures) -> Pai
     paint_frame(&frame, &palette, &font, font_texture)
 }
 
-/// The line skin's palette (a convenience for the screen painters).
+/// The palette a shown form of the running game draws with: the line
+/// skin's palette at fade 1 ([`shown_palette`]), the form group at alpha
+/// 170 and the control, hot-form, label and highlight groups at 125.
+///
+/// The base form's draw hands its fade to the skin as both scales only
+/// while a mode-0 show or hide fade runs, and sets them back to 1 after
+/// it; the GUI task's draw sets 1 for the game's own task before its forms
+/// draw. None of the windows painted through this module (inventory,
+/// journal, loot window, the hub's board, Manage Company and trade window)
+/// fades in: the base constructor leaves a form visible, and the show only
+/// starts its fade for a hidden form, which none of their openers makes
+/// first; their closes destroy the form at once, with no hide fade. So
+/// they draw at fade 1 throughout. The item card has its own squared fade
+/// and calls [`shown_palette`] with it.
 pub fn palette() -> SkinPalette {
-    line_palette()
+    shown_palette(1.0)
 }
 
 /// The line skin's scheme, for the callers that need its colours.
@@ -649,6 +738,112 @@ mod tests {
             paint_label(rect, 0x2300, 4, &palette, font, None, "x")
                 .layers
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn the_screens_draw_with_the_shown_palette() {
+        // Inventory, journal, loot window and the hub's trade window draw
+        // at fade 1: form group 170, the other groups 125.
+        let palette = palette();
+        assert_eq!(palette.form[3][3], 170);
+        assert_eq!(palette.text[6][3], 125);
+        assert_eq!(palette.control[0][3], 125);
+        assert_eq!(palette.highlight[2][3], 125);
+    }
+
+    #[test]
+    fn a_lone_button_takes_the_line_skins_idle_ink_and_the_off_caption() {
+        // The inventory's Primary and the journal's New and Erase: style
+        // 0x403320, no group, state 0.
+        let palette = palette();
+        let font = &exa_ui::gui_font::RAYFORM_10;
+        let rect = GuiRect::new(20, 40, 108, 24);
+        let painted = paint_button(
+            rect,
+            0x40_3320,
+            4,
+            &palette,
+            font,
+            Some((256, 256)),
+            "Primary",
+            false,
+            false,
+        );
+        assert_eq!(painted.layers.len(), 2);
+        let frame = &painted.layers[0].batch;
+        assert_eq!(frame.mode, exa_ui::skin::SkinMode::Textured);
+        assert_eq!(frame.tex_col, Some(0.0));
+        assert!(frame.vertices.iter().all(|v| v.ink == [255, 250, 230, 104]));
+        let caption = &painted.layers[1].batch;
+        assert!(caption.vertices.iter().all(|v| v.ink == palette.text[5]));
+        assert_eq!(palette.text[5][3], 125);
+    }
+
+    #[test]
+    fn a_pressed_button_and_a_fading_one_take_their_inks() {
+        let font = &exa_ui::gui_font::RAYFORM_10;
+        let rect = GuiRect::new(0, 0, 100, 40);
+        let shown = palette();
+        // On and lit with no group: still the idle ink; the caption takes
+        // the ninth shade a pixel lower.
+        let on = paint_button(
+            rect,
+            0x40_3320,
+            4,
+            &shown,
+            font,
+            Some((256, 256)),
+            "Tab",
+            true,
+            false,
+        );
+        assert_eq!(on.layers[0].batch.vertices[0].ink[3], 104);
+        assert!(
+            on.layers[1]
+                .batch
+                .vertices
+                .iter()
+                .all(|v| v.ink == shown.text[8])
+        );
+        // A grouped button that is lit takes the on ink, a disabled one the
+        // disabled ink; at fade 0.5 the
+        // inks are 40, 52 and 64 and the palette's groups 85 and 62.
+        let half = shown_palette(0.5);
+        assert_eq!((half.form[3][3], half.text[8][3]), (85, 62));
+        let grouped = paint_line_button(
+            rect,
+            ButtonWords {
+                style: 0x40_3320,
+                state: exa_ui::gui_controls::state::LIT,
+                group: 1,
+            },
+            4,
+            &half,
+            0.5,
+            font,
+            None,
+            "",
+        );
+        assert_eq!(grouped.layers.len(), 1);
+        assert_eq!(grouped.layers[0].batch.vertices[0].ink, [255, 250, 230, 64]);
+        let disabled = paint_line_button(
+            rect,
+            ButtonWords {
+                style: 0x40_3320,
+                state: exa_ui::gui_controls::state::DISABLED,
+                group: 0,
+            },
+            4,
+            &half,
+            0.5,
+            font,
+            None,
+            "",
+        );
+        assert_eq!(
+            disabled.layers[0].batch.vertices[0].ink,
+            [255, 250, 230, 40]
         );
     }
 }

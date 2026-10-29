@@ -1365,7 +1365,37 @@ its unlocated class-0xac01 record and its Primary button (108 × 24 at
 (4, 416)), and the journal's New (4, 20) and Erase (120, 20), 104 × 24
 each. A button caption takes the skin's placement from its style word
 (0x3000 centres horizontally, 0x300 centres vertically). The journal's
-selected entry draws through the text box. A dead body's double click in
+selected entry draws through the text box.
+
+**Palette and fades of the game's windows.** The base form's draw hands
+the skin a pair of alpha scales only while its show or hide fade runs in
+mode 0 (the alpha `1 − left/256` showing, `left/256` hiding) and sets it
+back to 1 after the draw; the GUI task's draw sets 1 for the game's own
+task before its forms draw (0.75 and 0.5 for another task). The line
+skin's hook scales its palette by the pair (form group 170 × fade, the
+control, hot-form, label and highlight groups 125 × fade) and its three
+control inks (255, 250, 230 at 80, 104 and 128 × fade). Which windows fade
+depends on their openers: the base constructor leaves a form visible and
+the show only starts the fade for a hidden form.
+
+| window | opener | fade | palette |
+|---|---|---|---|
+| Inventory, journal, loot window | adds and shows a visible form | none | 170 / 125 |
+| Match board, Manage Company | clears the visible flag, then shows | 256-tick fade in | 0 → 170 / 125 |
+| Trade window | adds a visible form | none | 170 / 125 |
+| Item card | its own step: the square of the elapsed share in, of the remaining share out | in and out | 170 · fade / 125 · fade |
+
+The closes destroy these forms at once (no hide fade; Manage Company's
+row that opens the board hides it with a fade, not reproduced). Their
+button records (the inventory's Primary, the journal's New and Erase, the
+board's tabs and Enter) are the line skin's atlas frame
+(`exa_game::gui_paint::paint_line_button`, the Settings form's draw): a
+lone button in the idle ink (104), a lit grouped one in the on ink (128), a
+disabled one in the disabled ink (80), the caption in the label group's
+sixth shade, its ninth a pixel lower when on. The board's tab records were
+not read: a selected tab is drawn as a lone button with its on and lit
+bits (a guess). The item card's icon takes the fade on its ink's alpha (the
+icon draw reading the GUI alpha byte is a guess). A dead body's double click in
 the world opens its loot window (400, 36; 244 × 440): the frame and the
 two item panels, the pack 228 × 180 at the client's bottom and the
 equipment panel above it ending four units before the pack, each drawing

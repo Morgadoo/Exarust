@@ -513,7 +513,9 @@ hotkeys on a `GuiTask` and draws them through `gui_draw` and
 icons when the item manager's atlas has any, its Encumbrance label and
 Primary button, and the journal's New and Erase buttons and the selected
 entry's text, from the constructors' words and records; a dead body's loot
-window draws its frame and its pack and equipment panels. The item panel's
+window draws its frame and its pack and equipment panels. They draw with
+`line_skin::shown_palette` at their fade and the line skin's button frame
+(`skin::draw_frame` in `line_control_inks`). The item panel's
 icons use `SkinMode::HltCol`, the item GUI's own program (below). The
 character view, preview bars, the loot panels' body items and the journal's
 entry list are not wired.

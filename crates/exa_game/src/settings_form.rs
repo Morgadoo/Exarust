@@ -32,9 +32,8 @@ use exa_ui::settings::{
     HIDDEN, HOVER_BITS, HOVERED, Part, SEPARATOR_CLASS,
 };
 use exa_ui::skin::{
-    FormScroll, FramePlace, GuiRect as SkinRect, SkinBatch, SkinInk, SkinPalette, SliderPlace,
-    check_box_quads, draw_flat_slider, draw_frame, draw_style_frames, four_stop_rect,
-    line_skin_batch, push_line_quads,
+    FormScroll, GuiRect as SkinRect, SkinBatch, SkinInk, SkinPalette, SliderPlace, check_box_quads,
+    draw_flat_slider, draw_style_frames, four_stop_rect, line_skin_batch, push_line_quads,
 };
 
 use crate::bindings::Bindings;
@@ -398,56 +397,22 @@ fn paint_control(
     };
     match c.class {
         1 => {
-            // The line skin's frame: four three-unit corners, the top and
-            // bottom edges and, when taller than four units, the sides, in
-            // the disabled, idle or on ink.
-            let draw = draw_frame(
-                unit,
-                FramePlace {
-                    x: rect.left as i16,
-                    y: rect.top as i16,
-                    w: c.w as i16,
-                    h: c.h as i16,
-                    mode: c.style,
+            // The line skin's frame and the caption's shade.
+            let button = gui_paint::paint_line_button(
+                rect,
+                gui_paint::ButtonWords {
+                    style: c.style,
                     state: c.state,
-                    mark: c.group as i16,
+                    group: c.group,
                 },
+                unit,
+                palette,
+                1.0,
+                text.font,
+                text.size,
+                &caption,
             );
-            let ink = match draw.ink {
-                2 => inks[1],
-                3 => inks[2],
-                _ => inks[0],
-            };
-            let mut batch = line_skin_batch();
-            push_line_quads(&mut batch, &draw.quads, ink);
-            batch.end_quads();
-            out.push(GuiLayer::new(batch, LayerTexture::Named(SKIN_TEXTURE)));
-            // The caption: the label group's third shade when disabled, its
-            // sixth when off, its ninth a pixel lower when on. A hovered
-            // button's caption goes through another text routine that was
-            // not traced; it is drawn as the off one, a pixel lower while
-            // lit (a guess).
-            if let Some(size) = text.size {
-                let (ink, down) = if c.state & state::DISABLED != 0 {
-                    (palette.text[2], 0)
-                } else if hovered {
-                    (palette.text[5], i32::from(c.state & state::LIT != 0))
-                } else if c.state & (state::ON | state::LIT) == 0 {
-                    (palette.text[5], 0)
-                } else {
-                    (palette.text[8], 1)
-                };
-                let bytes = caption.as_bytes();
-                let (x, y) =
-                    gui_paint::caption_origin(rect, c.style, text.font, bytes, palette, unit);
-                out.push(gui_paint::caption_layer(
-                    text.font,
-                    size,
-                    bytes,
-                    (x, y + down),
-                    ink,
-                ));
-            }
+            out.layers.extend(button.layers);
         }
         2 => {
             // The line skin's box: a four-unit square in the disabled ink,
