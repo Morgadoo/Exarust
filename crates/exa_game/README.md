@@ -519,8 +519,12 @@ hand (`hand`: the left press named by `pick`, the drag of props with Ctrl
 and of corpses through the solver's grab, the lift of a prop onto the item
 cursor, a hinged door's leaf pulled by its link (slack 1 cm, strength
 0.003, three passes; `exa_physics::body::DoorBody`) 100 cm from its origin
-toward the cursor until the release, the wheel and sliding-door drags'
-record until the release, a cloth
+toward the cursor until the release, a lever turned by the wheel drag
+(`exa_physics::body::LeverBody`: no link, its hand angle set each frame from
+the cursor on the plane across its axle, or across its arm at 30 cm while
+the view lies across the axle, clamped to the swing; let go out of 300 cm),
+the double-click interaction pushing a clickable push surface
+(`PlateBody::push`), the sliding-door drag's record until the release, a cloth
 vertex's grab and its per-frame target (the pick near the vertex, else the
 plane through the press point facing the camera), the reach under the cursor and
 the refusal that keeps the movement request; `docs/PLAYER.md`, The hand),

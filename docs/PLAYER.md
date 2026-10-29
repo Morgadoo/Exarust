@@ -675,11 +675,11 @@ there:
 - **A corpse** is dragged by the limb the pick hit, strength 0.5, in every
   pass, with or without Ctrl.
 - A door, a wheel or a sim object (cloth) start their own drags in the
-  original. A hinged door's leaf is a body under the hand in Exarust (The
-  door, below); a wheel (a lever) and a sliding door are static level
-  geometry, so a press on one only records the drag until the release;
-  meanwhile, as in the original, the keys and the right button keep the
-  movement request and the idle camera waits.
+  original. A hinged door's leaf and a lever's arm (the wheel) are bodies
+  under the hand in Exarust (The door, below); a sliding door is static
+  level geometry (unless `--sliding-doors`), so a press on one only records
+  the drag until the release; meanwhile, as in the original, the keys and
+  the right button keep the movement request and the idle camera waits.
 - **Anything else** (a person, the level, a heavy prop) is refused until the
   release: the cursor shows the cross and the frame's movement request is
   left as it was.
@@ -832,17 +832,28 @@ debug option) keeps doors static level geometry, as before.
 
 Not in Exarust: the door's sounds (its step reports them), the navigation
 passage report (the grid still treats every door as standing where the
-level saved it), sliding doors (static, their drag recorded: the cursor's
-offset projected on the slide), and the last-pusher stamp (the original's
+level saved it), sliding doors (static unless `--sliding-doors`, their drag
+recorded: the cursor's offset projected on the slide; see Levers, push
+surfaces and sliding doors below), and the last-pusher stamp (the original's
 door drag stamps the dragged body with the player as its last pusher for
 2000 ms, which impacts read; that is not the hold's end).
 
-A wheel (a lever) takes no link in the original: its press marks the lever
-held and each frame sets the lever's target angle from the cursor's point
-in the lever's frame (`hand::{wheel_set, uses_first_wheel_grip}`); the
-lever's own step drives its arm 0.02 rad a tick toward it
-(`exa_physics::lever`). Exarust's levers
-are static level geometry, so the wheel's drag is only recorded. A scene object's mesh that is a cloth takes
+A wheel (a lever, the fitting of its operative class 3) takes no link in
+the original: its press marks the lever held and keeps the angle between
+the arm and the cursor's point on the plane through the lever's node
+across its axle; each frame, while the hip is within 300 cm of the node (a
+squared 90 000 cm²), the lever's hand angle is the cursor's angle on that
+plane plus the kept one, wrapped, or, while the camera's view lies across
+the axle by less than 0.2 (a double compare), the heading of the cursor's
+sideways offset on the plane across the arm taken at 30 cm out; either is
+clamped to the swing (never below the first detent, at most one step past
+it; a NaN passes) and wrapped, and the lever is woken. Out of reach the
+lever is let go and woken, the drag kept; the release lets go and wakes it.
+The lever's own step drives its arm 0.02 rad a tick toward the hand angle
+(`hand::{ray_plane, first_wheel_grip}`, `LeverBody::{take_hold, turn_to,
+let_go}`). `--static-mechanisms` keeps levers and push surfaces static.
+
+A scene object's mesh that is a cloth takes
 the vertex within 10 cm of the press point in the cloth's own frame (a
 stand-in: the original takes the mesh element the pick hit and its own
 radius) and sets the drag plane through the press point, its normal the
@@ -880,6 +891,42 @@ hip is the player's pelvis (the original's reference point the swing whoosh
 also plays at).
 
 The point under the cursor is the navigation unit's pick: a screen ray, then the scene's nodes in order, each tested by its class (`0x89`, and `0x4000000` skips it), its layer against the view's, the segment against its bounding sphere and then its box, and each mesh asked for its nearest face within the best distance so far, which then shortens the segment. With no hit the pick records where the ray meets the ground plane. Exarust's `exa_game::nav_pick` does that walk; the physics world answers as the mesh callback because Exarust keeps no CPU triangles. The kinesis variant also needs the node's `0x200000` option bit, looks 40 m, grows each sphere by the caller's height and asks the mesh from where the ray crosses that sphere's top.
+
+### Levers, push surfaces and sliding doors
+
+A lever's arm is a body hung by its axle pins and its arm link, in the
+mechanism environment (no gravity, a part keeping 0.001 of its velocity a
+second), mobility 1. Its two detents are the ends of its swing (the arm
+link's half swing 2·asin(slack / 2r) either side of the link's tied point,
+the engine's fast arcsine); at load it settles on the nearest (ties to
+even). Arriving on a detent more than 0.1 rad from the last one reported
+signals its target (and the second when its flag 0x10 is set): 1 on the
+second detent (−1 when forced and inverted), 0 on the first (none when
+inverted), the first detent reporting 1 instead when its flag 1 is set; a
+lever with a return time (exanima01's 6 s, 5 s, 3.5 s, 2.5 s ones) is armed
+on its "on" report and, the time run out (asleep or not), aims home and
+signals again. A push surface (a button or a pressure plate) is a body on
+its slider links, mobility 0.3 (registered ≥ 0.5) or 0.03, in the same
+environment. While pushed its links' travel rises 0.02 a tick, else falls
+0.01; their mean above 0.7 presses it (1, or −1 inverted), below 0.5
+releases it (0, none inverted). The double-click interaction pushes a
+surface whose operative flag 4 is clear (exanima01's buttons; its
+pressure plates carry flag 4); a class 5 signal pushes (any value but 0)
+or lets go (0); a body standing on a plate moves its slider points down
+their rails, which raises the travel the step reads (exanima01's plates
+are 4 cm deep). A signal goes to the placed object it names: a door order
+(1 opens, 0 closes and locks, −1 toggles, flipped by the door's flag 0x80)
+wakes the door bodies under it, a latched or motorised leaf waiting 120
+ticks before it opens; a class 5 push its surface; relays and deferred
+fire and light jobs are not run yet. exanima01's levers mostly name its
+portcullises, which are sliding doors: static by default, so pulling such a
+lever signals but nothing moves. With `--sliding-doors` the 37 sliding
+leaves become bodies running the door's sliding rules, but they creep up to
+2 cm in two seconds at rest along their level rails, and the slider law
+rewrites a command's fraction every pass, so a plain open only shoves the
+leaf a little; how the original moves them that far was not traced.
+Mechanism sounds (creaks, the lever's tick loop, a plate's grind and
+click) are reported by the steps, not played.
 
 ## Combat mode
 
