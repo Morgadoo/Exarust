@@ -107,8 +107,11 @@ impl ClothObjects {
     pub const COLUMNS: i32 = 4096;
     /// Rows of the object grid.
     pub const ROWS: i32 = 4096;
-    /// The grid's origin cell, centred on the world origin.
-    pub const ORIGIN: (i32, i32) = (-2048, -2048);
+    /// The grid's origin cell, added to a point's cell so the world origin
+    /// falls in the grid's middle (cell index 2048 · 4096 + 2048). A
+    /// negative origin would put every object below the first row, where
+    /// the overflow guard parks it.
+    pub const ORIGIN: (i32, i32) = (2048, 2048);
 
     /// An empty list.
     pub fn new() -> Self {
@@ -513,6 +516,7 @@ fn step_cloths(
     mut meshes: ResMut<Assets<Mesh>>,
     mut debug: ResMut<ClothDebug>,
     names: Query<&Name>,
+    mut part_cells: Local<sector::CellGrid>,
 ) {
     let started = debug.on.then(std::time::Instant::now);
     let mut total = ClothWork::default();
@@ -534,15 +538,19 @@ fn step_cloths(
     }
     let order = objects.order.clone();
     // Every part of every body (asleep too) that can meet an object, with
-    // its body's sleep, built once a tick for all the cloths.
+    // its body's sleep, built once a tick for all the cloths, and bucketed
+    // by the grid cell its mesh box's world centre falls in, as the
+    // sector's body grid links it: an object is offered only the parts in
+    // the nine cells around its own ([`sector::CellGrid::around`]).
     let mut all_parts = Vec::new();
+    part_cells.clear();
     // The particle-mode cloths (hair) follow their owner: the body part
     // their node hangs from, whose countdown keeps them awake.
     let any_particle = instances
         .iter()
         .any(|(_, instance, _)| instance.cloth.record.particle_mode());
-    let mut part_countdowns: std::collections::HashMap<Entity, i32> =
-        std::collections::HashMap::new();
+    let mut part_countdowns: bevy::ecs::entity::EntityHashMap<i32> =
+        bevy::ecs::entity::EntityHashMap::default();
     if any_particle {
         for body in &bodies {
             for part in &body.parts {
@@ -558,12 +566,19 @@ fn step_cloths(
                 if part.pairing.out || part.spheres.is_empty() {
                     continue;
                 }
-                let (centre, radius) = part.sphere_bound();
+                let now = part.transform();
+                let centre = now.transform_point3(part.pairing.sphere.centre);
+                let radius = part.pairing.sphere.radius;
+                let box_centre = part.pairing.mesh.world_centre(&now) * 100.0;
+                part_cells.insert(
+                    sector::cell_of(box_centre, ClothObjects::ORIGIN),
+                    all_parts.len(),
+                );
                 all_parts.push((
                     part.entity,
                     asleep,
                     ObjectBodyPart {
-                        now: part.transform(),
+                        now,
                         previous: part.settled_transform(),
                         spheres: &part.spheres,
                         centre,
@@ -641,36 +656,37 @@ fn step_cloths(
             work.asleep = u32::from(asleep);
             let mut contacts = ObjectContacts::default();
             if let (true, Some(physics), Some(statics)) = (live_contacts.0, &physics, &statics) {
-                // Objects against bodies: the parts passing the sector's
-                // pre-test ([`sector::object_body_meet`]), less the cloth's own
-                // character; a sleeping cloth takes awake bodies only.
+                // Objects against bodies: the parts the grid sector's object
+                // stage walks (those bucketed in the nine cells around the
+                // object's own), passing its pre-test
+                // ([`sector::object_body_meet`]); a sleeping cloth takes
+                // awake bodies only. The particle mode takes its owner's
+                // character too (its owner's spheres without padding); any
+                // other cloth skips its own character.
                 let object_box = cloth::bounds(&instance.cloth.particles);
+                let cell = objects
+                    .grid
+                    .cell_of_id(id)
+                    .unwrap_or_else(|| sector::cell_of(object.centre, ClothObjects::ORIGIN));
+                let offered: Vec<usize> = part_cells
+                    .around(cell)
+                    .filter(|&index| {
+                        let (part_entity, body_asleep, _) = &all_parts[index];
+                        sector::object_takes_body(asleep, *body_asleep)
+                            && (particle_mode || !own.contains(part_entity))
+                    })
+                    .collect();
+                offered_parts = offered.iter().map(|&index| all_parts[index].0).collect();
+                work.parts = offered.len() as u32;
                 if particle_mode {
-                    // The particle mode takes the owner's character too:
-                    // its owner's spheres without padding.
-                    let (offered, parts): (Vec<Entity>, Vec<(ObjectBodyPart, bool)>) = all_parts
-                        .iter()
-                        .filter(|(_, body_asleep, _)| {
-                            sector::object_takes_body(asleep, *body_asleep)
-                        })
-                        .map(|&(part_entity, _, part)| {
-                            (part_entity, (part, owner == Some(part_entity)))
-                        })
-                        .unzip();
-                    offered_parts = offered;
-                    work.parts = parts.len() as u32;
+                    let parts = offered.iter().map(|&index| {
+                        let (part_entity, _, part) = all_parts[index];
+                        (part, owner == Some(part_entity))
+                    });
                     contacts.gather_particle_bodies(&to_object, object, parts);
                     work.bodies = contacts.particle_bodies.len() as u32;
                 } else {
-                    let (offered, parts): (Vec<Entity>, Vec<ObjectBodyPart>) = all_parts
-                        .iter()
-                        .filter(|(owner, body_asleep, _)| {
-                            sector::object_takes_body(asleep, *body_asleep) && !own.contains(owner)
-                        })
-                        .map(|&(owner, _, part)| (owner, part))
-                        .unzip();
-                    offered_parts = offered;
-                    work.parts = parts.len() as u32;
+                    let parts = offered.iter().map(|&index| all_parts[index].2);
                     contacts.gather_bodies(&to_object, object, object_box, parts);
                     work.bodies = contacts.bodies.len() as u32;
                 }
@@ -1051,6 +1067,85 @@ mod tests {
         assert_eq!(work.records, work.own_records);
         assert_eq!((work.triangles, work.level_tests), (0, 0));
         assert_eq!((work.awake, work.particles), (1, 4));
+    }
+
+    /// The grid sector's object stage offers a cloth only the body parts
+    /// bucketed in the nine 6 m cells around its own: a part in the
+    /// cloth's cell and one in the next cell are offered, one three cells
+    /// away is not, however many there are.
+    #[test]
+    fn a_cloth_is_offered_only_the_parts_in_the_nine_cells_around_it() {
+        use exa_physics::body::PartSetup;
+        use exa_physics::{Physics, StaticColliders};
+
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, ClothPlugin))
+            .init_resource::<Assets<Mesh>>()
+            .insert_resource(Physics::default())
+            .insert_resource(StaticColliders::default())
+            .insert_resource(ClothContacts(true))
+            .insert_resource(ClothDebug {
+                on: true,
+                ..ClothDebug::default()
+            });
+        let body_at = |x: f32| {
+            Ragdoll::new(&[PartSetup {
+                bone: 1,
+                entity: Entity::PLACEHOLDER,
+                parent: None,
+                world: Affine3A::from_translation(Vec3::new(x, 1.5, 0.0)),
+                centre: Vec3::ZERO,
+                half: Vec3::splat(0.1),
+                origin: Vec3::ZERO,
+                links: vec![],
+                foot: None,
+                pins: Vec::new(),
+                spheres: Some(vec![(Vec3::ZERO, 0.1)]),
+            }])
+        };
+        // The cloth's cell (x 0..6 m), the next cell, and twenty parts
+        // three cells away.
+        app.world_mut().spawn(body_at(0.5));
+        app.world_mut().spawn(body_at(7.0));
+        for _ in 0..20 {
+            app.world_mut().spawn(body_at(20.0));
+        }
+        let mesh = app
+            .world_mut()
+            .resource_mut::<Assets<Mesh>>()
+            .add(Mesh::new(
+                bevy::mesh::PrimitiveTopology::TriangleList,
+                bevy::asset::RenderAssetUsages::default(),
+            ));
+        let corners = [
+            Vec3::new(0.0, 2.0, 0.0),
+            Vec3::new(1.0, 2.0, 0.0),
+            Vec3::new(1.0, 1.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+        ];
+        let cloth = cloth_of(&corners, &[[0, 1, 2], [0, 2, 3]], &[]);
+        let entity = app
+            .world_mut()
+            .spawn((
+                ClothInstance {
+                    vertex_particle: (0..cloth.particles.len()).collect(),
+                    cloth,
+                    mesh,
+                    frame: None,
+                },
+                GlobalTransform::default(),
+            ))
+            .id();
+        app.world_mut().run_schedule(FixedUpdate);
+        let debug = app.world().resource::<ClothDebug>();
+        let (counted, work, _) = debug.cloths[0];
+        assert_eq!(counted, entity);
+        assert_eq!(work.awake, 1);
+        assert_eq!(work.parts, 2, "offered {} parts", work.parts);
+        // The object list knows the cloth's own cell, not the park cell.
+        let objects = app.world().resource::<ClothObjects>();
+        let origin = ClothObjects::ORIGIN;
+        assert_eq!(objects.grid.cell_of_id(0), Some(origin));
     }
 
     /// The lowest vertex of a cloth, in metres.

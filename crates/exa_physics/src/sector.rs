@@ -294,6 +294,20 @@ impl CellGrid {
         })
     }
 
+    /// The ids in the nine cells around `cell`, in the original's scan
+    /// order ([`NEAR_OFFSETS`]: the own cell first), each cell's ids in
+    /// insertion order. An id inserted into one cell only (a body, by its
+    /// mesh box's centre) comes once. This is the grid sector's object
+    /// stage: a simulated object is offered the bodies linked in these
+    /// cells around its own and no others.
+    pub fn around(&self, cell: (i32, i32)) -> impl Iterator<Item = usize> + '_ {
+        NEAR_OFFSETS.into_iter().flat_map(move |(dx, dz)| {
+            self.get((cell.0.wrapping_add(dx), cell.1.wrapping_add(dz)))
+                .iter()
+                .copied()
+        })
+    }
+
     /// Whether the grid holds no id at all.
     pub fn is_empty(&self) -> bool {
         self.cells.values().all(Vec::is_empty)
@@ -1248,7 +1262,9 @@ impl ObjectContacts {
         self.pieces.clear();
     }
 
-    /// The object's body-contact stage: every part passing
+    /// The object's body-contact stage: of the parts the caller offers
+    /// (the grid sector's are those bucketed in the nine cells around the
+    /// object's own, [`CellGrid::around`]), every part passing
     /// [`object_body_meet`] (its bound sphere meets the object's, and the
     /// object's centre lies within its radius of the part's mesh box) is
     /// handed to the object with its collision spheres, in the object's

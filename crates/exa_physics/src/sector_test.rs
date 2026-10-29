@@ -939,3 +939,26 @@ fn the_object_list_pairs_every_ordered_couple() {
     assert_eq!(object_pairs(&takes, &offered), [(0, 1), (2, 0), (2, 1)]);
     assert!(object_pairs(&[true], &[true]).is_empty());
 }
+
+/// The object stage's walk: the ids in the own cell first, then the eight
+/// around it in the offset table's order; a cell two away is never read.
+#[test]
+fn the_object_stage_walks_the_nine_cells_around_its_own() {
+    let mut grid = CellGrid::new();
+    grid.insert((10, 10), 0);
+    grid.insert((11, 11), 1);
+    grid.insert((9, 9), 2);
+    grid.insert((10, 10), 3);
+    grid.insert((12, 10), 4);
+    grid.insert((10, 8), 5);
+    let ids: Vec<usize> = grid.around((10, 10)).collect();
+    assert_eq!(ids, [0, 3, 2, 1]);
+    // A body and an object that meet lie within one cell of each other on
+    // each axis whenever their radii sum to under a cell, so the walk drops
+    // no body the pre-test would pass.
+    let object = cell_of(Vec3::new(599.0, 0.0, 0.0), (0, 0));
+    let body = cell_of(Vec3::new(601.0, 0.0, 0.0), (0, 0));
+    let mut near = CellGrid::new();
+    near.insert(body, 7);
+    assert_eq!(near.around(object).collect::<Vec<_>>(), [7]);
+}
