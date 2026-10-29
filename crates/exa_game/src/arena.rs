@@ -642,15 +642,16 @@ pub struct XpAward {
 /// The match's experience pool and damage total, before the shares are
 /// handed out.
 ///
-/// The tier factor is `round(tier · 0.25 + 1)`; the base is that factor
-/// times the template's experience, rounded again. The damage share is the
-/// opponents' missing health over their total maximum — except in the Fray
-/// (template 4), where every body's damage and missing health count. The
-/// base times the share is rounded in single precision. A trainer adds
-/// half again, truncated.
+/// The base is `(tier · 0.25 + 1) · template experience` in single
+/// precision, converted once (the tier factor is not rounded on its own).
+/// The damage share is the opponents' missing health over their total
+/// maximum — except in the Fray (template 4), where every body's damage
+/// and missing health count. The base times the missing health, over the
+/// maximum, is converted again. A trainer adds half again, truncated.
+/// Each conversion is the 64-bit CVTSS2SI kept in 32 bits.
 pub fn xp_pool(
     tier: i32,
-    template_xp: i32,
+    template_xp: u32,
     fray: bool,
     fighters: &[XpFighter],
     trainer: bool,
@@ -667,19 +668,21 @@ pub fn xp_pool(
             damage = damage.wrapping_add(fighter.damage);
         }
     }
-    let tier_factor = crate::arena_match::cvtss2si32(tier as f32 * 0.25 + 1.0);
-    let base = crate::arena_match::cvtss2si32(tier_factor as f32 * template_xp as f32);
-    let mut pool = crate::arena_match::cvtss2si32(base as f32 * missing / total_max);
+    let base = crate::arena_match::cvtss2si_low32(
+        (tier as f32 * 0.25 + 1.0) * template_xp as f32,
+    );
+    let mut pool = crate::arena_match::cvtss2si_low32(base as f32 * missing / total_max);
     if trainer {
         pool = pool.wrapping_add(pool / 2);
     }
     XpAward { pool, damage }
 }
 
-/// One company body's share of the pool: `round(pool · damage / total)`,
-/// the ratio divided in single precision first.
+/// One company body's share of the pool: `round(pool · ratio)`, the ratio
+/// `damage / total` divided in double and narrowed to single first.
 pub fn xp_share(pool: i32, total_damage: i32, damage: i32) -> i32 {
-    crate::arena_match::cvtss2si32(pool as f32 * (damage as f32 / total_damage as f32))
+    let ratio = (f64::from(damage) / f64::from(total_damage)) as f32;
+    crate::arena_match::cvtss2si_low32(pool as f32 * ratio)
 }
 
 /// The XP one award gives: `min(total/rank_points, 5000)`.
@@ -814,17 +817,19 @@ mod tests {
                 max: 100.0,
             },
         ];
-        // Tier 3: round(1.75) = 2, base 10 000, opponent missing 130 of
-        // 200, so the pool is 6 500.
+        // Tier 3: the factor 1.75 is not rounded on its own, so the base is
+        // 8 750; the opponents miss 130 of 200, and 5 687.5 rounds to even.
         let award = xp_pool(3, 5_000, false, &fighters, false);
-        assert_eq!((award.pool, award.damage), (6_500, 5));
-        assert_eq!(xp_share(6_500, 5, 2), 2_600);
-        assert_eq!(xp_share(6_500, 5, 3), 3_900);
+        assert_eq!((award.pool, award.damage), (5_688, 5));
+        // The ratios are the doubles 0.4 and 0.6 narrowed: 2 275.2 and
+        // 3 412.8 round to 2 275 and 3 413.
+        assert_eq!(xp_share(5_688, 5, 2), 2_275);
+        assert_eq!(xp_share(5_688, 5, 3), 3_413);
         // A trainer adds half again, truncated.
-        assert_eq!(xp_pool(3, 5_000, false, &fighters, true).pool, 9_750);
+        assert_eq!(xp_pool(3, 5_000, false, &fighters, true).pool, 8_532);
         // The Fray counts every body's damage and missing health: 160 of
-        // 400 maximum, so 4 000.
-        assert_eq!(xp_pool(3, 5_000, true, &fighters, false).pool, 4_000);
+        // 400 maximum, so 3 500.
+        assert_eq!(xp_pool(3, 5_000, true, &fighters, false).pool, 3_500);
     }
 
     #[test]
