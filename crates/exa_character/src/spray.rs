@@ -6,7 +6,11 @@
 //!   starts one jet at the contact point, fixed to the struck body part so
 //!   that it rides with the limb, pointing against the striker's swing. Its
 //!   frame: the second axis along the jet, the first across it and the
-//!   world's +Z, the third across both ([`jet_frame`]). It sends the blow's
+//!   world's +Z, the third across both ([`jet_frame`]; the first two made
+//!   unit by the approximate reciprocal square root, as the original's
+//!   normalise does), tied to the part by the transpose of the part's turn
+//!   ([`relative_frame`]); dropped when the world is torn down
+//!   ([`BloodSprays::reset`]). It sends the blow's
 //!   droplets, 36·R of them (at most 60), one at each emission, and then
 //!   stops; its place is taken by the next jet.
 //! - **Emission**: the scene's sprays share one clock. Each tick it drops
@@ -56,7 +60,9 @@ use exa_assets::texture::ColorSpace;
 use exa_combat::CombatSystems;
 use exa_combat::wounds::{Spray, jet_droplets, spray_strength};
 use exa_physics::body::{BODY_HZ, BodySystems, Ragdoll};
+use exa_physics::engine_math::normalize_approx;
 use exa_render::spray::{SPRAY_TEXTURE, SprayMaterial};
+use exa_world::level_lifecycle::LevelChangeRequest;
 
 use crate::Dressed;
 use crate::blood::{DebugWoundTarget, PartFronts, bone_by_name};
@@ -66,6 +72,7 @@ pub struct SprayPlugin;
 impl Plugin for SprayPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<Spray>()
+            .add_message::<LevelChangeRequest>()
             .init_resource::<BloodSprays>()
             .add_systems(
                 PostUpdate,
@@ -85,7 +92,11 @@ impl Plugin for SprayPlugin {
                     .after(CombatSystems),
             )
             // On the bodies' poses of the tick.
-            .add_systems(FixedUpdate, tick_sprays.after(BodySystems));
+            .add_systems(FixedUpdate, tick_sprays.after(BodySystems))
+            .add_systems(
+                PreUpdate,
+                reset_sprays.run_if(on_message::<LevelChangeRequest>),
+            );
     }
 }
 
@@ -172,15 +183,44 @@ pub fn droplet_fall() -> f32 {
     GRAVITY * DROPLET_FALL
 }
 
-/// A jet's frame in world space (cm): its second axis along `direction`
-/// (made unit; zero stays zero), its first across that and the world's +Z,
-/// its third across both; its origin at `origin`. A jet along ±Z has no
-/// first or third axis, as in the original.
+/// A jet's frame in world space (cm): its second axis along `direction`,
+/// its first across that and the world's +Z, its third across both; its
+/// origin at `origin`. The first two are made unit as the original's
+/// normalise does it, by the processor's approximate reciprocal square
+/// root (`normalize_approx`: unit only to about 12 bits; zero stays zero);
+/// the third is the cross product of the two, not normalised again. A jet
+/// along ±Z has no first or third axis, as in the original.
 pub fn jet_frame(origin: Vec3, direction: Vec3) -> Affine3A {
-    let along = direction.normalize_or_zero();
-    let across = along.cross(Vec3::Z).normalize_or_zero();
+    let along = normalize_approx(direction);
+    let across = normalize_approx(along.cross(Vec3::Z));
     let third = across.cross(along);
     Affine3A::from_cols(across.into(), along.into(), third.into(), origin.into())
+}
+
+/// `v` as the frame `frame` sees it, the original's way: the dot of `v`
+/// with each of the frame's axes, `(x·aₓ + y·a_y) + z·a_z`, which is the
+/// inverse only of a frame whose axes are unit and square (the transpose).
+fn into_frame(frame: &Affine3A, v: Vec3) -> Vec3 {
+    let dot = |a: Vec3| (v.x * a.x + v.y * a.y) + v.z * a.z;
+    Vec3::new(
+        dot(frame.matrix3.x_axis.into()),
+        dot(frame.matrix3.y_axis.into()),
+        dot(frame.matrix3.z_axis.into()),
+    )
+}
+
+/// The frame `world` expressed in the frame `frame`, as the original ties
+/// a jet to the struck part: each axis turned by the transpose of the
+/// part's turn ([`into_frame`]) and the origin less the part's origin
+/// turned the same way.
+pub fn relative_frame(frame: &Affine3A, world: &Affine3A) -> Affine3A {
+    let m = world.matrix3;
+    Affine3A::from_cols(
+        into_frame(frame, m.x_axis.into()).into(),
+        into_frame(frame, m.y_axis.into()).into(),
+        into_frame(frame, m.z_axis.into()).into(),
+        into_frame(frame, Vec3::from(world.translation - frame.translation)).into(),
+    )
 }
 
 /// A droplet's age from 0 to 1, `alpha` of the way to the next tick, with
@@ -296,7 +336,7 @@ impl Jet {
         direction: Vec3,
         droplets: i32,
     ) -> Self {
-        let local = frame.inverse() * jet_frame(contact, direction);
+        let local = relative_frame(&frame, &jet_frame(contact, direction));
         Self {
             body,
             part,
@@ -372,6 +412,16 @@ impl BloodSprays {
     /// The half-size a droplet is drawn at (cm).
     pub fn size(&self, d: &Droplet) -> f32 {
         self.sizes[usize::from(d.slot) % self.sizes.len()]
+    }
+
+    /// The original's reset of the scene's sprays when the world is
+    /// cleared: every jet is dropped (its source count goes to 0). The
+    /// droplets already flying, the emission clock, the random state and
+    /// the ring's sizes stay; the original also zeroes the emitter's two
+    /// bound corners, which Exarust's never-culled spray mesh has no use
+    /// for.
+    pub fn reset(&mut self) {
+        self.jets.clear();
     }
 
     /// Starts a jet in the first finished jet's place, or a new one.
@@ -559,6 +609,17 @@ fn start_jets(
             -spray.swing,
             spray.droplets,
         ));
+    }
+}
+
+/// Drops the jets when the world is torn down for a level change (or a
+/// plain teardown), as the original's world reset drops its spray sources
+/// ([`BloodSprays::reset`]). The droplets in flight fly on. Guess: the
+/// original's reset runs from the game's session routines that clear the
+/// world; Exarust's teardown request stands for them.
+fn reset_sprays(mut changes: MessageReader<LevelChangeRequest>, mut sprays: ResMut<BloodSprays>) {
+    if changes.read().any(|change| change.teardown) && !sprays.jets.is_empty() {
+        sprays.reset();
     }
 }
 
@@ -794,6 +855,7 @@ fn fire_debug_sprays(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use exa_physics::engine_math::reciprocal_sqrt;
 
     fn close(a: f32, b: f32, eps: f32) -> bool {
         (a - b).abs() < eps
@@ -832,21 +894,63 @@ mod tests {
         assert!(close(droplet_age(1, 1.0), 1.0, 1e-6));
     }
 
+    fn near(a: Vec3, b: Vec3) -> bool {
+        a.distance(b) < 1e-3
+    }
+
     /// The jet's frame: along the jet, across it and +Z, across both; a jet
-    /// along ±Z has only its axis.
+    /// along ±Z has only its axis. The axes are scaled by the approximate
+    /// reciprocal square root: (−4, 0, 0) by exactly that of 16.
     #[test]
     fn the_jet_frame() {
         let f = jet_frame(Vec3::new(1.0, 2.0, 3.0), Vec3::new(-4.0, 0.0, 0.0));
-        assert_eq!(Vec3::from(f.matrix3.y_axis), Vec3::NEG_X);
-        assert_eq!(Vec3::from(f.matrix3.x_axis), Vec3::Y);
-        assert_eq!(Vec3::from(f.matrix3.z_axis), Vec3::Z);
+        let along = Vec3::new(-4.0 * reciprocal_sqrt(16.0), 0.0, 0.0);
+        assert_eq!(Vec3::from(f.matrix3.y_axis), along);
+        let across = along.cross(Vec3::Z);
+        let across = across * reciprocal_sqrt(across.length_squared());
+        assert_eq!(Vec3::from(f.matrix3.x_axis), across);
+        assert_eq!(Vec3::from(f.matrix3.z_axis), across.cross(along));
+        assert!(near(Vec3::from(f.matrix3.y_axis), Vec3::NEG_X));
+        assert!(near(Vec3::from(f.matrix3.x_axis), Vec3::Y));
+        assert!(near(Vec3::from(f.matrix3.z_axis), Vec3::Z));
         assert_eq!(Vec3::from(f.translation), Vec3::new(1.0, 2.0, 3.0));
         let down = jet_frame(Vec3::ZERO, Vec3::NEG_Y);
-        assert_eq!(Vec3::from(down.matrix3.x_axis), Vec3::NEG_X);
-        assert_eq!(Vec3::from(down.matrix3.z_axis), Vec3::Z);
+        assert!(near(Vec3::from(down.matrix3.x_axis), Vec3::NEG_X));
+        assert!(near(Vec3::from(down.matrix3.z_axis), Vec3::Z));
         let along_z = jet_frame(Vec3::ZERO, Vec3::Z);
         assert_eq!(Vec3::from(along_z.matrix3.x_axis), Vec3::ZERO);
         assert_eq!(Vec3::from(along_z.matrix3.z_axis), Vec3::ZERO);
+        let none = jet_frame(Vec3::ZERO, Vec3::ZERO);
+        assert_eq!(none.matrix3, bevy::math::Mat3A::ZERO);
+    }
+
+    /// The jet is tied to the part by the transpose of the part's turn: a
+    /// part turned a quarter about Y at (10, 130, 0) sees the world's +X
+    /// as its +Z and the point (10, 140, 5) at (−5, 10, 0).
+    #[test]
+    fn the_jet_rides_in_the_part_frame() {
+        let part = Affine3A::from_rotation_translation(
+            Quat::from_rotation_y(std::f32::consts::FRAC_PI_2),
+            Vec3::new(10.0, 130.0, 0.0),
+        );
+        let world = Affine3A::from_translation(Vec3::new(10.0, 140.0, 5.0));
+        let local = relative_frame(&part, &world);
+        assert!(near(
+            Vec3::from(local.translation),
+            Vec3::new(-5.0, 10.0, 0.0)
+        ));
+        assert!(near(Vec3::from(local.matrix3.x_axis), Vec3::Z));
+        assert!(near(Vec3::from(local.matrix3.y_axis), Vec3::Y));
+        assert!(near(Vec3::from(local.matrix3.z_axis), Vec3::NEG_X));
+        // Put back on the part, the frame is where it was.
+        let back = part * local;
+        assert!(near(
+            Vec3::from(back.translation),
+            Vec3::from(world.translation)
+        ));
+        // The new jet's first carry is twice its axis in the part's frame.
+        let j = jet(part, Vec3::new(10.0, 140.0, 5.0), Vec3::X, 4);
+        assert!(near(j.carry, Vec3::new(0.0, 0.0, 2.0)));
     }
 
     fn jet(frame: Affine3A, contact: Vec3, direction: Vec3, droplets: i32) -> Jet {
@@ -966,7 +1070,8 @@ mod tests {
         let mut sprays = BloodSprays::new(11);
         sprays.start(jet(turned, contact, Vec3::NEG_X, 30));
         let seed = sprays.jets[0].carry;
-        assert!(seed.distance(Vec3::new(0.0, 0.0, -2.0)) < 1e-5, "{seed}");
+        // Within the approximate normalise's 12 bits.
+        assert!(seed.distance(Vec3::new(0.0, 0.0, -2.0)) < 2e-3, "{seed}");
         while sprays.droplets.is_empty() {
             sprays.tick(&[Some(turned)]);
         }
@@ -1032,6 +1137,51 @@ mod tests {
         assert_eq!(sprays.jets.len(), 2);
         assert_eq!((sprays.jets[0].left, sprays.jets[0].last), (9, Vec3::ONE));
         assert!(sprays.jets[1].left > 0);
+    }
+
+    /// The world's reset drops the jets but not the droplets in flight, the
+    /// clock or the sizes; a teardown request runs it, a plain load without
+    /// teardown does not.
+    #[test]
+    fn the_reset_drops_only_the_jets() {
+        let mut sprays = BloodSprays::new(3);
+        let f = Affine3A::IDENTITY;
+        sprays.start(jet(f, Vec3::ZERO, Vec3::X, 20));
+        for _ in 0..5 {
+            sprays.tick(&[Some(f)]);
+        }
+        let (droplets, sizes, owed) = (sprays.droplets.clone(), sprays.sizes.clone(), sprays.owed);
+        assert!(!droplets.is_empty());
+        sprays.reset();
+        assert!(sprays.jets.is_empty());
+        assert_eq!(sprays.droplets, droplets);
+        assert_eq!(sprays.sizes, sizes);
+        assert_eq!(sprays.owed, owed);
+
+        let mut app = App::new();
+        app.add_message::<LevelChangeRequest>()
+            .insert_resource(BloodSprays::new(3))
+            .add_systems(
+                Update,
+                reset_sprays.run_if(on_message::<LevelChangeRequest>),
+            );
+        let start = |app: &mut App| {
+            app.world_mut()
+                .resource_mut::<BloodSprays>()
+                .start(jet(f, Vec3::ZERO, Vec3::X, 20));
+        };
+        start(&mut app);
+        app.world_mut().write_message(LevelChangeRequest {
+            level: Some("arena1".into()),
+            spawn: 0,
+            teardown: false,
+        });
+        app.update();
+        assert_eq!(app.world().resource::<BloodSprays>().jets.len(), 1);
+        app.world_mut()
+            .write_message(LevelChangeRequest::teardown());
+        app.update();
+        assert!(app.world().resource::<BloodSprays>().jets.is_empty());
     }
 
     /// Every ring slot's half-size lies in 12–24 cm and slots go round all
@@ -1210,7 +1360,8 @@ mod tests {
         let jet = &sprays.jets[0];
         assert_eq!((jet.body, jet.part, jet.left), (body, chest, 16));
         assert!(jet.last.distance(contact * 100.0) < 1e-4);
-        assert!(jet.carry.distance(Vec3::new(0.0, 0.0, -2.0)) < 1e-5);
+        // Within the approximate normalise's 12 bits.
+        assert!(jet.carry.distance(Vec3::new(0.0, 0.0, -2.0)) < 2e-3);
         // The frame ignores the part's scale.
         let frame = Affine3A::from_rotation_translation(turn, Vec3::new(0.0, 130.0, 0.0));
         let origin = (frame * jet.local).translation;

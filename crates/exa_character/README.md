@@ -411,7 +411,9 @@ words). Nothing builds that node yet.
 - Blood sprays (`spray`): each `exa_combat::wounds::Spray` starts a `Jet`
   in the scene's one `BloodSprays` (a resource): fixed to the struck part's
   frame (where the body's last tick left it, else where the frame draws
-  it), against the swing, sending its droplets at 40 a second from one
+  it; tied by the transpose of the part's turn, `spray::relative_frame`),
+  against the swing (its axes made unit by the approximate reciprocal
+  square root, `spray::jet_frame`), sending its droplets at 40 a second from one
   shared emission clock. The sprays tick in the fixed step after the body
   solver (droplets age, fall at a quarter of gravity, keep 0.95 of their
   speed a second; never touch anything) and are drawn each frame as
@@ -419,5 +421,6 @@ words). Nothing builds that node yet.
   `exa_render::spray::SprayMaterial`, between the last two ticks; the
   droplet texture `BldPrt02` loads with the first jet. `spray::DebugSprays`
   (`--debug-spray`) fires test jets from the player's or the character
-  view's body every second. See
-  [`docs/RENDERING.md`](../../docs/RENDERING.md) (Blood sprays).
+  view's body every second. A world teardown (`LevelChangeRequest` with
+  `teardown`) drops the jets (`BloodSprays::reset`); droplets in flight fly
+  on. See [`docs/RENDERING.md`](../../docs/RENDERING.md) (Blood sprays).

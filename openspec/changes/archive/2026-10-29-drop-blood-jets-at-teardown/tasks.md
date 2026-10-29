@@ -1,0 +1,4 @@
+- [x] Jet frame with the approximate normalise and the transpose tie (exa_character)
+- [x] Reset of the sprays on a world teardown (exa_character)
+- [x] Shared weapon-blood clamp rule (exa_combat)
+- [x] Tests, READMEs and docs/RENDERING.md
