@@ -451,7 +451,9 @@ restore, the runtime resize, the 256-tick fade (whose eased mode sets no
 alpha), both scrollbars and their setters, the wheel, held arrows and
 thumb drags, the point conversions rounded with `CVTSS2SI`, the hit test
 (client, children, then records exactly and within two units), hover,
-focus, caret, Tab, the key/press/drag routes, the frame codes a press,
+focus, caret, Tab, the base form's key handler (`form_key`: Tab among
+the records, the focused record's answer, else the parent's key slot
+unless the key repeats or was typed), the key/press/drag routes, the frame codes a press,
 grip drag and release act on, the snap slots and the records' rescale,
 the maximise and restore steps with the window-state hook's words, the
 close cascade over owned popups and children, and the control table's

@@ -2040,6 +2040,53 @@ pub fn tab_target(controls: &[ControlTab], current: usize, backward: bool) -> Op
     }
 }
 
+/// What the base form's key handler did with a key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FormKey {
+    /// Tab moved the focus to this record.
+    Focus(usize),
+    /// The focused record took the key (its answer had both low bits); the
+    /// GUI is asked to redraw.
+    Taken(usize),
+    /// Nobody took it: it goes on to the parent form's key slot.
+    Parent,
+    /// The key ends here.
+    Nothing,
+}
+
+/// The base form's key handler. With a focused record (a positive focus
+/// code naming a record): Tab moves the focus to [`tab_target`] (Shift,
+/// the key flags' 0x10, goes backward), and a Tab with nowhere to go ends
+/// there; any other key is offered to the focused record (message 0xa0),
+/// whose `answer` with both low bits set takes it. A key nobody took goes
+/// to the parent's key slot unless its flags have a low bit (a repeat, 1,
+/// or a typed character, 2).
+pub fn form_key(
+    key: u32,
+    flags: u32,
+    focus: i32,
+    controls: &[ControlTab],
+    answer: impl FnOnce(usize) -> u32,
+) -> FormKey {
+    let last = controls.len() as i32 - 1;
+    if last >= 0
+        && let Some(index) = control_index(focus, last)
+    {
+        if key == 9 {
+            return tab_target(controls, index, flags & 0x10 != 0)
+                .map_or(FormKey::Nothing, FormKey::Focus);
+        }
+        if answer(index) & 3 == 3 {
+            return FormKey::Taken(index);
+        }
+    }
+    if flags & 3 == 0 {
+        FormKey::Parent
+    } else {
+        FormKey::Nothing
+    }
+}
+
 /// Where a key, press or drag goes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Route {
