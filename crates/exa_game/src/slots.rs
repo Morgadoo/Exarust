@@ -193,6 +193,9 @@ pub struct LoadedSave {
     pub has_world_characters: bool,
     /// Whether an old arena save was converted and written back.
     pub converted: bool,
+    /// The load mask the player data was read with: a full load's is every
+    /// bit, the character screen's `0x100010`, the scan's 0.
+    pub mask: u32,
 }
 
 impl LoadedSave {
@@ -432,12 +435,14 @@ impl Slots {
     }
 
     /// The valid slots, in the most-recently-used order. Files are taken in
-    /// directory order; the **first** file for a number decides that
-    /// number's fate, even when it leaves the slot out (the original
-    /// appends the number before asking the mode's reader, so a skipped
-    /// number's checkpoint is not tried afterwards). A slot the story
-    /// refuses for its old signature is deleted, both files; one that does
-    /// not read is left out and left on disk.
+    /// directory order; a number already **listed** is not looked at again,
+    /// but a number whose first file was left out or deleted is: the
+    /// original writes the number into the list's next free place before
+    /// asking the mode's reader and only moves past it when the reader
+    /// keeps the slot, and its repeat test covers the kept places only, so
+    /// a skipped save's checkpoint is still tried. A slot the story refuses
+    /// for its old signature is deleted, both files; one that does not read
+    /// is left out and left on disk.
     ///
     /// The original also requires the player's record to be found in the
     /// character databases; Exarust's own saves carry no placement, so a
@@ -447,16 +452,21 @@ impl Slots {
     }
 
     /// Applies the scan to slot files already listed in the order the
-    /// folder returned them. Split out so tests can pin the order.
+    /// folder returned them. Split out so tests can pin the order. A file
+    /// that is gone by the time the scan reaches it (deleted with its slot
+    /// earlier in the same scan) is passed over [guess: the original's
+    /// directory walk does not return a file deleted before the walk
+    /// reached it; the scan's open would otherwise create it empty].
     fn scan(&self, candidates: Vec<(u32, SlotKind)>) -> io::Result<Vec<Slot>> {
         let mut valid: Vec<Slot> = Vec::new();
-        let mut seen: Vec<u32> = Vec::new();
         for (number, kind) in candidates {
-            if seen.contains(&number) {
+            if valid.iter().any(|slot| slot.number == number) {
                 continue;
             }
-            seen.push(number);
             let path = self.file(number, kind);
+            if !path.is_file() {
+                continue;
+            }
             let mut package = Self::open(&path)?;
             match self.verdict(&mut package, &path) {
                 Verdict::Keep(info) => valid.push(Slot { number, kind, info }),
@@ -533,6 +543,18 @@ impl Slots {
         mask: u32,
     ) -> Result<LoadedSave, SaveError> {
         self.touch(number);
+        self.open_first(number, prefer_checkpoint, mask)
+    }
+
+    /// Opens the first existing file of a slot in the asked order and
+    /// decodes it with `mask`; a failed load from a checkpoint switches the
+    /// package back to the save name.
+    fn open_first(
+        &self,
+        number: u32,
+        prefer_checkpoint: bool,
+        mask: u32,
+    ) -> Result<LoadedSave, SaveError> {
         let order = if prefer_checkpoint {
             [SlotKind::Checkpoint, SlotKind::Save]
         } else {
@@ -606,6 +628,7 @@ impl Slots {
             has_world_objects,
             has_world_characters,
             converted,
+            mask,
         })
     }
 
@@ -969,6 +992,217 @@ impl Slots {
             }
         }
         Ok(removed)
+    }
+}
+
+/// The slot manager's cached list, as the original keeps it beside the
+/// folder: the slot count (−1 until the folder was scanned), the numbers in
+/// the list's order with each slot's player name, and the current slot (−1
+/// when the manager is made, 0 after a delete or a dropped death). The
+/// entry points that need the list scan the folder only while the count is
+/// negative; creating, selecting, touching and deleting then work on the
+/// cached list and keep the stored order, so the folder is read once and
+/// not on every question.
+///
+/// A scan whose folder cannot be listed leaves the count at −1, so the next
+/// question scans again, as the original's directory walk that fails
+/// leaves its count unset.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SlotList {
+    slots: Slots,
+    count: i32,
+    numbers: Vec<u32>,
+    names: Vec<Option<String>>,
+    current: i32,
+}
+
+impl SlotList {
+    /// A manager over `slots`, not scanned yet: count −1, current −1.
+    pub fn new(slots: Slots) -> Self {
+        Self {
+            slots,
+            count: -1,
+            numbers: Vec::new(),
+            names: Vec::new(),
+            current: -1,
+        }
+    }
+
+    /// The folder and mode.
+    pub fn slots(&self) -> &Slots {
+        &self.slots
+    }
+
+    /// The cached count; −1 until a scan ran.
+    pub fn count(&self) -> i32 {
+        self.count
+    }
+
+    /// The current slot number: −1 at creation, 0 when none is chosen.
+    pub fn current(&self) -> i32 {
+        self.current
+    }
+
+    /// The cached numbers, in the list's order.
+    pub fn numbers(&self) -> &[u32] {
+        &self.numbers
+    }
+
+    /// The cached player names, one per number.
+    pub fn names(&self) -> &[Option<String>] {
+        &self.names
+    }
+
+    /// Scans the folder ([`Slots::list`]) into the cache. A folder that
+    /// cannot be listed leaves the cache as it was.
+    pub fn rescan(&mut self) -> io::Result<()> {
+        let listed = self.slots.list()?;
+        self.numbers = listed.iter().map(|slot| slot.number).collect();
+        self.names = listed
+            .into_iter()
+            .map(|slot| slot.info.player_name)
+            .collect();
+        self.count = self.numbers.len() as i32;
+        Ok(())
+    }
+
+    /// Scans only while the count is negative.
+    fn ensure(&mut self) -> io::Result<()> {
+        if self.count < 0 {
+            self.rescan()?;
+        }
+        Ok(())
+    }
+
+    /// Whether any slot is listed: the cached count above zero, scanning
+    /// first when there is none. A folder that cannot be listed has none.
+    pub fn any(&mut self) -> bool {
+        let _ = self.ensure();
+        self.count > 0
+    }
+
+    /// The new-slot entry: the lowest free number
+    /// ([`save_chunk::free_slot_number`]) goes to the front, the others
+    /// move down a place with their names, and the front name becomes the
+    /// current player's when there is one; without one the front keeps the
+    /// name that was there (the original only overwrites the moved list's
+    /// first name when a player record exists). The new number is the
+    /// current slot, the order is stored, and the slot's save file is
+    /// opened (created empty when missing). Returns the number.
+    pub fn create(&mut self, player_name: Option<&str>) -> io::Result<u32> {
+        self.ensure()?;
+        let number = save_chunk::free_slot_number(&self.numbers);
+        save_chunk::insert_slot(&mut self.numbers, number);
+        let front = self.names.first().cloned().flatten();
+        self.names.insert(0, front);
+        if let Some(name) = player_name {
+            self.names[0] = Some(name.to_owned());
+        }
+        self.count += 1;
+        self.current = number as i32;
+        self.slots.store_order(&self.numbers)?;
+        Slots::open(&self.slots.file(number, SlotKind::Save))?;
+        Ok(number)
+    }
+
+    /// The number [`SlotList::create`] would take now, scanning first when
+    /// the list was never scanned.
+    pub fn next_free_number(&mut self) -> io::Result<u32> {
+        self.ensure()?;
+        Ok(save_chunk::free_slot_number(&self.numbers))
+    }
+
+    /// Makes the listed slot at `index` the current one, as the character
+    /// screen's load does before it reads; an index outside the cached
+    /// list changes nothing.
+    pub fn select(&mut self, index: usize) -> Option<u32> {
+        let number = *self.numbers.get(index)?;
+        self.current = number as i32;
+        Some(number)
+    }
+
+    /// Moves a listed number to the front with its name and stores the
+    /// order; a number that is not listed changes nothing and stores
+    /// nothing.
+    pub fn touch(&mut self, number: u32) {
+        let Some(at) = self.numbers.iter().position(|&seen| seen == number) else {
+            return;
+        };
+        let moved = self.numbers.remove(at);
+        let name = self.names.remove(at);
+        self.numbers.insert(0, moved);
+        self.names.insert(0, name);
+        let _ = self.slots.store_order(&self.numbers);
+    }
+
+    /// The menu's delete of the slot at `index`: it becomes the current
+    /// slot, both files are deleted (the save first), it leaves the list
+    /// and the current slot is 0 afterwards. The stored order is not
+    /// rewritten. Returns the number deleted.
+    pub fn delete_index(&mut self, index: usize) -> io::Result<Option<u32>> {
+        let Some(&number) = self.numbers.get(index) else {
+            return Ok(None);
+        };
+        self.current = number as i32;
+        let deleted = self.slots.delete(number);
+        self.numbers.remove(index);
+        self.names.remove(index);
+        self.count -= 1;
+        self.current = 0;
+        deleted.map(|()| Some(number))
+    }
+
+    /// The death rule over the current slot: with health below 0.01 (in
+    /// double) and a current slot above zero, the save file is deleted;
+    /// without a checkpoint the slot then leaves the list and the current
+    /// slot is 0, with one it stays for the next load to come back from.
+    /// Returns whether the slot left the list.
+    pub fn drop_after_death(&mut self, health: f32) -> io::Result<bool> {
+        if self.current <= 0 || save_chunk::save_allowed(health, false) {
+            return Ok(false);
+        }
+        let number = self.current as u32;
+        match fs::remove_file(self.slots.file(number, SlotKind::Save)) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        if self.slots.has_checkpoint(number) {
+            return Ok(false);
+        }
+        if let Some(at) = self.numbers.iter().position(|&seen| seen == number) {
+            self.numbers.remove(at);
+            self.names.remove(at);
+            self.count -= 1;
+        }
+        self.current = 0;
+        Ok(true)
+    }
+
+    /// The full load of the current slot: it moves to the front of the
+    /// cached list, then the slot's files are tried as [`Slots::load`]
+    /// tries them (the checkpoint first when asked). Loading from a
+    /// checkpoint copies it back over the save.
+    pub fn load_current(&mut self, prefer_checkpoint: bool) -> Result<LoadedSave, SaveError> {
+        if self.current <= 0 {
+            return Err(SaveError::Malformed);
+        }
+        let number = self.current as u32;
+        self.touch(number);
+        let loaded = self.slots.open_first(number, prefer_checkpoint, !0)?;
+        if loaded.kind == SlotKind::Checkpoint {
+            let _ = self.slots.copy_checkpoint_over_save(number);
+        }
+        Ok(loaded)
+    }
+
+    /// Writes every section of a save into the current slot
+    /// ([`Slots::save_full`]). No current slot writes nothing.
+    pub fn save_current(&self, session: &Session, world: &SaveWorld<'_>) -> io::Result<bool> {
+        if self.current <= 0 {
+            return Ok(false);
+        }
+        self.slots.save_full(self.current as u32, session, world)
     }
 }
 
@@ -1522,7 +1756,7 @@ mod tests {
     }
 
     #[test]
-    fn the_first_file_for_a_number_decides_even_when_it_is_skipped() {
+    fn a_skipped_number_is_tried_again_and_a_listed_one_is_not() {
         let dir = folder("scan");
         let slots = Slots::story(&dir);
         // An empty package (no player data) at number 5, and a readable
@@ -1537,20 +1771,24 @@ mod tests {
             session::write(&Session::story()),
         )
         .unwrap();
-        // The save comes first: the number is skipped and its checkpoint is
-        // not looked at.
-        assert!(
-            slots
-                .scan(vec![
-                    (5, SlotKind::Save),
-                    (5, SlotKind::Checkpoint),
-                    (6, SlotKind::Checkpoint)
-                ])
-                .unwrap()
-                .iter()
-                .all(|slot| slot.number == 6)
+        // The save comes first and is left out; the repeat test covers the
+        // kept slots only, so the checkpoint lists the slot. A number with
+        // no file left is passed over and not created.
+        let listed = slots
+            .scan(vec![
+                (5, SlotKind::Save),
+                (5, SlotKind::Checkpoint),
+                (6, SlotKind::Checkpoint),
+            ])
+            .unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(
+            (listed[0].number, listed[0].kind),
+            (5, SlotKind::Checkpoint)
         );
-        // The checkpoint comes first: the slot is listed from it.
+        assert!(!slots.file(6, SlotKind::Checkpoint).exists());
+        // The checkpoint comes first: the slot is listed from it and the
+        // save is not looked at again.
         let listed = slots
             .scan(vec![(5, SlotKind::Checkpoint), (5, SlotKind::Save)])
             .unwrap();
@@ -1996,5 +2234,91 @@ mod tests {
         assert!(!slots2.file(1, SlotKind::Save).exists());
         let _ = fs::remove_dir_all(&dir);
         let _ = fs::remove_dir_all(&dir2);
+    }
+
+    #[test]
+    fn the_cached_list_scans_once_and_works_on_its_cache() {
+        let dir = folder("cache");
+        let slots = Slots::arena(&dir);
+        let mut list = SlotList::new(slots.clone());
+        assert_eq!((list.count(), list.current()), (-1, -1));
+        // An empty folder scans to zero slots.
+        assert!(!list.any());
+        assert_eq!(list.count(), 0);
+        // Three new slots take 1, 2, 3, each at the front and current.
+        assert_eq!(list.create(Some("Ash")).unwrap(), 1);
+        assert_eq!(list.create(None).unwrap(), 2);
+        assert_eq!(list.create(Some("Cid")).unwrap(), 3);
+        assert_eq!(list.numbers(), &[3, 2, 1]);
+        assert_eq!(list.current(), 3);
+        // Without a player the new front keeps the name that was there.
+        assert_eq!(
+            list.names(),
+            &[Some("Cid".into()), Some("Ash".into()), Some("Ash".into())]
+        );
+        assert!(slots.file(2, SlotKind::Save).is_file());
+        // A file written behind the cache's back is not seen: the count is
+        // set, so the folder is not read again.
+        fs::write(slots.file(9, SlotKind::Save), session::write(&arena("Zed"))).unwrap();
+        assert!(list.any());
+        assert_eq!(list.count(), 3);
+        // Touch moves a listed number to the front with its name and
+        // stores the order; an unknown number changes nothing.
+        list.touch(1);
+        list.touch(42);
+        assert_eq!(list.numbers(), &[1, 3, 2]);
+        assert_eq!(list.names()[0], Some("Ash".into()));
+        assert_eq!(slots.stored_order(), Some(vec![1, 3, 2]));
+        // Select sets the current slot from the cached list only.
+        assert_eq!(list.select(2), Some(2));
+        assert_eq!(list.current(), 2);
+        assert_eq!(list.select(3), None);
+        // Delete by index removes both files and leaves current at 0.
+        assert_eq!(list.delete_index(1).unwrap(), Some(3));
+        assert_eq!(list.numbers(), &[1, 2]);
+        assert_eq!((list.count(), list.current()), (2, 0));
+        assert!(!slots.file(3, SlotKind::Save).exists());
+        // The free number fills the gap at 3 only after 1 and 2: the list
+        // is two long, so 3 is one past it.
+        assert_eq!(list.create(None).unwrap(), 3);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_cached_death_drops_the_slot_only_without_a_checkpoint() {
+        let dir = folder("cache-death");
+        let slots = Slots::arena(&dir);
+        let mut list = SlotList::new(slots.clone());
+        let first = list.create(Some("Ash")).unwrap();
+        slots.save(first, &arena("Ash")).unwrap();
+        // A living player changes nothing; the single 0.01 widens to just
+        // under the double 0.01, so it already counts as dead.
+        assert!(!list.drop_after_death(0.0101).unwrap());
+        assert!(slots.file(first, SlotKind::Save).is_file());
+        // With a checkpoint the save goes, the slot stays current.
+        slots.copy_save_over_checkpoint(first).unwrap();
+        assert!(!list.drop_after_death(0.0).unwrap());
+        assert!(!slots.file(first, SlotKind::Save).exists());
+        assert_eq!((list.count(), list.current()), (1, first as i32));
+        // The load of the current slot comes back from the checkpoint and
+        // copies it over the save.
+        let loaded = list.load_current(false).unwrap();
+        assert_eq!(loaded.kind, SlotKind::Checkpoint);
+        assert!(slots.file(first, SlotKind::Save).is_file());
+        // Without a checkpoint the slot leaves the list.
+        fs::remove_file(slots.file(first, SlotKind::Checkpoint)).unwrap();
+        assert!(list.drop_after_death(0.0).unwrap());
+        assert_eq!((list.count(), list.current()), (0, 0));
+        assert!(list.load_current(false).is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_folder_that_cannot_be_listed_stays_unscanned() {
+        let dir = folder("cache-missing").join("absent");
+        let mut list = SlotList::new(Slots::story(&dir));
+        assert!(!list.any());
+        assert_eq!(list.count(), -1);
+        assert!(list.create(None).is_err());
     }
 }

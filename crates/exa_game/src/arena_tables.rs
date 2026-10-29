@@ -311,7 +311,7 @@ pub fn apply(
             box_entries.extend(list.iter().map(arsenal_entry));
         }
     }
-    *stash = tables.stash.iter().map(|entry| entry.id).collect();
+    *stash = stash_from_tables(tables);
 
     career.company.name = String::from_utf8_lossy(&tables.company.name).into_owned();
     career.company.stock = tables.shop_stock.clone();
@@ -341,7 +341,27 @@ pub fn apply(
             .collect(),
     };
 
-    staff.employees = tables
+    staff.employees = employees_from_tables(tables);
+
+    career.merchant_stock = tables.merchant.ids.clone();
+    career.merchant_kinds = tables.merchant.stock_type;
+    career.merchant_rank = tables.merchant.specialisation as i32;
+    career.entries = roster_from_rows(&tables.tournament.rows);
+    // A field whose first company is 0 stays empty, so the next tournament
+    // asks for a new one.
+    career.rivals = tables.tournament.field.map(|company| company as i32);
+}
+
+/// The hub stash's item ids from a save's tables.
+pub fn stash_from_tables(tables: &ArenaTables) -> Vec<u32> {
+    tables.stash.iter().map(|entry| entry.id).collect()
+}
+
+/// The staff from a save's employees chunk: a specialist's flat item list
+/// comes back as its carried items, a fighter's as its kit; the hand and
+/// worn split is not stored on the wire.
+pub fn employees_from_tables(tables: &ArenaTables) -> Vec<crate::staff::Employee> {
+    tables
         .employees
         .employees
         .iter()
@@ -356,15 +376,7 @@ pub fn apply(
                 ..crate::staff::Employee::default()
             }
         })
-        .collect();
-
-    career.merchant_stock = tables.merchant.ids.clone();
-    career.merchant_kinds = tables.merchant.stock_type;
-    career.merchant_rank = tables.merchant.specialisation as i32;
-    career.entries = roster_from_rows(&tables.tournament.rows);
-    // A field whose first company is 0 stays empty, so the next tournament
-    // asks for a new one.
-    career.rivals = tables.tournament.field.map(|company| company as i32);
+        .collect()
 }
 
 #[cfg(test)]
