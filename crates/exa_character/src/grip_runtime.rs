@@ -463,6 +463,7 @@ mod tests {
             origin: Vec3::ZERO,
             links: Vec::new(),
             mesh: None,
+            triangles: None,
         }])
     }
 

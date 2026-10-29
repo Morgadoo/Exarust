@@ -45,6 +45,7 @@ fn slab(at: Vec3) -> RigidPart {
         origin: at,
         links: vec![slider(-0.2, -0.2), slider(0.2, -0.2), slider(0.0, 0.3)],
         mesh: None,
+        triangles: None,
     }
 }
 

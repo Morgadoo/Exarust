@@ -159,6 +159,7 @@ impl ModelLoader<'_> {
             cloth_mesh: None,
             mesh: false,
             render_flags: 0,
+            triangles: None,
         }];
         let mut head: Option<(f32, f32)> = None;
         let mut flipped: Option<(f32, f32)> = None;
@@ -269,6 +270,7 @@ impl ModelLoader<'_> {
                 cloth_mesh: None,
                 mesh: false,
                 render_flags: 0,
+                triangles: None,
             });
         }
 

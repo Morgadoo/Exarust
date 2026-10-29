@@ -696,6 +696,7 @@ mod tests {
                 cloth_mesh: None,
                 mesh,
                 render_flags: 0,
+                triangles: None,
             }
         }
         let body = Model {

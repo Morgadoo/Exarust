@@ -71,6 +71,10 @@ pub struct RigidPart {
     /// pair stage buckets and meets the body by (the original copies the
     /// node's bounds); without one the box around its spheres stands in.
     pub mesh: Option<Bounds>,
+    /// The node's mesh triangles in its frame (m), which the pair stage
+    /// tests the other side's spheres against; `None` for a node without a
+    /// mesh, which leaves the sphere fallback.
+    pub triangles: Option<std::sync::Arc<Vec<[Vec3; 3]>>>,
 }
 
 /// A stored link of an articulated child to its parent body.
@@ -133,7 +137,7 @@ impl Part {
             link_mobility: s.mobility,
             gravity: gravity_shares(s.point_masses),
             spheres: s.spheres.clone(),
-            triangles: None,
+            triangles: s.triangles.clone(),
             sphere_grid: SphereGrid::build(&s.spheres).map(std::sync::Arc::new),
             pairing: {
                 let mut pairing = Pairing::new(&rest, &rest_inverse, &s.spheres, s.mobility);

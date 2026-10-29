@@ -365,6 +365,7 @@ fn spawn_crate(app: &mut App, at: Vec3) -> Entity {
             origin: Vec3::ZERO,
             links: Vec::new(),
             mesh: None,
+            triangles: None,
         }]));
     prop
 }

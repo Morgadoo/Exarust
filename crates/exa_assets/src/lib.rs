@@ -39,7 +39,7 @@ pub use exa_rpk::{Archive, GameData, PackKind, locate_install};
 
 pub use model::{
     ClothMesh, ImageInsert, Model, ModelCache, ModelLoader, ModelNode, NodeRigidBody, TextureInfo,
-    transform_from_rows,
+    mesh_triangles, transform_from_rows,
 };
 pub use morph::BodyMorph;
 pub use skin_composite::{SkinBeard, SkinCompositeJob};

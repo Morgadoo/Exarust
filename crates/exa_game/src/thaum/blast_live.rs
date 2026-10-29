@@ -696,6 +696,7 @@ pub(crate) mod test_bodies {
                     origin: Vec3::ZERO,
                     links: Vec::new(),
                     mesh: None,
+                    triangles: None,
                 }
             })
             .collect();
@@ -843,6 +844,7 @@ mod tests {
             origin: Vec3::ZERO,
             links: Vec::new(),
             mesh: None,
+            triangles: None,
         }])
     }
 

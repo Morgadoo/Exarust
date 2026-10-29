@@ -57,6 +57,7 @@ fn arm(at: Vec3) -> RigidPart {
             link(Vec3::new(-0.15, 0.0, 0.0), Vec3::new(-0.15, 0.0, 0.0), 0.0),
         ],
         mesh: None,
+        triangles: None,
     }
 }
 

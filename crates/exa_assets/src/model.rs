@@ -109,6 +109,10 @@ pub struct ModelNode {
     pub cloth_mesh: Option<Arc<ClothMesh>>,
     /// The node stores a mesh body, whatever its groups draw.
     pub mesh: bool,
+    /// The node mesh's triangles in the node's space (metres), for the
+    /// pair stage's sphere-against-mesh query; `None` for a node without a
+    /// mesh, and for an index list that does not name whole triangles.
+    pub triangles: Option<Arc<Vec<[Vec3; 3]>>>,
     /// The mesh body's render word, which the original copies onto its
     /// mesh node as the body is read
     /// ([`exa_formats::rfc::Mesh::render_flags`]). The dressed-mesh pass
@@ -229,6 +233,23 @@ pub fn is_body_model(entry: &str) -> bool {
 
 /// A mesh part: its mesh and material.
 pub type Part = (Handle<Mesh>, Handle<ExaMaterial>);
+
+/// The triangles of a stored mesh in its node's space (metres), for the
+/// pair stage's sphere-against-mesh query. `None` when the index list does
+/// not name whole triangles of the mesh's positions; a trailing index that
+/// starts no triangle is ignored. The positions are in metres, as the mesh
+/// reader scales them.
+pub fn mesh_triangles(mesh: &RfcMesh) -> Option<Vec<[Vec3; 3]>> {
+    let at = |i: u32| -> Option<Vec3> { mesh.positions.get(i as usize).copied().map(Vec3::from) };
+    let triangles: Vec<[Vec3; 3]> = mesh
+        .indices
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .map(|t| Some([at(t[0])?, at(t[1])?, at(t[2])?]))
+        .collect::<Option<_>>()?;
+    (!triangles.is_empty()).then_some(triangles)
+}
 
 /// A loaded texture and whether it carries alpha.
 type CachedTexture = Option<(Handle<Image>, bool)>;
@@ -593,6 +614,7 @@ impl ModelLoader<'_> {
                     collision_sound,
                 }
             });
+            let triangles = mesh.and_then(mesh_triangles).map(Arc::new);
             let cloth_mesh = match mesh {
                 Some(mesh) if node.cloth_marker => {
                     let groups: Vec<usize> = built.meshes.iter().map(|(g, _)| *g).collect();
@@ -686,6 +708,7 @@ impl ModelLoader<'_> {
                 ),
                 cloth_mesh,
                 mesh: mesh.is_some(),
+                triangles,
                 render_flags: mesh.map_or(0, |mesh| mesh.render_flags),
             });
         }
@@ -3050,6 +3073,40 @@ pub fn painted_model_stem(model: &Model) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_meshs_triangles_are_its_positions_in_metres() {
+        let mut mesh = RfcMesh::default();
+        mesh.positions = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 2.0, 0.0],
+            [0.0, 0.0, 3.0],
+        ];
+        // A trailing index that starts no triangle is ignored.
+        mesh.indices = vec![0, 1, 2, 0, 2, 3, 1];
+        assert_eq!(
+            mesh_triangles(&mesh),
+            Some(vec![
+                [
+                    Vec3::new(0.0, 0.0, 0.0),
+                    Vec3::new(1.0, 0.0, 0.0),
+                    Vec3::new(0.0, 2.0, 0.0),
+                ],
+                [
+                    Vec3::new(0.0, 0.0, 0.0),
+                    Vec3::new(0.0, 2.0, 0.0),
+                    Vec3::new(0.0, 0.0, 3.0),
+                ],
+            ])
+        );
+        // An index past the positions leaves the body without mesh
+        // triangles, so the pair stage falls back to its spheres.
+        mesh.indices = vec![0, 1, 9];
+        assert_eq!(mesh_triangles(&mesh), None);
+        mesh.indices.clear();
+        assert_eq!(mesh_triangles(&mesh), None);
+    }
+
     use bevy::render::render_resource::TextureFormat;
 
     fn flat(w: usize, v: u8) -> Texels {
@@ -3182,6 +3239,7 @@ mod tests {
             cloth_mesh: None,
             mesh: false,
             render_flags: 0,
+            triangles: None,
         }
     }
 
