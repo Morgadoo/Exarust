@@ -648,6 +648,16 @@ pub fn perceive_all(
                 npc.unseen(sensed.id);
                 continue;
             }
+            // A full list admits a new character only when its sensed
+            // weight reaches the lightest contact's; the lightest is put
+            // back otherwise (the original senses into a scratch record
+            // and admits it after).
+            let evicted = (combatant.contact(sensed.entity).is_none()
+                && combatant.contacts.len() >= combatant::MAX_CONTACTS)
+                .then(|| {
+                    let (at, least) = combatant.lightest();
+                    (at, least, combatant.contacts[at].clone())
+                });
             let index = combatant.contact_index(sensed.entity);
             let observed = Observed {
                 entity: sensed.entity,
@@ -756,6 +766,17 @@ pub fn perceive_all(
                     }
                 }
             };
+            if let Some((at, least, old)) = evicted
+                && least > combatant::admission_weight(&combatant.contacts[at])
+            {
+                debug!(
+                    "{entity:?}: a full contact list keeps its lightest contact over {:?}",
+                    sensed.entity
+                );
+                combatant.contacts[at] = old;
+                npc.unseen(sensed.id);
+                continue;
+            }
             if let Some(floor) = sight.alert_floor
                 && combatant.alert < floor
             {
@@ -1058,18 +1079,27 @@ pub fn ai_tick(
                 duellist.leave();
                 combatant.in_combat = false;
                 // The target pass leaves through the leave-combat routine:
-                // the AI's look and aim take the body's look yaw and the
-                // next sway is drawn 500 ms out. It zeroes the heading where
-                // the leave look copies the yaw, but the out-of-combat turn
-                // rewrites the heading and eased offset from the look every
-                // tick, so the leave look's writes stand in for it.
+                // the AI's look, heading and head look take the body's look
+                // yaw, the offsets and sway are zeroed, the alert look's
+                // wide pan waits 3 s and the sway and narrow pan 0.5 s.
                 if let Some(t) = transform.as_deref() {
                     let body_look = motion::yaw_of(t.rotation * Vec3::Z);
                     let brain = &mut *npc;
-                    motion::leave_look(&mut brain.gaze, &mut brain.turn, body_look);
-                    brain.turn.sway_at_ms = now.wrapping_add(500);
+                    motion::leave_combat(
+                        &mut brain.gaze,
+                        &mut brain.turn,
+                        &mut brain.alert,
+                        body_look,
+                        now,
+                    );
+                    info!(
+                        "{talking}: the target pass leaves combat looking at {body_look:.3} rad; \
+                         the wide pan waits until {} ms, the narrow pan until {} ms",
+                        brain.alert.wide_at_ms, brain.alert.narrow_at_ms
+                    );
+                } else {
+                    info!("{talking}: the target pass leaves combat");
                 }
-                info!("{talking}: the target pass leaves combat");
             }
         }
         // Out of combat the AI sways its look about its heading and the
@@ -1198,13 +1228,23 @@ pub fn ai_tick(
 /// state: unless the character follows a planned route, its locomotion is
 /// active and its speed is at least 1 cm a tick, so a character walking a
 /// route leaves no footprint for the others' planners. The compare is
-/// unordered: a NaN speed skips the stamp.
+/// unordered: a NaN speed skips the stamp. The tick lifts the footprint
+/// before its state, so a character the gate refuses stays off the grid.
 ///
-/// Not wired: the game's footprint system stamps every NPC each fixed tick,
-/// and an NPC body carries no locomotion request whose activity and speed
-/// this gate reads.
+/// The game's footprint system (`exa_game::footprints`) asks this gate for
+/// every NPC each fixed tick, with [`follows_route`], whether the AI asks
+/// its body to walk, and the speed along its facing the last fixed step
+/// walked.
 pub fn stamps_footprint(following_route: bool, moving: bool, speed_cm: f32) -> bool {
     !following_route || !moving || speed_cm < 1.0
+}
+
+/// The original's route-following flag, as Exarust keeps it: a brain walks
+/// a roam or patrol leg, or a flight route, or its duellist walks a chase
+/// route ([`crate::Duellist::follows_route`]).
+pub fn follows_route(npc: Option<&Npc>, duellist: Option<&crate::Duellist>) -> bool {
+    npc.is_some_and(|n| !n.walk.route.is_empty() || !n.flight_walk.route.is_empty())
+        || duellist.is_some_and(crate::Duellist::follows_route)
 }
 
 /// The attach step's snap, once: the AI's look yaws, aim, look and

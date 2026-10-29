@@ -755,6 +755,42 @@ pub fn leave_look(gaze: &mut Gaze, turn: &mut Turning, body_look_yaw: f32) {
     gaze.offset = body_look_yaw;
 }
 
+/// How long after leaving combat the alert look's wide pan may be drawn
+/// (ms).
+pub const LEAVE_WIDE_MS: u32 = 3000;
+/// How long after leaving combat the next sway (and the alert look's
+/// narrow pan) may be drawn (ms).
+pub const LEAVE_NARROW_MS: u32 = 500;
+
+/// The leave-combat routine's look (the target pass and the combat state
+/// leave through it): the AI's look, its heading and the head look take the
+/// body's look yaw; the eased offset and the sway (the head offset and its
+/// target, the alert pan's offset and target: the original keeps each pair
+/// in one slot) are zeroed; the alert look's wide pan waits
+/// [`LEAVE_WIDE_MS`] and the sway and the narrow pan [`LEAVE_NARROW_MS`].
+/// The current state becomes the idle state and the state phase restarts:
+/// those are the caller's.
+pub fn leave_combat(
+    gaze: &mut Gaze,
+    turn: &mut Turning,
+    alert: &mut AlertLook,
+    body_look_yaw: f32,
+    now_ms: u32,
+) {
+    turn.look = body_look_yaw;
+    turn.heading = body_look_yaw;
+    gaze.look = body_look_yaw;
+    turn.offset = 0.0;
+    gaze.offset = 0.0;
+    alert.offset = 0.0;
+    turn.sway = 0.0;
+    gaze.target_offset = 0.0;
+    alert.target = 0.0;
+    alert.wide_at_ms = now_ms.wrapping_add(LEAVE_WIDE_MS);
+    turn.sway_at_ms = now_ms.wrapping_add(LEAVE_NARROW_MS);
+    alert.narrow_at_ms = turn.sway_at_ms;
+}
+
 /// The aim: the look is snapped to the body's facing and a new sway draw is
 /// made 1–4 s out.
 pub fn aim(
@@ -1351,5 +1387,44 @@ mod tests {
         );
         assert_eq!((gaze.look, gaze.target_offset), (0.0, 0.0));
         assert_eq!(turn.sway_at_ms, 77);
+    }
+
+    /// The leave-combat routine: look, heading and head look take the
+    /// body's yaw, the offsets and targets are zeroed, the wide pan waits
+    /// 3 s and the sway and narrow pan 0.5 s (wrapping on the clock).
+    #[test]
+    fn leaving_combat_waits_three_seconds_to_pan() {
+        let mut gaze = Gaze {
+            offset: 0.3,
+            target_offset: 0.4,
+            ..Gaze::default()
+        };
+        let mut turn = Turning {
+            offset: 0.2,
+            sway: 1.1,
+            sway_at_ms: 9,
+            ..Turning::default()
+        };
+        let mut alert = AlertLook {
+            offset: 0.5,
+            target: -0.5,
+            marked: true,
+            ..AlertLook::default()
+        };
+        leave_combat(&mut gaze, &mut turn, &mut alert, -1.25, 10_000);
+        assert_eq!((turn.look, turn.heading, gaze.look), (-1.25, -1.25, -1.25));
+        assert_eq!((turn.offset, gaze.offset, alert.offset), (0.0, 0.0, 0.0));
+        assert_eq!(
+            (turn.sway, gaze.target_offset, alert.target),
+            (0.0, 0.0, 0.0)
+        );
+        assert_eq!((alert.wide_at_ms, alert.narrow_at_ms), (13_000, 10_500));
+        assert_eq!(turn.sway_at_ms, 10_500);
+        assert!(alert.marked, "the in-combat mark is the caller's");
+        leave_combat(&mut gaze, &mut turn, &mut alert, 0.0, u32::MAX - 999);
+        assert_eq!(
+            (alert.wide_at_ms, alert.narrow_at_ms),
+            (2000, u32::MAX - 499)
+        );
     }
 }

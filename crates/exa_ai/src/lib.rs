@@ -196,6 +196,15 @@ impl Duellist {
         self.in_combat
     }
 
+    /// It walks a chase route: the last combat tick ended at the chase and
+    /// a route the planner accepted is left to walk (the route-following
+    /// flag the AI tick's footprint gate reads) [guess: the original's flag
+    /// stays set until its walk state changes; Exarust's route is cleared
+    /// on arrival and only walked while the tick ends at the chase].
+    pub fn follows_route(&self) -> bool {
+        self.chasing && !self.route.is_empty()
+    }
+
     /// Leaves combat for the idle state.
     pub fn leave(&mut self) {
         self.engaged = false;
@@ -449,12 +458,13 @@ fn duellist(
             Option<&Ragdoll>,
             &Fighter,
             Option<&Animator>,
+            Option<&exa_physics::body::locomotion::Locomotor>,
         ),
         Without<Duellist>,
     >,
     children: Query<&Children>,
     blades: Query<&Blade>,
-    brains: Query<&brain::Npc>,
+    mut brains: Query<&mut brain::Npc>,
     role_db: Option<Res<brain::RoleDatabase>>,
     role_lists: Query<&crate::roles::Roles>,
     ids: Query<&brain::CharacterId>,
@@ -532,6 +542,35 @@ fn duellist(
         let Ok((target, target_warded)) = targets.get(ai.target) else {
             continue;
         };
+        // The target's body: the fighter at or under the target entity.
+        let target_body = std::iter::once(ai.target)
+            .chain(children.iter_descendants(ai.target))
+            .find_map(|e| bodies.get(e).ok().map(|b| (e, b)));
+        let target_fighter_entity = target_body.map(|(e, _)| e);
+        let target_body = target_body.map(|(_, b)| b);
+        let traits = brains
+            .get(entity)
+            .ok()
+            .and_then(|b| b.personality)
+            .or(ai.personality)
+            .map_or(
+                // A fighter without a record's personality: skill 0 and
+                // the blend 1 a fully feral one has [Exarust's default].
+                combat::Traits {
+                    skill: 0.0,
+                    blend: 1.0,
+                },
+                |p| combat::Traits {
+                    skill: p.skill,
+                    blend: p.blend,
+                },
+            );
+        let foe_chest = target_body
+            .map(|(_, tgt, tgt_body, ..)| stance::chest_point(tgt, tgt_body))
+            .unwrap_or_else(|| stance::chest_point(target, None))
+            * CM;
+        let target_forward = target.rotation() * Vec3::Z;
+        let foe_motion = foe_walk(target_body.and_then(|(.., l)| l), target_forward);
         if !ai.in_combat {
             // Entering combat: the guard, from the idle it stood in, its
             // eagerness at a half, and the published reach. The combat
@@ -540,15 +579,38 @@ fn duellist(
             ai.in_combat = true;
             combat::enter(&mut ai.mind, false, now as u32);
             ai.mind.heading = yaw_of(t.rotation);
-            // The target is set here: the estimate starts at its body, the
-            // set-target's fresh flag, commitment and cleared overshoot and
-            // stuck counts are set, and the bearing and aim are measured
-            // from the chest.
+            // The target is set here: the estimate starts at the foe
+            // estimate's lead (a moving foe's chest 30 ticks along its
+            // facing at its speed), the set-target's fresh flag, commitment
+            // and cleared overshoot and stuck counts are set, and the
+            // bearing and aim are measured from the chest; the brain's look
+            // takes the aim's yaw too.
             let chest_cm = stance::chest_point(gt, ragdoll) * CM;
-            let target_cm = target.translation() * CM;
+            let lead = combat::foe_estimate(
+                &combat::Foe {
+                    chest: foe_chest,
+                    step_goal: foe_chest,
+                    running: foe_motion.moving,
+                    facing: foe_motion.facing,
+                    forward_speed: foe_motion.speed_cm,
+                    ..combat::Foe::default()
+                },
+                traits.skill,
+            );
             let previous = ai.bearing.0;
-            let bearing = combat::set_target(&mut ai.mind, target_cm, chest_cm, previous);
+            let bearing = combat::set_target(&mut ai.mind, lead, chest_cm, previous);
             ai.bearing = (bearing.to_target, bearing.distance_cm);
+            if let Ok(mut npc) = brains.get_mut(entity) {
+                npc.turn.look = ai.mind.aim;
+            }
+            info!(
+                "duellist {entity:?} sets its target: estimate {:.1} cm from the foe's chest \
+                 (moving {}, {:.2} cm a tick), aim {:.3} rad",
+                (lead - foe_chest).length(),
+                foe_motion.moving,
+                foe_motion.speed_cm,
+                ai.mind.aim
+            );
             combatant.in_combat = true;
             combatant.clear_combat_step(gt.translation() * 100.0, t.rotation * Vec3::Z, 0.0);
             combatant.refresh_fighting(0.0, reach_of(entity, &blades) * 100.0);
@@ -560,10 +622,6 @@ fn duellist(
             );
             continue;
         }
-        // The target's body: the fighter at or under the target entity.
-        let target_body = std::iter::once(ai.target)
-            .chain(children.iter_descendants(ai.target))
-            .find_map(|e| bodies.get(e).ok());
         let primary = attacker.primary_record(entity, blades.iter()).copied();
         let primary_blend = primary.map(|r| r.blend);
         // Leave a collapsing or dead target alone.
@@ -579,10 +637,9 @@ fn duellist(
 
         // One perception pass on the target (the combatant's), then the
         // published arc the position score reads.
-        let target_forward = target.rotation() * Vec3::Z;
         let target_condition = target_body.map(|(c, ..)| *c).unwrap_or(Condition::NORMAL);
-        let target_fighter = target_body.map(|(_, _, _, f, _)| f);
-        let target_anim = target_body.and_then(|(_, _, _, _, a)| a);
+        let target_fighter = target_body.map(|(_, _, _, f, ..)| f);
+        let target_anim = target_body.and_then(|(_, _, _, _, a, _)| a);
         let phase = target_anim
             .zip(motions.as_deref())
             .and_then(|(a, m)| m.clip(a, &a.action).map(|c| a.clip_progress(c)))
@@ -737,34 +794,15 @@ fn duellist(
             strikers: attack::held_strikers(entity, blades.iter()),
         };
         let ready = attack::execute(attack::Request::default(), busy).is_some();
-        let traits = brains
-            .get(entity)
-            .ok()
-            .and_then(|b| b.personality)
-            .or(ai.personality)
-            .map_or(
-                // A fighter without a record's personality: skill 0 and
-                // the blend 1 a fully feral one has [Exarust's default].
-                combat::Traits {
-                    skill: 0.0,
-                    blend: 1.0,
-                },
-                |p| combat::Traits {
-                    skill: p.skill,
-                    blend: p.blend,
-                },
-            );
-        let foe_chest = target_body
-            .map(|(_, tgt, tgt_body, _, _)| stance::chest_point(tgt, tgt_body))
-            .unwrap_or_else(|| stance::chest_point(target, None))
-            * CM;
         let foe = combat::Foe {
             condition: target_condition.0,
             dead: target_condition.is_dead(),
             reach_cm: reach_of(ai.target, &blades) * CM,
             chest: foe_chest,
             step_goal: foe_chest,
-            facing: target_forward,
+            running: foe_motion.moving,
+            forward_speed: foe_motion.speed_cm,
+            facing: foe_motion.facing,
             scale: target_fighter.map_or(1.0, |f| f.stats.scale),
             rules: target_fighter.map_or(0, |f| f.stats.rules.0),
             ..combat::Foe::default()
@@ -812,6 +850,23 @@ fn duellist(
             }
             _ => None,
         };
+        // The combat state lifts its foe's footprint too, so its place
+        // scores do not pay for the foe it closes on; it stamps the foe's
+        // again after the place pass, and an earlier exit (down, leave,
+        // chase, charge) leaves it to the foe's own controller, which
+        // stamps it on its next tick.
+        let foe_print = match (
+            target_fighter_entity,
+            nav.as_deref_mut(),
+            footprints.as_deref_mut(),
+        ) {
+            (Some(foe), Some(grid), Some(prints)) => prints.of(foe).map(|at| {
+                prints.lift(grid, foe);
+                (foe, at)
+            }),
+            _ => None,
+        };
+        let mut placed = runs == 0;
         for _ in 0..runs {
             let yaw = yaw_of(t.rotation);
             let stepping = ai.step;
@@ -936,6 +991,7 @@ fn duellist(
                 roll,
             );
             let chased = field.chase.and_then(|c| c.outcome);
+            placed = matches!(out.exit, None | Some(combat::Exit::NoPlace));
             if marked && !contacts[0].unreachable {
                 // The foe is in reach again.
                 combatant.contacts[index].flags &= !crate::contacts::UNREACHABLE;
@@ -1053,6 +1109,17 @@ fn duellist(
         {
             prints.stamp(grid, entity, at);
         }
+        if let Some((foe, at)) = foe_print {
+            if placed
+                && let (Some(grid), Some(prints)) = (nav.as_deref_mut(), footprints.as_deref_mut())
+            {
+                prints.stamp(grid, foe, at);
+            } else {
+                debug!(
+                    "duellist {entity:?}: its foe's footprint stays off until the foe's own tick"
+                );
+            }
+        }
         // Only a character in the scene moves its body. A hidden one's AI
         // still runs its combat state above, as the original's AI manager
         // runs a dormant character's whole AI tick; its body, out of the
@@ -1088,6 +1155,36 @@ fn duellist(
             }
             _ => stance::take_ai_stance(&mut anim, *stance, primary_blend),
         }
+    }
+}
+
+/// What the foe estimate reads of the foe's locomotion: whether it moves,
+/// its speed along its heading (cm a tick) and its facing.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct FoeWalk {
+    moving: bool,
+    speed_cm: f32,
+    facing: Vec3,
+}
+
+/// The foe's locomotion from its body's locomotor (the player's); a foe
+/// without one (an NPC, whose path driver writes no locomotor) stands, and
+/// faces along `forward`.
+fn foe_walk(
+    locomotor: Option<&exa_physics::body::locomotion::Locomotor>,
+    forward: Vec3,
+) -> FoeWalk {
+    match locomotor {
+        Some(l) => FoeWalk {
+            moving: l.moving(),
+            speed_cm: l.speed,
+            facing: exa_physics::body::locomotion::forward(l.yaw),
+        },
+        None => FoeWalk {
+            moving: false,
+            speed_cm: 0.0,
+            facing: forward,
+        },
     }
 }
 
@@ -1193,6 +1290,36 @@ mod tests {
             .get::<CharacterBody>(root)
             .unwrap()
             .desired_velocity
+    }
+
+    /// Entering combat sets the target through the estimate routine: a
+    /// foe moving at 2 cm a tick along +X is led 60 cm (30 ticks) ahead of
+    /// its chest; a standing one is not.
+    #[test]
+    fn set_target_leads_a_moving_foe() {
+        use exa_physics::body::locomotion::{Locomotor, Stop};
+        for (moving, lead) in [(true, 60.0), (false, 0.0)] {
+            let (mut app, foe, _) = duel(2.0, false);
+            let target = app.world().get::<Duellist>(foe).unwrap().target;
+            app.world_mut().entity_mut(target).insert((
+                Condition::NORMAL,
+                Locomotor {
+                    yaw: std::f32::consts::FRAC_PI_2,
+                    speed: 2.0,
+                    stop: if moving { Stop::Moving } else { Stop::Standing },
+                    ..Locomotor::default()
+                },
+            ));
+            engage(&mut app, foe);
+            step(&mut app);
+            let at = *app.world().get::<GlobalTransform>(target).unwrap();
+            let chest = stance::chest_point(&at, None) * CM;
+            let mind = &app.world().get::<Duellist>(foe).unwrap().mind;
+            let off = mind.estimate - chest;
+            assert!((off.x - lead).abs() < 1e-3, "{moving}: {off:?}");
+            assert!(off.y.abs() < 1e-3 && off.z.abs() < 1e-3, "{off:?}");
+            assert!(mind.fresh_target);
+        }
     }
 
     /// The perception pass fills a contact for the target: seen, its

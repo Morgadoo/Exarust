@@ -671,9 +671,11 @@ fn bearing_to(estimate: Vec3, from: Vec3, chest_y: f32, previous: Vec3) -> Beari
 /// from `from` (the fighter's chest) as the original's set-target does,
 /// without the estimate tick's rules: the distance is the flat length, the
 /// direction the whole offset over it (its height scaled too), and the aim
-/// takes the direction's yaw. The original runs the estimate routine on the
-/// new foe first; Exarust places the estimate directly on the foe, as its
-/// entering combat does.
+/// takes the direction's yaw. `foe` is the estimate routine's answer for
+/// the new foe ([`foe_estimate`]: its chest, led 30 ticks along its facing
+/// while it moves, or toward its step goal while it steps; the routine has
+/// no draw). The caller copies the aim's yaw into the brain's look, which
+/// the original keeps beside it.
 pub fn set_target(mind: &mut CombatMind, foe: Vec3, from: Vec3, previous: Vec3) -> Bearing {
     mind.fresh_target = true;
     mind.commitment = 1.0;
