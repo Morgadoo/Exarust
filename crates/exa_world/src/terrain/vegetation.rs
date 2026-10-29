@@ -423,13 +423,15 @@ pub fn ground_with_normal(vertices: &[[f32; 3]], n: usize, at: Vec2, position: V
     let relative = position - p1;
     let edge = p0 - p1;
     let other = p2 - p1;
+    // The engine sums a dot as `(x·x + y·y) + z·z`.
+    let dot = |a: Vec3, b: Vec3| (a.x * b.x + a.y * b.y) + a.z * b.z;
     let cross = relative.cross(edge);
     let test = ((-relative.x) + relative.z) * SLOPE - cross.y * CORRECTION;
     if test.is_nan() || test > DIAGONAL {
         let cross = relative.cross(p3 - p1);
-        position.y + other.dot(cross) * CORRECTION
+        position.y + dot(other, cross) * CORRECTION
     } else {
-        position.y - other.dot(cross) * CORRECTION
+        position.y - dot(other, cross) * CORRECTION
     }
 }
 
