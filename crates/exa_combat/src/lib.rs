@@ -36,6 +36,7 @@ pub mod fast_math;
 pub mod fighter;
 pub mod grip;
 pub mod impact;
+pub mod pain;
 pub mod parry;
 pub mod regen;
 pub mod remedy;
