@@ -766,11 +766,20 @@ pub fn perceive_all(
 /// combat state and the distances, on the game clock and the brain's
 /// generator. The report stays in [`Npc::pass`] (its level, attention,
 /// stress and cursor included).
+///
+/// The tick ends by registering the brain's navigation footprint unless the
+/// character is fighting, its body is moving and it is walking at least
+/// 1 cm a tick ([`stamps_footprint`]); a knocked-out, collapsed or dead body
+/// only lifts and re-stamps it.
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn ai_tick(
     ticks: Option<Res<BodyTicks>>,
     mut clock: Option<ResMut<BrainClock>>,
     mut rooms: Option<ResMut<RoomCells>>,
+    (mut nav, mut footprints): (
+        Option<ResMut<exa_world::nav::NavGrid>>,
+        Option<ResMut<exa_world::nav::NavFootprints>>,
+    ),
     level: Option<Res<exa_world::room_view::LevelRooms>>,
     players: Query<(Entity, &GlobalTransform), With<RatedPlayer>>,
     targets: Query<(Entity, &GlobalTransform)>,
@@ -787,6 +796,8 @@ pub fn ai_tick(
         Option<&Name>,
         Option<&mut Transform>,
         Option<&crate::presence::Presence>,
+        Option<&exa_physics::body::locomotion::Locomotion>,
+        Option<&exa_physics::body::locomotion::Locomotor>,
     )>,
 ) {
     // One pass a tick: a second frame on the same body tick does nothing
@@ -810,6 +821,8 @@ pub fn ai_tick(
         name,
         transform,
         presence,
+        locomotion,
+        locomotor,
     ) in &mut npcs
     {
         let talking = name.map_or("character", |n| n.as_str());
@@ -820,6 +833,11 @@ pub fn ai_tick(
         // refreshes its nav footprint: no morale, contacts, state or look
         // (the original's out-of-the-fight condition branch).
         if condition.0 & combatant::CONDITION_OUT != 0 {
+            if let (Some(grid), Some(prints)) = (nav.as_deref_mut(), footprints.as_deref_mut()) {
+                let standing = gt.map_or(Vec3::ZERO, |g| g.translation());
+                prints.lift(grid, _entity);
+                prints.stamp(grid, _entity, standing);
+            }
             continue;
         }
         let target = duellist.as_deref().map(|d| d.target).or(player);
@@ -1136,11 +1154,29 @@ pub fn ai_tick(
                 transform.rotation = Quat::from_rotation_y(npc.turn.offset);
             }
         }
+        // The tick's last step registers the character's navigation
+        // footprint unless the fight and a walking body keep it moving (the
+        // combat state handles its own then).
+        let fighting = duellist.as_deref().is_some_and(|d| d.fighting());
+        let moving = locomotion.is_some_and(|l| l.moving);
+        let speed = locomotor.map_or(0.0, |l| l.speed);
+        if stamps_footprint(fighting, moving, speed)
+            && let (Some(grid), Some(prints)) = (nav.as_deref_mut(), footprints.as_deref_mut())
+        {
+            prints.stamp(grid, _entity, gt.map_or(Vec3::ZERO, |g| g.translation()));
+        }
         npc.roll = roll;
     }
     if let (Some(ticks), Some(clock)) = (ticks.as_deref(), clock.as_deref_mut()) {
         clock.passed = ticks.0;
     }
+}
+
+/// Whether the AI tick registers the nav footprint after the state: unless
+/// the character is in combat, its body is moving and its speed is at least
+/// 1 cm a tick. A NaN speed fails the compare and stamps.
+pub fn stamps_footprint(in_combat: bool, moving: bool, speed_cm: f32) -> bool {
+    !in_combat || !moving || speed_cm < 1.0
 }
 
 /// Walks a fleeing brain out of its room: a brain whose target pass put it
@@ -2732,5 +2768,20 @@ mod tests {
             .unwrap();
         assert!((c.soothe - -50.0).abs() < 1e-6, "{}", c.soothe);
         assert_eq!(c.tolerance, 0.0);
+    }
+
+    #[test]
+    fn the_footprint_is_stamped_unless_the_fight_walks_the_body() {
+        // Out of combat it always stamps, moving or not.
+        assert!(stamps_footprint(false, false, 0.0));
+        assert!(stamps_footprint(false, true, 250.0));
+        // In combat a still body stamps, a walking one does not.
+        assert!(stamps_footprint(true, false, 250.0));
+        assert!(!stamps_footprint(true, true, 250.0));
+        // The speed gate is 1 cm a tick, exclusive, and a NaN speed skips
+        // the stamp (the parity jump), as an unordered compare does there.
+        assert!(stamps_footprint(true, true, 0.999_999_94));
+        assert!(!stamps_footprint(true, true, 1.0));
+        assert!(!stamps_footprint(true, true, f32::NAN));
     }
 }
