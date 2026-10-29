@@ -237,6 +237,8 @@ pub struct RosterRowText {
     pub rank: RosterCellText,
     /// The health bar's fill, health over 65535.
     pub health: f32,
+    /// The record's health word the gauge draw reads ([`health_marker`]).
+    pub health_word: u16,
 }
 
 /// The three cells of a roster row.
@@ -258,6 +260,7 @@ pub fn roster_row(
             ink: None,
         },
         health: health_fill(health),
+        health_word: health,
     }
 }
 

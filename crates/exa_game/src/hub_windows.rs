@@ -677,7 +677,21 @@ fn paint_board(board: &Board, bounds: GuiRect, look: &Look) -> gui_paint::Painte
                     CellValue::Text(text) => text,
                     CellValue::Coin(coins) => coin_text(coins),
                     CellValue::Health(word) => {
-                        format!("{:.0}%", f64::from(word) / 655.35)
+                        // The roster's health column is owner-drawn: the
+                        // table hands the gauge draw the cell's left one
+                        // unit in, its pen line five units under the row's
+                        // top and the column's width.
+                        let cell = at(bounds, rect);
+                        let unit = look.unit;
+                        let marker = crate::manage::health_marker(
+                            cell.left + unit,
+                            cell.top + 5 * unit,
+                            cell.width(),
+                            unit,
+                            word,
+                        );
+                        paint_gauge(&mut painted, &marker, look);
+                        String::new()
                     }
                     CellValue::Empty => String::new(),
                 };
@@ -721,14 +735,29 @@ fn paint_manage(refresh: &ManageRefresh, bounds: GuiRect, look: &Look) -> gui_pa
     for (title, x) in columns {
         paint_text(
             &mut painted,
-            GuiRect::new(roster.left + x, roster.top, 84, ROW_HEIGHT),
+            GuiRect::new(roster.left + x, roster.top, 84, 6 * look.unit),
             title,
             look,
         );
     }
+    // The roster is a table of 6-unit rows under a 6-unit header; its
+    // health column is owner-drawn: the table hands the cell's left (one
+    // unit in, past the two columns), its pen line `11u + 6u·row` and the
+    // rest of the client's width to the gauge draw ([`health_marker`]).
+    let u = look.unit;
+    let health_x = u + 0x84 + 0x50;
     for (row, text) in refresh.roster.iter().enumerate() {
-        let y = roster.top + ROW_HEIGHT * (row as i32 + 1);
-        paint_row(&mut painted, roster.left, y, text, look);
+        let row = row as i32;
+        let y = roster.top + 6 * u * (row + 1);
+        paint_row(&mut painted, roster.left, y, 6 * u, text, look);
+        let marker = crate::manage::health_marker(
+            roster.left + health_x,
+            roster.top + 11 * u + 6 * u * row,
+            roster.width() - health_x,
+            u,
+            text.health_word,
+        );
+        paint_gauge(&mut painted, &marker, look);
     }
     // The report's roster-id lines are not drawn: the report table's own
     // rows carry no column labels in the constructor.
@@ -739,25 +768,36 @@ fn paint_row(
     painted: &mut gui_paint::Painted,
     left: i32,
     y: i32,
+    height: i32,
     text: &RosterRowText,
     look: &Look,
 ) {
     paint_text_ink(
         painted,
-        GuiRect::new(left, y, 0x84, ROW_HEIGHT),
+        GuiRect::new(left, y, 0x84, height),
         &text.name.text,
         text.name.ink,
         look,
     );
     paint_text(
         painted,
-        GuiRect::new(left + 0x84, y, 0x50, ROW_HEIGHT),
+        GuiRect::new(left + 0x84, y, 0x50, height),
         &text.rank.text,
         look,
     );
-    let bar = GuiRect::new(left + 0x84 + 0x50, y + 8, 0x84, ROW_HEIGHT - 16);
+}
+
+/// The roster's health gauge where [`crate::manage::health_marker`] puts
+/// it: its frame, and the client fill up to the record's share. The GUI's
+/// gauge shading itself is drawn with the panel and client-fill layers.
+fn paint_gauge(
+    painted: &mut gui_paint::Painted,
+    marker: &crate::manage::HealthMarker,
+    look: &Look,
+) {
+    let bar = GuiRect::new(marker.left, marker.top, marker.length, marker.thickness);
     paint_panel(painted, bar, look);
-    let filled = (f64::from(text.health) * f64::from(bar.width())) as i32;
+    let filled = (f64::from(marker.fill) * f64::from(marker.length)) as i32;
     if filled > 0 {
         let fill = GuiRect::new(bar.left, bar.top, filled.min(bar.width()), bar.height());
         for layer in gui_paint::paint_client_fill(fill, &look.palette).layers {
