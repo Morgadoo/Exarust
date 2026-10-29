@@ -330,6 +330,18 @@ fn key_named(name: &str) -> Option<KeyCode> {
         KeyCode::F11,
         KeyCode::F12,
     ];
+    let digits = [
+        KeyCode::Digit0,
+        KeyCode::Digit1,
+        KeyCode::Digit2,
+        KeyCode::Digit3,
+        KeyCode::Digit4,
+        KeyCode::Digit5,
+        KeyCode::Digit6,
+        KeyCode::Digit7,
+        KeyCode::Digit8,
+        KeyCode::Digit9,
+    ];
     let letters = [
         KeyCode::KeyA,
         KeyCode::KeyB,
@@ -376,6 +388,10 @@ fn key_named(name: &str) -> Option<KeyCode> {
                 (Some(c), None) if c.is_ascii_alphabetic() => letters
                     .get((c.to_ascii_uppercase() as u8 - b'A') as usize)
                     .copied(),
+                // The digit row (the power bar's slot keys).
+                (Some(c), None) if c.is_ascii_digit() => {
+                    digits.get((c as u8 - b'0') as usize).copied()
+                }
                 _ => None,
             }
         }
@@ -1090,6 +1106,15 @@ mod tests {
             ])
         );
         assert_eq!(parse_presses(""), Some(vec![]));
+        // The digit row, for the power bar's slots.
+        assert_eq!(
+            parse_presses("C@60,1@70,Q@80"),
+            Some(vec![
+                key(KeyCode::KeyC, 60),
+                key(KeyCode::Digit1, 70),
+                key(KeyCode::KeyQ, 80),
+            ])
+        );
         assert_eq!(parse_clicks("300, 420,540"), Some(vec![300, 420, 540]));
         assert_eq!(parse_clicks("300,x"), None);
         assert_eq!(

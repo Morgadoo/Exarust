@@ -317,8 +317,9 @@ barrier (facing 1 or more, 3 m), shell and strikes (cost within half the
 focus, facing within 0.5, a free slot). Each creator's material
 (`_ForceMat01`, `_ForceBarrier01`, `_ForceAura01`), its parameter block,
 the shared `gi_multipoint` emissive program, the animated `_ForceNoise`
-field (one 8-bit channel from `exa_render::image_noise`) and the sounds each one loads are data in `force` (the GL scene
-nodes, shader binding and GI registration are not issued).
+field (one 8-bit channel from `exa_render::image_noise`) and the sounds each one loads are data in `force`. The
+blast-family and torrent ribbons and the shell aura are drawn on the GPU (`thaum::effect_draw`, see The
+shaped-force aura); the other materials' programs and the GI registration are not issued.
 
 ## Mind
 
@@ -730,7 +731,23 @@ GL static draw) and the `_ForceNoise` picture. The
 node carries the `ForceShell` aura (`LiveShellAura`): it opens, holds and
 closes, steps its ripples, and outlives the power until it has closed; it
 also carries its material's pass plan (`thaum::effect_material`,
-`thaum::effect_pass`). Nothing draws it yet.
+`thaum::effect_pass`).
+
+**On the GPU** (`thaum::effect_draw`, `exa_render::force_effects`; rules in
+[RENDERING.md](RENDERING.md), Force effects): the aura copies each skinned
+mesh of its caster (body and apparel), sharing the source's skin, and draws
+them with the ported `effectshell_v`/`effectshell_f`; each frame its one
+material takes `shell_uniforms` for a skinned copy, the node's frame unturned
+at the body's root (cm), the skin box the body parts' spheres' height span,
+the camera carried into that frame. The copies leave with the aura. The
+blast, bolt and wave ribbons wear `effectforce_f` and the torrent's streams
+`effecttorrent_f`, with their frames' `TexOfs` (blast `(0, radius, texture
+scale)`, torrent `(0, scroll, 1)`) and the second coordinate set. All three
+bind the `_ForceNoise` picture as `EmiTex`: it is made the first frame one of
+these effects exists and uploaded again only when the noise object reports a
+new picture, so nothing runs while no power is active. The force record names
+no texture of its own that the routines make, so the ribbons' `EmiTex` being
+the noise picture is a guess.
 
 ## Displacement wisps
 
@@ -897,10 +914,12 @@ hum, the dead shell and tendril image, the body's hit and restore callbacks
 and the shell's fade hook. The vanish's show and hide are still the effect
 class's own, not applied to Exarust's drawn body.
 
-The effects' meshes come from their own builders but are drawn with
-`exa_render::glow::GlowMaterial`, an additive stand-in: the original's
-electricity program, `effectforce` and `effectfbrcd` (with the animated
-force noise) are not ported, nor are the lights and sounds. The arcs
+The arcs', wisps' and barricade's meshes come from their own builders but
+are drawn with `exa_render::glow::GlowMaterial`, an additive stand-in: the
+original's electricity program and `effectfbrcd` are not ported, nor are
+the lights and sounds. The blast-family and torrent ribbons and the shell
+aura draw with their own ported programs (`effectforce_f`,
+`effecttorrent_f`, `effectshell`; The shaped-force aura). The arcs
 upload their ribbon's UVs. The barricade's navigation stamp is applied to
 the grid (`exa_world::nav::stamp`); the AI's sight of it is still
 `effects::danger`, which nothing registers yet. The domes, the wave and

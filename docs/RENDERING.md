@@ -2333,6 +2333,51 @@ lifetimes and the texture-scroll rate), the `_ElecMat01` emissive map, the
 per-branch scissor/uniform loop, the GI flow, the device's hum, and the
 callers (nothing spawns an arc yet).
 
+## Force effects
+
+`exa_render::force_effects` holds the Force effects' programs, ported from
+the shipped GLSL (`effectforce_f`, `effecttorrent_f`, `effectshell_v` /
+`effectshell_f`); `exa_game::thaum::effect_draw` submits them
+([THAUMATURGY.md](THAUMATURGY.md), The shaped-force aura).
+
+- **Ribbons** (`ForceRibbonMaterial`, `force_ribbon.wesl`): the blast, bolt
+  and wave chunks (`effectforce_f`) and, with the `TORRENT` definition, the
+  torrent's streams (`effecttorrent_f`). The vertex stage is Bevy's mesh
+  stage, which is `effectforce_v` up to the colour scale: `vTex` is the
+  first coordinate set, `vTx2` the second (`ATTRIBUTE_UV_1`), `vCol` the
+  colour bytes over 255. `TexOfs` is the uniform, `EmiTex` the noise
+  picture. `effectforce_f` never writes its alpha; it is taken as 0, so the
+  blast ribbon only adds.
+- **Shell aura** (`ForceShellMaterial`, `force_shell.wesl`): its own vertex
+  stage on Bevy's skinning moves each vertex out 2 cm along its skinned
+  normal (the skinned copy's `position + 2·normal`); the fragment stage
+  takes the world position and normal through `LclMat · scale(100)` into the
+  shell's frame in cm and runs `effectshell_f` as shipped (three planar
+  lookups blended by the squared normal, the eight `ColPt` ripples, the fade
+  plane `FdPln`, the rim and the violet ramp). The viewer direction is
+  normalised per fragment (the original interpolates a per-vertex unit
+  vector). The uniform is 256 bytes: `LclMat` 0, `ViewPos` 64, `FdPln` 80,
+  `ColPt` 96, `TexPos` 224, `ColourInt` 240, `TexScale` 244, `Fade` 248,
+  the push 252.
+- **Render state** comes from the material records the routines create:
+  `_ForceMat01` and `_ForceAura01` carry blend word 0x163 (source ONE,
+  destination ONE_MINUS_SRC_ALPHA, layer 6), Bevy's premultiplied blend,
+  without depth writes; the force record's flags 0x480018 are two-sided,
+  the aura's 0x480008 one-sided. Outputs are clamped to [0, 1] as the
+  original's 8-bit target clamps them.
+- **`_ForceNoise`**: 256 by 256 one-byte red texels (`R8Unorm`), repeating,
+  linear, with a 2×2 box mip chain (rounded means) when the parameter
+  word's bit 0x40 is set (nine levels, 87 381 bytes). It is made from the
+  engine's noise object the first frame a force effect exists and uploaded
+  again only when the object's tick reports a new picture.
+- **Passes.** The original draws each effect once per supersample layer
+  with that layer's depth term (`exa_game::thaum::effect_pass`); Exarust
+  draws each effect once a frame and its supersample resolve does the rest.
+- **Tests.** Both programs compose with Bevy's modules and validate under
+  naga (`tests/surface_shader.rs`: blast, torrent, skinned with storage and
+  uniform skins, rigid); both uniforms match their WGSL structs in size and
+  member offsets.
+
 ## Rooms and black fill
 
 The original paints nothing black: it clears the frame to the
