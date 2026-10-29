@@ -4699,18 +4699,20 @@ pub fn stripe_bar(batch: &mut SkinBatch, rect: GuiRect, inks: &[SkinInk]) {
 /// The translucent band a listing draws over a selected row: an outline
 /// whose middle is the highlight ink, then glow fans that reach from the
 /// top and bottom edges into the row. Selecting the row widens the glow by
-/// the unit. The original reads `ink` from the highlight group's fourth or
-/// fifth shade and `highlight` from its seventh or eighth, by `selected`.
+/// the unit and moves both inks up a shade: the outline reads the highlight
+/// group's fourth shade and its glow the seventh, or the fifth and eighth
+/// when selected.
 pub fn selection_band(
     batch: &mut SkinBatch,
     rect: GuiRect,
-    ink: SkinInk,
-    highlight: SkinInk,
+    highlight: &SkinGroup,
     selected: bool,
     unit: i32,
 ) {
+    let ink = highlight[if selected { 4 } else { 3 }];
+    let glow_ink = highlight[if selected { 7 } else { 6 }];
     let edge = [ink[0], ink[1], ink[2], 25];
-    let low = [highlight[0], highlight[1], highlight[2], 200];
+    let low = [glow_ink[0], glow_ink[1], glow_ink[2], 200];
     let top = [ink[0], ink[1], ink[2], 100];
     let mid = [ink[0], ink[1], ink[2], 30];
     let clear = [ink[0], ink[1], ink[2], 0];
@@ -11545,12 +11547,16 @@ mod tests {
 
     #[test]
     fn a_selection_band_draws_its_outline_and_two_glows() {
+        let mut highlight = [[0u8; 4]; 12];
+        highlight[3] = [10, 20, 30, 255];
+        highlight[4] = [11, 21, 31, 255];
+        highlight[6] = [200, 100, 50, 255];
+        highlight[7] = [201, 101, 51, 255];
         let mut batch = SkinBatch::new();
         selection_band(
             &mut batch,
             GuiRect::corners(10.0, 20.0, 110.0, 100.0),
-            [10, 20, 30, 255],
-            [200, 100, 50, 255],
+            &highlight,
             false,
             4,
         );
@@ -11577,6 +11583,21 @@ mod tests {
         assert_eq!((glow[13].x, glow[13].y), (60.0, 94.0));
         assert_eq!((glow[14].x, glow[14].y), (10.0, 95.0));
         assert_eq!((glow[21].x, glow[21].y), (110.0, 95.0));
+        // A selected row reads the next shades up and reaches twice the unit.
+        let mut selected = SkinBatch::new();
+        selection_band(
+            &mut selected,
+            GuiRect::corners(10.0, 20.0, 110.0, 100.0),
+            &highlight,
+            true,
+            4,
+        );
+        let outline = selected.vertices_of(&selected.primitives[0]);
+        assert_eq!(outline[0].ink, [11, 21, 31, 25]);
+        assert_eq!(outline[1].ink, [201, 101, 51, 200]);
+        let glow = selected.vertices_of(&selected.primitives[1]);
+        assert_eq!((glow[0].x, glow[0].y), (60.0, 29.0));
+        assert_eq!((glow[1].x, glow[1].y), (60.0, 21.0));
     }
 
     #[test]
