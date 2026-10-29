@@ -616,6 +616,17 @@ impl SwingState {
         Some(r)
     }
 
+    /// Whether a clip at `progress` is in the swing's region, where the
+    /// trackers run and the swing voice sounds: within the first 25 % of
+    /// a chained side attack, else past 30 % (compared in double).
+    pub fn in_region(&self, motion: AttackMotion, progress: f32) -> bool {
+        if motion.is_side() && self.has(flags::CONTINUATION) {
+            progress < CARRIED_UNTIL
+        } else {
+            f64::from(progress) > REGION_FROM
+        }
+    }
+
     /// One attack tick of the swing routine, in the original's order: the
     /// trackers in the window region (late past 70 %); the rate; a chained
     /// swing's carried window closing past 25 %; the overhead's and stab's
@@ -626,11 +637,7 @@ impl SwingState {
     /// the rate × P; tiredness ([`paced`]).
     pub fn tick(&mut self, swing: &Swing, t: &SwingTick, primary: &mut Option<Slot>) -> SwingEvent {
         let p = t.at.progress;
-        let region = if t.motion.is_side() && self.has(flags::CONTINUATION) {
-            p < CARRIED_UNTIL
-        } else {
-            f64::from(p) > REGION_FROM
-        };
+        let region = self.in_region(t.motion, p);
         if region {
             if p > LATE_FROM {
                 self.flags |= flags::LATE;
