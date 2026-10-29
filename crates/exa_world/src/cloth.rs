@@ -182,6 +182,8 @@ pub struct ClothDebug {
     pub cloths: Vec<ClothTick>,
     /// The stage's time in the last tick (µs).
     pub last_micros: u64,
+    /// Its parts split in the last tick (µs): bucketing the body parts.
+    pub last_parts_micros: u64,
     /// Frames the mesh write-back ran since the last log, the meshes it
     /// wrote and its time (µs).
     pub frames: u32,
@@ -836,6 +838,7 @@ fn step_cloths(
         total.cloths_micros = micros(planned, stepped);
         total.micros = t.elapsed().as_micros() as u64;
         debug.last_micros = total.micros;
+        debug.last_parts_micros = total.parts_micros;
         debug.tick(total, &names, &parents);
     }
 }
