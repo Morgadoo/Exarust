@@ -106,6 +106,33 @@ impl PlacedItem {
     }
 }
 
+/// What the player's interactions read off a placed object's record and
+/// placement: the placement word (the scene node's instance word: bit 0 a
+/// saved latch the container open tests, bits 16..23 the condition or used
+/// mark, bit `0x8000` the first touch), its usable section and its
+/// container section. The container's children are the live copy the
+/// container popup loads and saves back when it closes, as the original
+/// rewrites the record's container section. Only objects with a usable or a
+/// container section carry it.
+#[derive(Component, Debug, Clone, PartialEq)]
+pub struct ObjectSections {
+    pub placement: u32,
+    pub usable: Option<exa_formats::objdb::Operative>,
+    pub container: Option<exa_formats::containers::Container>,
+}
+
+impl ObjectSections {
+    /// The sections of `item` placed by `object`, or `None` when it has
+    /// neither a usable nor a container section.
+    pub fn of(item: &Item, object: &exa_formats::rfc::PlacedObject) -> Option<Self> {
+        (item.operative.is_some() || item.container.is_some()).then(|| Self {
+            placement: object.flags,
+            usable: item.operative,
+            container: item.container.clone(),
+        })
+    }
+}
+
 /// The scene entity whose placed object carries the database id `id`, as
 /// the original's lookup walks the scene's roots and their child nodes and
 /// compares each node's id word. Exarust keeps a placed object's id on its
@@ -487,6 +514,9 @@ fn spawn_placed_object(
             markers::PlacedTemplate(item.parent),
             ChildOf(parent),
         ));
+        if let Some(sections) = ObjectSections::of(item, object) {
+            commands.entity(e).insert(sections);
+        }
         return Some(PlacedSpawn::Placed {
             entity: e,
             lights: 0,
@@ -512,6 +542,9 @@ fn spawn_placed_object(
                     ChildOf(parent),
                 ))
                 .id();
+            if let Some(sections) = ObjectSections::of(item, object) {
+                commands.entity(entity).insert(sections);
+            }
             return Some(PlacedSpawn::Placed {
                 entity,
                 lights: 0,
@@ -548,6 +581,9 @@ fn spawn_placed_object(
         markers::PlacedTemplate(item.parent),
         ChildOf(parent),
     ));
+    if let Some(sections) = ObjectSections::of(item, object) {
+        commands.entity(e).insert(sections);
+    }
     // Its door and operative records, for the signals and mechanisms.
     if let Some(records) = mechanisms::MechanismRecords::of(object.id, item) {
         commands.entity(e).insert(records);
@@ -2517,7 +2553,35 @@ mod tests {
             volume: None,
             rank_word: 0,
             armour_type: 0,
+            container: None,
         }
+    }
+
+    #[test]
+    fn only_objects_with_a_usable_or_container_section_carry_their_sections() {
+        let object = exa_formats::rfc::PlacedObject {
+            id: objdb::LOCAL | 4,
+            flags: 0x0003_0001,
+            object_flags: 0,
+            transform: [[0.0; 3]; 4],
+            slot: 0,
+            second_word: 0,
+            word_3d22: None,
+            attachments: Vec::new(),
+        };
+        let mut chest = item(4, "chest", "", 0);
+        assert_eq!(ObjectSections::of(&chest, &object), None);
+        chest.container = Some(exa_formats::containers::Container {
+            width: 50,
+            height: 30,
+            capacity: 400,
+            max_item: 60,
+            children: Vec::new(),
+        });
+        let sections = ObjectSections::of(&chest, &object).unwrap();
+        assert_eq!(sections.placement, 0x0003_0001);
+        assert!(sections.usable.is_none());
+        assert_eq!(sections.container.unwrap().width, 50);
     }
 
     fn record(id: u32, worn: Vec<u32>) -> CharacterRecord {

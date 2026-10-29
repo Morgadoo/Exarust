@@ -11,7 +11,7 @@
   child after the femur factor, outside its limit-link test. It does not
   run while the condition has 0x800, and the collapse's start writes 0.
   Exarust keeps the bit as `Part::skips_thin`; bit 1 stays `no_level`.
-- **Hand words.** The original's contact mobility is the part's `+0x54`
+- **Hand words.** The original's contact mobility is the part's contact
   word, restored from its mass value. Exarust's limb contact mobility is
   its inverse mass × 2/3, used as the base. The refresh's armed test reads
   the first held item's class bits 0x30; Exarust reads `Hands` (the main

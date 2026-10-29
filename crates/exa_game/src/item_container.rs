@@ -702,6 +702,35 @@ mod tests {
         assert_eq!(open_container(false, None, 4, 4, 160), None);
     }
 
+    /// A 50 × 30 chest at unit 4 with a 70-pixel half-height icon: the
+    /// panel is 208 × 128 at 24 + 140 down, the popup 224 × 288; it is
+    /// centred on the pointer and kept inside the root.
+    #[test]
+    fn the_container_popup_layout() {
+        assert_eq!(popup_icon_height(70, 160), 140);
+        assert_eq!(popup_icon_height(90, 160), 160);
+        let plan = open_container(false, Some((50, 30)), 4, POPUP_PANEL_BORDER, 140).unwrap();
+        assert_eq!(plan.inner, (208, 128));
+        assert_eq!(plan.inner_top, 164);
+        let size = popup_form_size(plan, 4, POPUP_BORDER);
+        assert_eq!(size, (224, 8 + 164 + 8 + 128));
+        assert_eq!(
+            popup_place((640, 400), size, 1280, 4),
+            (528, 400 - 308 + 32)
+        );
+        assert_eq!(popup_place((50, 100), size, 1280, 4), (0, 4));
+        assert_eq!(popup_place((1270, 400), size, 1280, 4), (1056, 124));
+        // An odd width halves down.
+        assert_eq!(popup_place((100, 500), (225, 40), 1280, 4).0, 0);
+        assert_eq!(popup_place((200, 500), (225, 40), 1280, 4).0, 88);
+        // The icon sits as the plain card's: across the client less a
+        // border, down the icon area, four units lower.
+        assert_eq!(
+            popup_icon_place(224, 140, 4, 160),
+            ((224 - 24 - 160) / 2, -10 + 16)
+        );
+    }
+
     #[test]
     fn the_card_window_delays_opens_and_fades() {
         let mut card = CardWindow::default();
@@ -2278,14 +2307,16 @@ pub struct PopupPlan {
 
 /// Opening a container: an already-open popup of the same container is
 /// refocused and returns `None`; otherwise its panel is sized from the
-/// record's cell size, `2 · border + cells · unit` each way. A container
-/// with no record opens nothing.
+/// record's cell size, `2 · border + cells · unit` each way, and placed
+/// six units plus the icon area's height (`icon_height`,
+/// [`popup_icon_height`]) down the popup. A container with no record opens
+/// nothing.
 pub fn open_container(
     already_open: bool,
     record: Option<(u16, u16)>,
     unit: i32,
     border: i32,
-    icon_size: i32,
+    icon_height: i32,
 ) -> Option<PopupPlan> {
     if already_open {
         return None;
@@ -2293,8 +2324,81 @@ pub fn open_container(
     let (x, y) = record?;
     Some(PopupPlan {
         inner: popup_inner(x, y, unit, border),
-        inner_top: unit * 6 + icon_size,
+        inner_top: unit * 6 + icon_height,
     })
+}
+
+/// The container popup's own border (its form's `0x30` field, set by its
+/// constructor) and its inner panel's.
+pub const POPUP_BORDER: i32 = exa_ui::popups::CONTAINER_MARGIN;
+pub const POPUP_PANEL_BORDER: i32 = exa_ui::popups::CONTAINER_STEP;
+
+/// The popup's icon area: twice the container icon's stored half height,
+/// at most the icon manager's icon size.
+pub fn popup_icon_height(half_height: i32, icon_size: i32) -> i32 {
+    let height = half_height.wrapping_mul(2);
+    if icon_size < height {
+        icon_size
+    } else {
+        height
+    }
+}
+
+/// The popup form's size around its panel: twice its border plus the
+/// panel's width across; two units, the panel's top, one border and the
+/// panel's height down.
+pub fn popup_form_size(plan: PopupPlan, unit: i32, border: i32) -> (i32, i32) {
+    (
+        border * 2 + plan.inner.0,
+        unit * 2 + plan.inner_top + border + plan.inner.1,
+    )
+}
+
+/// Where a new popup goes: centred across on the pointer (half its width,
+/// shifted unsigned) and kept inside the root's width, its top eight units
+/// above its height over the pointer and at least one unit from the top.
+/// A popup wider than the root goes to `root_width − width`, as the
+/// original's clamp does; there is no bottom clamp.
+pub fn popup_place(
+    pointer: (i32, i32),
+    size: (i32, i32),
+    root_width: i32,
+    unit: i32,
+) -> (i32, i32) {
+    let mut x = pointer.0.wrapping_sub(((size.0 as u32) >> 1) as i32);
+    let mut y = pointer
+        .1
+        .wrapping_sub(size.1.wrapping_add(unit.wrapping_mul(-8)));
+    if x < 0 {
+        x = 0;
+    } else if i64::from(root_width) < i64::from(size.0) + i64::from(x) {
+        x = root_width.wrapping_sub(size.0);
+    }
+    if y < unit {
+        y = unit;
+    }
+    (x, y)
+}
+
+/// The container's icon in its popup, relative to the popup's client: the
+/// plain card's placement over the client width less the popup's border
+/// and the icon area's height. The client width the card's draw reads is
+/// taken as the form's width less both borders [guess: the field is the
+/// form's client width].
+pub fn popup_icon_place(
+    form_width: i32,
+    icon_height: i32,
+    unit: i32,
+    icon_size: i32,
+) -> (i32, i32) {
+    exa_ui::popups::desc_icon_place_sized(
+        form_width - 2 * POPUP_BORDER - POPUP_BORDER,
+        icon_height,
+        icon_height,
+        unit,
+        false,
+        icon_size,
+    )
 }
 
 /// A card's description box: 4 pixels in from the card's left, `0xb4`

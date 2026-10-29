@@ -58,6 +58,7 @@
 //!          --sliding-doors            debug: sliding doors (portcullises) become bodies too; their lift is not reproduced
 //!          --debug-gui-form           open one empty GUI form through the draw skin's path
 //!          --open-settings <page>     once loaded, open the menu and the Settings form on its settings or controls page
+//!          --open-container FRAME     open the container nearest the player in its popup at that frame
 //!          --debug-path x,y,z         play mode: plan a path from the player's feet to this point (metres) and draw it,
 //!                                     again whenever the player has moved a metre
 //!          --searcher <id>            play mode: the level character with this record id (hex with 0x) takes the
@@ -244,6 +245,9 @@ pub struct Options {
     /// Open the menu and the Settings form on this page (0 Settings, 1
     /// Controls) once loaded.
     pub open_settings: Option<u8>,
+    /// Play mode: open the placed container nearest the player in its
+    /// popup this many frames after the load (`--open-container`).
+    pub open_container: Option<u32>,
     /// Play mode: the debug path's goal (`--debug-path`, metres).
     pub debug_path: Option<[f32; 3]>,
     /// Play mode: the level character with this record id takes the
@@ -623,6 +627,7 @@ fn main() -> AppExit {
                     }
                 };
             }
+            "--open-container" => options.open_container = args.next().and_then(|v| v.parse().ok()),
             "--perf-log" => options.perf_log = args.next().and_then(|v| v.parse().ok()),
             "--profiler" => options.profiler = true,
             "--debug-column" => {
@@ -1019,6 +1024,9 @@ fn main() -> AppExit {
         page: options.open_settings,
         done: false,
     })
+    .insert_resource(exa_game::gui_screens::DebugOpenContainer(
+        options.open_container,
+    ))
     .insert_resource(exa_ui::ScriptedPointer(options.cursor.map(Vec2::from)))
     .insert_resource(exa_render::cube_shadows::PointShadows(!options.no_shadows))
     .insert_resource(exa_world::sun_shadow::SunShadowFit(

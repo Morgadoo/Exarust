@@ -225,6 +225,10 @@ pub struct PendingUse {
     pub target: u32,
 }
 
+/// The controls' deferred interaction list as the running game keeps it.
+#[derive(bevy::prelude::Resource, Debug, Clone, Default, PartialEq)]
+pub struct PendingUses(pub UseQueue);
+
 /// The controls' deferred interaction list. The original keeps it in an
 /// array and takes a done entry out by shifting every later entry down one
 /// place, so the list keeps its order (not the timed cleaning list's
@@ -244,8 +248,8 @@ impl UseQueue {
     /// One frame at `now_ms` (the per-frame update, while the controls are
     /// not paused and a player exists): the entries whose time is not after
     /// `now` run, in order, the list shifting down over each. Returns them
-    /// in order. [No caller yet: the double click's consumable is not
-    /// wired.]
+    /// in order. Each one opens the doors under its target's node
+    /// ([`exa_world::mechanisms::OpenDoorsUnder`]).
     pub fn tick(&mut self, now_ms: u32) -> Vec<PendingUse> {
         let mut done = Vec::new();
         let mut i = 0;
@@ -411,14 +415,107 @@ impl ClickTarget {
     }
 }
 
+impl ClickTarget {
+    /// A placed object as its record and placement give it: the usable
+    /// section's kind (its first byte) and subtype (its second), its
+    /// container section, the used mark (the placement word's bits
+    /// 16..23, clear while unmarked) and a button's flag bit 4 (set: it
+    /// does not fire). The lock's two model-section words and the key test
+    /// are only read by the single click on a lock, whose card and journal
+    /// line are not wired, so they are left false here.
+    pub fn of_object(sections: &exa_world::ObjectSections) -> Self {
+        let usable = sections.usable;
+        ClickTarget::Placed {
+            usable: usable.map(|u| u.class),
+            subtype: usable.map_or(0, |u| u.kind),
+            lock_open: false,
+            reward_ready: false,
+            key_ok: false,
+            container: sections.container.is_some(),
+            unmarked: sections.placement & USED_MARK == 0,
+            push_released: usable.is_none_or(|u| u.flags & BUTTON_HELD == 0),
+        }
+    }
+}
+
+/// The placement word's used-mark byte (bits 16..23): a used consumable or
+/// a taken item is marked here.
+pub const USED_MARK: u32 = 0x00ff_0000;
+/// The placement word's saved latch: a container whose placement has it is
+/// not opened by the idle double click.
+pub const PLACEMENT_LATCH: u32 = 1;
+/// A button's usable flag that keeps it from firing.
+pub const BUTTON_HELD: u16 = 4;
+
+/// What the double click does on a placed object while the player's
+/// controls are not the ones taking it (the item-use hook the hand installs
+/// for the double click, which the controls' own interaction replaces once
+/// they run).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdleDoubleClick {
+    Nothing,
+    /// Open the container's popup (closing the item card's request first).
+    OpenContainer,
+    /// The usable kind 0: the object database's use runs at once.
+    UseNow,
+    /// Any other usable kind: the item is taken onto the use cursor and the
+    /// press handler waits for its release.
+    UseOnCursor,
+}
+
+/// The idle double click on a placed object, as its hook decides: nothing
+/// while either of the hand's two block bytes is set (`hand_blocked`);
+/// without a usable section, a container opens unless the placement's
+/// latch bit is set or the player is in combat with the controls on
+/// (`combat_controls`: a player control exists, its combat byte is set and
+/// its controls-off byte is clear); a usable kind 0 is used at once and any
+/// other kind goes onto the use cursor.
+pub fn idle_double_click(
+    sections: &exa_world::ObjectSections,
+    hand_blocked: bool,
+    combat_controls: bool,
+) -> IdleDoubleClick {
+    if hand_blocked {
+        return IdleDoubleClick::Nothing;
+    }
+    match sections.usable {
+        None => {
+            if sections.container.is_some()
+                && sections.placement & PLACEMENT_LATCH == 0
+                && !combat_controls
+            {
+                IdleDoubleClick::OpenContainer
+            } else {
+                IdleDoubleClick::Nothing
+            }
+        }
+        Some(usable) if usable.class == 0 => IdleDoubleClick::UseNow,
+        Some(_) => IdleDoubleClick::UseOnCursor,
+    }
+}
+
+/// What the controls' double click does on a placed object, in the
+/// original's order: the object's own interaction ([`interact_object`])
+/// runs first; when it does not end there (only the hand-held item does)
+/// and the record has a container section, the item card's request is
+/// closed and the container's popup opens.
+pub fn double_click_object(
+    sections: &exa_world::ObjectSections,
+    now_ms: u32,
+) -> (ObjectInteraction, bool) {
+    interact_object(ClickTarget::of_object(sections), now_ms)
+}
+
 /// What a click does after the turn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClickOutcome {
     Nothing,
     /// Show the item (its card or the narrator's line).
     Inspect,
-    /// Open the container's window.
-    OpenContainer,
+    /// Show the item's card after the card delay (the panel's delayed card
+    /// request); the single click never opens a container's popup, which
+    /// only the double click does.
+    DelayedCard,
     /// Unlock a lock: the journal line and the experience it pays.
     Unlock {
         reward: u32,
@@ -436,10 +533,10 @@ pub enum ClickOutcome {
 }
 
 /// The click's outcome. On a placed object: no usable section shows the
-/// item; a lock (kind 2) that is open opens its container, a closed one
-/// with the key and its reward still due pays 100 (1000 for the lock
-/// subtype 3), else nothing; kinds 0 and 1 open the container; any other
-/// kind shows the item. The object's first-touch bit is cleared by any
+/// item's card at once; a lock (kind 2) that is open asks for the delayed
+/// card, a closed one with the key and its reward still due pays 100 (1000
+/// for the lock subtype 3), else nothing; kinds 0 and 1 ask for the delayed
+/// card; any other kind shows the card at once. The object's first-touch bit is cleared by any
 /// hit.
 pub fn click(target: ClickTarget) -> ClickOutcome {
     match target {
@@ -458,7 +555,7 @@ pub fn click(target: ClickTarget) -> ClickOutcome {
             None => ClickOutcome::Inspect,
             Some(USABLE_LOCK) => {
                 if lock_open {
-                    ClickOutcome::OpenContainer
+                    ClickOutcome::DelayedCard
                 } else if key_ok && reward_ready {
                     ClickOutcome::Unlock {
                         reward: if subtype == MAIN_LOCK_SUBTYPE {
@@ -471,7 +568,7 @@ pub fn click(target: ClickTarget) -> ClickOutcome {
                     ClickOutcome::Nothing
                 }
             }
-            Some(kind) if kind < USABLE_LOCK => ClickOutcome::OpenContainer,
+            Some(kind) if kind < USABLE_LOCK => ClickOutcome::DelayedCard,
             Some(_) => ClickOutcome::Inspect,
         },
     }
@@ -1542,9 +1639,9 @@ mod tests {
         let spent = placed_with(Some(USABLE_LOCK), 3, false, false, true, false, true, true);
         assert_eq!(click(spent), ClickOutcome::Nothing);
         let open = placed_with(Some(USABLE_LOCK), 0, true, false, false, false, true, true);
-        assert_eq!(click(open), ClickOutcome::OpenContainer);
-        assert_eq!(click(placed(Some(0), 0)), ClickOutcome::OpenContainer);
-        assert_eq!(click(placed(Some(1), 0)), ClickOutcome::OpenContainer);
+        assert_eq!(click(open), ClickOutcome::DelayedCard);
+        assert_eq!(click(placed(Some(0), 0)), ClickOutcome::DelayedCard);
+        assert_eq!(click(placed(Some(1), 0)), ClickOutcome::DelayedCard);
         let kind3 = placed_with(Some(3), 0, false, true, true, true, true, true);
         assert_eq!(click(kind3), ClickOutcome::Inspect);
         assert_eq!(click(placed(Some(USABLE_BUTTON), 0)), ClickOutcome::Inspect);
@@ -1621,6 +1718,119 @@ mod tests {
         assert_eq!(
             interact_character(ClickTarget::LivingCharacter, false, false),
             CharacterInteraction::Nothing
+        );
+    }
+
+    fn sections(
+        usable: Option<(u8, u8, u16)>,
+        container: bool,
+        placement: u32,
+    ) -> exa_world::ObjectSections {
+        exa_world::ObjectSections {
+            placement,
+            usable: usable.map(|(class, kind, flags)| exa_formats::objdb::Operative {
+                class,
+                kind,
+                flags,
+                value: 0,
+                time: 0,
+                target: 0,
+                second: 0,
+                atlas: [0; 16],
+                destinations: [0; exa_formats::objdb::DESTINATIONS],
+            }),
+            container: container.then(|| exa_formats::containers::Container {
+                width: 50,
+                height: 30,
+                capacity: 400,
+                max_item: 60,
+                children: Vec::new(),
+            }),
+        }
+    }
+
+    /// A record's sections become the click target: the usable kind and
+    /// subtype, the container, the used mark in bits 16..23 and a button's
+    /// flag 4.
+    #[test]
+    fn a_placed_object_becomes_its_click_target() {
+        let chest = sections(None, true, 0);
+        assert_eq!(
+            ClickTarget::of_object(&chest),
+            placed_with(None, 0, false, false, false, true, true, true)
+        );
+        let used = sections(Some((0, 1, 0)), false, 0x0001_0000);
+        assert_eq!(
+            ClickTarget::of_object(&used),
+            placed_with(Some(0), 1, false, false, false, false, false, true)
+        );
+        let held = sections(Some((USABLE_BUTTON, 0, 4)), false, 0x8000);
+        assert_eq!(
+            ClickTarget::of_object(&held),
+            placed_with(Some(5), 0, false, false, false, false, true, false)
+        );
+    }
+
+    /// The controls' double click: a plain chest opens; a consumable chest
+    /// is consumed and then opens; a hand-held item never opens; a lock's
+    /// container opens (the double click does not read the lock).
+    #[test]
+    fn the_double_click_opens_a_container_after_the_objects_own_use() {
+        let n = ObjectInteraction::Nothing;
+        assert_eq!(double_click_object(&sections(None, true, 0), 0), (n, true));
+        assert_eq!(
+            double_click_object(&sections(None, false, 0), 0),
+            (n, false)
+        );
+        assert_eq!(
+            double_click_object(&sections(Some((0, 1, 0)), true, 0), 500),
+            (ObjectInteraction::Consume { due_ms: 2_600 }, true)
+        );
+        assert_eq!(
+            double_click_object(&sections(Some((1, 0, 0)), true, 0), 0),
+            (ObjectInteraction::UseInHand, false)
+        );
+        assert_eq!(
+            double_click_object(&sections(Some((USABLE_LOCK, 0, 0)), true, 0), 0),
+            (n, true)
+        );
+    }
+
+    /// The idle double click: blocked hands do nothing; a container opens
+    /// without a usable section unless latched or in combat with the
+    /// controls on; usable kind 0 is used at once, any other kind goes onto
+    /// the cursor.
+    #[test]
+    fn the_idle_double_click() {
+        let chest = sections(None, true, 0);
+        assert_eq!(
+            idle_double_click(&chest, false, false),
+            IdleDoubleClick::OpenContainer
+        );
+        assert_eq!(
+            idle_double_click(&chest, true, false),
+            IdleDoubleClick::Nothing
+        );
+        assert_eq!(
+            idle_double_click(&chest, false, true),
+            IdleDoubleClick::Nothing
+        );
+        let latched = sections(None, true, PLACEMENT_LATCH);
+        assert_eq!(
+            idle_double_click(&latched, false, false),
+            IdleDoubleClick::Nothing
+        );
+        assert_eq!(
+            idle_double_click(&sections(None, false, 0), false, false),
+            IdleDoubleClick::Nothing
+        );
+        assert_eq!(
+            idle_double_click(&sections(Some((0, 2, 0)), true, 0), false, false),
+            IdleDoubleClick::UseNow
+        );
+        assert_eq!(
+            idle_double_click(&sections(Some((3, 0, 0)), true, 0), false, false),
+            IdleDoubleClick::UseOnCursor
         );
     }
 
@@ -2135,6 +2345,7 @@ mod tests {
             volume: None,
             rank_word: 0,
             armour_type: 0,
+            container: None,
         }
     }
 

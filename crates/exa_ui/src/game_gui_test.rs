@@ -800,6 +800,13 @@ fn a_right_release_closes_the_inventory_and_loot() {
     assert!(right_release_closes(GameScreen::Loot));
     assert!(!right_release_closes(GameScreen::Journal));
     assert!(!right_release_closes(GameScreen::TechniqueSelector));
+    // The container popup closes on a right click (`popups::container_right_click`).
+    assert!(right_release_closes(GameScreen::Container));
+    assert_eq!(
+        GameScreen::Container.tag(),
+        Some(crate::popups::CONTAINER_TAG)
+    );
+    assert_eq!(GameScreen::Container.size(), None);
 }
 
 #[test]

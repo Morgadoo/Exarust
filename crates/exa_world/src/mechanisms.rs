@@ -52,7 +52,42 @@ impl Plugin for MechanismPlugin {
         if !app.world().contains_resource::<Messages<MechanismSignal>>() {
             app.add_message::<MechanismSignal>();
         }
-        app.add_systems(FixedUpdate, route_signals.after(BodySystems));
+        app.add_message::<OpenDoorsUnder>().add_systems(
+            FixedUpdate,
+            (route_signals, open_doors_under).after(BodySystems),
+        );
+    }
+}
+
+/// An order to open the doors under a placed object's node, as the
+/// original's "open the doors under a node" takes it straight from the
+/// player's deferred use (a consumable's target word, 2100 ms after the
+/// double click), without the signal's door-flag inversion. The `LkO`
+/// sound that call plays once is not played here.
+#[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OpenDoorsUnder {
+    /// The placed object's database id, tag bits included.
+    pub target: u32,
+}
+
+/// Runs each [`OpenDoorsUnder`]: the door bodies under the placed object
+/// with that id are opened (latched or motorised ones) and woken. An id
+/// no placed object carries does nothing.
+pub fn open_doors_under(
+    mut orders: MessageReader<OpenDoorsUnder>,
+    ticks: Option<Res<BodyTicks>>,
+    placed: Query<(Entity, &crate::PlacedItem)>,
+    children: Query<&Children>,
+    mut bodies: Query<MechanismParts>,
+) {
+    let now = ticks.map_or(0, |t| t.millis() as i32);
+    for order in orders.read() {
+        let Some(node) = crate::object_entity(placed.iter(), order.target) else {
+            info!("mechanism: no placed object {:#x} to open", order.target);
+            continue;
+        };
+        let nodes = under(node, &children);
+        order_doors(DoorOrder::Open, &nodes, &mut bodies, now);
     }
 }
 
@@ -250,6 +285,30 @@ pub fn lever_record(record: &mechanism::Record) -> lever::Record {
 mod tests {
     use super::*;
     use exa_physics::mechanism::{Dispatch, DoorOrder};
+
+    /// The order finds its placed object by id and walks the nodes under
+    /// it; a target without doors, or an id no object carries, is left.
+    #[test]
+    fn the_open_order_runs_on_the_placed_object_by_id() {
+        let mut app = App::new();
+        app.add_message::<OpenDoorsUnder>()
+            .add_systems(Update, open_doors_under);
+        let object = app
+            .world_mut()
+            .spawn(crate::PlacedItem {
+                id: 4,
+                tagged_id: objdb::LOCAL | 4,
+                condition: 0,
+            })
+            .id();
+        app.world_mut().spawn(ChildOf(object));
+        app.world_mut().write_message(OpenDoorsUnder {
+            target: objdb::LOCAL | 4,
+        });
+        app.world_mut().write_message(OpenDoorsUnder { target: 9 });
+        app.update();
+        assert!(app.world().get_entity(object).is_ok());
+    }
 
     fn item(door: Option<objdb::Door>, operative: Option<objdb::Operative>) -> Item {
         Item {
