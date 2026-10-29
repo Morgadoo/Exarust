@@ -288,7 +288,9 @@ pub fn build_grips(mut held: Query<(Entity, &mut HeldGrip)>, bodies: Query<&Ragd
 
 /// Marks every item with built links as held: it never meets its holder's
 /// body, it is a held part (class bit 2 for the contact classifier), and it
-/// stays awake so the grip stage can pull it.
+/// stays awake so the grip stage can pull it. A shield's equip also gives
+/// its body the mark bit beside the held bit (`0x20002`) and its link
+/// mobility from its contact mobility ([`crate::grip::shield_words`]).
 pub fn mark_held(mut held: Query<(&HeldGrip, &mut Ragdoll)>) {
     for (grip, mut body) in &mut held {
         if grip.links.is_none() {
@@ -300,6 +302,11 @@ pub fn mark_held(mut held: Query<(&HeldGrip, &mut Ragdoll)>) {
             part.state = part.state.with(crate::part::PartState::HELD);
             // A held item's friction is the character constructor's 0.5.
             part.friction = 0.5;
+        }
+        if grip.kind == HeldKind::Shield
+            && let Some(part) = body.parts.get_mut(HeldGrip::ITEM_PART)
+        {
+            crate::grip::shield_words(part);
         }
         body.wake_to(crate::body::WAKE_COUNT);
     }

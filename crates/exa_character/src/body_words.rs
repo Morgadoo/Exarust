@@ -7,8 +7,9 @@
 //! hands puts each hand back at its base; the equip refresh then halves an
 //! unarmed character's hands (a quarter in the heavy-claws state), so a
 //! fist pushes as a heavier part; and every attack start in the heavy-claws
-//! state quarters both hands, armed or not. A gobbler's collapse gives each
-//! femur's limit link 10 cm of slack.
+//! state quarters both hands, armed or not. A collapse empties an unarmed
+//! character's hands (back to the base), and a gobbler's collapse gives
+//! each femur's limit link 10 cm of slack.
 //!
 //! Each system runs only on the tick its trigger changes (the hands, a new
 //! body, an attack's start, a collapse's start), so it costs nothing on a
@@ -19,7 +20,9 @@ use exa_combat::Fighter;
 use exa_combat::collapse::Collapse;
 use exa_formats::weapon_record::{self, race};
 use exa_physics::body::Ragdoll;
-use exa_physics::grip::{HeldGrip, attack_hand_mobility, refreshed_hand_mobility};
+use exa_physics::grip::{
+    HeldGrip, attack_hand_mobility, empty_hand_words, refreshed_hand_mobility,
+};
 
 use crate::held::Hands;
 use crate::{LEFT_HAND, RIGHT_HAND, RaceWeaponry};
@@ -28,11 +31,14 @@ use crate::{LEFT_HAND, RIGHT_HAND, RaceWeaponry};
 /// weapon (the fists, a torch), as the refresh tests its class word.
 pub const HANDS_BITS: u32 = 0x30;
 
-/// Whether the character counts as armed for the refresh: its main hand's
-/// item has hands bits. Empty hands are the fists, whose class is 0.
+/// Whether the character counts as armed for the refresh: its first held
+/// item has hands bits. The first held item is the main hand's, or the
+/// second weapon once the main one is gone (the original's held list moves
+/// it to the front when the first is dropped). Empty hands are the fists,
+/// whose class is 0.
 pub fn armed(hands: Option<&Hands>) -> bool {
     hands
-        .and_then(|h| h.main)
+        .and_then(|h| h.main.or(h.second))
         .is_some_and(|item| u32::from(item.flags) & HANDS_BITS != 0)
 }
 
@@ -86,11 +92,25 @@ pub fn attack_hand_contacts(
     }
 }
 
-/// Gives a collapsing gobbler's femur limits their 10 cm of slack
-/// ([`Ragdoll::slacken_femur_limits`]) on the tick its collapse starts.
-pub fn gobbler_collapse_slack(mut bodies: Query<(&RaceWeaponry, &mut Ragdoll), Added<Collapse>>) {
-    for (race, mut body) in &mut bodies {
-        if race.index == race::GOBBLER {
+/// The collapse's writes on the tick it starts: an unarmed character's
+/// hands are emptied, which puts both back at their base contact mobility
+/// ([`empty_hand_words`]; an armed one's drop runs the refresh instead,
+/// through the hands' change), and a gobbler's femur limits take their
+/// 10 cm of slack ([`Ragdoll::slacken_femur_limits`]).
+#[allow(clippy::type_complexity)]
+pub fn collapse_words(
+    mut bodies: Query<
+        (Option<&Hands>, Option<&RaceWeaponry>, &mut Ragdoll),
+        (With<Fighter>, Added<Collapse>),
+    >,
+) {
+    for (hands, race, mut body) in &mut bodies {
+        if !armed(hands) {
+            for bone in [RIGHT_HAND, LEFT_HAND] {
+                body.set_contact_share(bone, |base| empty_hand_words(base).1);
+            }
+        }
+        if race.is_some_and(|r| r.index == race::GOBBLER) {
             body.slacken_femur_limits();
         }
     }
@@ -103,11 +123,7 @@ impl Plugin for BodyWordsPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
             FixedUpdate,
-            (
-                refresh_hand_contacts,
-                attack_hand_contacts,
-                gobbler_collapse_slack,
-            )
+            (refresh_hand_contacts, attack_hand_contacts, collapse_words)
                 .chain()
                 .before(exa_physics::grip_solve::GripSolveSet::Sync),
         );
@@ -228,9 +244,9 @@ mod tests {
 
     /// Only a gobbler's collapse slackens its femur limits.
     #[test]
-    fn only_a_gobbler_collapse_slackens_the_femurs() {
+    fn only_a_collapse_wordsens_the_femurs() {
         let mut app = App::new();
-        app.add_systems(Update, gobbler_collapse_slack);
+        app.add_systems(Update, collapse_words);
         let hip = |slack| {
             let mut femur = setup(2, Some(0), Vec3::new(0.1, -0.1, 0.0));
             femur.links = vec![(
@@ -251,11 +267,17 @@ mod tests {
                 },
                 hip(0.15),
                 Collapse::default(),
+                Fighter::default(),
             ))
             .id();
         let human = app
             .world_mut()
-            .spawn((RaceWeaponry::default(), hip(0.15), Collapse::default()))
+            .spawn((
+                RaceWeaponry::default(),
+                hip(0.15),
+                Collapse::default(),
+                Fighter::default(),
+            ))
             .id();
         app.update();
         let slack = |app: &App, e: Entity| {
@@ -264,5 +286,34 @@ mod tests {
         };
         assert_eq!(slack(&app, gobbler), 0.1);
         assert_eq!(slack(&app, human), 0.15);
+    }
+
+    /// A collapse puts an unarmed character's hands back at their base and
+    /// leaves an armed one's; a second weapon left alone still arms.
+    #[test]
+    fn a_collapse_empties_unarmed_hands() {
+        let mut app = App::new();
+        app.add_systems(Update, (refresh_hand_contacts, collapse_words).chain());
+        let body = arms();
+        let base = body.contact_base(1).unwrap();
+        let e = app
+            .world_mut()
+            .spawn((Fighter::default(), Hands::default(), body))
+            .id();
+        app.update();
+        assert_eq!(mobility(&app, e, 1), base * 0.5);
+        app.world_mut().entity_mut(e).insert(Collapse::default());
+        app.update();
+        assert_eq!(mobility(&app, e, 1), base);
+        assert_eq!(mobility(&app, e, 2), base);
+        let sword = HeldItem {
+            flags: 0x10,
+            light: false,
+        };
+        assert!(armed(Some(&Hands {
+            second: Some(sword),
+            ..Hands::default()
+        })));
+        assert!(!armed(None));
     }
 }

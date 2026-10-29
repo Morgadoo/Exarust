@@ -365,6 +365,16 @@ tested rules of their own.
   drive that reads the weights is outside this component, and the reach
   the AI reads is the equip pass's longest record reach, which overwrites
   the refresh's.
+- The hands' contact mobility (how far a contact push moves a hand) is
+  written by `body_words` on the ticks it changes: after every change of
+  the hands an armed character's hands are at their base and an unarmed
+  one's at half (a quarter in the heavy-claws state), as the original's
+  emptying of the hands and its equip refresh leave them; every attack
+  start in the heavy-claws state quarters both hands; a collapse empties
+  an unarmed character's hands back to the base; and a gobbler's collapse
+  gives each femur's limit link 10 cm of slack. A held shield's body takes
+  the held and mark bits and a link mobility equal to its contact
+  mobility (`exa_physics::grip::shield_words`).
 - A wielded weapon sits under the hand its grip names
   (`exa_combat::grip`, by its weapon class as the first held item: a
   polearm in the left hand), placed for the character's size and race

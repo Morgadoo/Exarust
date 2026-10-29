@@ -304,6 +304,17 @@ pub fn attack_hand_mobility(base_mass: f32, heavy_claws: bool) -> Option<f32> {
     heavy_claws.then_some(base_mass * HEAVY_CLAW_HAND_SHARE)
 }
 
+/// The words a shield's equip writes on its own body: the held bit and the
+/// mark bit (`0x20002`), and its mobilities from its mass value, which an
+/// item body leaves at 0 so the contact mobility stands in for it: the link
+/// mobility becomes the contact mobility, which stays as it is.
+pub fn shield_words(part: &mut crate::body::Part) {
+    part.state = part
+        .state
+        .with(crate::part::PartState::HELD | crate::part::PartState::STRIKE_MARK);
+    part.link_mobility = part.pairing.mobility;
+}
+
 /// An unarmed hand's mobility as a share of its base: a half, a quarter for
 /// a race with heavy claws (its hands weigh 2 or 4 times their part, as
 /// [`exa_formats::weapon_record::Equipped::hand_mass`] says).
@@ -1568,5 +1579,31 @@ mod empty_hand_tests {
         assert_eq!(attack_hand_mobility(2.0, false), None);
         // A NaN base stays NaN (plain products, no compare).
         assert!(refreshed_hand_mobility(f32::NAN, false, false).is_nan());
+    }
+
+    /// A shield's body takes the held and mark bits and a link mobility
+    /// equal to its contact mobility.
+    #[test]
+    fn a_shield_takes_its_held_mark_and_its_contact_mobility() {
+        let mut body = crate::body::Ragdoll::new(&[crate::body::PartSetup {
+            bone: 0,
+            entity: bevy::prelude::Entity::PLACEHOLDER,
+            parent: None,
+            world: bevy::math::Affine3A::IDENTITY,
+            centre: Vec3::ZERO,
+            half: Vec3::splat(0.2),
+            origin: Vec3::ZERO,
+            links: vec![],
+            foot: None,
+            pins: Vec::new(),
+            spheres: None,
+        }]);
+        let part = &mut body.parts[0];
+        part.pairing.mobility = 3.5;
+        part.link_mobility = 0.1;
+        shield_words(part);
+        assert_eq!(part.link_mobility, 3.5);
+        assert_eq!(part.pairing.mobility, 3.5);
+        assert_eq!(part.state.0 & 0x20002, 0x20002);
     }
 }

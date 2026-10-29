@@ -157,9 +157,11 @@ tests. A part's mask (`Level::mask`) is tested against its body mask
 before any triangle is queried; the body solver hands the detection the
 level with the static grid's stored masks (`body::MaskedLevel`), so a thin
 horizontal plate (local half height under 1 cm, world up over 0.99) is
-mask 1|4 and a living foot's mask-4 part never meets it (`Ragdoll::level_mask`:
-only a body with muscles carries the foot's 4, as the original clears it on
-collapse and death, so a corpse's feet meet thin plates); a piece with no
+mask 1|4 and a living foot's mask-4 part never meets it (`Ragdoll::level_mask`,
+`Part::skips_thin`: the leg routine sets the foot's 4 on each lower leg's
+first child every living tick that is not a collapse, and the collapse and
+death clear it, so a collapsing body's and a corpse's feet meet thin
+plates); a piece with no
 record answers 1. The original's flagged-mask bit has no traced node
 source, so it is never set [guess]. Not wired: the overflow guard's reset
 in the game (Exarust's grid is sparse and may hold any cell, so no body
@@ -1024,8 +1026,16 @@ class word to every part and `word | 0x30` to each first child,
 `raise_grab_layer` adds the bite-grab's 0x40 to a part, its parent and its
 children, and `raise_state_flag` walks the whole tree. Death's class
 writer is `pairs::set_leg_layers` instead (layer 0 on each lower leg, 0x30
-on its foot), and `Ragdoll::clear_death_strikes` clears the strike chain
-and level word only on those feet. `push_at` applies a
+on its foot), and `Ragdoll::clear_death_strikes` (run by the collapse's
+start and by death) clears the strike chain and the world mask word only on
+those feet. A gobbler's collapse gives each femur's limit link 10 cm of
+slack (`Ragdoll::slacken_femur_limits`). The revive of a corpse
+(`Ragdoll::revive`) marks every limb below the pelvis muscled with its
+contact base, gives the feet the thin-plate bit and the 0x30 layer (the
+lower legs keep death's 0), turns the muscles on and knocks the body out;
+it has no running caller yet (Raise Dead and the undead's rise are not
+wired). `Ragdoll::contact_base` and `set_contact_share` read and write a
+limb's contact mobility from its base (inverse mass × 2/3). `push_at` applies a
 push at a world point with the original's weighting (`push_fraction`, the
 `4·dot` test against the push's squared length). The stagger helper
 (`stagger`, `recoil`) gives a blow's stagger speed, decay, flags and
