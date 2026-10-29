@@ -11,12 +11,24 @@
 //!
 //! A door, lever or plate is a body hung from the world by its links: the
 //! hinge pins and swing stop of a door, the axle pins and arm of a lever,
-//! the slider links of a plate. A hinged door's leaf registers so and runs
-//! its door rules (`exa_physics::body::DoorBody`, set up from the record
-//! and the placement's word, [`crate::bodies::Placement::Door`]). Levers,
-//! plates and sliding doors stay static level geometry: nothing yet
-//! produces the travel fraction or arm angle their steps read, and no
-//! system routes signals.
+//! the slider links of a plate. A hinged door's leaf, a lever's arm and a
+//! push surface register so and run their rules (`exa_physics::body`'s
+//! `DoorBody`, `LeverBody` and `PlateBody`, set up from the records and the
+//! placement's word, [`crate::bodies::Placement`]); a sliding door's leaf
+//! does so only when the loader is asked for it (`SlideBody`), and stays
+//! static level geometry otherwise.
+//!
+//! **Signals.** A lever's or plate's report sends a
+//! [`MechanismSignal`] to each target it names; [`route_signals`] finds the
+//! placed object whose id is the target and runs what its records ask
+//! ([`MechanismRecords::dispatch`]): a door order (open, close and lock,
+//! toggle, [`exa_physics::mechanism::open_doors`] and its siblings) on
+//! every door body under the object's node, each woken, or a class 5 push
+//! on the push surface under it. A relay or a deferred job (a fire, a
+//! light) is logged and not run: relays need the level's listener lists
+//! and jobs the fire and light spawning, which no system holds yet. A
+//! target with no record, or no body of the right kind under it (a static
+//! sliding door), does nothing.
 //!
 //! Evidence: the object database's door and operative sections
 //! (`docs/formats/OTHER.md`) and the records the original's door, lever
@@ -25,7 +37,126 @@
 
 use bevy::prelude::*;
 use exa_formats::objdb::{self, Item};
+use exa_physics::body::{
+    BodySystems, BodyTicks, DoorBody, PlateBody, Ragdoll, SlideBody, WAKE_COUNT,
+};
+use exa_physics::mechanism::{Dispatch, DoorOrder, MechanismSignal};
 use exa_physics::{door, lever, mechanism, plate};
+
+/// Routes the mechanisms' signals to their targets. Added by
+/// [`crate::WorldPlugin`].
+pub struct MechanismPlugin;
+
+impl Plugin for MechanismPlugin {
+    fn build(&self, app: &mut App) {
+        if !app.world().contains_resource::<Messages<MechanismSignal>>() {
+            app.add_message::<MechanismSignal>();
+        }
+        app.add_systems(FixedUpdate, route_signals.after(BodySystems));
+    }
+}
+
+/// The entities at and under `node`, the node first, parents before
+/// children (bounded, so a cycle in bad input ends).
+fn under(node: Entity, children: &Query<&Children>) -> Vec<Entity> {
+    let mut found = vec![node];
+    let mut k = 0;
+    while k < found.len() && found.len() < 4096 {
+        if let Ok(kids) = children.get(found[k]) {
+            found.extend(kids.iter());
+        }
+        k += 1;
+    }
+    found
+}
+
+/// What [`route_signals`] reads and moves of the bodies under a target.
+type MechanismParts = (
+    &'static mut Ragdoll,
+    Option<&'static mut DoorBody>,
+    Option<&'static mut SlideBody>,
+    Option<&'static mut PlateBody>,
+);
+
+/// Runs each mechanism signal on its target's records: a door order on the
+/// door bodies under the target's node (each woken), a push on its push
+/// surface. Relays and jobs are logged only.
+pub fn route_signals(
+    mut signals: MessageReader<MechanismSignal>,
+    ticks: Option<Res<BodyTicks>>,
+    objects: Query<(Entity, &MechanismRecords)>,
+    children: Query<&Children>,
+    mut bodies: Query<MechanismParts>,
+) {
+    let now = ticks.map_or(0, |t| t.millis() as i32);
+    for signal in signals.read() {
+        let Some((node, records)) = objects.iter().find(|(_, r)| r.id == signal.target) else {
+            info!(
+                "mechanism: {:#x} signals {} to {:#x}, which has no record here",
+                signal.source, signal.value, signal.target
+            );
+            continue;
+        };
+        let dispatch = records.dispatch(signal.value);
+        info!(
+            "mechanism: {:#x} signals {} to {:#x}: {:?}",
+            signal.source, signal.value, signal.target, dispatch
+        );
+        let nodes = under(node, &children);
+        match dispatch {
+            Dispatch::Doors(order) => order_doors(order, &nodes, &mut bodies, now),
+            Dispatch::Plate { pushed } => {
+                for &e in &nodes {
+                    if let Ok((mut body, _, _, Some(mut glue))) = bodies.get_mut(e) {
+                        glue.push(&mut body, pushed);
+                        break;
+                    }
+                }
+            }
+            Dispatch::Relay(_) | Dispatch::Job(_) | Dispatch::None => {}
+        }
+    }
+}
+
+/// A door order on the door bodies (hinged or sliding) among `nodes`, in
+/// their order, each woken to run it.
+fn order_doors(order: DoorOrder, nodes: &[Entity], bodies: &mut Query<MechanismParts>, now: i32) {
+    let mut found: Vec<(Entity, door::Door)> = Vec::new();
+    for &e in nodes {
+        if let Ok((_, hinged, sliding, _)) = bodies.get(e) {
+            if let Some(glue) = hinged {
+                found.push((e, glue.door));
+            } else if let Some(glue) = sliding {
+                found.push((e, glue.door));
+            }
+        }
+    }
+    if found.is_empty() {
+        return;
+    }
+    let mut doors: Vec<door::Door> = found.iter().map(|(_, d)| *d).collect();
+    match order {
+        DoorOrder::Open => {
+            mechanism::open_doors(&mut doors, now);
+        }
+        DoorOrder::CloseAndLock => {
+            mechanism::close_and_lock_doors(&mut doors, 0);
+        }
+        DoorOrder::Toggle => {
+            mechanism::toggle_doors(&mut doors, 0, now);
+        }
+    }
+    for ((e, _), changed) in found.iter().zip(doors) {
+        if let Ok((mut body, hinged, sliding, _)) = bodies.get_mut(*e) {
+            if let Some(mut glue) = hinged {
+                glue.door = changed;
+            } else if let Some(mut glue) = sliding {
+                glue.door = changed;
+            }
+            body.wake_to(WAKE_COUNT);
+        }
+    }
+}
 
 /// The records of a placed object that a signal or a mechanism reads.
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]

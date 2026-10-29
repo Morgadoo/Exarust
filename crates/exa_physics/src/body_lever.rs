@@ -208,7 +208,7 @@ impl LeverBody {
     }
 
     /// A lever-frame point in the parent node's frame.
-    fn from_frame(&self, l: Vec3) -> Vec3 {
+    fn frame_to_parent(&self, l: Vec3) -> Vec3 {
         self.side * l.x + self.up * l.y + self.forward * l.z + self.offset
     }
 
@@ -228,7 +228,8 @@ impl LeverBody {
     /// where the drive puts the arm point.
     pub fn arm_point_at(&self, angle: f32) -> Vec3 {
         let local = direction_from_yaw(angle) * self.radius;
-        self.parent_world.transform_point3(self.from_frame(local))
+        self.parent_world
+            .transform_point3(self.frame_to_parent(local))
     }
 
     /// The arm point now (m).

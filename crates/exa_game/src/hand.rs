@@ -30,8 +30,18 @@
 //!   is the point 100 cm from that origin toward the cursor's point on the
 //!   plane at that height, the link disabled while the hip is farther than
 //!   350 cm from the door; the release removes it;
-//! - a wheel or a sliding door: the drag is recorded until the release
-//!   (Exarust's levers and sliding doors are static level geometry); a
+//! - a lever's arm (`exa_physics::body::LeverBody`, the wheel fitting of
+//!   its operative class 3): no link; the press marks the lever held and
+//!   keeps the angle between the arm and the cursor's point on the plane
+//!   through the node across the axle; each frame, while the hip is within
+//!   300 cm of the node, the lever's hand angle is the cursor's angle on that
+//!   plane plus the kept one (or, while the view lies across the axle by
+//!   less than 0.2, the heading of the cursor's sideways offset on the plane
+//!   across the arm at 30 cm), clamped to the swing; out of reach the lever
+//!   is let go and woken; the lever's own step turns its arm 0.02 rad a tick
+//!   toward that angle; the release lets go;
+//! - a sliding door: the drag is recorded until the release (sliding doors
+//!   are static level geometry unless `--sliding-doors`); a
 //!   scene object's mesh that is a cloth takes the vertex within 10 cm of
 //!   the point [a stand-in for the mesh element the original's pick hit],
 //!   and each frame the vertex is pulled to the cursor's point on the cloth
@@ -53,7 +63,9 @@
 //!
 //! **A click** (released before the drag starts) turns the player, outside
 //! combat mode, toward the cursor's point once it is farther than 70 cm:
-//! the heading takes the cursor's direction. (The original then names or
+//! the heading takes the cursor's direction. A double click (the
+//! interaction) on a push surface whose operative flag 4 is clear pushes it
+//! (`exa_physics::body::PlateBody::push`) while the point is in reach. (The original then names or
 //! uses what was clicked; Exarust has no description to show yet.)
 //!
 //! **The reach** is measured each frame: outside combat mode while the
@@ -80,7 +92,7 @@ use exa_combat::Condition;
 use exa_physics::ColliderNodes;
 use exa_physics::Physics;
 use exa_physics::body::locomotion::{Locomotion, Locomotor};
-use exa_physics::body::{DoorBody, Ragdoll, WAKE_COUNT};
+use exa_physics::body::{DoorBody, LeverBody, PlateBody, Ragdoll, WAKE_COUNT};
 use exa_physics::prop::{PropBody, StandIns};
 use exa_ui::ScriptedPointer;
 
@@ -146,6 +158,11 @@ pub enum Holding {
     /// (`exa_physics::body::DoorBody`), until the release. Like a
     /// mechanism's drag it leaves the movement request to the keys.
     Door { body: Entity, grip: DoorGrip },
+    /// A lever's arm turned by the wheel drag
+    /// (`exa_physics::body::LeverBody`), until the release: the lever is
+    /// held and each frame sets its hand angle from the cursor; `grabbed`
+    /// is the angle between the arm and the cursor's point at the press.
+    Wheel { body: Entity, grabbed: f32 },
     /// A cloth's vertex under the hand: the cloth, the vertex the press
     /// took, and the drag plane the cursor pulls along when the pick leaves
     /// the vertex: its normal (the camera's view axis at the press) and its
@@ -220,7 +237,7 @@ impl Hand {
             Holding::Lift => DragState::Lift,
             Holding::Drag { .. } => DragState::Physical,
             Holding::Mechanism(Pick::Hinge) | Holding::Door { .. } => DragState::Door,
-            Holding::Mechanism(Pick::Wheel) => DragState::Wheel,
+            Holding::Mechanism(Pick::Wheel) | Holding::Wheel { .. } => DragState::Wheel,
             Holding::Mechanism(_) | Holding::Cloth { .. } => DragState::Cloth,
             Holding::Refused => DragState::Refused,
         }
@@ -461,6 +478,32 @@ pub const DOOR_PULL_CM: f32 = 100.0;
 /// While a door is dragged, the pull is suppressed once the hip is farther
 /// than this squared distance (cm²; 350 cm) from the door's origin.
 pub const DOOR_REACH2: f32 = 122_500.0;
+/// While a wheel is turned, the cursor is out of reach once the hip is
+/// farther than this squared distance (cm²; 300 cm) from the lever's node.
+pub const WHEEL_REACH2: f32 = 90_000.0;
+/// The first wheel grip (the plane across the axle) is used while the
+/// camera's view axis lies along the axle by at least this (a double
+/// compare; a NaN takes the first grip).
+pub const FIRST_GRIP: f64 = 0.2;
+
+/// Where a ray meets the plane `normal·x = offset`; `None` when it runs
+/// along the plane.
+pub fn ray_plane(origin: Vec3, dir: Vec3, normal: Vec3, offset: f32) -> Option<Vec3> {
+    let t = (offset - normal.dot(origin)) / normal.dot(dir);
+    let at = origin + dir * t;
+    at.is_finite().then_some(at)
+}
+
+/// Whether the wheel turns by its first grip: the camera's view axis lies
+/// along the lever's axle by at least 0.2 (its absolute dot with the first
+/// plane's normal, widened to double; a NaN takes the first grip).
+pub fn first_wheel_grip(view: Vec3, across: Vec3) -> bool {
+    let along = (view.x * across.x + view.y * across.y + view.z * across.z).abs();
+    #[allow(clippy::neg_cmp_op_on_partial_ord)]
+    let below = f64::from(along) < FIRST_GRIP;
+    !below
+}
+
 /// A door's drag link: its flags (the iteration limit alone), its last
 /// pass, its slack (cm) and its strength. The press passes slack 1.0 and
 /// strength 0.003 to the engine's link-adding routine, which stores the
@@ -557,62 +600,6 @@ pub fn door_drag_frame(
             stop: false,
         }
     }
-}
-
-/// A wheel's asked angle after a frame: the gap `wanted − current` is taken
-/// as no turn when it is negative and stops at `limit` when it is longer;
-/// the current angle plus that turn is then wrapped into ±π, compared in
-/// double precision against the double π and moved by the float 2π. The
-/// gap is not wrapped before the clamp, as the original computes it, and a
-/// NaN gap passes both clamps.
-pub fn wheel_turn(current: f32, wanted: f32, limit: f32) -> f32 {
-    let delta = wanted - current;
-    let delta = if delta < 0.0 {
-        0.0
-    } else if delta > limit {
-        limit
-    } else {
-        delta
-    };
-    let mut out = current + delta;
-    if f64::from(out) < -std::f64::consts::PI {
-        out += std::f32::consts::TAU;
-    } else if f64::from(out) > std::f64::consts::PI {
-        out -= std::f32::consts::TAU;
-    }
-    out
-}
-
-/// Wraps an angle into ±π as the wheel drag does: under −π (compared in
-/// double) adds the float 2π; over π (compared in double) takes it off. A
-/// NaN passes both compares and stays.
-pub fn wrap_half_turn(angle: f32) -> f32 {
-    if f64::from(angle) < -std::f64::consts::PI {
-        angle + std::f32::consts::TAU
-    } else if f64::from(angle) > std::f64::consts::PI {
-        angle - std::f32::consts::TAU
-    } else {
-        angle
-    }
-}
-
-/// The wheel's asked angle after a frame: the grip's angle plus the angle
-/// the grip was taken at, wrapped into ±π, then turned toward from the
-/// present angle (never back, at most `limit`). The values past the wrap
-/// are the caller's: the grip's angle comes from the cursor's point in the
-/// wheel's frame (or from the second grip's point, whose height is 30 cm,
-/// with a scale-looking 30 cm set on it). [inf: which of the two axes the
-/// grip's angle is taken about is not traced; the caller passes the angle
-/// already in the wheel's plane.]
-pub fn wheel_set(current: f32, grip_angle: f32, grabbed: f32, limit: f32) -> f32 {
-    wheel_turn(current, wrap_half_turn(grip_angle + grabbed), limit)
-}
-
-/// Whether the first wheel grip is the one the view picks: its direction
-/// from the wheel, on the camera's forward axis, is at least 0.2 in
-/// absolute value; otherwise the second grip is used.
-pub fn uses_first_wheel_grip(alignment: f32) -> bool {
-    alignment.abs() >= 0.2
 }
 
 /// The cloth vertex a press grabbed: the first of the cloth's local
@@ -943,8 +930,16 @@ fn name_of(
     hit: Hit,
     top_mobility: impl Fn(Entity) -> Option<f32>,
     door: impl Fn(Entity) -> Option<bool>,
+    lever: impl Fn(Entity) -> bool,
 ) -> Pick {
     let target = match hit {
+        // A lever's arm: its operative record's class 3, the wheel fitting.
+        Hit::Prop { body, .. } if lever(body) => Target {
+            has_record: true,
+            fitting: Some(pick::Fitting::Wheel),
+            body: Some(Body::Prop),
+            ..Target::default()
+        },
         // A door's leaf: its record's hinge, blocked when the door is not
         // clickable (its flag 8).
         Hit::Prop { body, .. } if door(body).is_some() => Target {
@@ -992,6 +987,20 @@ fn let_go_of_doors(hand: Res<Hand>, mut doors: Query<(Entity, &mut DoorBody, &mu
     }
 }
 
+/// Lets go of every lever the hand no longer turns, however its drag
+/// ended: the hold clears and the lever wakes.
+fn let_go_of_levers(hand: Res<Hand>, mut levers: Query<(Entity, &mut LeverBody, &mut Ragdoll)>) {
+    let turned = match hand.holding {
+        Holding::Wheel { body, .. } => Some(body),
+        _ => None,
+    };
+    for (e, mut glue, mut ragdoll) in &mut levers {
+        if glue.lever.held && Some(e) != turned {
+            glue.let_go(&mut ragdoll);
+        }
+    }
+}
+
 pub struct HandPlugin;
 
 /// The hand's frame: the press, the hold and the reach.
@@ -1013,6 +1022,7 @@ impl Plugin for HandPlugin {
                     hold_hand,
                     reach_hand,
                     let_go_of_doors,
+                    let_go_of_levers,
                     send_let_go,
                 )
                     .chain()
@@ -1053,6 +1063,15 @@ type OtherBodies = (
     &'static mut Ragdoll,
     Option<&'static Condition>,
     Has<PropBody>,
+);
+
+/// What the press reads beyond the bodies: whether the pointer is over the
+/// GUI, the placed objects' ids, the door leaves and the lever arms.
+type PressMechanisms<'w, 's> = (
+    Option<Res<'w, crate::panel_live::PointerOverGui>>,
+    Query<'w, 's, ObjectIds>,
+    Query<'w, 's, &'static mut DoorBody>,
+    Query<'w, 's, &'static mut LeverBody>,
 );
 
 /// What a body's nodes say of the placed object they belong to: its id,
@@ -1236,11 +1255,7 @@ fn press_hand(
     mut bodies: Query<OtherBodies, Without<PlayerBody>>,
     kinesis: Option<Res<KinesisPickHook>>,
     mut kinesis_picks: Option<ResMut<Messages<KinesisPicked>>>,
-    (over_gui, objects, mut doors): (
-        Option<Res<crate::panel_live::PointerOverGui>>,
-        Query<ObjectIds>,
-        Query<&mut DoorBody>,
-    ),
+    (over_gui, objects, mut doors, mut levers): PressMechanisms,
 ) {
     let kinesis = kinesis.and_then(|k| k.0);
     let now = real.elapsed().as_millis() as i64;
@@ -1323,6 +1338,7 @@ fn press_hand(
                     .ok()
                     .map(|d| d.door.record.has(exa_physics::door::NOT_CLICKABLE))
             },
+            |body| levers.contains(body),
         )
     });
     let state = PressState {
@@ -1373,6 +1389,26 @@ fn press_hand(
                     }
                     _ => hand.holding = Holding::Refused,
                 }
+                return;
+            }
+            // A lever's arm takes the wheel's hold: the angle between the
+            // arm and the cursor's point on the plane across its axle.
+            if pick == Pick::Wheel
+                && let Some(Picked {
+                    hit: Hit::Prop { body, .. },
+                    ..
+                }) = picked
+                && let Ok(mut glue) = levers.get_mut(body)
+                && let Ok((_, mut ragdoll, ..)) = bodies.get_mut(body)
+                && let Some(ray) = ray
+            {
+                let (across, _) = glue.grip_normals();
+                let offset = across.dot(glue.origin());
+                let point = ray_plane(ray.origin, *ray.direction, across, offset)
+                    .unwrap_or_else(|| glue.arm_point(&ragdoll));
+                let grabbed = glue.take_hold(&mut ragdoll, point);
+                info!("hand: lever taken by the wheel, {grabbed:.3} rad from the arm");
+                hand.holding = Holding::Wheel { body, grabbed };
                 return;
             }
             hand.holding = Holding::Mechanism(pick);
@@ -1502,7 +1538,13 @@ fn hold_hand(
     scripted: Res<ScriptedPointer>,
     windows: Query<&Window, With<PrimaryWindow>>,
     cameras: Query<(&Camera, &GlobalTransform), With<ChaseCamera>>,
-    (mut hand, mut items, mut doors): (ResMut<Hand>, ResMut<ItemCursor>, Query<&mut DoorBody>),
+    (mut hand, mut items, mut doors, mut levers, mut plates): (
+        ResMut<Hand>,
+        ResMut<ItemCursor>,
+        Query<&mut DoorBody>,
+        Query<&mut LeverBody>,
+        Query<&mut PlateBody>,
+    ),
     players: Query<(&GlobalTransform, &Children), With<Player>>,
     mut player_bodies: Query<PlayerParts, Without<PropBody>>,
     mut requests: Query<&mut Locomotion, With<PlayerBody>>,
@@ -1563,6 +1605,21 @@ fn hold_hand(
                 req.heading = yaw;
             }
             let interact = left.double && (!combat || bindings.pressed(&keys, Action::Interact));
+            // The interaction on a push surface whose operative flag 4 is
+            // clear pushes it (and wakes it), while the point is in reach.
+            if interact
+                && !hand.out_of_reach
+                && let Some(Picked {
+                    hit: Hit::Prop { body, .. },
+                    ..
+                }) = picked
+                && let Ok(mut glue) = plates.get_mut(body)
+                && glue.clickable()
+                && let Ok((_, mut ragdoll, ..)) = bodies.get_mut(body)
+            {
+                glue.push(&mut ragdoll, true);
+                info!("hand: push surface {:#x} pushed", glue.id);
+            }
             if !combat || interact {
                 let target = picked.and_then(|picked| match picked.hit {
                     Hit::Character { body, .. } if body == child => Some(ClickTarget::Player),
@@ -1628,6 +1685,41 @@ fn hold_hand(
         Holding::Mechanism(_) => {
             if released {
                 hand.holding = Holding::Nothing;
+            }
+        }
+        Holding::Wheel { body, grabbed } => {
+            let (Ok(mut glue), Ok((_, mut ragdoll, ..))) =
+                (levers.get_mut(body), bodies.get_mut(body))
+            else {
+                hand.holding = Holding::Nothing;
+                return;
+            };
+            if released {
+                glue.let_go(&mut ragdoll);
+                hand.holding = Holding::Nothing;
+                return;
+            }
+            // Out of reach the lever is let go (and woken) but the drag
+            // stays; in reach each frame sets the hand angle.
+            if hand.out_of_reach {
+                glue.let_go(&mut ragdoll);
+                return;
+            }
+            let Some(ray) = cursor_ray(&scripted, &windows, &cameras) else {
+                return;
+            };
+            let view = cameras
+                .single()
+                .map(|(_, eye)| eye.forward().as_vec3())
+                .unwrap_or(Vec3::NEG_Z);
+            let (across, forward) = glue.grip_normals();
+            let at = glue.origin();
+            let (origin, dir) = (ray.origin, *ray.direction);
+            let first = ray_plane(origin, dir, across, across.dot(at));
+            let second = ray_plane(origin, dir, forward, forward.dot(at));
+            if let (Some(first), Some(second)) = (first, second) {
+                let grip = first_wheel_grip(view, across);
+                glue.turn_to(&mut ragdoll, first, second, grip, grabbed);
             }
         }
         Holding::Door { body, grip } => {
@@ -2020,6 +2112,7 @@ fn reach_hand(
     players: Query<(&GlobalTransform, &Children), With<Player>>,
     player_bodies: Query<PlayerParts, Without<PropBody>>,
     mut bodies: Query<OtherBodies, Without<PlayerBody>>,
+    levers: Query<&LeverBody>,
 ) {
     let Some((feet, child)) = player_child(&players, &player_bodies) else {
         return;
@@ -2054,6 +2147,14 @@ fn reach_hand(
     }
     let in_reach = match hand.holding {
         Holding::Drag { .. } | Holding::Door { .. } => true,
+        // A turned wheel is in reach while the hip is within 300 cm of the
+        // lever's node.
+        Holding::Wheel { body, .. } => {
+            let hip = hip_of(feet, own);
+            levers
+                .get(body)
+                .is_ok_and(|glue| ((hip - glue.origin()) * CM).length_squared() <= WHEEL_REACH2)
+        }
         _ => {
             let hip = hip_of(feet, own);
             let ray = cursor_ray(&scripted, &windows, &cameras);
@@ -2065,7 +2166,16 @@ fn reach_hand(
                 &bodies,
                 own.map(|r| (child, r, condition)),
             )
-            .is_some_and(|p| pick::within_reach(p.at.y * CM, (p.at - hip) * CM, ReachTo::Point))
+            .is_some_and(|p| {
+                // A lever's reach is measured from its node.
+                match p.hit {
+                    Hit::Prop { body, .. } if levers.contains(body) => {
+                        let node = levers.get(body).map_or(p.at, |g| g.origin());
+                        pick::within_reach(p.at.y * CM, (node - hip) * CM, ReachTo::Wheel)
+                    }
+                    _ => pick::within_reach(p.at.y * CM, (p.at - hip) * CM, ReachTo::Point),
+                }
+            })
         }
     };
     hand.out_of_reach = !in_reach;
@@ -2413,7 +2523,10 @@ mod tests {
                 dead: true
             }
         );
-        assert_eq!(name_of(picked.hit, |_| None, |_| None), Pick::Corpse);
+        assert_eq!(
+            name_of(picked.hit, |_| None, |_| None, |_| false),
+            Pick::Corpse
+        );
         let aside = Ray3d::new(Vec3::X, Dir3::Z);
         let bodies = [(near, &a, Condition::DEAD)];
         assert_eq!(
@@ -2431,14 +2544,34 @@ mod tests {
             body: near,
             part: 0,
         };
-        assert_eq!(name_of(prop, |_| Some(0.5), |_| None), Pick::Loose);
-        assert_eq!(name_of(prop, |_| Some(0.05), |_| None), Pick::Nothing);
-        assert_eq!(name_of(Hit::Level, |_| None, |_| None), Pick::Nothing);
-        // A door's leaf is a hinge, a door that is not clickable nothing.
-        assert_eq!(name_of(prop, |_| Some(0.05), |_| Some(false)), Pick::Hinge);
-        assert_eq!(name_of(prop, |_| Some(0.05), |_| Some(true)), Pick::Nothing);
         assert_eq!(
-            name_of(Hit::SceneNode { node: near }, |_| None, |_| None),
+            name_of(prop, |_| Some(0.5), |_| None, |_| false),
+            Pick::Loose
+        );
+        assert_eq!(
+            name_of(prop, |_| Some(0.05), |_| None, |_| false),
+            Pick::Nothing
+        );
+        assert_eq!(
+            name_of(Hit::Level, |_| None, |_| None, |_| false),
+            Pick::Nothing
+        );
+        // A door's leaf is a hinge, a door that is not clickable nothing.
+        assert_eq!(
+            name_of(prop, |_| Some(0.05), |_| Some(false), |_| false),
+            Pick::Hinge
+        );
+        assert_eq!(
+            name_of(prop, |_| Some(0.05), |_| Some(true), |_| false),
+            Pick::Nothing
+        );
+        // A lever's arm is the wheel fitting, whatever its mobility.
+        assert_eq!(
+            name_of(prop, |_| Some(0.05), |_| None, |_| true),
+            Pick::Wheel
+        );
+        assert_eq!(
+            name_of(Hit::SceneNode { node: near }, |_| None, |_| None, |_| false),
             Pick::Nothing
         );
     }
@@ -2752,38 +2885,10 @@ mod tests {
         assert_eq!(plane_pick(Vec3::Y, Vec3::X, 0.5), None);
     }
 
-    /// The wheel stops at its limit, never turns the other way, and picks
-    /// its first grip at an alignment of 0.2. The cloth grabs the first
-    /// vertex within its radius and follows the picked point.
+    /// The cloth grabs the first vertex within its radius and follows the
+    /// picked point. (The wheel's turn is `exa_physics::body::LeverBody`'s.)
     #[test]
-    fn the_wheel_and_cloth_drags() {
-        assert!((wheel_turn(0.5, 2.0, 1.0) - 1.5).abs() < 1e-6);
-        assert!((wheel_turn(1.5, 2.0, 1.0) - 2.0).abs() < 1e-6);
-        assert!((wheel_turn(0.5, 0.0, 1.0) - 0.5).abs() < 1e-6);
-        // The gap is not wrapped: −6 is no turn, so the angle stays.
-        assert_eq!(wheel_turn(3.0, -3.0, 1.0), 3.0);
-        // The float π is over the double π: it wraps to −π.
-        assert_eq!(
-            wheel_turn(3.0, std::f32::consts::PI, 1.0),
-            std::f32::consts::PI - std::f32::consts::TAU
-        );
-        assert!(uses_first_wheel_grip(0.2));
-        assert!(!uses_first_wheel_grip(0.19));
-        assert!(uses_first_wheel_grip(-0.3));
-        // The wrap: a hair under −π takes a turn on; the single π is just
-        // over the double π, so it wraps to −π.
-        assert!((wrap_half_turn(-3.2) - (-3.2 + std::f32::consts::TAU)).abs() < 1e-5);
-        assert_eq!(wrap_half_turn(std::f32::consts::PI), -std::f32::consts::PI);
-        assert!((wrap_half_turn(3.2) - (3.2 - std::f32::consts::TAU)).abs() < 1e-5);
-        assert!(wrap_half_turn(f32::NAN).is_nan());
-        // The wheel's set: the grip's angle turns the wheel toward it by at
-        // most the limit, and a grip behind the present angle is no turn.
-        assert!((wheel_set(0.0, 0.5, 0.0, 1.0) - 0.5).abs() < 1e-6);
-        assert!((wheel_set(0.0, 2.0, 0.0, 1.0) - 1.0).abs() < 1e-6);
-        assert_eq!(wheel_set(0.5, -0.5, 0.0, 1.0), 0.5);
-        // A grip angle past π wraps to the near side, behind the present
-        // angle: no turn.
-        assert_eq!(wheel_set(0.0, 3.3, 0.0, 1.0), 0.0);
+    fn the_cloth_drags() {
         let v = [Vec3::ZERO, Vec3::X, Vec3::Y];
         assert_eq!(cloth_vertex(&v, Vec3::new(0.99, 0.0, 0.0), 0.05), Some(1));
         assert_eq!(cloth_vertex(&v, Vec3::new(0.5, 0.0, 0.0), 0.05), None);
@@ -2954,5 +3059,21 @@ mod tests {
         // Exactly on the radius is not within it.
         let picked = vertex + Vec3::new(10.0, 0.0, 0.0);
         assert_eq!(cloth_drag_frame(vertex, Some(picked), plane, 10.0), plane);
+    }
+
+    /// The wheel's planes: a ray meets a plane at its offset; the first grip
+    /// is used while the view lies along the axle by at least 0.2 (a double
+    /// compare), and a NaN takes it too.
+    #[test]
+    fn the_wheel_picks_its_grip_by_the_view() {
+        let at = ray_plane(Vec3::new(0.0, 1.0, -5.0), Vec3::Z, Vec3::Z, 2.0).unwrap();
+        assert!(at.abs_diff_eq(Vec3::new(0.0, 1.0, 2.0), 1e-6));
+        assert_eq!(ray_plane(Vec3::ZERO, Vec3::X, Vec3::Z, 1.0), None);
+        assert!(first_wheel_grip(Vec3::X, Vec3::X));
+        assert!(first_wheel_grip(Vec3::new(0.2, 0.0, 0.98), Vec3::X));
+        assert!(!first_wheel_grip(Vec3::new(0.199_999, 0.0, 0.98), Vec3::X));
+        // The single-precision 0.2 is above the double 0.2.
+        assert!(first_wheel_grip(Vec3::new(-0.2, 0.0, 0.98), Vec3::X));
+        assert!(first_wheel_grip(Vec3::NAN, Vec3::X));
     }
 }

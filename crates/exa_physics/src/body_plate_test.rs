@@ -138,10 +138,9 @@ fn a_weight_presses_a_plate() {
     let rest = body.parts[0].positions;
     let mut sent = Vec::new();
     for _ in 0..80 {
-        for i in 0..4 {
-            body.parts[0].positions[i] = rest[i] - Vec3::Y * 0.04;
-            body.parts[0].previous[i] = rest[i] - Vec3::Y * 0.04;
-        }
+        let sunk = rest.map(|p| p - Vec3::Y * 0.04);
+        body.parts[0].positions = sunk;
+        body.parts[0].previous = sunk;
         body.wake_to(WAKE_COUNT);
         sent.extend(tick(&mut body, &mut glue));
     }

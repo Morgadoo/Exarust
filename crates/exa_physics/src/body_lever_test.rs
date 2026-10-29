@@ -216,6 +216,13 @@ fn the_wheel_clamps_its_angle_to_the_swing() {
     assert_eq!(swing_clamp(-0.5, 0.9, 1.0), 0.5);
     assert!((swing_clamp(-0.5, 0.1, 1.0) - 0.1).abs() < 1e-6);
     assert!(swing_clamp(-0.5, f32::NAN, 1.0).is_nan());
+    // The gap is not wrapped before the clamp: −6 is no turn. The float π
+    // is over the double π, so it wraps to −π.
+    assert_eq!(swing_clamp(3.0, -3.0, 1.0), 3.0);
+    assert_eq!(
+        swing_clamp(3.0, std::f32::consts::PI, 1.0),
+        std::f32::consts::PI - std::f32::consts::TAU
+    );
     let at = Vec3::ZERO;
     let (mut body, mut glue) = lever_at(at, 0, 0);
     // 30 cm sideways along the frame's side row (−y here) at any height:

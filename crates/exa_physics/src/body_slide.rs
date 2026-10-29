@@ -125,6 +125,11 @@ impl SlideBody {
         })
     }
 
+    /// The travel link's index in the body's world links.
+    pub fn travel_link(&self) -> usize {
+        self.travel
+    }
+
     /// The travel link's fraction (1 shut, 0 open).
     pub fn fraction(&self, body: &Ragdoll) -> f32 {
         body.world[self.travel].length

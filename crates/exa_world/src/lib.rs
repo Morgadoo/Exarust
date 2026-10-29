@@ -61,6 +61,7 @@ impl Plugin for WorldPlugin {
             sun_shadow::SunShadowPlugin,
             cloth::ClothPlugin,
             level_lifecycle::LevelChangePlugin,
+            mechanisms::MechanismPlugin,
         ));
     }
 }
@@ -459,7 +460,7 @@ fn spawn_placed_object(
     global: &[Item],
     parent: Entity,
     object: &exa_formats::rfc::PlacedObject,
-    door_bodies: bool,
+    mechanism_bodies: bodies::MechanismBodies,
 ) -> Option<PlacedSpawn> {
     let item = placed_item(scene, global, object)?;
     // `@` names a weapon assembled by a factory.
@@ -547,13 +548,14 @@ fn spawn_placed_object(
             operative,
         });
     }
-    // A hinged door's leaves register with their door rules; a lever, push
-    // surface or sliding door keeps its body static for its mechanism. The
+    // A hinged door's leaves, a lever's arm and a push surface register with
+    // their rules (a sliding door's leaf too when asked for); any other
+    // mechanism body stays static. The
     // placement's static bits (`PlacedObject::is_static`) mark only the
     // object's root node in the original, which, unlike the prop reader,
     // does not spread the flag to the nodes under it; what that root flag
     // does to the model's bodies is not traced, so it is not applied.
-    let placement = bodies::placement_of(item, object, door_bodies);
+    let placement = bodies::placement_of(item, object, mechanism_bodies);
     let geometry = if object.is_static() {
         bodies::LevelGeometry::Root
     } else {
@@ -1237,8 +1239,9 @@ pub struct LevelLoad {
     placed_objects: usize,
     missing_objects: usize,
     bodies: bodies::BodyCounts,
-    /// Hinged doors become bodies under the hand ([`DoorBodies`]).
-    pub door_bodies: bool,
+    /// Which mechanisms become bodies with their rules (hinged doors,
+    /// levers and push surfaces by default).
+    pub mechanism_bodies: bodies::MechanismBodies,
 }
 
 impl LevelLoad {
@@ -1313,7 +1316,7 @@ impl LevelLoad {
             placed_objects: 0,
             missing_objects: 0,
             bodies: bodies::BodyCounts::default(),
-            door_bodies: true,
+            mechanism_bodies: bodies::MechanismBodies::default(),
         })
     }
 
@@ -1501,7 +1504,7 @@ impl LevelLoad {
                         &self.global_items,
                         self.root,
                         object,
-                        self.door_bodies,
+                        self.mechanism_bodies,
                     ) {
                         Some(PlacedSpawn::Placed { lights, bodies }) => {
                             self.placed_objects += 1;

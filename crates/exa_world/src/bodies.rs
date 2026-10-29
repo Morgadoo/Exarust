@@ -7,22 +7,27 @@
 //! free bodies and hung ones: a body
 //! whose root carries links (lamps, chains, wall rings) registers with its
 //! stored links anchored to its node ([`exa_physics::body::WorldLink`]) and
-//! no level detection. A hinged door's leaf registers the same way and
-//! also gets its door rules ([`exa_physics::body::PendingDoor`]): the
-//! original creates a door body for it and runs the door's set-up when it
-//! is added to the world. Sliding doors, levers and push surfaces stay
-//! static level geometry until their mechanisms drive their bodies. Their
-//! rules are in `exa_physics`'s `door`, `lever`, `plate` and `mechanism`
-//! modules.
+//! no level detection. A mechanism's hung body registers the same way and
+//! also gets its rules, as the original creates its mechanism body and runs
+//! its set-up when it is added to the world: a hinged door's leaf its door
+//! rules ([`exa_physics::body::PendingDoor`]), a lever's arm its lever rules
+//! ([`exa_physics::body::PendingLever`]), a push surface its plate rules
+//! ([`exa_physics::body::PendingPlate`]), and, when the loader is asked for
+//! them ([`MechanismBodies::sliding`]), a sliding door's leaf its sliding
+//! rules ([`exa_physics::body::PendingSlide`]). Otherwise a mechanism's body
+//! stays static level geometry. Their rules are in `exa_physics`'s `door`,
+//! `lever`, `plate` and `mechanism` modules.
 //! Evidence: `docs/formats/RFC.md` (Rigid body, Props).
 
 use bevy::prelude::*;
 use exa_assets::{Model, NodeRigidBody};
 use exa_formats::rigid_body::RigidBody;
-use exa_physics::body::{PendingDoor, RigidLink, RigidPart};
-use exa_physics::door;
+use exa_physics::body::{
+    PendingDoor, PendingLever, PendingPlate, PendingSlide, RigidLink, RigidPart,
+};
 use exa_physics::prop::{BodyNode, BodyScrape, BodySounds, PendingProp, PendingScrapes};
 use exa_physics::sector::Bounds;
+use exa_physics::{door, mechanism};
 
 /// What a body tree (a top body and its body children) is to the solver.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,8 +100,12 @@ pub struct BodyCounts {
     /// Of the registered trees, those hung from the world by their root's
     /// links.
     pub hung: usize,
-    /// Of the registered trees, the hinged doors' leaves.
+    /// Of the registered trees, the hinged doors' leaves, the levers' arms,
+    /// the push surfaces and the sliding doors' leaves.
     pub doors: usize,
+    pub levers: usize,
+    pub plates: usize,
+    pub sliding: usize,
     /// Trees left static: of a mechanism, of a prop placed static, or with
     /// a flat rest tetrahedron.
     pub mechanisms: usize,
@@ -110,6 +119,9 @@ impl BodyCounts {
         self.parts += other.parts;
         self.hung += other.hung;
         self.doors += other.doors;
+        self.levers += other.levers;
+        self.plates += other.plates;
+        self.sliding += other.sliding;
         self.mechanisms += other.mechanisms;
         self.static_props += other.static_props;
         self.flat += other.flat;
@@ -123,40 +135,107 @@ pub enum Placement {
     Loose,
     /// A prop placed static: none of its bodies registers.
     Static,
-    /// A lever, push surface or sliding door (static until its mechanism
-    /// lands).
+    /// A mechanism whose bodies stay static (its kind is not asked for).
     Mechanism,
-    /// A door: its hinged leaves register hung, with their door rules; a
-    /// sliding leaf, or a tree that is not hung, stays static.
+    /// A door: its hinged leaves register hung, with their door rules, and
+    /// its sliding leaves too when asked for; any other tree stays static.
     Door(DoorPlacement),
+    /// A lever: its hung arm registers with its lever rules.
+    Lever(OperativePlacement),
+    /// A push surface: its hung plate registers with its plate rules.
+    Plate(OperativePlacement),
 }
 
 /// What a door's leaves take from its placement: the object database's
-/// door record and the placement's stored word.
+/// door record, the placement's stored word, and whether a sliding leaf
+/// registers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DoorPlacement {
     pub record: door::Record,
     pub saved: i32,
+    pub sliding: bool,
 }
 
-/// How a placed object's bodies are treated: a door's as a door when door
-/// bodies are on (else static), a lever's or push surface's static, every
-/// other object's loose. A door takes the placement's word as its stored
-/// word, as the original's object spawn stores it on the node.
+/// What a lever or push surface takes from its placement: its operative
+/// record, the placement's stored word and its placed id (tag bits
+/// included), which its signals come from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OperativePlacement {
+    pub record: mechanism::Record,
+    pub saved: i32,
+    pub id: u32,
+}
+
+/// Which mechanisms' bodies a level load registers with their rules.
+/// Hinged doors, levers and push surfaces by default; sliding doors only
+/// when asked (`--sliding-doors`: their lift is not reproduced, see
+/// `exa_physics::body::slide_body`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MechanismBodies {
+    pub doors: bool,
+    pub levers: bool,
+    pub plates: bool,
+    pub sliding: bool,
+}
+
+impl Default for MechanismBodies {
+    fn default() -> Self {
+        Self {
+            doors: true,
+            levers: true,
+            plates: true,
+            sliding: false,
+        }
+    }
+}
+
+impl MechanismBodies {
+    /// Every mechanism static level geometry.
+    pub const STATIC: Self = Self {
+        doors: false,
+        levers: false,
+        plates: false,
+        sliding: false,
+    };
+}
+
+/// How a placed object's bodies are treated: a door's as a door (else
+/// static), a lever's as a lever and a push surface's as a plate when their
+/// kinds are asked for (else static), every other object's loose. A
+/// mechanism takes the placement's word as its stored word, as the
+/// original's object spawn stores it on the node.
 pub fn placement_of(
     item: &exa_formats::objdb::Item,
     object: &exa_formats::rfc::PlacedObject,
-    door_bodies: bool,
+    bodies: MechanismBodies,
 ) -> Placement {
-    match (item.mechanism(), item.door.as_ref()) {
-        (Some(exa_formats::objdb::Mechanism::Door), Some(section)) if door_bodies => {
+    use exa_formats::objdb::Mechanism;
+    let saved = object.flags as i32;
+    let operative = |record: &exa_formats::objdb::Operative| OperativePlacement {
+        record: crate::mechanisms::operative_record(record),
+        saved,
+        id: object.id,
+    };
+    match (
+        item.mechanism(),
+        item.door.as_ref(),
+        item.operative.as_ref(),
+    ) {
+        (Some(Mechanism::Door), Some(section), _) if bodies.doors => {
             Placement::Door(DoorPlacement {
                 record: crate::mechanisms::door_record(section),
-                saved: object.flags as i32,
+                saved,
+                sliding: bodies.sliding,
             })
         }
-        (Some(_), _) => Placement::Mechanism,
-        (None, _) => Placement::Loose,
+        (Some(Mechanism::Lever), _, Some(record)) if bodies.levers => {
+            Placement::Lever(operative(record))
+        }
+        (Some(Mechanism::PushSurface), _, Some(record)) if bodies.plates => {
+            Placement::Plate(operative(record))
+        }
+        (Some(_), _, _) => Placement::Mechanism,
+        (None, _, _) => Placement::Loose,
     }
 }
 
@@ -171,11 +250,53 @@ fn hinged(tree: &BodyTree, nodes: &[(Option<usize>, Option<&RigidBody>)]) -> boo
             .is_some_and(|b| !b.links.iter().any(|l| l.is_slider()))
 }
 
-/// A stored link of an articulated child in the solver's terms. The
-/// original keeps only flag 8 of a child's links, so a slider's stored
-/// slack (its travel squared, in cm²) becomes plain slack in cm.
-fn child_link(l: &exa_formats::rigid_body::BodyLink) -> RigidLink {
-    let slack = if l.is_slider() {
+/// Whether a body tree is a sliding leaf: its top body carries a slider
+/// link.
+fn sliding(tree: &BodyTree, nodes: &[(Option<usize>, Option<&RigidBody>)]) -> bool {
+    tree.kind == TreeKind::Hung
+        && tree
+            .nodes
+            .first()
+            .and_then(|&i| nodes[i].1)
+            .is_some_and(|b| b.links.iter().any(|l| l.is_slider()))
+}
+
+/// What a registered tree of a mechanism is, by its placement and links.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Rules {
+    None,
+    Hinged,
+    Sliding,
+    Lever,
+    Plate,
+}
+
+/// The rules a tree of `placement` takes, or `None` when the tree stays
+/// static (`Some(Rules::None)` registers it plainly).
+fn rules_of(
+    placement: Placement,
+    tree: &BodyTree,
+    nodes: &[(Option<usize>, Option<&RigidBody>)],
+) -> Option<Rules> {
+    match placement {
+        Placement::Static | Placement::Mechanism => None,
+        Placement::Loose => Some(Rules::None),
+        Placement::Door(_) if hinged(tree, nodes) => Some(Rules::Hinged),
+        Placement::Door(d) if d.sliding && sliding(tree, nodes) => Some(Rules::Sliding),
+        Placement::Door(_) => None,
+        Placement::Lever(_) if tree.kind == TreeKind::Hung => Some(Rules::Lever),
+        Placement::Plate(_) if sliding(tree, nodes) => Some(Rules::Plate),
+        Placement::Lever(_) | Placement::Plate(_) => None,
+    }
+}
+
+/// A stored link in the solver's terms. A root body's links to the world
+/// keep a slider's travel as its slack (the slider law divides by its
+/// square, the stored value). The original keeps only flag 8 of an
+/// articulated child's links, so a child slider's stored slack (its travel
+/// squared, in cm²) becomes plain slack in cm.
+fn body_link(l: &exa_formats::rigid_body::BodyLink, child: bool) -> RigidLink {
+    let slack = if child && l.is_slider() {
         let travel_cm = l.slack * 100.0;
         travel_cm * travel_cm / 100.0
     } else {
@@ -216,7 +337,11 @@ fn rigid_part(
             .map(|s| (Vec3::from(s.centre), s.radius))
             .collect(),
         origin,
-        links: b.links.iter().map(child_link).collect(),
+        links: b
+            .links
+            .iter()
+            .map(|l| body_link(l, parent.is_some()))
+            .collect(),
         mesh: Some(mesh),
     }
 }
@@ -238,27 +363,31 @@ pub fn plan(
     let mut counts = BodyCounts::default();
     let mut registered = Vec::new();
     for tree in body_trees(nodes) {
-        let door = matches!(placement, Placement::Door(_));
-        match (placement, tree.kind) {
-            (Placement::Static, _) => counts.static_props += 1,
-            (Placement::Mechanism, _) => counts.mechanisms += 1,
-            (Placement::Door(_), _) if !hinged(&tree, nodes) => counts.mechanisms += 1,
-            (Placement::Loose | Placement::Door(_), TreeKind::Free | TreeKind::Hung) => {
-                if !tree.nodes.iter().all(|&i| nodes[i].1.is_some_and(solid)) {
-                    counts.flat += 1;
-                    continue;
-                }
-                if tree.kind == TreeKind::Hung {
-                    counts.hung += 1;
-                }
-                if door {
-                    counts.doors += 1;
-                }
-                counts.registered += 1;
-                counts.parts += tree.nodes.len();
-                registered.push(tree);
-            }
+        if placement == Placement::Static {
+            counts.static_props += 1;
+            continue;
         }
+        let Some(rules) = rules_of(placement, &tree, nodes) else {
+            counts.mechanisms += 1;
+            continue;
+        };
+        if !tree.nodes.iter().all(|&i| nodes[i].1.is_some_and(solid)) {
+            counts.flat += 1;
+            continue;
+        }
+        if tree.kind == TreeKind::Hung {
+            counts.hung += 1;
+        }
+        match rules {
+            Rules::Hinged => counts.doors += 1,
+            Rules::Sliding => counts.sliding += 1,
+            Rules::Lever => counts.levers += 1,
+            Rules::Plate => counts.plates += 1,
+            Rules::None => {}
+        }
+        counts.registered += 1;
+        counts.parts += tree.nodes.len();
+        registered.push(tree);
     }
     (counts, registered)
 }
@@ -349,15 +478,41 @@ pub fn register_bodies(
             });
         }
         commands.entity(root).insert(PendingProp(parts));
-        // A hinged leaf's door rules, built once its body is registered.
-        if let Placement::Door(door) = placement
-            && let Some(&top) = tree.nodes.first()
-        {
-            commands.entity(root).insert(PendingDoor {
-                record: door.record,
-                saved: door.saved,
-                handle_height: model.nodes[top].bounds.0.y,
-            });
+        // A mechanism's rules, built once its body is registered.
+        let Some(&top) = tree.nodes.first() else {
+            continue;
+        };
+        let handle_height = model.nodes[top].bounds.0.y;
+        match (placement, rules_of(placement, &tree, &shape)) {
+            (Placement::Door(door), Some(Rules::Hinged)) => {
+                commands.entity(root).insert(PendingDoor {
+                    record: door.record,
+                    saved: door.saved,
+                    handle_height,
+                });
+            }
+            (Placement::Door(door), Some(Rules::Sliding)) => {
+                commands.entity(root).insert(PendingSlide {
+                    record: door.record,
+                    saved: door.saved,
+                    handle_height,
+                });
+            }
+            (Placement::Lever(lever), Some(Rules::Lever)) => {
+                commands.entity(root).insert(PendingLever {
+                    record: crate::mechanisms::lever_record(&lever.record),
+                    saved: lever.saved,
+                    id: lever.id,
+                });
+            }
+            (Placement::Plate(plate), Some(Rules::Plate)) => {
+                commands.entity(root).insert(PendingPlate {
+                    record: crate::mechanisms::plate_record(&plate.record),
+                    saved: plate.saved,
+                    id: plate.id,
+                });
+            }
+            _ => {}
         }
     }
     counts
@@ -538,7 +693,11 @@ mod tests {
     /// The bodies of a level as its load registers them, from its scenes
     /// alone: its own model, its props (static ones not), its placed
     /// objects (mechanisms not).
-    fn level_counts(game: &exa_assets::GameData, level: &str) -> BodyCounts {
+    fn level_counts(
+        game: &exa_assets::GameData,
+        level: &str,
+        mechanisms: MechanismBodies,
+    ) -> BodyCounts {
         use exa_assets::PackKind;
         use exa_formats::rdb::Database;
         use exa_formats::rfc::{PlacedObject, Scene};
@@ -592,19 +751,21 @@ mod tests {
                 continue;
             };
             if let Some(m) = model(&[PackKind::Objects, PackKind::Objlib], &item.model) {
-                counts.add(count(&m, placement_of(item, o, true)));
+                counts.add(count(&m, placement_of(item, o, mechanisms)));
             }
         }
         counts
     }
 
     /// The installed levels' bodies (skipped without the game): what
-    /// registers and what stays static. `exanima01`: 4 822 trees of 6 146
-    /// bodies register (props' sacks, buckets and carts with their children
-    /// among them); 231 of the trees hang from the world (wall chains,
-    /// lamps, and the 109 hinged door leaves, 123 bodies with their
-    /// knockers), 89 are levers, plates and sliding doors left static, 492
-    /// belong to props placed static. `arenao1`: 68 of its props are placed static (the
+    /// registers and what stays static. `exanima01`, with hinged doors
+    /// alone: 4 822 trees of 6 146 bodies register (props' sacks, buckets
+    /// and carts with their children among them); 231 of the trees hang
+    /// from the world (wall chains, lamps, and the 109 hinged door leaves,
+    /// 123 bodies with their knockers), 89 are levers, plates and sliding
+    /// doors left static, 492 belong to props placed static. By default the
+    /// 40 levers and 12 push surfaces register too (37 left static), and
+    /// with sliding doors asked for, the 37 sliding leaves as well. `arenao1`: 68 of its props are placed static (the
     /// barrels, the cart), 3 lanterns hang, its own model's tavern table is a
     /// node marked static; 20 bodies register (its tableware, clothes, a
     /// basket and the lanterns).
@@ -621,13 +782,49 @@ mod tests {
             doors,
             mechanisms,
             static_props,
-            flat: 0,
+            ..BodyCounts::default()
+        };
+        let doors_only = MechanismBodies {
+            levers: false,
+            plates: false,
+            ..MechanismBodies::default()
         };
         assert_eq!(
-            level_counts(&game, "exanima01"),
+            level_counts(&game, "exanima01", doors_only),
             counts(4822, 6146, 231, 109, 89, 492)
         );
-        assert_eq!(level_counts(&game, "arenao1"), counts(20, 20, 3, 0, 0, 68));
+        let live = level_counts(&game, "exanima01", MechanismBodies::default());
+        let all = level_counts(
+            &game,
+            "exanima01",
+            MechanismBodies {
+                sliding: true,
+                ..MechanismBodies::default()
+            },
+        );
+        // The 40 levers and 12 push surfaces register with their rules; the
+        // 37 sliding leaves (portcullises, secret doors) only when asked.
+        assert_eq!(
+            live,
+            BodyCounts {
+                levers: 40,
+                plates: 12,
+                ..counts(4874, 6198, 283, 109, 37, 492)
+            }
+        );
+        assert_eq!(
+            all,
+            BodyCounts {
+                levers: 40,
+                plates: 12,
+                sliding: 37,
+                ..counts(4911, 6235, 320, 109, 0, 492)
+            }
+        );
+        assert_eq!(
+            level_counts(&game, "arenao1", MechanismBodies::default()),
+            counts(20, 20, 3, 0, 0, 68)
+        );
         // The levels' own bodies marked as level geometry: only the tavern
         // table of arenao1 (the six of exanima01 register).
         let res = game.pack(exa_assets::PackKind::Resource).unwrap();
@@ -806,17 +1003,210 @@ mod tests {
         );
     }
 
+    /// The installed `exanima01`'s levers and push surfaces as bodies, with
+    /// its sliding doors asked for (skipped without the game): the 40 arms
+    /// and 12 plates register with their rules; woken and left alone for
+    /// two seconds of ticks, no arm or plate moves more than a centimetre
+    /// and none signals; a lever turned by the wheel onto its other detent
+    /// signals its target, and the router runs the order on the door bodies
+    /// under it. The other bodies are taken out after registration (there
+    /// is no level collision here). The 37 sliding leaves all read fraction
+    /// 0 at load (their slider points on their anchors), every rail lies
+    /// level, and at rest they creep up to about 2 cm in two seconds without
+    /// sleeping; the test prints them.
+    #[test]
+    fn shipped_levers_and_plates_rest_and_signal() {
+        use bevy::ecs::world::CommandQueue;
+        use bevy::time::TimeUpdateStrategy;
+        use exa_physics::body::{DoorBody, LeverBody, PlateBody, Ragdoll, SlideBody};
+        use exa_physics::mechanism::MechanismSignal;
+        #[derive(Resource, Default)]
+        struct Sent(Vec<MechanismSignal>);
+        fn capture(mut read: MessageReader<MechanismSignal>, mut sent: ResMut<Sent>) {
+            sent.0.extend(read.read().copied());
+        }
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let Ok(game) = exa_assets::GameData::open(&dir) else {
+            return;
+        };
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            bevy::transform::TransformPlugin,
+            exa_physics::PhysicsPlugin,
+            crate::mechanisms::MechanismPlugin,
+        ))
+        .insert_resource(TimeUpdateStrategy::ManualDuration(
+            std::time::Duration::from_secs_f64(1.0 / exa_physics::STEP_HZ),
+        ))
+        .init_resource::<Sent>()
+        .add_systems(FixedUpdate, capture.after(exa_physics::body::BodySystems));
+        let mut cache = exa_assets::ModelCache::default();
+        let mut meshes = Assets::<Mesh>::default();
+        let mut materials = Assets::<exa_render::material::ExaMaterial>::default();
+        let mut images = Assets::<Image>::default();
+        let mut queue = CommandQueue::default();
+        {
+            let mut loader = exa_assets::ModelLoader {
+                game: &game,
+                cache: &mut cache,
+                meshes: &mut meshes,
+                materials: &mut materials,
+                images: &mut images,
+                bc_supported: false,
+            };
+            let mut commands = Commands::new(&mut queue, app.world());
+            let mut load = crate::LevelLoad::begin(&mut commands, &mut loader, "exanima01")
+                .expect("exanima01");
+            load.mechanism_bodies.sliding = true;
+            while !matches!(
+                load.step(&mut commands, &mut loader, std::time::Duration::MAX),
+                crate::LoadProgress::Finished(..)
+            ) {}
+        }
+        queue.apply(app.world_mut());
+        app.world_mut().insert_resource(meshes);
+        for _ in 0..4 {
+            app.update();
+        }
+        let mut q = app.world_mut().query_filtered::<Entity, With<LeverBody>>();
+        let levers: Vec<Entity> = q.iter(app.world()).collect();
+        let mut q = app.world_mut().query_filtered::<Entity, With<PlateBody>>();
+        let plates: Vec<Entity> = q.iter(app.world()).collect();
+        let mut q = app.world_mut().query_filtered::<Entity, With<SlideBody>>();
+        let slides: Vec<Entity> = q.iter(app.world()).collect();
+        assert_eq!((levers.len(), plates.len()), (40, 12));
+        let mut q = app.world_mut().query_filtered::<Entity, (
+            With<Ragdoll>,
+            Without<LeverBody>,
+            Without<PlateBody>,
+            Without<SlideBody>,
+            Without<DoorBody>,
+        )>();
+        let others: Vec<Entity> = q.iter(app.world()).collect();
+        for e in others {
+            app.world_mut().entity_mut(e).remove::<Ragdoll>();
+        }
+        for &e in &slides {
+            let body = app.world().get::<Ragdoll>(e).unwrap();
+            let glue = app.world().get::<SlideBody>(e).unwrap();
+            let rail = body
+                .world
+                .iter()
+                .find(|l| l.flags & exa_physics::body::world_link::SLIDER != 0)
+                .map(|l| l.axis.normalize_or_zero())
+                .unwrap_or_default();
+            eprintln!(
+                "slide {e:?}: fraction {:.3} closed {} motorised {} mode {:?} rail {rail:.2}",
+                glue.fraction(body),
+                glue.door.closed,
+                glue.door.motorised,
+                glue.door.slide.mode,
+            );
+        }
+        let arm = |app: &App, e: Entity| -> Vec3 {
+            let body = app.world().get::<Ragdoll>(e).unwrap();
+            app.world().get::<LeverBody>(e).unwrap().arm_point(body)
+        };
+        let plate_at = |app: &App, e: Entity| -> Vec3 {
+            app.world().get::<Ragdoll>(e).unwrap().parts[0]
+                .transform()
+                .translation
+                .into()
+        };
+        let before: Vec<Vec3> = levers.iter().map(|&e| arm(&app, e)).collect();
+        let plates_before: Vec<Vec3> = plates.iter().map(|&e| plate_at(&app, e)).collect();
+        let slides_before: Vec<Vec3> = slides.iter().map(|&e| plate_at(&app, e)).collect();
+        for _ in 0..2 {
+            for &e in levers.iter().chain(&plates).chain(&slides) {
+                app.world_mut().get_mut::<Ragdoll>(e).unwrap().wake();
+            }
+            for _ in 0..83 {
+                app.update();
+            }
+        }
+        for (i, &e) in levers.iter().enumerate() {
+            let moved = arm(&app, e).distance(before[i]);
+            assert!(moved < 0.01, "lever {i} moved {moved} m");
+            let lever = app.world().get::<LeverBody>(e).unwrap().lever;
+            let near = lever.detent_angle(lever.detent_index());
+            assert!(
+                (lever.angle - near).abs() < 0.03,
+                "lever {i} off its detent"
+            );
+        }
+        for (i, &e) in plates.iter().enumerate() {
+            let moved = plate_at(&app, e).distance(plates_before[i]);
+            assert!(moved < 0.01, "plate {i} moved {moved} m");
+        }
+        for (i, &e) in slides.iter().enumerate() {
+            let moved = plate_at(&app, e).distance(slides_before[i]);
+            let body = app.world().get::<Ragdoll>(e).unwrap();
+            let glue = app.world().get::<SlideBody>(e).unwrap();
+            // The sliding leaves creep along their rails (up to about 2 cm
+            // in two seconds, still awake): why they stay behind the flag.
+            assert!(moved < 0.05, "sliding leaf {i} moved {moved} m");
+            assert!(!glue.door.closed && glue.fraction(body) < 0.05);
+            if moved > 0.01 {
+                eprintln!("sliding leaf {i} crept {moved:.3} m at rest");
+            }
+        }
+        assert!(
+            app.world().resource::<Sent>().0.is_empty(),
+            "{:?}",
+            app.world().resource::<Sent>().0
+        );
+        // Turn a lever with a target onto its other detent.
+        let lever = *levers
+            .iter()
+            .find(|&&e| app.world().get::<LeverBody>(e).unwrap().record.target != 0)
+            .expect("a lever with a target");
+        let (from, target, other) = {
+            let glue = app.world().get::<LeverBody>(lever).unwrap();
+            let index = glue.lever.detent_index();
+            let other = glue.lever.detent_angle(1 - index.clamp(0, 1));
+            (index, glue.record.target, glue.arm_point_at(other))
+        };
+        for _ in 0..300 {
+            let world = app.world_mut();
+            let mut entity = world.entity_mut(lever);
+            let mut glue = entity.take::<LeverBody>().unwrap();
+            let mut body = entity.get_mut::<Ragdoll>().unwrap();
+            if !glue.lever.held {
+                let at = glue.arm_point(&body);
+                let grabbed = glue.take_hold(&mut body, at);
+                assert!(grabbed.abs() < 0.05, "{grabbed}");
+            }
+            glue.turn_to(&mut body, other, other, true, 0.0);
+            entity.insert(glue);
+            app.update();
+        }
+        let glue = app.world().get::<LeverBody>(lever).unwrap();
+        assert_eq!(glue.lever.detent_index(), 1 - from.clamp(0, 1));
+        let sent = &app.world().resource::<Sent>().0;
+        let value = if from == 0 { 1 } else { 0 };
+        assert!(
+            sent.iter().any(|s| s.target == target && s.value == value),
+            "{sent:?}"
+        );
+        eprintln!("lever signals: {sent:?}");
+    }
+
     /// A child's slider link keeps its stored slack as plain slack: a 7 cm
-    /// travel (stored 49) becomes 49 cm.
+    /// travel (stored 49) becomes 49 cm. A root body's slider keeps its
+    /// travel, which the slider law divides by.
     #[test]
     fn a_childs_slider_slack_is_its_stored_value() {
         let mut l = body(1).links[0];
         l.flags = 4;
         l.slack = 0.07;
         l.axis = Some([0.0, 0.0, -0.07]);
-        assert!((child_link(&l).slack - 0.49).abs() < 1e-6);
+        assert!((body_link(&l, true).slack - 0.49).abs() < 1e-6);
+        assert_eq!(body_link(&l, false).slack, 0.07);
         l.flags = 2;
-        assert_eq!(child_link(&l).slack, 0.07);
+        assert_eq!(body_link(&l, true).slack, 0.07);
     }
 }
 

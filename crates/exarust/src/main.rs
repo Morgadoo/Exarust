@@ -54,6 +54,8 @@
 //!          --nav-refresh-moved        debug: a door or prop that comes to rest somewhere new refreshes the navigation grid
 //!                                     under it (the original refreshes only where a lifted item is let go)
 //!          --static-doors             debug: hinged doors stay static level geometry, as before they became bodies
+//!          --static-mechanisms        debug: levers and push surfaces stay static level geometry, as before they became bodies
+//!          --sliding-doors            debug: sliding doors (portcullises) become bodies too; their lift is not reproduced
 //!          --debug-gui-form           open one empty GUI form through the draw skin's path
 //!          --debug-path x,y,z         play mode: plan a path from the player's feet to this point (metres) and draw it,
 //!                                     again whenever the player has moved a metre
@@ -230,6 +232,12 @@ pub struct Options {
     /// Keep hinged doors static level geometry instead of bodies under the
     /// hand (Exarust's debug option).
     pub static_doors: bool,
+    /// Keep levers and push surfaces static level geometry (Exarust's
+    /// debug option).
+    pub static_mechanisms: bool,
+    /// Make sliding doors bodies with their rules (Exarust's debug option:
+    /// their lift is not reproduced).
+    pub sliding_doors: bool,
     /// Open one empty form through the GUI draw path.
     pub debug_gui_form: bool,
     /// Play mode: the debug path's goal (`--debug-path`, metres).
@@ -581,6 +589,8 @@ fn main() -> AppExit {
             "--debug-nav" => options.debug_nav = true,
             "--nav-refresh-moved" => options.nav_refresh_moved = true,
             "--static-doors" => options.static_doors = true,
+            "--static-mechanisms" => options.static_mechanisms = true,
+            "--sliding-doors" => options.sliding_doors = true,
             "--debug-gui-form" => options.debug_gui_form = true,
             "--perf-log" => options.perf_log = args.next().and_then(|v| v.parse().ok()),
             "--profiler" => options.profiler = true,
