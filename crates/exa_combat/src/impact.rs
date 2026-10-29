@@ -857,6 +857,11 @@ fn sync_held_striking(mut blades: Query<(&Blade, &mut Ragdoll)>, swings: Query<&
             .first()
             .is_some_and(|p| p.state.has(PartState::STRIKING));
         if open != striking {
+            debug!(
+                "{:?}'s weapon {} striking",
+                blade.wielder,
+                if open { "starts" } else { "stops" }
+            );
             body.set_striking(0, open);
         }
     }

@@ -77,6 +77,7 @@ impl Plugin for ViewerPlugin {
                     fly_camera,
                     screenshot_after_frames,
                     fell_arena_opponents,
+                    equip_debug_shields,
                     shove_at_frame,
                     shove_props_at_frame,
                     start_fight,
@@ -1179,21 +1180,23 @@ fn spawn_players(
         ));
         // A lit torch, as the player carries one through the original's
         // dungeons; practice and arena take it away.
-        let player_shield = options
-            .shield
-            .as_deref()
-            .and_then(|asked| debug_shield(&items, asked));
-        if exa_world::start::keeps_torch(name) && player_shield.is_none() {
+        // `--shield` / `--opponent-shield`: the shields resolved once, hung
+        // on the player and every duellist (the arena's too) by
+        // [`equip_debug_shields`].
+        let shields = DebugShields {
+            player: options
+                .shield
+                .as_deref()
+                .and_then(|asked| debug_shield(game, &items, asked)),
+            opponent: options
+                .opponent_shield
+                .as_deref()
+                .and_then(|asked| debug_shield(game, &items, asked)),
+        };
+        let player_shield = shields.player.is_some();
+        commands.insert_resource(shields);
+        if exa_world::start::keeps_torch(name) && !player_shield {
             commands.entity(model).insert(exa_game::torch::CarriesTorch);
-        }
-        if let Some(shield) = player_shield {
-            commands.entity(model).insert((
-                shield,
-                exa_character::held::Hands {
-                    shield: Some(exa_character::held::ShieldStyle::Plain),
-                    ..Default::default()
-                },
-            ));
         }
         if let Some(w) = &options.weapon {
             commands
@@ -1314,23 +1317,10 @@ fn spawn_players(
                 &Physique::of_record(&duel_record),
                 0x2F1D_3B57,
             );
-            let foe_shield = options
-                .opponent_shield
-                .as_deref()
-                .and_then(|asked| debug_shield(&items, asked));
-            let foe_hands = exa_character::held::Hands {
-                shield: foe_shield
-                    .is_some()
-                    .then_some(exa_character::held::ShieldStyle::Plain),
-                ..Default::default()
-            };
-            if let Some(shield) = foe_shield {
-                commands.entity(foe).insert(shield);
-            }
             commands.entity(foe).insert((
                 Transform::from_rotation(Quat::from_rotation_y(foe_at.yaw)),
                 anim,
-                foe_hands,
+                exa_character::held::Hands::default(),
                 exa_character::Outfit::of_models(&outfit),
                 exa_character::Wielded::model(weapon),
                 exa_assets::BodyModel(model::BODY_MODEL.into()),
@@ -2337,25 +2327,109 @@ fn spawn_placed_characters(
     (spawned, missing)
 }
 
+/// The shields `--shield` and `--opponent-shield` hang on the player and
+/// on every duellist.
+#[derive(Resource, Clone, Debug, Default)]
+struct DebugShields {
+    player: Option<exa_character::offhand::OffHeld>,
+    opponent: Option<exa_character::offhand::OffHeld>,
+}
+
+/// Marks a body [`equip_debug_shields`] has seen.
+#[derive(Component)]
+struct DebugShielded;
+
+/// Hangs the debug shields: the player's on the player's body, the
+/// opponent's on each duellist (the debug duellist and the arena's), once
+/// each, through the off-hand attach pass (`off hand: … as a Shield`). The
+/// body's moveset becomes the plain shield's.
+#[allow(clippy::type_complexity)]
+fn equip_debug_shields(
+    mut commands: Commands,
+    shields: Option<Res<DebugShields>>,
+    mut bodies: Query<
+        (
+            Entity,
+            Has<exa_ai::Duellist>,
+            Has<exa_game::player::PlayerBody>,
+            Option<&mut exa_character::held::Hands>,
+        ),
+        (
+            With<exa_combat::Fighter>,
+            Without<DebugShielded>,
+            Without<exa_character::offhand::OffHeld>,
+        ),
+    >,
+) {
+    let Some(shields) = shields else { return };
+    for (entity, duellist, player, hands) in &mut bodies {
+        let shield = match (duellist, player) {
+            (true, _) => shields.opponent.clone(),
+            (_, true) => shields.player.clone(),
+            _ => continue,
+        };
+        commands.entity(entity).insert(DebugShielded);
+        let Some(shield) = shield else { continue };
+        info!(
+            "debug shield: {} hung on the {} {entity:?}",
+            shield.model,
+            if player { "player" } else { "duellist" }
+        );
+        if let Some(mut hands) = hands {
+            hands.shield = Some(exa_character::held::ShieldStyle::Plain);
+        }
+        commands.entity(entity).insert(shield);
+    }
+}
+
 /// `--shield` and `--opponent-shield`: the off-hand shield an object
-/// model names (`any`: the first item with a shield section and a model),
-/// held unflipped. Logs and gives none when no such shield exists.
+/// model names, held unflipped. A shield item of the object database whose
+/// model is that name (case aside) gives its record; a model of
+/// `Objects.rpk` no item names takes the first loadable shield item's
+/// record. `any` is the first shield item whose model `Objects.rpk` holds
+/// (several shield items name models the packs lack). Logs what it picks,
+/// or why it picks none.
 fn debug_shield(
+    game: &Game,
     items: &[exa_formats::objdb::Item],
     asked: &str,
 ) -> Option<exa_character::offhand::OffHeld> {
-    let item = items.iter().find(|item| {
-        item.shield.is_some()
-            && !item.model.is_empty()
-            && (asked == "any" || item.model.eq_ignore_ascii_case(asked))
-    });
-    let Some(item) = item else {
-        warn!("no shield item {asked}: no debug shield");
-        return None;
+    let objects = game.0.pack(PackKind::Objects);
+    let loads = |model: &str| !model.is_empty() && objects.is_some_and(|p| p.get(model).is_some());
+    let shields = || items.iter().filter(|item| item.shield.is_some());
+    let named = shields().find(|item| asked != "any" && item.model.eq_ignore_ascii_case(asked));
+    let first = shields().find(|item| loads(&item.model));
+    let (model, item) = match (named, first) {
+        (Some(item), _) if loads(&item.model) => (item.model.clone(), item),
+        (Some(item), _) => {
+            warn!(
+                "shield item {} ({}) names model {}, which Objects.rpk lacks: no debug shield",
+                item.name, item.id, item.model
+            );
+            return None;
+        }
+        (None, Some(item)) if asked == "any" => (item.model.clone(), item),
+        (None, Some(item)) if loads(asked) => (asked.to_string(), item),
+        _ => {
+            let known: Vec<&str> = shields()
+                .filter(|i| loads(&i.model))
+                .map(|i| i.model.as_str())
+                .collect();
+            warn!(
+                "no loadable shield {asked} ({} objects, {} shield items; loadable: {known:?}): \
+                 no debug shield",
+                items.len(),
+                shields().count()
+            );
+            return None;
+        }
     };
-    info!("debug shield: {} ({})", item.model, item.name);
+    info!(
+        "debug shield: model {model}, record of {} ({})",
+        item.name, item.id
+    );
     Some(exa_character::offhand::OffHeld {
-        model: item.model.clone(),
+        model,
         weapon: None,
         shield: item.shield,
         flip: false,
