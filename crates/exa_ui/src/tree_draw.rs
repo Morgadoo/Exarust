@@ -1738,6 +1738,58 @@ fn glow_text_line(out: &mut TreeDraw, view: &TreeView, text: &[u8], x: f32, y: f
     text_line(out, view, text, x, y, ink(glow.text_ink));
 }
 
+/// The style the tree hands the skin's shaded box: 4.
+pub const SKIN_BOX_STYLE: i32 = 4;
+
+/// The GUI skin's shaded box behind a text, as the skin draws it for the
+/// tree's tooltip, labels and prompt: the rounded program in black with
+/// `alpha`, its quad grown on every side by `unit · style · 4` pixels
+/// (an integer product taken to single), with the corner coordinates
+/// `(0, 0)`, `(0, 1)`, `(1, 1)` and `(1, 0)` from the top-left, down,
+/// across and up, and the `Scale` uniform the rectangle's share of the
+/// grown sides ([`crate::skin::rounded_scale`]). The rectangle is integer
+/// pixels: its far corner is `x + width` and `y + height`, summed as
+/// integers before the grow is added.
+#[allow(clippy::too_many_arguments)]
+pub fn skin_box(
+    out: &mut TreeDraw,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    unit: i32,
+    style: i32,
+    alpha: u8,
+) {
+    let grow = (i64::from(unit) * i64::from(style) * 4) as f32;
+    let x0 = x as f32;
+    let y0 = y as f32;
+    let x1 = (i64::from(x) + i64::from(width)) as f32;
+    let y1 = (i64::from(y) + i64::from(height)) as f32;
+    let mut batch = Batch::new(Program::Rounded, Texture::None);
+    batch.uniforms.par0 = crate::skin::rounded_scale(crate::skin::GuiRect { x0, y0, x1, y1 }, grow);
+    let ink = [0.0, 0.0, 0.0, f32::from(alpha) / 255.0];
+    batch.quad([
+        TreeVertex::new(x0 - grow, y0 - grow, 0.0, 0.0).with_colour(ink),
+        TreeVertex::new(x0 - grow, y1 + grow, 0.0, 1.0).with_colour(ink),
+        TreeVertex::new(x1 + grow, y1 + grow, 1.0, 1.0).with_colour(ink),
+        TreeVertex::new(x1 + grow, y0 - grow, 1.0, 0.0).with_colour(ink),
+    ]);
+    out.submit(batch);
+}
+
+/// The skin's text ink the tree draws its texts with: the seventh label
+/// ink of the line skin's palette.
+pub fn skin_text_ink() -> [f32; 4] {
+    crate::line_skin::line_palette().text[6].map(|byte| f32::from(byte) / 255.0)
+}
+
+/// The skin's text ink with its alpha replaced, as the tooltip sets it.
+fn skin_text_ink_alpha(alpha: f32) -> [f32; 4] {
+    let [r, g, b, _] = skin_text_ink();
+    [r, g, b, alpha]
+}
+
 /// One panel of the tooltip, in pixels.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TipPanel {
@@ -1882,17 +1934,20 @@ pub fn tooltip_draw(
     let Some(layout) = tooltip_layout(view, lines, line_step, name_width) else {
         return out;
     };
+    // The skin's shaded box at the panel's integer place, style 4.
+    let unit = view.scale as i32;
     let boxed = |out: &mut TreeDraw, rect: [f32; 4], alpha: f32| {
-        let mut batch = Batch::new(Program::Mods, Texture::None);
-        let ink = [0.55, 0.56, 0.58, alpha];
         let [x, y, w, h] = rect;
-        batch.quad([
-            TreeVertex::new(x, y + h, 0.0, 0.0).with_colour(ink),
-            TreeVertex::new(x + w, y + h, 0.0, 0.0).with_colour(ink),
-            TreeVertex::new(x + w, y, 0.0, 0.0).with_colour(ink),
-            TreeVertex::new(x, y, 0.0, 0.0).with_colour(ink),
-        ]);
-        out.submit(batch);
+        skin_box(
+            out,
+            x as i32,
+            y as i32,
+            w as i32,
+            h as i32,
+            unit,
+            SKIN_BOX_STYLE,
+            alpha_byte(alpha),
+        );
     };
     if let Some(tip) = layout.description {
         boxed(&mut out, tip.panel, tip.alpha);
@@ -1903,7 +1958,7 @@ pub fn tooltip_draw(
                 x: tip.text[0],
                 y: tip.text[1] + layout.line_step * (line as f32 + 0.8),
                 size: layout.line_step,
-                colour: [1.0, 1.0, 1.0, tip.alpha],
+                colour: skin_text_ink_alpha(tip.alpha),
                 text: text.clone(),
             });
         }
@@ -1918,7 +1973,7 @@ pub fn tooltip_draw(
             tip.text[1],
             (TIP_TEXT_WIDTH * view.scale) as i32,
             (tip.panel[3] + view.scale) as i32,
-            [1.0, 1.0, 1.0, tip.alpha],
+            skin_text_ink_alpha(tip.alpha),
         );
     }
     if let Some(tip) = layout.name {
@@ -1927,7 +1982,7 @@ pub fn tooltip_draw(
             x: tip.text[0],
             y: tip.text[1] + view.scale * 1.6,
             size: view.scale * 2.0,
-            colour: [0.9, 0.9, 0.9, tip.alpha],
+            colour: skin_text_ink_alpha(tip.alpha),
             text: name.to_string(),
         });
         text_line(
@@ -1936,7 +1991,7 @@ pub fn tooltip_draw(
             name.as_bytes(),
             tip.text[0],
             tip.text[1],
-            [0.9, 0.9, 0.9, tip.alpha],
+            skin_text_ink_alpha(tip.alpha),
         );
     }
     out
@@ -1952,30 +2007,40 @@ pub fn tooltip_draw(
 pub fn labels_draw(view: &TreeView, names: &[(String, f32)]) -> TreeDraw {
     let mut out = TreeDraw::default();
     let unit = view.scale;
-    for (index, node) in view.nodes.iter().enumerate() {
-        let Some((text, width)) = names.get(index) else {
-            continue;
-        };
-        if text.is_empty() {
-            continue;
-        }
+    let named = || {
+        view.nodes
+            .iter()
+            .zip(names)
+            .filter(|(_, (text, _))| !text.is_empty())
+    };
+    let base_of = |node: &NodeView| {
         let framed = node.power & 0x0f00_0000 != 0;
         let drop = f64::from(view.icon_size) * if framed { 0.32 } else { 0.54 };
-        let base = drop + f64::from(node.y);
+        drop + f64::from(node.y)
+    };
+    // Every box first, the skin's shaded box at 128 alpha.
+    for (node, (_, width)) in named() {
+        let base = base_of(node);
         let panel = width - unit * 2.0;
         // The box is centred by its own width (the text's less two units),
         // halved as an unsigned word.
-        let x = cvt_i32(node.x - ((panel as i32 as u32 >> 1) as f32)) as f32;
-        let y = cvt_i32((f64::from(unit) + base) as f32) as f32;
-        let mut batch = Batch::new(Program::Mods, Texture::None);
-        let ink = [0.55, 0.56, 0.58, 128.0 / 255.0];
-        batch.quad([
-            TreeVertex::new(x, y + unit * 2.0, 0.0, 0.0).with_colour(ink),
-            TreeVertex::new(x + panel, y + unit * 2.0, 0.0, 0.0).with_colour(ink),
-            TreeVertex::new(x + panel, y, 0.0, 0.0).with_colour(ink),
-            TreeVertex::new(x, y, 0.0, 0.0).with_colour(ink),
-        ]);
-        out.submit(batch);
+        let x = cvt_i32(node.x - ((panel as i32 as u32 >> 1) as f32));
+        let y = cvt_i32((f64::from(unit) + base) as f32);
+        skin_box(
+            &mut out,
+            x,
+            y,
+            panel as i32,
+            (unit * 2.0) as i32,
+            unit as i32,
+            SKIN_BOX_STYLE,
+            0x80,
+        );
+    }
+    // Then every name, in the skin's text ink.
+    let ink = skin_text_ink();
+    for (node, (text, width)) in named() {
+        let base = base_of(node);
         let text_x = unit + cvt_i32(node.x - ((width + unit * 2.0) as u32 >> 1) as f32) as f32;
         let text_y = cvt_i32((f64::from(unit * 4.0) + base) as f32) as f32;
         out.texts.push(TextRun {
@@ -1983,19 +2048,10 @@ pub fn labels_draw(view: &TreeView, names: &[(String, f32)]) -> TreeDraw {
             // A baseline four fifths down the text's two units.
             y: text_y + unit * 1.6,
             size: unit * 2.0,
-            // The skin colour's alpha is outside the pack: 160, a labelled
-            // guess.
-            colour: [1.0, 1.0, 1.0, 160.0 / 255.0],
+            colour: ink,
             text: text.clone(),
         });
-        text_line(
-            &mut out,
-            view,
-            text.as_bytes(),
-            text_x,
-            text_y,
-            [1.0, 1.0, 1.0, 160.0 / 255.0],
-        );
+        text_line(&mut out, view, text.as_bytes(), text_x, text_y, ink);
     }
     out
 }
@@ -2023,42 +2079,40 @@ pub fn prompt_draw(
     let height = view.height as i32;
     let title_x = (width >> 1) as f32 - (title_width as i32 >> 1) as f32;
     let title_y = (height >> 3) as f32;
-    let mut panel = Batch::new(Program::Mods, Texture::None);
-    let quad = |batch: &mut Batch, x: f32, y: f32, w: f32, h: f32, alpha: f32| {
-        let ink = [0.55, 0.56, 0.58, alpha];
-        batch.quad([
-            TreeVertex::new(x, y + h, 0.0, 0.0).with_colour(ink),
-            TreeVertex::new(x + w, y + h, 0.0, 0.0).with_colour(ink),
-            TreeVertex::new(x + w, y, 0.0, 0.0).with_colour(ink),
-            TreeVertex::new(x, y, 0.0, 0.0).with_colour(ink),
-        ]);
-    };
-    // The title's panel is 140 alpha, the buttons' 160.
-    quad(
-        &mut panel,
-        title_x,
-        title_y,
-        title_width + unit * 2.0,
-        unit * 2.0,
-        140.0 / 255.0,
+    // The skin's shaded boxes, style 4: the title's at 140 alpha, the
+    // buttons' at 160.
+    let unit_word = unit as i32;
+    skin_box(
+        &mut out,
+        title_x as i32,
+        title_y as i32,
+        unit_word * 2 + title_width as i32,
+        unit_word * 2,
+        unit_word,
+        SKIN_BOX_STYLE,
+        0x8c,
     );
-    quad(
-        &mut panel,
-        unit * 6.0,
-        (height - (unit * 7.0) as i32) as f32,
-        unit * 30.0,
-        unit * 2.0,
-        160.0 / 255.0,
+    skin_box(
+        &mut out,
+        unit_word * 6,
+        height - unit_word * 7,
+        unit_word * 30,
+        unit_word * 2,
+        unit_word,
+        SKIN_BOX_STYLE,
+        0xa0,
     );
-    quad(
-        &mut panel,
-        (width - (unit * 36.0) as i32) as f32,
-        (height - (unit * 7.0) as i32) as f32,
-        unit * 30.0,
-        unit * 2.0,
-        160.0 / 255.0,
+    skin_box(
+        &mut out,
+        width - unit_word * 36,
+        height - unit_word * 7,
+        unit_word * 30,
+        unit_word * 2,
+        unit_word,
+        SKIN_BOX_STYLE,
+        0xa0,
     );
-    out.submit(panel);
+    let ink = skin_text_ink();
     let button_y = (height - (unit * 7.0) as i32) as f32 + unit * 3.0;
     // A button's text sits one unit right of the panel's centre: the
     // original adds the unit after the centring, not before it.
@@ -2069,16 +2123,12 @@ pub fn prompt_draw(
         x: title_x + unit,
         y: title_y + unit * 3.0,
         size: unit * 2.0,
-        colour: [1.0, 1.0, 1.0, 1.0],
+        colour: ink,
         text: title.to_string(),
     });
     let glow_ink = crate::line_skin::line_palette().text[7].map(|byte| f32::from(byte) / 255.0);
     let button = |focused: bool| {
-        if focused {
-            glow_ink
-        } else {
-            [1.0, 1.0, 1.0, 1.0]
-        }
+        if focused { glow_ink } else { ink }
     };
     out.texts.push(TextRun {
         x: back_x,
@@ -2100,14 +2150,14 @@ pub fn prompt_draw(
         title.as_bytes(),
         title_x + unit,
         title_y + unit * 3.0,
-        [1.0, 1.0, 1.0, 1.0],
+        ink,
     );
     // A focused button's caption is the skin's glowing text.
     let button_text = |out: &mut TreeDraw, text: &[u8], x: f32, focused: bool| {
         if focused {
             glow_text_line(out, view, text, x, button_y);
         } else {
-            text_line(out, view, text, x, button_y, [1.0, 1.0, 1.0, 1.0]);
+            text_line(out, view, text, x, button_y, ink);
         }
     };
     button_text(&mut out, back.as_bytes(), back_x, focused == 0x100_0000);
@@ -3142,17 +3192,21 @@ mod tests {
             8.0,
             60.0,
         );
-        // The two panels are one batch (the submit joins equal ones).
-        assert_eq!(draw.batches.len(), 1);
-        assert_eq!(draw.batches[0].vertices.len(), 12);
+        // Two shaded boxes, each its own `Scale`: the description's first.
+        assert_eq!(draw.batches.len(), 2);
+        assert!(draw.batches.iter().all(|b| b.program == Program::Rounded));
+        assert_eq!(draw.batches[0].vertices.len(), 6);
         assert_eq!(draw.texts.len(), 3);
         assert_eq!(draw.texts[1].text, "bolt");
         assert_eq!(draw.texts[2].text, "Blast");
-        // The box grows a line: 2 × 8 + 4 − 4 = 16.
+        // The box grows a line: 2 × 8 + 4 − 4 = 16, plus 64 on each side.
         assert_eq!(
-            draw.batches[0].vertices[0].y - draw.batches[0].vertices[2].y,
-            16.0
+            draw.batches[0].vertices[2].y - draw.batches[0].vertices[0].y,
+            16.0 + 128.0
         );
+        // The texts take the skin's text ink with the tooltip's alpha.
+        let [r, g, b, _] = skin_text_ink();
+        assert_eq!(draw.texts[2].colour, [r, g, b, 160.0 / 255.0]);
     }
 
     #[test]
@@ -3190,12 +3244,26 @@ mod tests {
         let draw = prompt_draw(
             &view, "Choose", 100.0, "BACK", 40.0, "BEGIN", 50.0, 0x200_0000,
         );
-        assert_eq!(draw.batches.len(), 1);
-        assert_eq!(draw.batches[0].vertices.len(), 6 * 3);
+        // The two buttons' boxes share one `Scale` and join one batch.
+        assert_eq!(draw.batches.len(), 2);
+        assert!(draw.batches.iter().all(|b| b.program == Program::Rounded));
+        assert_eq!(draw.batches[1].vertices.len(), 12);
         // Integer halving: 500 − 50 = 450; the height's eighth is 87.
-        // The title's panel is at an eighth of the height, 87, plus its two
-        // units; the first vertex is its bottom edge.
-        assert_eq!(draw.batches[0].vertices[0].y, 87.0 + 8.0);
+        // The title's box is at an eighth of the height, 87, two units
+        // high, grown by 4 · 4 · 4 = 64 pixels: from 23 down to 159, and
+        // from 386 across to 450 + 108 + 64 = 622. It is 140 alpha.
+        let title = &draw.batches[0];
+        assert_eq!((title.vertices[0].x, title.vertices[0].y), (386.0, 23.0));
+        assert_eq!((title.vertices[2].x, title.vertices[2].y), (622.0, 159.0));
+        assert_eq!(title.vertices[0].colour, [0.0, 0.0, 0.0, 140.0 / 255.0]);
+        // The buttons: 30 × 2 units, seven units up, 160 alpha.
+        let back = &draw.batches[1];
+        assert_eq!(
+            (back.vertices[0].x, back.vertices[0].y),
+            (24.0 - 64.0, 672.0 - 64.0)
+        );
+        assert_eq!(back.vertices[0].colour[3], 160.0 / 255.0);
+        assert_eq!(draw.batches[1].vertices[6].x, 856.0 - 64.0);
         assert_eq!(draw.texts[0].x, 454.0);
         assert_eq!(draw.texts[0].y, 99.0);
         // BACK: the button's centre plus a unit (8 units + 28 − 40 / 2).
@@ -3206,7 +3274,7 @@ mod tests {
         // A focused caption takes the skin's glowing text ink.
         let ink = crate::line_skin::line_palette().text[7].map(|byte| f32::from(byte) / 255.0);
         assert_eq!(draw.texts[2].colour, ink);
-        assert_eq!(draw.texts[1].colour, [1.0, 1.0, 1.0, 1.0]);
+        assert_eq!(draw.texts[1].colour, skin_text_ink());
         // With the atlas loaded, the focused BEGIN glows: four copies of its
         // five glyphs in the highlight ink, then the text in the label ink.
         view.font_size = (1024, 1024);
@@ -3232,21 +3300,96 @@ mod tests {
         view.nodes = vec![node(0x101, 100.0, mark::SHOWN), node(0x102, 200.0, 0)];
         let names = vec![("Blast".to_string(), 40.0), ("Bolt".to_string(), 24.0)];
         let draw = labels_draw(&view, &names);
-        // Both boxes are one batch (the submit joins equal ones).
-        assert_eq!(draw.batches.len(), 1);
-        assert_eq!(draw.batches[0].vertices.len(), 12);
+        // Two shaded boxes at 128 alpha, each its own `Scale`.
+        assert_eq!(draw.batches.len(), 2);
+        assert!(draw.batches.iter().all(|b| b.program == Program::Rounded));
+        assert_eq!(
+            draw.batches[0].vertices[0].colour,
+            [0.0, 0.0, 0.0, 128.0 / 255.0]
+        );
         assert_eq!(draw.texts.len(), 2);
         // The box is the width less two units (32), at ROUND(100 − 16)
-        // across and ROUND(4 + 140.5) = 144 (to even) down.
-        assert_eq!(draw.batches[0].vertices[0].x, 84.0);
-        assert_eq!(draw.batches[0].vertices[2].x, 116.0);
-        assert_eq!(draw.batches[0].vertices[2].y, 144.0);
+        // across and ROUND(4 + 140.5) = 144 (to even) down, grown by 64.
+        assert_eq!(draw.batches[0].vertices[0].x, 84.0 - 64.0);
+        assert_eq!(draw.batches[0].vertices[2].x, 116.0 + 64.0);
+        assert_eq!(draw.batches[0].vertices[0].y, 144.0 - 64.0);
+        assert_eq!(draw.batches[0].vertices[2].y, 152.0 + 64.0);
         // The text: a unit right of ROUND(100 − (40 + 8)/2), at
         // ROUND(16 + 140.5) = 156, its baseline 1.6 units lower.
         assert_eq!(draw.texts[0].x, 80.0);
         assert_eq!(draw.texts[0].y, 156.0 + 6.4);
         // The second box: 16 wide at ROUND(200 − 8).
-        assert_eq!(draw.batches[0].vertices[6].x, 192.0);
+        assert_eq!(draw.batches[1].vertices[0].x, 192.0 - 64.0);
+        // The names take the skin's text ink, whole.
+        assert_eq!(draw.texts[0].colour, skin_text_ink());
+    }
+
+    #[test]
+    fn label_mode_draws_every_box_before_any_name() {
+        let mut view = view();
+        view.font_size = (1024, 1024);
+        view.nodes = vec![node(0x101, 100.0, mark::SHOWN), node(0x102, 200.0, 0)];
+        let names = vec![("Blast".to_string(), 40.0), ("Bolt".to_string(), 24.0)];
+        let draw = labels_draw(&view, &names);
+        let programs: Vec<Program> = draw.batches.iter().map(|b| b.program).collect();
+        // Both boxes, then the glyphs of both names (joined into one batch).
+        assert_eq!(
+            programs,
+            vec![Program::Rounded, Program::Rounded, Program::SkinText]
+        );
+        let glyphs = &draw.batches[2];
+        assert_eq!(glyphs.vertices.len(), (5 + 4) * 6);
+        assert_eq!(glyphs.vertices[0].colour, skin_text_ink());
+    }
+
+    #[test]
+    fn the_skin_box_grows_by_the_style_and_cuts_its_corners() {
+        let mut out = TreeDraw::default();
+        skin_box(&mut out, 100, 50, 40, 8, 4, SKIN_BOX_STYLE, 0x80);
+        let batch = &out.batches[0];
+        assert_eq!(batch.program, Program::Rounded);
+        assert_eq!(batch.blend, crate::gui_draw::BLEND_ALPHA);
+        // 4 · 4 · 4 = 64 on every side; the corners in the original's
+        // order: top-left, bottom-left, bottom-right, top-right.
+        let corner = |i: usize| {
+            let v = batch.vertices[i];
+            (v.x, v.y, v.u, v.v)
+        };
+        assert_eq!(corner(0), (36.0, -14.0, 0.0, 0.0));
+        assert_eq!(corner(1), (36.0, 122.0, 0.0, 1.0));
+        assert_eq!(corner(2), (204.0, 122.0, 1.0, 1.0));
+        assert_eq!(corner(5), (204.0, -14.0, 1.0, 0.0));
+        // Scale: 40 / (128 + 40) · 0.5 and 8 / (128 + 8) · 0.5, then the
+        // reciprocals of what is left of a half.
+        let sx = 40.0f32 / 168.0 * 0.5;
+        let sy = 8.0f32 / 136.0 * 0.5;
+        assert_eq!(
+            batch.uniforms.par0,
+            [sx, sy, 1.0 / (0.5 - sx), 1.0 / (0.5 - sy)]
+        );
+        // The centre is the ink's full alpha; the grown corner nothing.
+        let centre = crate::wheel_draw::rounded_fragment(
+            [0.5, 0.5],
+            [0.0, 0.0, 0.0, 1.0],
+            batch.uniforms.par0,
+        );
+        assert_eq!(centre[3], 1.0);
+        let edge = crate::wheel_draw::rounded_fragment(
+            [0.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+            batch.uniforms.par0,
+        );
+        assert_eq!(edge[3], 0.0);
+    }
+
+    #[test]
+    fn the_tree_text_ink_is_the_skins_seventh_label_ink() {
+        let palette = crate::line_skin::line_palette();
+        assert_eq!(
+            skin_text_ink(),
+            palette.text[6].map(|byte| f32::from(byte) / 255.0)
+        );
+        assert_ne!(palette.text[6], palette.text[7]);
     }
 
     #[test]

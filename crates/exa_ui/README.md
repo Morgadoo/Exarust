@@ -448,7 +448,11 @@ flames, glows and empty slots with its opening and closing animation, the
 creation prompt and the tooltip's caption and wrapped description (with the
 interface level's main font: its advances, glyph quad and line step, sampled
 from the level's atlas when installed or the base font's atlas scaled to the
-quad), the label mode and the dragged power's preview. A prompt button's
+quad), the label mode and the dragged power's preview. Their texts take
+the skin's text ink (`skin_text_ink`, the line skin's seventh label ink) and
+sit on the skin's shaded box (`skin_box`: the rounded program in black,
+grown by `unit · style · 4` pixels, style 4); label mode draws every box
+before any name. A prompt button's
 caption sits one unit past its centring and, focused, is the skin's glowing
 text (`skin::glow_text` with the line skin's inks). A domain whose icon
 sheet is not installed draws no icons (the original assumes every sheet
