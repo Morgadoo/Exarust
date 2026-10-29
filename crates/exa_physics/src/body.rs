@@ -2074,6 +2074,12 @@ impl Drive {
         self.stance
     }
 
+    /// Writes the stance factor outright, as a knock-out's wake does (0
+    /// while it lies, the race's standing once it is fully awake).
+    pub fn set_stance(&mut self, stance: f32) {
+        self.stance = stance;
+    }
+
     /// The tone target T = tone·s, which scales the link muscles.
     pub fn tone_target(&self) -> f32 {
         self.tone * self.stance

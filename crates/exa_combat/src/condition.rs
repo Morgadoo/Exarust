@@ -220,8 +220,10 @@ pub fn settle_death(
     })
 }
 
-/// The original's state flags beside the condition word. Knock-outs and
-/// shocks still have no writer on the running body. An elixir sets the
+/// The original's state flags beside the condition word. The game flow's
+/// lie-down and revive write a knock-out's wake nibble on the player (the
+/// wake tick, [`track_wake`], clears it); shocks still have no writer on
+/// the running body. An elixir sets the
 /// potion ([`crate::remedy`]), and the health tick clears it once the
 /// game clock passes its stamp.
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -463,7 +465,9 @@ impl Plugin for ConditionPlugin {
         )
         .add_systems(
             CharacterTick,
-            track_condition.in_set(CharacterStage::Posture),
+            (track_condition, track_wake)
+                .chain()
+                .in_set(CharacterStage::Posture),
         );
     }
 }
@@ -546,6 +550,69 @@ pub fn track_condition(
             condition.0, next.0, anim.action
         );
         *condition = next;
+    }
+}
+
+/// The ticked body's knock-out wake. The original's body tick runs it on
+/// every tick its state flags hold waking (0x20); here it runs on a body
+/// that also carries a [`KnockOut`] (what a knock-out writes: the game
+/// flow's lie-down and the dead body's revive), after the condition (the
+/// order against the posture decision is a guess). One [`wake`] tick on
+/// the game clock writes the condition, the flags, the readiness, the
+/// drive's tone and its stance factor. The getting-up clock is read as the
+/// playing clip's progress, and the stance the full wake restores as the
+/// race's standing stance factor (both readings of the original's fields,
+/// not traced further). The wake clears the waking bit once the readiness
+/// reaches 1, unless the body is held (0x40).
+#[allow(clippy::type_complexity)]
+pub fn track_wake(
+    ticked: Res<TickedCharacter>,
+    ticks: Option<Res<exa_physics::body::BodyTicks>>,
+    motions: Option<Res<Motions>>,
+    mut bodies: Query<(
+        &mut Condition,
+        &mut StateFlags,
+        &mut KnockOut,
+        &mut Ragdoll,
+        Option<&exa_anim::Animator>,
+    )>,
+) {
+    let Ok((mut condition, mut flags, mut knock, mut body, anim)) = bodies.get_mut(ticked.body)
+    else {
+        return;
+    };
+    if !flags.has(StateFlags::WAKING) {
+        return;
+    }
+    let Some(drive) = body.drive.as_mut() else {
+        return;
+    };
+    let now = ticks.map_or(0, |t| t.millis() as u32);
+    let clock = match (motions.as_ref(), anim) {
+        (Some(motions), Some(anim)) => motions
+            .clip(anim, &anim.action)
+            .map_or(0.0, |c| anim.clip_progress(c)),
+        _ => 0.0,
+    };
+    let out = wake(
+        &knock,
+        *condition,
+        *flags,
+        drive.tone,
+        now,
+        clock,
+        drive.race.stance,
+    );
+    if *condition != out.condition {
+        *condition = out.condition;
+    }
+    if *flags != out.flags {
+        *flags = out.flags;
+    }
+    drive.tone = out.tone;
+    knock.ready = out.ready;
+    if let Some(stance) = out.stance {
+        drive.set_stance(stance);
     }
 }
 

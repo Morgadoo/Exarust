@@ -1128,9 +1128,9 @@ switch (practice, story, arena, scripted modes), the session starters
 Derrin, practice from the ladder with its role, the story and arena
 continues, the arena hub), the transition screen's actions at black, the
 per-frame dialogue and session hook (with the wake-up's whole animator
-write: flags, blend, move and turn factors and the clip clock; the first
-animation ends on the animator's 0x20 flag, carried on the player as
-`WakeFlags`, not on the condition word), the story's
+write: flags, blend, move and turn factors and the wake clock; the first
+animation ends on the 0x20 bit of the player's state flags,
+`exa_combat::StateFlags`, not on the condition word), the story's
 wake-up, knockout and revival, death and the end-of-session menu, level
 exits with their save and checkpoint, the level-load finish, the story
 end-menu exit, the story respawn at `exanima05`'s portal, the application
@@ -1140,8 +1140,20 @@ level's start point, the pre-load view and the loader's twelve-byte start
 record; a level exit that makes the sixth level's checkpoint stamps the
 level's time; the next practice fight clears the condition word; the death
 screen's CONTINUE writes the player back with its 0x100 record flag; and the
-boot applies the settings store's expert and background unlock words. The
-rules return named steps;
+boot applies the settings store's expert and background unlock words.
+The player controls' combat-mode setter is its own step (`CombatMode`):
+the practice start and each next fight turn combat mode on, the revive off.
+A new story's unknown background and the story respawn lay the player down
+to wake (`KnockOut`: down, flags 0x30, tone and stance 0, the wake clock
+3000 ms or 0 ms on), the revive raises the dead body (`ReviveBody`, the
+original's dead-body revive: yellow health half the red) and holds its
+wake, and `exa_combat::condition::track_wake` runs the wake tick live on a
+body with a knock-out while its flags hold 0x20, which clears that bit once
+the body is ready (so the story's first wake-up animation ends when the
+body is up). The story respawn and the story start attach the controls
+again (`Controls(true)`), which gives them back after a story death. A
+camera shot turns the chase camera to the shot's bearing
+(`ChaseCamera::face_shot`). The rules return named steps;
 `FlowPlugin` runs them on the 12 ms game clock, follows a play level's
 player as a sandbox practice-mode session (without the practice round
 hook), turns a teleporter's journey into a
