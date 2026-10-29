@@ -1245,7 +1245,14 @@ drawing:
   word's second byte is 3, activates the window of the same body and opens
   a second window for another body.
 - **Inventory.** 244 wide and 644 high (628 compact, 590 in the arsenal),
-  titled "Inventory", at (8, 8); the player's own goes to its remembered
+  border 8, titled "Inventory", at (8, 8); its character view is a child
+  at the client's top, the form's width less two borders by its height
+  less 0x104 (228 × 384), border 2, its attribute word's bits 0x4000 and
+  0x8000 cleared and 0x90 set, style bit 0x80; the pack is 228 × 180 at
+  the client's bottom. These are design numbers at unit 4: showing the
+  form rescales it, its children and records to the live unit (Forms), so
+  at unit 8 it is 488 × 1288 with border 16, the view 452 × 764 and the
+  pack 452 × 356 (their 2-pixel borders are not scaled); the player's own goes to its remembered
   place, another character's to the screen's right less its width and four
   units. The record flag 0x1000000 lights the fourth tab record instead of
   the third; the scene is told the first of the character's items 431,

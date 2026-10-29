@@ -101,7 +101,7 @@ pub(crate) fn open_panels(screens: &GameScreens) -> Vec<(Panel, GuiRect)> {
     if let Some(screen) = screens.find(GameScreen::Inventory)
         && let Some(form) = screens.task.form(screen.form)
     {
-        let rect = gui_screens::inventory_pack_panel(form.bounds());
+        let rect = screens.inventory_layout().pack_at(form.bounds());
         out.push((Panel::PlayerPack, gui_screens::panel_client(rect)));
     }
     for screen in screens.open.iter().filter(|s| s.kind == GameScreen::Loot) {

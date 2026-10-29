@@ -41,7 +41,12 @@ pub const JOURNAL_ATTRIBUTES: u32 = FORM_ATTRIBUTES | 0x8000;
 /// The item pack's attribute word: the base word with the two bits the
 /// inventory constructor sets on the pack (0x10 and 0x100000).
 pub const PACK_ATTRIBUTES: u32 = FORM_ATTRIBUTES | 0x10 | 0x10_0000;
-/// The pack's frame style: the bit the inventory constructor sets on it.
+/// The character view's attribute word: the inventory constructor clears
+/// bits 0x4000 and 0x8000 of the view's word and sets 0x90 [guess: the view
+/// starts from the base form's word, as the pack does].
+pub const DOLL_ATTRIBUTES: u32 = (FORM_ATTRIBUTES & 0xffff_3fff) | 0x90;
+/// The pack's frame style: the bit the inventory constructor sets on it
+/// (the character view's style takes the same bit).
 pub const PACK_STYLE: u32 = 0x80;
 /// The inventory and journal frame style: both constructors set the
 /// centred-title bits (0x3000).

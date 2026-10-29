@@ -21,8 +21,10 @@ use bevy::prelude::*;
 use bevy::render::gpu_readback::{ReadbackComplete, ReadbackOnce};
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages};
 
-use exa_assets::model;
+use bevy::tasks::{AsyncComputeTaskPool, Task, block_on, poll_once};
+use exa_assets::model::{self, Paint, PaintedSet};
 use exa_assets::{Game, ModelCache, ModelLoader, PackKind};
+use exa_formats::objdb::Appearance;
 use exa_items::catalogue::ItemCatalogue;
 use exa_items::item_gui::framing;
 use exa_items::item_icon::{self, IconCamera, IconPixels, IconScene, sun_direction};
@@ -92,6 +94,20 @@ pub struct IconGpuJobs {
     pub jobs: Vec<IconGpuJob>,
 }
 
+/// How long one frame may spend decoding the textures an icon's paint job
+/// reads: a texture set's dozen textures take too long for one frame.
+pub const ICON_PAINT_BUDGET: std::time::Duration = std::time::Duration::from_millis(4);
+
+/// The apparel paint jobs icons wait on, by texture stem and appearance:
+/// the original's streamed icon paints the item's run-time materials from
+/// its body section's appearance (512 texels a side, 1024 at the highest
+/// texture quality) before it renders; Exarust paints on the async compute
+/// pool at the shade map's size and the icon waits for the material.
+#[derive(Resource, Default)]
+pub struct IconPainting {
+    pub tasks: std::collections::HashMap<(String, Appearance), Task<PaintedSet>>,
+}
+
 /// The icon renderer plugin. The game adds it after the GUI screens; a
 /// headless App gets the CPU painter.
 pub struct ItemIconPlugin;
@@ -106,6 +122,7 @@ impl Plugin for ItemIconPlugin {
         app.insert_resource(IconRenderMode { gpu })
             .init_resource::<PanelIcons>()
             .init_resource::<IconGpuJobs>()
+            .init_resource::<IconPainting>()
             .add_systems(
                 Update,
                 (
@@ -123,10 +140,13 @@ impl Plugin for ItemIconPlugin {
 
 /// Loads the model of each pending icon, at most [`ICONS_PER_FRAME`] a
 /// frame, and bakes its scene. A model that cannot be loaded is retried
-/// twice, then the pending icon is dropped (its slot stays reserved).
+/// twice, then the pending icon is dropped (its slot stays reserved). An
+/// apparel model's run-time materials are painted from the item's
+/// appearance first; the icon waits while its paint job runs.
 #[allow(clippy::too_many_arguments)]
 fn prepare_icon_scenes(
     mut icons: ResMut<PanelIcons>,
+    mut painting: Option<ResMut<IconPainting>>,
     game: Option<Res<Game>>,
     catalogue: Option<Res<ItemCatalogue>>,
     cache: Option<ResMut<ModelCache>>,
@@ -153,6 +173,28 @@ fn prepare_icon_scenes(
         // The catalogue loads once the game data is in; a pending icon
         // waits rather than being taken for an unknown record.
         return;
+    }
+    let deadline = std::time::Instant::now() + ICON_PAINT_BUDGET;
+    if let Some(painting) = painting.as_deref_mut()
+        && !painting.tasks.is_empty()
+    {
+        let mut loader = ModelLoader {
+            game: &game.0,
+            cache: &mut cache,
+            meshes: &mut meshes,
+            materials: &mut materials,
+            images: &mut images,
+            bc_supported: model::bc_supported(support.as_deref()),
+        };
+        painting
+            .tasks
+            .retain(|_, task| match block_on(poll_once(task)) {
+                Some(painted) => {
+                    loader.painted_material(painted);
+                    false
+                }
+                None => true,
+            });
     }
     let mut budget = ICONS_PER_FRAME;
     let mut index = 0;
@@ -196,10 +238,37 @@ fn prepare_icon_scenes(
             index += 1;
             continue;
         };
+        let painted = match (model_info.appearance, model::painted_model_stem(&model)) {
+            (Some(appearance), Some(stem)) => {
+                match icon_paint(
+                    &mut loader,
+                    painting.as_deref_mut(),
+                    stem,
+                    appearance,
+                    deadline,
+                ) {
+                    Some(handle) => Some(handle),
+                    // The paint is under way: the icon waits, and keeps its
+                    // attempts.
+                    None => {
+                        index += 1;
+                        continue;
+                    }
+                }
+            }
+            _ => None,
+        };
         let variant = icons.pending[index].variant;
         let turned = framing(variant, false).turned;
         let hide_star = model_info.flags & 0x5f == 9;
-        let scene = IconScene::from_model(&model, &meshes, &materials, hide_star, turned);
+        let scene = IconScene::from_model(
+            &model,
+            &meshes,
+            &materials,
+            hide_star,
+            turned,
+            painted.as_ref(),
+        );
         let Some(scene) = scene else {
             let pending = &mut icons.pending[index];
             pending.attempts += 1;
@@ -213,6 +282,41 @@ fn prepare_icon_scenes(
         icons.pending[index].scene = Some(scene);
         budget -= 1;
         index += 1;
+    }
+}
+
+/// The painted material of `stem` with `appearance` for an icon, once it
+/// is ready; `None` while its textures decode or its paint job runs. The
+/// job goes to the async compute pool when there is one (and painting is
+/// tracked), else it is painted on the calling thread.
+fn icon_paint(
+    loader: &mut ModelLoader<'_>,
+    painting: Option<&mut IconPainting>,
+    stem: String,
+    appearance: Appearance,
+    deadline: std::time::Instant,
+) -> Option<Handle<exa_render::material::ExaMaterial>> {
+    let key = (stem, appearance);
+    if painting
+        .as_ref()
+        .is_some_and(|painting| painting.tasks.contains_key(&key))
+    {
+        return None;
+    }
+    if !loader.warm_paint(&key.0, &appearance, deadline) {
+        return None;
+    }
+    match loader.paint_job(&key.0, &appearance) {
+        Paint::Ready(handle) => Some(handle),
+        Paint::Job(job) => match (painting, AsyncComputeTaskPool::try_get()) {
+            (Some(painting), Some(pool)) => {
+                painting
+                    .tasks
+                    .insert(key, pool.spawn(async move { job.paint() }));
+                None
+            }
+            _ => Some(loader.painted_material(job.paint())),
+        },
     }
 }
 
@@ -730,6 +834,107 @@ mod tests {
             icons.cache.entries[0]
         );
         assert!(icons.atlas.image.pixels.iter().any(|&b| b != 0));
+    }
+
+    /// A shipped apparel item's icon scene takes the material its
+    /// appearance paints for every run-time (`&`) part, not the unpainted
+    /// shade-map stand-in that rendered the chest's clothes white (skipped
+    /// without an installation).
+    #[test]
+    fn a_shipped_apparel_icon_is_painted_from_its_appearance() {
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let Ok(data) = exa_assets::GameData::open(&dir) else {
+            return;
+        };
+        let Some(bytes) = data
+            .pack(exa_assets::PackKind::Resource)
+            .and_then(|pack| pack.get("objdb.rdb"))
+        else {
+            return;
+        };
+        let Ok(db) = exa_formats::rdb::Database::parse(bytes) else {
+            return;
+        };
+        let catalogue = ItemCatalogue::of_database(&db);
+        let items = exa_formats::objdb::items(&db);
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, bevy::asset::AssetPlugin::default()))
+            .init_asset::<Mesh>()
+            .init_asset::<exa_render::material::ExaMaterial>()
+            .init_asset::<Image>()
+            .init_resource::<ModelCache>()
+            .init_resource::<PanelIcons>()
+            .init_resource::<IconPainting>()
+            .insert_resource(catalogue.clone())
+            .insert_resource(Game(std::sync::Arc::new(data)))
+            .add_systems(Update, prepare_icon_scenes);
+        // The first apparel record whose ground model has a run-time part.
+        let mut found = None;
+        for item in items.iter().filter(|item| {
+            item.appearance.is_some() && !item.model.is_empty() && !item.model.starts_with('@')
+        }) {
+            let world = app.world_mut();
+            let stem = world.resource_scope(|world, game: Mut<Game>| {
+                world.resource_scope(|world, mut cache: Mut<ModelCache>| {
+                    world.resource_scope(|world, mut meshes: Mut<Assets<Mesh>>| {
+                        world.resource_scope(
+                            |world, mut materials: Mut<Assets<exa_render::material::ExaMaterial>>| {
+                                let mut images = world.resource_mut::<Assets<Image>>();
+                                let mut loader = ModelLoader {
+                                    game: &game.0,
+                                    cache: &mut cache,
+                                    meshes: &mut meshes,
+                                    materials: &mut materials,
+                                    images: &mut images,
+                                    bc_supported: false,
+                                };
+                                let pack = loader.object_pack(&item.model)?;
+                                let model = loader.model(pack, &item.model)?;
+                                model::painted_model_stem(&model)
+                            },
+                        )
+                    })
+                })
+            });
+            if stem.is_some() {
+                found = Some(item.clone());
+                break;
+            }
+        }
+        let Some(item) = found else {
+            return;
+        };
+        let mut icons = app.world_mut().resource_mut::<PanelIcons>();
+        let _ = icons.reserve(item.id, 0, Some(&catalogue));
+        // The paint runs on the async pool; the icon waits for it.
+        for _ in 0..200 {
+            app.update();
+            if app.world().resource::<PanelIcons>().pending[0]
+                .scene
+                .is_some()
+            {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let icons = app.world().resource::<PanelIcons>();
+        let scene = icons.pending[0]
+            .scene
+            .as_ref()
+            .unwrap_or_else(|| panic!("{} never got its scene", item.name));
+        let materials = app
+            .world()
+            .resource::<Assets<exa_render::material::ExaMaterial>>();
+        let painted = scene.parts.iter().any(|part| {
+            materials.get(&part.material).is_some_and(|m| {
+                m.params.flags & exa_render::material::flags::PACKED_SPECULAR != 0
+                    && m.diffuse_map.is_some()
+            })
+        });
+        assert!(painted, "{} keeps its unpainted materials", item.name);
+        assert!(app.world().resource::<IconPainting>().tasks.is_empty());
     }
 
     #[test]

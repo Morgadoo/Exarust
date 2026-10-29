@@ -250,14 +250,17 @@ pub struct IconScene {
 impl IconScene {
     /// Bakes a model's drawable meshes for an icon. `hide_star` drops the
     /// parts whose material name begins with `*` (the manager's model-flag
-    /// rule); `turned` applies the variant's rotation. `None` when the model
-    /// has no mesh with positions and triangles.
+    /// rule); `turned` applies the variant's rotation; `painted` replaces
+    /// every run-time (`&`) material, as the original's icon render paints
+    /// an apparel model from the item's appearance before it draws it.
+    /// `None` when the model has no mesh with positions and triangles.
     pub fn from_model(
         model: &Model,
         meshes: &Assets<Mesh>,
         materials: &Assets<ExaMaterial>,
         hide_star: bool,
         turned: bool,
+        painted: Option<&Handle<ExaMaterial>>,
     ) -> Option<Self> {
         let turn = if turned {
             turn_rotation()
@@ -281,14 +284,14 @@ impl IconScene {
             }
             let world = root * absolute[index];
             for (part, (handle, material)) in node.parts.iter().enumerate() {
-                if hide_star
-                    && node
-                        .part_materials
-                        .get(part)
-                        .is_some_and(|name| name.starts_with('*'))
-                {
+                let name = node.part_materials.get(part);
+                if hide_star && name.is_some_and(|name| name.starts_with('*')) {
                     continue;
                 }
+                let material = match painted {
+                    Some(painted) if name.is_some_and(|name| name.starts_with('&')) => painted,
+                    _ => material,
+                };
                 let Some(mesh) = meshes.get(handle) else {
                     continue;
                 };
@@ -731,7 +734,7 @@ mod tests {
         let model = loader
             .factory_weapon(item.model.trim_start_matches('@'), item.weapon.as_ref())
             .expect("a shipped factory weapon assembles");
-        let scene = IconScene::from_model(&model, &meshes, &materials, false, false)
+        let scene = IconScene::from_model(&model, &meshes, &materials, false, false, None)
             .expect("a shipped weapon has drawable meshes");
         let variant = if item.model_flags & 1 != 0 {
             crate::icon_cache::variant::LIT
@@ -747,6 +750,71 @@ mod tests {
         assert!(plan.screen_pass);
         assert!(icon.any_alpha(), "{} has an empty icon", item.name);
         assert!(plan.screen_extents.0 > 0.0 && plan.screen_extents.1 > 0.0);
+    }
+
+    /// A painted material takes every run-time (`&`) part and leaves the
+    /// model's own materials alone; without one the `&` part keeps the
+    /// loader's unpainted stand-in.
+    #[test]
+    fn the_painted_material_replaces_the_run_time_parts() {
+        use bevy::asset::RenderAssetUsages;
+        use bevy::mesh::PrimitiveTopology;
+        let mut meshes = Assets::<Mesh>::default();
+        let mut quad = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::all());
+        quad.insert_attribute(
+            Mesh::ATTRIBUTE_POSITION,
+            vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+        );
+        quad.insert_indices(Indices::U32(vec![0, 1, 2]));
+        let mesh = meshes.add(quad);
+        let mut materials = Assets::<ExaMaterial>::default();
+        let colour = |materials: &mut Assets<ExaMaterial>, v: f32| {
+            let mut m = ExaMaterial::default();
+            m.params.diffuse = Vec4::new(v, v, v, 1.0);
+            materials.add(m)
+        };
+        let unpainted = colour(&mut materials, 0.9);
+        let wood = colour(&mut materials, 0.4);
+        let painted = colour(&mut materials, 0.2);
+        let model = Model {
+            nodes: vec![exa_assets::ModelNode {
+                name: "shirt".into(),
+                parent: None,
+                transform: Transform::IDENTITY,
+                parts: vec![(mesh.clone(), unpainted.clone()), (mesh, wood.clone())],
+                part_materials: vec!["&shirt_aa01".into(), "wood01".into()],
+                collision: Vec::new(),
+                skin_bone: None,
+                light: None,
+                voxel_light: None,
+                fire: None,
+                portal: None,
+                bounds: (Vec3::ZERO, 1.0),
+                half_extents: Vec3::ZERO,
+                gi_points: Default::default(),
+                gi_centred: false,
+                gi_thin: false,
+                rigid: None,
+                tracks: Vec::new(),
+                shadow_bias: 0,
+                is_skin: false,
+                placeholder: false,
+                cloth: false,
+                cloth_mesh: None,
+                mesh: false,
+                render_flags: 0,
+            }],
+        };
+        let scene =
+            IconScene::from_model(&model, &meshes, &materials, false, false, Some(&painted))
+                .expect("drawable");
+        assert_eq!(scene.parts[0].material, painted);
+        assert_eq!(scene.parts[1].material, wood);
+        assert_eq!(scene.surfaces[0].diffuse, [0.2, 0.2, 0.2, 1.0]);
+        assert_eq!(scene.surfaces[1].diffuse, [0.4, 0.4, 0.4, 1.0]);
+        let bare = IconScene::from_model(&model, &meshes, &materials, false, false, None)
+            .expect("drawable");
+        assert_eq!(bare.parts[0].material, unpainted);
     }
 
     #[test]

@@ -30,7 +30,11 @@ renderbuffers at twice that, the two RGBA image headers, the sun along
 `item_icon` adds what the running camera needs: that fit in metres on +Z
 from the box's centre, the framing presets' sun direction, the model's
 baked scene and a CPU rasteriser; the tests pin the fit, the camera, the
-plan's pixel extents, the sun and a shipped weapon's non-empty icon.
+plan's pixel extents, the sun and a shipped weapon's non-empty icon. A
+painted material passed to `IconScene::from_model` replaces every
+run-time (`&`) part, and the catalogue's `ItemModel` carries the record's
+appearance block (a level record's own, else its template's) for that
+paint.
 
 The Body loot window (`char_loot`) is 244 by 440 with a 228 by 180
 pack at the bottom of the client area and the equipment panel above it; a
