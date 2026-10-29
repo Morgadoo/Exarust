@@ -193,10 +193,16 @@ pub struct ViewInputs {
     pub ambient_w: f32,
     /// The exposure (1 in play).
     pub exposure: f32,
-    /// The frame's clock: `ViewPos.w` and `TimeDlt.x` are this value after
-    /// the exposure, and `TimeDlt.y` is `−1/supersample_factor` times the
-    /// clock itself (not the exposure).
-    pub time_delta: f32,
+    /// The sub-frame's time offset within the frame: 0 outside
+    /// super-sampling, and `0.5 − (i + 0.5)/N` while the super-sampling loop
+    /// draws sub-frame `i` of `N`. `ViewPos.w` and `TimeDlt.x` are this
+    /// offset times [`frame_scale`](Self::frame_scale).
+    pub subframe_offset: f32,
+    /// The frame's time scale: 1 when the last frame took at most 1/60 s,
+    /// else `16.666… / the frame's milliseconds` (formed in double, stored
+    /// single). Both `TimeDlt` lanes and `ViewPos.w` multiply by it; the
+    /// exposure enters neither.
+    pub frame_scale: f32,
     /// The fog colour, linear.
     pub fog_colour: [f32; 3],
     /// The fog distance in cm; `FogColr.w` is its inverse.
@@ -232,7 +238,8 @@ impl Default for ViewInputs {
             ambient_scale: 15.0,
             ambient_w: 8.0,
             exposure: 1.0,
-            time_delta: 0.0,
+            subframe_offset: 0.0,
+            frame_scale: 1.0,
             fog_colour: [0.0; 3],
             fog_distance: 50_100.0,
             sun_eye: [0.0; 3],
@@ -312,7 +319,7 @@ impl GlobalUniforms {
                 view.eye[0],
                 view.eye[1],
                 view.eye[2],
-                view.time_delta * view.exposure,
+                view.subframe_offset * view.frame_scale,
             ],
             view_size: size,
             // `ViewPrj` is the projection's half extents at 500 cm [inf].
@@ -321,12 +328,11 @@ impl GlobalUniforms {
             sdw_mat: view.world_to_shadow,
             voxel_gi_scale: gi_scale,
             ambient,
-            // `TimeDlt` is (the frame's clock after the exposure, −1/factor
-            // times the frame's clock): the engine multiplies both lanes by
-            // the same clock, only the first by the exposure.
+            // `TimeDlt` is (sub-frame offset × frame scale, −1/factor ×
+            // frame scale): the reciprocal is negated first, then scaled.
             time_delta: [
-                view.time_delta * view.exposure,
-                -(1.0 / view.supersample_factor.max(1) as f32) * view.time_delta,
+                view.subframe_offset * view.frame_scale,
+                -(1.0 / view.supersample_factor.max(1) as f32) * view.frame_scale,
             ],
             view_reciprocal: [1.0 / width as f32, 1.0 / height as f32],
             fog_colour: [
@@ -1010,7 +1016,8 @@ mod tests {
             ambient_scale: 15.0,
             exposure: 1.0,
             ambient_w: 8.0,
-            time_delta: 0.5,
+            subframe_offset: 0.25,
+            frame_scale: 2.0,
             fog_colour: [0.2, 0.3, 0.4],
             fog_distance: 1000.0,
             sun_eye: [300.0, 500.0, -100.0],
@@ -1018,7 +1025,8 @@ mod tests {
             ..ViewInputs::default()
         };
         let u = GlobalUniforms::from_view(&view);
-        // `ViewPos.w` and `TimeDlt.x` are the same frame clock.
+        // `ViewPos.w` and `TimeDlt.x` are the sub-frame offset × the frame
+        // scale (0.25 × 2).
         assert_eq!(u.view_pos, [100.0, 200.0, -300.0, 0.5]);
         assert_eq!(u.view_size, [1599.0, 899.0]);
         assert_eq!(u.voxel_gi_scale[0], 1.0 / (256.0 * 20.0));
@@ -1026,9 +1034,9 @@ mod tests {
         assert_eq!(u.voxel_gi_scale[2], 1.0 / (64.0 * 20.0));
         assert_eq!(u.voxel_gi_scale[3], 0.5);
         assert_eq!(u.ambient, [1.5, 3.0, 6.0, 8.0]);
-        // `TimeDlt` is the frame's clock after the exposure and −1 over the
-        // super-sampling factor times the clock itself.
-        assert_eq!(u.time_delta, [0.5, -0.125]);
+        // `TimeDlt.y` is −1 over the super-sampling factor times the frame
+        // scale: −(1/4) × 2.
+        assert_eq!(u.time_delta, [0.5, -0.5]);
         // `FogPos` is the eye + (shadow eye − eye)·0.5 with `w` the scene's
         // height limit 340 and `y` (350) lowered to it.
         assert_eq!(u.fog_position, [200.0, 340.0, -200.0, 340.0]);
@@ -1047,23 +1055,31 @@ mod tests {
     }
 
     #[test]
-    fn the_global_time_pairs_follow_the_exposure_and_supersampling() {
+    fn the_global_time_pairs_follow_the_frame_scale_and_supersampling() {
+        // Sub-frame 1 of 4: offset 0.5 − 1.5/4 = 0.125; a 25 ms frame gives
+        // the scale 16.666…/25. The exposure (2) enters neither lane.
+        let scale = (16.666_666_666_666_668_f64 / 25.0) as f32;
         let view = ViewInputs {
             eye: [1.0, 2.0, 3.0],
-            time_delta: 0.25,
+            subframe_offset: 0.5 - 1.5 / 4.0,
+            frame_scale: scale,
             exposure: 2.0,
             supersample_factor: 8,
             ..ViewInputs::default()
         };
         let u = GlobalUniforms::from_view(&view);
-        assert_eq!(u.view_pos[3], 0.5);
-        // The second lane is the clock over the factor, not the exposure:
-        // 0.25 / 8, while the first is 0.25 × 2.
-        assert_eq!(u.time_delta, [0.5, -0.03125]);
+        assert_eq!(u.view_pos[3], 0.125 * scale);
+        assert_eq!(u.time_delta, [0.125 * scale, -0.125 * scale]);
+        // Outside super-sampling the offset is 0 and the factor 1.
+        let u = GlobalUniforms::from_view(&ViewInputs {
+            supersample_factor: 1,
+            ..ViewInputs::default()
+        });
+        assert_eq!(u.view_pos[3], 0.0);
+        assert_eq!(u.time_delta, [0.0, -1.0]);
         // The factor is floored at one rather than dividing by zero.
         let u = GlobalUniforms::from_view(&ViewInputs {
             supersample_factor: 0,
-            time_delta: 1.0,
             exposure: 1.0,
             ..ViewInputs::default()
         });

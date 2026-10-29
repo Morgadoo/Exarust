@@ -16,8 +16,9 @@ for map binding and the emissive's doubling), the program choice
 (`shading/shadeopt/shadehar/shadesss/shadetrl`), the shadow and displacement
 sample splits, the warm-up variants, the surface entry's `<set>_f` name
 rule, the height layer's one-texel switch-off and the sub-frame count;
-`shader_uniforms` the 252-byte `Global` block (the frame clock in `ViewPos.w`
-and `TimeDlt.x`, `−clock/factor` in `TimeDlt.y`, the eye/sun-eye midpoint
+`shader_uniforms` the 252-byte `Global` block (the sub-frame offset times
+the frame scale in `ViewPos.w` and `TimeDlt.x`, `−scale/factor` in
+`TimeDlt.y`, the eye/sun-eye midpoint
 in `FogPos`, whose `w` is the scene height limit capping `y`), the 112-byte `Material` block, the per-light `vec4`s and the
 refraction background's choice. The builder's separate shadow-declaration
 callback is `shader_template::interface_shadow_samplers` (one `Shadow<i>`

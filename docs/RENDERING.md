@@ -139,9 +139,11 @@ shadow map reads a tap's first two lanes.
 
 **Uniforms.** `Global` is 252 bytes, `Material` 112 bytes and each light
 three `vec4`s; the fields and their values are in `docs/formats/FLB.md`.
-`ViewPos.w` and `TimeDlt.x` are the same frame clock after the exposure;
-`TimeDlt.y` is minus the frame's clock over the super-sampling factor (the
-clock, not the exposure). `FogPos`
+`ViewPos.w` and `TimeDlt.x` are the same value: the sub-frame's time offset
+(0 outside super-sampling, `0.5 − (i + 0.5)/N` for sub-frame `i` of `N`)
+times the frame scale (1 when the last frame took at most 1/60 s, else
+16.666… ms over the frame's time); `TimeDlt.y` is minus the frame scale over
+the super-sampling factor. The exposure enters neither. `FogPos`
 is the midpoint of the camera's eye and the sun camera's eye, built as
 `a + (b − a)·0.5`; its `w` is the scene's integer height limit (340 cm
 when the scene is created) and a `y` above that limit is lowered to it. The material writer's dirt block is written only by a

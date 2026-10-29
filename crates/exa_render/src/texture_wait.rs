@@ -2,8 +2,8 @@
 //! parallax pass reads the height map's size.
 //!
 //! The loader's parallax step starts the material's maps uploading, then
-//! spins until none of the leading slots is still uploading: a slot's word
-//! bit 1 means the driver has not finished. It scans the material's map
+//! spins until none of the leading slots is still uploading: a texture
+//! whose state word has bit 0 (mask 1) set has not finished. It scans the material's map
 //! slots from slot 0 while they exist, but never past the fifth (`0..=4` —
 //! the loop's bound is a five-slot window), and its poll rounds cover the
 //! slots it found occupied. When no slot is left uploading the round ends
@@ -22,7 +22,7 @@ pub const SCANNED_SLOTS: usize = 5;
 pub struct MapSlot {
     /// The slot holds a texture.
     pub present: bool,
-    /// The texture's word bit 1: the driver is still uploading it.
+    /// The texture's state word has bit 0 (mask 1): it is still uploading.
     pub uploading: bool,
 }
 
@@ -71,8 +71,10 @@ pub fn started(slots: &[MapSlot]) -> Vec<usize> {
 /// the wait found occupied, or `None` when the round finds none — which
 /// ends the spin.
 ///
-/// Each round polls one uploading slot, yields to the scheduler, and starts
-/// again from slot 0; the engine's `Sleep(0)` is the yield.
+/// A round that finds an uploading slot runs the upload queue's poll (which
+/// takes no slot), yields to the scheduler and starts again from slot 0;
+/// the engine's `Sleep(0)` is the yield. The poll runs once more after the
+/// last round.
 pub fn poll(slots: &[MapSlot]) -> Option<usize> {
     let count = scanned(slots);
     (0..count).find(|&i| slots[i].uploading)
