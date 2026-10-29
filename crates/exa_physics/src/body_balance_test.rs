@@ -1074,3 +1074,105 @@ fn the_first_leg_is_the_one_on_the_negative_side() {
     assert!(!legs_swap(&setup(0.09), 2, 1));
     assert!(!legs_swap(&setup(f32::NAN), 2, 2));
 }
+
+/// A body off its feet takes its ground from one 10 cm sphere cast down
+/// from its pelvis: over a 4 cm pedestal 30 cm up between its feet (which
+/// its feet's 5 cm spheres, 7.8 cm to either side, miss) its ground is the
+/// pedestal while its feet stand on the floor and give it support. On its
+/// feet the same body's ground is its lowest foot's.
+#[test]
+fn a_down_body_takes_its_ground_from_under_its_pelvis() {
+    let mut level = floor();
+    level.extend(square(Vec2::ZERO, 0.3, 0.02));
+    let mut standing = biped();
+    standing.measure_balance(level.as_slice());
+    assert!(drive(&standing).balance.under.abs() < 1e-5);
+    let mut down = biped();
+    bearing(
+        &mut down,
+        Bearing {
+            off_feet: true,
+            ..Bearing::default()
+        },
+    );
+    down.measure_balance(level.as_slice());
+    let b = &drive(&down).balance;
+    assert!(b.has_support());
+    assert!((b.under - 0.3).abs() < 1e-5, "{}", b.under);
+    // With no support the feet routine's own probe under the pelvis
+    // replaces it: over nothing, 100 m down.
+    down.measure_balance(NONE);
+    assert_eq!(drive(&down).balance.under, -100.0);
+}
+
+/// The flat-floor bit puts every foot on a floor at 0 without a probe: its
+/// ground 0, its anchor at the sole plus 1 cm, its state touching, reached
+/// and ramp-held, its floor 1 cm; the body has full support over nothing
+/// at all, and its lift aims 10 cm under the target it has on a real floor.
+#[test]
+fn a_flat_floor_body_stands_on_0_without_probing() {
+    let mut real = biped();
+    real.measure_balance(floor().as_slice());
+    real.lift();
+    let walking = drive(&real).lift_target.unwrap();
+    let mut flat = biped();
+    bearing(
+        &mut flat,
+        Bearing {
+            splay: true,
+            ..Bearing::default()
+        },
+    );
+    flat.measure_balance(NONE);
+    let sole = flat.sole;
+    for leg in flat.legs() {
+        assert_eq!(leg.ground, Some(0.0));
+        assert!((leg.anchor.y - (sole + 0.01)).abs() < 1e-6);
+        assert_eq!(leg.state, feet::FLAT_FLOOR_FOOT);
+        assert_eq!(leg.state.0, 0x4a);
+        assert!((leg.floor - 0.01).abs() < 1e-6);
+    }
+    let d = drive(&flat);
+    assert_eq!(d.feet_mode, feet::FeetMode::FlatFloor);
+    assert!(d.balance.has_support());
+    assert_eq!(d.balance.under, 0.0);
+    assert_eq!(d.support, 1.0);
+    flat.lift();
+    let target = drive(&flat).lift_target.unwrap();
+    assert!(
+        (target - (walking - 0.1)).abs() < 1e-4,
+        "{target} vs {walking}"
+    );
+}
+
+/// A hovering race probes once under its pelvis with a 20 cm sphere from
+/// 20 cm over it: a hit is its ground, a miss raises the next probe 5 cm.
+/// It has full support either way and its feet are not probed.
+#[test]
+fn a_hovering_body_probes_once_under_its_pelvis() {
+    let mut body = biped();
+    body.drive.as_mut().unwrap().race.hovers = true;
+    let before: Vec<Option<f32>> = body.legs().iter().map(|l| l.ground).collect();
+    body.measure_balance(NONE);
+    let d = drive(&body);
+    assert_eq!(d.feet_mode, feet::FeetMode::Hovering);
+    assert_eq!(d.hover.raise, 5.0);
+    assert!(d.balance.has_support());
+    assert_eq!(d.support, 1.0);
+    body.measure_balance(square(Vec2::ZERO, -0.5, 10.0).as_slice());
+    let d = drive(&body);
+    assert_eq!(d.hover.raise, 0.0);
+    assert!((d.balance.under + 0.5).abs() < 1e-5, "{}", d.balance.under);
+    let after: Vec<Option<f32>> = body.legs().iter().map(|l| l.ground).collect();
+    assert_eq!(before, after);
+    // The flat-floor bit wins over the hover flag.
+    bearing(
+        &mut body,
+        Bearing {
+            splay: true,
+            ..Bearing::default()
+        },
+    );
+    body.measure_balance(NONE);
+    assert_eq!(drive(&body).feet_mode, feet::FeetMode::FlatFloor);
+}

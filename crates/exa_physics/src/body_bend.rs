@@ -464,6 +464,11 @@ impl Ragdoll {
         if drive.targets.len() != parts.len() {
             return;
         }
+        // The feet routine's flat-floor and hovering modes call no leg IK:
+        // the stored corrections stay as they were.
+        if drive.feet_mode != super::FeetMode::Walking {
+            return;
+        }
         if drive.bearing.off_feet && !drive.bearing.getting_up {
             for leg in legs.iter_mut() {
                 let (knee, knee_rate) = ease(leg.knee, leg.knee_rate, 0.0, EASE_STANDING);

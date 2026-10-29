@@ -281,7 +281,7 @@ pub struct Balance {
     /// The character's ground (m): with support the lowest foot's (their
     /// mean while walking), without it the ground under the pelvis. A foot
     /// with no ground in reach is anchored at its height.
-    under: f32,
+    pub(super) under: f32,
     /// The pelvis's height (m) when the feet were last measured.
     pub(super) pelvis: f32,
     /// The stance's level, 1 on level ground: less while one foot stands
@@ -800,6 +800,10 @@ impl Ragdoll {
         let mut foot_lag = 1.0;
         let bonus = drive.race.balance_bonus;
         let scale = drive.stats.scale;
+        // The feet routine's mode: the state word's flat-floor bit (the
+        // lying spawn's and the character viewers' 0x1000, Exarust's
+        // splay bit) wins over the race's hover flag.
+        let mode = feet::feet_mode(bearing.splay, drive.race.hovers);
         // Down: lying, or getting up (a collapsing body, unsupported as it
         // is, still probes its feet standing).
         let down = (!drive.supported && !bearing.collapsing) || bearing.getting_up;
@@ -1088,8 +1092,92 @@ impl Ragdoll {
             }
         }
 
-        // The feet.
+        // The down body's ground probe (the body tick's, before it calls
+        // the feet routine): a body off its feet (the condition's bit
+        // 0x200: down, getting up, dormant, dead) casts one 10 cm sphere
+        // 2000 cm straight down from its pelvis (plus its sector's origin,
+        // zero in Exarust's one world frame). A hit is its ground; a miss
+        // keeps the last. The feet routine below leaves that ground to a
+        // supported down body and replaces it under one with no support.
+        if bearing.off_feet {
+            let start = feet::down_probe_origin(pelvis, Vec3::ZERO);
+            let hit = level
+                .height_below(
+                    start,
+                    feet::DOWN_PROBE_RADIUS / CM,
+                    feet::DOWN_PROBE_REACH / CM,
+                )
+                .map(cm);
+            let (ground, _previous) = feet::down_probe_ground(cm(b.under), hit);
+            if (ground - cm(b.under)).abs() > 1.0 {
+                debug!(
+                    "down probe: ground {:.1} -> {ground:.1} cm (pelvis {:.1} cm)",
+                    cm(b.under),
+                    cm(pelvis.y)
+                );
+            }
+            b.under = ground / CM;
+        }
+
+        // The feet routine's two special modes skip every per-foot probe,
+        // the support count, the stance's level, the imbalance decay and
+        // the leg IK (`bend_legs`); both give full support.
         b.pelvis = pelvis.y;
+        drive.feet_mode = mode;
+        match mode {
+            feet::FeetMode::FlatFloor => {
+                // Every leg on a floor at 0: its ground 0, its anchor at
+                // the sole plus 1 cm, its state touching, reached and its
+                // ramp held, its toe's floor 1 cm. The character's ground
+                // is 0 and it has support.
+                let flat = feet::flat_floor_leg(cm(sole));
+                for leg in legs.iter_mut() {
+                    leg.smoothed = flat.ground / CM;
+                    leg.ground = Some(flat.ground / CM);
+                    leg.anchor.y = flat.anchor_height / CM;
+                    leg.state = flat.state;
+                    leg.floor = flat.floor / CM;
+                    leg.grounded = true;
+                }
+                b.under = 0.0;
+                b.ground = None;
+                b.has_support = true;
+                b.extension = 1.0;
+                drive.support = 1.0;
+                return;
+            }
+            feet::FeetMode::Hovering => {
+                // One 20 cm sphere 2000 cm down from 20 cm over the pelvis
+                // (5 cm higher after every miss): a hit is the character's
+                // ground. Support, the locomotion lag and the extension
+                // are 1; the feet are not touched.
+                let start = pelvis.with_y(drive.hover.start(cm(pelvis.y)) / CM);
+                let hit = level
+                    .height_below(
+                        start,
+                        feet::HOVER_PROBE_RADIUS / CM,
+                        feet::HOVER_PROBE_REACH / CM,
+                    )
+                    .map(cm);
+                if let Some(ground) = drive.hover.land(hit) {
+                    b.under = ground / CM;
+                } else {
+                    debug!(
+                        "hover probe missed: next starts {:.1} cm over the pelvis",
+                        feet::HOVER_PROBE_RISE + drive.hover.raise
+                    );
+                }
+                b.ground = None;
+                b.has_support = true;
+                b.extension = 1.0;
+                drive.bearing.lag = 1.0;
+                drive.support = 1.0;
+                return;
+            }
+            feet::FeetMode::Walking => {}
+        }
+
+        // The feet.
         let under = b.under;
         let mut grounded = 0;
         for (i, ((leg, &c), &axis)) in legs.iter_mut().zip(&contacts).zip(&ahead).enumerate() {
