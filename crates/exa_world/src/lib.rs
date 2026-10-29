@@ -2254,6 +2254,7 @@ mod tests {
             cloth_mesh: None,
             mesh: false,
             render_flags: 0,
+            triangles: None,
         }
     }
 

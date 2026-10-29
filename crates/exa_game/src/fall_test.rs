@@ -185,6 +185,7 @@ fn fallen_out() -> Ragdoll {
         origin: Vec3::ZERO,
         links: Vec::new(),
         mesh: None,
+        triangles: None,
     }]);
     body.wake();
     for _ in 0..2000 {

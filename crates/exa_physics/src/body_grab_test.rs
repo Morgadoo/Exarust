@@ -20,6 +20,7 @@ fn rigid_part(at: Vec3, parent: Option<usize>, mobility: f32) -> RigidPart {
         origin: at,
         links: Vec::new(),
         mesh: None,
+        triangles: None,
     }
 }
 

@@ -2099,6 +2099,13 @@ The more mobile part's spheres SHALL be tested against the other part's collisio
 - **WHEN** a sphere's centre lies behind a mesh triangle
 - **THEN** it is not pushed
 
+### Requirement: Prop collision mesh
+A registered prop part SHALL carry its node mesh's triangles (metres, the node's frame) as its collision triangles; an index past the positions SHALL leave it none.
+
+#### Scenario: A prop's mesh
+- **WHEN** a mesh of positions (0,0,0), (1,0,0), (0,2,0), (0,0,3) with indices 0 1 2 0 2 3 1 belongs to a node with a registering body
+- **THEN** its part carries the two triangles (0,0,0)(1,0,0)(0,2,0) and (0,0,0)(0,2,0)(0,0,3); with an index of 9 it carries none and the sphere fallback stays
+
 ### Requirement: Trailing-foot request
 A clip start that replaces Walk or Run SHALL leave a trailing-foot request with a deadline 500 ms on, unless the movement decision moves the body that tick. The body tick SHALL plant the trailing foot after its sample while the request is 2 and set it to 1. A request strictly past its deadline SHALL be dropped and the behaviour told; the movement decision's move branch SHALL drop it.
 

@@ -46,6 +46,7 @@ fn panel(at: Vec3) -> RigidPart {
         origin: at,
         links: vec![slider(0.7, 0.2), slider(0.7, 1.9), slider(-0.7, 1.0)],
         mesh: None,
+        triangles: None,
     }
 }
 

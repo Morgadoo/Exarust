@@ -793,6 +793,7 @@ pub fn held_item_bodies(
                 half: n.half_extents,
                 radius: n.bounds.1,
             }),
+            triangles: None,
         });
     }
     parts
@@ -894,6 +895,7 @@ pub fn assembled_item_body(
             half: half / CM_PER_M,
             radius: half.length() / CM_PER_M,
         }),
+        triangles: None,
     };
     part.is_solid().then_some(part)
 }
@@ -2210,6 +2212,7 @@ mod tests {
             cloth_mesh: None,
             mesh: false,
             render_flags: 0,
+            triangles: None,
         }
     }
 

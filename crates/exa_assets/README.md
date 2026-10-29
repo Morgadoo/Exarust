@@ -143,17 +143,22 @@ past the array.
 
 Model nodes carry their rigid body with the physical divisor of their first
 mesh part's material (`ModelNode::rigid`, `NodeRigidBody::mobility`), what
-the solver registers a prop with. A node's `_null` groups are geometry the
-original never draws but its cursor pick meets (the hub's shop counter is a
-`_null` box): they are built into `ModelNode::collision` as bare position
-and index meshes kept in the main world (never uploaded; none for a skinned
-mesh), spawned hidden as pick-only colliders, and do not appear among the
-node's drawn parts. A cloth-marked node also keeps what its cloth is built
-from (`ModelNode::cloth_mesh`, `ClothMesh`): the mesh's position elements,
-its triangles over them with their face flags (sub-chunk `0x3DC3`, whose
-top bits mark the pinned faces) and, for each drawn part, the element of
-each of its vertices, so the cloth makes one particle per element as the
-original does (a seam does not split it).
+the solver registers a prop with. A node with a body also keeps its mesh
+triangles in the node's frame (metres, `ModelNode::triangles` from
+`model::mesh_triangles`: the file's index list over its positions, a
+trailing index that starts no triangle ignored, an index past the positions
+giving none), which registration hands the solver as the collision mesh the
+pair stage tests the other side's spheres against. A node's `_null` groups
+are geometry the original never draws but its cursor pick meets (the hub's
+shop counter is a `_null` box): they are built into `ModelNode::collision`
+as bare position and index meshes kept in the main world (never uploaded;
+none for a skinned mesh), spawned hidden as pick-only colliders, and do not
+appear among the node's drawn parts. A cloth-marked node also keeps what its
+cloth is built from (`ModelNode::cloth_mesh`, `ClothMesh`): the mesh's
+position elements, its triangles over them with their face flags (sub-chunk
+`0x3DC3`, whose top bits mark the pinned faces) and, for each drawn part,
+the element of each of its vertices, so the cloth makes one particle per
+element as the original does (a seam does not split it).
 
 Object libraries: `ModelLoader::object_pack` searches the project's object
 libraries in their order and `object_model` loads the first match, as the

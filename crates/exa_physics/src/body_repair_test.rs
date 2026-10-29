@@ -19,6 +19,7 @@ fn rigid_part(world: Affine3A, origin: Vec3, links: Vec<RigidLink>) -> RigidPart
         origin,
         links,
         mesh: None,
+        triangles: None,
     }
 }
 

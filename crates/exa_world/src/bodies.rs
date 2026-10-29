@@ -321,6 +321,7 @@ fn rigid_part(
     rigid: &NodeRigidBody,
     origin: Vec3,
     mesh: Bounds,
+    triangles: Option<std::sync::Arc<Vec<[Vec3; 3]>>>,
 ) -> RigidPart {
     let b = &rigid.body;
     RigidPart {
@@ -343,6 +344,7 @@ fn rigid_part(
             .map(|l| body_link(l, parent.is_some()))
             .collect(),
         mesh: Some(mesh),
+        triangles,
     }
 }
 
@@ -442,6 +444,9 @@ pub fn register_bodies(
                         half: node.half_extents,
                         radius: node.bounds.1,
                     },
+                    // Its mesh, which the pair stage tests the other
+                    // body's spheres against.
+                    node.triangles.clone(),
                 );
                 for sound in &rigid.body.sounds {
                     // The original drops a slot whose sound the audio
@@ -1402,5 +1407,47 @@ mod volume_fit {
             matched * 10 >= bodies * 6,
             "{matched} of {bodies} shipped bodies fitted"
         );
+    }
+
+    /// The installed game's prop bodies (with `EXANIMA_DIR`): every body
+    /// node whose mesh decodes gives the pair stage triangles, in the node's
+    /// frame, as many as its index list names; a mesh whose indices leave
+    /// the position list gives none, which leaves the sphere fallback.
+    #[test]
+    fn shipped_prop_meshes_give_the_pair_stage_triangles() {
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let game = exa_assets::GameData::open(&dir).unwrap();
+        let pack = game.pack(PackKind::Objlib).unwrap();
+        let (mut meshes, mut triangles, mut broken) = (0usize, 0usize, 0usize);
+        for entry in pack.entries() {
+            let Some(bytes) = pack.get(&entry.name) else {
+                continue;
+            };
+            let Ok(scene) = Scene::parse(bytes) else {
+                continue;
+            };
+            for node in &scene.nodes {
+                let Some(Ok(_)) = &node.rigid_body else {
+                    continue;
+                };
+                let NodeBody::Mesh(mesh) = &node.body else {
+                    continue;
+                };
+                meshes += 1;
+                match exa_assets::mesh_triangles(mesh) {
+                    Some(t) => {
+                        assert_eq!(t.len(), mesh.indices.len() / 3);
+                        assert!(t.iter().flatten().all(|v| v.is_finite()));
+                        triangles += t.len();
+                    }
+                    None => broken += 1,
+                }
+            }
+        }
+        assert!(meshes > 0, "no prop body meshes in the install");
+        assert_eq!(broken, 0, "prop body meshes without triangles");
+        assert!(triangles > 0);
     }
 }

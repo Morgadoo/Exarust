@@ -26,6 +26,7 @@ fn rigid(entity: Entity, at: Vec3, mobility: f32) -> Ragdoll {
         origin: Vec3::ZERO,
         links: Vec::new(),
         mesh: None,
+        triangles: None,
     }])
 }
 

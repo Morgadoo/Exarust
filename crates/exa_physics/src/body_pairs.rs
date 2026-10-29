@@ -1045,9 +1045,11 @@ impl Pairs {
 /// sphere against B's mesh box and mesh sphere (or the swept sphere against
 /// the box and B's mesh sphere as a capsule); then B's mesh query, one
 /// triangle at a time, with the sphere re-read after every hit (so later
-/// triangles see the push). A part without triangles falls back to B's
-/// stored spheres, pre-tested against their own bound, which is Exarust's
-/// stand-in until the loaders hand over the model meshes.
+/// triangles see the push). The triangles are visited in the file's order
+/// (the original walks its mesh kd-tree, so the order of hits can differ).
+/// A part without triangles (a character part; props get their node mesh
+/// at registration) falls back to B's stored spheres, pre-tested against
+/// their own bound.
 fn collide(pa: &mut Part, pb: &mut Part, pair: &mut Pair, touch: &mut Touch, placed: Option<bool>) {
     let mut a_now = pa.transform();
     let mut b_now = pb.transform();

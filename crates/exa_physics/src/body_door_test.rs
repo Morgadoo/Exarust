@@ -58,6 +58,7 @@ fn leaf(at: Vec3, yaw: f32) -> RigidPart {
             link(Vec3::new(-1.0, 0.0, 0.0), turn * tied(), SLACK),
         ],
         mesh: None,
+        triangles: None,
     }
 }
 
