@@ -31,6 +31,11 @@
 //! light or shield reads and clears the record's off-hand entry whatever
 //! item it names.
 //!
+//! Applying a plan clears the body's weapon part between the detaches and
+//! the attaches when the body's weapon class word has no `0x30` bits, and
+//! refreshes the body after the attaches when both hands of the stowed set
+//! the plan read are empty.
+//!
 //! Every completed re-dress restarts the figure's stance with blend 20,
 //! unless the body is in its weapon-swap state (its animation does it
 //! then), and clears the body's first attach flag.
@@ -77,6 +82,9 @@ pub struct HandAttach {
 pub struct AttachPlan {
     pub changed: [bool; 2],
     pub attach: [Option<HandAttach>; 2],
+    /// The record's stowed set's item ids as the plan read them; the apply
+    /// refreshes the body when both are empty.
+    pub targets: [u32; 2],
     /// The record's second set is out after this plan (the plan was made
     /// for the swap, so the sets trade when it is applied).
     pub swap: bool,
@@ -104,6 +112,7 @@ where
     let mut plan = AttachPlan {
         changed: [false; 2],
         attach: [None; 2],
+        targets: [stowed[0].id, stowed[1].id],
         swap: true,
     };
     for hand in 0..2 {
@@ -140,15 +149,22 @@ where
 }
 
 /// One step of applying a plan, in the original's order: the changed hands
-/// detach first (main, then off), then the new items attach (main, then
+/// detach first (main, then off), the body's weapon part is cleared when
+/// its class word has no weapon bits, then the new items attach (main, then
 /// off).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApplyStep {
     Detach(usize),
+    /// The body's weapon part is cleared: its weapon class word has none
+    /// of the `0x30` bits. Once per apply, whatever the hands take.
+    ClearWeaponPart,
     Attach {
         hand: usize,
         kind: AttachKind,
     },
+    /// The body is refreshed because neither hand of the stowed set the
+    /// plan read holds an item.
+    RefreshBody,
     /// The stance is restarted with [`STANCE_BLEND`] (skipped in the swap
     /// state).
     RestartStance,
@@ -159,16 +175,26 @@ pub enum ApplyStep {
 }
 
 /// Applies an attachment plan to the record. The changed hands' models are
-/// detached, the new ones attached, the stance restarted unless the body is
-/// in [`SWAP_STATE`], the body's flag cleared, and — for a swap plan — the
-/// out and stowed sets exchanged. Returns the steps in the original's
-/// order.
-pub fn apply(p: &mut Possessions, plan: &AttachPlan, body_state: u32) -> Vec<ApplyStep> {
+/// detached, the body's weapon part cleared when `class` (the body's weapon
+/// class word) has no `0x30` bits, the new models attached, the body
+/// refreshed when both of the plan's stowed hands are empty, the stance
+/// restarted unless the body is in [`SWAP_STATE`], the body's flag cleared,
+/// and — for a swap plan — the out and stowed sets exchanged. Returns the
+/// steps in the original's order.
+pub fn apply(
+    p: &mut Possessions,
+    plan: &AttachPlan,
+    body_state: u32,
+    class: u32,
+) -> Vec<ApplyStep> {
     let mut steps = Vec::new();
     for hand in 0..2 {
         if plan.changed[hand] {
             steps.push(ApplyStep::Detach(hand));
         }
+    }
+    if class & 0x30 == 0 {
+        steps.push(ApplyStep::ClearWeaponPart);
     }
     for hand in 0..2 {
         if let Some(attach) = plan.attach[hand] {
@@ -177,6 +203,9 @@ pub fn apply(p: &mut Possessions, plan: &AttachPlan, body_state: u32) -> Vec<App
                 kind: attach.kind,
             });
         }
+    }
+    if plan.targets == [0, 0] {
+        steps.push(ApplyStep::RefreshBody);
     }
     if body_state != SWAP_STATE {
         steps.push(ApplyStep::RestartStance);
@@ -763,7 +792,9 @@ mod tests {
         })
         .unwrap();
         assert_eq!(plan.changed, [true, true]);
-        let steps = apply(&mut p, &plan, 0);
+        assert_eq!(plan.targets, [7, 8]);
+        // A body with a weapon class bit keeps its weapon part.
+        let steps = apply(&mut p, &plan, 0, 0x10);
         assert_eq!(
             steps,
             vec![
@@ -784,17 +815,22 @@ mod tests {
         // A redress plan does not trade the sets.
         assert_eq!(p.out, [hand(5, 0), hand(6, 0)]);
         // A swap plan does, and its stance restart is skipped in the swap
-        // state.
+        // state. A body without weapon class bits has its weapon part
+        // cleared after the detaches, and a stowed set with both hands
+        // empty refreshes the body after the attaches.
         let plan = AttachPlan {
             changed: [true, false],
             attach: [None, None],
+            targets: [0, 0],
             swap: true,
         };
-        let steps = apply(&mut p, &plan, SWAP_STATE);
+        let steps = apply(&mut p, &plan, SWAP_STATE, 0x40);
         assert_eq!(
             steps,
             vec![
                 ApplyStep::Detach(0),
+                ApplyStep::ClearWeaponPart,
+                ApplyStep::RefreshBody,
                 ApplyStep::ClearAttachFlag,
                 ApplyStep::ExchangeSets
             ]

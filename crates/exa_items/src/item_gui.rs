@@ -828,6 +828,41 @@ pub fn crop_sheet_cell(
     Some(out)
 }
 
+/// One of the four sprite sheets as decoded from the installation: the
+/// source image's size and one RGBA cell image per stored place, in the
+/// sheet's own order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoadedSheet {
+    pub name: &'static str,
+    pub width: i32,
+    pub height: i32,
+    pub cells: Vec<Vec<u8>>,
+}
+
+/// Decode a sheet's `.rfi` and crop its cells. The original reads the
+/// sheet, makes a blank cell image of the sheet's cell side in the source's
+/// pixel format and copies each stored place into it; an image or a place
+/// that does not fit leaves the sheet out. Nothing draws the cells yet (the
+/// running card paints no rating dots, coins, grip buttons or sockets), so
+/// no system reads the sheets at start-up.
+pub fn load_sheet(sheet: &SpriteSheet, bytes: &[u8]) -> Option<LoadedSheet> {
+    let rfi = exa_formats::rfi::Rfi::parse(bytes).ok()?;
+    let width = i32::try_from(rfi.header.width).ok()?;
+    let height = i32::try_from(rfi.header.height).ok()?;
+    let rgba = rfi.decode_rgba8().ok()?;
+    let mut cells = Vec::with_capacity(sheet.cells as usize);
+    for index in 0..sheet.cells as usize {
+        let rect = sheet_cell_rect(sheet, index)?;
+        cells.push(crop_sheet_cell(&rgba, width, height, 4, rect)?);
+    }
+    Some(LoadedSheet {
+        name: sheet.name,
+        width,
+        height,
+        cells,
+    })
+}
+
 /// The item panel's icon shader, as the original's program compiles it.
 /// Its uniform and per-pixel arithmetic are drawn by
 /// `exa_ui::gui_draw::item_icon_fragment` (the GUI's `HltCol` program).
@@ -1171,6 +1206,35 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn the_sheets_load_from_the_resource_pack() {
+        // Malformed bytes leave the sheet out rather than panicking.
+        assert_eq!(load_sheet(&SPRITE_SHEETS[0], b"not an image"), None);
+        let Ok(root) = std::env::var("EXANIMA_DIR") else {
+            return;
+        };
+        let Ok(data) = exa_assets::GameData::open(root) else {
+            return;
+        };
+        for (sheet, (width, height)) in
+            SPRITE_SHEETS
+                .iter()
+                .zip([(64, 192), (144, 48), (288, 192), (128, 192)])
+        {
+            let bytes = data.texture(sheet.name).expect("the sheet is installed");
+            let loaded = load_sheet(sheet, bytes).expect("the sheet decodes");
+            assert_eq!((loaded.width, loaded.height), (width, height));
+            assert_eq!(loaded.cells.len(), sheet.cells as usize);
+            let side = sheet.cell as usize;
+            assert!(
+                loaded
+                    .cells
+                    .iter()
+                    .all(|cell| cell.len() == side * side * 4)
+            );
+        }
     }
 
     #[test]

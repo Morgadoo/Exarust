@@ -1107,22 +1107,29 @@ pub fn item_sentence(
             text: fixed_name(name),
         };
     }
-    let mut name = name.to_string();
-    if name.as_bytes().last() == Some(&b'.') {
-        name.pop();
+    // The original edits the name as bytes; doing the same here keeps a
+    // multi-byte character from splitting the string at a non-boundary.
+    let mut bytes = name.as_bytes().to_vec();
+    if bytes.last() == Some(&b'.') {
+        bytes.pop();
     }
-    let bracket = name.as_bytes().last() == Some(&b']');
-    let crafted = bracket && name.len() >= 2 && name.as_bytes()[name.len() - 2] == b'c';
-    if bracket && name.len() >= 4 {
-        name.truncate(name.len() - 4);
+    let bracket = bytes.last() == Some(&b']');
+    let crafted = bracket && bytes.len() >= 2 && bytes[bytes.len() - 2] == b'c';
+    if bracket {
+        if bytes.len() >= 4 {
+            bytes.truncate(bytes.len() - 4);
+        } else {
+            bytes.clear();
+        }
     }
     let condition_mark = scale_mark(condition);
-    let (state, quality_text, dashed) = if crafted {
-        (state, String::new(), false)
+    let mut dashed = false;
+    let (state, quality_text) = if crafted {
+        (state, String::new())
     } else {
-        let dashed = name.as_bytes().first() == Some(&b'-');
+        dashed = bytes.first() == Some(&b'-');
         if dashed {
-            name.remove(0);
+            bytes.remove(0);
         }
         let rows = if dashed {
             rows(tables.high, HIGH_ROWS)
@@ -1130,8 +1137,9 @@ pub fn item_sentence(
             rows(tables.made, MADE_ROWS)
         };
         let (state, chosen) = raw_phrase(state, scale_mark(quality), rows);
-        (state, chosen.unwrap_or_default(), dashed)
+        (state, chosen.unwrap_or_default())
     };
+    let name = String::from_utf8_lossy(&bytes).into_owned();
     let mut text = if crafted {
         format!("{name}It is")
     } else if bracket {
@@ -1442,12 +1450,8 @@ fn apply_material(name: &str, material: u8, material_name: &str, side: &str) -> 
         return (name.to_string(), side.to_string());
     }
     let side = material_side(material_name, side);
-    if marked && !material_name.is_empty() {
+    if marked {
         (splice_material(name, material_name), side)
-    } else if marked {
-        let mut bytes = name.as_bytes().to_vec();
-        drop_mark(&mut bytes);
-        (String::from_utf8_lossy(&bytes).into_owned(), side)
     } else {
         (name.to_string(), side)
     }
@@ -1463,43 +1467,33 @@ fn material_side(material: &str, side: &str) -> String {
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
-/// Replace the 0x10 and the next byte with the material name and a space.
+/// Replace the 0x10 and the next byte with the material name and a space,
+/// as the original's in-place edit does: the string grows by the name's
+/// length less one, the tail from two bytes past the mark moves right, the
+/// name goes over the mark and a space over the byte after it. A mark that
+/// is the last byte has no byte after it, so the space falls past the end
+/// and only the name is added. With an empty name the backward move copies
+/// the string's terminator into every byte after the mark and the space
+/// lands on the mark; none of the installed variant words is empty, so
+/// that branch only keeps the edit total.
 fn splice_material(name: &str, material: &str) -> String {
-    let mut bytes = name.as_bytes().to_vec();
+    let bytes = name.as_bytes();
     let Some(pos) = bytes.iter().position(|&byte| byte == 0x10) else {
         return name.to_string();
     };
-    let mark = pos + 1;
-    let mat = material.as_bytes();
-    let new_len = bytes.len() + mat.len() - 1;
-    bytes.resize(new_len, 0);
-    let stop = mark + 1;
-    if stop <= new_len {
-        let mut cursor = new_len + 1;
-        loop {
-            cursor -= 1;
-            let dest = cursor - 1;
-            let src = cursor as isize - mat.len() as isize;
-            if src >= 0 {
-                bytes[dest] = bytes[src as usize];
-            }
-            if cursor <= stop {
-                break;
-            }
-        }
+    let mut out = Vec::with_capacity(bytes.len() + material.len());
+    out.extend_from_slice(&bytes[..pos]);
+    if pos + 1 == bytes.len() {
+        out.extend_from_slice(material.as_bytes());
+    } else if material.is_empty() {
+        out.push(b' ');
+        out.resize(bytes.len() - 1, 0);
+    } else {
+        out.extend_from_slice(material.as_bytes());
+        out.push(b' ');
+        out.extend_from_slice(&bytes[pos + 2..]);
     }
-    let start = mark - 1;
-    for (index, &byte) in mat.iter().enumerate() {
-        let at = start + index;
-        if at < bytes.len() {
-            bytes[at] = byte;
-        }
-    }
-    let space_at = mark + mat.len() - 1;
-    if space_at < bytes.len() {
-        bytes[space_at] = b' ';
-    }
-    String::from_utf8_lossy(&bytes).into_owned()
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 fn shares_long_word(so_far: &str, phrase: &str) -> bool {
@@ -1881,6 +1875,53 @@ mod tests {
             .text,
             "A well sword ok."
         );
+    }
+
+    #[test]
+    fn a_multi_byte_name_is_edited_as_bytes_without_panicking() {
+        let edge = [phrase("edge", 0, 255)];
+        let rows = tables(&edge, &edge, &edge, &edge, &edge);
+        // Three bytes ending in the bracket lose all of them rather than
+        // splitting a character; the sentence stays whole.
+        let short = item_sentence(0, "é]", false, 0, 0, &rows);
+        assert!(short.text.ends_with("edge."));
+        let long = item_sentence(0, "éé]", false, 0, 0, &rows);
+        assert!(!long.text.is_empty());
+        let also = apparel_sentence(0, "éé]", false, line(0, 0, 0, "", "side"), &rows);
+        assert!(!also.text.is_empty());
+    }
+
+    #[test]
+    fn the_material_splice_follows_the_in_place_edit() {
+        let made = [phrase("well", 0, 255)];
+        let flawless = [phrase("sharp", 0, 255)];
+        let rows = tables(&made, &made, &flawless, &flawless, &flawless);
+        let s = apparel_sentence(
+            0,
+            "ab\u{10}xy",
+            false,
+            line(0, 0, 1, "", "wool line"),
+            &rows,
+        );
+        // An empty name: the backward move fills the bytes after the mark
+        // with the terminator and the space lands on the mark.
+        assert_eq!(s.text, "A well ab \0 sharp.");
+        assert_eq!(s.side, " wool line");
+        // A mark that is the last byte takes the name and no space.
+        assert_eq!(splice_material("ab\u{10}", "wool"), "abwool");
+        assert_eq!(splice_material("ab\u{10}", ""), "ab");
+        assert_eq!(splice_material("ab\u{10}xy", "wool"), "abwool y");
+        // An invalid material deletes the mark and the byte after it and
+        // leaves the side alone.
+        let s = apparel_sentence(
+            0,
+            "ab\u{10}xy",
+            false,
+            line(0, 0, 9, "oak", "wool line"),
+            &rows,
+        );
+        assert_eq!(s.text, "A well aby sharp.");
+        assert_eq!(s.side, "wool line");
     }
 
     #[test]

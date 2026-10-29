@@ -87,6 +87,9 @@ impl SentenceSource {
     /// not withheld) uses the weapon rule on a factory model; otherwise an
     /// apparel body uses the apparel rule, whatever its armour type;
     /// otherwise a shield section uses the weapon rule on a factory model.
+    /// The builder looks the apparel body up only after no weapon page was
+    /// built, so an item with both a weapon page and an apparel body takes
+    /// the weapon rule (or none on a model that is not a factory model).
     pub fn choose(
         weapon_page: Option<&[u8]>,
         body: Option<&[u8]>,

@@ -325,3 +325,10 @@ The weapon rule SHALL read the section's seed word, quality and damage; the appa
 #### Scenario: A gambeson and a mace
 - **WHEN** a body of variant 2, quality 200 and damage 10 describes "A gambeson." titled "gambeson", and a weapon of quality 30 and damage 200 describes "mace" and "-mace", over tables whose rows split at 50
 - **THEN** the apparel text is "A finely made gambeson in mint shape." titled "V2 gambeson" after two draws, the mace is "A roughly made mace in rough shape." and the dashed mace "A top grade mace in grand shape."; a fixed seed keeps "Coat of plates" and the roll
+
+### Requirement: Card name byte edits
+The weapon sentence SHALL edit the name as bytes: a bracketed name shorter than four bytes after the trailing dot SHALL become empty, and no edit SHALL split a multi-byte character into an error. The apparel splice SHALL put the material word over the 0x10 mark and a space over the byte after it, moving the tail right; a mark that is the last byte SHALL take the word and no space.
+
+#### Scenario: Short brackets and a mark at the end
+- **WHEN** "é]" is wrapped by the weapon sentence and "ab" plus a mark is spliced with "wool"
+- **THEN** the sentence keeps no part of the name and ends with its condition phrase, and the splice gives "abwool"
