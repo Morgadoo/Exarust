@@ -896,16 +896,19 @@ struct SideScore {
     score: f32,
 }
 
-/// Draw the winning team of a match nobody is watching.
+/// Draw the winning team of a match the player is watching.
 ///
-/// Fighters are grouped in first-seen order. A team scores
-/// `(count × 0.5 + 0.5) × strength sum`. The largest score starts at 0 and
-/// moves only when a score is greater. Each weight is the square of score
-/// over that largest, times 100, rounded to the nearest even integer. The
-/// roll steps by `roll × 0x08088405 + 1`. The high half of that word times
-/// one more than the weight total picks the first team whose running
-/// weights are not below it. No counted fighter still steps the roll and
-/// returns no team.
+/// The scene bodies are grouped in first-seen order. A dead body (mark bit
+/// `0x800`), and the player's team unless the session is forfeiting
+/// (`mode == 0x10`), is left out. A team scores `(count × 0.5 + 0.5) ×
+/// health sum`. The largest score starts at 0 and moves only when a score
+/// is greater. Each weight is the square of score over that largest, times
+/// 100, converted to the nearest even integer. The roll steps by
+/// `roll × 0x08088405 + 1` even when no team remains. The high half of that
+/// word times one more than the weight total picks the first team whose
+/// running weights reach it (an exact equal counts). This is the scene
+/// draw; the bracket's draw ([`clear_losing_bracket`]) uses one more than
+/// it as the span and needs a running weight strictly above the pick.
 pub fn draw_unwatched(
     fighters: &[SideFighter],
     player_team: i32,
@@ -915,7 +918,7 @@ pub fn draw_unwatched(
     let mut sides: Vec<SideScore> = Vec::new();
     let mut largest = 0.0f32;
     for fighter in fighters {
-        if fighter.aside || (fighter.team == player_team && mode == FORFEIT_DRAW) {
+        if fighter.aside || (fighter.team == player_team && mode != FORFEIT_DRAW) {
             continue;
         }
         let found = sides.iter().position(|side| side.team == fighter.team);
@@ -952,10 +955,7 @@ pub fn draw_unwatched(
             total = total.wrapping_add(rounded);
         }
     }
-    if sides.is_empty() {
-        return None;
-    }
-    let index = draw_weight(weights.as_slice(), total, roll).unwrap_or(0);
+    let index = draw_weight(weights.as_slice(), total, roll)?;
     Some(sides[index].team)
 }
 
@@ -970,18 +970,35 @@ fn round_to_i32(value: f32) -> i32 {
     }
 }
 
-/// One weighted draw: step the roll, take the high half of the total plus
-/// one times it, and walk the weights until the running sum is above the
-/// pick. The first weight whose cumulative total is strictly greater wins;
-/// an equal cumulative is skipped. `None` when no weight passes, which the
-/// caller treats as the first side (the original leaves the loop's index
-/// register at its entry value).
+/// The scene draw's weighted pick: step the roll (even with no weights),
+/// take the high half of one more than the total times it, and walk the
+/// weights until the running sum reaches the pick. The first weight whose
+/// cumulative total is at least the pick wins. `None` when no weight
+/// reaches it.
 fn draw_weight(weights: &[i32], total: i32, roll: &mut u32) -> Option<usize> {
     *roll = roll.wrapping_mul(0x0808_8405).wrapping_add(1);
     if weights.is_empty() {
         return None;
     }
     let span = i64::from(total.wrapping_add(1));
+    let product = i64::from(*roll).wrapping_mul(span);
+    let pick = ((product as u64) >> 32) as i32;
+    let mut reached = 0i32;
+    for (index, weight) in weights.iter().enumerate() {
+        reached = reached.wrapping_add(*weight);
+        if reached >= pick {
+            return Some(index);
+        }
+    }
+    None
+}
+
+/// The bracket draw's weighted pick: step the roll, take the high half of
+/// the total (not one more) times it, and keep the first weight whose
+/// running sum is strictly above the pick. `None` when no weight passes.
+fn draw_weight_strict(weights: &[i32], total: i32, roll: &mut u32) -> Option<usize> {
+    *roll = roll.wrapping_mul(0x0808_8405).wrapping_add(1);
+    let span = i64::from(total);
     let product = i64::from(*roll).wrapping_mul(span);
     let pick = ((product as u64) >> 32) as i32;
     let mut reached = 0i32;
@@ -1084,24 +1101,11 @@ pub fn clear_losing_bracket(
             for team in &teams {
                 let ratio = team.score / largest;
                 let weight = ratio * ratio * 100.0;
-                let rounded = weight.round_ties_even() as i32;
+                let rounded = round_to_i32(weight);
                 weights.push(rounded);
                 total = total.wrapping_add(rounded);
             }
-            *roll = roll.wrapping_mul(0x0808_8405).wrapping_add(1);
-            let product = i64::from(total).wrapping_mul(i64::from(*roll));
-            let pick = ((product as u64) >> 32) as i32;
-            let mut reached = 0i32;
-            let mut found = None;
-            for (index, weight) in weights.iter().enumerate() {
-                reached = reached.wrapping_add(*weight);
-                if reached <= pick {
-                    continue;
-                }
-                found = Some(index);
-                break;
-            }
-            found
+            draw_weight_strict(&weights, total, roll)
         };
         for (index, team) in teams.iter().enumerate() {
             if Some(index) == winner {
@@ -1891,7 +1895,9 @@ mod tests {
             },
         ];
         let mut roll = 1u32;
-        assert_eq!(draw_unwatched(&sides, 1, 0, &mut roll), Some(1));
+        // Watching the match leaves the player's team out, so team 2's
+        // weight is the first the pick reaches.
+        assert_eq!(draw_unwatched(&sides, 1, 0, &mut roll), Some(2));
         assert_eq!(roll, 0x0808_8406);
         roll = 4;
         assert_eq!(draw_unwatched(&sides, 1, 0, &mut roll), Some(2));
@@ -1900,7 +1906,9 @@ mod tests {
         assert_eq!(draw_unwatched(&sides, 1, 0, &mut roll), Some(3));
         assert_eq!(roll, 0x6066_303d);
         roll = 1;
-        assert_eq!(draw_unwatched(&sides, 1, FORFEIT_DRAW, &mut roll), Some(2));
+        // A forfeit leaves the player's team in the draw; the first weight
+        // already reaches the pick.
+        assert_eq!(draw_unwatched(&sides, 1, FORFEIT_DRAW, &mut roll), Some(1));
         assert_eq!(roll, 0x0808_8406);
         let aside = [
             SideFighter {
@@ -1929,22 +1937,27 @@ mod tests {
         assert_eq!(roll, 0x0808_8406);
         roll = 1;
         assert_eq!(draw_unwatched(&[], 1, 0, &mut roll), None);
-        // No group means the routine returns before it steps the roll.
-        assert_eq!(roll, 1);
+        // The scene draw steps the roll even when no team remains.
+        assert_eq!(roll, 0x0808_8406);
     }
 
     #[test]
-    fn an_unwatched_draw_skips_an_exact_cumulative() {
-        // Two equal weights: total 2, and a roll whose step is exactly
-        // 0x8000_0000 picks 1. The first cumulative (1) is not above it,
-        // so the second team wins.
+    fn an_unwatched_draw_takes_an_exact_cumulative() {
+        // Two equal weights: total 2, span 3, and a roll whose step is
+        // exactly 0x8000_0000 picks 1. The first cumulative (1) reaches it,
+        // so the first team wins.
         let mut roll = 0xa6b0_5733;
-        assert_eq!(draw_weight(&[1, 1], 2, &mut roll), Some(1));
+        assert_eq!(draw_weight(&[1, 1], 2, &mut roll), Some(0));
         assert_eq!(roll, 0x8000_0000);
-        // One weight is always above any pick below the total.
+        // One weight is always at least any pick below the total.
         let mut roll = 0;
         assert_eq!(draw_weight(&[5], 5, &mut roll), Some(0));
         assert_eq!(draw_weight(&[], 0, &mut roll), None);
+        // The bracket draw uses the total itself and a strict compare: the
+        // same step of 0x8000_0000 picks 1 and an equal cumulative loses.
+        let mut roll = 0xa6b0_5733;
+        assert_eq!(draw_weight_strict(&[1, 1], 2, &mut roll), Some(1));
+        assert_eq!(roll, 0x8000_0000);
     }
 
     #[test]
