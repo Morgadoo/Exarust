@@ -13,16 +13,20 @@
 use bevy::math::Vec3;
 use exa_physics::body::locomotion::{asin_approx, heading_of};
 
-/// The most the yaw and pitch move in one tick (1.8°).
-pub const HEAD_STEP: f32 = std::f32::consts::PI / 100.0;
+/// The most the yaw and pitch move in one tick, π/100 (1.8°), as the
+/// original compares it: the double π/100 against a single-precision
+/// error.
+pub const HEAD_STEP_RADIANS: f64 = std::f64::consts::PI / 100.0;
+/// The step it adds to an angle: the double π/100 rounded to a float.
+pub const HEAD_STEP: f32 = 0.031_415_928;
 /// The squared xz radius under which the previous direction is reused.
 pub const HEAD_NEAR_SQUARED: f32 = 2500.0;
 /// The squared xz radius at which the mid-band blend ends.
 pub const HEAD_FAR_SQUARED: f32 = 10_000.0;
 /// The look-ahead distance of the aim point.
 pub const HEAD_AHEAD: f32 = 250.0;
-/// The lowest pitch the target may ask for.
-pub const HEAD_PITCH_FLOOR: f32 = -0.6;
+/// The lowest pitch the target may ask for: the float nearest −0.6.
+pub const HEAD_PITCH_FLOOR: f32 = f32::from_bits(0xbf19_999a);
 /// The yaw limit about the body's facing.
 pub const HEAD_YAW_LIMIT: f32 = std::f32::consts::FRAC_PI_4;
 
@@ -63,9 +67,11 @@ fn wrap(angle: f32) -> f32 {
 
 fn step(current: f32, want: f32) -> f32 {
     let error = wrap(want - current);
-    if error > HEAD_STEP {
+    // The original widens the single-precision error and compares it with
+    // the double π/100.
+    if f64::from(error) > HEAD_STEP_RADIANS {
         wrap(current + HEAD_STEP)
-    } else if error < -HEAD_STEP {
+    } else if f64::from(error) < -HEAD_STEP_RADIANS {
         wrap(current - HEAD_STEP)
     } else {
         want
@@ -132,21 +138,27 @@ fn track_head_inner(
 
     let mut yaw = step(head.yaw, head_atan2_xz(dir_in[0], dir_in[2]));
     let body_yaw = head_atan2_xz(body_forward[0], body_forward[2]);
-    let offset = wrap(yaw - body_yaw);
-    if offset > HEAD_YAW_LIMIT {
-        yaw = wrap(body_yaw + HEAD_YAW_LIMIT);
-    } else if offset < -HEAD_YAW_LIMIT {
-        yaw = wrap(body_yaw - HEAD_YAW_LIMIT);
-    }
 
     // The target is the negated arc sine of the height, raised to the
-    // floor by an ordered compare (a NaN target stays NaN).
+    // floor by an ordered compare in double precision (a NaN target stays
+    // NaN).
     let target = -asin_approx(dir_in[1]);
     let want_pitch = match pitch_floor {
-        Some(floor) if target < floor => floor,
+        Some(floor) if f64::from(target) < -0.6 => floor,
         _ => target,
     };
     let pitch = step(head.pitch, want_pitch);
+
+    // The original holds the yaw within ±45° of the body both before and
+    // after the pitch step; the pitch step leaves the yaw alone, so one
+    // hold is the same. The bound is compared in double precision and the
+    // clamped angle is the body yaw plus the float quarter turn.
+    let offset = wrap(yaw - body_yaw);
+    if f64::from(offset) > std::f64::consts::FRAC_PI_4 {
+        yaw = wrap(body_yaw + HEAD_YAW_LIMIT);
+    } else if f64::from(offset) < -std::f64::consts::FRAC_PI_4 {
+        yaw = wrap(body_yaw - HEAD_YAW_LIMIT);
+    }
 
     *head = HeadTrack { yaw, pitch };
     let dir = [
@@ -169,6 +181,49 @@ fn track_head_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_step_is_the_double_pi_over_a_hundred() {
+        assert_eq!(HEAD_STEP_RADIANS, std::f64::consts::PI / 100.0);
+        // The float the original adds, and its pitch floor.
+        assert_eq!(HEAD_STEP.to_bits(), 0x3d00_adfd);
+        assert_eq!(HEAD_PITCH_FLOOR.to_bits(), 0xbf19_999a);
+        // A float under the double step is inside the band, so the head
+        // takes the wanted angle exactly; a larger error moves one step.
+        let under = f32::from_bits(HEAD_STEP.to_bits() - 1);
+        assert_eq!(step(0.0, under), under);
+        assert_eq!(step(0.0, HEAD_STEP), HEAD_STEP);
+        assert_eq!(step(0.0, 0.1), HEAD_STEP);
+        assert_eq!(step(0.0, -0.1), -HEAD_STEP);
+    }
+
+    #[test]
+    fn the_pitch_floor_holds_at_the_floored_value() {
+        // A point above the eye asks for a pitch of about −0.785, below the
+        // floor. Held there, the head stays on the floored value.
+        let mut head = HeadTrack {
+            yaw: 0.0,
+            pitch: HEAD_PITCH_FLOOR,
+        };
+        track_head(
+            &mut head,
+            [0.0, 0.0, 1.0],
+            [0.0; 3],
+            [0.0, 0.0, 1.0],
+            [0.0, 1000.0, 1000.0],
+        );
+        assert_eq!(head.pitch, HEAD_PITCH_FLOOR);
+        // From level it takes one step down.
+        head.pitch = 0.0;
+        let _ = track_head(
+            &mut head,
+            [0.0, 0.0, 1.0],
+            [0.0; 3],
+            [0.0, 0.0, 1.0],
+            [0.0, 1000.0, 1000.0],
+        );
+        assert_eq!(head.pitch, -HEAD_STEP);
+    }
 
     #[test]
     fn a_distant_target_is_tracked_at_once() {
