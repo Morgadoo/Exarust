@@ -24,7 +24,7 @@ triangles at load, level geometry included) and corrected the docs.
 
 ### Modified Capabilities
 
-- `physical-body`: mesh pair contacts.
+- `physical-body`: prop collision mesh (added).
 
 ## Impact
 
