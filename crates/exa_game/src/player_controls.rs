@@ -2116,6 +2116,7 @@ mod tests {
         Item {
             id: 7,
             name: "thing".into(),
+            parent: 0,
             model: "ThingA01".into(),
             model_flags: 0,
             worn_model: worn_model.into(),

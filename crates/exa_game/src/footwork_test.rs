@@ -152,8 +152,8 @@ fn a_queued_word_keeps_its_step_vector() {
 fn a_taken_queue_gives_the_word_back() {
     let mut keys = MoveWord::default();
     let fwd = [true, false, false, false];
-    keys.tick(1000, fwd, Vec2::ZERO, 0.0);
-    keys.tick(1300, fwd, Vec2::ZERO, 0.0);
+    keys.tick(1000, fwd, Vec3::ZERO, 0.0);
+    keys.tick(1300, fwd, Vec3::ZERO, 0.0);
     assert!(keys.tap);
     keys.queued_word = MOVE_LEFT;
     let mut queue = 1;
@@ -168,9 +168,9 @@ fn a_taken_queue_gives_the_word_back() {
     assert_eq!((keys.held, keys.queued_word, queue), (MOVE_LEFT, 0, 0));
     assert!(!keys.tap);
     let left = [false, false, true, false];
-    keys.tick(1600, left, Vec2::ZERO, 0.0);
+    keys.tick(1600, left, Vec3::ZERO, 0.0);
     assert!(!keys.tap);
-    keys.tick(1601, left, Vec2::ZERO, 0.0);
+    keys.tick(1601, left, Vec3::ZERO, 0.0);
     assert!(keys.tap);
 }
 
@@ -186,4 +186,55 @@ fn the_goal_direction_reads_the_word_or_the_stick() {
         goal_direction(Vec3::Z, MOVE_ANALOG, Vec3::new(1.0, 2.0, 3.0)),
         Vec3::new(1.0, 0.0, 3.0)
     );
+}
+
+/// The approach bend: a step that would enter the target's 60·scale cm
+/// circle is cut at its edge when the angle test passes; a step from inside
+/// the circle is pushed out to the radius, or zeroed when the squared
+/// distance reaches the radius.
+#[test]
+fn a_lone_forward_step_bends_at_the_target() {
+    let target = Vec3::ZERO;
+    // From 100 cm off along z toward the target, a 80 cm step: it meets
+    // the 60 cm circle at t = 0.5. The angle test reads (from.z + w.z −
+    // target.z, 0) = (60, 0) against d = (0, 100): cosine 0, refused.
+    let step = Vec3::new(0.0, 0.0, -80.0);
+    let from = Vec3::new(0.0, 0.0, 100.0);
+    assert_eq!(approach_bend(step, from, target, 1.0), step);
+    // From 100 cm off along x and z, the end offset's z part lands in the
+    // x slot, so the cosine with d = (100, 100)/|d| is 1/√2 ≈ 0.707: under
+    // 0.75, refused too.
+    let from = Vec3::new(100.0, 0.0, 100.0);
+    let step = Vec3::new(-60.0, 0.0, -60.0);
+    assert_eq!(approach_bend(step, from, target, 1.0), step);
+    // Along x only (d = (100, 0)), the written offset is (from.z + w.z, 0)
+    // = (0, 0): a zero vector, a NaN cosine, which passes: the step is cut
+    // where it enters the circle, at t = 0.5.
+    let from = Vec3::new(100.0, 0.0, 0.0);
+    let step = Vec3::new(-80.0, 0.0, 0.0);
+    assert_eq!(
+        approach_bend(step, from, target, 1.0),
+        Vec3::new(-40.0, 0.0, 0.0)
+    );
+    // A step that stops short of the circle (t over 1) or points away (t
+    // under 0, or a negative discriminant) is left as it was.
+    let short = Vec3::new(-20.0, 0.0, 0.0);
+    assert_eq!(approach_bend(short, from, target, 1.0), short);
+    let away = Vec3::new(30.0, 0.0, 50.0);
+    assert_eq!(approach_bend(away, from, target, 1.0), away);
+    // The radius follows the target's scale: at scale 0.5 (30 cm) the same
+    // step enters at t = 0.875.
+    assert_eq!(
+        approach_bend(step, from, target, 0.5),
+        Vec3::new(-70.0, 0.0, 0.0)
+    );
+    // Inside the circle: r over |d|² (the squared distance) pushes out to
+    // the radius along d; a squared distance at least r zeroes the step.
+    let near = Vec3::new(5.0, 0.0, 0.0);
+    assert_eq!(
+        approach_bend(step, near, target, 1.0),
+        Vec3::new(60.0, 0.0, 0.0)
+    );
+    let inside = Vec3::new(40.0, 0.0, 0.0);
+    assert_eq!(approach_bend(step, inside, target, 1.0), Vec3::ZERO);
 }

@@ -241,8 +241,10 @@ pub(crate) struct MoveWord {
     change_ms: u64,
     /// The last tick the raw word was nonzero (ms).
     busy_ms: u64,
-    /// The pad's analog stick last read as the analog word.
-    pub(crate) analog: Vec2,
+    /// The pad's stick vector (camera-relative, in the world) last read as
+    /// the analog word: the direction the analog word's goal and queued
+    /// step take.
+    pub(crate) analog: Vec3,
     /// Set on the tick the word has been zero for over [`TAP_MS`] since its
     /// last nonzero tick: the original clears the body's step queue then
     /// (`crate::footwork::StepRecord::queue`).
@@ -285,8 +287,9 @@ impl MoveWord {
     /// reads the analog word; a NaN fails the ordered test and reads the
     /// keys) and the body's crouch amount (0 to 1). Returns the word the
     /// request reads.
-    pub(crate) fn tick(&mut self, now_ms: u64, keys: [bool; 4], analog: Vec2, crouch: f32) -> u32 {
-        let squared = analog.x * analog.x + analog.y * analog.y;
+    pub(crate) fn tick(&mut self, now_ms: u64, keys: [bool; 4], analog: Vec3, crouch: f32) -> u32 {
+        // Summed x, y, then z, as the reader adds them.
+        let squared = (analog.x * analog.x + analog.y * analog.y) + analog.z * analog.z;
         let word = if f64::from(squared) > ANALOG_DEAD_ZONE {
             self.analog = analog;
             MOVE_ANALOG

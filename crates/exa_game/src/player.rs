@@ -748,6 +748,7 @@ pub(crate) fn steer_player(
         Option<&Ragdoll>,
         Has<Attacking>,
     )>,
+    targets: Query<(&GlobalTransform, Option<&Ragdoll>, Option<&Stature>), Without<PlayerBody>>,
 ) {
     let now = ticks.map_or(0, |t| t.millis());
     let held = |action| bindings.pressed(&keys, action);
@@ -806,13 +807,18 @@ pub(crate) fn steer_player(
                     at.translation = standing;
                 }
             }
-            // The pad drives the same request the keys do
-            // (`gamepad::pad_keys`).
+            // Exploring, the pad drives the same request the keys do
+            // (`gamepad::pad_keys`); in combat mode its stick vector is the
+            // footwork's analog word and only its sprint reaches the keys.
             let mut input = input;
             let pad_crouch = gamepad.is_some_and(|g| g.crouch);
+            let pad_stick = gamepad.map_or(Vec3::ZERO, |g| g.move_world);
             if let Some(g) = gamepad {
-                input =
-                    crate::gamepad::pad_keys(input, &g, req.heading, pb.combat.then_some(pb.aim));
+                if pb.combat {
+                    input.shift |= g.sprint;
+                } else {
+                    input = crate::gamepad::pad_keys(input, &g, req.heading);
+                }
             }
             // The crouch is kept while down, so it is set before the
             // helpless bodies are left alone.
@@ -879,6 +885,13 @@ pub(crate) fn steer_player(
                         energy,
                         swinging,
                     },
+                    // The behaviour's auto-target stands for the body's
+                    // target the goal reads.
+                    target: pb.target.and_then(|t| targets.get(t).ok()).map(
+                        |(gt, body, stature)| {
+                            (stance::chest_point(gt, body), stature.map_or(1.0, |s| s.0))
+                        },
+                    ),
                     line: &line,
                     nearest: &nearest,
                 };
@@ -925,6 +938,7 @@ pub(crate) fn steer_player(
                 } else {
                     combat_steps(
                         &input,
+                        pad_stick,
                         &mut req,
                         &mut steering,
                         &mut pb,
@@ -1057,6 +1071,9 @@ struct Footwork<'a> {
     scale_root: f32,
     /// What may lay a step.
     gate: StepGate,
+    /// The body's target: its chest (m) and scale, which a lone forward
+    /// word's goal bends at ([`footwork::approach_bend`]).
+    target: Option<(Vec3, f32)>,
     line: LineWalk<'a>,
     /// The grid's nearest walkable point.
     nearest: &'a dyn Fn(Vec3) -> Vec3,
@@ -1087,6 +1104,7 @@ struct Footwork<'a> {
 #[allow(clippy::too_many_arguments)]
 fn combat_steps(
     input: &Keys,
+    stick: Vec3,
     req: &mut Locomotion,
     steering: &mut Steering,
     pb: &mut PlayerBody,
@@ -1097,16 +1115,13 @@ fn combat_steps(
     now: u64,
 ) {
     let facing = forward(pb.aim);
-    // The pad reaches the footwork as keys (`gamepad::pad_keys`), so the
-    // analog word is not read here (Exarust's own).
-    let analog = Vec3::ZERO;
     pb.move_word.take_queue(now, &mut pb.step.queue);
-    pb.move_word.tick(
-        now,
-        [input.w, input.s, input.a, input.d],
-        Vec2::ZERO,
-        pb.crouch,
-    );
+    // The pad's stick vector, once its squared length is over 0.01, is the
+    // analog word in place of the keys; the vector it was read with is
+    // the direction the word's goal and queued step take.
+    pb.move_word
+        .tick(now, [input.w, input.s, input.a, input.d], stick, pb.crouch);
+    let analog = pb.move_word.analog;
     if pb.move_word.queue_expired {
         pb.step.queue = 0;
     }
@@ -1191,7 +1206,14 @@ fn lay_goal(
         footing.encumbrance,
         tap,
     );
-    let wanted = footing.chest + (dir * (stride / length)) / 100.0;
+    let mut step = dir * (stride / length);
+    // A lone forward word with a target bends at the target's circle.
+    if word == crate::steering::MOVE_FORWARD
+        && let Some((target, scale)) = footing.target
+    {
+        step = footwork::approach_bend(step, footing.chest * 100.0, target * 100.0, scale);
+    }
+    let wanted = footing.chest + step / 100.0;
     let (target, taken) = steering.step_target(
         footing.chest,
         footing.ground,
@@ -2309,6 +2331,7 @@ mod tests {
                 energy: 1.0,
                 swinging: false,
             },
+            target: None,
             line,
             nearest,
         }
@@ -2338,6 +2361,7 @@ mod tests {
         let mut steering = pb.steering;
         combat_steps(
             input,
+            Vec3::ZERO,
             req,
             &mut steering,
             pb,

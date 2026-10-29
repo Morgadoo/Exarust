@@ -1632,32 +1632,22 @@ pub fn rumble_hit(pad: &mut PlayPad, amount: f32) {
 }
 
 /// The keys a frame of pad input stands for in Exarust's key-driven
-/// steering, added to the keys held (Exarust's own: the original feeds the
-/// stick's world vector to its player behaviour as the wanted direction,
-/// and Exarust's exploration steering reads keys). `Sprint` holds the run
-/// key. Out of combat (`combat_aim` none) a stick past 0.2 turns with A or
-/// D while the heading is more than 0.06 rad off it, and walks forward, or
-/// backpedals when it points more than 135° behind. In combat mode it steps
-/// along and across the aim, each part past 0.4.
+/// exploration steering, added to the keys held (Exarust's own: the
+/// original feeds the stick's world vector to its player behaviour as the
+/// wanted direction, and Exarust's exploration steering reads keys).
+/// `Sprint` holds the run key. A stick past 0.2 turns with A or D while
+/// the heading is more than 0.06 rad off it, and walks forward, or
+/// backpedals when it points more than 135° behind. In combat mode the
+/// stick is the footwork's analog word instead (`steering::MoveWord`).
 pub(crate) fn pad_keys(
     mut keys: crate::steering::Keys,
     frame: &PlayFrame,
     heading: f32,
-    combat_aim: Option<f32>,
 ) -> crate::steering::Keys {
-    use exa_physics::body::locomotion::{forward, turn_between, yaw_of};
+    use exa_physics::body::locomotion::{turn_between, yaw_of};
     keys.shift |= frame.sprint;
     let ground = frame.move_world.with_y(0.0);
-    if let Some(aim) = combat_aim {
-        let look = forward(aim);
-        let side = Vec3::new(look.z, 0.0, -look.x);
-        let along = ground.dot(look);
-        let across = ground.dot(side);
-        keys.w |= along > 0.4;
-        keys.s |= along < -0.4;
-        keys.a |= across > 0.4;
-        keys.d |= across < -0.4;
-    } else if ground.length() > 0.2 {
+    if ground.length() > 0.2 {
         let error = turn_between(heading, yaw_of(ground));
         if error > 0.06 {
             keys.a = true;

@@ -26,9 +26,9 @@
 //! which no level reaches) places the item there. Otherwise the item goes
 //! where the ray crosses that height; a ray that climbs (its height
 //! component over −1.19209e−7) refuses the placement. The item is put there
-//! whether or not its box fits: the box test (its rest points and half
-//! extents in its turned saved frame at most 280 cm high and at least
-//! −1000 cm low, `hand::box_ok_local`) only decides the routine's answer.
+//! and the box test (its rest points and half extents in its turned saved
+//! frame at most 280 cm high and at least −1000 cm low,
+//! `hand::box_ok_local`) decides the routine's answer.
 //! The original then slides the item along the ray from 600 cm back to its
 //! first contact (at most 1000 cm on, [`per_sphere_contact`]): every
 //! collision sphere of every part, carried with the placed point, is swept
@@ -40,17 +40,21 @@
 //! or model id snaps the item onto the marker's frame when the cursor's
 //! segment (to the pick, or 10 000 cm) meets the marker's sphere and the
 //! item fits there ([`snap_to_marker`]); its link byte `L` gives the
-//! give-back word. Exarust's level loader does not register the marker
-//! nodes and its props carry no object id yet, so nothing snaps in the
-//! game.
+//! lock word. The level loader registers the `[`-named nodes of the
+//! objects it places (`exa_world::markers`) and the lift keeps the placed
+//! object's id and template. A free placement takes the free word only when
+//! its box fitted and the item stays in reach, a marker only in reach
+//! ([`lift_frame`]); a frame that fails puts the item back at the last
+//! placement that held, keeps the word, and counts as out of reach.
 //!
-//! **The release.** A plain release leaves the item where the cursor put
-//! it: the original's release hands the saved rest points to the deferred
-//! restore only to move the body out of its old sector, and the body keeps
-//! its current points. A release over a GUI item slot is the GUI's. A lift
-//! cancelled by the movement request goes to the GUI when it is over a
-//! slot, stays where it is with the world hover bit, and is otherwise put
-//! back at the saved rest points. The GUI drop spawn path takes an inventory entry
+//! **The release** ([`release`]). A release in reach leaves the item where
+//! the cursor put it: the original's release hands the saved rest points to
+//! the deferred restore only to move the body out of its old sector, and
+//! the body keeps its current points. A cancelled lift (the point out of
+//! reach) with the free word is placed again at the last placement that
+//! held and put down when it still fits; with a marker's word it stays on
+//! the marker, frozen for the lock word; otherwise it goes back to the
+//! saved rest points. The GUI drop spawn path takes an inventory entry
 //! whose object has a body, puts it into the scene, and starts the lift on
 //! it; an object with no body is the original's content error and is not
 //! put into the scene.
@@ -97,28 +101,57 @@ pub const PLACEMENT_LIMIT_CM: f32 = -100_000.0;
 pub const DRAG_REACH_CM: f32 = 1000.0;
 /// The lift's grab strength (Exarust's stand-in hold).
 pub const LIFT_STRENGTH: f32 = 1.0;
-/// The hover word's bits. [The live item cursor keeps them as the earlier
-/// pass named them; in the original the lift's frame sets 1 for a free
-/// world placement, 0x10 for an item snapped onto a matching level
-/// placement marker, and 0x30 for a marker whose link byte reads `L`.]
-pub const HOVER_GUI: u32 = 1;
-pub const HOVER_WORLD: u32 = 0x10;
-pub const HOVER_GIVE_BACK: u32 = 0x30;
-/// The placement marker's link byte that gives the give-back word.
-pub const GIVE_BACK_LINK: u8 = b'L';
+/// The hover word's values, as the lift's frame leaves them: 1 for a free
+/// placement whose box fitted within reach, 0x10 for an item snapped onto
+/// a placement marker named for it within reach, and 0x30 for a marker
+/// whose link byte reads `L`, which locks the item there when a cancelled
+/// lift lets it go. A frame that fails keeps the word it had.
+pub const HOVER_FREE: u32 = 1;
+pub const HOVER_MARKER: u32 = 0x10;
+pub const HOVER_LOCK: u32 = 0x30;
+/// The placement marker's link byte that gives [`HOVER_LOCK`].
+pub const LOCK_LINK: u8 = b'L';
 
-/// The lift's hover word for a frame, in the original's order: a level
-/// placement marker the item snaps onto gives [`HOVER_GIVE_BACK`] when its
-/// link byte is [`GIVE_BACK_LINK`] and [`HOVER_WORLD`] otherwise; else a
-/// free placement that passed its checks gives [`HOVER_GUI`] (the bit 1
-/// word); else none. `marker` is the snapped marker's link byte.
+/// The lift's hover word for a frame, in the original's order: a placement
+/// marker the item snaps onto gives [`HOVER_LOCK`] when its link byte is
+/// [`LOCK_LINK`] and [`HOVER_MARKER`] otherwise; else a free placement
+/// that passed its checks gives [`HOVER_FREE`]; else none. `marker` is the
+/// snapped marker's link byte.
 pub fn hover_word(marker: Option<u8>, placed: bool) -> u32 {
     match marker {
-        Some(GIVE_BACK_LINK) => HOVER_GIVE_BACK,
-        Some(_) => HOVER_WORLD,
-        None if placed => HOVER_GUI,
+        Some(LOCK_LINK) => HOVER_LOCK,
+        Some(_) => HOVER_MARKER,
+        None if placed => HOVER_FREE,
         None => 0,
     }
+}
+
+/// One frame of the lift: the placement's word (0 refused, [`HOVER_FREE`],
+/// or a marker's [`HOVER_MARKER`]/[`HOVER_LOCK`]), whether the free
+/// placement's box fitted, and whether the placed item is within reach
+/// (`pick::walk_within_reach` of its new place). A free placement takes its
+/// word only when its box fitted and the item is in reach; a marker only in
+/// reach; anything else answers `None`: the item goes back to the frame of
+/// the last placement that held, the hover word stays as it was, and the
+/// point counts as out of reach (the cursor a cross).
+pub fn lift_frame(word: u32, fits: bool, in_reach: bool) -> Option<u32> {
+    match word {
+        HOVER_FREE if fits && in_reach => Some(HOVER_FREE),
+        HOVER_MARKER | HOVER_LOCK if in_reach => Some(word),
+        _ => None,
+    }
+}
+
+/// Every part's world frame once the held part takes `frame` whole (its
+/// rotation and its origin), the others keeping their place relative to
+/// it, as the original copies a marker's matrix into the held node.
+pub fn snapped_parts(parts: &[Affine3A], held: usize, frame: Frame) -> Vec<Affine3A> {
+    let target = Affine3A::from_mat3_translation(frame.rotation, frame.position);
+    let Some(now) = parts.get(held) else {
+        return parts.to_vec();
+    };
+    let shift = target * now.inverse();
+    parts.iter().map(|p| shift * *p).collect()
 }
 
 /// The mouse turn's running speed: the frame clock, the ramp's start and
@@ -407,7 +440,7 @@ pub struct PlacementMarker {
 }
 
 /// Where a placement marker takes the item: the marker's frame and the
-/// lift's hover word ([`HOVER_WORLD`], or [`HOVER_GIVE_BACK`] for an `L`
+/// lift's hover word ([`HOVER_MARKER`], or [`HOVER_LOCK`] for an `L`
 /// link).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Placement {
@@ -509,28 +542,38 @@ pub fn snap_to_marker(
 /// What a lift's release does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Release {
-    /// Put the item back where its lift saved it.
-    PutBack,
-    /// Leave it where it is: the hold flag clears.
+    /// Put down where it is.
     Drop,
-    /// The GUI item slot took it back.
-    ToGui,
+    /// Placed again at the last free placement that held, then put down.
+    LastFit,
+    /// Left on the placement marker it snapped onto.
+    OnMarker,
+    /// Left on the marker and frozen there (an `L` marker).
+    Lock,
+    /// Put back where the lift took it.
+    PutBack,
 }
 
-/// The release's outcome. A lift the movement request cancelled goes, in
-/// the original's order, to the GUI slot it is over, stays where it is with
-/// the world hover bit (the give-back word also ends the hold), and is
-/// otherwise put back at its saved rest points. A plain release is the
-/// GUI's over a slot and otherwise leaves the item where the cursor put it:
-/// the original's release passes the saved rest points to the deferred
-/// restore only to take the body out of its old sector, and the body keeps
-/// its current points. [The GUI slot's acceptance test of the cancelled
-/// path is not modelled: a slot always takes it.]
-pub fn release(cancelled: bool, hover: u32) -> Release {
-    if hover & HOVER_GUI != 0 {
-        Release::ToGui
-    } else if !cancelled || hover & HOVER_WORLD != 0 {
+/// The release's outcome, in the original's order. A release with the
+/// point in reach puts the item down where the cursor left it. A cancelled
+/// one (the point out of reach) with the free word places the item again
+/// at the last placement that held and puts it down there when that box
+/// still fits (`fits_last`); otherwise, with a marker's word, it stays on
+/// the marker, frozen for the lock word; anything else goes back to the
+/// frames the lift saved. [When the pointer is over another view (a GUI
+/// window), the original also hands that view the drop; Exarust's windows
+/// take no world item, so that call is not made.]
+pub fn release(cancelled: bool, hover: u32, fits_last: bool) -> Release {
+    if !cancelled {
         Release::Drop
+    } else if hover & HOVER_FREE != 0 && fits_last {
+        Release::LastFit
+    } else if hover & HOVER_MARKER != 0 {
+        if hover == HOVER_LOCK {
+            Release::Lock
+        } else {
+            Release::OnMarker
+        }
     } else {
         Release::PutBack
     }
@@ -694,14 +737,14 @@ pub struct ItemCursor {
     /// The item's shown rotation, turned piece by piece as the original's
     /// held frame is.
     pub rotation: Mat3,
-    /// The hover word: [`HOVER_GUI`], [`HOVER_WORLD`], [`HOVER_GIVE_BACK`]
+    /// The hover word: [`HOVER_FREE`], [`HOVER_MARKER`], [`HOVER_LOCK`]
     /// or zero.
     pub hover: u32,
     /// The GUI drops queued for the next frame, in order.
     pub drops: Vec<DropTask>,
-    /// The level's placement markers. The original walks the scene's nodes
-    /// for them; Exarust's level loader does not register the marker nodes
-    /// yet, so the list is empty and a lift always makes a free placement.
+    /// The scene's placement markers while something is held, gathered
+    /// each frame of a lift from the nodes the level loader registered
+    /// (`exa_world::markers`).
     pub markers: Vec<PlacementMarker>,
 }
 
@@ -715,11 +758,12 @@ impl ItemCursor {
         self.turn = TurnRamp::default();
     }
 
-    /// Ends the lift: the outcome for the hover and whether the movement
-    /// request cancelled it, and the item that was held.
-    pub fn end(&mut self, cancelled: bool) -> Option<(Release, HeldItem)> {
+    /// Ends the lift: the outcome for the hover, whether the point was out
+    /// of reach, and whether the last placement that held still fits
+    /// (`fits_last`), and the item that was held.
+    pub fn end(&mut self, cancelled: bool, fits_last: bool) -> Option<(Release, HeldItem)> {
         let held = self.held.take()?;
-        let outcome = release(cancelled, self.hover);
+        let outcome = release(cancelled, self.hover, fits_last);
         self.offset = Vec2f::ZERO;
         self.hover = 0;
         Some((outcome, held))
@@ -938,14 +982,45 @@ mod tests {
         assert_eq!(at, Vec3::new(0.0, -3.0, 0.0));
     }
 
-    /// The hover word: a placement marker's `L` link gives the give-back
-    /// word, another marker the world word, a free placement bit 1.
+    /// The hover word: a placement marker's `L` link gives the lock word,
+    /// another marker the marker word, a free placement bit 1.
     #[test]
     fn the_hover_words() {
-        assert_eq!(hover_word(Some(GIVE_BACK_LINK), true), HOVER_GIVE_BACK);
-        assert_eq!(hover_word(Some(b'K'), false), HOVER_WORLD);
-        assert_eq!(hover_word(None, true), HOVER_GUI);
+        assert_eq!(hover_word(Some(LOCK_LINK), true), HOVER_LOCK);
+        assert_eq!(hover_word(Some(b'K'), false), HOVER_MARKER);
+        assert_eq!(hover_word(None, true), HOVER_FREE);
         assert_eq!(hover_word(None, false), 0);
+    }
+
+    /// A free placement holds only when its box fitted and the item is in
+    /// reach, a marker only in reach; a refused word never holds.
+    #[test]
+    fn a_lift_frame_holds_or_falls_back() {
+        assert_eq!(lift_frame(HOVER_FREE, true, true), Some(HOVER_FREE));
+        assert_eq!(lift_frame(HOVER_FREE, false, true), None);
+        assert_eq!(lift_frame(HOVER_FREE, true, false), None);
+        assert_eq!(lift_frame(HOVER_MARKER, false, true), Some(HOVER_MARKER));
+        assert_eq!(lift_frame(HOVER_LOCK, false, true), Some(HOVER_LOCK));
+        assert_eq!(lift_frame(HOVER_LOCK, true, false), None);
+        assert_eq!(lift_frame(0, true, true), None);
+    }
+
+    /// The held part takes the marker's frame whole; another part keeps its
+    /// place relative to it.
+    #[test]
+    fn a_snap_moves_every_part_with_the_held_one() {
+        let parts = [
+            Affine3A::from_translation(Vec3::new(1.0, 0.0, 0.0)),
+            Affine3A::from_translation(Vec3::new(1.0, 0.5, 0.0)),
+        ];
+        let turn = Mat3::from_rotation_y(std::f32::consts::FRAC_PI_2);
+        let frame = Frame::new(Vec3::new(0.0, 2.0, 3.0), turn);
+        let placed = snapped_parts(&parts, 0, frame);
+        assert!((Vec3::from(placed[0].translation) - frame.position).length() < 1e-6);
+        assert!((Vec3::from(placed[1].translation) - Vec3::new(0.0, 2.5, 3.0)).length() < 1e-6);
+        assert!(Mat3::from(placed[1].matrix3).abs_diff_eq(turn, 1e-6));
+        // A missing part leaves the frames as they were.
+        assert_eq!(snapped_parts(&parts, 5, frame), parts.to_vec());
     }
 
     /// Both drag events spawn the GUI's dragged entry with the drag's
@@ -1094,7 +1169,7 @@ mod tests {
         assert!(cursor.turn_frame(0, 100.0, Vec2f::new(0.0, 1.0), [false; 4], Vec3::X));
         assert!((cursor.offset.x - 0.0625).abs() < 1e-6);
         assert!((cursor.rotation * Vec3::Y - Vec3::Y).length() > 0.01);
-        cursor.hover = HOVER_GUI;
+        cursor.hover = HOVER_FREE;
         cursor.queue_drop(DropTask {
             item: 3,
             from_gui: true,
@@ -1107,11 +1182,11 @@ mod tests {
         });
         assert_eq!(cursor.take_drops().len(), 2);
         assert!(cursor.take_drops().is_empty());
-        let (outcome, held) = cursor.end(false).unwrap();
-        assert_eq!(outcome, Release::ToGui);
+        let (outcome, held) = cursor.end(false, true).unwrap();
+        assert_eq!(outcome, Release::Drop);
         assert_eq!(held.part, 0);
         assert!(cursor.held.is_none());
-        assert_eq!(cursor.end(false), None);
+        assert_eq!(cursor.end(false, true), None);
     }
 
     /// A part's rest points box: the centre is their middle, the half the
@@ -1187,8 +1262,8 @@ mod tests {
 
     /// A marker takes the item when the cursor's descending ray meets its
     /// sphere and its hexadecimal name gives the item's or the model's id;
-    /// the item must fit the marker's frame. An `L` link gives the
-    /// give-back word, another marker the world word.
+    /// the item must fit the marker's frame. An `L` link gives the lock
+    /// word, another marker the marker word.
     #[test]
     fn a_placement_marker_snaps_the_item() {
         assert_eq!(marker_id(b"00001A2f"), 0x1a2f);
@@ -1213,11 +1288,11 @@ mod tests {
         // Straight down from above, 50 cm from the first marker and inside
         // its 60 cm radius, named for the item.
         let p = snap_to_marker(above, Vec3::NEG_Y, 100.0, 7, 0, &markers, |_| true).unwrap();
-        assert_eq!(p.hover, HOVER_WORLD);
+        assert_eq!(p.hover, HOVER_MARKER);
         assert_eq!(p.frame.position, Vec3::new(0.5, 0.0, 10.0));
         // The model id names the second marker, with the L link.
         let p = snap_to_marker(above, Vec3::NEG_Y, 100.0, 3, 9, &markers, |_| true).unwrap();
-        assert_eq!(p.hover, HOVER_GIVE_BACK);
+        assert_eq!(p.hover, HOVER_LOCK);
         // A segment that stops short of the markers meets neither: its end
         // is 40 m above them.
         assert!(snap_to_marker(above, Vec3::NEG_Y, 60.0, 7, 9, &markers, |_| true).is_none());
@@ -1288,19 +1363,26 @@ mod tests {
         ));
     }
 
-    /// The release: a plain release leaves the item where it is unless a
-    /// GUI slot takes it; a cancelled lift goes to the slot, stays with the
-    /// world hover bit, and is otherwise put back.
+    /// The release: in reach the item is put down where it is; a cancelled
+    /// lift with the free word goes to its last fitting placement when that
+    /// still fits, then a marker's word leaves it on the marker (locked for
+    /// the lock word), and anything else goes back.
     #[test]
     fn the_release_order() {
-        assert_eq!(release(false, 0), Release::Drop);
-        assert_eq!(release(false, HOVER_WORLD), Release::Drop);
-        assert_eq!(release(false, HOVER_GUI), Release::ToGui);
-        assert_eq!(release(true, 0), Release::PutBack);
-        assert_eq!(release(true, HOVER_GUI), Release::ToGui);
-        assert_eq!(release(true, HOVER_GUI | HOVER_WORLD), Release::ToGui);
-        assert_eq!(release(true, HOVER_WORLD), Release::Drop);
-        assert_eq!(release(true, HOVER_GIVE_BACK), Release::Drop);
+        assert_eq!(release(false, 0, false), Release::Drop);
+        assert_eq!(release(false, HOVER_LOCK, true), Release::Drop);
+        assert_eq!(release(false, HOVER_FREE, false), Release::Drop);
+        assert_eq!(release(true, 0, true), Release::PutBack);
+        assert_eq!(release(true, HOVER_FREE, true), Release::LastFit);
+        // A last placement that no longer fits falls to the marker test,
+        // which the free word fails.
+        assert_eq!(release(true, HOVER_FREE, false), Release::PutBack);
+        assert_eq!(
+            release(true, HOVER_FREE | HOVER_MARKER, false),
+            Release::OnMarker
+        );
+        assert_eq!(release(true, HOVER_MARKER, true), Release::OnMarker);
+        assert_eq!(release(true, HOVER_LOCK, false), Release::Lock);
     }
 
     /// The GUI drop: a drag out of an inventory with a body spawns; none of

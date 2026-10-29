@@ -899,15 +899,12 @@ fn the_pad_stick_stands_for_the_steering_keys() {
         ..PlayFrame::default()
     };
     // Straight ahead of a heading of 0 (+Z): forward only.
-    let keys = pad_keys(Keys::default(), &frame(Vec3::Z, false), 0.0, None);
+    let keys = pad_keys(Keys::default(), &frame(Vec3::Z, false), 0.0);
     assert!(keys.w && !keys.a && !keys.d && !keys.s);
     // Behind: backpedal; a sprint holds the run key.
-    let keys = pad_keys(Keys::default(), &frame(-Vec3::Z, true), 0.0, None);
+    let keys = pad_keys(Keys::default(), &frame(-Vec3::Z, true), 0.0);
     assert!(keys.s && !keys.w && keys.shift);
     // Under 0.2 the stick asks nothing.
-    let keys = pad_keys(Keys::default(), &frame(Vec3::Z * 0.1, false), 0.0, None);
+    let keys = pad_keys(Keys::default(), &frame(Vec3::Z * 0.1, false), 0.0);
     assert_eq!(keys, Keys::default());
-    // In combat mode it steps along the aim.
-    let keys = pad_keys(Keys::default(), &frame(Vec3::Z, false), 0.0, Some(0.0));
-    assert!(keys.w && !keys.a && !keys.d);
 }

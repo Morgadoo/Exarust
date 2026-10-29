@@ -506,6 +506,7 @@ mod tests {
         exa_formats::objdb::Item {
             id,
             name: "Sword".into(),
+            parent: 0,
             model: model.into(),
             model_flags: 0,
             worn_model: String::new(),
