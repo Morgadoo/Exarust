@@ -1451,8 +1451,6 @@ fn apply_material(name: &str, material: u8, material_name: &str, side: &str) -> 
     }
     let side = material_side(material_name, side);
     if marked {
-        // A valid material with an empty name still replaces the mark and
-        // the byte after it with the single trailing space.
         (splice_material(name, material_name), side)
     } else {
         (name.to_string(), side)
@@ -1469,9 +1467,15 @@ fn material_side(material: &str, side: &str) -> String {
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
-/// Replace the 0x10 and the next byte with the material name and a space.
-/// An empty name leaves the space alone. The original writes the name over
-/// the mark, the space after it, and moves the tail right.
+/// Replace the 0x10 and the next byte with the material name and a space,
+/// as the original's in-place edit does: the string grows by the name's
+/// length less one, the tail from two bytes past the mark moves right, the
+/// name goes over the mark and a space over the byte after it. A mark that
+/// is the last byte has no byte after it, so the space falls past the end
+/// and only the name is added. With an empty name the backward move copies
+/// the string's terminator into every byte after the mark and the space
+/// lands on the mark; none of the installed variant words is empty, so
+/// that branch only keeps the edit total.
 fn splice_material(name: &str, material: &str) -> String {
     let bytes = name.as_bytes();
     let Some(pos) = bytes.iter().position(|&byte| byte == 0x10) else {
@@ -1479,9 +1483,16 @@ fn splice_material(name: &str, material: &str) -> String {
     };
     let mut out = Vec::with_capacity(bytes.len() + material.len());
     out.extend_from_slice(&bytes[..pos]);
-    out.extend_from_slice(material.as_bytes());
-    out.push(b' ');
-    out.extend_from_slice(bytes.get(pos + 2..).unwrap_or_default());
+    if pos + 1 == bytes.len() {
+        out.extend_from_slice(material.as_bytes());
+    } else if material.is_empty() {
+        out.push(b' ');
+        out.resize(bytes.len() - 1, 0);
+    } else {
+        out.extend_from_slice(material.as_bytes());
+        out.push(b' ');
+        out.extend_from_slice(&bytes[pos + 2..]);
+    }
     String::from_utf8_lossy(&out).into_owned()
 }
 
@@ -1881,7 +1892,7 @@ mod tests {
     }
 
     #[test]
-    fn a_valid_material_with_an_empty_name_leaves_its_space() {
+    fn the_material_splice_follows_the_in_place_edit() {
         let made = [phrase("well", 0, 255)];
         let flawless = [phrase("sharp", 0, 255)];
         let rows = tables(&made, &made, &flawless, &flawless, &flawless);
@@ -1892,8 +1903,14 @@ mod tests {
             line(0, 0, 1, "", "wool line"),
             &rows,
         );
-        assert_eq!(s.text, "A well ab y sharp.");
+        // An empty name: the backward move fills the bytes after the mark
+        // with the terminator and the space lands on the mark.
+        assert_eq!(s.text, "A well ab \0 sharp.");
         assert_eq!(s.side, " wool line");
+        // A mark that is the last byte takes the name and no space.
+        assert_eq!(splice_material("ab\u{10}", "wool"), "abwool");
+        assert_eq!(splice_material("ab\u{10}", ""), "ab");
+        assert_eq!(splice_material("ab\u{10}xy", "wool"), "abwool y");
         // An invalid material deletes the mark and the byte after it and
         // leaves the side alone.
         let s = apparel_sentence(
