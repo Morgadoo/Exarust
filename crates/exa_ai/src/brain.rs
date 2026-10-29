@@ -761,22 +761,13 @@ pub fn perceive_all(
             {
                 combatant.alert = floor;
             }
-            // The perception's familiarity drift goes into the relations
-            // (the original's sense routine writes it to the character's
-            // relation with the one it saw).
+            // The perception's familiarity drift goes into the relations:
+            // the original adds it to the observer's relation with the one
+            // it saw only when that relation exists (an encounter makes
+            // it); a stranger's drift is dropped.
             if let (Some(relations), Some(drift)) = (relations.as_deref_mut(), sight.familiarity)
                 && sensed.character_id != 0
             {
-                // A character seen for the first time gets its relation,
-                // as the role database makes one on the first meeting.
-                if relations.find(sensed.character_id).is_none() {
-                    relations.create(
-                        sensed.character_id,
-                        0.0,
-                        now,
-                        db.as_deref().map_or(0, |db| db.locale),
-                    );
-                }
                 relations.add_familiarity(sensed.character_id, drift);
             }
             let mut record = ContactRecord::of(&combatant.contacts[index], sensed.id);
@@ -806,19 +797,15 @@ pub fn perceive_all(
 /// generator. The report stays in [`Npc::pass`] (its level, attention,
 /// stress and cursor included).
 ///
-/// The tick ends by registering the brain's navigation footprint unless the
-/// character is fighting, its body is moving and it is walking at least
-/// 1 cm a tick ([`stamps_footprint`]); a knocked-out, collapsed or dead body
-/// only lifts and re-stamps it.
+/// The original's tick also lifts and re-stamps the character's navigation
+/// footprint ([`stamps_footprint`] is its gate); in Exarust every NPC's
+/// footprint is kept at its feet each fixed tick by the game's footprint
+/// system, so this tick does not touch the grid.
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn ai_tick(
     ticks: Option<Res<BodyTicks>>,
     mut clock: Option<ResMut<BrainClock>>,
     mut rooms: Option<ResMut<RoomCells>>,
-    (mut nav, mut footprints): (
-        Option<ResMut<exa_world::nav::NavGrid>>,
-        Option<ResMut<exa_world::nav::NavFootprints>>,
-    ),
     level: Option<Res<exa_world::room_view::LevelRooms>>,
     players: Query<(Entity, &GlobalTransform), With<RatedPlayer>>,
     targets: Query<(Entity, &GlobalTransform)>,
@@ -835,8 +822,6 @@ pub fn ai_tick(
         Option<&Name>,
         Option<&mut Transform>,
         Option<&crate::presence::Presence>,
-        Option<&exa_physics::body::locomotion::Locomotion>,
-        Option<&exa_physics::body::locomotion::Locomotor>,
         Option<&mut exa_combat::stance::Stance>,
         Option<&mut Animator>,
     )>,
@@ -862,8 +847,6 @@ pub fn ai_tick(
         name,
         transform,
         presence,
-        locomotion,
-        locomotor,
         mut stance,
         mut anim,
     ) in &mut npcs
@@ -874,13 +857,9 @@ pub fn ai_tick(
             crate::manager::decay_alert(npc.alert_count, npc.alert_until_ms, now);
         // After the alert decay, a knocked-out, collapsed or dead body only
         // refreshes its nav footprint: no morale, contacts, state or look
-        // (the original's out-of-the-fight condition branch).
+        // (the original's out-of-the-fight condition branch; the footprint
+        // is the game's footprint system's, which keeps it every tick).
         if condition.0 & combatant::CONDITION_OUT != 0 {
-            if let (Some(grid), Some(prints)) = (nav.as_deref_mut(), footprints.as_deref_mut()) {
-                let standing = gt.map_or(Vec3::ZERO, |g| g.translation());
-                prints.lift(grid, _entity);
-                prints.stamp(grid, _entity, standing);
-            }
             continue;
         }
         let target = duellist.as_deref().map(|d| d.target).or(player);
@@ -1217,17 +1196,6 @@ pub fn ai_tick(
                 transform.rotation = Quat::from_rotation_y(npc.turn.offset);
             }
         }
-        // The tick's last step registers the character's navigation
-        // footprint unless the fight and a walking body keep it moving (the
-        // combat state handles its own then).
-        let fighting = duellist.as_deref().is_some_and(|d| d.fighting());
-        let moving = locomotion.is_some_and(|l| l.moving);
-        let speed = locomotor.map_or(0.0, |l| l.speed);
-        if stamps_footprint(fighting, moving, speed)
-            && let (Some(grid), Some(prints)) = (nav.as_deref_mut(), footprints.as_deref_mut())
-        {
-            prints.stamp(grid, _entity, gt.map_or(Vec3::ZERO, |g| g.translation()));
-        }
         npc.roll = roll;
     }
     if let (Some(ticks), Some(clock)) = (ticks.as_deref(), clock.as_deref_mut()) {
@@ -1235,11 +1203,17 @@ pub fn ai_tick(
     }
 }
 
-/// Whether the AI tick registers the nav footprint after the state: unless
-/// the character is in combat, its body is moving and its speed is at least
-/// 1 cm a tick. A NaN speed fails the compare and stamps.
-pub fn stamps_footprint(in_combat: bool, moving: bool, speed_cm: f32) -> bool {
-    !in_combat || !moving || speed_cm < 1.0
+/// Whether the original's AI tick registers the nav footprint after the
+/// state: unless the character follows a planned route, its locomotion is
+/// active and its speed is at least 1 cm a tick, so a character walking a
+/// route leaves no footprint for the others' planners. The compare is
+/// unordered: a NaN speed skips the stamp.
+///
+/// Not wired: the game's footprint system stamps every NPC each fixed tick,
+/// and an NPC body carries no locomotion request whose activity and speed
+/// this gate reads.
+pub fn stamps_footprint(following_route: bool, moving: bool, speed_cm: f32) -> bool {
+    !following_route || !moving || speed_cm < 1.0
 }
 
 /// The attach step's snap, once: the AI's look yaws, aim, look and
@@ -2883,51 +2857,65 @@ mod tests {
 
     #[test]
     fn the_sense_writes_its_familiarity_drift_into_the_relations() {
-        let mut app = App::new();
-        app.insert_resource(db()).add_systems(Update, perceive_all);
-        let player = app
-            .world_mut()
-            .spawn((
-                GlobalTransform::from_translation(Vec3::new(0.0, 0.0, 2.0)),
-                Fighter::default(),
-                RatedPlayer,
-                Roles::new_character(&db().book, 0),
-                CharacterId(PLAYER_ID),
-            ))
-            .id();
-        let mut combatant = Combatant::default();
-        let mut seen = combatant::Contact::new(player);
-        // The contact's elapsed count is the caller's; the sense's drift
-        // scales with it, so a long-known character drifts.
-        seen.elapsed = 100;
-        combatant.contacts.push(seen);
-        let npc = app
-            .world_mut()
-            .spawn((
-                held(&[9, 2]),
-                Npc::new([0.0; 4]),
-                combatant,
-                crate::Duellist::new(player),
-                Mind::new(0.0),
-                GlobalTransform::IDENTITY,
-                Fighter::default(),
-                Relations::default(),
-                CharacterId(2),
-            ))
-            .id();
-        app.update();
-        let relations = app.world().get::<Relations>(npc).unwrap();
-        let relation = relations.find(PLAYER_ID).expect("a relation was made");
-        assert!(relation.base != 0.0, "{}", relation.base);
-        assert!(relation.base.abs() < 1.0, "{}", relation.base);
+        // `known` says whether the observer met the player before; the
+        // drift goes only into a relation that exists.
+        let run = |known: bool| {
+            let mut app = App::new();
+            app.insert_resource(db()).add_systems(Update, perceive_all);
+            let player = app
+                .world_mut()
+                .spawn((
+                    GlobalTransform::from_translation(Vec3::new(0.0, 0.0, 2.0)),
+                    Fighter::default(),
+                    RatedPlayer,
+                    Roles::new_character(&db().book, 0),
+                    CharacterId(PLAYER_ID),
+                ))
+                .id();
+            let mut combatant = Combatant::default();
+            let mut seen = combatant::Contact::new(player);
+            // The contact's elapsed count is the brain's ticks seen; the
+            // sense's drift scales with it, so a long-seen character drifts.
+            seen.elapsed = 100;
+            combatant.contacts.push(seen);
+            let mut relations = Relations::default();
+            if known {
+                relations.create(PLAYER_ID, 0.0, 0, 0);
+            }
+            let npc = app
+                .world_mut()
+                .spawn((
+                    held(&[9, 2]),
+                    Npc::new([0.0; 4]),
+                    combatant,
+                    crate::Duellist::new(player),
+                    Mind::new(0.0),
+                    GlobalTransform::IDENTITY,
+                    Fighter::default(),
+                    relations,
+                    CharacterId(2),
+                ))
+                .id();
+            app.update();
+            app.world()
+                .get::<Relations>(npc)
+                .unwrap()
+                .find(PLAYER_ID)
+                .map(|r| r.base)
+        };
+        let base = run(true).expect("the relation is kept");
+        assert!(base != 0.0, "{base}");
+        assert!(base.abs() < 1.0, "{base}");
+        // A stranger's drift is dropped: no relation is made for it.
+        assert!(run(false).is_none_or(|base| base == 0.0));
     }
 
     #[test]
-    fn the_footprint_is_stamped_unless_the_fight_walks_the_body() {
-        // Out of combat it always stamps, moving or not.
+    fn the_footprint_is_stamped_unless_a_route_walks_the_body() {
+        // Without a route it always stamps, moving or not.
         assert!(stamps_footprint(false, false, 0.0));
         assert!(stamps_footprint(false, true, 250.0));
-        // In combat a still body stamps, a walking one does not.
+        // On a route a still body stamps, a walking one does not.
         assert!(stamps_footprint(true, false, 250.0));
         assert!(!stamps_footprint(true, true, 250.0));
         // The speed gate is 1 cm a tick, exclusive, and a NaN speed skips
