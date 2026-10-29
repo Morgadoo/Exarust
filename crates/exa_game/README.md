@@ -771,7 +771,13 @@ The hardware configuration (`hw_config`) runs the settings screen: it holds
 the live options, the saved set and the open page's draft; opens the page
 (reading the settings file again), applies, cancels and runs Defaults per
 page; writes the settings file's lines; rebinds a Controls row of the page's
-copy of the bindings from the next key or mouse button; and drives the GPU
+copy of the bindings through the key-capture screen
+(`exa_ui::modal_screens::ReadKeyScreen`: the key's scan code against the
+page's saved-table rows, "ALREADY IN USE" for another row's code, Escape
+closes, the middle and extra mouse buttons as `0x8004`–`0x8006`, the code
+read back through the saved table's conversion); opens the shader warm-up
+screen after an Apply that changes a shader option and steps it each frame
+(`ShaderWarmScreen`); and drives the GPU
 benchmark (a 1024² target, a 512² texture and sixteen full-screen quads, the
 original's half-second warm-up and three runs). It pushes the live options into `exa_render::quality`
 (super-sampling on or off, shadow-map sizes, MSAA), the audio buses, the
@@ -1099,10 +1105,20 @@ routines that were read from the original.
   loader flags, the dialog's constructor values and paint quad, the steps
   that close or finish the dialog, and the `klean` preset applied to the
   editor.
-- `create`: the body form's and the hair form's constructor values, the
-  edit page's update from a character record (`edit_page`), and the
-  physique, skin, hair-colour and hair-style callbacks. The skin and
-  hair-colour callbacks round half to even like the original.
+- `create`: the body form's and the hair form's constructor values (the
+  body form's table word, the hair page's style list placed under its
+  picker: `hair_list`), the edit page's update from a character record
+  (`edit_page`: the `V` + appearance-label caption, the hair controls only
+  with a hair picker), and the physique, skin, hair-colour and hair-style
+  callbacks. The skin and hair-colour callbacks convert in single precision
+  to a 64-bit integer, ties to even, keeping the low word or byte. The
+  creation form's own parts: the preview view's words, camera and floor
+  scene (`preview_view`, `PREVIEW_*`), the ten-element table's words by
+  game mode, the editors' places, the close (smoothing off, apparel
+  refresh, child close, edit close), the drop record's release, the shared
+  change callback's steps and the mode-container drop. None of the
+  creation forms runs in the game yet: the menu's character screen is not
+  wired.
 
 ## Scene bodies and the live arena round
 

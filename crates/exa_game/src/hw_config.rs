@@ -23,6 +23,7 @@ use exa_formats::hw_config::{Benchmark, Options, QualityChange, Screen};
 use exa_formats::settings_ini;
 use exa_render::quality::{MultisampleSetting, ShadowQuality};
 use exa_render::supersample::SuperSampling;
+use exa_ui::modal_screens::{CacheShaderScreen, KeyAnswer, ReadKeyScreen, ScreenStep, warm_row};
 use exa_ui::settings::{self, Effect, Setting};
 
 use crate::bindings::{self, Action, Bindings, DEFAULT_KEYS};
@@ -74,6 +75,9 @@ pub struct HardwareConfig {
     /// in the original and no Exarust effect (no gamepad); kept as a session
     /// flag (its default is a guess).
     pub rumble: bool,
+    /// Apply changed a renderer option that rebuilds the shaders: the
+    /// "Applying new settings..." screen opens on the next frame.
+    pub warm_pending: bool,
 }
 
 impl Default for HardwareConfig {
@@ -115,6 +119,7 @@ impl HardwareConfig {
             window_size: None,
             screen_size: (0, 0),
             rumble: true,
+            warm_pending: false,
         }
     }
 
@@ -221,6 +226,9 @@ impl HardwareConfig {
         }
         // Hardware anti-aliasing is only stored: it takes effect when the
         // file is read at the next start.
+        // Any of the four shader options opens the warm-up screen, as the
+        // original's Apply does after handing each changed option over.
+        self.warm_pending |= quality.rebuilds_shaders();
         self.close();
         Some(Applied {
             lines,
@@ -369,75 +377,118 @@ impl HardwareConfig {
     }
 }
 
-/// A rebinding in progress: the row whose key cell was clicked.
+/// A rebinding in progress: the row whose key cell was clicked and the
+/// key-capture screen it opened ([`ReadKeyScreen`]).
 #[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct BindingEditor {
     /// The Controls row being rebound.
     pub row: Option<usize>,
+    /// The open key-capture screen.
+    pub screen: Option<ReadKeyScreen>,
 }
 
 /// The editor's answer to a key or button.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Rebind {
-    /// A key or button was assigned to the row.
+    /// The saved-table code was assigned to the row and the screen closed.
     Assigned(u32),
-    /// Escape cancelled the rebinding.
+    /// The code is another row's: the screen shows "ALREADY IN USE" and
+    /// stays open.
+    InUse,
+    /// Escape closed the screen.
     Cancelled,
     /// Nothing was assigned.
     None,
 }
 
+/// The Controls page's table as the original's key screen sees it: each
+/// row's saved-table code ([`bindings::row_code`] of the slot it fills),
+/// 0 for the row no slot reads.
+pub fn page_rows(bindings: &Bindings) -> [u32; bindings::COUNT] {
+    let mut rows = [0; bindings::COUNT];
+    for (row, slot) in bindings::ROW_SLOTS.iter().enumerate() {
+        if let Some(slot) = slot {
+            rows[row] = bindings::row_code(bindings.keys()[*slot]);
+        }
+    }
+    rows
+}
+
 impl BindingEditor {
-    /// Starts a rebinding of the Controls row `row`, when it has a key cell.
-    pub fn begin(&mut self, row: usize) -> bool {
-        if settings::BINDINGS
-            .get(row)
-            .is_some_and(|binding| binding.keyed)
-        {
-            self.row = Some(row);
-            true
-        } else {
-            false
+    /// Opens the key-capture screen for the Controls row `row` at `now`,
+    /// when the row has a key cell; the screen's action is the cell's
+    /// control id.
+    pub fn begin(&mut self, row: usize, now: u32) -> bool {
+        match settings::BINDINGS.get(row) {
+            Some(binding) if binding.keyed => {
+                self.row = Some(row);
+                self.screen = Some(ReadKeyScreen::new(u32::from(binding.action), now));
+                true
+            }
+            _ => false,
         }
     }
 
-    /// Cancels the rebinding.
+    /// Closes the screen without a capture.
     pub fn cancel(&mut self) -> bool {
+        self.screen = None;
         self.row.take().is_some()
     }
 
-    /// Takes a key code for the open row, writing it into `bindings` (the
-    /// Controls page's copy).
-    ///
-    /// Escape cancels. A code of 0 is ignored. The row's slot is the binding
-    /// table's slot (Exarust's guess at the key-read screen, which is outside
-    /// this unit).
-    pub fn key(&mut self, code: u32, bindings: &mut Bindings) -> Rebind {
-        let Some(row) = self.row else {
-            return Rebind::None;
-        };
-        if code == 0x1B {
-            self.row = None;
-            return Rebind::Cancelled;
+    /// Applies the screen's answer: a captured code goes into the row's
+    /// slot of `bindings` (the page's copy) through the original's
+    /// conversion ([`bindings::slot_code`]) and closes the screen; Escape
+    /// closes it.
+    fn answer(&mut self, answer: KeyAnswer, bindings: &mut Bindings) -> Rebind {
+        match answer {
+            KeyAnswer::Ignored => Rebind::None,
+            KeyAnswer::InUse => Rebind::InUse,
+            KeyAnswer::Closed => {
+                self.cancel();
+                Rebind::Cancelled
+            }
+            KeyAnswer::Captured(code) => {
+                let slot = self
+                    .screen
+                    .and_then(|screen| (screen.action as usize).checked_sub(1))
+                    .and_then(|row| bindings::ROW_SLOTS.get(row).copied().flatten());
+                if let Some(action) = slot.and_then(action_at) {
+                    bindings.set_key(action, bindings::slot_code(code));
+                }
+                self.cancel();
+                Rebind::Assigned(code)
+            }
         }
-        if code == 0 {
-            return Rebind::None;
-        }
-        let Some(binding) = settings::BINDINGS.get(row) else {
-            self.row = None;
-            return Rebind::None;
-        };
-        let Some(slot) = binding.slot else {
-            self.row = None;
+    }
+
+    /// A key for the open screen: `code` is its virtual-key code (Escape
+    /// is `0x1b`) and `state` the window's key-state word
+    /// ([`bindings::key_state_word`]); see [`ReadKeyScreen::key`].
+    pub fn key(&mut self, code: u32, state: u32, bindings: &mut Bindings, now: u32) -> Rebind {
+        let Some(mut screen) = self.screen else {
             return Rebind::None;
         };
-        let Some(action) = action_at(slot) else {
-            self.row = None;
+        let mut rows = page_rows(bindings);
+        let answer = screen.key(&mut rows, code, 0, state, now);
+        self.screen = Some(screen);
+        self.answer(answer, bindings)
+    }
+
+    /// A mouse button for the open screen, as the window's button bit
+    /// ([`bindings::mouse_hook_bit`]); see [`ReadKeyScreen::mouse`].
+    pub fn mouse(&mut self, bit: u32, bindings: &mut Bindings, now: u32) -> Rebind {
+        let Some(mut screen) = self.screen else {
             return Rebind::None;
         };
-        self.row = None;
-        bindings.set_key(action, code);
-        Rebind::Assigned(code)
+        let mut rows = page_rows(bindings);
+        let answer = screen.mouse(&mut rows, bit, now);
+        self.screen = Some(screen);
+        self.answer(answer, bindings)
+    }
+
+    /// The screen's per-frame step, while it is open.
+    pub fn step(&mut self, now: u32) -> Option<ScreenStep> {
+        self.screen.as_mut().map(|screen| screen.step(now))
     }
 }
 
@@ -466,61 +517,93 @@ pub struct HardwareConfigPlugin;
 
 impl Plugin for HardwareConfigPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<BindingEditor>().add_systems(
-            Update,
-            (
-                rebind_keys,
-                drive_benchmark,
-                apply_options,
-                apply_window,
-                start_benchmark_scene,
-                cleanup_benchmark,
-            )
-                .chain(),
-        );
+        app.init_resource::<BindingEditor>()
+            .init_resource::<ShaderWarmScreen>()
+            .add_systems(
+                Update,
+                (
+                    rebind_keys,
+                    drive_warm_screen,
+                    drive_benchmark,
+                    apply_options,
+                    apply_window,
+                    start_benchmark_scene,
+                    cleanup_benchmark,
+                )
+                    .chain(),
+            );
     }
 }
 
-/// Reads a key or mouse button for the open binding row into the Controls
-/// page's copy of the bindings.
+/// Drives the open key-capture screen: its per-frame fade and warning,
+/// then a mouse button (the middle and extra buttons) or a key into the
+/// Controls page's copy of the bindings.
 pub fn rebind_keys(
     keys: Res<ButtonInput<KeyCode>>,
     buttons: Res<ButtonInput<MouseButton>>,
+    time: Res<Time<Real>>,
     mut editor: ResMut<BindingEditor>,
     config: Option<ResMut<HardwareConfig>>,
 ) {
     let Some(mut config) = config else {
         return;
     };
-    if editor.row.is_none() {
+    if editor.screen.is_none() {
         return;
     }
     let Some(bindings) = config.bindings.as_mut() else {
         // No form is open: nothing to edit.
-        editor.row = None;
+        editor.cancel();
         return;
     };
-    // Mouse first: a click on the key cell is also a press, and the original
-    // names extra buttons.
-    for button in [
-        MouseButton::Left,
-        MouseButton::Right,
-        MouseButton::Middle,
-        MouseButton::Back,
-        MouseButton::Forward,
-    ] {
-        if buttons.just_pressed(button)
-            && let Some(code) = bindings::mouse_code(button)
+    let now = time.elapsed().as_millis() as u32;
+    editor.step(now);
+    for button in buttons.get_just_pressed() {
+        if let Some(bit) = bindings::mouse_hook_bit(*button)
+            && editor.mouse(bit, bindings, now) != Rebind::None
         {
-            editor.key(code, bindings);
             return;
         }
     }
     for key in keys.get_just_pressed() {
-        if let Some(code) = bindings::virtual_key(*key) {
-            editor.key(code, bindings);
+        let Some(code) = bindings::virtual_key(*key) else {
+            continue;
+        };
+        if editor.key(code, bindings::key_state_word(*key), bindings, now) != Rebind::None {
             return;
         }
+    }
+}
+
+/// The shader warm-up screen ("Applying new settings...") while it is
+/// open.
+#[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ShaderWarmScreen {
+    pub screen: Option<CacheShaderScreen>,
+}
+
+/// Opens the warm-up screen when Apply asked for it and steps it once a
+/// frame: its fades and one row of the renderer's 29-row warm-up table a
+/// frame ([`exa_ui::modal_screens::warm_row`]; Bevy builds the pipelines
+/// themselves when they are first drawn), closing it at the end of its
+/// fade-out.
+pub fn drive_warm_screen(
+    time: Res<Time<Real>>,
+    mut warm: ResMut<ShaderWarmScreen>,
+    config: Option<ResMut<HardwareConfig>>,
+) {
+    let now = time.elapsed().as_millis() as u32;
+    if let Some(mut config) = config
+        && config.warm_pending
+    {
+        config.warm_pending = false;
+        warm.screen = Some(CacheShaderScreen::new(now));
+    }
+    let Some(screen) = warm.screen.as_mut() else {
+        return;
+    };
+    if screen.step(now, warm_row).close {
+        warm.screen = None;
     }
 }
 
@@ -910,6 +993,7 @@ mod tests {
         config.set_slider(Setting::ShadowQuality, 2.0 / 3.0);
         config.set_slider(Setting::Multisample, 1.0);
         let applied = config.apply().expect("a screen was open");
+        assert!(config.warm_pending);
         assert_eq!(config.live.supersample, 4);
         assert_eq!(config.live.shadow_quality, 3);
         // Hardware anti-aliasing is stored, not pushed; super-sampling was
@@ -1068,19 +1152,36 @@ mod tests {
         config.open(Some(&Bindings::default()));
         let mut editor = BindingEditor::default();
         let copy = config.bindings.as_mut().unwrap();
-        assert!(editor.begin(0));
-        assert_eq!(editor.key(0x4C, copy), Rebind::Assigned(0x4C));
+        assert!(editor.begin(0, 0));
+        assert_eq!(editor.screen.unwrap().action, 1);
+        // L: scan 0x26, read back as its virtual-key code.
+        let l = bindings::key_state_word(KeyCode::KeyL);
+        assert_eq!(l, 0x26 << 16);
+        assert_eq!(editor.key(0x4C, l, copy, 10), Rebind::Assigned(0x26));
         assert_eq!(copy.key(Action::Forward), 0x4C);
-        assert_eq!(editor.key(0x4D, copy), Rebind::None);
+        assert!(editor.screen.is_none());
+        assert_eq!(editor.key(0x4D, l, copy, 10), Rebind::None);
 
-        assert!(editor.begin(0));
-        assert_eq!(editor.key(0x1B, copy), Rebind::Cancelled);
+        assert!(editor.begin(0, 20));
+        assert_eq!(editor.key(0x1B, 1 << 16, copy, 30), Rebind::Cancelled);
         assert_eq!(copy.key(Action::Forward), 0x4C);
 
-        // The Power Tree row has a key cell too.
-        assert!(editor.begin(21));
-        assert_eq!(editor.key(0x4E, copy), Rebind::Assigned(0x4E));
+        // The Power Tree row (control 0x12, saved row 17, slot 19). S is
+        // Back's: the screen warns and stays open, then takes N.
+        assert!(editor.begin(21, 40));
+        let s = bindings::key_state_word(KeyCode::KeyS);
+        assert_eq!(editor.key(0x53, s, copy, 50), Rebind::InUse);
+        assert_eq!(editor.screen.unwrap().prompt(), "ALREADY IN USE");
+        let n = bindings::key_state_word(KeyCode::KeyN);
+        assert_eq!(editor.key(0x4E, n, copy, 60), Rebind::Assigned(0x31));
         assert_eq!(copy.key(Action::PowerTree), 0x4E);
+
+        // The middle button is Orbit's; the extra button binds as Mouse 4.
+        assert!(editor.begin(18, 70));
+        assert_eq!(editor.mouse(1, copy, 80), Rebind::None);
+        assert_eq!(editor.mouse(4, copy, 80), Rebind::InUse);
+        assert_eq!(editor.mouse(8, copy, 80), Rebind::Assigned(0x8005));
+        assert_eq!(copy.key(Action::PowerBar), 5);
 
         let applied = config.apply().unwrap();
         let committed = applied.bindings.unwrap();
@@ -1097,6 +1198,33 @@ mod tests {
         config.open(Some(&Bindings::default()));
         config.cancel();
         assert!(config.bindings.is_none());
+    }
+
+    #[test]
+    fn a_shader_change_opens_the_warm_up_screen_until_its_fade_out() {
+        let mut app = App::new();
+        app.insert_resource(Time::<Real>::default())
+            .init_resource::<ShaderWarmScreen>()
+            .insert_resource(HardwareConfig {
+                warm_pending: true,
+                ..HardwareConfig::default()
+            })
+            .add_systems(Update, drive_warm_screen);
+        app.update();
+        let screen = app.world().resource::<ShaderWarmScreen>().screen.unwrap();
+        assert!(!app.world().resource::<HardwareConfig>().warm_pending);
+        assert_eq!(
+            screen.phase,
+            exa_ui::modal_screens::WarmScreenPhase::FadingIn
+        );
+        // With the clock standing still the fade never ends: the screen
+        // stays open, as the original's would.
+        app.update();
+        assert!(app.world().resource::<ShaderWarmScreen>().screen.is_some());
+        // Without a page open, Apply does nothing and nothing is pending.
+        let mut config = HardwareConfig::default();
+        assert_eq!(config.apply(), None);
+        assert!(!config.warm_pending);
     }
 
     #[test]

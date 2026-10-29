@@ -105,10 +105,14 @@ pub struct TaskStack {
 }
 
 impl TaskStack {
-    /// The push: appends the task and makes its layer remove itself on
-    /// close. Returns the layer form's handle.
-    pub fn push(&mut self, form: u64, interface: u64) -> u64 {
+    /// The push: appends the task with its new layer `form`, makes the
+    /// layer remove itself on close ([`Self::remove`]) and keep the
+    /// interface, then focuses the layer, which runs the activation hook
+    /// ([`Self::activate`] with the layer's `link` word and `view`): the
+    /// new task is published. Returns the layer form's handle.
+    pub fn push(&mut self, form: u64, interface: u64, root: u64, link: u64, view: u64) -> u64 {
         self.entries.push(TaskEntry { form, interface });
+        self.activate(form, root, link, view);
         form
     }
 
@@ -215,9 +219,18 @@ mod tests {
     #[test]
     fn focusing_moves_a_task_to_the_top() {
         let mut stack = TaskStack::default();
-        stack.push(1, 11);
-        stack.push(2, 22);
-        stack.push(3, 33);
+        stack.push(1, 11, 0, 5, 10);
+        stack.push(2, 22, 0, 5, 20);
+        // The push focuses the new layer: it is published.
+        assert_eq!(stack.push(3, 33, 0, 5, 30), 3);
+        assert_eq!(
+            stack.active,
+            ActiveTask {
+                interface: 33,
+                view: 30,
+                form: 3
+            }
+        );
         assert!(stack.activate(1, 0, 5, 100));
         assert_eq!(stack.entries.last().unwrap().form, 1);
         assert_eq!(stack.entries[0].form, 2);
@@ -236,8 +249,8 @@ mod tests {
     #[test]
     fn removing_the_active_task_clears_it() {
         let mut stack = TaskStack::default();
-        stack.push(1, 11);
-        stack.push(2, 22);
+        stack.push(1, 11, 0, 5, 10);
+        stack.push(2, 22, 0, 5, 20);
         stack.activate(2, 0, 5, 50);
         assert!(stack.remove(2, 77));
         assert_eq!(
