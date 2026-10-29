@@ -812,8 +812,33 @@ fn teach(student: &mut Member, trainer: &Member) {
     if known == 0 || !trainer.techniques[skill][..known.min(6)].contains(&technique) {
         return;
     }
+    let before = crate::report::level_sum(&student.skill_xp);
     experience::add_skill_lump(&mut skills, LESSON as i32);
     student.skill_xp = skills.map(|s| s.points);
+    // The gain may cross a rank: the new rank's kit starts as the old
+    // one's, as the rank-up routine does.
+    if crate::report::level_sum(&student.skill_xp) > before {
+        copy_rank_loadout(student);
+    }
+}
+
+/// A rank-up copies the previous rank's kit into the new rank's slot.
+///
+/// The level sum is the six skill levels (points over 5000). The copy runs
+/// only while the sum is below 11 and even, from slot `sum/2 − 1` to
+/// `sum/2`. A sum under 2 has no previous slot; the original cannot reach
+/// that on a rank-up, and Exarust leaves the kits alone. Returns whether a
+/// kit was copied.
+pub fn copy_rank_loadout(member: &mut Member) -> bool {
+    let sum = crate::report::level_sum(&member.skill_xp);
+    if sum < 11 && sum.is_multiple_of(2) && sum >= 2 {
+        let to = (sum / 2) as usize;
+        if to < crate::loadout::RANKS {
+            member.loadouts[to] = member.loadouts[to - 1].clone();
+            return true;
+        }
+    }
+    false
 }
 
 fn rested(health: u16, physician: bool) -> u16 {
@@ -1709,6 +1734,27 @@ mod tests {
     }
 
     #[test]
+    fn a_rank_up_copies_the_previous_kit_into_the_new_slot() {
+        let mut company = Company::new("Ash");
+        company.hire("a", Profession::Combatant).unwrap();
+        let fighter = &mut company.roster[0];
+        fighter.skill_xp = [5_000, 5_000, 0, 0, 0, 0];
+        fighter.loadouts[0].word = 5;
+        assert!(copy_rank_loadout(fighter));
+        assert_eq!(fighter.loadouts[1].word, 5);
+        // An odd sum or a sum of eleven and over copies nothing.
+        fighter.skill_xp[2] = 5_000;
+        assert!(!copy_rank_loadout(fighter));
+        fighter.skill_xp = [10_000; 6];
+        assert!(!copy_rank_loadout(fighter));
+        // A sum of ten copies slot four into five.
+        fighter.skill_xp = [10_000, 10_000, 10_000, 10_000, 10_000, 0];
+        fighter.loadouts[4].word = 11;
+        assert!(copy_rank_loadout(fighter));
+        assert_eq!(fighter.loadouts[5].word, 11);
+    }
+
+    #[test]
     fn a_trainer_teaches_a_known_technique() {
         let mut alone = Company::new("Ash");
         alone.hire("a", Profession::Combatant).unwrap();
@@ -1734,6 +1780,21 @@ mod tests {
         other.roster[1].techniques[0][0] = 3;
         other.end_day([0; 6]);
         assert_eq!(other.roster[0].skill_xp[0], 0);
+
+        // Crossing a rank copies the previous kit into the new rank's slot.
+        let mut ranked = Company::new("Ash");
+        ranked.hire("a", Profession::Combatant).unwrap();
+        ranked.hire("coach", Profession::Trainer).unwrap();
+        // The lesson gives 1000 over one more than the six levels, 500 at
+        // this level, so 9600 reaches the next level.
+        ranked.roster[0].skill_xp[0] = 9_600;
+        ranked.roster[0].techniques[0][1] = 7;
+        ranked.roster[0].loadouts[0].word = 9;
+        ranked.roster[1].skill_xp[0] = 5_000;
+        ranked.roster[1].techniques[0][0] = 7;
+        ranked.end_day([0; 6]);
+        assert_eq!(ranked.roster[0].skill_xp[0], 10_000);
+        assert_eq!(ranked.roster[0].loadouts[1].word, 9);
 
         let mut shop = Company::new("Ash");
         shop.hire("sell", Profession::Merchant).unwrap();
