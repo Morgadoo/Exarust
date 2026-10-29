@@ -269,6 +269,9 @@ pub fn resolve_dead_bodies(
 pub struct ReturnFighter {
     /// The body carries the match-participant flag: a company fighter.
     pub company: bool,
+    /// The arena index: 0 is the manager, `n` the company roster's member
+    /// `n - 1`.
+    pub id: u32,
     pub health: f32,
     pub max: f32,
     /// The record's health word after the write.
@@ -325,6 +328,38 @@ pub fn settle_return(
         day: checks,
         matches_today,
     }
+}
+
+/// Write the returned health words into the career's records: index 0 is
+/// the manager, every other index the roster member one less. The original
+/// writes each participant record's two health words before it numbers the
+/// fighters and books the result; Exarust keeps one health word per member,
+/// so both are the same value. Bodies with no record (a roster slot the
+/// career no longer has) are left alone. Returns how many words were
+/// written.
+pub fn write_back_health(
+    career: &mut crate::hub_windows::ArenaCareer,
+    fighters: &[ReturnFighter],
+) -> usize {
+    let mut written = 0;
+    for fighter in fighters {
+        if !fighter.company {
+            continue;
+        }
+        let Some(word) = fighter.word else {
+            continue;
+        };
+        if fighter.id == 0 {
+            career.player.health = word;
+        } else {
+            let Some(member) = career.company.roster.get_mut(fighter.id as usize - 1) else {
+                continue;
+            };
+            member.health = word;
+        }
+        written += 1;
+    }
+    written
 }
 
 /// The participant list a saved lineup starts with.
@@ -662,12 +697,14 @@ mod tests {
         let mut fighters = [
             ReturnFighter {
                 company: true,
+                id: 1,
                 health: 0.25,
                 max: 0.5,
                 word: None,
             },
             ReturnFighter {
                 company: false,
+                id: 2,
                 health: 0.1,
                 max: 0.5,
                 word: None,
@@ -715,6 +752,69 @@ mod tests {
         assert_eq!(out.matches_today, 1);
         assert_eq!(out.paid, 0);
         assert!(log.records.is_empty());
+    }
+
+    #[test]
+    fn the_health_words_go_back_into_the_manager_and_the_roster() {
+        let mut career = crate::hub_windows::ArenaCareer::default();
+        for name in ["Ash", "Bryn"] {
+            career.company.roster.push(crate::career::Member {
+                name: name.to_string(),
+                profession: crate::career::Profession::Combatant,
+                xp: 0,
+                skills: [0; 6],
+                skill_xp: [0; 6],
+                techniques: [[0; 6]; 6],
+                loadouts: Default::default(),
+                health: u16::MAX,
+                in_entry: false,
+            });
+        }
+        let mut fighters = [
+            ReturnFighter {
+                company: true,
+                id: 0,
+                health: 0.25,
+                max: 0.5,
+                word: None,
+            },
+            ReturnFighter {
+                company: true,
+                id: 2,
+                health: 0.0,
+                max: 0.5,
+                word: None,
+            },
+            // A body from a roster slot the career no longer has writes
+            // nothing.
+            ReturnFighter {
+                company: true,
+                id: 9,
+                health: 0.1,
+                max: 0.5,
+                word: None,
+            },
+        ];
+        let mut records = CompanyRecords::default();
+        let mut log = ArenaLog::default();
+        settle_return(
+            Finish::Lost,
+            1,
+            false,
+            0,
+            &mut fighters,
+            &mut records,
+            &mut log,
+            3,
+            false,
+            0,
+        );
+        assert_eq!(fighters[0].word, Some(32_768));
+        let written = write_back_health(&mut career, &fighters);
+        assert_eq!(written, 2);
+        assert_eq!(career.player.health, 32_768);
+        assert_eq!(career.company.roster[0].health, u16::MAX);
+        assert_eq!(career.company.roster[1].health, 0);
     }
 
     #[test]
