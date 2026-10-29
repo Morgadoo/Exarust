@@ -315,8 +315,10 @@ pub struct Params {
     pub stretch: f32,
     /// Velocity kept per tick.
     pub retention: f32,
-    /// The tick a one-shot emitter finishes at (rounded half to even), or
-    /// `i32::MAX` for templates that are not one-shot.
+    /// A one-shot template's ring deadline: the tick its first particle's
+    /// life plus the ring's span reaches (rounded half to even), or
+    /// `i32::MAX` for other templates. The original stores it for the game
+    /// to read; the tick itself does not.
     pub deadline: i32,
     /// Ring capacity, excluding the spare slot.
     pub capacity: usize,
@@ -760,7 +762,6 @@ impl Emitter {
             sources
         };
         let params = Params::new(template, sources.len());
-        let deadline = params.deadline;
         let mut slots = vec![Slot::default(); params.capacity + 1];
         if params.flags & flags::RANDOM_SIZE != 0 {
             for slot in &mut slots {
@@ -789,7 +790,7 @@ impl Emitter {
             active: true,
             emitter_flags,
             ticks: 0,
-            deadline,
+            deadline: i32::MAX,
             hits: 0,
             flat_opacity: 1.0,
             entered: false,
@@ -956,7 +957,8 @@ impl Emitter {
                 spawned += 1;
                 // The pull is along the source's own second axis, untransformed.
                 let src = self.sources[index];
-                self.slots[slot].q += src.axes[1] * -src.kick;
+                // The source's stored angle, reset to zero by the ring builder.
+                self.slots[slot].q += src.axes[0] * -src.kick;
                 if p.start_life == 0 && self.next == self.params.capacity {
                     self.active = false;
                     break;
@@ -1218,6 +1220,28 @@ impl Emitter {
         let frame = self.light.frame(self.params.flags);
         self.sound.frame(self.light.density, self.params.flags, rng);
         frame
+    }
+
+    /// The material's level-of-detail scalar for a camera at `eye`: the
+    /// emitter's size over the distance to its node, never sharper than
+    /// one (`size · 1000 / distance`).
+    pub fn lod_scale(&self, eye: Vec3) -> f32 {
+        let distance = (self.node.position - eye).length().max(1.0);
+        self.size * 1000.0 / distance
+    }
+
+    /// The four corners of the fixed screen quad a material that draws one
+    /// asks for: each corner is a point of the camera's forward axis
+    /// displaced half a unit along its right or up axis, normalised, in the
+    /// original's corner order.
+    pub fn camera_quad(view: View) -> [Vec3; 4] {
+        let forward = view.forward * 0.3;
+        [
+            (forward - view.up * 0.5).normalize_or(Vec3::NEG_Y),
+            (forward + view.right * 0.5).normalize_or(Vec3::X),
+            (forward - view.right * 0.5).normalize_or(Vec3::NEG_X),
+            (forward + view.up * 0.5).normalize_or(Vec3::Y),
+        ]
     }
 }
 
@@ -1835,10 +1859,9 @@ mod tests {
         // 103 + 97 · 1.10667 + 0.5 = 210.85 → 211 (the conversion rounds
         // half to even).
         let want = (103.0f32 + 97.0 * e.params.interval + 0.5).round_ties_even() as i32;
-        assert_eq!(e.deadline, want);
         assert_eq!(e.params.deadline, want);
-        // A template that is not one-shot has no deadline.
-        assert_eq!(torch().deadline, i32::MAX);
+        // A template that is not one-shot has no ring deadline.
+        assert_eq!(torch().params.deadline, i32::MAX);
     }
 
     #[test]
@@ -1901,6 +1924,41 @@ mod tests {
         let colour = e.quads(0.0, view)[0].colour;
         // 0.75483 · 255 = 192.48, rounded half to even.
         assert_eq!(colour[..3], [192, 192, 192]);
+    }
+
+    #[test]
+    fn the_level_of_detail_is_the_size_over_the_distance() {
+        let mut e = torch();
+        e.size = 0.2;
+        e.node.position = Vec3::new(100.0, 0.0, 0.0);
+        // 0.2 · 1000 / 100 = 2.
+        assert!((e.lod_scale(Vec3::ZERO) - 2.0).abs() < 1e-6);
+        // A camera 1000 cm away gets a fifth.
+        assert!((e.lod_scale(Vec3::new(1100.0, 0.0, 0.0)) - 0.2).abs() < 1e-6);
+        // Closer than a centimetre is held at one.
+        assert!((e.lod_scale(Vec3::new(100.5, 0.0, 0.0)) - 200.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn the_fixed_camera_quad_has_the_originals_corner_order() {
+        let view = View {
+            eye: Vec3::ZERO,
+            right: Vec3::X,
+            up: Vec3::Y,
+            forward: Vec3::NEG_Z,
+        };
+        let q = Emitter::camera_quad(view);
+        // Each corner is a third of a unit along the view, half along right
+        // or up, then normalised: the thirds become 0.5145 and the halves
+        // 0.8575.
+        let want = [0.514_495_7, 0.857_492_9];
+        assert!((q[0].y + want[1]).abs() < 1e-5 && (q[0].z + want[0]).abs() < 1e-5);
+        assert!((q[1].x - want[1]).abs() < 1e-5 && (q[1].z + want[0]).abs() < 1e-5);
+        assert!((q[2].x + want[1]).abs() < 1e-5 && (q[2].z + want[0]).abs() < 1e-5);
+        assert!((q[3].y - want[1]).abs() < 1e-5 && (q[3].z + want[0]).abs() < 1e-5);
+        for corner in q {
+            assert!((corner.length() - 1.0).abs() < 1e-5);
+        }
     }
 
     #[test]
