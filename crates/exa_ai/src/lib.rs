@@ -1152,6 +1152,21 @@ mod tests {
                 ChildOf(root),
             ))
             .id();
+        // Its empty hands hold both fists, as the original's set-up holds
+        // them: the executor's held count is 2.
+        let fist = exa_formats::weapon_record::WeaponRecord::build(
+            &exa_formats::weapon_record::Section::FISTS,
+            false,
+            exa_formats::weapon_record::Lengths::hand(-8.0, 9.66),
+            &exa_formats::weapon_record::Holder::AVERAGE,
+        );
+        for slot in [
+            exa_combat::attack::Slot::First,
+            exa_combat::attack::Slot::Second,
+        ] {
+            app.world_mut()
+                .spawn(Blade::new(foe, 0.1, fist).in_slot(slot));
+        }
         (app, foe, root)
     }
 
