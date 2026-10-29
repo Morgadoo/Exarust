@@ -245,6 +245,80 @@ pub fn opacity(wide: bool) -> f32 {
 /// The dark ink the form's backdrop quad is filled with (`0xFF000000`).
 pub const BACKDROP_INK: u32 = 0xFF00_0000;
 
+/// The four flat fills the form's parts use when they are drawn through
+/// the GUI draw path: the backdrop (the paint's own black, alpha 255), the
+/// arsenal and equipment containers, and the preview.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LoadoutInks {
+    pub backdrop: [u8; 4],
+    pub arsenal: [u8; 4],
+    pub equipment: [u8; 4],
+    pub preview: [u8; 4],
+}
+
+impl LoadoutInks {
+    /// The inks from the skin's form colours. The two containers take the
+    /// form's background and the preview a darker form colour; the
+    /// containers and the preview draw themselves through their own
+    /// controls in the original, so these flat fills stand in for them
+    /// (guess: the palette entry each part uses).
+    pub fn from_palette(palette: &crate::skin::SkinPalette) -> Self {
+        Self {
+            backdrop: [0, 0, 0, u8::MAX],
+            arsenal: palette.form[3],
+            equipment: palette.form[3],
+            preview: palette.form[5],
+        }
+    }
+}
+
+/// The layer one flat rectangle fills, in the draw path's solid program.
+fn solid_layer(rect: [i32; 4], ink: [u8; 4]) -> crate::gui_draw::GuiLayer {
+    let [x, y, w, h] = rect;
+    let mut batch = crate::skin::SkinBatch::new();
+    batch.select(1, 0, false);
+    batch.set_ink(ink);
+    batch.begin();
+    batch.vertex(x as f32, y as f32);
+    batch.vertex(x as f32, (y + h) as f32);
+    batch.vertex((x + w) as f32, (y + h) as f32);
+    batch.vertex((x + w) as f32, y as f32);
+    batch.end_quads();
+    crate::gui_draw::GuiLayer::new(batch, crate::gui_draw::LayerTexture::None)
+}
+
+/// Turns the paint's steps into the draw path's frame: the full-form
+/// backdrop, then the arsenal, the equipment and the preview at the
+/// layout's rectangles, in the paint's order. The name box draws with the
+/// preview. A step with an empty rectangle draws nothing.
+pub fn frame(
+    draws: &[LoadoutDraw],
+    layout: &LoadoutLayout,
+    inks: &LoadoutInks,
+    width: i32,
+    height: i32,
+) -> crate::gui_draw::GuiFrame {
+    let mut frame = crate::gui_draw::GuiFrame::new();
+    for draw in draws {
+        let (rect, ink) = match *draw {
+            LoadoutDraw::Backdrop => ([0, 0, width, height], inks.backdrop),
+            LoadoutDraw::Arsenal => (layout.arsenal, inks.arsenal),
+            LoadoutDraw::Equipment => (layout.equipment, inks.equipment),
+            LoadoutDraw::Preview => (
+                // The constructor leaves the preview's y to the character
+                // creation helper; the view spans the form's height less
+                // four (guess: it starts at the top).
+                [layout.preview_x, 0, layout.preview_width, FORM_HEIGHT - 4],
+                inks.preview,
+            ),
+        };
+        if rect[2] > 0 && rect[3] > 0 {
+            frame.push(solid_layer(rect, ink));
+        }
+    }
+    frame
+}
+
 /// The paint's steps.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LoadoutDraw {
@@ -1597,5 +1671,40 @@ mod tests {
         editor.mode = LoadoutMode::Arena;
         assert!(!drop_cancelled(&mut editor, 1));
         assert_eq!(editor.arsenal.len(), 1);
+    }
+
+    #[test]
+    fn the_frame_draws_the_backdrop_and_the_layouts_parts() {
+        let layout = layout(LoadoutMode::Arena, 1024, false);
+        let inks = LoadoutInks {
+            backdrop: [0, 0, 0, 255],
+            arsenal: [1, 2, 3, 4],
+            equipment: [5, 6, 7, 8],
+            preview: [9, 10, 11, 12],
+        };
+        let drawn = frame(&draw_order(), &layout, &inks, 1024, 768);
+        assert_eq!(drawn.layers.len(), 4);
+        assert_eq!(drawn.layers[0].batch.primitives.len(), 1);
+        // The arsenal is 4,180 228×492 (the interface is not wide); the
+        // equipment hugs the right edge.
+        assert_eq!(layout.arsenal, [4, 180, 228, 492]);
+        assert_eq!(layout.equipment, [1024 - 236 - 4, 88, 236, 628]);
+        let drawn = frame(
+            &[LoadoutDraw::Arsenal, LoadoutDraw::Preview],
+            &layout,
+            &inks,
+            1024,
+            768,
+        );
+        assert_eq!(drawn.layers.len(), 2);
+        // The palette's fills are the form's own colours.
+        let palette = crate::line_skin::line_palette();
+        let from_palette = LoadoutInks::from_palette(&palette);
+        assert_eq!(from_palette.backdrop, [0, 0, 0, 255]);
+        assert_eq!(from_palette.arsenal, palette.form[3]);
+        assert_eq!(from_palette.preview, palette.form[5]);
+        // Empty parts draw nothing.
+        let drawn = frame(&[LoadoutDraw::Backdrop], &layout, &inks, 0, 768);
+        assert_eq!(drawn.layers.len(), 0);
     }
 }
