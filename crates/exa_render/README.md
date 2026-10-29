@@ -84,7 +84,8 @@ Rules and evidence: [`docs/formats/FLB.md`](../../docs/formats/FLB.md) and
   mipmapping is off), the resample to an arbitrary size (the chain's level
   for a power-of-two ratio, else the phase-shifted window), normal-map
   renormalisation for three- and four-channel images flagged
-  `0x0400_0000`, the sharpen kernel, kernel normalisation, bytes-per-pixel,
+  `0x0400_0000`, the sharpen kernel and the image sharpen at the image's
+  own size (`sharpen_rgba8`, the menu cursor's), kernel normalisation, bytes-per-pixel,
   the sub-image blits and the canvas placement of the icon atlas
   ([`docs/formats/RFI.md`](../../docs/formats/RFI.md), Generated mip levels).
 - `geometry`: the original's planar vertex streams (format-word flags, per-stream sizes and buffer offsets, attribute locations, index-size encoding and CPU index batches) as tested pure rules; not called by the running renderer, where Bevy's mesh allocator takes their place.

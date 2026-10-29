@@ -15,7 +15,10 @@ draws the whole interface over the game's view, premultiplied), the
 character creator's labels and page captions (`creation`; the game crate
 owns the rules and places), the
 in-game world cursor from `cursors.rfi` (`cursor`; the game crate picks
-its shape), the health and focus bars with their fade and the stamina gauge
+its shape), the window's own pointer (`system_cursor`: the original's twelve-slot
+pointer table and show rule, and the menu cursor from `menucursor.rfi`
+resampled to the screen-height size, sharpened and set as the window's
+custom pointer), the health and focus bars with their fade and the stamina gauge
 (`hud`, framed with `guitex.rfi`; `HudShowUntil` holds the bars shown, as
 a click on the player's own body does for 5000 ms), the compass's turned
 square from `compass.rfi` (`hud_extra`; the game crate shows it while the

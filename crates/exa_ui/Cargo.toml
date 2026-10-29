@@ -7,6 +7,10 @@ version.workspace = true
 
 [dependencies]
 bevy.workspace = true
+# The window's custom pointer image (the menu cursor); Bevy's own feature
+# would also pull in its picking crate.
+bevy_window = { version = "0.20", default-features = false, features = ["custom_cursor"] }
+bevy_winit = { version = "0.20", default-features = false, features = ["custom_cursor"] }
 exa_assets.workspace = true
 exa_character.workspace = true
 exa_formats.workspace = true

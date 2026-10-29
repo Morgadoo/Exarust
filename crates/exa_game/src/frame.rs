@@ -294,6 +294,120 @@ impl LogPresentation {
     }
 }
 
+/// The message box's style word for the error icon: top-most, task-modal,
+/// with the stop sign.
+pub const MESSAGE_BOX_ERROR_STYLE: u32 = 0x0004_2010;
+/// The style word for the warning icon: top-most, task-modal, with the
+/// exclamation mark.
+pub const MESSAGE_BOX_WARNING_STYLE: u32 = 0x0004_2030;
+
+/// What the original's message box shows: its caption (the logger's
+/// title), its text and its icon. The box is modal; the logger waits for
+/// it to be closed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MessageBox {
+    pub caption: String,
+    pub text: String,
+    pub icon: MessageBoxIcon,
+}
+
+impl MessageBox {
+    /// The box wrapper's own rule: any non-zero kind (negative included)
+    /// takes the error icon, zero the warning icon.
+    pub fn from_kind(kind: i32, caption: impl Into<String>, text: impl Into<String>) -> Self {
+        Self {
+            caption: caption.into(),
+            text: text.into(),
+            icon: if kind != 0 {
+                MessageBoxIcon::Error
+            } else {
+                MessageBoxIcon::Warning
+            },
+        }
+    }
+
+    /// The box the logger opens for a message at `level`: level 6 passes
+    /// kind 2 (the error icon), level 7 kind 0 (the warning icon); other
+    /// levels open none.
+    pub fn for_level(
+        level: i32,
+        caption: impl Into<String>,
+        text: impl Into<String>,
+    ) -> Option<Self> {
+        match level {
+            6 => Some(Self::from_kind(2, caption, text)),
+            7 => Some(Self::from_kind(0, caption, text)),
+            _ => None,
+        }
+    }
+
+    /// The style word the original passes with this box.
+    pub fn style(&self) -> u32 {
+        match self.icon {
+            MessageBoxIcon::Error => MESSAGE_BOX_ERROR_STYLE,
+            MessageBoxIcon::Warning => MESSAGE_BOX_WARNING_STYLE,
+        }
+    }
+}
+
+/// The level of the original's "no graphics device" message: a critical
+/// failure, an error box.
+pub const CRITICAL_FAILURE_LEVEL: i32 = 6;
+
+/// The text of the original's box when the graphics device lacks what the
+/// renderer needs (its caption is the window's title).
+pub const MINIMUM_REQUIREMENTS_TEXT: &str = "This system does not meet the minimum requirements \
+     to run Exanima. Updating the graphics driver may solve the problem.";
+
+/// The title the original's operating-system error report carries.
+pub const OS_ERROR_TITLE: &str = "Windows Error";
+/// The level of that report: the on-screen overlay, not the log file.
+pub const OS_ERROR_LEVEL: i32 = 5;
+/// The longest system text the report holds, in bytes.
+pub const OS_ERROR_TEXT_MAX: usize = 256;
+
+/// The title and text the save writer reports (level 4) when it cannot
+/// open or create a package file, before the operating-system report.
+pub const PACKAGE_CREATE_FAILED: (&str, &str) = ("IO Error", "Failed to create package file.");
+
+/// The system's text for an I/O error: its description without the
+/// trailing `" (os error N)"` the standard library adds.
+pub fn system_error_text(error: &std::io::Error) -> String {
+    let text = error.to_string();
+    match text.rfind(" (os error ") {
+        Some(at) if text.ends_with(')') => text[..at].to_string(),
+        _ => text,
+    }
+}
+
+/// The two log lines of a package file the save writer cannot create, as
+/// the original logs them: [`PACKAGE_CREATE_FAILED`], then the forced
+/// operating-system report ([`os_error_report`]), each as an overlay line.
+pub fn package_create_failure(error: &std::io::Error) -> Vec<String> {
+    let (title, text) = PACKAGE_CREATE_FAILED;
+    let mut lines = vec![overlay_text(title, text)];
+    let code = error.raw_os_error().unwrap_or(0);
+    if let Some((_, system)) = os_error_report(code, true, &system_error_text(error)) {
+        lines.push(overlay_text(OS_ERROR_TITLE, &system));
+    }
+    lines
+}
+
+/// The original's report of the last operating-system error: nothing when
+/// there is no error code and the caller does not force it, else a level-5
+/// message titled [`OS_ERROR_TITLE`] carrying the system's text for the
+/// code, cut to [`OS_ERROR_TEXT_MAX`] bytes (on a character boundary).
+pub fn os_error_report(code: i32, force: bool, system_text: &str) -> Option<(i32, String)> {
+    if code == 0 && !force {
+        return None;
+    }
+    let mut end = system_text.len().min(OS_ERROR_TEXT_MAX);
+    while !system_text.is_char_boundary(end) {
+        end -= 1;
+    }
+    Some((OS_ERROR_LEVEL, system_text[..end].to_string()))
+}
+
 /// The text of one overlay line: the title, `" : "` and the message.
 pub fn overlay_text(title: &str, message: &str) -> String {
     format!("{title}{LOG_OVERLAY_SEPARATOR}{message}")
@@ -778,6 +892,62 @@ pub fn sleep_yield(ms: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_logger_opens_an_error_box_at_six_and_a_warning_at_seven() {
+        let error = MessageBox::for_level(6, "Critical failure", "Failed to create window.");
+        let error = error.unwrap();
+        assert_eq!(error.icon, MessageBoxIcon::Error);
+        assert_eq!(error.style(), 0x42010);
+        assert_eq!(error.caption, "Critical failure");
+        let warning = MessageBox::for_level(7, "Exanima", "Careful").unwrap();
+        assert_eq!(warning.icon, MessageBoxIcon::Warning);
+        assert_eq!(warning.style(), 0x42030);
+        assert_eq!(MessageBox::for_level(4, "Error", "x"), None);
+        assert_eq!(MessageBox::for_level(5, "Error", "x"), None);
+        assert_eq!(
+            MessageBox::from_kind(-1, "a", "b").icon,
+            MessageBoxIcon::Error
+        );
+        assert_eq!(LogPresentation::for_level(6), LogPresentation::MessageBox);
+        assert!(MINIMUM_REQUIREMENTS_TEXT.starts_with("This system does not meet"));
+        assert!(MINIMUM_REQUIREMENTS_TEXT.contains("requirements to run Exanima."));
+    }
+
+    #[test]
+    fn a_package_file_that_cannot_be_created_logs_two_lines() {
+        let error = std::io::Error::from_raw_os_error(13);
+        let lines = package_create_failure(&error);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0], "IO Error : Failed to create package file.");
+        assert!(lines[1].starts_with("Windows Error : "));
+        assert!(!lines[1].contains("os error"));
+        let custom = std::io::Error::other("disk full");
+        assert_eq!(
+            package_create_failure(&custom)[1],
+            "Windows Error : disk full"
+        );
+    }
+
+    #[test]
+    fn an_os_error_is_reported_only_with_a_code_or_when_forced() {
+        assert_eq!(os_error_report(0, false, "ignored"), None);
+        assert_eq!(
+            os_error_report(5, false, "Access is denied."),
+            Some((5, "Access is denied.".to_string()))
+        );
+        assert_eq!(os_error_report(0, true, ""), Some((5, String::new())));
+        let long = "é".repeat(200);
+        let (_, text) = os_error_report(2, false, &long).unwrap();
+        assert_eq!(text.len(), 256);
+        let odd = format!("a{long}");
+        let (_, text) = os_error_report(2, false, &odd).unwrap();
+        assert_eq!(text.len(), 255);
+        assert_eq!(
+            LogPresentation::for_level(OS_ERROR_LEVEL),
+            LogPresentation::Overlay
+        );
+    }
 
     fn focused(vsync: bool, refresh_hz: u32, fps_cap: i32) -> FramePacer {
         FramePacer {

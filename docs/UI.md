@@ -166,6 +166,40 @@ Exarust (`exa_ui::cursor` draws, `exa_game::cursor` picks the shape):
 - `--cursor x,y` holds the pointer at a window position for unattended
   runs ([DEBUGGING.md](DEBUGGING.md)).
 
+## System pointer
+
+Outside the game's view (menus, the character view, panels) the window
+shows its own pointer. The original keeps a table of twelve pointers and
+shows one by index: the arrow, up-down, left-right, the two diagonals,
+the hand, wait, the four-way move, the text beam, the cross, an "add"
+slot and the not-allowed sign. The shipped executable carries no pointer
+images of its own, so these are the platform's, and the "add" slot stays
+empty. A negative index hides the pointer; showing an index again after
+that reveals it first; asking for the index already shown does nothing.
+The window starts on slot 0.
+
+At start-up the game unit builds the **menu cursor** from
+`menucursor.rfi` and installs it in slots 0 and 8 (the arrow and the text
+beam), so wherever the platform's arrow would show, the menu cursor shows:
+
+- **Size.** s = round(cursor size × screen height / 1080 × 32) pixels in
+  double precision, at most 128 (32 on a 1080-pixel screen, 64 on 2160).
+  The height is the screen's, not the window's; the cursor size setting is
+  1.
+- **Picture.** The picture is resampled to s × s by the engine's
+  resample-to-size path, then sharpened with amount 0.01 and radius 1
+  (taps −0.01, 1.02, −0.01 along each row and then each column, in the
+  resample's filtering space).
+- **Hotspot.** round(0.176 s), round(0.08 s): (6, 3) at 32 pixels.
+
+Exarust (`exa_ui::system_cursor`): the table, the show rule and the build
+are reproduced; the window's `CursorIcon` is set to the slot shown, the
+menu cursor as a custom image built once the display is known (the
+primary display's height, else the first display's on Wayland, rebuilt if
+it changes). Exarust's interface never changes the slot, so the pointer is
+always slot 0, the menu cursor. Winit has no empty pointer, so the empty
+slot would show the platform's arrow.
+
 ## Health bars
 
 At the bottom centre of the game's view the original draws two framed bars

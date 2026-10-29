@@ -66,6 +66,45 @@ the deferred-call ring and the redraw-driven wait are engine-internal in
 the original, modelled in `exa_game::frame` and not needed by Exarust's
 event-driven winit loop.
 
+### Window and platform rules
+
+- **Timer resolution.** The original's sleeps wait on a high-resolution
+  waitable timer for whole milliseconds (raising the system timer to
+  1 ms and calling `Sleep` only where that timer is missing); a sleep of 0
+  yields. `exa_game::frame::sleep_yield` uses the standard library's
+  sleep, which is already high-resolution on Exarust's platforms.
+- **Losing the focus in full screen.** A full-screen window (borderless or
+  exclusive) minimises when another application takes the activation; the
+  original's switch for this is on in the shipped executable. Exarust
+  minimises the window when it loses the focus while full screen, except
+  in unattended screenshot and fixed-frame runs.
+- **Message boxes.** The logger's level-6 messages open an error box and
+  its level-7 messages a warning box: top-most, task-modal, captioned with
+  the logger's title, waited on until closed. The only one Exarust can meet
+  is the original's "minimum requirements" box for a graphics device that
+  cannot run the renderer (captioned with the window's title); Exarust
+  shows it when Bevy's renderer finds no usable adapter, through `zenity`
+  or `kdialog`, else on standard error (always on standard error in an
+  unattended run).
+- **Reported failures.** A full-screen size the display refuses is logged
+  as "Error : Display mode not supported." (level 4) and the desktop's size
+  is kept; Exarust logs it when the settings' `ScreenWidth`/`ScreenHeight`
+  differ from the desktop's and the display does not list that size. A
+  save package file that cannot be opened or created logs "IO Error :
+  Failed to create package file." and then the operating system's text
+  for the error as "Windows Error : …" (level 5, always reported);
+  Exarust logs both lines as warnings (`exa_game::slots`).
+- **Pointer warps and drags.** When the game moves the pointer itself it
+  holds the position it reads at the target for the next four pointer
+  moves, putting the pointer back when a move lands 41 pixels or more away
+  on either axis, until a move lands closer. A GUI drag confines the
+  pointer to a rectangle (unbounded sides one pixel inside the screen),
+  and a pointer that reaches the screen's edge is moved to the other side
+  (two pixels short of the right or bottom edge, or to 1) while a virtual
+  offset of whole screen sizes keeps the position the drag sees growing.
+  Both are modelled in `exa_game::window` (`WarpHold`, `PointerClip`);
+  Exarust's Cursor Look uses winit's locked grab instead.
+
 ## Frame profiler
 
 Three tools, from a quick look to a full timeline:

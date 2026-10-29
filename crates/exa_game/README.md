@@ -89,10 +89,19 @@ rule (`fullscreen_mode`: borderless over the desktop, exclusive only for a
 listed `ScreenWidth`/`ScreenHeight` other than the desktop's), the swap
 interval's present mode (immediate, or with vertical sync the adaptive
 `AutoVsync` while Exarust's frames are slower than the display, where the
-original uses plain Fifo: `ADAPTIVE_VSYNC`) and the Alt+Enter toggle.
+original uses plain Fifo: `ADAPTIVE_VSYNC`), the Alt+Enter toggle, the
+full-screen window's minimise on losing the activation, the pointer warp's
+four-move hold (`WarpHold`) and the GUI drag's pointer clip with its
+endless edge wrap (`PointerClip`). `frame` also holds the logger's message
+box (`MessageBox`: level 6 the error icon, 7 the warning, style words
+0x42010 and 0x42030), the "minimum requirements" text and the
+operating-system error report (level 5, "Windows Error"), which the save
+writer logs after "IO Error : Failed to create package file." when a
+package file cannot be opened; `hw_config` logs "Display mode not
+supported." for a full-screen size the display does not list.
 Tests pin the arithmetic and the orders. `hw_config` applies the full-screen
 rule and the present mode, `exarust::frame_loop` the pacing, the focus key
-release and Alt+Enter; the other models document the original's loop, which
+release, Alt+Enter and the minimise; the other models document the original's loop, which
 winit's event loop replaces. Rules:
 [`docs/PERFORMANCE.md`](../../docs/PERFORMANCE.md) (Frame pacing) and
 [`docs/UI.md`](../../docs/UI.md) (Settings options).
