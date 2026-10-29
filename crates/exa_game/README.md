@@ -136,8 +136,13 @@ follower re-attach (UID and controls re-created, carry cleared, the
 minimum distance raised to 5 cm), the menu background scene
 (`menuscene.rfc`, fog 1.8, view (0, 500, 700), target (0, 0, −200)), the `<locale>.rft` terrain name and the scene-content classifier.
 The arena's save-id pass also classifies a re-added item onto its shelf
-(with flag `0x400`, once), flushes a scene character's items and registers
-its world record, and compacts the stash, employee and record lists. An
+(with flag `0x400`, once): `arsenal::ItemKind::of_item` reads the object
+record's sections — a body makes the item apparel and its armour type byte
+(3 through 6 armour, else clothing), otherwise a weapon section, else a
+shield section — and `arena_ids::kinds_from_items` turns a saved world
+object database into the lookup `regenerate_lists` uses. It also flushes a
+scene character's items and registers its world record, and compacts the
+stash, employee and record lists. An
 arena session may carry `arena_save::ArenaTables` (arsenal, stash, shop
 stock, company, day, employees, merchant, hireables, tournament); the
 player-data writer then emits them in the original's order, removes the

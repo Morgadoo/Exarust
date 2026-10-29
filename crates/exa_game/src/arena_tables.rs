@@ -644,17 +644,7 @@ mod tests {
             .unwrap();
         let database = exa_formats::rdb::Database::parse(bytes).unwrap();
         let items = exa_formats::objdb::items(&database);
-        let kind_of = |item: &exa_formats::objdb::Item| crate::arsenal::ItemKind {
-            known: true,
-            apparel_layer: item
-                .slot_layers
-                .iter()
-                .copied()
-                .map(|layer| layer & 0x3f)
-                .find(|layer| *layer != 0),
-            weapon: item.weapon.is_some(),
-            shield: item.shield.is_some(),
-        };
+        let kind_of = |item: &exa_formats::objdb::Item| crate::arsenal::ItemKind::of_item(item);
         let mut arsenal = Arsenal::default();
         let mut stowed = Vec::new();
         for item in &items {

@@ -475,8 +475,11 @@ impl CharacterRecord {
 
     /// The save load's reset of a player record: the race byte (bits 8
     /// through 15) is cleared from the profession word, leaving sex and the
-    /// kept bits. The original then calls its mode hook with the scene and
-    /// a create flag; that hook is the caller's.
+    /// kept bits. The original runs this on a save's load just before the
+    /// level import (and from four other entry points outside the save
+    /// unit); when a player hook is installed it then stores the word
+    /// `0x1000` and the game pointer in the player data and calls the hook,
+    /// which is the caller's.
     pub fn reset_loaded_identity(&mut self) {
         self.set_profession(self.profession() & 0xFFFF_00FF);
     }

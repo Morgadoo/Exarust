@@ -2347,6 +2347,9 @@ mod tests {
             armour_type: 0,
             container: None,
             random_table: None,
+            has_body: false,
+            has_weapon: false,
+            has_shield: false,
         }
     }
 

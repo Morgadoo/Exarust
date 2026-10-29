@@ -149,6 +149,12 @@ pub struct Item {
     /// The random-table section ([`RANDOM_TABLE`]): the rows a container
     /// child naming this record draws from when the world loads.
     pub random_table: Option<crate::containers::RandomTable>,
+    /// The record has a body section (`0x1000`), whatever its contents.
+    pub has_body: bool,
+    /// The record has a weapon section (`0x4000`), whatever its contents.
+    pub has_weapon: bool,
+    /// The record has a shield section (`0x8000`), whatever its contents.
+    pub has_shield: bool,
 }
 
 /// An object's volume section: a box the level places, and for a level
@@ -737,6 +743,9 @@ impl Item {
             armour_type: 0,
             container: None,
             random_table: None,
+            has_body: false,
+            has_weapon: false,
+            has_shield: false,
         };
         let mut body_rank = None;
         let mut weapon_rank = None;
@@ -767,6 +776,7 @@ impl Item {
                         .map_or(0, |w| u32::from_le_bytes(w.try_into().expect("4 bytes")));
                 }
                 BODY => {
+                    item.has_body = true;
                     item.worn_model = name(body);
                     body_rank = body
                         .get(0x1AB..0x1AD)
@@ -791,12 +801,14 @@ impl Item {
                     item.burden = Some(Burden::parse(body));
                 }
                 WEAPON => {
+                    item.has_weapon = true;
                     weapon_rank = body
                         .get(0x42..0x44)
                         .map(|w| u16::from_le_bytes(w.try_into().expect("2 bytes")));
                     item.weapon = Weapon::parse(body);
                 }
                 SHIELD => {
+                    item.has_shield = true;
                     shield_rank = body
                         .get(0x08..0x0A)
                         .map(|w| u16::from_le_bytes(w.try_into().expect("2 bytes")));
@@ -1533,5 +1545,17 @@ mod tests {
         let mut p = NAME.to_le_bytes().to_vec();
         p.extend(100u32.to_le_bytes());
         assert!(Item::parse(1, &p).is_err());
+    }
+
+    #[test]
+    fn section_presence_is_kept_even_when_the_section_does_not_parse() {
+        // The arena's classifier tests whether a section exists, so an
+        // eight-byte body or a four-byte weapon body still counts.
+        let body = Item::parse(1, &section(BODY, &[0u8; 8])).unwrap();
+        assert!(body.has_body && !body.has_weapon && !body.has_shield);
+        let weapon = Item::parse(2, &section(WEAPON, &[0u8; 4])).unwrap();
+        assert!(weapon.has_weapon && !weapon.weapon.is_some() && !weapon.has_body);
+        let shield = Item::parse(3, &section(SHIELD, &[0u8; 4])).unwrap();
+        assert!(shield.has_shield && !shield.has_weapon);
     }
 }

@@ -87,6 +87,18 @@ pub fn reclassify_records(
     added
 }
 
+/// The classification lookup the load's id pass uses over an object
+/// database's item records: [`ItemKind::of_item`] for every record, and an
+/// id the database does not hold is unknown and goes on no shelf.
+pub fn kinds_from_items(
+    items: &[exa_formats::objdb::Item],
+) -> std::collections::HashMap<u32, ItemKind> {
+    items
+        .iter()
+        .map(|item| (item.id, ItemKind::of_item(item)))
+        .collect()
+}
+
 /// What flushing one scene character produced.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SceneCharacterFlush {
@@ -499,7 +511,7 @@ pub fn regenerate_lists(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::arsenal::{ARMOUR, CLOTHING, SHIELDS, WEAPONS};
+    use crate::arsenal::{ARMOUR, CLOTHING, SHIELDS, WEAPONS, shelf_of};
     use exa_formats::characters::{ItemRef, Loadout};
 
     fn character(
@@ -954,5 +966,101 @@ mod tests {
         assert!(add_unique_entry(&mut list, 5, 0));
         assert!(!add_unique_entry(&mut list, 5, 9));
         assert_eq!(list.len(), 1);
+    }
+
+    /// An object record payload with the given sections. The body is long
+    /// enough to hold the armour type byte; weapon and shield sections are
+    /// short enough that their own parsers fail, which is the point: the
+    /// classifier tests the section's presence, not its contents.
+    fn object_payload(body: Option<u8>, weapon: bool, shield: bool) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut push = |tag: u32, data: &[u8]| {
+            out.extend_from_slice(&tag.to_le_bytes());
+            out.extend_from_slice(&((data.len() + 8) as u32).to_le_bytes());
+            out.extend_from_slice(data);
+        };
+        if let Some(armour_type) = body {
+            let mut data = vec![0u8; 0x1AA];
+            data[0x1A8] = armour_type;
+            push(0x1000, &data);
+        }
+        if weapon {
+            push(0x4000, &[0u8; 4]);
+        }
+        if shield {
+            push(0x8000, &[0u8; 4]);
+        }
+        out
+    }
+
+    fn object_item(
+        id: u32,
+        body: Option<u8>,
+        weapon: bool,
+        shield: bool,
+    ) -> exa_formats::objdb::Item {
+        exa_formats::objdb::Item::parse(id, &object_payload(body, weapon, shield)).unwrap()
+    }
+
+    #[test]
+    fn the_object_record_classifies_like_the_load_pass() {
+        // A body is apparel: armour types 3 through 6 go on the armour
+        // shelf, every other type on the clothing shelf, and the body wins
+        // over a weapon section.
+        assert_eq!(
+            shelf_of(ItemKind::of_item(&object_item(1, Some(3), false, false))),
+            Some(ARMOUR)
+        );
+        assert_eq!(
+            shelf_of(ItemKind::of_item(&object_item(2, Some(6), true, false))),
+            Some(ARMOUR)
+        );
+        assert_eq!(
+            shelf_of(ItemKind::of_item(&object_item(3, Some(2), false, false))),
+            Some(CLOTHING)
+        );
+        assert_eq!(
+            shelf_of(ItemKind::of_item(&object_item(4, Some(7), false, true))),
+            Some(CLOTHING)
+        );
+        // Without a body the weapon section is checked first, then the
+        // shield section; neither leaves the item unclassified.
+        assert_eq!(
+            shelf_of(ItemKind::of_item(&object_item(5, None, true, true))),
+            Some(WEAPONS)
+        );
+        assert_eq!(
+            shelf_of(ItemKind::of_item(&object_item(6, None, false, true))),
+            Some(SHIELDS)
+        );
+        assert_eq!(
+            shelf_of(ItemKind::of_item(&object_item(7, None, false, false))),
+            None
+        );
+    }
+
+    #[test]
+    fn the_item_lookup_shelves_known_records_and_skips_unknown_ids() {
+        let items = [
+            object_item(1, Some(3), false, false),
+            object_item(2, None, true, false),
+        ];
+        let kinds = kinds_from_items(&items);
+        let mut arsenal = Arsenal::default();
+        let records: Vec<[u8; 12]> = [1u32, 2, 99]
+            .iter()
+            .map(|&id| {
+                let mut record = [0u8; 12];
+                record[..4].copy_from_slice(&id.to_le_bytes());
+                record
+            })
+            .collect();
+        let added = reclassify_records(&mut arsenal, &records, |id| {
+            kinds.get(&id).copied().unwrap_or_default()
+        });
+        assert_eq!(added, 2);
+        assert_eq!(arsenal.shelves[ARMOUR][0][0].item, 1);
+        assert_eq!(arsenal.shelves[WEAPONS][0][0].item, 2);
+        assert_eq!(arsenal.shelves[SHIELDS][0].len(), 0);
     }
 }

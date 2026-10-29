@@ -46,7 +46,8 @@ pub const STARTING_KIT: u32 = 0x600;
 pub struct ItemKind {
     /// Found in the database at all.
     pub known: bool,
-    /// Its apparel record's layer type, when it is apparel.
+    /// Its body's armour type byte (the arena's apparel class), when the
+    /// record has a body section and so is apparel.
     pub apparel_layer: Option<u8>,
     /// It has the weapon kind (0x4000).
     pub weapon: bool,
@@ -72,6 +73,25 @@ pub fn shelf_of(kind: ItemKind) -> Option<usize> {
         Some(SHIELDS)
     } else {
         None
+    }
+}
+
+impl ItemKind {
+    /// The kind the object database's record gives, as the save's load pass
+    /// classifies an item: an item with a body is apparel, its armour type
+    /// byte choosing between the armour shelf (types 3 through 6) and the
+    /// clothing shelf; an item without a body is a weapon when the record
+    /// has a weapon section and a shield when it has a shield section. An
+    /// item with neither body, weapon nor shield section is known but goes
+    /// on no shelf. The section checks are on the section's presence, not on
+    /// whether its contents parse, which is what the original tests.
+    pub fn of_item(item: &exa_formats::objdb::Item) -> Self {
+        Self {
+            known: true,
+            apparel_layer: item.has_body.then_some(item.armour_type),
+            weapon: item.has_weapon,
+            shield: item.has_shield,
+        }
     }
 }
 
