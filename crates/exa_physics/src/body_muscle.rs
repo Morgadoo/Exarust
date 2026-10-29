@@ -125,7 +125,14 @@ pub struct RaceMuscles {
     /// tick (`GaitRow::scaled`; a human's clock rates 27, 16.6, 13.5 and
     /// 28 frames a second).
     pub gaits: [GaitRow; 4],
+    /// The character is a golem: the character init gives every body link
+    /// of its parts the smoothing [`GOLEM_LINK_SMOOTHING`].
+    pub golem: bool,
 }
+
+/// The smoothing of a golem's body links (the character init's 0.995 for
+/// every pivot link of every part).
+pub const GOLEM_LINK_SMOOTHING: f32 = 0.995;
 
 impl RaceMuscles {
     pub const HUMAN: Self = Self {
@@ -135,6 +142,7 @@ impl RaceMuscles {
         damping_ratio: 1.0,
         clip_rate: 1.0,
         gaits: GaitTable::HUMAN_ROWS,
+        golem: false,
     };
 }
 

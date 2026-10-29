@@ -1304,3 +1304,29 @@ fn the_relaxed_blend_reads_the_stepping_flag() {
     assert_eq!(run(true), 0.48);
     assert_eq!(run(false), 0.46);
 }
+
+/// A golem's body links all take the smoothing 0.995 (the character
+/// init's golem set-up); any other race keeps the smoothing its links'
+/// points gave them.
+#[test]
+fn a_golems_links_are_smoothed_at_0_995() {
+    let plain = arm().with_race(RaceMuscles::HUMAN);
+    let golem = arm().with_race(RaceMuscles {
+        golem: true,
+        ..RaceMuscles::HUMAN
+    });
+    assert!(!golem.links.is_empty());
+    for (p, g) in plain.links.iter().zip(&golem.links) {
+        if g.flags & crate::body::LINK_BODY != 0 {
+            assert_eq!(g.smoothing, GOLEM_LINK_SMOOTHING);
+        } else {
+            assert_eq!(g.smoothing, p.smoothing);
+        }
+    }
+    assert!(
+        plain
+            .links
+            .iter()
+            .any(|l| l.smoothing != GOLEM_LINK_SMOOTHING)
+    );
+}
