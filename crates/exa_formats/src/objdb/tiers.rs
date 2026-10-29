@@ -6,7 +6,7 @@
 use super::record::{section_range, set_section_u32, set_u32, u32_at};
 use super::{
     CONTAINER, DOOR, ID_MASK, INHERIT, Item, LOCAL, MODEL, NAME, OPERATIVE, RANDOM_TABLE, Record,
-    Store, TAG_MASK, WORLD,
+    Store, TAG_MASK, WEAPON, WORLD,
 };
 use crate::Result;
 use crate::objstrings::Library;
@@ -306,6 +306,41 @@ impl ObjectDb {
         self.section(source, MODEL)
             .and_then(|m| m.get(0x1C).copied())
             .unwrap_or(0)
+    }
+
+    /// The weapon bytes the dormant object editor copies from a record's
+    /// template into the item it edits: the template weapon section's stat
+    /// bytes `0x30..=0x40` and the low byte of its variant word at `0x42`,
+    /// written at the same offsets of `target`. The hit-sound byte `0x41`
+    /// and the word's high byte are not copied. The original reads the raw
+    /// section memory; a section shorter than those bytes is refused here
+    /// rather than read past. Returns whether a template weapon block was
+    /// copied.
+    pub fn copy_template_weapon(&self, id: u32, target: &mut [u8]) -> bool {
+        const STAT_BYTES: std::ops::RangeInclusive<usize> = 0x30..=0x40;
+        const VARIANTS: usize = 0x42;
+        if target.len() <= VARIANTS {
+            return false;
+        }
+        let Some(record) = self.find(id) else {
+            return false;
+        };
+        let parent = record.template();
+        if parent == 0 {
+            return false;
+        }
+        let Some(template) = self.find(parent) else {
+            return false;
+        };
+        let Some(body) = template.section(WEAPON) else {
+            return false;
+        };
+        if body.len() <= VARIANTS {
+            return false;
+        }
+        target[STAT_BYTES.clone()].copy_from_slice(&body[STAT_BYTES]);
+        target[VARIANTS] = body[VARIANTS];
+        true
     }
 
     /// The original's instancer for a placed or used object: a tagged id
@@ -856,6 +891,57 @@ mod tests {
         assert!(db.flagged_section(WORLD | 3, MODEL).is_none());
         assert!(db.section(WORLD | 3, MODEL).is_some());
         assert!(!db.has_section(0, MODEL));
+    }
+
+    #[test]
+    fn the_editor_takes_a_templates_weapon_bytes() {
+        let mut db = db();
+        // A weapon section with a recognisable stat block. The source's
+        // hit-sound byte (0x41) and the variant word's high byte (0x43) are
+        // not part of the copy.
+        let mut weapon = vec![0u8; 0x5A];
+        for (i, byte) in weapon.iter_mut().enumerate().skip(0x30).take(0x11) {
+            *byte = i as u8;
+        }
+        weapon[0x41] = 0xEE;
+        weapon[0x42] = 0x21;
+        weapon[0x43] = 0xEE;
+        let mut plain = item("Blade", 0, 0, 1, 2);
+        plain.extend(section(WEAPON, &weapon));
+        put(&mut db.base, 40, NAME | MODEL | WEAPON, &plain);
+        put(
+            &mut db.local,
+            1,
+            NAME | MODEL,
+            &item("Copy", 0, 40, INHERIT, INHERIT),
+        );
+
+        let mut target = [0xAAu8; 0x50];
+        assert!(db.copy_template_weapon(LOCAL | 1, &mut target));
+        assert_eq!(&target[0x30..=0x40], &weapon[0x30..=0x40]);
+        assert_eq!(target[0x42], 0x21);
+        assert_eq!(target[0x41], 0xAA);
+        assert_eq!(target[0x43], 0xAA);
+
+        // A record naming no template, a template with no weapon section,
+        // a target too short for the block and a section too short to hold
+        // it all copy nothing.
+        assert!(!db.copy_template_weapon(10, &mut target));
+        assert!(!db.copy_template_weapon(40, &mut target));
+        assert!(!db.copy_template_weapon(LOCAL | 1, &mut [0u8; 0x42]));
+        let mut short = vec![0u8; 0x5A];
+        short.truncate(0x42);
+        let mut stub = item("Stub", 0, 0, 1, 2);
+        stub.extend(section(WEAPON, &short));
+        put(&mut db.base, 41, NAME | MODEL | WEAPON, &stub);
+        put(
+            &mut db.local,
+            2,
+            NAME | MODEL,
+            &item("Copy2", 0, 41, INHERIT, INHERIT),
+        );
+        assert!(!db.copy_template_weapon(LOCAL | 2, &mut target));
+        assert_eq!(target[0x30], weapon[0x30]);
     }
 
     #[test]
