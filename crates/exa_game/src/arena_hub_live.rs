@@ -563,40 +563,34 @@ impl HubShop<'_> {
         if let Some(game) = self.game.as_deref() {
             self.live.load_from_game(game);
         }
-        let empty = if merchant {
-            career.merchant_stock.is_empty()
-        } else {
-            career.company.stock.is_empty()
+        // The original reads the performance counter twice: the draw's roll
+        // and the variant seed.
+        let rolls = || {
+            [
+                crate::arena_match::counter_now() as u32,
+                crate::arena_match::counter_now() as u32,
+            ]
         };
-        if empty {
-            // The original reads the performance counter twice: the draw's
-            // roll and the variant seed.
-            let rolls = [
-                crate::arena_match::counter_now() as u32,
-                crate::arena_match::counter_now() as u32,
-            ];
-            let kinds = if merchant { career.merchant_kinds } else { 0 };
-            let report = if merchant {
-                crate::career::Company::first_merchant_stock(
-                    &mut career.merchant_stock,
-                    kinds,
-                    rolls,
-                    &mut *self.live,
-                )
-            } else {
-                career.company.first_shop_stock(rolls, &mut *self.live)
-            };
-            if let Some(report) = report {
-                bevy::log::info!(
-                    "hub shop: first stock of {} items ({} invalid)",
-                    if merchant {
-                        career.merchant_stock.len()
-                    } else {
-                        career.company.stock.len()
-                    },
-                    report.invalid
-                );
-            }
+        // The shop's shelf asks the default kinds and any rank; the
+        // merchant's asks its stock type and specialisation. Either is built
+        // only when empty.
+        let (stock, kinds, rank) = if merchant {
+            (
+                &mut career.merchant_stock,
+                career.merchant_kinds,
+                career.merchant_rank,
+            )
+        } else {
+            (&mut career.company.stock, 0, -1)
+        };
+        if let Some(report) =
+            crate::trade::ensure_first_stock_of(stock, kinds, rank, rolls(), &mut *self.live)
+        {
+            bevy::log::info!(
+                "hub shop: first stock of {} items ({} invalid)",
+                stock.len(),
+                report.invalid
+            );
         }
         if let Some(catalogue) = self.catalogue.as_deref() {
             self.live.fill_names(catalogue, &mut self.names);
@@ -1041,6 +1035,88 @@ mod tests {
             );
             assert!(!app.world().resource::<ArenaHub>().busy);
         }
+    }
+
+    /// A shop click on an empty shelf builds the first stock from the live
+    /// stock world (18 to 20 copies of its one listed apparel record) and a
+    /// second click leaves the shelf as it is. The merchant's shelf asks its
+    /// own kinds: a weapons merchant finds nothing among apparel.
+    #[test]
+    fn a_shop_click_builds_the_first_stock_once() {
+        use exa_formats::trade_record::{TradeModel, TradeRecord};
+        let mut app = hub_app();
+        let mut flow = Flow::default();
+        flow.mode = crate::flow::Mode::Arena;
+        flow.phase = Phase::Playing;
+        app.insert_resource(flow);
+        app.insert_resource(crate::shop_stock::LiveShopStock::from_entries(vec![
+            crate::trade::ShopEntry {
+                id: 10,
+                flags: crate::trade::APPAREL,
+                record: Some(TradeRecord {
+                    listing: Some(0),
+                    parent: 0,
+                    model: Some(TradeModel {
+                        named: true,
+                        flags: 0,
+                        rarity: 0,
+                        size: [1, 1],
+                    }),
+                    rank: 0,
+                }),
+            },
+        ]));
+        spawn_hub_level(&mut app);
+        app.update();
+        let shop = app
+            .world_mut()
+            .spawn((Name::new("\u{aa}ArenaShop"), GlobalTransform::default()))
+            .id();
+        app.world_mut()
+            .write_message(WorldClick::picked(Hit::SceneNode { node: shop }));
+        app.update();
+        let first = app
+            .world()
+            .resource::<crate::hub_windows::ArenaCareer>()
+            .company
+            .stock
+            .clone();
+        assert!((18..=20).contains(&first.len()), "{}", first.len());
+        let live = app.world().resource::<crate::shop_stock::LiveShopStock>();
+        assert!(
+            first
+                .iter()
+                .all(|&id| live.parent_of_instance(id) == Some(10))
+        );
+        app.world_mut().resource_mut::<HubWindows>().close();
+        app.world_mut()
+            .write_message(WorldClick::picked(Hit::SceneNode { node: shop }));
+        app.update();
+        assert_eq!(
+            app.world()
+                .resource::<crate::hub_windows::ArenaCareer>()
+                .company
+                .stock,
+            first
+        );
+
+        // A weapons merchant's first stock finds no candidate among the
+        // apparel and stays empty.
+        let mut live = app
+            .world()
+            .resource::<crate::shop_stock::LiveShopStock>()
+            .clone();
+        let mut merchant = Vec::new();
+        let report = crate::trade::ensure_first_stock_of(
+            &mut merchant,
+            crate::trade::ARMS,
+            -1,
+            [1, 2],
+            &mut live,
+        )
+        .unwrap();
+        assert_eq!(report.invalid, 0);
+        assert!(merchant.is_empty());
     }
 
     /// The ArenaMach side is the bounding centre's x, transformed by the

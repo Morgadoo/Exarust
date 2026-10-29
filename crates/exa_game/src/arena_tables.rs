@@ -12,11 +12,12 @@
 //!
 //! What Exarust has no live model for keeps the chunk a save already holds,
 //! or the reader's default when there is none: the hireables, the
-//! tournament's field, prizes, events and history, the merchant's stock type
-//! and specialisation, the day's specials and daily tallies, and the
-//! company's second name string and three words. The merchant's
-//! specialisation is the constant the original's writer uses (−1), and its
-//! two unused words are zero.
+//! tournament's field, prizes, events and history, the day's specials and
+//! daily tallies, and the company's second name string and three words. The
+//! merchant's stock type and specialisation are the career's
+//! (`ArenaCareer::merchant_kinds` and `merchant_rank`, 0 and −1 in a new
+//! career, as the original's writer stores its two words), and its two
+//! unused words are zero.
 //!
 //! Evidence: the arena's save writers and readers for the company, day,
 //! employees and merchant chunks, and the tournament chunk's six
@@ -47,9 +48,6 @@ pub const RECORD_DEATHS: usize = 9;
 pub const RECORD_FIRED: usize = 10;
 pub const RECORD_EARNED: usize = 11;
 pub const RECORD_SPENT: usize = 12;
-
-/// The specialisation word the merchant writer always stores (a raw −1).
-pub const MERCHANT_SPECIALISATION: u32 = u32::MAX;
 
 /// The bytes of one roster row: a count, two entrants (an actor id and two
 /// weapon handles) and the team id, forty-eight bytes as the original's
@@ -274,8 +272,8 @@ pub fn from_live(
     };
 
     tables.merchant = MerchantChunk {
-        stock_type: previous.merchant.stock_type,
-        specialisation: MERCHANT_SPECIALISATION,
+        stock_type: career.merchant_kinds,
+        specialisation: career.merchant_rank as u32,
         unused: [0; 2],
         ids: career.merchant_stock.clone(),
     };
@@ -361,6 +359,8 @@ pub fn apply(
         .collect();
 
     career.merchant_stock = tables.merchant.ids.clone();
+    career.merchant_kinds = tables.merchant.stock_type;
+    career.merchant_rank = tables.merchant.specialisation as i32;
     career.entries = roster_from_rows(&tables.tournament.rows);
     // A field whose first company is 0 stays empty, so the next tournament
     // asks for a new one.
@@ -567,6 +567,9 @@ mod tests {
         };
         career.company.stock = vec![5];
         career.merchant_stock = vec![6];
+        // A weapons merchant of rank 3 (option 5) keeps both words.
+        career.merchant_kinds = 0xc000;
+        career.merchant_rank = 3;
         career.log.append_words(1, [2, 3, 4, 5]);
         career.matches_today = 4;
         let tables = from_live(&career, &staff, &arsenal, &[300], None);
@@ -588,6 +591,10 @@ mod tests {
         assert_eq!(target_career.company.stock, vec![5]);
         assert_eq!(target_career.company.emblem, career.company.emblem);
         assert_eq!(target_career.merchant_stock, vec![6]);
+        assert_eq!(tables.merchant.stock_type, 0xc000);
+        assert_eq!(tables.merchant.specialisation, 3);
+        assert_eq!(target_career.merchant_kinds, 0xc000);
+        assert_eq!(target_career.merchant_rank, 3);
         assert_eq!(target_career.matches_today, 4);
         assert_eq!(target_career.log, career.log);
         assert_eq!(target_career.entries, career.entries);

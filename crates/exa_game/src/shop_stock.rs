@@ -6,14 +6,19 @@
 //! copies themselves and the variant seed. This module supplies that world
 //! from the game's `objdb.rdb`, parsed once on the first shop click and kept
 //! in [`LiveShopStock`], so a shelf's first stock is the object database's
-//! own items.
+//! own items. The kinds word is the table's flags word, as the original's
+//! stock update reads it from the table entry (the databases' writer stores
+//! the OR of the record's section tags there).
 //!
 //! An item copy is the original's local instance: a new id with the
 //! instance bits set and the source record remembered. The original also
-//! rolls the copy's condition and variant into a new item body; Exarust has
-//! no live item-body database yet, so the copy keeps its id and source only
-//! and the variant draw's step is applied to the seed without a body to
-//! write. That is the one approximation here.
+//! rolls the copy's condition and variant into a new item body from the
+//! engine's shared random seed; Exarust has no live item-body database yet,
+//! so the copy keeps its id and source only and steps the seed once (the
+//! apparel copy's one quality draw; the weapon copy's draw count is a
+//! guess). The instance ids count up from one under the instance bits, a
+//! guess for the original's item-body allocator. These are the
+//! approximations here.
 //!
 //! Evidence: the trade unit's stock update and the hub's first-stock call
 //! (`context/re/arena-hub.md`); the record's flags and shop fields are
@@ -23,7 +28,7 @@ use std::collections::HashMap;
 
 use bevy::prelude::Resource;
 use exa_formats::rdb::Database;
-use exa_formats::trade_record::{TradeRecord, section_flags};
+use exa_formats::trade_record::TradeRecord;
 
 use crate::hub_windows::HubItemNames;
 use crate::trade::{INSTANCE, ShopEntry, ShopWorld, step};
@@ -38,6 +43,17 @@ pub struct LiveShopStock {
 }
 
 impl LiveShopStock {
+    /// A stock world over entries already read (in id order), marked
+    /// loaded so the game's database is not read over them.
+    #[must_use]
+    pub fn from_entries(entries: Vec<ShopEntry>) -> Self {
+        Self {
+            entries,
+            loaded: true,
+            ..Self::default()
+        }
+    }
+
     /// Whether the object database was read (even if it did not parse, so a
     /// missing file is not retried every frame).
     #[must_use]
@@ -57,8 +73,9 @@ impl LiveShopStock {
         self.entries.is_empty()
     }
 
-    /// Read every record of an object database into shop entries. The
-    /// records stay in the database's order (id order).
+    /// Read every record of an object database into shop entries: its id,
+    /// the table's flags word (the kinds the stock update tests) and its
+    /// shop fields. The records stay in the table's order (id order).
     pub fn load_from_database(&mut self, database: &Database<'_>) {
         self.entries.clear();
         self.parents.clear();
@@ -67,7 +84,7 @@ impl LiveShopStock {
             let payload = database.payload(record);
             self.entries.push(ShopEntry {
                 id: record.id,
-                flags: section_flags(payload),
+                flags: record.flags,
                 record: TradeRecord::parse(payload).ok(),
             });
         }
@@ -211,10 +228,10 @@ mod tests {
         assert_eq!(stock.parent_of(weapon), Some(20));
     }
 
-    /// A shelf of the two records fills, keeps only listed items and names
-    /// its instances after their sources.
+    /// A shelf of the two records fills with copies of them, each copy
+    /// remembering its source.
     #[test]
-    fn a_first_stock_takes_the_records_and_names_its_copies() {
+    fn a_first_stock_takes_the_records_as_copies() {
         let mut stock = world();
         let mut shelf = Vec::new();
         let report = crate::trade::first_stock(&mut shelf, [1, 2], &mut stock);
@@ -228,8 +245,8 @@ mod tests {
         assert!(stock.len() == 2);
     }
 
-    /// The shop entries read the payload's tags as the kinds word and keep
-    /// the record's shop fields.
+    /// The shop entries take the table's flags word as the kinds word and
+    /// keep the record's shop fields.
     #[test]
     fn a_database_load_takes_the_flags_and_shop_fields() {
         // A model section (0x00100000) with a name, flags, rarity 40 and
@@ -250,7 +267,9 @@ mod tests {
         file.extend_from_slice(&exa_formats::objdb::MAGIC.to_le_bytes());
         file.extend_from_slice(&16u32.to_le_bytes());
         file.extend_from_slice(&7u32.to_le_bytes());
-        file.extend_from_slice(&0u32.to_le_bytes());
+        // The table's flags word: a weapon section (0x4000) the payload
+        // does not hold, so the kinds come from the table, not the payload.
+        file.extend_from_slice(&0x4000u32.to_le_bytes());
         file.extend_from_slice(&0u32.to_le_bytes());
         file.extend_from_slice(&(payload.len() as u32).to_le_bytes());
         file.extend_from_slice(&payload);
@@ -261,7 +280,7 @@ mod tests {
         assert_eq!(stock.len(), 1);
         let entry = stock.entries()[0];
         assert_eq!(entry.id, 7);
-        assert_eq!(entry.flags, 0x0010_0000 | 0x1000_0000);
+        assert_eq!(entry.flags, 0x4000);
         assert_eq!(entry.record.unwrap().model.unwrap().rarity, 40);
     }
 }
