@@ -36,6 +36,9 @@ fn item(id: u32, occupancy: u64) -> Item {
         armour_type: 0,
         container: None,
         random_table: None,
+        has_body: false,
+        has_weapon: false,
+        has_shield: false,
     }
 }
 
