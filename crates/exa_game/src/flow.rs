@@ -3099,9 +3099,9 @@ pub fn exit_nudge(player: Vec3, trigger: ExitTrigger) -> Option<ExitNudge> {
     let axis = if clearance_z < clearance_x { 2 } else { 0 };
     let value = local[axis];
     let push = (trigger.extent[axis] - value) + EXIT_MARGIN;
-    // The original takes the negative branch for a zero offset too, and an
-    // unordered (NaN) offset takes the positive branch.
-    let distance = if value <= 0.0 { -push } else { push };
+    // Only an ordered, strictly positive offset takes the positive branch:
+    // a zero or unordered (NaN) offset takes the negated one.
+    let distance = if value > 0.0 { push } else { -push };
     let row = Vec3::from_array(trigger.rotation[axis]);
     Some(ExitNudge {
         position: player + row * distance,
