@@ -3449,16 +3449,15 @@ fn run_transition(
 /// Runs the commands the main menu handed over. The menu's own page changes
 /// and the resume already happened in [`crate::menu_screen`]; the session,
 /// restart and leave work below turns into the same [`Step`]s the flow's
-/// methods return and is applied by [`apply_steps`]. The character screen,
-/// the creator, the manual and the settings form are not wired yet.
+/// methods return and is applied by [`apply_steps`]. The creator's rows
+/// belong to [`crate::creator_screen`]; the saves' character screen (the
+/// CONTINUE rows) and the manual are not wired yet.
 fn apply_menu_choices(
     mut choices: MessageReader<MenuChoice>,
     mut flow: ResMut<Flow>,
     mut queued: ResMut<FlowSteps>,
     arena_match: Option<Res<crate::arena_match::ArenaMatch>>,
-    ticks: Option<Res<exa_physics::body::BodyTicks>>,
 ) {
-    let now = ticks.as_ref().map_or(0, |ticks| ticks.millis() as u32);
     for MenuChoice(command) in choices.read() {
         let steps = match command {
             MenuCommand::Resume => {
@@ -3469,22 +3468,15 @@ fn apply_menu_choices(
                     vec![Step::Controls(true)]
                 }
             }
-            MenuCommand::NewPractice => {
-                let ladder = flow.practice.ladder;
-                let (standing, viewport) = (flow.stand_height, flow.viewport);
-                let start = flow.start_practice(ladder, standing, viewport, now);
-                flow.begin_session(start)
-            }
-            MenuCommand::Practice { expert } => {
-                let ladder = if *expert {
-                    Ladder::Expert
-                } else {
-                    Ladder::Novice
-                };
-                let (standing, viewport) = (flow.stand_height, flow.viewport);
-                let start = flow.start_practice(ladder, standing, viewport, now);
-                flow.begin_session(start)
-            }
+            // The creator opens for these ([`crate::creator_screen`]): the
+            // practice and versus characters and the arena's new career at
+            // the free creator, the story's BEGIN at the background picker.
+            // Its commit starts the session.
+            MenuCommand::NewPractice
+            | MenuCommand::Practice { .. }
+            | MenuCommand::BeginStory
+            | MenuCommand::NewCareer
+            | MenuCommand::Versus => Vec::new(),
             MenuCommand::ExitArena | MenuCommand::ExitToTitle => flow.quit_to_menu(),
             MenuCommand::QuitStory => flow.story_exit(),
             MenuCommand::FinishMatch { forfeit } => {
@@ -3499,15 +3491,6 @@ fn apply_menu_choices(
                     flow.quit_to_menu()
                 }
             }
-            MenuCommand::BeginStory => {
-                // Exarust's story start has no background form: the sandbox
-                // player is the unknown background's, and its body height is
-                // the average the flow's spawn arithmetic expects (a guess
-                // until the creator supplies the measured body).
-                let viewport = flow.viewport;
-                let steps = flow.start_story(Background::Unknown, 1.0, viewport, now);
-                flow.begin_session(steps)
-            }
             MenuCommand::CharacterScreen(mode) => {
                 // The saves' character screen needs a loaded save, which the
                 // running game does not have yet.
@@ -3515,10 +3498,7 @@ fn apply_menu_choices(
                 Vec::new()
             }
             MenuCommand::None | MenuCommand::ShowPage(_) | MenuCommand::Quit => Vec::new(),
-            MenuCommand::NewCareer
-            | MenuCommand::Versus
-            | MenuCommand::OpenManual
-            | MenuCommand::OpenSettings => {
+            MenuCommand::OpenManual | MenuCommand::OpenSettings => {
                 warn!("main menu command {command:?} is not wired");
                 Vec::new()
             }

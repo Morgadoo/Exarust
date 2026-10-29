@@ -13,7 +13,9 @@ decoded (`loadout::CONTROLS`); the game's bitmap font
 frame-rate readout (`fps`), the loading screen (`loading`, whose camera
 draws the whole interface over the game's view, premultiplied), the
 character creator's labels and page captions (`creation`; the game crate
-owns the rules and places), the
+owns the rules and places) and its three control-record tables with
+their layout and the story backgrounds' names and descriptions
+(`creation_forms`), the
 in-game world cursor from `cursors.rfi` (`cursor`; the game crate picks
 its shape), the window's own pointer (`system_cursor`: the original's twelve-slot
 pointer table and show rule, and the menu cursor from `menucursor.rfi`
