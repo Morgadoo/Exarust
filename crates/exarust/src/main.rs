@@ -39,6 +39,8 @@
 //!          --outfit a,b,c             apparel for character/play (Characters.rpk entries), over the underwear
 //!          --weapon <name>            weapon in the right hand (Objects.rpk entry)
 //!          --opponent                 an armed duellist in play mode; practice and arena fights start in combat mode (Tab toggles it, left click attacks)
+//!          --original-spawn           living bodies spawn in the original's order (key pick, pelvis on the frame,
+//!                                     leg snap); their pelvis height is logged for 120 ticks at debug level
 //!          --still-opponent           the duellist stands its ground: it faces the player in its stance but neither walks nor strikes
 //!          --arena-match <id>         in an arena, lay the match out as the original's template <id> does (1 duel, 2 doubles,
 //!                                     3 skirmish, 4 fray, 5 reserve, 6 pugilism, 7 elimination, 8 challenger, 9 captain,
@@ -212,6 +214,9 @@ pub struct Options {
     pub opponent: bool,
     /// The opponent stands its ground (no steps, no strikes).
     pub still_opponent: bool,
+    /// Spawn living bodies in the original's order (key pick, pelvis on the
+    /// frame, leg snap) instead of the default clip-pose spawn.
+    pub original_spawn: bool,
     /// Lay an arena match out as the original's template of this id does.
     pub arena_match: Option<i32>,
     /// The arena match's rank, for the generated opponents' level.
@@ -603,6 +608,7 @@ fn main() -> AppExit {
                     })
                     .unwrap_or_default();
             }
+            "--original-spawn" => options.original_spawn = true,
             "--still-opponent" => {
                 options.opponent = true;
                 options.still_opponent = true;
@@ -952,6 +958,9 @@ fn main() -> AppExit {
     });
     if let Some(trace) = trace {
         app.insert_resource(trace);
+    }
+    if options.original_spawn {
+        app.insert_resource(exa_game::limp::OriginalSpawn);
     }
     if !options.debug_wounds.is_empty() {
         app.insert_resource(exa_character::blood::DebugWounds(
