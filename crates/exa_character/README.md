@@ -359,11 +359,11 @@ tested rules of their own.
   (`Equipped::shield_record`) for the arm's block factors. The shield's
   equip writes the holder's block factors: the record's parry factor,
   leak and cost with its own Mobility and Endure techniques and a full
-  arm (`exa_combat::damage::shield_guard`, kept on `ShieldHold`); the
+  arm (`exa_combat::damage::shield_guard`, kept on `exa_combat::block::ShieldHold`); the
   marker goes when the shield leaves or its grip is released
   (`drop_shield_holds`). The fighter's guard is not changed: the original
-  blocks only a blow that strikes the shield, and Exarust does not strike
-  shield bodies yet. A second weapon turns with the character's starting
+  blocks only a blow that strikes the shield's body, which
+  `exa_combat::block::strike_held` finds in the pair stage. A second weapon turns with the character's starting
   flip (the main hand's flag), as every held item does.
 - Each attached item carries what the equip refresh measures it by
   (weapon class, the record's start byte, the node's y extents and the

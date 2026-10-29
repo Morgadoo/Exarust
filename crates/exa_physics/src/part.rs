@@ -727,9 +727,10 @@ pub struct Contact {
     pub other: PartState,
     /// Both parts belong to the same character tree.
     pub same_tree: bool,
-    /// The hit lies on the striking side: the original's local z test. A
-    /// part whose character wields nothing (`class & 0x30 == 0`) or whose
-    /// parent is itself a weapon passes without the test.
+    /// The hit lies on the striking side ([`faces`]): the contact's local
+    /// y in the striking part's frame is not below 0. A part whose
+    /// character wields nothing (`class & 0x30 == 0`) or whose parent is
+    /// itself a weapon passes without the test.
     pub faces: bool,
     /// The striker's attack motion.
     pub own_motion: i32,
@@ -748,6 +749,15 @@ pub struct Contact {
     pub other_guarded: bool,
 }
 
+/// Whether a contact lies on the striking side of a striking part: its
+/// point's y in the part's frame (`local_y`) is not below 0, as an ordered
+/// compare (a NaN passes), or the striker's character wields nothing, or
+/// the part's parent is itself a striker (a chained weapon).
+#[allow(clippy::neg_cmp_op_on_partial_ord)] // the ordered compare keeps a NaN passing
+pub fn faces(local_y: f32, unarmed: bool, parent_strikes: bool) -> bool {
+    !(0.0 > local_y) || unarmed || parent_strikes
+}
+
 /// A contact the striking part accepts, and the attack state word it leaves.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Classified {
@@ -762,7 +772,8 @@ pub struct Classified {
 /// for a hit behind the striking side; a held weapon (`0x2`) is a block, a
 /// weapon body (`0x1`) a clash and a muscled limb (`0x2000`) a wound.
 /// A clash is refused when its once-a-swing bit is already set unless the
-/// struck character counters this very motion with its other weapon; a
+/// struck character parries, or counters this very motion with a weapon
+/// other than its primary; a
 /// wound is refused while a hit is pending, on an arm, or on a guarded
 /// body.
 pub fn classify(contact: &Contact) -> Option<Classified> {
@@ -782,9 +793,11 @@ pub fn classify(contact: &Contact) -> Option<Classified> {
         });
     }
     if contact.other.has(PartState::STRIKING) {
-        let countering = !contact.other_parrying
-            && contact.other_motion == contact.own_motion
-            && !contact.other_is_primary;
+        // A parrying struck character always takes the clash; otherwise
+        // only a counter of this very motion with another weapon than its
+        // primary passes the once-a-swing bit.
+        let countering = contact.other_parrying
+            || (contact.other_motion == contact.own_motion && !contact.other_is_primary);
         if !countering && contact.own_flags & 0x100 != 0 {
             return None;
         }
@@ -1265,10 +1278,22 @@ mod tests {
         assert_eq!(classify(&c).unwrap().kind, ContactKind::Clash);
         c.other_is_primary = true;
         assert_eq!(classify(&c), None);
-        // Parrying does not count as countering here.
-        c.other_is_primary = false;
+        // A parrying character takes the clash whatever the bit, even on
+        // its primary weapon.
         c.other_parrying = true;
-        assert_eq!(classify(&c), None);
+        assert_eq!(classify(&c).unwrap().flags, 0x100);
+        c.other_motion = -1;
+        assert_eq!(classify(&c).unwrap().kind, ContactKind::Clash);
+    }
+
+    #[test]
+    fn a_contact_behind_the_grip_faces_only_unarmed_or_chained() {
+        assert!(faces(0.0, false, false));
+        assert!(faces(12.5, false, false));
+        assert!(faces(f32::NAN, false, false));
+        assert!(!faces(-0.001, false, false));
+        assert!(faces(-3.0, true, false));
+        assert!(faces(-3.0, false, true));
     }
 
     #[test]

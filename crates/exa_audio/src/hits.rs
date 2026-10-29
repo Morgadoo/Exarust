@@ -58,8 +58,10 @@ pub(crate) fn hit_sounds(
         };
         env.play_set(&mut bank, weapon, hit.point, 1.0, 1.0, 0);
         // The struck part's material: its outer covering layer's class, or
-        // the flesh default.
-        if let Ok(fighter) = fighters.get(hit.target)
+        // the flesh default. A blow on a held shield or weapon rings the
+        // weapon only (the item's own material set is not played yet).
+        if hit.struck == exa_combat::Struck::Limb
+            && let Ok(fighter) = fighters.get(hit.target)
             && let Some(armour) = hit.bone.checked_sub(1).and_then(|i| fighter.armour.get(i))
             && let Some(sound) = part_hit_sound(armour, false, false)
             && let Some(set) = hit_set(sound)

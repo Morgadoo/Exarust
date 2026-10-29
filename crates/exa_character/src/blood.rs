@@ -1179,6 +1179,7 @@ mod tests {
         app.world_mut().write_message(exa_combat::Hit {
             attacker: b.root,
             striker: blade,
+            struck: exa_combat::Struck::Limb,
             target: a.root,
             bone: 9,
             point: Vec3::ZERO,
@@ -1474,6 +1475,7 @@ mod tests {
             app.world_mut().write_message(exa_combat::Hit {
                 attacker: Entity::PLACEHOLDER,
                 striker,
+                struck: exa_combat::Struck::Limb,
                 target: struck,
                 bone: 9,
                 point: Vec3::ZERO,

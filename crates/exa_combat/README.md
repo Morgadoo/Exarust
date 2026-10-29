@@ -85,10 +85,33 @@ parry deals nothing and sags the parrier (`parried`), a shield takes it on
 its arm's stamina and leaks yellow (`block`, the block path with its
 Synchrony, Persist and Counter rules). A shield's own equip gives its
 holder the guard's factors from the shield's record and its techniques,
-with a full arm (`damage::shield_guard`); `exa_character::offhand` keeps
-them beside the shield (`ShieldHold`) and does not raise the guard, since
-only a blow on the shield itself is blocked and Exarust does not strike
-shield bodies yet. The parry factor waits for the shield parry. Rules and
+with a full arm (`damage::shield_guard`), kept on the holder's
+`block::ShieldHold` (the body tick refills its arm, `block::refill_hold`);
+the fighter's guard is not raised, since only a blow on the shield itself
+is blocked. The parry factor waits for the shield parry.
+
+Held items are struck as bodies (`block`). While a striker's window is
+open its weapon body carries the window, strike-chain (0x10000) and mark
+bits (`impact::sync_held_striking`, written only when the window opens or
+shuts), so its pair contacts with hittable bodies take the pair stage's
+hit event instead of the impact path. `block::strike_held` classifies each
+side of each hit event as the original's striking part does
+(`part::classify`, `part::faces`): a held shield is a block (refused once
+the swing's 0x200 bit is set), a held weapon a clash (once a swing via
+0x100, set at once, unless the struck holder parries or counters the
+motion with a weapon other than its primary). The last accepted contact
+of each attacker in a tick becomes its `Hit` with `Struck::Shield` or
+`Struck::Weapon`, waiting as `Attacking::held_pending` until the damage
+routine deals it; a block on a striker under the large size keeps the
+sweep off the holder (its window shuts there). The damage routine then
+blocks with the holder's `ShieldHold` (parrying with it while the holder
+parries; `Holding::countering` when it counters this motion), writes the
+spent arm back, recoils the striker and stamps the shield body's sound
+clock with the first shield ring's draw (now + 300 − draw); a clash takes
+`parry::clash_branch` with the struck weapon's primary flag. Limbs stay
+the blade sweep's (`Struck::Limb`), which never wounds the hand holding a
+shield (the classifier's guard). Blocks and clashes are logged at info
+("a block", "blow on …'s shield"), each classified contact at debug. Rules and
 numbers: [`docs/formats/OTHER.md`](../../docs/formats/OTHER.md), Damage.
 
 The hit reaction then runs the striker's side (`SwingState::after_wound`):
@@ -175,7 +198,9 @@ ancestors, and interrupts or stalls the owner's swing by the same
 `round(5√impact)` on the swing (`SwingState::strike_strength`) with a
 zero stall that ends at the tick clock. The
 contact classifier (`part::classify`) reads the striker's state for the
-kind when the other side is itself striking; the message carries it.
+kind when the other side is itself striking; the message carries it. A
+weapon whose window is open no longer takes this branch against a held
+item: that pair is a hit event (`block`).
 A hard overhead by a big attacker past 0.6 of its clip, over impact 60,
 emits a `CameraHit`; the game's chase camera measures it against the eye
 (under 18 m) and takes the original's `(2000 − distance)·0.001` vertical

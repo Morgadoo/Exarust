@@ -41,6 +41,9 @@
 //!          --opponent                 an armed duellist in play mode; practice and arena fights start in combat mode (Tab toggles it, left click attacks)
 //!          --original-spawn           living bodies spawn in the original's order (key pick, pelvis on the frame,
 //!                                     leg snap); their pelvis height is logged for 120 ticks at debug level
+//!          --opponent-shield <m|any>  the duellist carries this shield (Objects.rpk model, `any`: the first shield item)
+//!                                     on its off arm; a blade that meets it is blocked (logged "a block" at info)
+//!          --shield <m|any>           play mode: the player carries this shield on its off arm (no torch then)
 //!          --still-opponent           the duellist stands its ground: it faces the player in its stance but neither walks nor strikes
 //!          --arena-match <id>         in an arena, lay the match out as the original's template <id> does (1 duel, 2 doubles,
 //!                                     3 skirmish, 4 fray, 5 reserve, 6 pugilism, 7 elimination, 8 challenger, 9 captain,
@@ -214,6 +217,10 @@ pub struct Options {
     pub opponent: bool,
     /// The opponent stands its ground (no steps, no strikes).
     pub still_opponent: bool,
+    /// A shield on the duellist's off arm (an object model, or `any`).
+    pub opponent_shield: Option<String>,
+    /// A shield on the player's off arm (an object model, or `any`).
+    pub shield: Option<String>,
     /// Spawn living bodies in the original's order (key pick, pelvis on the
     /// frame, leg snap) instead of the default clip-pose spawn.
     pub original_spawn: bool,
@@ -585,6 +592,11 @@ fn main() -> AppExit {
             "--autowalk" => options.autowalk = true,
             "--weapon" => options.weapon = args.next(),
             "--opponent" => options.opponent = true,
+            "--opponent-shield" => {
+                options.opponent = true;
+                options.opponent_shield = args.next();
+            }
+            "--shield" => options.shield = args.next(),
             "--arena-match" => {
                 options.opponent = true;
                 options.arena_match = args.next().and_then(|v| v.parse().ok());
