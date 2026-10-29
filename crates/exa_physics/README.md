@@ -317,15 +317,21 @@ at most 2 cm), leaving its follow out of the carry. In each solver
 iteration the support pins (`src/body_pins.rs`) pull the two thorax pins
 once and the pelvis pin twice horizontally toward the frame's targets, clamped near
 the feet centre. Each foot's ground is its own: the controller's floor
-does not raise the lift (`src/body_lift.rs`). The feet routine's two other modes are
-tested rules (`feet_mode`): a flat floor (every ground 0, the pelvis aimed
-10 cm under its standing height, `flat_floor_leg`) and a hovering race's
-single probe under the pelvis, 5 cm higher after each miss (`HoverProbe`).
-A down body's ground probe in the body tick is a tested rule too
-(`down_probe_origin`, `down_probe_ground`): one 10 cm sphere cast 2000 cm
-straight down from the pelvis plus its zone's origin (zero in Exarust's one
-world frame); a hit is the ground and the previous ground, a miss keeps
-both. The samplers' heights (`body::pose_heights`: the stand height over
+does not raise the lift (`src/body_lift.rs`). The feet routine's two other modes run
+in `measure_balance` (`feet_mode`, kept as `Drive::feet_mode`): on a flat floor
+(the state word's splay bit 0x1000, which the original's lying spawn sets and
+Exarust's spawn does not yet) every leg's ground is 0, its anchor the sole plus
+1 cm, its state 0x4a (`flat_floor_leg`) and the lift aims 10 cm under its
+standing target; a hovering race (the race factors' `hovers`, from the race
+record's hover flag: the wraith) casts one 20 cm sphere 2000 cm down from
+20 cm over its pelvis, 5 cm higher after each miss (`HoverProbe`), its feet
+unprobed and its lift aimed over that ground. Both give full support, skip
+the per-foot probes, the stance's level and the imbalance decay, and call no
+leg IK (`bend_legs` returns). Before the feet a body off its feet (condition
+bit 0x200) casts one 10 cm sphere 2000 cm straight down from its pelvis
+(`down_probe_origin`, plus its zone's origin, zero in Exarust's one world
+frame; `down_probe_ground`): a hit is its ground, a miss keeps it, and a
+supported down body keeps that ground through the feet. The samplers' heights (`body::pose_heights`: the stand height over
 the lowest posed contact, the leg reach, the placement's and the living
 sampler's pelvis targets) and the placement routines' arithmetic
 (`body::placement`: the pose lowered by the pelvis's posed height and put
