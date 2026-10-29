@@ -3034,10 +3034,11 @@ pub fn underscore_skinned_child(model: &Model, parent: usize) -> Option<usize> {
     })
 }
 
-/// The first skinned mesh in `parent`'s subtree, searched in reverse child
-/// order then depth first, as the shell, scan and GUI effects find the mesh
-/// they draw on. `ModelNode::skin_bone` stands for the original's skin
-/// controller pointer.
+/// The first skinned mesh in `parent`'s subtree, as the shell, scan and GUI
+/// effects find the mesh they draw on. The original first looks for a
+/// skinned mesh among the children themselves, in reverse child order, and
+/// only then recurses, in forward child order and depth first.
+/// `ModelNode::skin_bone` stands for the original's skin controller pointer.
 pub fn skinned_mesh_under(model: &Model, parent: usize) -> Option<usize> {
     let children: Vec<usize> = (0..model.nodes.len())
         .filter(|&i| model.nodes[i].parent == Some(parent))
@@ -3046,6 +3047,8 @@ pub fn skinned_mesh_under(model: &Model, parent: usize) -> Option<usize> {
         if model.nodes[child].skin_bone.is_some() {
             return Some(child);
         }
+    }
+    for &child in &children {
         if let Some(found) = skinned_mesh_under(model, child) {
             return Some(found);
         }
@@ -3309,6 +3312,38 @@ mod tests {
         assert_eq!(skinned_mesh_under(&model, 0), Some(3));
         assert_eq!(skinned_mesh_under(&model, 1), Some(2));
         assert_eq!(skinned_mesh_under(&model, 2), None);
+    }
+
+    /// The effect lookup's two passes: the children themselves in reverse
+    /// order first, and only when none is skinned the subtrees, in forward
+    /// child order. A later child with a skinned descendant does not win
+    /// over an earlier child's.
+    #[test]
+    fn a_direct_skinned_child_wins_and_then_the_first_subtree() {
+        let mut root = material_node(&[]);
+        root.name = "12RUArm".into();
+        let mut first = material_node(&[]);
+        first.name = "plainA".into();
+        first.parent = Some(0);
+        let mut first_under = material_node(&[]);
+        first_under.name = "_a".into();
+        first_under.parent = Some(1);
+        first_under.skin_bone = Some(1);
+        let mut second = material_node(&[]);
+        second.name = "plainB".into();
+        second.parent = Some(0);
+        let mut second_under = material_node(&[]);
+        second_under.name = "_b".into();
+        second_under.parent = Some(3);
+        second_under.skin_bone = Some(2);
+        let model = Model {
+            nodes: vec![root, first, first_under, second, second_under],
+        };
+        assert_eq!(skinned_mesh_under(&model, 0), Some(2));
+        // A direct skinned child is taken before any subtree, reverse first.
+        let mut model = model;
+        model.nodes[3].skin_bone = Some(3);
+        assert_eq!(skinned_mesh_under(&model, 0), Some(3));
     }
 
     fn record(class: u32, flags: u32, opacity: f32) -> Material {

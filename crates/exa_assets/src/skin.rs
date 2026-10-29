@@ -786,15 +786,18 @@ impl GroupStack {
         Ok(())
     }
 
-    /// Pushes an empty frame.
-    pub fn push_empty(&mut self) -> Result<(), GroupStackOverflow> {
-        self.push(Vec::new())
+    /// Pushes an empty frame. The original's push-with-no-groups does not
+    /// test the limit: a seventeenth empty frame is accepted (and leaves
+    /// the count past [`GROUP_STACK_LIMIT`], so the next push with groups
+    /// is refused).
+    pub fn push_empty(&mut self) {
+        self.frames.push(GroupFrame::default());
     }
 
-    /// Clears the frame on top without popping it: its
-    /// joint list is freed, the depth stays.
-    pub fn clear_top(&mut self) {
-        if let Some(frame) = self.frames.last_mut() {
+    /// Clears every frame's joint list without popping any: the depth
+    /// stays, as the original's per-frame cleanup does.
+    pub fn clear_frames(&mut self) {
+        for frame in &mut self.frames {
             frame.joints.clear();
         }
     }
@@ -1561,8 +1564,9 @@ mod tests {
         assert_eq!(plain[0].joint, Some(1));
     }
 
-    /// The group stack keeps sixteen frames; the seventeenth is refused and
-    /// a cleared top frame keeps its depth.
+    /// The group stack keeps sixteen group-bearing frames; the seventeenth
+    /// is refused. Empty frames do not test the limit, and the depth-only
+    /// clear empties every frame without popping one.
     #[test]
     fn the_group_stack_holds_sixteen_frames() {
         let mut stack = GroupStack::new();
@@ -1584,13 +1588,35 @@ mod tests {
                 .is_err()
         );
         assert_eq!(stack.len(), 16);
-        stack.clear_top();
-        assert_eq!(stack.top().unwrap().joints, Vec::<Joint>::new());
+        stack.clear_frames();
+        for frame in &stack.frames {
+            assert!(frame.joints.is_empty());
+        }
         assert_eq!(stack.len(), 16);
         stack.clear();
         assert!(stack.is_empty());
-        stack.push_empty().unwrap();
+        stack.push_empty();
         assert_eq!(stack.top().unwrap().joints.len(), 0);
+    }
+
+    /// An empty frame does not test the sixteen-frame limit: the original's
+    /// push-with-no-groups has no check, so the seventeenth is accepted and
+    /// a later push with groups then overflows.
+    #[test]
+    fn empty_frames_bypass_the_limit() {
+        let mut stack = GroupStack::new();
+        for _ in 0..=GROUP_STACK_LIMIT {
+            stack.push_empty();
+        }
+        assert_eq!(stack.len(), GROUP_STACK_LIMIT + 1);
+        assert!(
+            stack
+                .push(vec![Joint {
+                    bone: 0,
+                    pivot: Vec3::ZERO
+                }])
+                .is_err()
+        );
     }
 
     /// Compares with weights measured on the shipped body (run with
