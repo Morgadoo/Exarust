@@ -1,0 +1,4 @@
+- [x] Hand flags per the equip pass, with tests
+- [x] Shared attach helper on both spawn paths
+- [x] Real-data count over the shipped levels
+- [x] Docs (READMEs, PLAYER.md, formats/RFC.md)

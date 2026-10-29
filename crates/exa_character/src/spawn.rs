@@ -221,12 +221,16 @@ pub fn player_motion(mode: i32) -> i32 {
     if mode == 1 { 3 } else { 0x13 }
 }
 
-/// The record's hand flag that asks the held light to burn (read for a
-/// weapon-section item only).
-pub const HAND_LIT: u32 = 0x0200_0000;
-/// The record's hand flag that holds the weapon flipped (one flag for the
-/// character: the last weapon equipped sets it).
-pub const HAND_FLIPPED: u32 = 0x0100_0000;
+/// The record's hand flag that turns a weapon-section item to its flipped
+/// side: the equip pass sets the item body's flip byte and builds its
+/// weapon record from the side six bytes on (the same byte a torch's
+/// burning state uses). Read per item, for weapon-section items only.
+pub const HAND_FLIPPED: u32 = 0x0200_0000;
+/// The record's hand flag that sets the character's half-sword hold (the
+/// weapon handles heavier and less balanced, `exa_formats::weapon_record`):
+/// every weapon-section item the equip pass takes writes it, so the last
+/// one's flag wins.
+pub const HAND_HALF_SWORD: u32 = 0x0100_0000;
 
 /// How the attach pass hangs an item on the body.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -247,10 +251,16 @@ pub enum Attach {
 pub struct AttachPlan {
     pub hand: usize,
     pub kind: Attach,
-    /// The item's light burns: a weapon-section item whose hand has
-    /// [`HAND_LIT`] (the equip pass lights it; a shield or the off-hand
-    /// torch path never reads the flag).
-    pub lit: bool,
+    /// The item starts on its flipped side: a weapon-section item whose
+    /// hand has [`HAND_FLIPPED`] (a shield or the off-hand torch path never
+    /// reads the flag).
+    pub flipped: bool,
+}
+
+/// Whether the equip pass turns `item` to its flipped side: a
+/// weapon-section item whose hand has [`HAND_FLIPPED`].
+pub fn item_flipped(item: &Equipped) -> bool {
+    item.kind == EquipKind::Weapon && item.flags & HAND_FLIPPED != 0
 }
 
 /// The attach pass over the equip pass's result ([`equip_hands`]).
@@ -262,7 +272,6 @@ pub struct AttachPlan {
 /// when there is one, else the torch, else the second weapon. A shield in
 /// hand 0 with a weapon in hand 1 attaches the shield only.
 pub fn attach_plan(hands: &[Option<Equipped>; 2]) -> Vec<AttachPlan> {
-    let lit = |item: &Equipped| item.kind == EquipKind::Weapon && item.flags & HAND_LIT != 0;
     let mut out = Vec::new();
     if let Some(main) = &hands[0]
         && main.kind == EquipKind::Weapon
@@ -270,7 +279,7 @@ pub fn attach_plan(hands: &[Option<Equipped>; 2]) -> Vec<AttachPlan> {
         out.push(AttachPlan {
             hand: 0,
             kind: Attach::Weapon,
-            lit: lit(main),
+            flipped: item_flipped(main),
         });
     }
     let shield = (0..2).rev().find(|&h| {
@@ -288,21 +297,31 @@ pub fn attach_plan(hands: &[Option<Equipped>; 2]) -> Vec<AttachPlan> {
         out.push(AttachPlan {
             hand,
             kind,
-            lit: hands[hand].as_ref().is_some_and(lit),
+            flipped: hands[hand].as_ref().is_some_and(item_flipped),
         });
     }
     out
 }
 
-/// Whether the character holds its weapons flipped: the flag of the last
-/// weapon-section item the equip pass took (hand 1's over hand 0's).
+/// Whether the main hand's weapon starts on its flipped side (its own
+/// hand's [`HAND_FLIPPED`]); `None` without a main-hand weapon.
 pub fn holds_flipped(hands: &[Option<Equipped>; 2]) -> Option<bool> {
+    hands[0]
+        .as_ref()
+        .filter(|i| i.kind == EquipKind::Weapon)
+        .map(item_flipped)
+}
+
+/// The character's half-sword hold: the [`HAND_HALF_SWORD`] flag of the
+/// last weapon-section item the equip pass took (hand 1's over hand 0's).
+/// `None` when no weapon was taken (the pass leaves the hold as it was).
+pub fn half_sword(hands: &[Option<Equipped>; 2]) -> Option<bool> {
     hands
         .iter()
         .rev()
         .flatten()
         .find(|i| i.kind == EquipKind::Weapon)
-        .map(|i| i.flags & HAND_FLIPPED != 0)
+        .map(|i| i.flags & HAND_HALF_SWORD != 0)
 }
 
 /// The corpse's motion: the Defence stance 3.
@@ -674,8 +693,9 @@ mod tests {
     }
 
     /// The attach pass: the main hand's weapon, then one off-hand item (a
-    /// shield first, else the torch, else a second weapon); the lit flag
-    /// only on a weapon, the flipped flag from the last weapon.
+    /// shield first, else the torch, else a second weapon); each weapon's
+    /// own `0x2000000` flips it, the last weapon's `0x1000000` sets the
+    /// half-sword hold.
     #[test]
     fn the_attach_plan_takes_the_equipped_hands() {
         let mut record = CharacterRecord::default();
@@ -695,23 +715,40 @@ mod tests {
                 AttachPlan {
                     hand: 0,
                     kind: Attach::Weapon,
-                    lit: true,
+                    flipped: true,
                 },
-                // The torch path does not read the lit flag.
+                // The torch path does not read the flip flag.
                 AttachPlan {
                     hand: 1,
                     kind: Attach::Torch,
-                    lit: false,
+                    flipped: false,
                 },
             ]
         );
         assert_eq!(holds_flipped(&hands), Some(true));
-        // A second weapon: its own kind, and its flag decides the flip.
+        // Only the sword is a weapon: its 0x1000000 sets the hold.
+        assert_eq!(half_sword(&hands), Some(true));
+        // A second weapon: its own kind and its own flip; the last weapon
+        // (hand 1, without 0x1000000) decides the hold.
         let hands = equip_hands(&record, |_, _| Some(sword()));
-        assert_eq!(attach_plan(&hands)[1].kind, Attach::SecondWeapon);
+        assert_eq!(
+            attach_plan(&hands)[1],
+            AttachPlan {
+                hand: 1,
+                kind: Attach::SecondWeapon,
+                flipped: true,
+            }
+        );
+        assert_eq!(holds_flipped(&hands), Some(true));
+        assert_eq!(half_sword(&hands), Some(false));
+        record.hands[0] = ItemRef::new(1, 0x0100_0000);
+        let hands = equip_hands(&record, |hand, _| {
+            Some(if hand == 0 { sword() } else { torch() })
+        });
         assert_eq!(holds_flipped(&hands), Some(false));
+        assert_eq!(half_sword(&hands), Some(true));
         // A shield in hand 0 goes on the off arm and wins over hand 1's
-        // weapon; nothing hangs in the main hand.
+        // weapon; nothing hangs in the main hand, and no weapon is flipped.
         let shield = || entry("shield", None, true);
         let hands = equip_hands(&record, |hand, _| {
             Some(if hand == 0 { shield() } else { sword() })
@@ -721,11 +758,13 @@ mod tests {
             [AttachPlan {
                 hand: 0,
                 kind: Attach::Shield,
-                lit: false,
+                flipped: false,
             }]
         );
+        assert_eq!(holds_flipped(&hands), None);
         assert!(attach_plan(&[None, None]).is_empty());
         assert_eq!(holds_flipped(&[None, None]), None);
+        assert_eq!(half_sword(&[None, None]), None);
     }
 
     #[test]

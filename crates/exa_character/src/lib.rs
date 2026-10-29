@@ -157,11 +157,18 @@ impl Wielded {
     }
 }
 
-/// The character's first held weapon starts turned over: the record's hand
-/// flag asked for it ([`spawn::holds_flipped`]). The equip pass builds the
-/// grip at the flipped end of its flip animation.
+/// The character's first held weapon starts turned over: its record hand's
+/// flip flag asked for it ([`spawn::holds_flipped`]). The equip pass builds
+/// the grip at the flipped end of its flip animation.
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct HeldFlipped;
+
+/// The character holds its weapons half-sword: the last weapon its record's
+/// hands give carries the half-sword flag ([`spawn::half_sword`]). Its
+/// weapon records are built with the hold (heavier, less balanced, no
+/// two-hand factor).
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HalfSword;
 
 /// Right hand bone.
 pub const RIGHT_HAND: usize = 17;
@@ -1304,7 +1311,7 @@ fn equip_outfits(
             Entity,
             &Outfit,
             Option<&Wielded>,
-            Has<HeldFlipped>,
+            (Has<HeldFlipped>, Has<HalfSword>),
             Option<&mut exa_combat::Fighter>,
             Option<&mut held::Hands>,
             Option<&RaceWeaponry>,
@@ -1364,7 +1371,7 @@ fn equip_outfits(
         body,
         outfit,
         wielded,
-        flipped,
+        (flipped, half_sword),
         fighter,
         hands,
         race,
@@ -1492,9 +1499,12 @@ fn equip_outfits(
         let fights = fighter.is_some();
         // Its weapons and fists are held by its own size, scale and
         // encumbrance.
-        let holder = fighter
-            .as_ref()
-            .map_or(Holder::AVERAGE, |f| f.stats.holder());
+        let holder = Holder {
+            half_sword,
+            ..fighter
+                .as_ref()
+                .map_or(Holder::AVERAGE, |f| f.stats.holder())
+        };
         if let Some(mut f) = fighter {
             f.armour = exa_combat::damage::armour_layers(
                 f.natural.as_ref(),

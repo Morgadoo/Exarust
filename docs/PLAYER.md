@@ -1455,8 +1455,11 @@ held items change (by the character's), both giving the same grip
   shield item takes the shield builder's face pivots, and the off hand's
   second weapon takes the grip table's off-hand entry; both are attached
   by `exa_character::offhand` after the main hand's weapon, and the
-  record's flipped hand flag starts the main weapon turned over
-  (`HeldFlipped`).
+  main weapon's own flipped hand flag (`0x2000000`) starts it turned over
+  (`HeldFlipped`); the last weapon's `0x1000000` is the half-sword hold
+  (`HalfSword`), not a flip. The inventory's hand plans
+  (`exa_items::possession`, `doll`) still read `0x1000000` as the flip and
+  `0x2000000` as a lit light.
 
 ## Weapon sets and what a character carries
 

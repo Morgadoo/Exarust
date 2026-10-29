@@ -35,7 +35,6 @@
 
 use bevy::prelude::*;
 use exa_assets::{Game, GameData, ModelCache, ModelLoader, PackKind, SkinLook, model};
-use exa_character::held::{Hands, HeldItem};
 use exa_formats::characters::{CharacterRecord, ID_MASK};
 use exa_formats::objdb::Item;
 use exa_formats::races::{Race, RaceBody};
@@ -498,7 +497,6 @@ pub fn spawn_scene_body(
             });
         }
     }
-    let mut hands = Hands::default();
     let equip = exa_character::spawn::equip_hands(&record, |hand, r| {
         let item = look.hands.get(hand)?.as_ref()?;
         Some(exa_character::spawn::HandEntry {
@@ -509,58 +507,9 @@ pub fn spawn_scene_body(
             torch: item.torch,
         })
     });
-    if let Some(item) = &equip[0]
-        && item.kind == exa_character::spawn::EquipKind::Weapon
-        && let Some(weapon) = item.weapon
-    {
-        hands.main = Some(HeldItem::weapon(weapon.flags));
-    }
-    if let Some(item) = &equip[1] {
-        match item.kind {
-            exa_character::spawn::EquipKind::Shield => {
-                hands.shield = Some(exa_character::held::ShieldStyle::Plain);
-            }
-            exa_character::spawn::EquipKind::Weapon if hands.main.is_some() => {
-                if let Some(weapon) = item.weapon {
-                    hands.second = Some(HeldItem::weapon(weapon.flags));
-                }
-            }
-            _ => {}
-        }
-    }
-    // The record's hand flag that holds the last weapon flipped: the equip
-    // pass builds the grip at the far end of its flip animation.
-    if exa_character::spawn::holds_flipped(&equip).unwrap_or(false) {
-        commands
-            .entity(model_entity)
-            .insert(exa_character::HeldFlipped);
-    }
-    // The off hand's item: a shield from either hand (hand 1's wins), else
-    // hand 1's torch (the light path), else a second weapon.
-    if let Some(plan) = exa_character::spawn::attach_plan(&equip)
-        .into_iter()
-        .find(|p| p.kind != exa_character::spawn::Attach::Weapon)
-        && let Some(item) = equip[plan.hand].as_ref()
-    {
-        let kind = match plan.kind {
-            exa_character::spawn::Attach::Shield => exa_character::offhand::OffKind::Shield,
-            exa_character::spawn::Attach::SecondWeapon => exa_character::offhand::OffKind::Weapon,
-            _ => exa_character::offhand::OffKind::Weapon,
-        };
-        if plan.kind != exa_character::spawn::Attach::Torch {
-            commands
-                .entity(model_entity)
-                .insert(exa_character::offhand::OffHeld {
-                    model: item.model.clone(),
-                    weapon: item.weapon,
-                    shield: item.shield_record,
-                    // The flip is the character's, set from the main hand's
-                    // item: every held item turns with it.
-                    flip: exa_character::spawn::holds_flipped(&equip).unwrap_or(false),
-                    kind,
-                });
-        }
-    }
+    // The equip and attach passes: the moveset's hands, the main weapon's
+    // flip, the half-sword hold and the off hand's shield or second weapon.
+    let hands = exa_character::offhand::insert_equipped(&mut commands.entity(model_entity), &equip);
     let mut fighter = exa_combat::Fighter::of_stats(race, stats).with_perks(record.perks());
     // The armour pass's special kinds, for the arena's generated fighters
     // as for the level's: kind 2 grants the second wind, 3/4/6 register
