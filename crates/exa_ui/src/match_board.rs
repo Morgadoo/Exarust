@@ -2442,6 +2442,15 @@ pub enum BoardPaint {
         value: CellValue,
         disabled: bool,
     },
+    /// A coin cell's drawing: the dash at its offset, or the coin icons with
+    /// their denomination counts. Follows the cell it belongs to.
+    Coin {
+        slot: TableSlot,
+        row: usize,
+        column: usize,
+        rect: Rect,
+        draw: CoinDraw,
+    },
     /// A label; its rectangle is absent when the form template places it
     /// and that placement is not modelled.
     Label {
@@ -2483,19 +2492,33 @@ fn paint_table_rows(
         let mut x = table.rect.x;
         for (index, column) in table.columns.iter().enumerate() {
             let value = values.get(index).cloned().unwrap_or(CellValue::Empty);
+            let rect = Rect {
+                x,
+                y: table.rect.y + row as i32 * ROW_HEIGHT,
+                w: column.width,
+                h: ROW_HEIGHT,
+            };
+            let coin = match &value {
+                CellValue::Coin(packed) => Some(Board::coin_draw(*packed, x)),
+                _ => None,
+            };
             paint.push(BoardPaint::Cell {
                 slot: table.slot,
                 row,
                 column: index,
-                rect: Rect {
-                    x,
-                    y: table.rect.y + row as i32 * ROW_HEIGHT,
-                    w: column.width,
-                    h: ROW_HEIGHT,
-                },
+                rect,
                 value,
                 disabled,
             });
+            if let Some(draw) = coin {
+                paint.push(BoardPaint::Coin {
+                    slot: table.slot,
+                    row,
+                    column: index,
+                    rect,
+                    draw,
+                });
+            }
             x += column.width;
         }
     }
@@ -3446,6 +3469,66 @@ mod tests {
         assert_eq!(cells[3], (0, 3, 340));
         assert_eq!(cells[4], (0, 4, 454));
         assert_eq!(cells[5], (1, 0, 0));
+    }
+
+    #[test]
+    fn the_coin_cells_carry_their_draw_decision() {
+        let mut board = board();
+        board.events[0] = MatchRecord {
+            name: "Duel".to_string(),
+            fee: 0x0002_0304,
+            prize: 0,
+            ..MatchRecord::default()
+        };
+        assert!(board.switch_tab(BoardTab::Events).is_some());
+        let coins: Vec<(usize, usize, CoinDraw)> = board
+            .paint()
+            .iter()
+            .filter_map(|item| match item {
+                BoardPaint::Coin {
+                    slot: TableSlot::Events,
+                    row,
+                    column,
+                    draw,
+                    ..
+                } => Some((*row, *column, *draw)),
+                _ => None,
+            })
+            .collect();
+        // Six rows, an entry and a prize cell each.
+        assert_eq!(coins.len(), 12);
+        // Row 0's entry sits at the fourth column's left edge; its zero
+        // prize is the dash four pixels into the fifth.
+        assert_eq!(
+            coins[0],
+            (
+                0,
+                3,
+                CoinDraw::Coins {
+                    x: 340,
+                    copper: 4,
+                    silver: 3,
+                    gold: 2,
+                }
+            )
+        );
+        assert_eq!(coins[1], (0, 4, CoinDraw::Dash { x: 458 }));
+        // Row 1's entry is zero too, so the dash sits four pixels in.
+        assert_eq!(coins[2], (1, 3, CoinDraw::Dash { x: 344 }));
+        // The coin item follows its cell.
+        let paint = board.paint();
+        let at = paint
+            .iter()
+            .position(|item| matches!(item, BoardPaint::Coin { row: 0, .. }))
+            .unwrap();
+        assert!(matches!(
+            paint.get(at - 1),
+            Some(BoardPaint::Cell {
+                row: 0,
+                column: 3,
+                ..
+            })
+        ));
     }
 
     #[test]

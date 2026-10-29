@@ -28,7 +28,8 @@ use exa_ui::gui_core::{FormHost, FormId, GuiRect, GuiTask, NO_CONTROL};
 use exa_ui::gui_draw::{GuiFrames, GuiTextures};
 use exa_ui::line_skin::shown_palette;
 use exa_ui::match_board::{
-    Board, BoardAction, BoardPaint, BoardTab, CellValue, Rect, TableLayout, TableSlot, Widget,
+    Board, BoardAction, BoardPaint, BoardTab, CellValue, CoinDraw, Rect, TableLayout, TableSlot,
+    Widget,
 };
 use exa_ui::skin::SkinPalette;
 
@@ -675,7 +676,10 @@ fn paint_board(board: &Board, bounds: GuiRect, look: &Look) -> gui_paint::Painte
             BoardPaint::Cell { rect, value, .. } => {
                 let text = match value {
                     CellValue::Text(text) => text,
-                    CellValue::Coin(coins) => coin_text(coins),
+                    // A coin column carries a draw callback instead of a
+                    // text value: the following Coin item draws its dash or
+                    // its coin counts.
+                    CellValue::Coin(_) => String::new(),
                     CellValue::Health(word) => {
                         format!("{:.0}%", f64::from(word) / 655.35)
                     }
@@ -683,6 +687,21 @@ fn paint_board(board: &Board, bounds: GuiRect, look: &Look) -> gui_paint::Painte
                 };
                 if !text.is_empty() {
                     paint_text(&mut painted, at(bounds, rect), &text, look);
+                }
+            }
+            BoardPaint::Coin { rect, draw, .. } => {
+                let (x, text) = match draw {
+                    CoinDraw::Dash { x } => (x, "-".to_string()),
+                    CoinDraw::Coins {
+                        x,
+                        copper,
+                        silver,
+                        gold,
+                    } => (x, coin_text_parts(gold, silver, copper)),
+                };
+                if !text.is_empty() {
+                    let cell = Rect { x, ..rect };
+                    paint_text(&mut painted, at(bounds, cell), &text, look);
                 }
             }
             BoardPaint::Label { rect, text, .. } => {
@@ -695,10 +714,10 @@ fn paint_board(board: &Board, bounds: GuiRect, look: &Look) -> gui_paint::Painte
     painted
 }
 
-/// A packed coin amount as the text a table cell can show: "g s c", leaving
-/// out the leading zeroes.
-fn coin_text(packed: u32) -> String {
-    let (copper, silver, gold) = exa_ui::match_board::coin_parts(packed);
+/// A coin amount's text as a table cell can show it: "g s c", leaving out
+/// the leading zeroes. The board's coin draw gives the counts; a zero cell
+/// is the dash and never reaches this.
+fn coin_text_parts(gold: u32, silver: u32, copper: u32) -> String {
     match (gold, silver, copper) {
         (0, 0, coins) => format!("{coins}c"),
         (0, silver, coins) => format!("{silver}s {coins}c"),
@@ -954,6 +973,17 @@ mod tests {
         assert_eq!(board.fighters[0].name, "Manager");
         assert!(!board.events[0].name.is_empty());
         assert_eq!(board.matches_played, 0);
+    }
+
+    #[test]
+    fn a_coin_draw_shows_its_counts_and_zero_is_the_dash() {
+        assert_eq!(coin_text_parts(0, 0, 4), "4c");
+        assert_eq!(coin_text_parts(0, 3, 4), "3s 4c");
+        assert_eq!(coin_text_parts(2, 3, 4), "2g 3s 4c");
+        // A zero amount is never formatted: the board's coin draw is the
+        // dash at its offset instead.
+        let zero = exa_ui::match_board::Board::coin_draw(0, 10);
+        assert_eq!(zero, exa_ui::match_board::CoinDraw::Dash { x: 14 });
     }
 
     #[test]
