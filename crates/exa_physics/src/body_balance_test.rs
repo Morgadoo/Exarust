@@ -612,6 +612,36 @@ fn down_the_query_starts_at_the_ankle_5_cm_wide() {
     }
 }
 
+/// Getting up before 0.8 of the clip, each leg in reach takes the clip's
+/// hip-to-contact length squared as its reach and keeps it after; past
+/// 0.8, or standing, the reach is left.
+#[test]
+fn a_get_up_gives_the_legs_the_clip_reach() {
+    let get_up = |progress: f32| Bearing {
+        off_balance: true,
+        getting_up: true,
+        progress,
+        ..Bearing::default()
+    };
+    let mut body = biped();
+    body.measure_balance(floor().as_slice());
+    assert!(body.legs().iter().all(|l| l.reach2.is_none()));
+    bearing(&mut body, get_up(0.9));
+    body.measure_balance(floor().as_slice());
+    assert!(body.legs().iter().all(|l| l.reach2.is_none()));
+    bearing(&mut body, get_up(0.5));
+    body.measure_balance(floor().as_slice());
+    for leg in body.legs() {
+        let clip = ((leg.anim_contact - leg.anim_hip) * 100.0).length_squared();
+        assert_eq!(leg.animated2, clip);
+        assert_eq!(leg.reach2, Some(clip));
+        assert_eq!(leg.lift, 0.0);
+    }
+    bearing(&mut body, Bearing::default());
+    body.measure_balance(floor().as_slice());
+    assert!(body.legs().iter().all(|l| l.reach2.is_some()));
+}
+
 /// At the gait bump's peak the first foot's sphere is 20 cm and its probe
 /// sits 36 cm further along the facing than the plain 5 cm offset, so a
 /// platform there is the ground. At a phase with no bump the same platform

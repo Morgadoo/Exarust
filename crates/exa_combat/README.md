@@ -128,7 +128,13 @@ follow-through by its size, the blow's impact and where on the weapon it
 struck; a guard (for a striker under 1.4) or a body that turns blows
 (`StateFlags::TURNS_BLOWS`, checked before a parry) recoils it
 (`SwingState::recoil_from`), and a clash or a block marks the swing's
-weapon and shield sounds once a swing (`strike_back`). Each contact's
+weapon and shield sounds once a swing (`strike_back`). The swing's first
+clash or block rings the striking weapon (`sounds::weapon_ring`): the haft
+class's shared set (`WH_HaftWoodA`, `WH_HaftMA`, `WH_HaftLA`) when the haft
+took it, else its own set, at volume × share and pitch × 1.2 (double), as an
+`impact::WeaponSounded`; its body's sound clock waits 200 ms less 80 a unit
+of the volume (`sounds::ring_clock`), and `pain::ClashFelt` rumbles the
+player's pad by half the volume when the player is either side. Each contact's
 striker is dealt right after its struck side, as the original's routine
 runs per contact. The blow sag rides the `Shove` to the struck body.
 
@@ -379,8 +385,11 @@ the camera jolts by its root past 1 and the pad rumbles by it
 (`striking_player_rumble`). The pain sounds are live: the damage pass
 writes `PainSounded` after the damage call on flesh (wound `L`, the
 unweighed yellow `Y`, the yellow left as the voice gate) and `exa_audio`
-plays them; the jolt and the rumble are tested, not called (no camera
-jolt or pad rumble reads them).
+plays them; the jolt and the rumble are live too: the damage pass writes
+`pain::BlowFelt` (the wound, the yellow, the striker's scale, speed and
+overhead swing, the blade's velocity in cm a tick as the jolt's direction)
+and `exa_game`'s `feel_blows` kicks the chase camera (`kick_random`) and
+raises the pad's rumble.
 
 A fall to death (`fall`) is kept on every fighter (`FallDeath`: its stage,
 the game-clock time it was lost, whether it has left the world) and

@@ -95,9 +95,12 @@ const RELAX_RISE: f32 = 0.015;
 /// A supported leg's: clamp(0.6 − 0.001·| |hip − foot contact|² − (2·r)² |,
 /// 0, 0.2) in cm², r the contact's distance from the lower leg's origin;
 /// rising 0.01 a tick.
-const LEG_RELAX_SPREAD: f32 = 0.001;
+const LEG_RELAX_SPREAD_DOUBLE: f64 = 0.001;
 const LEG_RELAX_CAP: f32 = 0.2;
-const LEG_RELAX_RISE: f32 = 0.01;
+const LEG_RELAX_CAP_DOUBLE: f64 = 0.2;
+const LEG_RELAX_RISE_DOUBLE: f64 = 0.01;
+/// The leg target's top, a double constant in the original.
+const RELAX_TOP_DOUBLE: f64 = 0.6;
 /// The leg's rest reach is this many times the contact's distance.
 const LEG_REACH: f32 = 2.0;
 
@@ -567,12 +570,37 @@ pub(super) fn relax(lambda: f32, target: f32, rise: f32) -> f32 {
     }
 }
 
-/// A supported leg's relaxation target, from the squared distance (cm²)
-/// between its hip and its foot contact and the contact's distance `r`
-/// (cm) from the lower leg's origin.
-pub(super) fn leg_relax_target(hip_to_contact2: f32, r: f32) -> f32 {
-    let reach2 = (LEG_REACH * r).powi(2);
-    (RELAX_TOP - LEG_RELAX_SPREAD * (hip_to_contact2 - reach2).abs()).clamp(0.0, LEG_RELAX_CAP)
+/// The lower leg's rest reach squared (cm²), the muscle set-up's: twice the
+/// contact's distance `r` (cm) from the lower leg's origin, squared.
+pub(super) fn rest_reach2(r: f32) -> f32 {
+    (LEG_REACH * r).powi(2)
+}
+
+/// A supported leg's relaxation target against the lower leg's reach
+/// squared `reach2` (cm²): 0.6 − 0.001·| hip–contact² − reach² |, the
+/// difference's magnitude in single precision and the rest in double;
+/// under 0 it is 0, over the double 0.2 the single 0.2 (a NaN passes both).
+pub(super) fn reach_relax_target(hip_to_contact2: f32, reach2: f32) -> f32 {
+    let gap = (hip_to_contact2 - reach2).abs();
+    let target = (RELAX_TOP_DOUBLE - f64::from(gap) * LEG_RELAX_SPREAD_DOUBLE) as f32;
+    if target < 0.0 {
+        0.0
+    } else if f64::from(target) > LEG_RELAX_CAP_DOUBLE {
+        LEG_RELAX_CAP
+    } else {
+        target
+    }
+}
+
+/// One tick of a leg's relaxation toward `target`: over the current value
+/// it rises by the double 0.01; otherwise it takes the target at once (a
+/// NaN target included, as the original's unordered compare falls through).
+pub(super) fn relax_leg(lambda: f32, target: f32) -> f32 {
+    if target > lambda {
+        (f64::from(lambda) + LEG_RELAX_RISE_DOUBLE) as f32
+    } else {
+        target
+    }
 }
 
 /// A link muscle's pull in one pass, in the original's centimetres: the gap
@@ -825,8 +853,10 @@ impl Ragdoll {
             bearing.head_looks,
             drive.head_pose_parent(),
         );
-        if drive.support > 0.0 {
-            relax_legs(parts);
+        // The feet routine's flat-floor and hovering modes skip the
+        // per-leg pass, so their legs keep the relaxation the sampler gave.
+        if drive.support > 0.0 && drive.feet_mode == super::FeetMode::Walking {
+            relax_legs(parts, legs);
         }
     }
 
@@ -903,9 +933,11 @@ fn sample_anchors(
 }
 
 /// A supported leg's relaxation, from how far its hip is from its foot
-/// contact against twice the contact's distance from the lower leg's
-/// origin; the thigh takes the lower leg's.
-fn relax_legs(parts: &mut [Part]) {
+/// contact against the lower leg's reach: twice the contact's distance
+/// from the lower leg's origin, until a get-up replaces it by the clip's
+/// own hip-to-contact length ([`super::Leg`]'s reach); the thigh takes the
+/// lower leg's.
+fn relax_legs(parts: &mut [Part], legs: &[super::Leg]) {
     for i in 0..parts.len() {
         let Some(contact) = parts[i].foot else {
             continue;
@@ -915,8 +947,13 @@ fn relax_legs(parts: &mut [Part]) {
         };
         let hip = Vec3::from(parts[j].transform().translation);
         let at = parts[i].transform().transform_point3(contact);
-        let target = leg_relax_target(((at - hip) * CM).length_squared(), contact.length() * CM);
-        let lambda = relax(parts[i].relax, target, LEG_RELAX_RISE);
+        let reach2 = legs
+            .iter()
+            .find(|l| l.shin == i)
+            .and_then(|l| l.reach2)
+            .unwrap_or_else(|| rest_reach2(contact.length() * CM));
+        let target = reach_relax_target(((at - hip) * CM).length_squared(), reach2);
+        let lambda = relax_leg(parts[i].relax, target);
         parts[i].relax = lambda;
         parts[j].relax = lambda;
     }

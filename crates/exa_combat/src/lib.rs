@@ -85,6 +85,9 @@ impl Plugin for CombatPlugin {
             .add_message::<Weakened>()
             .add_message::<DamageTaken>()
             .add_message::<pain::PainSounded>()
+            .add_message::<pain::BlowFelt>()
+            .add_message::<pain::ClashFelt>()
+            .add_message::<impact::WeaponSounded>()
             .add_message::<SecondWindFired>()
             .add_message::<block::ShieldRung>()
             .add_plugins((
@@ -356,6 +359,8 @@ const CONTACT_SHARE: f32 = 0.1;
 const PUSH_FROM: f32 = 0.5;
 const PUSH_PER_IMPACT: f32 = 10.0 * BODY_HZ / 100.0;
 const CM_PER_M: f32 = 100.0;
+/// The overhead attack's motion, whose blow a struck player feels at 0.4.
+const OVERHEAD_MOTION: usize = 0x0C;
 
 /// A fist meets a part with its knuckles, which lie inside the hand's box;
 /// its segment ends on the box's far face, so a contact there is measured
@@ -633,10 +638,16 @@ fn react_to_hits(
     mut shoves: MessageWriter<Shove>,
     mut sprays: MessageWriter<wounds::Spray>,
     mut weakened: MessageWriter<Weakened>,
-    (mut noticed, mut pains): (MessageWriter<DamageTaken>, MessageWriter<pain::PainSounded>),
-    (mut winds, mut rungs): (
+    (mut noticed, mut pains, mut felt): (
+        MessageWriter<DamageTaken>,
+        MessageWriter<pain::PainSounded>,
+        MessageWriter<pain::BlowFelt>,
+    ),
+    (mut winds, mut rungs, mut weapon_rings, mut clashes): (
         MessageWriter<SecondWindFired>,
         MessageWriter<block::ShieldRung>,
+        MessageWriter<impact::WeaponSounded>,
+        MessageWriter<pain::ClashFelt>,
     ),
     mut fighters: Query<(
         Entity,
@@ -675,6 +686,11 @@ fn react_to_hits(
             attack.held_pending = false;
         }
         let motion = attacks.get(hit.attacker).map_or(0, |a| a.motion.index());
+        // The striker's body scale, which a struck player's jolt reads (1
+        // for a striker that is not a fighter).
+        let striker_scale = fighters
+            .get(hit.attacker)
+            .map_or(1.0, |(_, a, ..)| a.stats.scale);
         // The struck side first, then (the original's routine per contact)
         // the striker's swing.
         let reaction = 'struck: {
@@ -928,6 +944,21 @@ fn react_to_hits(
                     fighter: hit.target,
                 });
             }
+            // The player's feedback, last in the routine's tail: the
+            // striker's scale and swing are read where it is a fighter.
+            let (scale, overhead) = (striker_scale, motion == OVERHEAD_MOTION);
+            felt.write(pain::BlowFelt {
+                target: hit.target,
+                attacker: hit.attacker,
+                wound: outcome.wound,
+                yellow: outcome.yellow_unweighed,
+                striker: pain::Striker {
+                    scale,
+                    speed: outcome.speed,
+                    overhead,
+                },
+                direction: hit.velocity * (CM_PER_M / BODY_HZ),
+            });
             if taken == Taken::Weakened {
                 answer_low(
                     hit.target,
@@ -1087,7 +1118,49 @@ fn react_to_hits(
                 slot: slots.get(hit.striker).map_or(Slot::First, |b| b.slot),
                 now_ms: now as i32,
             };
+            let rung_before = state.flags & swing::flags::WEAPON_RUNG != 0;
             let draw = strike_back(&mut state, &striker, hit, reaction, &mut roll);
+            // The swing's first clash or block rings the striking weapon
+            // (its haft class's set or its own sound), stamps its body's
+            // sound clock, and rumbles the player's pad when the player is
+            // either side.
+            if let (false, StrikerReaction::Clashed { blow, .. } | StrikerReaction::Blocked(blow)) =
+                (rung_before, reaction)
+            {
+                let ring = sounds::weapon_ring(
+                    hit.weapon.flags,
+                    blow.haft,
+                    hit.weapon.hit_sound_name(),
+                    blow.volume,
+                    blow.sound_share,
+                    blow.pitch,
+                );
+                if let Some((set, volume, pitch)) = ring {
+                    debug!(
+                        "{:?}'s weapon rings on its swing's first clash: {set} at {volume:.3}, \
+                         pitch {pitch:.3}",
+                        hit.attacker
+                    );
+                    weapon_rings.write(impact::WeaponSounded {
+                        target: hit.striker,
+                        point: hit.point,
+                        volume,
+                        pitch,
+                        set: Some(set.to_owned()),
+                        kind: None,
+                    });
+                }
+                if let Ok(mut weapon) = items.get_mut(hit.striker)
+                    && let Some(part) = weapon.parts.first_mut()
+                {
+                    part.sound_ready_ms = sounds::ring_clock(now as u32, blow.volume);
+                }
+                clashes.write(pain::ClashFelt {
+                    target: hit.target,
+                    attacker: hit.attacker,
+                    volume: blow.volume,
+                });
+            }
             if let (Some(spread), Struck::Shield { item }) = (draw, hit.struck) {
                 // The struck item's own material rings at the blow, once a
                 // swing.
@@ -1234,6 +1307,9 @@ mod tests {
             .add_message::<Weakened>()
             .add_message::<DamageTaken>()
             .add_message::<pain::PainSounded>()
+            .add_message::<pain::BlowFelt>()
+            .add_message::<pain::ClashFelt>()
+            .add_message::<impact::WeaponSounded>()
             .add_message::<SecondWindFired>()
             .add_message::<crate::block::ShieldRung>()
             .add_systems(Update, react_to_hits);
@@ -1553,6 +1629,15 @@ mod tests {
             assert_eq!(striker.has(swing::flags::RECOILED), recoils);
             assert!(striker.has(swing::flags::WEAPON_RUNG));
             assert_eq!(f.parry.counter_motion.is_none(), recoils);
+            // The swing's first clash rings the sword's own set at the
+            // blow's volume and 1.2 of its pitch, once.
+            let rings = app.world().resource::<Messages<impact::WeaponSounded>>();
+            let rung: Vec<_> = rings.iter_current_update_messages().collect();
+            assert_eq!(rung.len(), 1);
+            assert_eq!(rung[0].set.as_deref(), Some("WH_SwordA"));
+            assert_eq!(rung[0].target, blade);
+            let clashes = app.world().resource::<Messages<pain::ClashFelt>>();
+            assert_eq!(clashes.iter_current_update_messages().count(), 1);
         }
     }
 
@@ -2580,6 +2665,9 @@ mod tests {
             .add_message::<Weakened>()
             .add_message::<DamageTaken>()
             .add_message::<pain::PainSounded>()
+            .add_message::<pain::BlowFelt>()
+            .add_message::<pain::ClashFelt>()
+            .add_message::<impact::WeaponSounded>()
             .add_message::<SecondWindFired>()
             .add_message::<crate::block::ShieldRung>()
             .init_resource::<exa_physics::body::BodyTicks>()

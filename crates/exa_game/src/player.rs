@@ -497,6 +497,8 @@ impl Plugin for PlayerPlugin {
             .init_resource::<CameraKickRng>()
             .init_resource::<crate::player_controls::PlaySession>()
             .add_message::<exa_combat::AttackAskedHook>()
+            .add_message::<exa_combat::pain::BlowFelt>()
+            .add_message::<exa_combat::pain::ClashFelt>()
             .add_systems(
                 RunFixedMainLoop,
                 latch_attack_button.in_set(RunFixedMainLoopSystems::BeforeFixedMainLoop),
@@ -521,6 +523,7 @@ impl Plugin for PlayerPlugin {
                     cursor_ground,
                     player_combat,
                     camera_hits,
+                    feel_blows,
                     chase_camera,
                 )
                     .chain(),
@@ -1864,6 +1867,60 @@ fn camera_hits(
         };
         let mut draw = || rng.0.unit() as f32;
         camera.kick_random(Vec3::Y, Vec3::X, strength * 0.01, &mut draw);
+    }
+}
+
+/// The player's feedback to a blow dealt on flesh, as the damage routine's
+/// tail gives it: a struck player's camera jolts along the blow by the
+/// square root of its strength (`7Y + 7L`, a big striker's by its speed)
+/// when that passes 1, in cm, with the kick's random offset, and its pad
+/// rumbles by the strength; a striking player's pad rumbles by half the
+/// yellow it dealt. The kick's side axis is the world's x, as
+/// [`camera_hits`] takes it.
+fn feel_blows(
+    mut blows: MessageReader<exa_combat::pain::BlowFelt>,
+    mut clashes: MessageReader<exa_combat::pain::ClashFelt>,
+    players: Query<(), With<PlayerBody>>,
+    mut rng: ResMut<CameraKickRng>,
+    mut cameras: Query<&mut ChaseCamera>,
+    mut pad: Option<ResMut<crate::gamepad::PlayPad>>,
+) {
+    for blow in blows.read() {
+        if players.contains(blow.target)
+            && let Ok(mut camera) = cameras.single_mut()
+        {
+            let jolt = exa_combat::pain::struck_player_jolt(blow.wound, blow.yellow, &blow.striker);
+            if let Some(size) = jolt.camera {
+                let mut draw = || rng.0.unit() as f32;
+                camera.kick_random(blow.direction, Vec3::X, size * 0.01, &mut draw);
+            }
+            if let Some(pad) = pad.as_mut() {
+                crate::gamepad::rumble_hit(pad, jolt.rumble);
+            }
+            info!(
+                "player struck: jolt {:.3} (camera {}), rumble {:.3}",
+                jolt.rumble,
+                jolt.camera.map_or("none".into(), |c| format!("{c:.3} cm")),
+                jolt.rumble
+            );
+        } else if players.contains(blow.attacker) {
+            let rumble = exa_combat::pain::striking_player_rumble(blow.yellow);
+            if let Some(pad) = pad.as_mut() {
+                crate::gamepad::rumble_hit(pad, rumble);
+            }
+            debug!("player's blow: rumble {rumble:.3}");
+        }
+    }
+    // A swing's first clash or block rumbles the pad by half the blow's
+    // volume when the player struck or was struck.
+    for clash in clashes.read() {
+        if players.contains(clash.attacker) || players.contains(clash.target) {
+            let rumble = exa_combat::pain::clash_rumble(clash.volume);
+            if let Some(pad) = pad.as_mut() {
+                crate::gamepad::rumble_hit(pad, rumble);
+            }
+            debug!("player's clash: rumble {rumble:.3}");
+        }
     }
 }
 
@@ -3726,6 +3783,64 @@ mod tests {
         // The present offset decides: one ending drops out at once.
         cam.shake = Vec3::new(2e-5, 0.0, 0.0);
         assert_eq!(cam.shown(0.5).2, Vec3::ZERO);
+    }
+
+    /// A struck player's camera kicks by √(7Y + 7L) cm and its pad rumbles
+    /// by 7Y + 7L; a blow too light (strength 1 or under) rumbles without
+    /// a kick; a striking player's pad rumbles by half the yellow.
+    #[test]
+    fn blows_jolt_the_struck_player_and_rumble_the_striker() {
+        let mut app = App::new();
+        app.init_resource::<CameraKickRng>()
+            .init_resource::<crate::gamepad::PlayPad>()
+            .add_message::<exa_combat::pain::BlowFelt>()
+            .add_message::<exa_combat::pain::ClashFelt>()
+            .add_systems(Update, feel_blows);
+        let player = app.world_mut().spawn(PlayerBody::new(0.0)).id();
+        let other = app.world_mut().spawn_empty().id();
+        let camera = app.world_mut().spawn(ChaseCamera::behind(0.0)).id();
+        let blow = |target, attacker, wound: f32, yellow: f32| exa_combat::pain::BlowFelt {
+            target,
+            attacker,
+            wound,
+            yellow,
+            striker: exa_combat::pain::Striker {
+                scale: 1.0,
+                speed: 10.0,
+                overhead: false,
+            },
+            direction: Vec3::new(0.0, 0.0, 5.0),
+        };
+        // 7 × 0.2 + 7 × 0.3 = 3.5: a √3.5 cm kick and a full rumble.
+        app.world_mut().write_message(blow(player, other, 0.3, 0.2));
+        app.update();
+        let cam = app.world().get::<ChaseCamera>(camera).unwrap();
+        assert!((cam.shake.length() - 3.5f32.sqrt() * 0.01).abs() < 1e-6);
+        assert_eq!(cam.shake_before, -cam.shake);
+        let pad = app.world().resource::<crate::gamepad::PlayPad>();
+        assert_eq!(pad.rumble.first, 1.0);
+        // 7 × 0.1 = 0.7 kicks nothing.
+        let mut fresh = app.world_mut().get_mut::<ChaseCamera>(camera).unwrap();
+        *fresh = ChaseCamera::behind(0.0);
+        app.world_mut()
+            .resource_mut::<crate::gamepad::PlayPad>()
+            .rumble = crate::gamepad::Rumble::default();
+        app.world_mut().write_message(blow(player, other, 0.0, 0.1));
+        app.update();
+        assert_eq!(
+            app.world().get::<ChaseCamera>(camera).unwrap().shake,
+            Vec3::ZERO
+        );
+        let rumble = app.world().resource::<crate::gamepad::PlayPad>().rumble;
+        assert!((rumble.first - 0.7).abs() < 1e-6);
+        // The player strikes: half the yellow.
+        app.world_mut()
+            .resource_mut::<crate::gamepad::PlayPad>()
+            .rumble = crate::gamepad::Rumble::default();
+        app.world_mut().write_message(blow(other, player, 0.5, 0.4));
+        app.update();
+        let rumble = app.world().resource::<crate::gamepad::PlayPad>().rumble;
+        assert_eq!(rumble.first, 0.2);
     }
 
     #[test]

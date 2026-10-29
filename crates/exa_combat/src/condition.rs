@@ -243,7 +243,8 @@ impl StateFlags {
     /// instead of holding the clip's turns, and the feet routine stands
     /// every foot on a floor at 0 without probing. The original's lying
     /// spawn and its character viewers set it (assigned, the whole word);
-    /// nothing clears it. Exarust's spawn does not set it yet.
+    /// nothing clears it. In Exarust only the play flag `--flat-floor`
+    /// sets it, on the player.
     pub const SPLAY: u32 = 0x1000;
     /// Blows on it are turned: the striker recoils and nothing is dealt
     /// (what sets it was not traced).

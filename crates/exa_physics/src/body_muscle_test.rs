@@ -428,12 +428,34 @@ fn relaxation_rises_slowly_falls_at_once_and_ignores_fast_motion() {
     assert_eq!(relax(0.3, -2.0, 0.015), 0.3);
     // A supported leg: its hip 92.17 cm from its foot contact against twice
     // the contact's 49.03 cm leaves no relaxation; at that reach, 0.2.
-    assert_eq!(leg_relax_target(92.17f32.powi(2), 49.03), 0.0);
-    assert!((leg_relax_target(98.06f32.powi(2), 49.03) - 0.2).abs() < 1e-6);
-    assert!((leg_relax_target(98.06f32.powi(2) + 450.0, 49.03) - 0.15).abs() < 1e-3);
+    assert_eq!(
+        reach_relax_target(92.17f32.powi(2), rest_reach2(49.03)),
+        0.0
+    );
+    assert!((reach_relax_target(98.06f32.powi(2), rest_reach2(49.03)) - 0.2).abs() < 1e-6);
+    assert!((reach_relax_target(98.06f32.powi(2) + 450.0, rest_reach2(49.03)) - 0.15).abs() < 1e-3);
     // The contact is the ankle, 41.95 cm from the knee: a straight human
     // leg, its hip 85.15 cm from the ankle, relaxes at the cap of 0.2.
-    assert!((leg_relax_target(85.15f32.powi(2), 41.95) - 0.2).abs() < 1e-6);
+    assert!((reach_relax_target(85.15f32.powi(2), rest_reach2(41.95)) - 0.2).abs() < 1e-6);
+}
+
+/// The feet routine's leg relaxation, against an explicit reach: the
+/// target's rest in double (0.6 − 0.001 × 450 = 0.15 exactly rounded from
+/// the double), over the double 0.2 the single 0.2; the leg rises by the
+/// double 0.01 and takes any lower target, a NaN included.
+#[test]
+fn a_leg_relaxes_against_its_reach_in_double() {
+    assert_eq!(rest_reach2(41.95), 83.9f32.powi(2));
+    assert_eq!(
+        reach_relax_target(10_450.0, 10_000.0),
+        (0.6f64 - 450.0 * 0.001) as f32
+    );
+    assert_eq!(reach_relax_target(10_000.0, 10_000.0), 0.2);
+    assert_eq!(reach_relax_target(20_000.0, 10_000.0), 0.0);
+    assert!(reach_relax_target(f32::NAN, 10_000.0).is_nan());
+    assert_eq!(relax_leg(0.1, 0.2), (0.1f64 + 0.01) as f32);
+    assert_eq!(relax_leg(0.15, 0.05), 0.05);
+    assert!(relax_leg(0.15, f32::NAN).is_nan());
 }
 
 /// Each slack link's anchor is its point placed by the part's animated turn

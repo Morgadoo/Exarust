@@ -1170,6 +1170,17 @@ fn spawn_players(
                 .entity(model)
                 .insert(exa_game::sim_control::Undying);
         }
+        if options.flat_floor {
+            // The original's lying spawn (the player spawn's mode 2, which
+            // its character viewers take) assigns the whole state word.
+            commands
+                .entity(model)
+                .insert(exa_combat::StateFlags(exa_character::spawn::LYING_FLAGS));
+            info!(
+                "player: flat floor (state word {:#x})",
+                exa_character::spawn::LYING_FLAGS
+            );
+        }
         commands.entity(model).insert((
             fighter,
             exa_physics::body::Physical {

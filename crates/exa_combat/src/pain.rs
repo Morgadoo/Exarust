@@ -31,6 +31,43 @@ pub struct PainSounded {
     pub sounds: PainSounds,
 }
 
+/// A blow dealt on flesh, after the damage call and its pain sounds: what
+/// the player's feedback reads. The struck player feels
+/// [`struck_player_jolt`] (the camera's jolt along `direction`, the pad's
+/// rumble); a striking player [`striking_player_rumble`].
+#[derive(Message, Debug, Clone, Copy, PartialEq)]
+pub struct BlowFelt {
+    /// The struck fighter.
+    pub target: Entity,
+    /// The striking fighter.
+    pub attacker: Entity,
+    /// The wound `L`, before the red bar's 0.75.
+    pub wound: f32,
+    /// The yellow `Y`, before its 0.75.
+    pub yellow: f32,
+    pub striker: Striker,
+    /// The contact's queued impact vector, which the camera's jolt is
+    /// thrown along: the blade's velocity at the contact (cm a tick).
+    /// [inference: the original's impact record holds a vector and the
+    /// speed beside it; the vector is read as the blow's direction]
+    pub direction: Vec3,
+}
+
+/// A swing's first clash or block, which rumbles the player's pad by half
+/// the blow's volume when the player struck it or was struck.
+#[derive(Message, Debug, Clone, Copy, PartialEq)]
+pub struct ClashFelt {
+    pub target: Entity,
+    pub attacker: Entity,
+    /// The blow's hit-sound volume.
+    pub volume: f32,
+}
+
+/// A clash's rumble: half the blow's volume.
+pub fn clash_rumble(volume: f32) -> f32 {
+    volume * 0.5
+}
+
 /// The wound sound set a character's init picks from its record's race
 /// byte: none for race 0x0E, `SkelHit` for the skeleton (0x01), `WndFls`
 /// for a race without the 0x10 bit, `HitGlm` (the golems) otherwise.

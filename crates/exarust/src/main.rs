@@ -41,6 +41,9 @@
 //!          --opponent                 an armed duellist in play mode; practice and arena fights start in combat mode (Tab toggles it, left click attacks)
 //!          --original-spawn           living bodies spawn in the original's order (key pick, pelvis on the frame,
 //!                                     leg snap); their pelvis height is logged for 120 ticks at debug level
+//!          --flat-floor               play mode: the player spawns with the state word's flat-floor bit 0x1000, as
+//!                                     the original's lying (mode 2) spawn and its character viewers set it: the
+//!                                     feet stand on a floor at 0 without probing and the thighs splay 5°
 //!          --opponent-shield <m|any>  every duellist (the debug one and the arena's) carries this shield on its off
 //!                                     arm (an Objects.rpk model, e.g. "Shield R01"; `any`: the first shield item whose
 //!                                     model loads); a blade that meets it is blocked (logged "a block" at info)
@@ -234,6 +237,9 @@ pub struct Options {
     /// Spawn living bodies in the original's order (key pick, pelvis on the
     /// frame, leg snap) instead of the default clip-pose spawn.
     pub original_spawn: bool,
+    /// Play mode: the player spawns with the flat-floor bit (the original's
+    /// lying spawn's state word).
+    pub flat_floor: bool,
     /// Lay an arena match out as the original's template of this id does.
     pub arena_match: Option<i32>,
     /// The arena match's rank, for the generated opponents' level.
@@ -644,6 +650,7 @@ fn main() -> AppExit {
                     .unwrap_or_default();
             }
             "--original-spawn" => options.original_spawn = true,
+            "--flat-floor" => options.flat_floor = true,
             "--still-opponent" => {
                 options.opponent = true;
                 options.still_opponent = true;
