@@ -117,3 +117,4 @@ while the map was being built, so treat the row as a best-effort snapshot.
 | 2026-10-29 | ef231767e | clean | 69.6% | 4.9% | 62.7% | 45.4% | Rate round 33's lanes |
 | 2026-10-29 | 1ea606b01 | clean | 69.8% | 4.9% | 62.9% | 45.4% | Rate round 34's lanes |
 | 2026-10-29 | 426c0b713 | clean | 70.0% | 4.9% | 63.0% | 45.4% | Rate round 35's lanes |
+| 2026-10-29 | d6317228d | clean | 70.1% | 4.9% | 63.1% | 45.4% | Rate round 36's lanes |

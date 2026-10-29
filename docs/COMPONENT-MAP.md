@@ -5,8 +5,8 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 ## Headline
 
 - **8,783 functions**, 2,616 KB of code, in **445 components** across 16 sections.
-- Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **70.0% reimplemented** by Exarust's own code and **4.9% provided** by Bevy, wgpu, rapier or the Rust standard library.
-- Weighted by function count (zero-byte imported names left out): 63.0% and 11.8%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
+- Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **70.1% reimplemented** by Exarust's own code and **4.9% provided** by Bevy, wgpu, rapier or the Rust standard library.
+- Weighted by function count (zero-byte imported names left out): 63.1% and 11.8%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
 - The 24 combat-rule functions (52 KB of damage, armour and weapon-stat rules inside body, part, AI and item owners) are **45.4%** reproduced.
 
 ## By section
@@ -26,7 +26,7 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 | Thaumaturgy & effects | 697 | 296 | 83 | 72% | 0% |  |
 | Audio | 59 | 18 | 4 | 84% | 0% |  |
 | Script, dialogue & story | 184 | 46 | 11 | 77% | 0% |  |
-| Game modes, arena & session | 646 | 193 | 23 | 73% | 0% | Save-package section delete (SG_EmblemGen by address), TSaveGameManager |
+| Game modes, arena & session | 646 | 193 | 23 | 74% | 0% | Save-package section delete (SG_EmblemGen by address), TSaveGameManager |
 | UI | 959 | 312 | 63 | 79% | 0% | SGD_GameObjEdit, TSkillTip, TColourPicker |
 | Other, tools & editor | 171 | 33 | 8 | 55% | 0% |  |
 
@@ -89,7 +89,7 @@ Ordered by code size; these are where most of the original still has no counterp
 | SG_CharacterGen | Characters, motion & animation | 43 | 78% | exa_character/src/layers.rs; exa_character/src/look.rs |
 | TGUIDrawSkin | UI | 35 | 90% | exa_ui/src/skin.rs; exa_ui/src/gui_draw.rs |
 | SG_PlayerControls | AI & behaviour | 47 | 67% | exa_game/src/player_controls.rs; exa_game/src/idle_orbit.rs |
-| TMotilePart | Characters, motion & animation | 53 | 57% | exa_physics/src/part.rs; exa_physics/src/grip.rs |
+| TMotilePart | Characters, motion & animation | 53 | 58% | exa_physics/src/part.rs; exa_physics/src/grip.rs |
 | TThaumTree | Thaumaturgy & effects | 38 | 78% | exa_game/src/thaum/tree.rs; exa_game/src/power_screen.rs |
 | TPathFinder | AI & behaviour | 32 | 90% | exa_world/src/nav/path.rs; exa_world/src/nav/mover.rs |
 | TVCCloth | Physics, bodies & cloth | 30 | 96% | exa_physics/src/cloth.rs; exa_world/src/cloth.rs |
@@ -101,8 +101,8 @@ Ordered by code size; these are where most of the original still has no counterp
 | TMesh | Rendering & GPU | 25 | 82% | exa_formats/src/rfc.rs; exa_assets/src/model.rs |
 | RF_Skinning | Characters, motion & animation | 25 | 82% | exa_assets/src/skin.rs; exa_assets/src/model.rs |
 | RF_SceneNodes | World, levels & terrain | 24 | 82% | exa_world/src/scene_nodes.rs; exa_world/src/light_flood.rs |
+| XA_SaveGames | Game modes, arena & session | 27 | 70% | exa_formats/src/save_package.rs; exa_formats/src/arena_save.rs |
 | RFE_MeshTools | Rendering & GPU | 19 | 95% | exa_assets/src/mesh_weld.rs; exa_assets/src/mesh_edit.rs |
-| XA_SaveGames | Game modes, arena & session | 27 | 67% | exa_formats/src/save_package.rs; exa_formats/src/arena_save.rs |
 
 ## Combat rules
 
