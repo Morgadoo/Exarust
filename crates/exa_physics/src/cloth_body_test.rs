@@ -136,6 +136,7 @@ fn sphere(from: Vec3, to: Vec3, radius: f32, moving: bool) -> ClothBody {
             moving,
         }],
         countdown: 0,
+        part: 0,
     }
 }
 

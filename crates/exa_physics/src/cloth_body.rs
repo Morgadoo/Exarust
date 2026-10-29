@@ -106,6 +106,9 @@ pub struct ClothBody {
     pub spheres: Vec<BodySweep>,
     /// The body's sleep countdown: 0 asleep.
     pub countdown: i32,
+    /// Which of the parts the sector offered this is (its index in that
+    /// list): a debug tag, no rule reads it.
+    pub part: usize,
 }
 
 /// A cloth triangle as the body stage sees it this tick: its face plane

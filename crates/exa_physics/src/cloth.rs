@@ -93,6 +93,55 @@ pub struct Pin {
     pub weight: f32,
 }
 
+/// The face-flag bits that mark a cloth face as pinned (the top nibble of
+/// the mesh's per-face flags, sub-chunk `0x3DC3`).
+pub const PINNED_FACES: u32 = 0xF000_0000;
+/// Of those, the bits that pin firmly; a pinned face with neither pins
+/// loosely.
+pub const FIRM_PIN_FACES: u32 = 0xC000_0000;
+/// The weight of a firm pin: the vertex sits on its rest point.
+pub const FIRM_PIN: f32 = 1.0;
+/// The weight of a loose pin.
+pub const LOOSE_PIN: f32 = 0.1;
+
+/// The cloth's pin list, as the original builds it when its controller
+/// starts: a position element (a particle) is pinned when every face about
+/// it carries a bit of [`PINNED_FACES`], firmly ([`FIRM_PIN`]) when each of
+/// them also carries a bit of [`FIRM_PIN_FACES`] and loosely
+/// ([`LOOSE_PIN`]) otherwise; one face without the bits leaves it free. An
+/// element no face touches is pinned firmly, as the original's empty walk
+/// leaves it. `faces` are triangles over the elements, `flags` their face
+/// flags in the same order (a face past the end has none). Returns the
+/// pinned elements in order with their weights.
+///
+/// Every shipped cloth (the four banners and the wraith's robe) marks its
+/// hem faces with `0x80000000`, so its hem is held firmly and the rest
+/// hangs free.
+pub fn face_flag_pins(elements: usize, faces: &[[u32; 3]], flags: &[u32]) -> Vec<(usize, f32)> {
+    let mut free = vec![false; elements];
+    let mut loose = vec![false; elements];
+    for (index, face) in faces.iter().enumerate() {
+        let flag = flags.get(index).copied().unwrap_or(0);
+        for &corner in face {
+            let Some(element) = usize::try_from(corner).ok().filter(|&e| e < elements) else {
+                continue;
+            };
+            if flag & PINNED_FACES == 0 {
+                free[element] = true;
+            } else if flag & FIRM_PIN_FACES == 0 {
+                loose[element] = true;
+            }
+        }
+    }
+    (0..elements)
+        .filter(|&element| !free[element])
+        .map(|element| {
+            let weight = if loose[element] { LOOSE_PIN } else { FIRM_PIN };
+            (element, weight)
+        })
+        .collect()
+}
+
 /// A level plane. The normal points out of the solid.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LevelPlane {
@@ -196,6 +245,9 @@ pub struct Cloth {
     /// How many triangle records the body stage's swept query looked at
     /// last tick (a debug count; no rule reads it).
     pub body_tests: usize,
+    /// The bodies (indices into `bodies`) that pushed the cloth last tick
+    /// (a debug list; no rule reads it).
+    pub pushed_by: Vec<usize>,
     pub planes: Vec<LevelPlane>,
     pub triangles: Vec<ClothTri>,
     pub level: Vec<LevelTri>,
@@ -240,6 +292,7 @@ impl Cloth {
             bodies: Vec::new(),
             pushes: Vec::new(),
             body_tests: 0,
+            pushed_by: Vec::new(),
             planes: Vec::new(),
             triangles: Vec::new(),
             level: Vec::new(),
@@ -671,11 +724,12 @@ pub fn step(cloth: &mut Cloth, gravity: Vec3) {
     // The body stage: each body's spheres push the cloth's triangles into
     // the push buffer, and a body that pushed trades countdowns with it.
     cloth.body_tests = 0;
+    cloth.pushed_by.clear();
     cloth.pushes.resize(count, Vec3::ZERO);
     if !cloth.bodies.is_empty() {
         let bounds = crate::cloth_body::triangle_bounds(cloth);
         let bodies = std::mem::take(&mut cloth.bodies);
-        for body in &bodies {
+        for (index, body) in bodies.iter().enumerate() {
             let touch = crate::cloth_body::touch_body(
                 &cloth.particles,
                 &cloth.triangles,
@@ -685,6 +739,7 @@ pub fn step(cloth: &mut Cloth, gravity: Vec3) {
             );
             cloth.body_tests += touch.tests;
             if touch.pushed {
+                cloth.pushed_by.push(index);
                 let (woke, _owed) =
                     crate::cloth_body::trade_countdowns(&mut cloth.sleep, body.countdown);
                 awake |= woke;
@@ -1886,5 +1941,106 @@ mod tests {
                 .mean_velocity
                 .abs_diff_eq(Vec3::new(0.05, 0.0, 0.0), 1e-7)
         );
+    }
+
+    /// The pin list reads the face flags: an element is pinned only when
+    /// every face about it is marked, firmly when each mark has a firm bit,
+    /// and an element no face touches is pinned firmly.
+    #[test]
+    fn face_flags_pin_the_hem_and_free_the_rest() {
+        // Two triangles over 0-1-2 and 1-3-2, and element 4 on no face.
+        let faces = [[0, 1, 2], [1, 3, 2]];
+        assert_eq!(
+            face_flag_pins(5, &faces, &[0x8000_0000, 0]),
+            vec![(0, FIRM_PIN), (4, FIRM_PIN)]
+        );
+        assert_eq!(
+            face_flag_pins(5, &faces, &[0x8000_0000, 0x1000_0000]),
+            vec![
+                (0, FIRM_PIN),
+                (1, LOOSE_PIN),
+                (2, LOOSE_PIN),
+                (3, LOOSE_PIN),
+                (4, FIRM_PIN)
+            ]
+        );
+        // No flags at all: every element on a face hangs free.
+        assert_eq!(face_flag_pins(4, &faces, &[]), Vec::new());
+        // A corner past the elements is ignored.
+        assert_eq!(
+            face_flag_pins(2, &[[0, 1, 9]], &[0x4000_0000]),
+            vec![(0, FIRM_PIN), (1, FIRM_PIN)]
+        );
+    }
+
+    /// A banner held firmly by its hem and hanging free against a sleeping
+    /// body's sphere settles on it and falls asleep: a sleeping body pushes
+    /// but never keeps the cloth awake, and with the hem pinned there is a
+    /// rest the pushes hold.
+    #[test]
+    fn a_hem_pinned_banner_against_a_sleeping_sphere_sleeps() {
+        let mut cloth = hanging_banner();
+        cloth.bodies = vec![crate::cloth_body::ClothBody {
+            spheres: vec![crate::cloth_body::BodySweep {
+                from: Vec3::new(20.0, -25.0, 4.0),
+                to: Vec3::new(20.0, -25.0, 4.0),
+                radius: 8.0 + PADDING_CM,
+                moving: false,
+            }],
+            countdown: 0,
+            part: 0,
+        }];
+        let gravity = gravity_cm(1.0);
+        let mut slept = None;
+        for tick in 0..3000 {
+            step(&mut cloth, gravity);
+            if cloth.sleep == 0 {
+                slept = Some(tick);
+                break;
+            }
+        }
+        assert!(slept.is_some(), "the banner never slept: {}", cloth.sleep);
+        // The hem stayed near where it was put (the links after the pins
+        // pull it a little each pass).
+        for pin in &cloth.pins {
+            let off = cloth.particles[pin.index].position.distance(pin.rest);
+            assert!(off < 1.0, "the hem moved {off} cm");
+        }
+    }
+
+    /// A 5 × 5 banner of 10 cm squares hanging in the x–y plane below
+    /// y = 0, its top row of faces marked as pinned.
+    fn hanging_banner() -> Cloth {
+        let side = 5;
+        let mut vertices = Vec::new();
+        for row in 0..side {
+            for column in 0..side {
+                vertices.push(Vec3::new(column as f32 * 10.0, -(row as f32) * 10.0, 0.0));
+            }
+        }
+        let mut faces = Vec::new();
+        let mut flags = Vec::new();
+        for row in 0..side - 1 {
+            for column in 0..side - 1 {
+                let at = (row * side + column) as u32;
+                let s = side as u32;
+                let mark = if row == 0 { 0x8000_0000 } else { 0 };
+                faces.push([at, at + s, at + 1]);
+                faces.push([at + 1, at + s, at + s + 1]);
+                flags.extend([mark, mark]);
+            }
+        }
+        let pins = face_flag_pins(vertices.len(), &faces, &flags);
+        assert_eq!(pins.len(), side, "only the top row is pinned");
+        let triangles: Vec<[usize; 3]> = faces
+            .iter()
+            .map(|f| [f[0] as usize, f[1] as usize, f[2] as usize])
+            .collect();
+        let pinned: Vec<usize> = pins.iter().map(|(i, _)| *i).collect();
+        let mut cloth = Cloth::from_mesh(&vertices, &triangles, &pinned);
+        for (pin, (_, weight)) in cloth.pins.iter_mut().zip(&pins) {
+            pin.weight = *weight;
+        }
+        cloth
     }
 }
