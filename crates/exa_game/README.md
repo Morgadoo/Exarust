@@ -930,7 +930,12 @@ the title bit), the inventory's 228 × 180 pack panel, and the control
 records laid out by the two-pass layout (the inventory's Encumbrance label
 and Primary button, the journal's New and Erase buttons) with captions
 placed by the skin's own rule, and the journal's selected entry through the
-text box. A dead body's double click in the world opens the body's loot
+text box. Every window painted through `gui_paint` draws with the line
+skin's palette as a shown form's fade scales it (`gui_paint::palette`, form
+group 170, other groups 125) and its buttons with the line skin's atlas
+frame (`gui_paint::paint_line_button`, shared with the Settings form); the
+hub's board and Manage Company fade in over 256 ticks (`hub_windows::HubFade`)
+and the item card draws at its squared fade (`docs/UI.md`). A dead body's double click in the world opens the body's loot
 window (400, 36; 244 × 440) with its pack and equipment panels; it joins
 the open-container registry under the body's tagged id and closes with the
 focused screen. The window's show rule reads the body's record flag word, its

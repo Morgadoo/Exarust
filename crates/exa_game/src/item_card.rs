@@ -543,7 +543,9 @@ fn draw_card(
     let Some(font_texture) = font_texture else {
         return;
     };
-    let palette = gui_paint::palette();
+    // The card's fade step hands its squared fade to the skin as both
+    // scales, so the frame and the text draw with the palette at that fade.
+    let palette = exa_ui::line_skin::shown_palette(step.alpha);
     let width = (CARD_WIDTH * unit / 4).max(CARD_WIDTH);
     let stats = card.built.content.is_some();
     let desc = wrap(&font, &card.built.description, width - unit * 3);
@@ -624,7 +626,14 @@ fn draw_card(
             flags: 0,
             drag: 0,
         });
-        if let Some(layer) = icons.layer(&icon_panel) {
+        if let Some(mut layer) = icons.layer(&icon_panel) {
+            // The icon takes the GUI alpha the fade step sets (the icon
+            // manager's draw reading that alpha is a guess).
+            for vertex in &mut layer.batch.vertices {
+                vertex.ink[3] = (f32::from(vertex.ink[3]) * step.alpha)
+                    .round()
+                    .clamp(0.0, 255.0) as u8;
+            }
             painted.push(layer);
         }
     }
@@ -725,14 +734,6 @@ fn draw_card(
         ));
     }
 
-    // The card's alpha over its whole draw, on the popup's squared curve.
-    for layer in &mut painted.layers {
-        for vertex in &mut layer.batch.vertices {
-            vertex.ink[3] = (f32::from(vertex.ink[3]) * step.alpha)
-                .round()
-                .clamp(0.0, 255.0) as u8;
-        }
-    }
     painted.submit(&mut frames);
 }
 
@@ -768,6 +769,21 @@ impl Plugin for ItemCardPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_card_draws_with_the_palette_at_its_squared_fade() {
+        let mut fade = PopupFade::default();
+        fade.show(1000);
+        // Half way in: the squared fade is 0.25, the frame's group alpha
+        // 42 and the text's 31.
+        let step = fade.step(1128);
+        assert_eq!(step.alpha, 0.25);
+        let palette = exa_ui::line_skin::shown_palette(step.alpha);
+        assert_eq!((palette.form[3][3], palette.text[6][3]), (42, 31));
+        // Shown: 170 and 125.
+        let palette = exa_ui::line_skin::shown_palette(fade.step(1256).alpha);
+        assert_eq!((palette.form[3][3], palette.text[6][3]), (170, 125));
+    }
 
     #[test]
     fn the_card_keeps_open_on_a_left_press_and_fades_on_a_right_one() {

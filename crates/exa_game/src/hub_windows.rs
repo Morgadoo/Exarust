@@ -22,13 +22,15 @@
 use std::collections::HashMap;
 
 use bevy::prelude::*;
-use exa_ui::form::{ClientRect, UNPLACED, place_unset};
+use exa_ui::form::{ClientRect, FadeStep, FormFade, UNPLACED, place_unset};
 use exa_ui::gui_controls::Control;
 use exa_ui::gui_core::{FormHost, FormId, GuiRect, GuiTask, NO_CONTROL};
 use exa_ui::gui_draw::{GuiFrames, GuiTextures};
+use exa_ui::line_skin::shown_palette;
 use exa_ui::match_board::{
     Board, BoardAction, BoardPaint, BoardTab, CellValue, Rect, TableLayout, TableSlot, Widget,
 };
+use exa_ui::skin::SkinPalette;
 
 use crate::arena;
 use crate::arena::Roster;
@@ -507,33 +509,78 @@ fn screen_font(
     crate::gui_screens::screen_font(exa_ui::gui_font::gui_level(level).main, textures)
 }
 
-/// The window's frame.
-fn paint_window(
-    painted: &mut gui_paint::Painted,
-    bounds: GuiRect,
-    title: &str,
+/// What a hub window paints with: the palette its fade hands the skin, the
+/// fade itself (for the line skin's control inks), the GUI unit and the
+/// textures.
+struct Look<'a> {
+    palette: SkinPalette,
+    fade: f32,
     unit: i32,
-    textures: &GuiTextures,
-) {
-    let palette = gui_paint::palette();
-    let (font, size) = screen_font(textures, unit);
-    let mut frame = Frame::new(bounds, unit, title);
+    textures: &'a GuiTextures,
+}
+
+impl<'a> Look<'a> {
+    fn new(fade: f32, unit: i32, textures: &'a GuiTextures) -> Self {
+        Self {
+            palette: shown_palette(fade),
+            fade,
+            unit,
+            textures,
+        }
+    }
+}
+
+/// Whether a window's opener shows it with a fade. The board's and Manage
+/// Company's openers clear the new form's visible flag before they show
+/// it, so the show starts the base form's 256-tick fade (mode 0, which
+/// hands its alpha to the skin); the trade window's opener only adds the
+/// form, which the base constructor left visible, so it draws at 1 from
+/// the first frame.
+pub fn fades_in(kind: HubWindowKind) -> bool {
+    matches!(kind, HubWindowKind::Board | HubWindowKind::Manage)
+}
+
+/// The open window's show fade: which form it belongs to and the base
+/// form's fade state.
+#[derive(Debug, Default)]
+pub struct HubFade {
+    form: Option<FormId>,
+    fade: FormFade,
+}
+
+impl HubFade {
+    /// The fade `form` draws at, at GUI clock `now`: a form seen for the
+    /// first time starts its show fade there when its kind fades in; the
+    /// draw takes the fade's alpha while it runs and 1 otherwise.
+    pub fn alpha(&mut self, form: FormId, kind: HubWindowKind, now: u32) -> f32 {
+        if self.form != Some(form) {
+            self.form = Some(form);
+            self.fade = FormFade::default();
+            if fades_in(kind) {
+                self.fade.start_show(now, false);
+            }
+        }
+        match self.fade.step(now) {
+            FadeStep::Draw(Some(alpha)) => alpha,
+            _ => 1.0,
+        }
+    }
+}
+
+/// The window's frame.
+fn paint_window(painted: &mut gui_paint::Painted, bounds: GuiRect, title: &str, look: &Look) {
+    let (font, size) = screen_font(look.textures, look.unit);
+    let mut frame = Frame::new(bounds, look.unit, title);
     frame.attributes |= TITLE_BIT;
-    for layer in gui_paint::paint_frame(&frame, &palette, &font, size).layers {
+    for layer in gui_paint::paint_frame(&frame, &look.palette, &font, size).layers {
         painted.push(layer);
     }
 }
 
-fn paint_text(
-    painted: &mut gui_paint::Painted,
-    rect: GuiRect,
-    text: &str,
-    unit: i32,
-    textures: &GuiTextures,
-) {
-    let palette = gui_paint::palette();
-    let (font, size) = screen_font(textures, unit);
-    for layer in gui_paint::paint_label(rect, 0, unit, &palette, &font, size, text).layers {
+fn paint_text(painted: &mut gui_paint::Painted, rect: GuiRect, text: &str, look: &Look) {
+    let (font, size) = screen_font(look.textures, look.unit);
+    for layer in gui_paint::paint_label(rect, 0, look.unit, &look.palette, &font, size, text).layers
+    {
         painted.push(layer);
     }
 }
@@ -543,39 +590,33 @@ fn paint_text_ink(
     rect: GuiRect,
     text: &str,
     ink: Option<[u8; 4]>,
-    unit: i32,
-    textures: &GuiTextures,
+    look: &Look,
 ) {
-    let palette = gui_paint::palette();
-    let (font, size) = screen_font(textures, unit);
-    for layer in gui_paint::paint_label_ink(rect, 0, unit, &palette, &font, size, text, ink).layers
+    let (font, size) = screen_font(look.textures, look.unit);
+    let unit = look.unit;
+    for layer in
+        gui_paint::paint_label_ink(rect, 0, unit, &look.palette, &font, size, text, ink).layers
     {
         painted.push(layer);
     }
 }
 
-fn paint_panel(painted: &mut gui_paint::Painted, rect: GuiRect, unit: i32) {
-    let palette = gui_paint::palette();
-    for layer in gui_paint::paint_panel(rect, unit, &palette, gui_paint::FORM_ATTRIBUTES, 0).layers
-    {
+fn paint_panel(painted: &mut gui_paint::Painted, rect: GuiRect, look: &Look) {
+    let attributes = gui_paint::FORM_ATTRIBUTES;
+    for layer in gui_paint::paint_panel(rect, look.unit, &look.palette, attributes, 0).layers {
         painted.push(layer);
     }
 }
 
 /// The board's paint list through the GUI path.
-fn paint_board(
-    board: &Board,
-    bounds: GuiRect,
-    unit: i32,
-    textures: &GuiTextures,
-) -> gui_paint::Painted {
+fn paint_board(board: &Board, bounds: GuiRect, look: &Look) -> gui_paint::Painted {
     let mut painted = gui_paint::Painted {
         client: client(bounds),
         ..Default::default()
     };
-    paint_window(&mut painted, bounds, BOARD_TITLE, unit, textures);
-    let palette = gui_paint::palette();
-    let (font, size) = screen_font(textures, unit);
+    paint_window(&mut painted, bounds, BOARD_TITLE, look);
+    let unit = look.unit;
+    let (font, size) = screen_font(look.textures, unit);
     for item in board.paint() {
         match item {
             BoardPaint::Frame {
@@ -583,7 +624,7 @@ fn paint_board(
                 ..
             } => {}
             BoardPaint::Frame { rect, .. } => {
-                paint_panel(&mut painted, at(bounds, rect), unit);
+                paint_panel(&mut painted, at(bounds, rect), look);
             }
             BoardPaint::Tab {
                 rect,
@@ -597,16 +638,28 @@ fn paint_board(
                 } else {
                     title.to_string()
                 };
-                for layer in gui_paint::paint_button(
+                // The tab records' own words are not traced: a lone
+                // button whose on and lit bits stand for the selection (a
+                // guess).
+                let state = if selected {
+                    exa_ui::gui_controls::state::ON | exa_ui::gui_controls::state::LIT
+                } else {
+                    0
+                };
+                let words = gui_paint::ButtonWords {
+                    style: BUTTON_STYLE,
+                    state,
+                    group: 0,
+                };
+                for layer in gui_paint::paint_line_button(
                     button,
-                    BUTTON_STYLE,
+                    words,
                     unit,
-                    &palette,
+                    &look.palette,
+                    look.fade,
                     &font,
                     size,
                     &caption,
-                    selected,
-                    false,
                 )
                 .layers
                 {
@@ -614,10 +667,10 @@ fn paint_board(
                 }
             }
             BoardPaint::Table { rect, .. } => {
-                paint_panel(&mut painted, at(bounds, rect), unit);
+                paint_panel(&mut painted, at(bounds, rect), look);
             }
             BoardPaint::Column { rect, title, .. } => {
-                paint_text(&mut painted, at(bounds, rect), title, unit, textures);
+                paint_text(&mut painted, at(bounds, rect), title, look);
             }
             BoardPaint::Cell { rect, value, .. } => {
                 let text = match value {
@@ -629,12 +682,12 @@ fn paint_board(
                     CellValue::Empty => String::new(),
                 };
                 if !text.is_empty() {
-                    paint_text(&mut painted, at(bounds, rect), &text, unit, textures);
+                    paint_text(&mut painted, at(bounds, rect), &text, look);
                 }
             }
             BoardPaint::Label { rect, text, .. } => {
                 if let Some(rect) = rect {
-                    paint_text(&mut painted, at(bounds, rect), &text, unit, textures);
+                    paint_text(&mut painted, at(bounds, rect), &text, look);
                 }
             }
         }
@@ -654,40 +707,28 @@ fn coin_text(packed: u32) -> String {
 }
 
 /// The manage window's two tables, headers and roster rows.
-fn paint_manage(
-    refresh: &ManageRefresh,
-    bounds: GuiRect,
-    unit: i32,
-    textures: &GuiTextures,
-) -> gui_paint::Painted {
+fn paint_manage(refresh: &ManageRefresh, bounds: GuiRect, look: &Look) -> gui_paint::Painted {
     let mut painted = gui_paint::Painted {
         client: client(bounds),
         ..Default::default()
     };
-    paint_window(
-        &mut painted,
-        bounds,
-        crate::manage::MANAGE_TITLE,
-        unit,
-        textures,
-    );
+    paint_window(&mut painted, bounds, crate::manage::MANAGE_TITLE, look);
     let roster = at4(bounds, MANAGE_ROSTER);
     let report_table = at4(bounds, MANAGE_REPORT);
-    paint_panel(&mut painted, roster, unit);
-    paint_panel(&mut painted, report_table, unit);
+    paint_panel(&mut painted, roster, look);
+    paint_panel(&mut painted, report_table, look);
     let columns = [("Name", 0), ("Rank", 0x84), ("Health", 0x84 + 0x50)];
     for (title, x) in columns {
         paint_text(
             &mut painted,
             GuiRect::new(roster.left + x, roster.top, 84, ROW_HEIGHT),
             title,
-            unit,
-            textures,
+            look,
         );
     }
     for (row, text) in refresh.roster.iter().enumerate() {
         let y = roster.top + ROW_HEIGHT * (row as i32 + 1);
-        paint_row(&mut painted, roster.left, y, text, unit, textures);
+        paint_row(&mut painted, roster.left, y, text, look);
     }
     // The report's roster-id lines are not drawn: the report table's own
     // rows carry no column labels in the constructor.
@@ -699,59 +740,44 @@ fn paint_row(
     left: i32,
     y: i32,
     text: &RosterRowText,
-    unit: i32,
-    textures: &GuiTextures,
+    look: &Look,
 ) {
     paint_text_ink(
         painted,
         GuiRect::new(left, y, 0x84, ROW_HEIGHT),
         &text.name.text,
         text.name.ink,
-        unit,
-        textures,
+        look,
     );
     paint_text(
         painted,
         GuiRect::new(left + 0x84, y, 0x50, ROW_HEIGHT),
         &text.rank.text,
-        unit,
-        textures,
+        look,
     );
     let bar = GuiRect::new(left + 0x84 + 0x50, y + 8, 0x84, ROW_HEIGHT - 16);
-    paint_panel(painted, bar, unit);
+    paint_panel(painted, bar, look);
     let filled = (f64::from(text.health) * f64::from(bar.width())) as i32;
     if filled > 0 {
         let fill = GuiRect::new(bar.left, bar.top, filled.min(bar.width()), bar.height());
-        let palette = gui_paint::palette();
-        for layer in gui_paint::paint_client_fill(fill, &palette).layers {
+        for layer in gui_paint::paint_client_fill(fill, &look.palette).layers {
             painted.push(layer);
         }
     }
 }
 
 /// The trade window's panels, stock rows and bottom row.
-fn paint_shop(
-    shop: &ShopModel,
-    bounds: GuiRect,
-    unit: i32,
-    textures: &GuiTextures,
-) -> gui_paint::Painted {
+fn paint_shop(shop: &ShopModel, bounds: GuiRect, look: &Look) -> gui_paint::Painted {
     let mut painted = gui_paint::Painted {
         client: client(bounds),
         ..Default::default()
     };
-    paint_window(
-        &mut painted,
-        bounds,
-        crate::shop_window::TRADE_TITLE,
-        unit,
-        textures,
-    );
+    paint_window(&mut painted, bounds, crate::shop_window::TRADE_TITLE, look);
     for panel in shop.window.panels() {
         paint_panel(
             &mut painted,
             at4(bounds, (panel[0], panel[1], panel[2], panel[3])),
-            unit,
+            look,
         );
     }
     let stock = shop.window.panels()[4];
@@ -765,8 +791,7 @@ fn paint_shop(
             &mut painted,
             GuiRect::new(stock_rect.left + 4, y, stock_rect.width() - 8, ROW_HEIGHT),
             name,
-            unit,
-            textures,
+            look,
         );
     }
     let bottom = [
@@ -785,8 +810,7 @@ fn paint_shop(
             &mut painted,
             GuiRect::new(bounds.left + x, bounds.bottom - 28 + y, 120, 20),
             &text,
-            unit,
-            textures,
+            look,
         );
     }
     painted
@@ -815,11 +839,15 @@ pub fn draw_hub_windows(
     textures: Option<Res<GuiTextures>>,
     screen: Query<&Window, With<bevy::window::PrimaryWindow>>,
     mut frames: ResMut<GuiFrames>,
+    time: Option<Res<Time>>,
+    mut fade: Local<HubFade>,
 ) {
     let Some(windows) = windows else {
         return;
     };
     if !windows.is_open() {
+        // A reopened window fades in again even if its form id comes back.
+        fade.form = None;
         return;
     }
     frames.clear();
@@ -833,19 +861,24 @@ pub fn draw_hub_windows(
         .ok()
         .map(|window| exa_ui::scale::gui_scale(window.physical_height(), 0) as i32)
         .unwrap_or(4);
+    let now = time.map_or(0, |time| time.elapsed().as_millis() as u32);
+    let alpha = windows
+        .form
+        .map_or(1.0, |form| fade.alpha(form, windows.kind, now));
+    let look = Look::new(alpha, unit, textures);
     let painted = match windows.kind {
         HubWindowKind::Board => windows
             .board
             .as_ref()
-            .map(|board| paint_board(board, bounds, unit, textures)),
+            .map(|board| paint_board(board, bounds, &look)),
         HubWindowKind::Manage => windows
             .manage
             .as_ref()
-            .map(|manage| paint_manage(manage, bounds, unit, textures)),
+            .map(|manage| paint_manage(manage, bounds, &look)),
         HubWindowKind::Shop => windows
             .shop
             .as_ref()
-            .map(|shop| paint_shop(shop, bounds, unit, textures)),
+            .map(|shop| paint_shop(shop, bounds, &look)),
         HubWindowKind::None => None,
     };
     if let Some(painted) = painted {
@@ -876,6 +909,35 @@ mod tests {
     use crate::arena_hub::{ARENA_MODE, HubTarget, hub_click};
     use crate::arena_spawn::generic_plan;
     use crate::career::Profession;
+
+    #[test]
+    fn the_board_and_manage_fade_in_and_the_trade_window_does_not() {
+        let mut fade = HubFade::default();
+        // The board opens at clock 1000: alpha 0, half way at 1128, 1 once
+        // its 256 ticks pass.
+        assert_eq!(fade.alpha(7, HubWindowKind::Board, 1000), 0.0);
+        let half = fade.alpha(7, HubWindowKind::Board, 1128);
+        assert_eq!(half, 0.5);
+        let look = shown_palette(half);
+        assert_eq!((look.form[3][3], look.text[6][3]), (85, 62));
+        assert_eq!(
+            exa_ui::line_skin::line_control_inks(half),
+            [
+                [255, 250, 230, 40],
+                [255, 250, 230, 52],
+                [255, 250, 230, 64]
+            ]
+        );
+        assert_eq!(fade.alpha(7, HubWindowKind::Board, 1256), 1.0);
+        assert_eq!(fade.alpha(7, HubWindowKind::Board, 5000), 1.0);
+        // Manage Company, a new form, fades again; the trade window does
+        // not.
+        assert_eq!(fade.alpha(8, HubWindowKind::Manage, 6000), 0.0);
+        assert_eq!(fade.alpha(8, HubWindowKind::Manage, 6064), 0.25);
+        assert_eq!(fade.alpha(9, HubWindowKind::Shop, 7000), 1.0);
+        let shown = shown_palette(1.0);
+        assert_eq!((shown.form[3][3], shown.control[0][3]), (170, 125));
+    }
 
     fn career() -> ArenaCareer {
         let mut career = ArenaCareer::default();
