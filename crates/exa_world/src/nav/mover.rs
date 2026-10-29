@@ -288,6 +288,37 @@ pub fn refresh_movers(grid: &mut NavGrid, movers: &mut Movers, samples: &[Vec3])
     }
 }
 
+/// Raise the grid's floors from the moving props' sample points (world,
+/// metres) as the original's build does once the layers are written and
+/// before the cost passes: each point that falls in cells 1 to `W − 3`
+/// (and `D − 3`) and voxels 0–254 raises the current floor of its cell by
+/// the refresh's rule ([`raise_static`]), one point after another, against
+/// the lower slab's underside. The floors as built stay as they were, so a
+/// prop that moves away later leaves its cells to the built floors.
+pub fn raise_from_movers(grid: &mut NavGrid, samples: impl IntoIterator<Item = Vec3>) {
+    let (width, depth) = grid.size();
+    for sample in samples {
+        let sx = axis(sample.x, width).round_ties_even() as i32;
+        let sz = axis(sample.z, depth).round_ties_even() as i32;
+        let v = sample_voxel(sample.y, grid.base());
+        if sx < 1
+            || sz < 1
+            || sx >= width as i32 - 2
+            || sz >= depth as i32 - 2
+            || !(0..255).contains(&v)
+        {
+            continue;
+        }
+        let (x, z) = (sx as usize, sz as usize);
+        let mut lower = grid.cell(x, z, Layer::Lower).floor;
+        let mut upper = grid.cell(x, z, Layer::Upper).floor;
+        let underside = grid.cell(x, z, Layer::Lower).underside;
+        raise_static(&mut lower, &mut upper, underside, v as u8);
+        grid.set_floor(x, z, Layer::Lower, lower);
+        grid.set_floor(x, z, Layer::Upper, upper);
+    }
+}
+
 /// A sample's voxel as the refresh rounds a mover's vertex:
 /// `y · 0.1 + ½ − base · 0.1` (centimetres, single precision), ties to even.
 fn sample_voxel(y: f32, base: f32) -> i32 {
@@ -591,6 +622,28 @@ mod tests {
         assert_eq!(grid.cell(11, 12, Layer::Lower).floor, 10);
         assert_eq!(grid.cell(16, 12, Layer::Lower).floor, 10);
         assert_eq!(grid.cell(16, 12, Layer::Lower).roughness, 0);
+    }
+
+    /// A door leaf standing in a doorway: its points, one voxel apart and
+    /// lowest first, each less than fifteen over the floor they find, walk
+    /// the cell's floor up to the leaf's top, as the original's build
+    /// raises it; the floor as built stays. A point fifteen over the floor
+    /// it meets raises the upper floor, and one on the cells next to the
+    /// border (from `W − 2`) raises nothing.
+    #[test]
+    fn a_door_leaf_raises_its_doorway_to_its_top() {
+        let mut grid = yard();
+        let leaf: Vec<Vec3> = (0..15)
+            .map(|k| at(&grid, 10, 10, 1.05 + 0.1 * k as f32))
+            .collect();
+        raise_from_movers(&mut grid, leaf);
+        assert_eq!(grid.cell(10, 10, Layer::Lower).floor, 25);
+        assert_eq!(grid.built_floor(10, 10, Layer::Lower), 10);
+        let points = [at(&grid, 5, 5, 2.45), at(&grid, 22, 5, 1.05)];
+        raise_from_movers(&mut grid, points);
+        assert_eq!(grid.cell(5, 5, Layer::Lower).floor, 10);
+        assert_eq!(grid.cell(5, 5, Layer::Upper).floor, 25);
+        assert_eq!(grid.cell(22, 5, Layer::Lower).floor, 10);
     }
 
     #[test]

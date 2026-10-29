@@ -296,6 +296,66 @@ pub fn register_bodies(
     counts
 }
 
+/// Which of a spawned model's nodes its placement marks as level geometry
+/// (the original's node flag `0x80000`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LevelGeometry {
+    /// None: a loose prop, a placed object without the static bits, the
+    /// level's own model.
+    None,
+    /// The model's root alone: a placed object whose placement carries the
+    /// static bits (the object reader does not spread the flag).
+    Root,
+    /// Every node: a prop placed static (the prop reader spreads the flag).
+    All,
+}
+
+/// The mesh nodes of a model that carry a rigid body, as the original's grid
+/// build sees them, each with whether its points are still stamped: the
+/// body's attach sets the node's second flag word's `0x10` (whether the body
+/// was read with the node or copied with an object's instance), and the
+/// stamp skips such a mesh unless the node is level geometry (`0x80000`);
+/// every one of them, level geometry or not, raises the floors under it
+/// once the layers are written. Whether the body registers in the solver
+/// does not matter (doors, levers and bodies under a plain node under a
+/// body count too). A node marked static in its file has no body
+/// ([`exa_assets::ModelNode::rigid`]), nor has an object-library
+/// placeholder; a mesh without GI points takes no part.
+pub fn moving_meshes(model: &Model, geometry: LevelGeometry) -> Vec<(usize, bool)> {
+    let root = model.roots().next();
+    model
+        .nodes
+        .iter()
+        .enumerate()
+        .filter(|(_, n)| n.rigid.is_some() && !n.placeholder && !n.gi_points.is_empty())
+        .map(|(i, _)| {
+            let level_geometry = match geometry {
+                LevelGeometry::None => false,
+                LevelGeometry::Root => Some(i) == root,
+                LevelGeometry::All => true,
+            };
+            (i, level_geometry)
+        })
+        .collect()
+}
+
+/// Marks a spawned model's meshes that carry a rigid body
+/// ([`moving_meshes`]) for the navigation grid ([`crate::nav::MovingMesh`]).
+pub fn mark_moving_meshes(
+    commands: &mut Commands,
+    model: &Model,
+    nodes: &[Entity],
+    geometry: LevelGeometry,
+) {
+    for (i, stamped) in moving_meshes(model, geometry) {
+        if let Some(&e) = nodes.get(i) {
+            commands
+                .entity(e)
+                .insert(crate::nav::MovingMesh { stamped });
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -329,6 +389,51 @@ mod tests {
                 .collect(),
             sounds: Vec::new(),
         }
+    }
+
+    /// The meshes with bodies the grid build sees: a loose sack's body
+    /// meshes (not its plain root, nor a placeholder or a mesh without
+    /// points), stamped only where the placement makes the node level
+    /// geometry: the root alone for a placed object's static bits, every
+    /// node for a prop placed static.
+    #[test]
+    fn meshes_with_bodies_raise_floors_and_level_geometry_stamps() {
+        use exa_assets::{ModelNode, NodeRigidBody};
+        let model_node = |parent: Option<usize>, rigid: bool, points: bool| {
+            let mut n = crate::tests::node("n", parent, None);
+            n.rigid = rigid.then(|| NodeRigidBody {
+                body: std::sync::Arc::new(body(0)),
+                mobility_divisor: 1.0,
+                collision_sound: None,
+            });
+            if points {
+                n.gi_points = std::sync::Arc::new(vec![Vec3::ZERO]);
+            }
+            n
+        };
+        let mut placeholder: ModelNode = model_node(Some(0), true, true);
+        placeholder.placeholder = true;
+        let model = Model {
+            nodes: vec![
+                model_node(None, true, true),
+                model_node(Some(0), true, true),
+                model_node(Some(0), false, true),
+                model_node(Some(0), true, false),
+                placeholder,
+            ],
+        };
+        assert_eq!(
+            moving_meshes(&model, LevelGeometry::None),
+            [(0, false), (1, false)]
+        );
+        assert_eq!(
+            moving_meshes(&model, LevelGeometry::Root),
+            [(0, true), (1, false)]
+        );
+        assert_eq!(
+            moving_meshes(&model, LevelGeometry::All),
+            [(0, true), (1, true)]
+        );
     }
 
     /// A sack (a body with three body children), a chain hung from a wall

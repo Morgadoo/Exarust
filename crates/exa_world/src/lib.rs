@@ -514,18 +514,15 @@ fn spawn_placed_object(
         &scaled
     };
     let with_overrides;
-    let model = match with_placement_transforms(model, &object.attachments) {
+    let placement = transform_from_rows(&object.transform);
+    let model = match with_placement_transforms(model, &object.attachments, placement) {
         Some(m) => {
             with_overrides = m;
             &with_overrides
         }
         None => model,
     };
-    let (e, nodes) = spawn_model_nodes(
-        commands,
-        model,
-        Some(transform_from_rows(&object.transform)),
-    );
+    let (e, nodes) = spawn_model_nodes(commands, model, Some(placement));
     mark_cloth_starts(commands, model, &nodes, &object.attachments);
     commands.entity(e).insert((
         Name::new(item.name.clone()),
@@ -558,6 +555,12 @@ fn spawn_placed_object(
     } else {
         bodies::Placement::Loose
     };
+    let geometry = if object.is_static() {
+        bodies::LevelGeometry::Root
+    } else {
+        bodies::LevelGeometry::None
+    };
+    bodies::mark_moving_meshes(commands, model, &nodes, geometry);
     Some(PlacedSpawn::Placed {
         lights: model.nodes.iter().filter(|n| n.light.is_some()).count(),
         bodies: bodies::register_bodies(commands, model, &nodes, placement),
@@ -620,13 +623,22 @@ fn resolved_attachments<'a>(
     model: &Model,
     attachments: &'a [exa_formats::level::PropAttachment],
 ) -> Vec<(usize, &'a exa_formats::level::PropAttachment)> {
+    resolved_records(model, attachments)
+        .into_iter()
+        .map(|(node, a, _)| (node, a))
+        .collect()
+}
+
+/// [`resolved_attachments`], each with whether it came from a placement
+/// tree (`0x3DE0EC00`) rather than a node record (`0x3DE0ECAC`,
+/// `0x3DE0ECDB`).
+fn resolved_records<'a>(
+    model: &Model,
+    attachments: &'a [exa_formats::level::PropAttachment],
+) -> Vec<(usize, &'a exa_formats::level::PropAttachment, bool)> {
     use exa_formats::level::PropAttachment;
-    fn walk<'a>(
-        model: &Model,
-        at: usize,
-        list: &'a [PropAttachment],
-        out: &mut Vec<(usize, &'a PropAttachment)>,
-    ) {
+    type Resolved<'a> = Vec<(usize, &'a PropAttachment, bool)>;
+    fn walk<'a>(model: &Model, at: usize, list: &'a [PropAttachment], out: &mut Resolved<'a>) {
         for a in list {
             if let PropAttachment::Tree { entries } = a {
                 walk_tree(model, at, entries, out);
@@ -641,7 +653,7 @@ fn resolved_attachments<'a>(
                     .position(|n| n.parent == Some(at) && n.name == a.name())
             };
             let Some(target) = target else { continue };
-            out.push((target, a));
+            out.push((target, a, false));
             if let PropAttachment::Transform { children, .. } = a {
                 walk(model, target, children, out);
             }
@@ -654,7 +666,7 @@ fn resolved_attachments<'a>(
         model: &Model,
         at: usize,
         entries: &'a [PropAttachment],
-        out: &mut Vec<(usize, &'a PropAttachment)>,
+        out: &mut Resolved<'a>,
     ) {
         for entry in entries {
             let target = model
@@ -662,7 +674,7 @@ fn resolved_attachments<'a>(
                 .iter()
                 .position(|n| n.parent == Some(at) && n.name == entry.name());
             let Some(target) = target else { continue };
-            out.push((target, entry));
+            out.push((target, entry, true));
             if let PropAttachment::Transform { children, .. } = entry {
                 walk_tree(model, target, children, out);
             }
@@ -694,7 +706,7 @@ fn placement_base(
     use exa_formats::level::PropAttachment;
     use std::hash::{Hash, Hasher};
     let model = loader.model(pack, entry)?;
-    let placed = with_placement_transforms(&model, attachments);
+    let placed = with_placement_transforms(&model, attachments, placement);
     let frames: &Model = placed.as_ref().unwrap_or(&model);
     let edits: Vec<(usize, Vec<[f32; 3]>)> = resolved_attachments(&model, attachments)
         .into_iter()
@@ -801,10 +813,12 @@ fn mark_cloth_starts(
 }
 
 /// A copy of `model` with the placement's transform records (`0x3DE0ECAC`)
-/// applied, or `None` when none applies, so the model is shared as it is.
+/// applied at `placement`, or `None` when none applies, so the model is
+/// shared as it is.
 fn with_placement_transforms(
     model: &Model,
     attachments: &[exa_formats::level::PropAttachment],
+    placement: Transform,
 ) -> Option<Model> {
     use exa_formats::level::PropAttachment;
     let resolved = resolved_attachments(model, attachments);
@@ -815,31 +829,45 @@ fn with_placement_transforms(
         return None;
     }
     let mut out = model.clone();
-    apply_transform_attachments(&mut out, attachments);
+    apply_transform_attachments(&mut out, attachments, placement);
     Some(out)
 }
 
-/// The transform records of a placement, applied to the model's nodes: each
-/// replaces its node's local transform ([`resolved_attachments`]).
+/// The transform records of a placement, applied to the model's nodes in
+/// the order they are resolved ([`resolved_attachments`]).
 ///
-/// [Known divergence: a node record (`0x3DE0ECAC`) holds the node's frame in
-/// the level, not its local transform. Every shipped record in exanima01
-/// matches the placement composed with the model's own local transform to
-/// within 1 cm (sacks, buckets, carts, wall rings, chains, mattresses), and
-/// the original stores it as the node's world matrix and derives the local
-/// one from the parent's, so read as a local transform each overridden
-/// node lands 45–90 m away. Reading it as a level frame changes the
-/// navigation grid's reach from exanima01's start, so it waits for its own
-/// change.]
+/// A node record (`0x3DE0ECAC`) holds the node's frame in the level, as the
+/// level saved it: the original's placement loader copies it over the
+/// node's world matrix and derives the local rotation from the parent's
+/// world matrix (the parent's already placed: the object's root at the
+/// placement, or the node of the record it is nested in). Every exanima01
+/// record matches the placement composed with the model's own local
+/// transform to within 1 cm (sacks, buckets, carts, wall rings, chains,
+/// mattresses). Here the node's local transform becomes that frame seen
+/// from its parent's frame at `placement`, so its frame in the level is the
+/// record's. A record on a root node (none shipped) keeps the placement,
+/// which stands for the root. A placement tree's entries (`0x3DE0EC00`,
+/// none shipped) replace their nodes' local transforms as they are.
 fn apply_transform_attachments(
     model: &mut Model,
     attachments: &[exa_formats::level::PropAttachment],
+    placement: Transform,
 ) {
     use exa_formats::level::PropAttachment;
-    for (node, a) in resolved_attachments(model, attachments) {
-        if let PropAttachment::Transform { transform, .. } = a {
-            model.nodes[node].transform = transform_from_rows(transform);
+    for (node, a, from_tree) in resolved_records(model, attachments) {
+        let PropAttachment::Transform { transform, .. } = a else {
+            continue;
+        };
+        let record = transform_from_rows(transform);
+        if from_tree {
+            model.nodes[node].transform = record;
+            continue;
         }
+        let Some(parent) = model.nodes[node].parent else {
+            continue;
+        };
+        let local = node_world(model, parent, placement).inverse() * record.to_matrix();
+        model.nodes[node].transform = Transform::from_matrix(local);
     }
 }
 
@@ -1369,6 +1397,7 @@ impl LevelLoad {
                 if let Some(own) = loader.model(PackKind::Resource, &self.entry) {
                     self.lights += own.nodes.iter().filter(|n| n.light.is_some()).count();
                     let (e, nodes) = spawn_model_nodes(commands, &own, None);
+                    bodies::mark_moving_meshes(commands, &own, &nodes, bodies::LevelGeometry::None);
                     self.bodies.add(bodies::register_bodies(
                         commands,
                         &own,
@@ -1407,22 +1436,26 @@ impl LevelLoad {
                         Some(model) => {
                             self.lights += model.nodes.iter().filter(|n| n.light.is_some()).count();
                             let owned;
-                            let model: &Model =
-                                match with_placement_transforms(&model, &prop.attachments) {
-                                    Some(m) => {
-                                        owned = m;
-                                        &owned
-                                    }
-                                    None => &model,
-                                };
+                            let model: &Model = match with_placement_transforms(
+                                &model,
+                                &prop.attachments,
+                                placement,
+                            ) {
+                                Some(m) => {
+                                    owned = m;
+                                    &owned
+                                }
+                                None => &model,
+                            };
                             let (e, nodes) = spawn_model_nodes(commands, model, Some(placement));
                             mark_cloth_starts(commands, model, &nodes, &prop.attachments);
                             // A prop placed static is level geometry.
-                            let placement = if prop.is_static() {
-                                bodies::Placement::Static
+                            let (placement, geometry) = if prop.is_static() {
+                                (bodies::Placement::Static, bodies::LevelGeometry::All)
                             } else {
-                                bodies::Placement::Loose
+                                (bodies::Placement::Loose, bodies::LevelGeometry::None)
                             };
+                            bodies::mark_moving_meshes(commands, model, &nodes, geometry);
                             self.bodies
                                 .add(bodies::register_bodies(commands, model, &nodes, placement));
                             e
@@ -1936,7 +1969,11 @@ mod tests {
         }
     }
 
-    fn node(name: &str, parent: Option<usize>, intensity: Option<f32>) -> exa_assets::ModelNode {
+    pub(crate) fn node(
+        name: &str,
+        parent: Option<usize>,
+        intensity: Option<f32>,
+    ) -> exa_assets::ModelNode {
         exa_assets::ModelNode {
             name: name.into(),
             parent,
@@ -2009,7 +2046,10 @@ mod tests {
     }
 
     /// A placement's node transforms change the named direct child of the
-    /// prop root, or the root itself for an empty name; other nodes stay.
+    /// prop root, or its own named child under a record; other nodes stay.
+    /// Each record is the node's frame in the level, so with the prop
+    /// placed at the origin the ring sits at 1 and its pin at 2 (1 from the
+    /// ring).
     #[test]
     fn placement_attachments_move_the_named_nodes() {
         use exa_formats::level::PropAttachment;
@@ -2047,9 +2087,61 @@ mod tests {
                 // A record whose node is missing skips its nested records.
                 transform("nope", 4.0, vec![transform("Pin", 5.0, Vec::new())]),
             ],
+            Transform::IDENTITY,
         );
         let x = |i: usize| model.nodes[i].transform.translation.x;
-        assert_eq!((x(0), x(1), x(2), x(3), x(4)), (0.0, 1.0, 0.0, 2.0, 0.0));
+        assert_eq!((x(0), x(1), x(2), x(3), x(4)), (0.0, 1.0, 0.0, 1.0, 0.0));
+    }
+
+    /// A node record is the node's frame in the level: a wall ring placed
+    /// turned half round at (1603, 141, 7123) cm, whose record puts the
+    /// ring 10 cm in front of the wall, ends with the model's own local
+    /// transform (10 cm along its z), not the record's level coordinates
+    /// added on top of the placement.
+    #[test]
+    fn a_node_record_is_taken_from_the_level_frame() {
+        use exa_formats::level::PropAttachment;
+        let mut model = Model {
+            nodes: vec![
+                node("MetalRingH", None, None),
+                node("MetalRing", Some(0), None),
+            ],
+        };
+        let placement = Transform::from_xyz(16.03, 1.41, 71.23)
+            .with_rotation(Quat::from_rotation_y(std::f32::consts::PI));
+        // The ring's frame in the level: the placement, then 10 cm along
+        // the model's z.
+        let world = placement.to_matrix() * Mat4::from_translation(Vec3::new(0.0, 0.0, 0.1));
+        let cols = world.to_cols_array_2d();
+        // The level stores the rows of its row-vector matrix: the columns
+        // of Bevy's.
+        let rows = [
+            [cols[0][0], cols[0][1], cols[0][2]],
+            [cols[1][0], cols[1][1], cols[1][2]],
+            [cols[2][0], cols[2][1], cols[2][2]],
+            [cols[3][0], cols[3][1], cols[3][2]],
+        ];
+        assert!(
+            transform_from_rows(&rows)
+                .to_matrix()
+                .abs_diff_eq(world, 1e-5)
+        );
+        apply_transform_attachments(
+            &mut model,
+            &[PropAttachment::Transform {
+                name: "MetalRing".into(),
+                word: 0,
+                transform: rows,
+                children: Vec::new(),
+            }],
+            placement,
+        );
+        let local = model.nodes[1].transform.translation;
+        assert!(local.abs_diff_eq(Vec3::new(0.0, 0.0, 0.1), 1e-4), "{local}");
+        assert!(
+            node_world(&model, 1, placement).abs_diff_eq(world, 1e-4),
+            "the ring is where the level saved it"
+        );
     }
 
     /// A banner's saved positions are in the level's frame: placed turned
@@ -2108,6 +2200,7 @@ mod tests {
                     entry("", 3.0, Vec::new()),
                 ],
             }],
+            Transform::IDENTITY,
         );
         let x = |i: usize| model.nodes[i].transform.translation.x;
         assert_eq!((x(0), x(1), x(2), x(3)), (0.0, 1.0, 2.0, 0.0));
