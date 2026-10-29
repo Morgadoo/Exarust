@@ -2488,12 +2488,17 @@ impl Flow {
             Step::Save {
                 drop_on_low_health: false,
             },
+            // The end menu hides and the prelude closes before the world
+            // goes; the controls are taken away for the load.
+            Step::HideEndMenu,
+            Step::ClosePrelude,
             Step::TeardownWorld,
             Step::LoadLevel {
                 locale: "exanima05",
                 spawn: 0,
                 teardown: true,
             },
+            Step::Controls(false),
             Step::PlacePlayer(placement),
             Step::RequestAction(0x2f),
             Step::Hook(Hook::Story),
@@ -4807,6 +4812,9 @@ mod tests {
             drop_on_low_health: false
         }));
         assert!(steps.contains(&Step::ClearStoryFlag));
+        assert!(steps.contains(&Step::HideEndMenu));
+        assert!(steps.contains(&Step::ClosePrelude));
+        assert!(steps.contains(&Step::Controls(false)));
         assert!(!steps.iter().any(|step| matches!(step, Step::Camera(_))));
     }
 
