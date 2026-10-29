@@ -280,6 +280,7 @@ mod tests {
             .init_resource::<Assets<Image>>()
             .init_resource::<ModelCache>()
             .insert_resource(Game(Arc::new(game)))
+            .add_plugins(exa_world::cloth::ClothPlugin)
             .add_systems(Update, attach_hair);
         let body = app
             .world_mut()
@@ -299,7 +300,16 @@ mod tests {
             ChildOf(body),
         ));
         app.update();
+        app.update();
         let world = app.world_mut();
+        // The cloth stage built each cloth, pinned, in the particle mode.
+        let mut built = world.query::<&exa_world::cloth::ClothInstance>();
+        let instances: Vec<_> = built.iter(world).collect();
+        assert!(!instances.is_empty(), "the hair cloth was never built");
+        for instance in instances {
+            assert!(instance.cloth.record.particle_mode());
+            assert!(!instance.cloth.pins.is_empty());
+        }
         let mut cloths = world.query::<(&ClothNode, Option<&ClothParameters>, &ClothSource)>();
         let found: Vec<_> = cloths
             .iter(world)
