@@ -833,7 +833,18 @@ atlas scaled to the level's glyph quad; with no GUI atlas at all the
 running screen falls back to the game's bitmap font for the same runs. A
 flash ends, with the refusal that shaped it, when the draw finds its time
 up. The running screen rasterises those batches in software (`power_screen::render`)
-with each fragment program's arithmetic and the loaded sheets. The links'
+with each fragment program's arithmetic and the loaded sheets. It keeps the
+canvas between its 33 ms redraws (`power_screen::CanvasCache`): the new draw
+is compared with the last batch by batch, and only the boxes the changed
+batches walk (old and new triangles) are cleared and drawn again with every
+batch, which gives the same bytes as a whole redraw because every other pixel
+is covered by the same batches in the same order. On the open tree only the
+domain wheel (its phase moves the backdrop and bands) and the link glow
+change, about 100 000 of the 921 600 pixels at 1280×720; the rows are drawn
+in bands on the compute pool. The canvas holds premultiplied colour, as the
+blends leave it in a transparent target; the image node gets it with straight
+alpha (each colour over its alpha) at `GlobalZIndex` 910, over the HUD's
+layers. The links'
 texture unit is unbound and the spline program samples nothing, so the
 ribbon is wholly procedural.
 

@@ -8,7 +8,12 @@
 //! the six fragment programs' arithmetic and the loaded `.rfi` sheets, into
 //! one screen-sized image (the same canvas path the main menu uses). Only
 //! the open screen is drawn, at most 33 ms apart; the in-game bar draws a
-//! strip `scale × 20` high.
+//! strip `scale × 20` high. The canvas is kept between redraws
+//! ([`CanvasCache`]): only the boxes of the batches that changed (on the
+//! open tree, the domain wheel's shimmer and the link glow) are drawn
+//! again, in row bands on the compute pool, giving the bytes a whole
+//! redraw gives. The image node gets the picture with straight alpha and
+//! draws it over the HUD ([`TREE_Z`]).
 //!
 //! The text is the GUI skin's own: the interface level's main font gives
 //! the advances, glyph quad and line step, and its glyphs sample the level's
