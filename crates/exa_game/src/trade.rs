@@ -370,6 +370,18 @@ pub fn first_stock(
     update_stock(stock, 0, -1, rolls, world)
 }
 
+/// A stock's first fill for a merchant's own kinds: the same empty-shelf
+/// draw with the kinds the merchant sells and any rank.
+pub fn first_stock_of(
+    stock: &mut Vec<u32>,
+    kinds: u32,
+    rank: i32,
+    rolls: [u32; 2],
+    world: &mut impl ShopWorld,
+) -> StockReport {
+    update_stock(stock, kinds, rank, rolls, world)
+}
+
 /// Fill an empty stock and leave a shelf that already has items alone. The
 /// hub click's first-stock guard: `None` when there was nothing to do.
 pub fn ensure_first_stock(
@@ -378,6 +390,20 @@ pub fn ensure_first_stock(
     world: &mut impl ShopWorld,
 ) -> Option<StockReport> {
     stock.is_empty().then(|| first_stock(stock, rolls, world))
+}
+
+/// Fill an empty stock of a merchant's kinds, leaving a shelf that already
+/// has items alone.
+pub fn ensure_first_stock_of(
+    stock: &mut Vec<u32>,
+    kinds: u32,
+    rank: i32,
+    rolls: [u32; 2],
+    world: &mut impl ShopWorld,
+) -> Option<StockReport> {
+    stock
+        .is_empty()
+        .then(|| first_stock_of(stock, kinds, rank, rolls, world))
 }
 
 /// The variant roll's next unit in [0, 1): the seed stepped, times 2^−32,

@@ -2581,6 +2581,7 @@ dependencies = [
  "exa_character",
  "exa_formats",
  "exa_physics",
+ "exa_render",
  "exa_script",
 ]
 
@@ -2594,6 +2595,7 @@ dependencies = [
  "exa_formats",
  "exa_physics",
  "exa_render",
+ "naga",
  "rapier3d",
 ]
 

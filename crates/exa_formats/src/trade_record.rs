@@ -148,6 +148,27 @@ fn word(b: &[u8], at: usize) -> u32 {
         .map_or(0, |w| u32::from_le_bytes([w[0], w[1], w[2], w[3]]))
 }
 
+/// The OR of every section tag in a record payload: the flags word a shop
+/// tests against the kinds it stocks. A section that is short, runs past
+/// the payload or has a header under eight bytes stops the walk (the tags
+/// read before it still count), so a malformed payload yields what was
+/// legible rather than an error.
+#[must_use]
+pub fn section_flags(payload: &[u8]) -> u32 {
+    let mut flags = 0u32;
+    let mut pos = 0usize;
+    while pos + 8 <= payload.len() {
+        let tag = word(payload, pos);
+        let size = word(payload, pos + 4) as usize;
+        if size < 8 || pos + size > payload.len() {
+            break;
+        }
+        flags |= tag;
+        pos += size;
+    }
+    flags
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -233,5 +254,26 @@ mod tests {
         let mut long = NAME.to_le_bytes().to_vec();
         long.extend(64u32.to_le_bytes());
         assert!(TradeRecord::parse(&long).is_err());
+    }
+
+    /// The kinds word is the OR of the payload's section tags, and a
+    /// malformed tail leaves only the tags read before it.
+    #[test]
+    fn the_section_tags_are_the_kinds_word() {
+        let mut p = section(NAME, &[0u8; 4]);
+        p.extend(section(MODEL, &[0u8; 4]));
+        p.extend(section(BODY, &[0u8; 4]));
+        assert_eq!(section_flags(&p), NAME | MODEL | BODY);
+        assert_eq!(section_flags(&[]), 0);
+        // A header whose size runs past the payload stops the walk.
+        let mut cut = p.clone();
+        cut.extend(BODY.to_le_bytes());
+        cut.extend(64u32.to_le_bytes());
+        assert_eq!(section_flags(&cut), NAME | MODEL | BODY);
+        // A header under eight bytes stops it before its tag counts.
+        let mut short = p.clone();
+        short.extend(WEAPON.to_le_bytes());
+        short.extend(4u32.to_le_bytes());
+        assert_eq!(section_flags(&short), NAME | MODEL | BODY);
     }
 }

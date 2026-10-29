@@ -76,6 +76,9 @@ pub struct ArenaCareer {
     pub picks: crate::arena_match::ArenaPicks,
     /// The merchant's own stock, apart from the shop's shelf.
     pub merchant_stock: Vec<u32>,
+    /// The kinds the employed merchant sells: [`crate::trade::DEFAULT_KINDS`]
+    /// when the career does not narrow them.
+    pub merchant_kinds: u32,
     /// The hub's items as the physician's weapon query reads them, supplied
     /// by the host that knows the scene.
     pub venue_items: Vec<crate::arena_spawn::PlacedItem>,
@@ -109,6 +112,7 @@ impl Default for ArenaCareer {
             matches_today: 0,
             picks: crate::arena_match::ArenaPicks::default(),
             merchant_stock: Vec::new(),
+            merchant_kinds: crate::trade::DEFAULT_KINDS,
             venue_items: Vec::new(),
             roll: 0,
             warn_manager: true,

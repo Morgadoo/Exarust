@@ -195,6 +195,25 @@ fn the_first_stock_guard_fills_only_an_empty_shelf() {
     assert_eq!(stock.len(), 18);
 }
 
+/// A merchant's first shelf takes only the kinds the merchant sells. The
+/// apparel-only draw never stocks the weapon, and the rank filter refuses
+/// the apparel of rank 2.
+#[test]
+fn a_merchants_first_stock_takes_its_kinds_and_rank() {
+    let mut world = World::new();
+    let mut stock = Vec::new();
+    let report = ensure_first_stock_of(&mut stock, APPAREL, -1, [7, 99], &mut world).unwrap();
+    assert!((18..=20).contains(&stock.len()));
+    assert_eq!(report.invalid, 0);
+    for &id in &stock {
+        let base = world.parent_of(id).unwrap_or(id);
+        assert_eq!(base, 10, "{id:#x}");
+    }
+    let mut ranked = Vec::new();
+    ensure_first_stock_of(&mut ranked, APPAREL, 1, [3, 4], &mut world).unwrap();
+    assert!(ranked.is_empty(), "no apparel of rank 1 is listed");
+}
+
 /// Options 1 to 3 ask all kinds, apparel and arms; option 1 of the ranks
 /// asks any. The dialog reopens on the matching options.
 #[test]

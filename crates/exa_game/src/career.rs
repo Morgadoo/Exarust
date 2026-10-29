@@ -431,6 +431,17 @@ impl Company {
         trade::ensure_first_stock(&mut self.stock, rolls, world)
     }
 
+    /// Fill the merchant's own shelf on its first click, with the kinds the
+    /// merchant sells. A shelf that already has items is left alone.
+    pub fn first_merchant_stock(
+        stock: &mut Vec<u32>,
+        kinds: u32,
+        rolls: [u32; 2],
+        world: &mut impl ShopWorld,
+    ) -> Option<StockReport> {
+        trade::ensure_first_stock_of(stock, kinds, -1, rolls, world)
+    }
+
     /// Apply a confirmed trade (`trade::settle`) through coin dwords: the
     /// copper due leaves the purse, none left below 1, and the two tallies
     /// add to the copper spent and earned [guess: which tally is which].
