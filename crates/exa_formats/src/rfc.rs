@@ -153,7 +153,39 @@ pub struct Node {
     pub body: NodeBody,
 }
 
+/// Node flags that ask the importer's finalise pass to apply a visibility
+/// rule to the node's tree.
+pub const VISIBILITY_MASK: u32 = 0x30_0000;
+/// Visibility rule: hide every light node in the tree.
+pub const VISIBILITY_HIDE: u32 = 0x10_0000;
+/// Visibility rule: hide light and fire nodes once the level's darkness is
+/// above [`DARKNESS_LIMIT`].
+pub const VISIBILITY_FADE: u32 = 0x20_0000;
+/// The fade value above which [`VISIBILITY_FADE`] hides a node, the
+/// original's stored f32 `0.12` (strict).
+pub const DARKNESS_LIMIT: f32 = f32::from_bits(0x3df5_c28f);
+
 impl Node {
+    /// `flags2` bit: the node is hidden (the original's visibility state
+    /// word, set by [`Scene::apply_visibility_flags`]).
+    pub const HIDDEN: u32 = 0x2;
+
+    /// Whether the node's scene class is a light: the class bits its
+    /// registration masks with `0x5f` are `5`.
+    pub fn is_light_node(&self) -> bool {
+        self.flags & 0x5f == 0x5
+    }
+
+    /// Whether the node is a fire emitter (`0x3DD0E002`).
+    pub fn is_fire_node(&self) -> bool {
+        matches!(self.body, NodeBody::Emitter { kind: FIRE, .. })
+    }
+
+    /// Whether [`Scene::apply_visibility_flags`] hid the node.
+    pub fn is_hidden(&self) -> bool {
+        self.flags2 & Self::HIDDEN != 0
+    }
+
     /// Node flag: the node is level geometry. The original never registers
     /// the rigid body of a node marked so (its meshes stay static
     /// colliders): a level's own nodes can carry it in the file (the tavern
@@ -185,6 +217,39 @@ impl Node {
     /// The decoded keyframe tracks.
     pub fn tracks(&self) -> impl Iterator<Item = &KeyTrack> {
         self.key_tracks.iter().filter_map(|t| t.as_ref().ok())
+    }
+}
+
+/// The recursive half of [`Scene::apply_visibility_flags`]: marks the node
+/// and then every node under it, in the original's child order.
+fn apply_hidden(
+    nodes: &mut [Node],
+    children: &[Vec<usize>],
+    at: usize,
+    hide_lights: bool,
+    darkness: f32,
+    remaining: usize,
+) {
+    let Some(node) = nodes.get_mut(at) else {
+        return;
+    };
+    if remaining == 0 {
+        return;
+    }
+    let hides = if hide_lights {
+        node.is_light_node()
+    } else {
+        // A NaN or exactly 0.12 leaves the node shown (the original's
+        // `comiss` against the constant).
+        (node.is_light_node() || node.is_fire_node()) && darkness > DARKNESS_LIMIT
+    };
+    if hides {
+        node.flags2 |= Node::HIDDEN;
+    }
+    if let Some(kids) = children.get(at) {
+        for &child in kids {
+            apply_hidden(nodes, children, child, hide_lights, darkness, remaining - 1);
+        }
     }
 }
 
@@ -1166,6 +1231,48 @@ impl Scene {
             }
         }
         Ok(db)
+    }
+
+    /// Applies the importer's node visibility flags as its finalise pass
+    /// does when it walks a node whose flags ask for them: `0x100000` hides
+    /// every light node in the tree, and `0x200000` hides light and fire
+    /// nodes once the level's darkness is above `0.12` (a NaN or exactly
+    /// `0.12` leaves them shown). The hidden bit is
+    /// [`Node::HIDDEN`] of `flags2`; the walk reaches children from any
+    /// depth. A level's importer calls this with the fade value it is
+    /// loading at; Exarust loads a level whole, so nothing calls it yet.
+    pub fn apply_visibility_flags(&mut self, darkness: f32) {
+        let mut children = vec![Vec::new(); self.nodes.len()];
+        for (i, node) in self.nodes.iter().enumerate() {
+            if let Some(parent) = node.parent
+                && parent > 0
+                && parent <= self.nodes.len()
+                && parent - 1 != i
+            {
+                children[parent - 1].push(i);
+            }
+        }
+        let roots: Vec<(usize, bool)> = self
+            .nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(i, node)| match node.flags & VISIBILITY_MASK {
+                VISIBILITY_HIDE => Some((i, true)),
+                VISIBILITY_FADE => Some((i, false)),
+                _ => None,
+            })
+            .collect();
+        for (root, hide_lights) in roots {
+            let depth = self.nodes.len();
+            apply_hidden(
+                &mut self.nodes,
+                &children,
+                root,
+                hide_lights,
+                darkness,
+                depth,
+            );
+        }
     }
 
     pub fn material(&self, name: &str) -> Option<&Material> {
@@ -3783,6 +3890,85 @@ mod tests {
         let scene = Scene::parse(&file).unwrap();
         assert_eq!(scene.nodes[0].unknown_sub_chunks, [0x1234_5678]);
         assert_eq!(SEEN.load(Ordering::SeqCst), 1);
+    }
+
+    /// A stored node with its own flags word, flags2, instance and parent.
+    fn node_flags(
+        node: &str,
+        flags: u32,
+        flags2: u32,
+        instance: u32,
+        parent: u32,
+        body: &[u8],
+    ) -> Vec<u8> {
+        let mut b = name(node);
+        b.extend(u32s(&[flags, flags2, instance, parent]));
+        b.extend(f32s(&[
+            1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0,
+        ]));
+        b.extend(f32s(&[0.0; 7]));
+        b.extend(u32s(&[0]));
+        b.extend_from_slice(body);
+        b
+    }
+
+    /// A light body: its flags, colour, one word and the five shape words.
+    fn light_body() -> Vec<u8> {
+        let mut b = u32s(&[0]);
+        b.extend(f32s(&[1.0, 1.0, 1.0]));
+        b.extend(u32s(&[0]));
+        b.extend(f32s(&[1.0, 1.0, 100.0, 0.0, 0.5]));
+        b
+    }
+
+    #[test]
+    fn the_visibility_rules_hide_lights_and_fires_by_darkness() {
+        let light = light_body();
+        let nodes = [
+            (NODE_LIGHT, node_flags("A", 0x20_0005, 0, 0, 0, &light)),
+            // B is under A: no rule of its own, but A's walk reaches it.
+            (NODE_LIGHT, node_flags("B", 0x05, 0, 0, 1, &light)),
+            (NODE_LIGHT, node_flags("C", 0x10_0005, 0, 0, 0, &light)),
+            // Both bits are not one of the two rules.
+            (NODE_LIGHT, node_flags("D", 0x30_0005, 0, 0, 0, &light)),
+            (NODE_LIGHT, node_flags("E", 0x05, 0, 0, 0, &light)),
+            // A fire emitter under the fade rule.
+            (0x3D01, {
+                let mut b = u32s(&[FIRE, 4]);
+                b.extend(f32s(&[20.0]));
+                node_flags("Fire", 0x20_0000, 0, 0, 0, &b)
+            }),
+        ];
+        let file = |tag: u16| {
+            let mut list = u32s(&[nodes.len() as u32]);
+            for (kind, body) in &nodes {
+                list.extend(chunk(*kind, body));
+            }
+            let mut f = vec![0xCF, 0xAF];
+            f.extend(tag.to_le_bytes());
+            f.extend(chunk(NODE_LIST, &list));
+            f
+        };
+        let mut scene = Scene::parse(&file(0x3D23)).unwrap();
+        // Exactly 0.12 leaves the fade nodes shown; C's hide rule still
+        // applies at any darkness.
+        scene.apply_visibility_flags(0.12);
+        let hidden: Vec<bool> = scene.nodes.iter().map(Node::is_hidden).collect();
+        assert_eq!(hidden, [false, false, true, false, false, false]);
+        // Above it: A and its child B join C; D's both bits match no rule
+        // and E has none.
+        scene.apply_visibility_flags(0.13);
+        let hidden: Vec<bool> = scene.nodes.iter().map(Node::is_hidden).collect();
+        assert_eq!(hidden, [true, true, true, false, false, true]);
+        // The hide rule needs no darkness at all.
+        let mut scene = Scene::parse(&file(0x3D23)).unwrap();
+        scene.apply_visibility_flags(0.0);
+        let hidden: Vec<bool> = scene.nodes.iter().map(Node::is_hidden).collect();
+        assert_eq!(hidden, [false, false, true, false, false, false]);
+        // A NaN darkness leaves the fade nodes shown.
+        let mut scene = Scene::parse(&file(0x3D23)).unwrap();
+        scene.apply_visibility_flags(f32::NAN);
+        assert!(!scene.nodes[0].is_hidden() && !scene.nodes[1].is_hidden());
     }
 
     #[test]

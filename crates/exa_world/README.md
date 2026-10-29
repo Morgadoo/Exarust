@@ -88,7 +88,13 @@ and the grid's rooms; portal clipping is next (see
   240 × 240 texels, the two random draws of a plant's size and rotation use
   the engine's double-precision unit, and each chunk's plants are ordered
   small plants, grass, large plants by mean height as the original sorts
-  them; the baked chunks have no collider and cast shadows
+  them; the original's plant ground query with its diagonal normal
+  correction is `vegetation::ground_with_normal` (in the block vertices'
+  centimetres; the original discards its result after computing it), and
+  the grass hooks' per-chunk tests are `chunk_drawn`, `chunk_sun_shadow` and
+  `chunk_omni_shadow` (the block node and shadow words, the renderer and
+  node masks, the node mask's sun-shadow bit, the node's skip bit and a
+  positive instance count); the baked chunks have no collider and cast shadows
   only above shadow quality 4; the plant shader's normal-map variant is not
   switched by quality (one Exarust plant material). Wind is not ported.
 - `voxeliser`: the GI sample-point generator's parameters: a 40 cm lattice spacing, the 4.0 and 0.4 tuning values and one work pass.

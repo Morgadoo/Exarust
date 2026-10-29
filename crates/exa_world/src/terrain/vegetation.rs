@@ -31,6 +31,62 @@ const MIN_DENSITY: f64 = 0.35;
 /// Grass models are shrunk by this.
 pub const GRASS_SCALE: f32 = 0.75;
 
+/// Block word bit: the block has a draw node (the grass hook draws its
+/// chunks).
+pub const BLOCK_VISIBLE: u32 = 0x80;
+/// Block word bit: the block is drawn in an omni light's shadow map.
+pub const BLOCK_OMNI_SHADOW: u32 = 0x1_0000;
+/// Block word bit: the block's shadow faces are current.
+pub const BLOCK_SHADOW_FACES: u32 = 0x2_0000;
+/// Chunk node mask bit (the top bit of the same mask word the main draw
+/// meets with the renderer's view mask): the chunk casts into the sun's
+/// shadow map.
+pub const NODE_SUN_SHADOW: u32 = 0x8000_0000;
+/// Chunk node word bit: the chunk is left out of the main draw.
+pub const NODE_SKIP_DRAW: u32 = 0x4;
+
+/// Whether the grass hook draws a chunk: the block has a draw node, the
+/// renderer's view mask meets the chunk node's mask, the node's word has no
+/// skip bit and the chunk has instances. The original tests these in this
+/// order before binding the buffers and drawing the instances.
+pub fn chunk_drawn(
+    block_words: u32,
+    render_mask: u32,
+    node_mask: u32,
+    node_words: u32,
+    instances: usize,
+) -> bool {
+    block_words & BLOCK_VISIBLE != 0
+        && render_mask & node_mask != 0
+        && node_words & NODE_SKIP_DRAW == 0
+        && instances > 0
+}
+
+/// Whether the grass hook draws a chunk into the sun's shadow map: the
+/// block is visible, the chunk has instances and its node mask (the word
+/// [`chunk_drawn`] takes as `node_mask`, not the skip word) has the sun
+/// shadow bit.
+pub fn chunk_sun_shadow(block_words: u32, node_mask: u32, instances: usize) -> bool {
+    block_words & BLOCK_VISIBLE != 0 && instances > 0 && node_mask & NODE_SUN_SHADOW != 0
+}
+
+/// Whether the grass hook draws a chunk into an omni light's shadow map: the
+/// block carries both shadow words, the chunk has instances, and the
+/// renderer's shadow mask for the light meets the chunk node's mask. The
+/// original finds the chunk's room in the renderer's room list and intersects
+/// that light's mask; Exarust passes the resulting mask in.
+pub fn chunk_omni_shadow(
+    block_words: u32,
+    light_mask: u32,
+    node_mask: u32,
+    instances: usize,
+) -> bool {
+    block_words & (BLOCK_OMNI_SHADOW | BLOCK_SHADOW_FACES)
+        == (BLOCK_OMNI_SHADOW | BLOCK_SHADOW_FACES)
+        && instances > 0
+        && light_mask & node_mask != 0
+}
+
 /// The original's 32-bit linear congruential generator.
 #[derive(Debug, Clone, Copy)]
 pub struct Lcg(pub u32);
@@ -327,6 +383,60 @@ pub fn ground(heights: &[f32], n: usize, at: Vec2) -> f32 {
     } else {
         // The triangle (0, 0), (0, 1), (1, 1).
         h(0, 0) * (1.0 - fz) + h(0, 1) * (fz - fx) + h(1, 1) * fx
+    }
+}
+
+/// The ground height under a plant point with the original's normal
+/// correction, from a block's vertex positions in centimetres (the unit of
+/// the original's terrain block grid) and the point in vertex steps.
+///
+/// The original starts at the cell corner and takes the point relative to
+/// the corner's right neighbour. It tests `(z − x)·0.05 − cross.y·0.0025`
+/// against 1: a value above 1, or a NaN, picks the cell's other diagonal
+/// (a NaN takes the branch, as the original's unordered compare does). The
+/// correction is `±0.0025·(edge·(relative × diagonal))`, added on the far
+/// branch and taken off on the near one. In the original its result is
+/// discarded by the caller, which places the instance at the uncorrected
+/// height (and passes a position whose height it never set, so `position.y`
+/// is whatever the previous call left); it is kept here as a tested rule
+/// that the Exarust baker does not call. A point outside the
+/// grid returns the position's own height `[guess: the original reads on]`.
+pub fn ground_with_normal(vertices: &[[f32; 3]], n: usize, at: Vec2, position: Vec3) -> f32 {
+    /// The original's determinant test against 1.
+    const DIAGONAL: f32 = 1.0;
+    /// The original's f32 0.05.
+    const SLOPE: f32 = f32::from_bits(0x3d4c_cccd);
+    /// The original's f32 0.0025.
+    const CORRECTION: f32 = f32::from_bits(0x3b23_d70a);
+    let (i, j) = (at.x as i64, at.y as i64);
+    let corner = |di: i64, dj: i64| {
+        let (ci, cj) = (i + di, j + dj);
+        if ci < 0 || cj < 0 || ci as usize >= n || cj as usize >= n {
+            return None;
+        }
+        vertices.get(cj as usize * n + ci as usize).copied()
+    };
+    let (Some(p0), Some(p1), Some(p2), Some(p3)) =
+        (corner(0, 0), corner(1, 0), corner(0, 1), corner(1, 1))
+    else {
+        return position.y;
+    };
+    let p0 = Vec3::from(p0);
+    let p1 = Vec3::from(p1);
+    let p2 = Vec3::from(p2);
+    let p3 = Vec3::from(p3);
+    let relative = position - p1;
+    let edge = p0 - p1;
+    let other = p2 - p1;
+    // The engine sums a dot as `(x·x + y·y) + z·z`.
+    let dot = |a: Vec3, b: Vec3| (a.x * b.x + a.y * b.y) + a.z * b.z;
+    let cross = relative.cross(edge);
+    let test = ((-relative.x) + relative.z) * SLOPE - cross.y * CORRECTION;
+    if test.is_nan() || test > DIAGONAL {
+        let cross = relative.cross(p3 - p1);
+        position.y + dot(other, cross) * CORRECTION
+    } else {
+        position.y - dot(other, cross) * CORRECTION
     }
 }
 
@@ -648,5 +758,73 @@ mod tests {
         let heights = [0.0, 3.0, 1.0, 2.0];
         assert!((ground(&heights, 2, Vec2::new(0.2, 0.6)) - 0.8).abs() < 1e-5);
         assert!((ground(&heights, 2, Vec2::new(0.6, 0.2)) - 1.6).abs() < 1e-5);
+    }
+
+    /// A 3 × 3 block of 20 cm cells on the flat plane y = 0, in centimetres.
+    fn flat_block() -> Vec<[f32; 3]> {
+        (0..9)
+            .map(|k| {
+                let (i, j) = (k % 3, k / 3);
+                [i as f32 * 20.0, 0.0, j as f32 * 20.0]
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_ground_correction_takes_the_far_diagonal() {
+        // At (0.5, 0.5) the cell corner is (0, 0) and the point lies
+        // 20 cm past its right neighbour. The test is 2, above 1: the
+        // correction uses the far diagonal and comes to −5 cm on this flat
+        // block, so the point sits back on the plane.
+        let block = flat_block();
+        let got = ground_with_normal(&block, 3, Vec2::new(0.5, 0.5), Vec3::new(20.0, 5.0, 20.0));
+        assert_eq!(got, 0.0);
+    }
+
+    #[test]
+    fn the_ground_correction_takes_the_near_diagonal() {
+        // The same block with the point 20 cm short of the cell: the test is
+        // −2, so the near diagonal applies and the correction takes the
+        // 5 cm off, back to the plane.
+        let block = flat_block();
+        let got = ground_with_normal(&block, 3, Vec2::new(0.5, 0.5), Vec3::new(20.0, 5.0, -20.0));
+        assert_eq!(got, 0.0);
+    }
+
+    #[test]
+    fn the_draw_and_shadow_hooks_gate_each_chunk() {
+        // Main draw: block node, view mask, no skip bit, instances.
+        assert!(chunk_drawn(BLOCK_VISIBLE, 1, 1, 0, 3));
+        assert!(!chunk_drawn(0, 1, 1, 0, 3));
+        assert!(!chunk_drawn(BLOCK_VISIBLE, 2, 1, 0, 3));
+        assert!(!chunk_drawn(BLOCK_VISIBLE, 1, 1, NODE_SKIP_DRAW, 3));
+        assert!(!chunk_drawn(BLOCK_VISIBLE, 1, 1, 0, 0));
+        // Sun shadow: visible block, instances and the node's shadow bit.
+        assert!(chunk_sun_shadow(BLOCK_VISIBLE, NODE_SUN_SHADOW, 1));
+        assert!(!chunk_sun_shadow(BLOCK_VISIBLE, 0, 1));
+        assert!(!chunk_sun_shadow(0, NODE_SUN_SHADOW, 1));
+        assert!(!chunk_sun_shadow(BLOCK_VISIBLE, NODE_SUN_SHADOW, 0));
+        // Omni shadow: both block shadow words, instances and the light's
+        // mask meeting the chunk's.
+        let both = BLOCK_OMNI_SHADOW | BLOCK_SHADOW_FACES;
+        assert!(chunk_omni_shadow(both, 4, 4, 1));
+        assert!(!chunk_omni_shadow(BLOCK_OMNI_SHADOW, 4, 4, 1));
+        assert!(!chunk_omni_shadow(BLOCK_SHADOW_FACES, 4, 4, 1));
+        assert!(!chunk_omni_shadow(both, 1, 4, 1));
+    }
+
+    #[test]
+    fn a_nan_point_takes_the_far_diagonal_as_the_original_does() {
+        let block = flat_block();
+        let got = ground_with_normal(
+            &block,
+            3,
+            Vec2::new(0.5, 0.5),
+            Vec3::new(f32::NAN, 5.0, 20.0),
+        );
+        assert!(got.is_nan());
+        // Off the grid: the position's height, the labelled fallback.
+        let got = ground_with_normal(&block, 3, Vec2::new(5.0, 5.0), Vec3::new(0.0, 7.0, 0.0));
+        assert_eq!(got, 7.0);
     }
 }
