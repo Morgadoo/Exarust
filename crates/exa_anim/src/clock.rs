@@ -229,13 +229,15 @@ impl Animator {
     /// captured turns become the bones' current targets. Nothing is
     /// captured before the clip's first sample: it starts from its keys,
     /// with no blend (which would only set its clock back).
-    pub fn take_capture(&mut self, physical: &[Option<Quat>]) {
+    /// Returns whether a capture was taken (the caller then notes its
+    /// feet, [`Animator::note_planted`]).
+    pub fn take_capture(&mut self, physical: &[Option<Quat>]) -> bool {
         let Some(kind) = self.pending.take() else {
-            return;
+            return false;
         };
         let Some(pose) = self.pose.as_mut() else {
             self.blend = 0.0;
-            return;
+            return false;
         };
         for (i, r) in pose.rotations.iter_mut().enumerate() {
             if kind == Capture::Plain && LOWER_BODY.contains(&(i + 1)) {
@@ -246,6 +248,27 @@ impl Animator {
             }
         }
         self.capture = Some(pose.clone());
+        true
+    }
+
+    /// Notes, with a capture just taken, whether each foot touched: `feet`
+    /// holds each foot bone's pose slot (skin bone − 1) and its touching
+    /// state, as every one of the original's captures copies the foot's
+    /// state bit into the captured bone's flag. Slots not named keep what
+    /// they had (unset until a capture names them).
+    pub fn note_planted(&mut self, feet: &[(usize, bool)]) {
+        for &(slot, touching) in feet {
+            if self.capture_planted.len() <= slot {
+                self.capture_planted.resize(slot + 1, false);
+            }
+            self.capture_planted[slot] = touching;
+        }
+    }
+
+    /// The capture's flag for pose slot `slot`: whether its foot touched
+    /// when the capture was taken. False for a slot never noted.
+    pub fn captured_planted(&self, slot: usize) -> bool {
+        self.capture_planted.get(slot).copied().unwrap_or(false)
     }
 
     /// The pose a dazed or unsteady body holds this tick: its pelvis's and
@@ -396,11 +419,30 @@ impl Animator {
     /// hold, the root keeping its travel, and the pose kept as the targets.
     /// The body still snaps its particles to the pose itself; that and the
     /// contacts are the caller's. Exarust has no clip on a corpse yet.
-    pub fn sample_ragdoll(&mut self, clip: &Clip, looping: bool) -> Option<ClipPose> {
-        let b = ragdoll_bracket(clip, self.time, looping, self.blend)?;
+    /// While the clip still leads in on the key its capture is meant for,
+    /// the capture is the source ([`Animator::ragdoll_lead`]). Returns the
+    /// pose and the bracket it was blended on.
+    pub fn sample_ragdoll(&mut self, clip: &Clip, looping: bool) -> Option<(ClipPose, Bracket)> {
+        let mut b = ragdoll_bracket(clip, self.time, looping, self.blend)?;
+        self.ragdoll_lead(&mut b);
         let pose = self.blend_keys(clip, &b, false);
         self.keep(&pose, 0.0);
-        Some(pose)
+        Some((pose, b))
+    }
+
+    /// The muscles-off sampler's lead-in: while the bracket aims at the
+    /// capture's key, the capture (when taken) is its source, with no ease;
+    /// aiming at another key ends the lead for good and the blend goes,
+    /// but unlike the living sampler's the clock keeps it (the original's
+    /// muscles-off sampler zeroes the blend alone) and the ease stays.
+    pub fn ragdoll_lead(&mut self, b: &mut Bracket) {
+        if self.leading && b.dst == self.capture_key {
+            b.from_capture = self.capture.is_some();
+        } else if self.leading {
+            self.leading = false;
+            self.capture = None;
+            self.blend = 0.0;
+        }
     }
 
     /// Samples `clip` at the clock for a body without parts of its own.

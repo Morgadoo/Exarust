@@ -245,6 +245,11 @@ pub struct Animator {
     /// Where the body was when the clip started: each bone's turn and the
     /// root (unscaled), once its tick has taken it.
     pub capture: Option<ClipPose>,
+    /// Per pose slot (skin bone − 1), whether that bone's foot touched
+    /// when a capture was last taken: every capture writes each foot
+    /// bone's flag ([`Animator::note_planted`]); other bones stay unset.
+    /// The muscles-off sampler reads it as the capture's key flag.
+    pub capture_planted: Vec<bool>,
     /// A start whose capture the body's next tick takes.
     pub pending: Option<Capture>,
     /// The pose last sampled (the root unscaled): the bones' current
@@ -278,6 +283,7 @@ impl Animator {
             leading: true,
             capture_key: 0,
             capture: None,
+            capture_planted: Vec::new(),
             pending: None,
             pose: None,
             held: 0.0,

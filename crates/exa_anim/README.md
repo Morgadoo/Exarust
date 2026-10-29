@@ -19,8 +19,12 @@ them. A start that replaces Walk or Run leaves a trailing-foot request
 (`Animator::take_left_locomotion`), which the body's tick hands to its
 footwork. A limp (muscles-off) body's sampler takes the bracket at the raw
 clock, with no blend and no hold, the root keeping its travel
-(`ragdoll_bracket`, `Animator::sample_ragdoll`); Exarust has no clip on a
-corpse yet. A sample is taken in the original's
+(`ragdoll_bracket`, `Animator::sample_ragdoll`), leading in from the
+start's capture without ease while it aims at the capture's key and
+keeping the clock when the lead ends (`Animator::ragdoll_lead`); Exarust
+has no clip on a corpse yet. Every capture notes whether each foot
+touched (`Animator::note_planted`, read back by `captured_planted`): the
+muscles-off sampler's source flag while it leads in. A sample is taken in the original's
 steps (the bracket, which writes the progress; the keys blended; the
 gait overlay, the Run clip slerped over the Walk at the same keys; the
 hold; the pose kept as the targets), so a physical body's sampler can put

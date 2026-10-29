@@ -58,7 +58,9 @@ mod bend;
 #[path = "body_limp.rs"]
 mod limp_sampler;
 pub use bend::{FemurPosture, femur_posture_turn, foot_pitch_target};
-pub use limp_sampler::{limp_plant, limp_pose_height, snap_part};
+pub use limp_sampler::{
+    LimpFoot, limp_anchor_height, limp_foot, limp_plant, limp_pose_height, limp_step, snap_part,
+};
 #[path = "body_hunch.rs"]
 mod hunch;
 pub use hunch::{ease_hunch, hunch_applies, hunch_turn, step_hunch};
@@ -70,6 +72,7 @@ pub use feet::{
     FootState, Footstep, FullTone, GaitStep, QueuedStep, StepEnd, WalkedStep, full_tone, gait_step,
     queued_step, step_end, step_loudness, step_position,
 };
+pub use feet::{WalkRustle, walk_rustle};
 #[path = "body_pins.rs"]
 mod pins;
 #[path = "body_stages.rs"]
@@ -1522,6 +1525,14 @@ pub struct Ragdoll {
     limp_height: f32,
     /// The body scale the muscles-off sampler's height target reads.
     limp_scale: f32,
+    /// Some foot supported the body at its last feet pass, kept when the
+    /// muscles go: the muscles-off sampler's walking plants need it.
+    /// Exarust runs no feet pass on a body without muscles, so this is the
+    /// last living pass's support.
+    limp_supported: bool,
+    /// The body was walking (its motion the walk's) when its muscles went:
+    /// the muscles-off sampler plants by the keys' flags only then.
+    limp_walking: bool,
     /// The body's scrape and roll sound sources, each following a point in
     /// its part's frame ([`Ragdoll::add_scrape_on`]).
     scrapes: Vec<ScrapeSource>,
@@ -2261,6 +2272,8 @@ impl Ragdoll {
             limp_clip_rate: 1.0,
             limp_height: 0.0,
             limp_scale: 1.0,
+            limp_supported: false,
+            limp_walking: false,
             scrapes: Vec::new(),
             scrape_events: Vec::new(),
         }
@@ -2315,6 +2328,17 @@ impl Ragdoll {
     /// The body scale the muscles-off sampler's height target reads.
     pub fn limp_scale(&self) -> f32 {
         self.limp_scale
+    }
+
+    /// Some foot supported the body at the last feet pass before its
+    /// muscles went.
+    pub fn limp_supported(&self) -> bool {
+        self.limp_supported
+    }
+
+    /// The body was walking when its muscles went.
+    pub fn limp_walking(&self) -> bool {
+        self.limp_walking
     }
 
     /// A recovery or stagger step is running.
@@ -2787,6 +2811,8 @@ impl Ragdoll {
             self.limp_clip_rate = d.race.clip_rate;
             self.limp_height = d.lift_target.unwrap_or(0.0) * CM;
             self.limp_scale = d.stats.scale;
+            self.limp_supported = d.balance.has_support();
+            self.limp_walking = d.bearing.walking;
         }
         self.drive = None;
         pairs::set_leg_layers(&mut self.parts, 0);

@@ -24,7 +24,7 @@ use bevy::math::Affine3A;
 use bevy::prelude::*;
 use exa_anim::{
     ATTACKS, AnimSystems, Animator, BodyPart, Capture, ClipPose, Motions, Stature, TickedClips,
-    follow_up_blend, in_place, ragdoll_bracket, rising_frames, slerp, standing_frames,
+    follow_up_blend, in_place, rising_frames, slerp, standing_frames,
 };
 use exa_assets::SkinnedPart;
 use exa_combat::Condition;
@@ -34,8 +34,8 @@ use exa_formats::rsq::{BoneBody, Clip};
 use exa_physics::CharacterBody;
 use exa_physics::body::locomotion::{LegMode, Locomotion, Locomotor, half_lean};
 use exa_physics::body::{
-    Bearing, BodyStats, Drive, FootState, GoLimp, PartSetup, Physical, PlacedCorpse, RaceMuscles,
-    Ragdoll, limp_plant, limp_pose_height, snap_part,
+    Bearing, BodyStats, Drive, FootState, GoLimp, LimpFoot, PartSetup, Physical, PlacedCorpse,
+    RaceMuscles, Ragdoll, limp_anchor_height, limp_foot, limp_pose_height, snap_part,
 };
 
 use crate::stages::CharacterTickPlugin;
@@ -304,35 +304,39 @@ const LIMP_CLOCK: f32 = 0.9;
 
 /// One tick of the muscles-off sampler for a body that has no muscles
 /// and still has its clip: its clip clock runs at 0.9 of the race's base
-/// rate, its pose is sampled with the clip's full root travel, each part's
-/// particles snap to the pose on the character frame it had when its
-/// muscles went, the standing height eases 0.05 of its target a tick, and
-/// a foot plants where it is when the destination key's flag (and the
-/// source key's, under a half) asks.
+/// rate, its pose is sampled with the clip's full root travel (leading in
+/// from the start's capture while it aims at the capture's key), each
+/// part's particles snap to the pose on the character frame it had when
+/// its muscles went, the standing height eases 0.05 of its target a tick,
+/// and the feet follow [`limp_foot`]: a walking, supported body plants a
+/// foot where it is when the destination key's flag (and the source's,
+/// under a half: the capture's own flag while it leads in) asks and lifts
+/// it otherwise; a body that is not walking puts every loose foot down.
+/// Returns the legs a walking plant put down, whose steps
+/// ([`exa_physics::body::limp_step`]) the caller sounds.
 ///
 /// Not scheduled: the original's body tick runs it only for a body whose
 /// muscles are off and whose condition is not dead, and a dead body's tick
 /// returns before any sampling (its muscles go only as it dies, so a
 /// corpse is a free ragdoll). No Exarust body is in that state; snapping
 /// every limp body to its clip would freeze the dying in their last pose.
-pub fn sample_limp(anim: &mut Animator, body: &mut Ragdoll, motions: &Motions) {
+pub fn sample_limp(anim: &mut Animator, body: &mut Ragdoll, motions: &Motions) -> Vec<usize> {
+    let mut stepped = Vec::new();
     if body.drive.is_some() {
-        return;
+        return stepped;
     }
     let Some(frame) = body.limp_frame() else {
-        return;
+        return stepped;
     };
     let Some(clip) = motions.clip(anim, &anim.action) else {
-        return;
+        return stepped;
     };
     anim.tick(clip, LIMP_CLOCK * body.limp_clip_rate(), 0);
     // The limp sampler's bracket is the raw clock with the remaining
-    // blend; its pose keeps the clip's full root travel.
-    let Some(bracket) = ragdoll_bracket(clip, anim.time, clip.loops(), anim.blend) else {
-        return;
-    };
-    let Some(pose) = anim.sample_ragdoll(clip, clip.loops()) else {
-        return;
+    // blend, its source the capture while it leads in; its pose keeps the
+    // clip's full root travel.
+    let Some((pose, bracket)) = anim.sample_ragdoll(clip, clip.loops()) else {
+        return stepped;
     };
     // The clip's character-space chain: each part's bone turn with its
     // rest offset, the root with the clip's root travel.
@@ -372,31 +376,71 @@ pub fn sample_limp(anim: &mut Animator, body: &mut Ragdoll, motions: &Motions) {
         let height = limp_pose_height(body.limp_height(), target);
         body.set_limp_height(height);
     }
-    // A foot plants where it is when the keys' flags ask.
-    let foot_bones: Vec<usize> = body
-        .legs()
-        .iter()
-        .map(|l| {
-            l.foot
-                .map_or(body.parts[l.shin].bone, |f| body.parts[f].bone)
-        })
-        .collect();
+    // The feet: planted, lifted or kept by the keys' flags.
+    let walking = body.limp_walking();
+    let supported = body.limp_supported();
+    let feet = foot_slots(body);
     let ankles: Vec<Option<Vec3>> = (0..body.legs().len()).map(|i| body.ankle(i)).collect();
     for (i, leg) in body.legs_mut().iter_mut().enumerate() {
-        let bone = foot_bones[i];
-        let flag = |key: usize| {
+        let Some(&(slot, _)) = feet.get(i) else {
+            continue;
+        };
+        let key_flag = |key: usize| {
             clip.keys
                 .get(key)
-                .and_then(|k| k.flags.get(bone.wrapping_sub(1)))
+                .and_then(|k| k.flags.get(slot))
                 .is_some_and(|f| f & 1 != 0)
         };
-        if limp_plant(flag(bracket.src), flag(bracket.dst), bracket.f)
-            && let Some(Some(at)) = ankles.get(i)
-        {
-            leg.anchor = *at;
-            leg.state = FootState(FootState::TOUCHING);
+        let source = if bracket.from_capture {
+            anim.captured_planted(slot)
+        } else {
+            key_flag(bracket.src)
+        };
+        let touching = leg.state.has(FootState::TOUCHING);
+        let Some(Some(at)) = ankles.get(i) else {
+            continue;
+        };
+        match limp_foot(
+            walking,
+            supported,
+            touching,
+            source,
+            key_flag(bracket.dst),
+            bracket.f,
+        ) {
+            LimpFoot::Keep => {}
+            LimpFoot::Lift => {
+                leg.anchor = *at;
+                leg.state = FootState(0);
+            }
+            LimpFoot::Plant { walking } => {
+                leg.anchor = *at;
+                if walking {
+                    // The original writes three times the scale (cm) over
+                    // the anchor's height, as it stands.
+                    leg.anchor.y = limp_anchor_height(scale) / CM;
+                    stepped.push(i);
+                }
+                leg.state = FootState(FootState::TOUCHING);
+            }
         }
     }
+    stepped
+}
+
+/// Each leg's foot bone as a pose slot (skin bone − 1; the shin's when the
+/// leg has no foot part) and whether the foot touches: what every capture
+/// notes ([`Animator::note_planted`]) and the muscles-off sampler reads.
+pub(crate) fn foot_slots(body: &Ragdoll) -> Vec<(usize, bool)> {
+    body.legs()
+        .iter()
+        .map(|l| {
+            let bone = l
+                .foot
+                .map_or(body.parts[l.shin].bone, |f| body.parts[f].bone);
+            (bone.wrapping_sub(1), l.state.has(FootState::TOUCHING))
+        })
+        .collect()
 }
 
 /// Centimetres per metre: the clocks' speeds are the original's, in cm a
@@ -523,7 +567,9 @@ pub(crate) fn clip_tick(
     };
     let physical = (anim.pending.is_some() || holding).then(|| turns(body));
     let physical = physical.as_deref().unwrap_or(&[]);
-    anim.take_capture(&lean.capture(anim.pending, physical, lean.before));
+    if anim.take_capture(&lean.capture(anim.pending, physical, lean.before)) {
+        anim.note_planted(&foot_slots(body));
+    }
     let playing = set.action_index(&anim.action);
     if let Some(clip) = motions.clip(anim, &anim.action) {
         let progress = anim.clip_progress(clip);
@@ -547,7 +593,9 @@ pub(crate) fn clip_tick(
             } else {
                 physical
             };
-            anim.take_capture(&lean.capture(anim.pending, physical, lean.now));
+            if anim.take_capture(&lean.capture(anim.pending, physical, lean.now)) {
+                anim.note_planted(&foot_slots(body));
+            }
         }
     }
     Some(Hold {
@@ -2377,8 +2425,13 @@ pub(crate) mod tests {
         assert!(body.drive.is_none());
         let motions = motions();
         let mut anim = Animator::new("Default", "Idle");
-        sample_limp(&mut anim, &mut body, &motions);
+        assert!(!body.legs()[0].state.has(FootState::TOUCHING));
+        let stepped = sample_limp(&mut anim, &mut body, &motions);
         assert!((anim.time - 0.9).abs() < 1e-5, "clock {}", anim.time);
+        // Not walking, its loose foot is put down where it is, no step.
+        assert!(stepped.is_empty());
+        assert!(body.legs()[0].state.has(FootState::TOUCHING));
+        assert_eq!(Some(body.legs()[0].anchor), body.ankle(0));
         for p in &body.parts {
             for (now, was) in p.positions.iter().zip(&p.previous) {
                 assert_eq!(now, was, "snapped particles carry no velocity");

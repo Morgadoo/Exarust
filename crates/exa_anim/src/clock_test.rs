@@ -682,8 +682,49 @@ fn the_limp_sampler_brackets_at_the_raw_clock() {
     // A sample starts from the keys and keeps the root's travel.
     let mut anim = Animator::new("Default", "Walk");
     anim.time = 110.0;
-    let pose = anim.sample_ragdoll(&walk, true).unwrap();
+    let (pose, _) = anim.sample_ragdoll(&walk, true).unwrap();
     assert_eq!(pose.rotations.len(), BONES);
+}
+
+/// The limp sampler leads in from a capture while it aims at the
+/// capture's key, unblended by any ease; aiming at the next key drops the
+/// capture and the blend but keeps the clock.
+#[test]
+fn the_limp_sampler_leads_in_from_its_capture() {
+    let walk = clip(&[20.0, 80.0], &[Vec3::ZERO, Vec3::ZERO], true);
+    let mut anim = Animator::new("Default", "Walk");
+    anim.capture = Some(ClipPose {
+        rotations: vec![Quat::from_rotation_y(0.4); BONES],
+        root: Vec3::ZERO,
+    });
+    anim.ease = Ease::Smooth;
+    anim.blend = 4.0;
+    anim.time = 12.0;
+    let (pose, b) = anim.sample_ragdoll(&walk, true).unwrap();
+    assert!(b.from_capture);
+    // 12 / 24 = 0.5 of the way from the capture, not eased.
+    assert!((b.f - 0.5).abs() < 1e-6, "{}", b.f);
+    let half = crate::slerp(Quat::from_rotation_y(0.4), turn(0, 0), 0.5);
+    assert!(pose.rotations[0].angle_between(half) < 1e-5);
+    // Past the first key the lead ends: no capture, no blend, same clock.
+    anim.time = 30.0;
+    let (_, b) = anim.sample_ragdoll(&walk, true).unwrap();
+    assert!(!b.from_capture);
+    assert!(anim.capture.is_none() && !anim.leading);
+    assert_eq!((anim.blend, anim.time), (0.0, 30.0));
+}
+
+/// Every capture notes whether each foot touched; slots never noted read
+/// as unset, and a later capture overwrites the slots it names.
+#[test]
+fn a_capture_notes_its_planted_feet() {
+    let mut anim = Animator::new("Default", "Walk");
+    assert!(!anim.captured_planted(5));
+    anim.note_planted(&[(5, true), (2, false)]);
+    assert!(anim.captured_planted(5) && !anim.captured_planted(2));
+    anim.note_planted(&[(5, false)]);
+    assert!(!anim.captured_planted(5));
+    assert!(!anim.captured_planted(40));
 }
 
 /// The hold pose keeps the last targets of skin bones 1 to 7 (its pose
