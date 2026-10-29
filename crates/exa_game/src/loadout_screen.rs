@@ -3,8 +3,8 @@
 //! equipped, one taken off the kit is released), the close that saves the
 //! kit, and the paint through the GUI draw path.
 //!
-//! The rules are [`exa_ui::loadout`]: the drop handler sorts a drag into its
-//! container, a champion's form takes nothing, and the close writes the
+//! The rules are [`exa_ui::loadout`]: a drop onto the kit goes through the
+//! equip gate, a champion's form takes nothing, and the close writes the
 //! kit in the arena and match modes. The screen holds the editor and its
 //! size; the caller that opened it keeps the member and writes the kit back
 //! when the close says so ([`LoadoutClose`]).
@@ -127,9 +127,7 @@ impl LoadoutScreen {
                 accepted: false,
                 swapped: false,
                 source,
-                origin: loadout::DropOrigin::Equipment,
                 off_hand: item.flags & loadout::OFFHAND_FLAG != 0,
-                armed: 0,
                 refresh: true,
                 clear_pointer: true,
             })

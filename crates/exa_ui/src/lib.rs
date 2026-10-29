@@ -189,12 +189,12 @@ pub use line_skin::{
 };
 pub use loading::LoadingStatus;
 pub use loadout::{
-    CONTROLS as LOADOUT_CONTROLS, ClassifiedDrop, DropOrigin, DropResult, DropSource, EquipFacts,
-    EquipKind, FORM_HEIGHT, FORM_OPACITY, FORM_WIDTH, FormControl, HeldWeapon, LoadoutEditor,
-    LoadoutItem, LoadoutLayout, LoadoutMode, LoadoutSave, OFFHAND_FLAG, Slot, apply_drop,
-    can_equip, classify_source, container_copies, controls as loadout_controls, copies,
-    drop_cancelled, encumbrance, item_cost, kit_copies, layout as loadout_layout, may_equip,
-    opacity as loadout_opacity, points_used, save_on_close, unequip,
+    CONTROLS as LOADOUT_CONTROLS, DropOrigin, DropResult, DropSource, EquipFacts, EquipKind,
+    FORM_HEIGHT, FORM_OPACITY, FORM_WIDTH, FormControl, HeldWeapon, LoadoutEditor, LoadoutItem,
+    LoadoutLayout, LoadoutMode, LoadoutSave, OFFHAND_FLAG, Slot, StockReturn, apply_drop,
+    can_equip, container_copies, controls as loadout_controls, copies, encumbrance, item_cost,
+    layout as loadout_layout, may_equip, opacity as loadout_opacity, points_used, return_to_stock,
+    save_on_close, sort_drop, unequip,
 };
 pub use match_board::{
     Board, BoardAction, BoardHit, BoardInput, BoardLayout, BoardPaint, BoardTab, CellValue,

@@ -503,31 +503,22 @@ pub fn points_used(weapons: &[LoadoutItem], armour: &[LoadoutItem]) -> i32 {
     points + armour.iter().map(|item| item.points).sum::<i32>()
 }
 
-/// How many copies of an item the lists hold.
-pub fn copies(editor: &LoadoutEditor, id: u32) -> usize {
-    editor
-        .weapons
-        .iter()
-        .chain(editor.armour.iter())
-        .filter(|item| item.id == id)
-        .count()
-}
-
 /// How many entries of one container hold an item, by its catalogue id.
 pub fn container_copies(entries: &[LoadoutItem], id: u32) -> usize {
     entries.iter().filter(|item| item.id == id).count()
 }
 
-/// How many copies of an item the equipment and the arsenal hold together:
-/// the drop gate counts the arsenal's and the equipment's entries for the
-/// item before it compares them with the hands that hold it.
-pub fn kit_copies(editor: &LoadoutEditor, id: u32) -> usize {
-    copies(editor, id) + container_copies(&editor.arsenal, id)
+/// How many copies of an item the kit holds: the weapon container's
+/// entries and the worn container's, counted one container at a time
+/// ([`container_copies`]). The company arsenal is not counted.
+pub fn copies(editor: &LoadoutEditor, id: u32) -> usize {
+    container_copies(&editor.weapons, id) + container_copies(&editor.armour, id)
 }
 
 /// The list model's equip check, through [`may_equip`]: an item already in
 /// the lists is a drag out of the kit, held by `hands_holding` hands; its
-/// rank and points come from the list item.
+/// rank and points come from the list item. The gate counts the copies the
+/// weapon and worn containers hold ([`copies`]), not the arsenal's.
 pub fn can_equip(editor: &LoadoutEditor, item: &LoadoutItem, hands_holding: usize) -> bool {
     let facts = EquipFacts {
         from_kit: editor
@@ -536,7 +527,7 @@ pub fn can_equip(editor: &LoadoutEditor, item: &LoadoutItem, hands_holding: usiz
             .chain(editor.armour.iter())
             .any(|held| held.id == item.id),
         held: hands_holding as u32,
-        copies: kit_copies(editor, item.id) as u32,
+        copies: copies(editor, item.id) as u32,
         allowed: item.allowed,
         kind: EquipKind::Weapon {
             rank: item.rank.clamp(0, 255) as u8,
@@ -561,25 +552,25 @@ pub enum DropSource {
     Armour,
     /// The arsenal.
     Arsenal,
+    /// The character preview.
+    Preview,
     /// Another container, matched by the item's id.
     Unknown,
 }
 
-/// The container the drop handler sorts a dragged item into. The original
-/// keeps the equipment in one container (the armour bit 0x100 marks the
-/// worn entries, the top bit the off hand) and the arsenal in another; a
-/// drag from the arsenal is a weapon (2) or an off-hand copy (3), a drag
-/// from the equipment is 1, and anything else is 0.
+/// The container the arsenal's drop handler finds a returned item in. The
+/// weapon container marks an off-hand copy with the top bit; the worn
+/// container marks the entries held in a hand with [`ARMOUR_KEEP`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DropOrigin {
-    /// No container the handler recognises.
+    /// Neither kit container holds it.
     Unknown = 0,
-    /// The equipment container (a drag within the kit).
-    Equipment = 1,
-    /// The arsenal, as a weapon.
-    Arsenal = 2,
-    /// The arsenal, as an off-hand copy.
-    ArsenalOffHand = 3,
+    /// The worn container.
+    Armour = 1,
+    /// The weapon container.
+    Weapons = 2,
+    /// The weapon container, as an off-hand copy.
+    WeaponsOffHand = 3,
 }
 
 impl DropOrigin {
@@ -588,104 +579,199 @@ impl DropOrigin {
         self as u32
     }
 
-    /// The drag comes from the arsenal.
-    pub fn from_arsenal(self) -> bool {
-        matches!(self, DropOrigin::Arsenal | DropOrigin::ArsenalOffHand)
-    }
-
-    /// The arsenal entry is an off-hand copy.
-    pub fn off_hand(self) -> bool {
-        self == DropOrigin::ArsenalOffHand
+    fn of_flags(flags: u32) -> Self {
+        if flags & OFFHAND_FLAG == 0 {
+            DropOrigin::Weapons
+        } else {
+            DropOrigin::WeaponsOffHand
+        }
     }
 }
 
-/// What sorting a drag into a container found.
+/// Sorts an item returned to the arsenal into the kit container it left. A
+/// drag from the weapon list takes the off-hand mark from the drag's own
+/// flags; a drag from the worn list is [`DropOrigin::Armour`]. Any other
+/// drag looks for the item in the weapon list, first entry first, and
+/// takes that entry out (its mark decides the origin); failing that it
+/// looks for a worn entry with the item that no hand holds, last entry
+/// first.
+pub fn sort_drop(editor: &mut LoadoutEditor, item: &LoadoutItem, source: DropSource) -> DropOrigin {
+    match source {
+        DropSource::Weapons => DropOrigin::of_flags(item.flags),
+        DropSource::Armour => DropOrigin::Armour,
+        _ => {
+            if let Some(index) = editor.weapons.iter().position(|held| held.id == item.id) {
+                let origin = DropOrigin::of_flags(editor.weapons[index].flags);
+                editor.weapons.remove(index);
+                origin
+            } else if editor
+                .armour
+                .iter()
+                .rev()
+                .any(|held| held.id == item.id && held.flags & ARMOUR_KEEP == 0)
+            {
+                DropOrigin::Armour
+            } else {
+                DropOrigin::Unknown
+            }
+        }
+    }
+}
+
+/// What returning an item to the arsenal did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ClassifiedDrop {
+pub struct StockReturn {
+    /// The kit container the item left.
     pub origin: DropOrigin,
-    /// The arsenal held the item under the form's swap mask, so the drag
-    /// takes that copy instead of adding one (the handler clears the mask
-    /// bit on the entry).
-    pub swapped: bool,
+    /// An arsenal entry lent out under the form's mask took the item back
+    /// (its mask bit was cleared).
+    pub released: bool,
+    /// The arsenal's count of the item is set to zero (an item of another
+    /// category the arsenal had not lent).
+    pub zero_stock: bool,
+    /// The drag keeps its item, so the arsenal adds it as a new entry.
+    pub keep_item: bool,
+    /// The worn container gave up the hand-held copy, so the hand slots
+    /// holding the item are emptied.
+    pub freed_hand: bool,
+    /// How many copies of the item the kit still holds: the count written
+    /// to the rank's loadout record.
+    pub count: u32,
 }
 
-impl ClassifiedDrop {
-    const UNKNOWN: Self = Self {
-        origin: DropOrigin::Unknown,
-        swapped: false,
-    };
-}
-
-/// Sorts a drag into its container, as the handler does before it touches
-/// any list.
+/// The arsenal's drop handler: an item dragged back onto the arsenal.
 ///
-/// A drag the caller places in the equipment is an equipment drag. A drag
-/// from the arsenal is an arsenal weapon or off-hand copy, and an entry
-/// under the form's swap mask is given up (its mask bit cleared). A drag of
-/// unknown origin is looked for in the arsenal first, then in the
-/// equipment; an item in neither is [`DropOrigin::Unknown`].
-pub fn classify_source(
+/// A champion's form takes nothing and the drag drops its item. Otherwise,
+/// for an item of the form's own category, the first arsenal entry with
+/// the item under the form's mask takes it back (the bit is cleared).
+/// When none does, `lent` is the arsenal's own answer to whether it has
+/// lent the item under the mask; an unlent item of another category has
+/// its arsenal count zeroed. Either way the drag keeps its item only for
+/// an unlent item of the form's category.
+///
+/// Then the item is sorted into the kit container it left
+/// ([`sort_drop`]) and the copies the kit still holds are counted, per
+/// container:
+/// - an off-hand copy removes the first worn entry with the item that a
+///   hand holds and counts the other worn entries;
+/// - in match mode the weapon list gives up its first off-hand entry when
+///   the drag comes from the preview (the count stays as it is);
+/// - otherwise a worn copy counts the worn entries, less one (the one a
+///   drag from the preview removes: the first that no hand holds), plus the
+///   weapon entries that are not off-hand copies;
+/// - and a weapon counts the weapon entries that are not off-hand copies,
+///   less one (the first off-hand entry a drag from the preview removes
+///   instead), plus every worn entry.
+pub fn return_to_stock(
     editor: &mut LoadoutEditor,
     item: &LoadoutItem,
     source: DropSource,
-) -> ClassifiedDrop {
-    let origin_of = |flags: u32| {
-        if flags & OFFHAND_FLAG == 0 {
-            DropOrigin::Arsenal
-        } else {
-            DropOrigin::ArsenalOffHand
+    lent: bool,
+) -> StockReturn {
+    if editor.mode == LoadoutMode::Champion {
+        return StockReturn {
+            origin: DropOrigin::Unknown,
+            released: false,
+            zero_stock: false,
+            keep_item: false,
+            freed_hand: false,
+            count: 0,
+        };
+    }
+    let own_category = item.category == editor.category;
+    let mut released = false;
+    if own_category {
+        let mask = editor.mask;
+        if let Some(entry) = editor
+            .arsenal
+            .iter_mut()
+            .find(|entry| entry.id == item.id && entry.flags & mask != 0)
+        {
+            entry.flags &= !mask;
+            released = true;
         }
-    };
-    match source {
-        DropSource::Weapons | DropSource::Armour => ClassifiedDrop {
-            origin: DropOrigin::Equipment,
-            swapped: false,
-        },
-        DropSource::Arsenal => match editor.arsenal.iter().position(|held| held.id == item.id) {
-            Some(index) => {
-                let flags = editor.arsenal[index].flags;
-                let swapped = flags & editor.mask != 0;
-                if swapped {
-                    editor.arsenal[index].flags &= !editor.mask;
-                }
-                ClassifiedDrop {
-                    origin: origin_of(flags),
-                    swapped,
-                }
+    }
+    let zero_stock = !released && !lent && !own_category;
+    let keep_item = !released && !lent && own_category;
+    let origin = sort_drop(editor, item, source);
+    let from_preview = source == DropSource::Preview;
+    let id = item.id;
+    let mut count = 0u32;
+    let mut freed_hand = false;
+    if origin == DropOrigin::WeaponsOffHand {
+        editor.armour.retain(|held| {
+            if held.id != id {
+                return true;
             }
-            // The arsenal container does not hold the item: the handler
-            // still treats it as an arsenal drag (guess: the drag record
-            // carries the container it started in).
-            None => ClassifiedDrop {
-                origin: origin_of(item.flags),
-                swapped: false,
-            },
-        },
-        DropSource::Unknown => {
-            if let Some(index) = editor.arsenal.iter().position(|held| held.id == item.id) {
-                let flags = editor.arsenal[index].flags;
-                let swapped = flags & editor.mask != 0;
-                if swapped {
-                    editor.arsenal[index].flags &= !editor.mask;
-                }
-                ClassifiedDrop {
-                    origin: origin_of(flags),
-                    swapped,
-                }
-            } else if editor
+            if held.flags & ARMOUR_KEEP != 0 && !freed_hand {
+                freed_hand = true;
+                false
+            } else {
+                count += 1;
+                true
+            }
+        });
+    }
+    if editor.mode == LoadoutMode::Match {
+        if from_preview
+            && let Some(index) = editor
                 .weapons
                 .iter()
-                .chain(editor.armour.iter())
-                .any(|held| held.id == item.id)
-            {
-                ClassifiedDrop {
-                    origin: DropOrigin::Equipment,
-                    swapped: false,
-                }
-            } else {
-                ClassifiedDrop::UNKNOWN
-            }
+                .position(|held| held.id == id && held.flags & OFFHAND_FLAG != 0)
+        {
+            editor.weapons.remove(index);
         }
+    } else if origin == DropOrigin::Armour {
+        let mut removed = false;
+        editor.armour.retain(|held| {
+            if held.id != id {
+                return true;
+            }
+            if held.flags & ARMOUR_KEEP == 0 && !removed && from_preview {
+                removed = true;
+                false
+            } else {
+                count += 1;
+                true
+            }
+        });
+        if !removed && count > 0 {
+            count -= 1;
+        }
+        count += editor
+            .weapons
+            .iter()
+            .filter(|held| held.id == id && held.flags & OFFHAND_FLAG == 0)
+            .count() as u32;
+    } else if origin == DropOrigin::Weapons {
+        let mut removed = false;
+        editor.weapons.retain(|held| {
+            if held.id != id {
+                return true;
+            }
+            if held.flags & OFFHAND_FLAG == 0 {
+                count += 1;
+                true
+            } else if from_preview && !removed {
+                removed = true;
+                false
+            } else {
+                true
+            }
+        });
+        if !removed && count > 0 {
+            count -= 1;
+        }
+        count += container_copies(&editor.armour, id) as u32;
+    }
+    editor.points = points_used(&editor.weapons, &editor.armour);
+    StockReturn {
+        origin,
+        released,
+        zero_stock,
+        keep_item,
+        freed_hand,
+        count,
     }
 }
 
@@ -698,27 +784,20 @@ pub struct DropResult {
     pub swapped: bool,
     /// The list the item came from.
     pub source: DropSource,
-    /// The container the handler sorted the drag into.
-    pub origin: DropOrigin,
     /// The item's slot is the off hand.
     pub off_hand: bool,
-    /// How many copies of the item the equipment still holds: the original
-    /// hands this count to the preview's loadout record.
-    pub armed: u32,
     /// The preview must be refreshed.
     pub refresh: bool,
     /// The form clears its pointer to the item.
     pub clear_pointer: bool,
 }
 
-/// Applies a drop the way the handler walks it: sort the drag into its
-/// container, give up an arsenal copy under the swap mask, take the
-/// displaced entry out of the equipment, then put the item in its slot.
-///
-/// The three container branches differ in what they displace: an arsenal
-/// off-hand copy takes the first worn entry with the same id that is not
-/// armour; an arsenal weapon takes the arsenal's off-hand copy of it; a
-/// drag within the equipment moves the item out of the slot it was in.
+/// The list model's equip: finds the source, removes the item from the
+/// list it came from, clears the off hand for a two-handed weapon and
+/// takes the arsenal's matching item when the drop swaps. This stands in
+/// for the containers' own drag-and-drop (outside the form); the form's
+/// rule it applies is the equip gate ([`can_equip`]). An item found in
+/// neither list goes to the armour list when it is worn.
 pub fn apply_drop(
     editor: &mut LoadoutEditor,
     item: &LoadoutItem,
@@ -729,80 +808,69 @@ pub fn apply_drop(
             accepted: false,
             swapped: false,
             source,
-            origin: DropOrigin::Unknown,
             off_hand: false,
-            armed: 0,
             refresh: false,
             clear_pointer: true,
         };
     }
-    let classified = classify_source(editor, item, source);
-    let origin = classified.origin;
-    if classified.swapped {
-        // The arsenal entry gave up its copy: the equipment is left alone.
-        editor.points = points_used(&editor.weapons, &editor.armour);
-        return DropResult {
-            accepted: false,
-            swapped: true,
-            source,
-            origin,
-            off_hand: origin.off_hand(),
-            armed: copies(editor, item.id) as u32,
-            refresh: true,
-            clear_pointer: true,
-        };
+    let mut accepted = true;
+    let mut swapped = false;
+    // The arsenal of the form's own category swaps the item already there.
+    if source == DropSource::Arsenal
+        && item.category == editor.category
+        && let Some(index) = editor
+            .arsenal
+            .iter()
+            .position(|held| held.id == item.id && held.flags & editor.mask != 0)
+    {
+        editor.arsenal[index].flags &= !editor.mask;
+        accepted = false;
+        swapped = true;
     }
-    if !can_equip(editor, item, 0) {
+    if !accepted || !can_equip(editor, item, 0) {
         return DropResult {
             accepted: false,
-            swapped: false,
+            swapped,
             source,
-            origin,
             off_hand: false,
-            armed: 0,
             refresh: false,
             clear_pointer: true,
         };
     }
-    match origin {
-        DropOrigin::ArsenalOffHand => {
-            // The off-hand copy replaces the first worn entry with the same
-            // id that is not armour.
-            if let Some(index) = editor
-                .armour
-                .iter()
-                .position(|held| held.id == item.id && held.flags & ARMOUR_KEEP == 0)
-            {
+    // Find the item in a list if the caller did not say which one it was.
+    let slot: Slot;
+    let mut resolved = source;
+    match source {
+        DropSource::Weapons => slot = Slot::Weapon,
+        DropSource::Armour => slot = Slot::Armour,
+        DropSource::Arsenal | DropSource::Preview | DropSource::Unknown => {
+            if let Some(index) = editor.weapons.iter().position(|held| held.id == item.id) {
+                slot = if editor.weapons[index].flags & OFFHAND_FLAG != 0 {
+                    Slot::TwoHanded
+                } else {
+                    Slot::Weapon
+                };
+                editor.weapons.remove(index);
+                resolved = DropSource::Weapons;
+            } else if let Some(index) = editor.armour.iter().position(|held| held.id == item.id) {
+                slot = Slot::Armour;
                 editor.armour.remove(index);
+                resolved = DropSource::Armour;
+            } else {
+                slot = if item.two_handed {
+                    Slot::TwoHanded
+                } else if item.worn {
+                    Slot::Armour
+                } else {
+                    Slot::Weapon
+                };
             }
-        }
-        DropOrigin::Arsenal => {
-            // An arsenal weapon takes the arsenal's off-hand copy out of
-            // the equipment.
-            if let Some(index) = editor
-                .armour
-                .iter()
-                .position(|held| held.id == item.id && held.flags & OFFHAND_FLAG != 0)
-            {
-                editor.armour.remove(index);
-            }
-        }
-        DropOrigin::Equipment | DropOrigin::Unknown => {
-            // The drag moves the item: its own entry leaves the equipment.
-            editor.weapons.retain(|held| held.id != item.id);
-            editor.armour.retain(|held| held.id != item.id);
         }
     }
     let off_hand = item.flags & OFFHAND_FLAG != 0;
-    let slot = if item.two_handed {
-        Slot::TwoHanded
-    } else if item.worn {
-        Slot::Armour
-    } else {
-        Slot::Weapon
-    };
     match slot {
         Slot::Armour => {
+            // A second copy of an armour item is replaced, not stacked.
             editor.armour.retain(|held| held.id != item.id);
             editor.armour.push(*item);
         }
@@ -812,34 +880,20 @@ pub fn apply_drop(
         }
         Slot::TwoHanded => {
             // The two-handed weapon takes both hands: the off hand goes.
-            if item.two_handed {
-                editor.weapons.clear();
-                editor.armour.retain(|held| held.flags & ARMOUR_KEEP != 0);
-            }
-            editor.weapons.retain(|held| held.id != item.id);
+            editor.weapons.clear();
+            editor.armour.retain(|held| held.flags & ARMOUR_KEEP != 0);
             editor.weapons.push(*item);
         }
     }
     editor.points = points_used(&editor.weapons, &editor.armour);
     DropResult {
         accepted: true,
-        swapped: false,
-        source,
-        origin,
+        swapped,
+        source: resolved,
         off_hand,
-        armed: copies(editor, item.id) as u32,
         refresh: true,
         clear_pointer: false,
     }
-}
-
-/// The match-mode release: a key other than 8 takes the last arsenal entry
-/// away. Every other mode, and key 8, leaves the arsenal alone.
-pub fn drop_cancelled(editor: &mut LoadoutEditor, key: i32) -> bool {
-    if editor.mode != LoadoutMode::Match || key == 8 {
-        return false;
-    }
-    editor.arsenal.pop().is_some()
 }
 
 /// Removes an item from a list: returns whether it was there.
@@ -1560,117 +1614,172 @@ mod tests {
     }
 
     #[test]
-    fn the_kit_and_the_arsenal_count_the_same_item_together() {
+    fn the_gate_counts_the_two_kit_containers_not_the_arsenal() {
         let mut editor = editor();
         editor.weapons = vec![item(1, 2, 0)];
         editor.armour = vec![item(1, 2, 0)];
         editor.arsenal = vec![item(1, 2, 0), item(2, 2, 0)];
-        assert_eq!(copies(&editor, 1), 2);
+        assert_eq!(container_copies(&editor.weapons, 1), 1);
         assert_eq!(container_copies(&editor.arsenal, 1), 1);
-        assert_eq!(kit_copies(&editor, 1), 3);
-        assert_eq!(kit_copies(&editor, 2), 1);
-        assert_eq!(kit_copies(&editor, 3), 0);
-        // Two hands holding the item leave one arsenal copy to add.
-        assert!(can_equip(&editor, &item(1, 2, 0), 2));
-        // A fourth copy needs a fourth hand the fighter does not have.
-        editor.arsenal.push(item(1, 2, 0));
-        assert_eq!(kit_copies(&editor, 1), 4);
-        assert!(!can_equip(&editor, &item(1, 2, 0), 4));
+        assert_eq!(copies(&editor, 1), 2);
+        assert_eq!(copies(&editor, 2), 0);
+        // One hand holding it leaves the second copy free.
+        assert!(can_equip(&editor, &item(1, 2, 0), 1));
+        // Both copies held: the arsenal's copy does not count.
+        assert!(!can_equip(&editor, &item(1, 2, 0), 2));
     }
 
     #[test]
-    fn a_drag_is_sorted_into_its_container() {
+    fn a_returned_item_is_sorted_into_the_container_it_left() {
         let mut editor = editor();
-        editor.arsenal = vec![
-            LoadoutItem {
-                flags: SWAP_MASK,
-                ..item(1, 2, 0)
-            },
-            item(2, 2, 0),
-        ];
-        // An arsenal entry under the mask gives its copy up.
-        let sorted = classify_source(&mut editor, &item(1, 2, 0), DropSource::Arsenal);
-        assert_eq!(sorted.origin, DropOrigin::Arsenal);
-        assert!(sorted.swapped);
-        assert_eq!(editor.arsenal[0].flags, 0);
-        // An off-hand arsenal entry is the off-hand copy.
-        editor.arsenal[0].flags = OFFHAND_FLAG | SWAP_MASK;
-        let sorted = classify_source(&mut editor, &item(1, 2, 0), DropSource::Arsenal);
-        assert_eq!(sorted.origin, DropOrigin::ArsenalOffHand);
-        assert!(sorted.swapped);
-        assert_eq!(sorted.origin.word(), 3);
-        // A drag placed in the equipment is an equipment drag.
-        let sorted = classify_source(&mut editor, &item(1, 2, 0), DropSource::Armour);
-        assert_eq!(sorted.origin, DropOrigin::Equipment);
-        assert_eq!(sorted.origin.word(), 1);
-        // Unknown origin is found in the equipment when the arsenal has no
-        // entry for it.
-        editor.weapons = vec![item(3, 2, 0)];
-        let sorted = classify_source(&mut editor, &item(3, 2, 0), DropSource::Unknown);
-        assert_eq!(sorted.origin, DropOrigin::Equipment);
-        let sorted = classify_source(&mut editor, &item(9, 2, 0), DropSource::Unknown);
-        assert_eq!(sorted.origin, DropOrigin::Unknown);
-        assert_eq!(sorted.origin.word(), 0);
-        assert!(!sorted.origin.from_arsenal());
-        assert!(DropOrigin::ArsenalOffHand.from_arsenal());
-        assert!(DropOrigin::ArsenalOffHand.off_hand());
-        assert!(!DropOrigin::Arsenal.off_hand());
-    }
-
-    #[test]
-    fn an_off_hand_copy_takes_the_worn_entry_with_its_id() {
-        let mut editor = editor();
-        editor.weapons = vec![item(1, 2, 0)];
-        editor.armour = vec![
-            LoadoutItem {
-                flags: ARMOUR_KEEP,
-                ..item(2, 3, 0)
-            },
-            item(3, 4, 0),
-        ];
-        let mut copy = item(3, 4, 0);
-        copy.flags = OFFHAND_FLAG;
-        let result = apply_drop(&mut editor, &copy, DropSource::Arsenal);
-        assert!(result.accepted);
-        assert_eq!(result.origin, DropOrigin::ArsenalOffHand);
-        assert!(result.off_hand);
-        // The worn entry with that id leaves; the armour entry stays.
-        assert_eq!(editor.armour.len(), 1);
-        assert_eq!(editor.armour[0].id, 2);
-        assert_eq!(result.armed, 1);
-        assert_eq!(editor.points, 9);
-    }
-
-    #[test]
-    fn an_equipment_drag_moves_the_item_between_the_lists() {
-        let mut editor = editor();
-        editor.weapons = vec![item(1, 2, 0)];
+        let mut off = item(1, 2, 0);
+        off.flags = OFFHAND_FLAG;
+        // From the weapon list, the drag's own mark decides.
+        assert_eq!(
+            sort_drop(&mut editor, &off, DropSource::Weapons),
+            DropOrigin::WeaponsOffHand
+        );
+        assert_eq!(
+            sort_drop(&mut editor, &item(1, 2, 0), DropSource::Weapons).word(),
+            2
+        );
+        assert_eq!(sort_drop(&mut editor, &off, DropSource::Armour).word(), 1);
+        // Elsewhere: the weapon list's first entry with the id leaves and
+        // its mark decides.
+        editor.weapons = vec![item(3, 2, 0), off, item(1, 2, 0)];
+        assert_eq!(
+            sort_drop(&mut editor, &item(1, 2, 0), DropSource::Unknown),
+            DropOrigin::WeaponsOffHand
+        );
+        assert_eq!(editor.weapons.len(), 2);
+        assert_eq!(editor.weapons[1].flags, 0);
+        // A worn entry counts only when no hand holds it.
         editor.armour = vec![LoadoutItem {
             flags: ARMOUR_KEEP,
-            ..item(2, 3, 0)
+            ..item(4, 2, 0)
         }];
-        let mut moved = LoadoutItem::armour(1, 0x40, 2, 0);
-        moved.flags = ARMOUR_KEEP;
-        let result = apply_drop(&mut editor, &moved, DropSource::Weapons);
-        assert!(result.accepted);
-        assert_eq!(result.origin, DropOrigin::Equipment);
-        assert!(editor.weapons.is_empty());
+        assert_eq!(
+            sort_drop(&mut editor, &item(4, 2, 0), DropSource::Preview),
+            DropOrigin::Unknown
+        );
+        editor.armour.push(item(4, 2, 0));
+        assert_eq!(
+            sort_drop(&mut editor, &item(4, 2, 0), DropSource::Preview),
+            DropOrigin::Armour
+        );
         assert_eq!(editor.armour.len(), 2);
-        assert_eq!(editor.points, 5);
     }
 
     #[test]
-    fn a_cancelled_match_drop_takes_the_last_arsenal_entry() {
+    fn an_off_hand_copy_frees_the_held_worn_entry() {
         let mut editor = editor();
-        editor.arsenal = vec![item(1, 2, 0), item(2, 3, 0)];
+        let held = LoadoutItem {
+            flags: ARMOUR_KEEP,
+            ..item(5, 3, 0)
+        };
+        editor.armour = vec![item(5, 3, 0), held, held, item(6, 1, 0)];
+        let mut off = item(5, 3, 0);
+        off.flags = OFFHAND_FLAG;
+        let done = return_to_stock(&mut editor, &off, DropSource::Weapons, false);
+        assert_eq!(done.origin, DropOrigin::WeaponsOffHand);
+        assert!(done.freed_hand);
+        // The first held entry leaves; the unheld one and the second held
+        // one are counted.
+        assert_eq!(done.count, 2);
+        assert_eq!(editor.armour.len(), 3);
+        assert_eq!(editor.points, 3 + 3 + 1);
+    }
+
+    #[test]
+    fn a_returned_copy_counts_what_the_kit_still_holds() {
+        // A worn copy from the worn list: three worn entries less one, plus
+        // the weapon entry that is not an off-hand copy.
+        let mut editor = editor();
+        let mut off = item(7, 2, 0);
+        off.flags = OFFHAND_FLAG;
+        editor.armour = vec![item(7, 2, 0), item(7, 2, 0), item(7, 2, 0)];
+        editor.weapons = vec![item(7, 2, 0), off];
+        let done = return_to_stock(&mut editor, &item(7, 2, 0), DropSource::Armour, false);
+        assert_eq!(done.origin, DropOrigin::Armour);
+        assert_eq!(done.count, 3 - 1 + 1);
+        assert_eq!(editor.armour.len(), 3);
+        // From the preview the first unheld worn entry leaves instead of
+        // the one taken off the count.
+        let done = return_to_stock(&mut editor, &item(7, 2, 0), DropSource::Preview, false);
+        // The weapon list's first entry with the id left in the sort.
+        assert_eq!(done.origin, DropOrigin::Weapons);
+        assert!(editor.weapons.is_empty());
+        // Its off-hand copy was the preview's to remove; no plain entry is
+        // left, and the three worn entries count.
+        assert_eq!(done.count, 3);
+        // A weapon from the weapon list: two plain entries less one, plus
+        // one worn entry; the off-hand entry stays (not from the preview).
+        let mut editor = editor_with(
+            vec![item(8, 2, 0), off_of(8), item(8, 2, 0)],
+            vec![item(8, 2, 0)],
+        );
+        let done = return_to_stock(&mut editor, &item(8, 2, 0), DropSource::Weapons, false);
+        assert_eq!(done.count, 2 - 1 + 1);
+        assert_eq!(editor.weapons.len(), 3);
+    }
+
+    fn off_of(id: u32) -> LoadoutItem {
+        LoadoutItem {
+            flags: OFFHAND_FLAG,
+            ..item(id, 2, 0)
+        }
+    }
+
+    fn editor_with(weapons: Vec<LoadoutItem>, armour: Vec<LoadoutItem>) -> LoadoutEditor {
+        LoadoutEditor {
+            weapons,
+            armour,
+            ..editor()
+        }
+    }
+
+    #[test]
+    fn the_arsenal_takes_back_a_lent_item_of_its_category() {
+        let mut editor = editor();
+        editor.category = 0x20;
+        editor.arsenal = vec![LoadoutItem {
+            flags: SWAP_MASK | 1,
+            ..item(9, 2, 0)
+        }];
+        let done = return_to_stock(&mut editor, &item(9, 2, 0), DropSource::Unknown, false);
+        assert!(done.released && !done.keep_item && !done.zero_stock);
+        assert_eq!(editor.arsenal[0].flags, 1);
+        assert_eq!(done.origin, DropOrigin::Unknown);
+        assert_eq!(done.count, 0);
+        // Not lent under the mask: the drag keeps its item.
+        let done = return_to_stock(&mut editor, &item(9, 2, 0), DropSource::Unknown, false);
+        assert!(!done.released && done.keep_item);
+        // The arsenal says it lent it elsewhere: the item is dropped.
+        let done = return_to_stock(&mut editor, &item(9, 2, 0), DropSource::Unknown, true);
+        assert!(!done.keep_item && !done.zero_stock);
+        // Another category is never searched; unlent, its count is zeroed.
+        editor.arsenal[0].flags = SWAP_MASK;
+        let other = LoadoutItem::weapon(9, 0x10, 2, 0);
+        let done = return_to_stock(&mut editor, &other, DropSource::Unknown, false);
+        assert!(!done.released && done.zero_stock && !done.keep_item);
+        assert_eq!(editor.arsenal[0].flags, SWAP_MASK);
+        // A champion's form only drops the item.
+        editor.mode = LoadoutMode::Champion;
+        let done = return_to_stock(&mut editor, &item(9, 2, 0), DropSource::Unknown, false);
+        assert!(!done.released && !done.keep_item);
+        assert_eq!(editor.arsenal[0].flags, SWAP_MASK);
+    }
+
+    #[test]
+    fn a_match_return_drops_the_previews_off_hand_copy() {
+        let mut editor = editor_with(vec![item(2, 2, 0), off_of(2), off_of(2)], vec![]);
         editor.mode = LoadoutMode::Match;
-        assert!(!drop_cancelled(&mut editor, 8));
-        assert_eq!(editor.arsenal.len(), 2);
-        assert!(drop_cancelled(&mut editor, 1));
-        assert_eq!(editor.arsenal.len(), 1);
-        editor.mode = LoadoutMode::Arena;
-        assert!(!drop_cancelled(&mut editor, 1));
-        assert_eq!(editor.arsenal.len(), 1);
+        let done = return_to_stock(&mut editor, &item(2, 2, 0), DropSource::Preview, false);
+        // The sort took the first entry; the match branch the first
+        // off-hand copy; the count is not taken in match mode.
+        assert_eq!(done.origin, DropOrigin::Weapons);
+        assert_eq!(editor.weapons, vec![off_of(2)]);
+        assert_eq!(done.count, 0);
     }
 
     #[test]

@@ -371,27 +371,15 @@ pub fn item_from_facts(
     if facts.id.0 == 0 {
         return None;
     }
+    // The rank and the bulk as the pool rows read them.
+    let points = i32::from(facts.bulk());
+    let rank = i32::from((facts.rank_word as u8) >> 5);
     let item = if facts.apparel_class != 0 {
-        LoadoutItem::armour(
-            facts.id.0,
-            family,
-            i32::from(facts.rank_word & 0x1f),
-            i32::from((facts.rank_word >> 5) & 0x7),
-        )
+        LoadoutItem::armour(facts.id.0, family, points, rank)
     } else if two_handed {
-        LoadoutItem::two_handed(
-            facts.id.0,
-            family,
-            i32::from(facts.rank_word & 0x1f),
-            i32::from((facts.rank_word >> 5) & 0x7),
-        )
+        LoadoutItem::two_handed(facts.id.0, family, points, rank)
     } else {
-        LoadoutItem::weapon(
-            facts.id.0,
-            family,
-            i32::from(facts.rank_word & 0x1f),
-            i32::from((facts.rank_word >> 5) & 0x7),
-        )
+        LoadoutItem::weapon(facts.id.0, family, points, rank)
     };
     Some(item)
 }
