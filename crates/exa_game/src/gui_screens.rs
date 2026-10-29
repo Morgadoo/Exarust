@@ -970,7 +970,7 @@ fn debug_open_container(
             let db = b.3.translation().distance_squared(feet);
             da.total_cmp(&db)
         });
-    let Some((object, placed, _, transform)) = nearest else {
+    let Some((object, placed, sections, transform)) = nearest else {
         info!("open-container: no placed container in the level");
         return;
     };
@@ -983,10 +983,16 @@ fn debug_open_container(
             )
         })
         .unwrap_or(IVec2::new(640, 360));
+    let (cells, items) = sections
+        .container
+        .as_ref()
+        .map_or(((0, 0), 0), |c| ((c.width, c.height), c.children.len()));
     info!(
-        "open-container: {:#x} at {:.2} m",
+        "open-container: {:#x} at {:.2} m, {}x{} cells, {items} items",
         placed.tagged_id,
-        transform.translation().distance(feet)
+        transform.translation().distance(feet),
+        cells.0,
+        cells.1
     );
     requests.write(ContainerRequest {
         object,
