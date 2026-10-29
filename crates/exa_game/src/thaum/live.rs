@@ -82,6 +82,7 @@ impl Plugin for ThaumEffectsPlugin {
         app.add_message::<ArcShocked>()
             .insert_resource(EffectDraws(Mt19937::new(5489)))
             .init_resource::<EffectRoll>()
+            .init_resource::<super::effect_draw::ForceNoise>()
             .add_systems(
                 FixedUpdate,
                 (tick_arcs, tick_barricades, tick_wisps, shock_fighters)
@@ -98,8 +99,17 @@ impl Plugin for ThaumEffectsPlugin {
                     draw_arcs,
                     draw_barricades,
                     draw_wisps,
-                    super::blast_live::draw_blasts,
-                    super::torrent_live::draw_torrents,
+                    (
+                        super::effect_draw::tick_force_noise
+                            .run_if(super::effect_draw::force_effects_alive),
+                        (
+                            super::blast_live::draw_blasts,
+                            super::torrent_live::draw_torrents,
+                            super::effect_draw::draw_shell_auras,
+                            super::effect_draw::drop_shell_copies,
+                        ),
+                    )
+                        .chain(),
                 )
                     .after(TransformSystems::Propagate),
             );
@@ -662,7 +672,12 @@ pub(super) fn mesh_of_ribbon(ribbon: &crate::effects::ribbon::RibbonMesh) -> Mes
         })
         .collect();
     let indices = ribbon.indices.iter().map(|&i| u32::from(i)).collect();
-    mesh_of_uv(positions, uvs, colours, indices)
+    let mut mesh = mesh_of_uv(positions, uvs, colours, indices);
+    // The second coordinate set (`vTx2`): the effect's texture row.
+    if ribbon.uvs2.len() == ribbon.positions.len() {
+        mesh.insert_attribute(Mesh::ATTRIBUTE_UV_1, ribbon.uvs2.clone());
+    }
+    mesh
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -851,6 +866,9 @@ mod tests {
         app.add_plugins((MinimalPlugins, AssetPlugin::default()))
             .init_asset::<Mesh>()
             .init_asset::<GlowMaterial>()
+            .init_asset::<Image>()
+            .init_asset::<exa_render::force_effects::ForceRibbonMaterial>()
+            .init_asset::<exa_render::force_effects::ForceShellMaterial>()
             .add_plugins(ThaumEffectsPlugin);
         let mut grid = NavGrid::empty(40, 40, 0.0);
         for z in 0..40 {
@@ -1040,6 +1058,9 @@ mod tests {
         app.add_plugins((MinimalPlugins, AssetPlugin::default()))
             .init_asset::<Mesh>()
             .init_asset::<GlowMaterial>()
+            .init_asset::<Image>()
+            .init_asset::<exa_render::force_effects::ForceRibbonMaterial>()
+            .init_asset::<exa_render::force_effects::ForceShellMaterial>()
             .add_plugins(ThaumEffectsPlugin);
         for _ in 0..3 {
             app.update();

@@ -56,7 +56,7 @@ use super::barricade::WAKE_TICKS;
 use super::cast::PowerCaster;
 use super::casting::{self, CastBody, CastHook};
 use super::force::{BLAST_MOTION, BlastSetup};
-use super::live::{EffectDraws, EffectMesh, mesh_of_ribbon, show};
+use super::live::{EffectDraws, EffectMesh, mesh_of_ribbon};
 use crate::effects::Frame as ViewFrame;
 use crate::effects::blast::{
     ALERT_GAIN, Blast, BlastChunk, BlastView, CHARGING, CONTACT_WEAR, HIT_HOSTILITY, STATIC_EXTRA,
@@ -591,19 +591,22 @@ pub(crate) fn tick_blasts(
     }
 }
 
-/// The glow tint the ribbon draws with: the vertices carry the original's
-/// colour bytes.
-const RIBBON_TINT: Vec4 = Vec4::ONE;
-
 /// Draws every blast's ribbon, built in the camera's space each frame, as
-/// the original's linked geometry draw does.
+/// the original's linked geometry draw does, with `effectforce_f` and the
+/// frame's `TexOfs` ([`super::effect_draw::show_ribbon`]).
+#[allow(clippy::type_complexity)]
 pub(crate) fn draw_blasts(
     mut commands: Commands,
-    mut blasts: Query<(Entity, &LiveBlast, Option<&EffectMesh>)>,
+    mut blasts: Query<(
+        Entity,
+        &LiveBlast,
+        Option<(&EffectMesh, &super::effect_draw::RibbonMaterial)>,
+    )>,
     cameras: Query<&GlobalTransform, exa_render::supersample::SceneCamera>,
     time: Res<Time<Fixed>>,
+    noise: Res<super::effect_draw::ForceNoise>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<exa_render::glow::GlowMaterial>>,
+    mut materials: ResMut<Assets<exa_render::force_effects::ForceRibbonMaterial>>,
 ) {
     let Some(camera) = cameras.iter().next() else {
         return;
@@ -627,12 +630,14 @@ pub(crate) fn draw_blasts(
             continue;
         }
         let mesh = mesh_of_ribbon(&ribbon);
-        show(
+        super::effect_draw::show_ribbon(
             &mut commands,
             entity,
             drawn,
             mesh,
-            RIBBON_TINT,
+            live.blast.frame(alpha).texture_offset,
+            false,
+            &noise,
             &mut meshes,
             &mut materials,
         );

@@ -49,7 +49,7 @@ use super::blast_live::{
 };
 use super::cast::PowerCaster;
 use super::casting::{self, CastBody, CastHook, spend_tick};
-use super::live::{EffectDraws, EffectMesh, EffectRoll, mesh_of_ribbon, show};
+use super::live::{EffectDraws, EffectMesh, EffectRoll, mesh_of_ribbon};
 use crate::effects::blast::{EPSILON, HIT_HOSTILITY, blast_aim};
 use crate::effects::torrent::{
     CONTACT_EASE, POINTS, RUNNING_FLAGS, STATIC_CONTACT, Stream, StreamPoint, TORRENT_MOTION,
@@ -418,18 +418,22 @@ pub(crate) fn tick_torrents(
     }
 }
 
-/// The glow tint the stream ribbon draws with: the vertices carry the
-/// original's colour bytes.
-const RIBBON_TINT: Vec4 = Vec4::ONE;
-
-/// Draws every torrent's stream ribbon, built from this frame's samples.
+/// Draws every torrent's stream ribbon, built from this frame's samples,
+/// with `effecttorrent_f` and the frame's `TexOfs`
+/// ([`super::effect_draw::show_ribbon`]).
+#[allow(clippy::type_complexity)]
 pub(crate) fn draw_torrents(
     mut commands: Commands,
-    mut torrents: Query<(Entity, &mut LiveTorrent, Option<&EffectMesh>)>,
+    mut torrents: Query<(
+        Entity,
+        &mut LiveTorrent,
+        Option<(&EffectMesh, &super::effect_draw::RibbonMaterial)>,
+    )>,
     cameras: Query<&GlobalTransform, exa_render::supersample::SceneCamera>,
     time: Res<Time<Fixed>>,
+    noise: Res<super::effect_draw::ForceNoise>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<exa_render::glow::GlowMaterial>>,
+    mut materials: ResMut<Assets<exa_render::force_effects::ForceRibbonMaterial>>,
 ) {
     let Some(camera) = cameras.iter().next() else {
         return;
@@ -445,12 +449,14 @@ pub(crate) fn draw_torrents(
             continue;
         }
         let mesh = mesh_of_ribbon(&ribbon);
-        show(
+        super::effect_draw::show_ribbon(
             &mut commands,
             entity,
             drawn,
             mesh,
-            RIBBON_TINT,
+            frame.texture_offset,
+            true,
+            &noise,
             &mut meshes,
             &mut materials,
         );

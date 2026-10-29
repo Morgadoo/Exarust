@@ -1329,7 +1329,10 @@ fn create_force(
                 &visual_input(context, ragdoll, start_pitch),
             );
             let entity = spawn_visual(commands, spec);
-            commands.entity(entity).insert(LiveShellAura(aura));
+            commands.entity(entity).insert((
+                LiveShellAura(aura),
+                super::effect_draw::ShellAuraOf(caster_entity),
+            ));
             push_active(
                 caster,
                 SHELL,
