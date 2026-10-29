@@ -85,6 +85,7 @@ impl Plugin for CombatPlugin {
             .add_message::<Weakened>()
             .add_message::<DamageTaken>()
             .add_message::<pain::PainSounded>()
+            .add_message::<pain::BlowFelt>()
             .add_message::<SecondWindFired>()
             .add_message::<block::ShieldRung>()
             .add_plugins((
@@ -356,6 +357,8 @@ const CONTACT_SHARE: f32 = 0.1;
 const PUSH_FROM: f32 = 0.5;
 const PUSH_PER_IMPACT: f32 = 10.0 * BODY_HZ / 100.0;
 const CM_PER_M: f32 = 100.0;
+/// The overhead attack's motion, whose blow a struck player feels at 0.4.
+const OVERHEAD_MOTION: usize = 0x0C;
 
 /// A fist meets a part with its knuckles, which lie inside the hand's box;
 /// its segment ends on the box's far face, so a contact there is measured
@@ -633,7 +636,11 @@ fn react_to_hits(
     mut shoves: MessageWriter<Shove>,
     mut sprays: MessageWriter<wounds::Spray>,
     mut weakened: MessageWriter<Weakened>,
-    (mut noticed, mut pains): (MessageWriter<DamageTaken>, MessageWriter<pain::PainSounded>),
+    (mut noticed, mut pains, mut felt): (
+        MessageWriter<DamageTaken>,
+        MessageWriter<pain::PainSounded>,
+        MessageWriter<pain::BlowFelt>,
+    ),
     (mut winds, mut rungs): (
         MessageWriter<SecondWindFired>,
         MessageWriter<block::ShieldRung>,
@@ -675,6 +682,11 @@ fn react_to_hits(
             attack.held_pending = false;
         }
         let motion = attacks.get(hit.attacker).map_or(0, |a| a.motion.index());
+        // The striker's body scale, which a struck player's jolt reads (1
+        // for a striker that is not a fighter).
+        let striker_scale = fighters
+            .get(hit.attacker)
+            .map_or(1.0, |(_, a, ..)| a.stats.scale);
         // The struck side first, then (the original's routine per contact)
         // the striker's swing.
         let reaction = 'struck: {
@@ -928,6 +940,21 @@ fn react_to_hits(
                     fighter: hit.target,
                 });
             }
+            // The player's feedback, last in the routine's tail: the
+            // striker's scale and swing are read where it is a fighter.
+            let (scale, overhead) = (striker_scale, motion == OVERHEAD_MOTION);
+            felt.write(pain::BlowFelt {
+                target: hit.target,
+                attacker: hit.attacker,
+                wound: outcome.wound,
+                yellow: outcome.yellow_unweighed,
+                striker: pain::Striker {
+                    scale,
+                    speed: outcome.speed,
+                    overhead,
+                },
+                direction: hit.velocity * (CM_PER_M / BODY_HZ),
+            });
             if taken == Taken::Weakened {
                 answer_low(
                     hit.target,
@@ -1234,6 +1261,7 @@ mod tests {
             .add_message::<Weakened>()
             .add_message::<DamageTaken>()
             .add_message::<pain::PainSounded>()
+            .add_message::<pain::BlowFelt>()
             .add_message::<SecondWindFired>()
             .add_message::<crate::block::ShieldRung>()
             .add_systems(Update, react_to_hits);
@@ -2580,6 +2608,7 @@ mod tests {
             .add_message::<Weakened>()
             .add_message::<DamageTaken>()
             .add_message::<pain::PainSounded>()
+            .add_message::<pain::BlowFelt>()
             .add_message::<SecondWindFired>()
             .add_message::<crate::block::ShieldRung>()
             .init_resource::<exa_physics::body::BodyTicks>()

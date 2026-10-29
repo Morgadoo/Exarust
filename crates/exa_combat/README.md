@@ -379,8 +379,11 @@ the camera jolts by its root past 1 and the pad rumbles by it
 (`striking_player_rumble`). The pain sounds are live: the damage pass
 writes `PainSounded` after the damage call on flesh (wound `L`, the
 unweighed yellow `Y`, the yellow left as the voice gate) and `exa_audio`
-plays them; the jolt and the rumble are tested, not called (no camera
-jolt or pad rumble reads them).
+plays them; the jolt and the rumble are live too: the damage pass writes
+`pain::BlowFelt` (the wound, the yellow, the striker's scale, speed and
+overhead swing, the blade's velocity in cm a tick as the jolt's direction)
+and `exa_game`'s `feel_blows` kicks the chase camera (`kick_random`) and
+raises the pad's rumble.
 
 A fall to death (`fall`) is kept on every fighter (`FallDeath`: its stage,
 the game-clock time it was lost, whether it has left the world) and
