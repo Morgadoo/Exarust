@@ -26,7 +26,8 @@
 //!   look-around, then the attention to the attended contact), and the
 //!   roam and patrol walk ([`idle_walk`]) plans through the level's room
 //!   table and navigation grid and walks its legs; the search is created
-//!   but has no containers or corpses to search. The mind powers'
+//!   here and run under the follow by the game (`exa_game::npc_search`),
+//!   over the level's dead bodies. The mind powers'
 //!   attitude overrides and their perception masks are not applied: the
 //!   running game sets no mind effect yet.
 

@@ -916,7 +916,19 @@ panel's press, accept, drop and drag-end rules; a drop on another pack moves
 the possession entries, a drop on the same panel only repositions, and a
 drop on a body's equipment panel or outside every panel is refused (no
 running character view and no GUI-to-world drop yet). Taking a worn item
-off a corpse does not re-dress its mesh. The world's own press is held while
+off a corpse does not re-dress its mesh.
+`npc_search` hosts the original's follow state and the companion's search
+in the running game: a level brain whose roles choose the follow follows the
+player (past its 400 cm band a route through the navigation grid on its own
+planning turn; inside the personal stop it stands) and, inside the band,
+runs its search once a body tick over the level's dead bodies (their 600 cm
+cells, their possessions as packs; reachable is the level's sight test, a
+path the grid's route), carrying out each take, wear or wield on both sides'
+`Possessions` and logging comments (no dialogue engine). The items' values
+come from the game's object database; level-local ids, containers and loose
+items are not searched, nothing is re-dressed and no kneel clip plays.
+`--searcher <record id>` gives a level character the Explorer role with its
+Activity variable set to the follow (its log lines start `search:`). The world's own press is held while
 the pointer is over an open screen. The character view, the preview bars,
 the journal's entry list, the controls' callbacks and the
 inventory's unlocated second record are not wired; the text keeps the level

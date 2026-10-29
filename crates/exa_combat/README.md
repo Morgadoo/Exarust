@@ -6,7 +6,8 @@ Combat resolution: contacts between weapons and bodies, impact energy, armour co
 
 It already decides when a fighter may attack and which of its strikers
 strike, by the original's attack executor shared by the player and the AI
-(`attack`: 80 % of the most energy, the cooldown from the last attack tick
+(`attack`: nothing without a held striker, the fists counting as two and a
+weapon as one; 80 % of the most energy, the cooldown from the last attack tick
 on the 12 ms game clock, 400 ms or round(300 × the primary's recoil) +
 300 ms, nothing while a swing stalls but a released swing's overhead
 within 300 ms or Feint's renewal, the choice of attack and the side's

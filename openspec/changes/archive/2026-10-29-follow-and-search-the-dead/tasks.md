@@ -1,0 +1,8 @@
+- [x] Executor: refuse without a held striker; count the wielder's blades in the AI's readiness and the player's attack (exa_combat, exa_ai, exa_game)
+- [x] Search: read an item record's apparel, weapon, operative and container sections as the weighing reads them (exa_ai)
+- [x] Follow and search in the running game: the scene from the level's characters, the searcher's answers, the deeds written back to the possessions (exa_game)
+- [x] `--searcher <record id>` debug flag (exarust)
+- [x] Tests: the guard with fists and weapons, the record reader, the pack and grid conversions, a follower that takes a dead body's weapon
+- [x] Real-data check: the shipped exanima01 has no character starting in the follow, and its corpses carry possessions (exa-tool characters)
+- [x] READMEs (exa_ai, exa_game); docs/PLAN.md is updated by the integration
+- [x] `make check` equivalent on the worker: tests of the touched crates, clippy --workspace --all-targets -D warnings
