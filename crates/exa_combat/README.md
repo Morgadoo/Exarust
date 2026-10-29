@@ -75,7 +75,11 @@ resistance raised by the engine's fast logarithm and exponential
 returns an `Outcome` with what the rest of the hit reads: the impact at
 the hit, the blow sag (min(2·I, 1)), the zone and whether the edge or the
 weapon's body struck, the bite and its smoothing, the hit sound's volume,
-pitch and muffling and each layer's ringing (`hit_sounds`). A blow on a
+pitch and muffling and each layer's ringing (`hit_sounds`). An armed bite
+above 0.1 sticks the weapon (`bite::stick`); its grab (`bite::grab_of`)
+pulls by the original's shares of the weapon's and the struck part's link
+mobilities, and once it breaks every grab to that part is dropped with the
+grab layer (`bite::BiteHold`, not live yet). A blow on a
 shield or a weapon (`Guard`) meets no layer and draws no roll: a weapon's
 parry deals nothing and sags the parrier (`parried`), a shield takes it on
 its arm's stamina and leaks yellow (`block`, the block path with its

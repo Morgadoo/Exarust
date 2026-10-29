@@ -246,6 +246,49 @@ fn give_masks(
     }
 }
 
+/// Blends the link mobilities of a rigid body's articulated tree as the
+/// original's group-mask builder does on the way: each child's link
+/// mobility becomes `parent·0.5 + child·0.5`, after the child's own
+/// subtree was built, so with the parent's value from before the parent is
+/// blended itself.
+///
+/// Registration builds the masks once for every body that has children,
+/// after its children registered (theirs first): each such pass walks the
+/// whole subtree under it, so a body `d` levels below the tree's root is
+/// blended `d` times. Bodies whose parent does not come before them
+/// (`parent >= index`, as [`crate::body::Ragdoll::rigid`] skips) or
+/// out of range are roots. A character skips this: its init sets every
+/// limb's link mobility afresh after the masks.
+pub(super) fn blend_link_mobilities(parts: &mut [Part]) {
+    let mut children = vec![Vec::new(); parts.len()];
+    let mut roots = Vec::new();
+    for (i, p) in parts.iter().enumerate() {
+        match p.parent.filter(|&j| j < i) {
+            Some(j) => children[j].push(i),
+            None => roots.push(i),
+        }
+    }
+    // Registration order: a body's children register (and run their own
+    // passes) before the body's pass.
+    fn register(parts: &mut [Part], children: &[Vec<usize>], i: usize) {
+        for &c in &children[i] {
+            register(parts, children, c);
+        }
+        if !children[i].is_empty() {
+            blend_pass(parts, children, i);
+        }
+    }
+    fn blend_pass(parts: &mut [Part], children: &[Vec<usize>], i: usize) {
+        for &c in &children[i] {
+            blend_pass(parts, children, c);
+            parts[c].link_mobility = parts[i].link_mobility * 0.5 + parts[c].link_mobility * 0.5;
+        }
+    }
+    for root in roots {
+        register(parts, &children, root);
+    }
+}
+
 /// A character's legs as the original registers them: each lower leg (a
 /// part with a foot contact) in the living lower legs' layer, its children
 /// (the foot) in the feet's and out of every contact with other parts; the

@@ -758,9 +758,31 @@ marks `count ≤ pass` (`iterations_reached`), which nothing reads.
 
 A limp body's links also carry the original's other kinds. A soft weld
 takes a quarter of its strength times the gap less 0.4 of its two points'
-motion since the tick began, shared by 0.1/(m + m'); a link with an
-iteration limit runs only up to its pass; a disabled link never runs. (A
-breakable grab is `body::pull_grab`'s.) A root body hangs from points in a
+motion since the tick began, shared by 0.1/(m + m') of the two parts' link
+mobilities as they stand (`Part::link_mobility`); a link with an
+iteration limit runs only up to its pass; a disabled link never runs. A
+rigid body's link mobility is its registered mobility; when the group masks
+of an articulated tree are built (once for every body with children, its
+children's passes first) each child's becomes the mean of its own and its
+parent's (`pairs::blend_link_mobilities`), so a body d levels down is
+blended d times; the link shares were taken before, so only the soft welds
+and a later `Ragdoll::recompute_link_shares` (every enabled body link from
+the mobilities as they stand) read the blended values. A limb's link
+mobility is 0.175 of its inverse mass, set afresh by the character's init
+after the masks, so a character is never blended. A breakable grab
+(`body::GrabPull`, `Ragdoll::pull_grab`, opened by
+`exa_combat::bite::grab_of`) is worked in centimetres: from a gap of at
+least the general epsilon squared, a disabled struck body breaks it, a
+re-anchoring grab moves its struck point onto the weapon point once,
+otherwise its strain falls by (q/|d|)·2 + 1 when q = (d in the weapon's
+frame)·axis + 1 is above 0 (by 1 otherwise, a NaN q too), an ordered
+strain below 0 breaks it (a NaN strain pulls), and above the epsilon each
+side takes its share (`body::grab_shares`, m/(m + m') and −m'/(m + m') of
+the link mobilities) of strength/(|d|·0.001 + 1) in double. After a break
+`Ragdoll::release_grabs` drops every breakable grab to that part, in
+order, and lowers the grab layer bit on it, its parent and its children
+(`Ragdoll::lower_grab_layer`) and on the weapon. Bites are not live yet.
+A root body hangs from points in a
 scene node by world links (`body::WorldLink`, made by `Ragdoll::rigid` from
 the part's stored links, so the hung props use them). They are worked in
 centimetres in the original's order: the hand's horizontal drag (twice the
