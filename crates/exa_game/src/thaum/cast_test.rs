@@ -1385,3 +1385,124 @@ fn worn_specials_ward_the_caster_and_quicken_its_focus() {
     );
     assert_eq!(caster.body.regen_bonus, 0.0);
 }
+
+/// The scripted run's bar: `C` opens the bar, a digit picks and `Q` casts.
+/// The first known power's slot starts chosen, so a digit on that slot
+/// unpicks it and `Q` casts nothing; `C` then `Q` casts it. The cast
+/// spawns the aura linked to its caster, and the draw copies the caster's
+/// skinned meshes, out of combat mode as the arena starts.
+#[test]
+fn the_bar_casts_the_shell_and_its_aura_copies_the_body() {
+    use crate::thaum::effect_draw::{
+        ForceNoise, ShellAuraOf, ShellCopy, draw_shell_auras, drop_shell_copies,
+        force_effects_alive, tick_force_noise,
+    };
+    use bevy::asset::AssetPlugin;
+    use bevy::mesh::skinning::SkinnedMesh;
+    use exa_render::force_effects::ForceShellMaterial;
+    let build = || {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<Image>()
+            .init_asset::<Mesh>()
+            .init_asset::<ForceShellMaterial>()
+            .init_resource::<ForceNoise>()
+            .add_plugins(CastPlugin)
+            .add_systems(
+                PostUpdate,
+                (
+                    tick_force_noise.run_if(force_effects_alive),
+                    draw_shell_auras,
+                    drop_shell_copies,
+                )
+                    .chain(),
+            );
+        let caster = app
+            .world_mut()
+            .spawn((PlayerBody::new(0.0), PowerCaster::new(&[SHELL]), ragdoll()))
+            .id();
+        let mesh = app
+            .world_mut()
+            .resource_mut::<Assets<Mesh>>()
+            .add(Mesh::from(Cuboid::default()));
+        app.world_mut()
+            .spawn((Mesh3d(mesh), SkinnedMesh::default(), ChildOf(caster)));
+        (app, caster)
+    };
+    // C, 1, Q: the digit unpicks the chosen first slot.
+    let (mut app, caster) = build();
+    for action in [BarAction::Toggle, BarAction::Pick(0), BarAction::Use] {
+        command(&mut app, caster, action);
+        app.update();
+    }
+    assert_eq!(count::<LiveShellAura>(&mut app), 0);
+    // C, Q: the chosen slot casts.
+    let (mut app, caster) = build();
+    for action in [BarAction::Toggle, BarAction::Use] {
+        command(&mut app, caster, action);
+        app.update();
+    }
+    app.world_mut().run_schedule(FixedUpdate);
+    app.update();
+    let mut query = app.world_mut().query::<&ShellAuraOf>();
+    let links: Vec<ShellAuraOf> = query.iter(app.world()).copied().collect();
+    assert_eq!(links, vec![ShellAuraOf(caster)]);
+    assert_eq!(count::<ShellCopy>(&mut app), 1);
+    // Out of combat mode the shell holds: a second and a half of ticks on,
+    // its aura is open and still drawn.
+    for _ in 0..125 {
+        app.world_mut().run_schedule(FixedUpdate);
+    }
+    app.update();
+    let mut auras = app.world_mut().query::<&LiveShellAura>();
+    let aura = auras
+        .iter(app.world())
+        .next()
+        .expect("the aura stays")
+        .0
+        .clone();
+    assert!(aura.state < 4, "{}", aura.state);
+    assert_eq!(count::<ShellCopy>(&mut app), 1);
+    // Q alone, with the bar closed, casts the chosen slot too.
+    let (mut app, caster) = build();
+    command(&mut app, caster, BarAction::Use);
+    app.update();
+    app.update();
+    assert_eq!(count::<ShellCopy>(&mut app), 1);
+}
+
+/// The player's blast from the bar: cast with `Q`, it charges in the hand
+/// and throws by itself once its charge passes 1, in combat mode. Out of
+/// combat mode the player's controller asks the hook every tick
+/// (`casting::player_hooks`), which ends the charge before it throws.
+#[test]
+fn the_players_blast_throws_in_combat_mode() {
+    use crate::effects::blast::THROWN;
+    use crate::thaum::blast_live::LiveBlast;
+    let run = |combat: bool| {
+        let mut app = new_app();
+        let mut player = PlayerBody::new(0.0);
+        player.set_combat(combat);
+        let mut caster = PowerCaster::new(&[0x201]);
+        caster.body.focus = 1.0;
+        let entity = app
+            .world_mut()
+            .spawn((player, caster, GlobalTransform::IDENTITY, ragdoll()))
+            .id();
+        command(&mut app, entity, BarAction::Toggle);
+        app.update();
+        cast(&mut app, entity);
+        let mut thrown = false;
+        for _ in 0..200 {
+            app.world_mut().run_schedule(FixedUpdate);
+            let mut q = app.world_mut().query::<&LiveBlast>();
+            if q.iter(app.world()).any(|b| b.blast.state == THROWN) {
+                thrown = true;
+                break;
+            }
+        }
+        thrown
+    };
+    assert!(run(true), "the blast throws in combat mode");
+    assert!(!run(false), "out of combat mode the hook ends the charge");
+}

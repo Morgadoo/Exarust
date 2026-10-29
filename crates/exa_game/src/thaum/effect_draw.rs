@@ -225,6 +225,24 @@ pub fn aura_frame(body: &Ragdoll) -> Option<ShellFrame> {
     })
 }
 
+/// The frame and skin box of a caster without a physical body: unturned at
+/// `at` (cm, the node's place, at the feet), a box 180 cm tall from there.
+pub fn standing_frame(at: Vec3) -> (ShellFrame, ShellBox) {
+    (
+        ShellFrame {
+            rows: [Vec3::X, Vec3::Y, Vec3::Z],
+            translation: at,
+        },
+        ShellBox::Skinned {
+            centre_y: at.y + STANDING_HALF_HEIGHT,
+            half_y: STANDING_HALF_HEIGHT,
+        },
+    )
+}
+
+/// Half a standing body's height (cm) for a caster without a physical body.
+const STANDING_HALF_HEIGHT: f32 = 90.0;
+
 /// Each frame: a shell aura without copies copies its caster's skinned
 /// meshes; every aura's material takes this frame's uniforms.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
@@ -236,6 +254,7 @@ pub(crate) fn draw_shell_auras(
         &LiveShellAura,
         Option<&ShellAuraOf>,
         Option<&ShellAuraDraw>,
+        &Transform,
     )>,
     bodies: Query<&Ragdoll>,
     children: Query<&Children>,
@@ -250,16 +269,17 @@ pub(crate) fn draw_shell_auras(
         .iter()
         .next()
         .map_or(Vec3::ZERO, |c| c.translation() * CM);
-    for (entity, aura, of, drawn) in &auras {
+    for (entity, aura, of, drawn, place) in &auras {
         let Some(ShellAuraOf(caster)) = of.copied() else {
             continue;
         };
-        let Ok(body) = bodies.get(caster) else {
-            continue;
-        };
-        let (Some(frame), Some(bounds)) = (aura_frame(body), skin_box(body)) else {
-            continue;
-        };
+        // The body's root and parts when the caster has a physical body;
+        // otherwise the node's own place (cm) and a standing body's box.
+        let fitted = bodies
+            .get(caster)
+            .ok()
+            .and_then(|body| Some((aura_frame(body)?, skin_box(body)?)));
+        let (frame, bounds) = fitted.unwrap_or_else(|| standing_frame(place.translation));
         let params = shell_params(&shell_uniforms(&aura.0, true, &frame, bounds, view));
         match drawn {
             Some(draw) => {
@@ -276,8 +296,13 @@ pub(crate) fn draw_shell_auras(
                     })
                     .collect();
                 if sources.is_empty() {
+                    debug!("force shell aura {entity:?}: its caster has no skinned mesh yet");
                     continue;
                 }
+                info!(
+                    "force shell aura {entity:?}: {} skinned copies of {caster:?}",
+                    sources.len()
+                );
                 let material = materials.add(ForceShellMaterial {
                     params,
                     noise: image.clone(),
@@ -411,6 +436,7 @@ mod tests {
             .spawn((
                 LiveShellAura(ForceShell::new(0, [0.0, 0.0])),
                 ShellAuraOf(caster),
+                Transform::default(),
             ))
             .id();
         app.update();
