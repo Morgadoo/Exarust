@@ -824,15 +824,16 @@ pub fn step_loudness(length_cm: f32) -> f32 {
 /// a miss leaves the ground.
 const FLOOR_TOUCHING: f32 = 10.0;
 
-/// The loudness of a walking footstep before the random share: the
-/// original's two body fields (the character's step gain and its race's)
-/// have no Exarust counterpart, so both are 1 (a guess).
+/// The loudness of a walking footstep before the random share is this body
+/// gain times the character's footstep volume (the init's: the body scale,
+/// doubled over 1.3, the ogre's 5). The gain field has no traced writer
+/// in the character init; 1 is a guess.
 const STEP_GAIN: f32 = 1.0;
 
 /// A walking footstep's gain and pitch from its speed along the heading
 /// (cm a tick) and the engine's two draws in [0, 1), the pitch's first:
 /// the pitch is `(0.2·p + 0.9)(0.05·speed + 0.85)` and the gain
-/// `gain · (0.5·g + 0.5) · ((0.08·speed)² + 0.01)`, the draw's share in
+/// `gain · volume · (0.5·g + 0.5) · ((0.08·speed)² + 0.01)`, the draw's share in
 /// single precision and the rest in double, narrowed once, as the
 /// original's are.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -841,14 +842,14 @@ pub struct GaitStep {
     pub pitch: f32,
 }
 
-/// The walk's footstep gain and pitch from the pitch draw `p` and the gain
-/// draw `g`, drawn in that order.
-pub fn gait_step(speed_cm: f32, p: f32, g: f32) -> GaitStep {
+/// The walk's footstep gain and pitch from the character's footstep volume,
+/// the pitch draw `p` and the gain draw `g`, drawn in that order.
+pub fn gait_step(speed_cm: f32, volume: f32, p: f32, g: f32) -> GaitStep {
     let speed = f64::from(speed_cm);
     let pitch = ((0.2 * f64::from(p) + 0.9) * (0.05 * speed + 0.85)) as f32;
     let share = f64::from(g * 0.5 + 0.5);
     let loud = 0.08 * speed * (0.08 * speed) + 0.01;
-    let gain = (f64::from(STEP_GAIN) * f64::from(STEP_GAIN) * (share * loud)) as f32;
+    let gain = (f64::from(STEP_GAIN) * f64::from(volume) * (share * loud)) as f32;
     GaitStep { gain, pitch }
 }
 
@@ -875,12 +876,10 @@ pub fn walk_rustle(
     let share = f64::from(g * 0.5 + 0.5);
     let volume = (f64::from(base) * (share * (speed * 0.02 + 0.01))) as f32;
     let pitch = ((f64::from(p) * 0.2 + 0.9) * (speed * 0.2 + 0.7) / f64::from(size)) as f32;
-    *roll = roll.wrapping_mul(0x0808_8405).wrapping_add(1);
-    let jitter = ((u64::from(*roll) * 100) >> 32) as u32;
     WalkRustle {
         volume,
         pitch,
-        next_ms: now_ms.wrapping_add(400).wrapping_add(jitter),
+        next_ms: sound_clock(now_ms, RUSTLE_WAIT_MS, roll),
     }
 }
 
@@ -895,6 +894,113 @@ pub struct WalkRustle {
     pub next_ms: u32,
 }
 
+/// The engine's generator stepped once and its `(roll · 100) >> 32`
+/// jitter (ms) added to `now_ms + wait_ms`: the next free time of a foot
+/// sound clock.
+fn sound_clock(now_ms: u32, wait_ms: u32, roll: &mut u32) -> u32 {
+    *roll = roll.wrapping_mul(0x0808_8405).wrapping_add(1);
+    let jitter = ((u64::from(*roll) * 100) >> 32) as u32;
+    now_ms.wrapping_add(wait_ms).wrapping_add(jitter)
+}
+
+/// The balance routine's clothing rustle clock wait (after a foot anchors or a walking plant)
+/// (ms), and its footstep clock wait after a foot lets go.
+pub const RUSTLE_WAIT_MS: u32 = 400;
+pub const RELEASE_STEP_WAIT_MS: u32 = 250;
+
+/// A foot sound's volume (the played gain is it times the sound gain),
+/// pitch and its clock's next free time (ms).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FootSound {
+    pub volume: f32,
+    pub pitch: f32,
+    pub next_ms: u32,
+}
+
+/// The clothing rustle the balance routine plays when a foot becomes
+/// anchored and its rustle clock is free: `k = min(1, 0.0001·d² + 0.2)`
+/// (d² the squared distance in cm² between the foot's contact and its
+/// previous point, scaled and offset in double), doubled while attacking,
+/// then the volume `k · base · (0.02·g + 0.02)` (double, narrowed once)
+/// and the pitch `0.3·p + 0.8`, the volume's draw first. The played gain
+/// is the volume times the sound gain; the clock waits 400 ms plus the
+/// generator's jitter. A NaN distance keeps the unclamped NaN.
+pub fn anchor_rustle(
+    base: f32,
+    gap_sq_cm: f32,
+    attacking: bool,
+    g: f32,
+    p: f32,
+    now_ms: u32,
+    roll: &mut u32,
+) -> FootSound {
+    let mut k = (f64::from(gap_sq_cm) * 0.0001 + 0.2) as f32;
+    if k > 1.0 {
+        k = 1.0;
+    }
+    if attacking {
+        k *= 2.0;
+    }
+    let share = f64::from(g) * 0.02 + 0.02;
+    let volume = (f64::from(k) * f64::from(base) * share) as f32;
+    let pitch = (f64::from(p) * 0.3 + 0.8) as f32;
+    FootSound {
+        volume,
+        pitch,
+        next_ms: sound_clock(now_ms, RUSTLE_WAIT_MS, roll),
+    }
+}
+
+/// The footstep the balance routine plays when an anchored foot lets go
+/// and the footstep clock is free, from the step's loudness (`loudness`,
+/// [`step_loudness`]), the character's footstep volume (`volume`), the
+/// body gain and the engine's draws, the pitch's first: the pitch
+/// `0.25·p + (0.2·loudness + 0.5)` and the gain `gain · loudness · volume ·
+/// (0.005·g + 0.02)`, the draw's scaling in single precision for the
+/// pitch and the rest in double, narrowed once.
+pub fn release_step(loudness: f32, volume: f32, p: f32, g: f32) -> GaitStep {
+    let pitch = (f64::from(p * 0.25) + (f64::from(loudness) * 0.2 + 0.5)) as f32;
+    let share = f64::from(g) * 0.005 + 0.02;
+    let gain = (f64::from(STEP_GAIN) * f64::from(loudness) * f64::from(volume) * share) as f32;
+    GaitStep { gain, pitch }
+}
+
+/// The wet step that follows [`release_step`] when the water surface
+/// (`water_cm`, the level's) lies over the foot's contact height
+/// (`foot_cm`): its depth share `min(1, 0.05·(−water − 1 − foot))` (the
+/// sum in single precision, scaled in double), then the pitch
+/// `0.35·p + (0.2·loudness + 0.4)` and the gain `gain · depth · loudness ·
+/// volume · (0.01·g + 0.02)` in double, the pitch's draw first. `None`
+/// when the foot is not under the surface (or either height is NaN).
+pub fn wet_release_step(
+    water_cm: f32,
+    foot_cm: f32,
+    loudness: f32,
+    volume: f32,
+    p: f32,
+    g: f32,
+) -> Option<GaitStep> {
+    if water_cm.partial_cmp(&foot_cm) != Some(std::cmp::Ordering::Greater) {
+        return None;
+    }
+    let mut depth = (f64::from(-water_cm - 1.0 - foot_cm) * 0.05) as f32;
+    if depth > 1.0 {
+        depth = 1.0;
+    }
+    let pitch = (f64::from(p) * 0.35 + (f64::from(loudness) * 0.2 + 0.4)) as f32;
+    let share = f64::from(g) * 0.01 + 0.02;
+    let gain =
+        (f64::from(STEP_GAIN) * f64::from(depth) * f64::from(loudness) * f64::from(volume) * share)
+            as f32;
+    Some(GaitStep { gain, pitch })
+}
+
+/// The footstep clock's next free time after [`release_step`] (and its
+/// wet step): 250 ms plus the generator's jitter, stepped once.
+pub fn release_step_clock(now_ms: u32, roll: &mut u32) -> u32 {
+    sound_clock(now_ms, RELEASE_STEP_WAIT_MS, roll)
+}
+
 /// Where a footstep sounds from: the character's place, this far (m)
 /// along its motion: `3·speed + 4` cm.
 pub fn step_position(character: Vec3, direction: Vec3, speed_cm: f32) -> Vec3 {
@@ -902,13 +1008,14 @@ pub fn step_position(character: Vec3, direction: Vec3, speed_cm: f32) -> Vec3 {
 }
 
 /// A walking footstep, as the body's sampler makes it: the sound's place,
-/// the speed along the heading (cm a tick), the body's scale and the
-/// race's footstep set (empty when the race has none).
+/// the speed along the heading (cm a tick), the character's footstep volume
+/// and the race's footstep set (empty when the race has none).
 #[derive(Debug, Clone, Copy, Message, PartialEq)]
 pub struct Footstep {
     pub position: Vec3,
     pub speed_cm: f32,
-    pub scale: f32,
+    /// The character's footstep volume (its stats' `footstep_volume`).
+    pub volume: f32,
     /// The race's footstep set's name in `Sound.rpk`; none for a race
     /// without one.
     pub set: Option<&'static str>,

@@ -1082,7 +1082,9 @@ main hand (a drawn weapon variant's id) and its brain, and
 physique, the skinned parts and skin look, the garments, the physical
 body's stats, its fighter and held item, the record data and possessions,
 and a duellist or placed-character brain — the same components a level's
-placed characters carry. A `SceneCommand::Despawn` naming the root or the
+placed characters carry. The physical body's race muscles take the character
+init's race presets over the race record's balance bonus and arm relaxation
+(`character_muscles`; a human keeps its record's). A `SceneCommand::Despawn` naming the root or the
 body model releases the character capsule and removes the root's whole
 subtree. The generator reads the game's tables once, on its first command;
 frames without one cost nothing. The arena's generic and hire-list

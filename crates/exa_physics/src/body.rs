@@ -69,10 +69,13 @@ mod feet;
 #[path = "body_stagger.rs"]
 pub mod stagger;
 pub use feet::{
+    FootSound, WalkRustle, anchor_rustle, release_step, release_step_clock, walk_rustle,
+    wet_release_step,
+};
+pub use feet::{
     FootState, Footstep, FullTone, GaitStep, QueuedStep, StepEnd, WalkedStep, full_tone, gait_step,
     queued_step, step_end, step_loudness, step_position,
 };
-pub use feet::{WalkRustle, walk_rustle};
 #[path = "body_pins.rs"]
 mod pins;
 #[path = "body_stages.rs"]

@@ -1248,6 +1248,15 @@ level, kept within 0…1) and its race (or the built-in record):
 | perception | race `0x110`, or 1 − f/2 when feral |
 | voice | pitch: the record's within 0.9…1.07 (race byte 7, the hulking ghoul, 0.85); volume: scale × race `0x1B4`; attack-voice step: race `0x1C4` − 1, or 1 when feral |
 | clip-rate base | race `0x5C` |
+| balance bonus | the race record's, by race byte: 5 (Fael), 6 and 7 (the ghouls) 2.0, 8 (gobbler) 1.5 |
+| arm relaxation | the race record's, by race byte: 5 (Fael) 0, 7 (hulking ghoul) 0.5; golems 0.5, byte 17 (the boss) 0 |
+| footstep volume | the body scale, doubled over 1.3 (a double compare); race byte 3 (ogre) 5. It multiplies the footsteps' and landing steps' gain |
+| golem | bit `0x10` of the race byte (not the skeleton or the wraith): walks on `Golem_Stp` whatever its race names, its golem suit starts powered |
+
+The init's race-byte branches write more (the pin and clip-rate factors,
+the stance and damping, the voice volume and attack-voice step, the
+perception), but the same init overwrites them from the race record
+afterwards; only the rows above and the health and rule bits survive.
 
 Maximum health is 0.25 × the race's health factor, then by race byte (the
 record's, which also picks the race): 3 (ogre) 1.5 and 4 (Sir) 1.0 unless

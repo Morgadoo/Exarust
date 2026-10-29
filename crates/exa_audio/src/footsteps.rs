@@ -59,7 +59,7 @@ pub(crate) fn footsteps(
         // The original draws the pitch's share, then the gain's.
         let pitch_roll = bank.random_unit();
         let gain_roll = bank.random_unit();
-        let step = gait_step(plant.speed_cm, pitch_roll, gain_roll);
+        let step = gait_step(plant.speed_cm, plant.volume, pitch_roll, gain_roll);
         env.play_set(&mut bank, set, plant.position, step.gain, step.pitch, 0);
     }
     for (e, body, gt, ragdoll, clock) in &mut walkers {

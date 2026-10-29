@@ -621,7 +621,7 @@ pub fn spawn_scene_body(
             head_word: look.worn.iter().fold(0, |word, worn| word | worn.head_word),
         },
         exa_physics::body::Physical {
-            race: race_muscles(&race_body),
+            race: character_muscles(&race_body, &stats),
             stats: body_stats(&stats),
             ..default()
         },
@@ -770,6 +770,21 @@ pub fn race_muscles(body: &RaceBody) -> RaceMuscles {
         damping_ratio: body.damping_ratio,
         clip_rate: body.clip_rate,
         gaits: exa_physics::race_runtime::rows_of(body),
+    }
+}
+
+/// The factors a character's race gives its body's muscles, with the
+/// character init's race presets over the race record's balance bonus and
+/// arm relaxation (the Fael, the ghouls, the gobbler and the golems; a
+/// human keeps its record's).
+pub fn character_muscles(
+    body: &RaceBody,
+    stats: &exa_formats::character_stats::CharacterStats,
+) -> RaceMuscles {
+    RaceMuscles {
+        balance_bonus: stats.balance_bonus,
+        arm_relaxation: stats.arm_relaxation,
+        ..race_muscles(body)
     }
 }
 

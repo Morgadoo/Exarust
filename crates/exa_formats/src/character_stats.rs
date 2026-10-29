@@ -81,6 +81,83 @@ const RACE2_FIERCE: u32 = 0x2;
 const RACE2_REGENERATES_RED: u32 = 0x4;
 /// Over this feral level a character is fierce.
 const FIERCE_FERAL: f32 = 0.5;
+/// A body scale over this (compared in double precision) doubles the
+/// footstep volume.
+const LOUD_STEPS_ABOVE: f64 = 1.3;
+const LOUD_STEPS: f32 = 2.0;
+/// A golem's arm relaxation (the boss's is none).
+const GOLEM_ARM_RELAXATION: f32 = 0.5;
+const GOLEM_BOSS_ARM_RELAXATION: f32 = 0.0;
+
+/// What the character init's race-byte branches set over the values the
+/// race record gives (the balance bonus and the arm relaxation are the
+/// record's, the footstep volume the body scale, unless a preset names
+/// its own). The branches' other writes are overwritten from the race
+/// record later in the same init, or are the health and rule bits
+/// ([`max_health`], [`rules`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct RacePreset {
+    byte: u8,
+    balance_bonus: Option<f32>,
+    arm_relaxation: Option<f32>,
+    footstep_volume: Option<f32>,
+}
+
+impl RacePreset {
+    const NONE: Self = Self {
+        byte: 0,
+        balance_bonus: None,
+        arm_relaxation: None,
+        footstep_volume: None,
+    };
+}
+
+/// The init's presets by race byte (code constants of the original, not
+/// race data). Golems are handled by their bit ([`GOLEM_BIT`]).
+const RACE_PRESETS: [RacePreset; 5] = [
+    RacePreset {
+        byte: OGRE,
+        footstep_volume: Some(5.0),
+        ..RacePreset::NONE
+    },
+    RacePreset {
+        byte: FAEL,
+        balance_bonus: Some(2.0),
+        arm_relaxation: Some(0.0),
+        ..RacePreset::NONE
+    },
+    RacePreset {
+        byte: GHOUL,
+        balance_bonus: Some(2.0),
+        ..RacePreset::NONE
+    },
+    RacePreset {
+        byte: HULKING_GHOUL,
+        balance_bonus: Some(2.0),
+        arm_relaxation: Some(0.5),
+        ..RacePreset::NONE
+    },
+    RacePreset {
+        byte: GOBBLER,
+        balance_bonus: Some(1.5),
+        ..RacePreset::NONE
+    },
+];
+
+/// The preset of race byte `byte`, if the init has one.
+fn race_preset(byte: u8) -> RacePreset {
+    RACE_PRESETS
+        .iter()
+        .copied()
+        .find(|p| p.byte == byte)
+        .unwrap_or(RacePreset::NONE)
+}
+
+/// The record's race byte names a golem (the init's golem branch: not the
+/// skeleton or the wraith, and the golem bit).
+pub fn golem_byte(byte: u8) -> bool {
+    byte != SKELETON && byte != WRAITH && byte & GOLEM_BIT != 0
+}
 
 /// What the original's spawn knows besides the record and the race.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -252,6 +329,19 @@ pub struct CharacterStats {
     /// The race word's release bit: a shock releases it into the shocked
     /// state instead of burning it (the energy powers' races).
     pub shocks_release: bool,
+    /// Adds 0.05 × it to the balance score: the race record's, 2 for the
+    /// Fael and the ghouls, 1.5 for the gobbler.
+    pub balance_bonus: f32,
+    /// Scales how far link-muscle anchors relax and the arms' relaxed
+    /// stiffness: the race record's, none for the Fael and the golem boss,
+    /// 0.5 for the hulking ghoul and the other golems.
+    pub arm_relaxation: f32,
+    /// Multiplies its footsteps' and landings' gain: the body scale,
+    /// doubled over 1.3; the ogre's is 5.
+    pub footstep_volume: f32,
+    /// Its race byte is a golem's: it walks on the golem footstep set
+    /// whatever its race names, and its golem suit starts powered.
+    pub golem: bool,
 }
 
 impl Default for CharacterStats {
@@ -290,6 +380,17 @@ impl CharacterStats {
                 ..record.pools
             }
         };
+        let preset = race_preset(byte);
+        let golem = golem_byte(byte);
+        let golem_arms = if byte == GOLEM_BOSS {
+            GOLEM_BOSS_ARM_RELAXATION
+        } else {
+            GOLEM_ARM_RELAXATION
+        };
+        let mut footstep_volume = scale;
+        if f64::from(scale) > LOUD_STEPS_ABOVE {
+            footstep_volume *= LOUD_STEPS;
+        }
         let mut voice_pitch = clamp_f64(record.voice_pitch, LOWEST_PITCH, HIGHEST_PITCH);
         if byte == HULKING_GHOUL {
             voice_pitch = HULKING_GHOUL_PITCH;
@@ -340,8 +441,20 @@ impl CharacterStats {
             deflection: record.deflection(),
             encumbrance: 0.0,
             quadruped: stats.flags2 & QUADRUPED != 0,
-            footsteps: FootstepSet::of(&stats.footsteps),
+            footsteps: if golem {
+                FootstepSet::Golem
+            } else {
+                FootstepSet::of(&stats.footsteps)
+            },
             shocks_release: flags & SHOCKS_RELEASE != 0,
+            balance_bonus: preset.balance_bonus.unwrap_or(body.balance_bonus),
+            arm_relaxation: preset.arm_relaxation.unwrap_or(if golem {
+                golem_arms
+            } else {
+                body.arm_relaxation
+            }),
+            footstep_volume: preset.footstep_volume.unwrap_or(footstep_volume),
+            golem,
         }
     }
 
