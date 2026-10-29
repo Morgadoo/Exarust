@@ -5,6 +5,11 @@
 //! prints the tick's wall time, the stage's own counters and a checksum of
 //! every particle, so a change that is meant to leave the simulation alone
 //! can be checked bit for bit.
+//!
+//! `cloth_cost_of_fifteen_hairs_in_a_level` sets the same hairs among
+//! exanima01's count of bodies (4 800 of ten parts, nearly all asleep,
+//! spread over a 280 m square): it prints the stage's parts split (the
+//! per-tick bucketing of the parts around the cloths) and its checksum.
 
 use super::*;
 use exa_physics::body::PartSetup;
@@ -45,6 +50,21 @@ fn hair_mesh() -> (Vec<Vec3>, Vec<[usize; 3]>) {
 
 /// The scene: its app, the hair cloths and the head part each hangs from.
 pub(super) fn hair_scene() -> (App, Vec<Entity>, Vec<Entity>) {
+    let (app, hairs, heads, _) = hair_scene_in_level(0);
+    (app, hairs, heads)
+}
+
+/// Level bodies: ten parts each, asleep, on a 4 m grid centred on the
+/// hairs' square.
+const LEVEL_PARTS: usize = 10;
+const LEVEL_SPACING: f32 = 4.0;
+
+/// The hair scene among `level_bodies` sleeping level bodies; it also
+/// returns the characters' bodies (each tick's body stage marks them
+/// changed, as it does every awake body).
+pub(super) fn hair_scene_in_level(
+    level_bodies: usize,
+) -> (App, Vec<Entity>, Vec<Entity>, Vec<Entity>) {
     let mut app = App::new();
     app.add_plugins((MinimalPlugins, ClothPlugin))
         .init_resource::<Assets<Mesh>>()
@@ -83,6 +103,33 @@ pub(super) fn hair_scene() -> (App, Vec<Entity>, Vec<Entity>) {
     let pins: Vec<(usize, f32)> = (0..COLUMNS).map(|i| (i, cloth::FIRM_PIN)).collect();
     let mut hairs = Vec::new();
     let mut heads = Vec::new();
+    let mut characters = Vec::new();
+    let side = (level_bodies as f32).sqrt().ceil() as usize;
+    for body in 0..level_bodies {
+        let at = Vec3::new(
+            ((body % side) as f32 - side as f32 * 0.5) * LEVEL_SPACING + 0.7,
+            0.2,
+            ((body / side) as f32 - side as f32 * 0.5) * LEVEL_SPACING + 0.9,
+        );
+        let setups: Vec<PartSetup> = (0..LEVEL_PARTS)
+            .map(|part| PartSetup {
+                bone: part,
+                entity: app.world_mut().spawn_empty().id(),
+                parent: None,
+                world: Affine3A::from_translation(at + Vec3::new(part as f32 * 0.15, 0.0, 0.0)),
+                centre: Vec3::new(0.0, 0.03, 0.0),
+                half: Vec3::splat(0.06),
+                origin: Vec3::ZERO,
+                links: vec![],
+                foot: None,
+                pins: Vec::new(),
+                spheres: Some(vec![(Vec3::ZERO, 0.07)]),
+            })
+            .collect();
+        let mut ragdoll = Ragdoll::new(&setups);
+        ragdoll.sleep = exa_physics::body::Sleep::Deep;
+        app.world_mut().spawn(ragdoll);
+    }
     for body in 0..BODIES {
         // Bodies stand in a 5 m square, so every hair's nine cells hold
         // every part.
@@ -112,7 +159,7 @@ pub(super) fn hair_scene() -> (App, Vec<Entity>, Vec<Entity>) {
                 }
             })
             .collect();
-        app.world_mut().spawn(Ragdoll::new(&setups));
+        characters.push(app.world_mut().spawn(Ragdoll::new(&setups)).id());
         let head = entities[0];
         let head_at = at + Vec3::new(0.0, 1.7, 0.0);
         app.world_mut()
@@ -146,7 +193,7 @@ pub(super) fn hair_scene() -> (App, Vec<Entity>, Vec<Entity>) {
         hairs.push(entity);
         heads.push(head);
     }
-    (app, hairs, heads)
+    (app, hairs, heads, characters)
 }
 
 /// Turns each head a little about y, as a frame's propagation would.
@@ -226,6 +273,65 @@ fn cloth_cost_of_fifteen_hairs() {
         last.particles,
     );
     println!("cloth checksum: {:016x}", checksum(&app, &hairs));
+    assert_eq!(last.awake as usize, HAIRS);
+}
+
+/// Fifteen awake hairs among 4 800 sleeping level bodies of ten parts
+/// (exanima01's count): the stage's parts split (bucketing the parts the
+/// cloths can meet) and its whole time, with the checksum after 400 ticks.
+/// The characters' bodies are marked changed every tick, as the body stage
+/// leaves every awake body.
+#[test]
+#[ignore = "a timing bench: run with --release --ignored --nocapture"]
+fn cloth_cost_of_fifteen_hairs_in_a_level() {
+    let (mut app, hairs, heads, characters) = hair_scene_in_level(4_800);
+    let mut parts = Vec::new();
+    let mut stage = Vec::new();
+    for frame in 0..100 {
+        turn_heads(&mut app, &heads, frame);
+        for _ in 0..4 {
+            for &body in &characters {
+                app.world_mut()
+                    .get_mut::<Ragdoll>(body)
+                    .unwrap()
+                    .set_changed();
+            }
+            app.world_mut().run_schedule(FixedUpdate);
+            let debug = app.world().resource::<ClothDebug>();
+            parts.push(debug.last_parts_micros);
+            stage.push(debug.last_micros);
+        }
+    }
+    let mean = |v: &[u64]| v.iter().sum::<u64>() as f64 / v.len() as f64 / 1000.0;
+    let median = |v: &[u64]| {
+        let mut sorted = v.to_vec();
+        sorted.sort_unstable();
+        sorted[sorted.len() / 2] as f64 / 1000.0
+    };
+    // The first ticks build the level's index; the rest are the steady
+    // state.
+    let steady = &parts[4..];
+    let last = app
+        .world()
+        .resource::<ClothDebug>()
+        .cloths
+        .iter()
+        .map(|c| c.1)
+        .fold(ClothWork::default(), |mut a, w| {
+            a.add(&w);
+            a
+        });
+    println!(
+        "level cloth cost: parts {:.3} ms mean ({:.3} ms median, first tick {:.3} ms), stage {:.3} ms mean; awake {}, parts offered {}, bodies {}",
+        mean(steady),
+        median(steady),
+        parts[0] as f64 / 1000.0,
+        mean(&stage),
+        last.awake,
+        last.parts,
+        last.bodies,
+    );
+    println!("level cloth checksum: {:016x}", checksum(&app, &hairs));
     assert_eq!(last.awake as usize, HAIRS);
 }
 

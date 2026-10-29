@@ -137,7 +137,10 @@ physique values and the body morphs they select remain the body's concern
   meshes of `hair hula01…05` and `hair husa02`) becomes an
   `exa_world::cloth` cloth pinned by its face flags, the style's roots
   with the hair's cloth record (`exa_physics::cloth_record::ClothRecord::HAIR`);
-  only with `EXA_HAIR_CLOTH=1` (off by default: exanima01 still ran at 16 FPS with hair on after the cull, with most of the cost outside the counted cloth stage). A living
+  on by default (`EXA_HAIR_CLOTH=0` keeps the styles rigid): the cloth
+  stage's part index re-buckets only the bodies that changed and reads
+  only the cells around its cloths, so exanima01's ~4 800 bodies no longer
+  cost a full re-bucket every tick (`exa_world::cloth_parts`). A living
   character's hair never sleeps; each awake hair is offered only the body
   parts in the nine 6 m cells around it, as the original's grid sector
   walks them (offered every part of the level, exanima01 fell to 16 FPS).
