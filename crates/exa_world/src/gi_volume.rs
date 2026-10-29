@@ -414,6 +414,9 @@ fn block_centre(sector: IVec2, width: u32, height: u32) -> Vec2 {
 pub struct GiSettings {
     pub enabled: bool,
     pub warm_up: u32,
+    /// The original's high shading quality (4 or above, its default): the
+    /// base ambient is the level record's `0x30` × 0.001, else × 0.002.
+    pub high_quality: bool,
 }
 
 impl Default for GiSettings {
@@ -421,6 +424,7 @@ impl Default for GiSettings {
         Self {
             enabled: true,
             warm_up: 600,
+            high_quality: true,
         }
     }
 }
@@ -449,8 +453,10 @@ pub enum GiState {
 pub struct GiRefocus;
 
 /// The level record's secondary ambient (`0x30`) scale for the per-step base
-/// ambient, at the original's top shading quality.
+/// ambient at shading quality 4 or above, the retail default.
 pub const BASE_AMBIENT: f32 = 0.001;
+/// The scale below that quality: the original's manager doubles it.
+pub const BASE_AMBIENT_LOW_QUALITY: f32 = 0.002;
 
 /// The level's GI inputs in world space, collected once its nodes have
 /// settled: every sample point, every floor point and every terrain
@@ -927,7 +933,12 @@ fn volume_of(block: &BuiltBlock, level: &PendingGi, settings: &GiSettings) -> Gi
         voxel: VOXEL,
         floors: block.floors.clone(),
         cells: block.cells.clone(),
-        base_ambient: Vec3::from(level.base_ambient) * BASE_AMBIENT,
+        base_ambient: Vec3::from(level.base_ambient)
+            * if settings.high_quality {
+                BASE_AMBIENT
+            } else {
+                BASE_AMBIENT_LOW_QUALITY
+            },
         sector: block.sector,
         warm_up: settings.warm_up,
         top_slice: level.top_slice,
@@ -1241,11 +1252,17 @@ impl TerrainColumns {
         }
     }
 
-    /// Fills terrain as the original does (whole-voxel columns): voxels below
-    /// the surface hold 20, the surface voxel its covered fraction of 20; the
+    /// Fills terrain as the original does (whole-voxel columns): with `k`
+    /// the surface height in voxels truncated towards zero, a column below
+    /// slice 0 (`k` < 0) is skipped; below the top slice voxel `k` holds its
+    /// covered fraction of 20 (rounded to even) and slices 0..k hold 20; at
+    /// or above it `k` clamps to the top slice, no surface byte is written
+    /// and slices 0..D−1 hold 20 (so the lid's 5 in slice D−2 becomes 20 and
+    /// the top slice's 26 stays). The column's lowest slice becomes `k`. The
     /// margins are left alone. Returns the columns filled.
     fn apply(&self, o: &mut Occupancy) -> usize {
         let mut filled = 0;
+        let top_slice = o.depth as i32 - 1;
         for z in MARGIN..SIDE - MARGIN {
             for x in MARGIN..SIDE - MARGIN {
                 let top = self.tops[x + z * SIDE];
@@ -1253,20 +1270,27 @@ impl TerrainColumns {
                     continue;
                 }
                 let g = (top - self.origin.y) / VOXEL;
-                if g <= 0.0 {
+                // The original truncates (towards zero), so a surface less
+                // than a voxel below slice 0 still counts as slice 0.
+                let mut k = g as i32;
+                if k < 0 {
                     continue;
                 }
-                let surface = (g.floor() as usize).min(o.depth);
-                for y in 0..surface {
+                if k < top_slice {
+                    // A surface in (-1, 0) voxels gives a negative byte,
+                    // which the original stores wrapped; kept as it is.
+                    let frac = g - k as f32;
+                    o.cells[x + z * SIDE + k as usize * SIDE * SIDE] =
+                        (frac * TERRAIN_SOLID as f32).round_ties_even() as i32 as u8;
+                } else {
+                    k = top_slice;
+                }
+                for y in 0..k as usize {
                     o.cells[x + z * SIDE + y * SIDE * SIDE] = TERRAIN_SOLID;
                 }
-                if surface < o.depth {
-                    let frac = g - surface as f32;
-                    o.cells[x + z * SIDE + surface * SIDE * SIDE] =
-                        (frac * TERRAIN_SOLID as f32).round_ties_even() as u8;
-                }
-                let column = &mut o.lowest[x + z * SIDE];
-                *column = (*column).min(surface.min(o.depth - 1) as u8);
+                // Terrain is filled first, so the original's plain store
+                // is the column's lowest slice.
+                o.lowest[x + z * SIDE] = k as u8;
                 filled += 1;
             }
         }
@@ -1462,8 +1486,11 @@ impl Occupancy {
         Some(region)
     }
 
-    /// slice of its 6 m sector (30 × 30 columns inside the 8-voxel margin),
-    /// or 255 where the sector holds nothing (or in the margin).
+    /// A sector's floor for each column: the lowest slice any column of its
+    /// 6 m sector (all 30 × 30 columns inside the 8-voxel margin) holds, or
+    /// 255 where the sector holds nothing (or in the margin). The original
+    /// keeps one byte per sector; Exarust repeats it over the sector's
+    /// columns.
     pub fn floors(&self) -> Vec<u8> {
         let mut sector = [[255u8; SECTORS]; SECTORS];
         for z in MARGIN..MARGIN + SECTORS * SECTOR {
@@ -2001,6 +2028,60 @@ mod tests {
     }
 
     #[test]
+    fn terrain_at_or_above_the_lid_clamps_to_the_top_slice() {
+        let column = 20 + 20 * SIDE;
+        let fill = |top: f32| {
+            let mut o = Occupancy::new_at(Vec3::ZERO, 64, IVec2::ZERO);
+            let mut tops = vec![f32::NEG_INFINITY; SIDE * SIDE];
+            tops[column] = top;
+            let ground = TerrainColumns {
+                origin: Vec3::ZERO,
+                tops,
+            };
+            assert_eq!(ground.apply(&mut o), 1);
+            o
+        };
+        let at = |o: &Occupancy, y: usize| o.cells[column + y * SIDE * SIDE];
+        // 13.4 m is voxel 67, above the top slice: k clamps to 63, slices
+        // 0..=62 hold 20 (the lid's 5 is overwritten), the top slice keeps
+        // its 26 and no surface byte is written.
+        let o = fill(13.4);
+        assert_eq!(at(&o, 61), 20);
+        assert_eq!(at(&o, 62), 20);
+        assert_eq!(at(&o, 63), 26);
+        assert_eq!(o.lowest[column], 63);
+        // 12.5 m is voxel 62.5: below the top slice, so slice 62 holds
+        // round(0.5 · 20) = 10 and slices 0..=61 hold 20.
+        let o = fill(12.5);
+        assert_eq!(at(&o, 61), 20);
+        assert_eq!(at(&o, 62), 10);
+        assert_eq!(at(&o, 63), 26);
+        assert_eq!(o.lowest[column], 62);
+        // 12.7 m is voxel 63.5: at the top slice, clamped, the 26 stays.
+        let o = fill(12.7);
+        assert_eq!(at(&o, 62), 20);
+        assert_eq!(at(&o, 63), 26);
+        assert_eq!(o.lowest[column], 63);
+        // 3 cm below slice 0 (−0.15 voxel) truncates to slice 0: nothing is
+        // filled under it and slice 0 takes round(−0.15 · 20) = −3, stored
+        // as the byte 253.
+        let o = fill(-0.03);
+        assert_eq!(at(&o, 0), 253);
+        assert_eq!(at(&o, 1), 0);
+        assert_eq!(o.lowest[column], 0);
+        // A whole voxel below is skipped.
+        let mut o = Occupancy::new_at(Vec3::ZERO, 64, IVec2::ZERO);
+        let mut tops = vec![f32::NEG_INFINITY; SIDE * SIDE];
+        tops[column] = -0.25;
+        let ground = TerrainColumns {
+            origin: Vec3::ZERO,
+            tops,
+        };
+        assert_eq!(ground.apply(&mut o), 0);
+        assert_eq!(o.lowest[column], 255);
+    }
+
+    #[test]
     fn edge_points_are_dropped_and_sectors_get_floors() {
         let mut o = Occupancy::new(Vec3::ZERO, 6.0, 0.0, (8, 8));
         let edge = o.origin + Vec3::new(0.5, 10.5, 100.5) * VOXEL;
@@ -2014,6 +2095,18 @@ mod tests {
         assert_eq!(floors[8 + 37 * SIDE], 12);
         assert_eq!(floors[38 + 20 * SIDE], 255);
         assert_eq!(floors[2 + 20 * SIDE], 255);
+    }
+
+    #[test]
+    fn a_sectors_last_column_lowers_its_floor() {
+        let mut o = Occupancy::new_at(Vec3::ZERO, 64, IVec2::ZERO);
+        // Voxel column 8 + 29 (the sector's last) at slice 30: the
+        // original's scan runs over all 30 columns and rows of the sector.
+        let p = o.origin + Vec3::new(37.5, 30.5, 37.5) * VOXEL;
+        o.splat(p);
+        assert_eq!(o.lowest[37 + 37 * SIDE], 30);
+        assert_eq!(o.floors()[8 + 8 * SIDE], 30);
+        assert_eq!(o.floors()[37 + 37 * SIDE], 30);
     }
 
     /// A block 64 slices high whose slice 0 sits at the world's zero.
