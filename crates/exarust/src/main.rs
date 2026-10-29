@@ -82,6 +82,8 @@
 //!                                     loading (e.g. `.@400,F8@500,LMB@600`); `key@a-b` holds it from frame a to b
 //!          --cursor x,y               play mode: the cursor stays at this window point (logical pixels), for unattended runs
 //!          --click frame,...          click the left mouse button at frames after loading
+//!          --object-click F[d][l],...  debug: click the placed container nearest the player at frames after
+//!                                     loading (d: the double click, l: as a hit on level geometry)
 //!          --level-change lvl@frame,...  play mode: change level in process at frames after the first load (loading
 //!                                     frames do not count), logging entity, physics-body and asset counts per level
 //!          --debug-wound b,r[,dx,dy,dz]  a test wound on the player's (or the character view's) body part b
@@ -291,6 +293,8 @@ pub struct Options {
     pub cursor: Option<[f32; 2]>,
     /// Left mouse button clicks at frames after the load.
     pub clicks: Vec<u32>,
+    /// `--object-click`: scripted clicks on the nearest placed container.
+    pub object_clicks: Vec<exa_game::object_click::ScriptedObjectClick>,
     /// Play mode: in-process level changes at frames after the first load
     /// (`level@frame`), each logged with an entity, physics and asset count.
     pub level_changes: Vec<(String, u32)>,
@@ -745,6 +749,16 @@ fn main() -> AppExit {
                     }
                 }
             }
+            "--object-click" => {
+                let list = args.next().unwrap_or_default();
+                match exa_game::object_click::ScriptedObjectClick::parse_list(&list) {
+                    Some(c) => options.object_clicks = c,
+                    None => {
+                        eprintln!("--object-click: cannot read {list:?} (frame[d][l],...)");
+                        return AppExit::from_code(2);
+                    }
+                }
+            }
             "--level-change" => {
                 let list = args.next().unwrap_or_default();
                 match parse_level_changes(&list) {
@@ -1067,6 +1081,9 @@ fn main() -> AppExit {
         .with_pause_on_hit(options.pause_on_hit)
         .with_pause_after_collapse(options.pause_after_collapse),
     )
+    .insert_resource(exa_game::object_click::ObjectClickScript(
+        options.object_clicks.clone(),
+    ))
     .insert_resource(options)
     .add_plugins((
         frame_loop::FrameLoopPlugin,

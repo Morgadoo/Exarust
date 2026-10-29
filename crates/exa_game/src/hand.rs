@@ -1028,6 +1028,7 @@ impl Plugin for HandPlugin {
                     take_cloth,
                     gather_markers,
                     hold_hand,
+                    crate::object_click::scripted_object_clicks,
                     crate::object_click::run_object_clicks,
                     reach_hand,
                     run_pending_uses,

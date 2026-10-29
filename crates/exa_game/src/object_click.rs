@@ -119,7 +119,7 @@ impl WorldObjects<'_, '_> {
     /// origin, else the model's root node bounds (cm) and that node's frame
     /// (cm). [guess: the model's root node bounds stand for the object
     /// node's]
-    fn bounds_of(&self, entity: Entity) -> Option<(Bounds, Affine3A)> {
+    pub fn bounds_of(&self, entity: Entity) -> Option<(Bounds, Affine3A)> {
         let (_, _, _, transform, children, placeholder) = self.placed.get(entity).ok()?;
         if let Some(placeholder) = placeholder {
             let half = Vec3::from_array(placeholder.extents);
@@ -426,6 +426,106 @@ fn close_card(out: &mut ClickOutputs, now: u32) {
     }
 }
 
+/// One scripted object click (`exarust --object-click`), a debug tool: the
+/// frame after the load it fires on, whether it is the double click's
+/// interaction, and whether it is sent as a hit on plain level geometry at
+/// the object's box centre (which exercises the point search) rather than
+/// on the object's node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScriptedObjectClick {
+    pub frame: u32,
+    pub double: bool,
+    pub level: bool,
+}
+
+impl ScriptedObjectClick {
+    /// Reads `F[d][l],...`: a frame, `d` for the double click, `l` for a
+    /// level hit. `None` on anything else.
+    pub fn parse_list(list: &str) -> Option<Vec<Self>> {
+        list.split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|item| {
+                let digits = item.trim_end_matches(['d', 'l']);
+                let flags = &item[digits.len()..];
+                Some(Self {
+                    frame: digits.parse().ok()?,
+                    double: flags.contains('d'),
+                    level: flags.contains('l'),
+                })
+            })
+            .collect()
+    }
+}
+
+/// The scripted object clicks of a run.
+#[derive(Resource, Debug, Clone, Default)]
+pub struct ObjectClickScript(pub Vec<ScriptedObjectClick>);
+
+/// Fires the scripted object clicks on the placed container nearest the
+/// player (the hand's reach gate is skipped), counting frames from the end
+/// of the load, and logs the chosen object.
+pub fn scripted_object_clicks(
+    script: Option<Res<ObjectClickScript>>,
+    loading: Option<Res<exa_ui::LoadingStatus>>,
+    mut frames: Local<u32>,
+    players: Query<&GlobalTransform, With<crate::player::Player>>,
+    objects: WorldObjects,
+    mut out: MessageWriter<ObjectClick>,
+) {
+    let Some(script) = script.filter(|s| !s.0.is_empty()) else {
+        return;
+    };
+    if loading.is_some() {
+        return;
+    }
+    *frames += 1;
+    let frame = *frames;
+    let Some(click) = script.0.iter().find(|c| c.frame == frame) else {
+        return;
+    };
+    let Some(feet) = players.iter().next().map(GlobalTransform::translation) else {
+        info!("object click script: no player at frame {frame}");
+        return;
+    };
+    let nearest = objects
+        .placed
+        .iter()
+        .filter(|(_, _, sections, ..)| sections.as_ref().is_some_and(|s| s.container.is_some()))
+        .map(|(e, placed, _, transform, ..)| (e, placed.tagged_id, transform.translation()))
+        .min_by(|a, b| {
+            a.2.distance_squared(feet)
+                .total_cmp(&b.2.distance_squared(feet))
+        });
+    let Some((entity, id, at)) = nearest else {
+        info!("object click script: no placed container");
+        return;
+    };
+    let centre = objects.bounds_of(entity).map_or(at, |(bounds, frame)| {
+        frame.transform_point3(bounds.centre) / CM
+    });
+    let hit = if click.level {
+        Hit::Level
+    } else {
+        Hit::SceneNode { node: entity }
+    };
+    info!(
+        "object click script: frame {frame}, {} on container {id:#x} at {centre:?} ({:.0} cm away), {hit:?}",
+        if click.double {
+            "double click"
+        } else {
+            "click"
+        },
+        centre.distance(feet) * CM
+    );
+    out.write(ObjectClick {
+        hit,
+        at: centre,
+        pointer: IVec2::ZERO,
+        double: click.double,
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -602,5 +702,24 @@ mod tests {
             }]
         );
         assert!(app.world().get_entity(jar).is_err());
+    }
+
+    /// The script list reads frames with `d` (double) and `l` (level).
+    #[test]
+    fn the_object_click_script_reads_its_list() {
+        let list = ScriptedObjectClick::parse_list("100, 110d,120l,130ld").unwrap();
+        let read: Vec<(u32, bool, bool)> =
+            list.iter().map(|c| (c.frame, c.double, c.level)).collect();
+        assert_eq!(
+            read,
+            vec![
+                (100, false, false),
+                (110, true, false),
+                (120, false, true),
+                (130, true, true)
+            ]
+        );
+        assert_eq!(ScriptedObjectClick::parse_list("x1"), None);
+        assert_eq!(ScriptedObjectClick::parse_list("d"), None);
     }
 }
