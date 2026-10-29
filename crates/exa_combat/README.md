@@ -354,8 +354,12 @@ and above 1 gives the loop's volume (the class's volume factor). The
 golem bodies' `FoleyPlH` (2) and `Golem_Foley` (6, or 1 for race 0x1200)
 are the body loops. `exa_audio` plays them.
 
-`swing_voice` holds the swing voice's lifecycle (tested; `exa_audio` still
-plays one whoosh when the window opens): it starts silent at 0.4 × W26 on
+`swing_voice` holds the swing voice's lifecycle, wired: `run_swings` keeps
+each fighter's `SwingVoice` (required by `SwingState`) and sends a
+`SwingVoiceCue` (start, each attack tick's volume and pitch from
+`swing_sound`), `fade_swing_voices` the fade of every living body tick that
+is not an attack, and `exa_audio` plays them on the first held item's
+voice (an unarmed fighter has none). The voice starts silent at 0.4 × W26 on
 the first attack tick in the swing's region (`SwingState::in_region`) and
 again after leaving it, the second hand's tracker sets it for a one-hand
 striker's other-side attacks (`voice_speed2`), the start rustles the
