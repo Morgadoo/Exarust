@@ -907,6 +907,7 @@ impl ModelLoader<'_> {
         if packed {
             shading |= flags::PACKED_SPECULAR;
         }
+        shading |= program_flags(lit, state_word, shader_word);
         let mut mat = ExaMaterial {
             params: ExaParams {
                 diffuse: diffuse.extend(m.opacity),
@@ -2178,6 +2179,26 @@ fn emissive(m: &Material, key: u32) -> Vec4 {
         m.emissive[3]
     };
     rgb.extend(alpha)
+}
+
+/// The shading flags the factory's program choice adds to a lit record:
+/// the hair program for class 3 ([`flags::HAIR`]), and no specular sum when
+/// the material word lacks `MatSpc` (`0x4`, [`flags::NO_SPECULAR`]). An
+/// unlit record draws the emissive branch, which has neither.
+fn program_flags(lit: bool, material_word: u32, shader_word: u32) -> u32 {
+    if !lit {
+        return 0;
+    }
+    let mut out = 0;
+    if exa_render::shader_program::program_for_shader_word(shader_word)
+        == exa_render::shader_program::SurfaceProgram::Hair
+    {
+        out |= flags::HAIR;
+    }
+    if material_word & 0x4 == 0 {
+        out |= flags::NO_SPECULAR;
+    }
+    out
 }
 
 /// Which of Exarust's texture maps the original's material factory would
@@ -3575,6 +3596,27 @@ mod tests {
 
     /// MatDif.rgb is zero for an unlit record; a lit record with source
     /// nibble ONE premultiplies by the opacity, except in refraction mode.
+    #[test]
+    fn the_program_choice_marks_hair_and_a_missing_specular_bit() {
+        // The shipped hair record (`harhps1`): type 3, lit, MatSpc, maps.
+        let hair = Material {
+            kind: 3,
+            class: 0x203,
+            flags: 0x72_0007,
+            extra: 0x100,
+            ..default()
+        };
+        let (mat, shd) =
+            exa_render::shader_program::state_words(&hair, SHADING_QUALITY).expect("a lit record");
+        assert_eq!(shd & 0xF, 3);
+        assert_eq!(program_flags(true, mat, shd), flags::HAIR);
+        // A lit PBR record without MatSpc draws no specular; unlit never
+        // takes either flag.
+        assert_eq!(program_flags(true, 0x3, 0x1), flags::NO_SPECULAR);
+        assert_eq!(program_flags(true, 0x7, 0x1), 0);
+        assert_eq!(program_flags(false, 0x0, 0x3), 0);
+    }
+
     #[test]
     fn the_diffuse_colour_is_premultiplied_only_for_a_lit_one_source() {
         let mut m = Material {

@@ -16,6 +16,9 @@ import exa_render::shading::{
     gi_sample, in_gi, gi_ambient,
     REFLECTION_STRENGTH, ENVIRONMENT_FALLBACK, AMBIENT_SCALE, SUN_LUX,
 };
+import exa_render::hair::{
+    light_hair, hair_rim_colour, hair_ambient_weight, hair_reflection_dir, hair_reflection_weight,
+};
 
 struct ExaParams {
     // Linear rgb (×1.5 for legacy materials); a = opacity.
@@ -80,6 +83,10 @@ const SKIP_DIFFUSE_BIAS: u32 = 33554432u;
 // luminance LATC upload): the shader repeats the red channel over rgb.
 const GREY_SPECULAR: u32 = 67108864u;
 const GREY_EMISSIVE: u32 = 134217728u;
+// The hair program (`shadehar_f`, `hair.wesl`).
+const HAIR: u32 = 268435456u;
+// The material word lacks `MatSpc`: no specular sum at all.
+const NO_SPECULAR: u32 = 536870912u;
 const BLOOD_TINT = vec3(0.6, 0.03, 0.0);
 const HAIR_BLOOD_TINT = vec3(0.45, 0.03, 0.02);
 const SKIN_ALPHA_FLOOR: f32 = 0.02;
@@ -202,9 +209,10 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         }
     }
     var alpha = material.diffuse.a * dif_tex.a;
+    var opacity = 1.0;
     if has(OPACITY_MAP) {
-        let o = textureSampleBias(opacity_map, opacity_sampler, uv, material.texture_bias).a;
-        alpha = material.diffuse.a * o * o;
+        opacity = textureSampleBias(opacity_map, opacity_sampler, uv, material.texture_bias).a;
+        alpha = material.diffuse.a * opacity * opacity;
     }
 
     // Unlit: emissive only. An emissive map's glow uses its alpha unless the
@@ -270,6 +278,41 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         sn = n;
     }
 }
+    // The hair program builds its own frame: the tangent and bitangent from
+    // the unflipped vertex normal, the vertex normal flipped on every back
+    // face (two-sided bit or not), the map's z as stored and no
+    // normalisation; then the strand frame around the shaded normal.
+    let hair = has(HAIR);
+    var strand_t = vec3(1.0, 0.0, 0.0);
+    var strand_b = vec3(0.0, 1.0, 0.0);
+@if(VERTEX_TANGENTS) {
+    if hair {
+        let wt = in.world_tangent;
+        let t0 = normalize(wt.xyz - geom * dot(geom, wt.xyz));
+        let b0 = cross(geom, t0) * wt.w;
+        let s_nrm = select(-geom, geom, is_front);
+        var xyz = vec3(0.0, 0.0, 1.0);
+        if has(NORMAL_MAP) {
+            let xy = textureSample(normal_map, normal_sampler, uv).rg * 2.0 - 1.0;
+            xyz = vec3(xy, sqrt(1.0 - min(dot(xy, xy), 1.0)));
+        }
+        n = t0 * xyz.x + b0 * xyz.y + s_nrm * xyz.z;
+        sn = n;
+        strand_t = normalize(wt.xyz - n * dot(n, wt.xyz));
+        strand_b = cross(n, strand_t) * wt.w;
+    }
+}
+@else {
+    if hair {
+        // [guess] A mesh without tangents (the program reads them): the
+        // flipped vertex normal, strands across the world's up axis.
+        n = select(-geom, geom, is_front);
+        sn = n;
+        let up = select(vec3(0.0, 1.0, 0.0), vec3(1.0, 0.0, 0.0), abs(n.y) > 0.99);
+        strand_t = normalize(cross(up, n));
+        strand_b = cross(n, strand_t);
+    }
+}
     let shadow_normal = select(geom, -geom, back_face);
     var s: Surface;
     s.n = n;
@@ -321,6 +364,16 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     if has(GLOSS_MAP) && !has(SPECULAR_MAP) {
         s.rough = 1.0 - material.specular.w * textureSample(gloss_map, gloss_sampler, uv).r;
     }
+    // The hair program's diffuse colour (`difCol`), which only its blood
+    // applies: MatDif·map·(1 − metal) with a specular map, the map's colour
+    // alone with a diffuse map (no MatDif), else MatDif.
+    var hair_dif = material.diffuse.rgb;
+    if has(SPECULAR_MAP) {
+        hair_dif = dif_col;
+    } else if has(DIFFUSE_MAP) {
+        hair_dif = dif_tex.rgb;
+    }
+    var blood_mul = vec3(1.0);
     // Blood: wounds lower the mesh's vertex alpha (1 clean); where it falls
     // below the tiling speckle (the dirt map, read at UV×2, at UV×1 for
     // hair) the amount da = clamp((a − α)/a·k, 0, 1) darkens the diffuse
@@ -351,6 +404,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
             bld = BLOOD_TINT * dark;
         }
         bld = clamp(bld + vec3(1.0 - da), vec3(0.0), vec3(1.0));
+        blood_mul = bld;
         // Both the plain and the scattered share of the skin.
         dif_col *= bld;
         scatter_col *= bld;
@@ -361,6 +415,26 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // the end, ignoring the diffuse map's alpha.
     if skin {
         alpha = material.diffuse.a;
+    }
+    // The hair program's alpha: 1 with a specular map, (a − 1 + MatEmi.a)/
+    // MatEmi.a of the diffuse map's alpha, MatDif.a × the opacity map (not
+    // squared), else MatDif.a; then × MatDif.a once more.
+    if hair {
+        if has(SPECULAR_MAP) {
+            alpha = 1.0;
+        } else if has(DIFFUSE_MAP) {
+            let e = material.emissive.a;
+            alpha = (dif_tex.a - 1.0 + e) / e;
+        } else if has(OPACITY_MAP) {
+            alpha = material.diffuse.a * opacity;
+        } else {
+            alpha = material.diffuse.a;
+        }
+        alpha *= material.diffuse.a;
+    }
+    var rim = vec3(0.0);
+    if hair {
+        rim = hair_rim_colour(material.diffuse.rgb);
     }
 
     var diffuse = vec3(0.0);
@@ -395,6 +469,12 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
             shadow *= displacement_shadow(uv, l, ax, ay, shadow_normal, h0);
         }
         let colour = (*lt).color_inverse_square_range.rgb * atn * shadow;
+        if hair {
+            let lit = light_hair(n, v, strand_t, strand_b, l, colour, s.rough, s.ndv, material.diffuse.rgb, material.specular.rgb, rim);
+            diffuse += lit.diffuse;
+            specular += lit.specular;
+            continue;
+        }
         if skin {
             let lit = light_skin(s, sn, blur, l, colour);
             diffuse += lit.diffuse;
@@ -417,6 +497,12 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
             shadow *= displacement_shadow(uv, (*sun).direction_to_light, ax, ay, shadow_normal, h0);
         }
         let colour = (*sun).color.rgb / SUN_LUX * shadow;
+        if hair {
+            let lit = light_hair(n, v, strand_t, strand_b, (*sun).direction_to_light, colour, s.rough, s.ndv, material.diffuse.rgb, material.specular.rgb, rim);
+            diffuse += lit.diffuse;
+            specular += lit.specular;
+            continue;
+        }
         if skin {
             let lit = light_skin(s, sn, blur, (*sun).direction_to_light, colour);
             diffuse += lit.diffuse;
@@ -464,6 +550,45 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         mirrored = textureSampleLevel(environment_map, environment_sampler, r, max(s.rough - 0.1, 0.0) * 8.0).rgb;
         reflected = (mirrored + mirrored * mirrored) * level / AMBIENT_SCALE * REFLECTION_STRENGTH * gv;
     }
+    // The hair program: the ambient × (1.5 − 0.75·v·n) × MatDif, the map's
+    // colour only under blood, the reflection about the normal bent across
+    // the strands, the emissive as is.
+    if hair {
+        var c = diffuse + ambient * hair_ambient_weight(v, n) * material.diffuse.rgb;
+        if has(BLOOD_HAIR) {
+            c *= blood_mul * hair_dif;
+        }
+        if !has(NO_SPECULAR) {
+            var spc = specular;
+            // [guess] Without a reflection layer the original's program does
+            // not compile (its reflection is undeclared); Exarust draws it
+            // without the reflection.
+            if has(ENVIRONMENT) {
+                let rd = hair_reflection_dir(v, n, strand_b);
+                let m = textureSampleLevel(environment_map, environment_sampler, rd, max(s.rough - 0.05, 0.0) * 8.0).rgb;
+                spc += m * ambient * (vec3(1.0) + material.specular.rgb) * REFLECTION_STRENGTH * 0.5 * hair_reflection_weight(s.ndv);
+            }
+            if has(SPECULAR_MAP) {
+                spc *= cavity;
+            }
+            c += spc;
+        }
+        var he = material.emissive.rgb;
+        if has(EMISSIVE_MAP) {
+            var em = textureSampleBias(emissive_map, emissive_sampler, uv, material.texture_bias).rgb;
+            if has(GREY_EMISSIVE) {
+                em = em.rrr;
+            }
+            he *= em;
+        }
+        c += he;
+        if has(FADE_TO_BLACK) {
+            let a = min(length(p.xz) / FADE_RADIUS, 1.0);
+            c *= 1.0 - a * (2.0 - a);
+        }
+        out.color = blended(c, alpha);
+        return out;
+    }
     // Parallax darkens the PBR program's ambient in hollows, with or without
     // the displacement shadows (`Mat.TexDsp`, independent of `Shd.DispSdw`;
     // the older program adds its ambient as it is).
@@ -481,8 +606,12 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         // Older program: (lights + reflection) × specular colour × a soft
         // Fresnel between 0.5 and 1.
         let spf = 0.5 + 0.5 * exp2((-5.55473 * s.ndv - 6.98316) * s.ndv);
-        colour += (specular + reflected) * s.f0 * spf;
-    } else {
+        if !has(NO_SPECULAR) {
+            colour += (specular + reflected) * s.f0 * spf;
+        }
+    } else if !has(NO_SPECULAR) {
+        // Every program adds its specular sum only for a record with
+        // `MatSpc`.
         specular += reflected * schlick(s.f0, s.ndv);
         colour += specular * cavity;
     }

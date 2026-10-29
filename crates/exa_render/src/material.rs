@@ -17,6 +17,7 @@ pub struct MaterialsPlugin;
 impl Plugin for MaterialsPlugin {
     fn build(&self, app: &mut App) {
         bevy::shader::load_shader_library!(app, "shading.wesl");
+        bevy::shader::load_shader_library!(app, "hair.wesl");
         embedded_asset!(app, "exa.wesl");
         embedded_asset!(app, "exa_prepass.wesl");
         app.add_plugins(MaterialPlugin::<ExaMaterial>::default())
@@ -150,6 +151,13 @@ pub mod flags {
     /// The emissive map is a single-channel BC4 image: its red channel is
     /// the whole colour, as [`Self::GREY_SPECULAR`].
     pub const GREY_EMISSIVE: u32 = 134217728;
+    /// The record draws with the hair program (`shadehar_f`, program class
+    /// 3): anisotropic strand highlights, a wrapping rim and the diffuse
+    /// map's colour only under blood ([`crate::hair_program`]).
+    pub const HAIR: u32 = 268435456;
+    /// The record's material word lacks `MatSpc` (`0x4`): every program
+    /// leaves its whole specular sum (lights and reflection) out.
+    pub const NO_SPECULAR: u32 = 536870912;
 }
 
 /// How a surface shows the blood that wounds paint into its mesh's vertex
