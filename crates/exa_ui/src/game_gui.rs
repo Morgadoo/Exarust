@@ -1621,6 +1621,284 @@ pub fn selector_locked(trains: bool, required: u16, skill_points: u16) -> bool {
     trains && required <= skill_points / LEVEL_XP
 }
 
+/// The bars' show inputs, as the HUD draw compares them each frame: the
+/// health and focus values it stored the last frame it showed the bars, the
+/// player's current ones, whether the power bar is open, the player's
+/// combat mode, and the clock the bars stay up until.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BarsShow {
+    pub last_health: f32,
+    pub health: f32,
+    pub last_focus: f32,
+    pub focus: f32,
+    /// The power bar is open (the thaumaturgy unit sets the flag while a
+    /// power is being chosen and clears it when the bar closes).
+    pub power_bar: bool,
+    /// The player is in combat mode.
+    pub combat: bool,
+    /// The game clock, ms.
+    pub now: u32,
+    /// The clock the bars are held up until.
+    pub hold_until: u32,
+}
+
+/// Whether the HUD's bars show this frame, tested in the original's order:
+/// a health that changed (the compare is unordered, so a NaN on either side
+/// shows), a focus that dropped (strictly; a NaN does not show), the power
+/// bar, combat mode, or a hold clock still ahead of `now` (an unsigned
+/// compare). The values compared are stored only on a frame that shows.
+pub fn bars_shown(input: BarsShow) -> bool {
+    input.last_health != input.health
+        || input.last_focus > input.focus
+        || input.power_bar
+        || input.combat
+        || input.now < input.hold_until
+}
+
+/// Whether the block-stamina gauge shows: the player holds a shield and is
+/// in combat mode. Its fade is the bars' own.
+pub fn gauge_shown(shield: bool, combat: bool) -> bool {
+    shield && combat
+}
+
+/// The control state the inventory's fill gives its two page buttons: the
+/// lit one (see [`inventory_tab`]) gets 0x60, the other 0.
+pub fn inventory_tab_states(flags: u32) -> [u32; 2] {
+    if inventory_tab(flags) == 2 {
+        [0x60, 0]
+    } else {
+        [0, 0x60]
+    }
+}
+
+/// What the inventory window's fill (its bind of a character) writes after
+/// the character view is placed: the preview's model value and the scene
+/// word on a mounted character, the two page buttons' states and the place
+/// the window moves to. The item panels' load, the pack's bulk from the
+/// worn equipment and the view's thaumaturgy check are the item and
+/// thaumaturgy units' rules and are not part of this plan.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct InventoryFill {
+    /// The preview's model value ([`PREVIEW_MODEL_OPEN`]), written only
+    /// when the view mounted a character.
+    pub view_model: Option<f32>,
+    /// The scene word ([`PREVIEW_SCENE_WORD`]) written on the mounted
+    /// character.
+    pub scene_word: Option<u32>,
+    pub tab_states: [u32; 2],
+    pub place: (i32, i32),
+}
+
+/// The fill's inputs: whose inventory it is, its remembered place, the
+/// screen, the window's width and current place, the GUI unit, the
+/// inventory record's flag word and whether the view mounted a character.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct InventoryFillInput {
+    pub owner_is_player: bool,
+    pub remembered: Option<(i32, i32)>,
+    pub screen_width: i32,
+    pub width: i32,
+    pub unit: i32,
+    pub current: (i32, i32),
+    pub flags: u32,
+    pub view_mounted: bool,
+}
+
+/// The inventory's fill: see [`InventoryFill`]. The player's own window
+/// keeps its current or remembered place; another character's goes to the
+/// screen's right edge less four units ([`inventory_place`]).
+pub fn inventory_fill(input: InventoryFillInput) -> InventoryFill {
+    InventoryFill {
+        view_model: input.view_mounted.then_some(PREVIEW_MODEL_OPEN),
+        scene_word: input.view_mounted.then_some(PREVIEW_SCENE_WORD),
+        tab_states: inventory_tab_states(input.flags),
+        place: inventory_place(
+            input.owner_is_player,
+            input.remembered,
+            input.screen_width,
+            input.width,
+            input.unit,
+            input.current,
+        ),
+    }
+}
+
+/// Which draw a counter's message asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ControlDraw {
+    #[default]
+    None,
+    /// Message 1: the counter's own segments ([`Counter::layout`]).
+    Segments,
+    /// Message 2: the skin's generic control draw.
+    Skin,
+}
+
+/// A counter's answer to a message: the draw, the result the record
+/// returns, the caption a value set writes and whether its callback runs.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CounterMessage {
+    pub draw: ControlDraw,
+    pub result: u32,
+    pub caption: Option<String>,
+    pub callback: bool,
+}
+
+impl Counter {
+    /// The counter's message handler: 1 draws its segments, 2 the skin's
+    /// control, 0x200 sets the value ([`Counter::set`]), writes the
+    /// percentage caption, runs the record's callback (when it has one)
+    /// and answers 3. Every other message answers 0.
+    pub fn message(&mut self, message: u32, value: f32) -> CounterMessage {
+        match message {
+            1 => CounterMessage {
+                draw: ControlDraw::Segments,
+                ..CounterMessage::default()
+            },
+            2 => CounterMessage {
+                draw: ControlDraw::Skin,
+                ..CounterMessage::default()
+            },
+            0x200 => {
+                self.set(value);
+                CounterMessage {
+                    draw: ControlDraw::None,
+                    result: 3,
+                    caption: Some(self.text()),
+                    callback: true,
+                }
+            }
+            _ => CounterMessage::default(),
+        }
+    }
+}
+
+/// The bar control (class 0xac4): the two shares it draws.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct BarControl {
+    pub first: f32,
+    pub second: f32,
+}
+
+/// What a bar control's message draws: message 1 the skin's control frame,
+/// message 2 the bar at [`bar_control_place`] with the control's two
+/// shares. Every message answers 0.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum BarDraw {
+    None,
+    Frame,
+    Bar {
+        x: i32,
+        y: i32,
+        width: i32,
+        first: f32,
+        second: f32,
+    },
+}
+
+impl BarControl {
+    /// The control's message handler for a control at `(x, y)` of `width`.
+    pub fn message(&self, message: u32, x: i32, y: i32, width: i32) -> BarDraw {
+        match message {
+            1 => BarDraw::Frame,
+            2 => {
+                let (x, y, width) = bar_control_place(x, y, width);
+                BarDraw::Bar {
+                    x,
+                    y,
+                    width,
+                    first: self.first,
+                    second: self.second,
+                }
+            }
+            _ => BarDraw::None,
+        }
+    }
+}
+
+/// What the journal's selection writes into its controls: the selected
+/// entry's title as the list's caption, its text into the text box, the
+/// 1-based row, the entry count and every title.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct JournalListState {
+    pub title: String,
+    pub text: String,
+    pub selected: i32,
+    pub count: i32,
+    pub titles: Vec<String>,
+}
+
+impl Journal {
+    /// The controls' state for the selected entry: see [`JournalListState`].
+    pub fn list_state(&self) -> JournalListState {
+        let entry = self.entries.get(self.current);
+        JournalListState {
+            title: entry.map(|e| e.title.clone()).unwrap_or_default(),
+            text: entry.map(|e| e.text.clone()).unwrap_or_default(),
+            selected: self.row(),
+            count: self.entries.len() as i32,
+            titles: self.titles().into_iter().map(str::to_string).collect(),
+        }
+    }
+}
+
+/// The state bits the record that opens the technique selector gains.
+pub const SELECTOR_RECORD_STATE: u32 = 0x60;
+
+/// The technique selector's open inputs: the opening record's screen place
+/// and size, and the rows' inputs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SelectorOpenInput {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+    pub rows: SelectorInput,
+}
+
+/// What opening the selector does: its placement request, its rows' states,
+/// whether it opens in forget mode (the form's forget word is set to 1 and
+/// the ninth row enabled only then), and the state bits the opening record
+/// gains.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SelectorOpen {
+    pub place: crate::gui_core::PlaceRequest,
+    pub rows: [u32; 9],
+    pub forget: bool,
+    pub record_state: u32,
+}
+
+/// Opens the technique selector: [`selector_place`], [`selector_rows`],
+/// and [`SELECTOR_RECORD_STATE`] on the opening record.
+pub fn selector_open(input: SelectorOpenInput) -> SelectorOpen {
+    let (rows, forget) = selector_rows(input.rows);
+    SelectorOpen {
+        place: selector_place(input.x, input.y, input.width, input.height),
+        rows,
+        forget,
+        record_state: SELECTOR_RECORD_STATE,
+    }
+}
+
+/// The deferred inventory fill's answer on the GUI's job queue: when the
+/// character generator has the character's node the inventory fills and
+/// the job is done; without one the job answers true and stays queued
+/// for the next pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AsyncFill {
+    pub fill: bool,
+    pub retry: bool,
+}
+
+/// The deferred fill for a generator that has (`true`) or has not yet
+/// (`false`) built the character's node.
+pub fn async_inventory_fill(node: bool) -> AsyncFill {
+    AsyncFill {
+        fill: node,
+        retry: !node,
+    }
+}
+
 #[cfg(test)]
 #[path = "game_gui_test.rs"]
 mod tests;

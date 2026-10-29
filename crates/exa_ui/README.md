@@ -472,7 +472,15 @@ byte is 3 and matched to its body. The inventory's preview writes its model
 values 0.15 and 0.05, the scene and draw words, the appearance copy and the
 build delay, its build callback's camera refit (ten times the height),
 and its preview bars' fills and frames. The
-bars and their frames are `hud`'s.
+bars and their frames are `hud`'s; their show test (`bars_shown`: a
+changed or NaN health, a dropped focus, the power bar, combat mode or the
+unsigned hold clock) and the gauge's (`gauge_shown`: a shield in combat
+mode) are here and the HUD draw calls them every frame, with the power
+bar off because Exarust has none. The counter's and bar control's message
+handlers, the inventory fill's page states and plan, the journal's list
+state, the technique selector's open plan and the deferred fill's answer
+(retry until the generator has the node) are tested rules with no live
+caller yet.
 `exa_game::gui_screens` opens the inventory and journal from the I and J
 hotkeys on a `GuiTask` and draws them through `gui_draw` and
 `exa_game::gui_paint`: the frame, the inventory's pack panel and its item
