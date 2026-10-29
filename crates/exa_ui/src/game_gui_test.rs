@@ -612,10 +612,6 @@ fn the_preview_model_value_and_draw_words() {
             draw_word: 0x42,
             appearance_words: 6,
             build_delay: 100,
-            model_scale: 1.0,
-            driver_model: 0.15,
-            mesh_registrations: 10,
-            node_word: 0,
         }
     );
     assert_eq!(preview_plan(true).model, 0.05);
@@ -758,15 +754,8 @@ fn the_preview_build_destroy_and_bars() {
             camera: None
         }
     );
-    assert_eq!(
-        preview_release(true),
-        PreviewRelease {
-            remove_node: true,
-            update_scene: true,
-            clear_node: true
-        }
-    );
-    assert_eq!(preview_release(false), PreviewRelease::default());
+    assert!(preview_destroyed(true));
+    assert!(!preview_destroyed(false));
     // At a 1600 × 1014 view and unit 5: the health bar starts at
     // 800 − 250 = 550, 1014 − 25 = 989, 240 wide; its frame runs from 548
     // to 792 and down to 989 + 18; the focus bar is 260 further right.
@@ -903,8 +892,8 @@ fn the_bars_show_on_a_health_change_a_focus_drop_or_a_hold() {
         health: 0.5,
         last_focus: 0.4,
         focus: 0.4,
+        power_bar: false,
         combat: false,
-        in_combat: false,
         now: 1000,
         hold_until: 0,
     };
@@ -935,13 +924,18 @@ fn the_bars_show_on_a_health_change_a_focus_drop_or_a_hold() {
         focus: f32::NAN,
         ..base
     }));
-    // The combat word, the player's own flag and a hold clock ahead of now.
+    // The power bar, combat mode and a hold clock ahead of now (unsigned:
+    // a clock past 2^31 is still ahead).
+    assert!(bars_shown(BarsShow {
+        power_bar: true,
+        ..base
+    }));
     assert!(bars_shown(BarsShow {
         combat: true,
         ..base
     }));
     assert!(bars_shown(BarsShow {
-        in_combat: true,
+        hold_until: 0x8000_0000,
         ..base
     }));
     assert!(bars_shown(BarsShow {
@@ -979,12 +973,10 @@ fn the_inventory_fill_writes_the_page_and_place() {
         unit: 4,
         current: (8, 8),
         flags: 0,
-        equipment_bulk: 37,
         view_mounted: true,
     });
     assert_eq!(fill.view_model, Some(0.05));
     assert_eq!(fill.scene_word, Some(0x1000));
-    assert_eq!(fill.bulk, 37);
     assert_eq!(fill.tab_states, [0x60, 0]);
     assert_eq!(fill.place, (12, 34));
     // Without a mounted view no model or scene word is written; another
@@ -997,7 +989,6 @@ fn the_inventory_fill_writes_the_page_and_place() {
         unit: 4,
         current: (8, 8),
         flags: 0x0100_0000,
-        equipment_bulk: 0,
         view_mounted: false,
     });
     assert_eq!(fill.view_model, None);
@@ -1012,8 +1003,8 @@ fn the_counter_answers_its_messages() {
         value: 0.0,
         segments: 3,
     };
-    assert_eq!(counter.message(1, 0.0).draw, ControlDraw::Back);
-    assert_eq!(counter.message(2, 0.0).draw, ControlDraw::Front);
+    assert_eq!(counter.message(1, 0.0).draw, ControlDraw::Segments);
+    assert_eq!(counter.message(2, 0.0).draw, ControlDraw::Skin);
     assert_eq!(counter.message(3, 0.0).result, 0);
     let answer = counter.message(0x200, 0.5);
     assert_eq!(answer.result, 3);
@@ -1051,35 +1042,36 @@ fn the_bar_control_draws_two_pixels_in() {
 }
 
 #[test]
-fn the_journal_list_state_and_close_callback() {
+fn the_journal_list_state() {
     let mut journal = Journal::default();
     journal.add_entry("first");
     journal.entries[1].text = "second".to_string();
     journal.current = 1;
     let list = journal.list_state();
     assert_eq!(list.title, "New Entry");
+    assert_eq!(list.text, "second");
     assert_eq!(list.selected, 2);
     assert_eq!(list.count, 2);
     assert_eq!(list.titles, vec!["New Entry", "New Entry"]);
-    assert_eq!(journal_close_callback(), 1);
-    assert_eq!(journal_controls_flag(false), 1);
 }
 
 #[test]
-fn the_selector_opens_at_the_owners_corner() {
+fn the_selector_opens_at_the_records_corner() {
     let skill = Skill {
         points: 10_000,
         techniques: [1, 2, 0, 0, 0, 0],
     };
     let open = selector_open(SelectorOpenInput {
-        owner_x: 100,
-        owner_y: 200,
-        owner_width: 40,
-        owner_height: 40,
-        locked: false,
-        skill,
-        requirements: [[0; 2]; 8],
-        count: 1,
+        x: 100,
+        y: 200,
+        width: 40,
+        height: 40,
+        rows: SelectorInput {
+            locked: false,
+            skill,
+            requirements: [[0; 2]; 8],
+            count: 1,
+        },
     });
     assert_eq!(open.place.desired_x, 140);
     assert_eq!(open.place.fallback_x, 100);
@@ -1089,45 +1081,23 @@ fn the_selector_opens_at_the_owners_corner() {
     assert_eq!(open.rows[1], 0x10);
     assert_eq!(open.rows[8], 0);
     assert!(open.forget);
-    assert_eq!(open.forget_mode, 1);
-    assert_eq!(open.owner_state, 0x60);
+    assert_eq!(open.record_state, 0x60);
 }
 
 #[test]
-fn the_async_fill_and_the_unit_lifecycle() {
+fn the_deferred_fill_retries_until_the_node_exists() {
     assert_eq!(
         async_inventory_fill(true),
         AsyncFill {
             fill: true,
-            done: false
+            retry: false
         }
     );
     assert_eq!(
         async_inventory_fill(false),
         AsyncFill {
             fill: false,
-            done: true
+            retry: true
         }
-    );
-    let registration = game_gui_registration();
-    assert_eq!(registration.controls, HUD_CONTROLS);
-    assert!(registration.tooltip_creator);
-    assert!(registration.chains_shutdown);
-    assert!(registration.installs_close_hook);
-    assert_eq!(
-        unit_finalisation(),
-        &[
-            UnitOwned::Skin,
-            UnitOwned::JournalEntries,
-            UnitOwned::JournalTitles,
-            UnitOwned::JournalText,
-            UnitOwned::FirstControlTable,
-            UnitOwned::JournalControls,
-            UnitOwned::SkillNames,
-            UnitOwned::TechniqueNames,
-            UnitOwned::CounterRecord,
-            UnitOwned::ButtonRecord,
-            UnitOwned::ConfirmText,
-        ]
     );
 }

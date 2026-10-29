@@ -381,15 +381,6 @@ pub const PREVIEW_DRAW_WORD: u32 = 0x42;
 pub const PREVIEW_APPEARANCE_WORDS: usize = 6;
 /// The delay the bind's build callback is registered with, in ticks.
 pub const PREVIEW_BUILD_DELAY: u32 = 100;
-/// The scale the bind's camera focus takes the view's own field by (the
-/// instruction multiplies it by 1.0).
-pub const PREVIEW_MODEL_SCALE: f32 = 1.0;
-/// The model value the character driver the bind creates carries.
-pub const PREVIEW_DRIVER_MODEL: f32 = 0.15;
-/// How many times the bind calls the node's mesh-registration slot.
-pub const PREVIEW_MESH_REGISTRATIONS: u32 = 10;
-/// The node word the bind clears before it redraws the character.
-pub const PREVIEW_NODE_WORD: u32 = 0;
 
 /// The preview settings the inventory writes when it binds a character or
 /// opens its window.
@@ -400,21 +391,11 @@ pub struct PreviewPlan {
     pub draw_word: u32,
     pub appearance_words: usize,
     pub build_delay: u32,
-    /// The scale the camera's focus takes the view's field by.
-    pub model_scale: f32,
-    /// The model value of the driver created on the character.
-    pub driver_model: f32,
-    /// The mesh-registration calls the bind makes.
-    pub mesh_registrations: u32,
-    /// The node word the bind clears.
-    pub node_word: u32,
 }
 
 /// The preview's settings: binding a character sets [`PREVIEW_MODEL_BOUND`],
 /// opening the window [`PREVIEW_MODEL_OPEN`]; both give every mesh node
-/// [`PREVIEW_DRAW_WORD`], copy the appearance block, create the driver with
-/// [`PREVIEW_DRIVER_MODEL`] and register the node's meshes
-/// [`PREVIEW_MESH_REGISTRATIONS`] times.
+/// [`PREVIEW_DRAW_WORD`] and copy the appearance block.
 pub fn preview_plan(opening: bool) -> PreviewPlan {
     PreviewPlan {
         model: if opening {
@@ -426,10 +407,6 @@ pub fn preview_plan(opening: bool) -> PreviewPlan {
         draw_word: PREVIEW_DRAW_WORD,
         appearance_words: PREVIEW_APPEARANCE_WORDS,
         build_delay: PREVIEW_BUILD_DELAY,
-        model_scale: PREVIEW_MODEL_SCALE,
-        driver_model: PREVIEW_DRIVER_MODEL,
-        mesh_registrations: PREVIEW_MESH_REGISTRATIONS,
-        node_word: PREVIEW_NODE_WORD,
     }
 }
 
@@ -460,23 +437,10 @@ pub fn preview_built(inventory_shows_view: bool, character_height: Option<f32>) 
     }
 }
 
-/// What destroying a character view does: a view that holds a character's
-/// node removes it from the scene, updates the scene and forgets the node;
-/// one without does nothing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct PreviewRelease {
-    pub remove_node: bool,
-    pub update_scene: bool,
-    pub clear_node: bool,
-}
-
-/// The character view's destroy: see [`PreviewRelease`].
-pub fn preview_release(has_node: bool) -> PreviewRelease {
-    PreviewRelease {
-        remove_node: has_node,
-        update_scene: has_node,
-        clear_node: has_node,
-    }
+/// The destroy releases the preview's scene node and forgets it only when
+/// there was one.
+pub fn preview_destroyed(has_node: bool) -> bool {
+    has_node
 }
 
 /// One preview bar in the character view: the fill's origin and width,
@@ -1659,72 +1623,75 @@ pub fn selector_locked(trains: bool, required: u16, skill_points: u16) -> bool {
 
 /// The bars' show inputs, as the HUD draw compares them each frame: the
 /// health and focus values it stored the last frame it showed the bars, the
-/// player's current ones, the game's combat word, the player's own
-/// in-combat flag, and the clock the bars stay up until.
+/// player's current ones, whether the power bar is open, the player's
+/// combat mode, and the clock the bars stay up until.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BarsShow {
     pub last_health: f32,
     pub health: f32,
     pub last_focus: f32,
     pub focus: f32,
-    /// The game's combat word is set.
+    /// The power bar is open (the thaumaturgy unit sets the flag while a
+    /// power is being chosen and clears it when the bar closes).
+    pub power_bar: bool,
+    /// The player is in combat mode.
     pub combat: bool,
-    /// The player's own in-combat flag is set.
-    pub in_combat: bool,
-    pub now: i64,
-    pub hold_until: i64,
+    /// The game clock, ms.
+    pub now: u32,
+    /// The clock the bars are held up until.
+    pub hold_until: u32,
 }
 
-/// Whether the HUD's bars show this frame: a health that changed (an
-/// unordered compare and a "not equal" both show, so a NaN on either side
-/// shows), a focus that dropped (strictly; a NaN does not show), the combat
-/// word, the player's in-combat flag, or a hold clock still ahead of `now`.
-/// The values it compares are stored only on a frame that shows.
+/// Whether the HUD's bars show this frame, tested in the original's order:
+/// a health that changed (the compare is unordered, so a NaN on either side
+/// shows), a focus that dropped (strictly; a NaN does not show), the power
+/// bar, combat mode, or a hold clock still ahead of `now` (an unsigned
+/// compare). The values compared are stored only on a frame that shows.
 pub fn bars_shown(input: BarsShow) -> bool {
     input.last_health != input.health
         || input.last_focus > input.focus
+        || input.power_bar
         || input.combat
-        || input.in_combat
         || input.now < input.hold_until
 }
 
-/// Whether the block-stamina gauge shows: the player holds a shield (the
-/// record's shield pointer is not null) and the record's in-combat flag is
-/// set. Its fade is the bars' own.
-pub fn gauge_shown(shield_item: bool, in_combat: bool) -> bool {
-    shield_item && in_combat
+/// Whether the block-stamina gauge shows: the player holds a shield and is
+/// in combat mode. Its fade is the bars' own.
+pub fn gauge_shown(shield: bool, combat: bool) -> bool {
+    shield && combat
 }
 
-/// The two control-record states the inventory writes when it fills: the
-/// page button without the record flag 0x1000000 has 0x60 and the other 0.
+/// The control state the inventory's fill gives its two page buttons: the
+/// lit one (see [`inventory_tab`]) gets 0x60, the other 0.
 pub fn inventory_tab_states(flags: u32) -> [u32; 2] {
-    if flags & 0x0100_0000 == 0 {
+    if inventory_tab(flags) == 2 {
         [0x60, 0]
     } else {
         [0, 0x60]
     }
 }
 
-/// The inventory window's fill (its bind of a character), as the original
-/// writes it after the character view is placed: the preview's model value,
-/// the scene word, the pack's bulk from the equipment, the two page
-/// buttons' states and the place the window moves to.
+/// What the inventory window's fill (its bind of a character) writes after
+/// the character view is placed: the preview's model value and the scene
+/// word on a mounted character, the two page buttons' states and the place
+/// the window moves to. The item panels' load, the pack's bulk from the
+/// worn equipment and the view's thaumaturgy check are the item and
+/// thaumaturgy units' rules and are not part of this plan.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct InventoryFill {
-    /// The preview's model value (the opening's 0.05), written only when
-    /// the view mounted a character.
+    /// The preview's model value ([`PREVIEW_MODEL_OPEN`]), written only
+    /// when the view mounted a character.
     pub view_model: Option<f32>,
-    /// The scene word written on the mounted character.
+    /// The scene word ([`PREVIEW_SCENE_WORD`]) written on the mounted
+    /// character.
     pub scene_word: Option<u32>,
-    /// The bulk the pack gains from the character's worn equipment.
-    pub bulk: i32,
     pub tab_states: [u32; 2],
     pub place: (i32, i32),
 }
 
 /// The fill's inputs: whose inventory it is, its remembered place, the
-/// screen, the window's width and current place, the GUI unit, the record's
-/// flag word, the equipment's bulk and whether the view mounted a character.
+/// screen, the window's width and current place, the GUI unit, the
+/// inventory record's flag word and whether the view mounted a character.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct InventoryFillInput {
     pub owner_is_player: bool,
@@ -1734,18 +1701,16 @@ pub struct InventoryFillInput {
     pub unit: i32,
     pub current: (i32, i32),
     pub flags: u32,
-    pub equipment_bulk: i32,
     pub view_mounted: bool,
 }
 
 /// The inventory's fill: see [`InventoryFill`]. The player's own window
 /// keeps its current or remembered place; another character's goes to the
-/// screen's right edge less four units.
+/// screen's right edge less four units ([`inventory_place`]).
 pub fn inventory_fill(input: InventoryFillInput) -> InventoryFill {
     InventoryFill {
         view_model: input.view_mounted.then_some(PREVIEW_MODEL_OPEN),
         scene_word: input.view_mounted.then_some(PREVIEW_SCENE_WORD),
-        bulk: input.equipment_bulk,
         tab_states: inventory_tab_states(input.flags),
         place: inventory_place(
             input.owner_is_player,
@@ -1758,16 +1723,15 @@ pub fn inventory_fill(input: InventoryFillInput) -> InventoryFill {
     }
 }
 
-/// What a counter's message does: a draw of the back or front pass, or a
-/// value set that answers 3 and runs the record's callback.
+/// Which draw a counter's message asks for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ControlDraw {
     #[default]
     None,
-    /// The back pass (message 1).
-    Back,
-    /// The front pass (message 2).
-    Front,
+    /// Message 1: the counter's own segments ([`Counter::layout`]).
+    Segments,
+    /// Message 2: the skin's generic control draw.
+    Skin,
 }
 
 /// A counter's answer to a message: the draw, the result the record
@@ -1781,19 +1745,19 @@ pub struct CounterMessage {
 }
 
 impl Counter {
-    /// The counter's message handler: 1 draws the back pass, 2 the front
-    /// one, 0x200 sets the value (a negative one becomes 0; −0 and a NaN
-    /// stay), writes the percentage caption and runs the record's callback,
-    /// answering 3. Other messages answer 0.
+    /// The counter's message handler: 1 draws its segments, 2 the skin's
+    /// control, 0x200 sets the value ([`Counter::set`]), writes the
+    /// percentage caption, runs the record's callback (when it has one)
+    /// and answers 3. Every other message answers 0.
     pub fn message(&mut self, message: u32, value: f32) -> CounterMessage {
         match message {
             1 => CounterMessage {
-                draw: ControlDraw::Back,
-                ..default_counter_message()
+                draw: ControlDraw::Segments,
+                ..CounterMessage::default()
             },
             2 => CounterMessage {
-                draw: ControlDraw::Front,
-                ..default_counter_message()
+                draw: ControlDraw::Skin,
+                ..CounterMessage::default()
             },
             0x200 => {
                 self.set(value);
@@ -1804,13 +1768,9 @@ impl Counter {
                     callback: true,
                 }
             }
-            _ => default_counter_message(),
+            _ => CounterMessage::default(),
         }
     }
-}
-
-fn default_counter_message() -> CounterMessage {
-    CounterMessage::default()
 }
 
 /// The bar control (class 0xac4): the two shares it draws.
@@ -1820,9 +1780,9 @@ pub struct BarControl {
     pub second: f32,
 }
 
-/// What a bar control's message does: message 1 draws its skin frame,
-/// message 2 draws the bar two pixels in and one down, four narrower, with
-/// the control's two shares. Both answer 0.
+/// What a bar control's message draws: message 1 the skin's control frame,
+/// message 2 the bar at [`bar_control_place`] with the control's two
+/// shares. Every message answers 0.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BarDraw {
     None,
@@ -1856,28 +1816,25 @@ impl BarControl {
     }
 }
 
-/// A journal list row's state as the journal's selection writes it: the
-/// selected entry's title, its 1-based row, the entry count and every
-/// title.
+/// What the journal's selection writes into its controls: the selected
+/// entry's title as the list's caption, its text into the text box, the
+/// 1-based row, the entry count and every title.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct JournalListState {
     pub title: String,
+    pub text: String,
     pub selected: i32,
     pub count: i32,
     pub titles: Vec<String>,
 }
 
 impl Journal {
-    /// The list control's state for the selected entry: the original writes
-    /// the title as the control's caption, the row as its selection (the
-    /// index plus one), the session's entry count and the title array.
+    /// The controls' state for the selected entry: see [`JournalListState`].
     pub fn list_state(&self) -> JournalListState {
+        let entry = self.entries.get(self.current);
         JournalListState {
-            title: self
-                .entries
-                .get(self.current)
-                .map(|entry| entry.title.clone())
-                .unwrap_or_default(),
+            title: entry.map(|e| e.title.clone()).unwrap_or_default(),
+            text: entry.map(|e| e.text.clone()).unwrap_or_default(),
             selected: self.row(),
             count: self.entries.len() as i32,
             titles: self.titles().into_iter().map(str::to_string).collect(),
@@ -1885,158 +1842,61 @@ impl Journal {
     }
 }
 
-/// The journal's close callback: it sets the player controls' GUI flag (1)
-/// and answers nothing.
-pub const JOURNAL_CLOSE_FLAG: u8 = 1;
+/// The state bits the record that opens the technique selector gains.
+pub const SELECTOR_RECORD_STATE: u32 = 0x60;
 
-/// The journal's close callback value: the player controls are told 1 (the
-/// journal is gone).
-pub fn journal_close_callback() -> u8 {
-    JOURNAL_CLOSE_FLAG
-}
-
-/// The technique selector's open inputs: the owner record's place and size,
-/// and the rows' inputs.
+/// The technique selector's open inputs: the opening record's screen place
+/// and size, and the rows' inputs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SelectorOpenInput {
-    pub owner_x: i32,
-    pub owner_y: i32,
-    pub owner_width: i32,
-    pub owner_height: i32,
-    pub locked: bool,
-    pub skill: Skill,
-    pub requirements: [[i32; 2]; 8],
-    pub count: i32,
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+    pub rows: SelectorInput,
 }
 
-/// What opening the selector does: where it is placed, its rows' states,
-/// whether the forget row opens, the forget-mode word it sets, and the two
-/// state bits the owner takes.
+/// What opening the selector does: its placement request, its rows' states,
+/// whether it opens in forget mode (the form's forget word is set to 1 and
+/// the ninth row enabled only then), and the state bits the opening record
+/// gains.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SelectorOpen {
     pub place: crate::gui_core::PlaceRequest,
     pub rows: [u32; 9],
     pub forget: bool,
-    /// The word the form's forget flag is set to when the record's count is
-    /// positive (1), else 0.
-    pub forget_mode: i32,
-    /// The owner's state word gains these bits (0x60).
-    pub owner_state: u32,
+    pub record_state: u32,
 }
 
-/// Opens the technique selector: it is placed at the owner's right less one
-/// and one below it (falling back to the owner's left and bottom less one),
-/// its rows come from [`selector_rows`], a positive record count puts it in
-/// forget mode and the owner takes state bits 0x60.
+/// Opens the technique selector: [`selector_place`], [`selector_rows`],
+/// and [`SELECTOR_RECORD_STATE`] on the opening record.
 pub fn selector_open(input: SelectorOpenInput) -> SelectorOpen {
-    let (rows, forget) = selector_rows(SelectorInput {
-        locked: input.locked,
-        skill: input.skill,
-        requirements: input.requirements,
-        count: input.count,
-    });
+    let (rows, forget) = selector_rows(input.rows);
     SelectorOpen {
-        place: selector_place(
-            input.owner_x,
-            input.owner_y,
-            input.owner_width,
-            input.owner_height,
-        ),
+        place: selector_place(input.x, input.y, input.width, input.height),
         rows,
         forget,
-        forget_mode: i32::from(forget),
-        owner_state: 0x60,
+        record_state: SELECTOR_RECORD_STATE,
     }
 }
 
-/// The asynchronous inventory fill's answer: the generator's node fills the
-/// panels when it is non-null; a null node means the fill could not run.
+/// The deferred inventory fill's answer on the GUI's job queue: when the
+/// character generator has the character's node the inventory fills and
+/// the job is done; without one the job answers true and stays queued
+/// for the next pass.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AsyncFill {
     pub fill: bool,
-    pub done: bool,
+    pub retry: bool,
 }
 
-/// The asynchronous fill's callback: a non-null node fills the inventory
-/// and the callback is not done (it runs again); a null node ends it.
+/// The deferred fill for a generator that has (`true`) or has not yet
+/// (`false`) built the character's node.
 pub fn async_inventory_fill(node: bool) -> AsyncFill {
     AsyncFill {
         fill: node,
-        done: !node,
+        retry: !node,
     }
-}
-
-/// What the in-game GUI unit registers when it loads: the three control
-/// classes (power slot, counter, bar) with their default sizes, the
-/// tooltip's creator, and the previous GUI shutdown and close-all hooks it
-/// chains.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct GameGuiRegistration {
-    pub controls: [(u32, i32, i32); 3],
-    pub tooltip_creator: bool,
-    /// The GUI's shutdown hook is chained to the unit's finalisation.
-    pub chains_shutdown: bool,
-    /// The deferred close-all hook is installed (the loot windows whose
-    /// bodies no longer qualify).
-    pub installs_close_hook: bool,
-}
-
-/// The unit's registrations, once.
-pub fn game_gui_registration() -> GameGuiRegistration {
-    GameGuiRegistration {
-        controls: HUD_CONTROLS,
-        tooltip_creator: true,
-        chains_shutdown: true,
-        installs_close_hook: true,
-    }
-}
-
-/// One block of data the unit owns and frees when it unloads.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UnitOwned {
-    /// The game's skin object.
-    Skin,
-    /// The journal's entry array.
-    JournalEntries,
-    /// The journal's title array.
-    JournalTitles,
-    /// The journal's edited text.
-    JournalText,
-    /// The first of the unit's control-record tables.
-    FirstControlTable,
-    /// The journal's two-record control table.
-    JournalControls,
-    /// The skills' name table.
-    SkillNames,
-    /// The techniques' name table.
-    TechniqueNames,
-    /// The counter's control-record template.
-    CounterRecord,
-    /// The button's control-record template.
-    ButtonRecord,
-    /// The skill selector's confirmation text.
-    ConfirmText,
-}
-
-/// The blocks the unit's finalisation frees, in the original's order. The
-/// memory itself is Rust's; the list records what the unit owned.
-pub const UNIT_OWNED: [UnitOwned; 11] = [
-    UnitOwned::Skin,
-    UnitOwned::JournalEntries,
-    UnitOwned::JournalTitles,
-    UnitOwned::JournalText,
-    UnitOwned::FirstControlTable,
-    UnitOwned::JournalControls,
-    UnitOwned::SkillNames,
-    UnitOwned::TechniqueNames,
-    UnitOwned::CounterRecord,
-    UnitOwned::ButtonRecord,
-    UnitOwned::ConfirmText,
-];
-
-/// The unit's finalisation: the blocks it owned, in order.
-pub fn unit_finalisation() -> &'static [UnitOwned] {
-    &UNIT_OWNED
 }
 
 #[cfg(test)]
