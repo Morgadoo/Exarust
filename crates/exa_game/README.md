@@ -1033,7 +1033,11 @@ compute pool (`IconPainting`) and the icon waits for its material, so the
 chest's clothes no longer render as the unpainted shade map (white). A GPU icon also waits (at most `TEXTURE_WAIT` frames) until
 every texture its materials bind is in the image store and is not the
 streamed load's 1 × 1 placeholder (`scene_textures_ready`), so a model with
-its own materials is not baked over the placeholder.
+its own materials is not baked over the placeholder. An empty readback (the
+camera drew nothing: the session's first icon waits on its pipelines) is
+asked again up to `READBACK_RETRIES` times before the CPU's flat stand-in
+fills the slot; each icon logs at debug level whether it was painted or
+plain and whether the GPU or the stand-in made it.
 `--open-container FRAME` (Exarust's debug helper) opens
 the container nearest the player that many frames after the level load ends.
 `npc_search` hosts the original's follow state and the companion's search
