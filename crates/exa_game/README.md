@@ -947,8 +947,11 @@ design at unit 4 (244 × 644, border 8, the character view 228 × 384 at the
 client's top, the pack 228 × 180 at its bottom, the records between them)
 rescaled by `exa_ui::gui_rescale::rescale_form`, so at unit 8 the form is
 488 × 1288 at (16, 16) and its pack and records follow (the pack's hit
-rectangle in `panel_live` too). The character view's panel frame is drawn;
-its figure is not; the
+rectangle in `panel_live` too). The loot window (`ScreenLayout::loot`: 484 ×
+876 at x 800 at unit 8, its panels 452 wide) and the journal
+(`ScreenLayout::journal`: 484 × 1028, its text box 456 × 824) are rescaled
+the same way, their 2-pixel borders kept. The character view's panel frame
+is drawn; its figure is not; the
 journal keeps its session entries and stores its text on close. Escape
 closes the focused screen (Exarust's). The rules are `exa_ui::game_gui`'s.
 The screens draw through `gui_paint` and `exa_ui::gui_draw` with the words
@@ -1027,7 +1030,10 @@ icon layer, and two at once framed the second item on the first's model. An appa
 record's appearance block before its scene is baked, as the original's
 streamed icon paints the item first: the paint job runs on the async
 compute pool (`IconPainting`) and the icon waits for its material, so the
-chest's clothes no longer render as the unpainted shade map (white).
+chest's clothes no longer render as the unpainted shade map (white). A GPU icon also waits (at most `TEXTURE_WAIT` frames) until
+every texture its materials bind is in the image store and is not the
+streamed load's 1 × 1 placeholder (`scene_textures_ready`), so a model with
+its own materials is not baked over the placeholder.
 `--open-container FRAME` (Exarust's debug helper) opens
 the container nearest the player that many frames after the level load ends.
 `npc_search` hosts the original's follow state and the companion's search

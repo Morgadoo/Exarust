@@ -111,7 +111,8 @@ pub(crate) fn open_panels(screens: &GameScreens) -> Vec<(Panel, GuiRect)> {
         let Some(form) = screens.task.form(screen.form) else {
             continue;
         };
-        let (pack, equipment) = gui_screens::loot_panel_rects(form.bounds());
+        let (pack, equipment) =
+            gui_screens::loot_panel_rects_at(form.bounds(), window.pack.unit.max(1));
         out.push((
             Panel::BodyPack(window.character),
             gui_screens::panel_client(pack),
