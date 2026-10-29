@@ -579,6 +579,29 @@ fn support_point(m: Vec3, a: Vec3, b: Vec3) -> Vec3 {
     a + (b - a) * t
 }
 
+/// The character init's leg order: with more than one leg, the part above
+/// the first leg's lower leg that hangs from the root (its thigh) must not
+/// sit at positive x in the root; when it does, the first two legs swap.
+/// `first_shin` is the first leg's lower leg in `setup`. A NaN x does not
+/// swap. Exarust builds the legs in part order and does not call this: the
+/// human's first thigh is on the right (negative x), where nothing swaps.
+pub fn legs_swap(setup: &[PartSetup], first_shin: usize, legs: usize) -> bool {
+    if legs < 2 {
+        return false;
+    }
+    let mut part = setup.get(first_shin).and_then(|s| s.parent);
+    // Climb until the part's parent is the root (a part without a parent).
+    for _ in 0..setup.len() {
+        let Some(p) = part else { return false };
+        match setup[p].parent {
+            Some(q) if setup[q].parent.is_some() => part = Some(q),
+            Some(_) => return 0.0 < setup[p].origin.x,
+            None => return false,
+        }
+    }
+    false
+}
+
 /// The chest pins, legs and sole height of a body built from `setup`. The
 /// first part with pins carries the chest. Every part with a foot contact
 /// is a leg, in part order; the original's muscle setup moves the contact

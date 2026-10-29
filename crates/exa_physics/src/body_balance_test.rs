@@ -1040,3 +1040,37 @@ fn the_placement_frame_height_maps_to_the_feet() {
     let feet = body.placement_feet();
     assert!((feet - 0.15).abs() < 1e-4, "feet {feet}");
 }
+
+/// The leg order: the biped's first thigh hangs at −9 cm (its right), so
+/// its legs keep their order; mirrored, the first thigh at +9 cm swaps
+/// them. A single leg never swaps.
+#[test]
+fn the_first_leg_is_the_one_on_the_negative_side() {
+    let setup = |x: f32| -> Vec<PartSetup> {
+        BIPED
+            .iter()
+            .map(|b| PartSetup {
+                bone: b.bone,
+                entity: Entity::PLACEHOLDER,
+                parent: b.parent,
+                world: Affine3A::IDENTITY,
+                centre: Vec3::ZERO,
+                half: Vec3::splat(0.01),
+                origin: if b.bone == 2 {
+                    Vec3::new(x, -0.085, 0.035)
+                } else {
+                    Vec3::from_array(b.origin) * 0.01
+                },
+                links: vec![],
+                foot: None,
+                pins: vec![],
+                spheres: None,
+            })
+            .collect()
+    };
+    // Part 2 is the first lower leg (bone 3), under the thigh (part 1).
+    assert!(!legs_swap(&setup(-0.09), 2, 2));
+    assert!(legs_swap(&setup(0.09), 2, 2));
+    assert!(!legs_swap(&setup(0.09), 2, 1));
+    assert!(!legs_swap(&setup(f32::NAN), 2, 2));
+}

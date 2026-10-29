@@ -286,7 +286,13 @@ at most 2 cm), leaving its follow out of the carry. In each solver
 iteration the support pins (`src/body_pins.rs`) pull the two thorax pins
 once and the pelvis pin twice horizontally toward the frame's targets, clamped near
 the feet centre. Each foot's ground is its own: the controller's floor
-does not raise the lift (`src/body_lift.rs`). A standing leg bends onto
+does not raise the lift (`src/body_lift.rs`). The feet routine's two other modes are
+tested rules (`feet_mode`): a flat floor (every ground 0, the pelvis aimed
+10 cm under its standing height, `flat_floor_leg`) and a hovering race's
+single probe under the pelvis, 5 cm higher after each miss (`HoverProbe`).
+A golem's body links are smoothed at 0.995 (`Ragdoll::smooth_golem_links`,
+from `RaceMuscles::golem`); the init's leg order is `legs_swap`. A body
+that stands has no locomotion drive (`stand` clears it). A standing leg bends onto
 its target by the law of cosines, at most 0.02 rad a tick (0.2 while a
 recovery step is on), and the muscles follow that bend on the next tick
 (`src/body_bend.rs`). The standing target is the anchor lowered by twice

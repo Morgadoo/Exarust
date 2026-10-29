@@ -150,6 +150,22 @@ fn a_standing_body_lets_its_exertion_fall() {
     assert_eq!(body.exertion, ((0.5f64 * 0.95) as f32 as f64 * 0.95) as f32);
 }
 
+/// Standing (getting up too) clears the locomotion drive, which the body
+/// tick zeroes before its locomotion call: a recovery step after a walk is
+/// not pushed by the walk's last drive.
+#[test]
+fn a_standing_body_has_no_drive() {
+    let mut body = Locomotor {
+        drive: Vec3::new(0.3, 0.0, -0.2),
+        ..default()
+    };
+    stand(&mut body, false);
+    assert_eq!(body.drive, Vec3::ZERO);
+    body.drive = Vec3::X;
+    stand(&mut body, true);
+    assert_eq!(body.drive, Vec3::ZERO);
+}
+
 /// The columns at a half run blend: walking the clock by √run (0.23670),
 /// running by the blend (0.26265); the stop 125 cm on the jog row, 150 cm
 /// on the sprint row (the latch, a level of 1 and 3.6 cm a tick), 125 cm

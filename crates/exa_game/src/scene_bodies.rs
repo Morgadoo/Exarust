@@ -770,6 +770,7 @@ pub fn race_muscles(body: &RaceBody) -> RaceMuscles {
         damping_ratio: body.damping_ratio,
         clip_rate: body.clip_rate,
         gaits: exa_physics::race_runtime::rows_of(body),
+        golem: false,
     }
 }
 
@@ -784,6 +785,7 @@ pub fn character_muscles(
     RaceMuscles {
         balance_bonus: stats.balance_bonus,
         arm_relaxation: stats.arm_relaxation,
+        golem: stats.golem,
         ..race_muscles(body)
     }
 }

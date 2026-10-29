@@ -463,7 +463,7 @@ pub struct Outcome {
 
 /// Under this a float counts as nothing (the damage model's epsilon, about
 /// 1.19e-7).
-const EPSILON: f32 = f32::from_bits(0x33ff_ffd7);
+pub(crate) const EPSILON: f32 = f32::from_bits(0x33ff_ffd7);
 /// The speed cap and the speed under which a blow is softened, cm a tick.
 const SPEED_CAP: f32 = 30.0;
 const SOFT_BELOW: f32 = 10.0;

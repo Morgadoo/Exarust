@@ -14,7 +14,9 @@ whether the running game calls the Rust item ("no" = tested but not called).
 The audit was made on 2026-10-29 from the pack's decompiles and assembly and a sweep of
 the crates; shares of partial routines are estimates, not instruction-level diffs. Updated the same
 day after the character-init presets, the grip and block-stamina re-check and the balance
-routine's foot sounds (see Corrections), and after the wiring lane (live column).
+routine's foot sounds (see Corrections), after the wiring lane (live column), and after the
+kernel lane (the damage routine's pain sounds, the feet routine's modes, the init's golem links
+and leg order, the standing body's drive).
 
 ## Totals
 
@@ -26,20 +28,20 @@ routine's foot sounds (see Corrections), and after the wiring lane (live column)
 | n.a. | 5 | 896 |
 | all | 100 | 123,719 |
 
-Weighted by the partial shares, about **90,504 of 122,823 needed bytes (74 %)** are reproduced (n.a. routines left out; counting the partial routines' shares, 70,048 of their 101,464 bytes). Counting only what the running game calls, about **79,492 bytes (65 %)**; the rest is tested but not wired.
-The wiring lane then made Break Tangle (#38, 370 B), the swing voice of #34 (about 450 B) and the held-voice fade in #49 (about 100 B) live, adding about 920 B to the live total (about 80,400 B, 65 %).
+Weighted by the partial shares, about **92,175 of 122,823 needed bytes (75 %)** are reproduced (n.a. routines left out; counting the partial routines' shares, 71,719 of their 101,464 bytes). Counting only what the running game calls, about **80,760 bytes (66 %)**; the rest is tested but not wired.
+The wiring lane made Break Tangle (#38, 370 B), the swing voice of #34 (about 450 B) and the held-voice fade in #49 (about 100 B) live (about 80,400 B). The kernel lane then added about 1,670 B reproduced (the pain sounds and player jolt of #8, the feet modes of #50, the leg order of #73: tested only) and about 360 B live (the standing body's drive reset in #49, the golem link smoothing of #73, and the init's foot-mask union, which was live but not credited).
 
 ## Largest remaining work
 
 | routine | size | left (est.) | role | missing |
 |---|---|---|---|---|
-| #49 | 20,293 | 6,100 | Body tick kernel: prologue, impacts and burn, ramps, daze, links, behaviour, posture, attack, move/stop, turn, locomotion, twist and head, sampler, frame, carry, balance and feet calls | alignment and stop details, jump phase, some state flags, Break Tangle call |
-| #8 | 13,157 | 3,289 | Damage routine: impact speed, zones, armour roll, channels, daze, block/clash/parry branches, bite, follow-through, sounds, blood, knockback, kill | bite link not attached, pain voices, camera nudge, script hook, struck-item sound not called |
+| #49 | 20,293 | 5,885 | Body tick kernel: prologue, impacts and burn, ramps, daze, links, behaviour, posture, attack, move/stop, turn, locomotion, twist and head, sampler, frame, carry, balance and feet calls | the down body's ground probe, some state flags |
+| #8 | 13,157 | 2,631 | Damage routine: impact speed, zones, armour roll, channels, daze, block/clash/parry branches, bite, follow-through, sounds, blood, knockback, kill | bite link not attached; pain sounds and player jolt ported but not wired; script hook and callbacks; struck-item sound not called |
 | #76 | 3,562 | 2,315 | Pose-only sampler (spawn and placement) | femur posture, half twist, hunch, anchors, contacts, heights |
-| #50 | 7,185 | 1,796 | Feet routine: friction, height probe, smoothed ground, sole floor, anchor smoothing, pelvis target, support, lift servo and leg IK calls | flat-floor and no-probe modes; some thresholds unverified |
+| #50 | 7,185 | 1,336 | Feet routine: friction, height probe, smoothed ground, sole floor, anchor smoothing, pelvis target, support, lift servo and leg IK calls | flat-floor and hovering modes ported but not wired; some thresholds unverified |
 | #81 | 8,782 | 1,756 | Living sampler (muscles on) | head tilt and exertion read 0, dead jump branch, rebase capture |
 | #62 | 2,042 | 1,736 | Placement on the ground (teleport with snap) | the outer sequence |
-| #73 | 5,423 | 1,627 | Character init: rates, masses, gains, leg sides, placement, techniques, race and class presets, sounds, voice pitch, leg reach, head set-up | foot-mask union, leg swap, ghoul head-part set-up, golem contact smoothing, gait scale check |
+| #73 | 5,423 | 1,247 | Character init: rates, masses, gains, leg sides, placement, techniques, race and class presets, sounds, voice pitch, leg reach, head set-up | leg swap ported but not called; ghoul head-part set-up; gait scale check |
 | #18 | 8,061 | 1,612 | Balance routine: lean, score and counter, recovery steps and episodes, footwork and stance pick, grounds, support, landing and footstep sounds | foot sounds ported but not wired; nav calls; parity unverified block by block |
 | #58 | 2,194 | 1,426 | Placement at a matrix (spawn, teleport, saves, arena) | re-placing a living body, field resets, contact offsets, cloth, behaviour hook |
 | #82 | 4,499 | 1,350 | Muscles-off sampler | hold, anchors; not scheduled |
@@ -55,7 +57,7 @@ The wiring lane then made Break Tangle (#38, 370 B), the swing voice of #34 (abo
 | 5 | 481 | Apply damage to the yellow and red bars, lasting-wound rule, low and kill thresholds, death | `exa_combat fighter.rs Health::take, failing` | done | player-kill callback hook | yes |
 | 6 | 89 | Bite layers on the struck part, its parent and children | `exa_combat bite.rs stuck_layers` | done | - | no |
 | 7 | 266 | Attacker recoil after a blocked or shield hit | `exa_combat swing.rs recoil, SwingState::recoil_from` | done | - | yes |
-| 8 | 13,157 | Damage routine: impact speed, zones, armour roll, channels, daze, block/clash/parry branches, bite, follow-through, sounds, blood, knockback, kill | `exa_combat damage.rs resolve, hit_sounds, block`; `lib.rs react_to_hits, strike_back` | partial (75 %) | bite link not attached, pain voices, camera nudge, script hook, struck-item sound not called | yes |
+| 8 | 13,157 | Damage routine: impact speed, zones, armour roll, channels, daze, block/clash/parry branches, bite, follow-through, sounds, blood, knockback, kill | `exa_combat damage.rs resolve, hit_sounds, block, notices_damage`; `pain.rs pain_sounds, struck_player_jolt, striking_player_rumble`; `lib.rs react_to_hits, strike_back` | partial (80 %) | bite link not attached; the pain sounds and the player jolt are not called (no voice samples are played yet, no camera jolt or pad rumble reads them); the scripted damage hook and the two damage callbacks; struck-item sound not called | yes (pain sounds no) |
 | 9 | 651 | Bite: the weapon sticks in the struck part (grab link, strength, lifetime, weapon layer) | `exa_combat bite.rs stick, grab_of, BiteHold` | done | not wired into the hit path: the grab link joins two parts of one body, but the weapon is a separate entity (bone-attached or a gripped item body) and no cross-body grab exists | no |
 | 10 | 490 | Follow-through after a wound | `exa_combat swing.rs follow_through, SwingState::after_wound` | done | - | yes |
 | 11 | 286 | Push at a point, cut by how far the point already moves | `exa_physics body.rs push_fraction, Ragdoll::push_at` | done | no caller | no |
@@ -96,8 +98,8 @@ The wiring lane then made Break Tangle (#38, 370 B), the swing voice of #34 (abo
 | 46 | 472 | Femur posture (thigh turn about the femur axis) | `exa_physics body.rs femur_posture_turn`; `exa_game stages/sampler.rs femur_posture` | done | - | yes |
 | 47 | 147 | Can-locomote gate | `exa_physics body_locomotion.rs gates`; `motile.rs action_ready` | done | - | yes |
 | 48 | 41 | String release thunk (runtime library cleanup) | - | n.a. | - | n.a. |
-| 49 | 20,293 | Body tick kernel: prologue, impacts and burn, ramps, daze, links, behaviour, posture, attack, move/stop, turn, locomotion, twist and head, sampler, frame, carry, balance and feet calls | `exa_physics body_stages.rs, grip.rs HeldGrip::relax, flip_step`; `exa_character grip_runtime.rs`; `exa_game stages/*, balance.rs`; `exa_combat regen (ShieldStamina), condition, swing, parry, collapse` | partial (70 %) | alignment and stop details, jump phase, some state flags | yes |
-| 50 | 7,185 | Feet routine: friction, height probe, smoothed ground, sole floor, anchor smoothing, pelvis target, support, lift servo and leg IK calls | `exa_physics body_balance.rs measure_balance`; `body_feet.rs`; `body_lift.rs`; `body_bend.rs`; `body_steps.rs` | partial (75 %) | flat-floor and no-probe modes; some thresholds unverified | yes |
+| 49 | 20,293 | Body tick kernel: prologue, impacts and burn, ramps, daze, links, behaviour, posture, attack, move/stop, turn, locomotion, twist and head, sampler, frame, carry, balance and feet calls | `exa_physics body_stages.rs, grip.rs HeldGrip::relax, flip_step, body_gait.rs stand`; `exa_character grip_runtime.rs`; `exa_game stages/*, balance.rs`; `exa_combat regen (ShieldStamina), condition, swing, parry, collapse` | partial (71 %) | the down body's ground probe under the pelvis; some state flags | yes |
+| 50 | 7,185 | Feet routine: friction, height probe, smoothed ground, sole floor, anchor smoothing, pelvis target, support, lift servo and leg IK calls | `exa_physics body_balance.rs measure_balance`; `body_feet.rs` (and `feet_mode, flat_floor_leg, flat_floor_target, HoverProbe`); `body_lift.rs`; `body_bend.rs`; `body_steps.rs` | partial (81 %) | the flat-floor and hovering modes are not called (no Exarust body has the flat-floor bit; the wraith's hover flag is not passed to its body); some thresholds unverified | yes (modes no) |
 | 51 | 712 | Pelvis-height lift servo | `exa_physics body_lift.rs lift_unclamped, lift_factor, Ragdoll::lift` | done | - | yes |
 | 52 | 46 | Create the shared motions object once | `exa_anim lib.rs Motions` | done | - | yes |
 | 53 | 696 | Constructor field defaults | `exa_physics body.rs Ragdoll::new`; `body_muscle.rs BodyStats` | partial (40 %) | many defaults unchecked | yes |
@@ -120,7 +122,7 @@ The wiring lane then made Break Tangle (#38, 370 B), the swing voice of #34 (abo
 | 70 | 412 | Two-hand group bit | `exa_combat strike_body.rs two_hand_group` | done | no caller | no |
 | 71 | 168 | Add to the scene's dynamics list, player first | (spawn) | n.a. | - | n.a. |
 | 72 | 360 | Part mobilities and masses | `exa_physics body.rs INVERSE_MASS, LINK_MOBILITY` | partial (40 %) | normalisation from measured size, limp parts | yes |
-| 73 | 5,423 | Character init: rates, masses, gains, leg sides, placement, techniques, race and class presets, sounds, voice pitch, leg reach, head set-up | `exa_formats character_stats.rs CharacterStats::derive (RACE_PRESETS), BodyRules`; `exa_game scene_bodies.rs character_muscles`; `exa_combat sounds.rs`; `exa_physics body.rs` | partial (70 %) | foot-mask union, leg swap, the ghouls' half-scale head-part set-up, golem contact smoothing 0.995, a word set to 4 for creatures with no reader found, gait scale check | yes |
+| 73 | 5,423 | Character init: rates, masses, gains, leg sides, placement, techniques, race and class presets, sounds, voice pitch, leg reach, head set-up | `exa_formats character_stats.rs CharacterStats::derive (RACE_PRESETS), BodyRules`; `exa_game scene_bodies.rs character_muscles`; `exa_combat sounds.rs`; `exa_physics body.rs Ragdoll::smooth_golem_links, legs_swap`; `body_pairs.rs register_legs` (foot-mask union) | partial (77 %) | the leg swap is not called (the human's first thigh is at negative x, where nothing swaps); the ghouls' half-scale head-part set-up; a word set to 4 for creatures with no reader found; gait scale check | yes (leg swap no) |
 | 74 | 1,218 | Part classification: legs, side arms, hand chains | `exa_physics body.rs (fixed human bone order)` | partial (40 %) | data-driven walk, ankle offset, factors, roles | yes |
 | 75 | 434 | Part list from model nodes | `exa_physics body.rs`; `exa_anim attach_body_parts`; `exa_combat sounds.rs` | partial (60 %) | boneless parts, per-part foley | yes |
 | 76 | 3,562 | Pose-only sampler (spawn and placement) | `exa_game limp.rs spawn_pose`; `exa_anim sample, ClipPose::at` | partial (35 %) | femur posture, half twist, hunch, anchors, contacts, heights | yes |
@@ -165,10 +167,10 @@ Byte counts are estimated from block landmarks in the research notes.
 | Move and stop branches | 735 | 90 % |  |
 | Movement decision | 490 | 80 % |  |
 | Turn | 1,150 | 90 % |  |
-| Alignment and stop | 600 | 50 % |  |
+| Alignment and stop | 600 | 65 % | drive cleared before the locomotion call (`stand`); the muscles-off clock counter has no writer (dead); the down body's ground probe is not ported |
 | Locomotion call and clock | 930 | 75 % |  |
 | Torso twist and head look | 670 | 90 % |  |
-| Sampler call, carry reset, jump phase, character frame, drive into the carry, part matrices, chest pins, balance and feet calls, carry propagation | 4,500 | 60 % | jump phase is dead code; part of the movement still follows the capsule controller |
+| Sampler call, carry reset, jump phase, character frame, drive into the carry, part matrices, chest pins, balance and feet calls, carry propagation | 4,500 | 60 % | jump phase is dead code (its flag and timer have no writer; kept as `Locomotor::jump`); part of the movement still follows the capsule controller |
 
 ## Corrections made by the audit
 
@@ -201,3 +203,27 @@ Byte counts are estimated from block landmarks in the research notes.
   tick's fade walks the held items' voices while the condition is not 2 (attacking). The
   character's swing loudness and sound gain are 1.0 from the constructor; only the force
   swing (loudness 3) and scripted fades change them.
+- The body tick's alignment tail (routine #49), read from the assembly: after the alignment it
+  zeroes the locomotion drive every tick before the locomotion call, so a body that does not
+  locomote has no drive. Exarust kept the last walking tick's drive, which the carry still
+  applied during a recovery step (`bearing.moving` is set while stepping); `stand` now clears it.
+  A down body (condition 0x200) takes its ground from one 10 cm sphere cast 2000 cm down from
+  the pelvis (not ported). The muscles-off branch's clock counter has no writer in the image:
+  only a powered golem suit runs the clock there.
+- The damage routine's tail (routine #8) after the damage call: the wound sound (`WndFls`,
+  `SkelHit` or `HitGlm`, chosen at the init) and the pain voice (a groan above a wound of 0.3,
+  else a groan or a grunt by the yellow over 0.5), then the "DamageTaken" notice (the earlier
+  "camera nudge"; it is `notices_damage`), the two damage callbacks, and the player's feedback: a
+  struck player's camera jolt and pad rumble by `7Y + 7L` (a big striker's by its speed), a
+  striking player's rumble by half the yellow. A scripted damage hook, when set, replaces the
+  damage call and skips all of it.
+- The init's foot-mask union (routine #73) was already ported (`register_legs`). Its golem
+  set-up gives every pivot link of every part the smoothing 0.995 (the earlier "contact
+  smoothing"), now `Ragdoll::smooth_golem_links`, live for golems. Its leg order swaps the first
+  two legs when the first leg's thigh sits at positive x in the root. The ghouls' head-part
+  set-up re-runs the mass set-up of the character's attached head body at half its size factor.
+- The feet routine's modes (routine #50): flat floor (the condition's 0x1000 bit) sets every
+  leg's ground to 0, its anchor height to sole + 1, its state to 0x4a and its foot floor to 1,
+  aims the pelvis 10 cm under its standing height and sets support and its factors to 1;
+  hovering (the race's flag 0x200, the wraith) casts one 20 cm sphere 2000 cm down from 20 cm
+  over the pelvis, plus 5 cm more after each miss.

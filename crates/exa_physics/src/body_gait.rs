@@ -556,9 +556,13 @@ pub fn advance_clock(body: &mut Locomotor, clock: f32, length: f32) -> f32 {
 /// One tick of a standing body's run blend (the body tick's branch for a
 /// body that does not locomote): the exertion value keeps 95% (double
 /// precision); getting up the run blend is 0, otherwise it falls 0.02 a
-/// tick (double), never under 0.
+/// tick (double), never under 0. The locomotion drive is zero: the body
+/// tick clears it every tick before the locomotion call, so a body that
+/// does not locomote (one taking a recovery step included) is not pushed
+/// by its last walking tick's drive.
 pub fn stand(body: &mut Locomotor, getting_up: bool) {
     body.locomoted = false;
+    body.drive = Vec3::ZERO;
     body.exertion = (f64::from(body.exertion) * STAND_EXERTION_KEEP) as f32;
     if getting_up {
         body.run = 0.0;
