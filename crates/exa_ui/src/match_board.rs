@@ -1726,6 +1726,21 @@ impl Board {
         state
     }
 
+    /// Restores a previous session's tab and list selections, as the
+    /// original's constructor does from its saved selections when the board
+    /// is opened again. The selections are clamped to the six-row lists and
+    /// the saved tab is opened, which refreshes it like a tab switch. The
+    /// saved items and picture are not restored: the tab's own show creates
+    /// them again.
+    pub fn restore(&mut self, state: &CloseState) {
+        let last = RANKS.len() - 1;
+        self.match_type = state.match_type.min(MATCH_TYPES.len() - 1);
+        self.rank = state.rank.min(last);
+        self.tier = state.tier.min(last);
+        let target = state.tab;
+        self.apply_tab(None, target);
+    }
+
     /// Whether the tournament day flag is set.
     pub fn tournament_day(&self) -> bool {
         is_tournament_day(self.day)
@@ -3714,6 +3729,46 @@ mod tests {
             _ => None,
         });
         assert_eq!(greyed, Some(true));
+    }
+
+    #[test]
+    fn a_reopened_board_restores_the_tab_and_the_lists() {
+        let mut board = board();
+        board.match_type = 2;
+        board.rank = 3;
+        board.tier = 1;
+        board.tab = BoardTab::Events;
+        let close = board.close();
+        let mut fresh = Board::new(true, board.day, fighters());
+        fresh.restore(&close);
+        assert_eq!(fresh.tab, BoardTab::Events);
+        assert_eq!((fresh.match_type, fresh.rank, fresh.tier), (2, 3, 1));
+        // The standard tab then refreshes with the restored selections.
+        assert!(fresh.switch_tab(BoardTab::Matches).is_some());
+        assert_eq!(fresh.selected.name, "Skirmish");
+        assert_eq!(fresh.rank_floor(), 3);
+        assert_eq!(fresh.tier, 1);
+        assert_eq!(fresh.selected.tier, 1);
+
+        // Selections past the six-row lists clamp; the reopen stays total.
+        let mut far = CloseState {
+            tab: BoardTab::Season,
+            match_type: usize::MAX,
+            rank: usize::MAX,
+            tier: usize::MAX,
+            tournament_reward: None,
+            season_items: [None; 4],
+            picture: String::new(),
+        };
+        let mut fresh = Board::new(true, 0, fighters());
+        fresh.restore(&far);
+        assert_eq!(fresh.tab, BoardTab::Season);
+        assert_eq!((fresh.match_type, fresh.rank, fresh.tier), (5, 5, 5));
+        far.rank = 0;
+        far.tier = 0;
+        far.match_type = 0;
+        fresh.restore(&far);
+        assert_eq!(fresh.controls[control::ENTER], control::HIDDEN);
     }
 
     #[test]

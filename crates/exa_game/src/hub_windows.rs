@@ -28,8 +28,8 @@ use exa_ui::gui_core::{FormHost, FormId, GuiRect, GuiTask, NO_CONTROL};
 use exa_ui::gui_draw::{GuiFrames, GuiTextures};
 use exa_ui::line_skin::shown_palette;
 use exa_ui::match_board::{
-    Board, BoardAction, BoardPaint, BoardTab, CellValue, CoinDraw, Rect, TableLayout, TableSlot,
-    Widget,
+    Board, BoardAction, BoardPaint, BoardTab, CellValue, CloseState, CoinDraw, Rect, TableLayout,
+    TableSlot, Widget,
 };
 use exa_ui::skin::SkinPalette;
 
@@ -289,6 +289,9 @@ pub struct HubWindows {
     pub kind: HubWindowKind,
     pub form: Option<FormId>,
     pub board: Option<Board>,
+    /// The closed board's saved tab and list selections, restored when it
+    /// is opened again.
+    pub board_state: Option<CloseState>,
     pub manage: Option<ManageRefresh>,
     pub shop: Option<ShopModel>,
 }
@@ -335,7 +338,11 @@ impl HubWindows {
     /// Opens the board on a career.
     pub fn open_board(&mut self, career: &ArenaCareer) {
         self.close();
-        self.board = Some(career.board());
+        let mut board = career.board();
+        if let Some(state) = &self.board_state {
+            board.restore(state);
+        }
+        self.board = Some(board);
         self.kind = HubWindowKind::Board;
         self.push(
             HubWindowKind::Board,
@@ -383,7 +390,7 @@ impl HubWindows {
         match self.kind {
             HubWindowKind::Board => {
                 if let Some(board) = self.board.as_mut() {
-                    board.close();
+                    self.board_state = Some(board.close());
                 }
             }
             HubWindowKind::Manage => {
@@ -1006,6 +1013,26 @@ mod tests {
         assert_eq!(refresh.roster[1].name.text, "Anna");
         assert_eq!(refresh.roster[0].rank.text, "Inept+");
         assert_eq!(refresh.money, 343);
+    }
+
+    #[test]
+    fn the_board_reopens_on_its_last_tab_and_lists() {
+        let mut windows = HubWindows::default();
+        let career = career();
+        windows.open_board(&career);
+        {
+            let board = windows.board.as_mut().unwrap();
+            assert!(board.switch_tab(BoardTab::Events).is_some());
+            board.match_type = 2;
+            board.rank = 3;
+            board.tier = 1;
+        }
+        windows.close_window();
+        assert!(windows.board_state.is_some());
+        windows.open_board(&career);
+        let board = windows.board.as_ref().unwrap();
+        assert_eq!(board.tab, BoardTab::Events);
+        assert_eq!((board.match_type, board.rank, board.tier), (2, 3, 1));
     }
 
     #[test]
