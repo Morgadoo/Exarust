@@ -198,6 +198,73 @@ pub(crate) fn goal_direction(facing: Vec3, word: u32, analog: Vec3) -> Vec3 {
     }
 }
 
+/// The radius (cm per unit of the target's scale) the approach bend keeps
+/// from the target.
+pub(crate) const APPROACH_RADIUS_CM: f32 = 60.0;
+/// The least cosine between the bent step's end and the start, both seen
+/// from the target, for the bend to be taken.
+pub(crate) const APPROACH_COS: f32 = 0.75;
+
+/// The movement goal's bend for a lone forward word while the body has a
+/// target: `step` is the goal's vector (cm, its stride applied) from the
+/// chest `from` (cm), `target` the target's chest (cm) and `scale` its
+/// scale, all taken across the ground (x and z). With `d = from − target`
+/// and the radius `r = 60·scale`:
+/// - farther than `r` (`|d|² > r²`; an unordered compare counts as
+///   farther), the step is cut where it first enters the circle of radius
+///   `r` about the target, `t = (−b − √(b² − 4a(|d|² − r²)))/(2a)` with
+///   `a = |step|²` and `b = 2·d·step`: when the discriminant is not
+///   negative and `t` lies in 0..=1 (an unordered `t` is refused), the
+///   step shortens to `t·step` if the angle test passes;
+/// - otherwise, when `r` is over `|d|²` (the squared distance, as the
+///   original compares it), the step becomes `d` scaled to `r`, away from
+///   the target; else it is zero (its height too).
+///
+/// The angle test reads a vector whose first component the original writes
+/// twice: the end's x offset is overwritten by its z offset,
+/// `(from.z + t·step.z) − target.z`, and its second component is a stack
+/// word nothing in the routine writes [guess: zero]. Its cosine with `d`,
+/// `q·d / √(|d|²·|q|²)`, must be at least 0.75 (an unordered cosine
+/// passes). The other branches keep the step's height.
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
+pub(crate) fn approach_bend(step: Vec3, from: Vec3, target: Vec3, scale: f32) -> Vec3 {
+    // The engine's two-component length and dot: x then z.
+    let len2 = |x: f32, z: f32| x * x + z * z;
+    let dot = |ax: f32, az: f32, bx: f32, bz: f32| ax * bx + az * bz;
+    let (dx, dz) = (from.x - target.x, from.z - target.z);
+    let r = APPROACH_RADIUS_CM * scale;
+    let d2 = len2(dx, dz);
+    // `r² < |d|²` or unordered: the intersection branch.
+    if !(d2 <= r * r) {
+        let c = d2 - r * r;
+        let a = len2(step.x, step.z);
+        let b = dot(dx, dz, step.x, step.z) * 2.0;
+        let disc = b * b - 4.0 * a * c;
+        if disc < 0.0 {
+            return step;
+        }
+        let t = (-b - disc.sqrt()) / (2.0 * a);
+        if !(0.0..=1.0).contains(&t) {
+            return step;
+        }
+        let (wx, wz) = (step.x * t, step.z * t);
+        // The end's offset as the original stores it (see above).
+        let qx = (from.z + wz) - target.z;
+        let qz = 0.0;
+        let q2 = len2(qx, qz);
+        let cos = dot(qx, qz, dx, dz) / (d2 * q2).sqrt();
+        if cos < APPROACH_COS {
+            return step;
+        }
+        Vec3::new(wx, step.y, wz)
+    } else if r > d2 {
+        let k = 1.0 / d2.sqrt();
+        Vec3::new(dx * r * k, step.y, dz * r * k)
+    } else {
+        Vec3::ZERO
+    }
+}
+
 #[cfg(test)]
 #[path = "footwork_test.rs"]
 mod tests;

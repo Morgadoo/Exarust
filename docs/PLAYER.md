@@ -835,8 +835,18 @@ level shows; not in the arena hub).
   `(stride·extension·√scale)/|dir|` cm, where the stride is the step reach
   or, for a tap, `(1.5 − 0.3·encumbrance)` reaches (one double product
   narrowed once: 120 cm unencumbered, 97.2 cm at encumbrance 0.5 on a
-  72 cm reach). The line walk from the chest's x/z on the ground clamps
-  it; it is taken only when over 400 cm² from the chest in three
+  72 cm reach). A lone forward word (W alone) with a target bends the
+  step at the target's circle of 60·scale cm across the ground
+  (`footwork::approach_bend`): from outside it, a step that would enter
+  is cut where it first meets the circle (the root of the quadratic in
+  0..=1) when the original's angle test passes; that test reads a vector
+  whose x is overwritten by the end's z offset and whose other part is
+  an unwritten stack word (Exarust takes zero), so the cut is taken only
+  for a cosine of at least 0.75 or a NaN one. From inside, the step is
+  pushed out to the radius along the line from the target when the
+  radius is over the *squared* distance (as the original compares it),
+  and is zero otherwise. Exarust's target is the behaviour's auto-target.
+  The line walk from the chest's x/z on the ground clamps it; it is taken only when over 400 cm² from the chest in three
   dimensions, and is then moved onto the grid's nearest walkable point
   across the ground. The deep crouch's 0.7 stride is not the goal's: the
   goal routine lays its own stride.

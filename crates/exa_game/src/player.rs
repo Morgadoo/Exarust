@@ -748,6 +748,7 @@ pub(crate) fn steer_player(
         Option<&Ragdoll>,
         Has<Attacking>,
     )>,
+    targets: Query<(&GlobalTransform, Option<&Ragdoll>, Option<&Stature>), Without<PlayerBody>>,
 ) {
     let now = ticks.map_or(0, |t| t.millis());
     let held = |action| bindings.pressed(&keys, action);
@@ -884,6 +885,13 @@ pub(crate) fn steer_player(
                         energy,
                         swinging,
                     },
+                    // The behaviour's auto-target stands for the body's
+                    // target the goal reads.
+                    target: pb.target.and_then(|t| targets.get(t).ok()).map(
+                        |(gt, body, stature)| {
+                            (stance::chest_point(gt, body), stature.map_or(1.0, |s| s.0))
+                        },
+                    ),
                     line: &line,
                     nearest: &nearest,
                 };
@@ -1063,6 +1071,9 @@ struct Footwork<'a> {
     scale_root: f32,
     /// What may lay a step.
     gate: StepGate,
+    /// The body's target: its chest (m) and scale, which a lone forward
+    /// word's goal bends at ([`footwork::approach_bend`]).
+    target: Option<(Vec3, f32)>,
     line: LineWalk<'a>,
     /// The grid's nearest walkable point.
     nearest: &'a dyn Fn(Vec3) -> Vec3,
@@ -1195,7 +1206,14 @@ fn lay_goal(
         footing.encumbrance,
         tap,
     );
-    let wanted = footing.chest + (dir * (stride / length)) / 100.0;
+    let mut step = dir * (stride / length);
+    // A lone forward word with a target bends at the target's circle.
+    if word == crate::steering::MOVE_FORWARD
+        && let Some((target, scale)) = footing.target
+    {
+        step = footwork::approach_bend(step, footing.chest * 100.0, target * 100.0, scale);
+    }
+    let wanted = footing.chest + step / 100.0;
     let (target, taken) = steering.step_target(
         footing.chest,
         footing.ground,
@@ -2313,6 +2331,7 @@ mod tests {
                 energy: 1.0,
                 swinging: false,
             },
+            target: None,
             line,
             nearest,
         }
