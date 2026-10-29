@@ -964,7 +964,8 @@ size) below the popup's client top, the popup `2 · 8 + panel` wide and
 (kept inside the screen's width) with its top eight units above its height
 over the pointer (at least one unit down), and the panel loads the record's
 children (positions in 1/80 unit). The popup paints its frame with the container
-constructor's words (attributes `0x830023`, centred-title style `0x3000`),
+constructor's words (attributes `0x830023`, centred-title style `0x3000`)
+in the shown form's palette (`exa_ui::line_skin::shown_palette(1.0)`),
 the container's icon by the plain card's placement and the panel's entries
 (a level's own records resolve their icon model and bulk through
 `ItemCatalogue::set_level_items`, fed from `exa_world::LevelLocalItems` by

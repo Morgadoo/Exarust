@@ -1555,7 +1555,9 @@ fn paint_container_popup(
     popup: &ContainerPopup,
     mut icons: Option<&mut PanelIcons>,
 ) -> gui_paint::Painted {
-    let palette = gui_paint::palette();
+    // A shown form's draw hands its fade (1) to the skin, which raises the
+    // palette's alpha ramps (form group 170, the others 125).
+    let palette = exa_ui::line_skin::shown_palette(1.0);
     let level = exa_ui::gui_font::level_for_unit(unit);
     let (font, size) = screen_font(exa_ui::gui_font::gui_level(level).main, textures);
     let mut frame = popup_frame(bounds, unit);
