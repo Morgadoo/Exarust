@@ -113,6 +113,19 @@ impl Plugin for StancePlugin {
     }
 }
 
+/// The stance a fighter returns to by its energy (the AI's guard, a recoil,
+/// a failed parry, a clinch's end): the Defence stance while dying (yellow
+/// health under 0.01) or dazed (energy more than 0.05 under its most), else
+/// the combat idle. Both compares are in double; a NaN energy or most takes
+/// the combat idle, and a NaN yellow goes on to the energy test.
+pub fn stance_by_energy(yellow: f32, energy: f32, most_energy: f32) -> Stance {
+    if failing(yellow) || f64::from(most_energy) - 0.05 > f64::from(energy) {
+        Stance::Defence
+    } else {
+        Stance::CombatIdle
+    }
+}
+
 /// The player's stance, chosen every behaviour tick: Idle out of combat
 /// mode; in combat mode the Defence stance while dying (yellow health
 /// under 0.01, [`failing`]), the combat idle with its target nearer than 3.5 m times
@@ -375,6 +388,22 @@ fn take_stance(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_stance_by_energy_compares_in_double() {
+        use super::{Stance, stance_by_energy};
+        assert_eq!(stance_by_energy(1.0, 1.0, 1.0), Stance::CombatIdle);
+        // 0.01 as a float is under 0.01 in double: dying.
+        assert_eq!(stance_by_energy(0.01, 1.0, 1.0), Stance::Defence);
+        assert_eq!(stance_by_energy(0.0101, 1.0, 1.0), Stance::CombatIdle);
+        // 0.95 as a float is just under 1 − 0.05 in double: dazed (a float
+        // compare would say not).
+        assert_eq!(stance_by_energy(1.0, 0.95, 1.0), Stance::Defence);
+        assert_eq!(stance_by_energy(1.0, 0.950_000_1, 1.0), Stance::CombatIdle);
+        assert_eq!(stance_by_energy(f32::NAN, 1.0, 1.0), Stance::CombatIdle);
+        assert_eq!(stance_by_energy(f32::NAN, 0.5, 1.0), Stance::Defence);
+        assert_eq!(stance_by_energy(1.0, f32::NAN, 1.0), Stance::CombatIdle);
+    }
+
     use super::*;
 
     /// The player's rule against the live retail trace: in combat mode the
