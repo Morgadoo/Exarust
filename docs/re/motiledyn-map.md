@@ -12,7 +12,7 @@ Rust does not need (string release, destructor, clone, scene list insertion). *L
 whether the running game calls the Rust item ("no" = tested but not called).
 
 The audit was made on 2026-10-29 from the pack's decompiles and assembly and a sweep of
-the crates; shares of partial routines are estimates, not instruction-level diffs.
+the crates (live column updated the same day by the wiring lane); shares of partial routines are estimates, not instruction-level diffs.
 
 ## Totals
 
@@ -24,7 +24,7 @@ the crates; shares of partial routines are estimates, not instruction-level diff
 | n.a. | 5 | 896 |
 | all | 100 | 123,719 |
 
-Weighted by the partial shares, about **88,227 of 122,823 needed bytes (72 %)** are reproduced (n.a. routines left out; counting the partial routines' shares, 67,771 of their 101,464 bytes). Counting only what the running game calls, about **77,618 bytes (63 %)**; the rest is tested but not wired.
+Weighted by the partial shares, about **88,227 of 122,823 needed bytes (72 %)** are reproduced (n.a. routines left out; counting the partial routines' shares, 67,771 of their 101,464 bytes). Counting only what the running game calls, about **78,538 bytes (64 %)**; the rest is tested but not wired. (Round 29 wired the tangle break, routine #38, 370 bytes, and the swing voice with its rustle and the body tick's fade of the held voices, about 450 bytes of routine #34 and 100 of #49; before that 77,618 bytes, 63 %.)
 
 ## Largest remaining work
 
@@ -48,12 +48,12 @@ Weighted by the partial shares, about **88,227 of 122,823 needed bytes (72 %)** 
 | 1 | 355 | Class set-up: per-tick constants from the 83 Hz rate and the motile environment (default retentions × 0.6) | `exa_physics body.rs DRIVE_SCALE, MOTILE_ENVIRONMENT` | partial (45 %) | the other per-tick constants (1200/rate, 4π/3/rate, 80/rate, rate·0.0125); the environment is data no body uses | yes |
 | 2 | 779 | Placement probe: 10 cm sphere cast down through collidable static meshes, skipping the character's own bodies | (stand-in: exa_physics contact.rs height_below) | missing | the mesh and body sweep with the own-body filter | no |
 | 3 | 536 | Post-step: queued weapon impact into the damage routine, travel phase, looping voices follow the body, position history shift | `exa_physics body.rs Ragdoll::post_step, travel_phase` | partial (60 %) | voice follow and volume, history shift (damage arrives by message instead) | yes |
-| 4 | 503 | Struck-item hit sound: cooldown, class set or item sound by where the point falls along the item, pitch ×1.2 | `exa_combat sounds.rs struck_item_sound` | done | NaN-projection branch picks the other set | no |
+| 4 | 503 | Struck-item hit sound: cooldown, class set or item sound by where the point falls along the item, pitch ×1.2 | `exa_combat sounds.rs struck_item_sound` | done | NaN-projection branch picks the other set; no caller: its call is the shield-block branch of #8, and Exarust's shield guard has no item entity, record split or length, nor the three shared class sets | no |
 | 5 | 481 | Apply damage to the yellow and red bars, lasting-wound rule, low and kill thresholds, death | `exa_combat fighter.rs Health::take, failing` | done | player-kill callback hook | yes |
 | 6 | 89 | Bite layers on the struck part, its parent and children | `exa_combat bite.rs stuck_layers` | done | - | no |
 | 7 | 266 | Attacker recoil after a blocked or shield hit | `exa_combat swing.rs recoil, SwingState::recoil_from` | done | - | yes |
 | 8 | 13,157 | Damage routine: impact speed, zones, armour roll, channels, daze, block/clash/parry branches, bite, follow-through, sounds, blood, knockback, kill | `exa_combat damage.rs resolve, hit_sounds, block`; `lib.rs react_to_hits, strike_back` | partial (75 %) | bite link not attached, pain voices, camera nudge, script hook, struck-item sound not called | yes |
-| 9 | 651 | Bite: the weapon sticks in the struck part (grab link, strength, lifetime, weapon layer) | `exa_combat bite.rs stick, grab_of, BiteHold` | done | not wired into the hit path | no |
+| 9 | 651 | Bite: the weapon sticks in the struck part (grab link, strength, lifetime, weapon layer) | `exa_combat bite.rs stick, grab_of, BiteHold` | done | not wired into the hit path: the grab link joins two parts of one body, but the weapon is a separate entity (bone-attached or a gripped item body) and no cross-body grab exists | no |
 | 10 | 490 | Follow-through after a wound | `exa_combat swing.rs follow_through, SwingState::after_wound` | done | - | yes |
 | 11 | 286 | Push at a point, cut by how far the point already moves | `exa_physics body.rs push_fraction, Ragdoll::push_at` | done | no caller | no |
 | 12 | 77 | Clear bits from every leg's foot-contact state | `exa_physics body.rs clear_feet`; `body_feet.rs clear_foot_state` | done | - | yes |
@@ -68,7 +68,7 @@ Weighted by the partial shares, about **88,227 of 122,823 needed bytes (72 %)** 
 | 21 | 85 | Full tone reset after a get-up | `exa_physics body_feet.rs full_tone` | done | no caller | no |
 | 22 | 438 | Turn the heading toward a fall | `exa_game balance.rs fall_heading, turn_toward_fall` | done | - | yes |
 | 23 | 614 | Getting up: pick the rise clip by the pelvis axis, turn, anchor, clear feet, start | `exa_game balance.rs start_getting_up, pick_rise, rise_heading` | done | dead-body frame branch | yes |
-| 24 | 255 | Parry end and clinch clear (grip links off, hands' bit off, stance blend 40) | `exa_combat strike_body.rs clear_clinch`; `parry.rs ParryState::end` | done | clear_clinch has no caller; the live end skips links and hand bits | partly |
+| 24 | 255 | Parry end and clinch clear (grip links off, hands' bit off, stance blend 40) | `exa_combat strike_body.rs clear_clinch`; `parry.rs ParryState::end` | done | clear_clinch has no caller: its links are the armed parry's grip links and the hands' bit 8, which Exarust never sets (the armed parry is not live), so the live end has nothing more to clear | partly |
 | 25 | 1,881 | Armed parry: parry point on the attacker's blade, falloff, weapon or shield grip, passed-blow path | `exa_combat parry.rs parry_blade_height, blade_point, parry_point, parry_distance, armed_grip` | partial (80 %) | writing the grip links and the refusal path into the game (the armed parry is not modelled live) | no |
 | 26 | 136 | Re-pick the parry clip for a new countered motion | `exa_combat parry.rs parry_repick` | done | - | yes |
 | 27 | 788 | Auto-parry and clinch check each tick | `exa_combat parry.rs parry_ends, parry_trigger, parry_counter, parry_start, run_parries` | partial (70 %) | armed success, arm bit 8, explicit target | yes |
@@ -78,11 +78,11 @@ Weighted by the partial shares, about **88,227 of 122,823 needed bytes (72 %)** 
 | 31 | 3,389 | Locomotion routine: run blend, gait columns, boost ramp, speed, clock | `exa_physics body_gait.rs locomote, clock_step, advance_clock, stand` | partial (80 %) | gait audio mode, dead jump branch, start callback, approximate normalisation | yes |
 | 32 | 1,375 | Stab arm drive: blade lift and bend push the weapon and forearm | `exa_combat weapon.rs blade_lift, blade_bend, handling_pushes` | done | not applied to any body | no |
 | 33 | 36 | Smoothstep | `exa_combat swing.rs smoothstep` | done | - | yes |
-| 34 | 6,380 | Swing tick: strike window, striker speeds, swing clock and stall, arm stiffness, sounds, weapon and hand pushes | `exa_combat swing.rs run_swings, pace_swings, attack_arm_stiffness, swing_sound`; `strike_body.rs fist_push, edge_push, overhead_pull, vertical_homing` | partial (80 %) | the pushes are not applied to bodies; down-attack arm flags; off-target countdown | yes |
+| 34 | 6,380 | Swing tick: strike window, striker speeds, swing clock and stall, arm stiffness, sounds, weapon and hand pushes | `exa_combat swing.rs run_swings, pace_swings, attack_arm_stiffness, swing_sound`; `swing_voice.rs SwingVoice, SwingVoiceCue`; `exa_audio sounds.rs swing_voices`; `strike_body.rs fist_push, edge_push, overhead_pull, vertical_homing` | partial (80 %) | the pushes are not applied to bodies (tested only: most weapons are bone-attached, and a push on a gripped item body or a hand part is unverified against Exarust's solver); the armed-parry and clinch-clear branch at its top; down-attack arm flags; off-target countdown | yes (voice and rustle since round 29; pushes no) |
 | 35 | 86 | Mark every scene node's object when the body leaves every sector | - | missing | whole routine | n.a. |
 | 36 | 578 | Collapse and dying tick | `exa_combat collapse.rs dying_tick, jitter_heading, lose_tone, fade_pins, stagger_step` | partial (90 %) | large-body branch's two writes | yes |
 | 37 | 320 | Trailing foot planted on leaving Walk or Run | `exa_physics body_feet.rs plant_trailing_foot` | done | - | yes |
-| 38 | 370 | Break Tangle: a held item behind the pelvis builds a counter that starts the break motion | `exa_combat strike_body.rs break_tangle` | done | no caller: the motion start and mask write are not wired | no |
+| 38 | 370 | Break Tangle: a hand part behind the back (in the character frame) builds a counter that starts the break motion | `exa_combat strike_body.rs break_tangle, break_tangles, hands_in_frame, TangleCount` | done | the hand's timer and the motion-state word it stamps (nothing in Exarust reads them) | yes |
 | 39 | 801 | Burning damage over time | `exa_combat burn.rs burn_upkeep` | done | nothing feeds burn strength | yes |
 | 40 | 90 | Group-root post-step: edge lengths, muscle-anchor history | `exa_physics body.rs edge restore`; `body_muscle.rs remember_anchors` | partial (80 %) | per-link hook unidentified | yes |
 | 41 | 280 | Attack-arm easing | `exa_physics body_muscle.rs attack_arms` | done | - | yes |
@@ -153,7 +153,7 @@ Byte counts are estimated from block landmarks in the research notes.
 | block | bytes | share | notes |
 |---|---|---|---|
 | Prologue: fatigue factors, wound painting, dead hold, look smoothing, red regeneration | 1,030 | 70 % | body timers, red regeneration, blood |
-| Impact accumulator, burn call, retention, grip helpers, readiness, stepping decay, queued motion, Break Tangle call | 980 | 50 % | grip relax and weapon flip missing; Break Tangle ported but not called |
+| Impact accumulator, burn call, retention, grip helpers, readiness, stepping decay, queued motion, Break Tangle call | 980 | 50 % | grip relax and weapon flip missing; Break Tangle called (round 29) |
 | Pin gain and energy ramps, blow sag, daze and shock stagger | 760 | 80 % |  |
 | Link-iteration target, jolt, grip relax and weapon flip, chest velocity, standing anchor, look target | 1,700 | 50 % |  |
 | Behaviour call, waking, collapse branch | 520 | 80 % |  |
@@ -178,3 +178,13 @@ Byte counts are estimated from block landmarks in the research notes.
 - The armed parry (routine #25): its blend was rounded half away from zero, the original's
   conversion rounds half to even; its grip strengths take their products in double; a NaN
   distance gives a NaN falloff. Fixed with the geometry port.
+- Break Tangle (routine #38) reads the **hand parts**' origins (the character's hand list, the
+  one whose entries' parents are the forearms), not the held items'; the box test is on the
+  hand's place in the character frame. Its call (assembly) sits behind the condition word
+  having no 0xA00 bit and the body's muscles-on byte, in the queued-motion block.
+- The swing voice (routine #34) is the first held item's voice record, restarted (the
+  environment's set retrigger, not a loop) silent at 0.4 × W26 on the region's first tick; its
+  gain and pitch are written straight into that record on every attack tick, and the body
+  tick's fade walks the held items' voices while the condition is not 2 (attacking). The
+  character's swing loudness and sound gain are 1.0 from the constructor; only the force
+  swing (loudness 3) and scripted fades change them.

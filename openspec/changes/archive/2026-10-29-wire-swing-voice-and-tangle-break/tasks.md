@@ -1,0 +1,5 @@
+- [x] Swing voice cues in the swing tick and the body tick's fade (exa_combat)
+- [x] Swing voice and rustle playback replacing the whoosh (exa_audio)
+- [x] Tangle break in the readiness stage
+- [x] Tests: cues from the swing tick, the tangle counter and the hands in the frame
+- [x] Routine map live column and totals, READMEs
