@@ -614,6 +614,11 @@ impl HudShowUntil {
     pub fn holds(&self, now: i64) -> bool {
         now < self.0
     }
+
+    /// The clock the bars are held until.
+    pub fn until(&self) -> i64 {
+        self.0
+    }
 }
 
 /// The frame texture, when loaded.
@@ -708,12 +713,22 @@ fn draw(
     // dropped. The values compared against are taken
     // only in a frame that shows the bars, as the original's show rule
     // stores them (a rise of the focus while hidden is not remembered).
-    let changed = state
-        .last
-        .is_some_and(|(yellow, focus)| hud.yellow != yellow || hud.focus < focus);
-    let shown = hud.combat || show_until.holds(now) || changed;
+    let shown = crate::game_gui::bars_shown(crate::game_gui::BarsShow {
+        last_health: state.last.map_or(hud.yellow, |last| last.0),
+        health: hud.yellow,
+        last_focus: state.last.map_or(hud.focus, |last| last.1),
+        focus: hud.focus,
+        combat: hud.combat,
+        // Exarust's single in-combat flag stands for the game's combat word
+        // and the player record's own flag: both only ever raise the bars.
+        in_combat: hud.combat,
+        now,
+        hold_until: show_until.until(),
+    });
     let bars_fade = state.bars.step(shown, now);
-    let gauge_fade = state.gauge.step(hud.combat && hud.shield, now);
+    let gauge_fade = state
+        .gauge
+        .step(crate::game_gui::gauge_shown(hud.shield, hud.combat), now);
     if shown || state.last.is_none() {
         state.last = Some((hud.yellow, hud.focus));
     }
