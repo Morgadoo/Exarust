@@ -705,10 +705,15 @@ under 1.19209e−7 is no turn.
 Each frame the cursor's ray is picked against the level, the held item left
 out. A hit whose height is not under the limit (−100000 cm) places the item
 there; otherwise it goes where the ray crosses that height, unless the ray
-climbs (its height part over −1.19209e−7) and the placement is refused. The
-item goes there whether or not its box (its rest points' centre and half
-extents in its saved frame, turned as above) stays within 280 cm up and
-−1000 cm down: the box only decides the routine's answer. The original
+climbs (its height part over −1.19209e−7) and the placement is refused.
+The placement holds only when the item's box (its rest points' centre and
+half extents in its saved frame, turned as above) stays within 280 cm up
+and −1000 cm down and the item's new place is within reach of the hip
+(the walk-to point's test: at most 245 cm high, 300 cm across the ground,
+a NaN passing); a frame that does not hold puts the item back at the last
+placement that held, keeps the hover word, and counts as out of reach
+(the cursor a cross, and a release then is a cancelled one)
+(`item_cursor::lift_frame`). The original
 then backs the ray's point off 600 cm along the ray and sweeps every
 collision sphere of every part of the item against the level's meshes from
 there, starting at a 1000 cm reach and keeping a contact only when it is
@@ -721,24 +726,39 @@ point (`item_cursor::{per_sphere_contact, placement_distance,
 placement_point}`).
 
 The lift's hover word comes from its frame: an item that snaps onto a
-level placement marker gives 0x10, or 0x30 when the marker's link byte
-reads `L`; otherwise a free placement that passed its checks gives 1
-(`item_cursor::hover_word`). The marker is an entry of a level node whose
-eight name characters, read as hexadecimal up to the first other
-character, give the item's object id or its model's id; the cursor's
-segment (to the pick, or 10 000 cm with none) must meet the entry's
-sphere, the item must have an object id and fit the marker's frame, and
-the ray must not climb; the first marker in order wins
-(`item_cursor::{snap_to_marker, marker_id, segment_meets_sphere}`).
-Exarust's level loader does not register the marker nodes and its props
-carry no object id yet, so the live hand leaves the word at zero.
+placement marker within reach gives 0x10, or 0x30 when the marker's link
+byte reads `L`; otherwise a free placement that held gives 1
+(`item_cursor::hover_word`). When the original attaches a node to its
+sector, a node with no object record whose name starts with `[` goes into
+the sector's marker list (so does an object whose volume flags read
+`0x22` in their second byte; no shipped volume does). The shipped markers
+are child nodes of object models: the torch holders' `[0000001F]`, the
+teleporter's `[000001F4L]` and the resurrection device's `[000001AFL]`.
+The eight characters after the `[`, read as hexadecimal up to the first
+other character, give the object id or template the marker takes (the
+lift keeps the placed object's id and its template, the record header's
+parent word); the cursor's segment (to the pick, or 10 000 cm with none)
+must meet the node's bounding sphere, the item must have an object id
+and fit the marker's frame, and the ray must not climb; the first marker
+in order wins, and the held node takes the marker's frame whole
+(`exa_world::markers`, `item_cursor::{snap_to_marker, marker_id,
+segment_meets_sphere, snapped_parts}`). Exarust gathers the registered
+nodes each frame of a lift only; the original's space-free test of the
+item at the marker (its spheres against the other bodies) is not run.
 
-A plain release leaves the item where the cursor put it: the release hands
-the saved rest points to the deferred restore only to take the body out of
-its old sector. A release over a GUI item slot is the GUI's. A lift the
-movement request cancels (the point out of reach) goes to the slot it is
-over, stays with the world hover bit, and is otherwise put back at the
-saved rest points. The turn, placement, hover, release and drop rules are
+A release in reach leaves the item where the cursor put it: the release
+hands the saved rest points to the deferred restore only to take the body
+out of its old sector. A cancelled lift (the point out of reach) with the
+free word is placed again at the last placement that held and put down
+there while that still fits; with a marker's word it stays on the marker,
+frozen there for the `L` word (the press that takes it thaws it); anything
+else goes back to the saved rest points (`item_cursor::release`,
+`hand::end_lift`). A fall ends a lift the same way. The original also
+hands a drop over another view (a GUI window) to that view; Exarust's
+windows take no world item. The forced release (the movement request's
+cancel, a fall, the kinesis) picks its handler by the state word's bits in
+the order lift, door, physical, wheel, GUI callback, cloth, and a cloth's
+bit reaches the wheel's handler (`hand::release_handler`). The turn, placement, hover, release and drop rules are
 `item_cursor::{TurnRamp, place_point, place_frame, hover_word, release,
 drop, DropTask, spawn_record}`.
 An item put down runs the scripts of the scene objects within 5 cm² of the

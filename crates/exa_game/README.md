@@ -609,14 +609,18 @@ the level hit (a miss keeps the last point), then slides it along the ray
 from 600 cm before that point (never behind the eye) to the nearest
 contact of every collision sphere of every part, each carried with the
 placed grab point (a sweep starting inside the level is no contact),
-its rest-point box test (280 cm up, −1000 cm down) only answering; a plain
-release leaves it there, and a cancelled one is put back at the frames the
-lift saved (the live hover word stays zero, as the level loader registers
-no markers and props carry no object id). The hover word's rule (a level
-placement marker whose eight hexadecimal name characters give the item's
-object or model id, whose sphere the cursor's segment meets, and where the
-item fits gives 0x10, or 0x30 when its link
-byte reads `L`; else a free placement gives 1) is tested
+and a placement holds only when its rest-point box (280 cm up, −1000 cm
+down) fits and the item stays in the hip's reach (`item_cursor::lift_frame`);
+a frame that fails puts the item back at the last placement that held and
+counts as out of reach. A placement marker (a model node whose name starts
+with `[`, registered by `exa_world::markers` and gathered each frame of a
+lift) whose eight hexadecimal name characters give the placed object's id
+or template, whose sphere the cursor's segment meets, takes the held node's
+frame whole and gives 0x10, or 0x30 when its link byte reads `L`; a free
+placement gives 1. A release in reach puts the item down; a cancelled one
+puts it at its last fitting placement, leaves it on its marker (frozen for
+`L`, thawed by the next press) or puts it back at the frames the lift saved
+(`item_cursor::release`, `hand::end_lift`); a fall ends a lift the same way
 (`item_cursor::{hover_word, snap_to_marker}`), as are the
 GUI drop's branch (an entry, from a GUI, with a body), its spawned record
 (both drag events alike), object spawner and next-frame queue, and the
