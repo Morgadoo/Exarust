@@ -1102,11 +1102,11 @@ fn collide(pa: &mut Part, pb: &mut Part, pair: &mut Pair, touch: &mut Touch, pla
                 .is_some_and(|g| g.candidates(lo, hi, &mut near));
             let mut moved_at = None;
             let test = |j: usize,
-                            pa: &mut Part,
-                            pb: &mut Part,
-                            pair: &mut Pair,
-                            touch: &mut Touch,
-                            end: Vec3| {
+                        pa: &mut Part,
+                        pb: &mut Part,
+                        pair: &mut Pair,
+                        touch: &mut Touch,
+                        end: Vec3| {
                 let (cb, rb) = spheres[j];
                 let hit = if swept {
                     swept_on_sphere(start, end, r, cb, rb)

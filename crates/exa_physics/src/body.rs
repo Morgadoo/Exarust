@@ -118,6 +118,9 @@ mod drag;
 #[path = "body_sphere_grid.rs"]
 pub mod sphere_grid;
 pub use sphere_grid::SphereGrid;
+#[path = "body_door.rs"]
+pub mod door_body;
+pub use door_body::{DoorBody, PendingDoor};
 #[path = "body_rigid.rs"]
 mod rigid;
 pub use drag::{Grab, drag_pull};
