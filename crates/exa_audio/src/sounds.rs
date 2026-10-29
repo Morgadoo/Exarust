@@ -91,6 +91,66 @@ pub(crate) fn heal_sounds(
     }
 }
 
+/// A named one-shot at a point (m) at a set volume and pitch: the original's
+/// point sound, which a picked-up object's use sound goes through (volume
+/// 0.25, pitch 1).
+#[derive(Message, Debug, Clone, PartialEq)]
+pub struct PointSounded {
+    pub name: String,
+    pub position: Vec3,
+    pub volume: f32,
+    pub pitch: f32,
+}
+
+/// A door's lock sound levels from the two draws, in the order the original
+/// takes them: the pitch first, `0.9 + 0.15·draw`, then the volume,
+/// `0.15 + 0.1·draw`, each in double precision and narrowed. Returns
+/// `(volume, pitch)`.
+pub fn lock_sound_levels(pitch_draw: f64, volume_draw: f64) -> (f32, f32) {
+    let pitch = (pitch_draw * 0.15 + 0.9) as f32;
+    let volume = (volume_draw * 0.1 + 0.15) as f32;
+    (volume, pitch)
+}
+
+/// Plays the named one-shots: a door's lock sound
+/// ([`exa_physics::mechanism::LockSounded`]) at its drawn levels, and the
+/// point sounds at theirs. Each name's buffer is loaded once and kept; a
+/// sound the packs do not hold plays nothing.
+pub(crate) fn named_sounds(
+    game: Option<Res<Game>>,
+    mut locks: MessageReader<exa_physics::mechanism::LockSounded>,
+    mut points: MessageReader<PointSounded>,
+    mut bank: ResMut<SoundBank>,
+    mut sources: ResMut<Assets<AudioSource>>,
+    mut env: ResMut<AudioEnvironment>,
+    mut loaded: Local<HashMap<String, Option<u32>>>,
+) {
+    let Some(game) = game else {
+        locks.clear();
+        points.clear();
+        return;
+    };
+    for lock in locks.read() {
+        let pitch_draw = bank.rng().unit_f64();
+        let volume_draw = bank.rng().unit_f64();
+        let (volume, pitch) = lock_sound_levels(pitch_draw, volume_draw);
+        let buffer = *loaded
+            .entry(lock.name.clone())
+            .or_insert_with(|| bank.load_buffer(&game, &mut sources, &lock.name));
+        if let Some(buffer) = buffer {
+            env.play_buffer(buffer, lock.position, volume, pitch, 0);
+        }
+    }
+    for point in points.read() {
+        let buffer = *loaded
+            .entry(point.name.clone())
+            .or_insert_with(|| bank.load_buffer(&game, &mut sources, &point.name));
+        if let Some(buffer) = buffer {
+            env.play_buffer(buffer, point.position, point.volume, point.pitch, 0);
+        }
+    }
+}
+
 /// A fighter's swing voice as the mixer keeps it: the voice of its first
 /// held item (allocated at its first swing), the clothing rustle's handle
 /// and the foley clock (ms) the rustle waits on.
@@ -243,5 +303,15 @@ mod tests {
         assert_eq!(foley_set(FoleyKind::Player), Some(FOLEY_PLAYER));
         assert_eq!(foley_set(FoleyKind::Class(2)), Some(FOLEY_PLAYER));
         assert_eq!(foley_set(FoleyKind::Golem), Some(FOLEY_GOLEM));
+    }
+
+    /// The lock sound's levels: draws 0 give volume 0.15 and pitch 0.9,
+    /// draws 0.5 volume 0.2 and pitch 0.975; the first draw is the pitch.
+    #[test]
+    fn the_lock_sound_draws_its_pitch_first() {
+        assert_eq!(lock_sound_levels(0.0, 0.0), (0.15, 0.9));
+        assert_eq!(lock_sound_levels(0.5, 0.5), (0.2, 0.975));
+        assert_eq!(lock_sound_levels(1.0, 0.0), (0.15, 1.05));
+        assert_eq!(lock_sound_levels(0.0, 1.0), (0.25, 0.9));
     }
 }

@@ -130,6 +130,12 @@ parameters are in. EFX is not applied by the backend (see [Gaps](#gaps)).
   attack fades a playing voice by 0.01 and 0.0005 and stops it under
   0.005. Fists and claws are not held items and swing silently.
 - A second wind's heal plays `StmHeal01` at 0.1 and pitch 1.
+- Named one-shots (`sounds::named_sounds`, each buffer loaded once): a
+  door's lock sound (`exa_physics::mechanism::LockSounded`, the `LkO` an
+  order to open the doors under a node plays) draws its pitch first,
+  `0.9 + 0.15·draw`, then its volume, `0.15 + 0.1·draw`, from the engine's
+  generator, in double precision (`lock_sound_levels`); a `PointSounded`
+  plays at its own volume and pitch (a taken object's use sound, 0.25 and 1).
 - A blow plays the weapon's own set by its record's hit-sound class
   (`WH_SwordA`, `BdyCol` for fists, …) and the struck part's material set:
   its outer armour layer covering at least half, else the inner, its class

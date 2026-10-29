@@ -537,11 +537,22 @@ drag pulls along the cursor direction by the nearest accepted hit, and that
 reach starts at 1000 cm. The grabbed box is refused when any placed corner
 is higher than 280 cm or lower than 1000 cm.
 
-The click's outcome is [`player_controls::click`]: on a placed object with
-no usable section it shows the item; a usable section of kind 2 is a lock:
-open, it opens its container; closed, with the key and its reward still
-due, its first opening pays 100, or 1000 when the lock's subtype is 3.
-Kinds 0 and 1 open the container and every other kind shows the item. A
+The click's outcome is [`player_controls::click`]: the first click on a
+placed object clears its placement's first-touch bit (`0x8000`, then the
+game's first-touch hook); with no usable section the object's item card is
+shown at once. A usable class 2 is a device (a pedestal hand, a teleporter,
+a reconstruction device): its use runs first (`device_use`: kind 3 answers
+no within 2400 ms of its last use, the teleporter and reconstruction device
+answer through their own use, the signal kind 4 answers no, the placed id
+`0x24c` yes once a game, anything else yes); then a model section naming it
+(its name string id set) asks for the delayed card, else when the use said
+yes and the model section has a description, the narrator says that
+description after 1000 ms for kind 3 and 100 ms for the others (at least
+500 ms while a narrator line is up). Classes 0 and 1 ask for the delayed
+card, every other class shows the card at once. A click on plain level
+geometry looks the point up among the level's objects: the first whose
+bounding sphere holds it and whose box lies within 0.1 cm² of it
+(`player_controls::on_object`); only a used device's narration follows. A
 dead character runs its roles' interact scripts, the player's own body
 shows the health and focus bars for 5000 ms (then the click callback runs,
 as for a living character). Exarust wires the bars: a click on the own
@@ -549,8 +560,14 @@ body sets `exa_ui::hud::HudShowUntil` 5000 ms ahead. The double-click
 interaction (in combat mode only with Ctrl held) is
 [`player_controls::{interaction_allowed, interact_object, interact_character}`]:
 while the object's used mark is clear, kind 0 subtype 1 is used after 2100
-ms and kind 1 is taken in hand (which ends the interaction); kind 5 is
-pushed while its flag allows; then a container section opens. The player's
+ms and any other kind 0 subtype is used at once (both leave the scene first,
+the usable section's 16-byte sound name at body offset 0x10 playing at the
+node at volume 0.25, pitch 1; the immediate use closes the item card and
+runs the record's use: subtype 7 the game's read hook, 5 the powers
+screen), and kind 1 is taken in hand (which ends the interaction); kind 5 is
+pushed while its flag allows; then a container section opens. A double
+click out of reach does nothing (the gate's reach flag; only a pending GUI
+drag callback runs): the original does not walk the player to the object. The player's
 inventory opens, a corpse is looted, and a living character talks when its
 roles' condition passes or a role links it to the player. The double click
 is strict: the same button within the system's double-click time
@@ -645,13 +662,13 @@ press (20 pixels at once, nothing between 181 and 190 ms). A release before
 that is a **click**: outside combat mode it turns the player toward the
 cursor's point once that is farther than 70 cm (the heading takes the
 cursor's direction); the original then names what was clicked (an object's
-description card, the narrator's line for a lock it opened, the HUD for the
-player's own body, a corpse's roles' scripts), which Exarust cannot show
-yet, except the bars for the own body. A double click (a second press
-within the 500 ms double-click time and less than 2 pixels
-from the one before) opens containers, the player's own inventory, loots
-corpses and talks in the original, within reach only; Exarust has no window
-for them yet.
+item card, at once or after the card delay, the narrator's line for a device
+it used, the HUD for the player's own body, a corpse's roles' scripts);
+Exarust shows the cards, the narrator's line and the bars
+(`object_click`). A double click (a second press within the 500 ms
+double-click time and less than 2 pixels from the one before) opens
+containers, takes consumables, opens the player's own inventory, loots
+corpses and talks, within reach only; Exarust has no talk window yet.
 
 A drag start does nothing while combat mode keeps the button for attacks
 (unless Ctrl is held or something is already held), while the point under

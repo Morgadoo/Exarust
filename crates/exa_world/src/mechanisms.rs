@@ -40,7 +40,7 @@ use exa_formats::objdb::{self, Item};
 use exa_physics::body::{
     BodySystems, BodyTicks, DoorBody, PlateBody, Ragdoll, SlideBody, WAKE_COUNT,
 };
-use exa_physics::mechanism::{Dispatch, DoorOrder, MechanismSignal};
+use exa_physics::mechanism::{Dispatch, DoorOrder, LockSounded, MechanismSignal};
 use exa_physics::{door, lever, mechanism, plate};
 
 /// Routes the mechanisms' signals to their targets. Added by
@@ -52,6 +52,9 @@ impl Plugin for MechanismPlugin {
         if !app.world().contains_resource::<Messages<MechanismSignal>>() {
             app.add_message::<MechanismSignal>();
         }
+        if !app.world().contains_resource::<Messages<LockSounded>>() {
+            app.add_message::<LockSounded>();
+        }
         app.add_message::<OpenDoorsUnder>().add_systems(
             FixedUpdate,
             (route_signals, open_doors_under).after(BodySystems),
@@ -62,8 +65,8 @@ impl Plugin for MechanismPlugin {
 /// An order to open the doors under a placed object's node, as the
 /// original's "open the doors under a node" takes it straight from the
 /// player's deferred use (a consumable's target word, 2100 ms after the
-/// double click), without the signal's door-flag inversion. The `LkO`
-/// sound that call plays once is not played here.
+/// double click), without the signal's door-flag inversion. The first door
+/// found under the node plays its `LkO` sound once ([`LockSounded`]).
 #[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OpenDoorsUnder {
     /// The placed object's database id, tag bits included.
@@ -71,14 +74,16 @@ pub struct OpenDoorsUnder {
 }
 
 /// Runs each [`OpenDoorsUnder`]: the door bodies under the placed object
-/// with that id are opened (latched or motorised ones) and woken. An id
-/// no placed object carries does nothing.
+/// with that id are opened (latched or motorised ones) and woken, the
+/// first of them, in the walk's order, sounding its lock once. An id no
+/// placed object carries does nothing.
 pub fn open_doors_under(
     mut orders: MessageReader<OpenDoorsUnder>,
     ticks: Option<Res<BodyTicks>>,
     placed: Query<(Entity, &crate::PlacedItem)>,
     children: Query<&Children>,
     mut bodies: Query<MechanismParts>,
+    mut sounds: MessageWriter<LockSounded>,
 ) {
     let now = ticks.map_or(0, |t| t.millis() as i32);
     for order in orders.read() {
@@ -87,8 +92,25 @@ pub fn open_doors_under(
             continue;
         };
         let nodes = under(node, &children);
+        if let Some(sound) = first_lock_sound(&nodes, &bodies) {
+            sounds.write(sound);
+        }
         order_doors(DoorOrder::Open, &nodes, &mut bodies, now);
     }
+}
+
+/// The lock sound of the first door among `nodes`: its record's `LkO`
+/// sound at the leaf's first part. [guess: the original plays it at a
+/// point the door controller keeps; the leaf's origin stands in]
+fn first_lock_sound(nodes: &[Entity], bodies: &Query<MechanismParts>) -> Option<LockSounded> {
+    nodes.iter().find_map(|&e| {
+        let (body, hinged, sliding, _) = bodies.get(e).ok()?;
+        let door = hinged.map(|g| g.door).or(sliding.map(|g| g.door))?;
+        Some(LockSounded {
+            name: door::sound_name(door.record.lock_sound, "LkO"),
+            position: body.origin_at(0).unwrap_or_default(),
+        })
+    })
 }
 
 /// The entities at and under `node`, the node first, parents before
@@ -292,6 +314,7 @@ mod tests {
     fn the_open_order_runs_on_the_placed_object_by_id() {
         let mut app = App::new();
         app.add_message::<OpenDoorsUnder>()
+            .add_message::<LockSounded>()
             .add_systems(Update, open_doors_under);
         let object = app
             .world_mut()
@@ -308,6 +331,8 @@ mod tests {
         app.world_mut().write_message(OpenDoorsUnder { target: 9 });
         app.update();
         assert!(app.world().get_entity(object).is_ok());
+        // No door under it: no lock sound.
+        assert!(app.world().resource::<Messages<LockSounded>>().is_empty());
     }
 
     fn item(door: Option<objdb::Door>, operative: Option<objdb::Operative>) -> Item {

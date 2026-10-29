@@ -249,6 +249,23 @@ impl ColliderNodes {
         self.0.insert(collider, node);
     }
 
+    /// Takes out every collider built from one of `nodes` (a subtree that
+    /// leaves the scene) and returns their handles for the caller to remove
+    /// from the world.
+    pub fn take_under(&mut self, nodes: &[Entity]) -> Vec<ColliderHandle> {
+        let mut taken: Vec<ColliderHandle> = self
+            .0
+            .iter()
+            .filter(|(_, node)| nodes.contains(node))
+            .map(|(&handle, _)| handle)
+            .collect();
+        taken.sort_by_key(|h| h.into_raw_parts());
+        for handle in &taken {
+            self.0.remove(handle);
+        }
+        taken
+    }
+
     /// How many colliders have a scene node.
     pub fn len(&self) -> usize {
         self.0.len()
@@ -895,6 +912,33 @@ fn step_world(mut physics: ResMut<Physics>, mut pending: ResMut<PendingKinematic
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Taking a subtree's nodes takes their colliders out of the map, in
+    /// handle order, and leaves the others.
+    #[test]
+    fn the_colliders_under_a_removed_subtree_are_taken() {
+        let mut world = World::new();
+        let (a, b, c) = (
+            world.spawn_empty().id(),
+            world.spawn_empty().id(),
+            world.spawn_empty().id(),
+        );
+        let mut nodes = ColliderNodes::default();
+        for (i, node) in [(3, a), (1, b), (2, a), (4, c)] {
+            nodes.insert(ColliderHandle::from_raw_parts(i, 0), node);
+        }
+        let taken = nodes.take_under(&[a, b]);
+        assert_eq!(
+            taken,
+            vec![
+                ColliderHandle::from_raw_parts(1, 0),
+                ColliderHandle::from_raw_parts(2, 0),
+                ColliderHandle::from_raw_parts(3, 0),
+            ]
+        );
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes.node_of(ColliderHandle::from_raw_parts(4, 0)), Some(c));
+    }
 
     /// A ball swept up meets a level ceiling a radius short of it, passes
     /// through a prop's stand-in, and meets nothing beyond its reach.
