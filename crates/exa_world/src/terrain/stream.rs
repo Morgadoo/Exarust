@@ -662,7 +662,7 @@ mod tests {
         );
         assert!(!high_resolution(f32::NAN));
         assert!(within_reach(0.0) && within_reach(f32::NAN));
-        assert!(!within_reach(19_713_601.0) && within_reach(19_713_600.0));
+        assert!(!within_reach(19_713_602.0) && within_reach(19_713_600.0));
         // The list stops at 189 entries.
         let many = select_composites(focus, std::iter::repeat_n(Vec2::ZERO, 300));
         assert_eq!(many.len(), MAX_SELECTED);

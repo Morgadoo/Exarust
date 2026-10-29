@@ -560,7 +560,7 @@ fn prepare_bakes(
     render_queue: Res<RenderQueue>,
     mut prepared: ResMut<PreparedBakes>,
 ) {
-    prepared.ready.clear();
+    prepared.ready = None;
     let live: HashSet<u64> = queue.jobs.iter().map(|job| job.ticket).collect();
     prepared.baked.retain(|ticket| live.contains(ticket));
     let Some(pipeline) = pipeline else {
